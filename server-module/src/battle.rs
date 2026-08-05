@@ -10,6 +10,7 @@
 //! relocated to `schema.rs` (the M8.9a table-name collision constraint).
 
 use crate::economy::grant_currency;
+use crate::evolution::check_and_evolve;
 use crate::guards::{
     check_monster_in_party, check_party_size, check_team_coupling, escrowed_item_qty,
     is_in_ongoing_battle, is_ranked_pvp, log_reject, reject_if_monster_in_trade, require_owner,
@@ -19,6 +20,7 @@ use crate::marshal::{
     battle_monster_from_row, build_ability_store, loser_base_stat_total, now_ms, pub_from_monster,
     wild_battle_monster, write_back_hp,
 };
+use crate::raising::{accrue_quality_time, grant_essence};
 use crate::schema::{
     battle, battle_wild, inventory, monster, monster_pub, skill_row, species_row, trade_offer,
     Battle, BattleWild, Monster, SkillRow,
@@ -1004,6 +1006,34 @@ pub(crate) fn write_back_party_hp(ctx: &ReducerContext, battle: &Battle) -> Resu
     Ok(())
 }
 
+/// EG2-7: essence divisor — deliberately 3x steeper than currency's `/ 10`
+/// (`battle_currency_reward`); reusing that rate would clear every authored
+/// essence threshold in a handful of wins.
+pub(crate) const ESSENCE_BST_DIVISOR: u16 = 30;
+
+/// EG2-7: essence granted per winning participant on a WILD win —
+/// `max(1, loser_bst / 30)`. Floored so a low-BST win is never essence-inert.
+pub(crate) fn essence_battle_reward(bst: u16) -> u32 {
+    u32::from((bst / ESSENCE_BST_DIVISOR).max(1))
+}
+
+/// EG2-7 / ADR-0175 D4: the UTC-day index of a server timestamp (day =
+/// ms / 86_400_000), SATURATING to `u32::MAX` when the index has no u32
+/// representation. A negative index (clock far behind epoch) also saturates to
+/// the MAXIMUM, so `day > stored` stays false and a rewound clock produces a
+/// bounded lockout — never a repeat credit.
+pub(crate) fn day_epoch_utc(ms: i64) -> u32 {
+    u32::try_from(ms / 86_400_000).unwrap_or(u32::MAX)
+}
+
+/// EG2-7: is this battle row a WILD battle? The ONE predicate that exempts both
+/// practice (player == opponent) and PvP (a genuine third identity) from every
+/// EG2 battle credit. Deliberately outcome- and caller-independent — the faint
+/// penalty must apply on terminal outcomes too (unlike `is_ongoing_wild_battle`).
+pub(crate) fn is_wild_battle(b: &Battle) -> bool {
+    b.opponent_identity == WILD_IDENTITY
+}
+
 /// After a battle ends (win/loss), write HP back to all party monsters and
 /// grant XP to the winner's team.
 pub(crate) fn write_back_battle_results(
@@ -1068,6 +1098,34 @@ pub(crate) fn write_back_battle_results(
         }
     }
 
+    // EG2-7 faint penalties (ADR-0175 D4): WILD battles only, per fainted party
+    // member, on ANY outcome — its own pass BEFORE the win block, because that
+    // block runs only on SideAWins and early-returns on corrupt loser data,
+    // while faints must credit on a loss, a flee and the disconnect write-back.
+    if is_wild_battle(battle) {
+        for (i, bm) in battle.state.side_a.team.iter().enumerate() {
+            if !bm.is_fainted() {
+                continue;
+            }
+            // Can't fail: check_team_coupling asserted same lengths above.
+            let Some(&mid) = battle.party_monster_ids.get(i) else {
+                continue;
+            };
+            let Some(mut m) = ctx.db.monster().monster_id().find(mid) else {
+                continue;
+            };
+            m.trust_unfavorable_count = m.trust_unfavorable_count.saturating_add(1);
+            // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing
+            // monster_pub row — never fabricate a tier.
+            let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(mid) else {
+                return Err(format!("monster_pub row missing for monster {mid}"));
+            };
+            let pub_row = pub_from_monster(&m, existing_pub.tier);
+            ctx.db.monster().monster_id().update(m);
+            ctx.db.monster_pub().monster_id().update(pub_row);
+        }
+    }
+
     // Grant XP if the player won (12.5e-3: log-and-continue on parse failures —
     // one corrupt row must not make a battle unwinnable; mirrors movement_tick
     // per-character philosophy, ADR-0077).
@@ -1110,6 +1168,11 @@ pub(crate) fn write_back_battle_results(
         // (RT-M16-02: opponent_identity != WILD_IDENTITY is wrong for PvP).
         let is_practice = battle.player_identity == battle.opponent_identity;
 
+        // EG2-7: the win credits are WILD-gated (practice AND PvP exempt) and
+        // computed once per write-back.
+        let wild_win = is_wild_battle(battle);
+        let today = day_epoch_utc(now_ms(ctx));
+
         // Award XP to each conscious member of the winning team.
         for (i, bm) in battle.state.side_a.team.iter().enumerate() {
             if bm.is_fainted() {
@@ -1123,93 +1186,106 @@ pub(crate) fn write_back_battle_results(
                 continue;
             };
 
-            // Parse winner level — log-and-continue on corrupt data.
-            let winner_lvl = match game_core::Level::new(bm.level) {
-                Ok(l) => l,
-                Err(e) => {
-                    log::error!(
-                        "{{\"evt\":\"xp_skip_level\",\"monster_id\":{mid},\"reason\":\"{e}\"}}",
-                    );
-                    continue;
+            // EG2-7 wild-win credits, INDEPENDENT of the winner-level parse
+            // below (RT-WB-CURRENCY-01 discipline: a corrupt winner level skips
+            // XP ONLY, never essence/Trust — neither uses the winner's level).
+            if wild_win {
+                // Essence is typed by the DEFEATED species' affinity and sized
+                // by the shared reward rule ("go fight the type you need").
+                grant_essence(&mut m, loser_species.affinity, essence_battle_reward(bst));
+                // Trust-favorable: at most once per monster per UTC day, strict
+                // `>` so a clock rewind is a bounded lockout, never a re-credit
+                // (ADR-0175 D4).
+                if today > m.trust_favorable_battle_day_epoch {
+                    m.trust_favorable_count = m.trust_favorable_count.saturating_add(1);
+                    m.trust_favorable_battle_day_epoch = today;
                 }
-            };
-            let base_xp = battle_xp_reward(winner_lvl, bst, loser_lvl);
-            let xp_gained = game_core::practice_xp_reward(base_xp, is_practice);
-            let current_xp = game_core::Xp::new(m.xp);
-            let (new_xp, new_level, leveled_up) = apply_xp_gain(current_xp, xp_gained);
-            m.xp = new_xp.value();
-            m.level = new_level.as_u8();
+            }
 
-            if leveled_up {
-                // Recompute derived stats on level-up. Stat-recompute failures are
-                // logged and skipped (XP/level already written above); `level_up_healed_hp`
-                // remains the SSOT (ADR-0003, ADR-0073).
-                if let Some(species) = ctx.db.species_row().id().find(m.species_id) {
-                    let base = StatBlock {
-                        hp: species.base_hp,
-                        attack: species.base_attack,
-                        defense: species.base_defense,
-                        speed: species.base_speed,
-                        sp_attack: species.base_sp_attack,
-                        sp_defense: species.base_sp_defense,
-                    };
-                    'stat_recompute: {
-                        let ivs = match game_core::IVs::new(
-                            m.iv_hp,
-                            m.iv_attack,
-                            m.iv_defense,
-                            m.iv_speed,
-                            m.iv_sp_attack,
-                            m.iv_sp_defense,
-                        ) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                log::error!(
-                                    "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"ivs: {e}\"}}",
-                                );
-                                break 'stat_recompute;
-                            }
+            // Parse winner level — a corrupt level skips the XP block ONLY; the
+            // credits above and the dual-write below still happen.
+            if let Ok(winner_lvl) = game_core::Level::new(bm.level) {
+                let base_xp = battle_xp_reward(winner_lvl, bst, loser_lvl);
+                let xp_gained = game_core::practice_xp_reward(base_xp, is_practice);
+                let current_xp = game_core::Xp::new(m.xp);
+                let (new_xp, new_level, leveled_up) = apply_xp_gain(current_xp, xp_gained);
+                m.xp = new_xp.value();
+                m.level = new_level.as_u8();
+
+                if leveled_up {
+                    // Recompute derived stats on level-up. Stat-recompute failures are
+                    // logged and skipped (XP/level already written above); `level_up_healed_hp`
+                    // remains the SSOT (ADR-0003, ADR-0073).
+                    if let Some(species) = ctx.db.species_row().id().find(m.species_id) {
+                        let base = StatBlock {
+                            hp: species.base_hp,
+                            attack: species.base_attack,
+                            defense: species.base_defense,
+                            speed: species.base_speed,
+                            sp_attack: species.base_sp_attack,
+                            sp_defense: species.base_sp_defense,
                         };
-                        let evs = match game_core::EVs::new(
-                            m.ev_hp,
-                            m.ev_attack,
-                            m.ev_defense,
-                            m.ev_speed,
-                            m.ev_sp_attack,
-                            m.ev_sp_defense,
-                        ) {
-                            Ok(v) => v,
-                            Err(e) => {
-                                log::error!(
-                                    "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"evs: {e}\"}}",
-                                );
-                                break 'stat_recompute;
-                            }
-                        };
-                        let nature = game_core::Nature::new(m.nature_kind);
-                        let lvl = match game_core::Level::new(m.level) {
-                            Ok(l) => l,
-                            Err(e) => {
-                                log::error!(
-                                    "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"level: {e}\"}}",
-                                );
-                                break 'stat_recompute;
-                            }
-                        };
-                        let derived = game_core::derive_stats(&base, &ivs, &evs, &nature, lvl);
-                        m.stat_hp = derived.hp;
-                        m.stat_attack = derived.attack;
-                        m.stat_defense = derived.defense;
-                        m.stat_speed = derived.speed;
-                        m.stat_sp_attack = derived.sp_attack;
-                        m.stat_sp_defense = derived.sp_defense;
-                        // Heal the HP gained from the max-HP growth on level-up
-                        // (SSOT: game_core owns the heal rule, ADR-0003).
-                        m.current_hp = level_up_healed_hp(m.current_hp, bm.max_hp, derived.hp);
-                        // EG1 (ADR-0174 D2): the evolves_to recompute is GONE —
-                        // the column is frozen dead until Migration B.
+                        'stat_recompute: {
+                            let ivs = match game_core::IVs::new(
+                                m.iv_hp,
+                                m.iv_attack,
+                                m.iv_defense,
+                                m.iv_speed,
+                                m.iv_sp_attack,
+                                m.iv_sp_defense,
+                            ) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    log::error!(
+                                        "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"ivs: {e}\"}}",
+                                    );
+                                    break 'stat_recompute;
+                                }
+                            };
+                            let evs = match game_core::EVs::new(
+                                m.ev_hp,
+                                m.ev_attack,
+                                m.ev_defense,
+                                m.ev_speed,
+                                m.ev_sp_attack,
+                                m.ev_sp_defense,
+                            ) {
+                                Ok(v) => v,
+                                Err(e) => {
+                                    log::error!(
+                                        "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"evs: {e}\"}}",
+                                    );
+                                    break 'stat_recompute;
+                                }
+                            };
+                            let nature = game_core::Nature::new(m.nature_kind);
+                            let lvl = match game_core::Level::new(m.level) {
+                                Ok(l) => l,
+                                Err(e) => {
+                                    log::error!(
+                                        "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"level: {e}\"}}",
+                                    );
+                                    break 'stat_recompute;
+                                }
+                            };
+                            let derived = game_core::derive_stats(&base, &ivs, &evs, &nature, lvl);
+                            m.stat_hp = derived.hp;
+                            m.stat_attack = derived.attack;
+                            m.stat_defense = derived.defense;
+                            m.stat_speed = derived.speed;
+                            m.stat_sp_attack = derived.sp_attack;
+                            m.stat_sp_defense = derived.sp_defense;
+                            // Heal the HP gained from the max-HP growth on level-up
+                            // (SSOT: game_core owns the heal rule, ADR-0003).
+                            m.current_hp = level_up_healed_hp(m.current_hp, bm.max_hp, derived.hp);
+                            // EG1 (ADR-0174 D2): the evolves_to recompute is GONE —
+                            // the column is frozen dead until Migration B.
+                        }
                     }
                 }
+            } else {
+                // Corrupt winner level: XP skipped, nothing else (ADR-0175 D4).
+                log::error!("{{\"evt\":\"xp_skip_level\",\"monster_id\":{mid}}}");
             }
             // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing
             // monster_pub row — never fabricate a tier.
@@ -1219,6 +1295,14 @@ pub(crate) fn write_back_battle_results(
             let pub_row = pub_from_monster(&m, existing_pub.tier);
             ctx.db.monster().monster_id().update(m);
             ctx.db.monster_pub().monster_id().update(pub_row);
+            // EG2-8/EG2-12 tails (fresh-find, after this monster's own write):
+            // Quality Time is wild-gated like the other credits; the
+            // auto-evolution check is UNCONDITIONAL and LAST — the level can
+            // change on practice/PvP wins too.
+            if wild_win {
+                accrue_quality_time(ctx, mid);
+            }
+            check_and_evolve(ctx, mid);
         }
     }
 

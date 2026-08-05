@@ -12,11 +12,13 @@
 //! ADR-0056 — keep it stable.
 
 use crate::battle::{begin_encounter, lead_party, NO_CONSCIOUS_MONSTER_REASON};
+use crate::evolution::check_and_evolve;
 use crate::guards::{authorize_move, is_in_ongoing_battle, json_escape, log_reject, validate_name};
 use crate::marshal::{
     apply_state, char_state, monster_from_instance, now_ms, pub_from_monster,
     table_from_encounter_row,
 };
+use crate::raising::accrue_quality_time;
 use crate::schema::{
     battle, character, encounter, monster, monster_pub, npc, player, species_row, Character, Player,
 };
@@ -140,6 +142,16 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
     }
     ch.move_queue.push(input);
     ctx.db.character().entity_id().update(ch);
+    // EG2-8/EG2-12 growth tails: THE movement call site — a genuinely
+    // player-triggered reducer (never movement_tick, EG2-9). Once per party
+    // monster over lead_party's FULL id list (not just the lead); accrual
+    // first, auto-evolution check LAST. No party -> credit nothing.
+    if let Some((party_ids, _)) = lead_party(ctx, ctx.sender) {
+        for monster_id in party_ids {
+            accrue_quality_time(ctx, monster_id);
+            check_and_evolve(ctx, monster_id);
+        }
+    }
     Ok(())
 }
 

@@ -2859,13 +2859,15 @@ fn win_credits_not_gated_behind_winner_level_parse() {
              wild win. RED at HEAD: no essence is granted anywhere in battle.rs."
         )
     });
-    let day_at = win_region.find(day_epoch_field.as_str()).unwrap_or_else(|| {
-        panic!(
-            "TEETH (EG2-7): the winner loop must read and write \
+    let day_at = win_region
+        .find(day_epoch_field.as_str())
+        .unwrap_or_else(|| {
+            panic!(
+                "TEETH (EG2-7): the winner loop must read and write \
              `trust_favorable_battle_day_epoch` — the once-per-day cap on the \
              Trust-favorable battle credit. RED at HEAD: the column is never touched."
-        )
-    });
+            )
+        });
 
     assert!(
         grant_at < parse_at,

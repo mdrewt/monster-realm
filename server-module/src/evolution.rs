@@ -1,8 +1,13 @@
-//! `evolution` — server-module domain submodule (EG1 rewrite, ADR-0174).
+//! `evolution` — server-module domain submodule (EG1 rewrite ADR-0174; EG2
+//! reducers ADR-0175).
 //!
-//! ONE reducer: `evolve(ctx, monster_id, to_species)` — the write path of the
-//! essence-graph evolution model. It is a ctx/DB shell only: the gate DECISION
-//! is `game_core::path_satisfied` and the requirement NAMING is
+//! ONE reducer: `evolve(ctx, monster_id, to_species)` — the player-invoked
+//! write path of the essence-graph evolution model — plus the two EG2 internal
+//! helpers: `apply_evolution` (the ONE transform-and-write path, shared by the
+//! reducer and the auto-evolution driver) and `check_and_evolve` (the bounded
+//! auto-evolution cascade called as a tail from the intent reducers). This file
+//! is a ctx/DB shell only: the gate DECISION is `game_core::path_satisfied` /
+//! `game_core::eligible_evolution_paths` and the requirement NAMING is
 //! `game_core::unmet_requirement`; nothing in this file reads a gate field
 //! (EG1-11 source scan, whole production region). Fusion is deleted as a
 //! feature (EG1-9); the `Fusion` TABLE struct stays in schema.rs until
@@ -15,9 +20,17 @@ use crate::guards::{reject_if_in_battle, reject_if_monster_in_trade, require_own
 use crate::marshal::{
     evolution_path_from_row, monster_to_instance, pub_from_monster, species_from_row,
 };
-use crate::schema::{battle, evolution_path, monster, monster_pub, species_row, trade_offer};
+use crate::schema::{
+    battle, evolution_path, monster, monster_pub, species_row, trade_offer, EvolutionPathRow,
+};
 use game_core::Affinity;
 use spacetimedb::ReducerContext;
+
+/// Hard cap on the auto-evolution chain cascade (EG2-13, ADR-0175 D3): R11's
+/// tier cap 5 plus 2 — generous on purpose and structurally unreachable for
+/// R5-valid content (strict tier +1 per edge). Hitting it mid-chain means an
+/// R5/R11 invariant violation shipped in content.
+pub(crate) const MAX_EVOLUTION_CHAIN_STEPS: u32 = 7;
 
 /// Evolve a monster along one authored evolution-graph edge (EG2-1 shape).
 ///
@@ -28,13 +41,14 @@ use spacetimedb::ReducerContext;
 ///    from_species, then compare to_species) — a client-supplied `to_species`
 ///    can never cross-apply a foreign edge
 /// 4. Marshal to the pure instance + path, gate via the SHARED predicate
-/// 5. FRESH target-species lookup (the MonsterPub.tier source, EG1-8)
-/// 6. `game_core::evolve` transform (re-derives stats, clamps HP, zeroes all 8
-///    essence pools — ADR-0174 D2); Trust/Quality-Time survive untouched
-/// 7. Dual-write Monster + MonsterPub (ADR-0015 discipline)
+/// 5. Delegate the transform-and-write to `apply_evolution` (EG2-11: an
+///    evolution is NEVER applied through two different code paths)
+/// 6. Tail-call `check_and_evolve` (EG2-13: chain evolution applies to the
+///    player-invoked path too — the new form may already satisfy an
+///    unambiguous next edge on its surviving level/Trust/Quality-Time)
 #[spacetimedb::reducer]
 pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
-    let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+    let Some(m) = ctx.db.monster().monster_id().find(monster_id) else {
         return Err("monster not found".to_string());
     };
 
@@ -85,10 +99,41 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<
             .unwrap_or_else(|| "evolution requirements not met".to_string()));
     }
 
+    // EG2-11: the transform-and-write is DELEGATED — the player-invoked path
+    // and the auto-evolution path apply an evolution through exactly one helper.
+    apply_evolution(ctx, monster_id, &path_row)?;
+
+    // EG2-13: cascade — the new form may already satisfy an unambiguous next
+    // edge (level/Trust/Quality-Time survive the transform).
+    check_and_evolve(ctx, monster_id);
+
+    Ok(())
+}
+
+/// Apply ONE evolution edge to a monster: the shared transform-and-write path
+/// (EG2-11, ADR-0175 D3), factored out of `evolve()` so the reducer and
+/// `check_and_evolve` cannot drift.
+///
+/// Deliberately guard-free (EG2-12 Guard warning): this is an internal helper,
+/// never wire-reachable, and at the `write_back_battle_results` call site the
+/// battle row is still `Ongoing` — the standard guard would self-reject every
+/// auto-evolution there. It also re-reads the monster row itself, so a caller
+/// can never hand it a stale in-memory copy (what makes the chain safe to run
+/// step after step).
+pub(crate) fn apply_evolution(
+    ctx: &ReducerContext,
+    monster_id: u64,
+    path: &EvolutionPathRow,
+) -> Result<(), String> {
+    let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+        return Err("monster not found".to_string());
+    };
+    let instance = monster_to_instance(&m)?;
+
     // FRESH target-species lookup — the MonsterPub.tier source (EG1-8) and the
     // transform's base stats both come from it.
-    let Some(to_species_row) = ctx.db.species_row().id().find(to_species) else {
-        return Err(format!("target species {to_species} not found"));
+    let Some(to_species_row) = ctx.db.species_row().id().find(path.to_species) else {
+        return Err(format!("target species {} not found", path.to_species));
     };
     let target = species_from_row(&to_species_row)?;
 
@@ -124,6 +169,68 @@ pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<
     ctx.db.monster_pub().monster_id().update(pub_row);
 
     Ok(())
+}
+
+/// Auto-evolution driver (EG2-11/EG2-13, ADR-0175 D3): called as a TAIL from
+/// the intent reducers (care / train / essence_train / consume_crystalized_
+/// essence / enqueue_move) and from the battle write-back — never from a
+/// scheduled reducer (EG2-9).
+///
+/// Each iteration: FRESH monster read, the DB `evolution_path` rows for the
+/// CURRENT species (the same source `evolve()` and the EG4 client read — never
+/// the cfg(test)-gated RON cache), the SHARED `eligible_evolution_paths` query.
+/// 0 eligible -> done; 2+ -> the player owns the choice (EG2-2); exactly 1 ->
+/// apply and loop against the NEW species. Guard-free by design (EG2-12) and
+/// infallible outward: this must never fail the caller's already-performed
+/// write, so every abnormal condition is log-and-stop.
+pub(crate) fn check_and_evolve(ctx: &ReducerContext, monster_id: u64) {
+    let mut steps: u32 = 0;
+    while steps < MAX_EVOLUTION_CHAIN_STEPS {
+        // FRESH find every step — the row changed under us on the last one.
+        let Some(m) = ctx.db.monster().monster_id().find(monster_id) else {
+            return;
+        };
+        let Ok(instance) = monster_to_instance(&m) else {
+            return;
+        };
+        // Candidate edges out of the monster's CURRENT species, via the
+        // from_species btree index (EG1-4 — this runs on the movement hot path).
+        let mut candidate_rows: Vec<EvolutionPathRow> = Vec::new();
+        let mut candidate_paths: Vec<game_core::EvolutionPath> = Vec::new();
+        for row in ctx.db.evolution_path().from_species().filter(m.species_id) {
+            match evolution_path_from_row(&row) {
+                Ok(path) => {
+                    candidate_rows.push(row);
+                    candidate_paths.push(path);
+                }
+                // A corrupt row is skipped, never fatal: this is a reducer tail.
+                Err(e) => {
+                    log::warn!(
+                        "{{\"evt\":\"check_and_evolve_skip_edge\",\"monster_id\":{monster_id},\"reason\":\"{e}\"}}",
+                    );
+                }
+            }
+        }
+        // THE decision: the SHARED full-set query (EG2-11), never a hand-rolled
+        // first-match. 0 -> chain ends; 2+ -> the player picks (EG2-2).
+        let eligible = game_core::eligible_evolution_paths(&instance, &candidate_paths);
+        if eligible.len() != 1 {
+            return;
+        }
+        if let Err(e) = apply_evolution(ctx, monster_id, &candidate_rows[eligible[0]]) {
+            log::error!(
+                "{{\"evt\":\"check_and_evolve_apply_failed\",\"monster_id\":{monster_id},\"reason\":\"{e}\"}}",
+            );
+            return;
+        }
+        steps += 1;
+    }
+    // Cap reached with the loop still live: an R5/R11 invariant violation
+    // shipped in content (a cycle or an over-deep chain). Distinct signal, never
+    // a silent stop (ADR-0175 D3).
+    log::error!(
+        "{{\"evt\":\"check_and_evolve_cap_hit\",\"monster_id\":{monster_id},\"steps\":{steps}}}",
+    );
 }
 
 #[cfg(test)]

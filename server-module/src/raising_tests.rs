@@ -1785,7 +1785,10 @@ fn below_min_write_gap_is_a_pure_noop_returning_false() {
     // Call 2 — 10 s after the ORIGINAL anchor: the full 10 s must credit.
     let now2 = QT_ANCHOR + 10_000;
     let wrote2 = apply_quality_time_credit(&mut m, now2);
-    assert!(wrote2, "a 10 s gap is above the write threshold — must return true");
+    assert!(
+        wrote2,
+        "a 10 s gap is above the write threshold — must return true"
+    );
     assert_eq!(
         qt_state(&m),
         (now2, 14_000, 13_000, 2),
@@ -2660,7 +2663,12 @@ fn tails_ordering() {
     let accrue = ["accrue_quality", "_time("].concat();
     let evolve = ["check_and", "_evolve("].concat();
 
-    for decl in [care_decl(), train_decl(), essence_train_decl(), consume_decl()] {
+    for decl in [
+        care_decl(),
+        train_decl(),
+        essence_train_decl(),
+        consume_decl(),
+    ] {
         let body = eg2_scan_body(&decl);
 
         let last_update = body.rfind(update.as_str()).unwrap_or_else(|| {

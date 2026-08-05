@@ -44,9 +44,11 @@ import CareReducer from "./care_reducer";
 import ChallengePvpReducer from "./challenge_pvp_reducer";
 import ClearQueueReducer from "./clear_queue_reducer";
 import ConfirmTradeReducer from "./confirm_trade_reducer";
+import ConsumeCrystalizedEssenceReducer from "./consume_crystalized_essence_reducer";
 import DeclineChallengeReducer from "./decline_challenge_reducer";
 import DismissDialogueReducer from "./dismiss_dialogue_reducer";
 import EnqueueMoveReducer from "./enqueue_move_reducer";
+import EssenceTrainReducer from "./essence_train_reducer";
 import EvolveReducer from "./evolve_reducer";
 import FleeReducer from "./flee_reducer";
 import HealPartyReducer from "./heal_party_reducer";
@@ -406,9 +408,11 @@ const reducersSchema = __reducers(
   __reducerSchema("challenge_pvp", ChallengePvpReducer),
   __reducerSchema("clear_queue", ClearQueueReducer),
   __reducerSchema("confirm_trade", ConfirmTradeReducer),
+  __reducerSchema("consume_crystalized_essence", ConsumeCrystalizedEssenceReducer),
   __reducerSchema("decline_challenge", DeclineChallengeReducer),
   __reducerSchema("dismiss_dialogue", DismissDialogueReducer),
   __reducerSchema("enqueue_move", EnqueueMoveReducer),
+  __reducerSchema("essence_train", EssenceTrainReducer),
   __reducerSchema("evolve", EvolveReducer),
   __reducerSchema("flee", FleeReducer),
   __reducerSchema("heal_party", HealPartyReducer),

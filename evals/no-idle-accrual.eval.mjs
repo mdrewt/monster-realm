@@ -22,14 +22,22 @@
 //     false-positive.
 //
 // GROWTH_WRITERS (the allowlist is intentionally FIXED — adding a NEW growth
-// writer, e.g. for M10 evolution, MUST consciously update this list; that is
-// the mechanical enforcement, per ADR-0010 proof-of-teeth spirit):
-//   care, train, write_back_battle_results
+// writer MUST consciously update this list; that is the mechanical enforcement,
+// per ADR-0010 proof-of-teeth spirit). EG2 (ADR-0175 D6) added the essence-graph
+// writers: care, train, write_back_battle_results, evolve,
+// recompute_monster_derived_fields, accrue_quality_time, apply_quality_time_credit,
+// apply_evolution, essence_train, consume_crystalized_essence, check_and_evolve,
+// grant_essence.
 //
-// GROWTH_FIELDS (14 named fields, no glob — enumerated per reviewer guidance):
+// GROWTH_FIELDS (30 named fields, no glob — enumerated per reviewer guidance;
+// EG2/ADR-0175 D6 added the 16 EG1-frozen private Monster columns):
 //   bond, ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
 //   stat_hp, stat_attack, stat_defense, stat_speed, stat_sp_attack,
-//   stat_sp_defense, last_care_at_ms
+//   stat_sp_defense, last_care_at_ms, essence_fire..essence_dark (8),
+//   trust_favorable_count, trust_unfavorable_count,
+//   trust_favorable_battle_day_epoch, quality_time_ticks_total,
+//   quality_time_accum_ms, quality_time_window_ms, quality_time_window_start_ms,
+//   last_essence_train_at_ms
 //
 // === ABSENCE-IS-FAIL ===
 // If the full-source growth-write count is 0 → FAIL (scan likely broken).
@@ -140,8 +148,14 @@ export function readServerModuleSources(dir) {
 // ---------------------------------------------------------------------------
 
 /**
- * The 14 growth fields — enumerated explicitly (no glob), per reviewer guidance.
+ * The 30 growth fields — enumerated explicitly (no glob), per reviewer guidance.
  * Any assignment to `.<field> = <non-=>` in non-allowlisted code is a violation.
+ *
+ * EG2 (ADR-0175 D6): the 16 EG1-frozen private Monster columns (8 essence pools,
+ * 3 Trust, 4 Quality-Time, the shared essence-training cooldown anchor) are
+ * growth resources from the moment they exist — deferring them to EG5-3 would
+ * leave Check A blind to the new gates for the whole EG2->EG5 window. The
+ * pub-side projections and the `bond` removal stay EG5-3's.
  */
 export const GROWTH_FIELDS = [
   'bond',
@@ -158,6 +172,22 @@ export const GROWTH_FIELDS = [
   'stat_sp_attack',
   'stat_sp_defense',
   'last_care_at_ms',
+  'essence_fire',
+  'essence_water',
+  'essence_plant',
+  'essence_electric',
+  'essence_earth',
+  'essence_wind',
+  'essence_light',
+  'essence_dark',
+  'trust_favorable_count',
+  'trust_unfavorable_count',
+  'trust_favorable_battle_day_epoch',
+  'quality_time_ticks_total',
+  'quality_time_accum_ms',
+  'quality_time_window_ms',
+  'quality_time_window_start_ms',
+  'last_essence_train_at_ms',
 ];
 
 /**
@@ -175,6 +205,18 @@ export const GROWTH_FIELDS = [
  * upgrade. It rewrites stat columns + current_hp clamp to reflect new base stats
  * from a content change — not idle accrual. Called only from intent-path reducers
  * (sync_content / init), never from scheduled reducers.
+ *
+ * EG2 (ADR-0175 D6): the essence-graph writers. `essence_train` /
+ * `consume_crystalized_essence` are new intent reducers; `apply_evolution` is
+ * the one shared transform-and-write path (`evolve` STAYS listed post-refactor
+ * for the Check B reason — a scheduled reducer must not call it directly);
+ * `accrue_quality_time` is the Quality-Time ctx shell and
+ * `apply_quality_time_credit` / `grant_essence` are its pure write seams (the
+ * unit-tested single write sites for the QT columns / essence pools — the exact
+ * analogue of the existing pure-helper entries); `check_and_evolve` writes
+ * nothing itself, but listing it makes Check B mechanically ban a scheduled
+ * reducer from ever calling the auto-evolution driver directly (the eval half
+ * of EG2-9).
  */
 export const GROWTH_WRITERS = [
   'care',
@@ -182,6 +224,13 @@ export const GROWTH_WRITERS = [
   'write_back_battle_results',
   'evolve',
   'recompute_monster_derived_fields',
+  'accrue_quality_time',
+  'apply_quality_time_credit',
+  'apply_evolution',
+  'essence_train',
+  'consume_crystalized_essence',
+  'check_and_evolve',
+  'grant_essence',
 ];
 
 // ---------------------------------------------------------------------------
@@ -814,7 +863,7 @@ pub fn wellness_tick(ctx: &ReducerContext, sched: WellnessTickSchedule) -> Resul
 
 export default async function () {
   const name =
-    'no-idle-accrual (M9 §2+§3: growth confined to care/train/write_back_battle_results; no scheduled accrual)';
+    'no-idle-accrual (M9 §2+§3 + EG2/ADR-0175 D6: growth confined to the intent-path GROWTH_WRITERS allowlist; no scheduled accrual)';
 
   // Run proofs-of-teeth FIRST — if any tooth fails, return before touching real src.
   const teethError = runTeeth();

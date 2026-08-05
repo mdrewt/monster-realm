@@ -914,7 +914,10 @@ fn check_and_evolve_zero_eligible_is_noop() {
 
     let steps = check_and_evolve_seam(&mut db, 1);
 
-    assert_eq!(steps, 0, "no eligible path means no evolution step is applied");
+    assert_eq!(
+        steps, 0,
+        "no eligible path means no evolution step is applied"
+    );
     let after = db.get_monster(1).expect("monster row must survive");
     assert_eq!(after.species_id, 1, "TEETH: the species must be unchanged");
     assert_eq!(
@@ -949,7 +952,10 @@ fn check_and_evolve_exactly_one_applies_same_transaction() {
 
     let steps = check_and_evolve_seam(&mut db, 1);
 
-    assert_eq!(steps, 1, "exactly one eligible path must apply exactly one step");
+    assert_eq!(
+        steps, 1,
+        "exactly one eligible path must apply exactly one step"
+    );
     let m = db.get_monster(1).expect("monster row must survive").clone();
     let p = db
         .get_monster_pub(1)
@@ -1063,7 +1069,10 @@ fn check_and_evolve_ignores_unsatisfied_paths() {
 
     let steps = check_and_evolve_seam(&mut db, 1);
 
-    assert_eq!(steps, 1, "exactly one of the two candidate rows is eligible");
+    assert_eq!(
+        steps, 1,
+        "exactly one of the two candidate rows is eligible"
+    );
     assert_eq!(
         db.get_monster(1)
             .expect("monster row must survive")
@@ -1206,7 +1215,9 @@ fn eg2_13_chain_three_single_eligible_steps_resolves_in_one_call() {
         "essence is spent on the FIRST step and stays zero through the chain"
     );
     assert_eq!(
-        db.get_monster_pub(1).expect("monster_pub must survive").tier,
+        db.get_monster_pub(1)
+            .expect("monster_pub must survive")
+            .tier,
         3,
         "TEETH: the public tier must be the FINAL species' tier (3), read fresh \
          on the last step — a chain that writes the tier once, up front, shows 1"
@@ -1274,7 +1285,7 @@ fn eg2_13_iteration_cap_terminates_on_degenerate_cycle() {
     let mut db = TestEvolutionDb::new();
     db.insert_species(source_species_row()); // 1, tier 0
     db.insert_species(target_species_row()); // 2, tier 1
-    // R5-INVALID by construction: a 2-cycle, both edges trivially satisfied.
+                                             // R5-INVALID by construction: a 2-cycle, both edges trivially satisfied.
     db.insert_evolution_path(make_level_only_path_row(1, 100, 1, 2, 1));
     db.insert_evolution_path(make_level_only_path_row(2, 101, 2, 1, 1));
 
@@ -1437,7 +1448,9 @@ fn apply_evolution_sets_pub_tier_from_fresh_target_species_lookup() {
     apply_evolution_seam(&mut db, 1, &path).expect("apply_evolution must succeed");
 
     assert_eq!(
-        db.get_monster_pub(1).expect("monster_pub must survive").tier,
+        db.get_monster_pub(1)
+            .expect("monster_pub must survive")
+            .tier,
         2,
         "TEETH(EG1-8): the tier must come from a FRESH species_row lookup of the \
          path's to_species (2); 9 = copy-forward, 0 = fabricated, 1 = derived \
@@ -2333,9 +2346,9 @@ fn eg2_13_chain_has_explicit_iteration_cap() {
          the seam tests drive the seam's own loop."
     );
     let while_pos = body.find("while ").expect("asserted present just above");
-    let eligible_pos = body
-        .find("eligible_evolution_paths(")
-        .expect("vacuity: pinned by eg1_11_evolution_rs_production_region_has_no_inlined_gate_logic");
+    let eligible_pos = body.find("eligible_evolution_paths(").expect(
+        "vacuity: pinned by eg1_11_evolution_rs_production_region_has_no_inlined_gate_logic",
+    );
     let apply_pos = body
         .find("apply_evolution(")
         .expect("vacuity: check_and_evolve must apply the single eligible path");
