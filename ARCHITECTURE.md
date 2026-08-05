@@ -150,8 +150,8 @@ invalidates downstream `touches:` declarations — **keep the file names stable.
 | `battle.rs` | `start_battle`, `start_wild_battle`, `submit_attack`, `use_battle_item` (M14e — ADR-0096), `swap_active`, `flee`, `begin_encounter`, `lead_party`, `write_back_*` (the largest module — the battle cluster) | `battle_tests.rs` |
 | `taming.rs` | `attempt_recruit`, `grant_bait` | `taming_tests.rs` |
 | `inventory.rs` | `grant_item`, `consume_one` (single item-mutation surface — ADR-0059) | — |
-| `raising.rs` | `care`, `train`, `evaluate_heal`, `heal_party` (raising + heal cooldown — ADR-0058/0059) | `raising_tests.rs` |
-| `evolution.rs` | `evolve`, `fuse`, `compute_evolves_to` (M10b, ADR-0061/0062) | `evolution_tests.rs` |
+| `raising.rs` | `care`, `train`, `essence_train`, `consume_crystalized_essence`, `evaluate_heal`, `heal_party` + the `accrue_quality_time`/`apply_quality_time_credit`/`grant_essence` growth helpers (raising + heal cooldown — ADR-0058/0059; essence/Quality-Time — ADR-0175) | `raising_tests.rs` |
+| `evolution.rs` | `evolve` + the `apply_evolution`/`check_and_evolve` auto-evolution helpers (fusion deleted — EG1/ADR-0174; event-triggered essence-graph evolution — EG2/ADR-0175) | `evolution_tests.rs` |
 | `npc.rs` | `talk`, `advance_dialogue`, `dismiss_dialogue` reducers; dialogue/quest state marshaling + helpers (M12b, ADR-0069) | `npc_tests.rs` |
 | `economy.rs` | `buy`, `sell` reducers + `grant_currency` / `spend_currency` / `wallet_balance` helpers (the single economy-mutation surface — M13, ADR-0081/0082) | `economy_tests.rs` |
 | `trading.rs` | `propose_trade`, `respond_trade`, `confirm_trade`, `cancel_trade`, `trade_offer_reaper` + the `trade_offer_reaper_schedule` scheduled table (M15a — ADR-0106; TTL reaper M16.5f — ADR-0117) | `trading_tests.rs` |

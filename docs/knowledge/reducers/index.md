@@ -16,9 +16,11 @@
 | reducers/challenge_pvp | SpacetimeDB Reducer | challenge_pvp | Send a PvP battle challenge to another online player. Guard order (reject-not-cl |
 | reducers/clear_queue | SpacetimeDB Reducer | clear_queue | Empty the queue (key release). |
 | reducers/confirm_trade | SpacetimeDB Reducer | confirm_trade | Initiator confirms a ConfirmedByCounterparty offer → atomic swap. Role + status  |
+| reducers/consume_crystalized_essence | SpacetimeDB Reducer | consume_crystalized_essence | Consume a crystalized-essence item: grant the ITEM's essence to the matching poo |
 | reducers/decline_challenge | SpacetimeDB Reducer | decline_challenge | Decline a pending PvP challenge. Deletes the challenge row. |
 | reducers/dismiss_dialogue | SpacetimeDB Reducer | dismiss_dialogue | Dismiss the current dialogue (no-op if no active conversation). |
 | reducers/enqueue_move | SpacetimeDB Reducer | enqueue_move | Append one intent to the bounded queue (anti-flood: reject when full). Buffers i |
+| reducers/essence_train | SpacetimeDB Reducer | essence_train | Essence-train a monster: +ESSENCE_TRAIN_AMOUNT to ONE pool, gated by the shared  |
 | reducers/evolve | SpacetimeDB Reducer | evolve | Evolve a monster along one authored evolution-graph edge (EG2-1 shape). Steps: 1 |
 | reducers/flee | SpacetimeDB Reducer | flee | Flee from a battle. Sets outcome to `Fled`; no XP awarded. |
 | reducers/grant_bait | SpacetimeDB Reducer | grant_bait | DEV/TEST: grant bait to the CALLER only (self-scoped to `ctx.sender`; no arbitra |

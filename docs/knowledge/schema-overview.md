@@ -4,7 +4,7 @@ title: Monster Realm Schema Overview
 slug: schema-overview
 updated: 2026-08-04
 tags: [schema, spacetimedb, overview]
-abstract: "35-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 41 reducers."
+abstract: "35-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 43 reducers."
 source: scripts/okf-export.mjs@server-module/src/
 ---
 
@@ -51,7 +51,7 @@ source: scripts/okf-export.mjs@server-module/src/
 - [pvp_deadline_schedule](tables/pvp_deadline_schedule.md)
 - [trade_offer_reaper_schedule](tables/trade_offer_reaper_schedule.md)
 
-## Reducers (41)
+## Reducers (43)
 
 - [accept_challenge](reducers/accept_challenge.md)
 - [advance_dialogue](reducers/advance_dialogue.md)
@@ -64,9 +64,11 @@ source: scripts/okf-export.mjs@server-module/src/
 - [challenge_pvp](reducers/challenge_pvp.md)
 - [clear_queue](reducers/clear_queue.md)
 - [confirm_trade](reducers/confirm_trade.md)
+- [consume_crystalized_essence](reducers/consume_crystalized_essence.md)
 - [decline_challenge](reducers/decline_challenge.md)
 - [dismiss_dialogue](reducers/dismiss_dialogue.md)
 - [enqueue_move](reducers/enqueue_move.md)
+- [essence_train](reducers/essence_train.md)
 - [evolve](reducers/evolve.md)
 - [flee](reducers/flee.md)
 - [grant_bait](reducers/grant_bait.md)

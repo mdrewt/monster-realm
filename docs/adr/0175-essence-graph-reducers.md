@@ -32,12 +32,20 @@ scheduled — is honored by bounded-gap crediting:
 - gap < `QT_MIN_WRITE_GAP_MS` (5 s): **no DB write, anchor kept** — sub-threshold calls batch
   against the older anchor, so no time is lost and the movement hot path writes each party
   monster's row at most once per 5 s.
+- the UTC-day rollover reset runs NEXT, before any re-anchor: when
+  `day_epoch_utc(now) != day_epoch_utc(anchor)` (the shared day rule in battle.rs),
+  `quality_time_window_ms` resets to 0. Ordering is load-bearing: the review cycle caught
+  that a reset placed below the idle branch turns the daily cap into a permanent lifetime
+  cap (an overnight gap re-anchors into the new day without ever resetting the window;
+  QT tiers 3–4 become unreachable). Pinned by
+  `daily_cap_resets_after_an_idle_overnight_gap`.
 - gap > `QT_IDLE_GAP_MS` (120 s): re-anchor only, credit 0 — the player was away; idle time
   never credits (the first-ever call, anchor 0, lands here by construction).
 - else credit `min(gap, QT_DAILY_CAP_MS − window_ms)` where `quality_time_window_ms` = ms
-  credited in the current UTC day (reset when `day(now) != day(anchor)`, day = ms/86 400 000)
-  and `QT_DAILY_CAP_MS` = 2 h — defense-in-depth so one marathon session cannot blow through
-  the whole tier ladder.
+  credited in the current UTC day and `QT_DAILY_CAP_MS` = 2 h — defense-in-depth so one
+  marathon session cannot blow through the whole tier ladder. (An `enqueue_move` cadence of
+  one call per <120 s is indistinguishable from real play at the reducer, so the daily cap
+  is also the sole bound on scripted AFK farming — accepted, spec §6 pacing knob.)
 - `quality_time_accum_ms` accumulates credit and converts to whole ticks at
   `QT_TICK_MS` = 60 000 (1 tick ≈ 1 active minute) into `quality_time_ticks_total`
   (saturating), keeping the remainder.
@@ -79,6 +87,23 @@ until Migration B (EG5-6) removes the column.
   `Ongoing`; the standard guard would silently disable auto-evolution from the one site
   covering essence+Trust+level together. The other call sites are battle-guarded before
   their own mutation.
+- `check_and_evolve` is never called DIRECTLY from a scheduled reducer body (EG2-9,
+  direct-call-only — pinned by the one-hop-closure companion test). It IS transitively
+  reachable via `pvp_deadline_reaper → apply_pvp_forfeit → settle_pvp_battle →
+  write_back_battle_results`; harmless — the only gate value that path can change is
+  level/XP from the pre-existing forfeit settlement, and all three credits at that site
+  are wild-gated.
+- `enqueue_move`'s tail SKIPS trade-escrowed party monsters (the caller's active
+  `trade_offer` rows' monster-id sets, collected once before the loop; skip, never a
+  move reject). Without it, an offered monster could accrue QT and auto-evolve mid-trade
+  while the counterparty confirms against a stale propose-time card — the one growth path
+  the TR-* escrow guards did not already cover (review HIGH). Battle write-back needs no
+  equivalent: battle entry already escrow-guards every participant.
+- `accrue_quality_time` returns whether a tick actually accrued, and `enqueue_move` alone
+  gates its `check_and_evolve` on that — walking can change no gate but Quality Time, and
+  the ungated form cost ~6 point-reads + an indexed range scan per party monster per
+  tile-step inside ADR-0148's documented movement latency budget. The other five sites
+  call unconditionally (their reducers change other gates).
 - Call sites (tails, after the caller's own dual-write, fresh-find semantics):
   `care`, `train`, `essence_train`, `write_back_battle_results`, `enqueue_move`
   (whole `lead_party` id list), **and `consume_crystalized_essence` — a sixth site,
@@ -126,11 +151,12 @@ slice's touches; EG5 may promote them beside `battle_currency_reward`).
 
 ## D6 — Gate deltas (no-idle-accrual + evolution-reducer-security + the EG1-11 scan)
 
-- `GROWTH_WRITERS` += `accrue_quality_time`, `apply_evolution`, `essence_train`,
-  `consume_crystalized_essence`, `check_and_evolve` (writes nothing itself, but listing it
-  makes Check B mechanically ban a scheduled reducer from ever calling it directly — the
-  eval half of EG2-9), `grant_essence`. `evolve` STAYS listed post-refactor for the same
-  Check B reason (not a stale leftover).
+- `GROWTH_WRITERS` += `accrue_quality_time`, `apply_quality_time_credit` (the pure QT
+  seam that holds the actual column writes — Check A resolves the enclosing fn by name),
+  `apply_evolution`, `essence_train`, `consume_crystalized_essence`, `check_and_evolve`
+  (writes nothing itself, but listing it makes Check B mechanically ban a scheduled
+  reducer from ever calling it directly — the eval half of EG2-9), `grant_essence`.
+  `evolve` STAYS listed post-refactor for the same Check B reason (not a stale leftover).
 - `GROWTH_FIELDS` += all 16 new private `Monster` columns now (8 essence, 3 trust, 4
   quality-time, `last_essence_train_at_ms`): the names were frozen by EG1, and deferring to
   EG5-3 would leave Check A blind to the new resources for the whole EG2→EG5 window.
@@ -157,3 +183,18 @@ slice's touches; EG5 may promote them beside `battle_currency_reward`).
 - Six accrual/auto-evolve call sites, not five — spec correction owed (see D3).
 - All pacing constants (5 h cooldown, +5 train amount, 999 cap, bst/30 divisor, QT windows)
   are playtest placeholders; the shapes are the decisions.
+- Follow-ups flagged, deliberately NOT in this slice's touches: (1)
+  `evals/trade-escrow-guards.eval.mjs`'s GUARD_SITES registry doesn't yet list
+  `essence_train`/`consume_crystalized_essence` (their guards ARE scan-pinned in
+  raising_tests.rs — a traceability gap, not an unenforced guard); (2)
+  `game_core::apply_care`'s doc comment now misdescribes its consumer (the AtMaxBond
+  remap, D2) — one-line game-core comment fix; (3) promote `essence_battle_reward` and
+  `ESSENCE_SOFT_CAP` into game-core beside `battle_currency_reward` when EG5 opens it,
+  so the content validator can reject unsatisfiable essence thresholds (> cap) and a
+  future client preview has an SSOT; (4) `lead_party`'s `Level::new(lead.level).ok()?`
+  silently disables the whole party's movement-path accrual on a corrupt LEAD level —
+  wants an ids-only helper; (5) `ItemRow` carries no essence columns, so the client
+  cannot render an essence item's effect (the reducer reads the content registry) — a
+  future additive migration; (6) the EG2-9 companion test + eval Check B are one-hop —
+  a two-hop wrapper (scheduled → A → B → helper) evades both; documented honest limit,
+  Check A confines the actual writes.
