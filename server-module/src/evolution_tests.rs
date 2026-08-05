@@ -1509,18 +1509,156 @@ fn strip_rust_comments(src: &str) -> String {
     String::from_utf8(out).expect("stripped source must be valid UTF-8")
 }
 
-/// Extract the body of the function whose declaration starts at `decl_needle`,
-/// by walking braces from the first `{` after the declaration.
-fn extract_fn_body(stripped: &str, decl_needle: &str) -> String {
-    let decl_pos = stripped
-        .find(decl_needle)
-        .unwrap_or_else(|| panic!("declaration {decl_needle:?} must exist in the scanned source"));
-    let after = &stripped[decl_pos..];
-    let brace_offset = after
-        .find('{')
-        .expect("the scanned function must have a body");
-    let body_start = decl_pos + brace_offset + 1;
+// ---------------------------------------------------------------------------
+// STRING-LITERAL BLANKING (hardening, mirrors movement_tests.rs:73-196 and
+// guards_tests.rs).
+//
+// `strip_rust_comments` alone leaves string CONTENT in the scanned text, so a
+// perfectly legitimate log line or error message in evolution.rs mentioning a
+// banned needle (`min_level`, `loop {`, `reject_if_in_battle`, …) would fail a
+// CORRECT implementation. Every needle this file scans for is a fact about
+// CODE, so the scan pipeline blanks literals first. Char literals are preserved
+// (they are code) but consumed as a unit, so a char literal holding a
+// double-quote byte cannot open a phantom string and hollow out the rest of the
+// scan — the exact misalignment the sibling scanners documented.
+// ---------------------------------------------------------------------------
 
+/// The ASCII double-quote byte, named rather than spelled as a char literal:
+/// an unpaired double quote inside THIS file is the landmine
+/// `movement_tests.rs:73` records (it blanked `pub fn init(` in an unrelated
+/// file and turned a live gate vacuous). Keep every double quote in this file
+/// part of a balanced Rust string literal.
+const DQUOTE: u8 = 0x22;
+
+/// Is `b` an identifier byte (used for word-boundary checks)?
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// If a STRING literal starts at `i`, the index one past its closing delimiter.
+///
+/// Covers plain, byte (`b"…"`) and raw (`r"…"` / `r#"…"#` / `br#"…"#`) forms. A
+/// `b`/`r` prefix only counts when it is not part of a longer identifier, so
+/// `ctx.db` and `row` are never mistaken for literal openers. No production
+/// `.rs` file in this crate uses a raw or byte string today (only `_tests.rs`
+/// files do); the handling is defensive.
+fn string_literal_end(bytes: &[u8], i: usize) -> Option<usize> {
+    let len = bytes.len();
+    let first = bytes[i];
+    if first != DQUOTE && first != b'r' && first != b'b' {
+        return None;
+    }
+    let prev_is_ident = i > 0 && is_ident_byte(bytes[i - 1]);
+    let mut p = i;
+    if first == b'b' {
+        if prev_is_ident || p + 1 >= len {
+            return None;
+        }
+        if bytes[p + 1] != DQUOTE && bytes[p + 1] != b'r' {
+            return None;
+        }
+        p += 1;
+    } else if first == b'r' && prev_is_ident {
+        return None;
+    }
+    if bytes[p] == b'r' {
+        let mut hashes = 0usize;
+        while p + 1 + hashes < len && bytes[p + 1 + hashes] == b'#' {
+            hashes += 1;
+        }
+        if p + 1 + hashes >= len || bytes[p + 1 + hashes] != DQUOTE {
+            return None;
+        }
+        let mut j = p + 2 + hashes;
+        while j < len {
+            if bytes[j] == DQUOTE {
+                let mut k = 0usize;
+                while k < hashes && j + 1 + k < len && bytes[j + 1 + k] == b'#' {
+                    k += 1;
+                }
+                if k == hashes {
+                    return Some(j + 1 + hashes);
+                }
+            }
+            j += 1;
+        }
+        return Some(len);
+    }
+    let mut j = p + 1;
+    while j < len {
+        if bytes[j] == b'\\' {
+            j += 2;
+        } else if bytes[j] == DQUOTE {
+            return Some(j + 1);
+        } else {
+            j += 1;
+        }
+    }
+    Some(len)
+}
+
+/// If a CHAR (or byte-char) literal starts at `i`, the index one past it.
+///
+/// A `'` is only read as a literal when a closing `'` follows within four
+/// bytes; otherwise it is a lifetime tick (`&'a str`) and is left alone.
+fn char_literal_end(bytes: &[u8], i: usize) -> Option<usize> {
+    let len = bytes.len();
+    if bytes[i] != b'\'' {
+        return None;
+    }
+    let escaped = i + 1 < len && bytes[i + 1] == b'\\';
+    let first = if escaped { 3 } else { 2 };
+    for k in first..=4 {
+        if i + k < len && bytes[i + k] == b'\'' {
+            return Some(i + k + 1);
+        }
+    }
+    None
+}
+
+/// Comments AND string-literal content blanked; code (including char literals)
+/// preserved at its original byte offsets. THE scan pipeline for every
+/// needle check below.
+fn strip_comments_and_strings(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = vec![b' '; len];
+    let mut i = 0;
+    while i < len {
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else if let Some(end) = string_literal_end(bytes, i) {
+            i = end;
+        } else if let Some(end) = char_literal_end(bytes, i) {
+            while i < end {
+                out[i] = bytes[i];
+                i += 1;
+            }
+        } else {
+            out[i] = bytes[i];
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("stripped source must be valid UTF-8")
+}
+
+/// The byte range (exclusive of the braces) of the block whose opening `{` sits
+/// at `open`. ONE brace-walk implementation, shared by the fn-body extractors
+/// (ADR-0003 SSOT — two parsers for one grammar in one file is a duplicated
+/// source of truth).
+fn brace_block_range(stripped: &str, open: usize) -> (usize, usize) {
+    let body_start = open + 1;
     let mut depth: usize = 1;
     let mut byte_off = 0usize;
     for ch in stripped[body_start..].chars() {
@@ -1534,17 +1672,104 @@ fn extract_fn_body(stripped: &str, decl_needle: &str) -> String {
         }
         byte_off += ch.len_utf8();
     }
-    stripped[body_start..body_start + byte_off].to_string()
+    (body_start, body_start + byte_off)
+}
+
+/// Byte range of the body of the function whose declaration starts at
+/// `decl_needle`, or `None` if the declaration (or its body) is absent.
+///
+/// Ranges — not just text — because the confinement checks below must ask
+/// "is THIS occurrence inside THAT function", which a copied substring cannot
+/// answer.
+fn extract_fn_body_range(stripped: &str, decl_needle: &str) -> Option<(usize, usize)> {
+    let decl_pos = stripped.find(decl_needle)?;
+    let brace_offset = stripped[decl_pos..].find('{')?;
+    Some(brace_block_range(stripped, decl_pos + brace_offset))
+}
+
+/// Extract the body of the function whose declaration starts at `decl_needle`,
+/// by walking braces from the first `{` after the declaration.
+fn extract_fn_body(stripped: &str, decl_needle: &str) -> String {
+    let (start, end) = extract_fn_body_range(stripped, decl_needle).unwrap_or_else(|| {
+        panic!("declaration {decl_needle:?} (with a body) must exist in the scanned source")
+    });
+    stripped[start..end].to_string()
+}
+
+/// Byte offset of every occurrence of `needle` in `haystack`.
+fn occurrences(haystack: &str, needle: &str) -> Vec<usize> {
+    assert!(!needle.is_empty(), "an empty needle would never terminate");
+    let mut out = Vec::new();
+    let mut pos = 0usize;
+    while let Some(idx) = haystack[pos..].find(needle) {
+        let abs = pos + idx;
+        out.push(abs);
+        pos = abs + needle.len();
+    }
+    out
+}
+
+/// Every `fn NAME(` declaration in `stripped`, paired with its body text.
+///
+/// Nested fns are included; fn-pointer TYPES (`fn(u8) -> u8`, no space) and
+/// body-less declarations (trait methods) are skipped. Used by the EG2-9 one-hop
+/// wrapper closure.
+fn enumerate_fn_bodies(stripped: &str) -> Vec<(String, String)> {
+    let bytes = stripped.as_bytes();
+    let len = bytes.len();
+    let mut out = Vec::new();
+    for decl in occurrences(stripped, "fn ") {
+        // Word boundary before `fn` (never the tail of `pfn`/`my_fn`).
+        if decl > 0 && is_ident_byte(bytes[decl - 1]) {
+            continue;
+        }
+        let mut name_start = decl + 3;
+        while name_start < len && (bytes[name_start] == b' ' || bytes[name_start] == b'\t') {
+            name_start += 1;
+        }
+        let mut name_end = name_start;
+        while name_end < len && is_ident_byte(bytes[name_end]) {
+            name_end += 1;
+        }
+        if name_end == name_start {
+            continue;
+        }
+        // Walk the signature to the body brace; a `;` first means no body.
+        let mut k = name_end;
+        while k < len && bytes[k] != b'{' && bytes[k] != b';' {
+            k += 1;
+        }
+        if k >= len || bytes[k] == b';' {
+            continue;
+        }
+        let (start, end) = brace_block_range(stripped, k);
+        out.push((
+            stripped[name_start..name_end].to_string(),
+            stripped[start..end].to_string(),
+        ));
+    }
+    out
+}
+
+/// Does `body` DIRECTLY call `name(`, with a word boundary before the name?
+/// (`health_care(` is not a call to `care(`.) Mirrors
+/// `no-idle-accrual.eval.mjs` Check B's direct-call test.
+fn body_calls(body: &str, name: &str) -> bool {
+    let needle = format!("{name}(");
+    let bytes = body.as_bytes();
+    occurrences(body, &needle)
+        .into_iter()
+        .any(|idx| idx == 0 || !is_ident_byte(bytes[idx - 1]))
 }
 
 /// The PRODUCTION region of a source file: everything before the first
-/// `#[cfg(test)]` marker, comments stripped.
+/// `#[cfg(test)]` marker, comments AND string literals blanked.
 ///
 /// Test-only code must never be able to satisfy (or pollute) a production-shape
 /// assertion — the same file-scoping lesson `evolution-reducer-security`'s
 /// `readServerModuleProdSources` already encodes at the eval layer.
 fn production_region(src: &str) -> String {
-    let stripped = strip_rust_comments(src);
+    let stripped = strip_comments_and_strings(src);
     match stripped.find("#[cfg(test)]") {
         Some(idx) => stripped[..idx].to_string(),
         None => stripped,
@@ -1568,7 +1793,7 @@ fn production_region(src: &str) -> String {
 ///        requirements panel) and the write path silently drift apart.
 #[test]
 fn eg1_11_evolve_body_delegates_to_path_satisfied() {
-    let stripped = strip_rust_comments(EVOLUTION_RS_SOURCE);
+    let stripped = strip_comments_and_strings(EVOLUTION_RS_SOURCE);
     let body = extract_fn_body(&stripped, "pub fn evolve(ctx");
 
     // Vacuity guard: an empty extraction must never pass this test silently.
@@ -1677,7 +1902,7 @@ fn eg1_11_evolution_rs_production_region_has_no_inlined_gate_logic() {
     // a first-marker cut), and EG1 deletes the old cfg(test) effect structs
     // anyway.
     assert_eq!(
-        strip_rust_comments(EVOLUTION_RS_SOURCE)
+        strip_comments_and_strings(EVOLUTION_RS_SOURCE)
             .matches("#[cfg(test)]")
             .count(),
         1,
@@ -1713,7 +1938,7 @@ fn eg1_11_evolution_rs_production_region_has_no_inlined_gate_logic() {
     }
 
     // --- Body-scoped: the full-set query belongs to check_and_evolve ONLY ---
-    let stripped = strip_rust_comments(EVOLUTION_RS_SOURCE);
+    let stripped = strip_comments_and_strings(EVOLUTION_RS_SOURCE);
     let evolve_body = extract_fn_body(&stripped, "pub fn evolve(ctx");
     assert!(
         !evolve_body.trim().is_empty(),
@@ -1759,6 +1984,55 @@ fn eg1_11_evolution_rs_production_region_has_no_inlined_gate_logic() {
          write-path drift EG1-11 exists to prevent, and it would also silently \
          reintroduce the first-match-winner race EG2-2 forbids."
     );
+
+    // --- CONFINEMENT: the body-scoped bans above are not enough on their own --
+    //
+    // THE ESCAPE THIS CLOSES: a private helper anywhere else in evolution.rs
+    // (`fn candidate_paths(ctx, m) -> Vec<usize> { … eligible_evolution_paths(…)
+    // … .collect() }`) called from `evolve`'s body satisfies every body-scoped
+    // assertion above while putting the full-set query right back on the
+    // player-invoked path — the SAME helper-indirection bypass the EG1 whole-file
+    // ban was written to stop. D12 re-scoped that needle; it did not licence a
+    // second copy. So the file-scope strength is restored as a CONFINEMENT rule:
+    // the mandated occurrence is permitted in exactly one place, and nowhere else.
+    let production_end = stripped.find("#[cfg(test)]").unwrap_or(stripped.len());
+    let (check_start, check_end) =
+        extract_fn_body_range(&stripped, "pub(crate) fn check_and_evolve(")
+            .expect("vacuity guard: check_and_evolve's body must be locatable");
+
+    let eligible_sites = occurrences(&stripped[..production_end], "eligible_evolution_paths(");
+    assert_eq!(
+        eligible_sites.len(),
+        1,
+        "TEETH(EG1-11 confinement): the production region of evolution.rs must \
+         contain EXACTLY ONE `eligible_evolution_paths(` occurrence (found {}). \
+         EG2-11 mandates the full-set query in `check_and_evolve` and NOWHERE \
+         else — a second copy in a private helper is how the query walks back \
+         onto `evolve`'s targeted path (EG2-1) without tripping any body-scoped \
+         ban.",
+        eligible_sites.len()
+    );
+    assert!(
+        eligible_sites[0] >= check_start && eligible_sites[0] < check_end,
+        "TEETH(EG1-11 confinement): the one `eligible_evolution_paths(` call in \
+         evolution.rs sits OUTSIDE `check_and_evolve`'s body (byte {} not in \
+         {check_start}..{check_end}) — a private helper hosting the full-set query \
+         and called from `evolve` is exactly the indirection this scan exists to \
+         catch",
+        eligible_sites[0]
+    );
+
+    for site in occurrences(&stripped[..production_end], ".collect") {
+        assert!(
+            site >= check_start && site < check_end,
+            "TEETH(EG1-11 confinement): a `.collect` at byte {site} of \
+             evolution.rs's production region sits outside `check_and_evolve`'s \
+             body ({check_start}..{check_end}). The ONLY legitimate collection in \
+             this file is `check_and_evolve` gathering the current species' \
+             candidate rows; anywhere else it is a hand-rolled candidate filter — \
+             the loop-reimplementation escape, moved one function over."
+        );
+    }
 }
 
 /// EG1-9: the fusion machinery and `compute_evolves_to` are DELETED from
@@ -1769,7 +2043,7 @@ fn eg1_11_evolution_rs_production_region_has_no_inlined_gate_logic() {
 ///        alive against a content model that no longer exists.
 #[test]
 fn eg1_9_evolution_rs_has_no_fusion_or_compute_evolves_to_leftovers() {
-    let stripped = strip_rust_comments(EVOLUTION_RS_SOURCE);
+    let stripped = strip_comments_and_strings(EVOLUTION_RS_SOURCE);
 
     let banned = [
         "pub fn fuse(",
@@ -1814,7 +2088,7 @@ fn eg1_9_evolution_rs_has_no_fusion_or_compute_evolves_to_leftovers() {
 ///        exists but is never called from `evolve`.
 #[test]
 fn eg2_1_evolve_body_delegates_to_apply_evolution() {
-    let stripped = strip_rust_comments(EVOLUTION_RS_SOURCE);
+    let stripped = strip_comments_and_strings(EVOLUTION_RS_SOURCE);
     let body = extract_fn_body(&stripped, "pub fn evolve(ctx");
     assert!(
         !body.trim().is_empty(),
@@ -1872,7 +2146,7 @@ fn eg2_11_apply_evolution_is_the_only_transform_path() {
          different code paths"
     );
 
-    let stripped = strip_rust_comments(EVOLUTION_RS_SOURCE);
+    let stripped = strip_comments_and_strings(EVOLUTION_RS_SOURCE);
     let apply_body = extract_fn_body(&stripped, "pub(crate) fn apply_evolution(");
     assert!(
         apply_body.contains("game_core::evolve("),
@@ -1905,7 +2179,7 @@ fn eg2_11_apply_evolution_is_the_only_transform_path() {
 ///        test while being dead in the one path that matters most in production.
 #[test]
 fn eg2_11_check_and_evolve_has_no_battle_or_trade_guard() {
-    let stripped = strip_rust_comments(EVOLUTION_RS_SOURCE);
+    let stripped = strip_comments_and_strings(EVOLUTION_RS_SOURCE);
     let banned = [
         "reject_if_in_battle",
         "is_in_ongoing_battle",
@@ -1963,7 +2237,7 @@ fn eg2_11_check_and_evolve_reads_db_rows_not_the_ron_cache() {
          disagree with what sync_content actually seeded)"
     );
 
-    let stripped = strip_rust_comments(EVOLUTION_RS_SOURCE);
+    let stripped = strip_comments_and_strings(EVOLUTION_RS_SOURCE);
     let body = extract_fn_body(&stripped, "pub(crate) fn check_and_evolve(");
     assert!(
         body.contains("evolution_path()"),
@@ -1992,10 +2266,28 @@ fn eg2_11_check_and_evolve_reads_db_rows_not_the_ron_cache() {
 /// change to R5/R11 breaks that guarantee — an unbounded loop in a WASM reducer
 /// is a stuck transaction, not a slow one.
 ///
+/// THE CASCADE ITSELF IS PINNED HERE, not just the constant: the seam tests
+/// exercise the seam's own mirror of the loop, so if this scan only required
+/// `MAX_EVOLUTION_CHAIN_STEPS` and a `log::error!` to EXIST, a production
+/// `check_and_evolve` that applies ONE step and returns would pass every test in
+/// this file. So the loop REGION is checked too: there must be a `while`, and
+/// both the eligible-set query and the apply call must appear AFTER it.
+///
+/// HONEST LIMIT: this is a textual-position check, not a scope check. It proves
+/// the query and the apply are not hoisted ABOVE the loop (the "compute
+/// eligibility once, then spin a decorative counter" cheat); it cannot prove they
+/// sit lexically INSIDE the loop body rather than after it. Combined with the
+/// re-check-against-the-NEW-species semantics the seam pins
+/// (`eg2_13_chain_three_single_eligible_steps_resolves_in_one_call`) and the
+/// single-transform-path scan, that is the buildable guarantee at this layer.
+///
 /// kills: a recursive `check_and_evolve` (no counter to inspect, and a stack
 ///        overflow instead of a bounded stop); a bare `loop {}` with only a
 ///        `break` on 0-eligible (which never fires on cyclic content); a silent
-///        stop at the cap with no operator signal that content is broken.
+///        stop at the cap with no operator signal that content is broken; a
+///        one-shot `check_and_evolve` with no cascade at all; a cheat that
+///        computes the eligible set ONCE before the loop and re-applies the same
+///        stale index every iteration.
 #[test]
 fn eg2_13_chain_has_explicit_iteration_cap() {
     let production = production_region(EVOLUTION_RS_SOURCE);
@@ -2008,7 +2300,7 @@ fn eg2_13_chain_has_explicit_iteration_cap() {
          behaviourally."
     );
 
-    let stripped = strip_rust_comments(EVOLUTION_RS_SOURCE);
+    let stripped = strip_comments_and_strings(EVOLUTION_RS_SOURCE);
     let body = extract_fn_body(&stripped, "pub(crate) fn check_and_evolve(");
     assert!(
         body.contains("MAX_EVOLUTION_CHAIN_STEPS"),
@@ -2029,22 +2321,62 @@ fn eg2_13_chain_has_explicit_iteration_cap() {
          reaching it means an R5/R11 invariant violation shipped in content, and a \
          silent stop would hide it forever"
     );
+
+    // --- The cascade must actually LOOP over the decision ------------------
+    assert!(
+        body.contains("while "),
+        "TEETH(EG2-13/ADR-0175 D3): `check_and_evolve`'s body must contain a \
+         `while` loop — the chain is an ITERATIVE cascade with an explicit \
+         counter. A body with no loop at all is a one-shot check: the monster \
+         stops one form short of where its surviving level/Trust/Quality-Time \
+         already qualify it, and NOTHING else in this file would notice, because \
+         the seam tests drive the seam's own loop."
+    );
+    let while_pos = body.find("while ").expect("asserted present just above");
+    let eligible_pos = body
+        .find("eligible_evolution_paths(")
+        .expect("vacuity: pinned by eg1_11_evolution_rs_production_region_has_no_inlined_gate_logic");
+    let apply_pos = body
+        .find("apply_evolution(")
+        .expect("vacuity: check_and_evolve must apply the single eligible path");
+    assert!(
+        eligible_pos > while_pos,
+        "TEETH(EG2-13): the FIRST `eligible_evolution_paths(` call (byte \
+         {eligible_pos}) precedes the loop (byte {while_pos}) — eligibility must be \
+         recomputed FRESH on every iteration against the monster's NEW species. \
+         Hoisting it above the loop is the cheat where a decorative counter spins \
+         while the same stale eligible set is re-applied."
+    );
+    assert!(
+        apply_pos > while_pos,
+        "TEETH(EG2-13): the FIRST `apply_evolution(` call (byte {apply_pos}) \
+         precedes the loop (byte {while_pos}) — the apply is the loop's BODY. One \
+         apply before a counter loop is a one-shot evolution wearing a cascade's \
+         clothes."
+    );
 }
 
 // ---------------------------------------------------------------------------
-// EG2-9 — no SCHEDULED reducer may DIRECTLY call the growth helpers.
+// EG2-9 — no SCHEDULED reducer may call the growth helpers (directly, or one
+// hop away through a wrapper).
 //
-// SEMANTICS: DIRECT-CALL ONLY, deliberately NOT transitive reachability. The
-// spec (EG2-9) spells out why, and this scan mirrors `no-idle-accrual.eval.mjs`
-// Check B's oracle exactly: `write_back_battle_results` — itself a growth writer
-// and a `check_and_evolve` call site — is ALREADY legitimately reachable from the
-// scheduled `movement_tick` (grass encounter -> battle -> level-up) and from
+// SEMANTICS: BOUNDED at ONE HOP, deliberately NOT full transitive reachability.
+// The spec (EG2-9) spells out why full reachability is unbuildable here:
+// `write_back_battle_results` — itself a growth writer and a `check_and_evolve`
+// call site — is ALREADY legitimately reachable from the scheduled
+// `movement_tick` (grass encounter -> battle -> level-up) and from
 // `pvp_deadline_reaper` (apply_pvp_forfeit -> settle_pvp_battle). A transitive
-// scan would false-positive on both real paths and would have to be weakened or
-// deleted; the buildable guarantee is that no scheduled reducer's OWN body calls
-// these helpers. Idle accrual through the reachable battle path is prevented by a
-// different mechanism entirely — EG2-7's wild-battle-only exemption (practice and
-// PvP grant nothing) — not by a callgraph rule.
+// scan would false-positive on both REAL paths and would have to be weakened or
+// deleted, which is exactly why `no-idle-accrual.eval.mjs` Check B is
+// direct-call-only. Idle accrual through that reachable battle path is prevented
+// by a different mechanism entirely — EG2-7's wild-battle-only exemption
+// (practice and PvP grant nothing) — not by a callgraph rule.
+//
+// This companion test goes ONE HOP FURTHER THAN THE EVAL, because a direct-call
+// scan is defeated by a two-line wrapper and that wrapper would have no backstop
+// at all. The single hop is the strongest line that still avoids the
+// write_back_battle_results false positive (which is handled by an explicit,
+// argued allowlist entry rather than by weakening the rule).
 // ---------------------------------------------------------------------------
 
 /// Every production source scanned for scheduled reducers. Superset of the A3
@@ -2133,7 +2465,29 @@ fn find_named_fn_body(stripped: &str, name: &str) -> Option<String> {
 /// temptation: it is where tile entry is actually detected, which is exactly why
 /// EG2-12 routes the hook to the player-triggered `enqueue_move` instead.
 ///
-/// ABSENCE-IS-FAIL, three ways:
+/// ONE-HOP CLOSURE (L1): a direct-call scan alone is trivially evaded by a
+/// one-line wrapper —
+/// `fn tick_accrue(ctx, id) { accrue_quality_time(ctx, id); }` called from
+/// `movement_tick` — and unlike the legitimately-reachable
+/// `write_back_battle_results` (backstopped by EG2-7's wild-battle-only
+/// exemption, so a timer can reach it but never GRANT through it), such a wrapper
+/// has no backstop whatsoever. So this test also collects L1 = every fn in the
+/// scanned sources whose OWN body calls a growth helper, and forbids a scheduled
+/// reducer from calling any of them, with a single documented allowlist entry.
+/// `care`/`train`/`essence_train`/`consume_crystalized_essence`/`enqueue_move`
+/// land in L1 by design (they are the five/six intent-path call sites) and are
+/// deliberately NOT allowlisted: no scheduled reducer may call an intent reducer
+/// either.
+///
+/// HONEST LIMIT: one hop, not full transitivity. Two-hop nesting (scheduled ->
+/// A -> B -> helper) is not covered — deliberately, because full reachability
+/// re-introduces the `write_back_battle_results` false positive that forced
+/// `no-idle-accrual.eval.mjs` Check B into direct-call-only in the first place.
+/// One hop is the strictly-stronger-than-the-eval line that stays free of that
+/// false positive; Check A (growth writes confined to allowlisted writers)
+/// remains the independent backstop at the write site itself.
+///
+/// ABSENCE-IS-FAIL, four ways:
 ///   1. at least one scheduled reducer must be discovered (`movement_tick` must
 ///      exist) — a rotted attribute scanner would otherwise pass vacuously;
 ///   2. every discovered scheduled reducer's body must be FOUND in the scanned
@@ -2141,17 +2495,20 @@ fn find_named_fn_body(stripped: &str, name: &str) -> Option<String> {
 ///      checked by nobody;
 ///   3. both banned helpers must EXIST in the scanned production sources — you
 ///      cannot prove a scheduled reducer does not call a function that has not
-///      been written yet.
+///      been written yet;
+///   4. L1 must be non-empty — an empty wrapper set means the fn enumerator
+///      rotted (the helpers exist, so somebody calls them).
 ///
 /// kills: `movement_tick` (or any reaper) growing an `accrue_quality_time(` /
 ///        `check_and_evolve(` tail — the AFK-farming vector this whole invariant
-///        exists to close; a scan that silently misses a reaper because its file
-///        is not in the include list.
+///        exists to close; the one-line wrapper that hides that tail one call
+///        away; a scan that silently misses a reaper because its file is not in
+///        the include list.
 #[test]
 fn eg2_9_no_scheduled_reducer_body_calls_growth_triggers() {
     let stripped: String = scheduled_scan_sources()
         .iter()
-        .map(|(_, src)| strip_rust_comments(src))
+        .map(|(_, src)| strip_comments_and_strings(src))
         .collect::<Vec<String>>()
         .join("\n");
 
@@ -2189,6 +2546,29 @@ fn eg2_9_no_scheduled_reducer_body_calls_growth_triggers() {
     }
 
     let banned = ["accrue_quality_time(", "check_and_evolve("];
+
+    // L1 — every fn whose OWN body calls a growth helper (the wrapper set).
+    // `write_back_battle_results` is the ONE documented legitimate entry: it is
+    // already transitively reachable from movement_tick (grass encounter) and
+    // pvp_deadline_reaper (forfeit funnel), and EG2-7's wild-battle-only
+    // exemption — not a callgraph rule — is what prevents accrual through it.
+    const L1_ALLOWED: [&str; 1] = ["write_back_battle_results"];
+    let mut l1: Vec<String> = Vec::new();
+    for (fn_name, fn_body) in enumerate_fn_bodies(&stripped) {
+        if banned.iter().any(|needle| fn_body.contains(*needle)) && !l1.contains(&fn_name) {
+            l1.push(fn_name);
+        }
+    }
+    // (4) An empty wrapper set means the enumerator rotted, not that the code is
+    // clean: the guards above already proved both helpers exist, so SOMETHING
+    // calls them.
+    assert!(
+        !l1.is_empty(),
+        "vacuity guard(EG2-9): no function in the scanned sources calls \
+         `accrue_quality_time(`/`check_and_evolve(`, yet both are declared — the \
+         fn enumerator has rotted and the one-hop closure below is meaningless"
+    );
+
     for name in &names {
         // (2) A scheduled reducer whose body we cannot see is a hole, not a pass.
         let body = find_named_fn_body(&stripped, name).unwrap_or_else(|| {
@@ -2212,6 +2592,25 @@ fn eg2_9_no_scheduled_reducer_body_calls_growth_triggers() {
                  transitively reachable from movement_tick/pvp_deadline_reaper is \
                  INTENDED — EG2-7's wild-battle-only exemption, not a callgraph \
                  rule, is what stops accrual there.)"
+            );
+        }
+        // ONE HOP: no scheduled reducer may call a fn that calls a growth helper.
+        for wrapper in &l1 {
+            if L1_ALLOWED.contains(&wrapper.as_str()) || wrapper == name {
+                continue;
+            }
+            assert!(
+                !body_calls(&body, wrapper),
+                "TEETH(EG2-9, one-hop): the SCHEDULED reducer {name:?} calls \
+                 {wrapper:?}, whose own body calls `accrue_quality_time(` or \
+                 `check_and_evolve(`. A one-line wrapper is the cheapest way to \
+                 put growth back on a timer while passing a direct-call scan, and \
+                 it has NO backstop: unlike `write_back_battle_results` (the sole \
+                 allowlisted entry, whose credits are wild-battle-only per EG2-7), \
+                 a wrapper around the helpers grants unconditionally. If \
+                 {wrapper:?} is a NEW legitimately-reachable funnel, it needs its \
+                 own documented exemption argument before it joins L1_ALLOWED — \
+                 not a silent addition."
             );
         }
     }

@@ -1796,6 +1796,44 @@ fn below_min_write_gap_is_a_pure_noop_returning_false() {
     );
 }
 
+/// EG2-8: a gap of EXACTLY `QT_MIN_WRITE_GAP_MS` CREDITS — the no-write rule is
+/// strict `<`, so the threshold value itself is on the crediting side.
+///
+/// Deliberately the same starting row as
+/// `below_min_write_gap_is_a_pure_noop_returning_false` so the pair brackets the
+/// boundary: at +3_000 ms nothing happens at all, at +5_000 ms the full 5 s
+/// credits. Both directions of the comparison are now pinned, exactly as
+/// `cooldown_boundary_exact_is_ok` / `cooldown_boundary_one_ms_before_is_err`
+/// bracket the care cooldown.
+///
+/// kills: a `<=` written where ADR-0175 D1 specifies `<` — the sub-threshold
+///        branch would swallow this call, returning false and dropping 5 s of
+///        real playtime on a call that is supposed to be a normal credit. That
+///        mutant is invisible to every other test in this file: the sibling test
+///        below the threshold and the crediting tests well above it both pass
+///        under it.
+#[test]
+fn min_write_gap_boundary_exactly_credits() {
+    let now = QT_ANCHOR + QT_MIN_WRITE_GAP_MS;
+    let mut m = qt_monster(QT_ANCHOR, 4_000, 3_000, 2);
+    let wrote = apply_quality_time_credit(&mut m, now);
+
+    assert!(
+        wrote,
+        "TEETH (EG2-8, ADR-0175 D1): a gap of EXACTLY QT_MIN_WRITE_GAP_MS is NOT \
+         below the threshold (the rule is `gap < QT_MIN_WRITE_GAP_MS`), so this \
+         call must credit and return true"
+    );
+    assert_eq!(
+        qt_state(&m),
+        (now, 9_000, 8_000, 2),
+        "TEETH (EG2-8, ADR-0175 D1): the boundary gap must credit the FULL \
+         5_000 ms (window 4_000+5_000, accum 3_000+5_000, still short of a tick) \
+         and re-anchor. A `<=` in the threshold test leaves the row untouched at \
+         (QT_ANCHOR, 4_000, 3_000, 2)."
+    );
+}
+
 /// EG2-8: once the day window is full, further gaps credit nothing (but still
 /// re-anchor).
 ///
@@ -2336,19 +2374,47 @@ fn essence_train_body_has_full_guard_set() {
         "TR-6 (ADR-0106): a monster locked in an active trade offer must not be \
          mutated out from under the counterparty.",
     );
-    assert_body_has(
+
+    let decide = ["evaluate_essence", "_train("].concat();
+    let grant = ["grant", "_essence("].concat();
+    assert_body_has_exactly_one(
         &body,
         label,
-        &["evaluate_essence", "_train("].concat(),
+        &decide,
         "the cooldown decision must come from the pure seam this file tests, not \
-         from a second open-coded copy that can drift.",
+         from a second open-coded copy that can drift; and one decision, one \
+         place — a second call could be reached with different arguments after \
+         the first has already been checked.",
     );
-    assert_body_has(
+    assert_body_has_exactly_one(
         &body,
         label,
-        &["grant", "_essence("].concat(),
+        &grant,
         "EG1-1's clamp-never-reject rule lives in ONE helper; an inline \
-         `m.essence_fire += amount` bypasses both the saturation and the cap.",
+         `m.essence_fire += amount` bypasses both the saturation and the cap. \
+         Exactly one grant per call — a second would double the payout.",
+    );
+
+    // DECISION BEFORE MUTATION — the essence_train counterpart of `care`'s
+    // `care_reject_still_never_burns` and `consume`'s decision-before-consume
+    // index assertion. Without it, this reducer is the only one of the four with
+    // no ordering pin at all.
+    let decide_at = body
+        .find(decide.as_str())
+        .expect("EG2-3: the cooldown decision seam call must exist in the body");
+    let grant_at = body
+        .find(grant.as_str())
+        .expect("EG2-3: grant_essence must exist in the body");
+    assert!(
+        decide_at < grant_at,
+        "TEETH (EG2-3, ADR-0059 §3 reject-never-burns): the cooldown decision is \
+         at collapsed byte {decide_at} but the essence grant is at {grant_at} — \
+         the DECISION MUST COME FIRST. A grant-then-reject shape mutates the \
+         monster's essence pool and only afterwards consults the cooldown; the \
+         transaction rollback happens to cover it today, but the ordering is the \
+         house discipline every sibling reducer in this file follows, and one \
+         refactor that turns the reject into a logged early-`Ok` makes the \
+         un-cooled-down grant permanent."
     );
     assert_body_has(
         &body,
@@ -2683,6 +2749,54 @@ fn accrue_quality_time_body_never_fabricates_tier() {
          a tier to 0 publishes a projection the private row does not support, and \
          is exactly the fabrication ADR-0174 forbids at every other write site in \
          this file."
+    );
+}
+
+/// EG2-5 / ADR-0175 D2: the remap is `AtMaxBond`-SPECIFIC — it must not be a
+/// catch-all that swallows every `CareError`.
+///
+/// The behavioural tests above cannot see this. `evaluate_care(255, ..)` returns
+/// `Ok(255)` under BOTH the correct
+/// `Err(CareError::AtMaxBond) => Ok(bond)` and the over-broad
+/// `Err(_) => Ok(bond)`, because `AtMaxBond` is the only variant a bond of 255
+/// can produce. `CareError` also carries `NoEffect` (`apply_care` returns it when
+/// the amount is 0), and ADR-0175 D2 remaps exactly ONE variant: "every other
+/// reject (cooldown included) still gates unconditionally". A catch-all would
+/// silently convert a future `CARE_BOND_AMOUNT = 0` mis-tune — today a loud
+/// reject — into a permanently succeeding no-op care that still credits Trust.
+///
+/// kills: `Err(_) => Ok(bond)` (and the same shape written as
+///        `.unwrap_or(bond)`, which spells no variant at all and so fails the
+///        POSITIVE needle).
+///
+/// HONEST LIMIT: the negative needle covers the `Err(_)` spelling only — a bare
+/// `_ =>` arm in a `match` over the full `Result`, for instance, is not caught by
+/// it. The POSITIVE `CareError::AtMaxBond` needle is the load-bearing half: no
+/// catch-all can satisfy it, because naming the variant is precisely what a
+/// catch-all avoids doing.
+#[test]
+fn evaluate_care_remaps_only_the_at_max_bond_variant() {
+    let body = eg2_scan_body(&["fn evaluate", "_care("].concat());
+    let label = "the `evaluate_care` seam body";
+
+    assert_body_has(
+        &body,
+        label,
+        &["CareError::", "AtMaxBond"].concat(),
+        "ADR-0175 D2 remaps exactly ONE CareError variant; the body must NAME it. \
+         RED at HEAD, where the body maps every variant alike with \
+         `map_err(|e| format!(..))?`.",
+    );
+
+    let catch_all = ["Err(", "_)"].concat();
+    let n = body.matches(catch_all.as_str()).count();
+    assert_eq!(
+        n, 0,
+        "TEETH (EG2-5, ADR-0175 D2): `evaluate_care`'s body contains {n} \
+         `Err(_)` catch-all pattern(s) and must contain ZERO. The remap is \
+         AtMaxBond-ONLY — a catch-all also swallows `NoEffect`, turning a \
+         mis-tuned zero-magnitude care from a loud reject into a silently \
+         succeeding no-op that still credits Trust."
     );
 }
 

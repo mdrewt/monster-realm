@@ -2518,18 +2518,36 @@ fn paren_group(src: &str, from: usize) -> Option<&str> {
     None
 }
 
-/// How many bytes of text before a `{` count as that block's "header".
-const HEADER_LOOKBACK: usize = 120;
+/// The header of the brace block whose `{` sits at `open`: the text back to the
+/// previous `;`, `{` or `}`.
+///
+/// An EXACT header, not a fixed-width window. A window bleeds neighbouring
+/// statements in, which is a false-GREEN generator for every gate assertion below
+/// — most concretely, it could bleed the `SideAWins` condition (or an earlier
+/// `is_wild_battle` gate) into an inner block's header and make an ungated credit
+/// look gated. Stopping at the previous statement/block delimiter yields the whole
+/// condition and nothing else.
+fn block_header(body: &str, open: usize) -> &str {
+    let bytes = body.as_bytes();
+    let mut start = open;
+    while start > 0 {
+        let b = bytes[start - 1];
+        if b == b';' || b == b'{' || b == b'}' {
+            break;
+        }
+        start -= 1;
+    }
+    &body[start..open]
+}
 
-/// The header text of every brace block that ENCLOSES byte `at` in `body`,
-/// outermost first.
+/// `(open_index, header)` for every brace block that ENCLOSES byte `at` in
+/// `body`, outermost first.
 ///
 /// Walks the brace stack from the start of the body to `at`; whatever is still
-/// open at `at` is an enclosing block, and the bytes immediately before its `{`
-/// are the condition / loop header that decides whether the block runs. This is
-/// how a "the write is INSIDE the wild gate" assertion is expressed without
-/// pinning one exact spelling of the gate.
-fn enclosing_block_headers(body: &str, at: usize) -> Vec<&str> {
+/// open at `at` is an enclosing block, and its header is the condition / loop
+/// header that decides whether the block runs. This is how "the write is INSIDE
+/// the gate" is expressed without pinning one exact spelling of the gate.
+fn enclosing_block_headers(body: &str, at: usize) -> Vec<(usize, &str)> {
     let bytes = body.as_bytes();
     let mut stack: Vec<usize> = Vec::new();
     let mut i = 0usize;
@@ -2543,11 +2561,33 @@ fn enclosing_block_headers(body: &str, at: usize) -> Vec<&str> {
         }
         i += 1;
     }
-    let mut headers: Vec<&str> = Vec::new();
+    let mut out: Vec<(usize, &str)> = Vec::new();
     for &open in &stack {
-        headers.push(&body[open.saturating_sub(HEADER_LOOKBACK)..open]);
+        out.push((open, block_header(body, open)));
     }
-    headers
+    out
+}
+
+/// Is byte `at` inside a brace block that OPENS at or after `min_open` and whose
+/// header names a `wild` decision?
+///
+/// `min_open` is what makes a win-credit check INDEPENDENT of the faint loop's
+/// own gate: passing the `SideAWins` anchor rejects every block that opened
+/// earlier, so a shell that nests the whole win block inside the faint loop's
+/// `is_wild_battle` gate does NOT count as gating the win credits (and that shell
+/// would be wrong anyway — it would also strip XP and currency from practice and
+/// PvP winners).
+///
+/// `battle_wild` is scrubbed first, so the pre-existing `battle_wild` GC
+/// statement can never satisfy the token match.
+///
+/// Accepts every reasonable spelling of the gate — `if is_wild_battle(battle) {`,
+/// `if wild_win {`, `if is_wild {` — because it matches the token in the header
+/// that actually guards the block, not one exact line.
+fn wild_gated_at(body: &str, at: usize, min_open: usize) -> bool {
+    enclosing_block_headers(body, at)
+        .iter()
+        .any(|(open, h)| *open >= min_open && h.replace("battle_wild", "").contains("wild"))
 }
 
 /// For every occurrence of `field` in `src`, the two bytes immediately BEFORE the
@@ -2708,13 +2748,9 @@ fn faint_loop_is_wild_gated() {
     );
 
     // --- Layer 3: the penalty write lives INSIDE a wild-gated block ----------
-    let headers = enclosing_block_headers(&body, unfav_at);
-    let gated = headers
-        .iter()
-        .any(|h| h.replace("battle_wild", "").contains("wild"));
     assert!(
-        gated,
-        "TEETH (EG2-7, layer 3): none of the {} brace block(s) enclosing the \
+        wild_gated_at(&body, unfav_at, 0),
+        "TEETH (EG2-7, layer 3): no brace block enclosing the \
          `trust_unfavorable_count` write is headed by a wild decision. Layer 2 only \
          proves the predicate is CALLED somewhere earlier; a hoisted \
          `let is_wild = is_wild_battle(battle);` that no branch ever consumes \
@@ -2725,8 +2761,50 @@ fn faint_loop_is_wild_gated() {
          `battle_wild` GC statement cannot satisfy this.) \
          HONEST LIMIT: a source scan sees the SHAPE of the gate, never that the \
          condition is un-inverted; `is_wild_battle_true_only_for_wild_identity` owns \
-         the predicate's meaning.",
-        headers.len()
+         the predicate's meaning."
+    );
+}
+
+/// **EG2-7 (scan)** — the faint penalty increments SATURATINGLY.
+///
+/// kills: `m.trust_unfavorable_count += 1`. The workspace ships
+/// `overflow-checks = true`, so a plain `+= 1` on a `u32` at `u32::MAX` PANICS —
+/// and it panics inside the battle write-back, which every battle-ending path
+/// funnels through, including the disconnect resolver. A panicking write-back
+/// aborts the whole transaction: the battle never resolves and the player is
+/// soft-locked out of every future battle by the lingering `Ongoing` row. Reaching
+/// `u32::MAX` faints is not a realistic play pattern, but "unreachable therefore
+/// unguarded" is exactly the reasoning this codebase's saturating discipline
+/// rejects everywhere else, and the raising-side sibling pins the identical
+/// property for `trust_favorable_count`.
+///
+/// The needle is scoped to the STATEMENT that first mentions the column (via the
+/// existing depth-aware `statement_end`), not to the whole body — a
+/// `saturating_add` somewhere else in the function cannot satisfy it.
+///
+/// RED BY SCAN at HEAD: the column is never written.
+#[test]
+fn faint_penalty_uses_a_saturating_increment() {
+    let body = write_back_body();
+    let unfavorable = ["trust_unfavorable", "_count"].concat();
+    let saturating = [".saturating_add(", "1"].concat();
+
+    let unfav_at = body.find(unfavorable.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-7): the `trust_unfavorable_count` penalty write is missing \
+             entirely — see faint_loop_precedes_side_a_wins_block."
+        )
+    });
+    let stmt = &body[unfav_at..statement_end(&body, unfav_at)];
+    assert!(
+        stmt.contains(saturating.as_str()),
+        "TEETH (EG2-7): the statement writing `trust_unfavorable_count` is \
+         `{stmt}` — it must increment with `.saturating_add(1)`. A plain `+= 1` \
+         panics at `u32::MAX` under this workspace's `overflow-checks = true`, and it \
+         panics INSIDE the battle write-back that every battle-ending path (including \
+         the disconnect resolver) funnels through — aborting the transaction, leaving \
+         the battle row `Ongoing`, and soft-locking the player out of every future \
+         battle."
     );
 }
 
@@ -3065,5 +3143,291 @@ fn day_cap_comparator_is_strictly_greater() {
          (adjacency contexts: {adjacency:?}), which would credit ONLY on a day whose \
          index already equals the stored one — the cap inverted into a permanent \
          lock (or, with a 0 default, a same-day-only credit). The comparator is `>`."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// ONE body shape that satisfies EVERY scan in this section simultaneously.
+//
+// Written out because these tests are not editable by the implementer, so joint
+// satisfiability has to be demonstrated, not asserted. This is a SKETCH of
+// `write_back_battle_results` (the `fn` keyword is deliberately omitted from the
+// signature line so nothing that extracts function bodies from a concatenation of
+// this crate's sources can mistake the sketch for a second definition):
+//
+//   write_back_battle_results(ctx, battle) -> Result<(), String> {
+//       check_team_coupling(..)?;  write_back_party_hp(ctx, battle)?;
+//       ctx.db.battle_wild().battle_id().delete(battle.battle_id);
+//       ..the two terminal-battle GC blocks, unchanged..
+//
+//       // EG2-7 faint penalties: WILD only, ANY outcome, BEFORE the win block.
+//       if is_wild_battle(battle) {                                  // [W1]
+//           for (i, bm) in battle.state.side_a.team.iter().enumerate() {
+//               if !bm.is_fainted() { continue; }
+//               ..resolve mid, find the monster row, else continue..
+//               m.trust_unfavorable_count =
+//                   m.trust_unfavorable_count.saturating_add(1);      // [U]
+//               ..copy-forward tier, fail loud on a missing pub row, dual-write..
+//           }
+//       }
+//
+//       if battle.state.outcome == BattleOutcome::SideAWins {         // [ANCHOR]
+//           ..loser_species (log+return on miss), bst, grant_currency, loser_lvl..
+//           let is_practice = battle.player_identity == battle.opponent_identity;
+//           let wild_win = is_wild_battle(battle);
+//           let today = day_epoch_utc(now_ms(ctx));
+//           for (i, bm) in battle.state.side_a.team.iter().enumerate() {
+//               if bm.is_fainted() { continue; }
+//               ..resolve mid, find the monster row, else continue..
+//
+//               if wild_win {                                         // [W2]
+//                   grant_essence(&mut m, loser_species.affinity,
+//                                 essence_battle_reward(bst));        // [G]
+//                   if today > m.trust_favorable_battle_day_epoch {    // [D1]
+//                       m.trust_favorable_count =
+//                           m.trust_favorable_count.saturating_add(1); // [F]
+//                       m.trust_favorable_battle_day_epoch = today;    // [D2]
+//                   }
+//               }
+//
+//               if let Ok(winner_lvl) = game_core::Level::new(bm.level) {  // [P]
+//                   ..battle_xp_reward, practice_xp_reward(base_xp, ..),
+//                     apply_xp_gain, and on level-up the existing
+//                     `if let Some(species)` + 'stat_recompute + level_up_healed_hp..
+//               } else {
+//                   log::error!(..xp_skip_level..);   // skips XP ONLY, no continue
+//               }
+//
+//               ..copy-forward tier, fail loud on a missing pub row..
+//               ctx.db.monster().monster_id().update(m);
+//               ctx.db.monster_pub().monster_id().update(pub_row);     // [UP]
+//
+//               if wild_win {
+//                   accrue_quality_time(ctx, mid);                     // [A]
+//                   check_and_evolve(ctx, mid);                        // [C]
+//               }
+//           }
+//       }
+//       Ok(())
+//   }
+//
+// Check against every assertion in this section (win_region = body from ANCHOR):
+//   faint_loop_precedes_side_a_wins_block ....... [U] < [ANCHOR]              OK
+//   faint_loop_is_wild_gated ..... [W1] < [U]; [U] enclosed by [W1]'s block   OK
+//   faint_penalty_uses_a_saturating_increment ... [U]'s statement saturates   OK
+//   win_credits_and_qt_are_wild_gated ... [G], [F], [A] all enclosed by [W2],
+//        whose `{` opens after [ANCHOR] (so [W1] cannot stand in for it)      OK
+//   trust_favorable_count_increments_inside_the_day_cap ... [F] saturates,
+//        [F] enclosed by [D1]'s block, epoch mentioned twice ([D1] + [D2])    OK
+//   win_credits_not_gated_behind_winner_level_parse ... [G] < [P], [D1] < [P] OK
+//   winner_tails_after_dual_write ............... [UP] < [A] < [C]            OK
+//   essence_uses_defeated_species_affinity ... [G]'s args carry `affinity`,
+//        `loser` and `essence_battle_reward(`                                 OK
+//   day_cap_comparator_is_strictly_greater ... `day_epoch_utc(` present, and
+//        [D1] puts `>` adjacent to the column; no `!=` / `==` on it           OK
+// And the pre-existing pins still hold: `level_up_healed_hp` stays below
+// `if let Some(species) = `, `practice_xp_reward(base_xp,` survives, the body
+// still names `WILD_IDENTITY` (opponent GC block) and still has `log::error!`,
+// no `Level::new(bm.level)?`, and the `battle().battle_id().delete(` GC remains.
+// ---------------------------------------------------------------------------
+
+/// **EG2-7 (scan)** — ALL THREE win credits are WILD-gated, with a gate of their
+/// own that opens inside the win block.
+///
+/// THE GAP THIS CLOSES (review finding, HIGH). Every other scan in this section
+/// is satisfied by an implementation that grants essence, the Trust-favorable
+/// credit and the winner's Quality Time to EVERY winner — practice and PvP
+/// included. That reopens the exact collusion vector EG2-7's PvP exemption exists
+/// to close: `pvp.rs` has no rematch cooldown, so two accounts can trade wins as
+/// fast as they can click and mint essence + Trust for both sides. The practice
+/// sandbox is worse still — it is a single account fighting itself.
+///
+/// kills:
+///   * un-gated win credits (no enclosing block names a wild decision);
+///   * a hoisted `let wild_win = is_wild_battle(battle);` that no branch consumes
+///     — the value has to be the header of a block the credit sits inside;
+///   * borrowing the FAINT loop's gate by nesting the whole `SideAWins` block
+///     inside it. `min_open = win_at` rejects any block that opened before the
+///     anchor, which is what makes this check independent of
+///     [`faint_loop_is_wild_gated`]. (That shell is wrong for a second reason
+///     anyway: it would strip XP and currency from practice and PvP winners.)
+///   * gating essence but forgetting Quality Time (or vice versa) — all three
+///     credits are asserted separately, because EG2-7 exempts all three and a
+///     half-applied gate is the likeliest partial fix.
+///
+/// RED BY SCAN at HEAD: none of the three credits exists.
+///
+/// HONEST LIMITS. (a) A scan sees the gate's SHAPE, never that its condition is
+/// un-inverted; [`is_wild_battle_true_only_for_wild_identity`] owns the
+/// predicate's meaning. (b) The gate is matched by the token `wild` in the
+/// enclosing block's header (with `battle_wild` scrubbed), so `if wild_win {`,
+/// `if is_wild {` and `if is_wild_battle(battle) {` all pass while
+/// `if !is_practice && !is_pvp {` does not — deliberately, since EG2-7 mandates
+/// the ONE predicate. (c) A `if !wild_win { continue; }` early-exit at the top of
+/// the winner loop would false-RED — and would also be wrong, since it would skip
+/// XP for practice and PvP winners; the gate must wrap the credits only.
+#[test]
+fn win_credits_and_qt_are_wild_gated() {
+    let body = write_back_body();
+    let win_outcome = ["SideA", "Wins"].concat();
+    let win_at = body
+        .find(win_outcome.as_str())
+        .expect("SCAN PRECONDITION (EG2-7): the SideAWins block anchor is missing");
+    let win_region = &body[win_at..];
+
+    let grant = ["grant", "_essence("].concat();
+    let favorable = ["trust_favorable", "_count"].concat();
+    let accrue = ["accrue_quality", "_time("].concat();
+
+    let grant_rel = win_region.find(grant.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-7): the winner loop grants no essence at all. RED at HEAD; \
+             see the body sketch above this test for the sanctioned shape."
+        )
+    });
+    assert!(
+        wild_gated_at(&body, win_at + grant_rel, win_at),
+        "TEETH (EG2-7, HIGH): the essence grant is not inside a wild-gated block \
+         that opens within the `SideAWins` region. Without that gate every PRACTICE \
+         and PvP winner banks essence: `pvp.rs` has no rematch cooldown, so two \
+         colluding accounts trade wins and mint essence for both sides, and a single \
+         account farms itself in the practice sandbox — the precise vector EG2-7's \
+         'BOTH practice- AND PvP-exempted' clause exists to close. Wrap the credits \
+         in `if wild_win {{ .. }}` (or `if is_wild_battle(battle) {{ .. }}`) INSIDE \
+         the win block. Reusing the faint loop's gate by nesting the whole \
+         `SideAWins` block inside it does NOT satisfy this, deliberately — that \
+         shell would also strip XP and currency from practice and PvP winners."
+    );
+
+    let fav_rel = win_region.find(favorable.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-7): `trust_favorable_count` is never incremented in the \
+             winner loop, so a wild win grows no Trust at all. RED at HEAD. Writing \
+             only `trust_favorable_battle_day_epoch` (the cap anchor) without the \
+             counter passes every ordering scan while Trust stays frozen at 0 \
+             forever and no Trust-gated evolution edge can ever open."
+        )
+    });
+    assert!(
+        wild_gated_at(&body, win_at + fav_rel, win_at),
+        "TEETH (EG2-7, HIGH): the Trust-favorable increment is not inside a \
+         wild-gated block that opens within the `SideAWins` region. Same collusion \
+         vector as the essence grant above — EG2-7 exempts ALL THREE credits from \
+         practice and PvP, and Trust is the one that feeds the `min_trust_tier` \
+         evolution gates."
+    );
+
+    let accrue_rel = win_region.find(accrue.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-7/EG2-12): the winner loop never accrues Quality Time. \
+             RED at HEAD; see winner_tails_after_dual_write."
+        )
+    });
+    assert!(
+        wild_gated_at(&body, win_at + accrue_rel, win_at),
+        "TEETH (EG2-7, HIGH): the winner-side Quality-Time accrual is not inside a \
+         wild-gated block that opens within the `SideAWins` region. EG2-7 names \
+         Quality Time explicitly as the THIRD credit that is practice- and \
+         PvP-exempt: an ungated accrual lets two colluding accounts (or one \
+         self-battling account) pump the Quality-Time tier — one of the five \
+         evolution gate factors — with no wild encounter at all. Put the tails \
+         inside the same wild gate, after the dual-write."
+    );
+}
+
+/// **EG2-7 (scan)** — the Trust-favorable COUNTER is incremented, saturatingly,
+/// INSIDE the once-per-day gate, and the day anchor is both read and written.
+///
+/// THE GAP THIS CLOSES (review finding, HIGH). The comparator test proves the cap
+/// is spelled with `>`; nothing proved anything actually happens inside it. An
+/// implementation that advances `trust_favorable_battle_day_epoch` and never
+/// touches `trust_favorable_count` satisfies every ordering and comparator scan in
+/// this section while Trust never grows from battle at all — silently disabling
+/// every `min_trust_tier` evolution edge, with no error and no log line.
+///
+/// kills:
+///   * the missing counter increment (layer 1);
+///   * `+= 1` instead of `saturating_add` — the same overflow-panic hazard
+///     [`faint_penalty_uses_a_saturating_increment`] documents, scoped here to the
+///     statement that first names the column (layer 2);
+///   * an increment placed OUTSIDE the day-gated block — i.e. a cap that is
+///     computed and then ignored, crediting Trust on every wild win of the day and
+///     letting a grinding session saturate the Trust ladder in minutes (layer 3);
+///   * a cap that is read but never advanced (or advanced but never read): the
+///     column must appear at least twice in the win region — once in the
+///     comparison, once in the store. With a single mention the cap is decorative
+///     and every win credits (layer 4).
+///
+/// RED BY SCAN at HEAD: neither column is touched.
+///
+/// HONEST LIMITS. (a) Layer 3 requires the day-gate's condition to NAME the column
+/// (`if today > m.trust_favorable_battle_day_epoch {`), which is the same spelling
+/// [`day_cap_comparator_is_strictly_greater`] already requires; hoisting the
+/// stored value into a local first would false-RED both, consistently. (b) Layer 4
+/// counts mentions, not distinct roles — two reads and no write would pass it, but
+/// layer 3 plus the comparator test make that shape hard to write by accident, and
+/// only an executing seam (which this crate does not have) could prove the store.
+#[test]
+fn trust_favorable_count_increments_inside_the_day_cap() {
+    let body = write_back_body();
+    let win_outcome = ["SideA", "Wins"].concat();
+    let win_at = body
+        .find(win_outcome.as_str())
+        .expect("SCAN PRECONDITION (EG2-7): the SideAWins block anchor is missing");
+    let win_region = &body[win_at..];
+
+    let favorable = ["trust_favorable", "_count"].concat();
+    let day_field = ["trust_favorable_battle", "_day_epoch"].concat();
+    let saturating = [".saturating_add(", "1"].concat();
+
+    // --- Layer 1: the counter is written at all ------------------------------
+    let fav_rel = win_region.find(favorable.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-7, HIGH): `trust_favorable_count` is never incremented in \
+             the winner loop. RED at HEAD. An implementation that only advances \
+             `trust_favorable_battle_day_epoch` passes every other scan here while a \
+             wild win grows NO Trust — every `min_trust_tier` evolution edge stays \
+             shut forever, silently."
+        )
+    });
+
+    // --- Layer 2: saturating, not `+= 1` -------------------------------------
+    let stmt = &win_region[fav_rel..statement_end(win_region, fav_rel)];
+    assert!(
+        stmt.contains(saturating.as_str()),
+        "TEETH (EG2-7): the statement writing `trust_favorable_count` is `{stmt}` — \
+         it must increment with `.saturating_add(1)`. A plain `+= 1` panics at \
+         `u32::MAX` under this workspace's `overflow-checks = true`, inside the \
+         write-back every battle-ending path funnels through."
+    );
+
+    // --- Layer 3: the increment is INSIDE the day-capped block ---------------
+    let headers = enclosing_block_headers(&body, win_at + fav_rel);
+    let capped = headers
+        .iter()
+        .any(|(open, h)| *open >= win_at && h.contains(day_field.as_str()));
+    assert!(
+        capped,
+        "TEETH (EG2-7, HIGH): no brace block enclosing the `trust_favorable_count` \
+         increment is headed by a condition naming \
+         `trust_favorable_battle_day_epoch`, so the once-per-day cap does not gate \
+         the credit it exists to cap. EG2-7 caps the Trust-favorable battle credit \
+         at once per monster per day; an increment outside the gate credits EVERY \
+         wild win, and a grinding session walks the whole Trust ladder in minutes. \
+         The sanctioned shape is \
+         `if today > m.trust_favorable_battle_day_epoch {{ ..increment..; \
+         m.trust_favorable_battle_day_epoch = today; }}` — see the body sketch above \
+         this test."
+    );
+
+    // --- Layer 4: the anchor is both READ and WRITTEN ------------------------
+    let n_day = win_region.matches(day_field.as_str()).count();
+    assert!(
+        n_day >= 2,
+        "TEETH (EG2-7): `trust_favorable_battle_day_epoch` appears {n_day} time(s) \
+         in the `SideAWins` region; it must appear at least twice — once in the \
+         comparison that gates the credit, once in the store that advances it. With \
+         one mention the cap is decorative: read-but-never-advanced credits every \
+         win forever, and advanced-but-never-read never blocks anything."
     );
 }
