@@ -25,6 +25,24 @@
 //! reducer's own delegation is pinned separately by the EG1-11 source-scan at
 //! the bottom of this file.
 //!
+//! WHAT EG2 ADDS (ADR-0175 D3, spec EG2-1/9/11/12/13):
+//!   - `apply_evolution_seam` — the transform-and-write half of `evolve_seam`,
+//!     factored out exactly the way production factors `apply_evolution` out of
+//!     `evolve()`, so BOTH seam paths apply an evolution through one code path.
+//!   - `check_and_evolve_seam` — the auto-evolution driver: fresh monster read,
+//!     DB `evolution_path` rows for the CURRENT species, the REAL
+//!     `game_core::eligible_evolution_paths`, 0/2+ eligible are no-ops, exactly
+//!     one applies, then the bounded chain loop re-checks against the NEW
+//!     species. It takes its cap from the production constant
+//!     `crate::evolution::MAX_EVOLUTION_CHAIN_STEPS`, so the seam can never
+//!     drift from the reducer's own termination bound.
+//!   - Source scans for the shapes a seam cannot observe: `evolve()` delegating
+//!     (EG2-1), one transform path (EG2-11), no battle/trade guard on the
+//!     auto-evolution path (EG2-12 Guard warning), DB rows not the RON cache,
+//!     the explicit iteration cap (EG2-13), and the EG2-9 hard invariant that no
+//!     SCHEDULED reducer body directly calls `accrue_quality_time`/
+//!     `check_and_evolve`.
+//!
 //! Each test carries a `// kills:` note stating which wrong implementation it
 //! catches.
 
@@ -197,6 +215,71 @@ fn make_evolution_path_row(path_id: u64, edge_id: u32, from: u32, to: u32) -> Ev
         min_trust_tier: Some(TrustTier::Friendly),
         min_quality_time_tier: Some(2),
         min_nutrition_pct: Some(50),
+    }
+}
+
+/// An `evolution_path` row gated ONLY on `min_level`.
+///
+/// The chain fixtures (EG2-13) need gates that SURVIVE an evolution: all 8
+/// essence pools zero on every step (ADR-0174 D2), so an essence-gated second
+/// step could never fire, while level / Trust / Quality-Time are lifetime state
+/// and persist.
+fn make_level_only_path_row(
+    path_id: u64,
+    edge_id: u32,
+    from: u32,
+    to: u32,
+    min_level: u8,
+) -> EvolutionPathRow {
+    EvolutionPathRow {
+        path_id,
+        edge_id,
+        from_species: from,
+        to_species: to,
+        min_level,
+        essence: vec![],
+        min_trust_tier: None,
+        min_quality_time_tier: None,
+        min_nutrition_pct: None,
+    }
+}
+
+/// Field-by-field copy of an `evolution_path` row.
+///
+/// `EvolutionPathRow` deliberately does NOT derive `Clone` in schema.rs (unlike
+/// `Monster`/`SpeciesRow`), and production never needs one: SpacetimeDB's table
+/// iterators yield OWNED rows, so `check_and_evolve`'s
+/// `from_species().filter(..).collect()` gets owned values for free. The seam
+/// reads from an in-memory map instead, so it needs this one explicit copy —
+/// test infrastructure only, and NOT a request to widen the schema derive.
+fn copy_path_row(p: &EvolutionPathRow) -> EvolutionPathRow {
+    EvolutionPathRow {
+        path_id: p.path_id,
+        edge_id: p.edge_id,
+        from_species: p.from_species,
+        to_species: p.to_species,
+        min_level: p.min_level,
+        essence: p.essence.clone(),
+        min_trust_tier: p.min_trust_tier,
+        min_quality_time_tier: p.min_quality_time_tier,
+        min_nutrition_pct: p.min_nutrition_pct,
+    }
+}
+
+/// An `evolution_path` row gated on `min_level` AND a Trust tier — Trust is
+/// lifetime history (EG2-1) and survives an evolution, so it is a legitimate
+/// mid-chain gate and proves the chain re-checks against surviving state.
+fn make_level_and_trust_path_row(
+    path_id: u64,
+    edge_id: u32,
+    from: u32,
+    to: u32,
+    min_level: u8,
+    min_trust_tier: TrustTier,
+) -> EvolutionPathRow {
+    EvolutionPathRow {
+        min_trust_tier: Some(min_trust_tier),
+        ..make_level_only_path_row(path_id, edge_id, from, to, min_level)
     }
 }
 
@@ -799,6 +882,570 @@ fn evolve_preserves_trust_and_quality_time_columns() {
 }
 
 // ===========================================================================
+// EG2-11/12/13 — `check_and_evolve` / `apply_evolution` behaviour.
+//
+// These drive `check_and_evolve_seam` / `apply_evolution_seam` (bottom of this
+// file), which mirror the production helpers step for step against
+// `TestEvolutionDb` while calling the REAL `game_core::eligible_evolution_paths`
+// and the REAL marshaling helpers. The seam returns the number of chain steps it
+// applied — production returns `()`, but the step count is the only way a test
+// can distinguish "cascaded once" from "cascaded three times" from "spun to the
+// cap", which is exactly what EG2-13 legislates.
+// ===========================================================================
+
+/// EG2-11: ZERO eligible paths -> a silent no-op. This is the normal state for
+/// the whole EG1 -> EG3 window (no `evolution_path` content exists yet), so it
+/// must never error, panic, or touch the row.
+///
+/// kills: an impl that treats an empty candidate set as "evolve along whatever
+///        row it can find"; an impl that writes the monster row back unchanged
+///        anyway (public-row churn on the movement hot path, ADR-0175 D1); an
+///        impl that returns/propagates an error from a no-op check.
+#[test]
+fn check_and_evolve_zero_eligible_is_noop() {
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    db.insert_species(source_species_row());
+    db.insert_species(target_species_row());
+    // NO evolution_path rows at all.
+    let m = make_qualified_monster_row(1, owner);
+    db.insert_monster(m.clone());
+    db.insert_monster_pub(make_monster_pub(&m, 0));
+
+    let steps = check_and_evolve_seam(&mut db, 1);
+
+    assert_eq!(steps, 0, "no eligible path means no evolution step is applied");
+    let after = db.get_monster(1).expect("monster row must survive");
+    assert_eq!(after.species_id, 1, "TEETH: the species must be unchanged");
+    assert_eq!(
+        after.essence_fire, 150,
+        "TEETH: a no-op must not spend essence — the pools are only zeroed by an \
+         evolution that actually happened"
+    );
+    assert_eq!(
+        db.get_monster_pub(1)
+            .expect("monster_pub must survive")
+            .species_id,
+        1,
+        "the public projection must be unchanged too"
+    );
+}
+
+/// EG2-11: EXACTLY ONE eligible path -> applied immediately, same transaction,
+/// no player action. The full transform contract rides along: species on both
+/// rows, all 8 essence pools zeroed, Trust/Quality-Time preserved, and
+/// `MonsterPub.tier` from the TARGET species row.
+///
+/// kills: an impl that only computes eligibility and leaves the write to some
+///        later player-invoked `evolve()` (EG2-1 says the single-path case never
+///        reaches that reducer); an impl that applies the transform without the
+///        dual-write; an impl that copies the tier forward from the stale public
+///        row instead of the fresh target species.
+#[test]
+fn check_and_evolve_exactly_one_applies_same_transaction() {
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    seed_evolvable_world(&mut db, 1, owner);
+
+    let steps = check_and_evolve_seam(&mut db, 1);
+
+    assert_eq!(steps, 1, "exactly one eligible path must apply exactly one step");
+    let m = db.get_monster(1).expect("monster row must survive").clone();
+    let p = db
+        .get_monster_pub(1)
+        .expect("monster_pub must survive")
+        .clone();
+    assert_eq!(m.species_id, 2, "the single eligible path must be applied");
+    assert_eq!(
+        p.species_id, 2,
+        "TEETH(dual-write): the public projection must follow the private row"
+    );
+    assert_eq!(
+        (
+            m.essence_fire,
+            m.essence_water,
+            m.essence_plant,
+            m.essence_electric,
+            m.essence_earth,
+            m.essence_wind,
+            m.essence_light,
+            m.essence_dark,
+        ),
+        (0, 0, 0, 0, 0, 0, 0, 0),
+        "TEETH: an auto-evolution spends essence exactly like the player-invoked \
+         one — the shared apply_evolution helper is the ONE transform path"
+    );
+    assert_eq!(
+        m.trust_favorable_count, 30,
+        "Trust is lifetime history and survives the auto-evolution"
+    );
+    assert_eq!(
+        m.quality_time_ticks_total, 400,
+        "Quality-Time is lifetime history and survives the auto-evolution"
+    );
+    assert_eq!(
+        p.tier, 1,
+        "TEETH(EG1-8): MonsterPub.tier must come from a FRESH lookup of the \
+         TARGET species row (tier 1), not copied forward from the stale public row"
+    );
+}
+
+/// EG2-11 (server-side dual of EG2-2): TWO simultaneously eligible paths -> a
+/// no-op. The choice belongs to the player (EG4-2), and the server SHALL NOT
+/// pick a first-match winner — the Tamagotchi/Wurmple "silent race" anti-pattern.
+///
+/// The pure half of this invariant is pinned in game-core at
+/// `game-core/src/evolution/m10a_gating_tests.rs:880`
+/// (`eligible_evolution_paths_returns_every_satisfied_path` — two paths from
+/// species 1 return `vec![0, 1]`, BOTH indices). This test pins the SERVER's
+/// reaction to that set: a length-2 result must stop, not index into it.
+///
+/// kills: `if let Some(idx) = eligible.first()` / `.find()` / `.position()` —
+///        every "just take the first one" shape, which would silently railroad
+///        the player past a genuine branch point; also an impl that checks
+///        `>= 1` instead of `== 1`.
+#[test]
+fn check_and_evolve_two_eligible_is_noop() {
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    db.insert_species(source_species_row());
+    db.insert_species(target_species_row());
+    db.insert_species(make_species_row(3, 40, 60, 1));
+    // BOTH satisfied, BOTH out of species 1 — the genuine-ambiguity case.
+    db.insert_evolution_path(make_evolution_path_row(1, 100, 1, 2));
+    db.insert_evolution_path(make_level_only_path_row(2, 101, 1, 3, 20));
+
+    let m = make_qualified_monster_row(1, owner);
+    db.insert_monster(m.clone());
+    db.insert_monster_pub(make_monster_pub(&m, 0));
+
+    let steps = check_and_evolve_seam(&mut db, 1);
+
+    assert_eq!(steps, 0, "a 2-eligible monster must not auto-evolve at all");
+    let after = db.get_monster(1).expect("monster row must survive");
+    assert_eq!(
+        after.species_id, 1,
+        "TEETH(EG2-2/EG2-11): with TWO eligible paths the monster must stay at \
+         its current species until the player picks — never a first-match winner"
+    );
+    assert_eq!(
+        after.essence_fire, 150,
+        "TEETH: an ambiguous state must not spend the essence either"
+    );
+}
+
+/// EG2-11: candidate rows that are NOT satisfied do not count toward the
+/// 0/1/2+ decision — only the ELIGIBLE set does, and the applied edge is the one
+/// the eligible INDEX addresses.
+///
+/// Fixture ordering is load-bearing: the UNSATISFIED path (1 -> 3, `min_level`
+/// 99) is inserted FIRST, so `eligible_evolution_paths` returns `[1]`, not `[0]`.
+///
+/// kills: an impl that counts candidate ROWS instead of eligible ones (would see
+///        2 and bail — auto-evolution silently dead for any species with a
+///        higher-level second branch); an impl that ignores the returned index
+///        and applies `rows[0]` / `rows.first()` (the monster would be dragged
+///        through an edge whose gates it does not meet, landing on species 3).
+#[test]
+fn check_and_evolve_ignores_unsatisfied_paths() {
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    db.insert_species(source_species_row());
+    db.insert_species(target_species_row());
+    db.insert_species(make_species_row(3, 40, 60, 1));
+    // Index 0: NOT satisfied (level 99). Index 1: satisfied.
+    db.insert_evolution_path(make_level_only_path_row(1, 100, 1, 3, 99));
+    db.insert_evolution_path(make_level_only_path_row(2, 101, 1, 2, 20));
+
+    let m = make_qualified_monster_row(1, owner);
+    db.insert_monster(m.clone());
+    db.insert_monster_pub(make_monster_pub(&m, 0));
+
+    let steps = check_and_evolve_seam(&mut db, 1);
+
+    assert_eq!(steps, 1, "exactly one of the two candidate rows is eligible");
+    assert_eq!(
+        db.get_monster(1)
+            .expect("monster row must survive")
+            .species_id,
+        2,
+        "TEETH: the SATISFIED edge (1 -> 2, index 1 of the candidate slice) must \
+         be the one applied — an impl that applies rows[0] lands on species 3, \
+         through a level-99 gate this level-20 monster does not meet"
+    );
+}
+
+/// EG2-12 Guard warning: `check_and_evolve`/`apply_evolution` are NEVER
+/// battle-guarded. At the `write_back_battle_results` call site the battle row is
+/// still `Ongoing` (battle.rs's own documented ordering invariant), so the
+/// "standard" guard would self-reject every auto-evolution from the one call
+/// site covering essence + Trust + level together.
+///
+/// PROOF-OF-TEETH: the monster sits in an `Ongoing` battle here — the exact
+/// fixture that makes `evolve()` reject (`evolve_rejects_when_owner_in_ongoing_
+/// battle_side_a`, same world) — and the auto-evolution must still apply.
+///
+/// kills: a copy-paste of `evolve()`'s guard prologue into `check_and_evolve` or
+///        `apply_evolution` (auto-evolution would go permanently dark from the
+///        battle write-back path, and no other test would notice).
+#[test]
+fn check_and_evolve_applies_during_an_ongoing_battle() {
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    seed_evolvable_world(&mut db, 1, owner);
+    db.insert_battle(make_side_a_battle(100, owner, vec![1]));
+
+    let steps = check_and_evolve_seam(&mut db, 1);
+
+    assert_eq!(
+        steps, 1,
+        "TEETH(EG2-12): the auto-evolution path must NOT be battle-guarded — the \
+         battle row is still Ongoing when write_back_battle_results calls it"
+    );
+    assert_eq!(
+        db.get_monster(1)
+            .expect("monster row must survive")
+            .species_id,
+        2,
+        "the evolution must actually have been applied mid-battle-write-back"
+    );
+}
+
+/// EG2-11: a missing monster row is a silent no-op — `check_and_evolve` returns
+/// `()` and never errors outward (its callers are reducer tails that must not
+/// fail a legitimate care/train/battle write-back because a row vanished).
+///
+/// kills: `.unwrap()`/`.expect()` on the fresh find (a WASM trap that would roll
+///        back the CALLER's already-committed dual-write); an impl that
+///        propagates an Err out of a tail call.
+#[test]
+fn check_and_evolve_missing_monster_is_silent_noop() {
+    let mut db = TestEvolutionDb::new();
+    db.insert_species(source_species_row());
+    db.insert_species(target_species_row());
+    db.insert_evolution_path(make_evolution_path_row(1, 100, 1, 2));
+
+    let steps = check_and_evolve_seam(&mut db, 424_242);
+
+    assert_eq!(
+        steps, 0,
+        "TEETH: a missing monster must be a silent no-op, not a panic and not an \
+         evolution of some other row"
+    );
+}
+
+/// EG2-13 (chain, positive): three consecutive single-eligible steps resolve to
+/// the FINAL species in ONE call, with no player action.
+///
+/// World: 1 (tier 0) -> 2 (tier 1) -> 3 (tier 2) -> 4 (tier 3). Step 1 carries
+/// the full 5-gate edge (including Fire essence 100); steps 2 and 3 are gated on
+/// level + Trust ONLY, because all 8 essence pools zero on every step — an
+/// essence-gated step 2 could never fire, and that is the point of gating the
+/// chain on state that survives.
+///
+/// kills: a `check_and_evolve` that applies one step and returns (the monster
+///        would sit one form short until an unrelated later action nudged it);
+///        a chain that re-checks against the STALE pre-evolution species (it
+///        would re-match edge 1 -> 2 forever and only stop at the cap, landing on
+///        species 2 after 7 steps); a chain that re-uses the already-marshaled
+///        instance instead of a FRESH find.
+#[test]
+fn eg2_13_chain_three_single_eligible_steps_resolves_in_one_call() {
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    db.insert_species(source_species_row()); // 1, tier 0
+    db.insert_species(target_species_row()); // 2, tier 1
+    db.insert_species(make_species_row(3, 40, 60, 2));
+    db.insert_species(make_species_row(4, 55, 70, 3));
+    db.insert_evolution_path(make_evolution_path_row(1, 100, 1, 2));
+    db.insert_evolution_path(make_level_and_trust_path_row(
+        2,
+        101,
+        2,
+        3,
+        20,
+        TrustTier::Friendly,
+    ));
+    db.insert_evolution_path(make_level_and_trust_path_row(
+        3,
+        102,
+        3,
+        4,
+        20,
+        TrustTier::Friendly,
+    ));
+
+    let m = make_qualified_monster_row(1, owner);
+    db.insert_monster(m.clone());
+    db.insert_monster_pub(make_monster_pub(&m, 0));
+
+    // ONE seam invocation — exactly what a reducer tail performs.
+    let steps = check_and_evolve_seam(&mut db, 1);
+
+    assert_eq!(
+        steps, 3,
+        "TEETH(EG2-13): the whole 3-step chain must resolve in ONE call — one \
+         step means no cascade, more than three means the loop lost track of the \
+         monster's NEW species"
+    );
+    let after = db.get_monster(1).expect("monster row must survive");
+    assert_eq!(
+        after.species_id, 4,
+        "the monster must land on the FINAL species of the chain"
+    );
+    assert_eq!(
+        after.trust_favorable_count, 30,
+        "Trust survives every step (it is what gates steps 2 and 3)"
+    );
+    assert_eq!(
+        after.quality_time_ticks_total, 400,
+        "Quality-Time survives every step"
+    );
+    assert_eq!(
+        after.essence_fire, 0,
+        "essence is spent on the FIRST step and stays zero through the chain"
+    );
+    assert_eq!(
+        db.get_monster_pub(1).expect("monster_pub must survive").tier,
+        3,
+        "TEETH: the public tier must be the FINAL species' tier (3), read fresh \
+         on the last step — a chain that writes the tier once, up front, shows 1"
+    );
+}
+
+/// EG2-13 (chain, stop condition): a chain stops the moment a step has 2+
+/// eligible paths, leaving the monster at that intermediate species for the
+/// player to choose from (EG4-8's badge is computed from exactly this state).
+///
+/// kills: a chain that keeps cascading past a branch point by taking the first
+///        eligible path (the player never gets the choice — and the monster ends
+///        up on a species they did not pick); a chain that stops one step EARLY
+///        (the first, unambiguous step would not be applied at all).
+#[test]
+fn eg2_13_chain_stops_at_two_eligible() {
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    db.insert_species(source_species_row()); // 1, tier 0
+    db.insert_species(target_species_row()); // 2, tier 1
+    db.insert_species(make_species_row(3, 40, 60, 2));
+    db.insert_species(make_species_row(5, 45, 65, 2));
+    // Step 1: unambiguous. Then species 2 has TWO satisfied outgoing edges.
+    db.insert_evolution_path(make_evolution_path_row(1, 100, 1, 2));
+    db.insert_evolution_path(make_level_only_path_row(2, 101, 2, 3, 20));
+    db.insert_evolution_path(make_level_only_path_row(3, 102, 2, 5, 20));
+
+    let m = make_qualified_monster_row(1, owner);
+    db.insert_monster(m.clone());
+    db.insert_monster_pub(make_monster_pub(&m, 0));
+
+    let steps = check_and_evolve_seam(&mut db, 1);
+
+    assert_eq!(steps, 1, "the chain must apply step 1 and then stop");
+    assert_eq!(
+        db.get_monster(1)
+            .expect("monster row must survive")
+            .species_id,
+        2,
+        "TEETH(EG2-13): the chain stops AT the branch point — species 2, not 3 \
+         and not 5; the player owns that choice (EG4-2)"
+    );
+}
+
+/// EG2-13 (termination, proof-of-teeth): the chain carries an EXPLICIT hard
+/// iteration cap, so R5/R11-invalid content cannot spin it forever.
+///
+/// Fixture: deliberately R5-INVALID content seeded straight into the test DB —
+/// 1 -> 2 AND 2 -> 1, both level-gated only, both ALWAYS satisfied. The content
+/// gate (R5 tier monotonicity) makes this unauthorable, which is precisely why
+/// the runtime guard is the last line of defence: this is the shape a future
+/// R5/R11 relaxation would let through.
+///
+/// The cap is read from the PRODUCTION constant, so the seam can never encode a
+/// different bound than the reducer.
+///
+/// kills: a bare `loop {}` / unbounded recursion (this test would hang forever
+///        or blow the WASM stack instead of failing); an off-by-one cap that
+///        runs one extra step; a cap set to a different value than
+///        `MAX_EVOLUTION_CHAIN_STEPS` (the count assertion pins it at 7 = R11's
+///        tier cap 5 + 2, ADR-0175 D3).
+#[test]
+fn eg2_13_iteration_cap_terminates_on_degenerate_cycle() {
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    db.insert_species(source_species_row()); // 1, tier 0
+    db.insert_species(target_species_row()); // 2, tier 1
+    // R5-INVALID by construction: a 2-cycle, both edges trivially satisfied.
+    db.insert_evolution_path(make_level_only_path_row(1, 100, 1, 2, 1));
+    db.insert_evolution_path(make_level_only_path_row(2, 101, 2, 1, 1));
+
+    let m = make_qualified_monster_row(1, owner);
+    db.insert_monster(m.clone());
+    db.insert_monster_pub(make_monster_pub(&m, 0));
+
+    // Terminates at all == the test returns. What it terminates AT is the pin.
+    let steps = check_and_evolve_seam(&mut db, 1);
+
+    let cap = usize::try_from(crate::evolution::MAX_EVOLUTION_CHAIN_STEPS)
+        .expect("the chain cap must fit a usize");
+    assert_eq!(
+        cap, 7,
+        "TEETH(EG2-13/ADR-0175 D3): MAX_EVOLUTION_CHAIN_STEPS must be 7 — R11's \
+         tier cap 5 plus 2, generous on purpose and structurally unreachable for \
+         R5-valid content"
+    );
+    assert_eq!(
+        steps, cap,
+        "TEETH: a degenerate cycle must stop EXACTLY at the cap — never run \
+         longer, never hang"
+    );
+    assert_eq!(
+        db.get_monster(1)
+            .expect("monster row must survive")
+            .species_id,
+        2,
+        "7 steps around a 2-cycle starting at species 1 ends on species 2 — pins \
+         that every counted step really was applied, not skipped"
+    );
+}
+
+/// EG2-11/EG2-1: `apply_evolution` zeroes ALL EIGHT essence pools and preserves
+/// every Trust / Quality-Time / bookkeeping column, called DIRECTLY (not through
+/// `evolve()`'s guard prologue).
+///
+/// Fixture: all 8 pools non-zero and DISTINCT, every Trust/QT column non-zero.
+///
+/// kills: an impl that zeroes only the pools the edge required (banked essence
+///        of other affinities would survive an evolution that is supposed to
+///        spend the bar); an impl that rebuilds the row via
+///        `monster_from_instance` (which drops the server-only QT bookkeeping by
+///        design) — including the `last_essence_train_at_ms` reset, which would
+///        silently clear the shared essence-training cooldown on every evolution.
+#[test]
+fn apply_evolution_zeroes_all_eight_pools_and_preserves_trust_and_quality_time() {
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    db.insert_species(source_species_row());
+    db.insert_species(target_species_row());
+
+    let mut m = make_qualified_monster_row(1, owner);
+    m.essence_fire = 111;
+    m.essence_water = 122;
+    m.essence_plant = 133;
+    m.essence_electric = 144;
+    m.essence_earth = 155;
+    m.essence_wind = 166;
+    m.essence_light = 177;
+    m.essence_dark = 188;
+    db.insert_monster(m.clone());
+    db.insert_monster_pub(make_monster_pub(&m, 0));
+
+    let path = make_evolution_path_row(1, 100, 1, 2);
+    apply_evolution_seam(&mut db, 1, &path).expect("apply_evolution must succeed");
+
+    let after = db.get_monster(1).expect("monster row must survive").clone();
+    assert_eq!(
+        (
+            after.essence_fire,
+            after.essence_water,
+            after.essence_plant,
+            after.essence_electric,
+            after.essence_earth,
+            after.essence_wind,
+            after.essence_light,
+            after.essence_dark,
+        ),
+        (0, 0, 0, 0, 0, 0, 0, 0),
+        "TEETH(ADR-0174 D2): ALL EIGHT pools zero — every one entered non-zero \
+         and only the Fire pool was required by this edge"
+    );
+    assert_eq!(
+        after.trust_favorable_count, 30,
+        "trust_favorable_count must survive"
+    );
+    assert_eq!(
+        after.trust_unfavorable_count, 2,
+        "trust_unfavorable_count must survive"
+    );
+    assert_eq!(
+        after.trust_favorable_battle_day_epoch, 5,
+        "the once-per-day battle-credit anchor must survive"
+    );
+    assert_eq!(
+        after.quality_time_ticks_total, 400,
+        "quality_time_ticks_total must survive"
+    );
+    assert_eq!(
+        after.quality_time_accum_ms, 777,
+        "quality_time_accum_ms must survive"
+    );
+    assert_eq!(
+        after.quality_time_window_ms, 888,
+        "quality_time_window_ms must survive"
+    );
+    assert_eq!(
+        after.quality_time_window_start_ms, 999,
+        "quality_time_window_start_ms (the accrual anchor) must survive"
+    );
+    assert_eq!(
+        after.last_essence_train_at_ms, 1234,
+        "TEETH: last_essence_train_at_ms must survive — resetting it would clear \
+         the shared essence-training cooldown on every evolution"
+    );
+    let p = db.get_monster_pub(1).expect("monster_pub must survive");
+    assert_eq!(
+        (
+            p.essence_fire,
+            p.essence_water,
+            p.essence_plant,
+            p.essence_electric,
+            p.essence_earth,
+            p.essence_wind,
+            p.essence_light,
+            p.essence_dark,
+        ),
+        (0, 0, 0, 0, 0, 0, 0, 0),
+        "TEETH(dual-write): the PUBLIC pools must be zeroed too — the EG4 \
+         requirements panel reads these"
+    );
+}
+
+/// EG2-11/EG1-8: `apply_evolution` sets `MonsterPub.tier` from a FRESH lookup of
+/// the path's `to_species` row — not from the (stale) public row, not from the
+/// path, not a default.
+///
+/// Fixture: the target species row carries `tier: 2` while the existing public
+/// row carries a deliberately stale `tier: 9`.
+///
+/// PROOF-OF-TEETH: a copy-forward impl writes 9; a defaulted/`unwrap_or(0)` impl
+/// writes 0; a "source tier + 1" impl writes 1. Only a fresh
+/// `species_row(path.to_species).tier` read produces 2.
+///
+/// kills: tier copy-forward / fabrication at the one call site that must read
+///        fresh (A3, ADR-0174 D7).
+#[test]
+fn apply_evolution_sets_pub_tier_from_fresh_target_species_lookup() {
+    let owner = owner_id();
+    let mut db = TestEvolutionDb::new();
+    db.insert_species(source_species_row()); // 1, tier 0
+    db.insert_species(make_species_row(2, 20, 80, 2)); // target, tier 2
+
+    let m = make_qualified_monster_row(1, owner);
+    db.insert_monster(m.clone());
+    db.insert_monster_pub(make_monster_pub(&m, 9)); // STALE
+
+    let path = make_evolution_path_row(1, 100, 1, 2);
+    apply_evolution_seam(&mut db, 1, &path).expect("apply_evolution must succeed");
+
+    assert_eq!(
+        db.get_monster_pub(1).expect("monster_pub must survive").tier,
+        2,
+        "TEETH(EG1-8): the tier must come from a FRESH species_row lookup of the \
+         path's to_species (2); 9 = copy-forward, 0 = fabricated, 1 = derived \
+         from the source tier"
+    );
+}
+
+// ===========================================================================
 // EG2-1 message layer — NOTE ON OWNERSHIP.
 //
 // `unmet_requirement` lives in GAME-CORE (`game_core::unmet_requirement`), NOT
@@ -824,6 +1471,9 @@ const BATTLE_RS_SOURCE: &str = include_str!("battle.rs");
 const CONTENT_RS_SOURCE: &str = include_str!("content.rs");
 const MONSTER_MGMT_RS_SOURCE: &str = include_str!("monster_mgmt.rs");
 const MOVEMENT_RS_SOURCE: &str = include_str!("movement.rs");
+// Included for the EG2-9 scheduled-reducer scan ONLY (it hosts `playtest_reaper`);
+// it calls no `pub_from_monster`, so it is deliberately NOT in the A3 file set.
+const PLAYTEST_RS_SOURCE: &str = include_str!("playtest.rs");
 const PVP_RS_SOURCE: &str = include_str!("pvp.rs");
 const RAISING_RS_SOURCE: &str = include_str!("raising.rs");
 const TAMING_RS_SOURCE: &str = include_str!("taming.rs");
@@ -958,9 +1608,31 @@ fn eg1_11_evolve_body_delegates_to_path_satisfied() {
 ///     `min_nutrition_pct` — the `EvolutionPath` gate fields,
 ///   * `.amount` — the `EssenceRequirement` threshold,
 ///   * `trust_tier_of(` / `quality_time_tier_of(` / `nutrition_pct_of(` /
-///     `nutrition_pct_from_ev_total(` — the three tier derivations,
-///   * `eligible_evolution_paths(` — the FULL-SET query, which EG2-1 explicitly
-///     forbids on this path (the targeted, indexed lookup is the point).
+///     `nutrition_pct_from_ev_total(` — the three tier derivations.
+///
+/// ---------------------------------------------------------------------------
+/// EG2 REVISION (spec-driven, plan D12 / ADR-0175 D6) — NOT a weakening.
+///
+/// EG1 also banned `eligible_evolution_paths(` at FILE scope. EG2-11 MANDATES
+/// that exact call in this exact file: `check_and_evolve` must compute the full
+/// eligible set for the monster's current species (0 / 1 / 2+ is the whole
+/// decision). A file-scoped ban and the spec now contradict each other, so the
+/// needle is re-scoped rather than dropped — the invariant EG1 was protecting
+/// (EG2-1's "evaluate only the ONE matched edge, never the full set" rule on the
+/// player-invoked path) is preserved exactly, and is now enforced where it
+/// actually lives:
+///   (a) BODY-SCOPED BAN — `evolve`'s body must not call `eligible_evolution_paths(`.
+///   (b) POSITIVE REQUIREMENT — `check_and_evolve`'s body MUST call it, so the
+///       full-set query cannot be quietly replaced by a hand-rolled loop.
+///   (c) EXACTLY ONE `path_satisfied(` in `evolve`'s body — one targeted row,
+///       one gate decision; two occurrences means a loop over candidates.
+///   (d) NO `.collect` in `evolve`'s body — closes the loop-reimplementation
+///       escape where `evolve` gathers a candidate set and filters it by hand,
+///       which is EG2-1's "re-deriving and discarding 9 irrelevant edges" waste
+///       wearing a different name.
+/// The other NINE needles stay file-scoped and now bind `apply_evolution` and
+/// `check_and_evolve` too.
+/// ---------------------------------------------------------------------------
 ///
 /// NOTE FOR THE IMPLEMENTER: naming the failing requirement is still required
 /// (EG2-1) — call `game_core::unmet_requirement(&instance, &path)`; do not
@@ -971,26 +1643,34 @@ fn eg1_11_evolve_body_delegates_to_path_satisfied() {
 /// kills: a hand-rolled `path.min_level <= level && …` chain anywhere in
 ///        `evolution.rs`; a private `fn describe_gate(..)` helper next to
 ///        `evolve` that re-implements the five gates; a body that computes the
-///        three tiers itself; a full-set eligibility query where a targeted
-///        lookup is required.
+///        three tiers itself; a full-set eligibility query on the player-invoked
+///        path where a targeted lookup is required; a `check_and_evolve` that
+///        re-implements the eligible-set query instead of calling the shared one.
 #[test]
 fn eg1_11_evolution_rs_production_region_has_no_inlined_gate_logic() {
     let production = production_region(EVOLUTION_RS_SOURCE);
 
     // Vacuity guards: the scanned region must be real production code that still
-    // contains the reducer, otherwise a truncated/empty region would pass.
+    // contains all three functions, otherwise a truncated/empty region would pass.
     assert!(
         !production.trim().is_empty(),
         "vacuity guard: the production region of evolution.rs is empty — the \
          scanner has rotted"
     );
-    assert!(
-        production.contains("pub fn evolve("),
-        "vacuity guard: the production region of evolution.rs does not contain \
-         `pub fn evolve(` — either the reducer moved or a `#[cfg(test)]` marker \
-         above it truncated the scan, which would let gate logic below the cut \
-         escape this check"
-    );
+    for decl in [
+        "pub fn evolve(",
+        "pub(crate) fn apply_evolution(",
+        "pub(crate) fn check_and_evolve(",
+    ] {
+        assert!(
+            production.contains(decl),
+            "vacuity guard: the production region of evolution.rs does not contain \
+             {decl:?} — either the function moved/was never written (EG2-11 puts \
+             apply_evolution AND check_and_evolve in this file) or a `#[cfg(test)]` \
+             marker above it truncated the scan, which would let gate logic below \
+             the cut escape this check"
+        );
+    }
     // Soundness of the cut: the ONLY `#[cfg(test)]` in evolution.rs must be the
     // test-module declaration at the bottom. A second one placed above `evolve`
     // would shrink the scanned region (the exact way to smuggle gate logic past
@@ -1007,6 +1687,7 @@ fn eg1_11_evolution_rs_production_region_has_no_inlined_gate_logic() {
          EG1 also deletes the old cfg(test) EvolutionEffect/FuseEffect structs."
     );
 
+    // --- File-scoped bans: the nine gate/threshold needles ------------------
     let banned = [
         "min_level",
         "min_trust_tier",
@@ -1017,7 +1698,6 @@ fn eg1_11_evolution_rs_production_region_has_no_inlined_gate_logic() {
         "quality_time_tier_of(",
         "nutrition_pct_of(",
         "nutrition_pct_from_ev_total(",
-        "eligible_evolution_paths(",
     ];
     for needle in banned {
         assert!(
@@ -1031,6 +1711,54 @@ fn eg1_11_evolution_rs_production_region_has_no_inlined_gate_logic() {
              exactly that reason."
         );
     }
+
+    // --- Body-scoped: the full-set query belongs to check_and_evolve ONLY ---
+    let stripped = strip_rust_comments(EVOLUTION_RS_SOURCE);
+    let evolve_body = extract_fn_body(&stripped, "pub fn evolve(ctx");
+    assert!(
+        !evolve_body.trim().is_empty(),
+        "vacuity guard: the extracted `evolve` body is empty — the source scanner \
+         has rotted and every verdict below would be meaningless"
+    );
+    assert!(
+        !evolve_body.contains("eligible_evolution_paths("),
+        "TEETH(EG2-1): `evolve`'s body must NOT call `eligible_evolution_paths(` — \
+         the player-invoked path evaluates ONE targeted, indexed row \
+         (from_species + to_species), never the full outgoing set. At up to 10 \
+         edges per species that is nine edges' worth of gate checks derived and \
+         discarded on every call."
+    );
+    assert_eq!(
+        evolve_body.matches("path_satisfied(").count(),
+        1,
+        "TEETH(EG2-1): `evolve`'s body must contain EXACTLY ONE `path_satisfied(` \
+         call — one targeted row, one gate decision. Two or more means the reducer \
+         is iterating candidates, i.e. re-implementing `eligible_evolution_paths` \
+         under another name."
+    );
+    assert!(
+        !evolve_body.contains(".collect"),
+        "TEETH(EG2-1, loop-reimplementation escape): `evolve`'s body must not \
+         `.collect` anything — the only reason this reducer would build a \
+         collection is to gather candidate edges and filter them by hand, which is \
+         the full-set query the targeted lookup exists to avoid."
+    );
+
+    let check_body = extract_fn_body(&stripped, "pub(crate) fn check_and_evolve(");
+    assert!(
+        !check_body.trim().is_empty(),
+        "vacuity guard: the extracted `check_and_evolve` body is empty — the \
+         source scanner has rotted"
+    );
+    assert!(
+        check_body.contains("eligible_evolution_paths("),
+        "TEETH(EG2-11): `check_and_evolve`'s body MUST call \
+         `eligible_evolution_paths(` — the 0 / exactly-1 / 2+ decision is defined \
+         over the SHARED eligible set (the same set the EG4 client computes \
+         client-side). A hand-rolled filter here is exactly the read-path / \
+         write-path drift EG1-11 exists to prevent, and it would also silently \
+         reintroduce the first-match-winner race EG2-2 forbids."
+    );
 }
 
 /// EG1-9: the fusion machinery and `compute_evolves_to` are DELETED from
@@ -1057,6 +1785,435 @@ fn eg1_9_evolution_rs_has_no_fusion_or_compute_evolves_to_leftovers() {
              repurposed (the Fusion TABLE struct stays in schema.rs until \
              Migration B, but no code may reference this)"
         );
+    }
+}
+
+// ===========================================================================
+// EG2 SOURCE SCANS — the shapes a seam cannot observe.
+//
+// The seam tests above prove BEHAVIOUR (given these rows, this is the result).
+// They cannot prove that the production reducer reaches that result through the
+// ONE shared helper, reads the DB instead of a cache, or carries an explicit
+// termination bound — those are structural facts about the source, so they are
+// scanned here, exactly as EG1-11 scans the shared-predicate delegation.
+// ===========================================================================
+
+/// EG2-1: `evolve()` DELEGATES the transform-and-write to `apply_evolution` —
+/// it no longer performs one itself.
+///
+/// Three assertions, because the positive alone is bypassable: an `evolve` that
+/// calls `apply_evolution(` AND still runs its own inline transform would satisfy
+/// a call check while leaving two write paths in the codebase (the exact "an
+/// evolution is NEVER applied through two different code paths" failure EG2-11
+/// names). So the transform call and the monster update must BOTH be gone from
+/// `evolve`'s body.
+///
+/// kills: a copy-pasted `apply_evolution` that duplicates instead of replacing
+///        the reducer's tail (two write paths that drift the first time one is
+///        fixed); a delegation added below a `return`; an `apply_evolution` that
+///        exists but is never called from `evolve`.
+#[test]
+fn eg2_1_evolve_body_delegates_to_apply_evolution() {
+    let stripped = strip_rust_comments(EVOLUTION_RS_SOURCE);
+    let body = extract_fn_body(&stripped, "pub fn evolve(ctx");
+    assert!(
+        !body.trim().is_empty(),
+        "vacuity guard: the extracted `evolve` body is empty — the scanner has rotted"
+    );
+
+    assert!(
+        body.contains("apply_evolution("),
+        "TEETH(EG2-1): `evolve`'s body must call `apply_evolution(` — the \
+         transform-and-write logic is factored into ONE shared helper that both \
+         `evolve()` and `check_and_evolve` call (EG2-11)"
+    );
+    assert!(
+        !body.contains("game_core::evolve("),
+        "TEETH(EG2-11): `evolve`'s body must NOT call `game_core::evolve(` any \
+         more — the pure transform is invoked from `apply_evolution` and nowhere \
+         else. A body that delegates AND transforms leaves two write paths."
+    );
+    assert!(
+        !body.contains("monster().monster_id().update("),
+        "TEETH(EG2-11): `evolve`'s body must NOT write the monster row itself — \
+         the dual-write belongs to `apply_evolution`. A leftover update here means \
+         the row is written twice (or written differently) depending on which \
+         entry point ran."
+    );
+}
+
+/// EG2-11: `apply_evolution` is the ONLY transform path in this file.
+///
+/// Two teeth working together: exactly ONE `game_core::evolve(` occurrence in the
+/// whole production region, AND that occurrence is inside `apply_evolution`'s
+/// body. Either alone is bypassable — a single occurrence sitting in a second
+/// private helper would pass a count-only check, and a count-free body check
+/// would tolerate a duplicate elsewhere in the file.
+///
+/// kills: an auto-evolution path that transforms the monster itself instead of
+///        calling the shared helper; a private `fn apply_evolution_inner` twin;
+///        a leftover transform in `evolve` (also caught above, deliberately
+///        double-covered — this is the invariant EG2-11 states outright).
+#[test]
+fn eg2_11_apply_evolution_is_the_only_transform_path() {
+    let production = production_region(EVOLUTION_RS_SOURCE);
+    assert!(
+        production.contains("pub(crate) fn apply_evolution("),
+        "vacuity guard: `pub(crate) fn apply_evolution(` is not in evolution.rs's \
+         production region — without it this test's count assertion is vacuous \
+         (EG2-11 puts the shared helper in exactly this file)"
+    );
+
+    assert_eq!(
+        production.matches("game_core::evolve(").count(),
+        1,
+        "TEETH(EG2-11): the production region of evolution.rs must contain EXACTLY \
+         ONE `game_core::evolve(` call — an evolution is NEVER applied through two \
+         different code paths"
+    );
+
+    let stripped = strip_rust_comments(EVOLUTION_RS_SOURCE);
+    let apply_body = extract_fn_body(&stripped, "pub(crate) fn apply_evolution(");
+    assert!(
+        apply_body.contains("game_core::evolve("),
+        "TEETH(EG2-11): the one transform call must live in `apply_evolution`'s \
+         body — if it sits anywhere else, `apply_evolution` is not the shared \
+         transform path the spec requires, whatever the file-wide count says"
+    );
+    assert!(
+        apply_body.contains("pub_from_monster("),
+        "TEETH(EG2-11/ADR-0015): `apply_evolution` owns the dual-write, so its body \
+         must project the public row through `pub_from_monster(`"
+    );
+}
+
+/// EG2-12 (Guard warning): `check_and_evolve` and `apply_evolution` SHALL NEVER
+/// carry the standard guard prologue.
+///
+/// This inverts this codebase's default convention on purpose. At the
+/// `write_back_battle_results` call site the battle's DB row is STILL `Ongoing`
+/// (the mutating callers move it to its terminal state only after the write-back
+/// returns), so `reject_if_in_battle` here would silently self-reject every
+/// auto-evolution from the ONE call site covering essence + Trust + level
+/// together. The other call sites (`care` / `train` / `essence_train` /
+/// `enqueue_move` / `consume_crystalized_essence`) each guard BEFORE their own
+/// mutation, so the tail call is already battle-clean; and ownership is not
+/// checked because this is an internal helper, never a wire-reachable reducer.
+///
+/// kills: a well-meaning "every reducer in this file is guarded, so guard these
+///        too" edit — which would make auto-evolution look fine in every unit
+///        test while being dead in the one path that matters most in production.
+#[test]
+fn eg2_11_check_and_evolve_has_no_battle_or_trade_guard() {
+    let stripped = strip_rust_comments(EVOLUTION_RS_SOURCE);
+    let banned = [
+        "reject_if_in_battle",
+        "is_in_ongoing_battle",
+        "reject_if_monster_in_trade",
+        "require_owner",
+    ];
+    for decl in [
+        "pub(crate) fn check_and_evolve(",
+        "pub(crate) fn apply_evolution(",
+    ] {
+        let body = extract_fn_body(&stripped, decl);
+        assert!(
+            !body.trim().is_empty(),
+            "vacuity guard: the extracted body for {decl:?} is empty — the scanner \
+             has rotted"
+        );
+        for needle in banned {
+            assert!(
+                !body.contains(needle),
+                "TEETH(EG2-12 Guard warning): {decl:?}'s body contains {needle:?} — \
+                 the auto-evolution path must NEVER be battle-guarded, trade-guarded \
+                 or ownership-guarded. The battle row is still Ongoing at the \
+                 write_back_battle_results call site, so this guard disables \
+                 auto-evolution exactly where essence, Trust and level all change."
+            );
+        }
+    }
+}
+
+/// EG2-11: `check_and_evolve` reads the DB `evolution_path` rows — the same
+/// source `evolve()` and the EG4 client read — not the compile-time RON cache.
+///
+/// `content_cache::cached_evolution_paths()` is `#[cfg(test)]`-gated
+/// (content_cache.rs:68) and reflects the SHIPPED content bundle, not the rows
+/// `sync_content` actually seeded; auto-evolving off it would make the server
+/// disagree with the public table every client subscribes to.
+///
+/// The positive half is what gives the ban teeth: without it, the "no
+/// cached_evolution_paths(" assertion passes vacuously in a file that reads
+/// nothing at all.
+///
+/// kills: an impl that reaches for the in-process content cache because it is
+///        easier than the indexed table read; an impl that iterates the WHOLE
+///        `evolution_path` table instead of the `from_species` btree index
+///        (1,500-4,000+ rows at full roster scale, on the movement hot path).
+#[test]
+fn eg2_11_check_and_evolve_reads_db_rows_not_the_ron_cache() {
+    let production = production_region(EVOLUTION_RS_SOURCE);
+    assert!(
+        !production.contains("cached_evolution_paths("),
+        "TEETH(EG2-11/ADR-0175 D3): evolution.rs must not read \
+         `cached_evolution_paths(` — the eligible-set query runs against the DB \
+         `evolution_path` rows, the same source the reducer's targeted lookup and \
+         the EG4 client panel use (the cache is #[cfg(test)]-gated and can \
+         disagree with what sync_content actually seeded)"
+    );
+
+    let stripped = strip_rust_comments(EVOLUTION_RS_SOURCE);
+    let body = extract_fn_body(&stripped, "pub(crate) fn check_and_evolve(");
+    assert!(
+        body.contains("evolution_path()"),
+        "TEETH(EG2-11): `check_and_evolve`'s body must read the `evolution_path()` \
+         table — otherwise the ban above is vacuous"
+    );
+    assert!(
+        body.contains("from_species()"),
+        "TEETH(EG2-11/EG1-4): the read must go through the `from_species()` btree \
+         index, not a full-table scan — this runs on the movement hot path once \
+         per party monster"
+    );
+    assert!(
+        body.contains("evolution_path_from_row("),
+        "TEETH(EG2-11): each DB row must be converted through the shared \
+         `evolution_path_from_row(` marshaling helper (parse-don't-validate, \
+         ADR-0174 D4) before the pure eligible-set query sees it"
+    );
+}
+
+/// EG2-13 (termination): the chain carries an EXPLICIT hard iteration cap and is
+/// never a bare `loop {}`.
+///
+/// The bound is structurally guaranteed today (R5's strict tier +1 plus R11's
+/// tier cap 5), but the spec demands the defensive guard anyway, in case a future
+/// change to R5/R11 breaks that guarantee — an unbounded loop in a WASM reducer
+/// is a stuck transaction, not a slow one.
+///
+/// kills: a recursive `check_and_evolve` (no counter to inspect, and a stack
+///        overflow instead of a bounded stop); a bare `loop {}` with only a
+///        `break` on 0-eligible (which never fires on cyclic content); a silent
+///        stop at the cap with no operator signal that content is broken.
+#[test]
+fn eg2_13_chain_has_explicit_iteration_cap() {
+    let production = production_region(EVOLUTION_RS_SOURCE);
+    assert!(
+        production.contains("MAX_EVOLUTION_CHAIN_STEPS: u32 = 7"),
+        "TEETH(EG2-13/ADR-0175 D3): evolution.rs must declare \
+         `MAX_EVOLUTION_CHAIN_STEPS: u32 = 7` — R11's tier cap 5 plus 2, generous \
+         on purpose. The seam test \
+         `eg2_13_iteration_cap_terminates_on_degenerate_cycle` pins the same value \
+         behaviourally."
+    );
+
+    let stripped = strip_rust_comments(EVOLUTION_RS_SOURCE);
+    let body = extract_fn_body(&stripped, "pub(crate) fn check_and_evolve(");
+    assert!(
+        body.contains("MAX_EVOLUTION_CHAIN_STEPS"),
+        "TEETH(EG2-13): `check_and_evolve`'s body must reference \
+         `MAX_EVOLUTION_CHAIN_STEPS` — a constant declared but never consulted is \
+         not a bound"
+    );
+    assert!(
+        !body.contains("loop {") && !body.contains("loop{"),
+        "TEETH(EG2-13): the cascade must be a bounded iterative loop with an \
+         explicit counter, NEVER a bare `loop {{ }}` — the spec calls the cap a \
+         defensive guard precisely because the structural guarantee could be \
+         relaxed by a future content-rule change"
+    );
+    assert!(
+        body.contains("log::error!"),
+        "TEETH(ADR-0175 D3): hitting the cap must emit a distinct `log::error!` — \
+         reaching it means an R5/R11 invariant violation shipped in content, and a \
+         silent stop would hide it forever"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EG2-9 — no SCHEDULED reducer may DIRECTLY call the growth helpers.
+//
+// SEMANTICS: DIRECT-CALL ONLY, deliberately NOT transitive reachability. The
+// spec (EG2-9) spells out why, and this scan mirrors `no-idle-accrual.eval.mjs`
+// Check B's oracle exactly: `write_back_battle_results` — itself a growth writer
+// and a `check_and_evolve` call site — is ALREADY legitimately reachable from the
+// scheduled `movement_tick` (grass encounter -> battle -> level-up) and from
+// `pvp_deadline_reaper` (apply_pvp_forfeit -> settle_pvp_battle). A transitive
+// scan would false-positive on both real paths and would have to be weakened or
+// deleted; the buildable guarantee is that no scheduled reducer's OWN body calls
+// these helpers. Idle accrual through the reachable battle path is prevented by a
+// different mechanism entirely — EG2-7's wild-battle-only exemption (practice and
+// PvP grant nothing) — not by a callgraph rule.
+// ---------------------------------------------------------------------------
+
+/// Every production source scanned for scheduled reducers. Superset of the A3
+/// file set: `playtest.rs` hosts `playtest_reaper` but calls no
+/// `pub_from_monster`, so it belongs here and not there.
+fn scheduled_scan_sources() -> [(&'static str, &'static str); 10] {
+    [
+        ("evolution.rs", EVOLUTION_RS_SOURCE),
+        ("battle.rs", BATTLE_RS_SOURCE),
+        ("content.rs", CONTENT_RS_SOURCE),
+        ("monster_mgmt.rs", MONSTER_MGMT_RS_SOURCE),
+        ("movement.rs", MOVEMENT_RS_SOURCE),
+        ("playtest.rs", PLAYTEST_RS_SOURCE),
+        ("pvp.rs", PVP_RS_SOURCE),
+        ("raising.rs", RAISING_RS_SOURCE),
+        ("taming.rs", TAMING_RS_SOURCE),
+        ("trading.rs", TRADING_RS_SOURCE),
+    ]
+}
+
+/// Every scheduled reducer NAME declared in `src`, read out of the
+/// `#[spacetimedb::table(... scheduled(<name>))]` attribute — the same canonical
+/// form `no-idle-accrual.eval.mjs`'s `findScheduledReducers` scans, ported to
+/// Rust so the companion test and the eval agree on what "scheduled" means.
+fn scheduled_reducer_names(stripped: &str) -> Vec<String> {
+    const ATTR: &str = "#[spacetimedb::table(";
+    const SCHED: &str = "scheduled(";
+    let mut names = Vec::new();
+    let mut pos = 0usize;
+    while let Some(idx) = stripped[pos..].find(ATTR) {
+        let attr_start = pos + idx;
+        let args_start = attr_start + ATTR.len();
+        // Walk to the `)` that closes the attribute's own paren.
+        let mut depth: usize = 1;
+        let mut attr_end = args_start;
+        for (off, ch) in stripped[args_start..].char_indices() {
+            if ch == '(' {
+                depth += 1;
+            } else if ch == ')' {
+                depth -= 1;
+                if depth == 0 {
+                    attr_end = args_start + off;
+                    break;
+                }
+            }
+        }
+        let attr_args = &stripped[args_start..attr_end];
+        if let Some(sched_idx) = attr_args.find(SCHED) {
+            let name: String = attr_args[sched_idx + SCHED.len()..]
+                .chars()
+                .take_while(|c| is_word_char(*c))
+                .collect();
+            if !name.is_empty() {
+                names.push(name);
+            }
+        }
+        pos = attr_end.max(args_start);
+    }
+    names
+}
+
+/// The body of `fn <name>(` in `stripped`, or `None` if the declaration is not
+/// in the scanned sources. Non-panicking twin of `extract_fn_body` (a scheduled
+/// reducer could legitimately live in a file this scan does not include — the
+/// caller turns that into an explicit, informative failure).
+fn find_named_fn_body(stripped: &str, name: &str) -> Option<String> {
+    let qualified = format!("pub fn {name}(");
+    let bare = format!("fn {name}(");
+    let needle = if stripped.contains(&qualified) {
+        qualified
+    } else if stripped.contains(&bare) {
+        bare
+    } else {
+        return None;
+    };
+    Some(extract_fn_body(stripped, &needle))
+}
+
+/// EG2-9 (hard invariant, PROOF-OF-TEETH): NO scheduled reducer's own body calls
+/// `accrue_quality_time(` or `check_and_evolve(`.
+///
+/// This is the companion test the spec names beside `no-idle-accrual.eval.mjs`
+/// Check B. Quality Time is "time spent actively playing WITH the monster" — the
+/// moment a timer can credit it, a player enqueues a walk, tapes down a key and
+/// farms Trust/Quality-Time/evolutions overnight. `movement_tick` is the standing
+/// temptation: it is where tile entry is actually detected, which is exactly why
+/// EG2-12 routes the hook to the player-triggered `enqueue_move` instead.
+///
+/// ABSENCE-IS-FAIL, three ways:
+///   1. at least one scheduled reducer must be discovered (`movement_tick` must
+///      exist) — a rotted attribute scanner would otherwise pass vacuously;
+///   2. every discovered scheduled reducer's body must be FOUND in the scanned
+///      sources — a scheduled reducer in an un-included file would otherwise be
+///      checked by nobody;
+///   3. both banned helpers must EXIST in the scanned production sources — you
+///      cannot prove a scheduled reducer does not call a function that has not
+///      been written yet.
+///
+/// kills: `movement_tick` (or any reaper) growing an `accrue_quality_time(` /
+///        `check_and_evolve(` tail — the AFK-farming vector this whole invariant
+///        exists to close; a scan that silently misses a reaper because its file
+///        is not in the include list.
+#[test]
+fn eg2_9_no_scheduled_reducer_body_calls_growth_triggers() {
+    let stripped: String = scheduled_scan_sources()
+        .iter()
+        .map(|(_, src)| strip_rust_comments(src))
+        .collect::<Vec<String>>()
+        .join("\n");
+
+    // (3) The ban must not be vacuous.
+    for decl in ["fn accrue_quality_time(", "fn check_and_evolve("] {
+        assert!(
+            stripped.contains(decl),
+            "vacuity guard(EG2-9): {decl:?} does not exist in the scanned \
+             production sources — until both growth helpers are written, \
+             asserting that no scheduled reducer calls them proves nothing"
+        );
+    }
+
+    // (1) The attribute scanner must actually find the live scheduled reducers.
+    let names = scheduled_reducer_names(&stripped);
+    assert!(
+        !names.is_empty(),
+        "vacuity guard(EG2-9): no `#[spacetimedb::table(... scheduled(..))]` \
+         declaration found — movement_tick must exist; the scanner has rotted"
+    );
+    for known in [
+        "movement_tick",
+        "pvp_deadline_reaper",
+        "battle_challenge_reaper",
+        "trade_offer_reaper",
+        "playtest_reaper",
+    ] {
+        assert!(
+            names.iter().any(|n| n.as_str() == known),
+            "vacuity guard(EG2-9): the scheduled reducer {known:?} was not \
+             discovered — either it was renamed/removed (update this list \
+             consciously, the way GROWTH_WRITERS is updated) or the scan no longer \
+             covers its file. Discovered: {names:?}"
+        );
+    }
+
+    let banned = ["accrue_quality_time(", "check_and_evolve("];
+    for name in &names {
+        // (2) A scheduled reducer whose body we cannot see is a hole, not a pass.
+        let body = find_named_fn_body(&stripped, name).unwrap_or_else(|| {
+            panic!(
+                "vacuity guard(EG2-9): scheduled reducer {name:?} is declared but \
+                 its `fn` body is not in the scanned source set — extend \
+                 `scheduled_scan_sources()` with the file that defines it, \
+                 otherwise this invariant silently skips it"
+            )
+        });
+        for needle in banned {
+            assert!(
+                !body.contains(needle),
+                "TEETH(EG2-9): the SCHEDULED reducer {name:?} directly calls \
+                 {needle:?} in its own body. Quality-Time and auto-evolution may \
+                 only be driven by deliberate player action: a timer-driven call \
+                 lets a player tape down a movement key (or simply stay connected) \
+                 and farm Trust / Quality-Time / evolutions while AFK. The hook \
+                 belongs on `enqueue_move`, not `movement_tick` (EG2-12). \
+                 (Direct-call only: `write_back_battle_results` staying \
+                 transitively reachable from movement_tick/pvp_deadline_reaper is \
+                 INTENDED — EG2-7's wild-battle-only exemption, not a callgraph \
+                 rule, is what stops accrual there.)"
+            );
+        }
     }
 }
 
@@ -1405,7 +2562,7 @@ pub(crate) fn evolve_seam(
     monster_id: u64,
     to_species: u32,
 ) -> Result<(), String> {
-    let Some(mut m) = db.get_monster(monster_id).cloned() else {
+    let Some(m) = db.get_monster(monster_id).cloned() else {
         return Err("monster not found".to_string());
     };
 
@@ -1433,15 +2590,16 @@ pub(crate) fn evolve_seam(
 
     // EG2-1: ONE targeted row, keyed on BOTH endpoints (production reads the
     // from_species btree index and compares to_species).
-    let path = match db.find_evolution_path(m.species_id, to_species) {
-        Some(row) => crate::marshal::evolution_path_from_row(row)?,
-        None => {
-            return Err(format!(
-                "no such evolution: species {} has no path to species {to_species}",
-                m.species_id
-            ))
-        }
+    let Some(path_row) = db
+        .find_evolution_path(m.species_id, to_species)
+        .map(copy_path_row)
+    else {
+        return Err(format!(
+            "no such evolution: species {} has no path to species {to_species}",
+            m.species_id
+        ));
     };
+    let path = crate::marshal::evolution_path_from_row(&path_row)?;
 
     let instance = crate::marshal::monster_to_instance(&m)?;
 
@@ -1453,10 +2611,33 @@ pub(crate) fn evolve_seam(
             .unwrap_or_else(|| "evolution requirements not met".to_string()));
     }
 
+    // EG2-11: the transform-and-write is DELEGATED — the disambiguation path and
+    // the auto-evolution path apply an evolution through exactly one helper.
+    apply_evolution_seam(db, monster_id, &path_row)
+}
+
+/// Pure `apply_evolution` seam: mirrors
+/// `apply_evolution(ctx, monster_id, path: &EvolutionPathRow)` (EG2-11) against a
+/// `TestEvolutionDb`.
+///
+/// Deliberately guard-free (EG2-12 Guard warning) and deliberately re-reading the
+/// monster row itself: production takes only `(ctx, monster_id, path)`, so a
+/// caller can never hand it a stale in-memory copy — which is what makes the
+/// chain (EG2-13) safe to run step after step.
+pub(crate) fn apply_evolution_seam(
+    db: &mut TestEvolutionDb,
+    monster_id: u64,
+    path: &EvolutionPathRow,
+) -> Result<(), String> {
+    let Some(mut m) = db.get_monster(monster_id).cloned() else {
+        return Err("monster not found".to_string());
+    };
+    let instance = crate::marshal::monster_to_instance(&m)?;
+
     // FRESH target-species lookup — the tier source (EG1-8) and the transform's
     // base stats both come from it.
-    let Some(to_species_row) = db.get_species(to_species).cloned() else {
-        return Err(format!("target species {to_species} not found"));
+    let Some(to_species_row) = db.get_species(path.to_species).cloned() else {
+        return Err(format!("target species {} not found", path.to_species));
     };
     let target = crate::marshal::species_from_row(&to_species_row)?;
 
@@ -1490,6 +2671,62 @@ pub(crate) fn evolve_seam(
     db.update_monster_pub(pub_row);
 
     Ok(())
+}
+
+/// Pure `check_and_evolve` seam: mirrors `check_and_evolve(ctx, monster_id)`
+/// (EG2-11/EG2-13) against a `TestEvolutionDb`.
+///
+/// Production returns `()`. This seam returns the number of chain steps applied
+/// — the ONLY observable that distinguishes "cascaded once" from "cascaded three
+/// times" from "spun to the cap", which is precisely what EG2-13 legislates. The
+/// cap itself is the PRODUCTION constant, so the seam cannot encode a bound the
+/// reducer does not have.
+///
+/// Mirrors production step for step: fresh find (missing -> silent stop), the
+/// `from_species`-filtered DB rows converted through the REAL
+/// `marshal::evolution_path_from_row`, the REAL
+/// `game_core::eligible_evolution_paths`, 0 or 2+ -> stop, exactly 1 -> apply,
+/// then loop against the NEW species. NO battle/trade/ownership guard (EG2-12).
+pub(crate) fn check_and_evolve_seam(db: &mut TestEvolutionDb, monster_id: u64) -> usize {
+    let cap = usize::try_from(crate::evolution::MAX_EVOLUTION_CHAIN_STEPS)
+        .expect("the chain cap must fit a usize");
+    let mut steps = 0usize;
+
+    while steps < cap {
+        // FRESH find every step — the row changed under us on the last one.
+        let Some(m) = db.get_monster(monster_id).cloned() else {
+            return steps;
+        };
+        // Candidate edges out of the monster's CURRENT species (the btree read).
+        let mut candidate_rows: Vec<EvolutionPathRow> = Vec::new();
+        let mut candidate_paths: Vec<game_core::EvolutionPath> = Vec::new();
+        for row in db.paths_from_species(m.species_id) {
+            // A corrupt row is skipped, never fatal: production logs and moves on
+            // (this is a reducer TAIL — it must not fail the caller's write).
+            if let Ok(path) = crate::marshal::evolution_path_from_row(&row) {
+                candidate_rows.push(row);
+                candidate_paths.push(path);
+            }
+        }
+        let Ok(instance) = crate::marshal::monster_to_instance(&m) else {
+            return steps;
+        };
+
+        // THE decision: the shared full-set query (EG2-11), never a hand-rolled
+        // first-match. 0 -> chain ends; 2+ -> the player owns the choice (EG2-2).
+        let eligible = game_core::eligible_evolution_paths(&instance, &candidate_paths);
+        if eligible.len() != 1 {
+            return steps;
+        }
+        if apply_evolution_seam(db, monster_id, &candidate_rows[eligible[0]]).is_err() {
+            return steps;
+        }
+        steps += 1;
+    }
+
+    // Cap reached: production ALSO emits a distinct log::error! here (ADR-0175
+    // D3) — an R5/R11 invariant violation shipped in content.
+    steps
 }
 
 // ---------------------------------------------------------------------------
@@ -1594,6 +2831,21 @@ impl TestEvolutionDb {
         self.evolution_paths
             .iter()
             .find(|p| p.from_species == from && p.to_species == to)
+    }
+
+    /// The FULL-SET lookup (EG2-11): every outgoing edge of `from`, in insertion
+    /// order. Mirrors the production `evolution_path().from_species().filter(..)`
+    /// btree read that `check_and_evolve` collects into a Vec.
+    ///
+    /// Insertion order is load-bearing for the index semantics
+    /// `eligible_evolution_paths` returns against
+    /// (`check_and_evolve_ignores_unsatisfied_paths` depends on it).
+    pub fn paths_from_species(&self, from: u32) -> Vec<EvolutionPathRow> {
+        self.evolution_paths
+            .iter()
+            .filter(|p| p.from_species == from)
+            .map(copy_path_row)
+            .collect()
     }
 
     pub fn update_monster(&mut self, m: Monster) {

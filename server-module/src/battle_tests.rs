@@ -2208,3 +2208,862 @@ fn swap_active_rejects_a_fainted_swap_target() {
          swap away from a corpse while still permitting a swap INTO one."
     );
 }
+
+// ===========================================================================
+// EG2 — battle-side essence / Trust / Quality-Time credits
+// (spec `M-evolution-essence-graph.spec.md` §2 EG2-7 + EG2-12; ADR-0175 D4)
+//
+// EARS criteria covered in this section:
+//
+//   EG2-7   `write_back_battle_results` SHALL, on a WILD-battle win, grant
+//           `max(1, loser_bst / 30)` essence of the DEFEATED species' Affinity to
+//           each winning active-participant monster; on a WILD-battle faint,
+//           increment `trust_unfavorable_count`; on a WILD-battle win, credit
+//           Trust-favorable at most once per monster per day via
+//           `trust_favorable_battle_day_epoch`; and accrue Quality Time for the
+//           winning participants. ALL THREE credits SHALL be BOTH practice-
+//           AND PvP-exempted — wild battles only.
+//
+//   EG2-12  The auto-evolution check SHALL run as the LAST step, after the
+//           essence / Trust / Quality-Time / level mutation this reducer performs
+//           has actually been written back.
+//
+// SEAM AVAILABILITY — stated up front because it decides the shape of every test
+// below. This module has NO reducer-executing harness and no TestDb: a reducer
+// needs a live `ReducerContext`, a finding already recorded twice in this file
+// (the M14e header, and the ADR-0156 header) and again in `movement_tests.rs`
+// (ADR-0156 P7). `write_back_battle_results` therefore cannot be EXECUTED here,
+// so "a wild win grants essence to conscious winners only" has no honest
+// behavioural expression in this crate today, and standing up a DB harness for
+// one slice is out of scope. The split used instead is exactly the one this file
+// already applies to `is_ongoing_wild_battle` (T1/T2 above):
+//
+//   * every rule that CAN be a pure function is one, and is asserted BY VALUE
+//     against constructed fixtures — `essence_battle_reward`, `day_epoch_utc`,
+//     `is_wild_battle`. Those three are RED BY COMPILE until the specialist adds
+//     them (the symbols do not exist in `battle.rs` at HEAD).
+//   * the residue that exists only as wiring inside the reducer body — placement,
+//     gating, ordering, and the post-dual-write tails — is pinned by source scan
+//     over the extracted body. Those are RED BY SCAN (they compile today and fail
+//     at runtime because the needles are absent).
+//
+// What a scan provably cannot see is restated per test under HONEST LIMITS.
+// Needles are assembled from parts per this module's convention (MODULE_SOURCE is
+// `battle.rs` and this file is not inside it, but several evals concatenate every
+// non-test source in this crate, so keeping needle text un-spelled here is free
+// insurance).
+// ===========================================================================
+
+/// **EG2-7 (pure)** — the essence reward FLOORS at 1, so a low-BST wild win is
+/// never a zero-essence win.
+///
+/// kills: `bst / 30` written without the `max(1, ..)` floor — every species below
+/// BST 30 would award nothing at all, making those encounters silently
+/// evolution-inert (the floor is the literal text of EG2-7: `max(1, loser_bst / 30)`).
+/// Also kills a `saturating_sub`-flavoured mis-transcription that returns 0.
+///
+/// Values are HARDCODED, never derived from `ESSENCE_BST_DIVISOR` — a test that
+/// recomputes the formula from the same constant the implementation uses proves
+/// nothing about either.
+#[test]
+fn essence_battle_reward_floors_at_one() {
+    assert_eq!(
+        super::essence_battle_reward(0),
+        1,
+        "EG2-7: a BST of 0 must still award the floor of 1 essence, not 0. \
+         TEETH: kills a bare `bst / 30` with no `max(1, ..)`."
+    );
+    assert_eq!(
+        super::essence_battle_reward(20),
+        1,
+        "EG2-7: BST 20 -> 20/30 = 0, which must be floored to 1. \
+         TEETH: kills a bare `bst / 30` with no `max(1, ..)`."
+    );
+    assert_eq!(
+        super::essence_battle_reward(29),
+        1,
+        "EG2-7: BST 29 is the last value below the divisor and must still award 1. \
+         TEETH: kills an off-by-one floor such as `max(1, ..)` applied to the wrong side."
+    );
+    assert_eq!(
+        super::essence_battle_reward(30),
+        1,
+        "EG2-7: BST 30 -> exactly 1 (30/30). TEETH: kills a `+ 1` fudge that would \
+         make the divisor boundary award 2, and kills a `max(1, ..)` that clamps \
+         everything to 1."
+    );
+}
+
+/// **EG2-7 (pure)** — the essence reward SCALES with the defeated species' BST at
+/// the deliberately steeper divisor, three times steeper than currency's.
+///
+/// kills: reusing `battle_currency_reward`'s `loser_bst / 10` rate for essence.
+/// EG2-7 calls that out by name: at /10 a BST-300 win yields 30, which cleared
+/// every authored essence threshold in 3-5 wins (a real undertuning risk). The
+/// assertions below are 10, not 30 — an aliased or copy-pasted currency formula
+/// fails all three. Also kills a rounding-up variant: 318/30 is 10.6 and must
+/// truncate to 10, not 11.
+#[test]
+fn essence_battle_reward_scales() {
+    assert_eq!(
+        super::essence_battle_reward(300),
+        10,
+        "EG2-7: BST 300 must award 10 essence (300/30). A value of 30 here means the \
+         implementation reused `battle_currency_reward`'s /10 rate, which EG2-7 \
+         explicitly rejects as a 3x undertuning."
+    );
+    assert_eq!(
+        super::essence_battle_reward(318),
+        10,
+        "EG2-7: BST 318 (the lowest BST in shipped content) must award 10 — integer \
+         division TRUNCATES 10.6 down. TEETH: kills a round-half-up or ceiling variant."
+    );
+    assert_eq!(
+        super::essence_battle_reward(450),
+        15,
+        "EG2-7: BST 450 must award 15 essence (450/30). TEETH: kills a constant \
+         reward that ignores the loser's BST entirely — with the two assertions \
+         above, only a genuinely BST-proportional formula passes all three."
+    );
+}
+
+/// **EG2-7 (pure)** — the day epoch is the UTC-day index of a server timestamp,
+/// and it SATURATES instead of panicking on an out-of-range clock.
+///
+/// The day-granular epoch is ADR-0175 D4's recorded deviation from EG2-7's
+/// "rolling-24h" prose: the EG1-frozen `trust_favorable_battle_day_epoch` column
+/// is a `u32` and cannot hold a rolling millisecond timestamp.
+///
+/// kills: (a) a seconds- or minutes-based divisor (86_399_999 would no longer
+/// share day 0 with 0, so the once-per-day cap would fire many times per day);
+/// (b) an off-by-one boundary — 86_400_000 ms is the FIRST millisecond of day 1,
+/// not the last of day 0; (c) an `as u32` cast or a bare `unwrap()` on the
+/// conversion, which would wrap or PANIC the whole write-back on an absurd clock
+/// value instead of saturating to a day epoch no future day can exceed (a bounded
+/// credit lockout — never a double credit).
+#[test]
+fn day_epoch_utc_maps_ms_to_day() {
+    assert_eq!(super::day_epoch_utc(0), 0, "EG2-7/D4: epoch 0 ms is day 0.");
+    assert_eq!(
+        super::day_epoch_utc(86_399_999),
+        0,
+        "EG2-7/D4: the last millisecond of the first UTC day is still day 0. \
+         TEETH: kills a divisor that is not 86_400_000 ms — with a seconds or \
+         minutes divisor this lands in a different bucket from 0 and the \
+         once-per-day Trust cap fires repeatedly within one day."
+    );
+    assert_eq!(
+        super::day_epoch_utc(86_400_000),
+        1,
+        "EG2-7/D4: the first millisecond of the second UTC day is day 1. \
+         TEETH: kills an off-by-one boundary (`>=` vs `>` inside the division, or a \
+         `- 1` correction) that would merge two calendar days into one epoch."
+    );
+    assert_eq!(
+        super::day_epoch_utc(172_800_000),
+        2,
+        "EG2-7/D4: two whole days of milliseconds is day 2 — a second scale point so \
+         a constant-returning implementation cannot pass."
+    );
+    // Saturation, not panic. `i64::MAX / 86_400_000` is ~1.07e11, far beyond u32.
+    assert_eq!(
+        super::day_epoch_utc(i64::MAX),
+        u32::MAX,
+        "EG2-7/D4: an absurd forward clock must SATURATE to u32::MAX, not wrap and \
+         not panic. `i64::MAX / 86_400_000` is about 1.07e11, well past u32::MAX; \
+         an `as u32` cast wraps to an arbitrary small day (re-enabling repeat \
+         credits) and a bare `unwrap()` panics the entire battle write-back. \
+         TEETH: this assertion is the one that distinguishes \
+         `u32::try_from(..).unwrap_or(u32::MAX)` from both."
+    );
+    // A backwards clock is representable (`now_ms` is server-injected, ADR-0003).
+    assert_eq!(
+        super::day_epoch_utc(-1),
+        0,
+        "EG2-7/D4: -1 ms truncates toward zero, so it is still day 0 — no panic."
+    );
+    assert_eq!(
+        super::day_epoch_utc(-86_400_000),
+        u32::MAX,
+        "EG2-7/D4: a negative day index has no u32 representation and must saturate \
+         to u32::MAX — the MAXIMUM epoch, so `day > stored` is false and a rewound \
+         clock produces a bounded lockout rather than a credit. TEETH: kills an \
+         `unwrap_or(0)` default, which would make every monster instantly \
+         re-creditable after a clock rewind (and kills `unwrap()`, which panics)."
+    );
+}
+
+/// **EG2-7 (pure)** — `is_wild_battle` is TRUE for wild battles and for nothing
+/// else: it is the single predicate that exempts BOTH practice and PvP.
+///
+/// kills:
+///   * an `opponent_identity != player_identity` formulation (practice would be
+///     correctly false, but a PvP battle — a genuine third identity — would read
+///     as WILD and two colluding accounts could farm essence + Trust through
+///     repeated `challenge_pvp` rematches, the exact collusion vector EG2-7's PvP
+///     exemption exists to close, and there is no rematch cooldown in `pvp.rs`);
+///   * an always-true impl (the practice and PvP cases below fail);
+///   * an always-false impl (the wild cases fail);
+///   * copying `is_ongoing_wild_battle`'s shape, which ALSO requires
+///     `outcome == Ongoing` and takes a player argument. That predicate is right
+///     for disconnect GC and WRONG here: the faint penalty must credit on ANY
+///     wild outcome — a loss, a flee, and the disconnect write-back path — so the
+///     terminal-outcome rows below must still read as wild.
+#[test]
+fn is_wild_battle_true_only_for_wild_identity() {
+    let p = spacetimedb::Identity::from_byte_array([7u8; 32]);
+    let q = spacetimedb::Identity::from_byte_array([8u8; 32]);
+    let wild = crate::WILD_IDENTITY;
+
+    let wild_row = battle_fixture(20, p, wild, game_core::BattleOutcome::Ongoing);
+    assert!(
+        super::is_wild_battle(&wild_row),
+        "EG2-7: a battle whose opponent is WILD_IDENTITY IS a wild battle. \
+         TEETH: kills an always-false impl."
+    );
+
+    // Practice = the self-vs-self sandbox (ADR-0078): player == opponent.
+    let practice_row = battle_fixture(21, p, p, game_core::BattleOutcome::Ongoing);
+    assert!(
+        !super::is_wild_battle(&practice_row),
+        "EG2-7: a PRACTICE battle (player_identity == opponent_identity) must NOT be \
+         wild — practice is exempt from essence, Trust and Quality-Time credit, \
+         mirroring the existing practice-XP exemption."
+    );
+
+    // PvP = a genuine third identity.
+    let pvp_row = battle_fixture(22, p, q, game_core::BattleOutcome::Ongoing);
+    assert!(
+        !super::is_wild_battle(&pvp_row),
+        "EG2-7: a PvP battle (opponent is another player's identity) must NOT be \
+         wild. TEETH: this is the assertion an `opponent != player` implementation \
+         fails — that spelling exempts practice but hands two colluding accounts \
+         unlimited essence and Trust through repeated PvP rematches (no rematch \
+         cooldown exists in pvp.rs)."
+    );
+
+    // Outcome-independence: the faint penalty credits on ANY wild outcome.
+    for outcome in [
+        game_core::BattleOutcome::SideAWins,
+        game_core::BattleOutcome::SideBWins,
+        game_core::BattleOutcome::Fled,
+    ] {
+        let terminal = battle_fixture(23, p, wild, outcome);
+        assert!(
+            super::is_wild_battle(&terminal),
+            "EG2-7: a TERMINAL wild battle is still a wild battle. \
+             TEETH: kills an implementation copied from `is_ongoing_wild_battle`, \
+             which also demands `outcome == Ongoing`. The faint penalty must apply \
+             on a loss, on a flee, and on the disconnect write-back path — all of \
+             which reach this function with a non-Ongoing outcome."
+        );
+    }
+
+    // Owner-independence: unlike `is_ongoing_wild_battle`, there is no player arg.
+    let other_owner = battle_fixture(24, q, wild, game_core::BattleOutcome::Ongoing);
+    assert!(
+        super::is_wild_battle(&other_owner),
+        "EG2-7: wildness is a property of the ROW, not of who is asking — the \
+         predicate takes no player argument. TEETH: documents the deliberate \
+         difference from `is_ongoing_wild_battle`."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Scanning helpers for the EG2 body pins
+//
+// All of them operate on the FULLY stripped view (comments AND string literals
+// blanked) produced by `fn_body`, which is pure ASCII — so every byte index is a
+// char boundary and the windowing below cannot split a character.
+// ---------------------------------------------------------------------------
+
+/// The fully-stripped body of the battle write-back, the subject of every EG2
+/// scan below. Panics loudly if the function is missing, so no scan can pass
+/// vacuously against a renamed or deleted target.
+fn write_back_body() -> String {
+    let name = ["write_back", "_battle", "_results"].concat();
+    fn_body(name.as_str())
+}
+
+/// `src` with ALL whitespace removed, so a rustfmt line split can never turn a
+/// correct implementation red. Used only where adjacency is the property under
+/// test (the day-cap comparator).
+fn squash_ws(src: &str) -> String {
+    src.split_whitespace().collect()
+}
+
+/// The interior of the balanced parenthesis group that OPENS at or after `from`.
+///
+/// Used to read a call's ARGUMENT LIST rather than an arbitrary character window,
+/// so the affinity/amount pins below say something exact about the call instead of
+/// "these tokens appear near each other".
+fn paren_group(src: &str, from: usize) -> Option<&str> {
+    let bytes = src.as_bytes();
+    let open = from + src[from..].find('(')?;
+    let mut depth: usize = 0;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&src[open + 1..i]);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// How many bytes of text before a `{` count as that block's "header".
+const HEADER_LOOKBACK: usize = 120;
+
+/// The header text of every brace block that ENCLOSES byte `at` in `body`,
+/// outermost first.
+///
+/// Walks the brace stack from the start of the body to `at`; whatever is still
+/// open at `at` is an enclosing block, and the bytes immediately before its `{`
+/// are the condition / loop header that decides whether the block runs. This is
+/// how a "the write is INSIDE the wild gate" assertion is expressed without
+/// pinning one exact spelling of the gate.
+fn enclosing_block_headers(body: &str, at: usize) -> Vec<&str> {
+    let bytes = body.as_bytes();
+    let mut stack: Vec<usize> = Vec::new();
+    let mut i = 0usize;
+    while i < at && i < bytes.len() {
+        match bytes[i] {
+            b'{' => stack.push(i),
+            b'}' => {
+                stack.pop();
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let mut headers: Vec<&str> = Vec::new();
+    for &open in &stack {
+        headers.push(&body[open.saturating_sub(HEADER_LOOKBACK)..open]);
+    }
+    headers
+}
+
+/// For every occurrence of `field` in `src`, the two bytes immediately BEFORE the
+/// start of its dotted path and the two bytes immediately AFTER the field name.
+///
+/// `src` must be whitespace-squashed, where an operator is always physically
+/// adjacent to its operand — which is exactly what makes `>` distinguishable from
+/// `>=`, `==` and `!=` by two bytes of context.
+fn field_adjacency(src: &str, field: &str) -> Vec<(String, String)> {
+    let bytes = src.as_bytes();
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut from = 0usize;
+    while let Some(rel) = src[from..].find(field) {
+        let at = from + rel;
+        // Walk back over the dotted path (`m.trust_..` -> the `m`).
+        let mut path_start = at;
+        while path_start > 0 {
+            let b = bytes[path_start - 1];
+            if b.is_ascii_alphanumeric() || b == b'_' || b == b'.' {
+                path_start -= 1;
+            } else {
+                break;
+            }
+        }
+        let before = src[path_start.saturating_sub(2)..path_start].to_string();
+        let end = at + field.len();
+        let after = src[end..(end + 2).min(src.len())].to_string();
+        out.push((before, after));
+        from = end;
+    }
+    out
+}
+
+/// **EG2-7 (scan)** — the faint-penalty loop must sit textually BEFORE the
+/// `SideAWins` block.
+///
+/// kills: the placement bug. `write_back_battle_results`'s win block early-RETURNS
+/// twice on corrupt loser data (`xp_skip_loser_species`, `xp_skip_loser_level`),
+/// and it only runs at all on `SideAWins`. A faint loop written INSIDE it, or
+/// after it, therefore silently drops the `trust_unfavorable_count` penalty for
+/// every wild LOSS, every FLEE, the whole disconnect write-back path, and — even
+/// on a win — for any battle whose loser row is corrupt. Trust would then only
+/// ever move up, and the Bayesian smoothing would drift permanently favourable.
+///
+/// The comparison is against the FIRST `SideAWins` occurrence in the body, which
+/// is the conservative choice: if a later refactor introduces a second one, the
+/// penalty still has to precede the first.
+///
+/// RED BY SCAN at HEAD: `trust_unfavorable_count` does not appear in `battle.rs`.
+#[test]
+fn faint_loop_precedes_side_a_wins_block() {
+    let body = write_back_body();
+
+    let unfavorable = ["trust_unfavorable", "_count"].concat();
+    let win_outcome = ["SideA", "Wins"].concat();
+
+    let unfav_at = body.find(unfavorable.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-7): `write_back_battle_results` must write \
+             `trust_unfavorable_count` — the per-fainted-party-member Trust penalty \
+             on a WILD battle. RED at HEAD: the field is never written in battle.rs. \
+             It must be a saturating +1 per fainted member of side A's team, with the \
+             usual dual-write (copy-forward tier, fail loud on a missing monster_pub \
+             row), in its own loop placed BEFORE the SideAWins block."
+        )
+    });
+    let win_at = body.find(win_outcome.as_str()).unwrap_or_else(|| {
+        panic!(
+            "SCAN PRECONDITION (EG2-7): the SideAWins outcome comparison vanished from \
+             `write_back_battle_results` — the ordering assertion below has no anchor \
+             and every EG2 win-credit scan in this file is untrustworthy. Re-derive \
+             the anchor deliberately."
+        )
+    });
+
+    assert!(
+        unfav_at < win_at,
+        "TEETH (EG2-7): the faint penalty is written at body byte {unfav_at}, but the \
+         SideAWins block opens at byte {win_at} — the penalty must come FIRST. \
+         WHY: that block runs ONLY on a win, and it early-RETURNS on a missing loser \
+         species row and on a corrupt loser level. A faint loop placed inside or after \
+         it credits nothing on a wild LOSS, nothing on a FLEE, nothing on the \
+         disconnect write-back path, and nothing at all when the loser row is corrupt \
+         — so `trust_unfavorable_count` would stay 0 forever while the favourable \
+         counter keeps climbing, permanently skewing every Trust gate upward. \
+         ADR-0175 D4 places the loop in its own pass before the win block for exactly \
+         this reason. \
+         HONEST LIMIT: this proves textual ORDER in the source, not execution order \
+         under every control-flow shape; the two coincide here because there is no \
+         early return above the win block."
+    );
+}
+
+/// **EG2-7 (scan)** — the faint penalty is WILD-gated: practice and PvP faints
+/// credit nothing.
+///
+/// kills: an ungated faint loop. Without the gate, a player could farm Trust
+/// DOWNWARD on demand in a practice sandbox, and — worse in the other direction —
+/// two colluding PvP accounts control both sides of every faint. EG2-7 requires
+/// all three credits to be practice- AND PvP-exempt; this is the faint third.
+///
+/// Three layers:
+///   1. the wild predicate is called at all inside this body;
+///   2. it is called BEFORE the penalty write. Given
+///      [`faint_loop_precedes_side_a_wins_block`], this is stronger than it looks:
+///      a gate that exists only inside the winner loop necessarily appears AFTER
+///      the faint write, so "gated the win credits, forgot the faint loop" fails
+///      here;
+///   3. some brace block ENCLOSING the penalty write is headed by a wild
+///      decision — which is what makes layer 2 non-satisfiable by a hoisted
+///      `let is_wild = ..;` that nothing ever branches on. The header check
+///      accepts any spelling (`if is_wild_battle(battle) {`, `if is_wild {`,
+///      `if wild {`) because it looks for the token, not one exact line, and
+///      `battle_wild` is scrubbed out of the header first so the existing
+///      `battle_wild` GC statement can never satisfy it.
+///
+/// RED BY SCAN at HEAD: neither the predicate nor the field exists in `battle.rs`.
+///
+/// HONEST LIMITS. (a) A scan cannot prove the gate's VALUE is what the branch
+/// tests — layer 3 proves an enclosing block is headed by a wild decision, not
+/// that the decision is not inverted. The pure test
+/// [`is_wild_battle_true_only_for_wild_identity`] owns the predicate's meaning.
+/// (b) Gating with `is_ongoing_wild_battle` instead would satisfy layer 3's token
+/// check while wrongly re-adding an outcome condition; layer 1's exact-name pin is
+/// what makes that shape visible.
+#[test]
+fn faint_loop_is_wild_gated() {
+    let body = write_back_body();
+
+    let wild_call = ["is_wild", "_battle("].concat();
+    let unfavorable = ["trust_unfavorable", "_count"].concat();
+
+    // --- Layer 1: the wild predicate is used here at all ---------------------
+    let wild_at = body.find(wild_call.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-7, layer 1): `write_back_battle_results` must call \
+             `is_wild_battle(` — the ONE predicate that exempts practice \
+             (player == opponent) and PvP (a third identity) from every EG2 credit. \
+             RED at HEAD: the predicate does not exist in battle.rs."
+        )
+    });
+    let unfav_at = body.find(unfavorable.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-7, layer 1): the `trust_unfavorable_count` penalty write is \
+             missing entirely — see faint_loop_precedes_side_a_wins_block."
+        )
+    });
+
+    // --- Layer 2: the gate is established before the penalty write -----------
+    assert!(
+        wild_at < unfav_at,
+        "TEETH (EG2-7, layer 2): the first `is_wild_battle(` call is at body byte \
+         {wild_at}, AFTER the faint penalty write at {unfav_at}. Combined with the \
+         mandated placement of the faint loop before the SideAWins block, this is the \
+         signature of the half-applied fix: the WIN credits were wild-gated and the \
+         faint loop was left ungated, so practice and PvP faints still push \
+         `trust_unfavorable_count` up. EG2-7 exempts all three credits, not two."
+    );
+
+    // --- Layer 3: the penalty write lives INSIDE a wild-gated block ----------
+    let headers = enclosing_block_headers(&body, unfav_at);
+    let gated = headers
+        .iter()
+        .any(|h| h.replace("battle_wild", "").contains("wild"));
+    assert!(
+        gated,
+        "TEETH (EG2-7, layer 3): none of the {} brace block(s) enclosing the \
+         `trust_unfavorable_count` write is headed by a wild decision. Layer 2 only \
+         proves the predicate is CALLED somewhere earlier; a hoisted \
+         `let is_wild = is_wild_battle(battle);` that no branch ever consumes \
+         satisfies it while every practice and PvP faint still credits. The penalty \
+         loop must sit inside the gate — `if is_wild_battle(battle) {{ .. }}` or \
+         `if is_wild {{ .. }}` — with the loop and its dual-write inside. \
+         (`battle_wild` is scrubbed from each header first, so the existing \
+         `battle_wild` GC statement cannot satisfy this.) \
+         HONEST LIMIT: a source scan sees the SHAPE of the gate, never that the \
+         condition is un-inverted; `is_wild_battle_true_only_for_wild_identity` owns \
+         the predicate's meaning.",
+        headers.len()
+    );
+}
+
+/// **EG2-7 (scan)** — the two NEW win credits must be computed INDEPENDENT of the
+/// winner-level parse (the RT-WB-CURRENCY-01 discipline, applied to essence and
+/// Trust).
+///
+/// kills: the exact regression this function already suffered once for currency.
+/// At HEAD the winner loop parses `Level::new(bm.level)` and `continue`s on error —
+/// so a single corrupt level byte on ONE monster skips everything below it for
+/// that monster. If essence and the Trust-favorable credit are written after that
+/// parse and behind that `continue`, a corrupt level silently costs the player
+/// their essence and Trust as well, even though neither depends on the winner's
+/// level at all. ADR-0175 D4 says it plainly: a corrupt winner level skips XP
+/// ONLY. The same fix was already made for currency (grant it as soon as the
+/// loser BST is known) — this is that decision applied to the new resources.
+///
+/// Both pins are scoped to the SideAWins region so a faint-loop write cannot
+/// satisfy them.
+///
+/// RED BY SCAN at HEAD: neither the grant helper nor the day-epoch column appears.
+///
+/// HONEST LIMIT: textual ORDER is the pinned property, and it is the sanctioned
+/// shape (ADR-0175 D4). An implementation that keeps the parse first but genuinely
+/// removes the `continue` — writing the credits afterwards on both paths — is also
+/// correct and would false-RED here. When that happens, re-argue against D4 and
+/// move the credits above the parse rather than weakening this test.
+#[test]
+fn win_credits_not_gated_behind_winner_level_parse() {
+    let body = write_back_body();
+    let win_outcome = ["SideA", "Wins"].concat();
+    let win_at = body
+        .find(win_outcome.as_str())
+        .expect("SCAN PRECONDITION (EG2-7): the SideAWins block anchor is missing");
+    let win_region = &body[win_at..];
+
+    let level_parse = ["Level::new(", "bm.level)"].concat();
+    let grant = ["grant", "_essence("].concat();
+    let day_epoch_field = ["trust_favorable_battle", "_day_epoch"].concat();
+
+    let parse_at = win_region.find(level_parse.as_str()).unwrap_or_else(|| {
+        panic!(
+            "SCAN PRECONDITION (EG2-7): `Level::new(bm.level)` — the per-winner level \
+             parse — is no longer in the SideAWins region, so the ordering assertions \
+             below have no anchor. If the parse was legitimately restructured, \
+             re-derive this anchor DELIBERATELY."
+        )
+    });
+    let grant_at = win_region.find(grant.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-7): the winner loop must call the essence grant helper on a \
+             wild win. RED at HEAD: no essence is granted anywhere in battle.rs."
+        )
+    });
+    let day_at = win_region.find(day_epoch_field.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-7): the winner loop must read and write \
+             `trust_favorable_battle_day_epoch` — the once-per-day cap on the \
+             Trust-favorable battle credit. RED at HEAD: the column is never touched."
+        )
+    });
+
+    assert!(
+        grant_at < parse_at,
+        "TEETH (EG2-7 / RT-WB-CURRENCY-01): the essence grant is at region byte \
+         {grant_at}, BELOW the winner-level parse at {parse_at}. A corrupt \
+         `bm.level` makes that parse fail and skip the rest of the iteration, so the \
+         player loses essence they earned by winning — even though essence is typed \
+         and sized entirely by the DEFEATED species and does not use the winner's \
+         level at all. This is the identical defect already fixed once in this \
+         function for currency; ADR-0175 D4 requires a corrupt winner level to skip \
+         XP ONLY. Compute the essence grant BEFORE the parse."
+    );
+    assert!(
+        day_at < parse_at,
+        "TEETH (EG2-7 / RT-WB-CURRENCY-01): the Trust-favorable day-cap read/write is \
+         at region byte {day_at}, BELOW the winner-level parse at {parse_at}. Same \
+         defect as the essence grant above: the Trust credit does not depend on the \
+         winner's level, so a corrupt level byte must not consume it. Compute the \
+         Trust credit BEFORE the parse."
+    );
+}
+
+/// **EG2-12 (scan)** — the Quality-Time accrual and the auto-evolution check are
+/// TAILS: they run after the winner's own dual-write, in that order.
+///
+/// kills:
+///   * running either tail BEFORE the monster row is written. Both re-FIND the
+///     monster fresh from the DB (ADR-0175 D3's fresh-find semantics), so a tail
+///     placed above the `update` reads the PRE-battle row: the auto-evolution check
+///     evaluates gates against stale essence/level and refuses an evolution the
+///     player just earned, or the accrual's own write is immediately overwritten by
+///     the winner update that follows it, silently discarding the tick.
+///   * inverting the two — EG2-12 says the evolution check is the LAST step, after
+///     every gate-relevant mutation this reducer performs, and Quality Time is
+///     itself one of the five gate factors. Checking first and accruing after can
+///     leave a monster eligible-but-unevolved until some unrelated later action.
+///
+/// Scoped to the SideAWins region, so the faint loop's own dual-write (which is
+/// textually earlier and deliberately carries no tails) cannot be mistaken for the
+/// winner's.
+///
+/// RED BY SCAN at HEAD: neither helper exists in `battle.rs`.
+#[test]
+fn winner_tails_after_dual_write() {
+    let body = write_back_body();
+    let win_outcome = ["SideA", "Wins"].concat();
+    let win_at = body
+        .find(win_outcome.as_str())
+        .expect("SCAN PRECONDITION (EG2-12): the SideAWins block anchor is missing");
+    let win_region = &body[win_at..];
+
+    let pub_update = ["monster_pub()", ".monster_id().update("].concat();
+    let accrue = ["accrue_quality", "_time("].concat();
+    let evolve_check = ["check_and", "_evolve("].concat();
+
+    let update_at = win_region.find(pub_update.as_str()).unwrap_or_else(|| {
+        panic!(
+            "SCAN PRECONDITION (EG2-12): the winner loop's public dual-write \
+             (`monster_pub().monster_id().update(`) is missing from the SideAWins \
+             region — the tail-ordering assertions have no anchor."
+        )
+    });
+    let accrue_at = win_region.find(accrue.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-8/EG2-12): the winner loop must call the Quality-Time accrual \
+             for each winning participant. RED at HEAD: `write_back_battle_results` \
+             is one of the mandated call sites and calls it nowhere."
+        )
+    });
+    let check_at = win_region.find(evolve_check.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-12): the winner loop must call the auto-evolution check as its \
+             LAST step. RED at HEAD: `write_back_battle_results` is the one call site \
+             covering essence, Trust AND level together, and calls it nowhere."
+        )
+    });
+
+    assert!(
+        update_at < accrue_at,
+        "TEETH (EG2-12): the Quality-Time accrual is at region byte {accrue_at}, \
+         BEFORE the winner's dual-write at {update_at}. Both tails re-find the \
+         monster row fresh, so running them first means they read the pre-write row \
+         — and worse, the accrual's own write is then clobbered by the winner update \
+         that follows, silently discarding the credited time. The tails belong after \
+         each winner's own `monster` + `monster_pub` update."
+    );
+    assert!(
+        accrue_at < check_at,
+        "TEETH (EG2-12): the auto-evolution check (region byte {check_at}) must run \
+         AFTER the Quality-Time accrual (byte {accrue_at}), not before. EG2-12 makes \
+         the check the LAST step after every gate-relevant mutation, and Quality Time \
+         is itself one of the five gate factors — checking first can leave a monster \
+         that just crossed its Quality-Time tier un-evolved until some unrelated \
+         later action, contradicting EG2-1's 'evolves the instant it becomes \
+         eligible'."
+    );
+}
+
+/// **EG2-7 (scan)** — essence is typed by the DEFEATED species' Affinity and sized
+/// by the shared reward helper.
+///
+/// kills:
+///   * typing the essence by the WINNER's affinity. That inverts the entire
+///     strategy EG2-7 is built on ("go fight the type you need"): a Fire monster
+///     grinding Water opponents would bank Fire essence it already has, and the
+///     Water-gated edges would be unreachable by design. The winner's species row
+///     is bound as `species` in this very loop, so `species.affinity` is one
+///     plausible slip away — and the positive needle here (`loser`) is exactly
+///     what that slip does not contain.
+///   * a hardcoded `Affinity::` variant (which would make every wild win award the
+///     same element).
+///   * inlining the reward arithmetic instead of calling `essence_battle_reward`,
+///     which is where the `max(1, bst/30)` rule and its unit tests live.
+///
+/// The assertions read the call's ARGUMENT LIST via balanced-paren matching, not a
+/// character window, so they say something exact about this call.
+///
+/// RED BY SCAN at HEAD: the grant helper does not exist.
+///
+/// HONEST LIMIT: `loser` is matched as a token inside the argument list rather
+/// than the exact spelling `loser_species.affinity`, so a hoisted
+/// `let loser_affinity = loser_species.affinity;` also passes. That is deliberate
+/// — the property is provenance (the defeated side), and pinning one variable
+/// name would false-RED an equivalent refactor.
+#[test]
+fn essence_uses_defeated_species_affinity() {
+    let body = write_back_body();
+    let win_outcome = ["SideA", "Wins"].concat();
+    let win_at = body
+        .find(win_outcome.as_str())
+        .expect("SCAN PRECONDITION (EG2-7): the SideAWins block anchor is missing");
+    let win_region = &body[win_at..];
+
+    let grant = ["grant", "_essence("].concat();
+    let grant_at = win_region.find(grant.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-7): the winner loop must call the essence grant helper. \
+             RED at HEAD: no essence is granted anywhere in battle.rs."
+        )
+    });
+    let args = paren_group(win_region, grant_at).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-7): the essence grant call has no balanced argument list — \
+             the scan cannot read what affinity or amount is being granted."
+        )
+    });
+
+    let affinity_token = ["affin", "ity"].concat();
+    assert!(
+        args.contains(affinity_token.as_str()),
+        "TEETH (EG2-7): the essence grant's arguments are `{args}` — no `affinity` \
+         expression among them. A hardcoded `Affinity::Fire`-style variant (which \
+         does NOT contain the lowercase field name) would make every wild win award \
+         the same element regardless of what was defeated, and every non-Fire \
+         evolution edge unreachable through battle."
+    );
+    assert!(
+        args.contains("loser"),
+        "TEETH (EG2-7): the essence grant's arguments are `{args}` — nothing there \
+         comes from the LOSER. EG2-7 types essence by the DEFEATED species' Affinity \
+         ('go fight the type you need'), not the winner's. The winner's own species \
+         row is bound as `species` in this same loop, so `species.affinity` is one \
+         slip away and is precisely what this assertion catches: a Fire monster \
+         farming Water opponents would bank Fire essence and could never reach a \
+         Water-gated edge."
+    );
+    let reward_helper = ["essence_battle", "_reward("].concat();
+    assert!(
+        args.contains(reward_helper.as_str()),
+        "TEETH (EG2-7): the essence grant's arguments are `{args}` — the amount is \
+         not computed by `essence_battle_reward(`. That helper is where the \
+         `max(1, bst / 30)` rule lives and where its floor/scale unit tests bite; an \
+         inlined division here can silently drift from both (most plausibly back to \
+         currency's 3x-shallower `/ 10`)."
+    );
+}
+
+/// **EG2-7 (scan)** — the once-per-day Trust cap compares with STRICT GREATER-THAN.
+///
+/// kills:
+///   * `>=` — every wild win on the same day would re-credit, turning a
+///     once-per-day cap into no cap at all and letting one grinding session climb
+///     the whole Trust ladder;
+///   * `!=` — the spelling a "day changed?" reading naturally produces. It is
+///     wrong in one specific direction that matters: a server clock rewind makes
+///     `day(now) != stored` true again, so every monster becomes instantly
+///     re-creditable, and repeated rewinds are a double-credit engine. With `>` a
+///     rewind is a bounded (<= 24 h) lockout instead — ADR-0175 D4 accepts that
+///     trade explicitly;
+///   * dropping the helper: `day_epoch_utc(` must actually be called, so the
+///     comparison is against a real UTC-day index and not raw milliseconds
+///     (a `u32` column cannot hold a rolling ms timestamp — the reason for the
+///     day-granularity deviation from EG2-7's 'rolling-24h' prose).
+///
+/// Runs on the whitespace-squashed body, where an operator is always physically
+/// adjacent to its operand, so `>` is distinguishable from `>=` / `==` / `!=` by
+/// two bytes of context. Both orientations are accepted (`day > stored` and
+/// `stored < day`).
+///
+/// RED BY SCAN at HEAD: neither the helper nor the column appears in `battle.rs`.
+///
+/// HONEST LIMIT: the comparison must be written against the column directly, which
+/// is the sanctioned shape. Hoisting it into a local first
+/// (`let stored = m.trust_favorable_battle_day_epoch; if today > stored`) removes
+/// the adjacency this test reads and would false-RED; keep the comparison on the
+/// field.
+#[test]
+fn day_cap_comparator_is_strictly_greater() {
+    let body = write_back_body();
+    let squashed = squash_ws(&body);
+
+    let helper = ["day_epoch", "_utc("].concat();
+    assert!(
+        squashed.contains(helper.as_str()),
+        "TEETH (EG2-7): `write_back_battle_results` must call `day_epoch_utc(` to \
+         derive the UTC-day index it compares against \
+         `trust_favorable_battle_day_epoch`. RED at HEAD: the helper does not exist. \
+         Comparing raw milliseconds is not an option — the EG1-frozen column is a \
+         `u32`, which is why ADR-0175 D4 records day granularity as a deliberate \
+         deviation from EG2-7's 'rolling-24h' prose."
+    );
+
+    let field = ["trust_favorable_battle", "_day_epoch"].concat();
+    let adjacency = field_adjacency(&squashed, field.as_str());
+    assert!(
+        !adjacency.is_empty(),
+        "TEETH (EG2-7): `trust_favorable_battle_day_epoch` is never touched in \
+         `write_back_battle_results`, so the Trust-favorable battle credit has no \
+         once-per-day cap at all — every wild win would credit Trust, and a grinding \
+         session would saturate the Trust ladder in minutes."
+    );
+
+    let strictly_greater = adjacency.iter().any(|(before, after)| {
+        let prev = before.chars().last();
+        let prev2 = before.chars().rev().nth(1);
+        let gt_before =
+            prev == Some('>') && !matches!(prev2, Some('-') | Some('=') | Some('<') | Some('>'));
+        let next = after.chars().next();
+        let next2 = after.chars().nth(1);
+        let lt_after = next == Some('<') && next2 != Some('=');
+        gt_before || lt_after
+    });
+    assert!(
+        strictly_greater,
+        "TEETH (EG2-7 / ADR-0175 D4): no STRICT `>` comparison against \
+         `trust_favorable_battle_day_epoch` was found (adjacency contexts seen: \
+         {adjacency:?}). The credit must fire iff `day_epoch_utc(now) > \
+         m.trust_favorable_battle_day_epoch` (or the equivalent \
+         `m.trust_favorable_battle_day_epoch < day`). A `>=` re-credits on every win \
+         within the same day — no cap at all. \
+         HONEST LIMIT: the comparison must name the field directly; hoisting it into \
+         a local first removes the adjacency this assertion reads."
+    );
+
+    let uses_inequality = adjacency
+        .iter()
+        .any(|(before, after)| before.ends_with("!=") || after.starts_with("!="));
+    assert!(
+        !uses_inequality,
+        "TEETH (EG2-7 / ADR-0175 D4): `trust_favorable_battle_day_epoch` is compared \
+         with `!=` (adjacency contexts: {adjacency:?}). 'The day changed' is the \
+         natural reading and it is wrong in the one direction that matters: a server \
+         clock REWIND makes `day(now) != stored` true again, so every monster is \
+         instantly re-creditable and each rewind mints another day's Trust. `>` turns \
+         the same event into a bounded (<= 24 h) lockout, which ADR-0175 D4 accepts \
+         explicitly as the safer failure direction."
+    );
+
+    let uses_equality = adjacency
+        .iter()
+        .any(|(before, after)| before.ends_with("==") || after.starts_with("=="));
+    assert!(
+        !uses_equality,
+        "TEETH (EG2-7): `trust_favorable_battle_day_epoch` is compared with `==` \
+         (adjacency contexts: {adjacency:?}), which would credit ONLY on a day whose \
+         index already equals the stored one — the cap inverted into a permanent \
+         lock (or, with a 0 default, a same-day-only credit). The comparator is `>`."
+    );
+}

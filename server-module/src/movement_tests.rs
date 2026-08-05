@@ -2522,3 +2522,486 @@ fn movement_tick_grass_block_never_aborts_the_tick() {
          where there is nothing left to do)."
     );
 }
+
+// ===========================================================================
+// EG2 — the MOVEMENT call site for Quality-Time accrual and auto-evolution
+// (spec `M-evolution-essence-graph.spec.md` §2 EG2-8 / EG2-9 / EG2-12;
+//  ADR-0175 D1/D3)
+//
+// EARS criteria covered below:
+//
+//   EG2-8   The Quality-Time accrual SHALL be called DIRECTLY from exactly the
+//           listed reducers, and — uniquely at this call site — ONCE PER PARTY
+//           MONSTER, looping over `lead_party(ctx, owner)`'s full returned id
+//           list, NOT just the lead (party_slot 0). Drew's directive wording is
+//           "playtime with the monster actively in the party", not "the lead
+//           monster".
+//
+//   EG2-9   The accrual and the auto-evolution check SHALL NEVER be called
+//           DIRECTLY from a SCHEDULED reducer's own body. `movement_tick` is the
+//           scheduled reducer in this file; wiring the hooks there is precisely
+//           the afk-farming vulnerability the no-idle-accrual gate exists to
+//           close — a player could enqueue moves and walk away while the 200 ms
+//           tick kept crediting growth with no further engagement.
+//
+//   EG2-12  The auto-evolution check SHALL be called as the LAST step of the same
+//           five reducers, after that reducer's own mutation.
+//
+// SEAM AVAILABILITY (stated honestly): there is still no reducer-executing
+// harness in this crate (ADR-0156 P7, restated in the headers above) and no
+// TestDb — every reducer test in this file is a source scan, and the only
+// behavioural tests here are `RateLimiter` unit tests on a pure struct. So
+// EG2-8's "every party monster, not just the lead" cannot be observed by
+// EXECUTING `enqueue_move` in this crate; it is carried by the loop-shape pin in
+// `enqueue_move_body_loops_party_growth_tails` below, which reads the loop's
+// binding and both call arguments rather than merely checking that the two
+// helpers are mentioned somewhere. That is stated as a limit, not sold as
+// equivalent to a behavioural test.
+//
+// Needles are assembled from fragments (house rule), so no needle exists verbatim
+// in this file and neither this scan nor any eval that concatenates the crate's
+// sources can be satisfied by the test's own text.
+// ===========================================================================
+
+/// The interior of the balanced parenthesis group that OPENS at or after `from`.
+///
+/// Safe on the STRING-BLANKED squash only (the same precondition [`brace_body`]
+/// carries): a parenthesis inside a live log format string would otherwise
+/// corrupt the count. Used to read a call's ARGUMENT LIST, so the EG2 pins below
+/// can say which id the two growth helpers are handed instead of only that they
+/// are mentioned nearby.
+fn paren_interior(src: &str, from: usize) -> Option<&str> {
+    let bytes = src.as_bytes();
+    let open = from + src[from..].find('(')?;
+    let mut depth: usize = 0;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&src[open + 1..i]);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// `expr` with any leading borrow / deref / `mut` decoration stripped, so
+/// `&mut id`, `&id`, `*id` and `id` all reduce to `id`.
+///
+/// Whitespace is already squashed out by the time this runs, so `&mut id` arrives
+/// as one token. The point is to compare a loop BINDING with a call ARGUMENT
+/// without pinning which of the four equivalent spellings the implementer picked.
+fn ident_of(expr: &str) -> &str {
+    let deref = |c: char| c == '&' || c == '*';
+    let mut s = expr.trim_start_matches(deref);
+    if let Some(rest) = s.strip_prefix("mut") {
+        if !rest.is_empty() {
+            s = rest;
+        }
+    }
+    s.trim_start_matches(deref)
+}
+
+/// The first and second argument of the call whose name starts at `at`.
+///
+/// The split is on the FIRST comma, which is sound here because every call this
+/// section inspects takes `ctx` as its first argument — a fact the callers assert
+/// explicitly rather than assume.
+fn first_two_args(body: &str, at: usize) -> (String, String) {
+    let interior = paren_interior(body, at).unwrap_or("");
+    let mut parts = interior.splitn(2, ',');
+    let first = parts.next().unwrap_or("").to_string();
+    let second = parts.next().unwrap_or("").to_string();
+    (first, second)
+}
+
+/// **EG2-8 + EG2-12** — `enqueue_move` must resolve the caller's WHOLE active
+/// party and run both growth tails once per party monster, after its own
+/// character write.
+///
+/// kills:
+///   * **lead-only crediting** — `accrue_quality_time(ctx, ids[0])` with no loop,
+///     the single most likely simplification. `Character` carries no monster
+///     reference, so the party has to be resolved through `lead_party`, and
+///     `lead_party` also hands back the LEAD's level — reaching for slot 0 is one
+///     keystroke away. It would silently mean only the lead monster ever accrues
+///     Quality Time, so every non-lead party member's Quality-Time gate stays
+///     frozen at 0 forever and its evolution never fires. EG2-8 says the full id
+///     list, in Drew's own words. Layer 5 catches it by requiring the loop binding
+///     and the two call arguments to be the SAME identifier.
+///   * **pre-update placement** — tails hoisted above
+///     `ctx.db.character().entity_id().update(..)`. The queue write and the growth
+///     credits then live on opposite sides of the reducer's own commit point, and
+///     an auto-evolution triggered from the tail would run before the movement
+///     intent it was credited for was even persisted.
+///   * **inverted tails** — the auto-evolution check before the accrual. EG2-12
+///     makes the check the LAST step after every gate-relevant mutation, and
+///     Quality Time is itself one of the five gate factors, so checking first can
+///     leave a monster that just crossed a tier boundary un-evolved until some
+///     unrelated later action (contradicting EG2-1's "the instant it becomes
+///     eligible").
+///   * **mismatched ids** — accruing for one monster and evolution-checking
+///     another (layer 5's equality assertion).
+///
+/// RED BY SCAN at HEAD: `enqueue_move` calls neither helper and never touches
+/// `lead_party`.
+///
+/// HONEST LIMITS. (a) This is a source scan, not an execution: it proves the loop
+/// is WRITTEN over the resolved id list, never that `lead_party` returned every
+/// party member at runtime — that is `lead_party`'s own contract, exercised by the
+/// grass-encounter path. (b) Layer 5 accepts `for id in ..`, `for &id in ..`,
+/// `for mut id in ..` and `for &mut id in ..`, but not a `.for_each(..)` or an
+/// index loop; those would false-RED. The `for` loop is the sanctioned shape
+/// (ADR-0175 D3) and the failure message says so.
+#[test]
+fn enqueue_move_body_loops_party_growth_tails() {
+    let squashed = squashed_movement();
+
+    let enqueue_marker = ["pubfn", "enqueue", "_move("].concat();
+    let n_marker = squashed.matches(enqueue_marker.as_str()).count();
+    assert_eq!(
+        n_marker, 1,
+        "SCAN PRECONDITION (EG2-8): `pubfnenqueue_move(` must appear EXACTLY ONCE in \
+         the squashed `movement.rs`; found {n_marker}. With zero the body cannot be \
+         extracted at all; with two, the brace-matched extractor takes the FIRST \
+         match and a decoy could carry the sanctioned loop while the real reducer \
+         credits nothing — every assertion below would be untrustworthy."
+    );
+    let body = brace_body(&squashed, enqueue_marker.as_str());
+
+    let lead = ["lead", "_party("].concat();
+    let accrue = ["accrue_quality", "_time("].concat();
+    let evolve_check = ["check_and", "_evolve("].concat();
+    let char_update = ["character().entity_id()", ".update("].concat();
+
+    // --- Layer 1: all four anchors exist inside enqueue_move's own body ------
+    let update_at = body.find(char_update.as_str()).unwrap_or_else(|| {
+        panic!(
+            "SCAN PRECONDITION (EG2-8): `enqueue_move`'s character update \
+             (`ctx.db.character().entity_id().update(..)`) is missing — the \
+             placement assertions below have no anchor."
+        )
+    });
+    let lead_at = body.find(lead.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-8): `enqueue_move` must resolve the caller's active party \
+             through the existing `lead_party(ctx, ctx.sender)` helper. RED at HEAD: \
+             it never calls it. `Character` carries no monster reference, so the \
+             party is the ONLY way to know which monsters this movement is playtime \
+             WITH; a `None` return (no party) must simply credit nothing."
+        )
+    });
+    let accrue_at = body.find(accrue.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-8): `enqueue_move` must call the Quality-Time accrual — it is \
+             one of the mandated DIRECT call sites, and the ONE genuinely \
+             player-triggered movement reducer live in the shipped client. RED at \
+             HEAD: it calls nothing of the kind."
+        )
+    });
+    let check_at = body.find(evolve_check.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-12): `enqueue_move` must call the auto-evolution check as its \
+             LAST step, once per party monster. RED at HEAD: it calls nothing of the \
+             kind."
+        )
+    });
+
+    // --- Layer 2: the tails run AFTER the reducer's own character write ------
+    assert!(
+        update_at < accrue_at,
+        "TEETH (EG2-8): the Quality-Time accrual is at body byte {accrue_at}, BEFORE \
+         the character update at {update_at}. Both growth tails belong AFTER the \
+         reducer's own write: they are tails, not preconditions, and an \
+         auto-evolution triggered from a hoisted tail would fire before the movement \
+         intent it was credited for is persisted."
+    );
+    assert!(
+        update_at < check_at,
+        "TEETH (EG2-12): the auto-evolution check is at body byte {check_at}, BEFORE \
+         the character update at {update_at}. EG2-12 makes it the LAST step of the \
+         reducer, after that reducer's own mutation."
+    );
+
+    // --- Layer 3: accrual first, evolution check last ------------------------
+    assert!(
+        accrue_at < check_at,
+        "TEETH (EG2-12): the auto-evolution check (byte {check_at}) must run AFTER \
+         the Quality-Time accrual (byte {accrue_at}). Quality Time is itself one of \
+         the five evolution gate factors, so a check that runs first evaluates the \
+         PRE-accrual tier and can leave a monster that just crossed a tier boundary \
+         un-evolved until some unrelated later action."
+    );
+
+    // --- Layer 4: the party is resolved before anything is credited ----------
+    assert!(
+        lead_at < accrue_at,
+        "TEETH (EG2-8): `lead_party(` appears at body byte {lead_at}, AFTER the first \
+         growth credit at {accrue_at}. The party lookup is what decides WHICH \
+         monsters are credited; a credit written before it cannot be looping over \
+         the returned ids."
+    );
+
+    // --- Layer 5: the SAME id, and it is a loop binding over the party ------
+    let (accrue_ctx, accrue_id) = first_two_args(body, accrue_at);
+    let (check_ctx, check_id) = first_two_args(body, check_at);
+    assert_eq!(
+        accrue_ctx, "ctx",
+        "TEETH (EG2-8): the Quality-Time accrual's first argument is `{accrue_ctx}`, \
+         not `ctx` — the helper takes the ReducerContext first. (This also makes the \
+         second-argument split below sound.)"
+    );
+    assert_eq!(
+        check_ctx, "ctx",
+        "TEETH (EG2-12): the auto-evolution check's first argument is `{check_ctx}`, \
+         not `ctx` — the helper takes the ReducerContext first."
+    );
+    assert_eq!(
+        ident_of(&accrue_id),
+        ident_of(&check_id),
+        "TEETH (EG2-8/EG2-12): the accrual is called with `{accrue_id}` but the \
+         auto-evolution check with `{check_id}`. Both tails must run for the SAME \
+         monster on each iteration — crediting one monster's Quality Time and then \
+         checking a different monster's eligibility means the monster that just \
+         earned the tick is never re-evaluated, and EG2-1's automatic evolution \
+         silently never fires for it."
+    );
+
+    let loop_var = ident_of(&accrue_id).to_string();
+    assert!(
+        !loop_var.is_empty(),
+        "TEETH (EG2-8): the Quality-Time accrual was called with no second argument \
+         at all — it takes the monster id to credit."
+    );
+    let between = &body[lead_at..accrue_at];
+    let mut loop_forms: Vec<String> = Vec::new();
+    for prefix in ["", "&", "mut", "&mut"] {
+        loop_forms.push(["for", prefix, loop_var.as_str(), "in"].concat());
+    }
+    let looped = loop_forms.iter().any(|f| between.contains(f.as_str()));
+    assert!(
+        looped,
+        "TEETH (EG2-8): between `lead_party(` and the first growth credit there is no \
+         `for {loop_var} in ..` loop — so `{loop_var}` is not a loop binding over the \
+         returned party id list and only ONE monster is being credited. This is the \
+         lead-only mutant, and it is the most likely simplification of this call \
+         site: `lead_party` hands back a `(Vec<u64>, Level)`, so \
+         `accrue_quality_time(ctx, ids[0])` compiles, reads fine, and quietly freezes \
+         every non-lead party member's Quality-Time gate at 0 forever — their \
+         evolution can then never fire. EG2-8 is explicit: loop over the FULL \
+         returned id list, not the lead, matching Drew's directive wording \
+         (\"playtime with the monster actively in the party\"). \
+         Accepted spellings: `for id in ..`, `for &id in ..`, `for mut id in ..`, \
+         `for &mut id in ..`; a `.for_each(..)` or an index loop would false-RED — \
+         the `for` loop is the sanctioned shape."
+    );
+}
+
+/// **EG2-9 (hard invariant)** — the scheduled reducer must NEVER call the growth
+/// triggers, and neither may the two movement reducers that are not the sanctioned
+/// call site.
+///
+/// GREEN AT HEAD (nothing calls them yet) and green after the slice — this is a
+/// FENCE, and it is the movement-local half of EG2-9's proof-of-teeth. It is a
+/// separate `#[test]` for the reason recorded at line ~917: folded into the
+/// enqueue_move test it would sit behind assertions that fail at HEAD and could
+/// never be observed passing.
+///
+/// RELATIONSHIP TO THE SIBLING GATE (not a duplicate — read before deleting
+/// either). `evolution_tests.rs`'s `eg2_9_no_scheduled_reducer_body_calls_growth_triggers`
+/// owns the CROSS-FILE version: it discovers every
+/// `#[spacetimedb::table(.. scheduled(..))]` reducer in the crate and bans both
+/// helpers from all of them, with vacuity guards. This test is narrower and wider
+/// at once: narrower in that it only reads `movement.rs` (a local canary sitting
+/// next to the reducer an implementer is actually editing, and one that survives a
+/// rotted attribute scanner), and wider in that `set_move` and `clear_queue` are
+/// NOT scheduled reducers, so nothing else in the tree holds them to this rule.
+///
+/// kills: wiring the hooks into `movement_tick` — which is exactly where a
+/// well-meaning implementer would put them, because `movement_tick` is where
+/// tile-entry is ACTUALLY detected (position, warps and grass encounters are all
+/// computed there, one queued move drained per character per 200 ms). It is a
+/// SCHEDULED reducer that rejects any caller but the scheduler itself, so a player
+/// could enqueue two moves, walk away, and have growth credited on a timer forever
+/// — the precise afk-farming vulnerability `no-idle-accrual.eval.mjs` Check B
+/// exists to close. `enqueue_move` is the correct site instead: a real keydown (or
+/// a hold-continuation already gated on the key being physically held >= 150 ms),
+/// backpressure-throttled to roughly once per tile-step, so it does not fire
+/// per-frame in effect.
+///
+/// `set_move` and `clear_queue` are asserted clean too, for opposite reasons:
+///   * `set_move` is a genuine new-movement-intent event of the same shape as
+///     `enqueue_move` and WOULD need the same hook — but it has no production
+///     caller today (a `main.ts` regression test forbids one after a reverted
+///     attempt measured up to 1.75 tiles of backward teleport and permanent
+///     desync), so hooking it now would add an unreachable, untested credit path.
+///     If it is ever reactivated in the client, wire the same two tails there and
+///     update this test DELIBERATELY, in the same PR.
+///   * `clear_queue` never would: cancelling movement is not new engagement worth
+///     crediting, and it is deliberately left unguarded (ADR-0168 D3).
+///
+/// HONEST LIMIT: this pins DIRECT calls only, matching `no-idle-accrual` Check B's
+/// actual semantics. `movement_tick` remains transitively able to reach the battle
+/// write-back through the grass-encounter path, and that is fine — EG2-7 gates
+/// every credit there to wild battles, which is the real mechanism, not a
+/// callgraph check.
+#[test]
+fn movement_tick_body_never_calls_growth_triggers() {
+    let squashed = squashed_movement();
+
+    let accrue = ["accrue_quality", "_time("].concat();
+    let evolve_check = ["check_and", "_evolve("].concat();
+
+    // --- The scheduled reducer -----------------------------------------------
+    let tick_marker = ["pubfn", "movement", "_tick("].concat();
+    let n_tick = squashed.matches(tick_marker.as_str()).count();
+    assert_eq!(
+        n_tick, 1,
+        "SCAN PRECONDITION (EG2-9): `pubfnmovement_tick(` must appear EXACTLY ONCE; \
+         found {n_tick}. With zero, this fence would extract nothing and pass \
+         vacuously while the scheduled reducer credits growth on a timer."
+    );
+    let tick_body = movement_tick_body(&squashed);
+    let n_tick_accrue = tick_body.matches(accrue.as_str()).count();
+    assert_eq!(
+        n_tick_accrue, 0,
+        "TEETH (EG2-9, green at HEAD): `movement_tick`'s body calls the Quality-Time \
+         accrual {n_tick_accrue} time(s); it must call it ZERO times. `movement_tick` \
+         is SCHEDULED (`ScheduleAt::Interval`, scheduler-only) — it is where \
+         tile-entry is actually detected, which is exactly why this is the tempting \
+         wrong place. A player could enqueue moves, walk away, and the 200 ms tick \
+         would keep crediting growth with no further engagement: the afk-farming \
+         vulnerability `no-idle-accrual.eval.mjs` Check B exists to close. The \
+         sanctioned site is `enqueue_move` — a genuinely player-triggered reducer."
+    );
+    let n_tick_check = tick_body.matches(evolve_check.as_str()).count();
+    assert_eq!(
+        n_tick_check, 0,
+        "TEETH (EG2-9, green at HEAD): `movement_tick`'s body calls the \
+         auto-evolution check {n_tick_check} time(s); it must call it ZERO times. \
+         Same reasoning as the accrual above — and the check is listed in \
+         GROWTH_WRITERS for precisely this reason, so that a scheduled reducer \
+         calling it is mechanically forbidden even though the check writes nothing \
+         itself."
+    );
+
+    // --- set_move: same shape as enqueue_move, but no production caller -------
+    let set_marker = ["pubfn", "set", "_move("].concat();
+    let n_set = squashed.matches(set_marker.as_str()).count();
+    assert_eq!(
+        n_set, 1,
+        "SCAN PRECONDITION (EG2-9): `pubfnset_move(` must appear EXACTLY ONCE; found \
+         {n_set}."
+    );
+    let set_body = brace_body(&squashed, set_marker.as_str());
+    let n_set_accrue = set_body.matches(accrue.as_str()).count();
+    let n_set_check = set_body.matches(evolve_check.as_str()).count();
+    let n_set_growth = n_set_accrue + n_set_check;
+    assert_eq!(
+        n_set_growth, 0,
+        "TEETH (EG2-9, green at HEAD): `set_move`'s body contains {n_set_growth} \
+         growth-trigger call(s); it must contain ZERO in THIS slice. `set_move` is a \
+         genuine new-movement-intent event of the same shape as `enqueue_move` and \
+         WOULD need the same two tails — but it has no production caller today (a \
+         `main.ts` regression test forbids one, after a reverted attempt at this \
+         exact approach measured up to 1.75 tiles of backward teleport and permanent \
+         desync), so hooking it now ships an unreachable, untested credit path. If \
+         `set_move` is ever reactivated in the client, add the same tails and update \
+         this assertion DELIBERATELY, in that same PR."
+    );
+
+    // --- clear_queue: cancellation is not engagement --------------------------
+    let clear_marker = ["pubfn", "clear", "_queue("].concat();
+    let n_clear = squashed.matches(clear_marker.as_str()).count();
+    assert_eq!(
+        n_clear, 1,
+        "SCAN PRECONDITION (EG2-9): `pubfnclear_queue(` must appear EXACTLY ONCE; \
+         found {n_clear}."
+    );
+    let clear_body = brace_body(&squashed, clear_marker.as_str());
+    let n_clear_accrue = clear_body.matches(accrue.as_str()).count();
+    let n_clear_check = clear_body.matches(evolve_check.as_str()).count();
+    let n_clear_growth = n_clear_accrue + n_clear_check;
+    assert_eq!(
+        n_clear_growth, 0,
+        "TEETH (EG2-9, green at HEAD): `clear_queue`'s body contains \
+         {n_clear_growth} growth-trigger call(s); it must contain ZERO, now and \
+         later. Cancelling movement is not new engagement worth crediting — unlike \
+         `set_move`, this reducer will NEVER need the hook, and adding one would let \
+         a client mint Quality-Time credit by spamming key-release with no movement \
+         at all. (`clear_queue` is also deliberately left un-battle-guarded, \
+         ADR-0168 D3 — do not 'complete the symmetry' here either.)"
+    );
+}
+
+/// **EG2-8 (rejection paths)** — a REJECTED move credits nothing.
+///
+/// kills: tails hoisted above `enqueue_move`'s two rejects. Both rejects
+/// `return Err(..)`, which rolls the whole SpacetimeDB transaction back — so the
+/// credit would be rolled back too, and this is a defence-in-depth ordering pin
+/// rather than a live exploit. What it really protects is the shape: the growth
+/// tails must sit on the SUCCESS path, after the character write, where a future
+/// refactor that turns a reject into a logged no-op (the `movement_tick`
+/// per-character philosophy, already used elsewhere in this file) cannot silently
+/// convert "rejected move" into "free Quality Time". The queue-full reject is the
+/// one that matters most: it is exactly what a key-spamming client hits, so a
+/// pre-reject credit would make flooding `enqueue_move` the CHEAPEST way to farm
+/// Quality Time — strictly better for the attacker than actually walking.
+///
+/// RED BY SCAN at HEAD: `lead_party(` does not appear in `enqueue_move`.
+///
+/// HONEST LIMIT: textual order inside one body, not execution order under every
+/// control-flow shape. Both rejects are unconditional `return`s at the top of the
+/// reducer, so the two coincide here.
+#[test]
+fn enqueue_move_reject_paths_precede_tails() {
+    let squashed = squashed_movement();
+    let enqueue_marker = ["pubfn", "enqueue", "_move("].concat();
+    let body = brace_body(&squashed, enqueue_marker.as_str());
+
+    let lead = ["lead", "_party("].concat();
+    let lead_at = body.find(lead.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (EG2-8): `enqueue_move` must resolve the party via `lead_party(` \
+             before crediting anything. RED at HEAD: it never calls it."
+        )
+    });
+
+    let ssot = ["is_in_ongoing", "_battle("].concat();
+    let ssot_at = body.find(ssot.as_str()).unwrap_or_else(|| {
+        panic!(
+            "SCAN PRECONDITION (EG2-8 / ADR-0168 D2): `enqueue_move`'s battle-guard \
+             reject vanished — see e2_intake_rejects_movement_intent_during_an_ongoing_battle."
+        )
+    });
+    assert!(
+        ssot_at < lead_at,
+        "TEETH (EG2-8): the battle-guard reject is at body byte {ssot_at}, AFTER the \
+         party resolution at {lead_at}. A move rejected because the caller is in an \
+         ongoing battle must credit nothing at all — the growth tails belong on the \
+         success path, below both rejects and below the character write."
+    );
+
+    let cap = ["MOVE_QUEUE", "_CAP"].concat();
+    let cap_at = body.find(cap.as_str()).unwrap_or_else(|| {
+        panic!(
+            "SCAN PRECONDITION (EG2-8): `enqueue_move`'s queue-full reject \
+             (`MOVE_QUEUE_CAP`) vanished — the anti-flood bound is what makes the \
+             ordering assertion below meaningful."
+        )
+    });
+    assert!(
+        cap_at < lead_at,
+        "TEETH (EG2-8): the queue-full reject is at body byte {cap_at}, AFTER the \
+         party resolution at {lead_at}. This is the reject a key-spamming client \
+         actually hits: with the credit above it, flooding `enqueue_move` would \
+         become the cheapest possible way to farm Quality Time — strictly better \
+         than walking. Keep both growth tails on the success path."
+    );
+}
