@@ -229,11 +229,16 @@ canonical `touches:` vocabulary**: adding content is a new
   two places the eval reads independently — not a minimum: a count below it means a
   baseline was shrunk (restore the content), a count above it means content grew, so the
   PR that adds an id must **bump both pins in that same PR**. That closes the
-  self-consistent "delete the content and un-pin it in one commit" shrink, the
-  add-one/retire-one swap, and the duplicate/`-0` padding that inflates `length` while
-  `Set` collapses it. The gate does **not** detect id reuse/rebinding: swapping two ids,
-  or rebinding an id to a different entity, leaves the id set unchanged and stays green
-  (that needs a map-shaped baseline, e.g. `evolution-path-edge-ids.json`).
+  add-one/retire-one swap and the duplicate/`-0` padding that inflates `length` while
+  `Set` collapses it, and it turns the "delete the content and un-pin it in one commit"
+  shrink into a **reviewable line** — two hardcoded numbers must come down — rather than
+  an invisible agreement between two files. Be precise: that is review visibility, not a
+  mechanical impossibility. A **fully-coordinated** shrink (content, pin, and both counts
+  in one commit) still passes; no working-tree gate can tell it from a legitimate
+  retirement without a cross-revision record of what was once shipped. The gate likewise
+  does **not** detect id reuse/rebinding: swapping two ids, or rebinding an id to a
+  different entity, leaves the id set unchanged and stays green. Both gaps want the
+  map-shaped ever-issued-ledger shape, e.g. `evolution-path-edge-ids.json`.
 - **Loud per-file rejection**: a malformed `*.ron` makes the loader return `Err`
   naming the offending file — never a silent skip (parse-don't-validate preserved).
 - Content is **data, not schema** — the layout change touches neither `module_bindings`

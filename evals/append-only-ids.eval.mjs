@@ -41,7 +41,18 @@
 // floor", and `floorViolations`/`BASELINE_ID_FLOORS` keep those names): a commit
 // that deletes content AND shrinks the baseline in the same breath is
 // self-consistent, so both directions agree and both go green. The per-registry
-// expected count is the independent anchor a shrink cannot argue with.
+// expected count forces such a commit to also LOWER a hardcoded number in two
+// separate places, which is a reviewable line in the diff rather than an
+// invisible agreement between two files.
+//   BE PRECISE ABOUT WHAT THIS BUYS: it is review VISIBILITY, not a mechanical
+// impossibility. A fully-coordinated shrink — delete the content, un-pin the id,
+// and lower BOTH count pins in the same commit — still passes, and no
+// working-tree gate can tell that apart from a legitimate retirement without an
+// external record of what was once shipped (that is what a cross-revision
+// ever-issued ledger buys, cf. `evals/baselines/evolution-path-edge-ids.json`).
+// Only species 20 / item 4 / skill 7 are hard-anchored, incidentally, by T3-a's
+// precondition (a). Treat a PR that lowers one of these numbers as a shipped-id
+// un-pinning until proven otherwise.
 //   It is an EXACT PIN, not a minimum — 12r-a round 2, after the red-team proved
 // four green bypasses of a `>=` floor. Under a minimum every id ever added mints
 // one free future deletion: grow a baseline from 16 to 17 in a legitimate PR
