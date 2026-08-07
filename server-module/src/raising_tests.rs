@@ -3014,7 +3014,9 @@ fn accrue_quality_time_returns_before_the_row_write_when_the_seam_declines() {
          may not dominate. (`monster_pub().monster_id().update(` does NOT match \
          this needle — the accessor before `.monster_id()` differs.)"
     );
-    let write_at = body.find(row_write.as_str()).expect("asserted present above");
+    let write_at = body
+        .find(row_write.as_str())
+        .expect("asserted present above");
     assert!(
         blk_end < write_at,
         "TEETH (12r-e E3): the seam-declined guard's block ends at collapsed byte \

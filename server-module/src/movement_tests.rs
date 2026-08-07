@@ -3460,7 +3460,10 @@ fn enqueue_move_growth_tail_does_not_depend_on_the_lead_level() {
     // once this call site is edited, which is exactly when the PoC becomes
     // available.
     let level_any = ["lev", "el"].concat();
-    let n_level = body.to_ascii_lowercase().matches(level_any.as_str()).count();
+    let n_level = body
+        .to_ascii_lowercase()
+        .matches(level_any.as_str())
+        .count();
     assert_eq!(
         n_level, 0,
         "TEETH (12r-e E2, HARDENING / call-site fence): `enqueue_move`'s body names \
