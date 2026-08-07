@@ -45,12 +45,9 @@ const PUB_FROM_MONSTER = 'pub_from_monster(';
 // declaration (the last to end-of-input), so every function — whatever its
 // visibility — is scanned against its OWN monster → monster_pub mirror.
 //
-// The predecessor of this scan used exactly two literal markers, `'\nfn '` and
-// `'\npub fn '`. `pub(crate) fn` matched neither, so such a declaration was
-// absorbed into the PRECEDING recognised function's span — and because
-// readServerModuleSources concatenates the whole tree into one string, that
-// absorption crossed file boundaries. The gate then only verified that SOME
-// compliant pair existed somewhere in the blob (the ADR-0072 gap).
+// The predecessor scan used only the literal markers `'\nfn '` / `'\npub fn '`,
+// so a `pub(crate) fn` was absorbed into the preceding span (the ADR-0072 gap)
+// — TEETH F pins it.
 //
 // WHY COLUMN 0 (leading whitespace DISQUALIFIES a line):
 //   * Nesting immunity — an indented `fn` inside an `impl`/`mod`/closure never
@@ -67,8 +64,8 @@ const PUB_FROM_MONSTER = 'pub_from_monster(';
 // KNOWN LIMITATIONS (deliberately not chased — stated so they stay visible):
 //   * INDENTED DECLARATIONS. A `pub(crate) fn` method inside an `impl` block is
 //     absorbed into the preceding column-0 span. No `ctx.db.monster()` write
-//     lives in an `impl` block today — all 16 write sites are column-0 free
-//     functions (independently verified) — but a future one gets no own span.
+//     lives in an `impl` block today — every write site is a column-0 free
+//     function (independently verified) — but a future one gets no own span.
 //   * QUALIFIER ALLOWLIST is `const|async|unsafe` only. `extern "ABI"` and
 //     `default` are excluded deliberately: zero occurrences in the crate, and
 //     `default fn` needs nightly specialization which the pinned stable 1.96.0
@@ -76,12 +73,25 @@ const PUB_FROM_MONSTER = 'pub_from_monster(';
 //     fails SAFE-but-SILENT (the declaration re-merges into the previous span),
 //     which is exactly why the allowlist is written down here.
 //   * The column-0 anchor's safety rests on `cargo fmt --all --check` being
-//     CI-gated (`justfile:17`, a dependency of `ci` at `:355`). A
-//     `#[rustfmt::skip]` near a monster-writing helper silently weakens it.
-//   * STRING LITERALS ARE NOT BLANKED. A future Rust string containing a
-//     column-0 `fn`-looking line would plant a false boundary. Zero today;
-//     remedy if it goes live: `blankStringLiterals`
-//     (`evolution-reducer-security.eval.mjs:153-221`).
+//     CI-gated (`justfile:17`, a dependency of `ci`). A `#[rustfmt::skip]` on an
+//     indented monster-writing helper would silently weaken it.
+//   * COMMENTS AND STRING LITERALS ARE NOT NEUTRALIZED before the co-presence
+//     scan. `stripLineComments` removes `//` tails only: `/* ... */` block
+//     comments and string literals survive, so text that merely *mentions* a
+//     marker CURES a real violation — an honest `/* FIXME: still need the
+//     ctx.db.monster_pub().monster_id().update( mirror ... pub_from_monster( */`,
+//     or a `log::debug!("... pub_from_monster( ...")`. Both are demonstrated,
+//     no-adversary-required false GREENs. PRE-EXISTING (unchanged by this slice)
+//     and deliberately deferred, because a bolt-on block-comment stripper is
+//     unsafe in BOTH orders: line-strip-first destroys the `*/` of any block
+//     comment whose prose contains `//` (e.g. a URL), and the resulting
+//     unterminated `/*` then pairs with the NEXT `*/` anywhere in the
+//     concatenated tree, DELETING real `ctx.db.monster()` writes in between;
+//     block-strip-first mis-eats real code because the tree's `///` doc-comment
+//     PROSE contains unbalanced `/*`. Correct handling needs ONE combined pass
+//     tracking string literals AND both comment forms — `prepareRustSource` /
+//     `blankStringLiterals` (`evolution-reducer-security.eval.mjs:130-221`) —
+//     which is its own slice.
 // ---------------------------------------------------------------------------
 export function splitIntoFnBodies(src) {
   // Declared INSIDE the function: a /g literal is stateful via `lastIndex`.
@@ -102,41 +112,6 @@ export function splitIntoFnBodies(src) {
     bodies.push(src.slice(start, end));
   }
   return bodies;
-}
-
-// ---------------------------------------------------------------------------
-// Strip `/* ... */` block comment regions. Char/indexOf walk — no dynamic
-// RegExp. Nested `/* /* */ */` is not valid Rust in the plain form, so the
-// FIRST `*/` terminates (non-greedy), matching `stripRustComments` in
-// `evolution-reducer-security.eval.mjs:130-132`.
-//
-// FAIL-LOUD contract: an unterminated `/*` is NOT stripped to end-of-input —
-// that would silently hide every function after it. The remainder is preserved
-// verbatim and `unterminated: true` is returned so findDualWriteViolations can
-// emit its own violation naming the ambiguity.
-//
-// @param {string} src Source (line comments already stripped — see the ORDER
-//   note in findDualWriteViolations).
-// @returns {{ text: string, unterminated: boolean }}
-// ---------------------------------------------------------------------------
-export function stripBlockComments(src) {
-  let out = '';
-  let i = 0;
-  while (i < src.length) {
-    const open = src.indexOf('/*', i);
-    if (open === -1) {
-      out += src.slice(i);
-      return { text: out, unterminated: false };
-    }
-    out += src.slice(i, open);
-    const close = src.indexOf('*/', open + 2);
-    if (close === -1) {
-      // Unterminated: keep the rest VERBATIM (never strip to EOF) and signal.
-      return { text: out + src.slice(open), unterminated: true };
-    }
-    i = close + 2;
-  }
-  return { text: out, unterminated: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -222,41 +197,12 @@ export function checkFnBodyDualWrite(rawBody) {
 }
 
 // ---------------------------------------------------------------------------
-// Top-level predicate: prepare the source ONCE, split it, and return every
-// violation. Returns an array of violation strings (empty = compliant).
-//
-// THE ORDER IS LOAD-BEARING:
-//     stripLineComments(src) → stripBlockComments(...) → splitIntoFnBodies(...)
-//
-// Line comments MUST go first. RAW `server-module/src` contains 14 `/*` and 18
-// `*/` — UNBALANCED — because every single hit is `///` doc-comment PROSE
-// *describing* comment stripping (e.g. ``/// Strip Rust block comments
-// (`/* ... */`)``). Block-stripping FIRST would pair those prose fragments and
-// eat real code between them. After line-comment stripping the real tree has 0
-// `/*` and 0 `*/`, so block-stripping is a 0-byte no-op there — which is why
-// this hardening cannot regress the real-source check.
-//
-// Why block comments are stripped at all: `checkFnBodyDualWrite` matches with
-// `.includes()`, so an ordinary `/* FIXME: still need the
-// ctx.db.monster_pub().monster_id().update( mirror ... pub_from_monster(&m) */`
-// comment CURES a real violation — a live, no-adversary-required false GREEN.
-//
-// `checkFnBodyDualWrite` keeps its own `stripLineComments` call (idempotent),
-// preserving that function's standalone contract.
+// Top-level predicate: scan all fn bodies in `src` and return all violations.
+// Returns an array of violation strings (empty = compliant).
 // ---------------------------------------------------------------------------
 export function findDualWriteViolations(src) {
+  const bodies = splitIntoFnBodies(src);
   const violations = [];
-
-  const lineStripped = stripLineComments(src);
-  const blockStripped = stripBlockComments(lineStripped);
-  if (blockStripped.unterminated) {
-    violations.push(
-      'unterminated /* block comment — cannot determine where the block comment ends, so ' +
-        'every function after it is unverifiable (fail-loud: parse ambiguity, not a pass)',
-    );
-  }
-
-  const bodies = splitIntoFnBodies(blockStripped.text);
   for (const body of bodies) {
     const v = checkFnBodyDualWrite(body);
     if (v) violations.push(v);
@@ -543,7 +489,7 @@ pub(in crate::npc) fn helper_update(ctx: &ReducerContext, monster_id: u64) {
   }
 
   // -------------------------------------------------------------------------
-  // TEETH I: cross-file absorption. readServerModuleSources:370 joins files
+  // TEETH I: cross-file absorption. readServerModuleSources joins files
   // with `[chunkA, chunkB].join('\n')` — replicate that exactly. Chunk A ends
   // with a compliant UPDATE `pub fn`; chunk B (a different "file") OPENS with
   // a non-compliant `pub(crate) fn` UPDATE with no mirror. If the splitter
@@ -736,92 +682,13 @@ impl Foo {
     };
   }
 
-  // -------------------------------------------------------------------------
-  // TEETH P: block comments must not cure a violation. A non-compliant
-  // `pub(crate) fn` (private UPDATE, no mirror) followed by a `/* ... */`
-  // block comment whose PROSE happens to mention both mirror markers — the
-  // natural shape of an honest FIXME. This is a LIVE false-GREEN today:
-  // checkFnBodyDualWrite only strips `//` comments, never `/* */` ones, so
-  // the comment's mention of the markers satisfies the co-presence check.
-  // -------------------------------------------------------------------------
-  const teethPSrc = `
-pub(crate) fn commented_out_mirror(ctx: &ReducerContext, monster_id: u64) {
-    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
-    m.current_hp = 0;
-    ctx.db.monster().monster_id().update(m);
-}
-/* FIXME: still need to add the ctx.db.monster_pub().monster_id().update( mirror
-   here using pub_from_monster(&m) once the schema migration lands. */
-`;
-  const teethP = findDualWriteViolations(teethPSrc);
-  if (teethP.length < 1) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'TEETH P: a non-compliant pub(crate) fn was cured by a block comment whose PROSE merely ' +
-        'mentions the monster_pub mirror and pub_from_monster( — block comments must be stripped ' +
-        'before the co-presence scan, not left to satisfy it',
-    };
-  }
-
-  // -------------------------------------------------------------------------
-  // TEETH Q: parse-ambiguity fail-loud, made DISCRIMINATING. A non-compliant
-  // `pub(crate) fn` (private UPDATE, no mirror) BEFORE an UNTERMINATED `/*`
-  // block comment whose prose ALSO mentions both mirror markers, followed by
-  // a SECOND, distinct non-compliant `pub(crate) fn` (private UPDATE, no
-  // mirror, no pub_from_monster) AFTER the unterminated comment.
-  //
-  // Why the second fn is load-bearing: a strip-to-EOF implementation (the
-  // dangerous behaviour this tooth exists to forbid) would still catch the
-  // FIRST fn — it sits before the `/*` — and would satisfy a bare
-  // `length >= 1` check for the wrong reason, hollowing out everything after
-  // the unterminated comment (including the second fn) without anyone
-  // noticing. So the assertion below does NOT accept "any violation at all";
-  // it requires a violation string that explicitly NAMES the parse ambiguity
-  // ("unterminated"), pinning the contract: `findDualWriteViolations` must
-  // itself detect and report the unterminated `/*`, not merely stumble onto
-  // an unrelated violation that happened to precede it.
-  // -------------------------------------------------------------------------
-  const teethQSrc = `
-pub(crate) fn unterminated_comment_hides_rest(ctx: &ReducerContext, monster_id: u64) {
-    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
-    m.current_hp = 0;
-    ctx.db.monster().monster_id().update(m);
-}
-/* FIXME: will add ctx.db.monster_pub().monster_id().update( and pub_from_monster(
-   here soon, but this comment never closes
-
-pub(crate) fn after_unterminated_comment_also_no_mirror(ctx: &ReducerContext, monster_id: u64) {
-    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
-    m.current_hp = 1;
-    ctx.db.monster().monster_id().update(m);
-}
-`;
-  const teethQ = findDualWriteViolations(teethQSrc);
-  if (teethQ.length < 1) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'TEETH Q: an unterminated /* block comment (with a second non-compliant pub(crate) fn ' +
-        'placed AFTER it) must be reported as its own fail-loud violation naming the unterminated ' +
-        'block comment, because strip-to-EOF would silently hide every function after it',
-    };
-  }
-  if (!teethQ.some((v) => v.includes('unterminated'))) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'TEETH Q: findDualWriteViolations flagged something, but no violation string names the ' +
-        'parse ambiguity (expected one containing "unterminated") — a strip-to-EOF implementation ' +
-        'would still pass a bare length>=1 check by catching only the fn BEFORE the unterminated ' +
-        '/*, while silently hollowing out the fn placed AFTER it; the contract is that an ' +
-        'unterminated /* must be reported as its own fail-loud violation naming the unterminated ' +
-        'block comment, because strip-to-EOF would silently hide every function after it',
-    };
-  }
+  // NOTE: block-comment and string-literal decoys (e.g. a comment or string
+  // that merely mentions a mirror marker) are a KNOWN, demonstrated false-
+  // green in this gate. Teeth for them (TEETH P, TEETH Q) were written and
+  // then withdrawn together with the severed block-comment-stripping
+  // hardening; they belong to a follow-up slice that adds ONE combined
+  // string-and-comment-aware prepare pass — `prepareRustSource` /
+  // `blankStringLiterals` (`evolution-reducer-security.eval.mjs:130-221`).
 
   // -------------------------------------------------------------------------
   // TEETH R: the COLUMN-0 anchor must not be relaxed to allow leading
