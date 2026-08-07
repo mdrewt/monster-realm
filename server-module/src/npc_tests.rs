@@ -1393,3 +1393,184 @@ fn apply_quest_trigger_still_grants_currency_and_item_on_quest_complete() {
          this body and depend on this call surviving."
     );
 }
+
+// ===========================================================================
+// 12r-d (E3) — the SECOND hand-built JSON log line in `apply_quest_trigger`
+//
+// T4 (above) escaped the CONTENT-authored `quest_id` at npc.rs:184-190. The
+// sibling line five statements earlier — `quest_defs_load_error` at npc.rs:164 —
+// interpolates a raw `{e}` and was never covered: its `e` is
+// `cached_quest_defs()`'s error, i.e. a RON PARSE ERROR, which is the single
+// most likely string in this crate to contain a double quote (a parser reporting
+// an unexpected token quotes it). ADR-0170 D5's rule applies to it identically.
+//
+// EARS criterion covered:
+//
+//   E3  `apply_quest_trigger`'s `quest_defs_load_error` line SHALL interpolate a
+//       `crate::guards::json_escape`d binding, never the raw `Err` text.
+//
+// RED STATE: ASSERTION-RED at HEAD — npc.rs:164 reads
+// `\"reason\":\"{e}\"` and `apply_quest_trigger` makes exactly ONE
+// `json_escape(` call (T4's, for `quest_id`), not two.
+//
+// SHAPE: this file's native idiom — a CONTIGUOUS, whitespace-squashed,
+// comment-stripped mega-needle (the T4-c / T4-i discipline), which is strictly
+// TIGHTER than a split "raw absent + capture present" pair: it pins the escaped
+// capture into the exact slot of the exact format string, so an escaped value
+// interpolated into a DIFFERENT line cannot satisfy it. Needles are assembled
+// from parts and the two structural characters are spelled as NUMBERS, never as
+// CHARACTER literals (guards_tests G-5a; this file sorts before `npc.rs` in the
+// evals' concatenation order, so a contiguous copy here would poison them).
+// ===========================================================================
+
+/// The two-character sequence a Rust source spells to put a double quote INSIDE
+/// a string literal: backslash then quote.
+///
+/// Built from numeric constants so this file never contains a bare delimiter
+/// CHARACTER literal — the repo's source scanners have no char-literal lexer and
+/// a bare quote between apostrophes inverts string/code polarity for the rest of
+/// the file.
+fn d12r_escaped_quote() -> String {
+    let mut out = String::new();
+    out.push(char::from(0x5Cu8));
+    out.push(char::from(0x22u8));
+    out
+}
+
+/// **12r-d E3** — `quest_defs_load_error` interpolates the escaped binding.
+///
+/// ASSERTION-RED at HEAD on every layer.
+///
+/// LAYER BY LAYER, and what each kills:
+///   * **The GOOD contiguous needle appears exactly once.** Requiring
+///     `quest_defs_load_error","reason":"{escaped}"` as ONE squashed sequence
+///     pins the escaped capture into the reason slot OF THIS format string. A
+///     split presence check ("the body mentions `escaped` somewhere") is
+///     satisfied by escaping into an unrelated line; this is not. Exactly ONE
+///     also kills a duplicated log site.
+///   * **The RAW contiguous needle is gone.** Kills the belt-and-braces shell
+///     that adds an escaped line and leaves the raw one in place.
+///   * **No `{e}` interpolation survives ANYWHERE in the function.** The two
+///     needles above only inspect the one sanctioned line; this closes the
+///     T4-h class — a second statement elsewhere in the body that leaks the raw
+///     `Err`. `apply_quest_trigger` has exactly one `{e}` at HEAD, so the target
+///     count is zero and the arithmetic is exact.
+///   * **`json_escape(` is called at least TWICE in the function.** The
+///     arithmetic: T4's `quest_id` escape (npc.rs:184, must SURVIVE) plus this
+///     slice's `reason` escape. Asserting the pair means a future slice deleting
+///     T4's escape trips this test too, and a fix that merely MOVES T4's call
+///     rather than adding one cannot pass.
+///   * **`escaped` is bound only by `json_escape`.** Kills the shadow-rebind
+///     (`let escaped = json_escape(&e); let escaped = e.clone();`) that satisfies
+///     every name-based check while the value at the point of use is raw — the
+///     exact cheat T4-d documents at npc_tests.rs:1142-1154.
+#[test]
+fn apply_quest_trigger_defs_load_error_uses_an_escaped_binding() {
+    const ESCAPED_BINDING: &str = "escaped";
+
+    let stripped = strip_npc_comments(NPC_SOURCE);
+    let body = extract_npc_fn_body(&stripped, "apply_quest_trigger")
+        .expect("fn apply_quest_trigger must exist in npc.rs");
+    let sq = squash_ws(body);
+
+    let bq = d12r_escaped_quote();
+    let evt = ["quest_defs_load", "_error"].concat();
+    let tail = |slot: &str| {
+        [
+            evt.as_str(),
+            bq.as_str(),
+            ",",
+            bq.as_str(),
+            "reason",
+            bq.as_str(),
+            ":",
+            bq.as_str(),
+            slot,
+            bq.as_str(),
+        ]
+        .concat()
+    };
+    let good = tail(&["{", ESCAPED_BINDING, "}"].concat());
+    let bad = tail(&["{", "e}"].concat());
+
+    let n_bad = sq.matches(bad.as_str()).count();
+    assert_eq!(
+        n_bad, 0,
+        "TEETH (12r-d E3, ADR-0170 D5): `apply_quest_trigger` still interpolates the \
+         RAW `Err` into the `quest_defs_load_error` line ({n_bad} occurrence(s) of the \
+         squashed sequence {bad:?}). That `e` is `cached_quest_defs()`'s error — a RON \
+         PARSE error, the shape most likely in this whole crate to contain a double \
+         quote, because a parser reporting an unexpected token quotes it. One such \
+         character makes the emitted line unparseable and the log ingest drops it, so \
+         the ONE diagnostic that says why every quest in the game just stopped \
+         advancing is the one that disappears."
+    );
+
+    let n_good = sq.matches(good.as_str()).count();
+    assert_eq!(
+        n_good, 1,
+        "TEETH (12r-d E3, ADR-0170 D5): `apply_quest_trigger` must emit the \
+         `quest_defs_load_error` line with the ESCAPED binding interpolated into the \
+         reason slot — the contiguous squashed sequence {good:?} must appear EXACTLY \
+         once, found {n_good}. Zero means the escape never reached this format string \
+         (RED at HEAD); two means the log site was duplicated. The needle is CONTIGUOUS \
+         on purpose: a split 'the body mentions `escaped` somewhere' check is satisfied \
+         by escaping into an unrelated line, which is no fix at all. Write \
+         `let {ESCAPED_BINDING} = crate::guards::json_escape(&e);` immediately before \
+         the log and interpolate `{{{ESCAPED_BINDING}}}` — the npc.rs:184-190 shape T4 \
+         already established in this same function."
+    );
+
+    // Whole-function raw-leak sweep (the T4-h class): no `{e}` anywhere.
+    let raw_interp = ["{", "e}"].concat();
+    let n_raw = sq.matches(raw_interp.as_str()).count();
+    assert_eq!(
+        n_raw, 0,
+        "TEETH (12r-d E3, whole-function raw-leak sweep): `apply_quest_trigger` \
+         contains {n_raw} raw `{{e}}` interpolation(s) and must contain ZERO. The two \
+         needles above only inspect the ONE sanctioned line; this closes the T4-h class \
+         — a second statement anywhere else in the body that interpolates the \
+         un-escaped `Err` (a debug line, a duplicated log) while the sanctioned line is \
+         perfectly correct. HEAD has exactly 1, at npc.rs:164, so the target is 0 and \
+         the arithmetic is exact."
+    );
+
+    let escape_call = ["json", "_escape("].concat();
+    let n_escape = sq.matches(escape_call.as_str()).count();
+    assert!(
+        n_escape >= 2,
+        "TEETH (12r-d E3): `apply_quest_trigger` must make at least TWO `json_escape(` \
+         calls but makes {n_escape}. THE ARITHMETIC: T4's `quest_id` escape at \
+         npc.rs:184 (which must SURVIVE this slice) plus this slice's `reason` escape. \
+         Asserting the PAIR means a fix that merely MOVES T4's existing call instead of \
+         adding one cannot pass, and a later slice that deletes T4's escape trips this \
+         test as well as T4's own."
+    );
+
+    let any_binding = ["let", ESCAPED_BINDING, "="].concat();
+    let qualified = ["let", ESCAPED_BINDING, "=crate::guards::json", "_escape("].concat();
+    let bare = ["let", ESCAPED_BINDING, "=json", "_escape("].concat();
+    let n_all = sq.matches(any_binding.as_str()).count();
+    let n_esc = sq.matches(qualified.as_str()).count() + sq.matches(bare.as_str()).count();
+
+    assert!(
+        n_esc >= 1,
+        "TEETH (12r-d E3): the escaped reason must be bound to the EXACT identifier \
+         `{ESCAPED_BINDING}` via `let {ESCAPED_BINDING} = crate::guards::json_escape(&e);` \
+         (the bare `json_escape(&e)` spelling is accepted when the helper is imported) — \
+         found none. The exact name is required so this test can tie the value that was \
+         escaped to the identifier the format string interpolates; a differently-named, \
+         unread escape binding is the red-team's proven cheat (T4-d, this file)."
+    );
+    assert_eq!(
+        n_all, n_esc,
+        "TEETH (12r-d E3, shadow-rebind cheat kill): `{ESCAPED_BINDING}` is `let`-bound \
+         {n_all} time(s) but only {n_esc} of those bindings come from `json_escape`. \
+         KILLS `let {ESCAPED_BINDING} = crate::guards::json_escape(&e); \
+         let {ESCAPED_BINDING} = e.clone();` — the first statement satisfies the \
+         provenance check, the second rebinds the same name to the RAW value before the \
+         log reads it, and the format string still interpolates the identifier. The \
+         compiler is silent: the binding IS read, just not the one that was escaped. \
+         Same cheat, same reasoning, as T4-d at npc_tests.rs:1205-1222."
+    );
+}

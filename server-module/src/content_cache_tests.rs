@@ -1285,12 +1285,15 @@ fn sync_content_reachable_modules_never_call_cached_type_chart() {
 /// (including `taming.rs`), and folding a red arm into it would make an unrelated
 /// slice's gate go red for this slice's reason.
 ///
-/// SCOPE IS DELIBERATELY `battle.rs` ONLY. `pvp.rs:280/:392`, `taming.rs:205`
-/// (`load_abilities`) and `pvp.rs:383`, `taming.rs:191` (`type_chart_from_rows`)
-/// are OUTSIDE 11r-g's declared touch set and are recorded as ADR-0170 residual
-/// 2. Scoping the gate to `battle.rs` bodies is what stops it from forcing an
-/// out-of-boundary edit — do NOT widen it here; widen it in the slice that
-/// legitimately swaps those call sites.
+/// SCOPE IS DELIBERATELY `battle.rs` ONLY, and it STAYS that way. `pvp.rs` and
+/// `taming.rs` were outside 11r-g's declared touch set (ADR-0170 residual 2);
+/// slice **12r-d is the slice that legitimately swaps those call sites**, and it
+/// widens the coverage in a SIBLING pair of tests below
+/// ([`pvp_and_taming_hot_paths_use_the_cached_accessors`] and
+/// [`pvp_and_taming_no_longer_call_the_uncached_loaders`]) rather than by
+/// stretching this one. Same reason this test is itself a sibling of the M14.5e
+/// gate: one test per slice keeps a failing build pointing at the slice that
+/// caused it.
 ///
 /// WHAT EACH NEEDLE KILLS.
 ///   * Positive `content_cache::cached_abilities` / `content_cache::cached_type_chart`
@@ -1398,10 +1401,13 @@ fn battle_reducers_use_cached_abilities_and_cached_type_chart() {
 /// comments, so any comment-stripping view would report zero and the test would
 /// be vacuous in both directions.
 ///
-/// Scoped to `battle.rs`. `taming.rs:203` carries the one remaining PARK comment
-/// that is still TRUE (its `load_abilities` call site is outside this slice's
-/// touch set — ADR-0170 residual 2) and must NOT be deleted here; a whole-crate
-/// scan would force exactly that out-of-boundary edit.
+/// Scoped to `battle.rs`, and it stays scoped: 11r-g left `taming.rs`'s PARK
+/// comment standing because that call site was outside its touch set (ADR-0170
+/// residual 2), and a whole-crate scan would have forced an out-of-boundary
+/// edit. Slice 12r-d swaps the `taming.rs` / `pvp.rs` sites, which makes that
+/// comment false too; its removal is gated separately by
+/// `taming_tests.rs::taming_rs_carries_no_remaining_adr_0089_park_marker`, so
+/// each slice owns the marker it actually invalidated.
 ///
 /// The needle is assembled from fragments so this test file never spells the
 /// marker contiguously — otherwise any eval that concatenates every source file
@@ -1419,8 +1425,231 @@ fn battle_rs_carries_no_remaining_adr_0089_park_markers() {
          registry is NOT cached. After C-8's swap that statement is FALSE, and a \
          false comment about a caching decision is precisely what persuades a future \
          reader to 'restore' the uncached call. Scoped to `battle.rs` on purpose: \
-         `taming.rs:203` carries the one PARK comment that is still true (its call \
-         site is outside this slice's touch set, ADR-0170 residual 2) and must be left \
-         alone. Scanned on RAW source because the markers live in comments."
+         `taming.rs`'s own PARK comment is gated by 12r-d in `taming_tests.rs`, so \
+         each slice owns the marker it invalidated. Scanned on RAW source because \
+         the markers live in comments."
     );
+}
+
+// ===========================================================================
+// 12r-d (E2) — the LAST two uncached call sites: `pvp.rs` and `taming.rs`
+//
+// This is the widening 11r-g's `battle_reducers_use_cached_abilities_and_cached_type_chart`
+// doc comment explicitly deferred to "the slice that legitimately swaps those
+// call sites". 11r-g completed `battle.rs` and recorded `pvp.rs` / `taming.rs`
+// as ADR-0170 residual 2 because they were outside its declared touch set; 12r-d
+// closes the residual, so the coverage moves with it.
+//
+// EARS criterion covered:
+//
+//   E2  `pvp.rs` and `taming.rs` SHALL reach the abilities registry and the type
+//       chart through `content_cache::cached_abilities` /
+//       `content_cache::cached_type_chart`, and SHALL contain ZERO calls to the
+//       uncached `load_abilities(` / `type_chart_from_rows(`.
+//
+// RED STATE — both tests are ASSERTION-RED at HEAD:
+//   * the POSITIVE test: `start_pvp_battle` (pvp.rs:280) and
+//     `resolve_pvp_turn_if_ready` (pvp.rs:383/:392) and `attempt_recruit`
+//     (taming.rs:193/:207) contain none of the `content_cache::cached_*` needles;
+//   * the BANNED test: `pvp.rs` makes 2 `load_abilities(` + 1
+//     `type_chart_from_rows(` calls and `taming.rs` makes 1 + 1.
+//
+// WHY TWO TESTS, POSITIVE AND NEGATIVE, WITH DIFFERENT SHAPES. The positive one
+// is per-function and asserts PRESENCE (>= 1), never an exact count: a future
+// slice that legitimately adds a second `cached_abilities()` call inside one of
+// these reducers must not turn this gate red. The negative one is whole-FILE and
+// asserts EXACTLY ZERO, because that is E2's literal wording and because a
+// per-function negative would miss an uncached call relocated into a new private
+// helper in the same file — which re-parses the RON just as often while every
+// per-function needle stays satisfied.
+// ===========================================================================
+
+/// **E2 positive** — the three swapped reducer bodies reach the registries
+/// through the module-qualified cached accessors.
+///
+/// ASSERTION-RED at HEAD on every arm.
+///
+/// THE FUNCTIONS AND WHAT EACH MUST CONTAIN:
+///   * `start_pvp_battle` (pvp.rs, holds the :280 site) — `cached_abilities`.
+///   * `resolve_pvp_turn_if_ready` (pvp.rs, holds :383 AND :392) — BOTH
+///     `cached_abilities` and `cached_type_chart`.
+///   * `attempt_recruit` (taming.rs, holds :193 AND :207) — BOTH.
+///
+/// PRESENCE, NOT COUNTS. `>= 1` on purpose; see the section header.
+///
+/// THE NEEDLES ARE MODULE-QUALIFIED (`content_cache::cached_*`), which kills the
+/// false green where a file-local helper named `load_cached_abilities()`
+/// satisfies a bare `cached_abilities` substring while internally calling the
+/// uncached loader on every invocation. Same reasoning the two gates above record.
+///
+/// COMMENTS **AND** STRING LITERALS ARE BLANKED before any needle is evaluated,
+/// via the same [`blank_rust_strings_local`] this file already uses for
+/// `battle.rs`: a positive needle is otherwise satisfied by a dead
+/// `let _decoy = "content_cache::cached_abilities()";` anywhere in the body while
+/// the reducer still calls the uncached loader (the red-team hole
+/// `movement_tests.rs:45-52` records for this crate).
+/// [`assert_no_scan_landmines`] fails LOUDLY on the two constructs the blanker's
+/// minimal lexer cannot see, so a silently misaligned scan can never read as a
+/// pass — verified at HEAD: neither `pvp.rs` nor `taming.rs` contains a raw-string
+/// opener or a char-literal double quote.
+#[test]
+fn pvp_and_taming_hot_paths_use_the_cached_accessors() {
+    let pvp_raw = include_str!("pvp.rs");
+    let taming_raw = include_str!("taming.rs");
+    assert_no_scan_landmines("pvp.rs", pvp_raw);
+    assert_no_scan_landmines("taming.rs", taming_raw);
+
+    let pvp = blank_rust_strings_local(&strip_rust_comments_local(pvp_raw));
+    let taming = blank_rust_strings_local(&strip_rust_comments_local(taming_raw));
+
+    let cached_abilities_needle = ["content_cache::cached", "_abilities"].concat();
+    let cached_chart_needle = ["content_cache::cached_type", "_chart"].concat();
+
+    // (file label, stripped source, fn-name parts, needs_abilities, needs_chart)
+    let arms = [
+        (
+            "pvp.rs",
+            pvp.as_str(),
+            ["start_pvp", "_battle"],
+            true,
+            false,
+        ),
+        (
+            "pvp.rs",
+            pvp.as_str(),
+            ["resolve_pvp_turn", "_if_ready"],
+            true,
+            true,
+        ),
+        (
+            "taming.rs",
+            taming.as_str(),
+            ["attempt", "_recruit"],
+            true,
+            true,
+        ),
+    ];
+
+    for (file, src, name_parts, needs_abilities, needs_chart) in arms {
+        let fn_name = name_parts.concat();
+        let body = extract_fn_body_local(src, &fn_name)
+            .unwrap_or_else(|| panic!("12r-d E2: `{fn_name}` not found in {file}"));
+
+        if needs_abilities {
+            assert!(
+                body.contains(cached_abilities_needle.as_str()),
+                "TEETH (12r-d E2, ADR-0170 D2 residual 2): `{fn_name}` in {file} must \
+                 reach the abilities registry through `content_cache::cached_abilities`. \
+                 RED at HEAD: it calls the uncached loader, which re-parses the whole \
+                 abilities RON on every PvP battle start / turn resolution / recruit \
+                 attempt — the last places in the crate that still pay that cost after \
+                 11r-g fixed `battle.rs`. The needle is module-QUALIFIED so a file-local \
+                 `load_cached_abilities()` shim cannot satisfy it while still re-parsing."
+            );
+        }
+        if needs_chart {
+            assert!(
+                body.contains(cached_chart_needle.as_str()),
+                "TEETH (12r-d E2, ADR-0170 D1 residual 2): `{fn_name}` in {file} must \
+                 reach the type chart through the version-keyed \
+                 `content_cache::cached_type_chart`. RED at HEAD: it rebuilds the chart \
+                 from a FULL `type_relation_row` scan on every call — the expensive half \
+                 of the per-action cost, and the half whose version key is the only thing \
+                 keeping the chart fresh across a `sync_content` reseed."
+            );
+        }
+    }
+}
+
+/// **E2 negative** — neither `pvp.rs` nor `taming.rs` contains ANY call to the
+/// uncached loaders. Whole-file, exactly zero.
+///
+/// ASSERTION-RED at HEAD, and the arithmetic is exact: `pvp.rs` has two
+/// `load_abilities(` (:280, :392) and one `type_chart_from_rows(` (:383);
+/// `taming.rs` has one of each (:207, :193). Five calls must become zero.
+///
+/// WHY WHOLE-FILE RATHER THAN PER-FUNCTION. The positive gate above proves the
+/// cached accessor is reached from each reducer; only a whole-file zero proves
+/// the uncached one is reached from NOWHERE. The gap between the two is the
+/// belt-and-braces shell that keeps the old call alive — most plausibly by
+/// relocating it into a new private helper in the same file, where every
+/// per-function needle stays satisfied and the RON is still re-parsed on every
+/// battle action.
+///
+/// THE NEEDLES CARRY THE OPENING PAREN so that a `use game_core::{.., load_abilities}`
+/// import line is not counted as a call. That is not a loophole: an import left
+/// behind after the last call site is removed is an `unused_imports` warning, and
+/// this crate builds with warnings denied — the compiler closes that half.
+///
+/// COMMENTS AND STRING LITERALS ARE BLANKED FIRST, in that order. Comment
+/// stripping is load-bearing in BOTH directions here: `taming.rs:205`'s PARK
+/// comment names `load_abilities()` today (it would false-RED an otherwise correct
+/// swap), and the swap's own replacement comment will name the cached accessor.
+/// String blanking stops an error message that happens to mention the old
+/// accessor from false-REDding a correct implementation — a fence with no defect
+/// behind it is worse than none.
+#[test]
+fn pvp_and_taming_no_longer_call_the_uncached_loaders() {
+    let files = [
+        ("pvp.rs", include_str!("pvp.rs")),
+        ("taming.rs", include_str!("taming.rs")),
+    ];
+    let banned_abilities = ["load", "_abilities("].concat();
+    let banned_chart = ["type_chart_from", "_rows("].concat();
+
+    for (name, raw) in files {
+        assert_no_scan_landmines(name, raw);
+        let stripped = blank_rust_strings_local(&strip_rust_comments_local(raw));
+
+        // Vacuity guards: a truncated file or a misaligned stripping pipeline must
+        // never read as "zero calls". The marker is chosen to be UNAFFECTED by this
+        // slice — both files update the `battle` table, and neither line moves —
+        // because a marker the swap itself deletes would false-RED a correct fix.
+        assert!(
+            stripped.len() > 2000,
+            "vacuity guard (12r-d E2): the stripped view of `{name}` is only {} bytes — \
+             the file was truncated, emptied or moved, and both ZERO assertions below \
+             would pass against a hollow haystack",
+            stripped.len()
+        );
+        let live_marker = ["ctx.db.", "battle()"].concat();
+        assert!(
+            stripped.contains(live_marker.as_str()),
+            "vacuity guard (12r-d E2): the stripped view of `{name}` no longer contains \
+             {live_marker:?}, which both files use and this slice does not touch. Its \
+             absence means the comment/string stripping pipeline misaligned and blanked \
+             LIVE code — and a hollowed-out haystack satisfies every ZERO assertion below \
+             for entirely the wrong reason."
+        );
+
+        let n_abilities = stripped.matches(banned_abilities.as_str()).count();
+        assert_eq!(
+            n_abilities, 0,
+            "TEETH (12r-d E2, ADR-0170 D2 residual 2): `{name}` still makes \
+             {n_abilities} call(s) to the uncached abilities loader and must make ZERO. \
+             HEAD has 2 in pvp.rs (:280 `start_pvp_battle`, :392 \
+             `resolve_pvp_turn_if_ready`) and 1 in taming.rs (:207 `attempt_recruit`). \
+             Each one re-parses the compile-time-embedded abilities RON from scratch, \
+             per battle start / per resolved turn / per failed recruit. Replace with \
+             `crate::content_cache::cached_abilities()?` — the same shape battle.rs uses \
+             at :245/:424/:588/:610. Whole-FILE and exactly zero on purpose: the \
+             per-function positive gate cannot see an uncached call relocated into a new \
+             private helper in this same file."
+        );
+
+        let n_chart = stripped.matches(banned_chart.as_str()).count();
+        assert_eq!(
+            n_chart, 0,
+            "TEETH (12r-d E2, ADR-0170 D1 residual 2): `{name}` still makes {n_chart} \
+             direct call(s) to the uncached chart builder and must make ZERO. HEAD has 1 \
+             in pvp.rs (:383) and 1 in taming.rs (:193). Each is a FULL \
+             `type_relation_row` table scan plus a chart rebuild, on every PvP turn and \
+             every failed recruit. Replace with \
+             `crate::content_cache::cached_type_chart(ctx)?` — the rebuild still happens, \
+             but only inside the cache's rebuild closure and only on a content-version \
+             miss. (`marshal.rs` KEEPS the function and its own unit tests in \
+             `marshal_tests.rs`; only these call sites move, which is why this gate names \
+             two files rather than scanning the crate.)"
+        );
+    }
 }

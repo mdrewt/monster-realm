@@ -17,7 +17,9 @@ import { BURST_EPSILON_MS } from '../shared/interpConfig';
 import { buildBattleViewModel } from '../ui/battleModel';
 // uxd2 (ADR-0161 D1): the boundary converter, used by the npc-interaction integration
 // tooth at the foot of this file (adapter path: upsertNpc(npcRowToStore(row))).
-import { npcRowToStore } from './rowConvert';
+// 12r-d [E2]: healLocationRowToStore joins it for the heal-cost currency adapter tooth
+// (adapter path: upsertHealLocation(healLocationRowToStore(row))) — same shape, same file.
+import { healLocationRowToStore, npcRowToStore } from './rowConvert';
 import {
   AuthoritativeStore,
   type EssenceByAffinity,
@@ -25,6 +27,11 @@ import {
   // below is RED at authoring time on a missing export (see the describe block's own
   // RED-reason comment).
   ownPerspective,
+  // 12r-d [E2]: the REAL heal-location row type, imported under an alias because this file
+  // also declares a LOCAL `StoreHealLocationRow` (line ~2132) that the M12d block's
+  // type-erasure casts let drift. The 12r-d block at the foot of this file builds its
+  // fixtures against THIS one, so the compiler is actually looking at the shipped shape.
+  type StoreHealLocationRow as RealStoreHealLocationRow,
   type StoreBattle,
   type StoreBattleMonster,
   type StoreBattleSide,
@@ -2135,6 +2142,12 @@ interface StoreHealLocationRow {
   costItemId?: number;
   costQty: number;
   cooldownMs: number;
+  // 12r-d [E2]: the heal cost's CURRENCY channel — a REQUIRED u64 carried as bigint
+  // (store.ts:242-250). Kept in sync with the real type by hand; the M12d block below
+  // reaches the store through `as unknown as Record<…>` casts, so the compiler cannot
+  // enforce that sync — which is exactly why the 12r-d block at the foot of this file
+  // builds its fixtures against the IMPORTED `RealStoreHealLocationRow` instead.
+  costCurrency: bigint;
 }
 
 interface StoreNpcRow {
@@ -2174,6 +2187,9 @@ function healLocationRow(locationId: number, zoneId = 0): StoreHealLocationRow {
     costItemId: undefined,
     costQty: 0,
     cooldownMs: 30000,
+    // 12r-d [E2]: a free pad — 0n, never `0`. Every M12d case above keeps its original
+    // assertions; this key only keeps the fixture well-formed under the new required field.
+    costCurrency: 0n,
   };
 }
 
@@ -4148,5 +4164,122 @@ describe('AuthoritativeStore 11r-b: ownPerspective ∘ buildBattleViewModel — 
     const vmAliceWon = buildBattleViewModel(ownPerspective(aliceWon, 'bob'), skillMap, speciesMap);
     expect(vmAliceWon).not.toBeNull();
     expect(vmAliceWon!.outcome).toBe('SideBWins'); // side B's OWN perspective: "I lost"
+  });
+});
+
+// ===========================================================================
+// 12r-d [E2] — StoreHealLocationRow carries costCurrency as a bigint, end to end.
+// APPENDED BLOCK — nothing above this line is weakened. The M12d local interface
+// (~line 2132) and its `healLocationRow` factory gained the new required key so they
+// still describe a well-formed row; not one of their assertions changed.
+//
+// EARS E2: WHEN a heal-location row is written into the store and read back, the store
+// SHALL return its `costCurrency` as the SAME bigint value it was given — no coercion,
+// no truncation, no cross-row bleed.
+//
+// RED STATE, DECLARED HONESTLY (this is the interesting part of this block):
+//   * ST-HL-CC-01 is a CONTRACT PIN that is GREEN AT HEAD BY DESIGN at runtime.
+//     `upsertHealLocation` is a bare `#healLocations.set(row.locationId, row)` — it stores
+//     the caller's object BY REFERENCE, so it carries any field the caller put on it. Its
+//     RED arm at HEAD is TYPE-LEVEL ONLY: the fixture is annotated with the IMPORTED
+//     `RealStoreHealLocationRow`, which has no `costCurrency` today, so the literal is an
+//     excess property and `got.costCurrency` is a TS2339. That arm does NOT surface in
+//     `npm run typecheck` either — client/tsconfig.json line 15 EXCLUDES `**/*.test.ts`
+//     (verified in this worktree) — so it is an editor/review signal, not a CI gate.
+//     Its real job is to BITE a future `upsertHealLocation` that normalises the row by
+//     rebuilding it field-by-field (the shape every converter in this repo uses) and
+//     silently drops the new column. Same posture, same wording, as the uxd2 npc
+//     "REGRESSION GUARD (green on master)" cases above.
+//   * ST-HL-CC-02 / ST-HL-CC-03 are the RED ones: they drive the row through the REAL
+//     boundary converter first (`healLocationRowToStore`), which at HEAD maps seven fields
+//     and drops costCurrency — so the store hands back `undefined`.
+// ===========================================================================
+
+/** 2^53 + 1 — the smallest integer a JS `number` cannot hold. Any Number() hop in the
+ *  ingest path collapses it to 9007199254740992. */
+const HEAL_COST_2P53_PLUS_1 = 9007199254740993n;
+
+describe('AuthoritativeStore 12r-d [E2]: heal-location costCurrency survives the store round trip', () => {
+  it('ST-HL-CC-01 CONTRACT PIN (green at HEAD by design — see block header): upsertHealLocation → healLocations() returns the same bigint', () => {
+    // WRONG IMPL KILLED: a future upsertHealLocation that rebuilds the row field-by-field
+    // (`this.#healLocations.set(row.locationId, { locationId: row.locationId, … })`) and
+    // forgets costCurrency — the heal overlay would go back to claiming a paid pad is free
+    // with no error anywhere. Built against the IMPORTED store type (no `as unknown as`
+    // erasure) so the shape under test is the SHIPPED one, not a local mirror.
+    const row: RealStoreHealLocationRow = {
+      locationId: 9,
+      zoneId: 2,
+      tileX: 3,
+      tileY: 4,
+      costItemId: undefined,
+      costQty: 0,
+      cooldownMs: 30_000,
+      costCurrency: HEAL_COST_2P53_PLUS_1,
+    };
+    const s = new AuthoritativeStore();
+    s.upsertHealLocation(row);
+    const got = s.healLocations().find((l) => l.locationId === 9);
+    expect(got).toBeDefined();
+    expect(typeof got!.costCurrency).toBe('bigint');
+    expect(got!.costCurrency).toBe(9007199254740993n);
+    expect(got!.costCurrency).not.toBe(9007199254740992n); // the Number()-hop value
+  });
+
+  it('★ ST-HL-CC-02 BITES (RED at HEAD): the ADAPTER path SDK row → healLocationRowToStore → store preserves 2^53+1 exactly', () => {
+    // THE integration tooth. connection.ts:380-383 is literally
+    // `store.upsertHealLocation(healLocationRowToStore(row))`, so this composition IS the
+    // production ingest path for heal content. WRONG IMPL KILLED (the HEAD one): a converter
+    // that never mentions costCurrency — the store then hands `undefined` to healModel and
+    // every cost readout downstream is a guess. ALSO KILLED: a `Number()` hop anywhere in
+    // that path, which returns 9007199254740992 (asserted explicitly so the failure names
+    // the bug rather than just "expected X received Y").
+    const sdkRow = {
+      locationId: 9,
+      zoneId: 2,
+      tileX: 3,
+      tileY: 4,
+      costItemId: undefined as number | undefined,
+      costQty: 0,
+      cooldownMs: 30_000,
+      costCurrency: HEAL_COST_2P53_PLUS_1,
+    };
+    const s = new AuthoritativeStore();
+    s.upsertHealLocation(healLocationRowToStore(sdkRow));
+    const got = s.healLocations().find((l) => l.locationId === 9);
+    expect(got).toBeDefined();
+    expect(typeof got!.costCurrency).toBe('bigint');
+    expect(got!.costCurrency).toBe(9007199254740993n);
+    expect(got!.costCurrency).not.toBe(9007199254740992n);
+  });
+
+  it('★ ST-HL-CC-03 BITES (RED at HEAD): three pads keep their OWN costCurrency through the adapter (no cross-row bleed)', () => {
+    // WRONG IMPL KILLED (1): the dropped field again (all three read `undefined`).
+    // WRONG IMPL KILLED (2): a converter/store that hoists one row's currency out of the
+    // per-row path and reuses the first (or last) value for every pad — a free pad next to
+    // a 500-gold pad is exactly the content shape the world seeds, and a bleed there is
+    // invisible in any single-row spot check. The middle pad is 0n so a "last write wins"
+    // bleed and a "first write wins" bleed produce DIFFERENT wrong answers, both caught.
+    const pads: ReadonlyArray<readonly [number, bigint]> = [
+      [1, 10n],
+      [2, 0n],
+      [3, 500n],
+    ];
+    const s = new AuthoritativeStore();
+    for (const [locationId, costCurrency] of pads) {
+      const sdkRow = {
+        locationId,
+        zoneId: 0,
+        tileX: 1,
+        tileY: 1,
+        costItemId: undefined as number | undefined,
+        costQty: 0,
+        cooldownMs: 30_000,
+        costCurrency,
+      };
+      s.upsertHealLocation(healLocationRowToStore(sdkRow));
+    }
+    const byId = s.healLocations().sort((a, b) => a.locationId - b.locationId);
+    expect(byId.map((l) => l.locationId)).toEqual([1, 2, 3]);
+    expect(byId.map((l) => l.costCurrency)).toEqual([10n, 0n, 500n]);
   });
 });

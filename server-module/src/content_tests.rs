@@ -2084,3 +2084,569 @@ fn uxd2_content_version_is_at_least_17() {
          DB and neither the column nor the new NPC is ever seeded (ADR-0054)."
     );
 }
+
+// ===========================================================================
+// 12r-d — E1 (`heal_location_row.cost_currency`, server side) and E3 (the two
+// hand-built JSON log sites inside `sync_npc_entities_from`).
+//
+// EARS criteria covered by this section:
+//
+//   E1  `HealLocationRow` SHALL carry a `cost_currency: u64` column APPENDED
+//       after `cooldown_ms` and carrying an explicit, TYPED `#[default(0u64)]`;
+//       `seed_heal_locations_from` SHALL map it from `def.cost_currency`; and
+//       `evals/baselines/table-schemas.json` SHALL baseline it as `u64`.
+//   E3  Every hand-built JSON log line in `content.rs` that interpolates
+//       content-authored text SHALL interpolate a `crate::guards::json_escape`d
+//       binding instead of the raw value (`npc_sync_remove`, `npc_sync_repair`).
+//
+// RED STATE — all four tests are ASSERTION-RED at HEAD:
+//   * A1 — `HealLocationRow` (schema.rs:546-556) ends at `cooldown_ms: i64`.
+//     There is no `cost_currency` field, so the field needle simply misses.
+//   * A2 — the `HealLocationRow { .. }` literal (content.rs:724-732) has no
+//     `cost_currency:` line, so the anchored adjacency needle misses.
+//   * A3 — the `heal_location_row` block of `table-schemas.json` (line 325-336)
+//     ends at `"cooldown_ms": "i64"`.
+//   * A4 — content.rs:649 interpolates a raw `{npc_id}`, content.rs:670 feeds
+//     `npc.npc_id` into a positional `{}`, and `sync_npc_entities_from` makes
+//     ZERO `json_escape` calls.
+//
+// SCAN SUBSTRATE RULES honoured throughout (violating them breaks OTHER
+// slices' gates, not this one): every needle naming a production marker is
+// assembled from fragments — whole-tree eval parsers concatenate the
+// `*_tests.rs` files into one scan blob (the EG2 poisoning precedent), so a
+// contiguous copy of a marker in the test that forbids it poisons them — and no
+// double quote is ever spelled as a CHAR literal (guards_tests G-5a).
+// ===========================================================================
+
+/// The production `schema.rs` source — 12r-d A1.
+const D12R_SCHEMA_RS: &str = include_str!("schema.rs");
+
+/// The eval schema baseline — 12r-d A3.
+const D12R_TABLE_SCHEMAS_JSON: &str = include_str!("../../evals/baselines/table-schemas.json");
+
+/// The ASCII double quote, spelled as a NUMBER.
+///
+/// This file must contain no bare delimiter CHARACTER literal: the repo's
+/// source-scan substrate has no char-literal lexer, and a quote between
+/// apostrophes inverts string/code polarity for every stripper that reads this
+/// file downstream (guards_tests G-5a records the measured blast radius).
+const D12R_DQUOTE: u8 = 0x22;
+
+/// `src` with ALL whitespace removed, so a rustfmt line split can never turn a
+/// correct implementation red.
+fn d12r_squash(src: &str) -> String {
+    src.split_whitespace().collect()
+}
+
+/// True when the quote byte at `idx` DELIMITS a string literal rather than
+/// being an escaped `\"` inside one: a delimiter is preceded by an EVEN number
+/// of consecutive backslashes.
+fn d12r_quote_delimits(bytes: &[u8], idx: usize) -> bool {
+    let mut n = 0usize;
+    let mut i = idx;
+    while i > 0 && bytes[i - 1] == b'\\' {
+        n += 1;
+        i -= 1;
+    }
+    n % 2 == 0
+}
+
+/// The interior (delimiters excluded) of the double-quoted string literal that
+/// CONTAINS byte offset `at`.
+///
+/// The hand-built JSON log lines in this crate spell their structural quotes as
+/// `\"` inside one literal, so a naive "nearest quote" scan would slice the
+/// wrong span; [`d12r_quote_delimits`] is what distinguishes the two.
+fn d12r_format_string_at(src: &str, at: usize) -> Option<&str> {
+    let bytes = src.as_bytes();
+    let mut i = at;
+    let open = loop {
+        if bytes[i] == D12R_DQUOTE && d12r_quote_delimits(bytes, i) {
+            break i;
+        }
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
+    };
+    let mut j = at;
+    while j < bytes.len() {
+        if bytes[j] == D12R_DQUOTE && d12r_quote_delimits(bytes, j) {
+            return Some(&src[open + 1..j]);
+        }
+        j += 1;
+    }
+    None
+}
+
+/// Byte range of the `log::<level>!( .. )` invocation that CONTAINS `at`.
+///
+/// Walks parens from the macro's `(`, JUMPING OVER string literals so a paren
+/// inside a log message cannot unbalance the walk. Returns `(start, end)` with
+/// `end` just past the closing `)`.
+fn d12r_log_call_range(src: &str, at: usize) -> Option<(usize, usize)> {
+    let marker = ["log", "::"].concat();
+    let start = src[..at].rfind(marker.as_str())?;
+    let bytes = src.as_bytes();
+    let open = start + src[start..].find('(')?;
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < bytes.len() {
+        if bytes[i] == D12R_DQUOTE && d12r_quote_delimits(bytes, i) {
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == D12R_DQUOTE && d12r_quote_delimits(bytes, i) {
+                    break;
+                }
+                i += 1;
+            }
+        } else if bytes[i] == b'(' {
+            depth += 1;
+        } else if bytes[i] == b')' {
+            depth -= 1;
+            if depth == 0 {
+                return Some((start, i + 1));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The interior of the `{ .. }` block that OPENS at or after the first
+/// occurrence of `head` in `src`, braces excluded.
+///
+/// Used for a `struct` body (A1) and for a JSON object (A3) alike; both are
+/// brace-balanced with no brace inside any string, which is what makes a
+/// depth-count sufficient here.
+fn d12r_braced_block<'a>(src: &'a str, head: &str) -> Option<&'a str> {
+    let start = src.find(head)?;
+    let open = start + src[start..].find('{')?;
+    let bytes = src.as_bytes();
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&src[open + 1..i]);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// **A1** (12r-d E1) — `HealLocationRow` gains `cost_currency: u64`, APPENDED
+/// after `cooldown_ms`, carrying a TYPED `#[default(0u64)]`.
+///
+/// ASSERTION-RED at HEAD: the struct (schema.rs:546-556) ends at
+/// `cooldown_ms: i64` and the field needle misses outright.
+///
+/// WHAT EACH ASSERTION KILLS.
+///   * **Field present, typed `u64`.** Kills the whole omission, and kills a
+///     narrower `u32`/`i64` spelling — `game_core::HealLocationDef.cost_currency`
+///     is `u64` and `player_wallet` balances are `u64`, so anything else either
+///     truncates a price or forces a lossy cast at the seed site.
+///   * **Strictly AFTER `cooldown_ms`.** SpacetimeDB's automatic migration only
+///     accepts a TAIL append (ADR-0173 D5): a column inserted in the middle
+///     renumbers every following column and the publish is rejected — the exact
+///     failure the `#[default(..)]` discipline exists to avoid.
+///   * **`#[default(0u64)]` IMMEDIATELY before the field.** Contiguity is the
+///     point: an attribute that exists somewhere in the struct but decorates a
+///     DIFFERENT field leaves the new column defaultless, and an automatic
+///     migration that must invent values for existing rows without a default is
+///     rejected outright.
+///   * **The UNTYPED `#[default(0)]` is explicitly banned.** This is the
+///     measured one, not a theoretical one: an untyped `0` in `#[default(..)]`
+///     BSATN-encodes as FOUR bytes, and the publish fails with "data too short"
+///     for an 8-byte column (schema.rs:291-293 records the same finding for the
+///     two `i64` columns, which is why they carry `0i64`). A test that accepted
+///     a bare `0` here would let a green CI ship a module that cannot publish.
+#[test]
+fn heal_location_row_cost_currency_is_appended_with_a_default() {
+    let stripped = m13_5c_strip_rust_comments(D12R_SCHEMA_RS);
+    let head = ["struct ", "HealLocation", "Row"].concat();
+    let body = d12r_braced_block(&stripped, head.as_str()).unwrap_or_else(|| {
+        panic!(
+            "12r-d A1 (E1): `{head}` must be declared in server-module/src/schema.rs — \
+             the field assertions below would be vacuous without its body"
+        )
+    });
+    let sq = d12r_squash(body);
+
+    let field = ["pubcost", "_currency:u64"].concat();
+    let prev = ["pubcooldown", "_ms:i64"].concat();
+    let typed_attr = ["#[def", "ault(0u64)]"].concat();
+    let untyped_attr = ["#[def", "ault(0)]"].concat();
+    let typed_attr_field = [typed_attr.as_str(), field.as_str()].concat();
+    let untyped_attr_field = [untyped_attr.as_str(), field.as_str()].concat();
+
+    assert!(
+        sq.contains(prev.as_str()),
+        "vacuity guard (12r-d A1, E1): `HealLocationRow` no longer declares \
+         `pub cooldown_ms: i64` — the anchor every ordering claim below is made \
+         against is gone, so those claims would prove nothing. Squashed struct \
+         body was: {sq:?}"
+    );
+    assert!(
+        sq.contains(field.as_str()),
+        "TEETH (12r-d A1, E1): `HealLocationRow` in server-module/src/schema.rs must \
+         declare `pub cost_currency: u64`. RED at HEAD — the struct ends at \
+         `cooldown_ms: i64`. `game_core::HealLocationDef.cost_currency` is `u64` and \
+         `heal_party` charges out of a `u64` wallet, so a `u32`/`i64` spelling either \
+         truncates a price or forces a lossy cast at the seed site. Squashed struct \
+         body was: {sq:?}"
+    );
+
+    let prev_at = sq.find(prev.as_str()).expect("asserted present above");
+    let field_at = sq.find(field.as_str()).expect("asserted present above");
+    assert!(
+        prev_at < field_at,
+        "TEETH (12r-d A1, E1): `cost_currency` must be APPENDED strictly AFTER \
+         `cooldown_ms` (found cooldown_ms at {prev_at}, cost_currency at {field_at} in \
+         the squashed struct body). SpacetimeDB's automatic migration accepts a TAIL \
+         append only (ADR-0173 D5): a column spliced into the middle renumbers every \
+         following column and the publish is rejected."
+    );
+
+    assert!(
+        !sq.contains(untyped_attr_field.as_str()),
+        "TEETH (12r-d A1, E1 — the measured publish failure): `cost_currency` carries \
+         the UNTYPED `#[default(0)]`. An untyped `0` BSATN-encodes as FOUR bytes and \
+         the publish rejects an 8-byte column with `data too short`; schema.rs:291-293 \
+         records exactly this finding for the two `i64` columns, which is why they \
+         carry `0i64`. Write `#[default(0u64)]`. A test that accepted the bare `0` \
+         would let a green CI ship a module that cannot publish at all."
+    );
+    assert!(
+        sq.contains(typed_attr_field.as_str()),
+        "TEETH (12r-d A1, E1): the TYPED `#[default(0u64)]` attribute must sit \
+         IMMEDIATELY before `pub cost_currency: u64` (needle {typed_attr_field:?} not \
+         found in the squashed struct body). Contiguity is the property: an attribute \
+         that exists somewhere in the struct but decorates a DIFFERENT field leaves \
+         the new column defaultless, and an automatic migration that must invent \
+         values for existing rows without a default is rejected. Squashed struct body \
+         was: {sq:?}"
+    );
+}
+
+/// **A2** (12r-d E1) — the `HealLocationRow` literal in `seed_heal_locations_from`
+/// maps `cost_currency` from THE DEF, anchored to its neighbour field.
+///
+/// ASSERTION-RED at HEAD: the literal (content.rs:724-732) ends at
+/// `cooldown_ms: def.cooldown_ms,`.
+///
+/// WHY THE NEEDLE IS ANCHORED, AND WHY A BARE `def.cost_currency` IS FORBIDDEN.
+/// The obvious needle — `body.contains("def.cost_currency")` — is satisfied by
+/// at least two implementations that seed the column WRONG:
+///   * a `stale_def.cost_currency` (or any other binding whose name merely ENDS
+///     in `def`) read from some other slice's variable, which seeds a price from
+///     the wrong registry entry; and
+///   * a dead-code shape such as `if false { def.cost_currency; }` — or a
+///     `debug_assert` / log line mentioning the field — anywhere in the same
+///     function, with the row literal itself untouched.
+/// Requiring the CONTIGUOUS, whitespace-squashed sequence
+/// `cooldown_ms:def.cooldown_ms,cost_currency:def.cost_currency` pins the field
+/// to the position immediately after its neighbour INSIDE the struct literal,
+/// which neither shape can produce. (`stale_def.cost_currency` cannot appear
+/// there without the `cooldown_ms:def.cooldown_ms,` prefix breaking.)
+///
+/// HONEST LIMIT: this pins ADJACENCY to `cooldown_ms`, not "is the last field" —
+/// a later slice appending a further column after `cost_currency` must stay
+/// green, and it does.
+#[test]
+fn seed_heal_locations_from_maps_cost_currency_from_the_def() {
+    let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
+    let fn_head = ["fn seed_heal_locations", "_from("].concat();
+    let body = m13_5c_fn_body(&stripped, fn_head.as_str());
+    let sq = d12r_squash(body);
+
+    let anchored = [
+        "cooldown_ms:def.cooldown_ms,cost",
+        "_currency:def.cost",
+        "_currency",
+    ]
+    .concat();
+
+    assert!(
+        sq.contains(anchored.as_str()),
+        "TEETH (12r-d A2, E1): `seed_heal_locations_from` must build its \
+         `HealLocationRow` with `cost_currency: def.cost_currency` IMMEDIATELY after \
+         `cooldown_ms: def.cooldown_ms` — the contiguous squashed sequence \
+         {anchored:?} was not found. RED at HEAD (the literal ends at \
+         `cooldown_ms: def.cooldown_ms,`), so every seeded row would keep the column \
+         at its `#[default(0u64)]` and EVERY heal location would be free no matter \
+         what the RON says. The needle is ANCHORED to the neighbour field on purpose: \
+         a bare `.contains(\"def.cost_currency\")` is satisfied by a \
+         `stale_def.cost_currency` read from the wrong registry entry and by a \
+         dead-code `if false {{ def.cost_currency; }}` elsewhere in the same function, \
+         both of which leave the row literal untouched. Squashed fn body was: {sq:?}"
+    );
+}
+
+/// **A3** (12r-d E1) — the eval schema baseline carries the new column, typed.
+///
+/// ASSERTION-RED at HEAD: the `heal_location_row` block of
+/// `evals/baselines/table-schemas.json` (lines 325-336) ends at
+/// `"cooldown_ms": "i64"`.
+///
+/// The block is BRACE-BOUNDED, not read out of a fixed-size byte window: the
+/// `heal_cooldown` table starts one line later, and a window that spilled into
+/// it could satisfy a column claim from the wrong table. (The EA-5 precedent in
+/// `m14_5d_1a_tests.rs` uses a 1 000-byte window; brace-bounding is the same
+/// idea with the ambiguity removed.)
+///
+/// KILLS: a schema edit that lands in `schema.rs` and never reaches the
+/// baseline — `battle-schema-snapshot` compares the baseline BIDIRECTIONALLY
+/// against the parsed source, so the drift surfaces as a CI failure in a
+/// different gate with no pointer back to this slice; and a baseline entry typed
+/// `"u32"`/`"i64"`, which makes the snapshot agree with a schema the module
+/// cannot actually publish.
+#[test]
+fn table_schemas_baseline_carries_heal_cost_currency() {
+    let table = ["\"heal_location", "_row\""].concat();
+    let block = d12r_braced_block(D12R_TABLE_SCHEMAS_JSON, table.as_str()).unwrap_or_else(|| {
+        panic!(
+            "12r-d A3 (E1): evals/baselines/table-schemas.json must contain a \
+             {table} block — the column assertions below would be vacuous without it"
+        )
+    });
+    let sq = d12r_squash(block);
+
+    let neighbour = ["\"cooldown", "_ms\":\"i64\""].concat();
+    assert!(
+        sq.contains(neighbour.as_str()),
+        "vacuity guard (12r-d A3, E1): the `heal_location_row` baseline block no \
+         longer carries {neighbour} — the block was found but is not the one this \
+         test means, so the assertion below would prove nothing. Squashed block was: \
+         {sq:?}"
+    );
+
+    let column = ["\"cost", "_currency\""].concat();
+    let typed_column = [column.as_str(), ":\"u64\""].concat();
+    assert!(
+        sq.contains(column.as_str()),
+        "TEETH (12r-d A3, E1): evals/baselines/table-schemas.json must add a \
+         {column} entry to the `heal_location_row` columns object. RED at HEAD (the \
+         block ends at `\"cooldown_ms\": \"i64\"`). The baseline is one half of a \
+         BIDIRECTIONAL comparison against the parsed schema source — leaving it \
+         behind turns this slice's schema edit into a red `battle-schema-snapshot` \
+         run in an unrelated gate. Squashed block was: {sq:?}"
+    );
+    assert!(
+        sq.contains(typed_column.as_str()),
+        "TEETH (12r-d A3, E1): the `cost_currency` baseline entry must be typed \
+         `\"u64\"` (needle {typed_column:?}). The key is present but the type string \
+         is wrong — a baseline typed `\"u32\"` or `\"i64\"` makes the snapshot agree \
+         with a schema shape the module cannot publish, which is worse than no \
+         baseline at all. Squashed block was: {sq:?}"
+    );
+}
+
+/// One hand-built JSON log site under test (12r-d E3).
+///
+/// A named struct rather than a tuple so the driver's slice parameter stays
+/// under clippy's `type_complexity` threshold and each field says what it pins.
+struct D12rLogSite {
+    /// The `evt` name; located inside its own format string literal.
+    evt: String,
+    /// Extra format-string text that selects THIS site when one `evt` name
+    /// labels several. Empty means "every site carrying this evt".
+    discriminator: String,
+    /// How many sites the row must claim — asserted EXACTLY, so a deleted or
+    /// duplicated log line is caught rather than silently skipped.
+    expected_sites: usize,
+    /// Text that must be ABSENT from the site's whole macro call.
+    raw: String,
+    /// Text that must be PRESENT in the site's FORMAT STRING.
+    capture: String,
+}
+
+/// Assert one region's hand-built JSON log sites interpolate an ESCAPED binding.
+///
+/// `binding` is the identifier the escape must be bound to, and
+/// `min_escape_calls` the number of `json_escape(` calls the region must make.
+///
+/// HONEST LIMITS. (a) A source scan, not execution (ADR-0156 P7): there is no
+/// reducer harness in this crate. (b) It pins the INLINE-CAPTURE form
+/// (`{escaped}`) rather than a positional argument, which is what makes "the
+/// escaped value reaches THIS format string" checkable at all; the npc.rs:184-190
+/// site is the precedent. (c) It cannot see an escaped value interpolated into
+/// the wrong SLOT of the right line — that residue is covered by guards_tests
+/// G-1..G-3 (the helper is worth calling) and by the composed-line framing table
+/// in `battle_tests.rs`.
+fn d12r_assert_escaped_log_sites(
+    label: &str,
+    body: &str,
+    rows: &[D12rLogSite],
+    binding: &str,
+    min_escape_calls: usize,
+) {
+    for row in rows {
+        let evt = &row.evt;
+        let disc = &row.discriminator;
+        let expected = &row.expected_sites;
+        let raw = &row.raw;
+        let capture = &row.capture;
+        let mut seen = 0usize;
+        for (at, _) in body.match_indices(evt.as_str()) {
+            let fmt = d12r_format_string_at(body, at).unwrap_or_else(|| {
+                panic!(
+                    "12r-d E3 ({label}): the event name {evt:?} at byte {at} is not \
+                     inside a string literal — this scan locates a log site by its \
+                     format string, so the line must have been restructured. \
+                     Re-derive the row DELIBERATELY rather than loosening it."
+                )
+            });
+            if !disc.is_empty() && !fmt.contains(disc.as_str()) {
+                continue;
+            }
+            seen += 1;
+
+            let (cs, ce) = d12r_log_call_range(body, at).unwrap_or_else(|| {
+                panic!(
+                    "12r-d E3 ({label}): could not find the enclosing `log::<level>!( .. )` \
+                     invocation for {evt:?}{disc:?} — the site scan needs it to prove the \
+                     raw value is gone from the WHOLE call, not just from the format string"
+                )
+            });
+            let call_sq = d12r_squash(&body[cs..ce]);
+
+            assert!(
+                !call_sq.contains(raw.as_str()),
+                "TEETH (12r-d E3, ADR-0170 D5) {label} / {evt}{disc}: the log call still \
+                 carries the RAW value {raw:?}. A hand-built JSON line interpolating an \
+                 unescaped string emits a MALFORMED line the moment that string contains \
+                 a double quote, a backslash or a control character — and a malformed \
+                 line is silently dropped by the log ingest, so the diagnostic this site \
+                 exists to produce disappears exactly when something has gone wrong. \
+                 Route it through `crate::guards::json_escape` and interpolate the \
+                 binding instead. Squashed call was: {call_sq:?}"
+            );
+            assert!(
+                fmt.contains(capture.as_str()),
+                "TEETH (12r-d E3, ADR-0170 D5) {label} / {evt}{disc}: the format string \
+                 must interpolate {capture:?} — the output of \
+                 `crate::guards::json_escape`, captured INLINE so this scan can prove \
+                 the escaped value reaches THIS line and not some other one. Not found. \
+                 The literal prefix (if any) stays OUTSIDE the capture: only the \
+                 untrusted text is escaped, never the hand-written label. Format string \
+                 was: {fmt:?}"
+            );
+        }
+        assert_eq!(
+            seen, *expected,
+            "TEETH (12r-d E3) {label}: expected exactly {expected} log site(s) matching \
+             event {evt:?} + discriminator {disc:?}, found {seen}. Fewer means a log \
+             line was deleted or renamed rather than escaped (the cheapest way to make \
+             every other assertion in this row vacuous); more means a new site appeared \
+             and its escaping was never considered. Re-derive the count DELIBERATELY."
+        );
+    }
+
+    let sq = d12r_squash(body);
+    let escape_call = ["json", "_escape("].concat();
+    let n_escape = sq.matches(escape_call.as_str()).count();
+    assert!(
+        n_escape >= min_escape_calls,
+        "TEETH (12r-d E3, ADR-0170 D5) {label}: the region must make at least \
+         {min_escape_calls} `json_escape(` call(s) — one per interpolated untrusted \
+         value — but it makes {n_escape}. This is the arithmetic pin that survives a \
+         future slice adding another log line: adding one without an escape trips this \
+         count and forces the number to be re-derived on purpose."
+    );
+
+    let any_binding = ["let", binding, "="].concat();
+    let qualified = ["let", binding, "=crate::guards::json", "_escape("].concat();
+    let bare = ["let", binding, "=json", "_escape("].concat();
+    let n_all = sq.matches(any_binding.as_str()).count();
+    let n_esc = sq.matches(qualified.as_str()).count() + sq.matches(bare.as_str()).count();
+
+    assert!(
+        n_esc >= 1,
+        "TEETH (12r-d E3, ADR-0170 D5) {label}: the escaped value must be bound to the \
+         identifier `{binding}` by a statement of the form \
+         `let {binding} = crate::guards::json_escape(..);` (the bare `json_escape(..)` \
+         spelling is accepted when the helper is imported) — found none. The exact \
+         binding name is REQUIRED so this test can tie the value that was escaped to \
+         the identifier the format string interpolates; a differently-named escape \
+         binding is the red-team's proven cheat (npc_tests.rs:1117-1223): \
+         `let _escaped = json_escape(&e);` (unused, not `let _ =`, so clippy stays \
+         silent) beside a format string that still interpolates the raw value."
+    );
+    assert_eq!(
+        n_all, n_esc,
+        "TEETH (12r-d E3, shadow-rebind cheat kill) {label}: `{binding}` is `let`-bound \
+         {n_all} time(s) but only {n_esc} of those bindings come from `json_escape`. \
+         KILLS the shadow-rebind that defeats every name-based assertion above: \
+         `let {binding} = crate::guards::json_escape(&e); let {binding} = e.clone();` \
+         satisfies 'the escape statement is present' AND 'the format string \
+         interpolates `{binding}`', while the VALUE at the point of use is the raw, \
+         un-escaped one. The compiler does not complain: the binding IS read — just \
+         not the one that was escaped."
+    );
+}
+
+/// **A4** (12r-d E3) — both hand-built JSON log sites in `sync_npc_entities_from`
+/// escape the content-authored `npc_id`.
+///
+/// ASSERTION-RED at HEAD on every layer: content.rs:649 interpolates
+/// `\"npc_id\":\"{npc_id}\"` raw, content.rs:670 feeds `npc.npc_id` into a
+/// positional `{}`, and the function makes ZERO `json_escape` calls.
+///
+/// WHY THESE TWO SITES. `npc_id` is CONTENT-AUTHORED text (it comes out of the
+/// npcs RON registry) crossing into a hand-built JSON log line — structurally
+/// the same trust boundary ADR-0170 D5 closed at `log_reject`, and exactly the
+/// case npc.rs:184-190 already fixed for `quest_id`. One `npc_id` containing a
+/// double quote turns both lines into unparseable JSON, and the log ingest drops
+/// them — so the NPC-sync audit trail vanishes precisely for the malformed
+/// registry entry that made the sync interesting.
+///
+/// The scan runs on COMMENT-STRIPPED but NOT string-blanked source: the needles
+/// under test ARE the format-string contents, so blanking literals would make
+/// every one of them vacuous. Comment stripping is still mandatory — the fix's
+/// own explanatory comment will name both `npc_id` and `json_escape`.
+///
+/// KILLS, per row: an escape computed but not interpolated; the raw value left
+/// in the call beside a new escaped binding (the belt-and-braces shell); a
+/// shadow-rebind of the escaped name; a log line deleted instead of fixed; and —
+/// via the `>= 2` call count — a fix applied to only ONE of the two arms.
+#[test]
+fn sync_npc_entities_from_log_sites_escape_the_npc_id() {
+    let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
+    let fn_head = ["fn sync_npc_entities", "_from("].concat();
+    let body = m13_5c_fn_body(&stripped, fn_head.as_str());
+
+    let binding = ["escaped", "_npc_id"].concat();
+    let capture = ["{", binding.as_str(), "}"].concat();
+
+    let rows = vec![
+        D12rLogSite {
+            evt: ["npc_sync", "_remove"].concat(),
+            discriminator: String::new(),
+            expected_sites: 1,
+            raw: ["{npc", "_id}"].concat(),
+            capture: capture.clone(),
+        },
+        D12rLogSite {
+            evt: ["npc_sync", "_repair"].concat(),
+            discriminator: String::new(),
+            expected_sites: 1,
+            raw: ["npc.npc", "_id"].concat(),
+            capture: capture.clone(),
+        },
+    ];
+
+    d12r_assert_escaped_log_sites(
+        "content.rs / sync_npc_entities_from",
+        body,
+        &rows,
+        binding.as_str(),
+        2,
+    );
+}

@@ -1263,6 +1263,10 @@ describe('M12d converters', () => {
       costItemId: undefined,
       costQty: 0,
       cooldownMs: 30000,
+      // 12r-d: `costCurrency` becomes a REQUIRED bigint on SdkHealLocationRow /
+      // StoreHealLocationRow. Carried here so this pre-existing fixture still describes a
+      // well-formed row after the type change (its assertions are untouched).
+      costCurrency: 0n,
     };
     const store = healLocationRowToStore(sdkRow);
     expect(store.costItemId).toBeUndefined();
@@ -1279,6 +1283,7 @@ describe('M12d converters', () => {
       costItemId: 2,
       costQty: 1,
       cooldownMs: 60000,
+      costCurrency: 0n, // 12r-d: required field, carried so the fixture stays well-formed.
     };
     const store = healLocationRowToStore(sdkRow);
     expect(typeof store.costItemId).toBe('number');
@@ -1296,6 +1301,7 @@ describe('M12d converters', () => {
       costItemId: undefined,
       costQty: 0,
       cooldownMs: 45000,
+      costCurrency: 0n, // 12r-d: required field, carried so the fixture stays well-formed.
     };
     const store = healLocationRowToStore(sdkRow);
     expect(typeof store.locationId).toBe('number');
@@ -1584,6 +1590,7 @@ describe('M12d gating: healLocationRowToStore cooldownMs must be bigint (i64 inv
       costQty: 0,
       // Simulate the SDK delivering a bigint for the i64 column:
       cooldownMs: 30000n as unknown as number,
+      costCurrency: 0n, // 12r-d: required field, carried so the fixture stays well-formed.
     };
     const store = healLocationRowToStore(sdkRow);
     // After the fix: SdkHealLocationRow.cooldownMs is bigint and the converter
@@ -3056,5 +3063,203 @@ describe('rowConvert 11r-e: playerWalletRowToStore — totality (RC-PW-05)', () 
     // another route to fabricating a zero the server never sent.
     const stored = playerWalletRowToStore(makeSdkWalletRow('aaa', -7n));
     expect(stored.balance).toBe(-7n);
+  });
+});
+
+// =============================================================================
+// 12r-d [E1] — healLocationRowToStore carries the heal cost CURRENCY as a bigint.
+// APPENDED BLOCK — nothing above this line is weakened. Four pre-existing heal
+// fixtures gained a `costCurrency: 0n` key so they still describe a WELL-FORMED row
+// once the field becomes required; not one of their assertions changed.
+//
+// EARS E1: WHEN a `heal_location_row` arrives from the SDK, the client SHALL carry its
+// `costCurrency` (u64) into the store as a `bigint`, byte-identical, with NO numeric
+// coercion and NO defaulting.
+//
+// CONTRACT (the implementer builds exactly this):
+//   interface SdkHealLocationRow { …; readonly costCurrency: bigint }   // REQUIRED
+//   type StoreHealLocationRow   = { …; readonly costCurrency: bigint }  // REQUIRED
+//   healLocationRowToStore: `costCurrency: row.costCurrency`  — a bare pass-through.
+//
+// WHY BIGINT AND WHY NO DEFAULT — the doctrine is already written down one function up,
+// at rowConvert.ts:543-568 (playerWalletRowToStore):
+//   * NO `Number(row.costCurrency)`: the column is u64; Number() is lossy above 2^53 and
+//     `BigInt(Number(x))` restores the TYPE while keeping the WRONG VALUE.
+//   * NO `?? 0n` / `|| 0n` / `< 0n` clamp: a fabricated zero turns "the client has no
+//     idea" into "this heal is free", which is the exact silent-debit lie ADR-0170's
+//     §D3 heal-cost seam exists to prevent (the server debits; only the UI lies).
+//   * NO throw of its own: this runs inside an SDK row callback, dispatched in a bare
+//     unguarded loop — a throw starves every sibling table's ingest for that transaction.
+//
+// RED AT HEAD: rowConvert.ts:602-612 maps seven fields and never mentions costCurrency,
+// so `store.costCurrency` is `undefined` and the key is ABSENT from the result object.
+// Every case below fails on that (`undefined` !== the expected bigint; `Object.hasOwn`
+// false; the key-set assertion missing an entry). Note client/tsconfig.json EXCLUDES
+// `**/*.test.ts`, so `npm run typecheck` does NOT see this file — the gating signal is
+// the runtime failure under vitest, exactly as the 11r-e wallet block above.
+// =============================================================================
+
+import type { StoreHealLocationRow } from './store';
+
+/** A well-formed SDK heal-location row. `costCurrency` is the only knob under test.
+ *  No spread of a `Record<string, unknown>` here on purpose: that would widen the
+ *  inferred return type and defuse the assignability pin in RC-HL-CC-08. */
+function makeSdkHealRow(costCurrency: bigint, locationId = 3) {
+  return {
+    locationId,
+    zoneId: 1,
+    tileX: 8,
+    tileY: 4,
+    costItemId: undefined as number | undefined,
+    costQty: 0,
+    cooldownMs: 30000,
+    costCurrency,
+  };
+}
+
+/** 2^64 - 1: the largest value the u64 column can hold. */
+const HEAL_U64_MAX = 18446744073709551615n;
+/** 2^53 + 1: the smallest integer a JS `number` cannot represent. */
+const HEAL_2P53_PLUS_1 = 9007199254740993n;
+
+describe('rowConvert 12r-d [E1]: healLocationRowToStore — costCurrency is a pass-through bigint', () => {
+  it('RC-HL-CC-01 BITES: costCurrency 0n arrives as 0n with typeof "bigint" — kills the dropped field', () => {
+    // WRONG IMPL KILLED (the HEAD one): a converter that maps the other seven fields and
+    // never mentions costCurrency — every consumer downstream reads `undefined`, and the
+    // heal overlay renders a cost it cannot describe.
+    // ALSO KILLED: `costCurrency: Number(row.costCurrency)` — 0n and 0 are DIFFERENT under
+    // Object.is (`toBe`), so the typeof pin AND `.toBe(0n)` each bite the numeric variant
+    // even at the one value where the two numeric domains agree.
+    const store = healLocationRowToStore(makeSdkHealRow(0n));
+    expect(typeof store.costCurrency).toBe('bigint');
+    expect(store.costCurrency).toBe(0n);
+  });
+
+  it('RC-HL-CC-02 BITES: costCurrency 120n arrives as 120n (a realistic seeded gold cost)', () => {
+    // WRONG IMPL KILLED: a hardcoded 0n, or a re-derivation from costQty (`BigInt(costQty)`
+    // would yield 0n here while looking plausible on an item-cost row).
+    const store = healLocationRowToStore(makeSdkHealRow(120n));
+    expect(store.costCurrency).toBe(120n);
+    expect(typeof store.costCurrency).toBe('bigint');
+  });
+
+  it('★ RC-HL-CC-03 BITES (DISCRIMINATOR): 2^53 + 1 (9007199254740993n) survives byte-identically', () => {
+    // THE ROW THAT IS IMPOSSIBLE TO PASS UNDER A `Number()` IMPLEMENTATION. This is the
+    // successor discriminator to the retired 11r-g `?? 0` vs `|| 0` NaN case (no NaN exists
+    // in the bigint domain — see healModel.test.ts's 12r-d inventory).
+    //   Number(9007199254740993n)          === 9007199254740992   (off by one, silently)
+    //   BigInt(Number(9007199254740993n))  === 9007199254740992n  (right TYPE, wrong VALUE)
+    // The second assertion states that mutant's exact output so a failure NAMES the bug.
+    const store = healLocationRowToStore(makeSdkHealRow(HEAL_2P53_PLUS_1));
+    expect(typeof store.costCurrency).toBe('bigint');
+    expect(store.costCurrency).toBe(9007199254740993n);
+    expect(
+      store.costCurrency,
+      'costCurrency must NOT equal BigInt(Number(2^53+1)) === 9007199254740992n — that is ' +
+        'exactly what a Number() round trip produces (rowConvert.ts:543-568 doctrine)',
+    ).not.toBe(9007199254740992n);
+  });
+
+  it('RC-HL-CC-04 BITES: u64::MAX (18446744073709551615n) survives byte-identically', () => {
+    // The far end of the same discriminator: Number(u64::MAX) === 18446744073709551616 —
+    // one ABOVE the true value, so a lossy impl overstates the price instead of understating
+    // it. Kills any float round trip that RC-HL-CC-03's smaller witness might survive by
+    // accident on some engine.
+    const store = healLocationRowToStore(makeSdkHealRow(HEAL_U64_MAX));
+    expect(store.costCurrency).toBe(18446744073709551615n);
+    expect(store.costCurrency).not.toBe(BigInt(Number(HEAL_U64_MAX)));
+  });
+
+  it('★ RC-HL-CC-05 BITES: an ABSENT costCurrency passes through as undefined with the KEY PRESENT — kills `?? 0n`', () => {
+    // The no-defaulting half of the doctrine, and the ONLY assertion that can see it: a
+    // well-typed row always carries a bigint, so `?? 0n` is unobservable on well-typed
+    // input. It has to be probed with the malformed row a schema drift would hand us.
+    //
+    // The `Object.hasOwn` pre-assertion is what stops this case from being VACUOUSLY GREEN
+    // at HEAD: HEAD also yields `undefined` for `store.costCurrency` — but because the key
+    // is ABSENT, not because it was mapped. Explicit mapping of an undefined value keeps
+    // the key. So: hasOwn === true kills the dropped field, value === undefined kills the
+    // fabricated `0n` that would paint a dark row as a free heal.
+    const malformed = {
+      locationId: 3,
+      zoneId: 1,
+      tileX: 8,
+      tileY: 4,
+      costItemId: undefined,
+      costQty: 0,
+      cooldownMs: 30000,
+    } as unknown as Parameters<typeof healLocationRowToStore>[0];
+    const store = healLocationRowToStore(malformed);
+    expect(
+      Object.hasOwn(store as unknown as Record<string, unknown>, 'costCurrency'),
+      'the converter must map costCurrency EXPLICITLY (the key must exist on the result) — ' +
+        'HEAD omits the field entirely, which reads as `undefined` for the wrong reason',
+    ).toBe(true);
+    expect((store as { costCurrency: unknown }).costCurrency).toBeUndefined();
+    expect((store as { costCurrency: unknown }).costCurrency).not.toBe(0n);
+    expect((store as { costCurrency: unknown }).costCurrency).not.toBe(0);
+  });
+
+  it('RC-HL-CC-06 BITES: exact key set — costCurrency joins the eight mapped keys, nothing leaks', () => {
+    // WRONG IMPL KILLED (1): the dropped field (costCurrency missing from the key set).
+    // WRONG IMPL KILLED (2): `{ ...row }` — a spread would smuggle every SDK-only field the
+    // generator adds later into the store row, where the heal overlay eventually renders it.
+    // The explicit-field-mapping tooth that RC-PW-04 applies to the wallet converter.
+    const sdk = {
+      ...makeSdkHealRow(7n),
+      // A field the current generated binding does not have; a spread impl leaks it.
+      serverOnlyScratch: 'leak-me',
+    } as unknown as Parameters<typeof healLocationRowToStore>[0];
+    const store = healLocationRowToStore(sdk);
+    const keys = Object.keys(store as unknown as Record<string, unknown>).sort();
+    expect(keys).toEqual([
+      'cooldownMs',
+      'costCurrency',
+      'costItemId',
+      'costQty',
+      'locationId',
+      'tileX',
+      'tileY',
+      'zoneId',
+    ]);
+  });
+
+  it('RC-HL-CC-07 BITES: a negative costCurrency passes through UNCLAMPED (u64 makes it unreachable; clamping is not a wire concern)', () => {
+    // The column is u64, so a negative value cannot arrive from a healthy server — this
+    // pins that the converter does not invent a policy anyway. WRONG IMPL KILLED:
+    // `row.costCurrency < 0n ? 0n : row.costCurrency`, another route to fabricating a zero
+    // the server never sent (and one that HIDES a corrupt row instead of surfacing it).
+    const store = healLocationRowToStore(makeSdkHealRow(-25n));
+    expect(store.costCurrency).toBe(-25n);
+  });
+
+  it('RC-HL-CC-08 BITES: the result is assignable to StoreHealLocationRow (compile-time contract pin)', () => {
+    // A tsc tooth, not a runtime one: if the implementer types the field `number` (or names
+    // it `cost_currency` / `costGold`), THIS ANNOTATION stops compiling even though every
+    // runtime assertion above could be rewritten to pass. HONEST LIMIT: client/tsconfig.json
+    // excludes `**/*.test.ts`, so this arm surfaces in the editor and in review — NOT in
+    // `npm run typecheck`. The runtime assertions beside it are the gating signal.
+    const store: StoreHealLocationRow = healLocationRowToStore(makeSdkHealRow(42n));
+    expect(store.costCurrency).toBe(42n);
+    expect(store.locationId).toBe(3);
+  });
+
+  it('★ RC-HL-CC-09 BITES fast-check: EVERY u64 value round-trips exactly, and the converter never throws', () => {
+    // Property form of E1 over the whole u64 domain. A Number()-based impl fails here for
+    // every value above 2^53 — which is most of the domain, so this shrinks straight to a
+    // named counterexample. Block-bodied arrow: fast-check reads an expression-bodied
+    // matcher's return value as a `false` predicate and fails spuriously.
+    fc.assert(
+      fc.property(
+        fc.bigUintN(64),
+        fc.integer({ min: 0, max: 9999 }),
+        (costCurrency, locationId) => {
+          const store = healLocationRowToStore(makeSdkHealRow(costCurrency, locationId));
+          expect(typeof store.costCurrency).toBe('bigint');
+          expect(store.costCurrency).toBe(costCurrency);
+          expect(store.locationId).toBe(locationId);
+        },
+      ),
+    );
   });
 });

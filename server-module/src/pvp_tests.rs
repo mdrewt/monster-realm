@@ -3254,3 +3254,236 @@ fn pvp_swap_arm_has_no_fainted_active_guard() {
          `is_fainted` checks in this reducer."
     );
 }
+
+// ===========================================================================
+// 12r-d (E3) — `json_escape` at the four hand-built JSON log sites in pvp.rs
+//
+// EARS criterion covered:
+//
+//   E3  Every hand-built JSON log line in `pvp.rs` that interpolates an error
+//       reason SHALL interpolate a `crate::guards::json_escape`d binding rather
+//       than the raw `Err` text.
+//
+// THE FOUR SITES (verified at b4c55b5), in TWO regions:
+//   settle_pvp_battle       pvp.rs:501  pvp_settle_writeback_fail   "err"
+//                           pvp.rs:518  pvp_settle_side_b_hp_fail   "err"
+//   forfeit_on_disconnect   pvp.rs:612  forfeit_on_disconnect_err   "reason"
+//                           pvp.rs:625  forfeit_on_disconnect_err   "reason"
+//
+// NOTE THE DUPLICATE EVENT NAME: `forfeit_on_disconnect_err` labels TWO sites
+// (the side-A loop and the side-B loop). The scan is COUNT-based rather than
+// first-match based precisely so BOTH occurrences are asserted — a fix applied
+// to the side-A loop only would otherwise pass.
+//
+// RED STATE: ASSERTION-RED at HEAD — all four format strings interpolate raw
+// `{e}` and neither region makes a single `json_escape(` call.
+//
+// PIPELINE WARNING (why this section does NOT use `stripped_pvp_for_scan`):
+// that helper strips string-literal CONTENT, which is exactly the text these
+// needles are made of — it would make every assertion below vacuous. This
+// section comment-strips ONLY, then squashes whitespace. Comment stripping is
+// still mandatory in both directions: the fix's own explanatory comment will
+// name `json_escape`, and the existing comments around these sites discuss the
+// `Err` values (ADR-0077 log-and-continue).
+//
+// Needles are assembled from parts and the two structural characters are spelled
+// as NUMBERS, never as CHARACTER literals (guards_tests G-5a).
+// ===========================================================================
+
+/// The two-character sequence a Rust source spells to put a double quote INSIDE
+/// a string literal: backslash then quote. Built from numeric constants so this
+/// file adds no bare delimiter CHARACTER literal.
+fn d12r_escaped_quote() -> String {
+    let mut out = String::new();
+    out.push(char::from(0x5Cu8));
+    out.push(char::from(0x22u8));
+    out
+}
+
+/// Build the CONTIGUOUS squashed source sequence
+/// `<evt>","<id_key>":{<id_expr>},"<reason_key>":"<slot>"` — the exact tail of one
+/// hand-built JSON log line as it is spelled in `pvp.rs`.
+///
+/// Pinning the id field between the event name and the reason slot is what makes
+/// this a needle about ONE format string rather than about tokens that merely
+/// co-occur: nothing can be inserted, reordered or re-slotted without breaking it.
+fn d12r_pvp_log_tail(
+    evt: &str,
+    id_key: &str,
+    id_expr: &str,
+    reason_key: &str,
+    slot: &str,
+) -> String {
+    let bq = d12r_escaped_quote();
+    [
+        evt,
+        bq.as_str(),
+        ",",
+        bq.as_str(),
+        id_key,
+        bq.as_str(),
+        ":{",
+        id_expr,
+        "},",
+        bq.as_str(),
+        reason_key,
+        bq.as_str(),
+        ":",
+        bq.as_str(),
+        slot,
+        bq.as_str(),
+    ]
+    .concat()
+}
+
+/// **12r-d E3** — all four hand-built JSON reason logs in `pvp.rs` interpolate an
+/// escaped binding, and none still carries the raw `{e}`.
+///
+/// ASSERTION-RED at HEAD on every layer.
+///
+/// LAYER BY LAYER, and what each kills:
+///   * **The GOOD contiguous needle appears the EXPECTED number of times** (1, 1,
+///     2). Contiguity pins the escaped capture into the reason slot of THAT
+///     format string, so escaping into some other line cannot satisfy it; the
+///     exact COUNT is what covers the duplicated `forfeit_on_disconnect_err`
+///     event name — a fix applied to only the side-A disconnect loop leaves the
+///     count at 1 and fails.
+///   * **The RAW contiguous needle is gone (0).** Kills the belt-and-braces
+///     shell that adds an escaped line and leaves the raw one beside it.
+///   * **No `{e}` interpolation survives anywhere in either region.** The
+///     per-site needles inspect only the sanctioned lines; this closes the
+///     whole-region leak class (npc_tests T4-h) — a second statement elsewhere
+///     that interpolates the un-escaped `Err`. HEAD has exactly 2 per region, so
+///     the target is 0 and the arithmetic is exact.
+///   * **`json_escape(` is called at least once per site in its own region.**
+///     Per-region counts, not one whole-file count: four escapes in
+///     `settle_pvp_battle` must not satisfy `forfeit_on_disconnect`, which has
+///     none.
+///   * **`escaped` is bound only by `json_escape`.** Kills the shadow-rebind
+///     `let escaped = json_escape(&e); let escaped = e.clone();`, which satisfies
+///     every name-based check while the value at the point of use is raw — the
+///     compiler stays silent because the binding IS read, just not the escaped
+///     one (npc_tests.rs:1142-1154 records the same cheat).
+///
+/// WHY THESE REASONS ARE UNTRUSTED. `write_back_battle_results`,
+/// `write_back_party_hp_pvp_side_b` and `apply_pvp_forfeit` all build their `Err`
+/// with `format!`, embedding monster ids and validator text; ADR-0077 makes every
+/// one of these paths LOG-AND-CONTINUE, so the log line is the ONLY record that
+/// a PvP settlement partially failed. A malformed line is dropped by the ingest,
+/// which means the one signal that a ranked match settled wrong is also the one
+/// that disappears.
+#[test]
+fn pvp_reason_log_sites_interpolate_an_escaped_binding() {
+    const ESCAPED_BINDING: &str = "escaped";
+
+    let stripped = strip_rust_comments(PVP_RS);
+    let good_slot = ["{", ESCAPED_BINDING, "}"].concat();
+    let raw_slot = ["{", "e}"].concat();
+
+    // (region fn, expected json_escape calls, rows of (evt, reason_key, count))
+    let settle = ["settle_pvp", "_battle"].concat();
+    let forfeit = ["forfeit_on", "_disconnect"].concat();
+    let regions = [
+        (
+            settle,
+            2usize,
+            vec![
+                (["pvp_settle_writeback", "_fail"].concat(), "err", 1usize),
+                (["pvp_settle_side_b_hp", "_fail"].concat(), "err", 1usize),
+            ],
+        ),
+        (
+            forfeit,
+            2usize,
+            vec![(["forfeit_on_disconnect", "_err"].concat(), "reason", 2usize)],
+        ),
+    ];
+
+    for (region, min_escape_calls, rows) in regions {
+        let body = extract_pvp_fn_body(&stripped, region.as_str())
+            .unwrap_or_else(|| panic!("12r-d E3: `{region}` not found in pvp.rs"));
+        let sq = squash_ws(body);
+
+        for (evt, reason_key, expected) in &rows {
+            let good = d12r_pvp_log_tail(evt, "battle_id", "battle_id", reason_key, &good_slot);
+            let bad = d12r_pvp_log_tail(evt, "battle_id", "battle_id", reason_key, &raw_slot);
+
+            let n_bad = sq.matches(bad.as_str()).count();
+            assert_eq!(
+                n_bad, 0,
+                "TEETH (12r-d E3, ADR-0170 D5) pvp.rs / {region} / {evt}: the RAW `Err` \
+                 is still interpolated ({n_bad} occurrence(s) of the squashed sequence \
+                 {bad:?}). These reasons are `format!`-built strings carrying monster \
+                 ids and validator text across an ADR-0077 log-and-continue boundary, \
+                 so this line is the ONLY record that a ranked settlement partially \
+                 failed. A double quote in the reason makes it unparseable and the \
+                 ingest drops it."
+            );
+
+            let n_good = sq.matches(good.as_str()).count();
+            assert_eq!(
+                n_good, *expected,
+                "TEETH (12r-d E3, ADR-0170 D5) pvp.rs / {region} / {evt}: the contiguous \
+                 squashed sequence {good:?} must appear EXACTLY {expected} time(s), found \
+                 {n_good}. Zero means the escape never reached this format string (RED at \
+                 HEAD). For `forfeit_on_disconnect_err` the expected count is TWO — the \
+                 side-A and side-B disconnect loops carry the SAME event name, and a fix \
+                 applied to only one of them leaves the count at 1. Write \
+                 `let {ESCAPED_BINDING} = crate::guards::json_escape(&e);` immediately \
+                 before each log and interpolate `{{{ESCAPED_BINDING}}}` — the \
+                 npc.rs:184-190 shape."
+            );
+        }
+
+        let n_raw = sq.matches(raw_slot.as_str()).count();
+        assert_eq!(
+            n_raw, 0,
+            "TEETH (12r-d E3, whole-region raw-leak sweep) pvp.rs / {region}: {n_raw} raw \
+             `{{e}}` interpolation(s) survive and there must be ZERO. The per-site needles \
+             above only inspect the sanctioned lines; this closes the leak class where a \
+             SECOND statement elsewhere in the region interpolates the un-escaped `Err` \
+             (a debug line, a duplicated log) while the sanctioned line is perfect. HEAD \
+             has exactly 2 per region, so the target is 0 and the arithmetic is exact."
+        );
+
+        let escape_call = ["json", "_escape("].concat();
+        let n_escape = sq.matches(escape_call.as_str()).count();
+        assert!(
+            n_escape >= min_escape_calls,
+            "TEETH (12r-d E3) pvp.rs / {region}: the region must make at least \
+             {min_escape_calls} `json_escape(` call(s) — one per interpolated reason — \
+             but it makes {n_escape}. The count is PER REGION on purpose: a whole-file \
+             count would let two escapes in `settle_pvp_battle` satisfy \
+             `forfeit_on_disconnect`, which has none."
+        );
+
+        let any_binding = ["let", ESCAPED_BINDING, "="].concat();
+        let qualified = ["let", ESCAPED_BINDING, "=crate::guards::json", "_escape("].concat();
+        let bare = ["let", ESCAPED_BINDING, "=json", "_escape("].concat();
+        let n_all = sq.matches(any_binding.as_str()).count();
+        let n_esc = sq.matches(qualified.as_str()).count() + sq.matches(bare.as_str()).count();
+
+        assert!(
+            n_esc >= 1,
+            "TEETH (12r-d E3) pvp.rs / {region}: the escaped reason must be bound to the \
+             EXACT identifier `{ESCAPED_BINDING}` via \
+             `let {ESCAPED_BINDING} = crate::guards::json_escape(&e);` (the bare \
+             `json_escape(&e)` spelling is accepted when the helper is imported) — found \
+             none. The exact name is required so this test can tie the value that was \
+             escaped to the identifier the format string interpolates; a \
+             differently-named, unread escape binding is the red-team's proven cheat \
+             (npc_tests.rs:1117-1223)."
+        );
+        assert_eq!(
+            n_all, n_esc,
+            "TEETH (12r-d E3, shadow-rebind cheat kill) pvp.rs / {region}: \
+             `{ESCAPED_BINDING}` is `let`-bound {n_all} time(s) but only {n_esc} of those \
+             bindings come from `json_escape`. KILLS \
+             `let {ESCAPED_BINDING} = crate::guards::json_escape(&e); \
+             let {ESCAPED_BINDING} = e.clone();` — the first statement satisfies the \
+             provenance check, the second rebinds the same name to the RAW value before \
+             the log reads it, and the format string still interpolates the identifier. \
+             The compiler is silent: the binding IS read, just not the escaped one."
+        );
+    }
+}

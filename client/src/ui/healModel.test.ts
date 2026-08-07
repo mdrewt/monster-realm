@@ -13,42 +13,42 @@
 //   - TOTAL: never throws
 //
 // AMENDED 11r-g (ADR-0170 §D3) — nothing above is deleted; the amendment ADDS a
-// required VM field and NARROWS isFree. See the appended [11r-g V-*] block at the
-// foot of this file for the full pinned contract:
-//   - HealLocationViewModel gains a REQUIRED `costCurrency: number` (`?? 0` when absent)
+// required VM field and NARROWS isFree:
+//   - HealLocationViewModel gains a REQUIRED `costCurrency`
 //   - isFree = costItemId undefined AND costQty === 0 AND costCurrency === 0
+//
+// SUPERSEDED IN PLACE BY 12r-d — the seam is no longer inert and no longer `number`:
+//   - `costCurrency` is a REQUIRED `bigint` on BOTH the store row and the VM (u64 column;
+//     the wallet-balance doctrine at rowConvert.ts:543-568 applies — no Number(), no default)
+//   - the builders take `readonly StoreHealLocationRow[]` DIRECTLY (the inert
+//     `HealLocationInputRow` intersection is deleted)
+//   - isFree = costItemId undefined AND costQty === 0 AND costCurrency === 0n
+//   - NEW export `formatHealCostLine(loc: HealLocationViewModel): string`
+// The 11r-g [V-*] block at the foot of this file is REPLACED by the 12r-d [W-*] block,
+// which carries a per-case inventory: every retired V case has a named successor or an
+// explicit moot-by-type entry. Nothing was weakened.
 //
 // Pattern follows raisingModel.test.ts: pure function, no DOM, no SDK.
 
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
 import { describe, expect, it } from 'vitest';
-import type { StoreItemRow } from '../net/store';
+// 12r-d: the REAL store row type — the local mirror this file used to declare is gone.
+// The builders consume `StoreHealLocationRow` directly now, so the fixtures below are
+// typed against the SHIPPED shape and drift between the two is no longer expressible.
+import type { StoreHealLocationRow, StoreItemRow } from '../net/store';
 import {
   buildHealViewModel,
   // uxd2 (ADR-0161 D5): the bound-location selector. Named import — RED until it exists.
   buildHealViewModelForLocation,
+  // 12r-d: the cost-line renderer healView.ts:25 delegates to. Named import — the WHOLE
+  // file fails to link until the implementer exports it (the established red mode here).
+  formatHealCostLine,
+  type HealLocationViewModel,
   healTargetLocationId,
 } from './healModel';
-
-// ---------------------------------------------------------------------------
-// Local type definition (mirrors what store.ts will export as StoreHealLocationRow).
-// ---------------------------------------------------------------------------
-
-interface StoreHealLocationRow {
-  locationId: number;
-  zoneId: number;
-  tileX: number;
-  tileY: number;
-  costItemId?: number;
-  costQty: number;
-  cooldownMs: number;
-  // 11r-g (ADR-0170 §D3): the heal-cost currency seam. OPTIONAL here because the net
-  // layer's StoreHealLocationRow does NOT carry it yet (the `cost_currency` column leg
-  // is parked — ADR-0170 residual 1), so the builder input widens locally to
-  // `StoreHealLocationRow & { readonly costCurrency?: number }` and an ABSENT field must
-  // project to 0. Deliberately NOT defaulted in makeLocation: absent is production's path.
-  costCurrency?: number;
-}
 
 // ---------------------------------------------------------------------------
 // Factories
@@ -63,9 +63,10 @@ function makeLocation(overrides: Partial<StoreHealLocationRow> = {}): StoreHealL
     costItemId: undefined,
     costQty: 0,
     cooldownMs: 30000,
-    // 11r-g: `costCurrency` is DELIBERATELY absent from the defaults — today's store rows
-    // have no such field, so absent ⇒ 0 is the DEFAULT path under test. Tests that need a
-    // currency cost pass it explicitly via `overrides`.
+    // 12r-d: `costCurrency` is REQUIRED and bigint, so the default is an explicit 0n
+    // (a FREE pad) rather than 11r-g's deliberate absence — absence is no longer a
+    // representable input. Tests that need a currency cost pass it via `overrides`.
+    costCurrency: 0n,
     ...overrides,
   };
 }
@@ -264,16 +265,18 @@ describe('buildHealViewModel criterion 6: locationId and zoneId pass-through', (
     expect(entry).toHaveProperty('costQty', 1);
     expect(entry).toHaveProperty('cooldownMs', 60000);
     expect(entry).toHaveProperty('isFree', false);
-    // 11r-g (ADR-0170 §D3) EXTENSION — nothing above removed; `costCurrency` joins the
-    // required-key contract. The fixture row carries NO costCurrency, so the required key
-    // must still be present, as the number 0.
+    // 11r-g (ADR-0170 §D3) EXTENSION, MIGRATED BY 12r-d — nothing above removed;
+    // `costCurrency` joins the required-key contract, now as a BIGINT. The fixture row is
+    // a free-of-currency pad (makeLocation's 0n default), so the required key must be
+    // present as 0n — never the number 0, never `undefined`.
     // Kills: an impl that leaves the field off the VM entirely (consumers would read
-    // `undefined` and healView would render a "Cost: undefined gold" pad), and — via the
-    // typed member access below — the type-level form of the same defect (TS2339 against a
-    // HealLocationViewModel that lacks the key).
-    expect(entry).toHaveProperty('costCurrency', 0);
-    expect(entry.costCurrency).toBe(0);
-    expect(typeof entry.costCurrency).toBe('number');
+    // `undefined` and healView would render a "Cost: undefined gold" pad); an impl that
+    // Number()s the projection (0n and 0 differ under Object.is, and the typeof pin states
+    // it outright); and — via the typed member access below — the type-level form of the
+    // same defect (TS2339 against a HealLocationViewModel that lacks the key).
+    expect(entry).toHaveProperty('costCurrency', 0n);
+    expect(entry.costCurrency).toBe(0n);
+    expect(typeof entry.costCurrency).toBe('bigint');
   });
 });
 
@@ -307,9 +310,11 @@ describe('buildHealViewModel criterion 7: total function — never throws', () =
   it('BITES fast-check: never throws for any valid location array', () => {
     // Property: no structurally valid location array should crash the pure model.
     // 11r-g EXTENSION (input domain only — the assertion below is untouched): the
-    // generated rows now also carry an optional costCurrency, so this totality property
-    // covers currency-bearing rows too. The VALUE invariants for that field live in the
-    // sibling [11r-g V-5] property at the foot of this file.
+    // generated rows now also carry a costCurrency, so this totality property covers
+    // currency-bearing rows too. The VALUE invariants for that field live in the sibling
+    // [12r-d W-5] property at the foot of this file.
+    // 12r-d MIGRATION: the arbitrary moves to bigint and DROPS its `fc.option(…, {nil:
+    // undefined})` wrapper — the field is required, so absence is unrepresentable.
     fc.assert(
       fc.property(
         fc.array(
@@ -321,15 +326,12 @@ describe('buildHealViewModel criterion 7: total function — never throws', () =
             costItemId: fc.option(fc.integer({ min: 1, max: 999 })),
             costQty: fc.integer({ min: 0, max: 99 }),
             cooldownMs: fc.integer({ min: 0, max: 86400000 }),
-            // absent (nil) | 0 | natural | negative | absurdly large (past 2**40).
-            costCurrency: fc.option(
-              fc.oneof(
-                fc.nat(),
-                fc.integer({ min: -1000, max: -1 }),
-                fc.constant(0),
-                fc.integer({ min: 2 ** 40, max: 2 ** 45 }),
-              ),
-              { nil: undefined },
+            // 0n | anywhere in u64 | negative (unreachable from a u64 column, kept as the
+            // adversarial arm — the model must project, never validate).
+            costCurrency: fc.oneof(
+              fc.constant(0n),
+              fc.bigUintN(64),
+              fc.bigInt({ min: -1000n, max: -1n }),
             ),
           }),
           { maxLength: 20 },
@@ -523,157 +525,283 @@ describe('buildHealViewModelForLocation [uxd2-2]: unknown id → empty, never a 
 });
 
 // ===========================================================================
-// 11r-g (ADR-0170 §D3) — HEAL COST CURRENCY SEAM.
-// APPENDED BLOCK — every case above this line is untouched except two legitimate
-// EXTENSIONS: the criterion-6 shape contract gained the new required key, and the
-// criterion-7 property gained a costCurrency arbitrary in its INPUT DOMAIN (its
-// assertion is unchanged). Nothing was weakened, renamed, or removed.
+// 12r-d [W-*] — THE HEAL COST CURRENCY DISPLAY PATH, IN THE BIGINT DOMAIN.
 //
-// SOURCE OF TRUTH: docs/adr/0170-server-hardening-cache-completion-log-escaping.md §D3.
+// This block REPLACES the 11r-g [V-1..V-5] block that stood here. Every case above this
+// line is untouched except three MIGRATIONS forced by the type change (not weakenings):
+// the criterion-6 shape contract now expects `0n` / typeof 'bigint', the criterion-7
+// property's costCurrency arbitrary moved to bigint (its ASSERTION is unchanged), and
+// the local StoreHealLocationRow mirror was replaced by an import of the real type.
+//
+// SOURCE OF TRUTH: 12r-d item 1 (the heal currency display path) +
+//   docs/adr/0170-server-hardening-cache-completion-log-escaping.md §D3 (the seam).
 //
 // CONTRACT (pinned — the implementer builds exactly this in healModel.ts):
-//   export interface HealLocationViewModel { …; costCurrency: number }  // REQUIRED
+//   export interface HealLocationViewModel { …; costCurrency: bigint }  // REQUIRED
 //   buildHealViewModel(
-//     healLocations: readonly (StoreHealLocationRow & { readonly costCurrency?: number })[],
-//     itemDefs: ReadonlyMap<number, StoreItemRow>,
-//   ): HealViewModel
-//   - costCurrency = `loc.costCurrency ?? 0`  (NULLISH coalesce — never `|| 0`)
-//   - isFree = costItemId === undefined AND costQty === 0 AND costCurrency === 0
+//     healLocations: readonly StoreHealLocationRow[],       // ← the row type DIRECTLY;
+//     itemDefs: ReadonlyMap<number, StoreItemRow>,          //   HealLocationInputRow is
+//   ): HealViewModel                                       //   DELETED
+//   - costCurrency = `loc.costCurrency` — a bare pass-through (no ??, no Number(), no clamp)
+//   - isFree = costItemId === undefined AND costQty === 0 AND costCurrency === 0n
+//   - export function formatHealCostLine(loc: HealLocationViewModel): string
 //   - the module stays TOTAL: never throws.
-//   The field is REQUIRED on the VM (not optional) so every future consumer must reckon
-//   with it; an optional field could be `?? 0`-ed past, reintroducing the gap.
 //
-// WHY THE SEAM IS INERT: the `cost_currency` COLUMN leg is parked (ADR-0170 residual 1),
-// so store rows carry no such field today — the ABSENT ⇒ 0 path IS production's path.
-// The isFree contract is fixed now so the follow-up wiring is mechanical.
+// WHY BIGINT: the cost is a u64. `Number()` is lossy above 2^53 and `BigInt(Number(x))`
+// restores the TYPE while keeping the WRONG VALUE — the wallet-balance doctrine written
+// out at rowConvert.ts:543-568, applied one layer up. WHY REQUIRED: an optional field can
+// be `?? 0`-ed past by a future consumer, which is how the silent-debit gap opened in the
+// first place (ADR-0170 Context item 3 — `spend_currency` charges correctly server-side;
+// only the UI lies).
 //
-// RED TODAY (runtime assertion RED in every case below unless noted): healModel.ts
-// computes `isFree = costItemId === undefined && costQty === 0` and never emits
-// costCurrency, so `entry.costCurrency` is `undefined` and a currency-only pad reports
-// isFree === true — the silent-debit trap (ADR-0170 Context item 3: `spend_currency`
-// charges correctly server-side; only the UI lies). The `.costCurrency` member accesses
-// are ALSO a type-level RED (TS2339 against the current HealLocationViewModel) — note
-// client/tsconfig.json excludes `**/*.test.ts`, so that arm surfaces in the editor and
-// not in `npm run typecheck`; the gating signal is the runtime failure under vitest.
+// formatHealCostLine WORDING FREEDOM (deliberate): the implementer chooses the currency
+// wording. Only these are pinned, and only these are asserted:
+//   * free               → EXACTLY the string 'Free'
+//   * item-only          → EXACTLY `${costQty}x ${costItemName ?? 'Unknown item'}` — the
+//                          byte-for-byte rendering healView.ts:25 produces TODAY, so no
+//                          existing content's overlay text changes
+//   * currency-only      → contains the amount rendered FROM THE BIGINT; contains neither
+//                          '0x' nor 'Unknown item' (that pair IS the HEAD bug)
+//   * both channels      → both renderings present
+// Everything else about the currency phrasing is the implementer's to choose.
+//
+// ---------------------------------------------------------------------------
+// PER-CASE INVENTORY — every retired [11r-g V-*] case, with its successor or an
+// explicit moot-by-type entry. No case was dropped silently.
+//
+//  RETIRED [11r-g V-*] CASE                              → 12r-d DISPOSITION
+//  1. V-1 "costCurrency=50 passed through verbatim"      → W-1a (50n, typeof 'bigint')
+//  2. V-1 "huge 2**40 neither clamped nor bit-truncated" → W-1c (u64::MAX). NOTE the old
+//        prey (`x | 0` / `x >>> 0`) is gone by TYPE — bitwise ops THROW on a bigint — so
+//        the successor's real prey is Number()/clamping, pinned exactly by W-1b/W-1c.
+//  3. V-2 "row with NO costCurrency key → 0"             → MOOT BY TYPE: the field is
+//        REQUIRED on StoreHealLocationRow, so an absent key is unrepresentable in the
+//        builder's input. The no-defaulting rule still has teeth one layer DOWN, where a
+//        malformed SDK row can still arrive: rowConvert.test.ts RC-HL-CC-05.
+//        HONEST LIMIT: store.test.ts's M12d block reaches the store through
+//        `as unknown as Record<…>` casts, so a hand-rolled row COULD still omit the field
+//        at runtime there; that is why RC-HL-CC-05 (converter) and ST-HL-CC-02 (adapter)
+//        exist rather than a re-litigation of absence here.
+//  4. V-2 "explicit costCurrency 0 → 0"                  → W-1d (0n stays 0n, not `0`)
+//  5. V-1 "item cost AND currency cost both surfaced"    → W-1e (75n + 3x Herb)
+//  6. V-1 "each row keeps its OWN costCurrency"          → W-1f ([10n, 0n, 250n])
+//  7. V-3 "no item, qty 0, currency 50 → isFree FALSE"   → W-3a (50n)
+//  8. V-3 "explicit currency 0 → isFree TRUE"            → W-3b (0n)
+//  9. V-3 "ABSENT costCurrency leaves a free pad free"   → MOOT BY TYPE (same reason as 3).
+//        The "free stays free" outcome it protected is pinned by W-3b and by row 1 of the
+//        W-3c truth table.
+// 10. V-3 "truth table: exactly 1 of 8 is free"          → W-3c (8 rows, 0n/50n)
+// 11. V-4 "currency-only invents no item name"           → W-4a (55n)
+// 12. V-4 "populated itemDefs leaks no name"             → W-4b (55n, defs with id 0 and 1)
+// 13. V-5 "negative costCurrency passes through"         → W-1g (-25n)
+// 14. V-5 "NaN survives as NaN (the ?? vs || tooth)"     → MOOT BY TYPE: there is no NaN in
+//        the bigint domain, and `??` vs `||` can only diverge on a falsy-but-present value,
+//        which for bigint is 0n alone — already pinned by W-1d (0n stays 0n) and W-3b
+//        (0n keeps a pad FREE, which `|| 0n` also produces, so no behavioural gap remains).
+//        SUCCESSOR DISCRIMINATOR (the exactness tooth that replaces it): W-1b — 2^53+1
+//        survives byte-identically, which is IMPOSSIBLE under any Number()-based impl.
+// 15. V-5 "fast-check: costCurrency === input, isFree ⇔ …" → W-5a (bigint domain)
+// 16. V-1 bound-arm "ForLocation carries costCurrency"   → W-8a (60n)
+// 17. V-1 bound-arm "ForLocation === default arm"        → W-8b (500n)
+//  (17 retired it() cases → 24 replacements: 15 named successors, 2 moot-by-type, and a
+//   surplus of 9 NEW cases — the formatHealCostLine branch table W-6a..W-6g, the
+//   delegation pin W-7, and the second property W-5b. Net test count strictly UP.)
+// ---------------------------------------------------------------------------
+//
+// RED TODAY: `formatHealCostLine` is not exported from ./healModel, so the named import
+// at the top of this file fails to link and the WHOLE file is red — the established red
+// mode for this suite (see the healTargetLocationId and uxd2 block headers). Underneath
+// that, once the export exists, the VALUE teeth stay red until the projection changes:
+// healModel.ts computes `costCurrency = loc.costCurrency ?? 0` (a NUMBER) and
+// `isFree = … && costCurrency === 0`, and healView.ts:25 renders every non-free pad as
+// `${costQty}x ${costItemName ?? 'Unknown item'}` — so a currency-only pad prints
+// "0x Unknown item" today. The `.costCurrency` member accesses are ALSO a type-level RED
+// (bigint vs number) — note client/tsconfig.json line 15 EXCLUDES `**/*.test.ts`, so that
+// arm surfaces in the editor and NOT in `npm run typecheck`; the gating signal is the
+// runtime failure under vitest.
 // ===========================================================================
 
-describe('buildHealViewModel [11r-g V-1/V-2]: costCurrency projection', () => {
-  it('★ [V-1] BITES: costCurrency=50 is passed through verbatim', () => {
-    // Kills: an impl that drops the field, hardcodes 0, or re-derives it from costQty.
-    const loc = makeLocation({ costCurrency: 50 });
-    const vm = buildHealViewModel([loc], new Map());
+/** 2^53 + 1 — the smallest integer a JS `number` cannot represent. Number()-ing it
+ *  yields 9007199254740992, which is the counter-value every exactness tooth names. */
+const COST_2P53_PLUS_1 = 9007199254740993n;
+/** 2^64 - 1 — the largest value the u64 `cost_currency` column can hold. */
+const COST_U64_MAX = 18446744073709551615n;
+
+/**
+ * Digit-grouping-insensitive needle search. A locale-aware formatter
+ * (`amount.toLocaleString()`) may insert separators, which is a legitimate wording
+ * choice — so amount assertions strip them before searching. STRING OPERATIONS ONLY:
+ * no `new RegExp(` anywhere in this file (the Semgrep ReDoS / non-literal-regexp gate).
+ * NOTE the raw line, not this one, is used for the '0x' / 'Unknown item' ABSENCE
+ * assertions, since stripping spaces would fuse 'Unknown item' into 'Unknownitem'.
+ */
+function stripDigitGrouping(s: string): string {
+  let out = s;
+  // Pass 1 — the ASCII grouping separators. `String(bigint)` emits none of them and an
+  // en-US `toLocaleString()` emits only the comma, so this pass covers every realistic
+  // wording the implementer might pick.
+  for (const sep of [',', ' ', '_', "'"]) {
+    out = out.split(sep).join('');
+  }
+  // Pass 2 — the same set plus the NBSP-family characters other locales group with.
+  // Idempotent over pass 1 (split/join on an already-absent separator is a no-op).
+  for (const sep of [',', ' ', '_', "'", ' ', ' ', ' ']) {
+    out = out.split(sep).join('');
+  }
+  return out;
+}
+
+/** The single-location VM the cost-line table renders, built through the REAL builder
+ *  so the branch table also proves the projection feeding it. */
+function vmFor(
+  overrides: Partial<StoreHealLocationRow>,
+  defs: ReadonlyMap<number, StoreItemRow> = new Map(),
+): HealLocationViewModel {
+  const vm = buildHealViewModel([makeLocation(overrides)], defs);
+  return vm.locations[0]!;
+}
+
+describe('buildHealViewModel [12r-d W-1]: costCurrency projection (bigint)', () => {
+  it('★ [W-1a] BITES: costCurrency 50n is passed through verbatim as a bigint', () => {
+    // Successor to V-1 "costCurrency=50 passed through verbatim".
+    // Kills: an impl that drops the field, hardcodes 0n, re-derives it from costQty
+    // (`BigInt(costQty)` would read 0n here), or Number()s it (50 !== 50n under Object.is,
+    // and the typeof pin states the defect outright).
+    const vm = buildHealViewModel([makeLocation({ costCurrency: 50n })], new Map());
     expect(vm.locations).toHaveLength(1);
-    expect(vm.locations[0]!.costCurrency).toBe(50);
-    expect(typeof vm.locations[0]!.costCurrency).toBe('number');
+    expect(vm.locations[0]!.costCurrency).toBe(50n);
+    expect(typeof vm.locations[0]!.costCurrency).toBe('bigint');
   });
 
-  it('[V-1] BITES: a huge costCurrency (2**40) is neither clamped nor bit-truncated', () => {
-    // Kills: `costCurrency | 0` / `>>> 0` "normalization" — 2**40 | 0 === 0, which would
-    // paint a 1.1-trillion-gold pad as free. Also kills Math.min-style clamping. The
-    // server column is u64; the client convention narrows to number (ADR-0170 residual 1).
-    const loc = makeLocation({ costCurrency: 1_099_511_627_776 }); // 2 ** 40
-    const vm = buildHealViewModel([loc], new Map());
-    expect(vm.locations[0]!.costCurrency).toBe(1_099_511_627_776);
-    expect(vm.locations[0]!.isFree).toBe(false);
-  });
-
-  it('★ [V-2] BITES: a row with NO costCurrency key → costCurrency 0 (the inert-seam default)', () => {
-    // Kills: a missing `?? 0` projection — the VM would emit `undefined` for EVERY
-    // production row today (the column is parked) and healView would render "undefined".
-    // makeLocation deliberately leaves the key absent; the pre-condition below pins that.
-    const loc = makeLocation();
-    expect(Object.hasOwn(loc, 'costCurrency')).toBe(false); // fixture pre-condition
-    const vm = buildHealViewModel([loc], new Map());
-    expect(vm.locations[0]!.costCurrency).toBe(0);
-    expect(typeof vm.locations[0]!.costCurrency).toBe('number');
-  });
-
-  it('[V-2] BITES: an explicit costCurrency 0 → 0 (not undefined, not dropped)', () => {
-    // Kills the same missing-projection defect through the explicit-zero door. `?? 0` and
-    // `|| 0` AGREE here and on the absent case above, so pinning BOTH fixes the projection
-    // shape without over-specifying the operator; the NaN case in the [V-5] block below is
-    // the one place the two operators observably diverge.
-    const loc = makeLocation({ costCurrency: 0 });
-    const vm = buildHealViewModel([loc], new Map());
-    expect(vm.locations[0]!.costCurrency).toBe(0);
-  });
-
-  it('[V-1] BITES: an item cost and a currency cost are BOTH surfaced on one row', () => {
-    // Kills: an impl that reads costCurrency only in the else-branch of "has an item cost"
-    // — a hybrid pad would show the herb and hide the gold.
-    const loc = makeLocation({ costItemId: 2, costQty: 3, costCurrency: 75 });
-    const defs = new Map<number, StoreItemRow>([[2, makeItemDef(2, 'Herb')]]);
-    const vm = buildHealViewModel([loc], defs);
+  it('★ [W-1b] BITES (DISCRIMINATOR): 2^53 + 1 survives byte-identically — impossible under a Number() projection', () => {
+    // THE successor discriminator to the retired V-5 `?? 0` vs `|| 0` NaN tooth (see the
+    // inventory in this block's header: NaN does not exist in the bigint domain).
+    //   Number(9007199254740993n)         === 9007199254740992   (silently off by one)
+    //   BigInt(Number(9007199254740993n)) === 9007199254740992n  (right TYPE, wrong VALUE)
+    // A `costCurrency: Number(loc.costCurrency)` projection — or a VM field typed `number`
+    // that the implementer "fixes" with a BigInt() round trip — dies exactly here. The
+    // second assertion names the mutant's output so the failure reads as the diagnosis.
+    const vm = buildHealViewModel([makeLocation({ costCurrency: COST_2P53_PLUS_1 })], new Map());
     const entry = vm.locations[0]!;
-    expect(entry.costItemName).toBe('Herb');
-    expect(entry.costQty).toBe(3);
-    expect(entry.costCurrency).toBe(75);
+    expect(typeof entry.costCurrency).toBe('bigint');
+    expect(entry.costCurrency).toBe(9007199254740993n);
+    expect(
+      entry.costCurrency,
+      'costCurrency must NOT equal BigInt(Number(2^53+1)) === 9007199254740992n — that is ' +
+        'exactly what a Number() round trip produces (rowConvert.ts:543-568 doctrine)',
+    ).not.toBe(9007199254740992n);
     expect(entry.isFree).toBe(false);
   });
 
-  it('[V-1] BITES: each row keeps its OWN costCurrency (no cross-row bleed)', () => {
+  it('[W-1c] BITES: u64::MAX is neither clamped nor truncated', () => {
+    // Successor to V-1 "huge 2**40 neither clamped nor bit-truncated". The OLD prey
+    // (`x | 0` / `x >>> 0`) is gone by TYPE — bitwise operators THROW on a bigint — so this
+    // successor hunts the survivors: Math.min-style clamping, and the float round trip
+    // (Number(u64::MAX) === 18446744073709551616, one ABOVE the true value, so a lossy impl
+    // OVERSTATES the price). A 18-quintillion-gold pad must still read as not-free.
+    const vm = buildHealViewModel([makeLocation({ costCurrency: COST_U64_MAX })], new Map());
+    expect(vm.locations[0]!.costCurrency).toBe(18446744073709551615n);
+    expect(vm.locations[0]!.costCurrency).not.toBe(BigInt(Number(COST_U64_MAX)));
+    expect(vm.locations[0]!.isFree).toBe(false);
+  });
+
+  it('[W-1d] BITES: an explicit costCurrency 0n → 0n (a bigint zero, never the number 0, never undefined)', () => {
+    // Successor to V-2 "explicit costCurrency 0 → 0". With the field REQUIRED, 0n is the
+    // free-pad path production actually takes, so this is the case a dropped projection
+    // (undefined) and a Number()-ed projection (the number 0) BOTH fail — `toBe` is
+    // Object.is, under which 0n and 0 are different values.
+    const vm = buildHealViewModel([makeLocation({ costCurrency: 0n })], new Map());
+    expect(vm.locations[0]!.costCurrency).toBe(0n);
+    expect(typeof vm.locations[0]!.costCurrency).toBe('bigint');
+  });
+
+  it('[W-1e] BITES: an item cost and a currency cost are BOTH surfaced on one row', () => {
+    // Successor to V-1 "item cost AND currency cost both surfaced".
+    // Kills: an impl that reads costCurrency only in the else-branch of "has an item cost"
+    // — a hybrid pad would show the herb and hide the gold.
+    const loc = makeLocation({ costItemId: 2, costQty: 3, costCurrency: 75n });
+    const defs = new Map<number, StoreItemRow>([[2, makeItemDef(2, 'Herb')]]);
+    const entry = buildHealViewModel([loc], defs).locations[0]!;
+    expect(entry.costItemName).toBe('Herb');
+    expect(entry.costQty).toBe(3);
+    expect(entry.costCurrency).toBe(75n);
+    expect(entry.isFree).toBe(false);
+  });
+
+  it('[W-1f] BITES: each row keeps its OWN costCurrency (no cross-row bleed)', () => {
+    // Successor to V-1 "each row keeps its OWN costCurrency".
     // Kills: an impl that hoists one row's currency out of the per-row map callback, or
-    // reuses the first/last row's value for the whole list.
+    // reuses the first/last row's value for the whole list. The MIDDLE row is the free one,
+    // so a first-wins bleed and a last-wins bleed produce different wrong answers — both
+    // caught by one toEqual.
     const locs = [
-      makeLocation({ locationId: 1, costCurrency: 10 }),
-      makeLocation({ locationId: 2 }),
-      makeLocation({ locationId: 3, costCurrency: 250 }),
+      makeLocation({ locationId: 1, costCurrency: 10n }),
+      makeLocation({ locationId: 2, costCurrency: 0n }),
+      makeLocation({ locationId: 3, costCurrency: 250n }),
     ];
     const vm = buildHealViewModel(locs, new Map());
-    expect(vm.locations.map((l) => l.costCurrency)).toEqual([10, 0, 250]);
+    expect(vm.locations.map((l) => l.costCurrency)).toEqual([10n, 0n, 250n]);
+    expect(vm.locations.map((l) => l.isFree)).toEqual([false, true, false]);
+  });
+
+  it('[W-1g] BITES: a negative costCurrency passes through unchanged (projection, not validation)', () => {
+    // Successor to V-5 "negative costCurrency passes through". The column is u64 so this is
+    // unreachable from a healthy server — the point is that the model does not invent a
+    // policy anyway. Kills `Math.max`/`< 0n ? 0n :` laundering, which would turn nonsense
+    // content into a plausible-looking FREE pad and HIDE the bad row instead of surfacing it.
+    const vm = buildHealViewModel([makeLocation({ costCurrency: -25n })], new Map());
+    expect(vm.locations[0]!.costCurrency).toBe(-25n);
+    expect(vm.locations[0]!.isFree).toBe(false); // -25n !== 0n
   });
 });
 
-describe('buildHealViewModel [11r-g V-3]: isFree requires ALL THREE cost channels empty', () => {
-  it('★ [V-3] BITES: no item, costQty 0, costCurrency 50 → isFree FALSE (the silent-debit trap)', () => {
-    // THE decisive case. Kills the pre-0170 predicate
-    // `isFree = costItemId === undefined && costQty === 0`, which reports TRUE here: a pure
-    // CONTENT edit (seed a gold cost on a pad) would then paint "Free heal" over a charge
-    // the server happily debits. ADR-0170 Context (3) / §D3.
-    const loc = makeLocation({ costItemId: undefined, costQty: 0, costCurrency: 50 });
+describe('buildHealViewModel [12r-d W-3]: isFree requires ALL THREE cost channels empty', () => {
+  it('★ [W-3a] BITES: no item, costQty 0, costCurrency 50n → isFree FALSE (the silent-debit trap)', () => {
+    // Successor to V-3 "currency 50 → isFree FALSE". THE decisive case. Kills the pre-0170
+    // predicate `isFree = costItemId === undefined && costQty === 0`, which reports TRUE
+    // here: a pure CONTENT edit (seed a gold cost on a pad) would then paint "Free heal"
+    // over a charge the server happily debits. ADR-0170 Context (3) / §D3.
+    const loc = makeLocation({ costItemId: undefined, costQty: 0, costCurrency: 50n });
     const vm = buildHealViewModel([loc], new Map());
     expect(vm.locations[0]!.isFree).toBe(false);
     expect(typeof vm.locations[0]!.isFree).toBe('boolean');
   });
 
-  it('[V-3] BITES: no item, costQty 0, explicit costCurrency 0 → isFree TRUE', () => {
-    // Kills the OVER-correction: any impl that treats "the currency field is present" as
-    // "there is a cost" (e.g. `costCurrency !== undefined ? false : …`).
-    const loc = makeLocation({ costItemId: undefined, costQty: 0, costCurrency: 0 });
-    const vm = buildHealViewModel([loc], new Map());
-    expect(vm.locations[0]!.isFree).toBe(true);
-    expect(vm.locations[0]!.costCurrency).toBe(0);
-  });
-
-  it('★ [V-3] BITES: an ABSENT costCurrency leaves a legacy free pad free (isFree TRUE)', () => {
-    // Kills the other over-correction: `loc.costCurrency === 0` tested WITHOUT the `?? 0`
-    // — `undefined === 0` is false, so EVERY production row (the column is parked) would
-    // flip to "not free" and today's free heal pad would grow a phantom price. This is the
-    // regression guard that keeps the seam INERT until the column leg lands.
-    const loc = makeLocation(); // no costCurrency key at all
+  it('[W-3b] BITES: no item, costQty 0, costCurrency 0n → isFree TRUE (a free pad stays free)', () => {
+    // Successor to V-3 "explicit currency 0 → isFree TRUE" AND to the retired
+    // "ABSENT costCurrency leaves a free pad free" case (absence is unrepresentable now —
+    // 0n is the value every legacy free pad carries). Kills the OVER-correction: any impl
+    // that treats "the currency field exists" as "there is a cost"
+    // (`costCurrency !== undefined ? false : …`), which would grow a phantom price on every
+    // free heal pad in the world.
+    const loc = makeLocation({ costItemId: undefined, costQty: 0, costCurrency: 0n });
     const vm = buildHealViewModel([loc], new Map());
     expect(vm.locations[0]!.isFree).toBe(true);
     expect(vm.locations[0]!.costItemName).toBeNull();
-    expect(vm.locations[0]!.costCurrency).toBe(0);
+    expect(vm.locations[0]!.costCurrency).toBe(0n);
   });
 
-  it('★ [V-3] BITES: truth table — isFree is true in EXACTLY 1 of the 8 (item × qty × currency) combinations', () => {
-    // Kills every partial predicate at once: `&&` swapped for `||`, a dropped conjunct, a
-    // negated conjunct, or a two-of-three check. Only the all-empty row may be free.
+  it('★ [W-3c] BITES: truth table — isFree is true in EXACTLY 1 of the 8 (item × qty × currency) combinations', () => {
+    // Successor to V-3's truth table, in the bigint domain and still EXHAUSTIVE over the
+    // three binary channels. Kills every partial predicate at once: `&&` swapped for `||`,
+    // a dropped conjunct, a negated conjunct, or a two-of-three check. Only the all-empty
+    // row may be free. The `0n` column also kills a `costCurrency` comparison written
+    // against the NUMBER zero (`=== 0`), which is false for 0n and would flip every free
+    // pad to paid — the mirror-image of the silent-debit bug.
     const cases: ReadonlyArray<{
       readonly costItemId: number | undefined;
       readonly costQty: number;
-      readonly costCurrency: number;
+      readonly costCurrency: bigint;
       readonly isFree: boolean;
     }> = [
-      { costItemId: undefined, costQty: 0, costCurrency: 0, isFree: true },
-      { costItemId: undefined, costQty: 0, costCurrency: 50, isFree: false },
-      { costItemId: undefined, costQty: 2, costCurrency: 0, isFree: false },
-      { costItemId: undefined, costQty: 2, costCurrency: 50, isFree: false },
-      { costItemId: 2, costQty: 0, costCurrency: 0, isFree: false },
-      { costItemId: 2, costQty: 0, costCurrency: 50, isFree: false },
-      { costItemId: 2, costQty: 2, costCurrency: 0, isFree: false },
-      { costItemId: 2, costQty: 2, costCurrency: 50, isFree: false },
+      { costItemId: undefined, costQty: 0, costCurrency: 0n, isFree: true },
+      { costItemId: undefined, costQty: 0, costCurrency: 50n, isFree: false },
+      { costItemId: undefined, costQty: 2, costCurrency: 0n, isFree: false },
+      { costItemId: undefined, costQty: 2, costCurrency: 50n, isFree: false },
+      { costItemId: 2, costQty: 0, costCurrency: 0n, isFree: false },
+      { costItemId: 2, costQty: 0, costCurrency: 50n, isFree: false },
+      { costItemId: 2, costQty: 2, costCurrency: 0n, isFree: false },
+      { costItemId: 2, costQty: 2, costCurrency: 50n, isFree: false },
     ];
     expect(cases).toHaveLength(8); // the table itself is well-formed: all 8 combinations…
     expect(cases.filter((c) => c.isFree)).toHaveLength(1); // …and exactly one is free.
@@ -697,66 +825,237 @@ describe('buildHealViewModel [11r-g V-3]: isFree requires ALL THREE cost channel
   });
 });
 
-describe('buildHealViewModel [11r-g V-4]: a currency-only cost invents no item name', () => {
-  it('★ [V-4] BITES: costCurrency 50 with no item cost → isFree false AND costItemName null', () => {
+describe('buildHealViewModel [12r-d W-4]: a currency-only cost invents no item name', () => {
+  it('★ [W-4a] BITES: costCurrency 55n with no item cost → isFree false AND costItemName null', () => {
+    // Successor to V-4 "currency-only invents no item name".
     // Kills: an impl that reaches for an item name whenever ANY cost exists (e.g. widening
     // `itemDefs.get(loc.costItemId ?? 0)?.name` into the currency branch). A gold cost must
-    // never fabricate an item row — healView would print a nonexistent reagent.
-    const loc = makeLocation({ costItemId: undefined, costQty: 0, costCurrency: 50 });
-    const vm = buildHealViewModel([loc], new Map());
-    const entry = vm.locations[0]!;
+    // never fabricate an item row — the overlay would print a nonexistent reagent. This is
+    // the MODEL half of the HEAD bug; the RENDER half is [W-6d].
+    const loc = makeLocation({ costItemId: undefined, costQty: 0, costCurrency: 55n });
+    const entry = buildHealViewModel([loc], new Map()).locations[0]!;
     expect(entry.isFree).toBe(false);
     expect(entry.costItemName).toBeNull();
     expect(entry.costQty).toBe(0);
-    expect(entry.costCurrency).toBe(50);
+    expect(entry.costCurrency).toBe(55n);
   });
 
-  it('[V-4] BITES: a POPULATED itemDefs map leaks no name onto a currency-only row', () => {
+  it('[W-4b] BITES: a POPULATED itemDefs map leaks no name onto a currency-only row', () => {
+    // Successor to V-4 "populated itemDefs leaks no name".
     // Kills: a fallback to itemDefs.get(0) / the first def when costItemId is undefined but
     // a cost is present — id 0 is a representable item id, so an empty map would not have
     // caught it.
-    const loc = makeLocation({ costItemId: undefined, costQty: 0, costCurrency: 120 });
+    const loc = makeLocation({ costItemId: undefined, costQty: 0, costCurrency: 55n });
     const defs = new Map<number, StoreItemRow>([
       [0, makeItemDef(0, 'Zero Item')],
       [1, makeItemDef(1, 'First Item')],
     ]);
-    const vm = buildHealViewModel([loc], defs);
-    expect(vm.locations[0]!.costItemName).toBeNull();
-    expect(vm.locations[0]!.costCurrency).toBe(120);
-    expect(vm.locations[0]!.isFree).toBe(false);
+    const entry = buildHealViewModel([loc], defs).locations[0]!;
+    expect(entry.costItemName).toBeNull();
+    expect(entry.costCurrency).toBe(55n);
+    expect(entry.isFree).toBe(false);
   });
 });
 
-describe('buildHealViewModel [11r-g V-5]: totality over adversarial costCurrency', () => {
-  it('[V-5] BITES: a negative costCurrency passes through unchanged (projection, not validation)', () => {
-    // The VM is a PURE PROJECTION: rejecting an out-of-range cost is the server's job
-    // (reject-not-clamp). Kills: `Math.max(0, …)` laundering nonsense content into a
-    // plausible-looking zero — which would HIDE the bad row instead of surfacing it.
-    const vm = buildHealViewModel([makeLocation({ costCurrency: -25 })], new Map());
-    expect(vm.locations[0]!.costCurrency).toBe(-25);
-    expect(vm.locations[0]!.isFree).toBe(false); // -25 !== 0
+// ---------------------------------------------------------------------------
+// [12r-d W-6] formatHealCostLine — the cost-line renderer healView.ts:25 delegates to.
+//
+// THE HEAD BUG THIS BLOCK EXISTS FOR: healView.ts:25 renders every non-free pad as
+// `${loc.costQty}x ${loc.costItemName ?? 'Unknown item'}`. A currency-only pad has
+// costQty 0 and costItemName null, so the overlay prints the literal text
+// "Heal here (0x Unknown item)" — a nonexistent reagent, in place of the gold price the
+// server is about to debit.
+//
+// WORDING FREEDOM: only the four pins listed in this block's header comment are asserted.
+// The currency phrasing ('120 gold', 'Cost: 120g', '120 coins', …) is the implementer's.
+// ---------------------------------------------------------------------------
+
+describe('formatHealCostLine [12r-d W-6]: the cost-line branches', () => {
+  it('★ [W-6a] BITES: a free pad renders EXACTLY the string "Free"', () => {
+    // Kills: an impl that decorates the free case ('Free!', 'Free heal', 'No cost') — the
+    // string is the VISUAL CONTRACT today's overlay already ships (healView.ts:25), and
+    // every currently-seeded pad is free, so a reworded free case is a visible regression
+    // for 100% of live content. Also kills an impl that ignores isFree and falls into the
+    // item branch, which would print '0x Unknown item' for a free pad.
+    const line = formatHealCostLine(vmFor({ costItemId: undefined, costQty: 0, costCurrency: 0n }));
+    expect(line).toBe('Free');
   });
 
-  it('★ [V-5] BITES: costCurrency NaN survives as NaN, is NOT free, and does not throw', () => {
-    // THE `?? 0` vs `|| 0` discriminator — the ONE input where they observably differ:
-    // `NaN ?? 0` is NaN (the pinned behavior), `NaN || 0` is 0. The `|| 0` variant would
-    // launder a corrupt row into "Free heal"; that mutant dies here. Also kills a
-    // Number()/isFinite sanitizer that maps NaN to 0, and pins totality on a non-finite.
-    let vm!: ReturnType<typeof buildHealViewModel>;
-    expect(() => {
-      vm = buildHealViewModel([makeLocation({ costCurrency: Number.NaN })], new Map());
-    }).not.toThrow();
-    expect(vm.locations[0]!.costCurrency).toBeNaN();
-    expect(vm.locations[0]!.isFree).toBe(false);
+  it('★ [W-6b] BITES: an item-only cost is BYTE-IDENTICAL to today\'s rendering ("3x Herb")', () => {
+    // THE no-visual-regression tooth. healView.ts:25 produces exactly
+    // `${costQty}x ${costItemName ?? 'Unknown item'}` today, and every seeded item-cost pad
+    // in the world renders through it. Kills: any "improvement" to the item wording
+    // ('3 x Herb', 'Herb x3', '3× Herb' with U+00D7) smuggled in alongside the currency
+    // feature — the delegation in [W-7] means such a change ships straight to the player.
+    const line = formatHealCostLine(
+      vmFor(
+        { costItemId: 2, costQty: 3, costCurrency: 0n },
+        new Map<number, StoreItemRow>([[2, makeItemDef(2, 'Herb')]]),
+      ),
+    );
+    expect(line).toBe('3x Herb');
   });
 
-  it('[V-5] BITES fast-check: costCurrency is always a number equal to its input (absent ⇒ 0), and building never throws', () => {
-    // Property: for ANY mix of absent / zero / natural / negative / absurd (>= 2**40)
-    // currency values, buildHealViewModel is TOTAL, every entry carries a NUMERIC
-    // costCurrency exactly equal to its input (0 when absent — never `undefined`, never
-    // clamped), and isFree is exactly the three-way conjunction.
-    // Kills: a dropped `?? 0` (undefined leaks under randomized input), clamping/coercion,
-    // and any isFree predicate that ignores or mis-weights one of the three channels.
+  it('[W-6c] BITES: an UNKNOWN cost item keeps the "Unknown item" fallback ("1x Unknown item")', () => {
+    // The other half of the byte-identical contract: when itemDefs has no entry for the
+    // cost item, costItemName is null and today's shell prints 'Unknown item'. Kills: an
+    // impl that drops the fallback (rendering '1x null' / '1x undefined') while moving the
+    // logic out of the view, and kills one that swallows the row into 'Free'.
+    const line = formatHealCostLine(vmFor({ costItemId: 99, costQty: 1, costCurrency: 0n }));
+    expect(line).toBe('1x Unknown item');
+  });
+
+  it('★ [W-6d] BITES: a currency-only cost names the AMOUNT and renders neither "0x" nor "Unknown item"', () => {
+    // THE HEAD BUG, pinned. WRONG IMPL KILLED (1): today's shell logic moved verbatim into
+    // the new function — it prints '0x Unknown item' for this row, which this case catches
+    // three ways (the '0x' needle, the 'Unknown item' needle, and the missing amount).
+    // WRONG IMPL KILLED (2): a currency branch that renders the ITEM channel's zero
+    // quantity anyway ('55 gold, 0x Unknown item').
+    // WRONG IMPL KILLED (3): 'Free' (the pre-0170 predicate leaking into the renderer).
+    //
+    // THE AMOUNT IS 55n ON PURPOSE: it has no trailing zero digit, so the '0x' needle can
+    // only fire on a costQty-0 item rendering — a legitimate `${amount}x Gold` wording
+    // (which would contain '0x' for an amount like 120) is NOT punished by this assertion.
+    const line = formatHealCostLine(
+      vmFor({ costItemId: undefined, costQty: 0, costCurrency: 55n }),
+    );
+    expect(typeof line).toBe('string');
+    expect(line).not.toBe('Free');
+    expect(line.length).toBeGreaterThan(0);
+    expect(
+      stripDigitGrouping(line).includes('55'),
+      'a currency-only cost line must NAME the amount (55) — the player has to know the price',
+    ).toBe(true);
+    expect(
+      line.includes('0x'),
+      'the cost line must not render the item channel\'s zero quantity — "0x …" is the HEAD bug',
+    ).toBe(false);
+    expect(
+      line.includes('Unknown item'),
+      'a currency cost must never fabricate an item name — "Unknown item" is the HEAD bug',
+    ).toBe(false);
+    expect(line.includes('undefined')).toBe(false);
+    expect(line.includes('null')).toBe(false);
+    expect(line.includes('NaN')).toBe(false);
+  });
+
+  it('★ [W-6e] BITES (DISCRIMINATOR): a 2^53+1 amount is rendered FROM THE BIGINT, not from a Number()', () => {
+    // The render-side twin of [W-1b]. `String(Number(9007199254740993n))` is
+    // '9007199254740992' — a formatter that Number()s the amount before templating shows
+    // the player a price that is off by one and unpayable. Both needles are checked on the
+    // grouping-stripped line so a locale-aware `toLocaleString()` wording stays legal.
+    const line = formatHealCostLine(
+      vmFor({ costItemId: undefined, costQty: 0, costCurrency: COST_2P53_PLUS_1 }),
+    );
+    const flat = stripDigitGrouping(line);
+    expect(
+      flat.includes('9007199254740993'),
+      'the amount must be rendered from the bigint (9007199254740993)',
+    ).toBe(true);
+    expect(
+      flat.includes('9007199254740992'),
+      'the line contains 9007199254740992 — the value a Number() hop produces for 2^53+1',
+    ).toBe(false);
+    expect(flat.includes('e+')).toBe(false); // no exponential float notation either
+  });
+
+  it('[W-6f] BITES: a pad with BOTH channels renders BOTH (the item rendering AND the amount)', () => {
+    // Kills: an early `return` in the item branch (or in the currency branch) that hides
+    // the other channel — a hybrid pad would understate what the player is about to pay.
+    // The item half is asserted as the byte-identical substring '2x Herb', so a both-channel
+    // impl cannot quietly reformat the item wording either. Amount 75n: no trailing zero.
+    const line = formatHealCostLine(
+      vmFor(
+        { costItemId: 2, costQty: 2, costCurrency: 75n },
+        new Map<number, StoreItemRow>([[2, makeItemDef(2, 'Herb')]]),
+      ),
+    );
+    expect(line.includes('2x Herb'), 'the item channel must still render as "2x Herb"').toBe(true);
+    expect(stripDigitGrouping(line).includes('75'), 'the currency channel must render too').toBe(
+      true,
+    );
+    expect(line).not.toBe('Free');
+    expect(line.includes('Unknown item')).toBe(false);
+  });
+
+  it('[W-6g] BITES: TOTAL — never throws, always returns a non-empty string, never leaks "undefined"/"NaN"', () => {
+    // The module's standing contract (this file's header: TOTAL, never throws) extended to
+    // the new export. The list includes an INTERNALLY INCONSISTENT view model — every
+    // channel empty but isFree false — which no builder produces but which a hand-built VM
+    // in a future call site could. Kills: a formatter that assumes exactly one channel is
+    // populated and dereferences its way into a throw, and one that returns '' for a shape
+    // it does not recognise (an empty cost line reads as a rendering bug in the overlay).
+    const vms: readonly HealLocationViewModel[] = [
+      { ...vmFor({ costCurrency: 0n }) },
+      { ...vmFor({ costCurrency: COST_U64_MAX }) },
+      { ...vmFor({ costCurrency: -5n }) },
+      { ...vmFor({ costItemId: 7, costQty: 0, costCurrency: 0n }) },
+      { ...vmFor({ costItemId: 7, costQty: 99, costCurrency: COST_U64_MAX }) },
+      // Inconsistent-by-construction: all three channels empty, yet flagged not-free.
+      { ...vmFor({ costCurrency: 0n }), isFree: false },
+      // A defined-but-empty item name (a content row with a blank name).
+      {
+        ...vmFor(
+          { costItemId: 4, costQty: 1, costCurrency: 0n },
+          new Map<number, StoreItemRow>([[4, makeItemDef(4, '')]]),
+        ),
+      },
+    ];
+    for (const vm of vms) {
+      let line!: string;
+      expect(() => {
+        line = formatHealCostLine(vm);
+      }, 'formatHealCostLine must be TOTAL — healView renders it inside a forEach over every pad').not.toThrow();
+      expect(typeof line).toBe('string');
+      expect(line.length).toBeGreaterThan(0);
+      expect(line.includes('undefined')).toBe(false);
+      expect(line.includes('NaN')).toBe(false);
+      expect(line.includes('[object')).toBe(false);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// [12r-d W-7] The delegation pin for the coverage-excluded DOM shell.
+// healView.ts is listed in vite.config.ts's coverage exclusions and has NO test file —
+// it is a DOM shell by policy. That makes a SOURCE SCAN the only available gate on the
+// one line of it that matters: the cost string must come from the pure function this
+// file tests, not from a second, divergent copy of the logic inside the view.
+// Single literal needle, `.includes` only — no `new RegExp(` anywhere (ReDoS gate).
+// ---------------------------------------------------------------------------
+
+describe('healView.ts [12r-d W-7]: the cost line is DELEGATED to formatHealCostLine', () => {
+  it('★ [W-7] BITES: healView.ts contains a call to formatHealCostLine(', () => {
+    // WRONG IMPL KILLED: shipping formatHealCostLine as a new export that healView.ts never
+    // calls. Every behavioural tooth in [W-6] would pass, the model would be perfect, and
+    // the player would STILL read "Heal here (0x Unknown item)" — the bug would be fully
+    // fixed everywhere except the one surface a human sees. Nothing else in this suite can
+    // see that failure mode, because healView is unreachable from a node-only unit test.
+    const viewPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'healView.ts');
+    let src: string;
+    try {
+      src = readFileSync(viewPath, 'utf8');
+    } catch (err) {
+      // Fail LOUD rather than vacuously green if the file moves or is renamed.
+      throw new Error('healView.ts could not be read — the file must exist: ' + String(err));
+    }
+    expect(
+      src.includes('formatHealCostLine('),
+      'healView.ts must call formatHealCostLine(...) — the cost string may not be rebuilt ' +
+        'inline in the DOM shell (that copy is coverage-excluded and cannot be gated)',
+    ).toBe(true);
+  });
+});
+
+describe('buildHealViewModel [12r-d W-5]: properties over the bigint domain', () => {
+  it('★ [W-5a] BITES fast-check: costCurrency equals its input EXACTLY, isFree is the three-way conjunction, and building never throws', () => {
+    // Successor to the V-5 property. For ANY mix of 0n / u64 / negative currency values the
+    // model is TOTAL, every entry carries a BIGINT costCurrency exactly equal to its input
+    // (never `undefined`, never coerced, never clamped), and isFree is exactly the
+    // three-way conjunction. Kills: a Number() hop (fails for most of the u64 domain), a
+    // clamp, and any isFree predicate that ignores or mis-weights one of the three channels.
+    // Block-bodied arrow: fast-check reads an expression-bodied matcher's return value as a
+    // `false` predicate and fails spuriously.
     fc.assert(
       fc.property(
         fc.array(
@@ -768,14 +1067,10 @@ describe('buildHealViewModel [11r-g V-5]: totality over adversarial costCurrency
             costItemId: fc.option(fc.integer({ min: 1, max: 999 }), { nil: undefined }),
             costQty: fc.integer({ min: 0, max: 99 }),
             cooldownMs: fc.integer({ min: 0, max: 86400000 }),
-            costCurrency: fc.option(
-              fc.oneof(
-                fc.nat(),
-                fc.integer({ min: -1000, max: -1 }),
-                fc.constant(0),
-                fc.integer({ min: 2 ** 40, max: 2 ** 45 }),
-              ),
-              { nil: undefined },
+            costCurrency: fc.oneof(
+              fc.constant(0n),
+              fc.bigUintN(64),
+              fc.bigInt({ min: -1000n, max: -1n }),
             ),
           }),
           { maxLength: 20 },
@@ -788,40 +1083,79 @@ describe('buildHealViewModel [11r-g V-5]: totality over adversarial costCurrency
           expect(vm.locations).toHaveLength(locs.length);
           vm.locations.forEach((entry, i) => {
             const src = locs[i]!;
-            expect(typeof entry.costCurrency).toBe('number');
-            expect(entry.costCurrency).toBe(src.costCurrency ?? 0);
+            expect(typeof entry.costCurrency).toBe('bigint');
+            expect(entry.costCurrency).toBe(src.costCurrency);
             expect(entry.isFree).toBe(
-              src.costItemId === undefined && src.costQty === 0 && (src.costCurrency ?? 0) === 0,
+              src.costItemId === undefined && src.costQty === 0 && src.costCurrency === 0n,
             );
           });
         },
       ),
     );
   });
+
+  it('★ [W-5b] BITES fast-check: formatHealCostLine returns "Free" for EXACTLY the free pads, and never leaks a placeholder', () => {
+    // The renderer's own invariant, stated as an IFF so both directions bite:
+    //   * a free pad that renders anything but 'Free' (e.g. '0x Unknown item'), and
+    //   * a PAID pad that renders 'Free' — the silent-debit lie, reached through the
+    //     renderer instead of through isFree.
+    // Plus: the line is always a non-empty string containing no 'undefined' / 'NaN' /
+    // '[object Object]' for ANY generated row. Kills a formatter that only handles the
+    // shapes the hand-written table above happens to use.
+    fc.assert(
+      fc.property(
+        fc.record({
+          costItemId: fc.option(fc.integer({ min: 1, max: 999 }), { nil: undefined }),
+          costQty: fc.integer({ min: 0, max: 99 }),
+          costCurrency: fc.oneof(fc.constant(0n), fc.bigUintN(64)),
+        }),
+        ({ costItemId, costQty, costCurrency }) => {
+          const entry = buildHealViewModel(
+            [makeLocation({ costItemId, costQty, costCurrency })],
+            new Map(),
+          ).locations[0]!;
+          let line!: string;
+          expect(() => {
+            line = formatHealCostLine(entry);
+          }).not.toThrow();
+          expect(typeof line).toBe('string');
+          expect(line.length).toBeGreaterThan(0);
+          expect(line === 'Free').toBe(entry.isFree);
+          expect(line.includes('undefined')).toBe(false);
+          expect(line.includes('NaN')).toBe(false);
+          expect(line.includes('[object')).toBe(false);
+        },
+      ),
+    );
+  });
 });
 
-describe('buildHealViewModelForLocation [11r-g V-1]: the bound arm carries costCurrency too', () => {
-  it('★ [V-1] BITES: the bound location surfaces its OWN costCurrency and isFree=false', () => {
-    // Kills: a ForLocation body that hand-rolls the view model instead of delegating — it
-    // would miss the new field entirely, and the bound overlay (the KeyT heal arm) is the
-    // ONE heal surface a player actually sees.
+describe('buildHealViewModelForLocation [12r-d W-8]: the bound arm carries costCurrency too', () => {
+  it('★ [W-8a] BITES: the bound location surfaces its OWN costCurrency (60n) and isFree=false', () => {
+    // Successor to the 11r-g bound-arm case. Kills: a ForLocation body that hand-rolls the
+    // view model instead of delegating — it would miss the new field entirely, and the BOUND
+    // overlay (the KeyT heal arm, main.ts:444-446) is the ONE heal surface a player actually
+    // sees. The fixture puts a DIFFERENT non-zero cost on the unselected pad, so an impl
+    // that filters after projecting the first row also dies here.
     const locs = [
-      makeLocation({ locationId: 1, costCurrency: 10 }),
-      makeLocation({ locationId: 2, costCurrency: 60 }),
+      makeLocation({ locationId: 1, costCurrency: 10n }),
+      makeLocation({ locationId: 2, costCurrency: 60n }),
     ];
     const vm = buildHealViewModelForLocation(2, locs, new Map());
     expect(vm.locations).toHaveLength(1);
     expect(vm.locations[0]!.locationId).toBe(2);
-    expect(vm.locations[0]!.costCurrency).toBe(60);
+    expect(vm.locations[0]!.costCurrency).toBe(60n);
+    expect(typeof vm.locations[0]!.costCurrency).toBe('bigint');
     expect(vm.locations[0]!.isFree).toBe(false);
   });
 
-  it('[V-1] CONSISTENCY PIN: ForLocation(id) equals the default arm for a currency-only pad', () => {
-    // Differential re-pin of "thin filter + delegate" across the NEW field (the uxd2-2
-    // pattern). Kills a future divergence where one arm learns about costCurrency and the
-    // other does not. NOTE: both arms are equally wrong today, so this case is GREEN before
-    // the fix — it is a divergence guard, not one of the RED teeth.
-    const locs = [makeLocation({ locationId: 4, costCurrency: 500 })];
+  it('[W-8b] CONSISTENCY PIN: ForLocation(id) equals the default arm for a currency-only pad', () => {
+    // Successor to the 11r-g bound-arm consistency pin. Differential re-pin of "thin filter
+    // + delegate" across the currency field (the uxd2-2 pattern). Kills a future divergence
+    // where one arm learns about costCurrency and the other does not. HONEST NOTE: both arms
+    // are equally wrong at HEAD, so the toEqual here is a DIVERGENCE guard, not one of the
+    // RED value teeth (the file is red at import either way until formatHealCostLine ships).
+    const locs = [makeLocation({ locationId: 4, costCurrency: 500n })];
     expect(buildHealViewModelForLocation(4, locs, new Map())).toEqual(
       buildHealViewModel(locs, new Map()),
     );
