@@ -37,29 +37,75 @@
 // violating append-only, so the baseline would be poisoned permanently. The
 // ambiguous registry is refused instead, and growth advice withheld until the
 // comment is rewritten in the `id=N` form.
-//   BASELINE FLOOR (production only): a commit that deletes content AND shrinks
-// the baseline in the same breath is self-consistent, so both directions agree
-// and both go green. `floorViolations` is the independent anchor — a hand-
-// ratcheted minimum id count per registry. It runs ONLY in the default export,
-// against the seven real committed baselines, and must NEVER be called from
-// `checkRegistry`: the temp-fixture teeth run 2-3 id fixtures against keys like
-// `species` (floor 16), so a floor inside `checkRegistry` would false-fail the
-// negative controls and make several teeth pass for entirely the wrong reason.
+//   EXPECTED DISTINCT ID COUNT (production only; historically "the baseline
+// floor", and `floorViolations`/`BASELINE_ID_FLOORS` keep those names): a commit
+// that deletes content AND shrinks the baseline in the same breath is
+// self-consistent, so both directions agree and both go green. The per-registry
+// expected count is the independent anchor a shrink cannot argue with.
+//   It is an EXACT PIN, not a minimum — 12r-a round 2, after the red-team proved
+// four green bypasses of a `>=` floor. Under a minimum every id ever added mints
+// one free future deletion: grow a baseline from 16 to 17 in a legitimate PR
+// (nothing forces the literal to ratchet), delete an id back down to 16 in a
+// later PR, both green, one shipped id silently un-pinned; or retire one id and
+// add another in the SAME commit and the count never moves at all. So BOTH
+// directions fail: below the expected count means a baseline was shrunk (restore
+// the content and the pin), above it means content grew without the ratchet.
+//   The count is of DISTINCT ids, never `Array.length` — the red-team padded a
+// baseline with a duplicate entry, and with `-0` beside a live `0`, both of which
+// add to `length` while `Set` collapses them, so a shipped id could be deleted
+// from the content AND un-pinned while the count still looked healthy.
+//   AUTHOR OBLIGATION: a content PR that adds an id must, IN THE SAME PR, append
+// that id to the registry's baseline JSON, bump the production
+// `BASELINE_ID_FLOORS` constant, AND bump the tooth-owned `baselineFloor` table
+// in the default export. Three visible, reviewable lines; touching only one of
+// them fails. There is no lazy path and no deferred ratchet.
+//   `floorViolations` runs ONLY in the default export, against the seven real
+// committed baselines (whose pinned ARRAYS it is handed, so the distinct-counting
+// is inside the pure function where a tooth can reach it), and must NEVER be
+// called from `checkRegistry`: the temp-fixture teeth run 2-3 id fixtures against
+// keys like `species` (expected 16), so this check inside `checkRegistry` would
+// false-fail the negative controls and make several teeth pass for entirely the
+// wrong reason.
 //   SCOPE LIMITS + named residuals (this gate is deliberately narrow):
 //   (i) id REUSE / rebinding is NOT detected. Swapping species 20 and 21, or
 //       rebinding id 20 to a different creature, is green — the set of ids is
 //       unchanged. Catching it needs a MAP-shaped baseline (id -> identity),
 //       like evals/baselines/evolution-path-edge-ids.json. Own slice.
 //   (ii) `parseIds` is not string-aware, so an id echoed inside a QUOTED RON
-//       string value still masks a removal. Deliberately NOT fixed here: it
-//       directly contradicts the intentional negative control at the end of the
-//       T2-e block (an in-string comment sequence must NOT refuse a registry),
-//       so changing it is a policy change about what string values mean to this
-//       gate, and needs its own slice.
-//   (iii) `parseIds` accepts plain decimal only, so RON's `0x14`, `2_00` and
-//       `id : 20` forms evade or mis-harvest it (`id: 2_00` renumbers species 2
-//       to 200 and stays green). Zero live occurrences across all content dirs
-//       today. Same future "extractor hardening" slice as (ii).
+//       string value still masks a removal. Deliberately NOT fixed here, and the
+//       FIRST blocker is ADR-0173: `parseIds`' behaviour for existing inputs is
+//       frozen by two out-of-scope `game-core/tests/*.rs` files, so no variant of
+//       the fix may touch it. Layering a refusal on top (the shape used for
+//       comment needles) is additionally ruled out because it contradicts the
+//       intentional negative control at the end of the T2-e block (an in-string
+//       comment sequence must NOT refuse a registry) — that control is a policy
+//       statement about what string values mean to this gate. Own slice, which
+//       must settle the policy first.
+//   (iii) `parseIds` accepts plain decimal only, so RON's `0x14`/`0b10100`/`0o24`,
+//       `2_00` and `id : 20` forms evade or mis-harvest it. Since 12r-a made the
+//       gate bidirectional most of these are RED FALSE-FAILS, not green evasions:
+//       `id : 20` harvests nothing (the pinned 20 reads as removed) and `id: 0x14`
+//       harvests `0` (20 reads as removed AND 0 as unpinned) — noisy and
+//       mis-diagnosed, but loud. TWO exceptions stay GREEN. (a) `id: 2_00`
+//       harvests `2`, so renumbering species 2 to 200 is invisible. (b) On ZONES
+//       specifically, the `0` mis-harvested out of a `0x`/`0b`/`0o` literal is
+//       ITSELF a pinned id (zones pins 0 and 1), so rewriting `(id: 0, …)` as
+//       `(id: 0x5, …)` renumbers the starting zone and stays GREEN — nothing is
+//       reported missing and nothing is reported unpinned. Zero live occurrences
+//       across all content dirs today. Same future "extractor hardening" slice
+//       as (ii).
+//   (iv) `parseIds` is FLAT and depth-blind: it cannot tell a top-level entry's
+//       `id:` from an `id:` field on a NESTED sub-record. A nested `id:` inside a
+//       registry entry is now a HARD FAIL WITH NO CORRECT REMEDIATION — the
+//       nested number is harvested as a live id, the growth half reports it as
+//       unpinned, and neither available answer is right: pinning it writes a
+//       non-id into the append-only baseline permanently, and rewriting it as
+//       `id=N` (the convention for prose) is not valid RON for a real field, so
+//       the content loader returns `Err`. This residual is SHARPER than before
+//       this slice — until 12r-a the gate only asked "is every baseline id still
+//       present?", so a nested `id:` was harmless noise. The growth message says
+//       so explicitly and tells the author NOT to pin it. Fixing it needs a
+//       scoped, depth-aware extractor, which ADR-0173 puts in its own slice.
 //   NO ADR NUMBER WAS RESERVED for this slice, so this comment block plus the
 // three regenerated baseline `_comment`s ARE the decision record. An ADR is
 // OWED for the bidirectional semantics + the ordering constraint (ADR-0173 is
@@ -89,10 +135,25 @@ function unpinnedIds(baselineIds, currentIds) {
   return [...new Set(currentIds)].filter((id) => !base.has(id)).sort((a, b) => a - b);
 }
 
-// 12r-a: per-registry MINIMUM pinned-id count, ratcheted BY HAND when content
-// grows. The floor is the only check that survives a commit which deletes
-// content and shrinks the baseline together (self-consistent, so removal and
-// growth both agree), and the E2 teeth cannot substitute for it — their fixture
+// 12r-a (round 2): per-registry EXPECTED DISTINCT pinned-id count. Historically
+// named a "floor", and the names are kept because the teeth reference them, but
+// the semantics are an EXACT PIN, not a minimum: a count below the expected
+// number AND a count above it are both violations.
+//   Why not a minimum: under `>=` every id ever added mints one free future
+// deletion. Grow a baseline from 16 to 17 in a legitimate PR (nothing forces the
+// literal below to ratchet), then delete an id back down to 16 in a later PR —
+// both commits green, one shipped id silently un-pinned. Retiring one id while
+// adding another in the SAME commit does it in one step. Exact equality makes
+// the ratchet mandatory and, more importantly, REVIEWABLE.
+//   AUTHOR OBLIGATION: a content PR that adds an id must, IN THE SAME PR, append
+// that id to the registry's evals/baselines/*-ids.json AND bump the expected
+// count here AND bump the tooth-owned `baselineFloor` table in this file's
+// default export. Three visible lines; a diff that touches only one of them
+// fails. A PR that LOWERS a number here is un-pinning a shipped id: restore the
+// content instead.
+//   This pin is the only check that survives a commit which deletes content and
+// shrinks the baseline together (self-consistent, so the removal and growth
+// halves both agree), and the E2 teeth cannot substitute for it — their fixture
 // RON is derived FROM the baseline, so a baseline pinning only the dropped id
 // would satisfy them.
 const BASELINE_ID_FLOORS = {
@@ -105,27 +166,58 @@ const BASELINE_ID_FLOORS = {
   npcs: 2,
 };
 
-// PURE. Takes `{ zones: n, species: n, ... }` and returns one human-readable
-// string per registry whose count is BELOW its floor, or whose key is ABSENT
-// from the input (a baseline that failed to read is a broken baseline, never
-// "nothing to check"). Empty array = healthy. Iterates its OWN floor table, not
-// the caller's object, so an omitted key cannot slip through. Production-only:
-// never call this from `checkRegistry` — see the ordering/floor notes in the
-// file header.
+// PURE. Takes `{ zones: <value>, species: <value>, ... }` and returns one
+// human-readable string per registry whose DISTINCT id count does not EXACTLY
+// equal its expected count, or whose key is ABSENT from the input (a baseline
+// that failed to read is a broken baseline, never "nothing to check"). Empty
+// array = healthy.
+//
+// Each per-key value may be EITHER:
+//   * a NUMBER — an already-distinct count, used as-is; or
+//   * the pinned ID ARRAY itself, in which case the count is
+//     `new Set(ids).size`. This is the shape the production loop passes, so the
+//     distinct-counting is inside this pure function where a tooth can reach it
+//     rather than buried in the caller, where `pinned.length` and
+//     `new Set(pinned).size` are indistinguishable from outside. That
+//     indistinguishability is exactly how the duplicate-entry and `-0` padding
+//     bypasses stayed green: both inflate `length` while `Set` collapses them.
+// Anything else (a string, null, NaN, a missing key) is a BROKEN read.
+//
+// Membership is tested with `Object.hasOwn`, never a bare property read, so an
+// inherited value off the prototype chain (`toString`, or anything an attacker
+// plants on `Object.prototype`) can never report a registry as healthy.
+//
+// The comparison is EXACT EQUALITY in both directions — see the note on
+// `BASELINE_ID_FLOORS` for why a minimum is not enough. Iterates its OWN table,
+// not the caller's object, so an omitted key cannot slip through.
+// Production-only: never call this from `checkRegistry` — see the ordering and
+// expected-count notes in the file header.
 export function floorViolations(countsByKey) {
   const violations = [];
   for (const key of Object.keys(BASELINE_ID_FLOORS)) {
-    const floor = BASELINE_ID_FLOORS[key];
-    const count = countsByKey == null ? undefined : countsByKey[key];
-    if (typeof count !== 'number' || !Number.isFinite(count)) {
+    const expected = BASELINE_ID_FLOORS[key];
+    const value =
+      countsByKey != null && Object.hasOwn(countsByKey, key) ? countsByKey[key] : undefined;
+    let count;
+    if (Array.isArray(value)) {
+      count = new Set(value).size;
+    } else if (typeof value === 'number' && Number.isFinite(value)) {
+      count = value;
+    } else {
       violations.push(
-        `${key}: pinned-id count is ABSENT from the floor check — its baseline JSON did not yield an id array, which is a broken baseline, not "nothing to check" (floor ${floor})`,
+        `${key}: pinned-id count is ABSENT from the expected-count check — its baseline JSON did not yield an id array or a count, which is a broken baseline, not "nothing to check" (expected exactly ${expected} distinct id(s))`,
       );
       continue;
     }
-    if (count < floor) {
+    if (count < expected) {
       violations.push(
-        `${key}: baseline pins only ${count} id(s), below its floor of ${floor} — a baseline may only ever GROW; either it drifted behind the content (regenerate it from a HAND READ of game-core/content/${key}/*.ron, never from parseIds) or it was SHRUNK alongside a content deletion, which is self-consistent and therefore invisible to both the removal and the growth check`,
+        `${key}: baseline pins ${count} DISTINCT id(s) but exactly ${expected} are expected — a baseline was SHRUNK — restore the content and the pin. Either the baseline drifted behind the content (append the missing ids from a HAND READ of game-core/content/${key}/*.ron, never from parseIds) or it was shrunk alongside a content deletion, which is self-consistent and therefore invisible to both the removal and the growth check. Never lower the expected count to match a shrink. Note DISTINCT: a duplicated entry, or a \`-0\` beside a \`0\`, inflates the array's length without pinning anything`,
+      );
+      continue;
+    }
+    if (count > expected) {
+      violations.push(
+        `${key}: baseline pins ${count} DISTINCT id(s) but exactly ${expected} are expected — content grew — bump the expected count in THIS PR. The expected count is an EXACT pin, not a minimum: set ${key} to ${count} in BOTH \`BASELINE_ID_FLOORS\` and the tooth-owned \`baselineFloor\` table, in the same PR that adds the id. Under a minimum the bump is optional, and every id added that way mints one free future deletion (grow to ${count} in one PR, delete back to ${expected} in the next, both green)`,
       );
     }
   }
@@ -189,9 +281,18 @@ function readRegistryDir(dirPath) {
 // String-aware in BOTH directions: a `//` or `/*` inside a RON string value
 // (e.g. a URL in flavour text) is DATA, not a comment, and must not trip the
 // guard; conversely quotes INSIDE a comment must never be mistaken for the
-// start of a string literal. The needle is `\bid:\s*\d` — exactly what
+// start of a string literal. The needle is `\bid:\s*\d+` — exactly what
 // `parseIds` would harvest — so `item_id:`/`species_id:` mentions and the
 // conventional `id=N` form are left alone.
+//
+// 12r-a round 2: returns `line N: <the matched needle>` — the MATCH ONLY, never
+// the surrounding prose. `checkRegistry` interpolates this straight into a gate
+// failure detail, so rendering the whole comment let a content author inject
+// arbitrary text into a gate message; the red-team planted the literal phrase
+// `baseline needs regeneration` in a comment and got a REMOVAL-context failure
+// that handed the reviewer the exact wrong instruction. Detection is unchanged
+// (same needle, same string-awareness, same per-registry rules) and the
+// `line N: ` prefix is preserved — only the rendered payload narrowed.
 function trailingCommentIdNeedles(ron) {
   const found = [];
   let i = 0;
@@ -229,8 +330,9 @@ function trailingCommentIdNeedles(ron) {
       const end = nl === -1 ? ron.length : nl;
       const comment = ron.slice(i, end);
       // Whole-line comments are already stripped upstream and are safe anyway.
-      if (codeSeenOnLine && /\bid:\s*\d/.test(comment)) {
-        found.push(`line ${line}: ${comment.trim()}`);
+      const needle = codeSeenOnLine ? /\bid:\s*\d+/.exec(comment) : null;
+      if (needle) {
+        found.push(`line ${line}: ${needle[0].trim()}`);
       }
       i = end;
       continue;
@@ -240,8 +342,9 @@ function trailingCommentIdNeedles(ron) {
       const end = close === -1 ? ron.length : close + 2;
       const comment = ron.slice(i, end);
       // NOTHING strips block comments — flag them wherever they sit.
-      if (/\bid:\s*\d/.test(comment)) {
-        found.push(`line ${line}: ${comment.trim()}`);
+      const needle = /\bid:\s*\d+/.exec(comment);
+      if (needle) {
+        found.push(`line ${line}: ${needle[0].trim()}`);
       }
       for (let k = i; k < end; k += 1) {
         if (ron[k] === '\n') line += 1;
@@ -294,7 +397,7 @@ function checkRegistry(ronDir, baselinePath, baselineKey, label) {
   // assertion). Naming an already-pinned id here would read as "the author must
   // add this", which is exactly how a baseline gets poisoned.
   const growthDetail = unpinned.length
-    ? `${label}: live ids that no baseline pins: ${unpinned.join(', ')} — baseline needs regeneration: append them to its \`evals/baselines/*-ids.json\` baseline in this same PR, so append-only enforcement actually covers them. The baseline may only ever be APPENDED to, never shrunk. If a number listed here is not a real registry entry — harvested out of flavour text or a nested field — rewrite that occurrence in the \`id=N\` form instead of pinning it`
+    ? `${label}: live ids that no baseline pins: ${unpinned.join(', ')} — baseline needs regeneration: append them to its \`evals/baselines/*-ids.json\` baseline in this same PR, and bump that registry's expected distinct-id count in the same PR too, so append-only enforcement actually covers them. The baseline may only ever be APPENDED to, never shrunk. If a number listed here is NOT a real registry entry, do not pin it — the fix depends on where it came from: (a) harvested out of FLAVOUR TEXT or any other prose, rewrite that occurrence in the \`id=N\` form; (b) a genuine NESTED \`id:\` sub-record inside an entry — \`parseIds\` is flat and depth-blind, so it cannot tell that field from a top-level id. \`id=N\` is NOT valid RON for a real field, so rewriting it there breaks the content loader; this needs a scoped, depth-aware extractor in its own slice. Do NOT pin it and do NOT mangle the field`
     : '';
   if (removalDetail && growthDetail) {
     // A RENUMBER fires both halves. Report them together, removal first: an
@@ -304,9 +407,14 @@ function checkRegistry(ronDir, baselinePath, baselineKey, label) {
   }
   if (removalDetail) return { pass: false, detail: removalDetail };
   if (growthDetail) return { pass: false, detail: growthDetail };
+  // DISTINCT baseline count, never `baseline.length`: a padded baseline (a
+  // duplicated entry, or `-0` beside `0`) has a length larger than the number of
+  // ids it actually pins, which is how this line came to print the
+  // self-contradictory "species: 15 ids; all 16 baseline ids retained" while a
+  // shipped id had been deleted from the content and un-pinned.
   return {
     pass: true,
-    detail: `${label}: ${current.length} ids; all ${baseline.length} baseline ids retained, none unpinned`,
+    detail: `${label}: ${current.length} ids; all ${new Set(baseline).size} distinct baseline ids retained, none unpinned`,
   };
 }
 
@@ -360,6 +468,28 @@ function countOccurrences(haystack, needle) {
 // actually pins today rather than a number frozen into this file.
 function committedBaselineIds(baselinePath, key) {
   return JSON.parse(readFileSync(baselinePath, 'utf8'))[key];
+}
+
+// Teeth-only helper (12r-a round 2 / T3-h): picks a probe id that a pinned set
+// does NOT contain, preferring the LOWEST id sitting in a GAP inside the pinned
+// range and falling back to `max + 1` when the set is contiguous.
+//
+// Why a gap and not simply `max + 1`: every round-1 growth probe (9999, 777, 77)
+// was the numeric MAXIMUM of its fixture, so the mutant
+//   `unpinned = live.filter((id) => !base.has(id) && id > Math.max(...baseline))`
+// — a high-water-mark check, blind to any unpinned id BELOW the top of the
+// baseline — survived the entire suite (mutant M3). That blindness is a live
+// hazard, not a theoretical one: this repo deliberately leaves gap BANDS in its
+// id ranges (species pins 1-10, then 20-23, then 30-31; ADR-0144 D1 reserves
+// bands), so the next species is as likely to land at 11 or 24 as at 32.
+function lowestGapOrNextId(pinnedIds) {
+  const sorted = [...new Set(pinnedIds)].sort((a, b) => a - b);
+  const present = new Set(sorted);
+  const highest = sorted[sorted.length - 1];
+  for (let candidate = sorted[0] + 1; candidate < highest; candidate += 1) {
+    if (!present.has(candidate)) return candidate;
+  }
+  return highest + 1;
 }
 
 export default async function () {
@@ -646,13 +776,26 @@ export default async function () {
   // T3-a (E2): removing a currently-SHIPPED id must turn the gate red, for
   // each of the three drifted registries. Deliberately NOT hand-written
   // fixtures: each case reads the REAL committed baseline JSON at run time
-  // and first asserts the PRECONDITION that the id it is about to delete is
-  // actually pinned there. That precondition is what makes this tooth red
-  // TODAY (species-ids.json does not pin 20, item-ids.json does not pin 4,
-  // skill-ids.json does not pin 7) and it is what keeps the tooth honest
+  // and first asserts the PRECONDITIONS that make the case meaningful. Those
+  // preconditions are what made this tooth red at the start of this slice
+  // (species-ids.json did not pin 20, item-ids.json did not pin 4,
+  // skill-ids.json did not pin 7) and they are what keeps the tooth honest
   // afterwards: a "fix" that regenerates only ONE baseline, or that pins a
   // subset, still fails here. Kills: today's checkRegistry + today's stale
   // baselines, together — the pair is the defect.
+  //
+  // 12r-a round 2 — TWO preconditions with DISTINCT messages (red-team
+  // finding 3). The round-1 tooth asserted only that the BASELINE pins the id,
+  // while its failure message claimed the id "ships in game-core/content/
+  // <label>/*.ron today" — a fact it never verified — and prescribed
+  // "regenerate the baseline from a HAND READ of the RON". Under an F1a-style
+  // edit (delete species 20 from the CONTENT and un-pin it from the baseline in
+  // the same commit) that claim is FALSE and that advice reproduces the shrunk
+  // baseline, so the gate stays red forever while the only real fix — restore
+  // the content — is never stated. The live-content precondition is therefore
+  // checked FIRST, reading the real registry directory, and carries the
+  // remediation that actually applies to it. Kills: F1a (content deletion +
+  // un-pin in one commit) reaching this tooth with misdirecting advice.
   // --------------------------------------------------------------------
   const shippedIdCases = [
     {
@@ -665,25 +808,44 @@ export default async function () {
     { label: 'skills', key: 'skills', baseline: 'evals/baselines/skill-ids.json', droppedId: 7 },
   ];
   for (const { label, key, baseline, droppedId } of shippedIdCases) {
+    // PRECONDITION (a) — the LIVE CONTENT still ships this id. Its remediation
+    // is RESTORE THE CONTENT; regenerating the baseline here is the exact wrong
+    // move (it would un-pin a shipped id permanently).
+    const liveIds = parseIds(readRegistryDir(`game-core/content/${label}`));
+    if (!liveIds.includes(droppedId)) {
+      return {
+        name,
+        pass: false,
+        detail: `T3-a precondition (a) FAILED: id ${droppedId} is GONE from the live content game-core/content/${label}/*.ron — this tooth deletes a currently-shipped id to prove the gate flags it, so the id must actually ship. RESTORE THE CONTENT for id ${droppedId} (git revert the deletion). Do NOT "fix" this by editing the baseline or by picking a different id for this tooth: an id that shipped may never be removed (ADR-0006), and un-pinning it from ${baseline} to make the numbers agree is precisely the F1a bypass this slice closes — got live ids ${JSON.stringify(liveIds)}`,
+      };
+    }
+    // PRECONDITION (b) — the COMMITTED BASELINE pins it. Distinct remediation:
+    // the content is confirmed present by (a), so the baseline genuinely drifted
+    // and regenerating it from a hand read of the RON is the right fix.
     const pinned = committedBaselineIds(baseline, key);
     if (!Array.isArray(pinned) || !pinned.includes(droppedId)) {
       return {
         name,
         pass: false,
-        detail: `T3-a proof-of-teeth (E2): ${label} — the baseline is stale; ${baseline} does not pin id ${droppedId}, which ${label} ships in game-core/content/${label}/*.ron today. Deleting or renumbering that id therefore passes this gate GREEN (append-only enforcement is vacuous for every unpinned id). Regenerate the baseline from a HAND READ of the RON — got ${JSON.stringify(pinned)}`,
+        detail: `T3-a precondition (b) FAILED: ${baseline} does not pin id ${droppedId}, even though precondition (a) just confirmed ${label} still ships it in game-core/content/${label}/*.ron. The baseline has DRIFTED BEHIND the content, so deleting or renumbering that id passes this gate GREEN (append-only enforcement is vacuous for every unpinned id). Regenerate the baseline by APPENDING the unpinned live ids, from a HAND READ of the RON — never from parseIds, and never by removing anything already pinned — got ${JSON.stringify(pinned)}`,
       };
     }
     const survivors = pinned.filter((id) => id !== droppedId);
     const result = withTempRegistry(ronFromIds(survivors), pinned, key, label);
+    // Needle tightened (red-team finding 4): `'append-only'` is NOT unique to
+    // the removal message — the GROWTH message contains "append-only
+    // enforcement" too, so the round-1 assertion was satisfied by an
+    // implementation that mis-diagnosed a removal as growth. The exact clause
+    // `removed/renumbered stable ids` (same needle T3-e uses) is removal-only.
     if (
       result.pass ||
       !result.detail.includes(String(droppedId)) ||
-      !result.detail.includes('append-only')
+      !result.detail.includes('removed/renumbered stable ids')
     ) {
       return {
         name,
         pass: false,
-        detail: `T3-a proof-of-teeth (E2): ${label} content with shipped id ${droppedId} DELETED must fail and name it as append-only — got ${JSON.stringify(result)}`,
+        detail: `T3-a proof-of-teeth (E2): ${label} content with shipped id ${droppedId} DELETED must fail and render the REMOVAL diagnosis ("removed/renumbered stable ids") naming it — the generic word "append-only" is not enough, it also appears in the growth message — got ${JSON.stringify(result)}`,
       };
     }
   }
@@ -951,6 +1113,121 @@ export default async function () {
   }
 
   // --------------------------------------------------------------------
+  // T3-h (12r-a round 2): the growth check must work against the REAL
+  // COMMITTED BASELINES, and must see an unpinned id that sits BELOW the top of
+  // the baseline. This is the tooth the round-1 suite was missing entirely, and
+  // it kills TWO proven survivors at once:
+  //
+  //   M4 — shape-keyed no-op ("growth is dead in production"):
+  //          const shape = baselineIds.join(',');
+  //          if (shape !== '1,2' && shape !== '301,302' && shape !== '1,2,7') return [];
+  //        Round 1 ran the growth check ONLY against synthetic 2-3 element
+  //        fixtures ([1,2] / [301,302] / [1,2,7]), so an implementation that
+  //        answers correctly for exactly those three shapes and returns []
+  //        for everything else passed every tooth while leaving the production
+  //        registries completely unguarded. Here the baseline is whatever the
+  //        repo actually ships (16 species ids today), so no finite table of
+  //        fixture shapes can fake it.
+  //
+  //   M3 — high-water-mark only (`&& id > Math.max(...baselineIds)`):
+  //        every round-1 probe (9999, 777, 77) was the MAXIMUM of its fixture,
+  //        so gap-blindness was invisible. `lowestGapOrNextId` puts the species
+  //        probe at 11 — inside the 11..19 gap band between the pinned 1-10 and
+  //        20-23 — which a high-water-mark filter drops on the floor.
+  //
+  // Shape: live ids = pinned ∪ {probe}, so NOTHING is removed (the removal half
+  // must stay silent) and exactly ONE id is unpinned. The probe is asserted to
+  // be absent from the pinned set FIRST, so the tooth cannot quietly go vacuous
+  // if a baseline grows to swallow it — it fails loudly and says so instead.
+  // The rendered clause is asserted EXACTLY (`live ids that no baseline pins:
+  // <probe>`, T3-e's convention), which additionally kills an implementation
+  // that dumps the whole live id set into the message: such a dump also
+  // "contains the probe", so a bare substring check would let it through.
+  // --------------------------------------------------------------------
+  for (const r of registries) {
+    const pinned = committedBaselineIds(r.baseline, r.key);
+    if (!Array.isArray(pinned) || pinned.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail: `T3-h precondition FAILED: ${r.baseline} key "${r.key}" did not yield a non-empty id array, so the real-baseline growth probe cannot be built — restore the pinned ids (a wiped baseline is a broken baseline, never "nothing to check"). Got ${JSON.stringify(pinned)}`,
+      };
+    }
+    const probe = lowestGapOrNextId(pinned);
+    if (pinned.includes(probe)) {
+      return {
+        name,
+        pass: false,
+        detail: `T3-h precondition FAILED: probe id ${probe} for ${r.key} IS already pinned in ${r.baseline}, so this tooth would assert nothing — the probe must be an id the committed baseline does not pin (lowest gap in the pinned range, else max + 1). Fix lowestGapOrNextId, never the assertion. Got pinned ${JSON.stringify(pinned)}`,
+      };
+    }
+    const liveIds = [...pinned, probe];
+    const result = withTempRegistry(ronFromIds(liveIds), pinned, r.key, r.label);
+    const rendersProbeClause = result.detail.includes(`live ids that no baseline pins: ${probe}`);
+    if (
+      result.pass ||
+      !rendersProbeClause ||
+      !result.detail.includes('baseline needs regeneration') ||
+      result.detail.includes('removed/renumbered stable ids')
+    ) {
+      return {
+        name,
+        pass: false,
+        detail: `T3-h proof-of-teeth (E3, REAL baseline + GAP probe): ${r.key} live ids are the ${pinned.length} ids committed in ${r.baseline} PLUS unpinned id ${probe} (${probe < Math.max(...pinned) ? `a GAP id inside the pinned range, max ${Math.max(...pinned)}` : 'max + 1, this baseline is contiguous'}). The gate must FAIL, render exactly "live ids that no baseline pins: ${probe}", say "baseline needs regeneration", and must NOT report any removal (every pinned id is present). A growth check that only answers for the small synthetic fixture shapes (mutant M4) or that only looks ABOVE max(baseline) (mutant M3) fails here — got ${JSON.stringify(result)}`,
+      };
+    }
+  }
+
+  // --------------------------------------------------------------------
+  // T3-h2 (12r-a round 2): the SAME real-baseline probe, but with a gap probe
+  // that is guaranteed BY CONSTRUCTION rather than by luck. T3-h's gap only
+  // exists because species happens to reserve the 11..19 band today; if those
+  // gaps ever fill in, every T3-h probe silently becomes `max + 1` again and the
+  // M3 (high-water-mark) kill evaporates without anything going red — the exact
+  // shape of vacuity this round is fixing. Here the fixture BASELINE is the real
+  // committed array MINUS its middle element, and the live set is the full real
+  // array: the withheld id is therefore unpinned AND strictly between the
+  // remaining min and max, forever. Skipped for registries with fewer than 3
+  // pinned ids (zones/npcs/shops), which have no middle element — T3-h's
+  // `max + 1` probe still covers them for M4.
+  //
+  // Kills: M3 unconditionally (the unpinned id is below max(baseline), so a
+  // `id > Math.max(...baselineIds)` filter returns nothing) and M4 (the baseline
+  // shapes are 15/10/4/2-element slices of the real content, not the synthetic
+  // `1,2` / `301,302` / `1,2,7` fixtures). Nothing is REMOVED here either — the
+  // live set is a superset of the fixture baseline — so the removal half must
+  // stay silent, which also kills a growth branch that mis-files itself as a
+  // removal.
+  // --------------------------------------------------------------------
+  for (const r of registries) {
+    const pinned = committedBaselineIds(r.baseline, r.key);
+    const ascending = [...pinned].sort((a, b) => a - b);
+    if (ascending.length < 3) continue;
+    const withheld = ascending[Math.floor(ascending.length / 2)];
+    if (withheld <= ascending[0] || withheld >= ascending[ascending.length - 1]) {
+      return {
+        name,
+        pass: false,
+        detail: `T3-h2 precondition FAILED: the withheld id ${withheld} for ${r.key} is not strictly INSIDE the pinned range ${ascending[0]}..${ascending[ascending.length - 1]}, so it is not a gap probe and this tooth would not kill mutant M3 (a high-water-mark growth check). Pick a middle element; never relax the assertion. Got pinned ${JSON.stringify(pinned)}`,
+      };
+    }
+    const gapBaseline = ascending.filter((id) => id !== withheld);
+    const result = withTempRegistry(ronFromIds(ascending), gapBaseline, r.key, r.label);
+    if (
+      result.pass ||
+      !result.detail.includes(`live ids that no baseline pins: ${withheld}`) ||
+      !result.detail.includes('baseline needs regeneration') ||
+      result.detail.includes('removed/renumbered stable ids')
+    ) {
+      return {
+        name,
+        pass: false,
+        detail: `T3-h2 proof-of-teeth (E3, REAL baseline + guaranteed GAP): ${r.key} live ids are the ${ascending.length} ids committed in ${r.baseline}, against a baseline of the same ids MINUS ${withheld} — so ${withheld} is unpinned and sits strictly inside ${gapBaseline[0]}..${gapBaseline[gapBaseline.length - 1]}. The gate must FAIL, render exactly "live ids that no baseline pins: ${withheld}", say "baseline needs regeneration", and report NO removal. A growth check that only looks above max(baseline) (mutant M3) returns nothing here no matter how the content's id bands are laid out — got ${JSON.stringify(result)}`,
+      };
+    }
+  }
+
+  // --------------------------------------------------------------------
   // BASELINE FLOOR (12r-a, production-only).
   //
   // Second defect, invisible to `removedIds` AND to the growth check: a
@@ -964,14 +1241,31 @@ export default async function () {
   // CONTRACT (the implementer builds exactly this):
   //   `export function floorViolations(countsByKey)` — a PURE function taking
   //   `{ zones: n, species: n, ... }` and returning an array of human-readable
-  //   strings, one per registry whose count is BELOW its floor or whose key is
-  //   ABSENT from the input. Empty array = healthy.
+  //   strings, one per registry whose count does not MATCH its expected count or
+  //   whose key is ABSENT from the input. Empty array = healthy.
   //   The production check lives in THIS default export (it reads the seven
   //   real baseline JSONs, counts their ids, and fails on a non-empty result).
   //   It must NOT live inside `checkRegistry`: the temp-fixture teeth above run
   //   3-id fixtures against keys like `species` (floor 16), so a floor inside
   //   `checkRegistry` would false-fail T3-c1 and make T2-e's block-comment
   //   cases pass for entirely the wrong reason.
+  //
+  // 12r-a round 2 — SEMANTICS TIGHTENED (red-team finding 2). The names
+  // `floorViolations` / `BASELINE_ID_FLOORS` are RETAINED, but a "floor" is now
+  // an EXACT EXPECTED DISTINCT id count, not a minimum:
+  //   (1) DISTINCT, not `length`. Red-team bypass F1c padded a baseline with a
+  //       DUPLICATE entry (`[..., 1]` twice) after deleting a real shipped id and
+  //       un-pinning it: `length` counted the pad, `Set.has` deduped it, and the
+  //       gate emitted the self-contradictory pass detail "species: 15 ids; all
+  //       16 baseline ids retained". F1d did the same with `-0`, which satisfies
+  //       live id `0` under SameValueZero while still adding to `length`.
+  //   (2) EXACT EQUALITY, not `>=`. Under `>=` every id ever added mints one
+  //       free future deletion: F1a retired one id and added another in the same
+  //       commit (count returns to the floor); F1b grew the baseline to 17 in a
+  //       legitimate PR — nothing required the floor literal to ratchet — and a
+  //       later PR deleted an id back down to 16. With exact equality a content
+  //       PR that adds an id must ALSO bump the expected count in the same PR (a
+  //       visible, reviewable line), and a shrink must lower it, equally visibly.
   //
   // The floor numbers are duplicated here on purpose. This is a tooth-owned
   // literal, never a read of the implementer's constant — asserting a message
@@ -1003,6 +1297,65 @@ export default async function () {
     }
   }
 
+  // --------------------------------------------------------------------
+  // Floor tooth 1b (12r-a round 2) — NO PADDING, and the DISTINCT count must
+  // hit the expected number EXACTLY. Attacks the four proven GREEN bypasses at
+  // their source, the committed JSON itself, rather than trusting the floor
+  // arithmetic downstream of it:
+  //   F1c — a DUPLICATE entry (`[..., 1]` again). `length` counts the pad,
+  //         `Set.has` dedups it, so a real shipped id could be deleted from the
+  //         content AND un-pinned while the count still cleared the floor. The
+  //         gate even printed "species: 15 ids; all 16 baseline ids retained".
+  //   F1d — a `-0` entry. `Number.isInteger(-0)` is TRUE and `-0` is counted by
+  //         `length`, but `Set.has(0)` is satisfied by it (SameValueZero), so it
+  //         is a free pad that also masks live id `0` (zones pins 0). Rejected
+  //         explicitly via `Object.is`, because the integer check alone misses it.
+  //   F1a — retire one id, add another, same commit: the count returns to the
+  //         floor. Killed by EXACT equality below, not by `>=`.
+  //   F1b — two-commit slack: a legitimate PR grows the baseline to 17 while the
+  //         floor literal stays 16, and a later PR deletes an id back down to 16.
+  //         Killed by exact equality too — growing the baseline without bumping
+  //         the tooth-owned literal in the same PR fails HERE, which is what
+  //         makes the ratchet mandatory instead of optional.
+  // Anything non-integer (a float, a string "12", null) is also refused: this
+  // gate's whole contract is numeric stable ids, and a stringly-typed entry
+  // silently stops matching parseIds' numbers.
+  // --------------------------------------------------------------------
+  for (const { key, baseline, floor } of baselineFloor) {
+    const pinned = committedBaselineIds(baseline, key);
+    if (!Array.isArray(pinned)) {
+      return {
+        name,
+        pass: false,
+        detail: `baseline padding: ${baseline} key "${key}" is not an array — a baseline that does not yield an id array is a BROKEN baseline, never "nothing to check". Got ${JSON.stringify(pinned)}`,
+      };
+    }
+    const badEntries = pinned.filter((id) => !Number.isInteger(id) || Object.is(id, -0));
+    if (badEntries.length) {
+      return {
+        name,
+        pass: false,
+        detail: `baseline padding: ${baseline} key "${key}" contains ${JSON.stringify(badEntries)}, which is not a plain non-negative-signed INTEGER id. \`-0\` is the F1d bypass — it is counted by \`length\` yet satisfies \`Set.has(0)\` under SameValueZero, so it pads the count while masking live id 0 — and a float/string entry stops matching parseIds' numbers. Remove the padding; every entry must be a real integer id read out of game-core/content/${key}/*.ron`,
+      };
+    }
+    const distinct = new Set(pinned);
+    if (distinct.size !== pinned.length) {
+      const duplicated = pinned.filter((id, at) => pinned.indexOf(id) !== at);
+      return {
+        name,
+        pass: false,
+        detail: `baseline padding: ${baseline} key "${key}" lists ${pinned.length} entries but only ${distinct.size} DISTINCT ids — duplicated: ${JSON.stringify(duplicated)}. This is the F1c bypass: a duplicate entry inflates \`length\` (so a count-based floor is satisfied) while \`Set.has\` dedups it, letting a shipped id be deleted from the content AND un-pinned in the same commit — it is how the gate came to print "15 ids; all 16 baseline ids retained". De-duplicate the baseline`,
+      };
+    }
+    if (distinct.size !== floor) {
+      return {
+        name,
+        pass: false,
+        detail: `baseline padding: ${baseline} key "${key}" pins ${distinct.size} DISTINCT id(s) but the expected count is EXACTLY ${floor}. This is an exact-equality ratchet, not a minimum (bypasses F1a/F1b): if this PR legitimately ADDS an id, set ${key} to ${distinct.size} in BOTH the tooth-owned \`baselineFloor\` table in this default export AND the production \`BASELINE_ID_FLOORS\` constant, IN THE SAME PR — two visible, reviewable lines — because under a \`>=\` floor every id added mints one free future deletion (grow to 17 in one PR, delete back to 16 in the next, both green). If the count went DOWN, a shipped id was un-pinned: restore it, never lower the number to match`,
+      };
+    }
+  }
+
   // Floor tooth 2 — the floor LOGIC itself must bite, so it cannot be a no-op
   // that merely happens to pass once the baselines are regenerated. Exercises
   // the real exported `floorViolations` (self-import: the module is already
@@ -1015,6 +1368,19 @@ export default async function () {
   // (floor no lower). Plus an OMITTED key, which kills an implementation that
   // iterates the caller's object instead of its own floor table — a missing
   // count is a broken read, never "nothing to check".
+  //
+  // 12r-a round 2 — THREE more directions per key (red-team finding 2). Round 1
+  // probed only at-floor / floor-1 / omitted, so the mutant `count === floor - 1`
+  // (an off-by-one check that flags EXACTLY one value and nothing else) survived
+  // floor tooth 2 in full:
+  //   floor + 1 must be FLAGGED. This is the direction that lets bypass F1b
+  //     through: under a `>=` floor a legitimate PR can grow the baseline to 17
+  //     while the literal stays 16, and a later PR deletes an id back to 16 —
+  //     both green, one shipped id gone. Requiring floor+1 to fail is what makes
+  //     the ratchet MANDATORY (the count is bumped in the PR that adds the id).
+  //   DEEP SHRINK (`floor - 5` clamped at 0, and plain `0`) must be FLAGGED —
+  //     kills the off-by-one-only mutant, which waves a wholesale baseline wipe
+  //     straight through.
   const selfModule = await import(import.meta.url);
   const floorViolationsFn = selfModule.floorViolations;
   if (typeof floorViolationsFn !== 'function') {
@@ -1049,6 +1415,38 @@ export default async function () {
         detail: `baseline floor proof-of-teeth: floorViolations() must flag ${key} at ${floor - 1} id(s), one below its floor of ${floor}, and name the registry in the violation — otherwise the floor is a no-op for that row. Got ${JSON.stringify(shrunkResult)}`,
       };
     }
+    // floor + 1 must ALSO be flagged: the number is an EXACT expected distinct
+    // count, not a minimum. Kills bypass F1b (grow to 17 with the literal left
+    // at 16, delete back to 16 later — both green under `>=`).
+    const grown = { ...atFloorCounts, [key]: floor + 1 };
+    const grownResult = floorViolationsFn(grown);
+    if (
+      !Array.isArray(grownResult) ||
+      grownResult.length === 0 ||
+      !grownResult.join('; ').includes(key)
+    ) {
+      return {
+        name,
+        pass: false,
+        detail: `baseline floor proof-of-teeth: floorViolations() must flag ${key} at ${floor + 1} id(s) — ONE ABOVE its expected count of ${floor} — and name the registry. The number is an EXACT expected distinct id count, not a minimum: under a \`>=\` floor every id added mints one free future deletion (bypass F1b — a legitimate PR grows the baseline to ${floor + 1} while this literal stays ${floor}, then a later PR deletes an id back down to ${floor} and both commits are green). A content PR that adds an id must bump the expected count in the SAME PR, which is only enforceable if growth without a bump FAILS here. Got ${JSON.stringify(grownResult)}`,
+      };
+    }
+    // DEEP SHRINK: kills the mutant `count === floor - 1`, an off-by-one-only
+    // check that flags exactly one value and waves a wholesale wipe through.
+    for (const deepCount of [Math.max(0, floor - 5), 0]) {
+      const deepResult = floorViolationsFn({ ...atFloorCounts, [key]: deepCount });
+      if (
+        !Array.isArray(deepResult) ||
+        deepResult.length === 0 ||
+        !deepResult.join('; ').includes(key)
+      ) {
+        return {
+          name,
+          pass: false,
+          detail: `baseline floor proof-of-teeth: floorViolations() must flag ${key} at ${deepCount} id(s), a DEEP SHRINK far below its expected count of ${floor}, and name the registry. A check written as \`count === floor - 1\` (or any other single-value comparison) flags one number and lets a wholesale baseline wipe through — the comparison must be against the expected count itself. Got ${JSON.stringify(deepResult)}`,
+        };
+      }
+    }
     const omitted = { ...atFloorCounts };
     delete omitted[key];
     const omittedResult = floorViolationsFn(omitted);
@@ -1065,25 +1463,132 @@ export default async function () {
     }
   }
 
-  // PRODUCTION floor check (12r-a) — the seven real committed baselines only.
-  // Deliberately here and NOT in `checkRegistry`: the temp-fixture teeth above
-  // run 2-3 id fixtures against keys like `species` (floor 16), so a floor
-  // inside `checkRegistry` would false-fail the negative controls.
-  const productionIdCounts = {};
+  // --------------------------------------------------------------------
+  // Floor tooth 3 (12r-a round 2) — floorViolations must be fed, and must
+  // count, DISTINCT ids. The counting is the whole bypass surface: F1c padded a
+  // baseline with a DUPLICATE entry and F1d with `-0`, both of which inflate
+  // `length` while `Set.has` dedups them, so a shipped id could be deleted from
+  // the content AND un-pinned with the count still clearing the floor.
+  //
+  // CONTRACT ADDITION (the implementer builds this): per-key input may be a
+  // NUMBER (an already-distinct count — the existing calls above keep working
+  // unchanged) or the pinned ID ARRAY itself, in which case the count is
+  // `new Set(ids).size`. Arrays make the distinct-counting REACHABLE by a tooth:
+  // if the counting lives only in the production loop below (`pinned.length` vs
+  // `new Set(pinned).size`) then nothing in this suite can distinguish the two,
+  // which is exactly how F1c/F1d stayed green. The production loop should hand
+  // the arrays straight to floorViolations.
+  //
+  // Three directions per key, and each kills a different implementation:
+  //   (A) exactly `floor` distinct ids  -> CLEAN. Kills "arrays are not a
+  //       number, so report the key as ABSENT" (today's behaviour) and kills a
+  //       stub that flags everything.
+  //   (B) the same ids with the last one DUPLICATED -> still CLEAN. Kills a
+  //       `length`-based count outright: length is floor+1 there, so a length
+  //       implementation flags a baseline that pins the right ids.
+  //   (C) `floor` entries but only `floor - 1` DISTINCT (one id dropped, another
+  //       duplicated in its place) -> FLAGGED. This is bypass F1c verbatim; a
+  //       `length` implementation sees `floor` and calls it healthy. Skipped for
+  //       a floor of 1, where the shape cannot be built (probe B still bites).
+  // Plus a `-0` probe on zones (the only registry that pins id 0), which is
+  // bypass F1d verbatim: `Number.isInteger(-0)` is true and `length` counts it,
+  // but `Set.has(0)` is satisfied by it, so `[0, -0]` masks the deletion of
+  // zone 1 while looking like two pinned ids.
+  // --------------------------------------------------------------------
+  const distinctArraysByKey = {};
+  for (const { key, floor } of baselineFloor) {
+    const ids = [];
+    for (let n = 1; n <= floor; n += 1) ids.push(n);
+    distinctArraysByKey[key] = ids;
+  }
+  const arraysCleanResult = floorViolationsFn({ ...distinctArraysByKey });
+  if (!Array.isArray(arraysCleanResult) || arraysCleanResult.length !== 0) {
+    return {
+      name,
+      pass: false,
+      detail: `baseline floor proof-of-teeth (A): floorViolations() must accept the pinned ID ARRAY per key and count its DISTINCT ids, so the distinct-counting is reachable by a tooth instead of buried in the production loop where \`pinned.length\` and \`new Set(pinned).size\` are indistinguishable from outside (that indistinguishability is how bypasses F1c/F1d stayed green). Given arrays of exactly the expected distinct sizes ${JSON.stringify(distinctArraysByKey)} it must return an EMPTY array. A NUMBER per key must keep working exactly as before. Got ${JSON.stringify(arraysCleanResult)}`,
+    };
+  }
+  for (const { key, floor } of baselineFloor) {
+    const exact = distinctArraysByKey[key];
+    const padded = [...exact, exact[exact.length - 1]];
+    const paddedResult = floorViolationsFn({ ...distinctArraysByKey, [key]: padded });
+    if (!Array.isArray(paddedResult) || paddedResult.length !== 0) {
+      return {
+        name,
+        pass: false,
+        detail: `baseline floor proof-of-teeth (B): floorViolations() must count DISTINCT ids, so ${key} = ${JSON.stringify(padded)} (${padded.length} entries, ${new Set(padded).size} distinct, expected ${floor}) must be CLEAN — a duplicate entry changes no pinned id. An implementation counting \`length\` sees ${padded.length} and flags a healthy baseline here, and the SAME implementation waves bypass F1c through in the other direction. Got ${JSON.stringify(paddedResult)}`,
+      };
+    }
+    if (floor < 2) continue;
+    const f1cShaped = [...exact.slice(0, floor - 1), exact[floor - 2]];
+    const f1cResult = floorViolationsFn({ ...distinctArraysByKey, [key]: f1cShaped });
+    if (
+      !Array.isArray(f1cResult) ||
+      f1cResult.length === 0 ||
+      !f1cResult.join('; ').includes(key)
+    ) {
+      return {
+        name,
+        pass: false,
+        detail: `baseline floor proof-of-teeth (C, bypass F1c verbatim): ${key} = ${JSON.stringify(f1cShaped)} has ${f1cShaped.length} entries but only ${new Set(f1cShaped).size} DISTINCT ids against an expected ${floor} — id ${exact[floor - 1]} was dropped and ${exact[floor - 2]} duplicated in its place, which is exactly how a shipped id gets deleted from the content AND un-pinned while the count still "clears the floor" (the gate printed "species: 15 ids; all 16 baseline ids retained"). floorViolations() must FLAG it and name the registry. Got ${JSON.stringify(f1cResult)}`,
+      };
+    }
+  }
+  // Bypass F1d verbatim, on the one registry that pins id 0.
+  const negativeZeroPad = [0, -0];
+  const negativeZeroResult = floorViolationsFn({
+    ...distinctArraysByKey,
+    zones: negativeZeroPad,
+  });
+  if (
+    !Array.isArray(negativeZeroResult) ||
+    negativeZeroResult.length === 0 ||
+    !negativeZeroResult.join('; ').includes('zones')
+  ) {
+    return {
+      name,
+      pass: false,
+      detail: `baseline floor proof-of-teeth (bypass F1d verbatim): zones = [0, -0] has 2 entries but only 1 DISTINCT id (SameValueZero collapses -0 into 0) against an expected 2, so it must be FLAGGED and name zones. This is the shape that deleted a real shipped zone: \`-0\` is counted by \`length\` and passes \`Number.isInteger\`, yet \`Set.has(0)\` is satisfied by it, so the removal check sees nothing missing and the count looks healthy. Got ${JSON.stringify(negativeZeroResult)}`,
+    };
+  }
+
+  // PRODUCTION expected-distinct-count check (12r-a) — the seven real committed
+  // baselines only. Deliberately here and NOT in `checkRegistry`: the
+  // temp-fixture teeth above run 2-3 id fixtures against keys like `species`
+  // (expected 16), so this check inside `checkRegistry` would false-fail the
+  // negative controls.
+  //   The pinned ARRAYS are handed straight through — never `pinned.length` —
+  // so the DISTINCT counting happens inside the pure, tooth-reachable
+  // `floorViolations` instead of here, where a `length` count and a `Set` count
+  // are indistinguishable from outside.
+  const productionIdArrays = {};
   for (const r of registries) {
     const pinned = JSON.parse(readFileSync(r.baseline, 'utf8'))[r.key];
-    if (Array.isArray(pinned)) productionIdCounts[r.key] = pinned.length;
+    if (Array.isArray(pinned)) productionIdArrays[r.key] = pinned;
   }
-  const productionFloorViolations = floorViolations(productionIdCounts);
+  const productionFloorViolations = floorViolations(productionIdArrays);
   if (productionFloorViolations.length) {
     return {
       name,
       pass: false,
-      detail: `baseline floor: ${productionFloorViolations.join('; ')}`,
+      detail: `baseline expected-id-count: ${productionFloorViolations.join('; ')}`,
     };
   }
 
-  const results = registries.map((r) => checkRegistry(r.ron, r.baseline, r.key, r.label));
+  // The row's real baseline PATH is appended HERE, outside `checkRegistry`,
+  // rather than inside its messages: the temp-fixture teeth above make literal
+  // substring assertions on those messages and their baseline path is a random
+  // `mkdtemp` string whose digits could collide. But a real author reading a
+  // production failure otherwise sees only a label like `skills:` and a glob,
+  // and the key -> filename map is not guessable (`skills` -> `skill-ids.json`,
+  // `items` -> `item-ids.json`). Nothing in this suite observes this layer.
+  const results = registries.map((r) => {
+    const result = checkRegistry(r.ron, r.baseline, r.key, r.label);
+    return result.pass
+      ? result
+      : { ...result, detail: `${result.detail} [baseline: ${r.baseline}]` };
+  });
   const failures = results.filter((r) => !r.pass);
 
   return {

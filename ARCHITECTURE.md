@@ -225,8 +225,15 @@ canonical `touches:` vocabulary**: adding content is a new
 - **The `append-only-ids` gate is BIDIRECTIONAL** (12r-a): adding a content id requires
   appending it to that registry's `evals/baselines/*-ids.json` in the **same PR** — an
   unpinned live id fails the gate rather than silently escaping append-only enforcement.
-  A baseline may only ever grow (a hand-ratcheted per-registry floor enforces that a
-  shrink cannot pass). The gate does **not** detect id reuse/rebinding.
+  Each registry additionally carries an **exact expected DISTINCT-id count**, pinned in
+  two places the eval reads independently — not a minimum: a count below it means a
+  baseline was shrunk (restore the content), a count above it means content grew, so the
+  PR that adds an id must **bump both pins in that same PR**. That closes the
+  self-consistent "delete the content and un-pin it in one commit" shrink, the
+  add-one/retire-one swap, and the duplicate/`-0` padding that inflates `length` while
+  `Set` collapses it. The gate does **not** detect id reuse/rebinding: swapping two ids,
+  or rebinding an id to a different entity, leaves the id set unchanged and stays green
+  (that needs a map-shaped baseline, e.g. `evolution-path-edge-ids.json`).
 - **Loud per-file rejection**: a malformed `*.ron` makes the loader return `Err`
   naming the offending file — never a silent skip (parse-don't-validate preserved).
 - Content is **data, not schema** — the layout change touches neither `module_bindings`
