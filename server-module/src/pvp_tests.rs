@@ -3290,14 +3290,93 @@ fn pvp_swap_arm_has_no_fainted_active_guard() {
 // as NUMBERS, never as CHARACTER literals (guards_tests G-5a).
 // ===========================================================================
 
+/// The ASCII double quote, spelled as a NUMBER — this section adds no bare
+/// delimiter CHARACTER literal (guards_tests G-5a).
+const D12R_DQUOTE: u8 = 0x22;
+
 /// The two-character sequence a Rust source spells to put a double quote INSIDE
-/// a string literal: backslash then quote. Built from numeric constants so this
-/// file adds no bare delimiter CHARACTER literal.
+/// a string literal: backslash then quote.
 fn d12r_escaped_quote() -> String {
     let mut out = String::new();
     out.push(char::from(0x5Cu8));
-    out.push(char::from(0x22u8));
+    out.push(char::from(D12R_DQUOTE));
     out
+}
+
+/// True when the quote byte at `idx` DELIMITS a string literal rather than being
+/// an escaped `\"` inside one: a delimiter is preceded by an EVEN number of
+/// consecutive backslashes.
+///
+/// Inlined here (and in `content_tests.rs` / `battle_tests.rs` / `npc_tests.rs`)
+/// because every `*_tests.rs` file is a `#[cfg(test)]` submodule of its own
+/// production file and none can reach another's bare `fn` items; there is no
+/// shared test-utility crate. Same precedent `content_cache_tests.rs:361-368`
+/// records for its own copies of the strippers.
+fn d12r_quote_delimits(bytes: &[u8], idx: usize) -> bool {
+    let mut n = 0usize;
+    let mut i = idx;
+    while i > 0 && bytes[i - 1] == b'\\' {
+        n += 1;
+        i -= 1;
+    }
+    n % 2 == 0
+}
+
+/// The interior (delimiters excluded) of the double-quoted string literal that
+/// CONTAINS byte offset `at`.
+fn d12r_format_string_at(src: &str, at: usize) -> Option<&str> {
+    let bytes = src.as_bytes();
+    let mut i = at;
+    let open = loop {
+        if bytes[i] == D12R_DQUOTE && d12r_quote_delimits(bytes, i) {
+            break i;
+        }
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
+    };
+    let mut j = at;
+    while j < bytes.len() {
+        if bytes[j] == D12R_DQUOTE && d12r_quote_delimits(bytes, j) {
+            return Some(&src[open + 1..j]);
+        }
+        j += 1;
+    }
+    None
+}
+
+/// Byte range of the `log::<level>!( .. )` invocation that CONTAINS `at`.
+///
+/// Walks parens from the macro's `(`, JUMPING OVER string literals so a paren
+/// inside a message cannot unbalance the walk. `end` is just past the `)`.
+fn d12r_log_call_range(src: &str, at: usize) -> Option<(usize, usize)> {
+    let marker = ["log", "::"].concat();
+    let start = src[..at].rfind(marker.as_str())?;
+    let bytes = src.as_bytes();
+    let open = start + src[start..].find('(')?;
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < bytes.len() {
+        if bytes[i] == D12R_DQUOTE && d12r_quote_delimits(bytes, i) {
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == D12R_DQUOTE && d12r_quote_delimits(bytes, i) {
+                    break;
+                }
+                i += 1;
+            }
+        } else if bytes[i] == b'(' {
+            depth += 1;
+        } else if bytes[i] == b')' {
+            depth -= 1;
+            if depth == 0 {
+                return Some((start, i + 1));
+            }
+        }
+        i += 1;
+    }
+    None
 }
 
 /// Build the CONTIGUOUS squashed source sequence
@@ -3341,29 +3420,45 @@ fn d12r_pvp_log_tail(
 ///
 /// ASSERTION-RED at HEAD on every layer.
 ///
+/// H2 — THE SITES ARE LOCATED, NOT COUNTED. An earlier draft counted the good
+/// and bad needles as substrings of the whole squashed region. The red team broke
+/// it: a dead string constant holding the exact good-needle text, plus a renamed
+/// raw error binding, satisfies "good needle present" and "bad needle absent"
+/// with the live log lines untouched. This version does what its
+/// `content_tests.rs` / `battle_tests.rs` siblings do — locate each event name
+/// with `match_indices`, assert its occurrence count EXACTLY (a decoy string is
+/// an extra occurrence and fails there), then evaluate every needle against THAT
+/// site's own format string and its own brace-matched `log::` macro call.
+///
 /// LAYER BY LAYER, and what each kills:
-///   * **The GOOD contiguous needle appears the EXPECTED number of times** (1, 1,
-///     2). Contiguity pins the escaped capture into the reason slot of THAT
-///     format string, so escaping into some other line cannot satisfy it; the
-///     exact COUNT is what covers the duplicated `forfeit_on_disconnect_err`
-///     event name — a fix applied to only the side-A disconnect loop leaves the
-///     count at 1 and fails.
-///   * **The RAW contiguous needle is gone (0).** Kills the belt-and-braces
-///     shell that adds an escaped line and leaves the raw one beside it.
+///   * **Each event name occurs EXACTLY the expected number of times** (1, 1, 2).
+///     Kills the dead-string decoy, a duplicated log site, and a renamed event —
+///     and the count of TWO is what covers the duplicated
+///     `forfeit_on_disconnect_err`: a fix applied to only the side-A disconnect
+///     loop leaves it at 1 and fails.
+///   * **The RAW `{e}` is absent from each whole MACRO CALL** — not merely from
+///     the format string, so a positional `, e` argument is caught too. Kills the
+///     belt-and-braces shell that adds an escaped line and keeps the raw one.
+///   * **The GOOD contiguous tail is present in THAT site's format string.**
+///     Pinning `<evt>","battle_id":{battle_id},"<key>":"{escaped}"` as one
+///     sequence puts the escaped capture in the right slot of the right line;
+///     escaping into some other line cannot satisfy it.
 ///   * **No `{e}` interpolation survives anywhere in either region.** The
-///     per-site needles inspect only the sanctioned lines; this closes the
+///     per-site layers inspect only the sanctioned calls; this closes the
 ///     whole-region leak class (npc_tests T4-h) — a second statement elsewhere
 ///     that interpolates the un-escaped `Err`. HEAD has exactly 2 per region, so
 ///     the target is 0 and the arithmetic is exact.
 ///   * **`json_escape(` is called at least once per site in its own region.**
-///     Per-region counts, not one whole-file count: four escapes in
+///     Per-region counts, not one whole-file count: two escapes in
 ///     `settle_pvp_battle` must not satisfy `forfeit_on_disconnect`, which has
 ///     none.
-///   * **`escaped` is bound only by `json_escape`.** Kills the shadow-rebind
+///   * **`escaped` is bound only by `json_escape(&e)`.** Kills the shadow-rebind
 ///     `let escaped = json_escape(&e); let escaped = e.clone();`, which satisfies
 ///     every name-based check while the value at the point of use is raw — the
 ///     compiler stays silent because the binding IS read, just not the escaped
-///     one (npc_tests.rs:1142-1154 records the same cheat).
+///     one (npc_tests.rs:1142-1154 records the same cheat) — and, via the
+///     ARGUMENT in the needle (H3), the placeholder cheat
+///     `json_escape(&"placeholder")`.
 ///
 /// WHY THESE REASONS ARE UNTRUSTED. `write_back_battle_results`,
 /// `write_back_party_hp_pvp_side_b` and `apply_pvp_forfeit` all build their `Err`
@@ -3406,33 +3501,71 @@ fn pvp_reason_log_sites_interpolate_an_escaped_binding() {
 
         for (evt, reason_key, expected) in &rows {
             let good = d12r_pvp_log_tail(evt, "battle_id", "battle_id", reason_key, &good_slot);
-            let bad = d12r_pvp_log_tail(evt, "battle_id", "battle_id", reason_key, &raw_slot);
 
-            let n_bad = sq.matches(bad.as_str()).count();
+            // --- Layer 1: locate the sites; EXACT occurrence count -----------
+            let hits: Vec<usize> = body.match_indices(evt.as_str()).map(|(i, _)| i).collect();
             assert_eq!(
-                n_bad, 0,
-                "TEETH (12r-d E3, ADR-0170 D5) pvp.rs / {region} / {evt}: the RAW `Err` \
-                 is still interpolated ({n_bad} occurrence(s) of the squashed sequence \
-                 {bad:?}). These reasons are `format!`-built strings carrying monster \
-                 ids and validator text across an ADR-0077 log-and-continue boundary, \
-                 so this line is the ONLY record that a ranked settlement partially \
-                 failed. A double quote in the reason makes it unparseable and the \
-                 ingest drops it."
+                hits.len(),
+                *expected,
+                "TEETH (12r-d E3, H2 decoy kill) pvp.rs / {region}: the event name \
+                 {evt:?} occurs {} time(s); it must occur EXACTLY {expected}. An EXTRA \
+                 occurrence is the red team's construction — a dead string constant \
+                 holding the sanctioned line's text satisfies any whole-region substring \
+                 check while the LIVE log still interpolates the raw `Err`. FEWER means \
+                 a log line was renamed or deleted rather than escaped, which would make \
+                 every assertion below vacuous. For `forfeit_on_disconnect_err` the \
+                 count is TWO: the side-A and side-B disconnect loops carry the SAME \
+                 event name, and a fix applied to only one of them must not pass.",
+                hits.len()
             );
 
-            let n_good = sq.matches(good.as_str()).count();
-            assert_eq!(
-                n_good, *expected,
-                "TEETH (12r-d E3, ADR-0170 D5) pvp.rs / {region} / {evt}: the contiguous \
-                 squashed sequence {good:?} must appear EXACTLY {expected} time(s), found \
-                 {n_good}. Zero means the escape never reached this format string (RED at \
-                 HEAD). For `forfeit_on_disconnect_err` the expected count is TWO — the \
-                 side-A and side-B disconnect loops carry the SAME event name, and a fix \
-                 applied to only one of them leaves the count at 1. Write \
-                 `let {ESCAPED_BINDING} = crate::guards::json_escape(&e);` immediately \
-                 before each log and interpolate `{{{ESCAPED_BINDING}}}` — the \
-                 npc.rs:184-190 shape."
-            );
+            for at in hits {
+                let fmt = d12r_format_string_at(body, at).unwrap_or_else(|| {
+                    panic!(
+                        "12r-d E3 (pvp.rs / {region}): the event name {evt:?} at byte \
+                         {at} is not inside a string literal — this scan locates a log \
+                         site by its format string, so the line must have been \
+                         restructured. Re-derive DELIBERATELY."
+                    )
+                });
+                let (cs, ce) = d12r_log_call_range(body, at).unwrap_or_else(|| {
+                    panic!(
+                        "12r-d E3 (pvp.rs / {region}): could not find the enclosing \
+                         `log::<level>!( .. )` invocation for {evt:?} — the scan needs \
+                         it to prove the raw `Err` is gone from the WHOLE call, not just \
+                         from the format string"
+                    )
+                });
+                let call_sq = squash_ws(&body[cs..ce]);
+
+                // --- Layer 2: raw value gone from the whole macro call -------
+                assert!(
+                    !call_sq.contains(raw_slot.as_str()),
+                    "TEETH (12r-d E3, ADR-0170 D5) pvp.rs / {region} / {evt}: this log \
+                     call still carries the RAW `Err` ({raw_slot:?}). These reasons are \
+                     `format!`-built strings carrying monster ids and validator text \
+                     across an ADR-0077 log-and-continue boundary, so the line is the \
+                     ONLY record that a ranked settlement partially failed. A double \
+                     quote in the reason makes it unparseable and the ingest drops it. \
+                     The check spans the whole macro CALL, so a positional `, e` \
+                     argument is caught too. Squashed call was: {call_sq:?}"
+                );
+
+                // --- Layer 3: the escaped capture is in THIS format string ---
+                assert!(
+                    fmt.contains(good.as_str()),
+                    "TEETH (12r-d E3, ADR-0170 D5) pvp.rs / {region} / {evt}: this \
+                     site's format string must carry the contiguous sequence {good:?} — \
+                     the escaped binding interpolated into the reason slot of THIS line. \
+                     Not found (RED at HEAD). The needle is CONTIGUOUS and evaluated \
+                     against this site's OWN format string, so escaping into an \
+                     unrelated line cannot satisfy it. Write \
+                     `let {ESCAPED_BINDING} = crate::guards::json_escape(&e);` \
+                     immediately before each log and interpolate \
+                     `{{{ESCAPED_BINDING}}}` — the npc.rs:184-190 shape. Format string \
+                     was: {fmt:?}"
+                );
+            }
         }
 
         let n_raw = sq.matches(raw_slot.as_str()).count();
@@ -3457,33 +3590,52 @@ fn pvp_reason_log_sites_interpolate_an_escaped_binding() {
              `forfeit_on_disconnect`, which has none."
         );
 
+        // H3: the reason at every one of these sites is the `Err` binding `e`.
+        // Both the reference and the `as_str()` spelling are accepted (equally
+        // correct, equally specific); a placeholder literal matches neither. The
+        // closing paren is part of each spelling so `&e)` cannot match `&entity_id)`.
+        let escape_args = ["&e)", "e.as_str())"];
         let any_binding = ["let", ESCAPED_BINDING, "="].concat();
-        let qualified = ["let", ESCAPED_BINDING, "=crate::guards::json", "_escape("].concat();
-        let bare = ["let", ESCAPED_BINDING, "=json", "_escape("].concat();
         let n_all = sq.matches(any_binding.as_str()).count();
-        let n_esc = sq.matches(qualified.as_str()).count() + sq.matches(bare.as_str()).count();
+        let mut n_esc = 0usize;
+        for arg in escape_args {
+            let qualified = [
+                "let",
+                ESCAPED_BINDING,
+                "=crate::guards::json",
+                "_escape(",
+                arg,
+            ]
+            .concat();
+            let bare = ["let", ESCAPED_BINDING, "=json", "_escape(", arg].concat();
+            n_esc += sq.matches(qualified.as_str()).count() + sq.matches(bare.as_str()).count();
+        }
 
         assert!(
             n_esc >= 1,
             "TEETH (12r-d E3) pvp.rs / {region}: the escaped reason must be bound to the \
              EXACT identifier `{ESCAPED_BINDING}` via \
              `let {ESCAPED_BINDING} = crate::guards::json_escape(&e);` (the bare \
-             `json_escape(&e)` spelling is accepted when the helper is imported) — found \
-             none. The exact name is required so this test can tie the value that was \
-             escaped to the identifier the format string interpolates; a \
-             differently-named, unread escape binding is the red-team's proven cheat \
-             (npc_tests.rs:1117-1223)."
+             `json_escape(&e)` and the `e.as_str()` spellings are accepted) — found none. \
+             The exact NAME ties the value that was escaped to the identifier the format \
+             string interpolates; a differently-named, unread escape binding is the \
+             red-team's proven cheat (npc_tests.rs:1117-1223). The exact ARGUMENT (H3) \
+             kills `let {ESCAPED_BINDING} = json_escape(&\"placeholder\");`, which \
+             satisfies every other layer while logging a constant instead of the \
+             settlement error."
         );
         assert_eq!(
             n_all, n_esc,
-            "TEETH (12r-d E3, shadow-rebind cheat kill) pvp.rs / {region}: \
+            "TEETH (12r-d E3, shadow-rebind + placeholder cheat kill) pvp.rs / {region}: \
              `{ESCAPED_BINDING}` is `let`-bound {n_all} time(s) but only {n_esc} of those \
-             bindings come from `json_escape`. KILLS \
+             bindings come from `json_escape` applied to the `Err` itself. KILLS (a) \
              `let {ESCAPED_BINDING} = crate::guards::json_escape(&e); \
              let {ESCAPED_BINDING} = e.clone();` — the first statement satisfies the \
              provenance check, the second rebinds the same name to the RAW value before \
-             the log reads it, and the format string still interpolates the identifier. \
-             The compiler is silent: the binding IS read, just not the escaped one."
+             the log reads it, and the format string still interpolates the identifier; \
+             the compiler is silent because the binding IS read, just not the escaped \
+             one. And (b) ONE of the region's two sites escaping a placeholder instead \
+             of its own `Err`, which this equality catches even when the other is right."
         );
     }
 }

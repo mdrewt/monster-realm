@@ -2213,16 +2213,16 @@ fn d12r_log_call_range(src: &str, at: usize) -> Option<(usize, usize)> {
     None
 }
 
-/// The interior of the `{ .. }` block that OPENS at or after the first
-/// occurrence of `head` in `src`, braces excluded.
+/// Index of the `}` that balances the `{` at byte offset `open` in `src`.
 ///
-/// Used for a `struct` body (A1) and for a JSON object (A3) alike; both are
-/// brace-balanced with no brace inside any string, which is what makes a
-/// depth-count sufficient here.
-fn d12r_braced_block<'a>(src: &'a str, head: &str) -> Option<&'a str> {
-    let start = src.find(head)?;
-    let open = start + src[start..].find('{')?;
+/// A depth count with no string lexer — sufficient for every span it is used on
+/// here (a `struct` body, a struct LITERAL and a JSON object), none of which
+/// contains a brace inside a string.
+fn d12r_matching_brace(src: &str, open: usize) -> Option<usize> {
     let bytes = src.as_bytes();
+    if bytes.get(open) != Some(&b'{') {
+        return None;
+    }
     let mut depth = 0usize;
     let mut i = open;
     while i < bytes.len() {
@@ -2231,7 +2231,7 @@ fn d12r_braced_block<'a>(src: &'a str, head: &str) -> Option<&'a str> {
             b'}' => {
                 depth -= 1;
                 if depth == 0 {
-                    return Some(&src[open + 1..i]);
+                    return Some(i);
                 }
             }
             _ => {}
@@ -2239,6 +2239,18 @@ fn d12r_braced_block<'a>(src: &'a str, head: &str) -> Option<&'a str> {
         i += 1;
     }
     None
+}
+
+/// The interior of the `{ .. }` block that OPENS at or after the first
+/// occurrence of `head` in `src`, braces excluded.
+///
+/// Used for the JSON object in A3. (A1 does NOT use it: it anchors on the
+/// `#[spacetimedb::table(..)]` attribute instead — see H4 in its doc comment.)
+fn d12r_braced_block<'a>(src: &'a str, head: &str) -> Option<&'a str> {
+    let start = src.find(head)?;
+    let open = start + src[start..].find('{')?;
+    let close = d12r_matching_brace(src, open)?;
+    Some(&src[open + 1..close])
 }
 
 /// **A1** (12r-d E1) — `HealLocationRow` gains `cost_currency: u64`, APPENDED
@@ -2267,17 +2279,54 @@ fn d12r_braced_block<'a>(src: &'a str, head: &str) -> Option<&'a str> {
 ///     for an 8-byte column (schema.rs:291-293 records the same finding for the
 ///     two `i64` columns, which is why they carry `0i64`). A test that accepted
 ///     a bare `0` here would let a green CI ship a module that cannot publish.
+///
+/// H4 — THE BLOCK IS ANCHORED ON THE TABLE ATTRIBUTE, not on the first textual
+/// match of `struct HealLocationRow`. The scan runs on the whitespace-squashed,
+/// comment-stripped whole file and requires the sequence
+/// `#[spacetimedb::table(name=heal_location_row` followed WITHIN A SHORT WINDOW
+/// by `pub struct HealLocationRow {`. Anchoring on the struct name alone would
+/// let a decoy — a same-named struct declared earlier in the file, or one whose
+/// table attribute was removed — become the scanned block, so every assertion
+/// below would describe a type SpacetimeDB never sees. Tying the block to the
+/// attribute that MAKES it a table is what keeps the claims about a real column.
 #[test]
 fn heal_location_row_cost_currency_is_appended_with_a_default() {
     let stripped = m13_5c_strip_rust_comments(D12R_SCHEMA_RS);
-    let head = ["struct ", "HealLocation", "Row"].concat();
-    let body = d12r_braced_block(&stripped, head.as_str()).unwrap_or_else(|| {
+    let sq_all = d12r_squash(&stripped);
+
+    // H4 anchor: the table attribute, then the struct head it decorates.
+    let attr = ["#[spacetimedb::", "table(name=heal_location", "_row"].concat();
+    let attr_at = sq_all.find(attr.as_str()).unwrap_or_else(|| {
         panic!(
-            "12r-d A1 (E1): `{head}` must be declared in server-module/src/schema.rs — \
-             the field assertions below would be vacuous without its body"
+            "12r-d A1 (E1, H4 anchor): server-module/src/schema.rs must declare the \
+             `heal_location_row` TABLE via {attr:?} (whitespace-squashed). Without the \
+             attribute there is no table, and every column assertion below would \
+             describe a plain struct SpacetimeDB never sees."
         )
     });
-    let sq = d12r_squash(body);
+    let after_attr = &sq_all[attr_at..];
+    let struct_head = ["pubstruct", "HealLocation", "Row{"].concat();
+    let head_rel = after_attr.find(struct_head.as_str()).unwrap_or_else(|| {
+        panic!(
+            "12r-d A1 (E1, H4 anchor): no {struct_head:?} follows the \
+             `heal_location_row` table attribute in schema.rs — the attribute and the \
+             struct it decorates must be adjacent."
+        )
+    });
+    assert!(
+        head_rel < 200,
+        "12r-d A1 (E1, H4 anchor): the `heal_location_row` table attribute and the \
+         `pub struct HealLocationRow {{` head are {head_rel} squashed bytes apart; they \
+         must be adjacent (< 200). A larger gap means the scan latched onto a struct \
+         head belonging to some LATER table, and every assertion below would be about \
+         the wrong type."
+    );
+
+    let open = attr_at + head_rel + struct_head.len() - 1;
+    let close = d12r_matching_brace(&sq_all, open).unwrap_or_else(|| {
+        panic!("12r-d A1 (E1): `HealLocationRow`'s struct body has unbalanced braces")
+    });
+    let sq = &sq_all[open + 1..close];
 
     let field = ["pubcost", "_currency:u64"].concat();
     let prev = ["pubcooldown", "_ms:i64"].concat();
@@ -2336,29 +2385,39 @@ fn heal_location_row_cost_currency_is_appended_with_a_default() {
 }
 
 /// **A2** (12r-d E1) — the `HealLocationRow` literal in `seed_heal_locations_from`
-/// maps `cost_currency` from THE DEF, anchored to its neighbour field.
+/// maps `cost_currency` from THE DEF, checked INSIDE the one and only literal.
 ///
 /// ASSERTION-RED at HEAD: the literal (content.rs:724-732) ends at
-/// `cooldown_ms: def.cooldown_ms,`.
+/// `cooldown_ms: def.cooldown_ms,` — the scoped needle misses.
 ///
-/// WHY THE NEEDLE IS ANCHORED, AND WHY A BARE `def.cost_currency` IS FORBIDDEN.
-/// The obvious needle — `body.contains("def.cost_currency")` — is satisfied by
-/// at least two implementations that seed the column WRONG:
-///   * a `stale_def.cost_currency` (or any other binding whose name merely ENDS
-///     in `def`) read from some other slice's variable, which seeds a price from
-///     the wrong registry entry; and
-///   * a dead-code shape such as `if false { def.cost_currency; }` — or a
-///     `debug_assert` / log line mentioning the field — anywhere in the same
-///     function, with the row literal itself untouched.
-/// Requiring the CONTIGUOUS, whitespace-squashed sequence
-/// `cooldown_ms:def.cooldown_ms,cost_currency:def.cost_currency` pins the field
-/// to the position immediately after its neighbour INSIDE the struct literal,
-/// which neither shape can produce. (`stale_def.cost_currency` cannot appear
-/// there without the `cooldown_ms:def.cooldown_ms,` prefix breaking.)
+/// WHY A BARE, UNSCOPED `def.cost_currency` NEEDLE IS FORBIDDEN. The obvious
+/// check — `body.contains("def.cost_currency")` — is satisfied by at least two
+/// implementations that seed the column WRONG:
+///   * `cost_currency: stale_def.cost_currency`, reading a binding whose name
+///     merely ENDS in `def`, so the price comes from the wrong registry entry; and
+///   * a dead-code mention anywhere else in the function — a `debug_assert`, a
+///     log line, or (H1, the red-team's construction) a whole decoy struct
+///     literal inside `if false { .. }`, which compiles clean while the LIVE
+///     literal ships `cost_currency: 0` and every heal location stays free.
 ///
-/// HONEST LIMIT: this pins ADJACENCY to `cooldown_ms`, not "is the last field" —
-/// a later slice appending a further column after `cost_currency` must stay
-/// green, and it does.
+/// H1 — THREE LAYERS, IN ORDER:
+///   1. **Exactly ONE `HealLocationRow {` literal in the function.** This fn
+///      builds the row once, in the upsert loop. A second occurrence is either
+///      the `if false` decoy above or a genuine second construction path that
+///      nobody has reasoned about; both must stop the build.
+///   2. **The needle is evaluated INSIDE that literal's brace block**, not
+///      against the whole body — so no statement outside the literal can satisfy
+///      it, whatever it says.
+///   3. **A survivor pin** for `cooldown_ms: def.cooldown_ms` inside the same
+///      literal, so "the field list is real" is a claim about a populated struct
+///      and a swap that REPLACED a field rather than appending one is caught.
+///
+/// FIELD ORDER IS DELIBERATELY NOT PINNED HERE (reviewer MED: over-constraint /
+/// false-RED risk). Once (1) and (2) hold, the scoped bare needle
+/// `cost_currency:def.cost_currency` is already decoy-proof — note
+/// `cost_currency:stale_def.cost_currency` does NOT contain that substring — and
+/// the tail-append ORDER that automatic migration actually cares about is pinned
+/// where it belongs: on the SCHEMA, by A1.
 #[test]
 fn seed_heal_locations_from_maps_cost_currency_from_the_def() {
     let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
@@ -2366,26 +2425,56 @@ fn seed_heal_locations_from_maps_cost_currency_from_the_def() {
     let body = m13_5c_fn_body(&stripped, fn_head.as_str());
     let sq = d12r_squash(body);
 
-    let anchored = [
-        "cooldown_ms:def.cooldown_ms,cost",
-        "_currency:def.cost",
-        "_currency",
-    ]
-    .concat();
+    // --- Layer 1: exactly ONE struct literal ---------------------------------
+    let literal_head = ["HealLocation", "Row{"].concat();
+    let n_literals = sq.matches(literal_head.as_str()).count();
+    assert_eq!(
+        n_literals, 1,
+        "TEETH (12r-d A2, E1, H1 decoy kill): `seed_heal_locations_from` contains \
+         {n_literals} `HealLocationRow {{` struct literal(s); it must contain EXACTLY \
+         ONE — the row it upserts per def. TWO is the red-team's proven cheat: a dead \
+         `if false {{ let _decoy = HealLocationRow {{ .. cost_currency: def.cost_currency \
+         }}; }}` compiles clean, satisfies any needle scoped to the whole function body, \
+         and leaves the LIVE literal shipping `cost_currency: 0` — every heal location \
+         free, forever, with a green suite. Squashed fn body was: {sq:?}"
+    );
 
+    // --- Layer 2: scope the needles to THAT literal --------------------------
+    let literal_at = sq
+        .find(literal_head.as_str())
+        .expect("asserted present by the count above");
+    let open = literal_at + literal_head.len() - 1;
+    let close = d12r_matching_brace(&sq, open).unwrap_or_else(|| {
+        panic!(
+            "12r-d A2 (E1): the `HealLocationRow {{ .. }}` literal in \
+             `seed_heal_locations_from` has unbalanced braces after squashing"
+        )
+    });
+    let literal = &sq[open + 1..close];
+
+    // --- Layer 3: survivor pin + the field under test ------------------------
+    let neighbour = ["cooldown_ms:def.cooldown", "_ms"].concat();
     assert!(
-        sq.contains(anchored.as_str()),
-        "TEETH (12r-d A2, E1): `seed_heal_locations_from` must build its \
-         `HealLocationRow` with `cost_currency: def.cost_currency` IMMEDIATELY after \
-         `cooldown_ms: def.cooldown_ms` — the contiguous squashed sequence \
-         {anchored:?} was not found. RED at HEAD (the literal ends at \
-         `cooldown_ms: def.cooldown_ms,`), so every seeded row would keep the column \
-         at its `#[default(0u64)]` and EVERY heal location would be free no matter \
-         what the RON says. The needle is ANCHORED to the neighbour field on purpose: \
-         a bare `.contains(\"def.cost_currency\")` is satisfied by a \
-         `stale_def.cost_currency` read from the wrong registry entry and by a \
-         dead-code `if false {{ def.cost_currency; }}` elsewhere in the same function, \
-         both of which leave the row literal untouched. Squashed fn body was: {sq:?}"
+        literal.contains(neighbour.as_str()),
+        "vacuity guard (12r-d A2, E1): the one `HealLocationRow` literal no longer maps \
+         `cooldown_ms: def.cooldown_ms`. Either the extraction mis-sliced or a field was \
+         REPLACED rather than appended — in both cases the assertion below would be \
+         making a claim about a field list that is not the real one. Literal was: \
+         {literal:?}"
+    );
+
+    let mapped = ["cost", "_currency:def.cost", "_currency"].concat();
+    assert!(
+        literal.contains(mapped.as_str()),
+        "TEETH (12r-d A2, E1): the `HealLocationRow` literal in \
+         `seed_heal_locations_from` must map `cost_currency: def.cost_currency` — the \
+         squashed sequence {mapped:?} was not found INSIDE the literal. RED at HEAD (it \
+         ends at `cooldown_ms: def.cooldown_ms,`), so every seeded row would keep the \
+         column at its `#[default(0u64)]` and EVERY heal location would be free no \
+         matter what the RON says. The needle is SCOPED to the literal, so a mention \
+         anywhere else in the function cannot satisfy it, and it names `def.` \
+         explicitly, so `cost_currency: stale_def.cost_currency` — the wrong registry \
+         entry — does not match either. Literal was: {literal:?}"
     );
 }
 
@@ -2469,8 +2558,18 @@ struct D12rLogSite {
 
 /// Assert one region's hand-built JSON log sites interpolate an ESCAPED binding.
 ///
-/// `binding` is the identifier the escape must be bound to, and
-/// `min_escape_calls` the number of `json_escape(` calls the region must make.
+/// `binding` is the identifier the escape must be bound to; `escape_args` lists
+/// the ACCEPTED argument spellings (each including its closing paren, e.g.
+/// `"&e)"`); `min_escape_calls` is the number of `json_escape(` calls the region
+/// must make.
+///
+/// H3 — WHY THE ARGUMENT IS PART OF THE PROVENANCE NEEDLE. A needle that stops
+/// at `let escaped = json_escape(` is satisfied by
+/// `let escaped = json_escape(&"placeholder");` — the escape is called, its
+/// result IS read by the format string, no lint fires, and the value logged is a
+/// constant instead of the error nobody will now ever see. Naming the argument
+/// closes it. The closing paren is part of each spelling on purpose: a bare `&e`
+/// would also match `&entity_id`.
 ///
 /// HONEST LIMITS. (a) A source scan, not execution (ADR-0156 P7): there is no
 /// reducer harness in this crate. (b) It pins the INLINE-CAPTURE form
@@ -2485,6 +2584,7 @@ fn d12r_assert_escaped_log_sites(
     body: &str,
     rows: &[D12rLogSite],
     binding: &str,
+    escape_args: &[&str],
     min_escape_calls: usize,
 ) {
     for row in rows {
@@ -2562,33 +2662,44 @@ fn d12r_assert_escaped_log_sites(
     );
 
     let any_binding = ["let", binding, "="].concat();
-    let qualified = ["let", binding, "=crate::guards::json", "_escape("].concat();
-    let bare = ["let", binding, "=json", "_escape("].concat();
     let n_all = sq.matches(any_binding.as_str()).count();
-    let n_esc = sq.matches(qualified.as_str()).count() + sq.matches(bare.as_str()).count();
+    let mut n_esc = 0usize;
+    for &arg in escape_args {
+        let qualified = ["let", binding, "=crate::guards::json", "_escape(", arg].concat();
+        let bare = ["let", binding, "=json", "_escape(", arg].concat();
+        n_esc += sq.matches(qualified.as_str()).count() + sq.matches(bare.as_str()).count();
+    }
 
     assert!(
         n_esc >= 1,
         "TEETH (12r-d E3, ADR-0170 D5) {label}: the escaped value must be bound to the \
          identifier `{binding}` by a statement of the form \
-         `let {binding} = crate::guards::json_escape(..);` (the bare `json_escape(..)` \
-         spelling is accepted when the helper is imported) — found none. The exact \
-         binding name is REQUIRED so this test can tie the value that was escaped to \
-         the identifier the format string interpolates; a differently-named escape \
-         binding is the red-team's proven cheat (npc_tests.rs:1117-1223): \
-         `let _escaped = json_escape(&e);` (unused, not `let _ =`, so clippy stays \
-         silent) beside a format string that still interpolates the raw value."
+         `let {binding} = crate::guards::json_escape(<arg>);` (the bare \
+         `json_escape(<arg>)` spelling is accepted when the helper is imported), where \
+         `<arg>` is one of {escape_args:?} — found none. \
+         TWO things are pinned here and both are load-bearing. The exact BINDING NAME \
+         ties the value that was escaped to the identifier the format string \
+         interpolates; a differently-named escape binding is the red-team's proven \
+         cheat (npc_tests.rs:1117-1223): `let _escaped = json_escape(&e);` (unused, not \
+         `let _ =`, so clippy stays silent) beside a format string that still \
+         interpolates the raw value. The exact ARGUMENT (H3) kills \
+         `let {binding} = json_escape(&\"placeholder\");` — the escape is called, its \
+         result IS read by the format string, nothing warns, and the line logs a \
+         constant instead of the error nobody will now ever see."
     );
     assert_eq!(
         n_all, n_esc,
-        "TEETH (12r-d E3, shadow-rebind cheat kill) {label}: `{binding}` is `let`-bound \
-         {n_all} time(s) but only {n_esc} of those bindings come from `json_escape`. \
-         KILLS the shadow-rebind that defeats every name-based assertion above: \
+        "TEETH (12r-d E3, shadow-rebind + placeholder cheat kill) {label}: `{binding}` \
+         is `let`-bound {n_all} time(s) but only {n_esc} of those bindings come from \
+         `json_escape` applied to one of {escape_args:?}. \
+         KILLS (a) the shadow-rebind that defeats every name-based assertion above — \
          `let {binding} = crate::guards::json_escape(&e); let {binding} = e.clone();` \
          satisfies 'the escape statement is present' AND 'the format string \
          interpolates `{binding}`', while the VALUE at the point of use is the raw, \
-         un-escaped one. The compiler does not complain: the binding IS read — just \
-         not the one that was escaped."
+         un-escaped one, and the compiler does not complain because the binding IS \
+         read, just not the one that was escaped; and (b) a per-site escape whose \
+         ARGUMENT is a placeholder rather than the value being logged, which this \
+         equality catches even when the other sites are correct."
     );
 }
 
@@ -2614,8 +2725,11 @@ fn d12r_assert_escaped_log_sites(
 ///
 /// KILLS, per row: an escape computed but not interpolated; the raw value left
 /// in the call beside a new escaped binding (the belt-and-braces shell); a
-/// shadow-rebind of the escaped name; a log line deleted instead of fixed; and —
-/// via the `>= 2` call count — a fix applied to only ONE of the two arms.
+/// shadow-rebind of the escaped name; a log line deleted or duplicated instead
+/// of fixed (exact site count); a fix applied to only ONE of the two arms (the
+/// `>= 2` call count); and — H3, via the ARGUMENT in the provenance needle —
+/// `json_escape(&"placeholder")`, which otherwise satisfies every other layer
+/// while logging a constant in place of the npc_id the line exists to report.
 #[test]
 fn sync_npc_entities_from_log_sites_escape_the_npc_id() {
     let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
@@ -2642,11 +2756,24 @@ fn sync_npc_entities_from_log_sites_escape_the_npc_id() {
         },
     ];
 
+    // H3: the two arms hold the npc_id under different names — the `Remove` arm
+    // destructures `npc_id` out of the action, the `Repair` arm holds the whole
+    // `npc` row — so BOTH argument spellings are accepted, and the `.as_str()`
+    // form of each is accepted too (it is equally correct and equally specific).
+    // A placeholder literal matches none of them.
+    let escape_args = [
+        "&npc_id)",
+        "npc_id.as_str())",
+        "&npc.npc_id)",
+        "npc.npc_id.as_str())",
+    ];
+
     d12r_assert_escaped_log_sites(
         "content.rs / sync_npc_entities_from",
         body,
         &rows,
         binding.as_str(),
+        &escape_args,
         2,
     );
 }

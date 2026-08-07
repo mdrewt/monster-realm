@@ -3586,8 +3586,18 @@ struct D12rLogSite {
 
 /// Assert one region's hand-built JSON log sites interpolate an ESCAPED binding.
 ///
-/// `binding` is the identifier the escape must be bound to; `min_escape_calls`
-/// is how many `json_escape(` calls the region must make.
+/// `binding` is the identifier the escape must be bound to; `escape_args` lists
+/// the ACCEPTED argument spellings (each including its closing paren, e.g.
+/// `"&e)"`); `min_escape_calls` is how many `json_escape(` calls the region must
+/// make.
+///
+/// H3 — WHY THE ARGUMENT IS PART OF THE PROVENANCE NEEDLE. A needle that stops
+/// at `let escaped = json_escape(` is satisfied by
+/// `let escaped = json_escape(&"placeholder");`: the escape IS called, its result
+/// IS read by the format string, no lint fires, and the line logs a constant
+/// instead of the error nobody will now ever see. Naming the argument closes it.
+/// The closing paren is part of each spelling on purpose — a bare `&e` would also
+/// match `&entity_id`.
 ///
 /// HONEST LIMITS. (a) Source scan, not execution (ADR-0156 P7). (b) It pins the
 /// INLINE-CAPTURE form (`{escaped}`), which is what makes "the escaped value
@@ -3602,6 +3612,7 @@ fn d12r_assert_escaped_log_sites(
     body: &str,
     rows: &[D12rLogSite],
     binding: &str,
+    escape_args: &[&str],
     min_escape_calls: usize,
 ) {
     for row in rows {
@@ -3682,33 +3693,44 @@ fn d12r_assert_escaped_log_sites(
     );
 
     let any_binding = ["let", binding, "="].concat();
-    let qualified = ["let", binding, "=crate::guards::json", "_escape("].concat();
-    let bare = ["let", binding, "=json", "_escape("].concat();
     let n_all = sq.matches(any_binding.as_str()).count();
-    let n_esc = sq.matches(qualified.as_str()).count() + sq.matches(bare.as_str()).count();
+    let mut n_esc = 0usize;
+    for &arg in escape_args {
+        let qualified = ["let", binding, "=crate::guards::json", "_escape(", arg].concat();
+        let bare = ["let", binding, "=json", "_escape(", arg].concat();
+        n_esc += sq.matches(qualified.as_str()).count() + sq.matches(bare.as_str()).count();
+    }
 
     assert!(
         n_esc >= 1,
         "TEETH (12r-d E3, ADR-0170 D5) {label}: the escaped value must be bound to the \
          identifier `{binding}` by a statement of the form \
-         `let {binding} = crate::guards::json_escape(&e);` (the bare `json_escape(&e)` \
-         spelling is accepted when the helper is imported) — found none. The exact \
-         binding name is REQUIRED so this test can tie the value that was escaped to the \
-         identifier the format string interpolates; a differently-named escape binding is \
-         the red-team's proven cheat (npc_tests.rs:1117-1223): \
-         `let _escaped = json_escape(&e);` — unused, but NOT `let _ =`, so clippy stays \
-         silent — beside a format string that still interpolates the raw value."
+         `let {binding} = crate::guards::json_escape(<arg>);` (the bare \
+         `json_escape(<arg>)` spelling is accepted when the helper is imported), where \
+         `<arg>` is one of {escape_args:?} — found none. \
+         TWO things are pinned and both are load-bearing. The BINDING NAME ties the \
+         value that was escaped to the identifier the format string interpolates; a \
+         differently-named escape binding is the red-team's proven cheat \
+         (npc_tests.rs:1117-1223): `let _escaped = json_escape(&e);` — unused, but NOT \
+         `let _ =`, so clippy stays silent — beside a format string that still \
+         interpolates the raw value. The ARGUMENT (H3) kills \
+         `let {binding} = json_escape(&\"placeholder\");`, where the escape is called, \
+         its result IS read, nothing warns, and the line logs a constant instead of the \
+         error nobody will now ever see."
     );
     assert_eq!(
         n_all, n_esc,
-        "TEETH (12r-d E3, shadow-rebind cheat kill) {label}: `{binding}` is `let`-bound \
-         {n_all} time(s) but only {n_esc} of those bindings come from `json_escape`. \
-         KILLS the shadow-rebind that defeats every name-based assertion above: \
+        "TEETH (12r-d E3, shadow-rebind + placeholder cheat kill) {label}: `{binding}` \
+         is `let`-bound {n_all} time(s) but only {n_esc} of those bindings come from \
+         `json_escape` applied to one of {escape_args:?}. \
+         KILLS (a) the shadow-rebind that defeats every name-based assertion above — \
          `let {binding} = crate::guards::json_escape(&e); let {binding} = e.clone();` \
          satisfies BOTH 'the escape statement is present' and 'the format string \
-         interpolates `{binding}`', while the VALUE at the point of use is the raw one. \
-         The compiler says nothing: the binding IS read — just not the one that was \
-         escaped."
+         interpolates `{binding}`', while the VALUE at the point of use is the raw one, \
+         and the compiler says nothing because the binding IS read, just not the escaped \
+         one; and (b) ONE site out of the four whose escape argument is a placeholder \
+         rather than the `Err` being logged — this equality catches it even when the \
+         other three are correct."
     );
 }
 
@@ -3743,6 +3765,11 @@ fn battle_reason_log_sites_interpolate_an_escaped_binding() {
     let binding = "escaped";
     let capture = ["{", binding, "}"].concat();
     let raw = ["{", "e}"].concat();
+    // H3: every reason at these five sites is the `Err` binding `e`. Both the
+    // reference and the `as_str()` spelling are accepted (equally correct,
+    // equally specific); a placeholder literal matches neither. The closing
+    // paren is part of each spelling so `&e)` cannot match `&entity_id)`.
+    let escape_args = ["&e)", "e.as_str())"];
 
     // --- Region 1: write_back_battle_results (four reasons) ------------------
     let write_back_fn = ["write_back", "_battle", "_results"].concat();
@@ -3783,6 +3810,7 @@ fn battle_reason_log_sites_interpolate_an_escaped_binding() {
         &write_back,
         &rows_write_back,
         binding,
+        &escape_args,
         4,
     );
 
@@ -3801,6 +3829,7 @@ fn battle_reason_log_sites_interpolate_an_escaped_binding() {
         &disconnect,
         &rows_disconnect,
         binding,
+        &escape_args,
         1,
     );
 
