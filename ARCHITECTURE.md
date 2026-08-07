@@ -222,6 +222,11 @@ canonical `touches:` vocabulary**: adding content is a new
   affects behavior (every registry is keyed by id / zone_id, and `validate_content`
   enforces id-uniqueness across the merged `Vec`) — the convention only keeps
   `000-core.ron` the stable first part.
+- **The `append-only-ids` gate is BIDIRECTIONAL** (12r-a): adding a content id requires
+  appending it to that registry's `evals/baselines/*-ids.json` in the **same PR** — an
+  unpinned live id fails the gate rather than silently escaping append-only enforcement.
+  A baseline may only ever grow (a hand-ratcheted per-registry floor enforces that a
+  shrink cannot pass). The gate does **not** detect id reuse/rebinding.
 - **Loud per-file rejection**: a malformed `*.ron` makes the loader return `Err`
   naming the offending file — never a silent skip (parse-don't-validate preserved).
 - Content is **data, not schema** — the layout change touches neither `module_bindings`

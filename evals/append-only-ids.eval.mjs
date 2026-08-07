@@ -15,6 +15,55 @@
 // `comment_needle_violations`. A baseline generated FROM the extractor under
 // test is self-confirming and forbidden — every baseline here must be
 // derived by reading the RON directly, then cross-checked against parseIds.
+//
+// 12r-a: the gate is now BIDIRECTIONAL. Until this slice `checkRegistry` only
+// ever asked "is every BASELINE id still in the content?", so a live id that no
+// baseline pinned was invisible to it. Three baselines had drifted far behind
+// the content they guard (species pinned 3 of 16 live ids, skills 6 of 11,
+// items 2 of 5), which made append-only enforcement VACUOUS for every unpinned
+// id: deleting or renumbering species 20, item 4 or skill 7 outright — the exact
+// regression ADR-0006 exists to stop — passed this gate GREEN. Both halves are
+// enforced now: a pinned id must never vanish, and a live id no baseline pins
+// fails loud with a "baseline needs regeneration" instruction.
+//   AUTHOR OBLIGATION: a content PR that adds an id MUST append that id to the
+// registry's evals/baselines/*-ids.json in the SAME PR. There is no lazy path
+// that re-opens the blind spot.
+//   ORDERING (load-bearing, pinned by a tooth): the comment-needle guard MUST
+// run BEFORE the growth check. `parseIds` harvests ids straight out of comments
+// (readRegistryDir strips whole-line line-comments only), so with the growth
+// check first an id echoed in a masking comment is reported as "not in the
+// baseline — regenerate", instructing the author to pin a PHANTOM id that
+// exists nowhere in the content. A pinned phantom can never be removed without
+// violating append-only, so the baseline would be poisoned permanently. The
+// ambiguous registry is refused instead, and growth advice withheld until the
+// comment is rewritten in the `id=N` form.
+//   BASELINE FLOOR (production only): a commit that deletes content AND shrinks
+// the baseline in the same breath is self-consistent, so both directions agree
+// and both go green. `floorViolations` is the independent anchor — a hand-
+// ratcheted minimum id count per registry. It runs ONLY in the default export,
+// against the seven real committed baselines, and must NEVER be called from
+// `checkRegistry`: the temp-fixture teeth run 2-3 id fixtures against keys like
+// `species` (floor 16), so a floor inside `checkRegistry` would false-fail the
+// negative controls and make several teeth pass for entirely the wrong reason.
+//   SCOPE LIMITS + named residuals (this gate is deliberately narrow):
+//   (i) id REUSE / rebinding is NOT detected. Swapping species 20 and 21, or
+//       rebinding id 20 to a different creature, is green — the set of ids is
+//       unchanged. Catching it needs a MAP-shaped baseline (id -> identity),
+//       like evals/baselines/evolution-path-edge-ids.json. Own slice.
+//   (ii) `parseIds` is not string-aware, so an id echoed inside a QUOTED RON
+//       string value still masks a removal. Deliberately NOT fixed here: it
+//       directly contradicts the intentional negative control at the end of the
+//       T2-e block (an in-string comment sequence must NOT refuse a registry),
+//       so changing it is a policy change about what string values mean to this
+//       gate, and needs its own slice.
+//   (iii) `parseIds` accepts plain decimal only, so RON's `0x14`, `2_00` and
+//       `id : 20` forms evade or mis-harvest it (`id: 2_00` renumbers species 2
+//       to 200 and stays green). Zero live occurrences across all content dirs
+//       today. Same future "extractor hardening" slice as (ii).
+//   NO ADR NUMBER WAS RESERVED for this slice, so this comment block plus the
+// three regenerated baseline `_comment`s ARE the decision record. An ADR is
+// OWED for the bidirectional semantics + the ordering constraint (ADR-0173 is
+// the direct precedent); the PR body asks the supervisor to reserve a number.
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,6 +76,60 @@ export function parseIds(ron) {
 export function removedIds(baselineIds, currentIds) {
   const cur = new Set(currentIds);
   return baselineIds.filter((id) => !cur.has(id));
+}
+
+// 12r-a: the other half of the bidirectional gate — the LIVE ids the baseline
+// does not pin. De-duplicated (a duplicate live id is `validate_content`'s job,
+// not this gate's, and repeating it in the remediation advice is just spam) and
+// numerically ascending, so the message is stable and reviewable. Mirrors
+// `removedIds`' convention; module-local because nothing outside this file
+// imports `parseIds`/`removedIds` either.
+function unpinnedIds(baselineIds, currentIds) {
+  const base = new Set(baselineIds);
+  return [...new Set(currentIds)].filter((id) => !base.has(id)).sort((a, b) => a - b);
+}
+
+// 12r-a: per-registry MINIMUM pinned-id count, ratcheted BY HAND when content
+// grows. The floor is the only check that survives a commit which deletes
+// content and shrinks the baseline together (self-consistent, so removal and
+// growth both agree), and the E2 teeth cannot substitute for it — their fixture
+// RON is derived FROM the baseline, so a baseline pinning only the dropped id
+// would satisfy them.
+const BASELINE_ID_FLOORS = {
+  zones: 2,
+  species: 16,
+  skills: 11,
+  items: 5,
+  abilities: 3,
+  shops: 1,
+  npcs: 2,
+};
+
+// PURE. Takes `{ zones: n, species: n, ... }` and returns one human-readable
+// string per registry whose count is BELOW its floor, or whose key is ABSENT
+// from the input (a baseline that failed to read is a broken baseline, never
+// "nothing to check"). Empty array = healthy. Iterates its OWN floor table, not
+// the caller's object, so an omitted key cannot slip through. Production-only:
+// never call this from `checkRegistry` — see the ordering/floor notes in the
+// file header.
+export function floorViolations(countsByKey) {
+  const violations = [];
+  for (const key of Object.keys(BASELINE_ID_FLOORS)) {
+    const floor = BASELINE_ID_FLOORS[key];
+    const count = countsByKey == null ? undefined : countsByKey[key];
+    if (typeof count !== 'number' || !Number.isFinite(count)) {
+      violations.push(
+        `${key}: pinned-id count is ABSENT from the floor check — its baseline JSON did not yield an id array, which is a broken baseline, not "nothing to check" (floor ${floor})`,
+      );
+      continue;
+    }
+    if (count < floor) {
+      violations.push(
+        `${key}: baseline pins only ${count} id(s), below its floor of ${floor} — a baseline may only ever GROW; either it drifted behind the content (regenerate it from a HAND READ of game-core/content/${key}/*.ron, never from parseIds) or it was SHRUNK alongside a content deletion, which is self-consistent and therefore invisible to both the removal and the growth check`,
+      );
+    }
+  }
+  return violations;
 }
 
 // M8.9e: each registry is now a DIRECTORY of *.ron parts. Read them all in
@@ -174,13 +277,36 @@ function checkRegistry(ronDir, baselinePath, baselineKey, label) {
       detail: `${label}: a comment (trailing mid-line \`//\`, or a \`/* … */\` block) carries an id-shaped needle, which masks a removed id from the append-only scan — rewrite it in the \`id=N\` form: ${maskingComments.join('; ')}`,
     };
   }
+  // 12r-a: BOTH directions, computed after the two guards above (the ordering is
+  // load-bearing — see the file header). `missing` is a pinned id that vanished
+  // from the content; `unpinned` is a live id no baseline pins. They are DISTINCT
+  // diagnoses on purpose: telling an author to regenerate the baseline in
+  // response to a removal is how a shipped id gets silently un-pinned.
   const current = parseIds(ron);
   const missing = removedIds(baseline, current);
+  const unpinned = unpinnedIds(baseline, current);
+  const removalDetail = missing.length
+    ? `${label}: removed/renumbered stable ids: ${missing.join(', ')} (ids are append-only) — restore the CONTENT for those ids; NEVER delete an id from the baseline to make this pass, that un-pins a shipped id and voids the guarantee`
+    : '';
+  // Renders the `unpinned` list ONLY — never the baseline, never the full live
+  // set, and never the baseline PATH (for the temp-fixture teeth that path is a
+  // random mkdtemp string whose digits could collide with a literal-substring
+  // assertion). Naming an already-pinned id here would read as "the author must
+  // add this", which is exactly how a baseline gets poisoned.
+  const growthDetail = unpinned.length
+    ? `${label}: live ids that no baseline pins: ${unpinned.join(', ')} — baseline needs regeneration: append them to its \`evals/baselines/*-ids.json\` baseline in this same PR, so append-only enforcement actually covers them. The baseline may only ever be APPENDED to, never shrunk. If a number listed here is not a real registry entry — harvested out of flavour text or a nested field — rewrite that occurrence in the \`id=N\` form instead of pinning it`
+    : '';
+  if (removalDetail && growthDetail) {
+    // A RENUMBER fires both halves. Report them together, removal first: an
+    // early return after the removal branch would hide the growth half and
+    // invite the author to "fix" it by regenerating off the renumbered content.
+    return { pass: false, detail: `${removalDetail}; ${growthDetail}` };
+  }
+  if (removalDetail) return { pass: false, detail: removalDetail };
+  if (growthDetail) return { pass: false, detail: growthDetail };
   return {
-    pass: missing.length === 0,
-    detail: missing.length
-      ? `${label}: removed/renumbered stable ids: ${missing.join(', ')} (ids are append-only)`
-      : `${label}: ${current.length} ids; all ${baseline.length} baseline ids retained`,
+    pass: true,
+    detail: `${label}: ${current.length} ids; all ${baseline.length} baseline ids retained, none unpinned`,
   };
 }
 
@@ -937,6 +1063,24 @@ export default async function () {
         detail: `baseline floor proof-of-teeth: floorViolations() must flag ${key} when its count is ABSENT entirely (a baseline that failed to read is a broken baseline, never "nothing to check") — got ${JSON.stringify(omittedResult)}`,
       };
     }
+  }
+
+  // PRODUCTION floor check (12r-a) — the seven real committed baselines only.
+  // Deliberately here and NOT in `checkRegistry`: the temp-fixture teeth above
+  // run 2-3 id fixtures against keys like `species` (floor 16), so a floor
+  // inside `checkRegistry` would false-fail the negative controls.
+  const productionIdCounts = {};
+  for (const r of registries) {
+    const pinned = JSON.parse(readFileSync(r.baseline, 'utf8'))[r.key];
+    if (Array.isArray(pinned)) productionIdCounts[r.key] = pinned.length;
+  }
+  const productionFloorViolations = floorViolations(productionIdCounts);
+  if (productionFloorViolations.length) {
+    return {
+      name,
+      pass: false,
+      detail: `baseline floor: ${productionFloorViolations.join('; ')}`,
+    };
   }
 
   const results = registries.map((r) => checkRegistry(r.ron, r.baseline, r.key, r.label));
