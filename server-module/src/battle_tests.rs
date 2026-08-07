@@ -4531,7 +4531,10 @@ fn lead_party_ids_does_not_parse_a_level() {
 
     // --- Layer 5 (HARDENING): the level column/type is not named at all ------
     let level_any = ["lev", "el"].concat();
-    let n_level_any = body.to_ascii_lowercase().matches(level_any.as_str()).count();
+    let n_level_any = body
+        .to_ascii_lowercase()
+        .matches(level_any.as_str())
+        .count();
     assert_eq!(
         n_level_any, 0,
         "TEETH (12r-e E2, HARDENING): `lead_party_ids`'s body names `{level_any}` \
