@@ -281,6 +281,25 @@ ledger can lag by at most the open milestone — the tenth review found it 8 mer
 behind. A slice's own squash line lands at the NEXT regen: git-cliff reads committed
 master history, so regenerate at the branch point, never after `wip:` commits.
 
+**ADR back-link reciprocity (12r-f):** ADR-0104 D1 already required that "an ADR
+that only *amends* another stays `Accepted`; the amended ADR gains
+`**Amended-by:**`", but only `checkRefs` enforced anything — a one-directional
+dangling-reference check, so a *missing* back-link passed green and 53 accumulated.
+`validateBacklinks()` in `scripts/adr-digest.mjs` now mechanizes the invariant in
+both directions. It is **era-scoped**: enforced only when BOTH endpoints are
+`>= BACKLINK_ERA_MIN` (`0151` — the oldest ADR 12r-f repaired). Repairing a
+pre-era back-link is a semantic claim ("did 0116 really amend 0103?"), not a
+formatting fix, so the 44 below-era gaps are counted in a one-line WARN summary
+rather than itemised or enforced. Five in-era gaps predate the gate and sit in
+`KNOWN_BACKLINK_GAPS`, which **may only shrink** — a ratchet errors on an entry
+whose gap is already repaired, and a frozen duplicate of the set in
+`evals/adr-backlink-corpus.eval.mjs` asserts set equality so growth needs two
+visible edits in two directories. Back-link resolution reads a fence-stripped
+header view and accepts bare `NNNN` as well as `ADR-NNNN` (nine ADRs of the
+0151–0164 era write bare ids); normalising those to `ADR-NNNN` per ADR-0104 D1,
+and adding an `Amended-by` column to `DIGEST.md`, are follow-ups. Teeth:
+`evals/adr-backlink-integrity.eval.mjs` + `evals/adr-backlink-corpus.eval.mjs`.
+
 Research library (`docs/research/*.md`) carries `type: Research Note` (additive;
 validated by the vendored `research-lint.mjs`; `INDEX.md` regenerated with `type`
 column via `research-index.mjs`).

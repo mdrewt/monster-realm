@@ -196,11 +196,12 @@ function parseAdr(id, filePath) {
   // widening it there would move DIGEST bytes and perturb evals/adr-digest.eval.mjs.
   // (On today's corpus the two views are identical — no ADR has a fence in its
   // preamble — so this is defence against a future ADR, not a live correction.)
-  const unfenced = stripFencedBlocks(content);
-  const amendsBacklink =
-    extractBoldField(unfenced, 'Amends') || extractListField(unfenced, 'Amends');
-  const amendedByBacklink =
-    extractBoldField(unfenced, 'Amended-by') || extractListField(unfenced, 'Amended-by');
+  // headerPreamble FIRST, then strip: stripping first could delete the `## `
+  // that bounds the preamble and widen the view into the body — reintroducing
+  // the very bypass this view exists to close.
+  const backlinkView = stripFencedBlocks(headerPreamble(content));
+  const amendsBacklink = extractBacklinkField(backlinkView, 'Amends');
+  const amendedByBacklink = extractBacklinkField(backlinkView, 'Amended-by');
 
   return {
     id,
@@ -380,17 +381,55 @@ function extractAllAdrIds(ref) {
 // ---------------------------------------------------------------------------
 
 /**
- * Drop every ``` fenced block. Used ONLY to build the back-link header view —
- * see the note in parseAdr(). An unterminated fence swallows the rest of the
- * document, which is the fail-closed direction: a field we cannot trust the
- * position of resolves to nothing rather than satisfying reciprocity.
+ * Drop every fenced block, backtick- and tilde-delimited. Used ONLY to build the
+ * back-link header view — see the note in parseAdr(). An unterminated fence
+ * swallows the rest of its input, which is the fail-closed direction: a field
+ * whose position we cannot trust resolves to nothing rather than satisfying
+ * reciprocity.
  */
 function stripFencedBlocks(content) {
-  const parts = content.split('```');
-  // Even indices are outside fences, odd indices inside.
-  let out = '';
-  for (let i = 0; i < parts.length; i += 2) out += parts[i];
+  let out = content;
+  for (const marker of ['```', '~~~']) {
+    const parts = out.split(marker);
+    // Even indices are outside fences, odd indices inside.
+    let kept = '';
+    for (let i = 0; i < parts.length; i += 2) kept += parts[i];
+    out = kept;
+  }
   return out;
+}
+
+/**
+ * Read a relation field out of the back-link header view.
+ *
+ * Deliberately stricter than extractBoldField(): the marker must start at
+ * column 0. An indented `**Amended-by:**` is inside a markdown code block (the
+ * one decoy shape fence-stripping cannot see), and the canonical header block
+ * in ADR-0104 D1 is unindented, so this costs no legitimate ADR anything.
+ *
+ * Collects EVERY matching line plus its indented continuation lines, so both
+ * natural multi-amender forms work — a repeated `**Amended-by:**` line, and a
+ * comma-wrapped list. Two slices amending the same ADR is not hypothetical:
+ * 12r-f itself produced it twice (0162, 0174).
+ */
+function extractBacklinkField(view, fieldName) {
+  const needle = `**${fieldName}:**`;
+  const collected = [];
+  const lines = view.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (!lines[i].startsWith(needle)) continue;
+    collected.push(lines[i].slice(needle.length).trim());
+    // Absorb indented continuation lines (no bold marker of their own).
+    for (let j = i + 1; j < lines.length; j++) {
+      const next = lines[j];
+      if (next.trim() === '' || !/^\s/.test(next) || next.indexOf('**') !== -1) break;
+      collected.push(next.trim());
+      i = j;
+    }
+  }
+  if (collected.length === 0) return null;
+  const joined = collected.join(', ').trim();
+  return joined || null;
 }
 
 /**
