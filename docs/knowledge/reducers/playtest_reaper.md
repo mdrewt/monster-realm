@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: playtest_reaper
 slug: reducers/playtest_reaper
-updated: 2026-08-04
+updated: 2026-08-07
 tags: [reducer, spacetimedb, playtest]
 abstract: "SpacetimeDB reducer playtest_reaper."
 resource: server-module/src/playtest.rs#L158

@@ -2,10 +2,10 @@
 type: SpacetimeDB Reducer
 title: care
 slug: reducers/care
-updated: 2026-08-04
+updated: 2026-08-07
 tags: [reducer, spacetimedb, raising]
-abstract: "Raise a monster's bond, gated by a per-monster cooldown measured from the server clock (`ctx.timestamp`, never a client…"
-resource: server-module/src/raising.rs#L82
+abstract: "Care for a monster (Trust-favorable credit, EG2-5/ADR-0175), gated by a per-monster cooldown measured from the server c…"
+resource: server-module/src/raising.rs#L75
 source: scripts/okf-export.mjs@server-module/src/raising.rs
 ---
 

@@ -8,15 +8,15 @@
 //!   - 12.5b-2 seam: `sync_content_inner` currently returns `()`, not
 //!     `Result<(), String>`. These tests call it expecting a Result.
 //!   - 12.5b-3 re-derive: no `sync_content_inner_for_monsters` (or equivalent
-//!     re-derive seam) exists yet. The test calls `compute_evolves_to` directly
-//!     (available via `crate::evolution::compute_evolves_to`) to verify that
-//!     after content version changes, monsters can have their evolves_to refreshed.
+//!     re-derive seam) exists yet. (The `compute_evolves_to`/`evolves_to` model
+//!     was deleted at EG1/ADR-0174 D2 and the column removed by Migration B —
+//!     EG5-6/ADR-0177 D2.)
 //!
 //! EARS criteria covered:
 //!   - 12.5b-2: `sync_content_inner` returns Result; a validation failure at ANY
 //!     registry means no DB writes occur (txn atomic / load-all before write-all).
 //!   - 12.5b-3: after `sync_content_inner` with a stale version, monster rows
-//!     get updated stats (re-derived from new base stats) and updated `evolves_to`.
+//!     get updated stats (re-derived from new base stats).
 //!
 //! Pattern: these tests call the pure-seam helpers exposed by the implementation
 //! and verify concrete state changes. No SpacetimeDB live context is used.
@@ -65,7 +65,6 @@ fn make_stale_monster(monster_id: u64, owner: Identity, species_id: u32) -> Mons
         nickname: String::new(),
         level: 20,
         xp: 8000,
-        bond: 50,
         iv_hp: 15,
         iv_attack: 15,
         iv_defense: 15,
@@ -90,7 +89,6 @@ fn make_stale_monster(monster_id: u64, owner: Identity, species_id: u32) -> Mons
         current_hp: 50,
         party_slot: 0,
         last_care_at_ms: 0,
-        evolves_to: None, // stale: may be wrong
         // EG1 Migration A columns at creation defaults (compiler-forced append).
         essence_fire: 0,
         essence_water: 0,
@@ -203,23 +201,22 @@ fn sync_content_inner_recheck_rejects_empty_species() {
 }
 
 // ---------------------------------------------------------------------------
-// 12.5b-3: compute_evolves_to is called on monster re-derive pass
+// 12.5b-3: monster re-derive pass (historical: originally also refreshed the
+// `evolves_to` hint — that model was deleted at EG1/ADR-0174 D2 and the column
+// removed by Migration B, EG5-6/ADR-0177 D2)
 //
 // Criterion: after sync_content_inner with a stale version, monster rows get
-// updated stat_hp (re-derived from new base stats), updated evolves_to.
+// updated stat_hp (re-derived from new base stats).
 //
 // Because sync_content_inner operates on a live DB context (not unit-testable
-// here), we test the pure-seam sub-function `recompute_monster_derived_fields`
-// which the implementer must expose:
+// here), we test the pure-seam sub-function `recompute_monster_derived_fields`:
 //
 //   pub(crate) fn recompute_monster_derived_fields(
 //       monster: &mut Monster,
 //       species: &SpeciesRow,
-//       evolutions: &[EvolutionCondition],
 //   )
 //
-// This seam updates monster.stat_hp (and other stats) + monster.evolves_to in place.
-// RED state: the function does not exist yet → compile-RED.
+// This seam updates monster.stat_hp (and other stats) in place.
 // ---------------------------------------------------------------------------
 
 /// 12.5b-3: after recompute_monster_derived_fields with new species (higher base_hp),
@@ -282,7 +279,6 @@ fn recompute_monster_derived_fields_clamps_current_hp() {
         nickname: String::new(),
         level: 5,
         xp: 0,
-        bond: 50,
         iv_hp: 0,
         iv_attack: 0,
         iv_defense: 0,
@@ -307,7 +303,6 @@ fn recompute_monster_derived_fields_clamps_current_hp() {
         current_hp: 35, // at full HP
         party_slot: 0,
         last_care_at_ms: 0,
-        evolves_to: None,
         // EG1 Migration A columns at creation defaults (compiler-forced append).
         essence_fire: 0,
         essence_water: 0,
@@ -345,41 +340,9 @@ fn recompute_monster_derived_fields_clamps_current_hp() {
     );
 }
 
-// EG1 (ADR-0174 D2) — DELETED here, mechanical consequence of a deleted subject:
-//   * `recompute_monster_derived_fields_updates_evolves_to` asserted that the
-//     re-derive pass sets `evolves_to = Some(target)` from an `EvolutionCondition`
-//     trigger list. Both `compute_evolves_to` and the whole trigger content model
-//     (`EvolutionCondition`/`EvolutionTrigger`) are deleted; the spec now freezes
-//     `evolves_to` to `None` on every sync (dead column until Migration B), so
-//     no implementation can produce `Some(2)` any more.
-//   * `compute_evolves_to_handles_bond_trigger_in_recompute_path` exercised
-//     `compute_evolves_to` directly — the function no longer exists.
-// The ineligible-stays-None sibling below survives with the trigger fixture
-// removed: `None` staying `None` is exactly the frozen-column contract.
-
-/// 12.5b-3 proof-of-teeth (EG1-updated): `evolves_to` must remain None after a
-/// recompute — the column is frozen dead (ADR-0174 D2) and the re-derive pass
-/// writes None.
-///
-/// KILLS: a recompute impl that writes any Some(..) into the frozen column.
-#[test]
-fn recompute_monster_derived_fields_does_not_set_evolves_to_for_ineligible() {
-    let owner = owner_id();
-    let mut monster = make_stale_monster(4, owner, 1); // level=20
-    monster.evolves_to = None;
-
-    let new_species = make_species_row(1, 45, 49);
-
-    // EG1 mechanical migration: the evolutions parameter is gone (ADR-0174 D2).
-    super::recompute_monster_derived_fields(&mut monster, &new_species);
-
-    assert_eq!(
-        monster.evolves_to, None,
-        "TEETH(12.5b-3 proof-of-teeth, EG1): evolves_to is a frozen dead column; \
-         it must remain None after recompute. \
-         Kills: impl that writes Some(..) into the frozen column."
-    );
-}
+// (EG1/ADR-0174 D2 deleted the evolves_to recompute tests with their subject;
+// Migration B — EG5-6/ADR-0177 D2 — then removed the frozen column itself, and
+// the ineligible-stays-None fence went with it.)
 
 // ===========================================================================
 // M13.5c gating tests — content lifecycle completion.

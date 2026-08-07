@@ -169,7 +169,6 @@
       "nickname": "String",
       "level": "u8",
       "xp": "u32",
-      "bond": "u8",
       "iv_hp": "u8",
       "iv_attack": "u8",
       "iv_defense": "u8",
@@ -192,7 +191,6 @@
       "current_hp": "u16",
       "party_slot": "u8",
       "last_care_at_ms": "i64",
-      "evolves_to": "Option<u32>",
       "essence_fire": "u32",
       "essence_water": "u32",
       "essence_plant": "u32",
@@ -220,7 +218,6 @@
       "nickname": "String",
       "level": "u8",
       "xp": "u32",
-      "bond": "u8",
       "current_hp": "u16",
       "stat_hp": "u16",
       "stat_attack": "u16",
@@ -229,7 +226,6 @@
       "stat_sp_attack": "u16",
       "stat_sp_defense": "u16",
       "party_slot": "u8",
-      "evolves_to": "Option<u32>",
       "tier": "u8",
       "essence_fire": "u32",
       "essence_water": "u32",
@@ -272,15 +268,6 @@
       "owner_identity": "Identity",
       "item_id": "u32",
       "count": "u32"
-    }
-  },
-  "fusion": {
-    "pk": "fusion_id",
-    "columns": {
-      "fusion_id": "u64",
-      "a_species": "u32",
-      "b_species": "u32",
-      "to_species": "u32"
     }
   },
   "evolution_path": {

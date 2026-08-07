@@ -202,9 +202,9 @@ fn level_up_heal_is_owned_by_game_core() {
 // here — their subject, the level-up `evolves_to` recompute via
 // `compute_evolves_to`, is removed outright: the helper's parameter type
 // (`EvolutionCondition`) no longer exists in game-core, so the pinned
-// implementation is compile-impossible and `evolves_to` is a frozen dead
-// column until Migration B. Removal is the mechanical consequence of the
-// deleted subject, not a weakened assertion.
+// implementation is compile-impossible; `evolves_to` stayed a frozen dead
+// column until Migration B removed it (EG5-6/ADR-0177 D2). Removal is the
+// mechanical consequence of the deleted subject, not a weakened assertion.
 // =========================================================================
 
 // =========================================================================

@@ -1,6 +1,7 @@
 # 0063. Evolution & fusion client overlay: subscription shape, overlay key, fusion recipe display
 
-**Status:** Accepted
+**Status:** Superseded
+**Superseded-by:** ADR-0177 (fusion-specific provisions; see ADR-0177 D1 for surviving provisions)
 **Date:** 2026-07-02
 **Slice:** m10c
 **Supersedes:** —

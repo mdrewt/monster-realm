@@ -221,14 +221,6 @@ export const EvolutionPathRow = __t.object("EvolutionPathRow", {
 });
 export type EvolutionPathRow = __Infer<typeof EvolutionPathRow>;
 
-export const Fusion = __t.object("Fusion", {
-  fusionId: __t.u64(),
-  aSpecies: __t.u32(),
-  bSpecies: __t.u32(),
-  toSpecies: __t.u32(),
-});
-export type Fusion = __Infer<typeof Fusion>;
-
 export const HealCooldown = __t.object("HealCooldown", {
   ownerIdentity: __t.identity(),
   lastHealAtMs: __t.i64(),
@@ -277,7 +269,6 @@ export const Monster = __t.object("Monster", {
   nickname: __t.string(),
   level: __t.u8(),
   xp: __t.u32(),
-  bond: __t.u8(),
   ivHp: __t.u8(),
   ivAttack: __t.u8(),
   ivDefense: __t.u8(),
@@ -302,7 +293,6 @@ export const Monster = __t.object("Monster", {
   currentHp: __t.u16(),
   partySlot: __t.u8(),
   lastCareAtMs: __t.i64(),
-  evolvesTo: __t.option(__t.u32()),
   essenceFire: __t.u32(),
   essenceWater: __t.u32(),
   essencePlant: __t.u32(),
@@ -339,7 +329,6 @@ export const MonsterPub = __t.object("MonsterPub", {
   nickname: __t.string(),
   level: __t.u8(),
   xp: __t.u32(),
-  bond: __t.u8(),
   currentHp: __t.u16(),
   statHp: __t.u16(),
   statAttack: __t.u16(),
@@ -348,7 +337,6 @@ export const MonsterPub = __t.object("MonsterPub", {
   statSpAttack: __t.u16(),
   statSpDefense: __t.u16(),
   partySlot: __t.u8(),
-  evolvesTo: __t.option(__t.u32()),
   tier: __t.u8(),
   essenceFire: __t.u32(),
   essenceWater: __t.u32(),

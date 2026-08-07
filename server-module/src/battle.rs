@@ -1278,8 +1278,6 @@ pub(crate) fn write_back_battle_results(
                             // Heal the HP gained from the max-HP growth on level-up
                             // (SSOT: game_core owns the heal rule, ADR-0003).
                             m.current_hp = level_up_healed_hp(m.current_hp, bm.max_hp, derived.hp);
-                            // EG1 (ADR-0174 D2): the evolves_to recompute is GONE —
-                            // the column is frozen dead until Migration B.
                         }
                     }
                 }

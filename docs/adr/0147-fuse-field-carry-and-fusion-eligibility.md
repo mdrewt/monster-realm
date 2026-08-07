@@ -1,6 +1,7 @@
 # 0147 — fuse() field-carry repair (taxed, not reset) + fusion_eligible guard SSOT
 
-**Status:** Accepted
+**Status:** Superseded
+**Superseded-by:** ADR-0177 (fusion-specific provisions; see ADR-0177 D1 for surviving provisions)
 **Date:** 2026-07-25
 **Slice:** A0 (M-postgate-evolution-fusion-hardening — fuse() field-carry fix + fusion_eligible extraction; EARS A0-1..A0-9)
 **Supersedes:** —

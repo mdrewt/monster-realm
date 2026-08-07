@@ -76,8 +76,6 @@ fn monster_from_instance_flattens_correctly() {
     assert_eq!(m.species_id, inst.species_id);
     assert_eq!(m.level, inst.level.as_u8());
     assert_eq!(m.xp, inst.xp.value());
-    // EG1-7: `bond` is gone from MonsterInstance (the row column survives, frozen,
-    // until Migration B / EG5-6) — there is nothing to flatten from any more.
     assert_eq!(m.iv_hp, inst.ivs.get(StatKind::Hp));
     assert_eq!(m.iv_attack, inst.ivs.get(StatKind::Attack));
     assert_eq!(m.iv_defense, inst.ivs.get(StatKind::Defense));
@@ -97,9 +95,8 @@ fn monster_from_instance_flattens_correctly() {
 
 /// pub_from_monster produces a projection with NO hidden fields.
 ///
-/// EG1-8: the signature is now `pub_from_monster(&Monster, tier: u8)`. `bond` STAYS
-/// on both sides this slice (Migration A is additive-only; the pair is removed in
-/// Migration B / EG5-6), so the bond assertion below is deliberately retained.
+/// EG1-8: the signature is `pub_from_monster(&Monster, tier: u8)`. (`bond`/
+/// `evolves_to` were removed from both sides by Migration B — EG5-6/ADR-0177 D2.)
 #[test]
 fn pub_from_monster_omits_hidden_fields() {
     let sp = test_species();
@@ -115,7 +112,6 @@ fn pub_from_monster_omits_hidden_fields() {
     assert_eq!(p.nickname, m.nickname);
     assert_eq!(p.level, m.level);
     assert_eq!(p.xp, m.xp);
-    assert_eq!(p.bond, m.bond);
     assert_eq!(p.current_hp, m.current_hp);
     assert_eq!(p.stat_hp, m.stat_hp);
     assert_eq!(p.stat_attack, m.stat_attack);
@@ -161,7 +157,6 @@ fn m7b_test_monster_row() -> Monster {
         nickname: "Sparky".to_string(),
         level: 15,
         xp: 0,
-        bond: 0,
         iv_hp: 20,
         iv_attack: 25,
         iv_defense: 10,
@@ -185,7 +180,6 @@ fn m7b_test_monster_row() -> Monster {
         current_hp: 90, // damaged — not at max
         party_slot: 0,
         last_care_at_ms: 0,
-        evolves_to: None,
         // --- EG1 Migration A: the 16 appended Monster columns (ADR-0174 D1) ------
         essence_fire: 0,
         essence_water: 0,
