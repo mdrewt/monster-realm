@@ -65,6 +65,34 @@
 //   TOOTH 18 the tolerance set is PAIR-keyed, not TARGET-keyed   (0956->0156).
 //   TOOTH 19 the §-annotated + multi-reference form resolves (0940->0941, 0940->0944).
 //   TOOTH 20 relations resolve against SCANNED FILES, not allIds (0942, 0943).
+//   TOOTH 21 the target already carries a DIFFERENT back-link (0981->0982, and
+//            the reverse legs 0983<-0980 / 0983<-0981) — membership, not emptiness.
+//   TOOTH 21b the same shape with the ordering flipped: the target's one
+//            non-matching back-link sorts ABOVE the unanswered source (0986->0988).
+//   TOOTH 22 a `~~~`-fenced back-link is not a back-link            (0970->0971).
+//   TOOTH 23 a four-space-indented back-link is not a back-link     (0972->0973).
+//   TOOTH 24a FALSE-RED GUARD: two repeated **Amended-by:** lines are BOTH read.
+//   TOOTH 24b FALSE-RED GUARD: a wrapped/continued back-link list is read whole.
+//   TOOTH 25 an em-dash back-link whose parenthetical names the amender in prose,
+//            with an internal comma in the aside, is still a gap  (0984->0985).
+//   TOOTH 26 a comma INSIDE a parenthetical does not start a new token
+//            (0990->0991).
+//   TOOTH 26b the same, one nesting level deeper: the comma after an INNER
+//            closing parenthesis is still not top-level             (0992->0993).
+//   TOOTH 26c the mirror: after an UNMATCHED closing parenthesis a top-level
+//            comma still splits                        (0994->0995, 0994->0996).
+//
+// THE STRUCTURAL GAP TEETH 21/21b CLOSE. Every other "gap must be reported"
+// fixture here has a target whose **Amended-by:** resolves to the EMPTY set, so
+// a membership test degraded into an emptiness test
+//   -  if (amendedBy.get(y)?.includes(x)) continue;
+//   +  if ((amendedBy.get(y)?.length ?? 0) > 0) continue;
+// passed every one of them AND greened the real corpus — while silently
+// accepting the next ADR to amend an already-amended one. That is the corpus's
+// MOST COMMON shape, not an edge case: docs/adr/0174 carries ADR-0175, ADR-0176
+// and docs/adr/0162 carries ADR-0163, ADR-0164. TEETH 21 and 21b are the only
+// fixtures in this file whose violation has a NON-EMPTY, non-matching
+// counterpart set, in both directions and in both id orderings.
 //
 // Every assertion is on the parenthesised PAIR KEY or on the literal "obsolete"
 // substring — never on a bare non-zero exit code. A red-team pass proved that
@@ -104,6 +132,15 @@ const FIXTURE_DIRS = [
   't18-target-keyed-baseline',
   't19-section-annotated',
   't20-harness-ref',
+  't21-nonmatching-backlink',
+  't21b-backlink-above-source',
+  't22-tilde-fence',
+  't23-indented-decoy',
+  't24a-repeated-field-line',
+  't24b-continuation-line',
+  't25-paren-target',
+  't26-paren-comma-deferral',
+  't26c-unmatched-close-paren',
 ];
 
 // The ONLY fixture directories in which the ratchet is allowed to fire. Every
@@ -137,6 +174,21 @@ const FIXTURE_DIRS = [
 //        endpoints of no baseline entry at all.
 // In none of them does any entry have both endpoints, so the ratchet must stay
 // silent there and TOOTH 0's scope guard says so.
+//
+// The nine directories added in the hardening rounds — t21, t21b, t22, t23,
+// t24a, t24b, t25, t26 and t26c — use the ids 0970-0996 exclusively. NONE of
+// 0970, 0971, 0972, 0973, 0974, 0975, 0976, 0977, 0978, 0979, 0980, 0981, 0982,
+// 0983, 0984, 0985, 0986, 0987, 0988, 0990, 0991, 0992, 0993, 0994, 0995 or
+// 0996 is an endpoint of ANY of the five baseline entries (whose only endpoints
+// are 0154, 0156, 0157, 0166, 0168, 0169, 0172, 0173 and 0177 — every one of
+// them below 0180). CONFIRMED for the two newest directories specifically:
+// t26 holds {0990, 0991, 0992, 0993} and t26c holds {0994, 0995, 0996}, and
+// none of those seven ids appears on either side of any baseline key. No
+// baseline entry can have even ONE endpoint present in those directories, let
+// alone both, so the ratchet must stay silent in all nine and TOOTH 0's scope
+// guard enforces it. This is a structural property of the >= 0900 fixture-id
+// rule, not a coincidence, and it survives any future shrinking of the
+// baseline.
 const RATCHET_DIRS = ['t8-obsolete-baseline', 't17-ratchet-declaration-gone'];
 
 // ---------------------------------------------------------------------------
@@ -768,6 +820,14 @@ export default async function () {
   //       separating the two references sits INSIDE the parenthetical gloss.
   //       Asserting both keys is what pins the split-then-truncate ordering;
   //       asserting only (0940->0941) would not.
+  //
+  // TWO-SIDED PIN WITH TOOTH 26. This tooth demands that the top-level comma
+  // BETWEEN the two references still splits even though a parenthetical gloss
+  // sits before it — so it is satisfied by a plain `fieldValue.split(',')`.
+  // TOOTH 26 demands the converse, that a comma INSIDE a parenthetical does NOT
+  // split — so it is satisfied by never splitting at all. Only a
+  // parenthesis-aware splitter (splitTopLevelCommas() in scripts/adr-digest.mjs)
+  // satisfies both. Neither tooth alone pins it; change one, re-read the other.
   // =========================================================================
   withFixtureDir('t19-section-annotated', (r) => {
     const first = '(0940->0941)';
@@ -1164,6 +1224,582 @@ export default async function () {
   });
 
   // =========================================================================
+  // TOOTH 21 — the target already carries a DIFFERENT, NON-MATCHING back-link.
+  //
+  // The structural blind spot of every other fixture in this file: in all of
+  // them the target's **Amended-by:** resolves to the EMPTY set, so "is the
+  // source a MEMBER of the target's back-link set?" and "is that set NON-EMPTY?"
+  // are indistinguishable. The real corpus is the other way round — 0174 carries
+  // `ADR-0175, ADR-0176`, 0162 carries `ADR-0163, ADR-0164` — so the shape that
+  // no fixture covered is the shape most future amendments will have.
+  //
+  // The directory holds all four legs at once:
+  //   0980 **Amends:** ADR-0982   and 0982 names 0980  -> RECIPROCAL, must be silent
+  //   0981 **Amends:** ADR-0982   and 0982 does NOT    -> FORWARD GAP (0981->0982)
+  //   0983 **Amended-by:** ADR-0980, ADR-0981, and neither amends 0983
+  //                                              -> REVERSE GAPS (0983<-0980),
+  //                                                 (0983<-0981)
+  // 0982's back-link set is non-empty and does not contain 0981; 0980's and
+  // 0981's **Amends:** sets are non-empty (both hold 0982) and do not contain
+  // 0983. So the non-matching-counterpart shape is pinned in BOTH directions.
+  //
+  // Kills (each of these passed all 22 previous teeth AND the real corpus):
+  //   (a) `if ((amendedBy.get(y)?.length ?? 0) > 0) continue;` — "the target has
+  //       a back-link, good enough". (0981->0982) vanishes.
+  //   (b) the same degradation in the reverse loop — (0983<-0980)/(0983<-0981)
+  //       vanish, because 0980 and 0981 do each declare SOME amendment.
+  //   (c) "skip when the target carries >= 2 back-links": 0983 carries exactly
+  //       two, so both reverse keys vanish.
+  //   (d) "skip when the target back-links any id <= the source": 0982 names
+  //       0980 and 0980 <= 0981, so (0981->0982) vanishes. The mirrored ordering
+  //       (>= the source) is TOOTH 21b's job — this directory cannot kill it,
+  //       because here the non-matching back-link sorts BELOW the source.
+  //
+  // The ABSENCE assertions are load-bearing, not decoration. (0980->0982) is
+  // this fixture's in-place false-positive guard: without it, the whole
+  // directory is satisfied by an always-report implementation, and every cheat
+  // above would be "killed" for the wrong reason. Same for (0982<-0980).
+  // =========================================================================
+  withFixtureDir('t21-nonmatching-backlink', (r) => {
+    const gapKey = '(0981->0982)';
+    const expected =
+      '0981: **Amends:** ADR-0982 but ADR-0982 has no reciprocal ' +
+      '**Amended-by:** ADR-0981 back-link (0981->0982)';
+    if (r.combined.indexOf(gapKey) === -1) {
+      failing.push(
+        `TOOTH 21 (non-matching back-link): expected the pair key "${gapKey}" but the output ` +
+          `does not contain it (exit ${r.code}). 0981 declares **Amends:** ADR-0982; 0982's ` +
+          '**Amended-by:** is NOT empty — it names 0980 — but it does not name 0981. The ' +
+          'reciprocity test has degraded from MEMBERSHIP ("does the target back-link the ' +
+          'source?") into something weaker: emptiness, a count, or an ordering. Every such ' +
+          'degradation greens the real corpus today and silently accepts the next ADR that ' +
+          `amends 0174 or 0162, both of which already carry other back-links. ` +
+          `output: ${excerpt(r.combined)}`,
+      );
+    } else if (r.combined.indexOf(expected) === -1) {
+      failing.push(
+        `TOOTH 21 (non-matching back-link): pair key "${gapKey}" is present but the message ` +
+          `does not match the contract.\n  expected substring: ${expected}\n` +
+          `  output: ${excerpt(r.combined)}`,
+      );
+    }
+    for (const reverseKey of ['(0983<-0980)', '(0983<-0981)']) {
+      if (r.combined.indexOf(reverseKey) === -1) {
+        failing.push(
+          `TOOTH 21 (non-matching back-link, reverse leg): expected the pair key ` +
+            `"${reverseKey}" but the output does not contain it (exit ${r.code}). 0983 claims ` +
+            'TWO amenders, 0980 and 0981; both of them DO declare an amendment, but of 0982, ' +
+            'not of 0983. The reverse check must ask whether the named source amends THIS ADR ' +
+            '— not whether it amends anything at all, and not whether the claiming ADR has ' +
+            `enough back-links to look plausible. output: ${excerpt(r.combined)}`,
+        );
+      }
+    }
+    // In-place false-positive guards. 0980's forward leg and 0982's reverse leg
+    // are both fully reciprocal; if either is reported, the three assertions
+    // above are being satisfied by an always-report implementation rather than
+    // by a working membership test.
+    for (const cleanKey of ['(0980->0982)', '(0982<-0980)']) {
+      if (r.combined.indexOf(cleanKey) !== -1) {
+        failing.push(
+          `TOOTH 21 (false-positive guard): the output names "${cleanKey}", but that leg is ` +
+            'fully reciprocal — 0980 declares **Amends:** ADR-0982 and 0982 answers ' +
+            '**Amended-by:** ADR-0980. A target that already carries a back-link naming the ' +
+            'source must be accepted. Reporting it means the check errors on every relation ' +
+            "regardless of reciprocity, which would also green this tooth's three gap " +
+            `assertions for a reason that has nothing to do with membership. ` +
+            `output: ${excerpt(r.combined)}`,
+        );
+      }
+    }
+    if (r.code === 0) {
+      failing.push(
+        'TOOTH 21 (non-matching back-link): the generator exited 0 on a directory holding one ' +
+          'unreciprocated forward amendment and two unreciprocated back-link claims — all three ' +
+          'against counterpart sets that are non-empty but do not contain the id under test.',
+      );
+    }
+  });
+
+  // =========================================================================
+  // TOOTH 21b — the same non-matching shape with the ID ORDERING FLIPPED.
+  //
+  // TOOTH 21's target (0982) back-links 0980 while the unanswered source is
+  // 0981, so the one id in the target's set sorts BELOW the source. That kills
+  // `some(id => id <= source)` but NOT its mirror, `some(id => id >= source)` —
+  // a shortcut that also greens the real corpus, because there every amender is
+  // numerically later than the ADR it amends and so appears in its own target's
+  // back-link set as the maximum. It would accept any BACK-dated amendment and,
+  // more importantly, any amendment of an ADR whose existing back-links happen
+  // to sort later than the newcomer.
+  //
+  //   0986 **Amends:** ADR-0988   and 0988 does NOT name it -> GAP (0986->0988)
+  //   0987 **Amends:** ADR-0988   and 0988 names 0987       -> reciprocal, silent
+  //   0988 **Amended-by:** ADR-0987                          -> reverse leg clean
+  //
+  // The surviving gap's source (0986) sorts BELOW the single id in the target's
+  // back-link set (0987), the exact inverse of TOOTH 21. Together the two
+  // directories leave no total-order predicate standing in place of membership.
+  //
+  // This directory is an ADDITION to the handed-over spec, made because the
+  // specified TOOTH 21 fixture does not in fact kill the ">= source" variant
+  // named in that spec — see the report accompanying this change.
+  // =========================================================================
+  withFixtureDir('t21b-backlink-above-source', (r) => {
+    const gapKey = '(0986->0988)';
+    const expected =
+      '0986: **Amends:** ADR-0988 but ADR-0988 has no reciprocal ' +
+      '**Amended-by:** ADR-0986 back-link (0986->0988)';
+    if (r.combined.indexOf(gapKey) === -1) {
+      failing.push(
+        `TOOTH 21b (non-matching back-link, higher-id ordering): expected the pair key ` +
+          `"${gapKey}" but the output does not contain it (exit ${r.code}). 0988's ` +
+          '**Amended-by:** names 0987 — an id that sorts ABOVE the unanswered source 0986 — ' +
+          'and does not name 0986. A reciprocity test written as "the target back-links ' +
+          'something at or after the source" passes the whole corpus (every real amender ' +
+          'outnumbers its target) and passes TOOTH 21 (whose non-matching back-link sorts ' +
+          `BELOW its source), but it is not a membership test. output: ${excerpt(r.combined)}`,
+      );
+    } else if (r.combined.indexOf(expected) === -1) {
+      failing.push(
+        `TOOTH 21b (non-matching back-link, higher-id ordering): pair key "${gapKey}" is ` +
+          `present but the message does not match the contract.\n  expected substring: ` +
+          `${expected}\n  output: ${excerpt(r.combined)}`,
+      );
+    }
+    for (const cleanKey of ['(0987->0988)', '(0988<-0987)']) {
+      if (r.combined.indexOf(cleanKey) !== -1) {
+        failing.push(
+          `TOOTH 21b (false-positive guard): the output names "${cleanKey}", but 0987 and 0988 ` +
+            'are fully reciprocal in both directions. Reporting that leg means the gap ' +
+            'assertion above is being satisfied by an always-report implementation. ' +
+            `output: ${excerpt(r.combined)}`,
+        );
+      }
+    }
+    if (r.code === 0) {
+      failing.push(
+        'TOOTH 21b (non-matching back-link, higher-id ordering): the generator exited 0 on a ' +
+          'directory containing an amendment of an already-amended ADR that does not name the ' +
+          'amender back.',
+      );
+    }
+  });
+
+  // =========================================================================
+  // TOOTH 22 — a `~~~`-fenced back-link is not a back-link.
+  //
+  // 0970 **Amends:** ADR-0971. 0971 uses only level-three subheads, so the
+  // header view is the whole document (TOOTH 15's premise), and its only
+  // `**Amended-by:** ADR-0970` sits inside a TILDE-delimited fenced block.
+  //
+  // CommonMark accepts a run of three or more tildes as a code fence on exactly
+  // equal footing with backticks, and it is the delimiter authors reach for when
+  // the block itself contains backticks — which a markdown template block
+  // demonstrating ADR header syntax very often does.
+  //
+  // Kills: narrowing stripFencedBlocks back to backticks only. Under that
+  // mutation the fenced line reads as a genuine column-0 header field, the pair
+  // looks reciprocal, and the gate reports nothing — the TOOTH 15 bypass
+  // reopened through a second door. TOOTH 15 cannot catch it: its fixture uses
+  // a backtick fence, which the narrowed stripper still handles.
+  // =========================================================================
+  withFixtureDir('t22-tilde-fence', (r) => {
+    const key = '(0970->0971)';
+    if (r.combined.indexOf(key) === -1) {
+      failing.push(
+        `TOOTH 22 (tilde-fenced back-link bypass): expected the pair key "${key}" but the ` +
+          `output does not contain it (exit ${r.code}). 0971 has no level-two heading, so its ` +
+          'whole file is the header view, and its only reciprocal declaration is inside a ' +
+          '`~~~` fence. Fence stripping that recognises only backticks leaves that line ' +
+          'standing, so illustrative template text satisfies the reciprocity requirement. ' +
+          `output: ${excerpt(r.combined)}`,
+      );
+    }
+    if (r.code === 0) {
+      failing.push(
+        'TOOTH 22 (tilde-fenced back-link bypass): the generator exited 0 — a tilde-fenced ' +
+          '**Amended-by:** line counted as a back-link.',
+      );
+    }
+  });
+
+  // =========================================================================
+  // TOOTH 23 — a four-space-INDENTED back-link is not a back-link.
+  //
+  // 0972 **Amends:** ADR-0973. 0973 again has no level-two heading, and its only
+  // `**Amended-by:** ADR-0972` is indented by four spaces.
+  //
+  // This is the one decoy shape fence stripping is STRUCTURALLY incapable of
+  // seeing: an indented code block has no delimiter to strip. CommonMark renders
+  // it as literal sample text exactly like a fenced block, so it is just as
+  // plausible in a real ADR, and it survives any amount of fence-stripper
+  // hardening. The only thing that keeps it out of the header view is the
+  // requirement that a relation marker start at COLUMN 0 — which costs no
+  // legitimate ADR anything, since the canonical header block of ADR-0104 D1 is
+  // unindented.
+  //
+  // Kills: dropping the column-0 requirement from the back-link field reader —
+  // e.g. reverting it to the substring-based extractBoldField(), which finds the
+  // marker anywhere on a line. Under that mutation the indented sample becomes a
+  // header field and the gap disappears. Neither TOOTH 15 nor TOOTH 22 can catch
+  // it: both of their decoys are fenced, so fence stripping removes them first
+  // whatever the column rule says.
+  // =========================================================================
+  withFixtureDir('t23-indented-decoy', (r) => {
+    const key = '(0972->0973)';
+    if (r.combined.indexOf(key) === -1) {
+      failing.push(
+        `TOOTH 23 (indented back-link bypass): expected the pair key "${key}" but the output ` +
+          `does not contain it (exit ${r.code}). 0973 has no level-two heading, so its whole ` +
+          'file is the header view, and its only reciprocal declaration is indented by four ' +
+          'spaces — a markdown code block with NO fence to strip. If the relation reader ' +
+          'accepts a marker at any column, sample text satisfies reciprocity and no amount of ' +
+          `fence-stripper hardening can help. output: ${excerpt(r.combined)}`,
+      );
+    }
+    if (r.code === 0) {
+      failing.push(
+        'TOOTH 23 (indented back-link bypass): the generator exited 0 — a four-space-indented ' +
+          '**Amended-by:** line counted as a back-link.',
+      );
+    }
+  });
+
+  // =========================================================================
+  // TOOTH 24a / 24b — FALSE-RED GUARD: both natural MULTI-AMENDER forms are
+  // read whole. MERGE-BLOCKING CLASS.
+  //
+  // Two slices amending the same ADR is not hypothetical: 12r-f itself produced
+  // it twice while repairing the real corpus (0162 gained ADR-0163, ADR-0164;
+  // 0174 gained ADR-0175, ADR-0176), and a relation reader that saw only the
+  // first line of the second form was a LIVE false RED before the final fix.
+  //
+  // A regression here does not merely weaken the gate — it BLOCKS the next
+  // author who legitimately adds a second amender, with a diagnostic telling
+  // them to add the back-link they have just added. That failure mode is worse
+  // than a missing check: it is a gate that cannot be satisfied, and the fastest
+  // way out of it is to delete the gate.
+  //
+  //   24a  repeated field line: 0976 carries TWO separate lines,
+  //        `**Amended-by:** ADR-0974` and `**Amended-by:** ADR-0975`. This is
+  //        what an author produces by APPENDING rather than editing.
+  //        Kills: a reader that stops at the first matching line (indexOf +
+  //        slice-to-newline). 0975's leg would be reported as a gap.
+  //   24b  wrapped list: 0979 carries `**Amended-by:** ADR-0977,` followed by an
+  //        indented continuation line `  ADR-0978` with no bold marker of its
+  //        own. Markdown folds the two into one paragraph, so the author has no
+  //        visual cue that anything is different.
+  //        Kills: a reader that slices from the marker to the first newline.
+  //        0978's leg would be reported as a gap.
+  //
+  // Both directories are fully reciprocal: exit 0, and NO id named in stderr.
+  // The id assertions are on stderr only — stdout carries the tmpdir path, whose
+  // random suffix must not be allowed to decide the assertion (see TOOTH 2).
+  // =========================================================================
+  withFixtureDir('t24a-repeated-field-line', (r) => {
+    if (r.code !== 0) {
+      failing.push(
+        'TOOTH 24a (repeated relation line, FALSE-RED guard): 0974 and 0975 both declare ' +
+          '**Amends:** ADR-0976, and 0976 answers with TWO separate **Amended-by:** lines, one ' +
+          `naming each. The directory is fully reciprocal and must exit 0 — it exited ${r.code}. ` +
+          'The relation reader is collecting only the FIRST matching line, so the second ' +
+          'amender is reported as a gap. This is not a weakened gate, it is an UNSATISFIABLE ' +
+          'one: the next author to add a second amender is told to add the back-link they just ' +
+          `added. output: ${excerpt(r.combined)}`,
+      );
+    }
+    for (const id of ['0974', '0975', '0976']) {
+      if (r.stderr.indexOf(id) !== -1) {
+        failing.push(
+          `TOOTH 24a (repeated relation line, FALSE-RED guard): the generator named ${id} in ` +
+            'its diagnostics although every leg in this directory is reciprocal. Both ' +
+            '**Amended-by:** lines of 0976 must contribute to its resolved back-link set. ' +
+            `stderr: ${excerpt(r.stderr)}`,
+        );
+      }
+    }
+  });
+
+  withFixtureDir('t24b-continuation-line', (r) => {
+    if (r.code !== 0) {
+      failing.push(
+        'TOOTH 24b (wrapped relation list, FALSE-RED guard): 0977 and 0978 both declare ' +
+          '**Amends:** ADR-0979, and 0979 answers with `**Amended-by:** ADR-0977,` wrapped onto ' +
+          'an indented continuation line carrying `ADR-0978`. The directory is fully reciprocal ' +
+          `and must exit 0 — it exited ${r.code}. The relation reader is slicing from the ` +
+          'marker to the first newline, so the wrapped half of the list is invisible and the ' +
+          'second amender is reported as a gap — an unsatisfiable diagnostic for the next ' +
+          `author who wraps a growing list. output: ${excerpt(r.combined)}`,
+      );
+    }
+    for (const id of ['0977', '0978', '0979']) {
+      if (r.stderr.indexOf(id) !== -1) {
+        failing.push(
+          `TOOTH 24b (wrapped relation list, FALSE-RED guard): the generator named ${id} in its ` +
+            'diagnostics although every leg in this directory is reciprocal. An indented ' +
+            'continuation line with no bold marker of its own is part of the relation value ' +
+            `above it, exactly as markdown renders it. stderr: ${excerpt(r.stderr)}`,
+        );
+      }
+    }
+  });
+
+  // =========================================================================
+  // TOOTH 25 — an em-dash back-link whose parenthetical names the amender, with
+  // an INTERNAL COMMA in the aside, is still a gap.
+  //
+  // 0984 **Amends:** ADR-0985; 0985 carries
+  //   **Amended-by:** — (0984 pending, tracked in the next slice)
+  //
+  // How this differs from TOOTH 6, whose value is
+  //   **Amended-by:** — (none yet; 0919 deferred the back-link)
+  // TOOTH 6's aside is comma-FREE, so the whole value survives the comma split
+  // as ONE token. Here the aside contains a comma, so the value splits into TWO
+  // tokens — `— (0984 pending` and ` tracked in the next slice)` — and the id
+  // sits in a token the em dash does not lead. The resolver must still find
+  // nothing: neither token has a LEADING four-digit run.
+  //
+  // Kills: a resolver that scrapes any four-digit run out of each comma token,
+  // rather than reading only the token's leading run. TOOTH 6 kills the
+  // whole-value form of that scraper; this kills the per-token form on a value
+  // whose tokenisation actually differs.
+  //
+  // HONEST SCOPE — read this before trusting the tooth for more than it does.
+  // The handover asked this fixture to pin the "truncate each token at the first
+  // `(`" rule against the mutation `const paren = -1;`. IT DOES NOT, and no
+  // fixture can, because that mutation is EQUIVALENT under the current resolver.
+  // The argument, in full: truncating at `(` only removes a token SUFFIX, and
+  // every remaining rule reads a token PREFIX — the `H-` test, the `ADR-` strip,
+  // and the leading-4-digit run with its "next char is not a digit" guard, which
+  // together look no further than index 4. So truncation can change the outcome
+  // only if the `(` sits at index <= 4 of a token whose first four characters
+  // (post-`ADR-`) are digits — impossible, a digit is not a `(`. It cannot flip
+  // the `token.length < 4` test either: a token that resolves untruncated has
+  // four leading digits, so its `(` is at index >= 4 and truncation leaves at
+  // least those four characters standing. The truncation is therefore defensive,
+  // not load-bearing, and this tooth does not pretend otherwise.
+  //
+  // WHAT WAS GENUINELY UNPINNED, AND NOW IS NOT. Building this fixture turned
+  // up a real bypass and it was reported rather than papered over: a comma
+  // inside a parenthetical aside whose NEXT fragment begins with a bare id —
+  // `**Amended-by:** — (deferred, 0984 lands next slice)` — resolved 0984 under
+  // the then-shipped resolver and satisfied reciprocity. No tooth was written
+  // for it at the time, because a tooth asserting the gap would have failed
+  // against the shipped implementation; a gating test is revised from the spec,
+  // never written to encode a bug. The resolver has since been tightened
+  // (splitTopLevelCommas() in scripts/adr-digest.mjs splits on top-level commas
+  // only), and TOOTH 26 below now pins exactly that shape.
+  // =========================================================================
+  withFixtureDir('t25-paren-target', (r) => {
+    const key = '(0984->0985)';
+    if (r.combined.indexOf(key) === -1) {
+      failing.push(
+        `TOOTH 25 (parenthetical id in a comma-split value): expected the pair key "${key}" but ` +
+          `the output does not contain it (exit ${r.code}). 0985's **Amended-by:** is ` +
+          '"— (0984 pending, tracked in the next slice)". The internal comma splits that value ' +
+          'into two tokens, and the amending id lands in a token the em dash does not lead — ' +
+          'but neither token has a LEADING four-digit run, so the relation resolves to nothing ' +
+          'and the amendment is unreciprocated. A resolver that scrapes any four-digit run out ' +
+          `of a token reads the deferral note as a real back-link. output: ${excerpt(r.combined)}`,
+      );
+    }
+    if (r.code === 0) {
+      failing.push(
+        'TOOTH 25 (parenthetical id in a comma-split value): the generator exited 0 — a ' +
+          'back-link documented as pending in a parenthetical aside is still a missing ' +
+          'back-link.',
+      );
+    }
+  });
+
+  // =========================================================================
+  // TOOTH 26 — a comma INSIDE a parenthetical must not start a new token.
+  //
+  // 0990 **Amends:** ADR-0991; 0991 carries
+  //   **Amended-by:** — (deferred, 0990 lands next slice)
+  //
+  // WHY THIS SUCCEEDS WHERE TOOTH 25 COULD NOT. Both fixtures are em-dash
+  // deferrals whose aside contains a comma, but the id sits in a different
+  // place, and that placement is the whole tooth:
+  //   T25  `— (0984 pending, tracked in the next slice)`
+  //        A plain comma split yields `— (0984 pending` and ` tracked in the
+  //        next slice)`. The id shares its token with the LEADING em dash, so
+  //        the leading-four-digit-run rule rejects that token with or without
+  //        truncation — the resolver already resolves nothing whatever the
+  //        splitting rule is. T25 therefore cannot observe the split at all;
+  //        it pins only "read a token's LEADING run, never any run".
+  //   T26  `— (deferred, 0990 lands next slice)`
+  //        A plain comma split yields `— (deferred` and ` 0990 lands next
+  //        slice)`. The parenthesised comma MANUFACTURES a fresh token whose
+  //        first four characters ARE digits and which has no `(` left to
+  //        truncate at, so it resolves 0990, the target looks reciprocal, and
+  //        an explicitly deferred back-link silently satisfies the gate. That
+  //        manufactured token is the only way the splitting rule becomes
+  //        observable, which is why T26 needs its own fixture rather than an
+  //        extra assertion on T25's.
+  //
+  // Kills: reverting splitTopLevelCommas() to a plain `fieldValue.split(',')`.
+  // That mutation passes all 25 preceding teeth (measured), so before this
+  // fixture the fix was entirely unpinned.
+  //
+  // TWO-SIDED PIN WITH TOOTH 19 — neither tooth alone pins the splitter:
+  //   T19 pins that a top-level comma AFTER a parenthetical still splits: its
+  //       0940 carries `ADR-0941 §D2 (widens the guard, per the weekly review),
+  //       ADR-0944` and BOTH ids must resolve. It kills "drop the comma split
+  //       entirely" and "truncate the whole value at the first `(` before
+  //       splitting", but it is satisfied by a plain `.split(',')`.
+  //   T26 pins that a comma INSIDE a parenthetical does not split. It kills the
+  //       plain `.split(',')`, but it is satisfied by "never split at all".
+  // Together they force a splitter that is parenthesis-aware in both
+  // directions. Cross-reference is deliberate: change one, re-read the other.
+  // =========================================================================
+  withFixtureDir('t26-paren-comma-deferral', (r) => {
+    const key = '(0990->0991)';
+    const expected =
+      '0990: **Amends:** ADR-0991 but ADR-0991 has no reciprocal ' +
+      '**Amended-by:** ADR-0990 back-link (0990->0991)';
+    if (r.combined.indexOf(key) === -1) {
+      failing.push(
+        `TOOTH 26 (parenthesised comma): expected the pair key "${key}" but the output does not ` +
+          `contain it (exit ${r.code}). 0991's **Amended-by:** is ` +
+          '"— (deferred, 0990 lands next slice)" — an explicitly DEFERRED back-link, i.e. no ' +
+          'back-link at all. Splitting the relation value on every comma rather than on its ' +
+          'TOP-LEVEL commas manufactures the token " 0990 lands next slice)", whose first four ' +
+          'characters are digits and which has no "(" left to truncate at, so the deferral note ' +
+          'resolves 0990 and satisfies reciprocity. TOOTH 25 cannot catch this: there the id ' +
+          'shares its comma token with the leading em dash, so the leading-four-digit-run rule ' +
+          `rejects it however the value is split. output: ${excerpt(r.combined)}`,
+      );
+    } else if (r.combined.indexOf(expected) === -1) {
+      failing.push(
+        `TOOTH 26 (parenthesised comma): pair key "${key}" is present but the message does not ` +
+          `match the contract.\n  expected substring: ${expected}\n  output: ${excerpt(r.combined)}`,
+      );
+    }
+    if (r.code === 0) {
+      failing.push(
+        'TOOTH 26 (parenthesised comma): the generator exited 0 — a back-link the target ' +
+          'explicitly deferred inside a parenthetical aside was read as a real back-link.',
+      );
+    }
+  });
+
+  // =========================================================================
+  // TOOTH 26b — the same shape ONE NESTING LEVEL DEEPER: the comma after an
+  // INNER closing parenthesis is still not a top-level comma.
+  //
+  // 0992 **Amends:** ADR-0993; 0993 carries
+  //   **Amended-by:** — (deferred (pending review, §D2), 0992 lands next slice)
+  //
+  // Shares TOOTH 26's directory: both are "a comma inside parentheses must not
+  // split" and their two gaps are asserted by distinct pair keys, so a failure
+  // in either is unambiguous. No exit-code assertion here on purpose — the
+  // shared directory always exits non-zero on TOOTH 26's gap alone, so one here
+  // could never bite and would only look like coverage it does not provide.
+  //
+  // Kills: tracking parenthesis state as a BOOLEAN in-paren flag instead of a
+  // DEPTH counter —
+  //   -  if (ch === '(') depth++; else if (ch === ')') depth = depth > 0 ? depth - 1 : 0;
+  //   +  if (ch === '(') inParen = true; else if (ch === ')') inParen = false;
+  // The inner `)` before `, 0992` clears the flag, so the flag version splits
+  // there, manufactures the token " 0992 lands next slice)" and greens the
+  // deferral exactly as the plain `.split(',')` did. TOOTH 26 cannot catch it:
+  // its aside has no nesting, so flag and counter agree on every character.
+  // TOOTH 19 cannot either — its parenthetical is also unnested.
+  // Nested asides are not exotic in this corpus: a gloss that cites a section
+  // in parentheses inside a parenthetical reason is the ordinary house style.
+  // =========================================================================
+  withFixtureDir('t26-paren-comma-deferral', (r) => {
+    const key = '(0992->0993)';
+    const expected =
+      '0992: **Amends:** ADR-0993 but ADR-0993 has no reciprocal ' +
+      '**Amended-by:** ADR-0992 back-link (0992->0993)';
+    if (r.combined.indexOf(key) === -1) {
+      failing.push(
+        `TOOTH 26b (nested parenthetical): expected the pair key "${key}" but the output does ` +
+          `not contain it (exit ${r.code}). 0993's **Amended-by:** is ` +
+          '"— (deferred (pending review, §D2), 0992 lands next slice)". The comma before 0992 ' +
+          'follows an INNER closing parenthesis but is still inside the outer aside, so it is ' +
+          'not a top-level comma. Tracking parenthesis state as a boolean flag rather than as a ' +
+          'depth count clears the flag on that inner ")", splits there, and the manufactured ' +
+          'token " 0992 lands next slice)" resolves 0992 — the deferral satisfies reciprocity. ' +
+          `TOOTH 26's aside is unnested, so flag and counter agree there. ` +
+          `output: ${excerpt(r.combined)}`,
+      );
+    } else if (r.combined.indexOf(expected) === -1) {
+      failing.push(
+        `TOOTH 26b (nested parenthetical): pair key "${key}" is present but the message does ` +
+          `not match the contract.\n  expected substring: ${expected}\n` +
+          `  output: ${excerpt(r.combined)}`,
+      );
+    }
+  });
+
+  // =========================================================================
+  // TOOTH 26c — THE MIRROR: after an UNMATCHED closing parenthesis, a top-level
+  // comma must STILL split.
+  //
+  // 0994 carries
+  //   **Amends:** ADR-0995 §D2 — see notes a) and b), ADR-0996
+  // and neither 0995 nor 0996 answers, so BOTH references are gaps.
+  //
+  // The value has two closing parentheses that never opened — the enumerator
+  // form `a) ... b)`, which authors do write inside a relation gloss. The
+  // shipped depth counter clamps at zero
+  //   depth = depth > 0 ? depth - 1 : 0
+  // so depth is still 0 at the comma before ADR-0996 and the list splits.
+  //
+  // Kills: the unclamped decrement `depth--`, which is the more natural thing
+  // to type. Under it depth reaches -2, the `depth === 0` test never holds
+  // again, the whole value stays one token, and only its LEADING reference
+  // (0995) resolves — (0994->0996) silently vanishes. That is a loss of bite in
+  // the same class as TOOTH 19(b): a second amended ADR goes unenforced because
+  // of how the list was punctuated.
+  //
+  // Note the DIRECTION. Teeth 26 and 26b both demand "do not split"; this one
+  // demands "do split", so an implementation cannot satisfy the trio by simply
+  // splitting less. The 0995 leg is the control: it resolves under every
+  // splitting rule considered, so if it is also missing the directory was not
+  // scanned at all and the 0996 assertion would otherwise be ambiguous.
+  //
+  // NOT an invented behaviour: the clamp is what scripts/adr-digest.mjs does
+  // today, and this tooth asserts only its observable consequence.
+  // =========================================================================
+  withFixtureDir('t26c-unmatched-close-paren', (r) => {
+    const controlKey = '(0994->0995)';
+    const key = '(0994->0996)';
+    if (r.combined.indexOf(controlKey) === -1) {
+      failing.push(
+        `TOOTH 26c (unmatched closing parenthesis, control leg): expected the pair key ` +
+          `"${controlKey}" but the output does not contain it (exit ${r.code}). 0994 declares ` +
+          '"**Amends:** ADR-0995 §D2 — see notes a) and b), ADR-0996" and 0995 does not answer. ' +
+          'This leg is the FIRST reference in the list and resolves under every splitting rule ' +
+          'considered, so its absence means the directory was not scanned or the relation was ' +
+          `not read at all — not that the comma rule broke. output: ${excerpt(r.combined)}`,
+      );
+    }
+    if (r.combined.indexOf(key) === -1) {
+      failing.push(
+        `TOOTH 26c (unmatched closing parenthesis): expected the pair key "${key}" but the ` +
+          `output does not contain it (exit ${r.code}). ADR-0996 is the SECOND reference of ` +
+          "0994's relation list, and the top-level comma before it follows two closing " +
+          'parentheses that were never opened ("see notes a) and b)"). The depth counter clamps ' +
+          'at zero, so it is still 0 there and the list splits; an unclamped "depth--" reaches ' +
+          '-2, never returns to 0, keeps the whole value as one token and resolves only its ' +
+          'leading reference — so the second amended ADR goes silently unenforced, the same ' +
+          `loss of bite TOOTH 19 pins from the other side. output: ${excerpt(r.combined)}`,
+      );
+    }
+    if (r.code === 0) {
+      failing.push(
+        'TOOTH 26c (unmatched closing parenthesis): the generator exited 0 on a directory whose ' +
+          'only ADR declares two amendments that neither target reciprocates.',
+      );
+    }
+  });
+
+  // =========================================================================
   // Final result.
   // =========================================================================
   if (failing.length > 0) {
@@ -1178,6 +1814,7 @@ export default async function () {
     name,
     pass: true,
     detail:
-      '18/18 teeth bite correctly (T0, T1–T8, T10, T15, T16a, T16b, T16c, T17, T18, T19, T20)',
+      '28/28 teeth bite correctly (T0, T1–T8, T10, T15, T16a, T16b, T16c, T17, T18, T19, T20, ' +
+      'T21, T21b, T22, T23, T24a, T24b, T25, T26, T26b, T26c)',
   };
 }

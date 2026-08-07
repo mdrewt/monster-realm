@@ -8,7 +8,8 @@
 //   if (checkMode) return issues;            // "only enforce when generating"
 //   if (adrs.length > 100) return issues;    // "only enforce on small corpora"
 // Both of those bypasses are invisible to a 1–3 file tmpdir fixture. Everything
-// below runs against the REAL docs/adr/ corpus (170+ ADRs) in BOTH modes.
+// below runs against the REAL docs/adr/ corpus in BOTH modes — and T12 runs
+// against a copy of it PADDED past any hard-codable size (see T12(f)).
 //
 // The contract under test (implemented by someone else, in scripts/adr-digest.mjs):
 //   Rule       X declares `Amends: Y`  ⟹  Y must declare `Amended-by: X` (and reverse).
@@ -47,7 +48,11 @@
 //         (d) report the tolerated count as 4, not 5 — i.e. N counts what was
 //             suppressed THIS RUN, not KNOWN_BACKLINK_GAPS.size;
 //         (e) fire the obsolete-baseline-entry ratchet for the now-reciprocal
-//             0166->0156.
+//             0166->0156;
+//         (f) keep doing all of the above after the copy is PADDED with ~62
+//             synthetic, relation-free ADRs, so the scanned corpus is larger than
+//             any number a bypass could be tuned to. Padding is proved INERT
+//             against an unpadded control run of the same copy.
 //   T13 — POSITIVE: the four back-links (and their forward Amends legs) really do
 //         exist in the committed docs/adr/ files.
 //   T14 — the KNOWN_BACKLINK_GAPS baseline may not GROW (exact set equality).
@@ -175,7 +180,182 @@ const ERROR_LINE_PREFIX = 'adr-digest ERROR:';
 // T9's below-era floor. The real corpus reports 44 today. Pinned as a FLOOR, not
 // as the exact number, because M moves whenever any pre-0151 ADR's Amends /
 // Amended-by fields change — and that is not this gate's business.
+//
+// KNOWN, ACCEPTED GAP (red-team, LOW): `const belowEra = 44;` satisfies this
+// floor, and T12(f) only pins M as UNCHANGED between the control and padded runs
+// of the same copy, which a constant also satisfies. Nothing here forces M to
+// vary. Closing it is cheap but was deliberately not done in 12r-f: it needs a
+// SECOND corpus copy in which one pre-0151 ADR gains a one-directional relation
+// to another pre-0151 ADR, asserting M === (M seen on the real corpus) + 1 —
+// a delta assertion, the only shape a constant cannot satisfy. That costs a
+// third fixture and a fourth full-corpus digest run for a diagnostic number.
+// The gate's teeth do not depend on M: it is itemised nowhere, changes no exit
+// code, and the reason M is pinned at all is to stop a summary built entirely
+// from constants (see T9's rejection of 0). A ceiling was considered and
+// rejected as brittle — it false-REDs on ordinary pre-0151 ADR edits.
 const BELOW_ERA_FLOOR = 40;
+
+// ---------------------------------------------------------------------------
+// CORPUS PADDING (T12 leg (f)) — the size-threshold killer.
+//
+// WHY THIS EXISTS. A `return issues` guarded by adrs.length is invisible to any
+// tooth whose corpus size does not land inside the guard's window. Before this
+// leg the suite probed exactly two sizes: 2-4 ADRs (the sibling eval's fixture
+// dirs) and the LIVE corpus count. So it killed windows containing 2-4 — that is
+// the honest, narrow claim the earlier version of this comment overstated as
+// "kills a corpus-size bypass such as `if (adrs.length > 100) return issues;`",
+// which is true only because 100 < 143 — and it killed nothing else. The
+// red-team confirmed by running all 22 teeth green against each of
+//   if (adrs.length > 143) return issues;   // 143 == the LIVE count when 12r-f shipped
+//   if (adrs.length > 150) return issues;
+//   if (adrs.length > 200) return issues;
+//   if (adrs.length > 20 && adrs.length < 100) return issues;
+// The first is the time bomb: false at 143, so green today, and TRUE the moment
+// ADR-0178 lands.
+//
+// HOW THE SIZE PROBES COMPOSE (the actual argument, stated as precisely as it
+// deserves). The suite now probes THREE sizes, two of which MOVE with the corpus:
+//   2-4      sibling fixture dirs
+//   LIVE     T9's --check on docs/adr/, and T12's unpadded control run
+//   LIVE+62  T12's padded legs
+// A size-predicate bypass survives only if it is FALSE at all three. Two
+// consequences:
+//   * It can never be silently active on the real corpus, because T9 probes the
+//     live size and demands the WARN SUMMARY, which an early `return issues`
+//     deletes along with everything else. (So `> 143` would not in fact stay
+//     green forever — at ADR-0178 T9 reds with "output does not contain the exact
+//     warn line prefix". That is a loud failure, but a badly-aimed one: it reads
+//     as baseline drift, and the natural next move is to argue about the 5.)
+//   * The padded probe pulls that discovery FORWARD. `adrs.length > K` is active
+//     on the padded run as soon as LIVE + 62 > K, i.e. 62 ADRs before the live
+//     corpus alone would reach K — and it goes red HERE, in the tooth whose
+//     failure text is about the size of the scanned corpus. For every K from 143
+//     to 204 — which is every threshold a mutant could plausibly tune to today's
+//     count, including the three the red-team found — that means RIGHT NOW.
+//     K = 205 exactly still survives today and reds here at ADR-0178.
+// WHAT PADDING STILL DOES NOT KILL — stated plainly, because the previous
+// version of this comment claimed more than it delivered and that is how a gate
+// rots. Three probes are three points, not an interval. A BOUNDED window that
+// contains none of them survives:
+//   * `> 20 && < 100` (the red-team's fourth mutant) sits in the gap between the
+//     fixture sizes and LIVE. It is unkillable without inventing a fourth
+//     corpus of that size, and it is also INERT: the live corpus only grows, so
+//     no caller in this repo ever hands the gate 20-100 ADRs. Closing it would
+//     mean a curated ~15-file subset (all seven violating pairs plus both
+//     endpoints of every baseline entry) padded to ~50 — a fourth fixture with
+//     its own N/M arithmetic. Judged not worth it; revisit if --adr-dir ever
+//     gets pointed at a real mid-size directory.
+//   * a window strictly between LIVE and LIVE+62 (e.g. `> 150 && < 200`). Not
+//     silent: the LIVE probe walks into it as the corpus grows and T9 reds.
+// A CEILING on the scanned size (asserting adrs.length is also not too large)
+// was considered and rejected as brittle, for the same reason BELOW_ERA_FLOOR is
+// a floor and not an equality.
+//
+// FILLER ID BAND — 0700-0799. It must collide with nothing:
+//   * the real corpus is 0001 and 0035-0177 (contiguous through 0177), so a
+//     0700-band file cannot overwrite a real ADR even after years of growth;
+//   * the sibling eval's fixtures use two kinds of id — verbatim copies of real
+//     ADRs (0120, 0154, 0156, 0157, 0166, 0168, 0169, 0172) and SYNTHETIC ones,
+//     and every synthetic one is in 0910-0988. Nothing there is in 07xx, so a
+//     reader comparing the two files never has to wonder whether a 07xx id means
+//     something over there;
+//   * no KNOWN_BACKLINK_GAPS / FROZEN_BASELINE endpoint is in the band
+//     (0154, 0156, 0157, 0166, 0168, 0169, 0172, 0173, 0177);
+//   * the synthetic harness range seeded into allIds is 0002-0034, and the H-
+//     namespace is textually distinct, so neither can alias a filler.
+// The pre-write collision guard re-checks the first bullet against the actual
+// copy rather than trusting this comment.
+//
+// ERA, RE-DERIVED (not assumed): the era test is a STRING comparison against
+// BACKLINK_ERA_MIN = '0151' (adr-digest.mjs:527), and '0700' > '0151', so the
+// fillers are IN-era, not below it. That is fine and is the reason the band does
+// not need to be below 0151: an in-era ADR that declares no relations produces no
+// gap in either direction, so it is invisible to BOTH tallies. What would be
+// unsafe is a filler that declares a relation — hence `**Amends:** —`, no
+// **Amended-by:** at all, and the post-write guards that re-read every file and
+// prove no filler id is resolved by anyone (and that no filler resolves anyone).
+//
+// Each filler carries a COMPLETE canonical header. An incomplete one would make
+// validateAdr() emit its own errors, and T12 would then be passing for a
+// pre-existing reason (a missing **Subsystems:** field, say) rather than because
+// the back-link gate bit — the classic vacuous green. The inertness comparison
+// against the unpadded control run catches that too: any filler-induced error of
+// ANY kind shows up as an extra error line.
+// ---------------------------------------------------------------------------
+const FILLER_ID_MIN = 700;
+const FILLER_ID_MAX = 799;
+/** 143 live ADRs (12r-f) + 62 fillers = 205 scanned files. */
+const FILLER_COUNT = 62;
+/** The scanned corpus must exceed this after padding, or the tooth is vacuous. */
+const CORPUS_SIZE_FLOOR = 200;
+/** The live docs/adr/ count on the day 12r-f shipped. Documents why the floor is 200. */
+const LIVE_ADR_COUNT_AT_12RF = 143;
+
+/** '0700', '0701', … — the filler id for the n-th file in the band. */
+function fillerId(n) {
+  return String(FILLER_ID_MIN + n).padStart(4, '0');
+}
+
+function fillerFileName(n) {
+  return `${fillerId(n)}-t12-synthetic-corpus-padding.md`;
+}
+
+/**
+ * A complete, canonical, RELATION-FREE ADR. Every field validateAdr() requires
+ * of a non-legacy ADR is present (Status/Date/Slice/Supersedes/Amends/
+ * Subsystems/Decision), Subsystems uses a vocabulary term, Decision is well
+ * under the 240-char cap, and the "## Context" heading terminates the header
+ * preamble so the fields are inside the window every extractor reads.
+ *
+ * "**Amends:** —" resolves to NOTHING under the gate's resolver (the token is
+ * one character, so the leading-4-digit test rejects it) and checkRefs() skips
+ * an em dash outright, so it is neither a relation nor a dangling reference.
+ * There is deliberately NO **Amended-by:** line.
+ */
+function fillerBody(n) {
+  const id = fillerId(n);
+  return [
+    `# ${id} — synthetic corpus padding (T12 fixture only)`,
+    '',
+    '**Status:** Accepted',
+    '**Date:** 2026-08-07',
+    '**Slice:** 12r-f (evals/adr-backlink-corpus.eval.mjs T12 padding — not a real decision)',
+    '**Supersedes:** —',
+    '**Amends:** —',
+    '**Subsystems:** tooling-docs',
+    '**Decision:** Synthetic filler written only into a tmpdir copy of the corpus, so the ' +
+      'scanned corpus is larger than any hard-coded size threshold a bypass could use.',
+    '',
+    '## Context',
+    '',
+    'Generated by evals/adr-backlink-corpus.eval.mjs and never committed to docs/adr/.',
+    'It declares no Amends and no Amended-by, so it contributes zero reciprocity gaps in',
+    'either direction and perturbs neither the tolerated count nor the below-era tally.',
+    '',
+  ].join('\n');
+}
+
+/**
+ * Write FILLER_COUNT fillers into `dest`. Returns the number of files that are
+ * actually present in the band afterwards, counted by re-reading the directory
+ * rather than by trusting the write loop.
+ */
+function writeFillers(dest) {
+  for (let n = 0; n < FILLER_COUNT; n++) {
+    writeFileSync(join(dest, fillerFileName(n)), fillerBody(n), 'utf8');
+  }
+  let present = 0;
+  for (const id of adrIdsInDir(dest)) {
+    if (isFillerId(id)) present++;
+  }
+  return present;
+}
+
+/** Is `id` (a 4-digit string) inside the reserved filler band? */
+function isFillerId(id) {
+  const n = Number.parseInt(id, 10);
+  return Number.isInteger(n) && n >= FILLER_ID_MIN && n <= FILLER_ID_MAX;
+}
 
 // The frozen pre-existing baseline. EXACTLY these 5 — no more, no fewer.
 // Deliberately duplicated here, in a different directory from the source of
@@ -463,19 +643,33 @@ export default async function () {
   //   4. In the COPY ONLY, REPAIR one baselined pair: insert
   //      "**Amended-by:** ADR-0166" into 0156, directly under its
   //      "**Amends:** ADR-0155" line, so 0166->0156 becomes reciprocal.
-  //   5. Run the script twice against the tmpdir: once plain, once --check.
-  //   6. Both runs must exit non-0 AND name all SEVEN pair keys, each on a line
+  //   5. Run the script ONCE against the still-unpadded copy — the CONTROL run.
+  //      Its error lines and warn summary are the reference the padding must not
+  //      move.
+  //   6. PAD the copy with FILLER_COUNT relation-free synthetic ADRs in the
+  //      0700-0799 band (leg f), so the scanned corpus is > CORPUS_SIZE_FLOOR.
+  //   7. Run the script twice against the PADDED tmpdir: once plain, once
+  //      --check. Building the copy once and reusing it for both legs keeps this
+  //      to three digest runs total.
+  //   8. Both runs must exit non-0 AND name all SEVEN pair keys, each on a line
   //      beginning with "adr-digest ERROR:"; both must report the tolerated
   //      count as 4 (leg d) and flag 0166->0156 as an obsolete baseline entry
-  //      (leg e).
+  //      (leg e); and both must emit EXACTLY the control run's error lines and
+  //      warn summary (leg f's inertness half).
   //
-  // Why each ingredient matters — all five, stated explicitly:
+  // Why each ingredient matters — all six, stated explicitly:
   //   * Running BOTH modes is what kills `if (checkMode) return issues;`. A
   //     gate that only fires while generating is dead in CI, which runs --check.
   //     A gate that only fires under --check is dead for `just adr-digest`.
-  //   * Using the FULL real corpus (170+ ADRs, not a 4-file fixture) is what
-  //     kills a corpus-size bypass such as `if (adrs.length > 100) return
-  //     issues;` — a shape that passes every synthetic fixture tooth.
+  //   * Using the FULL real corpus (143 ADRs, not a 4-file fixture) is what
+  //     kills a bypass whose window is a SMALL corpus — `if (adrs.length < 100)
+  //     return issues;` and, together with the sibling eval's 1–4 file fixtures,
+  //     the bounded window `adrs.length > 2 && adrs.length < 100`. It does NOT
+  //     kill a threshold tuned to the live count; that is leg (f)'s job.
+  //   * PADDING the copy past CORPUS_SIZE_FLOOR (leg f) is what kills
+  //     `if (adrs.length > 143) return issues;` — the time bomb that is green on
+  //     the day it lands and silently dead the moment the corpus grows — and its
+  //     `> 150` / `> 200` variants. See the CORPUS PADDING block above.
   //   * Requiring the SIX SPECIFIC repaired pair keys is what kills an
   //     obfuscated or over-broad KNOWN_BACKLINK_GAPS that silently swallows
   //     exactly these violations to reach green; a generic "exit non-0"
@@ -484,10 +678,11 @@ export default async function () {
   //     scan to cover the WHOLE corpus. All six repaired keys have their source
   //     ADR in 0163..0176 — the newest files — so `for (const adr of
   //     adrs.slice(-20))` reports all six and passes. So does a cap at six
-  //     reported violations, and so does `if (adrs.length > 2 &&
-  //     adrs.length < 100) return issues;` (a "small fixture OR huge corpus"
-  //     window that both the sibling fixture teeth and a 170-file corpus miss).
-  //     0155 is the ~5th-oldest in-era ADR; one assertion kills all three.
+  //     reported violations. 0155 is the ~5th-oldest in-era ADR, so requiring
+  //     its key kills both. (This bullet used to also claim the seventh key
+  //     kills `adrs.length > 2 && adrs.length < 100`; it does not — a
+  //     size-window bypass returns BEFORE any per-ADR loop and drops all seven
+  //     keys, not just the mid-corpus one. Size windows are leg (f)'s subject.)
   //   * Requiring each key on an "adr-digest ERROR:" line pins the LEVEL. A gate
   //     that pushed back-link violations into `warnings` while some unrelated
   //     problem drove the exit code non-0 would otherwise pass: the keys would
@@ -771,11 +966,178 @@ export default async function () {
         }
       }
 
+      // =====================================================================
+      // (f) THE UNPADDED CONTROL RUN, then the PADDING.
+      //
+      // The control run is what turns "the fillers are inert" from a claim in a
+      // comment into an OBSERVATION. Everything the padded legs assert — the
+      // seven keys, N=4, the obsolete-entry ratchet — is also true of this
+      // control run; the padded legs additionally have to reproduce its error
+      // lines and its warn summary EXACTLY. So if a filler ever contributes a
+      // violation (a resolved relation), a below-era gap, or a validateAdr
+      // complaint of any kind, an extra line appears and leg (f) fires — rather
+      // than the padding quietly making some OTHER assertion pass or fail for a
+      // reason nobody attributed to it.
+      //
+      // It costs one extra digest run over the copy. Three runs total.
+      // =====================================================================
+      let paddingOk = setupOk;
+      let control = null;
+      let controlErrors = [];
+      let controlWarns = [];
+
       if (setupOk) {
+        control = runDigest(['--adr-dir', dir, '--out', join(dir, 'DIGEST.md')]);
+        controlErrors = errorLines(control).sort();
+        controlWarns = toleratedWarnLines(control).sort();
+
+        // Static band sanity: the ids we are about to write must fit the
+        // reserved band. A FILLER_COUNT edit that overflows 0799 would start
+        // writing 08xx ids that this file's collision reasoning never covered.
+        if (FILLER_ID_MIN + FILLER_COUNT - 1 > FILLER_ID_MAX) {
+          paddingOk = false;
+          failing.push(
+            'T12(f) FIXTURE SETUP DID NOT DO WHAT IT CLAIMS: FILLER_COUNT ' +
+              `(${FILLER_COUNT}) overflows the reserved filler band ` +
+              `${String(FILLER_ID_MIN).padStart(4, '0')}-${FILLER_ID_MAX} — the last id would be ` +
+              `${fillerId(FILLER_COUNT - 1)}. Widen the band deliberately (and re-check it against ` +
+              'the real corpus range and the sibling eval fixtures) instead of spilling out of it.',
+          );
+        }
+
+        // COLLISION: a filler id that already names a file in the copy would
+        // OVERWRITE a real ADR — silently deleting its relations and with them
+        // whichever violations this tooth expects.
+        const idsBeforePadding = paddingOk ? adrIdsInDir(dir) : new Set();
+        const collisions = [];
+        for (const id of idsBeforePadding) {
+          if (isFillerId(id)) collisions.push(id);
+        }
+        if (collisions.length > 0) {
+          paddingOk = false;
+          failing.push(
+            'T12(f) FIXTURE SETUP DID NOT DO WHAT IT CLAIMS: the corpus copy already contains ' +
+              `${collisions.length} file(s) in the reserved filler band ` +
+              `${String(FILLER_ID_MIN).padStart(4, '0')}-${FILLER_ID_MAX}: ${collisions.join(', ')}. ` +
+              'Writing the padding would OVERWRITE real ADR(s) and delete whatever relations they ' +
+              'declare, which changes the violations this tooth expects. The real corpus was ' +
+              '0001 + 0035-0177 when this band was chosen; if it has grown into 07xx, move the ' +
+              'band (and say why in the CORPUS PADDING block).',
+          );
+        }
+
+        if (paddingOk) {
+          const written = writeFillers(dir);
+          if (written !== FILLER_COUNT) {
+            paddingOk = false;
+            failing.push(
+              'T12(f) FIXTURE SETUP DID NOT DO WHAT IT CLAIMS: after writing the padding, only ' +
+                `${written} of the ${FILLER_COUNT} filler ADRs are present in the copy. The ` +
+                'scanned corpus is not the size this tooth claims to be testing, so a size ' +
+                'threshold tuned above the live count could still be hiding. Refusing to pass ' +
+                'vacuously.',
+            );
+          }
+        }
+
+        // FLOOR: the whole point is a scanned corpus meaningfully larger than
+        // the live count. Asserted on the actual directory, not on arithmetic.
+        const paddedIds = paddingOk ? adrIdsInDir(dir) : new Set();
+        if (paddingOk && paddedIds.size <= CORPUS_SIZE_FLOOR) {
+          paddingOk = false;
+          failing.push(
+            `T12(f) FIXTURE SETUP DID NOT DO WHAT IT CLAIMS: the padded copy holds only ` +
+              `${paddedIds.size} ADR file(s), which does not exceed CORPUS_SIZE_FLOOR ` +
+              `(${CORPUS_SIZE_FLOOR}). The live corpus was ${LIVE_ADR_COUNT_AT_12RF} when this ` +
+              `floor was set and FILLER_COUNT is ${FILLER_COUNT}, so the expected size is about ` +
+              `${LIVE_ADR_COUNT_AT_12RF + FILLER_COUNT}. Either the copy step or the padding step ` +
+              'silently under-delivered; without the size, `if (adrs.length > 143) return issues;` ' +
+              'survives this tooth.',
+          );
+        }
+
+        // ZERO-PERTURBATION, STATICALLY: no filler may be an endpoint of any
+        // relation, in either direction. Re-read from disk and resolved with the
+        // CONTRACT resolver against the PADDED id set — because adding the files
+        // is exactly what could make a pre-existing token resolve: a 07xx id in
+        // some real ADR's Amends field was previously dropped by the resolver's
+        // "must name a file in the scanned dir" clause and would now stick.
+        //
+        // This scan reads the FIRST **Amends:** / **Amended-by:** line of each
+        // header (extractBoldField), which is very slightly narrower than the
+        // gate's own view (extractBacklinkField collects every such line plus
+        // indented continuations). It is here to name the offending FILE when
+        // something goes wrong; the authoritative, view-independent proof that
+        // the padding is inert is the control-run comparison in leg (f) below,
+        // which observes the gate's real output rather than re-deriving it.
+        if (paddingOk) {
+          const offenders = [];
+          for (const entry of readdirSync(dir, { withFileTypes: true })) {
+            if (!entry.isFile()) continue;
+            const fileName = entry.name;
+            if (!fileName.endsWith('.md')) continue;
+            if (fileName.length < 5 || fileName[4] !== '-') continue;
+            let leadingFour = true;
+            for (let k = 0; k < 4; k++) if (!isDigitChar(fileName[k])) leadingFour = false;
+            if (!leadingFour) continue;
+            const id = fileName.slice(0, 4);
+            let content;
+            try {
+              content = readFileSync(join(dir, fileName), 'utf8');
+            } catch (err) {
+              offenders.push(`${id}: unreadable (${err?.message ?? String(err)})`);
+              continue;
+            }
+            const amends = extractBoldField(content, 'Amends');
+            const amendedBy = extractBoldField(content, 'Amended-by');
+            if (isFillerId(id)) {
+              const selfAmends = resolveFieldIds(amends, paddedIds);
+              if (selfAmends.length > 0) {
+                offenders.push(
+                  `${id} (filler) **Amends:** "${amends}" → {${selfAmends.join(', ')}}`,
+                );
+              }
+              if (amendedBy !== null) {
+                offenders.push(`${id} (filler) has an **Amended-by:** field ("${amendedBy}")`);
+              }
+              continue;
+            }
+            for (const target of resolveFieldIds(amends, paddedIds)) {
+              if (isFillerId(target)) offenders.push(`${id} **Amends:** resolves filler ${target}`);
+            }
+            for (const source of resolveFieldIds(amendedBy, paddedIds)) {
+              if (isFillerId(source)) {
+                offenders.push(`${id} **Amended-by:** resolves filler ${source}`);
+              }
+            }
+          }
+          if (offenders.length > 0) {
+            paddingOk = false;
+            failing.push(
+              'T12(f) FIXTURE SETUP DID NOT DO WHAT IT CLAIMS: the padding is NOT relation-free. ' +
+                `${offenders.length} offending field(s): ${offenders.slice(0, 12).join(' // ')}. ` +
+                'A filler that is an endpoint of any relation adds a reciprocity gap, which moves ' +
+                'the tolerated count N or the below-era tally M and makes legs (d) and (f) assert ' +
+                'the wrong numbers. Note the second shape this catches: a real ADR whose Amends ' +
+                "field mentions a 07xx id was previously dropped by the resolver's " +
+                '"must name a file in the scanned dir" clause and STARTS resolving once the band ' +
+                'has files. If that is what fired, move the filler band.',
+            );
+          }
+        }
+      }
+
+      if (setupOk && paddingOk) {
         const out = join(dir, 'DIGEST.md');
         const runs = [
-          { label: 'plain (generate)', result: runDigest(['--adr-dir', dir, '--out', out]) },
-          { label: '--check', result: runDigest(['--adr-dir', dir, '--out', out, '--check']) },
+          {
+            label: 'padded, plain (generate)',
+            result: runDigest(['--adr-dir', dir, '--out', out]),
+          },
+          {
+            label: 'padded, --check',
+            result: runDigest(['--adr-dir', dir, '--out', out, '--check']),
+          },
         ];
 
         for (const { label, result } of runs) {
@@ -784,8 +1146,11 @@ export default async function () {
               `T12 (negative control, ${label}): the real corpus with the four back-links ` +
                 `STRIPPED and ${PLANT_KEY} PLANTED exited 0 — the bidirectional back-link gate ` +
                 'has NO BITE in this mode. This is exactly the shape the red-team found: a check ' +
-                'guarded by `if (checkMode) return issues;` or `if (adrs.length > 100) return ' +
-                'issues;` passes every synthetic fixture and dies here. Expected exit non-0 ' +
+                'guarded by `if (checkMode) return issues;` or by a corpus-size threshold passes ' +
+                'every synthetic fixture and dies here. NOTE this run scans a PADDED corpus ' +
+                `(~${LIVE_ADR_COUNT_AT_12RF + FILLER_COUNT} ADRs); if the unpadded control run ` +
+                `above did NOT fail the same way, the bypass is keyed on adrs.length — control ` +
+                `exit was ${control === null ? 'n/a' : control.code}. Expected exit non-0 ` +
                 `naming ${EXPECTED_VIOLATION_KEYS.length} missing back-links. stdout: ` +
                 `${result.stdout.slice(0, 400)} | stderr: ${result.stderr.slice(0, 400)}`,
             );
@@ -824,9 +1189,12 @@ export default async function () {
                   ? ` NOTE: the MID-CORPUS plant (${PLANT_KEY}) is among the missing. That key ` +
                     'is deliberately far from the end of the corpus while all six repaired keys ' +
                     'have sources in 0163..0176. If it is the ONLY one missing, the scan is not ' +
-                    'covering the whole corpus (a tail window such as `adrs.slice(-20)`, a ' +
-                    'corpus-size window such as `adrs.length < 100`, or a cap on the number of ' +
-                    'reported violations).'
+                    'covering the whole corpus (a tail window such as `adrs.slice(-20)`, or a cap ' +
+                    'on the number of reported violations). If ALL SEVEN are missing here but the ' +
+                    'unpadded control run reported them, the bypass is keyed on adrs.length — ' +
+                    'this run scans ~' +
+                    `${LIVE_ADR_COUNT_AT_12RF + FILLER_COUNT} ADRs and the control scanned ~` +
+                    `${LIVE_ADR_COUNT_AT_12RF}.`
                   : '') +
                 ` stderr: ${result.stderr.slice(0, 800)} | stdout: ${result.stdout.slice(0, 400)}`,
             );
@@ -933,6 +1301,90 @@ export default async function () {
                 'apply-only: entries survive the repairs that made them unnecessary and go on ' +
                 'suppressing whatever later lands on the same key. Error lines actually seen ' +
                 `(${errLines.length}): ${errLines.slice(0, 12).join(' // ').slice(0, 900)}`,
+            );
+          }
+
+          // -----------------------------------------------------------------
+          // (f) THE PADDING IS INERT — re-derived from the control run, not
+          //     assumed from the fillers' shape.
+          //
+          // The assertions above (seven keys, N=4, the ratchet) are the ones
+          // that kill the size bypass, and they only mean what they say if the
+          // fillers changed NOTHING else. So: this padded run's ERROR LINES
+          // must be exactly the unpadded control run's error lines, and its
+          // tolerated-count WARN SUMMARY must be exactly the control's — same
+          // N, same M, same wording.
+          //
+          // Comparing whole lines rather than just the two numbers is
+          // deliberate; it makes one assertion cover four separate ways a
+          // filler could have perturbed the run:
+          //   * a filler resolving (or being resolved by) a relation → an extra
+          //     back-link ERROR line, or a changed N/M;
+          //   * a filler with an incomplete canonical header → an extra
+          //     validateAdr ERROR line (missing **Subsystems:**, unknown
+          //     subsystem, Decision over 240 chars, dangling reference…). That
+          //     is the shape that would make this whole tooth VACUOUS: the run
+          //     exits non-0 for a reason that has nothing to do with the gate;
+          //   * a filler id colliding with a real ADR → a MISSING error line
+          //     (the overwritten ADR's relations are gone);
+          //   * the fillers landing below the era, or dragging some pre-existing
+          //     token into resolution → a changed below-era tally M.
+          // Sorted, so line ORDER is not part of the claim.
+          // -----------------------------------------------------------------
+          const paddedErrors = errLines.slice().sort();
+          const paddedWarns = toleratedWarnLines(result).sort();
+
+          if (controlErrors.length < EXPECTED_VIOLATION_KEYS.length) {
+            failing.push(
+              `T12(f) (padding inertness, ${label}): the UNPADDED control run produced only ` +
+                `${controlErrors.length} "${ERROR_LINE_PREFIX}" line(s), fewer than the ` +
+                `${EXPECTED_VIOLATION_KEYS.length} violations this fixture plants, so comparing ` +
+                'the padded run against it would prove nothing (two empty lists are equal). The ' +
+                'cause is upstream of the padding — see the other T12 failures for this run. ' +
+                `Control exit ${control.code}; control error lines: ` +
+                `${controlErrors.slice(0, 12).join(' // ').slice(0, 700) || '<none>'}`,
+            );
+          } else {
+            const onlyPadded = paddedErrors.filter((line) => !controlErrors.includes(line));
+            const onlyControl = controlErrors.filter((line) => !paddedErrors.includes(line));
+            if (onlyPadded.length > 0 || onlyControl.length > 0) {
+              failing.push(
+                `T12(f) (padding inertness, ${label}): adding ${FILLER_COUNT} relation-free ` +
+                  'synthetic ADRs to the corpus copy CHANGED the run. The padding exists only to ' +
+                  'make the scanned corpus exceed any hard-coded size threshold; it must not ' +
+                  'contribute or remove a single diagnostic.\n' +
+                  `  NEW with padding (${onlyPadded.length}): ` +
+                  `${onlyPadded.slice(0, 8).join(' // ').slice(0, 900) || '<none>'}\n` +
+                  `  LOST with padding (${onlyControl.length}): ` +
+                  `${onlyControl.slice(0, 8).join(' // ').slice(0, 900) || '<none>'}\n` +
+                  '  NEW lines mean a filler is not inert: either its header is incomplete (then ' +
+                  'this whole tooth was about to pass for a validateAdr reason rather than a ' +
+                  'back-link one) or it became an endpoint of a relation. LOST lines mean a ' +
+                  'filler overwrote a real ADR. Fix fillerBody()/the id band — do NOT relax this ' +
+                  'comparison.',
+              );
+            }
+          }
+
+          if (controlWarns.length !== 1) {
+            failing.push(
+              `T12(f) (padding inertness, ${label}): the UNPADDED control run emitted ` +
+                `${controlWarns.length} tolerated-count summary line(s), not 1, so there is no ` +
+                "reference to compare the padded run's N and M against. See the T12(d) failure " +
+                `for this run. Control summary line(s): ${controlWarns.join(' // ').slice(0, 400) || '<none>'}`,
+            );
+          } else if (paddedWarns.join('|') !== controlWarns.join('|')) {
+            failing.push(
+              `T12(f) (padding inertness, ${label}): the tolerated-count summary CHANGED when the ` +
+                `corpus was padded with ${FILLER_COUNT} relation-free synthetic ADRs.\n` +
+                `  unpadded control: ${controlWarns.join(' // ')}\n` +
+                `  padded ${label}: ${paddedWarns.join(' // ') || '<none>'}\n` +
+                '  Both numbers in that line are pinned by this comparison. N must still be ' +
+                `${T12_EXPECTED_TOLERATED} (a filler cannot be suppressed by a baseline entry — ` +
+                'no filler id is an endpoint of one) and M must be UNCHANGED: the fillers are ' +
+                "IN-era ('0700' > '0151' as strings) but declare no relations, so they produce no " +
+                'gap in either tally. If M moved, either a filler acquired a relation or the ' +
+                'padding made a pre-existing 07xx token resolve.',
             );
           }
         }
@@ -1058,13 +1510,18 @@ export default async function () {
   // WHAT THIS FLOOR IS NOT FOR: it does not pin the resolver's "the id must
   // name a file in the scanned dir" clause. A numeric band over M would be a
   // poor proxy for that clause anyway, and none is added here. That clause is
-  // pinned DIRECTLY AND BEHAVIOURALLY by TOOTH 20 half B in
-  // evals/adr-backlink-integrity.eval.mjs: a fixture where 0943 declares
-  // "**Amends:** 0958" — an IN-ERA id with NO file in the dir, written BARE so
-  // the pre-existing extractAllAdrIds dangling check stays silent — and the
-  // tooth asserts (0943->0958) is NOT reported. Drop the file-existence clause
-  // and that key appears and the tooth reds. This floor's only job is to kill a
-  // zero/constant tally.
+  // covered by TOOTH 20 half B in evals/adr-backlink-integrity.eval.mjs: a
+  // fixture where 0943 declares "**Amends:** 0958" — an IN-ERA id with NO file
+  // in the dir, written BARE so the pre-existing extractAllAdrIds dangling check
+  // stays silent — and the tooth asserts (0943->0958) is NOT reported. Read that
+  // cross-reference precisely: TOOTH 20 is an ABSENCE tooth (exit 0, and the
+  // string "0958" nowhere in stderr). It kills the DROP-THE-CLAUSE mutation —
+  // delete the file-existence filter and the key appears and the tooth reds —
+  // but, being absence-shaped, it does not by itself prove the resolver ran at
+  // all; its headline "relations resolve against SCANNED FILES" is stronger than
+  // what one absence assertion can carry. The presence half of that claim lives
+  // in the teeth that DO require keys (T12 here, TOOTH 19 there). This floor's
+  // only job is to kill a zero/constant below-era tally.
   //
   // Both pinned numbers are TWO-WAY. If a future slice legitimately repairs a
   // baselined gap, the literal 5 here, FROZEN_BASELINE in this file, and
@@ -1249,7 +1706,8 @@ export default async function () {
     name,
     pass: true,
     detail:
-      '4/4 corpus-level teeth bite correctly (T9, T12 incl. legs (d) suppression-count ' +
-      'and (e) obsolete-entry ratchet on both modes, T13, T14)',
+      '4/4 corpus-level teeth bite correctly (T9, T12 incl. legs (d) suppression-count, ' +
+      `(e) obsolete-entry ratchet and (f) ${FILLER_COUNT}-ADR corpus padding proved inert ` +
+      'against an unpadded control run — on both modes, T13, T14)',
   };
 }

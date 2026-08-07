@@ -444,16 +444,44 @@ function extractBacklinkField(view, fieldName) {
  * aside cannot contribute ids; skip H- (the harness namespace aliases collide
  * with project numbers — H-0055 is project 0056); strip a leading `ADR-`; take
  * the leading 4-digit run only when the next character is a non-digit or the
- * token ends (so `ADR-0118 §3/A3` resolves and `2026-07-20` does not); keep only
+ * token ends (so `ADR-0118 §3/A3` resolves and a 5-digit `01510` does not; a
+ * date like `2026-07-20` passes that test and is dropped by the file filter
+ * below instead); keep only
  * ids that are files in the scanned directory; dedup.
  *
  * "No relation" is an EMPTY result, never a string test against the em dash —
  * real values include `— (supersedes the literal wording of ...)`.
  */
+
+/**
+ * Split a relation field on its TOP-LEVEL commas only, so a comma inside a
+ * parenthetical aside does not start a new token. Without this,
+ * `— (deferred, 0984 lands next slice)` splits into `—` and `0984 lands next
+ * slice)`, and the second fragment — having no `(` left to truncate at —
+ * resolves 0984 and silently satisfies reciprocity for a back-link that was
+ * explicitly deferred. Parenthesised commas are common in this corpus
+ * (0118, 0137, 0139, 0147 ...), so this is a live shape, not a hypothetical.
+ */
+function splitTopLevelCommas(value) {
+  const tokens = [];
+  let depth = 0;
+  let start = 0;
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    if (ch === '(') depth++;
+    else if (ch === ')') depth = depth > 0 ? depth - 1 : 0;
+    else if (ch === ',' && depth === 0) {
+      tokens.push(value.slice(start, i));
+      start = i + 1;
+    }
+  }
+  tokens.push(value.slice(start));
+  return tokens;
+}
 function resolveRelationIds(fieldValue, localIds) {
   if (!fieldValue) return [];
   const found = new Set();
-  for (const rawToken of fieldValue.split(',')) {
+  for (const rawToken of splitTopLevelCommas(fieldValue)) {
     const paren = rawToken.indexOf('(');
     let token = (paren === -1 ? rawToken : rawToken.slice(0, paren)).trim();
     if (token.startsWith('H-')) continue;
@@ -480,7 +508,6 @@ function resolveRelationIds(fieldValue, localIds) {
  */
 function validateBacklinks(adrs, localIds) {
   const issues = [];
-  const byId = new Map(adrs.map((adr) => [adr.id, adr]));
 
   const amends = new Map();
   const amendedBy = new Map();
@@ -543,7 +570,8 @@ function validateBacklinks(adrs, localIds) {
     const arrow = key.indexOf('->') !== -1 ? '->' : '<-';
     const left = key.slice(0, 4);
     const right = key.slice(6);
-    if (!byId.has(left) || !byId.has(right)) continue;
+    // slice(0,4)/slice(6) are safe: the startup validator pins the 4+2+4 shape.
+    if (!localIds.has(left) || !localIds.has(right)) continue;
     if (liveKeys.has(key)) continue;
     const declared =
       arrow === '->' ? amends.get(left)?.includes(right) : amendedBy.get(left)?.includes(right);
@@ -552,7 +580,9 @@ function validateBacklinks(adrs, localIds) {
       level: 'error',
       message:
         `KNOWN_BACKLINK_GAPS entry "${key}" is obsolete — ${reason}; ` +
-        'delete the entry (the set may only shrink)',
+        'delete the entry (the set may only shrink) — and in the SAME commit drop ' +
+        'it from FROZEN_BASELINE and lower BASELINE_TOLERATED_COUNT in ' +
+        'evals/adr-backlink-corpus.eval.mjs, or T9/T14 red next run',
     });
   }
 

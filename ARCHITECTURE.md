@@ -284,14 +284,15 @@ master history, so regenerate at the branch point, never after `wip:` commits.
 **ADR back-link reciprocity (12r-f):** ADR-0104 D1 already required that "an ADR
 that only *amends* another stays `Accepted`; the amended ADR gains
 `**Amended-by:**`", but only `checkRefs` enforced anything — a one-directional
-dangling-reference check, so a *missing* back-link passed green and 53 accumulated.
+dangling-reference check, so a *missing* back-link passed green and 55 accumulated
+(53 forward, 2 reverse).
 `validateBacklinks()` in `scripts/adr-digest.mjs` now mechanizes the invariant in
 both directions. It is **era-scoped**: enforced only when BOTH endpoints are
 `>= BACKLINK_ERA_MIN` (`0151` — the oldest ADR 12r-f repaired). Repairing a
 pre-era back-link is a semantic claim ("did 0116 really amend 0103?"), not a
-formatting fix, so the 44 below-era gaps are counted in a one-line WARN summary
-rather than itemised or enforced. Five in-era gaps predate the gate and sit in
-`KNOWN_BACKLINK_GAPS`, which **may only shrink** — a ratchet errors on an entry
+formatting fix, so the below-era gaps (44 as of 12r-f) are counted in a one-line
+WARN summary rather than itemised or enforced. The in-era gaps that predate the
+gate (five at 12r-f) sit in `KNOWN_BACKLINK_GAPS`, which **may only shrink** — a ratchet errors on an entry
 whose gap is already repaired, and a frozen duplicate of the set in
 `evals/adr-backlink-corpus.eval.mjs` asserts set equality so growth needs two
 visible edits in two directories. Back-link resolution reads a fence-stripped
