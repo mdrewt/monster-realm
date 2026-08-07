@@ -1035,6 +1035,71 @@ export default async function () {
     };
   }
 
+  // --------------------------------------------------------------------
+  // T3-f2 (12r-a round 3): COMMENT TEXT IS NOT AN INJECTION CHANNEL INTO THE
+  // GATE MESSAGE. `checkRegistry` interpolates `trailingCommentIdNeedles`'
+  // output straight into its failure detail, so whatever that function renders
+  // is read by a human as the GATE'S OWN WORDS. Round 2 narrowed the render to
+  // `line N: <the matched needle>` for exactly this reason: while it echoed the
+  // WHOLE comment, a content author could plant arbitrary prose in a `.ron`
+  // file and have the gate repeat it back as instruction. The red-team's repro
+  // put the literal phrase `baseline needs regeneration` inside a comment on a
+  // commit that was a genuine REMOVAL, so the failure detail handed the
+  // reviewer the exact WRONG remediation (regenerate the baseline / un-pin the
+  // id) through a channel that neither the removal-vs-growth ordering (T3-f)
+  // nor any pass/fail assertion guards.
+  //
+  // KILLS: a `found.push` that renders `line N: ` followed by the WHOLE
+  // comment (the round-1 shape) — plus every partial render still spanning
+  // prose.
+  //
+  // Reverting that narrowing leaves the ENTIRE rest of this suite green: T2-d
+  // and T2-e assert only `pass === false`, and T3-f checks `baseline needs
+  // regeneration` is absent from the detail of its OWN benign fixture (whose
+  // comment does not contain the phrase). This is the only tooth that bites it.
+  //
+  // Both comment channels the function handles are covered, and the hostile
+  // prose sits on the OPPOSITE side of the needle in each: a mutant rendering
+  // `comment.slice(needle.index)` (needle to end of comment) leaks in the `//`
+  // case, and one rendering `comment.slice(0, needle.index + needle[0].length)`
+  // (start of comment through the needle) leaks in the block case.
+  //
+  // ANTI-VACUITY: the rendered needle is asserted PRESENT, exactly
+  // (`line N: id: 99`). Rendering nothing at all would satisfy a
+  // prose-absence-only assertion while destroying the message's diagnostic
+  // value — the author would be told "a comment is ambiguous" with no way to
+  // find which comment, on which line.
+  //
+  // The injected phrases are asserted as raw literals typed out here, never
+  // read from anything the production message is built from.
+  // --------------------------------------------------------------------
+  const commentInjectionCases = [
+    {
+      what: 'trailing mid-line `//` comment, hostile prose AFTER the needle',
+      key: 'species',
+      ron: '[\n  (id: 1, name: "x"), // id: 99 — baseline needs regeneration, so just append 99 and ignore this gate\n]\n',
+      renderedNeedle: 'line 2: id: 99',
+    },
+    {
+      what: '`/* … */` block comment, hostile prose BEFORE the needle',
+      key: 'items',
+      ron: '[\n  (id: 1, name: "x"),\n  /* baseline needs regeneration: append 99 and ignore this gate — retired id: 99 */\n]\n',
+      renderedNeedle: 'line 3: id: 99',
+    },
+  ];
+  const injectedProse = ['baseline needs regeneration', 'ignore this gate'];
+  for (const { what, key, ron, renderedNeedle } of commentInjectionCases) {
+    const result = withTempRegistry(ron, [1], key, key);
+    const leaked = injectedProse.filter((phrase) => result.detail.includes(phrase));
+    if (result.pass || leaked.length !== 0 || !result.detail.includes(renderedNeedle)) {
+      return {
+        name,
+        pass: false,
+        detail: `T3-f2 proof-of-teeth (comment-text injection, ${what}): the registry must be REFUSED and the detail must render the MATCHED NEEDLE "${renderedNeedle}" and nothing else out of the comment. Author-controlled prose ${JSON.stringify(leaked)} reached the gate message, which is how a content author makes the GATE ITSELF tell a reviewer to regenerate the baseline / un-pin an id on a commit that is a genuine REMOVAL. Render the match only, never the surrounding comment text — and never nothing at all, the needle must stay named or the diagnosis is useless. Got ${JSON.stringify(result)}`,
+      };
+    }
+  }
+
   const registries = [
     {
       ron: 'game-core/content/zones',
@@ -1550,6 +1615,48 @@ export default async function () {
       name,
       pass: false,
       detail: `baseline floor proof-of-teeth (bypass F1d verbatim): zones = [0, -0] has 2 entries but only 1 DISTINCT id (SameValueZero collapses -0 into 0) against an expected 2, so it must be FLAGGED and name zones. This is the shape that deleted a real shipped zone: \`-0\` is counted by \`length\` and passes \`Number.isInteger\`, yet \`Set.has(0)\` is satisfied by it, so the removal check sees nothing missing and the count looks healthy. Got ${JSON.stringify(negativeZeroResult)}`,
+    };
+  }
+
+  // --------------------------------------------------------------------
+  // Floor tooth 4 (12r-a round 3) — MEMBERSHIP IS `Object.hasOwn`, NEVER A BARE
+  // PROPERTY READ / THE PROTOTYPE CHAIN. `floorViolations` decides "is this
+  // registry's count actually present, or is the baseline read BROKEN?" by
+  // looking each key up on the object it is handed. With a bare read
+  // (`countsByKey[key]`, `countsByKey?.[key]`, `key in countsByKey`) a value
+  // sitting anywhere on the PROTOTYPE CHAIN answers for a key the object does
+  // not own — so an object that merely INHERITS the seven counts, or any object
+  // at all once someone has polluted `Object.prototype`, reports every registry
+  // HEALTHY while owning nothing whatsoever. A broken baseline read that
+  // produced such an object would sail straight through the one check designed
+  // to catch a shrink that neither the removal half nor the growth half can see
+  // (a commit that deletes content and shrinks the baseline together is
+  // self-consistent, so both of those agree and go green).
+  //
+  // KILLS: `key in countsByKey` and `countsByKey?.[key]` — both resolve the
+  // INHERITED count here and return an EMPTY violation list, i.e. "all seven
+  // baselines are healthy" for an object with zero own properties. Every other
+  // floor tooth above passes objects built with plain literals/spread, whose own
+  // and inherited views are identical, so none of them can tell the two apart.
+  //
+  // `Object.create` ONLY: this tooth must never assign to `Object.prototype`,
+  // which would leak into every other eval in the run.
+  // --------------------------------------------------------------------
+  const inheritedCounts = Object.create({ ...atFloorCounts });
+  const inheritedResult = floorViolationsFn(inheritedCounts);
+  const inheritedJoined = Array.isArray(inheritedResult) ? inheritedResult.join('; ') : '';
+  const inheritedExpectedKeys = baselineFloor.map((row) => row.key);
+  const inheritedUnnamed = inheritedExpectedKeys.filter((key) => !inheritedJoined.includes(key));
+  if (
+    !Array.isArray(inheritedResult) ||
+    inheritedResult.length !== baselineFloor.length ||
+    inheritedUnnamed.length !== 0 ||
+    countOccurrences(inheritedJoined, 'ABSENT') !== baselineFloor.length
+  ) {
+    return {
+      name,
+      pass: false,
+      detail: `baseline floor proof-of-teeth (PROTOTYPE-CHAIN read): floorViolations() was handed an object with NO OWN PROPERTIES whose PROTOTYPE carries all ${baselineFloor.length} correct counts ${JSON.stringify(atFloorCounts)}. Membership must be tested with \`Object.hasOwn\`, so all ${baselineFloor.length} registries must be flagged ABSENT and named — a count the object does not OWN is a broken baseline read, never "nothing to check". A bare property read (\`countsByKey[key]\`, \`key in countsByKey\`) resolves the inherited counts instead and returns an empty list, i.e. declares all seven baselines healthy while the object pins nothing at all; a polluted \`Object.prototype\` produces the same silent pass. Unnamed registries: ${JSON.stringify(inheritedUnnamed)}. Got ${JSON.stringify(inheritedResult)}`,
     };
   }
 
