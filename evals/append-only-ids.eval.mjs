@@ -203,6 +203,39 @@ function withTempRegistry(ronText, baselineIds, key, label) {
   }
 }
 
+// Teeth-only helper (12r-a / T3): renders a minimal registry RON from a list of
+// ids, so a fixture can be derived from a baseline array (or from a baseline
+// MINUS one id) without hand-writing the text. Plain string concatenation — no
+// dynamically-constructed regexes anywhere in this file (semgrep's
+// `detect-non-literal-regexp` is a hard CI gate here and has bitten this repo
+// twice); every scan below is a literal regex or an indexOf/includes.
+function ronFromIds(ids) {
+  let out = '[\n';
+  for (const id of ids) {
+    out += '  (id: ' + id + ', name: "x"),\n';
+  }
+  return out + ']\n';
+}
+
+// Teeth-only helper: substring occurrence count, indexOf-based (no RegExp).
+function countOccurrences(haystack, needle) {
+  let count = 0;
+  let from = 0;
+  for (;;) {
+    const at = haystack.indexOf(needle, from);
+    if (at === -1) return count;
+    count += 1;
+    from = at + needle.length;
+  }
+}
+
+// Teeth-only helper: reads a COMMITTED baseline array (the real, shipped JSON)
+// so the E2 teeth below are self-maintaining — they drop an id that the repo
+// actually pins today rather than a number frozen into this file.
+function committedBaselineIds(baselinePath, key) {
+  return JSON.parse(readFileSync(baselinePath, 'utf8'))[key];
+}
+
 export default async function () {
   const name = 'append-only-ids (stable content ids never removed/renumbered)';
 
@@ -440,8 +473,21 @@ export default async function () {
       ron: '[\n  (id: 1, name: "A"),\n  /* id=99 was retired here; see ADR-0006 */\n  (id: 2, name: "B"),\n]\n',
     },
     {
+      // 12r-a: the in-string needle was `id: 99` when this control was written
+      // (11r-i). `parseIds` is NOT string-aware — only `trailingCommentIdNeedles`
+      // is — so it harvests that 99 as a live id, and the growth guard this slice
+      // adds would then refuse the registry ("99 is not in the baseline"), turning
+      // this control RED for a reason that has nothing to do with what it asserts.
+      // Fixed by moving the needle to an ALREADY-PINNED id (2): parseIds now sees
+      // [1, 2, 2] against the fixture baseline [1, 2], so nothing is unpinned and
+      // nothing is missing. The control keeps its full kill — a string-BLIND
+      // comment guard still sees `/* id: 2 */` as a block comment carrying an
+      // id-shaped needle and still false-fails here. Deliberately NOT fixed by
+      // pinning 99 into the fixture baseline: that would make this suite ASSERT
+      // that a number inside flavour text is a legitimate content id (see the
+      // parked "string-needle refusal" follow-up).
       what: 'comment-looking sequences inside a quoted string VALUE',
-      ron: '[\n  (id: 1, name: "Path: C://data"),\n  (id: 2, name: "glob /* id: 99 */ in flavour text"),\n]\n',
+      ron: '[\n  (id: 1, name: "Path: C://data"),\n  (id: 2, name: "glob /* id: 2 */ in flavour text"),\n]\n',
     },
   ];
   for (const { what, ron } of blockCommentControls) {
@@ -453,6 +499,252 @@ export default async function () {
         detail: `T2-e negative control FAILED (${what}): the comment guard must not refuse this — got ${JSON.stringify(result)}`,
       };
     }
+  }
+
+  // ====================================================================
+  // 12r-a / T3 — BIDIRECTIONAL enforcement.
+  //
+  // The live defect: `checkRegistry` only ever asks "is every BASELINE id
+  // still present in the content?". A live id ABSENT FROM THE BASELINE is
+  // invisible. Three baselines were never updated as content grew
+  // (species pins [1,2,3] against 16 live ids; skills [1..6] against 11;
+  // items [1,2] against 5), so today DELETING species 20, item 4 or skill 7
+  // outright — the exact regression ADR-0006 exists to stop — passes this
+  // gate GREEN. The teeth below encode both halves: a shipped id must never
+  // vanish (E2), and a live id that no baseline pins must FAIL LOUD with a
+  // "regenerate the baseline" instruction (E3) instead of silently widening
+  // the blind spot again.
+  // ====================================================================
+
+  // --------------------------------------------------------------------
+  // T3-a (E2): removing a currently-SHIPPED id must turn the gate red, for
+  // each of the three drifted registries. Deliberately NOT hand-written
+  // fixtures: each case reads the REAL committed baseline JSON at run time
+  // and first asserts the PRECONDITION that the id it is about to delete is
+  // actually pinned there. That precondition is what makes this tooth red
+  // TODAY (species-ids.json does not pin 20, item-ids.json does not pin 4,
+  // skill-ids.json does not pin 7) and it is what keeps the tooth honest
+  // afterwards: a "fix" that regenerates only ONE baseline, or that pins a
+  // subset, still fails here. Kills: today's checkRegistry + today's stale
+  // baselines, together — the pair is the defect.
+  // --------------------------------------------------------------------
+  const shippedIdCases = [
+    {
+      label: 'species',
+      key: 'species',
+      baseline: 'evals/baselines/species-ids.json',
+      droppedId: 20,
+    },
+    { label: 'items', key: 'items', baseline: 'evals/baselines/item-ids.json', droppedId: 4 },
+    { label: 'skills', key: 'skills', baseline: 'evals/baselines/skill-ids.json', droppedId: 7 },
+  ];
+  for (const { label, key, baseline, droppedId } of shippedIdCases) {
+    const pinned = committedBaselineIds(baseline, key);
+    if (!Array.isArray(pinned) || !pinned.includes(droppedId)) {
+      return {
+        name,
+        pass: false,
+        detail: `T3-a proof-of-teeth (E2): ${label} — the baseline is stale; ${baseline} does not pin id ${droppedId}, which ${label} ships in game-core/content/${label}/*.ron today. Deleting or renumbering that id therefore passes this gate GREEN (append-only enforcement is vacuous for every unpinned id). Regenerate the baseline from a HAND READ of the RON — got ${JSON.stringify(pinned)}`,
+      };
+    }
+    const survivors = pinned.filter((id) => id !== droppedId);
+    const result = withTempRegistry(ronFromIds(survivors), pinned, key, label);
+    if (
+      result.pass ||
+      !result.detail.includes(String(droppedId)) ||
+      !result.detail.includes('append-only')
+    ) {
+      return {
+        name,
+        pass: false,
+        detail: `T3-a proof-of-teeth (E2): ${label} content with shipped id ${droppedId} DELETED must fail and name it as append-only — got ${JSON.stringify(result)}`,
+      };
+    }
+  }
+
+  // --------------------------------------------------------------------
+  // T3-b (E3): a live id that the baseline does not pin must FAIL, with an
+  // explicit `baseline needs regeneration` instruction. Without this the
+  // drift that caused T3-a simply re-accumulates: content grows, nobody
+  // touches the baseline, and the gate quietly stops covering the new ids.
+  //
+  // ALL SEVEN registries, not just the three that drifted — an
+  // implementation that hardcodes the growth branch to species/skills/items,
+  // or that short-circuits on the first registry (`zones`), passes every
+  // other tooth in this file. The literal `baseline needs regeneration` is
+  // asserted as a raw substring (never via a shared constant, which would
+  // make the assertion vacuous).
+  // --------------------------------------------------------------------
+  const unpinnedGrowthKeys = ['zones', 'species', 'skills', 'items', 'abilities', 'shops', 'npcs'];
+  for (const key of unpinnedGrowthKeys) {
+    const result = withTempRegistry(ronFromIds([1, 2, 9999]), [1, 2], key, key);
+    if (
+      result.pass ||
+      !result.detail.includes('9999') ||
+      !result.detail.includes('baseline needs regeneration')
+    ) {
+      return {
+        name,
+        pass: false,
+        detail: `T3-b proof-of-teeth (E3): ${key} shipped live id 9999 with a baseline of [1, 2] that does not pin it — the gate must FAIL, name 9999, and say "baseline needs regeneration" (an unpinned id is an id this gate cannot protect) — got ${JSON.stringify(result)}`,
+      };
+    }
+  }
+
+  // --------------------------------------------------------------------
+  // T3-c: negative controls for the growth check. Each of these would be
+  // false-failed by a blunt implementation, and each uses a DIFFERENT
+  // key/label so a per-key short-circuit cannot hide behind a uniform
+  // `zones` fixture.
+  //   c1 live == baseline exactly                  -> pass
+  //   c2 live [2,1] vs baseline [1,2]              -> pass  (order-independent;
+  //      kills a JSON.stringify / positional comparison)
+  //   c3 live [1,1,2] vs baseline [1,2]            -> pass  (a DUPLICATE live id
+  //      is `validate_content`'s job, not this gate's; kills a length/count
+  //      comparison, which is the laziest way to "detect" growth)
+  // --------------------------------------------------------------------
+  const growthControls = [
+    {
+      what: 'c1 live set identical to the baseline',
+      key: 'species',
+      ids: [1, 2, 3],
+      baselineIds: [1, 2, 3],
+    },
+    {
+      what: 'c2 live ids in a different ORDER than the baseline',
+      key: 'zones',
+      ids: [2, 1],
+      baselineIds: [1, 2],
+    },
+    {
+      what: 'c3 a DUPLICATE live id (validate_content owns duplicates)',
+      key: 'items',
+      ids: [1, 1, 2],
+      baselineIds: [1, 2],
+    },
+  ];
+  for (const { what, key, ids, baselineIds } of growthControls) {
+    const result = withTempRegistry(ronFromIds(ids), baselineIds, key, key);
+    if (!result.pass) {
+      return {
+        name,
+        pass: false,
+        detail: `T3-c negative control FAILED (${what}, key ${key}): nothing is removed and nothing is unpinned, so the gate must PASS — got ${JSON.stringify(result)}`,
+      };
+    }
+  }
+
+  // --------------------------------------------------------------------
+  // T3-c4: the reported `unpinned` list must be the DE-DUPLICATED set of
+  // live ids the baseline does not pin — not the raw parseIds array. A raw
+  // array leaks two ways: it repeats a duplicated live id (spam), and a
+  // naive "live ids differ from baseline" dump names already-pinned ids as
+  // if the author had to add them (phantoms). Both make the gate's own
+  // remediation advice wrong, which is how a baseline gets poisoned.
+  //
+  // ID CHOICE (deliberate): 301/302 pinned, 777 unpinned — digit-shapes that
+  // cannot collide with prose or path noise in the message. `mkdtempSync`'s
+  // random 6-char suffix contains a `1` in roughly 9% of runs, and the
+  // existing empty-baseline detail already interpolates `baselinePath`, so a
+  // literal `!detail.includes('1')` assertion would be FLAKY rather than
+  // strict. Same kill, deterministic.
+  // --------------------------------------------------------------------
+  const dedupeCases = [
+    { what: 'duplicate PINNED id', ids: [301, 301, 302, 777] },
+    { what: 'duplicate UNPINNED id', ids: [301, 301, 302, 777, 777] },
+  ];
+  for (const { what, ids } of dedupeCases) {
+    const result = withTempRegistry(ronFromIds(ids), [301, 302], 'skills', 'skills');
+    const names777Once = countOccurrences(result.detail, '777') === 1;
+    const namesPinned = result.detail.includes('301') || result.detail.includes('302');
+    if (result.pass || !names777Once || namesPinned) {
+      return {
+        name,
+        pass: false,
+        detail: `T3-c4 proof-of-teeth (${what}): skills live ${JSON.stringify(ids)} vs baseline [301, 302] must fail naming 777 EXACTLY ONCE and must never name the already-pinned 301/302 (the unpinned list is a de-duplicated SET difference, not the raw parseIds array) — got ${JSON.stringify(result)}`,
+      };
+    }
+  }
+
+  // --------------------------------------------------------------------
+  // T3-d: the two diagnoses must stay DISTINCT. A baseline id that is
+  // legitimately pinned but absent from the content is a REMOVAL — the
+  // author must restore the content, and must NEVER be told to regenerate
+  // the baseline (that is how a shipped id gets un-pinned and the append-only
+  // guarantee silently evaporates). Kills a guard collapsed into one blunt
+  // "the sets differ" message, which is the tempting one-liner here.
+  // --------------------------------------------------------------------
+  const removalOnly = withTempRegistry(ronFromIds([1]), [1, 2], 'npcs', 'npcs');
+  if (
+    removalOnly.pass ||
+    !removalOnly.detail.includes('append-only') ||
+    removalOnly.detail.includes('baseline needs regeneration')
+  ) {
+    return {
+      name,
+      pass: false,
+      detail: `T3-d proof-of-teeth: npcs live [1] vs baseline [1, 2] is a REMOVAL, not growth — the detail must keep the append-only removal diagnosis and must NOT tell the author to regenerate the baseline — got ${JSON.stringify(removalOnly)}`,
+    };
+  }
+
+  // --------------------------------------------------------------------
+  // T3-e: a RENUMBER (id 7 -> 77) fires BOTH halves, and both must be
+  // reported. This is precisely the attack this slice exists to catch, and
+  // the natural implementation bug is an early `return` after the removal
+  // branch that hides the growth half — leaving the author to fix the
+  // removal, re-run, and only then discover the second problem, or worse to
+  // "fix" it by regenerating the baseline off the renumbered content.
+  //
+  // Assertion care: `'77'.includes('7')` is true, so a naive
+  // `detail.includes('7')` proves nothing. Asserted instead on (a) the two
+  // message substrings and (b) the EXACT rendered removal clause, whose
+  // prefix the contract preserves byte-for-byte from today's message.
+  // --------------------------------------------------------------------
+  const renumbered = withTempRegistry(ronFromIds([1, 2, 77]), [1, 2, 7], 'abilities', 'abilities');
+  const rendersRemoved7 = renumbered.detail.includes(
+    'removed/renumbered stable ids: 7 (ids are append-only)',
+  );
+  if (
+    renumbered.pass ||
+    !rendersRemoved7 ||
+    !renumbered.detail.includes('77') ||
+    !renumbered.detail.includes('baseline needs regeneration')
+  ) {
+    return {
+      name,
+      pass: false,
+      detail: `T3-e proof-of-teeth: abilities live [1, 2, 77] vs baseline [1, 2, 7] is a RENUMBER — id 7 removed AND id 77 unpinned. BOTH halves must be reported in one detail: the existing "removed/renumbered stable ids: 7 (ids are append-only)" clause AND the "baseline needs regeneration" clause naming 77 — got ${JSON.stringify(renumbered)}`,
+    };
+  }
+
+  // --------------------------------------------------------------------
+  // T3-f: ORDERING. The comment-needle guard must run BEFORE the growth
+  // check. `parseIds` harvests ids straight out of comments (it is not
+  // comment-aware; `readRegistryDir` strips whole-line `//` only), so with
+  // the growth check first this fixture would report "id 99 is not in the
+  // baseline — regenerate", instructing the author to pin a PHANTOM id that
+  // exists nowhere in the content. A pinned phantom can never be removed
+  // (that would be an append-only violation), so the baseline is poisoned
+  // permanently. The registry must be REFUSED for the ambiguous comment
+  // instead, and the growth advice withheld until the comment is rewritten
+  // in the `id=N` form.
+  // --------------------------------------------------------------------
+  const maskedGrowth = withTempRegistry(
+    '[\n  (id: 1, name: "x"), // was id: 99\n]\n',
+    [1],
+    'species',
+    'species',
+  );
+  if (
+    maskedGrowth.pass ||
+    !maskedGrowth.detail.includes('comment') ||
+    maskedGrowth.detail.includes('baseline needs regeneration')
+  ) {
+    return {
+      name,
+      pass: false,
+      detail: `T3-f proof-of-teeth: a masking mid-line comment must be diagnosed as a COMMENT problem before any growth advice is given — otherwise the gate tells the author to pin phantom id 99 (harvested out of the comment) into the baseline, permanently. Got ${JSON.stringify(maskedGrowth)}`,
+    };
   }
 
   const registries = [
@@ -499,6 +791,153 @@ export default async function () {
       label: 'npcs',
     },
   ];
+
+  // --------------------------------------------------------------------
+  // T3-g: registry-table COVERAGE. Every guard in this file is worthless for
+  // a registry that is not in the table, and silently losing a row (a botched
+  // merge, a "cleanup" of a registry someone thought was dead) is the exact
+  // same defect class as this slice: enforcement that looks green because it
+  // is not looking. Asserted as a sorted, de-duplicated label set against a
+  // literal list — a dropped row, a duplicated row, or a renamed label all
+  // fail here rather than passing quietly.
+  // --------------------------------------------------------------------
+  const expectedRegistryLabels = [
+    'abilities',
+    'items',
+    'npcs',
+    'shops',
+    'skills',
+    'species',
+    'zones',
+  ];
+  const actualRegistryLabels = registries.map((r) => r.label).sort();
+  const uniqueRegistryLabels = [...new Set(actualRegistryLabels)];
+  if (
+    registries.length !== expectedRegistryLabels.length ||
+    uniqueRegistryLabels.length !== expectedRegistryLabels.length ||
+    actualRegistryLabels.join(',') !== expectedRegistryLabels.join(',')
+  ) {
+    return {
+      name,
+      pass: false,
+      detail: `T3-g proof-of-teeth: the production registries table must cover EXACTLY the seven registries ${JSON.stringify(expectedRegistryLabels)} — a deleted or duplicated row silently disables append-only enforcement for a whole registry. Got ${JSON.stringify(actualRegistryLabels)}`,
+    };
+  }
+
+  // --------------------------------------------------------------------
+  // BASELINE FLOOR (12r-a, production-only).
+  //
+  // Second defect, invisible to `removedIds` AND to the growth check: a
+  // commit that DELETES content and SHRINKS the baseline in the same breath
+  // is self-consistent, so both directions agree and the gate goes green.
+  // The E2 teeth above cannot catch it either — their fixture RON is derived
+  // FROM the baseline, so a baseline containing only the dropped id would
+  // satisfy them. The floor is the independent anchor: a hardcoded minimum
+  // id-count per registry, ratcheted by hand, that a shrink cannot argue with.
+  //
+  // CONTRACT (the implementer builds exactly this):
+  //   `export function floorViolations(countsByKey)` — a PURE function taking
+  //   `{ zones: n, species: n, ... }` and returning an array of human-readable
+  //   strings, one per registry whose count is BELOW its floor or whose key is
+  //   ABSENT from the input. Empty array = healthy.
+  //   The production check lives in THIS default export (it reads the seven
+  //   real baseline JSONs, counts their ids, and fails on a non-empty result).
+  //   It must NOT live inside `checkRegistry`: the temp-fixture teeth above run
+  //   3-id fixtures against keys like `species` (floor 16), so a floor inside
+  //   `checkRegistry` would false-fail T3-c1 and make T2-e's block-comment
+  //   cases pass for entirely the wrong reason.
+  //
+  // The floor numbers are duplicated here on purpose. This is a tooth-owned
+  // literal, never a read of the implementer's constant — asserting a message
+  // or a threshold against the very value that produced it proves nothing.
+  // --------------------------------------------------------------------
+  const baselineFloor = [
+    { key: 'zones', baseline: 'evals/baselines/zone-ids.json', floor: 2 },
+    { key: 'species', baseline: 'evals/baselines/species-ids.json', floor: 16 },
+    { key: 'skills', baseline: 'evals/baselines/skill-ids.json', floor: 11 },
+    { key: 'items', baseline: 'evals/baselines/item-ids.json', floor: 5 },
+    { key: 'abilities', baseline: 'evals/baselines/ability-ids.json', floor: 3 },
+    { key: 'shops', baseline: 'evals/baselines/shop-ids.json', floor: 1 },
+    { key: 'npcs', baseline: 'evals/baselines/npc-ids.json', floor: 2 },
+  ];
+
+  // Floor tooth 1 — the COMMITTED baselines must actually clear the floor.
+  // RED today for species (3 < 16), skills (6 < 11) and items (2 < 5): those
+  // three baselines never grew with the content, which is what makes the whole
+  // append-only guarantee vacuous for every id they do not pin.
+  for (const { key, baseline, floor } of baselineFloor) {
+    const pinned = committedBaselineIds(baseline, key);
+    const count = Array.isArray(pinned) ? pinned.length : 0;
+    if (count < floor) {
+      return {
+        name,
+        pass: false,
+        detail: `baseline floor: ${key} pins only ${count} id(s) in ${baseline}, below the floor of ${floor}. Either the baseline drifted behind the content (regenerate it from a HAND READ of game-core/content/${key}/*.ron) or it was SHRUNK alongside a content deletion — a shrink is self-consistent, so neither the removal check nor the growth check can see it`,
+      };
+    }
+  }
+
+  // Floor tooth 2 — the floor LOGIC itself must bite, so it cannot be a no-op
+  // that merely happens to pass once the baselines are regenerated. Exercises
+  // the real exported `floorViolations` (self-import: the module is already
+  // fully evaluated here, so this is the same instance, and it forces the
+  // function to be exported rather than buried in an inline expression).
+  //
+  // Two directions, which together pin the implementer's floor to EXACTLY the
+  // tooth-owned numbers above: at-floor counts must be clean (floor no higher
+  // than the literals), and floor-minus-one must be flagged for EVERY key
+  // (floor no lower). Plus an OMITTED key, which kills an implementation that
+  // iterates the caller's object instead of its own floor table — a missing
+  // count is a broken read, never "nothing to check".
+  const selfModule = await import(import.meta.url);
+  const floorViolationsFn = selfModule.floorViolations;
+  if (typeof floorViolationsFn !== 'function') {
+    return {
+      name,
+      pass: false,
+      detail:
+        'baseline floor: `export function floorViolations(countsByKey)` is missing — the production floor check must be a PURE, exercisable function (returning one string per below-floor/absent registry), not an inline expression no tooth can reach. It must live at module scope, NOT inside checkRegistry',
+    };
+  }
+  const atFloorCounts = {};
+  for (const { key, floor } of baselineFloor) atFloorCounts[key] = floor;
+  const atFloorResult = floorViolationsFn({ ...atFloorCounts });
+  if (!Array.isArray(atFloorResult) || atFloorResult.length !== 0) {
+    return {
+      name,
+      pass: false,
+      detail: `baseline floor: floorViolations() must return an EMPTY array for counts sitting exactly ON the floor ${JSON.stringify(atFloorCounts)} — a floor set higher than the shipped content would fail the gate permanently. Got ${JSON.stringify(atFloorResult)}`,
+    };
+  }
+  for (const { key, floor } of baselineFloor) {
+    const shrunk = { ...atFloorCounts, [key]: floor - 1 };
+    const shrunkResult = floorViolationsFn(shrunk);
+    if (
+      !Array.isArray(shrunkResult) ||
+      shrunkResult.length === 0 ||
+      !shrunkResult.join('; ').includes(key)
+    ) {
+      return {
+        name,
+        pass: false,
+        detail: `baseline floor proof-of-teeth: floorViolations() must flag ${key} at ${floor - 1} id(s), one below its floor of ${floor}, and name the registry in the violation — otherwise the floor is a no-op for that row. Got ${JSON.stringify(shrunkResult)}`,
+      };
+    }
+    const omitted = { ...atFloorCounts };
+    delete omitted[key];
+    const omittedResult = floorViolationsFn(omitted);
+    if (
+      !Array.isArray(omittedResult) ||
+      omittedResult.length === 0 ||
+      !omittedResult.join('; ').includes(key)
+    ) {
+      return {
+        name,
+        pass: false,
+        detail: `baseline floor proof-of-teeth: floorViolations() must flag ${key} when its count is ABSENT entirely (a baseline that failed to read is a broken baseline, never "nothing to check") — got ${JSON.stringify(omittedResult)}`,
+      };
+    }
+  }
 
   const results = registries.map((r) => checkRegistry(r.ron, r.baseline, r.key, r.label));
   const failures = results.filter((r) => !r.pass);
