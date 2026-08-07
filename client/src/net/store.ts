@@ -247,6 +247,9 @@ export type StoreHealLocationRow = {
   readonly costItemId?: number;
   readonly costQty: number;
   readonly cooldownMs: number;
+  // u64 server-side — bigint end-to-end, REQUIRED (12r-d, ADR-0170 residual 1;
+  // same no-Number() doctrine as StoreWallet.balance).
+  readonly costCurrency: bigint;
 };
 
 /** An NPC row, normalized (entityId as bigint; M12d). */
