@@ -108,9 +108,10 @@ export function formatHealCostLine(loc: HealLocationViewModel): string {
     parts.push(`${loc.costCurrency} gold`);
   }
   if (parts.length === 0) {
-    // Unreachable from buildHealViewModel (isFree covers the all-empty shape);
-    // a hand-built inconsistent VM still gets the legacy non-free rendering
-    // rather than a lie ('Free') or an empty line.
+    // Reachable only from an inconsistent VM (hand-built isFree:false with all
+    // channels empty) or a dangling cost_item_id whose def is missing while
+    // costQty is 0 — content the server-side F4 seed check rejects. Either way:
+    // the legacy non-free rendering, never a lie ('Free') or an empty line.
     return `${loc.costQty}x ${loc.costItemName ?? 'Unknown item'}`;
   }
   return parts.join(' + ');

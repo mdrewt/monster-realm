@@ -168,6 +168,13 @@ pre-existing latent mistype, flagged not fixed (nothing consumes it today);
 cache while the client displays from the DB row — which diverge only in the
 republished-but-not-yet-`sync_content`ed window; unifying `heal_party` on
 `loc.cost_currency` is a 12r-e candidate (`raising.rs` is 12r-e's declared file).
+The sharpest shape of that window (12r-d red-team): `heal_party`'s cache lookup
+is `.find(location_id).map(cost_currency).unwrap_or(0)` — a location REMOVED
+from RON heals for free while its stale row still displays a price, because the
+zone/cooldown/item checks all read the row. The 12r-e unification should also
+test the row-present/cache-absent case explicitly. (RON edits themselves cannot
+skip the reseed: `content-version.eval.mjs` hashes `game-core/content/**` and
+forces the `CONTENT_VERSION` bump that re-runs `sync_content`.)
 
 ## D4 — Rate-limited wild-encounter failure logging
 

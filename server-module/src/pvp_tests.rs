@@ -3319,7 +3319,7 @@ fn d12r_quote_delimits(bytes: &[u8], idx: usize) -> bool {
         n += 1;
         i -= 1;
     }
-    n % 2 == 0
+    n.is_multiple_of(2)
 }
 
 /// The interior (delimiters excluded) of the double-quoted string literal that

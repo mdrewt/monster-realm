@@ -3502,7 +3502,7 @@ fn d12r_quote_delimits(bytes: &[u8], idx: usize) -> bool {
         n += 1;
         i -= 1;
     }
-    n % 2 == 0
+    n.is_multiple_of(2)
 }
 
 /// The interior (delimiters excluded) of the double-quoted string literal that
@@ -3897,6 +3897,7 @@ fn d12r_compose_raw_line(
 ///     (`" \ / b f n r t`, or `u` plus four hex digits);
 ///   * no raw character below 0x20 appears inside a string;
 ///   * every string that opens also closes.
+///
 /// It says nothing about key ordering, duplicate keys or number syntax — none of
 /// which an unescaped reason string can corrupt. Its blind spot (a line that is
 /// well-FRAMED but carries the wrong VALUE) is exactly what oracle 2,
