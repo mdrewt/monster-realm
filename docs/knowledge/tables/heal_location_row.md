@@ -21,3 +21,4 @@ visibility: public
 | `cost_item_id` | `Option<u32>` | — |
 | `cost_qty` | `u32` | — |
 | `cooldown_ms` | `i64` | — |
+| `cost_currency` | `u64` | — |

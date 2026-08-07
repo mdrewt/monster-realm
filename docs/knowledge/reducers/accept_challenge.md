@@ -5,7 +5,7 @@ slug: reducers/accept_challenge
 updated: 2026-08-07
 tags: [reducer, spacetimedb, pvp]
 abstract: "Accept a pending PvP challenge. Creates the `battle` row and schedules the turn deadline. Guard order: 1. Challenge exi…"
-resource: server-module/src/pvp.rs#L818
+resource: server-module/src/pvp.rs#L821
 source: scripts/okf-export.mjs@server-module/src/pvp.rs
 ---
 

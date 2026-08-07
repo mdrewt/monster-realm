@@ -5,7 +5,7 @@ slug: tables/battle_challenge_reaper_schedule
 updated: 2026-08-07
 tags: [schema, spacetimedb, private]
 abstract: "SpacetimeDB private table battle_challenge_reaper_schedule."
-resource: server-module/src/pvp.rs#L104
+resource: server-module/src/pvp.rs#L101
 source: scripts/okf-export.mjs@server-module/src/pvp.rs
 visibility: private
 ---
