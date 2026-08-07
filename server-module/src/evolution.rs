@@ -10,8 +10,8 @@
 //! `game_core::eligible_evolution_paths` and the requirement NAMING is
 //! `game_core::unmet_requirement`; nothing in this file reads a gate field
 //! (EG1-11 source scan, whole production region). Fusion is deleted as a
-//! feature (EG1-9); the `Fusion` TABLE struct stays in schema.rs until
-//! Migration B, but no code here references it.
+//! feature (EG1-9); Migration B (EG5-6/ADR-0177 D2) then removed the `Fusion`
+//! table struct from schema.rs as well.
 //!
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
@@ -160,8 +160,7 @@ pub(crate) fn apply_evolution(
     m.essence_light = transformed.essence[Affinity::Light.index()];
     m.essence_dark = transformed.essence[Affinity::Dark.index()];
     // Trust and Quality-Time are lifetime history — untouched on purpose, as
-    // are the server-only bookkeeping columns. `evolves_to` stays frozen too
-    // (dead column until Migration B, ADR-0174 D2).
+    // are the server-only bookkeeping columns.
 
     // Dual-write, with the tier read fresh from the TARGET species row.
     let pub_row = pub_from_monster(&m, to_species_row.tier);

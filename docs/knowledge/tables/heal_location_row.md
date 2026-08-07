@@ -5,7 +5,7 @@ slug: tables/heal_location_row
 updated: 2026-08-04
 tags: [schema, spacetimedb, public]
 abstract: "Healing location content seeded by `sync_content`. Public (world-readable)."
-resource: server-module/src/schema.rs#L561
+resource: server-module/src/schema.rs#L545
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---

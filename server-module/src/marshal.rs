@@ -62,10 +62,6 @@ pub(crate) fn monster_from_instance(
         nickname: inst.nickname.clone().unwrap_or_default(),
         level: inst.level.as_u8(),
         xp: inst.xp.value(),
-        // `bond` is gone from MonsterInstance (EG1-7); the row column stays,
-        // frozen until Migration B. Creation keeps the pre-EG1 starting value
-        // (Bond::default_bond) so the care loop's behavior is unchanged.
-        bond: game_core::Bond::default_bond().value(),
         iv_hp: inst.ivs.get(StatKind::Hp),
         iv_attack: inst.ivs.get(StatKind::Attack),
         iv_defense: inst.ivs.get(StatKind::Defense),
@@ -88,7 +84,6 @@ pub(crate) fn monster_from_instance(
         current_hp: inst.current_hp,
         party_slot,
         last_care_at_ms: 0, // epoch ⇒ cooldown elapsed ⇒ first care allowed (ADR-0059)
-        evolves_to: None,
         // EG1-1/EG1-7: the 8 essence pools flatten from the instance array in
         // Affinity::ALL order (each named column reads its own affinity index).
         essence_fire: inst.essence[Affinity::Fire.index()],
@@ -228,7 +223,6 @@ pub(crate) fn pub_from_monster(m: &Monster, tier: u8) -> MonsterPub {
         nickname: m.nickname.clone(),
         level: m.level,
         xp: m.xp,
-        bond: m.bond,
         current_hp: m.current_hp,
         stat_hp: m.stat_hp,
         stat_attack: m.stat_attack,
@@ -237,7 +231,6 @@ pub(crate) fn pub_from_monster(m: &Monster, tier: u8) -> MonsterPub {
         stat_sp_attack: m.stat_sp_attack,
         stat_sp_defense: m.stat_sp_defense,
         party_slot: m.party_slot,
-        evolves_to: m.evolves_to,
         tier,
         essence_fire: m.essence_fire,
         essence_water: m.essence_water,
@@ -255,8 +248,8 @@ pub(crate) fn pub_from_monster(m: &Monster, tier: u8) -> MonsterPub {
 
 /// Marshal a Monster row to a game-core MonsterInstance (M10b; EG1-7 essence
 /// graph). Trust boundary: rejects illegal level (0 or >100) per Level::new
-/// bounds. The row's frozen `bond` column has no instance counterpart any more;
-/// the server-only Quality-Time/Trust bookkeeping columns stay behind too.
+/// bounds. The server-only Quality-Time/Trust bookkeeping columns stay behind
+/// (no instance counterpart).
 pub(crate) fn monster_to_instance(m: &Monster) -> Result<game_core::MonsterInstance, String> {
     let level =
         game_core::Level::new(m.level).map_err(|_| format!("invalid monster level {}", m.level))?;

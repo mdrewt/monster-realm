@@ -115,7 +115,6 @@ fn make_monster_row(monster_id: u64, owner: Identity) -> Monster {
         nickname: String::new(),
         level: 20,
         xp: 8000,
-        bond: 100,
         iv_hp: 15,
         iv_attack: 15,
         iv_defense: 15,
@@ -138,8 +137,6 @@ fn make_monster_row(monster_id: u64, owner: Identity) -> Monster {
         current_hp: 50,
         party_slot: 0,
         last_care_at_ms: 0,
-        // Frozen dead column (Migration B / EG5-6 removes it).
-        evolves_to: None,
         // --- EG1 Migration A: the 16 appended columns (ADR-0174 D1) ----------
         essence_fire: 0,
         essence_water: 0,

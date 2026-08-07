@@ -5,21 +5,18 @@
 //! Declared from `raising.rs` as:
 //!   `#[cfg(test)] #[path = "raising_tests.rs"] mod raising_tests;`
 //! so `super` resolves to the `raising` module — giving access to
-//! `evaluate_care`, `CARE_COOLDOWN_MS`, and `CARE_BOND_AMOUNT` by name.
+//! `evaluate_care` and `CARE_COOLDOWN_MS` by name.
 //!
 //! RED state: this file does not compile until the implementer creates
-//! `server-module/src/raising.rs` (with `evaluate_care`, `CARE_COOLDOWN_MS`,
-//! `CARE_BOND_AMOUNT` exported `pub(crate)`) and adds the `#[path]` mod decl.
+//! `server-module/src/raising.rs` (with `evaluate_care` and `CARE_COOLDOWN_MS`
+//! exported `pub(crate)`) and adds the `#[path]` mod decl.
 //! That is intentional — the tests are the contract, not the implementation.
 //!
 //! EARS criteria covered (from M9 spec §3):
 //!   - Care cooldown: boundary is `<`, not `<=` (equal-to-cooldown is ALLOWED).
-//!   - Max bond is NOT a reject any more — EG2-5 / ADR-0175 D2 remaps
-//!     `CareError::AtMaxBond` to a bond-unchanged continuation so the Trust
-//!     credit keeps flowing; the cooldown still gates unconditionally. (This
-//!     supersedes the M9 bullet "max bond rejects before burning cooldown" —
-//!     see `care_at_max_bond_still_succeeds_and_increments_trust` below.)
-//!   - Care raises bond by exactly min(CARE_BOND_AMOUNT, 255 - bond).
+//!     (Bond and its arithmetic are retired — EG5/ADR-0177 D3; `evaluate_care`
+//!     is the cooldown-only seam and the bond-arithmetic test family went with
+//!     its subject.)
 //!   - Safe-direction clock: future last_care_at_ms only over-rejects (no bypass).
 //!   - Elapsed from nonzero base works correctly.
 //!
@@ -395,10 +392,10 @@ fn cooldown_boundary_exact_is_ok() {
     // last_care_at_ms = 0, now_ms = CARE_COOLDOWN_MS: elapsed == CARE_COOLDOWN_MS.
     // With `<` in the gate: elapsed < CARE_COOLDOWN_MS is FALSE → allowed → Ok.
     // With `<=` in the gate: elapsed <= CARE_COOLDOWN_MS is TRUE → rejected → Err (WRONG).
-    let result = evaluate_care(50, 0, CARE_COOLDOWN_MS);
+    let result = evaluate_care(0, CARE_COOLDOWN_MS);
     assert!(
         result.is_ok(),
-        "evaluate_care(bond=50, last=0, now=CARE_COOLDOWN_MS) must be Ok \
+        "evaluate_care(last=0, now=CARE_COOLDOWN_MS) must be Ok \
          (elapsed == CARE_COOLDOWN_MS is exactly at the boundary — operator must be < not <=); \
          got Err: {:?}",
         result.err()
@@ -412,10 +409,10 @@ fn cooldown_boundary_exact_is_ok() {
 fn cooldown_boundary_one_ms_before_is_err() {
     // last_care_at_ms = 0, now_ms = CARE_COOLDOWN_MS - 1: elapsed = CARE_COOLDOWN_MS - 1.
     // With correct `<`: elapsed < CARE_COOLDOWN_MS is TRUE → rejected → Err.
-    let result = evaluate_care(50, 0, CARE_COOLDOWN_MS - 1);
+    let result = evaluate_care(0, CARE_COOLDOWN_MS - 1);
     assert!(
         result.is_err(),
-        "evaluate_care(bond=50, last=0, now=CARE_COOLDOWN_MS-1) must be Err \
+        "evaluate_care(last=0, now=CARE_COOLDOWN_MS-1) must be Err \
          (cooldown not yet elapsed — exactly one ms short of the boundary); \
          got Ok: {:?}",
         result.ok()
@@ -433,126 +430,14 @@ fn cooldown_boundary_one_ms_before_is_err() {
 fn cooldown_elapsed_from_nonzero_base_is_ok() {
     // last_care_at_ms = 1000, now_ms = 1000 + CARE_COOLDOWN_MS.
     // elapsed = CARE_COOLDOWN_MS → allowed.
-    let result = evaluate_care(50, 1000, 1000 + CARE_COOLDOWN_MS);
+    let result = evaluate_care(1000, 1000 + CARE_COOLDOWN_MS);
     assert!(
         result.is_ok(),
-        "evaluate_care(bond=50, last=1000, now=1000+CARE_COOLDOWN_MS) must be Ok \
+        "evaluate_care(last=1000, now=1000+CARE_COOLDOWN_MS) must be Ok \
          (elapsed == CARE_COOLDOWN_MS from nonzero base); \
          got Err: {:?}",
         result.err()
     );
-}
-
-// ---------------------------------------------------------------------------
-// Max bond: REVISED by EG2-5 / ADR-0175 D2 (was: "rejects even with cooldown
-// elapsed"). See the doc comment on the first test below for why the old pin is
-// gone — the change is spec-driven, not implementation-driven.
-// ---------------------------------------------------------------------------
-
-/// **REVISION (EG2-5, ADR-0175 D2 — supersedes the M9b pin
-/// `max_bond_rejects_even_with_cooldown_elapsed`).**
-///
-/// The deleted pin asserted `evaluate_care(255, 0, CARE_COOLDOWN_MS)` is `Err`,
-/// encoding M9b's "a maxed-bond monster has nothing left to gain, so reject
-/// before burning the cooldown". EG2-5 makes `care` the Trust-favorable writer
-/// (`trust_favorable_count`), and `bond` is a FROZEN dead column until Migration
-/// B (EG5-6). Keeping the old reject would mean the live gate (Trust) is
-/// permanently starved by the dead column: after ~51 cares (~13 days of routine
-/// play at the 6 h cooldown) `care` would reject forever and Trust could never
-/// grow again. So `CareError::AtMaxBond` now maps to a bond-UNCHANGED
-/// continuation and the reducer proceeds to the Trust credit.
-///
-/// The revision is written from the spec (EG2-5 + ADR-0175 D2), not to match any
-/// implementation; the cooldown half of the old pin is NOT relaxed — it is
-/// re-asserted, harder, by `care_at_max_bond_still_cooldown_gated` below.
-///
-/// kills: an impl that keeps propagating `AtMaxBond` as `Err` (Trust growth
-///        silently dies at bond 255); an impl that "fixes" it by returning a
-///        bumped bond (256 is unrepresentable — the value must stay 255).
-///
-/// The Trust increment itself lives in `care`'s body (not in this pure seam) and
-/// is pinned by `care_body_has_trust_increment_and_tails`.
-#[test]
-fn care_at_max_bond_still_succeeds_and_increments_trust() {
-    // bond = 255 (max), cooldown fully elapsed.
-    let result = evaluate_care(255, 0, CARE_COOLDOWN_MS);
-    match result {
-        Ok(new_bond) => {
-            assert_eq!(
-                new_bond, 255,
-                "evaluate_care(bond=255, cooldown elapsed) must return the bond \
-                 UNCHANGED at 255 (AtMaxBond ⇒ bond-unchanged continuation, \
-                 ADR-0175 D2) — never a wrapped or clamped-down value"
-            );
-        }
-        Err(e) => {
-            panic!(
-                "TEETH (EG2-5, ADR-0175 D2): evaluate_care(bond=255, last=0, \
-                 now=CARE_COOLDOWN_MS) must now be Ok(255), NOT Err. A maxed-bond \
-                 monster must keep earning Trust through `care`; rejecting here \
-                 lets a FROZEN dead column (bond) permanently starve a LIVE \
-                 evolution gate (Trust). Got Err: {e:?}"
-            );
-        }
-    }
-}
-
-/// **EG2-5 / ADR-0175 D2, second half — the remap must NOT open a rate hole.**
-///
-/// A maxed-bond monster earns Trust at exactly the same cooldown-limited rate as
-/// every other monster. This is the reason D2 says the `AtMaxBond` remap must be
-/// REORDERED inside `evaluate_care` rather than bolted on: if the impl keeps
-/// `apply_care(..)?`-first shape and merely turns the error into an early
-/// `return Ok(bond)`, the early return jumps straight over the cooldown gate and
-/// a bond-255 monster can be cared — and Trust-credited — in an unbounded loop.
-///
-/// kills: `match apply_care(..) { Err(AtMaxBond) => return Ok(bond), .. }` placed
-///        BEFORE the `is_cooldown_ready` check (rate-unlimited Trust farming on
-///        any monster the player has already maxed) — the exact wrong shape the
-///        naive reading of D2 produces.
-#[test]
-fn care_at_max_bond_still_cooldown_gated() {
-    // bond = 255 (max), ONE ms short of the cooldown boundary.
-    let result = evaluate_care(255, 0, CARE_COOLDOWN_MS - 1);
-    assert!(
-        result.is_err(),
-        "TEETH (EG2-5, ADR-0175 D2): evaluate_care(bond=255, last=0, \
-         now=CARE_COOLDOWN_MS-1) must be Err — the AtMaxBond remap must not \
-         short-circuit past the cooldown gate. A maxed-bond monster earns Trust \
-         at the SAME rate as any other, never faster. Got Ok: {:?}",
-        result.ok()
-    );
-}
-
-/// Near-max bond (254) with CARE_BOND_AMOUNT >= 1 saturates to exactly 255.
-/// kills: an impl that clamps to 254 (off-by-one in saturation) or panics on
-/// near-max bond arithmetic.
-#[test]
-fn near_max_bond_saturates_to_255() {
-    // bond = 254, CARE_BOND_AMOUNT >= 1 → result must be 255.
-    let result = evaluate_care(254, 0, CARE_COOLDOWN_MS);
-    match result {
-        Ok(new_bond) => {
-            assert!(
-                new_bond > 254,
-                "bond must have increased above 254 (CARE_BOND_AMOUNT >= 1); got {}",
-                new_bond
-            );
-            // Precise expectation: min(254 + CARE_BOND_AMOUNT, 255) = 255 since CARE_BOND_AMOUNT >= 1.
-            assert_eq!(
-                new_bond, 255,
-                "bond=254 + CARE_BOND_AMOUNT({}) should saturate to exactly 255",
-                CARE_BOND_AMOUNT
-            );
-        }
-        Err(e) => {
-            panic!(
-                "evaluate_care(bond=254, last=0, now=CARE_COOLDOWN_MS) must be Ok \
-                 (254 < 255 = max bond, cooldown elapsed); got Err: {:?}",
-                e
-            );
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -572,47 +457,15 @@ fn future_last_care_at_ms_only_over_rejects() {
     // Wrong:   wrapping sub on i64: 0i64.wrapping_sub(10_000) = -10_000 < CARE_COOLDOWN_MS → Err
     //          (coincidentally also Err, but the semantics are wrong — do NOT rely on this).
     // The invariant: this call must be Err (never Ok — a future timestamp must not bypass gate).
-    let result = evaluate_care(50, 10_000, 0);
+    let result = evaluate_care(10_000, 0);
     assert!(
         result.is_err(),
-        "evaluate_care(bond=50, last=10_000, now=0) must be Err \
+        "evaluate_care(last=10_000, now=0) must be Err \
          (last_care_at_ms is in the future relative to now — safe-direction: \
          over-reject is fine, but the gate must never be bypassed); \
          got Ok: {:?}",
         result.ok()
     );
-}
-
-// ---------------------------------------------------------------------------
-// Successful care raises bond by exactly min(CARE_BOND_AMOUNT, 255 - bond)
-// ---------------------------------------------------------------------------
-
-/// A successful care raises bond by exactly `min(CARE_BOND_AMOUNT, 255 - bond)`.
-/// kills: an impl that adds a hardcoded amount instead of using CARE_BOND_AMOUNT,
-/// or one that adds more than the remaining headroom.
-#[test]
-fn successful_care_raises_bond_by_care_bond_amount() {
-    // bond = 50, CARE_BOND_AMOUNT >= 1, headroom = 205 (>> CARE_BOND_AMOUNT for any sane value).
-    // Expected new bond = 50 + CARE_BOND_AMOUNT (no saturation needed for reasonable CARE_BOND_AMOUNT).
-    let result = evaluate_care(50, 0, CARE_COOLDOWN_MS);
-    match result {
-        Ok(new_bond) => {
-            // The exact expected value uses the const symbolically.
-            let expected = 50u8.saturating_add(CARE_BOND_AMOUNT);
-            assert_eq!(
-                new_bond, expected,
-                "bond raised by wrong amount: expected 50 + CARE_BOND_AMOUNT({}) = {}, got {}",
-                CARE_BOND_AMOUNT, expected, new_bond
-            );
-        }
-        Err(e) => {
-            panic!(
-                "evaluate_care(bond=50, last=0, now=CARE_COOLDOWN_MS) must be Ok \
-                 (bond=50 < 255, cooldown elapsed); got Err: {:?}",
-                e
-            );
-        }
-    }
 }
 
 // ---------------------------------------------------------------------------
@@ -1444,7 +1297,6 @@ fn eg2_monster() -> Monster {
         nickname: "Quill".to_string(),
         level: 12,
         xp: 340,
-        bond: 40,
         iv_hp: 11,
         iv_attack: 12,
         iv_defense: 13,
@@ -1467,7 +1319,6 @@ fn eg2_monster() -> Monster {
         current_hp: 90,
         party_slot: 0,
         last_care_at_ms: 0,
-        evolves_to: None,
         essence_fire: 0,
         essence_water: 0,
         essence_plant: 0,
@@ -2331,38 +2182,6 @@ fn shared_cooldown_boundary_allowed() {
 }
 
 // ===========================================================================
-// EG2-5 — the revised `care` seam (the other two cases live beside the
-// superseded max-bond pin above)
-// ===========================================================================
-
-/// EG2-5 / ADR-0175 D2 regression fence: the AtMaxBond remap must not disturb the
-/// ordinary path.
-///
-/// kills: a remap implemented by making `apply_care` infallible-by-clamping in
-///        the shell (e.g. `Ok(bond.saturating_add(CARE_BOND_AMOUNT))` computed
-///        inline), which would drop the `game_core::apply_care` SSOT delegation
-///        the raising-reducer-security gate requires; and any drift in the
-///        magnitude while the surrounding code is being edited.
-#[test]
-fn evaluate_care_normal_path_unchanged() {
-    let result = evaluate_care(100, 0, CARE_COOLDOWN_MS);
-    match result {
-        Ok(new_bond) => {
-            let expected = 100u8.saturating_add(CARE_BOND_AMOUNT);
-            assert_eq!(
-                new_bond, expected,
-                "TEETH (EG2-5): a normal care must still raise bond by exactly \
-                 CARE_BOND_AMOUNT ({CARE_BOND_AMOUNT}): 100 ⇒ {expected}"
-            );
-        }
-        Err(e) => panic!(
-            "evaluate_care(bond=100, last=0, now=CARE_COOLDOWN_MS) must be Ok; \
-             got Err: {e:?}"
-        ),
-    }
-}
-
-// ===========================================================================
 // EG2 SOURCE SCANS on `raising.rs` (production, NOT this file).
 //
 // HONEST LIMIT, stated once for the whole block: these are source scans, not
@@ -2863,53 +2682,6 @@ fn accrue_quality_time_body_never_fabricates_tier() {
     );
 }
 
-/// EG2-5 / ADR-0175 D2: the remap is `AtMaxBond`-SPECIFIC — it must not be a
-/// catch-all that swallows every `CareError`.
-///
-/// The behavioural tests above cannot see this. `evaluate_care(255, ..)` returns
-/// `Ok(255)` under BOTH the correct
-/// `Err(CareError::AtMaxBond) => Ok(bond)` and the over-broad
-/// `Err(_) => Ok(bond)`, because `AtMaxBond` is the only variant a bond of 255
-/// can produce. `CareError` also carries `NoEffect` (`apply_care` returns it when
-/// the amount is 0), and ADR-0175 D2 remaps exactly ONE variant: "every other
-/// reject (cooldown included) still gates unconditionally". A catch-all would
-/// silently convert a future `CARE_BOND_AMOUNT = 0` mis-tune — today a loud
-/// reject — into a permanently succeeding no-op care that still credits Trust.
-///
-/// kills: `Err(_) => Ok(bond)` (and the same shape written as
-///        `.unwrap_or(bond)`, which spells no variant at all and so fails the
-///        POSITIVE needle).
-///
-/// HONEST LIMIT: the negative needle covers the `Err(_)` spelling only — a bare
-/// `_ =>` arm in a `match` over the full `Result`, for instance, is not caught by
-/// it. The POSITIVE `CareError::AtMaxBond` needle is the load-bearing half: no
-/// catch-all can satisfy it, because naming the variant is precisely what a
-/// catch-all avoids doing.
-#[test]
-fn evaluate_care_remaps_only_the_at_max_bond_variant() {
-    let body = eg2_scan_body(&["fn evaluate", "_care("].concat());
-    let label = "the `evaluate_care` seam body";
-
-    assert_body_has(
-        &body,
-        label,
-        &["CareError::", "AtMaxBond"].concat(),
-        "ADR-0175 D2 remaps exactly ONE CareError variant; the body must NAME it. \
-         RED at HEAD, where the body maps every variant alike with \
-         `map_err(|e| format!(..))?`.",
-    );
-
-    let catch_all = ["Err(", "_)"].concat();
-    let n = body.matches(catch_all.as_str()).count();
-    assert_eq!(
-        n, 0,
-        "TEETH (EG2-5, ADR-0175 D2): `evaluate_care`'s body contains {n} \
-         `Err(_)` catch-all pattern(s) and must contain ZERO. The remap is \
-         AtMaxBond-ONLY — a catch-all also swallows `NoEffect`, turning a \
-         mis-tuned zero-magnitude care from a loud reject into a silently \
-         succeeding no-op that still credits Trust."
-    );
-}
 
 /// EG2-5 (reject-never-burns, ADR-0059 §3 carried into the D2 remap): `care`'s
 /// decision seam runs BEFORE every mutation in the body, and its `Result` is

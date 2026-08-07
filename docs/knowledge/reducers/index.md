@@ -12,7 +12,7 @@
 | reducers/buy | SpacetimeDB Reducer | buy | Buy `qty` units of `item_id` from shop `shop_id`. Server flow (reject-not-clamp, |
 | reducers/cancel_challenge | SpacetimeDB Reducer | cancel_challenge | Cancel a pending PvP challenge (initiator-only). |
 | reducers/cancel_trade | SpacetimeDB Reducer | cancel_trade | Cancel a trade offer. Either party may cancel before the swap executes. Deletes  |
-| reducers/care | SpacetimeDB Reducer | care | Raise a monster's bond, gated by a per-monster cooldown measured from the server |
+| reducers/care | SpacetimeDB Reducer | care | Care for a monster (Trust-favorable credit, EG2-5/ADR-0175), gated by a per-mons |
 | reducers/challenge_pvp | SpacetimeDB Reducer | challenge_pvp | Send a PvP battle challenge to another online player. Guard order (reject-not-cl |
 | reducers/clear_queue | SpacetimeDB Reducer | clear_queue | Empty the queue (key release). |
 | reducers/confirm_trade | SpacetimeDB Reducer | confirm_trade | Initiator confirms a ConfirmedByCounterparty offer → atomic swap. Role + status  |

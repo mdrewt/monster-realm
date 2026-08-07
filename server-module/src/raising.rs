@@ -1,12 +1,13 @@
 //! `raising` — server-module domain submodule (M8.9, ADR-0056 / ADR-0059).
 //!
-//! The M9b raising shell: the `care` reducer (itemless bond raise, server-
-//! authoritative per-monster cooldown). It is THIN — find the monster, check
-//! ownership, run the pure decision seam `evaluate_care` (which delegates the bond
-//! arithmetic to the SSOT `game_core::apply_care` and then gates on the cooldown),
-//! and only on `Ok` mutate + dual-write `monster` / `monster_pub`. No DB write
-//! occurs before the success path, so a rejected `care` can never burn the
-//! cooldown or mutate bond (the reducer transaction rolls back on any `Err`).
+//! The M9b raising shell: the `care` reducer (itemless Trust raise since
+//! EG2/ADR-0175 — Bond retired at EG5/ADR-0177 — server-authoritative
+//! per-monster cooldown). It is THIN — find the monster, check ownership, run
+//! the pure decision seam `evaluate_care` (a cooldown-only gate delegating to
+//! the SSOT `game_core::is_cooldown_ready`), and only on `Ok` mutate +
+//! dual-write `monster` / `monster_pub`. No DB write occurs before the success
+//! path, so a rejected `care` can never burn the cooldown or credit Trust
+//! (the reducer transaction rolls back on any `Err`).
 //!
 //! `train` (focus-training food spend) is implemented in the same file (M9b-tail,
 //! ADR-0059): pure `evaluate_train` seam → SSOT `focus_train`; decision-before-
@@ -28,28 +29,26 @@ use crate::schema::{
     species_row, trade_offer, HealCooldown, Monster,
 };
 use game_core::{
-    apply_care, focus_train, is_cooldown_ready, Affinity, Bond, CareError, EVs, FocusTrainError,
-    FocusTrainResult, IVs, Level, Nature, StatBlock, StatKind,
+    focus_train, is_cooldown_ready, Affinity, EVs, FocusTrainError, FocusTrainResult, IVs, Level,
+    Nature, StatBlock, StatKind,
 };
-// SSOT (ptc5e-1): the CARE policy magnitudes now live in game-core beside
-// `apply_care`. Re-exported `pub(crate)` — and ONLY these two names, not the
-// whole `game_core` import above — so the `#[path]`-attached `raising_tests.rs`
-// child mod reaches them through `use super::*` without an ambiguous-glob clash
-// with its own explicit `use game_core::{EVs, IVs, ...}` imports.
-pub(crate) use game_core::{CARE_BOND_AMOUNT, CARE_COOLDOWN_MS};
+// SSOT (ptc5e-1): the CARE cooldown magnitude lives in game-core. Re-exported
+// `pub(crate)` — and ONLY this name, not the whole `game_core` import above —
+// so the `#[path]`-attached `raising_tests.rs` child mod reaches it through
+// `use super::*` without an ambiguous-glob clash with its own explicit
+// `use game_core::{EVs, IVs, ...}` imports. (`CARE_BOND_AMOUNT`/`apply_care`/
+// `Bond`/`CareError` dropped at EG5/ADR-0177 D3 — Bond retired; they remain in
+// game-core as a named retirement follow-up.)
+pub(crate) use game_core::CARE_COOLDOWN_MS;
 use spacetimedb::{ReducerContext, Table};
 
-/// Pure decision seam (testable without a DB): apply the SSOT bond rule, remap
-/// EXACTLY ONE of its rejects, then gate on the cooldown. Returns the new bond
-/// value, or `Err` if the action is rejected.
-///
-/// EG2-5 / ADR-0175 D2: `CareError::AtMaxBond` is a bond-UNCHANGED continuation
-/// — `bond` is a frozen dead column until Migration B, and rejecting at 255
-/// would let it permanently starve the LIVE Trust gate `care` now feeds. The
-/// remap is AtMaxBond-SPECIFIC (`NoEffect` still rejects loudly) and the
-/// cooldown still gates UNCONDITIONALLY below, so a maxed-bond monster earns
-/// Trust at exactly the same rate as any other. `apply_care` remains the called
-/// SSOT for the bond arithmetic.
+/// Pure decision seam (testable without a DB): the cooldown-only care gate.
+/// Bond and its arithmetic are retired (EG5/ADR-0177 D3 — the AtMaxBond remap,
+/// `apply_care`, and the returned bond value all went with the column); what
+/// remains is the same thin pure-seam-over-`is_cooldown_ready` shape
+/// `evaluate_heal` already has. Kept as a seam (not inlined into `care`) so the
+/// cooldown gate stays DB-free unit-testable and `raising-reducer-security`'s
+/// g8 SSOT-delegation check has a real target.
 ///
 /// The cooldown gate delegates to the SSOT `game_core::is_cooldown_ready`
 /// (ptc5e-1): ready ⟺ `now - last >= CARE_COOLDOWN_MS`, so elapsed ==
@@ -59,25 +58,19 @@ use spacetimedb::{ReducerContext, Table};
 /// The `now` parameter is the server clock ms (the caller passes `now_ms(ctx)`);
 /// it is named `now` — NOT `now_ms` — to avoid shadowing the module-level
 /// `now_ms` helper inside this body (red-team F2, least-surprise).
-pub(crate) fn evaluate_care(bond: u8, last_care_at_ms: i64, now: i64) -> Result<u8, String> {
-    let new_bond = match apply_care(Bond::new(bond), CARE_BOND_AMOUNT) {
-        Ok(b) => b.value(),
-        // EG2-5: max bond continues with the bond unchanged — never a reject.
-        Err(CareError::AtMaxBond) => bond,
-        // A zero-magnitude care is a mis-tune, not a success — keep it loud.
-        Err(CareError::NoEffect) => return Err("care grants no effect".to_string()),
-    };
+pub(crate) fn evaluate_care(last_care_at_ms: i64, now: i64) -> Result<(), String> {
     if !is_cooldown_ready(last_care_at_ms, now, CARE_COOLDOWN_MS) {
         return Err("care cooldown not yet elapsed".to_string());
     }
-    Ok(new_bond)
+    Ok(())
 }
 
-/// Raise a monster's bond, gated by a per-monster cooldown measured from the
-/// server clock (`ctx.timestamp`, never a client argument). Ownership-checked;
-/// dual-writes the private `monster` row and its public `monster_pub` projection.
-/// No DB write before the success path — a reject (not found, not owner, max bond,
-/// within cooldown) never burns the cooldown (ADR-0059 §3, reject-never-burns).
+/// Care for a monster (Trust-favorable credit, EG2-5/ADR-0175), gated by a
+/// per-monster cooldown measured from the server clock (`ctx.timestamp`, never
+/// a client argument). Ownership-checked; dual-writes the private `monster` row
+/// and its public `monster_pub` projection. No DB write before the success path
+/// — a reject (not found, not owner, within cooldown) never burns the cooldown
+/// (ADR-0059 §3, reject-never-burns).
 #[spacetimedb::reducer]
 pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
@@ -102,15 +95,11 @@ pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
         monster_id,
     )?;
     let now = now_ms(ctx);
-    let new_bond = evaluate_care(m.bond, m.last_care_at_ms, now)?;
-    m.bond = new_bond;
+    evaluate_care(m.last_care_at_ms, now)?;
     m.last_care_at_ms = now;
     // EG2-5: care is the Trust-favorable writer — saturating, the counter is a
     // u32 lifetime total and a raw increment would overflow-panic mid-reducer.
     m.trust_favorable_count = m.trust_favorable_count.saturating_add(1);
-    // EG1 (ADR-0174 D2): the evolves_to recompute is GONE — the column is frozen
-    // dead until Migration B. The bond write above stays (frozen column, but its
-    // care semantics are unchanged this slice).
     // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing monster_pub row.
     let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
         return Err(format!("monster_pub row missing for monster {monster_id}"));

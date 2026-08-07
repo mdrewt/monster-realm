@@ -77,7 +77,6 @@ import BattleChallengeRow from "./battle_challenge_table";
 import CharacterRow from "./character_table";
 import ConfigRow from "./config_table";
 import EvolutionPathRow from "./evolution_path_table";
-import FusionRow from "./fusion_table";
 import HealLocationRowRow from "./heal_location_row_table";
 import InventoryRow from "./inventory_table";
 import ItemRowRow from "./item_row_table";
@@ -173,17 +172,6 @@ const tablesSchema = __schema({
       { name: 'evolution_path_path_id_key', constraint: 'unique', columns: ['pathId'] },
     ],
   }, EvolutionPathRow),
-  fusion: __table({
-    name: 'fusion',
-    indexes: [
-      { accessor: 'fusion_id', name: 'fusion_fusion_id_idx_btree', algorithm: 'btree', columns: [
-        'fusionId',
-      ] },
-    ],
-    constraints: [
-      { name: 'fusion_fusion_id_key', constraint: 'unique', columns: ['fusionId'] },
-    ],
-  }, FusionRow),
   heal_location_row: __table({
     name: 'heal_location_row',
     indexes: [

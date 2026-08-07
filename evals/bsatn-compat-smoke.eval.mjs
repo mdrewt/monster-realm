@@ -38,8 +38,10 @@
 //   6. The BSATN-vs-serde codec finding is machine-visible in eval name+detail
 //  11. (EG1-11, ADR-0174 D1) Migration A's 16 Monster + 12 MonsterPub + 1
 //      SpeciesRow columns each sit AFTER that struct's last pre-migration column
-//      (Monster/MonsterPub: evolves_to; SpeciesRow: ability), in the ADR's
-//      declared order, each carrying an explicit #[default(...)]
+//      (Monster: last_care_at_ms; MonsterPub: party_slot; SpeciesRow: ability —
+//      the Monster/MonsterPub anchors moved when Migration B, EG5-6/ADR-0177 D2,
+//      removed the old `evolves_to` anchor), in the ADR's declared order, each
+//      carrying an explicit #[default(...)]
 //  12. (EG1-11) the nested row struct EssenceRequirementRow exists and derives
 //      SpacetimeType (a table/shape snapshot does not cover nested types)
 //
@@ -428,7 +430,8 @@ export function checkAdditiveColumnCoupling(schemaSrc, contentSrc) {
 // detect-non-literal-regexp).
 // ---------------------------------------------------------------------------
 
-// Monster +16, in ADR-0174 D1 declaration order, appended after `evolves_to`.
+// Monster +16, in ADR-0174 D1 declaration order — appended after `evolves_to` at
+// EG1; the live anchor is `last_care_at_ms` since Migration B removed it (EG5-6).
 export const EG1_MONSTER_APPENDED_COLUMNS = [
   'essence_fire',
   'essence_water',
@@ -448,7 +451,8 @@ export const EG1_MONSTER_APPENDED_COLUMNS = [
   'last_essence_train_at_ms',
 ];
 
-// MonsterPub +12, in ADR-0174 D1 declaration order, appended after `evolves_to`.
+// MonsterPub +12, in ADR-0174 D1 declaration order — appended after `evolves_to` at
+// EG1; the live anchor is `party_slot` since Migration B removed it (EG5-6).
 export const EG1_MONSTER_PUB_APPENDED_COLUMNS = [
   'tier',
   'essence_fire',
@@ -1615,11 +1619,14 @@ export default async function () {
   // pre-migration column AND carry an explicit #[default(...)] — the only shape
   // live spacetime 2.6.0 accepts without --delete-data.
   const eg1Violations = [
-    ...checkAppendedColumns(schemaSrc, 'Monster', 'evolves_to', EG1_MONSTER_APPENDED_COLUMNS),
+    // Anchors moved by Migration B (EG5-6/ADR-0177 D2): `evolves_to` (and `bond`)
+    // were removed, so the last PRE-Migration-A column is now `last_care_at_ms`
+    // on Monster and `party_slot` on MonsterPub.
+    ...checkAppendedColumns(schemaSrc, 'Monster', 'last_care_at_ms', EG1_MONSTER_APPENDED_COLUMNS),
     ...checkAppendedColumns(
       schemaSrc,
       'MonsterPub',
-      'evolves_to',
+      'party_slot',
       EG1_MONSTER_PUB_APPENDED_COLUMNS,
     ),
     ...checkAppendedColumns(schemaSrc, 'SpeciesRow', 'ability', EG1_SPECIES_ROW_APPENDED_COLUMNS),
@@ -1675,7 +1682,8 @@ export default async function () {
     'content-synced table has its field-assignment in a content.rs re-seed row literal ' +
     '(anchors: ability, train_stat, cure_status, cost_item_id). ' +
     'EG1-11 (ADR-0174 D1): Migration A verified against the same rule — all 16 Monster and ' +
-    '12 MonsterPub columns sit after evolves_to and SpeciesRow.tier after ability, in the ' +
+    '12 MonsterPub columns sit after last_care_at_ms/party_slot (the post-Migration-B ' +
+    'anchors, ADR-0177 D2) and SpeciesRow.tier after ability, in the ' +
     "ADR's declared order, each with an explicit #[default(...)]; the nested row struct " +
     'EssenceRequirementRow derives SpacetimeType (its field set is a one-shot freeze, ' +
     'ADR-0174 D8 — nested widening is rejected by automigration).';

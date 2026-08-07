@@ -11,7 +11,7 @@
 
 use crate::marshal::{encounter_rows_from_table, pub_from_monster};
 use crate::schema::{
-    character, config, encounter, evolution_path, fusion, heal_location_row, item_row, monster,
+    character, config, encounter, evolution_path, heal_location_row, item_row, monster,
     monster_pub, npc, player_conversation, shop_item_row, shop_row, skill_row, species_row,
     type_relation_row, zone_def, Character, EssenceRequirementRow, EvolutionPathRow,
     HealLocationRow, ItemRow, Monster, Npc, ShopItemRow, ShopRow, SkillRow, SpeciesRow,
@@ -257,14 +257,8 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
             }
         }
     }
-    // Fusion rows: CLEAR ONLY (ADR-0174 D3/D8) — fusion is removed as a feature,
-    // so the v18 sync reaps any stale rows a live DB still carries (rows are
-    // data, not schema; the still-shipped client UI must not render recipes for
-    // a removed feature). The table STRUCT stays until Migration B; there is no
-    // reinsert.
-    for existing in ctx.db.fusion().iter().collect::<Vec<_>>() {
-        ctx.db.fusion().fusion_id().delete(existing.fusion_id);
-    }
+    // (The fusion clear-only reap — ADR-0174 D3/D8 — is gone: Migration B
+    // removed the `fusion` table itself, EG5-6/ADR-0177 D2.)
     // evolution_path: clear-and-reinsert (path_id is auto_inc and DB-internal
     // ONLY; edge_id is the durable identity, EG1-12 — reminting path_ids on
     // reseed is therefore harmless by design).
@@ -361,8 +355,6 @@ pub(crate) fn sync_content_inner_recheck(
 /// stats derived from `species` (new base stats).
 /// Clamps `current_hp` to the new `stat_hp` (no-idle-accrual, ADR-0058).
 /// Returns without mutating on invalid IV/EV/level values (data integrity guard).
-/// EG1 (ADR-0174 D2): `evolves_to` is a frozen dead column — its trigger content
-/// model no longer exists, so the re-derive pass writes `None`.
 pub(crate) fn recompute_monster_derived_fields(monster: &mut Monster, species: &SpeciesRow) {
     let base = StatBlock {
         hp: species.base_hp,
@@ -401,9 +393,6 @@ pub(crate) fn recompute_monster_derived_fields(monster: &mut Monster, species: &
         monster.stat_sp_defense = derived.sp_defense;
         // Clamp current_hp — sync_content is not a heal (no-idle-accrual, ADR-0058).
         monster.current_hp = monster.current_hp.min(derived.hp);
-        // EG1 (ADR-0174 D2): evolves_to freezes to None on every sync — the
-        // trigger content model behind the old recompute is deleted.
-        monster.evolves_to = None;
     }
 }
 

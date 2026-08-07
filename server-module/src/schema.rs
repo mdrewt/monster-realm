@@ -216,7 +216,6 @@ pub struct Monster {
     // Progression
     pub level: u8,
     pub xp: u32,
-    pub bond: u8,
     // Hidden genes — MUST NEVER reach non-owner clients (ADR-0015)
     pub iv_hp: u8,
     pub iv_attack: u8,
@@ -246,12 +245,9 @@ pub struct Monster {
     // last successful `care`. Additive (ADR-0006). New monsters start at 0 (epoch
     // ⇒ cooldown elapsed ⇒ first care allowed). Stays OFF monster_pub (YAGNI).
     pub last_care_at_ms: i64,
-    // Evolution eligibility (M10b, ADR-0061): server-computed passive evolves_to.
-    // Additive (ADR-0006). Exposed to client subscription for UI hints.
-    // FROZEN dead column since EG1 (ADR-0174 D2): compute_evolves_to and all its
-    // write paths are deleted; sync_content re-derive now writes None. Removal is
-    // Migration B (EG5-6) — automatic migration rejects additive+removal combined.
-    pub evolves_to: Option<u32>,
+    // (`bond` and `evolves_to` were removed here by Migration B — EG5-6, ADR-0177 D2.
+    // A column removal is always rejected by automatic migration; a live DB on the
+    // Migration-A schema needs the ADR-0177 runbook, never a plain republish.)
     // --- EG1 Migration A: 16 appended columns (ADR-0174 D1). APPEND-AT-END ONLY:
     // live spacetime 2.6.0 accepts an automatic migration only as tail-appended
     // columns each carrying an explicit default (ADR-0173 D5); a mid-struct
@@ -317,7 +313,6 @@ pub struct MonsterPub {
     pub nickname: String,
     pub level: u8,
     pub xp: u32,
-    pub bond: u8,
     pub current_hp: u16,
     // Derived stats (safe to expose — computed server-side)
     pub stat_hp: u16,
@@ -327,9 +322,7 @@ pub struct MonsterPub {
     pub stat_sp_attack: u16,
     pub stat_sp_defense: u16,
     pub party_slot: u8,
-    // FROZEN dead column since EG1 (ADR-0174 D2): sync_content re-derive writes
-    // None; removal is Migration B (EG5-6).
-    pub evolves_to: Option<u32>,
+    // (`bond` and `evolves_to` were removed here by Migration B — EG5-6, ADR-0177 D2.)
     // --- EG1 Migration A: 12 appended public columns (ADR-0174 D1). APPEND-AT-
     // END ONLY with explicit defaults (ADR-0173 D5). The EG4 client requirements
     // panel reads these — all are derived server-side, never client-written.
@@ -429,20 +422,11 @@ pub struct Inventory {
     pub count: u32,
 }
 
-/// Fusion recipes (M10b, ADR-0061): public content table seeded from game-core.
-/// Each row defines an order-independent recipe `(a, b) → to_species`.
-/// Recipes are looked up by canonical pair (min(a,b), max(a,b)) to enforce
-/// order-independence — see evolution.rs `find_fusion_recipe`.
-#[derive(Clone)]
-#[spacetimedb::table(name = fusion, public)]
-pub struct Fusion {
-    #[primary_key]
-    #[auto_inc]
-    pub fusion_id: u64,
-    pub a_species: u32,
-    pub b_species: u32,
-    pub to_species: u32,
-}
+// (The `Fusion` recipe table — M10b, ADR-0061 — was removed here by Migration B,
+// EG5-6/ADR-0177 D2. Fusion was deleted as a feature at EG1-9; the table struct
+// survived only because a table removal cannot ride along with Migration A's
+// additive publish. Table removal is always rejected by automatic migration —
+// a live DB on the Migration-A schema needs the ADR-0177 runbook.)
 
 // --- EG1 evolution-graph tables (ADR-0174 D1) ---------------------------------
 

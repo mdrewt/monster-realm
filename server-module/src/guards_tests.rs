@@ -327,7 +327,7 @@ fn test_reject_if_in_battle_rejects_when_in_ongoing() {
 /// Slice 2 test 3: monster is in a battle with outcome=SideAWins (battle is over) → Ok.
 /// PROOF-OF-TEETH: kills an impl that rejects any monster present in ANY battle row,
 /// without checking whether the battle is still ongoing. A completed battle must
-/// never block evolution or fusion.
+/// never block evolution.
 #[test]
 fn test_reject_if_in_battle_accepts_when_battle_won() {
     let monster_id = 42u64;

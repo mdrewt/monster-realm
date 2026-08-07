@@ -20,7 +20,6 @@ visibility: private
 | `nickname` | `String` | — |
 | `level` | `u8` | — |
 | `xp` | `u32` | — |
-| `bond` | `u8` | — |
 | `iv_hp` | `u8` | — |
 | `iv_attack` | `u8` | — |
 | `iv_defense` | `u8` | — |
@@ -43,7 +42,6 @@ visibility: private
 | `current_hp` | `u16` | — |
 | `party_slot` | `u8` | — |
 | `last_care_at_ms` | `i64` | — |
-| `evolves_to` | `Option<u32>` | — |
 | `essence_fire` | `u32` | — |
 | `essence_water` | `u32` | — |
 | `essence_plant` | `u32` | — |
