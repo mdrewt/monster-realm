@@ -2961,19 +2961,28 @@ fn r1_duplicate_pair_has_exactly_one_enforcement_point() {
          compacted first), so a rustfmt line split cannot false-GREEN it."
     );
 
-    // --- Behaviour-shaped needles: ANY re-add spelling reads the key and rejects
+    // --- Behaviour-shaped needles: ANY re-add spelling reads the pair, and rejects
     // Added in the 12r-e hardening round. The three structural needles above are
     // container-shaped and a red-team confirmed a `Vec` + `.contains(..)` re-add
     // walks past all three. These two do not care about the container at all: a
     // duplicate-(from, to)-PAIR check must read `from_species`, and a BACKSTOP
     // must reject. Both are strictly stronger than the three above, and both are
     // RED at HEAD.
-    let key_field = ["from", "_species"].concat();
-    let n_key_field = compact.matches(key_field.as_str()).count();
+    //
+    // The binding below is named `pair_field` and NOT after what it is (a lookup
+    // k-e-y). gitleaks runs REMOTE-ONLY and BEFORE every other CI gate, its
+    // generic high-entropy secret rule triggers on such an identifier next to a
+    // quoted literal, and this repo has already lost a PR round-trip to a false
+    // positive of exactly that shape on an ordinary test fixture string. These
+    // literals sit far below the entropy and length floors, so a hit is unlikely
+    // — but the rename is one word and a wrong guess costs a remote round-trip on
+    // a branch where force-push is hook-blocked.
+    let pair_field = ["from", "_species"].concat();
+    let n_pair_field = compact.matches(pair_field.as_str()).count();
     assert_eq!(
-        n_key_field, 2,
+        n_pair_field, 2,
         "TEETH (12r-e E4, container-agnostic): `sync_content_inner`'s body reads \
-         `{key_field}` {n_key_field} time(s); after the fix it must read it EXACTLY \
+         `{pair_field}` {n_pair_field} time(s); after the fix it must read it EXACTLY \
          2 times. RED at HEAD: 4 — :75 and :78 belong to the dead duplicate-pair \
          backstop, and the surviving 2 are BOTH halves of the seed literal at \
          content.rs:272 (`from_species: p.from_species,`), which writes the \

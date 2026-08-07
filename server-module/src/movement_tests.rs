@@ -3334,7 +3334,7 @@ fn squashed_battle_for_e2() -> String {
 /// `Monster.level` writer goes through `Level::new`) — this is the ADR-0175
 /// Consequences (4) defense-in-depth fix.
 ///
-/// Four layers (2b added in the 12r-e HARDENING ROUND):
+/// Four layers (layer 3 added in the 12r-e HARDENING ROUND):
 ///
 /// 1. **`lead_party_ids(` exactly once** in `enqueue_move`'s body. Not "at least
 ///    once": two resolutions would mean two different id lists could be credited

@@ -4291,7 +4291,7 @@ fn e2_tail_expression(body: &str) -> &str {
     let mut depth: usize = 0;
     let mut last: Option<usize> = None;
     for (i, b) in bytes.iter().enumerate() {
-        match b {
+        match *b {
             b'{' => depth += 1,
             b'}' => depth = depth.saturating_sub(1),
             b';' if depth == 0 => last = Some(i),
@@ -4556,9 +4556,15 @@ fn lead_party_ids_does_not_parse_a_level() {
     // former while an `if party.is_empty()` guard uses the latter. Pinning either
     // spelling — or its position relative to `sort_by_key(` — would false-RED the
     // shape layer 3's own message tells the implementer to write.
-    let try_op = "?";
+    // `'?'` as a CHAR, not the string "?" — `clippy::single_char_pattern` is a
+    // style lint and `justfile:18` runs clippy with `-D warnings`. It does not
+    // fire through a `let try_op = "?";` binding, so the string form is a latent
+    // error that arms itself the moment anyone inlines the binding. (A char
+    // literal is safe here: the source-scan landmine this crate guards against is
+    // a char literal holding a DOUBLE QUOTE, which opens a phantom string in the
+    // evals' quote-counting strippers. `'?'` cannot.)
     let ret_none = ["return", "None"].concat();
-    let n_exits = body.matches(try_op).count() + body.matches(ret_none.as_str()).count();
+    let n_exits = body.matches('?').count() + body.matches(ret_none.as_str()).count();
     assert!(
         n_exits <= 1,
         "TEETH (12r-e E2, HARDENING): `lead_party_ids`'s body has {n_exits} early \

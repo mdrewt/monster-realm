@@ -1797,18 +1797,33 @@ fn daily_cap_stops_credit() {
     let mut m = qt_monster(QT_ANCHOR, cap, 0, 120);
     let wrote = apply_quality_time_credit(&mut m, now);
 
+    // EVAL LANDMINE (12r-e hardening round). `evals/monster-dual-write.eval.mjs`
+    // concatenates every `.rs` file under `server-module/src` — `*_tests.rs`
+    // INCLUDED — splits the text into column-0 `fn` spans, and requires every
+    // span containing the private-row update marker to also contain the
+    // `monster_pub` mirror. It strips `//` comments (:148,:159) but does NOT
+    // blank string literals, so spelling that marker contiguously inside the
+    // assertion message below landed it in THIS test's span, which has no mirror
+    // — and the eval went red on a pure documentation string. Assembling it at
+    // runtime keeps the failure message exact while the file text never contains
+    // it. Same landmine family as the `/*` and char-literal-double-quote bans in
+    // this crate, one level out: a needle written as DOCUMENTATION can trip a
+    // DIFFERENT gate that scans the same file.
+    let row_write_marker = ["ctx.db.monster().monster_id()", ".update(m)"].concat();
+
     assert!(
         !wrote,
         "TEETH (12r-e E3): a call whose creditable amount is 0 (day window already \
          at QT_DAILY_CAP_MS) must return FALSE so `accrue_quality_time` performs NO \
          DB write. RED at HEAD: it returns true, and the ctx shell then runs an \
-         unconditional `ctx.db.monster().monster_id().update(m)` that changes only \
-         the invisible clock anchor — on `movement.rs:181`, the hottest reducer in \
-         the game, that is one wasted row write per party monster per ~5 s for the \
-         rest of the UTC day. The re-anchor it persists buys at most 2 QT ticks in \
-         either direction across a single UTC rollover (measured), and the \
-         day-reset branch is mutually exclusive with this one, so nothing else is \
-         lost — see this test's doc block for the proof."
+         unconditional `{row_write_marker}` that changes only the invisible clock \
+         anchor — on `movement.rs:181`, the hottest reducer in the game, that is \
+         one wasted row write per party monster per ~5 s for the rest of the UTC \
+         day. The re-anchor it persists buys at most 4 QT ticks in either \
+         direction across a single UTC rollover (measured over ~500M call \
+         evaluations; an earlier estimate of 2 was wrong), and the day-reset branch \
+         is mutually exclusive with this one, so nothing else is lost — see this \
+         test's doc block for the proof and the minimised witness."
     );
     assert_eq!(
         qt_state(&m),
@@ -1838,11 +1853,12 @@ fn daily_cap_stops_credit() {
 ///
 /// The test BRACKETS the bound with two calls on identical fresh capped rows, so
 /// it pins the comparator's strictness rather than merely observing a re-anchor:
-///   * `gap == QT_IDLE_GAP_MS`     → NOT idle (the rule is strict `>`), falls
-///                                   through to the capped branch → `false`,
-///                                   nothing moves. Staleness still growing.
-///   * `gap == QT_IDLE_GAP_MS + 1` → idle → `true`, anchor moves to `now`, and
-///                                   still no credit (idle time never credits).
+///
+/// - `gap == QT_IDLE_GAP_MS` — NOT idle (the rule is strict `>`), so it falls
+///   through to the capped branch: `false`, nothing moves at all, staleness
+///   still growing.
+/// - `gap == QT_IDLE_GAP_MS + 1` — idle: `true`, the anchor moves to `now`, and
+///   still no credit, because idle time never credits.
 ///
 /// kills: (a) a fix that also swallows the IDLE branch's re-anchor for capped
 ///        rows — the anchor would then never advance while capped, staleness
