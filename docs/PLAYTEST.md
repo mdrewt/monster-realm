@@ -37,31 +37,34 @@ for a clean state, verifying you're on an "honest" build), see the ops runbook:
 
 ## 3. Controls
 
-Press **`?`** in-game for this list at any time. (Kept in sync with the in-client help
-overlay — `client/src/ui/helpModel.ts`.)
+Press **`?`** in-game for this list at any time. (`client/src/ui/helpModel.ts` is the source
+of truth for the keymap; `client/src/ui/playtestControlsDoc.test.ts` fails the build if this
+table drifts from it, so edit both together.)
 
 | Key | Action |
 |-----|--------|
 | `?` | Toggle this help overlay |
+| `M` | Open the main menu |
 | `WASD` / Arrows | Move around the world |
 | `Space` | Jump |
 | `Escape` | Close the open overlay |
-| `T` | Talk to a nearby NPC |
+| `T` | Interact — talk to an NPC, shop at a shopkeeper, heal at a heal tile |
 | `B` | Open the monster Box |
 | `I` | Open Inventory / raise a monster |
 | `E` | Open Evolution / fuse monsters |
 | `Q` | Open the Quest log |
-| `H` | Heal your party |
-| `G` | Open the shop |
 | `U` | View an incoming trade |
 | `O` | Offer a trade (propose) to a nearby player |
 | `P` | Challenge a nearby player to a PvP battle |
 | `L` | Open the ranked Leaderboard |
 | `N` | Rename your profile |
-| `F9` | Download a bug-report bundle (see §6) |
+| `F9` | Download a bug-report bundle |
 
 Only one overlay is open at a time — opening another (or a battle) closes the current
-one. `Escape` closes the open overlay.
+one. `Escape` closes the open overlay. See §6 for the `F9` bug-bundle ritual.
+
+There is no separate shop or heal key: walk up to a shopkeeper or onto a heal tile and
+press `T`.
 
 ## 4. Your first 15 minutes
 
@@ -71,7 +74,7 @@ one. `Escape` closes the open overlay.
 4. **Recruit** a monster during a battle instead of defeating it.
 5. **Open your Box** (`B`) to see your party and reserves; **raise** one in Inventory (`I`).
 6. **Evolve / fuse** (`E`) once a monster qualifies.
-7. **Shop** (`G`) and **heal** (`H`) in town.
+7. **Shop and heal** in town: stand next to a shopkeeper, or on a heal tile, and press `T`.
 8. **Rename your profile** (`N`) so the leaderboard shows a name you like.
 9. **Propose a trade** (`O`) to another tester (currency for now); respond to an incoming
    offer with (`U`).
