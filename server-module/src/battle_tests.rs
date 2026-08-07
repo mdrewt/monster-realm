@@ -4181,3 +4181,380 @@ fn escaped_reason_composes_a_well_framed_json_log_line() {
         }
     }
 }
+
+// ===========================================================================
+// 12r-e ITEM 2 / EARS E2 — the party-id list must not be gated on the LEAD's
+// level parsing (defense in depth, ADR-0175 Consequences (4)).
+//
+// THE DEFECT. `battle.rs:283-296`'s `lead_party` ends with
+// `let lead_level = Level::new(lead.level).ok()?;` — a SILENT `None` for the
+// WHOLE party if the lead monster's stored `level` byte is outside 1..=100.
+// `movement.rs:150` consumes that `None` as "this player has no party" and
+// therefore skips `accrue_quality_time` + `check_and_evolve` for EVERY party
+// monster on EVERY move, for as long as the bad byte survives. One corrupt row
+// would silently freeze Quality Time and auto-evolution for five healthy
+// monsters, with no log line anywhere.
+//
+// NOT CURRENTLY REACHABLE (verified): every writer of `Monster.level` in the
+// tree goes through `Level::new`, so no live row can hold an out-of-range level
+// today. This is a blast-radius fix, not an incident fix — which is exactly why
+// it must be pinned structurally rather than argued about.
+//
+// THE PRESCRIBED SHAPE (the tests below pin it, and pin its DIRECTION):
+//
+// (a space is written before each `(` so this comment does not contain the
+// `fn lead_party(` declaration verbatim — house rule. `battle.rs` sorts BEFORE
+// `battle_tests.rs`, so a first-match eval over the sorted concatenation would
+// find the real declaration first regardless; the space is belt-and-braces, and
+// no needle in this file is ever written verbatim either — every one is built
+// with `concat` or from a runtime `name` parameter.)
+//
+//   pub(crate) fn lead_party_ids (ctx: &ReducerContext, owner: Identity)
+//       -> Option<Vec<u64>>          // query + sort + collect ids. Parses NO
+//                                    // level, so it cannot fail on one.
+//   pub(crate) fn lead_party (ctx: &ReducerContext, owner: Identity)
+//       -> Option<(Vec<u64>, Level)> // DELEGATES to lead_party_ids, then
+//                                    // point-reads ids[0] for the level and
+//                                    // WARNS (rate-limited) if it will not parse.
+//
+// WHY THE DIRECTION IS THE WHOLE POINT. A red-team PoC built the mirror image —
+// `lead_party_ids` as a thin wrapper `lead_party(ctx, owner).map(|(ids, _)| ids)`
+// — and it passed a naive "both functions exist and enqueue_move calls the new
+// one" suite with ZERO behaviour change: a bad lead level still returns `None`
+// from the inner call and still disables the whole party's growth. The base
+// function must therefore be proven to (a) never mention `Level::new`, (b) never
+// call `lead_party`, and (c) actually perform the owner-index query ITSELF.
+// The matching negative on the other side — `lead_party` delegating rather than
+// re-querying — lives in `movement_tests.rs`'s
+// `enqueue_move_growth_tail_does_not_depend_on_the_lead_level`, deliberately
+// paired with the re-point of that file's three `lead_party(` needles.
+//
+// WHY SOURCE SCANS. This crate has NO reducer-executing harness (stated at
+// battle_tests.rs:1353 and content_tests.rs:144): both helpers take a live
+// `ReducerContext` and cannot be called from a unit test at all. What a scan can
+// see — and all it claims — is the SHAPE.
+// ===========================================================================
+
+/// `battle.rs` fn body, comments AND string literals blanked, then
+/// whitespace-squashed. Panics with an EXPLICIT missing-function message rather
+/// than the generic ADR-0156 one, because at HEAD `lead_party_ids` does not
+/// exist and "function not found" is the honest RED reason.
+fn e2_helper_body(name: &str) -> String {
+    let stripped = strip_rust_strings(&strip_rust_comments(MODULE_SOURCE));
+    let (start, end) = extract_fn_body_range(&stripped, name).unwrap_or_else(|| {
+        panic!(
+            "TEETH (12r-e E2) — FUNCTION NOT FOUND: server-module/src/battle.rs \
+             declares no `fn {name}(`. RED at HEAD is expected for `lead_party_ids`: \
+             it is the function this slice adds. Split `lead_party` into a BASE \
+             `pub(crate) fn lead_party_ids(ctx: &ReducerContext, owner: Identity) -> \
+             Option<Vec<u64>>` (query + sort + collect, parsing NO level) and a \
+             delegating `lead_party` that adds the lead level on top."
+        )
+    });
+    squash_ws(&stripped[start..end])
+}
+
+/// The squashed DECLARATION text of a `battle.rs` fn — everything from `fn <name>(`
+/// up to (not including) its opening `{`. Used to pin a return type, which the
+/// body alone cannot show.
+fn e2_helper_signature(name: &str) -> String {
+    let stripped = strip_rust_strings(&strip_rust_comments(MODULE_SOURCE));
+    let needle = ["fn ", name, "("].concat();
+    let at = stripped.find(needle.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (12r-e E2) — FUNCTION NOT FOUND: server-module/src/battle.rs \
+             declares no `fn {name}(`, so its signature cannot be inspected. See \
+             the failure message on the body extractor for the shape to write."
+        )
+    });
+    let brace = stripped[at..].find('{').unwrap_or_else(|| {
+        panic!("12r-e E2: `fn {name}(` in battle.rs has no opening brace after it")
+    });
+    squash_ws(&stripped[at..at + brace])
+}
+
+/// **12r-e E2 (base)** — `lead_party_ids` resolves the party WITHOUT parsing any
+/// level, and does the owner-index query ITSELF.
+///
+/// Four layers, each aimed at a specific wrong implementation:
+///
+/// 1. **`Level::new(` count == 0.** This IS E2 for the base helper: the whole
+///    point is a party-id path that cannot be knocked out by one bad level byte.
+/// 2. **`lead_party(` count == 0 — the anti-cheat.** Kills the verified
+///    red-team mirror image, `lead_party_ids` implemented as
+///    `lead_party(ctx, owner).map(|(ids, _)| ids)`. That shape satisfies every
+///    "the function exists and the caller uses it" check while changing NOTHING:
+///    the inner call still returns `None` on an unparseable lead level, so the
+///    whole party still loses its growth tail. The two needles are cleanly
+///    disjoint — `lead_party(` is NOT a substring of `lead_party_ids(`, because
+///    the character after `lead_party` differs (`(` vs `_`).
+/// 3. **The query is really here.** A body that mentions neither the owner index
+///    nor the slot sort is delegating to something, whatever it is named; layer 2
+///    only bans one spelling. All four needles are taken verbatim from
+///    battle.rs:284-292 — `owner_identity()` (the index accessor),
+///    `filter(owner` (filtering on the `owner` PARAMETER, not on `ctx.sender`),
+///    `PARTY_SLOT_NONE` (the party-membership filter) and `sort_by_key(`
+///    (the slot ordering that makes `ids[0]` the lead, which `lead_party` then
+///    point-reads). `filter(owner` deliberately omits the closing paren so a
+///    rustfmt trailing comma cannot false-RED it.
+/// 4. **No `Level` in the signature.** A `-> Option<(Vec<u64>, Level)>` base
+///    helper would be the same function under a new name; the body needles
+///    cannot see a return type, so the declaration is scanned separately.
+///
+/// RED at HEAD: `fn lead_party_ids(` does not exist, so layer 0 (the extractor)
+/// panics with an explicit FUNCTION NOT FOUND message naming the signature to
+/// write.
+///
+/// HONEST LIMITS. (a) SOURCE SCAN ONLY — no `ReducerContext` harness exists in
+/// this crate, so nothing here executes either helper or observes a single row.
+/// It cannot prove that `lead_party_ids` returns the same ids `lead_party` used
+/// to return, nor that they are slot-ordered at runtime; it proves the code that
+/// computes them is written HERE and reads no level. (b) The needles are
+/// whitespace-insensitive but not syntax-aware: a semantically identical query
+/// spelled with a different accessor (say a full-table scan filtered in Rust)
+/// would false-RED. That is intended — the owner INDEX read is the shape being
+/// preserved, and re-deriving it differently on the hottest reducer in the game
+/// is a decision, not a refactor.
+#[test]
+fn lead_party_ids_does_not_parse_a_level() {
+    let body = e2_helper_body("lead_party_ids");
+
+    // --- Layer 1: no level parsing at all ------------------------------------
+    let level_new = ["Level", "::new("].concat();
+    let n_level = body.matches(level_new.as_str()).count();
+    assert_eq!(
+        n_level, 0,
+        "TEETH (12r-e E2): `lead_party_ids` mentions `{level_new}..)` \
+         {n_level} time(s); it must mention it ZERO times. Parsing the lead's level \
+         is the ONE thing this helper exists to avoid: `movement.rs:150` drives \
+         `accrue_quality_time` + `check_and_evolve` for the whole party from this \
+         return value, so a level byte outside 1..=100 on the LEAD would silently \
+         freeze Quality Time and auto-evolution for EVERY monster in the party, on \
+         EVERY move, with no log line. Collect the ids and stop; the level belongs \
+         in `lead_party`, which is allowed to fail because its callers genuinely \
+         need a `Level`."
+    );
+
+    // --- Layer 2: the anti-cheat — this is the BASE, not a wrapper -----------
+    let lead_party_call = ["lead", "_party("].concat();
+    let n_delegate = body.matches(lead_party_call.as_str()).count();
+    assert_eq!(
+        n_delegate, 0,
+        "TEETH (12r-e E2, ANTI-CHEAT): `lead_party_ids`'s body calls \
+         `{lead_party_call}..)` {n_delegate} time(s); it must call it ZERO times. \
+         The dependency direction is the entire fix. A red-team PoC implemented \
+         `lead_party_ids` as `lead_party(ctx, owner).map(|(ids, _)| ids)` and it \
+         passed a naive scan suite with ZERO behaviour change — the inner call \
+         still returns `None` on an unparseable lead level, so the whole party \
+         still loses its growth tail and E2 is unmet while every test is green. \
+         `lead_party_ids` is the BASE (query + sort + collect ids); `lead_party` \
+         DELEGATES to it and adds the level. Never the reverse."
+    );
+
+    // --- Layer 3: the query is actually performed here -----------------------
+    let query_needles = [
+        (
+            ["owner", "_identity()"].concat(),
+            "the `monster` table's owner index — without it this body is not \
+             resolving a party at all, it is calling something else that does",
+        ),
+        (
+            ["filter", "(owner"].concat(),
+            "the filter must be on the `owner` PARAMETER (both call sites pass an \
+             identity that is NOT always `ctx.sender` — `movement_tick` passes the \
+             scanned character's player identity)",
+        ),
+        (
+            ["PARTY_SLOT", "_NONE"].concat(),
+            "the party-membership filter — without it stored (non-party) monsters \
+             would be credited Quality Time and could auto-evolve in the box",
+        ),
+        (
+            ["sort", "_by_key("].concat(),
+            "the slot ordering — it is what makes `ids[0]` the LEAD, which is \
+             precisely what `lead_party` point-reads for the level. An unsorted \
+             collect would hand `lead_party` an arbitrary monster's level and, \
+             through `movement_tick`, roll wild encounters against it",
+        ),
+    ];
+    for (needle, why) in &query_needles {
+        assert!(
+            body.contains(needle.as_str()),
+            "TEETH (12r-e E2): `lead_party_ids`'s body does not contain `{needle}` \
+             (whitespace-squashed; comments and string literals are blanked first, so \
+             only executable code can satisfy this). It must perform the party query \
+             ITSELF — move battle.rs:284-292 into it verbatim. Missing needle means: \
+             {why}. Body scanned was:\n{body}"
+        );
+    }
+
+    // --- Layer 4: the signature returns ids only -----------------------------
+    let sig = e2_helper_signature("lead_party_ids");
+    assert!(
+        !sig.contains("Level"),
+        "TEETH (12r-e E2): `lead_party_ids`'s DECLARATION mentions `Level`: \
+         `{sig}`. A base helper returning `Option<(Vec<u64>, Level)>` is the old \
+         function with a new name — every caller would still be gated on the lead \
+         level parsing. The signature must be \
+         `pub(crate) fn lead_party_ids(ctx: &ReducerContext, owner: Identity) -> \
+         Option<Vec<u64>>`. (The body needles above cannot see a return type, which \
+         is why the declaration is scanned separately.)"
+    );
+}
+
+/// **12r-e E2 (audit)** — `lead_party`'s level-parse failure is LOUD, not silent.
+///
+/// `lead_party` keeps the fallible parse: `movement.rs:436` (`movement_tick`,
+/// which rolls the encounter table against the lead level) and `battle.rs:497`
+/// (`start_wild_battle`) genuinely need a `Level`, and a monster whose level will
+/// not parse cannot be given one. What must change is that the failure stops
+/// being invisible.
+///
+/// WHY THIS IS SCOPED TO A BLOCK AND A STATEMENT, NOT A BYTE WINDOW. A red-team
+/// PoC defeated the obvious formulation ("a warn somewhere after `Level::new(`")
+/// with a provably DEAD branch (indentation kept under four spaces on purpose —
+/// a four-space-indented doc block is a markdown code block):
+///
+/// - `let lead_level = Level::new(lead.level).ok()?;` — the defect, unchanged
+/// - `if lead_level.as_u8() == 0 { log::warn!(..); return None; }` — unreachable
+///
+/// `Level` is 1..=100 by construction, so that `if` can never fire — yet it puts
+/// a warn and a `return None` inside the window. Two layers close it:
+///
+///   * [`block_after`] (this module's helper, built for exactly this at line
+///     ~1485) takes the brace-matched `{ .. }` that OPENS after the `Level::new(`
+///     needle, instead of a span running to end-of-function; and
+///   * [`statement_end`] proves that block belongs to the SAME STATEMENT as the
+///     parse. In the decoy the parse statement is terminated by `;` BEFORE the
+///     decoy `if`'s brace, so the block is a different statement and the
+///     assertion names that explicitly.
+///
+/// Both accepted shapes satisfy it — `let Ok(l) = Level::new(..) else { .. };`
+/// and `let l = match Level::new(..) { Ok(l) => l, Err(_) => { .. } };` — and so
+/// does `let l = if let Ok(l) = Level::new(..) { l } else { .. };`, because the
+/// warn/`return None` needles are checked over the whole STATEMENT window (a
+/// superset of the block) while the block-vs-statement check pins attachment.
+///
+/// The `.ok()?` count is asserted separately and is the most direct statement of
+/// the defect: `.ok()?` IS the silent discard.
+///
+/// RATE LIMITING. The warn must be rate-limited in the shipped fix —
+/// `movement_tick` reaches `lead_party` once per character per scheduled tick, so
+/// an unlimited warn is a log flood. `movement.rs:443-455`
+/// (`ENCOUNTER_TABLE_ERR_LIMITER`) is the house idiom. This test deliberately
+/// does NOT pin the limiter: `warn!(` inside an
+/// `if let Some(suppressed) = LIMITER.check(..) { .. }` still sits inside the
+/// failure block, so both the limited and unlimited spellings pass here and the
+/// limiter is a review item rather than a false-RED trap.
+///
+/// RED at HEAD: `lead_party`'s body is `Level::new(lead.level).ok()?;` followed
+/// by two brace-free statements, so [`block_after`] finds NO block at all and
+/// this test panics with the explicit "no `{ .. }` block follows" message.
+///
+/// HONEST LIMITS. (a) SOURCE SCAN — no `ReducerContext` harness exists, so this
+/// never observes a log line being emitted, only that one is written on the
+/// failure path. (b) It does not check the log's CONTENT (no `evt` name, no
+/// monster id is pinned): the `evt` vocabulary is not fixed by this slice, and
+/// pinning a name here would collide with `d12r_assert_escaped_log_sites`'s
+/// separate ownership of battle.rs log-site shape. (c) `warn!(` OR `error!(` is
+/// accepted; the criterion is "not silent", and choosing between the two levels
+/// for an unreachable-today fault is a judgement call, not a contract.
+#[test]
+fn lead_party_warns_on_an_unparseable_lead_level() {
+    let body = e2_helper_body("lead_party");
+
+    // --- Precondition: lead_party still parses the level ---------------------
+    let level_new = ["Level", "::new("].concat();
+    let level_at = body.find(level_new.as_str()).unwrap_or_else(|| {
+        panic!(
+            "SCAN PRECONDITION (12r-e E2): `lead_party` no longer calls \
+             `{level_new}..)` at all. It is the helper that RETURNS the lead level \
+             — `movement_tick` (movement.rs:436) resolves wild encounters against \
+             it and `start_wild_battle` (battle.rs:497) seeds a battle with it — so \
+             the parse must stay here; only its SILENCE is the defect. If the level \
+             genuinely moved elsewhere, this test must be re-derived from the spec, \
+             not deleted. Body scanned was:\n{body}"
+        )
+    });
+
+    // --- Layer 1: the silent-discard idiom is gone ---------------------------
+    let silent_discard = [".ok", "()?"].concat();
+    let n_silent = body.matches(silent_discard.as_str()).count();
+    assert_eq!(
+        n_silent, 0,
+        "TEETH (12r-e E2): `lead_party`'s body still contains `{silent_discard}` \
+         {n_silent} time(s); it must contain ZERO. RED at HEAD: 1 \
+         (battle.rs:293, `Level::new(lead.level).ok()?`). `.ok()?` IS the defect — \
+         it converts a content/data fault into an indistinguishable `None`, which \
+         `movement.rs:150` reads as `this player has no party` and acts on by \
+         skipping the growth tail for EVERY party monster on EVERY move, forever, \
+         with nothing logged anywhere. Replace it with an explicit failure arm that \
+         warns and then returns `None`."
+    );
+
+    // --- Layer 2: there IS an explicit failure block ------------------------
+    let (blk_start, blk_end) = block_after(&body, level_at).unwrap_or_else(|| {
+        panic!(
+            "TEETH (12r-e E2): no `{{ .. }}` block follows `{level_new}` in \
+             `lead_party` (needle at body byte {level_at}). RED at HEAD: the parse \
+             is the brace-free expression `Level::new(lead.level).ok()?`, so its \
+             failure path is invisible. Write an explicit arm, e.g. \
+             `let Ok(lead_level) = Level::new(lead.level) else {{ <rate-limited \
+             warn>; return None; }};` — `movement.rs:443-455` \
+             (ENCOUNTER_TABLE_ERR_LIMITER) is the house limiter idiom, and it is \
+             needed here because `movement_tick` reaches this helper once per \
+             character per scheduled tick. Body scanned was:\n{body}"
+        )
+    });
+    let stmt_end = statement_end(&body, level_at);
+
+    // --- Layer 3: that block belongs to the PARSE statement -----------------
+    assert!(
+        blk_start <= stmt_end,
+        "TEETH (12r-e E2, DEAD-BRANCH GUARD): the first `{{ .. }}` block after \
+         `{level_new}` opens at body byte {blk_start}, but the statement containing \
+         the parse already ended at byte {stmt_end}. So the block is a LATER, \
+         SEPARATE statement — which is exactly the verified evasion: keep \
+         `Level::new(lead.level).ok()?;` unchanged and add \
+         `if lead_level.as_u8() == 0 {{ log::warn!(..); return None; }}` after it. \
+         That `if` can NEVER fire (`Level` is 1..=100 by construction), so the \
+         defect is untouched while a warn and a `return None` sit inside the \
+         window. The warn must live on the parse's OWN failure arm. Body scanned \
+         was:\n{body}"
+    );
+
+    // --- Layer 4: that arm both WARNS and returns None ----------------------
+    // The window is the whole parse STATEMENT (a superset of the block found
+    // above), so the `if let Ok(l) = .. { l } else { warn; return None; }`
+    // spelling — whose FIRST block is the success arm — is accepted too. The
+    // block-vs-statement check above is what keeps this superset honest.
+    let window = &body[level_at..stmt_end.min(body.len())];
+    let warn_macro = ["warn", "!("].concat();
+    let error_macro = ["error", "!("].concat();
+    assert!(
+        window.contains(warn_macro.as_str()) || window.contains(error_macro.as_str()),
+        "TEETH (12r-e E2): the failure arm of `{level_new}` in `lead_party` \
+         (statement bytes {level_at}..{stmt_end}, block at {blk_start}..{blk_end}) \
+         contains neither `{warn_macro}..)` nor `{error_macro}..)`. An \
+         out-of-range stored level is a DATA FAULT, and this helper is the only \
+         place in the tree that can see it: every `Monster.level` writer goes \
+         through `Level::new`, so if this ever fires something upstream has already \
+         gone wrong and an operator needs to know. Silence here means the symptom \
+         (a whole party's Quality Time and auto-evolution frozen) is reported with \
+         no cause. Statement scanned was:\n{window}"
+    );
+    // The body is whitespace-SQUASHED, so `return None` reads as `returnNone`.
+    let none_return = ["return", "None"].concat();
+    assert!(
+        window.contains(none_return.as_str()),
+        "TEETH (12r-e E2): the failure arm of `{level_new}` in `lead_party` \
+         (statement bytes {level_at}..{stmt_end}) never returns `None`. Logging \
+         without returning would fall through with an unbound level and could not \
+         compile; logging and then substituting a DEFAULT level would be worse than \
+         the defect — `movement_tick` rolls the wild-encounter table against this \
+         value, so an invented lead level silently changes which monsters spawn. \
+         Warn, then `return None`; `lead_party`'s `None` contract (no usable lead) \
+         is unchanged, and the id-only path that must NOT be gated on it is \
+         `lead_party_ids`. Statement scanned was:\n{window}"
+    );
+}

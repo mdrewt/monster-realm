@@ -3362,6 +3362,381 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
+    // R4 (12r-e) — vacuity is a SEMANTIC floor, not field presence
+    //
+    // R4's job is "a monster must not qualify at birth". Four encodings are
+    // structurally present yet impose nothing, because each sits at the MINIMUM
+    // of its own comparison in `evolution::eligibility::path_satisfied`:
+    //   (a) an essence entry with amount 0   -> `essence[i] >= 0` on a u32
+    //   (b) min_trust_tier Some(Hostile)     -> Hostile is the lowest Ord tier
+    //   (c) min_quality_time_tier Some(0)    -> tiers are 0..=4
+    //   (d) min_nutrition_pct Some(0)        -> percentages are 0..=100
+    // A field-presence R4 accepts all four; under EG2-11 auto-evolution such an
+    // edge then fires at monster creation with no player action.
+    //
+    // The tests below go through the public `validate_evolution_paths` only,
+    // and the oracle test cross-checks the validator against the SAME predicate
+    // the runtime uses, so the two can never drift apart silently.
+    // -----------------------------------------------------------------------
+
+    use crate::evolution::{nutrition_pct_of, path_satisfied, quality_time_tier_of, trust_tier_of};
+    use crate::monster::rules::{derive_stats, xp_for_level};
+    use crate::monster::types::{EVs, IVs, MonsterInstance, Nature, NatureKind};
+
+    /// The R4 base fixture: `eg1_path` with `min_level` pulled DOWN to the
+    /// vacuity floor of 1, so whatever single field a caller then sets is the
+    /// only gate candidate on the edge.
+    fn r4_floor_path() -> EvolutionPath {
+        let mut path = eg1_path(1, 1, 2);
+        path.min_level = Level::new(1).expect("1 is a valid level");
+        path
+    }
+
+    /// The species pair every R4 fixture validates against: tier 0 -> tier 1,
+    /// so R3/R5/R10/R11 all stay satisfied and R4 is the only rule in play.
+    fn r4_species() -> Vec<Species> {
+        vec![eg1_species(1, 0), eg1_species(2, 1)]
+    }
+
+    /// Validate `path` alone and require R4 — not some other rule — to be what
+    /// rejects it.
+    ///
+    /// Asserting on error CONTENT, not merely `is_err()`, is what stops a false
+    /// green: if a fixture accidentally trips R1/R3/R5/R10, `is_err()` would
+    /// pass while the vacuity floor stayed unimplemented.
+    fn assert_r4_rejects(encoding: &str, path: EvolutionPath) {
+        let edge_id = path.edge_id;
+        let outcome = validate_evolution_paths(&r4_species(), &[path], &[], &[]);
+        let err = match outcome {
+            Err(err) => err,
+            Ok(()) => panic!(
+                "R4 TEETH: {encoding} is NOT a gate — it is the minimum of its own comparison in \
+                 path_satisfied, so every newborn monster of species 1 already clears it and the \
+                 edge fires at creation under EG2-11 auto-evolution. R4 must reject this edge."
+            ),
+        };
+        assert!(
+            err.contains("R4"),
+            "R4 TEETH: {encoding} was rejected, but not by R4 — got {err:?}. A different rule \
+             tripping on this fixture would hide an unimplemented vacuity floor behind a green \
+             is_err() check."
+        );
+        let edge_needle = format!("edge {edge_id}");
+        assert!(
+            err.contains(edge_needle.as_str()),
+            "R4 TEETH: the rejection for {encoding} must name the offending {edge_needle} so a \
+             content author can find it — got {err:?}."
+        );
+    }
+
+    /// R4: an essence entry with `amount: 0` is not a gate.
+    ///
+    /// `essence_gate_met` compares `instance.essence[..] >= req.amount` on a
+    /// `u32`, and `>= 0` is universally true, so a non-empty essence list can
+    /// still impose nothing.
+    ///
+    /// Kills: an R4 that tests `essence.is_empty()` (field presence) instead of
+    /// `essence.iter().any(|r| r.amount > 0)` (a binding amount).
+    #[test]
+    fn r4_zero_amount_essence_entry_is_not_a_gate() {
+        let mut path = r4_floor_path();
+        path.essence = vec![EssenceRequirement {
+            affinity: Affinity::Fire,
+            amount: 0,
+        }];
+        assert_r4_rejects("an essence entry requiring 0 Fire essence", path);
+    }
+
+    /// R4: `min_trust_tier: Some(TrustTier::Hostile)` is not a gate.
+    ///
+    /// `Hostile` is the lowest `Ord` variant, so the `>=` trust comparison holds
+    /// for every possible smoothed tier.
+    ///
+    /// Kills: an R4 that tests `min_trust_tier.is_none()` instead of
+    /// `min_trust_tier.is_some_and(|t| t > TrustTier::Hostile)`.
+    #[test]
+    fn r4_hostile_trust_floor_is_not_a_gate() {
+        let mut path = r4_floor_path();
+        path.min_trust_tier = Some(TrustTier::Hostile);
+        assert_r4_rejects("a min_trust_tier of Hostile (the lowest tier)", path);
+    }
+
+    /// R4: `min_quality_time_tier: Some(0)` is not a gate — Quality-Time tiers
+    /// run 0..=4 and every monster starts at 0.
+    ///
+    /// Kills: an R4 that tests `min_quality_time_tier.is_none()` instead of
+    /// `is_some_and(|t| t > 0)`.
+    #[test]
+    fn r4_quality_time_tier_zero_is_not_a_gate() {
+        let mut path = r4_floor_path();
+        path.min_quality_time_tier = Some(0);
+        assert_r4_rejects("a min_quality_time_tier of 0 (the lowest tier)", path);
+    }
+
+    /// R4: `min_nutrition_pct: Some(0)` is not a gate — nutrition runs 0..=100
+    /// and a zero-EV monster reads 0.
+    ///
+    /// Kills: an R4 that tests `min_nutrition_pct.is_none()` instead of
+    /// `is_some_and(|p| p > 0)`.
+    #[test]
+    fn r4_nutrition_pct_zero_is_not_a_gate() {
+        let mut path = r4_floor_path();
+        path.min_nutrition_pct = Some(0);
+        assert_r4_rejects("a min_nutrition_pct of 0 (the lowest percentage)", path);
+    }
+
+    /// R4 (anti-over-tightening): a MIXED essence list — one inert entry plus
+    /// one real requirement — is ACCEPTED. The list binds as soon as ANY entry
+    /// binds, because the entries are AND-combined: needing 100 Water is a real
+    /// wall regardless of the vacuous Fire entry sitting beside it.
+    ///
+    /// Kills: the naive over-tightening fix `essence.iter().all(|r| r.amount > 0)`,
+    /// which would reject this perfectly legitimate edge and make an authorable
+    /// content shape unshippable.
+    #[test]
+    fn r4_mixed_essence_list_with_one_real_amount_is_accepted() {
+        let mut path = r4_floor_path();
+        path.essence = vec![
+            EssenceRequirement {
+                affinity: Affinity::Fire,
+                amount: 0,
+            },
+            EssenceRequirement {
+                affinity: Affinity::Water,
+                amount: 100,
+            },
+        ];
+        assert_eq!(
+            validate_evolution_paths(&r4_species(), &[path], &[], &[]),
+            Ok(()),
+            "R4 TEETH: essence entries are AND-combined, so a list containing ONE binding entry \
+             (100 Water) gates the edge no matter how many inert entries sit beside it — an R4 \
+             written with `all(amount > 0)` instead of `any(amount > 0)` wrongly rejects this."
+        );
+    }
+
+    /// R4 (off-by-one): every gate set to EXACTLY one step above its floor is
+    /// ACCEPTED — level 2, essence amount 1, `Wary`, quality-time tier 1,
+    /// nutrition 1%.
+    ///
+    /// Kills: a `>=`-instead-of-`>` comparison copied between gate slots (e.g.
+    /// `amount >= 0` / `tier >= TrustTier::Hostile` / `pct >= 0`), which would
+    /// re-admit the degenerate encodings; and kills the mirror-image
+    /// over-tightening (`> 1`, `> Wary`) that would reject these rows.
+    #[test]
+    fn r4_one_step_above_each_floor_is_accepted() {
+        // (a) level at floor + 1
+        let mut level_row = r4_floor_path();
+        level_row.min_level = Level::new(2).expect("2 is a valid level");
+
+        // (b) essence amount at floor + 1: 1 unit is unreachable for a monster
+        // that has consumed no essence items.
+        let mut essence_row = r4_floor_path();
+        essence_row.essence = vec![EssenceRequirement {
+            affinity: Affinity::Fire,
+            amount: 1,
+        }];
+
+        // (c) trust at floor + 1. DISCLOSURE, read this before "fixing" the row:
+        // Some(Wary) is binding ONLY in the sense R4 tests — it CAN exclude a
+        // monster, namely one whose smoothed Trust has fallen to Hostile. It is
+        // NOT a gate against qualifying at birth: `trust_tier_of(0, 0)` is
+        // Neutral (the Bayesian midpoint, eligibility.rs:170-201), so a newborn
+        // ALREADY satisfies Some(Wary) and Some(Neutral). That at-birth gap is
+        // a KNOWN, DISCLOSED residual deliberately left outside this slice,
+        // whose scope is only "the minimum of its own comparison". This row
+        // pins can-ever-exclude semantics and must NOT be read as endorsing
+        // at-birth qualification; tightening R4 to a birth-proof trust floor is
+        // a separate spec decision, not a bug fix to this assertion.
+        let mut trust_row = r4_floor_path();
+        trust_row.min_trust_tier = Some(TrustTier::Wary);
+
+        // (d) quality-time tier at floor + 1
+        let mut quality_time_row = r4_floor_path();
+        quality_time_row.min_quality_time_tier = Some(1);
+
+        // (e) nutrition percentage at floor + 1
+        let mut nutrition_row = r4_floor_path();
+        nutrition_row.min_nutrition_pct = Some(1);
+
+        for (label, path) in [
+            ("level 2", level_row),
+            ("essence amount 1", essence_row),
+            ("min_trust_tier Wary", trust_row),
+            ("min_quality_time_tier 1", quality_time_row),
+            ("min_nutrition_pct 1", nutrition_row),
+        ] {
+            assert_eq!(
+                validate_evolution_paths(&r4_species(), &[path], &[], &[]),
+                Ok(()),
+                "R4 TEETH: {label} is exactly ONE step above its vacuity floor and therefore CAN \
+                 exclude a monster, so it is a real gate and must be accepted — an R4 whose \
+                 binding test is off by one in either direction breaks this row."
+            );
+        }
+    }
+
+    /// The WEAKEST representable monster: level 1, zero essence, zero EVs, zero
+    /// Quality-Time ticks, and a Trust history chosen to sit in the LOWEST tier.
+    ///
+    /// The non-obvious field is `trust_unfavorable_count: 14`. A zero-history
+    /// monster is NOT the trust floor: `trust_tier_of(0, 0)` is Neutral, the
+    /// Bayesian midpoint. Verified by hand against `eligibility.rs`
+    /// (`TRUST_K = 10`, `TRUST_BAND_PCT = [30, 45, 60, 80]`, cross-multiplied as
+    /// `(fav + K) * 100 >= band * (fav + unfav + 2K)`) with `fav = 0`:
+    ///   unfav 13 -> 1000 >= 30 * 33 = 990  -> first band cleared -> Wary
+    ///   unfav 14 -> 1000 <  30 * 34 = 1020 -> no band cleared    -> Hostile
+    /// so 14 is the first count that reaches Hostile. The pins inside
+    /// `r4_vacuity_floor_agrees_with_path_satisfied` assert this, so a Trust
+    /// retune fails loudly here instead of silently weakening the oracle.
+    fn r4_weakest_monster() -> MonsterInstance {
+        let ivs = IVs::new(0, 0, 0, 0, 0, 0).expect("0 is a valid IV");
+        let nature = Nature::new(NatureKind::Hardy);
+        let evs = EVs::zero();
+        let level = Level::new(1).expect("1 is a valid level");
+        let derived_stats = derive_stats(&valid_base_stats(), &ivs, &evs, &nature, level);
+        MonsterInstance {
+            species_id: 1,
+            nickname: None,
+            level,
+            xp: xp_for_level(level),
+            ivs,
+            nature,
+            evs,
+            essence: [0; 8],
+            trust_favorable_count: 0,
+            trust_unfavorable_count: 14,
+            quality_time_ticks_total: 0,
+            current_hp: derived_stats.hp,
+            derived_stats,
+            party_slot: None,
+        }
+    }
+
+    /// The SSOT drift gate: R4's vacuity floor must agree, edge for edge, with
+    /// the runtime predicate `path_satisfied`.
+    ///
+    /// The biconditional is exactly the rule R4 exists to enforce: an edge is
+    /// vacuous IF AND ONLY IF the weakest representable monster already
+    /// satisfies it. Checking both directions at once means neither an
+    /// under-strict R4 (accepts an edge the weakest monster clears) nor an
+    /// over-strict one (rejects an edge nothing can clear at birth) can pass.
+    ///
+    /// Kills: mutants that ALL of the fixed-value tests above survive, because
+    /// those tests hardcode both sides. Flip `essence_gate_met`'s `>=` to `>` in
+    /// `eligibility.rs`, or swap the `Hostile`/`Wary` declaration order in
+    /// `TrustTier` (the `Ord` derive follows declaration order), and the
+    /// runtime's notion of "the floor" moves while R4's stays put — only a
+    /// cross-check against the real predicate notices.
+    #[test]
+    fn r4_vacuity_floor_agrees_with_path_satisfied() {
+        // Fixture pins FIRST: these three numbers are the non-obvious ones a
+        // future reader would be tempted to simplify away, and every row below
+        // depends on them being the true floor of their axis.
+        assert_eq!(
+            trust_tier_of(0, 13),
+            TrustTier::Wary,
+            "fixture pin: with 13 unfavorable events the smoothed ratio still clears the first \
+             band, so 13 is NOT the trust floor — this is why the weakest monster carries 14."
+        );
+        assert_eq!(
+            trust_tier_of(0, 14),
+            TrustTier::Hostile,
+            "fixture pin: 14 unfavorable events is the first count that reaches Hostile. If Trust \
+             smoothing or the bands are retuned this breaks FIRST, before the oracle rows below \
+             start silently comparing against a monster that is no longer the weakest one."
+        );
+        assert_eq!(
+            quality_time_tier_of(0),
+            0,
+            "fixture pin: zero lifetime ticks is Quality-Time tier 0, the floor a Some(0) gate \
+             fails to rise above."
+        );
+        assert_eq!(
+            nutrition_pct_of(&EVs::zero()),
+            0,
+            "fixture pin: an untrained monster reads 0% nutrition, the floor a Some(0) gate fails \
+             to rise above."
+        );
+
+        let weakest = r4_weakest_monster();
+        assert_eq!(
+            trust_tier_of(weakest.trust_favorable_count, weakest.trust_unfavorable_count),
+            TrustTier::Hostile,
+            "the oracle monster must really sit at the trust floor, otherwise the degenerate \
+             Some(Hostile) row below would pass for the wrong reason."
+        );
+
+        // A vacuous edge with no gate slot used at all — the shape the original
+        // R4 already rejected, carried here so the oracle covers it too.
+        let fully_vacuous = r4_floor_path();
+
+        let mut degenerate_essence = r4_floor_path();
+        degenerate_essence.essence = vec![EssenceRequirement {
+            affinity: Affinity::Fire,
+            amount: 0,
+        }];
+        let mut degenerate_trust = r4_floor_path();
+        degenerate_trust.min_trust_tier = Some(TrustTier::Hostile);
+        let mut degenerate_quality_time = r4_floor_path();
+        degenerate_quality_time.min_quality_time_tier = Some(0);
+        let mut degenerate_nutrition = r4_floor_path();
+        degenerate_nutrition.min_nutrition_pct = Some(0);
+
+        let mut binding_level = r4_floor_path();
+        binding_level.min_level = Level::new(2).expect("2 is a valid level");
+        let mut binding_essence = r4_floor_path();
+        binding_essence.essence = vec![EssenceRequirement {
+            affinity: Affinity::Fire,
+            amount: 1,
+        }];
+        let mut binding_trust = r4_floor_path();
+        binding_trust.min_trust_tier = Some(TrustTier::Wary);
+        let mut binding_quality_time = r4_floor_path();
+        binding_quality_time.min_quality_time_tier = Some(1);
+        let mut binding_nutrition = r4_floor_path();
+        binding_nutrition.min_nutrition_pct = Some(1);
+        let mut mixed_essence = r4_floor_path();
+        mixed_essence.essence = vec![
+            EssenceRequirement {
+                affinity: Affinity::Fire,
+                amount: 0,
+            },
+            EssenceRequirement {
+                affinity: Affinity::Water,
+                amount: 100,
+            },
+        ];
+
+        for (label, path) in [
+            ("fully vacuous edge", fully_vacuous),
+            ("essence amount 0", degenerate_essence),
+            ("min_trust_tier Hostile", degenerate_trust),
+            ("min_quality_time_tier 0", degenerate_quality_time),
+            ("min_nutrition_pct 0", degenerate_nutrition),
+            ("level 2", binding_level),
+            ("essence amount 1", binding_essence),
+            ("min_trust_tier Wary", binding_trust),
+            ("min_quality_time_tier 1", binding_quality_time),
+            ("min_nutrition_pct 1", binding_nutrition),
+            ("mixed essence 0 Fire + 100 Water", mixed_essence),
+        ] {
+            let weakest_qualifies = path_satisfied(&weakest, &path);
+            let validator_rejects =
+                validate_evolution_paths(&r4_species(), &[path], &[], &[]).is_err();
+            assert!(
+                weakest_qualifies == validator_rejects,
+                "R4 SSOT DRIFT ({label}): path_satisfied says the weakest representable monster \
+                 qualifies = {weakest_qualifies}, but the R4 validator rejects = \
+                 {validator_rejects}. These must agree: R4's whole purpose is to reject exactly \
+                 those edges the runtime predicate would let a newborn walk through. A false here \
+                 means either content can ship an edge that auto-evolves at creation, or the \
+                 validator forbids an edge that is genuinely gated."
+            );
+        }
+    }
+
+    // -----------------------------------------------------------------------
     // R5 — tier monotonicity, strict +1
     // -----------------------------------------------------------------------
 
