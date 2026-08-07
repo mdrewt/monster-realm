@@ -147,7 +147,7 @@ export class RaisingView {
 
       const info = document.createElement('div');
       info.style.cssText = 'font-size:12px;margin-top:4px;color:#ccc;';
-      info.textContent = `Lv${mon.level} · Bond ${mon.bond} · HP ${mon.currentHp}/${mon.statHp}`;
+      info.textContent = `Lv${mon.level} · Trust ${mon.trustTier} · HP ${mon.currentHp}/${mon.statHp}`;
       el.appendChild(info);
 
       const stats = document.createElement('div');

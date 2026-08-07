@@ -1134,3 +1134,250 @@ describe('connection.ts wiring (11r-e / ADR-0169 D2): W-UX2B-INGEST — the my_w
     ).toBe(0);
   });
 });
+
+// ===========================================================================
+// EG4 — the `evolution_path` subscription + ingest REPLACES `fusion`.
+//
+// SOURCE OF TRUTH: memory/projects/monster-realm-EG4-contract.md §A1, §B
+// ("Deleted: … 'SELECT * FROM fusion' …"), §G (EARS EG4-5 + the A1 row).
+//
+// RED REASON (verified against client/src/net/connection.ts this session):
+//   * the ONE `.subscribe([...])` array (:568-619) still carries
+//     `'SELECT * FROM fusion'` (:591) and names `evolution_path` nowhere;
+//   * `wireTables` still wires `conn.db.fusion.onInsert/onUpdate/onDelete`
+//     (:308-317) through `ingestFusion` / `fusionRowToStore`, and
+//     `conn.db.evolution_path` appears nowhere in the file.
+// Every tooth below fails on a MISSING implementation, not a typo here.
+//
+// TABLE NAME VERIFIED: client/src/module_bindings/index.ts:162-174 declares
+// `name: 'evolution_path'` (snake_case, matching every other table string in the
+// array). This matters more than usual: a WRONG table name in a subscription does
+// not degrade gracefully — SpacetimeDB rejects the ENTIRE subscription batch,
+// `onApplied` never fires, and every player gets a blank world (the T0 rollout
+// probe recorded in ADR-0087 / conversation-privacy check D).
+//
+// NO `new RegExp(...)` — this file's convention. indexOf / includes / split only.
+// ===========================================================================
+
+describe('★ connection.ts wiring (EG4): W-EG4-SUBSCRIBE — evolution_path is subscribed INSIDE the ONE .subscribe([...]) array', () => {
+  it("★ BITES: the .subscribe([...]) array contains 'SELECT * FROM evolution_path' exactly once", () => {
+    // WRONG IMPL KILLED (a): shipping the converter, the store map and the ingest
+    // handlers and never subscribing the table. Every other EG4 gate can pass while no
+    // row ever arrives — the progress panel renders "no paths" forever and looks like
+    // missing CONTENT rather than missing wiring.
+    // WRONG IMPL KILLED (b): parking the string in a dead module-level constant, a
+    // commented-out line, or a second unreachable .subscribe() call — the WINDOW is
+    // what kills this (precedent: evals/conversation-privacy.eval.mjs:394-420).
+    // WRONG IMPL KILLED (c): subscribing it twice (an over-eager merge) — the ===1.
+    const src = readConnectionTs();
+    // Anti-vacuity: a duplicated/deleted anchor lets a needle-bounded region silently
+    // cover the wrong code (the nh1 post-mortem failure mode).
+    expectUniqueAnchor(src, '.subscribe([');
+    const arrayBody = bodyRegion(src, '.subscribe([', ']);');
+
+    // Anti-vacuity: prove the window really is the subscription array before judging it.
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM monster_pub'"),
+      'the .subscribe([...]) window must still contain the monster_pub subscription — if it ' +
+        'does not, this gate is judging the wrong region and every assertion here is vacuous',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM evolution_path'"),
+      "connection.ts's ONE .subscribe([...]) array must contain 'SELECT * FROM " +
+        "evolution_path' exactly once. The table name is EXACT — module_bindings/index.ts:" +
+        "162-174 declares name: 'evolution_path'. A wrong name (evolutionPath, " +
+        'evolution_paths, EvolutionPath) errors the WHOLE subscription batch and onApplied ' +
+        'never fires: every player gets a blank world, not just an empty panel. RED TODAY',
+    ).toBe(1);
+  });
+
+  it('★ BITES (EG4-5): the .subscribe([...]) array no longer names the fusion table at all', () => {
+    // WRONG IMPL KILLED: adding evolution_path and leaving `'SELECT * FROM fusion'`
+    // behind. EG4-5 deletes ALL fusion wiring; a surviving subscription keeps a table
+    // the client no longer has a store map for streaming rows at every client, and it
+    // is exactly the "partial deletion leaving dead wiring" the contract's §G row for
+    // EG4-5 names.
+    // WINDOWED, comment-stripped, and the POSITIVE is asserted first: "fusion is gone"
+    // is a vacuous truth for an array that also lost evolution_path.
+    const src = readConnectionTs();
+    expectUniqueAnchor(src, '.subscribe([');
+    const arrayBody = bodyRegion(src, '.subscribe([', ']);');
+
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM evolution_path'"),
+      'precondition for the fusion negative: the evolution_path subscription must exist ' +
+        'first, otherwise "fusion is absent" is a vacuous truth. RED TODAY',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM fusion'"),
+      "the .subscribe([...]) array must NOT contain 'SELECT * FROM fusion' — EG4-5 deletes " +
+        'the fusion wiring outright (contract §B). RED TODAY: it is still at ' +
+        'connection.ts:591',
+    ).toBe(0);
+    expect(
+      countOccurrences(arrayBody, 'fusion'),
+      'the comment-stripped .subscribe([...]) array body must not mention `fusion` in ANY ' +
+        'form — a renamed-but-still-present subscription is the same dead wiring',
+    ).toBe(0);
+  });
+});
+
+describe('★ connection.ts wiring (EG4/A1): W-EG4-INGEST — the evolution_path row handlers are wired, keyed by pathId', () => {
+  it('★ BITES: onInsert, onUpdate and onDelete are each registered EXACTLY once on conn.db.evolution_path', () => {
+    // WRONG IMPL KILLED (a): no handlers at all — the subscription delivers rows into
+    // the void and the store map stays empty (today's state: `conn.db.evolution_path`
+    // appears nowhere in connection.ts).
+    // WRONG IMPL KILLED (b): wiring onInsert only. `evolution_path` is a REGULAR public
+    // table with a primary key, not a view, so onUpdate fires normally — and
+    // `sync_content` (server-module/src/content.rs:268-292) republishes by DELETE +
+    // INSERT, so onDelete is not optional either: without it the map only ever grows
+    // and stale edges accumulate across republishes.
+    // WRONG IMPL KILLED (c): registering a handler twice (double schedule per row).
+    const squashed = squashedStrippedConnectionTs();
+    expect(
+      countOccurrences(squashed, 'conn.db.evolution_path.onInsert'),
+      'connection.ts must register exactly one conn.db.evolution_path.onInsert handler. ' +
+        'RED TODAY: conn.db.evolution_path appears nowhere in the file',
+    ).toBe(1);
+    expect(
+      countOccurrences(squashed, 'conn.db.evolution_path.onUpdate'),
+      'connection.ts must register exactly one conn.db.evolution_path.onUpdate handler',
+    ).toBe(1);
+    expect(
+      countOccurrences(squashed, 'conn.db.evolution_path.onDelete'),
+      'connection.ts must register exactly one conn.db.evolution_path.onDelete handler',
+    ).toBe(1);
+  });
+
+  it('★ BITES: the ingest converts through evolutionPathRowToStore and kicks batcher.schedule()', () => {
+    // WRONG IMPL KILLED (a): `store.upsertEvolutionPath(row as unknown as
+    // StoreEvolutionPath)` — the RAW SDK row, so `minTrustTier` stays `{tag,value}`,
+    // absent options stay `undefined` instead of `null`, and the essence list keeps its
+    // tagged-union affinities. Every gate in the eligibility port then silently reads
+    // false and NOTHING is ever eligible.
+    // WRONG IMPL KILLED (b): omitting `batcher.schedule()` — rows land in the store and
+    // nothing re-renders until some UNRELATED table happens to flush. Content arrives
+    // once, at subscription time, so in practice the panel stays blank for the session.
+    const squashed = squashedStrippedConnectionTs();
+    expect(
+      countOccurrences(squashed, 'evolutionPathRowToStore('),
+      'connection.ts must convert evolution_path rows through evolutionPathRowToStore( — ' +
+        'never hand the raw SDK row to the store',
+    ).toBeGreaterThanOrEqual(1);
+
+    const insertIdx = squashed.indexOf('conn.db.evolution_path.onInsert');
+    expect(
+      insertIdx,
+      'connection.ts must contain a conn.db.evolution_path.onInsert handler. RED TODAY',
+    ).toBeGreaterThanOrEqual(0);
+
+    // RED-TEAM CORRECTION (window sizing, not a loosening): a fixed 300-char forward
+    // window from `onInsert` FALSE-REDS the house idiom. Every other table here
+    // (item_row :301-306, the fusion block :308-317, my_conversation :332-...) hoists
+    // the body into a `const ingestX = (row) => { store.upsertX(...); batcher.schedule(); }`
+    // helper declared ABOVE the three registrations, so `batcher.schedule()` sits BEFORE
+    // `onInsert`, and the next occurrence after it is inside onDelete — measured at ~344
+    // chars past `onInsert` once biome wraps at lineWidth 100. The tooth would have forced
+    // a non-idiomatic inline handler or a weakened assertion.
+    //
+    // The region is therefore anchored on the CONVERSION SITE and bounded by the onDelete
+    // registration. This is STRICTLY TIGHTER, not looser: it cannot borrow a neighbouring
+    // table's `batcher.schedule()` (the bound stops inside this table's own block), and it
+    // still reds for the mutant it was written for — an ingest that writes the store and
+    // never kicks the batcher, under EITHER the helper idiom or an inline handler.
+    const convIdx = squashed.indexOf('evolutionPathRowToStore(');
+    expect(
+      convIdx,
+      'connection.ts must contain an evolutionPathRowToStore( call site. RED TODAY',
+    ).toBeGreaterThanOrEqual(0);
+    const ingestEndIdx = squashed.indexOf('conn.db.evolution_path.onDelete');
+    expect(
+      ingestEndIdx,
+      'the evolution_path onDelete registration must exist and FOLLOW the conversion/ingest ' +
+        'site — the house idiom is onInsert/onUpdate/onDelete in that order, and this bound ' +
+        'is what stops the batcher assertion from borrowing the delete handler’s own ' +
+        'schedule() call. RED TODAY',
+    ).toBeGreaterThan(convIdx);
+    const ingestRegion = squashed.slice(convIdx, ingestEndIdx);
+    expect(
+      ingestRegion.includes('batcher.schedule()'),
+      'the evolution_path INSERT/UPDATE ingest must call batcher.schedule() — without the ' +
+        're-render kick the content batch lands silently and the panel never redraws. The ' +
+        'scanned region runs from the evolutionPathRowToStore( call site up to (and NOT ' +
+        'including) the onDelete registration, so the delete handler’s own schedule() ' +
+        'cannot satisfy it',
+    ).toBe(true);
+  });
+
+  it('★★ BITES (A1): the onDelete handler removes by pathId — it must NOT read edgeId', () => {
+    // ★ THE A1 BLOCKER, seen from the wiring side. `sync_content`
+    // (server-module/src/content.rs:268-292) clear-and-reinserts `evolution_path` in ONE
+    // transaction: N deletes + N inserts, the SAME edge_ids, FRESHLY MINTED path_ids, and
+    // the SDK gives NO ordering guarantee between the two halves. A delete handler that
+    // keys off `row.edgeId` therefore wipes the row the insert half just wrote, and the
+    // client's path map silently empties — no error anywhere, the panel just goes blank
+    // until the next republish.
+    // Kills: `store.removeEvolutionPath(row.edgeId)` and any `#paths.delete(edgeId)`
+    // shape reached from this handler.
+    const squashed = squashedStrippedConnectionTs();
+    const deleteIdx = squashed.indexOf('conn.db.evolution_path.onDelete');
+    expect(
+      deleteIdx,
+      'connection.ts must contain a conn.db.evolution_path.onDelete handler. RED TODAY',
+    ).toBeGreaterThanOrEqual(0);
+    // 300 chars — see the sizing note on the insert region above. Deliberately tight:
+    // the `.edgeId` NEGATIVE below must not be able to spill into a neighbouring
+    // table's wiring and red on unrelated code.
+    const deleteRegion = squashed.slice(deleteIdx, deleteIdx + 300);
+
+    expect(
+      deleteRegion.includes('store.removeEvolutionPath('),
+      'the evolution_path onDelete region must call store.removeEvolutionPath(',
+    ).toBe(true);
+    expect(
+      deleteRegion.includes('.pathId'),
+      'the evolution_path onDelete region must remove by `.pathId` — the store is keyed by ' +
+        'pathId (contract §A1) precisely so a republish burst cannot delete a row the same ' +
+        'transaction just inserted',
+    ).toBe(true);
+    expect(
+      deleteRegion.includes('.edgeId'),
+      'the evolution_path onDelete region must NOT read `.edgeId`. sync_content re-mints ' +
+        'path_ids while KEEPING edge_ids, and delivers N deletes + N inserts UNORDERED in ' +
+        'one transaction — an edgeId-keyed delete wipes the freshly inserted row and the ' +
+        'client path map silently empties',
+    ).toBe(false);
+  });
+
+  it('★ BITES (EG4-5): NO fusion ingest survives anywhere in the file', () => {
+    // WHOLE-FILE, not region-bounded: a relocated handler is just as dead as an adjacent
+    // one, and a partial deletion (view-model gone, adapter left behind) is the likely
+    // shape of a half-done EG4-5.
+    // Anti-vacuity: the replacement wiring is asserted first, so "fusion is gone" cannot
+    // be satisfied by deleting the feature instead of replacing it.
+    const squashed = squashedStrippedConnectionTs();
+    expect(
+      countOccurrences(squashed, 'conn.db.evolution_path.onInsert'),
+      'precondition: the evolution_path ingest must exist before "fusion is gone" means ' +
+        'anything. RED TODAY',
+    ).toBe(1);
+
+    for (const needle of [
+      'conn.db.fusion',
+      'ingestFusion',
+      'fusionRowToStore',
+      'SdkFusionRow',
+      'store.upsertFusion',
+      'store.removeFusion',
+    ]) {
+      expect(
+        countOccurrences(squashed, needle),
+        `connection.ts must contain NO occurrence of "${needle}" — EG4-5 deletes ALL fusion ` +
+          'wiring from the adapter (contract §B). RED TODAY: the ingestFusion block is still ' +
+          'at connection.ts:308-317 and the two rowConvert import specifiers at :32/:46',
+      ).toBe(0);
+    }
+  });
+});

@@ -108,7 +108,8 @@ function oneMonsterVm(monsterId: bigint): RaisingViewModel {
         monsterId,
         nickname: 'Aria',
         level: 5,
-        bond: 10,
+        // EG4-4 (contract §E): RaisingMonsterViewModel.bond -> trustTier.
+        trustTier: 'Neutral',
         currentHp: 20,
         statHp: 20,
         statAttack: 5,
@@ -128,7 +129,8 @@ function oneMonsterVm(monsterId: bigint): RaisingViewModel {
 function twoMonsterVm(idA: bigint, idB: bigint): RaisingViewModel {
   const base = {
     level: 5,
-    bond: 10,
+    // EG4-4 (contract §E): RaisingMonsterViewModel.bond -> trustTier.
+    trustTier: 'Neutral' as const,
     currentHp: 20,
     statHp: 20,
     statAttack: 5,
@@ -165,6 +167,82 @@ async function flushPromises(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
 }
+
+// ---------------------------------------------------------------------------
+// EG4-4 — the status line swaps its Bond readout for a Trust-tier readout.
+//
+// SOURCE OF TRUTH: spec EARS EG4-4 ("raisingModel.ts/raisingView.ts SHALL swap
+// their `Bond ${mon.bond}` status-line readout for a trust_tier readout") +
+// contract §E ("raisingView.ts:150 `Bond ${mon.bond}` -> `Trust ${mon.trustTier}`").
+//
+// RED REASON (verified against client/src/ui/raisingView.ts:150 this session):
+//   info.textContent = `Lv${mon.level} · Bond ${mon.bond} · HP …`
+// The word "Bond" is still there and `mon.trustTier` is read nowhere in the file.
+//
+// WHY BOTH HALVES ARE ASSERTED: a half-swap is the realistic failure. Rendering
+// `Bond ${mon.trustTier}` satisfies "the tier name appears"; rendering
+// `Trust ${mon.bond}` satisfies "the word Trust appears" (and would crash to
+// `undefined` once the field is gone). Only the positive AND the negative together
+// close it.
+// ---------------------------------------------------------------------------
+
+describe('★ RaisingView status line (EG4-4): Trust tier replaces the Bond readout', () => {
+  it('★ BITES: the rendered card shows "Trust" AND the tier name, and never the word "Bond"', () => {
+    // WRONG IMPL KILLED (a): the shipped `Bond ${mon.bond}` surviving untouched
+    // (today's state — RED).
+    // WRONG IMPL KILLED (b): the LABEL swapped but the VALUE left on the retired field
+    // (`Trust ${mon.bond}`) — with `bond` gone from the view-model that renders the
+    // literal text "Trust undefined", which this test's tier-name assertion catches.
+    // WRONG IMPL KILLED (c): the VALUE swapped but the label left (`Bond Friendly`) —
+    // caught by the negative.
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks());
+    const vm = oneMonsterVm(1n);
+    view.refresh({
+      ...vm,
+      monsters: [{ ...vm.monsters[0]!, trustTier: 'Friendly' }],
+    });
+
+    const text = overlayRootOf(parent).textContent ?? '';
+    expect(text, 'the raising status line must label the readout "Trust"').toContain('Trust');
+    expect(
+      text,
+      'the raising status line must render the monster\'s OWN trust tier name ("Friendly" ' +
+        'here) — not a placeholder, not "undefined", not a hard-coded tier',
+    ).toContain('Friendly');
+    expect(
+      text.includes('Bond'),
+      'the raising status line must NOT contain the word "Bond" any more — `bond` is retired ' +
+        'from StoreMonsterPub and from RaisingMonsterViewModel (contract §B/§E). RED TODAY: ' +
+        'raisingView.ts:150 still renders `Bond ${mon.bond}`',
+    ).toBe(false);
+    expect(text.includes('undefined'), 'no field may render as the literal "undefined"').toBe(
+      false,
+    );
+  });
+
+  it('★ BITES: the tier name is read PER MONSTER, not hard-coded (two monsters, two tiers)', () => {
+    // WRONG IMPL KILLED: `Trust Neutral` written as a literal, or the tier read once
+    // and reused for every card in the loop. Two monsters with DIFFERENT tiers, both
+    // rendered from the same refresh(), is what separates "reads mon.trustTier" from
+    // "prints something tier-shaped".
+    const parent = mountParent();
+    const view = new RaisingView(parent, makeCallbacks());
+    const vm = twoMonsterVm(1n, 2n);
+    view.refresh({
+      ...vm,
+      monsters: [
+        { ...vm.monsters[0]!, trustTier: 'Hostile' },
+        { ...vm.monsters[1]!, trustTier: 'Devoted' },
+      ],
+    });
+
+    const text = overlayRootOf(parent).textContent ?? '';
+    expect(text).toContain('Hostile');
+    expect(text).toContain('Devoted');
+    expect(text.includes('Bond')).toBe(false);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // C1: showFeedback writes the message into the feedback node's textContent.

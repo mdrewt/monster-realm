@@ -20,6 +20,7 @@ import { buildBattleViewModel } from '../ui/battleModel';
 import { npcRowToStore } from './rowConvert';
 import {
   AuthoritativeStore,
+  type EssenceByAffinity,
   // 11r-b (ADR-0167): ownPerspective does NOT exist on master yet — every T-OWNP-* test
   // below is RED at authoring time on a missing export (see the describe block's own
   // RED-reason comment).
@@ -28,6 +29,8 @@ import {
   type StoreBattleMonster,
   type StoreBattleSide,
   type StoreCharacter,
+  // EG4 (contract §B): the essence-graph path row, keyed in the store by `pathId` (A1).
+  type StoreEvolutionPath,
   type StoreInventory,
   type StoreItemRow,
   type StoreMonsterPub,
@@ -312,7 +315,26 @@ describe('AuthoritativeStore: properties (fast-check)', () => {
 // SOURCE OF TRUTH: specs/monster-realm-v2/M6-box-party.spec.md
 // =============================================================================
 
-/** Factory: minimal valid StoreMonsterPub. All fields required by the interface. */
+/** EG4: the 8-affinity essence record carried on every StoreMonsterPub (contract §B).
+ *  DISTINCT per-affinity defaults are deliberate — a Wind/Light column swap in the
+ *  converter is invisible against an all-zero record. */
+function essenceRecord(overrides: Partial<EssenceByAffinity> = {}): EssenceByAffinity {
+  return {
+    Fire: 0,
+    Water: 0,
+    Plant: 0,
+    Electric: 0,
+    Earth: 0,
+    Wind: 0,
+    Light: 0,
+    Dark: 0,
+    ...overrides,
+  };
+}
+
+/** Factory: minimal valid StoreMonsterPub. All fields required by the interface.
+ *  EG4 (contract §B): `bond` and `evolvesTo` are GONE; `tier`, `essence`,
+ *  `trustTier`, `qualityTimeTier` and `nutritionPct` are now required. */
 function monsterPub(monsterId: bigint, ownerIdentity = 'dead', partySlot = 255): StoreMonsterPub {
   return {
     monsterId,
@@ -321,7 +343,11 @@ function monsterPub(monsterId: bigint, ownerIdentity = 'dead', partySlot = 255):
     nickname: '',
     level: 5,
     xp: 0,
-    bond: 0,
+    tier: 0,
+    essence: essenceRecord(),
+    trustTier: 'Neutral',
+    qualityTimeTier: 0,
+    nutritionPct: 0,
     currentHp: 20,
     statHp: 20,
     statAttack: 10,
@@ -503,6 +529,11 @@ describe('AuthoritativeStore M6c: StoreMonsterPub type contract (no hidden field
 
   it('BITES: StoreMonsterPub has all required public stat fields', () => {
     // Kills: an impl that strips stats together with the hidden fields.
+    //
+    // EG4 (contract §B, EARS EG4-7): `bond` is REMOVED from the list and the five
+    // essence-graph fields are added. Editing the FACTORY alone is not enough — this
+    // list is the contract, and it is what makes "the tier readout was never wired"
+    // a red rather than a silent omission.
     const m = monsterPub(1n);
     const keys = Object.keys(m);
     const required = [
@@ -512,7 +543,6 @@ describe('AuthoritativeStore M6c: StoreMonsterPub type contract (no hidden field
       'nickname',
       'level',
       'xp',
-      'bond',
       'currentHp',
       'statHp',
       'statAttack',
@@ -521,6 +551,12 @@ describe('AuthoritativeStore M6c: StoreMonsterPub type contract (no hidden field
       'statSpAttack',
       'statSpDefense',
       'partySlot',
+      // EG4 additions (contract §B):
+      'tier',
+      'essence',
+      'trustTier',
+      'qualityTimeTier',
+      'nutritionPct',
     ];
     for (const field of required) {
       expect(keys).toContain(field);
@@ -1428,183 +1464,392 @@ describe('AuthoritativeStore M9c: inventoryCount property (fast-check)', () => {
 });
 
 // =============================================================================
-// M10c extension: StoreFusionRow — upsert / remove / iterate / reset / batch
-// SOURCE OF TRUTH: specs/monster-realm-v2/M10c (Client evolution/fuse UI)
+// EG4-5 / A1 extension: StoreEvolutionPath REPLACES StoreFusionRow.
+// SOURCE OF TRUTH: memory/projects/monster-realm-EG4-contract.md §A1 + §B + §G.
 //
-// These tests are INTENTIONALLY RED until the fusion map is added to
-// AuthoritativeStore and StoreFusionRow is exported from store.ts.
+// The whole M10c fusion suite that used to live here is DELETED, not adapted:
+// EG4-5 removes `StoreFusionRow`, `#fusions`, `upsertFusion`, `removeFusion`,
+// `fusions()`, `fusionCount` and the `reset()` fusion clear outright.
+//
+// RED REASON (verified against client/src/net/store.ts this session): the store
+// exports no `StoreEvolutionPath`, has no `#evolutionPaths` map, and no
+// `upsertEvolutionPath` / `removeEvolutionPath` / `evolutionPaths()` /
+// `evolutionPathCount` member. Every test below fails on a MISSING IMPLEMENTATION
+// (`s.upsertEvolutionPath is not a function`), not on a fixture typo. Conversely
+// the EG4-5 deletion suite is red the other way round: `upsertFusion` et al are
+// still very much defined (store.ts:546-553, :844-850).
 // =============================================================================
 
-/** Factory: minimal valid StoreFusionRow. */
-function fusionRow(fusionId: bigint, aSpecies = 1, bSpecies = 2, toSpecies = 3): StoreFusionRow {
-  return { fusionId, aSpecies, bSpecies, toSpecies };
+/** Factory: minimal valid StoreEvolutionPath (contract §B).
+ *  `pathId` and `edgeId` are SEPARATE parameters on purpose — the A1 tests below
+ *  need to vary them independently. */
+function evoPath(
+  pathId: bigint,
+  edgeId: number,
+  overrides: Partial<StoreEvolutionPath> = {},
+): StoreEvolutionPath {
+  return {
+    pathId,
+    edgeId,
+    fromSpecies: 1,
+    toSpecies: 2,
+    minLevel: 10,
+    essence: [],
+    minTrustTier: null,
+    minQualityTimeTier: null,
+    minNutritionPct: null,
+    ...overrides,
+  };
 }
 
-describe('AuthoritativeStore M10c: fusion upsert + fusionCount', () => {
-  it('BITES: upsertFusion stores a StoreFusionRow; fusionCount increments from 0 to 1', () => {
-    // Kills: an impl that ignores upsertFusion or that never initializes the fusion map.
-    // A fusionCount getter that always returns 0 is killed by the second assertion.
+describe('AuthoritativeStore EG4: evolution-path upsert + evolutionPathCount', () => {
+  it('BITES: upsertEvolutionPath stores the row; evolutionPathCount goes 0 -> 1', () => {
+    // Kills: an impl that exposes the method but never writes to the map, and a
+    // `evolutionPathCount` getter hard-wired to 0.
     const s = new AuthoritativeStore();
-    expect(s.fusionCount).toBe(0);
-    s.upsertFusion(fusionRow(1n, 1, 2, 3));
-    expect(s.fusionCount).toBe(1);
+    expect(s.evolutionPathCount).toBe(0);
+    s.upsertEvolutionPath(evoPath(1n, 7));
+    expect(s.evolutionPathCount).toBe(1);
   });
 
-  it('BITES: re-inserting the same fusionId (idempotent reconnect) overwrites; count stays 1', () => {
-    // Reconnect scenario: the subscription may replay the same row. A Map overwrite
-    // must prevent duplication. Count staying at 1 kills any array-based impl.
-    // Kills: an impl that appends on re-insert instead of overwriting.
+  it('BITES: re-inserting the SAME pathId overwrites (keyed Map, reconnect-idempotent); count stays 1', () => {
+    // Kills: an array-backed store that appends on a subscription replay — after a
+    // reconnect the same content rows arrive again and the panel would list every
+    // edge twice.
     const s = new AuthoritativeStore();
-    s.upsertFusion(fusionRow(1n, 1, 2, 3));
-    s.upsertFusion({ fusionId: 1n, aSpecies: 1, bSpecies: 2, toSpecies: 99 }); // same id, changed toSpecies
-    expect(s.fusionCount).toBe(1);
-    // last-write wins: toSpecies must be 99 from the second upsert
-    const rows = [...s.fusions()];
+    s.upsertEvolutionPath(evoPath(1n, 7, { toSpecies: 2 }));
+    s.upsertEvolutionPath(evoPath(1n, 7, { toSpecies: 99 }));
+    expect(s.evolutionPathCount).toBe(1);
+    const rows = [...s.evolutionPaths()];
     expect(rows).toHaveLength(1);
-    expect(rows[0]!.toSpecies).toBe(99);
+    expect(rows[0]!.toSpecies).toBe(99); // last-write wins
   });
 
-  it('BITES: two distinct fusionIds → fusionCount is 2', () => {
-    // Kills: a fusionCount that always returns 1 or reads from the wrong map.
+  it('BITES: every field survives the round trip (no silent field drop)', () => {
+    // Kills: an impl that stores a narrowed projection — dropping `minNutritionPct`
+    // (or collapsing the essence list) silently makes an unsatisfiable path look
+    // satisfied in the EG4-1 progress panel.
     const s = new AuthoritativeStore();
-    s.upsertFusion(fusionRow(1n, 1, 2, 3));
-    s.upsertFusion(fusionRow(2n, 4, 5, 6));
-    expect(s.fusionCount).toBe(2);
+    const row = evoPath(3n, 11, {
+      fromSpecies: 7,
+      toSpecies: 30,
+      minLevel: 15,
+      essence: [{ affinity: 'Water', amount: 100 }],
+      minTrustTier: 'Friendly',
+      minQualityTimeTier: 2,
+      minNutritionPct: 60,
+    });
+    s.upsertEvolutionPath(row);
+    expect([...s.evolutionPaths()][0]).toEqual(row);
+  });
+
+  it('BITES: two DISTINCT pathIds coexist — evolutionPathCount is 2', () => {
+    // Kills: a single-slot field masquerading as a map.
+    const s = new AuthoritativeStore();
+    s.upsertEvolutionPath(evoPath(1n, 7));
+    s.upsertEvolutionPath(evoPath(2n, 8));
+    expect(s.evolutionPathCount).toBe(2);
+  });
+
+  it('BITES (A1): the store is keyed by pathId — TWO rows sharing one edgeId coexist', () => {
+    // Kills: `Map<number /* edgeId */, StoreEvolutionPath>`. This is the structural
+    // half of the A1 blocker: `sync_content` (server-module/src/content.rs:268-292)
+    // clear-and-reinserts the whole table in ONE transaction, re-minting `path_id`
+    // while KEEPING `edge_id`, so during the burst two live rows legitimately carry
+    // the same edgeId. An edgeId-keyed map collapses them to one.
+    const s = new AuthoritativeStore();
+    s.upsertEvolutionPath(evoPath(5n, 7));
+    s.upsertEvolutionPath(evoPath(9n, 7));
+    expect(s.evolutionPathCount).toBe(2);
+    expect([...s.evolutionPaths()].map((p) => p.pathId).sort()).toEqual([5n, 9n]);
+  });
+
+  it('BITES: pathId is bigint-exact across the 2^53 boundary (no Number() key coercion)', () => {
+    // 2^53 and 2^53+1 collapse to the SAME JS number. `path_id` is a u64 auto_inc,
+    // so a Number()-keyed map silently merges two distinct rows.
+    // Kills: `Map<number, …>` fed by `Number(row.pathId)`.
+    const s = new AuthoritativeStore();
+    s.upsertEvolutionPath(evoPath(9007199254740992n, 1)); // 2^53
+    s.upsertEvolutionPath(evoPath(9007199254740993n, 2)); // 2^53 + 1
+    expect(s.evolutionPathCount).toBe(2);
   });
 });
 
-describe('AuthoritativeStore M10c: removeFusion', () => {
-  it('BITES: removeFusion removes the row; fusionCount goes back to 0', () => {
-    // Kills: an impl where removeFusion is a no-op or removes from the wrong map.
+describe('AuthoritativeStore EG4: removeEvolutionPath', () => {
+  it('BITES: removeEvolutionPath(pathId) deletes that row; the count drops back to 0', () => {
+    // Kills: a no-op remove, or one that removes from the wrong map.
     const s = new AuthoritativeStore();
-    s.upsertFusion(fusionRow(7n, 1, 2, 3));
-    expect(s.fusionCount).toBe(1);
-    s.removeFusion(7n);
-    expect(s.fusionCount).toBe(0);
+    s.upsertEvolutionPath(evoPath(7n, 3));
+    expect(s.evolutionPathCount).toBe(1);
+    s.removeEvolutionPath(7n);
+    expect(s.evolutionPathCount).toBe(0);
+    expect([...s.evolutionPaths()]).toHaveLength(0);
   });
 
-  it('BITES: removeFusion on unknown fusionId does NOT throw and does NOT increase fusionCount', () => {
-    // Safety: a no-op delete must be silent, not an exception.
-    // Kills: an impl that throws on a missing key or increments count on a no-op.
+  it('BITES: removeEvolutionPath on an ABSENT pathId is a silent no-op — never throws, count unchanged', () => {
+    // The A1 delete/insert burst guarantees this path is taken: an onDelete for a row
+    // whose freshly-minted twin already replaced it must not explode. A throw inside a
+    // subscription callback kills the ENTIRE flushBatch burst — flushBatch has no
+    // per-callback isolation on the ingest side (store.ts:608-621 isolates listeners,
+    // NOT ingest).
+    // Kills: `if (!this.#evolutionPaths.has(id)) throw …` and any assert-style guard.
     const s = new AuthoritativeStore();
-    expect(() => s.removeFusion(999n)).not.toThrow();
-    expect(s.fusionCount).toBe(0);
-  });
-});
-
-describe('AuthoritativeStore M10c: fusions() iterator', () => {
-  it('BITES: fusions() iterates all stored StoreFusionRow values', () => {
-    // Kills: an impl where fusions() returns an empty iterator or a non-iterable.
-    const s = new AuthoritativeStore();
-    const r1 = fusionRow(1n, 10, 11, 12);
-    const r2 = fusionRow(2n, 20, 21, 22);
-    s.upsertFusion(r1);
-    s.upsertFusion(r2);
-    const all = [...s.fusions()];
-    expect(all).toHaveLength(2);
-    // Both rows present (order is Map-insertion order — not contractually required,
-    // but the values must match what was inserted):
-    const fusionIds = all.map((f) => f.fusionId);
-    expect(fusionIds).toContain(1n);
-    expect(fusionIds).toContain(2n);
-    const row1 = all.find((f) => f.fusionId === 1n)!;
-    expect(row1.aSpecies).toBe(10);
-    expect(row1.bSpecies).toBe(11);
-    expect(row1.toSpecies).toBe(12);
-  });
-
-  it('BITES: fusions() on empty store returns an empty iterator (no crash, no undefined)', () => {
-    // Kills: an impl that returns undefined or throws when no fusions exist.
-    const s = new AuthoritativeStore();
+    s.upsertEvolutionPath(evoPath(1n, 3));
     expect(() => {
-      const result = [...s.fusions()];
-      expect(result).toHaveLength(0);
+      s.removeEvolutionPath(999n);
     }).not.toThrow();
-  });
-});
-
-describe('AuthoritativeStore M10c: reset() clears the fusion map', () => {
-  it('BITES: reset() clears the fusion map (fusionCount → 0)', () => {
-    // Kills: an impl whose reset() does not clear the fusion map, allowing
-    // stale fusion rows from a prior session to bleed into a fresh session.
-    const s = new AuthoritativeStore();
-    s.upsertFusion(fusionRow(1n, 1, 2, 3));
-    s.upsertFusion(fusionRow(2n, 4, 5, 6));
-    expect(s.fusionCount).toBe(2);
-    s.reset();
-    expect(s.fusionCount).toBe(0);
-    expect([...s.fusions()]).toHaveLength(0);
+    expect(s.evolutionPathCount).toBe(1);
+    expect(() => {
+      s.removeEvolutionPath(999n);
+    }).not.toThrow(); // idempotent on an empty-of-that-key map too
   });
 
-  it('BITES: reset() still clears monster rows (existing reset behavior is unchanged)', () => {
-    // Regression: adding the fusion map must NOT break the existing monster clear.
-    // Kills: an impl that only clears fusions and accidentally omits the monster clear.
-    const s = new AuthoritativeStore();
-    s.upsertMonster(monsterPub(1n, 'alice'));
-    s.upsertFusion(fusionRow(10n, 1, 2, 3));
-    s.reset();
-    expect(s.monsterCount).toBe(0); // existing behavior preserved
-    expect(s.fusionCount).toBe(0); // new behavior
-  });
-
-  it('BITES: reset() clears fusions AND monsters AND existing maps; listeners survive', () => {
-    // Combined gate: all maps are clean after reset; the loop listener is retained.
-    // Kills: an impl that clears only some maps, or that removes listeners on reset.
+  it('BITES: removeEvolutionPath on an absent pathId does NOT mark the batch dirty (no phantom re-render)', () => {
+    // Kills: an unconditional `this.#dirty = true` in the remove path — the A1 burst
+    // delivers many such no-op deletes, each one forcing a pointless full re-render.
     const s = new AuthoritativeStore();
     const cb = vi.fn();
     s.onBatchApplied(cb);
-    s.upsertFusion(fusionRow(5n, 1, 2, 3));
-    s.upsertMonster(monsterPub(1n, 'p'));
-    s.reset();
-    expect(s.fusionCount).toBe(0);
-    expect(s.monsterCount).toBe(0);
-    // Post-reset batch must still reach the still-registered listener
-    s.upsertFusion(fusionRow(6n, 7, 8, 9));
-    s.flushBatch();
-    expect(cb).toHaveBeenCalledTimes(1);
-  });
-});
-
-describe('AuthoritativeStore M10c: upsertFusion/removeFusion mark dirty (flushBatch fires)', () => {
-  it('BITES: upsertFusion marks dirty so flushBatch fires the batch listener', () => {
-    // Kills: an impl that stores the fusion but forgets to set #dirty = true.
-    // A listener that never fires means the render loop never updates after a fusion arrives.
-    const s = new AuthoritativeStore();
-    const cb = vi.fn();
-    s.onBatchApplied(cb);
-    s.upsertFusion(fusionRow(1n, 1, 2, 3));
-    expect(cb).toHaveBeenCalledTimes(0); // not yet — flush hasn't been called
-    s.flushBatch();
-    expect(cb).toHaveBeenCalledTimes(1); // dirty was set → listener fired
-  });
-
-  it('BITES: removeFusion marks dirty so flushBatch fires the batch listener', () => {
-    // Kills: an impl where removeFusion deletes the row but never sets #dirty = true.
-    // The render loop would not know a fusion was removed and would show stale data.
-    const s = new AuthoritativeStore();
-    const cb = vi.fn();
-    s.onBatchApplied(cb);
-    s.upsertFusion(fusionRow(2n, 4, 5, 6));
-    s.flushBatch(); // consume the upsert dirty
-    cb.mockClear();
-    s.removeFusion(2n);
-    s.flushBatch();
-    expect(cb).toHaveBeenCalledTimes(1); // remove also marked dirty
-  });
-
-  it('BITES: removeFusion on unknown id does NOT mark dirty (no phantom re-renders)', () => {
-    // Kills: an impl that marks dirty even on a no-op delete, causing spurious re-renders.
-    const s = new AuthoritativeStore();
-    const cb = vi.fn();
-    s.onBatchApplied(cb);
-    s.removeFusion(999n); // never inserted
+    s.removeEvolutionPath(999n);
     s.flushBatch();
     expect(cb).toHaveBeenCalledTimes(0);
   });
 });
 
-// Import the new type so TS errors are part of the red state
-import type { StoreFusionRow } from './store';
+// ---------------------------------------------------------------------------
+// ★ A1 — THE BLOCKER. `sync_content` (server-module/src/content.rs:268-292) does
+// N deletes + N inserts of `evolution_path` in ONE transaction with the SAME
+// edge_ids and FRESHLY MINTED path_ids, and the SDK gives NO ordering guarantee
+// between the two halves. Keying by pathId is what makes callback order irrelevant.
+// ---------------------------------------------------------------------------
+
+describe('★ AuthoritativeStore EG4 (A1): a content republish burst never empties the path map', () => {
+  it('★ BITES: onInsert(pathId 9, edge 7) THEN onDelete(pathId 5, edge 7) — edge 7 SURVIVES', () => {
+    // THE ordering that kills an edgeId-keyed store: the new row lands first, then the
+    // stale delete for the SAME edge arrives and wipes the row that was just written.
+    // The client's path map silently empties and the whole EG4-1 progress panel goes
+    // blank until the next republish — with no error anywhere.
+    // Kills: `Map<number /* edgeId */, …>` + `#paths.delete(row.edgeId)`.
+    const s = new AuthoritativeStore();
+    s.upsertEvolutionPath(evoPath(5n, 7, { toSpecies: 42 })); // the pre-republish row
+    s.flushBatch();
+
+    s.upsertEvolutionPath(evoPath(9n, 7, { toSpecies: 43 })); // republished: NEW pathId, SAME edgeId
+
+    // RED-TEAM ADDITION — the MID-BURST assertion, which is what actually makes THIS
+    // ordering discriminate. Without it, an edgeId-keyed store whose removeEvolutionPath
+    // SCANS for the matching pathId passes both order tests: the insert has already
+    // overwritten key 7, so the scan finds nothing, and the end state (one row, pathId 9n)
+    // is identical to the correct store's. The distinguishing observation is HERE, between
+    // the two callbacks — the SDK delivers them as separate callbacks inside one
+    // transaction, so this intermediate state is genuinely observable by any listener that
+    // runs before flushBatch. A pathId-keyed map holds BOTH rows; an edgeId-keyed map has
+    // already collapsed them to one.
+    expect(
+      s.evolutionPathCount,
+      'MID-BURST (A1): after the republished insert but BEFORE the stale delete, the stale ' +
+        'row (pathId 5) and the fresh row (pathId 9) must BOTH be live — they are distinct ' +
+        'rows that merely share an edgeId. A count of 1 here means the map is keyed by ' +
+        'edgeId and the insert silently destroyed a row the transaction had not deleted yet',
+    ).toBe(2);
+
+    s.removeEvolutionPath(5n); // the stale delete, arriving SECOND
+
+    const rows = [...s.evolutionPaths()];
+    expect(
+      rows.map((p) => p.edgeId),
+      'edge 7 must still be present after a same-transaction re-insert + stale delete',
+    ).toEqual([7]);
+    expect(rows[0]!.pathId).toBe(9n); // the freshly-minted row, not the deleted one
+    expect(
+      rows[0]!.toSpecies,
+      'the SURVIVOR must be the republished row (toSpecies 43), not the stale one (42) — ' +
+        'distinct payloads so "a row with edgeId 7 survived" cannot be satisfied by the ' +
+        'wrong row',
+    ).toBe(43);
+    expect(s.evolutionPathCount).toBe(1);
+  });
+
+  it('★ BITES: the REVERSE order — onDelete(pathId 5, edge 7) THEN onInsert(pathId 9, edge 7) — edge 7 SURVIVES', () => {
+    // Same burst, opposite arrival order. An edgeId-keyed store happens to survive THIS
+    // ordering, which is exactly why the ordering above must be tested too: a wrong impl
+    // is green half the time and the defect presents as an intermittent blank panel.
+    // Kills: a "fix" that special-cases delete-before-insert only.
+    const s = new AuthoritativeStore();
+    s.upsertEvolutionPath(evoPath(5n, 7, { toSpecies: 42 }));
+    s.flushBatch();
+
+    s.removeEvolutionPath(5n);
+    s.upsertEvolutionPath(evoPath(9n, 7, { toSpecies: 43 }));
+
+    const rows = [...s.evolutionPaths()];
+    expect(rows.map((p) => p.edgeId)).toEqual([7]);
+    expect(rows[0]!.pathId).toBe(9n);
+    // Distinct payloads (43, not the stale 42) — see the note on the forward-order case.
+    expect(rows[0]!.toSpecies).toBe(43);
+    expect(s.evolutionPathCount).toBe(1);
+  });
+
+  it('★ BITES: a FULL 3-edge republish burst, interleaved insert/delete, leaves exactly the 3 new rows', () => {
+    // The realistic shape of the transaction: all three edges re-minted, deletes and
+    // inserts interleaved arbitrarily. An edgeId-keyed store ends with 0-2 rows here
+    // depending on interleaving; the pathId-keyed store always ends with exactly 3,
+    // carrying the NEW pathIds.
+    // Kills: edgeId keying, and any "last write wins per edge" dedupe layer.
+    const s = new AuthoritativeStore();
+    for (const [pid, eid] of [
+      [1n, 7],
+      [2n, 8],
+      [3n, 9],
+    ] as const) {
+      s.upsertEvolutionPath(evoPath(pid, eid));
+    }
+    s.flushBatch();
+
+    // The republish burst, deliberately interleaved and NOT delete-first:
+    s.upsertEvolutionPath(evoPath(11n, 7));
+    s.removeEvolutionPath(1n);
+    s.removeEvolutionPath(2n);
+    s.upsertEvolutionPath(evoPath(12n, 8));
+    s.upsertEvolutionPath(evoPath(13n, 9));
+    s.removeEvolutionPath(3n);
+
+    const rows = [...s.evolutionPaths()];
+    expect(rows).toHaveLength(3);
+    expect(rows.map((p) => p.edgeId).sort((a, b) => a - b)).toEqual([7, 8, 9]);
+    expect(rows.map((p) => p.pathId).sort()).toEqual([11n, 12n, 13n]);
+  });
+});
+
+describe('AuthoritativeStore EG4: evolutionPaths() iterator + reset()', () => {
+  it('BITES: evolutionPaths() on an empty store yields an EMPTY iterable (never undefined, never a throw)', () => {
+    // Kills: an accessor that returns undefined before the first row arrives — every
+    // caller spreads it (`[...store.evolutionPaths()]`, contract §F).
+    const s = new AuthoritativeStore();
+    expect(() => {
+      expect([...s.evolutionPaths()]).toHaveLength(0);
+    }).not.toThrow();
+  });
+
+  it('BITES: evolutionPaths() yields every stored row', () => {
+    // Kills: an accessor wired to the wrong map (returns [] forever).
+    const s = new AuthoritativeStore();
+    s.upsertEvolutionPath(evoPath(1n, 7, { fromSpecies: 1, toSpecies: 2 }));
+    s.upsertEvolutionPath(evoPath(2n, 8, { fromSpecies: 1, toSpecies: 3 }));
+    const all = [...s.evolutionPaths()];
+    expect(all).toHaveLength(2);
+    expect(all.map((p) => p.edgeId).sort((a, b) => a - b)).toEqual([7, 8]);
+  });
+
+  it('BITES: reset() CLEARS the evolution-path map (no stale content across a reconnect)', () => {
+    // Kills: a `reset()` that forgets the new map — after switching identity the panel
+    // would still be driven by the previous session's content rows.
+    const s = new AuthoritativeStore();
+    s.upsertEvolutionPath(evoPath(1n, 7));
+    s.upsertEvolutionPath(evoPath(2n, 8));
+    expect(s.evolutionPathCount).toBe(2);
+    s.reset();
+    expect(s.evolutionPathCount).toBe(0);
+    expect([...s.evolutionPaths()]).toHaveLength(0);
+  });
+
+  it('BITES: reset() still clears monsters too, and batch listeners survive (existing contract intact)', () => {
+    // Regression frame: adding a map must not disturb reset()'s existing duties.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.upsertMonster(monsterPub(1n, 'p'));
+    s.upsertEvolutionPath(evoPath(1n, 7));
+    s.reset();
+    expect(s.monsterCount).toBe(0);
+    expect(s.evolutionPathCount).toBe(0);
+    s.upsertEvolutionPath(evoPath(2n, 8));
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AuthoritativeStore EG4: upsert/removeEvolutionPath mark the batch dirty', () => {
+  it('BITES: upsertEvolutionPath marks dirty so flushBatch fires the listener', () => {
+    // Kills: an ingest that writes the map but never sets #dirty — content arrives and
+    // nothing re-renders until some unrelated table happens to flush.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.upsertEvolutionPath(evoPath(1n, 7));
+    expect(cb).toHaveBeenCalledTimes(0); // not mid-batch
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('BITES: a REAL removeEvolutionPath marks dirty so flushBatch fires', () => {
+    // Kills: a delete that mutates the map but never sets #dirty (paired with the
+    // absent-id no-op test above, this pins BOTH arms of the conditional).
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.upsertEvolutionPath(evoPath(2n, 8));
+    s.flushBatch();
+    cb.mockClear();
+    s.removeEvolutionPath(2n);
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('★ AuthoritativeStore EG4-5: the fusion store surface is DELETED, not merely unused', () => {
+  it('★ BITES: upsertFusion / removeFusion / fusions / fusionCount are all undefined on a store instance', () => {
+    // EG4-5 says "ALL fusion-wiring SHALL be deleted". A PARTIAL deletion — the picker
+    // and view-model gone but the store methods left behind — is the likely outcome and
+    // is invisible to every other test in this slice: dead ingest wiring that still
+    // compiles, still runs, and still accumulates rows nothing reads.
+    // Kills: leaving `#fusions` + its four members in place "just in case".
+    // (Runtime probe, not a type probe: client/tsconfig.json excludes **/*.test.ts, so a
+    // tsc-only assertion would gate nothing.)
+    const s = new AuthoritativeStore();
+    const probe = s as unknown as Record<string, unknown>;
+    expect(
+      probe.upsertFusion,
+      'upsertFusion must be deleted from AuthoritativeStore',
+    ).toBeUndefined();
+    expect(
+      probe.removeFusion,
+      'removeFusion must be deleted from AuthoritativeStore',
+    ).toBeUndefined();
+    expect(probe.fusions, 'fusions() must be deleted from AuthoritativeStore').toBeUndefined();
+    expect(
+      probe.fusionCount,
+      'the fusionCount getter must be deleted from AuthoritativeStore',
+    ).toBeUndefined();
+  });
+
+  it('★ BITES: the replacement surface IS present (anti-vacuity for the deletion gate above)', () => {
+    // Without this, "fusion is gone" would be satisfied by a store that has neither
+    // fusion NOR evolution paths — i.e. by deleting the feature instead of replacing it.
+    const s = new AuthoritativeStore();
+    const probe = s as unknown as Record<string, unknown>;
+    expect(typeof probe.upsertEvolutionPath).toBe('function');
+    expect(typeof probe.removeEvolutionPath).toBe('function');
+    expect(typeof probe.evolutionPaths).toBe('function');
+    expect(s.evolutionPathCount).toBe(0);
+  });
+});
+
+describe('AuthoritativeStore EG4: evolutionPathCount property (fast-check)', () => {
+  it('BITES: evolutionPathCount equals the number of DISTINCT pathIds after random upserts', () => {
+    // Kills: array-backed accumulation (inflates on replay) and edgeId keying (deflates
+    // whenever two generated pathIds happen to share the constant edgeId used here).
+    fc.assert(
+      fc.property(fc.array(fc.bigInt({ min: 0n, max: 30n }), { maxLength: 50 }), (ids) => {
+        const s = new AuthoritativeStore();
+        for (const id of ids) {
+          s.upsertEvolutionPath(evoPath(id, 7));
+        }
+        expect(s.evolutionPathCount).toBe(new Set(ids).size);
+      }),
+    );
+  });
+});
 
 // =============================================================================
 // M11c extension: store.resetCharacters() (C3)
@@ -1617,7 +1862,7 @@ import type { StoreFusionRow } from './store';
 // Contract:
 //   - resetCharacters() clears ONLY the #chars map.
 //   - It does NOT touch #players, #monsters, #species, #battles, #skills,
-//     #inventory, #itemDefs, or #fusions.
+//     #inventory, #itemDefs, or #evolutionPaths (EG4-5: #fusions is gone).
 // =============================================================================
 
 describe('AuthoritativeStore M11c C3: resetCharacters() clears only the character map', () => {

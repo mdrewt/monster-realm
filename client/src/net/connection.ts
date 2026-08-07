@@ -29,7 +29,7 @@ import {
   battleChallengeRowToStore,
   battleRowToStore,
   characterRowToStore,
-  fusionRowToStore,
+  evolutionPathRowToStore,
   healLocationRowToStore,
   inventoryRowToStore,
   itemRowToStore,
@@ -43,7 +43,7 @@ import {
   type SdkBattleChallengeRow,
   type SdkBattleRow,
   type SdkCharacterRow,
-  type SdkFusionRow,
+  type SdkEvolutionPathRow,
   type SdkInventoryRow,
   type SdkItemRowRow,
   type SdkMonsterPubRow,
@@ -305,14 +305,23 @@ export function connect(opts: ConnectionOptions): Connection {
       batcher.schedule();
     });
 
-    const ingestFusion = (row: SdkFusionRow): void => {
-      store.upsertFusion(fusionRowToStore(row));
+    // EG4 (ADR-0174): the essence-graph edges. `sync_content` republishes this table as
+    // N deletes + N inserts in ONE unordered transaction, RE-MINTING path_id while
+    // keeping edge_id — so both the store map and this delete handler key off `pathId`.
+    // Removing by edgeId would wipe the row the insert half of the same burst just
+    // wrote, and the client's path map would silently empty.
+    const ingestEvolutionPath = (row: SdkEvolutionPathRow): void => {
+      store.upsertEvolutionPath(evolutionPathRowToStore(row));
       batcher.schedule();
     };
-    conn.db.fusion.onInsert((_ctx, row) => ingestFusion(row as unknown as SdkFusionRow));
-    conn.db.fusion.onUpdate((_ctx, _old, row) => ingestFusion(row as unknown as SdkFusionRow));
-    conn.db.fusion.onDelete((_ctx, row) => {
-      store.removeFusion((row as unknown as SdkFusionRow).fusionId);
+    conn.db.evolution_path.onInsert((_ctx, row) =>
+      ingestEvolutionPath(row as unknown as SdkEvolutionPathRow),
+    );
+    conn.db.evolution_path.onUpdate((_ctx, _old, row) =>
+      ingestEvolutionPath(row as unknown as SdkEvolutionPathRow),
+    );
+    conn.db.evolution_path.onDelete((_ctx, row) => {
+      store.removeEvolutionPath((row as unknown as SdkEvolutionPathRow).pathId);
       batcher.schedule();
     });
 
@@ -587,8 +596,10 @@ export function connect(opts: ConnectionOptions): Connection {
             // same as monster_pub. item_row is public content (no owner).
             'SELECT * FROM inventory',
             'SELECT * FROM item_row',
-            // fusion is public content (all recipes visible to all players — M10c).
-            'SELECT * FROM fusion',
+            // evolution_path is public content (every authored edge is visible to every
+            // player — EG3/EG4). The name is EXACT: a wrong table name errors the WHOLE
+            // subscription batch and onApplied never fires.
+            'SELECT * FROM evolution_path',
             // M12d: dialogue / quest / heal / npc tables (ADR-0071).
             // M13.5c (ADR-0087): player_conversation is PRIVATE — subscribe the
             // owner-scoped my_conversation view instead (subscribing the private

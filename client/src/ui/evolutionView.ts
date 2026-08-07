@@ -1,35 +1,38 @@
-// ui/evolutionView.ts — thin DOM shell for the evolution/fusion screen (M10c).
+// ui/evolutionView.ts — thin DOM shell for the evolution screen (EG4, ADR-0174).
 //
 // Renders an EvolutionViewModel produced by evolutionModel.ts into a DOM overlay.
-// No game logic, no SDK imports, no store writes, no eligibility/recipe computation
-// (those live server-side per ADR-0019) — one-way flow only. The loop calls
-// refresh() on batch-applied; the user triggers reducer intents via callbacks passed
-// at construction (never called directly by this module). Coverage-excluded shell.
+// No game logic, no SDK imports, no store writes, no eligibility computation of its own —
+// one-way flow only, and the eligibility decision is the model's (it is the SAME
+// predicate game-core runs, so the shell must never re-derive or second-guess it).
+// The loop calls refresh() on batch-applied; the user triggers reducer intents via
+// callbacks passed at construction (never called directly by this module).
+// Coverage-excluded shell.
+//
+// TWO RULES THIS FILE MUST NOT BREAK:
+//   * `choices` is non-empty ONLY at 2+ eligible paths, so a choice control is rendered
+//     from `choices` and NEVER re-derived from `paths.filter(met)`. At exactly one
+//     eligible path the server auto-applies the evolution — an Evolve affordance there
+//     offers the player an action that does not exist (EG4-2).
+//   * Nicknames and species names are PLAYER-CONTROLLED (`set_nickname`). Every string
+//     reaches the DOM through `textContent` / `createElement` — NEVER `innerHTML`.
 import type {
+  EvolutionGateViewModel,
   EvolutionMonsterViewModel,
+  EvolutionPathViewModel,
   EvolutionViewModel,
-  FusionRecipeViewModel,
 } from './evolutionModel';
 
 export interface EvolutionViewCallbacks {
-  /** Called when the user clicks Evolve on an eligible monster. */
-  readonly onEvolve: (monsterId: bigint) => void;
-  /** Called when the user clicks Fuse after selecting exactly two monsters. */
-  readonly onFuse: (aId: bigint, bId: bigint) => void;
+  /** Called when the player picks one of 2+ eligible paths. The CHOSEN target species is
+   *  forwarded — the client never resolves an ambiguous evolution on the player's behalf. */
+  readonly onEvolve: (monsterId: bigint, toSpecies: number) => void;
 }
 
 export class EvolutionView {
   readonly #root: HTMLDivElement;
   readonly #listEl: HTMLDivElement;
-  readonly #fuseEl: HTMLDivElement;
-  readonly #fuseBtn: HTMLButtonElement;
-  readonly #fuseLabel: HTMLSpanElement;
-  readonly #recipesEl: HTMLDivElement;
   readonly #callbacks: EvolutionViewCallbacks;
-  // Keyed by monsterId for immediate visual refresh on selection (no server-tick wait).
-  readonly #cardEls = new Map<bigint, HTMLDivElement>();
   #visible = false;
-  #selected: bigint[] = [];
 
   constructor(parent: HTMLElement, callbacks: EvolutionViewCallbacks) {
     this.#callbacks = callbacks;
@@ -41,45 +44,21 @@ export class EvolutionView {
       'overflow-y:auto;font-family:monospace;color:#e0e0e0;';
 
     const title = document.createElement('h2');
-    title.textContent = 'Evolution & Fusion';
+    title.textContent = 'Evolution';
     title.style.cssText = 'margin:0 0 8px;color:#fff;';
     this.#root.appendChild(title);
 
     const hint = document.createElement('p');
-    hint.textContent = 'Click Evolve on eligible monsters, or select two monsters and click Fuse.';
-    hint.style.cssText = 'margin:0 0 16px;color:#aaa;font-size:0.85em;';
+    hint.textContent =
+      'Each path lists what it needs and how close this monster is. When two or more ' +
+      'paths are ready at once, you choose which one to take.';
+    hint.style.cssText = 'margin:0 0 16px;color:#aaa;font-size:0.85em;max-width:700px;';
     this.#root.appendChild(hint);
 
     this.#listEl = document.createElement('div');
     this.#listEl.style.cssText =
-      'display:grid;grid-template-columns:repeat(2,1fr);gap:8px;width:100%;max-width:700px;margin-bottom:16px;';
+      'display:grid;grid-template-columns:repeat(2,1fr);gap:8px;width:100%;max-width:700px;';
     this.#root.appendChild(this.#listEl);
-
-    this.#fuseEl = document.createElement('div');
-    this.#fuseEl.style.cssText = 'display:flex;align-items:center;gap:12px;margin-bottom:8px;';
-    this.#fuseLabel = document.createElement('span');
-    this.#fuseLabel.textContent = 'Select two monsters to fuse (0/2):';
-    this.#fuseLabel.style.color = '#aaa';
-    this.#fuseBtn = document.createElement('button');
-    this.#fuseBtn.textContent = 'Fuse';
-    this.#fuseBtn.style.cssText =
-      'padding:8px 20px;background:#7c3aed;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:1em;';
-    this.#fuseBtn.disabled = true;
-    this.#fuseBtn.addEventListener('click', () => {
-      if (this.#selected.length === 2) {
-        // biome-ignore lint/style/noNonNullAssertion: length===2 guard above guarantees both indices
-        this.#callbacks.onFuse(this.#selected[0]!, this.#selected[1]!);
-        this.#selected = [];
-        this.#updateFuseStatus();
-      }
-    });
-    this.#fuseEl.appendChild(this.#fuseLabel);
-    this.#fuseEl.appendChild(this.#fuseBtn);
-    this.#root.appendChild(this.#fuseEl);
-
-    this.#recipesEl = document.createElement('div');
-    this.#recipesEl.style.cssText = 'width:100%;max-width:700px;margin-top:8px;';
-    this.#root.appendChild(this.#recipesEl);
 
     parent.appendChild(this.#root);
   }
@@ -96,7 +75,6 @@ export class EvolutionView {
   hide(): void {
     this.#root.style.display = 'none';
     this.#visible = false;
-    this.#selected = [];
   }
 
   toggle(): void {
@@ -105,113 +83,122 @@ export class EvolutionView {
   }
 
   refresh(vm: EvolutionViewModel): void {
-    this.#listEl.textContent = '';
-    this.#cardEls.clear();
+    // replaceChildren, not append: refresh() fires on EVERY batch-applied.
+    this.#listEl.replaceChildren();
     if (vm.monsters.length === 0) {
       const empty = document.createElement('p');
       empty.textContent = 'No monsters yet.';
       empty.style.color = '#666';
       this.#listEl.appendChild(empty);
-      this.#selected = [];
-      this.#updateFuseStatus();
-    } else {
-      for (const mon of vm.monsters) {
-        const card = this.#renderCard(mon);
-        this.#cardEls.set(mon.monsterId, card);
-        this.#listEl.appendChild(card);
-      }
-      // Prune stale selection entries for monsters no longer in vm.
-      const ids = new Set(vm.monsters.map((m) => m.monsterId));
-      this.#selected = this.#selected.filter((id) => ids.has(id));
-      this.#updateFuseStatus();
+      return;
     }
-    this.#renderRecipes(vm.fusionRecipes);
+    for (const mon of vm.monsters) {
+      this.#listEl.appendChild(this.#renderCard(mon));
+    }
   }
 
   #renderCard(mon: EvolutionMonsterViewModel): HTMLDivElement {
-    const isSelected = this.#selected.includes(mon.monsterId);
     const card = document.createElement('div');
-    card.style.cssText =
-      `background:${isSelected ? '#1e3a5f' : '#1e1e2e'};border-radius:6px;padding:10px;` +
-      `border:${isSelected ? '2px solid #7c3aed' : '1px solid #333'};cursor:pointer;`;
+    card.setAttribute('data-testid', 'evo-monster-card');
+    card.style.cssText = 'background:#1e1e2e;border-radius:6px;padding:10px;border:1px solid #333;';
 
     const name = document.createElement('div');
-    // Explicit check avoids falsy-coercion: empty nickname ("") shows species name.
+    // Explicit check avoids falsy-coercion: an empty nickname ("") shows the species name.
     name.textContent = `${mon.nickname !== '' ? mon.nickname : mon.speciesName} (${mon.speciesName})`;
     name.style.cssText = 'font-weight:bold;margin-bottom:4px;';
-
-    const stats = document.createElement('div');
-    stats.textContent = `Lv.${mon.level}  Bond:${mon.bond}`;
-    stats.style.cssText = 'font-size:0.8em;color:#aaa;margin-bottom:6px;';
-
     card.appendChild(name);
+
+    // The three server-derived tiers, surfaced verbatim beside level and stage (EG4-6).
+    const stats = document.createElement('div');
+    stats.textContent =
+      `Lv.${mon.level} · Stage ${mon.tier} · Trust ${mon.trustTier} · ` +
+      `Quality time ${mon.qualityTimeTier} · Nutrition ${mon.nutritionPct}%`;
+    stats.style.cssText = 'font-size:0.8em;color:#aaa;margin-bottom:6px;';
     card.appendChild(stats);
 
-    if (mon.canEvolve && mon.evolvesToSpeciesName !== null) {
-      const evoLine = document.createElement('div');
-      evoLine.textContent = `→ ${mon.evolvesToSpeciesName}`;
-      evoLine.style.cssText = 'color:#34d399;font-size:0.85em;margin-bottom:6px;';
-      card.appendChild(evoLine);
-
-      const evolveBtn = document.createElement('button');
-      evolveBtn.textContent = 'Evolve';
-      evolveBtn.style.cssText =
-        'padding:4px 12px;background:#059669;border:none;border-radius:4px;color:#fff;cursor:pointer;font-size:0.85em;margin-right:6px;';
-      evolveBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        evolveBtn.disabled = true; // debounce: re-enabled on next server-tick refresh
-        this.#selected = [];
-        this.#updateFuseStatus();
-        this.#callbacks.onEvolve(mon.monsterId);
-      });
-      card.appendChild(evolveBtn);
+    if (mon.paths.length === 0) {
+      const none = document.createElement('div');
+      none.textContent = 'No evolution paths.';
+      none.style.cssText = 'font-size:0.8em;color:#666;';
+      card.appendChild(none);
+    }
+    for (const path of mon.paths) {
+      card.appendChild(this.#renderPathRow(path));
     }
 
-    card.addEventListener('click', () => {
-      this.#toggleSelect(mon.monsterId);
-    });
+    // A3: informational ONLY — never a button, never clickable, never a choice control.
+    if (mon.readyPathName !== null) {
+      const ready = document.createElement('div');
+      ready.setAttribute('data-testid', 'evo-ready-note');
+      ready.textContent = `Ready — evolves into ${mon.readyPathName} on your next action.`;
+      ready.style.cssText = 'margin-top:6px;font-size:0.85em;color:#34d399;';
+      card.appendChild(ready);
+    }
+
+    // EG4-2: rendered from `choices`, which the model keeps empty below 2 eligible.
+    if (mon.choices.length > 0) {
+      const prompt = document.createElement('div');
+      prompt.textContent = 'Two or more paths are ready — pick one:';
+      prompt.style.cssText = 'margin-top:6px;font-size:0.85em;color:#e0e0e0;';
+      card.appendChild(prompt);
+
+      const picker = document.createElement('div');
+      picker.style.cssText = 'display:flex;flex-wrap:wrap;gap:6px;margin-top:4px;';
+      for (const choice of mon.choices) {
+        picker.appendChild(this.#renderChoice(mon.monsterId, choice));
+      }
+      card.appendChild(picker);
+    }
 
     return card;
   }
 
-  #renderRecipes(recipes: readonly FusionRecipeViewModel[]): void {
-    this.#recipesEl.textContent = '';
-    if (recipes.length === 0) return;
-    const title = document.createElement('p');
-    title.textContent = 'Fusion Recipes:';
-    title.style.cssText = 'margin:0 0 6px;color:#aaa;font-size:0.85em;font-weight:bold;';
-    this.#recipesEl.appendChild(title);
-    for (const r of recipes) {
-      const line = document.createElement('p');
-      line.textContent = `${r.aSpeciesName} + ${r.bSpeciesName} → ${r.toSpeciesName}`;
-      line.style.cssText = 'margin:0 0 4px;font-size:0.8em;color:#888;';
-      this.#recipesEl.appendChild(line);
+  #renderPathRow(path: EvolutionPathViewModel): HTMLDivElement {
+    const row = document.createElement('div');
+    row.setAttribute('data-testid', 'evo-path-row');
+    row.style.cssText =
+      'margin-top:6px;padding:6px;border-radius:4px;background:#181826;' +
+      `border-left:3px solid ${path.met ? '#34d399' : '#555'};`;
+
+    const heading = document.createElement('div');
+    heading.textContent = `→ ${path.toSpeciesName}`;
+    heading.style.cssText = `font-size:0.85em;color:${path.met ? '#34d399' : '#ccc'};`;
+    row.appendChild(heading);
+
+    const status = document.createElement('div');
+    // `unmetReason` is null exactly when the path is reachable, so this is total.
+    status.textContent = path.unmetReason ?? 'All requirements met.';
+    status.style.cssText = `font-size:0.75em;margin-bottom:4px;color:${path.met ? '#34d399' : '#f59e0b'};`;
+    row.appendChild(status);
+
+    for (const gate of path.gates) {
+      row.appendChild(EvolutionView.#renderGateRow(gate));
     }
+
+    return row;
   }
 
-  #toggleSelect(monsterId: bigint): void {
-    const idx = this.#selected.indexOf(monsterId);
-    if (idx !== -1) {
-      this.#selected.splice(idx, 1);
-    } else if (this.#selected.length < 2) {
-      this.#selected.push(monsterId);
-    } else {
-      this.#selected = [monsterId];
-    }
-    // Immediately refresh card visuals — don't wait for next server batch.
-    for (const [id, el] of this.#cardEls) {
-      const sel = this.#selected.includes(id);
-      el.style.background = sel ? '#1e3a5f' : '#1e1e2e';
-      el.style.border = sel ? '2px solid #7c3aed' : '1px solid #333';
-    }
-    this.#updateFuseStatus();
+  /** One gate: label, the monster's CURRENT value, and the REQUIRED value. Rendering only
+   *  the requirement would be the requirements panel with the progress half missing. */
+  static #renderGateRow(gate: EvolutionGateViewModel): HTMLDivElement {
+    const row = document.createElement('div');
+    row.setAttribute('data-testid', 'evo-gate-row');
+    row.textContent = `${gate.met ? '✓' : '•'} ${gate.label}: ${gate.currentText} / ${gate.requiredText}`;
+    row.style.cssText = `font-size:0.75em;color:${gate.met ? '#8fbc8f' : '#999'};`;
+    return row;
   }
 
-  #updateFuseStatus(): void {
-    this.#fuseBtn.disabled = this.#selected.length !== 2;
-    this.#fuseLabel.textContent =
-      this.#selected.length === 2
-        ? 'Fuse selected monsters:'
-        : `Select two monsters to fuse (${this.#selected.length}/2):`;
+  #renderChoice(monsterId: bigint, choice: EvolutionPathViewModel): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.setAttribute('data-testid', 'evo-choice');
+    btn.textContent = `Evolve into ${choice.toSpeciesName}`;
+    btn.style.cssText =
+      'padding:4px 12px;background:#059669;border:none;border-radius:4px;color:#fff;' +
+      'cursor:pointer;font-size:0.85em;';
+    btn.addEventListener('click', () => {
+      btn.disabled = true; // debounce: re-enabled on the next server-tick refresh
+      this.#callbacks.onEvolve(monsterId, choice.toSpecies);
+    });
+    return btn;
   }
 }

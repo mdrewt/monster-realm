@@ -4,18 +4,28 @@
 // uxd2: fast-check is used by the AC-16 totality property at the foot of this file.
 import * as fc from 'fast-check';
 import { describe, expect, it, vi } from 'vitest';
+// EG4-5 (contract §B "Deleted: … SdkFusionRow, fusionRowToStore …"): the namespace
+// import is what lets the deletion tooth at the foot of the fusion section PROVE the
+// export is gone at runtime. A named `import { fusionRowToStore }` cannot express
+// "this must not exist" — it would either red at module-eval or (once deleted) fail to
+// compile; the namespace object is the only runtime-inspectable surface, and
+// client/tsconfig.json EXCLUDES **/*.test.ts, so a tsc-only probe would gate nothing.
+import * as rowConvertModule from './rowConvert';
 import {
   battleRowToStore,
   characterRowToStore,
-  fusionRowToStore,
+  // EG4 (contract §B): the evolution_path converter REPLACES fusionRowToStore, which
+  // EG4-5 deletes outright together with SdkFusionRow.
+  evolutionPathRowToStore,
   inventoryRowToStore,
   itemRowToStore,
   monsterPubRowToStore,
   playerRowToStore,
   type SdkBattleRow,
-  type SdkFusionRow,
+  type SdkEvolutionPathRow,
   type SdkInventoryRow,
   type SdkItemRowRow,
+  type SdkMonsterPubRow,
   type SdkSkillRowRow,
   type SdkTradeOfferRow,
   skillRowToStore,
@@ -64,27 +74,76 @@ describe('rowConvert: player row -> store', () => {
 // M6c extension: monsterPubRowToStore + speciesRowToStore
 // =============================================================================
 
+// ---------------------------------------------------------------------------
+// EG4 fixture helper: a full SdkMonsterPubRow.
+//
+// VERIFIED against client/src/module_bindings/types.ts:335-366 (`MonsterPub`) this
+// session: the eight essence columns are FLAT `essenceFire … essenceDark` u32s, and
+// `trustTier` is a `TrustTier` enum — which the SDK deserializes as
+// `{ tag: 'Neutral', value: {} }`, NOT a bare `{ tag }` (red-team probe, contract
+// §"Verified probe facts"). The fixtures below therefore always carry `value: {}`;
+// a structural `SdkMonsterPubRow` that assumes a bare `{tag}` is a real drift hazard.
+//
+// `bond` / `evolvesTo` are DELIBERATELY ABSENT: EG4 removes both from the client type
+// (contract §B), and the Sdk* interfaces in rowConvert.ts are documented as "just the
+// fields convert reads" — the converter reads neither any more. (Migration B removes
+// them from the server row in EG5-6; until then the live SDK row still carries them
+// and the converter simply ignores them.)
+// ---------------------------------------------------------------------------
+function sdkMonsterPub(overrides: Partial<SdkMonsterPubRow> = {}): SdkMonsterPubRow {
+  return {
+    monsterId: 1n,
+    ownerIdentity: { toHexString: () => 'ff' },
+    speciesId: 1,
+    nickname: '',
+    level: 1,
+    xp: 0,
+    currentHp: 10,
+    statHp: 10,
+    statAttack: 10,
+    statDefense: 10,
+    statSpeed: 10,
+    statSpAttack: 10,
+    statSpDefense: 10,
+    partySlot: 255,
+    tier: 0,
+    essenceFire: 0,
+    essenceWater: 0,
+    essencePlant: 0,
+    essenceElectric: 0,
+    essenceEarth: 0,
+    essenceWind: 0,
+    essenceLight: 0,
+    essenceDark: 0,
+    trustTier: { tag: 'Neutral', value: {} },
+    qualityTimeTier: 0,
+    nutritionPct: 0,
+    ...overrides,
+  };
+}
+
 describe('rowConvert M6c: monsterPubRowToStore — SDK row -> StoreMonsterPub', () => {
   it('BITES: monsterId stays bigint, ownerIdentity becomes hex string, stats are numbers', () => {
     // Kills: an impl that downcasts monsterId to number (lossy for u64) or
     // forgets to call toHexString() on identity (leaves an object in the store).
-    const store = monsterPubRowToStore({
-      monsterId: 12345678901234567890n,
-      ownerIdentity: { toHexString: () => 'deadbeef' },
-      speciesId: 7,
-      nickname: 'Sparky',
-      level: 12,
-      xp: 3000,
-      bond: 80,
-      currentHp: 45,
-      statHp: 60,
-      statAttack: 55,
-      statDefense: 40,
-      statSpeed: 70,
-      statSpAttack: 65,
-      statSpDefense: 50,
-      partySlot: 0,
-    });
+    const store = monsterPubRowToStore(
+      sdkMonsterPub({
+        monsterId: 12345678901234567890n,
+        ownerIdentity: { toHexString: () => 'deadbeef' },
+        speciesId: 7,
+        nickname: 'Sparky',
+        level: 12,
+        xp: 3000,
+        currentHp: 45,
+        statHp: 60,
+        statAttack: 55,
+        statDefense: 40,
+        statSpeed: 70,
+        statSpAttack: 65,
+        statSpDefense: 50,
+        partySlot: 0,
+      }),
+    );
 
     // monsterId must remain a bigint — u64 exceeds Number.MAX_SAFE_INTEGER
     expect(typeof store.monsterId).toBe('bigint');
@@ -100,7 +159,6 @@ describe('rowConvert M6c: monsterPubRowToStore — SDK row -> StoreMonsterPub', 
     expect(store.nickname).toBe('Sparky');
     expect(store.level).toBe(12);
     expect(store.xp).toBe(3000);
-    expect(store.bond).toBe(80);
     expect(store.currentHp).toBe(45);
     expect(store.statHp).toBe(60);
     expect(store.statAttack).toBe(55);
@@ -113,23 +171,7 @@ describe('rowConvert M6c: monsterPubRowToStore — SDK row -> StoreMonsterPub', 
 
   it('BITES: no hidden iv*, ev*, or natureKind fields appear in the output', () => {
     // Kills: an impl that passes through a wider SDK row without stripping private fields.
-    const store = monsterPubRowToStore({
-      monsterId: 1n,
-      ownerIdentity: { toHexString: () => 'ff' },
-      speciesId: 1,
-      nickname: '',
-      level: 1,
-      xp: 0,
-      bond: 0,
-      currentHp: 10,
-      statHp: 10,
-      statAttack: 10,
-      statDefense: 10,
-      statSpeed: 10,
-      statSpAttack: 10,
-      statSpDefense: 10,
-      partySlot: 255,
-    });
+    const store = monsterPubRowToStore(sdkMonsterPub());
     const keys = Object.keys(store);
     const forbidden = [
       'ivHp',
@@ -148,6 +190,131 @@ describe('rowConvert M6c: monsterPubRowToStore — SDK row -> StoreMonsterPub', 
     ];
     for (const field of forbidden) {
       expect(keys).not.toContain(field);
+    }
+  });
+
+  // -------------------------------------------------------------------------
+  // EG4-1 / EG4-6 / EG4-7 — the essence-graph half of MonsterPub.
+  // RED REASON: monsterPubRowToStore (rowConvert.ts:165-184) maps `bond` and
+  // `evolvesTo` and knows nothing about tier / the eight essence columns /
+  // trustTier / qualityTimeTier / nutritionPct. Missing implementation.
+  // -------------------------------------------------------------------------
+
+  it('★ BITES (EG4-1): the EIGHT essence columns map to the affinity-keyed record, each to ITS OWN key', () => {
+    // EIGHT DISTINCT VALUES, deliberately. With an all-equal (or all-zero) fixture a
+    // Wind/Light — or Plant/Electric, or Earth/Wind — transposition in the converter's
+    // hand-written map is completely invisible, and it is exactly the mistake an
+    // 8-line literal map invites. Every downstream essence gate (EG4-1's requirements
+    // panel, EG4-8's badge) reads through this record, so one swapped key silently
+    // mis-reports eligibility for two affinities at once.
+    // Kills: any pairwise column transposition; also a record built by ZIPPING the
+    // column values against HANDLED_ENUM_VARIANTS.Affinity in the wrong order.
+    const store = monsterPubRowToStore(
+      sdkMonsterPub({
+        essenceFire: 11,
+        essenceWater: 22,
+        essencePlant: 33,
+        essenceElectric: 44,
+        essenceEarth: 55,
+        essenceWind: 66,
+        essenceLight: 77,
+        essenceDark: 88,
+      }),
+    );
+    expect(store.essence).toEqual({
+      Fire: 11,
+      Water: 22,
+      Plant: 33,
+      Electric: 44,
+      Earth: 55,
+      Wind: 66,
+      Light: 77,
+      Dark: 88,
+    });
+  });
+
+  it('BITES (EG4-1): the essence record has EXACTLY the eight Affinity keys — no extras, none missing', () => {
+    // Kills: a record built from a partial map (a missing key reads `undefined` and
+    // every comparison against a threshold becomes `undefined >= n` === false, i.e. a
+    // permanently unsatisfiable gate that looks like "not enough essence yet").
+    const store = monsterPubRowToStore(sdkMonsterPub());
+    expect(Object.keys(store.essence).sort()).toEqual(
+      ['Dark', 'Earth', 'Electric', 'Fire', 'Light', 'Plant', 'Water', 'Wind'].sort(),
+    );
+  });
+
+  it('BITES (EG4-6): tier, qualityTimeTier and nutritionPct are mapped as DISTINCT numbers', () => {
+    // Three different values so a copy-paste (`qualityTimeTier: row.tier`) is caught.
+    // Kills: a converter that maps one of the three from the wrong column, and one
+    // that drops a field entirely (undefined !== the asserted number).
+    const store = monsterPubRowToStore(
+      sdkMonsterPub({ tier: 3, qualityTimeTier: 4, nutritionPct: 87 }),
+    );
+    expect(store.tier).toBe(3);
+    expect(store.qualityTimeTier).toBe(4);
+    expect(store.nutritionPct).toBe(87);
+    expect(typeof store.tier).toBe('number');
+    expect(typeof store.qualityTimeTier).toBe('number');
+    expect(typeof store.nutritionPct).toBe('number');
+  });
+
+  it('BITES (EG4-6): zero-valued tier / qualityTimeTier / nutritionPct survive (no falsy coercion)', () => {
+    // 0 is a REAL value for all three (a tier-0 base-form monster with no quality time
+    // and an empty stomach). Kills: `row.tier || 1`, `?? `-with-a-default applied to a
+    // non-optional field, or any `if (row.nutritionPct)` gating.
+    const store = monsterPubRowToStore(
+      sdkMonsterPub({ tier: 0, qualityTimeTier: 0, nutritionPct: 0 }),
+    );
+    expect(store.tier).toBe(0);
+    expect(store.qualityTimeTier).toBe(0);
+    expect(store.nutritionPct).toBe(0);
+  });
+
+  it('★ BITES (EG4-4/EG4-6): trustTier is NORMALIZED to the bare tag string, for every one of the five variants', () => {
+    // The SDK hands over `{ tag: 'Hostile', value: {} }` — a UNIT enum variant still
+    // carries `value: {}` (verified probe). Storing the object instead of the tag makes
+    // every `===` comparison in trustTierRank fail and the raising status line render
+    // "[object Object]".
+    // Kills: `trustTier: row.trustTier` (object passthrough); a hard-coded 'Neutral';
+    // and a converter that only handles the one variant its author happened to test.
+    for (const tag of ['Hostile', 'Wary', 'Neutral', 'Friendly', 'Devoted'] as const) {
+      const store = monsterPubRowToStore(sdkMonsterPub({ trustTier: { tag, value: {} } }));
+      expect(store.trustTier).toBe(tag);
+      expect(typeof store.trustTier).toBe('string');
+    }
+  });
+
+  it('★ BITES (EG4-7): the store row carries NO `bond` and NO `evolvesTo` key', () => {
+    // Both are retired by the essence graph (contract §B "REMOVED: bond, evolvesTo").
+    // A converter that keeps mapping them leaves a second, stale source of truth alive:
+    // raisingView could keep rendering `Bond` (EG4-4 half-done) and the evolution panel
+    // could keep resolving a single `toSpecies` scalar (the EG4-2 auto-resolve defect).
+    // Kills: a spread-the-SDK-row converter, and a "leave them, they're harmless" patch.
+    const keys = Object.keys(monsterPubRowToStore(sdkMonsterPub()));
+    expect(keys).not.toContain('bond');
+    expect(keys).not.toContain('evolvesTo');
+  });
+
+  it('★ BITES (fail-soft): an UNKNOWN trustTier tag does NOT throw — the row still converts', () => {
+    // SDK row callbacks dispatch UNGUARDED (connection.ts:236-247 — `ingestMonster` is
+    // called straight from `conn.db.monster_pub.onInsert`), and a throw there kills the
+    // whole coalesced transaction burst, not just this row. rowConvert.ts:69-83 states
+    // the rule outright: "fail-soft, NEVER throw". A future server-side TrustTier
+    // variant must degrade, not blank the world.
+    // Kills: `narrowTag`-with-a-throw, a `switch` with a `default: throw`, and a lookup
+    // table dereference that explodes on a miss.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      let store: ReturnType<typeof monsterPubRowToStore> | undefined;
+      expect(() => {
+        store = monsterPubRowToStore(
+          sdkMonsterPub({ trustTier: { tag: 'Adoring', value: {} }, level: 9 }),
+        );
+      }).not.toThrow();
+      // The rest of the row must still be intact — degraded, never dropped.
+      expect(store!.level).toBe(9);
+    } finally {
+      warnSpy.mockRestore();
     }
   });
 });
@@ -648,181 +815,330 @@ describe('rowConvert M9c: itemRowToStore — SDK row -> StoreItemRow', () => {
 });
 
 // =============================================================================
-// M10c extension: monsterPubRowToStore evolvesTo + fusionRowToStore
-// SOURCE OF TRUTH: specs/monster-realm-v2/M10c (Client evolution/fuse UI)
+// EG4 extension: evolutionPathRowToStore REPLACES fusionRowToStore.
+// SOURCE OF TRUTH: memory/projects/monster-realm-EG4-contract.md §B + §G
+//                  (EARS EG4-1 / EG4-5 / EG4-7).
 //
-// These tests are INTENTIONALLY RED until:
-//   - SdkMonsterPubRow gains evolvesTo: number | undefined
-//   - monsterPubRowToStore maps evolvesTo through
-//   - SdkFusionRow and fusionRowToStore are added to rowConvert.ts
+// The M10c `evolvesTo` and `fusionRowToStore` suites that lived here are DELETED,
+// not adapted: EG4 removes `evolvesTo` from the client type (contract §B "REMOVED:
+// bond, evolvesTo") and EG4-5 deletes `SdkFusionRow` / `fusionRowToStore` outright.
+// These are removals from the client type, NOT backfills.
+//
+// RED REASON: `evolutionPathRowToStore` and `SdkEvolutionPathRow` do not exist in
+// client/src/net/rowConvert.ts (verified this session — the file's last converter
+// block is the M10c fusion one at :387-404). The VALUE import at the head of this
+// file therefore reds either at module-eval time ("does not provide an export named
+// evolutionPathRowToStore") or at the first call ("is not a function"), depending on
+// how the runner resolves the missing specifier. Either way it is a MISSING
+// IMPLEMENTATION, not a typo here — and adding the export is the first thing the
+// implementer does, after which the individual teeth below start reporting for
+// themselves.
+//
+// SHAPE VERIFIED against client/src/module_bindings/types.ts:199-222:
+//   EvolutionPathRow { pathId u64, edgeId u32, fromSpecies u32, toSpecies u32,
+//                      minLevel u8, essence: array(EssenceRequirementRow),
+//                      minTrustTier: option(TrustTier),
+//                      minQualityTimeTier: option(u8),
+//                      minNutritionPct: option(u8) }
+//   EssenceRequirementRow { affinity: Affinity, amount: u32 }
+//
+// THREE VERIFIED SDK DECODE FACTS the fixtures below are built against:
+//   1. `t.option(T)` decodes None as **undefined**, never null. The converter
+//      normalizes undefined -> null so consumers use `=== null` (contract §B:
+//      "null = PERMISSIVE (absent), not lowest tier").
+//   2. `t.option(t.u8())` decodes Some(0) as **0** — the falsy-coercion trap is live.
+//   3. A UNIT enum variant deserializes to `{ tag: 'Friendly', value: {} }`, NOT a
+//      bare `{ tag }`. Every enum fixture below carries `value: {}`.
 // =============================================================================
 
-describe('rowConvert M10c: monsterPubRowToStore — evolvesTo field', () => {
-  it('BITES: evolvesTo: 5 on SDK row is mapped to evolvesTo: 5 on the store row', () => {
-    // Kills: an impl that ignores the new evolvesTo field and leaves it undefined
-    // even when the SDK row carries a value. Without this field the evolution UI
-    // cannot know which monsters are eligible to evolve.
-    const store = monsterPubRowToStore({
-      monsterId: 1n,
-      ownerIdentity: { toHexString: () => 'abc' },
-      speciesId: 1,
-      nickname: 'Sparky',
-      level: 10,
-      xp: 0,
-      bond: 50,
-      currentHp: 30,
-      statHp: 40,
-      statAttack: 10,
-      statDefense: 10,
-      statSpeed: 10,
-      statSpAttack: 10,
-      statSpDefense: 10,
-      partySlot: 0,
-      evolvesTo: 5,
-    } as Parameters<typeof monsterPubRowToStore>[0]);
-    expect((store as Record<string, unknown>).evolvesTo).toBe(5);
-    expect(typeof (store as Record<string, unknown>).evolvesTo).toBe('number');
+/** Factory: a full SdkEvolutionPathRow with permissive (absent) optional gates.
+ *  Absent options are spelled `undefined` — the shape the SDK actually delivers. */
+function sdkEvoPath(overrides: Partial<SdkEvolutionPathRow> = {}): SdkEvolutionPathRow {
+  return {
+    pathId: 1n,
+    edgeId: 7,
+    fromSpecies: 1,
+    toSpecies: 2,
+    minLevel: 10,
+    essence: [],
+    minTrustTier: undefined,
+    minQualityTimeTier: undefined,
+    minNutritionPct: undefined,
+    ...overrides,
+  };
+}
+
+describe('rowConvert EG4: evolutionPathRowToStore — field-by-field', () => {
+  it('BITES: every scalar field is mapped, with pathId staying bigint and the rest numbers', () => {
+    // Kills: a converter that drops a field (undefined then silently satisfies or
+    // silently blocks a gate downstream) and one that Number()-s the u64 pathId.
+    const store = evolutionPathRowToStore(
+      sdkEvoPath({
+        pathId: 42n,
+        edgeId: 11,
+        fromSpecies: 7,
+        toSpecies: 30,
+        minLevel: 15,
+      }),
+    );
+    expect(typeof store.pathId).toBe('bigint');
+    expect(store.pathId).toBe(42n);
+    expect(store.edgeId).toBe(11);
+    expect(store.fromSpecies).toBe(7);
+    expect(store.toSpecies).toBe(30);
+    expect(store.minLevel).toBe(15);
+    expect(typeof store.edgeId).toBe('number');
   });
 
-  it('BITES: evolvesTo: undefined on SDK row is mapped to evolvesTo: undefined on the store row', () => {
-    // Kills: an impl that maps undefined to 0 (a valid species id) or drops the field
-    // entirely when undefined — the model must distinguish "no evolution" from "evolves to id 0".
-    const store = monsterPubRowToStore({
-      monsterId: 2n,
-      ownerIdentity: { toHexString: () => 'def' },
-      speciesId: 1,
-      nickname: '',
-      level: 5,
-      xp: 0,
-      bond: 0,
-      currentHp: 20,
-      statHp: 20,
-      statAttack: 10,
-      statDefense: 10,
-      statSpeed: 10,
-      statSpAttack: 10,
-      statSpDefense: 10,
-      partySlot: 255,
-      evolvesTo: undefined,
-    } as Parameters<typeof monsterPubRowToStore>[0]);
-    expect((store as Record<string, unknown>).evolvesTo).toBeUndefined();
+  it('★ BITES (A1): pathId survives the 2^53 boundary byte-exactly — it is the STORE KEY', () => {
+    // `path_id` is a u64 auto_inc and it is the store's Map key (contract §A1). A
+    // Number() round-trip merges 2^53 and 2^53+1 into one key, so a content republish
+    // would silently drop an edge.
+    // Kills: `pathId: Number(row.pathId)`, and a `pathId` typed/stored as number.
+    const hi = 9007199254740993n; // 2^53 + 1
+    const store = evolutionPathRowToStore(sdkEvoPath({ pathId: hi }));
+    expect(store.pathId).toBe(hi);
+    expect(store.pathId).not.toBe(9007199254740992n); // the Number-coerced (wrong) value
   });
 
-  it('BITES: evolvesTo is not converted to a string or bigint (must remain number | undefined)', () => {
-    // Kills: an impl that accidentally stringifies or bigints the species id.
-    const store = monsterPubRowToStore({
-      monsterId: 3n,
-      ownerIdentity: { toHexString: () => 'ff' },
-      speciesId: 2,
-      nickname: 'Blaze',
-      level: 20,
-      xp: 5000,
-      bond: 100,
-      currentHp: 60,
-      statHp: 70,
-      statAttack: 55,
-      statDefense: 45,
-      statSpeed: 65,
-      statSpAttack: 75,
-      statSpDefense: 55,
-      partySlot: 1,
-      evolvesTo: 7,
-    } as Parameters<typeof monsterPubRowToStore>[0]);
-    const evolvesTo = (store as Record<string, unknown>).evolvesTo;
-    expect(typeof evolvesTo).toBe('number'); // not 'bigint', not 'string'
-    expect(evolvesTo).toBe(7);
+  it('BITES: edgeId and pathId are NOT interchanged', () => {
+    // Kills: the single most plausible converter typo — `pathId: row.edgeId`. It
+    // typechecks nowhere (bigint vs number) but a `BigInt(row.edgeId)` "fix" does, and
+    // it would make every republished row collide on the same handful of keys.
+    const store = evolutionPathRowToStore(sdkEvoPath({ pathId: 500n, edgeId: 3 }));
+    expect(store.pathId).toBe(500n);
+    expect(store.edgeId).toBe(3);
   });
 
-  it('BITES: existing fields are still mapped correctly when evolvesTo is present (no regression)', () => {
-    // Kills: an impl that maps evolvesTo but accidentally breaks existing field mapping
-    // (e.g. by spreading the SDK row instead of picking fields explicitly).
-    const store = monsterPubRowToStore({
-      monsterId: 99n,
-      ownerIdentity: { toHexString: () => 'cafebabe' },
-      speciesId: 3,
-      nickname: 'Tidal',
-      level: 15,
-      xp: 1000,
-      bond: 60,
-      currentHp: 50,
-      statHp: 55,
-      statAttack: 40,
-      statDefense: 45,
-      statSpeed: 50,
-      statSpAttack: 60,
-      statSpDefense: 50,
-      partySlot: 2,
-      evolvesTo: 8,
-    } as Parameters<typeof monsterPubRowToStore>[0]);
-    // Existing fields must be unaffected
-    expect(store.monsterId).toBe(99n);
-    expect(store.ownerIdentity).toBe('cafebabe');
-    expect(store.speciesId).toBe(3);
-    expect(store.nickname).toBe('Tidal');
-    expect(store.level).toBe(15);
-    expect(store.bond).toBe(60);
-    // New field
-    expect((store as Record<string, unknown>).evolvesTo).toBe(8);
+  it('BITES: fromSpecies and toSpecies are NOT swapped', () => {
+    // Kills: a transposition that would make every edge point backwards — the panel
+    // would offer to evolve a monster into its own pre-evolution.
+    const store = evolutionPathRowToStore(sdkEvoPath({ fromSpecies: 100, toSpecies: 200 }));
+    expect(store.fromSpecies).toBe(100);
+    expect(store.toSpecies).toBe(200);
   });
 });
 
-describe('rowConvert M10c: fusionRowToStore — SdkFusionRow -> StoreFusionRow', () => {
-  it('BITES: fusionId stays bigint, aSpecies/bSpecies/toSpecies are numbers', () => {
-    // Kills: an impl that converts fusionId to number (lossy for u64) or that
-    // bigints the species ids (they are u32, safe as number).
-    const sdk: SdkFusionRow = {
-      fusionId: 1234567890123456789n,
-      aSpecies: 10,
-      bSpecies: 20,
-      toSpecies: 30,
-    };
-    const store = fusionRowToStore(sdk);
-    expect(typeof store.fusionId).toBe('bigint');
-    expect(store.fusionId).toBe(1234567890123456789n);
-    expect(typeof store.aSpecies).toBe('number');
-    expect(store.aSpecies).toBe(10);
-    expect(typeof store.bSpecies).toBe('number');
-    expect(store.bSpecies).toBe(20);
-    expect(typeof store.toSpecies).toBe('number');
-    expect(store.toSpecies).toBe(30);
+describe('★ rowConvert EG4 (A10): the essence requirement list stays an ORDERED ARRAY', () => {
+  it('★ BITES: essence maps to an ordered array of {affinity, amount}, NOT an affinity-keyed record', () => {
+    // Rust evaluates the requirement LIST with `.all()` (game-core eligibility), and a
+    // DUPLICATE affinity is legal content. Collapsing the list to a Record is last-wins:
+    // `[(Fire,900),(Fire,150)]` becomes `{Fire:150}` and a Fire-200 monster reads as
+    // ELIGIBLE when the server says it is not. The list ORDER is load-bearing too — it
+    // is the order `unmetRequirement` reports the first unmet gate in.
+    // Kills: `Object.fromEntries(row.essence.map(...))` and any record-shaped port.
+    const store = evolutionPathRowToStore(
+      sdkEvoPath({
+        essence: [
+          { affinity: { tag: 'Fire', value: {} }, amount: 900 },
+          { affinity: { tag: 'Fire', value: {} }, amount: 150 },
+          { affinity: { tag: 'Water', value: {} }, amount: 10 },
+        ],
+      }),
+    );
+    expect(Array.isArray(store.essence)).toBe(true);
+    expect(store.essence).toEqual([
+      { affinity: 'Fire', amount: 900 },
+      { affinity: 'Fire', amount: 150 },
+      { affinity: 'Water', amount: 10 },
+    ]);
+    // Explicit anti-collapse assertion: both Fire entries survive, in authored order.
+    expect(store.essence).toHaveLength(3);
+    expect(store.essence.filter((e) => e.affinity === 'Fire')).toHaveLength(2);
   });
 
-  it('BITES: fusionId preserves precision across the 2^53 boundary (no Number() coercion)', () => {
-    // 9007199254740993n (2^53 + 1) and 9007199254740992n (2^53) are distinct bigints
-    // but coerce to the same Number. A Number() conversion would silently corrupt the id.
-    // Kills: any impl that converts fusionId via Number() or parseInt().
-    const hi = 9007199254740993n; // 2^53 + 1
-    const sdk: SdkFusionRow = { fusionId: hi, aSpecies: 1, bSpecies: 2, toSpecies: 3 };
-    const store = fusionRowToStore(sdk);
-    expect(store.fusionId).toBe(hi);
-    expect(store.fusionId).not.toBe(9007199254740992n); // the Number-coerced (wrong) value
+  it('BITES: each requirement affinity is normalized from the tagged union to a bare string', () => {
+    // Kills: `affinity: req.affinity` (object passthrough) — every `===` against an
+    // AffinityName in the eligibility port would then be false and no essence gate
+    // could ever be satisfied.
+    const store = evolutionPathRowToStore(
+      sdkEvoPath({
+        essence: [{ affinity: { tag: 'Electric', value: {} }, amount: 5 }],
+      }),
+    );
+    expect(store.essence[0]!.affinity).toBe('Electric');
+    expect(typeof store.essence[0]!.affinity).toBe('string');
   });
 
-  it('BITES: all four fields are present and correct (no silent field drop)', () => {
-    // Kills: an impl that omits one of the four required fields from the output.
-    const sdk: SdkFusionRow = { fusionId: 42n, aSpecies: 5, bSpecies: 6, toSpecies: 7 };
-    const store = fusionRowToStore(sdk);
-    expect(store).toHaveProperty('fusionId', 42n);
-    expect(store).toHaveProperty('aSpecies', 5);
-    expect(store).toHaveProperty('bSpecies', 6);
-    expect(store).toHaveProperty('toSpecies', 7);
+  it('BITES: an EMPTY essence list maps to an empty array (a permissive gate), not to undefined', () => {
+    // Kills: `essence: row.essence.length ? … : undefined`. Downstream the port does
+    // `p.essence.every(...)`; undefined throws inside an unguarded subscription
+    // callback and takes the whole transaction burst with it.
+    const store = evolutionPathRowToStore(sdkEvoPath({ essence: [] }));
+    expect(store.essence).toEqual([]);
+    expect(Array.isArray(store.essence)).toBe(true);
   });
 
-  it('BITES: distinct aSpecies/bSpecies values are not swapped', () => {
-    // Kills: an impl that accidentally swaps aSpecies and bSpecies on output.
-    const sdk: SdkFusionRow = { fusionId: 1n, aSpecies: 100, bSpecies: 200, toSpecies: 300 };
-    const store = fusionRowToStore(sdk);
-    expect(store.aSpecies).toBe(100);
-    expect(store.bSpecies).toBe(200);
-    expect(store.toSpecies).toBe(300);
+  it('BITES: amount 0 is preserved (not dropped as falsy)', () => {
+    // Kills: a `.filter((e) => e.amount)` "cleanup" — a 0-amount requirement is a
+    // trivially-satisfied gate that must still RENDER in the progress panel.
+    const store = evolutionPathRowToStore(
+      sdkEvoPath({ essence: [{ affinity: { tag: 'Dark', value: {} }, amount: 0 }] }),
+    );
+    expect(store.essence).toEqual([{ affinity: 'Dark', amount: 0 }]);
   });
 
-  it('BITES: fusionId=0n is preserved as 0n (not treated as falsy/absent)', () => {
-    // Kills: an impl that treats fusionId=0n as "no id" and returns undefined or throws.
-    const sdk: SdkFusionRow = { fusionId: 0n, aSpecies: 1, bSpecies: 2, toSpecies: 3 };
-    const store = fusionRowToStore(sdk);
-    expect(store.fusionId).toBe(0n);
-    expect(typeof store.fusionId).toBe('bigint');
+  it('★ BITES (fail-soft): an UNKNOWN Affinity tag in a requirement does NOT throw', () => {
+    // `conn.db.evolution_path.onInsert` dispatches this converter UNGUARDED (the same
+    // shape as connection.ts:236-247's ingestMonster), and rowConvert.ts:69-83 states
+    // the rule: "fail-soft, NEVER throw" — a throw inside a subscription callback kills
+    // the entire coalesced flushBatch burst, not just this row.
+    // Kills: a `switch (tag) { default: throw }` mapping and an index-into-a-table
+    // dereference that explodes on a miss.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      let store: ReturnType<typeof evolutionPathRowToStore> | undefined;
+      expect(() => {
+        store = evolutionPathRowToStore(
+          sdkEvoPath({
+            edgeId: 77,
+            essence: [{ affinity: { tag: 'Cosmic', value: {} }, amount: 5 }],
+          }),
+        );
+      }).not.toThrow();
+      // Degraded, never dropped: the rest of the row must still be intact.
+      expect(store!.edgeId).toBe(77);
+      expect(store!.essence).toHaveLength(1);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+describe('★ rowConvert EG4: the three Option thresholds normalize absent -> null', () => {
+  it('★ BITES: an ABSENT (undefined) option becomes null — never undefined', () => {
+    // VERIFIED SDK FACT: `t.option(T)` decodes None as **undefined**, never null. The
+    // store contract (§B) says `TrustTierName | null`, with null meaning PERMISSIVE.
+    // Kills: a passthrough that leaves `undefined` on the row — `undefined === null` is
+    // false, so a `threshold === null` permissive check silently turns every absent
+    // gate into an unsatisfiable one, and every path in the game becomes ineligible.
+    const store = evolutionPathRowToStore(
+      sdkEvoPath({
+        minTrustTier: undefined,
+        minQualityTimeTier: undefined,
+        minNutritionPct: undefined,
+      }),
+    );
+    expect(store.minTrustTier).toBeNull();
+    expect(store.minQualityTimeTier).toBeNull();
+    expect(store.minNutritionPct).toBeNull();
+    // Explicit: not merely "falsy" — the exact null the contract names.
+    expect(store.minTrustTier).not.toBeUndefined();
+    expect(store.minQualityTimeTier).not.toBeUndefined();
+    expect(store.minNutritionPct).not.toBeUndefined();
+  });
+
+  it('★ BITES: Some(0) on BOTH u8 options survives as 0 — the falsy-coercion trap', () => {
+    // VERIFIED SDK FACT: `t.option(t.u8())` decodes Some(0) as `0`. A converter written
+    // as `row.minQualityTimeTier || null` turns an authored `Some(0)` — a REAL, if
+    // trivially satisfied, gate — into "no gate at all", which silently DELETES a row
+    // from the EG4-1 progress panel. `nutrition 0%` is likewise a real authored value.
+    // Kills: `||`-based normalization anywhere in this converter. Only `?? null` /
+    // an explicit `=== undefined` check passes.
+    const store = evolutionPathRowToStore(
+      sdkEvoPath({ minQualityTimeTier: 0, minNutritionPct: 0 }),
+    );
+    expect(store.minQualityTimeTier).toBe(0);
+    expect(store.minNutritionPct).toBe(0);
+    expect(store.minQualityTimeTier).not.toBeNull();
+    expect(store.minNutritionPct).not.toBeNull();
+  });
+
+  it('BITES: non-zero Some(n) values pass through on BOTH u8 options, not swapped', () => {
+    // Two DISTINCT values so a copy-paste (`minNutritionPct: row.minQualityTimeTier`)
+    // is caught — the two gates would otherwise be indistinguishable in any fixture
+    // that used the same number for both.
+    const store = evolutionPathRowToStore(
+      sdkEvoPath({ minQualityTimeTier: 2, minNutritionPct: 60 }),
+    );
+    expect(store.minQualityTimeTier).toBe(2);
+    expect(store.minNutritionPct).toBe(60);
+  });
+
+  it('★ BITES: Some(TrustTier) normalizes to the BARE TAG STRING for all five variants', () => {
+    // The SDK delivers `{ tag: 'Friendly', value: {} }` for a UNIT variant — the
+    // `value: {}` key is real and a structural Sdk* interface that assumes a bare
+    // `{tag}` is a drift hazard. Storing the object makes `trustTierRank(threshold)`
+    // read `undefined` and the trust gate unsatisfiable.
+    // Kills: object passthrough; a hard-coded single tag; a converter that only
+    // handles the variant its author tested.
+    for (const tag of ['Hostile', 'Wary', 'Neutral', 'Friendly', 'Devoted'] as const) {
+      const store = evolutionPathRowToStore(sdkEvoPath({ minTrustTier: { tag, value: {} } }));
+      expect(store.minTrustTier).toBe(tag);
+      expect(typeof store.minTrustTier).toBe('string');
+    }
+  });
+
+  it("★ BITES: minTrustTier 'Hostile' is NOT collapsed to null (lowest tier is a REAL threshold)", () => {
+    // The permissive sentinel is `null` = ABSENT. `Some(Hostile)` is a real (if
+    // trivially satisfied) authored gate that must still render a row in the
+    // requirements panel. Conflating the two loses the distinction the contract calls
+    // out explicitly: "null = PERMISSIVE (absent), not 'lowest tier'".
+    // Kills: a converter that maps the lowest tier to null "because it's a no-op".
+    const store = evolutionPathRowToStore(
+      sdkEvoPath({ minTrustTier: { tag: 'Hostile', value: {} } }),
+    );
+    expect(store.minTrustTier).toBe('Hostile');
+    expect(store.minTrustTier).not.toBeNull();
+  });
+
+  it('★ BITES (fail-soft): an UNKNOWN trustTier tag does NOT throw and does NOT become null', () => {
+    // Two teeth in one. (a) No throw — an unguarded row callback would take the whole
+    // burst down. (b) It must NOT be silently normalized to `null`: null means
+    // PERMISSIVE, so a future server variant would turn an unrecognized threshold into
+    // NO threshold and grant phantom eligibility — the exact fail-OPEN direction the
+    // contract's A2 adjudication forbids. Passing the raw tag through keeps the gate
+    // unsatisfiable (fail-closed) in the eligibility port.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      let store: ReturnType<typeof evolutionPathRowToStore> | undefined;
+      expect(() => {
+        store = evolutionPathRowToStore(
+          sdkEvoPath({ minTrustTier: { tag: 'Adoring', value: {} } }),
+        );
+      }).not.toThrow();
+      expect(store!.minTrustTier).not.toBeNull();
+      expect(typeof store!.minTrustTier).toBe('string');
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RED-TEAM ADDITION (gap against contract §G, EG4-5 row): that row names
+// `rowConvert.test.ts` as one of the three files that must prove "a partial deletion
+// leaving dead wiring" reds — but the authored suite only DELETED the fusion describe
+// block and swapped the import specifier. Deleting a test is not a gate: nothing here
+// asserted that `fusionRowToStore` / `SdkFusionRow` actually left rowConvert.ts.
+//
+// They could survive as live exports. `SdkFusionRow` is type-only (erased), but
+// `fusionRowToStore` is a runtime export, and connection.test.ts's whole-file scan only
+// proves connection.ts stopped IMPORTING it — a dead-but-exported converter satisfies
+// every other gate in this slice and is precisely the shape a half-done EG4-5 takes.
+//
+// Runtime probe on the module namespace, not a type probe: client/tsconfig.json excludes
+// **/*.test.ts, so a tsc-only assertion would gate nothing at all.
+// ---------------------------------------------------------------------------
+describe('★ rowConvert EG4-5: the fusion converter surface is DELETED from the module', () => {
+  it('★ BITES: rowConvert exports no fusionRowToStore', () => {
+    // Kills: leaving the converter exported "because nothing calls it" — dead wiring that
+    // still compiles, still ships in the bundle, and reads to the next author as if fusion
+    // were still a supported path.
+    const exported = rowConvertModule as unknown as Record<string, unknown>;
+    expect(
+      exported.fusionRowToStore,
+      'fusionRowToStore must be deleted from rowConvert.ts (contract §B "Deleted: … ' +
+        'SdkFusionRow, fusionRowToStore …"). RED TODAY: it is still exported.',
+    ).toBeUndefined();
+  });
+
+  it('★ BITES: the replacement converter IS exported (anti-vacuity for the deletion above)', () => {
+    // Without this, "fusion is gone" would be satisfied by deleting the feature instead
+    // of replacing it — the same anti-vacuity frame store.test.ts uses for its own
+    // fusion-surface deletion gate.
+    const exported = rowConvertModule as unknown as Record<string, unknown>;
+    expect(typeof exported.evolutionPathRowToStore).toBe('function');
   });
 });
 
@@ -2225,6 +2541,8 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS.TradeStatus — registry matc
 //     TradeStatus    — tradeOfferRowToStore: row.status.tag (the narrowTag site)
 //     ChallengeStatus — battleChallengeRowToStore: row.status.tag
 //     NpcInteraction — npcRowToStore: row.interaction.tag  // uxd2: registered — ADR-0161
+//     TrustTier      — monsterPubRowToStore: row.trustTier.tag;                  // EG4
+//                      evolutionPathRowToStore: row.minTrustTier?.tag
 //
 //   Excluded (write-direction or non-.tag reads):
 //     PvpAction      — the client WRITES this via submitPvpAction; rowConvert never
@@ -2244,10 +2562,14 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS.TradeStatus — registry matc
 // The exact required registry keys are:
 //   TradeStatus, ChallengeStatus, BattleOutcome, Affinity,
 //   StatusKind, WeatherEffect, ActionState, Direction,
-//   NpcInteraction                        // uxd2: NpcInteraction registered — ADR-0161
+//   NpcInteraction,                       // uxd2: NpcInteraction registered — ADR-0161
+//   TrustTier                             // EG4: monsterPubRowToStore reads
+//                                         //   row.trustTier.tag and
+//                                         //   evolutionPathRowToStore reads
+//                                         //   row.minTrustTier?.tag (contract §A7/A8)
 // ---------------------------------------------------------------------------
 describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)', () => {
-  it('BITES: registry contains all nine required boundary enum keys', () => {
+  it('BITES: registry contains all TEN required boundary enum keys (EG4: +TrustTier)', () => {
     // These are the enums whose .tag values cross the SDK→store boundary in rowConvert.ts.
     // Verified by reading each .tag access site in rowConvert.ts.
     // Kills: an impl that omits any boundary enum (eval cannot check an unregistered enum).
@@ -2264,6 +2586,14 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
       // `row.interaction.tag` at the SDK→store boundary, so a server-added 4th
       // variant MUST ratchet the sdk-enum-exhaustiveness eval RED (plan I5).
       'NpcInteraction',
+      // EG4: TrustTier registered. TWO new boundary reads in this slice —
+      // `monsterPubRowToStore` reads `row.trustTier.tag` (MonsterPub gained the
+      // column in EG1) and `evolutionPathRowToStore` reads
+      // `row.minTrustTier?.tag`. A server-side reorder or a 6th variant is
+      // invisible to tsc and, unregistered, invisible to the eval too — and the
+      // ORDER is semantically load-bearing here in a way no other registry entry
+      // is (it is the ranking the trust gate compares through).
+      'TrustTier',
     ] as const;
     for (const key of requiredKeys) {
       expect(
@@ -2284,8 +2614,8 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
     ).toBe(false);
   });
 
-  it('BITES: registry has EXACTLY 9 keys — no extra keys allowed (T4-6 exact-count pin)', () => {
-    // Exact-count gate: the required set is exactly the 9 boundary-read enums listed
+  it('BITES: registry has EXACTLY 10 keys — no extra keys allowed (T4-6 exact-count pin)', () => {
+    // Exact-count gate: the required set is exactly the boundary-read enums listed
     // in the T4-6 comment above. No more, no less. This kills:
     //   - An impl that adds extra enums (e.g. StatKind, PvpAction, MoveInput) that
     //     are NOT boundary-read enums in rowConvert.ts — the eval would silently
@@ -2295,18 +2625,47 @@ describe('rowConvert m17.5f: HANDLED_ENUM_VARIANTS — registry key set (T4-6)',
     // The presence test above confirms the 9 required keys exist; this test pins
     // that no additional keys were added.
     //
-    // uxd2 RECALIBRATION (8 -> 9): NpcInteraction registered — ADR-0161. The pin was
-    // calibrated pre-uxd2 and is now internally inconsistent with plan I5, which
-    // MANDATES the registry entry: with the count left at 8 no implementation could
-    // both register NpcInteraction and pass this gate. RED TODAY (the live registry
-    // still has 8 keys) — correct TDD red.
+    // uxd2 RECALIBRATION (8 -> 9): NpcInteraction registered — ADR-0161.
+    // EG4 RECALIBRATION (9 -> 10): TrustTier registered. Same reasoning as uxd2's: the
+    // slice MANDATES the entry (two new `.tag` boundary reads — MonsterPub.trustTier
+    // and EvolutionPathRow.minTrustTier), so leaving the pin at 9 would make it
+    // impossible for any correct implementation to satisfy both this gate and the
+    // key-presence gate above. RED TODAY (the live registry has 9 keys) — correct
+    // TDD red, recalibrated FROM the contract, not to fit the code.
     expect(
       Object.keys(HANDLED_ENUM_VARIANTS).length,
-      'HANDLED_ENUM_VARIANTS must have EXACTLY 9 keys: TradeStatus, ChallengeStatus, ' +
+      'HANDLED_ENUM_VARIANTS must have EXACTLY 10 keys: TradeStatus, ChallengeStatus, ' +
         'BattleOutcome, Affinity, StatusKind, WeatherEffect, ActionState, Direction, ' +
-        'NpcInteraction. ' +
+        'NpcInteraction, TrustTier. ' +
         `Got ${Object.keys(HANDLED_ENUM_VARIANTS).length} keys: ${Object.keys(HANDLED_ENUM_VARIANTS).sort().join(', ')}`,
-    ).toBe(9);
+    ).toBe(10);
+  });
+
+  it('★ BITES (EG4): TrustTier registry matches types.ts variants in DECLARATION order', () => {
+    // Verified against the generated client/src/module_bindings/types.ts:650-656 this
+    // session:
+    //   export const TrustTier = __t.enum("TrustTier", {
+    //     Hostile: __t.unit(), Wary: __t.unit(), Neutral: __t.unit(),
+    //     Friendly: __t.unit(), Devoted: __t.unit(),
+    //   });
+    // The generator emits variants in RUST DECLARATION order, and for TrustTier that
+    // order IS the ranking (ascending hostile -> devoted) the eligibility port compares
+    // through — which makes this the one registry entry where order is semantic, not
+    // cosmetic.
+    //
+    // WRONG IMPL KILLED (1): an ALPHABETISED entry ['Devoted','Friendly','Hostile',
+    //   'Neutral','Wary'] — it satisfies the sdk-enum-exhaustiveness eval (C2/C3 are
+    //   SET-based), the key-presence gate and the exact-count gate above. This array
+    //   pin is the only thing standing between the registry and a silent ordering drift.
+    // WRONG IMPL KILLED (2): a dropped variant (e.g. only the three tiers some fixture
+    //   happened to use) — the eval reds only on regen; this reds at unit speed.
+    expect(HANDLED_ENUM_VARIANTS.TrustTier).toEqual([
+      'Hostile',
+      'Wary',
+      'Neutral',
+      'Friendly',
+      'Devoted',
+    ]);
   });
 
   it('BITES: ChallengeStatus registry matches types.ts variants', () => {

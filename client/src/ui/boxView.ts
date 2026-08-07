@@ -168,6 +168,21 @@ export class BoxView {
     info.textContent = `${card.speciesName} · Lv${card.level} · HP ${card.currentHp}/${card.statHp} (${card.hpPercent}%)`;
     wrap.appendChild(info);
 
+    // EG4-8: the evolution-choice badge. Built INSIDE the card (so it is per-monster and
+    // is cleared by #renderParty/#renderBox's replaceChildren), never wrapping `header`
+    // and never a #root child: five client/e2e/recruit.spec.ts sites resolve the box root
+    // as h2['Party & Box'].parentElement.parentElement, and those helpers scan the root's
+    // text for an `HP cur/max` shape — so this copy carries NO "HP " token.
+    if (card.evolutionChoicePending) {
+      const badge = document.createElement('div');
+      badge.setAttribute('data-testid', 'evo-choice-badge');
+      badge.textContent = '★ Ready to evolve — choose a path';
+      badge.style.cssText =
+        'margin-top:4px;font-size:11px;color:#fbbf24;border:1px solid #fbbf24;' +
+        'border-radius:3px;padding:1px 4px;display:inline-block;';
+      wrap.appendChild(badge);
+    }
+
     const actions = document.createElement('div');
     actions.style.cssText = 'margin-top:6px;';
     if (inParty) {

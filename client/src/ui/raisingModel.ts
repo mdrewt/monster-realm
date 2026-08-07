@@ -6,12 +6,15 @@
 // hardcoded id list. TOTAL: never throws on empty/unknown/missing input — a throw
 // here would starve sibling store batch-listeners (store.ts one-way flow).
 import type { StoreInventory, StoreItemRow, StoreMonsterPub } from '../net/store';
+import type { TrustTierName } from './evolutionModel';
 
 export interface RaisingMonsterViewModel {
   readonly monsterId: bigint;
   readonly nickname: string;
   readonly level: number;
-  readonly bond: number;
+  /** EG4-4: replaces the retired `bond`. A VERBATIM copy of the server-derived tier —
+   *  never re-derived here (the Bayesian smoothing lives in game-core). */
+  readonly trustTier: TrustTierName;
   readonly currentHp: number;
   readonly statHp: number;
   readonly statAttack: number;
@@ -41,7 +44,7 @@ function toMonster(m: StoreMonsterPub): RaisingMonsterViewModel {
     monsterId: m.monsterId,
     nickname: m.nickname,
     level: m.level,
-    bond: m.bond,
+    trustTier: m.trustTier,
     currentHp: m.currentHp,
     statHp: m.statHp,
     statAttack: m.statAttack,

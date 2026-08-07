@@ -44,6 +44,19 @@ function makePlayer(identity: string, name: string, extra: Partial<StorePlayer> 
   };
 }
 
+// EG4-7 (blast radius): this file builds `StoreMonsterPub`-shaped literals but
+// tradeProposeModel.ts itself reads NEITHER `bond` NOR `evolvesTo` — so this is a
+// PURE FIXTURE UPDATE. `bond` is dropped (contract §B removes it from the type) and
+// the five essence-graph fields are backfilled so the literal still satisfies
+// StoreMonsterPub. No assertion in this file changes: if any trade-propose behaviour
+// test moves as a result, that is a real regression, not an expected fixture effect.
+//
+// RED-TEAM NOTE (D4): "still satisfies StoreMonsterPub" is a statement of INTENT, not a
+// checked property. `client/tsconfig.json` excludes `**/*.test.ts` and vitest strips
+// types via esbuild, so this literal's conformance to the store type is never verified by
+// anything. This file is GREEN today and gates nothing in EG4 — it is kept in sync so the
+// next reader is not misled, not because it enforces the type change. The runtime EG4-7
+// teeth live in store.test.ts (required-field list) and rowConvert.test.ts (no `bond` key).
 function makeMonster(
   monsterId: bigint,
   ownerIdentity: string,
@@ -59,7 +72,6 @@ function makeMonster(
     nickname,
     level,
     xp: 0,
-    bond: 0,
     currentHp: 10,
     statHp: 10,
     statAttack: 5,
@@ -68,6 +80,21 @@ function makeMonster(
     statSpAttack: 5,
     statSpDefense: 5,
     partySlot: 0,
+    // EG4 (contract §B) — the five new required fields.
+    tier: 0,
+    essence: {
+      Fire: 0,
+      Water: 0,
+      Plant: 0,
+      Electric: 0,
+      Earth: 0,
+      Wind: 0,
+      Light: 0,
+      Dark: 0,
+    },
+    trustTier: 'Neutral',
+    qualityTimeTier: 0,
+    nutritionPct: 0,
     ...extra,
   };
 }

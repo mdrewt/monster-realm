@@ -981,7 +981,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.code === 'KeyE') {
-    // Evolution/fusion overlay — third member of the hide-switch trio, same verdict-driven
+    // Evolution overlay — third member of the hide-switch trio, same verdict-driven
     // gate as box/raising above (see the KeyB comment for the guard-never-dismiss rule).
     const evolutionVerdict = overlayVerdict('evolutionView');
     if (evolutionVerdict.kind === 'allow') {
@@ -1277,9 +1277,12 @@ function refreshBox(): void {
   if (!boxView?.visible || identity === '') return;
   const monsters = store.ownMonsters(identity);
   const speciesMap = store.speciesMap();
+  // EG4-8: the same authored-edge set feeds both lists, so a boxed monster and a party
+  // monster badge identically (the badge is computed in boxModel's shared toCard).
+  const paths = [...store.evolutionPaths()];
   boxView.refresh(
-    buildPartyViewModel(monsters, speciesMap, PARTY_SIZE),
-    buildBoxViewModel(monsters, speciesMap, PARTY_SLOT_NONE),
+    buildPartyViewModel(monsters, speciesMap, PARTY_SIZE, paths),
+    buildBoxViewModel(monsters, speciesMap, PARTY_SLOT_NONE, paths),
   );
 }
 store.onBatchApplied(() => refreshBox());
@@ -1296,14 +1299,14 @@ function refreshRaising(): void {
 }
 store.onBatchApplied(() => refreshRaising());
 
-// --- evolution/fusion view: refresh on batch when visible (M10c, ADR-0014/0019) --
+// --- evolution view: refresh on batch when visible (EG4, ADR-0014/0174) ---------
 // MUST be total (never throw): defense-in-depth — store.flushBatch has per-listener
 // try/catch since M10.5d, but a throwing function here signals a logic bug.
 function refreshEvolution(): void {
   if (!evolutionView?.visible || identity === '') return;
   const monsters = store.ownMonsters(identity);
   const speciesMap = store.speciesMap();
-  evolutionView.refresh(buildEvolutionViewModel(monsters, speciesMap, [...store.fusions()]));
+  evolutionView.refresh(buildEvolutionViewModel(monsters, speciesMap, [...store.evolutionPaths()]));
 }
 store.onBatchApplied(() => refreshEvolution());
 
@@ -2104,14 +2107,12 @@ async function main(): Promise<void> {
         }),
     });
     evolutionView = new EvolutionViewClass(mount, {
-      onEvolve: (monsterId) => {
-        // EG1 transitional: evolution dark until EG3 content; EG4 wires real path selection (spec EG4-3)
-        sendGuarded('evolve', () => conn?.conn.reducers.evolve({ monsterId, toSpecies: 0 }));
+      // EG4-3: the CHOSEN species is forwarded from the panel's path picker. The client
+      // never resolves an ambiguous evolution itself (EG4-2) — the player picks, and the
+      // server re-validates the same gates before applying.
+      onEvolve: (monsterId, toSpecies) => {
+        sendGuarded('evolve', () => conn?.conn.reducers.evolve({ monsterId, toSpecies }));
       },
-      // EG1 transitional: evolution dark until EG3 content; EG4 wires real path selection (spec EG4-3)
-      // The fuse reducer was deleted (EG1/ADR-0174 — fusion removed); the callback SHAPE
-      // stays until EG4 deletes the fusion UI (EG4-5), so this is a no-op stub.
-      onFuse: () => {},
     });
     // M12d: dialogue / quest log / heal DOM shells (ADR-0071).
     dialogueView = new DialogueViewClass();
