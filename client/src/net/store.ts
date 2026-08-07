@@ -13,6 +13,17 @@
 // `flushBatch` once per transaction burst (validation-findings: per-tx fallback).
 import type { WasmAction, WasmDirection, WasmMoveInput } from '../convert/convert';
 import { BURST_EPSILON_MS, INTERP_JITTER_ALPHA, INTERP_MAX_DEPTH } from '../shared/interpConfig';
+// Type-only, therefore erased: no runtime import edge, no cycle. `AffinityName` is
+// derived from the SDK-boundary registry (contract A7); `TrustTierName` comes from the
+// eligibility port, which owns the hard-coded ascending TRUST_TIER_ORDER (A7/A8).
+import type { TrustTierName } from '../ui/evolutionModel';
+import type { AffinityName } from './rowConvert';
+
+export type { AffinityName };
+
+/** A monster's essence pool, one entry per affinity (contract §B). Keyed by affinity —
+ *  never positional, never partial. */
+export type EssenceByAffinity = Readonly<Record<AffinityName, number>>;
 
 /**
  * ADR-0171 D1: inter-arrival intervals above K × stepMs are IDLENESS, not jitter —
@@ -58,7 +69,6 @@ export type StoreMonsterPub = {
   readonly nickname: string;
   readonly level: number;
   readonly xp: number;
-  readonly bond: number;
   readonly currentHp: number;
   readonly statHp: number;
   readonly statAttack: number;
@@ -67,18 +77,40 @@ export type StoreMonsterPub = {
   readonly statSpAttack: number;
   readonly statSpDefense: number;
   readonly partySlot: number;
-  /** Server-computed evolution target species id (M10c, ADR-0019). Undefined = not eligible. */
-  readonly evolvesTo?: number;
+  // --- EG4 (Migration A, ADR-0174): the essence-graph projection. `bond` and
+  // `evolvesTo` are RETIRED — evolution eligibility is now derived client-side from
+  // these fields against the `evolution_path` rows (ui/evolutionModel.ts).
+  readonly tier: number;
+  readonly essence: EssenceByAffinity;
+  /** Server-derived Bayesian-smoothed trust tier — copied VERBATIM, never re-derived. */
+  readonly trustTier: TrustTierName;
+  readonly qualityTimeTier: number;
+  readonly nutritionPct: number;
 };
 
-// NOTE: StoreFusionRow is a `type` alias (not `interface`) for consistency with the
+/** One entry of an evolution path's ORDERED essence requirement list (contract §B). */
+export type StoreEssenceRequirement = {
+  readonly affinity: AffinityName;
+  readonly amount: number;
+};
+
+// NOTE: StoreEvolutionPath is a `type` alias (not `interface`) for consistency with the
 // other store row types (StoreMonsterPub, StoreInventory, StoreItemRow).
-/** A fusion recipe row (public content — M10c, ADR-0019). */
-export type StoreFusionRow = {
-  readonly fusionId: bigint;
-  readonly aSpecies: number;
-  readonly bSpecies: number;
+/** One authored edge of the essence graph (public content — EG3, ADR-0174/0176). */
+export type StoreEvolutionPath = {
+  /** DB-internal key ONLY — the store map key (contract A1). NEVER read by a model or a
+   *  view-model: `sync_content` RE-MINTS it on every content republish. */
+  readonly pathId: bigint;
+  readonly edgeId: number;
+  readonly fromSpecies: number;
   readonly toSpecies: number;
+  readonly minLevel: number;
+  /** ORDERED (contract A10) — duplicate affinities are legal, never collapsed. */
+  readonly essence: readonly StoreEssenceRequirement[];
+  /** null = PERMISSIVE (the gate is ABSENT), never "requires the lowest tier". */
+  readonly minTrustTier: TrustTierName | null;
+  readonly minQualityTimeTier: number | null;
+  readonly minNutritionPct: number | null;
 };
 
 /** A skill definition row, normalized (affinity as bare string). */
@@ -339,7 +371,11 @@ export class AuthoritativeStore {
   readonly #skills = new Map<number, StoreSkillRow>();
   readonly #inventory = new Map<bigint, StoreInventory>();
   readonly #itemDefs = new Map<number, StoreItemRow>();
-  readonly #fusions = new Map<bigint, StoreFusionRow>();
+  // EG4 (contract A1): keyed by `pathId`, NOT by `edgeId`. `sync_content` republishes
+  // this table as N deletes + N inserts in ONE unordered transaction, re-minting
+  // path_ids while KEEPING edge_ids — an edgeId-keyed map lets the stale delete wipe
+  // the row the insert half just wrote, silently emptying the client's path map.
+  readonly #evolutionPaths = new Map<bigint, StoreEvolutionPath>();
   // M12d: dialogue / quest / heal / npc maps
   readonly #conversations = new Map<string, StorePlayerConversation>();
   readonly #quests = new Map<bigint, StorePlayerQuest>();
@@ -543,13 +579,13 @@ export class AuthoritativeStore {
     if (this.#itemDefs.delete(id)) this.#dirty = true;
   }
 
-  upsertFusion(f: StoreFusionRow): void {
-    this.#fusions.set(f.fusionId, f);
+  upsertEvolutionPath(p: StoreEvolutionPath): void {
+    this.#evolutionPaths.set(p.pathId, p);
     this.#dirty = true;
   }
 
-  removeFusion(fusionId: bigint): void {
-    if (this.#fusions.delete(fusionId)) this.#dirty = true;
+  removeEvolutionPath(pathId: bigint): void {
+    if (this.#evolutionPaths.delete(pathId)) this.#dirty = true;
   }
 
   // --- M12d: conversation / quest / heal / npc ingest --------------------------
@@ -629,7 +665,7 @@ export class AuthoritativeStore {
 
   /** Zone-warp character flush: drop ONLY the character map so remote positions
    *  from the old zone are never interpolated in the new zone. All other tables
-   *  (players, monsters, species, battles, skills, inventory, itemDefs, fusions)
+   *  (players, monsters, species, battles, skills, inventory, itemDefs, evolutionPaths)
    *  are untouched — they survive the zone transition. (M11c, ADR-0067 Option C) */
   resetCharacters(): void {
     if (this.#chars.size === 0) return; // no-op → no dirty mark (no phantom re-render)
@@ -648,7 +684,7 @@ export class AuthoritativeStore {
     this.#skills.clear();
     this.#inventory.clear();
     this.#itemDefs.clear();
-    this.#fusions.clear();
+    this.#evolutionPaths.clear();
     // M12d: clear the 5 new maps
     this.#conversations.clear();
     this.#quests.clear();
@@ -839,14 +875,14 @@ export class AuthoritativeStore {
     return new Map(this.#itemDefs);
   }
 
-  // --- fusion read (M10c evolution view reads truth here) ----------------------
+  // --- evolution-path read (the EG4 requirements panel reads truth here) -------
 
-  fusions(): IterableIterator<StoreFusionRow> {
-    return this.#fusions.values();
+  evolutionPaths(): IterableIterator<StoreEvolutionPath> {
+    return this.#evolutionPaths.values();
   }
 
-  get fusionCount(): number {
-    return this.#fusions.size;
+  get evolutionPathCount(): number {
+    return this.#evolutionPaths.size;
   }
 
   // --- M12d: conversation / quest / heal / npc read ----------------------------

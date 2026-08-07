@@ -14,7 +14,8 @@ import type {
   StoreBattleChallenge,
   StoreBattleMonster,
   StoreCharacter,
-  StoreFusionRow,
+  StoreEssenceRequirement,
+  StoreEvolutionPath,
   StoreHealLocationRow,
   StoreInventory,
   StoreItemRow,
@@ -64,7 +65,16 @@ export const HANDLED_ENUM_VARIANTS = {
   ActionState: ['Idle', 'Walking', 'Jumping'],
   Direction: ['North', 'South', 'East', 'West'],
   NpcInteraction: ['Dialogue', 'Shop', 'Heal'],
+  // EG4 (ADR-0174): TWO new boundary reads — monsterPubRowToStore reads
+  // `row.trustTier.tag` and evolutionPathRowToStore reads `row.minTrustTier?.tag`.
+  // Order mirrors types.ts declaration order, which for TrustTier IS the ranking the
+  // eligibility port compares through (see TRUST_TIER_ORDER in ui/evolutionModel.ts).
+  TrustTier: ['Hostile', 'Wary', 'Neutral', 'Friendly', 'Devoted'],
 } as const;
+
+/** The eight essence affinities, DERIVED from the registry (contract A7) — never a
+ *  hand-typed union that can silently lose a variant. */
+export type AffinityName = (typeof HANDLED_ENUM_VARIANTS.Affinity)[number];
 
 /** Narrow a raw SDK enum tag to its registry-typed union. A known tag returns
  *  typed; an unknown tag (a future server-side variant) logs once per call via
@@ -129,6 +139,13 @@ export function playerRowToStore(row: SdkPlayerRow): StorePlayer {
 
 // --- M6c: monster_pub + species_row converters --------------------------------
 
+/** A tagged-union enum exactly as the SDK delivers it. A UNIT variant still carries
+ *  `value: {}` — never assume a bare `{ tag }` (EG4 verified probe fact). */
+interface SdkEnumTag {
+  readonly tag: string;
+  readonly value?: unknown;
+}
+
 export interface SdkMonsterPubRow {
   readonly monsterId: bigint;
   readonly ownerIdentity: { toHexString(): string };
@@ -136,7 +153,6 @@ export interface SdkMonsterPubRow {
   readonly nickname: string;
   readonly level: number;
   readonly xp: number;
-  readonly bond: number;
   readonly currentHp: number;
   readonly statHp: number;
   readonly statAttack: number;
@@ -145,8 +161,20 @@ export interface SdkMonsterPubRow {
   readonly statSpAttack: number;
   readonly statSpDefense: number;
   readonly partySlot: number;
-  /** Option<u32> decodes as number | undefined for primitive options (M10c). */
-  readonly evolvesTo?: number;
+  // --- EG4 (Migration A, ADR-0174): the essence-graph columns. `bond` and `evolvesTo`
+  // are deliberately absent — the converter no longer reads either.
+  readonly tier: number;
+  readonly essenceFire: number;
+  readonly essenceWater: number;
+  readonly essencePlant: number;
+  readonly essenceElectric: number;
+  readonly essenceEarth: number;
+  readonly essenceWind: number;
+  readonly essenceLight: number;
+  readonly essenceDark: number;
+  readonly trustTier: SdkEnumTag;
+  readonly qualityTimeTier: number;
+  readonly nutritionPct: number;
 }
 
 export interface SdkSpeciesRowRow {
@@ -170,7 +198,6 @@ export function monsterPubRowToStore(row: SdkMonsterPubRow): StoreMonsterPub {
     nickname: row.nickname,
     level: row.level,
     xp: row.xp,
-    bond: row.bond,
     currentHp: row.currentHp,
     statHp: row.statHp,
     statAttack: row.statAttack,
@@ -179,7 +206,25 @@ export function monsterPubRowToStore(row: SdkMonsterPubRow): StoreMonsterPub {
     statSpAttack: row.statSpAttack,
     statSpDefense: row.statSpDefense,
     partySlot: row.partySlot,
-    evolvesTo: row.evolvesTo,
+    tier: row.tier,
+    // EIGHT flat u32 columns -> the affinity-keyed record the eligibility port reads.
+    // Written out one key per column, in registry order: a zip against a variant list
+    // is the shape that transposes two affinities without anything noticing.
+    essence: {
+      Fire: row.essenceFire,
+      Water: row.essenceWater,
+      Plant: row.essencePlant,
+      Electric: row.essenceElectric,
+      Earth: row.essenceEarth,
+      Wind: row.essenceWind,
+      Light: row.essenceLight,
+      Dark: row.essenceDark,
+    },
+    // narrowTag: an unknown tag is logged and passed through RAW (never null, never a
+    // default) — null means PERMISSIVE downstream, so normalizing here would fail OPEN.
+    trustTier: narrowTag(row.trustTier.tag, HANDLED_ENUM_VARIANTS.TrustTier, 'TrustTier'),
+    qualityTimeTier: row.qualityTimeTier,
+    nutritionPct: row.nutritionPct,
   };
 }
 
@@ -384,22 +429,57 @@ export function shopItemRowToStore(row: SdkShopItemRowRow): StoreShopItemRow {
   };
 }
 
-// --- M10c: fusion converter ---------------------------------------------------
+// --- EG4: evolution_path converter (replaces the deleted M10c fusion one) -------
+//
+// THREE SDK decode facts this converter is built against:
+//   1. `t.option(T)` decodes None as `undefined`, NEVER null. It is normalized to null
+//      here because the store contract spells the permissive sentinel `null`.
+//   2. `t.option(t.u8())` decodes Some(0) as `0` — so `||` is banned throughout: an
+//      authored `Some(0)` is a REAL (trivially satisfied) gate, not "no gate".
+//   3. A unit enum variant deserializes to `{ tag: 'Friendly', value: {} }`.
 
-/** Structural view of the generated fusion table row (all primitives — no tagged unions). */
-export interface SdkFusionRow {
-  readonly fusionId: bigint;
-  readonly aSpecies: number;
-  readonly bSpecies: number;
-  readonly toSpecies: number;
+export interface SdkEssenceRequirementRow {
+  readonly affinity: SdkEnumTag;
+  readonly amount: number;
 }
 
-export function fusionRowToStore(row: SdkFusionRow): StoreFusionRow {
+export interface SdkEvolutionPathRow {
+  readonly pathId: bigint;
+  readonly edgeId: number;
+  readonly fromSpecies: number;
+  readonly toSpecies: number;
+  readonly minLevel: number;
+  readonly essence: readonly SdkEssenceRequirementRow[];
+  readonly minTrustTier?: SdkEnumTag | null;
+  readonly minQualityTimeTier?: number | null;
+  readonly minNutritionPct?: number | null;
+}
+
+function essenceRequirementToStore(req: SdkEssenceRequirementRow): StoreEssenceRequirement {
   return {
-    fusionId: row.fusionId,
-    aSpecies: row.aSpecies,
-    bSpecies: row.bSpecies,
+    affinity: narrowTag(req.affinity.tag, HANDLED_ENUM_VARIANTS.Affinity, 'Affinity'),
+    amount: req.amount,
+  };
+}
+
+export function evolutionPathRowToStore(row: SdkEvolutionPathRow): StoreEvolutionPath {
+  const minTrustTier = row.minTrustTier;
+  return {
+    pathId: row.pathId,
+    edgeId: row.edgeId,
+    fromSpecies: row.fromSpecies,
     toSpecies: row.toSpecies,
+    minLevel: row.minLevel,
+    // ORDERED array, never collapsed to a record: duplicate affinities are legal
+    // content and Rust evaluates the LIST with `.all()`.
+    essence: row.essence.map(essenceRequirementToStore),
+    // An unknown tag stays RAW (fail-CLOSED downstream); only ABSENT becomes null.
+    minTrustTier:
+      minTrustTier == null
+        ? null
+        : narrowTag(minTrustTier.tag, HANDLED_ENUM_VARIANTS.TrustTier, 'TrustTier'),
+    minQualityTimeTier: row.minQualityTimeTier ?? null,
+    minNutritionPct: row.minNutritionPct ?? null,
   };
 }
 

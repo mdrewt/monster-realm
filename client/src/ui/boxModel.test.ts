@@ -5,11 +5,20 @@
 // Tests the pure functions in ui/boxModel.ts, which has no SDK or PixiJS deps.
 // All inputs are plain objects; deterministic; node-only.
 //
-// EG4-7 (compile gate): the `monster()` factory below is a StoreMonsterPub literal. It
-// carries NO `bond:` (retired — Bond is replaced by Trust, spec §4) and supplies the five
-// new required fields explicitly (`tier`, `essence`, `trustTier`, `qualityTimeTier`,
-// `nutritionPct`). Explicit, not spread-from-a-partial: a field that silently defaults is
-// a field whose gate can never be exercised here.
+// EG4-7 (fixture update — NOT a compile gate; see the correction below): the `monster()`
+// factory is a StoreMonsterPub literal. It carries NO `bond:` (retired — Bond is replaced
+// by Trust, spec §4) and supplies the five new required fields explicitly (`tier`,
+// `essence`, `trustTier`, `qualityTimeTier`, `nutritionPct`). Explicit, not
+// spread-from-a-partial: a field that silently defaults is a field whose gate can never
+// be exercised here.
+//
+// RED-TEAM CORRECTION (D4): an earlier draft of this header called the above a "compile
+// gate". IT IS NOT ONE. `client/tsconfig.json` sets `"exclude": ["**/*.test.ts"]`, and
+// vitest strips types through esbuild without checking them — so NO type annotation in
+// ANY test file in this repo is ever verified. Do not rely on a test-file literal to
+// enforce a store-type change. The teeth that actually enforce EG4-7 are RUNTIME:
+// `store.test.ts`'s required-field list (`Object.keys` must contain the five new fields)
+// and `rowConvert.test.ts`'s `expect(keys).not.toContain('bond')` on the converter output.
 //
 // EG4-8: `MonsterCardViewModel.evolutionChoicePending` is TRUE iff the monster has 2+
 // currently-eligible evolution paths — computed in the shared `toCard()` (contract A16),

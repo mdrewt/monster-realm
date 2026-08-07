@@ -2,7 +2,10 @@
 //
 // No DOM, no SDK, no side effects. Takes store data, returns view-models.
 // The thin DOM shell (boxView.ts) renders these; the loop refreshes on batch.
-import type { StoreMonsterPub, StoreSpeciesRow } from '../net/store';
+import type { StoreEvolutionPath, StoreMonsterPub, StoreSpeciesRow } from '../net/store';
+// EG4-8 (contract A4/A16): the ONE eligibility predicate, imported — never re-implemented
+// here. House precedent runs the other way too (battleModel.ts imports hpPercent below).
+import { eligibleEvolutionPaths } from './evolutionModel';
 
 export interface MonsterCardViewModel {
   readonly monsterId: bigint;
@@ -13,11 +16,15 @@ export interface MonsterCardViewModel {
   readonly statHp: number;
   readonly hpPercent: number;
   readonly partySlot: number;
+  /** EG4-8: true IFF this monster has 2+ CURRENTLY-ELIGIBLE evolution paths — the
+   *  ambiguous case the server will never auto-resolve, so it needs the player. */
+  readonly evolutionChoicePending: boolean;
 }
 
 function toCard(
   m: StoreMonsterPub,
   speciesMap: ReadonlyMap<number, StoreSpeciesRow>,
+  paths: readonly StoreEvolutionPath[],
 ): MonsterCardViewModel {
   return {
     monsterId: m.monsterId,
@@ -28,6 +35,7 @@ function toCard(
     statHp: m.statHp,
     hpPercent: hpPercent(m.currentHp, m.statHp),
     partySlot: m.partySlot,
+    evolutionChoicePending: eligibleEvolutionPaths(m, paths).length >= 2,
   };
 }
 
@@ -35,11 +43,12 @@ export function buildPartyViewModel(
   monsters: readonly StoreMonsterPub[],
   speciesMap: ReadonlyMap<number, StoreSpeciesRow>,
   partySize: number,
+  paths: readonly StoreEvolutionPath[] = [],
 ): (MonsterCardViewModel | null)[] {
   const slots: (MonsterCardViewModel | null)[] = Array.from({ length: partySize }, () => null);
   for (const m of monsters) {
     if (m.partySlot < partySize) {
-      slots[m.partySlot] = toCard(m, speciesMap);
+      slots[m.partySlot] = toCard(m, speciesMap, paths);
     }
   }
   return slots;
@@ -49,8 +58,11 @@ export function buildBoxViewModel(
   monsters: readonly StoreMonsterPub[],
   speciesMap: ReadonlyMap<number, StoreSpeciesRow>,
   partySlotNone: number,
+  paths: readonly StoreEvolutionPath[] = [],
 ): MonsterCardViewModel[] {
-  return monsters.filter((m) => m.partySlot === partySlotNone).map((m) => toCard(m, speciesMap));
+  return monsters
+    .filter((m) => m.partySlot === partySlotNone)
+    .map((m) => toCard(m, speciesMap, paths));
 }
 
 export function hpPercent(currentHp: number, statHp: number): number {

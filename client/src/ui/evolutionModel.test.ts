@@ -592,6 +592,53 @@ describe('EG4-1 (A11) level gate: minLevel outside 1..=100 is never satisfied', 
     expect(pathSatisfied(monster({ level: 100 }), evoPath({ minLevel: 100 }))).toBe(true);
   });
 
+  it('BITES (A11 row semantics): an out-of-range minLevel emits a level gate row with met === FALSE', () => {
+    // CONTRACT FREEZE (adjudicated: D2 ACCEPTED). §C spells pathSatisfied as "every row
+    // met (AND the A11 level-range check)" — the range check reads as a SEPARATE conjunct,
+    // which left the level ROW free to report met: true for a minLevel the server SKIPS
+    // (marshal.rs:354-362 Level::new rejects 0 and > 100). The panel would then render an
+    // all-green level row on a permanently-blocked path: the requirements half says the
+    // requirement is satisfied while the path stays blocked forever, with the reason
+    // pointing at a gate the player has already cleared. Frozen: met === false.
+    //
+    // Kills: an A11 clamp bolted onto pathSatisfied/eligibleEvolutionPaths only, leaving
+    // pathRequirements' level row on the naive `level >= minLevel` compare.
+    //
+    // Each path below ALSO carries a nutrition gate the monster clears, so exactly one row
+    // is false and one is true in the SAME walk — "when out of range, mark every row
+    // unmet" cannot satisfy this, and neither can "the level row is always false".
+    const m = monster({ level: 100, nutritionPct: 100 });
+    for (const minLevel of [0, 101]) {
+      const p = evoPath({ minLevel, minNutritionPct: 60 });
+      const rows = pathRequirements(m, p);
+      const level = rows.find((g) => g.kind === 'level');
+      const nutrition = rows.find((g) => g.kind === 'nutrition');
+      expect(level, `a level gate row must be emitted for minLevel ${minLevel}`).toBeDefined();
+      expect(nutrition, 'the nutrition gate row must be emitted too').toBeDefined();
+      expect(
+        level!.met,
+        `minLevel ${minLevel} is outside 1..=100, so the server SKIPS this edge — the level ` +
+          'row must read UNMET, never green',
+      ).toBe(false);
+      expect(
+        nutrition!.met,
+        'CONTROL: nutrition 100 clears a 60% threshold — so "every row is false when the ' +
+          'level is out of range" cannot satisfy the assertion above',
+      ).toBe(true);
+      expect(pathSatisfied(m, p)).toBe(false);
+      expect(unmetRequirement(m, p)).not.toBeNull();
+      expect(eligibleEvolutionPaths(m, [p])).toEqual([]);
+    }
+    // IN-RANGE CONTROL, same shape: the level row IS green at the legal upper endpoint, so
+    // the loop above cannot be satisfied by a level row hard-wired to false.
+    const legal = evoPath({ minLevel: 100, minNutritionPct: 60 });
+    const legalRows = pathRequirements(m, legal);
+    expect(legalRows.find((g) => g.kind === 'level')?.met).toBe(true);
+    expect(legalRows.every((g) => g.met)).toBe(true);
+    expect(pathSatisfied(m, legal)).toBe(true);
+    expect(unmetRequirement(m, legal)).toBeNull();
+  });
+
   it('BITES: unmetRequirement is null EXACTLY when pathSatisfied is true, A11 paths included', () => {
     // Kills: an A11 range-check bolted onto pathSatisfied ALONE. If unmetRequirement
     // still walks only the gate rows, a minLevel-0 path reports `satisfied === false`
@@ -1095,6 +1142,59 @@ describe('EG4-2 buildEvolutionViewModel: choices appear ONLY at 2+ eligible', ()
     expect(mon.paths.map((p) => p.edgeId)).toEqual([1, 2]);
     expect(mon.paths.map((p) => p.met)).toEqual([true, false]);
     expect(mon.paths.map((p) => p.unmetReason)).toEqual([null, 'requires level 99']);
+  });
+
+  it('BITES (A9, extended to `paths`): shuffled insertion order → the PROGRESS PANEL is ascending by edgeId', () => {
+    // CONTRACT EXTENSION (adjudicated: D1 ACCEPTED). A9 originally froze only the ELIGIBLE
+    // set's order; `EvolutionMonsterViewModel.paths` — the full outgoing set the EG4-1
+    // progress panel actually renders — was left free, and the two tests above happen to
+    // feed already-sorted input, so "input order" and "edgeId-ascending" were
+    // indistinguishable. `paths` is now frozen ascending by edgeId, on A9's verbatim
+    // rationale: subscription-arrival order is nondeterministic and is RE-SHUFFLED on
+    // every content republish (A1 re-mints path_ids), so a muscle-memory click must not
+    // land on a different evolution between sessions — which applies at least as strongly
+    // to the panel as to the picker.
+    //
+    // Kills: `paths` built by iterating the store Map / the incoming array unsorted, while
+    // only `choices` gets the sort. Same anti-correlation discipline as the eligible-set
+    // fixture: pathId, toSpecies and insertion order EACH produce a different sequence
+    // from the expected one, so no wrong key passes for free.
+    const shuffled: readonly StoreEvolutionPath[] = [
+      evoPath({ pathId: 90n, edgeId: 7, toSpecies: 4, minLevel: 20 }), // eligible
+      evoPath({ pathId: 40n, edgeId: 2, toSpecies: 9, minLevel: 20 }), // eligible
+      evoPath({ pathId: 20n, edgeId: 9, toSpecies: 2, minLevel: 99 }), // blocked
+      evoPath({ pathId: 70n, edgeId: 4, toSpecies: 3, minLevel: 99 }), // blocked
+      evoPath({ pathId: 10n, edgeId: 1, fromSpecies: 9, toSpecies: 2 }), // FOREIGN — excluded
+    ];
+    const mon = vmFor(monster({ speciesId: 1, level: 30 }), shuffled);
+
+    expect(
+      mon.paths.map((p) => p.edgeId),
+      'the progress panel must list every outgoing edge of THIS species, ascending by edgeId',
+    ).toEqual([2, 4, 7, 9]);
+    // The blocked edges are in there too — this is the FULL set, not the eligible one.
+    expect(mon.paths.map((p) => p.met)).toEqual([true, false, true, false]);
+    expect(mon.eligibleCount).toBe(2);
+    expect(mon.choices.map((c) => c.edgeId)).toEqual([2, 7]);
+
+    // FIXTURE SOUNDNESS — the three wrong keys each yield a DIFFERENT sequence, so the
+    // equality above is a genuine four-way discrimination rather than a coincidence.
+    const ours = shuffled.filter((p) => p.fromSpecies === 1);
+    expect(
+      ours.map((p) => p.edgeId),
+      'FIXTURE SOUNDNESS: insertion order must differ from edgeId order',
+    ).not.toEqual([2, 4, 7, 9]);
+    expect(
+      [...ours].sort((a, b) => Number(a.pathId - b.pathId)).map((p) => p.edgeId),
+      'FIXTURE SOUNDNESS: pathId order must differ from edgeId order',
+    ).not.toEqual([2, 4, 7, 9]);
+    expect(
+      [...ours].sort((a, b) => a.toSpecies - b.toSpecies).map((p) => p.edgeId),
+      'FIXTURE SOUNDNESS: toSpecies order must differ from edgeId order',
+    ).not.toEqual([2, 4, 7, 9]);
+    // ...and the foreign edge carries edgeId 1, which would sort FIRST if the fromSpecies
+    // filter were dropped — so this fixture also re-kills a missing filter, positionally.
+    expect(mon.paths.map((p) => p.edgeId)).not.toContain(1);
   });
 
   it('BITES (A1/EG1-12): no path view-model leaks pathId — it is a DB-internal store key', () => {
