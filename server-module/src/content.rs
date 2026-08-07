@@ -645,8 +645,11 @@ fn sync_npc_entities_from(ctx: &ReducerContext, npc_defs: &[game_core::NpcDef]) 
                 ctx.db.npc().entity_id().delete(entity_id);
                 ctx.db.character().entity_id().delete(entity_id);
                 removed_entity_ids.push(entity_id);
+                // 12r-d (ADR-0170 D5): npc_id is a content-authored string with no
+                // charset validation — escape before the hand-built JSON line.
+                let escaped_npc_id = crate::guards::json_escape(&npc_id);
                 log::info!(
-                    "{{\"evt\":\"npc_sync_remove\",\"npc_id\":\"{npc_id}\",\"entity_id\":{entity_id}}}"
+                    "{{\"evt\":\"npc_sync_remove\",\"npc_id\":\"{escaped_npc_id}\",\"entity_id\":{entity_id}}}"
                 );
             }
             NpcSyncAction::Repair {
@@ -666,9 +669,9 @@ fn sync_npc_entities_from(ctx: &ReducerContext, npc_defs: &[game_core::NpcDef]) 
                 ctx.db.npc().entity_id().delete(entity_id);
                 removed_entity_ids.push(entity_id);
                 let ch = ctx.db.character().insert(character);
+                let escaped_npc_id = crate::guards::json_escape(&npc.npc_id);
                 log::warn!(
-                    "{{\"evt\":\"npc_sync_repair\",\"npc_id\":\"{}\",\"orphan_entity_id\":{entity_id},\"new_entity_id\":{}}}",
-                    npc.npc_id,
+                    "{{\"evt\":\"npc_sync_repair\",\"npc_id\":\"{escaped_npc_id}\",\"orphan_entity_id\":{entity_id},\"new_entity_id\":{}}}",
                     ch.entity_id,
                 );
                 ctx.db.npc().insert(Npc {
@@ -729,6 +732,7 @@ fn seed_heal_locations_from(ctx: &ReducerContext, defs: &[game_core::HealLocatio
             cost_item_id: def.cost_item_id,
             cost_qty: def.cost_qty,
             cooldown_ms: def.cooldown_ms,
+            cost_currency: def.cost_currency,
         };
         match ctx
             .db

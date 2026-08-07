@@ -235,6 +235,7 @@ export const HealLocationRow = __t.object("HealLocationRow", {
   costItemId: __t.option(__t.u32()),
   costQty: __t.u32(),
   cooldownMs: __t.i64(),
+  costCurrency: __t.u64(),
 });
 export type HealLocationRow = __Infer<typeof HealLocationRow>;
 

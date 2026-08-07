@@ -18,4 +18,5 @@ export default __t.row({
   costItemId: __t.option(__t.u32()).name("cost_item_id"),
   costQty: __t.u32().name("cost_qty"),
   cooldownMs: __t.i64().name("cooldown_ms"),
+  costCurrency: __t.u64().name("cost_currency"),
 });

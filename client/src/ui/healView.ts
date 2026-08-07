@@ -1,6 +1,6 @@
 // ui/healView.ts — DOM shell for the heal overlay (M12d, ADR-0071).
 // DOM shell — coverage-excluded
-import type { HealViewModel } from './healModel';
+import { formatHealCostLine, type HealViewModel } from './healModel';
 
 export class HealView {
   private overlay: HTMLElement;
@@ -22,7 +22,7 @@ export class HealView {
     this.list.innerHTML = '';
     vm.locations.forEach((loc) => {
       const li = document.createElement('li');
-      const cost = loc.isFree ? 'Free' : `${loc.costQty}x ${loc.costItemName ?? 'Unknown item'}`;
+      const cost = formatHealCostLine(loc);
       li.textContent = `Heal here (${cost})`;
       li.dataset.locationId = String(loc.locationId);
       this.list.appendChild(li);

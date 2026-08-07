@@ -376,6 +376,7 @@ export function connect(opts: ConnectionOptions): Connection {
       costItemId?: number;
       costQty: number;
       cooldownMs: number;
+      costCurrency: bigint;
     };
     const ingestHealLocation = (row: SdkHealRow): void => {
       store.upsertHealLocation(healLocationRowToStore(row));

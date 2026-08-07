@@ -470,3 +470,76 @@ fn rt_ptb2_01c_record_recruit_event_passes_correct_args() {
         bait_needle
     );
 }
+
+// =========================================================================
+// 12r-d (E2) — the LAST ADR-0089 park marker
+//
+// The call-site swap itself is gated in `content_cache_tests.rs`
+// (`pvp_and_taming_hot_paths_use_the_cached_accessors` /
+// `pvp_and_taming_no_longer_call_the_uncached_loaders`); this file owns the
+// COMMENT half, because the marker lives in `taming.rs` and a comment scan must
+// run on RAW source, which is the one view every other guard in this file
+// deliberately strips away.
+// =========================================================================
+
+/// **12r-d E2** — `taming.rs` carries no remaining ADR-0089 PARK marker.
+///
+/// ASSERTION-RED at HEAD: taming.rs:205-206 carries a two-line comment opening
+/// with the ADR-0089 park tag and asserting that the uncached abilities loader
+/// "is NOT cached — it re-parses RON per call", with caching named as a
+/// follow-up. (The tag itself is never spelled contiguously in this file; see
+/// the needle note below.)
+///
+/// WHY DELETING IT IS PART OF THE WORK, NOT COSMETIC. 11r-g removed the two
+/// identical markers from `battle.rs` the moment its swap made them false, and
+/// left this one standing ONLY because `taming.rs:207` was outside its declared
+/// touch set (ADR-0170 residual 2 — the reason recorded in
+/// `content_cache_tests.rs`'s C-10 doc comment). 12r-d swaps that call site, so
+/// the comment becomes an assertion the code contradicts: it tells a future
+/// reader that abilities are deliberately uncached here, which is precisely the
+/// argument someone uses to "restore" the uncached call and silently undo the
+/// slice. A stale comment about a caching decision is a trap with a long fuse.
+///
+/// SCANNED ON RAW, UN-STRIPPED SOURCE on purpose. The marker lives in a `//`
+/// comment, so every comment-stripping view in this file would report zero and
+/// the test would be vacuous in BOTH directions — green at HEAD and green after,
+/// proving nothing either way. The `MODULE_SOURCE` constant is the raw text.
+///
+/// THE NEEDLE IS ASSEMBLED FROM FRAGMENTS so this test file never spells the
+/// marker contiguously: several evals concatenate every source file under
+/// `server-module/src` (the `*_tests.rs` files included) into one scan blob, and
+/// a verbatim copy inside the test that FORBIDS the marker would be found by
+/// them — the EG2 poisoning precedent. Same idiom, same reason, as
+/// `content_cache_tests.rs`'s C-10.
+///
+/// KILLS: a swap that lands the code change and leaves the comment behind (the
+/// most likely partial fix — nothing else in the suite reads comments), and a
+/// "fix" that merely reworded the marker's prose while keeping the `PARK(ADR-…`
+/// tag that the crate's park inventory is greppable by.
+#[test]
+fn taming_rs_carries_no_remaining_adr_0089_park_marker() {
+    // Vacuity guard: an emptied/moved file must never read as marker-free.
+    assert!(
+        MODULE_SOURCE.len() > 2000,
+        "vacuity guard (12r-d E2): taming.rs is only {} bytes — the file was \
+         truncated, emptied or moved, and the absence assertion below would pass \
+         against a hollow haystack",
+        MODULE_SOURCE.len()
+    );
+
+    let needle = ["PARK(ADR-", "0089"].concat();
+    let n = MODULE_SOURCE.matches(needle.as_str()).count();
+    assert_eq!(
+        n, 0,
+        "TEETH (12r-d E2, ADR-0170 D2 residual 2): `taming.rs` still carries {n} \
+         ADR-0089 PARK marker(s) matching the assembled needle `{needle}`; it must \
+         carry ZERO. HEAD has 1, at taming.rs:205-206, stating that the abilities \
+         registry is NOT cached at this call site. Once 12r-d swaps :207 to \
+         `crate::content_cache::cached_abilities()?` that statement is FALSE, and a \
+         false comment about a caching decision is exactly what persuades a future \
+         reader to 'restore' the uncached call. 11r-g deleted the two identical \
+         markers from `battle.rs` for the same reason and left this one only because \
+         the call site was out of its scope. Scanned on RAW source because the marker \
+         lives in a comment."
+    );
+}

@@ -161,7 +161,10 @@ fn apply_quest_trigger(
     let quest_defs = match crate::content_cache::cached_quest_defs() {
         Ok(q) => q,
         Err(e) => {
-            log::error!("{{\"evt\":\"quest_defs_load_error\",\"reason\":\"{e}\"}}");
+            // 12r-d (ADR-0170 D5): RON parse-error text may contain quotes —
+            // escape before interpolating into the hand-built JSON line.
+            let escaped = crate::guards::json_escape(&e);
+            log::error!("{{\"evt\":\"quest_defs_load_error\",\"reason\":\"{escaped}\"}}");
             return;
         }
     };

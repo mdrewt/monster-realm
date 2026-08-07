@@ -996,7 +996,9 @@ modules (13 NPC + 26 dialogue + 18 quest); all `just ci` evals pass.
 per-player/dialogue-tree flags/quest sets per ADR-0015) + `player_quest` (public, quest step
 tracking) + `player_conversation` (transient session anchor; public at M12b, PRIVATE since
 M13.5c — clients read it only through the owner-scoped `my_conversation` view, ADR-0087) + `heal_location_row`
-(public, NPC healing POI) + `heal_cooldown` (PRIVATE, per-location/player cooldown gate per
+(public, NPC healing POI; 12r-d adds the tail-appended `cost_currency` u64 column — bigint
+end-to-end on the client, rendered by `healModel.ts::formatHealCostLine`, closing ADR-0170
+residual 1's silent-debit trap) + `heal_cooldown` (PRIVATE, per-location/player cooldown gate per
 ADR-0015). `movement.rs` integrates NPC wander: for each NPC character, `npc_decide` returns
 direction → push to move_queue, existing drain loop processes. `raising.rs` adds `evaluate_heal`
 seam + `heal_party` reducer (guards: in-battle SideA-won-only, zone, position F7; full HP restore;

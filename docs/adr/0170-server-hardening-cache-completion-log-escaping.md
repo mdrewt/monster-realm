@@ -144,6 +144,38 @@ What ships now, in scope:
   lack the field until the column leg lands — ux2/ADR-0154 precedent) but the isFree
   contract and tests are fixed now, so the follow-up is mechanical wiring.
 
+**Amendment (12r-d).** The column leg landed: `schema.rs` gained
+`HealLocationRow.cost_currency` with `#[default(0u64)]` — the typed literal matters
+(a bare `0` BSATN-encodes as 4 bytes and fails the automigration publish, the
+ADR-0174 D1 lesson), appended at the tail per ADR-0173 D5's one accepted shape —
+plus the `content.rs` seed read, bindings regen, and the client wiring. One
+deliberate deviation from this section's text: the client carries the value as
+**bigint end-to-end** (`StoreHealLocationRow.costCurrency: bigint`, required; VM
+`costCurrency: bigint`; `isFree` compares `=== 0n`), NOT the "u64→number narrowing
+at rowConvert.ts:522" suggested above. By 12r-d every sibling u64 row scalar
+(`sellPrice`, `buyPrice`, wallet `balance`, the trade currencies) is bigint under
+the explicit no-`Number()` doctrine at `playerWalletRowToStore`, and a second
+numeric convention for the same currency unit is exactly the unenforced-exception
+class D5 exists to remove; the discriminating gate is a `2^53+1` round-trip test
+that no `Number()` hop can pass. The inert input-widening type
+(`costCurrency?: number`) is deleted; the display arm ships as a pure
+`formatHealCostLine()` in `healModel.ts` with `healView.ts` delegating (the shell
+is coverage-excluded; the formatter is table-tested, and a currency-only pad no
+longer renders `0x Unknown item`). Two related notes: (a) `cooldownMs` remains
+typed `number` client-side although the SDK delivers i64 as bigint — a
+pre-existing latent mistype, flagged not fixed (nothing consumes it today);
+(b) the heal price now has TWO readers — `heal_party` debits from the RON content
+cache while the client displays from the DB row — which diverge only in the
+republished-but-not-yet-`sync_content`ed window; unifying `heal_party` on
+`loc.cost_currency` is a 12r-e candidate (`raising.rs` is 12r-e's declared file).
+The sharpest shape of that window (12r-d red-team): `heal_party`'s cache lookup
+is `.find(location_id).map(cost_currency).unwrap_or(0)` — a location REMOVED
+from RON heals for free while its stale row still displays a price, because the
+zone/cooldown/item checks all read the row. The 12r-e unification should also
+test the row-present/cache-absent case explicitly. (RON edits themselves cannot
+skip the reseed: `content-version.eval.mjs` hashes `game-core/content/**` and
+forces the `CONTENT_VERSION` bump that re-runs `sync_content`.)
+
 ## D4 — Rate-limited wild-encounter failure logging
 
 Both swallow sites in `movement_tick`'s grass block become logged no-ops (still
@@ -231,18 +263,21 @@ source of truth.
 
 ## Residuals (recorded for the supervisor)
 
-1. **`HealLocationRow.cost_currency` column — PARKED (hidden dependency).** Needs
-   `schema.rs:430-441` + `content.rs:702` seed + bindings regen +
-   `client/src/net/{store,rowConvert}.ts` + `healView.ts` display; amends ADR-0083 §A
-   (its m13c/m13d constraint has expired); u64→number narrowing at `rowConvert.ts:522`.
-   The `healView.ts` currency arm is a NON-OPTIONAL pairing with the wiring: once
-   `rowConvert` supplies the field, a currency-only pad would otherwise render
-   "0x Unknown item" (its non-free branch has no currency arm today).
-2. **ADR-0089 residual call sites:** `pvp.rs:280/:392` and `taming.rs:205`
-   (`load_abilities`; only taming.rs:203 carries a PARK comment to delete);
-   `pvp.rs:383` and `taming.rs:191` (`type_chart_from_rows` — plain call sites, no
-   PARK comments exist there). Follow-up slice swaps them to
-   `cached_abilities`/`cached_type_chart`.
+1. **CLOSED by 12r-d.** The `HealLocationRow.cost_currency` column, seed read,
+   bindings regen, client wiring, and the non-optional display arm all landed —
+   see the D3 Amendment above for the shape (bigint end-to-end, superseding this
+   bullet's "u64→number narrowing" suggestion) and for the two-readers divergence
+   note it leaves behind.
+2. **CLOSED by 12r-d.** All five uncached call sites swapped to
+   `crate::content_cache::cached_abilities()` / `cached_type_chart(ctx)` (at
+   12r-d-time line numbers: `pvp.rs:280/:383/:392`, `taming.rs:193/:207` — this
+   bullet's original citations had drifted), the taming PARK comment deleted, and
+   the zero-needle state gated by scan teeth in `content_cache_tests.rs` (widened
+   per its own doc-comment invitation) plus `pvp_tests.rs`/`taming_tests.rs`.
+   Honest scope limit, unchanged from the 11r-g battle.rs gate: the negative scans
+   cover those named files — relocating an uncached call into a brand-new module
+   would evade them (a hand-maintained crate-wide `include_str!` list fails open
+   on new files, so it was not attempted).
 3. `movement_tick_error` sites escaped but not rate-limited. Stated honestly: the
    scheduler ticks every zone every STEP_MS (200 ms) regardless of players, so a
    persistent zone-map/content fault would emit ~5 ERROR lines/sec/zone until
@@ -264,11 +299,19 @@ source of truth.
    shared `begin_encounter_error` window and mask rarer anomalies. Full fix =
    per-reason discriminants or typed errors from `begin_encounter` — deliberate
    non-goal this slice.
-8. The unescaped hand-built-JSON log defect class (D5) persists at
-   `battle.rs:1087/:1124/:1310` (in a touched file — deliberately NOT ridden along:
-   3 hunks near the boyscout cap, adjacent to eval-scanned regions) and at
-   `pvp.rs:501/:518/:607`, `content.rs:266/:696`, `npc.rs:147` (out of scope).
-   Batch them into the residual-2 follow-up swap slice.
+8. **CLOSED by 12r-d for `battle.rs`/`npc.rs`/`pvp.rs`/`content.rs`.** This
+   bullet's citations had drifted; the sites actually escaped (12r-d-time line
+   numbers) are `battle.rs:1158/:1240/:1256/:1266/:1382` and `npc.rs:164` (the
+   spec-mandated six, all runtime `{e}` validator/parse-error text) plus
+   `pvp.rs:501/:518/:612/:625` (same `{e}` class, batched here as this bullet
+   directed) and the two `content.rs` `npc_sync_remove`/`npc_sync_repair` sites
+   (a WEAKER class, honestly labelled: content-authored `npc_id` strings, which
+   no validator charset-restricts — defensive escaping, not a runtime-error
+   echo). **Still open, now queued rather than merely disclosed:**
+   `evolution.rs:203/:221/:234` interpolate `{e}` into hand-built JSON the same
+   way and were outside 12r-d's declared touches — they need a (tiny) slice of
+   their own; this milestone's own thesis is that disclosed-but-unqueued
+   residuals rot, so the supervisor should queue it, not re-disclose it.
 9. The C-7 pin is a hand-maintained three-file lexical list. A stronger inversion —
    scan all of `server-module/src/` for `type_relation_row` WRITES outside
    `content.rs` (fails closed as modules grow) — is a cheap follow-up test.

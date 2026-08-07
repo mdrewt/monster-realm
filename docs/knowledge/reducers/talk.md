@@ -5,7 +5,7 @@ slug: reducers/talk
 updated: 2026-08-07
 tags: [reducer, spacetimedb, npc]
 abstract: "Initiate a dialogue with an NPC. Creates/replaces the player_conversation row. Zone + range checked. auto_effects appli…"
-resource: server-module/src/npc.rs#L228
+resource: server-module/src/npc.rs#L231
 source: scripts/okf-export.mjs@server-module/src/npc.rs
 ---
 

@@ -597,6 +597,10 @@ interface SdkHealLocationRow {
   readonly costItemId?: number;
   readonly costQty: number;
   readonly cooldownMs: number;
+  // u64 → bigint from the SDK (12r-d). Carried verbatim — the no-coercion
+  // contract documented at playerWalletRowToStore applies: no Number(), no
+  // defaulting, no clamping.
+  readonly costCurrency: bigint;
 }
 
 export function healLocationRowToStore(row: SdkHealLocationRow): StoreHealLocationRow {
@@ -608,6 +612,7 @@ export function healLocationRowToStore(row: SdkHealLocationRow): StoreHealLocati
     costItemId: row.costItemId,
     costQty: row.costQty,
     cooldownMs: row.cooldownMs,
+    costCurrency: row.costCurrency,
   };
 }
 

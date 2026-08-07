@@ -109,6 +109,11 @@ function healRow(
     costItemId: undefined,
     costQty: 0,
     cooldownMs: 30_000,
+    // 12r-d [E2]: StoreHealLocationRow gains a REQUIRED `costCurrency: bigint`. This file's
+    // subject (nearestInteractable) is indifferent to the cost channels — it selects by
+    // zone/distance only — so 0n is a pure COMPILE KEEP-ALIVE: it keeps the fixture a
+    // well-formed store row after the type change, and no assertion here reads it.
+    costCurrency: 0n,
   };
 }
 
