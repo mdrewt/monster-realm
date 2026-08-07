@@ -40,6 +40,58 @@ const SUBSYSTEM_VOCAB = new Set([
 const LEGACY_TOLERANCE = new Set([]);
 
 // ---------------------------------------------------------------------------
+// Bidirectional Amends/Amended-by enforcement (12r-f)
+//
+// ADR-0104 D1 already states the invariant: "An ADR that only *amends* another
+// stays `Accepted`; the amended ADR gains `**Amended-by:**`." Until 12r-f that
+// was convention only — checkRefs below is a one-directional dangling-reference
+// check, so a missing back-link passed green. validateBacklinks() mechanizes it.
+//
+// ERA SCOPE. A pair is enforced only when BOTH endpoints are >= this id. Below
+// it the corpus predates mechanical enforcement and carries ~44 one-directional
+// links whose repair is a semantic claim (did X really amend Y?), not a
+// formatting fix — a separate slice. Both endpoints, not just the source: you
+// can only demand a back-link from Y if Y is itself in the enforced era.
+// 0151 is the oldest ADR 12r-f repairs, and is forced from above — one repaired
+// pair targets 0151, so a higher cutoff would make the gate vacuous.
+const BACKLINK_ERA_MIN = '0151';
+
+// In-era gaps that predate the gate. Keys are `<source><arrow><target>`, arrow
+// `->` for a missing Amended-by and `<-` for a missing Amends.
+//
+// THIS SET MAY ONLY SHRINK. Adding an entry to make CI green defeats the gate
+// and is a decision, not a fix; the frozen duplicate in
+// evals/adr-backlink-corpus.eval.mjs (T14) asserts set EQUALITY, so growth
+// needs two visible edits in two directories. Removing an entry is free — the
+// ratchet in validateBacklinks() errors on an entry whose gap is already gone,
+// so the set cannot silently rot.
+//
+// PIN: evals/adr-backlink-integrity.eval.mjs TOOTH 8 is pinned to the entries
+// 0168 -> 0166 (reciprocal branch) and 0172 -> 0157 (declaration-gone branch),
+// and TOOTH 17 to 0169 -> 0154. If a slice repairs one of those back-links and
+// deletes its entry, re-pin the tooth (and its fixture directory + the
+// RATCHET_DIRS collision audit) to a surviving entry first — otherwise the
+// ratchet loses its proof-of-teeth and the set can stop shrinking unnoticed.
+const KNOWN_BACKLINK_GAPS = new Set([
+  '0166->0156',
+  '0168->0166',
+  '0169->0154',
+  '0172->0157',
+  '0177->0173',
+]);
+
+for (const key of KNOWN_BACKLINK_GAPS) {
+  if (!/^\d{4}(->|<-)\d{4}$/.test(key)) {
+    console.error(
+      `adr-digest: KNOWN_BACKLINK_GAPS contains a malformed key "${key}" — ` +
+        "expected NNNN->NNNN or NNNN<-NNNN. A typo'd key is inert: it tolerates " +
+        'nothing and the ratchet can never retire it.',
+    );
+    process.exit(2);
+  }
+}
+
+// ---------------------------------------------------------------------------
 // CLI argument parsing
 // ---------------------------------------------------------------------------
 const args = process.argv.slice(2);
@@ -137,6 +189,19 @@ function parseAdr(id, filePath) {
   const amendedBy =
     extractBoldField(content, 'Amended-by') || extractListField(content, 'Amended-by');
 
+  // Back-link resolution reads a FENCE-STRIPPED view so an illustrative
+  // `**Amended-by:**` inside a code block cannot satisfy reciprocity. This is a
+  // second, narrower view rather than a change to headerPreamble() on purpose:
+  // headerPreamble feeds every other field and the generated DIGEST, and
+  // widening it there would move DIGEST bytes and perturb evals/adr-digest.eval.mjs.
+  // (On today's corpus the two views are identical — no ADR has a fence in its
+  // preamble — so this is defence against a future ADR, not a live correction.)
+  const unfenced = stripFencedBlocks(content);
+  const amendsBacklink =
+    extractBoldField(unfenced, 'Amends') || extractListField(unfenced, 'Amends');
+  const amendedByBacklink =
+    extractBoldField(unfenced, 'Amended-by') || extractListField(unfenced, 'Amended-by');
+
   return {
     id,
     filePath,
@@ -150,6 +215,8 @@ function parseAdr(id, filePath) {
     decision: decision || null,
     supersededBy: supersededBy || null,
     amendedBy: amendedBy || null,
+    amendsBacklink: amendsBacklink || null,
+    amendedByBacklink: amendedByBacklink || null,
   };
 }
 
@@ -306,6 +373,161 @@ function extractAllAdrIds(ref) {
     idx = end;
   }
   return ids;
+}
+
+// ---------------------------------------------------------------------------
+// Bidirectional back-link checking (12r-f)
+// ---------------------------------------------------------------------------
+
+/**
+ * Drop every ``` fenced block. Used ONLY to build the back-link header view —
+ * see the note in parseAdr(). An unterminated fence swallows the rest of the
+ * document, which is the fail-closed direction: a field we cannot trust the
+ * position of resolves to nothing rather than satisfying reciprocity.
+ */
+function stripFencedBlocks(content) {
+  const parts = content.split('```');
+  // Even indices are outside fences, odd indices inside.
+  let out = '';
+  for (let i = 0; i < parts.length; i += 2) out += parts[i];
+  return out;
+}
+
+/**
+ * Resolve the ADR ids named by a relation field (**Amends:** / **Amended-by:**).
+ *
+ * Deliberately NOT extractAllAdrIds(): that one is prefix-only (ADR-NNNN / H-NNNN)
+ * and feeds the dangling-reference check, where widening it would newly drag
+ * prose numbers into scope. Nine ADRs in the 0151-0164 era write bare ids
+ * (`**Amends:** 0151, 0162`), so back-link resolution must accept both forms.
+ *
+ * Rules: split on commas; truncate each token at the first `(` so a parenthetical
+ * aside cannot contribute ids; skip H- (the harness namespace aliases collide
+ * with project numbers — H-0055 is project 0056); strip a leading `ADR-`; take
+ * the leading 4-digit run only when the next character is a non-digit or the
+ * token ends (so `ADR-0118 §3/A3` resolves and `2026-07-20` does not); keep only
+ * ids that are files in the scanned directory; dedup.
+ *
+ * "No relation" is an EMPTY result, never a string test against the em dash —
+ * real values include `— (supersedes the literal wording of ...)`.
+ */
+function resolveRelationIds(fieldValue, localIds) {
+  if (!fieldValue) return [];
+  const found = new Set();
+  for (const rawToken of fieldValue.split(',')) {
+    const paren = rawToken.indexOf('(');
+    let token = (paren === -1 ? rawToken : rawToken.slice(0, paren)).trim();
+    if (token.startsWith('H-')) continue;
+    if (token.startsWith('ADR-')) token = token.slice(4);
+    if (token.length < 4) continue;
+    let digits = 0;
+    while (digits < 4 && token[digits] >= '0' && token[digits] <= '9') digits++;
+    if (digits !== 4) continue;
+    const next = token[4];
+    if (next !== undefined && next >= '0' && next <= '9') continue;
+    const id = token.slice(0, 4);
+    if (localIds.has(id)) found.add(id);
+  }
+  return [...found];
+}
+
+/**
+ * Corpus-level reciprocity check. validateAdr() is per-ADR and structurally
+ * cannot do this — a back-link lives in a different file than the declaration.
+ *
+ * Enforced only inside the era window (both endpoints >= BACKLINK_ERA_MIN) and
+ * outside KNOWN_BACKLINK_GAPS. Also ratchets: a baseline entry whose gap is no
+ * longer present is an error, so the set can only shrink.
+ */
+function validateBacklinks(adrs, localIds) {
+  const issues = [];
+  const byId = new Map(adrs.map((adr) => [adr.id, adr]));
+
+  const amends = new Map();
+  const amendedBy = new Map();
+  for (const adr of adrs) {
+    amends.set(adr.id, resolveRelationIds(adr.amendsBacklink, localIds));
+    amendedBy.set(adr.id, resolveRelationIds(adr.amendedByBacklink, localIds));
+  }
+
+  // Every reciprocity gap in the corpus, keyed, before era or tolerance filtering.
+  // The ratchet compares against THIS set, not the surviving errors — comparing
+  // against post-tolerance errors would mark every baselined entry obsolete.
+  const gaps = [];
+  for (const [x, targets] of amends) {
+    for (const y of targets) {
+      if (amendedBy.get(y)?.includes(x)) continue;
+      gaps.push({
+        key: `${x}->${y}`,
+        a: x,
+        b: y,
+        message:
+          `${x}: **Amends:** ADR-${y} but ADR-${y} has no reciprocal ` +
+          `**Amended-by:** ADR-${x} back-link (${x}->${y})`,
+      });
+    }
+  }
+  for (const [y, sources] of amendedBy) {
+    for (const x of sources) {
+      if (amends.get(x)?.includes(y)) continue;
+      gaps.push({
+        key: `${y}<-${x}`,
+        a: y,
+        b: x,
+        message:
+          `${y}: **Amended-by:** ADR-${x} but ADR-${x} has no reciprocal ` +
+          `**Amends:** ADR-${y} declaration (${y}<-${x})`,
+      });
+    }
+  }
+
+  const liveKeys = new Set(gaps.map((gap) => gap.key));
+  let tolerated = 0;
+  let belowEra = 0;
+  for (const gap of gaps) {
+    if (gap.a < BACKLINK_ERA_MIN || gap.b < BACKLINK_ERA_MIN) {
+      // Counted, never itemised: naming ~44 pre-era pairs on every run is how a
+      // gate becomes noise nobody reads.
+      belowEra++;
+      continue;
+    }
+    if (KNOWN_BACKLINK_GAPS.has(gap.key)) {
+      tolerated++;
+      continue;
+    }
+    issues.push({ level: 'error', message: gap.message });
+  }
+
+  // Ratchet. Scoped to entries whose BOTH endpoints exist as files, so a partial
+  // corpus (a fixture directory, or an ADR still unwritten) cannot fire it.
+  for (const key of KNOWN_BACKLINK_GAPS) {
+    const arrow = key.indexOf('->') !== -1 ? '->' : '<-';
+    const left = key.slice(0, 4);
+    const right = key.slice(6);
+    if (!byId.has(left) || !byId.has(right)) continue;
+    if (liveKeys.has(key)) continue;
+    const declared =
+      arrow === '->' ? amends.get(left)?.includes(right) : amendedBy.get(left)?.includes(right);
+    const reason = declared ? 'the pair is now reciprocal' : 'the amendment declaration is gone';
+    issues.push({
+      level: 'error',
+      message:
+        `KNOWN_BACKLINK_GAPS entry "${key}" is obsolete — ${reason}; ` +
+        'delete the entry (the set may only shrink)',
+    });
+  }
+
+  if (tolerated > 0 || belowEra > 0) {
+    issues.push({
+      level: 'warn',
+      message:
+        `${tolerated} pre-existing Amends/Amended-by back-link gap(s) tolerated ` +
+        `(KNOWN_BACKLINK_GAPS in scripts/adr-digest.mjs); ${belowEra} more below ` +
+        `the ADR-${BACKLINK_ERA_MIN} enforcement era`,
+    });
+  }
+
+  return issues;
 }
 
 // ---------------------------------------------------------------------------
@@ -519,6 +741,20 @@ function main() {
       } else {
         warnings.push(issue.message);
       }
+    }
+  }
+
+  // Corpus-level reciprocity (12r-f). Runs unconditionally — in --check AND in
+  // generate mode — because a gate that only bites in one mode is half dead.
+  // Resolves against the SCANNED FILE ids, not allIds: allIds also carries the
+  // synthetic harness range 0002-0034 and the H- namespace, which have no file
+  // and so could never gain a back-link.
+  const localIds = new Set(adrEntries.map((e) => e.id));
+  for (const issue of validateBacklinks(adrs, localIds)) {
+    if (issue.level === 'error') {
+      errors.push(issue.message);
+    } else {
+      warnings.push(issue.message);
     }
   }
 
