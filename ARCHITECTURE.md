@@ -222,6 +222,23 @@ canonical `touches:` vocabulary**: adding content is a new
   affects behavior (every registry is keyed by id / zone_id, and `validate_content`
   enforces id-uniqueness across the merged `Vec`) — the convention only keeps
   `000-core.ron` the stable first part.
+- **The `append-only-ids` gate is BIDIRECTIONAL** (12r-a): adding a content id requires
+  appending it to that registry's `evals/baselines/*-ids.json` in the **same PR** — an
+  unpinned live id fails the gate rather than silently escaping append-only enforcement.
+  Each registry additionally carries an **exact expected DISTINCT-id count**, pinned in
+  two places the eval reads independently — not a minimum: a count below it means a
+  baseline was shrunk (restore the content), a count above it means content grew, so the
+  PR that adds an id must **bump both pins in that same PR**. That closes the
+  add-one/retire-one swap and the duplicate/`-0` padding that inflates `length` while
+  `Set` collapses it, and it turns the "delete the content and un-pin it in one commit"
+  shrink into a **reviewable line** — two hardcoded numbers must come down — rather than
+  an invisible agreement between two files. Be precise: that is review visibility, not a
+  mechanical impossibility. A **fully-coordinated** shrink (content, pin, and both counts
+  in one commit) still passes; no working-tree gate can tell it from a legitimate
+  retirement without a cross-revision record of what was once shipped. The gate likewise
+  does **not** detect id reuse/rebinding: swapping two ids, or rebinding an id to a
+  different entity, leaves the id set unchanged and stays green. Both gaps want the
+  map-shaped ever-issued-ledger shape, e.g. `evolution-path-edge-ids.json`.
 - **Loud per-file rejection**: a malformed `*.ron` makes the loader return `Err`
   naming the offending file — never a silent skip (parse-don't-validate preserved).
 - Content is **data, not schema** — the layout change touches neither `module_bindings`
