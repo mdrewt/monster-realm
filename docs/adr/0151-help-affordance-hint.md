@@ -5,6 +5,7 @@
 **Slice:** ux1 (M-postgate-ux-hardening — persistent on-screen hint advertising the `?` help overlay + a battle-result continue hint; EARS ux1-1..ux1-3)
 **Supersedes:** —
 **Amends:** 0135
+**Amended-by:** ADR-0163
 **Subsystems:** client-ui
 **Decision:** Ship the "Press ? for controls & help" hint as static zero-JS markup in `index.html`, and in the same edit give `#help-overlay` `position:fixed;inset:0;z-index:100` — the overlay it advertises rendered below the fold.
 

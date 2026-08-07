@@ -24,6 +24,9 @@
 - Reconcile next-free index after pt-d1/pt-d2 (0143/0144) -> 0145 (#243)
 - Reconcile next-free index after pt-d3 (0145 -> 0146) (#245)
 - Reconcile next-free index after feel-polish (0146 -> 0160) (#261)
+- Cbm 0.9.0 snapshot phrasing in AGENTS.md graph bullet
+- Make vitest-fast-check reference an actionable Read path
+- Ledger & backlog reconciliation — changelog regen #240-#269, README catalog to generated DIGEST, 0119/0122 back-links, shops registry row (ADR-0165) (#270)
 
 ### Features
 
@@ -162,6 +165,15 @@
 - Unified overlay IA — pure canOpen core + registry-backed two-level main menu (ADR-0162) (#266)
 - One overlay probe table behind all five fan-out surfaces + AC-12 click front door (ADR-0163) (#267)
 - Overlay write substrate + 12 hotkeys routed through canOpen — closes M-postgate-overlay-registry (ADR-0164) (#268)
+- PvP side-B battle overlay — role-agnostic battle accessors + ownPerspective view seam (ADR-0167) (#271)
+- Wallet view completion — my_wallet subscription, insert-only ingest, all three shop call sites (ADR-0169) (#273)
+- Server hardening basket — gated encounter-failure logging, ADR-0089 cache completion, heal-cost split, json_escape (ADR-0170) (#275)
+- Gate-coverage extensions — dialogue text gate, append-only id coverage, unknown-quest warn, corrected additive-schema rules (ADR-0173) (#278)
+- Essence-graph schema & core-type freeze — Migration A, fusion deleted (ADR-0174) (#279)
+- Essence-graph content — ten-edge evolution registry, essence items, shop stocking (ADR-0176) (#282)
+- Essence-graph reducers — auto-evolution cascade, essence_train/consume_crystalized_essence, Trust/Quality-Time credits (ADR-0175) (#283)
+- Essence-graph client UI — requirements/progress panel replaces the fusion overlay, 2+-only choice UI, party-roster badge (#285)
+- Eval-gate migration + Migration B + docs/ADR tail — closes M-evolution-essence-graph (#286)
 
 ### Fixes
 
@@ -189,6 +201,12 @@
 - Never seat a 0 HP monster as the PvE battle lead, and reject actions from a fainted active (ADR-0156) (#258)
 - Hold-commit tap/hold gate on held-key continuation — single tap moves one tile (ADR-0158) (#259)
 - Care-button confirmation + collision-aware NPC wander (ADR-0159) (#260)
+- PvP server-guard parity — with_lead leads, fainted-active reject, both-role warp guard, trade size bounds (ADR-0166) (#272)
+- Real server battle movement lock — drain-time lock + intake rejects (ADR-0168) (#274)
+- Resume-from-idle interpolation smoothness — EWMA idle-gap gate + bracket re-anchor (ADR-0171) (#277)
+- Kill 3 nightly mutation-gate survivors from EG1 (2 killing tests + 1 self-expiring blessed exclusion) (#281)
+- Reconcile docs/PLAYTEST.md's control table with the helpModel SSOT + a doc-drift gate (#287)
+- Restore append-only id-baseline protection for species/item/skill + bidirectional growth guard (#288)
 
 ### M8.8b
 
@@ -284,6 +302,13 @@
 - Reconcile next-free index after uxd1 (0160 -> 0161) (#263)
 - Reconcile next-free index after uxd2 (0161 -> 0162) (#265)
 - Reconcile next-free index to 0165 (post ADR-0162..0164 merges) (#269)
+- Two-graph routing — agent grants, allowlists, AGENTS.md (harness ADR-0010)
+- Revert fc71741 — accidental commit of worktree gitlink + .codegraph/.gitignore to master (11r-f session cwd slip, no source files affected)
+- Regenerate docs/knowledge bundle post-merge (#280)
+
+### Refactor
+
+- Trim AGENTS.md graph bullet to SSOT pointer; desync-guard union rule
 
 ### Testing
 
@@ -302,6 +327,7 @@
 - PvP eval harness — pvp-action-privacy + pvp-handshake-guards + pvp-deadline-disconnect (ADR-0111) (#178)
 - Deflake dialogue 13.5c-5 — soft-retry slow row-delete propagation (#182)
 - Ranked-ladder evals tail — ranking-security + PvE-exclusion evals + ranked-forfeit e2e (ADR-0121)
+- Test-integrity & diagnostics residuals — de-vacuified RT-SZ-02/F-5f/M14d pins, grantBait revival tripwire, movement-rejection breadcrumb (ADR-0172) (#276)
 
 ### Wip
 
@@ -310,3 +336,4 @@
 - ARCHITECTURE.md — module-map, content-registry, raising+evolution sections (#108)
 - Project-side changes — warpDetect wire-in, @types/node ^24, root lockfile delete, CONTENT_VERSION history, main.ts comments, ARCHITECTURE/AGENTS/ADR fixes (#131)
 - Regen knowledge bundle — UTC date rollover (2026-07-13→2026-07-14) (#166)
+- Docs — ARCHITECTURE.md 11r-f block, ADR-0171 final; graphs refreshed; full just ci exit 0
