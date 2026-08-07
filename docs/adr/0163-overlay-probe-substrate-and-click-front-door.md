@@ -5,6 +5,7 @@
 **Slice:** uxd3-b (M-postgate-ux-design — unified overlay IA)
 **Supersedes:** —
 **Amends:** 0151, 0162
+**Amended-by:** ADR-0164
 **Subsystems:** client-ui
 **Decision:** The five overlay OR-lists in `main.ts` collapse onto one probe table read via `anyVisible()`, and `#help-hint` becomes the menu's click door via attribute delegation; the hotkey→`canOpen` migration and the gate retirement defer to uxd3-c.
 
