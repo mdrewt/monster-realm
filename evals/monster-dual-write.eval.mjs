@@ -92,6 +92,22 @@ const PUB_FROM_MONSTER = 'pub_from_monster(';
 //     tracking string literals AND both comment forms — `prepareRustSource` /
 //     `blankStringLiterals` (`evolution-reducer-security.eval.mjs:130-221`) —
 //     which is its own slice.
+//   * CO-PRESENCE IS PER-SPAN, NOT PER-WRITE, and control-flow-blind. Three
+//     consequences, all PRE-EXISTING in `checkFnBodyDualWrite` (unchanged here;
+//     narrowing the spans shrinks their reach but does not close them):
+//       (a) a function with TWO private writes and only ONE mirror still passes
+//           — `write_back_battle_results` (`battle.rs:1039`) writes at `:1124`
+//           and `:1294`; deleting either mirror alone keeps the gate GREEN. The
+//           fix is counting (`count(UPDATE_PUB) >= count(UPDATE_MONSTER)`), not
+//           presence, and costs nothing on today's tree (17 writes / 17 mirrors).
+//       (b) a mirror behind a guard counts as present — `accrue_quality_time`
+//           (`raising.rs:563`) pairs an unconditional private write with a
+//           conditional mirror. Correct there by construction, but the gate
+//           cannot tell that shape from a genuinely non-exhaustive predicate.
+//       (c) the write markers are SINGLE-LINE literals, so a rustfmt-wrapped
+//           chain (`ctx\n.db\n.monster()\n...update(`) is not seen as a write at
+//           all — a silent GREEN, not a RED. No wrapped `.update(`/`.insert(`
+//           exists today; wrapped `.find(`/`.filter(` already do.
 // ---------------------------------------------------------------------------
 export function splitIntoFnBodies(src) {
   // Declared INSIDE the function: a /g literal is stateful via `lastIndex`.
