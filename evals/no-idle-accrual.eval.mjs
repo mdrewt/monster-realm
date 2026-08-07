@@ -37,6 +37,13 @@
 //     MonsterPub projections added to GROWTH_FIELDS below (tier / trust_tier /
 //     quality_time_tier / nutrition_pct) would be decorative: production never
 //     dot-writes them at all — `pub_from_monster` builds them in a literal.
+//     Check C confines ALL THREE spellings of that construction, because two of
+//     them were confirmed end-to-end evasions of a bare-name scan (red-team M1):
+//       (i)   `MonsterPub { … }` — the bare (or path-qualified) literal;
+//       (ii)  `Self { … }` inside an `impl Monster`/`impl MonsterPub` block —
+//             a perfectly ordinary builder that never spells the type name;
+//       (iii) `MP { … }` after `use crate::schema::MonsterPub as MP;` — an
+//             import rename, likewise ordinary Rust.
 //
 // === ONE-HOP RUST COMPANION TO CHECK B (do not weaken Check B in isolation) ===
 // Check B is deliberately DIRECT-CALL ONLY, which a two-line wrapper defeats.
@@ -92,10 +99,22 @@
 //   realistic shape and a false RED there would be paid every slice.
 // - Check C recognises the `TypeName {` construction shape only. It deliberately
 //   does NOT flag `-> Monster {` (return-type position), `pub struct Monster {`
-//   / `impl|for|enum|union|trait Monster {` (definition position) or
-//   `BattleMonster {` (left word boundary). A construction written through a
-//   type ALIAS (`type Row = MonsterPub; Row { .. }`) is out of scope — none
-//   exists, and the alias itself would have to be introduced consciously.
+//   / `enum|union|trait Monster {` (definition position) or `BattleMonster {`
+//   (left word boundary). `impl Monster {` / `impl T for Monster {` headers are
+//   not constructions either, but their BODIES are walked for `Self { … }`.
+// - Check C's remaining out-of-reach shapes, deliberately NOT chased (each would
+//   need a real Rust parser, and each is a conspicuous, reviewable thing to add
+//   to this codebase — none exists today):
+//     * construction inside a macro body (`macro_rules!` / a proc-macro that
+//       expands to a row literal) — the scanner sees the macro, not the expansion;
+//     * a `type Row = MonsterPub;` type-alias item (only `use … as …` renames are
+//       tracked) or a `Self { … }` reached through a blanket/generic impl;
+//     * a helper in ANOTHER crate (game-core) that returns a built row — the scan
+//       is scoped to server-module/src by construction.
+//   The `use … as …` alias set is GLOBAL across the concatenated source, not
+//   per-file: an alias declared anywhere makes that token a row type everywhere.
+//   That over-reports rather than under-reports, and only once someone has
+//   actually aliased a row type.
 // - Check A matches the enclosing fn by NAME; a trait-impl method sharing an
 //   allowlisted name (e.g. `impl X { fn care() {..} }`) would be treated as
 //   allowlisted. This is out of scope: SpacetimeDB reducers are the real call
@@ -614,12 +633,21 @@ export function blankStringLiterals(src) {
   return out.join('');
 }
 
+/** Is `ch` an ASCII whitespace char? (undefined-safe.) */
+function isSpaceChar(ch) {
+  return ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
+}
+
 /**
- * Find every `Monster { … }` / `MonsterPub { … }` struct-literal CONSTRUCTION.
+ * Classify a token occurrence as a potential `TypeName { … }` construction.
  *
- * A construction is the bare type name, word-bounded on BOTH sides, whose next
- * non-whitespace char is `{`, and which is not in a return-type or definition
- * position. indexOf + char inspection only — NO new RegExp(non-literal).
+ * Returns `null` unless the token is word-bounded on BOTH sides and its next
+ * non-whitespace char is `{`. Otherwise returns the index of that `{` plus the
+ * identifier word immediately preceding the token (`''` if the preceding
+ * non-whitespace char is punctuation), so the caller can tell a VALUE position
+ * from a DEFINITION (`struct`/`impl`/`for`/…) position. A `-> Token {`
+ * return-type position returns `null` outright — it opens a function body, not
+ * a value.
  *
  * The three discriminators, and what each one is for:
  *   LEFT boundary  — `Ok(BattleMonster {` must not read as `Monster {`.
@@ -628,20 +656,83 @@ export function blankStringLiterals(src) {
  *                    literal is exactly as much of a forgery as a bare one.
  *   RIGHT boundary — scanning for `Monster` must not match inside `MonsterPub`
  *                    (`P` is an identifier char) or `MonsterInstance`.
- *   POSITION       — `-> Monster {` opens a FUNCTION body, and
- *                    `pub struct Monster {` / `impl … Monster {` opens a
- *                    DEFINITION; neither builds a value. Both are real shapes in
- *                    marshal.rs / schema.rs today, so without this the check
- *                    would be permanently, uselessly red.
+ *   POSITION       — `-> Monster {` (marshal.rs:57/213) and
+ *                    `pub struct Monster {` (schema.rs:208/311) are both real
+ *                    shapes in the live tree; without this the check would be
+ *                    permanently, uselessly red and would get deleted.
+ *
+ * char inspection + indexOf only — NO new RegExp(non-literal).
  *
  * @param {string} src Comment-stripped AND string-blanked Rust source.
- * @returns {Array<{type:string, pos:number}>}
+ * @param {number} hit Index of the token's first char.
+ * @param {number} len Token length.
+ * @returns {{braceIdx:number, precedingWord:string}|null}
  */
-export function findRowStructLiterals(src) {
-  const results = [];
-  // Keywords that make the following `Name {` a definition, not a value.
-  const defKeywords = ['struct', 'impl', 'for', 'enum', 'union', 'trait'];
+function classifyTokenAt(src, hit, len) {
+  if (hit > 0 && /[A-Za-z0-9_]/.test(src[hit - 1])) return null;
+  const after = hit + len;
+  if (after < src.length && /[A-Za-z0-9_]/.test(src[after])) return null;
 
+  let j = after;
+  while (j < src.length && isSpaceChar(src[j])) j++;
+  if (src[j] !== '{') return null;
+
+  let k = hit - 1;
+  while (k >= 0 && isSpaceChar(src[k])) k--;
+  if (k >= 1 && src[k] === '>' && src[k - 1] === '-') return null; // `-> Token {`
+  const wordEnd = k + 1;
+  let wordStart = wordEnd;
+  while (wordStart > 0 && /[A-Za-z0-9_]/.test(src[wordStart - 1])) wordStart--;
+  return { braceIdx: j, precedingWord: src.slice(wordStart, wordEnd) };
+}
+
+/**
+ * Byte range `[start, end)` of the block whose opening `{` sits at `openIdx`.
+ * Brace-depth counting, no regex. (`end` is the index of the matching `}`, or
+ * `src.length` if the source is unbalanced.)
+ *
+ * @param {string} src
+ * @param {number} openIdx
+ * @returns {[number, number]}
+ */
+function braceBlockRange(src, openIdx) {
+  let depth = 1;
+  let i = openIdx + 1;
+  while (i < src.length && depth > 0) {
+    if (src[i] === '{') depth++;
+    else if (src[i] === '}') depth--;
+    if (depth === 0) return [openIdx + 1, i];
+    i++;
+  }
+  return [openIdx + 1, src.length];
+}
+
+/**
+ * Every LOCAL ALIAS of a row type introduced by a `use … as …` import.
+ *
+ * THE EVASION THIS CLOSES (red-team M1, confirmed end-to-end): a scheduled
+ * reducer that writes
+ *   `use crate::schema::MonsterPub as MP;`  …  `MP { trust_tier: …, ..old }`
+ * forges the public row while the scanner is looking for a token spelled
+ * `MonsterPub`. Renaming an import is completely ordinary Rust; it should not
+ * be a gate bypass.
+ *
+ * Precision: the `Monster`/`MonsterPub` token must be word-bounded, followed by
+ * a word-bounded `as`, and the statement it sits in must contain `use ` (walking
+ * back to the previous `;`). That last filter is what keeps a stray `X as Y`
+ * elsewhere out of the type set.
+ *
+ * SCOPE (honest): the alias set is GLOBAL across the concatenated source, not
+ * per-file — an alias declared in one file makes that token a row type
+ * everywhere in the scan. That is the strict direction (it can only over-report,
+ * and only once someone has actually aliased a row type), and the concatenated
+ * reader has no file boundaries to be per-file about.
+ *
+ * @param {string} src Comment-stripped AND string-blanked Rust source.
+ * @returns {string[]} Alias identifiers (never a name already in ROW_TYPES).
+ */
+export function findRowTypeAliases(src) {
+  const aliases = [];
   for (const type of ROW_TYPES) {
     let pos = 0;
     while (pos < src.length) {
@@ -649,35 +740,110 @@ export function findRowStructLiterals(src) {
       if (hit === -1) break;
       pos = hit + type.length;
 
-      // LEFT word boundary.
+      // Word-bounded token (so `MonsterPub as MP` is never read as `Monster`).
       if (hit > 0 && /[A-Za-z0-9_]/.test(src[hit - 1])) continue;
-      // RIGHT word boundary.
       const after = hit + type.length;
       if (after < src.length && /[A-Za-z0-9_]/.test(src[after])) continue;
 
-      // Next non-whitespace char must be `{`.
+      // …followed by a word-bounded `as`.
       let j = after;
-      while (
-        j < src.length &&
-        (src[j] === ' ' || src[j] === '\t' || src[j] === '\n' || src[j] === '\r')
-      )
-        j++;
-      if (src[j] !== '{') continue;
+      while (j < src.length && isSpaceChar(src[j])) j++;
+      if (src.slice(j, j + 2) !== 'as') continue;
+      const afterAs = j + 2;
+      if (afterAs < src.length && /[A-Za-z0-9_]/.test(src[afterAs])) continue;
 
-      // POSITION: walk back over whitespace and inspect what precedes the name.
-      let k = hit - 1;
-      while (k >= 0 && (src[k] === ' ' || src[k] === '\t' || src[k] === '\n' || src[k] === '\r'))
-        k--;
-      if (k >= 1 && src[k] === '>' && src[k - 1] === '-') continue; // `-> Monster {`
-      const wordEnd = k + 1;
-      let wordStart = wordEnd;
-      while (wordStart > 0 && /[A-Za-z0-9_]/.test(src[wordStart - 1])) wordStart--;
-      const precedingWord = src.slice(wordStart, wordEnd);
-      if (defKeywords.indexOf(precedingWord) !== -1) continue;
+      // …then the alias identifier.
+      let s = afterAs;
+      while (s < src.length && isSpaceChar(src[s])) s++;
+      let e = s;
+      while (e < src.length && /[A-Za-z0-9_]/.test(src[e])) e++;
+      const alias = src.slice(s, e);
+      if (!alias) continue;
+      if (ROW_TYPES.indexOf(alias) !== -1) continue;
 
-      results.push({ type, pos: hit });
+      // …inside a `use` statement (not some other `as`).
+      const semi = src.lastIndexOf(';', hit);
+      if (src.slice(semi + 1, hit).indexOf('use ') === -1) continue;
+
+      if (aliases.indexOf(alias) === -1) aliases.push(alias);
     }
   }
+  return aliases;
+}
+
+/**
+ * Find every `Monster { … }` / `MonsterPub { … }` struct-literal CONSTRUCTION,
+ * INCLUDING the two idiomatic spellings that dodge a bare-name scan:
+ *
+ *   1. `Self { … }` inside an `impl Monster {` / `impl MonsterPub {` block —
+ *      red-team M1(1), confirmed end-to-end:
+ *        `impl MonsterPub { pub fn promoted(old: Self) -> Self {
+ *             Self { trust_tier: TrustTier::Devoted, ..old } } }`
+ *      is a completely ordinary builder shape and never spells the type name at
+ *      the construction site. Only impl blocks OF A ROW TYPE are entered, so
+ *      `impl SpeciesRow { … Self { … } }` (movement.rs:237-238 is the live
+ *      example of this shape on another type) is correctly ignored.
+ *   2. A `use … as <Alias>` rename — red-team M1(2), see `findRowTypeAliases`.
+ *
+ * Results carry a `via` string naming which spelling was found, so the failure
+ * message tells the reader what to look for.
+ *
+ * @param {string} src Comment-stripped AND string-blanked Rust source.
+ * @returns {Array<{type:string, pos:number, via:string}>} Position-sorted.
+ */
+export function findRowStructLiterals(src) {
+  const results = [];
+  // Preceding keywords that make `Name {` a TYPE DEFINITION, never a value.
+  const defKeywords = ['struct', 'enum', 'union', 'trait'];
+  // Preceding keywords that open an IMPL BLOCK for that type
+  // (`impl Monster {` and `impl SomeTrait for Monster {`).
+  const implKeywords = ['impl', 'for'];
+
+  const aliases = findRowTypeAliases(src);
+  const typeNames = ROW_TYPES.concat(aliases);
+
+  for (const type of typeNames) {
+    const isAlias = ROW_TYPES.indexOf(type) === -1;
+    let pos = 0;
+    while (pos < src.length) {
+      const hit = src.indexOf(type, pos);
+      if (hit === -1) break;
+      pos = hit + type.length;
+
+      const cls = classifyTokenAt(src, hit, type.length);
+      if (cls === null) continue;
+      if (defKeywords.indexOf(cls.precedingWord) !== -1) continue;
+
+      if (implKeywords.indexOf(cls.precedingWord) !== -1) {
+        // An impl block ON a row type: every `Self { … }` in its body builds
+        // that row. Walk the block and collect them.
+        const [bodyStart, bodyEnd] = braceBlockRange(src, cls.braceIdx);
+        let sp = bodyStart;
+        while (sp < bodyEnd) {
+          const selfHit = src.indexOf('Self', sp);
+          if (selfHit === -1 || selfHit >= bodyEnd) break;
+          sp = selfHit + 4;
+          const selfCls = classifyTokenAt(src, selfHit, 4);
+          if (selfCls === null) continue; // `old: Self)`, `-> Self {`, `Self::x`
+          if (defKeywords.indexOf(selfCls.precedingWord) !== -1) continue;
+          if (implKeywords.indexOf(selfCls.precedingWord) !== -1) continue;
+          results.push({
+            type,
+            pos: selfHit,
+            via: `\`Self { … }\` inside \`impl ${type}\``,
+          });
+        }
+        continue;
+      }
+
+      results.push({
+        type,
+        pos: hit,
+        via: isAlias ? `\`${type} { … }\` (a \`use … as ${type}\` alias)` : `\`${type} { … }\``,
+      });
+    }
+  }
+  results.sort((a, b) => a.pos - b.pos);
   return results;
 }
 
@@ -845,6 +1011,11 @@ export function checkNoScheduledGrowth(src) {
  * them ONLY in `pub_from_monster`'s literal, so with Check A alone those four
  * entries could never fire on anything.
  *
+ * THREE SPELLINGS, ONE RULE (red-team M1): the bare `MonsterPub { … }`, the
+ * `Self { … }` inside an `impl MonsterPub` block, and a `use … as MP` renamed
+ * `MP { … }` all construct the same row and are all confined by this check —
+ * two of them were confirmed end-to-end evasions of the bare-name scan.
+ *
  * ABSENCE-IS-FAIL: zero literals found anywhere → error. marshal.rs owns exactly
  * two (`monster_from_instance`, `pub_from_monster`); finding none means the
  * scanner (or the string-blanker feeding it) has rotted, and a rotted scanner
@@ -852,6 +1023,8 @@ export function checkNoScheduledGrowth(src) {
  *
  * Kills:
  *   - A scheduled reducer forging a public row by literal (see above).
+ *   - The same forgery hidden behind `Self { … }` in an inherent impl, or behind
+ *     an import rename.
  *   - A second, drifting projection helper that rebuilds `MonsterPub` by hand
  *     instead of calling `pub_from_monster` — the derive-on-write SSOT bypass
  *     (ADR-0016) that the A3 Rust sibling scans for from the other direction.
@@ -873,18 +1046,19 @@ export function checkNoAdHocRowLiterals(src) {
     );
   }
 
-  for (const { type, pos } of literals) {
+  for (const { type, pos, via } of literals) {
     const fn_name = enclosingFnName(blanked, pos);
     if (fn_name === null) {
       return (
-        `a \`${type} { … }\` struct literal at position ${pos} is not inside any ` +
-        'function — a row built at module scope (const/static) escapes every ' +
-        'confinement rule this eval has; resolve it or fix the parser'
+        `a ${type} row is constructed at position ${pos} via ${via}, outside any ` +
+        'function — a row built at module scope (const/static) or at bare ' +
+        'associated-item level escapes every confinement rule this eval has; ' +
+        'resolve it or fix the parser'
       );
     }
     if (ROW_LITERAL_BUILDERS.indexOf(fn_name) === -1) {
       return (
-        `a \`${type} { … }\` struct literal is constructed inside fn '${fn_name}', ` +
+        `a ${type} row is constructed inside fn '${fn_name}' via ${via}, ` +
         `which is NOT in the ROW_LITERAL_BUILDERS allowlist ` +
         `[${ROW_LITERAL_BUILDERS.join(', ')}]; building a row by literal writes ` +
         'every growth column at once WITHOUT a single `.field =` for Check A to ' +
@@ -1023,6 +1197,78 @@ pub fn tick_forge_pub_rows(ctx: &ReducerContext, sched: ForgeTickSchedule) -> Re
             trust_tier: TrustTier::Devoted,
             quality_time_tier: 3,
             tier: old.tier.saturating_add(1),
+            ..old
+        };
+        ctx.db.monster_pub().monster_id().update(forged);
+    }
+    Ok(())
+}
+`;
+
+/**
+ * BAD_SCHEDULED_SELF_IMPL (NEW, EG5-3 / red-team M1(1) — a CONFIRMED end-to-end
+ * evasion): the same public-row forgery, spelled `Self { … }` inside an
+ * `impl MonsterPub` block. The construction site never contains the string
+ * `MonsterPub`, so a bare-name scan walks straight past it; there is still not
+ * one `.field =`, so Checks A and B are blind as before. Check C must enter the
+ * impl block, recognise `Self {` as a `MonsterPub` construction, and name the
+ * associated fn `promoted`.
+ *
+ * This shape is not exotic — an inherent `fn promoted(old: Self) -> Self` builder
+ * is what a reviewer would call idiomatic, which is exactly why the gate has to
+ * see through it rather than trusting the type name to be spelled out.
+ *
+ * Kills: "an impl-block builder launders the literal past a type-name scan".
+ */
+const BAD_SCHEDULED_SELF_IMPL = `
+#[spacetimedb::table(name = self_tick_schedule, scheduled(tick_self_promote))]
+pub struct SelfTickSchedule {
+    #[primary_key] #[auto_inc] pub id: u64,
+    pub scheduled_at: ScheduleAt,
+}
+
+impl MonsterPub {
+    pub fn promoted(old: Self) -> Self {
+        Self {
+            trust_tier: TrustTier::Devoted,
+            quality_time_tier: 3,
+            ..old
+        }
+    }
+}
+
+pub fn tick_self_promote(ctx: &ReducerContext, sched: SelfTickSchedule) -> Result<(), String> {
+    for old in ctx.db.monster_pub().iter() {
+        ctx.db.monster_pub().monster_id().update(MonsterPub::promoted(old));
+    }
+    Ok(())
+}
+`;
+
+/**
+ * BAD_SCHEDULED_ALIAS_LITERAL (NEW, EG5-3 / red-team M1(2) — a CONFIRMED
+ * end-to-end evasion): the same forgery behind an import rename. `use
+ * crate::schema::MonsterPub as MP;` then `MP { … }`. Renaming an import is
+ * ordinary Rust and must not be a gate bypass, so Check C resolves the alias
+ * from the `use` line and scans for the alias token too. It must name
+ * `tick_alias_forge`.
+ *
+ * Kills: "`use … as …` renames the type out of the scanner's vocabulary".
+ */
+const BAD_SCHEDULED_ALIAS_LITERAL = `
+use crate::schema::MonsterPub as MP;
+
+#[spacetimedb::table(name = alias_tick_schedule, scheduled(tick_alias_forge))]
+pub struct AliasTickSchedule {
+    #[primary_key] #[auto_inc] pub id: u64,
+    pub scheduled_at: ScheduleAt,
+}
+
+pub fn tick_alias_forge(ctx: &ReducerContext, sched: AliasTickSchedule) -> Result<(), String> {
+    for old in ctx.db.monster_pub().iter() {
+        let forged = MP {
+            trust_tier: TrustTier::Devoted,
+            quality_time_tier: 3,
             ..old
         };
         ctx.db.monster_pub().monster_id().update(forged);
@@ -1189,12 +1435,43 @@ fn some_display_helper(m: &Monster) -> &str {
  *   `Vec<MonsterPub>` / `&Monster)` → type positions are mentions, not values.
  *   the error string mentioning `MonsterPub {` → a scanner that does not blank
  *                                 string literals flags a log message.
+ *   `impl SpeciesRow { … Self { … } }` → the M1(1) impl-walk must enter impls of
+ *                                 ROW TYPES ONLY. A scanner that flags every
+ *                                 `Self {` anywhere goes red on the live tree
+ *                                 (movement.rs:237-238 is exactly this shape).
+ *   `impl MonsterPub { fn tier(&self) … }` → an impl ON a row type that builds
+ *                                 nothing must contribute ZERO literals.
+ *   `use crate::schema::SpeciesRow as SR;` + `SR { … }` → the M1(2) alias
+ *                                 resolver must add ROW-TYPE aliases only. A
+ *                                 scanner that harvests every `X as Y` flags
+ *                                 `seed_species` and goes red on clean code.
  */
 const GOOD_ROW_PROJECTION_HELPERS = `
+use crate::schema::SpeciesRow as SR;
+
 #[spacetimedb::table(name = monster_pub, public)]
 pub struct MonsterPub {
     #[primary_key] pub monster_id: u64,
     pub tier: u8,
+}
+
+impl MonsterPub {
+    pub fn tier(&self) -> u8 {
+        self.tier
+    }
+}
+
+impl SpeciesRow {
+    pub fn blank() -> Self {
+        Self {
+            id: 0,
+            tier: 0,
+        }
+    }
+}
+
+pub(crate) fn seed_species() -> SpeciesRow {
+    SR { id: 1, tier: 0 }
 }
 
 pub(crate) fn monster_from_instance(

@@ -1,6 +1,7 @@
 # 0062. Evolution & fusion server reducers: guard ordering, seam placement, growth-writer registration
 
-**Status:** Accepted
+**Status:** Superseded
+**Superseded-by:** ADR-0177 (fusion-specific provisions; see ADR-0177 D1 for surviving provisions)
 **Date:** 2026-07-02
 **Slice:** m10b
 **Supersedes:** —

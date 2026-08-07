@@ -1,6 +1,7 @@
 # 0060. Evolution/fusion content shape: a separate cross-referenced registry + additive validator
 
-**Status:** Accepted
+**Status:** Superseded
+**Superseded-by:** ADR-0177 (fusion-specific provisions; see ADR-0177 D1 for surviving provisions)
 **Date:** 2026-06-28
 **Slice:** m10a
 **Supersedes:** —

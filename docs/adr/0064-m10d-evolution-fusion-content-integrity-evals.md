@@ -1,6 +1,7 @@
 # 0064. M10d: evolution/fusion content-integrity evals and proof-of-teeth discipline
 
-**Status:** Accepted
+**Status:** Superseded
+**Superseded-by:** ADR-0177 (fusion-specific provisions; see ADR-0177 D1 for surviving provisions)
 **Date:** 2026-07-02
 **Slice:** m10d
 **Supersedes:** —

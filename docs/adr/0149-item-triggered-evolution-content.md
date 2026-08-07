@@ -1,6 +1,7 @@
 # 0149 — item-triggered evolution content (species 7/8 branches, id band 30..=39)
 
-**Status:** Accepted
+**Status:** Superseded
+**Superseded-by:** ADR-0177 (the Item-discrete-trigger reducer shape only — D3's 30..=39 id-band reservation and the species content it governs SURVIVE and remain binding; ADR-0177 D1)
 **Date:** 2026-07-25
 **Slice:** B (M-postgate-evolution-fusion-hardening — item-triggered evolution content; EARS B-1..B-5)
 **Supersedes:** —

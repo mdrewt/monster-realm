@@ -24,8 +24,8 @@ Design authority: harness `adr/0019-evolution-fusion-model.md` Amendment 2026-08
 
 ## D1 — Supersession is FUSION-SPECIFIC; named provisions of 0060/0149 survive
 
-ADR-0060/0061/0062/0063/0064/0147/0149 are marked `Superseded` (MADR — history kept, not
-deleted). The supersession covers their **fusion-specific provisions**: `fuse()` and its
+ADR-0060/0061/0062/0063/0064/0147/0149 are marked `Superseded` by this slice (MADR —
+history kept, not deleted). The supersession covers their **fusion-specific provisions**: `fuse()` and its
 guard/UI/reducer shape, `FusionRecipe`/`fusion.ron`, the `Fusion` table, taxed-carry math
 (0147), `evolves_to` passive-eligibility and its recompute (0061/0062/0063), and the
 Item-discrete-trigger reducer shape (0149).
@@ -47,8 +47,10 @@ Migration B removes `Monster.bond`, `Monster.evolves_to`, `MonsterPub.bond`,
 `MonsterPub.evolves_to`, and the unused `Fusion` table from `server-module/src/schema.rs`,
 plus every residual read/write that kept the frozen columns consistent
 (`marshal.rs`, `raising.rs` care's bond write, `content.rs` evolves_to freeze + fusion
-clear-loop). Verified before removal by grep + compiler (`cargo clippy --workspace
---all-targets -- -D warnings`): no reducer reads/writes any of the three post-EG4.
+clear-loop). Removal gate: grep + compiler (`cargo clippy --workspace --all-targets
+-- -D warnings`) must confirm no reducer reads/writes any of the three — the only
+remaining sites at slice start were the frozen-column maintenance writes this slice
+deletes, each already commented "removal is Migration B".
 
 **Mechanism (the ADR-0006 escape-hatch record):** per official SpacetimeDB 2.6 docs
 (Automatic Migrations), removing columns or tables is **always forbidden** in automatic
