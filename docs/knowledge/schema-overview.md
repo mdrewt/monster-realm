@@ -2,7 +2,7 @@
 type: Schema Overview
 title: Monster Realm Schema Overview
 slug: schema-overview
-updated: 2026-08-04
+updated: 2026-08-07
 tags: [schema, spacetimedb, overview]
 abstract: "34-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 43 reducers."
 source: scripts/okf-export.mjs@server-module/src/

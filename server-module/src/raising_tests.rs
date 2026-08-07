@@ -2682,7 +2682,6 @@ fn accrue_quality_time_body_never_fabricates_tier() {
     );
 }
 
-
 /// EG2-5 (reject-never-burns, ADR-0059 §3 carried into the D2 remap): `care`'s
 /// decision seam runs BEFORE every mutation in the body, and its `Result` is
 /// never swallowed.

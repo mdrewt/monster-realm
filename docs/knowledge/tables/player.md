@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: player
 slug: tables/player
-updated: 2026-08-04
+updated: 2026-08-07
 tags: [schema, spacetimedb, public]
 abstract: "Links a connection identity to its character. `last_input_seq` is the reconciliation ack (set at accept-time) — NEVER t…"
 resource: server-module/src/schema.rs#L45
