@@ -659,6 +659,15 @@ where
     };
   }
 
+  // NOTE (m3, not a gap): dropping the `[A-Za-z_]` identifier requirement after
+  // `fn[ \t]` is an EQUIVALENT MUTANT, not a coverage hole — `fn[ \t]` alone
+  // already excludes function-pointer types (`fn(u32) -> u32` has no
+  // whitespace after `fn`), and `fn ` followed by a non-identifier is not a
+  // shape valid Rust produces. No dedicated fixture is added for it
+  // deliberately; this line records that the identifier check is
+  // belt-and-braces so a later reader does not mistake the absence for an
+  // oversight.
+
   // -------------------------------------------------------------------------
   // TEETH N: a non-compliant `pub(crate) fn` at TRUE OFFSET 0 of the string
   // (the fixture's very first character is 'p', not a newline), followed by a
@@ -811,6 +820,67 @@ pub(crate) fn after_unterminated_comment_also_no_mirror(ctx: &ReducerContext, mo
         '/*, while silently hollowing out the fn placed AFTER it; the contract is that an ' +
         'unterminated /* must be reported as its own fail-loud violation naming the unterminated ' +
         'block comment, because strip-to-EOF would silently hide every function after it',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH R: the COLUMN-0 anchor must not be relaxed to allow leading
+  // indentation. Fixture: ONE fully compliant `pub fn` whose body contains an
+  // INDENTED nested `fn` (4 spaces, NOT column 0) declared BETWEEN the
+  // private monster().monster_id().update( write and its monster_pub mirror.
+  // Under the current anchor (`^` with no `[ \t]*` after it, so leading
+  // whitespace disqualifies a line as a boundary) the indented nested
+  // `clamp_bond` is NOT recognized as a declaration, so the whole compliant
+  // function stays one span and is correctly recognized as paired.
+  //
+  // If the anchor were relaxed to `^[ \t]*(?:pub...)?...fn ` the indented
+  // `fn clamp_bond` WOULD become a boundary, bisecting this function: the
+  // first fragment (ending right before `fn clamp_bond`) would contain the
+  // private monster().monster_id().update( write with NO monster_pub mirror
+  // in its own slice — a FALSE RED on fully compliant code. Two distinct
+  // assertions pin this from both directions: the violation count states the
+  // observable symptom, the span count states the property directly (so a
+  // compensating bug in the split can't hide behind a coincidentally-correct
+  // violation count).
+  // -------------------------------------------------------------------------
+  const teethRSrc = `
+pub fn care_with_local_helper(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.bond = 10;
+    ctx.db.monster().monster_id().update(m.clone());
+
+    fn clamp_bond(v: u8) -> u8 {
+        if v > 100 { 100 } else { v }
+    }
+
+    let pub_row = pub_from_monster(&m);
+    ctx.db.monster_pub().monster_id().update(pub_row);
+}
+`;
+  const teethRViolations = findDualWriteViolations(teethRSrc);
+  if (teethRViolations.length !== 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        `TEETH R: a fully compliant pub fn whose body contains an INDENTED nested fn ` +
+        `(declared BETWEEN the private monster().monster_id().update( write and its ` +
+        `monster_pub mirror) was falsely flagged (${teethRViolations.join('; ')}) — the ` +
+        'column-0 anchor was relaxed to accept leading indentation, so the indented nested ' +
+        '`fn clamp_bond` is being treated as a span boundary and the compliant function was ' +
+        'bisected into a fragment with the private write and no mirror',
+    };
+  }
+  const teethRBodies = splitIntoFnBodies(teethRSrc);
+  if (teethRBodies.length !== 1) {
+    return {
+      name,
+      pass: false,
+      detail:
+        `TEETH R: splitIntoFnBodies over the compliant pub fn with an indented nested fn ` +
+        `should yield exactly 1 span (the indented \`fn clamp_bond\` must NOT anchor a new ` +
+        `boundary), got ${teethRBodies.length} — the column-0 anchor was relaxed to accept ` +
+        'leading indentation, so indented declarations are being treated as span boundaries',
     };
   }
 
