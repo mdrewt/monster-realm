@@ -1021,29 +1021,102 @@ describe('formatHealCostLine [12r-d W-6]: the cost-line branches', () => {
 // it is a DOM shell by policy. That makes a SOURCE SCAN the only available gate on the
 // one line of it that matters: the cost string must come from the pure function this
 // file tests, not from a second, divergent copy of the logic inside the view.
-// Single literal needle, `.includes` only — no `new RegExp(` anywhere (ReDoS gate).
+// Literal needles + `.includes` only — no `new RegExp(` anywhere (the Semgrep
+// detect-non-literal-regexp / ReDoS gate), and the source is COMMENT-STRIPPED first so a
+// prose mention can never satisfy the tooth.
 // ---------------------------------------------------------------------------
 
+// Drop block comments (marker scan, multi-line aware) THEN line comments, so a needle that
+// only appears in a COMMENT — including one hidden by commenting out the real body — cannot
+// satisfy a tooth. Order matters: blocks are stripped FIRST so a `//` living inside a block
+// comment cannot be mis-parsed by the line pass afterwards (it is simply gone by then).
+// Ported from the established precedent at main.wiring.test.ts:1424-1453 (11r-h / ADR-0172
+// D7), which was itself written after a raw `.includes` tooth resolved to a comment 147
+// lines from the real statement. String scanning only: no RegExp, literal or otherwise —
+// and the delimiters are plain literals, matching that precedent byte for byte (a
+// concatenated spelling would trip biome's useless-string-concat lint).
+function stripBlockComments(src: string): string {
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const start = src.indexOf('/*', i);
+    if (start === -1) {
+      out += src.slice(i);
+      return out;
+    }
+    out += src.slice(i, start);
+    const end = src.indexOf('*/', start + 2);
+    if (end === -1) {
+      // Unterminated block comment — drop the remainder defensively. A needle that only
+      // survives inside an unterminated comment must never count as a call site.
+      return out;
+    }
+    i = end + 2;
+  }
+}
+
+/** Comment-free view of a TypeScript source file: block comments then line comments.
+ *  Idempotent. Deliberately naive about comment markers inside string literals — healView
+ *  is a 39-line DOM shell with none, and erring toward stripping only ever makes a tooth
+ *  HARDER to satisfy, never easier. */
+function stripSourceComments(src: string): string {
+  return stripBlockComments(src)
+    .split('\n')
+    .map((line) => {
+      const i = line.indexOf('//');
+      return i === -1 ? line : line.slice(0, i);
+    })
+    .join('\n');
+}
+
 describe('healView.ts [12r-d W-7]: the cost line is DELEGATED to formatHealCostLine', () => {
-  it('★ [W-7] BITES: healView.ts contains a call to formatHealCostLine(', () => {
-    // WRONG IMPL KILLED: shipping formatHealCostLine as a new export that healView.ts never
-    // calls. Every behavioural tooth in [W-6] would pass, the model would be perfect, and
-    // the player would STILL read "Heal here (0x Unknown item)" — the bug would be fully
-    // fixed everywhere except the one surface a human sees. Nothing else in this suite can
-    // see that failure mode, because healView is unreachable from a node-only unit test.
+  it('★ [W-7] BITES: healView.ts CALLS formatHealCostLine( in real code (comment-stripped) and no longer rebuilds the cost inline', () => {
+    // WRONG IMPL KILLED (1): shipping formatHealCostLine as a new export that healView.ts
+    // never calls. Every behavioural tooth in [W-6] would pass, the model would be perfect,
+    // and the player would STILL read "Heal here (0x Unknown item)" — the bug fixed
+    // everywhere except the one surface a human sees. Nothing else in this suite can see
+    // that failure mode, because healView is unreachable from a node-only unit test AND is
+    // excluded from the coverage denominator (vite.config.ts), so it has no other gate.
+    //
+    // WRONG IMPL KILLED (2) — why the source is COMMENT-STRIPPED: a raw `.includes` is
+    // satisfied by `// TODO: call formatHealCostLine(vm)` sitting above an untouched inline
+    // template. That is a one-line cheat that turns this tooth green while shipping the
+    // exact bug. Stripping blocks + line comments first makes the prose mention worthless.
+    //
+    // WRONG IMPL KILLED (3) — why 'Unknown item' must be GONE from the shell: an impl that
+    // calls formatHealCostLine into an unused local (or in a dead branch) while the live
+    // template still renders `${loc.costQty}x ${loc.costItemName ?? 'Unknown item'}`. The
+    // fallback string is pinned to the MODEL by [W-6c]; after delegation the view has no
+    // business spelling it at all, so its presence in real code means a second, divergent
+    // copy of the cost logic survived inside the shell.
     const viewPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'healView.ts');
-    let src: string;
+    let rawSrc: string;
     try {
-      src = readFileSync(viewPath, 'utf8');
+      rawSrc = readFileSync(viewPath, 'utf8');
     } catch (err) {
       // Fail LOUD rather than vacuously green if the file moves or is renamed.
       throw new Error('healView.ts could not be read — the file must exist: ' + String(err));
     }
+    const src = stripSourceComments(rawSrc);
+    // Pre-condition: stripping must not have eaten the file (a stripper bug would make the
+    // needle assertion below fail for the WRONG reason, and the absence assertion pass
+    // vacuously). healView's class declaration is comment-free and load-bearing.
+    expect(
+      src.includes('export class HealView'),
+      'the comment-stripper ate real code — healView.ts must still declare `export class HealView`',
+    ).toBe(true);
     expect(
       src.includes('formatHealCostLine('),
-      'healView.ts must call formatHealCostLine(...) — the cost string may not be rebuilt ' +
-        'inline in the DOM shell (that copy is coverage-excluded and cannot be gated)',
+      'healView.ts must CALL formatHealCostLine(...) in real code — a comment mentioning it ' +
+        'does not count (the source is comment-stripped), and the cost string may not be ' +
+        'rebuilt inline in the DOM shell (that copy is coverage-excluded and cannot be gated)',
     ).toBe(true);
+    expect(
+      src.includes('Unknown item'),
+      'healView.ts must no longer spell the "Unknown item" fallback — after delegation that ' +
+        'string lives in formatHealCostLine (pinned by [W-6c]); its survival in the shell ' +
+        'means the old inline cost template is still the live path',
+    ).toBe(false);
   });
 });
 
