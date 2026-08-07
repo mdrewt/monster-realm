@@ -149,14 +149,20 @@ fn archetype_violations(species: &[Species]) -> Vec<String> {
 /// Comment-hygiene predicate (ADR-0143 D7). Returns a violation per RON comment
 /// that carries an id-shaped needle.
 ///
-/// WHY THIS IS A GATE AND NOT A CONVENTION: `append-only-ids.eval.mjs` and
-/// `evolution-fusion-content-integrity.eval.mjs` strip WHOLE-LINE `//` comments
-/// only and then regex-scan the remainder. A *trailing* comment carrying `id:`
-/// injects a phantom stable content id into the append-only scan, and one
-/// carrying `species_id:`/`to_species:` fabricates a whole evolution block (which
-/// surfaces as a bogus self-evolution failure). The species registry is authored
-/// one part file per wave, so leaving this as prose in a wave-1 header would bind
-/// nobody; scanning the directory binds every future wave.
+/// WHY THIS IS A GATE AND NOT A CONVENTION: `append-only-ids.eval.mjs` strips
+/// WHOLE-LINE `//` comments only and then regex-scans the remainder, so a
+/// *trailing* comment carrying `id:` — or `species_id:`, which contains it —
+/// injects a phantom stable content id into that append-only scan and poisons the
+/// committed baseline. Its EG5-1 sibling `evolution-content-integrity.eval.mjs`
+/// (renamed from `evolution-fusion-content-integrity.eval.mjs`) meets the same
+/// hazard from the other side: it does NOT strip such a comment either, it
+/// REFUSES the whole evolution_paths registry whenever a trailing `//` comment or
+/// a block comment carries an `edge_id:`-shaped needle — a hard red rather than a
+/// silent mis-scan — while its separate R1-R12 structural lens scrubs comments
+/// outright. `to_species:` is retained in the needle list below as belt-and-braces
+/// for any future text scanner over this directory. The species registry is
+/// authored one part file per wave, so leaving this as prose in a wave-1 header
+/// would bind nobody; scanning the directory binds every future wave.
 fn comment_needle_violations(file_label: &str, src: &str) -> Vec<String> {
     let mut out = Vec::new();
     for (n, line) in src.lines().enumerate() {
@@ -661,11 +667,12 @@ fn pt_d1_7_ron_comments_carry_no_id_shaped_needles() {
 
     assert!(
         violations.is_empty(),
-        "pt-d1-7: RON trailing comments must not carry id-shaped needles — both \
-         append-only-ids and evolution-fusion-content-integrity strip WHOLE-LINE \
-         comments only and then regex-scan, so a trailing `id:` injects a phantom \
-         stable content id and a trailing `species_id:`/`to_species:` fabricates an \
-         evolution block. Violations: {violations:?}"
+        "pt-d1-7: RON trailing comments must not carry id-shaped needles — \
+         append-only-ids strips WHOLE-LINE comments only and then regex-scans, so a \
+         trailing `id:`/`species_id:` injects a phantom stable content id into its \
+         append-only baseline, and evolution-content-integrity REFUSES the whole \
+         evolution_paths registry when a trailing comment carries an `edge_id:`-shaped \
+         needle. Violations: {violations:?}"
     );
 }
 

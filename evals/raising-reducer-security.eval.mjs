@@ -5,7 +5,7 @@
 //   F2. Ownership guard — care checks ownership before any state read.
 //   F4. Dual-write mirror — both monster() and monster_pub() updated on success.
 //   F5. Server clock only — care reads ctx.timestamp or now_ms(ctx); no client time param.
-//   F6. SSOT — care delegates bond arithmetic to apply_care(); no inline bond math.
+//   F6. SSOT — care delegates its decision to apply_care(/evaluate_care(); no inline math.
 //   F7. Cooldown operator — cooldown uses strict `<` (not `<=`).
 //   F8. Dual-write uses pub_from_monster — no hand-rolled pub row on update.
 //
@@ -15,11 +15,43 @@
 // This eval starts RED: the `care` reducer does not exist yet in the source →
 // extractReducerBody returns null → FAIL.
 //
+// ===========================================================================
+// EG5 / Migration B — g8 IS INTENTIONALLY RED UNTIL MIGRATION B LANDS IN THIS
+// SAME PR. Read this before "fixing" it.
+//
+// Bond is RETIRED (spec M-evolution-essence-graph §4 "Bond retention.
+// CONFIRMED — retire entirely"; EG5-6 Migration B drops `bond` from Monster and
+// MonsterPub). `evaluate_care` therefore loses its bond half and becomes a
+// COOLDOWN-ONLY pure seam, the exact shape `evaluate_heal` already has
+// (raising.rs:296-305):
+//
+//     pub(crate) fn evaluate_care(last_care_at_ms: i64, now: i64) -> Result<(), String>
+//         -> delegates the elapsed rule to game_core::is_cooldown_ready
+//
+// g8 (below) is the gate that FORCES that reshape: it now REQUIRES
+// `is_cooldown_ready(` in evaluate_care's body, FORBIDS any bond arithmetic
+// (`apply_care(` / `Bond::new(` / `CARE_BOND_AMOUNT`) in it, and pins the 2-arg
+// signature + unit return. Against the pre-Migration-B tree the shipped seam
+// still calls `apply_care(Bond::new(bond), CARE_BOND_AMOUNT)`, so g8 reports
+// `g8-bond-residue: ...` and this eval exits non-zero — BY DESIGN, red-first.
+// The specialist's Migration B turns it green. Do NOT relax g8 to match the old
+// body; that would silently re-bless the retired column.
+//
+// The care/train fixtures that still mention `bond` (GOOD_CARE,
+// BAD_INLINE_BOND_MATH, BAD_UPDATE_HAND_ROLLED_PUB, ...) are deliberately left
+// alone: they are self-contained synthetic strings whose teeth are about
+// OWNERSHIP / inline-math / hand-rolled-pub, not about bond's existence, and
+// weakening or deleting them would remove live coverage that Migration B does
+// not affect.
+// ===========================================================================
+//
 // Implementation note on Semgrep detect-non-literal-regexp:
 //   All pattern matching uses String.indexOf() or literal /regex/ patterns.
 //   NO `new RegExp(...)` with a non-literal argument is used anywhere here.
 //   This convention has been bitten 3 times in the codebase; see the eval rule.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 // ---------------------------------------------------------------------------
 // Re-use helpers from recruit-reducer-security (verbatim copy — no circular
@@ -292,26 +324,25 @@ export function checkCareCooldownOperator(body) {
 }
 
 /**
- * Check F6 — SSOT: a function body must delegate bond arithmetic to either
- * `apply_care(` directly OR to the pure seam `evaluate_care(` (which itself
- * calls `apply_care`). Both are SSOT-honoring paths:
- *   - `care` body: expected to call `evaluate_care(` (seam delegation), but
- *     calling `apply_care(` directly is also accepted.
- *   - `evaluate_care` body: expected to call `apply_care(` (real-source check
- *     g8 enforces this separately on evaluate_care's own body).
+ * Check F6 (g5) — SSOT for the `care` REDUCER's body: it must delegate its
+ * decision to the pure seam `evaluate_care(` (the shipped style) or, still
+ * accepted, straight to the game-core rule `apply_care(`. Both are
+ * SSOT-honoring; what is FORBIDDEN is inline arithmetic
+ * (`Bond::new(bond.saturating_add(`) that bypasses the pure layer entirely.
  *
- * FORBIDDEN in both: inline bond arithmetic `Bond::new(bond.saturating_add(`
- * which would bypass the game-core pure rule entirely.
- *
- * The SSOT chain care → evaluate_care → apply_care is fully enforced because:
- *   1. This check (g5) requires care to call apply_care OR evaluate_care.
- *   2. The separate g8 check requires evaluate_care to call apply_care.
- *   3. The BAD_INLINE_BOND_MATH fixture has neither call AND has inline math
- *      → must still be flagged (the forbidden check catches it).
+ * SCOPE NOTE (EG5 / Migration B): this check no longer binds `evaluate_care`'s
+ * own body — the seam's contract moved to checkEvaluateCareCooldownOnly (g8),
+ * which requires the post-bond cooldown-only shape. The two are complementary:
+ *   1. g5 requires `care` to call evaluate_care( (or apply_care();
+ *   2. g8 requires `evaluate_care` to delegate the cooldown to
+ *      game_core::is_cooldown_ready and to carry NO bond arithmetic;
+ *   3. BAD_INLINE_BOND_MATH has neither delegating call AND has inline math →
+ *      must still be flagged here (the forbidden branch catches it).
+ * Together they still pin an unbroken reducer → seam → game-core chain.
  *
  * Uses only indexOf — NO new RegExp(...).
  *
- * @param {string} body  Body of care (or evaluate_care), comment-stripped.
+ * @param {string} body  Body of care, comment-stripped.
  * @returns {string|null}
  */
 export function checkCareSSOT(body) {
@@ -335,6 +366,120 @@ export function checkCareSSOT(body) {
     return (
       'care: body contains inline `Bond::new(bond.saturating_add(` — bond arithmetic ' +
       'must be delegated to apply_care( or evaluate_care(, not re-implemented inline'
+    );
+  }
+
+  return null;
+}
+
+/**
+ * g8 (EG5 / Migration B) — the `evaluate_care` SEAM's own contract, post-bond.
+ *
+ * INTENTIONALLY RED until Migration B lands in this same PR (see the file
+ * header): bond is retired, so the seam is cooldown-only and delegates the
+ * elapsed rule to the SSOT `game_core::is_cooldown_ready` — the identical
+ * pattern `evaluate_heal` (raising.rs:296-305) already uses:
+ *
+ *     pub(crate) fn evaluate_care(last_care_at_ms: i64, now: i64) -> Result<(), String> {
+ *         if !is_cooldown_ready(last_care_at_ms, now, CARE_COOLDOWN_MS) {
+ *             return Err("care cooldown not yet elapsed".to_string());
+ *         }
+ *         Ok(())
+ *     }
+ *
+ * Three sub-checks, each with a STABLE prefix so a tooth can assert WHICH one
+ * fired, evaluated in this order:
+ *
+ *   g8-cooldown-ssot: the body does not call is_cooldown_ready( — the seam
+ *                     open-codes its own elapsed comparison, which is exactly
+ *                     the second `saturating_sub`/`<` copy ptc5e-1 consolidated
+ *                     away (and where the `<=` off-by-one keeps coming back);
+ *   g8-bond-residue:  the body still carries bond arithmetic (`apply_care(`,
+ *                     `Bond::new(`, or `CARE_BOND_AMOUNT`) — the column is gone
+ *                     after Migration B, so this cannot compile AND must never
+ *                     be re-introduced;
+ *   g8-signature:     the seam is not `(last_care_at_ms: i64, now: i64) ->
+ *                     Result<(), String>`. Kills the lazy reshape that drops the
+ *                     apply_care call but keeps `bond: u8` as a passthrough
+ *                     parameter/return — body-only checks cannot see that.
+ *
+ * The `now` parameter is named `now`, NOT `now_ms`, matching the existing
+ * evaluate_care/evaluate_heal convention (raising.rs:59-61: avoid shadowing the
+ * module-level `now_ms` helper).
+ *
+ * Uses indexOf + a paren-depth walk — NO new RegExp(...).
+ *
+ * @param {string} src   Comment-stripped source containing evaluate_care.
+ * @param {string} body  Body of evaluate_care, comment-stripped.
+ * @returns {string|null}
+ */
+export function checkEvaluateCareCooldownOnly(src, body) {
+  const compact = body.replace(/\s+/g, '');
+
+  if (compact.indexOf('is_cooldown_ready(') === -1) {
+    return (
+      'g8-cooldown-ssot: evaluate_care does not call is_cooldown_ready( — the cooldown ' +
+      'decision must delegate to the SSOT game_core predicate (ptc5e-1), the same one ' +
+      'evaluate_heal uses; an open-coded elapsed comparison is a second copy of the rule ' +
+      'and is where the `<=` boundary bug keeps reappearing'
+    );
+  }
+
+  const bondResidue = ['apply_care(', 'Bond::new(', 'CARE_BOND_AMOUNT'];
+  for (const needle of bondResidue) {
+    if (compact.indexOf(needle) !== -1) {
+      return (
+        `g8-bond-residue: evaluate_care still references \`${needle}\` — bond is RETIRED ` +
+        '(spec §4 "Bond retention. CONFIRMED — retire entirely"; EG5-6 Migration B drops ' +
+        'the column from Monster and MonsterPub), so the seam must be cooldown-only: ' +
+        '`pub(crate) fn evaluate_care(last_care_at_ms: i64, now: i64) -> Result<(), String>` ' +
+        'delegating to game_core::is_cooldown_ready. THIS IS THE EXPECTED RED STATE before ' +
+        'Migration B lands in this PR — reshape the reducer, do not relax this check'
+      );
+    }
+  }
+
+  const sig = extractFnSignature(src, 'evaluate_care');
+  if (sig === null) {
+    return (
+      'g8-signature: evaluate_care signature not found — the seam must exist as a named ' +
+      'pure function (absence is a failure, never a skip)'
+    );
+  }
+
+  // Isolate the parameter region by paren-depth counting (indexOf only).
+  const openIdx = sig.indexOf('(');
+  if (openIdx === -1) {
+    return 'g8-signature: evaluate_care signature has no opening paren (parser error)';
+  }
+  let depth = 1;
+  let i = openIdx + 1;
+  while (i < sig.length && depth > 0) {
+    if (sig[i] === '(') depth++;
+    else if (sig[i] === ')') depth--;
+    i++;
+  }
+  // A rustfmt-wrapped parameter list carries a trailing comma; that is the same
+  // signature, so normalise it away rather than failing a correct impl on layout.
+  const params = sig
+    .slice(openIdx + 1, i - 1)
+    .replace(/\s+/g, '')
+    .replace(/,$/, '');
+  const CANONICAL_PARAMS = 'last_care_at_ms:i64,now:i64';
+  if (params !== CANONICAL_PARAMS) {
+    return (
+      'g8-signature: evaluate_care parameter list is ' +
+      `'${params}', expected '${CANONICAL_PARAMS}' — bond is retired, so the seam takes ` +
+      'only the cooldown inputs; a lingering `bond: u8` passthrough parameter keeps the ' +
+      'retired column alive across the pure/impure boundary'
+    );
+  }
+
+  const compactSig = sig.replace(/\s+/g, '');
+  if (compactSig.indexOf('->Result<(),String>') === -1) {
+    return (
+      'g8-signature: evaluate_care does not return `Result<(), String>` — a cooldown-only ' +
+      'seam has no value to hand back (the old `Result<u8, String>` returned the new bond)'
     );
   }
 
@@ -962,15 +1107,48 @@ const BAD_UPDATE_BEFORE_ERR = `
   }
 `;
 
-/** BAD: care uses <= for cooldown. Must be flagged by checkCareCooldownOperator. */
+/** BAD: evaluate_care open-codes the cooldown with `<=`. Must be flagged by
+ * checkCareCooldownOperator (the `<=` off-by-one) AND by
+ * checkEvaluateCareCooldownOnly (`g8-cooldown-ssot` — an open-coded comparison
+ * is a second copy of the rule instead of the SSOT is_cooldown_ready call).
+ * Post-Migration-B 2-arg shape: the seam takes only the cooldown inputs. */
 const BAD_COOLDOWN_LEQ = `
-  pub fn evaluate_care(bond: u8, last_care_at_ms: i64, now_ms: i64) -> Result<u8, String> {
-      let new_bond = apply_care(Bond::new(bond), CARE_BOND_AMOUNT)
-          .map_err(|e| format!("{:?}", e))?;
-      if now_ms.saturating_sub(last_care_at_ms) <=CARE_COOLDOWN_MS {
-          return Err("cooldown not elapsed".to_string());
+  pub(crate) fn evaluate_care(last_care_at_ms: i64, now: i64) -> Result<(), String> {
+      if now.saturating_sub(last_care_at_ms) <= CARE_COOLDOWN_MS {
+          return Err("care cooldown not yet elapsed".to_string());
       }
-      Ok(new_bond.value())
+      Ok(())
+  }
+`;
+
+/** BAD (g8-bond-residue): the PRE-Migration-B seam, verbatim in shape — it
+ * delegates the cooldown to is_cooldown_ready but still runs the retired bond
+ * arithmetic. This is exactly what the current tree ships, which is why g8 is
+ * red until Migration B lands. Must be flagged with `g8-bond-residue`. */
+const BAD_EVALUATE_CARE_BOND_RESIDUE = `
+  pub(crate) fn evaluate_care(bond: u8, last_care_at_ms: i64, now: i64) -> Result<u8, String> {
+      let new_bond = match apply_care(Bond::new(bond), CARE_BOND_AMOUNT) {
+          Ok(b) => b.value(),
+          Err(CareError::AtMaxBond) => bond,
+          Err(CareError::NoEffect) => return Err("care grants no effect".to_string()),
+      };
+      if !is_cooldown_ready(last_care_at_ms, now, CARE_COOLDOWN_MS) {
+          return Err("care cooldown not yet elapsed".to_string());
+      }
+      Ok(new_bond)
+  }
+`;
+
+/** BAD (g8-signature): the LAZY reshape — the apply_care call is gone and the
+ * cooldown SSOT is in place, so both body sub-checks pass, but `bond: u8` is
+ * kept as a passthrough parameter/return. Kills a body-only g8 that cannot see
+ * the retired column still crossing the pure/impure boundary. */
+const BAD_EVALUATE_CARE_BOND_PASSTHROUGH = `
+  pub(crate) fn evaluate_care(bond: u8, last_care_at_ms: i64, now: i64) -> Result<u8, String> {
+      if !is_cooldown_ready(last_care_at_ms, now, CARE_COOLDOWN_MS) {
+          return Err("care cooldown not yet elapsed".to_string());
+      }
+      Ok(bond)
   }
 `;
 
@@ -1016,7 +1194,17 @@ const BAD_UPDATE_HAND_ROLLED_PUB = `
   }
 `;
 
-/** GOOD: a fully-compliant care reducer. Must pass ALL checks. */
+/** GOOD: a fully-compliant care reducer. Must pass ALL checks.
+ *
+ * Deliberately left in its PRE-Migration-B shape (direct `apply_care(` + an
+ * inline strict-`<` cooldown): it is the ONLY green exemplar of
+ * checkCareSSOT's "delegates directly to the core rule" branch and of
+ * checkCareCooldownOperator accepting an inline `<`. Migration B does not force
+ * a change here — g5 still accepts either delegation style for `care`'s own
+ * body, and rewriting this fixture would leave both branches un-exercised. The
+ * shipped post-B `care` delegates to the cooldown-only seam instead; that shape
+ * is covered by GOOD_CARE_DELEGATING.
+ */
 const GOOD_CARE = `
   pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
       let mut m = ctx.db.monster().monster_id().find(monster_id)
@@ -1035,11 +1223,13 @@ const GOOD_CARE = `
   }
 `;
 
-/** GOOD: a fully-compliant care that delegates to evaluate_care (the real impl style per ADR-0059).
- * Must pass ALL SIX care checks. This is the canonical delegating style:
- *   care → evaluate_care (seam) → apply_care (game-core pure rule).
- * The SSOT chain is enforced: this body calls evaluate_care(, and evaluate_care's
- * own body (checked separately via g8) calls apply_care(.
+/** GOOD: a fully-compliant care that delegates to evaluate_care (the real impl style per ADR-0059),
+ * in its POST-Migration-B shape: bond is retired, so the seam call is 2-arg and
+ * the body writes `last_care_at_ms` plus the EG2-5 Trust-favorable counter, not
+ * `m.bond`. Must pass ALL SIX care checks. The delegating chain is now:
+ *   care → evaluate_care (cooldown-only seam) → game_core::is_cooldown_ready.
+ * The chain is enforced end-to-end: this body calls evaluate_care(, and
+ * evaluate_care's own body (checked separately via g8) calls is_cooldown_ready(.
  */
 const GOOD_CARE_DELEGATING = `
   pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
@@ -1047,10 +1237,10 @@ const GOOD_CARE_DELEGATING = `
           .ok_or_else(|| "monster not found".to_string())?;
       require_owner(ctx, m.owner_identity)?;
       let now = now_ms(ctx);
-      let new_bond = evaluate_care(m.bond, m.last_care_at_ms, now)
+      evaluate_care(m.last_care_at_ms, now)
           .map_err(|e| format!("care rejected: {e}"))?;
-      m.bond = new_bond;
       m.last_care_at_ms = now;
+      m.trust_favorable_count = m.trust_favorable_count.saturating_add(1);
       ctx.db.monster().monster_id().update(m.clone());
       ctx.db.monster_pub().monster_id().update(pub_from_monster(&m));
       Ok(())
@@ -1067,27 +1257,44 @@ const GOOD_CARE_WITH_LOG = `
           .ok_or_else(|| "monster not found".to_string())?;
       require_owner(ctx, m.owner_identity)?;
       let now = now_ms(ctx);
-      let new_bond = evaluate_care(m.bond, m.last_care_at_ms, now)
+      evaluate_care(m.last_care_at_ms, now)
           .map_err(|e| format!("care rejected: {e}"))?;
-      m.bond = new_bond;
       m.last_care_at_ms = now;
+      m.trust_favorable_count = m.trust_favorable_count.saturating_add(1);
       ctx.db.monster().monster_id().update(m.clone());
       ctx.db.monster_pub().monster_id().update(pub_from_monster(&m));
-      log::info!("{{"evt":"care_ok","monster_id":{monster_id},"bond":{},"note":"Err(cases_handled_above)"}}",
-          m.bond);
+      log::info!("{{"evt":"care_ok","monster_id":{monster_id},"trust":{},"note":"Err(cases_handled_above)"}}",
+          m.trust_favorable_count);
       Ok(())
   }
 `;
 
-/** GOOD: a fully-compliant evaluate_care seam. Must pass cooldown operator check. */
+/** GOOD: the post-Migration-B evaluate_care seam — cooldown-only, delegating to
+ * the SSOT game_core::is_cooldown_ready, bond retired. This is the shape g8
+ * requires and the shape the specialist must land; it must pass BOTH
+ * checkCareCooldownOperator and checkEvaluateCareCooldownOnly. */
 const GOOD_EVALUATE_CARE = `
-  pub(crate) fn evaluate_care(bond: u8, last_care_at_ms: i64, now_ms: i64) -> Result<u8, String> {
-      let new_bond = apply_care(Bond::new(bond), CARE_BOND_AMOUNT)
-          .map_err(|e| format!("{:?}", e))?;
-      if now_ms.saturating_sub(last_care_at_ms) <CARE_COOLDOWN_MS {
-          return Err("cooldown not elapsed".to_string());
+  pub(crate) fn evaluate_care(last_care_at_ms: i64, now: i64) -> Result<(), String> {
+      if !is_cooldown_ready(last_care_at_ms, now, CARE_COOLDOWN_MS) {
+          return Err("care cooldown not yet elapsed".to_string());
       }
-      Ok(new_bond.value())
+      Ok(())
+  }
+`;
+
+/** CONTROL (checkCareCooldownOperator ONLY): an open-coded but STRICT `<`
+ * comparison. Not the post-B target shape — g8 would (correctly) flag it with
+ * `g8-cooldown-ssot`, and it is never fed to g8. It exists so the `<=` tooth
+ * stays DISCRIMINATING: with GOOD_EVALUATE_CARE now delegating to
+ * is_cooldown_ready, no green fixture would otherwise contain a comparison at
+ * all, and a checkCareCooldownOperator degraded into "flag any `<`" (or into a
+ * blanket flag) would still pass every other assertion in this file. */
+const CONTROL_EVALUATE_CARE_STRICT_LT = `
+  pub(crate) fn evaluate_care(last_care_at_ms: i64, now: i64) -> Result<(), String> {
+      if now.saturating_sub(last_care_at_ms) < CARE_COOLDOWN_MS {
+          return Err("care cooldown not yet elapsed".to_string());
+      }
+      Ok(())
   }
 `;
 
@@ -1095,9 +1302,9 @@ const GOOD_EVALUATE_CARE = `
 // Default export: eval entry point.
 // ---------------------------------------------------------------------------
 
-export default async function () {
+export default async function raisingReducerSecurityEval() {
   const name =
-    'raising-reducer-security (care+train: ownership, server-clock, reject-never-burns, cooldown-op, SSOT, dual-write; train: signature, consume-after-decision, hp-untouched)';
+    'raising-reducer-security (care+train: ownership, server-clock, reject-never-burns, cooldown-op, SSOT, dual-write; evaluate_care: cooldown-only is_cooldown_ready seam, bond retired (EG5/Migration B); train: signature, consume-after-decision, hp-untouched)';
 
   // =========================================================================
   // PROOFS-OF-TEETH — every tooth must bite before we scan real source.
@@ -1303,7 +1510,8 @@ export default async function () {
     }
   }
   {
-    const body = extractReducerBody(stripRustComments(GOOD_EVALUATE_CARE), 'evaluate_care');
+    const stripped = stripRustComments(GOOD_EVALUATE_CARE);
+    const body = extractReducerBody(stripped, 'evaluate_care');
     if (!body) {
       return {
         name,
@@ -1318,6 +1526,101 @@ export default async function () {
         pass: false,
         detail: `TEETH: GOOD_EVALUATE_CARE was incorrectly flagged by checkCareCooldownOperator: ${checkCareCooldownOperator(body)}`,
       };
+    }
+    // Green-path for g8: the post-Migration-B seam must pass every sub-check.
+    const g8Green = checkEvaluateCareCooldownOnly(stripped, body);
+    if (g8Green) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: GOOD_EVALUATE_CARE (the post-Migration-B cooldown-only seam, the exact ' +
+          `shape g8 demands) was incorrectly flagged by checkEvaluateCareCooldownOnly: ${g8Green}`,
+      };
+    }
+  }
+
+  // --- Control: an open-coded STRICT `<` seam must NOT trip the `<=` check ---
+  // Keeps Tooth 4 discriminating now that the green seam contains no comparison
+  // at all (it delegates to is_cooldown_ready). Fed to the cooldown-operator
+  // check ONLY — g8 correctly rejects this shape, and that is not a bug.
+  {
+    const body = extractReducerBody(
+      stripRustComments(CONTROL_EVALUATE_CARE_STRICT_LT),
+      'evaluate_care',
+    );
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract evaluate_care body from CONTROL_EVALUATE_CARE_STRICT_LT (parser bug)',
+      };
+    }
+    const misfire = checkCareCooldownOperator(body);
+    if (misfire) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: CONTROL_EVALUATE_CARE_STRICT_LT (strict `<`, the ALLOWED boundary form) was ' +
+          `flagged by checkCareCooldownOperator: ${misfire} — the check must catch \`<=\` only`,
+      };
+    }
+  }
+
+  // --- Teeth g8 (EG5 / Migration B): each BAD flagged BY THE NAMED SUB-CHECK ---
+  // g8 is the gate that FORCES evaluate_care's cooldown-only reshape; these
+  // teeth prove all three of its sub-checks bite, and bite for the right reason.
+  {
+    const g8Bad = [
+      [
+        'BAD_COOLDOWN_LEQ',
+        BAD_COOLDOWN_LEQ,
+        'g8-cooldown-ssot:',
+        'the seam open-codes its own elapsed comparison instead of delegating to is_cooldown_ready',
+      ],
+      [
+        'BAD_EVALUATE_CARE_BOND_RESIDUE',
+        BAD_EVALUATE_CARE_BOND_RESIDUE,
+        'g8-bond-residue:',
+        'the retired bond arithmetic (apply_care/Bond::new/CARE_BOND_AMOUNT) survives in the seam ' +
+          '— this is the current tree, i.e. the expected RED until Migration B lands',
+      ],
+      [
+        'BAD_EVALUATE_CARE_BOND_PASSTHROUGH',
+        BAD_EVALUATE_CARE_BOND_PASSTHROUGH,
+        'g8-signature:',
+        'the body sub-checks both pass, but `bond: u8` is kept as a passthrough parameter/return',
+      ],
+    ];
+    for (const [label, fixture, prefix, why] of g8Bad) {
+      const stripped = stripRustComments(fixture);
+      const body = extractReducerBody(stripped, 'evaluate_care');
+      if (!body) {
+        return {
+          name,
+          pass: false,
+          detail: `TEETH: could not extract evaluate_care body from ${label} (parser bug)`,
+        };
+      }
+      const flagged = checkEvaluateCareCooldownOnly(stripped, body);
+      if (!flagged) {
+        return {
+          name,
+          pass: false,
+          detail: `TEETH: ${label} was NOT flagged by checkEvaluateCareCooldownOnly (${why})`,
+        };
+      }
+      if (flagged.indexOf(prefix) !== 0) {
+        return {
+          name,
+          pass: false,
+          detail:
+            `TEETH ATTRIBUTION: ${label} (${why}) was flagged, but by the WRONG sub-check — ` +
+            `expected a message starting with "${prefix}", got: ${flagged}`,
+        };
+      }
     }
   }
 
@@ -1574,7 +1877,9 @@ export default async function () {
   } else {
     const g7 = checkCareCooldownOperator(evaluateCareBody);
     if (g7) failures.push(g7);
-    const g8 = checkCareSSOT(evaluateCareBody);
+    // g8 (EG5 / Migration B): the seam is cooldown-only and bond-free.
+    // INTENTIONALLY RED against the pre-Migration-B tree — see the file header.
+    const g8 = checkEvaluateCareCooldownOnly(src, evaluateCareBody);
     if (g8) failures.push(g8);
   }
 
@@ -1629,7 +1934,8 @@ export default async function () {
     name,
     pass: true,
     detail:
-      'care guard ladder (ownership, server-clock, reject-never-burns, cooldown-op, SSOT, dual-write) + evaluate_care seam + ' +
+      'care guard ladder (ownership, server-clock, reject-never-burns, cooldown-op, SSOT, dual-write) + ' +
+      'evaluate_care seam (cooldown-only, is_cooldown_ready SSOT, bond retired — EG5/Migration B) + ' +
       'train guard ladder (ownership, signature, consume-after-decision, reject-never-burns, hp-untouched, dual-write, SSOT) + evaluate_train seam — all teeth verified',
   };
 }
@@ -1646,4 +1952,29 @@ function readServerModuleSources(dir) {
     else if (entry.endsWith('.rs')) parts.push(readFileSync(full, 'utf8'));
   }
   return parts.join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// Main-guard (the ci-gate-wiring / wallet-privacy idiom): `node
+// evals/raising-reducer-security.eval.mjs` runs this eval standalone and exits
+// non-zero on failure. No-op when imported by evals/run.mjs (process.argv[1] is
+// run.mjs there). Run it from the project root — the real-source scan resolves
+// `server-module/src` relative to the cwd.
+// ---------------------------------------------------------------------------
+if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
+  const result = await (async () => {
+    try {
+      return await raisingReducerSecurityEval();
+    } catch (e) {
+      return {
+        name: 'raising-reducer-security',
+        pass: false,
+        detail: `threw: ${e?.message ?? String(e)}`,
+      };
+    }
+  })();
+  console.log(
+    `eval ${result.pass ? 'PASS' : 'FAIL'}: ${result.name}${result.detail ? ` — ${result.detail}` : ''}`,
+  );
+  process.exit(result.pass ? 0 : 1);
 }

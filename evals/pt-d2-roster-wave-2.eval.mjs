@@ -20,12 +20,16 @@
 // until EG3 authors the graph). BST-monotonicity has NO R1-R12 successor —
 // whether to revive it as a general rule is EG5's decision (EG5-1 handoff).
 //
-// RON parsing is hand-rolled string scanning (no RON parser available in JS here),
-// following the same convention as evolution-fusion-content-integrity.eval.mjs:
+// RON parsing is hand-rolled string scanning (no RON parser available in JS here):
 // comment lines are stripped BEFORE parsing so a `//` that only appears as a
 // trailing/full-line comment can never masquerade as data; a `//` embedded inside
 // a quoted string on a line that also carries real content is never touched
-// because only *whole* comment lines are stripped.
+// because only *whole* comment lines are stripped. The sibling content gate
+// evolution-content-integrity.eval.mjs (EG5-1; renamed from
+// evolution-fusion-content-integrity.eval.mjs) started from this same convention
+// but has since diverged: its structural lens scrubs mid-line and block comments
+// too, and its R12 edge_id ledger refuses rather than strips. This eval keeps the
+// whole-line-only convention.
 //
 // HARD CONSTRAINT: no `new RegExp(...)` anywhere (Semgrep detect-non-literal-regexp).
 // Only literal /regex/ or String.indexOf/includes/split.

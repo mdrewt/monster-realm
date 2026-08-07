@@ -1,7 +1,15 @@
-// no-idle-accrual eval (M9 spec §3 + §2): the system must have NO idle/offline
-// accrual path for stats or bond (active-only). Growth (bond/EVs/derived-stats)
-// must happen ONLY through deliberate intent reducers (`care`/`train`) or battle
+// no-idle-accrual eval (M9 spec §3 + §2; EG5-3): the system must have NO
+// idle/offline accrual path for any growth resource (active-only). Growth —
+// level/xp, EVs, derived stats, and the essence-graph resources (essence pools,
+// Trust counters, Quality-Time accumulators) plus their public MonsterPub
+// projections — must happen ONLY through deliberate intent reducers
+// (`care`/`train`/`essence_train`/`consume_crystalized_essence`) or battle
 // level-up — NEVER on a timer/scheduled reducer (no afk-farming).
+//
+// `bond` is deliberately ABSENT from this file as of EG5-3: Migration B (EG5-6)
+// deletes the column. Its removal is oracled by evals/baselines/table-schemas.json
+// and by evolution_tests.rs `eg5_6_schema_rs_declares_no_bond_evolves_to_or_fusion_table`,
+// NOT here — this eval only ever confined WRITES, and an absent column has none.
 //
 // === ORACLE: CONFINEMENT, NOT REACHABILITY ===
 //
@@ -20,6 +28,27 @@
 //     reducer directly calls (in its own body) any allowlisted writer.
 //     "Direct call only" — no transitivity — avoids re-introducing the battle
 //     false-positive.
+//   Check C — no production fn outside {pub_from_monster, monster_from_instance}
+//     constructs a `Monster { … }` / `MonsterPub { … }` struct LITERAL.
+//     (EG5-3 / plan-review addendum item 3.) Checks A and B only see DOT
+//     assignments (`m.field = …`); a struct literal writes every column at once
+//     with no dot in sight, so `MonsterPub { ..old, trust_tier: Devoted }` inside
+//     a scheduled reducer is invisible to both. Without Check C the four
+//     MonsterPub projections added to GROWTH_FIELDS below (tier / trust_tier /
+//     quality_time_tier / nutrition_pct) would be decorative: production never
+//     dot-writes them at all — `pub_from_monster` builds them in a literal.
+//
+// === ONE-HOP RUST COMPANION TO CHECK B (do not weaken Check B in isolation) ===
+// Check B is deliberately DIRECT-CALL ONLY, which a two-line wrapper defeats.
+// That hole is closed one layer down by the Rust test
+// `eg2_9_no_scheduled_reducer_body_calls_growth_triggers`
+// (in server-module/src/evolution_tests.rs — cited by NAME, not line, because
+// that file grows), which goes ONE HOP further: it
+// collects every fn whose own body calls `accrue_quality_time(`/
+// `check_and_evolve(` and forbids a scheduled reducer from calling any of them
+// (single documented allowlist entry: `write_back_battle_results`). The two
+// gates are a PAIR — a future reader trimming Check B "because it's only
+// direct-call" must account for the companion, and vice versa.
 //
 // GROWTH_WRITERS (the allowlist is intentionally FIXED — adding a NEW growth
 // writer MUST consciously update this list; that is the mechanical enforcement,
@@ -29,19 +58,23 @@
 // apply_evolution, essence_train, consume_crystalized_essence, check_and_evolve,
 // grant_essence.
 //
-// GROWTH_FIELDS (30 named fields, no glob — enumerated per reviewer guidance;
-// EG2/ADR-0175 D6 added the 16 EG1-frozen private Monster columns):
-//   bond, ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack, ev_sp_defense,
-//   stat_hp, stat_attack, stat_defense, stat_speed, stat_sp_attack,
-//   stat_sp_defense, last_care_at_ms, essence_fire..essence_dark (8),
-//   trust_favorable_count, trust_unfavorable_count,
-//   trust_favorable_battle_day_epoch, quality_time_ticks_total,
-//   quality_time_accum_ms, quality_time_window_ms, quality_time_window_start_ms,
-//   last_essence_train_at_ms
+// GROWTH_FIELDS (35 named fields, no glob — enumerated per reviewer guidance;
+// EG2/ADR-0175 D6 added the 16 EG1-frozen private Monster columns; EG5-3 LOSES
+// `bond` and GAINS `level`/`xp` + the four MonsterPub projections):
+//   level, xp, ev_hp, ev_attack, ev_defense, ev_speed, ev_sp_attack,
+//   ev_sp_defense, stat_hp, stat_attack, stat_defense, stat_speed,
+//   stat_sp_attack, stat_sp_defense, last_care_at_ms,
+//   essence_fire..essence_dark (8), trust_favorable_count,
+//   trust_unfavorable_count, trust_favorable_battle_day_epoch,
+//   quality_time_ticks_total, quality_time_accum_ms, quality_time_window_ms,
+//   quality_time_window_start_ms, last_essence_train_at_ms,
+//   tier, trust_tier, quality_time_tier, nutrition_pct  ← MonsterPub projections
 //
 // === ABSENCE-IS-FAIL ===
 // If the full-source growth-write count is 0 → FAIL (scan likely broken).
 // If zero scheduled reducers found → FAIL (movement_tick must exist; broken).
+// If ZERO `Monster {`/`MonsterPub {` literals are found anywhere in the scanned
+// production source → FAIL (marshal.rs owns two; Check C's scanner is broken).
 //
 // === ReDoS-SAFE CONVENTION ===
 // All pattern matching uses String.indexOf() or literal /regex/ — NO
@@ -52,15 +85,25 @@
 // === KNOWN LIMITATIONS (documented scope, no impact on today's source) ===
 // - Scans only the canonical `#[spacetimedb::table(... scheduled(...))]` form;
 //   non-canonical attr forms or re-exports are out of scope.
-// - Source is comment-stripped but NOT string-literal-stripped: a `.bond =`
-//   inside a Rust string literal is a theoretical false-positive (none exist today).
+// - For Checks A/B the source is comment-stripped but NOT string-literal-
+//   stripped: a `.essence_fire =` inside a Rust string literal is a theoretical
+//   false-positive (none exist today). Check C DOES blank string literals first
+//   (`blankStringLiterals`), because error/log prose naming a row type is a
+//   realistic shape and a false RED there would be paid every slice.
+// - Check C recognises the `TypeName {` construction shape only. It deliberately
+//   does NOT flag `-> Monster {` (return-type position), `pub struct Monster {`
+//   / `impl|for|enum|union|trait Monster {` (definition position) or
+//   `BattleMonster {` (left word boundary). A construction written through a
+//   type ALIAS (`type Row = MonsterPub; Row { .. }`) is out of scope — none
+//   exists, and the alias itself would have to be introduced consciously.
 // - Check A matches the enclosing fn by NAME; a trait-impl method sharing an
 //   allowlisted name (e.g. `impl X { fn care() {..} }`) would be treated as
 //   allowlisted. This is out of scope: SpacetimeDB reducers are the real call
 //   boundary (declared via `#[spacetimedb::reducer]`), not trait methods, and
 //   no `impl` blocks write growth fields today.
 // - Compound assignment IS covered (`+= -= *= /= |= &= ^= %=`) — the natural
-//   idle-accrual form `m.bond += 1` is detected, not just `m.bond = ...`.
+//   idle-accrual form `m.essence_fire += 1` is detected, not just
+//   `m.essence_fire = ...`.
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 
@@ -148,7 +191,7 @@ export function readServerModuleSources(dir) {
 // ---------------------------------------------------------------------------
 
 /**
- * The 30 growth fields — enumerated explicitly (no glob), per reviewer guidance.
+ * The 35 growth fields — enumerated explicitly (no glob), per reviewer guidance.
  * Any assignment to `.<field> = <non-=>` in non-allowlisted code is a violation.
  *
  * EG2 (ADR-0175 D6): the 16 EG1-frozen private Monster columns (8 essence pools,
@@ -156,9 +199,33 @@ export function readServerModuleSources(dir) {
  * growth resources from the moment they exist — deferring them to EG5-3 would
  * leave Check A blind to the new gates for the whole EG2->EG5 window. The
  * pub-side projections and the `bond` removal stay EG5-3's.
+ *
+ * EG5-3 (spec §2 EG5-3) completes that list:
+ *   - LOSES `bond`. Migration B (EG5-6) deletes the column from `Monster` and
+ *     `MonsterPub` outright, so there is nothing left to confine. It is dropped
+ *     HERE, one task ahead of the schema edit, on purpose: with `bond` still in
+ *     this list the last surviving dot-write (`raising.rs` `care`) is an
+ *     allowlisted-writer write and Check A is green either way, so removing it
+ *     early is behaviour-neutral and keeps this file from needing a second edit
+ *     inside the same PR. The COLUMN's removal is oracled by the pre-edited
+ *     `evals/baselines/table-schemas.json` + the Rust tooth
+ *     `eg5_6_schema_rs_declares_no_bond_evolves_to_or_fusion_table`, NOT by this
+ *     eval — do not read `bond`'s absence here as permission to keep the column.
+ *   - GAINS the four MonsterPub projections `tier` / `trust_tier` /
+ *     `quality_time_tier` / `nutrition_pct`. Production writes these ONLY inside
+ *     `pub_from_monster`'s struct literal (no dot-assignment anywhere), so on
+ *     their own they would be inert here — Check C is what makes them bite, by
+ *     banning the ad-hoc literal that is the only other way to set them.
+ *   - GAINS `level` and `xp` (plan-review addendum item 4): the two most
+ *     evolution-consequential growth stats. `min_level` is an EvolutionPath gate,
+ *     so a timer that nudges `m.level` is an idle-accrual path straight into an
+ *     auto-evolution. Their only production dot-writers are `apply_evolution`
+ *     (evolution.rs:145-146) and `write_back_battle_results` (battle.rs:1212-1213)
+ *     — both already allowlisted, so this is a pure tightening.
  */
 export const GROWTH_FIELDS = [
-  'bond',
+  'level',
+  'xp',
   'ev_hp',
   'ev_attack',
   'ev_defense',
@@ -188,6 +255,14 @@ export const GROWTH_FIELDS = [
   'quality_time_window_ms',
   'quality_time_window_start_ms',
   'last_essence_train_at_ms',
+  // --- MonsterPub projections (EG5-3). Derived server-side inside
+  // `pub_from_monster`; no production dot-write exists. Listed so a HAND-ROLLED
+  // dot-write (`p.trust_tier = TrustTier::Devoted;`) in a scheduled reducer is a
+  // Check A violation, and constructed-by-literal forgery is a Check C one.
+  'tier',
+  'trust_tier',
+  'quality_time_tier',
+  'nutrition_pct',
 ];
 
 /**
@@ -426,6 +501,187 @@ export function findScheduledReducers(src) {
 }
 
 // ---------------------------------------------------------------------------
+// Check C primitives — struct-literal construction of the two row types.
+// ---------------------------------------------------------------------------
+
+/**
+ * The row types whose construction Check C confines.
+ * @type {string[]}
+ */
+export const ROW_TYPES = ['Monster', 'MonsterPub'];
+
+/**
+ * The ONLY production functions permitted to build a `Monster`/`MonsterPub`
+ * struct literal. VERIFIED against the live tree before being written down (the
+ * plan named two; a grep of server-module/src for `Monster {`/`MonsterPub {`
+ * outside *_tests.rs found exactly these two construction sites):
+ *   - marshal.rs `monster_from_instance` → the ONE `Monster { … }`
+ *   - marshal.rs `pub_from_monster`      → the ONE `MonsterPub { … }`
+ * (The other token hits in that grep are non-constructions: `-> Monster {` /
+ * `-> MonsterPub {` return types, `pub struct Monster {`/`pub struct MonsterPub {`
+ * definitions in schema.rs, and `Ok(BattleMonster {` — all excluded by the
+ * scanner's own discriminators, not by this list.)
+ *
+ * Adding a name here must be a CONSCIOUS act with an argument, exactly like
+ * GROWTH_WRITERS: a second construction point is a second place the derived
+ * `trust_tier`/`quality_time_tier`/`nutrition_pct` values can be forged.
+ */
+export const ROW_LITERAL_BUILDERS = ['pub_from_monster', 'monster_from_instance'];
+
+/**
+ * Blank the CONTENT of Rust string literals (plain, byte `b"…"`, raw `r"…"` /
+ * `r#"…"#` / `br#"…"#`), leaving every other byte at its original offset so
+ * positions stay comparable with `enclosingFnName`.
+ *
+ * Char literals are PRESERVED but consumed as a unit, so a `'"'` char literal
+ * can never open a phantom string and hollow out the rest of the file — the
+ * exact misalignment `server-module/src/movement_tests.rs` records. A `'` with
+ * no closing `'` within four chars is a lifetime tick (`&'a str`), left alone.
+ *
+ * Char-walk only — NO new RegExp(non-literal).
+ *
+ * @param {string} src Comment-stripped Rust source.
+ * @returns {string} Same length, string-literal contents replaced by spaces.
+ */
+export function blankStringLiterals(src) {
+  const out = src.split('');
+  const isIdent = (ch) => ch !== undefined && /[A-Za-z0-9_]/.test(ch);
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+
+    // --- char literal (kept verbatim, consumed as one unit) ---
+    if (c === "'") {
+      const escaped = src[i + 1] === '\\';
+      let end = -1;
+      for (let k = escaped ? 3 : 2; k <= 4; k++) {
+        if (src[i + k] === "'") {
+          end = i + k + 1;
+          break;
+        }
+      }
+      if (end !== -1) {
+        i = end;
+        continue;
+      }
+      i++; // lifetime tick
+      continue;
+    }
+
+    // --- raw string: r"…" / r#"…"# / br#"…"# (b/r prefix must not be part of
+    //     a longer identifier, so `ctx.db` and `row` are never openers) ---
+    let p = i;
+    if ((c === 'b' || c === 'r') && !isIdent(src[i - 1])) {
+      if (c === 'b' && (src[i + 1] === '"' || src[i + 1] === 'r')) p = i + 1;
+      if (src[p] === 'r') {
+        let hashes = 0;
+        while (src[p + 1 + hashes] === '#') hashes++;
+        if (src[p + 1 + hashes] === '"') {
+          const closer = `"${'#'.repeat(hashes)}`;
+          const hit = src.indexOf(closer, p + 2 + hashes);
+          const stop = hit === -1 ? src.length : hit;
+          for (let k = p + 2 + hashes; k < stop; k++) out[k] = ' ';
+          i = hit === -1 ? src.length : hit + closer.length;
+          continue;
+        }
+      }
+      // Keep `p` advanced ONLY for a byte string `b"…"` (the plain-string walk
+      // below then starts at the quote); otherwise this `b`/`r` was an ordinary
+      // identifier char and must be re-processed as such.
+      if (!(p === i + 1 && src[p] === '"')) p = i;
+    }
+
+    // --- plain (or byte) string ---
+    if (src[p] === '"') {
+      let j = p + 1;
+      while (j < src.length) {
+        if (src[j] === '\\') {
+          out[j] = ' ';
+          if (j + 1 < src.length) out[j + 1] = ' ';
+          j += 2;
+          continue;
+        }
+        if (src[j] === '"') break;
+        out[j] = ' ';
+        j++;
+      }
+      i = j < src.length ? j + 1 : src.length;
+      continue;
+    }
+
+    i++;
+  }
+  return out.join('');
+}
+
+/**
+ * Find every `Monster { … }` / `MonsterPub { … }` struct-literal CONSTRUCTION.
+ *
+ * A construction is the bare type name, word-bounded on BOTH sides, whose next
+ * non-whitespace char is `{`, and which is not in a return-type or definition
+ * position. indexOf + char inspection only — NO new RegExp(non-literal).
+ *
+ * The three discriminators, and what each one is for:
+ *   LEFT boundary  — `Ok(BattleMonster {` must not read as `Monster {`.
+ *                    A path qualifier (`crate::schema::MonsterPub {`) still
+ *                    matches: `:` is not an identifier char, and a qualified
+ *                    literal is exactly as much of a forgery as a bare one.
+ *   RIGHT boundary — scanning for `Monster` must not match inside `MonsterPub`
+ *                    (`P` is an identifier char) or `MonsterInstance`.
+ *   POSITION       — `-> Monster {` opens a FUNCTION body, and
+ *                    `pub struct Monster {` / `impl … Monster {` opens a
+ *                    DEFINITION; neither builds a value. Both are real shapes in
+ *                    marshal.rs / schema.rs today, so without this the check
+ *                    would be permanently, uselessly red.
+ *
+ * @param {string} src Comment-stripped AND string-blanked Rust source.
+ * @returns {Array<{type:string, pos:number}>}
+ */
+export function findRowStructLiterals(src) {
+  const results = [];
+  // Keywords that make the following `Name {` a definition, not a value.
+  const defKeywords = ['struct', 'impl', 'for', 'enum', 'union', 'trait'];
+
+  for (const type of ROW_TYPES) {
+    let pos = 0;
+    while (pos < src.length) {
+      const hit = src.indexOf(type, pos);
+      if (hit === -1) break;
+      pos = hit + type.length;
+
+      // LEFT word boundary.
+      if (hit > 0 && /[A-Za-z0-9_]/.test(src[hit - 1])) continue;
+      // RIGHT word boundary.
+      const after = hit + type.length;
+      if (after < src.length && /[A-Za-z0-9_]/.test(src[after])) continue;
+
+      // Next non-whitespace char must be `{`.
+      let j = after;
+      while (
+        j < src.length &&
+        (src[j] === ' ' || src[j] === '\t' || src[j] === '\n' || src[j] === '\r')
+      )
+        j++;
+      if (src[j] !== '{') continue;
+
+      // POSITION: walk back over whitespace and inspect what precedes the name.
+      let k = hit - 1;
+      while (k >= 0 && (src[k] === ' ' || src[k] === '\t' || src[k] === '\n' || src[k] === '\r'))
+        k--;
+      if (k >= 1 && src[k] === '>' && src[k - 1] === '-') continue; // `-> Monster {`
+      const wordEnd = k + 1;
+      let wordStart = wordEnd;
+      while (wordStart > 0 && /[A-Za-z0-9_]/.test(src[wordStart - 1])) wordStart--;
+      const precedingWord = src.slice(wordStart, wordEnd);
+      if (defKeywords.indexOf(precedingWord) !== -1) continue;
+
+      results.push({ type, pos: hit });
+    }
+  }
+  return results;
+}
+
+// ---------------------------------------------------------------------------
 // Named check functions (exported for unit-testability).
 // Each returns null on pass, or a non-empty string describing the violation.
 // ---------------------------------------------------------------------------
@@ -438,10 +694,14 @@ export function findScheduledReducers(src) {
  * the scan is likely broken (care/train/write_back_battle_results must exist).
  *
  * Kills:
- *   - A new idle-accrual reducer writing `.bond =` inline (write in non-allowlisted fn).
+ *   - A new idle-accrual reducer writing `.essence_fire =` inline (write in a
+ *     non-allowlisted fn).
  *   - A helper fn (`apply_idle_growth`) called by the scheduled reducer but itself
  *     containing `.ev_hp =` — the helper is not allowlisted; Check A catches the
  *     write site directly regardless of who calls it.
+ *   - A scheduled reducer hand-writing a DERIVED public projection
+ *     (`p.trust_tier = TrustTier::Devoted;`) to forge an evolution gate without
+ *     touching the private counters it is supposed to be derived from.
  *
  * @param {string} src Comment-stripped source (no _tests.rs files).
  * @returns {string|null}
@@ -477,8 +737,9 @@ export function checkConfinement(src) {
       return (
         `growth-field write to '.${field}' found inside fn '${fn_name}' ` +
         `which is NOT in the GROWTH_WRITERS allowlist [${GROWTH_WRITERS.join(', ')}]; ` +
-        'all bond/EV/stat writes must be confined to intent-path reducers or ' +
-        'write_back_battle_results — idle/scheduled accrual is forbidden (M9 spec §3)'
+        'all EV/stat/level/xp/essence/Trust/Quality-Time writes must be confined ' +
+        'to intent-path reducers or write_back_battle_results — idle/scheduled ' +
+        'accrual is forbidden (M9 spec §3)'
       );
     }
   }
@@ -566,6 +827,77 @@ export function checkNoScheduledGrowth(src) {
   return null;
 }
 
+/**
+ * Check C — Row-literal confinement (EG5-3, plan-review addendum item 3).
+ *
+ * Every `Monster { … }` / `MonsterPub { … }` struct-literal construction in the
+ * scanned production source must sit inside a ROW_LITERAL_BUILDERS function.
+ *
+ * WHY THIS EXISTS: Checks A and B are dot-assignment scanners. A struct literal
+ * sets every column at once and contains no `.field =` anywhere, so
+ *
+ *     let forged = MonsterPub { ..old, trust_tier: TrustTier::Devoted };
+ *     ctx.db.monster_pub().monster_id().update(forged);
+ *
+ * inside a scheduled reducer is completely invisible to Check A — while doing
+ * exactly the thing the eval bans. It is also the shape that makes the four
+ * MonsterPub projections in GROWTH_FIELDS worth listing at all: production sets
+ * them ONLY in `pub_from_monster`'s literal, so with Check A alone those four
+ * entries could never fire on anything.
+ *
+ * ABSENCE-IS-FAIL: zero literals found anywhere → error. marshal.rs owns exactly
+ * two (`monster_from_instance`, `pub_from_monster`); finding none means the
+ * scanner (or the string-blanker feeding it) has rotted, and a rotted scanner
+ * must never read as "clean".
+ *
+ * Kills:
+ *   - A scheduled reducer forging a public row by literal (see above).
+ *   - A second, drifting projection helper that rebuilds `MonsterPub` by hand
+ *     instead of calling `pub_from_monster` — the derive-on-write SSOT bypass
+ *     (ADR-0016) that the A3 Rust sibling scans for from the other direction.
+ *   - A scanner so eager it flags `-> Monster {` or `pub struct Monster {`
+ *     (it would be red on a correct tree and get deleted).
+ *
+ * @param {string} src Comment-stripped source (no _tests.rs files).
+ * @returns {string|null}
+ */
+export function checkNoAdHocRowLiterals(src) {
+  const blanked = blankStringLiterals(src);
+  const literals = findRowStructLiterals(blanked);
+
+  if (literals.length === 0) {
+    return (
+      'no `Monster { … }` / `MonsterPub { … }` struct literals found in the full ' +
+      'source — marshal.rs `monster_from_instance` and `pub_from_monster` each ' +
+      'build one; scan is likely broken (absence-is-FAIL, never a vacuous pass)'
+    );
+  }
+
+  for (const { type, pos } of literals) {
+    const fn_name = enclosingFnName(blanked, pos);
+    if (fn_name === null) {
+      return (
+        `a \`${type} { … }\` struct literal at position ${pos} is not inside any ` +
+        'function — a row built at module scope (const/static) escapes every ' +
+        'confinement rule this eval has; resolve it or fix the parser'
+      );
+    }
+    if (ROW_LITERAL_BUILDERS.indexOf(fn_name) === -1) {
+      return (
+        `a \`${type} { … }\` struct literal is constructed inside fn '${fn_name}', ` +
+        `which is NOT in the ROW_LITERAL_BUILDERS allowlist ` +
+        `[${ROW_LITERAL_BUILDERS.join(', ')}]; building a row by literal writes ` +
+        'every growth column at once WITHOUT a single `.field =` for Check A to ' +
+        'see, and forges the derived tier/trust_tier/quality_time_tier/' +
+        'nutrition_pct values that `pub_from_monster` exists to derive ' +
+        '(ADR-0016 derive-on-write, M9 spec §2 active-only)'
+      );
+    }
+  }
+
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Proof-of-teeth fixtures.
 // Each BAD fixture MUST be flagged by the named check; each GOOD must pass.
@@ -575,20 +907,30 @@ export function checkNoScheduledGrowth(src) {
 // --- BAD fixtures ---
 
 /**
- * BAD_SCHEDULED_INLINE_BOND: a scheduled reducer that writes `.bond =` inline.
- * Check A must flag it: the write is in non-allowlisted fn `tick_accrue_bond`.
- * Kills: "a new scheduled timer reducer writes bond directly, not through care".
+ * BAD_SCHEDULED_INLINE_ESSENCE: a scheduled reducer that writes `.essence_fire =`
+ * inline. Check A must flag it: the write is in non-allowlisted fn
+ * `tick_accrue_essence`.
+ *
+ * EG5-3 RE-POINT: this fixture used to accrue `bond`. `bond` leaves GROWTH_FIELDS
+ * in this slice (Migration B deletes the column), so a bond-based exemplar would
+ * quietly stop biting and the tooth would pass for the wrong reason — the exact
+ * silent-decay failure a re-point exists to prevent. Essence is the live
+ * equivalent: it is a banked evolution currency, so a timer that trickles it is
+ * precisely the AFK-farming vector.
+ *
+ * Kills: "a new scheduled timer reducer accrues an evolution currency directly,
+ * not through an intent reducer".
  */
-const BAD_SCHEDULED_INLINE_BOND = `
-#[spacetimedb::table(name = bond_tick_schedule, scheduled(tick_accrue_bond))]
-pub struct BondTickSchedule {
+const BAD_SCHEDULED_INLINE_ESSENCE = `
+#[spacetimedb::table(name = essence_tick_schedule, scheduled(tick_accrue_essence))]
+pub struct EssenceTickSchedule {
     #[primary_key] #[auto_inc] pub id: u64,
     pub scheduled_at: ScheduleAt,
 }
 
-pub fn tick_accrue_bond(ctx: &ReducerContext, sched: BondTickSchedule) -> Result<(), String> {
+pub fn tick_accrue_essence(ctx: &ReducerContext, sched: EssenceTickSchedule) -> Result<(), String> {
     for mut m in ctx.db.monster().iter() {
-        m.bond = m.bond.saturating_add(1);
+        m.essence_fire = m.essence_fire.saturating_add(1);
         ctx.db.monster().monster_id().update(m);
     }
     Ok(())
@@ -596,12 +938,19 @@ pub fn tick_accrue_bond(ctx: &ReducerContext, sched: BondTickSchedule) -> Result
 `;
 
 /**
- * BAD_SCHEDULED_COMPOUND_BOND: a scheduled reducer that uses COMPOUND assignment
- * `m.bond += 1` (read-modify-write) inline — the most natural way to express idle
- * accrual. Check A must flag it: the write is in non-allowlisted fn `creep_tick`.
+ * BAD_SCHEDULED_COMPOUND_TRUST: a scheduled reducer that uses COMPOUND assignment
+ * `m.trust_favorable_count += 1` (read-modify-write) inline — the most natural
+ * way to express idle accrual. Check A must flag it: the write is in
+ * non-allowlisted fn `creep_tick`.
+ *
+ * EG5-3 RE-POINT: was `m.bond += 1` (see above for why bond can no longer carry a
+ * tooth). Trust's favorable counter is the field `care` now increments and a
+ * direct EvolutionPath gate input, so the substitution keeps the exemplar
+ * threat-realistic rather than merely compiling.
+ *
  * Kills: "a `+=` accrual evades a scan that only matches the plain `=` form".
  */
-const BAD_SCHEDULED_COMPOUND_BOND = `
+const BAD_SCHEDULED_COMPOUND_TRUST = `
 #[spacetimedb::table(name = creep_schedule, scheduled(creep_tick))]
 pub struct CreepSchedule {
     #[primary_key] #[auto_inc] pub id: u64,
@@ -610,8 +959,73 @@ pub struct CreepSchedule {
 
 pub fn creep_tick(ctx: &ReducerContext, sched: CreepSchedule) -> Result<(), String> {
     for mut m in ctx.db.monster().iter() {
-        m.bond += 1;
+        m.trust_favorable_count += 1;
         ctx.db.monster().monster_id().update(m);
+    }
+    Ok(())
+}
+`;
+
+/**
+ * BAD_SCHEDULED_PUB_TIER_WRITE (NEW, EG5-3): a scheduled reducer that DOT-WRITES
+ * a derived MonsterPub projection — `p.trust_tier = …` and `p.tier = …` — on the
+ * public row, without touching the private counters those values are derived
+ * from. Check A must flag it: the writes are in non-allowlisted fn
+ * `tick_promote_tiers`.
+ *
+ * This is the ANTI-VACUITY fixture for the four projections EG5-3 adds to
+ * GROWTH_FIELDS. Production never dot-writes them (they are built inside
+ * `pub_from_monster`'s struct literal), so without this fixture those four
+ * entries would be untested decoration and a later reader could delete them
+ * believing they were never load-bearing.
+ *
+ * Kills: "a timer promotes the PUBLIC evolution-gate inputs directly — the EG4
+ * client's requirements panel and the server's own gate both read tier /
+ * trust_tier, so forging them AFK unlocks evolutions with no play at all".
+ */
+const BAD_SCHEDULED_PUB_TIER_WRITE = `
+#[spacetimedb::table(name = tier_tick_schedule, scheduled(tick_promote_tiers))]
+pub struct TierTickSchedule {
+    #[primary_key] #[auto_inc] pub id: u64,
+    pub scheduled_at: ScheduleAt,
+}
+
+pub fn tick_promote_tiers(ctx: &ReducerContext, sched: TierTickSchedule) -> Result<(), String> {
+    for mut p in ctx.db.monster_pub().iter() {
+        p.trust_tier = TrustTier::Devoted;
+        p.quality_time_tier = 3;
+        ctx.db.monster_pub().monster_id().update(p);
+    }
+    Ok(())
+}
+`;
+
+/**
+ * BAD_SCHEDULED_PUB_LITERAL (NEW, EG5-3 / addendum item 3): a scheduled reducer
+ * that forges the public row by STRUCT LITERAL with functional-update syntax.
+ * There is not one `.field =` in the whole reducer, so Check A sees nothing and
+ * Check B sees no call to an allowlisted writer — Check C is the only gate that
+ * can flag it, and it must name `tick_forge_pub_rows`.
+ *
+ * Kills: "the dot-assignment blindness — an idle-accrual reducer that rebuilds
+ * the row instead of mutating it walks straight past Checks A and B".
+ */
+const BAD_SCHEDULED_PUB_LITERAL = `
+#[spacetimedb::table(name = forge_tick_schedule, scheduled(tick_forge_pub_rows))]
+pub struct ForgeTickSchedule {
+    #[primary_key] #[auto_inc] pub id: u64,
+    pub scheduled_at: ScheduleAt,
+}
+
+pub fn tick_forge_pub_rows(ctx: &ReducerContext, sched: ForgeTickSchedule) -> Result<(), String> {
+    for old in ctx.db.monster_pub().iter() {
+        let forged = MonsterPub {
+            trust_tier: TrustTier::Devoted,
+            quality_time_tier: 3,
+            tier: old.tier.saturating_add(1),
+            ..old
+        };
+        ctx.db.monster_pub().monster_id().update(forged);
     }
     Ok(())
 }
@@ -690,8 +1104,19 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
 `;
 
 /**
- * GOOD_INTENT_WRITER: an allowlisted `care` fn that writes `.bond =` and
- * `.last_care_at_ms =`. Check A must pass (growth write inside allowlisted fn).
+ * GOOD_INTENT_WRITER: the allowlisted `care` reducer in its POST-MIGRATION-B
+ * shape (EG5-6) — no `bond` read, no `bond` write, `evaluate_care` reduced to the
+ * cooldown-only `(last_care_at_ms, now) -> Result<(), String>` seam, the live
+ * Trust-favorable increment kept, and the two-argument `pub_from_monster(&m,
+ * tier)` (EG1-8) with the tier copied forward from the existing public row.
+ * Check A must pass (both growth writes are inside an allowlisted fn) and Check C
+ * must pass (the projection goes through the helper, no literal).
+ *
+ * The fixture is deliberately kept FAITHFUL to what production will look like
+ * after the specialist lands Migration B, per the fixture-fidelity convention: a
+ * GOOD fixture that no longer resembles the code it vouches for stops being
+ * evidence that the checker tolerates the real thing.
+ *
  * Kills: "false-positive on the legitimate care reducer".
  */
 const GOOD_INTENT_WRITER = `
@@ -701,10 +1126,13 @@ pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
     };
     require_owner(ctx, "care", m.owner_identity)?;
     let now = now_ms(ctx);
-    let new_bond = evaluate_care(m.bond, m.last_care_at_ms, now)?;
-    m.bond = new_bond;
+    evaluate_care(m.last_care_at_ms, now)?;
     m.last_care_at_ms = now;
-    let pub_row = pub_from_monster(&m);
+    m.trust_favorable_count = m.trust_favorable_count.saturating_add(1);
+    let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(monster_id) else {
+        return Err("monster_pub row missing".to_string());
+    };
+    let pub_row = pub_from_monster(&m, existing_pub.tier);
     ctx.db.monster().monster_id().update(m);
     ctx.db.monster_pub().monster_id().update(pub_row);
     Ok(())
@@ -712,23 +1140,93 @@ pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
 `;
 
 /**
- * GOOD_COMPARISON_NOT_WRITE: a NON-allowlisted fn containing `.bond ==` (a
- * comparison, not an assignment). Check A must pass — the disambiguation must
- * not count `.bond ==` as a growth-field write.
- * Kills: "an impl that counts comparisons as writes would WRONGLY flag this
- * function and produce a false-positive on any fn that reads bond for a guard".
+ * GOOD_COMPARISON_NOT_WRITE: a NON-allowlisted fn that only COMPARES growth
+ * fields — `.essence_fire ==`, `.trust_favorable_count !=`, `.ev_hp >=`. Check A
+ * must pass: none of these is an assignment.
+ *
+ * EG5-3 RE-POINT: was `.bond ==`. Since `bond` is no longer in GROWTH_FIELDS, a
+ * bond comparison is not a field this scanner even looks at, so the fixture would
+ * have proved nothing at all — vacuously green. Every comparison here is now on a
+ * LIVE growth field, which is what makes the "comparison is not a write"
+ * disambiguation actually exercised.
+ *
+ * Kills: "an impl that counts `==`/`!=`/`>=` as writes would WRONGLY flag this
+ * function and produce a false-positive on every guard that READS an essence /
+ * Trust / EV value to make a decision".
  */
 const GOOD_COMPARISON_NOT_WRITE = `
-const MAX_BOND: u8 = 255;
+const MAX_ESSENCE: u32 = 1000;
 
 fn some_display_helper(m: &Monster) -> &str {
-    if m.bond == MAX_BOND {
-        return "max bond!";
+    if m.essence_fire == MAX_ESSENCE {
+        return "fire-saturated!";
+    }
+    if m.trust_favorable_count != 0 {
+        return "trusted";
     }
     if m.ev_hp >= 100 {
         return "trained";
     }
     "normal"
+}
+`;
+
+/**
+ * GOOD_ROW_PROJECTION_HELPERS (NEW, EG5-3): the two allowlisted builders in their
+ * real shape, surrounded by every non-construction token position that exists in
+ * the live tree. Check C must pass, and `findRowStructLiterals` must return
+ * EXACTLY the two real constructions — not zero (a scanner whose discriminators
+ * swallow everything is indistinguishable from a clean tree, and absence-is-fail
+ * is the only thing standing between that and a vacuous green) and not four (the
+ * two `->` return-type positions must not be double-counted).
+ *
+ * The traps, and which wrong scanner each kills:
+ *   `) -> Monster {`            → a scanner that ignores return-type position is
+ *                                 permanently red on marshal.rs:57 and gets deleted.
+ *   `pub struct MonsterPub {`   → same, for schema.rs:311.
+ *   `Ok(BattleMonster {`        → a scanner without a LEFT word boundary reads
+ *                                 `Monster {` out of `BattleMonster {`.
+ *   `Vec<MonsterPub>` / `&Monster)` → type positions are mentions, not values.
+ *   the error string mentioning `MonsterPub {` → a scanner that does not blank
+ *                                 string literals flags a log message.
+ */
+const GOOD_ROW_PROJECTION_HELPERS = `
+#[spacetimedb::table(name = monster_pub, public)]
+pub struct MonsterPub {
+    #[primary_key] pub monster_id: u64,
+    pub tier: u8,
+}
+
+pub(crate) fn monster_from_instance(
+    owner: Identity,
+    inst: &MonsterInstance,
+    party_slot: u8,
+) -> Monster {
+    Monster {
+        monster_id: 0,
+        owner_identity: owner,
+        level: inst.level.as_u8(),
+        party_slot,
+    }
+}
+
+pub(crate) fn pub_from_monster(m: &Monster, tier: u8) -> MonsterPub {
+    MonsterPub {
+        monster_id: m.monster_id,
+        tier,
+        trust_tier: game_core::trust_tier_of(m.trust_favorable_count, m.trust_unfavorable_count),
+    }
+}
+
+pub(crate) fn wild_battle_monster(species: &SpeciesRow) -> Result<BattleMonster, String> {
+    Ok(BattleMonster {
+        species_id: species.id,
+    })
+}
+
+fn describe(rows: &Vec<MonsterPub>, m: &Monster) -> String {
+    let _ = m;
+    format!("expected {} rows built via MonsterPub {{ .. }} projection", rows.len())
 }
 `;
 
@@ -738,28 +1236,65 @@ fn some_display_helper(m: &Monster) -> &str {
 // ---------------------------------------------------------------------------
 
 function runTeeth() {
-  // --- Tooth 1: BAD_SCHEDULED_INLINE_BOND → Check A must flag ---
+  // --- Tooth 1: BAD_SCHEDULED_INLINE_ESSENCE → Check A must flag ---
   {
-    const src = stripRustComments(BAD_SCHEDULED_INLINE_BOND);
+    const src = stripRustComments(BAD_SCHEDULED_INLINE_ESSENCE);
     const err = checkConfinement(src);
     if (!err) {
-      return 'TEETH tooth-1: BAD_SCHEDULED_INLINE_BOND (tick_accrue_bond writes .bond=) was NOT flagged by checkConfinement — Check A is broken';
+      return 'TEETH tooth-1: BAD_SCHEDULED_INLINE_ESSENCE (tick_accrue_essence writes .essence_fire=) was NOT flagged by checkConfinement — Check A is broken';
     }
     // Also confirm the error names the right offending fn.
-    if (err.indexOf('tick_accrue_bond') === -1) {
-      return `TEETH tooth-1: checkConfinement flagged BAD_SCHEDULED_INLINE_BOND but did not name 'tick_accrue_bond' in the error; got: ${err}`;
+    if (err.indexOf('tick_accrue_essence') === -1) {
+      return `TEETH tooth-1: checkConfinement flagged BAD_SCHEDULED_INLINE_ESSENCE but did not name 'tick_accrue_essence' in the error; got: ${err}`;
+    }
+    if (err.indexOf('essence_fire') === -1) {
+      return `TEETH tooth-1: checkConfinement flagged BAD_SCHEDULED_INLINE_ESSENCE but did not name the offending field 'essence_fire'; got: ${err}`;
     }
   }
 
-  // --- Tooth 1b: BAD_SCHEDULED_COMPOUND_BOND → Check A must flag the `+=` write ---
+  // --- Tooth 1b: BAD_SCHEDULED_COMPOUND_TRUST → Check A must flag the `+=` write ---
   {
-    const src = stripRustComments(BAD_SCHEDULED_COMPOUND_BOND);
+    const src = stripRustComments(BAD_SCHEDULED_COMPOUND_TRUST);
     const err = checkConfinement(src);
     if (!err) {
-      return 'TEETH tooth-1b: BAD_SCHEDULED_COMPOUND_BOND (creep_tick does `m.bond += 1`) was NOT flagged by checkConfinement — compound-assignment accrual is not detected';
+      return 'TEETH tooth-1b: BAD_SCHEDULED_COMPOUND_TRUST (creep_tick does `m.trust_favorable_count += 1`) was NOT flagged by checkConfinement — compound-assignment accrual is not detected';
     }
     if (err.indexOf('creep_tick') === -1) {
-      return `TEETH tooth-1b: checkConfinement flagged BAD_SCHEDULED_COMPOUND_BOND but did not name 'creep_tick'; got: ${err}`;
+      return `TEETH tooth-1b: checkConfinement flagged BAD_SCHEDULED_COMPOUND_TRUST but did not name 'creep_tick'; got: ${err}`;
+    }
+  }
+
+  // --- Tooth 1c (NEW, EG5-3): BAD_SCHEDULED_PUB_TIER_WRITE → Check A must flag a
+  //     dot-write to a DERIVED MonsterPub projection. This is the anti-vacuity
+  //     proof for tier/trust_tier/quality_time_tier/nutrition_pct joining
+  //     GROWTH_FIELDS: delete any of those four entries and this tooth goes
+  //     silent, which is exactly what a "these are never written, drop them"
+  //     cleanup would do. ---
+  {
+    const src = stripRustComments(BAD_SCHEDULED_PUB_TIER_WRITE);
+    const err = checkConfinement(src);
+    if (!err) {
+      return 'TEETH tooth-1c: BAD_SCHEDULED_PUB_TIER_WRITE (tick_promote_tiers writes .trust_tier= / .quality_time_tier=) was NOT flagged by checkConfinement — the four MonsterPub projections are missing from GROWTH_FIELDS or Check A cannot see them';
+    }
+    if (err.indexOf('tick_promote_tiers') === -1) {
+      return `TEETH tooth-1c: checkConfinement flagged BAD_SCHEDULED_PUB_TIER_WRITE but did not name 'tick_promote_tiers'; got: ${err}`;
+    }
+    if (err.indexOf('trust_tier') === -1 && err.indexOf('quality_time_tier') === -1) {
+      return `TEETH tooth-1c: checkConfinement flagged BAD_SCHEDULED_PUB_TIER_WRITE but named neither 'trust_tier' nor 'quality_time_tier' as the offending field; got: ${err}`;
+    }
+    // Field-level pin: BOTH projections must be seen as writes, so dropping ONE
+    // of the four new GROWTH_FIELDS entries cannot hide behind the other.
+    const fields = findGrowthWrites(src).map((w) => w.field);
+    if (fields.indexOf('trust_tier') === -1 || fields.indexOf('quality_time_tier') === -1) {
+      return `TEETH tooth-1c: findGrowthWrites must report BOTH 'trust_tier' and 'quality_time_tier' as writes in BAD_SCHEDULED_PUB_TIER_WRITE; got: [${fields.join(', ')}]`;
+    }
+    // Honest split: Check B correctly stays SILENT here — the reducer calls no
+    // allowlisted writer. Asserting that keeps a future "make B catch this too"
+    // rewrite from quietly widening B into the transitive scan that would
+    // re-introduce the write_back_battle_results false positive.
+    const errB = checkNoScheduledGrowth(src);
+    if (errB) {
+      return `TEETH tooth-1c: Check B must NOT fire on BAD_SCHEDULED_PUB_TIER_WRITE (it calls no allowlisted writer); Check A owns this one. Got: ${errB}`;
     }
   }
 
@@ -816,7 +1351,25 @@ function runTeeth() {
     const combined = stripRustComments(`${GOOD_MOVEMENT_TICK}\n${GOOD_INTENT_WRITER}`);
     const errA = checkConfinement(combined);
     if (errA) {
-      return `TEETH tooth-5: GOOD_INTENT_WRITER (care writes .bond= and .last_care_at_ms=) was incorrectly flagged by checkConfinement: ${errA}`;
+      return `TEETH tooth-5: GOOD_INTENT_WRITER (post-Migration-B care writes .last_care_at_ms= and .trust_favorable_count=) was incorrectly flagged by checkConfinement: ${errA}`;
+    }
+    // Non-vacuity: the fixture must actually contain the two growth writes it is
+    // vouching for. A GOOD fixture that accidentally stopped writing anything
+    // would "pass" Check A while proving nothing about the allowlist.
+    const goodFields = findGrowthWrites(stripRustComments(GOOD_INTENT_WRITER)).map((w) => w.field);
+    if (
+      goodFields.indexOf('last_care_at_ms') === -1 ||
+      goodFields.indexOf('trust_favorable_count') === -1
+    ) {
+      return `TEETH tooth-5: GOOD_INTENT_WRITER must contain growth writes to BOTH 'last_care_at_ms' and 'trust_favorable_count' for its pass to mean anything; findGrowthWrites saw: [${goodFields.join(', ')}]`;
+    }
+    // Check C must also tolerate it: `care` projects through pub_from_monster
+    // (two-arg, EG1-8) rather than hand-building the public row.
+    const errC = checkNoAdHocRowLiterals(
+      stripRustComments(`${GOOD_ROW_PROJECTION_HELPERS}\n${GOOD_INTENT_WRITER}`),
+    );
+    if (errC) {
+      return `TEETH tooth-5: GOOD_INTENT_WRITER (projects via pub_from_monster, builds no literal) was incorrectly flagged by checkNoAdHocRowLiterals: ${errC}`;
     }
   }
 
@@ -828,11 +1381,32 @@ function runTeeth() {
     );
     const errA = checkConfinement(combined);
     if (errA) {
-      return `TEETH tooth-6: GOOD_COMPARISON_NOT_WRITE (.bond== is a comparison, not write) was incorrectly flagged by checkConfinement: ${errA}`;
+      return `TEETH tooth-6: GOOD_COMPARISON_NOT_WRITE (.essence_fire== / .trust_favorable_count!= / .ev_hp>= are comparisons, not writes) was incorrectly flagged by checkConfinement: ${errA}`;
+    }
+    // Non-vacuity: the comparisons must be on fields the scanner actually
+    // tracks. If every compared field were untracked (the state `bond` fell into
+    // this slice), this fixture would pass no matter how broken the
+    // write-vs-comparison disambiguation became.
+    let comparesATrackedField = false;
+    for (const f of ['essence_fire', 'trust_favorable_count', 'ev_hp']) {
+      if (GROWTH_FIELDS.indexOf(f) !== -1) comparesATrackedField = true;
+    }
+    if (!comparesATrackedField) {
+      return 'TEETH tooth-6: GOOD_COMPARISON_NOT_WRITE compares no field that is in GROWTH_FIELDS — the fixture is vacuous; re-point it at a live growth field';
+    }
+    // And the comparisons must produce ZERO writes (that is the whole claim).
+    const cmpWrites = findGrowthWrites(stripRustComments(GOOD_COMPARISON_NOT_WRITE));
+    if (cmpWrites.length !== 0) {
+      return `TEETH tooth-6: findGrowthWrites counted ${cmpWrites.length} write(s) in GOOD_COMPARISON_NOT_WRITE (expected 0) — a comparison is being read as an assignment: [${cmpWrites.map((w) => w.field).join(', ')}]`;
     }
   }
 
   // --- Tooth 7: word-boundary — `health_care(` must NOT be flagged as `care(` ---
+  //     (EG5-3: the helper's body was `m.bond`; re-pointed to `m.trust_favorable_count`
+  //     so the fixture prose stays faithful to a post-Migration-B tree. The field
+  //     is inert to Check B either way — it is a READ, and Check B only looks at
+  //     call syntax — so this is a cosmetic re-point, deliberately not dressed up
+  //     as a new tooth.)
   {
     const withWordBoundaryTrap = stripRustComments(`
 #[spacetimedb::table(name = wellness_tick_schedule, scheduled(wellness_tick))]
@@ -841,7 +1415,7 @@ pub struct WellnessTickSchedule {
     pub scheduled_at: ScheduleAt,
 }
 
-fn health_care(m: &Monster) -> u8 { m.bond }
+fn health_care(m: &Monster) -> u32 { m.trust_favorable_count }
 
 pub fn wellness_tick(ctx: &ReducerContext, sched: WellnessTickSchedule) -> Result<(), String> {
     let _ = health_care;
@@ -854,6 +1428,82 @@ pub fn wellness_tick(ctx: &ReducerContext, sched: WellnessTickSchedule) -> Resul
     }
   }
 
+  // --- Tooth 8 (NEW, EG5-3 / addendum item 3): BAD_SCHEDULED_PUB_LITERAL →
+  //     Check C must flag the struct-literal forgery, AND Checks A/B must both
+  //     stay silent on it. The silence is the POINT: it is the measured proof
+  //     that the dot-assignment scanners are blind to this shape, which is the
+  //     whole justification for Check C existing. If a future edit makes A or B
+  //     catch it, this tooth fires and the author has to say so out loud. ---
+  {
+    const src = stripRustComments(BAD_SCHEDULED_PUB_LITERAL);
+
+    const errC = checkNoAdHocRowLiterals(src);
+    if (!errC) {
+      return 'TEETH tooth-8: BAD_SCHEDULED_PUB_LITERAL (tick_forge_pub_rows builds `MonsterPub { ..old, trust_tier: Devoted }`) was NOT flagged by checkNoAdHocRowLiterals — Check C is broken and the four MonsterPub GROWTH_FIELDS entries are decorative';
+    }
+    if (errC.indexOf('tick_forge_pub_rows') === -1) {
+      return `TEETH tooth-8: checkNoAdHocRowLiterals flagged BAD_SCHEDULED_PUB_LITERAL but did not name the offending fn 'tick_forge_pub_rows'; got: ${errC}`;
+    }
+    if (errC.indexOf('MonsterPub') === -1) {
+      return `TEETH tooth-8: checkNoAdHocRowLiterals flagged BAD_SCHEDULED_PUB_LITERAL but did not name the row type 'MonsterPub'; got: ${errC}`;
+    }
+
+    // The measured blindness of A: the fixture contains ZERO dot-assignments to
+    // a growth field, so Check A's only complaint can be absence-is-fail.
+    const forgedWrites = findGrowthWrites(src);
+    if (forgedWrites.length !== 0) {
+      return `TEETH tooth-8: BAD_SCHEDULED_PUB_LITERAL is supposed to contain NO dot-assignment (that is why Check C is needed), but findGrowthWrites saw ${forgedWrites.length}: [${forgedWrites.map((w) => w.field).join(', ')}] — re-write the fixture as a pure literal or this tooth no longer isolates the struct-literal hole`;
+    }
+    // And Check B sees no allowlisted-writer call, so it is silent too.
+    const errB = checkNoScheduledGrowth(src);
+    if (errB) {
+      return `TEETH tooth-8: Check B unexpectedly fired on BAD_SCHEDULED_PUB_LITERAL (${errB}) — the fixture is meant to be invisible to A and B, isolating Check C`;
+    }
+  }
+
+  // --- Tooth 9 (NEW, EG5-3): GOOD_ROW_PROJECTION_HELPERS → Check C must PASS on
+  //     the two legitimate builders, and its scanner must find EXACTLY the two
+  //     real constructions among the surrounding decoy token positions (two
+  //     return types, one struct definition, `Ok(BattleMonster {`, two type
+  //     positions, and one string literal). ---
+  {
+    const src = stripRustComments(GOOD_ROW_PROJECTION_HELPERS);
+
+    const errC = checkNoAdHocRowLiterals(src);
+    if (errC) {
+      return `TEETH tooth-9: GOOD_ROW_PROJECTION_HELPERS (marshal.rs's own two builders + return-type / struct-definition / BattleMonster / Vec<MonsterPub> / string-literal decoys) was incorrectly flagged by checkNoAdHocRowLiterals: ${errC}`;
+    }
+
+    // Exact count — the non-vacuity half. Zero would mean the discriminators
+    // swallowed everything (and absence-is-fail would be the only thing left
+    // standing); more than two would mean a decoy is being counted.
+    const found = findRowStructLiterals(blankStringLiterals(src));
+    if (found.length !== 2) {
+      return `TEETH tooth-9: findRowStructLiterals must see EXACTLY the 2 real constructions in GOOD_ROW_PROJECTION_HELPERS (Monster in monster_from_instance, MonsterPub in pub_from_monster); got ${found.length}: [${found.map((f) => f.type).join(', ')}]`;
+    }
+    const types = found.map((f) => f.type).sort();
+    if (types[0] !== 'Monster' || types[1] !== 'MonsterPub') {
+      return `TEETH tooth-9: the 2 constructions must be one Monster and one MonsterPub; got [${types.join(', ')}]`;
+    }
+    // Attribution: each must resolve to its own builder, not to a neighbour.
+    const blanked = blankStringLiterals(src);
+    for (const { type, pos } of found) {
+      const owner = enclosingFnName(blanked, pos);
+      const expected = type === 'Monster' ? 'monster_from_instance' : 'pub_from_monster';
+      if (owner !== expected) {
+        return `TEETH tooth-9: the \`${type} { … }\` construction resolved to enclosing fn '${owner}', expected '${expected}' — enclosingFnName mis-attributes literals and Check C's allowlist is therefore meaningless`;
+      }
+    }
+
+    // String-literal blanking bites: the `describe` fn's format! string mentions
+    // `MonsterPub {`. Un-blanked, that reads as a THIRD construction sitting in a
+    // NON-allowlisted fn, and Check C goes red on clean code.
+    const unblanked = findRowStructLiterals(src);
+    if (unblanked.length <= found.length) {
+      return `TEETH tooth-9: the string-literal decoy in GOOD_ROW_PROJECTION_HELPERS is not biting — findRowStructLiterals saw ${unblanked.length} construction(s) WITHOUT blanking and ${found.length} WITH it; the fixture must contain a string that a non-blanking scanner would mis-read, or blankStringLiterals is untested`;
+    }
+  }
+
   return null; // all teeth pass
 }
 
@@ -863,7 +1513,7 @@ pub fn wellness_tick(ctx: &ReducerContext, sched: WellnessTickSchedule) -> Resul
 
 export default async function () {
   const name =
-    'no-idle-accrual (M9 §2+§3 + EG2/ADR-0175 D6: growth confined to the intent-path GROWTH_WRITERS allowlist; no scheduled accrual)';
+    'no-idle-accrual (M9 §2+§3 + EG2/ADR-0175 D6 + EG5-3: growth confined to the intent-path GROWTH_WRITERS allowlist; no scheduled accrual; no ad-hoc row literals)';
 
   // Run proofs-of-teeth FIRST — if any tooth fails, return before touching real src.
   const teethError = runTeeth();
@@ -876,23 +1526,33 @@ export default async function () {
 
   const errA = checkConfinement(src);
   if (errA) {
-    return { name, pass: false, detail: errA };
+    return { name, pass: false, detail: `CHECK A: ${errA}` };
   }
 
   const errB = checkNoScheduledGrowth(src);
   if (errB) {
-    return { name, pass: false, detail: errB };
+    return { name, pass: false, detail: `CHECK B: ${errB}` };
+  }
+
+  const errC = checkNoAdHocRowLiterals(src);
+  if (errC) {
+    return { name, pass: false, detail: `CHECK C: ${errC}` };
   }
 
   // Summarize what was verified.
   const writes = findGrowthWrites(src);
   const scheduled = findScheduledReducers(src);
+  const literals = findRowStructLiterals(blankStringLiterals(src));
   return {
     name,
     pass: true,
     detail:
-      `${writes.length} growth-field writes all confined to [${GROWTH_WRITERS.join(', ')}]; ` +
-      `${scheduled.length} scheduled reducer(s) [${scheduled.join(', ')}] verified: ` +
-      'none is/uses an allowlisted growth writer (teeth: 8 verified)',
+      `A: ${writes.length} growth-field writes (${GROWTH_FIELDS.length} tracked fields) all ` +
+      `confined to [${GROWTH_WRITERS.join(', ')}]; ` +
+      `B: ${scheduled.length} scheduled reducer(s) [${scheduled.join(', ')}] — none is/uses an ` +
+      'allowlisted growth writer (one-hop companion: evolution_tests.rs ' +
+      'eg2_9_no_scheduled_reducer_body_calls_growth_triggers); ' +
+      `C: ${literals.length} Monster/MonsterPub struct literal(s) all confined to ` +
+      `[${ROW_LITERAL_BUILDERS.join(', ')}] (teeth: 11 verified)`,
   };
 }

@@ -2075,6 +2075,198 @@ fn eg1_9_evolution_rs_has_no_fusion_or_compute_evolves_to_leftovers() {
     }
 }
 
+/// EG5-6 (Migration B, schema cleanup): `schema.rs` declares NO `bond` column,
+/// NO `evolves_to` column, and NO `Fusion` table struct.
+///
+/// This is the moment `eg1_9`'s own parenthetical expires — that test records
+/// that "the Fusion TABLE struct stays in schema.rs until Migration B". Migration
+/// B is this slice, so the exemption becomes a ban, asserted on the file EG1
+/// deliberately left alone.
+///
+/// TWO ORACLES, ONE MIGRATION. The other half is
+/// `evals/baselines/table-schemas.json`, which `battle-schema-snapshot` compares
+/// BIDIRECTIONALLY against the parsed source; that catches the COLUMN AND TABLE
+/// SET. This test is the file-level lens beside it, and it catches the leftovers
+/// a table-schema parser structurally cannot see:
+///   - a `Fusion` struct that keeps its fields but loses only its table
+///     attribute — invisible to a parser that keys on the attribute, still a live
+///     type holding its `use` sites and its `docs/knowledge` page alive;
+///   - an `evolves_to` that survives outside a column position (a helper, a
+///     re-export, a `#[deprecated]` alias) — the schema snapshot only ever looks
+///     inside table structs.
+///
+/// ABSENCE-IS-FAIL, four ways:
+///   1. an unreadable/missing `schema.rs` is a COMPILE error (`include_str!`) —
+///      strictly louder than any runtime check could be;
+///   2. an implausibly small source means schema.rs was truncated/emptied/moved,
+///      and every `does not contain` below would pass against a hollow haystack;
+///   3. the table scanner must find at least one table, and specifically the
+///      SURVIVING `monster` / `monster_pub` / `battle` / `inventory` tables — a
+///      scanner that found nothing would report a fusion-free file for the wrong
+///      reason;
+///   4. columns that Migration B KEEPS (`pub last_care_at_ms`, `pub party_slot`,
+///      `pub trust_favorable_count`) must still be present, so "no `pub bond`"
+///      is a statement about the field list and not about an empty string.
+///
+/// kills: a Migration B that drops the fusion table attribute but leaves the
+///        struct (schema-snapshot goes green, the dead type does not);
+///        one that removes `Monster.bond` and forgets `MonsterPub.bond` (or
+///        either `evolves_to`) — the halves live in two structs 100 lines apart
+///        and the compiler does not connect them;
+///        one applied to the generated TS bindings only, leaving the Rust source
+///        untouched.
+#[test]
+fn eg5_6_schema_rs_declares_no_bond_evolves_to_or_fusion_table() {
+    const SCHEMA_RS_SOURCE: &str = include_str!("schema.rs");
+    // Fragment-assembled (concat! yields the identical contiguous value at
+    // compile time): several evals parse the CONCATENATED server source for this
+    // attribute marker and do NOT blank string literals, so a contiguous copy in
+    // this file poisons their table scan (measured in EG2: conversation-privacy
+    // lost schema.rs tables to the paren-walk). Same idiom, same reason, as
+    // `scheduled_reducer_names` above.
+    const TABLE_ATTR: &str = concat!("#[spacetimedb::", "table(");
+
+    let stripped = strip_comments_and_strings(SCHEMA_RS_SOURCE);
+
+    // (2) The haystack must be real before any absence claim means anything.
+    // (`strip_comments_and_strings` blanks in place, so this length is schema.rs's
+    // own — a small value means the FILE was truncated/emptied/moved, not that the
+    // stripper misfired; the stripper's own liveness is guard (3).)
+    assert!(
+        stripped.len() > 2000,
+        "vacuity guard(EG5-6): schema.rs is only {} bytes — the file was \
+         truncated, emptied or moved, and every absence assertion below would \
+         pass against a hollow haystack",
+        stripped.len()
+    );
+
+    // Every table declared in schema.rs, read out of the table attribute's
+    // `name = <ident>` argument (paren-walked, so a nested `scheduled(..)` cannot
+    // truncate the argument region).
+    let mut table_names: Vec<String> = Vec::new();
+    let mut pos = 0usize;
+    while let Some(idx) = stripped[pos..].find(TABLE_ATTR) {
+        let attr_start = pos + idx;
+        let args_start = attr_start + TABLE_ATTR.len();
+        let mut depth: usize = 1;
+        let mut attr_end = args_start;
+        for (off, ch) in stripped[args_start..].char_indices() {
+            if ch == '(' {
+                depth += 1;
+            } else if ch == ')' {
+                depth -= 1;
+                if depth == 0 {
+                    attr_end = args_start + off;
+                    break;
+                }
+            }
+        }
+        let attr_args = &stripped[args_start..attr_end];
+        if let Some(name_idx) = attr_args.find("name") {
+            let value: String = attr_args[name_idx + "name".len()..]
+                .trim_start()
+                .strip_prefix('=')
+                .unwrap_or("")
+                .trim_start()
+                .chars()
+                .take_while(|c| is_word_char(*c))
+                .collect();
+            if !value.is_empty() {
+                table_names.push(value);
+            }
+        }
+        pos = attr_end.max(args_start);
+    }
+
+    // (3) The scanner must see tables at all, and the surviving ones by name.
+    assert!(
+        !table_names.is_empty(),
+        "vacuity guard(EG5-6): the table-attribute scan found ZERO tables in \
+         schema.rs — the scanner (or the concat!-assembled marker) has rotted, and \
+         a rotted scanner must never read as a fusion-free schema"
+    );
+    for surviving in ["monster", "monster_pub", "battle", "inventory"] {
+        assert!(
+            table_names.iter().any(|n| n.as_str() == surviving),
+            "vacuity guard(EG5-6): the surviving table {surviving:?} was not \
+             discovered by the attribute scan (found: {table_names:?}) — either \
+             Migration B deleted far more than it was scoped to, or the scan is \
+             broken; in both cases the fusion assertion below proves nothing"
+        );
+    }
+
+    // (4) Columns Migration B KEEPS, so "no `pub bond`" is a claim about a real
+    // field list. `last_care_at_ms` and `party_slot` bracket the removed columns
+    // in `Monster`/`MonsterPub`; `trust_favorable_count` is the LIVE Trust
+    // counter that `bond`'s care semantics folded into (EG2-5).
+    for kept in [
+        "pub last_care_at_ms",
+        "pub party_slot",
+        "pub trust_favorable_count",
+    ] {
+        assert!(
+            stripped.contains(kept),
+            "vacuity guard(EG5-6): the surviving column declaration {kept:?} is \
+             absent from schema.rs — the field-level haystack is gone, so the \
+             `pub bond` / `evolves_to` absence assertions below are vacuous"
+        );
+    }
+
+    // --- THE INVARIANT: all three leftovers collected, then reported together.
+    // One assert per needle would stop at the first hit and hide the other two,
+    // which is exactly the wrong shape for a migration oracle: the implementer
+    // wants the whole removal list in one run, not three red-green cycles.
+    let mut leftovers: Vec<String> = Vec::new();
+
+    if stripped.contains("pub bond") {
+        leftovers.push(
+            "a `pub bond` column is still declared — EG5-6 removes `bond: u8` from \
+             BOTH `Monster` and `MonsterPub`; Bond is retired outright (spec §4 \
+             CONFIRMED), its investment-accumulator role folded into Trust"
+                .to_string(),
+        );
+    }
+    if stripped.contains("evolves_to") {
+        leftovers.push(
+            "the token `evolves_to` still appears — EG5-6 removes \
+             `evolves_to: Option<u32>` from BOTH `Monster` and `MonsterPub`; the \
+             column has been a frozen dead value since EG1 (ADR-0174 D2) and the \
+             evolution graph replaced the passive single-target hint entirely"
+                .to_string(),
+        );
+    }
+    if stripped.contains("pub struct Fusion") {
+        leftovers.push(
+            "the `Fusion` table struct is still declared — EG5-6 deletes it (EG1-9 \
+             already deleted every code path that read it, and left this struct \
+             standing ONLY because a column/table removal cannot ride along with \
+             Migration A's additions)"
+                .to_string(),
+        );
+    }
+    if table_names.iter().any(|n| n.as_str() == "fusion") {
+        leftovers.push(
+            "a table named `fusion` is still declared — deleting the struct's \
+             fields but keeping the table attribute (or vice versa) is a half \
+             migration; the live DB still carries the table"
+                .to_string(),
+        );
+    }
+
+    assert!(
+        leftovers.is_empty(),
+        "TEETH(EG5-6, Migration B): schema.rs still carries {} removal(s) that \
+         Migration B must land. This test is RED BY DESIGN until the schema edit \
+         ships; it is the source-scan oracle beside the pre-edited \
+         evals/baselines/table-schemas.json (battle-schema-snapshot + gate-teeth). \
+         Remember Migration B is a DISTINCT `spacetime publish` from Migration A \
+         and needs --delete-data or the new-table pattern — automatic migration \
+         always rejects a column/table removal.\n  - {}",
+        leftovers.len(),
+        leftovers.join("\n  - ")
+    );
+}
+
 // ===========================================================================
 // EG2 SOURCE SCANS — the shapes a seam cannot observe.
 //

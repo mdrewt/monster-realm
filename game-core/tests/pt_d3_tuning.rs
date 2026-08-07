@@ -715,11 +715,14 @@ fn pt_d3_content_sanity_bands() {
 /// line comments. The `ron` crate also accepts `/* ... */` block comments, and
 /// a red-team pass showed a phantom id hidden inside one — including a block
 /// comment spanning multiple lines — is completely invisible to a line-based
-/// scanner. Neither `append-only-ids.eval.mjs` nor
-/// `evolution-fusion-content-integrity.eval.mjs` strips block comments at all
-/// (only whole-line `//`), so ANY needle inside a `/* ... */` span is
-/// dangerous — unlike a whole-line `//` comment, which both evals do strip and
-/// is therefore safe.
+/// scanner. `append-only-ids.eval.mjs` strips whole-line `//` comments only and
+/// never strips block comments at all: it REFUSES the whole registry when a
+/// needle sits inside one. Its EG5-1 sibling
+/// `evolution-content-integrity.eval.mjs` (renamed from
+/// `evolution-fusion-content-integrity.eval.mjs`) takes the same refusal stance
+/// for the `edge_id:` needles its R12 ledger depends on. So ANY needle inside a
+/// block-comment span is dangerous — unlike a whole-line `//` comment, which
+/// both evals do strip and is therefore safe.
 fn comment_needle_violations(file_label: &str, src: &str) -> Vec<String> {
     let needles = ["to_species:", "species_id:", "id:"];
     let mut out = Vec::new();
@@ -800,7 +803,9 @@ fn comment_needle_violations(file_label: &str, src: &str) -> Vec<String> {
                 out.push(format!(
                     "{file_label}:{start_line}: block comment `/* ... */` contains `{needle}` \
                      — use the `id=N` form (block comments are NEVER stripped by \
-                     append-only-ids.eval.mjs / evolution-fusion-content-integrity.eval.mjs)"
+                     append-only-ids.eval.mjs, which refuses the registry instead; \
+                     evolution-content-integrity.eval.mjs refuses the same way for its \
+                     `edge_id:` needles)"
                 ));
             }
             i = j;
