@@ -34,44 +34,97 @@ const DELETE_PUB = 'ctx.db.monster_pub().monster_id().delete(';
 const PUB_FROM_MONSTER = 'pub_from_monster(';
 
 // ---------------------------------------------------------------------------
-// Split source into function bodies.
+// Split source into function bodies (one span per function).
 //
-// We split on `\nfn ` and `\npub fn ` (including `#[spacetimedb::reducer]`-
-// decorated reducers). We DON'T use dynamic RegExp — we walk with indexOf.
+// Strategy: a COLUMN-0 ANCHORED declaration scan. A span begins at offset 0 or
+// immediately after a `\n`, followed by an optional `pub` with an optional
+// `(...)` visibility scope (`pub(crate)`, `pub(super)`, `pub(in crate::battle)`),
+// then zero or more of the qualifiers `const` / `async` / `unsafe` (recognised
+// with OR without a preceding `pub`, so bare `async fn` / `unsafe fn` anchor
+// too), then `fn` + space/tab + an identifier start. Each span runs to the next
+// declaration (the last to end-of-input), so every function — whatever its
+// visibility — is scanned against its OWN monster → monster_pub mirror.
 //
-// Strategy: find every occurrence of "\nfn " or "\npub fn " and slice from
-// that position to the next such occurrence. The result is an array of strings,
-// each containing one function's text (header + body).
+// The predecessor scan used only the literal markers `'\nfn '` / `'\npub fn '`,
+// so a `pub(crate) fn` was absorbed into the preceding span (the ADR-0072 gap)
+// — TEETH F pins it.
+//
+// WHY COLUMN 0 (leading whitespace DISQUALIFIES a line):
+//   * Nesting immunity — an indented `fn` inside an `impl`/`mod`/closure never
+//     plants a boundary mid-function.
+//   * Fixture immunity — ~19 embedded-Rust fixture STRINGS across 9 `*_tests.rs`
+//     files contain INDENTED `fn` / `pub fn` / `pub(crate) fn` lines. An
+//     any-indentation scan would turn every one of them into a false boundary.
+//
+// Regex LITERAL only — never `new RegExp(<non-literal>)` (Semgrep
+// detect-non-literal-regexp has RED'd master 3×). `[ \t]` rather than `\s` is
+// deliberate: ReDoS-safe and correct for a line-anchored declaration.
+//
+// ---------------------------------------------------------------------------
+// KNOWN LIMITATIONS (deliberately not chased — stated so they stay visible):
+//   * INDENTED DECLARATIONS. A `pub(crate) fn` method inside an `impl` block is
+//     absorbed into the preceding column-0 span. No `ctx.db.monster()` write
+//     lives in an `impl` block today — every write site is a column-0 free
+//     function (independently verified) — but a future one gets no own span.
+//   * QUALIFIER ALLOWLIST is `const|async|unsafe` only. `extern "ABI"` and
+//     `default` are excluded deliberately: zero occurrences in the crate, and
+//     `default fn` needs nightly specialization which the pinned stable 1.96.0
+//     (`rust-toolchain.toml`) cannot compile. An unrecognised future qualifier
+//     fails SAFE-but-SILENT (the declaration re-merges into the previous span),
+//     which is exactly why the allowlist is written down here.
+//   * The column-0 anchor's safety rests on `cargo fmt --all --check` being
+//     CI-gated (`justfile:17`, a dependency of `ci`). A `#[rustfmt::skip]` on an
+//     indented monster-writing helper would silently weaken it.
+//   * COMMENTS AND STRING LITERALS ARE NOT NEUTRALIZED before the co-presence
+//     scan. `stripLineComments` removes `//` tails only: `/* ... */` block
+//     comments and string literals survive, so text that merely *mentions* a
+//     marker CURES a real violation — an honest `/* FIXME: still need the
+//     ctx.db.monster_pub().monster_id().update( mirror ... pub_from_monster( */`,
+//     or a `log::debug!("... pub_from_monster( ...")`. Both are demonstrated,
+//     no-adversary-required false GREENs. PRE-EXISTING (unchanged by this slice)
+//     and deliberately deferred, because a bolt-on block-comment stripper is
+//     unsafe in BOTH orders: line-strip-first destroys the `*/` of any block
+//     comment whose prose contains `//` (e.g. a URL), and the resulting
+//     unterminated `/*` then pairs with the NEXT `*/` anywhere in the
+//     concatenated tree, DELETING real `ctx.db.monster()` writes in between;
+//     block-strip-first mis-eats real code because the tree's `///` doc-comment
+//     PROSE contains unbalanced `/*`. Correct handling needs ONE combined pass
+//     tracking string literals AND both comment forms — `prepareRustSource` /
+//     `blankStringLiterals` (`evolution-reducer-security.eval.mjs:130-221`) —
+//     which is its own slice.
+//   * CO-PRESENCE IS PER-SPAN, NOT PER-WRITE, and control-flow-blind. Three
+//     consequences, all PRE-EXISTING in `checkFnBodyDualWrite` (unchanged here;
+//     narrowing the spans shrinks their reach but does not close them):
+//       (a) a function with TWO private writes and only ONE mirror still passes
+//           — `write_back_battle_results` (`battle.rs:1039`) writes at `:1124`
+//           and `:1294`; deleting either mirror alone keeps the gate GREEN. The
+//           fix is counting (`count(UPDATE_PUB) >= count(UPDATE_MONSTER)`), not
+//           presence, and costs nothing on today's tree (17 writes / 17 mirrors).
+//       (b) a mirror behind a guard counts as present — `accrue_quality_time`
+//           (`raising.rs:563`) pairs an unconditional private write with a
+//           conditional mirror. Correct there by construction, but the gate
+//           cannot tell that shape from a genuinely non-exhaustive predicate.
+//       (c) the write markers are SINGLE-LINE literals, so a rustfmt-wrapped
+//           chain (`ctx\n.db\n.monster()\n...update(`) is not seen as a write at
+//           all — a silent GREEN, not a RED. No wrapped `.update(`/`.insert(`
+//           exists today; wrapped `.find(`/`.filter(` already do.
 // ---------------------------------------------------------------------------
 export function splitIntoFnBodies(src) {
-  const markers = [];
+  // Declared INSIDE the function: a /g literal is stateful via `lastIndex`.
+  const FN_DECL =
+    /^(?:pub(?:\([^)\n]*\))?[ \t]+)?(?:(?:const|async|unsafe)[ \t]+)*fn[ \t]+[A-Za-z_]/gm;
 
-  // Collect positions of "\nfn " and "\npub fn "
-  const fnMarker = '\nfn ';
-  const pubFnMarker = '\npub fn ';
+  const starts = [];
+  for (const m of src.matchAll(FN_DECL)) starts.push(m.index);
 
-  let idx = 0;
-  while (idx < src.length) {
-    const fnPos = src.indexOf(fnMarker, idx);
-    const pubPos = src.indexOf(pubFnMarker, idx);
-
-    if (fnPos === -1 && pubPos === -1) break;
-
-    let nextPos;
-    if (fnPos === -1) nextPos = pubPos;
-    else if (pubPos === -1) nextPos = fnPos;
-    else nextPos = Math.min(fnPos, pubPos);
-
-    markers.push(nextPos);
-    idx = nextPos + 1;
-  }
-
-  if (markers.length === 0) return src ? [src] : [];
+  // FAIL-LOUD: no declaration found → hand back the whole input rather than an
+  // empty array. Returning [] would make entire files vanish from the gate.
+  if (starts.length === 0) return src ? [src] : [];
 
   const bodies = [];
-  for (let i = 0; i < markers.length; i++) {
-    const start = markers[i];
-    const end = i + 1 < markers.length ? markers[i + 1] : src.length;
+  for (let i = 0; i < starts.length; i++) {
+    const start = starts[i];
+    const end = i + 1 < starts.length ? starts[i + 1] : src.length;
     bodies.push(src.slice(start, end));
   }
   return bodies;
@@ -329,6 +382,392 @@ fn fuse_offspring_pub_wrong_order(ctx: &ReducerContext) {
   }
 
   // -------------------------------------------------------------------------
+  // PROOF-OF-TEETH F (12r-c headline): a compliant `pub fn` immediately
+  // followed by a NON-compliant `pub(crate) fn` (private UPDATE only, no
+  // monster_pub mirror). Today `splitIntoFnBodies` only recognizes the literal
+  // markers '\nfn ' and '\npub fn ' — `pub(crate) fn` matches neither, so this
+  // second function's text is silently absorbed into the FIRST function's body
+  // slice. The combined blob still contains a compliant UPDATE mirror (the
+  // first fn's), so checkFnBodyDualWrite reports the blob as compliant even
+  // though the second fn's own write has NO mirror at all. This is the exact
+  // "gate verifies SOME compliant pair exists in the blob, not each fn's own
+  // mirror" bug from ADR-0072. GREEN today (bug); must go RED.
+  // -------------------------------------------------------------------------
+  const teethFSrc = `
+pub fn well_paired_before_bad(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.bond = 10;
+    let pub_row = pub_from_monster(&m);
+    ctx.db.monster().monster_id().update(m);
+    ctx.db.monster_pub().monster_id().update(pub_row);
+}
+
+pub(crate) fn silently_absorbed_update(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.current_hp = 0;
+    ctx.db.monster().monster_id().update(m);
+    // BUG: no monster_pub mirror anywhere in THIS fn
+}
+`;
+  const teethF = findDualWriteViolations(teethFSrc);
+  if (teethF.length < 1) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH F: a compliant pub fn immediately followed by a non-compliant pub(crate) fn ' +
+        '(private monster().monster_id().update( only, no monster_pub mirror) was not caught — ' +
+        'the pub(crate) fn was absorbed into the preceding fn body instead of being scanned on its own',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // PROOF-OF-TEETH G: one compliant `pub fn`, then FOUR non-compliant private-
+  // only UPDATE fns spanning every visibility-scope shape: `pub(crate) fn`,
+  // `pub(super) fn`, `pub(in crate::battle) fn`, `pub(in crate::economy) fn`.
+  // Exactly 4 violations are expected. The count is load-bearing: it kills an
+  // "add a third literal marker" patch (which would only catch ONE shape) and
+  // a "hardcode these exact literal paths" patch (which would only catch the
+  // ones it was told about).
+  // -------------------------------------------------------------------------
+  const teethGSrc = `
+pub fn ok(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.bond = 1;
+    let pub_row = pub_from_monster(&m);
+    ctx.db.monster().monster_id().update(m);
+    ctx.db.monster_pub().monster_id().update(pub_row);
+}
+
+pub(crate) fn crate_scoped(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.current_hp = 1;
+    ctx.db.monster().monster_id().update(m);
+}
+
+pub(super) fn super_scoped(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.current_hp = 2;
+    ctx.db.monster().monster_id().update(m);
+}
+
+pub(in crate::battle) fn battle_scoped(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.current_hp = 3;
+    ctx.db.monster().monster_id().update(m);
+}
+
+pub(in crate::economy) fn economy_scoped(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.current_hp = 4;
+    ctx.db.monster().monster_id().update(m);
+}
+`;
+  const teethG = findDualWriteViolations(teethGSrc);
+  if (teethG.length !== 4) {
+    return {
+      name,
+      pass: false,
+      detail:
+        `TEETH G: expected exactly 4 violations (one per non-compliant visibility-scope fn: ` +
+        `pub(crate)/pub(super)/pub(in crate::battle)/pub(in crate::economy)), got ${teethG.length}`,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH H: false-positive sanity for scoped visibility. A fully compliant
+  // `pub(crate) fn` (INSERT) and a fully compliant `pub(in crate::npc) fn`
+  // (UPDATE) — neither should ever be flagged once scoped `pub(...)` forms are
+  // recognized as first-class fn boundaries.
+  // -------------------------------------------------------------------------
+  const teethHSrc = `
+pub(crate) fn helper_insert(ctx: &ReducerContext) {
+    let row = build_row();
+    let inserted = ctx.db.monster().insert(row);
+    ctx.db.monster_pub().insert(pub_from_monster(&inserted));
+}
+
+pub(in crate::npc) fn helper_update(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.bond = 50;
+    let pub_row = pub_from_monster(&m);
+    ctx.db.monster().monster_id().update(m);
+    ctx.db.monster_pub().monster_id().update(pub_row);
+}
+`;
+  const teethH = findDualWriteViolations(teethHSrc);
+  if (teethH.length !== 0) {
+    return {
+      name,
+      pass: false,
+      detail: `TEETH H: fully compliant scoped-pub fns were falsely flagged: ${teethH.join('; ')}`,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH I: cross-file absorption. readServerModuleSources joins files
+  // with `[chunkA, chunkB].join('\n')` — replicate that exactly. Chunk A ends
+  // with a compliant UPDATE `pub fn`; chunk B (a different "file") OPENS with
+  // a non-compliant `pub(crate) fn` UPDATE with no mirror. If the splitter
+  // treats the concatenated blob as one function, chunk A's own mirror masks
+  // chunk B's missing one — proving the bug survives the multi-file join.
+  // -------------------------------------------------------------------------
+  const teethIChunkA = `
+pub fn compliant_update_at_end_of_file(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.bond = 10;
+    let pub_row = pub_from_monster(&m);
+    ctx.db.monster().monster_id().update(m);
+    ctx.db.monster_pub().monster_id().update(pub_row);
+}
+`;
+  const teethIChunkB = `pub(crate) fn leaked_across_file_boundary(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.current_hp = 0;
+    ctx.db.monster().monster_id().update(m);
+    // BUG: no monster_pub mirror
+}
+`;
+  const teethISrc = [teethIChunkA, teethIChunkB].join('\n');
+  const teethI = findDualWriteViolations(teethISrc);
+  if (teethI.length < 1) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH I: a non-compliant pub(crate) fn opening a second "file" chunk (joined the same ' +
+        "way readServerModuleSources joins files) was not caught — the preceding compliant fn's " +
+        'own UPDATE mirror masked the missing mirror in the absorbed pub(crate) fn',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH J: qualifier forms. FIVE non-compliant private-only UPDATE fns:
+  // `pub(crate) async fn`, `pub const fn`, `pub(crate) unsafe fn`, and two
+  // BARE forms with no `pub` at all — `async fn` and `unsafe fn`. The bare
+  // forms kill a demonstrated cheat where qualifiers are only recognised when
+  // preceded by `pub` (that cheat passes every other tooth AND the real tree,
+  // since `async fn`/`unsafe fn` free functions do exist in idiomatic Rust).
+  // -------------------------------------------------------------------------
+  const teethJSrc = `
+pub(crate) async fn one(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.current_hp = 1;
+    ctx.db.monster().monster_id().update(m);
+}
+
+pub const fn two(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.current_hp = 2;
+    ctx.db.monster().monster_id().update(m);
+}
+
+pub(crate) unsafe fn three(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.current_hp = 3;
+    ctx.db.monster().monster_id().update(m);
+}
+
+async fn four(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.current_hp = 4;
+    ctx.db.monster().monster_id().update(m);
+}
+
+unsafe fn five(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.current_hp = 5;
+    ctx.db.monster().monster_id().update(m);
+}
+`;
+  const teethJ = findDualWriteViolations(teethJSrc);
+  if (teethJ.length !== 5) {
+    return {
+      name,
+      pass: false,
+      detail:
+        `TEETH J: expected exactly 5 violations across qualifier forms (pub(crate) async fn, ` +
+        `pub const fn, pub(crate) unsafe fn, bare async fn, bare unsafe fn), got ${teethJ.length}`,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH K: splitter precision (calls splitIntoFnBodies DIRECTLY). ONE real
+  // `pub fn` declaration, then column-0 decoy lines that are NOT function
+  // declarations: a fn-pointer type alias, a fn-pointer const, a struct named
+  // `Fnord` (contains "fn"-adjacent letters but not the token), and a bare
+  // `where` continuation line. The decoys sit AFTER the real declaration so a
+  // spurious extra boundary is detectable as an extra array element.
+  // -------------------------------------------------------------------------
+  const teethKSrc = `
+pub fn real_declaration_only(ctx: &ReducerContext) {
+    let row = build_row();
+    do_something(row);
+}
+pub(crate) type Cb = fn(u32);
+pub const H: fn(u32) -> u32 = h;
+pub struct Fnord;
+where
+    T: Clone,
+`;
+  const teethKBodies = splitIntoFnBodies(teethKSrc);
+  if (teethKBodies.length !== 1) {
+    return {
+      name,
+      pass: false,
+      detail:
+        `TEETH K: splitIntoFnBodies over one real pub fn + fn-pointer/struct/where decoys ` +
+        `should yield exactly 1 span, got ${teethKBodies.length}`,
+    };
+  }
+
+  // NOTE (m3, not a gap): dropping the `[A-Za-z_]` identifier requirement after
+  // `fn[ \t]` is an EQUIVALENT MUTANT, not a coverage hole — `fn[ \t]` alone
+  // already excludes function-pointer types (`fn(u32) -> u32` has no
+  // whitespace after `fn`), and `fn ` followed by a non-identifier is not a
+  // shape valid Rust produces. No dedicated fixture is added for it
+  // deliberately; this line records that the identifier check is
+  // belt-and-braces so a later reader does not mistake the absence for an
+  // oversight.
+
+  // -------------------------------------------------------------------------
+  // TEETH N: a non-compliant `pub(crate) fn` at TRUE OFFSET 0 of the string
+  // (the fixture's very first character is 'p', not a newline), followed by a
+  // compliant `pub fn`. Today this is invisible twice over: '\nfn ' cannot
+  // match at offset 0, AND splitIntoFnBodies:71-77 discards everything before
+  // markers[0] — so the entire first (non-compliant) fn vanishes silently.
+  // -------------------------------------------------------------------------
+  const teethNSrc = `pub(crate) fn leading_offset_zero(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.current_hp = 0;
+    ctx.db.monster().monster_id().update(m);
+    // BUG: no monster_pub mirror
+}
+
+pub fn compliant_after(ctx: &ReducerContext) {
+    let row = build_row();
+    let inserted = ctx.db.monster().insert(row);
+    ctx.db.monster_pub().insert(pub_from_monster(&inserted));
+}
+`;
+  if (teethNSrc.charAt(0) !== 'p') {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH N fixture must start with the literal character "p" (true offset 0, no leading newline)',
+    };
+  }
+  const teethN = findDualWriteViolations(teethNSrc);
+  if (teethN.length < 1) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH N: a non-compliant pub(crate) fn at true offset 0 of the source (no leading ' +
+        "newline) was not caught — it is invisible to a marker-scan that only fires on '\\nfn ' " +
+        'and discards everything before the first recognized marker',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH O: fail-loud contract. A monster UPDATE write with NO column-0 fn
+  // declaration anywhere in the fixture (everything sits inside an indented
+  // `impl Foo { ... }` block). Pins `return src ? [src] : []` — an impl that
+  // returns [] when it finds no fn boundary would make the whole blob vanish
+  // from the gate silently; this fixture must still surface a violation.
+  // -------------------------------------------------------------------------
+  const teethOSrc = `
+impl Foo {
+    fn indented_never_at_column_zero(ctx: &ReducerContext, monster_id: u64) {
+        let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+        m.current_hp = 0;
+        ctx.db.monster().monster_id().update(m);
+        // BUG: no monster_pub mirror, and this whole block is indented
+    }
+}
+`;
+  const teethO = findDualWriteViolations(teethOSrc);
+  if (teethO.length < 1) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH O: a monster UPDATE with zero column-0 fn declarations in the whole fixture was ' +
+        'not caught — an impl that returns [] when it finds no boundary would make this vanish',
+    };
+  }
+
+  // NOTE: block-comment and string-literal decoys (e.g. a comment or string
+  // that merely mentions a mirror marker) are a KNOWN, demonstrated false-
+  // green in this gate. Teeth for them (TEETH P, TEETH Q) were written and
+  // then withdrawn together with the severed block-comment-stripping
+  // hardening; they belong to a follow-up slice that adds ONE combined
+  // string-and-comment-aware prepare pass — `prepareRustSource` /
+  // `blankStringLiterals` (`evolution-reducer-security.eval.mjs:130-221`).
+
+  // -------------------------------------------------------------------------
+  // TEETH R: the COLUMN-0 anchor must not be relaxed to allow leading
+  // indentation. Fixture: ONE fully compliant `pub fn` whose body contains an
+  // INDENTED nested `fn` (4 spaces, NOT column 0) declared BETWEEN the
+  // private monster().monster_id().update( write and its monster_pub mirror.
+  // Under the current anchor (`^` with no `[ \t]*` after it, so leading
+  // whitespace disqualifies a line as a boundary) the indented nested
+  // `clamp_bond` is NOT recognized as a declaration, so the whole compliant
+  // function stays one span and is correctly recognized as paired.
+  //
+  // If the anchor were relaxed to `^[ \t]*(?:pub...)?...fn ` the indented
+  // `fn clamp_bond` WOULD become a boundary, bisecting this function: the
+  // first fragment (ending right before `fn clamp_bond`) would contain the
+  // private monster().monster_id().update( write with NO monster_pub mirror
+  // in its own slice — a FALSE RED on fully compliant code. Two distinct
+  // assertions pin this from both directions: the violation count states the
+  // observable symptom, the span count states the property directly (so a
+  // compensating bug in the split can't hide behind a coincidentally-correct
+  // violation count).
+  // -------------------------------------------------------------------------
+  const teethRSrc = `
+pub fn care_with_local_helper(ctx: &ReducerContext, monster_id: u64) {
+    let mut m = ctx.db.monster().monster_id().find(monster_id).unwrap();
+    m.bond = 10;
+    ctx.db.monster().monster_id().update(m.clone());
+
+    fn clamp_bond(v: u8) -> u8 {
+        if v > 100 { 100 } else { v }
+    }
+
+    let pub_row = pub_from_monster(&m);
+    ctx.db.monster_pub().monster_id().update(pub_row);
+}
+`;
+  const teethRViolations = findDualWriteViolations(teethRSrc);
+  if (teethRViolations.length !== 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        `TEETH R: a fully compliant pub fn whose body contains an INDENTED nested fn ` +
+        `(declared BETWEEN the private monster().monster_id().update( write and its ` +
+        `monster_pub mirror) was falsely flagged (${teethRViolations.join('; ')}) — the ` +
+        'column-0 anchor was relaxed to accept leading indentation, so the indented nested ' +
+        '`fn clamp_bond` is being treated as a span boundary and the compliant function was ' +
+        'bisected into a fragment with the private write and no mirror',
+    };
+  }
+  const teethRBodies = splitIntoFnBodies(teethRSrc);
+  if (teethRBodies.length !== 1) {
+    return {
+      name,
+      pass: false,
+      detail:
+        `TEETH R: splitIntoFnBodies over the compliant pub fn with an indented nested fn ` +
+        `should yield exactly 1 span (the indented \`fn clamp_bond\` must NOT anchor a new ` +
+        `boundary), got ${teethRBodies.length} — the column-0 anchor was relaxed to accept ` +
+        'leading indentation, so indented declarations are being treated as span boundaries',
+    };
+  }
+
+  // -------------------------------------------------------------------------
   // REAL SOURCE CHECK
   // -------------------------------------------------------------------------
   let src;
@@ -336,6 +775,31 @@ fn fuse_offspring_pub_wrong_order(ctx: &ReducerContext) {
     src = readServerModuleSources('server-module/src');
   } catch (e) {
     return { name, pass: false, detail: `cannot read server-module/src/lib.rs: ${e.message}` };
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH M: the detector bites on PRODUCTION source. Structural assertion
+  // only (no numeric span-count baseline — that would rot on unrelated
+  // deletions): splitIntoFnBodies over the real source must yield at least
+  // one span whose first line (trimmed) starts with `pub(crate) fn `.
+  // NOTE: there is no "prepare" helper yet (comment-stripping is expected to
+  // live inside findDualWriteViolations, ahead of the split, not as a
+  // standalone step) — once one exists, route this call through the SAME
+  // prepared text findDualWriteViolations(src) will see, not raw `src`. The
+  // assertion is written to hold either way.
+  // -------------------------------------------------------------------------
+  const teethMBodies = splitIntoFnBodies(src);
+  const teethMHasPubCrateFnSpan = teethMBodies.some((b) => b.trim().startsWith('pub(crate) fn '));
+  if (!teethMHasPubCrateFnSpan) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH M: splitIntoFnBodies over real server-module/src source produced no span whose ' +
+        'first line is a pub(crate) fn declaration — pub(crate) fn (and pub(super)/pub(in ...) ' +
+        'fn) declarations are being absorbed into a preceding function instead of scanned on ' +
+        'their own, exactly the ADR-0072 gap this eval must close',
+    };
   }
 
   const violations = findDualWriteViolations(src);
