@@ -7537,3 +7537,164 @@ describe('★ main.ts wiring (11r-h/ADR-0172): movement rejections reach the F9 
     }
   });
 });
+
+// ===========================================================================
+// EG4-3 (contract §A12) — W-EVOLVE-REDUCER: `onEvolve` forwards the CHOSEN species.
+//
+// SOURCE OF TRUTH: spec EARS EG4-3 ("main.ts's `onEvolve` SHALL gain a `toSpecies`
+// parameter, wired to the panel's path selection") + EG4-2 ("NEVER auto-resolve …
+// the player picks, submitted via evolve(monster_id, to_species)") + contract §F
+// ("forwarding the PARAMETER — the `toSpecies: 0` literal is deleted") and §A12.
+//
+// ★ WHY THIS TOOTH EXISTS AT ALL — the whole reason A12 was adjudicated as a BLOCKER-
+// adjacent finding. main.ts:2106-2114 today reads:
+//
+//     onEvolve: (monsterId) => {
+//       sendGuarded('evolve', () => conn?.conn.reducers.evolve({ monsterId, toSpecies: 0 }));
+//     },
+//     onFuse: () => {},
+//
+// When the callback type widens to `(monsterId: bigint, toSpecies: number) => void`,
+// TypeScript is PERFECTLY HAPPY with a handler that declares fewer parameters and with
+// the literal `toSpecies: 0` — a narrower callback is assignable, and `0` is a valid
+// `number`. So `tsc` CANNOT see the stub surviving. Neither can any pure unit test:
+// evolutionModel.test.ts owns the view-model, and main.ts is coverage-excluded and
+// un-importable under vitest (DOM/wasm side effects at module scope). Without this
+// source scan, EG4-3 has ZERO runtime gate and the shipped behaviour would be: the
+// player picks a path, the client sends `to_species: 0`, and the server rejects every
+// single choice. The panel would look complete and be entirely inert.
+//
+// RED REASON (verified against client/src/main.ts:2106-2114 this session): the handler
+// takes ONE parameter, the literal `toSpecies: 0` is right there, and `onFuse: () => {}`
+// is still wired.
+//
+// NO `new RegExp(...)` — the established per-file convention (Semgrep's
+// detect-non-literal-regexp is banned repo-wide and has broken this repo's CI twice).
+// indexOf / slice / includes / split only, exactly like W-RN-REDUCER (:726-735),
+// W-TP-REDUCER (:1020-1029) and W-CARE-REDUCER-CALL (:3102-3115).
+// ===========================================================================
+
+describe('★ main.ts wiring (EG4-3/A12): W-EVOLVE-REDUCER — onEvolve forwards the chosen toSpecies', () => {
+  /** The onEvolve wiring region: from the `onEvolve:` property key forward. 600 chars is
+   *  comfortably longer than the whole handler (the shipped one is ~200) and short enough
+   *  that the window cannot swallow an unrelated view's wiring. Same idiom and sizing
+   *  rationale as W-CARE-REDUCER-CALL's `slice(onCareIdx, onCareIdx + 1200)`. */
+  function onEvolveRegion(src: string): string {
+    const idx = src.indexOf('onEvolve:');
+    expect(
+      idx,
+      'main.ts must contain an `onEvolve:` wiring site — if this is -1 the evolution view is ' +
+        'no longer wired at all and every assertion below would be vacuous',
+    ).toBeGreaterThanOrEqual(0);
+    return src.slice(idx, idx + 600);
+  }
+
+  it('★ W-EVOLVE-REDUCER BITES: the onEvolve region calls reducers.evolve( and does NOT contain the `toSpecies: 0` stub literal', () => {
+    // WRONG IMPL KILLED (a) — THE ONE tsc CANNOT SEE: the signature widens, the panel
+    // starts passing a real species id, and the handler body keeps `toSpecies: 0`. It
+    // compiles, it lints, every model test is green, and EVERY player choice is rejected
+    // by the server. This is the whole reason the tooth exists (contract §A12).
+    // WRONG IMPL KILLED (b): gutting the reducer call while adding the picker UI — the
+    // overlay would let the player choose and then do nothing at all.
+    const stripped = stripLineComments(readMainTs());
+    const region = onEvolveRegion(stripped);
+
+    expect(
+      region.includes('reducers.evolve('),
+      'the main.ts onEvolve wiring region must call `reducers.evolve(` — main.ts is the only ' +
+        'place with access to `conn`, so this call site necessarily lives here (EG4-3)',
+    ).toBe(true);
+
+    expect(
+      region.includes('toSpecies: 0'),
+      'the main.ts onEvolve wiring region must NOT contain the literal `toSpecies: 0` — it is ' +
+        'the EG1 transitional stub (main.ts:2109) and it STILL TYPECHECKS after the callback ' +
+        'signature widens, so tsc cannot catch it surviving. Shipping it means every path the ' +
+        'player picks is submitted as species 0 and rejected server-side, with a UI that looks ' +
+        'complete. Contract §F: forward the PARAMETER — `reducers.evolve({ monsterId, ' +
+        'toSpecies })`. RED TODAY.',
+    ).toBe(false);
+  });
+
+  it('★ W-EVOLVE-REDUCER BITES: the literal `toSpecies: 0` appears NOWHERE in main.ts (comment-stripped, whole file)', () => {
+    // Companion whole-file ceiling to the region tooth above. WRONG IMPL KILLED: moving
+    // the stub OUT of the onEvolve region — into a `const EVOLVE_DEFAULTS = { toSpecies: 0 }`
+    // at module scope, or into a helper called from the handler. The region scan is blind
+    // to a relocated stub; a relocated stub rejects exactly as many player choices.
+    // Comment-stripped so a rationale comment quoting the old literal cannot red a
+    // correct implementation.
+    const stripped = stripLineComments(readMainTs());
+    expect(
+      countOccurrences(stripped, 'toSpecies: 0'),
+      'the literal `toSpecies: 0` must not appear anywhere in comment-stripped main.ts. It is ' +
+        "the EG1 transitional placeholder and species 0 is not a real target — the server's " +
+        '`evolve(monster_id, to_species)` rejects it. RED TODAY: main.ts:2109.',
+    ).toBe(0);
+  });
+
+  it('★ W-EVOLVE-PARAM BITES: the onEvolve callback DECLARES a toSpecies parameter (the signature actually widened)', () => {
+    // WRONG IMPL KILLED: deleting the `toSpecies: 0` literal by hard-coding some OTHER
+    // constant, or by reading a module-scope `let selectedSpecies` the panel never writes.
+    // Both satisfy the two negatives above. The only shape that satisfies THIS is a handler
+    // that actually receives the chosen species from the view — which is precisely what
+    // EG4-3 says ("wired to the panel's path selection") and what EG4-2 requires (the
+    // player picks; the client never auto-resolves).
+    //
+    // The parameter list is sliced from `onEvolve:` to the callback's `=>`, so the
+    // parameter NAME is what is asserted, not the (erased-at-runtime, formatter-mobile)
+    // type annotation.
+    const stripped = stripLineComments(readMainTs());
+    const idx = stripped.indexOf('onEvolve:');
+    expect(idx, 'main.ts must contain an `onEvolve:` wiring site').toBeGreaterThanOrEqual(0);
+    const arrowIdx = stripped.indexOf('=>', idx);
+    expect(
+      arrowIdx,
+      'the `onEvolve:` property must be an arrow-function callback (no `=>` found after it)',
+    ).toBeGreaterThan(idx);
+    const params = stripped.slice(idx, arrowIdx);
+
+    expect(
+      params.includes('monsterId'),
+      'ANTI-VACUITY: the onEvolve parameter list must still name `monsterId` — if it does not, ' +
+        'this slice resolved to the wrong region and the toSpecies assertion below proves nothing',
+    ).toBe(true);
+    expect(
+      params.includes('toSpecies'),
+      'the onEvolve callback must DECLARE a `toSpecies` parameter (EG4-3, contract §F: ' +
+        '`onEvolve: (monsterId: bigint, toSpecies: number) => void`). RED TODAY: main.ts:2107 ' +
+        'declares `onEvolve: (monsterId) => {` — one parameter. Note that a narrower callback ' +
+        'stays assignable to the widened type, so tsc will never flag this.',
+    ).toBe(true);
+  });
+
+  it('★ W-EVOLVE-NOFUSE BITES (EG4-5): `onFuse` appears NOWHERE in main.ts and no fuse reducer is called', () => {
+    // EG4-5: "ALL fusion-wiring SHALL be deleted … `onFuse` in main.ts". The stub is
+    // currently a live property (`onFuse: () => {}`, main.ts:2114) kept alive only because
+    // the callback SHAPE survived EG1; EG4 is where it goes.
+    // WRONG IMPL KILLED: a partial deletion that removes the fusion picker and the
+    // view-model but leaves the callback property wired — dead surface that the next
+    // author reads as "fusion is still a thing", and that keeps EvolutionViewCallbacks
+    // carrying a member nothing implements.
+    // Comment-stripped: the rationale comments at main.ts:2112-2113 legitimately discuss
+    // the deleted fuse reducer and must not red a correct implementation.
+    const stripped = stripLineComments(readMainTs());
+
+    // ANTI-VACUITY: prove the scan is reading real main.ts before trusting a zero.
+    expect(
+      countOccurrences(stripped, 'onEvolve:'),
+      'positive control: main.ts must still wire `onEvolve:` — a zero here means the scan is ' +
+        'reading an empty string and every negative below is vacuous',
+    ).toBeGreaterThan(0);
+
+    expect(
+      countOccurrences(stripped, 'onFuse'),
+      'main.ts must contain NO `onFuse` wiring (EG4-5). RED TODAY: `onFuse: () => {}` is still ' +
+        'at main.ts:2114 — a no-op stub kept alive by the callback shape EG1 preserved.',
+    ).toBe(0);
+    expect(
+      countOccurrences(stripped, 'reducers.fuse('),
+      'main.ts must call no fuse reducer — the `fuse` reducer was deleted server-side by ' +
+        'EG1/ADR-0174 and its binding disappears on regen',
+    ).toBe(0);
+  });
+});

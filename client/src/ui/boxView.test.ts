@@ -100,7 +100,11 @@ function makeBoxCallbacks(): BoxViewCallbacks {
   };
 }
 
-/** Every MonsterCardViewModel field supplied explicitly. */
+/**
+ * Every MonsterCardViewModel field supplied explicitly — including EG4-8's new
+ * `evolutionChoicePending`. Explicit, not spread-defaulted: the field is what X7–X10
+ * below toggle, so a silent default would make every one of those cases vacuous.
+ */
 function makeCard(overrides: Partial<MonsterCardViewModel> = {}): MonsterCardViewModel {
   return {
     monsterId: 100n,
@@ -111,6 +115,7 @@ function makeCard(overrides: Partial<MonsterCardViewModel> = {}): MonsterCardVie
     statHp: 20,
     hpPercent: 90,
     partySlot: 0,
+    evolutionChoicePending: false,
     ...overrides,
   };
 }
@@ -673,5 +678,381 @@ describe('BoxView ux4 X6: the hint stays truthful in the fresh-player state (emp
     ).not.toMatch(
       /\b(click|press|tap|hit|use|select|choose|move|find|open)\b[^.]{0,40}"?To Party/i,
     );
+  });
+});
+
+// ===========================================================================
+// EG4-8 — the evolution-choice badge (X7–X10)
+//
+// SOURCE OF TRUTH: memory/projects/monster-realm-EG4-contract.md §D + §G, and spec
+// §2 EG4-8 ("the party roster view SHALL show a badge/indicator on any monster with 2+
+// currently-eligible evolution paths").
+//
+// CONTRACT UNDER TEST — SYMBOLIC ANCHORS ONLY (same discipline as X2–X6 above):
+//   • `#renderCard` renders ONE `<... data-testid="evo-choice-badge">` INSIDE the card it
+//     is building, iff `card.evolutionChoicePending` is true — nothing else in this shell
+//     may read the flag, and no badge may exist when it is false;
+//   • the badge lives inside the monster card, so it is per-monster and is naturally
+//     cleared by `#renderParty` / `#renderBox`'s `replaceChildren()` — it must NOT be a
+//     direct `#root` child and must NOT wrap the `header` row;
+//   • its text carries NO `HP `-shaped substring (the e2e HP-scan constraint, verified
+//     probe fact §A of the contract / recruit.spec.ts:314,330-334,357-359,390-392,428-430).
+//
+// The whole eligibility decision is boxModel's (`evolutionChoicePending`, owned by
+// boxModel.test.ts). These cases pin ONLY the shell's rendering of that boolean — the
+// same scope discipline X2 states for the slot sentinels.
+// ===========================================================================
+
+const EVO_BADGE_SELECTOR = '[data-testid="evo-choice-badge"]';
+
+/** A party-slot-0 roster whose lone starter carries the given badge flag. */
+function partySlotsWithBadge(pending: boolean): (MonsterCardViewModel | null)[] {
+  return [
+    makeCard({
+      monsterId: 100n,
+      speciesName: 'Sproutle',
+      partySlot: 0,
+      evolutionChoicePending: pending,
+    }),
+    null,
+    null,
+    null,
+    null,
+    null,
+  ];
+}
+
+/** Resolve the rendered card element (a grid child) that shows `name`. */
+function cardElementFor(grid: HTMLElement, name: string): HTMLElement {
+  const found = [...grid.children].find((c) => (c.textContent ?? '').includes(name));
+  expect(
+    found,
+    `precondition (EG4-8): a rendered card containing "${name}" must exist in this grid — ` +
+      'otherwise the containment assertions made through it are vacuous',
+  ).toBeDefined();
+  return found as HTMLElement;
+}
+
+describe('BoxView EG4-8 X7: the badge renders in the PARTY grid iff evolutionChoicePending', () => {
+  it('BITES: pending=true renders exactly one badge in the party card; pending=false renders none anywhere', () => {
+    // KILLS (1): a shell that never renders the badge at all — EG4-8's entire deliverable
+    //   is the "active notification" on the roster, and `boxView.ts` is coverage-excluded
+    //   (vite.config.ts:103) and has no TS mutation harness, so this case is its only
+    //   automated defense.
+    // KILLS (2): a badge rendered UNCONDITIONALLY (ignoring the flag). The false half is
+    //   the control: a constant badge would tell every player that every monster has an
+    //   ambiguous evolution waiting, which is the exact ux1 failure mode (ADR-0151 —
+    //   advertising a state that does not hold).
+    // KILLS (3): a badge appended to a container that `#renderParty`'s `replaceChildren()`
+    //   does not clear — the second refresh below would then still show it.
+    const { parent, view } = mount();
+
+    view.refresh(partySlotsWithBadge(true), []);
+    view.show();
+
+    const partyGrid = partyGridOf(parent);
+    expect(
+      partyGrid.querySelectorAll(EVO_BADGE_SELECTOR),
+      'EG4-8 (X7): a monster with 2+ eligible evolution paths must carry exactly ONE ' +
+        '[data-testid="evo-choice-badge"] inside its party card',
+    ).toHaveLength(1);
+
+    const badge = partyGrid.querySelector(EVO_BADGE_SELECTOR) as HTMLElement;
+    expect(
+      badge.style.display,
+      'EG4-8 (X7): the badge must be visible when it is rendered — a display:none badge is ' +
+        'the ux1 defect in its purest form',
+    ).not.toBe('none');
+    expect(
+      (badge.textContent ?? '').trim().length,
+      'EG4-8 (X7): the badge must carry copy. An empty element satisfies a presence-only ' +
+        'query while telling the player nothing',
+    ).toBeGreaterThan(0);
+    expect(
+      badge.textContent ?? '',
+      'EG4-8 (X7): the badge copy must name what is pending. EG4-8 calls it the ' +
+        '"evolution-ready badge"; copy that never says "evolve"/"evolution" leaves the ' +
+        'player with an unexplained marker',
+    ).toMatch(/evolv/i);
+
+    // CONTROL — the same roster with the flag cleared.
+    view.refresh(partySlotsWithBadge(false), []);
+    expect(
+      parent.querySelectorAll(EVO_BADGE_SELECTOR),
+      'EG4-8 (X7) CONTROL: with evolutionChoicePending=false there must be NO badge anywhere ' +
+        'under the overlay. This is what makes the positive half non-vacuous, and it also ' +
+        'kills a badge parked outside the per-render containers, which would survive here',
+    ).toHaveLength(0);
+  });
+});
+
+describe('BoxView EG4-8 X8: the badge is per-card and renders in the BOX grid too', () => {
+  it('BITES: with one pending and one non-pending box monster, the badge sits inside the PENDING card only', () => {
+    // KILLS (1): a badge stamped on every card in the list (a per-render flag instead of a
+    //   per-card one) — the second card's absence assertion catches it.
+    // KILLS (2): a badge attached to the WRONG card. A per-list `if (anyPending)` renderer
+    //   would badge whichever card happened to be first, pointing the player at a monster
+    //   with no choice to make.
+    // KILLS (3): a party-only badge. Boxed monsters genuinely reach 2+ eligible (care /
+    //   train / essence_train have no party check — contract A16), and `#renderCard` is
+    //   shared, so the box arm must render it too.
+    const { parent, view } = mount();
+
+    view.refresh(makePartySlots(), [
+      makeCard({
+        monsterId: 200n,
+        speciesName: 'Emberfang',
+        partySlot: 255,
+        currentHp: 21,
+        statHp: 21,
+        hpPercent: 100,
+        evolutionChoicePending: true,
+      }),
+      makeCard({
+        monsterId: 300n,
+        speciesName: 'Mossling',
+        partySlot: 255,
+        currentHp: 19,
+        statHp: 20,
+        hpPercent: 95,
+        evolutionChoicePending: false,
+      }),
+    ]);
+    view.show();
+
+    const boxGrid = boxGridOf(parent);
+    expect(
+      boxGrid.querySelectorAll(EVO_BADGE_SELECTOR),
+      'EG4-8 (X8): exactly one of the two box monsters is pending, so exactly one badge ' +
+        'must render in the box grid',
+    ).toHaveLength(1);
+
+    const badge = boxGrid.querySelector(EVO_BADGE_SELECTOR) as HTMLElement;
+    const pendingCard = cardElementFor(boxGrid, 'Emberfang');
+    const plainCard = cardElementFor(boxGrid, 'Mossling');
+    expect(
+      pendingCard.contains(badge),
+      "EG4-8 (X8): the badge must render INSIDE the pending monster's own card. A badge " +
+        'hoisted to the grid (or to #root) is not attributable to a monster, which is the ' +
+        'whole point of a per-monster roster notification',
+    ).toBe(true);
+    expect(
+      plainCard.contains(badge),
+      "EG4-8 (X8): the non-pending monster's card must not contain the badge",
+    ).toBe(false);
+    expect(
+      plainCard.querySelectorAll(EVO_BADGE_SELECTOR),
+      'EG4-8 (X8): ...and must not contain a badge of its own',
+    ).toHaveLength(0);
+    expect(
+      parent.querySelectorAll(EVO_BADGE_SELECTOR),
+      'EG4-8 (X8): no stray badge may exist outside the box grid in this roster (the party ' +
+        'starter is not pending)',
+    ).toHaveLength(1);
+  });
+
+  it('BITES: two pending monsters render TWO badges (one each), stable across repeated refreshes', () => {
+    // KILLS (1): a singleton badge created once and moved/reused — with two ambiguous
+    //   monsters the player would only ever see one of them flagged.
+    // KILLS (2): a per-render `appendChild` to a container that is NOT cleared: N refreshes
+    //   would accumulate N badges per card. `#renderParty`/`#renderBox` each open with a
+    //   `replaceChildren()`, so a badge built inside `#renderCard` is idempotent by
+    //   construction — this pins that it actually is.
+    const { parent, view } = mount();
+
+    const boxCards = [
+      makeCard({
+        monsterId: 200n,
+        speciesName: 'Emberfang',
+        partySlot: 255,
+        currentHp: 21,
+        statHp: 21,
+        hpPercent: 100,
+        evolutionChoicePending: true,
+      }),
+      makeCard({
+        monsterId: 300n,
+        speciesName: 'Mossling',
+        partySlot: 255,
+        currentHp: 19,
+        statHp: 20,
+        hpPercent: 95,
+        evolutionChoicePending: true,
+      }),
+    ];
+
+    view.refresh(partySlotsWithBadge(true), boxCards);
+    view.show();
+    view.refresh(partySlotsWithBadge(true), boxCards);
+    view.refresh(partySlotsWithBadge(true), boxCards);
+
+    expect(
+      boxGridOf(parent).querySelectorAll(EVO_BADGE_SELECTOR),
+      'EG4-8 (X8): two pending box monsters, three refreshes — exactly two badges',
+    ).toHaveLength(2);
+    expect(
+      partyGridOf(parent).querySelectorAll(EVO_BADGE_SELECTOR),
+      'EG4-8 (X8): one pending party monster, three refreshes — exactly one badge',
+    ).toHaveLength(1);
+    expect(
+      parent.querySelectorAll(EVO_BADGE_SELECTOR),
+      'EG4-8 (X8): three badges total, no duplicates accumulated across refreshes',
+    ).toHaveLength(3);
+  });
+});
+
+describe('BoxView EG4-8 X9: e2e compatibility — inside the card, no header wrapper, no HP-shaped copy', () => {
+  it("BITES: the badge does not wrap the header, is not a direct #root child, and the box root's HP scan still reads clean", () => {
+    // KILLS (1): a badge (or a badge wrapper) placed around `header`. All five
+    //   `client/e2e/recruit.spec.ts` sites resolve the box root as
+    //   h2['Party & Box'].parentElement.parentElement — a wrapper silently retargets that
+    //   chain and `healViaBox` / `restoreHpBeforeEncounter` then read HP text out of the
+    //   wrong node. As in X4, the CONTAINMENT clauses are the load-bearing ones: under the
+    //   wrapping mutant an identity-only check still passes.
+    // KILLS (2): HP-shaped badge copy. `healViaBox` (recruit.spec.ts:326-340) uses
+    //   `!root.textContent.includes('HP 0/')` as its HEALED signal and
+    //   `restoreHpBeforeEncounter` (:386-405, :424-445) `matchAll`s /HP (\d+)\/(\d+)/g over
+    //   the same root requiring EVERY pair >= 80%. A badge reading e.g. "Evolution HP 0/2"
+    //   hangs all three helpers as a TIMEOUT, never as an assertion failure — the most
+    //   expensive possible failure mode.
+    // NOTE: `new RegExp()` is banned (ReDoS lint) — both probes below are literal.
+    const { parent, view } = mount();
+
+    view.refresh(partySlotsWithBadge(true), [
+      makeCard({
+        monsterId: 200n,
+        speciesName: 'Emberfang',
+        partySlot: 255,
+        currentHp: 21,
+        statHp: 21,
+        hpPercent: 100,
+        evolutionChoicePending: true,
+      }),
+    ]);
+    view.show();
+
+    const badge = parent.querySelector(EVO_BADGE_SELECTOR) as HTMLElement | null;
+    expect(badge, 'precondition (X9): a badge must exist for a pending monster').not.toBeNull();
+
+    const e2eRoot = e2eBoxRootOf(parent);
+    const header = headerRowOf(parent);
+    const partyGrid = partyGridOf(parent);
+    const boxGrid = boxGridOf(parent);
+
+    expect(
+      header.previousElementSibling,
+      "EG4-8 (X9): the header row must remain #root's FIRST element child — a badge (or a " +
+        'badge wrapper) inserted above the title both breaks the e2e chain and puts a ' +
+        "notification above the screen's own heading",
+    ).toBeNull();
+    expect(
+      badge!.contains(header),
+      'EG4-8 (X9): the badge must never WRAP the header row — recruit.spec.ts resolves the ' +
+        "box root as h2['Party & Box'].parentElement.parentElement at five sites",
+    ).toBe(false);
+    expect(
+      header.querySelectorAll(EVO_BADGE_SELECTOR),
+      'EG4-8 (X9): no badge may render inside the header row either — the badge is ' +
+        'per-monster, and the header belongs to the screen',
+    ).toHaveLength(0);
+    expect(
+      badge!.parentElement,
+      'EG4-8 (X9): the badge must NOT be a direct child of #root. A #root-level badge is not ' +
+        "attributable to a monster and survives `#renderCard`'s per-refresh rebuild",
+    ).not.toBe(e2eRoot);
+    expect(
+      e2eRoot.contains(partyGrid) && e2eRoot.contains(boxGrid),
+      'EG4-8 (X9): the resolved e2e box root must still contain BOTH grids — this is the ' +
+        'clause that catches a header-wrapping mutant, which an identity check alone misses',
+    ).toBe(true);
+
+    const badgeText = badge!.textContent ?? '';
+    expect(
+      badgeText,
+      'EG4-8 (X9): the badge copy must contain NO "HP <n>/<n>"-shaped substring — ' +
+        'restoreHpBeforeEncounter matchAll()s that shape over the box root and requires ' +
+        'every pair >= 80%',
+    ).not.toMatch(/HP\s*\d+\s*\/\s*\d+/);
+    expect(
+      badgeText,
+      'EG4-8 (X9): the badge copy must not contain "HP 0/" — healViaBox uses ' +
+        "`!root.textContent.includes('HP 0/')` as its HEALED signal",
+    ).not.toContain('HP 0/');
+    expect(
+      badgeText,
+      'EG4-8 (X9): the badge copy must not contain the bare token "HP " at all — the safest ' +
+        'form of the two constraints above, and the one an implementer can honour by ' +
+        'inspection',
+    ).not.toContain('HP ');
+
+    // The e2e helpers' own reads, executed here against the real rendered root.
+    const rootText = e2eBoxRootOf(parent).textContent ?? '';
+    expect(
+      rootText,
+      "EG4-8 (X9): with a full-HP roster the box root must not read as fainted — healViaBox's " +
+        'healed signal is the ABSENCE of this substring',
+    ).not.toContain('HP 0/');
+    const pairs = [...rootText.matchAll(/HP (\d+)\/(\d+)/g)];
+    expect(
+      pairs.length,
+      'precondition (X9): the HP scan must find one pair per rendered card (1 party + 1 box) ' +
+        '— a zero-length result would make the ratio loop below vacuous, and would itself ' +
+        'mean restoreHpBeforeEncounter can no longer see the roster at all',
+    ).toBe(2);
+    for (const [, current, max] of pairs) {
+      expect(
+        Number(current) / Number(max),
+        `EG4-8 (X9): restoreHpBeforeEncounter requires every HP pair in the box root to be ` +
+          `>= 80%; it read ${current}/${max}. A badge that injects an HP-shaped pair (e.g. ` +
+          '"2/5 paths") drops below that and hangs the helper on every e2e run',
+      ).toBeGreaterThanOrEqual(0.8);
+    }
+  });
+});
+
+describe("BoxView EG4-8 X10: the badge does not displace the card's existing content", () => {
+  it('BITES: a badged card still renders its name, its HP line, and its slot-swap button', () => {
+    // KILLS: a `#renderCard` rewrite that returns EARLY on the pending branch (or replaces
+    //   the card body with the badge). The player would lose the Rename / To Box / To Party
+    //   controls on exactly the monsters that need an action taken — a strictly worse
+    //   dead-end than the one X2 repros.
+    const { parent, view, callbacks } = mount();
+
+    view.refresh(partySlotsWithBadge(true), [
+      makeCard({
+        monsterId: 200n,
+        speciesName: 'Emberfang',
+        partySlot: 255,
+        currentHp: 21,
+        statHp: 21,
+        hpPercent: 100,
+        evolutionChoicePending: true,
+      }),
+    ]);
+    view.show();
+
+    const boxGrid = boxGridOf(parent);
+    const partyGrid = partyGridOf(parent);
+    expect(boxGrid.textContent, 'EG4-8 (X10): the badged box card still names its monster') //
+      .toContain('Emberfang');
+    expect(boxGrid.textContent, 'EG4-8 (X10): ...and still renders its HP line') //
+      .toContain('HP 21/21');
+    expect(partyGrid.textContent, 'EG4-8 (X10): the badged party card still names its monster') //
+      .toContain('Sproutle');
+
+    const toParty = [...boxGrid.querySelectorAll('button')].find(
+      (b) => b.textContent === 'To Party',
+    );
+    expect(
+      toParty,
+      'EG4-8 (X10): a badged box card must keep its "To Party" control — the badge is a ' +
+        'notification, never a replacement for the row',
+    ).toBeDefined();
+    toParty!.click();
+    expect(
+      callbacks.onSetPartySlot,
+      'EG4-8 (X10): the surviving control must still emit the same intent it does without ' +
+        'the badge (id + the -1 next-free-slot sentinel)',
+    ).toHaveBeenCalledWith(200n, NEXT_FREE_SLOT_SENTINEL);
   });
 });

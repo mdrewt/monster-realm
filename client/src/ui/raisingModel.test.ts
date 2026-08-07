@@ -16,6 +16,10 @@ import {
 // Factories
 // ---------------------------------------------------------------------------
 
+// EG4-4 / EG4-7 (contract §B, §E): `bond` is GONE from StoreMonsterPub; the five
+// essence-graph fields are required. `trustTier` defaults to 'Neutral' — deliberately
+// NOT the lowest tier, so a view-model that "defaults to the bottom of the ladder"
+// instead of copying the row cannot pass by coincidence (see the 'Hostile' tooth below).
 function monster(monsterId: bigint, overrides: Partial<StoreMonsterPub> = {}): StoreMonsterPub {
   return {
     monsterId,
@@ -24,7 +28,6 @@ function monster(monsterId: bigint, overrides: Partial<StoreMonsterPub> = {}): S
     nickname: `M-${monsterId}`,
     level: 5,
     xp: 0,
-    bond: 50,
     currentHp: 30,
     statHp: 40,
     statAttack: 10,
@@ -33,6 +36,20 @@ function monster(monsterId: bigint, overrides: Partial<StoreMonsterPub> = {}): S
     statSpAttack: 10,
     statSpDefense: 10,
     partySlot: 255,
+    tier: 0,
+    essence: {
+      Fire: 0,
+      Water: 0,
+      Plant: 0,
+      Electric: 0,
+      Earth: 0,
+      Wind: 0,
+      Light: 0,
+      Dark: 0,
+    },
+    trustTier: 'Neutral',
+    qualityTimeTier: 0,
+    nutritionPct: 0,
     ...overrides,
   };
 }
@@ -83,7 +100,7 @@ describe('buildRaisingViewModel: server-derived stats (ADR-0016, criterion 1)', 
       statSpeed: 666,
       statSpAttack: 555,
       statSpDefense: 444,
-      bond: 127,
+      trustTier: 'Devoted',
       currentHp: 500,
     });
     const vm = buildRaisingViewModel([m], [], new Map());
@@ -94,7 +111,9 @@ describe('buildRaisingViewModel: server-derived stats (ADR-0016, criterion 1)', 
     expect(mon.statSpeed).toBe(666);
     expect(mon.statSpAttack).toBe(555);
     expect(mon.statSpDefense).toBe(444);
-    expect(mon.bond).toBe(127);
+    // EG4-4: `bond` is retired; the status line now reads the server-derived trust tier,
+    // copied VERBATIM (contract §E — "verbatim copy, no derivation").
+    expect(mon.trustTier).toBe('Devoted');
     expect(mon.level).toBe(5);
     expect(mon.currentHp).toBe(500);
   });
@@ -141,21 +160,43 @@ describe('buildRaisingViewModel: server-derived stats (ADR-0016, criterion 1)', 
     );
   });
 
-  it('BITES fast-check property: bond and level copied verbatim from StoreMonsterPub', () => {
-    // Kills: an impl that recalculates bond or level from other fields.
+  it('BITES fast-check property (EG4-4): trustTier and level copied verbatim from StoreMonsterPub', () => {
+    // EG4-4 replaces the retired `bond` property test. `trustTier` is a VERBATIM copy
+    // (contract §E) — the tier is derived SERVER-side (EG1-6) and the client must never
+    // re-derive it.
+    // Kills: any client-side re-derivation, any clamp, and any "default to the lowest
+    // tier" fallback — the arbitrary sweeps all five tiers, so a constant answer
+    // (whatever it is) fails on four of them.
     fc.assert(
       fc.property(
-        fc.integer({ min: 0, max: 255 }),
+        fc.constantFrom('Hostile', 'Wary', 'Neutral', 'Friendly', 'Devoted'),
         fc.integer({ min: 1, max: 100 }),
-        (bond, level) => {
-          const m = monster(1n, { bond, level });
+        (trustTier, level) => {
+          const m = monster(1n, { trustTier, level });
           const vm = buildRaisingViewModel([m], [], new Map());
           const mon = vm.monsters[0]!;
-          expect(mon.bond).toBe(bond);
+          expect(mon.trustTier).toBe(trustTier);
           expect(mon.level).toBe(level);
         },
       ),
     );
+  });
+
+  it("★ BITES (EG4-4): trustTier 'Hostile' is copied verbatim — NOT replaced by a default", () => {
+    // 'Hostile' EXPLICITLY, and this is the point of the test. A view-model that ignores
+    // the row and hands back a "safe default" of the LOWEST tier passes any test written
+    // only against 'Friendly' or 'Devoted'; a view-model that defaults to 'Neutral'
+    // passes any test written only against the factory default. Pinning the extreme end
+    // of the ladder alongside the property sweep above closes both.
+    // Kills: `trustTier: TRUST_TIER_ORDER[0]`, `trustTier: m.trustTier ?? 'Hostile'`,
+    // and any re-derivation from another field.
+    const vm = buildRaisingViewModel([monster(1n, { trustTier: 'Hostile' })], [], new Map());
+    expect(vm.monsters[0]!.trustTier).toBe('Hostile');
+
+    // …and the opposite end, from the SAME builder call shape, so a hard-coded constant
+    // cannot satisfy both.
+    const vm2 = buildRaisingViewModel([monster(2n, { trustTier: 'Devoted' })], [], new Map());
+    expect(vm2.monsters[0]!.trustTier).toBe('Devoted');
   });
 });
 
@@ -385,15 +426,18 @@ describe('buildRaisingViewModel: output structure', () => {
     expect(item.canTrain).toBe(true);
   });
 
-  it('BITES: RaisingMonsterViewModel has all required fields', () => {
-    // Kills: an impl that omits any of the required RaisingMonsterViewModel fields.
-    const m = monster(3n, { nickname: 'Blaze', level: 12, bond: 80 });
+  it('BITES (EG4-4): RaisingMonsterViewModel has all required fields — trustTier IN, bond OUT', () => {
+    // Kills: an impl that omits any of the required RaisingMonsterViewModel fields, and
+    // (the EG4-4 half) one that ADDS trustTier while leaving `bond` in place — a
+    // half-swap that lets raisingView.ts keep rendering `Bond ${mon.bond}` while the
+    // model looks migrated.
+    const m = monster(3n, { nickname: 'Blaze', level: 12, trustTier: 'Friendly' });
     const vm = buildRaisingViewModel([m], [], new Map());
     const mon: RaisingMonsterViewModel = vm.monsters[0]!;
     expect(mon).toHaveProperty('monsterId');
     expect(mon).toHaveProperty('nickname');
     expect(mon).toHaveProperty('level');
-    expect(mon).toHaveProperty('bond');
+    expect(mon).toHaveProperty('trustTier');
     expect(mon).toHaveProperty('currentHp');
     expect(mon).toHaveProperty('statHp');
     expect(mon).toHaveProperty('statAttack');
@@ -401,6 +445,11 @@ describe('buildRaisingViewModel: output structure', () => {
     expect(mon).toHaveProperty('statSpeed');
     expect(mon).toHaveProperty('statSpAttack');
     expect(mon).toHaveProperty('statSpDefense');
+    expect(mon.trustTier).toBe('Friendly');
+    // The retired field must be GONE from the view-model, not merely unused
+    // (contract §E: `bond: number` -> `trustTier: TrustTierName`).
+    expect(mon).not.toHaveProperty('bond');
+    expect(Object.keys(mon)).not.toContain('bond');
   });
 
   it('BITES: multiple monsters in -> multiple monsters in output (same count, same order)', () => {
