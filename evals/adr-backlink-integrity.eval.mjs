@@ -81,6 +81,39 @@
 //            closing parenthesis is still not top-level             (0992->0993).
 //   TOOTH 26c the mirror: after an UNMATCHED closing parenthesis a top-level
 //            comma still splits                        (0994->0995, 0994->0996).
+//   TOOTH 27 the back-link view is BOUNDED at the first level-two heading: an
+//            unfenced, column-0 relation line in the BODY is not a back-link
+//            (0997->0998).
+//   TOOTH 27b the same bound, pinned in the ORDER the two view operations
+//            compose: a fence that CONTAINS the document's only level-two
+//            heading must not be able to delete that boundary  (0999->0959).
+//
+// THE VIEW IS TWO SEPARATE CLAIMS AND IT TAKES FIVE TEETH TO PIN THEM.
+// scripts/adr-digest.mjs builds the back-link view as
+//   stripFencedBlocks(headerPreamble(content))
+// and the composition has three independently mutable parts — the strip, the
+// bound, and the ORDER:
+//   T15/T22/T23 prove the view EXCLUDES decoys that sit inside it — a backtick
+//               fence, a tilde fence, a four-space indent. All three of their
+//               targets deliberately have NO level-two heading at all (that is
+//               what makes the whole file the view and the decoy the only thing
+//               under test), which also makes every one of them blind to the
+//               bound: delete headerPreamble entirely and none of them moves.
+//   T27         proves the view is BOUNDED at the first level-two heading. Its
+//               decoy is neither fenced nor indented, so the strip and the
+//               column-0 rule are both powerless and only the bound can hold it
+//               out. Kills `stripFencedBlocks(content)` — the bound dropped.
+//   T27b        proves the ORDER. It is the only shape in which the two orders
+//               differ: a fence that contains the document's only `## `. Bound
+//               first and the preamble ends at that heading; strip first and the
+//               heading is deleted with the fence, no boundary survives, and the
+//               whole document becomes the view. Kills
+//               `headerPreamble(stripFencedBlocks(content))` — and the dropped
+//               bound as well, so T27b subsumes T27's mutation but not the
+//               reverse. Both are kept: T27 states the clause in the ordinary
+//               shape a real ADR has, T27b states it in the one shape that
+//               separates the orders.
+// Change any one of the five, re-read the other four.
 //
 // THE STRUCTURAL GAP TEETH 21/21b CLOSE. Every other "gap must be reported"
 // fixture here has a target whose **Amended-by:** resolves to the EMPTY set, so
@@ -141,6 +174,8 @@ const FIXTURE_DIRS = [
   't25-paren-target',
   't26-paren-comma-deferral',
   't26c-unmatched-close-paren',
+  't27-body-backlink',
+  't27b-fence-eats-heading',
 ];
 
 // The ONLY fixture directories in which the ratchet is allowed to fire. Every
@@ -175,17 +210,21 @@ const FIXTURE_DIRS = [
 // In none of them does any entry have both endpoints, so the ratchet must stay
 // silent there and TOOTH 0's scope guard says so.
 //
-// The nine directories added in the hardening rounds — t21, t21b, t22, t23,
-// t24a, t24b, t25, t26 and t26c — use the ids 0970-0996 exclusively. NONE of
-// 0970, 0971, 0972, 0973, 0974, 0975, 0976, 0977, 0978, 0979, 0980, 0981, 0982,
-// 0983, 0984, 0985, 0986, 0987, 0988, 0990, 0991, 0992, 0993, 0994, 0995 or
-// 0996 is an endpoint of ANY of the five baseline entries (whose only endpoints
-// are 0154, 0156, 0157, 0166, 0168, 0169, 0172, 0173 and 0177 — every one of
-// them below 0180). CONFIRMED for the two newest directories specifically:
-// t26 holds {0990, 0991, 0992, 0993} and t26c holds {0994, 0995, 0996}, and
-// none of those seven ids appears on either side of any baseline key. No
+// The eleven directories added in the hardening rounds — t21, t21b, t22, t23,
+// t24a, t24b, t25, t26, t26c, t27 and t27b — use the ids 0959 and 0970-0999
+// exclusively. NONE of 0959, 0970, 0971, 0972, 0973, 0974, 0975, 0976, 0977,
+// 0978, 0979, 0980, 0981, 0982, 0983, 0984, 0985, 0986, 0987, 0988, 0990, 0991,
+// 0992, 0993, 0994, 0995, 0996, 0997, 0998 or 0999 is an endpoint of ANY of the
+// five baseline entries (whose only endpoints are 0154, 0156, 0157, 0166, 0168,
+// 0169, 0172, 0173 and 0177 — every one of them below 0180). CONFIRMED for the
+// two newest directories specifically: t27 holds {0997, 0998} and t27b holds
+// {0999, 0959}, and none of those four ids appears on either side of any
+// baseline key — 0959 was picked over the adjacent 0955/0956/0958 (already in
+// use by t10/t16b, t16c/t18 and t20's dangling reference respectively) and is
+// both >= 0900 and comfortably above BACKLINK_ERA_MIN, so both t27b endpoints
+// are in-era and the pair is genuinely enforced rather than era-tolerated. No
 // baseline entry can have even ONE endpoint present in those directories, let
-// alone both, so the ratchet must stay silent in all nine and TOOTH 0's scope
+// alone both, so the ratchet must stay silent in all eleven and TOOTH 0's scope
 // guard enforces it. This is a structural property of the >= 0900 fixture-id
 // rule, not a coincidence, and it survives any future shrinking of the
 // baseline.
@@ -944,6 +983,14 @@ export default async function () {
   // reciprocal, and the gate reports nothing. This is the same bypass shape that
   // TOOTH 8 of evals/adr-digest.eval.mjs guards for **Status:**; the back-link
   // check must not reintroduce it.
+  //
+  // Does NOT kill anything about the PREAMBLE BOUND — and cannot, by
+  // construction. 0931 has no level-two heading at all (that is the fixture's
+  // premise: it is what makes the whole file the view, so the fence is the only
+  // thing under test), so deleting headerPreamble from the composition entirely
+  // leaves this tooth exactly where it was. Same for TEETH 22 and 23. The bound
+  // is TOOTH 27's job and the ORDER of the two operations is TOOTH 27b's; see
+  // the five-teeth note in the file header.
   // =========================================================================
   withFixtureDir('t15-no-h2-heading', (r) => {
     const key = '(0930->0931)';
@@ -1403,6 +1450,10 @@ export default async function () {
   // looks reciprocal, and the gate reports nothing — the TOOTH 15 bypass
   // reopened through a second door. TOOTH 15 cannot catch it: its fixture uses
   // a backtick fence, which the narrowed stripper still handles.
+  //
+  // Like TEETH 15 and 23, blind to the PREAMBLE BOUND — 0971 has no level-two
+  // heading either, so dropping headerPreamble from the composition does not
+  // move this tooth. TOOTH 27 covers the bound, TOOTH 27b the composition order.
   // =========================================================================
   withFixtureDir('t22-tilde-fence', (r) => {
     const key = '(0970->0971)';
@@ -1445,6 +1496,12 @@ export default async function () {
   // header field and the gap disappears. Neither TOOTH 15 nor TOOTH 22 can catch
   // it: both of their decoys are fenced, so fence stripping removes them first
   // whatever the column rule says.
+  //
+  // Like TEETH 15 and 22, blind to the PREAMBLE BOUND — 0973 has no level-two
+  // heading either. The three of them together prove the view EXCLUDES fenced
+  // and indented decoys; TEETH 27 and 27b prove it is BOUNDED at the first
+  // heading and that the bound is applied BEFORE the strip. Only the five
+  // together pin the composition — see the note in the file header.
   // =========================================================================
   withFixtureDir('t23-indented-decoy', (r) => {
     const key = '(0972->0973)';
@@ -1462,6 +1519,160 @@ export default async function () {
       failing.push(
         'TOOTH 23 (indented back-link bypass): the generator exited 0 — a four-space-indented ' +
           '**Amended-by:** line counted as a back-link.',
+      );
+    }
+  });
+
+  // =========================================================================
+  // TOOTH 27 — the back-link view is BOUNDED at the first level-two heading.
+  //
+  // 0997 **Amends:** ADR-0998. 0998 carries a COMPLETE canonical header with no
+  // **Amended-by:** in it, then a real `## Context` heading, and then — in the
+  // BODY, below that heading, UNFENCED and at COLUMN 0 —
+  //   **Amended-by:** ADR-0997
+  //
+  // WHY THE EXISTING VIEW TEETH CANNOT REACH THIS. T15, T22 and T23 all prove
+  // the view EXCLUDES a decoy that sits inside it (backtick fence, tilde fence,
+  // four-space indent), and all three of their targets deliberately have NO
+  // level-two heading at all — that premise is exactly what makes the whole file
+  // the view and the decoy the only variable. It also makes all three blind to
+  // the bound: with no `## ` anywhere, headerPreamble is the identity function
+  // and deleting it from the composition changes nothing they observe.
+  //
+  // This fixture inverts every one of those properties. The decoy is not fenced,
+  // so stripFencedBlocks cannot remove it. It is at column 0, so the column-0
+  // rule in extractBacklinkField cannot reject it. The ONLY thing standing
+  // between it and the resolved back-link set is that the view is cut at the
+  // first `## `.
+  //
+  // Kills: `const backlinkView = stripFencedBlocks(content);` — the preamble
+  // scoping dropped from the composition in scripts/adr-digest.mjs. Under that
+  // mutation the body line joins the view, resolves 0997, the pair looks
+  // reciprocal and (0997->0998) vanishes — i.e. any prose sentence in any ADR's
+  // body that happens to begin `**Amended-by:** ADR-NNNN` would satisfy the
+  // gate. Every one of the 28 preceding teeth survives that mutation (measured),
+  // which is why this fixture exists.
+  //
+  // Does NOT separate the two ORDERINGS of the composition: 0998 contains no
+  // fence, so stripFencedBlocks is the identity here and
+  // headerPreamble(stripFencedBlocks(content)) behaves exactly like the shipped
+  // stripFencedBlocks(headerPreamble(content)). TOOTH 27b owns that mutation.
+  //
+  // COLLISION: the directory holds {0997, 0998}. Neither is an endpoint of any
+  // KNOWN_BACKLINK_GAPS entry (0166->0156, 0168->0166, 0169->0154, 0172->0157,
+  // 0177->0173), so the ratchet must stay silent — TOOTH 0's scope guard
+  // enforces that. Both ids are >= '0151', so the pair is genuinely enforced
+  // rather than era-tolerated.
+  // =========================================================================
+  withFixtureDir('t27-body-backlink', (r) => {
+    const key = '(0997->0998)';
+    const expected =
+      '0997: **Amends:** ADR-0998 but ADR-0998 has no reciprocal ' +
+      '**Amended-by:** ADR-0997 back-link (0997->0998)';
+    if (r.combined.indexOf(key) === -1) {
+      failing.push(
+        `TOOTH 27 (view bounded at the first heading): expected the pair key "${key}" but the ` +
+          `output does not contain it (exit ${r.code}). 0998's header carries NO **Amended-by:**; ` +
+          'its only reciprocal-looking line sits in the BODY, below a real `## Context` heading, ' +
+          'unfenced and at column 0. Fence stripping cannot remove it and the column-0 rule ' +
+          'cannot reject it — the only thing that keeps it out of the back-link view is that the ' +
+          'view is cut at the first level-two heading. Drop the headerPreamble() call from the ' +
+          'composition in scripts/adr-digest.mjs and any body prose beginning "**Amended-by:** ' +
+          'ADR-NNNN" satisfies reciprocity. TEETH 15/22/23 cannot catch this: their targets have ' +
+          `no level-two heading at all, so the bound is invisible to them. ` +
+          `output: ${excerpt(r.combined)}`,
+      );
+    } else if (r.combined.indexOf(expected) === -1) {
+      failing.push(
+        `TOOTH 27 (view bounded at the first heading): pair key "${key}" is present but the ` +
+          `message does not match the contract.\n  expected substring: ${expected}\n` +
+          `  output: ${excerpt(r.combined)}`,
+      );
+    }
+    if (r.code === 0) {
+      failing.push(
+        'TOOTH 27 (view bounded at the first heading): the generator exited 0 — an unfenced, ' +
+          'unindented **Amended-by:** line in the document BODY counted as a header back-link.',
+      );
+    }
+  });
+
+  // =========================================================================
+  // TOOTH 27b — the ORDER of the two view operations: bound FIRST, then strip.
+  //
+  // 0999 **Amends:** ADR-0959. 0959 carries a complete canonical header with no
+  // **Amended-by:** in it, uses only level-THREE subheads of its own, and then
+  // opens a fenced block that CONTAINS the document's one and only `## `
+  // heading. After the fence closes, at column 0:
+  //   **Amended-by:** ADR-0999
+  //
+  // This is the ONLY shape in which the two orderings of
+  //   stripFencedBlocks(...) and headerPreamble(...)
+  // can be told apart — they differ exactly when stripping would delete the
+  // `## ` that bounds the preamble:
+  //   shipped  stripFencedBlocks(headerPreamble(content))
+  //            headerPreamble cuts at the `## ` INSIDE the fence, so the view
+  //            ends at the fence's opening delimiter and the trailing line is
+  //            never seen. (The unterminated ``` left in the preamble is then
+  //            swallowed by stripFencedBlocks — the documented fail-closed
+  //            direction, and harmless here since nothing follows it.)
+  //            => the gap (0999->0959) IS reported.
+  //   mutation headerPreamble(stripFencedBlocks(content))
+  //            stripping deletes the fence AND the heading inside it, so no
+  //            `\n## ` survives anywhere, headerPreamble finds no boundary and
+  //            returns the WHOLE document, the trailing line resolves 0999, and
+  //            the gap vanishes.
+  //
+  // Kills BOTH surviving mutations of the composition — the swapped order above,
+  // and `stripFencedBlocks(content)` with the bound dropped entirely (which
+  // yields the same whole-document view here). TOOTH 27 kills only the second,
+  // so 27b subsumes it and not the reverse; both are kept because TOOTH 27
+  // states the clause in the shape a real ADR actually has, while this one needs
+  // a contrived fence to make the ordering observable at all.
+  //
+  // NOT an invented behaviour: the comment at scripts/adr-digest.mjs:199-201
+  // states this ordering and its reason ("stripping first could delete the `## `
+  // that bounds the preamble and widen the view into the body"). This tooth
+  // asserts only its observable consequence.
+  //
+  // No exit-code-only assertion carries the weight here — the pair key is
+  // asserted, and the full contracted message with it, because a bare non-zero
+  // exit would be satisfied by any unrelated error.
+  //
+  // COLLISION: the directory holds {0999, 0959}. Neither is an endpoint of any
+  // KNOWN_BACKLINK_GAPS entry, so the ratchet must stay silent (TOOTH 0's scope
+  // guard). 0959 avoids the already-used 0955/0956/0958 and is >= '0151', so
+  // both endpoints are in-era and the pair is enforced, not era-tolerated.
+  // =========================================================================
+  withFixtureDir('t27b-fence-eats-heading', (r) => {
+    const key = '(0999->0959)';
+    const expected =
+      '0999: **Amends:** ADR-0959 but ADR-0959 has no reciprocal ' +
+      '**Amended-by:** ADR-0999 back-link (0999->0959)';
+    if (r.combined.indexOf(key) === -1) {
+      failing.push(
+        `TOOTH 27b (view composition order): expected the pair key "${key}" but the output does ` +
+          `not contain it (exit ${r.code}). 0959's only level-two heading lives INSIDE a fenced ` +
+          'block, and a column-0 **Amended-by:** ADR-0999 line follows that fence. Bounding the ' +
+          'view first cuts the preamble at that heading and the trailing line is never seen — ' +
+          'the gap stands. Stripping first deletes the fence AND the heading inside it, so no ' +
+          'boundary survives, headerPreamble returns the whole document, and the trailing line ' +
+          'silently satisfies reciprocity. The composition must be ' +
+          'stripFencedBlocks(headerPreamble(content)), not the reverse and not the strip alone. ' +
+          `output: ${excerpt(r.combined)}`,
+      );
+    } else if (r.combined.indexOf(expected) === -1) {
+      failing.push(
+        `TOOTH 27b (view composition order): pair key "${key}" is present but the message does ` +
+          `not match the contract.\n  expected substring: ${expected}\n` +
+          `  output: ${excerpt(r.combined)}`,
+      );
+    }
+    if (r.code === 0) {
+      failing.push(
+        'TOOTH 27b (view composition order): the generator exited 0 — a fence that swallowed the ' +
+          "document's only level-two heading was allowed to widen the back-link view into the " +
+          'body, and a line after that fence counted as a header back-link.',
       );
     }
   });
@@ -1814,7 +2025,7 @@ export default async function () {
     name,
     pass: true,
     detail:
-      '28/28 teeth bite correctly (T0, T1–T8, T10, T15, T16a, T16b, T16c, T17, T18, T19, T20, ' +
-      'T21, T21b, T22, T23, T24a, T24b, T25, T26, T26b, T26c)',
+      '30/30 teeth bite correctly (T0, T1–T8, T10, T15, T16a, T16b, T16c, T17, T18, T19, T20, ' +
+      'T21, T21b, T22, T23, T24a, T24b, T25, T26, T26b, T26c, T27, T27b)',
   };
 }

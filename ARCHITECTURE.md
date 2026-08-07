@@ -285,7 +285,7 @@ master history, so regenerate at the branch point, never after `wip:` commits.
 that only *amends* another stays `Accepted`; the amended ADR gains
 `**Amended-by:**`", but only `checkRefs` enforced anything — a one-directional
 dangling-reference check, so a *missing* back-link passed green and 55 accumulated
-(53 forward, 2 reverse).
+(54 forward, 1 reverse).
 `validateBacklinks()` in `scripts/adr-digest.mjs` now mechanizes the invariant in
 both directions. It is **era-scoped**: enforced only when BOTH endpoints are
 `>= BACKLINK_ERA_MIN` (`0151` — the oldest ADR 12r-f repaired). Repairing a
