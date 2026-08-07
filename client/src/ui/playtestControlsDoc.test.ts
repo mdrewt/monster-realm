@@ -27,8 +27,22 @@
 //   - doc duplicates a row, or row count silently drifts          → A3 (structural anti-vacuity)
 //   - doc's PROSE (outside the table) still says `G`/`H`          → A4 (whole-document span scan)
 //   - a future engineer "fixes" a RED run by skipping this file   → A5 (anti-weakening failure messages)
+//   - a hidden/decoy table hijacks the header anchor (see below)  → parseControlTable's uniqueness check
 //
 // Do NOT edit these tests to match a buggy/unfixed doc — correct from the spec only.
+//
+// RED-TEAM FIX (post-first-pass): a real `npx vitest run` red-team PoC scored a FALSE GREEN by
+// inserting a complete, correct decoy Controls table immediately after the "## 3. Controls"
+// heading, then deleting the `M` row from ONLY the real, tester-visible table further down.
+// `indexOf('| Key | Action |', sectionIdx)` bound to the decoy (first occurrence after the
+// anchor) and validated IT, not the real table; A1-A3 read the decoy as ground truth and went
+// green, and A4 can't help (it only reports EXTRA spans, never a MISSING key). Fixed two ways:
+// (1) fenced (``` ```) blocks are now stripped BEFORE the header search, so a fenced decoy is
+// simply invisible to the anchor; (2) the header must be UNIQUE after the section anchor — a
+// SECOND "| Key | Action |" occurrence (fenced or not) after "## 3. Controls" throws a named
+// ambiguity error instead of silently picking one. A decoy BEFORE "## 3. Controls" is still
+// legitimately ignored (the section anchor already excludes it) — see the "before-anchor"
+// fixture below, which is unchanged and must keep passing.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -76,10 +90,19 @@ interface ParsedRow {
 /**
  * Parse the `## 3. Controls` table out of a PLAYTEST.md-shaped markdown string.
  *
- * Contract (12r-b plan, "Parser contract"):
+ * Contract (12r-b plan, "Parser contract", hardened post-red-team):
+ *  - Fenced (``` ```) code blocks are stripped FIRST (same even-index technique as
+ *    `singleCharCodeSpans`) — a decoy table hidden inside a fenced block is simply invisible to
+ *    everything below, never silently validated.
  *  - Anchor on `indexOf('## 3. Controls')` first, then `indexOf('| Key | Action |', ...)` after
- *    it — throws a named Error if either is absent, so the parser can never silently bind to
- *    some unrelated table elsewhere in the document.
+ *    it, both against the SAME fence-stripped string — throws a named Error if either is absent,
+ *    so the parser can never silently bind to some unrelated table elsewhere in the document.
+ *  - The header must be UNIQUE after the section anchor: if a SECOND "| Key | Action |" occurs
+ *    anywhere after the first one found, throws a named ambiguity error rather than silently
+ *    picking whichever occurrence `indexOf` happened to find first (the red-team's false-green:
+ *    a decoy table placed right after the heading, with the real table further down and the bug
+ *    ONLY in the real one, bound the anchor to the decoy and validated it instead). A decoy
+ *    BEFORE "## 3. Controls" is untouched by this — the section anchor already excludes it.
  *  - The line immediately after the header must be a markdown table separator (every cell,
  *    trimmed, contains only `-`, `:`, or whitespace) — else throws, so a deleted/corrupted
  *    separator is a direct diagnostic instead of a confusing "key `?` missing".
@@ -92,23 +115,38 @@ interface ParsedRow {
  */
 function parseControlTable(markdown: string): ParsedRow[] {
   const normalized = markdown.split('\r\n').join('\n');
+  const stripped = stripFencedBlocks(normalized);
 
-  const sectionIdx = normalized.indexOf('## 3. Controls');
+  const sectionIdx = stripped.indexOf('## 3. Controls');
   if (sectionIdx < 0) {
     throw new Error(
       'parseControlTable: could not find the "## 3. Controls" section heading in the supplied markdown.',
     );
   }
 
-  const headerIdx = normalized.indexOf('| Key | Action |', sectionIdx);
+  const headerIdx = stripped.indexOf('| Key | Action |', sectionIdx);
   if (headerIdx < 0) {
     throw new Error(
       'parseControlTable: found "## 3. Controls" but no "| Key | Action |" table header after it.',
     );
   }
 
+  // Uniqueness (post-anchor only — a decoy BEFORE "## 3. Controls" is legitimately excluded by
+  // the section anchor itself, per the "before-anchor" fixture below). A second occurrence after
+  // the first-found header means the anchor is ambiguous between two candidate tables — throw
+  // rather than silently guessing which one is the tester-visible Controls table.
+  const secondHeaderIdx = stripped.indexOf('| Key | Action |', headerIdx + 1);
+  if (secondHeaderIdx >= 0) {
+    throw new Error(
+      'parseControlTable: found more than one "| Key | Action |" table header after ' +
+        '"## 3. Controls" (after stripping fenced code blocks) — the anchor is ambiguous between ' +
+        'two candidate tables. Remove or rename the extra header; a legitimate second Controls ' +
+        'table must not be resolved silently.',
+    );
+  }
+
   // Walk forward from the header to split into lines, so we can inspect the separator and rows.
-  const afterHeader = normalized.slice(headerIdx);
+  const afterHeader = stripped.slice(headerIdx);
   const lines = afterHeader.split('\n');
   // lines[0] is the header row itself; lines[1] must be the separator.
   const separatorLine = lines[1];
@@ -178,26 +216,59 @@ function stripBackticks(cell: string): string {
 }
 
 // ---------------------------------------------------------------------------------------------
+// Shared fence-stripping (used by BOTH parseControlTable's header anchor and
+// singleCharCodeSpans's prose scan) — a single definition of "what counts as fenced" so the two
+// can never silently disagree about it.
+// ---------------------------------------------------------------------------------------------
+
+/**
+ * Split `markdown` on ``` ``` ``` fences and return only the segments OUTSIDE a fence (the
+ * even-indexed pieces of `split('\`\`\`')`) as an array — one entry per non-fenced stretch of
+ * text, in document order. Kept as an ARRAY (not pre-joined) so `singleCharCodeSpans` can keep
+ * doing its backtick-parity split PER SEGMENT — joining first could pair a trailing backtick in
+ * one segment with a leading backtick in the next, across a removed fence boundary, corrupting
+ * span detection. `parseControlTable` (which only does plain substring search, no backtick
+ * pairing) joins these itself via `stripFencedBlocks` below.
+ */
+function fenceStrippedSegments(markdown: string): string[] {
+  const parts = markdown.split('```');
+  const segments: string[] = [];
+  for (let i = 0; i < parts.length; i++) {
+    // Odd-indexed parts are INSIDE a fenced block — skip them entirely.
+    if (i % 2 === 0) {
+      segments.push(parts[i]);
+    }
+  }
+  return segments;
+}
+
+/**
+ * Fence-stripped text as ONE string, for `parseControlTable`'s plain substring anchor search
+ * (`indexOf('## 3. Controls')` / `indexOf('| Key | Action |')` / the uniqueness check) — joining
+ * on `\n` is safe here because these are substring searches, not backtick-pairing.
+ */
+function stripFencedBlocks(markdown: string): string {
+  return fenceStrippedSegments(markdown).join('\n');
+}
+
+// ---------------------------------------------------------------------------------------------
 // singleCharCodeSpans — pure, no dynamic RegExp, whole-document inline-code-span prose scan.
 // ---------------------------------------------------------------------------------------------
 
 /**
- * Return every inline `` `code` `` span in `markdown` whose content is EXACTLY one character,
- * after first stripping fenced (``` ```) code blocks (so shell examples can't pollute the scan
- * or throw off backtick-parity for the plain-text splitter below).
+ * Return every inline `` `code` `` span in `markdown` whose TRIMMED content is EXACTLY one
+ * character, after first stripping fenced (``` ```) code blocks (so shell examples can't
+ * pollute the scan or throw off backtick-parity for the plain-text splitter below). Trimming
+ * before the length check closes a padding-whitespace evasion: a span written as `` `H ` ``
+ * (trailing space inside the backticks) has RAW length 2 and would otherwise slip past A4's
+ * single-char whitelist check entirely.
  */
 function singleCharCodeSpans(markdown: string): string[] {
-  const fenceParts = markdown.split('```');
   const spans: string[] = [];
-  for (let i = 0; i < fenceParts.length; i++) {
-    // Odd-indexed segments are INSIDE a fenced block — skip them entirely.
-    if (i % 2 === 1) {
-      continue;
-    }
-    const segment = fenceParts[i];
+  for (const segment of fenceStrippedSegments(markdown)) {
     const backtickParts = segment.split('`');
     for (let j = 1; j < backtickParts.length; j += 2) {
-      const span = backtickParts[j];
+      const span = backtickParts[j].trim();
       if (span.length === 1) {
         spans.push(span);
       }
@@ -294,6 +365,56 @@ describe('parseControlTable(): pure-fixture behavior', () => {
       '| `?` | Toggle this help overlay |',
     ].join('\n');
     const rows = parseControlTable(decoyBeforeSection);
+    expect(rows).toEqual([{ key: '?', action: 'Toggle this help overlay' }]);
+  });
+
+  it('BITES (red-team fix): a decoy table AFTER "## 3. Controls" but BEFORE the real header throws — never silently binds to the decoy', () => {
+    // WRONG IMPL KILLED: the exact real-run false green a red-team PoC scored — `indexOf('| Key
+    // | Action |', sectionIdx)` finds the FIRST occurrence after the anchor (the decoy) and
+    // validates it, while a bug (here: a missing `M` row) lives ONLY in the real table further
+    // down. A1/A2/A3 would all read the decoy as ground truth and go green; A4 cannot catch a
+    // MISSING key (it only reports extras). The fix: a second "| Key | Action |" occurrence
+    // after the first is an ambiguity error, not a silent choice.
+    const decoyAfterHeading = [
+      '## 3. Controls',
+      '',
+      '| Key | Action |',
+      '|-----|--------|',
+      '| `?` | Toggle this help overlay |',
+      '| `M` | Open the main menu |',
+      '',
+      '| Key | Action |',
+      '|-----|--------|',
+      '| `?` | Toggle this help overlay |',
+      // NOTE: the "real" (second) table here is missing the `M` row — this is the actual
+      // tester-visible drift the red-team's PoC hid behind the decoy above.
+    ].join('\n');
+    expect(() => parseControlTable(decoyAfterHeading)).toThrow('more than one');
+  });
+
+  it('BITES (red-team fix): a FENCED decoy table anywhere after the heading is invisible — parses the real table, does not throw', () => {
+    // Belt-and-suspenders on the same attack: if the decoy is fenced (```), fence-stripping
+    // removes it before the header search ever sees it, so there is only ONE surviving
+    // "| Key | Action |" occurrence and parsing proceeds normally against the real table. This
+    // pins the ACTUAL observed behavior (invisible, not thrown) rather than leaving it ambiguous.
+    // WRONG IMPL KILLED: an implementation that strips fences AFTER computing indices from the
+    // unstripped string (so its indices point at the wrong offsets), or one that forgets to
+    // fence-strip at all (in which case this fixture would instead throw the ambiguity error,
+    // which is what the assertion below distinguishes from).
+    const fencedDecoy = [
+      '## 3. Controls',
+      '',
+      '```',
+      '| Key | Action |',
+      '|-----|--------|',
+      '| `DECOY` | fenced, must be invisible to the anchor search |',
+      '```',
+      '',
+      '| Key | Action |',
+      '|-----|--------|',
+      '| `?` | Toggle this help overlay |',
+    ].join('\n');
+    const rows = parseControlTable(fencedDecoy);
     expect(rows).toEqual([{ key: '?', action: 'Toggle this help overlay' }]);
   });
 
@@ -421,6 +542,17 @@ describe('singleCharCodeSpans(): pure-fixture behavior', () => {
     const spans = singleCharCodeSpans(md);
     expect(spans.sort()).toEqual(['A', 'B', 'C']);
   });
+
+  it('BITES (hardening): a span padded with whitespace inside the backticks is trimmed before the length check', () => {
+    // WRONG IMPL KILLED: an implementation that checks `span.length === 1` on the RAW (untrimmed)
+    // span text — a doc written as `` `H ` `` (trailing space inside the backticks) has RAW
+    // length 2, so it is neither flagged as a live single-char key NOR matched against any real
+    // 2-char key — it just silently vanishes from the whole scan, letting a dead key back into
+    // prose undetected by A4.
+    const md = 'prose `H ` trailing space, ` T` leading space, and `U` clean.';
+    const spans = singleCharCodeSpans(md);
+    expect(spans.sort()).toEqual(['H', 'T', 'U']);
+  });
 });
 
 // =================================================================================================
@@ -524,10 +656,16 @@ describe('docs/PLAYTEST.md §3 Controls table vs. helpModel.ts CONTROLS SSOT (12
   });
 
   it('A4 BITES: every single-character inline-code span in the WHOLE document is a live CONTROLS key (prose scan)', () => {
-    // WRONG IMPL KILLED: this is the assertion that catches the ORIGINAL bug's real shape —
-    // docs/PLAYTEST.md:74 step 7 says "**Shop** (`G`) and **heal** (`H`) in town." — dead keys
-    // living in PROSE, outside the table entirely, which a table-only gate (A1-A3) is blind to.
-    // RED TODAY: `G` and `H` appear as single-char inline-code spans at :74 (and in the table).
+    // WRONG IMPL KILLED: this is the assertion that catches the original bug's LITERAL
+    // backticked shape — docs/PLAYTEST.md:74 step 7 says "**Shop** (`G`) and **heal** (`H`) in
+    // town." — dead keys living in PROSE as `` `G` ``/`` `H` `` spans, outside the table
+    // entirely, which a table-only gate (A1-A3) is blind to. RED TODAY: `G` and `H` appear as
+    // single-char inline-code spans at :74 (and in the table).
+    //
+    // ACCURACY NOTE (not overclaiming): this only catches the BACKTICKED form. Non-backticked
+    // prose ("press G to shop", no backticks) is a disclosed, out-of-scope residual gap per the
+    // plan (RT-3 adjudication) — it is out of reach of any non-fragile gate, since the doc has no
+    // other convention distinguishing a key mention from ordinary prose.
     //
     // The whitelist is DERIVED from CONTROLS (never a hardcoded G/H denylist), and the scan is
     // deliberately single-character-only: `F8` (§6, error-overlay dismiss) is a LIVE key
