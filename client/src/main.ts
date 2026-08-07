@@ -981,7 +981,7 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.code === 'KeyE') {
-    // Evolution/fusion overlay — third member of the hide-switch trio, same verdict-driven
+    // Evolution overlay — third member of the hide-switch trio, same verdict-driven
     // gate as box/raising above (see the KeyB comment for the guard-never-dismiss rule).
     const evolutionVerdict = overlayVerdict('evolutionView');
     if (evolutionVerdict.kind === 'allow') {
