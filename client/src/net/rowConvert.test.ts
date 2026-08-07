@@ -4,6 +4,13 @@
 // uxd2: fast-check is used by the AC-16 totality property at the foot of this file.
 import * as fc from 'fast-check';
 import { describe, expect, it, vi } from 'vitest';
+// EG4-5 (contract §B "Deleted: … SdkFusionRow, fusionRowToStore …"): the namespace
+// import is what lets the deletion tooth at the foot of the fusion section PROVE the
+// export is gone at runtime. A named `import { fusionRowToStore }` cannot express
+// "this must not exist" — it would either red at module-eval or (once deleted) fail to
+// compile; the namespace object is the only runtime-inspectable surface, and
+// client/tsconfig.json EXCLUDES **/*.test.ts, so a tsc-only probe would gate nothing.
+import * as rowConvertModule from './rowConvert';
 import {
   battleRowToStore,
   characterRowToStore,
@@ -1095,6 +1102,43 @@ describe('★ rowConvert EG4: the three Option thresholds normalize absent -> nu
     } finally {
       warnSpy.mockRestore();
     }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// RED-TEAM ADDITION (gap against contract §G, EG4-5 row): that row names
+// `rowConvert.test.ts` as one of the three files that must prove "a partial deletion
+// leaving dead wiring" reds — but the authored suite only DELETED the fusion describe
+// block and swapped the import specifier. Deleting a test is not a gate: nothing here
+// asserted that `fusionRowToStore` / `SdkFusionRow` actually left rowConvert.ts.
+//
+// They could survive as live exports. `SdkFusionRow` is type-only (erased), but
+// `fusionRowToStore` is a runtime export, and connection.test.ts's whole-file scan only
+// proves connection.ts stopped IMPORTING it — a dead-but-exported converter satisfies
+// every other gate in this slice and is precisely the shape a half-done EG4-5 takes.
+//
+// Runtime probe on the module namespace, not a type probe: client/tsconfig.json excludes
+// **/*.test.ts, so a tsc-only assertion would gate nothing at all.
+// ---------------------------------------------------------------------------
+describe('★ rowConvert EG4-5: the fusion converter surface is DELETED from the module', () => {
+  it('★ BITES: rowConvert exports no fusionRowToStore', () => {
+    // Kills: leaving the converter exported "because nothing calls it" — dead wiring that
+    // still compiles, still ships in the bundle, and reads to the next author as if fusion
+    // were still a supported path.
+    const exported = rowConvertModule as unknown as Record<string, unknown>;
+    expect(
+      exported.fusionRowToStore,
+      'fusionRowToStore must be deleted from rowConvert.ts (contract §B "Deleted: … ' +
+        'SdkFusionRow, fusionRowToStore …"). RED TODAY: it is still exported.',
+    ).toBeUndefined();
+  });
+
+  it('★ BITES: the replacement converter IS exported (anti-vacuity for the deletion above)', () => {
+    // Without this, "fusion is gone" would be satisfied by deleting the feature instead
+    // of replacing it — the same anti-vacuity frame store.test.ts uses for its own
+    // fusion-surface deletion gate.
+    const exported = rowConvertModule as unknown as Record<string, unknown>;
+    expect(typeof exported.evolutionPathRowToStore).toBe('function');
   });
 });
 

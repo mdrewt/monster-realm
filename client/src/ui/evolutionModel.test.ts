@@ -496,9 +496,21 @@ describe('EG4-1 (A2) trust gate: unknown tags fail CLOSED, on either side', () =
     // for every monster — the client would render "ready to evolve" for an edge the
     // server rejects.
     const p = evoPath({ minTrustTier: UNKNOWN_TRUST_TAG });
-    expect(pathSatisfied(monster({ trustTier: 'Devoted' }), p)).toBe(false);
+    const devoted = monster({ trustTier: 'Devoted' });
+    expect(pathSatisfied(devoted, p)).toBe(false);
     expect(pathSatisfied(monster({ trustTier: 'Hostile' }), p)).toBe(false);
-    expect(eligibleEvolutionPaths(monster({ trustTier: 'Devoted' }), [p])).toEqual([]);
+    expect(eligibleEvolutionPaths(devoted, [p])).toEqual([]);
+    // RED-TEAM ADDITION: pin the SAME verdict on the gate ROW. A5 says pathRequirements
+    // is THE single walk and pathSatisfied derives from it — but nothing here forced the
+    // ROW to fail closed. An impl that special-cases the unknown threshold in
+    // pathSatisfied while pathRequirements keeps the `-1` sentinel renders an all-green
+    // trust row next to a blocked path: the panel says "requirement met", the server
+    // rejects. This is the fail-open direction A2 exists to forbid, one layer down.
+    const trustRow = pathRequirements(devoted, p).find((g) => g.kind === 'trust');
+    expect(trustRow, 'a present (non-null) threshold must still emit a trust row').toBeDefined();
+    expect(trustRow!.met, 'the trust ROW must fail closed on an unknown THRESHOLD tag') //
+      .toBe(false);
+    expect(unmetRequirement(devoted, p)).not.toBeNull();
   });
 
   it('BITES: an unknown MONSTER tag makes the gate unsatisfiable, even against the lowest threshold', () => {
@@ -506,9 +518,24 @@ describe('EG4-1 (A2) trust gate: unknown tags fail CLOSED, on either side', () =
     // still CLEAR a `minTrustTier: 'Hostile'` gate. A2: the gate returns false when
     // EITHER tag is unrecognized.
     const p = evoPath({ minTrustTier: 'Hostile' });
-    expect(pathSatisfied(monster({ trustTier: UNKNOWN_TRUST_TAG }), p)).toBe(false);
+    const unknown = monster({ trustTier: UNKNOWN_TRUST_TAG });
+    expect(pathSatisfied(unknown, p)).toBe(false);
     // Control: a KNOWN lowest tag does clear it, so the assertion above is not vacuous.
     expect(pathSatisfied(monster({ trustTier: 'Hostile' }), p)).toBe(true);
+    // RED-TEAM ADDITION: same row-level pin on the monster side, and the CONTROL row must
+    // read met=true — so "the row is always false" cannot satisfy this pair either.
+    const unknownRow = pathRequirements(unknown, p).find((g) => g.kind === 'trust');
+    const knownRow = pathRequirements(monster({ trustTier: 'Hostile' }), p).find(
+      (g) => g.kind === 'trust',
+    );
+    expect(unknownRow, 'a trust row must be emitted for an unknown monster tag too') //
+      .toBeDefined();
+    expect(knownRow, 'a trust row must be emitted for the known-tag control').toBeDefined();
+    expect(unknownRow!.met, 'the trust ROW must fail closed on an unknown MONSTER tag') //
+      .toBe(false);
+    expect(knownRow!.met, "CONTROL: 'Hostile' vs 'Hostile' is met — the row is not constant") //
+      .toBe(true);
+    expect(unmetRequirement(unknown, p)).not.toBeNull();
   });
 
   it('BITES: neither unknown-tag direction throws', () => {
@@ -799,14 +826,36 @@ describe('EG4-1 (A9) eligibleEvolutionPaths: filtered, complete, and sorted by e
     // nondeterministic and changes on every content republish per A1). The player's
     // choice list would silently reorder between sessions, so a muscle-memory click
     // picks a different evolution.
+    //
+    // RED-TEAM CORRECTION (fixture, not assertion): pathId is now ANTI-correlated with
+    // edgeId. The authored fixture used pathId = edgeId * 10, so "sort by pathId" — the
+    // single most likely wrong key, since pathId is the store's Map key and the field an
+    // implementer has closest to hand — produced the IDENTICAL order and sailed through.
+    // toSpecies is anti-correlated for the same reason. Against this fixture, only an
+    // edgeId-ascending sort yields [2,4,7,9]; the three anti-key assertions below prove
+    // that, so the equality is a genuine discrimination rather than a coincidence.
     const shuffled: readonly StoreEvolutionPath[] = [
-      evoPath({ pathId: 70n, edgeId: 7, toSpecies: 2 }),
-      evoPath({ pathId: 20n, edgeId: 2, toSpecies: 3 }),
-      evoPath({ pathId: 90n, edgeId: 9, toSpecies: 4 }),
-      evoPath({ pathId: 40n, edgeId: 4, toSpecies: 9 }),
+      evoPath({ pathId: 90n, edgeId: 7, toSpecies: 4 }),
+      evoPath({ pathId: 40n, edgeId: 2, toSpecies: 9 }),
+      evoPath({ pathId: 20n, edgeId: 9, toSpecies: 2 }),
+      evoPath({ pathId: 70n, edgeId: 4, toSpecies: 3 }),
     ];
     const got = eligibleEvolutionPaths(monster({ speciesId: 1 }), shuffled);
     expect(got.map((p) => p.edgeId)).toEqual([2, 4, 7, 9]);
+    expect(
+      shuffled.map((p) => p.edgeId),
+      'FIXTURE SOUNDNESS: insertion order must differ from edgeId order',
+    ).not.toEqual([2, 4, 7, 9]);
+    expect(
+      [...shuffled].sort((a, b) => Number(a.pathId - b.pathId)).map((p) => p.edgeId),
+      'FIXTURE SOUNDNESS: pathId order must differ from edgeId order, or a pathId sort ' +
+        'passes this test for free',
+    ).not.toEqual([2, 4, 7, 9]);
+    expect(
+      [...shuffled].sort((a, b) => a.toSpecies - b.toSpecies).map((p) => p.edgeId),
+      'FIXTURE SOUNDNESS: toSpecies order must differ from edgeId order, or a toSpecies ' +
+        'sort passes this test for free',
+    ).not.toEqual([2, 4, 7, 9]);
   });
 
   it('BITES: a different insertion permutation yields the SAME order', () => {
@@ -970,12 +1019,27 @@ describe('EG4-2 buildEvolutionViewModel: choices appear ONLY at 2+ eligible', ()
 
   it('BITES (A9): choices are ascending by edgeId, not by arrival order', () => {
     // Kills: Map-iteration-order dependence leaking into the player-facing choice list.
+    //
+    // RED-TEAM CORRECTION (fixture, not assertion): pathId and toSpecies are now both
+    // ANTI-correlated with edgeId. The authored fixture had edge9→to4, edge3→to2,
+    // edge6→to3 — i.e. toSpecies ascending produced the SAME [3,6,9], so an impl that
+    // sorted the choice list by target species (a plausible "alphabetical-ish" choice for
+    // a player-facing picker) passed for free. pathId defaulted to 1n on all three, so a
+    // pathId sort was merely stable and was caught only by luck of arrival order.
     const mon = vmFor(monster({ speciesId: 1 }), [
-      evoPath({ edgeId: 9, toSpecies: 4 }),
-      evoPath({ edgeId: 3, toSpecies: 2 }),
-      evoPath({ edgeId: 6, toSpecies: 3 }),
+      evoPath({ pathId: 30n, edgeId: 9, toSpecies: 2 }),
+      evoPath({ pathId: 90n, edgeId: 3, toSpecies: 4 }),
+      evoPath({ pathId: 60n, edgeId: 6, toSpecies: 3 }),
     ]);
+    // edgeId ascending → [3,6,9]; toSpecies ascending → [9,6,3]; pathId ascending →
+    // [9,6,3]; arrival order → [9,3,6]. Only the contracted sort produces the expected.
     expect(mon.choices.map((c) => c.edgeId)).toEqual([3, 6, 9]);
+    expect(
+      mon.choices.map((c) => c.toSpecies),
+      'FIXTURE SOUNDNESS: with edgeId-ascending choices the toSpecies sequence must be ' +
+        'DESCENDING here — if it reads ascending, the fixture no longer discriminates a ' +
+        'toSpecies sort from the contracted edgeId sort',
+    ).toEqual([4, 3, 2]);
   });
 
   it('BITES: exactly 1 eligible → choices is EMPTY', () => {
@@ -1031,6 +1095,37 @@ describe('EG4-2 buildEvolutionViewModel: choices appear ONLY at 2+ eligible', ()
     expect(mon.paths.map((p) => p.edgeId)).toEqual([1, 2]);
     expect(mon.paths.map((p) => p.met)).toEqual([true, false]);
     expect(mon.paths.map((p) => p.unmetReason)).toEqual([null, 'requires level 99']);
+  });
+
+  it('BITES (A1/EG1-12): no path view-model leaks pathId — it is a DB-internal store key', () => {
+    // RED-TEAM ADDITION (contract §B: "DB-internal key ONLY — the store map key (A1).
+    // NEVER read by a model or a view-model (EG1-12)"; §C freezes EvolutionPathViewModel
+    // to exactly {edgeId, toSpecies, toSpeciesName, met, unmetReason, gates}).
+    //
+    // Kills: `{ ...path, toSpeciesName, met, ... }` — a spread-the-store-row view-model.
+    // It is the shortest way to write the builder and it passes EVERY other assertion in
+    // this file. But pathId is RE-MINTED on every content republish (sync_content), so any
+    // view or callback that grows to key off it — a picker's `data-path-id`, a selection
+    // that survives a refresh — silently retargets after the next publish. Forbidding the
+    // field at the boundary is what stops that from ever becoming reachable.
+    const mon = vmFor(monster({ speciesId: 1, level: 30 }), [
+      evoPath({ pathId: 777n, edgeId: 1, toSpecies: 2, minLevel: 20 }),
+      evoPath({ pathId: 888n, edgeId: 2, toSpecies: 3, minLevel: 99 }),
+    ]);
+    expect(mon.paths, 'precondition: both outgoing edges are present').toHaveLength(2);
+    for (const p of mon.paths) {
+      const keys = Object.keys(p);
+      expect(keys, 'EvolutionPathViewModel must not carry pathId').not.toContain('pathId');
+      expect(keys, 'nor fromSpecies — the panel is already scoped to this monster') //
+        .not.toContain('fromSpecies');
+      expect(keys, 'nor the raw thresholds — gates[] is the rendered surface') //
+        .not.toContain('minLevel');
+      // Positive frame: the six contracted fields ARE all present, so the negatives above
+      // cannot be satisfied by an empty or degenerate object.
+      for (const field of ['edgeId', 'toSpecies', 'toSpeciesName', 'met', 'unmetReason', 'gates']) {
+        expect(keys, `EvolutionPathViewModel must carry ${field}`).toContain(field);
+      }
+    }
   });
 
   it('BITES: each path view-model carries its own gate rows (the progress half)', () => {

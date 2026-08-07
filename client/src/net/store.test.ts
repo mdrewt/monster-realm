@@ -1634,7 +1634,25 @@ describe('★ AuthoritativeStore EG4 (A1): a content republish burst never empti
     s.upsertEvolutionPath(evoPath(5n, 7, { toSpecies: 42 })); // the pre-republish row
     s.flushBatch();
 
-    s.upsertEvolutionPath(evoPath(9n, 7, { toSpecies: 42 })); // republished: NEW pathId, SAME edgeId
+    s.upsertEvolutionPath(evoPath(9n, 7, { toSpecies: 43 })); // republished: NEW pathId, SAME edgeId
+
+    // RED-TEAM ADDITION — the MID-BURST assertion, which is what actually makes THIS
+    // ordering discriminate. Without it, an edgeId-keyed store whose removeEvolutionPath
+    // SCANS for the matching pathId passes both order tests: the insert has already
+    // overwritten key 7, so the scan finds nothing, and the end state (one row, pathId 9n)
+    // is identical to the correct store's. The distinguishing observation is HERE, between
+    // the two callbacks — the SDK delivers them as separate callbacks inside one
+    // transaction, so this intermediate state is genuinely observable by any listener that
+    // runs before flushBatch. A pathId-keyed map holds BOTH rows; an edgeId-keyed map has
+    // already collapsed them to one.
+    expect(
+      s.evolutionPathCount,
+      'MID-BURST (A1): after the republished insert but BEFORE the stale delete, the stale ' +
+        'row (pathId 5) and the fresh row (pathId 9) must BOTH be live — they are distinct ' +
+        'rows that merely share an edgeId. A count of 1 here means the map is keyed by ' +
+        'edgeId and the insert silently destroyed a row the transaction had not deleted yet',
+    ).toBe(2);
+
     s.removeEvolutionPath(5n); // the stale delete, arriving SECOND
 
     const rows = [...s.evolutionPaths()];
@@ -1643,6 +1661,12 @@ describe('★ AuthoritativeStore EG4 (A1): a content republish burst never empti
       'edge 7 must still be present after a same-transaction re-insert + stale delete',
     ).toEqual([7]);
     expect(rows[0]!.pathId).toBe(9n); // the freshly-minted row, not the deleted one
+    expect(
+      rows[0]!.toSpecies,
+      'the SURVIVOR must be the republished row (toSpecies 43), not the stale one (42) — ' +
+        'distinct payloads so "a row with edgeId 7 survived" cannot be satisfied by the ' +
+        'wrong row',
+    ).toBe(43);
     expect(s.evolutionPathCount).toBe(1);
   });
 
@@ -1656,11 +1680,13 @@ describe('★ AuthoritativeStore EG4 (A1): a content republish burst never empti
     s.flushBatch();
 
     s.removeEvolutionPath(5n);
-    s.upsertEvolutionPath(evoPath(9n, 7, { toSpecies: 42 }));
+    s.upsertEvolutionPath(evoPath(9n, 7, { toSpecies: 43 }));
 
     const rows = [...s.evolutionPaths()];
     expect(rows.map((p) => p.edgeId)).toEqual([7]);
     expect(rows[0]!.pathId).toBe(9n);
+    // Distinct payloads (43, not the stale 42) — see the note on the forward-order case.
+    expect(rows[0]!.toSpecies).toBe(43);
     expect(s.evolutionPathCount).toBe(1);
   });
 

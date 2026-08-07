@@ -1272,13 +1272,42 @@ describe('★ connection.ts wiring (EG4/A1): W-EG4-INGEST — the evolution_path
       insertIdx,
       'connection.ts must contain a conn.db.evolution_path.onInsert handler. RED TODAY',
     ).toBeGreaterThanOrEqual(0);
-    // 300 chars: comfortably longer than the whole squashed handler (~150 chars) and
-    // short enough that the window cannot swallow the NEXT table's wiring.
-    const insertRegion = squashed.slice(insertIdx, insertIdx + 300);
+
+    // RED-TEAM CORRECTION (window sizing, not a loosening): a fixed 300-char forward
+    // window from `onInsert` FALSE-REDS the house idiom. Every other table here
+    // (item_row :301-306, the fusion block :308-317, my_conversation :332-...) hoists
+    // the body into a `const ingestX = (row) => { store.upsertX(...); batcher.schedule(); }`
+    // helper declared ABOVE the three registrations, so `batcher.schedule()` sits BEFORE
+    // `onInsert`, and the next occurrence after it is inside onDelete — measured at ~344
+    // chars past `onInsert` once biome wraps at lineWidth 100. The tooth would have forced
+    // a non-idiomatic inline handler or a weakened assertion.
+    //
+    // The region is therefore anchored on the CONVERSION SITE and bounded by the onDelete
+    // registration. This is STRICTLY TIGHTER, not looser: it cannot borrow a neighbouring
+    // table's `batcher.schedule()` (the bound stops inside this table's own block), and it
+    // still reds for the mutant it was written for — an ingest that writes the store and
+    // never kicks the batcher, under EITHER the helper idiom or an inline handler.
+    const convIdx = squashed.indexOf('evolutionPathRowToStore(');
     expect(
-      insertRegion.includes('batcher.schedule()'),
-      'the evolution_path onInsert region must call batcher.schedule() — without the ' +
-        're-render kick the content batch lands silently and the panel never redraws',
+      convIdx,
+      'connection.ts must contain an evolutionPathRowToStore( call site. RED TODAY',
+    ).toBeGreaterThanOrEqual(0);
+    const ingestEndIdx = squashed.indexOf('conn.db.evolution_path.onDelete');
+    expect(
+      ingestEndIdx,
+      'the evolution_path onDelete registration must exist and FOLLOW the conversion/ingest ' +
+        'site — the house idiom is onInsert/onUpdate/onDelete in that order, and this bound ' +
+        'is what stops the batcher assertion from borrowing the delete handler’s own ' +
+        'schedule() call. RED TODAY',
+    ).toBeGreaterThan(convIdx);
+    const ingestRegion = squashed.slice(convIdx, ingestEndIdx);
+    expect(
+      ingestRegion.includes('batcher.schedule()'),
+      'the evolution_path INSERT/UPDATE ingest must call batcher.schedule() — without the ' +
+        're-render kick the content batch lands silently and the panel never redraws. The ' +
+        'scanned region runs from the evolutionPathRowToStore( call site up to (and NOT ' +
+        'including) the onDelete registration, so the delete handler’s own schedule() ' +
+        'cannot satisfy it',
     ).toBe(true);
   });
 
