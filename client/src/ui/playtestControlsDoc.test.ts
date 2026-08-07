@@ -43,6 +43,27 @@
 // ambiguity error instead of silently picking one. A decoy BEFORE "## 3. Controls" is still
 // legitimately ignored (the section anchor already excludes it) — see the "before-anchor"
 // fixture below, which is unchanged and must keep passing.
+//
+// RED-TEAM FIX ROUND 2 (post-doc-fix review + a second red-team pass, both verified live):
+// (1) REVIEWER: `splitRowCells` returns `[]` for a truly blank/pipe-less separator line, so the
+//     "every cell is -/:/whitespace" loop silently runs zero times instead of throwing — not a
+//     false PASS (the next line gets mis-consumed as a row and A1 eventually fails), but the
+//     wrong, confusing diagnostic instead of REV-3's direct separator error. Fixed with an
+//     explicit zero-cells check.
+// (2) RED-TEAM: scored ANOTHER verified 22/22-green PoC (with the full original bug intact) by
+//     wrapping the REAL, tester-visible "## 3. Controls" section in a stray ``` fence and placing
+//     a byte-perfect DECOY "## 3. Controls" + table right after it, unfenced. Fence-stripping
+//     removes the real section before the anchor search ever runs, so only the decoy is visible —
+//     header-uniqueness (round 1's fix) cannot catch this because, post-stripping, there is
+//     exactly ONE heading and exactly ONE header. Fixed orthogonally (does not touch the
+//     fence-stripped anchor logic, so the before-anchor fixture is untouched): the RAW,
+//     CRLF-normalized-but-NOT-fence-stripped document must contain "## 3. Controls" EXACTLY ONCE,
+//     else throw — a duplicated raw heading means the fence-stripped view and the human-rendered
+//     view could disagree about which table is authoritative, and a gate must never silently
+//     prefer one.
+// (3) RED-TEAM: A4's ACCURACY NOTE understated the gap — see the note on A4's `it` block for the
+//     now-disclosed multi-char-span and bold-non-code shapes, plus the accepted false-positive
+//     risk now named in MISMATCH_GUIDANCE.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -115,6 +136,28 @@ interface ParsedRow {
  */
 function parseControlTable(markdown: string): ParsedRow[] {
   const normalized = markdown.split('\r\n').join('\n');
+
+  // RED-TEAM FIX ROUND 2 (2): this check runs on the RAW (CRLF-normalized but NOT
+  // fence-stripped) document, deliberately BEFORE fence-stripping — a stray fence can wrap the
+  // REAL "## 3. Controls" section, making it invisible to the fence-stripped anchor search below
+  // while a byte-perfect DECOY heading + table sits right after it, unfenced. Fence-stripped
+  // header-uniqueness (round 1's fix) cannot see this attack: post-stripping there is exactly one
+  // heading and one header. A duplicated RAW heading means the fence-stripped view and the
+  // human-rendered view disagree about which table is authoritative — a gate must never silently
+  // prefer one, so this throws rather than picking either candidate.
+  const rawHeadingCount = countOccurrences(normalized, '## 3. Controls');
+  if (rawHeadingCount > 1) {
+    throw new Error(
+      'parseControlTable: "## 3. Controls" appears more than once in the RAW document (before ' +
+        'fence-stripping): found ' +
+        rawHeadingCount +
+        ' occurrences. A duplicated section heading (e.g. a stray fence hiding the real, ' +
+        'tester-visible section behind a decoy) means the fence-stripped view and the ' +
+        'human-rendered view could disagree about which table is authoritative. Remove the ' +
+        'duplicate heading.',
+    );
+  }
+
   const stripped = stripFencedBlocks(normalized);
 
   const sectionIdx = stripped.indexOf('## 3. Controls');
@@ -156,6 +199,17 @@ function parseControlTable(markdown: string): ParsedRow[] {
     );
   }
   const separatorCells = splitRowCells(separatorLine);
+  if (separatorCells.length === 0) {
+    // REVIEWER FIX: a blank/pipe-less line splits to `[]`, so the per-cell loop below would run
+    // zero times and silently skip the diagnostic — the doc would still end up RED eventually
+    // (the next line gets mis-consumed as a data row, and A1 fails downstream), but with a
+    // confusing "unknown key" message instead of REV-3's direct, on-target separator error.
+    throw new Error(
+      'parseControlTable: separator row has no cells to validate — expected a pipe-delimited ' +
+        '"-"/":" line, got a blank or pipe-less line: ' +
+        JSON.stringify(separatorLine),
+    );
+  }
   for (const cell of separatorCells) {
     const trimmed = cell.trim();
     if (trimmed.length === 0) {
@@ -213,6 +267,21 @@ function splitRowCells(line: string): string[] {
 
 function stripBackticks(cell: string): string {
   return cell.split('`').join('');
+}
+
+/** Count non-overlapping occurrences of `needle` in `haystack` via a plain `indexOf` walk. */
+function countOccurrences(haystack: string, needle: string): number {
+  let count = 0;
+  let fromIndex = 0;
+  for (;;) {
+    const idx = haystack.indexOf(needle, fromIndex);
+    if (idx < 0) {
+      break;
+    }
+    count++;
+    fromIndex = idx + needle.length;
+  }
+  return count;
 }
 
 // ---------------------------------------------------------------------------------------------
@@ -283,7 +352,12 @@ function singleCharCodeSpans(markdown: string): string[] {
 
 const MISMATCH_GUIDANCE =
   'Fix docs/PLAYTEST.md (or client/src/ui/helpModel.ts CONTROLS if the SSOT itself is wrong) — ' +
-  'do NOT weaken or skip this test (client/src/ui/playtestControlsDoc.test.ts).';
+  'do NOT weaken or skip this test (client/src/ui/playtestControlsDoc.test.ts). ' +
+  'ACCEPTED FALSE-POSITIVE RISK (A4): CONTROLS currently contributes 12 single-character keys to ' +
+  "A4's whitelist, so a future doc edit that backticks an UNRELATED single character (e.g. a " +
+  'placeholder `S`, a lowercase `n`) will spuriously turn this RED even though nothing actually ' +
+  'drifted. If that happens, the right fix is to REPHRASE the doc to avoid a bare single-char ' +
+  'backtick, or to deliberately widen the whitelist — never to weaken or skip this test.';
 
 // =================================================================================================
 // Part 1 — pure-fixture unit tests for the two helpers (prove the fail-loud paths WITHOUT ever
@@ -418,6 +492,37 @@ describe('parseControlTable(): pure-fixture behavior', () => {
     expect(rows).toEqual([{ key: '?', action: 'Toggle this help overlay' }]);
   });
 
+  it('BITES (red-team fix round 2): a stray fence hiding the REAL section behind an unfenced decoy heading throws — never silently prefers the decoy', () => {
+    // WRONG IMPL KILLED: the round-2 red-team PoC, verified 22/22 GREEN against a doc carrying
+    // the FULL original bug (G/H restored, M dropped, T reverted) — the REAL, tester-visible
+    // "## 3. Controls" section is wrapped in a stray ``` fence, so fence-stripping removes it
+    // BEFORE the anchor search ever runs; a byte-perfect DECOY "## 3. Controls" + table sits
+    // right after, unfenced, and becomes the ONLY thing the (round-1-fixed) fence-stripped
+    // header-uniqueness check can see — exactly one heading, exactly one header, so round 1's fix
+    // alone cannot catch this. The round-2 fix works on the RAW (pre-fence-strip) document
+    // instead: two "## 3. Controls" occurrences in the raw text is itself the tell.
+    const strayFenceHidesReal = [
+      '# Doc',
+      '',
+      '```',
+      '## 3. Controls',
+      '',
+      '| Key | Action |',
+      '|-----|--------|',
+      '| `?` | Toggle this help overlay |',
+      '| `G` | Open the shop |',
+      '```',
+      '',
+      '## 3. Controls',
+      '',
+      '| Key | Action |',
+      '|-----|--------|',
+      '| `?` | Toggle this help overlay |',
+      '| `H` | Heal your party |',
+    ].join('\n');
+    expect(() => parseControlTable(strayFenceHidesReal)).toThrow('appears more than once');
+  });
+
   it('BITES: a removed/malformed separator line throws instead of silently misparsing', () => {
     // WRONG IMPL KILLED: a parser that treats the FIRST data row as the separator when the
     // real separator is deleted — it would silently drop the `?` row and produce a confusing
@@ -430,6 +535,24 @@ describe('parseControlTable(): pure-fixture behavior', () => {
       '| `T` | Interact |',
     ].join('\n');
     expect(() => parseControlTable(noSeparator)).toThrow('separator');
+  });
+
+  it('BITES (reviewer fix): a BLANK (pipe-less) separator line throws the direct separator error, not a confusing downstream one', () => {
+    // WRONG IMPL KILLED: `splitRowCells` returns `[]` for a truly blank/pipe-less line (unlike
+    // the `noSeparator`/`badSeparator` fixtures above, whose lines still contain `|` characters).
+    // Without the explicit zero-cells check, the `for (const cell of separatorCells)` loop below
+    // runs ZERO times, so no exception fires here — the doc still ends up RED eventually (the
+    // blank line gets skipped and the next `|`-prefixed line is parsed as a header-adjacent row,
+    // eventually failing A1 with a confusing "unknown key" message), but REV-3's whole point is a
+    // DIRECT diagnostic at the point of the actual defect, not a downstream inference.
+    const blankSeparator = [
+      '## 3. Controls',
+      '',
+      '| Key | Action |',
+      '',
+      '| `?` | Toggle this help overlay |',
+    ].join('\n');
+    expect(() => parseControlTable(blankSeparator)).toThrow('separator');
   });
 
   it('BITES: a separator row with stray prose text throws', () => {
@@ -662,10 +785,17 @@ describe('docs/PLAYTEST.md §3 Controls table vs. helpModel.ts CONTROLS SSOT (12
     // entirely, which a table-only gate (A1-A3) is blind to. RED TODAY: `G` and `H` appear as
     // single-char inline-code spans at :74 (and in the table).
     //
-    // ACCURACY NOTE (not overclaiming): this only catches the BACKTICKED form. Non-backticked
-    // prose ("press G to shop", no backticks) is a disclosed, out-of-scope residual gap per the
-    // plan (RT-3 adjudication) — it is out of reach of any non-fragile gate, since the doc has no
-    // other convention distinguishing a key mention from ordinary prose.
+    // ACCURACY NOTE (not overclaiming): this only catches the SINGLE-CHARACTER BACKTICKED form.
+    // Three shapes are disclosed, out-of-scope residual gaps (all verified invisible to this
+    // scan) — none are chased, because each collides with a legitimate span elsewhere in the doc:
+    //  - non-backticked prose ("press G to shop", no backticks) — the doc has no convention
+    //    distinguishing a key mention from ordinary prose (RT-3 adjudication);
+    //  - a MULTI-CHARACTER code span, e.g. "some older screenshots may show `G/H` for shop/heal"
+    //    — a multi-char scan would collide with the doc's legitimate `F8`, `F9`, `WASD`, `Space`,
+    //    `Escape`, `spacetime`, `npm run build`, `docs/playtest-ops.md` spans, which is exactly
+    //    why single-char-only was chosen;
+    //  - a bold non-code mention, e.g. "**G**" / "**H**" — has no backticks at all, so it is
+    //    indistinguishable from ordinary bold prose by any backtick-based scan.
     //
     // The whitelist is DERIVED from CONTROLS (never a hardcoded G/H denylist), and the scan is
     // deliberately single-character-only: `F8` (§6, error-overlay dismiss) is a LIVE key
