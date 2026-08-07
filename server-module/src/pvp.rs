@@ -32,20 +32,17 @@ use crate::guards::{
     check_monster_in_party, check_party_size, is_in_ongoing_battle, log_reject,
     reject_if_monster_in_trade, require_pvp_participant,
 };
-use crate::marshal::{
-    battle_monster_from_row, build_ability_store, now_ms, pub_from_monster, type_chart_from_rows,
-};
+use crate::marshal::{battle_monster_from_row, build_ability_store, now_ms, pub_from_monster};
 use crate::ranking;
 use crate::schema::{
     battle, battle_action, battle_challenge, monster, monster_pub, player, skill_row, species_row,
-    trade_offer, type_relation_row, Battle, BattleAction, BattleChallenge, ChallengeStatus,
-    SkillRow,
+    trade_offer, Battle, BattleAction, BattleChallenge, ChallengeStatus, SkillRow,
 };
 use crate::WILD_IDENTITY;
 use game_core::{
-    apply_entry_ability, is_challenge_stale, load_abilities, pvp_deadline_forfeit_side,
-    pvp_forfeit_outcome, resolve_full_turn, BattleMonster, BattleOutcome, BattleSide, BattleState,
-    BattleStatusStore, PvpAction, SideId, StatusVariance, TurnVariance, CHALLENGE_TTL_MS,
+    apply_entry_ability, is_challenge_stale, pvp_deadline_forfeit_side, pvp_forfeit_outcome,
+    resolve_full_turn, BattleMonster, BattleOutcome, BattleSide, BattleState, BattleStatusStore,
+    PvpAction, SideId, StatusVariance, TurnVariance, CHALLENGE_TTL_MS,
 };
 use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 
@@ -277,8 +274,8 @@ pub(crate) fn start_pvp_battle(
     };
 
     // Apply entry abilities for both initial actives (ADR-0100).
-    let ability_defs = load_abilities()?;
-    let abilities = build_ability_store(&ability_ids_a, &ability_ids_b, &ability_defs);
+    let ability_defs = crate::content_cache::cached_abilities()?;
+    let abilities = build_ability_store(&ability_ids_a, &ability_ids_b, ability_defs);
     let mut status = BattleStatusStore {
         side_a: state.side_a.team.iter().map(|m| m.status).collect(),
         side_b: state.side_b.team.iter().map(|m| m.status).collect(),
@@ -380,7 +377,7 @@ fn resolve_pvp_turn_if_ready(ctx: &ReducerContext, battle_id: u64) -> Result<(),
 
     // Build all inputs for resolve_full_turn (mirrors submit_attack in battle.rs).
     let skill_defs = cached_skills()?;
-    let type_chart = type_chart_from_rows(ctx.db.type_relation_row().iter())?;
+    let type_chart = crate::content_cache::cached_type_chart(ctx)?;
     let variance = TurnVariance::from_ctx_random(ctx.random());
     let sv = StatusVariance::from_ctx_random(ctx.random());
 
@@ -389,7 +386,7 @@ fn resolve_pvp_turn_if_ready(ctx: &ReducerContext, battle_id: u64) -> Result<(),
         side_b: battle.state.side_b.team.iter().map(|m| m.status).collect(),
     };
 
-    let ability_defs = load_abilities()?;
+    let ability_defs = crate::content_cache::cached_abilities()?;
     let a_ability_ids: Vec<Option<u32>> = battle
         .state
         .side_a
@@ -416,7 +413,7 @@ fn resolve_pvp_turn_if_ready(ctx: &ReducerContext, battle_id: u64) -> Result<(),
                 .and_then(|sp| sp.ability)
         })
         .collect();
-    let abilities = build_ability_store(&a_ability_ids, &b_ability_ids, &ability_defs);
+    let abilities = build_ability_store(&a_ability_ids, &b_ability_ids, ability_defs);
 
     let _events = resolve_full_turn(
         &mut battle.state,
@@ -497,8 +494,11 @@ fn settle_pvp_battle(ctx: &ReducerContext, battle: Battle) -> Result<(), String>
     // write_back_battle_results first — battle row is still Ongoing in DB so its
     // GC sweep does not delete the current row (RT-M16-08).
     if let Err(e) = write_back_battle_results(ctx, &battle) {
+        // 12r-d (ADR-0170 D5): `e` is error text that may contain quotes — escape
+        // before interpolating into the hand-built JSON line.
+        let escaped = crate::guards::json_escape(&e);
         log::error!(
-            "{{\"evt\":\"pvp_settle_writeback_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
+            "{{\"evt\":\"pvp_settle_writeback_fail\",\"battle_id\":{battle_id},\"err\":\"{escaped}\"}}",
         );
     }
 
@@ -514,8 +514,9 @@ fn settle_pvp_battle(ctx: &ReducerContext, battle: Battle) -> Result<(), String>
 
     // Side-B HP write-back. Log-and-continue (ADR-0077): outcome already committed.
     if let Err(e) = write_back_party_hp_pvp_side_b(ctx, &battle) {
+        let escaped = crate::guards::json_escape(&e);
         log::error!(
-            "{{\"evt\":\"pvp_settle_side_b_hp_fail\",\"battle_id\":{battle_id},\"err\":\"{e}\"}}",
+            "{{\"evt\":\"pvp_settle_side_b_hp_fail\",\"battle_id\":{battle_id},\"err\":\"{escaped}\"}}",
         );
     }
 
@@ -608,8 +609,9 @@ pub(crate) fn forfeit_on_disconnect(ctx: &ReducerContext, disconnected: Identity
                 continue;
             }
             if let Err(e) = apply_pvp_forfeit(ctx, battle, SideId::SideA) {
+                let escaped = crate::guards::json_escape(&e);
                 log::error!(
-                    "{{\"evt\":\"forfeit_on_disconnect_err\",\"battle_id\":{battle_id},\"reason\":\"{e}\"}}"
+                    "{{\"evt\":\"forfeit_on_disconnect_err\",\"battle_id\":{battle_id},\"reason\":\"{escaped}\"}}"
                 );
             }
         }
@@ -621,8 +623,9 @@ pub(crate) fn forfeit_on_disconnect(ctx: &ReducerContext, disconnected: Identity
                 continue;
             }
             if let Err(e) = apply_pvp_forfeit(ctx, battle, SideId::SideB) {
+                let escaped = crate::guards::json_escape(&e);
                 log::error!(
-                    "{{\"evt\":\"forfeit_on_disconnect_err\",\"battle_id\":{battle_id},\"reason\":\"{e}\"}}"
+                    "{{\"evt\":\"forfeit_on_disconnect_err\",\"battle_id\":{battle_id},\"reason\":\"{escaped}\"}}"
                 );
             }
         }

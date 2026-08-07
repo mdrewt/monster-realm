@@ -553,6 +553,12 @@ pub struct HealLocationRow {
     pub cost_item_id: Option<u32>,
     pub cost_qty: u32,
     pub cooldown_ms: i64,
+    /// Currency cost charged by `heal_party` (ADR-0083), mirrored to the client so
+    /// the heal UI can display it (12r-d, closes ADR-0170 residual 1). Appended at
+    /// the end with a typed default per ADR-0173 D5 — bare `0` BSATN-encodes as
+    /// 4 bytes and fails the automigration publish.
+    #[default(0u64)]
+    pub cost_currency: u64,
 }
 
 /// PRIVATE per-player heal cooldown anchor.

@@ -1154,8 +1154,11 @@ pub(crate) fn write_back_battle_results(
         let loser_lvl = match game_core::Level::new(loser_active.level) {
             Ok(l) => l,
             Err(e) => {
+                // 12r-d (ADR-0170 D5): validator error text may contain quotes —
+                // escape before interpolating into the hand-built JSON line.
+                let escaped = crate::guards::json_escape(&e);
                 log::error!(
-                    "{{\"evt\":\"xp_skip_loser_level\",\"battle_id\":{},\"loser_species_id\":{},\"reason\":\"{e}\"}}",
+                    "{{\"evt\":\"xp_skip_loser_level\",\"battle_id\":{},\"loser_species_id\":{},\"reason\":\"{escaped}\"}}",
                     battle.battle_id,
                     loser_active.species_id
                 );
@@ -1236,8 +1239,9 @@ pub(crate) fn write_back_battle_results(
                             ) {
                                 Ok(v) => v,
                                 Err(e) => {
+                                    let escaped = crate::guards::json_escape(&e);
                                     log::error!(
-                                        "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"ivs: {e}\"}}",
+                                        "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"ivs: {escaped}\"}}",
                                     );
                                     break 'stat_recompute;
                                 }
@@ -1252,8 +1256,9 @@ pub(crate) fn write_back_battle_results(
                             ) {
                                 Ok(v) => v,
                                 Err(e) => {
+                                    let escaped = crate::guards::json_escape(&e);
                                     log::error!(
-                                        "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"evs: {e}\"}}",
+                                        "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"evs: {escaped}\"}}",
                                     );
                                     break 'stat_recompute;
                                 }
@@ -1262,8 +1267,9 @@ pub(crate) fn write_back_battle_results(
                             let lvl = match game_core::Level::new(m.level) {
                                 Ok(l) => l,
                                 Err(e) => {
+                                    let escaped = crate::guards::json_escape(&e);
                                     log::error!(
-                                        "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"level: {e}\"}}",
+                                        "{{\"evt\":\"level_up_stat_skip\",\"monster_id\":{mid},\"reason\":\"level: {escaped}\"}}",
                                     );
                                     break 'stat_recompute;
                                 }
@@ -1378,8 +1384,9 @@ pub(crate) fn resolve_wild_battle_on_disconnect(ctx: &ReducerContext, disconnect
         // must NOT leave the `Ongoing` row alive (that re-creates the soft-lock);
         // the deletes below run regardless.
         if let Err(e) = write_back_battle_results(ctx, &battle) {
+            let escaped = crate::guards::json_escape(&e);
             log::error!(
-                "{{\"evt\":\"wild_disconnect_writeback_err\",\"battle_id\":{id},\"reason\":\"{e}\"}}"
+                "{{\"evt\":\"wild_disconnect_writeback_err\",\"battle_id\":{id},\"reason\":\"{escaped}\"}}"
             );
         }
         // Belt-and-suspenders (ADR-0138 D4): explicitly delete the private
