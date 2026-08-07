@@ -5,6 +5,7 @@
 **Slice:** EG1 (M-evolution-essence-graph — EARS EG1-1..EG1-12)
 **Supersedes:** —
 **Amends:** ADR-0060, ADR-0061, ADR-0062
+**Amended-by:** ADR-0175, ADR-0176
 **Subsystems:** evolution-fusion, schema-persistence
 **Decision:** Land Migration A (+16 Monster / +12 MonsterPub / Species.tier / new public evolution_path table) and the game-core essence-graph type freeze, deleting fusion outright, so EG2/EG3/EG4 fan out behind one frozen contract.
 

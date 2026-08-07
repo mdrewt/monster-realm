@@ -5,6 +5,7 @@
 **Slice:** uxd3-a (M-postgate-ux-design — unified overlay IA)
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** ADR-0163, ADR-0164
 **Subsystems:** client-ui
 **Decision:** Overlay modality moves into a pure `canOpen` reducer over a 15-member tier manifest, and a `KeyM` two-level menu makes the hotkeys discoverable; the fan-out collapse and gate retirement defer to uxd3-b.
 
