@@ -45,6 +45,35 @@
 // not affect.
 // ===========================================================================
 //
+// ===========================================================================
+// RED-TEAM HARDENING (EG5 round 2):
+//
+//   H1 STRING DECOYS. A single `log::debug!("… require_owner(..)?; …
+//      evaluate_care(..)?; … monster_pub().monster_id().update(pub_from_monster(&m)) …")`
+//      in an otherwise guard-free care() satisfied this file's whole ladder.
+//      Every scan now runs on `prepareRustSource` = comment-strip THEN
+//      `blankStringLiterals` (char-walk ported from no-idle-accrual.eval.mjs),
+//      applied PER FILE. BAD_CARE_STRING_DECOY pins it, and that tooth also
+//      asserts the decoy still fools the UNBLANKED scan, so the blanking cannot
+//      quietly decay into a no-op.
+//
+//   L2 ALIAS LAUNDERING (g8). `use game_core::apply_care as care_rule;` renames
+//      the retired bond API past the body needles; g8 now sweeps the SOURCE for
+//      the `use … as` shapes as well.
+//
+// KNOWN LIMITATIONS of this lens (deliberately NOT chased — a textual scanner
+// cannot close them):
+//   * DEAD-CODE WRAPPING. `if false { require_owner(..)?; }` still reads as
+//     present. Reachability needs the compiler; raising_tests.rs's behavioural
+//     cases and code review are that control.
+//   * PRESENCE ≠ ENFORCEMENT for the care/train guards. The sibling
+//     evolution-reducer-security eval requires its `?`-propagating guards to
+//     actually carry the `?`; the care/train checks here are still
+//     presence-only (`let _ = require_owner(..);` would pass g1/t1). Closing
+//     that is a known follow-up, deliberately NOT bundled into the
+//     Migration-B-forcing change so this eval's red stays attributable to g8.
+//   * ORDERING vs CONTROL FLOW. T3 compares textual indexes, not execution order.
+//
 // Implementation note on Semgrep detect-non-literal-regexp:
 //   All pattern matching uses String.indexOf() or literal /regex/ patterns.
 //   NO `new RegExp(...)` with a non-literal argument is used anywhere here.
@@ -67,6 +96,116 @@ import { fileURLToPath } from 'node:url';
 export function stripRustComments(src) {
   // Block comments first, then line comments.
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+}
+
+/**
+ * Blank the CONTENT of Rust string literals (plain, byte `b"…"`, raw `r"…"` /
+ * `r#"…"#` / `br#"…"#`), leaving the quotes and every other byte at its original
+ * offset. Ported (not imported — this repo keeps eval helpers file-local) from
+ * the tested copy in no-idle-accrual.eval.mjs.
+ *
+ * Char literals are PRESERVED but consumed as a unit, so a `'"'` char literal
+ * can never open a phantom string and hollow out the rest of the file — the
+ * exact misalignment `server-module/src/movement_tests.rs` records. A `'` with
+ * no closing `'` within four chars is a lifetime tick (`&'a str`), left alone.
+ *
+ * H1 (red-team): without this, a single `log::debug!("… require_owner(..)?; …
+ * evaluate_care(..)?; … monster_pub().monster_id().update(pub_from_monster(&m)) …")`
+ * satisfies this file's whole guard ladder from inside a comment-free string.
+ *
+ * Char-walk only — NO new RegExp(non-literal).
+ *
+ * @param {string} src Comment-stripped Rust source.
+ * @returns {string} Same length, string-literal contents replaced by spaces.
+ */
+export function blankStringLiterals(src) {
+  const out = src.split('');
+  const isIdent = (ch) => ch !== undefined && /[A-Za-z0-9_]/.test(ch);
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+
+    // --- char literal (kept verbatim, consumed as one unit) ---
+    if (c === "'") {
+      const escaped = src[i + 1] === '\\';
+      let end = -1;
+      for (let k = escaped ? 3 : 2; k <= 4; k++) {
+        if (src[i + k] === "'") {
+          end = i + k + 1;
+          break;
+        }
+      }
+      if (end !== -1) {
+        i = end;
+        continue;
+      }
+      i++; // lifetime tick
+      continue;
+    }
+
+    // --- raw string: r"…" / r#"…"# / br#"…"# (b/r prefix must not be part of
+    //     a longer identifier, so `ctx.db` and `row` are never openers) ---
+    let p = i;
+    if ((c === 'b' || c === 'r') && !isIdent(src[i - 1])) {
+      if (c === 'b' && (src[i + 1] === '"' || src[i + 1] === 'r')) p = i + 1;
+      if (src[p] === 'r') {
+        let hashes = 0;
+        while (src[p + 1 + hashes] === '#') hashes++;
+        if (src[p + 1 + hashes] === '"') {
+          const closer = `"${'#'.repeat(hashes)}`;
+          const hit = src.indexOf(closer, p + 2 + hashes);
+          const stop = hit === -1 ? src.length : hit;
+          for (let k = p + 2 + hashes; k < stop; k++) out[k] = ' ';
+          i = hit === -1 ? src.length : hit + closer.length;
+          continue;
+        }
+      }
+      // Keep `p` advanced ONLY for a byte string `b"…"`; otherwise this `b`/`r`
+      // was an ordinary identifier char and must be re-processed as such.
+      if (!(p === i + 1 && src[p] === '"')) p = i;
+    }
+
+    // --- plain (or byte) string ---
+    if (src[p] === '"') {
+      let j = p + 1;
+      while (j < src.length) {
+        if (src[j] === '\\') {
+          out[j] = ' ';
+          if (j + 1 < src.length) out[j + 1] = ' ';
+          j += 2;
+          continue;
+        }
+        if (src[j] === '"') break;
+        out[j] = ' ';
+        j++;
+      }
+      i = j < src.length ? j + 1 : src.length;
+      continue;
+    }
+
+    i++;
+  }
+  return out.join('');
+}
+
+/**
+ * THE single entry point every scan in this file goes through: strip comments,
+ * then blank string-literal contents.
+ *
+ * Applied PER FILE on the real source (readServerModuleSources' `transform`
+ * argument) — load-bearing here, because unlike the sibling
+ * evolution-reducer-security eval this reader INCLUDES `*_tests.rs`, and those
+ * files legitimately contain raw strings (`r#"…"#`, guards_tests.rs /
+ * m14_5d_1a_tests.rs) and `b'"'` char literals (battle_tests.rs,
+ * economy_tests.rs, pvp_tests.rs). Per-file scoping keeps any walker
+ * misalignment inside the file that caused it instead of hollowing out
+ * raising.rs downstream of it in the concatenation.
+ *
+ * @param {string} src Raw Rust source.
+ * @returns {string}
+ */
+export function prepareRustSource(src) {
+  return blankStringLiterals(stripRustComments(src));
 }
 
 /**
@@ -436,6 +575,34 @@ export function checkEvaluateCareCooldownOnly(src, body) {
         'delegating to game_core::is_cooldown_ready. THIS IS THE EXPECTED RED STATE before ' +
         'Migration B lands in this PR — reshape the reducer, do not relax this check'
       );
+    }
+  }
+
+  // L2 (red-team) — ALIAS LAUNDERING. `use game_core::apply_care as care_rule;`
+  // renames the retired API at the import boundary, and the body needles above
+  // (which only see the call site) go quiet. The sweep runs on the SOURCE, not
+  // the body, because that is where a `use` lives; it is deliberately
+  // module-wide rather than raising.rs-only, since bond is retired everywhere in
+  // server-module and an alias in ANY file is the same laundering signal.
+  // Word-bounded on the right so `as BondLike`/`as Bondage` cannot false-fire.
+  const isIdentChar = (ch) => ch !== undefined && /[A-Za-z0-9_]/.test(ch);
+  // Only the `use … as` shapes, in both directions: `apply_care as <new>`
+  // (renaming the retired API away) and `<other> as apply_care` (masquerading
+  // as it). `Bond as` / `CARE_BOND_AMOUNT as` are deliberately NOT listed —
+  // those collide with ordinary numeric/pointer casts and would false-fire.
+  const aliasNeedles = [' as apply_care', ' as Bond', ' as CARE_BOND_AMOUNT', 'apply_care as'];
+  for (const needle of aliasNeedles) {
+    let at = src.indexOf(needle);
+    while (at !== -1) {
+      if (!isIdentChar(src[at + needle.length])) {
+        return (
+          `g8-bond-residue: server-module source contains \`${needle.trim()}\` — the retired ` +
+          'bond API (apply_care / Bond / CARE_BOND_AMOUNT) is being re-exported or imported ' +
+          'under an alias, which launders it past the body needles above. Bond is RETIRED ' +
+          '(spec §4, EG5-6 Migration B): drop the import, do not rename it'
+        );
+      }
+      at = src.indexOf(needle, at + 1);
     }
   }
 
@@ -1152,6 +1319,41 @@ const BAD_EVALUATE_CARE_BOND_PASSTHROUGH = `
   }
 `;
 
+/** BAD (H1, red-team PoC): THE STRING DECOY. A care() with NO ownership guard,
+ * NO seam delegation and NO monster_pub mirror, whose only mention of any of
+ * them lives inside one log string. Before blankStringLiterals this body passed
+ * checkCareOwnershipGuard, checkCareSSOT AND checkCareDualWrite. Its tooth
+ * asserts both directions: flagged after blanking, still fooling every one of
+ * those three checkers WITHOUT blanking (so the blanking stays load-bearing). */
+const BAD_CARE_STRING_DECOY = `
+  pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
+      let mut m = ctx.db.monster().monster_id().find(monster_id)
+          .ok_or_else(|| "monster not found".to_string())?;
+      log::debug!("audit trail: require_owner(ctx,m.owner_identity)?; evaluate_care(m.last_care_at_ms,now)?; ctx.db.monster_pub().monster_id().update(pub_from_monster(&m));");
+      let now = now_ms(ctx);
+      m.last_care_at_ms = now;
+      m.trust_favorable_count = m.trust_favorable_count.saturating_add(1);
+      ctx.db.monster().monster_id().update(m.clone());
+      Ok(())
+  }
+`;
+
+/** BAD (L2, g8-bond-residue): ALIAS LAUNDERING. The seam body is textually
+ * clean — cooldown-only, 2-arg, no `apply_care(` token anywhere in it — because
+ * the retired rule was imported under a new name at the top of the file. The
+ * body-only needles go quiet; the source-level alias sweep catches it. */
+const BAD_EVALUATE_CARE_ALIASED_BOND = `
+  use game_core::{apply_care as care_rule, is_cooldown_ready};
+
+  pub(crate) fn evaluate_care(last_care_at_ms: i64, now: i64) -> Result<(), String> {
+      let _ = care_rule(m.bond, 5);
+      if !is_cooldown_ready(last_care_at_ms, now, CARE_COOLDOWN_MS) {
+          return Err("care cooldown not yet elapsed".to_string());
+      }
+      Ok(())
+  }
+`;
+
 /** BAD: care has inline bond arithmetic instead of apply_care. Must be flagged by checkCareSSOT. */
 const BAD_INLINE_BOND_MATH = `
   pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
@@ -1250,6 +1452,14 @@ const GOOD_CARE_DELEGATING = `
 /** GOOD: a fully-compliant care that logs after both updates using a string that
  * contains the characters "Err(" — must NOT be flagged by checkCareRejectNeverBurns.
  * Kills: a naive bare-Err( scanner that false-positives on log strings.
+ *
+ * Still biting after H1: this fixture's inner quotes are UNESCAPED, so
+ * blankStringLiterals tokenises the format string into alternating quoted and
+ * bare chunks and leaves `Err(cases_handled_above)` standing as bare text after
+ * the dual-write. The check must therefore still discriminate `returnErr(` from
+ * a bare `Err(` — blanking alone does not save it. (Brace balance is preserved:
+ * every `{{`/`{}`/`}}` in the line lands inside a quoted chunk and is blanked,
+ * so extraction is unaffected.)
  */
 const GOOD_CARE_WITH_LOG = `
   pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
@@ -1312,7 +1522,7 @@ export default async function raisingReducerSecurityEval() {
 
   // --- Tooth 1: missing ownership guard must be flagged --------------------
   {
-    const body = extractReducerBody(stripRustComments(BAD_NO_OWNERSHIP), 'care');
+    const body = extractReducerBody(prepareRustSource(BAD_NO_OWNERSHIP), 'care');
     if (!body) {
       return {
         name,
@@ -1329,9 +1539,57 @@ export default async function raisingReducerSecurityEval() {
     }
   }
 
+  // --- Tooth H1: the STRING DECOY (red-team PoC) ---------------------------
+  // (a) with blanking, every checker the decoy targets must flag it;
+  // (b) WITHOUT blanking, every one of them must still be fooled — proof that
+  //     blankStringLiterals is load-bearing and not a decorative no-op.
+  {
+    const runAll = (b) => [
+      ['checkCareOwnershipGuard', checkCareOwnershipGuard(b)],
+      ['checkCareSSOT', checkCareSSOT(b)],
+      ['checkCareDualWrite', checkCareDualWrite(b)],
+    ];
+
+    const blanked = extractReducerBody(prepareRustSource(BAD_CARE_STRING_DECOY), 'care');
+    const unblanked = extractReducerBody(stripRustComments(BAD_CARE_STRING_DECOY), 'care');
+    if (!blanked || !unblanked) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: could not extract care body from BAD_CARE_STRING_DECOY fixture',
+      };
+    }
+
+    const missed = runAll(blanked)
+      .filter(([, verdict]) => verdict === null)
+      .map(([label]) => label);
+    if (missed.length > 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH H1: BAD_CARE_STRING_DECOY (a guard-free, seam-free, mirror-free care whose ' +
+          `only mention of each lives in one log string) was NOT flagged by: ${missed.join(', ')} ` +
+          '— string-literal CONTENT must never satisfy a code invariant',
+      };
+    }
+
+    const stillFooled = runAll(unblanked).every(([, verdict]) => verdict === null);
+    if (!stillFooled) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH H1 (vacuity): BAD_CARE_STRING_DECOY no longer fools the UNBLANKED scan, so it ' +
+          'stopped exercising blankStringLiterals — restore a decoy that a non-blanking ' +
+          'scanner would swallow whole',
+      };
+    }
+  }
+
   // --- Tooth 2: client time param in signature must be flagged -------------
   {
-    const stripped = stripRustComments(BAD_CLIENT_TIME_PARAM);
+    const stripped = prepareRustSource(BAD_CLIENT_TIME_PARAM);
     const body = extractReducerBody(stripped, 'care');
     if (!body) {
       return {
@@ -1353,7 +1611,7 @@ export default async function raisingReducerSecurityEval() {
 
   // --- Tooth 3: update before Err must be flagged --------------------------
   {
-    const body = extractReducerBody(stripRustComments(BAD_UPDATE_BEFORE_ERR), 'care');
+    const body = extractReducerBody(prepareRustSource(BAD_UPDATE_BEFORE_ERR), 'care');
     if (!body) {
       return {
         name,
@@ -1374,7 +1632,7 @@ export default async function raisingReducerSecurityEval() {
 
   // --- Tooth 4: <= cooldown operator must be flagged -----------------------
   {
-    const body = extractReducerBody(stripRustComments(BAD_COOLDOWN_LEQ), 'evaluate_care');
+    const body = extractReducerBody(prepareRustSource(BAD_COOLDOWN_LEQ), 'evaluate_care');
     if (!body) {
       return {
         name,
@@ -1395,7 +1653,7 @@ export default async function raisingReducerSecurityEval() {
 
   // --- Tooth 5: inline bond math must be flagged ---------------------------
   {
-    const body = extractReducerBody(stripRustComments(BAD_INLINE_BOND_MATH), 'care');
+    const body = extractReducerBody(prepareRustSource(BAD_INLINE_BOND_MATH), 'care');
     if (!body) {
       return {
         name,
@@ -1415,7 +1673,7 @@ export default async function raisingReducerSecurityEval() {
 
   // --- Tooth 6: hand-rolled pub update must be flagged ---------------------
   {
-    const body = extractReducerBody(stripRustComments(BAD_UPDATE_HAND_ROLLED_PUB), 'care');
+    const body = extractReducerBody(prepareRustSource(BAD_UPDATE_HAND_ROLLED_PUB), 'care');
     if (!body) {
       return {
         name,
@@ -1436,7 +1694,7 @@ export default async function raisingReducerSecurityEval() {
 
   // --- Green-path teeth: good fixtures must pass ALL checks (no false positives) ---
   {
-    const stripped = stripRustComments(GOOD_CARE);
+    const stripped = prepareRustSource(GOOD_CARE);
     const body = extractReducerBody(stripped, 'care');
     if (!body) {
       return {
@@ -1463,7 +1721,7 @@ export default async function raisingReducerSecurityEval() {
   }
   // --- Green-path: delegating style (care → evaluate_care) must pass all six checks ---
   {
-    const stripped = stripRustComments(GOOD_CARE_DELEGATING);
+    const stripped = prepareRustSource(GOOD_CARE_DELEGATING);
     const body = extractReducerBody(stripped, 'care');
     if (!body) {
       return {
@@ -1491,7 +1749,7 @@ export default async function raisingReducerSecurityEval() {
   // --- Green-path: GOOD_CARE_WITH_LOG — log string contains "Err(" but AFTER updates,
   //     checkCareRejectNeverBurns must NOT flag it (scanner uses returnErr( not bare Err() ---
   {
-    const stripped = stripRustComments(GOOD_CARE_WITH_LOG);
+    const stripped = prepareRustSource(GOOD_CARE_WITH_LOG);
     const body = extractReducerBody(stripped, 'care');
     if (!body) {
       return {
@@ -1510,7 +1768,7 @@ export default async function raisingReducerSecurityEval() {
     }
   }
   {
-    const stripped = stripRustComments(GOOD_EVALUATE_CARE);
+    const stripped = prepareRustSource(GOOD_EVALUATE_CARE);
     const body = extractReducerBody(stripped, 'evaluate_care');
     if (!body) {
       return {
@@ -1546,7 +1804,7 @@ export default async function raisingReducerSecurityEval() {
   // check ONLY — g8 correctly rejects this shape, and that is not a bug.
   {
     const body = extractReducerBody(
-      stripRustComments(CONTROL_EVALUATE_CARE_STRICT_LT),
+      prepareRustSource(CONTROL_EVALUATE_CARE_STRICT_LT),
       'evaluate_care',
     );
     if (!body) {
@@ -1593,9 +1851,16 @@ export default async function raisingReducerSecurityEval() {
         'g8-signature:',
         'the body sub-checks both pass, but `bond: u8` is kept as a passthrough parameter/return',
       ],
+      [
+        'BAD_EVALUATE_CARE_ALIASED_BOND',
+        BAD_EVALUATE_CARE_ALIASED_BOND,
+        'g8-bond-residue:',
+        'L2 alias laundering — the body is textually clean because the retired rule was ' +
+          'imported as `apply_care as care_rule`; only the source-level alias sweep sees it',
+      ],
     ];
     for (const [label, fixture, prefix, why] of g8Bad) {
-      const stripped = stripRustComments(fixture);
+      const stripped = prepareRustSource(fixture);
       const body = extractReducerBody(stripped, 'evaluate_care');
       if (!body) {
         return {
@@ -1630,7 +1895,7 @@ export default async function raisingReducerSecurityEval() {
 
   // --- Train Tooth T1: missing ownership guard must be flagged ---------------
   {
-    const body = extractReducerBody(stripRustComments(BAD_TRAIN_NO_OWNERSHIP), 'train');
+    const body = extractReducerBody(prepareRustSource(BAD_TRAIN_NO_OWNERSHIP), 'train');
     if (!body) {
       return {
         name,
@@ -1650,7 +1915,7 @@ export default async function raisingReducerSecurityEval() {
 
   // --- Train Tooth T2a: client-supplied stat param in signature must be flagged ---
   {
-    const stripped = stripRustComments(BAD_TRAIN_CLIENT_STAT_PARAM);
+    const stripped = prepareRustSource(BAD_TRAIN_CLIENT_STAT_PARAM);
     if (!checkTrainSignature(stripped)) {
       return {
         name,
@@ -1664,7 +1929,7 @@ export default async function raisingReducerSecurityEval() {
   // --- Train Tooth T2b: extra client param not in denylist must be flagged ---
   // (ev_count: u16 would evade the old denylist; the allowlist catches it)
   {
-    const stripped = stripRustComments(BAD_TRAIN_EXTRA_CLIENT_PARAM);
+    const stripped = prepareRustSource(BAD_TRAIN_EXTRA_CLIENT_PARAM);
     if (!checkTrainSignature(stripped)) {
       return {
         name,
@@ -1677,7 +1942,7 @@ export default async function raisingReducerSecurityEval() {
 
   // --- Train Tooth T3: consume before decision must be flagged ---------------
   {
-    const body = extractReducerBody(stripRustComments(BAD_TRAIN_CONSUME_BEFORE_DECISION), 'train');
+    const body = extractReducerBody(prepareRustSource(BAD_TRAIN_CONSUME_BEFORE_DECISION), 'train');
     if (!body) {
       return {
         name,
@@ -1698,7 +1963,7 @@ export default async function raisingReducerSecurityEval() {
 
   // --- Train Tooth T4: update before return Err must be flagged -------------
   {
-    const body = extractReducerBody(stripRustComments(BAD_TRAIN_UPDATE_BEFORE_ERR), 'train');
+    const body = extractReducerBody(prepareRustSource(BAD_TRAIN_UPDATE_BEFORE_ERR), 'train');
     if (!body) {
       return {
         name,
@@ -1719,7 +1984,7 @@ export default async function raisingReducerSecurityEval() {
 
   // --- Train Tooth T5: current_hp assignment must be flagged ----------------
   {
-    const body = extractReducerBody(stripRustComments(BAD_TRAIN_WRITES_CURRENT_HP), 'train');
+    const body = extractReducerBody(prepareRustSource(BAD_TRAIN_WRITES_CURRENT_HP), 'train');
     if (!body) {
       return {
         name,
@@ -1740,7 +2005,7 @@ export default async function raisingReducerSecurityEval() {
 
   // --- Train Tooth T6: hand-rolled pub update must be flagged ---------------
   {
-    const body = extractReducerBody(stripRustComments(BAD_TRAIN_HAND_ROLLED_PUB), 'train');
+    const body = extractReducerBody(prepareRustSource(BAD_TRAIN_HAND_ROLLED_PUB), 'train');
     if (!body) {
       return {
         name,
@@ -1761,7 +2026,7 @@ export default async function raisingReducerSecurityEval() {
 
   // --- Train Tooth T7: inline focus_train (no evaluate_train) must be flagged ---
   {
-    const body = extractReducerBody(stripRustComments(BAD_TRAIN_INLINE_MATH), 'train');
+    const body = extractReducerBody(prepareRustSource(BAD_TRAIN_INLINE_MATH), 'train');
     if (!body) {
       return {
         name,
@@ -1782,7 +2047,7 @@ export default async function raisingReducerSecurityEval() {
 
   // --- Train green-path: GOOD_TRAIN must pass ALL train checks ---------------
   {
-    const stripped = stripRustComments(GOOD_TRAIN);
+    const stripped = prepareRustSource(GOOD_TRAIN);
     const body = extractReducerBody(stripped, 'train');
     if (!body) {
       return {
@@ -1811,7 +2076,7 @@ export default async function raisingReducerSecurityEval() {
 
   // --- Train green-path: GOOD_EVALUATE_TRAIN seam must satisfy SSOT check ---
   {
-    const evalBody = extractReducerBody(stripRustComments(GOOD_EVALUATE_TRAIN), 'evaluate_train');
+    const evalBody = extractReducerBody(prepareRustSource(GOOD_EVALUATE_TRAIN), 'evaluate_train');
     if (!evalBody) {
       return {
         name,
@@ -1837,13 +2102,13 @@ export default async function raisingReducerSecurityEval() {
   // =========================================================================
 
   const SERVER_SRC = 'server-module/src';
-  let rawSrc;
+  let src;
   try {
-    rawSrc = readServerModuleSources(SERVER_SRC);
+    // H1: per-file comment-strip + string-literal blanking (see prepareRustSource).
+    src = readServerModuleSources(SERVER_SRC, prepareRustSource);
   } catch (e) {
     return { name, pass: false, detail: `cannot read ${SERVER_SRC}: ${e.message}` };
   }
-  const src = stripRustComments(rawSrc);
 
   const failures = [];
 
@@ -1935,8 +2200,10 @@ export default async function raisingReducerSecurityEval() {
     pass: true,
     detail:
       'care guard ladder (ownership, server-clock, reject-never-burns, cooldown-op, SSOT, dual-write) + ' +
-      'evaluate_care seam (cooldown-only, is_cooldown_ready SSOT, bond retired — EG5/Migration B) + ' +
-      'train guard ladder (ownership, signature, consume-after-decision, reject-never-burns, hp-untouched, dual-write, SSOT) + evaluate_train seam — all teeth verified',
+      'evaluate_care seam (cooldown-only, is_cooldown_ready SSOT, bond retired incl. the ' +
+      'alias-laundering sweep — EG5/Migration B) + ' +
+      'train guard ladder (ownership, signature, consume-after-decision, reject-never-burns, hp-untouched, dual-write, SSOT) + evaluate_train seam — ' +
+      'all scans run on per-file comment-stripped AND string-literal-blanked source; all teeth verified',
   };
 }
 
@@ -1944,12 +2211,17 @@ export default async function raisingReducerSecurityEval() {
 // domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a
 // deterministic order) so this static check parses the whole crate, surviving the
 // split.
-function readServerModuleSources(dir) {
+//
+// `transform` is applied PER FILE (default: identity); the scan passes
+// `prepareRustSource` so comment-stripping and string-blanking are scoped to one
+// file at a time (see prepareRustSource for why that matters when *_tests.rs is
+// in scope).
+function readServerModuleSources(dir, transform = (s) => s) {
   const parts = [];
   for (const entry of readdirSync(dir).sort()) {
     const full = `${dir}/${entry}`;
-    if (statSync(full).isDirectory()) parts.push(readServerModuleSources(full));
-    else if (entry.endsWith('.rs')) parts.push(readFileSync(full, 'utf8'));
+    if (statSync(full).isDirectory()) parts.push(readServerModuleSources(full, transform));
+    else if (entry.endsWith('.rs')) parts.push(transform(readFileSync(full, 'utf8')));
   }
   return parts.join('\n');
 }

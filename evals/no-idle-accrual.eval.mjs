@@ -1738,6 +1738,68 @@ pub fn wellness_tick(ctx: &ReducerContext, sched: WellnessTickSchedule) -> Resul
     }
   }
 
+  // --- Tooth 8b (NEW, red-team M1(1)): BAD_SCHEDULED_SELF_IMPL → Check C must
+  //     see through `Self { … }` inside `impl MonsterPub`. This was a CONFIRMED
+  //     end-to-end evasion of the bare-name scan: the construction site never
+  //     spells `MonsterPub`, and there is still no `.field =` for A/B. ---
+  {
+    const src = stripRustComments(BAD_SCHEDULED_SELF_IMPL);
+
+    const errC = checkNoAdHocRowLiterals(src);
+    if (!errC) {
+      return 'TEETH tooth-8b: BAD_SCHEDULED_SELF_IMPL (`impl MonsterPub { fn promoted(old: Self) -> Self { Self { .. } } }`) was NOT flagged by checkNoAdHocRowLiterals — an impl-block builder launders the row literal past a type-name scan';
+    }
+    if (errC.indexOf('promoted') === -1) {
+      return `TEETH tooth-8b: checkNoAdHocRowLiterals flagged BAD_SCHEDULED_SELF_IMPL but did not name the offending associated fn 'promoted'; got: ${errC}`;
+    }
+    if (errC.indexOf('Self') === -1 || errC.indexOf('impl MonsterPub') === -1) {
+      return `TEETH tooth-8b: the failure must say HOW the row was built (\`Self { … }\` inside \`impl MonsterPub\`), otherwise the reader cannot find it; got: ${errC}`;
+    }
+
+    const forgedWrites = findGrowthWrites(src);
+    if (forgedWrites.length !== 0) {
+      return `TEETH tooth-8b: BAD_SCHEDULED_SELF_IMPL must contain NO dot-assignment (that is what makes it an evasion), but findGrowthWrites saw ${forgedWrites.length}: [${forgedWrites.map((w) => w.field).join(', ')}]`;
+    }
+    const errB = checkNoScheduledGrowth(src);
+    if (errB) {
+      return `TEETH tooth-8b: Check B unexpectedly fired on BAD_SCHEDULED_SELF_IMPL (${errB}) — the fixture is meant to be invisible to A and B, isolating Check C`;
+    }
+  }
+
+  // --- Tooth 8c (NEW, red-team M1(2)): BAD_SCHEDULED_ALIAS_LITERAL → Check C
+  //     must resolve `use crate::schema::MonsterPub as MP;` and then flag
+  //     `MP { … }`. Also a CONFIRMED end-to-end evasion. ---
+  {
+    const src = stripRustComments(BAD_SCHEDULED_ALIAS_LITERAL);
+
+    // The resolver half, pinned on its own: without the alias in the type set
+    // the whole check is a no-op on this fixture.
+    const aliases = findRowTypeAliases(blankStringLiterals(src));
+    if (aliases.indexOf('MP') === -1) {
+      return `TEETH tooth-8c: findRowTypeAliases did not resolve 'MP' from \`use crate::schema::MonsterPub as MP;\`; got: [${aliases.join(', ')}]`;
+    }
+
+    const errC = checkNoAdHocRowLiterals(src);
+    if (!errC) {
+      return 'TEETH tooth-8c: BAD_SCHEDULED_ALIAS_LITERAL (`use … as MP;` then `MP { .. }`) was NOT flagged by checkNoAdHocRowLiterals — an import rename takes the type out of the vocabulary the scanner looks for';
+    }
+    if (errC.indexOf('tick_alias_forge') === -1) {
+      return `TEETH tooth-8c: checkNoAdHocRowLiterals flagged BAD_SCHEDULED_ALIAS_LITERAL but did not name the offending fn 'tick_alias_forge'; got: ${errC}`;
+    }
+    if (errC.indexOf('alias') === -1) {
+      return `TEETH tooth-8c: the failure must say the row was reached through an alias, otherwise the reader greps for 'MonsterPub' and finds nothing; got: ${errC}`;
+    }
+
+    const forgedWrites = findGrowthWrites(src);
+    if (forgedWrites.length !== 0) {
+      return `TEETH tooth-8c: BAD_SCHEDULED_ALIAS_LITERAL must contain NO dot-assignment, but findGrowthWrites saw ${forgedWrites.length}: [${forgedWrites.map((w) => w.field).join(', ')}]`;
+    }
+    const errB = checkNoScheduledGrowth(src);
+    if (errB) {
+      return `TEETH tooth-8c: Check B unexpectedly fired on BAD_SCHEDULED_ALIAS_LITERAL (${errB}) — the fixture is meant to be invisible to A and B, isolating Check C`;
+    }
+  }
+
   // --- Tooth 9 (NEW, EG5-3): GOOD_ROW_PROJECTION_HELPERS → Check C must PASS on
   //     the two legitimate builders, and its scanner must find EXACTLY the two
   //     real constructions among the surrounding decoy token positions (two
@@ -1751,9 +1813,21 @@ pub fn wellness_tick(ctx: &ReducerContext, sched: WellnessTickSchedule) -> Resul
       return `TEETH tooth-9: GOOD_ROW_PROJECTION_HELPERS (marshal.rs's own two builders + return-type / struct-definition / BattleMonster / Vec<MonsterPub> / string-literal decoys) was incorrectly flagged by checkNoAdHocRowLiterals: ${errC}`;
     }
 
-    // Exact count — the non-vacuity half. Zero would mean the discriminators
-    // swallowed everything (and absence-is-fail would be the only thing left
-    // standing); more than two would mean a decoy is being counted.
+    // The M1(2) alias resolver must be SELECTIVE: this fixture aliases
+    // `SpeciesRow as SR` (not a row type), so the alias set must stay empty. An
+    // over-eager resolver that harvests every `X as Y` adds `SR`, then flags
+    // `seed_species`, and Check C is red on a clean tree.
+    const goodAliases = findRowTypeAliases(blankStringLiterals(src));
+    if (goodAliases.length !== 0) {
+      return `TEETH tooth-9: findRowTypeAliases must harvest ROW-TYPE aliases only; GOOD_ROW_PROJECTION_HELPERS aliases only SpeciesRow, yet the resolver returned [${goodAliases.join(', ')}]`;
+    }
+
+    // Exact count — the non-vacuity half, and the M1(1) impl-walk's precision
+    // pin. Zero would mean the discriminators swallowed everything (absence-is-
+    // fail would then be the only thing standing); THREE would mean the impl
+    // walk entered `impl SpeciesRow` and counted its `Self { … }` — the shape
+    // that lives at movement.rs:237-238 in the real tree, so that mistake is a
+    // permanent false RED, not a hypothetical.
     const found = findRowStructLiterals(blankStringLiterals(src));
     if (found.length !== 2) {
       return `TEETH tooth-9: findRowStructLiterals must see EXACTLY the 2 real constructions in GOOD_ROW_PROJECTION_HELPERS (Monster in monster_from_instance, MonsterPub in pub_from_monster); got ${found.length}: [${found.map((f) => f.type).join(', ')}]`;
@@ -1829,7 +1903,8 @@ export default async function () {
       `B: ${scheduled.length} scheduled reducer(s) [${scheduled.join(', ')}] — none is/uses an ` +
       'allowlisted growth writer (one-hop companion: evolution_tests.rs ' +
       'eg2_9_no_scheduled_reducer_body_calls_growth_triggers); ' +
-      `C: ${literals.length} Monster/MonsterPub struct literal(s) all confined to ` +
-      `[${ROW_LITERAL_BUILDERS.join(', ')}] (teeth: 11 verified)`,
+      `C: ${literals.length} Monster/MonsterPub row construction(s) — bare literal, ` +
+      `Self-in-impl and use-as-alias spellings all scanned — confined to ` +
+      `[${ROW_LITERAL_BUILDERS.join(', ')}] (teeth: 13 verified)`,
   };
 }

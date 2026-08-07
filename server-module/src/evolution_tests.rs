@@ -2105,7 +2105,7 @@ fn eg1_9_evolution_rs_has_no_fusion_or_compute_evolves_to_leftovers() {
 ///      scanner that found nothing would report a fusion-free file for the wrong
 ///      reason;
 ///   4. columns that Migration B KEEPS (`pub last_care_at_ms`, `pub party_slot`,
-///      `pub trust_favorable_count`) must still be present, so "no `pub bond`"
+///      `pub trust_favorable_count`) must still be present, so "no `pub bond:`"
 ///      is a statement about the field list and not about an empty string.
 ///
 /// kills: a Migration B that drops the fusion table attribute but leaves the
@@ -2208,19 +2208,23 @@ fn eg5_6_schema_rs_declares_no_bond_evolves_to_or_fusion_table() {
             stripped.contains(kept),
             "vacuity guard(EG5-6): the surviving column declaration {kept:?} is \
              absent from schema.rs — the field-level haystack is gone, so the \
-             `pub bond` / `evolves_to` absence assertions below are vacuous"
+             `pub bond:` / `evolves_to` absence assertions below are vacuous"
         );
     }
 
-    // --- THE INVARIANT: all three leftovers collected, then reported together.
-    // One assert per needle would stop at the first hit and hide the other two,
-    // which is exactly the wrong shape for a migration oracle: the implementer
-    // wants the whole removal list in one run, not three red-green cycles.
+    // --- THE INVARIANT: every leftover collected, then reported TOGETHER.
+    // One assert per needle would stop at the first hit and hide the rest, which
+    // is exactly the wrong shape for a migration oracle: the implementer wants
+    // the whole removal list in one run, not four red-green cycles.
     let mut leftovers: Vec<String> = Vec::new();
 
-    if stripped.contains("pub bond") {
+    // NEEDLE CARRIES A COLON on purpose (red-team L3): a bare `pub bond`
+    // substring would also match a future, unrelated `pub bond_currency_id: u32`
+    // and false-RED this migration oracle forever. `pub bond:` is the field
+    // DECLARATION and nothing else.
+    if stripped.contains("pub bond:") {
         leftovers.push(
-            "a `pub bond` column is still declared — EG5-6 removes `bond: u8` from \
+            "a `pub bond:` column is still declared — EG5-6 removes `bond: u8` from \
              BOTH `Monster` and `MonsterPub`; Bond is retired outright (spec §4 \
              CONFIRMED), its investment-accumulator role folded into Trust"
                 .to_string(),

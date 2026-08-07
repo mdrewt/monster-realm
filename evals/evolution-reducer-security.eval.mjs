@@ -75,6 +75,43 @@
 // before it lets a bad implementation slip through. A tooth that stops biting
 // fails THIS eval, not some future one.
 //
+// ===========================================================================
+// RED-TEAM HARDENING (EG5-2 round 2) — three confirmed bypasses, all closed:
+//
+//   H1 STRING DECOYS. A single `log::debug!("… require_owner( …
+//      reject_if_in_battle(player_identity() opponent_identity()) …
+//      path_satisfied( … apply_evolution( …")` in an otherwise GUARD-FREE
+//      evolve() made this whole eval pass end-to-end. Every scan now runs on
+//      `prepareRustSource` = comment-strip THEN `blankStringLiterals` (the
+//      char-walk ported from no-idle-accrual.eval.mjs), so literal PROSE can
+//      never satisfy a code invariant. BAD_EVOLVE_STRING_DECOY pins it, and
+//      that tooth ALSO asserts the decoy still fools the UNBLANKED scan — so
+//      the blanking stays load-bearing instead of quietly becoming a no-op.
+//
+//   H2a PRESENCE ≠ ENFORCEMENT. `let _ = reject_if_in_battle(..);` (verdict
+//      discarded) passed. Guard helpers that reject via `?` (require_owner,
+//      reject_if_in_battle, reject_if_monster_in_trade) must now have the `?`
+//      immediately after their own balanced-paren region, at SOME call site.
+//
+//   H2b FIXED-CHAR WINDOWS. An inert guard (`if is_in_ongoing_battle(..) {
+//      log::warn!("todo"); }`) plus any unrelated `Err(` later in the body
+//      passed a "…within N chars" scan. S2 and E5g now brace-match the guard's
+//      OWN `{ … }` block and require the rejection strictly INSIDE it; S4
+//      bounds its search to the escrow call's enclosing block (its rejection is
+//      one statement later, in the `if escrowed >= count` branch).
+//
+// KNOWN LIMITATIONS of this lens (deliberately NOT chased — a textual scanner
+// cannot close them, and pretending otherwise would be the real regression):
+//   * DEAD-CODE WRAPPING. `if false { require_owner(..)?; }` — or a guard
+//     behind a `#[cfg(..)]`/const-false branch — still reads as enforced here.
+//     Reachability needs the compiler; the Rust test suite (evolution_tests.rs /
+//     raising_tests.rs behavioural cases) and code review are that control.
+//   * ORDERING vs CONTROL FLOW. S5 compares textual indexes, not execution
+//     order; an early `return` between the seam and the spend is invisible.
+//   * MULTI-CALL AMBIGUITY. The enforcement checks pass when ANY call site is
+//     well-formed, so a well-formed guard plus a second, discarded one is
+//     accepted (harmless: the enforced one still rejects).
+//
 // All pattern matching uses String.indexOf() or literal /regex/ — NO
 // `new RegExp(...)` with a non-literal argument (Semgrep detect-non-literal-regexp).
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -92,6 +129,233 @@ import { fileURLToPath } from 'node:url';
  */
 export function stripRustComments(src) {
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+}
+
+/**
+ * Blank the CONTENT of Rust string literals (plain, byte `b"…"`, raw `r"…"` /
+ * `r#"…"#` / `br#"…"#`), leaving the quotes and every other byte at its original
+ * offset. Ported (not imported — this repo keeps eval helpers file-local) from
+ * the tested copy in no-idle-accrual.eval.mjs.
+ *
+ * Char literals are PRESERVED but consumed as a unit, so a `'"'` char literal
+ * can never open a phantom string and hollow out the rest of the file — the
+ * exact misalignment `server-module/src/movement_tests.rs` records. A `'` with
+ * no closing `'` within four chars is a lifetime tick (`&'a str`), left alone.
+ *
+ * H1: without this, `log::debug!("… require_owner( … apply_evolution( …")`
+ * satisfies every needle in this file from inside a comment-free string.
+ *
+ * Char-walk only — NO new RegExp(non-literal).
+ *
+ * @param {string} src Comment-stripped Rust source.
+ * @returns {string} Same length, string-literal contents replaced by spaces.
+ */
+export function blankStringLiterals(src) {
+  const out = src.split('');
+  const isIdent = (ch) => ch !== undefined && /[A-Za-z0-9_]/.test(ch);
+  let i = 0;
+  while (i < src.length) {
+    const c = src[i];
+
+    // --- char literal (kept verbatim, consumed as one unit) ---
+    if (c === "'") {
+      const escaped = src[i + 1] === '\\';
+      let end = -1;
+      for (let k = escaped ? 3 : 2; k <= 4; k++) {
+        if (src[i + k] === "'") {
+          end = i + k + 1;
+          break;
+        }
+      }
+      if (end !== -1) {
+        i = end;
+        continue;
+      }
+      i++; // lifetime tick
+      continue;
+    }
+
+    // --- raw string: r"…" / r#"…"# / br#"…"# (b/r prefix must not be part of
+    //     a longer identifier, so `ctx.db` and `row` are never openers) ---
+    let p = i;
+    if ((c === 'b' || c === 'r') && !isIdent(src[i - 1])) {
+      if (c === 'b' && (src[i + 1] === '"' || src[i + 1] === 'r')) p = i + 1;
+      if (src[p] === 'r') {
+        let hashes = 0;
+        while (src[p + 1 + hashes] === '#') hashes++;
+        if (src[p + 1 + hashes] === '"') {
+          const closer = `"${'#'.repeat(hashes)}`;
+          const hit = src.indexOf(closer, p + 2 + hashes);
+          const stop = hit === -1 ? src.length : hit;
+          for (let k = p + 2 + hashes; k < stop; k++) out[k] = ' ';
+          i = hit === -1 ? src.length : hit + closer.length;
+          continue;
+        }
+      }
+      // Keep `p` advanced ONLY for a byte string `b"…"`; otherwise this `b`/`r`
+      // was an ordinary identifier char and must be re-processed as such.
+      if (!(p === i + 1 && src[p] === '"')) p = i;
+    }
+
+    // --- plain (or byte) string ---
+    if (src[p] === '"') {
+      let j = p + 1;
+      while (j < src.length) {
+        if (src[j] === '\\') {
+          out[j] = ' ';
+          if (j + 1 < src.length) out[j + 1] = ' ';
+          j += 2;
+          continue;
+        }
+        if (src[j] === '"') break;
+        out[j] = ' ';
+        j++;
+      }
+      i = j < src.length ? j + 1 : src.length;
+      continue;
+    }
+
+    i++;
+  }
+  return out.join('');
+}
+
+/**
+ * THE single entry point every scan in this file goes through: strip comments,
+ * then blank string-literal contents. Applied PER FILE on the real source (see
+ * readServerModuleProdSources) so a malformed literal in one file can never
+ * hollow out the next one across the concatenation, and applied to every
+ * fixture before extraction so fixtures and production take the same path.
+ *
+ * @param {string} src Raw Rust source.
+ * @returns {string}
+ */
+export function prepareRustSource(src) {
+  return blankStringLiterals(stripRustComments(src));
+}
+
+/**
+ * Every call site of `<needle>` in a WHITESPACE-COMPACTED body, with that
+ * call's own balanced-paren argument region and the single character that
+ * follows it (`?` for a `?`-propagated guard).
+ *
+ * `needle` MUST end with `(`. Paren-depth walk — NO new RegExp.
+ *
+ * @param {string} compact  Whitespace-collapsed, comment-stripped, string-blanked body.
+ * @param {string} needle   e.g. 'require_owner('.
+ * @returns {{idx:number,args:string,after:string,afterIdx:number,balanced:boolean}[]}
+ */
+export function findCallSites(compact, needle) {
+  const sites = [];
+  let from = 0;
+  for (;;) {
+    const idx = compact.indexOf(needle, from);
+    if (idx === -1) break;
+    const openIdx = idx + needle.length - 1;
+    let depth = 1;
+    let i = openIdx + 1;
+    while (i < compact.length && depth > 0) {
+      if (compact[i] === '(') depth++;
+      else if (compact[i] === ')') depth--;
+      i++;
+    }
+    if (depth !== 0) {
+      sites.push({ idx, args: '', after: '', afterIdx: -1, balanced: false });
+      break;
+    }
+    sites.push({
+      idx,
+      args: compact.slice(openIdx + 1, i - 1),
+      after: compact.slice(i, i + 1),
+      afterIdx: i,
+      balanced: true,
+    });
+    from = i;
+  }
+  return sites;
+}
+
+/**
+ * The `{ … }` block that IMMEDIATELY follows a call site's balanced-paren
+ * region — i.e. the body of `if <call>(..) { … }`. Returns null when the parens
+ * are unbalanced, when no `{` follows (e.g. `if cond(..) && other {`), or when
+ * the braces do not close: an un-isolatable block is a FAILURE for the caller,
+ * never a silent pass.
+ *
+ * H2b: this replaces the old "an Err( within N chars" windows, which an inert
+ * guard could satisfy with an unrelated rejection further down the body.
+ *
+ * @param {string} compact
+ * @param {{afterIdx:number,balanced:boolean}} site  From findCallSites.
+ * @returns {string|null} The block's inner text.
+ */
+export function blockAfterCall(compact, site) {
+  if (!site.balanced || compact[site.afterIdx] !== '{') return null;
+  let depth = 1;
+  let j = site.afterIdx + 1;
+  const start = j;
+  while (j < compact.length && depth > 0) {
+    if (compact[j] === '{') depth++;
+    else if (compact[j] === '}') depth--;
+    j++;
+  }
+  if (depth !== 0) return null;
+  return compact.slice(start, j - 1);
+}
+
+/**
+ * Does a brace-matched block actually REJECT? True for `return Err(…)` anywhere
+ * in it, or an `Err(…)` tail expression opening it.
+ *
+ * `returnErr(` (not bare `Err(`) is the primary needle because `map_err(`
+ * CONTAINS the characters `Err(` — a bare-Err test would bless
+ * `if is_in_ongoing_battle(..) { let _ = f().map_err(|e| e); }`.
+ *
+ * @param {string} block
+ * @returns {boolean}
+ */
+export function blockRejects(block) {
+  return block.indexOf('returnErr(') !== -1 || block.indexOf('Err(') === 0;
+}
+
+/**
+ * The innermost `{ … }` block that ENCLOSES `idx`, as a [start,end) slice of
+ * `compact`. Falls back to the whole body when `idx` sits at function top level
+ * (no unclosed `{` to its left) — the caller then searches the remainder of the
+ * body, which is weaker but never vacuous.
+ *
+ * Used by S4, whose rejection is not in the guard call's own block: the escrow
+ * reserve is BOUND first (`let escrowed = escrowed_item_qty(..);`) and compared
+ * one statement later, so the invariant is "a rejection branch exists inside the
+ * escrow scope, after the call" rather than "the call's block rejects".
+ *
+ * @param {string} compact
+ * @param {number} idx
+ * @returns {{start:number,end:number}}
+ */
+export function enclosingBlockRange(compact, idx) {
+  let depth = 0;
+  let open = -1;
+  for (let k = idx - 1; k >= 0; k--) {
+    const ch = compact[k];
+    if (ch === '}') depth++;
+    else if (ch === '{') {
+      if (depth === 0) {
+        open = k;
+        break;
+      }
+      depth--;
+    }
+  }
+  if (open === -1) return { start: 0, end: compact.length };
+  let bd = 1;
+  let j = open + 1;
+  while (j < compact.length && bd > 0) {
+    if (compact[j] === '{') bd++;
+    else if (compact[j] === '}') bd--;
+    j++;
+  }
+  return { start: open + 1, end: bd === 0 ? j - 1 : compact.length };
 }
 
 /**
@@ -133,21 +397,30 @@ export function extractReducerBody(src, fnName) {
 // ---------------------------------------------------------------------------
 
 /**
- * E1 — Ownership guard: the body must call require_owner( (the canonical
- * consolidation from ADR-0056 guards.rs).  A custom inline ownership check is
- * also accepted: owner_identity != ctx.sender followed by Err(.
+ * E1/S1 — Ownership guard: the body must call `require_owner(..)?` (the
+ * canonical consolidation from ADR-0056 guards.rs), ENFORCED — the `?` must
+ * follow the call's own balanced-paren region (H2a: `let _ = require_owner(..);`
+ * computes the rejection and drops it). A custom inline ownership check is also
+ * accepted: owner_identity != ctx.sender followed by Err(.
  *
- * Uses only indexOf — NO new RegExp(...).
+ *   E1-missing:    no require_owner( call and no inline owner comparison;
+ *   E1-unenforced: called (or compared) but the rejection never propagates.
  *
- * @param {string} body  Comment-stripped function body.
+ * Uses indexOf + a paren walk — NO new RegExp(...).
+ *
+ * @param {string} body  Comment-stripped, string-blanked function body.
  * @param {string} fnName  Name used in error messages.
  * @returns {string|null}  null = pass, string = failure description.
  */
 export function checkOwnershipGuard(body, fnName) {
   const compact = body.replace(/\s+/g, '');
 
-  // Short-circuit: canonical guard helper.
-  if (compact.indexOf('require_owner(') !== -1) {
+  // Canonical guard helper — but PRESENCE IS NOT ENFORCEMENT (H2a):
+  // `let _ = require_owner(..);` throws the verdict away. The shipped shape is
+  // `require_owner(ctx, "<fn>", m.owner_identity)?;`, so require the `?` to sit
+  // immediately after the call's own balanced-paren region at SOME call site.
+  const ownerSites = findCallSites(compact, 'require_owner(');
+  if (ownerSites.some((s) => s.balanced && s.after === '?')) {
     return null;
   }
 
@@ -170,8 +443,16 @@ export function checkOwnershipGuard(body, fnName) {
   }
 
   if (cmpIdx === -1) {
+    if (ownerSites.length > 0) {
+      return (
+        `E1-unenforced: ${fnName}: require_owner( is called but its result is DISCARDED — ` +
+        'no `?` follows the call (a `let _ = require_owner(..);` compiles, returns the ' +
+        'rejection to nobody, and satisfies every presence scan while any player can ' +
+        "mutate another player's monster)"
+      );
+    }
     return (
-      `${fnName}: missing ownership guard — require \`require_owner(\` call OR ` +
+      `E1-missing: ${fnName}: missing ownership guard — require \`require_owner(..)?\` OR ` +
       '`owner_identity != ctx.sender` (or alias) followed by Err('
     );
   }
@@ -179,7 +460,7 @@ export function checkOwnershipGuard(body, fnName) {
   const window = compact.slice(cmpIdx, cmpIdx + 320);
   if (window.indexOf('Err(') === -1) {
     return (
-      `${fnName}: ownership comparison found but no Err( within 320 chars — ` +
+      `E1-unenforced: ${fnName}: ownership comparison found but no Err( within 320 chars — ` +
       'the comparison must lead to a rejection'
     );
   }
@@ -214,48 +495,49 @@ export function checkOwnershipGuard(body, fnName) {
  */
 export function checkBattleGuard(body, fnName) {
   const compact = body.replace(/\s+/g, '');
-  const NEEDLE = 'reject_if_in_battle(';
-  const callIdx = compact.indexOf(NEEDLE);
-  if (callIdx === -1) {
+  const sites = findCallSites(compact, 'reject_if_in_battle(');
+
+  if (sites.length === 0) {
     return (
       `E2-missing: ${fnName}: missing battle guard — must call reject_if_in_battle( to ` +
       'prevent evolving a monster that is currently in a battle'
     );
   }
-
-  // Walk the call's argument region: openIdx is the '(' that ends the needle.
-  const openIdx = callIdx + NEEDLE.length - 1;
-  let depth = 1;
-  let i = openIdx + 1;
-  while (i < compact.length && depth > 0) {
-    if (compact[i] === '(') depth++;
-    else if (compact[i] === ')') depth--;
-    i++;
-  }
-  if (depth !== 0) {
+  if (sites.some((s) => !s.balanced)) {
     return (
       `E2-parse: ${fnName}: reject_if_in_battle( parentheses do not balance — the ` +
       'argument region could not be isolated, so the both-role chain cannot be verified'
     );
   }
-  const args = compact.slice(openIdx + 1, i - 1);
 
-  if (args.indexOf('player_identity(') === -1) {
+  // A call site counts only if it is BOTH-ROLE and ?-PROPAGATED (H2a):
+  // `let _ = reject_if_in_battle(<both chains>);` rejects nothing at all.
+  const bothRole = sites.filter(
+    (s) => s.args.indexOf('player_identity(') !== -1 && s.args.indexOf('opponent_identity(') !== -1,
+  );
+  if (bothRole.some((s) => s.after === '?')) {
+    return null;
+  }
+  if (bothRole.length > 0) {
     return (
-      `E2-single-role: ${fnName}: reject_if_in_battle( argument region does not mention ` +
-      'player_identity( — the guard must be fed the caller-as-side-A battle index'
+      `E2-unenforced: ${fnName}: reject_if_in_battle( is called with the both-role chain but ` +
+      'its Result is DISCARDED — no `?` follows the call. The shipped shape is ' +
+      '`reject_if_in_battle(..)?;`; a `let _ = reject_if_in_battle(..);` computes the ' +
+      'rejection and throws it away while every presence scan stays green'
     );
   }
-  if (args.indexOf('opponent_identity(') === -1) {
+  if (sites.every((s) => s.args.indexOf('player_identity(') === -1)) {
     return (
-      `E2-single-role: ${fnName}: reject_if_in_battle( argument region does not mention ` +
-      'opponent_identity( — the both-role chain (ADR-0122/ADR-0136) is missing, so a ' +
-      'monster whose owner is side B of an ongoing PvP battle can still be evolved ' +
-      'mid-battle while every other check here stays green'
+      `E2-single-role: ${fnName}: no reject_if_in_battle( call mentions player_identity( in ` +
+      'its own argument region — the guard must be fed the caller-as-side-A battle index'
     );
   }
-
-  return null;
+  return (
+    `E2-single-role: ${fnName}: no reject_if_in_battle( call mentions opponent_identity( in ` +
+    'its own argument region — the both-role chain (ADR-0122/ADR-0136) is missing, so a ' +
+    'monster whose owner is side B of an ongoing PvP battle can still be evolved ' +
+    'mid-battle while every other check here stays green'
+  );
 }
 
 /**
@@ -293,25 +575,28 @@ export function checkOngoingBattleGuard(body, fnName) {
     );
   }
 
-  const gateIdx = compact.indexOf('ifis_in_ongoing_battle(');
-  if (gateIdx === -1) {
+  // H2b: brace-match the guard's OWN block and require the rejection INSIDE it.
+  // The old "Err( within 240 chars" window blessed an inert guard whose body
+  // only logged, as long as any unrelated Err( appeared soon enough after.
+  const gates = findCallSites(compact, 'ifis_in_ongoing_battle(');
+  if (gates.length === 0) {
     return (
       `S2-unenforced: ${fnName}: is_in_ongoing_battle( is called but not in the enforced ` +
-      '`if is_in_ongoing_battle(..) { .. Err(..) }` shape — a discarded call ' +
+      '`if is_in_ongoing_battle(..) { .. return Err(..) }` shape — a discarded call ' +
       '(`let _ = is_in_ongoing_battle(..)`) satisfies a bare presence scan while the ' +
       'guard rejects nothing at all'
     );
   }
-
-  const afterGate = compact.slice(gateIdx, gateIdx + 240);
-  if (afterGate.indexOf('Err(') === -1) {
-    return (
-      `S2-unenforced: ${fnName}: \`if is_in_ongoing_battle(\` found but no Err( within 240 ` +
-      'chars — the guard branch must lead to a rejection, not a log line'
-    );
+  for (const gate of gates) {
+    const block = blockAfterCall(compact, gate);
+    if (block !== null && blockRejects(block)) return null;
   }
-
-  return null;
+  return (
+    `S2-unenforced: ${fnName}: the \`if is_in_ongoing_battle(..)\` branch does not reject ` +
+    'INSIDE its own { } block — brace-matched, the block must contain `return Err(` (or be ' +
+    'an `Err(..)` tail expression). A branch that only logs, or whose block cannot be ' +
+    'isolated, guards nothing no matter what appears later in the body'
+  );
 }
 
 /**
@@ -320,10 +605,11 @@ export function checkOngoingBattleGuard(body, fnName) {
  * mutated while an active trade offer references it, or the counterparty can be
  * handed a monster whose essence/cooldown changed after they accepted.
  *
- * Presence is the invariant: the helper itself is `?`-propagating, exactly like
- * require_owner( in E1/S1 — there is no "call it and ignore it" shape.
+ * The helper is `?`-propagating, so (H2a, same class as E1/E2) presence alone is
+ * NOT the invariant: `let _ = reject_if_monster_in_trade(..);` is a no-op. The
+ * `?` must follow the call's own balanced-paren region at some call site.
  *
- * Uses only indexOf — NO new RegExp(...).
+ * Uses indexOf + a paren walk — NO new RegExp(...).
  *
  * @param {string} body  Comment-stripped function body.
  * @param {string} fnName  Name used in error messages.
@@ -331,14 +617,22 @@ export function checkOngoingBattleGuard(body, fnName) {
  */
 export function checkMonsterTradeEscrowGuard(body, fnName) {
   const compact = body.replace(/\s+/g, '');
-  if (compact.indexOf('reject_if_monster_in_trade(') === -1) {
+  const sites = findCallSites(compact, 'reject_if_monster_in_trade(');
+  if (sites.length === 0) {
     return (
       `S3-missing: ${fnName}: no reject_if_monster_in_trade( call — a monster sitting in an ` +
       'active trade offer must not be mutated (TR-6, ADR-0106); the guard set of these ' +
       'reducers mirrors care/train, which both carry it'
     );
   }
-  return null;
+  if (sites.some((s) => s.balanced && s.after === '?')) {
+    return null;
+  }
+  return (
+    `S3-unenforced: ${fnName}: reject_if_monster_in_trade( is called but its Result is ` +
+    'DISCARDED — no `?` follows the call, so an escrowed monster is mutated anyway ' +
+    '(the shipped shape is `reject_if_monster_in_trade(..)?;`)'
+  );
 }
 
 /**
@@ -351,17 +645,24 @@ export function checkMonsterTradeEscrowGuard(body, fnName) {
  * block for its food item; this is that block, transplanted.
  *
  *   S4-missing:    no escrowed_item_qty( call at all;
- *   S4-unenforced: called, but no `return Err(` within 500 compacted chars — the
- *                  reserve is computed and then thrown away.
+ *   S4-unenforced: called, but no rejection BRANCH follows it inside the call's
+ *                  own enclosing block — the reserve is computed and discarded.
  *
- * `returnErr(` (the compacted form of `return Err(`) is the needle, NOT bare
- * `Err(`: the shipped block is followed by a `.map_err(` on the item lookup, and
- * `map_err(` CONTAINS the characters `Err(` — a bare-Err scan would pass a body
- * whose escrow comparison had been deleted. The shipped block puts its
- * `return Err(` ~316 compacted chars after the call, so 500 is a working
- * margin that still ends well before the reducer's next unrelated rejection.
+ * H2b: the old form scanned a fixed 500-char window, which an unrelated later
+ * `return Err(` (the monster_pub-missing arm) could satisfy after the escrow
+ * comparison had been deleted. Unlike S2, the rejection is NOT in the guard
+ * call's own block — the shipped code BINDS the reserve
+ * (`let escrowed = escrowed_item_qty(..);`), reads the inventory count, and
+ * rejects one statement later — so the bound is the call's innermost ENCLOSING
+ * block (the dedicated `{ … }` escrow scope in raising.rs) and the needle is
+ * `{returnErr(`: a `return Err(` that OPENS a nested branch.
  *
- * Uses only indexOf — NO new RegExp(...).
+ * `else{returnErr(` occurrences are skipped: `let Some(x) = .. else { return
+ * Err(..) };` is a not-found early return, not an escrow rejection — without
+ * that filter a gutted escrow block in a body with any let-else would pass.
+ * `returnErr(` rather than bare `Err(` because `map_err(` contains `Err(`.
+ *
+ * Uses indexOf + paren/brace walks — NO new RegExp(...).
  *
  * @param {string} body  Comment-stripped function body.
  * @param {string} fnName  Name used in error messages.
@@ -370,8 +671,8 @@ export function checkMonsterTradeEscrowGuard(body, fnName) {
 export function checkItemEscrowGuard(body, fnName) {
   const compact = body.replace(/\s+/g, '');
 
-  const idx = compact.indexOf('escrowed_item_qty(');
-  if (idx === -1) {
+  const sites = findCallSites(compact, 'escrowed_item_qty(');
+  if (sites.length === 0) {
     return (
       `S4-missing: ${fnName}: no escrowed_item_qty( call — the ITEM trade-escrow guard is ` +
       'missing (EG2-4 makes it non-optional: it closes the double-spend-shaped gap where ' +
@@ -379,16 +680,23 @@ export function checkItemEscrowGuard(body, fnName) {
     );
   }
 
-  const window = compact.slice(idx, idx + 500);
-  if (window.indexOf('returnErr(') === -1) {
-    return (
-      `S4-unenforced: ${fnName}: escrowed_item_qty( is called but no \`return Err(\` follows ` +
-      'within 500 chars — the escrowed reserve is computed and then discarded, which is ' +
-      'indistinguishable from having no item-escrow guard at all'
-    );
+  for (const site of sites) {
+    if (!site.balanced) continue;
+    const scope = enclosingBlockRange(compact, site.idx);
+    const region = compact.slice(site.afterIdx, Math.max(site.afterIdx, scope.end));
+    let at = region.indexOf('{returnErr(');
+    while (at !== -1) {
+      if (region.slice(Math.max(0, at - 4), at) !== 'else') return null;
+      at = region.indexOf('{returnErr(', at + 1);
+    }
   }
 
-  return null;
+  return (
+    `S4-unenforced: ${fnName}: escrowed_item_qty( is called but no rejection branch ` +
+    '(`{ return Err(` — excluding a let-else not-found arm) follows it inside the call’s ' +
+    'own enclosing block — the escrowed reserve is computed and then discarded, which is ' +
+    'indistinguishable from having no item-escrow guard at all'
+  );
 }
 
 /**
@@ -530,26 +838,28 @@ export function checkPathSatisfiedGate(body) {
     );
   }
 
-  let gateIdx = compact.indexOf('if!game_core::path_satisfied(');
-  if (gateIdx === -1) gateIdx = compact.indexOf('if!path_satisfied(');
-  if (gateIdx === -1) {
+  // H2b: brace-match the negated gate's OWN block (same treatment as S2) — the
+  // old 400-char window was satisfiable by any unrelated rejection downstream.
+  const gates = findCallSites(compact, 'if!game_core::path_satisfied(').concat(
+    findCallSites(compact, 'if!path_satisfied('),
+  );
+  if (gates.length === 0) {
     return (
       'E5g-unenforced: path_satisfied( is called but not in the enforced ' +
-      '`if !(game_core::)path_satisfied(..) { .. Err(..) }` shape — a discarded call ' +
+      '`if !(game_core::)path_satisfied(..) { .. return Err(..) }` shape — a discarded call ' +
       '(`let _ = path_satisfied(..)`) leaves every other check satisfied while the ' +
       'gate does nothing at all'
     );
   }
-
-  const afterGate = compact.slice(gateIdx, gateIdx + 400);
-  if (afterGate.indexOf('Err(') === -1) {
-    return (
-      'E5g-unenforced: `if !path_satisfied(` found but no Err( within 400 chars — ' +
-      'the negated gate must lead to a rejection'
-    );
+  for (const gate of gates) {
+    const block = blockAfterCall(compact, gate);
+    if (block !== null && blockRejects(block)) return null;
   }
-
-  return null;
+  return (
+    'E5g-unenforced: the `if !path_satisfied(..)` branch does not reject INSIDE its own ' +
+    '{ } block — brace-matched, the block must contain `return Err(` (or be an `Err(..)` ' +
+    'tail expression). A gate branch that only logs leaves the evolution to proceed'
+  );
 }
 
 /**
@@ -747,6 +1057,94 @@ const BAD_EVOLVE_SINGLE_ROLE_BATTLE_GUARD = `
       }
       apply_evolution(ctx, monster_id, &path_row)?;
       check_and_evolve(ctx, monster_id);
+      Ok(())
+  }
+`;
+
+// H1 BAD — THE STRING DECOY (red-team PoC, verbatim shape). A guard-free,
+// gate-free, delegation-free evolve() whose ONLY mention of every needle this
+// file scans for lives inside one log string. Before blankStringLiterals this
+// body passed E1, E2, E3 AND E5g and took the whole eval green end-to-end.
+// Its tooth asserts BOTH directions: flagged by all four checkers after
+// blanking, and STILL fooling at least one of them without blanking (so the
+// blanking cannot silently decay into a no-op).
+const BAD_EVOLVE_STRING_DECOY = `
+  pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
+      let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+          return Err("monster not found".to_string());
+      };
+      log::debug!("audit trail: require_owner(ctx,sender)?; reject_if_in_battle(player_identity() opponent_identity())?; if !game_core::path_satisfied(x,y) { return Err(gated); } apply_evolution(ctx,id)?;");
+      m.species_id = to_species;
+      let pub_row = pub_from_monster(&m, 0);
+      ctx.db.monster().monster_id().update(m);
+      ctx.db.monster_pub().monster_id().update(pub_row);
+      Ok(())
+  }
+`;
+
+// H2a BAD — ownership guard CALLED but its Result discarded. Single-property
+// mutation of GOOD_EVOLVE; only the E1 enforcement arm can catch it.
+const BAD_EVOLVE_OWNERSHIP_DISCARDED = `
+  pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
+      let Some(m) = ctx.db.monster().monster_id().find(monster_id) else {
+          return Err("monster not found".to_string());
+      };
+      let _ = require_owner(ctx, "evolve", m.owner_identity);
+      reject_if_in_battle(
+          ctx.db.battle().player_identity().filter(m.owner_identity)
+              .chain(ctx.db.battle().opponent_identity().filter(m.owner_identity)),
+          monster_id,
+      )?;
+      if !game_core::path_satisfied(&instance, &path) {
+          return Err("evolution requirements not met".to_string());
+      }
+      apply_evolution(ctx, monster_id, &path_row)?;
+      Ok(())
+  }
+`;
+
+// H2a BAD — battle guard CALLED with the full both-role chain but its Result
+// discarded: the argument-region check alone (E2's first hardening) passes it.
+const BAD_EVOLVE_BATTLE_GUARD_DISCARDED = `
+  pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
+      let Some(m) = ctx.db.monster().monster_id().find(monster_id) else {
+          return Err("monster not found".to_string());
+      };
+      require_owner(ctx, "evolve", m.owner_identity)?;
+      let _ = reject_if_in_battle(
+          ctx.db.battle().player_identity().filter(m.owner_identity)
+              .chain(ctx.db.battle().opponent_identity().filter(m.owner_identity)),
+          monster_id,
+      );
+      if !game_core::path_satisfied(&instance, &path) {
+          return Err("evolution requirements not met".to_string());
+      }
+      apply_evolution(ctx, monster_id, &path_row)?;
+      Ok(())
+  }
+`;
+
+// H2b BAD — the negated gate is in the enforced if-shape but its block only
+// logs; the reducer then evolves anyway. The pre-hardening 400-char window was
+// satisfied by the unrelated `return Err(` further down.
+const BAD_EVOLVE_GATE_LOGS_ONLY = `
+  pub fn evolve(ctx: &ReducerContext, monster_id: u64, to_species: u32) -> Result<(), String> {
+      let Some(m) = ctx.db.monster().monster_id().find(monster_id) else {
+          return Err("monster not found".to_string());
+      };
+      require_owner(ctx, "evolve", m.owner_identity)?;
+      reject_if_in_battle(
+          ctx.db.battle().player_identity().filter(m.owner_identity)
+              .chain(ctx.db.battle().opponent_identity().filter(m.owner_identity)),
+          monster_id,
+      )?;
+      if !game_core::path_satisfied(&instance, &path) {
+          log::warn!("gate not satisfied");
+      }
+      let Some(path_row) = ctx.db.evolution_path().from_species().filter(m.species_id).find(|p| p.to_species == to_species) else {
+          return Err("no such evolution".to_string());
+      };
+      apply_evolution(ctx, monster_id, &path_row)?;
       Ok(())
   }
 `;
@@ -1041,6 +1439,35 @@ const BAD_ESSENCE_TRAIN_NO_TRADE_GUARD = `
   }
 `;
 
+// S3 BAD (H2a, unenforced) — the monster trade-escrow guard is CALLED and its
+// Result discarded, so an escrowed monster is fed anyway. Presence-only scans
+// pass this.
+const BAD_CONSUME_TRADE_GUARD_DISCARDED = `
+  pub fn consume_crystalized_essence(ctx: &ReducerContext, monster_id: u64, item_id: u32) -> Result<(), String> {
+      let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
+          return Err("monster not found".to_string());
+      };
+      require_owner(ctx, "consume_crystalized_essence", m.owner_identity)?;
+      if is_in_ongoing_battle(ctx, ctx.sender) {
+          return Err("cannot consume essence during an ongoing battle".to_string());
+      }
+      let _ = reject_if_monster_in_trade(
+          ctx.db.trade_offer().initiator().filter(m.owner_identity)
+              .chain(ctx.db.trade_offer().counterparty().filter(m.owner_identity)),
+          monster_id,
+      );
+      let now = now_ms(ctx);
+      let (item_affinity, amount) =
+          evaluate_consume_crystalized(item, m.last_essence_train_at_ms, now)?;
+      consume_one(ctx, ctx.sender, item_id)?;
+      grant_essence(&mut m, item_affinity, amount);
+      let pub_row = pub_from_monster(&m, 0);
+      ctx.db.monster().monster_id().update(m);
+      ctx.db.monster_pub().monster_id().update(pub_row);
+      Ok(())
+  }
+`;
+
 // S4 BAD (missing) — consume with the whole item-escrow block deleted: the
 // double-spend-shaped gap EG2-4 names as non-optional.
 const BAD_CONSUME_NO_ITEM_ESCROW = `
@@ -1229,14 +1656,21 @@ const BAD_ESSENCE_TRAIN_NO_PUB_WRITE = `
 // invariants are about what PRODUCTION does: evolution_tests.rs contains
 // evolve-shaped fixture strings that could otherwise shadow the real reducer.
 // ---------------------------------------------------------------------------
-export function readServerModuleProdSources(dir) {
+//
+// `transform` is applied PER FILE (default: identity). The scan passes
+// `prepareRustSource` so comment-stripping and string-blanking are scoped to one
+// file at a time: a malformed literal (an unterminated quote left behind by the
+// line-comment stripper, a `'"'` char literal) can then only affect its own
+// file, never hollow out the next one across the concatenation — the
+// `movement_tests.rs` misalignment lesson, applied preventively.
+export function readServerModuleProdSources(dir, transform = (s) => s) {
   const parts = [];
   for (const entry of readdirSync(dir).sort()) {
     const full = `${dir}/${entry}`;
     if (statSync(full).isDirectory()) {
-      parts.push(readServerModuleProdSources(full));
+      parts.push(readServerModuleProdSources(full, transform));
     } else if (entry.endsWith('.rs') && !entry.endsWith('_tests.rs')) {
-      parts.push(readFileSync(full, 'utf8'));
+      parts.push(transform(readFileSync(full, 'utf8')));
     }
   }
   return parts.join('\n');
@@ -1254,22 +1688,95 @@ export default async function evolutionReducerSecurityEval() {
   // PROOFS-OF-TEETH — run before real-source scan.
   // =========================================================================
 
-  // --- Tooth E1: evolve without ownership must be flagged -------------------
+  // --- Tooth H1: the STRING DECOY (red-team PoC) ---------------------------
+  // Two directions, both required:
+  //   (a) with blanking, EVERY evolve-scoped checker must flag the decoy;
+  //   (b) WITHOUT blanking, every one of them must still be fooled — proof that
+  //       blankStringLiterals is load-bearing and not a decorative no-op.
   {
-    const body = extractReducerBody(stripRustComments(BAD_EVOLVE_NO_OWNERSHIP), 'evolve');
-    if (!body) {
+    const runAll = (b) => [
+      ['E1/checkOwnershipGuard', checkOwnershipGuard(b, 'evolve')],
+      ['E2/checkBattleGuard', checkBattleGuard(b, 'evolve')],
+      ['E3/checkEvolveDelegation', checkEvolveDelegation(b)],
+      ['E5g/checkPathSatisfiedGate', checkPathSatisfiedGate(b)],
+    ];
+
+    const blanked = extractReducerBody(prepareRustSource(BAD_EVOLVE_STRING_DECOY), 'evolve');
+    const unblanked = extractReducerBody(stripRustComments(BAD_EVOLVE_STRING_DECOY), 'evolve');
+    if (!blanked || !unblanked) {
       return {
         name,
         pass: false,
-        detail: 'TEETH: could not extract evolve body from BAD_EVOLVE_NO_OWNERSHIP',
+        detail: 'TEETH: could not extract evolve body from BAD_EVOLVE_STRING_DECOY',
       };
     }
-    if (!checkOwnershipGuard(body, 'evolve')) {
+
+    const missed = runAll(blanked)
+      .filter(([, verdict]) => verdict === null)
+      .map(([label]) => label);
+    if (missed.length > 0) {
       return {
         name,
         pass: false,
-        detail: 'TEETH: BAD_EVOLVE_NO_OWNERSHIP was NOT flagged by checkOwnershipGuard',
+        detail:
+          'TEETH H1: BAD_EVOLVE_STRING_DECOY (a guard-free evolve whose only mention of ' +
+          `every needle lives in one log string) was NOT flagged by: ${missed.join(', ')} — ` +
+          'string-literal CONTENT must never satisfy a code invariant',
       };
+    }
+
+    const stillFooled = runAll(unblanked).every(([, verdict]) => verdict === null);
+    if (!stillFooled) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH H1 (vacuity): BAD_EVOLVE_STRING_DECOY no longer fools the UNBLANKED scan, ' +
+          'so it stopped exercising blankStringLiterals — either the decoy string drifted ' +
+          'out of shape or a checker started rejecting it for an unrelated reason; restore ' +
+          'a decoy that a non-blanking scanner would swallow whole',
+      };
+    }
+  }
+
+  // --- Teeth E1: ownership — missing AND discarded, BY SUB-CHECK ------------
+  {
+    const ownerBad = [
+      [
+        'BAD_EVOLVE_NO_OWNERSHIP',
+        BAD_EVOLVE_NO_OWNERSHIP,
+        'E1-missing:',
+        'no require_owner call and no inline owner comparison',
+      ],
+      [
+        'BAD_EVOLVE_OWNERSHIP_DISCARDED',
+        BAD_EVOLVE_OWNERSHIP_DISCARDED,
+        'E1-unenforced:',
+        '`let _ = require_owner(..);` throws the rejection away',
+      ],
+    ];
+    for (const [label, fixture, prefix, why] of ownerBad) {
+      const body = extractReducerBody(prepareRustSource(fixture), 'evolve');
+      if (!body) {
+        return { name, pass: false, detail: `TEETH: could not extract evolve body from ${label}` };
+      }
+      const flagged = checkOwnershipGuard(body, 'evolve');
+      if (!flagged) {
+        return {
+          name,
+          pass: false,
+          detail: `TEETH: ${label} was NOT flagged by checkOwnershipGuard (${why})`,
+        };
+      }
+      if (flagged.indexOf(prefix) !== 0) {
+        return {
+          name,
+          pass: false,
+          detail:
+            `TEETH ATTRIBUTION: ${label} (${why}) was flagged, but by the WRONG sub-check — ` +
+            `expected a message starting with "${prefix}", got: ${flagged}`,
+        };
+      }
     }
   }
 
@@ -1288,9 +1795,15 @@ export default async function evolutionReducerSecurityEval() {
         'E2-single-role:',
         'the opponent_identity chain is dropped, so PvP side B evolves mid-battle',
       ],
+      [
+        'BAD_EVOLVE_BATTLE_GUARD_DISCARDED',
+        BAD_EVOLVE_BATTLE_GUARD_DISCARDED,
+        'E2-unenforced:',
+        '`let _ = reject_if_in_battle(<both chains>);` computes the rejection and drops it',
+      ],
     ];
     for (const [label, fixture, prefix, why] of battleBad) {
-      const body = extractReducerBody(stripRustComments(fixture), 'evolve');
+      const body = extractReducerBody(prepareRustSource(fixture), 'evolve');
       if (!body) {
         return { name, pass: false, detail: `TEETH: could not extract evolve body from ${label}` };
       }
@@ -1316,7 +1829,7 @@ export default async function evolutionReducerSecurityEval() {
 
   // --- Tooth E3: evolve without the apply_evolution delegation must be flagged
   {
-    const body = extractReducerBody(stripRustComments(BAD_EVOLVE_NO_DELEGATION), 'evolve');
+    const body = extractReducerBody(prepareRustSource(BAD_EVOLVE_NO_DELEGATION), 'evolve');
     if (!body) {
       return {
         name,
@@ -1337,7 +1850,7 @@ export default async function evolutionReducerSecurityEval() {
   // --- Tooth E4: apply_evolution without monster_pub update must be flagged --
   {
     const body = extractReducerBody(
-      stripRustComments(BAD_APPLY_EVOLUTION_NO_PUB_WRITE),
+      prepareRustSource(BAD_APPLY_EVOLUTION_NO_PUB_WRITE),
       'apply_evolution',
     );
     if (!body) {
@@ -1361,7 +1874,7 @@ export default async function evolutionReducerSecurityEval() {
   // --- Tooth E5 (transform): apply_evolution without game_core must be flagged
   {
     const body = extractReducerBody(
-      stripRustComments(BAD_APPLY_EVOLUTION_NO_SSOT),
+      prepareRustSource(BAD_APPLY_EVOLUTION_NO_SSOT),
       'apply_evolution',
     );
     if (!body) {
@@ -1396,9 +1909,16 @@ export default async function evolutionReducerSecurityEval() {
         'E5g-unenforced:',
         '`let _ =` throws the gate verdict away',
       ],
+      [
+        'BAD_EVOLVE_GATE_LOGS_ONLY',
+        BAD_EVOLVE_GATE_LOGS_ONLY,
+        'E5g-unenforced:',
+        'the gate branch only logs; the pre-H2b 400-char window was satisfied by the ' +
+          'unrelated `no such evolution` rejection further down the body',
+      ],
     ];
     for (const [label, fixture, prefix, why] of gateBad) {
-      const body = extractReducerBody(stripRustComments(fixture), 'evolve');
+      const body = extractReducerBody(prepareRustSource(fixture), 'evolve');
       if (!body) {
         return { name, pass: false, detail: `TEETH: could not extract evolve body from ${label}` };
       }
@@ -1424,7 +1944,7 @@ export default async function evolutionReducerSecurityEval() {
 
   // --- Tooth GOOD: the EG2 target shapes must pass EVERY scoped check --------
   {
-    const body = extractReducerBody(stripRustComments(GOOD_EVOLVE), 'evolve');
+    const body = extractReducerBody(prepareRustSource(GOOD_EVOLVE), 'evolve');
     if (!body) {
       return {
         name,
@@ -1447,7 +1967,7 @@ export default async function evolutionReducerSecurityEval() {
     }
   }
   {
-    const body = extractReducerBody(stripRustComments(GOOD_APPLY_EVOLUTION), 'apply_evolution');
+    const body = extractReducerBody(prepareRustSource(GOOD_APPLY_EVOLUTION), 'apply_evolution');
     if (!body) {
       return {
         name,
@@ -1479,7 +1999,7 @@ export default async function evolutionReducerSecurityEval() {
         BAD_ESSENCE_TRAIN_NO_OWNERSHIP,
         'essence_train',
         (b) => checkOwnershipGuard(b, 'essence_train'),
-        'essence_train: missing ownership guard',
+        'E1-missing:',
         'S1: require_owner deleted — anyone could train anyone else’s monster',
       ],
       [
@@ -1513,6 +2033,14 @@ export default async function evolutionReducerSecurityEval() {
         (b) => checkMonsterTradeEscrowGuard(b, 'essence_train'),
         'S3-missing:',
         'S3: an escrowed monster could be mutated mid-trade',
+      ],
+      [
+        'BAD_CONSUME_TRADE_GUARD_DISCARDED',
+        BAD_CONSUME_TRADE_GUARD_DISCARDED,
+        'consume_crystalized_essence',
+        (b) => checkMonsterTradeEscrowGuard(b, 'consume_crystalized_essence'),
+        'S3-unenforced:',
+        'S3: the trade guard is called and its Result dropped (`let _ = ..;`)',
       ],
       [
         'BAD_CONSUME_NO_ITEM_ESCROW',
@@ -1566,7 +2094,7 @@ export default async function evolutionReducerSecurityEval() {
     ];
 
     for (const [label, fixture, fnName, run, prefix, why] of essenceBad) {
-      const body = extractReducerBody(stripRustComments(fixture), fnName);
+      const body = extractReducerBody(prepareRustSource(fixture), fnName);
       if (!body) {
         return {
           name,
@@ -1592,7 +2120,7 @@ export default async function evolutionReducerSecurityEval() {
 
   // --- Tooth GOOD (EG5-2): both essence reducers pass every scoped check -----
   {
-    const body = extractReducerBody(stripRustComments(GOOD_ESSENCE_TRAIN), 'essence_train');
+    const body = extractReducerBody(prepareRustSource(GOOD_ESSENCE_TRAIN), 'essence_train');
     if (!body) {
       return {
         name,
@@ -1616,7 +2144,7 @@ export default async function evolutionReducerSecurityEval() {
     }
   }
   {
-    const body = extractReducerBody(stripRustComments(GOOD_CONSUME), 'consume_crystalized_essence');
+    const body = extractReducerBody(prepareRustSource(GOOD_CONSUME), 'consume_crystalized_essence');
     if (!body) {
       return {
         name,
@@ -1646,8 +2174,8 @@ export default async function evolutionReducerSecurityEval() {
   //     "simplifying" the two checkers into one widened battle-guard check
   //     (exactly what EG5-2 forbids) would still pass every tooth above.
   {
-    const evolveBody = extractReducerBody(stripRustComments(GOOD_EVOLVE), 'evolve');
-    const trainBody = extractReducerBody(stripRustComments(GOOD_ESSENCE_TRAIN), 'essence_train');
+    const evolveBody = extractReducerBody(prepareRustSource(GOOD_EVOLVE), 'evolve');
+    const trainBody = extractReducerBody(prepareRustSource(GOOD_ESSENCE_TRAIN), 'essence_train');
     if (!evolveBody || !trainBody) {
       return {
         name,
@@ -1683,7 +2211,8 @@ export default async function evolutionReducerSecurityEval() {
   const SERVER_SRC = 'server-module/src';
   let prodSrc;
   try {
-    prodSrc = stripRustComments(readServerModuleProdSources(SERVER_SRC));
+    // H1: per-file comment-strip + string-literal blanking (see prepareRustSource).
+    prodSrc = readServerModuleProdSources(SERVER_SRC, prepareRustSource);
   } catch (e) {
     return { name, pass: false, detail: `cannot read ${SERVER_SRC}: ${e.message}` };
   }
@@ -1785,9 +2314,10 @@ export default async function evolutionReducerSecurityEval() {
       'game_core::evolve SSOT delegation; essence_train + consume_crystalized_essence ' +
       '(EG5-2): ownership, enforced is_in_ongoing_battle guard, monster trade escrow, ' +
       'item trade escrow (consume only), decision-before-consume ordering and dual-write ' +
-      '— verified against production source (teeth: 19 BAD + 4 GOOD synthetic fixtures ' +
-      'plus 2 cross-checker misfire controls; fuse checks deleted with the reducer, ' +
-      'EG1/ADR-0174)',
+      '— verified against production source, comment-stripped AND string-literal-blanked ' +
+      'per file (teeth: 24 BAD + 4 GOOD synthetic fixtures, 2 cross-checker misfire ' +
+      'controls, and a string-decoy tooth that also asserts the decoy still fools an ' +
+      'unblanked scan; fuse checks deleted with the reducer, EG1/ADR-0174)',
   };
 }
 
