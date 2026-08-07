@@ -5,7 +5,7 @@
 **Slice:** EG1 (M-evolution-essence-graph — EARS EG1-1..EG1-12)
 **Supersedes:** —
 **Amends:** ADR-0060, ADR-0061, ADR-0062
-**Amended-by:** ADR-0175, ADR-0176
+**Amended-by:** ADR-0175, ADR-0176, ADR-0178
 **Subsystems:** evolution-fusion, schema-persistence
 **Decision:** Land Migration A (+16 Monster / +12 MonsterPub / Species.tier / new public evolution_path table) and the game-core essence-graph type freeze, deleting fusion outright, so EG2/EG3/EG4 fan out behind one frozen contract.
 
@@ -46,6 +46,15 @@ Deleted outright in EG1: `game_core::fuse`, `fusion_eligible`, `FusionError`, `M
 ## D5 — Index choice: btree(from_species); R1 has NO DB-level backstop (spec deviation)
 
 Spec EG1-4 offered a composite unique index on `(from_species, to_species)` "doubling as DB-level enforcement of R1". This toolchain has no composite unique constraint (in-repo precedent: `schema.rs` inventory note, ADR-0054). EG1 ships `#[index(btree)]` on `from_species` alone; R1 (no duplicate pair) is enforced ONLY by `validate_evolution_paths` at the content gate plus `sync_content`'s duplicate-pair seed check. EG1-12's contingency stands: if R1 is ever relaxed, `evolve(monster_id, to_species)`'s wire signature must be revisited.
+
+**Amendment (12r-e, ADR-0178 D2).** The "plus `sync_content`'s duplicate-pair seed check"
+clause no longer holds — that second checkpoint was provably unreachable (it re-scanned the
+same unmutated `Vec` that `validate_evolution_paths` had just validated, in the same
+function) and has been **deleted**. R1 at the content gate is now the single enforcement
+point. The rest of D5 is unchanged: there is still no composite unique index and therefore
+no DB-level backstop, and EG1-12's contingency still stands. ADR-0178 D2 records why the
+alternative — re-scanning the written rows post-insert — cannot catch anything here, so that
+the deleted check is not "hardened" back in.
 
 ## D6 — Validation rules R1–R12 with an explicit R10 empty-set carve-out
 

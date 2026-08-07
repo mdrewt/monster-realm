@@ -4273,10 +4273,99 @@ fn e2_helper_signature(name: &str) -> String {
     squash_ws(&stripped[at..at + brace])
 }
 
+/// The squashed body text that FOLLOWS the last `;` at brace depth 0 — i.e. the
+/// function's TAIL EXPRESSION.
+///
+/// Added in the 12r-e hardening round. A red-team reintroduced the whole-party
+/// disable as a CONDITIONAL tail
+/// (`lead_ok(lead).then(|| party.iter().map(..).collect())`), which mentions no
+/// banned identifier and adds no early return, so every other layer passed. The
+/// tail expression is where "this function always returns the ids it collected"
+/// is either true or false, so it is scanned directly.
+///
+/// Brace depth alone is the right nesting measure here: a `;` can only appear
+/// inside a closure body if that body is a `{ .. }` block, so it is never at
+/// depth 0. If the body has no top-level `;` at all, the whole body IS the tail.
+fn e2_tail_expression(body: &str) -> &str {
+    let bytes = body.as_bytes();
+    let mut depth: usize = 0;
+    let mut last: Option<usize> = None;
+    for (i, b) in bytes.iter().enumerate() {
+        match b {
+            b'{' => depth += 1,
+            b'}' => depth = depth.saturating_sub(1),
+            b';' if depth == 0 => last = Some(i),
+            _ => {}
+        }
+    }
+    match last {
+        Some(i) => &body[i + 1..],
+        None => body,
+    }
+}
+
+/// Byte index of the innermost `{` still OPEN at `at`, found by scanning
+/// BACKWARDS. `src` must be brace-balanced ASCII with no live string literals
+/// (which is what [`e2_helper_body`] produces).
+fn e2_enclosing_open_brace(src: &str, at: usize) -> Option<usize> {
+    let bytes = src.as_bytes();
+    let mut depth: usize = 0;
+    let mut i = at;
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            b'}' => depth += 1,
+            b'{' => {
+                if depth == 0 {
+                    return Some(i);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The HEADER of the block opening at `open`: the text back to the previous
+/// statement/arm boundary (`{`, `}`, `;` or `,`) at paren depth 0.
+///
+/// Paren-aware on purpose. The sanctioned rate-limiter header is
+/// `if let Some(suppressed) = LIMITER.check(now, WINDOW)`, whose argument list
+/// contains a `,`; a naive backward scan would stop there and report a header of
+/// `WINDOW)`, false-REDding the intended implementation.
+fn e2_block_header(src: &str, open: usize) -> &str {
+    let bytes = src.as_bytes();
+    let mut paren: usize = 0;
+    let mut i = open;
+    while i > 0 {
+        i -= 1;
+        match bytes[i] {
+            b')' => paren += 1,
+            b'(' => paren = paren.saturating_sub(1),
+            b'{' | b'}' | b';' | b',' if paren == 0 => return &src[i + 1..open],
+            _ => {}
+        }
+    }
+    &src[..open]
+}
+
+/// Is `header` the header of a FAILURE ARM (rather than of a condition)?
+///
+/// `let .. else {` and a `match` arm `Err(_) => {` are the two spellings the
+/// slice sanctions; `if let Ok(l) = .. { l } else {` lands here too, because its
+/// else-arm header is the bare `else`.
+fn e2_is_failure_arm_header(header: &str) -> bool {
+    header.ends_with("else") || header.ends_with("=>")
+}
+
 /// **12r-e E2 (base)** — `lead_party_ids` resolves the party WITHOUT parsing any
 /// level, and does the owner-index query ITSELF.
 ///
-/// Four layers, each aimed at a specific wrong implementation:
+/// Seven layers, each aimed at a specific wrong implementation. Layers 5-7 were
+/// added in the 12r-e HARDENING ROUND after a red-team reintroduced the defect
+/// three separate ways with layers 1-4 all green; each is annotated with the PoC
+/// it kills.
 ///
 /// 1. **`Level::new(` count == 0.** This IS E2 for the base helper: the whole
 ///    point is a party-id path that cannot be knocked out by one bad level byte.
@@ -4300,10 +4389,42 @@ fn e2_helper_signature(name: &str) -> String {
 /// 4. **No `Level` in the signature.** A `-> Option<(Vec<u64>, Level)>` base
 ///    helper would be the same function under a new name; the body needles
 ///    cannot see a return type, so the declaration is scanned separately.
+/// 5. **No `level` in ANY casing (HARDENING).** Layers 1-4 ban a SPELLING, not
+///    the behaviour. This PoC was applied and ran 501/501 green:
+///    `let _lead_level = parse_lead_level(lead.level)?;` with
+///    `fn parse_lead_level(raw: u8) -> Option<Level> { Level::new(raw).ok() }`
+///    one line below — E2 100% unmet, whole party still dies on a bad byte. The
+///    base helper has no business naming the level column or the level type at
+///    all, in any casing, so the case-folded substring is banned outright.
+/// 6. **At most ONE early exit (HARDENING).** `?` plus `return None`, counted
+///    together, must be <= 1 — the empty-party guard. A SECOND exit is by
+///    definition a validation of row CONTENT, which is the defect. This kills
+///    both the helper PoC above and the inline
+///    `if !(1..=100).contains(&lead.level) { return None; }` variant even if
+///    someone finds a spelling of "level" this file has not thought of.
+/// 7. **The tail expression is an unconditional `Some(` (HARDENING).** Layers 5
+///    and 6 are both evaded by a CONDITIONAL TAIL —
+///    `lead_ok(lead).then(|| party.iter().map(..).collect())` names no level and
+///    adds no early return. [`e2_tail_expression`] takes the text after the last
+///    top-level `;` and requires it to open with `Some(`, which is what
+///    "given a non-empty party this function ALWAYS returns the ids it
+///    collected" actually looks like in source.
+///
+/// WHY THESE THREE AND NOT "`return None` exactly once, before `sort_by_key(`".
+/// That formulation (and its `?`-after-`sort_by_key` equivalent) FALSE-REDS the
+/// implementation this very test instructs: layer 3's message says to move
+/// `battle.rs:284-292` in verbatim, and that code's empty-party guard is
+/// `party.first()?` — which is a `?` (not a literal `return None`, so the count
+/// would be 0) sitting AFTER the sort (so the ordering would fail). Counting
+/// EXITS rather than pinning their spelling or position keeps the sanctioned
+/// shape green while still admitting only one of them.
 ///
 /// RED at HEAD: `fn lead_party_ids(` does not exist, so layer 0 (the extractor)
 /// panics with an explicit FUNCTION NOT FOUND message naming the signature to
-/// write.
+/// write. Layers 5-7 are RED-by-nonexistence today for the same reason, and are
+/// GREEN against the sanctioned implementation (hand-checked: no `level` in any
+/// casing; one `?` from `party.first()?`; tail `Some(party.iter().map(|m|
+/// m.monster_id).collect())`).
 ///
 /// HONEST LIMITS. (a) SOURCE SCAN ONLY — no `ReducerContext` harness exists in
 /// this crate, so nothing here executes either helper or observes a single row.
@@ -4314,7 +4435,14 @@ fn e2_helper_signature(name: &str) -> String {
 /// spelled with a different accessor (say a full-table scan filtered in Rust)
 /// would false-RED. That is intended — the owner INDEX read is the shape being
 /// preserved, and re-deriving it differently on the hottest reducer in the game
-/// is a decision, not a refactor.
+/// is a decision, not a refactor. (c) Layer 7 fixes `Some(..)` as the sanctioned
+/// tail: an equivalent `(!ids.is_empty()).then_some(ids)` would false-RED. That
+/// is deliberate rather than incidental — a CONDITIONAL tail is the exact shape
+/// of the defect, and this helper has no reason to have one. (d) A determined
+/// contortion still exists — a predicate helper taking the whole `&Monster` row,
+/// named without the substring `level`, whose result is folded into the query
+/// itself. It clears layers 5-7 only by being conspicuous, reviewable and
+/// deliberate, which is the honest ceiling of a source scan.
 #[test]
 fn lead_party_ids_does_not_parse_a_level() {
     let body = e2_helper_body("lead_party_ids");
@@ -4399,6 +4527,66 @@ fn lead_party_ids_does_not_parse_a_level() {
          `pub(crate) fn lead_party_ids(ctx: &ReducerContext, owner: Identity) -> \
          Option<Vec<u64>>`. (The body needles above cannot see a return type, which \
          is why the declaration is scanned separately.)"
+    );
+
+    // --- Layer 5 (HARDENING): the level column/type is not named at all ------
+    let level_any = ["lev", "el"].concat();
+    let n_level_any = body.to_ascii_lowercase().matches(level_any.as_str()).count();
+    assert_eq!(
+        n_level_any, 0,
+        "TEETH (12r-e E2, HARDENING): `lead_party_ids`'s body names `{level_any}` \
+         {n_level_any} time(s) (case-folded); it must name it ZERO times. Layers \
+         1-4 ban the SPELLING `Level::new(`, not the behaviour, and a red-team \
+         walked straight past them with a one-line helper: \
+         `let _lead_level = parse_lead_level(lead.level)?;` beside \
+         `fn parse_lead_level(raw: u8) -> Option<Level> {{ Level::new(raw).ok() }}` \
+         — 501/501 green, E2 100% unmet, the whole party still disabled by one bad \
+         byte. An inline `if !(1..=100).contains(&lead.level) {{ return None; }}` \
+         behaves identically. This helper resolves PARTY MEMBERSHIP; it has no \
+         business naming the level column or the level type in any casing. Body \
+         scanned was:\n{body}"
+    );
+
+    // --- Layer 6 (HARDENING): exactly one way out, the empty-party guard -----
+    // `?` and a literal `return None` are counted TOGETHER because the sanctioned
+    // guard (`party.first()?`, moved in verbatim from battle.rs:292) uses the
+    // former while an `if party.is_empty()` guard uses the latter. Pinning either
+    // spelling — or its position relative to `sort_by_key(` — would false-RED the
+    // shape layer 3's own message tells the implementer to write.
+    let try_op = "?";
+    let ret_none = ["return", "None"].concat();
+    let n_exits = body.matches(try_op).count() + body.matches(ret_none.as_str()).count();
+    assert!(
+        n_exits <= 1,
+        "TEETH (12r-e E2, HARDENING): `lead_party_ids`'s body has {n_exits} early \
+         exits (`?` plus `return None`, counted together); it may have AT MOST ONE, \
+         and that one is the empty-party guard. A SECOND exit is by definition a \
+         validation of row CONTENT — which is precisely the whole-party disable \
+         this slice removes, just relocated. Both red-team PoCs land here: the \
+         `parse_lead_level(lead.level)?` helper adds a second `?`, and the inline \
+         `if !(1..=100).contains(&lead.level) {{ return None; }}` adds a `return \
+         None`. Zero exits is allowed (an empty party may legitimately return \
+         `Some(vec![])` — every call site treats that identically to `None`: \
+         `lead_party` point-reads through `ids.first()?` and `enqueue_move` loops \
+         over an empty Vec). Body scanned was:\n{body}"
+    );
+
+    // --- Layer 7 (HARDENING): the tail returns the ids unconditionally -------
+    let tail = e2_tail_expression(&body);
+    let some_ctor = ["Some", "("].concat();
+    assert!(
+        tail.starts_with(some_ctor.as_str()),
+        "TEETH (12r-e E2, HARDENING): `lead_party_ids`'s TAIL EXPRESSION is \
+         `{tail}`, which does not open with `Some(`. Given a non-empty party this \
+         function must ALWAYS return the ids it just collected, and a conditional \
+         tail is exactly how that stops being true. Layers 5 and 6 are both evaded \
+         by `lead_ok(lead).then(|| party.iter().map(|m| m.monster_id).collect())` \
+         — it names no level and adds no early return, yet the whole party still \
+         dies. Write the tail as `Some(party.iter().map(|m| m.monster_id) \
+         .collect())`. HONEST LIMIT: an equivalent \
+         `(!ids.is_empty()).then_some(ids)` would false-RED here; that is \
+         deliberate, because a conditional tail is the defect's shape and this \
+         helper has no reason to have one."
     );
 }
 
@@ -4528,11 +4716,19 @@ fn lead_party_warns_on_an_unparseable_lead_level() {
     // above), so the `if let Ok(l) = .. { l } else { warn; return None; }`
     // spelling — whose FIRST block is the success arm — is accepted too. The
     // block-vs-statement check above is what keeps this superset honest.
-    let window = &body[level_at..stmt_end.min(body.len())];
+    let win_end = stmt_end.min(body.len());
+    let window = &body[level_at..win_end];
     let warn_macro = ["warn", "!("].concat();
     let error_macro = ["error", "!("].concat();
+    let warn_rel = [
+        window.find(warn_macro.as_str()),
+        window.find(error_macro.as_str()),
+    ]
+    .into_iter()
+    .flatten()
+    .min();
     assert!(
-        window.contains(warn_macro.as_str()) || window.contains(error_macro.as_str()),
+        warn_rel.is_some(),
         "TEETH (12r-e E2): the failure arm of `{level_new}` in `lead_party` \
          (statement bytes {level_at}..{stmt_end}, block at {blk_start}..{blk_end}) \
          contains neither `{warn_macro}..)` nor `{error_macro}..)`. An \

@@ -522,8 +522,17 @@ pub(crate) fn apply_quality_time_credit(m: &mut Monster, now: i64) -> bool {
         .max(0);
     let creditable = gap.min(headroom);
     if creditable == 0 {
-        m.quality_time_window_start_ms = now;
-        return true;
+        // Daily cap exhausted: no tick, no tier change, nothing check_and_evolve
+        // can observe. Return false WITHOUT re-anchoring so the ctx shell skips
+        // its row write (ADR-0178 D4) — on enqueue_move that was one wasted
+        // write per party monster per QT_MIN_WRITE_GAP_MS for the rest of the
+        // UTC day. Dropping the re-anchor is safe and drops exactly this one
+        // mutation: creditable == 0 <=> headroom == 0 <=> window_ms >= CAP,
+        // while the rollover branch above sets window_ms = 0 => headroom == CAP
+        // => creditable > 0, so the two branches are MUTUALLY EXCLUSIVE and a
+        // day reset can never be suppressed here. Anchor staleness stays bounded
+        // by the idle branch above, which still re-anchors.
+        return false;
     }
     // creditable <= QT_IDLE_GAP_MS here, so the conversion cannot fail; the
     // defensive arm re-anchors without credit rather than truncating (no `as`).

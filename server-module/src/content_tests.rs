@@ -2812,21 +2812,35 @@ fn sync_npc_entities_from_log_sites_escape_the_npc_id() {
 ///
 /// Scoped to the brace-matched body of `sync_content_inner` (comment-stripped
 /// first, so neither the doomed block's own comment nor this test's rationale can
-/// satisfy anything). Measured baseline at HEAD, inside that body:
-///   * `HashSet`       — 1 occurrence (content.rs:73)
-///   * `collections::` — 1 occurrence (content.rs:73)
-///   * `.insert((`     — 1 occurrence (content.rs:75)
-/// All three ARE the backstop, and all three must fall to 0. The three other
-/// `HashSet` uses in content.rs (`sync_content_inner_recheck` :342,
-/// `stale_zone_def_ids` :403, `stale_heal_location_ids` :423,
+/// satisfy anything). Measured baseline at HEAD, inside that body, with the
+/// post-fix target in brackets:
+///
+///   * `HashSet`       — 1 [0]  (content.rs:73)
+///   * `collections::` — 1 [0]  (content.rs:73)
+///   * `.insert((`     — 1 [0]  (content.rs:75)
+///   * `from_species`  — 4 [2]  (:75 once, :78 once, :272 TWICE — the surviving
+///     `EvolutionPathRow` seed literal `from_species: p.from_species,`)
+///   * `returnErr(`    — 2 [1]  (:76 the backstop, :315 the version-stamp guard,
+///     which is the one that survives; every CONTENT rejection flows through the
+///     `?` on the `validate_*` calls, not through a `return`)
+///
+/// The first three are the backstop's STRUCTURE. The last two are the
+/// **behaviour-shaped** pair added in the 12r-e hardening round, and they are the
+/// ones with real reach: any duplicate-(from, to)-pair scan whatsoever must READ
+/// `from_species` and must REJECT, no matter which container it is written with.
+/// Both are RED at HEAD and both catch the `Vec` + `.contains(..)` re-add that
+/// the first three miss (measured: 3 and 2 respectively under that spelling).
+///
+/// The four other `HashSet` uses in content.rs (`sync_content_inner_recheck`
+/// :342, `stale_zone_def_ids` :403, `stale_heal_location_ids` :423,
 /// `sync_npc_entities_from` :689) are in DIFFERENT functions and are excluded by
 /// the body extraction — the two boundary assertions below prove that exclusion
 /// rather than assuming it.
 ///
 /// VACUITY LAYER (load-bearing, do not remove). `validate_evolution_paths(` must
 /// still be called EXACTLY ONCE in the same body. Without it, deleting the
-/// validation call outright would also drive all three counts to 0 and this test
-/// would report "one enforcement point" while there were ZERO — a real false
+/// validation call outright would also drive the counts to their targets and this
+/// test would report "one enforcement point" while there were ZERO — a real false
 /// green, and a far worse outcome than the redundancy being removed.
 ///
 /// HONEST LIMITS. (a) This is a SOURCE SCAN, not an execution: this crate has no
@@ -2837,12 +2851,18 @@ fn sync_npc_entities_from_log_sites_escape_the_npc_id() {
 /// `game-core/src/content.rs`'s `r1_duplicate_from_to_pair_rejected` (~:3210),
 /// which is a strictly stronger test of the same property (it builds a duplicate
 /// pair and asserts the `Err`). This test only proves the server no longer
-/// carries a second, unreachable copy of that rule. (c) A duplicate-pair scan
-/// written with a `Vec` + `.contains(..)` instead of a `HashSet`, or with
-/// `BTreeSet`, would evade all three needles. That is accepted: the point of E4
-/// is the DELETION plus the truthful comment, and the vacuity layer keeps the
-/// real gate wired; an implementer who re-adds the redundancy in a new spelling
-/// has to do so deliberately, against this test's documented intent.
+/// carries a second, unreachable copy of that rule. (c) CORRECTED IN THE 12r-e
+/// HARDENING ROUND — an earlier draft of this doc claimed a `BTreeSet` re-add
+/// would evade the structural needles. It does NOT: `std::collections::BTreeSet`
+/// still spells `collections::` and still calls `.insert((..))`, and the red-team
+/// applied that spelling and measured this test correctly FAILING
+/// (`collections::` = 2, `.insert((` = 1). The one spelling that evades the three
+/// STRUCTURAL needles is `Vec` + `.contains(..)` — which is precisely why
+/// `from_species` and `returnErr(` were added, and both catch it. (d) The
+/// `returnErr(` count is a fence as well as a tooth: a future change that adds
+/// a genuinely new `return Err(..)` to `sync_content_inner` turns this red and
+/// must update the expected count DELIBERATELY, from the spec. That is the
+/// intended failure mode.
 #[test]
 fn r1_duplicate_pair_has_exactly_one_enforcement_point() {
     let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
@@ -2939,5 +2959,50 @@ fn r1_duplicate_pair_has_exactly_one_enforcement_point() {
          this survives both a rename of the binding AND a swap of the set type's \
          import path. Note the needle is whitespace-insensitive (the body is \
          compacted first), so a rustfmt line split cannot false-GREEN it."
+    );
+
+    // --- Behaviour-shaped needles: ANY re-add spelling reads the key and rejects
+    // Added in the 12r-e hardening round. The three structural needles above are
+    // container-shaped and a red-team confirmed a `Vec` + `.contains(..)` re-add
+    // walks past all three. These two do not care about the container at all: a
+    // duplicate-(from, to)-PAIR check must read `from_species`, and a BACKSTOP
+    // must reject. Both are strictly stronger than the three above, and both are
+    // RED at HEAD.
+    let key_field = ["from", "_species"].concat();
+    let n_key_field = compact.matches(key_field.as_str()).count();
+    assert_eq!(
+        n_key_field, 2,
+        "TEETH (12r-e E4, container-agnostic): `sync_content_inner`'s body reads \
+         `{key_field}` {n_key_field} time(s); after the fix it must read it EXACTLY \
+         2 times. RED at HEAD: 4 — :75 and :78 belong to the dead duplicate-pair \
+         backstop, and the surviving 2 are BOTH halves of the seed literal at \
+         content.rs:272 (`from_species: p.from_species,`), which writes the \
+         `evolution_path` row and must not be touched. This needle does not care \
+         which container the backstop is written with: a duplicate-(from, to)-PAIR \
+         scan has to read the from-species of every path, so a `HashSet`, a \
+         `BTreeSet`, and the `Vec` + `.contains(..)` spelling that walks past the \
+         three structural needles above ALL land here (measured: 3 under the `Vec` \
+         spelling). If this reads 2 while the structural counts are 0, the block \
+         is genuinely gone."
+    );
+
+    // `return Err(` with the whitespace removed — the body is compacted.
+    let reject = ["return", "Err("].concat();
+    let n_reject = compact.matches(reject.as_str()).count();
+    assert_eq!(
+        n_reject, 1,
+        "TEETH (12r-e E4, container-agnostic): `sync_content_inner`'s body \
+         contains {n_reject} `return Err(..)` statement(s); after the fix it must \
+         contain EXACTLY 1. RED at HEAD: 2 — content.rs:76 (the dead backstop's \
+         rejection) and content.rs:315 (the version-stamp `config row missing` \
+         guard, which is the one that SURVIVES). Every genuine CONTENT rejection \
+         in this function flows through the `?` on a `validate_*` call, never \
+         through a `return`, so `return Err(` here is a reliable census of \
+         hand-rolled gates. A re-added duplicate-pair backstop must REJECT to be \
+         worth anything, and rejecting costs a second `return Err(` no matter how \
+         the scan itself is spelled (measured: 2 under both the `BTreeSet` and the \
+         `Vec` + `.contains(..)` re-adds). FENCE NOTE: a future change that adds a \
+         legitimately new `return Err(..)` to this reducer turns this red — update \
+         the expected count deliberately, from the spec, and say why."
     );
 }

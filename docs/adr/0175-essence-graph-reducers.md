@@ -5,6 +5,7 @@
 **Slice:** EG2 (M-evolution-essence-graph — EARS EG2-1..EG2-13)
 **Supersedes:** —
 **Amends:** ADR-0174
+**Amended-by:** ADR-0178
 **Subsystems:** evolution-fusion, battle, movement-netcode
 **Decision:** Land the essence-graph write layer — apply_evolution/check_and_evolve with chain cascade, essence_train/consume_crystalized_essence, Trust/Quality-Time credits — defining quality time as bounded-gap active-playtime accrual.
 
@@ -193,7 +194,8 @@ slice's touches; EG5 may promote them beside `battle_currency_reward`).
   so the content validator can reject unsatisfiable essence thresholds (> cap) and a
   future client preview has an SSOT; (4) `lead_party`'s `Level::new(lead.level).ok()?`
   silently disables the whole party's movement-path accrual on a corrupt LEAD level —
-  wants an ids-only helper; (5) `ItemRow` carries no essence columns, so the client
+  wants an ids-only helper **[CLOSED by 12r-e, ADR-0178 D3: `lead_party_ids` is now the base
+  helper and `enqueue_move` consumes it; the failure path is rate-limit-logged]**; (5) `ItemRow` carries no essence columns, so the client
   cannot render an essence item's effect (the reducer reads the content registry) — a
   future additive migration; (6) the EG2-9 companion test + eval Check B are one-hop —
   a two-hop wrapper (scheduled → A → B → helper) evades both; documented honest limit,

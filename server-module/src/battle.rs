@@ -16,6 +16,7 @@ use crate::guards::{
     is_in_ongoing_battle, is_ranked_pvp, log_reject, reject_if_monster_in_trade, require_owner,
 };
 use crate::inventory::consume_one;
+use crate::movement::RateLimiter;
 use crate::marshal::{
     battle_monster_from_row, build_ability_store, loser_base_stat_total, now_ms, pub_from_monster,
     wild_battle_monster, write_back_hp,
@@ -276,11 +277,30 @@ pub fn start_battle(
 
 // --- Wild encounter (M8c, ADR-0045) -------------------------------------------
 
-/// The player's lead party monster (lowest `party_slot`) ids + level. Returns
-/// `(party_ids, lead_level)` over ALL party monsters (slot != 255), ordered by
-/// slot. `None` if the player has no party monster (callers treat that as a no-op
-/// / `Err`, and `begin_encounter`'s empty-party guard is the backstop).
-pub(crate) fn lead_party(ctx: &ReducerContext, owner: Identity) -> Option<(Vec<u64>, Level)> {
+/// Emit window for the bad-lead-level warn: at most one `log::warn!` per
+/// 5000 ms of the caller's injected clock (ADR-0003 — never a wall clock).
+const LEAD_LEVEL_ERR_WINDOW_MS: i64 = 5000;
+
+/// Gates `lead_party_bad_level` logging. `lead_party` is reached per character
+/// per tick from the scheduled `movement_tick`, so an unlimited warn on a single
+/// corrupt row is a log flood on the hottest scheduled reducer (ADR-0170 D4).
+/// Making the failure visible must not make it deafening.
+static LEAD_LEVEL_ERR_LIMITER: RateLimiter = RateLimiter::new();
+
+/// The player's party monster ids (slot != 255), ordered by `party_slot` —
+/// lowest slot (the lead) first. `None` iff the player has no party monster;
+/// a `Some` is NEVER empty.
+///
+/// THE BASE HELPER, and deliberately level-free: it parses nothing and therefore
+/// cannot fail for a non-empty party (ADR-0178 D3). The EG2-8/EG2-12 growth tail
+/// on `enqueue_move` consumes THIS, so a corrupt LEAD level can no longer
+/// silently disable Quality-Time and auto-evolution for the whole party.
+///
+/// The dependency direction is load-bearing and scan-pinned: `lead_party` calls
+/// this, never the reverse. Inverting it (or re-adding a level check here, or
+/// hoisting one into the caller) restores the exact defect this closes while
+/// leaving every needle satisfied — that shape was PoC'd during review.
+pub(crate) fn lead_party_ids(ctx: &ReducerContext, owner: Identity) -> Option<Vec<u64>> {
     let mut party: Vec<Monster> = ctx
         .db
         .monster()
@@ -288,10 +308,41 @@ pub(crate) fn lead_party(ctx: &ReducerContext, owner: Identity) -> Option<(Vec<u
         .filter(owner)
         .filter(|m| m.party_slot != PARTY_SLOT_NONE)
         .collect();
+    if party.is_empty() {
+        return None;
+    }
     party.sort_by_key(|m| m.party_slot);
-    let lead = party.first()?;
-    let lead_level = Level::new(lead.level).ok()?;
-    let ids = party.iter().map(|m| m.monster_id).collect();
+    Some(party.iter().map(|m| m.monster_id).collect())
+}
+
+/// The player's party ids PLUS the lead monster's typed level, for the callers
+/// that genuinely need the level (`begin_encounter`'s wild-encounter roll).
+/// Returns `None` when there is no party OR when the lead's `level` byte is out
+/// of `Level`'s 1..=100 range.
+///
+/// The out-of-range case is defense-in-depth, not a live path: every writer of
+/// `Monster.level` at this SHA goes through `Level::new` or an already-`Level`
+/// value. It is rate-limit-logged rather than silent so a future writer or a
+/// migration/corruption event surfaces instead of quietly degrading play.
+pub(crate) fn lead_party(ctx: &ReducerContext, owner: Identity) -> Option<(Vec<u64>, Level)> {
+    let ids = lead_party_ids(ctx, owner)?;
+    let lead_id = *ids.first()?;
+    let lead = ctx.db.monster().monster_id().find(lead_id)?;
+    let lead_level = match Level::new(lead.level) {
+        Ok(level) => level,
+        Err(_) => {
+            if let Some(suppressed) =
+                LEAD_LEVEL_ERR_LIMITER.check(now_ms(ctx), LEAD_LEVEL_ERR_WINDOW_MS)
+            {
+                log::warn!(
+                    "{{\"evt\":\"lead_party_bad_level\",\"owner\":\"{owner}\",\"monster_id\":{},\"level\":{},\"suppressed\":{suppressed}}}",
+                    lead.monster_id,
+                    lead.level
+                );
+            }
+            return None;
+        }
+    };
     Some((ids, lead_level))
 }
 

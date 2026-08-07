@@ -63,23 +63,15 @@ pub(crate) fn sync_content_inner(ctx: &ReducerContext) -> Result<(), String> {
     validate_encounters(&encounters, &species, &zones)
         .map_err(|e| format!("encounters invalid: {e}"))?;
     // EG1-10 (M2 discipline): the R1-R12 content gate runs BEFORE any DB write.
+    // R1 (no duplicate (from, to) pair) is enforced HERE and ONLY here — see
+    // ADR-0178 D2. A second, in-function re-scan of the same unmutated Vec used
+    // to sit directly below this call, calling itself the last line of defense;
+    // it was provably unreachable (nothing between the two could introduce a
+    // duplicate) and is deleted. Do NOT re-add it: the write phase below is a
+    // full clear followed by a total 1:1 map of THIS validated Vec, so a
+    // post-insert re-scan cannot catch anything either.
     validate_evolution_paths(&species, &evolution_paths, &encounters, &items)
         .map_err(|e| format!("evolution_paths invalid: {e}"))?;
-    // Defensive duplicate-(from, to)-pair check before seeding (ADR-0174 D5/R1
-    // backstop): this toolchain has no composite unique constraint, so the seed
-    // gate is the LAST line of defense against a duplicate edge reaching the DB
-    // (which would make the evolve reducer lookup ambiguous).
-    {
-        let mut seen_pairs = std::collections::HashSet::new();
-        for p in &evolution_paths {
-            if !seen_pairs.insert((p.from_species, p.to_species)) {
-                return Err(format!(
-                    "evolution_paths invalid: duplicate (from, to) pair ({}, {}) at the seed gate (R1 backstop)",
-                    p.from_species, p.to_species
-                ));
-            }
-        }
-    }
     validate_npc_content(
         &npc_defs,
         &dialogue_trees,

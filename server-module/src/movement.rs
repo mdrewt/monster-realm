@@ -11,7 +11,7 @@
 //! This file name is part of the canonical `touches:` vocabulary fixed by
 //! ADR-0056 — keep it stable.
 
-use crate::battle::{begin_encounter, lead_party, NO_CONSCIOUS_MONSTER_REASON};
+use crate::battle::{begin_encounter, lead_party, lead_party_ids, NO_CONSCIOUS_MONSTER_REASON};
 use crate::evolution::check_and_evolve;
 use crate::guards::{authorize_move, is_in_ongoing_battle, json_escape, log_reject, validate_name};
 use crate::marshal::{
@@ -147,7 +147,7 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
     // player-triggered reducer (never movement_tick, EG2-9). Once per party
     // monster over lead_party's FULL id list (not just the lead); accrual
     // first, auto-evolution check LAST. No party -> credit nothing.
-    if let Some((party_ids, _)) = lead_party(ctx, ctx.sender) {
+    if let Some(party_ids) = lead_party_ids(ctx, ctx.sender) {
         // Trade escrow (TR-6, ADR-0106): an escrowed party monster keeps its
         // party slot until settlement, so without this it would keep accruing
         // Quality Time and could AUTO-EVOLVE out from under the counterparty's
