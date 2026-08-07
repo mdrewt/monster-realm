@@ -1693,24 +1693,42 @@ fn min_write_gap_boundary_exactly_credits() {
 /// with the row completely untouched.
 ///
 /// THE DEFECT THIS NOW GATES (`raising.rs:524-527`). The capped branch re-anchors
-/// and returns `true`, so `accrue_quality_time` (`:562-583`) performs an
-/// unconditional `ctx.db.monster().monster_id().update(m)` whose ONLY change is
-/// an invisible clock anchor — no tick, no window, no accum, nothing a player or
-/// a gate can observe. On `movement.rs:181` — the hottest reducer in the game,
-/// roughly one call per tile-step per party monster — that is a wasted row write
-/// every ~5 s per party monster for the whole remainder of the UTC day, for
-/// every capped monster. THE FIX: `return false` in that branch, and do NOT
-/// re-anchor.
+/// and returns `true`, so `accrue_quality_time` (`:563-583`) performs an
+/// unconditional private-row update whose ONLY change is an invisible clock
+/// anchor — no tick, no window, no accum, nothing a player or a gate can
+/// observe. On `movement.rs:181` — the hottest reducer in the game, roughly one
+/// call per tile-step per party monster — that is a wasted row write every ~5 s
+/// per party monster for the whole remainder of the UTC day, for every capped
+/// monster. THE FIX: `return false` in that branch, and do NOT re-anchor.
+///
+/// (The private-row update is deliberately NOT spelled out here or in the
+/// assertion messages below. `evals/monster-dual-write.eval.mjs` concatenates
+/// every `.rs` file under `server-module/src` — `*_tests.rs` INCLUDED — splits it
+/// into column-0 `fn` spans and requires any span containing that marker to also
+/// contain the `monster_pub` mirror. It strips `//` comments but NOT string
+/// literals, so writing the marker contiguously inside an assertion message put
+/// it inside this test's span and turned the eval red. See the assembled-at-
+/// runtime marker in the body below.)
 ///
 /// THIS TEST WAS REWRITTEN IN 12r-e AND ITS OLD ASSERTIONS SAID THE OPPOSITE.
 /// Recorded honestly, because rewriting a teeth test is the highest-scrutiny move
 /// in a slice:
+///
 ///   * `assert!(wrote, ..)` became `assert!(!wrote, ..)`;
 ///   * `assert_eq!(qt_state(&m), (now, cap, 0, 120), ..)` became
 ///     `(QT_ANCHOR, cap, 0, 120)` — the anchor must NOT move.
-/// Nothing was dropped: both assertions were replaced by the strictly stronger
-/// claim about the same call (`no write at all` implies the old `no credit`), and
-/// a new sibling test pins the property the old anchor claim was reaching for.
+///
+/// CORRECTED IN THE HARDENING ROUND — an earlier draft of this note called the
+/// rewrite "strictly stronger". It is NOT, and the distinction matters. The
+/// no-credit content (`cap, 0, 120`) is IDENTICAL before and after; only the
+/// anchor element and the boolean changed, and `!wrote` versus `wrote` is a
+/// DIRECTIONAL INVERSION, not a strengthening. It is justified by a SPEC
+/// DECISION (E3: a capped call must cost no row write), not by logic. What IS a
+/// strengthening is the pairing: the property the old anchor assertion protected
+/// — that a capped-and-active row's anchor tracks the clock — is re-pinned, and
+/// pinned TIGHTER, by [`capped_and_active_still_reanchors_at_the_idle_bound`],
+/// which brackets that guarantee at exactly `QT_IDLE_GAP_MS` from both sides
+/// instead of buying it with an unconditional hot-path write.
 ///
 /// THE OLD `kills:` RATIONALE, AND WHY IT DOES NOT BLOCK THE FIX. It read: an
 /// impl that keeps the old anchor when capped leaves a stale anchor that "makes
@@ -1718,19 +1736,24 @@ fn min_write_gap_boundary_exactly_credits() {
 /// instead of credited". That is NOT refuted — it is BOUNDED, and the bound is
 /// what makes the trade sound:
 ///
-///   1. MUTUAL EXCLUSION (two independent derivations agree). `creditable ==
+///   1. MUTUAL EXCLUSION (independently re-verified in the hardening round over
+///      ~500M call evaluations, never once violated). `creditable ==
 ///      gap.min(headroom)` and `gap >= QT_MIN_WRITE_GAP_MS = 5_000 > 0` at this
 ///      point, so `creditable == 0` iff `headroom == 0` iff `window_ms >= CAP`.
 ///      The day-rollover branch (`raising.rs:513-515`) sets `window_ms = 0`, which
 ///      forces `headroom == CAP` and therefore `creditable > 0`. The two branches
 ///      can NEVER both be taken on one call, so `return false` here drops exactly
 ///      ONE mutation — the re-anchor — and can never suppress a day reset.
-///   2. THE RESIDUAL IS BOUNDED AT <= 2 QT TICKS, IN EITHER DIRECTION, PER UTC
-///      ROLLOVER. A red-team simulation (20 000 randomised trials x 400 calls,
-///      faithful port of the function) measured worst-case divergence between the
-///      old and new behaviour at -2 ticks (under-credit) and +2 ticks
-///      (over-credit). Not "not load-bearing" — bounded, small, and two-sided,
-///      against an unconditional hot-path row write per party monster per ~5 s.
+///   2. THE RESIDUAL IS BOUNDED AT <= 4 QT TICKS, IN EITHER DIRECTION, PER UTC
+///      ROLLOVER. CORRECTED IN THE HARDENING ROUND: an earlier draft said <= 2,
+///      from a 20 000-trial randomised simulation. An independent Python port
+///      searching ~500M call evaluations found divergence up to +/-4. Minimised
+///      witness: 44 calls across one UTC rollover with `anchor = 83_466_084`,
+///      `accum = 34_456`, `window = QT_DAILY_CAP_MS` — old behaviour credits 0
+///      ticks, new credits 3. Four ticks, both directions, per rollover, against
+///      an unconditional hot-path row write per party monster per ~5 s for the
+///      rest of every capped day. The trade still stands; the NUMBER has to be
+///      reproducible, and 2 was not.
 ///   3. THE SURVIVING ROLLOVER PATH IS INDEPENDENTLY TESTED.
 ///      [`daily_cap_resets_on_next_utc_day`] (below) exercises a real
 ///      day-straddling credit and is UNCHANGED by this slice, as is

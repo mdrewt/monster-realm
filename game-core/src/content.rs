@@ -3675,8 +3675,14 @@ mod tests {
         qt_and_nutrition.min_trust_tier = None;
 
         assert_r4_rejects("every gate slot at its floor at once", all_floors);
-        assert_r4_rejects("a floor essence entry beside a floor Trust tier", essence_and_trust);
-        assert_r4_rejects("a floor Quality-Time tier beside a floor 0%", qt_and_nutrition);
+        assert_r4_rejects(
+            "a floor essence entry beside a floor Trust tier",
+            essence_and_trust,
+        );
+        assert_r4_rejects(
+            "a floor Quality-Time tier beside a floor 0%",
+            qt_and_nutrition,
+        );
     }
 
     /// R4 (COMBINATION anti-over-tightening): ONE binding gate is enough even
@@ -3842,7 +3848,10 @@ mod tests {
 
         let weakest = r4_weakest_monster();
         assert_eq!(
-            trust_tier_of(weakest.trust_favorable_count, weakest.trust_unfavorable_count),
+            trust_tier_of(
+                weakest.trust_favorable_count,
+                weakest.trust_unfavorable_count
+            ),
             TrustTier::Hostile,
             "the oracle monster must really sit at the trust floor, otherwise the degenerate \
              Some(Hostile) row below would pass for the wrong reason."
@@ -3936,12 +3945,30 @@ mod tests {
             ("mixed essence 0 Fire + 100 Water", mixed_essence),
             ("all five slots at their floor", all_slots_at_floor),
             ("floor essence + floor trust", floor_essence_and_trust),
-            ("floor quality time + floor nutrition", floor_quality_time_and_nutrition),
-            ("binding level 2 beside four floors", floors_plus_binding_level),
-            ("binding essence beside four floors", floors_plus_binding_essence),
-            ("binding trust Wary beside four floors", floors_plus_binding_trust),
-            ("binding quality time beside four floors", floors_plus_binding_quality_time),
-            ("binding nutrition beside four floors", floors_plus_binding_nutrition),
+            (
+                "floor quality time + floor nutrition",
+                floor_quality_time_and_nutrition,
+            ),
+            (
+                "binding level 2 beside four floors",
+                floors_plus_binding_level,
+            ),
+            (
+                "binding essence beside four floors",
+                floors_plus_binding_essence,
+            ),
+            (
+                "binding trust Wary beside four floors",
+                floors_plus_binding_trust,
+            ),
+            (
+                "binding quality time beside four floors",
+                floors_plus_binding_quality_time,
+            ),
+            (
+                "binding nutrition beside four floors",
+                floors_plus_binding_nutrition,
+            ),
         ] {
             let weakest_qualifies = path_satisfied(&weakest, &path);
             let validator_rejects =

@@ -4626,6 +4626,17 @@ fn lead_party_ids_does_not_parse_a_level() {
 /// The `.ok()?` count is asserted separately and is the most direct statement of
 /// the defect: `.ok()?` IS the silent discard.
 ///
+/// LAYER 5, ADDED IN THE 12r-e HARDENING ROUND. Layers 2-4 above close the
+/// OUT-OF-STATEMENT decoy only. A red-team then put an unsatisfiable condition
+/// INSIDE the correctly-attached failure block —
+/// `else { if lead.level == 0 && lead.level > 200 { log::warn!(..); } return None; }`
+/// — and ran 501/501 green with the warn provably dead. Layer 5 therefore
+/// WHITELISTS the warn's immediate wrapper: it must be the failure arm itself, or
+/// exactly one ADR-0170 D4 rate-limiter block (`.check(`) that is itself directly
+/// in the arm. A blacklist of dead conditions was rejected because it has to
+/// guess the next spelling (`if false`, `if !true`, ...), and this module's own
+/// [`assert_lead_fields_untouched`] records losing that arms race twice.
+///
 /// RATE LIMITING. The warn must be rate-limited in the shipped fix —
 /// `movement_tick` reaches `lead_party` once per character per scheduled tick, so
 /// an unlimited warn is a log flood. `movement.rs:443-455`
@@ -4752,5 +4763,74 @@ fn lead_party_warns_on_an_unparseable_lead_level() {
          Warn, then `return None`; `lead_party`'s `None` contract (no usable lead) \
          is unchanged, and the id-only path that must NOT be gated on it is \
          `lead_party_ids`. Statement scanned was:\n{window}"
+    );
+
+    // --- Layer 5 (HARDENING): the warn is not behind a DEAD condition -------
+    // A red-team applied this and it ran 501/501 green against layers 1-4:
+    //
+    //     let Ok(lead_level) = Level::new(lead.level) else {
+    //         if lead.level == 0 && lead.level > 200 { log::warn!("..."); }
+    //         return None;
+    //     };
+    //
+    // The condition is unsatisfiable, so the warn can never fire — yet it sits
+    // inside the correctly-attached failure block, which is all layers 2-4 ask.
+    // The block-vs-statement check closed the OUT-OF-STATEMENT decoy only.
+    //
+    // The rule below is a WHITELIST on the warn's IMMEDIATE wrapper, because a
+    // blacklist of dead conditions has to guess the next one (`if false`,
+    // `if !true`, `if x == 0 && x > 200`, ...) and this file's own
+    // `assert_lead_fields_untouched` records losing that arms race twice. The
+    // warn's innermost enclosing block must be EITHER the failure arm itself
+    // (header ends `else` or `=>`) OR the one sanctioned wrapper — the
+    // ADR-0170 D4 rate limiter — whose OWN enclosing block must then be the arm.
+    let warn_at = level_at + warn_rel.expect("asserted present above");
+    let limiter = [".che", "ck("].concat();
+    let (leads, seen) = match e2_enclosing_open_brace(&body, warn_at) {
+        // No enclosing block at all: the warn is unconditional straight-line
+        // code in the failure path, which is strictly stronger than required.
+        None => (true, String::from("<no enclosing block: unconditional>")),
+        Some(open) => {
+            let header = e2_block_header(&body, open);
+            if e2_is_failure_arm_header(header) {
+                (true, header.to_string())
+            } else if header.contains(limiter.as_str()) {
+                match e2_enclosing_open_brace(&body, open) {
+                    Some(outer) => {
+                        let outer_header = e2_block_header(&body, outer);
+                        (
+                            e2_is_failure_arm_header(outer_header),
+                            [header, "  <<inside>>  ", outer_header].concat(),
+                        )
+                    }
+                    None => (false, header.to_string()),
+                }
+            } else {
+                (false, header.to_string())
+            }
+        }
+    };
+    assert!(
+        leads,
+        "TEETH (12r-e E2, DEAD-WARN GUARD): the log macro at body byte {warn_at} \
+         in `lead_party` is wrapped by a block whose header is\n  {seen}\n\
+         — which is neither the failure ARM itself nor the sanctioned rate \
+         limiter. A warn that only fires under some extra condition proves \
+         nothing: a red-team put `if lead.level == 0 && lead.level > 200 {{ .. }}` \
+         (unsatisfiable) around it and every other layer of this test stayed \
+         green, leaving the failure silent in practice. ACCEPTED SHAPES: (1) the \
+         warn directly in the arm — `else {{ log::warn!(..); return None; }}` or \
+         `Err(_) => {{ log::warn!(..); return None; }}`; (2) the warn inside ONE \
+         rate-limiter block that is itself directly in the arm — `else {{ if let \
+         Some(suppressed) = LIMITER.check(now, WINDOW) {{ log::warn!(..); }} \
+         return None; }}`. Shape (2) is the one to write: `movement_tick` reaches \
+         `lead_party` once per character per scheduled tick, so an unlimited warn \
+         here is a log flood, and `movement.rs:443-455` \
+         (ENCOUNTER_TABLE_ERR_LIMITER) is the house idiom this recognises. HONEST \
+         LIMITS: the limiter is recognised by the `.check(` method name only, so a \
+         hand-rolled `if now - last > WINDOW {{ .. }}` limiter would false-RED and \
+         must update this test deliberately; and a limiter configured never to \
+         fire is still accepted — that is a reviewable constant, not a syntax \
+         trick, and no scan can see it."
     );
 }

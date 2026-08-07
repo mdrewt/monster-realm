@@ -3301,6 +3301,16 @@ fn enqueue_move_reject_paths_precede_tails() {
 
 /// `battle.rs`, read from this module so the movement-side re-point and the
 /// battle-side delegation pin can live in one test.
+///
+/// HONEST LIMIT (12r-e hardening round): this puts `battle.rs` under a THIRD
+/// independent stripper — its own `battle.rs::tests`, `battle_tests.rs`, and now
+/// this file's [`strip_comments_and_strings`]. If `battle.rs` ever gains a nested
+/// block comment or an `r###"` raw string, [`assert_stripper_preconditions`] will
+/// fail inside a MOVEMENT test with a message that points at movement.rs's
+/// conventions — a misleading location for a battle.rs edit. The alternative
+/// (splitting the battle-side delegation pin into `battle_tests.rs`) was rejected
+/// because it would separate the re-point from the negative assertion that keeps
+/// it honest, which is the one pairing this slice must not break.
 const BATTLE_RS_FOR_E2: &str = include_str!("battle.rs");
 
 /// `battle.rs` with comments AND string literals blanked and all whitespace
@@ -3324,7 +3334,7 @@ fn squashed_battle_for_e2() -> String {
 /// `Monster.level` writer goes through `Level::new`) — this is the ADR-0175
 /// Consequences (4) defense-in-depth fix.
 ///
-/// Three layers:
+/// Four layers (2b added in the 12r-e HARDENING ROUND):
 ///
 /// 1. **`lead_party_ids(` exactly once** in `enqueue_move`'s body. Not "at least
 ///    once": two resolutions would mean two different id lists could be credited
@@ -3335,7 +3345,14 @@ fn squashed_battle_for_e2() -> String {
 ///    `_` in the other. So an implementation that keeps the old call beside the
 ///    new one is caught, and so is one that "resolves ids" but re-derives the
 ///    level from `lead_party` for some tail check.
-/// 3. **`lead_party` delegates** (scanned in `battle.rs`): its body must call
+/// 3. **No `level` in any casing (HARDENING).** Layer 2 bans the HELPER, not the
+///    BEHAVIOUR. A red-team re-derived the identical whole-party gate at this
+///    call site (point-read `party_ids[0]`, then
+///    `if Level::new(lead_row.level).is_err() { return Ok(()); }`) and ran
+///    501/501 green. `enqueue_move` has no legitimate use for a level. This
+///    layer is GREEN at HEAD — a fence that arms itself the moment the call
+///    site is edited.
+/// 4. **`lead_party` delegates** (scanned in `battle.rs`): its body must call
 ///    `lead_party_ids(` exactly once and must NOT contain the owner index
 ///    `owner_identity()`. That is the no-duplicate-query rule and, together with
 ///    layer 2 of `lead_party_ids_does_not_parse_a_level`, it pins the dependency
@@ -3355,13 +3372,17 @@ fn squashed_battle_for_e2() -> String {
 /// HONEST LIMITS. (a) SOURCE SCAN — this crate has no `ReducerContext` harness, so
 /// nothing here executes `enqueue_move` or observes a Quality-Time credit. It
 /// proves which helper is WRITTEN at the call site, never what that helper
-/// returned at runtime. (b) Layer 3 pins one spelling of the owner index
+/// returned at runtime. (b) Layer 4 pins one spelling of the owner index
 /// (`owner_identity()`); a delegation that nonetheless read the party through some
 /// other accessor would evade it. The count-exactly-one on `lead_party_ids(` is
 /// what makes that evasion pointless rather than the ban itself. (c) Nothing here
 /// checks the rate limiter on the new warn — `battle_tests.rs`
 /// `lead_party_warns_on_an_unparseable_lead_level` owns the audit shape, and
-/// deliberately does not pin the limiter either (documented there).
+/// deliberately does not pin the limiter either (documented there). (d) Layer 3's
+/// `level` ban is defeated by a predicate helper named without that substring;
+/// see the same honest limit on
+/// `battle_tests.rs::lead_party_ids_does_not_parse_a_level`, which carries the
+/// matching ban on the helper side.
 #[test]
 fn enqueue_move_growth_tail_does_not_depend_on_the_lead_level() {
     let squashed = squashed_movement();
@@ -3423,7 +3444,40 @@ fn enqueue_move_growth_tail_does_not_depend_on_the_lead_level() {
          — and neither is scanned here."
     );
 
-    // --- Layer 3 (battle.rs): lead_party DELEGATES; ONE party query ---------
+    // --- Layer 3 (HARDENING): the reducer never handles a level at all -------
+    // Layer 2 bans the HELPER, not the BEHAVIOUR. A red-team reintroduced the
+    // whole-party disable at this call site and ran 501/501 green:
+    //
+    //     if let Some(party_ids) = lead_party_ids(ctx, ctx.sender) {
+    //         let Some(lead_row) = ctx.db.monster().monster_id().find(party_ids[0])
+    //             else { return Ok(()); };
+    //         if Level::new(lead_row.level).is_err() { return Ok(()); }
+    //
+    // `enqueue_move` buffers a movement intent and credits growth; it has no
+    // legitimate use for a monster level in any casing, so the case-folded
+    // substring is banned outright. GREEN at HEAD (the reducer mentions no level
+    // today) and green after the fix — a FENCE that only becomes load-bearing
+    // once this call site is edited, which is exactly when the PoC becomes
+    // available.
+    let level_any = ["lev", "el"].concat();
+    let n_level = body.to_ascii_lowercase().matches(level_any.as_str()).count();
+    assert_eq!(
+        n_level, 0,
+        "TEETH (12r-e E2, HARDENING / call-site fence): `enqueue_move`'s body names \
+         `{level_any}` {n_level} time(s) (case-folded); it must name it ZERO times. \
+         Swapping `lead_party(` for `lead_party_ids(` is worthless if the reducer \
+         then point-reads the lead row and re-derives the same gate itself — \
+         `if Level::new(lead_row.level).is_err() {{ return Ok(()); }}` disables the \
+         whole party's Quality Time and auto-evolution exactly as before, and a \
+         red-team confirmed it passes every other layer of this test. This reducer \
+         buffers a movement intent and credits growth over an id list; a monster \
+         LEVEL has no business appearing in it. HONEST LIMIT: a predicate helper \
+         named without the substring `level` would evade this — that is the \
+         ceiling of a source scan, and it is a conspicuous, reviewable thing to \
+         write."
+    );
+
+    // --- Layer 4 (battle.rs): lead_party DELEGATES; ONE party query ---------
     let battle = squashed_battle_for_e2();
     let decl = ["fnlead", "_party("].concat();
     let n_decl = battle.matches(decl.as_str()).count();
