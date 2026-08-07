@@ -34,47 +34,109 @@ const DELETE_PUB = 'ctx.db.monster_pub().monster_id().delete(';
 const PUB_FROM_MONSTER = 'pub_from_monster(';
 
 // ---------------------------------------------------------------------------
-// Split source into function bodies.
+// Split source into function bodies (one span per function).
 //
-// We split on `\nfn ` and `\npub fn ` (including `#[spacetimedb::reducer]`-
-// decorated reducers). We DON'T use dynamic RegExp — we walk with indexOf.
+// Strategy: a COLUMN-0 ANCHORED declaration scan. A span begins at offset 0 or
+// immediately after a `\n`, followed by an optional `pub` with an optional
+// `(...)` visibility scope (`pub(crate)`, `pub(super)`, `pub(in crate::battle)`),
+// then zero or more of the qualifiers `const` / `async` / `unsafe` (recognised
+// with OR without a preceding `pub`, so bare `async fn` / `unsafe fn` anchor
+// too), then `fn` + space/tab + an identifier start. Each span runs to the next
+// declaration (the last to end-of-input), so every function — whatever its
+// visibility — is scanned against its OWN monster → monster_pub mirror.
 //
-// Strategy: find every occurrence of "\nfn " or "\npub fn " and slice from
-// that position to the next such occurrence. The result is an array of strings,
-// each containing one function's text (header + body).
+// The predecessor of this scan used exactly two literal markers, `'\nfn '` and
+// `'\npub fn '`. `pub(crate) fn` matched neither, so such a declaration was
+// absorbed into the PRECEDING recognised function's span — and because
+// readServerModuleSources concatenates the whole tree into one string, that
+// absorption crossed file boundaries. The gate then only verified that SOME
+// compliant pair existed somewhere in the blob (the ADR-0072 gap).
+//
+// WHY COLUMN 0 (leading whitespace DISQUALIFIES a line):
+//   * Nesting immunity — an indented `fn` inside an `impl`/`mod`/closure never
+//     plants a boundary mid-function.
+//   * Fixture immunity — ~19 embedded-Rust fixture STRINGS across 9 `*_tests.rs`
+//     files contain INDENTED `fn` / `pub fn` / `pub(crate) fn` lines. An
+//     any-indentation scan would turn every one of them into a false boundary.
+//
+// Regex LITERAL only — never `new RegExp(<non-literal>)` (Semgrep
+// detect-non-literal-regexp has RED'd master 3×). `[ \t]` rather than `\s` is
+// deliberate: ReDoS-safe and correct for a line-anchored declaration.
+//
+// ---------------------------------------------------------------------------
+// KNOWN LIMITATIONS (deliberately not chased — stated so they stay visible):
+//   * INDENTED DECLARATIONS. A `pub(crate) fn` method inside an `impl` block is
+//     absorbed into the preceding column-0 span. No `ctx.db.monster()` write
+//     lives in an `impl` block today — all 16 write sites are column-0 free
+//     functions (independently verified) — but a future one gets no own span.
+//   * QUALIFIER ALLOWLIST is `const|async|unsafe` only. `extern "ABI"` and
+//     `default` are excluded deliberately: zero occurrences in the crate, and
+//     `default fn` needs nightly specialization which the pinned stable 1.96.0
+//     (`rust-toolchain.toml`) cannot compile. An unrecognised future qualifier
+//     fails SAFE-but-SILENT (the declaration re-merges into the previous span),
+//     which is exactly why the allowlist is written down here.
+//   * The column-0 anchor's safety rests on `cargo fmt --all --check` being
+//     CI-gated (`justfile:17`, a dependency of `ci` at `:355`). A
+//     `#[rustfmt::skip]` near a monster-writing helper silently weakens it.
+//   * STRING LITERALS ARE NOT BLANKED. A future Rust string containing a
+//     column-0 `fn`-looking line would plant a false boundary. Zero today;
+//     remedy if it goes live: `blankStringLiterals`
+//     (`evolution-reducer-security.eval.mjs:153-221`).
 // ---------------------------------------------------------------------------
 export function splitIntoFnBodies(src) {
-  const markers = [];
+  // Declared INSIDE the function: a /g literal is stateful via `lastIndex`.
+  const FN_DECL =
+    /^(?:pub(?:\([^)\n]*\))?[ \t]+)?(?:(?:const|async|unsafe)[ \t]+)*fn[ \t]+[A-Za-z_]/gm;
 
-  // Collect positions of "\nfn " and "\npub fn "
-  const fnMarker = '\nfn ';
-  const pubFnMarker = '\npub fn ';
+  const starts = [];
+  for (const m of src.matchAll(FN_DECL)) starts.push(m.index);
 
-  let idx = 0;
-  while (idx < src.length) {
-    const fnPos = src.indexOf(fnMarker, idx);
-    const pubPos = src.indexOf(pubFnMarker, idx);
-
-    if (fnPos === -1 && pubPos === -1) break;
-
-    let nextPos;
-    if (fnPos === -1) nextPos = pubPos;
-    else if (pubPos === -1) nextPos = fnPos;
-    else nextPos = Math.min(fnPos, pubPos);
-
-    markers.push(nextPos);
-    idx = nextPos + 1;
-  }
-
-  if (markers.length === 0) return src ? [src] : [];
+  // FAIL-LOUD: no declaration found → hand back the whole input rather than an
+  // empty array. Returning [] would make entire files vanish from the gate.
+  if (starts.length === 0) return src ? [src] : [];
 
   const bodies = [];
-  for (let i = 0; i < markers.length; i++) {
-    const start = markers[i];
-    const end = i + 1 < markers.length ? markers[i + 1] : src.length;
+  for (let i = 0; i < starts.length; i++) {
+    const start = starts[i];
+    const end = i + 1 < starts.length ? starts[i + 1] : src.length;
     bodies.push(src.slice(start, end));
   }
   return bodies;
+}
+
+// ---------------------------------------------------------------------------
+// Strip `/* ... */` block comment regions. Char/indexOf walk — no dynamic
+// RegExp. Nested `/* /* */ */` is not valid Rust in the plain form, so the
+// FIRST `*/` terminates (non-greedy), matching `stripRustComments` in
+// `evolution-reducer-security.eval.mjs:130-132`.
+//
+// FAIL-LOUD contract: an unterminated `/*` is NOT stripped to end-of-input —
+// that would silently hide every function after it. The remainder is preserved
+// verbatim and `unterminated: true` is returned so findDualWriteViolations can
+// emit its own violation naming the ambiguity.
+//
+// @param {string} src Source (line comments already stripped — see the ORDER
+//   note in findDualWriteViolations).
+// @returns {{ text: string, unterminated: boolean }}
+// ---------------------------------------------------------------------------
+export function stripBlockComments(src) {
+  let out = '';
+  let i = 0;
+  while (i < src.length) {
+    const open = src.indexOf('/*', i);
+    if (open === -1) {
+      out += src.slice(i);
+      return { text: out, unterminated: false };
+    }
+    out += src.slice(i, open);
+    const close = src.indexOf('*/', open + 2);
+    if (close === -1) {
+      // Unterminated: keep the rest VERBATIM (never strip to EOF) and signal.
+      return { text: out + src.slice(open), unterminated: true };
+    }
+    i = close + 2;
+  }
+  return { text: out, unterminated: false };
 }
 
 // ---------------------------------------------------------------------------
@@ -160,12 +222,41 @@ export function checkFnBodyDualWrite(rawBody) {
 }
 
 // ---------------------------------------------------------------------------
-// Top-level predicate: scan all fn bodies in `src` and return all violations.
-// Returns an array of violation strings (empty = compliant).
+// Top-level predicate: prepare the source ONCE, split it, and return every
+// violation. Returns an array of violation strings (empty = compliant).
+//
+// THE ORDER IS LOAD-BEARING:
+//     stripLineComments(src) → stripBlockComments(...) → splitIntoFnBodies(...)
+//
+// Line comments MUST go first. RAW `server-module/src` contains 14 `/*` and 18
+// `*/` — UNBALANCED — because every single hit is `///` doc-comment PROSE
+// *describing* comment stripping (e.g. ``/// Strip Rust block comments
+// (`/* ... */`)``). Block-stripping FIRST would pair those prose fragments and
+// eat real code between them. After line-comment stripping the real tree has 0
+// `/*` and 0 `*/`, so block-stripping is a 0-byte no-op there — which is why
+// this hardening cannot regress the real-source check.
+//
+// Why block comments are stripped at all: `checkFnBodyDualWrite` matches with
+// `.includes()`, so an ordinary `/* FIXME: still need the
+// ctx.db.monster_pub().monster_id().update( mirror ... pub_from_monster(&m) */`
+// comment CURES a real violation — a live, no-adversary-required false GREEN.
+//
+// `checkFnBodyDualWrite` keeps its own `stripLineComments` call (idempotent),
+// preserving that function's standalone contract.
 // ---------------------------------------------------------------------------
 export function findDualWriteViolations(src) {
-  const bodies = splitIntoFnBodies(src);
   const violations = [];
+
+  const lineStripped = stripLineComments(src);
+  const blockStripped = stripBlockComments(lineStripped);
+  if (blockStripped.unterminated) {
+    violations.push(
+      'unterminated /* block comment — cannot determine where the block comment ends, so ' +
+        'every function after it is unverifiable (fail-loud: parse ambiguity, not a pass)',
+    );
+  }
+
+  const bodies = splitIntoFnBodies(blockStripped.text);
   for (const body of bodies) {
     const v = checkFnBodyDualWrite(body);
     if (v) violations.push(v);
