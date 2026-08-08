@@ -480,11 +480,39 @@ const STRIP_ANCHORS = ['pub struct', '#[spacetimedb::'];
  */
 function independentAnchorCount(raw, anchor) {
   let n = 0;
+  // Block-comment state. Without it a commented-out declaration —
+  //   /*
+  //   pub struct OldThing { pub identity: Identity }
+  //   */
+  // — is counted here (the inner line starts with neither `//` nor `*`) but is
+  // correctly blanked by the stripper, so `got < want` and BOTH new evals go RED
+  // claiming a stripper DESYNC that did not happen. Green today only because no
+  // non-test source contains a block comment; an ordinary migration edit trips
+  // it. Naive on purpose: this counter must stay INDEPENDENT of the real
+  // stripper (a shared implementation could not detect that stripper's desync),
+  // so it deliberately does not lex strings.
+  let inBlock = false;
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
-    if (trimmed.startsWith('//') || trimmed.startsWith(SLASH_STAR)) continue;
+    if (inBlock) {
+      const close = line.indexOf(STAR_SLASH);
+      if (close === -1) continue;
+      inBlock = false;
+      n += countOccurrences(line.slice(close + 2), anchor);
+      continue;
+    }
+    if (trimmed.startsWith('//') || trimmed.startsWith(SLASH_STAR)) {
+      if (trimmed.startsWith(SLASH_STAR) && line.indexOf(STAR_SLASH) === -1) inBlock = true;
+      continue;
+    }
     if (trimmed.startsWith('*') || trimmed.startsWith('!')) continue;
     if (line.indexOf(DQ) !== -1 || line.indexOf('`') !== -1) continue;
+    const open = line.indexOf(SLASH_STAR);
+    if (open !== -1 && line.indexOf(STAR_SLASH, open) === -1) {
+      inBlock = true;
+      n += countOccurrences(line.slice(0, open), anchor);
+      continue;
+    }
     const cut = line.indexOf('//');
     n += countOccurrences(cut === -1 ? line : line.slice(0, cut), anchor);
   }
@@ -1736,13 +1764,39 @@ const REKEY_MANIFEST = {
   // nothing to carry forward. ---
   'player.identity': 'BLOCKED: guard 1 (AUTH-18) rejects while the guest presence row exists',
   'player_conversation.owner_identity': 'BLOCKED: transitively covered by guards 1/3',
-  'battle.player_identity': 'BLOCKED: guard 2 (AUTH-19, guards::is_in_ongoing_battle)',
-  'battle.opponent_identity': 'BLOCKED: guard 2 (AUTH-19, guards::is_in_ongoing_battle)',
+  // CORRECTED during the M21c security audit — ADR-0179 D6 records these as
+  // "BLOCKED — guard 2", but `guards::is_in_ongoing_battle` (guards.rs:302-307)
+  // filters `outcome == Ongoing`, so it blocks only LIVE battles. Terminal PvP
+  // rows demonstrably persist: `settle_pvp_battle` (pvp.rs:491-533) updates the
+  // row and never deletes it, and battle.rs:1119-1156 GCs prior terminals only
+  // lazily on the next battle write-back. A guest who disconnects mid-PvP is
+  // forfeited and leaves a TERMINAL row naming the guest identity; guard 10
+  // passes, the claim succeeds, and that row is orphaned. Still not REKEY (a
+  // finished battle's participants are history, not owned state) and not EXEMPT
+  // (it is a real dangling reference), so the policy value stands — but the
+  // REASON must be truthful, because M22 consumes this manifest as its
+  // deletion-cascade SSOT and "BLOCKED" otherwise reads as "no cascade needed".
+  'battle.player_identity':
+    'BLOCKED: guard 2 (AUTH-19) blocks ONLY Ongoing rows — terminal rows survive and orphan; ' +
+    'M22 cascade MUST sweep this column',
+  'battle.opponent_identity':
+    'BLOCKED: guard 2 (AUTH-19) blocks ONLY Ongoing rows — terminal rows survive and orphan; ' +
+    'M22 cascade MUST sweep this column',
   'battle_action.player_identity': 'BLOCKED: transitively covered (requires an ongoing battle)',
   'trade_offer.initiator': 'BLOCKED: transitively covered by guards 1/3',
   'trade_offer.counterparty': 'BLOCKED: transitively covered by guards 1/3',
   'battle_challenge.challenger': 'BLOCKED: transitively covered by guards 1/3',
-  'battle_challenge.target': 'BLOCKED: transitively covered by guards 1/3',
+  // CORRECTED during the M21c security audit — `cancel_challenges_on_disconnect`
+  // (pvp.rs:638-651) filters `challenge_id().challenger().filter(player)` only,
+  // so an INCOMING pending challenge (guest is the `target`) survives the
+  // guest's disconnect until the CHALLENGE_TTL_MS reaper fires. Guards 9, 10 and
+  // 11 all pass — `account_has_game_data` (accounts.rs:209-216) never consults
+  // `battle_challenge`. Low impact in M21 (a stale challenge that TTL-expires),
+  // but the row is a real dangling reference and M22 inherits this table.
+  // Contrast `battle_challenge.challenger` above, which IS genuinely blocked.
+  'battle_challenge.target':
+    'BLOCKED: only the CHALLENGER half is swept on disconnect (pvp.rs:638-651) — an incoming ' +
+    'challenge survives until the TTL reaper; M22 cascade MUST sweep this column',
 
   // --- EXEMPT: never a foreign reference to re-key. ---
   'playtest_event.identity': 'EXEMPT: dev telemetry, deliberately stays under the guest identity',

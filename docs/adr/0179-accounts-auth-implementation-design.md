@@ -578,3 +578,101 @@ proof-of-teeth discipline):
   whether `ranking::rekey_profile` exists at all; OQ3 (email governance ack) needs a reply on this
   ADR's Amendments section but gates no build task. M22 consumes the D6 manifest and extends
   `delete_account`'s body per D7.
+
+- **M21c gate-implementation amendments (2026-08-08, body-only; no decision is reversed).** The Gates
+  table is the contract; these lines record where the shipped implementation is narrower, wider, or
+  mechanically different from its literal wording, plus two manifest corrections.
+  1. **G9 DERIVES its file set instead of extending a hardcoded list.** The row says "add `accounts.rs`
+     + new rekey helper files to its hardcoded `include_str!` list (currently 13 files)".
+     `pvp_tests.rs::m17a_rl2_profile_never_deleted_scan` instead derives the set from a RECURSIVE
+     `read_dir` of `concat!(env!("CARGO_MANIFEST_DIR"), "/src")` minus `*_tests.rs`, and matches every
+     needle against WHITESPACE-SQUASHED text. Reason: the hardcoded list had already silently
+     under-covered `ranking.rs` — the file the invariant is actually about — and the un-squashed needle
+     was walked past by this repo's own rustfmt-wrapped chain style, so widening the list alone would
+     have been motion, not coverage. Non-vacuity is a five-name anchor set (`accounts.rs`, `economy.rs`,
+     `pvp.rs`, `ranking.rs`, `schema.rs`) compared by BASENAME, **not** a `>= N` count floor (zero
+     headroom at 20 non-test files). Tightening beyond the row: the split-binding needle
+     `=ctx.db.profile()` is banned in `ranking.rs` too, with one carve-out for the exact read form
+     `= match ctx.db.profile().identity().find(`; and a UFCS needle family
+     (`::delete(&ctx.db.profile()`) closes a red-team-proven bypass in which the verb precedes the
+     accessor, defeating every chained and split-binding needle in both this test and
+     `ranking-security.eval.mjs` C1a while deleting a permanent ladder record.
+  2. **G6 ships in M21c, not m21a, and its manifest lives in the eval.** D6's "Self-scan note"
+     predicted G6 would fail on this milestone's own first `schema.rs` scan unless the four new-table
+     EXEMPT rows landed in m21a. That prediction was wrong in a harmless direction: m21a shipped no G6
+     checker, so there was nothing to fail. The manifest ships as `REKEY_MANIFEST` in
+     `evals/guest-claim-integrity.eval.mjs`, transcribing D6's 23 Identity columns. **Direction of
+     truth: `REKEY_MANIFEST` is the mechanically enforced copy** (bidirectional against the live
+     schema, plus consumption at BOTH `rekey_all` and `account_has_game_data`); D6's table is the
+     human-readable mirror and must be edited in the same PR. There is deliberately NO doc-tie clause
+     parsing this markdown — it would fail on a reword and pass on a wrong manifest.
+  3. **G6 reuses `parseTableSchemas`** (`evals/battle-schema-snapshot.eval.mjs`), the parser that
+     already gates schema drift, rather than a new field-list parser. That parser requires
+     `#[spacetimedb::table(...)]` to be followed immediately by `pub struct` and cannot span an inner
+     `]`, so a table with an interposed attribute or a multi-column `index(... columns = [...])` is
+     invisible to it — and, being absent from both the parse and the baseline, invisible to the drift
+     gate too. A `[G6/parse]` clause closes this: per file, the count of `#[spacetimedb::table(`
+     occurrences in stripped source must equal the number of parsed structs, failing loud on mismatch.
+  4. **G1's forged-`ViewContext` clause is delegated, not re-implemented.** `ViewContext::new(` /
+     `ViewContext{` are banned TREE-WIDE by `evals/wallet-privacy.eval.mjs` `[B/3c-forged-ctx]`, over a
+     glob that includes `schema.rs` and `accounts.rs`. Same for the short-form `#[view(` check and the
+     raw-vs-stripped hidden-view count; `format!`-inside-`log_reject` stays owned by
+     `accounts_tests.rs`. Re-encoding them would add maintenance surface and no coverage. G1 also
+     replaces the ADR's implied reader-closure walk with an EXACT view-inventory pin
+     (`['my_account','my_conversation','my_wallet']`), because a red-team proved a transitive closure
+     is defeated by a function pointer (`const HOPS: [fn(&ViewContext) -> …; 1] = [roster];`); a pinned
+     inventory makes a laundering view unrepresentable rather than merely detectable. Residual:
+     `wallet-privacy` strips comments only (no string awareness) over a CONCATENATED whole-tree blob —
+     weaker machinery than the per-file, string-aware stripper G1's own file uses.
+  5. **G8 ships the literal ask plus one value-exact clause and a whitespace hardening.** Added:
+     `[G8/tombstone-arg-pin]`, pinning the SECOND `.profile().identity().update(` argument in
+     `rekey_profile` to exactly `tombstoned_profile(guest)` — a red-team preserved the tombstone name
+     AND the update count while re-applying the guest's rating/W/L, defeating AUTH-25's
+     anti-re-donation purpose at 78/78 evals and 547/547 Rust tests green. Also added: A1's body
+     blocklist, A2, C1a and C1b now match WHITESPACE-COMPACTED source; without it each is walked past
+     by this repo's own rustfmt-wrapped formatting, which would have made G8's own A1/A2 fixtures
+     vacuous.
+  6. **G10 ships an exact-path allowlist plus a live-scan assertion and a wallet value pin.** Beyond
+     the row's negative assertion, ACCESSOR_BYPASS's allowlist match became an EXACT repo-relative path
+     — the previous suffix-tolerant match auto-exempted `server-module/src/accounts/economy.rs`,
+     verified as a live PASS with a wallet-row DELETE in it — and `[6b/scan-set-contains-accounts]`
+     asserts `accounts.rs` is genuinely in the live scan set. A new `[G10/wallet-zero-arg-pin]` mirrors
+     `[G8/tombstone-arg-pin]` for AUTH-24: `rekey_wallet`'s `player_wallet` update argument must be
+     exactly `zeroed_wallet(row)`. A security audit found the wallet side had only an
+     ordering+presence scan — the same clause shape already defeated on the profile side — so
+     `let _audit = zeroed_wallet(row.clone()); ...update(row);` left the guest's balance intact,
+     allowing ONE guest identity to donate the SAME balance to unbounded fresh accounts (AUTH-14 is
+     per-ACCOUNT, not per-GUEST).
+  7. **G2/G3/G5/G11 are strictly stronger than their rows, from proven bypasses.** G2 enumerates
+     reducers from source and pins the NAME SET exactly (`accounts_tests.rs`'s hardcoded five-name list
+     is blind to an ADDED reducer), type-checks every parameter with a scheduled-reducer carve-out that
+     requires a REJECTING `ctx.sender != ctx.identity()` early return rather than a bare comparison,
+     and flatly bans `Identity::from_*` constructors. G3 adds `[I/asym]`, pinning the DIRECTION of each
+     branch — the D1" asymmetry is the outage-safety argument, and flipping the unrecognized-issuer
+     branch to `Err` disconnects every player while every other clause stays green. G5 adds
+     `[W/split-binding]`, `[W/handle-type]`, a UFCS backward span, and `[W/db-binding]` (banning an
+     escaped `Local` handle — `ReducerContext.db` is a public field, so `let db = &ctx.db;` hides the
+     entire clause family, including `[W/battle-literal]`). G11 adds `[S/arg-pin]`, `[S/depth0]` and
+     `[S/reachable]`; the last bans a `return` between `rekey_all` and the consume, because an
+     always-true early return makes the consume dead code while POSITION-based clauses all pass.
+  8. **Two D6 manifest justifications are CORRECTED (policy values unchanged).** `battle.player_identity`
+     / `battle.opponent_identity` were recorded as "BLOCKED — guard 2"; `guards::is_in_ongoing_battle`
+     filters `outcome == Ongoing`, so it blocks only LIVE battles, and a guest forfeited on disconnect
+     leaves a TERMINAL row naming the guest identity. `battle_challenge.target` was recorded as
+     "BLOCKED — transitively covered by guards 1/3"; `cancel_challenges_on_disconnect` sweeps the
+     CHALLENGER half only, so an incoming challenge survives until the TTL reaper. Both remain BLOCKED
+     (neither is owned state to carry forward, nor genuinely exempt), but **M22's cascade MUST sweep
+     both columns** — the shipped `REKEY_MANIFEST` reasons say so, because "BLOCKED" otherwise reads as
+     "no cascade needed".
+  9. **Named residuals handed forward (none are M21c defects).** `evolution_tests.rs`'s hardcoded
+     10-file `scheduled_scan_sources()` omits `accounts.rs`, so EG2-9 does not cover
+     `guest_claim_reaper`; `accounts_tests.rs`'s G2 five-name reducer list and G12 identifier list stay
+     blind to an ADDED reducer and a RENAMED claim binding (M21c's JS gates cover both — the Rust twins
+     should be brought to parity), and its `write_target_accessors` uses an unbounded `rfind` (a
+     false-RED risk); `accounts_tests.rs:30-36`'s note still calls the four new-table columns BLOCKED
+     where D6 and the shipped manifest say EXEMPT; `wallet-privacy` / `ranking-security` /
+     `currency-integrity` still strip `//` line comments BEFORE string literals, which a real OQ1 issuer
+     URL will trip (`accounts.rs:41-48`); and the two new evals carry ~420 duplicated lines of scanner
+     machinery whose `splitArgs` copies have already diverged (one tracks angle depth, one does not) —
+     a shared `evals/rust-scan.mjs` is the indicated follow-up, invisible to `run.mjs`'s `.eval.mjs`
+     glob.

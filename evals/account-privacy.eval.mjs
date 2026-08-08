@@ -440,11 +440,39 @@ const STRIP_ANCHORS = ['pub struct', '#[spacetimedb::'];
  */
 function independentAnchorCount(raw, anchor) {
   let n = 0;
+  // Block-comment state. Without it a commented-out declaration —
+  //   /*
+  //   pub struct OldThing { pub identity: Identity }
+  //   */
+  // — is counted here (the inner line starts with neither `//` nor `*`) but is
+  // correctly blanked by the stripper, so `got < want` and BOTH new evals go RED
+  // claiming a stripper DESYNC that did not happen. Green today only because no
+  // non-test source contains a block comment; an ordinary migration edit trips
+  // it. Naive on purpose: this counter must stay INDEPENDENT of the real
+  // stripper (a shared implementation could not detect that stripper's desync),
+  // so it deliberately does not lex strings.
+  let inBlock = false;
   for (const line of raw.split('\n')) {
     const trimmed = line.trim();
-    if (trimmed.startsWith('//') || trimmed.startsWith(SLASH_STAR)) continue;
+    if (inBlock) {
+      const close = line.indexOf(STAR_SLASH);
+      if (close === -1) continue;
+      inBlock = false;
+      n += countOccurrences(line.slice(close + 2), anchor);
+      continue;
+    }
+    if (trimmed.startsWith('//') || trimmed.startsWith(SLASH_STAR)) {
+      if (trimmed.startsWith(SLASH_STAR) && line.indexOf(STAR_SLASH) === -1) inBlock = true;
+      continue;
+    }
     if (trimmed.startsWith('*') || trimmed.startsWith('!')) continue;
     if (line.indexOf(DQ) !== -1 || line.indexOf('`') !== -1) continue;
+    const open = line.indexOf(SLASH_STAR);
+    if (open !== -1 && line.indexOf(STAR_SLASH, open) === -1) {
+      inBlock = true;
+      n += countOccurrences(line.slice(0, open), anchor);
+      continue;
+    }
     const cut = line.indexOf('//');
     n += countOccurrences(cut === -1 ? line : line.slice(0, cut), anchor);
   }
