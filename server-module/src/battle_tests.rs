@@ -4875,11 +4875,47 @@ fn lead_party_warns_on_an_unparseable_lead_level() {
 ///
 /// SHAPE — two halves, asserted TOGETHER because neither is worth anything alone:
 ///
-/// 1. `lead_party_ids` still sorts by slot, and does NOT reverse. This is a
+/// 1. `lead_party_ids` still sorts by slot, ASCENDING — the sort exists, nothing
+///    re-orders after it, and the key is exactly the raw slot. This is a
 ///    PRECONDITION, not a duplicate of layer 3: "index 0 is the lead" is simply
-///    FALSE if the sort disappears or gains a `.rev()`, and the assertion below
-///    would then be pinning a meaningless index with full confidence.
+///    FALSE if the sort disappears, is reversed, or is keyed on an inverted
+///    value, and half 2 would then be pinning a meaningless index with full
+///    confidence.
 /// 2. `lead_party` picks the FIRST element, and never an end-relative one.
+///
+/// THE ORDER-INVERSION FAMILY, and where I drew the line. There are two places
+/// the ascending order can be flipped, and they need different instruments:
+///
+/// - AFTER the sort — `party.reverse()`, `.iter().rev()`. Caught by a bare,
+///   case-folded `rev` ban. My first version of this ban was the needle `rev()`,
+///   and the verifier killed it with `party.reverse();` (mutant MF-c, 502/502
+///   green) because `reverse()` is `rev` + `erse()` and never contains `rev()`.
+///   Dropping the parens and folding case collapses `.rev()`, `.reverse()`,
+///   `Reverse(` and both `cmp::Reverse(` spellings into ONE needle.
+/// - INSIDE the sort — `sort_by_key(|m| std::cmp::Reverse(m.party_slot))`,
+///   `|m| u8::MAX - m.party_slot`. Invisible to any `rev` ban, because the order
+///   is inverted by the key rather than after it. Pinned POSITIVELY: the key
+///   expression must be EXACTLY `<param>.party_slot`.
+///
+/// VERDICT ON THE POSITIVE KEY PIN (asked for explicitly; recorded so the next
+/// reader knows this boundary was chosen, not overlooked). I pinned it rather
+/// than declaring it past the ceiling of a scan, for one reason: I had just been
+/// wrong about exactly this. `rev()` vs `reverse()` is the third time this
+/// module has lost the enumerate-the-forbidden-spelling game — `.active` lost it
+/// to a compound assignment, `.team` lost it to `.swap`, and now `rev` has lost
+/// it to `reverse`. Blacklisting `Reverse(` would additionally have the
+/// bare-vs-`cmp::`-qualified problem, and would still say nothing about
+/// `u8::MAX - m.party_slot`. A whitelist on the key costs one assertion and
+/// closes the family without anyone having to imagine its next member.
+///
+/// WHAT I DELIBERATELY DID NOT ADD. A third layer requiring the sort to be the
+/// LAST top-level statement before the tail would additionally close
+/// `party.rotate_left(1)` / `party.swap(0, n)` / `party.pop()`. I left it out:
+/// the property is already double-covered, that layer has a real false-RED
+/// surface (any future statement legitimately placed between the sort and the
+/// return), and unlike `reverse()` those spellings have no plausible-accident
+/// story — they are adversarial only. If a fourth sibling ever does land, THAT
+/// is the layer to add, and this paragraph is the note saying so.
 ///
 /// NEEDLE CHOICE. The positive accepts `first()` OR a bare `[0]`, because both
 /// spellings are correct and pinning only `.first()` would false-RED an honest
@@ -4892,48 +4928,115 @@ fn lead_party_warns_on_an_unparseable_lead_level() {
 /// use for either: it hands the whole `ids` vector back untouched.
 ///
 /// GREEN against the landed implementation (`*ids.first()?`; no `last`, no `len`;
-/// sort present; no `rev`). RED against MF.
+/// sort present, keyed on the bare `m.party_slot`; no case-folded `rev`
+/// anywhere). RED against MF, MF-b and MF-c.
 ///
 /// HONEST LIMITS. (a) SOURCE SCAN — no `ReducerContext` harness exists in this
-/// crate, so this never observes a row. It proves the code SAYS "first"; it does
-/// NOT prove the first id belongs to the lowest-slotted monster at runtime. That
-/// rides on `sort_by_key(|m| m.party_slot)` being an ascending sort, which is
-/// Rust's contract, not this test's finding. (b) A third spelling —
-/// `ids.iter().next()`, or an index computed in a helper — would evade the
-/// positive. That is the ceiling of a scan; the two accepted spellings are the
-/// two anyone actually writes. (c) The `len()` ban would false-RED a future log
-/// line reporting the party size. That is a deliberate, narrow trade: if such a
-/// line is added, re-examine this pin in the SAME edit rather than widening it
-/// reflexively.
+/// crate, so this never observes a row. It proves the code SAYS "first" and SAYS
+/// "sort ascending by slot"; it does NOT prove the first id belongs to the
+/// lowest-slotted monster at runtime. That rides on `sort_by_key` being an
+/// ascending stable sort, which is Rust's contract, not this test's finding.
+/// (b) A third pick spelling — `ids.iter().next()`, or an index computed in a
+/// helper — would evade the positive. That is the ceiling of a scan; the two
+/// accepted spellings are the two anyone actually writes. (c) The `len()` ban
+/// would false-RED a future log line reporting the party size. Deliberate, narrow
+/// trade: if such a line is added, re-examine this pin in the SAME edit rather
+/// than widening it reflexively. (d) The case-folded `rev` ban would false-RED an
+/// identifier legitimately containing those three letters (`previous`,
+/// `revision`). `lead_party_ids` is a four-line query function, so the odds are
+/// low and the cost of the alternative — guessing the next spelling — is already
+/// measured at three losses. (e) The key pin requires a `|param| expr` CLOSURE;
+/// an equivalent function-reference key (`sort_by_key(Monster::slot)`) would
+/// false-RED with a message naming the sanctioned shape. (f) Neither half can see
+/// a re-ordering hidden inside a called helper — `party.fix_order();` — which is
+/// the honest floor of scanning one function body at a time.
 #[test]
 fn lead_party_point_reads_the_lead_not_an_arbitrary_member() {
     // --- Half 1: the ordering that gives index 0 its meaning -----------------
     let ids_body = e2_helper_body("lead_party_ids");
 
     let sort = ["sort", "_by_key("].concat();
-    assert!(
-        ids_body.contains(sort.as_str()),
-        "PRECONDITION (12r-e E2 coupling): `lead_party_ids`'s body no longer \
-         contains `{sort}..)`, so the id list is in arbitrary table order and \
-         `ids[0]` means NOTHING. The assertion below would still pass while \
-         `lead_party` read a random party member's level — which `movement_tick` \
-         feeds to `resolve_encounter` to decide what spawns. Restore the slot sort \
-         (`lead_party_ids_does_not_parse_a_level` layer 3 owns it as a pin; this is \
-         its precondition, deliberately restated because the two halves are ONE \
-         property). Body scanned was:\n{ids_body}"
-    );
+    let sort_at = ids_body.find(sort.as_str()).unwrap_or_else(|| {
+        panic!(
+            "PRECONDITION (12r-e E2 coupling): `lead_party_ids`'s body no longer \
+             contains `{sort}..)`, so the id list is in arbitrary table order and \
+             `ids[0]` means NOTHING. The assertions below would still pass while \
+             `lead_party` read a random party member's level — which `movement_tick` \
+             feeds to `resolve_encounter` to decide what spawns. Restore the slot \
+             sort (`lead_party_ids_does_not_parse_a_level` layer 3 owns it as a pin; \
+             this is its precondition, deliberately restated because the two halves \
+             are ONE property). Body scanned was:\n{ids_body}"
+        )
+    });
 
-    let reverse = ["re", "v()"].concat();
-    let n_rev = ids_body.matches(reverse.as_str()).count();
+    // Inversion AFTER the sort. The needle is the bare, case-folded `rev` — NOT
+    // `rev()`. A `rev()` needle was the first version of this ban and the verifier
+    // walked straight past it with `party.reverse();` (mutant MF-c, 502/502
+    // green): `reverse()` is `rev` followed by `erse()` and never contains the
+    // contiguous `rev()`. Folding case and dropping the parens catches `.rev()`,
+    // `.reverse()`, `Reverse(`, `cmp::Reverse(` and `std::cmp::Reverse(` with one
+    // needle instead of five — the enumerate-and-miss pattern this module's
+    // `assert_lead_fields_untouched` already records losing twice, and which I had
+    // just lost a third time.
+    let reverse = ["re", "v"].concat();
+    let n_rev = ids_body
+        .to_ascii_lowercase()
+        .matches(reverse.as_str())
+        .count();
     assert_eq!(
         n_rev, 0,
-        "TEETH (12r-e E2 coupling): `lead_party_ids`'s body calls `{reverse}` \
-         {n_rev} time(s); it must call it ZERO times. `sort_by_key` is ASCENDING, \
-         so index 0 is the LOWEST `party_slot` — the lead. A `.rev()` after the \
-         sort inverts that silently: every caller keeps reading `ids[0]`, the code \
-         still looks correct at both ends, and the LAST party member now drives the \
-         wild-encounter roll. This is the same defect as the `first()`/`last()` \
-         mutant, moved to the other side of the function boundary."
+        "TEETH (12r-e E2 coupling): `lead_party_ids`'s body contains `{reverse}` \
+         {n_rev} time(s) (case-folded); it must contain it ZERO times. \
+         `sort_by_key` is ASCENDING, so index 0 is the LOWEST `party_slot` — the \
+         lead. Any re-ordering after the sort inverts that silently: every caller \
+         keeps reading `ids[0]`, both ends of the split still look correct, and the \
+         LAST party member now drives the wild-encounter roll. This is mutant MF-c \
+         (`party.reverse();` on the line after the sort — the most natural spelling, \
+         since `party` is already a `Vec` in hand) and it is the same defect as the \
+         `first()`/`last()` mutant, moved to the other side of the function \
+         boundary. HONEST LIMIT: an identifier legitimately containing `rev` \
+         (`previous`, `revision`) would false-RED; this is a four-line query \
+         function, so that is a cheap price for not having to guess the next \
+         spelling."
+    );
+
+    // Inversion INSIDE the sort. The ban above cannot see an inverted KEY, because
+    // the ordering is reversed by the closure rather than after it. Pinned
+    // POSITIVELY (a whitelist on the key expression) rather than by blacklisting
+    // `MAX -`, `Reverse(`, `!` … one at a time — see the doc block's verdict.
+    let key_args = paren_group(&ids_body, sort_at).unwrap_or_else(|| {
+        panic!(
+            "PRECONDITION (12r-e E2 coupling): the `{sort}..)` call in \
+             `lead_party_ids` has no balanced argument list. Body scanned \
+             was:\n{ids_body}"
+        )
+    });
+    let closure = key_args
+        .strip_prefix('|')
+        .and_then(|rest| rest.split_once('|'));
+    let (param, key_expr) = closure.unwrap_or_else(|| {
+        panic!(
+            "TEETH (12r-e E2 coupling): `lead_party_ids`'s sort key is \
+             `{key_args}`, which is not a `|param| expr` closure. The sanctioned \
+             shape is `sort_by_key(|m| m.party_slot)`. HONEST LIMIT: an equivalent \
+             function-reference key would false-RED here — write the closure."
+        )
+    });
+    let param_ident = param.split(':').next().unwrap_or("").trim_matches('&');
+    let expected_key = [param_ident, ".party_slot"].concat();
+    assert_eq!(
+        key_expr, expected_key,
+        "TEETH (12r-e E2 coupling): `lead_party_ids` sorts by `{key_expr}`, but the \
+         key must be EXACTLY `{expected_key}` — the raw slot, ascending. This is a \
+         WHITELIST on the key expression, not a blacklist of inversions, and that \
+         choice is deliberate: `std::cmp::Reverse(m.party_slot)`, \
+         `u8::MAX - m.party_slot` and `255 - m.party_slot` all invert the order \
+         INSIDE the sort, where the `rev` ban above cannot see them, and each is a \
+         different spelling of one idea. Blacklisting them one at a time is how the \
+         `rev()` needle missed `reverse()`. Any inverted key makes `ids[0]` the \
+         HIGHEST party slot, so `lead_party` point-reads the wrong monster and \
+         `movement_tick` rolls wild encounters against its level — the exact defect \
+         mutants MF and MF-c produce, reached by a third route."
     );
 
     // --- Half 2: the pick ----------------------------------------------------
