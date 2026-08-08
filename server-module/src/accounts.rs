@@ -247,7 +247,10 @@ fn disarm_claim_reaper(ctx: &ReducerContext, guest: Identity) {
         .map(|s| s.scheduled_id)
         .collect();
     for id in ids {
-        ctx.db.guest_claim_reaper_schedule().scheduled_id().delete(id);
+        ctx.db
+            .guest_claim_reaper_schedule()
+            .scheduled_id()
+            .delete(id);
     }
 }
 
@@ -310,7 +313,10 @@ pub(crate) fn provision_or_touch_account(ctx: &ReducerContext) -> Result<(), Str
     let now = now_ms(ctx);
     match ctx.db.account().identity().find(ctx.sender) {
         Some(existing) => {
-            ctx.db.account().identity().update(touch_login(existing, now));
+            ctx.db
+                .account()
+                .identity()
+                .update(touch_login(existing, now));
         }
         None => {
             ctx.db
@@ -402,7 +408,11 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
     // Guard 9 (AUTH-18) — guest's presence row must be gone (liveness oracle,
     // sound because on_disconnect deletes `player` strictly last, D5.1).
     if ctx.db.player().identity().find(guest).is_some() {
-        return reject("complete_guest_claim", me, "close your other tab, then retry");
+        return reject(
+            "complete_guest_claim",
+            me,
+            "close your other tab, then retry",
+        );
     }
     // Guard 10 (AUTH-19) — neither identity mid-battle (reuse the SSOT predicate;
     // `accounts.rs` never touches `ctx.db.battle()` itself, D0/G5).
@@ -499,7 +509,12 @@ pub fn guest_claim_reaper(
     if ctx.sender != ctx.identity() {
         return Err("guest_claim_reaper is scheduler-only".to_string());
     }
-    let Some(claim) = ctx.db.guest_claim().guest_identity().find(args.guest_identity) else {
+    let Some(claim) = ctx
+        .db
+        .guest_claim()
+        .guest_identity()
+        .find(args.guest_identity)
+    else {
         return Ok(()); // consumed before the TTL fired — no-op
     };
     if claim_is_expired(claim.expires_at_ms, now_ms(ctx)) {

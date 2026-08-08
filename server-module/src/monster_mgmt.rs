@@ -140,5 +140,10 @@ pub(crate) fn rekey_monsters(
 /// True if `owner` owns at least one `monster` row (existence check for
 /// `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
 pub(crate) fn has_monsters(ctx: &ReducerContext, owner: Identity) -> bool {
-    ctx.db.monster().owner_identity().filter(owner).next().is_some()
+    ctx.db
+        .monster()
+        .owner_identity()
+        .filter(owner)
+        .next()
+        .is_some()
 }

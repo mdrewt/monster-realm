@@ -206,12 +206,15 @@ pub(crate) fn rekey_profile(ctx: &ReducerContext, from: Identity, to: Identity) 
         None => return,
     };
     let dest = get_or_init_profile(ctx, to);
-    ctx.db.profile().identity().update(profile_with_carried_stats(
-        dest,
-        guest.rating,
-        guest.wins,
-        guest.losses,
-    ));
+    ctx.db
+        .profile()
+        .identity()
+        .update(profile_with_carried_stats(
+            dest,
+            guest.rating,
+            guest.wins,
+            guest.losses,
+        ));
     ctx.db
         .profile()
         .identity()

@@ -1516,9 +1516,18 @@ fn auth25_profile_with_carried_stats_preserves_dest_identity_and_name() {
     let dest = make_profile(2, "DestName", 1000, 0, 0);
     let dest_id = dest.identity;
     let out = super::profile_with_carried_stats(dest, 1800, 40, 3);
-    assert_eq!(out.rating, 1800, "AUTH-25: destination rating := carried guest rating.");
-    assert_eq!(out.wins, 40, "AUTH-25: destination wins := carried guest wins.");
-    assert_eq!(out.losses, 3, "AUTH-25: destination losses := carried guest losses.");
+    assert_eq!(
+        out.rating, 1800,
+        "AUTH-25: destination rating := carried guest rating."
+    );
+    assert_eq!(
+        out.wins, 40,
+        "AUTH-25: destination wins := carried guest wins."
+    );
+    assert_eq!(
+        out.losses, 3,
+        "AUTH-25: destination losses := carried guest losses."
+    );
     assert_eq!(
         out.identity, dest_id,
         "AUTH-25: the destination identity (PK) is preserved."

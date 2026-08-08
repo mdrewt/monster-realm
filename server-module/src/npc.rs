@@ -445,19 +445,31 @@ pub(crate) fn rekey_npc_state(ctx: &ReducerContext, from: Identity, to: Identity
     }
     if let Some(row) = ctx.db.player_dialogue_state().owner_identity().find(from) {
         ctx.db.player_dialogue_state().owner_identity().delete(from);
-        ctx.db.player_dialogue_state().insert(PlayerDialogueStateRow {
-            owner_identity: to,
-            flags: row.flags,
-            done_quests: row.done_quests,
-        });
+        ctx.db
+            .player_dialogue_state()
+            .insert(PlayerDialogueStateRow {
+                owner_identity: to,
+                flags: row.flags,
+                done_quests: row.done_quests,
+            });
     }
 }
 
 /// True if `owner` has any `player_quest` progress or a `player_dialogue_state`
 /// row (for `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
 pub(crate) fn has_quest_or_dialogue_state(ctx: &ReducerContext, owner: Identity) -> bool {
-    ctx.db.player_quest().owner_identity().filter(owner).next().is_some()
-        || ctx.db.player_dialogue_state().owner_identity().find(owner).is_some()
+    ctx.db
+        .player_quest()
+        .owner_identity()
+        .filter(owner)
+        .next()
+        .is_some()
+        || ctx
+            .db
+            .player_dialogue_state()
+            .owner_identity()
+            .find(owner)
+            .is_some()
 }
 
 #[cfg(test)]

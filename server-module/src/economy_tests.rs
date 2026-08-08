@@ -1930,7 +1930,10 @@ fn auth24_zeroed_wallet_zeroes_balance_preserves_owner() {
         balance: 500,
     };
     let after = zeroed_wallet(before);
-    assert_eq!(after.balance, 0, "AUTH-24: the re-keyed guest wallet must be zeroed.");
+    assert_eq!(
+        after.balance, 0,
+        "AUTH-24: the re-keyed guest wallet must be zeroed."
+    );
     assert_eq!(
         after.owner_identity, owner,
         "AUTH-24/23: the wallet PK owner must be preserved (the row is zeroed, never deleted)."

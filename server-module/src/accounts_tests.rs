@@ -364,7 +364,10 @@ fn auth3_audience_allowed_semantics() {
         "AUTH-3: a single allowlisted aud entry must pass."
     );
     assert!(
-        audience_allowed(&["unrelated-app".to_string(), good.clone()], ALLOWED_AUDIENCE),
+        audience_allowed(
+            &["unrelated-app".to_string(), good.clone()],
+            ALLOWED_AUDIENCE
+        ),
         "AUTH-3: a multi-aud token passes if ANY entry is allowlisted."
     );
     assert!(
@@ -387,9 +390,16 @@ fn auth4_new_account_row_is_fresh_active() {
     let row = new_account_row(ident(7), "iss-abc".to_string(), 42);
     assert_eq!(row.identity, ident(7), "AUTH-4: identity is ctx.sender.");
     assert_eq!(row.auth_issuer, "iss-abc", "AUTH-4: auth_issuer recorded.");
-    assert_eq!(row.status, AccountStatus::Active, "AUTH-4: status == Active.");
+    assert_eq!(
+        row.status,
+        AccountStatus::Active,
+        "AUTH-4: status == Active."
+    );
     assert!(row.claimed_from.is_none(), "AUTH-4: claimed_from == None.");
-    assert!(row.claimed_at_ms.is_none(), "AUTH-4: claimed_at_ms == None.");
+    assert!(
+        row.claimed_at_ms.is_none(),
+        "AUTH-4: claimed_at_ms == None."
+    );
     assert!(
         row.deletion_requested_at_ms.is_none(),
         "AUTH-4: deletion_requested_at_ms == None."
@@ -407,20 +417,35 @@ fn auth4_new_account_row_is_fresh_active() {
 fn auth5_touch_login_updates_only_last_login() {
     let before = base_account(3);
     let after = touch_login(before.clone(), 99);
-    assert_eq!(after.last_login_at_ms, 99, "AUTH-5: last_login_at_ms := now.");
+    assert_eq!(
+        after.last_login_at_ms, 99,
+        "AUTH-5: last_login_at_ms := now."
+    );
     assert_eq!(
         after.created_at_ms, before.created_at_ms,
         "AUTH-5: created_at_ms MUST NOT change on login (kills the created:=now mutant)."
     );
-    assert_eq!(after.identity, before.identity, "AUTH-5: identity unchanged.");
-    assert_eq!(after.auth_issuer, before.auth_issuer, "AUTH-5: auth_issuer unchanged.");
+    assert_eq!(
+        after.identity, before.identity,
+        "AUTH-5: identity unchanged."
+    );
+    assert_eq!(
+        after.auth_issuer, before.auth_issuer,
+        "AUTH-5: auth_issuer unchanged."
+    );
     assert_eq!(after.status, before.status, "AUTH-5: status unchanged.");
     assert_eq!(
         after.deletion_requested_at_ms, before.deletion_requested_at_ms,
         "AUTH-5: deletion flag unchanged."
     );
-    assert_eq!(after.claimed_from, before.claimed_from, "AUTH-5: claimed_from unchanged.");
-    assert_eq!(after.claimed_at_ms, before.claimed_at_ms, "AUTH-5: claimed_at_ms unchanged.");
+    assert_eq!(
+        after.claimed_from, before.claimed_from,
+        "AUTH-5: claimed_from unchanged."
+    );
+    assert_eq!(
+        after.claimed_at_ms, before.claimed_at_ms,
+        "AUTH-5: claimed_at_ms unchanged."
+    );
 }
 
 /// AUTH-8 (pure): `is_valid_claim_code` accepts EXACTLY 64 lowercase-hex chars.
@@ -432,7 +457,10 @@ fn auth5_touch_login_updates_only_last_login() {
 fn auth8_is_valid_claim_code_charset_and_length() {
     let ok = "0123456789abcdef".repeat(4); // 64 lowercase hex
     assert_eq!(ok.len(), 64);
-    assert!(is_valid_claim_code(&ok), "AUTH-8: 64 lowercase hex is valid.");
+    assert!(
+        is_valid_claim_code(&ok),
+        "AUTH-8: 64 lowercase hex is valid."
+    );
     assert!(
         is_valid_claim_code(&"0".repeat(64)),
         "AUTH-8: 64 zeros is valid."
@@ -460,7 +488,10 @@ fn auth8_is_valid_claim_code_charset_and_length() {
     // Leading space.
     let mut spaced = " ".to_string();
     spaced.push_str(&"a".repeat(63));
-    assert!(!is_valid_claim_code(&spaced), "AUTH-8: whitespace is invalid.");
+    assert!(
+        !is_valid_claim_code(&spaced),
+        "AUTH-8: whitespace is invalid."
+    );
     // 64 chars of a multi-byte glyph (U+00E9, 2 bytes each): char-count 64 but
     // byte-len 128 => reject (the length check is on len(), reinforced by charset).
     let glyphs: String = "\u{e9}".repeat(64);
@@ -518,12 +549,18 @@ fn auth9_claim_expires_at_saturates() {
 /// the boundary (and would let the reaper skip a just-expired row).
 #[test]
 fn auth16_claim_is_expired_boundary_inclusive() {
-    assert!(!claim_is_expired(100, 99), "AUTH-16: before expiry => not expired.");
+    assert!(
+        !claim_is_expired(100, 99),
+        "AUTH-16: before expiry => not expired."
+    );
     assert!(
         claim_is_expired(100, 100),
         "AUTH-16: at the expiry instant => expired (boundary inclusive)."
     );
-    assert!(claim_is_expired(100, 101), "AUTH-16: past expiry => expired.");
+    assert!(
+        claim_is_expired(100, 101),
+        "AUTH-16: past expiry => expired."
+    );
 }
 
 /// AUTH-21 (pure): `claimed_account` stamps provenance (`claimed_from`,
@@ -535,12 +572,29 @@ fn auth21_claimed_account_stamps_provenance_only() {
     let before = base_account(4);
     let guest = ident(200);
     let after = claimed_account(before.clone(), guest, 7);
-    assert_eq!(after.claimed_from, Some(guest), "AUTH-21: claimed_from := Some(guest).");
-    assert_eq!(after.claimed_at_ms, Some(7), "AUTH-21: claimed_at_ms := Some(now).");
-    assert_eq!(after.identity, before.identity, "AUTH-21: identity unchanged.");
+    assert_eq!(
+        after.claimed_from,
+        Some(guest),
+        "AUTH-21: claimed_from := Some(guest)."
+    );
+    assert_eq!(
+        after.claimed_at_ms,
+        Some(7),
+        "AUTH-21: claimed_at_ms := Some(now)."
+    );
+    assert_eq!(
+        after.identity, before.identity,
+        "AUTH-21: identity unchanged."
+    );
     assert_eq!(after.status, before.status, "AUTH-21: status unchanged.");
-    assert_eq!(after.auth_issuer, before.auth_issuer, "AUTH-21: auth_issuer unchanged.");
-    assert_eq!(after.created_at_ms, before.created_at_ms, "AUTH-21: created unchanged.");
+    assert_eq!(
+        after.auth_issuer, before.auth_issuer,
+        "AUTH-21: auth_issuer unchanged."
+    );
+    assert_eq!(
+        after.created_at_ms, before.created_at_ms,
+        "AUTH-21: created unchanged."
+    );
     assert_eq!(
         after.last_login_at_ms, before.last_login_at_ms,
         "AUTH-21: last_login unchanged."
@@ -575,11 +629,26 @@ fn auth28_deletion_write_gate_and_transition() {
         "AUTH-28: deletion_requested_at_ms := Some(now)."
     );
     // Nothing else moves.
-    assert_eq!(after.identity, before.identity, "AUTH-28: identity unchanged.");
-    assert_eq!(after.created_at_ms, before.created_at_ms, "AUTH-28: created unchanged.");
-    assert_eq!(after.last_login_at_ms, before.last_login_at_ms, "AUTH-28: last_login unchanged.");
-    assert_eq!(after.claimed_from, before.claimed_from, "AUTH-28: claimed_from unchanged.");
-    assert_eq!(after.claimed_at_ms, before.claimed_at_ms, "AUTH-28: claimed_at_ms unchanged.");
+    assert_eq!(
+        after.identity, before.identity,
+        "AUTH-28: identity unchanged."
+    );
+    assert_eq!(
+        after.created_at_ms, before.created_at_ms,
+        "AUTH-28: created unchanged."
+    );
+    assert_eq!(
+        after.last_login_at_ms, before.last_login_at_ms,
+        "AUTH-28: last_login unchanged."
+    );
+    assert_eq!(
+        after.claimed_from, before.claimed_from,
+        "AUTH-28: claimed_from unchanged."
+    );
+    assert_eq!(
+        after.claimed_at_ms, before.claimed_at_ms,
+        "AUTH-28: claimed_at_ms unchanged."
+    );
 }
 
 /// AUTH-29 (pure): `cancelled_deletion` returns a `PendingDeletion` account to
@@ -598,7 +667,11 @@ fn auth29_cancelled_deletion_preserves_claim_provenance() {
         ..base_account(8)
     };
     let after = cancelled_deletion(pending.clone());
-    assert_eq!(after.status, AccountStatus::Active, "AUTH-29: status := Active.");
+    assert_eq!(
+        after.status,
+        AccountStatus::Active,
+        "AUTH-29: status := Active."
+    );
     assert!(
         after.deletion_requested_at_ms.is_none(),
         "AUTH-29: deletion flag cleared."
@@ -608,9 +681,19 @@ fn auth29_cancelled_deletion_preserves_claim_provenance() {
         Some(guest),
         "AUTH-29: claimed_from PRESERVED (a cancel never resurrects a spent claim)."
     );
-    assert_eq!(after.claimed_at_ms, Some(3), "AUTH-29: claimed_at_ms preserved.");
-    assert_eq!(after.identity, pending.identity, "AUTH-29: identity unchanged.");
-    assert_eq!(after.created_at_ms, pending.created_at_ms, "AUTH-29: created unchanged.");
+    assert_eq!(
+        after.claimed_at_ms,
+        Some(3),
+        "AUTH-29: claimed_at_ms preserved."
+    );
+    assert_eq!(
+        after.identity, pending.identity,
+        "AUTH-29: identity unchanged."
+    );
+    assert_eq!(
+        after.created_at_ms, pending.created_at_ms,
+        "AUTH-29: created unchanged."
+    );
 }
 
 /// AUTH-38 (pure): `needs_cancel_write` — a cancel on an already-`Active`
@@ -660,7 +743,10 @@ fn auth1_on_connect_has_jwt_gate_is_first_and_no_err_before() {
 
     let has_jwt = "has_jwt(";
     let provision = concat!("provision_or_touch", "_account(");
-    assert!(body.contains(has_jwt), "AUTH-1: on_connect must gate on has_jwt().");
+    assert!(
+        body.contains(has_jwt),
+        "AUTH-1: on_connect must gate on has_jwt()."
+    );
     assert!(
         body.contains(concat!("returnOk", "(())")),
         "AUTH-1: on_connect must early-return Ok(()) for the JWT-less case."
@@ -766,7 +852,9 @@ fn auth6_no_email_or_subject_stored() {
         .find(acct_marker)
         .expect("AUTH-6: struct Account not found in schema.rs");
     let after = &schema[acct_start..];
-    let open = after.find('{').expect("AUTH-6: Account body brace not found");
+    let open = after
+        .find('{')
+        .expect("AUTH-6: Account body brace not found");
     let field_bytes = after.as_bytes();
     let mut depth = 0usize;
     let mut end = open;
@@ -970,13 +1058,25 @@ fn auth12_13_14_caller_state_guards_precede_code_resolution() {
 
     let caller_state = [
         ("has_jwt(", "AUTH-12 JWT pre-filter"),
-        (concat!("account()", ".identity().find("), "AUTH-12 account-holder"),
-        (concat!("is_pending", "_deletion("), "AUTH-13 pending-deletion"),
+        (
+            concat!("account()", ".identity().find("),
+            "AUTH-12 account-holder",
+        ),
+        (
+            concat!("is_pending", "_deletion("),
+            "AUTH-13 pending-deletion",
+        ),
         ("claimed_from", "AUTH-14 one-claim-per-account"),
     ];
     let code_resolution = [
-        (concat!("is_valid_claim", "_code("), "AUTH-15a code well-formed"),
-        (concat!("guest", "_claim().code().find("), "AUTH-15b/35 claim lookup"),
+        (
+            concat!("is_valid_claim", "_code("),
+            "AUTH-15a code well-formed",
+        ),
+        (
+            concat!("guest", "_claim().code().find("),
+            "AUTH-15b/35 claim lookup",
+        ),
     ];
 
     let mut max_caller = 0usize;
@@ -1076,9 +1176,11 @@ fn auth17_18_19_20_completion_guards_present() {
     let body = extract_squashed_fn_body(&squashed, &nd_complete())
         .expect("AUTH-17..20: fn complete_guest_claim not found");
 
-    // AUTH-17.
+    // AUTH-17. Order-agnostic: `guest == me` and `me == guest` are behaviorally
+    // identical (Identity: Eq); pinning one operand order would false-RED on an
+    // innocent refactor without adding teeth (/simplify finding, 2026-08-08).
     assert!(
-        body.contains("guest==me"),
+        body.contains("guest==me") || body.contains("me==guest"),
         "AUTH-17: complete_guest_claim must reject when guest == me (own-session claim)."
     );
     // AUTH-18.
@@ -1172,14 +1274,32 @@ fn reject_message_contracts_present() {
     let kept = stripped_keep_strings(ACCOUNTS_RS);
     // Needles are the squashed message content, assembled to avoid self-match.
     let messages = [
-        (concat!("invalidoralready", "-usedcode"), "AUTH-15/35 invalid-or-already-used"),
+        (
+            concat!("invalidoralready", "-usedcode"),
+            "AUTH-15/35 invalid-or-already-used",
+        ),
         (concat!("code", "expired"), "AUTH-16 code expired"),
-        (concat!("cannotclaimyour", "ownsession"), "AUTH-17 own-session"),
-        (concat!("closeyourothertab", ",thenretry"), "AUTH-18 stale-tab"),
-        (concat!("alreadyhas", "gamedata"), "AUTH-20 destination has data"),
+        (
+            concat!("cannotclaimyour", "ownsession"),
+            "AUTH-17 own-session",
+        ),
+        (
+            concat!("closeyourothertab", ",thenretry"),
+            "AUTH-18 stale-tab",
+        ),
+        (
+            concat!("alreadyhas", "gamedata"),
+            "AUTH-20 destination has data",
+        ),
         (concat!("already", "signedin"), "AUTH-7 account holder"),
-        (concat!("invalid", "claimcode"), "AUTH-8 malformed code (start)"),
-        (concat!("guest_claim_reaperis", "scheduler-only"), "AUTH-27 scheduler-only"),
+        (
+            concat!("invalid", "claimcode"),
+            "AUTH-8 malformed code (start)",
+        ),
+        (
+            concat!("guest_claim_reaperis", "scheduler-only"),
+            "AUTH-27 scheduler-only",
+        ),
     ];
     for (needle, what) in messages {
         assert!(
@@ -1212,7 +1332,10 @@ fn auth21_rekey_all_delegates_every_table_in_order() {
     ];
     let mut prev = 0usize;
     for needle in ordered {
-        assert!(body.contains(needle), "AUTH-21: rekey_all must call {needle}.");
+        assert!(
+            body.contains(needle),
+            "AUTH-21: rekey_all must call {needle}."
+        );
         let at = idx(body, needle);
         assert!(
             at >= prev,
@@ -1241,10 +1364,22 @@ fn auth22_rekey_monsters_dual_write_fail_loud() {
         .expect("AUTH-22: fn rekey_monsters not found in monster_mgmt.rs");
 
     for (needle, what) in [
-        (concat!("monster()", ".monster_id().update("), "private monster re-key"),
-        (concat!("monster", "_pub().monster_id().update("), "public twin re-key"),
-        (concat!("pub_from", "_monster("), "derived pub row (never a literal tier)"),
-        (concat!("else{return", "Err"), "fail-loud on a missing pub twin"),
+        (
+            concat!("monster()", ".monster_id().update("),
+            "private monster re-key",
+        ),
+        (
+            concat!("monster", "_pub().monster_id().update("),
+            "public twin re-key",
+        ),
+        (
+            concat!("pub_from", "_monster("),
+            "derived pub row (never a literal tier)",
+        ),
+        (
+            concat!("else{return", "Err"),
+            "fail-loud on a missing pub twin",
+        ),
     ] {
         assert!(
             body.contains(needle),
@@ -1326,9 +1461,18 @@ fn auth37_delete_account_jwt_then_account_then_gate() {
     let has_jwt = "has_jwt(";
     let find = concat!("account()", ".identity().find(");
     let gate = concat!("needs_deletion", "_write(");
-    assert!(body.contains(has_jwt), "AUTH-37: delete_account must gate on has_jwt().");
-    assert!(body.contains(find), "AUTH-37: delete_account must bind the account row.");
-    assert!(body.contains(gate), "AUTH-37/28: delete_account must gate the write (idempotent).");
+    assert!(
+        body.contains(has_jwt),
+        "AUTH-37: delete_account must gate on has_jwt()."
+    );
+    assert!(
+        body.contains(find),
+        "AUTH-37: delete_account must bind the account row."
+    );
+    assert!(
+        body.contains(gate),
+        "AUTH-37/28: delete_account must gate the write (idempotent)."
+    );
     assert!(
         idx(body, has_jwt) < idx(body, find) && idx(body, find) < idx(body, gate),
         "AUTH-37: order must be has_jwt -> account lookup -> needs_deletion_write."
@@ -1345,9 +1489,18 @@ fn auth38_cancel_account_deletion_shape() {
     let has_jwt = "has_jwt(";
     let find = concat!("account()", ".identity().find(");
     let gate = concat!("needs_cancel", "_write(");
-    assert!(body.contains(has_jwt), "AUTH-38: cancel must gate on has_jwt().");
-    assert!(body.contains(find), "AUTH-38: cancel must bind the account row.");
-    assert!(body.contains(gate), "AUTH-38: cancel must gate the write via needs_cancel_write.");
+    assert!(
+        body.contains(has_jwt),
+        "AUTH-38: cancel must gate on has_jwt()."
+    );
+    assert!(
+        body.contains(find),
+        "AUTH-38: cancel must bind the account row."
+    );
+    assert!(
+        body.contains(gate),
+        "AUTH-38: cancel must gate the write via needs_cancel_write."
+    );
     assert!(
         idx(body, has_jwt) < idx(body, find) && idx(body, find) < idx(body, gate),
         "AUTH-38: order must be has_jwt -> account lookup -> needs_cancel_write."
@@ -1538,7 +1691,9 @@ fn machinery_g5_accessor_teeth() {
     let good = format!("fn f(){{ {good_chain} row); }}");
     let good_targets = write_target_accessors(&stripped_for_scan(&good));
     assert!(
-        good_targets.iter().all(|t| allowed_write_tables().iter().any(|a| a == t)),
+        good_targets
+            .iter()
+            .all(|t| allowed_write_tables().iter().any(|a| a == t)),
         "machinery: an account write must be inside the owned-table allowlist."
     );
 }
@@ -1554,16 +1709,27 @@ fn machinery_g12_log_reject_teeth() {
         concat!("form", "at!")
     );
     let bad_spans = log_reject_arg_spans(&stripped_for_scan(&bad));
-    assert_eq!(bad_spans.len(), 1, "machinery: one log_reject span expected in the BAD fixture.");
+    assert_eq!(
+        bad_spans.len(),
+        1,
+        "machinery: one log_reject span expected in the BAD fixture."
+    );
     assert!(
         bad_spans[0].contains("issuer") && bad_spans[0].contains(concat!("form", "at!")),
         "machinery: the G12 extractor must surface `issuer` and `format!` in the BAD span."
     );
 
     // GOOD: a static const reason — no claim identifier, no format!.
-    let good = format!("fn f(){{ {}(\"r\", s, REASON_CONST); }}", concat!("log", "_reject"));
+    let good = format!(
+        "fn f(){{ {}(\"r\", s, REASON_CONST); }}",
+        concat!("log", "_reject")
+    );
     let good_spans = log_reject_arg_spans(&stripped_for_scan(&good));
-    assert_eq!(good_spans.len(), 1, "machinery: one log_reject span expected in the GOOD fixture.");
+    assert_eq!(
+        good_spans.len(),
+        1,
+        "machinery: one log_reject span expected in the GOOD fixture."
+    );
     for claim in ["issuer", "subject", "audience", "claims"] {
         assert!(
             !good_spans[0].contains(claim),

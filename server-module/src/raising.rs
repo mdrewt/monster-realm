@@ -762,7 +762,11 @@ pub(crate) fn rekey_heal_cooldown(ctx: &ReducerContext, from: Identity, to: Iden
 /// True if `owner` has a `heal_cooldown` row (for
 /// `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
 pub(crate) fn has_heal_cooldown(ctx: &ReducerContext, owner: Identity) -> bool {
-    ctx.db.heal_cooldown().owner_identity().find(owner).is_some()
+    ctx.db
+        .heal_cooldown()
+        .owner_identity()
+        .find(owner)
+        .is_some()
 }
 
 #[cfg(test)]

@@ -267,10 +267,7 @@ pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> 
 /// "balance becomes 0, owner unchanged" property is unit-testable without a
 /// `ReducerContext`. NEVER produces a delete (AUTH-23).
 pub(crate) fn zeroed_wallet(row: PlayerWallet) -> PlayerWallet {
-    PlayerWallet {
-        balance: 0,
-        ..row
-    }
+    PlayerWallet { balance: 0, ..row }
 }
 
 /// Re-key the guest's wallet balance onto `to` by CREDIT-FORWARD, then zero the
@@ -284,7 +281,10 @@ pub(crate) fn zeroed_wallet(row: PlayerWallet) -> PlayerWallet {
 pub(crate) fn rekey_wallet(ctx: &ReducerContext, from: Identity, to: Identity) {
     if let Some(row) = ctx.db.player_wallet().owner_identity().find(from) {
         grant_currency(ctx, to, row.balance);
-        ctx.db.player_wallet().owner_identity().update(zeroed_wallet(row));
+        ctx.db
+            .player_wallet()
+            .owner_identity()
+            .update(zeroed_wallet(row));
     }
 }
 
@@ -294,7 +294,11 @@ pub(crate) fn rekey_wallet(ctx: &ReducerContext, from: Identity, to: Identity) {
 /// `wallet_balance` — "row present" is not "balance > 0" (a zeroed post-claim
 /// guest row still exists).
 pub(crate) fn wallet_exists(ctx: &ReducerContext, owner: Identity) -> bool {
-    ctx.db.player_wallet().owner_identity().find(owner).is_some()
+    ctx.db
+        .player_wallet()
+        .owner_identity()
+        .find(owner)
+        .is_some()
 }
 
 #[cfg(test)]

@@ -121,5 +121,10 @@ pub(crate) fn rekey_inventory(ctx: &ReducerContext, from: Identity, to: Identity
 /// True if `owner` holds at least one `inventory` row (for
 /// `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
 pub(crate) fn has_items(ctx: &ReducerContext, owner: Identity) -> bool {
-    ctx.db.inventory().owner_identity().filter(owner).next().is_some()
+    ctx.db
+        .inventory()
+        .owner_identity()
+        .filter(owner)
+        .next()
+        .is_some()
 }
