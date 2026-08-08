@@ -20,6 +20,7 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 use std::time::Duration;
 
 // --- Domain modules (the canonical `touches:` vocabulary, ADR-0056) ---------
+mod accounts;
 mod battle;
 mod content;
 mod content_cache;
@@ -189,6 +190,21 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
     ensure_zone_schedules(ctx);
     crate::playtest::ensure_playtest_reaper(ctx);
     Ok(())
+}
+
+/// Lifecycle: lazy-provision or touch an `account` on connect (M21, ADR-0179 D4).
+/// Anonymous play is FIRST-CLASS. Returning `Err` from this hook DISCONNECTS the
+/// client (crate doc), so the very first statement is the `has_jwt()` early
+/// return with no prior `Err` path (AUTH-1 / G3). The vendor's canonical example
+/// for this hook REJECTS JWT-less connections — that pattern is NOT copied here.
+/// All provisioning logic lives in `accounts.rs` (D0 write-isolation); this hook
+/// only branches on presence of a JWT and delegates.
+#[spacetimedb::reducer(client_connected)]
+pub fn on_connect(ctx: &ReducerContext) -> Result<(), String> {
+    if !ctx.sender_auth().has_jwt() {
+        return Ok(());
+    }
+    accounts::provision_or_touch_account(ctx)
 }
 
 #[spacetimedb::reducer(client_disconnected)]

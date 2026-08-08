@@ -40,7 +40,7 @@ use game_core::{
 // `Bond`/`CareError` dropped at EG5/ADR-0177 D3 — Bond retired; they remain in
 // game-core as a named retirement follow-up.)
 pub(crate) use game_core::CARE_COOLDOWN_MS;
-use spacetimedb::{ReducerContext, Table};
+use spacetimedb::{Identity, ReducerContext, Table};
 
 /// Pure decision seam (testable without a DB): the cooldown-only care gate.
 /// Bond and its arithmetic are retired (EG5/ADR-0177 D3 — the AtMaxBond remap,
@@ -741,6 +741,28 @@ pub fn consume_crystalized_essence(
     accrue_quality_time(ctx, monster_id);
     check_and_evolve(ctx, monster_id);
     Ok(())
+}
+
+// --- M21 guest→account re-key (ADR-0179 D6) ----------------------------------
+
+/// Re-key the `heal_cooldown` row owned by `from` onto `to`. Called only from
+/// `accounts::rekey_all` (D0 write-isolation). `owner_identity` IS the PK →
+/// delete-then-insert; the destination owns no row (`complete_guest_claim`
+/// guard 3), so no collision. No-op when the guest has never healed.
+pub(crate) fn rekey_heal_cooldown(ctx: &ReducerContext, from: Identity, to: Identity) {
+    if let Some(row) = ctx.db.heal_cooldown().owner_identity().find(from) {
+        ctx.db.heal_cooldown().owner_identity().delete(from);
+        ctx.db.heal_cooldown().insert(HealCooldown {
+            owner_identity: to,
+            last_heal_at_ms: row.last_heal_at_ms,
+        });
+    }
+}
+
+/// True if `owner` has a `heal_cooldown` row (for
+/// `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
+pub(crate) fn has_heal_cooldown(ctx: &ReducerContext, owner: Identity) -> bool {
+    ctx.db.heal_cooldown().owner_identity().find(owner).is_some()
 }
 
 #[cfg(test)]

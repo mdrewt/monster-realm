@@ -91,3 +91,35 @@ pub(crate) fn consume_one(
     }
     Ok(())
 }
+
+// --- M21 guest→account re-key (ADR-0179 D6) ----------------------------------
+
+/// Re-key every `inventory` row owned by `from` onto `to`. Called only from
+/// `accounts::rekey_all` (D0 write-isolation — `accounts.rs` must not touch
+/// `inventory` directly). `owner_identity` is a non-PK indexed column → update
+/// in place; this must NOT insert (the single-stack inserter is `grant_item`
+/// only, `inventory-single-stack.eval.mjs`). No stack merge is needed — the
+/// destination owns zero inventory rows (`complete_guest_claim` guard 3), so the
+/// single-stack-per-`(owner, item_id)` invariant is preserved for free. Collect
+/// ids before mutating (ADR-0126).
+pub(crate) fn rekey_inventory(ctx: &ReducerContext, from: Identity, to: Identity) {
+    let ids: Vec<u64> = ctx
+        .db
+        .inventory()
+        .owner_identity()
+        .filter(from)
+        .map(|r| r.inv_id)
+        .collect();
+    for id in ids {
+        if let Some(mut row) = ctx.db.inventory().inv_id().find(id) {
+            row.owner_identity = to;
+            ctx.db.inventory().inv_id().update(row);
+        }
+    }
+}
+
+/// True if `owner` holds at least one `inventory` row (for
+/// `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
+pub(crate) fn has_items(ctx: &ReducerContext, owner: Identity) -> bool {
+    ctx.db.inventory().owner_identity().filter(owner).next().is_some()
+}

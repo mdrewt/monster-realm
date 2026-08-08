@@ -416,6 +416,50 @@ pub fn dismiss_dialogue(ctx: &ReducerContext) -> Result<(), String> {
     Ok(())
 }
 
+// --- M21 guest→account re-key (ADR-0179 D6) ----------------------------------
+
+/// Re-key both NPC-state tables owned by `from` onto `to`: `player_quest`
+/// (progress rows) and `player_dialogue_state` (flags + done-quests). Called
+/// only from `accounts::rekey_all` (D0 write-isolation). `player_conversation`
+/// is deliberately NOT re-keyed — it is a transient presence row cleared by
+/// `on_disconnect` before the guest's `player` row is deleted, so it is BLOCKED
+/// by `complete_guest_claim`'s liveness guard (ADR-0179 D6 manifest).
+///
+/// `player_quest.pq_id` is the PK and `owner_identity` a non-PK index → update
+/// in place (collect ids first, ADR-0126). `player_dialogue_state.owner_identity`
+/// IS the PK → delete-then-insert. The destination owns zero rows in either
+/// table (`complete_guest_claim` guard 3), so neither path can collide.
+pub(crate) fn rekey_npc_state(ctx: &ReducerContext, from: Identity, to: Identity) {
+    let pq_ids: Vec<u64> = ctx
+        .db
+        .player_quest()
+        .owner_identity()
+        .filter(from)
+        .map(|q| q.pq_id)
+        .collect();
+    for id in pq_ids {
+        if let Some(mut q) = ctx.db.player_quest().pq_id().find(id) {
+            q.owner_identity = to;
+            ctx.db.player_quest().pq_id().update(q);
+        }
+    }
+    if let Some(row) = ctx.db.player_dialogue_state().owner_identity().find(from) {
+        ctx.db.player_dialogue_state().owner_identity().delete(from);
+        ctx.db.player_dialogue_state().insert(PlayerDialogueStateRow {
+            owner_identity: to,
+            flags: row.flags,
+            done_quests: row.done_quests,
+        });
+    }
+}
+
+/// True if `owner` has any `player_quest` progress or a `player_dialogue_state`
+/// row (for `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
+pub(crate) fn has_quest_or_dialogue_state(ctx: &ReducerContext, owner: Identity) -> bool {
+    ctx.db.player_quest().owner_identity().filter(owner).next().is_some()
+        || ctx.db.player_dialogue_state().owner_identity().find(owner).is_some()
+}
+
 #[cfg(test)]
 #[path = "npc_tests.rs"]
 mod npc_tests;
