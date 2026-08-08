@@ -326,6 +326,12 @@ pub(crate) fn lead_party_ids(ctx: &ReducerContext, owner: Identity) -> Option<Ve
 /// migration/corruption event surfaces instead of quietly degrading play.
 pub(crate) fn lead_party(ctx: &ReducerContext, owner: Identity) -> Option<(Vec<u64>, Level)> {
     let ids = lead_party_ids(ctx, owner)?;
+    // ids are ordered by `party_slot` ascending, so `first()` IS the lead. Both
+    // `?`s below are unreachable rather than silent-failure arms, which is why
+    // neither is logged like the level parse is: `lead_party_ids` never returns
+    // an empty `Some`, and `lead_id` came from the very query this re-reads, in
+    // the same transaction. If either ever CAN fail, it needs the same
+    // rate-limited warn treatment as the arm below — do not let it stay quiet.
     let lead_id = *ids.first()?;
     let lead = ctx.db.monster().monster_id().find(lead_id)?;
     let lead_level = match Level::new(lead.level) {
