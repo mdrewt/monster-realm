@@ -22,7 +22,7 @@ import {
 // statusModel is a pure MODEL (no DOM, no SDK) — importing it here creates no
 // net→view dependency (see the layering note in statusModel.ts).
 import { subscriptionErrorMessage } from '../ui/statusModel';
-import { createAuthTokenGate } from './authToken';
+import { createAuthTokenGate, readAuthKind } from './authToken';
 import { MicrotaskBatcher } from './batch';
 import { type SendLogger, wrapReducerLogging } from './devLog';
 import {
@@ -527,6 +527,15 @@ export function connect(opts: ConnectionOptions): Connection {
     // without any TDZ/ordering dependence on the `current` assignment below.
     const gen = ++buildGen;
     const stale = (): boolean => gen !== buildGen;
+    // M21b (ADR-0179 D8): which credential class THIS build is supplying. Read
+    // FRESH per build — the mirror image of the gate above, which is built once
+    // on purpose: the gate's counter must survive rebuilds, whereas a marker
+    // that flipped mid-session must be observed by the very next build. It is
+    // captured HERE, not re-read inside onConnect, because onConnect fires an
+    // arbitrary time later against mutable sessionStorage — a re-read there
+    // could report 'anon' for a build that supplied an account credential
+    // (TOCTOU), which is exactly the write this guards against.
+    const buildKind = readAuthKind(globalThis, opts.uri, opts.db);
     const conn = DbConnection.builder()
       .withUri(opts.uri)
       .withDatabaseName(opts.db)
@@ -539,7 +548,20 @@ export function connect(opts: ConnectionOptions): Connection {
         if (stale()) return; // superseded build: never clobber identity/subscriptions
         // Persist AFTER the stale guard: a superseded build's late onConnect must not
         // overwrite the credential the live build already stored.
-        auth.onConnected(token);
+        //
+        // M21b (ADR-0179 D8): and ONLY for an anonymous build. The SDK echoes the
+        // credential we supplied back as `token` (dist/index.mjs:5765 + :6226-6231 —
+        // the host's own token is adopted only when we supplied none), so on an
+        // authenticated build this argument IS the short-lived account JWT. Storing it
+        // here would put it in the ANONYMOUS slot, which `tokenForNextAttempt()` hands
+        // straight back to `.withToken()` on the next build — replaying an account JWT
+        // past its `exp`, the exact case D8 forbids. `=== 'anon'` (not `!== 'account'`)
+        // is the fail-CLOSED direction: if AuthKind ever gains a third member, a `!==`
+        // guard would start writing that kind's credential into the anonymous slot by
+        // default. TRIPWIRE: this guard is currently the SOLE enforcer of "the anon slot
+        // never contains an account JWT" — M21b-2's read-side credential guard is its
+        // other half; do not write an 'account' marker before that lands.
+        if (buildKind === 'anon') auth.onConnected(token);
         identity = id.toHexString();
         const reconnecting = hadSession;
         c.subscriptionBuilder()

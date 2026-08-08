@@ -183,3 +183,111 @@ export function createAuthTokenGate(
     },
   };
 }
+
+// ---------------------------------------------------------------------------
+// M21b (ADR-0179 D8) — the auth-KIND marker.
+//
+// APPENDED, ADDITIVE ONLY: nothing above this line changed. That is not a
+// courtesy, it is AUTH-31's proof — "the anonymous path behaves exactly as it
+// does today" is checkable by diffing everything above, and `connection.ts`
+// still calls `.withToken(auth.tokenForNextAttempt())` byte-identically.
+//
+// WHY A MARKER EXISTS AT ALL. The SDK echoes the credential we supplied back to
+// `onConnect`'s third argument: `spacetimedb/dist/index.mjs:5765` sets
+// `this.token` from `.withToken(...)` at construction, and `:6226-6231` adopts
+// the host's own token ONLY `if (!this.token && …)`. So once an account (OIDC)
+// JWT is ever supplied, the UNCONDITIONAL `auth.onConnected(token)` in
+// connection.ts would persist it into the ANONYMOUS token slot — the slot
+// `tokenForNextAttempt()` hands straight back to `.withToken()` on the next
+// build. A short-lived account JWT replayed past its `exp` is D8's exact
+// forbidden case. The marker is the discriminator that lets connection.ts
+// refuse that write. It is deliberately landing AHEAD of the account path, so
+// the hole cannot be opened by accident when that path arrives.
+//
+// The marker records INTENT, never FACT: it says which credential class this
+// tab believes it holds, not what the server concluded. Once M21b-2 subscribes
+// the `my_account` view, THAT is authoritative and this is a hint (ADR-0179).
+// ---------------------------------------------------------------------------
+
+/** Which credential class the stored token belongs to. */
+export type AuthKind = 'anon' | 'account';
+
+/**
+ * Namespace for the kind marker. Deliberately NOT `'mr.authToken.v1.kind'` (the
+ * spec's illustrative name): that string is a SUPERSTRING of `KEY_PREFIX`, so
+ * key-space disjointness would rest on a subtle argument about which character
+ * follows the shared 15-byte head. Here neither prefix is a prefix of the other,
+ * so a collision — which would overwrite a player's reconnect token with the
+ * literal `"account"`, then feed THAT to `.withToken()` — is impossible by
+ * construction rather than by proof.
+ */
+export const AUTH_KIND_KEY_PREFIX = 'mr.authKind.v1';
+
+/** Per-target marker key. Same two-axis, per-segment-percent-encoded (hence
+ *  injective) derivation as `storageKey` above, over the new namespace — the
+ *  marker must be scoped to exactly the target whose token it describes. */
+export function authKindStorageKey(uri: string, db: string): string {
+  return `${AUTH_KIND_KEY_PREFIX}|${encodeURIComponent(uri)}|${encodeURIComponent(db)}`;
+}
+
+/**
+ * The credential class recorded for this target, or `'anon'` if none is.
+ *
+ * FAILS TO `'anon'` on every absent/blocked/corrupt path — missing key, blank
+ * or non-string value, an unrecognised string, a hostile host, a throwing
+ * storage accessor. Two reasons this is the safe direction and not merely the
+ * lenient one: (1) every tab in existence today has no marker, so failing to
+ * `'account'` would break every existing anonymous reconnect the moment storage
+ * is blocked, turning a private-mode quirk into total loss of ADR-0150's
+ * feature; (2) `'anon'` IS today's behaviour, so the fail path is a no-op
+ * rather than a new one.
+ *
+ * Match is EXACT — `' account '` and `'ACCOUNT'` are not `'account'`. Same
+ * exact-string discipline connection.ts applies to `'already joined'`: a
+ * trimming/case-folding read is a second, divergent copy of a value contract.
+ */
+export function readAuthKind(
+  host: TokenStorageHost | undefined,
+  uri: string,
+  db: string,
+): AuthKind {
+  const getItem = storageMethod(host, 'getItem');
+  if (getItem === undefined) return 'anon';
+  try {
+    return getItem(authKindStorageKey(uri, db)) === 'account' ? 'account' : 'anon';
+  } catch {
+    return 'anon';
+  }
+}
+
+/**
+ * Record the credential class for this target. Degrades silently on quota /
+ * private-mode / blocked-storage failures, exactly as `onConnected` does.
+ *
+ * ⚠ NO PRODUCTION CALLER MAY WRITE `'account'` UNTIL THE READ-SIDE CREDENTIAL
+ * GUARD LANDS (M21b-2). This slice ships only the WRITE-side guard — the
+ * kind-gated `auth.onConnected(token)` in connection.ts. With the READ-SIDE
+ * half parked, an `'account'` marker would correctly suppress storing the
+ * account token while the NEXT build still supplies the stale ANON token
+ * through the unchanged `.withToken(auth.tokenForNextAttempt())` — silently
+ * dropping the player onto a different identity, which is the very harm D8
+ * exists to prevent. The writer ships now only so the marker is a complete
+ * read/write pair; it is exercised by tests alone. This is a NAMED YAGNI
+ * exception (standards/principles.md): M21b-2's OIDC return leg is its
+ * intended producer, and it must land together with the credential guard.
+ */
+export function writeAuthKind(
+  host: TokenStorageHost | undefined,
+  uri: string,
+  db: string,
+  kind: AuthKind,
+): void {
+  const setItem = storageMethod(host, 'setItem');
+  if (setItem === undefined) return;
+  try {
+    setItem(authKindStorageKey(uri, db), kind);
+  } catch {
+    // Same silent degradation as onConnected: the live connection is
+    // unaffected, only the marker's durability is lost.
+  }
+}
