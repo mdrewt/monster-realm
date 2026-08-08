@@ -1906,3 +1906,102 @@ fn no_forged_view_context_construction() {
         }
     }
 }
+
+// ===========================================================================
+// M21a AUTH-24 / AUTH-23 (ADR-0179 D6): guest->account wallet re-key credits the
+// balance forward via grant_currency, then zeroes the guest row IN PLACE — never
+// deletes. Pure seam + a credit-before-zero ordering scan on economy.rs.
+//
+// economy_tests.rs is exempt from currency-integrity ACCESSOR_BYPASS, so a
+// `PlayerWallet { .. }` literal here is legitimate (unlike accounts_tests.rs).
+// ===========================================================================
+
+/// AUTH-24 (pure): `zeroed_wallet` sets `balance == 0` and PRESERVES the PK owner
+/// (the guest row survives with a zero balance — never a delete, AUTH-23).
+///
+/// Kills: a mutant that also rewrites `owner_identity`, or that returns the row
+/// unchanged (balance not zeroed — the source could re-donate its balance to a
+/// second fresh account via a later claim).
+#[test]
+fn auth24_zeroed_wallet_zeroes_balance_preserves_owner() {
+    let owner = Identity::from_byte_array([9u8; 32]);
+    let before = PlayerWallet {
+        owner_identity: owner,
+        balance: 500,
+    };
+    let after = zeroed_wallet(before);
+    assert_eq!(after.balance, 0, "AUTH-24: the re-keyed guest wallet must be zeroed.");
+    assert_eq!(
+        after.owner_identity, owner,
+        "AUTH-24/23: the wallet PK owner must be preserved (the row is zeroed, never deleted)."
+    );
+}
+
+/// AUTH-24 (scan): `rekey_wallet` READS the guest balance (`find(from)`), CREDITS
+/// it forward via `grant_currency`, THEN zeroes the guest row via `zeroed_wallet`
+/// — and NEVER deletes a wallet row (AUTH-23).
+///
+/// Kills (proof-of-teeth): move the zeroing update BEFORE `grant_currency` — the
+/// row would be credited with 0 (silent balance destruction). Also kills replacing
+/// the in-place zero with a `.delete(`.
+#[test]
+fn auth24_rekey_wallet_credits_before_zero_never_deletes() {
+    let compact = compact_ws(&strip_rust_strings_economy(&strip_rust_comments_economy(
+        ECONOMY_SOURCE,
+    )));
+    let fn_needle = ["fnrekey", "_wallet("].concat();
+    let fn_pos = compact
+        .find(fn_needle.as_str())
+        .expect("AUTH-24: fn rekey_wallet not found in economy.rs");
+
+    let open = compact[fn_pos..]
+        .find('{')
+        .map(|o| fn_pos + o)
+        .expect("AUTH-24: rekey_wallet body opening brace not found");
+    let bytes = compact.as_bytes();
+    let mut depth = 0usize;
+    let mut close = open;
+    for (i, &b) in bytes.iter().enumerate().skip(open) {
+        match b {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    close = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+    }
+    let body = &compact[open..=close];
+
+    let find_from = ["find", "(from)"].concat();
+    let grant = ["grant", "_currency("].concat();
+    let zero = ["zeroed", "_wallet("].concat();
+    let delete = [".del", "ete("].concat();
+
+    let i_find = body
+        .find(find_from.as_str())
+        .expect("AUTH-24: rekey_wallet must read the guest wallet via find(from)");
+    let i_grant = body
+        .find(grant.as_str())
+        .expect("AUTH-24: rekey_wallet must credit forward via grant_currency(");
+    let i_zero = body
+        .find(zero.as_str())
+        .expect("AUTH-24: rekey_wallet must zero the guest row via zeroed_wallet(");
+
+    assert!(
+        i_find < i_grant,
+        "AUTH-24: the guest balance must be READ (find(from)) before it is credited forward."
+    );
+    assert!(
+        i_grant < i_zero,
+        "AUTH-24: CREDIT before ZERO — grant_currency must precede the zeroing update. \
+         (proof-of-teeth: moving the zero first credits 0 — silent balance destruction.)"
+    );
+    assert!(
+        !body.contains(delete.as_str()),
+        "AUTH-24/23: rekey_wallet must NEVER delete a wallet row (credit-forward + in-place zero)."
+    );
+}

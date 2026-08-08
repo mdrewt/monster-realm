@@ -676,7 +676,11 @@ pub enum AccountStatus {
 /// `Identity = f(iss, sub)` already keys every game-data table since M2, so an
 /// account needs no PII of its own. Clients read ONLY through the `my_account`
 /// view below. Runtime table, not seeded content → NO CONTENT_VERSION bump
-/// (D10, mirrors `trade_offer` / ADR-0106).
+/// (D10, mirrors `trade_offer` / ADR-0106). `Clone` (derived BEFORE the table
+/// attr — the `player_quest` precedent, so the schema-snapshot regex still
+/// matches `#[spacetimedb::table(...)] pub struct`) supports value-style unit
+/// tests over the pure seams that take an `Account` by value.
+#[derive(Clone)]
 #[spacetimedb::table(name = account)]
 pub struct Account {
     #[primary_key]
@@ -713,6 +717,8 @@ fn my_account(ctx: &spacetimedb::ViewContext) -> Option<Account> {
 /// unique column already supports `.find()` (the `npc.npc_id` convention).
 /// `guest_name` is a server-populated snapshot of `player.name`, never a reducer
 /// argument (AUTH-9), rendered back only to the same person completing the claim.
+/// `Clone` derived before the table attr (see `Account`) for value-style tests.
+#[derive(Clone)]
 #[spacetimedb::table(name = guest_claim)]
 pub struct GuestClaim {
     #[primary_key]
