@@ -499,6 +499,28 @@ proof-of-teeth discipline):
   the reject *reason value* to the accepted static-literal constants at these call sites, not merely
   scan for banned identifier names. M21a's code uses named `&'static str` reject-reason constants to
   make that value-pin straightforward.
+- **Two `profile` re-key residuals for the milestone owner (both OQ2-entangled — spec-retune, not
+  M21a defects; the code faithfully implements AUTH-25 + D8.7).** M21a's impl-review lenses surfaced
+  two bounded, non-security, self-limiting rough edges on the guest→account `profile` path, both of
+  which *vanish entirely if OQ2 is answered "ranked requires an account"* (then `rekey_profile` never
+  exists). Shipping per the literal spec; flagged rather than unilaterally redesigning a
+  finalization-reviewed criterion mid-slice:
+  1. **Tombstone floors the guest's own rating to 0, not `INITIAL_RATING`** (`ranking::tombstoned_profile`,
+     per AUTH-25's literal "zero rating"). If a claimed-out guest keeps playing on the *same anonymous
+     identity* (an unusual flow — their monsters migrated to the account), `get_or_init_profile` hits
+     its `Some` branch on the retained tombstone row and never re-seeds `INITIAL_RATING` (1000), so
+     that identity resumes ranked anchored at 0 forever. Bounded (ELO exchange saturates at ±K per
+     game regardless of gap — **not** a rating-laundering exploit; the zero also still fully satisfies
+     AUTH-25's anti-re-donation purpose). Red-team's proposed retune: set the tombstone `rating` to
+     `game_core::INITIAL_RATING` instead of `0` (a re-donated `1000/0/0` row is indistinguishable from
+     a never-existing profile, so no donation value is created) — needs an AUTH-25 wording amendment
+     ("reset to the fresh-player baseline" rather than "zero rating") and updating the
+     `auth25_tombstoned_profile_*` assertion. Deferred to the OQ2 decision.
+  2. **Destination leaderboard row is created with an empty `name`** when the claiming account has no
+     live `player` row (always true under guard 11). `get_or_init_profile`'s `unwrap_or_default()`
+     seeds `""`; the ADR-0125 passive mirror / the ADR-0133 rename UI fill it on the next rated game.
+     Consistent with D8.7 (guest display name is not carried across the claim) and with
+     `get_or_init_profile`'s pre-existing convention; cosmetic and self-healing on a public table.
 
 ## Consequences
 
