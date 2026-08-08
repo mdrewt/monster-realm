@@ -2777,3 +2777,241 @@ fn sync_npc_entities_from_log_sites_escape_the_npc_id() {
         2,
     );
 }
+
+// ===========================================================================
+// 12r-e ITEM 3 / EARS E4 — duplicate-(from, to)-pair rejection has EXACTLY ONE
+// enforcement point, and its comment describes it accurately.
+//
+// THE DEFECT. `content.rs:66-82` calls `validate_evolution_paths(..)` (game-core's
+// R1-R12 content gate) and then, IMMEDIATELY afterwards — same function, same
+// unmutated `evolution_paths` Vec, nothing in between — re-runs a
+// `HashSet<(from_species, to_species)>` duplicate-pair scan of its own.
+// game-core's R1 (`game-core/src/content.rs:961-972`) is the IDENTICAL algorithm
+// keyed on the IDENTICAL pair, so the server-side block is provably unreachable:
+// any input that would trip it has already returned `Err` one statement earlier.
+// Its own comment nevertheless calls it "the LAST line of defense", which is the
+// part that actually costs something — a future reader trusting that comment
+// believes duplicate-pair rejection is enforced HERE, and could weaken or delete
+// the real gate in game-core without any test going red.
+//
+// THE FIX IS A DELETION: remove the block. E4 is then "one enforcement point,
+// truthfully described".
+//
+// WHY THIS SHAPE OF ASSERTION (a previous draft was defeated). Asserting
+// `body.matches("seen_pairs").count() == 0` is beaten by re-adding the identical
+// block under any other binding name (`dup_guard`, `pairs`, ...) — a pure rename
+// with zero behaviour change. The three needles below are asserted instead
+// because they are the block's STRUCTURE, not its vocabulary: a duplicate-pair
+// scan needs a set type, the path to that type, and a tuple insert. Renaming the
+// binding changes none of them. (`seen_pairs` is also a bad baseline for a second
+// reason: it appears TWICE in content.rs, at :73 and :75, not once.)
+// ===========================================================================
+
+/// **12r-e E4** — after the fix there is EXACTLY ONE duplicate-(from, to)-pair
+/// enforcement point, and it is game-core's R1.
+///
+/// Scoped to the brace-matched body of `sync_content_inner` (comment-stripped
+/// first, so neither the doomed block's own comment nor this test's rationale can
+/// satisfy anything). Measured baseline at HEAD, inside that body, with the
+/// post-fix target in brackets:
+///
+///   * `HashSet`       — 1 [0]  (content.rs:73)
+///   * `collections::` — 1 [0]  (content.rs:73)
+///   * `.insert((`     — 1 [0]  (content.rs:75)
+///   * `from_species`  — 4 [2]  (:75 once, :78 once, :272 TWICE — the surviving
+///     `EvolutionPathRow` seed literal `from_species: p.from_species,`)
+///   * `returnErr(`    — 2 [1]  (:76 the backstop, :315 the version-stamp guard,
+///     which is the one that survives; every CONTENT rejection flows through the
+///     `?` on the `validate_*` calls, not through a `return`)
+///
+/// The first three are the backstop's STRUCTURE. The last two are the
+/// **behaviour-shaped** pair added in the 12r-e hardening round, and they are the
+/// ones with real reach: any duplicate-(from, to)-pair scan whatsoever must READ
+/// `from_species` and must REJECT, no matter which container it is written with.
+/// Both are RED at HEAD and both catch the `Vec` + `.contains(..)` re-add that
+/// the first three miss (measured: 3 and 2 respectively under that spelling).
+///
+/// The four other `HashSet` uses in content.rs (`sync_content_inner_recheck`
+/// :342, `stale_zone_def_ids` :403, `stale_heal_location_ids` :423,
+/// `sync_npc_entities_from` :689) are in DIFFERENT functions and are excluded by
+/// the body extraction — the two boundary assertions below prove that exclusion
+/// rather than assuming it.
+///
+/// VACUITY LAYER (load-bearing, do not remove). `validate_evolution_paths(` must
+/// still be called EXACTLY ONCE in the same body. Without it, deleting the
+/// validation call outright would also drive the counts to their targets and this
+/// test would report "one enforcement point" while there were ZERO — a real false
+/// green, and a far worse outcome than the redundancy being removed.
+///
+/// HONEST LIMITS. (a) This is a SOURCE SCAN, not an execution: this crate has no
+/// `ReducerContext` test harness (`content_tests.rs:144`), so `sync_content_inner`
+/// cannot be run here at all. It proves the SHAPE of the seed gate, never that a
+/// duplicate pair is rejected at runtime. (b) The behavioural proof of the
+/// surviving enforcement point is NOT here and must not be duplicated here: it is
+/// `game-core/src/content.rs`'s `r1_duplicate_from_to_pair_rejected` (~:3210),
+/// which is a strictly stronger test of the same property (it builds a duplicate
+/// pair and asserts the `Err`). This test only proves the server no longer
+/// carries a second, unreachable copy of that rule. (c) CORRECTED IN THE 12r-e
+/// HARDENING ROUND — an earlier draft of this doc claimed a `BTreeSet` re-add
+/// would evade the structural needles. It does NOT: `std::collections::BTreeSet`
+/// still spells `collections::` and still calls `.insert((..))`, and the red-team
+/// applied that spelling and measured this test correctly FAILING
+/// (`collections::` = 2, `.insert((` = 1). The one spelling that evades the three
+/// STRUCTURAL needles is `Vec` + `.contains(..)` — which is precisely why
+/// `from_species` and `returnErr(` were added, and both catch it. (d) The
+/// `returnErr(` count is a fence as well as a tooth: a future change that adds
+/// a genuinely new `return Err(..)` to `sync_content_inner` turns this red and
+/// must update the expected count DELIBERATELY, from the spec. That is the
+/// intended failure mode.
+#[test]
+fn r1_duplicate_pair_has_exactly_one_enforcement_point() {
+    let stripped = m13_5c_strip_rust_comments(M13_5C_CONTENT_RS_SOURCE);
+    // Same fn needle the sibling 13.5c-2 guard uses (line ~688). The `(ctx`
+    // suffix excludes `sync_content_inner_recheck(` even though the reducer is
+    // declared first in the file.
+    let body = m13_5c_fn_body(&stripped, "fn sync_content_inner(ctx");
+    let compact: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+
+    // --- Extraction boundary: prove the body is the one we mean --------------
+    // Both directions matter. Undershooting (the brace walk stopping early, e.g.
+    // on an unbalanced brace inside a log format string) would drop the backstop
+    // from the window and turn every count below into a vacuous 0. Overshooting
+    // into `sync_content_inner_recheck` / `stale_zone_def_ids` would import THEIR
+    // legitimate `HashSet`s and make the fix impossible to land.
+    let tail_anchor = ["recompute_monster_derived", "_fields(&mutm,"].concat();
+    assert!(
+        compact.contains(tail_anchor.as_str()),
+        "SCAN PRECONDITION (12r-e E4): the extracted `sync_content_inner` body does \
+         not reach its own re-derive tail ({tail_anchor:?}, content.rs:301). The \
+         brace walk stopped early, so the window scanned below is only a PREFIX of \
+         the function and every count in this test is untrustworthy. Fix the \
+         extractor before trusting any verdict here."
+    );
+    let next_fn = ["sync_content_inner", "_recheck"].concat();
+    assert!(
+        !compact.contains(next_fn.as_str()),
+        "SCAN PRECONDITION (12r-e E4): the extracted `sync_content_inner` body \
+         spills into `{next_fn}` (content.rs:333), whose own `HashSet<u32>` is \
+         legitimate. The counts below would then never reach 0 no matter what the \
+         implementer deletes — a permanent false RED. Fix the extractor."
+    );
+
+    // --- Vacuity layer: the REAL enforcement point is still called -----------
+    let validate = ["validate_evolution", "_paths("].concat();
+    let n_validate = compact.matches(validate.as_str()).count();
+    assert_eq!(
+        n_validate, 1,
+        "VACUITY GUARD (12r-e E4): `sync_content_inner` must call \
+         `{validate}..)` EXACTLY once; found {n_validate}. This is what makes the \
+         three zero-counts below mean `exactly one enforcement point` rather than \
+         `none`. game-core's R1 IS the enforcement point (its behavioural test is \
+         `r1_duplicate_from_to_pair_rejected` in game-core/src/content.rs) — \
+         deleting the seed-gate backstop is only safe while this call survives. \
+         Two calls would mean the gate was duplicated instead of the backstop \
+         removed."
+    );
+
+    // --- The backstop is GONE, asserted on SHAPE not on identifier ----------
+    let hash_set = ["Hash", "Set"].concat();
+    let n_hash_set = compact.matches(hash_set.as_str()).count();
+    assert_eq!(
+        n_hash_set, 0,
+        "TEETH (12r-e E4): `sync_content_inner`'s body still mentions `{hash_set}` \
+         {n_hash_set} time(s); it must mention it ZERO times. RED at HEAD: 1 \
+         (content.rs:73). The ONLY `{hash_set}` in this function is the \
+         duplicate-(from, to)-pair backstop at content.rs:68-82, and that block is \
+         DEAD CODE: `validate_evolution_paths` returned `Ok` one statement earlier \
+         over the SAME unmutated `evolution_paths` Vec, and game-core's R1 \
+         (game-core/src/content.rs:961-972) is the identical algorithm on the \
+         identical key — so no input can ever reach the `return Err` inside it. \
+         What it does do is LIE: its comment calls itself `the LAST line of \
+         defense`, so a future reader believes duplicate rejection is enforced here \
+         and can gut the real gate in game-core with every test still green. Delete \
+         the block. This assertion is on the SHAPE (a set type) rather than on the \
+         `seen_pairs` binding name on purpose — renaming the block to `dup_guard` \
+         is a zero-behaviour-change evasion of a name-based check."
+    );
+
+    let collections = ["collections", "::"].concat();
+    let n_collections = compact.matches(collections.as_str()).count();
+    assert_eq!(
+        n_collections, 0,
+        "TEETH (12r-e E4): `sync_content_inner`'s body still mentions \
+         `std::{collections}` {n_collections} time(s); it must mention it ZERO \
+         times. RED at HEAD: 1 (content.rs:73). This is the second of three \
+         structural needles on the dead duplicate-pair backstop; it survives an \
+         evasion that imports the set type at the top of the file to shorten the \
+         path at the use site. The other functions in content.rs that legitimately \
+         use a set (`sync_content_inner_recheck`, `stale_zone_def_ids`, \
+         `stale_heal_location_ids`, `sync_npc_entities_from`) are OUTSIDE this \
+         body and are unaffected — the boundary assertions above prove that."
+    );
+
+    let tuple_insert = [".insert", "(("].concat();
+    let n_tuple_insert = compact.matches(tuple_insert.as_str()).count();
+    assert_eq!(
+        n_tuple_insert, 0,
+        "TEETH (12r-e E4): `sync_content_inner`'s body still performs a \
+         tuple-keyed `{tuple_insert}..))` {n_tuple_insert} time(s); it must perform \
+         ZERO. RED at HEAD: 1 (content.rs:75, `seen_pairs.insert((p.from_species, \
+         p.to_species))`). This is the third structural needle and the most \
+         specific one: a duplicate-PAIR scan is defined by inserting the pair, so \
+         this survives both a rename of the binding AND a swap of the set type's \
+         import path. Note the needle is whitespace-insensitive (the body is \
+         compacted first), so a rustfmt line split cannot false-GREEN it."
+    );
+
+    // --- Behaviour-shaped needles: ANY re-add spelling reads the pair, and rejects
+    // Added in the 12r-e hardening round. The three structural needles above are
+    // container-shaped and a red-team confirmed a `Vec` + `.contains(..)` re-add
+    // walks past all three. These two do not care about the container at all: a
+    // duplicate-(from, to)-PAIR check must read `from_species`, and a BACKSTOP
+    // must reject. Both are strictly stronger than the three above, and both are
+    // RED at HEAD.
+    //
+    // The binding below is named `pair_field` and NOT after what it is (a lookup
+    // k-e-y). gitleaks runs REMOTE-ONLY and BEFORE every other CI gate, its
+    // generic high-entropy secret rule triggers on such an identifier next to a
+    // quoted literal, and this repo has already lost a PR round-trip to a false
+    // positive of exactly that shape on an ordinary test fixture string. These
+    // literals sit far below the entropy and length floors, so a hit is unlikely
+    // — but the rename is one word and a wrong guess costs a remote round-trip on
+    // a branch where force-push is hook-blocked.
+    let pair_field = ["from", "_species"].concat();
+    let n_pair_field = compact.matches(pair_field.as_str()).count();
+    assert_eq!(
+        n_pair_field, 2,
+        "TEETH (12r-e E4, container-agnostic): `sync_content_inner`'s body reads \
+         `{pair_field}` {n_pair_field} time(s); after the fix it must read it EXACTLY \
+         2 times. RED at HEAD: 4 — :75 and :78 belong to the dead duplicate-pair \
+         backstop, and the surviving 2 are BOTH halves of the seed literal at \
+         content.rs:272 (`from_species: p.from_species,`), which writes the \
+         `evolution_path` row and must not be touched. This needle does not care \
+         which container the backstop is written with: a duplicate-(from, to)-PAIR \
+         scan has to read the from-species of every path, so a `HashSet`, a \
+         `BTreeSet`, and the `Vec` + `.contains(..)` spelling that walks past the \
+         three structural needles above ALL land here (measured: 3 under the `Vec` \
+         spelling). If this reads 2 while the structural counts are 0, the block \
+         is genuinely gone."
+    );
+
+    // `return Err(` with the whitespace removed — the body is compacted.
+    let reject = ["return", "Err("].concat();
+    let n_reject = compact.matches(reject.as_str()).count();
+    assert_eq!(
+        n_reject, 1,
+        "TEETH (12r-e E4, container-agnostic): `sync_content_inner`'s body \
+         contains {n_reject} `return Err(..)` statement(s); after the fix it must \
+         contain EXACTLY 1. RED at HEAD: 2 — content.rs:76 (the dead backstop's \
+         rejection) and content.rs:315 (the version-stamp `config row missing` \
+         guard, which is the one that SURVIVES). Every genuine CONTENT rejection \
+         in this function flows through the `?` on a `validate_*` call, never \
+         through a `return`, so `return Err(` here is a reliable census of \
+         hand-rolled gates. A re-added duplicate-pair backstop must REJECT to be \
+         worth anything, and rejecting costs a second `return Err(` no matter how \
+         the scan itself is spelled (measured: 2 under both the `BTreeSet` and the \
+         `Vec` + `.contains(..)` re-adds). FENCE NOTE: a future change that adds a \
+         legitimately new `return Err(..)` to this reducer turns this red — update \
+         the expected count deliberately, from the spec, and say why."
+    );
+}

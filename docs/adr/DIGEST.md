@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 143 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 144 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -152,6 +152,7 @@ Generated from 143 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0175](./0175-essence-graph-reducers.md) | 0175 — Essence-graph reducers: quality-time semantics, auto-evolution, battle credits (EG2) | Accepted | evolution-fusion, battle, movement-netcode | EG2 (M-evolution-essence-graph — EARS EG2-1..EG2-13) | Land the essence-graph write layer — apply_evolution/check_and_evolve with chain cascade, essence_train/consume_crystalized_essence, Trust/Quality-Time credits — defining quality time as bounded-gap active-playtime accrual. |
 | [0176](./0176-essence-graph-content-authoring.md) | 0176 — Essence-graph content authoring (evolution_paths registry, essence items) | Accepted | content, evolution-fusion | EG3 (M-evolution-essence-graph — EARS EG3-1..EG3-9) | Author the ten-edge essence graph into `evolution_paths/` with explicit append-only `edge_id`s, retuning the legacy `1→4` gate to level 20 so auto-evolution cannot temporally dominate the Steamveil fan-in edge. |
 | [0177](./0177-essence-graph-evolution-replaces-fuse.md) | 0177 — Essence-graph evolution replaces fuse(): milestone consolidation, Migration B, gate migration (EG5) | Accepted | evolution-fusion, schema-persistence, ci-gates | EG5 (M-evolution-essence-graph — EARS EG5-1..EG5-7; closes the milestone) | Retire fusion's ADR lineage (fusion-specific provisions only), land Migration B removing bond/evolves_to/Fusion, and migrate the three evolution gates to the essence-graph shape with an edge_id ever-issued ledger. |
+| [0178](./0178-validator-and-core-hardening-tail.md) | 0178 — Validator & core hardening tail: R4 gate semantics, single duplicate-pair enforcement, ids-only party seam, cap-exhausted write elision | Accepted | evolution-fusion, content, movement-netcode | 12r-e (M-postgate-twelfth-review-residuals) | R4 tests vacuity against `path_satisfied`'s own thresholds; `sync_content`'s unreachable duplicate-pair re-scan is deleted; the movement growth tail takes an ids-only party helper; and a cap-exhausted Quality-Time call writes no row. |
 
 ## Harness design corpus (H- namespace)
 
@@ -257,6 +258,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0175](./0175-essence-graph-reducers.md) — EG2 (M-evolution-essence-graph — EARS EG2-1..EG2-13) — 0175 — Essence-graph reducers: quality-time semantics, auto-evolution, battle credits (EG2) (Accepted)
 - [0176](./0176-essence-graph-content-authoring.md) — EG3 (M-evolution-essence-graph — EARS EG3-1..EG3-9) — 0176 — Essence-graph content authoring (evolution_paths registry, essence items) (Accepted)
 - [0177](./0177-essence-graph-evolution-replaces-fuse.md) — EG5 (M-evolution-essence-graph — EARS EG5-1..EG5-7; closes the milestone) — 0177 — Essence-graph evolution replaces fuse(): milestone consolidation, Migration B, gate migration (EG5) (Accepted)
+- [0178](./0178-validator-and-core-hardening-tail.md) — 12r-e (M-postgate-twelfth-review-residuals) — 0178 — Validator & core hardening tail: R4 gate semantics, single duplicate-pair enforcement, ids-only party seam, cap-exhausted write elision (Accepted)
 
 ### movement-netcode
 
@@ -285,6 +287,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0171](./0171-resume-from-idle-interpolation.md) — 11r-f (M-postgate-eleventh-review-residuals — resume-from-idle smoothness; EARS E1) — 0171 — Resume-from-idle interpolation smoothness: idle-gap-gated jitter EWMA + re-anchored lerp bracket (Accepted)
 - [0172](./0172-test-integrity-and-movement-rejection-diagnostics.md) — 11r-h (M-postgate-eleventh-review-residuals — test-integrity & diagnostics residuals; EARS E1-1..E1-2, E2-1..E2-3, E3-1..E3-4, E4-1..E4-4, E5-1..E5-9) — 0172 — Test-integrity residuals and movement-rejection diagnostics (Accepted)
 - [0175](./0175-essence-graph-reducers.md) — EG2 (M-evolution-essence-graph — EARS EG2-1..EG2-13) — 0175 — Essence-graph reducers: quality-time semantics, auto-evolution, battle credits (EG2) (Accepted)
+- [0178](./0178-validator-and-core-hardening-tail.md) — 12r-e (M-postgate-twelfth-review-residuals) — 0178 — Validator & core hardening tail: R4 gate semantics, single duplicate-pair enforcement, ids-only party seam, cap-exhausted write elision (Accepted)
 
 ### content
 
@@ -309,6 +312,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0161](./0161-npc-interaction-context-interact.md) — uxd2 (M-postgate-ux-design — shop-via-NPC interaction) — 0161 — Server-anchored NpcInteraction enum and the context-sensitive KeyT interact system (Accepted)
 - [0173](./0173-content-registry-gate-coverage-and-schema-migration-reality.md) — 11r-i (M-postgate-eleventh-review-residuals — gate-coverage extensions; EARS E1-1..E1-11, E2-1..E2-6, E3-1..E3-8, E4-1..E4-8, E5-1..E5-3) — 0173 — Content-registry gate coverage, unknown-quest diagnostics, and the real SpacetimeDB additive-schema rules (Accepted)
 - [0176](./0176-essence-graph-content-authoring.md) — EG3 (M-evolution-essence-graph — EARS EG3-1..EG3-9) — 0176 — Essence-graph content authoring (evolution_paths registry, essence items) (Accepted)
+- [0178](./0178-validator-and-core-hardening-tail.md) — 12r-e (M-postgate-twelfth-review-residuals) — 0178 — Validator & core hardening tail: R4 gate semantics, single duplicate-pair enforcement, ids-only party seam, cap-exhausted write elision (Accepted)
 
 ### schema-persistence
 

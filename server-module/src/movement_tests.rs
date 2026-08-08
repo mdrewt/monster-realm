@@ -2532,10 +2532,11 @@ fn movement_tick_grass_block_never_aborts_the_tick() {
 //
 //   EG2-8   The Quality-Time accrual SHALL be called DIRECTLY from exactly the
 //           listed reducers, and — uniquely at this call site — ONCE PER PARTY
-//           MONSTER, looping over `lead_party(ctx, owner)`'s full returned id
+//           MONSTER, looping over `lead_party_ids(ctx, owner)`'s full returned id
 //           list, NOT just the lead (party_slot 0). Drew's directive wording is
 //           "playtime with the monster actively in the party", not "the lead
-//           monster".
+//           monster". (12r-e E2 re-point: the id-only resolver, so an unparseable
+//           LEAD level cannot silently disable the whole party's growth tail.)
 //
 //   EG2-9   The accrual and the auto-evolution check SHALL NEVER be called
 //           DIRECTLY from a SCHEDULED reducer's own body. `movement_tick` is the
@@ -2625,12 +2626,23 @@ fn first_two_args(body: &str, at: usize) -> (String, String) {
 /// party and run both growth tails once per party monster, after its own
 /// character write.
 ///
+/// **12r-e RE-POINT (E2).** The party-resolution needle in this test now targets
+/// `lead_party_ids(`, NOT `lead_party(`. `enqueue_move` no longer needs the lead's
+/// level (it drives the growth tails over the id list only), and `lead_party`
+/// returns `None` for the WHOLE party if the lead's level byte will not parse —
+/// which would silently disable Quality Time and auto-evolution for every party
+/// monster on every move. The negative half of the re-point (`lead_party(` must
+/// appear ZERO times in this body) lives in
+/// [`enqueue_move_growth_tail_does_not_depend_on_the_lead_level`]; WITHOUT that
+/// test this re-point would be a pure weakening, because an implementation that
+/// called BOTH helpers would satisfy every needle here.
+///
 /// kills:
 ///   * **lead-only crediting** — `accrue_quality_time(ctx, ids[0])` with no loop,
 ///     the single most likely simplification. `Character` carries no monster
-///     reference, so the party has to be resolved through `lead_party`, and
-///     `lead_party` also hands back the LEAD's level — reaching for slot 0 is one
-///     keystroke away. It would silently mean only the lead monster ever accrues
+///     reference, so the party has to be resolved through `lead_party_ids`, and
+///     the sibling `lead_party` also hands back the LEAD's level — reaching for
+///     slot 0 is one keystroke away. It would silently mean only the lead accrues
 ///     Quality Time, so every non-lead party member's Quality-Time gate stays
 ///     frozen at 0 forever and its evolution never fires. EG2-8 says the full id
 ///     list, in Drew's own words. Layer 5 catches it by requiring the loop binding
@@ -2650,12 +2662,13 @@ fn first_two_args(body: &str, at: usize) -> (String, String) {
 ///     another (layer 5's equality assertion).
 ///
 /// RED BY SCAN at HEAD: `enqueue_move` calls neither helper and never touches
-/// `lead_party`.
+/// the party resolver.
 ///
 /// HONEST LIMITS. (a) This is a source scan, not an execution: it proves the loop
-/// is WRITTEN over the resolved id list, never that `lead_party` returned every
-/// party member at runtime — that is `lead_party`'s own contract, exercised by the
-/// grass-encounter path. (b) Layer 5 accepts `for id in ..`, `for &id in ..`,
+/// is WRITTEN over the resolved id list, never that `lead_party_ids` returned
+/// every party member at runtime — that is the helper's own contract, pinned
+/// structurally by `battle_tests.rs::lead_party_ids_does_not_parse_a_level`.
+/// (b) Layer 5 accepts `for id in ..`, `for &id in ..`,
 /// `for mut id in ..` and `for &mut id in ..`, but not a `.for_each(..)` or an
 /// index loop; those would false-RED. The `for` loop is the sanctioned shape
 /// (ADR-0175 D3) and the failure message says so. (c) Every needle here is
@@ -2679,7 +2692,8 @@ fn enqueue_move_body_loops_party_growth_tails() {
     );
     let body = brace_body(&squashed, enqueue_marker.as_str());
 
-    let lead = ["lead", "_party("].concat();
+    // 12r-e RE-POINT (E2): `_party_ids(`, not `_party(` — see the doc block above.
+    let lead = ["lead", "_party_ids("].concat();
     let accrue = ["accrue_quality", "_time("].concat();
     let evolve_check = ["check_and", "_evolve("].concat();
     let char_update = ["character().entity_id()", ".update("].concat();
@@ -2694,11 +2708,14 @@ fn enqueue_move_body_loops_party_growth_tails() {
     });
     let lead_at = body.find(lead.as_str()).unwrap_or_else(|| {
         panic!(
-            "TEETH (EG2-8): `enqueue_move` must resolve the caller's active party \
-             through the existing `lead_party(ctx, ctx.sender)` helper. RED at HEAD: \
-             it never calls it. `Character` carries no monster reference, so the \
-             party is the ONLY way to know which monsters this movement is playtime \
-             WITH; a `None` return (no party) must simply credit nothing."
+            "TEETH (EG2-8 + 12r-e E2): `enqueue_move` must resolve the caller's \
+             active party through `lead_party_ids(ctx, ctx.sender)` — the id-only \
+             helper. RED at HEAD: it calls `lead_party(` instead, which additionally \
+             parses the LEAD's level and returns `None` for the WHOLE party if that \
+             byte is out of range, silently disabling both growth tails for every \
+             party monster on every move. `Character` carries no monster reference, \
+             so the party is the ONLY way to know which monsters this movement is \
+             playtime WITH; a `None` return (no party) must simply credit nothing."
         )
     });
     let accrue_at = body.find(accrue.as_str()).unwrap_or_else(|| {
@@ -2746,7 +2763,7 @@ fn enqueue_move_body_loops_party_growth_tails() {
     // --- Layer 4: the party is resolved before anything is credited ----------
     assert!(
         lead_at < accrue_at,
-        "TEETH (EG2-8): `lead_party(` appears at body byte {lead_at}, AFTER the first \
+        "TEETH (EG2-8): `{lead}` appears at body byte {lead_at}, AFTER the first \
          growth credit at {accrue_at}. The party lookup is what decides WHICH \
          monsters are credited; a credit written before it cannot be looping over \
          the returned ids."
@@ -2791,11 +2808,11 @@ fn enqueue_move_body_loops_party_growth_tails() {
     let looped = loop_forms.iter().any(|f| between.contains(f.as_str()));
     assert!(
         looped,
-        "TEETH (EG2-8): between `lead_party(` and the first growth credit there is no \
+        "TEETH (EG2-8): between `{lead}` and the first growth credit there is no \
          `for {loop_var} in ..` loop — so `{loop_var}` is not a loop binding over the \
          returned party id list and only ONE monster is being credited. This is the \
          lead-only mutant, and it is the most likely simplification of this call \
-         site: `lead_party` hands back a `(Vec<u64>, Level)`, so \
+         site: the helper hands back the whole slot-ordered `Vec<u64>`, so \
          `accrue_quality_time(ctx, ids[0])` compiles, reads fine, and quietly freezes \
          every non-lead party member's Quality-Time gate at 0 forever — their \
          evolution can then never fire. EG2-8 is explicit: loop over the FULL \
@@ -2824,7 +2841,10 @@ fn enqueue_move_body_loops_party_growth_tails() {
 //       // the counterparty is looking at a propose-time card snapshot that
 //       // confirm_trade never revalidates. Skip the monster; never reject the
 //       // move (a pending trade must not freeze the player in place).
-//       if let Some((party_ids, _)) = lead_party(ctx, ctx.sender) {      [L]
+//       // 12r-e E2: the ID-ONLY resolver. `lead_party` would additionally parse
+//       // the LEAD's level and return None for the WHOLE party if it is out of
+//       // range — silently killing both tails for every party monster.
+//       if let Some(party_ids) = lead_party_ids(ctx, ctx.sender) {       [L]
 //           let escrowed: Vec<u64> = ctx.db.trade_offer()               [T]
 //               .initiator().filter(ctx.sender)                          [I]
 //               .chain(ctx.db.trade_offer().counterparty()               [C]
@@ -2851,6 +2871,10 @@ fn enqueue_move_body_loops_party_growth_tails() {
 //   enqueue_move_skips_trade_escrowed_party_monsters
 //        [T]/[I]/[C] all sit in [L]..[A]; [F]..[A] holds `contains(`
 //        and `continue` and no `return`                                     OK
+//   enqueue_move_growth_tail_does_not_depend_on_the_lead_level
+//        [L] is `lead_party_ids(` exactly once and `lead_party(` zero times
+//        (the two needles are disjoint: the byte after `lead_party` is `_`
+//        in one and `(` in the other)                                       OK
 //   movement_tick_body_never_calls_growth_triggers ... untouched reducers    OK
 // And the pre-existing movement gates still hold: `is_in_ongoing_battle(`
 // stays at 4 file-wide (the tail adds none), `battle()` stays at 1 (the tail
@@ -2875,9 +2899,17 @@ fn enqueue_move_body_loops_party_growth_tails() {
 ///
 /// Two layers (the second carries three assertions):
 ///
+/// **12r-e RE-POINT (E2).** The window's left edge is now `lead_party_ids(`, not
+/// `lead_party(` — `enqueue_move` no longer resolves the party through the helper
+/// that parses the lead's level. This is a pure anchor move: the window it opens
+/// is the same statement in the same reducer. The negative that keeps the
+/// re-point from hollowing this scan (`lead_party(` must appear ZERO times in
+/// this body) is asserted by
+/// [`enqueue_move_growth_tail_does_not_depend_on_the_lead_level`].
+///
 /// * **(a) the escrow set is collected from BOTH trade roles, before the loop.**
 ///   `trade_offer()`, `initiator()` and `counterparty()` must each appear after
-///   `lead_party(` and before the first growth credit. Both index reads are pinned
+///   the party resolution and before the first growth credit. Both index reads are pinned
 ///   because an initiator-only (or counterparty-only) collection leaves half of
 ///   all offers unguarded — the same both-roles chain `care` spells at
 ///   `raising.rs:96-103`, which is also why this survives the likely refactor into
@@ -2912,13 +2944,15 @@ fn enqueue_move_skips_trade_escrowed_party_monsters() {
     let enqueue_marker = ["pubfn", "enqueue", "_move("].concat();
     let body = brace_body(&squashed, enqueue_marker.as_str());
 
-    let lead = ["lead", "_party("].concat();
+    // 12r-e RE-POINT (E2): `_party_ids(`, not `_party(` — see the doc block above.
+    let lead = ["lead", "_party_ids("].concat();
     let accrue = ["accrue_quality", "_time("].concat();
 
     let lead_at = body.find(lead.as_str()).unwrap_or_else(|| {
         panic!(
-            "TEETH (TR-6): `enqueue_move` must resolve the party via `lead_party(`. \
-             RED at HEAD: it never calls it."
+            "TEETH (TR-6 + 12r-e E2): `enqueue_move` must resolve the party via \
+             `lead_party_ids(` — the id-only helper that cannot be knocked out by an \
+             unparseable LEAD level. RED at HEAD: it calls `lead_party(` instead."
         )
     });
     let accrue_at = body.find(accrue.as_str()).unwrap_or_else(|| {
@@ -2955,11 +2989,11 @@ fn enqueue_move_skips_trade_escrowed_party_monsters() {
              between the party lookup ({lead_at}) and the first growth credit \
              ({accrue_at}). The escrowed-id set must be collected ONCE, after the \
              party is resolved and before the loop that credits it — inside the \
-             `if let Some((party_ids, _)) = lead_party(..)` arm, so a caller with no \
+             `if let Some(party_ids) = lead_party_ids(..)` arm, so a caller with no \
              party pays no trade-offer index reads at all (this is the hottest \
              player-triggered reducer in the game, roughly one call per tile-step \
              while a key is held). HONEST LIMIT: hoisting the collection ABOVE \
-             `lead_party(` is semantically equivalent and would false-RED here; the \
+             `{lead}` is semantically equivalent and would false-RED here; the \
              sketch above this test fixes collect-after-resolve as the sanctioned \
              shape."
         );
@@ -3177,7 +3211,16 @@ fn movement_tick_body_never_calls_growth_triggers() {
 /// pre-reject credit would make flooding `enqueue_move` the CHEAPEST way to farm
 /// Quality Time — strictly better for the attacker than actually walking.
 ///
-/// RED BY SCAN at HEAD: `lead_party(` does not appear in `enqueue_move`.
+/// **12r-e RE-POINT (E2).** The tail anchor is now `lead_party_ids(`, not
+/// `lead_party(`: `enqueue_move`'s growth tail must not be gated on the lead
+/// monster's level parsing. Pure anchor move — the ordering property is
+/// unchanged. Paired with
+/// [`enqueue_move_growth_tail_does_not_depend_on_the_lead_level`], which supplies
+/// the negative (`lead_party(` count == 0 in this body) that stops the re-point
+/// from being a weakening.
+///
+/// RED BY SCAN at HEAD: `lead_party_ids(` does not appear in `enqueue_move` (the
+/// helper does not exist yet).
 ///
 /// HONEST LIMIT: textual order inside one body, not execution order under every
 /// control-flow shape. Both rejects are unconditional `return`s at the top of the
@@ -3188,11 +3231,14 @@ fn enqueue_move_reject_paths_precede_tails() {
     let enqueue_marker = ["pubfn", "enqueue", "_move("].concat();
     let body = brace_body(&squashed, enqueue_marker.as_str());
 
-    let lead = ["lead", "_party("].concat();
+    // 12r-e RE-POINT (E2): `_party_ids(`, not `_party(` — see the doc block above.
+    let lead = ["lead", "_party_ids("].concat();
     let lead_at = body.find(lead.as_str()).unwrap_or_else(|| {
         panic!(
-            "TEETH (EG2-8): `enqueue_move` must resolve the party via `lead_party(` \
-             before crediting anything. RED at HEAD: it never calls it."
+            "TEETH (EG2-8 + 12r-e E2): `enqueue_move` must resolve the party via \
+             `lead_party_ids(` before crediting anything. RED at HEAD: it calls \
+             `lead_party(`, whose lead-level parse can return `None` for the whole \
+             party."
         )
     });
 
@@ -3226,5 +3272,254 @@ fn enqueue_move_reject_paths_precede_tails() {
          actually hits: with the credit above it, flooding `enqueue_move` would \
          become the cheapest possible way to farm Quality Time — strictly better \
          than walking. Keep both growth tails on the success path."
+    );
+}
+
+// ===========================================================================
+// 12r-e ITEM 2 / EARS E2 — `enqueue_move`'s growth tail must not be gated on
+// the LEAD monster's level parsing.
+//
+// This test is the MATCHED PAIR of the three `lead_party(` -> `lead_party_ids(`
+// re-points above (in `enqueue_move_body_loops_party_growth_tails`,
+// `enqueue_move_skips_trade_escrowed_party_monsters` and
+// `enqueue_move_reject_paths_precede_tails`). Those three are POSITIVE needles:
+// on their own, a body that called BOTH helpers would satisfy every one of them
+// while `lead_party`'s `None` still short-circuited the tail — i.e. the re-point
+// alone HOLLOWS them out. The negative assertion below is the only thing that
+// makes the re-point a strengthening rather than a weakening, which is why the
+// two changes must never be reviewed apart.
+//
+// A second `battle.rs` cross-check rides here, deliberately in the same test:
+// `lead_party` must DELEGATE to `lead_party_ids` rather than re-run the owner
+// query itself. Without it the tree could end up with two independent
+// definitions of "the party", free to drift on slot ordering or on the
+// `party_slot != PARTY_SLOT_NONE` filter — and `ids[0]` being the lead is
+// exactly the invariant `lead_party` relies on for its point-read. The other
+// half of the direction pin (`lead_party_ids` must not call `lead_party`) is in
+// `battle_tests.rs::lead_party_ids_does_not_parse_a_level`.
+// ===========================================================================
+
+/// `battle.rs`, read from this module so the movement-side re-point and the
+/// battle-side delegation pin can live in one test.
+///
+/// HONEST LIMIT (12r-e hardening round): this puts `battle.rs` under a THIRD
+/// independent stripper — its own `battle.rs::tests`, `battle_tests.rs`, and now
+/// this file's [`strip_comments_and_strings`]. If `battle.rs` ever gains a nested
+/// block comment or an `r###"` raw string, [`assert_stripper_preconditions`] will
+/// fail inside a MOVEMENT test with a message that points at movement.rs's
+/// conventions — a misleading location for a battle.rs edit. The alternative
+/// (splitting the battle-side delegation pin into `battle_tests.rs`) was rejected
+/// because it would separate the re-point from the negative assertion that keeps
+/// it honest, which is the one pairing this slice must not break.
+const BATTLE_RS_FOR_E2: &str = include_str!("battle.rs");
+
+/// `battle.rs` with comments AND string literals blanked and all whitespace
+/// squashed — the same treatment [`squashed_movement`] gives `movement.rs`,
+/// including the loud stripper preconditions.
+fn squashed_battle_for_e2() -> String {
+    let stripped = strip_comments_and_strings(BATTLE_RS_FOR_E2);
+    assert_stripper_preconditions(BATTLE_RS_FOR_E2, &stripped);
+    stripped.split_whitespace().collect()
+}
+
+/// **12r-e E2** — `enqueue_move` resolves the party through the ID-ONLY helper,
+/// and the party query has exactly ONE definition.
+///
+/// THE DEFECT. `battle.rs:293` does `let lead_level = Level::new(lead.level).ok()?;`
+/// — a silent `None` for the WHOLE party when the LEAD's stored level byte is
+/// outside 1..=100. `movement.rs:150` consumes that as "no party" and skips
+/// `accrue_quality_time` + `check_and_evolve` for EVERY party monster on EVERY
+/// move. Five healthy monsters lose Quality Time and auto-evolution because of
+/// one corrupt byte on a sixth, and nothing is logged. Not reachable today (every
+/// `Monster.level` writer goes through `Level::new`) — this is the ADR-0175
+/// Consequences (4) defense-in-depth fix.
+///
+/// Four layers (layer 3 added in the 12r-e HARDENING ROUND):
+///
+/// 1. **`lead_party_ids(` exactly once** in `enqueue_move`'s body. Not "at least
+///    once": two resolutions would mean two different id lists could be credited
+///    and skipped inconsistently against one escrow set.
+/// 2. **`lead_party(` exactly zero times** in the same body — THE tooth. The two
+///    needles are cleanly disjoint: `lead_party(` is not a substring of
+///    `lead_party_ids(`, because the byte after `lead_party` is `(` in one and
+///    `_` in the other. So an implementation that keeps the old call beside the
+///    new one is caught, and so is one that "resolves ids" but re-derives the
+///    level from `lead_party` for some tail check.
+/// 3. **No `level` in any casing (HARDENING).** Layer 2 bans the HELPER, not the
+///    BEHAVIOUR. A red-team re-derived the identical whole-party gate at this
+///    call site (point-read `party_ids[0]`, then
+///    `if Level::new(lead_row.level).is_err() { return Ok(()); }`) and ran
+///    501/501 green. `enqueue_move` has no legitimate use for a level. This
+///    layer is GREEN at HEAD — a fence that arms itself the moment the call
+///    site is edited.
+/// 4. **`lead_party` delegates** (scanned in `battle.rs`): its body must call
+///    `lead_party_ids(` exactly once and must NOT contain the owner index
+///    `owner_identity()`. That is the no-duplicate-query rule and, together with
+///    layer 2 of `lead_party_ids_does_not_parse_a_level`, it pins the dependency
+///    DIRECTION from both ends — closing the verified red-team mirror image in
+///    which `lead_party_ids` is a thin wrapper over `lead_party` and nothing
+///    about the defect changes.
+///
+/// VACUITY LAYER. The growth tail must still BE there: both
+/// `accrue_quality_time(` and `check_and_evolve(` are asserted present in
+/// `enqueue_move`. Without it, deleting the entire tail would drive
+/// `lead_party(` to zero and pass layer 2 while EG2-8 was destroyed.
+///
+/// RED at HEAD: `enqueue_move` calls `lead_party(` (movement.rs:150) and
+/// `lead_party_ids` does not exist, so layer 1 fails with a count of 0 and layer 2
+/// with a count of 1.
+///
+/// HONEST LIMITS. (a) SOURCE SCAN — this crate has no `ReducerContext` harness, so
+/// nothing here executes `enqueue_move` or observes a Quality-Time credit. It
+/// proves which helper is WRITTEN at the call site, never what that helper
+/// returned at runtime. (b) Layer 4 pins one spelling of the owner index
+/// (`owner_identity()`); a delegation that nonetheless read the party through some
+/// other accessor would evade it. The count-exactly-one on `lead_party_ids(` is
+/// what makes that evasion pointless rather than the ban itself. (c) Nothing here
+/// checks the rate limiter on the new warn — `battle_tests.rs`
+/// `lead_party_warns_on_an_unparseable_lead_level` owns the audit shape, and
+/// deliberately does not pin the limiter either (documented there). (d) Layer 3's
+/// `level` ban is defeated by a predicate helper named without that substring;
+/// see the same honest limit on
+/// `battle_tests.rs::lead_party_ids_does_not_parse_a_level`, which carries the
+/// matching ban on the helper side.
+#[test]
+fn enqueue_move_growth_tail_does_not_depend_on_the_lead_level() {
+    let squashed = squashed_movement();
+    let enqueue_marker = ["pubfn", "enqueue", "_move("].concat();
+    let n_marker = squashed.matches(enqueue_marker.as_str()).count();
+    assert_eq!(
+        n_marker, 1,
+        "SCAN PRECONDITION (12r-e E2): `pubfnenqueue_move(` must appear EXACTLY \
+         ONCE in the squashed `movement.rs`; found {n_marker}. With two, the \
+         brace-matched extractor takes the FIRST match and a decoy could carry the \
+         id-only call while the real reducer still used the level-parsing helper."
+    );
+    let body = brace_body(&squashed, enqueue_marker.as_str());
+
+    // --- Vacuity: the growth tail this test is about must exist -------------
+    let accrue = ["accrue_quality", "_time("].concat();
+    let evolve_check = ["check_and", "_evolve("].concat();
+    for needle in [accrue.as_str(), evolve_check.as_str()] {
+        assert!(
+            body.contains(needle),
+            "VACUITY GUARD (12r-e E2): `enqueue_move`'s body no longer contains \
+             `{needle}..)`, so there is no growth tail left for E2 to protect and \
+             the `lead_party(` zero-count below would pass trivially. EG2-8/EG2-12 \
+             require both tails at this call site — see \
+             enqueue_move_body_loops_party_growth_tails, which owns that pin."
+        );
+    }
+
+    // --- Layer 1: the id-only resolver, exactly once ------------------------
+    let ids_call = ["lead", "_party_ids("].concat();
+    let n_ids = body.matches(ids_call.as_str()).count();
+    assert_eq!(
+        n_ids, 1,
+        "TEETH (12r-e E2): `enqueue_move`'s body calls `{ids_call}..)` {n_ids} \
+         time(s); it must call it EXACTLY once. RED at HEAD: 0 — the helper does \
+         not exist and the reducer calls `lead_party(` instead. Zero means the \
+         growth tail is still gated on the LEAD monster's level parsing; two would \
+         mean two independently resolved id lists in one reducer, so the escrow \
+         skip could be computed against a different list than the one credited."
+    );
+
+    // --- Layer 2: THE tooth — the level-parsing helper is not called here ---
+    let lead_party_call = ["lead", "_party("].concat();
+    let n_lead_party = body.matches(lead_party_call.as_str()).count();
+    assert_eq!(
+        n_lead_party, 0,
+        "TEETH (12r-e E2): `enqueue_move`'s body calls `{lead_party_call}..)` \
+         {n_lead_party} time(s); it must call it ZERO times. RED at HEAD: 1 \
+         (movement.rs:150). `lead_party` parses the LEAD's level and returns `None` \
+         for the WHOLE party if it will not — and `movement.rs:150` reads that \
+         `None` as `this player has no party`, so ONE out-of-range level byte on \
+         the lead silently freezes Quality Time and auto-evolution for EVERY \
+         monster in the party, on EVERY move, for as long as the row survives. \
+         This assertion is what stops the three re-pointed `lead_party_ids(` \
+         needles in this file from being hollowed out: they are all POSITIVE, so a \
+         body calling BOTH helpers would satisfy every one of them while the defect \
+         lived on. `movement_tick` (movement.rs:436) and `start_wild_battle` \
+         (battle.rs:497) keep calling `lead_party` — they genuinely need a `Level` \
+         — and neither is scanned here."
+    );
+
+    // --- Layer 3 (HARDENING): the reducer never handles a level at all -------
+    // Layer 2 bans the HELPER, not the BEHAVIOUR. A red-team reintroduced the
+    // whole-party disable at this call site and ran 501/501 green:
+    //
+    //     if let Some(party_ids) = lead_party_ids(ctx, ctx.sender) {
+    //         let Some(lead_row) = ctx.db.monster().monster_id().find(party_ids[0])
+    //             else { return Ok(()); };
+    //         if Level::new(lead_row.level).is_err() { return Ok(()); }
+    //
+    // `enqueue_move` buffers a movement intent and credits growth; it has no
+    // legitimate use for a monster level in any casing, so the case-folded
+    // substring is banned outright. GREEN at HEAD (the reducer mentions no level
+    // today) and green after the fix — a FENCE that only becomes load-bearing
+    // once this call site is edited, which is exactly when the PoC becomes
+    // available.
+    let level_any = ["lev", "el"].concat();
+    let n_level = body
+        .to_ascii_lowercase()
+        .matches(level_any.as_str())
+        .count();
+    assert_eq!(
+        n_level, 0,
+        "TEETH (12r-e E2, HARDENING / call-site fence): `enqueue_move`'s body names \
+         `{level_any}` {n_level} time(s) (case-folded); it must name it ZERO times. \
+         Swapping `lead_party(` for `lead_party_ids(` is worthless if the reducer \
+         then point-reads the lead row and re-derives the same gate itself — \
+         `if Level::new(lead_row.level).is_err() {{ return Ok(()); }}` disables the \
+         whole party's Quality Time and auto-evolution exactly as before, and a \
+         red-team confirmed it passes every other layer of this test. This reducer \
+         buffers a movement intent and credits growth over an id list; a monster \
+         LEVEL has no business appearing in it. HONEST LIMIT: a predicate helper \
+         named without the substring `level` would evade this — that is the \
+         ceiling of a source scan, and it is a conspicuous, reviewable thing to \
+         write."
+    );
+
+    // --- Layer 4 (battle.rs): lead_party DELEGATES; ONE party query ---------
+    let battle = squashed_battle_for_e2();
+    let decl = ["fnlead", "_party("].concat();
+    let n_decl = battle.matches(decl.as_str()).count();
+    let decl_ids = ["fnlead", "_party_ids("].concat();
+    assert_eq!(
+        n_decl, 1,
+        "SCAN PRECONDITION (12r-e E2): `{decl}` must appear EXACTLY ONCE in the \
+         squashed `battle.rs`; found {n_decl}. (Note `{decl_ids}` does NOT match \
+         this needle — the byte after `_party` differs, which is what keeps the two \
+         declarations distinguishable by a plain substring search.) Without exactly \
+         one declaration the brace-matched body below is not the function this test \
+         means."
+    );
+    let lead_party_body = brace_body(&battle, decl.as_str());
+
+    let n_body_ids = lead_party_body.matches(ids_call.as_str()).count();
+    assert_eq!(
+        n_body_ids, 1,
+        "TEETH (12r-e E2, DIRECTION): `lead_party`'s own body in battle.rs calls \
+         `{ids_call}..)` {n_body_ids} time(s); it must call it EXACTLY once. \
+         `lead_party_ids` is the BASE and `lead_party` is the layer on top: it \
+         delegates for the ids, then point-reads `ids[0]` for the level. Zero means \
+         the split produced two independent party resolvers that can drift on slot \
+         ordering or on the `party_slot != PARTY_SLOT_NONE` filter — and \
+         `ids[0] == the lead` is precisely the invariant `lead_party` depends on."
+    );
+
+    let owner_index = ["owner", "_identity()"].concat();
+    let n_owner_index = lead_party_body.matches(owner_index.as_str()).count();
+    assert_eq!(
+        n_owner_index, 0,
+        "TEETH (12r-e E2, NO DUPLICATE QUERY): `lead_party`'s own body still reads \
+         the `{owner_index}` owner index {n_owner_index} time(s); after the split it \
+         must read it ZERO times. RED at HEAD: 1 (battle.rs:287). The owner-index \
+         party query must have ONE definition, and that definition is \
+         `lead_party_ids`; `lead_party` delegates to it and then point-reads the \
+         lead row by `monster_id`. Two copies of the query is how the two helpers \
+         come to disagree about who is in the party — which would make \
+         `lead_party`'s level and `enqueue_move`'s credited id list describe \
+         different monsters."
     );
 }

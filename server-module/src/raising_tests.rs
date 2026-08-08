@@ -1688,16 +1688,88 @@ fn min_write_gap_boundary_exactly_credits() {
     );
 }
 
-/// EG2-8: once the day window is full, further gaps credit nothing (but still
-/// re-anchor).
+/// EG2-8 / **12r-e E3** — once the day window is full, a further gap credits
+/// nothing AND writes nothing: `apply_quality_time_credit` must return `false`
+/// with the row completely untouched.
 ///
-/// Defense in depth per ADR-0175 D1: one marathon session must not walk the whole
-/// tier ladder.
+/// THE DEFECT THIS NOW GATES (`raising.rs:524-527`). The capped branch re-anchors
+/// and returns `true`, so `accrue_quality_time` (`:563-583`) performs an
+/// unconditional private-row update whose ONLY change is an invisible clock
+/// anchor — no tick, no window, no accum, nothing a player or a gate can
+/// observe. On `movement.rs:181` — the hottest reducer in the game, roughly one
+/// call per tile-step per party monster — that is a wasted row write every ~5 s
+/// per party monster for the whole remainder of the UTC day, for every capped
+/// monster. THE FIX: `return false` in that branch, and do NOT re-anchor.
 ///
-/// kills: an impl with no daily cap (the 60 s gap would credit another tick); an
-///        impl that returns false / keeps the old anchor when capped — the stale
-///        anchor makes the next call look IDLE, so the first post-midnight gap
-///        would be dropped instead of credited.
+/// (The private-row update is deliberately NOT spelled out here or in the
+/// assertion messages below. `evals/monster-dual-write.eval.mjs` concatenates
+/// every `.rs` file under `server-module/src` — `*_tests.rs` INCLUDED — splits it
+/// into column-0 `fn` spans and requires any span containing that marker to also
+/// contain the `monster_pub` mirror. It strips `//` comments but NOT string
+/// literals, so writing the marker contiguously inside an assertion message put
+/// it inside this test's span and turned the eval red. See the assembled-at-
+/// runtime marker in the body below.)
+///
+/// THIS TEST WAS REWRITTEN IN 12r-e AND ITS OLD ASSERTIONS SAID THE OPPOSITE.
+/// Recorded honestly, because rewriting a teeth test is the highest-scrutiny move
+/// in a slice:
+///
+///   * `assert!(wrote, ..)` became `assert!(!wrote, ..)`;
+///   * `assert_eq!(qt_state(&m), (now, cap, 0, 120), ..)` became
+///     `(QT_ANCHOR, cap, 0, 120)` — the anchor must NOT move.
+///
+/// CORRECTED IN THE HARDENING ROUND — an earlier draft of this note called the
+/// rewrite "strictly stronger". It is NOT, and the distinction matters. The
+/// no-credit content (`cap, 0, 120`) is IDENTICAL before and after; only the
+/// anchor element and the boolean changed, and `!wrote` versus `wrote` is a
+/// DIRECTIONAL INVERSION, not a strengthening. It is justified by a SPEC
+/// DECISION (E3: a capped call must cost no row write), not by logic. What IS a
+/// strengthening is the pairing: the property the old anchor assertion protected
+/// — that a capped-and-active row's anchor tracks the clock — is re-pinned, and
+/// pinned TIGHTER, by [`capped_and_active_still_reanchors_at_the_idle_bound`],
+/// which brackets that guarantee at exactly `QT_IDLE_GAP_MS` from both sides
+/// instead of buying it with an unconditional hot-path write.
+///
+/// THE OLD `kills:` RATIONALE, AND WHY IT DOES NOT BLOCK THE FIX. It read: an
+/// impl that keeps the old anchor when capped leaves a stale anchor that "makes
+/// the next call look IDLE, so the first post-midnight gap would be dropped
+/// instead of credited". That is NOT refuted — it is BOUNDED, and the bound is
+/// what makes the trade sound:
+///
+///   1. MUTUAL EXCLUSION (independently re-verified in the hardening round over
+///      ~500M call evaluations, never once violated). `creditable ==
+///      gap.min(headroom)` and `gap >= QT_MIN_WRITE_GAP_MS = 5_000 > 0` at this
+///      point, so `creditable == 0` iff `headroom == 0` iff `window_ms >= CAP`.
+///      The day-rollover branch (`raising.rs:513-515`) sets `window_ms = 0`, which
+///      forces `headroom == CAP` and therefore `creditable > 0`. The two branches
+///      can NEVER both be taken on one call, so `return false` here drops exactly
+///      ONE mutation — the re-anchor — and can never suppress a day reset.
+///   2. THE RESIDUAL IS BOUNDED AT <= 4 QT TICKS, IN EITHER DIRECTION, PER UTC
+///      ROLLOVER. CORRECTED IN THE HARDENING ROUND: an earlier draft said <= 2,
+///      from a 20 000-trial randomised simulation. An independent Python port
+///      searching ~500M call evaluations found divergence up to +/-4. Minimised
+///      witness: 44 calls across one UTC rollover with `anchor = 83_466_084`,
+///      `accum = 34_456`, `window = QT_DAILY_CAP_MS` — old behaviour credits 0
+///      ticks, new credits 3. Four ticks, both directions, per rollover, against
+///      an unconditional hot-path row write per party monster per ~5 s for the
+///      rest of every capped day. The trade still stands; the NUMBER has to be
+///      reproducible, and 2 was not.
+///   3. THE SURVIVING ROLLOVER PATH IS INDEPENDENTLY TESTED.
+///      [`daily_cap_resets_on_next_utc_day`] (below) exercises a real
+///      day-straddling credit and is UNCHANGED by this slice, as is
+///      [`daily_cap_resets_after_an_idle_overnight_gap`], which owns the common
+///      "capped, gone overnight, back the next day" shape.
+///
+/// Anchor staleness is separately bounded by the idle branch — see
+/// [`capped_and_active_still_reanchors_at_the_idle_bound`], which brackets that
+/// bound exactly.
+///
+/// kills: (a) an impl with no daily cap at all (the 60 s gap would credit another
+///        tick); (b) the SHIPPED capped branch, which re-anchors and returns
+///        `true` — a pure hot-path row write with no observable effect; (c) a
+///        half fix that returns `false` but still re-anchors (the caller skips the
+///        write, so the in-memory re-anchor is silently discarded and the two
+///        disagree about the row's state — the anchor assertion catches it).
 #[test]
 fn daily_cap_stops_credit() {
     // RETUNE: the only pin of QT_DAILY_CAP_MS's value.
@@ -1709,20 +1781,152 @@ fn daily_cap_stops_credit() {
         .expect("QT_DAILY_CAP_MS must fit the u32 quality_time_window_ms column");
 
     let now = QT_ANCHOR + 60_000; // same UTC day as the anchor.
+    assert_eq!(
+        QT_ANCHOR / EG2_DAY_MS,
+        now / EG2_DAY_MS,
+        "fixture sanity (12r-e E3): the call must stay INSIDE the anchor's UTC day \
+         — a rollover would reset the window and make `creditable` positive, so \
+         this fixture would never reach the capped branch at all"
+    );
+    assert!(
+        now - QT_ANCHOR <= QT_IDLE_GAP_MS,
+        "fixture sanity (12r-e E3): the gap must stay within the idle bound, or the \
+         idle branch would return before the capped branch is ever evaluated"
+    );
+
     let mut m = qt_monster(QT_ANCHOR, cap, 0, 120);
     let wrote = apply_quality_time_credit(&mut m, now);
 
+    // EVAL LANDMINE (12r-e hardening round). `evals/monster-dual-write.eval.mjs`
+    // concatenates every `.rs` file under `server-module/src` — `*_tests.rs`
+    // INCLUDED — splits the text into column-0 `fn` spans, and requires every
+    // span containing the private-row update marker to also contain the
+    // `monster_pub` mirror. It strips `//` comments (:148,:159) but does NOT
+    // blank string literals, so spelling that marker contiguously inside the
+    // assertion message below landed it in THIS test's span, which has no mirror
+    // — and the eval went red on a pure documentation string. Assembling it at
+    // runtime keeps the failure message exact while the file text never contains
+    // it. Same landmine family as the `/*` and char-literal-double-quote bans in
+    // this crate, one level out: a needle written as DOCUMENTATION can trip a
+    // DIFFERENT gate that scans the same file.
+    let row_write_marker = ["ctx.db.monster().monster_id()", ".update(m)"].concat();
+
     assert!(
-        wrote,
-        "a capped call must still persist the fresh anchor (true) — otherwise \
-         the next call reads a stale anchor and mis-classifies live play as idle"
+        !wrote,
+        "TEETH (12r-e E3): a call whose creditable amount is 0 (day window already \
+         at QT_DAILY_CAP_MS) must return FALSE so `accrue_quality_time` performs NO \
+         DB write. RED at HEAD: it returns true, and the ctx shell then runs an \
+         unconditional `{row_write_marker}` that changes only the invisible clock \
+         anchor — on `movement.rs:181`, the hottest reducer in the game, that is \
+         one wasted row write per party monster per ~5 s for the rest of the UTC \
+         day. The re-anchor it persists buys at most 4 QT ticks in either \
+         direction across a single UTC rollover (measured over ~500M call \
+         evaluations; an earlier estimate of 2 was wrong), and the day-reset branch \
+         is mutually exclusive with this one, so nothing else is lost — see this \
+         test's doc block for the proof and the minimised witness."
     );
     assert_eq!(
         qt_state(&m),
-        (now, cap, 0, 120),
-        "TEETH (EG2-8, ADR-0175 D1): with the day window already at \
-         QT_DAILY_CAP_MS the creditable amount is 0 — anchor moves, ticks and \
-         accum do not."
+        (QT_ANCHOR, cap, 0, 120),
+        "TEETH (12r-e E3): the capped call must mutate NOTHING — the ANCHOR \
+         ESPECIALLY must stay at its old value. Returning `false` while still \
+         re-anchoring in place is the worst of both worlds: the caller skips the \
+         write, so the mutation is discarded anyway, and the next reader of this \
+         `&mut Monster` sees an anchor the database never received. RED at HEAD, \
+         which reads (QT_ANCHOR + 60_000, cap, 0, 120). (EG2-8 still holds too: \
+         with the window at QT_DAILY_CAP_MS, ticks and accum must not move — one \
+         marathon session must not walk the whole tier ladder.)"
+    );
+}
+
+/// **12r-e E3 (the bound)** — a capped monster's anchor staleness is bounded by
+/// the IDLE branch, and the bound is EXACTLY `QT_IDLE_GAP_MS`.
+///
+/// This is what replaces the property [`daily_cap_stops_credit`]'s old
+/// `assert!(wrote)` was reaching for. That assertion tried to guarantee "a capped
+/// row's anchor never goes stale"; it bought that with an unconditional hot-path
+/// row write. The real guarantee — the one that costs nothing — is that staleness
+/// is CAPPED: once the gap exceeds `QT_IDLE_GAP_MS` the idle branch
+/// (`raising.rs:516-519`) re-anchors and returns `true`, entirely independently of
+/// the daily cap. So a capped monster's anchor can never lag `now` by more than
+/// `QT_IDLE_GAP_MS` while the player is still playing.
+///
+/// The test BRACKETS the bound with two calls on identical fresh capped rows, so
+/// it pins the comparator's strictness rather than merely observing a re-anchor:
+///
+/// - `gap == QT_IDLE_GAP_MS` — NOT idle (the rule is strict `>`), so it falls
+///   through to the capped branch: `false`, nothing moves at all, staleness
+///   still growing.
+/// - `gap == QT_IDLE_GAP_MS + 1` — idle: `true`, the anchor moves to `now`, and
+///   still no credit, because idle time never credits.
+///
+/// kills: (a) a fix that also swallows the IDLE branch's re-anchor for capped
+///        rows — the anchor would then never advance while capped, staleness
+///        would be unbounded, and after midnight the row would look idle forever;
+///        (b) an idle comparator written `>=`, which would make the bound
+///        `QT_IDLE_GAP_MS - 1` and is invisible to the second half alone;
+///        (c) an idle branch that credits (the window/accum/ticks equality).
+///
+/// RED at HEAD on the FIRST half only (HEAD returns `true` and re-anchors at
+/// exactly the bound); the second half is GREEN at HEAD and stays green — it is
+/// the fence that stops the fix from over-reaching.
+#[test]
+fn capped_and_active_still_reanchors_at_the_idle_bound() {
+    let cap = u32::try_from(QT_DAILY_CAP_MS)
+        .expect("QT_DAILY_CAP_MS must fit the u32 quality_time_window_ms column");
+
+    let at_bound = QT_ANCHOR + QT_IDLE_GAP_MS;
+    let past_bound = QT_ANCHOR + QT_IDLE_GAP_MS + 1;
+    assert_eq!(
+        QT_ANCHOR / EG2_DAY_MS,
+        past_bound / EG2_DAY_MS,
+        "fixture sanity (12r-e E3): both calls must stay inside the anchor's UTC \
+         day — a rollover would zero the window and neither call would be capped"
+    );
+
+    // --- Exactly AT the bound: not idle, capped ⇒ no write, nothing moves ----
+    let mut at = qt_monster(QT_ANCHOR, cap, 0, 120);
+    let wrote_at = apply_quality_time_credit(&mut at, at_bound);
+    assert!(
+        !wrote_at,
+        "TEETH (12r-e E3, lower bracket): a gap of EXACTLY QT_IDLE_GAP_MS is NOT \
+         idle (the rule is strict `gap > QT_IDLE_GAP_MS`), so a capped row falls \
+         through to the daily-cap branch and must return FALSE — no DB write. RED \
+         at HEAD: it returns true after re-anchoring. This half is what makes the \
+         bound TIGHT: without it, `capped rows re-anchor` would be satisfied by an \
+         impl that re-anchors everywhere and the second half would prove nothing \
+         about the boundary."
+    );
+    assert_eq!(
+        qt_state(&at),
+        (QT_ANCHOR, cap, 0, 120),
+        "TEETH (12r-e E3, lower bracket): at exactly the idle bound a capped row \
+         must be untouched — anchor included. RED at HEAD, which reads \
+         (QT_ANCHOR + QT_IDLE_GAP_MS, cap, 0, 120)."
+    );
+
+    // --- One ms PAST the bound: idle ⇒ re-anchor, still no credit ------------
+    let mut past = qt_monster(QT_ANCHOR, cap, 0, 120);
+    let wrote_past = apply_quality_time_credit(&mut past, past_bound);
+    assert!(
+        wrote_past,
+        "TEETH (12r-e E3, upper bracket / FENCE): one ms PAST QT_IDLE_GAP_MS the \
+         idle branch must still fire for a CAPPED row and persist the re-anchor \
+         (true). This is the fence on the 12r-e fix: the daily-cap branch returning \
+         `false` must not be generalised into `capped rows never write`. If the \
+         idle re-anchor were also suppressed, a capped row's anchor would never \
+         advance — staleness would be unbounded instead of bounded by \
+         QT_IDLE_GAP_MS, and after the next midnight every call would still \
+         classify as idle, so the monster would never credit again."
+    );
+    assert_eq!(
+        qt_state(&past),
+        (past_bound, cap, 0, 120),
+        "TEETH (12r-e E3, upper bracket): the idle re-anchor moves the anchor to \
+         `now` and changes NOTHING else — idle time never credits, and a capped \
+         window must not be reset by the idle branch either (only a UTC-day \
+         rollover resets it). Together with the lower bracket this pins the bound \
+         on anchor staleness at EXACTLY QT_IDLE_GAP_MS."
     );
 }
 
@@ -2679,6 +2883,152 @@ fn accrue_quality_time_body_never_fabricates_tier() {
          a tier to 0 publishes a projection the private row does not support, and \
          is exactly the fabrication ADR-0174 forbids at every other write site in \
          this file."
+    );
+}
+
+/// Byte range `[inner_start, close)` of the brace-matched `{ .. }` block that
+/// OPENS at or after `from` in a COLLAPSED body (no comments, no string literals,
+/// no whitespace — so every `{` is a real block opener).
+///
+/// Mirrors `battle_tests.rs::block_after`. Scoping an assertion to the guard's OWN
+/// block, rather than to "somewhere after the needle", is the difference between
+/// proving the early return belongs to this `if` and proving only that a `return
+/// false` exists somewhere in the function (there are two others, at
+/// `raising.rs:566` and `:570`).
+fn e3_block_after(src: &str, from: usize) -> Option<(usize, usize)> {
+    let bytes = src.as_bytes();
+    let open = from + src[from..].find('{')?;
+    let mut depth: usize = 0;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some((open + 1, i));
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    None
+}
+
+/// **12r-e E3 (the structural bridge)** — `accrue_quality_time` must RETURN on a
+/// `false` from the pure seam, BEFORE it reaches the `monster` row write.
+///
+/// WHY THIS TEST EXISTS AND WHAT IT IS NOT. E3's observable claim is "no DB row
+/// write when the daily cap is exhausted". The behavioural half of that lives in
+/// [`daily_cap_stops_credit`], which proves the pure seam returns `false` — but
+/// the seam takes a `&mut Monster`, not a `ReducerContext`, so it cannot see a
+/// row write at all. And the ctx shell CANNOT be executed here: this crate has no
+/// reducer-executing harness (recorded at `raising_tests.rs:1261-1264`,
+/// `evolution_tests.rs:20`, `battle_tests.rs:1353`, `content_tests.rs:144`). This
+/// scan is therefore the ONLY available bridge from "the seam says false" to "no
+/// row is written", and it is a STRUCTURAL proof, not a behavioural one. Labelled
+/// as such deliberately: it reads source text and asserts an ordering in that
+/// text. It does not execute one line of `accrue_quality_time`.
+///
+/// Three layers:
+///   1. the guard exists in its NEGATED `if !` form — a bare
+///      `apply_quality_time_credit(&mut m, ..)` whose result is discarded would
+///      satisfy a presence-only needle while writing the row unconditionally;
+///   2. the guard's OWN brace-matched block contains `return false` — not "a
+///      `return false` appears later in the body", which is trivially true (the
+///      two missing-row guards at `raising.rs:566` and `:570` each contain one);
+///   3. that block CLOSES before the `monster` row write begins (byte-offset
+///      ordering on the collapsed body), which is what makes it an early return
+///      rather than a branch the write can still be reached from.
+///
+/// GREEN AT HEAD, and green after the fix — this is a FENCE, not a RED gate. The
+/// shell already has the shape; what changes in 12r-e is the pure seam's return
+/// value in the capped branch, which turns this existing early return into a live
+/// path instead of a dead one. Recorded honestly rather than dressed up as a
+/// failing test: the RED half of E3 is [`daily_cap_stops_credit`] and
+/// [`capped_and_active_still_reanchors_at_the_idle_bound`].
+///
+/// kills: a future refactor that hoists the row write above the guard, or that
+/// converts the early return into `if !credit { .. } else { .. }` with the write
+/// duplicated in both arms — either would restore the wasted per-tile-step write
+/// this slice removes, and neither is visible to any behavioural test in the
+/// crate.
+///
+/// HONEST LIMITS. (a) Structural, per the above — no execution, no row observed.
+/// (b) It pins ONE spelling of the guard (`if !<seam>(`); an equivalent
+/// `match`/`let ... else` rewrite would false-RED and must be accompanied by a
+/// deliberate update to this test, from the spec. (c) It says nothing about the
+/// `monster_pub` write, which is separately gated by
+/// [`accrue_quality_time_body_never_fabricates_tier`].
+#[test]
+fn accrue_quality_time_returns_before_the_row_write_when_the_seam_declines() {
+    let body = eg2_scan_body(&accrue_decl());
+
+    // --- Layer 1: the negated guard on the seam's return value --------------
+    let guard = ["if!apply_quality", "_time_credit("].concat();
+    let guard_at = body.find(guard.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH (12r-e E3): `accrue_quality_time`'s body does not contain \
+             `{guard}..)` (whitespace-collapsed; comments and string literals are \
+             blanked first). The shell MUST branch on the pure seam's return value \
+             and return early when it is `false` — that boolean is the entire \
+             mechanism by which the 12r-e fix avoids a row write. Calling the seam \
+             and discarding its result writes the row unconditionally, which is the \
+             wasted write per party monster per ~5 s that E3 removes. Body scanned \
+             was:\n{body}"
+        )
+    });
+
+    // --- Layer 2: the guard's OWN block returns false -----------------------
+    let (blk_start, blk_end) = e3_block_after(&body, guard_at).unwrap_or_else(|| {
+        panic!(
+            "TEETH (12r-e E3): the `{guard}..)` guard in `accrue_quality_time` has \
+             no brace-matched block after it. Write it as \
+             `if !apply_quality_time_credit(&mut m, now_ms(ctx)) {{ return false; }}`."
+        )
+    });
+    let block = &body[blk_start..blk_end];
+    let early_return = ["return", "false"].concat();
+    assert!(
+        block.contains(early_return.as_str()),
+        "TEETH (12r-e E3): the seam-declined guard's own block (collapsed bytes \
+         {blk_start}..{blk_end} of `accrue_quality_time`) contains no \
+         `return false`. Scoping this to the GUARD'S BLOCK is load-bearing: the \
+         body already holds two other `return false`s (the missing-`monster` and \
+         missing-`monster_pub` guards at raising.rs:566 and :570), so a check for \
+         `return false` anywhere in the function would pass even if this guard's \
+         block were empty and execution fell straight through to the row write. \
+         Block scanned was:\n{block}"
+    );
+
+    // --- Layer 3: the guard closes BEFORE the monster row write -------------
+    let row_write = ["monster().monster_id()", ".update("].concat();
+    let n_write = body.matches(row_write.as_str()).count();
+    assert_eq!(
+        n_write, 1,
+        "SCAN PRECONDITION (12r-e E3): `accrue_quality_time` must perform the \
+         private `{row_write}..)` row write EXACTLY once; found {n_write}. Zero \
+         means the write this test orders the guard against is gone (the ordering \
+         claim would be vacuous); two means a second write exists that the guard \
+         may not dominate. (`monster_pub().monster_id().update(` does NOT match \
+         this needle — the accessor before `.monster_id()` differs.)"
+    );
+    let write_at = body
+        .find(row_write.as_str())
+        .expect("asserted present above");
+    assert!(
+        blk_end < write_at,
+        "TEETH (12r-e E3): the seam-declined guard's block ends at collapsed byte \
+         {blk_end}, but the `monster` row write is at {write_at} — the write is NOT \
+         strictly after the early return, so the declined path can still reach it. \
+         `apply_quality_time_credit` returning `false` MUST mean the caller performs \
+         no DB write at all; on `movement.rs:181`, the hottest reducer in the game, \
+         a write that survives the guard is one wasted row update per party monster \
+         per ~5 s for the rest of the UTC day, changing only an invisible clock \
+         anchor. HONEST LIMIT: this is a textual ordering in the source, not an \
+         executed control-flow proof — no `ReducerContext` harness exists in this \
+         crate."
     );
 }
 
