@@ -236,10 +236,22 @@ pub fn mr_heartbeat(ctx: &ReducerContext) -> Result<(), String> {
 Correlation is `ctx.connection_id` — session-scoped, already present on `ReducerContext`, no shared mutable
 counter table (which would itself be a write-contention hazard on a hot path). A scheduled reducer's
 `connection_id` is always `None`; those lines correlate by `(function, ts)` plus a natural key already in
-the payload (e.g. `zone_id`) instead. A CI lint/eval bans bare `log::info!/warn!/error!` calls anywhere in
-`server-module/src` outside `guards.rs` (which owns `log_reject`) and `observability.rs` (which owns
-`mr_log`) — two blessed low-level emission points, not a blanket rewrite of already-tested, working reject-
-path code.
+the payload (e.g. `zone_id`) instead.
+
+**The bare-`log::` ban is a ratchet against the current tree, not a blanket ban that fails on landing —
+corrected in this finalization pass.** A grep against the actual repo at ADR-amendment time found **56**
+pre-existing `log::info!/warn!/error!` call sites across **10** domain files outside `guards.rs`/
+`observability.rs` (`movement.rs`, `content.rs`, `lib.rs`, `trading.rs`, `pvp.rs`, `evolution.rs`, `taming.rs`,
+`raising.rs`, `battle.rs`, `npc.rs`) — hand-rolled JSON, non-reject structured events, functionally the same
+thing `mr_log` exists to formalize, already shipped and passing. As literally worded, a same-day blanket ban
+would fail CI against already-merged code the moment it lands, with no task anywhere in this milestone
+budgeted to migrate ten files' worth of call sites. The gate is corrected to be a **ratchet**: a committed
+baseline file (`server-module/src/.log-baseline` or equivalent — exact name/format decided at build time),
+enumerated once at build time by scanning the pre-existing tree, lists every pre-existing bare-`log::` call
+site; the CI lint/eval fails on any bare `log::info!/warn!/error!` call **not** in that baseline (i.e. any new
+one, in a new or existing file) and passes on baseline entries unchanged. Migrating the baseline's existing 56
+call sites to `mr_log` is explicitly **out of this milestone's scope** — a named follow-up (a future
+tech-debt slice), not a silently absorbed gap and not something this retrofit quietly declines to mention.
 
 **D7 — Perf-budget gate is a `criterion` dev-dependency scoped to `game-core` only.** Zero coupling to
 `spacetimedb`/wasm crates — the existing feature-isolation invariant (M0) stays intact with no exemption
@@ -320,7 +332,7 @@ proof-of-teeth discipline):
 
 | ID | Gate | Enforces |
 |---|---|---|
-| G1 | `evals/observability-log-wrapper.eval.mjs` | No bare `log::info!/warn!/error!` call anywhere in `server-module/src/*.rs` except inside `guards.rs` (owns `log_reject`) and `observability.rs` (owns `mr_log`); excludes `_tests.rs` files |
+| G1 | `evals/observability-log-wrapper.eval.mjs` | No bare `log::info!/warn!/error!` call anywhere in `server-module/src/*.rs` except inside `guards.rs` (owns `log_reject`), `observability.rs` (owns `mr_log`), or an entry in the committed pre-existing-call-site baseline (see D6's corrected ratchet framing — 56 sites across 10 files, grandfathered, not exempted forever); excludes `_tests.rs` files |
 | G2 | perf-budget CI step (`just ci`) + committed budget file(s) | A `game-core` `criterion` benchmark regressing beyond its committed budget fails CI; seeded-regression fixture proves it bites |
 | G3 | `evals/observability-metrics-contract.eval.mjs` — family/label assertion | Publishes a scratch module, scrapes `/v1/metrics`, asserts ≥80 families and the required label keys (`reducer`, `committed`, `txn_type`, `table_name`, `le`) are present |
 | G4 | same file — cross-file attribution assertion | `spacetime logs --format json` emits a line whose `function` equals the invoking reducer's name even when the log call originates in a different file's helper (reproduces the `guards.rs:55` case) |
@@ -373,3 +385,394 @@ proof-of-teeth discipline):
   regeneration is required after this ADR lands (mirrors ADR-0179's own equivalent task). The subsystem-tag
   gap (Amendments, above) should be resolved the next time `scripts/adr-digest.mjs`'s vocabulary is touched
   for any other reason, rather than as a dedicated slice on its own.
+
+  > **Correction, 2026-08-08 (see the dated amendment below, D18a):** the "S3 escape hatch's RLS requirement"
+  > line immediately above is now known to be wrong on the pinned toolchain and is superseded — **not just
+  > the RLS half.** RLS is gated behind the `unstable` Cargo feature and documented by the crate itself as
+  > unimplemented/unenforced; upstream recommends Views instead. D18a's corrected default also replaces the
+  > *transport* this Follow-up implicitly assumed (`POST /v1/database/<id>/sql`) with a subscribed
+  > `#[view]`-based read (the `my_wallet`/`my_conversation` pattern) — D18a's own wording is "not RLS+SQL,"
+  > rejecting both together, not narrowing to RLS alone. This paragraph is left unedited above, per this
+  > amendment's append-only write scope; the amendment section below is the authoritative correction.
+
+## Amendment — 2026-08-08 (server-side tracing reconsidered via scheduled Procedures; stack choice re-litigated at 96GB RAM)
+
+**Status of this amendment:** Accepted, same day as the ADR above. Appended, not merged into the sections
+above — D1–D12 above stand except where a decision below (D14–D18) explicitly amends one.
+
+### Trigger
+
+Per Drew's direct instruction, this ADR's tool-stack and server-tracing calls were re-litigated with two
+facts that did not exist at the original heavy-ceremony pass:
+
+- **(A) 96GB RAM.** Drew's desktop has 96GB RAM, so the ClickHouse-backed-footprint objection that would
+  have ruled out an OTel-native all-in-one (SigNoz / Uptrace / HyperDX-ClickStack / OpenObserve) no longer
+  applies. Resource cost is not the deciding factor for this reconsideration — single-developer
+  debugging/workflow ergonomics is. **(Framing note, added this finalization pass: V10 below finds this
+  objection was never actually evaluated or written down anywhere in this project's prior record — read this
+  trigger as removing a hypothetical/assumed blocker to reconsidering, not a previously-recorded one; see
+  D17/D18c for the honest accounting once that's established.)**
+- **(B) Beta-API pre-clearance, conditional.** Drew is explicitly willing to adopt a BETA SpacetimeDB API —
+  scheduled Procedures with outbound HTTP, gated behind the `unstable` Cargo feature — now, and to accept the
+  risk of fixing it later if the API shifts, **conditional on it producing a meaningfully better design**,
+  not merely because it is technically possible.
+
+Several subagents brainstormed, debated, and adversarially reviewed competing designs against this widened
+decision space, explicitly instructed to: steelman positions they disagreed with; disclose the real
+downsides of their own proposals; decide on verified evidence rather than rhetorical confidence; guard
+against both status-quo bias (keep D1–D12 unchanged just because they already shipped) and novelty bias
+(adopt the beta API just because it is now pre-cleared and more sophisticated); and flag any sign that a
+prior pipeline stage's output was gaming an evaluation criterion rather than genuinely satisfying it.
+
+### Verdict
+
+**Keep the 7-container Grafana/Prometheus/Loki/Tempo backend (D3, unchanged) as the tool selection. Do not
+enable `features = ["unstable"]`. Do not build a scheduled Procedure, a private span table, or an RLS-gated
+SQL puller.** Build server-side causal traceability out of the log path this ADR already designed (D2/D6) —
+`mr_log` breadcrumbs carrying host-supplied timestamps and natural keys, reassembled into real OTLP spans
+**with real, not synthetic, per-call durations** — by a small stateless relay (`mr-trace-relay`) that tails
+the same read-only log mount Alloy already tails, plus the cross-signal correlation layer (trace-to-logs, a
+`connection_id` pivot) the stack was missing. This adds one small, functionally-separate 8th service
+alongside the unchanged 7-container backend — "STAY" is a statement about backend *tool selection*, not a
+claim that total footprint stays at 7. D1 survives fully intact, no new credential is introduced, no schema
+changes, no bindings drift, and the beta API is not touched for M20 v1.
+
+This is **not** the status-quo answer: it rejects both the original ADR's "server traces are out of scope"
+position and every proposed export mechanism that required the beta API or an RLS-gated pull path — the
+latter is not currently buildable on the pinned toolchain at all (V3/V8 below), a fact this ADR's own D2
+escape hatch got wrong.
+
+### Evidence verified this pass
+
+All findings below were checked directly against primary sources (crate source, live upstream repositories,
+upstream docs, or real on-disk data from this project) during this reconsideration pass, independent of any
+upstream synthesis draft.
+
+| # | Finding | Source |
+|---|---|---|
+| V1 | `spacetimedb = "1.12"` resolves to crate **1.12.0**, against host/CLI **2.6.0** — crate version and product version are intentionally decoupled. | `Cargo.toml`, `Cargo.lock`, `spacetime --version` |
+| V2 | Crate 1.12.0 already contains `procedure`, `ProcedureContext`, `ctx.http`, `HttpClient`, `Timeout` — all behind one Cargo feature, `unstable`. **Adopting Procedures is a one-line feature flag, not a major-version migration** — a cost objection some upstream input reportedly relied on is false for this repo. | `spacetimedb-1.12.0` crate source (`Cargo.toml`, `lib.rs`, `http.rs`) |
+| V3 | **Decisive.** `client_visibility_filter` (RLS) is gated behind that same `unstable` flag **and** carries the crate's own doc comment: RLS filters are "currently unimplemented, and are not enforced." | `spacetimedb-1.12.0/src/lib.rs` |
+| V4 | `#[spacetimedb::view]` is stable, un-gated, and already shipped twice in this repo (`my_wallet`, `my_conversation` — ADR-0087/0154), `ctx.sender`-scoped, subscribable. | `spacetimedb-1.12.0/src/lib.rs`; `server-module/src/schema.rs` |
+| V5 | **Decisive.** `Instant`/`SystemTime::now/elapsed` are clippy-banned workspace-wide, `-D warnings`, with a proof-of-teeth fixture. **The module structurally cannot time itself**, regardless of what timing APIs a future crate version exposes. | `clippy.toml`; `evals/determinism-fail-loud.eval.mjs` |
+| V6 | **Corrected post-review — an unresolved upstream contradiction, not a settled figure.** `spacetimedb-1.12.0/src/http.rs`'s own doc comment states a 500ms maximum timeout on all outbound HTTP. But upstream's mdbook reference docs (version 1.12.0, the same pin) say the opposite: a request with no explicit `Timeout` defaults to 30 seconds, and a user-specified timeout is clamped to a host maximum of 180 seconds — the docs' own worked "Calling an External AI API" example sets an explicit `timeout: TimeDuration.fromMillis(3000)` (3s, six times the rustdoc's claimed ceiling) with no caveat and no mention of a 500ms clamp. This is a genuine, current, internal contradiction in SpacetimeDB's own documentation about a load-bearing operational parameter — not a resolved fact this ADR can build a numeric gate threshold on. G10 below is revised to measure both regimes on the pinned host rather than assume either figure. | `spacetimedb-1.12.0/src/http.rs`; upstream `docs/docs/00200-core-concepts/00200-functions/00400-procedures.md` (mdbook, version 1.12.0) |
+| V7 | Real on-disk `module_logs` NDJSON lines carry a **host-populated, per-call, microsecond-precision `ts`** — the pinned crate's `Logger::log` passes no timestamp parameter to the host call at all, so the host, not the module, stamps it. Cross-checked against the log file's own date-named filename. | `~/.local/share/spacetime/data/replicas/*/module_logs/*.log` (real project data); `spacetimedb-1.12.0/src/logger.rs` |
+| V8 | Official upstream docs (version 1.12.0, matching the pin) call RLS "an experimental, unstable feature. The API may change or be removed in future releases" and instruct: "For access control, use Views instead." | `clockworklabs/SpacetimeDB` docs, version-1.12.0, row-level-security page |
+| V9 | Official upstream docs (version 1.12.0) state Procedures "are currently in beta, and their API may change in upcoming SpacetimeDB releases," and advise "prefer defining reducers rather than procedures unless you need" one. | `clockworklabs/SpacetimeDB` docs, version-1.12.0, procedures page |
+| V10 | ADR-0180 and the M20 spec contain **zero mentions** of SigNoz, ClickHouse, Uptrace, HyperDX, or OpenObserve anywhere. **The ClickHouse-family tools were never evaluated, let alone rejected on RAM/footprint** — 96GB removes an objection that was never actually written down. | Full-text search, both documents |
+| V11 | **Correction to an upstream synthesis draft's claim, not to this ADR.** A pipeline stage asserted Uptrace's license is BSL, "not AGPLv3." Checked directly against the live `uptrace/uptrace` repository: it is **AGPL-3.0** — confirmed by both GitHub's own SPDX license detector and the raw `LICENSE` file's literal text. The draft's "correction" was itself wrong; this does not change any decision here (the SigNoz/Uptrace/HyperDX/OpenObserve deferral below never rested on licensing), but the record should not carry a wrong "correction" uncorrected. | `uptrace/uptrace` GitHub repository (license API + raw `LICENSE` file) |
+| V12 | The pinned playtest-report script (`scripts/playtest-report.mjs`, ADR-0131) reads its private table via the developer's own logged-in CLI identity, invoked outside `just ci` — precedent for `mr-trace-relay` mirroring the same toolchain and non-CI posture, not a new pattern. | `scripts/playtest-report.mjs`; `justfile` |
+
+### Decision
+
+**D14 — D1 stands, unamended; Procedures and `features = ["unstable"]` are explicitly considered and
+rejected for M20 v1.** The module still never times itself and never initiates an outbound call. This is
+forced, not a preference: V5 makes it a hard CI failure regardless of what APIs exist, so no dependency-shape
+change could make the module time itself even if it wanted to. V2 shows adopting Procedures is a one-Cargo-
+line change, not a migration — the cost objection several upstream inputs reportedly leaned on is retracted
+as false for this repo. Procedures are rejected anyway, but on a **necessity** argument, not a **fear**
+argument: D15 below delivers real causal server-side tracing, including real per-call durations, with no new
+outbound-HTTP surface and no new in-module timing mechanism at all — so there is nothing left for the beta
+API to buy that D15 doesn't already supply. V9's upstream guidance ("prefer reducers... unless you need" a
+procedure) reinforces this from the vendor's own side, independent of this project's reasoning. The
+falsifier that would overturn this is recorded below, not asserted away.
+
+**D15 — Server-side causal spans, with real durations, are reconstructed from the log stream — no procedure,
+no new table, no new credential.** `observability.rs`'s `mr_log` envelope (D6) gains three optional, bounded
+fields: `cause` (the call's natural key — `zone_id`/`battle_id`/`trade_id`, already present in the payload),
+`sched` (`{target_reducer, scheduled_at}`, logged when a reducer enqueues scheduled work), and `phase`
+(`enter` | `exit` | `event`). No synthesized ids, no counter table, no reducer-signature changes, no
+`schema.rs` change.
+
+For **causally-interesting calls only** — reducers that enqueue or are triggered by scheduled work, and
+cross-reducer chains (the motivating case: a scheduled reducer triggering another reducer, multiple players'
+actions interleaving in one zone tick) — `mr_log` is called twice: once at entry (`phase:"enter"`), once at
+exit (`phase:"exit"`, on every return path including error paths), sharing the same `cause`/`sched` key. This
+is deliberately **not** blanket instrumentation of every reducer, which would double S2 log volume
+project-wide for marginal benefit and work against D12's log-hygiene discipline.
+
+**Scoping is a named, enumerated allowlist, not a qualitative rule left to build-time judgment — corrected in
+this finalization pass.** `$trace_pair_set` (mirroring D8/OBS-22's `$slo_set` pattern) is the concrete list of
+reducers instrumented with enter/exit pairing; membership is decided and committed at build time, not inferred
+from this prose. **`$trace_pair_set` explicitly EXCLUDES `movement_tick` and any other reducer already gated
+by a per-call SLO (OBS-24's `STEP_MS` budget) or a `criterion` benchmark (D7)** — those reducers' durations are
+already measured, for free, host-side, by S1's per-reducer RED histogram with zero module-side cost; doubling
+their `mr_log` emission would risk adding exactly the kind of reducer-side latency this whole redesign exists
+to avoid, on exactly the hot path least able to absorb it. Breadcrumb pairing targets the reducers *around*
+those hot ticks — the ones a hot tick enqueues or is triggered by, and cross-reducer chains generally — not
+the tick itself. If a future need genuinely requires pairing a `$slo_set`/criterion-gated reducer, that
+addition is a deliberate, reviewed exception, not a default, and is gated by the pre-merge check below, not
+silently allowed in. This closes two gaps a later review found: (1) without a named list, it was unverifiable
+whether `movement_tick` — named as this feature's own motivating case — was actually in scope; (2) the
+project's only pre-merge performance gate (`criterion`, D7) is permanently walled off from `server-module` by
+design (never becomes a dependency), so nothing previously caught a `$trace_pair_set` addition eating into a
+`STEP_MS`-adjacent budget before merge. **Mitigation:** any reducer added to `$trace_pair_set` MUST be
+exercised by `mr-load-driver` (D9) with breadcrumbs active as part of m20e's post-integration verification,
+comparing its own relevant SLO/budget (if any) with and without pairing enabled, before that addition merges —
+see the new G11 gate below. This is disclosed as a real, previously-unmeasured cost, not assumed safe: two
+heap-allocating hand-rolled JSON string builds (`format!`/`json_escape`) per paired invocation, inline in the
+reducer's own transaction, is real reducer-side CPU/allocation cost that the "Log volume" cost item below
+previously named only in terms of S2 log-line volume, not reducer-side compute.
+
+A new stateless service, **`mr-trace-relay`** (`ops/observability/relay/`, Node, mirroring
+`scripts/playtest-report.mjs`'s toolchain — V12), tails the same read-only `module_logs/*.log` bind mount
+Alloy already tails, pairs and orders enter/exit breadcrumbs **by the host-populated `ts` field** (V7 — never
+by file-tail arrival order, since a rotation boundary or relay restart could in principle deliver `exit`
+before its matching `enter`), and computes `duration = exit.ts − enter.ts` — a real, host-attributed
+wall-clock duration, D1-compliant because the module never reads a clock to produce it; the subtraction
+happens entirely in the relay, outside the wasm sandbox. It then reconstructs trace trees (client-originated
+root keyed on `(connection_id, entry ctx.timestamp)`; scheduled root keyed on `(function, ts)` per the
+spec's existing OBS-4; cross-reducer edges via joining a child's `scheduled_at` to its parent's `sched`
+breadcrumb) and POSTs OTLP/HTTP JSON to Alloy's existing OTLP receiver → Tempo, encoding `trace_id`/`span_id`
+as **lowercase hex** (32/16 characters) — not base64, to match the W3C trace-context conventions
+Tempo/Grafana correlate against.
+
+**Integrity rule:** a paired enter/exit breadcrumb gets a real, non-negotiable, host-timestamped duration. An
+unpaired breadcrumb (only one phase seen — the process crashed mid-call, or the call wasn't scoped for
+pairing) stays `start == end`, honestly representing "we know this happened, not how long it took." **Never
+synthesize a duration for an unpaired span from an aggregate histogram** — that fabricates precision the
+data doesn't support.
+
+**D16 — Client and server traces are pivoted, not merged, in v1.** Unchanged rationale from the original
+ceremony: no `trace_id` reducer argument; the join is a Grafana trace-to-logs (span-time-window) pivot plus a
+`connection_id` correlation pivot (D17). A merged trace id would cost reducer signature changes across the
+hot API surface, a bindings regen, and an amendment to the spec's OBS-3 correlation rule, to buy what one
+dashboard click already provides. Distributed context propagation is deferred behind the falsifier below.
+
+**D17 — Backend tool selection: STAY on the Grafana-family stack (D3, 7 containers, unchanged); add one
+functionally-separate 8th service to close the correlation gap that motivated this reconsideration.**
+
+"STAY" is a decision about *which observability tools* are selected (Prometheus/Alloy/Loki/Tempo/Grafana
+OSS/node_exporter/Caddy), not a claim that nothing new is deployed. `mr-trace-relay` (D15) is genuine new ops
+infrastructure — an 8th `docker-compose.yml` service — disclosed as a real cost (Costs, below), not hidden
+inside a "no new mechanism" claim.
+
+Added to m20b (`ops/observability/**`, all additive):
+1. Tempo→Loki trace-to-logs with span-time-window shift (a standard Grafana Tempo datasource feature).
+2. A `connection_id` correlation pivot — **which first-party Grafana mechanism (Correlations vs. Loki derived
+   fields) is the right fit for this specific join is UNVERIFIED by this pass; both features exist in the
+   Grafana OSS ecosystem in general, but which correctly targets a `connection_id`-shaped join was not
+   independently confirmed. Treat this as a build-time spike, not a settled fact.**
+3. Shared time-range linkage across Prometheus/Loki/Tempo surfaces (standard dashboard-variable wiring).
+4. `mr-trace-relay` itself: stateless, restart-safe, its liveness folded into the existing OBS-39 dead-man's-
+   switch alert rule (extended, not duplicated).
+
+Its failure degrades trace *assembly* only — logs still reach Loki on the independent Alloy path (S2), since
+D15 reads the same file alongside Alloy, not in front of it.
+
+**D18 — Two corrections to already-Accepted content, found and fixed by this pass, plus the deferral entry
+the original ceremony left implicit.**
+
+**(a) This ADR's own D2 escape hatch is wrong on the current toolchain, and is hereby amended.** D2 above
+names `POST /v1/database/<id>/sql`, "governed by RLS," as the sanctioned path if S3 is ever un-cut. V3 and V8
+show this is not currently exercisable: RLS is gated behind the same `unstable` flag as Procedures,
+documented by the crate itself as unenforced, and upstream now actively steers developers to Views instead
+of RLS for access control generally. **Corrected default, if S3 is ever un-cut:** a Views-based per-owner
+read path (the `my_wallet`/`my_conversation` pattern — V4), not RLS+SQL, unless a future SpacetimeDB release
+documents RLS as stable. This corrects the "Follow-ups" line in this ADR's own Consequences section above
+(not edited directly, per this amendment's append-only convention — this paragraph is the authoritative
+correction) and the M20 spec's OBS-15, which is amended directly in that document.
+
+**(b) A factual correction to an upstream pipeline claim, not to this ADR.** V11: a prior synthesis pass
+asserted Uptrace's license is BSL, "not AGPLv3." It is AGPL-3.0. This does not change (c) below — the
+deferral never rested on licensing — but a wrong "correction" should not stand uncorrected in the record.
+
+**(c) Deferral, recorded explicitly rather than left implicit.** SigNoz, Uptrace, HyperDX-ClickStack, and
+OpenObserve remain deferred, now for a stated reason rather than by silence: RAM was never the operative
+reason (V10 — these tools were never evaluated in the first place). The deferral rests on (i) correlated-fate
+risk across a single ClickHouse instance backing everything, (ii) non-transfer of this ADR's own
+D4/OBS-18/OBS-19 alerting-correctness work to a different backend, and (iii) the fact that the headline
+benefit of an all-in-one — native cross-signal correlation — is unreachable in *either* backend without
+server-side trace context, which D15 now supplies regardless of backend choice. The falsifier below names
+the re-open trigger.
+
+### Costs of this decision, disclosed
+
+This design's own downsides, stated plainly rather than omitted to make it look better:
+
+1. **Residual fidelity loss.** Only paired enter/exit calls get real durations; unpaired single-phase
+   breadcrumbs stay zero-duration by design. A real tracing SDK would still capture sub-call timing (time
+   spent inside a nested function call within one reducer) that this cannot — mitigated by S1 histograms +
+   `--enable-tracy` shown alongside, not inside, the waterfall.
+2. **A new artifact.** `mr-trace-relay` is real code — an NDJSON→OTLP parser, a pairing/ordering algorithm,
+   an 8th container on a stack already carrying a real ops-burden accepted risk (this ADR's own Consequences
+   section, above).
+3. **Reconstruction is weaker than propagation.** Ambiguous interleavings can still mis-parent a span even
+   with real durations — pairing is heuristic, not a propagated context.
+4. **Out-of-order log delivery is a real edge case with a stated mitigation, not a solved problem.** The
+   relay sorts/pairs by host-stamped `ts` (never arrival order), but this still assumes `ts` values are
+   monotonic per source — true in every sample checked (V7), not adversarially stress-tested under
+   concurrent high-throughput logging in this pass.
+5. **Seconds-scale latency** (file-tail + batch) versus a push — worse for live debugging than an in-module
+   push would have been, if Procedures were viable (they are not, D14).
+6. **Log volume, and reducer-side CPU/allocation cost — corrected in this finalization pass to name both.**
+   Paired breadcrumbs double S2 log-line volume for whichever calls are scoped for pairing — bounded by D15's
+   `$trace_pair_set` allowlist, D12's PII/cardinality rules unchanged. Previously undisclosed: each paired
+   `mr_log` call does a heap-allocating hand-rolled JSON string build (`format!`/`json_escape`), so a paired
+   invocation does **two** such allocations inline in the reducer's own transaction, not one — real reducer-
+   side compute, not just downstream log volume. `$trace_pair_set`'s exclusion of `movement_tick` and other
+   `STEP_MS`/criterion-gated reducers (above) is the primary mitigation; G11 (below) is the mechanical check
+   for any future addition.
+7. **STAY forgoes** the single-pane ergonomics a ClickHouse-backed all-in-one genuinely offers — a real loss,
+   now that 96GB makes it affordable, and one D15's causal-tracing win does not fully offset: native
+   cross-signal correlation in a true all-in-one is still smoother than Grafana's trace-to-logs pivot, even
+   after D17's additions.
+
+### Attribution
+
+This amendment's pipeline received brainstormed proposals and debate verdicts as synthesized text, not as
+independently re-fetchable raw transcripts — the specific claim-by-claim provenance below is carried forward
+from that synthesis, not independently re-confirmed input-by-input, except where a row states otherwise.
+Where a claim's *substance* was checkable against a primary source (crate code, live repositories, upstream
+docs), it was verified directly regardless of attribution (Evidence, above).
+
+| Design input | Adopted → where | Rejected → why |
+|---|---|---|
+| Incremental (log-relay-first) proposal | OTLP/HTTP-JSON-with-hex-ids wire format → D15 (independently re-verified against current OTLP JSON conventions); the sub-ms private-address rejection measurement; the refusal to commit gate numbers on unresolved evidence | Scheduled-Procedure exporter — moot once D15 needs no procedure; its crate-pin cost premise is false for this repo (V1/V2) |
+| All-in-one (SigNoz-style) proposal | The out-of-process exporter shape → D15; the `#[view]`/ADR-0154 precedent (V4) → load-bearing in D18a's escape-hatch fix | SigNoz backend (D17/D18c); its module-computed `duration_micros` field cannot be built (V5) — though D15's relay-computed duration achieves a version of the same goal at zero module-side risk; its view-scoped sidecar table is strictly dominated by D15 (a table costs commitlog/RTO growth, an observer identity, and bindings churn D15 avoids) |
+| Skeptic (reject-everything) proposal | The reject-the-Procedure verdict → D14; the fault-isolation argument; the SSRF-forecloses-the-fast-local-collector point | Its "defer everything, change nothing" posture — status-quo by default. D15/D17 close the causal-tracing gap now. Its Uptrace license claim is corrected (V11) |
+| Clean-slate proposal | The `trace_id`-in-`mr_log`-not-a-label discipline → D15/D12; the "Procedures can't hold a tx open while sending" constraint (independently confirmed, V9); the reducer-signature/bindings-regen cost → why D16 refuses a merged trace id | Its 30s/180s timeout figures — checked at the time against the crate's rustdoc (V6, then read as 500ms) and marked contradicted; **corrected post-review:** upstream's own mdbook docs state the same 30s/180s figures this proposal used, so the two upstream sources conflict rather than one being simply wrong — downgraded from "contradicted" to "unresolved pending upstream clarification," see V6's correction |
+| Research-alternatives proposal | The external-drain insight (outbox safety requires an external consumer) → the core of D15; the self-flagged requirement that a beta API must be necessary, not merely permitted | Its recommended mechanism (RLS-gated SQL) is not buildable on the pinned toolchain (V3) and upstream discourages RLS generally (V8) |
+| Debate 1 (server spans, for/against Procedures) | The crate-pin correction — inverts the beta-cost argument several inputs reportedly leaned on; the commitlog/RTO cost of a span table → why D15 uses no table; the "synthesized ids forbidden" constraint (the spec's own OBS-3/OBS-4) → D15's derivation rules | Any pull path depending on RLS (V3/V8 — not enforced, not recommended) |
+| Debate 2 (backend stack, STAY vs. swap) | STAY and its rubric → D17/D18c; the finding that this ADR never evaluated the ClickHouse-family tools (V10); the flag that log→log derived-field targeting is unverified → carried into D17(2) as an explicit build-time spike | Any retrofit rationale asserting unstated reasoning was "already doing this work" without evidence |
+
+### Bias guards applied
+
+**Against status-quo bias.** The strongest reason to break the original design was V2: the beta API is one
+Cargo line away, not a migration — a cost objection this pass explicitly retracts rather than banks
+silently. This reconsideration also overturned the original spec's "server traces are out of scope" position
+(D15), "no correlation layer needed" (D17), this ADR's own silence on the ClickHouse family (D18c), and —
+the one piece of already-Accepted content this pass found and fixed that the original ceremony did not catch
+— **this ADR's own D2 RLS-based escape hatch** (D18a). D1 survives only because V5 makes it structurally
+forced, not because it was already written and convenient to leave alone.
+
+**Against novelty bias.** Drew pre-authorized the beta API, conditional on it producing a *meaningfully*
+better design. It is declined here because D15's log-relay path turned out *more* capable than a naive
+version of it would have been — real per-call durations, not just causal ordering (V7) — which raises the
+necessity bar for the beta API rather than lowering it. This pass explicitly resisted treating "the beta API
+turned out cheaper than believed" (V2) as license to adopt it anyway; V5's structural clippy ban is untouched
+by that finding.
+
+**Goal check** (debugging / latency / errors / load, per the operator's stated goals for this project): (1)
+debugging — server causal chains with real inter-call latency where scoped, a genuine capability upgrade over
+"always zero-duration"; (2) latency — S1 histograms + `--enable-tracy` + criterion (D7/D10) unchanged, D15
+adds inter-transaction chain latency for scoped calls but is not the main lever; (3) errors — `evt:"reject"`
+lines become trace-correlated; (4) load — `mr-load-driver` (D9) unchanged, untouched by anything in this
+amendment.
+
+### Reward-hacking / evaluation-gaming flags
+
+1. A pipeline stage's Uptrace "BSL, not AGPLv3" correction (V11) is itself a case of the failure mode it
+   claimed to be fixing: it read as rigorous specifically because it was phrased as correcting someone else's
+   error, confident and symmetrical-sounding — and it was wrong. Flagged explicitly per the operator's rigor
+   rule naming prior pipeline stages as fair game: a correction dressed in the language of rigor is not
+   evidence of rigor until checked against a primary source.
+2. **This flag itself needed correcting.** This amendment originally reported the 30s/180s outbound-HTTP
+   timeout figures circulating in the upstream pipeline as unreproducible "false precision" against the
+   crate's rustdoc (V6, then read as 500ms), and asserted "no gate threshold in this amendment is built on an
+   unverified number." A later adversarial pass found this backwards: upstream's own mdbook reference docs
+   (same version-1.12.0 pin) *do* state a 30s default / 180s clamp, with a worked example setting an explicit
+   3s timeout and no mention of 500ms — the 30s/180s figures were reproducible after all, from a different
+   primary source than the one originally checked. The real finding is that SpacetimeDB's own documentation
+   contradicts itself on this parameter, not that one side fabricated it — and G10's original 500ms-based
+   condition *was* built on an unverified number, the opposite of what this flag claimed. V6 is corrected
+   above; G10 is revised below to measure both regimes rather than assume either.
+3. No deliberate criterion-gaming was found in what could be checked this pass. The failures above are
+   unverified-confidence failures, not manipulation — but are named as failures, not rounded up to "minor."
+
+### Falsifiers — what overturns this amendment
+
+- **→ Adopt Procedures:** a documented, non-CI `procedure-http-clamp` harness (Gate G10, below) first
+  measures which of V6's two contradictory upstream timeout regimes the pinned host build actually enforces —
+  for both (i) a call with an explicit aggressive `Timeout` set and (ii) a call with no `Timeout` set at all —
+  then shows (a) a procedure call against a hung endpoint, on whichever regime a future adoption would
+  actually ship with, returns within the *measured* bound (not an assumed 500ms), **and** (b) a 200ms-interval
+  scheduled reducer loses no more ticks than that measured bound predicts during it, **and** (c) any adoption
+  mandates an explicit, aggressive `Timeout` on every outbound call as a hard, gate-enforced rule — not a
+  convention — since the no-`Timeout` code path is the one upstream's own worked example leaves unbounded at
+  30s/180s, **and** (d) D15's reconstruction still proves insufficient in practice despite its real-duration
+  improvement. All four conditions, not any one.
+- **→ Hard-reject in-module HTTP permanently:** a multi-second stall reproduces with an explicit 100ms
+  `Timeout` set (a real API surface per V6/V9). That would be a host defect worth reporting upstream,
+  independent of this decision.
+- **→ Upgrade D16 to real context propagation:** reconstruction mis-parents spans in ≥2 real debugging
+  sessions, even with D15's duration improvement.
+- **→ Re-open the backend swap:** D17(2)'s `connection_id` pivot has no first-party Grafana mechanism at all
+  (the "bounded config addition" premise is then false and the cost comparison inverts), or a one-day
+  pre-registered bake-off shows materially better symptom-to-root-cause time on a ClickHouse-backed
+  all-in-one.
+- **→ Revisit the relay's shape:** if a first-party Alloy/OTel log→trace converter is found to exist (none
+  was found in this pass either — treat the custom relay as committed until proven otherwise).
+- **→ Un-cut S3 via RLS after all:** if a future SpacetimeDB release documents RLS as stable (superseding
+  V3/V8's current "unimplemented, not enforced, use Views instead" status) *and* a genuine domain-metric need
+  arises that a `#[view]` cannot express (views are read-only projections; RLS could in principle restrict
+  row-level access to writes too) — until then, D18a's Views-based amendment stands.
+
+### Rollback plan for a future beta-API adoption
+
+Required explicitly by the operator's task framing, not left implicit:
+
+1. **Procedures are never adopted (the current decision, D14).** No rollback is needed — nothing beta is in
+   the dependency graph. D15 is the permanent baseline, not a placeholder.
+2. **Procedures are adopted later, because the falsifier above triggers all four conditions.** At that point
+   **D15 is not deleted** — the falsifier condition explicitly requires D15 to have already proven
+   *insufficient*, not broken, so both mechanisms coexist by design. If a *subsequent* SpacetimeDB release
+   then breaks the (still-beta, per V9) Procedure/`ctx.http` API surface, the rollback is to **pin the
+   crate/CLI version pair that still supports the working procedure API and defer the bump** — this project
+   already treats crate-vs-CLI versioning as an explicit, documented decision (V1), so this is an application
+   of an existing discipline, not a new one — **not** a data-path redesign. Tracing coverage does not go dark
+   during the pin, since D15's relay keeps running throughout.
+   **Blast radius, disclosed rather than implied "contained":** the pin is not scoped to the tracing feature —
+   it freezes the **whole SpacetimeDB host/toolchain version pair for the entire game server**, not just the
+   Procedure/export data path. If an unrelated upstream release two versions later ships a security-relevant
+   host patch, staying on the pin to preserve span export means the whole game server also misses that patch;
+   upgrading past the pin to take the patch means span export breaks (the accepted, "contained" loss this plan
+   already names). That tradeoff — security-patch cadence versus tracing continuity — is not disclosed
+   elsewhere in this document and is a real, standing cost of ever exercising this rollback, not a
+   hypothetical one; whoever exercises it must weigh it explicitly at the time, not assume the pin is free.
+
+### New gates
+
+| ID | Gate | Enforces |
+|---|---|---|
+| G8 | `mr-trace-relay` pure-function unit tests + a seeded-ambiguity proof-of-teeth fixture (two interleaved zone-tick chains that must not cross-pollinate) | D15's reconstruction/pairing rules |
+| G9 | `evals/observability-stack-config.eval.mjs` extension | Confirms the relay service is present in `docker-compose.yml`, reads `module_logs` read-only, and the trace-to-logs + correlation-pivot config exists in Grafana provisioning (mirrors G6's pattern); **this finalization pass adds:** the committed `$trace_pair_set` config does NOT list `movement_tick` or any other `$slo_set`/criterion-benched reducer, a static check independent of G11's runtime measurement |
+| G10 | `procedure-http-clamp` harness (documented, manually-triggered or separately network-gated — **explicitly NOT a `just ci` gate**, since it requires live network egress and toggling `features=["unstable"]` in a disposable scratch module, neither of which belongs in the always-on CI path); measures the hung-endpoint timeout **with and without** an explicit `Timeout` set, per V6's corrected upstream-doc-contradiction finding, rather than assuming either the 500ms or the 30s/180s figure holds | The Falsifiers section's Procedures-adoption trigger condition |
+| G11 *(new, this finalization pass)* | m20e post-integration verification step: `mr-load-driver` (D9) run **with** `$trace_pair_set`'s breadcrumbs active, comparing each paired reducer's own relevant SLO/budget (if any) with pairing on vs. off | D15's `$trace_pair_set` scoping rule — the pre-merge check HIGH-1 found missing; not a `just ci` gate itself (it needs the live `docker-compose.yml` stack + a published module, same precondition as G3–G6), but is required before any `$trace_pair_set` addition merges |
+
+### Open question carried forward
+
+**OQ1 (network topology)** — unchanged, still open, still blocks m20b independent of everything decided in
+this amendment: whether the SpacetimeDB host port is publicly reachable or private-network-only is a
+deployment decision only Drew can make. Nothing in this amendment creates new exposure — `mr-trace-relay`
+reads a read-only file mount, adds no port, and adds no credential — but m20b's Caddy/topology config, and
+now the relay's own placement (same box as the data dir it tails, or not), cannot be finalized until OQ1 is
+answered.
+
+### Amendments (to this ADR's own content, above)
+
+- **D2 (escape hatch):** amended by D18a — **both** the RLS clause **and** the `POST /v1/database/<id>/sql`
+  transport requirement are superseded by a Views-based default (subscribed via the SDK, the
+  `my_wallet`/`my_conversation` pattern), not merely the RLS half — D18a's own text says "not RLS+SQL"; the
+  "Follow-ups" line in Consequences (above, not edited directly per this section's append-only scope) is
+  corrected by the callout immediately preceding this amendment's heading, which is broadened to match. The
+  M20 spec's OBS-15 is corrected to the same full scope, not just its RLS clause (a coherence gap a later
+  review pass found and this finalization fixes).
+- **To `M20-observability-performance.spec.md`:** D3/D2 gain cross-reference notes to D17/D18a; OBS-15 is
+  amended directly; new EARS criteria OBS-41–OBS-49 implement D14–D18 mechanically, and OBS-50/OBS-51 (added
+  this finalization pass) name `$trace_pair_set` and its pre-merge check; §5 slice-decomposition notes for
+  m20a/m20b/m20e are updated to reflect the new files (no new slice row — the new work fits inside each
+  slice's already-declared `touches:` scope, per the Slice placement note below).
+- **Slice placement (verified against the spec's actual §5 table, not asserted):** `observability.rs`'s new
+  `cause`/`sched`/`phase` fields are additive within the file m20a is already scoped to create — no new
+  touches. `ops/observability/relay/**` and the correlation-config additions fall inside m20b's already-
+  declared `ops/observability/**` scope — touches-disjoint from m20a as already designed. Reconstruction unit
+  tests + the config-presence gate extension belong in m20e (SERIAL, already gated on both m20a and m20b
+  merging). **This finalization pass:** the `server-module/src/.log-baseline` file (OBS-2's ratchet) belongs
+  in m20a alongside `observability.rs` — same directory, same slice, added to that row's `touches:` list; the
+  `$trace_pair_set` config belongs in m20b's `ops/observability/**` scope alongside `mr-trace-relay`. **No
+  slice-serialization changes to the existing table.**
+- **To `observability-performance-plan.md`:** **not touched by this amendment** — the backend tool selection
+  (§4 "Tooling") does not change; D17 explicitly stays on the same 7-container Grafana/Prometheus/Loki/Tempo
+  stack that document already names. Only a project-specific spec/ADR amendment was warranted, not a
+  cross-cutting plan-document rewrite.
