@@ -22,7 +22,7 @@ import {
 // statusModel is a pure MODEL (no DOM, no SDK) — importing it here creates no
 // net→view dependency (see the layering note in statusModel.ts).
 import { subscriptionErrorMessage } from '../ui/statusModel';
-import { createAuthTokenGate } from './authToken';
+import { createAuthTokenGate, readAuthKind } from './authToken';
 import { MicrotaskBatcher } from './batch';
 import { type SendLogger, wrapReducerLogging } from './devLog';
 import {
@@ -527,6 +527,15 @@ export function connect(opts: ConnectionOptions): Connection {
     // without any TDZ/ordering dependence on the `current` assignment below.
     const gen = ++buildGen;
     const stale = (): boolean => gen !== buildGen;
+    // M21b (ADR-0179 D8): which credential class THIS build is supplying. Read
+    // FRESH per build — the mirror image of the gate above, which is built once
+    // on purpose: the gate's counter must survive rebuilds, whereas a marker
+    // that flipped mid-session must be observed by the very next build. It is
+    // captured HERE, not re-read inside onConnect, because onConnect fires an
+    // arbitrary time later against mutable sessionStorage — a re-read there
+    // could report 'anon' for a build that supplied an account credential
+    // (TOCTOU), which is exactly the write this guards against.
+    const buildKind = readAuthKind(globalThis, opts.uri, opts.db);
     const conn = DbConnection.builder()
       .withUri(opts.uri)
       .withDatabaseName(opts.db)
@@ -539,7 +548,31 @@ export function connect(opts: ConnectionOptions): Connection {
         if (stale()) return; // superseded build: never clobber identity/subscriptions
         // Persist AFTER the stale guard: a superseded build's late onConnect must not
         // overwrite the credential the live build already stored.
-        auth.onConnected(token);
+        //
+        // M21b (ADR-0179 D8): and ONLY for an anonymous build. The SDK echoes the
+        // credential we supplied back as `token` (dist/index.mjs:5765 + :6226-6231 —
+        // the host's own token is adopted only when we supplied none), so on an
+        // authenticated build this argument IS the short-lived account JWT. Storing it
+        // here would put it in the ANONYMOUS slot, which `tokenForNextAttempt()` hands
+        // straight back to `.withToken()` on the next build — replaying an account JWT
+        // past its `exp`, the exact case D8 forbids. `=== 'anon'` (not `!== 'account'`)
+        // is the fail-CLOSED direction ON THE VALUE: if AuthKind ever gains a third
+        // member, a `!==` guard would start writing that kind's credential into the
+        // anonymous slot by default.
+        //
+        // BEST-EFFORT, NOT STRUCTURAL — do not read more into this than it gives.
+        // `readAuthKind` fails to 'anon' on every lossy path (blocked storage, quota,
+        // eviction), and 'anon' is the PERMISSIVE direction here, so a lost marker
+        // silently re-opens the replay. That fail direction is forced by AUTH-31 and is
+        // not fixable with a marker at all; the discriminator must become the provenance
+        // of the credential actually supplied, carried in memory beside the token
+        // (M21b-2 — see the ⚠ block on writeAuthKind). Until then this guard is the sole
+        // enforcer of "the anon slot never contains an account JWT" and no production
+        // code may write an 'account' marker.
+        //
+        // NOTE this also gates `rejectionsSinceSuccess = 0`, which lives inside
+        // onConnected — see harm 2 in that same ⚠ block.
+        if (buildKind === 'anon') auth.onConnected(token);
         identity = id.toHexString();
         const reconnecting = hadSession;
         c.subscriptionBuilder()
@@ -628,6 +661,15 @@ export function connect(opts: ConnectionOptions): Connection {
             // m17b: profile is a PUBLIC regular table (world-readable leaderboard —
             // RL-13/ADR-0119); onUpdate fires normally (unlike the my_conversation view).
             'SELECT * FROM profile',
+            // M21b TRIPWIRE — `my_account` is DELIBERATELY ABSENT (M21a generated its
+            // bindings; this is not an oversight). Nothing in M21b consumes it, and
+            // subscribing it would drag rowConvert.ts + store.ts into a slice whose
+            // touches: set excludes them. It is NOT optional later, though: per
+            // ADR-0179 the kind marker records INTENT, while `my_account` is the only
+            // observable of the connection FACT (with the fail-closed `.invalid`
+            // issuer placeholder the server leaves every connection anonymous, so a
+            // client can currently believe it is authenticated when it is not).
+            // M21b-2 adds it, and `my_account` is authoritative where the two disagree.
           ]);
       })
       .onConnectError((_ctx, err: Error) => {

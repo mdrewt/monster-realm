@@ -10,9 +10,25 @@
 //      the `if (stale()) return;` guard.
 //   4. `auth.onConnectFailed(err)` inside `.onConnectError((_ctx, err: Error) => { ... })`,
 //      AFTER the `if (stale()) return;` guard.
-// None of the four exist on the file as of this writing (see connection.ts:485,
-// 567 read at authoring time — `.onConnect((c, id) => {` with NO third `token` param,
-// and no `.withToken(` call at all in the builder chain). This is the RED reason.
+//
+// ⚠ AMENDED BY M21b (ADR-0179). Point 3 above describes the nh4 shape, which is NO LONGER
+// what this file pins: the save call site is now GUARDED on the build's auth kind
+// (`if (buildKind === 'anon') auth.onConnected(token);`), and build() gains a FIFTH wiring
+// point — `const buildKind = readAuthKind(globalThis, opts.uri, opts.db);`. Points 1, 2 and
+// 4 are unchanged, and `.withToken(auth.tokenForNextAttempt())` stays byte-identical, which
+// is what makes AUTH-31's "no behaviour change to the anonymous path" literally true. The
+// full reasoning is in the M21b banner above W-M21B-KIND-READ and in the RE-PIN
+// JUSTIFICATION directly above W-NH4-SAVE-WIRED. Left here rather than rewritten in place
+// so the nh4 → M21b delta stays legible.
+//
+// ⚠ HISTORICAL — TRUE WHEN THE nh4 BLOCK WAS WRITTEN, FALSE NOW. The paragraph that stood
+// here recorded the RED state at nh4 authoring time: "none of the four exist on the file as
+// of this writing (connection.ts:485, 567) — `.onConnect((c, id) => {` with NO third
+// `token` param, and no `.withToken(` call at all in the builder chain." All four wiring
+// points have SHIPPED since; every nh4 gate below is a GREEN regression guard today, not a
+// red gate. Corrected in place rather than deleted so the nh4 → M21b provenance survives:
+// a stale "RED today" claim in a gating file teaches the next reader to discount failure
+// messages that say RED today, which is how a real red gets waved through.
 //
 // WHY source-scan (NOT import): connection.ts is coverage-excluded in vite.config.ts
 // specifically because it has DOM/wasm side effects (window.addEventListener,
@@ -35,11 +51,19 @@
 // NO `new RegExp(...)` anywhere in this file — Semgrep bans it repo-wide. All
 // matching uses String.indexOf / .includes / .split / .startsWith only.
 //
-// RED REASON (all 5 gates): none of the four wiring points exist in connection.ts
-// today. `.withToken(` occurs ZERO times in the file as of this writing; `onConnect(`
-// takes only two params `(c, id)`, not three; `authToken` does not appear anywhere
-// (no such module exists yet). Every gate below fails for the right reason — a
-// missing implementation — not a typo in this test.
+// ⚠ HISTORICAL — the "RED REASON (all 5 gates)" paragraph that stood here claimed
+// `.withToken(` occurred ZERO times, `onConnect(` took two params, and the `authToken`
+// module did not exist. All three were true at nh4 authoring time and are FALSE now: the
+// nh4 wiring shipped, and the M21b marker wiring shipped on top of it.
+//
+// ⚠ READ THIS BEFORE TRUSTING ANY "RED today" / "RED TODAY" TEXT IN THIS FILE. This file
+// has accreted gating blocks across five slices (nh4, ADR-0157 devlog, 11r-e wallet, EG4
+// evolution, M21b marker). Each block's failure messages were written while ITS feature was
+// unimplemented, so they say "RED today" about states that are long since shipped. They are
+// AUTHORING-TIME PROVENANCE, not current status — every gate in this file is a green
+// regression guard unless a specific test says otherwise in its own body. Left in place
+// rather than swept, because those sentences also record WHAT THE BUG LOOKED LIKE, which is
+// the most useful thing a failure message can tell the person who just re-introduced it.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -306,22 +330,332 @@ describe('connection.ts wiring (nh4): W-NH4-TOKEN-SUPPLIED — builder chain cal
   });
 });
 
+// ===========================================================================
+// M21b (ADR-0179 / EARS AUTH-31) — the auth-KIND discriminator and the guard on
+// the anonymous token slot.
+//
+// SOURCE OF TRUTH: memory/projects/monster-realm-M21b-plan.md, ADDENDUM section
+// (which SUPERSEDES the body of that memo), plus the coordinator's scope ruling
+// recorded below.
+//
+// ★★ SCOPE RULING (why this slice is the WRITE-SIDE half only) ★★
+// The plan's `decideConnectCredential` / `SESSION_EXPIRED_MESSAGE` /
+// `onSessionExpired` read-side guard is CUT from this slice and ships with
+// M21b-2. It cannot be built here: the guard's early exit needs `build()` to be
+// able to decline to return a connection, i.e. `DbConnection | undefined`, which
+// cascades into `let current = build()`, the `get conn()` accessor, and every
+// `conn.conn.reducers.*` call site in main.ts — a public-surface change far
+// outside this slice, and one that belongs with the cold-start contract (parked
+// item 6) it depends on. The type system was reporting a real dependency, not a
+// puzzle to route around.
+//
+// WHAT SHIPS HERE is coherent on its own, typechecks trivially, and has zero
+// blast radius: the auth-kind marker (authToken.ts, additive) plus ONE guard —
+// the anonymous token slot must never receive an account JWT.
+//
+//     function build(): DbConnection {          // signature UNCHANGED
+//       const gen = ++buildGen;
+//       const stale = (): boolean => gen !== buildGen;
+//       const buildKind = readAuthKind(globalThis, opts.uri, opts.db);
+//       ... .withToken(auth.tokenForNextAttempt())   // UNCHANGED from today
+//           .onConnect((c, id, token) => {
+//             if (stale()) return;
+//             if (buildKind === 'anon') auth.onConnected(token);
+//
+// ★★ CONSEQUENCE FOR THE GATING TESTS ★★
+// `W-NH4-TOKEN-SUPPLIED` above is therefore NOT re-pinned — it stands byte-for-byte
+// as it shipped, and `.withToken(auth.tokenForNextAttempt())` stays byte-identical
+// in connection.ts. That is what makes AUTH-31's "no behaviour change to the
+// anonymous path" claim literally true rather than merely asserted. Exactly ONE
+// pre-existing tooth changes this slice — `W-NH4-SAVE-WIRED` — and its written
+// justification is directly above it. `W-NH4-GATE-CONSTRUCTED`,
+// `W-NH4-FAILURE-WIRED`, `W-NH4-NO-CLEAR-ON-DROP`, `SDK-DRIFT` and
+// `W-DEVLOG-WRAP` are NOT touched.
+//
+// ⚠ THE HAZARD THIS SLICE KNOWINGLY LEAVES OPEN (named, not hidden): the
+// write-side guard alone is NOT sufficient. With the read side parked, a marker
+// of `'account'` means the account token is not STORED (correct) while the next
+// build still supplies the stale ANON token via the unchanged
+// `.withToken(auth.tokenForNextAttempt())` — a silent drop to a different
+// identity. Nothing in this slice writes `'account'`, and `writeAuthKind` is
+// required to carry that prohibition as a comment, pinned by a source-scan tooth
+// in authToken.test.ts so it cannot be silently deleted.
+//
+// NO `new RegExp(...)` — this file's standing convention.
+// ===========================================================================
+
+/** `readAuthKind(host, uri, db)` — host FIRST (unlike `createAuthTokenGate(uri, db, host)`);
+ *  the exact-argument-list pin is what kills a marker keyed on one axis only, which would
+ *  let an `'account'` marker written for the playtest database refuse the connection to
+ *  production. Bound to a NAMED const — `buildKind` — because W-NH4-SAVE-WIRED's guard must
+ *  read the value THIS build decided on, not re-derive it later from mutable storage. */
+const M21B_KIND_READ = 'const buildKind = readAuthKind(globalThis, opts.uri, opts.db);';
+
+/** The kind-guarded save. `=== 'anon'` (not `!== 'account'`) is the FAIL-CLOSED direction:
+ *  if `AuthKind` ever gains a third member, a `!==` guard would start writing that kind's
+ *  credential into the anonymous slot by default. */
+const M21B_SAVE_GUARDED = "if (buildKind === 'anon') auth.onConnected(token);";
+
 // ---------------------------------------------------------------------------
-// W-NH4-SAVE-WIRED — the token is captured on connect, under the stale guard.
+// W-M21B-KIND-READ (NEW) — the discriminator the save guard depends on is read
+// ONCE PER BUILD, inside build(), from BOTH key axes.
+//
+// This is the companion tooth to W-NH4-SAVE-WIRED below: that tooth pins the
+// GUARD, this one pins the BINDING the guard reads. Neither is sufficient alone
+// — a guard on a stale or wrongly-scoped binding is a guard in name only.
 // ---------------------------------------------------------------------------
 
-describe('connection.ts wiring (nh4): W-NH4-SAVE-WIRED — onConnect saves the token via auth.onConnected(token), guarded', () => {
-  it('BITES: onConnect callback takes a third param named token, calls auth.onConnected(token) exactly once file-wide, AFTER the stale guard', () => {
+describe('★ connection.ts wiring (M21b / AUTH-31): W-M21B-KIND-READ — build() binds `const buildKind = readAuthKind(globalThis, opts.uri, opts.db)`', () => {
+  it('★ BITES: the marker read is contiguous, bound to buildKind, INSIDE build(), and occurs exactly once file-wide', () => {
+    // WRONG IMPL KILLED (a): no marker read at all — the pre-M21b state, in which
+    //   W-NH4-SAVE-WIRED's guard has nothing to read and the anonymous token slot stays
+    //   unguarded. (This tooth was RED when authored and is a regression guard now.)
+    // WRONG IMPL KILLED (b): ★ THE READ HOISTED TO connect() SCOPE. This is the same
+    //   defect W-NH4-GATE-CONSTRUCTED guards for the gate itself, and it matters here for
+    //   the mirror-image reason: the gate must be built ONCE (its counter must survive
+    //   rebuilds), whereas the marker must be re-read on EVERY build (it is mutable
+    //   sessionStorage that M21b-2's return leg will write mid-session). A connect()-scope
+    //   read pins one value for the page lifetime, so a marker that flips to 'account'
+    //   before a rebuild is ignored and the very next reconnect writes the account JWT
+    //   into the anon slot — precisely the hole this slice exists to close. The region
+    //   bound is the only thing that sees it.
+    // WRONG IMPL KILLED (c): a one-axis read — `readAuthKind(globalThis, opts.db)` or
+    //   `readAuthKind(globalThis, opts.uri)`. The contiguous argument-list pin requires
+    //   BOTH key axes, in this order. A db-only key would let a marker written for the
+    //   playtest database govern the production connection.
+    // WRONG IMPL KILLED (d): the host argument swapped or dropped —
+    //   `readAuthKind(opts.uri, opts.db, globalThis)` (the createAuthTokenGate order,
+    //   which is the natural copy-paste slip).
+    //   RATIONALE CORRECTED (tester, post-review): an earlier version of this note claimed
+    //   the swap "would typecheck as `unknown` in some shapes". That is WRONG — the swapped
+    //   call fails to compile twice over (`string` is not assignable to
+    //   `TokenStorageHost | undefined`, and `typeof globalThis` is not assignable to
+    //   `string`). So tsc, not this tooth, is the primary defence against the swap. The pin
+    //   is kept anyway because it costs nothing and because tsc is not what runs in this
+    //   suite; it also still carries (c) above, which tsc CANNOT see (a one-axis call is a
+    //   compile error only because of arity — but `readAuthKind(globalThis, opts.db,
+    //   opts.db)` compiles perfectly and is a real, silent, cross-target bug).
+    // WRONG IMPL KILLED (e): a SECOND read somewhere else in the file — the exactly-once
+    //   count. A second read is by construction a chance to disagree with the first, and
+    //   the TOCTOU variant of that (a re-read inside the onConnect callback) is the exact
+    //   mutant W-NH4-SAVE-WIRED's guard needle also rejects. Both teeth red on it.
+    // WRONG IMPL KILLED (f): ★ THE SHADOWING SHIM (red-team, verified biome-clean):
+    //     import { readAuthKind as _unused, createAuthTokenGate } from './authToken';
+    //     const readAuthKind = (_h: unknown, _u: string, _d: string): AuthKind => 'anon';
+    //   The pinned needle text is unchanged, `readAuthKind(` still occurs once, the first
+    //   occurrence still sits inside the authToken import — and `buildKind` is now ALWAYS
+    //   'anon', so the save guard is permanently open and the whole slice is inert. An
+    //   earlier version of this tooth banned only `function readAuthKind`, so an arrow-const
+    //   shim walked straight through it. Closed three ways below: the IDENTIFIER-level count
+    //   (an alias + a shim + a call is THREE occurrences, not two), an explicit ban on every
+    //   local-binding and re-export spelling, and a requirement that the authToken import
+    //   statement name `readAuthKind` DIRECTLY with no ` as ` alias.
+    const src = readConnectionTs();
+    expectUniqueAnchor(src, 'function build(): DbConnection {');
+    expectUniqueAnchor(src, 'wireTables(conn);');
+
+    const squashedBody = squashWhitespace(
+      bodyRegion(src, 'function build(): DbConnection {', 'wireTables(conn);'),
+    );
+    const wholeSquashed = squashWhitespace(stripLineComments(src));
+
+    expect(
+      squashedBody.includes(M21B_KIND_READ),
+      `build() must contain the contiguous \`${M21B_KIND_READ}\` — read fresh per build, ` +
+        'from BOTH key axes, bound to `buildKind` so the onConnect guard reads the value ' +
+        'THIS build decided on',
+    ).toBe(true);
+    expect(
+      countOccurrences(wholeSquashed, 'readAuthKind('),
+      'readAuthKind( must be INVOKED from EXACTLY ONE site in connection.ts (the import ' +
+        'specifier carries no paren and is not a call site). A second call is a second, ' +
+        'divergent answer to "which kind is this build?"',
+    ).toBe(1);
+
+    // The read must live INSIDE build(), not at connect() scope. Asserted as an explicit
+    // ordering fact as well as a region membership, mirroring W-NH4-GATE-CONSTRUCTED's
+    // shape so the two scope rules read as one family rather than two idioms.
+    const readIdx = src.indexOf('readAuthKind(globalThis');
+    const buildIdx = src.indexOf('function build(): DbConnection {');
+    expect(readIdx, 'connection.ts must call readAuthKind(globalThis, …)').toBeGreaterThanOrEqual(
+      0,
+    );
+    expect(
+      readIdx,
+      'the readAuthKind( call must appear AFTER `function build(): DbConnection {` — i.e. ' +
+        'INSIDE build(), re-read on every rebuild. Hoisted to connect() scope it pins one ' +
+        'marker value for the whole page lifetime',
+    ).toBeGreaterThan(buildIdx);
+
+    // --- ANTI-SHIM: the `readAuthKind` in that call must BE the imported one -------------
+    // authToken.ts is the SSOT and authToken.test.ts is the ONLY place its behaviour is
+    // ever proven (this file can prove wiring, never behaviour — see this file's header).
+    // A local binding that merely SPELLS the same name defeats every needle above at once,
+    // so the name is pinned at the identifier level, not just at the call site.
+    expectUniqueAnchor(wholeSquashed, "from './authToken';");
+    const importEnd = wholeSquashed.indexOf("from './authToken';");
+    expect(
+      wholeSquashed.indexOf('readAuthKind'),
+      "readAuthKind must be IMPORTED from './authToken' — its first occurrence has to sit " +
+        'inside that import statement, not in a local re-declaration further down the file',
+    ).toBeLessThan(importEnd);
+
+    // ★ THE SHIM KILLER. `readAuthKind` may occur EXACTLY twice in the comment-stripped
+    // source: once as the import specifier, once as the single call. The shim needs a
+    // THIRD (`readAuthKind as _unused` + `const readAuthKind = …` + the call = 3), and so
+    // does every re-export, re-assignment or second import of the name. Same
+    // identifier-count-with-a-documented-breakdown idiom this file already applies to
+    // `shouldRemoveOnViewDelete` in the 11r-e block below.
+    expect(
+      countOccurrences(wholeSquashed, 'readAuthKind'),
+      'the readAuthKind IDENTIFIER must occur EXACTLY twice in the comment-stripped source: ' +
+        'the ./authToken import specifier, and the ONE call inside build(). A third ' +
+        'occurrence is a local shim, an alias, a re-export or a second call — the shim ' +
+        'variant (`import { readAuthKind as _unused, … }` plus `const readAuthKind = () => ' +
+        "'anon'`) leaves every other needle in this tooth satisfied while pinning buildKind " +
+        'to a constant and disarming the entire slice',
+    ).toBe(2);
+
+    // Belt and braces on the same hole, for a precise failure message: no local binding of
+    // the name in ANY spelling, and no aliased import of it.
+    for (const shim of [
+      'function readAuthKind',
+      'const readAuthKind',
+      'let readAuthKind',
+      'var readAuthKind',
+      'readAuthKind =',
+      'readAuthKind:',
+      'readAuthKind as',
+      'as readAuthKind',
+    ]) {
+      expect(
+        countOccurrences(wholeSquashed, shim),
+        `connection.ts must contain NO occurrence of "${shim}" — every one of these spellings ` +
+          'either re-declares readAuthKind locally or renames something else INTO that ' +
+          'identifier, which silently substitutes an untested stand-in for the only ' +
+          'behaviourally-proven implementation',
+      ).toBe(0);
+    }
+
+    // The import STATEMENT itself must name readAuthKind directly (not merely have the
+    // identifier appear somewhere before its `from` clause — a second, earlier import from
+    // a different module would satisfy that weaker check).
+    const importStart = wholeSquashed.lastIndexOf('import', importEnd);
+    expect(
+      importStart,
+      "the `from './authToken';` clause must be preceded by an `import` keyword — if it is " +
+        'not, this scan cannot locate the import statement and the pin below is vacuous',
+    ).toBeGreaterThanOrEqual(0);
+    const authTokenImport = wholeSquashed.slice(importStart, importEnd);
+    expect(
+      authTokenImport.includes('readAuthKind'),
+      "the './authToken' import statement must name readAuthKind DIRECTLY — found: " +
+        `\`${authTokenImport.trim()}\``,
+    ).toBe(true);
+
+    // --- the binding is bound ONCE and read ONCE ----------------------------------------
+    // WRONG IMPL KILLED (g, red-team, biome-clean): `buildKind` SHADOWED inside the
+    //   onConnect callback with a constant (`const buildKind = 'anon';`). Biome reports
+    //   shadowing as a warning at most, so it ships. The guard then reads a literal and is
+    //   inert. Two counts close it: exactly one BINDING file-wide, and exactly two
+    //   occurrences of the identifier in total (the binding + the guard's single read).
+    expect(
+      countOccurrences(wholeSquashed, 'const buildKind'),
+      'buildKind must be bound EXACTLY once in connection.ts — a second `const buildKind` ' +
+        'is a shadow, and a shadowed discriminator makes the save guard read a value the ' +
+        'build never decided',
+    ).toBe(1);
+    expect(
+      countOccurrences(wholeSquashed, 'buildKind'),
+      'the buildKind IDENTIFIER must occur EXACTLY twice in the comment-stripped source: ' +
+        'the binding inside build(), and the single read in the onConnect save guard. A ' +
+        'third occurrence is a shadow, a re-assignment, or a second consumer that can ' +
+        'disagree with the guard',
+    ).toBe(2);
+    // NOTE: a bare `buildKind =` needle would red the CORRECT implementation — the
+    // compliant binding `const buildKind = readAuthKind(...)` contains it. The two counts
+    // above already exclude every re-assignment (a `buildKind = …` line is a third
+    // occurrence of the identifier), so these needles cover only the spellings that do not
+    // overlap the compliant one, purely to produce a sharper failure message.
+    for (const rebind of ['let buildKind', 'var buildKind', '{ buildKind }', 'buildKind ??=']) {
+      expect(
+        countOccurrences(wholeSquashed, rebind),
+        `connection.ts must contain NO occurrence of "${rebind}" — the discriminator is a ` +
+          'single immutable binding per build; anything that can re-point it can point it ' +
+          "at 'anon' unconditionally",
+      ).toBe(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W-NH4-SAVE-WIRED (RE-PINNED, M21b) — the token is captured on connect, under
+// the stale guard AND under the build's kind.
+//
+// ★★ RE-PIN JUSTIFICATION (tester-owned; reviewer checklist item) ★★
+// CORRECTED after review — the first draft of this justification overstated the
+// case twice, and both overstatements are recorded here rather than quietly
+// edited out, because a re-pin defended by a false argument is worse than no
+// re-pin at all.
+//
+// WHAT MASTER'S TOOTH ACTUALLY ASSERTED (re-read from origin/master, not from
+// memory): the exact three-param `.onConnect((c, id, token) => {` signature;
+// `auth.onConnected(token)` occurring exactly once file-wide; and that call site
+// appearing after `if (stale()) return;`. That is ALL. It did NOT require the
+// call to be unconditional — it was simply SILENT on conditionality, and a
+// kind-guarded call would have passed it unchanged. (The first draft of this
+// note claimed the old tooth "REQUIRED" the unconditional shape. False.)
+//
+// SO WHAT IS THE RE-PIN? A STRICT SUPERSET. All three original assertions are
+// carried forward verbatim below, and the guard requirement is ADDED on top,
+// together with identifier-level counts that close re-spelling evasions the
+// original literal-count could not see. Nothing was removed or weakened. A
+// reviewer auditing this should check exactly that: that each of the three
+// original assertions still appears, unrelaxed, in the body below.
+//
+// WHY THE GUARD IS WORTH ADDING: probe P3 (spacetimedb dist/index.mjs:5765 sets
+// `this.token` from `.withToken(...)`; :6226-6231 adopts the host's token ONLY
+// `if (!this.token …)` before `emit("connect", this, this.identity, this.token)`)
+// proves a client-supplied JWT is echoed back VERBATIM as onConnect's third
+// argument. An unconditional save therefore writes an account JWT into the
+// ANONYMOUS token slot, from which the gate re-supplies it on every later build
+// for the life of the tab. Red-team C4, confirmed against SDK source.
+//
+// ⚠ AND THE HONEST LIMIT OF WHAT THIS GUARD BUYS (the second overstatement: the
+// first draft claimed "no marker desync can produce a replay" — ALSO FALSE).
+// The guard is BEST-EFFORT, not structural. Its discriminator is `readAuthKind`,
+// a lossy sessionStorage read that FAILS TO 'anon' on every absent/blocked/
+// evicted/quota path — and 'anon' is the PERMISSIVE direction for this guard.
+// So a marker lost in the marker-MISSING direction re-opens exactly the replay
+// this guards against. That fail direction is not a bug: AUTH-31 requires it
+// (failing to 'account' would break every existing anonymous tab the moment
+// storage is blocked). The two requirements genuinely conflict and one lossy
+// boolean cannot satisfy both.
+//
+// THAT IS A HARD CONSTRAINT ON M21b-2, recorded here because this is the file a
+// future author will read before touching the guard: the discriminator must stop
+// being a storage re-read and become the PROVENANCE of the credential this build
+// actually supplied, produced in memory alongside the token. Doing that WILL
+// require re-pinning `W-NH4-TOKEN-SUPPLIED`, which today pins
+// `.withToken(auth.tokenForNextAttempt())` byte-for-byte. Budget for it.
+//
+// THIS IS THE ONLY PRE-EXISTING TOOTH THIS SLICE CHANGES. `W-NH4-TOKEN-SUPPLIED`
+// was going to be re-pinned too, until the scope ruling above cut the read-side
+// guard; it now stands byte-for-byte as it shipped. One justified re-pin, not
+// two — please audit this one accordingly.
+// ---------------------------------------------------------------------------
+
+describe('connection.ts wiring (nh4, RE-PINNED by M21b): W-NH4-SAVE-WIRED — onConnect saves the token via auth.onConnected(token), stale-guarded AND kind-guarded', () => {
+  it('★ BITES: onConnect takes a third param named token and calls auth.onConnected(token) at exactly ONE site — guarded on the build kind, AFTER the stale guard', () => {
     const src = readConnectionTs();
     const squashedWhole = squashWhitespace(stripLineComments(src));
 
-    // WRONG IMPL KILLED (a): onConnect((c, id) => ...) — the token discarded entirely,
-    // the bug today. The exact three-param signature pin catches this.
+    // WRONG IMPL KILLED (a): onConnect((c, id) => ...) — the token discarded entirely.
+    // The exact three-param signature pin catches this. (Carried forward verbatim.)
     expect(
       squashedWhole.includes('.onConnect((c, id, token) => {'),
       'the onConnect callback must have the exact contiguous signature ' +
-        '".onConnect((c, id, token) => {" — RED today: connection.ts has ' +
-        '".onConnect((c, id) => {" with only two params, discarding the token entirely',
+        '".onConnect((c, id, token) => {"',
     ).toBe(true);
 
     // WRONG IMPL KILLED (b): auth.onConnected(id.toHexString()) — saving the IDENTITY
@@ -330,17 +664,106 @@ describe('connection.ts wiring (nh4): W-NH4-SAVE-WIRED — onConnect saves the t
     // the stale guard in addition to the compliant guarded one — killed by the
     // exactly-once file-wide count, which a mere "appears after the guard" check would
     // miss (it would find the LATER, compliant occurrence and never notice the earlier
-    // rogue one).
-    const savedCount = squashedWhole.split('auth.onConnected(token)').length - 1;
+    // rogue one). (Both carried forward verbatim.)
     expect(
-      savedCount,
-      'auth.onConnected(token) must occur EXACTLY once in connection.ts — RED today: it ' +
-        'does not occur at all (0 times); a duplicated unguarded call above the stale ' +
-        'guard would also fail this count',
+      countOccurrences(squashedWhole, 'auth.onConnected(token)'),
+      'auth.onConnected(token) must occur EXACTLY once in connection.ts — a duplicated ' +
+        'unguarded call anywhere else would also fail this count',
     ).toBe(1);
 
+    // ★★ THE RE-SPELLING KILLERS. The literal count above is necessary but NOT sufficient:
+    // it counts one exact spelling, and a second call spelled ANY other way is invisible to
+    // it. Two red-team implementations, both verified biome-clean, walked through it:
+    //   CHEAT 1: `if (buildKind === 'anon') auth.onConnected(token);`
+    //            `else auth.onConnected(String(token));`
+    //            — the guard is present and contiguous, the literal count is still 1
+    //              (`auth.onConnected(String(token))` does not contain `auth.onConnected(token)`),
+    //              and the write happens on BOTH branches. The guard is pure decoration.
+    //   CHEAT 5: `auth.onConnected(token as string);` on the line BEFORE the guarded call —
+    //            an unconditional write followed by a decorative guarded one. Same evasion.
+    // Closed at two coarser granularities, so no re-spelling of the ARGUMENT can help:
+    //   (i)  `.onConnected(` — every member-call spelling of the gate method, whatever the
+    //        argument. Note the leading dot: it deliberately does NOT match the unrelated
+    //        `state = onConnected(state)` reconnect-policy call at connection.ts:587.
+    //   (ii) the bare IDENTIFIER `onConnected`, which additionally catches spellings that
+    //        dodge the dot — `auth?.onConnected(token)`, `auth['onConnected'](token)`, a
+    //        second import, a destructured `const { onConnected } = auth`. The expected
+    //        total is 3, with the breakdown pinned in the message so the number is
+    //        self-documenting (the same idiom this file applies to shouldRemoveOnViewDelete).
+    expect(
+      countOccurrences(squashedWhole, '.onConnected('),
+      'the gate method must be CALLED from exactly one site: `.onConnected(` (with the dot) ' +
+        'must occur exactly once in the comment-stripped source. CHEAT 1 (an `else ' +
+        'auth.onConnected(String(token));` arm) and CHEAT 5 (an unconditional ' +
+        '`auth.onConnected(token as string);` on the preceding line) both leave the exact ' +
+        'literal `auth.onConnected(token)` at exactly one occurrence while writing the ' +
+        'account JWT into the anonymous slot on every path. This count is what sees them',
+    ).toBe(1);
+    expect(
+      countOccurrences(squashedWhole, 'onConnected'),
+      'the onConnected IDENTIFIER must occur EXACTLY 3 times in the comment-stripped source, ' +
+        'and the breakdown is: (1) the `onConnected,` specifier in the ./reconnectPolicy ' +
+        'import; (2) `state = onConnected(state)` in the subscription onApplied — the ' +
+        'reconnect-policy transition, unrelated to auth; (3) the ONE kind-guarded ' +
+        '`auth.onConnected(token)`. A 4th occurrence is a second write site in SOME ' +
+        'spelling — optional-chained, computed member access, a destructured alias, a ' +
+        'second import, or an else-arm — every one of which re-opens the replay this ' +
+        'slice exists to close',
+    ).toBe(3);
+
+    // ★ THE ADDED PROPERTY — and the whole of this slice's safety value.
+    // WRONG IMPL KILLED (e): the call left UNCONDITIONAL — `auth.onConnected(token);` on
+    //   its own line. That was the PRE-M21b shape (it shipped that way from nh4 until this
+    //   slice), and it is the C4 replay mechanism the moment the account branch becomes
+    //   reachable: the SDK hands back the very JWT we supplied (P3), and the anon slot
+    //   swallows it permanently. This is the plan's named mutation "un-guard
+    //   auth.onConnected(token)", and reverting to it is a one-character-deletion away.
+    // WRONG IMPL KILLED (f): the guard INVERTED — `if (buildKind === 'account')` or
+    //   `if (buildKind !== 'anon')`. Both write the account credential into the anonymous
+    //   slot and nothing else in the suite can see it; the contiguous needle admits only
+    //   the fail-closed `=== 'anon'` form. (`!== 'account'` is also rejected: it is
+    //   behaviourally equal TODAY, but it fails OPEN the moment `AuthKind` gains a third
+    //   member, which is exactly what M21b-2 may do.)
+    // WRONG IMPL KILLED (g): ★ TOCTOU — a guard that RE-READS the marker inside the
+    //   callback rather than using the build-scoped binding, e.g.
+    //   `if (readAuthKind(globalThis, opts.uri, opts.db) === 'anon') auth.onConnected(token);`.
+    //   onConnect fires asynchronously, an arbitrary time after the build decided; the
+    //   marker is mutable sessionStorage that M21b-2's return leg writes mid-session. A
+    //   re-read can therefore say 'anon' for a build that supplied an account credential
+    //   — the guard would be present, readable, and wrong. The needle pins the closed-over
+    //   `buildKind` binding, and W-M21B-KIND-READ pins `readAuthKind(` to exactly ONE call
+    //   site inside build(), so this variant reds in BOTH teeth.
+    expect(
+      squashedWhole.includes(M21B_SAVE_GUARDED),
+      `connection.ts must contain the contiguous \`${M21B_SAVE_GUARDED}\` — the anonymous ` +
+        'token slot must NEVER receive an account JWT. An unconditional save writes the ' +
+        'account credential into the anon slot, because the SDK echoes a client-supplied ' +
+        "JWT back as onConnect's third argument (probe P3), and the gate then re-supplies " +
+        'it on every later build for the life of the tab (red-team C4)',
+    ).toBe(true);
+    expect(
+      countOccurrences(squashedWhole, M21B_SAVE_GUARDED),
+      'the kind-guarded save must appear exactly once — two guarded sites means two ' +
+        'competing writers of the same slot',
+    ).toBe(1);
+
+    // ★ NO `else` ARM (CHEAT 1, killed a second, independent way). The counts above already
+    // exclude it, but this pins the SHAPE directly so the failure message names the defect
+    // instead of reporting a surprising number: whatever follows the guarded statement, it
+    // is not an else. `if (a) f(); else g();` is a guard that guards nothing.
+    const guardEndIdx = squashedWhole.indexOf(M21B_SAVE_GUARDED) + M21B_SAVE_GUARDED.length;
+    expect(
+      squashedWhole
+        .slice(guardEndIdx, guardEndIdx + 6)
+        .trimStart()
+        .startsWith('else'),
+      'the kind-guarded save must NOT be followed by an `else` arm — an else that also ' +
+        'writes (in ANY spelling) makes the guard pure decoration and restores the ' +
+        'unconditional write on the account path',
+    ).toBe(false);
+
     // WRONG IMPL KILLED (d): the single call placed ABOVE the stale guard, letting a
-    // superseded build clobber the live build's token.
+    // superseded build clobber the live build's token. (Carried forward verbatim.)
     expectUniqueAnchor(src, '.onConnect((c, id, token) => {');
     expectUniqueAnchor(src, '.onConnectError((_ctx, err: Error) => {');
     const region = bodyRegion(
@@ -362,6 +785,69 @@ describe('connection.ts wiring (nh4): W-NH4-SAVE-WIRED — onConnect saves the t
         'onConnect callback — a call placed above the guard would let a superseded ' +
         "build's late connect clobber the live build's saved token",
     ).toBeGreaterThan(guardIdx);
+    // The kind guard must live in the SAME region (not hoisted somewhere the callback
+    // never reaches), and likewise after the stale guard.
+    expect(
+      squashedRegion.indexOf(M21B_SAVE_GUARDED),
+      'the kind-guarded save must sit INSIDE the onConnect callback, AFTER the stale guard',
+    ).toBeGreaterThan(guardIdx);
+
+    // ★ NO SHADOWED DISCRIMINATOR inside this callback (CHEAT 2, red-team, biome-clean).
+    // `buildKind` must occur exactly ONCE in the onConnect region — the guard's single
+    // read. A `const buildKind = 'anon';` shadow declared inside the callback leaves every
+    // other needle in this tooth satisfied (the guard text is unchanged, the counts of
+    // .onConnected( are unchanged) while the guard reads a literal and is inert. Biome
+    // reports shadowing as a warning at most, so it ships. This complements
+    // W-M21B-KIND-READ's file-wide `buildKind`-occurs-exactly-twice count: that one sees
+    // the extra binding anywhere in the file, this one localises the check to the callback
+    // where a shadow actually changes the guard's meaning.
+    expect(
+      countOccurrences(squashedRegion, 'buildKind'),
+      'buildKind must occur EXACTLY once inside the onConnect callback — the guard reads ' +
+        'the build-scoped binding and nothing re-declares or re-derives it there. A second ' +
+        "occurrence is a shadow (`const buildKind = 'anon';`), which makes the guard read a " +
+        'constant and silently restores the unconditional write',
+    ).toBe(1);
+    for (const shadow of ['const buildKind', 'let buildKind', 'var buildKind']) {
+      expect(
+        countOccurrences(squashedRegion, shadow),
+        `the onConnect callback must contain NO "${shadow}" — the discriminator is decided ` +
+          'once per build, inside build(), and merely READ here',
+      ).toBe(0);
+    }
+
+    // ★ NO STORAGE ACCESS AT ALL FROM THIS SHELL (the last way to reach the token slot
+    // without going through the guard). Every needle above pins the ONE path into the
+    // anonymous credential — `auth.onConnected(token)`. None of them can see a build that
+    // simply bypasses the gate module:
+    //     globalThis.sessionStorage?.setItem('mr.authToken.v1|…', token);
+    // inside onConnect. That leaves `.onConnected(` at exactly one occurrence, keeps the
+    // kind guard textually intact, and writes the account JWT into the anon slot anyway.
+    //
+    // The pin is whole-file, not region-bounded, and it is not an ad-hoc widening: it is
+    // authToken.ts's stated charter, mechanised. That module's header says the storage HOST
+    // is injected "never a globalThis reach from inside" precisely so every branch is
+    // unit-testable in node — and connection.ts is coverage-EXCLUDED, so any storage logic
+    // that migrates here becomes permanently unprovable. ADR-0150 D3 additionally forbids
+    // localStorage anywhere (an origin-shared token lets closing a second tab forfeit the
+    // first tab's live PvP battle and delete its character row).
+    //
+    // FALSE-RED RISK ASSESSED BEFORE ADDING: connection.ts contains ZERO occurrences of
+    // any of these identifiers in shipped code today (its single `sessionStorage` mention
+    // is prose in the comment above the kind guard, and comments are stripped here). If a
+    // future slice genuinely needs storage in the adapter, that is the conversation this
+    // tooth is meant to force, not an inconvenience to route around.
+    for (const storageReach of ['sessionStorage', 'localStorage', 'indexedDB', 'document.cookie']) {
+      expect(
+        countOccurrences(squashedWhole, storageReach),
+        `connection.ts must not reference "${storageReach}" — storage belongs to ` +
+          'authToken.ts behind an INJECTED host (its module header: never a globalThis ' +
+          'reach from inside). A direct write here bypasses the kind guard entirely, ' +
+          're-opening the account-JWT replay while every other needle in this tooth stays ' +
+          'satisfied — and it would live in a coverage-excluded file, where behaviour ' +
+          'cannot be proven at all',
+      ).toBe(0);
+    }
   });
 });
 
