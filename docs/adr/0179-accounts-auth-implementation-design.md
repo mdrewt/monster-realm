@@ -456,6 +456,50 @@ proof-of-teeth discipline):
   own text for why the narrower (table-scoped) statement was tried first during this ceremony and
   found to conflict with its own worked example.
 
+- **M21a build-time corrections (2026-08-08, ratified by two live probes + a 3-lens plan review).**
+  Two premises this design rested on were tested empirically against `spacetime` 2.6.0 (module crate
+  `spacetimedb` 1.12) before implementation, and both were falsified — recorded here rather than
+  silently rewritten, consistent with this milestone's practice:
+  1. **`has_jwt()` is true for EVERY connection (probe P1).** The SpacetimeDB host mints its own
+     identity JWT for a tokenless first connect (`iss=localhost`, `aud=["spacetimedb"]`) and the
+     client replays it on every reconnect, so `ctx.sender_auth().has_jwt()` is never `false` in
+     practice. D4's `client_connected` early-return is therefore vacuous-but-harmless, and D1's
+     "reject an unrecognized issuer with `Err`" (which disconnects the client) would disconnect the
+     entire player base. **Corrected design — D1″ (asymmetric):** an unrecognized *issuer* returns
+     `Ok(())` with no `account` row (fail-safe to anonymous; this is the host's-own-token path), the
+     reject-log for it is **rate-limited** via `crate::movement::RateLimiter` (it is the modal path);
+     an allowed issuer with an unrecognized *audience* still returns `Err` (disconnect), because that
+     branch is reachable only by a same-issuer cross-app token, never a legitimate player. Load-
+     bearing invariant: **the host's anonymous issuer is never placed in `ALLOWED_ISSUERS`** (it is
+     not an account provider), which is what keeps the audience-disconnect branch outage-safe. Spec
+     AUTH-2 amended to `Ok`; AUTH-3 unchanged. The gate `is_account_holder(ctx, id)` (an `account`-row
+     lookup), not `has_jwt()`, is the load-bearing authorization predicate for `start_guest_claim`
+     (AUTH-7).
+  2. **A reducer `Err` rolls back all of its own writes (probe P2).** Confirmed by inserting a row
+     then returning `Err` and observing the row absent via `spacetime sql`. AUTH-16's "reject with
+     `Err(\"code expired\")` AND delete the row + disarm the reaper as the only side effect" is
+     therefore structurally impossible — the delete cannot persist on the same call that returns
+     `Err`. **Corrected:** the expiry branch of `complete_guest_claim` returns `Err(\"code expired\")`
+     and modifies no row; expired-claim cleanup is owned solely by the scheduled `guest_claim_reaper`
+     (its own `Ok` transaction). D5's guard list is unaffected; AUTH-16/AUTH-26 amended in the spec.
+- **CRITICAL-2 constraint on OQ1 (record before closing OQ1).** Because D1″ derives `Identity =
+  from_claims(iss, sub)` at the host (before the module runs) and the audience check only gates the
+  `account`-row write, a token minted by an allowed issuer for an *unrelated* application but bearing
+  a victim's `sub` would, absent an audience disconnect, let the bearer act as the victim's identity.
+  D1″'s audience-disconnect branch (item 1) closes this at the code level for any allowed-issuer/
+  wrong-audience token. It cannot close the case of a token that is validly scoped to *this* app for
+  the victim's `sub` (that is a provider-side auth compromise, out of scope). **Hard OQ1 requirement:**
+  the chosen OIDC issuer must be single-tenant/dedicated to monster-realm, OR the deployment must
+  verify that the host enforces an audience allowlist at connection establishment — otherwise a
+  shared multi-tenant issuer widens the confused-deputy surface. M21a ships the `.invalid` fail-closed
+  placeholder, so no real token is accepted until OQ1 lands with this constraint honored.
+- **Follow-up for M21c's G12 (NO_PII_IN_REJECT_LOGS):** a red-team pass noted the gate as originally
+  worded (ban the identifiers `issuer`/`subject`/`audience`/`claims` inside a `log_reject(` argument)
+  is evadable by a one-line rename (`let s = claims.issuer(); log_reject(.., s);`). M21c should pin
+  the reject *reason value* to the accepted static-literal constants at these call sites, not merely
+  scan for banned identifier names. M21a's code uses named `&'static str` reject-reason constants to
+  make that value-pin straightforward.
+
 ## Consequences
 
 - Positive: no game-data schema churn beyond the two new tables — the M2 identity-keying decision
