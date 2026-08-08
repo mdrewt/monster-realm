@@ -211,7 +211,85 @@ export const ACCESSOR_BYPASS_ALLOWLIST = [
   'schema.rs', // declares the table + struct; no reducer logic
 ];
 
-/** Normalise a readdirSync path to forward slashes (Windows emits `a\b.rs`). */
+// ---------------------------------------------------------------------------
+// [G10/wallet-zero-arg-pin] — AUTH-24's zero-in-place, pinned by VALUE.
+//
+// `rekey_wallet` and `ranking::rekey_profile` are the module's only two
+// COPY-FORWARD re-keys (monster / inventory / npc / heal are moves, so
+// re-donation is structurally impossible there). Both therefore depend on an
+// explicit ZERO of the guest's own row to stop unbounded re-donation, and both
+// need the same value-exact pin. `[G8/tombstone-arg-pin]` shipped for profile;
+// this is its wallet mirror, added after a security audit found the wallet side
+// had only an ordering+presence scan (economy_tests.rs:1951-2010) — the exact
+// clause shape a red-team already defeated on the profile side:
+//
+//     grant_currency(ctx, to, row.balance);
+//     let _audit = zeroed_wallet(row.clone());              // still "called"
+//     ctx.db.player_wallet().owner_identity().update(row);  // ORIGINAL balance
+//
+// That keeps `find(from)` < `grant_currency(` < `zeroed_wallet(`, adds no
+// `.delete(`, and leaves ACCESSOR_BYPASS / SINGLE_SURFACE / ZERO_GUARD green.
+// Exploit: guest G with balance B claims onto account A1 (B credited, G keeps
+// B), reconnects, calls start_guest_claim again (AUTH-7 passes — G holds no
+// account), and a fresh account A2 completes the claim. AUTH-14 is per-ACCOUNT,
+// not per-GUEST, so this repeats for every account the attacker provisions:
+// unbounded currency mint, strictly more valuable than the rating re-donation.
+const WALLET_ZERO_FN = 'rekey_wallet';
+const WALLET_UPDATE = 'player_wallet().owner_identity().update(';
+const WALLET_ZERO_ARG = 'zeroed_wallet(row)';
+
+/**
+ * The `player_wallet` update inside `rekey_wallet` must write exactly the
+ * zeroed row — not the original, and not the zeroed value re-wrapped.
+ * @param {string} economySrc Raw server-module/src/economy.rs source.
+ * @returns {string|null} Error string, or null on pass.
+ */
+export function checkWalletZeroArgPin(economySrc) {
+  const flat = stripRustComments(economySrc).replace(/\s+/g, '');
+  const fnAt = flat.indexOf(`fn${WALLET_ZERO_FN}(`);
+  if (fnAt === -1) {
+    return (
+      `[G10/wallet-zero-arg-pin] fn \`${WALLET_ZERO_FN}\` was not found in economy.rs — the clause ` +
+      'that pins AUTH-24’s zero-in-place has no scope and would pass vacuously. Fail loud'
+    );
+  }
+  const updateAt = flat.indexOf(WALLET_UPDATE, fnAt);
+  if (updateAt === -1) {
+    return (
+      `[G10/wallet-zero-arg-pin] \`${WALLET_ZERO_FN}\` contains no \`${WALLET_UPDATE}\` — AUTH-24 ` +
+      'requires the guest row be RETAINED with balance zero (AUTH-23: never deleted), so the ' +
+      'update must exist'
+    );
+  }
+  const argStart = updateAt + WALLET_UPDATE.length;
+  let depth = 1;
+  let i = argStart;
+  for (; i < flat.length && depth > 0; i++) {
+    if (flat[i] === '(') depth++;
+    else if (flat[i] === ')') depth--;
+  }
+  const arg = flat.slice(argStart, i - 1);
+  if (arg !== WALLET_ZERO_ARG) {
+    return (
+      `[G10/wallet-zero-arg-pin] in \`${WALLET_ZERO_FN}\` the \`${WALLET_UPDATE}\` argument is ` +
+      `\`${arg}\`, must be EXACTLY \`${WALLET_ZERO_ARG}\`. The guest’s own wallet row must be ` +
+      'rewritten with the ZEROED value and nothing else. Writing back the original row (or the ' +
+      'zeroed value re-wrapped so the balance survives) lets ONE guest identity donate the SAME ' +
+      'balance to an unbounded number of fresh accounts — AUTH-14 is per-ACCOUNT, not ' +
+      'per-GUEST, so the claim is repeatable. This is a value pin ON PURPOSE (mirroring ' +
+      '[G8/tombstone-arg-pin] for `profile`): an ordering+presence scan is passed by ' +
+      '`let _audit = zeroed_wallet(row.clone()); ...update(row);`, which is why the profile-side ' +
+      'equivalent was defeated. A deliberate reword is a PR-visible change to this gate'
+    );
+  }
+  return null;
+}
+
+/**
+ * Normalise a readdirSync path to forward slashes (Windows emits `a\b.rs`).
+ * @param {string} f Path as emitted by readdirSync.
+ * @returns {string} Path with forward slashes.
+ */
 export function normalizeSrcPath(f) {
   return f.replace(/\\/g, '/');
 }
@@ -669,6 +747,64 @@ export default async function () {
       );
     }
   }
+
+  // [G10/wallet-zero-arg-pin] — AUTH-24 zero-in-place, value-exact (see above).
+  const walletZeroTeeth = [
+    // GOOD: the shipped shape must PASS.
+    [
+      'fn rekey_wallet(ctx: &ReducerContext, from: Identity, to: Identity) {\n' +
+        '  if let Some(row) = ctx.db.player_wallet().owner_identity().find(from) {\n' +
+        '    grant_currency(ctx, to, row.balance);\n' +
+        '    ctx.db.player_wallet().owner_identity().update(zeroed_wallet(row));\n  }\n}',
+      false,
+    ],
+    // BAD: the audit-only call — ordering + presence + no-delete all hold, the
+    // guest keeps its balance. This is the proven unbounded-mint shape.
+    [
+      'fn rekey_wallet(ctx: &ReducerContext, from: Identity, to: Identity) {\n' +
+        '  if let Some(row) = ctx.db.player_wallet().owner_identity().find(from) {\n' +
+        '    grant_currency(ctx, to, row.balance);\n' +
+        '    let _audit = zeroed_wallet(row.clone());\n' +
+        '    ctx.db.player_wallet().owner_identity().update(row);\n  }\n}',
+      true,
+    ],
+    // BAD: zeroed value re-wrapped so the balance survives.
+    [
+      'fn rekey_wallet(ctx: &ReducerContext, from: Identity, to: Identity) {\n' +
+        '  if let Some(row) = ctx.db.player_wallet().owner_identity().find(from) {\n' +
+        '    grant_currency(ctx, to, row.balance);\n' +
+        '    ctx.db.player_wallet().owner_identity()\n' +
+        '      .update(with_balance(zeroed_wallet(row), keep));\n  }\n}',
+      true,
+    ],
+    // BAD: fn absent -> must fail loud, not pass vacuously.
+    ['fn something_else() {}', true],
+    // BAD: update absent -> AUTH-23 requires the row be retained and rewritten.
+    [
+      'fn rekey_wallet(ctx: &ReducerContext, from: Identity, to: Identity) {\n' +
+        '  if let Some(row) = ctx.db.player_wallet().owner_identity().find(from) {\n' +
+        '    grant_currency(ctx, to, row.balance);\n  }\n}',
+      true,
+    ],
+  ];
+  for (const [fixture, mustFlag] of walletZeroTeeth) {
+    const got = checkWalletZeroArgPin(fixture);
+    if (mustFlag && (got === null || got.indexOf('[G10/wallet-zero-arg-pin]') === -1)) {
+      failures.push(
+        'TEETH FAILED [G10/wallet-zero-arg-pin]: a fixture that must be FLAGGED was not, or was ' +
+          `flagged by another clause (got: ${got === null ? 'null' : got.slice(0, 80)})`,
+      );
+    }
+    if (!mustFlag && got !== null) {
+      failures.push(
+        `TEETH FAILED [G10/wallet-zero-arg-pin]: the GOOD fixture was flagged — ${got.slice(0, 120)}`,
+      );
+    }
+  }
+  const walletZeroFail = checkWalletZeroArgPin(
+    readFileSync('server-module/src/economy.rs', 'utf8'),
+  );
+  if (walletZeroFail) failures.push(walletZeroFail);
 
   if (failures.length > 0) {
     return { name, pass: false, detail: failures.join('; ') };

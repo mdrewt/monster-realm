@@ -264,6 +264,15 @@ function checkExactlyOneNameReducer(rankingSrc) {
 const PROFILE_ACCESS_NEEDLE = 'ctx.db.profile()'; // A2
 const C1A_CHAINED_NEEDLE = 'profile().identity().delete'; // C1a
 const C1A_ALT_NEEDLE = 'profile().delete'; // C1a (alternate chain)
+// C1a (UFCS). `UniqueColumn::delete(&ctx.db.profile().identity(), id)` places
+// the VERB BEFORE the accessor, so neither chained needle above matches, and the
+// accessor is preceded by `(&` rather than `=`, so C1b's split-binding needle
+// does not match either. A red-team pass landed exactly this in
+// `ranking.rs::rekey_profile` and observed it compile, pass clippy `-D warnings`
+// and `fmt --check`, and leave this eval AND pvp_tests' RL-2 scan green while
+// deleting a permanent ladder record. Both spellings, since `&` is optional at
+// the call site depending on the receiver's binding.
+const C1A_UFCS_NEEDLES = ['::delete(&ctx.db.profile()', '::delete(ctx.db.profile()'];
 const C1B_SPLIT_BINDING_NEEDLE = '=ctx.db.profile()'; // C1b (was '= ctx.db.profile()')
 
 // ---------------------------------------------------------------------------
@@ -1467,6 +1476,17 @@ export default async function () {
           'profile rows must NEVER be deleted (persistent leaderboard, ADR-0119 D1). ' +
           'This needle catches the alternate chained-delete form.',
       );
+    }
+    for (const ufcs of C1A_UFCS_NEEDLES) {
+      if (countOccurrences(code, ufcs) > 0) {
+        failures.push(
+          `C1a NEVER_DELETED (RL-2): found \`${ufcs}\` in ${fileName} — a UFCS delete ` +
+            'reaches the profile table with the VERB BEFORE the accessor, so both chained ' +
+            'needles and C1b’s split-binding needle are blind to it. Profile rows must ' +
+            'NEVER be deleted (persistent leaderboard, ADR-0119 D1); the guest→account ' +
+            're-key tombstones IN PLACE (AUTH-23 / ADR-0179 D6).',
+        );
+      }
     }
   }
 

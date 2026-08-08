@@ -1459,6 +1459,14 @@ fn m17a_rl7_server_ranking_module_invariants() {
 /// Fails LOUD on every I/O error (`read_dir`, entry, stat, read): a file this
 /// helper silently skips is a file the never-deleted scan does not cover, so a
 /// skip would be indistinguishable from a pass.
+/// Last path segment of a `/`-separated relative path from `collect_scan_sources`.
+/// The scan set carries subdirectory prefixes (`accounts/economy.rs`), so both
+/// the anchor-set guard and the `ranking.rs` carve-out must compare basenames —
+/// an exact compare reds the moment a module legitimately moves into a subdir.
+fn basename(rel_path: &str) -> &str {
+    rel_path.rsplit('/').next().unwrap_or(rel_path)
+}
+
 fn collect_scan_sources(dir: &std::path::Path, rel_prefix: &str) -> Vec<(String, String)> {
     let read = std::fs::read_dir(dir).unwrap_or_else(|e| {
         panic!(
@@ -1566,8 +1574,13 @@ fn m17a_rl2_profile_never_deleted_scan() {
         "ranking.rs",
         "schema.rs",
     ] {
+        // Compare BASENAMES: `derived` carries subdirectory-prefixed relative
+        // paths (the recursion exists precisely so `src/<subdir>/<mod>.rs` is
+        // covered), so an exact match would red the moment an anchor module
+        // legitimately moves into a subdirectory — reporting "the derivation is
+        // broken" when the derivation is the thing that still works.
         assert!(
-            derived.contains(anchor),
+            derived.iter().any(|d| basename(d) == *anchor),
             "m17a-RL-2 NON-VACUITY FAIL: the derived scan set does not contain `{}`. \
              The set is derived from a recursive read_dir of CARGO_MANIFEST_DIR/src \
              (`*.rs` minus `*_tests.rs`); if an anchor module is missing, the derivation \
@@ -1594,6 +1607,17 @@ fn m17a_rl2_profile_never_deleted_scan() {
     // concat! so this file's own text can never self-match a future scanner.
     let table_handle_needle = concat!("profile", "__TableHandle");
     let view_handle_needle = concat!("profile", "__ViewHandle");
+    // Needle 4: UFCS. `UniqueColumn::delete(&ctx.db.profile().identity(), id)`
+    // puts the VERB BEFORE the accessor, so needle 1 never matches, and the
+    // accessor is preceded by `(&` rather than `=`, so needle 2 never matches
+    // either. A red-team pass landed exactly this in `ranking.rs::rekey_profile`
+    // and observed it compile, pass clippy `-D warnings` and `fmt --check`, and
+    // leave BOTH this scan and `ranking-security.eval.mjs` C1a green while it
+    // deleted a permanent ladder record (AUTH-23 / ADR-0119 D1). The eval's G5
+    // family already models the UFCS backward span for `accounts.rs`; this is
+    // the `profile` mirror.
+    let ufcs_delete_needle = concat!("::delete(&ctx.db.", "profile()");
+    let ufcs_delete_ref_needle = concat!("::delete(ctx.db.", "profile()");
 
     for (filename, src) in &all_sources {
         // Comments blanked, then ALL whitespace removed: a needle written in
@@ -1638,8 +1662,22 @@ fn m17a_rl2_profile_never_deleted_scan() {
             );
         }
 
+        for ufcs_needle in [ufcs_delete_needle, ufcs_delete_ref_needle] {
+            assert!(
+                !squashed.contains(ufcs_needle),
+                "m17a-RL-2 FAIL in {}: found `{}` — a UFCS delete reaches the profile \
+                 table with the VERB BEFORE the accessor, so the chained-delete and \
+                 split-binding needles are both blind to it. `profile` rows must NEVER \
+                 be deleted (permanent ladder record, ADR-0119 D1; the guest→account \
+                 re-key tombstones IN PLACE, AUTH-23/ADR-0179 D6). Use \
+                 `ranking::rekey_profile`'s copy-forward + zero + tombstone instead.",
+                filename,
+                ufcs_needle
+            );
+        }
+
         for (at, _) in squashed.match_indices(match_binding_needle) {
-            let is_owner_module = filename.as_str() == "ranking.rs";
+            let is_owner_module = basename(filename) == "ranking.rs";
             let is_owned_read_form = squashed[at..].starts_with(owned_read_form);
             assert!(
                 is_owner_module && is_owned_read_form,

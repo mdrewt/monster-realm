@@ -1203,6 +1203,44 @@ export function checkIssuerAndAudience(accountsSrc) {
     );
   }
 
+  // [I/asym] — the DIRECTION of each branch, not merely its presence.
+  //
+  // ADR-0179 D1" is asymmetric, and the asymmetry is the whole outage-safety
+  // argument: an unrecognized ISSUER must return `Ok` (leaving the connection
+  // anonymous), an allowed issuer with an unrecognized AUDIENCE must return
+  // `Err` (disconnecting). This matters because a live M21a probe established
+  // that `has_jwt()` is TRUE FOR EVERY CONNECTION — the SpacetimeDB host mints
+  // its own `iss=localhost` token even for a tokenless connect — so the
+  // unrecognized-issuer branch is the MODAL path for every anonymous player.
+  // Flipping it to `Err` disconnects the entire player base at connect.
+  //
+  // Every clause above stays green through that flip, including
+  // [I/anon-no-err]: `on_connect`'s own body contains no `Err(` literal because
+  // the error propagates out of the tail call to this fn. Only accounts_tests.rs
+  // covers the direction today, which invites a future reader to delete the Rust
+  // test believing "ISSUER_AND_AUDIENCE_CHECKED" already covers it.
+  const issBranch = body.slice(issAt, audAt);
+  if (issBranch.indexOf('returnOk(())') === -1) {
+    return (
+      `[I/asym] in \`${PROVISION_FN}\` the unrecognized-ISSUER branch does not \`return Ok(())\`. ` +
+      'ADR-0179 D1" is asymmetric ON PURPOSE: `has_jwt()` is true for EVERY connection (the host ' +
+      'mints its own `iss=localhost` token even for a tokenless connect — probed live in M21a), so ' +
+      'this branch is the modal path for every anonymous player. Returning `Err` here disconnects ' +
+      'the ENTIRE player base at connect, which is a total outage, not a security tightening. ' +
+      'AUTH-2 (amended): return Ok without provisioning, leaving the connection anonymous'
+    );
+  }
+  if (body.slice(audAt).indexOf('returnErr(') === -1) {
+    return (
+      `[I/asym] in \`${PROVISION_FN}\` the unrecognized-AUDIENCE branch does not \`return Err(\`. ` +
+      'AUTH-3 is UNCHANGED by the D1" amendment: this branch is reachable only by a token whose ' +
+      'issuer we explicitly allowlisted but whose `aud` targets another application — a ' +
+      'same-issuer cross-app confused-deputy token, never a legitimate player. Downgrading it to ' +
+      '`Ok` silently retires `aud` as an authorization control, which is exactly the CRITICAL-2 ' +
+      'finding D1" was written to preserve against'
+    );
+  }
+
   return null;
 }
 
@@ -1244,6 +1282,33 @@ export function checkNoServerRng(accountsSrc) {
 // ---------------------------------------------------------------------------
 // G5 — MODULE_WRITE_ISOLATION.
 // ---------------------------------------------------------------------------
+
+// [W/db-binding] — every G5 clause below keys on the literal `ctx.db.<ident>(`.
+// `ReducerContext.db` is a PUBLIC field of type `Local`, so one binding hides
+// the whole family from every one of them:
+//
+//     let db = &ctx.db;
+//     db.monster().monster_id().update(m);   // foreign write, [W/*] all green
+//     db.battle().battle_id().find(id);      // [W/battle-literal] green too
+//
+// Same shape as [W/split-binding], one level up: if `ctx.db` is not immediately
+// followed by `.`, the handle escaped into a binding and the accessor scan is
+// blind from that point on. Banning the escape is exact — `accounts.rs` reaches
+// the database only through inline `ctx.db.<table>()` chains.
+const DB_ROOT = 'ctx.db';
+
+/**
+ * True if the compacted source lets the `Local` handle escape `ctx.db.` form.
+ * @param {string} flat Whitespace-compacted, string/comment-stripped source.
+ * @returns {boolean} True when a bare `ctx.db` is not a chained accessor.
+ */
+export function hasEscapedDbHandle(flat) {
+  for (let i = flat.indexOf(DB_ROOT); i !== -1; i = flat.indexOf(DB_ROOT, i + 1)) {
+    if (isWordChar(flat[i - 1])) continue; // e.g. `my_ctx.db` — not our root
+    if (flat[i + DB_ROOT.length] !== '.') return true;
+  }
+  return false;
+}
 
 // accounts.rs may WRITE only these three tables (D0 is WRITE-scoped, not
 // table-scoped). Bare READS of `player` are explicitly permitted — there is no
@@ -1313,6 +1378,21 @@ export function checkModuleWriteIsolation(accountsSrc) {
       'battle-table reach. ADR-0179 D0/G5 makes this a LITERAL ban rather than a write-only ban: ' +
       'the whole point of the indirection is that accounts.rs has no battle coupling at all, so ' +
       'even a read here is a new edge in the module graph'
+    );
+  }
+
+  // [W/db-binding] — before the accessor walk, because an escaped `Local`
+  // handle makes that walk blind rather than wrong.
+  if (hasEscapedDbHandle(flat)) {
+    return (
+      `[W/db-binding] ${ACCOUNTS_PATH} uses \`${DB_ROOT}\` somewhere it is not immediately ` +
+      'followed by `.` — the `Local` database handle escaped into a binding or an argument. ' +
+      '`ReducerContext.db` is a PUBLIC field, so `let db = &ctx.db; db.monster()...update(m);` ' +
+      'is a foreign-table write that EVERY other clause in this family misses: [W/write-target], ' +
+      '[W/split-binding] and [W/handle-type] all key on the literal `ctx.db.<table>(`, and ' +
+      '[W/battle-literal] keys on `ctx.db.battle(`. The Rust twin (accounts_tests.rs) shares the ' +
+      'same key, so there is no backstop. accounts.rs reaches the database only through inline ' +
+      '`ctx.db.<table>()` chains — keep it that way'
     );
   }
 
@@ -1500,6 +1580,52 @@ export function checkSingleUseConsumed(accountsSrc) {
   // always FALSE at this point (rekey_all has just moved the guest's rows away),
   // so the consume never executes while every needle-based clause is satisfied.
   const consumeAt = body.indexOf(CONSUME_PINNED);
+
+  // [S/reachable] — REACHABILITY, not just position. Runs BEFORE the
+  // depth/statement clauses so that this shape reports the clause that actually
+  // describes it (the statement-position check would otherwise catch it first
+  // and blame brace depth for a control-flow defect).
+  //
+  // Every other clause here reasons about WHERE the consume sits, never about
+  // whether control reaches it. The red-team pass built a patch that satisfied
+  // [S/count], [S/arg-pin], [S/depth0] AND [S/success-region] while the consume
+  // never executed, at 80/80 evals and 547/547 Rust tests green:
+  //
+  //     rekey_all(ctx, guest, me)?;
+  //     // "post-rekey belt: only an account holder may finalise provenance"
+  //     if is_account_holder(ctx, me) {
+  //         return Ok(());
+  //     }
+  //     consume_claim_and_disarm(ctx, guest);
+  //
+  // Guard 2 already bound `account` from `ctx.db.account().identity().find(me)`
+  // and `rekey_all` never deletes it, so `is_account_holder(ctx, me)` is ALWAYS
+  // true here: the early return always fires, the consume is dead code the
+  // compiler cannot prove unreachable (no `unreachable_code` lint), and both
+  // AUTH-34 single-use AND AUTH-21 provenance silently stop happening. The
+  // guest's claim row and its armed reaper survive, so the 64-hex code stays
+  // redeemable by a SECOND account until TTL.
+  //
+  // The success path is straight-line by design (ADR-0179: the entire reject
+  // region is guards 1-11, all of which precede `rekey_all`), so ANY `return`
+  // between the re-key and the consume is either dead code or a new early exit
+  // that skips it. Banning the token outright is exact here, and a legitimate
+  // future early exit is a PR-visible change to this gate.
+  const rekeyAtEarly = body.indexOf(REKEY_CALL);
+  if (consumeAt > rekeyAtEarly && rekeyAtEarly !== -1) {
+    if (body.slice(rekeyAtEarly, consumeAt).indexOf('return') !== -1) {
+      return (
+        `[S/reachable] \`${CLAIM_FN}\` contains a \`return\` between \`${REKEY_CALL}\` and the ` +
+        `\`${CONSUME_PINNED}\` call. After the re-key the success path is straight-line by ` +
+        'design — every reject guard runs BEFORE `rekey_all` — so a `return` here either makes ' +
+        'the consume dead code or adds an exit that skips it. Both leave the claim code ' +
+        'redeemable until TTL (AUTH-34/35 dead) while [S/count], [S/arg-pin], [S/depth0] and ' +
+        '[S/success-region] all stay green, because those clauses reason about POSITION, never ' +
+        'REACHABILITY. Proven live by the M21c red-team pass at 80/80 evals green'
+      );
+    }
+  }
+
   let depth = 0;
   for (let k = 0; k < consumeAt; k++) {
     if (body[k] === '{') depth++;
