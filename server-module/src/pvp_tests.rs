@@ -1400,74 +1400,223 @@ fn m17a_rl7_server_ranking_module_invariants() {
 }
 
 // ---------------------------------------------------------------------------
-// (f) RL-2: profile rows are never deleted (never-deleted scan)
+// (f) RL-2 / AUTH-23: profile rows are NEVER deleted (never-deleted scan)
 //
-// Scans the full set of server-module source files for two needles:
-//   Needle 1: chained delete form — `.profile().identity().delete`
-//   Needle 2: split-binding evasion — `= ctx.db.profile()`
-//              (assigns the profile table accessor to a binding, which could then
-//               call .delete() — the documented evasion heuristic from ADR-0119 D1)
+// The scan set is DERIVED, not hardcoded: every `*.rs` under
+// `CARGO_MANIFEST_DIR/src`, RECURSIVELY, minus `*_tests.rs`. A hand-maintained
+// list silently under-covers the moment a new module lands (the old 13-entry
+// list here never grew to cover `ranking.rs` or `accounts.rs`), and a
+// non-recursive walk is bypassed outright by `src/<subdir>/<module>.rs`.
+// `src/` is flat today, so the recursion is green on arrival and closes the
+// subdirectory hole prospectively. `CARGO_MANIFEST_DIR` is compile-time-baked
+// and absolute, so the test's CWD is irrelevant; under `cargo mutants` the
+// copied tree's own `src/` is read, which is the correct behaviour.
 //
-// GREEN-vacuous today (profile table absent → neither needle matches).
-// Paired with (g) which requires the table to exist — the pair together is
-// meaningful: (f) proves no delete path exists once (g) proves the table exists.
-// Note: this test is GREEN-vacuous today but provides regression protection.
-//       It will remain GREEN after implementation only if no delete is added.
+// Both needles are matched against WHITESPACE-SQUASHED text, and that is the
+// load-bearing half of this scan. The live tree is rustfmt-WRAPPED —
+// `ranking.rs` writes `ctx.db` / `.profile()` / `.identity()` / `.update(` on
+// four separate lines — so a delete written in this repo's own formatting
+// style walks straight past a whitespace-contiguous needle.
+//
+//   Needle 1: chained delete — `profile().identity().delete`. Banned in EVERY
+//             derived file; no exemption anywhere.
+//   Needle 2: split-binding evasion — `=ctx.db.profile()` binds the table
+//             handle to a local that can then call `.delete()`. Banned in
+//             every derived file INCLUDING `ranking.rs`: a blanket exemption
+//             would leave RL-2/AUTH-23 unenforced in the one file most likely
+//             to change.
+//   Needle 2': `=match ctx.db.profile()` is allowed ONLY in `ranking.rs` (the
+//             module that legitimately owns profile access — consistent with
+//             the `ranking.rs` carve-out in evals/ranking-security.eval.mjs
+//             C1b) and ONLY in the exact read form
+//             `= match ctx.db.profile().identity().find(` used by
+//             `rekey_profile`. Any other `match`-shaped binding of the handle,
+//             in any file, is a failure.
+//
+// NOT vacuous: the `profile` table has existed since M17a (schema.rs) and is
+// read and written by `ranking.rs` today. The anchor-set guard below reds if
+// the derivation stops seeing the modules that matter.
+//
+// String literals are deliberately NOT stripped here. For a BAN-only clause a
+// string decoy can only produce a false RED (loud, diagnosable), whereas a
+// string-stripper that mishandles a raw string or a quote-bearing char literal
+// blanks real code and produces a false GREEN (silent). Comments ARE stripped
+// so a commented-out delete does not false-RED.
 // ---------------------------------------------------------------------------
 
-/// RL-2 (f): no code path in any server-module source deletes a profile row.
+/// Recursively collect one `(relative path, file text)` pair — the path being
+/// relative to `src/` — for every non-test Rust source under `dir`.
 ///
-/// Two needles:
-///   - Chained delete: `profile().identity().delete`
-///   - Split-binding evasion: `= ctx.db.profile()`
+/// Fails LOUD on every I/O error (`read_dir`, entry, stat, read): a file this
+/// helper silently skips is a file the never-deleted scan does not cover, so a
+/// skip would be indistinguishable from a pass.
+fn collect_scan_sources(dir: &std::path::Path, rel_prefix: &str) -> Vec<(String, String)> {
+    let read = std::fs::read_dir(dir).unwrap_or_else(|e| {
+        panic!(
+            "m17a-RL-2 IO FAIL: read_dir(`{}`) failed: {} — the never-deleted scan derives \
+             its file set from the live tree, so an unreadable directory must fail LOUD \
+             rather than silently scan nothing.",
+            dir.display(),
+            e
+        )
+    });
+    let mut entries: Vec<(String, std::path::PathBuf)> = Vec::new();
+    for entry in read {
+        let entry = entry.unwrap_or_else(|e| {
+            panic!(
+                "m17a-RL-2 IO FAIL: a directory entry under `{}` could not be read: {} — \
+                 the scan must fail LOUD, never skip an entry.",
+                dir.display(),
+                e
+            )
+        });
+        entries.push((
+            entry.file_name().to_string_lossy().into_owned(),
+            entry.path(),
+        ));
+    }
+    entries.sort();
+
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (name, path) in entries {
+        let rel = if rel_prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{}/{}", rel_prefix, name)
+        };
+        let meta = std::fs::metadata(&path).unwrap_or_else(|e| {
+            panic!(
+                "m17a-RL-2 IO FAIL: cannot stat `{}`: {} — the scan must fail LOUD, never \
+                 skip a path it cannot classify.",
+                path.display(),
+                e
+            )
+        });
+        if meta.is_dir() {
+            out.extend(collect_scan_sources(&path, &rel));
+        } else if name.ends_with(".rs") && !name.ends_with("_tests.rs") {
+            let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!(
+                    "m17a-RL-2 IO FAIL: cannot read `{}`: {} — the scan must fail LOUD, \
+                     never `continue` past an unreadable source file.",
+                    path.display(),
+                    e
+                )
+            });
+            out.push((rel, src));
+        }
+    }
+    out
+}
+
+/// RL-2 / AUTH-23 (f): no code path in any server-module source deletes a
+/// `profile` row.
 ///
-/// GREEN-vacuous today (table absent). Paired with (g) to form a meaningful gate.
-/// Kills: any impl that adds a `profile().identity().delete(...)` call anywhere,
-/// or that assigns the profile accessor to a binding for later deletion.
+/// Invariant: profile rows are NEVER deleted. The ranked-ladder record is
+/// permanent (ADR-0119 D1), and the guest→account re-key tombstones the
+/// guest's own row in place rather than removing it (AUTH-23, ADR-0179 —
+/// `ranking::rekey_profile`).
+///
+/// Teeth:
+///   - DERIVED scan set (recursive `read_dir` of `CARGO_MANIFEST_DIR/src`,
+///     `*.rs` minus `*_tests.rs`). Kills a delete added in a module nobody
+///     remembered to add to a hardcoded list, and a delete hidden in a new
+///     `src/<subdir>/` module (the proven non-recursive bypass).
+///   - WHITESPACE-SQUASHED needles. Kills the rustfmt-wrapped delete
+///     `ctx.db` / `.profile()` / `.identity()` / `.delete(id);` spread over
+///     four lines, which the previous contiguous needle walked past.
+///   - Split-binding ban applies to `ranking.rs` too; only the exact
+///     `= match ctx.db.profile().identity().find(` read form is exempt there.
+///     Kills `let p = ctx.db.profile();` followed by `p.identity().delete(id)`
+///     in ANY file, including the owning module.
+///   - Anchor-set non-vacuity guard: the derived set must contain
+///     `accounts.rs`, `economy.rs`, `pvp.rs`, `ranking.rs` and `schema.rs`, so
+///     a broken derivation reds instead of vacuously scanning nothing. The
+///     panic message carries the derived count and the full derived list.
+///   - Every I/O step panics on error — a skipped file is an unscanned file.
 #[test]
 fn m17a_rl2_profile_never_deleted_scan() {
-    let all_sources = [
-        ("pvp.rs", PVP_RS),
-        ("battle.rs", BATTLE_RS),
-        ("lib.rs", LIB_RS),
-        ("schema.rs", SCHEMA_RS),
-        ("taming.rs", TAMING_RS),
-        ("trading.rs", TRADING_RS),
-        ("economy.rs", ECONOMY_RS),
-        ("monster_mgmt.rs", MONSTER_MGMT_RS),
-        ("evolution.rs", EVOLUTION_RS),
-        ("raising.rs", RAISING_RS),
-        ("npc.rs", NPC_RS),
-        ("movement.rs", MOVEMENT_RS),
-        ("content.rs", CONTENT_RS),
-    ];
+    let src_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+    let all_sources = collect_scan_sources(src_dir, "");
+    let derived: Vec<&str> = all_sources.iter().map(|(n, _)| n.as_str()).collect();
 
-    // Needle 1: chained delete form.
+    // Non-vacuity: the derivation must still be seeing the modules that matter.
+    // Deliberately NOT a `>= N` count floor (zero headroom today: exactly 20
+    // non-test files) and NOT a per-file non-empty check (an empty `.rs` file
+    // is still found by name). The anchor set is the whole non-vacuity story.
+    for anchor in &[
+        "accounts.rs",
+        "economy.rs",
+        "pvp.rs",
+        "ranking.rs",
+        "schema.rs",
+    ] {
+        assert!(
+            derived.contains(anchor),
+            "m17a-RL-2 NON-VACUITY FAIL: the derived scan set does not contain `{}`. \
+             The set is derived from a recursive read_dir of CARGO_MANIFEST_DIR/src \
+             (`*.rs` minus `*_tests.rs`); if an anchor module is missing, the derivation \
+             itself is broken and every ban below is vacuous. \
+             Derived {} file(s): [{}]",
+            anchor,
+            derived.len(),
+            derived.join(", ")
+        );
+    }
+
+    // Needle 1: chained delete form (whitespace-squashed).
     let delete_needle = concat!("profile().identity()", ".delete");
-    // Needle 2: split-binding evasion (assign accessor to a local var).
-    let binding_needle = concat!("= ctx.db.", "profile()");
+    // Needle 2: bare split-binding of the table handle (whitespace-squashed).
+    let binding_needle = concat!("=ctx.db.", "profile()");
+    // Needle 2': `match`-shaped binding of the table handle, and the ONE form
+    // `ranking.rs` is allowed to use.
+    let match_binding_needle = concat!("=matchctx.db.", "profile()");
+    let owned_read_form = concat!("=matchctx.db.", "profile().identity().find(");
 
     for (filename, src) in &all_sources {
-        let stripped = strip_rust_comments(src);
+        // Comments blanked, then ALL whitespace removed: a needle written in
+        // this repo's rustfmt-wrapped style still matches.
+        let squashed = squash_ws(&strip_rust_comments(src));
 
         assert!(
-            !stripped.contains(delete_needle),
-            "m17a-RL-2 FAIL in {}: found `{}` — profile rows must NEVER be deleted \
-             (persistent leaderboard record, ADR-0119 D1). Remove the delete call.",
+            !squashed.contains(delete_needle),
+            "m17a-RL-2 FAIL in {}: found `{}` (matched against whitespace-squashed source, \
+             so the rustfmt-wrapped `ctx.db` / `.profile()` / `.identity()` / `.delete(` \
+             form is caught too) — profile rows must NEVER be deleted: the ranked record is \
+             permanent (ADR-0119 D1) and the guest re-key tombstones in place (AUTH-23). \
+             Remove the delete call.",
             filename,
             delete_needle
         );
 
         assert!(
-            !stripped.contains(binding_needle),
-            "m17a-RL-2 FAIL in {}: found `{}` — this pattern assigns the profile \
-             table accessor to a binding, which could then call .delete(). \
-             Profile rows must never be deleted (ADR-0119 D1). \
-             Use `ctx.db.profile().identity().find(id)` inline rather than binding \
-             the accessor.",
+            !squashed.contains(binding_needle),
+            "m17a-RL-2 FAIL in {}: found `{}` (whitespace-squashed) — this binds the profile \
+             TABLE HANDLE to a local, which can then call `.delete()` out of sight of the \
+             chained-delete needle. Banned in every file, `ranking.rs` included. \
+             Use the inline chain `ctx.db.profile().identity().find(id)` instead \
+             (ADR-0119 D1, AUTH-23).",
             filename,
             binding_needle
         );
+
+        for (at, _) in squashed.match_indices(match_binding_needle) {
+            let is_owner_module = filename.as_str() == "ranking.rs";
+            let is_owned_read_form = squashed[at..].starts_with(owned_read_form);
+            assert!(
+                is_owner_module && is_owned_read_form,
+                "m17a-RL-2 FAIL in {}: found `{}` (whitespace-squashed) outside the one \
+                 permitted shape. `ranking.rs` is the module that owns profile access, and \
+                 even there the ONLY allowed binding form is the read \
+                 `{}...)` used by `rekey_profile`. Every other `match`-shaped binding of the \
+                 profile table handle — in ranking.rs or anywhere else — can reach \
+                 `.delete()` (ADR-0119 D1, AUTH-23). A blanket ranking.rs exemption would \
+                 leave RL-2 unenforced in the file most likely to change.",
+                filename,
+                match_binding_needle,
+                owned_read_form
+            );
+        }
     }
 }
 

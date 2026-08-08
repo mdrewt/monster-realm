@@ -6,8 +6,32 @@
 //   4. ZERO_GUARD      — grant_currency has a zero-amount early-return guard (no phantom rows)
 //   5. SINGLE_SURFACE  — no direct .balance assignment bypassing grant/spend helpers
 //   6. ACCESSOR_BYPASS — no file outside economy.rs / schema.rs / economy_tests.rs (see
-//                        the allowlist below) calls player_wallet() or constructs
+//                        ACCESSOR_BYPASS_ALLOWLIST below) calls player_wallet() or constructs
 //                        PlayerWallet{} directly (struct-literal bypass evades criterion 5)
+//
+// -- M21c / G10 (ADR-0179) -----------------------------------------------------
+// 6a. EXACT-PATH ALLOWLIST (the load-bearing fix). The allowlist match used to be
+//     suffix-tolerant (`base === X || base.endsWith('/' + X)`). A red-team created
+//     `server-module/src/accounts/economy.rs` containing
+//     `ctx.db.player_wallet().owner_identity().delete(who)` and BOTH this eval and
+//     wallet-privacy reported PASS: a file that DELETES wallet rows was invisible
+//     because `endsWith('/economy.rs')` auto-allowlisted it. Any attacker-chosen
+//     subdirectory could mint an exemption. The match is now an EXACT repo-relative
+//     path (`server-module/src` is flat today — 20 non-test *.rs, no subdirectories
+//     — so this is green on arrival). The `\\` -> `/` normalisation is preserved so
+//     Windows `readdirSync` output cannot dodge the exact compare.
+// 6b. Two G10 clauses about accounts.rs:
+//     [6b/allowlist-negative] — element-wise `!==` that no ACCESSOR_BYPASS_ALLOWLIST
+//       entry equals 'accounts.rs'. HONEST LABEL: this is a CHEAP BELT, not the
+//       load-bearing gate. Anyone who adds 'accounts.rs' to the allowlist edits both
+//       lines in one diff. It exists because the M21c spec contracts for it verbatim,
+//       and because it makes the intent unmissable in review.
+//     [6b/scan-set-contains-accounts] — the LOAD-BEARING companion: assert the LIVE
+//       scan set actually contains 'accounts.rs'. One line, and it cannot be bypassed
+//       by editing an inline predicate: if accounts.rs ever stops being scanned (an
+//       allowlist entry, a filter typo, or a readdirSync-recursion regression that
+//       moves it into a subdirectory) this clause goes RED regardless of how the
+//       exemption was spelled.
 //
 // Proof-of-teeth: each checker is tested against a BAD fixture (must flag) and a GOOD
 // fixture (must pass). A checker that fails to flag the bad fixture is reported as a
@@ -165,6 +189,43 @@ export function hasWalletAccessorBypass(src) {
   // Flag direct use of the player_wallet() table accessor call.
   // Pattern assembled from parts to avoid self-match: "player_wallet" + "()"
   return /player_wallet\s*\(\s*\)/.test(code) || /PlayerWallet\s*\{/.test(code);
+}
+
+// ---------------------------------------------------------------------------
+// Criterion 6a (M21c / G10): the ACCESSOR_BYPASS allowlist, as a named const.
+//
+// Entries are EXACT repo-relative paths under `server-module/src`. A path is
+// exempt iff it is === one of these; there is deliberately NO suffix tolerance
+// (see the 6a note in the file header — `accounts/economy.rs` used to be
+// auto-exempted by `endsWith('/economy.rs')` and could delete wallet rows in
+// total silence). Adding an entry here is a security decision and must be
+// argued in the PR that adds it.
+//
+// SSOT note: this const IS the filter. It is not a second copy of an inline
+// predicate, so [6b/allowlist-negative] below cannot drift away from the
+// behaviour it asserts about.
+// ---------------------------------------------------------------------------
+export const ACCESSOR_BYPASS_ALLOWLIST = [
+  'economy.rs', // the single sanctioned wallet surface (grant/spend live here)
+  'economy_tests.rs', // its sibling test module
+  'schema.rs', // declares the table + struct; no reducer logic
+];
+
+/** Normalise a readdirSync path to forward slashes (Windows emits `a\b.rs`). */
+export function normalizeSrcPath(f) {
+  return f.replace(/\\/g, '/');
+}
+
+/**
+ * True iff `relPath` (already normalised, relative to server-module/src) is an
+ * EXACT member of ACCESSOR_BYPASS_ALLOWLIST. Element-wise `===`, never a
+ * suffix/`includes` test.
+ */
+export function isAccessorBypassAllowlisted(relPath) {
+  for (const allowed of ACCESSOR_BYPASS_ALLOWLIST) {
+    if (relPath === allowed) return true;
+  }
+  return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -385,6 +446,103 @@ export default async function () {
     };
   }
 
+  // -------------------------------------------------------------------------
+  // Fixture 6b-BAD-subdir-economy [6a exact-path allowlist]: the PROVEN
+  // subdirectory bypass. `server-module/src/accounts/economy.rs` containing
+  //     ctx.db.player_wallet().owner_identity().delete(who)
+  // was reported PASS by both currency-integrity and wallet-privacy, because
+  // the old suffix-tolerant match (`base.endsWith('/economy.rs')`) exempted it.
+  // KILLS: any re-introduction of endsWith/includes tolerance in the allowlist.
+  // Asserts BOTH halves: the path is not exempt, AND the content is a violation
+  // (so the fixture stays meaningful if the accessor checker ever changes).
+  // -------------------------------------------------------------------------
+  const subdirEconomyPath = normalizeSrcPath('accounts/economy.rs');
+  if (isAccessorBypassAllowlisted(subdirEconomyPath)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        `TEETH FAILED (6b-BAD-subdir-economy): '${subdirEconomyPath}' is treated as ` +
+        'ACCESSOR_BYPASS-exempt — the allowlist match must be an EXACT repo-relative path. ' +
+        'A red-team put a wallet-row DELETE in server-module/src/accounts/economy.rs and both ' +
+        'currency-integrity and wallet-privacy reported PASS.',
+    };
+  }
+  const subdirEconomySrc =
+    'pub fn purge(ctx: &ReducerContext, who: Identity) { ctx.db.player_wallet().owner_identity().delete(who); }';
+  if (!hasWalletAccessorBypass(subdirEconomySrc)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (6b-BAD-subdir-economy): hasWalletAccessorBypass did not flag ' +
+        '`ctx.db.player_wallet().owner_identity().delete(who)` — the subdirectory fixture would ' +
+        'be scanned but still pass, so the exact-path fix would buy nothing',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Fixture 6b-BAD-subdir-windows [6a]: the same bypass with Windows separators
+  // (`accounts\economy.rs`, which is literally what readdirSync emits on Win32).
+  // KILLS: an exact-path compare that forgets the `\\` -> `/` normalisation and
+  // therefore compares a backslash path that can never equal an allowlist entry
+  // — or, worse, one that drops normalisation and reopens the suffix hole.
+  // -------------------------------------------------------------------------
+  if (isAccessorBypassAllowlisted(normalizeSrcPath('accounts\\economy.rs'))) {
+    return {
+      name,
+      pass: false,
+      detail:
+        "TEETH FAILED (6b-BAD-subdir-windows): 'accounts\\\\economy.rs' normalises to an " +
+        'ACCESSOR_BYPASS-exempt path — a Windows-separated subdirectory must not be exempt',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Fixture 6b-GOOD-top-level-owners [6a]: the three real owners at the top
+  // level must STILL be exempt (and normalisation must leave them untouched).
+  // KILLS: an over-tightened allowlist that starts scanning economy.rs/schema.rs
+  // themselves — every one of them would flag, and the eval would false-RED on
+  // the unmutated tree, which is the classic "gate nobody trusts" failure.
+  // -------------------------------------------------------------------------
+  for (const owner of ['economy.rs', 'economy_tests.rs', 'schema.rs']) {
+    if (!isAccessorBypassAllowlisted(normalizeSrcPath(owner))) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH FAILED (6b-GOOD-top-level-owners): '${owner}' is no longer ACCESSOR_BYPASS-exempt — ` +
+          'the sanctioned wallet surface and the schema declaration must stay allowlisted or the ' +
+          'eval false-REDs on the unmutated tree',
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Clause [6b/allowlist-negative] (ADR-0179 G10, spec §4 verbatim contract):
+  // element-wise `!==` that 'accounts.rs' is not an ACCESSOR_BYPASS entry.
+  // HONEST LABEL (see header 6b): this is a CHEAP BELT. It is defeated by a
+  // single diff that edits both the const and this line together. The
+  // load-bearing clause is [6b/scan-set-contains-accounts] in the live scan.
+  // KILLS: the "just allowlist it" reflex when accounts.rs first needs to look
+  // at a wallet — the reviewer sees a security exemption, not a lint tweak.
+  // -------------------------------------------------------------------------
+  const forbiddenAllowlistEntry = 'accounts.rs';
+  for (const entry of ACCESSOR_BYPASS_ALLOWLIST) {
+    if (entry === forbiddenAllowlistEntry) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `[6b/allowlist-negative] ACCESSOR_BYPASS (ADR-0179 G10): '${forbiddenAllowlistEntry}' is in ` +
+          'ACCESSOR_BYPASS_ALLOWLIST. accounts.rs owns guest-claim / re-key and must NEVER touch the ' +
+          'player_wallet accessor or construct PlayerWallet{} directly — it re-keys wallets through ' +
+          'crate::economy::rekey_wallet. Exempting it would let the account-claim path mint or ' +
+          'transfer currency outside grant_currency/spend_currency (ADR-0081 single-surface).',
+      };
+    }
+  }
+
   // --- Read actual source files. --------------------------------------------
 
   let economySrc, schemaSrc;
@@ -456,21 +614,42 @@ export default async function () {
   // Scan all other server-module/src/*.rs files (both criteria share one pass).
   // Recursive scan (Node 18.17+ readdirSync recursive option) so future
   // subdirectories under server-module/src/ are covered.
+  //
+  // M21c / G10 (6a): the allowlist match is an EXACT repo-relative path via
+  // ACCESSOR_BYPASS_ALLOWLIST — NOT the old suffix-tolerant
+  // `base.endsWith('/economy.rs')`, which auto-exempted (and hid a wallet-row
+  // DELETE in) `server-module/src/accounts/economy.rs`.
   const { readdirSync } = await import('node:fs');
   const srcs = readdirSync('server-module/src', { recursive: true })
     .filter((f) => typeof f === 'string')
-    .filter((f) => {
-      const base = f.replace(/\\/g, '/');
-      return (
-        base.endsWith('.rs') &&
-        base !== 'economy.rs' &&
-        base !== 'schema.rs' &&
-        base !== 'economy_tests.rs' &&
-        !base.endsWith('/economy.rs') &&
-        !base.endsWith('/schema.rs') &&
-        !base.endsWith('/economy_tests.rs')
-      );
-    });
+    .map((f) => normalizeSrcPath(f))
+    .filter((f) => f.endsWith('.rs') && !isAccessorBypassAllowlisted(f));
+
+  // -------------------------------------------------------------------------
+  // Clause [6b/scan-set-contains-accounts] (ADR-0179 G10) — the LOAD-BEARING
+  // half of the accounts.rs contract. [6b/allowlist-negative] above only proves
+  // a string is absent from a const; THIS proves the file is actually being
+  // read and needled. It goes RED for every way accounts.rs could fall out of
+  // coverage: an allowlist entry, a filter predicate edit, a rename, or a
+  // readdirSync-recursion regression that stops descending into subdirectories.
+  // Exact `===` membership, never `.includes` on a joined string.
+  // -------------------------------------------------------------------------
+  const REQUIRED_SCANNED_FILE = 'accounts.rs';
+  let scannedAccounts = 0;
+  for (const f of srcs) {
+    if (f === REQUIRED_SCANNED_FILE) scannedAccounts++;
+  }
+  if (scannedAccounts !== 1) {
+    failures.push(
+      `[6b/scan-set-contains-accounts] ACCESSOR_BYPASS (ADR-0179 G10): expected ` +
+        `'${REQUIRED_SCANNED_FILE}' to appear EXACTLY once in the ${srcs.length}-file ` +
+        `ACCESSOR_BYPASS/SINGLE_SURFACE scan set, found ${scannedAccounts}. accounts.rs owns ` +
+        'guest-claim and re-key; if it is not scanned, it can call player_wallet() or construct ' +
+        'PlayerWallet{} with nothing to stop it. Causes: it was allowlisted, the enumeration ' +
+        'filter changed, the file was renamed/moved, or readdirSync stopped recursing.',
+    );
+  }
+
   for (const f of srcs) {
     let src;
     try {
@@ -499,6 +678,10 @@ export default async function () {
     name,
     pass: true,
     detail:
-      'all 6 currency-integrity criteria met (saturating cap, checked_sub, private table, zero guard, single surface, accessor bypass)',
+      'all 6 currency-integrity criteria met (saturating cap, checked_sub, private table, zero guard, ' +
+      `single surface, accessor bypass over ${srcs.length} scanned file(s)); ` +
+      'M21c/G10: ACCESSOR_BYPASS_ALLOWLIST matched by EXACT repo-relative path (no subdirectory ' +
+      `bypass), [6b/allowlist-negative] '${forbiddenAllowlistEntry}' absent from the allowlist, ` +
+      `[6b/scan-set-contains-accounts] '${REQUIRED_SCANNED_FILE}' present in the live scan set.`,
   };
 }
