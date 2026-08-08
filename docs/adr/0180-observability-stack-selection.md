@@ -9,12 +9,19 @@
 there into concrete tool selection + data-path architecture; corrects ADR-0029's own "M0 already wired the
 substrate" consequence line)
 **Subsystems:** ci-gates, tooling-docs, schema-persistence
-**Decision:** A 7-container, all-open-source, self-hosted stack (Prometheus, Grafana Alloy, Loki, Tempo,
-Grafana OSS, node_exporter, Caddy) replaces the harness-default Datadog sink; the module never times or
-exports itself — every server signal is either host-computed (SpacetimeDB's own `/v1/metrics`/logs/health,
-free, zero module code) or client-side real OTel; a private domain-metric table + polling exporter (the
-naive way to get custom metrics) is cut for v1 as unnecessary once the host's free signals are used, and
-kept only as an explicit, RLS-gated escape hatch.
+**Decision:** An 8-container, all-open-source, self-hosted stack (Prometheus, Grafana Alloy, Loki, Tempo,
+Grafana OSS, node_exporter, Caddy, and `mr-trace-relay`) replaces the harness-default Datadog sink; the
+module never times or exports itself — every server signal is either host-computed (SpacetimeDB's own
+`/v1/metrics`/logs/health, free, zero module code), reconstructed from paired log breadcrumbs by
+`mr-trace-relay` (real per-call durations, no beta API), or client-side real OTel; a private domain-metric
+table + polling exporter is cut for v1 and kept only as an explicit escape hatch — a `#[view]`-based
+owner-scoped read, not RLS+SQL.
+
+**Corrected 2026-08-08 (this line is the ADR's most-quoted summary, feeding `DIGEST.md`; it had gone
+stale relative to the amendment below and is rewritten here, not left self-contradicting):** the count
+was "7-container" before `mr-trace-relay` (D14-D18) added the 8th; the escape hatch was originally
+described as "RLS-gated," which was itself wrong (D18a) — RLS is `unstable`-gated and documented
+unenforced on the pinned toolchain, not merely superseded by a later change of mind.
 
 ## Context
 
@@ -76,10 +83,21 @@ not a wholesale re-design:
    separately-wired fix (also in D2/D3 below). This project's own gate discipline caught the fix as
    half-complete before it shipped, not after.
 
-The complete evidence ledger (E1–E14), the pre-committed scoring rubric, and the mandatory per-brainstormer
-attribution table (what each contributed, where it landed, why the rest was rejected) live in the ceremony
-transcript; this ADR records only the decisions and their load-bearing rationale, per this project's own
-established convention for ceremony-sourced ADRs (ADR-0179's own framing).
+The decisions below record the load-bearing rationale, with evidence cited inline.
+
+**Attribution-record correction (added on review, 2026-08-08).** The line above originally pointed to
+"the ceremony transcript" for the mandatory per-brainstormer attribution table
+(`mr-feedback-doctrine.md` §6.3) — no such file was ever persisted anywhere in either repo; the raw
+multi-agent workflow transcript is an ephemeral, session-scoped artifact, not a citable project record.
+This is a real gap relative to doctrine, not a cosmetic one, and it is NOT the pattern this ADR's own
+later, second amendment follows: see this document's "## Amendment — 2026-08-08 (server-side tracing
+reconsidered...)" section below, whose "### Attribution" table is real and embedded directly in the
+ADR — distinctly-sourced per-lens rows, not a pointer to an external artifact. That is what this
+section should have done the first time, and what any future substantial re-amendment of the decisions
+above should do if revisited. Reconstructing one retroactively here, without the original transcript,
+would trade a known, disclosed gap for false precision, so none is fabricated in its place — the evidence
+ledger (E1-E14 above) and each `D`-decision's own inline citations remain the auditable record for this
+section.
 
 ## Decision
 
@@ -128,7 +146,11 @@ wrapped in ops code (the CLI's own `--help` banner flags the command `UNSTABLE`,
 Option as brittle tagged JSON objects — `{"some": "id"}`, `{"U32": []}` — at the wire level, confirmed by
 reading a raw response).
 
-**D3 — 7-container self-hosted OSS stack, one purpose each.**
+**D3 — 7-container self-hosted OSS stack, one purpose each.** *(Forward-pointer added this review pass: a
+same-day amendment (D14-D18, below) revisits this decision and adds an 8th, functionally-separate service —
+`mr-trace-relay` — for server-side causal tracing; it does not change the 7 tools below. A reader stopping
+at this ADR's "## Consequences" section, before the "## Amendment" heading, previously had no signal this
+table was ever revisited; see D17 for the full re-litigation at 96GB RAM.)*
 
 | # | Tool | Sole purpose | License |
 |---|---|---|---|
@@ -240,18 +262,26 @@ the payload (e.g. `zone_id`) instead.
 
 **The bare-`log::` ban is a ratchet against the current tree, not a blanket ban that fails on landing —
 corrected in this finalization pass.** A grep against the actual repo at ADR-amendment time found **56**
-pre-existing `log::info!/warn!/error!` call sites across **10** domain files outside `guards.rs`/
+raw substring matches for `log::info!/warn!/error!` across **10** domain files outside `guards.rs`/
 `observability.rs` (`movement.rs`, `content.rs`, `lib.rs`, `trading.rs`, `pvp.rs`, `evolution.rs`, `taming.rs`,
 `raising.rs`, `battle.rs`, `npc.rs`) — hand-rolled JSON, non-reject structured events, functionally the same
-thing `mr_log` exists to formalize, already shipped and passing. As literally worded, a same-day blanket ban
-would fail CI against already-merged code the moment it lands, with no task anywhere in this milestone
-budgeted to migrate ten files' worth of call sites. The gate is corrected to be a **ratchet**: a committed
-baseline file (`server-module/src/.log-baseline` or equivalent — exact name/format decided at build time),
-enumerated once at build time by scanning the pre-existing tree, lists every pre-existing bare-`log::` call
-site; the CI lint/eval fails on any bare `log::info!/warn!/error!` call **not** in that baseline (i.e. any new
-one, in a new or existing file) and passes on baseline entries unchanged. Migrating the baseline's existing 56
-call sites to `mr_log` is explicitly **out of this milestone's scope** — a named follow-up (a future
-tech-debt slice), not a silently absorbed gap and not something this retrofit quietly declines to mention.
+thing `mr_log` exists to formalize, already shipped and passing. **Corrected again, this review pass: the
+real invocation count is 53, not 56** — 3 of the 56 (`movement.rs:274`, `battle.rs:280`, `npc.rs:21`) are
+`///` doc-comment lines that merely *mention* the macro in prose, not real call sites; an invocation-anchored
+scan (`log::(info|warn|error)!\(`, requiring the opening paren) finds 53. This is the identical failure
+class ADR-0179's `REKEY_COMPLETENESS` gate already hit once on this same codebase — a naive whole-file scan
+false-positiving on non-matching sites, requiring a syntax-aware fix — and the same fix applies here: the
+`.log-baseline` generator AND G1's own CI check must both anchor on the invocation pattern, never a bare
+substring, or a doc-comment mention could pollute the baseline or false-flag a new comment as a violation.
+As literally worded, a same-day blanket ban would fail CI against already-merged code the moment it lands,
+with no task anywhere in this milestone budgeted to migrate ten files' worth of call sites. The gate is
+corrected to be a **ratchet**: a committed baseline file (`server-module/src/.log-baseline` or equivalent —
+exact name/format decided at build time), enumerated once at build time by scanning the pre-existing tree
+with the invocation-anchored pattern above, lists every pre-existing bare-`log::` call site; the CI lint/eval
+fails on any bare `log::info!/warn!/error!` call **not** in that baseline (i.e. any new one, in a new or
+existing file) and passes on baseline entries unchanged. Migrating the baseline's existing 53 call sites to
+`mr_log` is explicitly **out of this milestone's scope** — a named follow-up (a future tech-debt slice), not
+a silently absorbed gap and not something this retrofit quietly declines to mention.
 
 **D7 — Perf-budget gate is a `criterion` dev-dependency scoped to `game-core` only.** Zero coupling to
 `spacetimedb`/wasm crates — the existing feature-isolation invariant (M0) stays intact with no exemption
@@ -332,7 +362,7 @@ proof-of-teeth discipline):
 
 | ID | Gate | Enforces |
 |---|---|---|
-| G1 | `evals/observability-log-wrapper.eval.mjs` | No bare `log::info!/warn!/error!` call anywhere in `server-module/src/*.rs` except inside `guards.rs` (owns `log_reject`), `observability.rs` (owns `mr_log`), or an entry in the committed pre-existing-call-site baseline (see D6's corrected ratchet framing — 56 sites across 10 files, grandfathered, not exempted forever); excludes `_tests.rs` files |
+| G1 | `evals/observability-log-wrapper.eval.mjs` | No bare `log::info!/warn!/error!` call, matched by an invocation-anchored pattern (`log::(info\|warn\|error)!\(` — never a bare substring match, which would count doc-comment mentions as violations) anywhere in `server-module/src/*.rs` except inside `guards.rs` (owns `log_reject`), `observability.rs` (owns `mr_log`), or an entry in the committed pre-existing-call-site baseline (see D6's corrected ratchet framing — 53 sites across 10 files, grandfathered, not exempted forever; corrected from an earlier miscount of 56 that included 3 doc-comment mentions); excludes `_tests.rs` files |
 | G2 | perf-budget CI step (`just ci`) + committed budget file(s) | A `game-core` `criterion` benchmark regressing beyond its committed budget fails CI; seeded-regression fixture proves it bites |
 | G3 | `evals/observability-metrics-contract.eval.mjs` — family/label assertion | Publishes a scratch module, scrapes `/v1/metrics`, asserts ≥80 families and the required label keys (`reducer`, `committed`, `txn_type`, `table_name`, `le`) are present |
 | G4 | same file — cross-file attribution assertion | `spacetime logs --format json` emits a line whose `function` equals the invoking reducer's name even when the log call originates in a different file's helper (reproduces the `guards.rs:55` case) |
@@ -514,6 +544,22 @@ heap-allocating hand-rolled JSON string builds (`format!`/`json_escape`) per pai
 reducer's own transaction, is real reducer-side CPU/allocation cost that the "Log volume" cost item below
 previously named only in terms of S2 log-line volume, not reducer-side compute.
 
+**Single source of truth for `$trace_pair_set`, and a drift check between it and the code — added this
+review pass, closing a gap the earlier drafts left open.** `$trace_pair_set` genuinely has two independent
+representations that must agree: (a) which reducers' *source code* in `server-module/src/*.rs` actually
+contains the paired `mr_log("...", phase:"enter")`/`phase:"exit"` calls (a compile-time fact — a reducer
+either has the breadcrumb calls or it doesn't), and (b) the relay's own committed config file (D15,
+`ops/observability/relay/trace-pair-set.json` or equivalent — the exact filename is a build-time detail)
+that tells `mr-trace-relay` which reducer names to actually build trace trees for. Nothing previously
+verified these two lists agree — a reducer could gain breadcrumb code without ever being added to the
+relay's config (its breadcrumbs would be logged and then silently ignored by the relay), or vice versa (the
+relay would wait forever for breadcrumbs that never arrive). **The relay's committed config is the
+authoritative `$trace_pair_set`** — it is what OBS-50/G9's static exclusion check (movement_tick, etc.)
+already scans. G9 is extended to also statically scan `server-module/src/*.rs` for reducers containing a
+paired `mr_log(...)` `enter`/`exit` call and assert that set is *exactly* equal (not a subset either
+direction) to the relay's committed `$trace_pair_set` — failing CI on either a reducer with breadcrumbs but
+no config entry, or a config entry with no matching breadcrumb code.
+
 A new stateless service, **`mr-trace-relay`** (`ops/observability/relay/`, Node, mirroring
 `scripts/playtest-report.mjs`'s toolchain — V12), tails the same read-only `module_logs/*.log` bind mount
 Alloy already tails, pairs and orders enter/exit breadcrumbs **by the host-populated `ts` field** (V7 — never
@@ -554,8 +600,16 @@ Added to m20b (`ops/observability/**`, all additive):
    Grafana OSS ecosystem in general, but which correctly targets a `connection_id`-shaped join was not
    independently confirmed. Treat this as a build-time spike, not a settled fact.**
 3. Shared time-range linkage across Prometheus/Loki/Tempo surfaces (standard dashboard-variable wiring).
-4. `mr-trace-relay` itself: stateless, restart-safe, its liveness folded into the existing OBS-39 dead-man's-
-   switch alert rule (extended, not duplicated).
+4. `mr-trace-relay` itself: stateless, restart-safe. **Corrected this review pass — "folded into OBS-39" was
+   asserted, not designed: OBS-39 watches Prometheus's scrape of Alloy's self-metrics endpoint (S1b); it says
+   nothing about whether the separate `mr-trace-relay` process is alive, since Alloy keeps running fine if the
+   relay dies.** The real mechanism: `mr-trace-relay` exposes a minimal `/health` HTTP endpoint (a bare 200
+   response is sufficient — it does not need to implement the Prometheus text-exposition format itself) as a
+   new Prometheus scrape target (`job="mr-trace-relay"`, alongside S1/S1b in `prometheus.yml`); Prometheus's
+   own auto-generated `up{job="mr-trace-relay"}` gauge (present for every scrape target regardless of what it
+   exposes — the identical mechanism S1b's `up{job="alloy"}` already relies on for OBS-39) is what a NEW,
+   separate Grafana OSS alert rule watches, mirroring OBS-39's shape but on a distinct scrape target — not the
+   same rule extended to cover two unrelated processes' liveness under one condition.
 
 Its failure degrades trace *assembly* only — logs still reach Loki on the independent Alloy path (S2), since
 D15 reads the same file alongside Alloy, not in front of it.
@@ -736,7 +790,7 @@ Required explicitly by the operator's task framing, not left implicit:
 | ID | Gate | Enforces |
 |---|---|---|
 | G8 | `mr-trace-relay` pure-function unit tests + a seeded-ambiguity proof-of-teeth fixture (two interleaved zone-tick chains that must not cross-pollinate) | D15's reconstruction/pairing rules |
-| G9 | `evals/observability-stack-config.eval.mjs` extension | Confirms the relay service is present in `docker-compose.yml`, reads `module_logs` read-only, and the trace-to-logs + correlation-pivot config exists in Grafana provisioning (mirrors G6's pattern); **this finalization pass adds:** the committed `$trace_pair_set` config does NOT list `movement_tick` or any other `$slo_set`/criterion-benched reducer, a static check independent of G11's runtime measurement |
+| G9 | `evals/observability-stack-config.eval.mjs` extension | Confirms the relay service is present in `docker-compose.yml`, reads `module_logs` read-only, and the trace-to-logs + correlation-pivot config exists in Grafana provisioning (mirrors G6's pattern); **this finalization pass adds:** the committed `$trace_pair_set` config does NOT list `movement_tick` or any other `$slo_set`/criterion-benched reducer, a static check independent of G11's runtime measurement; **this review pass further adds:** `prometheus.yml` has a `job="mr-trace-relay"` scrape target pointed at the relay's `/health` endpoint (D17(4)), AND a Grafana OSS alert rule exists on that target's `up` metric distinct from OBS-39's own rule (not the same rule reused for two processes); AND the set of `server-module/src/*.rs` reducers containing a paired `mr_log(...)` enter/exit breadcrumb call exactly equals the relay's committed `$trace_pair_set` config (D15's single-source-of-truth fix — neither a superset nor a subset) |
 | G10 | `procedure-http-clamp` harness (documented, manually-triggered or separately network-gated — **explicitly NOT a `just ci` gate**, since it requires live network egress and toggling `features=["unstable"]` in a disposable scratch module, neither of which belongs in the always-on CI path); measures the hung-endpoint timeout **with and without** an explicit `Timeout` set, per V6's corrected upstream-doc-contradiction finding, rather than assuming either the 500ms or the 30s/180s figure holds | The Falsifiers section's Procedures-adoption trigger condition |
 | G11 *(new, this finalization pass)* | m20e post-integration verification step: `mr-load-driver` (D9) run **with** `$trace_pair_set`'s breadcrumbs active, comparing each paired reducer's own relevant SLO/budget (if any) with pairing on vs. off | D15's `$trace_pair_set` scoping rule — the pre-merge check HIGH-1 found missing; not a `just ci` gate itself (it needs the live `docker-compose.yml` stack + a published module, same precondition as G3–G6), but is required before any `$trace_pair_set` addition merges |
 
