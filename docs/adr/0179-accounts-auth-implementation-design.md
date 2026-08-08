@@ -53,10 +53,24 @@ crate/docs, found all of them accurate, and additionally found:
 5. **An inconsistently-applied documentation-version caveat** on SpacetimeAuth's Steam support (see
    OQ1 in the spec).
 
-The decisions below are the corrected design. Full evidence log, scoring rubric, and the mandatory
-attribution table (which brainstormer contributed which surviving element, and why each rejected
-element was rejected) live in the ceremony transcript; this ADR records only the decisions and their
-load-bearing rationale.
+The decisions below are the corrected design.
+
+**Attribution-record correction (added on review, 2026-08-08).** The line above originally pointed to
+"the ceremony transcript" for the mandatory per-brainstormer attribution table
+(`mr-feedback-doctrine.md` §6.3) — no such file was ever persisted anywhere in either repo; the raw
+multi-agent workflow transcript is an ephemeral, session-scoped artifact, not a citable project record,
+so that pointer resolved to nothing. What genuinely is auditable and durable: the six independent lenses
+this ceremony ran — unbiased, investigation-grounded, a security/threat-model-first lens, a
+migration/player-experience-first lens, and two research-mandated lenses (OIDC-provider landscape;
+privacy/forward-compatibility) — and the decisions + load-bearing rationale recorded in this ADR's own
+body, which already cites its evidence inline (e.g. the numbered findings above, and each `D`-decision's
+own "confirmed against `file:line`" citations) rather than deferring to an external table. This is a real
+gap relative to this project's own doctrine (§6.3's table requirement), not a cosmetic one — a later
+sibling ADR (0180's second amendment, `docs/adr/0180-observability-stack-selection.md`) shows the
+doctrine-compliant version of this same record (a real, embedded, per-lens attribution table with a
+bias-guard section), which this ADR should be brought up to if it is ever substantially re-amended;
+reconstructing one retroactively here, without the original transcript, would trade a known gap for
+false precision, so none is fabricated in its place.
 
 **Finalization pass (same date, post-acceptance).** Two further independent adversarial reviews
 (security/red-team; spec-and-ADR completeness) were run against this ADR and the spec together before
@@ -243,7 +257,11 @@ strictly before the `player` row is deleted: `trading::cancel_trades_on_disconne
 
 That fixed ordering means the guest's `player` row's presence is itself a sufficient liveness oracle
 — its absence proves all four prior cleanup steps already ran. `complete_guest_claim` therefore needs
-only:
+these table-state guards (a self-identity check — AUTH-17, "the resolved guest identity does not equal
+the caller's own identity" — is a separate, trivial equality check on the two identities already in
+hand at that point, not a table read; it is listed in the spec's own EARS criteria, not renumbered into
+this list, because it needs no gate of its own — G2/NO_CLIENT_IDENTITY is unrelated and no dedicated
+gate is warranted for a single `==` comparison):
 
 1. **Liveness (T15):** reject if `ctx.db.player().identity().find(guest)` is `Some` — "close your
    other tab, then retry." A bare read, permitted under D0's write-scoped carve-out; `player` has no
@@ -294,7 +312,13 @@ order, one per REKEY-policy table:
 | `battle_challenge` | `challenger`, `target` | BLOCKED — transitively covered by guards 1/3 | — |
 | `playtest_event` | `identity` | **EXEMPT: dev telemetry**, deliberately stays under the guest identity; M22's cascade erases it | — |
 | `config` | `owner_identity` | **EXEMPT: module-owner sentinel**, default is the zero-identity, never a player (`schema.rs`, confirmed this pass) | — |
+| `account` | `identity` | **EXEMPT: this milestone's own primary key**, not a foreign reference to re-key — it is always the caller's (post-authentication) own identity; a guest never has an `account` row (D2's tables are all gated behind JWT presence, D4), so there is nothing here to carry forward | — |
+| `account` | `claimed_from` | **EXEMPT: write target, not a rekey source** — this column's entire purpose is to *record* the guest identity being claimed as part of `complete_guest_claim` (AUTH-21); it is populated by the claim, never itself re-keyed | — |
+| `guest_claim` | `guest_identity` | **EXEMPT: consumed, not rekeyed** — the row is deleted in the same transaction as a successful claim (AUTH-34) or by the reaper on expiry (AUTH-27); it never survives to be a candidate for re-keying | — |
+| `guest_claim_reaper_schedule` | `guest_identity` | **EXEMPT: consumed, not rekeyed** — disarmed and deleted alongside its parent `guest_claim` row (AUTH-34) or by its own scheduled firing (AUTH-27); same reasoning as `guest_claim` above | — |
 | `character`, `battle_wild`, `encounter` | — | N/A — no `Identity` column (confirmed by exhaustive grep) | — |
+
+**Self-scan note (added post-review):** `REKEY_COMPLETENESS` (G6) scans every non-test `server-module/src/*.rs` file, including `accounts.rs` itself once it exists — so the four `account`/`guest_claim`/`guest_claim_reaper_schedule` `Identity` fields this milestone's own D2 schema introduces are in-scope for the gate from the moment `schema.rs` is first published, not just pre-existing tables from earlier milestones. The four EXEMPT rows above must land in the manifest in the SAME commit/slice as the `account`/`guest_claim`/`guest_claim_reaper_schedule` table definitions (m21a) — never as a follow-up — or G6 fails on this milestone's own first `schema.rs` scan.
 
 This table was independently re-derived by grep against the live schema during this ceremony's review
 pass and found exhaustive — including `playtest_event.identity` (`playtest.rs:16-21`), which no
@@ -356,7 +380,10 @@ accepted text, confirmed verbatim this pass ("`delete_account` cascades over it 
 extends *this same reducer body*, not a decoupled sweep keyed off the status flag.
 
 No procedures anywhere in this design: `Procedure`/related APIs in the pinned crate are gated behind
-`#[cfg(feature="unstable")]`, confirmed against `lib.rs:1018`. No out-of-module revocation poller: it
+`#[cfg(feature="unstable")]`, confirmed against `lib.rs:750-751` (`#[cfg(feature = "unstable")] pub use
+spacetimedb_bindings_macro::procedure;` — corrected citation, post-review; an earlier draft of this ADR
+cited `lib.rs:1018`, which is actually `sender_auth()`, a real but unrelated function). No out-of-module
+revocation poller: it
 would introduce a new always-on service, an unsolved service-credential custody problem, and a new
 private-table read path, none of which M21's stated scope needs. Provider-side revocation is deferred
 to M22 with the question named there, not silently dropped.
@@ -401,6 +428,12 @@ token is:
 7. Guest display name is not carried across the claim; the shipped rename UI (ADR-0133) already
    covers renaming post-claim.
 
+Items 6 and 7 are intentionally UI-copy/product decisions, not mechanically-verifiable system behavior
+— they get no AUTH-N EARS criterion by design (an EARS criterion for "the nudge copy reads correctly"
+would test string content, not a testable system property), only the §4 task-checklist line. This is a
+deliberate scope boundary, not an oversight: everything else in D8 (items 1-5) already has EARS
+coverage (AUTH-31/32/33).
+
 **D9 — No `email`, `email_hash`, or `auth_subject` column.** Three reasons, independent of each
 other: (a) there is no in-module CSPRNG to securely generate an HMAC pepper for an email hash (same
 `rng.rs` finding as D3); (b) an unkeyed hash over the email address space is reversible by dictionary,
@@ -426,7 +459,7 @@ proof-of-teeth discipline):
 | G2 | `evals/guest-claim-integrity.eval.mjs` — NO_CLIENT_IDENTITY | No reducer in `accounts.rs` declares an `Identity`-typed parameter |
 | G3 | same file — ANON_PASSTHROUGH + ISSUER_AND_AUDIENCE_CHECKED | `on_connect`'s first statement is the `has_jwt()` early return with no prior `Err`; `provision_or_touch_account`'s body contains both an `.issuer()` comparison and an `.audience()` comparison — a BAD fixture checking only `iss` must fail |
 | G4 | same file — NO_SERVER_RNG | `ctx.rng(`/`ctx.random(` absent from `accounts.rs` |
-| G5 | same file — MODULE_WRITE_ISOLATION | No `.insert(`/`.update(`/`.delete(` chained off `ctx.db.<t>()` in `accounts.rs` for any `t` other than `account`/`guest_claim`/`guest_claim_reaper_schedule`; literal `ctx.db.battle(` also banned (forces the `guards::is_in_ongoing_battle` indirection); bare reads of `player`/`trade_offer`/`battle_challenge`/`player_conversation` permitted |
+| G5 | same file — MODULE_WRITE_ISOLATION | No `.insert(`/`.update(`/`.delete(` chained off `ctx.db.<t>()` in `accounts.rs` for any `t` other than `account`/`guest_claim`/`guest_claim_reaper_schedule`; literal `ctx.db.battle(` also banned (forces the `guards::is_in_ongoing_battle` indirection); bare reads of `player` permitted (D5 guard 1 — the corrected three-guard design's only direct table read; `trade_offer`/`battle_challenge`/`player_conversation` are never read from `accounts.rs` at all, since they are BLOCKED-transitively per D6's manifest, not read-and-checked — an earlier draft's allowlist named all four, a leftover from the rejected five-table `assert_no_live_interactions` helper D5 replaces) |
 | G6 | same file — REKEY_COMPLETENESS | Scans only the field list of each `#[spacetimedb::table(...)]`-tagged struct in non-test `server-module/src/*.rs` for `: Identity`/`: Option<Identity>` fields (NOT a raw whole-file line match — that false-positives on ~17 function-parameter sites, e.g. `guards::require_owner`'s `owner: Identity,`); every such field has an explicit manifest policy; every REKEY-policy entry's helper is referenced from both `rekey_all` and `account_has_game_data` (consumption-completeness, not just declaration-completeness); manifest non-empty; `playtest_event` resolves to EXEMPT |
 | G7 | `accounts_tests.rs` | Rust-side mirror of G2–G6 and G11 (toolchain-boundary defense in depth, the `ranking-security.eval.mjs` precedent) |
 | G8 | extend `evals/ranking-security.eval.mjs` | Positive fixture proving `rekey_profile` stays green under A2 and doesn't change A1's reducer count |
