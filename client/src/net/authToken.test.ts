@@ -742,8 +742,15 @@ describe('authKindStorageKey', () => {
     // for one host would make a completely different host's tab refuse to connect.
     expect(authKindStorageKey('a|b', 'c')).not.toBe(authKindStorageKey('a', 'b|c'));
     // Each axis is load-bearing on its own (kills a key derived from uri alone / db alone).
-    expect(authKindStorageKey('ws://a:3000', 'same-db')).not.toBe(
-      authKindStorageKey('ws://b:3000', 'same-db'),
+    // TWO DISTINCT LOOPBACK PORTS, not two distinct hostnames — the file's own idiom from
+    // its key-scoping tests above (127.0.0.1:3000 vs :3001). Semgrep's blocking
+    // `detect-insecure-websocket` rule fires on any non-loopback unencrypted-websocket URL
+    // literal and exempts loopback, which is why every URI fixture in this file is
+    // 127.0.0.1. The property under test is only that the two URIs DIFFER, so the port axis
+    // carries it exactly as well as the host axis would — and not tripping the scanner
+    // beats allow-listing it with a suppression comment.
+    expect(authKindStorageKey('ws://127.0.0.1:3000', 'same-db')).not.toBe(
+      authKindStorageKey('ws://127.0.0.1:3001', 'same-db'),
     );
     expect(authKindStorageKey('same-uri', 'db-A')).not.toBe(authKindStorageKey('same-uri', 'db-B'));
     // Case is PRESERVED, exactly as storageKey does (connectionConfig.ts treats
@@ -948,12 +955,17 @@ describe('readAuthKind (AUTH-31): fails to "anon" on every absent / blocked / co
     // A marker that leaked across targets would make an `'account'` written for the
     // playtest database refuse the connection to the production one — a cross-target
     // denial-of-service on the anonymous path.
+    //
+    // The two URIs differ only by PORT (3000 vs 3001), the idiom the pre-existing
+    // key-scoping tests above already use: both are loopback, so Semgrep's blocking
+    // `detect-insecure-websocket` rule stays quiet, and "two distinct connection targets"
+    // — the only property this test needs — is preserved exactly.
     const storage = new FakeSessionStorage();
     const host = hostWithStorage(storage);
-    writeAuthKind(host, 'ws://a:3000', 'same-db', 'account');
-    expect(readAuthKind(host, 'ws://a:3000', 'same-db')).toBe('account');
-    expect(readAuthKind(host, 'ws://b:3000', 'same-db')).toBe('anon');
-    expect(readAuthKind(host, 'ws://a:3000', 'other-db')).toBe('anon');
+    writeAuthKind(host, 'ws://127.0.0.1:3000', 'same-db', 'account');
+    expect(readAuthKind(host, 'ws://127.0.0.1:3000', 'same-db')).toBe('account');
+    expect(readAuthKind(host, 'ws://127.0.0.1:3001', 'same-db')).toBe('anon');
+    expect(readAuthKind(host, 'ws://127.0.0.1:3000', 'other-db')).toBe('anon');
   });
 
   it('re-reads storage on EVERY call (kills a module-level memo of the first read)', () => {
@@ -1080,10 +1092,27 @@ describe('writeAuthKind (AUTH-31): writes under the kind key and degrades silent
 //     vocabulary. Best-effort by construction; the revocation ban is a tripwire,
 //     not a proof.
 //   * Test 2 (enforcement) is the one that actually holds the line, and it is
-//     MECHANICAL: no file under client/src, anywhere, calls `writeAuthKind(`.
-//     Prose can be inverted; a caller cannot be hidden from a tree walk. If
-//     someone lifts the prohibition in prose only, nothing has broken yet; the
-//     moment it becomes consequential — a caller appears — test 2 reds.
+//     MECHANICAL: the IDENTIFIER `writeAuthKind` does not appear at all in the
+//     comment-stripped source of any file under client/src (excluding the
+//     writer's own module and the tests). If someone lifts the prohibition in
+//     prose only, nothing has broken yet; the moment it becomes consequential —
+//     the name appears in shipped code — test 2 reds.
+//
+//     ⚠ THE CLAIM THAT SENTENCE USED TO MAKE, AND WHY IT WAS WRONG. It read
+//     "prose can be inverted; a caller cannot be hidden from a tree walk". The
+//     tree walk was never the weak part — the NEEDLE was. Test 2 counted the
+//     call token `writeAuthKind(`, and the verifier defeated it with four lines
+//     in main.ts that were biome-clean, tsc-clean and left the full suite green:
+//         import { writeAuthKind as markKind } from './net/authToken';
+//         markKind(globalThis, uri, db, 'account');
+//     The alias never spells `writeAuthKind(`, so the hazard shipped invisibly
+//     under a tooth whose own header called it the one that holds the line.
+//     Counting the BARE IDENTIFIER instead closes aliasing, re-export,
+//     destructuring, computed-member access and a second import in one move —
+//     the import statement must name it to bind it, whatever it is renamed to
+//     afterwards. Same discipline this slice already applied to `readAuthKind`
+//     in connection.test.ts (the `readAuthKind as` / `as readAuthKind` bans plus
+//     an identifier-level count); it belonged on the load-bearing tooth first.
 //
 // THREE EVASIONS THE FIRST DRAFT ADMITTED, all closed below (red-team):
 //   E1 — the region ran from `export function readAuthKind` to `export function
@@ -1328,19 +1357,37 @@ describe('W-M21B-WRITE-HAZARD-DOCUMENTED: writeAuthKind carries the "no producti
     }
   });
 
-  it('★★ BITES (enforcement): NO file under client/src calls writeAuthKind( — the writer has no production caller anywhere', () => {
-    // ★ THE TOOTH THAT ACTUALLY HOLDS THE LINE, and the one the first draft got wrong: it
-    // scanned connection.ts ONLY, while its title claimed "no other module". main.ts is the
-    // natural home for M21b-2's OIDC return leg and was completely unguarded — a single
-    // `writeAuthKind(globalThis, URI, DB, 'account')` there passed the entire suite green
-    // while shipping the exact hazard the comment above forbids. The scan now walks the
-    // whole of client/src.
+  it('★★ BITES (enforcement): the writeAuthKind IDENTIFIER appears in NO shipped file under client/src — the writer has no production caller, under any name', () => {
+    // ★ THE TOOTH THAT ACTUALLY HOLDS THE LINE. It has been wrong twice; both corrections
+    // are recorded here because each one is a lesson about what a source scan does and does
+    // not see.
     //
-    // WRONG IMPL KILLED: a marker write landing ANYWHERE ahead of the read-side guard —
-    // main.ts, a new ui/ module, a store helper, connection.ts. Each one silently drops a
-    // real player onto a different identity, and (per the writer's own doc block) also
-    // latches ADR-0150 suppression permanently and strands a fresh un-claimable identity
-    // per reconnect.
+    // MISS 1 (scope): it scanned connection.ts ONLY, while its title claimed "no other
+    //   module". main.ts is the natural home for M21b-2's OIDC return leg and was entirely
+    //   unguarded. Fixed by walking the whole of client/src.
+    // MISS 2 (needle — verifier, PROVEN, biome-clean AND tsc-clean AND full-suite green):
+    //   it counted the CALL TOKEN `writeAuthKind(`, which an alias never spells:
+    //       import { writeAuthKind as markKind } from './net/authToken';
+    //       markKind(globalThis, 'ws://127.0.0.1:3000', 'monster-realm', 'account');
+    //   The prohibited write shipped, undetected, under the tooth that three separate
+    //   documents (ADR-0179's amendment, the writer's own doc block, and this block's
+    //   header) cite as the enforcement. Fixed by counting the BARE IDENTIFIER: a module
+    //   cannot bind an import without naming it in the import statement, whatever it is
+    //   renamed to afterwards — so aliasing, re-export, destructuring off a namespace
+    //   import, computed member access and a second import are all closed at once.
+    //
+    // WRONG IMPL KILLED: a marker write landing ANYWHERE ahead of the read-side guard, in
+    // ANY spelling — main.ts, a new ui/ module, a store helper, connection.ts. Each one
+    // silently drops a real player onto a different identity, and (per the writer's own doc
+    // block) also latches ADR-0150 suppression permanently and strands a fresh un-claimable
+    // identity per reconnect.
+    //
+    // ACCEPTED RESIDUAL, stated rather than papered over: an identifier count cannot see a
+    // module that re-implements the six-line write inline (`storage.setItem(kindKey, 'account')`)
+    // without importing the writer at all. That is a different defect — duplicating the
+    // marker's storage machinery — and the honest place to catch it is review, not this
+    // needle. What this tooth guarantees is precisely: the shipped tree does not REFERENCE
+    // the writer.
     const files = m21bListClientSrcFiles();
 
     // --- ANTI-VACUITY: a tree walk that found nothing would pass every negative below ---
@@ -1370,28 +1417,31 @@ describe('W-M21B-WRITE-HAZARD-DOCUMENTED: writeAuthKind carries the "no producti
       const src = readSourceOrThrow(file);
       const rel = path.relative(CLIENT_SRC_ROOT, file);
       // Checked on RAW source first, because comment-stripping is what could HIDE a real
-      // call: `stripLineComments` truncates each line at the first `//`, so a line
-      // containing a URL literal followed by a call would lose the call. A raw zero needs
-      // no further argument.
-      if (m21bCount(src, 'writeAuthKind(') === 0) continue;
+      // reference: `m21bStripComments` truncates each line at the first `//`, so a line
+      // containing a URL literal followed by a reference would lose it. A raw zero needs no
+      // further argument and skips the rest.
+      if (m21bCount(src, 'writeAuthKind') === 0) continue;
 
-      // Raw is non-zero: the occurrences must ALL be in comments (a doc reference to
-      // `writeAuthKind(...)` is legitimate), and the naive stripper must be sound for this
-      // file — i.e. it contains no `://`, so no line was truncated at a URL.
+      // Raw is non-zero: the occurrences must ALL be in comments (a prose cross-reference
+      // to the writer is legitimate and connection.ts carries one), and the naive stripper
+      // must be sound for this file — i.e. it contains no `://`, so no line was truncated
+      // at a URL and hid a real reference behind it.
       expect(
         m21bCount(src, '://'),
-        `${rel} mentions writeAuthKind( AND contains a "://" literal. The comment stripper ` +
+        `${rel} mentions writeAuthKind AND contains a "://" literal. The comment stripper ` +
           'truncates each line at the first "//", so it cannot be trusted to tell a real ' +
-          'call from a commented one in this file. Move the URL to connectionConfig.ts, or ' +
-          'drop the parenthesis from the prose mention',
+          'reference from a commented one in this file. Move the URL to connectionConfig.ts',
       ).toBe(0);
       expect(
-        m21bCount(m21bStripComments(src), 'writeAuthKind('),
-        `${rel} must NOT call writeAuthKind( — with the read-side credential guard parked ` +
-          "to M21b-2, writing an 'account' marker leaves the next build supplying the stale " +
-          'ANON token through the unchanged .withToken(auth.tokenForNextAttempt()), ' +
-          'silently dropping the player onto a DIFFERENT identity. The producer ships WITH ' +
-          'the guard, never before it (ADDENDUM S11 / the doc block on writeAuthKind)',
+        m21bCount(m21bStripComments(src), 'writeAuthKind'),
+        `${rel} must not REFERENCE writeAuthKind in shipped code at all — not as a call, an ` +
+          'import specifier, an alias, a re-export or a namespace member. With the ' +
+          "read-side credential guard parked to M21b-2, writing an 'account' marker leaves " +
+          'the next build supplying the stale ANON token through the unchanged ' +
+          '.withToken(auth.tokenForNextAttempt()), silently dropping the player onto a ' +
+          'DIFFERENT identity. The producer ships WITH the guard, never before it (ADDENDUM ' +
+          'S11 / the doc block on writeAuthKind). A prose mention in a comment is fine — ' +
+          'comments are stripped before this count',
       ).toBe(0);
     }
   });

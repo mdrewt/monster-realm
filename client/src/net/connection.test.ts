@@ -815,6 +815,39 @@ describe('connection.ts wiring (nh4, RE-PINNED by M21b): W-NH4-SAVE-WIRED — on
           'once per build, inside build(), and merely READ here',
       ).toBe(0);
     }
+
+    // ★ NO STORAGE ACCESS AT ALL FROM THIS SHELL (the last way to reach the token slot
+    // without going through the guard). Every needle above pins the ONE path into the
+    // anonymous credential — `auth.onConnected(token)`. None of them can see a build that
+    // simply bypasses the gate module:
+    //     globalThis.sessionStorage?.setItem('mr.authToken.v1|…', token);
+    // inside onConnect. That leaves `.onConnected(` at exactly one occurrence, keeps the
+    // kind guard textually intact, and writes the account JWT into the anon slot anyway.
+    //
+    // The pin is whole-file, not region-bounded, and it is not an ad-hoc widening: it is
+    // authToken.ts's stated charter, mechanised. That module's header says the storage HOST
+    // is injected "never a globalThis reach from inside" precisely so every branch is
+    // unit-testable in node — and connection.ts is coverage-EXCLUDED, so any storage logic
+    // that migrates here becomes permanently unprovable. ADR-0150 D3 additionally forbids
+    // localStorage anywhere (an origin-shared token lets closing a second tab forfeit the
+    // first tab's live PvP battle and delete its character row).
+    //
+    // FALSE-RED RISK ASSESSED BEFORE ADDING: connection.ts contains ZERO occurrences of
+    // any of these identifiers in shipped code today (its single `sessionStorage` mention
+    // is prose in the comment above the kind guard, and comments are stripped here). If a
+    // future slice genuinely needs storage in the adapter, that is the conversation this
+    // tooth is meant to force, not an inconvenience to route around.
+    for (const storageReach of ['sessionStorage', 'localStorage', 'indexedDB', 'document.cookie']) {
+      expect(
+        countOccurrences(squashedWhole, storageReach),
+        `connection.ts must not reference "${storageReach}" — storage belongs to ` +
+          'authToken.ts behind an INJECTED host (its module header: never a globalThis ' +
+          'reach from inside). A direct write here bypasses the kind guard entirely, ' +
+          're-opening the account-JWT replay while every other needle in this tooth stays ' +
+          'satisfied — and it would live in a coverage-excluded file, where behaviour ' +
+          'cannot be proven at all',
+      ).toBe(0);
+    }
   });
 });
 
