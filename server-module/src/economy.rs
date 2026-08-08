@@ -261,6 +261,46 @@ pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> 
     Ok(())
 }
 
+// --- M21 guest→account wallet re-key (ADR-0179 D6, AUTH-23/24) ----------------
+
+/// Zero a wallet row's balance in place, preserving its PK. Pure seam so the
+/// "balance becomes 0, owner unchanged" property is unit-testable without a
+/// `ReducerContext`. NEVER produces a delete (AUTH-23).
+pub(crate) fn zeroed_wallet(row: PlayerWallet) -> PlayerWallet {
+    PlayerWallet { balance: 0, ..row }
+}
+
+/// Re-key the guest's wallet balance onto `to` by CREDIT-FORWARD, then zero the
+/// guest's row in place — NEVER delete it (AUTH-23/24, ADR-0081 single-surface).
+/// Must live in `economy.rs`: `currency-integrity.eval.mjs` ACCESSOR_BYPASS bans
+/// even a READ of `player_wallet()` from any other module, so `accounts.rs`
+/// delegates here. Read the balance BEFORE zeroing; `grant_currency` writes a
+/// different PK (`to != from`, guaranteed by AUTH-17), so credit-then-zero is
+/// race-free and the balance is never lost. A zero-balance guest creates no
+/// phantom destination row (`grant_currency`'s 0-amount early return).
+pub(crate) fn rekey_wallet(ctx: &ReducerContext, from: Identity, to: Identity) {
+    if let Some(row) = ctx.db.player_wallet().owner_identity().find(from) {
+        grant_currency(ctx, to, row.balance);
+        ctx.db
+            .player_wallet()
+            .owner_identity()
+            .update(zeroed_wallet(row));
+    }
+}
+
+/// True if `owner` has a `player_wallet` row (for
+/// `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Lives here because
+/// ACCESSOR_BYPASS gates wallet reads, not just writes. Distinct from
+/// `wallet_balance` — "row present" is not "balance > 0" (a zeroed post-claim
+/// guest row still exists).
+pub(crate) fn wallet_exists(ctx: &ReducerContext, owner: Identity) -> bool {
+    ctx.db
+        .player_wallet()
+        .owner_identity()
+        .find(owner)
+        .is_some()
+}
+
 #[cfg(test)]
 #[path = "economy_tests.rs"]
 #[allow(unused_imports)]

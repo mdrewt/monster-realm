@@ -152,6 +152,81 @@ pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String
     Ok(())
 }
 
+// --- M21 guest→account profile re-key (ADR-0179 D6, AUTH-23/25) ---------------
+
+/// Tombstone name for a claimed guest's retained (never-deleted) `profile` row.
+/// 15 chars ≤ `MAX_NAME_LEN` (24). Deliberately UN-TYPABLE: the parentheses are
+/// not alphanumeric, so `guards::validate_name` rejects it — no player can mint a
+/// name impersonating a tombstone.
+pub(crate) const PROFILE_TOMBSTONE_NAME: &str = "(claimed guest)";
+
+/// Copy `rating`/`wins`/`losses` onto `dest`, preserving its identity and name.
+/// Pure seam (unit-testable without a `ReducerContext`).
+pub(crate) fn profile_with_carried_stats(
+    dest: Profile,
+    rating: i32,
+    wins: u32,
+    losses: u32,
+) -> Profile {
+    Profile {
+        rating,
+        wins,
+        losses,
+        ..dest
+    }
+}
+
+/// Zero the ranked stats and tombstone the name of a guest's own `profile` row,
+/// preserving its identity. Pure seam. The zero is load-bearing, not cosmetic
+/// (AUTH-25): it is what stops the same guest identity donating the same stats
+/// to an unbounded number of later fresh accounts.
+pub(crate) fn tombstoned_profile(guest: Profile) -> Profile {
+    Profile {
+        name: PROFILE_TOMBSTONE_NAME.to_string(),
+        rating: 0,
+        wins: 0,
+        losses: 0,
+        ..guest
+    }
+}
+
+/// Re-key the guest's ranked profile onto `to`: copy stats forward onto the
+/// destination row (created via the single `get_or_init_profile` insert seam if
+/// absent — no new insert site, ADR-0119 D6 / ptc1 insert-count pin), THEN zero
+/// and tombstone the guest's OWN row in place. NEVER deletes a `profile` row
+/// (AUTH-23; ADR-0119 D1 structural never-deleted scan). Called only from
+/// `accounts::rekey_all` (D0). Reads the guest via `match`, not a split-binding
+/// (RL-2 / `=ctx.db` ban). NOT a `#[reducer]` — A1's one-reducer count is
+/// unaffected. No-op when the guest never played ranked.
+pub(crate) fn rekey_profile(ctx: &ReducerContext, from: Identity, to: Identity) {
+    // Read the guest via `match` (not `if let`/`let Some`) so the whitespace-free
+    // `=ctx.db.profile()` split-binding needle never appears (RL-2 / d1 scan).
+    let guest = match ctx.db.profile().identity().find(from) {
+        Some(g) => g,
+        None => return,
+    };
+    let dest = get_or_init_profile(ctx, to);
+    ctx.db
+        .profile()
+        .identity()
+        .update(profile_with_carried_stats(
+            dest,
+            guest.rating,
+            guest.wins,
+            guest.losses,
+        ));
+    ctx.db
+        .profile()
+        .identity()
+        .update(tombstoned_profile(guest));
+}
+
+/// True if `identity` has a `profile` row (for
+/// `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
+pub(crate) fn profile_exists(ctx: &ReducerContext, identity: Identity) -> bool {
+    ctx.db.profile().identity().find(identity).is_some()
+}
+
 #[cfg(test)]
 #[path = "ranking_tests.rs"]
 mod ranking_tests;

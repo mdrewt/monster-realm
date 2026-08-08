@@ -2,9 +2,9 @@
 type: Schema Overview
 title: Monster Realm Schema Overview
 slug: schema-overview
-updated: 2026-08-07
+updated: 2026-08-08
 tags: [schema, spacetimedb, overview]
-abstract: "34-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 43 reducers."
+abstract: "37-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 49 reducers."
 source: scripts/okf-export.mjs@server-module/src/
 ---
 
@@ -33,12 +33,15 @@ source: scripts/okf-export.mjs@server-module/src/
 - [type_relation_row](tables/type_relation_row.md)
 - [zone_def](tables/zone_def.md)
 
-### Private (14)
+### Private (17)
 
+- [account](tables/account.md)
 - [battle_action](tables/battle_action.md)
 - [battle_challenge_reaper_schedule](tables/battle_challenge_reaper_schedule.md)
 - [battle_wild](tables/battle_wild.md)
 - [encounter](tables/encounter.md)
+- [guest_claim](tables/guest_claim.md)
+- [guest_claim_reaper_schedule](tables/guest_claim_reaper_schedule.md)
 - [heal_cooldown](tables/heal_cooldown.md)
 - [monster](tables/monster.md) → public projection: [monster_pub](tables/monster_pub.md)
 - [movement_tick_schedule](tables/movement_tick_schedule.md)
@@ -50,31 +53,36 @@ source: scripts/okf-export.mjs@server-module/src/
 - [pvp_deadline_schedule](tables/pvp_deadline_schedule.md)
 - [trade_offer_reaper_schedule](tables/trade_offer_reaper_schedule.md)
 
-## Reducers (43)
+## Reducers (49)
 
 - [accept_challenge](reducers/accept_challenge.md)
 - [advance_dialogue](reducers/advance_dialogue.md)
 - [attempt_recruit](reducers/attempt_recruit.md)
 - [battle_challenge_reaper](reducers/battle_challenge_reaper.md)
 - [buy](reducers/buy.md)
+- [cancel_account_deletion](reducers/cancel_account_deletion.md)
 - [cancel_challenge](reducers/cancel_challenge.md)
 - [cancel_trade](reducers/cancel_trade.md)
 - [care](reducers/care.md)
 - [challenge_pvp](reducers/challenge_pvp.md)
 - [clear_queue](reducers/clear_queue.md)
+- [complete_guest_claim](reducers/complete_guest_claim.md)
 - [confirm_trade](reducers/confirm_trade.md)
 - [consume_crystalized_essence](reducers/consume_crystalized_essence.md)
 - [decline_challenge](reducers/decline_challenge.md)
+- [delete_account](reducers/delete_account.md)
 - [dismiss_dialogue](reducers/dismiss_dialogue.md)
 - [enqueue_move](reducers/enqueue_move.md)
 - [essence_train](reducers/essence_train.md)
 - [evolve](reducers/evolve.md)
 - [flee](reducers/flee.md)
 - [grant_bait](reducers/grant_bait.md)
+- [guest_claim_reaper](reducers/guest_claim_reaper.md)
 - [heal_party](reducers/heal_party.md)
 - [init](reducers/init.md)
 - [join_game](reducers/join_game.md)
 - [movement_tick](reducers/movement_tick.md)
+- [on_connect](reducers/on_connect.md)
 - [on_disconnect](reducers/on_disconnect.md)
 - [playtest_reaper](reducers/playtest_reaper.md)
 - [propose_trade](reducers/propose_trade.md)
@@ -86,6 +94,7 @@ source: scripts/okf-export.mjs@server-module/src/
 - [set_party_slot](reducers/set_party_slot.md)
 - [set_profile_name](reducers/set_profile_name.md)
 - [start_battle](reducers/start_battle.md)
+- [start_guest_claim](reducers/start_guest_claim.md)
 - [start_wild_battle](reducers/start_wild_battle.md)
 - [submit_attack](reducers/submit_attack.md)
 - [submit_pvp_action](reducers/submit_pvp_action.md)

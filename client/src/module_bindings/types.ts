@@ -10,6 +10,27 @@ import {
   type Infer as __Infer,
 } from "spacetimedb";
 
+export const Account = __t.object("Account", {
+  identity: __t.identity(),
+  authIssuer: __t.string(),
+  createdAtMs: __t.i64(),
+  lastLoginAtMs: __t.i64(),
+  get status() {
+    return AccountStatus;
+  },
+  deletionRequestedAtMs: __t.option(__t.i64()),
+  claimedFrom: __t.option(__t.identity()),
+  claimedAtMs: __t.option(__t.i64()),
+});
+export type Account = __Infer<typeof Account>;
+
+// The tagged union or sum type for the algebraic type `AccountStatus`.
+export const AccountStatus = __t.enum("AccountStatus", {
+  Active: __t.unit(),
+  PendingDeletion: __t.unit(),
+});
+export type AccountStatus = __Infer<typeof AccountStatus>;
+
 // The tagged union or sum type for the algebraic type `ActionState`.
 export const ActionState = __t.enum("ActionState", {
   Idle: __t.unit(),
@@ -220,6 +241,22 @@ export const EvolutionPathRow = __t.object("EvolutionPathRow", {
   minNutritionPct: __t.option(__t.u8()),
 });
 export type EvolutionPathRow = __Infer<typeof EvolutionPathRow>;
+
+export const GuestClaim = __t.object("GuestClaim", {
+  guestIdentity: __t.identity(),
+  code: __t.string(),
+  guestName: __t.string(),
+  createdAtMs: __t.i64(),
+  expiresAtMs: __t.i64(),
+});
+export type GuestClaim = __Infer<typeof GuestClaim>;
+
+export const GuestClaimReaperSchedule = __t.object("GuestClaimReaperSchedule", {
+  scheduledId: __t.u64(),
+  scheduledAt: __t.scheduleAt(),
+  guestIdentity: __t.identity(),
+});
+export type GuestClaimReaperSchedule = __Infer<typeof GuestClaimReaperSchedule>;
 
 export const HealCooldown = __t.object("HealCooldown", {
   ownerIdentity: __t.identity(),

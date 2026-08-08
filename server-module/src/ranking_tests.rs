@@ -571,45 +571,91 @@ fn d1_scan_helper_used_by_both_arms() {
 
 /// EARS 17.5d-1: The `Some` arm of `get_or_init_profile` must NOT add an extra DB write.
 ///
-/// Three sub-assertions (all whitespace-free):
-///   (a) profile().identity().update( count == 2 — the two existing apply_pvp_rating
-///       writes; an eager Some-arm write would make it 3. (Starts GREEN — regression pin.)
+/// Sub-assertions (all whitespace-free):
+///   (a) PER-FUNCTION profile().identity().update( counts (RE-SCOPED for M21a):
+///       apply_pvp_rating == 2, get_or_init_profile == 0, rekey_profile == 2, and a
+///       whole-file backstop == 4. M21a's rekey_profile added two profile writers, so
+///       the historical whole-file ==2 pin would false-fail; bumping it 2->4 would
+///       delete the tooth (a writer could be moved into get_or_init's Some arm and the
+///       count would stay 4). The per-fn pins keep the eager-write tooth for
+///       get_or_init while accounting for rekey_profile's legitimate two writes.
 ///   (b) `=ctx.db.profile()` absent — split-binding evasion of the never-deleted scan.
-///       Starts GREEN: the current file's profile accesses are `match ctx.db.profile()...`
-///       and `.insert(` — no `=`-binding of the accessor. Gate fires if a bad impl adds one.
+///       rekey_profile reads the guest via `match ctx.db.profile()`, so this stays GREEN
+///       (the `match` keyword breaks the `=ctx.db.profile()` needle).
 ///   (c) `=ctx.db.player()` absent — forces all player-table reads in ranking.rs through
-///       the `live_player_name` helper (ADR-0125 D3). Lifecycle: started RED pre-impl
-///       (old None arm bound `let name = ctx.db.player()...`, squashing to
-///       `letname=ctx.db.player()` which matched the needle); turned GREEN after the impl
-///       routed both get_or_init_profile arms through live_player_name; stays as a gate
-///       against split-binding regressions in future edits. The needle cannot distinguish
-///       binding-the-accessor from binding-a-chain-result — it bans both forms intentionally.
-///
-/// Update-count == 2 is a REGRESSION PIN — documented as green-at-birth by design.
-/// Sub-assertion (b) also starts GREEN (no profile-accessor binding in current code).
-/// Sub-assertion (c) started RED pre-impl, now GREEN post-impl (see lifecycle above).
+///       the `live_player_name` helper (ADR-0125 D3).
 ///
 /// Kills:
-///   - eager DB write added in Some arm (update count becomes 3)
-///   - split-binding `= ctx.db.profile()` added anywhere in the file
-///   - split-binding `= ctx.db.player()` added in new code
+///   - eager DB write added in get_or_init_profile's Some arm (its per-fn count becomes 1)
+///   - either rekey_profile write dropped (copy-forward OR the mandatory zero — count 1)
+///   - a 5th profile writer added anywhere (whole-file backstop fires)
+///   - split-binding `= ctx.db.profile()` / `= ctx.db.player()` added anywhere
 #[test]
 fn d1_scan_no_eager_write_in_get_or_init() {
     let squashed = stripped_for_scan(RANKING_RS);
 
-    // (a) Exactly 2 profile update calls (apply_pvp_rating's two writes).
-    // REGRESSION PIN: starts GREEN. Documents the write-count shape before impl.
+    // (a) PER-FUNCTION profile-update-count pins (RE-SCOPED for M21a / AUTH-25).
+    //
+    // M21a's ranking::rekey_profile adds two MORE profile().identity().update(
+    // calls (copy-forward + tombstone), so the historical whole-file ==2 pin now
+    // sees 4. Bumping the whole-file pin 2->4 would DELETE the tooth (any of the
+    // four writers could then be moved into get_or_init_profile's Some arm and the
+    // count would still be 4). Instead, pin each writer's body exactly, plus a
+    // whole-file backstop == 4 ("no fifth writer"). extract_squashed_fn_body is
+    // defined below in this file (pt-c1 section) and works on squashed source.
     let update_needle = concat!("profile().identity()", ".update(");
-    let update_count = squashed.matches(update_needle).count();
+
+    // apply_pvp_rating writes the winner + loser rows: exactly 2.
+    let apply_body = extract_squashed_fn_body(&squashed, concat!("fnapply_pvp", "_rating("))
+        .expect("d1_scan (update-count): fn apply_pvp_rating not found in ranking.rs");
+    let apply_updates = apply_body.matches(update_needle).count();
     assert_eq!(
-        update_count, 2,
-        "17.5d-1 FAIL (d1_scan_no_eager_write_in_get_or_init / update-count pin): \
-         ranking.rs must contain exactly 2 calls to profile().identity().update( \
-         (apply_pvp_rating's winner + loser writes). Found {} call(s). \
-         If 3+, get_or_init_profile's Some arm has added an eager write (ADR-0125 D1: \
-         refresh is in-memory only, persistence rides the existing two update spreads). \
-         If 0, apply_pvp_rating's writes were removed.",
-        update_count
+        apply_updates, 2,
+        "17.5d-1 FAIL (d1_scan_no_eager_write_in_get_or_init / apply_pvp_rating pin): \
+         apply_pvp_rating must contain exactly 2 profile().identity().update( calls \
+         (winner + loser). Found {}. If 1, one rating spread was deleted; if 3+, an \
+         eager write crept in.",
+        apply_updates
+    );
+
+    // get_or_init_profile is a READ/seed seam: it must add NO eager update (the
+    // refresh is in-memory only; persistence rides apply_pvp_rating's spreads).
+    let get_body = extract_squashed_fn_body(&squashed, concat!("fnget_or_init", "_profile("))
+        .expect("d1_scan (update-count): fn get_or_init_profile not found in ranking.rs");
+    let get_updates = get_body.matches(update_needle).count();
+    assert_eq!(
+        get_updates, 0,
+        "17.5d-1 FAIL (d1_scan_no_eager_write_in_get_or_init / get_or_init_profile pin): \
+         get_or_init_profile must contain ZERO profile().identity().update( calls — the \
+         Some-arm refresh is in-memory only (ADR-0125 D1). Found {}.",
+        get_updates
+    );
+
+    // rekey_profile (M21a, AUTH-25) writes exactly 2: the destination copy-forward
+    // and the guest-row tombstone-in-place. Never a delete (a separate scan).
+    let rekey_body = extract_squashed_fn_body(&squashed, concat!("fnrekey", "_profile("))
+        .expect("d1_scan (update-count): fn rekey_profile not found in ranking.rs");
+    let rekey_updates = rekey_body.matches(update_needle).count();
+    assert_eq!(
+        rekey_updates, 2,
+        "AUTH-25 FAIL (d1_scan_no_eager_write_in_get_or_init / rekey_profile pin): \
+         rekey_profile must contain exactly 2 profile().identity().update( calls (copy \
+         stats forward onto the destination, THEN zero+tombstone the guest row in place). \
+         Found {}. If 1, either the copy-forward or the mandatory zero step was dropped.",
+        rekey_updates
+    );
+
+    // Whole-file backstop: exactly 4 (apply_pvp_rating 2 + rekey_profile 2). Catches
+    // a FIFTH writer added anywhere (e.g. an eager write reachable through a helper
+    // the per-fn body scans would not textually contain).
+    let total_updates = squashed.matches(update_needle).count();
+    assert_eq!(
+        total_updates, 4,
+        "17.5d-1/AUTH-25 FAIL (d1_scan_no_eager_write_in_get_or_init / whole-file backstop): \
+         ranking.rs must contain exactly 4 profile().identity().update( calls total \
+         (apply_pvp_rating's 2 + rekey_profile's 2). Found {}. A 5th is an unaccounted \
+         profile writer.",
+        total_updates
     );
 
     // (b) No split-binding for profile table accessor.
@@ -1416,5 +1462,98 @@ fn ptc1_scan_machinery_teeth() {
          text appeared only inside a dead string literal. strip_rust_strings is not working \
          (red-team test-fan F1).",
         forbidden
+    );
+}
+
+// ===========================================================================
+// M21a AUTH-25 (ADR-0179 D6): guest->account profile re-key. Stats are copied
+// FORWARD onto the destination row, then the guest's own row is ZEROED and its
+// name tombstoned in place (never deleted). The zero step is load-bearing, not
+// cosmetic — it is the CRITICAL unbounded ranked-stat duplication path.
+//
+// Pure seams tested directly via super:: (no ReducerContext required):
+//   tombstoned_profile / profile_with_carried_stats / PROFILE_TOMBSTONE_NAME.
+// ===========================================================================
+
+/// AUTH-25 (pure) — THE SINGLE MOST IMPORTANT TOOTH IN M21a: `tombstoned_profile`
+/// zeroes rating/wins/losses AND overwrites the name with the tombstone constant,
+/// preserving the guest identity (the row is RETAINED, never deleted).
+///
+/// Kills (proof-of-teeth): delete ANY of the three `= 0` assignments — the guest
+/// identity could then donate the same ranked stats to an UNBOUNDED number of
+/// later fresh accounts via repeat claims. Each zero is asserted independently so
+/// dropping exactly one still goes RED.
+#[test]
+fn auth25_tombstoned_profile_zeroes_all_stats_and_tombstones_name() {
+    let guest = make_profile(9, "Ash", 1800, 40, 3);
+    let id = guest.identity;
+    let out = super::tombstoned_profile(guest);
+    assert_eq!(
+        out.rating, 0,
+        "AUTH-25: rating MUST be zeroed — this is the unbounded ranked-duplication path."
+    );
+    assert_eq!(out.wins, 0, "AUTH-25: wins MUST be zeroed.");
+    assert_eq!(out.losses, 0, "AUTH-25: losses MUST be zeroed.");
+    assert_eq!(
+        out.name,
+        super::PROFILE_TOMBSTONE_NAME,
+        "AUTH-25: the guest name MUST be overwritten with the tombstone constant."
+    );
+    assert_eq!(
+        out.identity, id,
+        "AUTH-25: the guest identity (PK) is preserved — the row is retained, never deleted."
+    );
+}
+
+/// AUTH-25 (pure): `profile_with_carried_stats` copies the three stats onto the
+/// DESTINATION row while preserving the destination's OWN identity and name.
+///
+/// Kills (proof-of-teeth): a mutant that copies the guest's `name` onto the
+/// destination — D6 requires the destination keep its own display name; carrying
+/// the guest name across would leak it onto the claimer's public leaderboard row.
+#[test]
+fn auth25_profile_with_carried_stats_preserves_dest_identity_and_name() {
+    let dest = make_profile(2, "DestName", 1000, 0, 0);
+    let dest_id = dest.identity;
+    let out = super::profile_with_carried_stats(dest, 1800, 40, 3);
+    assert_eq!(
+        out.rating, 1800,
+        "AUTH-25: destination rating := carried guest rating."
+    );
+    assert_eq!(
+        out.wins, 40,
+        "AUTH-25: destination wins := carried guest wins."
+    );
+    assert_eq!(
+        out.losses, 3,
+        "AUTH-25: destination losses := carried guest losses."
+    );
+    assert_eq!(
+        out.identity, dest_id,
+        "AUTH-25: the destination identity (PK) is preserved."
+    );
+    assert_eq!(
+        out.name, "DestName",
+        "AUTH-25: the destination keeps its OWN name (never the guest's name)."
+    );
+}
+
+/// AUTH-25 (pure): the tombstone constant fits the display-name cap and is
+/// deliberately UN-TYPABLE — `guards::validate_name` rejects it, so no player can
+/// mint a name that impersonates a claimed-guest tombstone.
+///
+/// Kills: setting PROFILE_TOMBSTONE_NAME to something a player could type (which
+/// would let a griefer masquerade as a tombstone) or to something over the cap.
+#[test]
+fn auth25_tombstone_name_is_bounded_and_untypable() {
+    assert!(
+        super::PROFILE_TOMBSTONE_NAME.chars().count() <= crate::MAX_NAME_LEN,
+        "AUTH-25: PROFILE_TOMBSTONE_NAME must be <= MAX_NAME_LEN ({}) characters.",
+        crate::MAX_NAME_LEN
+    );
+    assert!(
+        crate::guards::validate_name(super::PROFILE_TOMBSTONE_NAME).is_err(),
+        "AUTH-25: the tombstone name must be UN-TYPABLE (validate_name rejects it), so no \
+         player can impersonate a claimed-guest tombstone on the leaderboard."
     );
 }

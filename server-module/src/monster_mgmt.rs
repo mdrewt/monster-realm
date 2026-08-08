@@ -11,7 +11,7 @@ use crate::guards::{log_reject, reject_if_monster_in_trade, require_owner, valid
 use crate::marshal::pub_from_monster;
 use crate::schema::{monster, monster_pub, trade_offer};
 use crate::PARTY_SLOT_NONE;
-use spacetimedb::ReducerContext;
+use spacetimedb::{Identity, ReducerContext};
 
 // --- Monster management reducers (M6b) ----------------------------------------
 
@@ -97,4 +97,53 @@ pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result
     ctx.db.monster().monster_id().update(m);
     ctx.db.monster_pub().monster_id().update(pub_row);
     Ok(())
+}
+
+// --- M21 guest→account re-key (ADR-0179 D6, AUTH-22) --------------------------
+
+/// Re-key every `monster` row (and its `monster_pub` twin) owned by `from` onto
+/// `to`, in ONE function body (AUTH-22 / `monster-dual-write.eval.mjs`). Called
+/// only from `accounts::rekey_all`; `accounts.rs` must NOT touch `monster`
+/// directly (D0 write-isolation). `owner_identity` is a non-PK indexed column on
+/// both tables → update in place (no PK collision; the destination owns zero
+/// monster rows, guaranteed by `complete_guest_claim`'s destination-collision
+/// guard). Collect ids before mutating (ADR-0126 convention). Fallible — a
+/// missing `monster_pub` twin is a broken dual-write invariant, fail loud and
+/// roll the whole claim back, never fabricate a tier (ADR-0174 D7/A3).
+pub(crate) fn rekey_monsters(
+    ctx: &ReducerContext,
+    from: Identity,
+    to: Identity,
+) -> Result<(), String> {
+    let ids: Vec<u64> = ctx
+        .db
+        .monster()
+        .owner_identity()
+        .filter(from)
+        .map(|m| m.monster_id)
+        .collect();
+    for id in ids {
+        let Some(mut m) = ctx.db.monster().monster_id().find(id) else {
+            continue;
+        };
+        let Some(existing_pub) = ctx.db.monster_pub().monster_id().find(id) else {
+            return Err(format!("monster_pub row missing for monster {id}"));
+        };
+        m.owner_identity = to;
+        let pub_row = pub_from_monster(&m, existing_pub.tier);
+        ctx.db.monster().monster_id().update(m);
+        ctx.db.monster_pub().monster_id().update(pub_row);
+    }
+    Ok(())
+}
+
+/// True if `owner` owns at least one `monster` row (existence check for
+/// `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
+pub(crate) fn has_monsters(ctx: &ReducerContext, owner: Identity) -> bool {
+    ctx.db
+        .monster()
+        .owner_identity()
+        .filter(owner)
+        .next()
+        .is_some()
 }

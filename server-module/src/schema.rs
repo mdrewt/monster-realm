@@ -657,6 +657,79 @@ fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
     ctx.db.player_wallet().owner_identity().find(ctx.sender)
 }
 
+// --- M21 account tables (ADR-0179 D2) ------------------------------------------
+
+/// Lifecycle state of an account (ADR-0179 D7). M21 gates `PendingDeletion` in
+/// exactly one place (`complete_guest_claim`) via `accounts::is_pending_deletion`;
+/// M22 extends `delete_account`'s body with the grace window + cascade. Written
+/// one variant per line deliberately — the type-snapshot regex terminates a body
+/// on a newline before the closing brace, so a single-line body is invisible to
+/// the baseline (`spacetime-type-snapshot.eval.mjs`).
+#[derive(Clone, Copy, PartialEq, Eq, Debug, spacetimedb::SpacetimeType)]
+pub enum AccountStatus {
+    Active,
+    PendingDeletion,
+}
+
+/// PRIVATE account record (no `public`) — one row per authenticated identity
+/// (ADR-0179 D2). No email, no email hash, no raw JWT `sub` (D9 / AUTH-6):
+/// `Identity = f(iss, sub)` already keys every game-data table since M2, so an
+/// account needs no PII of its own. Clients read ONLY through the `my_account`
+/// view below. Runtime table, not seeded content → NO CONTENT_VERSION bump
+/// (D10, mirrors `trade_offer` / ADR-0106). `Clone` (derived BEFORE the table
+/// attr — the `player_quest` precedent, so the schema-snapshot regex still
+/// matches `#[spacetimedb::table(...)] pub struct`) supports value-style unit
+/// tests over the pure seams that take an `Account` by value.
+#[derive(Clone)]
+#[spacetimedb::table(name = account)]
+pub struct Account {
+    #[primary_key]
+    pub identity: Identity,
+    /// The `iss` claim this account was provisioned under (audit only). Never
+    /// updated after insert — `Identity = f(iss, sub)`, so a different issuer is
+    /// a different identity, hence a different row (ADR-0179 D1).
+    pub auth_issuer: String,
+    pub created_at_ms: i64,
+    pub last_login_at_ms: i64,
+    pub status: AccountStatus,
+    pub deletion_requested_at_ms: Option<i64>,
+    /// The guest identity this account claimed, if any (audit provenance;
+    /// must survive by design — set once, never re-keyed, AUTH-21).
+    pub claimed_from: Option<Identity>,
+    pub claimed_at_ms: Option<i64>,
+}
+
+/// Owner-scoped read path for `account` (ADR-0179 D2, mirroring `my_wallet`
+/// above / ADR-0154 D2). `public` on the `#[view]` keyword is a mandatory,
+/// inert token — THIS BODY is the entire security boundary and must stay pinned
+/// to exactly this expression, not merely contain it (a decoy `find(ctx.sender)`
+/// followed by `find(other)` compiles clean and leaks; ADR-0154 D2's attack
+/// applies identically here).
+#[spacetimedb::view(name = my_account, public)]
+fn my_account(ctx: &spacetimedb::ViewContext) -> Option<Account> {
+    ctx.db.account().identity().find(ctx.sender)
+}
+
+/// PRIVATE in-flight guest→account claim (no `public`) — one row per guest
+/// identity (ADR-0179 D2/D3). `code` is CLIENT-minted 256-bit entropy
+/// (`crypto.getRandomValues`), stored plaintext; server RNG is never a CSPRNG
+/// here (D3 / AUTH-11). `#[unique]` with NO adjacent `#[index(btree)]` — a
+/// unique column already supports `.find()` (the `npc.npc_id` convention).
+/// `guest_name` is a server-populated snapshot of `player.name`, never a reducer
+/// argument (AUTH-9), rendered back only to the same person completing the claim.
+/// `Clone` derived before the table attr (see `Account`) for value-style tests.
+#[derive(Clone)]
+#[spacetimedb::table(name = guest_claim)]
+pub struct GuestClaim {
+    #[primary_key]
+    pub guest_identity: Identity,
+    #[unique]
+    pub code: String,
+    pub guest_name: String,
+    pub created_at_ms: i64,
+    pub expires_at_ms: i64,
+}
+
 // --- M17a ranked-ladder table (ADR-0119) ---------------------------------------
 
 /// Persistent per-player ranked-ladder record (M17, ADR-0119 D1) — the
