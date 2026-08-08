@@ -504,21 +504,43 @@ premises the design was written on — not as commentary.
   `auth.onConnected(token)` in `connection.ts` **would persist an account JWT into the anonymous
   token slot** — the slot `authToken.ts` hands straight back to `.withToken()` on the next build.
   That is a replay path created by code that already shipped, reachable the moment an account token
-  first exists. **M21b closes it structurally, ahead of the feature**: the call site is guarded on
-  the build's auth kind, so the anon slot can never receive an account JWT.
+  first exists. **M21b guards it ahead of the feature**: the call site is gated on the build's auth
+  kind, so no production code path can put an account JWT in the anon slot today.
+- **The guard is BEST-EFFORT, not structural — and the marker is the wrong shape for its successor.**
+  Recorded because an earlier draft of this amendment claimed the anon slot "can never" receive an
+  account JWT, which is false. `readAuthKind` fails to `'anon'` on every lossy path (absent host,
+  blocked storage, quota, eviction), and `'anon'` is the **permissive** direction for the write
+  guard — so a marker that is never written, fails to write, or is evicted silently re-opens the
+  replay. The fail direction is not a defect: AUTH-31 *requires* failing to `'anon'` (failing to
+  `'account'` would break every existing anonymous tab the instant storage is blocked). The two
+  requirements genuinely conflict and one lossy boolean cannot satisfy both. **Hard constraint on
+  M21b-2: replace the discriminator, do not extend it** — it must become the *provenance of the
+  credential this build actually supplied*, produced in memory alongside the token, which will
+  require re-pinning `W-NH4-TOKEN-SUPPLIED` (today it pins `.withToken(auth.tokenForNextAttempt())`
+  byte-for-byte and therefore forbids the provenance-carrying form).
+- **Writing an `'account'` marker before the read-side guard lands causes three harms, not one.**
+  (1) the next build supplies the stale *anon* token, dropping the player onto a different identity;
+  (2) `onConnected` is skipped, and it is the ONLY reset of `rejectionsSinceSuccess`, so a
+  *successful* connect stops clearing the counter and ADR-0150's suppression latches permanently for
+  the tab; (3) with the slot never written the host mints a **fresh identity on every build**, and
+  per F2 each one strands another permanently un-claimable identity plus an undeletable starter
+  monster. All three are unreachable today (no production code writes the marker) and are pinned by
+  the prohibition comment on `writeAuthKind` plus its source-scan teeth.
 - **F1 — the account path is unreachable while OQ1 is open.** `ALLOWED_ISSUERS` is the fail-closed
   `.invalid` placeholder, so per D1″ every connection resolves to *unrecognized issuer → `Ok`,
   anonymous, no `account` row*. `complete_guest_claim` guard 2 therefore returns `"no account"` for
   every possible token, in every build producible today.
 - **F2 — `join_game` is IRREVERSIBLE with respect to claiming.** `movement.rs` inserts a starter
-  `monster` + `monster_pub` on first join; `on_disconnect` deletes `player` + `character` only, so
-  the monster is permanent. `account_has_game_data` short-circuits on `has_monsters`, so guard 11
+  `monster` + `monster_pub` on first join; `on_disconnect` deletes the `player` and `character` rows
+  (among other session cleanup) but no `monster` row — and `server-module/src/` contains no monster
+  deletion path at all — so the monster is permanent. `account_has_game_data` short-circuits on `has_monsters`, so guard 11
   rejects `"already has game data"` **forever** (and AUTH-14 makes it one-claim-per-account anyway).
   **A single `join_game` on a destination account permanently destroys that account's ability to
   ever claim any guest save**, with no reversal path in M21 or M22. F1 + F2 together mean a
   join-gate whose failure paths fall through to `join_game` would convert every claim attempt into
   irreversible player-data loss. This is why AUTH-33 is deferred rather than shipped (see the spec's
-  §4 deferral note), and it is a hard constraint on M21b-2's redesign: **no path may auto-join while
+  §4 deferral note, recorded there by the M21b handoff — the spec lives in the harness repo, outside
+  this PR), and it is a hard constraint on M21b-2's redesign: **no path may auto-join while
   a live claim record exists** — no timeout hatch, no reconnect bypass; only an explicit,
   consequence-labelled decline.
 - **The auth-kind marker records INTENT, never FACT.** `mr.authKind.v1|<uri>|<db>` is written by the
@@ -542,8 +564,8 @@ premises the design was written on — not as commentary.
   `function build(): DbConnection` and `let current = build();` is non-optional, so the
   "surface session-expired and do **not** connect" branch cannot return. Widening `build()`/`current`
   to `DbConnection | undefined` cascades into `get conn()` and every `conn.conn.reducers.*` call site
-  in `main.ts`, and the `function build(): DbConnection {` anchor bounds six existing source-scan
-  teeth. The credential decision, silent renewal, the session-expired state, the explicit
+  in `main.ts`, and the `function build(): DbConnection {` anchor bounds two existing source-scan
+  teeth (six assertions across them). The credential decision, silent renewal, the session-expired state, the explicit
   continue-anonymously affordance, and the cold-start contract are therefore **one indivisible unit**
   and ship together in M21b-2. (Note the same-tab OIDC redirect *return* is itself a cold start with
   populated sessionStorage — the authenticated path is, by construction, the cold-start path.)

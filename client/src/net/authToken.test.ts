@@ -686,7 +686,7 @@ describe('createAuthTokenGate: reads/writes sessionStorage only, never localStor
 // does exactly this for its appended integration section. Biome sorts imports WITHIN a
 // contiguous chunk and never moves them across intervening statements, so this import
 // stays here and no line above the banner is disturbed.
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import {
@@ -1060,10 +1060,7 @@ describe('writeAuthKind (AUTH-31): writes under the kind key and degrades silent
 // the read side lands.
 //
 // WHY A SOURCE SCAN AND NOT A BEHAVIOURAL TEST: a comment has no runtime
-// representation, so there is no other way to assert it exists. This is the one
-// non-injected assertion in the appended block, and it is deliberately narrow —
-// it reads authToken.ts as text and checks three phrases in the region that
-// belongs to `writeAuthKind`.
+// representation, so there is no other way to assert it exists.
 //
 // WRONG IMPL KILLED: shipping `writeAuthKind` as an unremarked six-line mirror
 // of `onConnected`. The next author — quite reasonably — wires M21b-2's OIDC
@@ -1072,115 +1069,330 @@ describe('writeAuthKind (AUTH-31): writes under the kind key and degrades silent
 // thing standing between "we shipped half a feature safely" and that outcome,
 // and a prohibition nobody wrote down is not a prohibition.
 //
-// NO `new RegExp(...)` — lowercase + indexOf only.
+// ★★ DIVISION OF LABOUR BETWEEN THE TWO TESTS BELOW — stated plainly, because
+// the first one CANNOT be made airtight and pretending otherwise is worse than
+// admitting it. A substring scan judges TEXT, not MEANING: a comment that
+// contains every required phrase and then revokes itself is a shape no needle
+// can fully exclude. So:
+//   * Test 1 (documentation integrity) pins the prohibition's PLACEMENT — it
+//     must be in the doc block ATTACHED to the writer, not parked elsewhere in
+//     the file — its clause-level wording, and the absence of revocation
+//     vocabulary. Best-effort by construction; the revocation ban is a tripwire,
+//     not a proof.
+//   * Test 2 (enforcement) is the one that actually holds the line, and it is
+//     MECHANICAL: no file under client/src, anywhere, calls `writeAuthKind(`.
+//     Prose can be inverted; a caller cannot be hidden from a tree walk. If
+//     someone lifts the prohibition in prose only, nothing has broken yet; the
+//     moment it becomes consequential — a caller appears — test 2 reds.
+//
+// THREE EVASIONS THE FIRST DRAFT ADMITTED, all closed below (red-team):
+//   E1 — the region ran from `export function readAuthKind` to `export function
+//        writeAuthKind`, i.e. the READER's BODY plus the writer's doc comment.
+//        Deleting the writer's doc comment entirely and dropping a one-line
+//        cross-reference inside readAuthKind's body was green. Now the region is
+//        the `/** … */` block IMMEDIATELY adjacent to the writer, with nothing
+//        but whitespace between it and the declaration.
+//   E2 — three scattered substrings were satisfied by a comment that revoked the
+//        prohibition while quoting it ("an earlier draft said that no production
+//        caller may write 'account' … that restriction was LIFTED"). Now the
+//        pins are CLAUSES, plus a revocation-vocabulary ban, plus test 2.
+//   E3 — the phrases had to be CONTIGUOUS, so a biome re-wrap that split
+//        `no production caller` across `\n * ` would have RED the build on a
+//        pure formatting change. The region is now normalised (doc-comment `*`
+//        gutters and every whitespace run collapse to one space) before
+//        searching, which fixes the false-RED without loosening E2.
+//
+// NO `new RegExp(...)` — normalisation is a hand-rolled char scan; matching is
+// indexOf / includes only.
 // ---------------------------------------------------------------------------
 
 const AUTH_TOKEN_TS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'authToken.ts');
+const CLIENT_SRC_ROOT = path.join(path.dirname(fileURLToPath(import.meta.url)), '..');
 
-function readAuthTokenTs(): string {
+function readSourceOrThrow(filePath: string): string {
   try {
-    return readFileSync(AUTH_TOKEN_TS_PATH, 'utf8');
+    return readFileSync(filePath, 'utf8');
   } catch (err) {
     // Fail loud — a missing file must never make a scan vacuously pass.
-    throw new Error(
-      'authToken.ts could not be read at expected path: ' +
-        AUTH_TOKEN_TS_PATH +
-        ' — ' +
-        String(err),
-    );
+    throw new Error(`could not read ${filePath} — ${String(err)}`);
   }
 }
 
+/** Count NON-OVERLAPPING occurrences via split (no `new RegExp`). Same form as
+ *  connection.test.ts / main.wiring.test.ts use. */
+function m21bCount(src: string, needle: string): number {
+  return src.split(needle).length - 1;
+}
+
+/** Drop block comments, then line comments — copied verbatim in behaviour from
+ *  connection.test.ts's helper family so the two source scans cannot drift apart. Used ONLY
+ *  by the caller scan: the documentation test deliberately reads comments, not code. */
+function m21bStripComments(src: string): string {
+  let withoutBlocks = '';
+  let i = 0;
+  for (;;) {
+    const start = src.indexOf('/*', i);
+    if (start === -1) {
+      withoutBlocks += src.slice(i);
+      break;
+    }
+    withoutBlocks += src.slice(i, start);
+    const end = src.indexOf('*/', start + 2);
+    if (end === -1) break;
+    i = end + 2;
+  }
+  return withoutBlocks
+    .split('\n')
+    .map((line) => {
+      const j = line.indexOf('//');
+      return j === -1 ? line : line.slice(0, j);
+    })
+    .join('\n');
+}
+
+/**
+ * Normalise a doc-comment region for phrase matching: every whitespace run AND every `*`
+ * (the doc-comment gutter) collapses to a single space, then lowercase.
+ *
+ * WHY: biome does not reflow comment prose, but a human re-wrapping at the 100-column
+ * ruler absolutely will, and `no production caller` split across `\n * ` would otherwise
+ * red the build on a formatting change with a message about a missing prohibition. That is
+ * a false RED in a gating test, which is exactly how a gate loses its credibility. Mapping
+ * `*` to whitespace rather than deleting it is deliberate — deleting would silently splice
+ * two words together and could MANUFACTURE a phrase that was never written.
+ */
+function m21bNormaliseComment(text: string): string {
+  let out = '';
+  let inWs = false;
+  for (const ch of text) {
+    const isWs =
+      ch === ' ' || ch === '\n' || ch === '\t' || ch === '\r' || ch === '\f' || ch === '*';
+    if (isWs) {
+      if (!inWs) out += ' ';
+      inWs = true;
+    } else {
+      out += ch;
+      inWs = false;
+    }
+  }
+  return out.toLowerCase();
+}
+
+function m21bReadDirOrThrow(dir: string) {
+  try {
+    return readdirSync(dir, { withFileTypes: true });
+  } catch (err) {
+    // Fail loud — a walk that silently returns nothing would make every negative below
+    // vacuously true, which is the precise failure mode a repo-wide scan must not have.
+    throw new Error(`could not enumerate ${dir} — ${String(err)}`);
+  }
+}
+
+/** Every `.ts` file under `client/src` that could plausibly CALL the writer: excludes
+ *  `authToken.ts` itself (it DECLARES the function), every `*.test.ts` (they exercise it —
+ *  that is the whole point of the YAGNI exception), and the generated `module_bindings/`
+ *  tree (machine-written SDK glue that cannot reference app modules). */
+function m21bListClientSrcFiles(): string[] {
+  const found: string[] = [];
+  const walk = (dir: string): void => {
+    for (const entry of m21bReadDirOrThrow(dir)) {
+      const full = path.join(dir, entry.name);
+      if (entry.isDirectory()) {
+        if (entry.name !== 'module_bindings') walk(full);
+        continue;
+      }
+      if (!entry.name.endsWith('.ts')) continue;
+      if (entry.name.endsWith('.test.ts')) continue;
+      if (full === AUTH_TOKEN_TS_PATH) continue;
+      found.push(full);
+    }
+  };
+  walk(CLIENT_SRC_ROOT);
+  return found;
+}
+
 describe('W-M21B-WRITE-HAZARD-DOCUMENTED: writeAuthKind carries the "no production caller" prohibition', () => {
-  it('★★ BITES: the region owning writeAuthKind states that no production caller may write "account" until the read-side guard lands in M21b-2', () => {
-    // THE SENTENCE THE IMPLEMENTER MUST WRITE (or a variant containing all three
-    // phrases below), as a comment on/above `export function writeAuthKind`:
+  it('★★ BITES (placement + wording): the doc block ATTACHED to writeAuthKind states the prohibition, and does not revoke it', () => {
+    // THE PROHIBITION THE IMPLEMENTER MUST WRITE, in the doc block immediately above
+    // `export function writeAuthKind` (wording may vary; the clauses pinned below may not):
     //
     //   No production caller may write 'account' until the read-side credential guard
     //   lands (M21b-2). With the read side parked, an 'account' marker means the account
     //   token is correctly NOT stored while the next build still supplies the stale anon
     //   token via .withToken(auth.tokenForNextAttempt()) — a silent drop to a different
     //   identity. This slice ships the writer so the marker is a complete read/write
-    //   pair; it is exercised only by tests. (ADDENDUM S11's named YAGNI exception.)
-    //
-    // RED TODAY: `writeAuthKind` does not exist in authToken.ts, so the region extraction
-    // below throws — a HARD red on a missing implementation, never a vacuous pass.
-    const raw = readAuthTokenTs();
+    //   pair; it is exercised by tests alone. (ADDENDUM S11's named YAGNI exception.)
+    const raw = readSourceOrThrow(AUTH_TOKEN_TS_PATH);
 
-    const readIdx = raw.indexOf('export function readAuthKind');
     const writeIdx = raw.indexOf('export function writeAuthKind');
+    expect(writeIdx, 'authToken.ts must export writeAuthKind').toBeGreaterThanOrEqual(0);
     expect(
-      readIdx,
-      'authToken.ts must export readAuthKind. RED TODAY: it does not exist',
-    ).toBeGreaterThanOrEqual(0);
-    expect(
-      writeIdx,
-      'authToken.ts must export writeAuthKind. RED TODAY: it does not exist',
-    ).toBeGreaterThanOrEqual(0);
-    expect(
-      writeIdx,
-      'writeAuthKind must be declared AFTER readAuthKind (the read/write pair reads in that ' +
-        "order, and the region scanned below is the text between them — writeAuthKind's own " +
-        'doc comment sits there)',
-    ).toBeGreaterThan(readIdx);
+      m21bCount(raw, 'export function writeAuthKind'),
+      'writeAuthKind must be declared exactly once — two declarations would make "the doc ' +
+        'block attached to the writer" ambiguous, and this scan would judge whichever came ' +
+        'first',
+    ).toBe(1);
 
-    // The region is RAW (never comment-stripped): this is the one tooth whose entire
-    // subject IS a comment. It runs from readAuthKind's declaration to writeAuthKind's,
-    // i.e. readAuthKind's body plus the doc comment attached to writeAuthKind — needle
-    // bounded, not a fixed-width window.
-    const region = raw.slice(readIdx, writeIdx).toLowerCase();
+    // ★ E1 CLOSED — THE REGION IS THE WRITER'S OWN DOC BLOCK, NOTHING ELSE.
+    // Previously the region ran from readAuthKind's declaration to writeAuthKind's, so it
+    // included the READER's entire body: deleting the writer's doc comment and parking a
+    // one-line cross-reference inside readAuthKind was green. The region is now the
+    // nearest preceding block comment, and it must be adjacent to the declaration with
+    // nothing but whitespace in between — which is what "attached to" means.
+    const docStart = raw.lastIndexOf('/**', writeIdx);
     expect(
-      region.length,
-      'the readAuthKind → writeAuthKind region collapsed to almost nothing — refusing to ' +
+      docStart,
+      'writeAuthKind must carry a doc block — no block comment was found before it at all',
+    ).toBeGreaterThanOrEqual(0);
+    const docEnd = raw.indexOf('*/', docStart);
+    expect(
+      docEnd,
+      'the doc block before writeAuthKind is unterminated — refusing to scan',
+    ).toBeGreaterThan(docStart);
+    expect(
+      docEnd,
+      'the doc block must CLOSE before `export function writeAuthKind` — otherwise the ' +
+        'block found is not the one attached to the writer',
+    ).toBeLessThan(writeIdx);
+    expect(
+      raw.slice(docEnd + 2, writeIdx).trim(),
+      'nothing but whitespace may sit between the doc block and `export function ' +
+        'writeAuthKind` — the prohibition must be ATTACHED to the writer, so that anyone ' +
+        'editing the writer sees it. A prohibition parked elsewhere in the file (in ' +
+        "readAuthKind's body, in the module header) is a prohibition the next author will " +
+        'not read',
+    ).toBe('');
+
+    const doc = m21bNormaliseComment(raw.slice(docStart, docEnd));
+    // Anti-vacuity: a one-line doc block cannot possibly carry the hazard analysis, and a
+    // degenerate region would make every phrase check below meaningless.
+    expect(
+      doc.length,
+      "writeAuthKind's doc block is too short to contain the hazard analysis — refusing to " +
         'scan a degenerate region',
-    ).toBeGreaterThan(100);
+    ).toBeGreaterThan(200);
 
-    for (const phrase of ['no production caller', 'read-side', 'm21b-2']) {
+    // ★ E3 CLOSED: matched against the NORMALISED block, so a line wrap inside a phrase is
+    // no longer a false RED. ★ E2 PARTLY CLOSED: these are CLAUSES, not scattered words —
+    // "no production caller may write" cannot be assembled from prose that happens to
+    // mention callers and writing.
+    for (const clause of [
+      'no production caller may write',
+      'until the read-side',
+      'm21b-2',
+      'exercised by tests',
+    ]) {
       expect(
-        region.indexOf(phrase),
-        `authToken.ts must document, in the comment attached to writeAuthKind, the phrase ` +
-          `"${phrase}". The prohibition in full: no production caller may write 'account' ` +
-          'until the read-side credential guard lands (M21b-2) — with the read side parked, ' +
-          'an account marker leaves the NEXT build supplying the stale ANON token through ' +
-          'the unchanged .withToken(auth.tokenForNextAttempt()), silently dropping the ' +
-          'player onto a different identity. This slice ships the writer only so the marker ' +
-          'is a complete read/write pair, exercised by tests alone (ADDENDUM S11).',
+        doc.indexOf(clause),
+        `the doc block attached to writeAuthKind must contain the clause "${clause}". The ` +
+          "prohibition in full: no production caller may write 'account' until the " +
+          'read-side credential guard lands (M21b-2) — with the read side parked, an ' +
+          'account marker leaves the NEXT build supplying the stale ANON token through the ' +
+          'unchanged .withToken(auth.tokenForNextAttempt()), silently dropping the player ' +
+          'onto a different identity. The writer ships now only so the marker is a complete ' +
+          'read/write pair; it is exercised by tests alone (ADDENDUM S11).',
       ).toBeGreaterThanOrEqual(0);
+    }
+
+    // ★ E2, the rest of what a text scan can do: a REVOCATION TRIPWIRE. The red-team's
+    // evasion kept every required phrase and then cancelled it — "an earlier draft said
+    // that no production caller may write 'account' … that restriction was LIFTED".
+    //
+    // HONEST LIMIT, stated so nobody mistakes this for a proof: this is a keyword tripwire
+    // over the natural spellings of a revocation, not a semantic check. A sufficiently
+    // creative revocation gets past it. What it buys is that the OBVIOUS ways to write one
+    // are red, and that a reviewer reading this list knows precisely what class of edit the
+    // gate does and does not see. The enforcement that does NOT depend on wording is the
+    // repo-wide caller scan in the next test — invert the prose all you like, the moment a
+    // caller exists the build reds.
+    for (const revocation of [
+      'lifted',
+      'no longer applies',
+      'no longer required',
+      'no longer holds',
+      'revoked',
+      'rescinded',
+      'superseded',
+      'obsolete',
+      'disregard',
+      'restriction was removed',
+      'this restriction has been',
+    ]) {
+      expect(
+        doc.indexOf(revocation),
+        `the doc block attached to writeAuthKind must not contain "${revocation}" — the ` +
+          'prohibition is LIVE for as long as the read-side credential guard is parked. If ' +
+          'M21b-2 has genuinely landed the guard, do not soften this comment: delete the ' +
+          'prohibition, delete this tooth, and re-pin the guard itself',
+      ).toBe(-1);
     }
   });
 
-  it('★ BITES: no OTHER module in this slice calls writeAuthKind — the writer has no production caller yet', () => {
-    // The prohibition above is prose; this is its mechanical half. connection.ts is the
-    // only file this slice wires, and it must read the marker (W-M21B-KIND-READ in
-    // connection.test.ts) and NEVER write it. A `writeAuthKind(` call there would be the
-    // exact hazard the comment forbids, shipped.
-    const connectionTsPath = path.join(
-      path.dirname(fileURLToPath(import.meta.url)),
-      'connection.ts',
-    );
-    let connectionSrc: string;
-    try {
-      connectionSrc = readFileSync(connectionTsPath, 'utf8');
-    } catch (err) {
-      throw new Error(
-        'connection.ts could not be read at expected path: ' +
-          connectionTsPath +
-          ' — ' +
-          String(err),
-      );
+  it('★★ BITES (enforcement): NO file under client/src calls writeAuthKind( — the writer has no production caller anywhere', () => {
+    // ★ THE TOOTH THAT ACTUALLY HOLDS THE LINE, and the one the first draft got wrong: it
+    // scanned connection.ts ONLY, while its title claimed "no other module". main.ts is the
+    // natural home for M21b-2's OIDC return leg and was completely unguarded — a single
+    // `writeAuthKind(globalThis, URI, DB, 'account')` there passed the entire suite green
+    // while shipping the exact hazard the comment above forbids. The scan now walks the
+    // whole of client/src.
+    //
+    // WRONG IMPL KILLED: a marker write landing ANYWHERE ahead of the read-side guard —
+    // main.ts, a new ui/ module, a store helper, connection.ts. Each one silently drops a
+    // real player onto a different identity, and (per the writer's own doc block) also
+    // latches ADR-0150 suppression permanently and strands a fresh un-claimable identity
+    // per reconnect.
+    const files = m21bListClientSrcFiles();
+
+    // --- ANTI-VACUITY: a tree walk that found nothing would pass every negative below ---
+    expect(
+      files.length,
+      'the client/src walk must find a substantial number of .ts files — a small number ' +
+        'means the walk broke and every "no caller" assertion below is vacuous',
+    ).toBeGreaterThan(20);
+    const baseNames = files.map((f) => path.basename(f));
+    for (const expected of ['connection.ts', 'main.ts']) {
+      expect(
+        baseNames.includes(expected),
+        `the walk must reach ${expected} — it is a file a marker write would most plausibly ` +
+          'land in, so its absence from the scan set would be the whole bug',
+      ).toBe(true);
     }
-    // Anti-vacuity: prove we are reading the real adapter before trusting a zero.
+    // Positive control on CONTENT, not just on filenames: the scanned set must actually
+    // contain the marker READ, proving these are the real sources and not stubs.
+    const allStripped = files.map((f) => m21bStripComments(readSourceOrThrow(f))).join('\n');
     expect(
-      connectionSrc.indexOf('export function connect(opts: ConnectionOptions): Connection {'),
-      'positive control: connection.ts must still declare connect() — a -1 here means this ' +
-        'scan is judging the wrong file and the negative below is vacuous',
-    ).toBeGreaterThanOrEqual(0);
-    expect(
-      connectionSrc.split('writeAuthKind(').length - 1,
-      'connection.ts must NOT call writeAuthKind( — with the read-side credential guard ' +
-        "parked to M21b-2, writing an 'account' marker leaves the next build supplying the " +
-        'stale ANON token and silently drops the player onto a different identity. The ' +
-        'producer ships WITH the guard, not before it',
-    ).toBe(0);
+      m21bCount(allStripped, 'readAuthKind('),
+      'positive control: the scanned sources must contain the marker read wired by this ' +
+        'slice (connection.ts). A zero means this scan is reading the wrong tree',
+    ).toBeGreaterThanOrEqual(1);
+
+    for (const file of files) {
+      const src = readSourceOrThrow(file);
+      const rel = path.relative(CLIENT_SRC_ROOT, file);
+      // Checked on RAW source first, because comment-stripping is what could HIDE a real
+      // call: `stripLineComments` truncates each line at the first `//`, so a line
+      // containing a URL literal followed by a call would lose the call. A raw zero needs
+      // no further argument.
+      if (m21bCount(src, 'writeAuthKind(') === 0) continue;
+
+      // Raw is non-zero: the occurrences must ALL be in comments (a doc reference to
+      // `writeAuthKind(...)` is legitimate), and the naive stripper must be sound for this
+      // file — i.e. it contains no `://`, so no line was truncated at a URL.
+      expect(
+        m21bCount(src, '://'),
+        `${rel} mentions writeAuthKind( AND contains a "://" literal. The comment stripper ` +
+          'truncates each line at the first "//", so it cannot be trusted to tell a real ' +
+          'call from a commented one in this file. Move the URL to connectionConfig.ts, or ' +
+          'drop the parenthesis from the prose mention',
+      ).toBe(0);
+      expect(
+        m21bCount(m21bStripComments(src), 'writeAuthKind('),
+        `${rel} must NOT call writeAuthKind( — with the read-side credential guard parked ` +
+          "to M21b-2, writing an 'account' marker leaves the next build supplying the stale " +
+          'ANON token through the unchanged .withToken(auth.tokenForNextAttempt()), ' +
+          'silently dropping the player onto a DIFFERENT identity. The producer ships WITH ' +
+          'the guard, never before it (ADDENDUM S11 / the doc block on writeAuthKind)',
+      ).toBe(0);
+    }
   });
 });

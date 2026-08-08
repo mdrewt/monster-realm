@@ -556,11 +556,22 @@ export function connect(opts: ConnectionOptions): Connection {
         // here would put it in the ANONYMOUS slot, which `tokenForNextAttempt()` hands
         // straight back to `.withToken()` on the next build — replaying an account JWT
         // past its `exp`, the exact case D8 forbids. `=== 'anon'` (not `!== 'account'`)
-        // is the fail-CLOSED direction: if AuthKind ever gains a third member, a `!==`
-        // guard would start writing that kind's credential into the anonymous slot by
-        // default. TRIPWIRE: this guard is currently the SOLE enforcer of "the anon slot
-        // never contains an account JWT" — M21b-2's read-side credential guard is its
-        // other half; do not write an 'account' marker before that lands.
+        // is the fail-CLOSED direction ON THE VALUE: if AuthKind ever gains a third
+        // member, a `!==` guard would start writing that kind's credential into the
+        // anonymous slot by default.
+        //
+        // BEST-EFFORT, NOT STRUCTURAL — do not read more into this than it gives.
+        // `readAuthKind` fails to 'anon' on every lossy path (blocked storage, quota,
+        // eviction), and 'anon' is the PERMISSIVE direction here, so a lost marker
+        // silently re-opens the replay. That fail direction is forced by AUTH-31 and is
+        // not fixable with a marker at all; the discriminator must become the provenance
+        // of the credential actually supplied, carried in memory beside the token
+        // (M21b-2 — see the ⚠ block on writeAuthKind). Until then this guard is the sole
+        // enforcer of "the anon slot never contains an account JWT" and no production
+        // code may write an 'account' marker.
+        //
+        // NOTE this also gates `rejectionsSinceSuccess = 0`, which lives inside
+        // onConnected — see harm 2 in that same ⚠ block.
         if (buildKind === 'anon') auth.onConnected(token);
         identity = id.toHexString();
         const reconnecting = hadSession;
@@ -650,6 +661,15 @@ export function connect(opts: ConnectionOptions): Connection {
             // m17b: profile is a PUBLIC regular table (world-readable leaderboard —
             // RL-13/ADR-0119); onUpdate fires normally (unlike the my_conversation view).
             'SELECT * FROM profile',
+            // M21b TRIPWIRE — `my_account` is DELIBERATELY ABSENT (M21a generated its
+            // bindings; this is not an oversight). Nothing in M21b consumes it, and
+            // subscribing it would drag rowConvert.ts + store.ts into a slice whose
+            // touches: set excludes them. It is NOT optional later, though: per
+            // ADR-0179 the kind marker records INTENT, while `my_account` is the only
+            // observable of the connection FACT (with the fail-closed `.invalid`
+            // issuer placeholder the server leaves every connection anonymous, so a
+            // client can currently believe it is authenticated when it is not).
+            // M21b-2 adds it, and `my_account` is authoritative where the two disagree.
           ]);
       })
       .onConnectError((_ctx, err: Error) => {

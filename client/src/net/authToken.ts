@@ -266,15 +266,42 @@ export function readAuthKind(
  *
  * ⚠ NO PRODUCTION CALLER MAY WRITE `'account'` UNTIL THE READ-SIDE CREDENTIAL
  * GUARD LANDS (M21b-2). This slice ships only the WRITE-side guard — the
- * kind-gated `auth.onConnected(token)` in connection.ts. With the READ-SIDE
- * half parked, an `'account'` marker would correctly suppress storing the
- * account token while the NEXT build still supplies the stale ANON token
- * through the unchanged `.withToken(auth.tokenForNextAttempt())` — silently
- * dropping the player onto a different identity, which is the very harm D8
- * exists to prevent. The writer ships now only so the marker is a complete
- * read/write pair; it is exercised by tests alone. This is a NAMED YAGNI
- * exception (standards/principles.md): M21b-2's OIDC return leg is its
- * intended producer, and it must land together with the credential guard.
+ * kind-gated `auth.onConnected(token)` in connection.ts. Writing `'account'`
+ * before its other half exists causes THREE distinct harms, all of them silent
+ * (enumerated because an earlier draft of this comment named only the first,
+ * and the other two are strictly worse):
+ *
+ *   1. The next build still supplies the stale ANON token through the
+ *      unchanged `.withToken(auth.tokenForNextAttempt())`, dropping the player
+ *      onto a different identity — the harm D8 exists to prevent.
+ *   2. `onConnected` is skipped entirely, and it is the ONLY place
+ *      `rejectionsSinceSuccess` is reset. A SUCCESSFUL connect therefore stops
+ *      clearing the counter, so after two classified rejections suppression
+ *      LATCHES PERMANENTLY for the life of the tab and a perfectly good token
+ *      sits unread in storage.
+ *   3. With the slot never written, the host mints a FRESH identity on every
+ *      build — and the server grants a new starter monster per identity that
+ *      it never deletes, so each reconnect strands another permanently
+ *      un-claimable identity (see ADR-0179's F2).
+ *
+ * The writer ships now only so the marker is a complete read/write pair; it is
+ * exercised by tests alone. This is a NAMED YAGNI exception
+ * (standards/principles.md): M21b-2's OIDC return leg is its intended producer,
+ * and it must land together with the credential guard.
+ *
+ * ⚠ AND WHEN M21b-2 DOES LAND IT: the marker is the WRONG SHAPE for a security
+ * guard and must be replaced, not extended. `readAuthKind` fails to `'anon'` on
+ * every lossy path (absent host, blocked storage, quota, eviction) — and
+ * `'anon'` is the PERMISSIVE direction for connection.ts's write guard, so a
+ * lost marker silently re-opens the very replay this guards against. That fail
+ * direction is not a bug here: AUTH-31 requires failing to `'anon'` (failing to
+ * `'account'` would break every existing anonymous tab the moment storage is
+ * blocked). The two requirements genuinely conflict, and one lossy boolean
+ * cannot satisfy both. The resolution is to stop re-reading storage: the
+ * discriminator must become the PROVENANCE of the credential this build
+ * actually supplied, produced in memory alongside the token itself. That will
+ * require re-pinning `W-NH4-TOKEN-SUPPLIED`, which currently pins
+ * `.withToken(auth.tokenForNextAttempt())` byte-for-byte.
  */
 export function writeAuthKind(
   host: TokenStorageHost | undefined,
