@@ -1325,6 +1325,54 @@ export function checkNoServerRng(accountsSrc) {
 // the database only through inline `ctx.db.<table>()` chains.
 const DB_ROOT = 'ctx.db';
 
+// [W/ctx-binding] — the same escape one level FURTHER up.
+//
+// Every clause in this family (including [W/db-binding] above) keys on the
+// literal string `ctx.db`, and deliberately skips any prefixed spelling so
+// `my_ctx.db` is not mistaken for our root. That leaves the context itself as
+// an escape hatch: reach the database through a `ReducerContext` bound under
+// any other name and NOTHING in the family sees it. The merge-gate verifier
+// proved this with ordinary, unremarkable Rust —
+//
+//     fn purge_stale_player(context: &ReducerContext, id: Identity) {
+//         context.db.player().identity().delete(id);   // FOREIGN table delete
+//     }
+//     // called from delete_account:  purge_stale_player(ctx, me);
+//
+// — and measured it at `fmt --check` 0, `clippy -D warnings` 0, 80/80 evals
+// PASS and 1662/1662 Rust tests passing, while `guest-claim-integrity`'s own
+// success string still claimed "writes confined to {account, guest_claim,
+// guest_claim_reaper_schedule}". `let c = ctx; c.db.player()...` is the same
+// hole. The Rust twin (accounts_tests.rs) shares the `ctx.db.` key, so there is
+// no backstop.
+//
+// Fixing it inside the accessor walk is not possible — the walk cannot know
+// which identifiers are contexts. Instead, pin the SPELLING: in accounts.rs the
+// context is always named `ctx` and is never aliased. That is true of every fn
+// in the file today and is a one-word constraint on future code.
+const CTX_PARAM_TYPE = ':&ReducerContext';
+const CTX_ALIAS_FORMS = ['=ctx;', '=ctx,', '=&ctx;', '=&ctx,', '=ctx.clone()'];
+
+/**
+ * Detect a `ReducerContext` reachable under a name other than `ctx`.
+ * @param {string} flat Whitespace-compacted, string/comment-stripped source.
+ * @returns {string|null} The offending spelling, or null when none.
+ */
+export function findAliasedContext(flat) {
+  // Parameters: walk back from `:&ReducerContext` over the identifier.
+  for (let i = flat.indexOf(CTX_PARAM_TYPE); i !== -1; i = flat.indexOf(CTX_PARAM_TYPE, i + 1)) {
+    let s = i;
+    while (s > 0 && isWordChar(flat[s - 1])) s--;
+    const name = flat.slice(s, i);
+    if (name !== 'ctx' && name !== '_ctx') return `${name}${CTX_PARAM_TYPE}`;
+  }
+  // Locals: `let c = ctx;` and friends.
+  for (const form of CTX_ALIAS_FORMS) {
+    if (flat.indexOf(form) !== -1) return form;
+  }
+  return null;
+}
+
 /**
  * True if the compacted source lets the `Local` handle escape `ctx.db.` form.
  * @param {string} flat Whitespace-compacted, string/comment-stripped source.
@@ -1406,6 +1454,24 @@ export function checkModuleWriteIsolation(accountsSrc) {
       'battle-table reach. ADR-0179 D0/G5 makes this a LITERAL ban rather than a write-only ban: ' +
       'the whole point of the indirection is that accounts.rs has no battle coupling at all, so ' +
       'even a read here is a new edge in the module graph'
+    );
+  }
+
+  // [W/ctx-binding] — first: an aliased context blinds the ENTIRE family,
+  // including [W/db-binding], because every clause keys on the literal `ctx.db`.
+  const aliased = findAliasedContext(flat);
+  if (aliased !== null) {
+    return (
+      `[W/ctx-binding] ${ACCOUNTS_PATH} reaches the \`ReducerContext\` under a name other than ` +
+      `\`ctx\` (found \`${aliased}\`). Every clause in this family — [W/write-target], ` +
+      '[W/split-binding], [W/handle-type], [W/battle-literal] and even [W/db-binding] — keys on ' +
+      'the literal string `ctx.db`, and deliberately skips prefixed spellings so `my_ctx.db` is ' +
+      'not mistaken for the root. So a helper written `fn purge(context: &ReducerContext, id: ' +
+      'Identity) { context.db.player().identity().delete(id); }` performs a FOREIGN-table delete ' +
+      'that NOTHING here can see, and the Rust twin (accounts_tests.rs) shares the same key, so ' +
+      'there is no backstop. Measured green end-to-end by the M21c merge-gate verifier. In ' +
+      'accounts.rs the context is always `ctx` and is never aliased — keep it that way, or the ' +
+      'whole write-isolation gate is decorative'
     );
   }
 
@@ -2899,6 +2965,58 @@ fn probe(ctx: &ReducerContext, from: Identity) {
 `;
     const bad = expectTag(checkModuleWriteIsolation(src), '[W/split-binding]', 'FG37');
     if (bad) return bad;
+  }
+
+  // FG37b (merge-gate verifier, BLOCKER) — the context itself aliased by NAME.
+  // Every [W/*] clause keys on the literal `ctx.db`, so a helper whose context
+  // parameter is spelled `context` performs a foreign-table delete that the
+  // whole family is blind to. Measured green end-to-end (fmt, clippy, 80/80
+  // evals, 1662/1662 Rust tests) before this clause existed. Kills: adding
+  // [W/db-binding] for `let db = &ctx.db;` and stopping there.
+  {
+    const src = `
+fn probe(ctx: &ReducerContext, from: Identity) {
+    ctx.db.guest_claim().guest_identity().delete(from);
+}
+fn purge_stale_player(context: &ReducerContext, id: Identity) {
+    context.db.player().identity().delete(id);
+}
+`;
+    const bad = expectTag(checkModuleWriteIsolation(src), '[W/ctx-binding]', 'FG37b');
+    if (bad) return bad;
+  }
+
+  // FG37c — the local-alias spelling of the same escape.
+  {
+    const src = `
+fn probe(ctx: &ReducerContext, from: Identity) {
+    ctx.db.guest_claim().guest_identity().delete(from);
+    let c = ctx;
+    c.db.player().identity().delete(from);
+}
+`;
+    const bad = expectTag(checkModuleWriteIsolation(src), '[W/ctx-binding]', 'FG37c');
+    if (bad) return bad;
+  }
+
+  // FG37d (GOOD) — the sanctioned spelling must PASS: several fns, every one
+  // taking `ctx: &ReducerContext`, plus an `_ctx: &ReducerContext` placeholder.
+  // Without this an always-red [W/ctx-binding] is indistinguishable from a
+  // working one, and the clause would red the live tree on arrival.
+  {
+    const src = `
+fn probe(ctx: &ReducerContext, from: Identity) {
+    ctx.db.guest_claim().guest_identity().delete(from);
+}
+fn helper(ctx: &ReducerContext, id: Identity) -> bool {
+    ctx.db.player().identity().find(id).is_some()
+}
+fn unused(_ctx: &ReducerContext) {}
+`;
+    const good = checkModuleWriteIsolation(src);
+    if (good !== null) {
+      return `TEETH FAILED (FG37d): the sanctioned \`ctx\`-named GOOD fixture was flagged — ${good}`;
+    }
   }
 
   // FG38 — a generated handle crossing a module boundary: the table is reached

@@ -652,7 +652,12 @@ proof-of-teeth discipline):
      branch to `Err` disconnects every player while every other clause stays green. G5 adds
      `[W/split-binding]`, `[W/handle-type]`, a UFCS backward span, and `[W/db-binding]` (banning an
      escaped `Local` handle — `ReducerContext.db` is a public field, so `let db = &ctx.db;` hides the
-     entire clause family, including `[W/battle-literal]`). G11 adds `[S/arg-pin]`, `[S/depth0]` and
+     entire clause family, including `[W/battle-literal]`) and `[W/ctx-binding]` (the same escape one
+     level further up: every clause keys on the literal `ctx.db`, so a helper written
+     `fn purge(context: &ReducerContext, ...)` — or a plain `let c = ctx;` — performs a foreign-table
+     write nothing in the family can see; the merge-gate verifier measured that green at `fmt` 0,
+     `clippy -D warnings` 0, 80/80 evals and 1662/1662 Rust tests, so `accounts.rs` now pins the
+     spelling: the context is always `ctx` and is never aliased). G11 adds `[S/arg-pin]`, `[S/depth0]` and
      `[S/reachable]`; the last bans a `return` between `rekey_all` and the consume, because an
      always-true early return makes the consume dead code while POSITION-based clauses all pass.
   8. **Two D6 manifest justifications are CORRECTED (policy values unchanged).** `battle.player_identity`
