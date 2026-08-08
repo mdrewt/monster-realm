@@ -44,7 +44,14 @@
 //     `ctx.sender != ctx.identity()` guard rejects any client that calls it.
 //     [R/param-types] carves out exactly that shape — same-file scheduled table,
 //     param type EQUAL to the scheduled struct, guard present — which is narrow
-//     enough that E1's `ClaimTarget` is still rejected.
+//     enough that E1's `ClaimTarget` is still rejected. The GUARD half is pinned
+//     as a REJECTING EARLY RETURN (`if ctx.sender != ctx.identity() { return`),
+//     not as a bare comparison: the adversarial pass showed that
+//       let scheduler_only = ctx.sender != ctx.identity();
+//       let _ = scheduler_only;
+//     satisfies a substring test, compiles, is clippy-clean — and rejects
+//     nobody, so any client can invoke the scheduled reducer with a hand-built
+//     row naming any victim identity. Fixture FG58.
 //   * lib.rs:204 is `if !ctx.sender_auth().has_jwt() {`, so `ctx.sender_auth()`
 //     legitimately precedes `has_jwt(`. [I/anon-first] is therefore worded as
 //     "has_jwt( precedes each of {accounts::, ctx.db., Err(}", NOT as "has_jwt is
@@ -105,6 +112,15 @@
 // desync GREENS every ban clause and reds only presence clauses, which is why
 // [STRIP/length] / [STRIP/idempotent] / [STRIP/anchors] run on EVERY live source
 // and fail loud.
+// The adversarial pass added the FOUR string prefixes, not two: `c"..."`,
+// `cr"..."` and `cr##"..."##` (stable Rust 1.77+) put a WORD CHARACTER in front
+// of the `r`, so the raw branch's `!isWordChar(src[i-1])` guard skipped them and
+// `cr"C:\"` was lexed as an ordinary string whose `\"` was eaten as an escape —
+// the same polarity inversion as the r/br forms in a spelling the r/br
+// hardening never enumerated. Placed at the END of a file the blanked tail
+// carries no anchor, so even [STRIP/anchors] could not see it and an appended
+// reducer became invisible to [R/name-set], [N/rng] and every [W/*] clause.
+// Fixture FG54 pins the fix.
 //
 // Clause inventory (each checker is exported so the fixtures drive it directly;
 // every clause carries a [tag] so a fixture can assert WHICH clause fired):
@@ -153,6 +169,11 @@
 //       [S/success-region] it lies between `rekey_all(` and the trailing `Ok(())`,
 //                          and precedes `account().identity().update(`.
 //   G6  checkRekeyCompleteness(treeSrcs, accountsSrc[, manifest])
+//       [G6/parse]         every `#[spacetimedb::table(` in each source yields
+//                          exactly one PARSED table — a declaration
+//                          parseTableSchemas cannot read hides its Identity
+//                          columns from [G6/declared] (and from the schema
+//                          baseline, which compares a union of both sides).
 //       [G6/declared]      every `Identity`/`Option<Identity>` COLUMN in the tree
 //                          has a manifest entry.
 //       [G6/live]          every manifest key still resolves to a live column
@@ -178,7 +199,7 @@
 //   * Strip PER FILE, never a concatenated blob: a quote left open in file A
 //     silently blanks the whole of file B.
 //
-// Proof-of-teeth fixtures (FG1-FG53) run BEFORE the live-tree checks so a broken
+// Proof-of-teeth fixtures (FG1-FG59) run BEFORE the live-tree checks so a broken
 // checker is caught first. Every clause has a BAD fixture asserting its [tag] by
 // expectTag, and every checker has a GOOD fixture that must PASS — an always-red
 // checker is indistinguishable from a working one (this repo's ux3 postmortem
@@ -268,16 +289,22 @@ function containsIdent(hay, name) {
 // ---------------------------------------------------------------------------
 
 /**
- * Match a (byte-)raw string literal starting at `i`, if any.
- * Handles `r"..."`, `r#"..."#`, `r##"..."##` (ANY hash count), `br"..."` and
- * `br##"..."##`, closing on a quote followed by exactly that many hashes.
+ * Match a (byte- / C-)raw string literal starting at `i`, if any.
+ * Handles `r"..."`, `r#"..."#`, `r##"..."##` (ANY hash count), `br"..."`,
+ * `br##"..."##`, and the C-string forms `cr"..."` / `cr##"..."##` (Rust 1.77+),
+ * closing on a quote followed by exactly that many hashes.
+ * The `c` prefix is NOT optional politeness: without it the `r` of `cr"C:\"` is
+ * preceded by a word character, the raw branch is skipped, and the literal is
+ * lexed as an ORDINARY string whose `\"` is eaten as an escape — the exact
+ * quote-polarity inversion the r/br hardening was built to close, reintroduced
+ * through a prefix the hardening never enumerated.
  * @param {string} src Raw source.
- * @param {number} i Index of the `r` or `b`.
+ * @param {number} i Index of the `r`, `b` or `c`.
  * @returns {{openQuote:number, closeQuote:number, end:number}|null} Span, or null.
  */
 function matchRawString(src, i) {
   let j = i;
-  if (src[j] === 'b') j++;
+  if (src[j] === 'b' || src[j] === 'c') j++;
   if (src[j] !== 'r') return null;
   j++;
   let hashes = 0;
@@ -349,8 +376,11 @@ export function stripRustSource(src) {
       continue;
     }
 
-    // Raw / byte-raw string: NO escape processing at all inside it.
-    if ((c === 'r' || c === 'b') && !isWordChar(src[i - 1])) {
+    // Raw / byte-raw / C-raw string: NO escape processing at all inside it.
+    // The `c` arm costs nothing on ordinary identifiers (`crate::`, `concat!`,
+    // `config` all fail the `r` + hashes + quote shape and fall straight
+    // through) and closes the `cr"..."` / `cr##"..."##` desync.
+    if ((c === 'r' || c === 'b' || c === 'c') && !isWordChar(src[i - 1])) {
       const raw = matchRawString(src, i);
       if (raw) {
         blank(i, raw.end);
@@ -361,9 +391,13 @@ export function stripRustSource(src) {
       }
     }
 
-    // Byte-string / byte-char prefix: blank the `b`, then fall through so the
-    // quote itself is lexed on the next iteration.
-    if (c === 'b' && !isWordChar(src[i - 1]) && (src[i + 1] === DQ || src[i + 1] === "'")) {
+    // Byte-string / byte-char / C-string prefix: blank the prefix letter, then
+    // fall through so the quote itself is lexed (with escapes) next iteration.
+    // `c'x'` is not a Rust literal, so the `'` arm stays `b`-only.
+    if (
+      !isWordChar(src[i - 1]) &&
+      ((c === 'b' && (src[i + 1] === DQ || src[i + 1] === "'")) || (c === 'c' && src[i + 1] === DQ))
+    ) {
       blank(i, i + 1);
       i++;
       continue;
@@ -810,7 +844,16 @@ const IDENTITY_CTORS = [
   'Identity::from_str(',
 ];
 
-const SCHEDULER_GUARD = 'ctx.sender!=ctx.identity()';
+// The scheduler guard, pinned as a REJECTING EARLY RETURN rather than as a bare
+// comparison. The adversarial pass found the carve-out was satisfied by
+//     let scheduler_only = ctx.sender != ctx.identity();
+//     let _ = scheduler_only;
+// which contains the comparison, compiles, is clippy-clean — and lets ANY client
+// invoke the scheduled reducer with a hand-built row naming any victim identity,
+// i.e. exactly the client-supplied-Identity hole the carve-out assumes is
+// closed. `{return` (not `{returnErr(`) so a future refactor to the equally
+// valid `{ return Ok(()); }` silent-ignore form does not false-RED.
+const SCHEDULER_GUARD = 'ifctx.sender!=ctx.identity(){return';
 
 /**
  * Is this reducer parameter type a wire-safe scalar (recursively through
@@ -898,9 +941,12 @@ export function checkNoClientIdentity(accountsSrc) {
         if (body.indexOf(SCHEDULER_GUARD) !== -1) continue;
         return (
           `[R/param-types] reducer \`${r.name}\` takes the scheduled struct \`${t}\` but its body ` +
-          `does not contain the scheduler guard \`${SCHEDULER_GUARD}\` — without it ANY client can ` +
-          'invoke the scheduled reducer directly and hand it a hand-built row, which is precisely ' +
-          'the client-supplied-Identity hole the carve-out assumes is closed'
+          `does not contain the scheduler guard \`${SCHEDULER_GUARD}...\` — without it ANY client ` +
+          'can invoke the scheduled reducer directly and hand it a hand-built row, which is ' +
+          'precisely the client-supplied-Identity hole the carve-out assumes is closed. The guard ' +
+          'is pinned as a REJECTING EARLY RETURN, not as a bare comparison: `let scheduler_only = ' +
+          'ctx.sender != ctx.identity(); let _ = scheduler_only;` contains the comparison, ' +
+          'compiles, passes clippy — and rejects nobody'
         );
       }
 
@@ -1208,6 +1254,10 @@ const WRITE_VERBS = ['.insert(', '.update(', '.delete('];
 const UFCS_WRITE_VERBS = ['::insert(', '::update(', '::delete('];
 const HANDLE_SUFFIXES = ['__TableHandle', '__ViewHandle'];
 const BATTLE_LITERAL = 'ctx.db.battle(';
+// The only sanctioned TERMINALS of a foreign-table chain. A foreign accessor
+// whose statement reaches none of these is producing a table handle or a column
+// handle as a VALUE, which is the split-binding family (see [W/split-binding]).
+const FOREIGN_READ_TERMINALS = ['.find(', '.filter(', '.iter(', '.count(', '.len('];
 
 /**
  * Is `ch` part of a method-chain expression once whitespace has been removed?
@@ -1308,24 +1358,40 @@ export function checkModuleWriteIsolation(accountsSrc) {
       }
     }
 
-    // [W/split-binding] — the chain TERMINATES at the accessor, so the value
-    // being produced is the table HANDLE itself. MANDATORY companion to
+    // [W/split-binding] — the foreign chain never reaches a READ, so the value
+    // it produces is a table / column / index HANDLE. MANDATORY companion to
     // [W/write-target]: with the span bounded at `;`,
     //   let presence = ctx.db.player(); presence.identity().delete(from);
     // goes from MISATTRIBUTED to UNDETECTED — a net regression versus the Rust
     // twin's unbounded rfind (accounts_tests.rs:1569). Same needle family as
-    // ranking-security.eval.mjs:827 (`= ctx.db.profile()`), generalised from
-    // "preceded by `=`" to "not followed by `.`" so that the LEGITIMATE
+    // ranking-security.eval.mjs:827 (`= ctx.db.profile()`).
+    //
+    // Stated as "the forward span reaches a READ TERMINAL" rather than the
+    // earlier "the accessor is not followed by a `.`", because the adversarial
+    // pass found that binding ONE HOP LATER beats the dot form completely — the
+    // accessor IS followed by a dot, and the write verb is still outside the
+    // statement:
+    //   let col = ctx.db.player().identity();   // no write verb in this span
+    //   col.delete(from);                       // no accessor in this statement
+    // That evades [W/write-target] (the span ends at the `;`), the dot spelling
+    // of THIS clause, and [W/handle-type] (no type name is ever written).
+    // Requiring a read terminal collapses the whole family — table handle,
+    // column handle, index handle — into one clause. The LEGITIMATE
     // `let Some(player) = ctx.db.player().identity().find(me)` at accounts.rs:349
-    // — a chained READ, already covered by the forward span above — is not
-    // false-flagged by a needle that is merely a prefix of it.
-    if (!owned && flat[a.accEnd] !== '.') {
+    // and `if ctx.db.player().identity().find(guest).is_some()` at :410 both
+    // reach `.find(` inside their own statement, so both stay green.
+    if (!owned && !FOREIGN_READ_TERMINALS.some((t) => forward.indexOf(t) !== -1)) {
       return (
-        `[W/split-binding] ${ACCOUNTS_PATH} binds the FOREIGN table handle \`ctx.db.${a.table}()\` ` +
-        'instead of chaining off it. Assigning the accessor to a local moves the write verb out of ' +
-        'the accessor\u2019s statement, so a span-bounded scan can no longer see it:\n' +
-        '  let presence = ctx.db.player(); presence.identity().delete(from);\n' +
-        'That is a real, proven evasion of [W/write-target]. Chain inline ' +
+        `[W/split-binding] ${ACCOUNTS_PATH} evaluates \`ctx.db.${a.table}()\` for the FOREIGN ` +
+        `table \`${a.table}\` without reaching a read terminal ` +
+        `(${FOREIGN_READ_TERMINALS.join(' / ')}) in the same statement. The value it produces is ` +
+        'a table / column / index HANDLE that escapes into a local, an argument or a return, ' +
+        'carrying the write verb out of the accessor\u2019s own statement where no span-bounded ' +
+        'scan can see it:\n' +
+        '  let presence = ctx.db.player();        presence.identity().delete(from);\n' +
+        '  let col = ctx.db.player().identity();  col.delete(from);\n' +
+        'Both are real, proven evasions of [W/write-target]; the second also evades the earlier ' +
+        '`accessor not followed by a dot` spelling of this clause AND [W/handle-type]. Chain inline ' +
         '(`ctx.db.player().identity().find(id)`) for the permitted bare reads, and route every ' +
         'write through the owning module\u2019s `rekey_*` helper'
       );
@@ -1439,6 +1505,31 @@ export function checkSingleUseConsumed(accountsSrc) {
     if (body[k] === '{') depth++;
     else if (body[k] === '}') depth--;
   }
+  // Statement position. Brace depth alone is NOT enough: the adversarial pass
+  // found two depth-ZERO forms that never run, because they wrap the call in a
+  // closure instead of a block —
+  //     let _reap = || consume_claim_and_disarm(ctx, guest);          // never called
+  //     std::iter::empty().for_each(|_| consume_claim_and_disarm(ctx, guest));
+  // Both use only parentheses and pipes, so the `{`/`}` counter stays at 0, and
+  // [S/count], [S/arg-pin] and [S/success-region] are all satisfied. Requiring
+  // the call to be a bare STATEMENT — `;` immediately before, `;` immediately
+  // after, in compacted text — kills the whole closure family in one line. The
+  // shipped shape is `rekey_all(ctx, guest, me)?;` then the consume, so the
+  // leading `;` always exists.
+  const CONSUME_STATEMENT = `;${CONSUME_PINNED};`;
+  if (depth === 0 && body.indexOf(CONSUME_STATEMENT) === -1) {
+    return (
+      `[S/depth0] the \`${CONSUME_PINNED}\` call in \`${CLAIM_FN}\` is at brace-depth 0 but is not ` +
+      `a STATEMENT: the compacted body does not contain \`${CONSUME_STATEMENT}\`. The call is an ` +
+      'operand of something else — almost always a closure body, which is depth-0 and never runs:\n' +
+      '  let _reap = || consume_claim_and_disarm(ctx, guest);\n' +
+      '  std::iter::empty().for_each(|_| consume_claim_and_disarm(ctx, guest));\n' +
+      'Both compile, are clippy-clean, and satisfy [S/count], [S/arg-pin] and ' +
+      '[S/success-region] while the claim code stays redeemable until its TTL (AUTH-34/35 dead). ' +
+      'The success path is straight-line by design'
+    );
+  }
+
   if (depth !== 0) {
     return (
       `[S/depth0] the \`${CONSUME_PINNED}\` call sits at brace-depth ${depth} inside \`${CLAIM_FN}\`, ` +
@@ -1594,6 +1685,39 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     if (desync) return desync;
   }
 
+  // [G6/parse] — PARSER non-vacuity, the [STRIP/anchors] idea applied to
+  // parseTableSchemas. [G6/declared] can only classify columns the parser
+  // RETURNS, so a table declaration the parser cannot read hides every Identity
+  // column in that struct — silently, and from the schema-snapshot baseline too
+  // (a table absent from BOTH parsed and baseline is in neither side of the
+  // union, so it reports no drift). Two live-legal spellings do exactly that:
+  //   #[spacetimedb::table(name = t, index(btree, name = i, columns = [a, b]))]
+  //     — the parser's `[^\]]*\)\]` sub-pattern cannot span the `]` of `[a, b]`;
+  //   #[spacetimedb::table(public, name = t)]
+  //     — the parser requires `name =` as the FIRST attribute argument.
+  // So: every `#[spacetimedb::table(` in each stripped source must yield exactly
+  // one parsed table. Verified equal across the live tree (37 attributes in the
+  // 6 non-test files that declare tables, 37 parsed, 37 baseline entries).
+  const TABLE_ATTR = '#[spacetimedb::table(';
+  for (const f of treeSrcs) {
+    const stripped = stripRustSource(f.src);
+    const declared = countOccurrences(stripped, TABLE_ATTR);
+    const parsed = Object.keys(parseTableSchemas(stripped)).length;
+    if (declared !== parsed) {
+      return (
+        `[G6/parse] ${f.path} contains ${declared} \`${TABLE_ATTR}\` attribute(s) but ` +
+        `parseTableSchemas returned ${parsed} table(s). A table the parser cannot read is a table ` +
+        'whose Identity columns [G6/declared] never sees, so the re-key manifest would silently ' +
+        'stop covering it — and the battle-schema-snapshot baseline would not notice either, ' +
+        'because a table missing from BOTH parsed and baseline appears in neither side of that ' +
+        'union. The two known unreadable spellings are a multi-column index inside the attribute ' +
+        '(`index(btree, name = i, columns = [a, b])` — the parser cannot span the inner `]`) and ' +
+        '`name =` not being the first attribute argument. Fix the declaration, or teach ' +
+        'parseTableSchemas the new form in the same PR'
+      );
+    }
+  }
+
   const columns = findIdentityColumns(treeSrcs);
 
   // [G6/declared] — forward direction: a NEW Identity column with no policy.
@@ -1701,7 +1825,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
 }
 
 // ---------------------------------------------------------------------------
-// PROOF-OF-TEETH FIXTURES (FG1-FG53) — inline sources, run BEFORE the live-tree
+// PROOF-OF-TEETH FIXTURES (FG1-FG59) — inline sources, run BEFORE the live-tree
 // checks. Returns the first tooth failure (string) or null.
 //
 // The Rust fixtures below are STRING LITERALS in a .mjs file; the live scan
@@ -2823,6 +2947,138 @@ pub struct GuildMember {
     if (bad) return bad;
   }
 
+  // --- adversarial pass (FG54-FG59) ----------------------------------------
+
+  // FG54 — the C-STRING prefixes `cr"..."` / `cr##"..."##` (stable Rust 1.77+).
+  // In `cr"C:\"` the `r` is preceded by the WORD CHARACTER `c`, so the raw-string
+  // branch's `!isWordChar(src[i-1])` guard skipped it and the literal was lexed
+  // as an ORDINARY string whose `\"` was eaten as an escape — quote polarity
+  // inverted for the rest of the file, exactly like the r/br forms, in a
+  // spelling the r/br hardening never enumerated.
+  // GOOD half: a C-string const must not make a clean source look dirty.
+  // BAD half: with the const in front of a REAL `ctx.rng()` call, the rng call
+  // must still be seen. A C-prefix-blind stripper blanks it and checkNoServerRng
+  // returns PASS (or reds under a DIFFERENT tag) — either way this fixture bites.
+  {
+    const forms = [
+      String.raw`pub const CP: &core::ffi::CStr = cr"C:\";`,
+      String.raw`pub const CQ: &core::ffi::CStr = cr##"use "code" or "CODE"##;`,
+    ];
+    const rngSrc = mut(
+      GOOD_ACCOUNTS,
+      '    let now = now_ms(ctx);\n    let row = claim_row(me, code, player.name, now);',
+      `    let code = ctx.rng().gen::<[u8; 32]>();
+    let now = now_ms(ctx);
+    let row = claim_row(me, hex(code), player.name, now);`,
+    );
+    for (let k = 0; k < forms.length; k++) {
+      const clean = `${forms[k]}\n${GOOD_ACCOUNTS}`;
+      const cleanErr = checkNoServerRng(clean);
+      if (cleanErr) {
+        return `FG54.${k + 1}: a C-string const made a clean source look dirty: ${cleanErr}`;
+      }
+      const bad = expectTag(checkNoServerRng(`${forms[k]}\n${rngSrc}`), '[N/rng]', `FG54.${k + 1}`);
+      if (bad) return `${bad} (C-string form: ${forms[k]})`;
+    }
+  }
+
+  // FG55 (adversarial pass) — bind the COLUMN, not the table handle. The
+  // accessor IS followed by a `.`, so the pre-hardening [W/split-binding]
+  // (`flat[accEnd] !== '.'`) was silent; the write verb sits in the NEXT
+  // statement, so [W/write-target]'s `;`-bounded span was silent; and no handle
+  // TYPE is ever named, so [W/handle-type] was silent. A foreign write with all
+  // three clauses green.
+  // Kills: any [W/split-binding] keyed on the accessor's immediate next char.
+  {
+    const src = `
+fn probe(ctx: &ReducerContext, from: Identity) {
+    ctx.db.guest_claim().guest_identity().delete(from);
+    let col = ctx.db.player().identity();
+    col.delete(from);
+}
+`;
+    const bad = expectTag(checkModuleWriteIsolation(src), '[W/split-binding]', 'FG55');
+    if (bad) return bad;
+  }
+
+  // FG56 — GOOD: the read terminals other than `.find(` must stay legal, or the
+  // hardened [W/split-binding] false-REDs the first legitimate `player` scan.
+  // Kills: a read-terminal list narrowed to `.find(` alone.
+  {
+    const src = `
+fn probe(ctx: &ReducerContext, row: GuestClaim, g: Identity) -> usize {
+    ctx.db.guest_claim().insert(row);
+    let n = ctx.db.player().iter().count();
+    let m = ctx.db.player().identity().filter(g).count();
+    n + m
+}
+`;
+    const err = checkModuleWriteIsolation(src);
+    if (err) return `FG56: a legitimate foreign READ terminal was flagged: ${err}`;
+  }
+
+  // FG57 (adversarial pass) — a depth-ZERO consume that never executes: the call
+  // is a CLOSURE BODY, so the `{`/`}` counter stays at 0 while the code is never
+  // run. [S/count], [S/arg-pin] and [S/success-region] are all satisfied.
+  // Kills: a brace-depth check with no statement-position pin.
+  {
+    const src = mut(
+      GOOD_ACCOUNTS,
+      '    consume_claim_and_disarm(ctx, guest);\n    ctx.db',
+      '    let _reap = || consume_claim_and_disarm(ctx, guest);\n    ctx.db',
+    );
+    const bad = expectTag(checkSingleUseConsumed(src), '[S/depth0]', 'FG57');
+    if (bad) return bad;
+  }
+
+  // FG58 (adversarial pass) — the scheduled-reducer carve-out abused from the
+  // GUARD side: the reaper keeps its scheduled struct argument and still
+  // CONTAINS `ctx.sender != ctx.identity()`, but only as an audit-only binding
+  // that rejects nobody. Any client can then invoke the scheduled reducer with a
+  // hand-built row naming any victim identity — the exact client-supplied
+  // Identity hole the carve-out assumes is closed.
+  // Kills: a carve-out that substring-matches the comparison instead of pinning
+  // it as a rejecting early return.
+  {
+    const src = mut(
+      GOOD_ACCOUNTS,
+      `    if ctx.sender != ctx.identity() {
+        return Err("guest_claim_reaper is scheduler-only".to_string());
+    }
+`,
+      `    let scheduler_only = ctx.sender != ctx.identity();
+    let _ = scheduler_only;
+`,
+    );
+    const bad = expectTag(checkNoClientIdentity(src), '[R/param-types]', 'FG58');
+    if (bad) return bad;
+  }
+
+  // FG59 (adversarial pass) — a NEW Identity column inside a table declaration
+  // parseTableSchemas CANNOT READ: a multi-column index in the attribute puts a
+  // `]` inside the parser's `[^\]]*\)\]` window, so the whole struct is invisible
+  // and [G6/declared] has nothing to complain about. Note the tag: this fixture
+  // must fire [G6/parse], NOT [G6/declared] — if [G6/declared] fired, the parser
+  // saw the table after all and the fixture would be proving nothing.
+  {
+    const tree = [
+      {
+        path: 'fixture/schema.rs',
+        src:
+          GOOD_TREE[0].src +
+          `#[spacetimedb::table(name = guild_member, index(btree, name = by_owner, columns = [owner_identity, guild_id]))]
+pub struct GuildMember {
+    pub owner_identity: Identity,
+    pub guild_id: u64,
+}
+`,
+      },
+      GOOD_TREE[1],
+    ];
+    const bad = expectTag(checkRekeyCompleteness(tree, GOOD_ACCOUNTS), '[G6/parse]', 'FG59');
+    if (bad) return bad;
+  }
+
   return null;
 }
 
@@ -2942,7 +3198,7 @@ export default async function guestClaimIntegrityEval() {
       'the claim code is consumed exactly once for the guest at brace-depth 0 of the success ' +
       `region, and all ${Object.keys(REKEY_MANIFEST).length} Identity columns carry a D6 policy ` +
       `(${rekeyEntries} REKEY entries consumed by both rekey_all and account_has_game_data) ` +
-      '(53 teeth verified)',
+      '(59 teeth verified)',
   };
 }
 

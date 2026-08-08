@@ -1412,7 +1412,7 @@ fn m17a_rl7_server_ranking_module_invariants() {
 // and absolute, so the test's CWD is irrelevant; under `cargo mutants` the
 // copied tree's own `src/` is read, which is the correct behaviour.
 //
-// Both needles are matched against WHITESPACE-SQUASHED text, and that is the
+// Every needle is matched against WHITESPACE-SQUASHED text, and that is the
 // load-bearing half of this scan. The live tree is rustfmt-WRAPPED —
 // `ranking.rs` writes `ctx.db` / `.profile()` / `.identity()` / `.update(` on
 // four separate lines — so a delete written in this repo's own formatting
@@ -1425,6 +1425,15 @@ fn m17a_rl7_server_ranking_module_invariants() {
 //             every derived file INCLUDING `ranking.rs`: a blanket exemption
 //             would leave RL-2/AUTH-23 unenforced in the one file most likely
 //             to change.
+//   Needle 3: the GENERATED HANDLE TYPE — `profile__TableHandle` /
+//             `profile__ViewHandle`. Passing the handle across a fn boundary
+//             (`fn purge(h: &crate::schema::profile__TableHandle, id: Identity)
+//             { h.identity().delete(id); }`) reaches the table with NO
+//             `ctx.db.profile()` anywhere in the deleting fn, so needles 1 and
+//             2 are both blind to it. `economy_tests.rs:1733` documents this
+//             exact shape as a proven bypass for `player_wallet`; the profile
+//             table had no equivalent guard until now. No non-test source names
+//             either type today, so this is green on arrival.
 //   Needle 2': `=match ctx.db.profile()` is allowed ONLY in `ranking.rs` (the
 //             module that legitimately owns profile access — consistent with
 //             the `ranking.rs` carve-out in evals/ranking-security.eval.mjs
@@ -1528,7 +1537,13 @@ fn collect_scan_sources(dir: &std::path::Path, rel_prefix: &str) -> Vec<(String,
 ///   - Split-binding ban applies to `ranking.rs` too; only the exact
 ///     `= match ctx.db.profile().identity().find(` read form is exempt there.
 ///     Kills `let p = ctx.db.profile();` followed by `p.identity().delete(id)`
-///     in ANY file, including the owning module.
+///     in ANY file, including the owning module. Because the needle is a
+///     PREFIX match it also kills the one-hop-later variant
+///     `let c = ctx.db.profile().identity();` followed by `c.delete(id)`.
+///   - Generated-handle-type ban (`profile__TableHandle` /
+///     `profile__ViewHandle`). Kills a delete reached through a handle taken as
+///     a fn parameter, where neither the chained needle nor the split-binding
+///     needle appears in the deleting fn at all.
 ///   - Anchor-set non-vacuity guard: the derived set must contain
 ///     `accounts.rs`, `economy.rs`, `pvp.rs`, `ranking.rs` and `schema.rs`, so
 ///     a broken derivation reds instead of vacuously scanning nothing. The
@@ -1572,6 +1587,13 @@ fn m17a_rl2_profile_never_deleted_scan() {
     // `ranking.rs` is allowed to use.
     let match_binding_needle = concat!("=matchctx.db.", "profile()");
     let owned_read_form = concat!("=matchctx.db.", "profile().identity().find(");
+    // Needle 3: the generated handle TYPES. A handle taken as a fn parameter
+    // reaches the table without `ctx.db.profile()` appearing in the deleting fn
+    // at all, so needles 1 and 2 are both blind to it (economy_tests.rs:1733
+    // documents the identical proven shape for `player_wallet`). Split with
+    // concat! so this file's own text can never self-match a future scanner.
+    let table_handle_needle = concat!("profile", "__TableHandle");
+    let view_handle_needle = concat!("profile", "__ViewHandle");
 
     for (filename, src) in &all_sources {
         // Comments blanked, then ALL whitespace removed: a needle written in
@@ -1599,6 +1621,22 @@ fn m17a_rl2_profile_never_deleted_scan() {
             filename,
             binding_needle
         );
+
+        for handle_needle in [table_handle_needle, view_handle_needle] {
+            assert!(
+                !squashed.contains(handle_needle),
+                "m17a-RL-2 FAIL in {}: found `{}` (whitespace-squashed) — naming the GENERATED \
+                 handle type lets a fn reach the profile table through a PARAMETER, so the \
+                 deleting body contains no `ctx.db.profile()` at all and both the \
+                 chained-delete needle and the split-binding needle are blind to it: \
+                 `fn purge(h: &..., id: Identity) {{ h.identity().delete(id); }}`. \
+                 economy_tests.rs:1733 documents the identical proven bypass for \
+                 `player_wallet`. Delegate through `ranking.rs` instead of passing table \
+                 handles across module boundaries (ADR-0119 D1, AUTH-23).",
+                filename,
+                handle_needle
+            );
+        }
 
         for (at, _) in squashed.match_indices(match_binding_needle) {
             let is_owner_module = filename.as_str() == "ranking.rs";

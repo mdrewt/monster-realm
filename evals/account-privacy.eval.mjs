@@ -102,7 +102,14 @@
 //                          The binding NAME is tracked from the source, never
 //                          pinned to a spelling — the M21a red-team's finding was
 //                          precisely that an identifier-name list is
-//                          rename-evadable.
+//                          rename-evadable. The adversarial pass widened it
+//                          twice: the taint is a FIXED POINT (`let iss =
+//                          claims.issuer(); let tag = iss;` launders a one-hop
+//                          rule), and a callee counts as a sink when its NAME
+//                          CONTAINS log / warn / reject, or is any panic-family
+//                          macro (a panicking reducer's message is logged), so
+//                          `fn warn_issuer(..) { log::warn!(..) }` cannot slip
+//                          past a whole-segment-equality list. Fixture FA35.
 //
 // THE STRIPPER (canonical implementation — the sibling M21c eval copies it):
 // `stripRustSource` blanks strings and comments IN PLACE, offset- and
@@ -119,9 +126,19 @@
 // is wrongly eaten as an escape; a two-hash raw string; a byte raw string). One
 // such line blanked 14,572 code characters of accounts.rs and silently zeroed
 // every ban needle. THE ASYMMETRY IS THE DANGER: a desync GREENS every ban clause
-// and reds only presence clauses. Hence: any number of hashes, matched by count;
-// no escape processing inside raw strings; properly lexed char literals with
-// lifetime disambiguation; nested block comments and doc comments; and
+// and reds only presence clauses.
+// A SECOND adversarial pass found a FOURTH form the r/br hardening still missed:
+// the C-string prefixes `c"..."` / `cr"..."` / `cr##"..."##` (stable since Rust
+// 1.77). In `cr"C:\"` the `r` is preceded by the word character `c`, so the raw
+// branch's `!isWordChar(src[i-1])` guard skipped it entirely and the literal was
+// lexed as an ORDINARY string whose `\"` was eaten as an escape — identical
+// polarity inversion, brand-new spelling. Worse, placed at the END of a file the
+// blanked tail carries no `pub struct` / `#[spacetimedb::` anchor, so
+// [STRIP/anchors] could not see it either and an entire appended reducer became
+// invisible to [R/name-set], [N/rng] and every [W/*] clause. Fixtures FA33/FA34
+// pin the fix. Hence: any number of hashes, matched by count; the b / c / br / cr
+// prefixes all recognised; no escape processing inside raw strings; properly
+// lexed char literals with lifetime disambiguation; nested block comments; and
 //   [STRIP/length] / [STRIP/idempotent] / [STRIP/anchors] — a desync SELF-CHECK
 // run on every live source, because a desync is invisible to the clauses
 // themselves. [STRIP/anchors] compares the anchor count in the stripped text
@@ -144,7 +161,7 @@
 // NO `new RegExp()` anywhere (Semgrep detect-non-literal-regexp) — literal
 // /regex/ and String.indexOf only.
 //
-// Proof-of-teeth fixtures (FA1-FA32) run BEFORE the live-tree checks so a broken
+// Proof-of-teeth fixtures (FA1-FA35) run BEFORE the live-tree checks so a broken
 // checker is caught first. Every clause that can fire has a BAD fixture
 // asserting its [tag], and every checker has a GOOD fixture that must PASS — an
 // always-red checker is indistinguishable from a working one (this repo's ux3
@@ -232,16 +249,22 @@ function containsIdent(hay, name) {
 // ---------------------------------------------------------------------------
 
 /**
- * Match a (byte-)raw string literal starting at `i`, if any.
- * Handles `r"..."`, `r#"..."#`, `r##"..."##` (ANY hash count), `br"..."` and
- * `br##"..."##`, closing on a quote followed by exactly that many hashes.
+ * Match a (byte- / C-)raw string literal starting at `i`, if any.
+ * Handles `r"..."`, `r#"..."#`, `r##"..."##` (ANY hash count), `br"..."`,
+ * `br##"..."##`, and the C-string forms `cr"..."` / `cr##"..."##` (Rust 1.77+),
+ * closing on a quote followed by exactly that many hashes.
+ * The `c` prefix is NOT optional politeness: without it the `r` of `cr"C:\"` is
+ * preceded by a word character, the raw branch is skipped, and the literal is
+ * lexed as an ORDINARY string whose `\"` is eaten as an escape — the exact
+ * quote-polarity inversion the r/br hardening was built to close, reintroduced
+ * through a prefix the hardening never enumerated.
  * @param {string} src Raw source.
- * @param {number} i Index of the `r` or `b`.
+ * @param {number} i Index of the `r`, `b` or `c`.
  * @returns {{openQuote:number, closeQuote:number, end:number}|null} Span, or null.
  */
 function matchRawString(src, i) {
   let j = i;
-  if (src[j] === 'b') j++;
+  if (src[j] === 'b' || src[j] === 'c') j++;
   if (src[j] !== 'r') return null;
   j++;
   let hashes = 0;
@@ -313,8 +336,11 @@ export function stripRustSource(src) {
       continue;
     }
 
-    // Raw / byte-raw string: NO escape processing at all inside it.
-    if ((c === 'r' || c === 'b') && !isWordChar(src[i - 1])) {
+    // Raw / byte-raw / C-raw string: NO escape processing at all inside it.
+    // The `c` arm costs nothing on ordinary identifiers (`crate::`, `concat!`,
+    // `config` all fail the `r` + hashes + quote shape and fall straight
+    // through) and closes the `cr"..."` / `cr##"..."##` desync.
+    if ((c === 'r' || c === 'b' || c === 'c') && !isWordChar(src[i - 1])) {
       const raw = matchRawString(src, i);
       if (raw) {
         blank(i, raw.end);
@@ -325,9 +351,13 @@ export function stripRustSource(src) {
       }
     }
 
-    // Byte-string / byte-char prefix: blank the `b`, then fall through so the
-    // quote itself is lexed on the next iteration.
-    if (c === 'b' && !isWordChar(src[i - 1]) && (src[i + 1] === DQ || src[i + 1] === "'")) {
+    // Byte-string / byte-char / C-string prefix: blank the prefix letter, then
+    // fall through so the quote itself is lexed (with escapes) next iteration.
+    // `c'x'` is not a Rust literal, so the `'` arm stays `b`-only.
+    if (
+      !isWordChar(src[i - 1]) &&
+      ((c === 'b' && (src[i + 1] === DQ || src[i + 1] === "'")) || (c === 'c' && src[i + 1] === DQ))
+    ) {
       blank(i, i + 1);
       i++;
       continue;
@@ -667,7 +697,28 @@ export function checkBindings(fsProbe) {
 const EXPECTED_REASONS = ['unrecognized audience', 'unrecognized issuer'];
 const CLAIM_ACCESSORS = ['claims.issuer()', 'claims.audience()', 'claims.subject()'];
 const SANCTIONED_SENDER_ARGS = ['ctx.sender', 'me'];
-const LOG_MACRO_NAMES = ['warn', 'info', 'error', 'debug', 'trace', 'println', 'eprintln'];
+// Every callee segment that can put its argument into the module log. The
+// panic family is here because a panicking reducer's message IS logged by the
+// SpacetimeDB host: `panic!("bad issuer {iss}")` is a G12 violation that a
+// macro list of only the `log::*` names walks straight past.
+const LOG_MACRO_NAMES = [
+  'warn',
+  'info',
+  'error',
+  'debug',
+  'trace',
+  'println',
+  'eprintln',
+  'panic',
+  'unreachable',
+  'todo',
+  'unimplemented',
+  'assert',
+  'assert_eq',
+  'assert_ne',
+  'expect',
+  'dbg',
+];
 
 /**
  * Locate a fn body by name in already-stripped source. The body `{` is the
@@ -819,9 +870,20 @@ function isRejectCallee(callee) {
 
 /**
  * Is this callee anything that could reach a log sink? Deliberately broader
- * than isRejectCallee (log::warn!, eprintln!, any *reject* helper), but
- * SEGMENT-scoped so `UNRECOGNIZED_ISSUER_LOG_LIMITER.check(...)` — a rate
- * limiter, not a sink — is not swept in.
+ * than isRejectCallee: `log::warn!`, `eprintln!`, `panic!`, any *reject*
+ * helper — and, since the adversarial pass, any segment whose NAME CONTAINS
+ * `log`, `warn` or `reject`.
+ *
+ * The substring rule exists because a whole-segment match is one rename away
+ * from silence: `fn warn_issuer(s: &str) { log::warn!("{s}"); }` called as
+ * `warn_issuer(claims.issuer())` is a real AUTH-36 leak whose callee segment
+ * (`warn_issuer`) equals none of the macro names. Over-classifying a callee as
+ * a sink is SAFE here — [G12/claim-binding] only fires when a CLAIM-TAINTED
+ * local is one of that call's arguments — so the two live over-matches
+ * (`UNRECOGNIZED_ISSUER_LOG_LIMITER.check(..)`, `touch_login(..)`) stay green
+ * because neither is handed a tainted name. Residual, accepted: a future
+ * helper whose name merely contains `log` (`catalog_lookup(issuer)`) would
+ * false-RED; that is the fail-loud direction.
  * @param {string} callee Dotted/pathed callee text.
  * @returns {boolean} True for a log-like call.
  */
@@ -830,6 +892,7 @@ function isLogLikeCallee(callee) {
     const bare = seg.endsWith('!') ? seg.slice(0, -1) : seg;
     if (bare === 'log' || bare === 'logger') return true;
     if (bare.indexOf('reject') !== -1) return true;
+    if (bare.indexOf('log') !== -1 || bare.indexOf('warn') !== -1) return true;
     if (LOG_MACRO_NAMES.indexOf(bare) !== -1) return true;
   }
   return false;
@@ -837,13 +900,23 @@ function isLogLikeCallee(callee) {
 
 /**
  * Names bound (by any `let` pattern) to an expression that reads a raw JWT
- * claim. The NAME IS OBSERVED, never pinned to a spelling — an identifier-name
- * list is rename-evadable, which is exactly how the shipped Rust twin was beaten.
+ * claim, TRANSITIVELY. The NAME IS OBSERVED, never pinned to a spelling — an
+ * identifier-name list is rename-evadable, which is exactly how the shipped Rust
+ * twin was beaten.
+ *
+ * The taint is a fixed point, not a single hop: the adversarial pass found that
+ *   let iss = claims.issuer();
+ *   let tag = iss;             // <- `tag`'s initializer names no claim accessor
+ *   warn_issuer(tag);
+ * defeats a one-hop rule while leaking exactly the same bytes. Each round taints
+ * every `let` whose initializer names an already-tainted local; the name set only
+ * grows, so it terminates.
  * @param {string} bodyStripped Stripped fn body.
- * @returns {string[]} Bound local names.
+ * @returns {string[]} Claim-tainted local names.
  */
 export function claimBoundLocals(bodyStripped) {
-  const names = [];
+  /** @type {Array<{names:string[], init:string}>} */
+  const lets = [];
   for (let at = bodyStripped.indexOf('let'); at !== -1; at = bodyStripped.indexOf('let', at + 1)) {
     if (isWordChar(bodyStripped[at - 1]) || isWordChar(bodyStripped[at + 3])) continue;
 
@@ -864,8 +937,8 @@ export function claimBoundLocals(bodyStripped) {
     }
     if (eq === -1) continue;
     const init = compactWs(bodyStripped.slice(eq + 1, semi === -1 ? bodyStripped.length : semi));
-    if (!CLAIM_ACCESSORS.some((needle) => init.indexOf(needle) !== -1)) continue;
 
+    const names = [];
     const pattern = bodyStripped.slice(at + 3, eq);
     for (const ident of pattern.match(/[A-Za-z_][A-Za-z0-9_]*/g) ?? []) {
       // Skip binding modes and type/variant names (`mut`, `ref`, `Some`, `Ok`).
@@ -873,8 +946,26 @@ export function claimBoundLocals(bodyStripped) {
       if (/^[A-Z]/.test(ident)) continue;
       names.push(ident);
     }
+    if (names.length > 0) lets.push({ names, init });
   }
-  return names;
+
+  const tainted = [];
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const l of lets) {
+      const direct = CLAIM_ACCESSORS.some((needle) => l.init.indexOf(needle) !== -1);
+      const derived = tainted.some((name) => containsIdent(l.init, name));
+      if (!direct && !derived) continue;
+      for (const name of l.names) {
+        if (tainted.indexOf(name) === -1) {
+          tainted.push(name);
+          changed = true;
+        }
+      }
+    }
+  }
+  return tainted;
 }
 
 /**
@@ -1018,7 +1109,7 @@ export function checkNoPiiInRejectLogs({ accountsSrc, libSrc }) {
 }
 
 // ---------------------------------------------------------------------------
-// PROOF-OF-TEETH FIXTURES (FA1-FA32) — inline sources, run BEFORE the live-tree
+// PROOF-OF-TEETH FIXTURES (FA1-FA35) — inline sources, run BEFORE the live-tree
 // checks. Returns the first tooth failure (string) or null.
 //
 // The Rust fixtures below are STRING LITERALS in a .mjs file; the live scan
@@ -1510,6 +1601,62 @@ fn account_roster(ctx: &spacetimedb::ViewContext) -> Vec<Account> {
     }
   }
 
+  // FA33 (adversarial pass, NEW) — the C-STRING prefixes. `c"..."`, `cr"..."`
+  // and `cr##"..."##` are stable Rust (1.77+). In `cr"C:\"` the `r` is preceded
+  // by the word character `c`, so the raw-string branch's
+  // `!isWordChar(src[i-1])` guard skips it and the ORDINARY-string branch eats
+  // the `\"` as an escape — the same polarity inversion as the r/br forms, in a
+  // spelling the r/br hardening never enumerated. Behavioural half: real code
+  // AFTER each form must survive, and the real stripper must call it SOUND.
+  {
+    const forms = [
+      String.raw`pub const P: &core::ffi::CStr = cr"C:\";`,
+      String.raw`pub const Q: &core::ffi::CStr = cr##"use "code" or "CODE"##;`,
+      String.raw`pub const R: &core::ffi::CStr = c"plain\"escaped";`,
+    ];
+    for (let k = 0; k < forms.length; k++) {
+      const src = `${forms[k]}
+pub struct Probe;
+fn probe(ctx: &Ctx) {
+    ctx.db.account().identity().delete(victim);
+}
+`;
+      const flat = compactWs(stripRustSource(src));
+      if (flat.indexOf('ctx.db.account().identity().delete(victim)') === -1) {
+        return (
+          `FA33.${k + 1}: real code AFTER \`${forms[k]}\` was blanked — the stripper does not ` +
+          'recognise the C-string prefix, so quote polarity is inverted for the rest of the file'
+        );
+      }
+      if (flat.indexOf('code') !== -1 || flat.indexOf('escaped') !== -1) {
+        return `FA33.${k + 1}: the C-string payload survived stripping`;
+      }
+      const err = assertStripperSound(src, `FA33.${k + 1}`);
+      if (err) return `FA33.${k + 1}: the real stripper was reported unsound: ${err}`;
+    }
+  }
+
+  // FA34 — the BITING half of FA33: each C-raw form sits between the view and a
+  // PUBLIC guest_claim table. With a C-prefix-blind stripper the table is
+  // blanked and the checker reports [A/missing-guest-claim] (or [STRIP/anchors])
+  // — a DIFFERENT tag — so this fixture cannot be satisfied by the wrong answer.
+  // Kills: reverting the `c`/`cr` arms of matchRawString and the prefix branch.
+  {
+    const forms = [
+      String.raw`pub const A: &core::ffi::CStr = cr"C:\";`,
+      String.raw`pub const B: &core::ffi::CStr = cr##"use "code" or "CODE"##;`,
+    ];
+    for (let k = 0; k < forms.length; k++) {
+      const schemaSrc = schemaWithRawConstAndPublicClaim(forms[k]);
+      const bad = expectTag(
+        checkAccountViewsSafe({ schemaSrc, accountsSrc: GOOD_ACCOUNTS }),
+        '[A/priv-guest-claim]',
+        `FA34.${k + 1}`,
+      );
+      if (bad) return `${bad} (C-string form: ${forms[k]})`;
+    }
+  }
+
   // --- check C ------------------------------------------------------------
 
   // FA19 — the private account table emitted a client binding.
@@ -1689,6 +1836,33 @@ pub(crate) fn provision_or_touch_account(ctx: &ReducerContext) -> Result<(), Str
     if (err) return `FA32: a legitimate (non-logged) claim binding was incorrectly flagged: ${err}`;
   }
 
+  // FA35 (adversarial pass, NEW) — TWO evasions of [G12/claim-binding] at once,
+  // both of which the pre-hardening clause was green on:
+  //   (1) the taint is laundered through a SECOND binding (`let tag = iss;`),
+  //       whose own initializer names no claim accessor — a one-hop rule sees
+  //       nothing;
+  //   (2) the sink is a project helper, `warn_issuer(..)`, whose callee segment
+  //       equals none of the log-macro names while its body is `log::warn!`.
+  // Kills: a single-hop taint, and a whole-segment-equality sink list.
+  {
+    const accountsSrc = GOOD_ACCOUNTS_PII.replace(
+      '    let now = now_ms(ctx);',
+      `    let iss = claims.issuer();
+    let tag = iss;
+    warn_issuer(tag);
+    let now = now_ms(ctx);`,
+    );
+    if (accountsSrc === GOOD_ACCOUNTS_PII) {
+      return 'FA35: the fixture substitution did not apply — the laundered leak was never injected';
+    }
+    const bad = expectTag(
+      checkNoPiiInRejectLogs({ accountsSrc, libSrc: GOOD_LIB_PII }),
+      '[G12/claim-binding]',
+      'FA35',
+    );
+    if (bad) return bad;
+  }
+
   return null;
 }
 
@@ -1794,7 +1968,7 @@ export default async function accountPrivacyEval() {
       `inventory is exactly [${EXPECTED_VIEWS.join(', ')}], no private table emitted a client ` +
       'binding while my_account_table.ts is present, and every reject-log argument on the ' +
       'connect path is a static literal with reasons pinned to ' +
-      `{${EXPECTED_REASONS.join(', ')}} (32 teeth verified)`,
+      `{${EXPECTED_REASONS.join(', ')}} (35 teeth verified)`,
   };
 }
 
