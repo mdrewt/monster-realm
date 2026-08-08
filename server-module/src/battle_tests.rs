@@ -4843,3 +4843,146 @@ fn lead_party_warns_on_an_unparseable_lead_level() {
          trick, and no scan can see it."
     );
 }
+
+/// **12r-e E2 (the split coupling)** — `lead_party` point-reads the LEAD, not an
+/// arbitrary party member.
+///
+/// THE MUTANT THIS KILLS (verifier-derived MF, the lone survivor of 14):
+/// `battle.rs:334`'s `let lead_id = *ids.first()?;` mutated to `*ids.last()?;` —
+/// 501/501 still green before this test existed.
+///
+/// WHY THIS IS THE SLICE'S PROBLEM AND NOT A PRE-EXISTING GAP. On `origin/master`
+/// lead selection was ONE adjacent pair of statements inside ONE function:
+/// `party.sort_by_key(|m| m.party_slot);` immediately followed by
+/// `let lead = party.first()?;`. Nothing could get between them. THIS SLICE SPLIT
+/// THEM ACROSS TWO FUNCTIONS — the sort now lives in `lead_party_ids`, the
+/// element pick in `lead_party` — and a coupling split across a function boundary
+/// is precisely the kind that rots without anyone noticing.
+/// [`lead_party_ids_does_not_parse_a_level`]'s layer 3 already pins the sort half
+/// and its own comment CLAIMS the other half IN PROSE ("the slot ordering that
+/// makes `ids[0]` the lead, which `lead_party` then point-reads"). That claim was
+/// decorative; this test makes it checkable.
+///
+/// THE FAILURE MODE, not just the mechanic. `ids` arrives slot-sorted, so `ids[0]`
+/// is the lowest `party_slot` — the LEAD. `movement_tick` (movement.rs:436) feeds
+/// `lead_party`'s `Level` straight into `resolve_encounter`, which is what decides
+/// WHICH WILD MONSTERS SPAWN AND AT WHAT LEVEL; `start_wild_battle`
+/// (battle.rs:497) seeds the battle from the same value. Point-read the wrong
+/// party member and every wild encounter in the game is rolled against some other
+/// monster's level: a player walking grass with a level-6 lead would face
+/// encounters scaled to whatever veteran happens to sit in slot 6, and nothing
+/// anywhere logs, rejects, or looks wrong.
+///
+/// SHAPE — two halves, asserted TOGETHER because neither is worth anything alone:
+///
+/// 1. `lead_party_ids` still sorts by slot, and does NOT reverse. This is a
+///    PRECONDITION, not a duplicate of layer 3: "index 0 is the lead" is simply
+///    FALSE if the sort disappears or gains a `.rev()`, and the assertion below
+///    would then be pinning a meaningless index with full confidence.
+/// 2. `lead_party` picks the FIRST element, and never an end-relative one.
+///
+/// NEEDLE CHOICE. The positive accepts `first()` OR a bare `[0]`, because both
+/// spellings are correct and pinning only `.first()` would false-RED an honest
+/// `let lead_id = ids[0];` refactor — the same reasoning that rejected a
+/// `return None`-position pin in [`lead_party_ids_does_not_parse_a_level`].
+/// (`ids.get(0)` needs no coverage: `clippy::get_first` is a style lint and
+/// `justfile:18` runs clippy with `-D warnings`, so it cannot ship.) The negative
+/// bans `last()` AND `len()` — `len()` is what `ids[ids.len() - 1]` needs, which
+/// is the end-relative pick spelled without `last()`. `lead_party` has no other
+/// use for either: it hands the whole `ids` vector back untouched.
+///
+/// GREEN against the landed implementation (`*ids.first()?`; no `last`, no `len`;
+/// sort present; no `rev`). RED against MF.
+///
+/// HONEST LIMITS. (a) SOURCE SCAN — no `ReducerContext` harness exists in this
+/// crate, so this never observes a row. It proves the code SAYS "first"; it does
+/// NOT prove the first id belongs to the lowest-slotted monster at runtime. That
+/// rides on `sort_by_key(|m| m.party_slot)` being an ascending sort, which is
+/// Rust's contract, not this test's finding. (b) A third spelling —
+/// `ids.iter().next()`, or an index computed in a helper — would evade the
+/// positive. That is the ceiling of a scan; the two accepted spellings are the
+/// two anyone actually writes. (c) The `len()` ban would false-RED a future log
+/// line reporting the party size. That is a deliberate, narrow trade: if such a
+/// line is added, re-examine this pin in the SAME edit rather than widening it
+/// reflexively.
+#[test]
+fn lead_party_point_reads_the_lead_not_an_arbitrary_member() {
+    // --- Half 1: the ordering that gives index 0 its meaning -----------------
+    let ids_body = e2_helper_body("lead_party_ids");
+
+    let sort = ["sort", "_by_key("].concat();
+    assert!(
+        ids_body.contains(sort.as_str()),
+        "PRECONDITION (12r-e E2 coupling): `lead_party_ids`'s body no longer \
+         contains `{sort}..)`, so the id list is in arbitrary table order and \
+         `ids[0]` means NOTHING. The assertion below would still pass while \
+         `lead_party` read a random party member's level — which `movement_tick` \
+         feeds to `resolve_encounter` to decide what spawns. Restore the slot sort \
+         (`lead_party_ids_does_not_parse_a_level` layer 3 owns it as a pin; this is \
+         its precondition, deliberately restated because the two halves are ONE \
+         property). Body scanned was:\n{ids_body}"
+    );
+
+    let reverse = ["re", "v()"].concat();
+    let n_rev = ids_body.matches(reverse.as_str()).count();
+    assert_eq!(
+        n_rev, 0,
+        "TEETH (12r-e E2 coupling): `lead_party_ids`'s body calls `{reverse}` \
+         {n_rev} time(s); it must call it ZERO times. `sort_by_key` is ASCENDING, \
+         so index 0 is the LOWEST `party_slot` — the lead. A `.rev()` after the \
+         sort inverts that silently: every caller keeps reading `ids[0]`, the code \
+         still looks correct at both ends, and the LAST party member now drives the \
+         wild-encounter roll. This is the same defect as the `first()`/`last()` \
+         mutant, moved to the other side of the function boundary."
+    );
+
+    // --- Half 2: the pick ----------------------------------------------------
+    // The NEGATIVES run before the positive on purpose. Both orders kill MF, but
+    // the mutant trips whichever fires first, and the `last()` message is the one
+    // that names the mutant and its consequence; the positive's message only says
+    // "no recognised pick", which is the right message for a DELETED point-read
+    // and the wrong one for an INVERTED one.
+    let body = e2_helper_body("lead_party");
+
+    let last = ["la", "st()"].concat();
+    let n_last = body.matches(last.as_str()).count();
+    assert_eq!(
+        n_last, 0,
+        "TEETH (12r-e E2 coupling): `lead_party`'s body calls `{last}` {n_last} \
+         time(s); it must call it ZERO times. THIS IS MUTANT MF, the only one of 14 \
+         that survived the suite before this test existed: `*ids.first()?` becomes \
+         `*ids.last()?` and every test stays green. `ids` is slot-sorted, so that \
+         reads the HIGHEST `party_slot` — the last party member — and hands ITS \
+         level back as `lead_level`. `movement_tick` (movement.rs:436) passes that \
+         level to `resolve_encounter`, so the wild-encounter table is rolled \
+         against the wrong monster entirely, and `start_wild_battle` \
+         (battle.rs:497) seeds the battle from it. No log line, no rejection, no \
+         crash — just a game that spawns the wrong monsters forever."
+    );
+
+    let len = ["le", "n()"].concat();
+    let n_len = body.matches(len.as_str()).count();
+    assert_eq!(
+        n_len, 0,
+        "TEETH (12r-e E2 coupling): `lead_party`'s body calls `{len}` {n_len} \
+         time(s); it must call it ZERO times. This closes the end-relative pick \
+         spelled WITHOUT `last()` — `ids[ids.len() - 1]` — which is the obvious way \
+         to write the MF mutant once `last()` is banned. `lead_party` returns the \
+         whole `ids` vector untouched and has no other use for its length. HONEST \
+         LIMIT: a future log line reporting the party size would false-RED here; \
+         re-examine this pin in that same edit rather than widening it reflexively."
+    );
+
+    let first = ["fir", "st()"].concat();
+    let index_zero = ["[", "0]"].concat();
+    assert!(
+        body.contains(first.as_str()) || body.contains(index_zero.as_str()),
+        "TEETH (12r-e E2 coupling): `lead_party`'s body selects its point-read \
+         target with neither `{first}` nor `{index_zero}`. `ids` arrives \
+         slot-sorted from `lead_party_ids`, so the LEAD is element 0 and nothing \
+         else — and handing that ONE monster's `Level` to `movement_tick`'s \
+         encounter roll is this helper's whole reason to exist. Write \
+         `let lead_id = *ids.first()?;` (the shipped shape) or \
+         `let lead_id = ids[0];`. Body scanned was:\n{body}"
+    );
+}
