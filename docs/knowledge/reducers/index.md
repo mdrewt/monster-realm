@@ -10,24 +10,29 @@
 | reducers/attempt_recruit | SpacetimeDB Reducer | attempt_recruit | Attempt to recruit the wild monster in a wild battle (M8d, ADR-0047). The roll i |
 | reducers/battle_challenge_reaper | SpacetimeDB Reducer | battle_challenge_reaper | Scheduled reaper: delete a Pending battle challenge that has outlived `CHALLENGE |
 | reducers/buy | SpacetimeDB Reducer | buy | Buy `qty` units of `item_id` from shop `shop_id`. Server flow (reject-not-clamp, |
+| reducers/cancel_account_deletion | SpacetimeDB Reducer | cancel_account_deletion | Reverse a pending deletion. Idempotent no-op on an already-`Active` account (AUT |
 | reducers/cancel_challenge | SpacetimeDB Reducer | cancel_challenge | Cancel a pending PvP challenge (initiator-only). |
 | reducers/cancel_trade | SpacetimeDB Reducer | cancel_trade | Cancel a trade offer. Either party may cancel before the swap executes. Deletes  |
 | reducers/care | SpacetimeDB Reducer | care | Care for a monster (Trust-favorable credit, EG2-5/ADR-0175), gated by a per-mons |
 | reducers/challenge_pvp | SpacetimeDB Reducer | challenge_pvp | Send a PvP battle challenge to another online player. Guard order (reject-not-cl |
 | reducers/clear_queue | SpacetimeDB Reducer | clear_queue | Empty the queue (key release). |
+| reducers/complete_guest_claim | SpacetimeDB Reducer | complete_guest_claim | Complete a guest→account claim: re-key the guest's game data onto the caller, co |
 | reducers/confirm_trade | SpacetimeDB Reducer | confirm_trade | Initiator confirms a ConfirmedByCounterparty offer → atomic swap. Role + status  |
 | reducers/consume_crystalized_essence | SpacetimeDB Reducer | consume_crystalized_essence | Consume a crystalized-essence item: grant the ITEM's essence to the matching poo |
 | reducers/decline_challenge | SpacetimeDB Reducer | decline_challenge | Decline a pending PvP challenge. Deletes the challenge row. |
+| reducers/delete_account | SpacetimeDB Reducer | delete_account | Request account deletion (M21 half only — sets `PendingDeletion`; M22 extends th |
 | reducers/dismiss_dialogue | SpacetimeDB Reducer | dismiss_dialogue | Dismiss the current dialogue (no-op if no active conversation). |
 | reducers/enqueue_move | SpacetimeDB Reducer | enqueue_move | Append one intent to the bounded queue (anti-flood: reject when full). Buffers i |
 | reducers/essence_train | SpacetimeDB Reducer | essence_train | Essence-train a monster: +ESSENCE_TRAIN_AMOUNT to ONE pool, gated by the shared  |
 | reducers/evolve | SpacetimeDB Reducer | evolve | Evolve a monster along one authored evolution-graph edge (EG2-1 shape). Steps: 1 |
 | reducers/flee | SpacetimeDB Reducer | flee | Flee from a battle. Sets outcome to `Fled`; no XP awarded. |
 | reducers/grant_bait | SpacetimeDB Reducer | grant_bait | DEV/TEST: grant bait to the CALLER only (self-scoped to `ctx.sender`; no arbitra |
+| reducers/guest_claim_reaper | SpacetimeDB Reducer | guest_claim_reaper | Reap a single expired `guest_claim` row (AUTH-27). Scheduler-only. Deletes exact |
 | reducers/heal_party | SpacetimeDB Reducer | heal_party | Restore all party monsters to full HP at a heal location. Reject-never-burns: al |
 | reducers/init | SpacetimeDB Reducer | init | SpacetimeDB reducer init. |
 | reducers/join_game | SpacetimeDB Reducer | join_game | Join: one `player` + one `character` at the spawn + one starter `monster` (idemp |
 | reducers/movement_tick | SpacetimeDB Reducer | movement_tick | Per-zone, server-paced tick: drain ≤1 move per character in THIS zone, compute t |
+| reducers/on_connect | SpacetimeDB Reducer | on_connect | Lifecycle: lazy-provision or touch an `account` on connect (M21, ADR-0179 D4). A |
 | reducers/on_disconnect | SpacetimeDB Reducer | on_disconnect | SpacetimeDB reducer on_disconnect. |
 | reducers/playtest_reaper | SpacetimeDB Reducer | playtest_reaper | SpacetimeDB reducer playtest_reaper. |
 | reducers/propose_trade | SpacetimeDB Reducer | propose_trade | Propose a trade: escrow the listed assets and await the counterparty's response. |
@@ -39,6 +44,7 @@
 | reducers/set_party_slot | SpacetimeDB Reducer | set_party_slot | Set or clear a monster's party slot. `slot = 255` moves to box; `slot < 6` assig |
 | reducers/set_profile_name | SpacetimeDB Reducer | set_profile_name | Rename the caller's display name (ADR-0132 D1). The single client-callable reduc |
 | reducers/start_battle | SpacetimeDB Reducer | start_battle | Start a PvE battle: build BattleMonsters from the player's party and the opponen |
+| reducers/start_guest_claim | SpacetimeDB Reducer | start_guest_claim | Bind a CLIENT-minted claim code to the anonymous caller (AUTH-7..11). The server |
 | reducers/start_wild_battle | SpacetimeDB Reducer | start_wild_battle | DEV/TEST entrypoint (gate or remove at M9+): a faithful double of the grass path |
 | reducers/submit_attack | SpacetimeDB Reducer | submit_attack | Submit an attack: resolve one turn where the player attacks with `skill_id` and  |
 | reducers/submit_pvp_action | SpacetimeDB Reducer | submit_pvp_action | Submit a PvP action (Attack or Swap) for the current turn. Guard order: 1. Battl |
