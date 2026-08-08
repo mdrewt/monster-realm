@@ -1,4 +1,12 @@
 {
+  "guest_claim_reaper_schedule": {
+    "pk": "scheduled_id",
+    "columns": {
+      "scheduled_id": "u64",
+      "scheduled_at": "ScheduleAt",
+      "guest_identity": "Identity"
+    }
+  },
   "movement_tick_schedule": {
     "pk": "id",
     "columns": {
@@ -365,6 +373,29 @@
     "columns": {
       "owner_identity": "Identity",
       "balance": "u64"
+    }
+  },
+  "account": {
+    "pk": "identity",
+    "columns": {
+      "identity": "Identity",
+      "auth_issuer": "String",
+      "created_at_ms": "i64",
+      "last_login_at_ms": "i64",
+      "status": "AccountStatus",
+      "deletion_requested_at_ms": "Option<i64>",
+      "claimed_from": "Option<Identity>",
+      "claimed_at_ms": "Option<i64>"
+    }
+  },
+  "guest_claim": {
+    "pk": "guest_identity",
+    "columns": {
+      "guest_identity": "Identity",
+      "code": "String",
+      "guest_name": "String",
+      "created_at_ms": "i64",
+      "expires_at_ms": "i64"
     }
   },
   "profile": {

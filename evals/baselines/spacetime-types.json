@@ -33,6 +33,13 @@
       ]
     ]
   },
+  "AccountStatus": {
+    "kind": "enum",
+    "variants": [
+      "Active",
+      "PendingDeletion"
+    ]
+  },
   "ChallengeStatus": {
     "kind": "enum",
     "variants": [

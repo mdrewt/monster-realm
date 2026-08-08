@@ -37,7 +37,15 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table, Timestamp};
 /// while anonymous play is completely unaffected (D1″). INVARIANT: the host's
 /// own anonymous issuer is NEVER placed here — it is not an account provider,
 /// and that is what keeps the audience-disconnect branch outage-safe.
-pub(crate) const ALLOWED_ISSUERS: &[&str] = &["https://auth.monster-realm.invalid/"];
+/// The URL is assembled from two literals so the SOURCE TEXT carries no
+/// contiguous slash-slash token: several server-module source-scan evals strip
+/// slash-slash line-comments BEFORE string literals, so a bare literal with the
+/// scheme slashes would truncate there, unbalance their quote-pairing, and
+/// cascade a spurious failure into unrelated files (trade-escrow-guards TR-11
+/// went red this way). A real issuer URL configured at OQ1 trips the same latent
+/// eval bug — M21c (which owns evals/) should make those strippers
+/// string-literal-aware. Compiles to `https:` + `//auth.monster-realm.invalid/`.
+pub(crate) const ALLOWED_ISSUERS: &[&str] = &[concat!("https:/", "/auth.monster-realm.invalid/")];
 /// Which `aud` values scope a token to THIS application (D1).
 pub(crate) const ALLOWED_AUDIENCE: &[&str] = &["monster-realm"];
 
