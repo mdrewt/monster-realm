@@ -9,6 +9,16 @@
 //! ```
 //! so these run under `just test` (`cargo nextest run --workspace`) without a
 //! criterion bench ever executing. Do not edit `Cargo.toml` from here.
+//! `evals/observability-log-wrapper.eval.mjs`'s A8 asserts that entry exists:
+//! WITHOUT it cargo and nextest never compile this file and report "0 tests" —
+//! the whole OBS-6 proof-of-teeth suite silently absent, and green.
+//!
+//! ALSO REQUIRED in `[package]`: `autobenches = false`. Cargo otherwise
+//! auto-registers every `.rs` under `benches/` as its own bench target, so
+//! `budgets.rs` and this file become phantom benches; `budgets.rs` compiled
+//! standalone has no caller for its items and trips `dead_code` under
+//! `clippy --all-targets -D warnings`. With `autobenches = false` the only
+//! bench target is the explicit `[[bench]] hot_paths` entry.
 //!
 //! `budgets.rs` lives beside this file and is shared verbatim with
 //! `hot_paths.rs` — one `BUDGETS` table, one comparison function, no second
@@ -81,6 +91,41 @@ fn budgets_covers_exactly_the_seven_named_hot_paths() {
         ids.len(),
         "BUDGETS contains a duplicate id — the second entry's ceiling would silently shadow \
          (or be shadowed by) the first"
+    );
+}
+
+/// AM11 (light enforcement) — every ceiling records its provenance in a comment.
+///
+/// A ceiling with no measured baseline beside it is a number someone guessed, or
+/// raised to green a red gate (anti-pattern 6, "budget inflation"). AM11 requires
+/// each entry's inline comment to record the measured value, the date, and the
+/// conditions. This cannot check the *content* of a comment, but it can check
+/// that there are at least as many provenance comments as there are budgets —
+/// which a single copy-pasted note for the whole table does not satisfy.
+///
+/// Scoped to COMMENT lines on purpose: counting the bare identifier `measured`
+/// would be satisfied by `violations`'s own parameter name. Case-insensitive so
+/// "Measured:" is not a false RED.
+#[test]
+fn every_ceiling_records_its_measured_provenance() {
+    const BUDGETS_RS: &str = include_str!("budgets.rs");
+    let opener = concat!("/", "/");
+    let mut notes = 0usize;
+    for line in BUDGETS_RS.split('\n') {
+        let trimmed = line.trim_start();
+        if !trimmed.starts_with(opener) {
+            continue;
+        }
+        notes += trimmed.to_ascii_lowercase().matches("measured").count();
+    }
+    assert!(
+        notes >= budgets::BUDGETS.len(),
+        "budgets.rs carries {notes} `measured` provenance note(s) in comments for \
+         {} budget(s) (AM11). Each ceiling needs its own inline comment recording the \
+         measured value, the date, and the conditions (release bench profile, idle \
+         machine, sample count) — a ceiling with no measurement behind it cannot be \
+         reviewed, and raising one to green a red gate becomes invisible.",
+        budgets::BUDGETS.len()
     );
 }
 
@@ -212,6 +257,37 @@ fn missing_names_a_budgeted_id_with_no_measurement() {
     let measured = [("fast_path", 10.0)];
     let absent = budgets::missing(&measured, &budgets_table);
     assert_eq!(absent, vec!["slow_path"], "the unmeasured id must be named");
+}
+
+/// LOW-9 — id matching is EXACT, not case- or whitespace-insensitive.
+///
+/// Criterion's directory names come from the bench ids verbatim, so a measured
+/// key that differs in case is a DIFFERENT benchmark (or, more likely, a typo in
+/// one of the two lists). A lenient comparator would pair them up and report a
+/// budget as satisfied by a measurement that was never taken for it.
+#[test]
+fn ids_match_exactly_not_case_or_whitespace_insensitively() {
+    let budgets_table = vec![Budget {
+        id: "apply_move",
+        ceiling_ns: 100.0,
+    }];
+    let miscased = [("Apply_Move", 10.0)];
+    assert_eq!(
+        budgets::missing(&miscased, &budgets_table),
+        vec!["apply_move"],
+        "a differently-cased measurement key must NOT satisfy a budget id"
+    );
+    assert!(
+        budgets::violations(&miscased, &budgets_table).is_empty(),
+        "an unmatched measurement must not be compared against an unrelated budget"
+    );
+
+    let padded = [(" apply_move ", 10.0)];
+    assert_eq!(
+        budgets::missing(&padded, &budgets_table),
+        vec!["apply_move"],
+        "a whitespace-padded measurement key must NOT satisfy a budget id"
+    );
 }
 
 /// A complete measurement set reports nothing missing.

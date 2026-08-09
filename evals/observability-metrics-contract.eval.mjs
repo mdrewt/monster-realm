@@ -267,23 +267,56 @@ export function functionAttribution(logLineJson) {
 // ---------------------------------------------------------------------------
 // Pure predicate 4: pinsAgree(ciYmlText) -> { ok, version, reason }  (AM9)
 //
-// Comment-aware: a line whose TRIMMED form starts with `#` does not count, so
-// commenting out one of the two install steps cannot make the pins "agree" by
-// leaving a single occurrence. >= 2 non-comment occurrences required, all
-// naming the same version.
+// A "pin" is a COMMAND that installs a LITERAL version. Three spoofs the first
+// draft accepted, all found by red-team:
+//   - COMMENT: a line whose trimmed form starts with `#` (commenting out one of
+//     the two install steps left a single "agreeing" occurrence);
+//   - DECORATIVE ECHO: `echo "spacetime version install 2.6.0"` counted as a
+//     second pin, so deleting the real one still "agreed". Fixed by requiring
+//     the marker to be the START of the command (optionally after a `- run: `
+//     or `run: ` key), not merely present somewhere in the line;
+//   - EXPRESSION COLLAPSE: `spacetime version install ${{ matrix.stdb }}` parsed
+//     to the token `$` (the name walk stops at `{`), and two such lines
+//     trivially "agreed" on `$`. Fixed by requiring the token to look like a
+//     literal version — leading digit, at least one dot — and by FAILING LOUD
+//     (not skipping) when a real pin line carries a non-literal.
 // ---------------------------------------------------------------------------
+
+/** A literal version token: starts with a digit, contains a dot. */
+export function isVersionToken(token) {
+  if (token.length === 0) return false;
+  const first = token[0];
+  if (first < '0' || first > '9') return false;
+  return token.indexOf('.') !== -1;
+}
+
+/** Strip a leading YAML `- run: ` / `run: ` key so both step forms are pins. */
+function commandTail(trimmed) {
+  for (const prefix of ['- run: ', 'run: ']) {
+    if (trimmed.startsWith(prefix)) return trimmed.slice(prefix.length).trim();
+  }
+  return trimmed;
+}
+
 export function pinsAgree(ciYmlText) {
   const marker = 'spacetime version install';
   const versions = [];
   for (const raw of ciYmlText.split('\n')) {
     const line = raw.trim();
     if (line.startsWith('#')) continue;
-    const at = line.indexOf(marker);
-    if (at === -1) continue;
-    const rest = line.slice(at + marker.length).trim();
+    const command = commandTail(line);
+    // The marker must OPEN the command. A line that merely mentions it (an
+    // echo, a comment inside a block scalar, a doc string) is not a pin.
+    if (!command.startsWith(marker)) continue;
+    const rest = command.slice(marker.length).trim();
     const token = sampleName(rest);
-    if (token.length === 0) {
-      return { ok: false, reason: `a \`${marker}\` line names no version: ${line}` };
+    if (!isVersionToken(token)) {
+      return {
+        ok: false,
+        reason:
+          `a \`${marker}\` command does not name a literal version (got '${token}') — a matrix ` +
+          `expression or variable cannot anchor the recorded live evidence: ${line}`,
+      };
     }
     versions.push(token);
   }
@@ -291,8 +324,9 @@ export function pinsAgree(ciYmlText) {
     return {
       ok: false,
       reason:
-        `expected >= 2 non-comment \`${marker}\` lines in ci.yml, found ${versions.length} — ` +
-        'the CLI pin is the anchor the recorded live evidence is valid against',
+        `expected >= 2 non-comment \`${marker}\` COMMANDS in ci.yml, found ${versions.length} — ` +
+        'the CLI pin is the anchor the recorded live evidence is valid against (a line that ' +
+        'only mentions the command, e.g. inside an echo, does not count)',
     };
   }
   for (const v of versions) {
@@ -381,6 +415,22 @@ const CI_PINS_COMMENTED = CI_PINS_GOOD.replace(
   '      - run: |\n          spacetime version install 2.6.0\n  e2e:',
   '      - run: |\n          # spacetime version install 2.6.0\n  e2e:',
 );
+// MEDIUM-6 spoof (a): a decorative echo naming the same version. Only ONE real
+// pin command remains, so this must fail rather than "agree" with itself.
+const CI_PINS_ECHO_DECOY = CI_PINS_GOOD.replace(
+  '      - run: |\n          spacetime version install 2.6.0\n  e2e:',
+  '      - run: |\n          echo "spacetime version install 2.6.0 (pinned)"\n  e2e:',
+);
+// MEDIUM-6 spoof (b): both steps install a matrix expression. The old name walk
+// stopped at `{` and both lines "agreed" on the token `$`.
+const CI_PINS_MATRIX = CI_PINS_GOOD.split('2.6.0').join('${{ matrix.stdb }}');
+// MEDIUM-6 spoof (c): a non-numeric token (a tag, a branch, `latest`).
+const CI_PINS_NONLITERAL = CI_PINS_GOOD.split('2.6.0').join('latest');
+// Inline `- run:` form must still count as a real pin (no false RED if ci.yml
+// is ever reformatted away from block scalars).
+const CI_PINS_INLINE =
+  'jobs:\n  ci:\n    steps:\n      - run: spacetime version install 2.6.0\n' +
+  '  e2e:\n    steps:\n      - run: spacetime version install 2.6.0\n';
 
 const TEETH = [
   {
@@ -520,6 +570,33 @@ const TEETH = [
       }
       if (pinsAgree('jobs:\n  ci:\n    steps: []\n').ok) {
         return 'a ci.yml with no `spacetime version install` line at all was accepted';
+      }
+      return null;
+    },
+  },
+  {
+    id: 'B4-pin-spoofs',
+    // MEDIUM-6. Each of these made the tripwire green while the real pin was
+    // absent, unpinned, or non-literal.
+    run() {
+      if (pinsAgree(CI_PINS_ECHO_DECOY).ok) {
+        return 'a decorative `echo "spacetime version install 2.6.0"` counted as a second pin';
+      }
+      const matrix = pinsAgree(CI_PINS_MATRIX);
+      if (matrix.ok) {
+        return `a \`\${{ matrix.* }}\` version expression was accepted as a pin (${matrix.version})`;
+      }
+      if (pinsAgree(CI_PINS_NONLITERAL).ok) {
+        return 'a non-literal version token (`latest`) was accepted as a pin';
+      }
+      const inline = pinsAgree(CI_PINS_INLINE);
+      if (!inline.ok) return `the inline \`- run: ...\` step form was rejected: ${inline.reason}`;
+      if (inline.version !== '2.6.0') return `inline form parsed '${inline.version}'`;
+      if (isVersionToken('$') || isVersionToken('v2.6.0') || isVersionToken('260')) {
+        return 'isVersionToken accepted a token that is not a literal dotted version';
+      }
+      if (!isVersionToken('2.6.0') || !isVersionToken('2.6.0-rc.1')) {
+        return 'isVersionToken rejected a legitimate literal version';
       }
       return null;
     },

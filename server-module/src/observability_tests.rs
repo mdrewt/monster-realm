@@ -21,9 +21,18 @@
 //!   2. per file, blank every line whose TRIMMED form starts with a double
 //!      slash (covers the plain, doc and inner-doc forms) — the ONLY stripping;
 //!   3. count `log::info!` / `log::warn!` / `log::error!` / `log::log!`, each
-//!      followed by optional whitespace then one of the three macro delimiters;
-//!   4. flat-ban `use log` / `extern crate log` as tokens, zero tolerance, in
-//!      every non-test file including the blessed emission points.
+//!      followed by any run of whitespace and/or COMPLETE block comments, then
+//!      one of the three macro delimiters (the comment skip closes a compiled
+//!      proof-of-concept where a comment sits between the `!` and its paren);
+//!   4. flat-ban, zero tolerance, in every non-test file including the blessed
+//!      emission points: `use log` and `use ::log` as tokens, `extern crate
+//!      log`, and the `rustfmt::skip` attribute anywhere. The last one is not a
+//!      logging construct: it is what lets the spaced macro path
+//!      `log :: warn ! (...)` — which matches no needle in either scanner —
+//!      survive `cargo fmt --check`. Banning it keeps fmt as the normalizer.
+//!      ACCEPTED RESIDUAL (disclosed): a comment spliced inside the macro PATH
+//!      itself still evades the needles; it too needs the skip attribute to
+//!      survive fmt, so the ban is the practical net.
 //!
 //! SOURCE-SCAN HYGIENE (house rules, learned the hard way):
 //!   - every needle is assembled with `concat!`, so this file never contains a
@@ -333,15 +342,34 @@ fn scrub_comment_lines(src: &str) -> String {
     out
 }
 
-/// Optional whitespace then one of the three Rust macro delimiters.
+/// Any run of whitespace and/or complete block comments, then one of the three
+/// Rust macro delimiters.
+///
+/// The block-comment skip closes a compiled proof-of-concept: `log::warn!` then
+/// a block comment then `("x")` is a real emission that a whitespace-only walk
+/// scores as zero. Byte-identical to `delimiterFollows` in
+/// `evals/observability-log-wrapper.eval.mjs` — the two scanners must agree.
+/// The markers are assembled from single characters so this file never spells
+/// either one contiguously (see the module header's hygiene note).
 fn delimiter_follows(text: &str, idx: usize) -> bool {
-    for ch in text[idx..].chars() {
-        if ch == ' ' || ch == '\t' || ch == '\n' || ch == '\r' {
+    let open = concat!("/", "*");
+    let close = concat!("*", "/");
+    let ws = |c: char| c == ' ' || c == '\t' || c == '\n' || c == '\r';
+    let mut rest = &text[idx..];
+    loop {
+        let trimmed = rest.trim_start_matches(ws);
+        if let Some(after) = trimmed.strip_prefix(open) {
+            match after.find(close) {
+                Some(end) => {
+                    rest = &after[end + close.len()..];
+                }
+                // An unterminated block comment is never an invocation.
+                None => return false,
+            }
             continue;
         }
-        return ch == '(' || ch == '{' || ch == '[';
+        return matches!(trimmed.chars().next(), Some('(') | Some('{') | Some('['));
     }
-    false
 }
 
 /// Every needle is `concat!`-assembled so this file never spells one contiguously.
@@ -373,18 +401,36 @@ fn count_needles(src: &str) -> Counts {
     c
 }
 
-/// `use log` / `extern crate log` as TOKENS — the character after `log` must be
-/// a colon, a space, a semicolon or end of input, so `use log_helper` is clean.
+/// `use log` / `use ::log` / `extern crate log` as TOKENS — the character after
+/// `log` must be a colon, a space, a semicolon or end of input, so
+/// `use log_helper` is clean and `use crate::log` (a legitimate module path)
+/// does not hit either. The leading-double-colon form is included because
+/// `use ::log::info as i;` is idiomatic, rustfmt-silent, and was not matched by
+/// the plain `use log` needle.
+///
+/// Plus the outright ban on `rustfmt::skip`: the spaced macro path
+/// `log :: warn ! (...)` defeats every needle above, and plain `cargo fmt
+/// --check` normalizes it back to the canonical spelling — but ONLY for code
+/// rustfmt is allowed to touch. Banning the attribute keeps fmt as the
+/// normalizer. Byte-identical to `flatBanHits` in the eval.
 fn flat_ban_hits(src: &str) -> Vec<&'static str> {
     let text = scrub_comment_lines(src);
     let mut hits = Vec::new();
-    for marker in [concat!("use", " log"), concat!("extern crate", " log")] {
+    for marker in [
+        concat!("use", " log"),
+        concat!("use", " ::log"),
+        concat!("extern crate", " log"),
+    ] {
         for (at, _) in text.match_indices(marker) {
             let next = text[at + marker.len()..].chars().next();
             if matches!(next, None | Some(':') | Some(' ') | Some(';')) {
                 hits.push(marker);
             }
         }
+    }
+    let skip = concat!("rustfmt", "::skip");
+    if text.contains(skip) {
+        hits.push(skip);
     }
     hits
 }
@@ -882,32 +928,105 @@ fn scanner_teeth_whitespace_split_invocation_is_counted() {
     );
 }
 
-/// AM2 / red-team 1.3: alias imports, and the negative control that keeps the
-/// ban from firing on an unrelated identifier.
+/// AM2 / red-team 1.3 + HIGH-4: alias imports in every spelling, and the
+/// negative controls that keep the ban from firing on an unrelated identifier
+/// or on the legitimate `crate::log` module path.
 #[test]
 fn scanner_teeth_flat_ban_catches_aliases_only() {
     for bad in [
         concat!("use", " log::warn as w;"),
         concat!("use", " log as l;"),
         concat!("use", " log;"),
+        concat!("use", " ::log::info as i;"),
+        concat!("pub use", " ::log;"),
         concat!("extern crate", " log;"),
     ] {
         assert_eq!(
             flat_ban_hits(bad).len(),
             1,
-            "TEETH: the flat ban missed a log-crate import"
+            "TEETH (HIGH-4): the flat ban missed a log-crate import: {bad}"
         );
     }
     for good in [
         concat!("use", " log_helper::thing;"),
         concat!("use", " logging::other;"),
+        concat!("use", " crate::log::helper;"),
+        concat!("use", " ::logging::other;"),
         concat!("/", "/ ", "use", " log::warn as w;"),
     ] {
         assert!(
             flat_ban_hits(good).is_empty(),
-            "TEETH: the flat ban false-positived on a harmless line"
+            "TEETH: the flat ban false-positived on a harmless line: {good}"
         );
     }
+}
+
+/// HIGH-3(a) — `#[rustfmt::skip]` is banned outright in non-test files.
+///
+/// The attack it closes: the spaced macro path `log :: warn ! (...)` compiles,
+/// emits, and matches NO needle in either scanner. Plain `cargo fmt --check`
+/// rewrites it back to the canonical spelling, so it can only survive review
+/// under a skip attribute. Banning the attribute restores fmt as the normalizer.
+/// The residual (the spaced path itself is uncounted) is pinned below so a
+/// future reader knows it is known, not missed.
+#[test]
+fn scanner_teeth_rustfmt_skip_is_flat_banned() {
+    let attr = concat!("#[rustfmt", "::skip]");
+    let spaced = concat!("fn f() { log :: warn ! (e); }");
+    let src = [attr, spaced].join("\n");
+    assert!(
+        !flat_ban_hits(&src).is_empty(),
+        "TEETH (HIGH-3): a rustfmt-skip attribute was not flagged by the flat ban"
+    );
+    assert_eq!(
+        count_needles(spaced),
+        Counts::default(),
+        "TEETH: the spaced macro path is now COUNTED — the documented residual has changed, \
+         update both scanners' header notes"
+    );
+    assert!(
+        flat_ban_hits("fn f() { let x = 1; }").is_empty(),
+        "TEETH: the rustfmt-skip ban false-positived on ordinary code"
+    );
+}
+
+/// HIGH-3(b) — a block comment spliced between the `!` and its delimiter.
+#[test]
+fn scanner_teeth_comment_spliced_invocation_is_counted() {
+    let open = concat!("/", "*");
+    let close = concat!("*", "/");
+    let spliced = [concat!("fn f() { log", "::warn!"), open, " c ", close, "(e); }"].concat();
+    assert_eq!(
+        count_needles(&spliced).warn,
+        1,
+        "TEETH (HIGH-3): a comment-spliced invocation dodged the needle"
+    );
+
+    let multi = [
+        concat!("fn f() { log", "::error!"),
+        " ",
+        open,
+        "a",
+        close,
+        "\n  ",
+        open,
+        "b",
+        close,
+        "(e); }",
+    ]
+    .concat();
+    assert_eq!(
+        count_needles(&multi).error,
+        1,
+        "TEETH: multiple spliced comments plus a line break dodged the needle"
+    );
+
+    let unterminated = [concat!("fn f() { log", "::info! "), open, " never closed (e); }"].concat();
+    assert_eq!(
+        count_needles(&unterminated),
+        Counts::default(),
+        "TEETH: an unterminated block comment was scored as an invocation"
+    );
 }
 
 /// The body extractor must stop at the function's own closing brace, and must

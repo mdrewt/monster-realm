@@ -23,14 +23,27 @@
 //      block-comment lexer, no string lexer, so a stripper cannot desync from
 //      the generator.
 //   3. Needles: `log::info!`, `log::warn!`, `log::error!`, `log::log!`, each
-//      followed by optional whitespace (newlines included) then one of
-//      `(` `{` `[` (AM2 — rustfmt line-wrapping and brace/bracket macro
-//      delimiters must not dodge the ratchet).
+//      followed by optional whitespace (newlines included) AND/OR any number of
+//      complete block comments, then one of `(` `{` `[` (AM2 — rustfmt
+//      line-wrapping, brace/bracket macro delimiters, and a comment spliced
+//      between the `!` and its delimiter must not dodge the ratchet).
 //   4. Flat ban, zero tolerance, ALL non-test files including the blessed
-//      `guards.rs`/`observability.rs`: `use log` (token-prefixed: `use log::`,
-//      `use log as`, `use log;` — but NOT `use log_helper`) and
-//      `extern crate log` (AM2 — an alias import would otherwise launder every
-//      needle above).
+//      `guards.rs`/`observability.rs`:
+//        - `use log` and `use ::log`, token-prefixed (so `use log::`,
+//          `use log as`, `use log;`, `use ::log::info as i;` all hit, while
+//          `use log_helper` and `use crate::log` do NOT) — AM2 plus the
+//          leading-double-colon form, which is idiomatic and rustfmt-silent;
+//        - `extern crate log`;
+//        - `rustfmt::skip`, anywhere. Zero occurrences exist today. The attribute
+//          is banned because plain `cargo fmt --check` normalizes a spaced macro
+//          path (`log :: warn ! (...)`) back to the canonical spelling the
+//          needles catch — but only for code rustfmt is allowed to touch. With
+//          the attribute, a spaced path survives both `fmt --check` and every
+//          needle here. Banning the attribute restores fmt as the normalizer.
+//      ACCEPTED RESIDUAL (disclosed, out of scope): a comment spliced inside the
+//      macro PATH itself (`log/*x*/::warn!`) still evades the needles. It also
+//      requires `rustfmt::skip` to survive `fmt --check`, so the ban above is the
+//      practical net; a path-level lexer is the m20e/G9 scanner's problem.
 //
 // BASELINE FORMAT (`server-module/src/.log-baseline`):
 //   `# ` comment header, a `# total <N>` line, then TSV rows
@@ -70,6 +83,12 @@
 //   node evals/observability-log-wrapper.eval.mjs --write
 // Every row delta must be explained in the PR description (anti-pattern 3,
 // "baseline laundering").
+//
+// ORDERING NOTE FOR THE IMPLEMENTER: run `--write` AFTER `observability.rs`
+// exists, not before. A baseline generated against a tree without that file has
+// no `observability.rs` row, and `observability_tests.rs`'s
+// `g7_blessed_files_are_pinned_not_exempt` requires one (1/0/0/0). Regenerating
+// once, at the end, is the intended flow.
 //
 // Proof-of-teeth runs FIRST and UNCONDITIONALLY, over injected fixtures (never
 // the real FS); any tooth miss short-circuits with a `TEETH:` detail.
@@ -134,14 +153,34 @@ function isSpace(c) {
   return c === ' ' || c === '\t' || c === '\n' || c === '\r';
 }
 
+const BLOCK_OPEN = '/*';
+const BLOCK_CLOSE = '*/';
+
 /**
- * True when, starting at `i`, optional whitespace is followed by `(`, `{` or `[`.
+ * True when, starting at `i`, any run of whitespace and/or complete block
+ * comments is followed by `(`, `{` or `[`.
+ *
  * This is the invocation anchor (OBS-2): a doc-comment prose mention has no
- * delimiter, a rustfmt-wrapped call has a newline before its `(`.
+ * delimiter; a rustfmt-wrapped call has a newline before its `(`; a
+ * comment-spliced call (a block comment between the `!` and the `(`, which
+ * compiles and which rustfmt leaves alone under a rustfmt-skip attribute)
+ * has a block comment before its delimiter.
+ *
+ * The Rust mirror in `observability_tests.rs::delimiter_follows` implements this
+ * character-for-character — the two must stay in byte agreement.
  */
 function delimiterFollows(text, i) {
   let p = i;
-  while (p < text.length && isSpace(text[p])) p++;
+  for (;;) {
+    while (p < text.length && isSpace(text[p])) p++;
+    if (text.startsWith(BLOCK_OPEN, p)) {
+      const end = text.indexOf(BLOCK_CLOSE, p + BLOCK_OPEN.length);
+      if (end === -1) return false;
+      p = end + BLOCK_CLOSE.length;
+      continue;
+    }
+    break;
+  }
   if (p >= text.length) return false;
   const c = text[p];
   return c === '(' || c === '{' || c === '[';
@@ -165,15 +204,27 @@ export function countNeedles(src) {
   return counts;
 }
 
+/** Token-boundary import markers (AM2 + the leading-`::` form). */
+const IMPORT_MARKERS = ['use log', 'use ::log', 'extern crate log'];
+
+/** Banned outright, anywhere, no boundary check — see the header's rule 4. */
+const RUSTFMT_SKIP = 'rustfmt::skip';
+
 /**
- * Flat-ban hits (AM2): `use log` / `extern crate log` as TOKENS. Returns the
- * list of offending constructs (empty = clean). `use log_helper::x` must NOT
- * hit — the character after `log` has to be `:`, ` `, `;` or end-of-file.
+ * Flat-ban hits. Returns the list of offending constructs (empty = clean).
+ *
+ * Token boundary: the character after `log` has to be `:`, ` `, `;` or
+ * end-of-file, so `use log_helper::x` does NOT hit. `use crate::log` does not
+ * hit either — neither `use log` nor `use ::log` is a substring of it — and
+ * that negative control is pinned by a tooth, because `crate::log` is a
+ * legitimate module path some future slice may well introduce.
+ *
+ * Mirrored character-for-character by `observability_tests.rs::flat_ban_hits`.
  */
 export function flatBanHits(src) {
   const text = scrubCommentLines(src);
   const hits = [];
-  for (const marker of ['use log', 'extern crate log']) {
+  for (const marker of IMPORT_MARKERS) {
     let at = text.indexOf(marker);
     while (at !== -1) {
       const after = text[at + marker.length];
@@ -183,6 +234,7 @@ export function flatBanHits(src) {
       at = text.indexOf(marker, at + marker.length);
     }
   }
+  if (text.indexOf(RUSTFMT_SKIP) !== -1) hits.push(RUSTFMT_SKIP);
   return hits;
 }
 
@@ -482,50 +534,261 @@ export function evalRecipeCallsPerfBudget(justfileText) {
 }
 
 /**
- * The `perf-budget:` recipe must: run the criterion bench (`cargo bench -p game-core`
- * + `--bench hot_paths`), fail loud (`set -euo pipefail`, AM8), and REMOVE the
- * criterion output dir BEFORE benching (AM1 belt — Swatinem/rust-cache restores
- * `target/` across CI runs, so a stale `<id>/new/estimates.json` would otherwise be
- * read back as this run's measurement).
+ * Recipe lines as TRIMMED strings, comment lines dropped — but a `#!` SHEBANG
+ * kept, because `just`'s shebang recipes need it and the ordering check below
+ * anchors on it. (`extractRecipeBody` drops every `#`-leading line, shebang
+ * included, which is right for `eval:` and wrong here.)
+ */
+export function extractRecipeLines(text, recipeName) {
+  const body = `${text}\n`;
+  const exactMarker = `\n${recipeName}:`;
+  const paramMarker = `\n${recipeName} `;
+  const exactIdx = body.indexOf(exactMarker);
+  const paramIdx = body.indexOf(paramMarker);
+
+  let headerIdx = -1;
+  if (exactIdx !== -1 && paramIdx !== -1) headerIdx = Math.min(exactIdx, paramIdx);
+  else if (exactIdx !== -1) headerIdx = exactIdx;
+  else if (paramIdx !== -1) headerIdx = paramIdx;
+
+  if (headerIdx === -1) {
+    if (body.startsWith(`${recipeName}:`) || body.startsWith(`${recipeName} `)) headerIdx = 0;
+    else return [];
+  }
+
+  const afterHeader = body.indexOf('\n', headerIdx === 0 ? 0 : headerIdx + 1);
+  if (afterHeader === -1) return [];
+
+  const lines = [];
+  let pos = afterHeader + 1;
+  while (pos < body.length) {
+    const lineEnd = body.indexOf('\n', pos);
+    const line = lineEnd === -1 ? body.slice(pos) : body.slice(pos, lineEnd);
+    if (line.length > 0 && (line[0] === ' ' || line[0] === '\t')) {
+      const trimmed = line.trimStart();
+      if (!trimmed.startsWith('#') || trimmed.startsWith('#!')) lines.push(trimmed.trimEnd());
+      pos = lineEnd === -1 ? body.length : lineEnd + 1;
+    } else if (line.length === 0) {
+      pos = lineEnd === -1 ? body.length : lineEnd + 1;
+    } else {
+      break;
+    }
+  }
+  return lines;
+}
+
+/**
+ * The `perf-budget:` recipe, checked as an ORDERED SEQUENCE of exact command
+ * forms rather than a bag of substrings.
+ *
+ * Required order: `#!` shebang -> `set -euo pipefail` (AM8) -> a clean line
+ * whose trimmed form STARTS WITH `rm -rf "$CRITERION_HOME"` (AM1) -> a bench
+ * line whose trimmed form STARTS WITH `cargo bench -p game-core` and carries
+ * `--bench hot_paths`.
+ *
+ * Three bypasses this shape closes, each proven against the previous
+ * substring-anywhere version:
+ *   - DECORATIVE ECHO: `echo "rm -rf $CRITERION_HOME (skipping)"` satisfied a
+ *     "line contains rm -rf and CRITERION_HOME" check while deleting nothing.
+ *     The clean line must now BEGIN with the command, with the variable quoted.
+ *   - CONTROL FLOW: `if false; then rm -rf "$CRITERION_HOME"; fi` is a line that
+ *     begins with `if `, so any such line is rejected outright — this scanner
+ *     has no shell evaluator and must not pretend to.
+ *   - EARLY EXIT: a bare `exit 0` anywhere in the body turns the whole recipe
+ *     into a no-op that still "contains" every needle.
  */
 export function perfBudgetRecipeIsSound(justfileText) {
-  const body = extractRecipeBody(justfileText, 'perf-budget');
-  if (body.length === 0) {
+  const lines = extractRecipeLines(justfileText, 'perf-budget');
+  if (lines.length === 0) {
     return { ok: false, reason: 'justfile has no `perf-budget:` recipe (or its body is empty)' };
   }
-  for (const needle of ['cargo bench -p game-core', '--bench hot_paths', 'set -euo pipefail']) {
-    if (body.indexOf(needle) === -1) {
-      return { ok: false, reason: `justfile perf-budget: body is missing \`${needle}\`` };
+
+  for (const line of lines) {
+    if (line.startsWith('if ')) {
+      return {
+        ok: false,
+        reason:
+          `justfile perf-budget: body has a conditional line (\`${line}\`) — this gate has no ` +
+          'shell evaluator, so a conditionally-executed clean or bench cannot be verified. ' +
+          'Keep the recipe a straight-line sequence.',
+      };
+    }
+    if (line === 'exit 0') {
+      return {
+        ok: false,
+        reason:
+          'justfile perf-budget: body contains a bare `exit 0` — the recipe would succeed ' +
+          'without benching anything while still "containing" every required needle',
+      };
     }
   }
-  const lines = body.split('\n');
-  let cleanAt = -1;
-  let benchAt = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const t = lines[i].trim();
-    if (cleanAt === -1 && t.indexOf('rm -rf') !== -1 && t.indexOf('CRITERION_HOME') !== -1) {
-      cleanAt = i;
+
+  const findAt = (pred) => {
+    for (let i = 0; i < lines.length; i++) {
+      if (pred(lines[i])) return i;
     }
-    if (benchAt === -1 && t.indexOf('cargo bench -p game-core') !== -1) benchAt = i;
+    return -1;
+  };
+
+  const shebangAt = findAt((l) => l.startsWith('#!'));
+  const pipefailAt = findAt((l) => l === 'set -euo pipefail');
+  const cleanAt = findAt((l) => l.startsWith('rm -rf "$CRITERION_HOME"'));
+  const benchAt = findAt((l) => l.startsWith('cargo bench -p game-core'));
+
+  if (shebangAt === -1) {
+    return {
+      ok: false,
+      reason:
+        'justfile perf-budget: no `#!` shebang line — justfile:1 sets `windows-shell`, so a ' +
+        'multi-line recipe needs a shebang or each line runs in its own shell and `set -euo ' +
+        'pipefail` protects nothing',
+    };
+  }
+  if (pipefailAt === -1) {
+    return {
+      ok: false,
+      reason:
+        'justfile perf-budget: no line whose trimmed form is exactly `set -euo pipefail` ' +
+        '(AM8) — without it a failing bench step is swallowed',
+    };
   }
   if (cleanAt === -1) {
     return {
       ok: false,
       reason:
-        'justfile perf-budget: body never removes the criterion output dir — expected a ' +
-        'non-comment line carrying both `rm -rf` and `CRITERION_HOME` (AM1: a cache-restored ' +
-        'stale estimates.json would be read back as a fresh measurement)',
+        'justfile perf-budget: no line STARTING WITH `rm -rf "$CRITERION_HOME"` — AM1 requires ' +
+        'the criterion output dir be removed before benching (Swatinem/rust-cache restores ' +
+        'target/ across CI runs, so a stale estimates.json would be read back as a fresh ' +
+        'measurement). A line that merely mentions the command (an echo) does not count.',
     };
   }
-  if (cleanAt > benchAt) {
+  if (benchAt === -1) {
     return {
       ok: false,
       reason:
-        'justfile perf-budget: the criterion-dir removal runs AFTER `cargo bench` — it must ' +
-        'run BEFORE, or the stale measurements are still what gets read back (AM1)',
+        'justfile perf-budget: no line STARTING WITH `cargo bench -p game-core` — the bench ' +
+        'must be the command, not a string mentioning it',
     };
   }
-  return { ok: true, reason: 'perf-budget: recipe cleans, fails loud, and runs the bench' };
+  if (lines[benchAt].indexOf('--bench hot_paths') === -1) {
+    return {
+      ok: false,
+      reason: `justfile perf-budget: the bench line does not name \`--bench hot_paths\`: ${lines[benchAt]}`,
+    };
+  }
+  if (!(shebangAt < pipefailAt && pipefailAt < cleanAt && cleanAt < benchAt)) {
+    return {
+      ok: false,
+      reason:
+        'justfile perf-budget: the required order is shebang -> `set -euo pipefail` -> ' +
+        `\`rm -rf "$CRITERION_HOME"\` -> \`cargo bench\`, but the lines appear at ` +
+        `${shebangAt}/${pipefailAt}/${cleanAt}/${benchAt}. Cleaning after the bench (or ` +
+        'arming pipefail after the clean) leaves the AM1 hole open.',
+    };
+  }
+  return {
+    ok: true,
+    reason: 'perf-budget: recipe is a straight-line shebang/pipefail/clean/bench sequence',
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Cargo manifest predicates (A8).
+//
+// BLOCK-SCOPED, not whole-file. A whole-file space-stripped `indexOf` accepts
+// `harness=false` sitting in a comment, in `[package]`, or in some OTHER
+// `[[bench]]` block — proven — so the key must be read from inside the same
+// table it is supposed to configure.
+// ---------------------------------------------------------------------------
+
+/** Drop a trailing `#` comment that is not inside a double-quoted string. */
+function stripTomlComment(line) {
+  let inQuote = false;
+  for (let i = 0; i < line.length; i++) {
+    const c = line[i];
+    if (c === '"') inQuote = !inQuote;
+    else if (c === '#' && !inQuote) return line.slice(0, i);
+  }
+  return line;
+}
+
+/**
+ * Every table body introduced by `header` (e.g. `[[bench]]`), as arrays of
+ * comment-stripped trimmed lines. A block ends at the next line that opens any
+ * table.
+ */
+export function tomlBlocks(tomlText, header) {
+  const blocks = [];
+  let current = null;
+  for (const raw of tomlText.split('\n')) {
+    const line = stripTomlComment(raw).trim();
+    if (line.startsWith('[')) {
+      if (current !== null) blocks.push(current);
+      current = line === header ? [] : null;
+      continue;
+    }
+    if (current !== null && line.length > 0) current.push(line);
+  }
+  if (current !== null) blocks.push(current);
+  return blocks;
+}
+
+/** `key = value` present in this block (whitespace-insensitive, exact pair). */
+export function blockHas(block, key, value) {
+  const want = `${key}=${value}`;
+  for (const line of block) {
+    if (line.split(' ').join('').split('\t').join('') === want) return true;
+  }
+  return false;
+}
+
+/**
+ * A8's manifest half: the criterion bench target AND the predicate test target
+ * must both be declared, each with its own keys in its own block.
+ *
+ * The `[[test]]` half is CRITICAL: without that entry cargo/nextest never build
+ * `benches/budget_check_tests.rs` at all and report "0 tests" — a silent, fully
+ * green non-registration of the entire OBS-6 proof-of-teeth suite.
+ */
+export function benchAndTestTargetsDeclared(tomlText) {
+  const benchBlocks = tomlBlocks(tomlText, '[[bench]]');
+  const bench = benchBlocks.find((b) => blockHas(b, 'name', '"hot_paths"'));
+  if (bench === undefined) {
+    return {
+      ok: false,
+      reason: 'game-core/Cargo.toml has no `[[bench]]` block with `name = "hot_paths"` (OBS-5)',
+    };
+  }
+  if (!blockHas(bench, 'harness', 'false')) {
+    return {
+      ok: false,
+      reason:
+        'game-core/Cargo.toml: the `[[bench]]` block naming hot_paths does not set ' +
+        '`harness = false` INSIDE that block — libtest would own `fn main` and the ' +
+        'budget comparison would never run',
+    };
+  }
+  const testBlocks = tomlBlocks(tomlText, '[[test]]');
+  const suite = testBlocks.find((b) => blockHas(b, 'name', '"perf_budget_predicate"'));
+  if (suite === undefined) {
+    return {
+      ok: false,
+      reason:
+        'game-core/Cargo.toml has no `[[test]]` block with `name = "perf_budget_predicate"` — ' +
+        'without it cargo/nextest never compile benches/budget_check_tests.rs and report ' +
+        '"0 tests" for the entire OBS-6 teeth suite, silently and green',
+    };
+  }
+  if (!blockHas(suite, 'path', '"benches/budget_check_tests.rs"')) {
+    return {
+      ok: false,
+      reason:
+        'game-core/Cargo.toml: the `perf_budget_predicate` `[[test]]` block does not set ' +
+        '`path = "benches/budget_check_tests.rs"` — it would resolve to tests/ and fail to ' +
+        'build, or silently register a different file',
+    };
+  }
+  return { ok: true, reason: 'hot_paths bench + perf_budget_predicate test targets declared' };
 }
 
 // ---------------------------------------------------------------------------
@@ -622,6 +885,70 @@ const TEETH = [
       const c = countNeedles(src);
       if (rowTotal(c) !== 0) {
         return `doc-comment mentions counted as ${JSON.stringify(c)}, expected all zero`;
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-comment-splice',
+    // HIGH-3(b). `log::warn!/* c */("x")` compiles, emits, and — with
+    // `#[rustfmt::skip]` above it — survives `cargo fmt --check`. Before the
+    // block-comment skip in delimiterFollows, the needle saw `/` after the `!`
+    // and scored zero. Kills a whitespace-only delimiter walk.
+    run() {
+      const spliced = countNeedles('fn f() { log::warn!/* c */("x"); }');
+      if (spliced.warn !== 1) {
+        return `comment-spliced log::warn! counted ${spliced.warn}, expected 1`;
+      }
+      const multi = countNeedles('fn f() { log::error! /*a*/ /*b*/\n  ("x"); }');
+      if (multi.error !== 1) {
+        return `multi-comment + newline spliced log::error! counted ${multi.error}, expected 1`;
+      }
+      // Negative control: an UNTERMINATED block comment must not be treated as
+      // an invocation (and must not hang the walk).
+      const unterminated = countNeedles('fn f() { log::info! /* never closed ("x"); }');
+      if (unterminated.info !== 0) {
+        return `an unterminated block comment scored ${unterminated.info}, expected 0`;
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-rustfmt-skip',
+    // HIGH-3(a). The spaced macro path `log :: warn ! (...)` defeats every
+    // needle here AND every needle in the Rust mirror; plain rustfmt normalizes
+    // it back, so it can only survive under `#[rustfmt::skip]`. Banning the
+    // attribute restores `cargo fmt --check` as the normalizer.
+    run() {
+      const hits = flatBanHits('#[rustfmt::skip]\nfn f() { log :: warn ! ("x"); }');
+      if (!hits.includes('rustfmt::skip')) {
+        return 'a `#[rustfmt::skip]` attribute was not flagged by the flat ban';
+      }
+      // Documented residual, pinned so a future reader knows it is known: the
+      // spaced path itself is NOT counted. The ban above is what closes it.
+      const spaced = countNeedles('fn f() { log :: warn ! ("x"); }');
+      if (spaced.warn !== 0) {
+        return 'the spaced macro path is now counted — update the header residual note';
+      }
+      if (flatBanHits('fn f() { let x = 1; }').length !== 0) {
+        return 'the rustfmt::skip ban false-positived on ordinary code';
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-uselog-leading-colons',
+    // HIGH-4. `use ::log::info as i;` is idiomatic, rustfmt-silent, and was not
+    // matched by the `use log` needle. Negative control: `use crate::log` (a
+    // perfectly legitimate future module path) must stay clean.
+    run() {
+      const leading = flatBanHits('use ::log::info as i;\nfn f() { i!("x"); }');
+      if (!leading.includes('use ::log')) {
+        return '`use ::log::info as i;` was not flagged by the flat ban';
+      }
+      for (const clean of ['use crate::log::helper;', 'use crate::logging;', 'use ::logging::x;']) {
+        const hits = flatBanHits(clean);
+        if (hits.length !== 0) return `false positive on \`${clean}\`: ${hits.join(', ')}`;
       }
       return null;
     },
@@ -814,9 +1141,114 @@ const TEETH = [
       if (perfBudgetRecipeIsSound(noPipefail).ok) {
         return 'perf-budget: recipe without `set -euo pipefail` was accepted (AM8)';
       }
+      const noShebang = good.replace('    #!/usr/bin/env bash\n', '');
+      if (perfBudgetRecipeIsSound(noShebang).ok) {
+        return 'perf-budget: recipe without a `#!` shebang was accepted';
+      }
       const noRecipe = good.slice(0, good.indexOf('perf-budget:\n'));
       if (perfBudgetRecipeIsSound(noRecipe).ok) {
         return 'a justfile with NO perf-budget: recipe at all was accepted';
+      }
+
+      // --- CRITICAL-2: decorative echo. The line mentions the command and the
+      // variable, satisfying a "contains rm -rf and CRITERION_HOME" check,
+      // while deleting precisely nothing.
+      const echoDecoy = good.replace(
+        '    rm -rf "$CRITERION_HOME"\n',
+        '    echo "rm -rf $CRITERION_HOME (skipped: cache is trusted)"\n',
+      );
+      if (perfBudgetRecipeIsSound(echoDecoy).ok) {
+        return (
+          'perf-budget: a decorative `echo "rm -rf $CRITERION_HOME ..."` line was accepted ' +
+          'as the AM1 clean step'
+        );
+      }
+      const unquoted = good.replace(
+        '    rm -rf "$CRITERION_HOME"\n',
+        '    echo cleaning; rm -rf "$CRITERION_HOME"\n',
+      );
+      if (perfBudgetRecipeIsSound(unquoted).ok) {
+        return 'perf-budget: a clean command hidden behind a leading `echo ...;` was accepted';
+      }
+
+      // --- MEDIUM-5: shell control flow this scanner cannot evaluate.
+      const ifWrapped = good.replace(
+        '    rm -rf "$CRITERION_HOME"\n',
+        '    if false; then rm -rf "$CRITERION_HOME"; fi\n',
+      );
+      if (perfBudgetRecipeIsSound(ifWrapped).ok) {
+        return 'perf-budget: an `if false; then rm -rf ...; fi` clean line was accepted';
+      }
+      const earlyExit = good.replace(
+        '    set -euo pipefail\n',
+        '    set -euo pipefail\n    exit 0\n',
+      );
+      if (perfBudgetRecipeIsSound(earlyExit).ok) {
+        return 'perf-budget: a body containing a bare `exit 0` was accepted';
+      }
+      const latePipefail = good
+        .replace('    set -euo pipefail\n', '')
+        .replace(
+          '    rm -rf "$CRITERION_HOME"\n',
+          '    rm -rf "$CRITERION_HOME"\n    set -euo pipefail\n',
+        );
+      if (perfBudgetRecipeIsSound(latePipefail).ok) {
+        return 'perf-budget: `set -euo pipefail` armed AFTER the clean line was accepted';
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-cargo-targets',
+    // CRITICAL-1. Two silent-green shapes, both proven:
+    //   (a) `harness = false` anywhere in the file (a comment, [package], or a
+    //       different [[bench]]) satisfying a whole-file space-stripped scan;
+    //   (b) no `[[test]]` entry at all — cargo/nextest then never build
+    //       benches/budget_check_tests.rs and report "0 tests", green.
+    run() {
+      const good =
+        '[package]\nname = "game-core"\nautobenches = false\n\n' +
+        '[[bench]]\nname = "hot_paths"\nharness = false\n\n' +
+        '[[test]]\nname = "perf_budget_predicate"\npath = "benches/budget_check_tests.rs"\n';
+      const r = benchAndTestTargetsDeclared(good);
+      if (!r.ok) return `a well-formed manifest was rejected: ${r.reason}`;
+
+      const harnessInComment = good.replace(
+        '[[bench]]\nname = "hot_paths"\nharness = false\n',
+        '[[bench]]\nname = "hot_paths"\n# harness = false (TODO)\n',
+      );
+      if (benchAndTestTargetsDeclared(harnessInComment).ok) {
+        return '`harness = false` sitting in a COMMENT was accepted';
+      }
+      const harnessElsewhere = good.replace(
+        '[[bench]]\nname = "hot_paths"\nharness = false\n',
+        '[[bench]]\nname = "other"\nharness = false\n\n[[bench]]\nname = "hot_paths"\n',
+      );
+      if (benchAndTestTargetsDeclared(harnessElsewhere).ok) {
+        return '`harness = false` declared in a DIFFERENT [[bench]] block was accepted';
+      }
+      const noTest = good.slice(0, good.indexOf('[[test]]'));
+      if (benchAndTestTargetsDeclared(noTest).ok) {
+        return (
+          'a manifest with NO [[test]] entry was accepted — the entire OBS-6 teeth suite ' +
+          'would silently report "0 tests"'
+        );
+      }
+      const wrongPath = good.replace(
+        'path = "benches/budget_check_tests.rs"',
+        'path = "tests/budget_check_tests.rs"',
+      );
+      if (benchAndTestTargetsDeclared(wrongPath).ok) {
+        return 'a [[test]] entry pointing at the wrong path was accepted';
+      }
+      const wrongName = good.replace('name = "perf_budget_predicate"', 'name = "perf_budget"');
+      if (benchAndTestTargetsDeclared(wrongName).ok) {
+        return 'a [[test]] entry with a different name was accepted';
+      }
+      // Whitespace tolerance must not be strictness: `harness=false` is legal TOML.
+      const tight = good.split(' = ').join('=');
+      if (!benchAndTestTargetsDeclared(tight).ok) {
+        return 'the space-free spelling `harness=false` was wrongly rejected';
       }
       return null;
     },
@@ -942,7 +1374,9 @@ export async function observabilityLogWrapperEval() {
       detail:
         `A2b: flat ban violated in ${banned.join(', ')} — ` +
         `${flatBans[banned[0]].join(', ')}. An aliased/glob import of the \`log\` crate ` +
-        'launders every needle the ratchet counts (AM2); route through observability::mr_log.',
+        '(including the leading-`::` form) launders every needle the ratchet counts, and ' +
+        '`#[rustfmt::skip]` lets a spaced macro path survive `cargo fmt --check` and every ' +
+        'needle at once (AM2 + HIGH-3/HIGH-4). Route emissions through observability::mr_log.',
     };
   }
 
@@ -1076,18 +1510,10 @@ export async function observabilityLogWrapperEval() {
   const sound = perfBudgetRecipeIsSound(justfileText);
   if (!sound.ok) return { name: NAME, pass: false, detail: `A7: ${sound.reason}` };
 
-  // --- A8: bench declaration + all 7 ids (OBS-5) ---------------------------
+  // --- A8: bench + test target declaration, 7 ids, harness consumption (OBS-5/6)
   const gameCoreToml = readFileSync(GAME_CORE_TOML, 'utf8');
-  const tomlSquashed = gameCoreToml.split(' ').join('');
-  for (const needle of ['[[bench]]', 'name="hot_paths"', 'harness=false']) {
-    if (tomlSquashed.indexOf(needle) === -1) {
-      return {
-        name: NAME,
-        pass: false,
-        detail: `A8: game-core/Cargo.toml is missing \`${needle}\` (OBS-5 criterion bench target)`,
-      };
-    }
-  }
+  const targets = benchAndTestTargetsDeclared(gameCoreToml);
+  if (!targets.ok) return { name: NAME, pass: false, detail: `A8: ${targets.reason}` };
   for (const benchFile of ['game-core/benches/budgets.rs', 'game-core/benches/hot_paths.rs']) {
     const full = path.resolve(benchFile);
     if (!existsSync(full)) {
@@ -1104,6 +1530,26 @@ export async function observabilityLogWrapperEval() {
             'benchmark AND a committed budget for each of the 7 named hot paths',
         };
       }
+    }
+  }
+  // Residual-8 mitigation: `budgets.rs` can be perfect while `hot_paths.rs`
+  // never CALLS it — a bench binary that measures and then exits 0 is the
+  // wire-but-never-bites shape. This is a WIRING-level check only (the needles
+  // prove the three functions and the failure exit are referenced); the
+  // behavioral half is the orchestrator's ceiling-halving bite-proof, which
+  // must turn `just ci` red at the perf-budget step.
+  const hotPaths = readFileSync(path.resolve('game-core/benches/hot_paths.rs'), 'utf8');
+  for (const needle of ['read_measurements', 'violations', 'clean_ids', 'process::exit(1)']) {
+    if (hotPaths.indexOf(needle) === -1) {
+      return {
+        name: NAME,
+        pass: false,
+        detail:
+          `A8: game-core/benches/hot_paths.rs never references \`${needle}\` — the harness must ` +
+          'clean the criterion dir (AM1), read the measurements back, compare them against ' +
+          'BUDGETS, and exit non-zero on a violation. Without that the bench runs and the gate ' +
+          'can never fail.',
+      };
     }
   }
 
@@ -1165,8 +1611,9 @@ export async function observabilityLogWrapperEval() {
     detail:
       `A1-A10 pass: ${files} non-test .rs scanned, grandfathered total ` +
       `${grandfatheredTotal(parsed.rows)} (expected 53 at m20a landing), blessed rows pinned, ` +
-      'heartbeat table+reducer shape verified, perf-budget wired and clean-first, 7 bench ids ' +
-      'declared, no unstable feature, no Procedures, $trace_pair_set empty',
+      'heartbeat table+reducer shape verified, perf-budget a straight-line clean-then-bench ' +
+      'sequence, hot_paths + perf_budget_predicate targets both declared, 7 bench ids declared ' +
+      'and consumed, no unstable feature, no Procedures, $trace_pair_set empty',
   };
 }
 
