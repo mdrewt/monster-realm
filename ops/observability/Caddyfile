@@ -1,0 +1,77 @@
+# Caddy — the ONLY process in this stack with an externally-facing policy (ADR-0180 D3/D5).
+#
+# TWO ROUTES, TWO DIFFERENT POLICIES — not one blanket rule. An earlier draft of this design gave
+# both routes a single "TLS + auth" rule, which is incoherent: an anonymous game client
+# structurally cannot present Grafana's login.
+#
+#   /grafana route : TLS + authentication          (operator-only)      OBS-20
+#   /otlp    route : TLS + PUBLIC + CORS + limits  (anonymous clients)  OBS-21
+#
+# THE CORS AND THE RATE LIMIT DEFEND DIFFERENT THREATS — they are not one layered defence.
+# CORS origin scoping is BROWSER-enforced: it stops another website using a victim's browser to
+# cross-origin-post telemetry here. A direct scripted client (curl, a bot, a load tool) simply
+# omits or forges the Origin header and is completely unaffected, because no browser is present
+# to honour the restriction. Against THAT threat the rate limit and the body-size cap are the
+# actual control, and CORS is not a redundant third leg. Both numbers below are therefore
+# gated for sane CEILINGS, not merely for presence — `events 999999999` would be structurally
+# compliant and functionally unlimited (checkCaddyDualPosture).
+#
+# BIND ADDRESS: MR_CADDY_BIND_ADDR is THE single variable that changes if this box is ever
+# exposed (M-playtest-a2). OQ1 fixes the current deployment as local-only, so it is 127.0.0.1
+# and every other service in the stack stays loopback-bound permanently.
+{
+	# caddy-ratelimit's directive is not in the standard order and must be placed explicitly.
+	order rate_limit before basic_auth
+}
+
+# ---------------------------------------------------------------------------
+# Operator-only: Grafana. TLS + authentication (OBS-20).
+# ---------------------------------------------------------------------------
+https://grafana.localhost:8443 {
+	bind {$MR_CADDY_BIND_ADDR}
+	tls internal
+
+	# The hash is injected from the environment — never committed. Generate one with:
+	#   docker compose run --rm --entrypoint caddy caddy hash-password
+	basic_auth {
+		{$MR_GRAFANA_BASIC_AUTH_USER} {$MR_GRAFANA_BASIC_AUTH_HASH}
+	}
+
+	reverse_proxy 127.0.0.1:3001
+}
+
+# ---------------------------------------------------------------------------
+# Public browser-OTLP ingest -> Alloy (S4). TLS, NO authentication (OBS-21).
+# ---------------------------------------------------------------------------
+https://otlp.localhost:8443 {
+	bind {$MR_CADDY_BIND_ADDR}
+	tls internal
+
+	# Browser-enforced origin scoping. Stops cross-origin abuse of a victim's browser; does
+	# nothing whatsoever against a scripted client (see the header).
+	header Access-Control-Allow-Origin {$MR_OTLP_ALLOWED_ORIGIN}
+	header Access-Control-Allow-Methods "POST, OPTIONS"
+	header Access-Control-Allow-Headers "content-type"
+	header Access-Control-Max-Age "3600"
+
+	@preflight method OPTIONS
+	respond @preflight 204
+
+	# The actual control against a scripted flood: 120 requests per minute per source address.
+	rate_limit {
+		zone otlp_ingest {
+			key {remote_host}
+			events 120
+			window 1m
+		}
+	}
+
+	# Payload-size cap. Bounds request VOLUME; note it does NOT bound the label SPACE a single
+	# well-formed request can introduce — that is the S4 attribute allowlist in
+	# alloy/config.alloy (OBS-34), which is a separate control for a separate failure mode.
+	request_body {
+		max_size 512KB
+	}
+
+	reverse_proxy 127.0.0.1:4318
+}

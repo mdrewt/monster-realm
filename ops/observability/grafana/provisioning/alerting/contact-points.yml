@@ -1,0 +1,23 @@
+# Grafana OSS contact points (D4). No Alertmanager container exists or should exist (OBS-19).
+#
+# The webhook target is env-driven and REQUIRED — Grafana resolves `$__env{...}` at provisioning
+# time, and docker-compose.yml declares MR_ALERT_WEBHOOK_URL with `:?` so the stack refuses to
+# start rather than booting with alerting that silently notifies nobody. A self-hosted ntfy
+# topic URL is the intended value (ADR-0180 names ntfy as an acceptable optional contact point);
+# any webhook receiver works.
+#
+# NEVER commit a literal URL containing a token here. `.env` is gitignored; `.env.example`
+# carries names only.
+
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: mr-observability-oncall
+    receivers:
+      - uid: mr-observability-webhook
+        type: webhook
+        disableResolveMessage: false
+        settings:
+          url: $__env{MR_ALERT_WEBHOOK_URL}
+          httpMethod: POST

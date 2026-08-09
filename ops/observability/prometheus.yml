@@ -1,0 +1,45 @@
+# Prometheus — storage + scraping + RECORDING RULES ONLY (M20 D4 / OBS-18).
+#
+# There is deliberately NO `alerting:` block and no `alert:` stanza in any loaded rule file.
+# Prometheus's native alerting has exactly one sink, Alertmanager, and this stack has no
+# Alertmanager by design (OBS-19) — so an `alert:` rule here would evaluate into nothing. 100% of
+# alert evaluation AND notification routing lives in Grafana OSS unified alerting, which queries
+# this Prometheus (and Loki) as datasources. Both halves are gated: checkNoAlertingBlock and
+# checkRulesAreRecordOnly in checks/stack-config-checks.mjs.
+#
+# All targets are loopback: every process in this stack runs on the host network bound to
+# 127.0.0.1, and SpacetimeDB itself stays loopback-bound per OQ1 (see docker-compose.yml).
+
+global:
+  scrape_interval: 15s
+  evaluation_interval: 15s
+  external_labels:
+    stack: monster-realm
+
+rule_files:
+  - /etc/prometheus/rules/recording.rules.yml
+
+scrape_configs:
+  # S1 — SpacetimeDB's own host-computed metrics. Free, zero module instrumentation, zero
+  # wasm-sandbox crossing (D1). NOTE: /v1/metrics is unauthenticated by a confirmed, permanent
+  # gap in the shipped 2.6.0 binary; it is safe here ONLY because the port is loopback-bound
+  # (OQ1/OBS-17). If SpacetimeDB is ever started with a wider --listen-addr, this endpoint
+  # discloses table names, row counts and connected-player counts to that network.
+  - job_name: spacetimedb
+    metrics_path: /v1/metrics
+    static_configs:
+      - targets: ['127.0.0.1:3000']
+
+  # S1b — Alloy's own self-metrics. Carries the S2 log-derived counters (OBS-13) AND doubles as
+  # the liveness probe for the sole telemetry agent (OBS-39) with no extra container.
+  - job_name: alloy
+    static_configs:
+      - targets: ['127.0.0.1:12345']
+
+  - job_name: node_exporter
+    static_configs:
+      - targets: ['127.0.0.1:9100']
+
+  # NOTE: no `mr-trace-relay` scrape job here — that service ships in slice m20b-2 (OBS-46).
+  # Adding its target before the process exists would pin up=0 forever and train the operator to
+  # ignore a dead-man's switch.

@@ -830,3 +830,105 @@ answered.
   (§4 "Tooling") does not change; D17 explicitly stays on the same 7-container Grafana/Prometheus/Loki/Tempo
   stack that document already names. Only a project-specific spec/ADR amendment was warranted, not a
   cross-cutting plan-document rewrite.
+
+## Amendment — 2026-08-08 (m20b build pass: build-time spikes resolved, networking model corrected, S4 cardinality closed)
+
+Recorded by the `m20b` build slice, which stands up `ops/observability/**`. This is an **append-only** amendment: it
+resolves decisions this ADR itself deferred to build time, and records two design corrections found by the slice's own
+plan-review and red-team passes. It does not restate or reverse D1–D18.
+
+### Build-time spikes this ADR left open — now resolved
+
+- **OQ1 (network topology) — ANSWERED from existing spec text, not guessed.** `M-playtest-a-deployment.spec.md`
+  fixes deployment as **local-only, no hosted deployment** (rescoped 2026-07-17; Drew is the sole tester), and states
+  same-box explicitly ("Local-only means the playtest DB shares the machine with dev churn"). The M20 spec's own
+  instruction is to treat OQ1 as answered if that file fixes the topology. Consequence: SpacetimeDB stays
+  loopback-bound and **OBS-17's "reverse proxy in front of SpacetimeDB itself" scope addition is NOT triggered**; the
+  D3/D5 posture as written is sufficient. This is a build-time *snapshot*, not an enforced invariant — see the
+  disclosed risk below.
+- **D17(2) — Grafana Correlations vs. Loki derived fields: CORRELATIONS.** This ADR flagged the mechanism UNVERIFIED
+  and demanded a build-time spike. Verdict: **derived fields cannot do this join** — they are one-way and Loki-source
+  only, so they structurally cannot express the Tempo→Loki leg the `connection_id` pivot requires. Correlations are
+  any-source→any-target and — the previously unverified half — **are file-provisionable in Grafana OSS**, as a nested
+  `correlations:` list under the *source* datasource in `datasources.yaml`; no UI or API step is needed. Two entries
+  are required, one per direction. **No falsifier tripped** (this ADR named "neither mechanism is a first-party fit"
+  as a re-open trigger for the backend swap; a first-party fit exists).
+- **Version pins (this ADR's standing "confirm versions against the pinned environment at build time").**
+  All images verified live via `docker manifest inspect` and pinned **by `tag@sha256:` digest**, which also
+  makes OBS-33's "stock, unmodified vendor images" claim mechanically checkable rather than asserted.
+  Licensing re-confirmed: Loki/Tempo/Grafana OSS AGPLv3; Prometheus/Alloy/node_exporter/Caddy Apache-2.0 —
+  unchanged, so the AGPL network-copyleft analysis stands. **Corrected during implementation (this is why
+  the standing instruction exists):** the digest-verification pass confirms only that a tag EXISTS, not that
+  its config schema is compatible. Running each config through its own upstream validator caught that
+  **Tempo 3.0.2 rejects this stack's config outright** — 3.0.x restructured `app.Config` and no longer
+  accepts the top-level `compactor`/`ingester` keys, so D11's named knob
+  (`compactor.compaction.block_retention`) has no home there. Tempo alone is therefore pinned to the **2.x
+  LTS track (2.10.7)**, which validates cleanly; every other image stays on current stable.
+
+### Correction 1 — the networking model: host networking with loopback-bound listeners
+
+A bridge-networked Prometheus **cannot** scrape a loopback-bound SpacetimeDB. A container's `127.0.0.1` is the
+container itself, and a socket bound to `127.0.0.1` refuses a connection whose destination is the bridge gateway, so
+the `host-gateway`/`extra_hosts` workaround does not rescue it. The two bridge-preserving repairs both require
+SpacetimeDB to bind a non-loopback address, which reopens `/v1/metrics`'s confirmed-permanent unauthenticated gap —
+to the LAN in one case, to every container on the box in the other. Both are rejected.
+
+**Adopted: `network_mode: host`, with every service's own listen-address flag bound to `127.0.0.1`.** SpacetimeDB
+stays strictly loopback and remains scrapable. The tradeoff is disclosed, not hidden: under host networking compose's
+`ports:` block is inert, so **each service's own listen flag becomes the security boundary** — a larger and
+easier-to-miss surface than a `ports:` prefix. It is therefore mechanically gated (`LISTEN_ADDRS_LOOPBACK`), and
+omission of a listen flag **fails** rather than passes, because the upstream defaults are all `0.0.0.0`.
+
+The payoff is that OQ1 containment becomes exact: **the single variable that changes if M-playtest-a2 later exposes
+this box is Caddy's bind address.** Every other service stays loopback permanently.
+
+### Correction 2 — S4's metric-label cardinality is now bounded (a real gap in this ADR's own controls)
+
+D12/OBS-36 bound the label sets of Alloy's `stage.metrics` — the **S2 log-derived** path only. The **S4** path
+(browser OTLP → `otelcol.exporter.prometheus` → `prometheus.remote_write`) is public and unauthenticated **by design**
+(D5/OBS-21: an anonymous game client structurally cannot authenticate), and converts caller-chosen OTLP attributes
+1:1 into Prometheus labels. Nothing in D12, OBS-36, or the original control set bounded that path.
+
+Concretely: a scripted client posting one distinct attribute value per request creates one new active series per
+request. Prometheus applies no default per-remote-write cardinality cap, so this grows unbounded until the container
+OOMs — destroying the metrics store that every SLO panel, every dashboard, **and OBS-39's own dead-man's switch**
+depend on to evaluate. The rate-limit and payload-size caps D5 correctly identifies as the control against a scripted
+client bound request *volume*, not the *label space* a single well-formed request can introduce.
+
+**Added: an explicit label allowlist on the S4 path before anything reaches storage**, gated by its own predicate
+distinct from S2's. **Extended after an adversarial pass on the implementation:** a key-only allowlist is only
+half the control, and calling it "closed" would have been wrong. `zone_id` is a legitimate,
+caller-supplied dimension, so a scripted client could still send a fresh value per request and mint one new
+series each time — the same bomb, moved from an arbitrary key to an allowed one. The shipped filter therefore
+bounds the label VALUE space too (OTTL `delete_key ... where not IsMatch(...)` per allowed attribute), and a
+second predicate asserts it. This discharges **OBS-34**, which already reads on its face as covering this path ("SHALL NOT
+include player-authored text in any log line, **metric label**, or trace attribute") even though OBS-36 names only
+`stage.metrics`. Follow-up flagged: the M20 spec has no S4-specific cardinality criterion; OBS-36 deserves an
+explicit S4 counterpart.
+
+### Correction 3 — liveness `up` is not pipeline health
+
+OBS-39 and OBS-46 both alert on `up{job=…} == 0`. Alloy is a single process hosting independent internal components:
+if the file-tail stalls (bind-mount permission drift, a log-rotation edge case) or the OTLP receiver rejects every
+request, Alloy's HTTP server — the thing S1b actually scrapes — stays healthy and `up` stays `1`, while S2 and S4
+ingestion are entirely dark. The meta-monitoring rationale that justified making S1b double as a liveness probe fails
+in exactly the scenario it exists for. OBS-39's rule ships as specified **plus** a companion rule on a sustained-zero
+Alloy-internal pipeline metric.
+
+### Slice-scope deviation, declared
+
+This ADR and the M20 spec both place `mr-trace-relay` inside m20b's `ops/observability/**` wildcard with "no new slice
+row needed", mitigated by m20e's post-merge eval. The build pass **split m20b**, shipping the backend stack config
+here and parking the relay as `m20b-2`, under the run's standing right-sizing instruction. The originally-drafted
+justification — that OBS-50's G9 and OBS-51's G11 force the split — was **wrong and is retracted**: both gates run at
+m20e regardless of the slicing, so they do not discriminate. The corrected reason is that the relay's only input does
+not exist and is assigned to no one:
+
+**Spec defect surfaced, requiring an owner: OBS-41 has no implementing slice.** The relay consumes `mr_log`
+breadcrumbs carrying `phase:"enter"`/`phase:"exit"`, which OBS-41 requires *inside domain reducers*. m20a's `touches:`
+covers `observability.rs` gaining the `cause`/`sched`/`phase` **fields** (the envelope) but includes **no**
+domain-reducer file, and **no §4 task checkbox anywhere assigns the paired call sites**. So no merged, in-flight, or
+planned slice emits a single `phase` breadcrumb. Shipping the relay now would ship a service with
+`$trace_pair_set = ∅` (G9-consistent, since ∅ == ∅ — the gate would not even flag it), zero input, and no possible
+integration coverage. That is dead code by the YAGNI standard. The gap is independent of how m20b is sliced and needs
+an owner before M20 can claim OBS-41 is covered.

@@ -1,0 +1,89 @@
+# Grafana datasource provisioning (M20 / ADR-0180 D17).
+#
+# Also carries the CORRELATION PIVOT this milestone's design left as an explicit build-time
+# spike. Verdict, recorded in ADR-0180's m20b amendment: Grafana CORRELATIONS, not Loki derived
+# fields. Derived fields are one-way and Loki-source-only, so they structurally cannot express
+# the Tempo -> Loki leg the connection_id pivot needs. Correlations are any-source -> any-target
+# and — the half that was genuinely unverified — ARE file-provisionable in Grafana OSS, as a
+# nested `correlations:` list under the SOURCE datasource. Two entries are needed, one per
+# direction; neither can be replaced by the other.
+#
+# `connection_id` is a log FIELD and a span ATTRIBUTE — never a Loki stream label and never a
+# Prometheus label (D12/OBS-35). It is filtered at query time via `| json | connection_id = ...`
+# rather than selected in `{}`, which is what keeps this a pivot rather than a cardinality bomb.
+#
+# HONEST LIMITATION for this slice: these entries are correct config but are NOT verifiable
+# end-to-end yet. Tempo holds no server spans until `mr-trace-relay` ships (m20b-2) and no client
+# spans until m20c ships. They are inert declarative config today, not a broken gate.
+#
+# `$$` escapes a literal `$` in Grafana provisioning files.
+
+apiVersion: 1
+
+datasources:
+  - name: Prometheus
+    type: prometheus
+    uid: mr-prometheus
+    access: proxy
+    url: http://127.0.0.1:9090
+    isDefault: true
+    editable: false
+    jsonData:
+      timeInterval: 15s
+      httpMethod: POST
+
+  - name: Loki
+    type: loki
+    uid: mr-loki
+    access: proxy
+    url: http://127.0.0.1:3100
+    editable: false
+    jsonData:
+      maxLines: 2000
+    correlations:
+      # Direction 2 of 2 — a log line pivots to the trace for the same session.
+      - targetUID: mr-tempo
+        label: Logs to trace (connection_id)
+        description: Jump from a module_logs line to the reconstructed trace for that session.
+        type: query
+        config:
+          field: connection_id
+          target:
+            queryType: traceql
+            query: '{ span.connection_id = "$${__value.raw}" }'
+
+  - name: Tempo
+    type: tempo
+    uid: mr-tempo
+    access: proxy
+    url: http://127.0.0.1:3200
+    editable: false
+    jsonData:
+      # D17(1) — trace-to-logs with a span time window. The shift widens the Loki query window
+      # around each span so a log line written just before/after the span boundary is still
+      # found; without it the join silently returns nothing for short spans.
+      tracesToLogsV2:
+        datasourceUid: mr-loki
+        spanStartTimeShift: '-5m'
+        spanEndTimeShift: '5m'
+        filterByTraceID: false
+        filterBySpanID: false
+        customQuery: true
+        query: '{job="spacetimedb-module"} | json | json message | connection_id = "$${__span.tags.connection_id}"'
+        tags:
+          - key: reducer
+      # D17(3) — shared time-range linkage across Prometheus/Loki/Tempo surfaces.
+      tracesToMetrics:
+        datasourceUid: mr-prometheus
+        spanStartTimeShift: '-5m'
+        spanEndTimeShift: '5m'
+    correlations:
+      # Direction 1 of 2 — a span pivots to every log line for the same session.
+      - targetUID: mr-loki
+        label: Trace to logs (connection_id)
+        description: Jump from a span to the module_logs lines for that session.
+        type: query
+        config:
+          field: connection_id
+          target:
+            expr: '{job="spacetimedb-module"} | json | json message | connection_id = "$${__value.raw}"'
