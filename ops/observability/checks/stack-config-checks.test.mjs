@@ -64,6 +64,11 @@ const EXPECTED_SERVICE_NAMES = [
   'caddy',
 ];
 
+// Tempo is pinned to the 2.x LTS track, not current stable: `tempo:3.0.x`
+// restructured `app.Config` and drops the top-level `compactor`/`ingester`
+// keys that D11's `compactor.compaction.block_retention` (7-day trace
+// retention) depends on. Verified with `-config.verify` against
+// tempo/tempo-config.yml: 3.0.2 fails to parse it, 2.10.7 parses cleanly.
 const PINNED_IMAGES = {
   prometheus:
     'prom/prometheus:v3.13.2@sha256:1147c92841726a6fef55fe6124491d6f85480f8de204f7d420304ca5bbd0a8f7',
@@ -71,7 +76,7 @@ const PINNED_IMAGES = {
     'grafana/alloy:v1.18.1@sha256:754409730f1a4ed9781f8a2ea3b6a8c55750ee125a267ecf8fb449f9a25c109a',
   loki: 'grafana/loki:3.7.6@sha256:83c76da7858a8f4f88117ac521864ac33896fdae7a352a1df4068556e7513f64',
   tempo:
-    'grafana/tempo:3.0.2@sha256:aa8df8d069f77b82e978464daf55169bb8d135852ad58700aa96880653c3d8f7',
+    'grafana/tempo:2.10.7@sha256:6616b00287a4d7001951b5de117828ad5c6f93744935c1b7a5e044736373352c',
   grafana:
     'grafana/grafana:13.1.3@sha256:e27e68cfd5795c1bea54950766078a02e84dfa3bafe0a4d0e5382f713dfd8e4e',
   node_exporter:

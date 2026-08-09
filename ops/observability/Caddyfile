@@ -19,7 +19,6 @@
 # BIND ADDRESS: MR_CADDY_BIND_ADDR is THE single variable that changes if this box is ever
 # exposed (M-playtest-a2). OQ1 fixes the current deployment as local-only, so it is 127.0.0.1
 # and every other service in the stack stays loopback-bound permanently.
-
 {
 	# caddy-ratelimit's directive is not in the standard order and must be placed explicitly.
 	order rate_limit before basic_auth
@@ -61,7 +60,7 @@ https://otlp.localhost:8443 {
 	# The actual control against a scripted flood: 120 requests per minute per source address.
 	rate_limit {
 		zone otlp_ingest {
-			key    {remote_host}
+			key {remote_host}
 			events 120
 			window 1m
 		}
