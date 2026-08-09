@@ -1,0 +1,96 @@
+# Prometheus RECORDING rules — `record:` only, never `alert:` (D4 / OBS-18).
+#
+# This file is also the SSOT for the `$slo_set` reducer allowlist (OBS-22). It is defined ONCE,
+# here, in the recording rule's own matcher; the Grafana dashboard variable derives from the
+# recorded series via label_values() rather than re-declaring the list. Two independently
+# maintained copies of one allowlist is exactly the drift trap ADR-0180 caught for
+# `$trace_pair_set` — it is not repeated here.
+#
+# Everything the dashboards and alert rules query is either recorded below or a raw host-native
+# name (`spacetime_*`, `node_*`, `up`). checkQueriedSeriesAreDefined enforces that closure, so a
+# panel or alert can never reference a series nothing emits.
+
+groups:
+  - name: mr-slo
+    interval: 15s
+    rules:
+      # OBS-22 / OBS-23 — reducer-success SLO over the NAMED allowlist only.
+      # $slo_set deliberately EXCLUDES reducers whose primary rejection mode is a functioning
+      # guard: `committed="false"` conflates a real failure with a guard correctly rejecting a
+      # bad request (independently reproduced on talk/set_profile_name), so blending them would
+      # make a working defence look like an outage.
+      #
+      # `by (reducer)` is load-bearing, not cosmetic: it makes $slo_set MEMBERSHIP visible as
+      # the recorded series' own labels, so the Grafana dashboard variable is
+      # `label_values(mr:slo_set_txns_total:rate5m, reducer)` — derived, never a second
+      # hand-maintained copy of the list.
+      - record: mr:slo_set_txns_committed:rate5m
+        expr: |
+          sum by (reducer) (rate(spacetime_num_txns_total{committed="true",reducer=~"move_player|create_player|sync_content|accept_trade|propose_trade|challenge_player|evolve_monster"}[5m]))
+      - record: mr:slo_set_txns_total:rate5m
+        expr: |
+          sum by (reducer) (rate(spacetime_num_txns_total{reducer=~"move_player|create_player|sync_content|accept_trade|propose_trade|challenge_player|evolve_monster"}[5m]))
+      - record: mr:reducer_success_ratio:rate5m
+        expr: |
+          sum(mr:slo_set_txns_committed:rate5m) / clamp_min(sum(mr:slo_set_txns_total:rate5m), 1)
+
+      # OBS-23 — guard-rejection rate is a SEPARATE series, fed by S2's evt:"reject" log lines,
+      # never blended into the success ratio above. `guards::log_reject` emits these today,
+      # unchanged by M20 — this is the no-dependency half of the m20a contract.
+      - record: mr:guard_reject:rate5m
+        expr: |
+          sum by (reducer) (rate(mr_log_events_total{evt="reject"}[5m]))
+
+      # OBS-24 — movement-tick latency SLO: p95 must stay under STEP_MS.
+      - record: mr:movement_tick_latency_p95
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(spacetime_txn_elapsed_time_sec_bucket{reducer="movement_tick"}[5m])))
+
+      # OBS-26 — connect success and saturation early-warnings.
+      - record: mr:connect_success_ratio:rate5m
+        expr: |
+          1 - (
+            sum(rate(spacetime_worker_ws_clients_aborted[5m]))
+            / clamp_min(sum(rate(spacetime_worker_ws_clients_spawned[5m])), 1)
+          )
+      - record: mr:reducer_wait_p95
+        expr: |
+          histogram_quantile(0.95, sum by (le) (rate(spacetime_reducer_wait_time_sec_bucket[5m])))
+
+  - name: mr-client
+    interval: 15s
+    rules:
+      # OBS-25 — client-fps SLO (p50 >= 55), sourced ONLY from S4 browser metrics.
+      # `mr_client_fps_bucket` is m20c's contract (client OTel Web SDK). Until m20c merges this
+      # records an empty series; `or vector(0)` keeps the panel and its axis alive rather than
+      # rendering "No data", without inventing a number.
+      - record: mr:client_fps_p50
+        expr: |
+          histogram_quantile(0.5, sum by (le) (rate(mr_client_fps_bucket[5m]))) or vector(0)
+
+  - name: mr-meta
+    interval: 15s
+    rules:
+      # Pipeline health, distinct from process liveness (ADR-0180 amendment "Correction 3").
+      # `up{job="alloy"}` only proves Alloy's HTTP server answers. Alloy hosts independent
+      # internal components: if the file tail stalls (bind-mount permission drift, a rotation
+      # edge case) `up` stays 1 while S2 ingestion is entirely dark. This records the actual
+      # throughput of the tail so the dead-man's switch can watch the pipeline, not the process.
+      - record: mr:alloy_log_bytes_read:rate5m
+        expr: |
+          sum(rate(loki_source_file_bytes_total[5m])) or vector(0)
+
+      # OBS-28 — chat-flood panel is RESERVED until M19 (chat) exists. This records a real
+      # series that legitimately reads zero today and lights up the moment chat emits events;
+      # it is a reservation, not a fake number, and M20 completion does not depend on it.
+      - record: mr:chat_events:rate5m
+        expr: |
+          sum(rate(mr_log_events_total{evt="chat"}[5m])) or vector(0)
+
+      # The `heartbeat` half of the D6 evt vocabulary. `mr_log`/`mr_heartbeat` do not exist yet
+      # — they are m20a's, and m20a is explicitly still free to adjust the envelope before it
+      # merges. Per M20 §5's own stated mitigation, drift here is caught by m20e's post-merge
+      # integration eval, NOT by a pre-merge check. Do not read this rule as a verified contract.
+      - record: mr:heartbeat:rate5m
+        expr: |
+          sum(rate(mr_log_events_total{evt="heartbeat"}[5m])) or vector(0)

@@ -1,0 +1,93 @@
+# Grafana OSS unified alerting — 100% of alert evaluation AND notification routing (D4/OBS-19).
+# Prometheus computes recording rules only; it has no `alerting:` block and no Alertmanager to
+# route to, so an alert rule there would evaluate into nothing.
+#
+# Every rule below is routed to a DEFINED, non-placeholder contact point — see
+# contact-points.yml and notification-policies.yml. checkAlertRuleHasReceiver fails the build if
+# a rule ever routes to a receiver that does not exist, or to a contact point that structurally
+# exists but notifies nobody (`receivers: []`, a placeholder URL). "The alert fires into
+# nothing" is the exact failure D4 exists to prevent, and it has two disguises, not one.
+#
+# NOT here: the `mr-trace-relay` dead-man's switch (OBS-46). Its service ships in m20b-2 and its
+# rule ships with it — a rule watching a target that does not exist would sit permanently firing
+# (or permanently `up=0`) and train the operator to ignore a dead-man's switch.
+
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: meta-monitoring
+    folder: Monster Realm
+    interval: 15s
+    rules:
+      # OBS-39 — the sole telemetry agent's dead-man's switch. Alloy failing would black out
+      # BOTH S2 and S4 ingestion at once with nothing else in the stack noticing; S1b's scrape
+      # target doubles as the liveness probe, so this costs no new signal and no new container.
+      # 3 consecutive 15s scrape intervals = 45s.
+      - uid: mr-alloy-down
+        title: AlloyDown
+        condition: C
+        for: 45s
+        labels:
+          severity: critical
+        annotations:
+          summary: Alloy has not been scraped for 3 consecutive intervals — S2 and S4 ingestion are both dark.
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: mr-prometheus
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              expr: up{job="alloy"}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: lt
+                    params:
+                      - 1
+
+      # ADR-0180 amendment "Correction 3" — process liveness is NOT pipeline health.
+      # `up` only proves Alloy's HTTP server answers. Alloy hosts independent internal
+      # components: if the file tail stalls (bind-mount permission drift, a log-rotation edge
+      # case) or the OTLP receiver rejects everything, `up` stays 1 while ingestion is entirely
+      # dark — the meta-monitoring rationale fails in exactly the scenario it exists for.
+      # This watches actual throughput, so a silently-stalled tail is visible.
+      - uid: mr-alloy-ingest-stalled
+        title: AlloyIngestStalled
+        condition: C
+        for: 10m
+        labels:
+          severity: warning
+        annotations:
+          summary: Alloy is alive but has read zero module_logs bytes for 10m — the S2 tail is stalled, not the process.
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: mr-prometheus
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              expr: mr:alloy_log_bytes_read:rate5m
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: lt
+                    params:
+                      - 1
