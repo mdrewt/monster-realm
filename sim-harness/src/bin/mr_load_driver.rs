@@ -188,8 +188,18 @@
 //! core intent — all measurement off S1 — is preserved.
 
 #![forbid(unsafe_code)]
+// The frozen T8 test module asserts a compile-time-constant precondition
+// (`0.3 >= BUDGET_S`) for documentation; that trips clippy's benign
+// `assertions_on_constants` style lint under `-D warnings`. This is unrelated to
+// the ADR-0003 determinism gate (`disallowed_methods`), which stays fully armed.
+#![allow(clippy::assertions_on_constants)]
 
-use game_core::{Direction, MoveInput, STEP_MS};
+use game_core::{tick_seed, Direction, MoveInput, STEP_MS};
+use std::io::{Read, Write};
+use std::net::TcpStream;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::Mutex;
+use std::time::Duration;
 
 // ===========================================================================
 // §1 CONSTANTS
@@ -324,16 +334,124 @@ pub struct Config {
 /// a missing `--run-id`. `--scenario chat-flood` yields exactly
 /// [`SCENARIO_RESERVED_ERR`].
 pub fn parse_args(args: &[String]) -> Result<Config, String> {
-    let _ = args;
-    todo!("m20d I1: CLI parse + validate")
+    let mut server = "http://127.0.0.1:3000".to_string();
+    let mut db = "monster-realm".to_string();
+    let mut scenario = Scenario::Movement;
+    let mut clients_start: u32 = 5;
+    let mut clients_step: u32 = 5;
+    let mut clients_max: u32 = 50;
+    let mut hold_scrapes: u32 = 10;
+    let mut scrape_interval_ms: u64 = 1000;
+    let mut move_rate: u32 = 5;
+    let mut seed: u64 = 0x5EED_0D20;
+    let mut run_id: Option<String> = None;
+    let mut report_path: Option<String> = None;
+
+    let mut i = 0usize;
+    while i < args.len() {
+        let flag = args[i].as_str();
+        match flag {
+            "--server" => server = flag_value(args, i, flag)?.clone(),
+            "--db" => db = flag_value(args, i, flag)?.clone(),
+            "--scenario" => scenario = parse_scenario(flag_value(args, i, flag)?)?,
+            "--clients-start" => clients_start = parse_u32(flag_value(args, i, flag)?, flag)?,
+            "--clients-step" => clients_step = parse_u32(flag_value(args, i, flag)?, flag)?,
+            "--clients-max" => clients_max = parse_u32(flag_value(args, i, flag)?, flag)?,
+            "--hold-scrapes" => hold_scrapes = parse_u32(flag_value(args, i, flag)?, flag)?,
+            "--scrape-interval-ms" => {
+                scrape_interval_ms = parse_u64(flag_value(args, i, flag)?, flag)?;
+            }
+            "--move-rate" => move_rate = parse_u32(flag_value(args, i, flag)?, flag)?,
+            "--seed" => seed = parse_u64(flag_value(args, i, flag)?, flag)?,
+            "--run-id" => run_id = Some(flag_value(args, i, flag)?.clone()),
+            "--report" => report_path = Some(flag_value(args, i, flag)?.clone()),
+            other => return Err(format!("unknown flag: {other}")),
+        }
+        i += 2;
+    }
+
+    let run_id = run_id.ok_or_else(|| "--run-id is required".to_string())?;
+    if run_id.is_empty() {
+        return Err("--run-id must not be empty".to_string());
+    }
+    if server.is_empty() {
+        return Err("--server must not be empty".to_string());
+    }
+    if clients_start == 0 {
+        return Err("--clients-start must be >= 1".to_string());
+    }
+    if clients_step == 0 {
+        return Err("--clients-step must be >= 1".to_string());
+    }
+    if clients_max < clients_start {
+        return Err(format!(
+            "--clients-max ({clients_max}) must be >= --clients-start ({clients_start})"
+        ));
+    }
+    if clients_max > MAX_CLIENTS {
+        return Err(format!("--clients-max must be <= {MAX_CLIENTS}"));
+    }
+    if hold_scrapes < MIN_HOLD_SCRAPES {
+        return Err(format!("--hold-scrapes must be >= {MIN_HOLD_SCRAPES}"));
+    }
+    if scrape_interval_ms < MIN_SCRAPE_INTERVAL_MS {
+        return Err(format!(
+            "--scrape-interval-ms must be >= {MIN_SCRAPE_INTERVAL_MS}"
+        ));
+    }
+    if !(1..=MAX_MOVE_RATE).contains(&move_rate) {
+        return Err(format!("--move-rate must be in 1..={MAX_MOVE_RATE}"));
+    }
+
+    Ok(Config {
+        server,
+        db,
+        scenario,
+        clients_start,
+        clients_step,
+        clients_max,
+        hold_scrapes,
+        scrape_interval_ms,
+        move_rate,
+        seed,
+        run_id,
+        report_path,
+    })
+}
+
+/// Fetch the value that must follow the flag at `i`.
+fn flag_value<'a>(args: &'a [String], i: usize, flag: &str) -> Result<&'a String, String> {
+    args.get(i + 1)
+        .ok_or_else(|| format!("flag {flag} requires a value"))
+}
+
+fn parse_u32(s: &str, flag: &str) -> Result<u32, String> {
+    s.parse::<u32>()
+        .map_err(|_| format!("flag {flag} expects a non-negative integer, got {s:?}"))
+}
+
+fn parse_u64(s: &str, flag: &str) -> Result<u64, String> {
+    s.parse::<u64>()
+        .map_err(|_| format!("flag {flag} expects a non-negative integer, got {s:?}"))
+}
+
+fn parse_scenario(s: &str) -> Result<Scenario, String> {
+    match s {
+        "movement" => Ok(Scenario::Movement),
+        "chat-flood" => Err(SCENARIO_RESERVED_ERR.to_string()),
+        other => Err(format!("unknown scenario: {other}")),
+    }
 }
 
 /// Process exit code for a top-level error message: 2 for the reserved-scenario
 /// error (OBS-28), 1 otherwise.
 #[must_use]
 pub fn exit_code_for_error(msg: &str) -> i32 {
-    let _ = msg;
-    todo!("m20d I1: exit-code mapping")
+    if msg == SCENARIO_RESERVED_ERR {
+        2
+    } else {
+        1
+    }
 }
 
 /// Open-loop pacing sleep in ms, derived purely from `--move-rate` (AM1): the
@@ -341,8 +459,17 @@ pub fn exit_code_for_error(msg: &str) -> i32 {
 /// `rate == 0` (which `parse_args` rejects) — returns 0.
 #[must_use]
 pub fn pacing_sleep_ms(move_rate: u32) -> u64 {
-    let _ = move_rate;
-    todo!("m20d I1: open-loop pacing constant")
+    if move_rate == 0 {
+        return 0;
+    }
+    let period = 1000 / u64::from(move_rate);
+    // The nominal period minus the drain allowance. A period at or below twice the
+    // allowance is fully paced by the drain read itself, so the residual sleep is 0.
+    if period <= 2 * READ_TIMEOUT_MS {
+        0
+    } else {
+        period - READ_TIMEOUT_MS
+    }
 }
 
 /// `http://127.0.0.1:3000` → `127.0.0.1:3000`.
@@ -350,8 +477,14 @@ pub fn pacing_sleep_ms(move_rate: u32) -> u64 {
 /// # Errors
 /// Any scheme other than `http://` (this driver has no TLS), or an empty host.
 pub fn server_host(server_url: &str) -> Result<String, String> {
-    let _ = server_url;
-    todo!("m20d I1: host extraction")
+    let rest = server_url
+        .strip_prefix("http://")
+        .ok_or_else(|| format!("--server must start with http:// (no TLS), got {server_url:?}"))?;
+    let rest = rest.strip_suffix('/').unwrap_or(rest);
+    if rest.is_empty() {
+        return Err("--server has an empty host".to_string());
+    }
+    Ok(rest.to_string())
 }
 
 // ===========================================================================
@@ -374,8 +507,112 @@ pub struct Sample {
 /// Malformed input — unbalanced label braces, a missing value, an unparsable
 /// value, or a bad escape (fail loud; never a silent skip).
 pub fn parse_line(line: &str) -> Result<Option<Sample>, String> {
-    let _ = line;
-    todo!("m20d I2: exposition line parse")
+    let trimmed = line.trim();
+    if trimmed.is_empty() || trimmed.starts_with('#') {
+        return Ok(None);
+    }
+    let chars: Vec<char> = trimmed.chars().collect();
+    let len = chars.len();
+    let mut i = 0usize;
+
+    // Family name: up to the first '{' or whitespace.
+    let name_start = i;
+    while i < len && chars[i] != '{' && !chars[i].is_whitespace() {
+        i += 1;
+    }
+    let name: String = chars[name_start..i].iter().collect();
+    if name.is_empty() {
+        return Err(format!("no metric name in line: {line:?}"));
+    }
+
+    // Optional label block.
+    let mut labels: Vec<(String, String)> = Vec::new();
+    if i < len && chars[i] == '{' {
+        i += 1; // consume '{'
+        loop {
+            while i < len && chars[i].is_whitespace() {
+                i += 1;
+            }
+            if i >= len {
+                return Err(format!("unterminated label block: {line:?}"));
+            }
+            if chars[i] == '}' {
+                i += 1;
+                break;
+            }
+            // key
+            let key_start = i;
+            while i < len && chars[i] != '=' && chars[i] != '}' && chars[i] != ',' {
+                i += 1;
+            }
+            if i >= len || chars[i] != '=' {
+                return Err(format!("malformed label (expected '='): {line:?}"));
+            }
+            let key: String = chars[key_start..i].iter().collect();
+            if key.is_empty() {
+                return Err(format!("empty label name: {line:?}"));
+            }
+            i += 1; // consume '='
+            if i >= len || chars[i] != '"' {
+                return Err(format!("label value must be quoted: {line:?}"));
+            }
+            i += 1; // consume opening '"'
+            let value_start = i;
+            loop {
+                if i >= len {
+                    return Err(format!("unterminated label value: {line:?}"));
+                }
+                if chars[i] == '\\' {
+                    // Keep the escape pair raw; label_unescape validates it.
+                    i += 2;
+                    continue;
+                }
+                if chars[i] == '"' {
+                    break;
+                }
+                i += 1;
+            }
+            let raw: String = chars[value_start..i].iter().collect();
+            let value = label_unescape(&raw)?;
+            labels.push((key, value));
+            i += 1; // consume closing '"'
+            while i < len && chars[i].is_whitespace() {
+                i += 1;
+            }
+            if i < len && chars[i] == ',' {
+                i += 1;
+                continue;
+            }
+            if i < len && chars[i] == '}' {
+                i += 1;
+                break;
+            }
+            return Err(format!("malformed label separator: {line:?}"));
+        }
+    }
+
+    // Value: skip whitespace, read the next token.
+    while i < len && chars[i].is_whitespace() {
+        i += 1;
+    }
+    let value_tok_start = i;
+    while i < len && !chars[i].is_whitespace() {
+        i += 1;
+    }
+    let value_tok: String = chars[value_tok_start..i].iter().collect();
+    if value_tok.is_empty() {
+        return Err(format!("no value in line: {line:?}"));
+    }
+    let value = value_tok
+        .parse::<f64>()
+        .map_err(|_| format!("unparsable value {value_tok:?} in line: {line:?}"))?;
+    // Any trailing token (an optional timestamp) is accepted and ignored.
+
+    Ok(Some(Sample {
+        name,
+        labels,
+        value,
+    }))
 }
 
 /// Parse a whole `/metrics` body.
@@ -383,8 +620,13 @@ pub fn parse_line(line: &str) -> Result<Option<Sample>, String> {
 /// # Errors
 /// Propagates the first [`parse_line`] error, naming the offending line.
 pub fn parse_exposition(text: &str) -> Result<Vec<Sample>, String> {
-    let _ = text;
-    todo!("m20d I2: exposition parse")
+    let mut out = Vec::new();
+    for line in text.lines() {
+        if let Some(sample) = parse_line(line)? {
+            out.push(sample);
+        }
+    }
+    Ok(out)
 }
 
 /// Unescape a Prometheus label value (`\\`, `\"`, `\n` are the only legal
@@ -393,23 +635,41 @@ pub fn parse_exposition(text: &str) -> Result<Vec<Sample>, String> {
 /// # Errors
 /// An unknown escape sequence or a trailing backslash.
 pub fn label_unescape(raw: &str) -> Result<String, String> {
-    let _ = raw;
-    todo!("m20d I2: label unescape")
+    let mut out = String::new();
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c == '\\' {
+            match chars.next() {
+                Some('\\') => out.push('\\'),
+                Some('"') => out.push('"'),
+                Some('n') => out.push('\n'),
+                Some(other) => return Err(format!("illegal label escape: \\{other}")),
+                None => return Err("trailing backslash in label value".to_string()),
+            }
+        } else {
+            out.push(c);
+        }
+    }
+    Ok(out)
 }
 
 /// The value of `key` on this sample, if present.
 #[must_use]
 pub fn label_value<'a>(sample: &'a Sample, key: &str) -> Option<&'a str> {
-    let _ = (sample, key);
-    todo!("m20d I2: label lookup")
+    sample
+        .labels
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v.as_str())
 }
 
 /// SUBSET match: every `(key, value)` in `required` must be present and equal.
 /// Extra labels on the sample are ignored (never exact-label-set equality).
 #[must_use]
 pub fn matches_labels(sample: &Sample, required: &[(&str, &str)]) -> bool {
-    let _ = (sample, required);
-    todo!("m20d I2: subset label match")
+    required
+        .iter()
+        .all(|(k, v)| label_value(sample, k) == Some(*v))
 }
 
 /// All samples with this family name whose labels satisfy `required`.
@@ -419,16 +679,21 @@ pub fn select_subset<'a>(
     name: &str,
     required: &[(&str, &str)],
 ) -> Vec<&'a Sample> {
-    let _ = (samples, name, required);
-    todo!("m20d I2: series selection")
+    samples
+        .iter()
+        .filter(|s| s.name == name && matches_labels(s, required))
+        .collect()
 }
 
 /// AM26/AM27: the pinned label subset for a txn family. Note `db=` (NOT
 /// `database_identity=`) and the mandatory `txn_type="Reducer"`.
 #[must_use]
 pub fn txn_match<'a>(db_identity: &'a str, reducer: &'a str) -> [(&'a str, &'a str); 3] {
-    let _ = (db_identity, reducer);
-    todo!("m20d I2: txn label pin")
+    [
+        ("db", db_identity),
+        ("reducer", reducer),
+        ("txn_type", TXN_TYPE_REDUCER),
+    ]
 }
 
 /// [`txn_match`] plus the `committed` discriminator, for accept/reject deltas.
@@ -438,16 +703,19 @@ pub fn txn_count_match<'a>(
     reducer: &'a str,
     committed: &'a str,
 ) -> [(&'a str, &'a str); 4] {
-    let _ = (db_identity, reducer, committed);
-    todo!("m20d I2: txn counter label pin")
+    [
+        ("db", db_identity),
+        ("reducer", reducer),
+        ("txn_type", TXN_TYPE_REDUCER),
+        ("committed", committed),
+    ]
 }
 
 /// AM26: the pinned label subset for a queue gauge. Note `database_identity=`
 /// (NOT `db=`) — the live label-name asymmetry.
 #[must_use]
-pub fn queue_match<'a>(db_identity: &'a str) -> [(&'a str, &'a str); 1] {
-    let _ = db_identity;
-    todo!("m20d I2: queue gauge label pin")
+pub fn queue_match(db_identity: &str) -> [(&str, &str); 1] {
+    [("database_identity", db_identity)]
 }
 
 /// Sum every matching counter series.
@@ -459,8 +727,13 @@ pub fn counter_sum(
     name: &str,
     required: &[(&str, &str)],
 ) -> Result<f64, String> {
-    let _ = (samples, name, required);
-    todo!("m20d I2: counter sum")
+    let hits = select_subset(samples, name, required);
+    if hits.is_empty() {
+        return Err(format!(
+            "no series matched {name}{required:?} (AM26 fail loud)"
+        ));
+    }
+    Ok(hits.iter().map(|s| s.value).sum())
 }
 
 /// Read one gauge value.
@@ -468,8 +741,37 @@ pub fn counter_sum(
 /// # Errors
 /// Zero matching series (fail loud), as for [`counter_sum`].
 pub fn gauge_sum(samples: &[Sample], name: &str, required: &[(&str, &str)]) -> Result<f64, String> {
-    let _ = (samples, name, required);
-    todo!("m20d I2: gauge sum")
+    let hits = select_subset(samples, name, required);
+    if hits.is_empty() {
+        return Err(format!(
+            "no series matched {name}{required:?} (AM26 fail loud)"
+        ));
+    }
+    Ok(hits.iter().map(|s| s.value).sum())
+}
+
+/// Parse a histogram `le` bound: `+Inf` → `f64::INFINITY`, else a decimal float
+/// (the live host emits short-decimals like `.00001`).
+fn parse_le(le: &str) -> Result<f64, String> {
+    if le.eq_ignore_ascii_case("+inf") || le.eq_ignore_ascii_case("inf") {
+        Ok(f64::INFINITY)
+    } else {
+        le.parse::<f64>()
+            .map_err(|_| format!("unparsable le bound: {le:?}"))
+    }
+}
+
+/// The canonical identity of a series (all labels except `le`), so bucket lines
+/// of the same underlying histogram group together.
+fn series_key(sample: &Sample) -> String {
+    let mut parts: Vec<String> = sample
+        .labels
+        .iter()
+        .filter(|(k, _)| k != "le")
+        .map(|(k, v)| format!("{k}={v}"))
+        .collect();
+    parts.sort();
+    parts.join(",")
 }
 
 /// A cumulative histogram reading: bucket upper bounds ASCENDING (last is
@@ -492,8 +794,50 @@ pub fn histogram_snapshot(
     name: &str,
     required: &[(&str, &str)],
 ) -> Result<BucketSnapshot, String> {
-    let _ = (samples, name, required);
-    todo!("m20d I2: histogram snapshot")
+    use std::collections::{BTreeMap, BTreeSet};
+
+    let hits = select_subset(samples, name, required);
+    if hits.is_empty() {
+        return Err(format!(
+            "no bucket series matched {name}{required:?} (AM26 fail loud)"
+        ));
+    }
+
+    // Per-le summed count, and per-series set of le texts (AM14 consistency).
+    let mut acc: BTreeMap<String, f64> = BTreeMap::new();
+    let mut per_series: BTreeMap<String, BTreeSet<String>> = BTreeMap::new();
+    for h in &hits {
+        let le = label_value(h, "le")
+            .ok_or_else(|| format!("bucket sample missing an le label: {}", h.name))?;
+        per_series
+            .entry(series_key(h))
+            .or_default()
+            .insert(le.to_string());
+        *acc.entry(le.to_string()).or_insert(0.0) += h.value;
+    }
+
+    // Every matched series must expose the SAME le set, or summing is a lie.
+    let mut series_iter = per_series.values();
+    if let Some(first) = series_iter.next() {
+        for other in series_iter {
+            if other != first {
+                return Err(format!(
+                    "matched {name} series disagree on their le set (AM14 fail loud)"
+                ));
+            }
+        }
+    }
+
+    // Sort ascending by parsed bound.
+    let mut pairs: Vec<(f64, f64)> = Vec::with_capacity(acc.len());
+    for (le, count) in &acc {
+        pairs.push((parse_le(le)?, *count));
+    }
+    pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap_or(std::cmp::Ordering::Equal));
+
+    let bounds = pairs.iter().map(|(b, _)| *b).collect();
+    let counts = pairs.iter().map(|(_, c)| *c).collect();
+    Ok(BucketSnapshot { bounds, counts })
 }
 
 /// `{"database_identity":{"__identity__":"0x<hex>"}}` → `<hex>` (AM26).
@@ -501,15 +845,14 @@ pub fn histogram_snapshot(
 /// # Errors
 /// The field is missing or malformed.
 pub fn database_identity_from_json(json: &str) -> Result<String, String> {
-    let _ = json;
-    todo!("m20d I2: db identity resolution")
+    let hex = extract_json_string_field(json, "__identity__")?;
+    Ok(strip_0x(&hex).to_string())
 }
 
 /// Strip a leading `0x`, if present. Label values carry the hex WITHOUT it.
 #[must_use]
 pub fn strip_0x(hex: &str) -> &str {
-    let _ = hex;
-    todo!("m20d I2: 0x strip")
+    hex.strip_prefix("0x").unwrap_or(hex)
 }
 
 // ===========================================================================
@@ -543,8 +886,13 @@ pub enum Breach {
 /// The SAME discard applies to histogram snapshots and queue gauges alike.
 #[must_use]
 pub fn usable_window<T: Clone>(readings: &[T]) -> Vec<T> {
-    let _ = readings;
-    todo!("m20d I3: warm-up discard")
+    readings.iter().skip(WARMUP_SCRAPES).cloned().collect()
+}
+
+/// Exact-equality of two bound sets (including `+Inf`), compared bit-for-bit so a
+/// re-published module's changed `le` set is caught (AM14).
+fn bounds_match(a: &[f64], b: &[f64]) -> bool {
+    a.len() == b.len() && a.iter().zip(b).all(|(x, y)| x.to_bits() == y.to_bits())
 }
 
 /// AM8: ONE windowed cumulative delta per level — last usable snapshot minus
@@ -553,8 +901,25 @@ pub fn usable_window<T: Clone>(readings: &[T]) -> Vec<T> {
 /// # Errors
 /// The two snapshots disagree on their `le` set (AM14).
 pub fn window_delta(raw: &[BucketSnapshot]) -> Result<Option<BucketSnapshot>, String> {
-    let _ = raw;
-    todo!("m20d I3: windowed histogram delta")
+    let usable = usable_window(raw);
+    if usable.len() < 2 {
+        return Ok(None);
+    }
+    let first = &usable[0];
+    let last = &usable[usable.len() - 1];
+    if !bounds_match(&first.bounds, &last.bounds) {
+        return Err("histogram le set changed within the level (AM14 fail loud)".to_string());
+    }
+    let counts = first
+        .counts
+        .iter()
+        .zip(&last.counts)
+        .map(|(f, l)| l - f)
+        .collect();
+    Ok(Some(BucketSnapshot {
+        bounds: last.bounds.clone(),
+        counts,
+    }))
 }
 
 /// Linear-interpolated p95 over ONE cumulative-count delta — the computation
@@ -578,8 +943,50 @@ pub fn window_delta(raw: &[BucketSnapshot]) -> Result<Option<BucketSnapshot>, St
 /// host restart) — two different invalid reasons, and only one of them is true.
 #[must_use]
 pub fn p95_from_delta(delta: &BucketSnapshot) -> P95 {
-    let _ = delta;
-    todo!("m20d I3: p95 interpolation")
+    p95_compute(delta).0
+}
+
+/// The shared p95 core: returns the outcome AND the containing bucket's width
+/// (`Some` only for a `Value` outcome), so [`p95_from_delta`] and
+/// [`p95_bucket_width_s`] can never disagree about which bucket won.
+fn p95_compute(delta: &BucketSnapshot) -> (P95, Option<f64>) {
+    let counts = &delta.counts;
+    let bounds = &delta.bounds;
+    if counts.is_empty() {
+        return (P95::TooFew, None);
+    }
+    // The negative-count test MUST precede the total test (a whole-window reset is
+    // all-negative AND has total <= 0).
+    if counts.iter().any(|c| *c < 0.0) {
+        return (P95::Reset, None);
+    }
+    let total = counts[counts.len() - 1];
+    if total <= 0.0 {
+        return (P95::TooFew, None);
+    }
+    let rank = 0.95 * total;
+    let i = counts
+        .iter()
+        .position(|c| *c >= rank)
+        .unwrap_or(counts.len() - 1);
+    if bounds[i].is_infinite() {
+        let top_finite = if bounds.len() >= 2 {
+            bounds[bounds.len() - 2]
+        } else {
+            bounds[i]
+        };
+        return (P95::AboveTop(top_finite), None);
+    }
+    let lower = if i == 0 { 0.0 } else { bounds[i - 1] };
+    let lower_count = if i == 0 { 0.0 } else { counts[i - 1] };
+    let denom = counts[i] - lower_count;
+    let width = bounds[i] - lower;
+    let value = if denom <= 0.0 {
+        lower
+    } else {
+        lower + width * (rank - lower_count) / denom
+    };
+    (P95::Value(value), Some(width))
 }
 
 /// [`usable_window`] + [`window_delta`] + [`p95_from_delta`] for a whole level.
@@ -587,16 +994,17 @@ pub fn p95_from_delta(delta: &BucketSnapshot) -> P95 {
 /// # Errors
 /// Propagates the [`window_delta`] `le`-mismatch error.
 pub fn p95_windowed(raw: &[BucketSnapshot]) -> Result<P95, String> {
-    let _ = raw;
-    todo!("m20d I3: level p95")
+    match window_delta(raw)? {
+        Some(delta) => Ok(p95_from_delta(&delta)),
+        None => Ok(P95::TooFew),
+    }
 }
 
 /// AM10: the WIDTH of the bucket the p95 landed in — the resolution/uncertainty
 /// indicator. `None` unless the outcome is [`P95::Value`].
 #[must_use]
 pub fn p95_bucket_width_s(delta: &BucketSnapshot) -> Option<f64> {
-    let _ = delta;
-    todo!("m20d I3: p95 bucket width")
+    p95_compute(delta).1
 }
 
 /// AM9: the ONE breach comparator. `Value(v)` breaches iff `v >= BUDGET_S`
@@ -605,30 +1013,53 @@ pub fn p95_bucket_width_s(delta: &BucketSnapshot) -> Option<f64> {
 /// `TooFew`/`Reset` are indeterminate.
 #[must_use]
 pub fn p95_breaches_budget(p95: P95) -> Breach {
-    let _ = p95;
-    todo!("m20d I3: breach comparator")
+    match p95 {
+        P95::Value(v) => {
+            if v >= BUDGET_S {
+                Breach::Yes
+            } else {
+                Breach::No
+            }
+        }
+        P95::AboveTop(t) => {
+            if t >= BUDGET_S {
+                Breach::Yes
+            } else {
+                Breach::Indeterminate
+            }
+        }
+        P95::TooFew | P95::Reset => Breach::Indeterminate,
+    }
 }
 
 /// Report field: the p95 seconds, or `None` for every non-`Value` outcome
 /// (`AboveTop` must NEVER be reported as its top finite bound).
 #[must_use]
 pub fn p95_value_s(p95: P95) -> Option<f64> {
-    let _ = p95;
-    todo!("m20d I3: p95 report value")
+    match p95 {
+        P95::Value(v) => Some(v),
+        _ => None,
+    }
 }
 
 /// Report field: the top finite bound of an [`P95::AboveTop`], else `None`.
 #[must_use]
 pub fn p95_top_finite_s(p95: P95) -> Option<f64> {
-    let _ = p95;
-    todo!("m20d I3: p95 top finite")
+    match p95 {
+        P95::AboveTop(t) => Some(t),
+        _ => None,
+    }
 }
 
 /// Report field: `"value" | "above_top" | "too_few" | "reset"`.
 #[must_use]
 pub fn p95_state_name(p95: P95) -> &'static str {
-    let _ = p95;
-    todo!("m20d I3: p95 state name")
+    match p95 {
+        P95::Value(_) => "value",
+        P95::AboveTop(_) => "above_top",
+        P95::TooFew => "too_few",
+        P95::Reset => "reset",
+    }
 }
 
 /// Operational definition of "begins monotonically growing" over an ALREADY
@@ -637,23 +1068,35 @@ pub fn p95_state_name(p95: P95) -> &'static str {
 /// an oscillating series with a net gain is NOT growth.
 #[must_use]
 pub fn is_monotonic_growth(window: &[f64]) -> bool {
-    let _ = window;
-    todo!("m20d I3: growth detector")
+    if window.len() < 3 {
+        return false;
+    }
+    let strictly_increasing = window.windows(2).all(|w| w[1] > w[0]);
+    let net_gain = window[window.len() - 1] - window[0];
+    strictly_increasing && net_gain >= 1.0
 }
 
 /// Within-level growth judgement for one family's RAW per-level series:
 /// [`usable_window`] then [`is_monotonic_growth`] (AM6 + AM7).
 #[must_use]
 pub fn level_growth(raw: &[f64]) -> bool {
-    let _ = raw;
-    todo!("m20d I3: within-level growth")
+    is_monotonic_growth(&usable_window(raw))
 }
 
 /// Median of a slice (input order irrelevant); `None` when empty.
 #[must_use]
 pub fn median(values: &[f64]) -> Option<f64> {
-    let _ = values;
-    todo!("m20d I3: median")
+    if values.is_empty() {
+        return None;
+    }
+    let mut sorted = values.to_vec();
+    sorted.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let n = sorted.len();
+    if n % 2 == 1 {
+        Some(sorted[n / 2])
+    } else {
+        Some((sorted[n / 2 - 1] + sorted[n / 2]) / 2.0)
+    }
 }
 
 // ===========================================================================
@@ -664,8 +1107,13 @@ pub fn median(values: &[f64]) -> Option<f64> {
 /// `start == max` yields exactly one level (the G11 fixed-concurrency A/B).
 #[must_use]
 pub fn ramp_levels(start: u32, step: u32, max: u32) -> Vec<u32> {
-    let _ = (start, step, max);
-    todo!("m20d I4: ramp planner")
+    let mut levels = Vec::new();
+    let mut n = start;
+    while n <= max {
+        levels.push(n);
+        n = n.saturating_add(step);
+    }
+    levels
 }
 
 /// Everything the verdict machine needs about ONE held level — plain data, no
@@ -726,8 +1174,63 @@ pub struct LevelVerdict {
 /// # Errors
 /// Propagates the [`window_delta`] `le`-mismatch error (AM14 fail loud).
 pub fn evaluate_level(sample: &LevelSample) -> Result<LevelVerdict, String> {
-    let _ = sample;
-    todo!("m20d I4: level verdict")
+    // The windowed p95 owns the AM6 discard; both calls below propagate an
+    // le-mismatch loudly (AM14) and agree on the same delta.
+    let p95 = p95_windowed(&sample.p95_snapshots)?;
+    let p95_bucket_width_s = match window_delta(&sample.p95_snapshots)? {
+        Some(delta) => p95_bucket_width_s(&delta),
+        None => None,
+    };
+
+    // Per-family within-level growth + plateau, over the AM6 usable window, in
+    // QUEUE_FAMILIES (input) order.
+    let mut queue_growth = Vec::new();
+    let mut plateau_by_family = Vec::new();
+    for (family, series) in &sample.queue_readings {
+        if level_growth(series) {
+            queue_growth.push(family.clone());
+        }
+        plateau_by_family.push((family.clone(), median(&usable_window(series))));
+    }
+
+    let accepted = sample.enqueue_accepted_delta;
+    let rejected = sample.enqueue_rejected_delta;
+
+    // AM5 validity precedence: report the more fundamental problem.
+    let invalid_reason: Option<&'static str> =
+        if sample.counter_decreased || matches!(p95, P95::Reset) {
+            Some("counter_reset")
+        } else if sample.join_committed_total_delta < f64::from(sample.concurrency) {
+            Some("join_failed")
+        } else if accepted + rejected <= 0.0 {
+            Some("no_load_reached")
+        } else if matches!(p95, P95::TooFew) {
+            Some("insufficient_samples")
+        } else if matches!(p95, P95::AboveTop(_))
+            && matches!(p95_breaches_budget(p95), Breach::Indeterminate)
+        {
+            Some("p95_indeterminate")
+        } else {
+            None
+        };
+
+    // AM5: a saturated server that accepted nothing but rejected something is a
+    // real measurement, not an invalid level — annotate it.
+    let mut notes = Vec::new();
+    if accepted <= 0.0 && rejected > 0.0 {
+        notes.push(REJECTION_STORM_NOTE.to_string());
+    }
+
+    Ok(LevelVerdict {
+        concurrency: sample.concurrency,
+        valid: invalid_reason.is_none(),
+        invalid_reason: invalid_reason.map(str::to_string),
+        p95,
+        p95_bucket_width_s,
+        queue_growth,
+        plateau_by_family,
+        notes,
+    })
 }
 
 /// The measured breaking point.
@@ -743,8 +1246,25 @@ pub struct BreakingPoint {
 /// comparator is [`p95_breaches_budget`] — inclusive at the budget (AM9).
 #[must_use]
 pub fn breaking_point(verdicts: &[LevelVerdict]) -> Option<BreakingPoint> {
-    let _ = verdicts;
-    todo!("m20d I4: breaking-point state machine")
+    for v in verdicts {
+        if !v.valid {
+            continue;
+        }
+        // p95 wins ties: it is the SLO of record.
+        if matches!(p95_breaches_budget(v.p95), Breach::Yes) {
+            return Some(BreakingPoint {
+                concurrency: v.concurrency,
+                reason: P95_BREACH_REASON.to_string(),
+            });
+        }
+        if let Some(family) = v.queue_growth.first() {
+            return Some(BreakingPoint {
+                concurrency: v.concurrency,
+                reason: format!("{QUEUE_BREACH_PREFIX}{family}"),
+            });
+        }
+    }
+    None
 }
 
 /// AM7 DIAGNOSTIC (never a breach reason): families whose per-level plateau is
@@ -752,23 +1272,51 @@ pub fn breaking_point(verdicts: &[LevelVerdict]) -> Option<BreakingPoint> {
 /// humans and G11 re-judge from the raw series in the report.
 #[must_use]
 pub fn cross_level_growth(verdicts: &[LevelVerdict]) -> Vec<String> {
-    let _ = verdicts;
-    todo!("m20d I4: cross-level plateau diagnostic")
+    let mut out = Vec::new();
+    if verdicts.len() < 3 {
+        return out;
+    }
+    // Family order follows the first verdict's plateau order (QUEUE_FAMILIES).
+    let families: Vec<String> = verdicts[0]
+        .plateau_by_family
+        .iter()
+        .map(|(f, _)| f.clone())
+        .collect();
+    for family in families {
+        let series: Vec<Option<f64>> = verdicts
+            .iter()
+            .map(|v| {
+                v.plateau_by_family
+                    .iter()
+                    .find(|(f, _)| f == &family)
+                    .and_then(|(_, p)| *p)
+            })
+            .collect();
+        let grows = series
+            .windows(3)
+            .any(|w| matches!(w, [Some(a), Some(b), Some(c)] if a < b && b < c));
+        if grows {
+            out.push(family);
+        }
+    }
+    out
 }
 
 /// Total threads this run will spawn: one per client plus the scraper.
 #[must_use]
 pub fn total_driver_threads(clients: u32) -> usize {
-    let _ = clients;
-    todo!("m20d I4: thread count")
+    clients as usize + 1
 }
 
 /// AM4: [`CO_LOCATION_NOTE`] iff the driver outnumbers the host's parallelism.
 /// Parallelism is INJECTED so this stays a pure, tested function.
 #[must_use]
 pub fn co_location_note(driver_threads: usize, available_parallelism: usize) -> Option<String> {
-    let _ = (driver_threads, available_parallelism);
-    todo!("m20d I4: co-location note")
+    if driver_threads > available_parallelism {
+        Some(CO_LOCATION_NOTE.to_string())
+    } else {
+        None
+    }
 }
 
 // ===========================================================================
@@ -783,16 +1331,32 @@ pub fn co_location_note(driver_threads: usize, available_parallelism: usize) -> 
 /// is behind a crate boundary, and DRY-across-boundaries is not a goal here.
 #[must_use]
 pub fn json_escape(s: &str) -> String {
-    let _ = s;
-    todo!("m20d I5: json escape")
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if u32::from(c) < 0x20 => out.push_str(&format!("\\u{:04x}", u32::from(c))),
+            c => out.push(c),
+        }
+    }
+    out
 }
 
 /// Render an `f64` as a JSON number, or `null` when it is not finite (a `+Inf`
 /// bucket width must never emit the invalid JSON token `inf`).
 #[must_use]
 pub fn json_number(v: f64) -> String {
-    let _ = v;
-    todo!("m20d I5: json number")
+    if v.is_finite() {
+        // Rust's f64 Display gives the shortest round-tripping decimal and omits a
+        // trailing `.0` for integer-valued floats (12.0 -> "12", 0.0 -> "0").
+        format!("{v}")
+    } else {
+        "null".to_string()
+    }
 }
 
 /// One level's raw sample paired with its verdict.
@@ -819,9 +1383,128 @@ pub struct Run {
 /// token. The breaking point is computed HERE from the level verdicts via
 /// [`breaking_point`], so the report can never disagree with the state machine.
 #[must_use]
+/// `"..."` — a JSON string literal, escaped.
+fn json_str(s: &str) -> String {
+    format!("\"{}\"", json_escape(s))
+}
+
+/// A JSON array of strings.
+fn json_str_array(items: &[String]) -> String {
+    let inner: Vec<String> = items.iter().map(|s| json_str(s)).collect();
+    format!("[{}]", inner.join(","))
+}
+
+/// A JSON array of numbers.
+fn json_num_array(items: &[f64]) -> String {
+    let inner: Vec<String> = items.iter().map(|v| json_number(*v)).collect();
+    format!("[{}]", inner.join(","))
+}
+
+/// An optional f64 report field: `null` when `None`, else the JSON number.
+fn json_opt_number(v: Option<f64>) -> String {
+    v.map_or_else(|| "null".to_string(), json_number)
+}
+
+fn scenario_name(scenario: Scenario) -> &'static str {
+    match scenario {
+        Scenario::Movement => "movement",
+    }
+}
+
+fn render_level(report: &LevelReport) -> String {
+    let s = &report.sample;
+    let v = &report.verdict;
+
+    let queues: Vec<String> = s
+        .queue_readings
+        .iter()
+        .map(|(family, series)| format!("{}:{}", json_str(family), json_num_array(series)))
+        .collect();
+    let plateau: Vec<String> = v
+        .plateau_by_family
+        .iter()
+        .map(|(family, median)| format!("{}:{}", json_str(family), json_opt_number(*median)))
+        .collect();
+
+    let invalid_reason = match &v.invalid_reason {
+        Some(reason) => json_str(reason),
+        None => "null".to_string(),
+    };
+
+    format!(
+        concat!(
+            "{{\"concurrency\":{},\"scrapes\":{},\"clients_connected\":{},",
+            "\"movement_tick_p95_s\":{},\"p95_state\":{},\"p95_top_finite_s\":{},",
+            "\"p95_bucket_width_s\":{},\"queues\":{{{}}},\"queue_growth\":{},",
+            "\"plateau\":{{{}}},\"enqueue_move_accepted_delta\":{},",
+            "\"enqueue_move_rejected_delta\":{},\"movement_tick_txn_delta\":{},",
+            "\"attempted_sends\":{},\"drain_cap_hits\":{},\"send_errors\":{},",
+            "\"valid\":{},\"invalid_reason\":{},\"notes\":{}}}"
+        ),
+        s.concurrency,
+        s.p95_snapshots.len(),
+        s.clients_connected,
+        json_opt_number(p95_value_s(v.p95)),
+        json_str(p95_state_name(v.p95)),
+        json_opt_number(p95_top_finite_s(v.p95)),
+        json_opt_number(v.p95_bucket_width_s),
+        queues.join(","),
+        json_str_array(&v.queue_growth),
+        plateau.join(","),
+        json_number(s.enqueue_accepted_delta),
+        json_number(s.enqueue_rejected_delta),
+        json_number(s.movement_tick_txn_delta),
+        s.attempted_sends,
+        s.drain_cap_hits,
+        s.send_errors,
+        v.valid,
+        invalid_reason,
+        json_str_array(&v.notes),
+    )
+}
+
 pub fn render_report(run: &Run) -> String {
-    let _ = run;
-    todo!("m20d I5: report renderer")
+    let cfg = &run.config;
+
+    let verdicts: Vec<LevelVerdict> = run.levels.iter().map(|l| l.verdict.clone()).collect();
+    let bp = breaking_point(&verdicts);
+    let breaking_point_json = match &bp {
+        Some(point) => format!(
+            "{{\"concurrency\":{},\"reason\":{}}}",
+            point.concurrency,
+            json_str(&point.reason)
+        ),
+        None => "null".to_string(),
+    };
+    let not_reached = bp.is_none();
+
+    let levels: Vec<String> = run.levels.iter().map(render_level).collect();
+
+    format!(
+        concat!(
+            "{{\"tool\":{},\"schema\":{},\"run_id\":{},\"server\":{},\"db\":{},",
+            "\"db_identity\":{},\"transport\":{},\"scenario\":{},\"step_ms\":{},",
+            "\"scrape_interval_ms\":{},\"hold_scrapes\":{},\"move_rate\":{},\"seed\":{},",
+            "\"breaking_point\":{},\"not_reached\":{},\"levels\":[{}],\"notes\":{}}}"
+        ),
+        json_str(TOOL_NAME),
+        SCHEMA_VERSION,
+        json_str(&cfg.run_id),
+        json_str(&cfg.server),
+        json_str(&cfg.db),
+        json_str(&run.db_identity),
+        json_str(TRANSPORT),
+        json_str(scenario_name(cfg.scenario)),
+        BUDGET_MS,
+        cfg.scrape_interval_ms,
+        cfg.hold_scrapes,
+        cfg.move_rate,
+        cfg.seed,
+        breaking_point_json,
+        not_reached,
+        levels.join(","),
+        json_str_array(&run.notes),
+    )
 }
 
 // ===========================================================================
@@ -834,16 +1517,14 @@ pub fn render_report(run: &Run) -> String {
 /// `join_failed` guard turns any future drift into a loud tool error).
 #[must_use]
 pub fn bot_name(i: u32) -> String {
-    let _ = i;
-    todo!("m20d I6: bot name")
+    format!("LoadBot {i}")
 }
 
 /// Per-client monotonic `seq` for the `step_index`-th intent: starts at 1
 /// (the server rejects `seq <= last_input_seq`).
 #[must_use]
 pub fn seq_for(step_index: u64) -> u64 {
-    let _ = step_index;
-    todo!("m20d I6: intent seq")
+    step_index + 1
 }
 
 /// The walk: East/West ONLY, so `y` never changes and the bot can never step
@@ -855,8 +1536,16 @@ pub fn seq_for(step_index: u64) -> u64 {
 /// grass invariant against the REAL map and the REAL `apply_move`.
 #[must_use]
 pub fn next_input(client_index: u32, seq: u64, seed: u64) -> MoveInput {
-    let _ = (client_index, seq, seed);
-    todo!("m20d I6: bot walk")
+    // A seeded per-client phase offset keeps clients out of lockstep; a triangle
+    // wave over a 32-intent period guarantees both directions appear inside any
+    // window of 32 consecutive intents (so the bot always reverses off a wall).
+    let phase = tick_seed(u64::from(client_index), 0, seed) % 32;
+    let t = (seq + phase) % 32;
+    if t < 16 {
+        MoveInput::Step(Direction::East)
+    } else {
+        MoveInput::Step(Direction::West)
+    }
 }
 
 // ===========================================================================
@@ -866,8 +1555,27 @@ pub fn next_input(client_index: u32, seq: u64, seed: u64) -> MoveInput {
 /// Standard base64 with `=` padding (only used for `Sec-WebSocket-Key`).
 #[must_use]
 pub fn b64_encode(bytes: &[u8]) -> String {
-    let _ = bytes;
-    todo!("m20d I7: base64")
+    const ALPHABET: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len().div_ceil(3) * 4);
+    for chunk in bytes.chunks(3) {
+        let b0 = u32::from(chunk[0]);
+        let b1 = chunk.get(1).map_or(0, |b| u32::from(*b));
+        let b2 = chunk.get(2).map_or(0, |b| u32::from(*b));
+        let n = (b0 << 16) | (b1 << 8) | b2;
+        out.push(ALPHABET[((n >> 18) & 0x3F) as usize]);
+        out.push(ALPHABET[((n >> 12) & 0x3F) as usize]);
+        if chunk.len() > 1 {
+            out.push(ALPHABET[((n >> 6) & 0x3F) as usize]);
+        } else {
+            out.push(b'=');
+        }
+        if chunk.len() > 2 {
+            out.push(ALPHABET[(n & 0x3F) as usize]);
+        } else {
+            out.push(b'=');
+        }
+    }
+    String::from_utf8(out).expect("base64 alphabet is ASCII")
 }
 
 /// A seeded 16-byte `Sec-WebSocket-Key` (24 base64 chars ending `==`). The
@@ -875,45 +1583,68 @@ pub fn b64_encode(bytes: &[u8]) -> String {
 /// SHA-1); the 101 status line is the handshake proof.
 #[must_use]
 pub fn ws_key_from_seed(seed: u64) -> String {
-    let _ = seed;
-    todo!("m20d I7: ws key")
+    let mut bytes = [0u8; 16];
+    let lo = tick_seed(0, 0x5745_424B, seed).to_le_bytes(); // "WEBK"
+    let hi = tick_seed(1, 0x5745_424B, seed).to_le_bytes();
+    bytes[..8].copy_from_slice(&lo);
+    bytes[8..].copy_from_slice(&hi);
+    b64_encode(&bytes)
 }
 
 /// Seeded 4-byte client mask for frame `frame_index` (RFC 6455 requires every
 /// client→server frame to be masked). Seeded, so a run replays byte-identically.
 #[must_use]
 pub fn mask_from_seed(seed: u64, frame_index: u64) -> [u8; 4] {
-    let _ = (seed, frame_index);
-    todo!("m20d I7: frame mask")
+    let h = tick_seed(frame_index, 0x4D41_534B, seed).to_le_bytes(); // "MASK"
+    [h[0], h[1], h[2], h[3]]
 }
 
 /// XOR the payload with the mask, in place. An involution: applying it twice
 /// restores the original bytes.
 pub fn apply_mask(payload: &mut [u8], mask: [u8; 4]) {
-    let _ = (payload, mask);
-    todo!("m20d I7: mask/unmask")
+    for (i, b) in payload.iter_mut().enumerate() {
+        *b ^= mask[i % 4];
+    }
+}
+
+/// A complete masked client→server frame with FIN set and the given opcode.
+fn encode_masked_frame(opcode: u8, payload: &[u8], mask: [u8; 4]) -> Vec<u8> {
+    let mut frame = Vec::with_capacity(payload.len() + 14);
+    frame.push(0x80 | opcode);
+    let n = payload.len();
+    if n < 126 {
+        frame.push(0x80 | u8::try_from(n).expect("n < 126 fits u8"));
+    } else if n <= 65535 {
+        frame.push(0x80 | 126);
+        frame.extend_from_slice(&u16::try_from(n).expect("n <= 65535 fits u16").to_be_bytes());
+    } else {
+        frame.push(0x80 | 127);
+        frame.extend_from_slice(&u64::try_from(n).expect("len fits u64").to_be_bytes());
+    }
+    frame.extend_from_slice(&mask);
+    let mut body = payload.to_vec();
+    apply_mask(&mut body, mask);
+    frame.extend_from_slice(&body);
+    frame
 }
 
 /// A complete masked client→server TEXT frame (`FIN|opcode 1` = `0x81`), using
 /// the 7-bit / 16-bit / 64-bit payload-length encoding as required.
 #[must_use]
 pub fn encode_text_frame(payload: &str, mask: [u8; 4]) -> Vec<u8> {
-    let _ = (payload, mask);
-    todo!("m20d I7: text frame")
+    encode_masked_frame(0x1, payload.as_bytes(), mask)
 }
 
 /// A masked PONG (`0x8A`) echoing the ping payload.
 #[must_use]
 pub fn encode_pong(payload: &[u8], mask: [u8; 4]) -> Vec<u8> {
-    let _ = (payload, mask);
-    todo!("m20d I7: pong frame")
+    encode_masked_frame(0xA, payload, mask)
 }
 
 /// A masked, empty-payload CLOSE (`0x88`).
 #[must_use]
 pub fn encode_close(mask: [u8; 4]) -> Vec<u8> {
-    let _ = mask;
-    todo!("m20d I7: close frame")
+    encode_masked_frame(0x8, &[], mask)
 }
 
 /// A parsed RFC 6455 frame header.
@@ -935,8 +1666,53 @@ pub struct FrameHeader {
 /// # Errors
 /// A 64-bit length with the high bit set (RFC 6455 forbids it).
 pub fn parse_frame_header(buf: &[u8]) -> Result<Option<FrameHeader>, String> {
-    let _ = buf;
-    todo!("m20d I7: frame header parse")
+    if buf.len() < 2 {
+        return Ok(None);
+    }
+    let b0 = buf[0];
+    let b1 = buf[1];
+    let fin = b0 & 0x80 != 0;
+    let opcode = b0 & 0x0F;
+    let masked = b1 & 0x80 != 0;
+    let len_code = b1 & 0x7F;
+
+    let mut offset = 2usize;
+    let payload_len: u64 = if len_code < 126 {
+        u64::from(len_code)
+    } else if len_code == 126 {
+        if buf.len() < 4 {
+            return Ok(None);
+        }
+        offset += 2;
+        u64::from(u16::from_be_bytes([buf[2], buf[3]]))
+    } else {
+        if buf.len() < 10 {
+            return Ok(None);
+        }
+        let v = u64::from_be_bytes([
+            buf[2], buf[3], buf[4], buf[5], buf[6], buf[7], buf[8], buf[9],
+        ]);
+        if v & 0x8000_0000_0000_0000 != 0 {
+            return Err("64-bit frame length has the high bit set (RFC 6455 §5.2)".to_string());
+        }
+        offset += 8;
+        v
+    };
+
+    if masked {
+        if buf.len() < offset + 4 {
+            return Ok(None);
+        }
+        offset += 4;
+    }
+
+    Ok(Some(FrameHeader {
+        fin,
+        opcode,
+        masked,
+        payload_len,
+        header_len: offset,
+    }))
 }
 
 /// A complete control frame surfaced by the drain (always ≤125 bytes per RFC).
@@ -986,15 +1762,78 @@ pub struct DrainOutcome {
 /// An unknown opcode, a control frame longer than 125 bytes, or an illegal
 /// 64-bit length — fail loud rather than desynchronise the stream.
 pub fn drain_feed(state: &mut DrainState, bytes: &[u8]) -> Result<DrainOutcome, String> {
-    let _ = (state, bytes);
-    todo!("m20d I7: streaming drain")
+    let mut outcome = DrainOutcome::default();
+    state.buf.extend_from_slice(bytes);
+
+    loop {
+        // 1. Mid-skip of a data payload: discard what we can.
+        if state.skip_remaining > 0 {
+            let avail = state.buf.len() as u64;
+            let take = state.skip_remaining.min(avail);
+            let take_usize = usize::try_from(take).expect("take <= buf.len()");
+            state.buf.drain(0..take_usize);
+            state.skip_remaining -= take;
+            if state.skip_remaining == 0 {
+                outcome.data_frames_skipped += 1;
+                continue;
+            }
+            break; // exhausted the buffer, still skipping
+        }
+
+        // 2. Parse a header.
+        let header = match parse_frame_header(&state.buf)? {
+            Some(h) => h,
+            None => break, // incomplete header: consume nothing
+        };
+
+        // Server→client frames must never be masked (RFC 6455 §5.1); a masked
+        // frame is a protocol violation we fail loud on rather than desync.
+        if header.masked {
+            return Err("server->client frame must not be masked (RFC 6455 §5.1)".to_string());
+        }
+
+        match header.opcode {
+            0x0..=0x2 => {
+                // 4. Data frame: consume the header, then skip the payload.
+                state.buf.drain(0..header.header_len);
+                if header.payload_len == 0 {
+                    outcome.data_frames_skipped += 1;
+                } else {
+                    state.skip_remaining = header.payload_len;
+                }
+            }
+            0x8..=0xA => {
+                // 3. Control frame: surface it once whole (never truncated).
+                if header.payload_len > 125 {
+                    return Err("control frame exceeds 125 bytes (RFC 6455 §5.5)".to_string());
+                }
+                let payload_len = usize::try_from(header.payload_len).expect("<= 125 fits usize");
+                let total = header.header_len + payload_len;
+                if state.buf.len() < total {
+                    break; // wait for the whole control frame
+                }
+                let payload = state.buf[header.header_len..total].to_vec();
+                match header.opcode {
+                    0x8 => {
+                        outcome.control.push(ControlFrame::Close);
+                        outcome.closed = true;
+                    }
+                    0x9 => outcome.control.push(ControlFrame::Ping(payload)),
+                    _ => outcome.control.push(ControlFrame::Pong(payload)),
+                }
+                state.buf.drain(0..total);
+            }
+            other => return Err(format!("unknown frame opcode: {other:#x}")),
+        }
+    }
+
+    Ok(outcome)
 }
 
 /// `/v1/database/<db>/subscribe` — the WS upgrade path.
 #[must_use]
 pub fn ws_path(db: &str) -> String {
-    let _ = db;
-    todo!("m20d I7: ws path")
+    format!("/v1/database/{db}/subscribe")
 }
 
 /// The full WS upgrade request, terminated by a blank line. The token appears
@@ -1002,30 +1841,59 @@ pub fn ws_path(db: &str) -> String {
 /// param (`?token=` also works on this host but would leak into access logs).
 #[must_use]
 pub fn handshake_request(host: &str, db: &str, token: &str, ws_key: &str) -> String {
-    let _ = (host, db, token, ws_key);
-    todo!("m20d I7: handshake request")
+    let path = ws_path(db);
+    let mut req = String::new();
+    req.push_str(&format!("GET {path} HTTP/1.1\r\n"));
+    req.push_str(&format!("Host: {host}\r\n"));
+    req.push_str("Upgrade: websocket\r\n");
+    req.push_str("Connection: Upgrade\r\n");
+    req.push_str("Sec-WebSocket-Version: 13\r\n");
+    req.push_str(&format!("Sec-WebSocket-Key: {ws_key}\r\n"));
+    req.push_str(&format!("Sec-WebSocket-Protocol: {WS_SUBPROTOCOL}\r\n"));
+    req.push_str(&format!("Authorization: Bearer {token}\r\n"));
+    req.push_str("\r\n");
+    req
 }
 
 /// `true` only for a `101 Switching Protocols` status line.
 #[must_use]
 pub fn handshake_is_101(response_head: &str) -> bool {
-    let _ = response_head;
-    todo!("m20d I7: handshake status")
+    let first = response_head.lines().next().unwrap_or("");
+    let mut parts = first.split_whitespace();
+    let _http = parts.next();
+    parts.next() == Some("101")
 }
 
 /// An HTTP/1.1 POST with a JSON body and `Connection: close`.
 /// `Content-Length` is the BYTE length of the body.
 #[must_use]
 pub fn http_post_request(host: &str, path: &str, body: &str, token: Option<&str>) -> String {
-    let _ = (host, path, body, token);
-    todo!("m20d I7: http post")
+    let mut req = String::new();
+    req.push_str(&format!("POST {path} HTTP/1.1\r\n"));
+    req.push_str(&format!("Host: {host}\r\n"));
+    req.push_str("Content-Type: application/json\r\n");
+    req.push_str(&format!("Content-Length: {}\r\n", body.len()));
+    if let Some(t) = token {
+        req.push_str(&format!("Authorization: Bearer {t}\r\n"));
+    }
+    req.push_str("Connection: close\r\n");
+    req.push_str("\r\n");
+    req.push_str(body);
+    req
 }
 
 /// An HTTP/1.1 GET with `Connection: close` (identity resolution + `/metrics`).
 #[must_use]
 pub fn http_get_request(host: &str, path: &str, token: Option<&str>) -> String {
-    let _ = (host, path, token);
-    todo!("m20d I7: http get")
+    let mut req = String::new();
+    req.push_str(&format!("GET {path} HTTP/1.1\r\n"));
+    req.push_str(&format!("Host: {host}\r\n"));
+    if let Some(t) = token {
+        req.push_str(&format!("Authorization: Bearer {t}\r\n"));
+    }
+    req.push_str("Connection: close\r\n");
+    req.push_str("\r\n");
+    req
 }
 
 /// The status code from a response head.
@@ -1033,8 +1901,14 @@ pub fn http_get_request(host: &str, path: &str, token: Option<&str>) -> String {
 /// # Errors
 /// A missing or non-numeric status line (fail loud; never a default 200).
 pub fn http_status(response_head: &str) -> Result<u16, String> {
-    let _ = response_head;
-    todo!("m20d I7: http status")
+    let first = response_head.lines().next().unwrap_or("");
+    let mut parts = first.split_whitespace();
+    let _http = parts.next();
+    let code = parts
+        .next()
+        .ok_or_else(|| format!("no status code in response head: {first:?}"))?;
+    code.parse::<u16>()
+        .map_err(|_| format!("non-numeric status code: {code:?}"))
 }
 
 /// Extract a STRING field by key from a JSON document, at ANY nesting depth,
@@ -1043,45 +1917,149 @@ pub fn http_status(response_head: &str) -> Result<u16, String> {
 ///
 /// # Errors
 /// The key is absent, its value is not a string, or the document is truncated.
+/// Read a JSON string literal starting at `chars[start] == '"'`. Returns the RAW
+/// content (escapes intact) and the index just past the closing quote.
+fn read_json_string(chars: &[char], start: usize) -> Result<(String, usize), String> {
+    let len = chars.len();
+    let mut i = start + 1;
+    let mut raw = String::new();
+    while i < len {
+        let c = chars[i];
+        if c == '\\' {
+            raw.push(c);
+            i += 1;
+            if i >= len {
+                return Err("truncated escape in JSON string".to_string());
+            }
+            raw.push(chars[i]);
+            i += 1;
+            continue;
+        }
+        if c == '"' {
+            return Ok((raw, i + 1));
+        }
+        raw.push(c);
+        i += 1;
+    }
+    Err("unterminated JSON string".to_string())
+}
+
+/// Decode JSON string escapes.
+fn json_string_unescape(raw: &str) -> Result<String, String> {
+    let mut out = String::new();
+    let mut chars = raw.chars();
+    while let Some(c) = chars.next() {
+        if c != '\\' {
+            out.push(c);
+            continue;
+        }
+        match chars.next() {
+            Some('"') => out.push('"'),
+            Some('\\') => out.push('\\'),
+            Some('/') => out.push('/'),
+            Some('n') => out.push('\n'),
+            Some('r') => out.push('\r'),
+            Some('t') => out.push('\t'),
+            Some('b') => out.push('\u{0008}'),
+            Some('f') => out.push('\u{000C}'),
+            Some('u') => {
+                let hex: String = (0..4).map_while(|_| chars.next()).collect();
+                if hex.len() != 4 {
+                    return Err("truncated \\u escape".to_string());
+                }
+                let cp = u32::from_str_radix(&hex, 16)
+                    .map_err(|_| format!("invalid \\u escape: {hex:?}"))?;
+                out.push(char::from_u32(cp).ok_or_else(|| format!("invalid codepoint: {cp}"))?);
+            }
+            Some(other) => return Err(format!("bad JSON escape: \\{other}")),
+            None => return Err("trailing backslash in JSON string".to_string()),
+        }
+    }
+    Ok(out)
+}
+
 pub fn extract_json_string_field(json: &str, key: &str) -> Result<String, String> {
-    let _ = (json, key);
-    todo!("m20d I7: json field extract")
+    let chars: Vec<char> = json.chars().collect();
+    let len = chars.len();
+    let mut i = 0usize;
+    while i < len {
+        if chars[i] != '"' {
+            i += 1;
+            continue;
+        }
+        // A string literal. Read it whole so its interior can never be mistaken
+        // for a key.
+        let (raw, end) = read_json_string(&chars, i)?;
+        // Is it a key? (next non-whitespace char is ':')
+        let mut j = end;
+        while j < len && chars[j].is_whitespace() {
+            j += 1;
+        }
+        if j < len && chars[j] == ':' {
+            if json_string_unescape(&raw)? == key {
+                // Parse the value.
+                let mut k = j + 1;
+                while k < len && chars[k].is_whitespace() {
+                    k += 1;
+                }
+                if k < len && chars[k] == '"' {
+                    let (value_raw, _) = read_json_string(&chars, k)?;
+                    return json_string_unescape(&value_raw);
+                }
+                return Err(format!("field {key:?} is present but not a string"));
+            }
+            // Not our key: resume scanning after the ':'.
+            i = j + 1;
+        } else {
+            // A value string: resume scanning after it.
+            i = end;
+        }
+    }
+    Err(format!("field {key:?} not found"))
 }
 
 /// SATS-JSON name of a direction (externally-tagged enum variant).
 #[must_use]
 pub fn sats_direction(d: Direction) -> &'static str {
-    let _ = d;
-    todo!("m20d I7: direction name")
+    match d {
+        Direction::North => "North",
+        Direction::South => "South",
+        Direction::East => "East",
+        Direction::West => "West",
+    }
 }
 
 /// SATS-JSON for a `MoveInput`: `{"Step":{"East":[]}}` / `{"Jump":[]}`
 /// (live-verified end-to-end — the bot moved (1,1)→(2,1)).
 #[must_use]
 pub fn sats_move_input(input: MoveInput) -> String {
-    let _ = input;
-    todo!("m20d I7: MoveInput encoding")
+    match input {
+        MoveInput::Step(d) => format!("{{\"Step\":{{\"{}\":[]}}}}", sats_direction(d)),
+        MoveInput::Jump => "{\"Jump\":[]}".to_string(),
+    }
 }
 
 /// `join_game` args ARRAY: `["LoadBot 3"]`.
 #[must_use]
 pub fn args_join_game(name: &str) -> String {
-    let _ = name;
-    todo!("m20d I7: join_game args")
+    format!("[{}]", json_str(name))
 }
 
 /// `enqueue_move` args ARRAY: `[{"Step":{"East":[]}},7]`.
 #[must_use]
 pub fn args_enqueue_move(input: MoveInput, seq: u64) -> String {
-    let _ = (input, seq);
-    todo!("m20d I7: enqueue_move args")
+    format!("[{},{}]", sats_move_input(input), seq)
 }
 
 /// `{"Subscribe":{"query_strings":[…],"request_id":N}}` over [`SUBSCRIBE_QUERIES`].
 #[must_use]
 pub fn client_msg_subscribe(request_id: u32) -> String {
-    let _ = request_id;
-    todo!("m20d I7: Subscribe envelope")
+    let queries: Vec<String> = SUBSCRIBE_QUERIES.iter().map(|q| json_str(q)).collect();
+    format!(
+        "{{\"Subscribe\":{{\"query_strings\":[{}],\"request_id\":{}}}}}",
+        queries.join(","),
+        request_id
+    )
 }
 
 /// `{"CallReducer":{"reducer":…,"args":…,"request_id":N,"flags":0}}` where
@@ -1089,8 +2067,12 @@ pub fn client_msg_subscribe(request_id: u32) -> String {
 /// not a raw array), and `flags` is the number 0.
 #[must_use]
 pub fn client_msg_call_reducer(reducer: &str, args: &str, request_id: u32) -> String {
-    let _ = (reducer, args, request_id);
-    todo!("m20d I7: CallReducer envelope")
+    format!(
+        "{{\"CallReducer\":{{\"reducer\":{},\"args\":{},\"request_id\":{},\"flags\":0}}}}",
+        json_str(reducer),
+        json_str(args),
+        request_id
+    )
 }
 
 // ===========================================================================
@@ -1107,6 +2089,68 @@ pub struct ClientCounters {
     pub drain_cap_hits: std::sync::atomic::AtomicU64,
 }
 
+/// Locate `needle` inside `haystack`.
+fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
+    haystack.windows(needle.len()).position(|w| w == needle)
+}
+
+/// One blocking HTTP/1.1 request over a fresh `Connection: close` socket. Returns
+/// the response head and body (split on the first blank line).
+fn http_roundtrip(host: &str, request: &str) -> Result<(String, String), String> {
+    let mut stream = TcpStream::connect(host).map_err(|e| format!("connect {host}: {e}"))?;
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| e.to_string())?;
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("write: {e}"))?;
+    let mut raw = Vec::new();
+    stream
+        .read_to_end(&mut raw)
+        .map_err(|e| format!("read: {e}"))?;
+    let text = String::from_utf8_lossy(&raw).into_owned();
+    Ok(match text.split_once("\r\n\r\n") {
+        Some((head, body)) => (head.to_string(), body.to_string()),
+        None => (text, String::new()),
+    })
+}
+
+/// One `/metrics` scrape → parsed exposition (AM12 retries live in the caller).
+fn scrape_once(host: &str, token: &str) -> Result<Vec<Sample>, String> {
+    let request = http_get_request(host, "/metrics", Some(token));
+    let (head, body) = http_roundtrip(host, &request)?;
+    let status = http_status(&head)?;
+    if status != 200 {
+        return Err(format!("/metrics returned {status}"));
+    }
+    parse_exposition(&body)
+}
+
+/// Read an HTTP response head (up to the blank line) from a live socket.
+fn read_response_head(stream: &mut TcpStream) -> Result<String, String> {
+    let mut buf: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 512];
+    loop {
+        let n = stream
+            .read(&mut chunk)
+            .map_err(|e| format!("handshake read: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        buf.extend_from_slice(&chunk[..n]);
+        if let Some(pos) = find_subslice(&buf, b"\r\n\r\n") {
+            return Ok(String::from_utf8_lossy(&buf[..pos]).into_owned());
+        }
+        if buf.len() > 65536 {
+            return Err("handshake response head too large".to_string());
+        }
+    }
+    Err("connection closed before the handshake completed".to_string())
+}
+
 /// Open a WS connection, handshake, subscribe, and `join_game`.
 /// AM11: sets BOTH a read timeout ([`READ_TIMEOUT_MS`]) and a write timeout.
 fn connect_client(
@@ -1114,33 +2158,336 @@ fn connect_client(
     cfg: &Config,
     client_index: u32,
     token: &str,
-) -> Result<std::net::TcpStream, String> {
-    let _ = (host, cfg, client_index, token);
-    todo!("m20d I8: connect + handshake + subscribe + join")
+) -> Result<TcpStream, String> {
+    let mut stream = TcpStream::connect(host).map_err(|e| format!("connect {host}: {e}"))?;
+    // A generous timeout for the handshake exchange; tightened to the drain
+    // allowance below once we are streaming frames.
+    stream
+        .set_read_timeout(Some(Duration::from_secs(10)))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_millis(READ_TIMEOUT_MS * 4)))
+        .map_err(|e| e.to_string())?;
+
+    let ws_key = ws_key_from_seed(cfg.seed ^ u64::from(client_index));
+    let request = handshake_request(host, &cfg.db, token, &ws_key);
+    stream
+        .write_all(request.as_bytes())
+        .map_err(|e| format!("handshake write: {e}"))?;
+    let head = read_response_head(&mut stream)?;
+    if !handshake_is_101(&head) {
+        return Err(format!("websocket handshake rejected: {head}"));
+    }
+
+    // The single hot subscription (frame 0), then join_game (frame 1).
+    let subscribe = client_msg_subscribe(1);
+    let sub_mask = mask_from_seed(cfg.seed ^ u64::from(client_index), 0);
+    stream
+        .write_all(&encode_text_frame(&subscribe, sub_mask))
+        .map_err(|e| format!("subscribe write: {e}"))?;
+    let join = client_msg_call_reducer(
+        REDUCER_JOIN_GAME,
+        &args_join_game(&bot_name(client_index)),
+        2,
+    );
+    let join_mask = mask_from_seed(cfg.seed ^ u64::from(client_index), 1);
+    stream
+        .write_all(&encode_text_frame(&join, join_mask))
+        .map_err(|e| format!("join write: {e}"))?;
+
+    stream
+        .set_read_timeout(Some(Duration::from_millis(READ_TIMEOUT_MS)))
+        .map_err(|e| e.to_string())?;
+    Ok(stream)
 }
 
 /// One thread per client: bounded drain (AM2) → one intent → open-loop sleep (AM1).
-fn client_thread(cfg: &Config, client_index: u32, token: &str, counters: &ClientCounters) {
-    let _ = (cfg, client_index, token, counters);
-    todo!("m20d I8: client loop")
+fn client_thread(
+    host: &str,
+    cfg: &Config,
+    client_index: u32,
+    token: &str,
+    counters: &ClientCounters,
+    running: &AtomicBool,
+) {
+    let mut stream = match connect_client(host, cfg, client_index, token) {
+        Ok(stream) => {
+            counters.connected.fetch_add(1, Ordering::Relaxed);
+            stream
+        }
+        Err(_) => {
+            counters.send_errors.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+    };
+
+    let mut drain = DrainState::default();
+    let mut buf = [0u8; 8192];
+    let mut step_index = 0u64;
+    let mut frame_index = 2u64; // frames 0 (subscribe) and 1 (join) are spent
+
+    while running.load(Ordering::Relaxed) {
+        // Bounded drain: read once (the socket blocks for at most READ_TIMEOUT_MS).
+        match stream.read(&mut buf) {
+            Ok(0) => break,
+            Ok(n) => match drain_feed(&mut drain, &buf[..n]) {
+                Ok(out) => {
+                    if out.data_frames_skipped >= DRAIN_FRAME_CAP as u64 {
+                        counters.drain_cap_hits.fetch_add(1, Ordering::Relaxed);
+                    }
+                    for control in out.control {
+                        if let ControlFrame::Ping(payload) = control {
+                            let mask =
+                                mask_from_seed(cfg.seed ^ u64::from(client_index), frame_index);
+                            frame_index += 1;
+                            let _ = stream.write_all(&encode_pong(&payload, mask));
+                        }
+                    }
+                    if out.closed {
+                        break;
+                    }
+                }
+                Err(_) => {
+                    counters.send_errors.fetch_add(1, Ordering::Relaxed);
+                    break;
+                }
+            },
+            Err(ref e)
+                if e.kind() == std::io::ErrorKind::WouldBlock
+                    || e.kind() == std::io::ErrorKind::TimedOut => {}
+            Err(_) => {
+                counters.send_errors.fetch_add(1, Ordering::Relaxed);
+                break;
+            }
+        }
+
+        // One movement intent.
+        let seq = seq_for(step_index);
+        let input = next_input(client_index, seq, cfg.seed);
+        let args = args_enqueue_move(input, seq);
+        let message = client_msg_call_reducer(REDUCER_ENQUEUE_MOVE, &args, 3);
+        let mask = mask_from_seed(cfg.seed ^ u64::from(client_index), frame_index);
+        frame_index += 1;
+        match stream.write_all(&encode_text_frame(&message, mask)) {
+            Ok(()) => {
+                counters.attempted_sends.fetch_add(1, Ordering::Relaxed);
+            }
+            Err(_) => {
+                counters.send_errors.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        step_index += 1;
+
+        let sleep = pacing_sleep_ms(cfg.move_rate);
+        if sleep > 0 {
+            std::thread::sleep(Duration::from_millis(sleep));
+        }
+    }
+
+    let mask = mask_from_seed(cfg.seed ^ u64::from(client_index), frame_index);
+    let _ = stream.write_all(&encode_close(mask));
 }
 
 /// The single scraper thread: `GET /metrics` with explicit timeouts and bounded
-/// retries (AM12) — exhaustion aborts the run LOUDLY with a partial report.
+/// retries (AM12). Exhaustion clears `running` and aborts the level LOUDLY.
 fn scraper_thread(
     cfg: &Config,
-    db_identity: &str,
-    scrapes: &std::sync::Mutex<Vec<Vec<Sample>>>,
+    host: &str,
+    token: &str,
+    scrapes: &Mutex<Vec<Vec<Sample>>>,
+    running: &AtomicBool,
 ) -> Result<(), String> {
-    let _ = (cfg, db_identity, scrapes);
-    todo!("m20d I8: scraper loop")
+    for _ in 0..cfg.hold_scrapes {
+        let mut collected = None;
+        for _ in 0..3u32 {
+            match scrape_once(host, token) {
+                Ok(samples) => {
+                    collected = Some(samples);
+                    break;
+                }
+                Err(_) => std::thread::sleep(Duration::from_millis(cfg.scrape_interval_ms)),
+            }
+        }
+        match collected {
+            Some(samples) => scrapes
+                .lock()
+                .map_err(|_| "scrapes mutex poisoned".to_string())?
+                .push(samples),
+            None => {
+                running.store(false, Ordering::Relaxed);
+                return Err("metrics scrape failed after retries (AM12)".to_string());
+            }
+        }
+        std::thread::sleep(Duration::from_millis(cfg.scrape_interval_ms));
+    }
+    running.store(false, Ordering::Relaxed);
+    Ok(())
+}
+
+/// Detect a cumulative counter going backwards between scrapes (host restart).
+fn detect_counter_reset(scrapes: &[Vec<Sample>], db_identity: &str) -> bool {
+    let pin = txn_count_match(db_identity, REDUCER_MOVEMENT_TICK, "true");
+    let mut previous: Option<f64> = None;
+    for scrape in scrapes {
+        if let Ok(value) = counter_sum(scrape, TXN_COUNT_FAMILY, &pin) {
+            if let Some(prev) = previous {
+                if value < prev {
+                    return true;
+                }
+            }
+            previous = Some(value);
+        }
+    }
+    false
+}
+
+/// Fold the raw per-scrape samples + the thread counters into one [`LevelSample`].
+fn build_level_sample(
+    db_identity: &str,
+    concurrency: u32,
+    counters: &ClientCounters,
+    scrapes: &[Vec<Sample>],
+) -> Result<LevelSample, String> {
+    let mut p95_snapshots = Vec::with_capacity(scrapes.len());
+    for scrape in scrapes {
+        p95_snapshots.push(histogram_snapshot(
+            scrape,
+            TXN_ELAPSED_BUCKET_FAMILY,
+            &txn_match(db_identity, REDUCER_MOVEMENT_TICK),
+        )?);
+    }
+
+    let mut queue_readings = Vec::with_capacity(QUEUE_FAMILIES.len());
+    for family in QUEUE_FAMILIES {
+        let series: Vec<f64> = scrapes
+            .iter()
+            .map(|scrape| gauge_sum(scrape, family, &queue_match(db_identity)).unwrap_or(0.0))
+            .collect();
+        queue_readings.push((family.to_string(), series));
+    }
+
+    let first = scrapes.first();
+    let last = scrapes.last();
+    let delta = |reducer: &str, committed: &str| -> f64 {
+        let pin = txn_count_match(db_identity, reducer, committed);
+        let start = first.map_or(0.0, |s| {
+            counter_sum(s, TXN_COUNT_FAMILY, &pin).unwrap_or(0.0)
+        });
+        let end = last.map_or(0.0, |s| {
+            counter_sum(s, TXN_COUNT_FAMILY, &pin).unwrap_or(0.0)
+        });
+        end - start
+    };
+
+    Ok(LevelSample {
+        concurrency,
+        clients_connected: u32::try_from(counters.connected.load(Ordering::Relaxed))
+            .unwrap_or(u32::MAX),
+        join_committed_total_delta: delta(REDUCER_JOIN_GAME, "true"),
+        enqueue_accepted_delta: delta(REDUCER_ENQUEUE_MOVE, "true"),
+        enqueue_rejected_delta: delta(REDUCER_ENQUEUE_MOVE, "false"),
+        movement_tick_txn_delta: delta(REDUCER_MOVEMENT_TICK, "true"),
+        p95_snapshots,
+        queue_readings,
+        attempted_sends: counters.attempted_sends.load(Ordering::Relaxed),
+        drain_cap_hits: counters.drain_cap_hits.load(Ordering::Relaxed),
+        send_errors: counters.send_errors.load(Ordering::Relaxed),
+        counter_decreased: detect_counter_reset(scrapes, db_identity),
+    })
+}
+
+/// Drive ONE concurrency level: spawn the clients + scraper, hold, then judge.
+fn run_level(
+    host: &str,
+    cfg: &Config,
+    token: &str,
+    db_identity: &str,
+    concurrency: u32,
+) -> Result<LevelReport, String> {
+    let counters = ClientCounters::default();
+    let running = AtomicBool::new(true);
+    let scrapes: Mutex<Vec<Vec<Sample>>> = Mutex::new(Vec::new());
+
+    // Shared references (Copy) so the `move` client closures don't consume the
+    // owned values we still need after the scope joins.
+    let counters_ref = &counters;
+    let running_ref = &running;
+    let scrapes_ref = &scrapes;
+    let scrape_result = std::thread::scope(|scope| -> Result<(), String> {
+        for client_index in 0..concurrency {
+            scope.spawn(move || {
+                client_thread(host, cfg, client_index, token, counters_ref, running_ref);
+            });
+        }
+        let scraper =
+            scope.spawn(move || scraper_thread(cfg, host, token, scrapes_ref, running_ref));
+        scraper
+            .join()
+            .map_err(|_| "scraper thread panicked".to_string())?
+    });
+    scrape_result?;
+
+    let raw = scrapes
+        .into_inner()
+        .map_err(|_| "scrapes mutex poisoned".to_string())?;
+    let sample = build_level_sample(db_identity, concurrency, &counters, &raw)?;
+    let verdict = evaluate_level(&sample)?;
+    Ok(LevelReport { sample, verdict })
 }
 
 /// The whole run: parse → resolve identity → ramp → judge → report. Returns the
 /// process exit code.
 fn run(args: &[String]) -> Result<i32, String> {
-    let _ = args;
-    todo!("m20d I8: run")
+    let cfg = parse_args(args)?;
+    let host = server_host(&cfg.server)?;
+
+    // Resolve a fresh identity + bearer token (POST /v1/identity).
+    let (id_head, id_body) =
+        http_roundtrip(&host, &http_post_request(&host, "/v1/identity", "", None))?;
+    if http_status(&id_head)? != 200 {
+        return Err(format!("POST /v1/identity failed: {id_head}"));
+    }
+    let token = extract_json_string_field(&id_body, "token")?;
+
+    // Resolve the database NAME → identity (GET /v1/database/<name>).
+    let db_path = format!("/v1/database/{}", cfg.db);
+    let (db_head, db_body) =
+        http_roundtrip(&host, &http_get_request(&host, &db_path, Some(&token)))?;
+    if http_status(&db_head)? != 200 {
+        return Err(format!("GET {db_path} failed: {db_head}"));
+    }
+    let db_identity = database_identity_from_json(&db_body)?;
+
+    let parallelism = std::thread::available_parallelism().map_or(1, std::num::NonZeroUsize::get);
+    let mut notes = Vec::new();
+    if let Some(note) = co_location_note(total_driver_threads(cfg.clients_max), parallelism) {
+        notes.push(note);
+    }
+
+    let mut levels = Vec::new();
+    for concurrency in ramp_levels(cfg.clients_start, cfg.clients_step, cfg.clients_max) {
+        levels.push(run_level(&host, &cfg, &token, &db_identity, concurrency)?);
+    }
+
+    // AM7 cross-level plateau diagnostic (never a breach reason).
+    let verdicts: Vec<LevelVerdict> = levels.iter().map(|l| l.verdict.clone()).collect();
+    for family in cross_level_growth(&verdicts) {
+        notes.push(format!("cross_level_growth:{family}"));
+    }
+
+    let run = Run {
+        config: cfg,
+        db_identity,
+        auth_token: token,
+        levels,
+        notes,
+    };
+    let report = render_report(&run);
+    match run.config.report_path.as_deref() {
+        Some(path) => std::fs::write(path, &report).map_err(|e| format!("write {path}: {e}"))?,
+        None => println!("{report}"),
+    }
+    Ok(0)
 }
 
 fn main() {
@@ -1241,7 +2588,10 @@ mod tests {
         while i < chars.len() && chars[i] != '{' {
             i += 1;
         }
-        assert!(i < chars.len(), "no JSON object found in the rendered report");
+        assert!(
+            i < chars.len(),
+            "no JSON object found in the rendered report"
+        );
         let mut keys: Vec<String> = Vec::new();
         let mut depth = 0usize;
         while i < chars.len() {
@@ -1272,7 +2622,10 @@ mod tests {
                         lit.push(chars[j]);
                         j += 1;
                     }
-                    assert!(j < chars.len(), "unterminated string in the rendered report");
+                    assert!(
+                        j < chars.len(),
+                        "unterminated string in the rendered report"
+                    );
                     let mut k = j + 1;
                     while k < chars.len() && chars[k].is_whitespace() {
                         k += 1;
@@ -1405,9 +2758,23 @@ mod tests {
     /// G11 runs a fixed-concurrency A/B.
     #[test]
     fn t01_clients_max_must_not_be_below_start() {
-        let bad = argv(&["--run-id", "T", "--clients-start", "20", "--clients-max", "19"]);
+        let bad = argv(&[
+            "--run-id",
+            "T",
+            "--clients-start",
+            "20",
+            "--clients-max",
+            "19",
+        ]);
         assert!(parse_args(&bad).is_err(), "max < start must be rejected");
-        let equal = argv(&["--run-id", "T", "--clients-start", "20", "--clients-max", "20"]);
+        let equal = argv(&[
+            "--run-id",
+            "T",
+            "--clients-start",
+            "20",
+            "--clients-max",
+            "20",
+        ]);
         let cfg = parse_args(&equal).expect("max == start is the single-level G11 case");
         assert_eq!(cfg.clients_start, cfg.clients_max);
     }
@@ -1549,7 +2916,10 @@ mod tests {
             "https must fail loud — this driver cannot do TLS"
         );
         assert!(server_host("ws://127.0.0.1:3000").is_err());
-        assert!(server_host("127.0.0.1:3000").is_err(), "a scheme is required");
+        assert!(
+            server_host("127.0.0.1:3000").is_err(),
+            "a scheme is required"
+        );
         assert!(server_host("http://").is_err(), "an empty host is an error");
     }
 
@@ -1625,8 +2995,14 @@ mod tests {
     /// T3: comments and blank lines are skipped, not errors.
     #[test]
     fn t03_parse_line_skips_comments_and_blanks() {
-        assert_eq!(parse_line("# HELP spacetime_num_txns_total total"), Ok(None));
-        assert_eq!(parse_line("# TYPE spacetime_num_txns_total counter"), Ok(None));
+        assert_eq!(
+            parse_line("# HELP spacetime_num_txns_total total"),
+            Ok(None)
+        );
+        assert_eq!(
+            parse_line("# TYPE spacetime_num_txns_total counter"),
+            Ok(None)
+        );
         assert_eq!(parse_line(""), Ok(None));
         assert_eq!(parse_line("   "), Ok(None));
     }
@@ -1681,7 +3057,10 @@ mod tests {
     /// into a fake "0" and then into a fake breaking point.
     #[test]
     fn t03_parse_line_fails_loud_on_malformed_input() {
-        assert!(parse_line("spacetime_x{a=\"b\"").is_err(), "unbalanced brace");
+        assert!(
+            parse_line("spacetime_x{a=\"b\"").is_err(),
+            "unbalanced brace"
+        );
         assert!(parse_line("spacetime_x").is_err(), "no value");
         assert!(parse_line("spacetime_x{a=\"b\"} notanumber").is_err());
         assert!(parse_line("{a=\"b\"} 1").is_err(), "no family name");
@@ -1695,8 +3074,14 @@ mod tests {
         assert_eq!(label_unescape("a\\\"b"), Ok("a\"b".to_string()));
         assert_eq!(label_unescape("a\\\\b"), Ok("a\\b".to_string()));
         assert_eq!(label_unescape("a\\nb"), Ok("a\nb".to_string()));
-        assert!(label_unescape("a\\tb").is_err(), "\\t is not a legal label escape");
-        assert!(label_unescape("a\\").is_err(), "a trailing backslash is an error");
+        assert!(
+            label_unescape("a\\tb").is_err(),
+            "\\t is not a legal label escape"
+        );
+        assert!(
+            label_unescape("a\\").is_err(),
+            "a trailing backslash is an error"
+        );
     }
 
     /// T3: a label value containing an escaped quote and a comma must not split
@@ -1706,7 +3091,11 @@ mod tests {
         let s = parse_line("spacetime_x{note=\"a\\\"b,c\",k=\"v\"} 3")
             .expect("escaped quotes inside a label value are legal")
             .expect("not a comment");
-        assert_eq!(s.labels.len(), 2, "the comma inside the value must not split labels");
+        assert_eq!(
+            s.labels.len(),
+            2,
+            "the comma inside the value must not split labels"
+        );
         assert_eq!(label_value(&s, "note"), Some("a\"b,c"));
         assert_eq!(label_value(&s, "k"), Some("v"));
     }
@@ -1730,7 +3119,10 @@ mod tests {
             matches_labels(&s, &[("reducer", "enqueue_move")]),
             "a subset of one label must match a four-label series"
         );
-        assert!(matches_labels(&s, &[]), "an empty requirement matches anything");
+        assert!(
+            matches_labels(&s, &[]),
+            "an empty requirement matches anything"
+        );
         assert!(
             !matches_labels(&s, &[("reducer", "join_game")]),
             "a value mismatch must not match"
@@ -1916,7 +3308,11 @@ mod tests {
             "c200abcdef"
         );
         assert_eq!(strip_0x("0xabc"), "abc");
-        assert_eq!(strip_0x("abc"), "abc", "already-stripped input is unchanged");
+        assert_eq!(
+            strip_0x("abc"),
+            "abc",
+            "already-stripped input is unchanged"
+        );
         assert!(database_identity_from_json("{\"other\":1}").is_err());
     }
 
@@ -1943,7 +3339,13 @@ mod tests {
     #[test]
     fn t04_bucket_bounds_are_read_from_the_exposition_text() {
         let counts: Vec<u64> = vec![0, 0, 0, 0, 0, 0, 0, 0, 90, 100, 100, 100, 100, 100];
-        let text = hist_text("c200ab", REDUCER_MOVEMENT_TICK, "Reducer", &LIVE_LE_TEXT, &counts);
+        let text = hist_text(
+            "c200ab",
+            REDUCER_MOVEMENT_TICK,
+            "Reducer",
+            &LIVE_LE_TEXT,
+            &counts,
+        );
         let samples = parse_exposition(&text).expect("valid exposition");
         let pinned = txn_match("c200ab", REDUCER_MOVEMENT_TICK);
         let s = histogram_snapshot(&samples, TXN_ELAPSED_BUCKET_FAMILY, &pinned)
@@ -2033,7 +3435,9 @@ mod tests {
     fn t05_p95_interpolates_within_real_live_bucket_bounds() {
         let delta = snap(
             &LIVE_BOUNDS,
-            &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 90.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 90.0, 100.0, 100.0, 100.0, 100.0, 100.0,
+            ],
         );
         let v = extract_p95_value(p95_from_delta(&delta));
         assert!(
@@ -2053,7 +3457,9 @@ mod tests {
     fn t05_p95_bucket_width_exposes_the_400ms_live_bucket() {
         let delta = snap(
             &LIVE_BOUNDS,
-            &[0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 90.0, 100.0, 100.0, 100.0, 100.0, 100.0],
+            &[
+                0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 90.0, 100.0, 100.0, 100.0, 100.0, 100.0,
+            ],
         );
         let w = p95_bucket_width_s(&delta).expect("a Value outcome has a containing bucket");
         assert!(close(w, 0.4), "expected the (0.1, 0.5] width 0.4, got {w}");
@@ -2217,7 +3623,10 @@ mod tests {
             Breach::No,
             "strictly under the budget is healthy"
         );
-        assert_eq!(p95_breaches_budget(P95::Value(BUDGET_S + 1e-9)), Breach::Yes);
+        assert_eq!(
+            p95_breaches_budget(P95::Value(BUDGET_S + 1e-9)),
+            Breach::Yes
+        );
     }
 
     /// T5: a healthy p95 well under the budget is not a breach, and
@@ -2246,7 +3655,10 @@ mod tests {
         let delta = window_delta(&raw)
             .expect("consistent le sets")
             .expect("two usable readings");
-        assert!(close(delta.counts[0], 0.0), "the first bucket delta is 0, not 100");
+        assert!(
+            close(delta.counts[0], 0.0),
+            "the first bucket delta is 0, not 100"
+        );
         assert!(close(delta.counts[1], 100.0));
         let v = extract_p95_value(p95_windowed(&raw).expect("consistent le sets"));
         assert!(
@@ -2450,7 +3862,10 @@ mod tests {
     }
 
     fn verdict_with_p95(n: u32, p95: P95) -> LevelVerdict {
-        LevelVerdict { p95, ..ok_verdict(n) }
+        LevelVerdict {
+            p95,
+            ..ok_verdict(n)
+        }
     }
 
     fn verdict_with_queue_growth(n: u32, family: &str) -> LevelVerdict {
@@ -2574,7 +3989,10 @@ mod tests {
             p95: P95::Value(9.9),
             ..ok_verdict(10)
         };
-        assert_eq!(breaking_point(&[ok_verdict(5), broken, ok_verdict(15)]), None);
+        assert_eq!(
+            breaking_point(&[ok_verdict(5), broken, ok_verdict(15)]),
+            None
+        );
     }
 
     /// T7 + AM9: a p95 sitting EXACTLY on STEP_MS crosses. This is the same
@@ -2610,7 +4028,10 @@ mod tests {
             ..ok_verdict(n)
         };
         let verdicts = vec![plateau(5, 1.0), plateau(10, 4.0), plateau(15, 9.0)];
-        assert_eq!(cross_level_growth(&verdicts), vec![QUEUE_FAMILIES[0].to_string()]);
+        assert_eq!(
+            cross_level_growth(&verdicts),
+            vec![QUEUE_FAMILIES[0].to_string()]
+        );
         assert_eq!(
             breaking_point(&verdicts),
             None,
@@ -2668,10 +4089,7 @@ mod tests {
     #[test]
     fn t07_two_families_breaching_at_one_level_names_the_first_in_declaration_order() {
         let both = LevelVerdict {
-            queue_growth: vec![
-                QUEUE_FAMILIES[0].to_string(),
-                QUEUE_FAMILIES[1].to_string(),
-            ],
+            queue_growth: vec![QUEUE_FAMILIES[0].to_string(), QUEUE_FAMILIES[1].to_string()],
             ..ok_verdict(10)
         };
         let bp = breaking_point(&[ok_verdict(5), both]).expect("level 10 crosses");
@@ -3052,10 +4470,7 @@ mod tests {
         let v = evaluate_level(&s).expect("consistent bounds");
         assert_eq!(
             v.queue_growth,
-            vec![
-                QUEUE_FAMILIES[0].to_string(),
-                QUEUE_FAMILIES[1].to_string()
-            ],
+            vec![QUEUE_FAMILIES[0].to_string(), QUEUE_FAMILIES[1].to_string()],
             "a stable order is what makes the reported reason reproducible"
         );
     }
@@ -3292,10 +4707,7 @@ mod tests {
         assert!(report.contains("\"scrapes\":3"));
         assert!(report.contains("\"clients_connected\":5"));
         assert!(
-            report.contains(&format!(
-                "\"{}\":[9,1,1,1]",
-                QUEUE_FAMILIES[0]
-            )),
+            report.contains(&format!("\"{}\":[9,1,1,1]", QUEUE_FAMILIES[0])),
             "the RAW per-scrape gauge series (warm-up reading included) must be \
              emitted so a human can re-judge, got: {report}"
         );
@@ -3405,7 +4817,10 @@ mod tests {
                 !levels.is_empty(),
                 "case {case}: start={start} step={step} max={max} must yield ≥1 level"
             );
-            assert_eq!(levels[0], start, "case {case}: the ramp starts at --clients-start");
+            assert_eq!(
+                levels[0], start,
+                "case {case}: the ramp starts at --clients-start"
+            );
             for w in levels.windows(2) {
                 assert_eq!(
                     w[1] - w[0],
@@ -3626,7 +5041,11 @@ mod tests {
         let map = zone_0_real();
         let mut state = at_spawn();
         state = apply_move(&state, MoveInput::Step(Direction::South), &map, Millis(200));
-        assert_eq!(state.pos, TilePos { x: 1, y: 2 }, "row 2 is walkable at x=1");
+        assert_eq!(
+            state.pos,
+            TilePos { x: 1, y: 2 },
+            "row 2 is walkable at x=1"
+        );
         assert!(!map.is_grass(state.pos), "(1,2) itself is plain floor");
         state = apply_move(&state, MoveInput::Step(Direction::East), &map, Millis(400));
         assert_eq!(state.pos, TilePos { x: 2, y: 2 });
@@ -3647,8 +5066,14 @@ mod tests {
             assert!(map.is_walkable(p), "({x},1) must be walkable");
             assert!(!map.is_grass(p), "({x},1) must not be tall grass");
         }
-        assert!(!map.is_walkable(TilePos { x: 0, y: 1 }), "(0,1) is the west wall");
-        assert!(!map.is_walkable(TilePos { x: 9, y: 1 }), "(9,1) is the east wall");
+        assert!(
+            !map.is_walkable(TilePos { x: 0, y: 1 }),
+            "(0,1) is the west wall"
+        );
+        assert!(
+            !map.is_walkable(TilePos { x: 9, y: 1 }),
+            "(9,1) is the east wall"
+        );
     }
 
     // =======================================================================
@@ -3711,7 +5136,10 @@ mod tests {
         assert_eq!(key, ws_key_from_seed(0x5EED_0D20), "seeded, so replayable");
         let distinct: std::collections::BTreeSet<String> =
             (0..64u64).map(ws_key_from_seed).collect();
-        assert!(distinct.len() > 1, "the key must actually depend on the seed");
+        assert!(
+            distinct.len() > 1,
+            "the key must actually depend on the seed"
+        );
     }
 
     /// T14: masks are seeded and vary per frame — a constant mask (or an
@@ -3787,7 +5215,18 @@ mod tests {
         let f = encode_text_frame(&payload, M);
         assert_eq!(
             &f[0..10],
-            &[0x81, 0x80 | 127, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00]
+            &[
+                0x81,
+                0x80 | 127,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x00,
+                0x01,
+                0x00,
+                0x00
+            ]
         );
         assert_eq!(f.len(), 2 + 8 + 4 + 65536);
         assert_eq!(unmask_payload(&f, 14, M), payload.as_bytes());
@@ -3915,7 +5354,10 @@ mod tests {
         let second = drain_feed(&mut st, &frame[2..]).expect("valid stream");
         assert_eq!(second.data_frames_skipped, 1, "the frame completes here");
         assert_eq!(st.skip_remaining, 0);
-        assert!(st.buf.is_empty(), "a fully consumed frame leaves no residue");
+        assert!(
+            st.buf.is_empty(),
+            "a fully consumed frame leaves no residue"
+        );
     }
 
     /// T14 + AM2: the skip counter RESUMES across feeds — this is the whole
@@ -3926,7 +5368,10 @@ mod tests {
         let mut st = DrainState::default();
         let a = drain_feed(&mut st, &frame[0..100]).expect("valid stream");
         assert_eq!(a.data_frames_skipped, 0);
-        assert_eq!(st.skip_remaining, 204, "300 payload − 96 payload bytes seen");
+        assert_eq!(
+            st.skip_remaining, 204,
+            "300 payload − 96 payload bytes seen"
+        );
         let b = drain_feed(&mut st, &frame[100..200]).expect("valid stream");
         assert_eq!(b.data_frames_skipped, 0);
         assert_eq!(st.skip_remaining, 104);
@@ -4456,7 +5901,10 @@ mod tests {
             "AM2: a generous ceiling against a pathological server, not a pacing knob"
         );
         assert_eq!(WS_SUBPROTOCOL, "v1.json.spacetimedb");
-        assert_eq!(TXN_ELAPSED_BUCKET_FAMILY, "spacetime_txn_elapsed_time_sec_bucket");
+        assert_eq!(
+            TXN_ELAPSED_BUCKET_FAMILY,
+            "spacetime_txn_elapsed_time_sec_bucket"
+        );
         assert_eq!(TXN_COUNT_FAMILY, "spacetime_num_txns_total");
         assert_eq!(REDUCER_MOVEMENT_TICK, "movement_tick");
         assert_eq!(REDUCER_ENQUEUE_MOVE, "enqueue_move");
