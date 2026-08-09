@@ -561,16 +561,21 @@ pub fn window_delta(raw: &[BucketSnapshot]) -> Result<Option<BucketSnapshot>, St
 /// Prometheus `histogram_quantile` performs:
 ///
 /// ```text
+/// any count < 0                             -> Reset      (CHECKED FIRST)
 /// total = counts[last]                      (the +Inf cumulative count)
 /// total <= 0                                -> TooFew
-/// any count < 0                             -> Reset
-/// rank  = 0.95 * total
+/// rank  = 0.95 * total                      (a FRACTIONAL rank; never rounded)
 /// i     = smallest index with counts[i] >= rank
 /// bounds[i] is +Inf                         -> AboveTop(bounds[len-2])
 /// lower       = if i == 0 { 0.0 } else { bounds[i-1] }
 /// lower_count = if i == 0 { 0.0 } else { counts[i-1] }
 /// Value(lower + (bounds[i] - lower) * (rank - lower_count) / (counts[i] - lower_count))
 /// ```
+///
+/// The negative-count test MUST precede the total test: a whole-window reset
+/// yields an all-negative delta, whose `total` is also `<= 0`. Checking `total`
+/// first would report `TooFew` (a level with no data) instead of `Reset` (a
+/// host restart) — two different invalid reasons, and only one of them is true.
 #[must_use]
 pub fn p95_from_delta(delta: &BucketSnapshot) -> P95 {
     let _ = delta;
@@ -2136,6 +2141,65 @@ mod tests {
         assert_eq!(p95_from_delta(&delta), P95::Reset);
         assert_eq!(p95_state_name(P95::Reset), "reset");
         assert_eq!(p95_value_s(P95::Reset), None);
+        assert_eq!(
+            p95_bucket_width_s(&delta),
+            None,
+            "a reset window has no containing bucket, so no resolution to report"
+        );
+    }
+
+    /// T5 ORDER PIN: a WHOLE-window reset makes every bucket delta negative, so
+    /// `total <= 0` is ALSO true. The negative-count test must be evaluated
+    /// FIRST or this fixture comes back `TooFew` ("no data") instead of `Reset`
+    /// ("the host restarted") — two different invalid reasons, one of them false.
+    #[test]
+    fn t05_negative_total_with_negative_buckets_is_reset_not_too_few() {
+        let delta = snap(&[1.0, 2.0, INF], &[-10.0, -5.0, -3.0]);
+        assert_eq!(
+            p95_from_delta(&delta),
+            P95::Reset,
+            "an all-negative delta is a counter reset, not an empty window"
+        );
+    }
+
+    /// T5 RANK PIN: the rank is FRACTIONAL and must be used as-is.
+    ///
+    /// total = 17 ⇒ rank = 0.95 · 17 = **16.15** (not 16, not 17).
+    /// counts[0] = 10 < 16.15 ≤ counts[1] = 17, so i = 1:
+    ///   1.0 + (2.0 − 1.0) · (16.15 − 10) / (17 − 10) = 1 + 6.15/7 ≈ **1.8785714…**
+    ///
+    /// Kills a rank that is floored or rounded to 16 (⇒ 1.8571428…) and one that
+    /// is ceiled to 17 (⇒ 2.0). Every other fixture in this file has a total
+    /// that is a multiple of 20, where 0.95·total is an exact integer and all
+    /// three implementations agree — this is the only fixture that separates them.
+    #[test]
+    fn t05_rank_is_a_fractional_value_not_rounded() {
+        let delta = snap(&[1.0, 2.0, INF], &[10.0, 17.0, 17.0]);
+        let v = extract_p95_value(p95_from_delta(&delta));
+        assert!(
+            close(v, 1.0 + 6.15 / 7.0),
+            "expected the fractional-rank result ≈1.8785714 (floor/round gives \
+             ≈1.8571428, ceil gives 2.0), got {v}"
+        );
+    }
+
+    /// T5 BOUNDARY: `rank == counts[i]` exactly must resolve INSIDE that finite
+    /// bucket. total = 20 ⇒ rank = 19, and counts[1] = 19, so the documented
+    /// `counts[i] >= rank` picks i = 1 and interpolates to the bucket's upper
+    /// edge: 1.0 + 1.0 · (19 − 10)/(19 − 10) = **2.0**.
+    ///
+    /// Kills a strict `>` search, which would skip past the finite bucket to
+    /// `+Inf` and wrongly report AboveTop — turning a measurable level into an
+    /// invalid one at exactly the boundary the SLO cares about.
+    #[test]
+    fn t05_rank_equal_to_the_top_bucket_count_stays_a_value() {
+        let delta = snap(&[1.0, 2.0, INF], &[10.0, 19.0, 20.0]);
+        let p = p95_from_delta(&delta);
+        assert!(
+            matches!(p, P95::Value(_)),
+            "rank == counts[i] must resolve inside the finite bucket, got {p:?}"
+        );
+        assert!(close(extract_p95_value(p), 2.0));
     }
 
     /// T5 + AM9 BOUNDARY: the breach comparator is INCLUSIVE. p95 exactly at
@@ -2206,6 +2270,15 @@ mod tests {
             None,
             "2 raw readings leave only 1 usable after the warm-up discard"
         );
+    }
+
+    /// T5 ROBUSTNESS: an EMPTY raw series (a level whose scrapes all failed)
+    /// must not panic on an index or an underflowing `len() - 1`. It is simply
+    /// too few readings.
+    #[test]
+    fn t05_empty_raw_series_is_too_few_not_a_panic() {
+        assert_eq!(window_delta(&[]).expect("no le conflict"), None);
+        assert_eq!(p95_windowed(&[]).expect("no le conflict"), P95::TooFew);
     }
 
     /// T5 + AM14: a bound set that changes mid-level (a re-published module)
@@ -2570,6 +2643,46 @@ mod tests {
         );
     }
 
+    /// T7 ROBUSTNESS: the SINGLE-LEVEL run is the primary documented use case
+    /// (`--clients-start N --clients-max N`, the G11 pairing A/B), and an empty
+    /// verdict list happens whenever the first level aborts. Neither may panic
+    /// on a `windows(3)` / `len() - 2` underflow.
+    #[test]
+    fn t07_cross_level_growth_on_degenerate_ramps_is_empty() {
+        assert!(
+            cross_level_growth(&[]).is_empty(),
+            "no levels means no cross-level trend"
+        );
+        assert!(
+            cross_level_growth(&[ok_verdict(10)]).is_empty(),
+            "the single-level G11 A/B run has nothing to compare against"
+        );
+        assert!(cross_level_growth(&[ok_verdict(10), ok_verdict(20)]).is_empty());
+    }
+
+    /// T7 DETERMINISM: when BOTH queue families diverge at the same level, the
+    /// reported reason names the FIRST family in `QUEUE_FAMILIES` declaration
+    /// order. Without this pin, an implementation backed by a HashMap would
+    /// report a different family on different runs and two identical runs would
+    /// disagree about why the server broke.
+    #[test]
+    fn t07_two_families_breaching_at_one_level_names_the_first_in_declaration_order() {
+        let both = LevelVerdict {
+            queue_growth: vec![
+                QUEUE_FAMILIES[0].to_string(),
+                QUEUE_FAMILIES[1].to_string(),
+            ],
+            ..ok_verdict(10)
+        };
+        let bp = breaking_point(&[ok_verdict(5), both]).expect("level 10 crosses");
+        assert_eq!(bp.concurrency, 10);
+        assert_eq!(
+            bp.reason,
+            format!("{QUEUE_BREACH_PREFIX}{}", QUEUE_FAMILIES[0]),
+            "the reason must be stable across runs, so it follows QUEUE_FAMILIES order"
+        );
+    }
+
     // =======================================================================
     // T8 — evaluate_level: the AM5 validity semantics.
     // =======================================================================
@@ -2828,6 +2941,123 @@ mod tests {
             v.p95_bucket_width_s.expect("a Value outcome has a width"),
             0.1
         ));
+    }
+
+    /// T8 TEETH: an `AboveTop` whose top finite bound is at or OVER the budget
+    /// is a real, decidable measurement — the level stays VALID so it can be
+    /// reported as the breaking point.
+    ///
+    /// Kills the over-broad rule "every AboveTop ⇒ p95_indeterminate ⇒ invalid",
+    /// which passes the under-budget fixture above and would silently discard
+    /// exactly the saturated levels OBS-27 exists to find.
+    #[test]
+    fn t08_above_top_over_budget_level_stays_valid() {
+        let s = LevelSample {
+            p95_snapshots: vec![
+                snap(&[0.1, 0.3, INF], &[0.0, 0.0, 0.0]),
+                snap(&[0.1, 0.3, INF], &[0.0, 0.0, 0.0]),
+                snap(&[0.1, 0.3, INF], &[1.0, 2.0, 100.0]),
+            ],
+            ..base_sample(10)
+        };
+        let v = evaluate_level(&s).expect("consistent bounds");
+        assert_eq!(v.p95, P95::AboveTop(0.3));
+        assert!(
+            0.3 >= BUDGET_S,
+            "precondition: the top finite bound is already over the budget"
+        );
+        assert_eq!(
+            p95_breaches_budget(v.p95),
+            Breach::Yes,
+            "a p95 above a bound that already exceeds the budget is unambiguously a breach"
+        );
+        assert!(
+            v.valid,
+            "a decidable AboveTop must stay VALID — it is the breaking point"
+        );
+        assert_eq!(v.invalid_reason, None);
+    }
+
+    /// T8 PRECEDENCE: a join shortfall explains the missing load, so a level
+    /// with BOTH problems reports the tool error, not its symptom.
+    #[test]
+    fn t08_join_failed_takes_precedence_over_no_load_reached() {
+        let s = LevelSample {
+            join_committed_total_delta: 4.0,
+            enqueue_accepted_delta: 0.0,
+            enqueue_rejected_delta: 0.0,
+            ..base_sample(10)
+        };
+        let v = evaluate_level(&s).expect("consistent bounds");
+        assert!(!v.valid);
+        assert_eq!(
+            v.invalid_reason.as_deref(),
+            Some("join_failed"),
+            "bots that never joined cannot offer load — report the cause, not the effect"
+        );
+    }
+
+    /// T8 PRECEDENCE: no offered load explains an empty histogram window, so a
+    /// level with both reports `no_load_reached`.
+    #[test]
+    fn t08_no_load_reached_takes_precedence_over_insufficient_samples() {
+        let s = LevelSample {
+            enqueue_accepted_delta: 0.0,
+            enqueue_rejected_delta: 0.0,
+            p95_snapshots: vec![snap(&[0.1, 0.5, INF], &[1.0, 1.0, 1.0])],
+            ..base_sample(10)
+        };
+        let v = evaluate_level(&s).expect("consistent bounds");
+        assert!(!v.valid);
+        assert_eq!(v.invalid_reason.as_deref(), Some("no_load_reached"));
+    }
+
+    /// T8 + AM6 TEETH: growth that exists only because the discarded warm-up
+    /// reading was counted must NOT be reported. Raw `[1, 2, 3]` looks like
+    /// divergence; the usable window is `[2, 3]` — too few readings to judge.
+    ///
+    /// Kills an `evaluate_level` that reimplements the growth check over the raw
+    /// series instead of going through the discard-owning path, which would
+    /// report a breaking point off the connect burst itself.
+    #[test]
+    fn t08_queue_growth_that_depends_on_the_discarded_reading_does_not_count() {
+        let s = LevelSample {
+            queue_readings: vec![
+                (QUEUE_FAMILIES[0].to_string(), vec![1.0, 2.0, 3.0]),
+                (QUEUE_FAMILIES[1].to_string(), vec![0.0, 0.0, 0.0]),
+            ],
+            ..base_sample(10)
+        };
+        let v = evaluate_level(&s).expect("consistent bounds");
+        assert!(
+            v.queue_growth.is_empty(),
+            "only [2, 3] survives the warm-up discard — no verdict is possible, \
+             got {:?}",
+            v.queue_growth
+        );
+    }
+
+    /// T8 DETERMINISM: when both families diverge, `queue_growth` lists them in
+    /// `QUEUE_FAMILIES` declaration order — the order the breach reason is then
+    /// chosen from (see the matching T7 test).
+    #[test]
+    fn t08_both_families_growing_are_listed_in_declaration_order() {
+        let s = LevelSample {
+            queue_readings: vec![
+                (QUEUE_FAMILIES[0].to_string(), vec![9.0, 1.0, 5.0, 20.0]),
+                (QUEUE_FAMILIES[1].to_string(), vec![9.0, 2.0, 6.0, 30.0]),
+            ],
+            ..base_sample(10)
+        };
+        let v = evaluate_level(&s).expect("consistent bounds");
+        assert_eq!(
+            v.queue_growth,
+            vec![
+                QUEUE_FAMILIES[0].to_string(),
+                QUEUE_FAMILIES[1].to_string()
+            ],
+            "a stable order is what makes the reported reason reproducible"
+        );
     }
 
     /// T8 + AM14: an `le` set that changes mid-level is a TOOL error, surfaced
