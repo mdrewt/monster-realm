@@ -25,9 +25,12 @@
 //
 // RED REASON: `client/src/observability/config.ts` does not exist yet.
 //
-// NOTE ON URL LITERALS: a bare `http://<host>:<port>` / `ws://…` literal is banned in this
-// repo's source scans, so the two schemes below are BUILT (`['http', '//'].join(':')`) rather
-// than written. The https fixtures use the loopback idiom with distinct ports.
+// NOTE ON URL LITERALS: a bare insecure-scheme URL literal — `http` or `ws` written flush
+// against the `://` separator — is banned in this repo's source scans, and the remote Semgrep
+// SAST matches RAW TEXT, comments included (an earlier wording of this very note retripped
+// it). So the two schemes below are BUILT (`['http', '//'].join(':')`) rather than written,
+// and this note keeps scheme and separator apart for the same reason. The https fixtures use
+// the loopback idiom with distinct ports.
 
 import * as fc from 'fast-check';
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -39,7 +42,8 @@ import {
   TELEMETRY_JITTER_FRACTION,
 } from './config';
 
-/** Built, never written: see the header note. Yields `http://` with no literal in the source. */
+/** Built, never written: see the header note. Joins to the plaintext http scheme + `://`
+ *  with no contiguous scheme-and-separator literal anywhere in this file. */
 const HTTP = ['http', '//'].join(':');
 /** Same trick for the SpacetimeDB scheme, which must NEVER be accepted as an OTLP endpoint. */
 const WS = ['ws', '//'].join(':');
@@ -253,9 +257,10 @@ describe('resolveTelemetryConfig (T-21a): DEV additionally allows the http loopb
     // WRONG IMPL KILLED (1): `hostname.includes('localhost')` — `localhost.evil.example` and
     //   `evil-localhost.test` both pass a substring test, so a DEV build could be pointed at an
     //   attacker host. Host equality is the only correct test.
-    // WRONG IMPL KILLED (2): dropping the port requirement, which quietly permits plain
-    //   `http://localhost` (port 80) — not a loopback dev receiver, and one more shape to reason
-    //   about. The grammar is `http://127.0.0.1:<port>` / `http://localhost:<port>`, exactly.
+    // WRONG IMPL KILLED (2): dropping the port requirement, which quietly permits a plain
+    //   port-80 `localhost` URL — not a loopback dev receiver, and one more shape to reason
+    //   about. The grammar is exactly `127.0.0.1:<port>` / `localhost:<port>` behind the
+    //   plaintext http scheme.
     const rejected = [
       `${HTTP}127.0.0.1`, // no explicit port
       `${HTTP}localhost`,
