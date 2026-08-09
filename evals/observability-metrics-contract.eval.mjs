@@ -36,7 +36,10 @@
 //                    from the reducer label, never from inventing an evt.)
 //                    The pure half — `logDerivedCounter` over inline fixtures —
 //                    always runs, so G5 cannot become a permanently-skipped
-//                    green either.
+//                    green either. MR_OBS_ALLOY_FETCH (a JSON argv ARRAY) swaps
+//                    the metrics read for a subprocess on boxes where Docker
+//                    Desktop scopes host networking to its own VM; unset is the
+//                    production default.
 //
 // THESE ARE PROPERTIES OF THE PINNED HOST BINARY, not of this repository's
 // source, so they cannot regress from a code change here — which is exactly why
@@ -1236,10 +1239,74 @@ export async function observabilityMetricsContractEval() {
       };
     }
 
+    // SEAM, live half only: Docker Desktop scopes `network_mode: host` to its own
+    // VM, so Alloy's loopback endpoint is unreachable from WSL-native Node —
+    // MR_OBS_ALLOY_FETCH supplies an argv vector that CAN reach it (e.g. a
+    // `docker run --network host` curl); the real single-box deployment needs no
+    // override and keeps the in-process fetch below.
+    let fetchArgv = null;
+    const rawFetchArgv = process.env.MR_OBS_ALLOY_FETCH;
+    if (rawFetchArgv !== undefined && rawFetchArgv.trim().length > 0) {
+      let parsedArgv;
+      try {
+        parsedArgv = JSON.parse(rawFetchArgv);
+      } catch (e) {
+        return {
+          name: NAME,
+          pass: false,
+          detail:
+            'LIVE G5: MR_OBS_ALLOY_FETCH is set but does not parse as JSON ' +
+            `(${e?.message ?? String(e)}). It must be a JSON ARGV ARRAY, never a shell string.`,
+        };
+      }
+      const isArgv =
+        Array.isArray(parsedArgv) &&
+        parsedArgv.length > 0 &&
+        parsedArgv.every((a) => typeof a === 'string' && a.length > 0);
+      if (!isArgv) {
+        return {
+          name: NAME,
+          pass: false,
+          detail:
+            'LIVE G5: MR_OBS_ALLOY_FETCH must be a JSON array of one or more non-empty strings ' +
+            '(argv[0] plus its arguments; the metrics URL is appended by this eval). A shell ' +
+            'string is never accepted.',
+        };
+      }
+      fetchArgv = parsedArgv;
+    }
+
     const readCounter = async () => {
-      const res = await fetch(alloyMetricsUrl);
-      if (!res.ok) throw new Error(`GET Alloy self-metrics returned HTTP ${res.status}`);
-      return logDerivedCounter(await res.text(), LOG_COUNTER_NAME, labels);
+      let text;
+      if (fetchArgv === null) {
+        const res = await fetch(alloyMetricsUrl);
+        if (!res.ok) throw new Error(`GET Alloy self-metrics returned HTTP ${res.status}`);
+        text = await res.text();
+      } else {
+        const run = spawnSync(fetchArgv[0], [...fetchArgv.slice(1), alloyMetricsUrl], {
+          encoding: 'utf8',
+          stdio: 'pipe',
+          timeout: 30_000,
+          maxBuffer: 32 * 1024 * 1024,
+        });
+        if (run.error !== undefined && run.error !== null) {
+          throw new Error(
+            `MR_OBS_ALLOY_FETCH '${fetchArgv[0]}' failed to spawn — ${run.error.message}`,
+          );
+        }
+        if (run.status !== 0) {
+          throw new Error(
+            `MR_OBS_ALLOY_FETCH exited ${run.status}: ${`${run.stderr ?? ''}`.trim().slice(0, 200)}`,
+          );
+        }
+        text = run.stdout ?? '';
+        if (text.trim().length === 0) {
+          throw new Error(
+            'MR_OBS_ALLOY_FETCH produced EMPTY stdout — an unread endpoint is not a zero counter',
+          );
+        }
+      }
+      return logDerivedCounter(text, LOG_COUNTER_NAME, labels);
     };
 
     let before;
@@ -1264,8 +1331,14 @@ export async function observabilityMetricsContractEval() {
           // A fixed base + i: no clock anywhere in this eval, and Alloy keys
           // ingestion off file position, not off this field.
           ts: 1782197246180474 + i,
-          target: '__spacetimedb__',
-          filename: '__spacetimedb__',
+          // The MODULE-emitted envelope, confirmed against a live capture: a
+          // module line carries its own target/filename/line_number, and only
+          // HOST-emitted lines say __spacetimedb__. Alloy reads `function`,
+          // `level` and `message`; the rest is here so the fixture is the shape
+          // the tail actually meets.
+          target: 'monster_realm_module::observability',
+          filename: 'server-module/src/observability.rs',
+          line_number: 88,
           function: syntheticReducer,
           message: `{"evt":"heartbeat","content_version":${i}}`,
         }),
@@ -1286,11 +1359,17 @@ export async function observabilityMetricsContractEval() {
     const ATTEMPTS = 20;
     let after = before;
     let reached = false;
+    // A read that keeps throwing is NOT a skip: the last error is carried into
+    // the timeout failure below so a broken seam names itself instead of being
+    // reported as "the counter never rose".
+    let lastReadError = null;
     for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
       await new Promise((resolve) => setTimeout(resolve, 1000));
       try {
         after = await readCounter();
-      } catch {
+        lastReadError = null;
+      } catch (e) {
+        lastReadError = e?.message ?? String(e);
         continue;
       }
       if (after.ok && after.value >= v0 + N) {
@@ -1309,8 +1388,10 @@ export async function observabilityMetricsContractEval() {
         detail:
           `LIVE G5 (OBS-12/OBS-13): ${LOG_COUNTER_NAME}{reducer="${syntheticReducer}"} did not ` +
           `reach ${v0 + N} within ${ATTEMPTS}s — V0=${v0}, last=${after.ok ? after.value : after.reason}, ` +
-          `fixture=${fixturePath}. The S2 tail derives no counter from a file matching Alloy's ` +
-          "own glob, so OBS-13's ingestion hop is dark.",
+          `fixture=${fixturePath}` +
+          `${lastReadError === null ? '' : `, last read error: ${lastReadError}`}. The S2 tail ` +
+          "derives no counter from a file matching Alloy's own glob, so OBS-13's ingestion hop " +
+          'is dark.',
       };
     }
   }

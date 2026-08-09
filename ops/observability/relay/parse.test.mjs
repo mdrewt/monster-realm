@@ -334,15 +334,36 @@ test('parseBreadcrumb: a sched-keyed exit yields the pinned crumb shape', () => 
 });
 
 test('parseBreadcrumb: the reducer is the HOST `function` field, not a module-supplied one', () => {
-  // config.alloy:34-37 — `function` is the host's cross-file attribution and is
-  // always present; a module-rendered "reducer" field is not authoritative. The
-  // sched cases prove the two DISAGREE (function=init, reducer=sync_content).
+  // config.alloy:34-37 — `function` is the HOST's cross-file attribution: it
+  // names the invoking reducer even when the emission happens in a helper in
+  // another file (OBS-10), and it is always present. A module-rendered
+  // "reducer" field inside the payload is a caller-authored convenience and is
+  // NOT authoritative. This record makes the two disagree, which is the only
+  // shape that can tell the two readings apart.
+  const disagreeing = {
+    ok: true,
+    level: 'Info',
+    ts: '1782197246196000',
+    functionName: 'init',
+    payloadText: '{"evt":"span","reducer":"sync_content","cause":"zone:42","phase":"enter"}',
+    payload: { evt: 'span', reducer: 'sync_content', cause: 'zone:42', phase: 'enter' },
+    evt: 'span',
+  };
+  const r = parseBreadcrumb(disagreeing);
+  assert.equal(r.ok, true);
+  assert.equal(
+    r.crumb.reducer,
+    'init',
+    'the crumb reducer must be the host `function`, not the payload-supplied `reducer`',
+  );
+  assert.notEqual(r.crumb.reducer, 'sync_content');
+
+  // ...and the same rule holds on a real golden line, where the payload also
+  // carries a `sched.target_reducer` that must not be mistaken for the reducer.
   const c = useCase('sched-enter');
-  const parsed = parseHostLine(c.host_line);
-  assert.equal(parsed.payload.reducer, 'init');
-  const r = parseBreadcrumb(parsed);
-  assert.equal(r.crumb.reducer, 'init');
-  assert.equal(r.crumb.sched.target_reducer, 'sync_content');
+  const real = parseBreadcrumb(parseHostLine(c.host_line));
+  assert.equal(real.crumb.reducer, 'init');
+  assert.equal(real.crumb.sched.target_reducer, 'sync_content');
 });
 
 test('parseBreadcrumb: rejects, with distinct reasons, everything that is not a pairable phase', () => {
