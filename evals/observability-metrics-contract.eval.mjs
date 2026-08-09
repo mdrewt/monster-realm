@@ -691,7 +691,9 @@ export async function observabilityMetricsContractEval() {
   }
 
   // --- B5: preflight on OUTPUT, never the exit code alone ------------------
-  const ping = runCli(['server', 'ping', '-s', server]);
+  // `server ping` takes the server POSITIONALLY (unlike `publish`/`call`/`logs`,
+  // which take `-s`) — verified against the pinned 2.6.0 CLI, which rejects `-s` here.
+  const ping = runCli(['server', 'ping', server]);
   const pingOut = `${ping.stdout ?? ''}${ping.stderr ?? ''}`;
   if (ping.error !== undefined) {
     return {
@@ -761,7 +763,10 @@ export async function observabilityMetricsContractEval() {
   // Anonymous identity => `set_profile_name` rejects with "not joined" through
   // guards.rs's `log_reject` helper. The reject is EXPECTED; a success would
   // mean the probe identity is joined and the fixture is not reproducing G4.
-  const call = runCli(['call', '-s', server, db, PROBE_REDUCER, '["obs_eval_probe"]']);
+  // The 2.6.0 CLI takes each reducer argument as its OWN JSON literal, not a
+  // wrapped array — `'["x"]'` is rejected 400 ("trailing characters") before
+  // the reducer ever runs. Verified against the pinned CLI.
+  const call = runCli(['call', '-s', server, db, PROBE_REDUCER, '"obs_eval_probe"']);
   if (call.error !== undefined) {
     return {
       name: NAME,
