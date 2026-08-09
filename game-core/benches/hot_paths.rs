@@ -28,10 +28,15 @@ use std::path::PathBuf;
 use std::process;
 use std::time::Duration;
 
-/// Criterion's own output-dir resolution, mirrored exactly (the `perf-budget:`
-/// recipe exports `CRITERION_HOME`, so the env var is the normal path): the
-/// `CRITERION_HOME` env var, else `$CARGO_TARGET_DIR/criterion`, else
-/// `target/criterion`.
+/// Output-dir resolution. Only the `CRITERION_HOME` branch is exercised in
+/// practice — the `perf-budget:` recipe always exports it, and `clean_ids`/
+/// `read_measurements` resolve through this same function, so a mismatch fails
+/// loud rather than reading stale data. The fallbacks below are a best-effort
+/// approximation, NOT criterion's exact logic: criterion additionally consults
+/// `cargo metadata` for the workspace target dir before falling back to a
+/// cwd-relative `target/criterion`, so a bare `cargo bench --bench hot_paths`
+/// without `CRITERION_HOME` set may fail with a missing-estimates error here
+/// (diagnosis: run via `just perf-budget`, which sets the env var).
 fn criterion_home() -> PathBuf {
     if let Some(home) = std::env::var_os("CRITERION_HOME") {
         return PathBuf::from(home);
@@ -145,11 +150,14 @@ fn main() {
         .measurement_time(Duration::from_secs(2))
         .sample_size(30);
 
+    // East from spawn (1,1) is open floor in zone 0, so this exercises the real
+    // successful-move write path; North is the border wall and would measure
+    // only the bump branch (reviewer finding, m20a impl review).
     c.bench_function("apply_move", |b| {
         b.iter(|| {
             apply_move(
                 black_box(&walker),
-                black_box(MoveInput::Step(Direction::North)),
+                black_box(MoveInput::Step(Direction::East)),
                 black_box(&map),
                 black_box(Millis(16)),
             )

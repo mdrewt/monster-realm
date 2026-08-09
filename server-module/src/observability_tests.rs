@@ -730,6 +730,64 @@ fn mutator_needles() -> [&'static str; 3] {
     ]
 }
 
+/// The scheduler-only preamble every scheduled reducer in this repo carries.
+/// `concat!`-assembled, like every other needle here, so this test file never
+/// spells it contiguously and can never satisfy a crate-wide scan with its own
+/// text — including the fixtures below, which are all built FROM this constant.
+const GUARD_NEEDLE: &str = concat!("ctx.sender != ", "ctx.identity()");
+
+/// Predicate half of [`g7_mr_heartbeat_guard_is_pinned_first`], separated so the
+/// teeth can drive it with fixtures through exactly the `fn_body` path the real
+/// scan uses (comment stripping included).
+///
+/// `Ok(())` iff the guard is present AND precedes both the Config read and the
+/// emission AND no statement runs ahead of it.
+fn guard_is_pinned_first(body: &str) -> Result<(), String> {
+    let config_read = concat!("config", "()");
+    let emission = concat!("mr_log", "(");
+
+    let Some(guard_at) = body.find(GUARD_NEEDLE) else {
+        return Err(format!(
+            "the body contains no `{GUARD_NEEDLE}` guard (a commented-out one does not count \
+             — comment lines are stripped before this scan)"
+        ));
+    };
+
+    // Required, not optional: without an emission to order against, every
+    // comparison below would be vacuously satisfied.
+    let Some(emit_at) = body.find(emission) else {
+        return Err(
+            "the body makes no mr_log emission, so the guard-ordering check would be vacuous"
+                .to_string(),
+        );
+    };
+    if guard_at > emit_at {
+        return Err(format!(
+            "the guard is at byte {guard_at}, AFTER the emission at byte {emit_at} — the forged \
+             heartbeat line is already on the wire by the time the caller is rejected"
+        ));
+    }
+
+    // Compared only when present: a future refactor may move the read into a
+    // helper, and that is not this test's business.
+    if let Some(config_at) = body.find(config_read) {
+        if guard_at > config_at {
+            return Err(format!(
+                "the guard is at byte {guard_at}, AFTER the Config read at byte {config_at} — an \
+                 unauthenticated caller reaches the database before being rejected"
+            ));
+        }
+    }
+
+    if body[..guard_at].contains(';') {
+        return Err(format!(
+            "a statement runs BEFORE the guard at byte {guard_at} (a `;` precedes it) — the \
+             guard must be the FIRST statement in the body, per the playtest_reaper precedent"
+        ));
+    }
+    Ok(())
+}
+
 /// OBS-1: the heartbeat emits exactly one line and writes NO row.
 ///
 /// Scoped to the reducer body, which is what OBS-1 actually constrains — the
@@ -760,6 +818,43 @@ fn g7_mr_heartbeat_emits_once_and_mutates_nothing() {
             0,
             "G7 (OBS-1): mr_heartbeat's body calls `{needle}` — the heartbeat must never insert, \
              update or delete a row"
+        );
+    }
+}
+
+/// **G7 / reducer-security parity** — `mr_heartbeat`'s scheduler-only guard is
+/// present, and is the FIRST statement in the body.
+///
+/// Every other scheduled reducer in this repo already has a structural gate
+/// pinning this preamble — `playtest_tests.rs:738-780`,
+/// `pvp-challenge-reaper.eval.mjs:130-142`,
+/// `trade-reducer-security.eval.mjs:412`, `accounts_tests.rs:1420-1427`.
+/// `mr_heartbeat` had none: deleting its sender/identity comparison today left
+/// every gate in the repo green. (The guard text is spelled ONCE in this file,
+/// `concat!`-assembled as `GUARD_NEEDLE`, per the module header's hygiene rule.)
+///
+/// WHY IT MATTERS MORE HERE THAN ELSEWHERE. An unguarded `mr_heartbeat` is
+/// callable BY NAME by any client, and its whole output is the `evt:"heartbeat"`
+/// line the dead-man's-switch alert keys on (m20b). A client that can forge
+/// beats can keep the alert quiet while the module is actually dead — it
+/// defeats precisely the one failure this reducer exists to surface. (This is
+/// also why AM16 tells m20b to alert on the log-derived S2 counter rather than
+/// `mr_heartbeat`'s `committed="false"` rate: the log line is guard-gated, the
+/// call rate is not.)
+///
+/// FIRST, not merely present: a guard that runs after the Config read has
+/// already let an unauthenticated caller touch the database, and one that runs
+/// after the emission has already put the forged line on the wire.
+#[test]
+fn g7_mr_heartbeat_guard_is_pinned_first() {
+    let src = observability_source();
+    let body = fn_body(&src, "mr_heartbeat").expect("G7: could not extract mr_heartbeat's body");
+    if let Err(reason) = guard_is_pinned_first(&body) {
+        panic!(
+            "G7 (scheduler-only guard, OBS-1 / ADR-0180 D6): {reason}. Restore the \
+             `playtest_reaper` preamble as the first statement of mr_heartbeat:\n    \
+             if <sender/identity mismatch> {{ return Err(\"mr_heartbeat is \
+             scheduler-only\".to_string()); }}"
         );
     }
 }
@@ -1100,6 +1195,91 @@ fn scanner_teeth_fn_body_is_scoped_and_fails_loud() {
         )
         .is_none(),
         "TEETH: unbalanced braces returned a body instead of failing loud"
+    );
+}
+
+/// Wrap body lines in a `mr_heartbeat` signature so the fixture goes through the
+/// real `fn_body` extractor (comment stripping and all).
+fn heartbeat_fixture(lines: &[&str]) -> String {
+    let mut all: Vec<&str> = vec!["pub fn mr_heartbeat(ctx: &C, _s: S) -> Result<(), String> {"];
+    all.extend_from_slice(lines);
+    all.push("    Ok(())");
+    all.push("}");
+    all.join("\n")
+}
+
+fn guard_check(src: &str) -> Result<(), String> {
+    let body = fn_body(src, "mr_heartbeat").expect("TEETH: fixture body must extract");
+    guard_is_pinned_first(&body)
+}
+
+/// Teeth for [`guard_is_pinned_first`] — six ways a deleted, disabled or
+/// demoted scheduler-only guard must bite, plus the positive control.
+///
+/// Every fixture is assembled FROM `GUARD_NEEDLE`, so this file still never
+/// spells the guard contiguously.
+#[test]
+fn scanner_teeth_guard_pin_bites() {
+    let guarded = ["    if ", GUARD_NEEDLE, " { return Err(e); }"].concat();
+    let commented = ["    // if ", GUARD_NEEDLE, " { return Err(e); }"].concat();
+    let config_line = ["    let cv = ctx.db.config", "().id().find(0);"].concat();
+    let emit_line = "    mr_log(a, b);";
+
+    // GOOD: guard, then the Config read, then the emission.
+    let good = heartbeat_fixture(&[guarded.as_str(), config_line.as_str(), emit_line]);
+    assert!(
+        guard_check(&good).is_ok(),
+        "TEETH: the canonical guarded body was rejected: {:?}",
+        guard_check(&good)
+    );
+
+    // BAD 1 — the audit's exact scenario: the guard is simply deleted.
+    let missing = heartbeat_fixture(&[config_line.as_str(), emit_line]);
+    assert!(
+        guard_check(&missing).is_err(),
+        "TEETH: a body with NO scheduler-only guard passed — any client could forge heartbeats"
+    );
+
+    // BAD 2 — the guard commented out. `fn_body` strips comment lines, so the
+    // needle must vanish; a scan over raw source would call this green.
+    let disabled = heartbeat_fixture(&[commented.as_str(), config_line.as_str(), emit_line]);
+    assert!(
+        guard_check(&disabled).is_err(),
+        "TEETH: a COMMENTED-OUT guard passed — the comment scrub is not being applied"
+    );
+
+    // BAD 3 — guard present but after the emission: the line is already out.
+    let late = heartbeat_fixture(&[config_line.as_str(), emit_line, guarded.as_str()]);
+    assert!(
+        guard_check(&late).is_err(),
+        "TEETH: a guard placed AFTER the emission passed"
+    );
+
+    // BAD 4 — guard present but after the Config read.
+    let after_read = heartbeat_fixture(&[config_line.as_str(), guarded.as_str(), emit_line]);
+    assert!(
+        guard_check(&after_read).is_err(),
+        "TEETH: a guard placed AFTER the Config read passed"
+    );
+
+    // BAD 5 — a statement runs before the guard, so it is no longer first.
+    let preceded = heartbeat_fixture(&[
+        "    let _ = ctx.db.player().count();",
+        guarded.as_str(),
+        config_line.as_str(),
+        emit_line,
+    ]);
+    assert!(
+        guard_check(&preceded).is_err(),
+        "TEETH: a statement running BEFORE the guard passed"
+    );
+
+    // BAD 6 — non-vacuity: with no emission to order against, the check must
+    // refuse rather than silently pass every comparison.
+    let no_emit = heartbeat_fixture(&[guarded.as_str(), config_line.as_str()]);
+    assert!(
+        guard_check(&no_emit).is_err(),
+        "TEETH: a body with no mr_log emission passed vacuously"
     );
 }
 
