@@ -1484,7 +1484,10 @@ impl JsonReader {
                 continue;
             }
             if (c as u32) < 0x20 {
-                return Err(format!("char {}: raw control character in a string", self.at));
+                return Err(format!(
+                    "char {}: raw control character in a string",
+                    self.at
+                ));
             }
             out.push(c);
         }
@@ -1835,7 +1838,15 @@ fn d6_golden_fixture_mirrors_build_log_line() {
             other => panic!("D6 golden: case `{id}` has a malformed sched ({other:?})"),
         };
 
-        let line = build_log_line(evt, extra, Breadcrumb { cause, sched, phase });
+        let line = build_log_line(
+            evt,
+            extra,
+            Breadcrumb {
+                cause,
+                sched,
+                phase,
+            },
+        );
         assert_eq!(
             line,
             expected.unwrap(),
@@ -1907,7 +1918,6 @@ fn scan_phase_pairs(src: &str) -> PhaseScan {
     let mut from = 0usize;
     while let Some(rel) = text[from..].find(REDUCER_ATTR) {
         let attr_at = from + rel;
-        from = attr_at + REDUCER_ATTR.len();
         let fn_marker = concat!("fn", " ");
         let fn_rel = match text[attr_at..].find(fn_marker) {
             Some(k) => k,
@@ -1975,7 +1985,7 @@ fn scan_tree_phase_pairs() -> PhaseScan {
         attrs_seen: 0,
         orphans: 0,
     };
-    for (_file, src) in &scan_tree() {
+    for src in scan_tree().values() {
         let one = scan_phase_pairs(src);
         all.paired.extend(one.paired);
         all.reducers_scanned += one.reducers_scanned;
