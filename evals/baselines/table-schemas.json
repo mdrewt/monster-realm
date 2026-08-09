@@ -15,6 +15,13 @@
       "scheduled_at": "ScheduleAt"
     }
   },
+  "mr_heartbeat_schedule": {
+    "pk": "id",
+    "columns": {
+      "id": "u64",
+      "scheduled_at": "ScheduleAt"
+    }
+  },
   "playtest_event": {
     "pk": "event_id",
     "columns": {

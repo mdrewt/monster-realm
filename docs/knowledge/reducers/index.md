@@ -32,6 +32,7 @@
 | reducers/init | SpacetimeDB Reducer | init | SpacetimeDB reducer init. |
 | reducers/join_game | SpacetimeDB Reducer | join_game | Join: one `player` + one `character` at the spawn + one starter `monster` (idemp |
 | reducers/movement_tick | SpacetimeDB Reducer | movement_tick | Per-zone, server-paced tick: drain ≤1 move per character in THIS zone, compute t |
+| reducers/mr_heartbeat | SpacetimeDB Reducer | mr_heartbeat | Scheduler-only, write-free dead-man beat (OBS-1/OBS-3). GUARD FIRST (`playtest_r |
 | reducers/on_connect | SpacetimeDB Reducer | on_connect | Lifecycle: lazy-provision or touch an `account` on connect (M21, ADR-0179 D4). A |
 | reducers/on_disconnect | SpacetimeDB Reducer | on_disconnect | SpacetimeDB reducer on_disconnect. |
 | reducers/playtest_reaper | SpacetimeDB Reducer | playtest_reaper | SpacetimeDB reducer playtest_reaper. |

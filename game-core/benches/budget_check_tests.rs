@@ -199,9 +199,16 @@ fn violations_reports_every_regression_not_just_the_first() {
     let budgets_table = two_budgets();
     let measured = [("fast_path", 400.0), ("slow_path", 40_000.0)];
     let found = budgets::violations(&measured, &budgets_table);
-    assert_eq!(found.len(), 2, "both regressions must be reported: {found:?}");
+    assert_eq!(
+        found.len(),
+        2,
+        "both regressions must be reported: {found:?}"
+    );
     let joined = found.join(" | ");
-    assert!(joined.contains("fast_path") && joined.contains("slow_path"), "{joined}");
+    assert!(
+        joined.contains("fast_path") && joined.contains("slow_path"),
+        "{joined}"
+    );
 }
 
 /// A healthy run is silent.
@@ -447,7 +454,10 @@ fn clean_ids_removes_a_stale_measurement_directory() {
     write_estimates(&root, "apply_move", 1.0);
     write_estimates(&root, "map_for", 2.0);
     let stale = root.join("apply_move").join("new").join("estimates.json");
-    assert!(stale.exists(), "fixture setup failed: no stale estimates.json");
+    assert!(
+        stale.exists(),
+        "fixture setup failed: no stale estimates.json"
+    );
 
     budgets::clean_ids(&root, &["apply_move"]).expect("clean_ids must succeed");
 
@@ -513,7 +523,10 @@ fn seeded_regression_round_trip_over_the_committed_budgets() {
     let victim = &budgets::BUDGETS[0];
     write_estimates(&root, victim.id, victim.ceiling_ns * 2.0);
     let regressed = budgets::read_measurements(&root, &ids).expect("read_measurements");
-    let pairs: Vec<(&str, f64)> = regressed.iter().map(|(id, ns)| (id.as_str(), *ns)).collect();
+    let pairs: Vec<(&str, f64)> = regressed
+        .iter()
+        .map(|(id, ns)| (id.as_str(), *ns))
+        .collect();
     let found = budgets::violations(&pairs, budgets::BUDGETS);
     assert_eq!(
         found.len(),

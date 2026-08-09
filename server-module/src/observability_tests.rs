@@ -536,9 +536,8 @@ fn parse_baseline(text: &str) -> (BTreeMap<String, Counts>, u32) {
             cols[0]
         );
     }
-    let declared = declared.expect(
-        "G7: .log-baseline carries no total header line (the anti-hand-edit self-check)",
-    );
+    let declared = declared
+        .expect("G7: .log-baseline carries no total header line (the anti-hand-edit self-check)");
     (rows, declared)
 }
 
@@ -698,8 +697,7 @@ fn g7_no_log_crate_import_in_any_non_test_file() {
 
 fn observability_source() -> String {
     let path = src_root().join("observability.rs");
-    fs::read_to_string(&path)
-        .unwrap_or_else(|e| panic!("G7: cannot read {} ({e})", path.display()))
+    fs::read_to_string(&path).unwrap_or_else(|e| panic!("G7: cannot read {} ({e})", path.display()))
 }
 
 /// Body of `fn <name>` by brace counting over the comment-scrubbed source.
@@ -876,8 +874,18 @@ fn g7_trace_pair_set_stays_empty() {
 #[test]
 fn scanner_teeth_doc_comment_mentions_are_not_call_sites() {
     let fixture = [
-        concat!("/", "/", "/ at most one `log", "::warn!` per 60_000 ms of injected clock"),
-        concat!("/", "/", "! module doc: never call log", "::error!(e) directly; use mr_log"),
+        concat!(
+            "/",
+            "/",
+            "/ at most one `log",
+            "::warn!` per 60_000 ms of injected clock"
+        ),
+        concat!(
+            "/",
+            "/",
+            "! module doc: never call log",
+            "::error!(e) directly; use mr_log"
+        ),
         concat!("    /", "/ log", "::info!(x); // parked during debugging"),
         "fn real() {}",
     ]
@@ -894,7 +902,11 @@ fn scanner_teeth_doc_comment_mentions_are_not_call_sites() {
 #[test]
 fn scanner_teeth_real_invocation_is_counted() {
     let fixture = concat!("fn f() { log", "::info!(x); }");
-    assert_eq!(count_needles(fixture).info, 1, "TEETH: a real call site was missed");
+    assert_eq!(
+        count_needles(fixture).info,
+        1,
+        "TEETH: a real call site was missed"
+    );
 }
 
 /// AM2 / red-team 1.1: `log::log!(Level::Warn, ...)` emits at warn level without
@@ -904,7 +916,10 @@ fn scanner_teeth_log_bang_is_counted() {
     let fixture = concat!("fn f() { log", "::log!(Level::Warn, e); }");
     let c = count_needles(fixture);
     assert_eq!(c.logbang, 1, "TEETH: the generic log macro was not counted");
-    assert_eq!(c.warn, 0, "TEETH: the generic log macro leaked into the warn bucket");
+    assert_eq!(
+        c.warn, 0,
+        "TEETH: the generic log macro leaked into the warn bucket"
+    );
 }
 
 /// AM2 / red-team 1.2: Rust macros accept brace and bracket delimiters, so a
@@ -912,9 +927,17 @@ fn scanner_teeth_log_bang_is_counted() {
 #[test]
 fn scanner_teeth_brace_and_bracket_delimiters_are_counted() {
     let braced = concat!("fn f() { log", "::warn!{ e } }");
-    assert_eq!(count_needles(braced).warn, 1, "TEETH: brace-delimited call missed");
+    assert_eq!(
+        count_needles(braced).warn,
+        1,
+        "TEETH: brace-delimited call missed"
+    );
     let bracketed = concat!("fn f() { log", "::error![ e ]; }");
-    assert_eq!(count_needles(bracketed).error, 1, "TEETH: bracket-delimited call missed");
+    assert_eq!(
+        count_needles(bracketed).error,
+        1,
+        "TEETH: bracket-delimited call missed"
+    );
 }
 
 /// rustfmt may wrap a long call so the delimiter lands on the next line.
@@ -972,7 +995,7 @@ fn scanner_teeth_flat_ban_catches_aliases_only() {
 #[test]
 fn scanner_teeth_rustfmt_skip_is_flat_banned() {
     let attr = concat!("#[rustfmt", "::skip]");
-    let spaced = concat!("fn f() { log :: warn ! (e); }");
+    let spaced = concat!("fn f() { log :: warn ", "! (e); }");
     let src = [attr, spaced].join("\n");
     assert!(
         !flat_ban_hits(&src).is_empty(),
@@ -995,7 +1018,14 @@ fn scanner_teeth_rustfmt_skip_is_flat_banned() {
 fn scanner_teeth_comment_spliced_invocation_is_counted() {
     let open = concat!("/", "*");
     let close = concat!("*", "/");
-    let spliced = [concat!("fn f() { log", "::warn!"), open, " c ", close, "(e); }"].concat();
+    let spliced = [
+        concat!("fn f() { log", "::warn!"),
+        open,
+        " c ",
+        close,
+        "(e); }",
+    ]
+    .concat();
     assert_eq!(
         count_needles(&spliced).warn,
         1,
@@ -1021,7 +1051,12 @@ fn scanner_teeth_comment_spliced_invocation_is_counted() {
         "TEETH: multiple spliced comments plus a line break dodged the needle"
     );
 
-    let unterminated = [concat!("fn f() { log", "::info! "), open, " never closed (e); }"].concat();
+    let unterminated = [
+        concat!("fn f() { log", "::info! "),
+        open,
+        " never closed (e); }",
+    ]
+    .concat();
     assert_eq!(
         count_needles(&unterminated),
         Counts::default(),
@@ -1059,7 +1094,11 @@ fn scanner_teeth_fn_body_is_scoped_and_fails_loud() {
         "TEETH: the arm body lost its insert"
     );
     assert!(
-        fn_body("pub fn mr_heartbeat() {\n    mr_log(a, b);\n", "mr_heartbeat").is_none(),
+        fn_body(
+            "pub fn mr_heartbeat() {\n    mr_log(a, b);\n",
+            "mr_heartbeat"
+        )
+        .is_none(),
         "TEETH: unbalanced braces returned a body instead of failing loud"
     );
 }

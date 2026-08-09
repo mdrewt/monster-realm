@@ -12,9 +12,17 @@ license = "MIT"
 
 # SSOT for shared dependency versions: declare once here, reference with
 # `dep.workspace = true` in members. Populated as crates take real deps —
-# spacetimedb (M2, matched to the installed CLI 2.6.0; crate ≠ product version),
-# proptest / criterion land with the test-tooling slice + their ADR.
+# spacetimedb (M2, matched to the installed CLI 2.6.0; crate ≠ product version).
 [workspace.dependencies]
+# Perf-budget bench harness (m20a, OBS-5/OBS-6, ADR-0180 D7) — game-core
+# dev-dep ONLY. EXACT pin: the harness reads criterion's documented-private
+# target/criterion/<id>/new/estimates.json (mean.point_estimate, ns) back for
+# the ceiling gate, so a criterion bump must be a deliberate, reviewed change
+# (R4 fail-loud; cargo-criterion is the documented fallback). default-features
+# off drops plotters/rayon; cargo_bench_support keeps `cargo bench` wiring and
+# CRITERION_HOME resolution (verified honored under this feature set).
+criterion = { version = "=0.5.1", default-features = false, features = ["cargo_bench_support"] }
+serde_json = "1"
 # The client-prediction wasm boundary (ADR-0036), built via wasm-pack.
 wasm-bindgen = "0.2"
 # M3 marshaling boundary (ADR-0036): JS<->serde value bridge for the consumable
