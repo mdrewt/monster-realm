@@ -1,0 +1,37 @@
+# Tempo — trace storage (M20 / ADR-0180 D3). Stock image, configuration only (OBS-33).
+#
+# In slice m20b this stores CLIENT traces only: the browser OTel Web SDK (S4, m20c) pushes to
+# Alloy's OTLP receiver, which forwards here. Server-side causal spans arrive later, from
+# `mr-trace-relay` (D15) in slice m20b-2 — via the same Alloy OTLP receiver, so no Tempo change
+# is needed when that lands.
+
+server:
+  http_listen_address: 127.0.0.1
+  http_listen_port: 3200
+  grpc_listen_address: 127.0.0.1
+  grpc_listen_port: 9095
+
+distributor:
+  receivers:
+    otlp:
+      protocols:
+        # Alloy's otelcol.exporter.otlp is the ONLY writer; nothing external reaches this port.
+        grpc:
+          endpoint: 127.0.0.1:4317
+
+ingester:
+  max_block_duration: 5m
+
+storage:
+  trace:
+    backend: local
+    local:
+      path: /var/tempo/blocks
+    wal:
+      path: /var/tempo/wal
+
+compactor:
+  compaction:
+    # D11 — 7-day trace retention (Tempo's default is 14d). Traces are the highest-volume,
+    # lowest-shelf-life signal in the stack; logs (30d) and metrics (30d) outlive them.
+    block_retention: 168h

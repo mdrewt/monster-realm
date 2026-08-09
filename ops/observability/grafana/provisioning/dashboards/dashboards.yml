@@ -1,0 +1,16 @@
+# Grafana dashboard provisioning — file-backed, UI edits disabled so the committed JSON stays
+# the source of truth (a UI-edited dashboard would drift silently from this repo).
+
+apiVersion: 1
+
+providers:
+  - name: monster-realm
+    orgId: 1
+    folder: Monster Realm
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: false
+    options:
+      path: /var/lib/grafana/dashboards
+      foldersFromFilesStructure: false

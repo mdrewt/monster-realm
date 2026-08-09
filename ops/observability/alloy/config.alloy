@@ -1,0 +1,178 @@
+// Grafana Alloy — the SOLE telemetry agent for the Monster Realm stack (M20 / ADR-0180 D3).
+//
+// Two independent data paths live here:
+//   S2  file tail  -> Loki  (+ log-derived counters on Alloy's own /metrics, scraped as S1b)
+//   S4  browser OTLP -> Tempo (traces) and -> Prometheus remote-write (metrics)
+//
+// D1 governs both: the server module never times itself and never initiates an outbound call.
+// Every server-side signal here is host-computed and read from a READ-ONLY bind mount.
+
+// ---------------------------------------------------------------------------
+// S2 — tail the host-written module_logs NDJSON.
+//
+// OBS-11: a file tail, never a subprocess. There is deliberately no exec-shaped source here and
+// no command/entrypoint override on the alloy service in docker-compose.yml (both halves gated
+// by checkNoExecLogSource — a shell pipeline in compose would achieve the banned outcome
+// outside this file).
+// ---------------------------------------------------------------------------
+
+local.file_match "module_logs" {
+	path_targets = [{
+		__path__ = "/data/replicas/*/module_logs/*.log",
+		job      = "spacetimedb-module",
+	}]
+}
+
+loki.source.file "module_logs" {
+	targets    = local.file_match.module_logs.targets
+	forward_to = [loki.process.module_logs.receiver]
+}
+
+// The real on-disk envelope, confirmed against this project's own data dir:
+//   {"level":"Error","ts":1782197246180474,"target":"__spacetimedb__",
+//    "filename":"__spacetimedb__","function":"submit_input","message":"..."}
+// `ts` is host-stamped microseconds and `function` is the HOST's cross-file attribution: it
+// names the calling reducer even when the log call originates in a helper in another file
+// (OBS-10, reproduced against guards.rs's log_reject). That is why `function` — not the
+// module's own field — is the reducer label source: it is always present and host-authoritative.
+//
+// For structured lines the module's payload rides inside `message` as its own JSON object, e.g.
+//   {"evt":"reject","reducer":"...","sender":"...","reason":"..."}
+// emitted by guards::log_reject (server-module/src/guards.rs). That emitter ships TODAY and is
+// unchanged by M20 — the `evt:"reject"` half of the D6 vocabulary has no dependency on m20a.
+// The `evt:"heartbeat"` half does: mr_log/mr_heartbeat are m20a's and m20a is still free to
+// adjust the envelope before it merges. Per M20 §5's own stated mitigation, drift there is
+// caught by m20e's post-merge integration eval, NOT by any pre-merge check here.
+loki.process "module_logs" {
+	forward_to = [loki.write.default.receiver]
+
+	// Outer host envelope.
+	stage.json {
+		expressions = {
+			reducer = "function",
+			level   = "level",
+			message = "message",
+		}
+	}
+
+	// Inner module payload. Lines whose message is not a JSON object simply leave `evt` empty,
+	// which is a bounded value, not an unbounded one.
+	stage.json {
+		source = "message"
+
+		expressions = {
+			evt = "evt",
+		}
+	}
+
+	// D12 / OBS-36 — the label set is a BOUNDED enum, and every value comes from a literal
+	// field mapping above rather than a free-form regex capture (a correctly-NAMED label fed by
+	// a capture group still has unbounded values). `sender` is deliberately absent: identity hex
+	// is permitted in the log BODY only and must never be promoted to a label (OBS-35).
+	// `connection_id` is likewise a log FIELD only — it is the correlation-pivot key in Grafana,
+	// and promoting it here would be one series per session.
+	stage.labels {
+		values = {
+			reducer = "",
+			evt     = "",
+		}
+	}
+
+	// OBS-12 / OBS-13 — the log-derived counter. It surfaces on Alloy's own self-metrics
+	// endpoint, which Prometheus scrapes as S1b, which is how S2-derived rates become queryable.
+	stage.metrics {
+		metric.counter {
+			name        = "log_events_total"
+			description = "module_logs lines by bounded (reducer, evt) label pair"
+			prefix      = "mr_"
+			match_all   = true
+			action      = "inc"
+		}
+	}
+}
+
+loki.write "default" {
+	endpoint {
+		url = "http://127.0.0.1:3100/loki/api/v1/push"
+	}
+}
+
+// ---------------------------------------------------------------------------
+// S4 — browser OTLP ingest (public and unauthenticated BY DESIGN, D5/OBS-21: an anonymous game
+// client structurally cannot present a login). Caddy fronts this endpoint with TLS, CORS origin
+// scoping, a rate limit and a body-size cap.
+// ---------------------------------------------------------------------------
+
+otelcol.receiver.otlp "s4" {
+	http {
+		endpoint = "127.0.0.1:4318"
+
+		cors {
+			allowed_origins = ["https://localhost:5173", "https://localhost:8443"]
+			allowed_headers = ["content-type"]
+			max_age         = 3600
+		}
+	}
+
+	output {
+		metrics = [otelcol.processor.transform.s4_keep.input]
+		traces  = [otelcol.exporter.otlp.tempo.input]
+		logs    = []
+	}
+}
+
+// OBS-34 (ADR-0180 amendment "Correction 2") — the S4 metric-label ALLOWLIST.
+//
+// This is the highest-severity control in the file. The ingest above is public and
+// unauthenticated, and OTLP attributes convert 1:1 into Prometheus labels, so without a filter a
+// scripted client posting one distinct attribute value per request creates one new active series
+// per request. Prometheus applies no default per-remote-write cardinality cap, so that grows
+// unbounded until it OOMs — destroying the store every SLO panel, every dashboard AND the
+// OBS-39 dead-man's switch itself depend on to evaluate. The rate/body caps in Caddy bound
+// request VOLUME; they do not bound the label SPACE one well-formed request can introduce.
+//
+// keep_matching_keys is an allowlist, not a denylist: anything not named here is dropped before
+// it can ever reach storage. m20c (client OTel) must emit only these dimensions.
+otelcol.processor.transform "s4_keep" {
+	metric_statements {
+		context = "datapoint"
+
+		statements = [
+			`keep_matching_keys(attributes, "^(zone_id|build_sha|device_class)$")`,
+		]
+	}
+
+	output {
+		metrics = [otelcol.exporter.prometheus.s4.input]
+	}
+}
+
+otelcol.exporter.prometheus "s4" {
+	// OBS-38: this exporter has NO scrapeable endpoint of its own — remote-write is its only
+	// sink, which is why S1b's scrape of Alloy does not carry S4's numbers and this second,
+	// independent wiring exists. The forward_to must name-resolve to the component below.
+	forward_to = [prometheus.remote_write.default.receiver]
+}
+
+prometheus.remote_write "default" {
+	endpoint {
+		url = "http://127.0.0.1:9090/api/v1/write"
+
+		// Defence in depth behind the allowlist above: even if a future edit widens the
+		// processor, only these label keys are ever written to Prometheus.
+		write_relabel_config {
+			action = "labelkeep"
+			regex  = "__name__|job|instance|zone_id|build_sha|device_class"
+		}
+	}
+}
+
+otelcol.exporter.otlp "tempo" {
+	client {
+		endpoint = "127.0.0.1:4317"
+
+		tls {
+			insecure = true
+		}
+	}
+}
