@@ -7698,3 +7698,808 @@ describe('★ main.ts wiring (EG4-3/A12): W-EVOLVE-REDUCER — onEvolve forwards
     ).toBe(0);
   });
 });
+
+// ===========================================================================
+// m20c (ADR-0180 body amendment) — client OTel Web SDK wiring: the EIGHT main.ts hooks.
+//
+// SOURCE OF TRUTH: EARS OBS-16 / OBS-21 / OBS-25 / OBS-34 / OBS-35 + the m20c adjudicated plan
+// (rulings AM1-AM22). The pure cores are unit-tested under client/src/observability/*.test.ts;
+// main.ts is COVERAGE-EXCLUDED (client/vite.config.ts:97) and un-importable under vitest (DOM /
+// wasm / PIXI side effects at module scope), so these source-scan teeth are the ONLY executable
+// guard that the tested cores are actually CONNECTED to the game.
+//
+// APPEND-ONLY BLOCK: nothing above this line is touched. It reuses this file's existing
+// helpers (readMainTs / stripLineComments / regionOrThrow / bodyRegion / squashWhitespace /
+// countOccurrences / callArgs / expectUniqueAnchor) and its existing anchor constants
+// (NH2_RAF_END, NH2_RECONCILE_START, NH3_SEND_START/END, DEVLOG_CONNECT_START,
+// UXD2_FRAME_START/END, MR_HELPER_START/END) so the m20c hunks are pinned RELATIVE to the
+// regions the pre-existing teeth already own — which is also how they are proven not to
+// re-anchor them.
+//
+// THE EIGHT HOOKS (all additive):
+//   1. module scope, after the wasm-derived consts: `const WASM_READY_MS = performance.now();`
+//   2. module scope: `TELEMETRY_CONFIG` resolve + `let telemetry = NOOP_TELEMETRY`
+//   3. inside main(), BEFORE `conn = connect({`: fire-and-forget `startClientTelemetry(...)`
+//   4. reconcileFromStore: recordReconcile + `if (diverged)` recordCorrection
+//   5. noteMoveRejection: `if (dropped)` recordIntentReject, inside the existing try
+//   6. sendIntent: a `.then` BEFORE the existing `.catch(`, recording the reducer RTT
+//   7. the rAF frame body: frameTick + a window-boundary-guarded record pair
+//   8. switchZone: `telemetry.setZone(newZoneId)` after the rawMap commit (AM1)
+//
+// MARKER COMMENTS (`// M20C-*-BEGIN` / `// M20C-*-END`) bound the four multi-statement hunks,
+// exactly as uxd3-b/uxd3-c do (UXD3B-PROBES-*, UXD3C-HANDLES-*). They are part of the contract:
+// they are what lets a region-bounded scan pin a hunk's SHAPE without importing main.ts, and
+// `expectUniqueAnchor` makes a duplicated or missing marker a hard red rather than a silently
+// widened region.
+//
+// RED AT AUTHORING TIME — ALL of the teeth below. `startClientTelemetry`, `TELEMETRY_CONFIG`,
+// `WASM_READY_MS`, `frameTick`, `maxRemoteGapMs`, `telemetry.` and every `// M20C-` marker occur
+// ZERO times in main.ts, so the marker-bounded teeth THROW out of `regionOrThrow` and the
+// needle teeth fail on `-1` / `0`.
+//
+// NO `new RegExp(...)` — the per-file convention (Semgrep's detect-non-literal-regexp is banned
+// repo-wide). indexOf / includes / split / slice only.
+// ===========================================================================
+
+/** Marker-comment bounds of the four m20c hunks. */
+const M20C_INIT_BEGIN = '// M20C-INIT-BEGIN';
+const M20C_INIT_END = '// M20C-INIT-END';
+const M20C_RECONCILE_BEGIN = '// M20C-RECONCILE-BEGIN';
+const M20C_RECONCILE_END = '// M20C-RECONCILE-END';
+const M20C_FRAME_BEGIN = '// M20C-FRAME-BEGIN';
+const M20C_FRAME_END = '// M20C-FRAME-END';
+const M20C_ZONE_BEGIN = '// M20C-ZONE-BEGIN';
+const M20C_ZONE_END = '// M20C-ZONE-END';
+
+/** Hook 1 — the wasm-ready mark, as a whole statement (so a rename or a second capture reds). */
+const M20C_WASM_READY_DECL = 'const WASM_READY_MS = performance.now();';
+/** Hook 6 — the RTT stopwatch start, as a whole statement. */
+const M20C_RTT_T0_DECL = 'const t0 = performance.now();';
+
+/** A marker-bounded m20c hunk: comment-stripped (so a commented-out line cannot satisfy a
+ *  tooth), whitespace-squashed (so biome's wrapping is irrelevant) and trimmed. Both markers are
+ *  uniqueness-checked first — a duplicated marker is how a region silently covers the wrong
+ *  code, which is the nh1 post-mortem failure this file exists to prevent. */
+function m20cHunk(src: string, begin: string, end: string): string {
+  expectUniqueAnchor(src, begin);
+  expectUniqueAnchor(src, end);
+  const body = squashWhitespace(bodyRegion(src, begin, end)).trim();
+  expect(
+    body.length,
+    `the m20c hunk between ${begin} and ${end} is EMPTY after comment-stripping — the markers ` +
+      'wrap nothing and every assertion about it would pass vacuously',
+  ).toBeGreaterThan(0);
+  return body;
+}
+
+/** Brace nesting depth at `index`, counting only `{`/`}`. Used by T-P4 to prove a call sits
+ *  INSIDE the window-boundary guard rather than merely after it. A balanced object literal
+ *  contributes zero, so an `if`-less hunk that opens a literal before the call cannot fake a
+ *  depth of 1 — the assertion is depth EXACTLY 1, not "at least 1". */
+function braceDepthAt(region: string, index: number): number {
+  let depth = 0;
+  for (let i = 0; i < index; i += 1) {
+    const ch = region.charAt(i);
+    if (ch === '{') depth += 1;
+    else if (ch === '}') depth -= 1;
+  }
+  return depth;
+}
+
+describe('★ main.ts wiring (m20c/ADR-0180): hooks 1+2 — the module-scope marks and the config resolve', () => {
+  it('★ W-M20C-WASM-MARK BITES: WASM_READY_MS is captured ONCE at module scope, after the wasm consts', () => {
+    // OBS (wasm-init timing). The metric is DEFINED as "ms from timeOrigin to wasm exports
+    // callable" (plan parking 3). The client-wasm import is top-level-awaited (vite-plugin-
+    // top-level-await), so module evaluation does not reach `const STEP_MS = step_ms();` until
+    // the exports ARE callable — which is exactly why the mark must sit BELOW them.
+    // WRONG IMPL KILLED (1): the mark taken inside main() or inside the telemetry init callback.
+    //   Both run after connect()/DOM setup, so the number would silently become "time to reach
+    //   the init callback" — a different, larger quantity with the same name.
+    // WRONG IMPL KILLED (2): a `let` re-stamped later (e.g. re-marked on reconnect), which turns
+    //   a once-per-session gauge into a rolling value. The occurrence count pins it at exactly
+    //   two: the declaration and the single use in the init hunk.
+    const src = readMainTs();
+    const stripped = stripLineComments(src);
+    expectUniqueAnchor(stripped, M20C_WASM_READY_DECL);
+
+    const markIdx = stripped.indexOf(M20C_WASM_READY_DECL);
+    const stepIdx = stripped.indexOf('const STEP_MS = step_ms();');
+    const mainIdx = stripped.indexOf('async function main(');
+    expect(stepIdx, 'anti-vacuity: the wasm-derived STEP_MS const must exist').toBeGreaterThan(0);
+    expect(mainIdx, 'anti-vacuity: `async function main(` must exist').toBeGreaterThan(0);
+
+    expect(
+      markIdx,
+      'WASM_READY_MS must be captured AFTER the wasm-derived consts (`const STEP_MS = ' +
+        'step_ms();`) — that is the point at which the top-level-awaited wasm exports are ' +
+        'callable, which is the definition of the metric (plan parking 3)',
+    ).toBeGreaterThan(stepIdx);
+    expect(
+      markIdx,
+      'WASM_READY_MS must be captured at MODULE scope, BEFORE `async function main(` — a mark ' +
+        'taken inside main() measures a different quantity under the same metric name',
+    ).toBeLessThan(mainIdx);
+
+    expect(
+      countOccurrences(stripped, 'WASM_READY_MS'),
+      'WASM_READY_MS must occur EXACTLY twice in comment-stripped main.ts: the declaration and ' +
+        'the single `recordWasmReady(WASM_READY_MS)` use. A third occurrence means it is being ' +
+        're-stamped or re-reported, turning a once-per-session measurement into a rolling one.',
+    ).toBe(2);
+  });
+
+  it('★ W-M20C-CONFIG-EAGER BITES: TELEMETRY_CONFIG resolves at module scope from the VITE flags + injected jitter', () => {
+    // The F-3 / W-DEVLOG-EAGER precedent, third instance. Resolving at module scope keeps the
+    // decision in ONE place and keeps `telemetry` a module-scope binding the frame loop and the
+    // send path can both see.
+    // WRONG IMPL KILLED (1): a hard-coded endpoint (or one read from anywhere but the VITE env
+    //   var). Vite only define-replaces `import.meta.env.*`, so anything else is not
+    //   configurable at build time at all — and a literal endpoint in the bundle points every
+    //   player at whatever host the developer happened to type.
+    // WRONG IMPL KILLED (2, AM12): a MISSING jitter argument, or a constant one. Without
+    //   `Math.random()` every tab that loaded together exports in lockstep forever — one
+    //   synchronised burst per interval against a 120/min/IP limiter. The jitter must be
+    //   INJECTED here (the resolver is pure and property-tested; sourceScan.test.ts bans
+    //   Math.random inside observability/*.ts).
+    // WRONG IMPL KILLED (3): reading the wrong flag (VITE_MR_DEVLOG is the neighbouring idiom
+    //   and an easy copy-paste) — telemetry would then switch on with the dev-log flag.
+    const src = readMainTs();
+    const stripped = stripLineComments(src);
+
+    expect(
+      countOccurrences(stripped, 'resolveTelemetryConfig('),
+      'main.ts must call resolveTelemetryConfig( EXACTLY once (a second call is a second, ' +
+        'divergent source of truth about whether telemetry is on)',
+    ).toBe(1);
+    expect(
+      stripped.indexOf('resolveTelemetryConfig('),
+      'the resolve must sit at MODULE scope, before `async function main(` — beside the pt-a1 ' +
+        'resolveConnectionConfig and the ADR-0157 resolveDevLogLevel calls',
+    ).toBeLessThan(stripped.indexOf('async function main('));
+    expect(
+      countOccurrences(stripped, 'const TELEMETRY_CONFIG = resolveTelemetryConfig('),
+      'the resolved value must be bound as `const TELEMETRY_CONFIG = resolveTelemetryConfig(…)`',
+    ).toBe(1);
+
+    const args = squashWhitespace(callArgs(stripped, 'resolveTelemetryConfig('));
+    expect(
+      args.includes('import.meta.env.VITE_MR_OTLP_ENDPOINT'),
+      'the endpoint must come from `import.meta.env.VITE_MR_OTLP_ENDPOINT` — the only form Vite ' +
+        `define-replaces at build time. Args=${JSON.stringify(args)}`,
+    ).toBe(true);
+    expect(
+      args.includes('import.meta.env.VITE_MR_OTLP_INTERVAL_MS'),
+      'the export interval must come from `import.meta.env.VITE_MR_OTLP_INTERVAL_MS`',
+    ).toBe(true);
+    expect(
+      args.includes('import.meta.env.DEV'),
+      'the DEV flag must be passed so the http-loopback allowance is dev-only (OBS-21)',
+    ).toBe(true);
+    expect(
+      args.includes('Math.random()'),
+      'the jitter argument must be `Math.random()` — injected here, never sampled inside the ' +
+        'pure resolver (AM12 thundering-herd mitigation)',
+    ).toBe(true);
+  });
+
+  it('★ W-M20C-NOOP-DEFAULT BITES: `telemetry` is a module-scope let seeded with the shared NOOP', () => {
+    // The F-3 precedent applied to a MUTABLE binding: the façade must be usable from the very
+    // first frame, long before the async init resolves (and forever, if it never does).
+    // WRONG IMPL KILLED (1): `let telemetry: ClientTelemetry | undefined;` plus `telemetry?.` at
+    //   every call site. Every hook would then be silently optional, and a missing init would be
+    //   indistinguishable from a working one — plus each call site grows a branch this file
+    //   cannot pin.
+    // WRONG IMPL KILLED (2): the declaration moved INSIDE main() (the W-NH3-FLOOR-SEND mutant
+    //   shape) — reconcileFromStore, noteMoveRejection, sendIntent and switchZone all live at
+    //   module scope and could not see it, so it would not compile… unless a SECOND module-scope
+    //   binding were added, which the exactly-one count below rules out.
+    const src = readMainTs();
+    const stripped = stripLineComments(src);
+
+    expect(
+      countOccurrences(stripped, '= NOOP_TELEMETRY'),
+      'main.ts must seed the binding with the shared no-op EXACTLY once (`let telemetry = ' +
+        'NOOP_TELEMETRY;`) — the import is the value, never a locally re-declared stub',
+    ).toBe(1);
+    expect(
+      stripped.includes('let telemetry'),
+      'the telemetry binding must be a `let` (it is re-assigned when the async init resolves)',
+    ).toBe(true);
+    expect(
+      stripped.indexOf('let telemetry'),
+      'the `let telemetry` declaration must sit at MODULE scope, before `async function main(` ' +
+        '— reconcileFromStore / noteMoveRejection / sendIntent / switchZone are all module-scope ' +
+        'functions that must see the same binding',
+    ).toBeLessThan(stripped.indexOf('async function main('));
+  });
+
+  it('★ W-M20C-IMPORTED-NOT-DECOYED BITES: every m20c symbol resolves to client/src/observability', () => {
+    // The W-CARE-IMPORT / uxd3-c decoy pattern (red-team F2), applied to this slice: a local
+    // re-declaration shadows the import, satisfies every needle in this file, and silently
+    // disconnects main.ts from the modules that are actually unit-tested.
+    const src = readMainTs();
+    const stripped = stripLineComments(src);
+
+    expect(
+      countOccurrences(stripped, "from './observability/"),
+      'main.ts must import the m20c symbols from ./observability/* (at least the config and the ' +
+        'telemetry shell)',
+    ).toBeGreaterThanOrEqual(1);
+
+    for (const decoy of [
+      'function startClientTelemetry',
+      'function resolveTelemetryConfig',
+      'function buildAttributes',
+      'function maxRemoteGapMs',
+      'function frameTick',
+      'function classifyDeviceClass',
+      'const NOOP_TELEMETRY =',
+    ]) {
+      expect(
+        countOccurrences(stripped, decoy),
+        `main.ts must NOT declare its own \`${decoy}\` — the name must resolve to the tested ` +
+          'module under client/src/observability. A local decoy satisfies every source-scan ' +
+          'needle here while nothing that was unit-tested ever runs.',
+      ).toBe(0);
+    }
+  });
+});
+
+describe('★ main.ts wiring (m20c/ADR-0180): hook 3 — fire-and-forget init, outside the connect region', () => {
+  it('★ W-M20C-INIT-PLACEMENT BITES: the init hunk sits inside main(), BEFORE `conn = connect({`', () => {
+    // Placement is the whole tooth. BEFORE the connect call keeps it out of the
+    // DEVLOG_CONNECT_START/END scan region (:2475-2476), so W-DEVLOG-EAGER (b)'s
+    // `onSend: sendLogger` pin keeps measuring the option list and nothing else.
+    // WRONG IMPL KILLED (1): the init call placed INSIDE the `connect({ … })` options object —
+    //   it would land in the devlog region and, worse, run on every reconnect.
+    // WRONG IMPL KILLED (2): init at module scope. The dynamic import() would then be started
+    //   during module evaluation, before the error plumbing exists, and a rejected chunk fetch
+    //   would surface as an unhandled rejection at page load.
+    const src = readMainTs();
+    expectUniqueAnchor(src, M20C_INIT_BEGIN);
+    expectUniqueAnchor(src, M20C_INIT_END);
+    expectUniqueAnchor(src, DEVLOG_CONNECT_START);
+
+    const beginIdx = src.indexOf(M20C_INIT_BEGIN);
+    const endIdx = src.indexOf(M20C_INIT_END);
+    const mainIdx = src.indexOf('async function main(');
+    const connectIdx = src.indexOf(DEVLOG_CONNECT_START);
+
+    expect(mainIdx, 'anti-vacuity: `async function main(` must exist').toBeGreaterThan(0);
+    expect(beginIdx, 'the init hunk must sit INSIDE main()').toBeGreaterThan(mainIdx);
+    expect(
+      endIdx,
+      'the whole init hunk must close BEFORE `conn = connect({` — that is what keeps it outside ' +
+        'the DEVLOG_CONNECT region every devlog tooth measures, and what guarantees telemetry is ' +
+        'armed before the first reducer round trip',
+    ).toBeLessThan(connectIdx);
+  });
+
+  it('★ W-M20C-INIT-SHAPE BITES: the init is fire-and-forget, assigns the façade, and is silent', () => {
+    // WRONG IMPL KILLED (1): `await startClientTelemetry(...)` — the dynamic OTel import would
+    //   then sit on the critical path between DOM setup and connect(). A slow chunk fetch (or a
+    //   CDN hiccup) would delay the player's connection for a feature they cannot see.
+    // WRONG IMPL KILLED (2): a `.catch()`-less floating promise is fine ONLY because
+    //   startClientTelemetry is contractually non-rejecting (T-P1); a `console.error` here would
+    //   still breach T-I1's "off is silent" for every misconfigured build.
+    // WRONG IMPL KILLED (3): forgetting `telemetry = …`, so the resolved façade is discarded and
+    //   the module-scope binding stays NOOP forever. Every other tooth in this block would still
+    //   pass — the call sites exist, they just all no-op. This is the single most likely way for
+    //   the whole slice to ship inert.
+    // WRONG IMPL KILLED (4, AM1): no initial `setZone`, leaving every datapoint before the first
+    //   zone WARP with no zone_id at all (a split series for the busiest zone in the game).
+    const src = readMainTs();
+    const hunk = m20cHunk(src, M20C_INIT_BEGIN, M20C_INIT_END);
+
+    expect(
+      countOccurrences(hunk, 'startClientTelemetry('),
+      'the init hunk must call startClientTelemetry( exactly once',
+    ).toBe(1);
+    expect(
+      countOccurrences(stripLineComments(readMainTs()), 'startClientTelemetry('),
+      'startClientTelemetry( must be called EXACTLY once in the whole file — a second call ' +
+        'builds a second MeterProvider and doubles every exported series',
+    ).toBe(1);
+    expect(
+      hunk.includes('telemetry ='),
+      'the init hunk must ASSIGN the resolved façade to the module-scope binding ' +
+        '(`telemetry = …`). Without it the whole slice ships inert: every hook runs, every call ' +
+        'hits NOOP_TELEMETRY, and nothing is ever exported.',
+    ).toBe(true);
+    expect(
+      hunk.includes('recordWasmReady(WASM_READY_MS)'),
+      'the init hunk must report the wasm-ready mark once the façade exists — ' +
+        '`recordWasmReady(WASM_READY_MS)`',
+    ).toBe(true);
+    expect(
+      hunk.includes('telemetry.setZone('),
+      'the init hunk must seed the initial zone (AM1) through the MODULE-SCOPE binding — ' +
+        '`telemetry.setZone(rawMap.zone_id);` — so datapoints before the first warp carry a ' +
+        'zone_id. Spell it on `telemetry.`, not on the locally-resolved value: the switchZone ' +
+        'hook and the exactly-two count in W-M20C-SETZONE both key on that one spelling.',
+    ).toBe(true);
+    expect(
+      hunk.includes('await'),
+      'the init must be FIRE-AND-FORGET: no `await`. Awaiting the OTel dynamic import puts a ' +
+        "network fetch on the path between DOM setup and connect(), delaying the player's " +
+        'connection for a feature they cannot see.',
+    ).toBe(false);
+    expect(
+      hunk.includes('console.'),
+      'the init hunk must not write to the console — telemetry degrades silently (T-I1), and ' +
+        'this line runs on every page load of every build',
+    ).toBe(false);
+  });
+});
+
+describe('★ main.ts wiring (m20c/ADR-0180): hook 4 — reconcile attempts vs corrections', () => {
+  it('★ W-M20C-RECONCILE BITES: the hunk is EXACTLY one unconditional attempt + one diverged-guarded correction', () => {
+    // AM5: the spec names both "prediction-divergence rate" and "reconcile-correction rate", and
+    // the predictor exposes ONE boolean (predictor.ts:261-263). The decomposition is
+    // attempts + corrections, and PromQL derives both rates —
+    //   divergence rate := rate(mr_client_reconcile_correction[5m]) / rate(mr_client_reconcile[5m])
+    // — which is arithmetic that only works if the denominator counts EVERY attempt and the
+    // numerator counts ONLY the diverged ones.
+    // WRONG IMPL KILLED (1): recordCorrection called unconditionally. The ratio becomes exactly
+    //   1.0 forever — a plausible-looking number that says "every prediction is wrong", and no
+    //   test other than this one can see it (main.ts is coverage-excluded).
+    // WRONG IMPL KILLED (2): recordReconcile placed INSIDE the `if (diverged)` guard. The ratio
+    //   becomes exactly 1.0 again, from the other direction.
+    // WRONG IMPL KILLED (3): the counters swapped.
+    // EXACT EQUALITY (the uxd3-c B1 idiom) because containment cannot distinguish any of the
+    // three: all of them contain both call names and the token `diverged`.
+    const src = readMainTs();
+    const hunk = m20cHunk(src, M20C_RECONCILE_BEGIN, M20C_RECONCILE_END);
+
+    expect(
+      hunk,
+      'the m20c reconcile hunk must be EXACTLY these two statements (comment-stripped, ' +
+        'whitespace-squashed):\n' +
+        '  telemetry.recordReconcile();\n' +
+        '  if (diverged) telemetry.recordCorrection();\n' +
+        `Got: ${JSON.stringify(hunk)}`,
+    ).toBe('telemetry.recordReconcile(); if (diverged) telemetry.recordCorrection();');
+  });
+
+  it('★ W-M20C-RECONCILE-PLACEMENT BITES: the hunk reads `diverged` and stays OUTSIDE the nh2 region', () => {
+    // The nh2/ADR-0148 re-issue block is bounded by NH2_RECONCILE_START/END and is pinned by
+    // W-NH2-GATE-WIRED. Inserting statements inside it would change the region every one of
+    // those assertions measures.
+    // WRONG IMPL KILLED (1): the hunk placed above `const diverged = predictor.reconcile(…)` —
+    //   it would not compile, but the ordering assertion names the real cause immediately.
+    // WRONG IMPL KILLED (2): the hunk placed inside the nh2 divergence guard, where it would
+    //   only count reconciles that ALSO passed the overlay/outstanding-steps gate — a silently
+    //   filtered denominator.
+    const src = readMainTs();
+    expectUniqueAnchor(src, M20C_RECONCILE_BEGIN);
+    expectUniqueAnchor(src, M20C_RECONCILE_END);
+    expectUniqueAnchor(src, NH2_RECONCILE_START);
+
+    const divergedIdx = src.indexOf('const diverged = predictor.reconcile(');
+    const beginIdx = src.indexOf(M20C_RECONCILE_BEGIN);
+    const endIdx = src.indexOf(M20C_RECONCILE_END);
+    const nh2Idx = src.indexOf(NH2_RECONCILE_START);
+
+    expect(
+      divergedIdx,
+      'anti-vacuity: `const diverged = predictor.reconcile(` must still exist (ADR-0013 seam)',
+    ).toBeGreaterThan(0);
+    expect(beginIdx, 'the hunk must come AFTER the `diverged` local it reads').toBeGreaterThan(
+      divergedIdx,
+    );
+    expect(
+      endIdx,
+      'the whole hunk must close BEFORE the nh2 divergence-re-issue block ' +
+        `("${NH2_RECONCILE_START}") — that region is pinned by W-NH2-GATE-WIRED and must not ` +
+        'change shape',
+    ).toBeLessThan(nh2Idx);
+  });
+});
+
+describe('★ main.ts wiring (m20c/ADR-0180): hook 5 — rejected intents, inside the existing try', () => {
+  it('★ W-M20C-INTENT-REJECT BITES: noteMoveRejection counts DROPPED rejections, inside its try/catch', () => {
+    // AM5 keeps `mr_client_intent_reject` as a deliberate third counter: a server-rejected
+    // intent is what the player experiences as a rubber-band, and the seam already exists.
+    // WRONG IMPL KILLED (1): counting EVERY rejection rather than the dropped ones. A rejection
+    //   whose seq was already evicted (dropped === false) is a stale echo, not a netcode event;
+    //   counting it inflates the signal precisely during the reconnect storms where the metric
+    //   would otherwise be readable.
+    // WRONG IMPL KILLED (2): the call placed OUTSIDE the helper's try/catch (ADR-0172 D4). This
+    //   helper runs inside the rejection `.catch`; a throw here rejects that handler's promise,
+    //   which reaches main.ts's unhandledrejection listener → pushError → the error overlay is
+    //   SHOWN. A telemetry line would then turn a silent movement rejection into the exact
+    //   user-visible error M2 §3 forbids.
+    const src = readMainTs();
+    const body = squashWhitespace(moveRejectHelperBody(src));
+
+    expect(
+      body.includes('if (dropped) telemetry.recordIntentReject();'),
+      'noteMoveRejection must contain the guarded counter `if (dropped) ' +
+        'telemetry.recordIntentReject();` — the DROPPED result, not the raw rejection',
+    ).toBe(true);
+    expect(
+      countOccurrences(stripLineComments(src), 'recordIntentReject('),
+      'recordIntentReject( must be called from exactly one place in main.ts',
+    ).toBe(1);
+
+    const tryIdx = body.indexOf('try {');
+    const callIdx = body.indexOf('telemetry.recordIntentReject(');
+    const catchIdx = body.lastIndexOf('catch');
+    expect(tryIdx, 'anti-vacuity: the helper must still open with `try {`').toBeGreaterThanOrEqual(
+      0,
+    );
+    expect(
+      tryIdx,
+      'the telemetry call must sit INSIDE the existing try (ADR-0172 D4 totality)',
+    ).toBeLessThan(callIdx);
+    expect(
+      catchIdx,
+      'the telemetry call must be enclosed by the catch — outside it, a throw escalates a silent ' +
+        'movement rejection into a user-visible error overlay',
+    ).toBeGreaterThan(callIdx);
+  });
+});
+
+describe('★ main.ts wiring (m20c/ADR-0180): hook 6 — reducer RTT on the enqueueMove seam', () => {
+  it('★ W-M20C-RTT-BEFORE-CATCH BITES: the new .then precedes the rejection .catch and is self-guarded', () => {
+    // AM8 + risk R-4, the highest-consequence hook in the slice.
+    // WRONG IMPL KILLED (1, the manufactured desync): a `.then` appended AFTER the existing
+    //   `.catch(`. A throw inside it would then be caught by NOTHING on the success path — but
+    //   worse, the common mistake is chaining `.catch(…).then(…)`, which inverts the semantics;
+    //   and any throw from telemetry landing in the rejection handler runs
+    //   `predictor.dropRejected` for a move the server ACCEPTED. That is a desync manufactured
+    //   by the observability code, on a successful move, in the netcode this repo has spent
+    //   three slices stabilising.
+    // WRONG IMPL KILLED (2): no inner try/catch. Defense-in-depth is MANDATORY here even though
+    //   telemetry.ts guards every façade method internally (T-P2): the call site is one line
+    //   from the rejection seam and must not depend on a promise made in another module.
+    // WRONG IMPL KILLED (3): recording an absolute timestamp (`recordRtt(performance.now())`)
+    //   instead of the delta. Every value would land in the +Inf bucket of a histogram whose
+    //   top boundary is 1000ms — a metric that is never wrong and never useful.
+    const src = readMainTs();
+    expectUniqueAnchor(src, NH3_SEND_START);
+    expectUniqueAnchor(src, NH3_SEND_END);
+    const region = bodyRegion(src, NH3_SEND_START, NH3_SEND_END);
+
+    // ADR-0116 bail-guard: prove this is still the send seam before judging it.
+    expect(
+      region.includes('dropRejected('),
+      'ANTI-VACUITY: the sendIntent region must still contain dropRejected( — otherwise these ' +
+        'anchors no longer bound the send site and every needle below is vacuous',
+    ).toBe(true);
+
+    const thenIdx = region.indexOf('.then(');
+    const catchIdx = region.indexOf('.catch(');
+    expect(catchIdx, 'the rejection `.catch(` must still exist').toBeGreaterThanOrEqual(0);
+    expect(
+      thenIdx,
+      'sendIntent must chain a `.then(` onto the enqueueMove promise (the RTT seam) — RED today: ' +
+        'there is no .then at all',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      thenIdx,
+      'the new `.then(` must come BEFORE the existing `.catch(` (AM8 / R-4). Chained after it, a ' +
+        'telemetry throw reaches the rejection handler and calls predictor.dropRejected on a ' +
+        'SUCCESSFUL move — a manufactured desync.',
+    ).toBeLessThan(catchIdx);
+
+    const thenBody = squashWhitespace(region.slice(thenIdx, catchIdx));
+    expect(
+      thenBody.includes('try {'),
+      'the new `.then` body must open its own `try {` (AM8: the call-site guard is mandatory, ' +
+        "defense-in-depth beyond telemetry.ts's internal guards)",
+    ).toBe(true);
+    expect(
+      thenBody.includes('catch'),
+      'the new `.then` body must CATCH — a bare try still propagates into the rejection path',
+    ).toBe(true);
+    expect(
+      thenBody.includes('recordRtt(performance.now() - t0)'),
+      'the `.then` must record the ELAPSED time: `telemetry.recordRtt(performance.now() - t0)`. ' +
+        'An absolute timestamp lands in the +Inf bucket of every histogram forever.',
+    ).toBe(true);
+    expect(
+      thenBody.includes('.catch('),
+      'the `.then` body must not contain its own `.catch(` — the region-relative ordering above ' +
+        'depends on the FIRST `.catch(` being the rejection seam',
+    ).toBe(false);
+    expect(
+      thenBody.includes('predictor.'),
+      'the `.then` body must not touch `predictor.` — the success path must never mutate ' +
+        'prediction state (that is what the rejection path is for)',
+    ).toBe(false);
+
+    // The stopwatch must start before the call it measures, inside this region.
+    expectUniqueAnchor(stripLineComments(src), M20C_RTT_T0_DECL);
+    const t0Idx = region.indexOf(M20C_RTT_T0_DECL);
+    const sendIdx = region.indexOf('reducers.enqueueMove(');
+    expect(
+      t0Idx,
+      `sendIntent must start the stopwatch with \`${M20C_RTT_T0_DECL}\` inside the send region ` +
+        '— measuring the reducer round trip, not the local predictor.enqueue that precedes it',
+    ).toBeGreaterThanOrEqual(0);
+    expect(sendIdx, 'anti-vacuity: the enqueueMove reducer call must exist').toBeGreaterThan(0);
+    expect(t0Idx, 'the stopwatch must start BEFORE the reducer call').toBeLessThan(sendIdx);
+  });
+
+  it('★ W-M20C-NH3-PRESERVED BITES: the nh3 epoch/drop invariants still hold after the .then lands', () => {
+    // T-W2/T-W3, protecting the PRE-EXISTING teeth rather than the new code. R-4 named this file
+    // a needle minefield: `W-NH3-EPOCH-CAPTURED` counts `epoch =` in this exact region and
+    // `W-NH3-DROP-GUARDED` counts `predictor.` in everything from the first `.catch(` onward.
+    // Re-asserting both HERE means the m20c PR reds with an m20c-shaped message if the new hunk
+    // disturbs them, instead of reding two unrelated-looking teeth 5000 lines up.
+    // WRONG IMPL KILLED: an implementer who, needing a timestamp in the rejection path too,
+    // writes `.catch(() => { const epoch2 = …; predictor.seedSeq(…); })` — a second `predictor.`
+    // reference in the catch body deletes the ADR-0152 guard's exclusivity.
+    const src = readMainTs();
+    const region = bodyRegion(src, NH3_SEND_START, NH3_SEND_END);
+
+    expect(
+      countOccurrences(region, 'epoch ='),
+      'the sendIntent region must STILL contain exactly one `epoch =` assignment (W-NH3-EPOCH-' +
+        'CAPTURED, ADR-0152) — the m20c .then must not introduce a second',
+    ).toBe(1);
+
+    const catchBody = squashWhitespace(region.slice(region.indexOf('.catch(')));
+    const guarded = catchBody.split('predictor.dropRejected(seq, epoch)').length - 1;
+    expect(
+      guarded,
+      'the guarded dropRejected(seq, epoch) call must survive',
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      catchBody.split('predictor.').length - 1,
+      'the rejection `.catch` must STILL touch `predictor.` only through the guarded ' +
+        'dropRejected(seq, epoch) call (W-NH3-DROP-GUARDED)',
+    ).toBe(guarded);
+  });
+});
+
+describe('★ main.ts wiring (m20c/ADR-0180): hook 7 — the frame loop tick and the boundary guard', () => {
+  it('★ W-M20C-FRAME-PLACEMENT BITES: the frame hunk lives in the rAF body, outside the nh2 re-issue block', () => {
+    // Placement, again, is the tooth. The hunk must sit AFTER `const ownEntityId =` (which is
+    // both the nh2 region's END anchor and the local the interp-gap call needs in order to
+    // EXCLUDE the own entity) and before the frame handler's own error log.
+    // WRONG IMPL KILLED: the hunk inserted inside NH2_RAF_START…NH2_RAF_END, which is the region
+    // W-NH2-GATE-WIRED pins with an `opensWith`-style contiguous needle — a silent re-anchoring
+    // of the press-teleport fix's only guard.
+    const src = readMainTs();
+    expectUniqueAnchor(src, M20C_FRAME_BEGIN);
+    expectUniqueAnchor(src, M20C_FRAME_END);
+    expectUniqueAnchor(src, UXD2_FRAME_START);
+    expectUniqueAnchor(src, UXD2_FRAME_END);
+    expectUniqueAnchor(src, NH2_RAF_END);
+
+    const beginIdx = src.indexOf(M20C_FRAME_BEGIN);
+    const endIdx = src.indexOf(M20C_FRAME_END);
+    expect(beginIdx, 'the frame hunk must sit inside the rAF frame body').toBeGreaterThan(
+      src.indexOf(UXD2_FRAME_START),
+    );
+    expect(
+      endIdx,
+      'the frame hunk must close before the frame handler error log (the rAF body END anchor)',
+    ).toBeLessThan(src.indexOf(UXD2_FRAME_END));
+    expect(
+      beginIdx,
+      `the frame hunk must start AFTER "${NH2_RAF_END}" — that keeps it out of the nh2 held-key ` +
+        're-issue region (pinned by W-NH2-GATE-WIRED) and puts `ownEntityId` in scope so the ' +
+        'interp-gap sample can exclude the OWN entity (AM2)',
+    ).toBeGreaterThan(src.indexOf(NH2_RAF_END));
+  });
+
+  it('★ W-M20C-FRAME-GUARDED BITES (T-P4): the tick is per-frame, every record() is inside the window guard', () => {
+    // T-P4, the per-frame cost tooth. The rAF body runs 60×/s for the whole session; only the
+    // O(1) accumulator tick may run unconditionally there.
+    // WRONG IMPL KILLED (1): `telemetry.recordFrameSample(...)` called EVERY FRAME. That is 60
+    //   histogram records/s (each with an attribute lookup) plus a 60× inflation of every
+    //   exported count — and it would make `mr_client_fps` a distribution of instantaneous frame
+    //   rates rather than the 1-second average OBS-25 specifies.
+    // WRONG IMPL KILLED (2): the interp-gap sample taken every frame — that is an O(remotes)
+    //   scan per frame instead of per second.
+    // WRONG IMPL KILLED (3): a record call placed after the guard's closing brace (textually
+    //   "after the if", semantically unconditional). The brace-depth assertion is what
+    //   distinguishes those two, and it demands depth EXACTLY 1 so a balanced object literal
+    //   opened earlier in the hunk cannot fake enclosure.
+    const src = readMainTs();
+    const hunk = m20cHunk(src, M20C_FRAME_BEGIN, M20C_FRAME_END);
+
+    expect(
+      countOccurrences(hunk, 'frameTick('),
+      'the frame hunk must call frameTick( exactly once per frame — the O(1) accumulator is the ' +
+        'ONLY thing allowed to run unconditionally here',
+    ).toBe(1);
+    expect(
+      braceDepthAt(hunk, hunk.indexOf('frameTick(')),
+      'the frameTick( call must be UNCONDITIONAL (brace depth 0 within the hunk) — a tick behind ' +
+        'a guard drops frames from the fps denominator',
+    ).toBe(0);
+
+    expect(
+      countOccurrences(hunk, 'if ('),
+      'the frame hunk must contain EXACTLY ONE `if (` — the window-boundary guard. A second ' +
+        'branch here is either a duplicate record path or a per-frame condition this tooth ' +
+        'cannot reason about.',
+    ).toBe(1);
+    expect(
+      hunk.includes('sample !== undefined'),
+      'the guard must test the window boundary explicitly (`… sample !== undefined`) — frameTick ' +
+        'returns a sample ONLY when a 1s window closed, and that is the sole permitted trigger',
+    ).toBe(true);
+    expect(
+      hunk.includes('else'),
+      'the frame hunk must have no `else` arm — there is nothing to do on a non-boundary frame',
+    ).toBe(false);
+
+    for (const call of ['telemetry.recordFrameSample(', 'telemetry.recordInterpGap(']) {
+      const idx = hunk.indexOf(call);
+      expect(idx, `the frame hunk must contain \`${call}\``).toBeGreaterThanOrEqual(0);
+      expect(
+        braceDepthAt(hunk, idx),
+        `\`${call}\` must sit at brace depth EXACTLY 1 inside the hunk — i.e. inside the single ` +
+          'window-boundary guard and nowhere else. Depth 0 means it runs on EVERY frame (60 ' +
+          'histogram records/s and a 60× inflation of the exported distribution).',
+      ).toBe(1);
+    }
+    expect(
+      countOccurrences(hunk, 'telemetry.'),
+      'exactly two telemetry calls belong in the frame hunk (the fps/frame-time sample and the ' +
+        'interp-gap sample)',
+    ).toBe(2);
+  });
+
+  it('★ W-M20C-FRAME-CEILING BITES: no OTHER telemetry call exists anywhere in the rAF body', () => {
+    // The ceiling that survives future edits: a region-bounded tooth is blind to a second call
+    // site added 40 lines further down the same frame body (the uxd3-b F3 lesson — a
+    // region-bounded scan cannot see a poisoning statement placed just outside its markers).
+    const src = readMainTs();
+    const frameBody = stripLineComments(regionOrThrow(src, UXD2_FRAME_START, UXD2_FRAME_END));
+    const hunk = m20cHunk(src, M20C_FRAME_BEGIN, M20C_FRAME_END);
+
+    expect(
+      frameBody.includes('renderer?.render('),
+      'ANTI-VACUITY: the frame region must still contain renderer?.render( — proof this is the ' +
+        'real rAF body',
+    ).toBe(true);
+    expect(
+      countOccurrences(frameBody, 'telemetry.'),
+      'every `telemetry.` reference inside the rAF frame body must live in the M20C-FRAME hunk. ' +
+        'An extra one outside the boundary guard is an unconditional per-frame record that the ' +
+        'marker-bounded tooth above structurally cannot see.',
+    ).toBe(countOccurrences(hunk, 'telemetry.'));
+  });
+
+  it('★ W-M20C-INTERP-GAP-EXCLUDES-OWN BITES: the gap sample is taken over REMOTES only (AM2)', () => {
+    // AM2's call-site half. `store.characters()` includes the OWN character, whose jitterEwma is
+    // fed by the same authoritative stream but is NEVER interpolated (the own entity renders
+    // from the slide clock — RenderResolver, ADR-0013). Including it makes the metric a mixture
+    // of two different things, and on a solo session it turns "no remotes" into a real sample.
+    // WRONG IMPL KILLED: `maxRemoteGapMs(store.characters(), STEP_MS)` — the shortest thing to
+    // write, wrong in exactly the sessions (solo playtests) where the number gets looked at.
+    const src = readMainTs();
+    const hunk = m20cHunk(src, M20C_FRAME_BEGIN, M20C_FRAME_END);
+
+    expect(
+      countOccurrences(hunk, 'maxRemoteGapMs('),
+      'the interp-gap sample must come from the tested maxRemoteGapMs( helper (AM2), not from a ' +
+        'hand-rolled reduction over jitterEwma',
+    ).toBe(1);
+    const args = squashWhitespace(callArgs(hunk, 'maxRemoteGapMs('));
+    expect(
+      args.includes('ownEntityId'),
+      'the maxRemoteGapMs( argument list must exclude the OWN entity — it has to mention ' +
+        `\`ownEntityId\` to do so. Args=${JSON.stringify(args)}`,
+    ).toBe(true);
+    expect(
+      args.includes('STEP_MS'),
+      'the interp-gap computation must be given the wasm-derived STEP_MS (the same cadence the ' +
+        'renderer uses), never a literal',
+    ).toBe(true);
+  });
+});
+
+describe('★ main.ts wiring (m20c/ADR-0180): hook 8 — zone_id tracks the zone switch (AM1)', () => {
+  it('★ W-M20C-SETZONE BITES: switchZone re-stamps the attribute set AFTER the rawMap commit', () => {
+    // AM1 (reviewer H1). WRONG IMPL KILLED (1): no hook at all — zone_id is stamped once at init
+    //   and every datapoint after a warp is attributed to the STARTING zone. Per-zone panels
+    //   would then be confidently, silently wrong, which is worse than not having the dimension.
+    // WRONG IMPL KILLED (2): the call placed BEFORE the commit / outside the try, so a FAILED
+    //   zone switch (zone_map throws, TileMap.fromRaw rejects the data) would still re-label the
+    //   telemetry for a zone the player never entered — and switchZone's whole design is
+    //   parse-first, commit-late (12.5c-3).
+    const src = readMainTs();
+    expectUniqueAnchor(src, M20C_ZONE_BEGIN);
+    expectUniqueAnchor(src, M20C_ZONE_END);
+    expectUniqueAnchor(src, 'function switchZone(');
+    expectUniqueAnchor(src, 'rawMap = newRawMap;');
+
+    const beginIdx = src.indexOf(M20C_ZONE_BEGIN);
+    const commitIdx = src.indexOf('rawMap = newRawMap;');
+    const fnIdx = src.indexOf('function switchZone(');
+    const nextFnIdx = src.indexOf('function reconcileFromStore(');
+
+    expect(nextFnIdx, 'anti-vacuity: reconcileFromStore must follow switchZone').toBeGreaterThan(
+      fnIdx,
+    );
+    expect(beginIdx, 'the zone hunk must sit INSIDE switchZone').toBeGreaterThan(fnIdx);
+    expect(beginIdx, 'the zone hunk must sit INSIDE switchZone').toBeLessThan(nextFnIdx);
+    expect(
+      beginIdx,
+      'the zone hunk must come AFTER `rawMap = newRawMap;` — the success-path commit. Before it ' +
+        '(or outside the try) a FAILED switch would still re-label telemetry for a zone the ' +
+        'player never entered (12.5c-3 parse-first, commit-late).',
+    ).toBeGreaterThan(commitIdx);
+
+    const hunk = m20cHunk(src, M20C_ZONE_BEGIN, M20C_ZONE_END);
+    expect(
+      hunk.includes('telemetry.setZone(newZoneId);'),
+      'the zone hunk must call `telemetry.setZone(newZoneId);` — the id that was just committed, ' +
+        `not a re-read of some other source. Got: ${JSON.stringify(hunk)}`,
+    ).toBe(true);
+
+    expect(
+      countOccurrences(stripLineComments(src), 'telemetry.setZone('),
+      'telemetry.setZone( must be called from EXACTLY two places: the init hunk (the initial ' +
+        'zone, AM1) and this switchZone commit. A third call site is another, unpinned source of ' +
+        'truth for the zone label.',
+    ).toBe(2);
+  });
+});
+
+describe('★ main.ts wiring (m20c/ADR-0180): the new hunks carry no credential and no identity', () => {
+  /** Every m20c-authored slice of main.ts, concatenated. AM3: the credential ban covers the new
+   *  main.ts hunks as well as observability/*.ts (which sourceScan.test.ts owns). */
+  function m20cHunks(src: string): string {
+    const region = bodyRegion(src, NH3_SEND_START, NH3_SEND_END);
+    const thenIdx = region.indexOf('.then(');
+    const catchIdx = region.indexOf('.catch(');
+    expect(
+      thenIdx,
+      'ANTI-VACUITY: the sendIntent `.then(` hunk must exist before the `.catch(` for this scan ' +
+        'to cover it',
+    ).toBeGreaterThanOrEqual(0);
+    expect(catchIdx).toBeGreaterThan(thenIdx);
+
+    return [
+      m20cHunk(src, M20C_INIT_BEGIN, M20C_INIT_END),
+      m20cHunk(src, M20C_RECONCILE_BEGIN, M20C_RECONCILE_END),
+      m20cHunk(src, M20C_FRAME_BEGIN, M20C_FRAME_END),
+      m20cHunk(src, M20C_ZONE_BEGIN, M20C_ZONE_END),
+      squashWhitespace(region.slice(thenIdx, catchIdx)),
+    ].join('\n');
+  }
+
+  it('★ W-M20C-NO-CREDENTIAL BITES (T-16b/AM3): no auth-shaped token reaches the telemetry hunks', () => {
+    // OBS-16. main.ts is the ONE file where a SpacetimeDB credential and the telemetry
+    // configuration are both in scope, so it is the only place the "correlate sessions by
+    // attaching the token" idea can be implemented. The ingest is unauthenticated and PUBLIC
+    // (ops/observability/Caddyfile) and its CORS preflight allows only `content-type` (:54).
+    const hunks = m20cHunks(readMainTs()).toLowerCase();
+    for (const needle of ['authorization', 'bearer', 'token', 'credentials:', 'withcredentials']) {
+      expect(
+        hunks.indexOf(needle),
+        `the m20c main.ts hunks must not contain "${needle}" — the OTLP ingest takes NO auth ` +
+          'credential (OBS-16). Describe the absence in prose without naming the mechanism.',
+      ).toBe(-1);
+    }
+  });
+
+  it('★ W-M20C-NO-IDENTITY BITES (T-35a): no identity or player text reaches the telemetry hunks', () => {
+    // OBS-34/35. `identity` is a module-scope `let` (main.ts:210) that is in scope at EVERY one
+    // of these hooks, and `.toHexString()` is one call away on any Identity — so the leak is
+    // always exactly one "helpful" line away, and no runtime test can prove its absence.
+    // WRONG IMPL KILLED: `telemetry.setZone(...)` extended to carry a player key, an
+    // `attributes.player = identity` added during a playtest, or a `?u=${identity}` appended to
+    // the endpoint. 64 hex chars of unique-per-player label on a public ingest is both the
+    // privacy breach and the cardinality bomb.
+    // NOTE: the frame hunk legitimately uses the LOCAL `ownEntityId` (the entity id, not the
+    // account) to exclude the own character from the remote-interp sample — the needle
+    // `identity` does not match it.
+    const hunks = m20cHunks(readMainTs()).toLowerCase();
+    for (const needle of ['identity', 'tohexstring', 'nickname', 'profilename', 'playername']) {
+      expect(
+        hunks.indexOf(needle),
+        `the m20c main.ts hunks must not contain "${needle}" (OBS-34/35). Nothing that names or ` +
+          'derives from the player may enter telemetry.',
+      ).toBe(-1);
+    }
+  });
+});
