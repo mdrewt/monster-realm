@@ -25,7 +25,14 @@ effectful shells.
   reject with `Err`, never clamp. Shared types flatten into table columns.
 - **`sim-harness`** — headless, deterministic, multi-client driver (injected
   clock + seed) with a seeded netcode `Link` (latency/loss/reorder) for in-CI
-  netcode tests without a browser.
+  netcode tests without a browser. Also hosts `src/bin/mr_load_driver.rs` (m20d,
+  ADR-0180 D9 / OBS-27): a std-only, live-only **network shell** bin that never
+  runs in CI (its pure core is unit-tested; the socket layer needs a live host).
+  It scales N WebSocket clients against a running module, minting one identity
+  per client, and reads the breaking point off `/v1/metrics` (movement-tick p95
+  vs `STEP_MS`, or queue-depth growth) — protocol-real, not SDK-real (no `tokio`,
+  no `spacetimedb-sdk`; the SDK deviation from D9 is recorded in ADR-0180's
+  m20d amendment). Invoke: `cargo run -p sim-harness --bin mr_load_driver -- --run-id <id> --db <name>`.
 - **`client/`** — PixiJS + TS: connects, subscribes, renders from the **generated**
   bindings (never duplicated content). Read-only store + one-way flow (ADR-0014).
 - **prediction layer** (`client/src/`, M3) — the headless, node-testable core M4's
