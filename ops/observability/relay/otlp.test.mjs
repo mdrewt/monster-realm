@@ -156,6 +156,11 @@ test('microsToNanosString: is arithmetic, not string append', () => {
   // A `micros + "000"` implementation returns '0000' here; BigInt arithmetic
   // returns '0'. Leading-zero garbage is rejected by OTLP consumers.
   assert.equal(microsToNanosString('0'), '0');
+  // Self-proving, matching the sibling above: spell out what the append
+  // implementation returns for this input, so the pin is demonstrably
+  // unreachable for it rather than merely asserted against it.
+  assert.equal(`0${'000'}`, '0000', 'FIXTURE: the append implementation yields 0000 here');
+  assert.notEqual('0000', '0', 'FIXTURE: so the pinned value above must be out of its reach');
 });
 
 // ---------------------------------------------------------------------------

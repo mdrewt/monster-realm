@@ -168,6 +168,113 @@ test('AM6: mixed-digit-length ts values order numerically, not lexicographically
   assert.equal(counts.paired, 1);
 });
 
+test('OBS-43 TIE-BREAK: at an IDENTICAL ts, enter is ordered before exit in EITHER arrival order', () => {
+  // The ordering contract in this file's header is only real if something
+  // constructs a genuine tie. A sort keyed on ts ALONE is stable, so it falls
+  // back to arrival order — and on this fixture arrival order changes the
+  // ANSWER, not merely the internal sequence: exit-first leaves both crumbs
+  // unpaired, enter-first pairs them.
+  const T = '1782197246200000';
+  const enter = crumb('sync_content', T, 'enter', 'zone:tie');
+  const exit = crumb('sync_content', T, 'exit', 'zone:tie');
+
+  for (const [label, arrival] of [
+    ['exit arrived first', [exit, enter]],
+    ['enter arrived first', [enter, exit]],
+  ]) {
+    const { spans, unpaired, counts } = pairBreadcrumbs(arrival);
+    assert.equal(unpaired.length, 0, `${label}: a same-microsecond pair is still a pair`);
+    assert.equal(spans.length, 1, `${label}: exactly one span`);
+    assert.deepEqual(
+      spans[0],
+      {
+        key: 'cause:zone:tie',
+        reducer: 'sync_content',
+        startMicros: T,
+        endMicros: T,
+        durationMicros: '0',
+      },
+      // NOT the banned zero (anti-pattern 9): that one is a duration invented
+      // for an UNPAIRED crumb, and the orphan tests below still forbid it. This
+      // zero is MEASURED — both host timestamps really are the same microsecond.
+      `${label}: the duration is a measured zero, both ts being equal`,
+    );
+    assert.deepEqual(counts, { total: 2, paired: 1, unpaired: 0, skippedNoKey: 0 });
+  }
+
+  assert.equal(
+    JSON.stringify(pairBreadcrumbs([exit, enter])),
+    JSON.stringify(pairBreadcrumbs([enter, exit])),
+    'the two arrival orders must produce byte-identical results',
+  );
+});
+
+test('OBS-43 TIE-BREAK: a reused key at ONE identical ts still pairs FIFO after the phase tie', () => {
+  // Two enters and two exits, all at the same microsecond, all one key. Under a
+  // ts-only stable sort the interleaved arrival below reads exit,enter,exit,
+  // enter and yields ONE span plus two unpaired; the pinned tie-break reads
+  // enter,enter,exit,exit and yields two.
+  const T = '1782197246201000';
+  const e1 = crumb('battle_tick', T, 'enter', 'battle:tie');
+  const e2 = crumb('battle_tick', T, 'enter', 'battle:tie');
+  const x1 = crumb('battle_tick', T, 'exit', 'battle:tie');
+  const x2 = crumb('battle_tick', T, 'exit', 'battle:tie');
+
+  const canonical = JSON.stringify(pairBreadcrumbs([e1, e2, x1, x2]));
+  for (const [label, arrival] of [
+    ['interleaved, exit first', [x1, e1, x2, e2]],
+    ['interleaved, enter first', [e1, x1, e2, x2]],
+    ['both exits first', [x1, x2, e1, e2]],
+  ]) {
+    const { spans, unpaired, counts } = pairBreadcrumbs(arrival);
+    assert.equal(spans.length, 2, `${label}: both pairs must resolve`);
+    assert.equal(unpaired.length, 0, `${label}: nothing may be left over`);
+    assert.deepEqual(counts, { total: 4, paired: 2, unpaired: 0, skippedNoKey: 0 });
+    assert.equal(
+      JSON.stringify({ spans, unpaired, counts }),
+      canonical,
+      `${label}: arrival order leaked into the result`,
+    );
+  }
+});
+
+test('OBS-43 TIE-BREAK: spans starting at the SAME ts are ordered by key, then by reducer', () => {
+  // The remaining two tie dimensions, made observable: with equal startMicros
+  // the SPAN OUTPUT ORDER is the only place the key/reducer tie-break shows up.
+  const T = '1782197246202000';
+  const crumbs = [
+    crumb('zone_tick', T, 'enter', 'zz'),
+    crumb('zone_tick', T, 'exit', 'zz'),
+    crumb('battle_tick', T, 'enter', 'zz'),
+    crumb('battle_tick', T, 'exit', 'zz'),
+    crumb('sync_content', T, 'enter', 'aa'),
+    crumb('sync_content', T, 'exit', 'aa'),
+  ];
+  const expected = [
+    { key: 'cause:aa', reducer: 'sync_content' },
+    { key: 'cause:zz', reducer: 'battle_tick' },
+    { key: 'cause:zz', reducer: 'zone_tick' },
+  ];
+
+  for (const [label, arrival] of [
+    ['declared order', crumbs],
+    ['reversed', [...crumbs].reverse()],
+    ['shuffled', [crumbs[4], crumbs[1], crumbs[3], crumbs[0], crumbs[5], crumbs[2]]],
+  ]) {
+    const { spans, unpaired } = pairBreadcrumbs(arrival);
+    assert.equal(unpaired.length, 0, `${label}: every chain pairs`);
+    assert.deepEqual(
+      spans.map((s) => ({ key: s.key, reducer: s.reducer })),
+      expected,
+      `${label}: same-ts spans must order by key then reducer, never by arrival`,
+    );
+    for (const span of spans) {
+      assert.equal(span.durationMicros, '0');
+      assert.equal(span.startMicros, T);
+    }
+  }
+});
+
 test('OBS-42: durations above 2^53 are exact — BigInt subtraction, never Number', () => {
   const big = [
     crumb('sync_content', '9007199254740993', 'enter', 'zone:e'),

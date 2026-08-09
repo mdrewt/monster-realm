@@ -34,12 +34,17 @@
 //                    observability-log-wrapper.eval.mjs:1589 and
 //                    observability_tests.rs:944 must be retired in the same
 //                    change, and G11 must have run first (OBS-51).
-//   G9i (always)   — the relay accepts no module-owner credential and the pure
-//                    core touches no filesystem at all (OBS-45).
-//   G9j (always)   — relay hygiene + EXACT production file set: a missing file
-//                    fails, and an unexpected extra non-test .mjs fails
-//                    (anti-smuggling — the parked daemon cannot creep back in
-//                    under a new filename).
+//   G9i (always)   — the relay accepts no module-owner credential, NEVER writes
+//                    (the batch CLI emits on stdout, so there is no `--out` flag
+//                    and no blessed write call to hide behind), and its pure
+//                    core touches no filesystem at all (OBS-45). "Always" is
+//                    literal: when the files are absent it fails saying so,
+//                    rather than falling silent.
+//   G9j (always)   — relay hygiene over EVERY .mjs under relay/ (tests included,
+//                    per AM12's scope) + the EXACT production file set: a
+//                    missing file fails, and an unexpected extra non-test .mjs
+//                    fails (anti-smuggling — the parked daemon cannot creep back
+//                    in under a new filename).
 //   G9k (always)   — runs `node --test` over the relay suites AND the m20b
 //                    checks suites. This is the only door those suites have:
 //                    nothing else in `just ci` executes them.
@@ -151,15 +156,15 @@ const TRACE_PAIR_SET_REL = `${RELAY_REL}/trace-pair-set.json`;
  *
  * FLOOR DERIVATION (re-run after adding or removing any test in these files):
  *   grep -c '^test(' ops/observability/relay/*.test.mjs ops/observability/checks/*.test.mjs
- * At authoring time: parse 21 + pair 15 + otlp 14 + reconstruct 12 = 62 relay,
- * plus checks 103 + redteam 13 = 116, total 178.
+ * At authoring time: parse 21 + pair 18 + otlp 14 + reconstruct 12 = 65 relay,
+ * plus checks 103 + redteam 13 = 116, total 181.
  */
 const NODE_TEST_FILES = [
   ...RELAY_TEST_FILES.map((f) => `${RELAY_REL}/${f}`),
   `${OPS}/checks/stack-config-checks.test.mjs`,
   `${OPS}/checks/stack-config-checks.redteam.test.mjs`,
 ];
-const NODE_TEST_PASS_FLOOR = 178;
+const NODE_TEST_PASS_FLOOR = 181;
 const NODE_TEST_TIMEOUT_MS = 60_000;
 
 /**
@@ -875,20 +880,49 @@ export function checkNoRelayAlertRule(alertRulesText) {
 // G9i/G9j — relay source hygiene
 // ===========================================================================
 
-/** Lines that are not whole-line `//`, `/*` or ` *` comment text. */
+/**
+ * The CODE of a source file: whole-line comments dropped, and trailing `//`
+ * comments cut QUOTE-AWARELY (the checks module's `stripComments` idiom, ported
+ * from `#` to `//`). Without the quote tracking a legitimate comment naming a
+ * banned token would false-positive; without cutting trailing comments at all,
+ * a banned token could hide behind `const x = 1; // setTimeout(` and read as
+ * code. Lowercased so every needle below can be written in lower case.
+ */
 function codeLines(source) {
-  return source
-    .split('\n')
-    .filter((line) => {
-      const t = line.trimStart();
-      return !t.startsWith('//') && !t.startsWith('/*') && !t.startsWith('*');
-    })
-    .map((line) => line.toLowerCase());
+  const out = [];
+  for (const line of source.split('\n')) {
+    const trimmed = line.trimStart();
+    if (trimmed.startsWith('//') || trimmed.startsWith('/*') || trimmed.startsWith('*')) {
+      continue;
+    }
+    let quote = '';
+    let escaped = false;
+    let cut = -1;
+    for (let i = 0; i < line.length; i++) {
+      const ch = line[i];
+      if (quote) {
+        if (escaped) escaped = false;
+        else if (ch === '\\') escaped = true;
+        else if (ch === quote) quote = '';
+        continue;
+      }
+      if (ch === '"' || ch === "'" || ch === '`') {
+        quote = ch;
+        continue;
+      }
+      if (ch === '/' && line[i + 1] === '/') {
+        cut = i;
+        break;
+      }
+    }
+    out.push((cut === -1 ? line : line.slice(0, cut)).toLowerCase());
+  }
+  return out;
 }
 
 /**
- * OBS-45 static half. Prose ABOUT credentials belongs in comments (which are
- * excluded); a credential surface in CODE is what this bans.
+ * OBS-45 static half, SUBSTRING needles. Prose ABOUT credentials belongs in
+ * comments (which `codeLines` strips); a credential surface in CODE is banned.
  */
 const CREDENTIAL_SURFACE = [
   '--token',
@@ -902,13 +936,53 @@ const CREDENTIAL_SURFACE = [
   'secret',
   'apikey',
   'api_key',
+  'x-api-key',
   'x-auth',
 ];
 
-/** Write-shaped fs APIs the batch shell must not reach for (`--out` uses writeFileSync). */
+/**
+ * OBS-45, WORD-SEGMENT needles. A bare substring `token` would fire on
+ * `tokenize` and `nextToken(` — both of which a hand-rolled parser (which is
+ * exactly what the relay is) may legitimately want. So the needle must be its
+ * own identifier SEGMENT: no ASCII letter on either side. Underscores, dots,
+ * dashes and quotes are all boundaries, which is what matters —
+ * `process.env.SESSION_TOKEN`, `.token`, `token:` and `'token'` all fire, while
+ * `tokenize`/`tokenizer`/`nextToken` stay clean. Accepted residual, stated
+ * rather than hidden: a run-together `authtoken` is missed; the `--token`,
+ * `authorization`, `bearer ` and `x-api-key` substrings above cover the shapes
+ * a real credential read actually takes.
+ */
+const CREDENTIAL_WORDS = ['token'];
+
+function containsCredentialWord(line, word) {
+  const isLetter = (c) => c !== undefined && c >= 'a' && c <= 'z';
+  let at = line.indexOf(word);
+  while (at !== -1) {
+    if (!isLetter(line[at - 1]) && !isLetter(line[at + word.length])) return true;
+    at = line.indexOf(word, at + word.length);
+  }
+  return false;
+}
+
+/**
+ * Write-shaped fs APIs NO relay file may reach for (OBS-45).
+ *
+ * CONTRACT CONSEQUENCE, stated so it is a decision and not an accident: the
+ * batch CLI writes its OTLP document to STDOUT ONLY — there is no `--out` flag.
+ * Allowing one blessed `writeFileSync` for `--out` is what let a red-team probe
+ * plant `writeFileSync('/tmp/x', 'x')` in the shell and stay silent. A relay
+ * that never writes at all is the only version of OBS-45 a static scan can
+ * actually prove, and `> file` covers every use `--out` would have had.
+ */
 const WRITE_APIS = [
+  'writefilesync',
+  'writefile',
   'appendfilesync',
+  'appendfile',
+  'copyfilesync',
+  'copyfile',
   'createwritestream',
+  'opensync',
   'unlinksync',
   'rmsync',
   'renamesync',
@@ -919,6 +993,8 @@ const WRITE_APIS = [
 
 // AM12's mechanical ban list — this is what keeps the parked /health server and
 // tail-follow daemon out of the slice rather than a promise that they stay out.
+// AM12 scopes it to `relay/**`, so it is applied to EVERY .mjs in that directory
+// including the four test files, not just the five production ones.
 // The first needle is assembled from fragments so that no CODE line of this file
 // spells the dynamic-regexp constructor contiguously; the remote Semgrep gate
 // matches raw text as well as AST, and this repo has been red-ed by it 3x.
@@ -1538,7 +1614,25 @@ export async function observabilityStackConfigEval() {
       : null;
     const read = readTracePairSet(text);
     record('G9d', read);
-    if (read.ok) membership = read.names;
+    if (read.ok) {
+      membership = read.names;
+      // AM19, mechanized rather than remembered: gitleaks runs remote-only and
+      // its entropy/keyword rules fire on a credential-shaped WORD near a
+      // quoted literal, so a helpful `note` in this config would red CI after
+      // the push, where the fix costs a squash onto a fresh branch (force-push
+      // is hook-blocked). Caught here instead, before the commit.
+      const lowered = text.toLowerCase();
+      for (const word of ['key', 'token', 'secret', 'password']) {
+        if (lowered.includes(word)) {
+          failures.push(
+            `G9d (AM19): ${TRACE_PAIR_SET_REL} contains the word \`${word}\`. Keep this file's ` +
+              'prose free of credential-shaped words — the remote secret scanners read it as a ' +
+              'committed credential. If a REDUCER NAME legitimately contains it, that is a ' +
+              'reviewed exception: record it in the PR and narrow this check in the same change.',
+          );
+        }
+      }
+    }
   }
 
   // --- G9e: banned membership ----------------------------------------------
@@ -1638,6 +1732,7 @@ export async function observabilityStackConfigEval() {
   }
 
   // --- G9i/G9j: relay source ------------------------------------------------
+  let relayFilesScanned = 0;
   {
     const relayDir = path.resolve(RELAY_REL);
     if (!existsSync(relayDir)) {
@@ -1661,16 +1756,26 @@ export async function observabilityStackConfigEval() {
           );
         }
       }
-      for (const file of RELAY_PRODUCTION_FILES) {
-        const full = path.join(relayDir, file);
-        if (!existsSync(full)) continue;
-        const source = readFileSync(full, 'utf8');
-        const lines = codeLines(source);
+
+      // AM12's ban list is scoped to `relay/**`, so it runs over EVERY .mjs in
+      // the directory, tests included: a `setTimeout` poll or a `node:http`
+      // import smuggled into a test file is still relay code that ships.
+      for (const file of present) {
+        const lines = codeLines(readFileSync(path.join(relayDir, file), 'utf8'));
         for (const ban of HYGIENE_BANS) {
           if (lines.some((l) => l.includes(ban))) {
             failures.push(`G9j (AM12): ${RELAY_REL}/${file} contains a banned construct (${ban})`);
           }
         }
+      }
+
+      // OBS-45 is about the PRODUCTION surface only: a test may legitimately
+      // build a fixture string naming a credential shape.
+      for (const file of RELAY_PRODUCTION_FILES) {
+        const full = path.join(relayDir, file);
+        if (!existsSync(full)) continue;
+        relayFilesScanned++;
+        const lines = codeLines(readFileSync(full, 'utf8'));
         for (const surface of CREDENTIAL_SURFACE) {
           if (lines.some((l) => l.includes(surface))) {
             failures.push(
@@ -1680,27 +1785,52 @@ export async function observabilityStackConfigEval() {
             );
           }
         }
+        for (const word of CREDENTIAL_WORDS) {
+          if (lines.some((l) => containsCredentialWord(l, word))) {
+            failures.push(
+              `G9i (OBS-45): ${RELAY_REL}/${file} reads a \`${word}\`-shaped value — OBS-45 ` +
+                'forbids the relay REQUIRING or ACCEPTING a module-owner credential, and an env ' +
+                'read is acceptance',
+            );
+          }
+        }
+        for (const api of WRITE_APIS) {
+          if (lines.some((l) => l.includes(api))) {
+            failures.push(
+              `G9i (OBS-45): ${RELAY_REL}/${file} calls a write API (${api}). Every relay file ` +
+                'is read-only: the batch CLI emits its document on STDOUT, so a write call has ' +
+                'no legitimate caller here',
+            );
+          }
+        }
         if (RELAY_PURE_FILES.includes(file) && lines.some((l) => l.includes('node:fs'))) {
           failures.push(
             `G9i: ${RELAY_REL}/${file} imports node:fs — the pure core takes text in and returns ` +
               'data out; all I/O belongs to the batch shell',
           );
         }
-        if (file === RELAY_SHELL_FILE) {
-          for (const api of WRITE_APIS) {
-            if (lines.some((l) => l.includes(api))) {
-              failures.push(`G9i (OBS-45): ${RELAY_REL}/${file} calls a write API (${api})`);
-            }
-          }
-          if (!lines.some((l) => l.includes('readfilesync') || l.includes('readdirsync'))) {
-            failures.push(
-              `G9i: ${RELAY_REL}/${file} never reads the logs directory — a shell that reads ` +
-                'nothing cannot be confirmed to read it READ-ONLY',
-            );
-          }
+        if (
+          file === RELAY_SHELL_FILE &&
+          !lines.some((l) => l.includes('readfilesync') || l.includes('readdirsync'))
+        ) {
+          failures.push(
+            `G9i: ${RELAY_REL}/${file} never reads the logs directory — a shell that reads ` +
+              'nothing cannot be confirmed to read it READ-ONLY',
+          );
         }
       }
     }
+  }
+  // G9i is documented as an ALWAYS assertion, so it must SAY something when the
+  // files are absent. Without this, a tree with no relay at all produced zero
+  // G9i output and the gate read as "nothing wrong here" — green by absence,
+  // the exact shape G9d exists to reject one directory over.
+  if (relayFilesScanned < RELAY_PRODUCTION_FILES.length) {
+    failures.push(
+      `G9i (OBS-45): only ${relayFilesScanned} of ${RELAY_PRODUCTION_FILES.length} production ` +
+        'relay files could be scanned — a file that does not exist cannot be confirmed ' +
+        'credential-free or write-free, and an unscanned file is not a clean one',
+    );
   }
 
   // --- G9k: run the suites nothing else runs -------------------------------
