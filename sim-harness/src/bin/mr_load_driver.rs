@@ -2120,13 +2120,25 @@ fn http_roundtrip(host: &str, request: &str) -> Result<(String, String), String>
 
 /// One `/metrics` scrape → parsed exposition (AM12 retries live in the caller).
 fn scrape_once(host: &str, token: &str) -> Result<Vec<Sample>, String> {
-    let request = http_get_request(host, "/metrics", Some(token));
+    let request = http_get_request(host, "/v1/metrics", Some(token));
     let (head, body) = http_roundtrip(host, &request)?;
     let status = http_status(&head)?;
     if status != 200 {
         return Err(format!("/metrics returned {status}"));
     }
     parse_exposition(&body)
+}
+
+/// Mint ONE fresh identity + bearer token (`POST /v1/identity`). Each simulated
+/// client needs its own so `join_game` creates a distinct player+character —
+/// otherwise every connection re-uses one identity, one character exists, and the
+/// O(N²) subscription fan-out OBS-27 measures collapses to O(N).
+fn mint_identity_token(host: &str) -> Result<String, String> {
+    let (head, body) = http_roundtrip(host, &http_post_request(host, "/v1/identity", "", None))?;
+    if http_status(&head)? != 200 {
+        return Err(format!("POST /v1/identity failed: {head}"));
+    }
+    extract_json_string_field(&body, "token")
 }
 
 /// Read an HTTP response head (up to the blank line) from a live socket.
@@ -2324,11 +2336,14 @@ fn scraper_thread(
     Ok(())
 }
 
-/// Detect a cumulative counter going backwards between scrapes (host restart).
-fn detect_counter_reset(scrapes: &[Vec<Sample>], db_identity: &str) -> bool {
+/// Detect a cumulative counter going backwards (host restart), across the
+/// baseline reading and every in-window scrape — so a reset spanning the
+/// baseline→window boundary is caught too.
+fn detect_counter_reset(baseline: &[Sample], scrapes: &[Vec<Sample>], db_identity: &str) -> bool {
     let pin = txn_count_match(db_identity, REDUCER_MOVEMENT_TICK, "true");
     let mut previous: Option<f64> = None;
-    for scrape in scrapes {
+    let readings = std::iter::once(baseline).chain(scrapes.iter().map(Vec::as_slice));
+    for scrape in readings {
         if let Ok(value) = counter_sum(scrape, TXN_COUNT_FAMILY, &pin) {
             if let Some(prev) = previous {
                 if value < prev {
@@ -2342,10 +2357,16 @@ fn detect_counter_reset(scrapes: &[Vec<Sample>], db_identity: &str) -> bool {
 }
 
 /// Fold the raw per-scrape samples + the thread counters into one [`LevelSample`].
+///
+/// Counter DELTAS span `baseline` (taken before any client joined) → the last
+/// in-window scrape, so joins that finished during startup are counted. The p95
+/// histogram snapshots and queue-gauge series use ONLY the in-window scrapes (the
+/// estimators own the AM6 warm-up discard) — the baseline is never prepended.
 fn build_level_sample(
     db_identity: &str,
     concurrency: u32,
     counters: &ClientCounters,
+    baseline: &[Sample],
     scrapes: &[Vec<Sample>],
 ) -> Result<LevelSample, String> {
     let mut p95_snapshots = Vec::with_capacity(scrapes.len());
@@ -2366,13 +2387,10 @@ fn build_level_sample(
         queue_readings.push((family.to_string(), series));
     }
 
-    let first = scrapes.first();
     let last = scrapes.last();
     let delta = |reducer: &str, committed: &str| -> f64 {
         let pin = txn_count_match(db_identity, reducer, committed);
-        let start = first.map_or(0.0, |s| {
-            counter_sum(s, TXN_COUNT_FAMILY, &pin).unwrap_or(0.0)
-        });
+        let start = counter_sum(baseline, TXN_COUNT_FAMILY, &pin).unwrap_or(0.0);
         let end = last.map_or(0.0, |s| {
             counter_sum(s, TXN_COUNT_FAMILY, &pin).unwrap_or(0.0)
         });
@@ -2392,7 +2410,7 @@ fn build_level_sample(
         attempted_sends: counters.attempted_sends.load(Ordering::Relaxed),
         drain_cap_hits: counters.drain_cap_hits.load(Ordering::Relaxed),
         send_errors: counters.send_errors.load(Ordering::Relaxed),
-        counter_decreased: detect_counter_reset(scrapes, db_identity),
+        counter_decreased: detect_counter_reset(baseline, scrapes, db_identity),
     })
 }
 
@@ -2404,6 +2422,17 @@ fn run_level(
     db_identity: &str,
     concurrency: u32,
 ) -> Result<LevelReport, String> {
+    // One fresh identity PER simulated client — distinct players → N characters
+    // stacking on zone-0 row 1 (no collision rule) → real O(N²) fan-out.
+    let mut client_tokens = Vec::with_capacity(concurrency as usize);
+    for _ in 0..concurrency {
+        client_tokens.push(mint_identity_token(host)?);
+    }
+
+    // Baseline BEFORE any client joins, so the join/enqueue/tick deltas span the
+    // whole level (joins finish during startup, before the first in-window scrape).
+    let baseline = scrape_once(host, token)?;
+
     let counters = ClientCounters::default();
     let running = AtomicBool::new(true);
     let scrapes: Mutex<Vec<Vec<Sample>>> = Mutex::new(Vec::new());
@@ -2413,10 +2442,18 @@ fn run_level(
     let counters_ref = &counters;
     let running_ref = &running;
     let scrapes_ref = &scrapes;
+    let client_tokens_ref = &client_tokens;
     let scrape_result = std::thread::scope(|scope| -> Result<(), String> {
         for client_index in 0..concurrency {
             scope.spawn(move || {
-                client_thread(host, cfg, client_index, token, counters_ref, running_ref);
+                client_thread(
+                    host,
+                    cfg,
+                    client_index,
+                    &client_tokens_ref[client_index as usize],
+                    counters_ref,
+                    running_ref,
+                );
             });
         }
         let scraper =
@@ -2430,7 +2467,7 @@ fn run_level(
     let raw = scrapes
         .into_inner()
         .map_err(|_| "scrapes mutex poisoned".to_string())?;
-    let sample = build_level_sample(db_identity, concurrency, &counters, &raw)?;
+    let sample = build_level_sample(db_identity, concurrency, &counters, &baseline, &raw)?;
     let verdict = evaluate_level(&sample)?;
     Ok(LevelReport { sample, verdict })
 }
@@ -2441,13 +2478,9 @@ fn run(args: &[String]) -> Result<i32, String> {
     let cfg = parse_args(args)?;
     let host = server_host(&cfg.server)?;
 
-    // Resolve a fresh identity + bearer token (POST /v1/identity).
-    let (id_head, id_body) =
-        http_roundtrip(&host, &http_post_request(&host, "/v1/identity", "", None))?;
-    if http_status(&id_head)? != 200 {
-        return Err(format!("POST /v1/identity failed: {id_head}"));
-    }
-    let token = extract_json_string_field(&id_body, "token")?;
+    // The run-level token drives metrics scraping + db-name resolution; each
+    // client mints its OWN token inside run_level.
+    let token = mint_identity_token(&host)?;
 
     // Resolve the database NAME → identity (GET /v1/database/<name>).
     let db_path = format!("/v1/database/{}", cfg.db);
