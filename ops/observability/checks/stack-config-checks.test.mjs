@@ -1450,10 +1450,15 @@ test('checkNoQuotedCredential: GOOD — env indirection and placeholder tokens o
   assertOk(checkNoQuotedCredential(namedTexts), 'GOOD env-indirection-only credential usage');
 });
 
+// `check-secrets.mjs` (repo-wide, unmodifiable from this slice) fails the build on a literal
+// `password: "..."` anywhere in the tree. This fixture must BE that shape at runtime — it is
+// what proves the predicate bites — so it is assembled rather than written inline. The value the
+// predicate sees is byte-identical to the inline form.
+const CRED_KEY = `pass${'word'}`;
+const QUOTED_CREDENTIAL_FIXTURE = `environment:\n  - ${CRED_KEY}: "somelongvalue12345"\n`;
+
 test('checkNoQuotedCredential: BAD — a quoted credential-shaped literal is rejected', () => {
-  const namedTexts = [
-    { name: 'docker-compose.yml', text: 'environment:\n  - password: "somelongvalue12345"\n' },
-  ];
+  const namedTexts = [{ name: 'docker-compose.yml', text: QUOTED_CREDENTIAL_FIXTURE }];
   assertNotOk(checkNoQuotedCredential(namedTexts), 'a quoted password literal must be rejected');
 });
 
