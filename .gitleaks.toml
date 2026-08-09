@@ -14,6 +14,11 @@
 [extend]
 useDefault = true
 
+# m20d: RFC 6455 section 1.3's OWN published example `Sec-WebSocket-Key` nonce
+# ("the sample nonce", base64-decoded), asserted verbatim in
+# sim-harness/src/bin/mr_load_driver.rs's handshake-header unit tests. High
+# entropy trips generic-api-key; it is a public spec fixture, never a secret.
+
 [allowlist]
-description = "Deliberate fake-secret markers used by no-leak gating tests (INTERNAL_SECRET_ prefix convention)"
-regexes = ['''INTERNAL_SECRET_[A-Za-z0-9_]+''']
+description = "Deliberate fake-secret markers used by no-leak gating tests (INTERNAL_SECRET_ prefix convention); RFC 6455 example nonce"
+regexes = ['''INTERNAL_SECRET_[A-Za-z0-9_]+''', '''dGhlIHNhbXBsZSBub25jZQ==''']

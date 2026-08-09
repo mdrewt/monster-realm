@@ -44,6 +44,15 @@ import {
 } from './net/devLog';
 import { AuthoritativeStore, ownPerspective } from './net/store';
 import { shouldReportZoneSyncFailure } from './net/zoneSyncGuard';
+import { resolveTelemetryConfig } from './observability/config';
+import { createFrameWindow, frameTick } from './observability/frameWindow';
+import { maxRemoteGapMs } from './observability/interpGap';
+import {
+  type ClientTelemetry,
+  loadOtelSdk,
+  NOOP_TELEMETRY,
+  startClientTelemetry,
+} from './observability/telemetry';
 import { HeldDirections, reissueDir } from './prediction/heldKeys';
 import { type ApplyMove, boundSeq, Predictor } from './prediction/predictor';
 import { TileMap } from './render/map';
@@ -183,6 +192,23 @@ const PARTY_SIZE = party_size();
 const PARTY_SLOT_NONE = party_slot_none();
 // M11c: rawMap is `let` — replaced on zone warp (zone_map() re-called for the new zone id).
 let rawMap = zone_map(ZONE_ID);
+
+// m20c (ADR-0180): wasm-ready mark — the import above is top-level-awaited, so the exports are
+// callable here (the metric's definition: ms from timeOrigin), captured once per session.
+const WASM_READY_MS = performance.now();
+// m20c: module-scope resolve (F-3 pattern); jitter injected so the resolver stays pure (AM12).
+const TELEMETRY_CONFIG = resolveTelemetryConfig(
+  {
+    endpoint: import.meta.env.VITE_MR_OTLP_ENDPOINT as string | undefined,
+    intervalMs: import.meta.env.VITE_MR_OTLP_INTERVAL_MS as string | undefined,
+  },
+  import.meta.env.DEV,
+  Math.random(),
+);
+// Seeded with the shared no-op; re-assigned once by the init hunk iff the bootstrap resolves.
+let telemetry: ClientTelemetry = NOOP_TELEMETRY;
+// m20c frame accumulator — created ONCE, carried across rAF frames by the frame hunk.
+let frameWindow = createFrameWindow(performance.now());
 
 // ADR-0090: stepMs injected so the store can do burst detection + jitter EWMA.
 const store = new AuthoritativeStore(STEP_MS);
@@ -699,6 +725,9 @@ function switchZone(newZoneId: number): void {
     renderer?.setMap(newRawMap); // draw BEFORE committing zone state (RT-SZ-01: atomicity)
     set_active_zone(newZoneId);
     rawMap = newRawMap;
+    // M20C-ZONE-BEGIN
+    telemetry.setZone(newZoneId);
+    // M20C-ZONE-END
     resetPredictionState();
     zoneSyncFailureCount = 0; // success: reset streak
     // pt-b1: emit the zone-change event ONLY on the success path, after set_active_zone.
@@ -774,6 +803,10 @@ function reconcileFromStore(): void {
     // predictor.reconcile is inside the outer try-catch (12.5c-4): a wasm throw
     // here is contained and never starves sibling batch listeners.
     const diverged = predictor.reconcile(baseline, own.row.moveQueue, ackedSeq, now);
+    // M20C-RECONCILE-BEGIN
+    telemetry.recordReconcile();
+    if (diverged) telemetry.recordCorrection();
+    // M20C-RECONCILE-END
     // Honor reconcile's documented divergence return (ADR-0013): on a genuine server
     // pullback, re-commit the held direction so a held key keeps walking from the
     // corrected baseline (same held-state-guarded dedup + hold-commit tap/hold
@@ -830,6 +863,7 @@ function noteMoveRejection(seq: number, dropped: boolean): void {
         `${MOVE_REJECT_PREFIX}seq=${seq} dropped=${dropped ? 1 : 0} count=${tick.emit.pending} breadcrumb=${tick.state.emitted}/${MOVE_REJECT_POLICY.cap}`,
       );
     }
+    if (dropped) telemetry.recordIntentReject();
   } catch {
     // Diagnostics must never escalate a movement rejection into a user-visible error:
     // a throw here rejects the .catch handler's promise, which reaches the
@@ -847,32 +881,43 @@ function sendIntent(input: WasmMoveInput): void {
   const seq = intent.seq;
   const epoch = intent.epoch;
   lastSentSeq = seq; // nh3 Case-M2 floor: reached only when the reducer call below is issued
-  conn.conn.reducers.enqueueMove({ input: moveInputToSdk(input), seq: BigInt(seq) }).catch(() => {
-    // Movement rejections stay SILENT to the user (M2 §3) — prediction repair only.
-    // ADR-0085 A2 (amended by nh3/ADR-0152): this closure captures ONLY PRIMITIVES —
-    // `seq` and `epoch`, both consts read from the intent BEFORE the closure exists —
-    // and reads the module-scope `predictor` at fire time. Never capture the intent
-    // object or the predictor instance here: a rejection promise may never settle
-    // after a socket drop (SDK no-settle-on-drop), so anything non-primitive it
-    // closes over is retained indefinitely. Cross-instance staleness is now guarded
-    // MECHANICALLY: dropRejected no-ops when the captured epoch is not the live
-    // instance's own generation (Case M1), and the send-seq floor above + the
-    // seedSeq call in the prediction reset remove the post-rebuild seq collision
-    // itself (Case M2), so a genuine "stale seq" rejection of the first post-warp
-    // move never comes into existence. The ordering invariant that previously
-    // carried this seam alone — rejections settle only on message receipt from the
-    // live socket, so a stale `.catch` drains as a microtask against the OLD
-    // predictor before any rebuild — is hereby DEMOTED to defense-in-depth, not
-    // retracted: it still holds, but it rests on observed SDK 2.6.0 behavior, not
-    // on a contract, and the epoch guard is the mechanical backstop if it drifts.
-    // ADR-0085 A3: burst rejections (N rejects → N drop+reconcile microtasks in one
-    // turn) are harmless — the microtask checkpoint drains before the next rAF, the
-    // renderer reads predictor state only in rAF, and each reconcile is a total
-    // re-derivation from store truth (idempotent, converging). No coalescing needed.
-    const dropped = predictor.dropRejected(seq, epoch);
-    if (dropped) reconcileFromStore();
-    noteMoveRejection(seq, dropped);
-  });
+  const t0 = performance.now();
+  const sent = conn.conn.reducers.enqueueMove({ input: moveInputToSdk(input), seq: BigInt(seq) });
+  sent
+    .then(() => {
+      // m20c RTT sample — self-guarded (AM8) so no fault here can reach the rejection handler.
+      try {
+        telemetry.recordRtt(performance.now() - t0);
+      } catch {
+        // swallowed (AM8)
+      }
+    })
+    .catch(() => {
+      // Movement rejections stay SILENT to the user (M2 §3) — prediction repair only.
+      // ADR-0085 A2 (amended by nh3/ADR-0152): this closure captures ONLY PRIMITIVES —
+      // `seq` and `epoch`, both consts read from the intent BEFORE the closure exists —
+      // and reads the module-scope `predictor` at fire time. Never capture the intent
+      // object or the predictor instance here: a rejection promise may never settle
+      // after a socket drop (SDK no-settle-on-drop), so anything non-primitive it
+      // closes over is retained indefinitely. Cross-instance staleness is now guarded
+      // MECHANICALLY: dropRejected no-ops when the captured epoch is not the live
+      // instance's own generation (Case M1), and the send-seq floor above + the
+      // seedSeq call in the prediction reset remove the post-rebuild seq collision
+      // itself (Case M2), so a genuine "stale seq" rejection of the first post-warp
+      // move never comes into existence. The ordering invariant that previously
+      // carried this seam alone — rejections settle only on message receipt from the
+      // live socket, so a stale `.catch` drains as a microtask against the OLD
+      // predictor before any rebuild — is hereby DEMOTED to defense-in-depth, not
+      // retracted: it still holds, but it rests on observed SDK 2.6.0 behavior, not
+      // on a contract, and the epoch guard is the mechanical backstop if it drifts.
+      // ADR-0085 A3: burst rejections (N rejects → N drop+reconcile microtasks in one
+      // turn) are harmless — the microtask checkpoint drains before the next rAF, the
+      // renderer reads predictor state only in rAF, and each reconcile is a total
+      // re-derivation from store truth (idempotent, converging). No coalescing needed.
+      const dropped = predictor.dropRejected(seq, epoch);
+      if (dropped) reconcileFromStore();
+      noteMoveRejection(seq, dropped);
+    });
 }
 const step = (dir: WasmDirection): void => sendIntent({ Step: dir });
 const jump = (): void => sendIntent('Jump');
@@ -2331,6 +2376,23 @@ async function main(): Promise<void> {
   // non-blocking pointer-events:none). pushError renders into it on the first error.
   errorOverlayView = new ErrorOverlayView();
 
+  // M20C-INIT-BEGIN
+  // Fire-and-forget (never awaited: the SDK chunk must not delay connect()) and contractually
+  // non-rejecting (T-P1). Host reads happen HERE — the observability modules are host-blind.
+  startClientTelemetry(TELEMETRY_CONFIG, {
+    loadSdk: loadOtelSdk,
+    buildSha: BUILD_INFO.sha,
+    hints: {
+      userAgent: navigator.userAgent,
+      maxTouchPoints: navigator.maxTouchPoints,
+    },
+  }).then((t) => {
+    telemetry = t;
+    telemetry.recordWasmReady(WASM_READY_MS);
+    telemetry.setZone(rawMap.zone_id);
+  });
+  // M20C-INIT-END
+
   conn = connect({
     uri: URI,
     db: DB,
@@ -2465,6 +2527,21 @@ async function main(): Promise<void> {
         lastCamY = ownEntity.y;
       }
       renderer?.render(entities, lastCamX, lastCamY);
+      // M20C-FRAME-BEGIN
+      const obsTick = frameTick(frameWindow, now);
+      frameWindow = obsTick.state;
+      if (obsTick.sample !== undefined) {
+        telemetry.recordFrameSample(obsTick.sample);
+        telemetry.recordInterpGap(
+          ownEntityId === undefined
+            ? undefined
+            : maxRemoteGapMs(
+                Array.from(store.characters()).filter((c) => c.row.entityId !== ownEntityId),
+                STEP_MS,
+              ),
+        );
+      }
+      // M20C-FRAME-END
       // uxd2 (ADR-0161 D6): recompute the on-world interact prompt EVERY frame
       // — the SAME resolver KeyT dispatches on, so the prompt can never
       // advertise a target KeyT refuses, and it self-heals on zone switch /

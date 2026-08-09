@@ -12,6 +12,10 @@
     "postinstall": "node ../scripts/wire-pixijs-skills.mjs"
   },
   "dependencies": {
+    "@opentelemetry/api": "1.9.1",
+    "@opentelemetry/exporter-metrics-otlp-http": "0.221.0",
+    "@opentelemetry/resources": "2.10.0",
+    "@opentelemetry/sdk-metrics": "2.10.0",
     "pixi.js": "^8.19.0",
     "spacetimedb": "^2.6.0"
   },
