@@ -7709,12 +7709,20 @@ describe('★ main.ts wiring (EG4-3/A12): W-EVOLVE-REDUCER — onEvolve forwards
 // guard that the tested cores are actually CONNECTED to the game.
 //
 // APPEND-ONLY BLOCK: nothing above this line is touched. It reuses this file's existing
-// helpers (readMainTs / stripLineComments / regionOrThrow / bodyRegion / squashWhitespace /
-// countOccurrences / callArgs / expectUniqueAnchor) and its existing anchor constants
-// (NH2_RAF_END, NH2_RECONCILE_START, NH3_SEND_START/END, DEVLOG_CONNECT_START,
-// UXD2_FRAME_START/END, MR_HELPER_START/END) so the m20c hunks are pinned RELATIVE to the
-// regions the pre-existing teeth already own — which is also how they are proven not to
-// re-anchor them.
+// COMMENT-BLIND helpers (readMainTs / regionOrThrow / squashWhitespace / countOccurrences /
+// callArgs / expectUniqueAnchor) and its existing anchor constants (NH2_RAF_END,
+// NH2_RECONCILE_START, NH3_SEND_START/END, DEVLOG_CONNECT_START, UXD2_FRAME_START/END,
+// MR_HELPER_START/END), so the m20c hunks are pinned RELATIVE to the regions the pre-existing
+// teeth already own — which is also how they are proven not to re-anchor them.
+//
+// IT DOES NOT REUSE `stripLineComments` / `stripBlockComments` / `bodyRegion` /
+// `moveRejectHelperBody` (red-team X1). Those strip `/*` with a plain `indexOf` and have no
+// notion of string literals, so ONE quoted string containing a slash-star pair makes them drop
+// the entire remainder of the file — every needle after it unfindable, every count 0, every ban
+// vacuous. The m20c teeth use the string-aware `m20cScan` below instead, and
+// `W-M20C-SCANNER-SELF-TEST` plants the exploit shape to prove it. The pre-existing helpers are
+// out of this block's touch-set; the obligation is discharged from the other side by
+// `W-M20C-NO-COMMENT-OPENER-IN-LITERAL`, which forbids the hazard in the code m20c introduces.
 //
 // THE EIGHT HOOKS (all additive):
 //   1. module scope, after the wasm-derived consts: `const WASM_READY_MS = performance.now();`
@@ -7756,19 +7764,201 @@ const M20C_WASM_READY_DECL = 'const WASM_READY_MS = performance.now();';
 /** Hook 6 — the RTT stopwatch start, as a whole statement. */
 const M20C_RTT_T0_DECL = 'const t0 = performance.now();';
 
-/** A marker-bounded m20c hunk: comment-stripped (so a commented-out line cannot satisfy a
- *  tooth), whitespace-squashed (so biome's wrapping is irrelevant) and trimmed. Both markers are
- *  uniqueness-checked first — a duplicated marker is how a region silently covers the wrong
- *  code, which is the nh1 post-mortem failure this file exists to prevent. */
-function m20cHunk(src: string, begin: string, end: string): string {
+interface M20cScan {
+  /** Source with every COMMENT removed. String/template literals are PRESERVED verbatim — they
+   *  are code, and a needle inside one must still count. */
+  readonly code: string;
+  /** The CONTENT of every string/template literal encountered (delimiters excluded). */
+  readonly literals: readonly string[];
+}
+
+/**
+ * A STRING-LITERAL-AWARE comment scanner, defined here for the m20c teeth only.
+ *
+ * WHY NOT THIS FILE'S EXISTING `stripLineComments` / `stripBlockComments` (red-team X1, PROVEN
+ * live against the first draft of this block): those helpers scan for `/*` with a plain
+ * `indexOf`, with no notion of string literals. A single line such as
+ *     const label = 'rate: a slash-star pair inside a quoted string';
+ * opens a "block comment" that never closes, and the stripper DROPS THE ENTIRE REMAINDER OF THE
+ * FILE. Every needle after that point becomes unfindable, every `countOccurrences` returns 0 and
+ * every ban passes — a live violation measured GREEN.
+ *
+ * The pre-existing helpers are NOT edited (this block is append-only), so the older teeth keep
+ * their behaviour; the m20c teeth use the scanner below instead, and the self-test in the first
+ * describe proves it. Note that main.ts contains no such literal TODAY — this is about the code
+ * the m20c hunks introduce, which is why there is also a tooth banning `/*` inside any string
+ * literal in those hunks.
+ *
+ * Modes: code / line-comment / block-comment / single / double / template, honouring backslash
+ * escapes inside the three string modes. An unescaped newline ends a `'…'`/`"…"` literal (JS
+ * forbids one there), so a stray apostrophe cannot swallow the file either.
+ *
+ * KNOWN LIMIT, stated not hidden: `${…}` interpolation is not parsed, so a backtick inside an
+ * interpolation expression would confuse template mode. No such construct exists in main.ts, and
+ * the failure direction is a SHORTER `code` string — which reds a tooth rather than passing one.
+ *
+ * No `new RegExp` — banned repo-wide, in tests as much as in source.
+ */
+function m20cScan(src: string): M20cScan {
+  const CODE = 0;
+  const LINE = 1;
+  const BLOCK = 2;
+  const SINGLE = 3;
+  const DOUBLE = 4;
+  const TEMPLATE = 5;
+
+  let code = '';
+  const literals: string[] = [];
+  let literal = '';
+  let mode = CODE;
+  let i = 0;
+
+  while (i < src.length) {
+    const ch = src.charAt(i);
+    const next = src.charAt(i + 1);
+
+    if (mode === CODE) {
+      if (ch === '/' && next === '/') {
+        mode = LINE;
+        i += 2;
+        continue;
+      }
+      if (ch === '/' && next === '*') {
+        mode = BLOCK;
+        i += 2;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === '`') {
+        mode = ch === "'" ? SINGLE : ch === '"' ? DOUBLE : TEMPLATE;
+        literal = '';
+        code += ch;
+        i += 1;
+        continue;
+      }
+      code += ch;
+      i += 1;
+      continue;
+    }
+
+    if (mode === LINE) {
+      if (ch === '\n') {
+        code += ch;
+        mode = CODE;
+      }
+      i += 1;
+      continue;
+    }
+
+    if (mode === BLOCK) {
+      if (ch === '*' && next === '/') {
+        mode = CODE;
+        i += 2;
+        continue;
+      }
+      if (ch === '\n') code += ch; // keep the line structure the region slicers rely on
+      i += 1;
+      continue;
+    }
+
+    // --- inside a string literal: the text is CODE and is kept verbatim ------------------
+    code += ch;
+    if (ch === '\\') {
+      code += next;
+      literal += next;
+      i += 2;
+      continue;
+    }
+    const closer = mode === SINGLE ? "'" : mode === DOUBLE ? '"' : '`';
+    if (ch === closer) {
+      literals.push(literal);
+      literal = '';
+      mode = CODE;
+      i += 1;
+      continue;
+    }
+    if (ch === '\n' && mode !== TEMPLATE) {
+      literals.push(literal); // unterminated '…' / "…": bail to code, never run away
+      literal = '';
+      mode = CODE;
+      i += 1;
+      continue;
+    }
+    literal += ch;
+    i += 1;
+  }
+
+  if (mode === SINGLE || mode === DOUBLE || mode === TEMPLATE) literals.push(literal);
+  return { code, literals };
+}
+
+/** Comment-stripped main.ts, WHOLE FILE, with the collapse guard the nh3 teeth use (:2363-2367):
+ *  a strip that ate the file would make every `countOccurrences(…) === 0/1` ceiling vacuous. */
+function m20cWholeFile(src: string): string {
+  const code = m20cScan(src).code;
+  expect(
+    code.length,
+    'comment-stripped main.ts collapsed to under half its raw size — the m20c scanner ate the ' +
+      'file, so every whole-file count below would be measuring a fragment',
+  ).toBeGreaterThan(src.length / 2);
+  return code;
+}
+
+/** RAW body of a needle-bounded region, with the START anchor's OWN LINE dropped (the anchor may
+ *  be a comment marker, whose line the strippers cannot see). Both anchors are uniqueness-checked
+ *  — a duplicated marker is how a region silently covers the wrong code (nh1 post-mortem). */
+function m20cRegionRaw(src: string, begin: string, end: string): string {
   expectUniqueAnchor(src, begin);
   expectUniqueAnchor(src, end);
-  const body = squashWhitespace(bodyRegion(src, begin, end)).trim();
+  const raw = regionOrThrow(src, begin, end);
+  const nl = raw.indexOf('\n');
+  if (nl === -1) {
+    throw new Error(
+      `the m20c region "${begin}" → "${end}" collapsed to a single line — refusing to scan a ` +
+        'degenerate region',
+    );
+  }
+  return raw.slice(nl + 1);
+}
+
+/** A marker-bounded m20c hunk: comment-stripped with the STRING-AWARE scanner, whitespace-
+ *  squashed (so biome's wrapping is irrelevant) and trimmed. */
+function m20cHunk(src: string, begin: string, end: string): string {
+  const body = squashWhitespace(m20cScan(m20cRegionRaw(src, begin, end)).code).trim();
   expect(
     body.length,
     `the m20c hunk between ${begin} and ${end} is EMPTY after comment-stripping — the markers ` +
       'wrap nothing and every assertion about it would pass vacuously',
   ).toBeGreaterThan(0);
+  return body;
+}
+
+/** The sendIntent region (nh3 anchors), comment-stripped with the string-aware scanner.
+ *  Deliberately NOT `bodyRegion`: see the X1 note on m20cScan. */
+function m20cSendRegion(src: string): string {
+  const region = m20cScan(m20cRegionRaw(src, NH3_SEND_START, NH3_SEND_END)).code;
+  expect(
+    region.includes('dropRejected('),
+    'ANTI-VACUITY: the sendIntent region must still contain dropRejected( — otherwise these ' +
+      'anchors no longer bound the send site and every needle below is vacuous',
+  ).toBe(true);
+  return region;
+}
+
+/** The noteMoveRejection body (11r-h anchors), comment-stripped with the string-aware scanner,
+ *  carrying the same placement bound the pre-existing helper asserts. */
+function m20cHelperBody(src: string): string {
+  const body = m20cScan(m20cRegionRaw(src, MR_HELPER_START, MR_HELPER_END)).code;
+  expect(
+    body.length,
+    `the region between "${MR_HELPER_START}" and "${MR_HELPER_END}" is ${body.length} chars — ` +
+      'noteMoveRejection must sit IMMEDIATELY before `function sendIntent(` (plan §R5.7). ' +
+      'Placed elsewhere, this region swallows unrelated main.ts code.',
+  ).toBeLessThan(2500);
+  expect(
+    body.includes('errorRing.push('),
+    'ANTI-VACUITY: the region must contain the breadcrumb write — proving this really is the ' +
+      'helper body and not a degenerate slice',
+  ).toBe(true);
   return body;
 }
 
@@ -7786,6 +7976,54 @@ function braceDepthAt(region: string, index: number): number {
   return depth;
 }
 
+describe('★ main.ts wiring (m20c/ADR-0180): SELF-TEST — the m20c scanner is itself gated', () => {
+  it('★ W-M20C-SCANNER-SELF-TEST BITES: an unclosed comment opener inside a STRING cannot blind the m20c teeth', () => {
+    // RED-TEAM X1, the OFFENSIVE half, and the reason this block does not reuse
+    // `stripLineComments`. MEASURED against the naive stripper: the first line below opens a
+    // "block comment" that never closes, so the stripper returns everything BEFORE it and drops
+    // the rest — the live `telemetry.recordFrameSample(...)` on the last line becomes invisible,
+    // `countOccurrences` reports 0, and a tooth asserting its PRESENCE fails misleadingly while
+    // every tooth asserting an ABSENCE (the credential and identity bans, the `telemetry.` count
+    // ceilings, T-P4's brace-depth check) passes vacuously.
+    //
+    // This fixture is the exploit shape, run against the scanner the m20c teeth actually use.
+    // If someone "simplifies" m20cScan back to an indexOf loop, THIS reds first and by name.
+    const opener = ['/', '*'].join(''); // built, so this fixture cannot trip any scan of this file
+    const fixture = [
+      `const decoy = 'zone ${opener} not a comment';`,
+      '// a real line comment naming telemetry.recordFrameSample(',
+      `${opener} a real block comment naming telemetry.recordFrameSample( *${'/'}`,
+      'telemetry.recordFrameSample(tick.sample);',
+    ].join('\n');
+
+    const scanned = m20cScan(fixture);
+    expect(
+      scanned.code.includes('telemetry.recordFrameSample(tick.sample);'),
+      'the LIVE statement after a string literal containing an unclosed comment opener must ' +
+        'survive the strip — otherwise every m20c tooth is blind from that literal onward',
+    ).toBe(true);
+    expect(
+      countOccurrences(scanned.code, 'telemetry.recordFrameSample('),
+      'exactly ONE call must survive the strip: the live one. The two named inside comments must ' +
+        'not — a commented-out call must never satisfy a presence tooth (nh1 post-mortem).',
+    ).toBe(1);
+    expect(
+      scanned.literals.includes(`zone ${opener} not a comment`),
+      'the literal collector must capture string CONTENT — it is what the ' +
+        'W-M20C-NO-COMMENT-OPENER-IN-LITERAL ban reads',
+    ).toBe(true);
+
+    // The mirror-image runaway: an unterminated `'…'`. JS forbids a raw newline inside one, so
+    // the scanner must end the literal at the line break rather than swallowing the file.
+    const stray = ["const s = 'unterminated", 'telemetry.recordReconcile();'].join('\n');
+    expect(m20cScan(stray).code.includes('telemetry.recordReconcile();')).toBe(true);
+
+    // And the ordinary cases still work: real comments really are removed.
+    expect(scanned.code.includes('a real line comment')).toBe(false);
+    expect(scanned.code.includes('a real block comment')).toBe(false);
+  });
+});
+
 describe('★ main.ts wiring (m20c/ADR-0180): hooks 1+2 — the module-scope marks and the config resolve', () => {
   it('★ W-M20C-WASM-MARK BITES: WASM_READY_MS is captured ONCE at module scope, after the wasm consts', () => {
     // OBS (wasm-init timing). The metric is DEFINED as "ms from timeOrigin to wasm exports
@@ -7799,7 +8037,7 @@ describe('★ main.ts wiring (m20c/ADR-0180): hooks 1+2 — the module-scope mar
     //   a once-per-session gauge into a rolling value. The occurrence count pins it at exactly
     //   two: the declaration and the single use in the init hunk.
     const src = readMainTs();
-    const stripped = stripLineComments(src);
+    const stripped = m20cWholeFile(src);
     expectUniqueAnchor(stripped, M20C_WASM_READY_DECL);
 
     const markIdx = stripped.indexOf(M20C_WASM_READY_DECL);
@@ -7844,7 +8082,7 @@ describe('★ main.ts wiring (m20c/ADR-0180): hooks 1+2 — the module-scope mar
     // WRONG IMPL KILLED (3): reading the wrong flag (VITE_MR_DEVLOG is the neighbouring idiom
     //   and an easy copy-paste) — telemetry would then switch on with the dev-log flag.
     const src = readMainTs();
-    const stripped = stripLineComments(src);
+    const stripped = m20cWholeFile(src);
 
     expect(
       countOccurrences(stripped, 'resolveTelemetryConfig('),
@@ -7894,7 +8132,7 @@ describe('★ main.ts wiring (m20c/ADR-0180): hooks 1+2 — the module-scope mar
     //   module scope and could not see it, so it would not compile… unless a SECOND module-scope
     //   binding were added, which the exactly-one count below rules out.
     const src = readMainTs();
-    const stripped = stripLineComments(src);
+    const stripped = m20cWholeFile(src);
 
     expect(
       countOccurrences(stripped, '= NOOP_TELEMETRY'),
@@ -7918,7 +8156,7 @@ describe('★ main.ts wiring (m20c/ADR-0180): hooks 1+2 — the module-scope mar
     // re-declaration shadows the import, satisfies every needle in this file, and silently
     // disconnects main.ts from the modules that are actually unit-tested.
     const src = readMainTs();
-    const stripped = stripLineComments(src);
+    const stripped = m20cWholeFile(src);
 
     expect(
       countOccurrences(stripped, "from './observability/"),
@@ -7996,7 +8234,7 @@ describe('★ main.ts wiring (m20c/ADR-0180): hook 3 — fire-and-forget init, o
       'the init hunk must call startClientTelemetry( exactly once',
     ).toBe(1);
     expect(
-      countOccurrences(stripLineComments(readMainTs()), 'startClientTelemetry('),
+      countOccurrences(m20cWholeFile(readMainTs()), 'startClientTelemetry('),
       'startClientTelemetry( must be called EXACTLY once in the whole file — a second call ' +
         'builds a second MeterProvider and doubles every exported series',
     ).toBe(1);
@@ -8012,11 +8250,13 @@ describe('★ main.ts wiring (m20c/ADR-0180): hook 3 — fire-and-forget init, o
         '`recordWasmReady(WASM_READY_MS)`',
     ).toBe(true);
     expect(
-      hunk.includes('telemetry.setZone('),
-      'the init hunk must seed the initial zone (AM1) through the MODULE-SCOPE binding — ' +
-        '`telemetry.setZone(rawMap.zone_id);` — so datapoints before the first warp carry a ' +
-        'zone_id. Spell it on `telemetry.`, not on the locally-resolved value: the switchZone ' +
-        'hook and the exactly-two count in W-M20C-SETZONE both key on that one spelling.',
+      hunk.includes('telemetry.setZone(rawMap.zone_id);'),
+      'the init hunk must seed the initial zone (AM1) with the CURRENT map id, as the whole ' +
+        'statement `telemetry.setZone(rawMap.zone_id);`. Reviewer R3: a bare `setZone(` needle ' +
+        'is satisfied by `telemetry.setZone(0)` — a hard-coded starting zone that is silently ' +
+        'WRONG for any session that resumes in another zone (reconnect-strand, 12.5c-1), and ' +
+        'wrong labels are worse than absent ones. Spell it on `telemetry.` too, not on the ' +
+        'locally-resolved value: the switchZone hook and W-M20C-SETZONE both key on that.',
     ).toBe(true);
     expect(
       hunk.includes('await'),
@@ -8029,6 +8269,51 @@ describe('★ main.ts wiring (m20c/ADR-0180): hook 3 — fire-and-forget init, o
       'the init hunk must not write to the console — telemetry degrades silently (T-I1), and ' +
         'this line runs on every page load of every build',
     ).toBe(false);
+  });
+
+  it('★ W-M20C-INIT-DEPS BITES: the init passes the REAL build sha and the REAL device hints', () => {
+    // REVIEWER R2. Everything else about hook 3 was pinned — that it runs, where it runs, that it
+    // assigns the façade — but not WHAT it hands the shell. `startClientTelemetry(TELEMETRY_CONFIG,
+    // { loadSdk })` satisfies every other assertion in this describe and ships telemetry with NO
+    // build_sha and NO device_class on any datapoint, forever.
+    //
+    // WRONG IMPL KILLED (1): omitting `buildSha` entirely. buildAttributes then omits the key
+    //   (correctly — `undefined` is not a valid sha), so every series merges across builds and
+    //   "is this regression in the new build?" becomes unanswerable. The failure is INVISIBLE:
+    //   the pipeline is healthy, the dashboards render, one dimension is just never there.
+    // WRONG IMPL KILLED (2): a hard-coded or hand-rolled sha string instead of the build-time
+    //   provenance. `BUILD_INFO.sha` (net/buildInfo.ts:44-48) is the ONE stamp the whole client
+    //   uses — and its `'unknown'` dev fallback is exactly what the T-A1 predicate rejects, which
+    //   is the designed behaviour (AM20). A literal would defeat both.
+    // WRONG IMPL KILLED (3): device hints invented instead of read from the host — a constant
+    //   `{ userAgent: 'desktop' }` makes device_class a constant, so the dimension costs series
+    //   and carries no information. main.ts is the ONLY place allowed to read `navigator`
+    //   (sourceScan.test.ts bans it inside observability/*.ts), so the read must be visible HERE.
+    const src = readMainTs();
+    const hunk = m20cHunk(src, M20C_INIT_BEGIN, M20C_INIT_END);
+    const args = squashWhitespace(callArgs(hunk, 'startClientTelemetry('));
+
+    expect(
+      args.includes('buildSha:'),
+      'the init must pass a `buildSha:` dep — without it every datapoint loses the build_sha ' +
+        `dimension silently. Args=${JSON.stringify(args)}`,
+    ).toBe(true);
+    expect(
+      args.includes('BUILD_INFO'),
+      'the build sha must come from `BUILD_INFO` (net/buildInfo.ts) — the build-time stamp the ' +
+        'rest of the client already uses, not a literal and not a second derivation',
+    ).toBe(true);
+    expect(
+      args.includes('hints'),
+      'the init must pass a `hints` dep — it is the only channel by which the device class can ' +
+        'be derived, and observability/*.ts may not read the host itself (AM21)',
+    ).toBe(true);
+    expect(
+      hunk.includes('navigator.'),
+      'the device hints must be READ FROM THE HOST in the init hunk (`navigator.userAgent`, ' +
+        '`navigator.maxTouchPoints`). A hand-made hints object makes device_class a constant: ' +
+        'the dimension then costs one series multiplier and carries zero information.',
+    ).toBe(true);
   });
 });
 
@@ -8110,7 +8395,7 @@ describe('★ main.ts wiring (m20c/ADR-0180): hook 5 — rejected intents, insid
     //   SHOWN. A telemetry line would then turn a silent movement rejection into the exact
     //   user-visible error M2 §3 forbids.
     const src = readMainTs();
-    const body = squashWhitespace(moveRejectHelperBody(src));
+    const body = squashWhitespace(m20cHelperBody(src));
 
     expect(
       body.includes('if (dropped) telemetry.recordIntentReject();'),
@@ -8118,7 +8403,7 @@ describe('★ main.ts wiring (m20c/ADR-0180): hook 5 — rejected intents, insid
         'telemetry.recordIntentReject();` — the DROPPED result, not the raw rejection',
     ).toBe(true);
     expect(
-      countOccurrences(stripLineComments(src), 'recordIntentReject('),
+      countOccurrences(m20cWholeFile(src), 'recordIntentReject('),
       'recordIntentReject( must be called from exactly one place in main.ts',
     ).toBe(1);
 
@@ -8156,17 +8441,10 @@ describe('★ main.ts wiring (m20c/ADR-0180): hook 6 — reducer RTT on the enqu
     // WRONG IMPL KILLED (3): recording an absolute timestamp (`recordRtt(performance.now())`)
     //   instead of the delta. Every value would land in the +Inf bucket of a histogram whose
     //   top boundary is 1000ms — a metric that is never wrong and never useful.
+    // m20cSendRegion applies the STRING-AWARE stripper (X1) and carries the ADR-0116 bail-guard
+    // (the region must still contain dropRejected() before anything below is trusted).
     const src = readMainTs();
-    expectUniqueAnchor(src, NH3_SEND_START);
-    expectUniqueAnchor(src, NH3_SEND_END);
-    const region = bodyRegion(src, NH3_SEND_START, NH3_SEND_END);
-
-    // ADR-0116 bail-guard: prove this is still the send seam before judging it.
-    expect(
-      region.includes('dropRejected('),
-      'ANTI-VACUITY: the sendIntent region must still contain dropRejected( — otherwise these ' +
-        'anchors no longer bound the send site and every needle below is vacuous',
-    ).toBe(true);
+    const region = m20cSendRegion(src);
 
     const thenIdx = region.indexOf('.then(');
     const catchIdx = region.indexOf('.catch(');
@@ -8210,7 +8488,7 @@ describe('★ main.ts wiring (m20c/ADR-0180): hook 6 — reducer RTT on the enqu
     ).toBe(false);
 
     // The stopwatch must start before the call it measures, inside this region.
-    expectUniqueAnchor(stripLineComments(src), M20C_RTT_T0_DECL);
+    expectUniqueAnchor(m20cWholeFile(src), M20C_RTT_T0_DECL);
     const t0Idx = region.indexOf(M20C_RTT_T0_DECL);
     const sendIdx = region.indexOf('reducers.enqueueMove(');
     expect(
@@ -8232,7 +8510,7 @@ describe('★ main.ts wiring (m20c/ADR-0180): hook 6 — reducer RTT on the enqu
     // writes `.catch(() => { const epoch2 = …; predictor.seedSeq(…); })` — a second `predictor.`
     // reference in the catch body deletes the ADR-0152 guard's exclusivity.
     const src = readMainTs();
-    const region = bodyRegion(src, NH3_SEND_START, NH3_SEND_END);
+    const region = m20cSendRegion(src);
 
     expect(
       countOccurrences(region, 'epoch ='),
@@ -8284,6 +8562,88 @@ describe('★ main.ts wiring (m20c/ADR-0180): hook 7 — the frame loop tick and
         're-issue region (pinned by W-NH2-GATE-WIRED) and puts `ownEntityId` in scope so the ' +
         'interp-gap sample can exclude the OWN entity (AM2)',
     ).toBeGreaterThan(src.indexOf(NH2_RAF_END));
+  });
+
+  it('★ W-M20C-FRAMEWINDOW-PERSISTED BITES: the accumulator OUTLIVES the frame — it is not rebuilt each tick', () => {
+    // REVIEWER R1 (BLOCKER). THE MUTANT THIS EXISTS FOR:
+    //     const tick = frameTick(createFrameWindow(now), now);
+    //     if (tick.sample !== undefined) { … }
+    // It passes W-M20C-FRAME-PLACEMENT, W-M20C-FRAME-GUARDED (frameTick at depth 0, both records
+    // at depth 1, exactly one `if (`), W-M20C-FRAME-CEILING and W-M20C-INTERP-GAP-EXCLUDES-OWN.
+    // It also emits ZERO samples for the entire life of the process: a window created at `now`
+    // has an elapsed of 0 on the very tick that creates it, so it never reaches 1000ms. The fps
+    // SLO (OBS-25) — the criterion this whole slice exists for — would record an empty series,
+    // `mr:client_fps_p50` would sit at its `or vector(0)` fallback, and every frame-loop tooth in
+    // this file would be green. Nothing else in the suite can see it: frameWindow.test.ts proves
+    // the accumulator works when it is CARRIED, and carrying it is a main.ts responsibility.
+    //
+    // Three clauses, each closing one shape:
+    //   (a) exactly one createFrameWindow( in the whole file — no second, shadowing accumulator;
+    //   (b) it is a `let` bound OUTSIDE the frame closure — a per-frame `const` is the mutant;
+    //   (c) the hunk both READS that binding and WRITES the returned state back, so a boundary
+    //       reset that returns a fresh object is carried into the next frame.
+    const src = readMainTs();
+    const stripped = m20cWholeFile(src);
+    const hunk = m20cHunk(src, M20C_FRAME_BEGIN, M20C_FRAME_END);
+    // The closure boundary this tooth measures against must be a single, unambiguous point.
+    expectUniqueAnchor(stripped, UXD2_FRAME_START);
+
+    // (a) ---------------------------------------------------------------------------------
+    expect(
+      countOccurrences(stripped, 'createFrameWindow('),
+      'createFrameWindow( must be called EXACTLY once in main.ts. Twice means either a per-frame ' +
+        'rebuild (which emits no samples, ever) or a second accumulator that half the frames go ' +
+        'to — both silently halve or zero the fps series.',
+    ).toBe(1);
+
+    // (b) ---------------------------------------------------------------------------------
+    const declNeedle = ' = createFrameWindow(';
+    const declIdx = stripped.indexOf(declNeedle);
+    expect(
+      declIdx,
+      'the accumulator must be BOUND to a variable (`let <name> = createFrameWindow(…)`), not ' +
+        'passed inline into frameTick',
+    ).toBeGreaterThan(0);
+    expect(
+      declIdx,
+      'the accumulator must be created OUTSIDE the rAF closure — before `const frame = ` (module ' +
+        'scope, or in main() above the closure). Created INSIDE, it is reborn every frame with ' +
+        'an elapsed of 0 and no window ever closes: zero fps samples for the whole session, with ' +
+        'every other frame-loop tooth still green.',
+    ).toBeLessThan(stripped.indexOf(UXD2_FRAME_START));
+
+    const lineStart = stripped.lastIndexOf('\n', declIdx) + 1;
+    const declPrefix = stripped.slice(lineStart, declIdx);
+    expect(
+      declPrefix.includes('let '),
+      'the accumulator binding must be a `let` — frameTick may return a FRESH state object when ' +
+        'a window closes or is discarded (AM14), and a `const` cannot take it. Got the ' +
+        `declaration prefix ${JSON.stringify(declPrefix)}`,
+    ).toBe(true);
+    const windowName = declPrefix.slice(declPrefix.lastIndexOf('let ') + 4).trim();
+    expect(
+      windowName.length,
+      'could not read the accumulator variable name from its declaration line — expected ' +
+        '`let <name> = createFrameWindow(…);`',
+    ).toBeGreaterThan(0);
+
+    // (c) ---------------------------------------------------------------------------------
+    expect(
+      hunk.includes(`frameTick(${windowName},`),
+      `the frame hunk must tick the PERSISTED accumulator: \`frameTick(${windowName}, now)\`. ` +
+        `Got: ${JSON.stringify(hunk)}`,
+    ).toBe(true);
+    expect(
+      hunk.includes(`${windowName} =`),
+      `the frame hunk must write the returned state back to \`${windowName}\` — frameTick hands ` +
+        'the caller the state to carry, and a boundary/discard reset may hand back a NEW object. ' +
+        'Dropping it strands the accumulator on a stale window.',
+    ).toBe(true);
+    expect(
+      hunk.includes('.state'),
+      'the write-back must take `.state` from the frameTick result (not the sample, and not a ' +
+        'freshly-created window)',
+    ).toBe(true);
   });
 
   it('★ W-M20C-FRAME-GUARDED BITES (T-P4): the tick is per-frame, every record() is inside the window guard', () => {
@@ -8351,7 +8711,7 @@ describe('★ main.ts wiring (m20c/ADR-0180): hook 7 — the frame loop tick and
     // site added 40 lines further down the same frame body (the uxd3-b F3 lesson — a
     // region-bounded scan cannot see a poisoning statement placed just outside its markers).
     const src = readMainTs();
-    const frameBody = stripLineComments(regionOrThrow(src, UXD2_FRAME_START, UXD2_FRAME_END));
+    const frameBody = m20cScan(regionOrThrow(src, UXD2_FRAME_START, UXD2_FRAME_END)).code;
     const hunk = m20cHunk(src, M20C_FRAME_BEGIN, M20C_FRAME_END);
 
     expect(
@@ -8436,7 +8796,7 @@ describe('★ main.ts wiring (m20c/ADR-0180): hook 8 — zone_id tracks the zone
     ).toBe(true);
 
     expect(
-      countOccurrences(stripLineComments(src), 'telemetry.setZone('),
+      countOccurrences(m20cWholeFile(src), 'telemetry.setZone('),
       'telemetry.setZone( must be called from EXACTLY two places: the init hunk (the initial ' +
         'zone, AM1) and this switchZone commit. A third call site is another, unpinned source of ' +
         'truth for the zone label.',
@@ -8444,11 +8804,82 @@ describe('★ main.ts wiring (m20c/ADR-0180): hook 8 — zone_id tracks the zone
   });
 });
 
+describe('★ main.ts wiring (m20c/ADR-0180): the whole-file call-site census', () => {
+  it('★ W-M20C-CALLSITE-CENSUS BITES: every façade method is called from exactly the sites pinned above', () => {
+    // REVIEWER R6. Each hook tooth above is REGION-BOUNDED, and a region-bounded tooth is
+    // structurally blind to a SECOND call site somewhere else in the 2500-line file — the
+    // uxd3-b F3 lesson ("a statement one line outside the markers is invisible"). Only a
+    // whole-file count closes that, and only for the methods it names, so it names all eight.
+    //
+    // WRONG IMPL KILLED (1): a duplicate `telemetry.recordReconcile()` added to the OTHER
+    //   reconcile caller (the batch listener wrapper at main.ts:793-802 calls the same function).
+    //   Every attempt would be counted twice while corrections were counted once — the
+    //   divergence ratio would read exactly HALF the truth, plausibly, forever.
+    // WRONG IMPL KILLED (2): `telemetry.recordRtt(...)` also wired into some other reducer's
+    //   promise (a "while I'm here" edit). `mr_client_reducer_rtt_ms` is DEFINED as the
+    //   enqueueMove round trip (ADR RTT wording, AM19); mixing a heavier reducer's latency into
+    //   the same histogram silently redefines the metric.
+    // WRONG IMPL KILLED (3): a stray `telemetry.recordCorrection()` on the rejection path, which
+    //   would make "correction" mean two different events at once.
+    //
+    // A raise here is a DELIBERATE act: bump a number only together with a new region-bounded
+    // tooth above that pins where the new call site is and why.
+    const stripped = m20cWholeFile(readMainTs());
+
+    const CENSUS: ReadonlyArray<readonly [string, number]> = [
+      ['telemetry.recordFrameSample(', 1],
+      ['telemetry.recordInterpGap(', 1],
+      ['telemetry.recordReconcile(', 1],
+      ['telemetry.recordCorrection(', 1],
+      ['telemetry.recordIntentReject(', 1],
+      ['telemetry.recordRtt(', 1],
+      ['telemetry.recordWasmReady(', 1],
+      ['telemetry.setZone(', 2], // the init seed (AM1) + the switchZone commit
+    ];
+
+    for (const [needle, expected] of CENSUS) {
+      expect(
+        countOccurrences(stripped, needle),
+        `\`${needle}\` must appear EXACTLY ${expected} time(s) in comment-stripped main.ts. A ` +
+          'second call site double-counts a signal whose whole value is its RATIO to another ' +
+          'signal — and no region-bounded tooth in this block can see it.',
+      ).toBe(expected);
+    }
+
+    // The ceiling that catches a NINTH method being wired somewhere unpinned: the total number of
+    // `telemetry.` references must equal the census. (`let telemetry = NOOP_TELEMETRY;` and
+    // `telemetry = t;` carry no dot, so they do not count.)
+    const censusTotal = CENSUS.reduce((sum, [, count]) => sum + count, 0);
+    expect(
+      countOccurrences(stripped, 'telemetry.'),
+      `main.ts must contain exactly ${censusTotal} \`telemetry.\` member accesses — the census ` +
+        'above. Anything else is a call site this block does not pin (or a method that was ' +
+        'added to the façade without a hook tooth to say where it belongs).',
+    ).toBe(censusTotal);
+  });
+});
+
 describe('★ main.ts wiring (m20c/ADR-0180): the new hunks carry no credential and no identity', () => {
-  /** Every m20c-authored slice of main.ts, concatenated. AM3: the credential ban covers the new
-   *  main.ts hunks as well as observability/*.ts (which sourceScan.test.ts owns). */
+  /** RAW text of every m20c-authored slice of main.ts: the four marker hunks plus the whole
+   *  sendIntent region (which is where the new `.then` lives). Raw, because the credential and
+   *  identity bans below deliberately read comments too, and because the string-literal ban needs
+   *  the literals themselves. */
+  function m20cHunksRaw(src: string): string {
+    return [
+      m20cRegionRaw(src, M20C_INIT_BEGIN, M20C_INIT_END),
+      m20cRegionRaw(src, M20C_RECONCILE_BEGIN, M20C_RECONCILE_END),
+      m20cRegionRaw(src, M20C_FRAME_BEGIN, M20C_FRAME_END),
+      m20cRegionRaw(src, M20C_ZONE_BEGIN, M20C_ZONE_END),
+      m20cRegionRaw(src, NH3_SEND_START, NH3_SEND_END),
+    ].join('\n');
+  }
+
+  /** The same slices, narrowed to the NEW code: the four marker hunks plus the `.then` body only
+   *  (so the pre-existing rejection `.catch` and its ADR-0085 rationale block are excluded — the
+   *  word `identity` appears nowhere in them today, but scoping the ban to what m20c AUTHORED is
+   *  what keeps the failure message honest). */
   function m20cHunks(src: string): string {
-    const region = bodyRegion(src, NH3_SEND_START, NH3_SEND_END);
+    const region = m20cSendRegion(src);
     const thenIdx = region.indexOf('.then(');
     const catchIdx = region.indexOf('.catch(');
     expect(
@@ -8466,6 +8897,33 @@ describe('★ main.ts wiring (m20c/ADR-0180): the new hunks carry no credential 
       squashWhitespace(region.slice(thenIdx, catchIdx)),
     ].join('\n');
   }
+
+  it('★ W-M20C-NO-COMMENT-OPENER-IN-LITERAL BITES: no string literal in the new hunks contains a comment opener', () => {
+    // RED-TEAM X1, the DEFENSIVE half. This file's PRE-EXISTING teeth (W-NH2-*, W-NH3-*,
+    // W-11RH-*, W-DEVLOG-*, the uxd3 families) all run through `stripLineComments`, which is not
+    // string-literal-aware: one `/`+`*` pair inside a quoted string anywhere in main.ts makes
+    // that stripper drop everything after it, and DOZENS of pre-existing teeth silently stop
+    // measuring. The m20c teeth are immune (they use m20cScan), but m20c must not be the slice
+    // that breaks everyone else's.
+    //
+    // Those helpers are out of this block's touch-set (append-only), so the obligation is
+    // discharged from this side: the code m20c introduces may not contain the hazard. Comment
+    // openers/closers inside COMMENTS are fine — this reads string LITERALS only.
+    // The two hazards are BUILT rather than written: a bare slash-star / star-slash literal in
+    // this file is the very shape being banned, and other repo scanners read client/src.
+    const hazards = [['/', '*'].join(''), ['*', '/'].join('')];
+    const literals = m20cScan(m20cHunksRaw(readMainTs())).literals;
+    for (const literal of literals) {
+      for (const hazard of hazards) {
+        expect(
+          literal.includes(hazard),
+          `a string literal in the m20c hunks contains "${hazard}": ${JSON.stringify(literal)}. ` +
+            "That sequence silently disables this file's older comment-stripper for everything " +
+            'after it (red-team X1). Build the string from parts, or reword it.',
+        ).toBe(false);
+      }
+    }
+  });
 
   it('★ W-M20C-NO-CREDENTIAL BITES (T-16b/AM3): no auth-shaped token reaches the telemetry hunks', () => {
     // OBS-16. main.ts is the ONE file where a SpacetimeDB credential and the telemetry

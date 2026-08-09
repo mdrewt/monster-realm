@@ -79,6 +79,12 @@ describe('instruments.ts (AM17): the table IS names.ts — no second list of str
     // WRONG IMPL KILLED (2): a name defined in names.ts but never instrumented (a signal the ADR
     //   claims to ship and does not), or an instrument with no constant behind it. The equality
     //   is bidirectional, so both directions red.
+    // NOT KILLED HERE, AND DELIBERATELY SO (red-team X5): a table that re-spells all eight names
+    //   as string LITERALS produces an identical set and passes this test. Value equality is
+    //   structurally blind to it. The companion TEXT check — instruments.ts must import
+    //   `from './names'` and contain no `name: '…'` literal — lives in sourceScan.test.ts
+    //   ("AM17 / X5"), where the comment-stripping scanner already exists. Both halves are
+    //   required; neither is sufficient.
     // ANTI-VACUITY: the constant set itself must be the expected size, or an empty-vs-empty
     // comparison would pass while nothing is instrumented at all.
     expect(NAME_CONSTANTS.length, 'names.ts must export 8 mr_client_* metric names').toBe(8);

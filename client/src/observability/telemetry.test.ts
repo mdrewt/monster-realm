@@ -14,6 +14,22 @@
 //   (vite.config.ts:47-53) with no `window`/`fetch` ceremony, and a fake is the only way to
 //   ASSERT ON the exporter configuration — the one thing OBS-16's "no auth credential" is about.
 //
+// THE INJECTED SEAM, SPELLED OUT (the implementer must match these names exactly):
+//   type SdkLoader = (init: TelemetryInit) => Promise<TelemetryMeter>;
+//   interface TelemetryInit {
+//     exporterUrl: string;                       // <configured origin> + OTLP_METRICS_PATH
+//     exporterHeaders?: Record<string, string>;  // absent, or {} — never anything else (OBS-16)
+//     exportIntervalMillis: number;              // the resolved config value, verbatim
+//     resourceAttributes: Record<string, string>;// EXACTLY { 'service.name': … } (AM7/R-1)
+//     temporality: 'cumulative';                 // explicit, never the package default (R4)
+//   }
+//   interface TelemetryMeter {
+//     createHistogram(spec: InstrumentSpec): Histogram;  // { record(value, attributes) }
+//     createCounter(spec: InstrumentSpec): Counter;      // { add(value, attributes) }
+//   }
+//   interface TelemetryDeps { loadSdk: SdkLoader; hints?: DeviceHints; buildSha?: string }
+//   startClientTelemetry(config, deps): Promise<ClientTelemetry>   // NEVER rejects
+//
 // RED REASON: `client/src/observability/telemetry.ts` does not exist yet.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
@@ -114,6 +130,65 @@ function spyConsole(): () => number {
   return () => spies.reduce((total, spy) => total + spy.mock.calls.length, 0);
 }
 
+interface StartOptions {
+  readonly config?: TelemetryConfig;
+  readonly hints?: DeviceHints;
+  readonly buildSha?: string;
+}
+
+/**
+ * Start telemetry against `harness` AND re-assert the whole-init invariants EVERY time.
+ *
+ * RED-TEAM X2, PROVEN: with the per-test assertions written only where each one was "about" the
+ * subject, an implementation that called `deps.loadSdk` a SECOND time — a second MeterProvider
+ * with an `Authorization` header and a `service.instance.id` resource attribute — passed all 97
+ * unit tests. T-16a and T-R1 each read `harness.inits[0]`, the FIRST (clean) init, and nothing
+ * anywhere asserted how many inits there were. Two exporters would then run side by side: one
+ * conforming, one shipping a credential and minting a series per page load.
+ *
+ * So the invariants are hoisted here and re-checked, over EVERY captured init, on EVERY start in
+ * this file: exactly one load, no headers, the exact resource set, cumulative temporality, and
+ * the exact OTLP path. A smuggled second init now reds in every test at once.
+ */
+async function startWith(harness: Harness, options: StartOptions = {}): Promise<ClientTelemetry> {
+  const config = options.config ?? ENABLED;
+  const telemetry = await startClientTelemetry(config, {
+    loadSdk: harness.loadSdk,
+    buildSha: options.buildSha ?? SHA,
+    hints: options.hints,
+  });
+
+  const expectedLoads = config.kind === 'enabled' ? 1 : 0;
+  expect(
+    harness.loadCount,
+    `the SDK loader must be invoked exactly ${expectedLoads} time(s) for a ${config.kind} ` +
+      'config. A SECOND load builds a second MeterProvider/exporter that no per-test assertion ' +
+      'reading inits[0] can see (red-team X2).',
+  ).toBe(expectedLoads);
+  expect(harness.inits).toHaveLength(expectedLoads);
+
+  for (const init of harness.inits) {
+    if (init.exporterHeaders !== undefined) {
+      expect(init.exporterHeaders, 'every exporter init must carry NO headers (OBS-16)').toEqual(
+        {},
+      );
+    }
+    expect(
+      Object.keys(init.resourceAttributes).sort(),
+      'every init resource must be exactly {service.name} (AM7/R-1)',
+    ).toEqual(['service.name']);
+    expect(init.resourceAttributes['service.name']).toBe('monster-realm-client');
+    expect(init.temporality, 'every init must be CUMULATIVE (R4)').toBe('cumulative');
+    const url = new URL(init.exporterUrl);
+    expect(url.pathname, 'every init must POST to the OTLP metrics path').toBe(OTLP_METRICS_PATH);
+    expect(url.search).toBe('');
+    expect(url.username).toBe('');
+    expect(url.password).toBe('');
+  }
+
+  return telemetry;
+}
+
 /** Drive every façade method once. Used by the robustness teeth. */
 function exerciseAll(t: ClientTelemetry): void {
   t.recordFrameSample({ fps: 59.5, maxFrameMs: 21 });
@@ -143,8 +218,11 @@ describe('startClientTelemetry (OBS-16): the exporter carries NO credential and 
     //   export fail the preflight — telemetry that silently never arrives.
     // Deep equality is the point: `expect(JSON.stringify(headers)).not.toContain('Authorization')`
     // passes for `{ 'x-mr-token': … }`.
+    // X2: `startWith` additionally proves there is exactly ONE init and re-checks the headers of
+    // EVERY captured init — a second, header-bearing exporter smuggled in beside the clean one is
+    // invisible to an `inits[0]` read.
     const harness = makeHarness();
-    await startClientTelemetry(ENABLED, { loadSdk: harness.loadSdk, buildSha: SHA });
+    await startWith(harness);
 
     expect(harness.inits, 'the loader must be called exactly once').toHaveLength(1);
     const headers = (harness.inits[0] as TelemetryInit).exporterHeaders;
@@ -165,7 +243,7 @@ describe('startClientTelemetry (OBS-16): the exporter carries NO credential and 
     //   `${endpoint}/${sessionId}/v1/metrics`. Both satisfy "ends with /v1/metrics"; neither
     //   survives `origin === endpoint && pathname === '/v1/metrics' && search === ''`.
     const harness = makeHarness();
-    await startClientTelemetry(ENABLED, { loadSdk: harness.loadSdk, buildSha: SHA });
+    await startWith(harness);
 
     const init = harness.inits[0] as TelemetryInit;
     const url = new URL(init.exporterUrl);
@@ -190,11 +268,25 @@ describe('startClientTelemetry (OBS-16): the exporter carries NO credential and 
     //   build sha belongs on the DATAPOINT (where the allowlist bounds it), not on the resource
     //   (where it mints a target_info series per build and is stripped anyway).
     const harness = makeHarness();
-    await startClientTelemetry(ENABLED, { loadSdk: harness.loadSdk, buildSha: SHA });
+    await startWith(harness);
 
     const init = harness.inits[0] as TelemetryInit;
     expect(Object.keys(init.resourceAttributes).sort()).toEqual(['service.name']);
     expect(init.resourceAttributes['service.name']).toBe('monster-realm-client');
+  });
+
+  it('R4: the reader temporality is CUMULATIVE, explicitly', async () => {
+    // Pinned rather than left to the SDK default. Alloy's prometheus exporter converts OTLP sums
+    // to Prometheus counters, and Prometheus's `rate()` model assumes a monotonically increasing
+    // series. DELTA temporality resets the value to the per-interval increment on every export,
+    // so `rate(mr_client_reconcile[5m])` would read a sawtooth as a stream of counter RESETS —
+    // producing plausible-looking but meaningless divergence and reject rates (§4's whole point).
+    // WRONG IMPL KILLED: leaving `temporality` unset and inheriting whatever the exporter
+    // package defaults to in the version the lockfile happens to resolve (AM6 pins 0.221.0 today;
+    // the default has changed across 0.x releases).
+    const harness = makeHarness();
+    await startWith(harness);
+    expect((harness.inits[0] as TelemetryInit).temporality).toBe('cumulative');
   });
 
   it('the resolved export interval is passed through to the reader unchanged', async () => {
@@ -202,10 +294,9 @@ describe('startClientTelemetry (OBS-16): the exporter carries NO credential and 
     // else — the clamp+jitter work in config.ts would be dead code and the herd would stay
     // synchronised (AM12).
     const harness = makeHarness();
-    await startClientTelemetry(
-      { kind: 'enabled', endpoint: ENDPOINT, exportIntervalMs: 63_000 },
-      { loadSdk: harness.loadSdk, buildSha: SHA },
-    );
+    await startWith(harness, {
+      config: { kind: 'enabled', endpoint: ENDPOINT, exportIntervalMs: 63_000 },
+    });
     expect((harness.inits[0] as TelemetryInit).exportIntervalMillis).toBe(63_000);
   });
 
@@ -215,7 +306,7 @@ describe('startClientTelemetry (OBS-16): the exporter carries NO credential and 
     // ceiling and the AM17 name-set identity proven in instruments.test.ts govern a table
     // nothing reads, and the real instrument set is unchecked.
     const harness = makeHarness();
-    await startClientTelemetry(ENABLED, { loadSdk: harness.loadSdk, buildSha: SHA });
+    await startWith(harness);
 
     expect([...harness.created].sort((a, b) => a.name.localeCompare(b.name))).toEqual(
       [...INSTRUMENTS]
@@ -241,10 +332,9 @@ describe('startClientTelemetry (T-I1): disabled means INERT — no loader, no co
     //   and it guarantees the disabled path allocates nothing at all.
     const total = spyConsole();
     const harness = makeHarness();
-    const telemetry = await startClientTelemetry(DISABLED, {
-      loadSdk: harness.loadSdk,
-      buildSha: SHA,
-    });
+    // startWith asserts ZERO loads for a disabled config — including a second, "just to warm the
+    // chunk" load that a `loadCount === 0` check written only here would still have to make.
+    const telemetry = await startWith(harness, { config: DISABLED });
 
     expect(telemetry).toBe(NOOP_TELEMETRY);
     expect(harness.loadCount, 'the SDK must NOT be loaded when telemetry is off').toBe(0);
@@ -313,10 +403,7 @@ describe('startClientTelemetry (T-P2): a throwing instrument is swallowed, per m
     // SUCCESSFUL move: a manufactured desync (plan anti-pattern 8).
     const total = spyConsole();
     const harness = makeHarness({ throwOnCall: true });
-    const telemetry = await startClientTelemetry(ENABLED, {
-      loadSdk: harness.loadSdk,
-      buildSha: SHA,
-    });
+    const telemetry = await startWith(harness);
 
     expect(() => exerciseAll(telemetry)).not.toThrow();
     // Anti-vacuity: the calls really were attempted (a façade that silently stopped calling
@@ -337,11 +424,7 @@ describe('startClientTelemetry (AM10/AM15): one frozen attribute object, no fan-
     //   a per-datapoint value that would mint a series if the allowlist ever widened. Reference
     //   identity makes the "one attribute object per zone" claim structural.
     const harness = makeHarness();
-    const telemetry = await startClientTelemetry(ENABLED, {
-      loadSdk: harness.loadSdk,
-      buildSha: SHA,
-      hints: IPHONE_HINTS,
-    });
+    const telemetry = await startWith(harness, { hints: IPHONE_HINTS });
     telemetry.setZone(3);
     exerciseAll(telemetry);
 
@@ -364,11 +447,7 @@ describe('startClientTelemetry (AM10/AM15): one frozen attribute object, no fan-
     // straight into the attribute (OBS-35), or hard-coding 'desktop' so the dimension is
     // constant and useless.
     const harness = makeHarness();
-    const telemetry = await startClientTelemetry(ENABLED, {
-      loadSdk: harness.loadSdk,
-      buildSha: SHA,
-      hints: IPHONE_HINTS,
-    });
+    const telemetry = await startWith(harness, { hints: IPHONE_HINTS });
     telemetry.recordReconcile();
     expect(harness.calls[0]?.attributes.device_class).toBe('mobile');
   });
@@ -381,11 +460,7 @@ describe('startClientTelemetry (AM10/AM15): one frozen attribute object, no fan-
     //   throws inside the guard, and every already-captured reference would change retroactively
     //   if it did not).
     const harness = makeHarness();
-    const telemetry = await startClientTelemetry(ENABLED, {
-      loadSdk: harness.loadSdk,
-      buildSha: SHA,
-      hints: IPHONE_HINTS,
-    });
+    const telemetry = await startWith(harness, { hints: IPHONE_HINTS });
 
     telemetry.setZone(0);
     telemetry.recordReconcile();
@@ -409,10 +484,7 @@ describe('startClientTelemetry (AM10/AM15): one frozen attribute object, no fan-
     // WRONG IMPL KILLED (2): recording the fps value into BOTH histograms (a copy-paste slip).
     //   The values are pinned, not just the count.
     const harness = makeHarness();
-    const telemetry = await startClientTelemetry(ENABLED, {
-      loadSdk: harness.loadSdk,
-      buildSha: SHA,
-    });
+    const telemetry = await startWith(harness);
 
     telemetry.recordFrameSample({ fps: 58.25, maxFrameMs: 34 });
 
@@ -428,10 +500,7 @@ describe('startClientTelemetry (AM10/AM15): one frozen attribute object, no fan-
     // `rate(correction)/rate(reconcile)` would then read 1.0 or 0.0 forever, and the number is
     // plausible enough that nobody would question it.
     const harness = makeHarness();
-    const telemetry = await startClientTelemetry(ENABLED, {
-      loadSdk: harness.loadSdk,
-      buildSha: SHA,
-    });
+    const telemetry = await startWith(harness);
 
     telemetry.recordReconcile();
     telemetry.recordCorrection();
@@ -456,10 +525,7 @@ describe('startClientTelemetry (AM10/AM15): one frozen attribute object, no fan-
     // whole distribution down — the histogram would say remote interpolation is perfect exactly
     // when there are no remotes to interpolate.
     const harness = makeHarness();
-    const telemetry = await startClientTelemetry(ENABLED, {
-      loadSdk: harness.loadSdk,
-      buildSha: SHA,
-    });
+    const telemetry = await startWith(harness);
 
     telemetry.recordInterpGap(undefined);
     expect(harness.calls).toHaveLength(0);

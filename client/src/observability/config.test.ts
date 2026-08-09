@@ -389,9 +389,9 @@ describe('resolveTelemetryConfig (T-21b): interval clamp + upward-only jitter', 
     //   requests per cycle           = 1 initial + up to 5 retries (otlp-exporter-base, on
     //                                  429/502/503/504, backoff 1s→5s cap, NOT configurable)
     //   worst case, one tab          = cycles × requests
-    // Caddy allows 120 events/min/IP. We require 4× headroom so a player with a couple of tabs
-    // open — or two players behind one CGNAT address — cannot trip the limiter and take the
-    // whole address's telemetry down.
+    // Caddy allows 120 events/min/IP. AM12 states the headroom as 5×, so that is what is
+    // asserted: a player with several tabs open — or a handful of players behind one CGNAT
+    // address — must not be able to trip the limiter and take the whole address's telemetry down.
     // WRONG IMPL KILLED: lowering MIN "just for debugging" (e.g. to 1000, which yields
     // 60 × 6 = 360 requests/min from ONE tab — three times the entire per-IP budget).
     const cyclesPerMinute = 60_000 / TELEMETRY_INTERVAL_MIN_MS;
@@ -404,8 +404,10 @@ describe('resolveTelemetryConfig (T-21b): interval clamp + upward-only jitter', 
         `req/min; Caddy allows ${CADDY_EVENTS_PER_MINUTE}/min/IP`,
     ).toBeLessThan(CADDY_EVENTS_PER_MINUTE);
     expect(
-      worstCasePerMinute * 4,
-      'the budget must leave 4× headroom (multiple tabs / shared egress IP)',
+      worstCasePerMinute * 5,
+      'the budget must leave 5× headroom (AM12) — multiple tabs / a shared egress IP. At the ' +
+        `${TELEMETRY_INTERVAL_MIN_MS}ms floor that is ${worstCasePerMinute * 5} of Caddy's ` +
+        `${CADDY_EVENTS_PER_MINUTE}/min. Lowering the floor to 10s already breaks it.`,
     ).toBeLessThanOrEqual(CADDY_EVENTS_PER_MINUTE);
   });
 });

@@ -21,7 +21,8 @@
 // NO `new RegExp(...)` IN THIS FILE EITHER (the repo-wide Semgrep ban): indexOf / includes /
 // split / toLowerCase only.
 
-import { readdirSync, readFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
@@ -56,39 +57,156 @@ interface SourceFile {
   readonly code: string;
 }
 
-/** Block comments first, then line comments — the main.wiring.test.ts order and rationale (a
- *  `//` living inside a `/* *\/` block must be gone before the line pass runs). Hand-rolled
- *  marker scan: `new RegExp` is banned in this repo, in tests as well as in source. */
-function stripComments(src: string): string {
-  let withoutBlocks = '';
-  let i = 0;
-  for (;;) {
-    const start = src.indexOf('/*', i);
-    if (start === -1) {
-      withoutBlocks += src.slice(i);
-      break;
-    }
-    withoutBlocks += src.slice(i, start);
-    const end = src.indexOf('*/', start + 2);
-    if (end === -1) break; // unterminated: drop the remainder defensively
-    i = end + 2;
-  }
-  return withoutBlocks
-    .split('\n')
-    .map((line) => {
-      const at = line.indexOf('//');
-      return at === -1 ? line : line.slice(0, at);
-    })
-    .join('\n');
+interface ScanResult {
+  /** Source with every COMMENT removed. String/template literals are PRESERVED verbatim — they
+   *  are code, and a needle inside one must still count. */
+  readonly code: string;
+  /** The CONTENT of every string/template literal encountered (delimiters excluded). */
+  readonly literals: readonly string[];
 }
 
-/** Read every non-test `.ts` file in client/src/observability. Throws LOUD on a missing
- *  directory or an empty result — a vacuous zero is the failure mode this whole file exists to
- *  avoid, so it must never be reachable. */
+/** A string-literal-aware comment scanner.
+ *
+ *  WHY NOT THE OBVIOUS `indexOf('/*')` LOOP (red-team X1, PROVEN live against the first draft of
+ *  this file): a naive stripper treats the two characters `/` `*` inside a STRING LITERAL as the
+ *  start of a block comment, finds no terminator, and silently drops the ENTIRE REST OF THE FILE.
+ *  Everything after that point becomes invisible to every purity ban here — a live `console.log`
+ *  measured GREEN. One innocuous-looking string literal disables the whole scan, and nothing says
+ *  so. The self-test below plants exactly that shape and proves the ban still fires.
+ *
+ *  Modes: code / line-comment / block-comment / single / double / template, with backslash
+ *  escapes honoured inside the three string modes. An unescaped newline inside a `'…'` or `"…"`
+ *  literal ENDS it (JS forbids it there), which stops a stray apostrophe from swallowing the
+ *  file — the same class of runaway, from the other direction.
+ *
+ *  KNOWN LIMIT, stated rather than hidden: `${…}` interpolation is not parsed, so a backtick
+ *  inside an interpolation expression would confuse the template mode. No such construct exists
+ *  in this tree, and the failure direction is a SHORTER `code` string, which reds a ban rather
+ *  than passing one.
+ *
+ *  No `new RegExp` — banned repo-wide, in tests as much as in source. */
+function scanSource(src: string): ScanResult {
+  const CODE = 0;
+  const LINE = 1;
+  const BLOCK = 2;
+  const SINGLE = 3;
+  const DOUBLE = 4;
+  const TEMPLATE = 5;
+
+  let code = '';
+  const literals: string[] = [];
+  let literal = '';
+  let mode = CODE;
+  let i = 0;
+
+  while (i < src.length) {
+    const ch = src.charAt(i);
+    const next = src.charAt(i + 1);
+
+    if (mode === CODE) {
+      if (ch === '/' && next === '/') {
+        mode = LINE;
+        i += 2;
+        continue;
+      }
+      if (ch === '/' && next === '*') {
+        mode = BLOCK;
+        i += 2;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === '`') {
+        mode = ch === "'" ? SINGLE : ch === '"' ? DOUBLE : TEMPLATE;
+        literal = '';
+        code += ch;
+        i += 1;
+        continue;
+      }
+      code += ch;
+      i += 1;
+      continue;
+    }
+
+    if (mode === LINE) {
+      if (ch === '\n') {
+        code += ch;
+        mode = CODE;
+      }
+      i += 1;
+      continue;
+    }
+
+    if (mode === BLOCK) {
+      if (ch === '*' && next === '/') {
+        mode = CODE;
+        i += 2;
+        continue;
+      }
+      if (ch === '\n') code += ch; // keep the line structure the region slicers rely on
+      i += 1;
+      continue;
+    }
+
+    // --- inside a string literal: the text is CODE and is kept verbatim ---------------
+    code += ch;
+    if (ch === '\\') {
+      code += next;
+      literal += next;
+      i += 2;
+      continue;
+    }
+    const closer = mode === SINGLE ? "'" : mode === DOUBLE ? '"' : '`';
+    if (ch === closer) {
+      literals.push(literal);
+      literal = '';
+      mode = CODE;
+      i += 1;
+      continue;
+    }
+    if (ch === '\n' && mode !== TEMPLATE) {
+      literals.push(literal); // unterminated '…' / "…": bail back to code, never run away
+      literal = '';
+      mode = CODE;
+      i += 1;
+      continue;
+    }
+    literal += ch;
+    i += 1;
+  }
+
+  if (mode === SINGLE || mode === DOUBLE || mode === TEMPLATE) literals.push(literal);
+  return { code, literals };
+}
+
+/** RECURSIVE walk for non-test `.ts` files, returning POSIX-style paths relative to `dir`.
+ *
+ *  WHY RECURSIVE (red-team X3, PROVEN live): the first draft used a flat `readdirSync`, so a
+ *  module parked at `client/src/observability/internal/otlp.ts` was invisible to every ban in
+ *  this file — including the credential and identity scans. One subdirectory disabled the whole
+ *  control, and the required-module check still passed because the eight top-level files were
+ *  all present. The self-test below plants a nested module in a temp directory and proves it is
+ *  picked up. */
+function collectTsFiles(dir: string, prefix = ''): string[] {
+  const out: string[] = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    const rel = prefix === '' ? entry.name : `${prefix}/${entry.name}`;
+    if (entry.isDirectory()) {
+      out.push(...collectTsFiles(path.join(dir, entry.name), rel));
+      continue;
+    }
+    if (!entry.isFile()) continue;
+    if (!entry.name.endsWith('.ts') || entry.name.endsWith('.test.ts')) continue;
+    out.push(rel);
+  }
+  return out.sort();
+}
+
+/** Read every non-test `.ts` file under client/src/observability, at ANY depth. Throws LOUD on a
+ *  missing directory or an empty result — a vacuous zero is the failure mode this whole file
+ *  exists to avoid, so it must never be reachable. */
 function readObservabilitySources(): readonly SourceFile[] {
-  let entries: string[];
+  let names: string[];
   try {
-    entries = readdirSync(OBS_DIR);
+    names = collectTsFiles(OBS_DIR);
   } catch (err) {
     throw new Error(
       `client/src/observability could not be read at ${OBS_DIR} — ${String(err)}. The m20c ` +
@@ -96,17 +214,14 @@ function readObservabilitySources(): readonly SourceFile[] {
     );
   }
 
-  const sources = entries
-    .filter((name) => name.endsWith('.ts') && !name.endsWith('.test.ts'))
-    .sort()
-    .map((name) => {
-      const text = readFileSync(path.join(OBS_DIR, name), 'utf8');
-      return { name, text, folded: text.toLowerCase(), code: stripComments(text) };
-    });
+  const sources = names.map((name) => {
+    const text = readFileSync(path.join(OBS_DIR, name), 'utf8');
+    return { name, text, folded: text.toLowerCase(), code: scanSource(text).code };
+  });
 
   if (sources.length === 0) {
     throw new Error(
-      `no non-test .ts modules found in ${OBS_DIR} — every ban below would pass vacuously. ` +
+      `no non-test .ts modules found under ${OBS_DIR} — every ban below would pass vacuously. ` +
         'The implementation does not exist yet (expected first red), or the layout moved.',
     );
   }
@@ -141,6 +256,82 @@ function expectAbsentInCode(sources: readonly SourceFile[], needle: string, why:
   }
 }
 
+describe('sourceScan SELF-TESTS: the scanner and the walk are themselves gated', () => {
+  // A source-scan tooth is only as good as its scanner. Both fixtures below encode a cheat that
+  // was MEASURED GREEN against the first draft of this file — they exist so that a future
+  // "simplification" of either helper reds here, loudly, instead of silently disabling every ban.
+
+  it('X1 self-test: an unclosed `/*` inside a STRING LITERAL does not blind the scanner', () => {
+    // THE PROVEN CHEAT: with the naive `indexOf('/*')` stripper, the first line below opened a
+    // block comment that never closed, so everything after it — including the live console.log —
+    // was deleted before any ban ran. Every purity assertion in this file passed on a file that
+    // demonstrably violated them.
+    const decoyOpen = ['/', '*'].join(''); // built, so this fixture cannot trip the file's own scan
+    const fixture = [
+      `const decoy = 'inline ${decoyOpen} not a comment';`,
+      '// a real line comment mentioning console.log',
+      `${decoyOpen} a real block comment mentioning console.log *${'/'}`,
+      'console.log(1);',
+    ].join('\n');
+
+    const scanned = scanSource(fixture);
+
+    expect(
+      scanned.code.includes('console.log(1);'),
+      'the LIVE statement after a string literal containing an unclosed block-comment opener ' +
+        'must survive the strip — if it does not, every ban in this file is blind from that ' +
+        'literal onward (red-team X1)',
+    ).toBe(true);
+    expect(
+      scanned.code.includes('a real line comment'),
+      'a genuine `//` comment must still be removed',
+    ).toBe(false);
+    expect(
+      scanned.code.includes('a real block comment'),
+      'a genuine block comment must still be removed',
+    ).toBe(false);
+    expect(
+      scanned.code.split('console.log').length - 1,
+      'exactly ONE console.log must survive: the live one. The two inside comments must not.',
+    ).toBe(1);
+    expect(
+      scanned.literals.includes(`inline ${decoyOpen} not a comment`),
+      'the literal collector must capture the string CONTENT (it is what the /* -in-a-literal ' +
+        'ban in main.wiring.test.ts reads)',
+    ).toBe(true);
+  });
+
+  it('X1 self-test: a stray apostrophe cannot swallow the rest of the file either', () => {
+    // The mirror-image runaway: an unterminated `'…'` literal. JS forbids a raw newline inside
+    // one, so the scanner ends the literal at the line break instead of treating everything after
+    // it as string content (which would hide the next line's banned token just as effectively).
+    const fixture = ["const s = 'unterminated", 'console.error(2);'].join('\n');
+    expect(scanSource(fixture).code.includes('console.error(2);')).toBe(true);
+  });
+
+  it('X3 self-test: the walk is RECURSIVE — a module in a subdirectory cannot hide from the bans', () => {
+    // THE PROVEN CHEAT: `client/src/observability/internal/otlp.ts` was invisible to the flat
+    // `readdirSync` the first draft used, so a file there could carry an Authorization header, a
+    // `navigator` read and an identity interpolation with every tooth in this file still green.
+    // The fixture is planted in a TEMP directory and removed afterwards — client/src must never
+    // acquire a stray non-test .ts file just to satisfy a test.
+    const tmp = mkdtempSync(path.join(tmpdir(), 'mr-m20c-scan-'));
+    try {
+      mkdirSync(path.join(tmp, 'internal'), { recursive: true });
+      writeFileSync(path.join(tmp, 'top.ts'), 'export const a = 1;\n');
+      writeFileSync(path.join(tmp, 'internal', 'deep.ts'), 'export const b = 2;\n');
+      writeFileSync(path.join(tmp, 'internal', 'deep.test.ts'), 'export const c = 3;\n');
+
+      expect(
+        collectTsFiles(tmp),
+        'the walk must find nested modules (and must still skip *.test.ts at any depth)',
+      ).toEqual(['internal/deep.ts', 'top.ts']);
+    } finally {
+      rmSync(tmp, { recursive: true, force: true });
+    }
+  });
+});
+
 describe('observability/*.ts (structure): the module set the scans below depend on', () => {
   it('all eight m20c modules exist — anti-vacuity for every ban in this file', () => {
     const names = readObservabilitySources().map((f) => f.name);
@@ -154,8 +345,9 @@ describe('observability/*.ts (structure): the module set the scans below depend 
 
   it('no .d.ts / .spec.ts / .tsx files are added under client/src (spec-gap-revival eval:232)', () => {
     // A local, fast copy of an eval that only runs under `just eval`. Catching it here saves a
-    // full CI round trip, and the eval is the authority either way.
-    const entries = readdirSync(OBS_DIR);
+    // full CI round trip, and the eval is the authority either way. RECURSIVE, for the same
+    // reason the source walk is (red-team X3): a nested directory must not be a blind spot.
+    const entries = readdirSync(OBS_DIR, { recursive: true }) as string[];
     for (const name of entries) {
       for (const banned of ['.d.ts', '.spec.ts', '.tsx']) {
         expect(
@@ -276,10 +468,16 @@ describe('observability/*.ts (T-A2/AM21): purity — no RegExp, no host globals,
   });
 
   it('AM21-node: no window / document / navigator / globalThis access — the host is INJECTED', () => {
-    // vitest runs these modules in the NODE environment (vite.config.ts:47-53). A module-scope
-    // `navigator.userAgent` read is a ReferenceError at IMPORT time, which fails the whole test
-    // FILE rather than one test — and in the browser it makes the module untestable without a
-    // DOM. main.ts reads the host once and passes `DeviceHints` in.
+    // vitest runs these modules in the NODE environment (vite.config.ts:47-53) and main.ts reads
+    // the host ONCE, passing a plain `DeviceHints` record in.
+    //
+    // CORRECTION (red-team X4) — do NOT read this tooth as belt-and-braces over a runtime
+    // backstop: Node 24 DEFINES a global `navigator` (and `globalThis`), so a module-scope
+    // `navigator.userAgent` read would NOT throw a ReferenceError under vitest. It would quietly
+    // return Node's own UA string, `classifyDeviceClass` would classify the TEST RUNNER, and
+    // every unit test would still pass. `window`/`document` do throw, but `navigator` — the one
+    // this module actually wants — does not. THIS TEXT SCAN IS THE SOLE ENFORCEMENT.
+    //
     // Case-sensitive by construction: `frameWindow.frames` contains "Window." (capital W) and
     // must not be mistaken for a `window.` global read — hence the dotted, lower-case needles.
     const sources = readObservabilitySources();
@@ -357,5 +555,44 @@ describe('observability/*.ts (T-A2/AM21): purity — no RegExp, no host globals,
       'this module is part of the PURE core: it must be importable, and unit-testable, with the ' +
         'SDK absent entirely.',
     );
+  });
+});
+
+describe('observability/instruments.ts (AM17 / X5): the table REFERENCES names.ts, textually', () => {
+  it('X5: instruments.ts imports from ./names and spells no metric name as a quoted literal', () => {
+    // THE PROVEN CHEAT (red-team X5): AM17 in instruments.test.ts compares the instrument-name
+    // SET to the names.ts constant SET by VALUE. An implementation that re-spells all eight names
+    // as string literals in the table — `{ name: 'mr_client_fps', … }` — produces an identical
+    // set and passes it, while the single-source claim AM17 exists to enforce is simply false.
+    // The two spellings then drift on the first rename: names.ts changes, the recording rule and
+    // the dashboards follow it, and the client keeps emitting the old name with nothing red.
+    //
+    // Value equality cannot see this — only the SOURCE TEXT can. Comment-stripped (the file's
+    // `.code`), so a rationale comment quoting the banned shape does not red a correct table.
+    const instruments = readObservabilitySources().find((f) => f.name === 'instruments.ts');
+    if (instruments === undefined) {
+      throw new Error(
+        'observability/instruments.ts not found by the recursive walk — AM17 cannot be checked ' +
+          'textually, and this must be a hard red rather than a skip',
+      );
+    }
+
+    expect(
+      instruments.code.includes("from './names'"),
+      'instruments.ts must import its names from ./names — that import IS the single source of ' +
+        'truth AM17 asserts (and the thing a literal table quietly replaces)',
+    ).toBe(true);
+    expect(
+      instruments.code.includes('METRIC_'),
+      'instruments.ts must reference the METRIC_* constants by name',
+    ).toBe(true);
+
+    for (const needle of ["name: '", 'name: "', 'name: `']) {
+      expect(
+        instruments.code.indexOf(needle),
+        `instruments.ts must not spell an instrument name as a quoted literal (${needle}…) — ` +
+          'every `name:` field must be a METRIC_* constant imported from ./names (AM17)',
+      ).toBe(-1);
+    }
   });
 });

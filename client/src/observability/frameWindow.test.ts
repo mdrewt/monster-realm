@@ -122,6 +122,41 @@ describe('frameWindow (T-25c): one sample per elapsed second, fps = frames × 10
     expect(samples[2]?.maxFrameMs, 'window 3 must not inherit window 2 hitch').toBeCloseTo(100, 10);
   });
 
+  it('T-25c-measured: a window that closes LATE divides by the measured elapsed, not by 1000', () => {
+    // RED-TEAM X6. Every other fixture in this file lands on an exact 1000ms boundary, where
+    // `frames × 1000 / elapsed` and `frames` are numerically identical — so the whole
+    // nominal-vs-measured distinction was carried by the property test alone. This fixture
+    // separates them by 5 fps, right on the OBS-25 threshold.
+    //
+    // 55 frames in a window that closes at 1100ms is 50.0 fps. An implementation that divides by
+    // the NOMINAL 1000 reports 55.0 — which is exactly the SLO line (p50 ≥ 55). The bug would
+    // therefore turn a failing machine into a passing one at precisely the value the SLO is
+    // defined at, and every boundary-aligned test in this file would still be green.
+    // 54 clean 18ms frames (elapsed 972ms — the window is still open), then a 128ms hitch that
+    // lands the 55th frame at 1100ms and closes the window LATE. That is the ordinary shape: a
+    // GC pause or a zone load at the end of a second.
+    const state = createFrameWindow(0);
+    const samples: FrameSample[] = [];
+    for (let i = 1; i <= 54; i += 1) {
+      const r = frameTick(state, i * 18);
+      if (r.sample !== undefined) samples.push(r.sample);
+    }
+    expect(samples, 'no window may close before 1000ms elapsed (54 × 18 = 972)').toHaveLength(0);
+
+    const closing = frameTick(state, 1100);
+    expect(closing.sample, 'the window must close on the 1100ms frame').toBeDefined();
+    expect(
+      closing.sample?.fps,
+      '55 frames over a MEASURED 1100ms window is 50.0 fps. A value of 55 means the divisor is ' +
+        'the nominal 1000ms — a systematic upward bias that reports "exactly at the SLO" for a ' +
+        'machine running 10% below it.',
+    ).toBeCloseTo(50, 10);
+    expect(closing.sample?.maxFrameMs, 'the 128ms hitch is this window worst frame').toBeCloseTo(
+      128,
+      10,
+    );
+  });
+
   it('T-25c-property: every emitted sample equals frames×1000/elapsed over ITS OWN window', () => {
     // The rule, not a sample of it. The test tracks the frames and the window start itself, so
     // it never re-implements the module — it only re-states the arithmetic OBS-25 depends on.
