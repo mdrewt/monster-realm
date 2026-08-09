@@ -69,7 +69,7 @@ datasources:
         filterByTraceID: false
         filterBySpanID: false
         customQuery: true
-        query: '{job="spacetimedb-module"} | json | connection_id = "$${__span.tags.connection_id}"'
+        query: '{job="spacetimedb-module"} | json | json message | connection_id = "$${__span.tags.connection_id}"'
         tags:
           - key: reducer
       # D17(3) — shared time-range linkage across Prometheus/Loki/Tempo surfaces.
@@ -86,4 +86,4 @@ datasources:
         config:
           field: connection_id
           target:
-            expr: '{job="spacetimedb-module"} | json | connection_id = "$${__value.raw}"'
+            expr: '{job="spacetimedb-module"} | json | json message | connection_id = "$${__value.raw}"'

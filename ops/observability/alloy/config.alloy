@@ -107,8 +107,12 @@ otelcol.receiver.otlp "s4" {
 	http {
 		endpoint = "127.0.0.1:4318"
 
+		// Driven by the SAME env var Caddy uses (MR_OTLP_ALLOWED_ORIGIN) rather than a second
+		// hardcoded list: Alloy applies its own CORS check independently of Caddy's header, so
+		// two independently-maintained origin lists would silently diverge the moment an
+		// operator edited .env — the same two-representations trap D15's $trace_pair_set names.
 		cors {
-			allowed_origins = ["https://localhost:5173", "https://localhost:8443"]
+			allowed_origins = [sys.env("MR_OTLP_ALLOWED_ORIGIN")]
 			allowed_headers = ["content-type"]
 			max_age         = 3600
 		}
@@ -137,8 +141,21 @@ otelcol.processor.transform "s4_keep" {
 	metric_statements {
 		context = "datapoint"
 
+		// TWO controls, because they close two different holes.
+		//
+		// (1) keep_matching_keys bounds the label KEY space: an attacker-chosen attribute name
+		//     never reaches storage.
+		// (2) The delete_key statements bound the label VALUE space. Without them the allowlist
+		//     is only half a control — `zone_id` is a legitimate, caller-supplied dimension, so
+		//     a scripted client could still send a fresh random value per request and create one
+		//     new active series each time, which is the cardinality bomb this filter exists to
+		//     stop. A non-conforming value has its key dropped, collapsing the point into the
+		//     unlabelled series instead of minting a new one.
 		statements = [
 			`keep_matching_keys(attributes, "^(zone_id|build_sha|device_class)$")`,
+			`delete_key(attributes, "zone_id") where not IsMatch(attributes["zone_id"], "^[0-9]{1,4}$")`,
+			`delete_key(attributes, "build_sha") where not IsMatch(attributes["build_sha"], "^[0-9a-f]{7,40}$")`,
+			`delete_key(attributes, "device_class") where not IsMatch(attributes["device_class"], "^(desktop|mobile|tablet)$")`,
 		]
 	}
 

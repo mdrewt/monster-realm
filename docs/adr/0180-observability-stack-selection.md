@@ -853,11 +853,17 @@ plan-review and red-team passes. It does not restate or reverse D1–D18.
   `correlations:` list under the *source* datasource in `datasources.yaml`; no UI or API step is needed. Two entries
   are required, one per direction. **No falsifier tripped** (this ADR named "neither mechanism is a first-party fit"
   as a re-open trigger for the backend swap; a first-party fit exists).
-- **Version pins (this ADR's standing "confirm versions against the pinned environment at build time").** All eight
-  images verified live via `docker manifest inspect` and pinned **by `tag@sha256:` digest**, which also makes OBS-33's
-  "stock, unmodified vendor images" claim mechanically checkable rather than asserted. Licensing re-confirmed:
-  Loki/Tempo/Grafana OSS AGPLv3; Prometheus/Alloy/node_exporter/Caddy Apache-2.0 — unchanged, so the AGPL
-  network-copyleft analysis stands.
+- **Version pins (this ADR's standing "confirm versions against the pinned environment at build time").**
+  All images verified live via `docker manifest inspect` and pinned **by `tag@sha256:` digest**, which also
+  makes OBS-33's "stock, unmodified vendor images" claim mechanically checkable rather than asserted.
+  Licensing re-confirmed: Loki/Tempo/Grafana OSS AGPLv3; Prometheus/Alloy/node_exporter/Caddy Apache-2.0 —
+  unchanged, so the AGPL network-copyleft analysis stands. **Corrected during implementation (this is why
+  the standing instruction exists):** the digest-verification pass confirms only that a tag EXISTS, not that
+  its config schema is compatible. Running each config through its own upstream validator caught that
+  **Tempo 3.0.2 rejects this stack's config outright** — 3.0.x restructured `app.Config` and no longer
+  accepts the top-level `compactor`/`ingester` keys, so D11's named knob
+  (`compactor.compaction.block_retention`) has no home there. Tempo alone is therefore pinned to the **2.x
+  LTS track (2.10.7)**, which validates cleanly; every other image stays on current stable.
 
 ### Correction 1 — the networking model: host networking with loopback-bound listeners
 
@@ -890,7 +896,12 @@ depend on to evaluate. The rate-limit and payload-size caps D5 correctly identif
 client bound request *volume*, not the *label space* a single well-formed request can introduce.
 
 **Added: an explicit label allowlist on the S4 path before anything reaches storage**, gated by its own predicate
-distinct from S2's. This discharges **OBS-34**, which already reads on its face as covering this path ("SHALL NOT
+distinct from S2's. **Extended after an adversarial pass on the implementation:** a key-only allowlist is only
+half the control, and calling it "closed" would have been wrong. `zone_id` is a legitimate,
+caller-supplied dimension, so a scripted client could still send a fresh value per request and mint one new
+series each time — the same bomb, moved from an arbitrary key to an allowed one. The shipped filter therefore
+bounds the label VALUE space too (OTTL `delete_key ... where not IsMatch(...)` per allowed attribute), and a
+second predicate asserts it. This discharges **OBS-34**, which already reads on its face as covering this path ("SHALL NOT
 include player-authored text in any log line, **metric label**, or trace attribute") even though OBS-36 names only
 `stage.metrics`. Follow-up flagged: the M20 spec has no S4-specific cardinality criterion; OBS-36 deserves an
 explicit S4 counterpart.

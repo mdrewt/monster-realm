@@ -112,6 +112,11 @@ on to evaluate.
 | `checks/` | The Tier-1 predicate library + its proof-of-teeth suite. |
 | `validate.mjs` | Tier-2: each config through its own upstream validator, via the pinned image. |
 
+**Image pins.** All images are digest-pinned, which is what makes the "stock, unmodified" claim above
+checkable. Tempo is the one exception to "current stable": it is pinned to the **2.x LTS track**, because
+Tempo 3.0.x restructured `app.Config` and dropped the top-level `compactor` key that D11's `block_retention`
+retention setting requires. `validate.mjs` is what caught it.
+
 ## Alerting
 
 Grafana OSS unified alerting owns **100%** of rule evaluation and notification routing (D4).

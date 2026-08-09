@@ -59,20 +59,39 @@ const isBlank = (text) => typeof text !== 'string' || text.trim().length === 0;
  * Service names declared under a compose `services:` key: exactly two-space indent, a name, a
  * colon. Returns [] when there is no `services:` key or it has no entries.
  */
-function composeServiceNames(composeText) {
+function parseComposeServices(composeText) {
   const lines = stripComments(composeText).split('\n');
   const start = lines.findIndex((l) => l.startsWith('services:'));
-  if (start === -1) return [];
+  if (start === -1) return { names: [], problems: ['no `services:` key'] };
   const names = [];
+  const problems = [];
+  // Flow style on the `services:` line itself hides every service from a line-oriented scan.
+  if (lines[start].slice('services:'.length).trim().length > 0) {
+    problems.push('`services:` uses inline/flow style, which this scanner cannot read');
+  }
   for (let i = start + 1; i < lines.length; i++) {
     const line = lines[i];
     if (line.trim().length === 0) continue;
     // A new column-0 key ends the services block.
     if (!line.startsWith(' ')) break;
+    // Only lines at EXACTLY two-space indent are service keys; deeper lines belong to a service.
+    if (line.startsWith('   ')) continue;
     const m = line.match(/^ {2}([a-z0-9][a-z0-9_-]*):\s*$/);
-    if (m) names.push(m[1]);
+    if (!m) {
+      // FAIL CLOSED. A quoted key (`"svc":`) or flow style (`svc: {image: ...}`) is valid
+      // compose that a permissive scanner would silently skip — which would hide an entire
+      // rogue service, and with it its listeners and any entrypoint override, from every
+      // predicate built on this function. Anything unrecognised is reported, never ignored.
+      problems.push(`unparsable service entry at line ${i + 1}: ${line.trim().slice(0, 60)}`);
+      continue;
+    }
+    if (names.includes(m[1])) {
+      // Real YAML is last-key-wins; first-match parsing would validate the decoy block.
+      problems.push(`duplicate service key \`${m[1]}\` at line ${i + 1}`);
+    }
+    names.push(m[1]);
   }
-  return names;
+  return { names, problems };
 }
 
 /** The raw lines belonging to one compose service block (everything more-indented than its key). */
@@ -204,6 +223,10 @@ const PROMQL_KEYWORDS = new Set([
   'sgn',
   'timestamp',
   'group',
+  // Grafana template-variable functions — they wrap a series, they are not one.
+  'label_values',
+  'label_names',
+  'query_result',
   'm',
   's',
   'h',
@@ -312,7 +335,10 @@ export function checkServiceSetExact(composeText, expectedServiceNames) {
   if (!Array.isArray(expectedServiceNames) || expectedServiceNames.length === 0) {
     return fail('the expected service-name set is empty — nothing to compare against');
   }
-  const actual = composeServiceNames(composeText);
+  const { names: actual, problems } = parseComposeServices(composeText);
+  if (problems.length > 0) {
+    return fail(`compose services could not be read exactly: ${problems.join('; ')}`);
+  }
   if (actual.length === 0) {
     return fail('docker-compose.yml declares zero services — nothing was scanned');
   }
@@ -428,7 +454,10 @@ const LISTEN_FLAGS = [
 ];
 
 export function checkListenAddrsLoopback(composeText) {
-  const services = composeServiceNames(composeText);
+  const { names: services, problems } = parseComposeServices(composeText);
+  if (problems.length > 0) {
+    return fail(`compose services could not be read exactly: ${problems.join('; ')}`);
+  }
   if (services.length === 0) {
     return fail('docker-compose.yml declares zero services — binding cannot be confirmed');
   }
@@ -498,14 +527,44 @@ export function checkNoExecLogSource(rawAlloyText, composeText) {
   if (alloyText.includes('loki.source.exec')) {
     return fail('OBS-11: a `loki.source.exec` subprocess log source is configured');
   }
+  // Fail closed on a compose the scanner cannot read exactly: a quoted `"alloy":` key would
+  // otherwise yield an EMPTY service block, and an empty block trivially contains no shell
+  // marker — so the exfil entrypoint inside it would read as clean.
+  const composeProblems = parseComposeServices(composeText).problems;
+  if (composeProblems.length > 0) {
+    return fail(
+      `OBS-11: compose services could not be read exactly: ${composeProblems.join('; ')}`,
+    );
+  }
+  if (!parseComposeServices(composeText).names.includes('alloy')) {
+    return fail('OBS-11: no `alloy` service found in docker-compose.yml — cannot confirm it');
+  }
   const alloyBlock = composeServiceBlock(composeText, 'alloy').join('\n');
-  const hasOverride = alloyBlock.includes('entrypoint:') || alloyBlock.includes('command:');
-  if (hasOverride) {
-    const marker = SHELL_MARKERS.find((m) => alloyBlock.includes(m));
-    if (marker) {
+  // `entrypoint:` REPLACES the alloy binary outright, so it is never acceptable — no marker
+  // list can enumerate the ways a replaced entrypoint could tail logs.
+  if (alloyBlock.includes('entrypoint:')) {
+    return fail(
+      'OBS-11: the alloy service overrides `entrypoint:`, replacing the alloy binary itself — ' +
+        'a denylist of shell markers cannot bound what a replaced entrypoint may do',
+    );
+  }
+  const marker = SHELL_MARKERS.find((m) => alloyBlock.includes(m));
+  if (marker) {
+    return fail(
+      `OBS-11: the alloy service's command override contains \`${marker}\` — a shell pipeline ` +
+        'there achieves the banned subprocess log tail OUTSIDE config.alloy',
+    );
+  }
+  // Positive shape check: if a command is present it must be alloy's own `run` subcommand.
+  if (alloyBlock.includes('command:')) {
+    const cmd = composeServiceBlock(composeText, 'alloy')
+      .slice(composeServiceBlock(composeText, 'alloy').findIndex((l) => l.includes('command:')) + 1)
+      .map((l) => l.trim())
+      .filter((l) => l.startsWith('- '));
+    if (cmd.length === 0 || cmd[0] !== '- run') {
       return fail(
-        `OBS-11: the alloy service's command/entrypoint override contains \`${marker}\` — a ` +
-          'shell pipeline there achieves the banned subprocess log tail OUTSIDE config.alloy',
+        "OBS-11: the alloy service's `command:` does not begin with alloy's own `run` " +
+          'subcommand — only the documented invocation shape is accepted, not an arbitrary one',
       );
     }
   }
@@ -617,13 +676,46 @@ export function checkS4MetricLabelsBounded(rawAlloyText) {
     b.header.startsWith('otelcol.receiver.otlp'),
   );
   const receiverBody = receiverBlock ? receiverBlock.body.join('\n') : '';
-  if (!receiverBody.includes(filterComponent)) {
+  // Name-resolve the receiver's metrics output rather than substring-matching the block: a
+  // trailing `// ... otelcol.processor.attributes ...` decoy comment would satisfy a plain
+  // `includes` while the receiver forwards straight to the exporter, unfiltered. Only a real
+  // `metrics = [...]` reference to the filter's `.input` counts as wiring.
+  const metricsOut = receiverBody.match(/metrics\s*=\s*\[([^\]]*)\]/);
+  if (!metricsOut?.[1].includes(`${filterComponent}.`)) {
     return fail(
       'OBS-34: the attributes filter exists but the OTLP receiver does not forward metrics into ' +
         'it — an unwired filter is not a control (co-occurrence is not wiring)',
     );
   }
   return pass('OBS-34: S4 metrics pass through a wired attribute allowlist before storage');
+}
+
+// ---------------------------------------------------------------------------
+// 9b. OBS-34 (red-team follow-up) — S4 attribute VALUES are bounded, not just keys
+// ---------------------------------------------------------------------------
+const S4_BOUNDED_ATTRS = ['zone_id', 'build_sha', 'device_class'];
+
+export function checkS4AttributeValuesBounded(rawAlloyText) {
+  if (isBlank(rawAlloyText)) return fail('Alloy config text is empty — nothing was scanned');
+  const alloyText = stripComments(rawAlloyText);
+  if (!alloyText.includes('otelcol.receiver.otlp')) {
+    return fail('OBS-34: no S4 OTLP receiver present — nothing to bound');
+  }
+  // A key allowlist alone is only half the control. Every allowed key is still a
+  // caller-supplied value on a PUBLIC, unauthenticated ingest, so an unconstrained value space
+  // mints one new Prometheus series per distinct value — the same cardinality bomb the key
+  // allowlist was added to stop, just moved to an allowed key.
+  const unbounded = S4_BOUNDED_ATTRS.find(
+    (attr) => !alloyText.includes(`IsMatch(attributes["${attr}"]`),
+  );
+  if (unbounded !== undefined) {
+    return fail(
+      `OBS-34: attribute \`${unbounded}\` is key-allowlisted but its VALUE space is ` +
+        'unconstrained — a scripted client can send a fresh value per request and still grow ' +
+        'active series without bound',
+    );
+  }
+  return pass(`OBS-34: all ${S4_BOUNDED_ATTRS.length} S4 attributes bound by key AND by value`);
 }
 
 // ---------------------------------------------------------------------------
@@ -704,6 +796,16 @@ export function checkCaddyDualPosture(caddyfileText) {
     return fail('OBS-21: the OTLP route declares no `request_body { max_size ... }` cap');
   }
 
+  // A second `zone` lets a decoy with sane numbers sit in front of the real, unlimited one:
+  // first-match extraction would read the decoy. Exactly one zone, so the numbers read are the
+  // numbers applied.
+  const zoneCount = (otlpBody.match(/zone\s+[a-zA-Z_][a-zA-Z0-9_]*\s*\{/g) || []).length;
+  if (zoneCount !== 1) {
+    return fail(
+      `OBS-21: the OTLP rate_limit declares ${zoneCount} zones; exactly 1 is required so the ` +
+        'checked limit is the applied limit (a decoy zone otherwise launders an unlimited one)',
+    );
+  }
   const events = otlpBody.match(/events\s+([0-9]+)/);
   const maxSize = otlpBody.match(/max_size\s+([0-9]+\s*[kKmMgG]?[bB]?)/);
   if (!events || !maxSize) {
@@ -852,6 +954,19 @@ export function checkQueriedSeriesAreDefined(
     return fail(`dashboard JSON does not parse: ${err.message}`);
   }
   exprs.push(...yamlExprValues(alertRulesText || ''));
+  // Template-variable queries (`label_values(<series>, reducer)`) reference series too, and a
+  // wrong one there ships a broken variable rather than a broken panel — same defect class.
+  try {
+    for (const v of JSON.parse(dashboardJsonText || '{}').templating?.list || []) {
+      if (typeof v.query !== 'string' || v.query.trim().length === 0) continue;
+      // `label_values(<series>, <label>)`'s SECOND argument is a label name, not a series —
+      // only the first argument is a series reference this closure should resolve.
+      const lv = v.query.match(/label_values\s*\(([\s\S]*),\s*[a-zA-Z_][a-zA-Z0-9_]*\s*\)/);
+      exprs.push(lv ? lv[1] : v.query);
+    }
+  } catch {
+    // Already reported by the parse above.
+  }
 
   const queried = new Set();
   for (const expr of exprs) for (const id of promqlIdentifiers(expr)) queried.add(id);
@@ -909,8 +1024,13 @@ export function checkRetentionConfigured({ composeText, lokiText, tempoText }) {
 // ---------------------------------------------------------------------------
 // 16. Secrets — no committed credential, quoted OR unquoted
 // ---------------------------------------------------------------------------
-const QUOTED_CREDENTIAL = /(password|secret|api_?key|token)\s*[:=]\s*["'][^"']{8,}["']/i;
-const UNQUOTED_CREDENTIAL = /\b[A-Za-z_]*(PASSWORD|SECRET|API_?KEY|TOKEN)\s*=\s*([^\s"'#]{8,})/;
+// `hash` is in the keyword set deliberately: the one credential this stack's design centres on
+// is the Grafana basic-auth BCRYPT HASH, which none of password/secret/api_key/token would match.
+// Both regexes are case-insensitive — a lowercase `grafana_admin_password=...` is just as leaked.
+const QUOTED_CREDENTIAL =
+  /(password|secret|api_?key|token|hash|private_key)\s*[:=]\s*["'][^"']{8,}["']/i;
+const UNQUOTED_CREDENTIAL =
+  /\b[A-Za-z_]*(PASSWORD|SECRET|API_?KEY|TOKEN|HASH|PRIVATE_KEY)\s*=\s*([^\s"'#]{8,})/i;
 
 export function checkNoQuotedCredential(namedTexts) {
   if (!Array.isArray(namedTexts) || namedTexts.length === 0) {
