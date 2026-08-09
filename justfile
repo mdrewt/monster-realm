@@ -27,6 +27,27 @@ test:
 
 eval:
     node evals/run.mjs
+    just perf-budget
+
+# The OBS-5/OBS-6 perf-budget gate (m20a, ADR-0180 D7): bench the 7 game-core
+# hot paths with criterion and fail on any committed-ceiling breach (the
+# comparison lives in game-core/benches/hot_paths.rs + budgets.rs).
+# WHY it is wired inside `eval:` rather than as a `ci:` dependency:
+# ci-gate-wiring.eval.mjs pins the `ci:` dep list against .github/workflows/
+# ci.yml (every ci: dep must appear there as `- run: just <dep>`), and ci.yml
+# is outside m20a's touches — while the `eval:` body is only required to
+# CONTAIN `node evals/run.mjs`, extra lines being legal.
+# The `rm -rf` is AM1's belt (in-process clean_ids is the suspenders): a
+# rust-cache-restored target/ must never hand the gate a stale estimates.json.
+# CRITERION_HOME is exported ABSOLUTE ($PWD fallback) because cargo runs the
+# bench binary with cwd = game-core/, so a relative path would resolve to a
+# different directory inside the bench than it does in this shell.
+perf-budget:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    export CRITERION_HOME="${CARGO_TARGET_DIR:-$PWD/target}/criterion"
+    rm -rf "$CRITERION_HOME"
+    cargo bench -p game-core --bench hot_paths
 
 # Build the client-prediction wasm pkg (--target bundler) the client imports +
 # the e2e/typecheck consume. Gitignored; rebuilt from source (client-wasm).

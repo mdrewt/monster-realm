@@ -24,6 +24,7 @@
 | tables/monster | SpacetimeDB Table | monster | The authoritative monster record — PRIVATE (no `public`). Contains hidden genes  |
 | tables/monster_pub | SpacetimeDB Table | monster_pub | Public projection of the monster table — NO hidden fields (no IVs, EVs, nature). |
 | tables/movement_tick_schedule | SpacetimeDB Table | movement_tick_schedule | Per-zone movement schedule: one interval-row per active zone makes the scheduler |
+| tables/mr_heartbeat_schedule | SpacetimeDB Table | mr_heartbeat_schedule | SpacetimeDB table mr_heartbeat_schedule. |
 | tables/npc | SpacetimeDB Table | npc | NPC entity role row. Entity/component: an NPC is a `character` row + this. `zone |
 | tables/player | SpacetimeDB Table | player | Links a connection identity to its character. `last_input_seq` is the reconcilia |
 | tables/player_conversation | SpacetimeDB Table | player_conversation | In-progress dialogue node. Single row per player (PK = owner_identity). PRIVATE  |

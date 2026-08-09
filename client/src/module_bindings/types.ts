@@ -408,6 +408,12 @@ export const MovementTickSchedule = __t.object("MovementTickSchedule", {
 });
 export type MovementTickSchedule = __Infer<typeof MovementTickSchedule>;
 
+export const MrHeartbeatSchedule = __t.object("MrHeartbeatSchedule", {
+  id: __t.u64(),
+  scheduledAt: __t.scheduleAt(),
+});
+export type MrHeartbeatSchedule = __Infer<typeof MrHeartbeatSchedule>;
+
 // The tagged union or sum type for the algebraic type `NatureKind`.
 export const NatureKind = __t.enum("NatureKind", {
   Hardy: __t.unit(),

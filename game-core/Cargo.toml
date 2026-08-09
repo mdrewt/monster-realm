@@ -3,6 +3,11 @@ name = "game-core"
 version.workspace = true
 edition.workspace = true
 license.workspace = true
+# Cargo otherwise auto-registers every .rs under benches/ as its own bench
+# target, making budgets.rs / budget_check_tests.rs phantom benches that trip
+# dead_code under `clippy --all-targets -D warnings`. The ONLY bench target is
+# the explicit [[bench]] hot_paths below (m20a, OBS-5/OBS-6).
+autobenches = false
 
 [features]
 # `SpacetimeType` derives are enabled ONLY by `server-module` (the STDB shell),
@@ -18,3 +23,21 @@ spacetimedb = { workspace = true, optional = true }
 
 [dev-dependencies]
 proptest = { workspace = true }
+# Perf-budget gate (m20a, OBS-5/OBS-6): criterion measures the 7 hot paths;
+# serde_json reads criterion's estimates.json back for the ceiling comparison.
+# Dev-deps ONLY — OBS-7/D7 forbids observability deps in the shipped library.
+criterion = { workspace = true }
+serde_json = { workspace = true }
+
+# The criterion harness owns `fn main` (harness = false) so it can compare the
+# measurements against benches/budgets.rs and exit non-zero on a breach.
+[[bench]]
+name = "hot_paths"
+harness = false
+
+# Registers benches/budget_check_tests.rs under `cargo nextest run` (just test).
+# WITHOUT this entry cargo/nextest never compile the file and report "0 tests" —
+# the whole OBS-6 proof-of-teeth suite silently absent, and green.
+[[test]]
+name = "perf_budget_predicate"
+path = "benches/budget_check_tests.rs"
