@@ -1,7 +1,5 @@
-// observability-metrics-contract.eval.mjs — m20a gates G3 (OBS-9) + G4 (OBS-10).
-//
-// TODO(m20e): G5 — Alloy self-metrics assertion (OBS-12/OBS-13) deferred; needs
-// ops/observability/** (m20b touches).
+// observability-metrics-contract.eval.mjs — m20a gates G3 (OBS-9) + G4 (OBS-10),
+// and m20e gate G5 (OBS-12/OBS-13).
 //
 // WHAT THIS PROVES, AND WHERE
 //   B1 (OBS-9/G3)  — `/v1/metrics` exposes >= 80 metric families including the 4
@@ -20,6 +18,28 @@
 //                    ("Server is online"), never the exit code alone: `ping`
 //                    exits 0 for a 404 and for an unrelated service on the port
 //                    (justfile:229 records the measured lesson).
+//   B6 (always)    — G5 STATIC TRIPWIRE (m20e). `ops/observability/alloy/
+//                    config.alloy`'s `stage.metrics` block must still declare
+//                    `prefix = "mr_"` and `name = "log_events_total"`. That pair
+//                    IS the exposed counter name, so this eval pins the name in
+//                    exactly one place and reds loudly the day the config moves
+//                    underneath the recorded live evidence.
+//   G5 (live only, MR_OBS_LIVE=1 AND MR_OBS_STACK=1) — OBS-12/OBS-13's
+//                    log-derived counter, measured as a DELTA AROUND AN
+//                    INJECTION, never as a bare `> 0`: real traffic makes any
+//                    counter non-zero eventually, so a bare threshold is
+//                    non-zero-by-accident. N synthetic host-envelope lines are
+//                    appended to a `module_logs` file matching Alloy's own glob
+//                    under a RUN-UNIQUE synthetic `function` value, and only
+//                    THAT series must rise by N. (The `evt` label value stays
+//                    `heartbeat` — it is a bounded enum, so uniqueness comes
+//                    from the reducer label, never from inventing an evt.)
+//                    The pure half — `logDerivedCounter` over inline fixtures —
+//                    always runs, so G5 cannot become a permanently-skipped
+//                    green either. MR_OBS_ALLOY_FETCH (a JSON argv ARRAY) swaps
+//                    the metrics read for a subprocess on boxes where Docker
+//                    Desktop scopes host networking to its own VM; unset is the
+//                    production default.
 //
 // THESE ARE PROPERTIES OF THE PINNED HOST BINARY, not of this repository's
 // source, so they cannot regress from a code change here — which is exactly why
@@ -50,11 +70,12 @@
 // `spawnSync` is called with ARRAY ARGS only, never a shell string.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const CI_YML = path.resolve('.github/workflows/ci.yml');
+const ALLOY_CONFIG = path.resolve('ops/observability/alloy/config.alloy');
 
 /** OBS-9's named families. */
 export const REQUIRED_FAMILIES = [
@@ -341,6 +362,168 @@ export function pinsAgree(ciYmlText) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// Pure predicate 5: logDerivedCounter(promText, nameNeedle, labels)  (G5, m20e)
+//
+// OBS-12/OBS-13's counter is derived from S2 log lines by Alloy and exposed on
+// Alloy's own self-metrics endpoint. Three ways a naive check reads green while
+// the derivation is dead, each closed here and each with a tooth:
+//   - `promText.includes('mr_log_events_total')` is satisfied by the `# HELP`
+//     line alone, which every Alloy build emits whether or not a single line was
+//     ever derived. Only a `# TYPE` declaration or a real SAMPLE counts.
+//   - a sample that exists with value 0 means the pipeline is wired and idle,
+//     which is NOT the same fact as "the derivation works".
+//   - a family that is absent entirely is a DIFFERENT failure from a family
+//     sitting at 0 (config not loaded vs config loaded but not matching), so the
+//     two must not collapse into one reason string.
+// The label filter reuses the same quote-aware walk `labelKeysIn` uses, so a
+// label VALUE spelling another key cannot forge a match.
+// ---------------------------------------------------------------------------
+
+/** The two halves config.alloy declares; their concatenation is the exposed name. */
+export const LOG_COUNTER_PREFIX = 'mr_';
+export const LOG_COUNTER_BASENAME = 'log_events_total';
+export const LOG_COUNTER_NAME = `${LOG_COUNTER_PREFIX}${LOG_COUNTER_BASENAME}`;
+
+/** `Map<labelKey, labelValue>` for one sample line. */
+export function sampleLabelPairs(line) {
+  const pairs = new Map();
+  const open = line.indexOf('{');
+  if (open === -1) return pairs;
+  let key = '';
+  let value = '';
+  let inValue = false;
+  let inQuote = false;
+  let escaped = false;
+  const flush = () => {
+    const k = key.trim();
+    if (inValue && k.length > 0) pairs.set(k, value);
+    key = '';
+    value = '';
+    inValue = false;
+  };
+  for (let i = open + 1; i < line.length; i++) {
+    const c = line[i];
+    if (inQuote) {
+      if (escaped) {
+        value += c;
+        escaped = false;
+      } else if (c === '\\') escaped = true;
+      else if (c === '"') inQuote = false;
+      else value += c;
+      continue;
+    }
+    if (c === '}') {
+      flush();
+      break;
+    }
+    if (inValue) {
+      if (c === '"') {
+        inQuote = true;
+        continue;
+      }
+      if (c === ',') {
+        flush();
+        continue;
+      }
+      value += c;
+      continue;
+    }
+    if (c === '=') {
+      inValue = true;
+      continue;
+    }
+    if (c === ',') {
+      key = '';
+      continue;
+    }
+    key += c;
+  }
+  return pairs;
+}
+
+/** The numeric value of a sample line, or null when it has none. */
+function sampleValueOf(line) {
+  const close = line.lastIndexOf('}');
+  const rest = (close === -1 ? line.slice(sampleName(line).length) : line.slice(close + 1)).trim();
+  const token = rest.split(' ')[0];
+  if (token.length === 0) return null;
+  const n = Number(token);
+  return Number.isFinite(n) ? n : null;
+}
+
+/** `{ ok, reason, value, matched }` — reasons are DISTINCT, never collapsed. */
+export function logDerivedCounter(promText, nameNeedle, labels) {
+  const { typeNames, sampleNames } = collectMetricNames(promText);
+  if (!typeNames.has(nameNeedle) && !sampleNames.has(nameNeedle)) {
+    return { ok: false, reason: 'family-absent', value: null, matched: 0 };
+  }
+  const required = Object.entries(labels ?? {});
+  let matched = 0;
+  let total = 0;
+  for (const raw of promText.split('\n')) {
+    const line = raw.trim();
+    if (line.length === 0 || line.startsWith('#')) continue;
+    if (sampleName(line) !== nameNeedle) continue;
+    const pairs = sampleLabelPairs(line);
+    if (required.some(([k, v]) => pairs.get(k) !== v)) continue;
+    const value = sampleValueOf(line);
+    if (value === null) continue;
+    matched++;
+    total += value;
+  }
+  if (matched === 0) return { ok: false, reason: 'no-labelled-sample', value: null, matched: 0 };
+  if (total <= 0) return { ok: false, reason: 'zero', value: total, matched };
+  return { ok: true, reason: 'ok', value: total, matched };
+}
+
+/**
+ * B6 — the counter name this eval pins is the one config.alloy declares.
+ * Scoped to the `metric.counter` block so an unrelated `name =` elsewhere in the
+ * river config cannot satisfy it.
+ */
+export function alloyDeclaresCounter(alloyText) {
+  const stageAt = alloyText.indexOf('stage.metrics');
+  if (stageAt === -1) {
+    return { ok: false, reason: 'config.alloy declares no `stage.metrics` block' };
+  }
+  const counterAt = alloyText.indexOf('metric.counter', stageAt);
+  if (counterAt === -1) {
+    return { ok: false, reason: 'the `stage.metrics` block declares no `metric.counter`' };
+  }
+  const close = alloyText.indexOf('}', counterAt);
+  if (close === -1) return { ok: false, reason: 'the `metric.counter` block is never closed' };
+  const declared = new Map();
+  for (const raw of alloyText.slice(counterAt, close).split('\n')) {
+    const line = raw.trim();
+    const eq = line.indexOf('=');
+    if (eq <= 0) continue;
+    const key = line.slice(0, eq).trim();
+    let value = line.slice(eq + 1).trim();
+    if (value.length >= 2 && value[0] === '"' && value[value.length - 1] === '"') {
+      value = value.slice(1, value.length - 1);
+    }
+    if (!declared.has(key)) declared.set(key, value);
+  }
+  if (declared.get('name') !== LOG_COUNTER_BASENAME) {
+    return {
+      ok: false,
+      reason:
+        `config.alloy's metric.counter declares name '${declared.get('name')}', but this eval ` +
+        `pins '${LOG_COUNTER_BASENAME}'`,
+    };
+  }
+  if (declared.get('prefix') !== LOG_COUNTER_PREFIX) {
+    return {
+      ok: false,
+      reason:
+        `config.alloy's metric.counter declares prefix '${declared.get('prefix')}', but this ` +
+        `eval pins '${LOG_COUNTER_PREFIX}'`,
+    };
+  }
+  return { ok: true, reason: `config.alloy declares ${LOG_COUNTER_NAME}` };
+}
+
 // ===========================================================================
 // PROOF-OF-TEETH — inline, hermetic fixtures. Always run, first.
 // ===========================================================================
@@ -431,6 +614,52 @@ const CI_PINS_NONLITERAL = CI_PINS_GOOD.split('2.6.0').join('latest');
 const CI_PINS_INLINE =
   'jobs:\n  ci:\n    steps:\n      - run: spacetime version install 2.6.0\n' +
   '  e2e:\n    steps:\n      - run: spacetime version install 2.6.0\n';
+
+// G5 fixtures. Two bounded (reducer, evt) pairs, exactly as config.alloy's
+// stage.labels declares them.
+const G5_GOOD = [
+  `# HELP ${LOG_COUNTER_NAME} module_logs lines by bounded (reducer, evt) label pair`,
+  `# TYPE ${LOG_COUNTER_NAME} counter`,
+  `${LOG_COUNTER_NAME}{reducer="mr_heartbeat",evt="heartbeat"} 3`,
+  `${LOG_COUNTER_NAME}{reducer="set_profile_name",evt="reject"} 11`,
+  '',
+].join('\n');
+// The pipeline is wired and has derived NOTHING. Structurally present, and a
+// bare `includes` or a `>= 0` check calls it green.
+const G5_ZERO = G5_GOOD.split('} 3').join('} 0');
+// Alloy is up and scrapeable, but the loki.process block never loaded.
+const G5_FAMILY_ABSENT = [
+  '# TYPE mr_other_total counter',
+  'mr_other_total{reducer="mr_heartbeat",evt="heartbeat"} 5',
+  '',
+].join('\n');
+// The name appears ONLY in a HELP string — which some builds emit regardless.
+const G5_HELP_ONLY = [
+  `# HELP ${LOG_COUNTER_NAME} module_logs lines by bounded (reducer, evt) label pair`,
+  '# TYPE mr_other_total counter',
+  'mr_other_total 1',
+  '',
+].join('\n');
+// A label VALUE that spells another key must not forge a match.
+const G5_VALUE_FORGERY = [
+  `# TYPE ${LOG_COUNTER_NAME} counter`,
+  `${LOG_COUNTER_NAME}{reducer="a,evt=heartbeat"} 9`,
+  '',
+].join('\n');
+
+const ALLOY_COUNTER_GOOD = [
+  'loki.process "module_logs" {',
+  '  stage.metrics {',
+  '    metric.counter {',
+  `      name        = "${LOG_COUNTER_BASENAME}"`,
+  '      description = "module_logs lines by bounded (reducer, evt) label pair"',
+  `      prefix      = "${LOG_COUNTER_PREFIX}"`,
+  '      match_all   = true',
+  '      action      = "inc"',
+  '    }',
+  '  }',
+  '}',
+].join('\n');
 
 const TEETH = [
   {
@@ -601,6 +830,124 @@ const TEETH = [
       return null;
     },
   },
+  {
+    id: 'G5-good',
+    // The positive control, plus B6's own teeth: the counter name this eval
+    // pins must be the one config.alloy declares, read from the metric.counter
+    // block rather than from anywhere in the file.
+    run() {
+      const r = logDerivedCounter(G5_GOOD, LOG_COUNTER_NAME, {
+        reducer: 'mr_heartbeat',
+        evt: 'heartbeat',
+      });
+      if (!r.ok) return `the good fixture was rejected: ${r.reason}`;
+      if (r.value !== 3) return `read value ${r.value}, expected 3`;
+      if (r.matched !== 1) return `matched ${r.matched} samples, expected exactly 1`;
+
+      const declared = alloyDeclaresCounter(ALLOY_COUNTER_GOOD);
+      if (!declared.ok) return `B6 rejected a well-formed metric.counter: ${declared.reason}`;
+      const renamed = alloyDeclaresCounter(
+        ALLOY_COUNTER_GOOD.split(LOG_COUNTER_BASENAME).join('module_lines_total'),
+      );
+      if (renamed.ok) return 'B6 accepted a metric.counter whose `name` had moved';
+      const reprefixed = alloyDeclaresCounter(
+        ALLOY_COUNTER_GOOD.split(`prefix      = "${LOG_COUNTER_PREFIX}"`).join(
+          'prefix      = "monster_"',
+        ),
+      );
+      if (reprefixed.ok) return 'B6 accepted a metric.counter whose `prefix` had moved';
+      if (alloyDeclaresCounter('loki.process "x" { }').ok) {
+        return 'B6 accepted a config with no stage.metrics block at all';
+      }
+      return null;
+    },
+  },
+  {
+    id: 'G5-zero-is-not-green',
+    // BITES: the pipeline is wired and has derived NOTHING. Structurally
+    // present, and every `includes`/`>= 0` shaped check calls it green.
+    run() {
+      const r = logDerivedCounter(G5_ZERO, LOG_COUNTER_NAME, {
+        reducer: 'mr_heartbeat',
+        evt: 'heartbeat',
+      });
+      if (r.ok) return 'a counter sitting at 0 was accepted as a working derivation';
+      if (r.reason !== 'zero') return `expected reason 'zero', got '${r.reason}'`;
+      if (r.value !== 0) return `expected value 0 to be REPORTED, got ${r.value}`;
+      return null;
+    },
+  },
+  {
+    id: 'G5-family-absent-is-a-distinct-failure',
+    // "Alloy is up but never loaded the loki.process block" and "the counter is
+    // idle" are different operational facts and must not share a reason.
+    run() {
+      const absent = logDerivedCounter(G5_FAMILY_ABSENT, LOG_COUNTER_NAME, {
+        reducer: 'mr_heartbeat',
+        evt: 'heartbeat',
+      });
+      if (absent.ok) return 'a payload with no such family at all was accepted';
+      if (absent.reason !== 'family-absent') {
+        return `expected reason 'family-absent', got '${absent.reason}'`;
+      }
+      const zero = logDerivedCounter(G5_ZERO, LOG_COUNTER_NAME, {
+        reducer: 'mr_heartbeat',
+        evt: 'heartbeat',
+      });
+      if (absent.reason === zero.reason) {
+        return 'an absent family and an idle counter collapsed into one reason';
+      }
+      return null;
+    },
+  },
+  {
+    id: 'G5-help-only-is-not-a-sample',
+    // BITES `promText.includes(LOG_COUNTER_NAME)`: the HELP line alone satisfies
+    // it while nothing was ever derived.
+    run() {
+      if (!G5_HELP_ONLY.includes(LOG_COUNTER_NAME)) {
+        return 'FIXTURE: the HELP-only fixture must still contain the counter name';
+      }
+      const r = logDerivedCounter(G5_HELP_ONLY, LOG_COUNTER_NAME, {
+        reducer: 'mr_heartbeat',
+        evt: 'heartbeat',
+      });
+      if (r.ok) return 'a `# HELP`-only mention was counted as a live counter';
+      if (r.reason !== 'family-absent') {
+        return `a HELP-only mention must read as family-absent, got '${r.reason}'`;
+      }
+      return null;
+    },
+  },
+  {
+    id: 'G5-labels-must-match',
+    // The right family with the wrong labels is not the series under test, and
+    // a label VALUE that spells another key must not forge one.
+    run() {
+      const wrongEvt = logDerivedCounter(G5_GOOD, LOG_COUNTER_NAME, {
+        reducer: 'mr_heartbeat',
+        evt: 'reject',
+      });
+      if (wrongEvt.ok) return 'a (mr_heartbeat, reject) query matched the (heartbeat) sample';
+      if (wrongEvt.reason !== 'no-labelled-sample') {
+        return `expected 'no-labelled-sample', got '${wrongEvt.reason}'`;
+      }
+      const wrongReducer = logDerivedCounter(G5_GOOD, LOG_COUNTER_NAME, {
+        reducer: 'mr_m20e_g5_absent',
+        evt: 'heartbeat',
+      });
+      if (wrongReducer.ok) return 'a synthetic reducer label matched an unrelated series';
+
+      const forged = logDerivedCounter(G5_VALUE_FORGERY, LOG_COUNTER_NAME, { evt: 'heartbeat' });
+      if (forged.ok) return 'an `evt` spelled inside a quoted label VALUE forged a match';
+
+      // ...and the label filter is not simply always-false.
+      const unfiltered = logDerivedCounter(G5_GOOD, LOG_COUNTER_NAME, null);
+      if (!unfiltered.ok) return `an unfiltered query was rejected: ${unfiltered.reason}`;
+      if (unfiltered.value !== 14) return `unfiltered sum was ${unfiltered.value}, expected 14`;
+      return null;
+    },
+  },
 ];
 
 function runTeeth() {
@@ -661,6 +1008,33 @@ export async function observabilityMetricsContractEval() {
         `"${version.trim().split('\n')[0]}". The recorded OBS-9/OBS-10 live evidence was ` +
         'gathered against the pinned host and is no longer known-good. Re-run the live half ' +
         '(MR_OBS_LIVE=1) against the new host, refresh the handoff evidence, then update the pin.',
+    };
+  }
+
+  // --- B6: G5 static tripwire (always) -------------------------------------
+  // The counter name G5 measures is DERIVED from config.alloy's own two
+  // declarations rather than guessed, and it is pinned in exactly one place
+  // (LOG_COUNTER_PREFIX/LOG_COUNTER_BASENAME above). If the config moves, the
+  // recorded live evidence stops being evidence — so this reds LOUDLY rather
+  // than letting G5 quietly measure a series nothing writes.
+  if (!existsSync(ALLOY_CONFIG)) {
+    return {
+      name: NAME,
+      pass: false,
+      detail:
+        'B6: ops/observability/alloy/config.alloy is missing — the OBS-12/OBS-13 counter name ' +
+        'cannot be confirmed, and an unconfirmable name makes the G5 measurement meaningless',
+    };
+  }
+  const counterDecl = alloyDeclaresCounter(readFileSync(ALLOY_CONFIG, 'utf8'));
+  if (!counterDecl.ok) {
+    return {
+      name: NAME,
+      pass: false,
+      detail:
+        `B6 COUNTER NAME MOVED: ${counterDecl.reason}. Update LOG_COUNTER_PREFIX/` +
+        'LOG_COUNTER_BASENAME in this file and re-run the G5 live half (MR_OBS_LIVE=1 ' +
+        'MR_OBS_STACK=1) before trusting the recorded OBS-12/OBS-13 evidence again.',
     };
   }
 
@@ -828,6 +1202,200 @@ export async function observabilityMetricsContractEval() {
     };
   }
 
+  // --- G5 (OBS-12/OBS-13): DELTA AROUND AN INJECTION -----------------------
+  // Gated on a SECOND flag: the Alloy stack is an independent precondition from
+  // SpacetimeDB, and conflating them would make MR_OBS_LIVE=1 fail on a box
+  // that legitimately has no compose stack up. The skip is stated, never silent
+  // — and the pure half plus B6 have already run unconditionally.
+  let g5Note =
+    'G5 live half skipped by design (MR_OBS_STACK != 1: the Alloy stack is a separate ' +
+    'precondition); the logDerivedCounter teeth and the B6 config.alloy tripwire ran';
+  if (process.env.MR_OBS_STACK === '1') {
+    // Run-unique SYNTHETIC series (AM10). `evt` stays "heartbeat" because it is
+    // a bounded enum (C8/D12); uniqueness comes from the reducer label, which
+    // Alloy sources from the host envelope's `function` field. Without this the
+    // delta could be satisfied by ambient mr_heartbeat traffic that this eval
+    // never caused.
+    const runId = process.env.MR_OBS_RUNID ?? String(process.pid);
+    const syntheticReducer = `mr_m20e_g5_${runId}`;
+    const dataDir = process.env.MR_SPACETIME_DATA_DIR ?? '/var/lib/spacetime';
+    const logsDir =
+      process.env.MR_OBS_G5_DIR ?? path.join(dataDir, 'replicas', 'mr-m20e-g5', 'module_logs');
+    const fixturePath = path.join(logsDir, `mr-m20e-g5-${runId}.log`);
+    const labels = { reducer: syntheticReducer, evt: 'heartbeat' };
+    // Built from parts: a contiguous scheme + separator literal is what the
+    // remote Semgrep raw-text rules match on (R1).
+    const alloyMetricsUrl = ['http', ':', '//', '127.0.0.1:12345', '/metrics'].join('');
+    const N = 5;
+
+    if (!existsSync(logsDir)) {
+      return {
+        name: NAME,
+        pass: false,
+        detail:
+          `LIVE G5: ${logsDir} does not exist. Create it BEFORE \`docker compose up\` (runbook ` +
+          'step 1) — Docker auto-creates a missing bind-mount path root-owned, after which Alloy ' +
+          'cannot read it. Override with MR_OBS_G5_DIR.',
+      };
+    }
+
+    // SEAM, live half only: Docker Desktop scopes `network_mode: host` to its own
+    // VM, so Alloy's loopback endpoint is unreachable from WSL-native Node —
+    // MR_OBS_ALLOY_FETCH supplies an argv vector that CAN reach it (e.g. a
+    // `docker run --network host` curl); the real single-box deployment needs no
+    // override and keeps the in-process fetch below.
+    let fetchArgv = null;
+    const rawFetchArgv = process.env.MR_OBS_ALLOY_FETCH;
+    if (rawFetchArgv !== undefined && rawFetchArgv.trim().length > 0) {
+      let parsedArgv;
+      try {
+        parsedArgv = JSON.parse(rawFetchArgv);
+      } catch (e) {
+        return {
+          name: NAME,
+          pass: false,
+          detail:
+            'LIVE G5: MR_OBS_ALLOY_FETCH is set but does not parse as JSON ' +
+            `(${e?.message ?? String(e)}). It must be a JSON ARGV ARRAY, never a shell string.`,
+        };
+      }
+      const isArgv =
+        Array.isArray(parsedArgv) &&
+        parsedArgv.length > 0 &&
+        parsedArgv.every((a) => typeof a === 'string' && a.length > 0);
+      if (!isArgv) {
+        return {
+          name: NAME,
+          pass: false,
+          detail:
+            'LIVE G5: MR_OBS_ALLOY_FETCH must be a JSON array of one or more non-empty strings ' +
+            '(argv[0] plus its arguments; the metrics URL is appended by this eval). A shell ' +
+            'string is never accepted.',
+        };
+      }
+      fetchArgv = parsedArgv;
+    }
+
+    const readCounter = async () => {
+      let text;
+      if (fetchArgv === null) {
+        const res = await fetch(alloyMetricsUrl);
+        if (!res.ok) throw new Error(`GET Alloy self-metrics returned HTTP ${res.status}`);
+        text = await res.text();
+      } else {
+        const run = spawnSync(fetchArgv[0], [...fetchArgv.slice(1), alloyMetricsUrl], {
+          encoding: 'utf8',
+          stdio: 'pipe',
+          timeout: 30_000,
+          maxBuffer: 32 * 1024 * 1024,
+        });
+        if (run.error !== undefined && run.error !== null) {
+          throw new Error(
+            `MR_OBS_ALLOY_FETCH '${fetchArgv[0]}' failed to spawn — ${run.error.message}`,
+          );
+        }
+        if (run.status !== 0) {
+          throw new Error(
+            `MR_OBS_ALLOY_FETCH exited ${run.status}: ${`${run.stderr ?? ''}`.trim().slice(0, 200)}`,
+          );
+        }
+        text = run.stdout ?? '';
+        if (text.trim().length === 0) {
+          throw new Error(
+            'MR_OBS_ALLOY_FETCH produced EMPTY stdout — an unread endpoint is not a zero counter',
+          );
+        }
+      }
+      return logDerivedCounter(text, LOG_COUNTER_NAME, labels);
+    };
+
+    let before;
+    try {
+      before = await readCounter();
+    } catch (e) {
+      return {
+        name: NAME,
+        pass: false,
+        detail: `LIVE G5: could not read Alloy self-metrics — ${e?.message ?? String(e)}`,
+      };
+    }
+    // V0 is recorded PER SERIES, so a re-used run id reads its own prior value
+    // rather than starting from an assumed zero.
+    const v0 = before.ok ? before.value : 0;
+
+    const lines = [];
+    for (let i = 0; i < N; i++) {
+      lines.push(
+        JSON.stringify({
+          level: 'Info',
+          // A fixed base + i: no clock anywhere in this eval, and Alloy keys
+          // ingestion off file position, not off this field.
+          ts: 1782197246180474 + i,
+          // The MODULE-emitted envelope, confirmed against a live capture: a
+          // module line carries its own target/filename/line_number, and only
+          // HOST-emitted lines say __spacetimedb__. Alloy reads `function`,
+          // `level` and `message`; the rest is here so the fixture is the shape
+          // the tail actually meets.
+          target: 'monster_realm_module::observability',
+          filename: 'server-module/src/observability.rs',
+          line_number: 88,
+          function: syntheticReducer,
+          message: `{"evt":"heartbeat","content_version":${i}}`,
+        }),
+      );
+    }
+    try {
+      writeFileSync(fixturePath, `${lines.join('\n')}\n`);
+    } catch (e) {
+      return {
+        name: NAME,
+        pass: false,
+        detail: `LIVE G5: could not write ${fixturePath} — ${e?.message ?? String(e)}`,
+      };
+    }
+
+    // Attempt-counted rather than wall-clocked: no Date.now anywhere in this
+    // eval's logic. 20 attempts at 1s is the ~20s budget the plan allots.
+    const ATTEMPTS = 20;
+    let after = before;
+    let reached = false;
+    // A read that keeps throwing is NOT a skip: the last error is carried into
+    // the timeout failure below so a broken seam names itself instead of being
+    // reported as "the counter never rose".
+    let lastReadError = null;
+    for (let attempt = 1; attempt <= ATTEMPTS; attempt++) {
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      try {
+        after = await readCounter();
+        lastReadError = null;
+      } catch (e) {
+        lastReadError = e?.message ?? String(e);
+        continue;
+      }
+      if (after.ok && after.value >= v0 + N) {
+        g5Note =
+          `G5 (OBS-12/OBS-13): ${LOG_COUNTER_NAME}{reducer="${syntheticReducer}",evt="heartbeat"} ` +
+          `rose ${v0} -> ${after.value} (>= +${N}) within ${attempt}s of appending ${N} synthetic ` +
+          `lines to ${fixturePath}`;
+        reached = true;
+        break;
+      }
+    }
+    if (!reached) {
+      return {
+        name: NAME,
+        pass: false,
+        detail:
+          `LIVE G5 (OBS-12/OBS-13): ${LOG_COUNTER_NAME}{reducer="${syntheticReducer}"} did not ` +
+          `reach ${v0 + N} within ${ATTEMPTS}s — V0=${v0}, last=${after.ok ? after.value : after.reason}, ` +
+          `fixture=${fixturePath}` +
+          `${lastReadError === null ? '' : `, last read error: ${lastReadError}`}. The S2 tail ` +
+          "derives no counter from a file matching Alloy's own glob, so OBS-13's ingestion hop " +
+          'is dark.',
+      };
+    }
+  }
+
   return {
     name: NAME,
     pass: true,
@@ -835,7 +1403,7 @@ export async function observabilityMetricsContractEval() {
       `LIVE: ${familyCount} metric families on ${server}/v1/metrics (>= ${MIN_FAMILIES}), all 4 ` +
       `named families + all 5 label keys present, and '${db}' attributes the rejected ` +
       `${PROBE_REDUCER} call's guards.rs log line to '${attribution.value}' via ` +
-      `'${attribution.field}' (pinned CLI ${pins.version})`,
+      `'${attribution.field}' (pinned CLI ${pins.version}). ${g5Note}`,
   };
 }
 

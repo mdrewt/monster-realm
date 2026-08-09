@@ -1,0 +1,115 @@
+// pair.mjs — enter/exit breadcrumb pairing (pure core, m20e T2; OBS-42/43).
+//
+// A duration comes ONLY from a matched enter/exit pair — never estimated,
+// never backfilled (OBS-42/AM9: unpaired crumbs are diagnostic-only). Crumbs
+// are ordered by the host-populated `ts`, never by file-tail arrival order
+// (OBS-43), with a pinned total tie-break so the result is a function of the
+// crumbs alone:
+//
+//   BigInt(ts) ascending; ties break `enter` before `exit`, then by
+//   correlation key, then by reducer. Matching is FIFO within one EXACT
+//   (reducer, correlationKey) tuple.
+//
+// All ts arithmetic is BigInt over the digit strings (AM6): microsecond
+// magnitudes sit outside the double's exact range, and mixed-length digit
+// strings order wrongly under a lexicographic sort.
+//
+// Discipline: no regex, no clock, no I/O. Data in, data out.
+
+import { correlationKey } from './parse.mjs';
+
+// Total order over keyed crumbs; never consults arrival position.
+function compareCrumbs(a, b) {
+  const ta = BigInt(a.ts);
+  const tb = BigInt(b.ts);
+  if (ta !== tb) return ta < tb ? -1 : 1;
+  if (a.phase !== b.phase) return a.phase === 'enter' ? -1 : 1;
+  if (a.key !== b.key) return a.key < b.key ? -1 : 1;
+  if (a.reducer !== b.reducer) return a.reducer < b.reducer ? -1 : 1;
+  return 0;
+}
+
+// Span output order: start ts, then key, then reducer, then end ts.
+function compareSpans(a, b) {
+  const sa = BigInt(a.startMicros);
+  const sb = BigInt(b.startMicros);
+  if (sa !== sb) return sa < sb ? -1 : 1;
+  if (a.key !== b.key) return a.key < b.key ? -1 : 1;
+  if (a.reducer !== b.reducer) return a.reducer < b.reducer ? -1 : 1;
+  const ea = BigInt(a.endMicros);
+  const eb = BigInt(b.endMicros);
+  if (ea !== eb) return ea < eb ? -1 : 1;
+  return 0;
+}
+
+/**
+ * Pair breadcrumbs into spans.
+ *
+ * Returns { spans, unpaired, counts }:
+ *   spans[i]    = { key, reducer, startMicros, endMicros, durationMicros }
+ *                 (digit strings; durationMicros is BigInt-exact)
+ *   unpaired[i] = { key, reducer, ts, phase } — diagnostic-only, never a span
+ *   counts      = { total, paired, unpaired, skippedNoKey } with the closed-
+ *                 book invariant total === paired*2 + unpaired + skippedNoKey.
+ *
+ * A crumb with no correlation key is counted as skippedNoKey: it was never a
+ * pairing candidate, so it is neither unpaired nor guessed at.
+ */
+export function pairBreadcrumbs(crumbs) {
+  const total = crumbs.length;
+  let skippedNoKey = 0;
+  const keyed = [];
+  for (const crumb of crumbs) {
+    const key = correlationKey(crumb);
+    if (key === null) {
+      skippedNoKey++;
+      continue;
+    }
+    keyed.push({ key, reducer: crumb.reducer, ts: crumb.ts, phase: crumb.phase });
+  }
+  keyed.sort(compareCrumbs);
+
+  const openByTuple = new Map();
+  const spans = [];
+  const leftovers = [];
+  for (const crumb of keyed) {
+    const tuple = `${crumb.reducer}\u0000${crumb.key}`;
+    if (crumb.phase === 'enter') {
+      const queue = openByTuple.get(tuple);
+      if (queue === undefined) openByTuple.set(tuple, [crumb]);
+      else queue.push(crumb);
+      continue;
+    }
+    const queue = openByTuple.get(tuple);
+    if (queue === undefined || queue.length === 0) {
+      leftovers.push(crumb);
+      continue;
+    }
+    const enter = queue.shift();
+    spans.push({
+      key: crumb.key,
+      reducer: crumb.reducer,
+      startMicros: enter.ts,
+      endMicros: crumb.ts,
+      durationMicros: String(BigInt(crumb.ts) - BigInt(enter.ts)),
+    });
+  }
+  for (const queue of openByTuple.values()) {
+    for (const enter of queue) leftovers.push(enter);
+  }
+
+  spans.sort(compareSpans);
+  leftovers.sort(compareCrumbs);
+  const unpaired = leftovers.map((c) => ({
+    key: c.key,
+    reducer: c.reducer,
+    ts: c.ts,
+    phase: c.phase,
+  }));
+
+  return {
+    spans,
+    unpaired,
+    counts: { total, paired: spans.length, unpaired: unpaired.length, skippedNoKey },
+  };
+}

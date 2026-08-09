@@ -1312,3 +1312,964 @@ fn scanner_teeth_baseline_parser_reads_a_good_file() {
         "TEETH: the blessed guards.rs row must not inflate the grandfathered total"
     );
 }
+
+// ===========================================================================
+// m20e (T5) — the RUST HALF of two cross-toolchain gates. Append-only block;
+// nothing above this line changed.
+//
+// D6 GOLDEN MIRROR. `ops/observability/relay/fixtures/breadcrumb-golden.json`
+// is read by BOTH this file and `ops/observability/relay/parse.test.mjs`, and
+// the two consumers read DIFFERENT LAYERS of it (AM4). This side asserts only
+// `build_log_line(...) == expected_module_json`, byte for byte; it never looks
+// at `host_line`, which is the JS side's business. That split is what makes the
+// fixture a contract instead of a copy: the envelope cannot drift on either
+// side without one of the two suites reddening, and neither suite can be
+// "fixed" by editing the other's expectations.
+//
+// OBS-50 RUST HALF. A SECOND, independent scanner (the file header's "WHY A
+// SECOND SCANNER" reasoning applies unchanged) finds the reducers whose own
+// function body carries BOTH phase literals, and asserts set equality against
+// the relay's committed `$trace_pair_set`. `evals/observability-stack-config.
+// eval.mjs` does the same thing in JavaScript with its own walker; a bug in
+// one cannot make both green, and the empty-set case is only honest because
+// each scanner is separately proven to DETECT a synthetic pair.
+//
+// JSON is hand-parsed, strictly and fail-loud: `serde_json` is not a dependency
+// of this crate and adding one for a test would be a real dependency for a
+// test-only need. The parser REJECTS duplicate keys, trailing content and
+// non-integer numbers, so the i64 bounds in the fixture cannot round-trip
+// through a float.
+//
+// The file's SOURCE-SCAN HYGIENE rules (header :37-47) bind this block too:
+// every needle is `concat!`-assembled, the double quote and the backslash are
+// spelled as scalar-value escapes rather than as bare char literals, and no
+// slash-asterisk appears anywhere.
+// ===========================================================================
+
+/// The double quote, never spelled as a bare char literal (header :41-43).
+const DQUOTE: char = '\u{0022}';
+/// The backslash, same reason (the `guards::json_escape` precedent).
+const BSLASH: char = '\u{005C}';
+
+/// The two call-site phase literals, assembled so this file never spells either
+/// contiguously and can never satisfy its own (or the eval's) tree scan.
+const PHASE_ENTER: &str = concat!("Some(", "\"enter\")");
+const PHASE_EXIT: &str = concat!("Some(", "\"exit\")");
+/// The reducer attribute that makes a function body attributable to a NAME.
+const REDUCER_ATTR: &str = concat!("#[spacetimedb", "::reducer");
+
+// ---------------------------------------------------------------------------
+// A strict, fail-loud JSON reader (no serde_json).
+// ---------------------------------------------------------------------------
+
+#[derive(Debug)]
+enum Json {
+    Null,
+    Bool(bool),
+    /// The RAW digit text. Never an f64: the fixture pins both i64 bounds, and
+    /// a float round-trip would silently move the last digit of each.
+    Num(String),
+    Str(String),
+    Arr(Vec<Json>),
+    /// A Vec rather than a map, so a DUPLICATE KEY is detectable instead of
+    /// being silently resolved last-key-wins — which is the very forgery the
+    /// fixture's own `forged-duplicate-evt` case describes.
+    Obj(Vec<(String, Json)>),
+}
+
+struct JsonReader {
+    chars: Vec<char>,
+    at: usize,
+}
+
+impl JsonReader {
+    fn new(text: &str) -> Self {
+        Self {
+            chars: text.chars().collect(),
+            at: 0,
+        }
+    }
+
+    fn peek(&self) -> Option<char> {
+        self.chars.get(self.at).copied()
+    }
+
+    fn bump(&mut self) -> Option<char> {
+        let c = self.peek();
+        if c.is_some() {
+            self.at += 1;
+        }
+        c
+    }
+
+    fn skip_ws(&mut self) {
+        while let Some(c) = self.peek() {
+            if c == ' ' || c == '\n' || c == '\r' || c == '\t' {
+                self.at += 1;
+            } else {
+                break;
+            }
+        }
+    }
+
+    fn expect(&mut self, want: char) -> Result<(), String> {
+        match self.bump() {
+            Some(c) if c == want => Ok(()),
+            other => Err(format!(
+                "char {}: expected {want}, found {other:?}",
+                self.at
+            )),
+        }
+    }
+
+    fn literal(&mut self, word: &str, out: Json) -> Result<Json, String> {
+        for want in word.chars() {
+            match self.bump() {
+                Some(c) if c == want => {}
+                other => {
+                    return Err(format!(
+                        "char {}: expected the literal {word}, found {other:?}",
+                        self.at
+                    ));
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    fn string(&mut self) -> Result<String, String> {
+        self.expect(DQUOTE)?;
+        let mut out = String::new();
+        loop {
+            let c = match self.bump() {
+                Some(c) => c,
+                None => return Err("unterminated string".to_string()),
+            };
+            if c == DQUOTE {
+                return Ok(out);
+            }
+            if c == BSLASH {
+                let esc = match self.bump() {
+                    Some(e) => e,
+                    None => return Err("unterminated escape sequence".to_string()),
+                };
+                match esc {
+                    'n' => out.push('\n'),
+                    't' => out.push('\t'),
+                    'r' => out.push('\r'),
+                    'b' => out.push('\u{0008}'),
+                    'f' => out.push('\u{000C}'),
+                    '/' => out.push('/'),
+                    DQUOTE => out.push(DQUOTE),
+                    BSLASH => out.push(BSLASH),
+                    'u' => {
+                        let mut hex = String::new();
+                        for _ in 0..4 {
+                            match self.bump() {
+                                Some(h) => hex.push(h),
+                                None => return Err("truncated unicode escape".to_string()),
+                            }
+                        }
+                        let code = u32::from_str_radix(&hex, 16)
+                            .map_err(|e| format!("bad unicode escape {hex}: {e}"))?;
+                        match char::from_u32(code) {
+                            Some(ch) => out.push(ch),
+                            None => {
+                                return Err(format!("unicode escape {hex} is not a scalar value"));
+                            }
+                        }
+                    }
+                    other => return Err(format!("char {}: unknown escape {other}", self.at)),
+                }
+                continue;
+            }
+            if (c as u32) < 0x20 {
+                return Err(format!(
+                    "char {}: raw control character in a string",
+                    self.at
+                ));
+            }
+            out.push(c);
+        }
+    }
+
+    /// Integers only. A fraction or an exponent is a LOUD error rather than a
+    /// tolerated widening: this fixture's whole point is byte-exact values.
+    fn number(&mut self) -> Result<String, String> {
+        let start = self.at;
+        if self.peek() == Some('-') {
+            self.at += 1;
+        }
+        let mut digits = 0usize;
+        while let Some(c) = self.peek() {
+            if c.is_ascii_digit() {
+                self.at += 1;
+                digits += 1;
+            } else {
+                break;
+            }
+        }
+        if digits == 0 {
+            return Err(format!("char {start}: a number with no digits"));
+        }
+        match self.peek() {
+            Some('.' | 'e' | 'E') => Err(format!(
+                "char {start}: a non-integer number. The fixture pins both i64 bounds, so a \
+                 float round-trip would move their last digit."
+            )),
+            _ => Ok(self.chars[start..self.at].iter().collect()),
+        }
+    }
+
+    fn array(&mut self) -> Result<Json, String> {
+        self.expect('[')?;
+        let mut out: Vec<Json> = Vec::new();
+        self.skip_ws();
+        if self.peek() == Some(']') {
+            self.at += 1;
+            return Ok(Json::Arr(out));
+        }
+        loop {
+            out.push(self.value()?);
+            self.skip_ws();
+            match self.bump() {
+                Some(',') => continue,
+                Some(']') => return Ok(Json::Arr(out)),
+                other => {
+                    return Err(format!(
+                        "char {}: expected a comma or a closing bracket, found {other:?}",
+                        self.at
+                    ));
+                }
+            }
+        }
+    }
+
+    fn object(&mut self) -> Result<Json, String> {
+        self.expect('{')?;
+        let mut out: Vec<(String, Json)> = Vec::new();
+        self.skip_ws();
+        if self.peek() == Some('}') {
+            self.at += 1;
+            return Ok(Json::Obj(out));
+        }
+        loop {
+            self.skip_ws();
+            let key = self.string()?;
+            if out.iter().any(|(k, _)| k == &key) {
+                return Err(format!(
+                    "char {}: duplicate key {key}. Last-key-wins is exactly the forgery this \
+                     fixture exists to describe, so the reader refuses to resolve it.",
+                    self.at
+                ));
+            }
+            self.skip_ws();
+            self.expect(':')?;
+            let value = self.value()?;
+            out.push((key, value));
+            self.skip_ws();
+            match self.bump() {
+                Some(',') => continue,
+                Some('}') => return Ok(Json::Obj(out)),
+                other => {
+                    return Err(format!(
+                        "char {}: expected a comma or a closing brace, found {other:?}",
+                        self.at
+                    ));
+                }
+            }
+        }
+    }
+
+    fn value(&mut self) -> Result<Json, String> {
+        self.skip_ws();
+        match self.peek() {
+            Some(DQUOTE) => Ok(Json::Str(self.string()?)),
+            Some('{') => self.object(),
+            Some('[') => self.array(),
+            Some('t') => self.literal("true", Json::Bool(true)),
+            Some('f') => self.literal("false", Json::Bool(false)),
+            Some('n') => self.literal("null", Json::Null),
+            Some(c) if c == '-' || c.is_ascii_digit() => Ok(Json::Num(self.number()?)),
+            other => Err(format!("char {}: unexpected {other:?}", self.at)),
+        }
+    }
+}
+
+fn parse_json(text: &str) -> Result<Json, String> {
+    let mut reader = JsonReader::new(text);
+    let value = reader.value()?;
+    reader.skip_ws();
+    if reader.at != reader.chars.len() {
+        return Err(format!(
+            "char {}: trailing content after the top-level value",
+            reader.at
+        ));
+    }
+    // DOCUMENT-level strictness, not just value-level. A bare scalar or array is
+    // legal JSON but is not a legal document for either file this reader serves
+    // (the golden fixture and trace-pair-set.json are both objects). Accepting
+    // one would let a truncated or replaced file parse "successfully" and then
+    // panic later, in a field lookup, with a message about the missing field
+    // rather than about the corrupted document.
+    if !matches!(value, Json::Obj(_)) {
+        return Err(format!(
+            "the top-level value is a bare {value:?}, not a JSON object — both documents this \
+             reader parses are objects, so this file is corrupted or was replaced"
+        ));
+    }
+    Ok(value)
+}
+
+fn json_obj<'a>(value: &'a Json, what: &str) -> &'a Vec<(String, Json)> {
+    match value {
+        Json::Obj(fields) => fields,
+        other => panic!("m20e: {what} is not a JSON object ({other:?})"),
+    }
+}
+
+fn json_field<'a>(fields: &'a [(String, Json)], key: &str, what: &str) -> &'a Json {
+    fields
+        .iter()
+        .find(|(k, _)| k == key)
+        .map(|(_, v)| v)
+        .unwrap_or_else(|| panic!("m20e: {what} carries no `{key}` field"))
+}
+
+fn json_str<'a>(fields: &'a [(String, Json)], key: &str, what: &str) -> &'a str {
+    match json_field(fields, key, what) {
+        Json::Str(s) => s.as_str(),
+        other => panic!("m20e: {what}.{key} is not a string ({other:?})"),
+    }
+}
+
+fn json_opt_str<'a>(fields: &'a [(String, Json)], key: &str, what: &str) -> Option<&'a str> {
+    match json_field(fields, key, what) {
+        Json::Null => None,
+        Json::Str(s) => Some(s.as_str()),
+        other => panic!("m20e: {what}.{key} is neither a string nor null ({other:?})"),
+    }
+}
+
+fn json_bool(fields: &[(String, Json)], key: &str, what: &str) -> bool {
+    match json_field(fields, key, what) {
+        Json::Bool(b) => *b,
+        other => panic!("m20e: {what}.{key} is not a boolean ({other:?})"),
+    }
+}
+
+fn json_i64(fields: &[(String, Json)], key: &str, what: &str) -> i64 {
+    match json_field(fields, key, what) {
+        Json::Num(raw) => raw
+            .parse::<i64>()
+            .unwrap_or_else(|e| panic!("m20e: {what}.{key} is not an i64 ({e})")),
+        other => panic!("m20e: {what}.{key} is not a number ({other:?})"),
+    }
+}
+
+// ---------------------------------------------------------------------------
+// D6 cross-language golden fixture.
+// ---------------------------------------------------------------------------
+
+fn relay_dir() -> PathBuf {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("..")
+        .join("ops")
+        .join("observability")
+        .join("relay")
+}
+
+fn golden_fixture_path() -> PathBuf {
+    relay_dir().join("fixtures").join("breadcrumb-golden.json")
+}
+
+fn read_golden_fixture() -> Json {
+    let path = golden_fixture_path();
+    let text = fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "D6 golden: cannot read {} ({e}). The fixture is the CONTRACT between \
+             observability.rs and the relay parser; without it neither side is pinned.",
+            path.display()
+        )
+    });
+    parse_json(&text).unwrap_or_else(|e| {
+        panic!(
+            "D6 golden: {} does not parse: {e}. A fixture that cannot be read must FAIL both \
+             sides, never be skipped by either.",
+            path.display()
+        )
+    })
+}
+
+/// Every case id the fixture must still carry, grouped by the AM13 category it
+/// covers. Named individually, never counted: a bare count is satisfied by
+/// duplicating the easy case, and deleting the one awkward case is exactly the
+/// edit this list exists to bite.
+const REQUIRED_CASE_IDS: [&str; 19] = [
+    // baseline + prose
+    "heartbeat-plain",
+    "prose-message",
+    // cause-keyed
+    "cause-enter",
+    "cause-exit",
+    // sched-keyed
+    "sched-enter",
+    "sched-exit",
+    // escaping
+    "escaping-quote-backslash",
+    "escaping-control-chars",
+    "escaping-nested-evt-in-string",
+    // duplicate-key forgery (one that must be rejected, two that must not be)
+    "forged-duplicate-evt",
+    "nested-evt-object",
+    // i64 content_version bounds
+    "content-version-i64-max",
+    "content-version-i64-min",
+    // mixed-length ts
+    "ts-short",
+    "ts-precision",
+    // non-JSON and malformed host lines
+    "non-json-line",
+    "json-array-line",
+    "missing-message",
+    "missing-ts",
+];
+
+/// The 13 cases that carry a module payload; the other 6 are JS-only (a forged
+/// line, a prose message, and four malformed host envelopes) and this side
+/// deliberately has nothing to say about them.
+const GOLDEN_MODULE_CASES: usize = 13;
+
+fn golden_cases(doc: &Json) -> &Vec<Json> {
+    let root = json_obj(doc, "the golden fixture");
+    match json_field(root, "schema", "the golden fixture") {
+        Json::Num(raw) if raw == "1" => {}
+        other => panic!("D6 golden: schema is {other:?}, expected 1"),
+    }
+    match json_field(root, "cases", "the golden fixture") {
+        Json::Arr(cases) => cases,
+        other => panic!("D6 golden: `cases` is not an array ({other:?})"),
+    }
+}
+
+/// Deletion bites: the exact case count AND every committed id by name.
+#[test]
+fn d6_golden_fixture_carries_every_committed_case_id() {
+    let doc = read_golden_fixture();
+    let cases = golden_cases(&doc);
+    let ids: Vec<&str> = cases
+        .iter()
+        .map(|c| json_str(json_obj(c, "a golden case"), "id", "a golden case"))
+        .collect();
+
+    assert_eq!(
+        ids.len(),
+        REQUIRED_CASE_IDS.len(),
+        "D6 golden: the fixture carries {} cases, {} are committed. Thinning the fixture is a \
+         reviewed decision in BOTH suites, never a quiet edit in one.",
+        ids.len(),
+        REQUIRED_CASE_IDS.len()
+    );
+    for required in REQUIRED_CASE_IDS {
+        assert!(
+            ids.contains(&required),
+            "D6 golden: the committed case `{required}` is gone. Each id covers a category the \
+             AM13 coverage list names; a count alone would be satisfied by a duplicate."
+        );
+    }
+    let mut sorted = ids.clone();
+    sorted.sort_unstable();
+    let before = sorted.len();
+    sorted.dedup();
+    assert_eq!(
+        sorted.len(),
+        before,
+        "D6 golden: duplicate case ids — two cases sharing an id make the id-based coverage \
+         assertions above meaningless"
+    );
+}
+
+/// The mirror itself: `build_log_line` must reproduce every committed
+/// `expected_module_json` byte for byte.
+///
+/// Kills: any drift in the envelope's field ORDER, its comma placement, its
+/// `sched` nesting, or `json_escape`'s escaping table — each of which would
+/// leave the relay parsing a shape the module no longer emits, with nothing
+/// else in the tree to notice.
+#[test]
+fn d6_golden_fixture_mirrors_build_log_line() {
+    let doc = read_golden_fixture();
+    let cases = golden_cases(&doc);
+    let mut mirrored = 0usize;
+    let mut skipped = 0usize;
+
+    for case in cases {
+        let fields = json_obj(case, "a golden case");
+        let id = json_str(fields, "id", "a golden case");
+        let forged = json_bool(fields, "forged", id);
+        let expected = json_opt_str(fields, "expected_module_json", id);
+
+        if expected.is_none() {
+            assert!(
+                json_opt_str(fields, "evt", id).is_none(),
+                "D6 golden: case `{id}` has no expected_module_json but still declares an evt — \
+                 the Rust mirror skips it, so a module-layer input there is unread and untested"
+            );
+            skipped += 1;
+            continue;
+        }
+        assert!(
+            !forged,
+            "D6 golden: case `{id}` is marked forged AND carries an expected_module_json. A \
+             forged line is one build_log_line cannot produce; the two fields contradict."
+        );
+
+        let evt = json_str(fields, "evt", id);
+        let extra = json_str(fields, "extra_fields_json", id);
+        let crumb = json_obj(json_field(fields, "breadcrumb", id), "breadcrumb");
+        let cause = json_opt_str(crumb, "cause", id);
+        let phase = json_opt_str(crumb, "phase", id);
+        let sched = match json_field(crumb, "sched", id) {
+            Json::Null => None,
+            Json::Obj(inner) => Some((
+                json_str(inner, "target_reducer", id),
+                json_i64(inner, "scheduled_at", id),
+            )),
+            other => panic!("D6 golden: case `{id}` has a malformed sched ({other:?})"),
+        };
+
+        let line = build_log_line(
+            evt,
+            extra,
+            Breadcrumb {
+                cause,
+                sched,
+                phase,
+            },
+        );
+        assert_eq!(
+            line,
+            expected.unwrap(),
+            "D6 golden: case `{id}` — build_log_line no longer reproduces the committed \
+             envelope. The relay parses what this function emits; fix the emitter or, if the \
+             envelope changed on purpose, regenerate BOTH layers of the fixture and say so in \
+             the PR."
+        );
+        mirrored += 1;
+    }
+
+    assert_eq!(
+        mirrored, GOLDEN_MODULE_CASES,
+        "D6 golden: {mirrored} cases were mirrored, {GOLDEN_MODULE_CASES} are committed. A \
+         scanner that mirrors nothing passes everything."
+    );
+    assert_eq!(
+        skipped,
+        REQUIRED_CASE_IDS.len() - GOLDEN_MODULE_CASES,
+        "D6 golden: {skipped} cases were skipped as JS-only; the committed split is \
+         {GOLDEN_MODULE_CASES} module cases and the rest"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// OBS-50 Rust half — the second, independent paired-call-site scanner (AM5).
+// ---------------------------------------------------------------------------
+
+/// What one file's scan found. `orphans` is the granularity blind spot made
+/// visible: a phase literal outside every reducer body cannot be attributed to
+/// a reducer NAME, so it is reported rather than silently dropped.
+struct PhaseScan {
+    paired: Vec<String>,
+    reducers_scanned: usize,
+    attrs_seen: usize,
+    orphans: usize,
+}
+
+/// "Paired reducer" means BOTH literals inside ONE reducer function's body
+/// (AM5), found by brace tracking over the comment-scrubbed source — the same
+/// rule the JS scanner implements, arrived at independently here.
+///
+/// `attrs_seen` is counted in its own pass over the SAME scrubbed text, so
+/// `attrs_seen != reducers_scanned` means the brace walk derailed rather than
+/// that the tree changed. A derailed walk stops finding call sites, which is
+/// precisely the vacuous green this gate must not have.
+///
+/// The tracker counts braces without lexing string or char literals — the same
+/// simplification `fn_body` above and the three other brace walkers in this
+/// crate make. CHECKED, not assumed, at authoring time: no reducer-bearing
+/// non-test file spells a brace as a CHAR literal (the only ones in the tree
+/// live in `content.rs`, which declares no reducer, and in `_tests.rs` files,
+/// which `collect_src` excludes), every brace inside a format string is a
+/// balanced pair, and comment lines are scrubbed first. If a future edit breaks
+/// that, the counts diverge and the assertion fires with a message saying so —
+/// a loud, actionable failure rather than a silently truncated scan.
+fn scan_phase_pairs(src: &str) -> PhaseScan {
+    let text = scrub_comment_lines(src);
+    let mut attrs_seen = 0usize;
+    let mut at = 0usize;
+    while let Some(rel) = text[at..].find(REDUCER_ATTR) {
+        attrs_seen += 1;
+        at += rel + REDUCER_ATTR.len();
+    }
+
+    let mut paired: Vec<String> = Vec::new();
+    let mut bodies: Vec<(usize, usize)> = Vec::new();
+    let mut reducers_scanned = 0usize;
+    let mut from = 0usize;
+    while let Some(rel) = text[from..].find(REDUCER_ATTR) {
+        let attr_at = from + rel;
+        let fn_marker = concat!("fn", " ");
+        let fn_rel = match text[attr_at..].find(fn_marker) {
+            Some(k) => k,
+            None => break,
+        };
+        let name_at = attr_at + fn_rel + fn_marker.len();
+        let name_end = text[name_at..]
+            .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+            .map_or(text.len(), |k| name_at + k);
+        let name = text[name_at..name_end].to_string();
+        let open = match text[name_end..].find('{') {
+            Some(k) => name_end + k,
+            None => break,
+        };
+        let mut depth = 0usize;
+        let mut close: Option<usize> = None;
+        for (i, ch) in text[open..].char_indices() {
+            if ch == '{' {
+                depth += 1;
+            } else if ch == '}' {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(open + i);
+                    break;
+                }
+            }
+        }
+        let close = match close {
+            Some(k) => k,
+            None => break,
+        };
+        reducers_scanned += 1;
+        let body = &text[open + 1..close];
+        if body.contains(PHASE_ENTER) && body.contains(PHASE_EXIT) {
+            paired.push(name);
+        }
+        bodies.push((open, close));
+        from = close;
+    }
+
+    let mut orphans = 0usize;
+    for needle in [PHASE_ENTER, PHASE_EXIT] {
+        let mut cursor = 0usize;
+        while let Some(rel) = text[cursor..].find(needle) {
+            let pos = cursor + rel;
+            if !bodies.iter().any(|&(o, c)| pos > o && pos < c) {
+                orphans += 1;
+            }
+            cursor = pos + needle.len();
+        }
+    }
+
+    PhaseScan {
+        paired,
+        reducers_scanned,
+        attrs_seen,
+        orphans,
+    }
+}
+
+fn scan_tree_phase_pairs() -> PhaseScan {
+    let mut all = PhaseScan {
+        paired: Vec::new(),
+        reducers_scanned: 0,
+        attrs_seen: 0,
+        orphans: 0,
+    };
+    for src in scan_tree().values() {
+        let one = scan_phase_pairs(src);
+        all.paired.extend(one.paired);
+        all.reducers_scanned += one.reducers_scanned;
+        all.attrs_seen += one.attrs_seen;
+        all.orphans += one.orphans;
+    }
+    all.paired.sort();
+    all.paired.dedup();
+    all
+}
+
+fn trace_pair_set_path() -> PathBuf {
+    relay_dir().join("trace-pair-set.json")
+}
+
+/// The committed `$trace_pair_set`, read in the same fail-loud stages the eval's
+/// G9d uses. ABSENCE IS NOT THE EMPTY SET.
+fn read_trace_pair_set() -> Vec<String> {
+    let path = trace_pair_set_path();
+    let text = fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "G9 (OBS-50): cannot read {} ({e}). ABSENCE IS NOT THE EMPTY SET — a missing or \
+             unreadable config must FAIL here, never read as `no reducer is instrumented`, or \
+             the set equality below passes vacuously forever.",
+            path.display()
+        )
+    });
+    let doc = parse_json(&text)
+        .unwrap_or_else(|e| panic!("G9 (OBS-50): {} does not parse: {e}", path.display()));
+    let root = json_obj(&doc, "trace-pair-set.json");
+    match json_field(root, "schema", "trace-pair-set.json") {
+        Json::Num(raw) if raw == "1" => {}
+        other => panic!("G9 (OBS-50): trace-pair-set.json schema is {other:?}, expected 1"),
+    }
+    let members = match json_field(root, "trace_pair_set", "trace-pair-set.json") {
+        Json::Arr(items) => items,
+        other => panic!("G9 (OBS-50): `trace_pair_set` is not an array ({other:?})"),
+    };
+    let mut names: Vec<String> = Vec::new();
+    for item in members {
+        match item {
+            Json::Str(s) if !s.trim().is_empty() => names.push(s.clone()),
+            other => panic!("G9 (OBS-50): membership entry {other:?} is not a reducer name"),
+        }
+    }
+    names.sort();
+    names.dedup();
+    names
+}
+
+/// OBS-50's single-source-of-truth extension (spec:652-655), enforced from the
+/// Rust side: the committed `$trace_pair_set` equals the set of reducers that
+/// actually carry a paired enter/exit breadcrumb — neither a superset nor a
+/// subset, with the two directions reported separately.
+///
+/// This is the SECOND implementation of that rule; the first lives in
+/// `evals/observability-stack-config.eval.mjs` (G9f) and shares no code with
+/// this one. While the set is empty on both sides, the teeth below are what
+/// make the equality mean anything.
+#[test]
+fn g9_trace_pair_set_equals_paired_call_sites() {
+    let scan = scan_tree_phase_pairs();
+
+    assert!(
+        scan.attrs_seen >= 10,
+        "G9 (OBS-50): only {} reducer attributes were found across the tree — the scan sees \
+         almost nothing, and a scanner that sees nothing passes everything",
+        scan.attrs_seen
+    );
+    assert_eq!(
+        scan.reducers_scanned, scan.attrs_seen,
+        "G9 (OBS-50): {} reducer attributes but only {} bodies extracted — the brace walk \
+         derailed part-way, so every call site after the derailment is invisible",
+        scan.attrs_seen, scan.reducers_scanned
+    );
+    assert_eq!(
+        scan.orphans, 0,
+        "G9 (OBS-50): {} phase literal(s) sit OUTSIDE every reducer body. Such a literal cannot \
+         be attributed to a reducer name, so neither this scanner nor the JS one can decide \
+         membership for it — move the emission into the reducer body or widen BOTH scanners.",
+        scan.orphans
+    );
+
+    let configured = read_trace_pair_set();
+    let missing: Vec<&String> = configured
+        .iter()
+        .filter(|name| !scan.paired.iter().any(|found| found == *name))
+        .collect();
+    let extra: Vec<&String> = scan
+        .paired
+        .iter()
+        .filter(|name| !configured.iter().any(|want| want == *name))
+        .collect();
+
+    assert!(
+        missing.is_empty(),
+        "G9 (OBS-50) SUPERSET: {missing:?} are in $trace_pair_set but no reducer body carries a \
+         paired enter/exit breadcrumb for them — the config promises spans that will never exist"
+    );
+    assert!(
+        extra.is_empty(),
+        "G9 (OBS-50) SUBSET: {extra:?} carry a paired enter/exit breadcrumb but are NOT in \
+         $trace_pair_set — the relay will drop their crumbs, so the instrumentation is dead \
+         weight and OBS-51's pre-merge comparison was never run for them"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Teeth for the phase-pair scanner and the JSON reader. Every fixture is built
+// FROM the `concat!`-assembled constants above, so this file still never spells
+// a needle contiguously.
+// ---------------------------------------------------------------------------
+
+fn reducer_fixture(name: &str, body: &[&str]) -> String {
+    let mut lines: Vec<String> = vec![
+        concat!("#[spacetimedb", "::reducer]").to_string(),
+        format!("pub fn {name}(ctx: &ReducerContext) -> Result<(), String> {{"),
+    ];
+    for line in body {
+        lines.push((*line).to_string());
+    }
+    lines.push("    Ok(())".to_string());
+    lines.push("}".to_string());
+    lines.join("\n")
+}
+
+fn breadcrumb_call(phase_literal: &str) -> String {
+    [
+        "    mr_log_breadcrumb(e, x, Breadcrumb { cause: c, phase: ",
+        phase_literal,
+        ", ..Default::default() });",
+    ]
+    .concat()
+}
+
+/// THE tooth that makes an empty-versus-empty equality honest: a synthetic
+/// reducer whose own body carries both literals MUST be detected. Without this,
+/// a scanner that finds nothing is indistinguishable from a tree that contains
+/// nothing, and G9 above is green forever by accident.
+#[test]
+fn scanner_teeth_phase_pair_scan_detects_a_real_pair() {
+    let src = reducer_fixture(
+        "synthetic_paired",
+        &[
+            breadcrumb_call(PHASE_ENTER).as_str(),
+            "    if ctx.sender != ctx.identity() { return Err(e); }",
+            breadcrumb_call(PHASE_EXIT).as_str(),
+        ],
+    );
+    let scan = scan_phase_pairs(&src);
+    assert_eq!(
+        scan.paired,
+        vec!["synthetic_paired".to_string()],
+        "TEETH: a reducer body carrying BOTH phase literals was not detected — an empty scan \
+         result would make the OBS-50 set equality vacuously green"
+    );
+    assert_eq!(scan.reducers_scanned, 1, "TEETH: the body walk lost the fn");
+    assert_eq!(scan.attrs_seen, 1, "TEETH: the attribute count is wrong");
+    assert_eq!(
+        scan.orphans, 0,
+        "TEETH: literals inside a reducer body were reported as orphans"
+    );
+}
+
+/// The AM5 granularity rule, from three directions: a pair SPLIT across two
+/// reducers is not a pair, a doc-comment MENTION is not a call site, and a
+/// literal outside every reducer body is reported rather than dropped.
+#[test]
+fn scanner_teeth_phase_pairs_are_function_body_scoped() {
+    // NEGATIVE CONTROL — enter in one reducer, exit in another, same file. A
+    // file-wide `contains(enter) && contains(exit)` calls this a pair.
+    let split = [
+        reducer_fixture("only_enter", &[breadcrumb_call(PHASE_ENTER).as_str()]),
+        reducer_fixture("only_exit", &[breadcrumb_call(PHASE_EXIT).as_str()]),
+    ]
+    .join("\n\n");
+    let split_scan = scan_phase_pairs(&split);
+    assert!(
+        split_scan.paired.is_empty(),
+        "TEETH (AM5): enter in one reducer and exit in ANOTHER registered as a pair: {:?}",
+        split_scan.paired
+    );
+    assert_eq!(
+        split_scan.reducers_scanned, 2,
+        "TEETH: the split fixture must yield two scanned bodies"
+    );
+
+    // A doc-comment mention is not a call site (the 56-vs-53 miscount class).
+    let mention = [
+        concat!("/", "/", "/ emits ").to_string(),
+        PHASE_ENTER.to_string(),
+        " then ".to_string(),
+        PHASE_EXIT.to_string(),
+        "\n".to_string(),
+        reducer_fixture("documented", &["    let _ = ctx;"]),
+    ]
+    .concat();
+    let mention_scan = scan_phase_pairs(&mention);
+    assert!(
+        mention_scan.paired.is_empty(),
+        "TEETH: a doc-comment mention of both literals registered as a paired reducer"
+    );
+
+    // A helper that is not a reducer cannot be attributed to a reducer name, so
+    // both of its literals must surface as orphans rather than vanish.
+    let helper = [
+        "fn helper_not_a_reducer() {",
+        breadcrumb_call(PHASE_ENTER).as_str(),
+        breadcrumb_call(PHASE_EXIT).as_str(),
+        "}",
+    ]
+    .join("\n");
+    let helper_scan = scan_phase_pairs(&helper);
+    assert!(
+        helper_scan.paired.is_empty(),
+        "TEETH: a non-reducer helper registered as a paired reducer"
+    );
+    assert_eq!(
+        helper_scan.orphans, 2,
+        "TEETH: a phase literal outside every reducer body must be REPORTED, not dropped"
+    );
+
+    // Non-vacuity of the whole tooth: the same call, inside a reducer, IS found.
+    let real = reducer_fixture(
+        "paired",
+        &[
+            breadcrumb_call(PHASE_ENTER).as_str(),
+            breadcrumb_call(PHASE_EXIT).as_str(),
+        ],
+    );
+    assert_eq!(
+        scan_phase_pairs(&real).paired.len(),
+        1,
+        "TEETH: the positive control stopped being detected, so every assertion above is vacuous"
+    );
+}
+
+/// The JSON reader must refuse the shapes a lenient one would quietly accept.
+/// Each of these would let a corrupted fixture read as a valid, thinner one.
+#[test]
+fn scanner_teeth_json_reader_is_strict() {
+    let good = parse_json(
+        "{\"schema\":1,\"cases\":[{\"id\":\"a\",\"n\":-9223372036854775808,\"b\":true}]}",
+    )
+    .expect("TEETH: a well-formed document was rejected");
+    let root = json_obj(&good, "fixture");
+    let cases = match json_field(root, "cases", "fixture") {
+        Json::Arr(items) => items,
+        other => panic!("TEETH: cases parsed as {other:?}"),
+    };
+    let first = json_obj(&cases[0], "case");
+    assert_eq!(json_str(first, "id", "case"), "a");
+    assert_eq!(
+        json_i64(first, "n", "case"),
+        i64::MIN,
+        "TEETH: the i64 lower bound did not survive the reader — a float path would move it"
+    );
+    assert!(json_bool(first, "b", "case"));
+
+    for (label, text) in [
+        ("a duplicate key", "{\"evt\":\"a\",\"evt\":\"b\"}"),
+        ("trailing content", "{\"a\":1} junk"),
+        ("an unterminated string", "{\"a\":\"b"),
+        ("a non-integer number", "{\"a\":1.5}"),
+        ("an unknown escape", "{\"a\":\"\\q\"}"),
+        ("a bare identifier", "{a:1}"),
+        ("a missing comma", "{\"a\":1 \"b\":2}"),
+        ("a truncated object", "{\"a\":1"),
+        ("a bare value where an object is expected", "42"),
+    ] {
+        assert!(
+            parse_json(text).is_err(),
+            "TEETH: the reader accepted {label} — a lenient reader turns a corrupted fixture \
+             into a valid, thinner one"
+        );
+    }
+
+    // The escapes the fixture actually relies on must round-trip exactly.
+    let escaped = parse_json("{\"c\":\"a\\\"b\\\\c\\t\\n\"}")
+        .expect("TEETH: the escaping fixture shape was rejected");
+    let fields = json_obj(&escaped, "escaped");
+    assert_eq!(
+        json_str(fields, "c", "escaped"),
+        "a\u{0022}b\u{005C}c\t\n",
+        "TEETH: the reader's escape table does not match the fixture's"
+    );
+}
