@@ -188,15 +188,10 @@
 //! core intent — all measurement off S1 — is preserved.
 
 #![forbid(unsafe_code)]
-// The frozen T8 test module asserts a compile-time-constant precondition
-// (`0.3 >= BUDGET_S`) for documentation; that trips clippy's benign
-// `assertions_on_constants` style lint under `-D warnings`. This is unrelated to
-// the ADR-0003 determinism gate (`disallowed_methods`), which stays fully armed.
-#![allow(clippy::assertions_on_constants)]
 
 use game_core::{tick_seed, Direction, MoveInput, STEP_MS};
 use std::io::{Read, Write};
-use std::net::TcpStream;
+use std::net::{TcpStream, ToSocketAddrs};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 use std::time::Duration;
@@ -809,10 +804,17 @@ pub fn histogram_snapshot(
     for h in &hits {
         let le = label_value(h, "le")
             .ok_or_else(|| format!("bucket sample missing an le label: {}", h.name))?;
-        per_series
+        // A single series must not repeat an `le`; merging duplicates would sum a
+        // bucket into itself (M1 fail loud).
+        if !per_series
             .entry(series_key(h))
             .or_default()
-            .insert(le.to_string());
+            .insert(le.to_string())
+        {
+            return Err(format!(
+                "duplicate le {le:?} within one {name} series (M1 fail loud)"
+            ));
+        }
         *acc.entry(le.to_string()).or_insert(0.0) += h.value;
     }
 
@@ -958,6 +960,12 @@ fn p95_compute(delta: &BucketSnapshot) -> (P95, Option<f64>) {
     // The negative-count test MUST precede the total test (a whole-window reset is
     // all-negative AND has total <= 0).
     if counts.iter().any(|c| *c < 0.0) {
+        return (P95::Reset, None);
+    }
+    // A valid cumulative-histogram delta is non-decreasing across ascending
+    // buckets; a scrape that violates that is corrupt and would mis-rank silently
+    // (false-healthy or false-breach). Treat it as a reset rather than trust it.
+    if counts.windows(2).any(|w| w[1] < w[0]) {
         return (P95::Reset, None);
     }
     let total = counts[counts.len() - 1];
@@ -1214,10 +1222,22 @@ pub fn evaluate_level(sample: &LevelSample) -> Result<LevelVerdict, String> {
             None
         };
 
-    // AM5: a saturated server that accepted nothing but rejected something is a
-    // real measurement, not an invalid level — annotate it.
+    // Visibility notes (additive, never a validity verdict): a short join wave or
+    // any driver-side send failure is worth surfacing even on a valid level.
     let mut notes = Vec::new();
-    if accepted <= 0.0 && rejected > 0.0 {
+    if sample.clients_connected < sample.concurrency {
+        notes.push(format!(
+            "clients_short:{}/{}",
+            sample.clients_connected, sample.concurrency
+        ));
+    }
+    if sample.send_errors > 0 {
+        notes.push(format!("send_errors:{}", sample.send_errors));
+    }
+    // AM5: a saturated server that accepted nothing but rejected something is a
+    // real measurement — annotate it, but only on an otherwise-VALID level (a
+    // storm note on an invalid level would be contradictory).
+    if invalid_reason.is_none() && accepted <= 0.0 && rejected > 0.0 {
         notes.push(REJECTION_STORM_NOTE.to_string());
     }
 
@@ -2094,10 +2114,26 @@ fn find_subslice(haystack: &[u8], needle: &[u8]) -> Option<usize> {
     haystack.windows(needle.len()).position(|w| w == needle)
 }
 
+/// Connect with a bounded timeout so an unreachable host fails loud rather than
+/// hanging the driver (`connect_timeout` is a syscall arg, not a clock read).
+fn connect_timeout(host: &str) -> Result<TcpStream, String> {
+    let addr = host
+        .to_socket_addrs()
+        .map_err(|e| format!("resolve {host}: {e}"))?
+        .next()
+        .ok_or_else(|| format!("no address resolved for {host}"))?;
+    TcpStream::connect_timeout(&addr, Duration::from_secs(10))
+        .map_err(|e| format!("connect {host}: {e}"))
+}
+
+/// Ceiling on any single HTTP response body we buffer (a slow/huge `/v1/metrics`
+/// must not grow driver memory without bound).
+const MAX_HTTP_BODY_BYTES: usize = 8 * 1024 * 1024;
+
 /// One blocking HTTP/1.1 request over a fresh `Connection: close` socket. Returns
 /// the response head and body (split on the first blank line).
 fn http_roundtrip(host: &str, request: &str) -> Result<(String, String), String> {
-    let mut stream = TcpStream::connect(host).map_err(|e| format!("connect {host}: {e}"))?;
+    let mut stream = connect_timeout(host)?;
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .map_err(|e| e.to_string())?;
@@ -2107,10 +2143,21 @@ fn http_roundtrip(host: &str, request: &str) -> Result<(String, String), String>
     stream
         .write_all(request.as_bytes())
         .map_err(|e| format!("write: {e}"))?;
+    // Bounded read: cap growth so a runaway body can't exhaust memory.
     let mut raw = Vec::new();
-    stream
-        .read_to_end(&mut raw)
-        .map_err(|e| format!("read: {e}"))?;
+    let mut chunk = [0u8; 8192];
+    loop {
+        let n = stream.read(&mut chunk).map_err(|e| format!("read: {e}"))?;
+        if n == 0 {
+            break;
+        }
+        raw.extend_from_slice(&chunk[..n]);
+        if raw.len() > MAX_HTTP_BODY_BYTES {
+            return Err(format!(
+                "HTTP response exceeded {MAX_HTTP_BODY_BYTES} bytes"
+            ));
+        }
+    }
     let text = String::from_utf8_lossy(&raw).into_owned();
     Ok(match text.split_once("\r\n\r\n") {
         Some((head, body)) => (head.to_string(), body.to_string()),
@@ -2171,14 +2218,15 @@ fn connect_client(
     client_index: u32,
     token: &str,
 ) -> Result<TcpStream, String> {
-    let mut stream = TcpStream::connect(host).map_err(|e| format!("connect {host}: {e}"))?;
-    // A generous timeout for the handshake exchange; tightened to the drain
-    // allowance below once we are streaming frames.
+    let mut stream = connect_timeout(host)?;
+    // Generous timeouts for the connect burst (a large handshake/subscribe/join
+    // write must not fail on a brief hiccup); tightened to the drain allowance
+    // below once we are streaming frames.
     stream
         .set_read_timeout(Some(Duration::from_secs(10)))
         .map_err(|e| e.to_string())?;
     stream
-        .set_write_timeout(Some(Duration::from_millis(READ_TIMEOUT_MS * 4)))
+        .set_write_timeout(Some(Duration::from_secs(10)))
         .map_err(|e| e.to_string())?;
 
     let ws_key = ws_key_from_seed(cfg.seed ^ u64::from(client_index));
@@ -2207,8 +2255,13 @@ fn connect_client(
         .write_all(&encode_text_frame(&join, join_mask))
         .map_err(|e| format!("join write: {e}"))?;
 
+    // Steady state: a tight read timeout so the per-iteration drain returns
+    // promptly (AM1), and a bounded write timeout for the send loop.
     stream
         .set_read_timeout(Some(Duration::from_millis(READ_TIMEOUT_MS)))
+        .map_err(|e| e.to_string())?;
+    stream
+        .set_write_timeout(Some(Duration::from_millis(READ_TIMEOUT_MS * 4)))
         .map_err(|e| e.to_string())?;
     Ok(stream)
 }
@@ -2239,38 +2292,59 @@ fn client_thread(
     let mut frame_index = 2u64; // frames 0 (subscribe) and 1 (join) are spent
 
     while running.load(Ordering::Relaxed) {
-        // Bounded drain: read once (the socket blocks for at most READ_TIMEOUT_MS).
-        match stream.read(&mut buf) {
-            Ok(0) => break,
-            Ok(n) => match drain_feed(&mut drain, &buf[..n]) {
-                Ok(out) => {
-                    if out.data_frames_skipped >= DRAIN_FRAME_CAP as u64 {
-                        counters.drain_cap_hits.fetch_add(1, Ordering::Relaxed);
-                    }
-                    for control in out.control {
-                        if let ControlFrame::Ping(payload) = control {
-                            let mask =
-                                mask_from_seed(cfg.seed ^ u64::from(client_index), frame_index);
-                            frame_index += 1;
-                            let _ = stream.write_all(&encode_pong(&payload, mask));
+        // AM2 bounded drain: keep reading + skipping until the socket would block
+        // (nothing more to drain this iteration) or the per-iteration frame cap is
+        // hit (receive-lag). Draining fully each iteration stops client
+        // backpressure from inflating the server's subscription queue (false breach).
+        let mut skipped_this_iter: u64 = 0;
+        let mut stop = false;
+        loop {
+            match stream.read(&mut buf) {
+                Ok(0) => {
+                    stop = true; // peer closed
+                    break;
+                }
+                Ok(n) => match drain_feed(&mut drain, &buf[..n]) {
+                    Ok(out) => {
+                        skipped_this_iter += out.data_frames_skipped;
+                        for control in out.control {
+                            if let ControlFrame::Ping(payload) = control {
+                                let mask =
+                                    mask_from_seed(cfg.seed ^ u64::from(client_index), frame_index);
+                                frame_index += 1;
+                                let _ = stream.write_all(&encode_pong(&payload, mask));
+                            }
+                        }
+                        if out.closed {
+                            stop = true;
+                            break;
+                        }
+                        if skipped_this_iter >= DRAIN_FRAME_CAP as u64 {
+                            counters.drain_cap_hits.fetch_add(1, Ordering::Relaxed);
+                            break; // receive-lag: stop draining, go send
                         }
                     }
-                    if out.closed {
+                    Err(_) => {
+                        counters.send_errors.fetch_add(1, Ordering::Relaxed);
+                        stop = true;
                         break;
                     }
+                },
+                Err(ref e)
+                    if e.kind() == std::io::ErrorKind::WouldBlock
+                        || e.kind() == std::io::ErrorKind::TimedOut =>
+                {
+                    break; // socket drained for now
                 }
                 Err(_) => {
                     counters.send_errors.fetch_add(1, Ordering::Relaxed);
+                    stop = true;
                     break;
                 }
-            },
-            Err(ref e)
-                if e.kind() == std::io::ErrorKind::WouldBlock
-                    || e.kind() == std::io::ErrorKind::TimedOut => {}
-            Err(_) => {
-                counters.send_errors.fetch_add(1, Ordering::Relaxed);
-                break;
             }
+        }
+        if stop {
+            break;
         }
 
         // One movement intent.
@@ -2380,15 +2454,22 @@ fn build_level_sample(
 
     let mut queue_readings = Vec::with_capacity(QUEUE_FAMILIES.len());
     for family in QUEUE_FAMILIES {
+        // A queue gauge absent from an already-parsed+retried scrape is a real
+        // problem (wrong identity / renamed family), not a 0 — a false 0 would
+        // read as "no growth" and hide a breach. Fail loud (C1).
         let series: Vec<f64> = scrapes
             .iter()
-            .map(|scrape| gauge_sum(scrape, family, &queue_match(db_identity)).unwrap_or(0.0))
-            .collect();
+            .map(|scrape| gauge_sum(scrape, family, &queue_match(db_identity)))
+            .collect::<Result<Vec<f64>, String>>()?;
         queue_readings.push((family.to_string(), series));
     }
 
     let last = scrapes.last();
     let delta = |reducer: &str, committed: &str| -> f64 {
+        // An absent cumulative counter == 0 is arithmetically correct here, AND a
+        // systematic absence fails toward INVALID (join_failed / no_load_reached),
+        // the safe direction — unlike a queue gauge whose absence would falsely
+        // read as "no growth". So .unwrap_or(0.0) stays for the counter deltas.
         let pin = txn_count_match(db_identity, reducer, committed);
         let start = counter_sum(baseline, TXN_COUNT_FAMILY, &pin).unwrap_or(0.0);
         let end = last.map_or(0.0, |s| {
@@ -2445,16 +2526,25 @@ fn run_level(
     let client_tokens_ref = &client_tokens;
     let scrape_result = std::thread::scope(|scope| -> Result<(), String> {
         for client_index in 0..concurrency {
-            scope.spawn(move || {
-                client_thread(
-                    host,
-                    cfg,
-                    client_index,
-                    &client_tokens_ref[client_index as usize],
-                    counters_ref,
-                    running_ref,
-                );
-            });
+            // 256 KiB stacks (not the ~2 MiB default) so MAX_CLIENTS=500 is
+            // actually reachable (~128 MiB vs ~1 GiB) and the doc claim is honest.
+            std::thread::Builder::new()
+                .stack_size(256 * 1024)
+                .spawn_scoped(scope, move || {
+                    client_thread(
+                        host,
+                        cfg,
+                        client_index,
+                        &client_tokens_ref[client_index as usize],
+                        counters_ref,
+                        running_ref,
+                    );
+                })
+                .map_err(|e| {
+                    // Release any already-spawned clients so the scope can join.
+                    running_ref.store(false, Ordering::Relaxed);
+                    format!("spawn client {client_index}: {e}")
+                })?;
         }
         let scraper =
             scope.spawn(move || scraper_thread(cfg, host, token, scrapes_ref, running_ref));
@@ -2497,9 +2587,19 @@ fn run(args: &[String]) -> Result<i32, String> {
         notes.push(note);
     }
 
+    // AM12: a level abort does NOT discard prior levels — stop the ramp, note it,
+    // and still emit a partial report to stdout, then exit non-zero.
     let mut levels = Vec::new();
+    let mut aborted = false;
     for concurrency in ramp_levels(cfg.clients_start, cfg.clients_step, cfg.clients_max) {
-        levels.push(run_level(&host, &cfg, &token, &db_identity, concurrency)?);
+        match run_level(&host, &cfg, &token, &db_identity, concurrency) {
+            Ok(level) => levels.push(level),
+            Err(err) => {
+                notes.push(format!("aborted_at_concurrency:{concurrency}: {err}"));
+                aborted = true;
+                break;
+            }
+        }
     }
 
     // AM7 cross-level plateau diagnostic (never a breach reason).
@@ -2520,7 +2620,7 @@ fn run(args: &[String]) -> Result<i32, String> {
         Some(path) => std::fs::write(path, &report).map_err(|e| format!("write {path}: {e}"))?,
         None => println!("{report}"),
     }
-    Ok(0)
+    Ok(i32::from(aborted))
 }
 
 fn main() {
@@ -2543,6 +2643,10 @@ fn main() {
 // ===========================================================================
 
 #[cfg(test)]
+// The frozen T8 module asserts a compile-time-constant precondition
+// (`0.3 >= BUDGET_S`) for documentation; scope the benign `assertions_on_constants`
+// style lint to this module (unrelated to the ADR-0003 determinism gate).
+#[allow(clippy::assertions_on_constants)]
 mod tests {
     use super::*;
     use game_core::{
