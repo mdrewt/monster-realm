@@ -6,7 +6,7 @@
 //
 // SOURCE OF TRUTH: docs/specs/m13.5c-plan.md (§T5 + "Eval teeth" + review folds
 // RT-H2/RT-8/RT-9/m2). Parser cloned from the HARDENED encounter-privacy.eval.mjs
-// (stripComments + brace-walking, attr-arg-order tolerant) — NOT monster-privacy's
+// (stripTsComments + brace-walking, attr-arg-order tolerant) — NOT monster-privacy's
 // weaker regex. NO `new RegExp()` anywhere (Semgrep detect-non-literal-regexp);
 // only literal /regex/ + indexOf. Needles are anchored to CODE shapes; comments
 // are stripped first so prose can neither satisfy nor trip them (m13.5b C4 trap).
@@ -56,30 +56,112 @@ import { existsSync, readFileSync } from 'node:fs';
 import { glob } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { assertStripperSound, stripRustSource } from './rust-scan.mjs';
+
+// 13r-c: hazard characters as data, never written contiguously as literal text in
+// this file's own source (this file is itself scanned by other repo scanners —
+// precedent: evals/account-privacy.eval.mjs:180-185, client/src/main.wiring.test.ts:7991).
+const SLASH13R = String.fromCharCode(0x2f); // /
 
 // ---------------------------------------------------------------------------
-// stripComments — cloned from encounter-privacy.eval.mjs (RT-9 hardened base).
-// Works for both Rust and TypeScript (same // and /* */ comment forms).
+// stripTsComments — the TypeScript-side scanner (13r-c / ADR-0181).
 // ---------------------------------------------------------------------------
+
+// 13r-c (ADR-0181): this replaces the two-regex `stripComments`, whose stated
+// LIMITATION (Finding 6) — "the line-comment pass blanks everything from `//` to
+// end-of-line, including the suffix of string literals containing `//`" — was a
+// false-GREEN, not a cosmetic wart. Teeth [13r-c/T3a] and [13r-c/T3b] pin both
+// halves: a `https://…` literal truncated its own line (hiding a whole-table
+// wallet leak that shared it), and a literal whose CONTENT is a block-comment
+// opener swallowed everything to the next closer (hiding a banned subscription
+// between them).
+//
+// THE TYPESCRIPT CONTRACT, and why it differs from the Rust one:
+// this strips COMMENTS ONLY and leaves every string / template literal PAYLOAD
+// VERBATIM. It must. The client-side clauses here and in wallet-privacy needle —
+// and, more dangerously, BAN — SQL text that lives INSIDE a literal
+// (`'SELECT * FROM player_wallet'`). The Rust scanner (`evals/rust-scan.mjs`)
+// blanks literal payloads to keep offsets stable, which is correct for Rust code
+// but would make those bans pass vacuously here. Measured: pointing
+// `stripRustSource` at TypeScript blanks the ban needle whenever the SQL literal
+// is DOUBLE-quoted; it survives today only because biome emits single quotes,
+// which the Rust lexer reads as a char literal and skips. That is luck, not a
+// guarantee — hence two scanners. [13r-c/T3b guard] pins this property.
+//
+// Single pass, not strip-strings-then-strip-comments: ADR-0169 D4 measured and
+// rejected the two-pass design (it desynchronises on unpaired apostrophes inside
+// `//` comments). Comment modes here consume to their delimiter without any
+// quote tracking, so an apostrophe inside a comment is structurally invisible.
+//
+// Length- and newline-preserving, as the previous contract promised: comment
+// characters are blanked to spaces, never deleted.
+
+/** A bare double quote / backtick as data, so no scanner mistakes this file's own text. */
+const TS_DQ = String.fromCharCode(0x22);
+const TS_BACKTICK = String.fromCharCode(0x60);
 
 /**
- * Strip line comments and block comments from source text.
- * Preserves line count (replaces comment content with spaces, keeps newlines).
+ * Strip line and block comments from TypeScript (or Rust) source, preserving
+ * length, every newline, and every string/template literal PAYLOAD verbatim.
  * @param {string} src Raw source text.
- * @returns {string} Source with comment content blanked.
+ * @returns {string} Same-length source with comment content blanked to spaces.
  */
-// LIMITATION (Finding 6): the line-comment pass blanks everything from `//`
-// to end-of-line, including the suffix of string literals containing `//`
-// (e.g. URLs like "https://example.com"). No such literals exist in the files
-// scanned today; if one is added, move it to a backtick template or escape
-// the slashes so this stripper does not blank the suffix.
-// The block-comment pass does NOT have this issue (balanced slash-star pairs).
-export function stripComments(src) {
-  const blockRe = /\/\*[\s\S]*?\*\//g;
-  let out = src.replace(blockRe, (m) => m.replace(/[^\n]/g, ' '));
-  const lineRe = /\/\/[^\n]*/g;
-  out = out.replace(lineRe, (m) => ' '.repeat(m.length));
-  return out;
+export function stripTsComments(src) {
+  const out = src.split('');
+  const len = src.length;
+  const blank = (from, to) => {
+    for (let k = from; k < Math.min(to, len); k++) if (out[k] !== '\n') out[k] = ' ';
+  };
+
+  let i = 0;
+  while (i < len) {
+    const c = src[i];
+
+    // Line comment — consume to EOL with NO quote tracking (see ADR-0169 D4).
+    if (c === '/' && src[i + 1] === '/') {
+      let j = i;
+      while (j < len && src[j] !== '\n') j++;
+      blank(i, j);
+      i = j;
+      continue;
+    }
+
+    // Block comment — consume to the closer, again without quote tracking.
+    if (c === '/' && src[i + 1] === '*') {
+      let j = i + 2;
+      while (j < len && !(src[j] === '*' && src[j + 1] === '/')) j++;
+      j = Math.min(j + 2, len);
+      blank(i, j);
+      i = j;
+      continue;
+    }
+
+    // String / char / template literal — SKIPPED OVER, payload kept verbatim, so
+    // a `//` or a block-comment opener inside it is data and can never open a
+    // comment. An unescaped newline ends a '…' / "…" literal (JS forbids one
+    // there), so a stray apostrophe cannot swallow the rest of the file.
+    if (c === "'" || c === TS_DQ || c === TS_BACKTICK) {
+      let j = i + 1;
+      while (j < len) {
+        if (src[j] === '\\') {
+          j += 2;
+          continue;
+        }
+        if (src[j] === c) {
+          j++;
+          break;
+        }
+        if (src[j] === '\n' && c !== TS_BACKTICK) break;
+        j++;
+      }
+      i = j;
+      continue;
+    }
+
+    i++;
+  }
+
+  return out.join('');
 }
 
 // ---------------------------------------------------------------------------
@@ -235,7 +317,7 @@ export function parseViews(src) {
  * @returns {string|null} Error string, or null on pass.
  */
 export function checkTablePrivate(serverSrc) {
-  const tables = parseTables(stripComments(serverSrc));
+  const tables = parseTables(stripRustSource(serverSrc));
   const table = tables.find((t) => t.name === 'player_conversation');
   if (!table) {
     return 'player_conversation table not found in server-module source';
@@ -273,7 +355,7 @@ const SCOPED_NEEDLE_REF = 'owner_identity().find(&ctx.sender)';
  * @returns {string|null} Error string, or null on pass.
  */
 export function checkViewsOwnerScoped(serverSrc) {
-  const stripped = stripComments(serverSrc);
+  const stripped = stripRustSource(serverSrc);
   const views = parseViews(stripped);
   const tables = parseTables(stripped);
 
@@ -389,7 +471,7 @@ function walkBracket(src, openIdx) {
  * @returns {string|null} Error string, or null on pass.
  */
 export function checkClientSubscription(connectionSrc) {
-  const stripped = stripComments(connectionSrc);
+  const stripped = stripTsComments(connectionSrc);
 
   // Windowed positive needle (Finding 5): locate the subscribe array and check
   // FROM my_conversation within it so a dead constant cannot satisfy the needle.
@@ -471,7 +553,7 @@ export function checkClientSubscription(connectionSrc) {
  * @returns {string|null} Error string, or null on pass.
  */
 export function checkOnDeleteHandler(connectionSrc) {
-  const stripped = stripComments(connectionSrc);
+  const stripped = stripTsComments(connectionSrc);
 
   // Locate the my_conversation.onDelete( registration.
   const handlerMarker = 'my_conversation.onDelete(';
@@ -576,7 +658,7 @@ pub struct PlayerConversation {
     if (!err) {
       return 'T2: public player_conversation (reversed arg order) was NOT flagged — arg-order-tolerant parsing is broken';
     }
-    const tables = parseTables(stripComments(fixture));
+    const tables = parseTables(stripRustSource(fixture));
     const t = tables.find((x) => x.name === 'player_conversation');
     if (!t?.isPublic) {
       return "T2: reversed-args fixture: name not extracted as 'player_conversation' with isPublic=true — name = <ident> extraction is broken";
@@ -883,6 +965,81 @@ fn braced_leak(ctx: &ViewContext) -> Vec<[PlayerConversation; {1}]> {
     }
   }
 
+  // -------------------------------------------------------------------------
+  // [13r-c/T3b] THE "ban-goes-vacuous" case: checkClientSubscription scans TS,
+  // and its needles (`FROM my_conversation` / `FROM player_conversation`) live
+  // INSIDE SQL string literals. stripComments (this file, line ~77) is a
+  // REGEX-ONLY comment stripper with NO string-literal awareness: its
+  // block-comment pass (`/\*[\s\S]*?\*\//g`) treats a decoy string literal
+  // whose CONTENT is a bare block-comment OPENER as a real comment start, and
+  // non-greedily swallows everything up to the NEXT `*/` it finds anywhere
+  // later in the file — including a real banned SQL string sandwiched between
+  // two such decoy literals, even though neither decoy is an actual comment.
+  //
+  // A genuine `// see https://docs.example/x` line comment is included as
+  // NOISE, placed where it cannot matter (it is a correctly-formed, self-
+  // contained comment): it proves the failure below is caused by the
+  // block-comment sandwich, not by anything to do with URL-shaped text.
+  //
+  // RED TODAY: checkClientSubscription is expected to return a non-null
+  // failure (a real `'SELECT * FROM player_conversation'` violation exists in
+  // the raw source), but returns null — the ban is swallowed between the two
+  // decoy literals before the fallback needle scan ever sees it (this fixture
+  // has no `.subscribe([` marker, so the windowed path is skipped and the
+  // fallback whole-file needle scan is what's under test).
+  //
+  // OPPOSITE-MISTAKE GUARD: a naive fix that borrows the Rust-side approach —
+  // blanking the CONTENT of every string/template literal, which is CORRECT
+  // for Rust code (account-privacy.eval.mjs's stripRustSource does exactly
+  // that) — would make this ban silently vacuous for a DIFFERENT reason: the
+  // SQL needle text lives INSIDE a string literal, so blanking string
+  // payloads erases 'FROM my_conversation' and 'FROM player_conversation'
+  // alike. The explicit assertion below pins that the ALLOWED SQL literal
+  // text — which sits OUTSIDE the block-comment sandwich in this fixture — is
+  // still LITERALLY present in stripComments' output. A Rust-style,
+  // content-blanking fix would break this pin; the correct TS-side fix
+  // (strip comments only, never touch string/template contents) satisfies it
+  // trivially.
+  // -------------------------------------------------------------------------
+  {
+    const httpsCommentLine = '// see https:' + SLASH13R + SLASH13R + 'docs.example/x';
+    const openDecoy = `const OPEN: string = '${SLASH13R}*';`;
+    const closeDecoy = `const CLOSE: string = '*${SLASH13R}';`;
+    const fixture = [
+      httpsCommentLine,
+      'export function buildQueries(): string[] {',
+      "  return ['SELECT * FROM my_conversation'];",
+      '}',
+      openDecoy,
+      "const BANNED_QUERY = 'SELECT * FROM player_conversation';",
+      closeDecoy,
+    ].join('\n');
+
+    const err = checkClientSubscription(fixture);
+    if (err === null) {
+      return (
+        'TEETH FAILED [13r-c/T3b]: checkClientSubscription returned PASS for a fixture ' +
+        "containing a genuine `const BANNED_QUERY = 'SELECT * FROM player_conversation';` " +
+        'sandwiched between two decoy string literals whose CONTENT is a block-comment ' +
+        "opener/closer — stripComments' block-comment regex swallows the real banned SQL " +
+        'string between them before the fallback needle scan can see it.'
+      );
+    }
+
+    const strippedForGuard = stripTsComments(fixture);
+    if (strippedForGuard.indexOf('SELECT * FROM my_conversation') === -1) {
+      return (
+        'TEETH FAILED [13r-c/T3b guard]: stripComments no longer preserves the LITERAL SQL ' +
+        "text 'SELECT * FROM my_conversation' (which sits OUTSIDE the block-comment " +
+        'sandwich in this fixture) — a Rust-style fix that blanks string/template literal ' +
+        'CONTENT (correct for Rust code, WRONG here) would silently empty ' +
+        "checkClientSubscription's / checkNoPrivateWalletSubscription's SQL-string needles. " +
+        'The TS-side fix must strip COMMENTS ONLY and leave string/template literal ' +
+        'contents byte-for-byte intact.'
+      );
+    }
+  }
+
   return null;
 }
 
@@ -921,6 +1078,23 @@ export default async function conversationPrivacyEval() {
   const serverSrc = rsSources.map((f) => readFileSync(f, 'utf8')).join('\n');
 
   const failures = [];
+
+  // 13r-c (ADR-0181) STRIPPER-SOUNDNESS GATE. A desync GREENS every ban below and
+  // reds only the presence checks, so it is invisible to the clauses it blinds and
+  // must be caught here.
+  //
+  // PER FILE, and NON-TEST ONLY, both deliberately. `assertStripperSound`'s desync
+  // detector is a quote-BLIND line scan (that independence is what lets it detect
+  // the real stripper's desync), so it counts a `#[spacetimedb::` that appears
+  // inside a *_tests.rs FIXTURE STRING as if it were real code. The stripper
+  // correctly blanks those, so gating the concatenated all-files blob reports a
+  // desync that did not happen — measured here: 7 phantom anchors across 9
+  // *_tests.rs files. account-privacy.eval.mjs scans non-test sources per file for
+  // exactly this reason.
+  for (const f of rsSources.filter((f) => !f.endsWith('_tests.rs'))) {
+    const desync = assertStripperSound(readFileSync(f, 'utf8'), f);
+    if (desync !== null) failures.push(`[STRIP soundness] ${desync}`);
+  }
 
   const errA = checkTablePrivate(serverSrc);
   if (errA) failures.push(`[A table-private] ${errA}`);
