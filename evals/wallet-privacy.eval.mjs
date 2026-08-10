@@ -52,9 +52,13 @@
 //                       fully-qualified form and would be BLIND to it).
 //      [B/F5-hidden]    the literal `#[spacetimedb::view(` occurs the same
 //                       number of times in the RAW and in the comment-stripped
-//                       source — a view hidden inside a comment (or inside a
-//                       comment FORGED with `const X: &str = "/*";`) is invisible
-//                       to every checker that consumes stripComments.
+//                       source — a view hidden inside a GENUINE comment is
+//                       invisible to every checker that consumes the stripped
+//                       text. (The FORGED-comment variant, `const X: &str` holding
+//                       a block-comment opener, is closed at the lexer as of 13r-c
+//                       / ADR-0181 — the forged comment no longer opens, so this
+//                       tripwire correctly stays silent for it and the real
+//                       structural clause sees the view directly. Fixture F18.)
 //      [B/2a] my_wallet exists as a view and its body reads the table.
 //      [B/2b] its body contains no `iter` substring.
 //      [B/2d] its signature is not AnonymousViewContext.
@@ -124,33 +128,33 @@ import { existsSync, readFileSync } from 'node:fs';
 import { glob } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { parseTables, parseViews, stripComments } from './conversation-privacy.eval.mjs';
+import { parseTables, parseViews, stripTsComments } from './conversation-privacy.eval.mjs';
+import { assertStripperSound, compactWs, countOccurrences, stripRustSource } from './rust-scan.mjs';
+
+// 13r-c (ADR-0181) — TWO scanners, deliberately, per the normative split:
+//   Rust sources (server-module *.rs)  -> stripRustSource  (blanks literal
+//     PAYLOADS to keep offsets stable; correct for scanning Rust CODE shapes).
+//   TypeScript sources (client/src/*.ts) -> stripTsComments (strips comments
+//     ONLY, keeps literal payloads VERBATIM).
+// The TS side is load-bearing, not stylistic: checkNoPrivateWalletSubscription
+// BANS the SQL text `FROM player_wallet`, and that needle lives INSIDE a string
+// literal. Pointing the Rust scanner at it would blank the payload and make the
+// ban pass vacuously — a false-GREEN on exactly the leak it exists to stop.
+
+// 13r-c: hazard characters as data, never written contiguously as literal text in
+// this file's own source (this file is itself scanned by other repo scanners —
+// precedent: evals/account-privacy.eval.mjs:180-185, client/src/main.wiring.test.ts:7991).
+const DQ13R = String.fromCharCode(0x22); // "
+const SLASH13R = String.fromCharCode(0x2f); // /
 
 // ---------------------------------------------------------------------------
 // Small shared helpers.
 // ---------------------------------------------------------------------------
 
-/**
- * Remove ALL whitespace so needles survive line breaks and stray spaces
- * (`player_wallet ()` compiles; so does `Table :: iter`).
- * @param {string} s Source text.
- * @returns {string} Whitespace-free text.
- */
-export function compactWs(s) {
-  return s.replace(/\s+/g, '');
-}
-
-/**
- * Count non-overlapping occurrences of a literal needle.
- * @param {string} hay Text to search.
- * @param {string} needle Literal needle.
- * @returns {number} Occurrence count.
- */
-export function countOccurrences(hay, needle) {
-  let n = 0;
-  for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, at + needle.length)) n++;
-  return n;
-}
+// `compactWs` / `countOccurrences` were byte-identical local copies of
+// rust-scan.mjs's; 13r-c (ADR-0181) removes the duplication at its source. They are
+// RE-EXPORTED so this module's public surface is unchanged.
+export { compactWs, countOccurrences };
 
 // ---------------------------------------------------------------------------
 // parseFns — brace-walking fn collector (the call-graph substrate for check B).
@@ -304,7 +308,7 @@ export function walletReaderClosure(fns, viewFnName) {
  * @returns {string|null} Error string, or null on pass.
  */
 export function checkWalletViewsSafe(serverSrc) {
-  const stripped = stripComments(serverSrc);
+  const stripped = stripRustSource(serverSrc);
   const fns = parseFns(stripped);
   const views = parseViews(stripped);
 
@@ -334,12 +338,18 @@ export function checkWalletViewsSafe(serverSrc) {
   }
 
   // [B/F5-hidden] a view attribute present in the RAW source but absent from the
-  // comment-stripped source is hidden inside a comment — either a real comment
-  // (harmless, but reword it so this tripwire stays sharp) or, far worse, a
-  // comment FORGED out of string literals (`const OPEN: &str = "/*";` …
-  // `const CLOSE: &str = "*/";`), which blanks a REAL leaky view for every
-  // checker that consumes stripComments (red-team F-5; stripComments is
-  // string-literal-unaware by documented limitation).
+  // comment-stripped source is hidden inside a GENUINE comment. Reword it so this
+  // tripwire stays sharp.
+  //
+  // 13r-c (ADR-0181): the FORGED-comment attack this was originally built for
+  // (red-team F-5 — `const OPEN: &str` / `const CLOSE: &str` holding block-comment
+  // delimiters) is now closed at the LEXER: `stripRustSource` lexes strings and
+  // comments in one pass, so a delimiter inside a literal is data and the forged
+  // comment never opens. Raw and stripped counts therefore AGREE for that shape,
+  // this clause correctly stays silent, and the real leaky view is caught directly
+  // by [B/3a] instead — a strictly stronger outcome (fixture F18 asserts the
+  // stronger tag). The clause is KEPT because a genuine comment containing a view
+  // attribute is still a live, different shape.
   const rawViewAttrs = countOccurrences(serverSrc, VIEW_ATTR);
   const strippedViewAttrs = countOccurrences(stripped, VIEW_ATTR);
   if (rawViewAttrs > strippedViewAttrs) {
@@ -541,7 +551,7 @@ export function checkWalletViewsSafe(serverSrc) {
  * @returns {string|null} Error string, or null on pass.
  */
 export function checkWalletAccessorConfined(schemaSrc) {
-  const stripped = stripComments(schemaSrc);
+  const stripped = stripRustSource(schemaSrc);
   const fns = parseFns(stripped);
   const views = parseViews(stripped);
   const mineView = views.find((v) => v.name === VIEW_NAME || v.fnName === VIEW_NAME);
@@ -617,7 +627,7 @@ export function checkBindings(fsProbe) {
  * @returns {string|null} Error string, or null on pass.
  */
 export function checkShopBalanceShell(shopViewSrc) {
-  const compact = compactWs(stripComments(shopViewSrc));
+  const compact = compactWs(stripTsComments(shopViewSrc));
   if (compact.indexOf('balance.amount') !== -1) {
     return (
       '[V/no-amount] shopView.ts references balance.amount — the DOM shell must ' +
@@ -673,7 +683,7 @@ function walkBracket(src, openIdx) {
  * @returns {string|null} Error string, or null on pass.
  */
 export function checkNoPrivateWalletSubscription(connectionSrc) {
-  const stripped = stripComments(connectionSrc);
+  const stripped = stripTsComments(connectionSrc);
   const marker = '.subscribe([';
 
   // \b guard: `FROM player_wallet_archive` (a hypothetical future public
@@ -1057,7 +1067,7 @@ fn purge_view(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
     // which is what makes a handle-hop leak visible when the view body does not.
     const bad = expectTag(checkWalletViewsSafe(fixture), '[B/3a]', 'F16');
     if (bad) return bad;
-    const readers = walletReaderClosure(parseFns(stripComments(fixture)), 'my_wallet');
+    const readers = walletReaderClosure(parseFns(stripRustSource(fixture)), 'my_wallet');
     if (!readers.has('purge')) {
       return 'F16: fn purge (wallet handle in its SIGNATURE, accessor never in its body) is NOT in the wallet-reader closure — the seed ignores signatures (red-team F-2)';
     }
@@ -1076,10 +1086,27 @@ fn purge_view(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
   }
 
   // F18 (red-team F-5) — a leaky view hidden inside a comment FORGED out of
-  // string literals: `const BLOCK_OPEN: &str = "/*";` … `const BLOCK_CLOSE: &str = "*/";`
-  // stripComments is string-literal-unaware, so it blanks the real view between
-  // them and every downstream clause goes blind. The raw-vs-stripped
-  // view-attribute count is the tripwire.
+  // string literals: `const BLOCK_OPEN: &str = <a quote>/*<a quote>;` …
+  // `const BLOCK_CLOSE: &str = <a quote>*/<a quote>;`.
+  //
+  // 13r-c (ADR-0181) RE-POINTED, and this is the whole point of the slice.
+  // The old string-literal-UNAWARE stripper blanked the real view between those
+  // two literals, so the leak was invisible to every structural clause and only
+  // the raw-vs-stripped view-attribute-count TRIPWIRE ([B/F5-hidden]) could
+  // notice something had gone missing. The tripwire was a detector of last
+  // resort for a blinded scanner.
+  //
+  // The scanner is no longer blinded: the forged comment never opens, so the
+  // counts agree, [B/F5-hidden] correctly stays silent, and the leaky view is
+  // now plainly VISIBLE to the real clause — [B/3a] fires and names the actual
+  // violation ("view 'all_wallets' references player_wallet"). That is a
+  // strictly STRONGER outcome: the attack is closed at the lexer instead of
+  // being inferred from a count discrepancy. Asserting the stronger tag is the
+  // fix; loosening `expectTag` to accept either would throw the improvement away.
+  //
+  // [B/F5-hidden] itself is DELIBERATELY KEPT (see checkWalletViewsSafe): it
+  // still fires for a GENUINE comment that contains a view attribute, which is a
+  // different and still-live shape.
   {
     const fixture = `${TABLE_DECL}${GOOD_VIEW}
 const BLOCK_OPEN: &str = "/*";
@@ -1091,7 +1118,7 @@ fn all_wallets(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
 
 const BLOCK_CLOSE: &str = "*/";
 `;
-    const bad = expectTag(checkWalletViewsSafe(fixture), '[B/F5-hidden]', 'F18');
+    const bad = expectTag(checkWalletViewsSafe(fixture), '[B/3a]', 'F18');
     if (bad) return bad;
   }
 
@@ -1196,6 +1223,63 @@ fn peek_wallet(_ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
     if (bad) return bad;
   }
 
+  // -------------------------------------------------------------------------
+  // [13r-c/T3a] a leaky view whose BODY-ONLY `player_wallet` reference sits on
+  // the same physical line as a `https://` string literal.
+  //
+  // PROVES (regression pin): the PRE-13r-c stripper — a regex-only comment
+  // stripper with NO string-literal awareness, which `checkWalletViewsSafe` used
+  // to consume — treated the `//` inside a `https://` URL literal as a comment
+  // start and blanked the REST OF THAT LINE: here, the trailing
+  // `ctx.db.player_wallet().iter().collect()` call, a genuine whole-table wallet
+  // leak. `checkWalletViewsSafe` now uses `stripRustSource` (ADR-0181); if this
+  // tooth reds, that has been reverted.
+  //
+  // CONSTRUCTION NOTE (why the URL sits on the BODY line, not the attribute
+  // line): putting the URL on the SAME line as `#[spacetimedb::view(...)]`
+  // would ALSO blank the attribute token, which the pre-existing
+  // [B/F5-hidden] clause (raw-vs-stripped VIEW_ATTR count) already detects —
+  // that construction is NOT vacuous today and would prove nothing new. This
+  // fixture keeps the attribute line untouched (raw count === stripped count,
+  // [B/F5-hidden] stays silent) and blanks only the BODY reference to
+  // player_wallet — the narrower blind spot [B/F5-hidden] cannot see, because
+  // it only ever compares counts of the ATTRIBUTE token, never of
+  // `player_wallet` itself.
+  //
+  // RED TODAY: checkWalletViewsSafe(fixture) is expected to return a non-null
+  // failure (a real `.iter()` whole-table leak exists in the raw source), but
+  // returns null — [B/3a]'s `vBody.indexOf('player_wallet')` finds nothing
+  // because the reference was blanked before parseViews ever ran.
+  //
+  // VACUOUS IF: the URL and the leak move to different lines (defeats the
+  // truncation entirely) or onto the attribute's line (already caught by
+  // [B/F5-hidden], proving nothing about this narrower hole).
+  // -------------------------------------------------------------------------
+  {
+    const httpsUrl = `https:${SLASH13R}${SLASH13R}evil.example.com`;
+    const leakyBodyLine =
+      `    const ISSUER: &str = ${DQ13R}${httpsUrl}${DQ13R}; ` +
+      'ctx.db.player_wallet().iter().collect()';
+    const fixture = `${TABLE_DECL}${GOOD_VIEW}
+#[spacetimedb::view(name = all_wallets, public)]
+fn all_wallets(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
+${leakyBodyLine}
+}
+`;
+    const err = checkWalletViewsSafe(fixture);
+    if (err === null) {
+      return (
+        'TEETH FAILED [13r-c/T3a]: checkWalletViewsSafe returned PASS for a fixture where ' +
+        `view 'all_wallets' whole-table-leaks player_wallet via ` +
+        '`ctx.db.player_wallet().iter().collect()` sharing its physical line with a ' +
+        `${DQ13R}${httpsUrl}${DQ13R} string literal. The pre-13r-c line-comment regex ` +
+        "truncated that line at the URL's `//`, blanking the leak before parseViews/[B/3a] " +
+        'ever saw it. The view attribute sits on its own line (so [B/F5-hidden] stays ' +
+        'silent), which is exactly why this hole was narrower and undetected.'
+      );
+    }
+  }
+
   return null;
 }
 
@@ -1238,6 +1322,21 @@ export default async function walletPrivacyEval() {
   const serverSrc = rsSources.map((f) => readFileSync(f, 'utf8')).join('\n');
 
   const failures = [];
+
+  // 13r-c (ADR-0181) STRIPPER-SOUNDNESS GATE. A desync GREENS every ban below and
+  // reds only the presence checks — it is invisible to the clauses it blinds, so
+  // it is caught here or not at all.
+  //
+  // PER FILE, NON-TEST ONLY, both deliberate: the desync detector is a quote-BLIND
+  // line scan (that independence is precisely what lets it catch the real
+  // stripper), so it counts a `#[spacetimedb::` sitting inside a *_tests.rs
+  // FIXTURE STRING as though it were real code. The stripper correctly blanks
+  // those, so gating the concatenated blob would report a desync that never
+  // happened (measured: 7 phantom anchors across 9 *_tests.rs files).
+  for (const f of rsSources.filter((f) => !f.endsWith('_tests.rs'))) {
+    const desync = assertStripperSound(readFileSync(f, 'utf8'), f);
+    if (desync !== null) failures.push(`[STRIP soundness] ${desync}`);
+  }
 
   const errB = checkWalletViewsSafe(serverSrc);
   if (errB) failures.push(`[B wallet-views-safe] ${errB}`);

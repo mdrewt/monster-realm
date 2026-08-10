@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 146 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 147 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -155,6 +155,7 @@ Generated from 146 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0178](./0178-validator-and-core-hardening-tail.md) | 0178 — Validator & core hardening tail: R4 gate semantics, single duplicate-pair enforcement, ids-only party seam, cap-exhausted write elision | Accepted | evolution-fusion, content, movement-netcode | 12r-e (M-postgate-twelfth-review-residuals) | R4 tests vacuity against `path_satisfied`'s own thresholds; `sync_content`'s unreachable duplicate-pair re-scan is deleted; the movement growth tail takes an ids-only party helper; and a cap-exhausted Quality-Time call writes no row. |
 | [0179](./0179-accounts-auth-implementation-design.md) | 0179 — Accounts & authentication implementation design: OIDC gate, guest-claim, and the re-key SSOT | Accepted | security-authz, schema-persistence, client-ui | heavy-ceremony M21 planning pass (pre-slice; implementation elaborates in m21a/m21b/m21c | New `accounts.rs` domain module gated by a write-scoped module-isolation invariant |
 | [0180](./0180-observability-stack-selection.md) | 0180 — Observability stack selection: self-hosted OSS replaces Datadog, and the WASM-sandbox-crossing data path | Accepted | ci-gates, tooling-docs, schema-persistence | heavy-ceremony M20 planning pass (pre-slice; implementation elaborates in m20a–m20e per | An 8-container, all-open-source, self-hosted stack (Prometheus, Grafana Alloy, Loki, Tempo, |
+| [0181](./0181-string-literal-aware-source-scanners.md) | 0181 — String-literal-aware source scanners: one Rust scanner, one TypeScript scanner, and why they cannot be the same function | Accepted | ci-gates, security-authz, tooling-docs | 13r-c (post-gate thirteenth-review residuals — `specs/monster-realm-v2/M-postgate-thirteenth-review-residuals.spec.md` §13r-c) | Rust scanning in `evals/` moves to one string-literal-aware `evals/rust-scan.mjs` that lexes comments and strings in a single pass and preserves offsets by blanking literal payloads; TypeScript uses a separate literal-PRESERVING scanner. |
 
 ## Harness design corpus (H- namespace)
 
@@ -444,6 +445,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0173](./0173-content-registry-gate-coverage-and-schema-migration-reality.md) — 11r-i (M-postgate-eleventh-review-residuals — gate-coverage extensions; EARS E1-1..E1-11, E2-1..E2-6, E3-1..E3-8, E4-1..E4-8, E5-1..E5-3) — 0173 — Content-registry gate coverage, unknown-quest diagnostics, and the real SpacetimeDB additive-schema rules (Accepted)
 - [0177](./0177-essence-graph-evolution-replaces-fuse.md) — EG5 (M-evolution-essence-graph — EARS EG5-1..EG5-7; closes the milestone) — 0177 — Essence-graph evolution replaces fuse(): milestone consolidation, Migration B, gate migration (EG5) (Accepted)
 - [0180](./0180-observability-stack-selection.md) — heavy-ceremony M20 planning pass (pre-slice; implementation elaborates in m20a–m20e per — 0180 — Observability stack selection: self-hosted OSS replaces Datadog, and the WASM-sandbox-crossing data path (Accepted)
+- [0181](./0181-string-literal-aware-source-scanners.md) — 13r-c (post-gate thirteenth-review residuals — `specs/monster-realm-v2/M-postgate-thirteenth-review-residuals.spec.md` §13r-c) — 0181 — String-literal-aware source scanners: one Rust scanner, one TypeScript scanner, and why they cannot be the same function (Accepted)
 
 ### tooling-docs
 
@@ -470,6 +472,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0157](./0157-dev-console-outbound-reducer-log.md) — dev-observability (M-postgate-dev-observability — a toggleable dev-console log of outbound reducer calls; EARS 1–4) — 0157 — Dev-console outbound reducer log: a flag-gated Proxy at the connection seam, console-only (Accepted)
 - [0165](./0165-changelog-freshness-nightly-check.md) — 11r-d — 0165 — Changelog freshness: nightly drift check (not per-PR, not manual) (Accepted)
 - [0180](./0180-observability-stack-selection.md) — heavy-ceremony M20 planning pass (pre-slice; implementation elaborates in m20a–m20e per — 0180 — Observability stack selection: self-hosted OSS replaces Datadog, and the WASM-sandbox-crossing data path (Accepted)
+- [0181](./0181-string-literal-aware-source-scanners.md) — 13r-c (post-gate thirteenth-review residuals — `specs/monster-realm-v2/M-postgate-thirteenth-review-residuals.spec.md` §13r-c) — 0181 — String-literal-aware source scanners: one Rust scanner, one TypeScript scanner, and why they cannot be the same function (Accepted)
 
 ### security-authz
 
@@ -504,6 +507,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0168](./0168-server-battle-movement-lock.md) — 11r-c (M-postgate-eleventh-review-residuals §2; EARS E1–E3) — 0168 — Real server battle movement lock: drain-time freeze in `movement_tick`, intake rejects in the move reducers (Accepted)
 - [0169](./0169-wallet-view-runtime-path.md) — 11r-e (M-postgate-eleventh-review-residuals — ux2b wallet view completion; EARS 11r-e-1..11r-e-9) — 0169 — Wallet view runtime path: `my_wallet` subscription, insert-only ingest, and a three-site call-site tooth (Accepted)
 - [0179](./0179-accounts-auth-implementation-design.md) — heavy-ceremony M21 planning pass (pre-slice; implementation elaborates in m21a/m21b/m21c — 0179 — Accounts & authentication implementation design: OIDC gate, guest-claim, and the re-key SSOT (Accepted)
+- [0181](./0181-string-literal-aware-source-scanners.md) — 13r-c (post-gate thirteenth-review residuals — `specs/monster-realm-v2/M-postgate-thirteenth-review-residuals.spec.md` §13r-c) — 0181 — String-literal-aware source scanners: one Rust scanner, one TypeScript scanner, and why they cannot be the same function (Accepted)
 
 ### economy-quests
 

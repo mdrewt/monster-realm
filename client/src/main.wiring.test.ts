@@ -1392,11 +1392,12 @@ describe('main.ts wiring (pt-c2b help): onReconnect does NOT hide helpView (PTC2
 //   Because stripping happens strictly after slicing, there is no offset-mismatch risk:
 //   we never need a stripped-text index to correspond to a raw-text index.
 //
-// KNOWN LIMITATION of stripLineComments/stripBlockComments (line-based / marker-scan, not
-// a real tokenizer): a `//` or `/*` living INSIDE a string/template literal would be
-// mistaken for a real comment marker and truncate/eat real code (e.g. a line like
-// `const s = "http://example.com";` or `const s = "/* not a comment */";`). No such
-// literal exists in any of the 4 regions scanned below (verified by reading main.ts lines
+// FORMER KNOWN LIMITATION of stripLineComments — CLOSED by 13r-c (ADR-0181). It used to be
+// a line-based marker scan, not a tokenizer, so a `//` or `/*` living INSIDE a
+// string/template literal was mistaken for a real comment marker and truncated or ate real
+// code. It now delegates to the string-literal-aware `m20cScan`, so a comment marker inside
+// a literal is data. The audit note below is kept as the historical record of why the
+// limitation was tolerable at the time. (verified by reading main.ts lines
 // 472-490 and 1006-1035, and by inspection of the ADR-0146 helper bodies quoted in the
 // spec) — the regions are plain control-flow/object-literal code with ordinary comments
 // only, so this limitation is disclosed but does not bite here.
@@ -1416,40 +1417,40 @@ describe('main.ts wiring (pt-c2b help): onReconnect does NOT hide helpView (PTC2
 // slice's touch-set (this file only, per the coordinator's instruction).
 // ===========================================================================
 
-// Drop `/* ... */` block comments (multi-line-aware, marker-scan not regex) THEN `//` line
-// comments, so a needle that only appears in a comment — including one hidden by
-// block-commenting out the real body (red-team Mutant 2) — cannot satisfy a tooth. Order
-// matters: block comments are stripped FIRST so no `//` living inside a `/* */` block can
-// be mis-parsed by the line-comment pass afterward (it's simply gone by then).
-function stripBlockComments(src: string): string {
-  let out = '';
-  let i = 0;
-  for (;;) {
-    const start = src.indexOf('/*', i);
-    if (start === -1) {
-      out += src.slice(i);
-      return out;
-    }
-    out += src.slice(i, start);
-    const end = src.indexOf('*/', start + 2);
-    if (end === -1) {
-      // Unterminated block comment — drop the remainder defensively (should not occur in
-      // the well-formed regions this file scans; see KNOWN LIMITATION above).
-      return out;
-    }
-    i = end + 2;
-  }
-}
-
+// Drop block comments THEN `//` line comments, so a needle that only appears in a comment —
+// including one hidden by block-commenting out the real body (red-team Mutant 2) — cannot
+// satisfy a tooth.
+//
+// 13r-c (ADR-0180 residual #2, ADR-0181): this is now a ONE-LINE DELEGATION to the
+// string-literal-aware `m20cScan` below, and the two hand-rolled helpers it used to be are
+// GONE. They were a plain `indexOf('/*')` / per-line `indexOf('//')` marker scan with no
+// notion of string literals, which made every tooth built on them false-GREEN capable in
+// two distinct ways:
+//
+//   1. A string literal whose CONTENT contains a block-comment opener opened a "comment"
+//      that never closed, and the old `stripBlockComments` then DROPPED THE ENTIRE
+//      REMAINDER OF THE FILE. Every needle after that point became unfindable, every
+//      `countOccurrences` returned 0, and every ban passed — a live violation measured
+//      GREEN.
+//   2. A `//` inside a literal truncated its own line. This one was not hypothetical:
+//      `client/src/net/connectionConfig.ts:12` — a `DEV_URI` const holding a websocket URL
+//      — was being reduced to `const DEV_URI = 'ws:` by this very function, and that file
+//      sits inside the corpus the offenders loop below scans.
+//
+// `m20cScan` (defined near the m20c block, with its own self-test) lexes comments and
+// string literals in a SINGLE pass, so a comment marker inside a literal is data. Teeth
+// `★ W-CMT-STRIP-*` pin both failure modes. The scanner is deliberately NOT moved up here:
+// its self-test is anchored to it by name ("if someone simplifies m20cScan back to an
+// indexOf loop, THIS reds first and by name"), and a `function` declaration hoists, so the
+// forward reference is resolved at module evaluation.
+//
+// Behaviour delta, stated not hidden: newlines INSIDE block comments are now retained
+// (they used to be deleted with the comment). Every consumer indexes into, or squashes
+// whitespace in, the STRIPPED text — never comparing stripped offsets against raw ones —
+// so this is inert. The `stripped.length > src.length / 2` anti-vacuity guards below only
+// get easier to satisfy, because the new scanner strips strictly LESS.
 function stripLineComments(src: string): string {
-  const withoutBlocks = stripBlockComments(src);
-  return withoutBlocks
-    .split('\n')
-    .map((line) => {
-      const i = line.indexOf('//');
-      return i === -1 ? line : line.slice(0, i);
-    })
-    .join('\n');
+  return m20cScan(src).code;
 }
 
 /** Generic "slice from START needle to END needle" region extractor for the nh1 teeth
@@ -2018,10 +2019,12 @@ describe('★ main.ts wiring (nh2/ADR-0148): drain-first + outstanding-steps gat
     // re-implemented a rejected alternative.
     const src = readMainTs();
     const stripped = stripLineComments(src);
-    // Anti-vacuity: `stripBlockComments` bails out and DROPS the remainder if it ever sees an
-    // unterminated `/*` (e.g. one living inside a string literal). If that happened, the tail of
-    // main.ts would go unscanned and this guard would pass vacuously. Comments are a small
-    // fraction of main.ts, so a stripped body under half the raw size means the strip ate the file.
+    // Anti-vacuity. The specific failure this was written for — the old stripper BAILING and
+    // dropping the remainder on an unterminated `/*` inside a string literal — is closed as of
+    // 13r-c (ADR-0181): the scanner is string-literal-aware and cannot be opened by a marker
+    // inside a literal. The guard is KEPT as a cheap, general assertion that the strip did not
+    // eat the file for ANY reason. Note the new scanner strips strictly LESS than the old one,
+    // so this bound only got easier to satisfy.
     expect(
       stripped.length,
       'comment-stripped main.ts collapsed to under half its raw size — the block-comment strip ' +
@@ -2091,17 +2094,17 @@ describe('main.ts wiring (ux1, ADR-0151): the Esc-to-continue promise and its ze
     // SECOND-PASS FIX (review battery) — SCAN COMMENT-STRIPPED SOURCE, not raw. Scanning
     // readMainTs() raw meant that block-commenting the Escape branch OUT left this pin GREEN:
     // the needle still occurs, inside the comment. This file already defines
-    // stripBlockComments/stripLineComments for exactly that reason ("a needle that only appears
+    // stripLineComments for exactly that reason ("a needle that only appears
     // in a comment cannot satisfy a tooth"), and the adjacent nh2 tooth (W-NH2-NO-CANCEL) uses
-    // stripLineComments(src) — which block-strips first, so it is the strictly stronger of the
-    // two and the closer local precedent. Matched here. (Its sibling W-UX1-HINT-NO-JS-OWNER
+    // stripLineComments(src) — which strips block AND line comments in one string-aware pass
+    // (13r-c/ADR-0181), so it is the strictly stronger of the two and the closer local precedent. Matched here. (Its sibling W-UX1-HINT-NO-JS-OWNER
     // below stays on RAW source on purpose: for a NEGATIVE pin, raw is the conservative
     // direction — a commented-out `help-hint` reference should still trip it.)
     const src = stripLineComments(readMainTs());
-    // Diagnostic guard (nh2 precedent): stripBlockComments BAILS and drops the remainder on an
-    // unterminated `/*`. For a positive pin that would red loudly rather than pass vacuously, but
-    // it would red for the WRONG reason — this assertion separates "the Escape branch was
-    // deleted" from "the comment strip ate the tail of main.ts".
+    // Diagnostic guard (nh2 precedent). Written when the stripper BAILED and dropped the
+    // remainder on an unterminated `/*`; 13r-c (ADR-0181) closed that hole, but the guard is
+    // kept as a general one — it still separates "the Escape branch was deleted" from "the
+    // comment strip ate the tail of main.ts", whatever the cause.
     expect(
       src.length,
       'comment-stripped main.ts collapsed to under half its raw size — the block-comment strip ' +
@@ -2198,11 +2201,12 @@ describe('main.ts wiring (ux1, ADR-0151): the Esc-to-continue promise and its ze
 // The remaining correctness pins live outside this file: the required-param + brand
 // SIGNATURE scan and the N1-N6 behaviour teeth in prediction/predictor.test.ts.
 //
-// WHY stripLineComments (NOT raw, and NOT stripBlockComments alone): the ADR-0085 A2
+// WHY stripLineComments (and NOT raw source): the ADR-0085 A2
 // comment block at main.ts:457-470 is `//`-style and its nh3 rewrite WILL mention
 // `dropRejected(`, `epoch`, `seedSeq(lastSentSeq)` in prose. Scanning raw source would
 // let that comment satisfy every needle below — the classic vacuous-green. `bodyRegion`
-// drops the anchor's own line and then strips block comments FIRST, then line comments.
+// drops the anchor's own line and then strips block and line comments in ONE
+// string-literal-aware pass (13r-c/ADR-0181).
 //
 // ANCHOR DISCIPLINE (nh1 post-mortem): needle-bounded regions only, every anchor's
 // uniqueness re-asserted at runtime, no fixed-width `slice(i, i + N)` windows, and no
@@ -2358,8 +2362,9 @@ describe('★ main.ts wiring (nh3/ADR-0152): epoch captured at the rejection sea
     ).toBe(true);
 
     const stripped = stripLineComments(src);
-    // Anti-vacuity (nh2 precedent): stripBlockComments BAILS and drops the remainder on an
-    // unterminated `/*`; a stripped body under half the raw size means the strip ate the file.
+    // Anti-vacuity (nh2 precedent). The bail-and-drop-on-unterminated-`/*` failure this was
+    // written for is closed by 13r-c (ADR-0181); kept as a general guard that the strip did not
+    // eat the file — a stripped body under half the raw size still means something went wrong.
     expect(
       stripped.length,
       'comment-stripped main.ts collapsed to under half its raw size — the block-comment strip ' +
@@ -6637,7 +6642,29 @@ describe('★ main.ts wiring (11r-e/ADR-0169 D4, mandated by ADR-0154 D7): all T
     const offenders = files.filter((rel) => {
       if (rel === 'main.ts' || rel === 'ui/shopModel.ts') return false;
       if (rel.endsWith('.test.ts')) return false; // sibling unit tests legitimately import it
-      return stripLineComments(readClientSrc(rel)).includes('buildShopViewModel');
+      const raw = readClientSrc(rel);
+      const stripped = stripLineComments(raw);
+      // 13r-c (ADR-0181) PER-FILE ANTI-TRUNCATION. This loop is a CEILING: a file
+      // is judged clean by a needle NOT being found, so any strip that eats a file
+      // silently EXONERATES it. Not hypothetical — before this slice the stripper
+      // truncated `net/connectionConfig.ts:12` at the `//` inside its websocket-URL
+      // literal (see W-CMT-STRIP-REALTREE-CONNCONFIG). 50+ files flow through here,
+      // so the check belongs per file.
+      //
+      // The invariant is NEWLINE COUNT, deliberately not a "stripped > raw/2" size
+      // ratio. The scanner removes comment CHARACTERS but re-emits every `\n` in
+      // every mode, so newline count is preserved EXACTLY (measured: 0 mismatches
+      // across all non-test client/src *.ts), while truncation — the failure this
+      // guards — always loses newlines. A size ratio would be both weaker and
+      // wrong: `shared/interpConfig.ts` legitimately strips to 8.5% of its raw
+      // size, and `inputGuards.ts` to under half, because they are mostly prose.
+      expect(
+        (stripped.match(/\n/g) ?? []).length,
+        `comment-stripping ${rel} lost newlines — the strip TRUNCATED the file. This ` +
+          'offenders loop clears a file when a needle is ABSENT, so a truncated read would ' +
+          'report it clean rather than red (ADR-0181)',
+      ).toBe((raw.match(/\n/g) ?? []).length);
+      return stripped.includes('buildShopViewModel');
     });
     expect(
       offenders,
@@ -7100,8 +7127,9 @@ describe('★ main.ts wiring (11r-h/ADR-0172): movement rejections reach the F9 
     const src = readMainTs();
     const stripped = stripLineComments(src);
 
-    // Anti-vacuity (nh2 precedent): stripBlockComments BAILS and drops the remainder on an
-    // unterminated `/*`; a stripped body under half the raw size means the strip ate the file.
+    // Anti-vacuity (nh2 precedent). The bail-and-drop-on-unterminated-`/*` failure this was
+    // written for is closed by 13r-c (ADR-0181); kept as a general guard that the strip did not
+    // eat the file — a stripped body under half the raw size still means something went wrong.
     expect(
       stripped.length,
       'comment-stripped main.ts collapsed to under half its raw size — the block-comment strip ' +
@@ -7715,14 +7743,17 @@ describe('★ main.ts wiring (EG4-3/A12): W-EVOLVE-REDUCER — onEvolve forwards
 // MR_HELPER_START/END), so the m20c hunks are pinned RELATIVE to the regions the pre-existing
 // teeth already own — which is also how they are proven not to re-anchor them.
 //
-// IT DOES NOT REUSE `stripLineComments` / `stripBlockComments` / `bodyRegion` /
-// `moveRejectHelperBody` (red-team X1). Those strip `/*` with a plain `indexOf` and have no
-// notion of string literals, so ONE quoted string containing a slash-star pair makes them drop
-// the entire remainder of the file — every needle after it unfindable, every count 0, every ban
-// vacuous. The m20c teeth use the string-aware `m20cScan` below instead, and
-// `W-M20C-SCANNER-SELF-TEST` plants the exploit shape to prove it. The pre-existing helpers are
-// out of this block's touch-set; the obligation is discharged from the other side by
-// `W-M20C-NO-COMMENT-OPENER-IN-LITERAL`, which forbids the hazard in the code m20c introduces.
+// HISTORICAL NOTE (m20c, red-team X1): this block originally avoided `stripLineComments` /
+// `bodyRegion` / `moveRejectHelperBody` because those stripped `/*` with a plain `indexOf` and
+// had no notion of string literals, so ONE quoted string containing a slash-star pair made them
+// drop the entire remainder of the file — every needle after it unfindable, every count 0, every
+// ban vacuous. Fixing the pre-existing helpers was out of m20c's touch-set, so the obligation was
+// discharged from the other side by `W-M20C-NO-COMMENT-OPENER-IN-LITERAL`.
+//
+// AS OF 13r-c (ADR-0181) THAT SPLIT IS GONE: `stripLineComments` now delegates to the same
+// string-aware `m20cScan` these teeth use, so the whole file shares ONE scanner.
+// `W-M20C-SCANNER-SELF-TEST` and the `★ W-CMT-STRIP-*` teeth both still plant the exploit shape,
+// and `W-M20C-NO-COMMENT-OPENER-IN-LITERAL` is KEPT as defence in depth.
 //
 // THE EIGHT HOOKS (all additive):
 //   1. module scope, after the wasm-derived consts: `const WASM_READY_MS = performance.now();`
@@ -7775,30 +7806,59 @@ interface M20cScan {
 /**
  * A STRING-LITERAL-AWARE comment scanner, defined here for the m20c teeth only.
  *
- * WHY NOT THIS FILE'S EXISTING `stripLineComments` / `stripBlockComments` (red-team X1, PROVEN
- * live against the first draft of this block): those helpers scan for `/*` with a plain
+ * ORIGINALLY WRITTEN because this file's `stripLineComments` / `stripBlockComments` (red-team
+ * X1, PROVEN live against the first draft of this block) scanned for `/*` with a plain
  * `indexOf`, with no notion of string literals. A single line such as
  *     const label = 'rate: a slash-star pair inside a quoted string';
- * opens a "block comment" that never closes, and the stripper DROPS THE ENTIRE REMAINDER OF THE
- * FILE. Every needle after that point becomes unfindable, every `countOccurrences` returns 0 and
- * every ban passes — a live violation measured GREEN.
+ * opened a "block comment" that never closed, and the stripper DROPPED THE ENTIRE REMAINDER OF
+ * THE FILE. Every needle after that point became unfindable, every `countOccurrences` returned 0
+ * and every ban passed — a live violation measured GREEN.
  *
- * The pre-existing helpers are NOT edited (this block is append-only), so the older teeth keep
- * their behaviour; the m20c teeth use the scanner below instead, and the self-test in the first
- * describe proves it. Note that main.ts contains no such literal TODAY — this is about the code
- * the m20c hunks introduce, which is why there is also a tooth banning `/*` inside any string
- * literal in those hunks.
+ * AS OF 13r-c (ADR-0181) this is no longer "for the m20c teeth only": `stripLineComments`
+ * delegates to this scanner and `stripBlockComments` is deleted, so it is THE scanner for the
+ * whole file and all ~78 pre-existing call sites are fixed in place. It is deliberately not
+ * moved next to `stripLineComments`: the self-test below is anchored to it BY NAME, and a
+ * `function` declaration hoists. The tooth banning `/*` inside any string literal in the m20c
+ * hunks is kept as defence in depth.
  *
  * Modes: code / line-comment / block-comment / single / double / template, honouring backslash
  * escapes inside the three string modes. An unescaped newline ends a `'…'`/`"…"` literal (JS
  * forbids one there), so a stray apostrophe cannot swallow the file either.
  *
- * KNOWN LIMIT, stated not hidden: `${…}` interpolation is not parsed, so a backtick inside an
- * interpolation expression would confuse template mode. No such construct exists in main.ts, and
- * the failure direction is a SHORTER `code` string — which reds a tooth rather than passing one.
+ * KNOWN LIMITS, stated not hidden. As of 13r-c this scanner serves the WHOLE file (all ~78
+ * `stripLineComments` call sites) and, through the offenders loop, every non-test file under
+ * `client/src` — so these are scoped to that corpus, not to main.ts alone:
+ *   1. `${…}` interpolation is not parsed, so a backtick inside an interpolation expression
+ *      would confuse template mode. No such construct exists anywhere under `client/src`
+ *      (verified by grep), and the failure direction is a SHORTER `code` string — which reds a
+ *      tooth rather than passing one.
+ *   2. There is no REGEX-LITERAL mode. A comment marker inside a regex CHARACTER CLASS —
+ *      `/[//]/` or `/[/*]/` — opens a comment that is not one and blanks the rest of that line
+ *      (measured). The common escaped-slash form `/a\/\/b/` is SAFE (the backslashes
+ *      interleave, so no two slashes are ever adjacent). No regex of the dangerous shape exists
+ *      in the scanned non-test corpus. Unlike limit 1, this failure is NOT self-announcing — a
+ *      needle sharing a line with such a regex would silently vanish — so if one is ever
+ *      introduced, add a regex mode rather than relying on luck.
  *
  * No `new RegExp` — banned repo-wide, in tests as much as in source.
  */
+/** Is the `/` at `i` the start of a REGEX LITERAL rather than a division or a comment
+ *  opener? True only where a binary `/` is impossible — immediately after an
+ *  operator/opening bracket/separator, or at the start of the source — so the answer is
+ *  sound rather than a guess. Deliberately CONSERVATIVE: a regex in keyword position
+ *  (`return /x/`) is not recognised, because telling that from division needs real token
+ *  history; under-detection just preserves the previous behaviour, whereas over-detection
+ *  would swallow real code. Returns false for `//` and block-comment openers so the
+ *  comment arms keep precedence there. */
+function startsRegexLiteral(src: string, i: number): boolean {
+  const next = src.charAt(i + 1);
+  if (next === '/' || next === '*' || next === '') return false;
+  let k = i - 1;
+  while (k >= 0 && (src[k] === ' ' || src[k] === '\t' || src[k] === '\n' || src[k] === '\r')) k--;
+  if (k < 0) return true;
+  return '=(,[{:;!?&|+-*%<>^~}'.indexOf(src.charAt(k)) !== -1;
+}
+
 function m20cScan(src: string): M20cScan {
   const CODE = 0;
   const LINE = 1;
@@ -7818,6 +7878,35 @@ function m20cScan(src: string): M20cScan {
     const next = src.charAt(i + 1);
 
     if (mode === CODE) {
+      // REGEX LITERAL, consumed BEFORE the comment arms and only where a binary `/`
+      // is IMPOSSIBLE (see `startsRegexLiteral`) — sound, not heuristic.
+      // 13r-c red-team BLOCKER, reproduced: a regex whose CLOSING slash abuts a `*`
+      // (`const RE = /ab/*` … `1 */ 2;`) formed a phantom block-comment opener that
+      // swallowed every line to the next `*/`, erasing real code from the scan. The
+      // newline-count guard in the offenders loop could NOT catch it, because BLOCK
+      // mode re-emits every newline it steps over.
+      if (ch === '/' && startsRegexLiteral(src, i)) {
+        let j = i + 1;
+        let inClass = false;
+        while (j < src.length) {
+          const rc = src.charAt(j);
+          if (rc === '\\') {
+            j += 2;
+            continue;
+          }
+          if (rc === '\n') break; // unterminated: bail, never run away
+          if (rc === '[') inClass = true;
+          else if (rc === ']') inClass = false;
+          else if (rc === '/' && !inClass) {
+            j++;
+            break;
+          }
+          j++;
+        }
+        code += src.slice(i, j); // kept VERBATIM, like a string literal
+        i = j;
+        continue;
+      }
       if (ch === '/' && next === '/') {
         mode = LINE;
         i += 2;
@@ -8959,5 +9048,157 @@ describe('★ main.ts wiring (m20c/ADR-0180): the new hunks carry no credential 
           'derives from the player may enter telemetry.',
       ).toBe(-1);
     }
+  });
+});
+
+// ===========================================================================
+// 13r-c (false-GREEN security-gate bug): stripLineComments/stripBlockComments
+// WERE a MARKER-SCAN pair with NO string-literal awareness — the exact class of
+// bug this slice fixes across four scanners. These teeth are the REGRESSION PINS
+// for that fix: each was observed RED before it, and each drives stripLineComments
+// DIRECTLY so a revert to any marker-scan implementation reds here, by name.
+// stripLineComments now delegates to the string-aware m20cScan and
+// stripBlockComments is deleted; the past-tense narration below describes the
+// DEFEATED implementation on purpose, so the reason each pin exists survives the fix.
+// LIVE, MEASURED proof this was not hypothetical: the old stripLineComments turned
+// client/src/net/connectionConfig.ts:12's `DEV_URI` websocket-URL const
+// into `const DEV_URI = 'ws:` — and that file IS scanned by the
+// W-UX2B-WALLET-CALLSITES-NO-CROSSFILE offenders loop (line ~6637-6641), via
+// clientSrcTsFiles()/readClientSrc(), through this exact function.
+// ===========================================================================
+describe('★ main.ts wiring (13r-c): stripLineComments has NO string-literal awareness — false-GREEN proof', () => {
+  it('★ W-CMT-STRIP-DECOY-OPENER BITES: a string literal containing a block-comment opener does not swallow a following real call', () => {
+    // WRONG IMPL KILLED: the deleted stripBlockComments located `/*` via a plain
+    // `indexOf`, with zero notion of string/template literals. A decoy string whose
+    // CONTENT happens to contain `/*` opened what it treated as a real (here, unterminated)
+    // block comment; on an unterminated opener it returned everything BEFORE it and DROPPED
+    // THE ENTIRE REMAINDER OF THE FILE — so a live call one line later became permanently
+    // invisible to every tooth built on stripLineComments.
+    // Built via .join('') (this file's own established idiom — line ~7991/~8914) so this
+    // fixture cannot trip any OTHER scanner reading this file's own source.
+    const opener = ['/', '*'].join('');
+    const fixture = [`const decoy = 'zone ${opener} not a comment';`, 'realCallAfterDecoy();'].join(
+      '\n',
+    );
+    expect(
+      stripLineComments(fixture).includes('realCallAfterDecoy();'),
+      'a live statement AFTER a string literal whose content contains an unclosed block-' +
+        'comment opener must survive stripLineComments. The pre-13r-c marker scan treated the ' +
+        'decoy as a real, unterminated `/*` and dropped everything from it to EOF, silently ' +
+        'blinding every downstream tooth built on this stripper. If this reds, the ' +
+        'string-literal-aware scanner has been reverted (ADR-0181).',
+    ).toBe(true);
+  });
+
+  it("★ W-CMT-STRIP-SAMELINE-URL BITES: a 'https://x/' string literal does not truncate real code on the SAME line", () => {
+    // WRONG IMPL KILLED: stripLineComments (line ~1444) locates `//` via a per-line
+    // `indexOf`, with zero notion of string/template literals. A `'https://...'` (or
+    // a websocket URL) literal's OWN `//` is indistinguishable from a real line comment, so
+    // everything after it on the SAME line — including real, live code — is truncated away.
+    // Built via SLASH+SLASH (never written contiguously as literal text in this fixture —
+    // this file's own convention, line ~7991) so the hazard lives only in the runtime
+    // string value, never in this file's own source bytes.
+    const SLASH = ['/'].join('');
+    const httpsUrl = `https:${SLASH}${SLASH}x${SLASH}`;
+    const fixture = `const DEV_URI = '${httpsUrl}'; realCallAfterUrl();`;
+    expect(
+      stripLineComments(fixture).includes('realCallAfterUrl();'),
+      `a live statement sharing its physical line with a '${httpsUrl}' string literal must ` +
+        "survive stripLineComments. The pre-13r-c marker scan mistook the literal's OWN `//` " +
+        'for a real line-comment start and truncated the rest of the line, dropping the real ' +
+        'call. If this reds, the string-literal-aware scanner has been reverted (ADR-0181).',
+    ).toBe(true);
+  });
+
+  it('★ W-CMT-STRIP-UNTERMINATED-QUOTE BITES: an unterminated single-quote literal does not swallow the rest of the file', () => {
+    // stripLineComments has NO string-tracking state at all — it never opens or closes a
+    // "quote mode", so an unterminated `'…` cannot by itself trigger the runaway class this
+    // block otherwise guards against (that requires an unclosed `/*`, covered above). This
+    // tooth pins that non-regression explicitly: whichever fix lands must not REGRESS this
+    // already-safe case while closing the `/*`/`//` holes above.
+    const fixture = ["const s = 'unterminated", 'realCallAfterQuote();'].join('\n');
+    expect(
+      stripLineComments(fixture).includes('realCallAfterQuote();'),
+      'a live statement on the line AFTER an unterminated single-quote literal must survive ' +
+        'stripLineComments. This held BEFORE 13r-c (the old stripper tracked no quote state at ' +
+        'all) and must keep holding AFTER it: the string-aware scanner bails out of a ' +
+        'single/double-quoted literal at an unescaped newline precisely so a stray apostrophe ' +
+        'cannot swallow the rest of the file while the /* and same-line-// holes are closed.',
+    ).toBe(true);
+  });
+
+  it('★ W-CMT-STRIP-IDEMPOTENT BITES: stripLineComments is idempotent on ordinary commented source', () => {
+    // A second pass over already-stripped, comment-free text must be a no-op. Any fix that
+    // introduces state (e.g. a quote-tracking pass that behaves differently on text with no
+    // quotes left to open) must preserve this property.
+    const fixture = [
+      '// a leading full-line comment',
+      'const a = 1; // a trailing comment',
+      'realCallIdempotent();',
+    ].join('\n');
+    const once = stripLineComments(fixture);
+    const twice = stripLineComments(once);
+    expect(twice, 'stripLineComments(stripLineComments(x)) must equal stripLineComments(x)').toBe(
+      once,
+    );
+  });
+
+  it('★ W-CMT-STRIP-REGEX-PHANTOM-BLOCK BITES: a regex literal abutting a star does not open a phantom block comment', () => {
+    // 13r-c red-team BLOCKER, reproduced then closed. A regex literal whose CLOSING
+    // slash is immediately followed by `*` used to form a `/*` the scanner read as a
+    // real block-comment opener. It then swallowed every line up to the next `*/` —
+    // erasing genuine, compiling code from the scan. On the eval side that made
+    // `checkNoPrivateWalletSubscription` return PASS for a live `FROM player_wallet`
+    // subscription; here it would exonerate a file from the offenders ceiling.
+    //
+    // The newline-count anti-truncation guard CANNOT catch this (asserted below):
+    // block mode re-emits every newline it steps over, so the line structure is
+    // intact while the code between the markers is gone. That is exactly why this
+    // needs its own tooth.
+    //
+    // Hazard sequences are built via .join('') so this fixture cannot trip any other
+    // scanner reading this file's own source.
+    const star = ['*'].join('');
+    const slash = ['/'].join('');
+    const fixture = [
+      `const RE = ${slash}ab${slash}${star}`,
+      'realCallInsidePhantom();',
+      `const noop = 1 ${star}${slash} 2;`,
+    ].join('\n');
+
+    const stripped = stripLineComments(fixture);
+    expect(
+      stripped.includes('realCallInsidePhantom();'),
+      'a live statement between a regex literal abutting a star and a later star-slash must ' +
+        'survive stripLineComments. Before 13r-c the regex close + star was read as a real ' +
+        'block-comment opener and everything to the next star-slash was swallowed, silently ' +
+        'erasing real code from every tooth built on this stripper (ADR-0181).',
+    ).toBe(true);
+
+    // Pins WHY this tooth must exist independently of the offenders-loop guard.
+    expect(
+      (stripped.match(/\n/g) ?? []).length,
+      'the newline-count guard is structurally blind to this attack — block mode re-emits ' +
+        'every newline it steps over — so newline count alone can never detect it',
+    ).toBe((fixture.match(/\n/g) ?? []).length);
+  });
+
+  it('★ W-CMT-STRIP-REALTREE-CONNCONFIG BITES: stripLineComments(connectionConfig.ts) still contains 127.0.0.1:3000', () => {
+    // LIVE, MEASURED regression (not a synthetic fixture): net/connectionConfig.ts:12 reads
+    // a `DEV_URI` websocket-URL const. The pre-13r-c per-line `indexOf('//')` found
+    // the `//` INSIDE that literal and truncated the line at it, yielding
+    // `const DEV_URI = 'ws:` — the entire address gone. This file's own
+    // W-UX2B-WALLET-CALLSITES-NO-CROSSFILE offenders loop (line ~6637-6641) already runs
+    // stripLineComments over every file clientSrcTsFiles() returns, via readClientSrc(); if
+    // a real ACCESSOR_BYPASS-shaped violation ever landed on the SAME line as this URL
+    // literal (or any other scheme-slash-slash URL literal client/src/net files legitimately
+    // carry), that offenders loop would silently miss it.
+    const stripped = stripLineComments(readClientSrc('net/connectionConfig.ts'));
+    expect(
+      stripped.includes('127.0.0.1:3000'),
+      'stripLineComments(connectionConfig.ts) no longer contains "127.0.0.1:3000" — the ' +
+        "websocket-URL literal's own `//` truncated the DEV_URI line before the address, exactly " +
+        'the live-in-tree proof this slice was scoped around.',
+    ).toBe(true);
   });
 });

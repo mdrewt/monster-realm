@@ -61,72 +61,57 @@
 // G8-BAD-c1b-wrapped-binding / G8-BAD-a2-wrapped-find prove the squash BITES —
 // each is undetected by the pre-M21c un-squashed matcher.
 //
-// All strips applied: stripRustComments THEN stripRustStrings THEN compactWs
-// before every needle count (C2 keeps the un-squashed body scan — its needle
-// `profile(` has no internal whitespace to survive and the body is extracted,
-// not needled, so compaction buys nothing there).
+// All strips applied (13r-c/ADR-0181): ONE string-literal-aware pass over
+// comments AND string literals (evals/rust-scan.mjs), THEN compactWs, before
+// every needle count. This replaced an ordered `stripRustComments` THEN
+// `stripRustStrings` pipeline whose ordering was itself the bug — see the
+// stripping section below and tooth [13r-c/T2]. (C2 keeps the un-squashed body
+// scan — its needle `profile(` has no internal whitespace to survive and the
+// body is extracted, not needled, so compaction buys nothing there.)
 // No new RegExp() anywhere.
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
+import { assertStripperSound, compactWs, countOccurrences, stripRustSource } from './rust-scan.mjs';
 
 const SERVER_SRC = 'server-module/src';
 
-// ---------------------------------------------------------------------------
-// Comment and string stripping (sourced from battle-reducer-security pattern)
-// ---------------------------------------------------------------------------
-function stripRustComments(src) {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
-}
+// 13r-c: hazard characters as data, never written contiguously as literal text in
+// this file's own source (this file is itself scanned by other repo scanners —
+// precedent: evals/account-privacy.eval.mjs:180-185, client/src/main.wiring.test.ts:7991).
+const DQ = String.fromCharCode(0x22); // "
+const SLASH = String.fromCharCode(0x2f); // /
 
-function stripRustStrings(src) {
-  let out = '';
-  let i = 0;
-  while (i < src.length) {
-    if (src[i] === '"') {
-      out += ' ';
-      i++;
-      while (i < src.length) {
-        if (src[i] === '\\' && i + 1 < src.length) {
-          out += '  ';
-          i += 2;
-        } else if (src[i] === '"') {
-          out += ' ';
-          i++;
-          break;
-        } else {
-          out += ' ';
-          i++;
-        }
-      }
-    } else {
-      out += src[i];
-      i++;
-    }
-  }
-  return out;
-}
-
+// ---------------------------------------------------------------------------
+// Comment and string stripping — 13r-c (ADR-0181).
+//
+// WAS: `stripRustComments` THEN `stripRustStrings`, i.e. comments were stripped
+// BEFORE strings. That ordering is the false-GREEN bug this slice closes. A real
+// issuer URL in a literal —
+//     const ISSUER: &str = <a quote>https:<slash><slash>auth.example/<a quote>;
+// — lost its tail (and its CLOSING quote) to the line-comment pass, leaving ONE
+// unmatched quote. `stripRustStrings` is a whole-text quote-toggle walk with no
+// line boundary, so it then treated everything from that orphan quote onward as
+// string data and blanked it — real code included. Tooth [13r-c/T2] pins the
+// exact shape: a genuine `profile().identity().delete(` ~20 lines below such a
+// const was blanked, and the RL-2/C1a ban reported PASS.
+//
+// NOW: one shared, single-pass, offset-preserving lexer (evals/rust-scan.mjs)
+// where a slash-slash inside a literal is data and can never open a comment.
+// `stripBoth` / `scanCode` keep their names so the ~25 needle call sites below
+// read unchanged; only the engine underneath them changed.
+// ---------------------------------------------------------------------------
 function stripBoth(src) {
-  return stripRustStrings(stripRustComments(src));
+  return stripRustSource(src);
 }
 
-// ---------------------------------------------------------------------------
-// compactWs: remove ALL whitespace so needles survive rustfmt line-wrapping
+// scanCode: the canonical pipeline — strip comments AND strings in one pass,
+// then squash whitespace so needles survive rustfmt line-wrapping
 // (`ctx.db\n  .profile()\n  .identity()\n  .delete(x)` compiles and is exactly
-// how this repo formats a 4-hop chain). Local copy on purpose — the repo
-// convention is a per-file helper, not a cross-eval import (same body as
-// wallet-privacy.eval.mjs:139 / account-privacy.eval.mjs:180).
-// ---------------------------------------------------------------------------
-function compactWs(s) {
-  return s.replace(/\s+/g, '');
-}
-
-// scanCode: the canonical M21c pipeline — strip comments, strip strings, then
-// squash whitespace. EVERY needle below is written against this output.
+// how this repo formats a 4-hop chain). EVERY needle below is written against
+// this output.
 function scanCode(src) {
   return compactWs(stripBoth(src));
 }
-
 // ---------------------------------------------------------------------------
 // extractReducerBody: extract a named function's body (between outer braces).
 // ---------------------------------------------------------------------------
@@ -146,21 +131,6 @@ function extractReducerBody(src, fnName) {
     i++;
   }
   return src.slice(start, i - 1);
-}
-
-// ---------------------------------------------------------------------------
-// countOccurrences: count non-overlapping occurrences of needle in haystack.
-// ---------------------------------------------------------------------------
-function countOccurrences(haystack, needle) {
-  let count = 0;
-  let start = 0;
-  while (true) {
-    const idx = haystack.indexOf(needle, start);
-    if (idx === -1) break;
-    count++;
-    start = idx + needle.length;
-  }
-  return count;
 }
 
 // ---------------------------------------------------------------------------
@@ -744,6 +714,68 @@ export default async function () {
       pass: false,
       detail:
         'TEETH FAILED (C1a-BAD): chained-delete fixture has neither needle — fixture construction error',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // [13r-c/T2] Fixture C1a-BAD-https-then-delete: a `https://` issuer const on
+  // line 1, ~20 padding lines, THEN a genuine chained profile delete far below.
+  //
+  // PROVES: this file's own strip pipeline (stripBoth = stripRustStrings(
+  // stripRustComments(src))) is a TWO-STAGE bug, not a one-line truncation.
+  // Stage 1 (stripRustComments, regex-only, per-line `\/\/[^\n]*`): the `//`
+  // inside the `https://` URL is treated as a comment start and eats the REST
+  // OF LINE 1 ONLY — including the string's own closing `"`. That leaves ONE
+  // unmatched `"` (the opening quote) in the text handed to stage 2.
+  // Stage 2 (stripRustStrings, a character-by-character quote-toggle walk with
+  // NO per-line boundary): it hits that lone unmatched `"`, enters "inside a
+  // string" mode, and — because no OTHER `"` exists anywhere later in the
+  // fixture — never finds a closing quote again. Every character from there to
+  // EOF is blanked, including all ~20 padding lines and the real
+  // `ctx.db.profile().identity().delete(who);` call. C1a's needle count on the
+  // fully-stripped text is 0, even though the source contains a genuine
+  // permanent-leaderboard-row DELETE (RL-2 / ADR-0119 D1).
+  //
+  // RED TODAY: the C1a needle count is expected to be > 0 (a real violation is
+  // present) but is 0 — this whole eval-teeth section returns TEETH FAILED,
+  // which is the intended RED for a not-yet-fixed stripper.
+  //
+  // VACUOUS IF: an implementer rewrites this fixture so the delete sits on the
+  // SAME physical line as the URL const — that would only prove the
+  // single-line truncation stage (already covered by
+  // evals/currency-integrity.eval.mjs's T1a), not this file's DISTINCT
+  // multi-line propagation through stripRustStrings. Also vacuous if any other
+  // `"` character is introduced anywhere after line 1 (it would re-close the
+  // string and stop the blanking early).
+  // -------------------------------------------------------------------------
+  const httpsIssuerLine = `const ISSUER: &str = ${DQ}https:${SLASH}${SLASH}issuer.example.com${DQ};`;
+  const paddingLines = [];
+  for (let i = 0; i < 20; i++) {
+    paddingLines.push(`    let _pad${i} = ${i};`);
+  }
+  const badHttpsThenDeleteSrc = [
+    httpsIssuerLine,
+    'fn purge_profile(ctx: &ReducerContext, who: Identity) {',
+    ...paddingLines,
+    '    ctx.db.profile().identity().delete(who);',
+    '}',
+  ].join('\n');
+  const t2Count =
+    countOccurrences(scanCode(badHttpsThenDeleteSrc), C1A_CHAINED_NEEDLE) +
+    countOccurrences(scanCode(badHttpsThenDeleteSrc), C1A_ALT_NEEDLE);
+  if (t2Count === 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED [13r-c/T2]: the C1a chained-delete needle did not fire on a fixture ' +
+        `containing a genuine \`ctx.db.profile().identity().delete(who);\` call ~20 lines ` +
+        `below a \`${DQ}https:${SLASH}${SLASH}...${DQ}\` issuer-URL const. ` +
+        "stripRustComments' per-line `//` truncation eats line 1's closing quote, leaving " +
+        'ONE unmatched `"`; stripRustStrings (a whole-text quote-toggle walk with no line ' +
+        'boundary) then treats everything from there to EOF as string data and blanks it — ' +
+        'including the real profile DELETE. A file could hide a permanent-leaderboard-row ' +
+        'delete this way and RL-2/C1a would report PASS.',
     };
   }
 
@@ -1349,6 +1381,20 @@ export default async function () {
   }
 
   const failures = [];
+
+  // 13r-c (ADR-0181) STRIPPER-SOUNDNESS GATE, per file. A desync GREENS every
+  // ban below and reds only the presence checks, so it is invisible to the very
+  // clauses it blinds — it must be caught here. Covers the three named sources
+  // plus every enumerated non-test domain file.
+  for (const { label, src } of [
+    { label: 'ranking.rs', src: rankingSrc },
+    { label: 'pvp.rs', src: pvpSrc },
+    { label: 'lib.rs', src: libSrc },
+    ...domainFiles.map((f) => ({ label: f.name, src: f.src })),
+  ]) {
+    const desync = assertStripperSound(src, `${SERVER_SRC}/${label}`);
+    if (desync !== null) failures.push(desync);
+  }
 
   // -------------------------------------------------------------------------
   // Criterion A1: ranking.rs declares EXACTLY ONE #[spacetimedb::reducer], named
