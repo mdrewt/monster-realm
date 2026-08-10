@@ -55,6 +55,14 @@
 //      and seeding taint from `claimCode` would false-positive the moment that
 //      boolean appeared in any log line. `const c = code; console.warn(c);` is
 //      therefore not caught — a review item, not a gate item.
+//   R6 FUNCTION-RETURN LAUNDERING. A helper that RETURNS a banned value and is
+//      then logged — `function getMsg() { return credential.token }` … then
+//      `opts.onError('x', getMsg())` — is NOT caught. This is one hop past the
+//      accepted `const NAME = <banned>` taint class: the launder happens through
+//      a return statement, not an initialiser, and following it would require
+//      real intra-file dataflow (resolving call targets to their return
+//      expressions). Documented, deliberately NOT closed — closing it needs the
+//      dataflow analysis this deliberately-shallow scanner does not do.
 import { existsSync, readFileSync } from 'node:fs';
 // CHECKER-IMPORT REUSE: the quote-aware comment stripper is the one already
 // exported by the DOM-shell eval; it is not re-implemented here.
@@ -121,6 +129,13 @@ const SIGN_IN_FAILED_SINK = 'opts.onSignInFailed(';
 export const SCAN_TARGETS = [
   { file: 'client/src/net/oidc.ts', requireSink: false, claimCodeBan: true },
   { file: 'client/src/net/credentialDecision.ts', requireSink: false, claimCodeBan: false },
+  // claimCode.ts holds the raw 64-hex claim secret in memory immediately after
+  // minting it — the module most likely to log the secret while debugging. It is
+  // a pure module (requireSink:false, extractor-completeness + the global floor,
+  // no per-file floor), and the claim-code identifiers are banned in its
+  // console./telemetry sink args (findTokenLeaks keys the ban on base ===
+  // 'claimCode.ts'). Exists only after T2 lands — same missing-file-RED as oidc.
+  { file: 'client/src/net/claimCode.ts', requireSink: false, claimCodeBan: true },
   { file: 'client/src/net/connection.ts', requireSink: true, claimCodeBan: true },
   { file: 'client/src/main.ts', requireSink: true, claimCodeBan: false },
 ];

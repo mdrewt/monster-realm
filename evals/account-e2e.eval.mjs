@@ -85,6 +85,10 @@ const DB_NAME = 'mr-acct-e2e';
 // account is provisioned, and A-applied fails loud. N4 (the throw) and this
 // coupling are the anti-vacuity spine of the whole live phase.
 const E2E_CLIENT_ID = 'mr-acct-e2e-client';
+// A DISTINCT audience for the E control token — minted with the correct issuer
+// but this `aud`, which is never what ALLOWED_AUDIENCE is patched to, so
+// audience_allowed rejects it (D18/CRITICAL-2 single-client gate).
+const WRONG_AUDIENCE = 'mr-acct-e2e-wrong-aud';
 const RUNBOOK_PATH = 'docs/observability-dr-runbook.md';
 const CI_WORKFLOW_PATH = '.github/workflows/ci.yml';
 // ops/auth/docker-compose.yml binds this loopback port (plan section 5).
@@ -232,6 +236,14 @@ function looksLikeEpochMs(cell) {
  * header is a data row. Tolerates both pipe-separated and whitespace-separated
  * renderings. The CLI also prints an UNSTABLE banner on STDERR — callers pass
  * stdout only, so it never reaches here.
+ *
+ * RESIDUAL (accepted): the cell split is NOT quote-aware — a `|` or whitespace
+ * INSIDE a quoted TEXT cell would be mis-split. This is only a false-RED risk,
+ * never a false-GREEN one, and it cannot fire here: every column this eval
+ * queries (identity, claimed_from, claimed_at_ms, owner_identity, code) is hex
+ * or an integer epoch, never a quoted string with embedded separators. If a
+ * future query selects a TEXT column (e.g. a player name), this must gain quote
+ * awareness first.
  */
 export function parseSqlOutput(stdout) {
   const kept = [];
@@ -274,6 +286,8 @@ export const MILESTONES = [
   'N3',
   'C-connect',
   'C-applied',
+  'E-connect',
+  'E-applied',
   'done',
 ];
 
@@ -327,11 +341,13 @@ export function checkMilestones(events, expected) {
   const bId = dataOf('B-connect').identity;
   const cId = dataOf('C-connect').identity;
   const dId = dataOf('D-connect').identity;
+  const eId = dataOf('E-connect').identity;
   for (const [label, id] of [
     ['A', aId],
     ['B', bId],
     ['C', cId],
     ['D', dId],
+    ['E', eId],
   ]) {
     if (typeof id !== 'string' || normHex(id).length < 32) {
       return { ok: false, reason: `${label}-connect did not report an identity (${String(id)})` };
@@ -350,6 +366,14 @@ export function checkMilestones(events, expected) {
   }
   if (identityMatches(dId, aId) || identityMatches(dId, bId) || identityMatches(dId, cId)) {
     return { ok: false, reason: 'D (second account) reused an existing identity' };
+  }
+  if (
+    identityMatches(eId, aId) ||
+    identityMatches(eId, bId) ||
+    identityMatches(eId, cId) ||
+    identityMatches(eId, dId)
+  ) {
+    return { ok: false, reason: 'E (wrong-audience) reused an existing identity' };
   }
 
   const aApplied = dataOf('A-applied');
@@ -386,6 +410,19 @@ export function checkMilestones(events, expected) {
         `C connected with a JWT from the SECOND issuer and got ${cApplied.rows} ` +
         'my_account row(s) — the issuer allowlist is inert, which makes every positive result ' +
         'in this run meaningless (this is the N1 control)',
+    };
+  }
+
+  const eApplied = dataOf('E-applied');
+  if (eApplied.rows !== 0) {
+    return {
+      ok: false,
+      reason:
+        `E connected with a CORRECT-issuer JWT but a WRONG audience and got ${eApplied.rows} ` +
+        'my_account row(s) — audience_allowed accepted a token minted for another application. ' +
+        'This is the D18/CRITICAL-2 single-client control: if the audience check is inert (or ' +
+        'later widened to a list), any issuer-valid token provisions here regardless of who it ' +
+        'was minted for',
     };
   }
 
@@ -426,7 +463,7 @@ export function checkMilestones(events, expected) {
  *   account columns: identity, claimed_from, claimed_at_ms
  *   guest_claim: any columns (only the count matters)
  *   monster columns: owner_identity
- * `ids` = { a, b, c, d } hex identities.
+ * `ids` = { a, b, c, d, e } hex identities.
  * Returns { ok, reason }.
  */
 export function checkSqlTruth(tables, ids) {
@@ -438,14 +475,22 @@ export function checkSqlTruth(tables, ids) {
     return {
       ok: false,
       reason:
-        `account holds ${account.length} row(s), expected exactly 2 (A + D). C connected ` +
-        'with an unrecognized issuer and must NEVER have provisioned one',
+        `account holds ${account.length} row(s), expected exactly 2 (A + D). C (unrecognized ` +
+        'issuer) and E (wrong audience) both connected and must NEVER have provisioned one',
     };
   }
   if (account.some((r) => identityMatches(r[0], ids.c))) {
     return {
       ok: false,
       reason: 'an account row exists for C, whose JWT came from an issuer outside ALLOWED_ISSUERS',
+    };
+  }
+  if (ids.e && account.some((r) => identityMatches(r[0], ids.e))) {
+    return {
+      ok: false,
+      reason:
+        'an account row exists for E, whose JWT carried an audience outside ALLOWED_AUDIENCE ' +
+        '(D18/CRITICAL-2: the single-client audience gate did not hold)',
     };
   }
   const aRow = account.find((r) => identityMatches(r[0], ids.a));
@@ -500,6 +545,48 @@ export function checkSqlTruth(tables, ids) {
     };
   }
   return { ok: true, reason: 'account/guest_claim/monster server truth matches the claimed flow' };
+}
+
+// --- host-side acceptance of the second issuer (N1 disambiguation) ----------
+
+/**
+ * `reqLog` = the issuer stub's ordered list of request paths (already
+ * slash-collapsed). The N1 control is only meaningful if the HOST actually
+ * fetched and evaluated the second issuer's key material: "C got no account"
+ * proves the module allowlist did the work ONLY if the host reached
+ * verification and then rejected on the issuer — not if the token was dropped
+ * before the host ever looked. This asserts the host fetched BOTH the primary
+ * discovery (A/D/E were verified at all) AND the second issuer's discovery +
+ * jwks (C reached verification). Returns { ok, reason }.
+ */
+export function checkHostSideAcceptance(reqLog) {
+  const log = Array.isArray(reqLog) ? reqLog : [];
+  const sawPrimaryDiscovery = log.some(
+    (u) => u.indexOf('other') === -1 && u.indexOf('openid-configuration') !== -1,
+  );
+  const sawOtherDiscovery = log.some(
+    (u) => u.indexOf('other') !== -1 && u.indexOf('openid-configuration') !== -1,
+  );
+  const sawOtherJwks = log.some((u) => u.indexOf('other') !== -1 && u.indexOf('jwks') !== -1);
+  if (!sawPrimaryDiscovery) {
+    return {
+      ok: false,
+      reason:
+        'the host never fetched the primary discovery document — A/D/E were not verified against ' +
+        `the stub at all (request log: ${JSON.stringify(log)})`,
+    };
+  }
+  if (!sawOtherDiscovery || !sawOtherJwks) {
+    return {
+      ok: false,
+      reason:
+        "the host never fetched the SECOND issuer's discovery+jwks, so C's token was rejected " +
+        'before verification. C proving "no account" is then meaningless: it would hold even if ' +
+        'the module allowlist were inert. Request log: ' +
+        JSON.stringify(log),
+    };
+  }
+  return { ok: true, reason: "host fetched both issuers' discovery + the second issuer's jwks" };
 }
 
 // --- ci.yml step ordering (read-only) --------------------------------------
@@ -783,6 +870,7 @@ const GOOD_ID_A = 'a'.repeat(64);
 const GOOD_ID_B = 'b'.repeat(64);
 const GOOD_ID_C = 'c'.repeat(64);
 const GOOD_ID_D = 'd'.repeat(64);
+const GOOD_ID_E = 'e'.repeat(64);
 const GOOD_CODE = '0123456789abcdef'.repeat(4);
 const GOOD_ISSUER = 'INTERNAL_SECRET_PLACEHOLDER_ISSUER';
 
@@ -801,6 +889,8 @@ function goodEvents() {
     { step: 'N3', ok: true, data: { err: ERR_INVALID_CODE } },
     { step: 'C-connect', ok: true, data: { identity: GOOD_ID_C } },
     { step: 'C-applied', ok: true, data: { rows: 0 } },
+    { step: 'E-connect', ok: true, data: { identity: GOOD_ID_E } },
+    { step: 'E-applied', ok: true, data: { rows: 0 } },
     { step: 'done', ok: true, data: {} },
   ];
 }
@@ -823,7 +913,7 @@ function goodSqlTables() {
   };
 }
 
-const GOOD_IDS = { a: GOOD_ID_A, b: GOOD_ID_B, c: GOOD_ID_C, d: GOOD_ID_D };
+const GOOD_IDS = { a: GOOD_ID_A, b: GOOD_ID_B, c: GOOD_ID_C, d: GOOD_ID_D, e: GOOD_ID_E };
 
 // --- the synthetic runbook -------------------------------------------------
 // The document deliberately carries DECOYS in the section AFTER the Better Auth
@@ -1028,6 +1118,7 @@ const DRIVER_SRC = [
   'const jwtA = process.env.MR_JWT_A;',
   'const jwtC = process.env.MR_JWT_C;',
   'const jwtD = process.env.MR_JWT_D;',
+  'const jwtE = process.env.MR_JWT_E;',
   '',
   'const mod = await import(pathToFileURL(CLIENT + "/src/module_bindings/index.ts").href);',
   'const DbConnection = mod.DbConnection;',
@@ -1141,11 +1232,17 @@ const DRIVER_SRC = [
   '  await applied(c.conn, ["SELECT * FROM my_account"]);',
   '  emit("C-applied", true, { rows: accountRows(c.conn).length });',
   '',
+  '  const e = await connectOnce(jwtE);',
+  '  emit("E-connect", true, { identity: e.identity });',
+  '  await applied(e.conn, ["SELECT * FROM my_account"]);',
+  '  emit("E-applied", true, { rows: accountRows(e.conn).length });',
+  '',
   '  clearTimeout(killer);',
   '  emit("done", true, {});',
   '  a.conn.disconnect();',
   '  c.conn.disconnect();',
   '  d.conn.disconnect();',
+  '  e.conn.disconnect();',
   '  process.exit(0);',
   '} catch (e) {',
   '  bail("flow", e);',
@@ -1290,6 +1387,12 @@ async function runLivePhase() {
     const jwtA = await mintJwt(stub.k1, 'e2e-k1', stub.iss1, 'alice-e2e', [E2E_CLIENT_ID]);
     const jwtD = await mintJwt(stub.k1, 'e2e-k1', stub.iss1, 'dave-e2e', [E2E_CLIENT_ID]);
     const jwtC = await mintJwt(stub.k2, 'e2e-k2', stub.iss2, 'mallory-e2e', [E2E_CLIENT_ID]);
+    // E: the CORRECT (patched) issuer + key, but an audience that is NOT the
+    // patched ALLOWED_AUDIENCE. This exercises audience_allowed directly: today's
+    // `.any()` membership check against the single patched entry already rejects
+    // it (the deployment-time exact-equality tightening is 13r-c-2-gated and out
+    // of this slice), so E provisions no account and E-applied.rows === 0.
+    const jwtE = await mintJwt(stub.k1, 'e2e-k1', stub.iss1, 'erin-e2e', [WRONG_AUDIENCE]);
 
     const clientDir = path.join(repoRoot, 'client');
     driver = spawn(process.execPath, ['--import', registerPath, driverPath], {
@@ -1302,6 +1405,7 @@ async function runLivePhase() {
         MR_JWT_A: jwtA,
         MR_JWT_C: jwtC,
         MR_JWT_D: jwtD,
+        MR_JWT_E: jwtE,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -1346,30 +1450,9 @@ async function runLivePhase() {
       );
     }
 
-    // --- host-side acceptance proof (F12) ---
-    const sawOtherDiscovery = stub.reqLog.some(
-      (u) => u.indexOf('other') !== -1 && u.indexOf('openid-configuration') !== -1,
-    );
-    const sawOtherJwks = stub.reqLog.some(
-      (u) => u.indexOf('other') !== -1 && u.indexOf('jwks') !== -1,
-    );
-    const sawPrimaryDiscovery = stub.reqLog.some(
-      (u) => u.indexOf('other') === -1 && u.indexOf('openid-configuration') !== -1,
-    );
-    if (!sawPrimaryDiscovery) {
-      throw new Error(
-        'the host never fetched the primary discovery document — A was not verified against ' +
-          `the stub at all (request log: ${JSON.stringify(stub.reqLog)})`,
-      );
-    }
-    if (!sawOtherDiscovery || !sawOtherJwks) {
-      throw new Error(
-        "the host never fetched the SECOND issuer's discovery+jwks, so C's token was rejected " +
-          'before verification. C proving "no account" is then meaningless: it would hold even ' +
-          'if the module allowlist were inert. Request log: ' +
-          JSON.stringify(stub.reqLog),
-      );
-    }
+    // --- host-side acceptance proof (F12) — pure fn, teeth-tested in phase 0 ---
+    const acceptance = checkHostSideAcceptance(stub.reqLog);
+    if (!acceptance.ok) throw new Error(acceptance.reason);
 
     // --- server truth ---
     const rawSql = [];
@@ -1388,6 +1471,7 @@ async function runLivePhase() {
         b: events.find((e) => e.step === 'B-connect').data.identity,
         c: events.find((e) => e.step === 'C-connect').data.identity,
         d: events.find((e) => e.step === 'D-connect').data.identity,
+        e: events.find((e) => e.step === 'E-connect').data.identity,
       },
     );
     if (!truth.ok) throw new Error(`server truth: ${truth.reason} :: raw ${rawSql.join(' | ')}`);
@@ -1615,6 +1699,12 @@ export default async function () {
           'single assertion that makes the positive result meaningful (N1)',
       ],
       [
+        'E-provisioned',
+        mutateEvent('E-applied', { data: { rows: 1 } }),
+        'a CORRECT-issuer but WRONG-audience connection that provisioned an account was accepted ' +
+          '— audience_allowed accepted a token minted for another application (D18/CRITICAL-2)',
+      ],
+      [
         'A-not-provisioned',
         mutateEvent('A-applied', { data: { rows: 0 } }),
         'a run where the account JWT provisioned nothing was accepted',
@@ -1735,6 +1825,49 @@ export default async function () {
       mutate(tables);
       if (checkSqlTruth(tables, GOOD_IDS).ok) return teeth(`sql-${id}`, why);
     }
+  }
+
+  // --- checkHostSideAcceptance (N1 host-side proof) ---
+  {
+    const goodLog = [
+      '/.well-known/openid-configuration',
+      '/jwks',
+      '/other/.well-known/openid-configuration',
+      '/other/jwks',
+    ];
+    const goodHost = checkHostSideAcceptance(goodLog);
+    if (!goodHost.ok) {
+      return teeth('host-good', `a complete request log was rejected: ${goodHost.reason}`);
+    }
+    const noOtherDiscovery = ['/.well-known/openid-configuration', '/jwks', '/other/jwks'];
+    if (checkHostSideAcceptance(noOtherDiscovery).ok) {
+      return teeth(
+        'host-no-other-discovery',
+        "a log missing the SECOND issuer's discovery fetch was accepted — C may have been " +
+          'dropped before verification, making its "no account" result vacuous',
+      );
+    }
+    const noOtherJwks = [
+      '/.well-known/openid-configuration',
+      '/jwks',
+      '/other/.well-known/openid-configuration',
+    ];
+    if (checkHostSideAcceptance(noOtherJwks).ok) {
+      return teeth(
+        'host-no-other-jwks',
+        "a log missing the SECOND issuer's jwks fetch was accepted — the host never obtained the " +
+          "key it would have rejected C's signature against",
+      );
+    }
+    const noPrimary = ['/other/.well-known/openid-configuration', '/other/jwks'];
+    if (checkHostSideAcceptance(noPrimary).ok) {
+      return teeth(
+        'host-no-primary',
+        'a log with no primary discovery fetch was accepted — A/D/E were never verified at all',
+      );
+    }
+    if (checkHostSideAcceptance([]).ok)
+      return teeth('host-empty', 'an empty request log was accepted');
   }
 
   // --- parseSqlOutput ---

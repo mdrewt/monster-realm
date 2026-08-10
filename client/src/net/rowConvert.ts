@@ -10,6 +10,7 @@ import {
   type WasmDirection,
 } from '../convert/convert';
 import type {
+  StoreAccount,
   StoreBattle,
   StoreBattleChallenge,
   StoreBattleMonster,
@@ -570,6 +571,48 @@ export function playerWalletRowToStore(row: SdkPlayerWalletRow): StoreWallet {
   return {
     ownerIdentity: row.ownerIdentity.toHexString(),
     balance: row.balance,
+  };
+}
+
+// --- M21b-2 (ADR-0182 D15): the owner-scoped `my_account` VIEW row --------------------
+
+export interface SdkAccountRow {
+  readonly identity: { toHexString(): string };
+  readonly authIssuer: string;
+  readonly createdAtMs: bigint;
+  readonly lastLoginAtMs: bigint;
+  readonly status: { tag: string };
+  readonly deletionRequestedAtMs: bigint | undefined;
+  readonly claimedFrom: { toHexString(): string } | undefined;
+  readonly claimedAtMs: bigint | undefined;
+}
+
+/**
+ * Map a `my_account` view row to the store's account slot. Modelled byte-for-byte on
+ * `playerWalletRowToStore`: EXPLICIT field mapping (the eight D15 keys, never a spread — the
+ * account record is deliberately PII-free and no SDK-only field may leak into the store), NO
+ * numeric coercion (the i64 timestamps stay bigint), NO defaulting (the three Option columns
+ * pass through as `undefined`, never fabricated to `0n`/`''` — the broke-vs-dark rule at
+ * rowConvert.ts:543-568), and NO throw of its own.
+ *
+ * Fail-SOFT, not fail-loud: this runs inside an SDK row callback whose dispatch loop has no
+ * per-listener isolation (ADR-0085 A6), so a throw here starves every sibling table's ingest
+ * for that transaction. `status?.tag` and the nullish `claimedFrom` guard keep a degenerate
+ * row from throwing; `status`'s unknown tags pass through raw (never normalised to 'Active').
+ */
+export function accountRowToStore(row: SdkAccountRow): StoreAccount {
+  return {
+    identity: row.identity.toHexString(),
+    authIssuer: row.authIssuer,
+    createdAtMs: row.createdAtMs,
+    lastLoginAtMs: row.lastLoginAtMs,
+    status: row.status?.tag,
+    deletionRequestedAtMs: row.deletionRequestedAtMs,
+    claimedFrom:
+      row.claimedFrom === undefined || row.claimedFrom === null
+        ? undefined
+        : row.claimedFrom.toHexString(),
+    claimedAtMs: row.claimedAtMs,
   };
 }
 

@@ -319,8 +319,8 @@ function makeRig(options: RigOptions = {}): Rig {
   let drawIndex = 0;
   let search = options.search ?? '';
   let tokenResponse = options.tokenResponse ?? OK_EXCHANGE;
-  const fetchThrows: FetchThrowMode = options.fetchThrows ?? 'none';
-  const digestThrows = options.digestThrows === true;
+  let fetchThrows: FetchThrowMode = options.fetchThrows ?? 'none';
+  let digestThrows = options.digestThrows === true;
 
   const respond = (spec: TokenResponseSpec) => ({
     ok: spec.ok,
