@@ -4283,3 +4283,227 @@ describe('AuthoritativeStore 12r-d [E2]: heal-location costCurrency survives the
     expect(byId.map((l) => l.costCurrency)).toEqual([10n, 0n, 500n]);
   });
 });
+
+// =============================================================================
+// M21b-2 (ADR-0182 D15) — the owner-scoped ACCOUNT SLOT: upsertAccount /
+// ownAccount / reset. APPENDED BLOCK — nothing above this line is modified.
+//
+// EARS COVERED
+//   AUTH-51 — WHILE deciding whether to display any "signed in" or claim-eligible
+//             affordance, the client SHALL use ONLY the subscribed `my_account` row's
+//             presence as the source of truth. This slot IS that source of truth, so its
+//             own-identity filter is the whole guarantee.
+//   G29 (store half) — `ownAccount(identity)` returns `undefined` for a FOREIGN identity
+//             even when the slot is populated. (The other half — main.ts naming neither
+//             `readAuthKind` nor `credential.kind` — is a whole-file negative in
+//             main.wiring.test.ts.)
+//
+// CONTRACT UNDER TEST (mirrors `#ownWallet` / `upsertWallet` / `ownWallet`, store.ts:404,
+// 713, 1039-1053, byte-for-byte in shape — the same reasoning applies verbatim):
+//   export type StoreAccount = {
+//     readonly identity: string;                     // hex, from Identity.toHexString()
+//     readonly authIssuer: string;
+//     readonly createdAtMs: bigint;                  // i64
+//     readonly lastLoginAtMs: bigint;                // i64
+//     readonly status: string;                       // the AccountStatus tag, carried bare
+//     readonly deletionRequestedAtMs: bigint | undefined;   // Option<i64>
+//     readonly claimedFrom: string | undefined;             // Option<Identity>, hex
+//     readonly claimedAtMs: bigint | undefined;             // Option<i64>
+//   };
+//   upsertAccount(row: StoreAccount): void   — sets a SINGLE slot, marks #dirty
+//   ownAccount(identity: string): StoreAccount | undefined
+//                                            — the slot ONLY when slot.identity === identity
+//   reset()                                  — also clears the slot
+//   NO removeAccount, deliberately: `delete_account` only flips `status` to
+//   `PendingDeletion` (schema.rs:669-700), account rows are never truly deleted, and the
+//   `my_account` VIEW delivers an update as unordered onInsert(new) + onDelete(old) — so a
+//   delete path could only ever wipe the LIVE row (ADR-0182 D15's explicit "deliberately NO
+//   onDelete").
+//
+// WHY A SLOT, NOT A MAP: `my_account` returns exactly ONE row — the caller's
+// (schema.rs:708-711). A Map would make another player's account row representable in the
+// client cache for free; a single slot makes that structurally impossible.
+//
+// RED REASON AT HEAD (8814416): `StoreAccount`, `upsertAccount` and `ownAccount` do not
+// exist in store.ts. The late import below fails to resolve its named export and this whole
+// block reds on a MISSING IMPLEMENTATION.
+// =============================================================================
+
+// A late, second import block. Precedent: rowConvert.test.ts:2816 and :3102 do exactly
+// this for their appended sections, and biome sorts imports only WITHIN a contiguous chunk.
+import type { StoreAccount } from './store';
+
+const ACCOUNT_A = 'alice-account-hex';
+const ACCOUNT_B = 'bob-account-hex';
+const GUEST_HEX = 'guest-identity-hex';
+
+function makeAccount(identity: string, overrides: Partial<StoreAccount> = {}): StoreAccount {
+  return {
+    identity,
+    authIssuer: 'issuer-under-test',
+    createdAtMs: 1_700_000_000_000n,
+    lastLoginAtMs: 1_700_000_100_000n,
+    status: 'Active',
+    deletionRequestedAtMs: undefined,
+    claimedFrom: undefined,
+    claimedAtMs: undefined,
+    ...overrides,
+  };
+}
+
+describe('AuthoritativeStore M21b-2 A1: ownAccount returns the own row and filters by identity', () => {
+  it('★ A1 BITES: upsertAccount + ownAccount(own identity) returns the row verbatim', () => {
+    // Kills: an impl that stores to the wrong key, or that projects/normalises the row on
+    // the way in (the timestamps are bigints and must survive as bigints — same u64/i64
+    // doctrine rowConvert.ts:543-568 states for the wallet balance).
+    const s = new AuthoritativeStore();
+    const row = makeAccount(ACCOUNT_A, { claimedFrom: GUEST_HEX, claimedAtMs: 1_700_000_200_000n });
+    s.upsertAccount(row);
+
+    const own = s.ownAccount(ACCOUNT_A);
+    expect(own).toBeDefined();
+    expect(own!.identity).toBe(ACCOUNT_A);
+    expect(own!.claimedFrom).toBe(GUEST_HEX);
+    expect(typeof own!.createdAtMs).toBe('bigint');
+    expect(own!.claimedAtMs).toBe(1_700_000_200_000n);
+  });
+
+  it('★★ A1 BITES (G29): ownAccount(a DIFFERENT identity) returns undefined even when the slot is populated', () => {
+    // ★ THE G29 STORE HALF. Kills: `return this.#ownAccount` — the slot returned
+    // unconditionally.
+    //
+    // WHY IT IS LOAD-BEARING AND NOT MERELY DEFENSIVE: AUTH-51 makes this slot the SOLE
+    // authority for "is this connection actually authenticated", and ADR-0182 D16 makes
+    // `store.ownAccount(identity)?.claimedFrom` the ONLY client-side disambiguation of
+    // ERR_INVALID_CODE. A reconnect that mints a NEW identity (the anonymous path does
+    // exactly this) would, without the filter, keep reading the PREVIOUS identity's account
+    // row — so the client would show "signed in", offer account-only affordances, and read
+    // a stale `claimedFrom` as proof that a claim it never made had succeeded. The slot is
+    // cleared on reset(), but reset() runs on DISCONNECT and the read paths run on every
+    // frame; the filter is what makes the window unreachable rather than merely short.
+    const s = new AuthoritativeStore();
+    s.upsertAccount(makeAccount(ACCOUNT_A));
+
+    expect(s.ownAccount(ACCOUNT_B)).toBeUndefined();
+    expect(s.ownAccount('')).toBeUndefined();
+    expect(s.ownAccount(ACCOUNT_A)).toBeDefined(); // anti-vacuity for the two negatives
+  });
+
+  it('★ A1 BITES: the identity match is EXACT — no case folding, no trimming', () => {
+    // main.ts holds the identity as the hex string the SDK handed `onConnect`, and the
+    // comparison is `===` on both sides. Any normalisation applied here and not there
+    // silently disables the account UI (or, worse, enables it for the wrong identity).
+    const s = new AuthoritativeStore();
+    s.upsertAccount(makeAccount('AABBCC'));
+    expect(s.ownAccount('aabbcc')).toBeUndefined();
+    expect(s.ownAccount(' AABBCC ')).toBeUndefined();
+    expect(s.ownAccount('AABBCC')).toBeDefined();
+  });
+
+  it('★ A1 BITES: an empty slot returns undefined (kills a fabricated default row)', () => {
+    // ADR-0154 D6's "broke vs dark" distinction, applied to accounts: "no account row yet"
+    // and "an account row exists" are DIFFERENT states and must stay distinguishable —
+    // AUTH-51 hangs the whole signed-in UI on exactly that difference.
+    const s = new AuthoritativeStore();
+    expect(s.ownAccount(ACCOUNT_A)).toBeUndefined();
+  });
+});
+
+describe('AuthoritativeStore M21b-2 A2: upsertAccount marks dirty and REPLACES the slot', () => {
+  it('★ A2 BITES: upsertAccount marks dirty — flushBatch fires onBatchApplied exactly once', () => {
+    // Kills: an impl that sets the slot but forgets `this.#dirty = true`. `status` and
+    // `claimed_from` MUTATE post-provisioning (ADR-0182 D15), so the claim UI would keep
+    // rendering the pre-claim state until some unrelated row happened to dirty the store.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+
+    s.upsertAccount(makeAccount(ACCOUNT_A));
+    expect(cb).toHaveBeenCalledTimes(0); // not mid-batch — only flushBatch signals
+
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+
+  it('★★ A2 BITES: a SECOND upsert for the same identity replaces the row (kills insert-wins)', () => {
+    // THE UPDATE PATH IS THE POINT. Unlike `my_wallet`, `my_account` is wired with BOTH
+    // onInsert AND onUpdate (ADR-0182 D15) precisely because `status`/`claimed_from` change
+    // after provisioning. An insert-wins slot would leave `claimedFrom: undefined` forever
+    // — and claimModel's ERR_INVALID_CODE disambiguation reads exactly that field, so a
+    // completed claim would be reported to the player as an invalid code.
+    const s = new AuthoritativeStore();
+    s.upsertAccount(makeAccount(ACCOUNT_A));
+    s.upsertAccount(makeAccount(ACCOUNT_A, { claimedFrom: GUEST_HEX, status: 'PendingDeletion' }));
+
+    const own = s.ownAccount(ACCOUNT_A);
+    expect(own!.claimedFrom).toBe(GUEST_HEX);
+    expect(own!.status).toBe('PendingDeletion');
+  });
+
+  it('★★ A2 BITES: a row for a DIFFERENT identity replaces the slot entirely (single-slot semantics)', () => {
+    // Kills a Map-backed impl, which would keep BOTH — making another identity's account
+    // row representable in the client cache, the exact shape the view's one-row contract
+    // exists to prevent.
+    const s = new AuthoritativeStore();
+    s.upsertAccount(makeAccount(ACCOUNT_A));
+    s.upsertAccount(makeAccount(ACCOUNT_B));
+
+    expect(s.ownAccount(ACCOUNT_B)).toBeDefined();
+    expect(s.ownAccount(ACCOUNT_A)).toBeUndefined();
+  });
+
+  it('★ A2 BITES: every upsert marks dirty, not just the first (the update is what carries the claim)', () => {
+    const s = new AuthoritativeStore();
+    s.upsertAccount(makeAccount(ACCOUNT_A));
+    s.flushBatch(); // consume the first dirty
+
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.upsertAccount(makeAccount(ACCOUNT_A, { claimedFrom: GUEST_HEX }));
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(1);
+  });
+});
+
+describe('AuthoritativeStore M21b-2 A3: reset() clears the account slot; no remove path exists', () => {
+  it('★★ A3 BITES: reset() clears the slot — ownAccount returns undefined afterwards', () => {
+    // Kills: an impl whose reset() forgets the new slot. reset() runs on disconnect, and
+    // the very next connection can carry a DIFFERENT identity (every anonymous rebuild can
+    // mint one). A surviving row would make the client show the previous player's
+    // signed-in state — and would hand claimModel a `claimedFrom` belonging to someone else.
+    const s = new AuthoritativeStore();
+    s.upsertAccount(makeAccount(ACCOUNT_A));
+    expect(s.ownAccount(ACCOUNT_A)).toBeDefined(); // precondition
+
+    s.reset();
+
+    expect(s.ownAccount(ACCOUNT_A)).toBeUndefined();
+  });
+
+  it('★ A3 BITES: reset() keeps batch listeners alive; a post-reset upsertAccount still signals', () => {
+    // Kills: an impl that clears listeners on reset (breaks the running loop) — the same
+    // guarantee the ux2 wallet block asserts for its own slot.
+    const s = new AuthoritativeStore();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+    s.upsertAccount(makeAccount(ACCOUNT_A));
+    s.flushBatch();
+
+    s.reset();
+    expect(s.ownAccount(ACCOUNT_A)).toBeUndefined();
+
+    s.upsertAccount(makeAccount(ACCOUNT_B));
+    s.flushBatch();
+    expect(cb).toHaveBeenCalledTimes(2); // once pre-reset, once post-reset
+    expect(s.ownAccount(ACCOUNT_B)).toBeDefined();
+  });
+
+  it('★ A3 BITES: AuthoritativeStore exposes NO removeAccount method', () => {
+    // ADR-0182 D15: account rows are NEVER truly deleted (`delete_account` flips `status`
+    // to `PendingDeletion`), and through a VIEW an UPDATE arrives as unordered
+    // onInsert(new) + onDelete(old) — so any delete path could only ever wipe the LIVE row.
+    // Kills: an impl that adds removeAccount "for symmetry" with the keyed tables.
+    const s = new AuthoritativeStore();
+    expect(typeof (s as unknown as Record<string, unknown>).removeAccount).not.toBe('function');
+  });
+});

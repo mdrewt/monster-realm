@@ -197,6 +197,38 @@ function countOccurrences(src: string, needle: string): number {
 }
 
 // ---------------------------------------------------------------------------
+// M21b-2 (ADR-0182 D13) — THE ONE SHARED build() ANCHOR.
+//
+// ★★ RE-PIN JUSTIFICATION #1 (tester-owned; reviewer checklist item) ★★
+// Master pinned `function build(): DbConnection {` at EIGHT sites in this file
+// (265, 269, 279, 297, 300, 454, 458, 479 — three of them `expectUniqueAnchor`).
+// ADR-0182 D13 changes that signature to
+// `function build(credential: ConnectCredential): DbConnection | undefined {`:
+// build() now takes the credential as an EXPLICIT PARAMETER (so staleness is
+// structurally impossible — no closure-captured mutable) and may DECLINE to
+// return a connection (the read-side guard M21b deliberately parked, see the
+// scope ruling below at :341-350, which said in as many words that this cascade
+// "belongs with M21b-2").
+//
+// WHAT CHANGES AND WHAT DOES NOT: only the anchor TEXT. Every assertion those
+// eight sites carried — gate-constructed-before-build, the region bound at
+// `wireTables(conn);`, the token pin, the region-membership negatives — is
+// carried forward unrelaxed against the new anchor. A reviewer auditing this
+// re-pin should check exactly that: same assertions, new needle.
+//
+// WHY A SHARED CONST AND NOT EIGHT LITERALS: eight copies of a signature is
+// eight chances for the next re-pin to be done five times out of eight, leaving
+// three teeth silently anchored on a string that no longer exists — which
+// `expectUniqueAnchor` reports as a HARD RED (count 0), but the bare `indexOf`
+// sites would report as `-1`, i.e. an ordering assertion comparing against -1.
+// One const makes the next re-pin atomic.
+// ---------------------------------------------------------------------------
+
+/** ADR-0182 D13's exact build() signature. RE-PINNED from `function build(): DbConnection {`. */
+const M21B2_BUILD_ANCHOR =
+  'function build(credential: ConnectCredential): DbConnection | undefined {';
+
+// ---------------------------------------------------------------------------
 // W-NH4-GATE-CONSTRUCTED — connect() builds the gate.
 // ---------------------------------------------------------------------------
 
@@ -248,10 +280,10 @@ describe('connection.ts wiring (nh4): W-NH4-GATE-CONSTRUCTED — connect() build
     ).toBeLessThan(beforeInterfaceIdx === -1 ? Number.POSITIVE_INFINITY : beforeInterfaceIdx);
   });
 
-  it('BITES (CRITICAL): createAuthTokenGate( is constructed at connect() SCOPE, BEFORE `function build(): DbConnection {` — NOT re-created inside build() — mutant killed: "gate recreated per build ⇒ counter resets every attempt ⇒ suppression never engages ⇒ permanent auth-reject loop"', () => {
+  it('BITES (CRITICAL): createAuthTokenGate( is constructed at connect() SCOPE, BEFORE build()`s declaration — NOT re-created inside build() — mutant killed: "gate recreated per build ⇒ counter resets every attempt ⇒ suppression never engages ⇒ permanent auth-reject loop"', () => {
     // WRONG IMPL KILLED: `const auth = createAuthTokenGate(opts.uri, opts.db,
-    // globalThis);` moved INSIDE `function build(): DbConnection {`. build() is
-    // re-invoked by scheduleRebuild() on every reconnect attempt, so a per-build
+    // globalThis);` moved INSIDE build(). build() is (since ADR-0182 D13, via
+    // attemptBuild) re-invoked on every reconnect attempt, so a per-build
     // gate would get a FRESH in-memory rejection counter on every single attempt —
     // AUTH_REJECT_SUPPRESS_THRESHOLD can never be reached across attempts,
     // suppression never engages, and a rejected stored credential produces exactly
@@ -262,21 +294,21 @@ describe('connection.ts wiring (nh4): W-NH4-GATE-CONSTRUCTED — connect() build
     // isolation) — this is the only tooth that pins the declaration's SCOPE.
     const src = readConnectionTs();
     expectUniqueAnchor(src, 'createAuthTokenGate(');
-    expectUniqueAnchor(src, 'function build(): DbConnection {');
+    expectUniqueAnchor(src, M21B2_BUILD_ANCHOR);
     expectUniqueAnchor(src, 'wireTables(conn);');
 
     const gateIdx = src.indexOf('createAuthTokenGate(');
-    const buildIdx = src.indexOf('function build(): DbConnection {');
+    const buildIdx = src.indexOf(M21B2_BUILD_ANCHOR);
     expect(
       gateIdx,
-      'createAuthTokenGate( must be constructed BEFORE `function build(): DbConnection ' +
-        '{` (i.e. at connect() scope, read fresh per rebuild via a closure, not ' +
+      `createAuthTokenGate( must be constructed BEFORE \`${M21B2_BUILD_ANCHOR}\` ` +
+        '(i.e. at connect() scope, read fresh per rebuild via a closure, not ' +
         're-created on every build() invocation) — a gate built inside build() gets a ' +
         'fresh in-memory rejection counter on every reconnect attempt, so suppression ' +
         'never engages',
     ).toBeLessThan(buildIdx);
 
-    const body = bodyRegion(src, 'function build(): DbConnection {', 'wireTables(conn);');
+    const body = bodyRegion(src, M21B2_BUILD_ANCHOR, 'wireTables(conn);');
     expect(
       body.includes('createAuthTokenGate('),
       'createAuthTokenGate( must NOT be called anywhere inside build() — gate recreated ' +
@@ -287,39 +319,84 @@ describe('connection.ts wiring (nh4): W-NH4-GATE-CONSTRUCTED — connect() build
 });
 
 // ---------------------------------------------------------------------------
-// W-NH4-TOKEN-SUPPLIED — the builder chain supplies the token, read freshly per build.
+// W-NH4-TOKEN-SUPPLIED (RE-PINNED by M21b-2 / G13) — the builder chain supplies
+// the token for THIS build's credential, read freshly per build.
+//
+// ★★ RE-PIN JUSTIFICATION #2 (tester-owned; reviewer checklist item) ★★
+// M21b's own scope ruling (:341-350 below) said this tooth "stands byte-for-byte
+// as it shipped" because the read-side guard was cut from that slice. M21b-2 is
+// the slice that ruling deferred it to, and `authToken.ts:263-305`'s doc comment
+// prescribes the change VERBATIM: "the discriminator must become the PROVENANCE
+// of the credential this build actually supplied... will require re-pinning
+// `W-NH4-TOKEN-SUPPLIED`". ADR-0182 D14 spells the new literal out.
+//
+// WHAT MASTER'S TOOTH ASSERTED (re-read from the file, not from memory): the
+// contiguous `.withToken(auth.tokenForNextAttempt())` inside build()'s region,
+// and `.withToken(` occurring exactly once file-wide. BOTH are carried forward:
+// the count is untouched, and the contiguous pin becomes the D14 ternary — which
+// still contains `auth.tokenForNextAttempt()` as the ANON branch, so the
+// anonymous path's behaviour is still pinned byte-for-byte (AUTH-31's "no
+// behaviour change to the anonymous path" survives this slice too).
+//
+// WHY `=== 'account'` AND NOT `!== 'anon'` (D14, and the same fail-CLOSED
+// argument the save guard below already makes ON THE VALUE): `ConnectCredential`
+// has SIX variants, not two. A `!== 'anon'` ternary hands `credential.token` to
+// the builder for every future seventh variant by default; `=== 'account'` hands
+// it over only for the one variant that is TYPED to carry a string token.
 // ---------------------------------------------------------------------------
 
-describe('connection.ts wiring (nh4): W-NH4-TOKEN-SUPPLIED — builder chain calls .withToken(auth.tokenForNextAttempt())', () => {
-  it('BITES: build() region contains the exact contiguous .withToken(auth.tokenForNextAttempt()) and .withToken( occurs exactly once file-wide', () => {
+/** ADR-0182 D14's exact builder-chain token supply. RE-PINNED from
+ *  `.withToken(auth.tokenForNextAttempt())`. The anon branch is byte-identical to the
+ *  literal master pinned, which is what keeps AUTH-31's anonymous-path claim true. */
+const M21B2_WITHTOKEN =
+  ".withToken(credential.kind === 'account' ? credential.token : auth.tokenForNextAttempt())";
+
+describe('connection.ts wiring (nh4, RE-PINNED by M21b-2 / G13): W-NH4-TOKEN-SUPPLIED — the builder chain supplies THIS build`s credential', () => {
+  it('★ BITES: build() region contains the exact contiguous D14 .withToken(...) ternary and .withToken( occurs exactly once file-wide', () => {
     // Region-bound to build(): both anchors must be unique first (anti-vacuity).
     const src = readConnectionTs();
-    expectUniqueAnchor(src, 'function build(): DbConnection {');
+    expectUniqueAnchor(src, M21B2_BUILD_ANCHOR);
     expectUniqueAnchor(src, 'wireTables(conn);');
 
-    const body = bodyRegion(src, 'function build(): DbConnection {', 'wireTables(conn);');
+    const body = bodyRegion(src, M21B2_BUILD_ANCHOR, 'wireTables(conn);');
     const squashedBody = squashWhitespace(body);
 
-    // WRONG IMPL KILLED (a): no .withToken( at all — the bug today.
+    // WRONG IMPL KILLED (a): no .withToken( at all.
     // WRONG IMPL KILLED (b): .withToken(undefined) / .withToken('') / .withToken(void 0)
     //   — the exact-argument pin rejects all of them.
     // WRONG IMPL KILLED (c): .withToken(auth.tokenForNextAttempt() && '') — a truthy-left
     //   short-circuit that silently disables persistence while keeping both tokens
     //   textually present; this exact-contiguous pin rejects the extra ` && ''`.
+    // WRONG IMPL KILLED (d) ★ THE G13 MUTANT: the guard inverted to
+    //   `credential.kind !== 'anon' ? credential.token : …`. Behaviourally identical
+    //   TODAY (only 'anon' and 'account' ever reach build() — D13's defensive belt
+    //   rejects the other four), and fail-OPEN the moment a seventh variant is added:
+    //   a variant with no `token` field would supply `undefined` to a builder that has
+    //   just been told this connection is authenticated. The contiguous needle admits
+    //   only the fail-closed `=== 'account'` form.
+    // WRONG IMPL KILLED (e): re-deriving the branch from STORAGE —
+    //   `.withToken(readAuthKind(globalThis, opts.uri, opts.db) === 'account' ? …)`.
+    //   Rejected here by the contiguous needle AND, independently and at the
+    //   argument-region level, by W-M21B2-CREDENTIAL-IS-PROVENANCE (G14) below.
     expect(
-      squashedBody.includes('.withToken(auth.tokenForNextAttempt())'),
-      'build() builder chain must call .withToken(auth.tokenForNextAttempt()) exactly as ' +
-        'written — RED today: connection.ts has no .withToken( call at all',
+      squashedBody.includes(M21B2_WITHTOKEN),
+      `build() builder chain must call ${M21B2_WITHTOKEN} exactly as written (ADR-0182 D14). ` +
+        'RED AT AUTHORING TIME: connection.ts still ships the M21b literal ' +
+        '`.withToken(auth.tokenForNextAttempt())`, which supplies the ANONYMOUS token on ' +
+        'every build — including the builds that just exchanged an OIDC code for an account ' +
+        'JWT, i.e. the account population silently connects anonymously forever. Do NOT ' +
+        'loosen this needle; re-derive it from ADR-0182 D14 if it ever needs to change',
     ).toBe(true);
 
-    // WRONG IMPL KILLED (d): the read hoisted to connect() scope with a closed-over
+    // WRONG IMPL KILLED (f): the read hoisted to connect() scope with a closed-over
     // variable passed instead — e.g. `const token = auth.tokenForNextAttempt();` at
     // connect() scope, with `.withToken(token)` inside build(). A dead
     // `auth.tokenForNextAttempt()` call left inside build() (to satisfy a naive
     // presence needle) would NOT satisfy this contiguous-argument pin, because the
     // call must appear literally as the argument to .withToken(.
-    // WRONG IMPL KILLED (e): a second, later .withToken(...) overriding the first —
-    // killed by the exactly-once file-wide count below.
+    // WRONG IMPL KILLED (g): a second, later .withToken(...) overriding the first —
+    // killed by the exactly-once file-wide count below. (CARRIED FORWARD UNCHANGED
+    // from master — the count is not relaxed by the re-pin.)
     const wholeSquashed = squashWhitespace(stripLineComments(src));
     const withTokenCount = wholeSquashed.split('.withToken(').length - 1;
     expect(
@@ -362,15 +439,24 @@ describe('connection.ts wiring (nh4): W-NH4-TOKEN-SUPPLIED — builder chain cal
 //             if (stale()) return;
 //             if (buildKind === 'anon') auth.onConnected(token);
 //
-// ★★ CONSEQUENCE FOR THE GATING TESTS ★★
-// `W-NH4-TOKEN-SUPPLIED` above is therefore NOT re-pinned — it stands byte-for-byte
-// as it shipped, and `.withToken(auth.tokenForNextAttempt())` stays byte-identical
-// in connection.ts. That is what makes AUTH-31's "no behaviour change to the
-// anonymous path" claim literally true rather than merely asserted. Exactly ONE
-// pre-existing tooth changes this slice — `W-NH4-SAVE-WIRED` — and its written
-// justification is directly above it. `W-NH4-GATE-CONSTRUCTED`,
-// `W-NH4-FAILURE-WIRED`, `W-NH4-NO-CLEAR-ON-DROP`, `SDK-DRIFT` and
-// `W-DEVLOG-WRAP` are NOT touched.
+// ★★ CONSEQUENCE FOR THE GATING TESTS — HISTORICAL, SUPERSEDED BY M21b-2 ★★
+// The paragraph that stood here recorded M21b's OWN scope ruling: that
+// `W-NH4-TOKEN-SUPPLIED` was "NOT re-pinned … stands byte-for-byte as it
+// shipped", that `.withToken(auth.tokenForNextAttempt())` "stays byte-identical",
+// and that "exactly ONE pre-existing tooth changes this slice". All three
+// sentences were TRUE OF M21b and are FALSE OF M21b-2, which is the slice M21b's
+// own ruling deferred the read side to. Corrected in place rather than deleted so
+// the M21b → M21b-2 provenance survives; the current re-pin ledger is:
+//   • W-NH4-GATE-CONSTRUCTED — anchor text only (M21B2_BUILD_ANCHOR), assertions
+//     carried forward verbatim.
+//   • W-NH4-TOKEN-SUPPLIED  — RE-PINNED (G13, ADR-0182 D14). Justification #2, above.
+//   • W-NH4-SAVE-WIRED      — RE-PINNED (G13b, D13/D14). Justification #3, below.
+//   • W-M21B-KIND-READ      — RETIRED WHOLESALE (G14). Replacement + justification #4.
+//   • W-DEVLOG-WRAP         — RE-PINNED twice (G15 end anchor; G15b joinGame receiver,
+//     D16). Justification #5, at the tooth.
+// `W-NH4-FAILURE-WIRED`, `W-NH4-NO-CLEAR-ON-DROP`, `SDK-DRIFT`, every `W-UX2B-*`,
+// `M13_5C_CONVERSATION_INGEST_CONTROL`, the scheme-literal calibration fixture in
+// W-UX2B-SCAN-SOUND and every EG4 tooth are NOT touched by M21b-2.
 //
 // ⚠ THE HAZARD THIS SLICE KNOWINGLY LEAVES OPEN (named, not hidden): the
 // write-side guard alone is NOT sufficient. With the read side parked, a marker
@@ -384,215 +470,245 @@ describe('connection.ts wiring (nh4): W-NH4-TOKEN-SUPPLIED — builder chain cal
 // NO `new RegExp(...)` — this file's standing convention.
 // ===========================================================================
 
-/** `readAuthKind(host, uri, db)` — host FIRST (unlike `createAuthTokenGate(uri, db, host)`);
- *  the exact-argument-list pin is what kills a marker keyed on one axis only, which would
- *  let an `'account'` marker written for the playtest database refuse the connection to
- *  production. Bound to a NAMED const — `buildKind` — because W-NH4-SAVE-WIRED's guard must
- *  read the value THIS build decided on, not re-derive it later from mutable storage. */
-const M21B_KIND_READ = 'const buildKind = readAuthKind(globalThis, opts.uri, opts.db);';
-
-/** The kind-guarded save. `=== 'anon'` (not `!== 'account'`) is the FAIL-CLOSED direction:
- *  if `AuthKind` ever gains a third member, a `!==` guard would start writing that kind's
- *  credential into the anonymous slot by default. */
-const M21B_SAVE_GUARDED = "if (buildKind === 'anon') auth.onConnected(token);";
+/** The kind-guarded save, RE-PINNED by M21b-2 (G13b). `=== 'anon'` (not `!== 'account'`) is
+ *  still the FAIL-CLOSED direction ON THE VALUE — `ConnectCredential` now has SIX variants,
+ *  so a `!==` guard would write five of them into the anonymous slot by default. The only
+ *  change from M21b is the DISCRIMINATOR: `buildKind` (a lossy sessionStorage re-read) becomes
+ *  `credential.kind` (the in-memory PROVENANCE of the token this build actually supplied),
+ *  which is exactly the fix `authToken.ts:263-305` and ADR-0182 D14 prescribe. */
+const M21B2_SAVE_GUARDED = "if (credential.kind === 'anon') auth.onConnected(token);";
 
 // ---------------------------------------------------------------------------
-// W-M21B-KIND-READ (NEW) — the discriminator the save guard depends on is read
-// ONCE PER BUILD, inside build(), from BOTH key axes.
+// W-M21B-KIND-READ — ★ RETIRED WHOLESALE BY M21b-2 (G14). Replaced by
+// W-M21B2-CREDENTIAL-IS-PROVENANCE, directly below.
 //
-// This is the companion tooth to W-NH4-SAVE-WIRED below: that tooth pins the
-// GUARD, this one pins the BINDING the guard reads. Neither is sufficient alone
-// — a guard on a stale or wrongly-scoped binding is a guard in name only.
+// ★★ RE-PIN JUSTIFICATION #4 (tester-owned; reviewer checklist item) ★★
+// The retired tooth pinned `const buildKind = readAuthKind(globalThis, opts.uri,
+// opts.db);` inside build(), `readAuthKind(` at exactly one call site, and a
+// family of anti-shim identifier counts. Every one of those assertions is about a
+// STORAGE RE-READ that ADR-0182 D14 DELETES from connection.ts outright: the
+// discriminator is now the `credential` parameter build() is handed, computed in
+// memory by resolveCredential() on the same attempt that produced the token.
+// There is no binding left to pin, no call site left to count, and no shim left
+// to defeat — the identifier is simply gone from the file.
+//
+// SOFTENING WAS NOT AN OPTION, AND NEITHER WAS SILENCE. Re-pointing the old
+// tooth's needles at `wasEverAuthenticated` would have been the WRONG repair: the
+// retired tooth's whole thesis is "the save guard must read the value THIS BUILD
+// DECIDED ON", and `wasEverAuthenticated` is a storage read with the same TOCTOU
+// exposure `buildKind` had. The replacement below therefore asserts the STRONGER,
+// D14-shaped property in the opposite direction: `readAuthKind` must not appear in
+// connection.ts AT ALL, and nothing storage-derived may reach `.withToken(`'s
+// argument. That is a strict strengthening, not a relaxation — the class of
+// implementations that pass shrank.
+//
+// WHAT MOVES WHERE: the "readAuthKind is invoked at exactly one call site" pin is
+// not lost, it MIGRATES to authToken.test.ts (G14(ii)), where the one surviving
+// call site now lives — inside `wasEverAuthenticated`'s own body. Different file,
+// different agent, same invariant. Neither half is sufficient alone.
 // ---------------------------------------------------------------------------
 
-describe('★ connection.ts wiring (M21b / AUTH-31): W-M21B-KIND-READ — build() binds `const buildKind = readAuthKind(globalThis, opts.uri, opts.db)`', () => {
-  it('★ BITES: the marker read is contiguous, bound to buildKind, INSIDE build(), and occurs exactly once file-wide', () => {
-    // WRONG IMPL KILLED (a): no marker read at all — the pre-M21b state, in which
-    //   W-NH4-SAVE-WIRED's guard has nothing to read and the anonymous token slot stays
-    //   unguarded. (This tooth was RED when authored and is a regression guard now.)
-    // WRONG IMPL KILLED (b): ★ THE READ HOISTED TO connect() SCOPE. This is the same
-    //   defect W-NH4-GATE-CONSTRUCTED guards for the gate itself, and it matters here for
-    //   the mirror-image reason: the gate must be built ONCE (its counter must survive
-    //   rebuilds), whereas the marker must be re-read on EVERY build (it is mutable
-    //   sessionStorage that M21b-2's return leg will write mid-session). A connect()-scope
-    //   read pins one value for the page lifetime, so a marker that flips to 'account'
-    //   before a rebuild is ignored and the very next reconnect writes the account JWT
-    //   into the anon slot — precisely the hole this slice exists to close. The region
-    //   bound is the only thing that sees it.
-    // WRONG IMPL KILLED (c): a one-axis read — `readAuthKind(globalThis, opts.db)` or
-    //   `readAuthKind(globalThis, opts.uri)`. The contiguous argument-list pin requires
-    //   BOTH key axes, in this order. A db-only key would let a marker written for the
-    //   playtest database govern the production connection.
-    // WRONG IMPL KILLED (d): the host argument swapped or dropped —
-    //   `readAuthKind(opts.uri, opts.db, globalThis)` (the createAuthTokenGate order,
-    //   which is the natural copy-paste slip).
-    //   RATIONALE CORRECTED (tester, post-review): an earlier version of this note claimed
-    //   the swap "would typecheck as `unknown` in some shapes". That is WRONG — the swapped
-    //   call fails to compile twice over (`string` is not assignable to
-    //   `TokenStorageHost | undefined`, and `typeof globalThis` is not assignable to
-    //   `string`). So tsc, not this tooth, is the primary defence against the swap. The pin
-    //   is kept anyway because it costs nothing and because tsc is not what runs in this
-    //   suite; it also still carries (c) above, which tsc CANNOT see (a one-axis call is a
-    //   compile error only because of arity — but `readAuthKind(globalThis, opts.db,
-    //   opts.db)` compiles perfectly and is a real, silent, cross-target bug).
-    // WRONG IMPL KILLED (e): a SECOND read somewhere else in the file — the exactly-once
-    //   count. A second read is by construction a chance to disagree with the first, and
-    //   the TOCTOU variant of that (a re-read inside the onConnect callback) is the exact
-    //   mutant W-NH4-SAVE-WIRED's guard needle also rejects. Both teeth red on it.
-    // WRONG IMPL KILLED (f): ★ THE SHADOWING SHIM (red-team, verified biome-clean):
-    //     import { readAuthKind as _unused, createAuthTokenGate } from './authToken';
-    //     const readAuthKind = (_h: unknown, _u: string, _d: string): AuthKind => 'anon';
-    //   The pinned needle text is unchanged, `readAuthKind(` still occurs once, the first
-    //   occurrence still sits inside the authToken import — and `buildKind` is now ALWAYS
-    //   'anon', so the save guard is permanently open and the whole slice is inert. An
-    //   earlier version of this tooth banned only `function readAuthKind`, so an arrow-const
-    //   shim walked straight through it. Closed three ways below: the IDENTIFIER-level count
-    //   (an alias + a shim + a call is THREE occurrences, not two), an explicit ban on every
-    //   local-binding and re-export spelling, and a requirement that the authToken import
-    //   statement name `readAuthKind` DIRECTLY with no ` as ` alias.
-    const src = readConnectionTs();
-    expectUniqueAnchor(src, 'function build(): DbConnection {');
-    expectUniqueAnchor(src, 'wireTables(conn);');
+// ---------------------------------------------------------------------------
+// W-M21B2-CREDENTIAL-IS-PROVENANCE (NEW, G14(i) + addendum §C F3) — the write-side
+// discriminator traces to `credential`, never to storage.
+//
+// THE INVARIANT: connection.ts must contain ZERO storage reach of any kind. The
+// attempt-gating hint it IS allowed to consult (`wasEverAuthenticated`) is behind
+// authToken.ts's injected-host boundary, and its answer must never reach the token
+// supplied to the builder — only `credential` may.
+// ---------------------------------------------------------------------------
 
-    const squashedBody = squashWhitespace(
-      bodyRegion(src, 'function build(): DbConnection {', 'wireTables(conn);'),
-    );
+describe('★ connection.ts wiring (M21b-2 / AUTH-43/44, G14): W-M21B2-CREDENTIAL-IS-PROVENANCE — the discriminator is the credential, never storage', () => {
+  it('★ BITES: readAuthKind is GONE from connection.ts, wasEverAuthenticated is the only storage-backed read, and no AuthKind token reaches .withToken(`s argument', () => {
+    // WRONG IMPL KILLED (a) ★ THE HEADLINE G14 MUTANT: the write-guard re-derived from
+    //   storage — `.withToken(readAuthKind(globalThis, opts.uri, opts.db) === 'account' ?
+    //   … : …)`, or the same read bound to a local and passed in. It is the single most
+    //   natural way to "port" the retired M21b tooth's shape into the new signature, and
+    //   it re-opens exactly the TOCTOU the retired tooth's own comment describes: the
+    //   marker is mutable sessionStorage the OIDC return leg writes mid-session, so a
+    //   build that supplied an ANON token can be told it supplied an account one (and
+    //   vice-versa). Killed twice below: `readAuthKind` occurs ZERO times file-wide, and
+    //   the `.withToken(` ARGUMENT REGION contains no storage-derived identifier at all.
+    // WRONG IMPL KILLED (b): `wasEverAuthenticated(...)` smuggled into the ternary —
+    //   `.withToken(wasEverAuthenticated(globalThis, opts.uri, opts.db) ? credential.token
+    //   : auth.tokenForNextAttempt())`. This one TYPECHECKS, reads plausibly ("we were
+    //   authenticated once, so send the account token"), and is wrong in the most
+    //   dangerous direction: `wasEverAuthenticated` is STICKY FOR THE TAB'S LIFE (D14), so
+    //   every later anonymous rebuild would try to send `credential.token` — `undefined`
+    //   on an anon credential. The argument-region scan is the only thing that sees it;
+    //   G13's contiguous needle would too, but only because it happens to be exact —
+    //   this pin states the RULE rather than relying on the coincidence.
+    // WRONG IMPL KILLED (c) — addendum §C F3: storage reached DIRECTLY from
+    //   connection.ts, bypassing authToken.ts's injected-host boundary entirely
+    //   (`globalThis.sessionStorage?.getItem('mr.authKind.v1|…')`). connection.ts is
+    //   COVERAGE-EXCLUDED (vite.config.ts), so any storage logic that migrates here
+    //   becomes permanently unprovable — that is authToken.ts's stated charter, and this
+    //   is it mechanised. The four bans below are whole-file and deliberately blunt.
+    // WRONG IMPL KILLED (d): a namespace import (`import * as authToken from
+    //   './authToken'`) used to reach `authToken.readAuthKind(...)` — which every
+    //   named-identifier count in this tooth would MISS, because the bare identifier
+    //   `readAuthKind` still appears… as a property access. `import *` is banned outright;
+    //   named imports only.
+    const src = readConnectionTs();
     const wholeSquashed = squashWhitespace(stripLineComments(src));
 
-    expect(
-      squashedBody.includes(M21B_KIND_READ),
-      `build() must contain the contiguous \`${M21B_KIND_READ}\` — read fresh per build, ` +
-        'from BOTH key axes, bound to `buildKind` so the onConnect guard reads the value ' +
-        'THIS build decided on',
-    ).toBe(true);
-    expect(
-      countOccurrences(wholeSquashed, 'readAuthKind('),
-      'readAuthKind( must be INVOKED from EXACTLY ONE site in connection.ts (the import ' +
-        'specifier carries no paren and is not a call site). A second call is a second, ' +
-        'divergent answer to "which kind is this build?"',
-    ).toBe(1);
-
-    // The read must live INSIDE build(), not at connect() scope. Asserted as an explicit
-    // ordering fact as well as a region membership, mirroring W-NH4-GATE-CONSTRUCTED's
-    // shape so the two scope rules read as one family rather than two idioms.
-    const readIdx = src.indexOf('readAuthKind(globalThis');
-    const buildIdx = src.indexOf('function build(): DbConnection {');
-    expect(readIdx, 'connection.ts must call readAuthKind(globalThis, …)').toBeGreaterThanOrEqual(
-      0,
-    );
-    expect(
-      readIdx,
-      'the readAuthKind( call must appear AFTER `function build(): DbConnection {` — i.e. ' +
-        'INSIDE build(), re-read on every rebuild. Hoisted to connect() scope it pins one ' +
-        'marker value for the whole page lifetime',
-    ).toBeGreaterThan(buildIdx);
-
-    // --- ANTI-SHIM: the `readAuthKind` in that call must BE the imported one -------------
-    // authToken.ts is the SSOT and authToken.test.ts is the ONLY place its behaviour is
-    // ever proven (this file can prove wiring, never behaviour — see this file's header).
-    // A local binding that merely SPELLS the same name defeats every needle above at once,
-    // so the name is pinned at the identifier level, not just at the call site.
-    expectUniqueAnchor(wholeSquashed, "from './authToken';");
-    const importEnd = wholeSquashed.indexOf("from './authToken';");
-    expect(
-      wholeSquashed.indexOf('readAuthKind'),
-      "readAuthKind must be IMPORTED from './authToken' — its first occurrence has to sit " +
-        'inside that import statement, not in a local re-declaration further down the file',
-    ).toBeLessThan(importEnd);
-
-    // ★ THE SHIM KILLER. `readAuthKind` may occur EXACTLY twice in the comment-stripped
-    // source: once as the import specifier, once as the single call. The shim needs a
-    // THIRD (`readAuthKind as _unused` + `const readAuthKind = …` + the call = 3), and so
-    // does every re-export, re-assignment or second import of the name. Same
-    // identifier-count-with-a-documented-breakdown idiom this file already applies to
-    // `shouldRemoveOnViewDelete` in the 11r-e block below.
+    // --- (1) readAuthKind is GONE from this file ----------------------------------------
     expect(
       countOccurrences(wholeSquashed, 'readAuthKind'),
-      'the readAuthKind IDENTIFIER must occur EXACTLY twice in the comment-stripped source: ' +
-        'the ./authToken import specifier, and the ONE call inside build(). A third ' +
-        'occurrence is a local shim, an alias, a re-export or a second call — the shim ' +
-        'variant (`import { readAuthKind as _unused, … }` plus `const readAuthKind = () => ' +
-        "'anon'`) leaves every other needle in this tooth satisfied while pinning buildKind " +
-        'to a constant and disarming the entire slice',
+      'the readAuthKind IDENTIFIER must occur ZERO times in connection.ts (comment-stripped). ' +
+        'ADR-0182 D14 moves the ONE surviving call site inside authToken.ts, behind ' +
+        '`wasEverAuthenticated` — where authToken.test.ts (G14(ii)) pins it. A single ' +
+        'occurrence here means the write-side discriminator is being re-derived from mutable ' +
+        'storage instead of from the credential this build actually supplied. RED AT ' +
+        'AUTHORING TIME: connection.ts:25 imports it and :538 calls it',
+    ).toBe(0);
+
+    // --- (2) wasEverAuthenticated is the ONLY storage-backed read, and it is ATTEMPT-GATING
+    // COUNT DERIVED FROM ADR-0182 D13's NORMATIVE resolveCredential() SNIPPET, NOT from the
+    // plan: D13 calls it TWICE and the second call is deliberate —
+    //   (i)  `const attemptGateOpen = wasEverAuthenticated(globalThis, opts.uri, opts.db) ||
+    //        isReturnLegAttempt;`  — the pre-flight gate (G17 pins this whole statement), and
+    //   (ii) the `everAuthenticated` ARGUMENT to `decideConnectCredential(...)`, re-read
+    //        AFTER the await so the decision table sees the marker as it stands once the
+    //        renewal attempt has settled, not as it stood before the network call.
+    // ⚠ The M21b-2 plan's §3 G14 row says `=== 1`. That number predates D13's snippet and
+    // would RED a verbatim implementation of the ADR. The ADR is the authority
+    // ("implements-as-written"), so the count is 2. Do NOT "fix" connection.ts to make this
+    // 1 — if the second read is ever genuinely removed, re-derive this number from D13 and
+    // say so here.
+    expect(
+      countOccurrences(wholeSquashed, 'wasEverAuthenticated('),
+      'wasEverAuthenticated( must be INVOKED exactly twice in connection.ts — the ' +
+        '`attemptGateOpen` derivation and the `everAuthenticated` argument to ' +
+        'decideConnectCredential (ADR-0182 D13). The import specifier carries no paren and ' +
+        'is not a call site. RED AT AUTHORING TIME: 0 — the function does not exist yet',
+    ).toBe(2);
+    expect(
+      countOccurrences(wholeSquashed, 'wasEverAuthenticated'),
+      'the wasEverAuthenticated IDENTIFIER must occur EXACTLY 3 times: the ./authToken ' +
+        'import specifier plus the two call sites above. A 4th occurrence is a local shim, ' +
+        'an alias or a third consumer — the same anti-shim reasoning the RETIRED ' +
+        'W-M21B-KIND-READ applied to readAuthKind, carried over to the identifier that ' +
+        'replaced it',
+    ).toBe(3);
+
+    // --- (3) every AuthKind mention is part of writeAuthKind ----------------------------
+    // `writeAuthKind` CONTAINS the substring `AuthKind`, so an equality between the two
+    // counts is the exact statement "no bare AuthKind type/token appears anywhere" — which
+    // is what stops the credential's construction from being typed, annotated or branched
+    // on a storage-shaped value. D14 keeps writeAuthKind (the first-paint UX HINT, written
+    // in onConnect for account builds); it deletes every READ.
+    expect(
+      countOccurrences(wholeSquashed, 'writeAuthKind'),
+      'writeAuthKind must occur EXACTLY twice: the ./authToken import specifier and the ONE ' +
+        "onConnect gate `if (credential.kind === 'account') writeAuthKind(globalThis, " +
+        "opts.uri, opts.db, 'account');` (ADR-0182 D13/D14 — a first-paint HINT, superseded " +
+        "by my_account's first snapshot, never a security input)",
+    ).toBe(2);
+    expect(
+      countOccurrences(wholeSquashed, 'AuthKind'),
+      'every occurrence of the substring `AuthKind` in connection.ts must be part of ' +
+        '`writeAuthKind` (2). A third is a bare `AuthKind` type import or annotation, which ' +
+        "means a storage-shaped value is being given a name in the credential's own type " +
+        'space — the first step of re-deriving provenance from the marker (D14 anti-pattern 2)',
     ).toBe(2);
 
-    // Belt and braces on the same hole, for a precise failure message: no local binding of
-    // the name in ANY spelling, and no aliased import of it.
-    for (const shim of [
-      'function readAuthKind',
-      'const readAuthKind',
-      'let readAuthKind',
-      'var readAuthKind',
-      'readAuthKind =',
-      'readAuthKind:',
-      'readAuthKind as',
-      'as readAuthKind',
-    ]) {
+    // --- (4) addendum §C F3: NO storage reach of any kind from this file ----------------
+    // `sessionStorage`/`localStorage` are already banned whole-file by W-NH4-SAVE-WIRED
+    // (carried forward there unchanged); `getItem(` and `import *` are the two new bans F3
+    // adds, and they close the two spellings that ban could not see: a read (rather than a
+    // write) through any host object, and a namespace import that turns every named-identifier
+    // count in this file into a false negative.
+    for (const reach of ['sessionStorage', 'localStorage', 'getItem(', 'import *']) {
       expect(
-        countOccurrences(wholeSquashed, shim),
-        `connection.ts must contain NO occurrence of "${shim}" — every one of these spellings ` +
-          'either re-declares readAuthKind locally or renames something else INTO that ' +
-          'identifier, which silently substitutes an untested stand-in for the only ' +
-          'behaviourally-proven implementation',
+        countOccurrences(wholeSquashed, reach),
+        `connection.ts must contain NO occurrence of "${reach}" — storage belongs to ` +
+          'authToken.ts / claimCode.ts behind an INJECTED host (their module headers: never a ' +
+          'globalThis reach from inside), and connection.ts is coverage-excluded, so any ' +
+          'storage logic that migrates here can never be behaviourally proven. `import *` is ' +
+          'banned for a second, independent reason: a namespace import defeats every ' +
+          'named-identifier count in this file at once',
       ).toBe(0);
     }
 
-    // The import STATEMENT itself must name readAuthKind directly (not merely have the
-    // identifier appear somewhere before its `from` clause — a second, earlier import from
-    // a different module would satisfy that weaker check).
-    const importStart = wholeSquashed.lastIndexOf('import', importEnd);
+    // --- (5) the .withToken( ARGUMENT REGION traces only to `credential` ----------------
+    // Region = the builder-chain segment from the token supply to the onConnect handler.
+    //
+    // ⚠ SLICED FROM THE COMMENT-STRIPPED SOURCE, and the uniqueness checks run against THAT
+    // SAME STRING — the fix W-NH4-NO-CLEAR-ON-DROP records for itself, and it is load-bearing
+    // here: connection.ts's own M21b rationale comment contains the prose "hands straight back
+    // to `.withToken()` on the next build", so a RAW-source `expectUniqueAnchor(src,
+    // '.withToken(')` finds TWO occurrences and reds on CORRECT code. Strip first, then slice.
+    const strippedSrc = stripLineComments(src);
+    expectUniqueAnchor(strippedSrc, '.withToken(');
+    expectUniqueAnchor(strippedSrc, '.onConnect((c, id, token) => {');
+    const tokenArgRegion = squashWhitespace(
+      regionOrThrow(strippedSrc, '.withToken(', '.onConnect((c, id, token) => {'),
+    );
+    // ANTI-VACUITY, ASSERTED FIRST: the region really is the token supply. Without this a
+    // mis-resolved region would satisfy all four negatives below by being empty.
     expect(
-      importStart,
-      "the `from './authToken';` clause must be preceded by an `import` keyword — if it is " +
-        'not, this scan cannot locate the import statement and the pin below is vacuous',
-    ).toBeGreaterThanOrEqual(0);
-    const authTokenImport = wholeSquashed.slice(importStart, importEnd);
-    expect(
-      authTokenImport.includes('readAuthKind'),
-      "the './authToken' import statement must name readAuthKind DIRECTLY — found: " +
-        `\`${authTokenImport.trim()}\``,
+      tokenArgRegion.includes('credential.token'),
+      'ANTI-VACUITY: the .withToken( argument region must contain `credential.token` — if it ' +
+        'does not, this scan is judging the wrong region (or the D14 ternary is missing, ' +
+        'which G13 reports on its own line) and every negative below is vacuous',
     ).toBe(true);
-
-    // --- the binding is bound ONCE and read ONCE ----------------------------------------
-    // WRONG IMPL KILLED (g, red-team, biome-clean): `buildKind` SHADOWED inside the
-    //   onConnect callback with a constant (`const buildKind = 'anon';`). Biome reports
-    //   shadowing as a warning at most, so it ships. The guard then reads a literal and is
-    //   inert. Two counts close it: exactly one BINDING file-wide, and exactly two
-    //   occurrences of the identifier in total (the binding + the guard's single read).
-    expect(
-      countOccurrences(wholeSquashed, 'const buildKind'),
-      'buildKind must be bound EXACTLY once in connection.ts — a second `const buildKind` ' +
-        'is a shadow, and a shadowed discriminator makes the save guard read a value the ' +
-        'build never decided',
-    ).toBe(1);
-    expect(
-      countOccurrences(wholeSquashed, 'buildKind'),
-      'the buildKind IDENTIFIER must occur EXACTLY twice in the comment-stripped source: ' +
-        'the binding inside build(), and the single read in the onConnect save guard. A ' +
-        'third occurrence is a shadow, a re-assignment, or a second consumer that can ' +
-        'disagree with the guard',
-    ).toBe(2);
-    // NOTE: a bare `buildKind =` needle would red the CORRECT implementation — the
-    // compliant binding `const buildKind = readAuthKind(...)` contains it. The two counts
-    // above already exclude every re-assignment (a `buildKind = …` line is a third
-    // occurrence of the identifier), so these needles cover only the spellings that do not
-    // overlap the compliant one, purely to produce a sharper failure message.
-    for (const rebind of ['let buildKind', 'var buildKind', '{ buildKind }', 'buildKind ??=']) {
+    for (const forbidden of ['wasEverAuthenticated', 'readAuthKind', 'AuthKind', 'auth.kind']) {
       expect(
-        countOccurrences(wholeSquashed, rebind),
-        `connection.ts must contain NO occurrence of "${rebind}" — the discriminator is a ` +
-          'single immutable binding per build; anything that can re-point it can point it ' +
-          "at 'anon' unconditionally",
+        countOccurrences(tokenArgRegion, forbidden),
+        `the .withToken( argument must not mention "${forbidden}" — ADR-0182 D14: the token ` +
+          'supplied to the builder is decided by `credential` ALONE, computed in memory on ' +
+          'this same attempt. Anything storage-derived in this expression re-opens the ' +
+          'marker-desync replay M21b could only ever mitigate, and does it on the PERMISSIVE ' +
+          'side (a sticky `wasEverAuthenticated` says "yes" forever)',
       ).toBe(0);
     }
   });
 });
 
 // ---------------------------------------------------------------------------
-// W-NH4-SAVE-WIRED (RE-PINNED, M21b) — the token is captured on connect, under
-// the stale guard AND under the build's kind.
+// W-NH4-SAVE-WIRED (RE-PINNED TWICE: M21b, then M21b-2 / G13b) — the token is
+// captured on connect, under the stale guard AND under the build's credential.
 //
-// ★★ RE-PIN JUSTIFICATION (tester-owned; reviewer checklist item) ★★
+// ★★ RE-PIN JUSTIFICATION #3 — M21b-2 / G13b (tester-owned; reviewer checklist) ★★
+// The M21b justification that follows is left VERBATIM below, because its closing
+// paragraph is the specification for this re-pin: it states, in the file itself,
+// that "the discriminator must stop being a storage re-read and become the
+// PROVENANCE of the credential this build actually supplied, produced in memory
+// alongside the token", and that doing so "WILL require re-pinning
+// `W-NH4-TOKEN-SUPPLIED`". ADR-0182 D13/D14 do exactly that. This is a tooth
+// changing because the condition IT ITSELF named came true — not a tooth being
+// bent to fit an implementation.
+//
+// WHAT CHANGES: ONE literal. `M21B_SAVE_GUARDED` ("if (buildKind === 'anon') …")
+// becomes `M21B2_SAVE_GUARDED` ("if (credential.kind === 'anon') …"). The guard's
+// DIRECTION (`=== 'anon'`, fail-closed on the value) is unchanged and now matters
+// more, not less: `ConnectCredential` has SIX variants where `AuthKind` had two.
+//
+// WHAT IS CARRIED FORWARD UNRELAXED — every other assertion in the body below:
+// the exact three-param `.onConnect((c, id, token) => {` signature; the
+// exactly-once `auth.onConnected(token)` literal count; `.onConnected(` === 1;
+// the `onConnected` identifier === 3 with its breakdown; the no-`else`-arm shape
+// pin; both after-the-stale-guard ordering assertions; and ALL FOUR whole-file
+// storage-reach bans. Nothing was removed, weakened or re-scoped.
+//
+// WHAT IS ADDED: the region-local `buildKind`-occurs-once count (which pinned the
+// M21b anti-shadow property) is replaced by its exact M21b-2 analogue — a
+// `credential.kind` count of 3 inside the onConnect region, with the breakdown
+// DERIVED from ADR-0182's own normative snippets rather than guessed:
+//   (1) D13's anon save guard          — `if (credential.kind === 'anon') …`
+//   (2) D13/D14's writeAuthKind gate   — `if (credential.kind === 'account') …`
+//   (3) D16's join veto                — `credential.kind !== 'account' || !codeUnconsumed`
+// plus a ban on re-DECLARING `credential` inside the callback (the shadow the old
+// `const buildKind = 'anon';` cheat used, translated to the new binding). Note the
+// structural upgrade this re-pin buys for free: `credential` is now build()'s own
+// PARAMETER, so a shadow is the only way to make the guard read a stale value at
+// all — the M21b TOCTOU (a storage re-read inside the callback) is not merely
+// banned, it is unrepresentable.
+//
+// ★ THE M21b JUSTIFICATION, VERBATIM, FOLLOWS. Read it as the SPECIFICATION for
+// the paragraph above, not as current status.
+//
 // CORRECTED after review — the first draft of this justification overstated the
 // case twice, and both overstatements are recorded here rather than quietly
 // edited out, because a re-pin defended by a false argument is worse than no
@@ -639,14 +755,18 @@ describe('★ connection.ts wiring (M21b / AUTH-31): W-M21B-KIND-READ — build(
 // require re-pinning `W-NH4-TOKEN-SUPPLIED`, which today pins
 // `.withToken(auth.tokenForNextAttempt())` byte-for-byte. Budget for it.
 //
-// THIS IS THE ONLY PRE-EXISTING TOOTH THIS SLICE CHANGES. `W-NH4-TOKEN-SUPPLIED`
-// was going to be re-pinned too, until the scope ruling above cut the read-side
-// guard; it now stands byte-for-byte as it shipped. One justified re-pin, not
-// two — please audit this one accordingly.
+// ⚠ THE SENTENCE THAT STOOD HERE — "THIS IS THE ONLY PRE-EXISTING TOOTH THIS
+// SLICE CHANGES … one justified re-pin, not two" — WAS TRUE OF M21b AND IS FALSE
+// OF M21b-2. Corrected in place rather than deleted (this file's standing
+// convention for a claim that a later slice invalidates), because a stale "only
+// one tooth changes" sentence in a gating file is precisely what teaches the next
+// reviewer to wave through a second, unjustified re-pin. M21b-2 changes FIVE
+// pre-existing teeth, each with its own numbered justification: see the re-pin
+// ledger in the M21b banner above (justifications #1-#5). Audit them as five.
 // ---------------------------------------------------------------------------
 
-describe('connection.ts wiring (nh4, RE-PINNED by M21b): W-NH4-SAVE-WIRED — onConnect saves the token via auth.onConnected(token), stale-guarded AND kind-guarded', () => {
-  it('★ BITES: onConnect takes a third param named token and calls auth.onConnected(token) at exactly ONE site — guarded on the build kind, AFTER the stale guard', () => {
+describe('connection.ts wiring (nh4, RE-PINNED by M21b then M21b-2/G13b): W-NH4-SAVE-WIRED — onConnect saves the token via auth.onConnected(token), stale-guarded AND credential-guarded', () => {
+  it('★ BITES: onConnect takes a third param named token and calls auth.onConnected(token) at exactly ONE site — guarded on THIS build`s credential, AFTER the stale guard', () => {
     const src = readConnectionTs();
     const squashedWhole = squashWhitespace(stripLineComments(src));
 
@@ -674,7 +794,7 @@ describe('connection.ts wiring (nh4, RE-PINNED by M21b): W-NH4-SAVE-WIRED — on
     // ★★ THE RE-SPELLING KILLERS. The literal count above is necessary but NOT sufficient:
     // it counts one exact spelling, and a second call spelled ANY other way is invisible to
     // it. Two red-team implementations, both verified biome-clean, walked through it:
-    //   CHEAT 1: `if (buildKind === 'anon') auth.onConnected(token);`
+    //   CHEAT 1: `if (credential.kind === 'anon') auth.onConnected(token);`
     //            `else auth.onConnected(String(token));`
     //            — the guard is present and contiguous, the literal count is still 1
     //              (`auth.onConnected(String(token))` does not contain `auth.onConnected(token)`),
@@ -718,32 +838,34 @@ describe('connection.ts wiring (nh4, RE-PINNED by M21b): W-NH4-SAVE-WIRED — on
     //   reachable: the SDK hands back the very JWT we supplied (P3), and the anon slot
     //   swallows it permanently. This is the plan's named mutation "un-guard
     //   auth.onConnected(token)", and reverting to it is a one-character-deletion away.
-    // WRONG IMPL KILLED (f): the guard INVERTED — `if (buildKind === 'account')` or
-    //   `if (buildKind !== 'anon')`. Both write the account credential into the anonymous
-    //   slot and nothing else in the suite can see it; the contiguous needle admits only
-    //   the fail-closed `=== 'anon'` form. (`!== 'account'` is also rejected: it is
-    //   behaviourally equal TODAY, but it fails OPEN the moment `AuthKind` gains a third
-    //   member, which is exactly what M21b-2 may do.)
-    // WRONG IMPL KILLED (g): ★ TOCTOU — a guard that RE-READS the marker inside the
-    //   callback rather than using the build-scoped binding, e.g.
+    // WRONG IMPL KILLED (f): the guard INVERTED — `if (credential.kind === 'account')` or
+    //   `if (credential.kind !== 'anon')`. Both write the account credential into the
+    //   anonymous slot and nothing else in the suite can see it; the contiguous needle
+    //   admits only the fail-closed `=== 'anon'` form. (`!== 'account'` is also rejected,
+    //   and under M21b-2 it is no longer even behaviourally equal: `ConnectCredential` has
+    //   SIX variants, and D13's `sign-in-failed` path REBUILDS AS ANON — so a `!==` guard
+    //   would be writing on paths that never carried an anon token at all.)
+    // WRONG IMPL KILLED (g): ★ TOCTOU — a guard that RE-DERIVES the discriminator inside
+    //   the callback rather than reading build()'s own parameter, e.g.
     //   `if (readAuthKind(globalThis, opts.uri, opts.db) === 'anon') auth.onConnected(token);`.
     //   onConnect fires asynchronously, an arbitrary time after the build decided; the
-    //   marker is mutable sessionStorage that M21b-2's return leg writes mid-session. A
-    //   re-read can therefore say 'anon' for a build that supplied an account credential
-    //   — the guard would be present, readable, and wrong. The needle pins the closed-over
-    //   `buildKind` binding, and W-M21B-KIND-READ pins `readAuthKind(` to exactly ONE call
-    //   site inside build(), so this variant reds in BOTH teeth.
+    //   marker is mutable sessionStorage that the OIDC return leg writes mid-session, so a
+    //   re-read can say 'anon' for a build that supplied an account credential — the guard
+    //   would be present, readable, and wrong. Under M21b-2 this is closed THREE ways: the
+    //   contiguous needle pins `credential.kind`; W-M21B2-CREDENTIAL-IS-PROVENANCE (G14)
+    //   makes `readAuthKind` occur ZERO times file-wide; and `credential` is build()'s own
+    //   PARAMETER (D13), so there is no mutable closure variable left to go stale.
     expect(
-      squashedWhole.includes(M21B_SAVE_GUARDED),
-      `connection.ts must contain the contiguous \`${M21B_SAVE_GUARDED}\` — the anonymous ` +
+      squashedWhole.includes(M21B2_SAVE_GUARDED),
+      `connection.ts must contain the contiguous \`${M21B2_SAVE_GUARDED}\` — the anonymous ` +
         'token slot must NEVER receive an account JWT. An unconditional save writes the ' +
         'account credential into the anon slot, because the SDK echoes a client-supplied ' +
         "JWT back as onConnect's third argument (probe P3), and the gate then re-supplies " +
         'it on every later build for the life of the tab (red-team C4)',
     ).toBe(true);
     expect(
-      countOccurrences(squashedWhole, M21B_SAVE_GUARDED),
-      'the kind-guarded save must appear exactly once — two guarded sites means two ' +
+      countOccurrences(squashedWhole, M21B2_SAVE_GUARDED),
+      'the credential-guarded save must appear exactly once — two guarded sites means two ' +
         'competing writers of the same slot',
     ).toBe(1);
 
@@ -751,7 +873,7 @@ describe('connection.ts wiring (nh4, RE-PINNED by M21b): W-NH4-SAVE-WIRED — on
     // exclude it, but this pins the SHAPE directly so the failure message names the defect
     // instead of reporting a surprising number: whatever follows the guarded statement, it
     // is not an else. `if (a) f(); else g();` is a guard that guards nothing.
-    const guardEndIdx = squashedWhole.indexOf(M21B_SAVE_GUARDED) + M21B_SAVE_GUARDED.length;
+    const guardEndIdx = squashedWhole.indexOf(M21B2_SAVE_GUARDED) + M21B2_SAVE_GUARDED.length;
     expect(
       squashedWhole
         .slice(guardEndIdx, guardEndIdx + 6)
@@ -785,34 +907,53 @@ describe('connection.ts wiring (nh4, RE-PINNED by M21b): W-NH4-SAVE-WIRED — on
         'onConnect callback — a call placed above the guard would let a superseded ' +
         "build's late connect clobber the live build's saved token",
     ).toBeGreaterThan(guardIdx);
-    // The kind guard must live in the SAME region (not hoisted somewhere the callback
+    // The credential guard must live in the SAME region (not hoisted somewhere the callback
     // never reaches), and likewise after the stale guard.
     expect(
-      squashedRegion.indexOf(M21B_SAVE_GUARDED),
-      'the kind-guarded save must sit INSIDE the onConnect callback, AFTER the stale guard',
+      squashedRegion.indexOf(M21B2_SAVE_GUARDED),
+      'the credential-guarded save must sit INSIDE the onConnect callback, AFTER the stale guard',
     ).toBeGreaterThan(guardIdx);
 
-    // ★ NO SHADOWED DISCRIMINATOR inside this callback (CHEAT 2, red-team, biome-clean).
-    // `buildKind` must occur exactly ONCE in the onConnect region — the guard's single
-    // read. A `const buildKind = 'anon';` shadow declared inside the callback leaves every
-    // other needle in this tooth satisfied (the guard text is unchanged, the counts of
-    // .onConnected( are unchanged) while the guard reads a literal and is inert. Biome
-    // reports shadowing as a warning at most, so it ships. This complements
-    // W-M21B-KIND-READ's file-wide `buildKind`-occurs-exactly-twice count: that one sees
-    // the extra binding anywhere in the file, this one localises the check to the callback
-    // where a shadow actually changes the guard's meaning.
+    // ★ THE DISCRIMINATOR CENSUS INSIDE THIS CALLBACK (M21b-2/G13b — the exact analogue of
+    // the M21b `buildKind`-occurs-once count this replaces; CHEAT 2, red-team, biome-clean).
+    //
+    // COUNT DERIVED FROM ADR-0182's NORMATIVE SNIPPETS, NOT GUESSED. `credential.kind`
+    // occurs exactly THREE times inside `.onConnect(…)` → `.onConnectError(…)`:
+    //   (1) D13   the anon save guard          — `if (credential.kind === 'anon') …`
+    //   (2) D13/D14 the writeAuthKind hint gate — `if (credential.kind === 'account') …`
+    //   (3) D16   the join veto, nested inside `.onApplied` (which is INSIDE this region) —
+    //             `const shouldJoin = credential.kind !== 'account' || !codeUnconsumed;`
+    // build()'s own defensive belt (`if (credential.kind !== 'anon' && credential.kind !==
+    // 'account') return undefined;`) sits ABOVE `.onConnect(`, outside this region, and is
+    // deliberately not counted here.
+    //
+    // WHAT A WRONG NUMBER MEANS, so the next reader repairs the CODE and not the count:
+    //   2 ⇒ one of the three gates is missing. Most likely (2): the `writeAuthKind` hint is
+    //       dropped, and the first paint after a real sign-in shows the anonymous chrome
+    //       until `my_account`'s first snapshot lands (D14's first-paint hint).
+    //   4 ⇒ a FOURTH consumer of the discriminator inside the callback — which is one more
+    //       chance for two branches to disagree about what this build supplied, and is how
+    //       the D15 reconciliation rule ("store.ownAccount is the SOLE authoritative
+    //       signal") gets quietly re-litigated inside the adapter.
     expect(
-      countOccurrences(squashedRegion, 'buildKind'),
-      'buildKind must occur EXACTLY once inside the onConnect callback — the guard reads ' +
-        'the build-scoped binding and nothing re-declares or re-derives it there. A second ' +
-        "occurrence is a shadow (`const buildKind = 'anon';`), which makes the guard read a " +
-        'constant and silently restores the unconditional write',
-    ).toBe(1);
-    for (const shadow of ['const buildKind', 'let buildKind', 'var buildKind']) {
+      countOccurrences(squashedRegion, 'credential.kind'),
+      'credential.kind must occur EXACTLY 3 times inside the onConnect callback — the anon ' +
+        'save guard, the writeAuthKind first-paint hint gate, and the D16 join veto nested ' +
+        'in .onApplied. Re-derive this number from ADR-0182 D13/D14/D16 if the shape ' +
+        'genuinely changes; do NOT bump it to match code',
+    ).toBe(3);
+    // The discriminator is build()'s own PARAMETER (D13) and is merely READ here. A local
+    // re-declaration is the M21b `const buildKind = 'anon';` cheat, translated: it leaves
+    // every other needle in this tooth satisfied (the guard text is unchanged, the
+    // .onConnected( counts are unchanged) while the guard reads a constant and is inert.
+    // Biome reports shadowing as a warning at most, so it ships.
+    for (const shadow of ['const credential', 'let credential', 'var credential']) {
       expect(
         countOccurrences(squashedRegion, shadow),
-        `the onConnect callback must contain NO "${shadow}" — the discriminator is decided ` +
-          'once per build, inside build(), and merely READ here',
+        `the onConnect callback must contain NO "${shadow}" — the credential is decided ONCE ` +
+          'per attempt by resolveCredential() and handed to build() as a parameter; anything ' +
+          'that re-binds that name inside the callback makes the guard read a value the ' +
+          'build never supplied',
       ).toBe(0);
     }
 
@@ -1047,9 +1188,47 @@ describe('connection.ts wiring (nh4): SDK-DRIFT — spacetimedb SDK still throws
 // dropping (2) leaves the single most interesting call (the reconnect re-join, and the
 // one that carries the player name) silently invisible — a gap no unit test of devLog.ts
 // and no main.ts wiring gate can see.
+//
+// ★★ RE-PIN JUSTIFICATION #5 — M21b-2 (G15 + G15b) ★★
+// TWO of this block's anchors are invalidated by ADR-0182, and BOTH are re-derived
+// from the ADR rather than adjusted to fit code:
+//
+// G15 — the END ANCHOR of the build()-tail region. `let current = build();` ceases to
+//   exist: D13 makes the cold start `let current: DbConnection | undefined;` followed by
+//   `void attemptBuild();`. The re-pin is to the DECLARATION, which T7's own build order
+//   places immediately after build()'s closing brace, so the region ("everything after
+//   `wireTables(conn);` up to the declaration") still covers exactly build()'s tail —
+//   the assertion is unchanged, only its right-hand fence moved.
+//   ⚠ NOT re-pinned to `void attemptBuild();`, which the ADR's prose suggests: that
+//   literal occurs THREE times (scheduleRebuild's timer body, the cold start, and
+//   continueAnonymously), so `expectUniqueAnchor` would red on CORRECT code — and the
+//   region would silently bound against whichever occurrence came first.
+//
+// G15b — the joinGame RECEIVER check. D16 extracts `attemptJoin(conn, name, onError)`
+//   (deliberately: `devLog.ts` builds a fresh Proxy per call with no memoisation, so an
+//   inline re-wrap of an already-wrapped connection double-logs every reducer call). The
+//   wrap therefore moves from the CALL EXPRESSION to the ARGUMENT at the call site, and
+//   the retired "wrapReducerLogging( appears within 140 chars before .reducers.joinGame("
+//   window would RED a correct implementation — the 140 chars before it are now
+//   attemptJoin's own signature. THIS WAS NOT IN THE ADR'S OR THE PLAN'S RE-PIN LIST; it
+//   was found by reading the tooth against D16 and is recorded here as a tester finding.
+//   The INVARIANT is unchanged and is re-stated at its new home: the one connection-
+//   internal joinGame path must receive a WRAPPED connection, so the exact D16 call
+//   `attemptJoin(wrapReducerLogging(c, opts.onSend), name, opts.onError);` is pinned
+//   contiguously. That is strictly SHARPER than the 140-char window it replaces (which
+//   could be satisfied by any nearby wrap call), not looser.
 // ---------------------------------------------------------------------------
 
-describe('connection.ts wiring (ADR-0157): W-DEVLOG-WRAP — both outbound wrap sites exist', () => {
+/** ADR-0182 D13's cold-start declaration — the new right-hand fence of build()'s tail
+ *  region. RE-PINNED from `let current = build();` (G15). */
+const M21B2_CURRENT_DECL = 'let current: DbConnection | undefined;';
+
+/** ADR-0182 D16's exact join call site: the ONE connection-internal outbound call, wrapped
+ *  at the ARGUMENT rather than at the call expression (G15b). */
+const M21B2_ATTEMPT_JOIN_CALL =
+  'attemptJoin(wrapReducerLogging(c, opts.onSend), name, opts.onError);';
+
+describe('connection.ts wiring (ADR-0157, RE-PINNED by M21b-2/G15+G15b): W-DEVLOG-WRAP — both outbound wrap sites exist', () => {
   it('★ W-DEVLOG-WRAP BITES (build): build() RETURNS wrapReducerLogging(conn, …) AFTER wireTables(conn)', () => {
     // WRONG IMPL KILLED (1): `return conn;` left untouched — 37 of the 38 outbound sites
     // are unlogged and the feature appears "half broken" only at runtime.
@@ -1058,16 +1237,23 @@ describe('connection.ts wiring (ADR-0157): W-DEVLOG-WRAP — both outbound wrap 
     // connection, putting the trap on the hot inbound path this slice explicitly excludes
     // (EARS-3, obs-b). Region-bounding the assertion to the text AFTER `wireTables(conn);`
     // is what pins the order.
+    // WRONG IMPL KILLED (3, M21b-2): `current` re-declared with an initialiser
+    // (`let current = undefined;` / `let current: DbConnection | undefined = undefined;`).
+    // Biome's own `noUselessUndefinedInitialization` would flag the second, but the first
+    // ships clean and erases the type annotation that makes every `conn?.live()` call site
+    // in main.ts a compile error rather than a runtime surprise. The exact declaration text
+    // is the fence, so either spelling reds here.
     const src = readConnectionTs();
     expectUniqueAnchor(src, 'wireTables(conn);');
-    expectUniqueAnchor(src, 'let current = build();');
+    expectUniqueAnchor(src, M21B2_CURRENT_DECL);
 
-    const tail = squashWhitespace(bodyRegion(src, 'wireTables(conn);', 'let current = build();'));
+    const tail = squashWhitespace(bodyRegion(src, 'wireTables(conn);', M21B2_CURRENT_DECL));
     expect(
       tail.includes('return wrapReducerLogging(conn'),
       'build() must end with `return wrapReducerLogging(conn, opts.onSend);` — placed AFTER ' +
-        'wireTables(conn) so the inbound path still sees the RAW connection (§A2). RED today: ' +
-        'wrapReducerLogging does not appear in connection.ts at all',
+        'wireTables(conn) so the inbound path still sees the RAW connection (§A2). The region ' +
+        `runs from wireTables(conn); to \`${M21B2_CURRENT_DECL}\` (ADR-0182 D13's cold-start ` +
+        'declaration, which T7 places immediately after build()`s closing brace)',
     ).toBe(true);
   });
 
@@ -1094,13 +1280,46 @@ describe('connection.ts wiring (ADR-0157): W-DEVLOG-WRAP — both outbound wrap 
         'bypasses the get conn() accessor is never logged',
     ).toBe(false);
 
-    const joinIdx = squashed.indexOf('.reducers.joinGame(');
-    const before = squashed.slice(Math.max(0, joinIdx - 140), joinIdx);
+    // ★ G15b (RE-PINNED, ADR-0182 D16). The 140-char backward window this replaces asked
+    // "is a wrap call textually near the joinGame call?" — a question that stops being
+    // answerable once D16 extracts `attemptJoin(conn, name, onError)`, because the wrap now
+    // happens at the CALL SITE's argument and the 140 chars before `.reducers.joinGame(` are
+    // attemptJoin's own signature. The invariant is unchanged; its statement moves to the
+    // one place that still expresses it, and gets SHARPER on the way:
+    //   WRONG IMPL KILLED (a): `attemptJoin(c, name, opts.onError);` — the raw connection
+    //     handed straight to the joiner. The one outbound call that cannot go through the
+    //     get conn() accessor is silently unlogged, exactly the §A2 gap this tooth exists
+    //     for. The old 140-char window CANNOT see this (build()'s own
+    //     `return wrapReducerLogging(conn, …)` is 100+ chars away from attemptJoin's body,
+    //     and the window would simply find nothing — but so would a correct impl).
+    //   WRONG IMPL KILLED (b): `attemptJoin(wrapReducerLogging(current, opts.onSend), …)` —
+    //     wrapping the module-scope `current` rather than the callback's own `c`. `current`
+    //     is a DIFFERENT (and, mid-rebuild, possibly superseded or `undefined`) instance;
+    //     the contiguous needle admits only `c`.
+    //   WRONG IMPL KILLED (c): a double wrap — killed independently below.
     expect(
-      before.includes('wrapReducerLogging('),
-      'the receiver of .reducers.joinGame( must come from wrapReducerLogging( — expected ' +
-        '`wrapReducerLogging(c, opts.onSend).reducers.joinGame({ name })` (§A2)',
-    ).toBe(true);
+      countOccurrences(squashed, M21B2_ATTEMPT_JOIN_CALL),
+      'the connection-internal join must be issued as the exact contiguous call ' +
+        `\`${M21B2_ATTEMPT_JOIN_CALL}\` (ADR-0182 D16) — the joiner is extracted ONCE (devLog ` +
+        'builds a fresh Proxy per call with no "already wrapped" memoisation, so an inline ' +
+        're-wrap double-logs every reducer call) and receives a WRAPPED connection, so the one ' +
+        'outbound site that bypasses the get conn() accessor is still logged (§A2)',
+    ).toBe(1);
+    // The extracted joiner is the ONLY place joinGame is issued from: a second call site
+    // would be a second, unwrapped (or differently-guarded) re-join path.
+    expect(
+      countOccurrences(squashed, '.reducers.joinGame('),
+      'joinGame must be issued from EXACTLY ONE site in connection.ts — attemptJoin`s body. ' +
+        'A second call site is a second re-join path that the D16 claim-code veto does not ' +
+        'gate (AUTH-52/F2: while a claim code is outstanding, an ACCOUNT-kind build must not ' +
+        're-join)',
+    ).toBe(1);
+    // ANTI-VACUITY for the pair above: the joiner really is a separate declaration, not an
+    // inline arrow that happens to spell the same call.
+    expect(
+      countOccurrences(squashed, 'function attemptJoin('),
+      'attemptJoin must be declared EXACTLY once — the single extraction D16 mandates',
+    ).toBe(1);
 
     // Both sites §A2 specifies must be present. AT LEAST two, not exactly two: a
     // behaviourally identical local helper (`const wrap = () => wrapReducerLogging(conn,
@@ -1865,5 +2084,925 @@ describe('★ connection.ts wiring (EG4/A1): W-EG4-INGEST — the evolution_path
           'at connection.ts:308-317 and the two rowConvert import specifiers at :32/:46',
       ).toBe(0);
     }
+  });
+});
+
+// ===========================================================================
+// M21b-2 (ADR-0182 D13/D15/D16/D17) — the async credential ladder, the claim-code
+// join veto, the my_account runtime path, and the session-lifecycle terminals.
+//
+// SOURCE OF TRUTH, in precedence order:
+//   1. docs/adr/0182-m21b2-oidc-client-claim-ui-better-auth-deployment.md D13-D17.
+//      Its code snippets are NORMATIVE ("implements-as-written") and every literal
+//      pinned below is transcribed from them, not paraphrased.
+//   2. memory/projects/monster-realm-M21b-2-plan.md §3 (G-gate map) + its ADDENDUM
+//      §B (RenewalOutcome) and §C (the binding F1-F19 strengthenings).
+//   Where 1 and 2 conflict, 1 wins and the conflict is named at the assertion —
+//   see G14's wasEverAuthenticated count above for the one instance in this file.
+//
+// RED REASON (verified by reading client/src/net/connection.ts this session):
+// NONE of `ConnectCredential`, `resolveCredential`, `attemptBuild`,
+// `continueAnonymously`, `forcedAnon`, `isReturnLegAttempt`,
+// `consecutiveTransientErrors`, `claimCode`, `attemptJoin`, `my_account`,
+// `upsertAccount` or `oidc` appears anywhere in connection.ts. Every tooth below
+// fails on a MISSING IMPLEMENTATION — most of them by THROWING out of
+// `regionOrThrow`/`expectUniqueAnchor`, which is a hard red and never a vacuous
+// pass. That is the whole reason those two helpers throw instead of returning an
+// empty slice.
+//
+// WHY SOURCE SCAN AND NOT BEHAVIOUR — restated because this block is where it hurts
+// most: connection.ts is coverage-EXCLUDED (client/vite.config.ts:98) because
+// importing it executes DOM/wasm side effects. It CANNOT be imported under vitest,
+// so no test in this repo can observe `attemptBuild()` actually running. Every
+// behavioural claim in this slice is proven in the PURE modules these teeth pin the
+// wiring to — credentialDecision.test.ts (the branch table), oidc.test.ts
+// (totality), claimCode.test.ts (storage), store.test.ts (own-identity filter),
+// reconnectPolicy.test.ts (the linkFrozen invariant). This block proves ONLY that
+// the shell calls them, in the right place, in the right order. Both halves are
+// required; neither substitutes for the other. G26 states its own version of this
+// limit at the tooth, where it is load-bearing.
+//
+// NO `new RegExp(...)`, and NO scheme literal in any string or comment added here —
+// this file's standing conventions, both mechanised (the second by the
+// W-UX2B-SCAN-SOUND calibration fixture above, which scans connection.ts itself).
+//
+// ⚠ ANCHOR HYGIENE, FOR THE IMPLEMENTER: the region fences below are resolved
+// against RAW connection.ts source (so that a fence sitting inside a comment still
+// resolves — this file's long-standing idiom), which means a COMMENT in
+// connection.ts that quotes one of them verbatim makes `expectUniqueAnchor` count
+// TWO and reds correct code. Describe these constructs in prose, do not quote them:
+//   `function build(credential: ConnectCredential): DbConnection | undefined {`
+//   `let current: DbConnection | undefined;`
+//   `async function attemptBuild(): Promise<void> {`
+//   `async function resolveCredential(): Promise<ConnectCredential> {`
+//   `function continueAnonymously(): void {`
+//   `.onApplied(() => {`   `.onError((ctx)`   `.subscribe([`   `wireTables(conn);`
+// This is not hypothetical: connection.ts's own M21b comment quotes `.withToken()`,
+// which is exactly why G14's argument-region scan strips comments BEFORE slicing.
+// ===========================================================================
+
+/** D13's `resolveCredential` — the ONE async credential producer. */
+const M21B2_RESOLVE_DECL = 'async function resolveCredential(): Promise<ConnectCredential> {';
+/** D13's `attemptBuild` — the ONE caller of build(). */
+const M21B2_ATTEMPT_DECL = 'async function attemptBuild(): Promise<void> {';
+/** D13/D17's `continueAnonymously` — AUTH-49's mechanism, and attemptBuild's region fence. */
+const M21B2_CONTINUE_DECL = 'function continueAnonymously(): void {';
+
+/** D13/AUTH-49: the sticky forced-anon short-circuit. ZERO I/O — this is the whole point. */
+const M21B2_FORCED_ANON_GUARD =
+  "if (forcedAnon) return { kind: 'anon', token: auth.tokenForNextAttempt() };";
+
+/** D13/AUTH-43/44 (addendum §C F8): the FULL attempt-gate derivation, pinned as one unit so
+ *  `= true`, `= wasEverAuthenticated(...)` alone, and `|| true` are all excluded. */
+const M21B2_ATTEMPT_GATE =
+  'const attemptGateOpen = wasEverAuthenticated(globalThis, opts.uri, opts.db) || isReturnLegAttempt;';
+
+/** D16 (addendum §C F2/F18): the FUSED claim-code read. Fused deliberately — the bug this
+ *  closes is a read HOISTED out of `.onApplied`, and a bare `claimCode.hasUnconsumed(` needle
+ *  cannot tell a fresh per-applied read from a cached connect()-scope one. */
+const M21B2_CODE_UNCONSUMED =
+  'const codeUnconsumed = claimCode.hasUnconsumed(globalThis, opts.uri, opts.db);';
+
+/** D16: the join veto. The claim code is the SOLE veto; `ownAccount` is NEVER an OR-branch. */
+const M21B2_SHOULD_JOIN = "const shouldJoin = credential.kind !== 'account' || !codeUnconsumed;";
+
+/** D13: the two terminal branches that must PARK the connection rather than build one. */
+const M21B2_SESSION_EXPIRED_BRANCH =
+  "if (credential.kind === 'session-expired') { opts.onSessionExpired?.(); current = undefined; return; }";
+const M21B2_UNREACHABLE_BRANCH =
+  "if (credential.kind === 'auth-service-unreachable') { opts.onAuthServiceUnreachable?.(); current = undefined; return; }";
+
+/** D13's post-await staleness re-check, in BOTH of its positions (see G27's breakdown). */
+const M21B2_STALE_RECHECK = 'if (gen !== buildGen || teardown) return;';
+
+/** D15 (addendum §C F4): the two my_account ingest statements, mirroring UX2B_WALLET_INGEST
+ *  byte-for-byte in FORM. Formatter stability: the longest inner line is
+ *  `      store.upsertAccount(accountRowToStore(row as unknown as SdkAccountRow));` = 78
+ *  columns at the wireTables indent, well inside biome's lineWidth 100, so it will not wrap
+ *  and will not gain a trailing comma — exactly as the calibrated my_conversation control
+ *  above proves for the sibling shape. */
+const M21B2_ACCOUNT_INSERT_INGEST =
+  'conn.db.my_account.onInsert((_ctx, row) => { ' +
+  'store.upsertAccount(accountRowToStore(row as unknown as SdkAccountRow)); ' +
+  'batcher.schedule(); });';
+const M21B2_ACCOUNT_UPDATE_INGEST =
+  'conn.db.my_account.onUpdate((_ctx, _old, row) => { ' +
+  'store.upsertAccount(accountRowToStore(row as unknown as SdkAccountRow)); ' +
+  'batcher.schedule(); });';
+
+/** attemptBuild's body, comment-stripped and squashed. Both fences are asserted unique by
+ *  each caller (anti-vacuity), so no tooth here is parasitic on another's execution order. */
+function attemptBuildRegion(src: string): string {
+  expectUniqueAnchor(src, M21B2_ATTEMPT_DECL);
+  expectUniqueAnchor(src, M21B2_CONTINUE_DECL);
+  return squashWhitespace(bodyRegion(src, M21B2_ATTEMPT_DECL, M21B2_CONTINUE_DECL));
+}
+
+/** resolveCredential's body, comment-stripped and squashed. The end fence is the function's
+ *  own final statement (D13) rather than a following declaration, so this region is immune to
+ *  where the implementer chooses to place resolveCredential relative to build(). */
+function resolveCredentialRegion(src: string): string {
+  expectUniqueAnchor(src, M21B2_RESOLVE_DECL);
+  expectUniqueAnchor(src, 'return decideConnectCredential(');
+  return squashWhitespace(bodyRegion(src, M21B2_RESOLVE_DECL, 'return decideConnectCredential('));
+}
+
+/** The subscription's applied callback, comment-stripped and squashed — D16's join gate. */
+function onAppliedRegion(src: string): string {
+  expectUniqueAnchor(src, '.onApplied(() => {');
+  expectUniqueAnchor(src, '.onError((ctx)');
+  return squashWhitespace(bodyRegion(src, '.onApplied(() => {', '.onError((ctx)'));
+}
+
+// ---------------------------------------------------------------------------
+// W-M21B2-ANON-NO-NETWORK (G17 + addendum §C F8, AUTH-43/44/49) — a tab that has
+// never authenticated, and a tab whose player has declined, make ZERO calls to the
+// auth service.
+// ---------------------------------------------------------------------------
+
+describe('★ connection.ts wiring (M21b-2 / AUTH-43/44/49, G17): W-M21B2-ANON-NO-NETWORK — the renewal call sits BEHIND the attempt gate', () => {
+  it('★ BITES: oidc.renewOrExchange( occurs once, AFTER the full attempt-gate derivation and its early return, and the forcedAnon short-circuit is resolveCredential`s FIRST statement', () => {
+    // THE POPULATION THIS PROTECTS: every anonymous player who has never signed in —
+    // today that is ALL of them. AUTH-43/44 require that such a tab never contacts Better
+    // Auth at all, on any attempt, including every reconnect in the backoff ladder. A
+    // renewal call hoisted above the gate turns one flaky wifi minute into a burst of
+    // cross-origin requests from every anonymous tab in the playtest.
+    //
+    // WRONG IMPL KILLED (a) ★ THE NAMED G17 MUTANT: `const outcome = await
+    //   oidc.renewOrExchange();` hoisted above `const attemptGateOpen = …` (or the gate
+    //   demoted to a `void`-ed pre-warm). Both leave every needle in this tooth textually
+    //   present; only the INDEX ORDERING sees them.
+    // WRONG IMPL KILLED (b): the gate stubbed to `const attemptGateOpen = true;`, or
+    //   narrowed to `= wasEverAuthenticated(globalThis, opts.uri, opts.db);` (dropping the
+    //   return-leg disjunct, which silently breaks the FIRST sign-in: the return leg has
+    //   no stored marker yet, so the exchange never runs and the code_verifier is burned
+    //   for nothing). Addendum §C F8 is exactly this: the FULL derivation is one anchor.
+    // WRONG IMPL KILLED (c): the forcedAnon short-circuit deleted or demoted below the
+    //   gate. AUTH-49's promise is that "continue anonymously" STOPS the retrying; a
+    //   short-circuit placed after `wasEverAuthenticated` still consults storage whose
+    //   'account' marker is sticky for the tab's life, so the very next reconnect
+    //   re-arms the ladder the player just dismissed (finalization security review H1).
+    // WRONG IMPL KILLED (d): a SECOND renewal call site (e.g. a retry loop inside
+    //   resolveCredential) — the exactly-once count. Two call sites means two chances to
+    //   consume the single-use code_verifier, and the second always fails.
+    const src = readConnectionTs();
+    const wholeSquashed = squashWhitespace(stripLineComments(src));
+
+    // Addendum §C F8: the FULL derivation as a unique anchor, never a bare identifier.
+    expectUniqueAnchor(wholeSquashed, M21B2_ATTEMPT_GATE);
+    expectUniqueAnchor(wholeSquashed, M21B2_FORCED_ANON_GUARD);
+    expect(
+      countOccurrences(wholeSquashed, 'oidc.renewOrExchange('),
+      'oidc.renewOrExchange( must be called from EXACTLY ONE site in connection.ts. D13: it ' +
+        'takes NO flag argument and branches on WHAT IS IN STORAGE, so a second caller is a ' +
+        'second consumer of the same single-use code_verifier — the second one always loses',
+    ).toBe(1);
+
+    const guardIdx = wholeSquashed.indexOf(M21B2_FORCED_ANON_GUARD);
+    const gateIdx = wholeSquashed.indexOf(M21B2_ATTEMPT_GATE);
+    const earlyReturnIdx = wholeSquashed.indexOf('if (!attemptGateOpen) {');
+    const renewIdx = wholeSquashed.indexOf('oidc.renewOrExchange(');
+
+    expect(
+      earlyReturnIdx,
+      'resolveCredential must contain the contiguous early return `if (!attemptGateOpen) {` — ' +
+        'without it the gate is computed and then ignored, which is the most common way a ' +
+        'guard ships inert (D13: the closed-gate arm returns an anon credential and makes ' +
+        'ZERO calls to Better Auth)',
+    ).toBeGreaterThanOrEqual(0);
+
+    expect(
+      guardIdx,
+      'the forcedAnon short-circuit must appear BEFORE the attempt-gate derivation — AUTH-49: ' +
+        'once the player has declined, this tab must not even ASK storage whether it was ever ' +
+        'authenticated, because that answer is sticky and would re-arm the ladder',
+    ).toBeLessThan(gateIdx);
+    expect(
+      gateIdx,
+      'the attempt-gate derivation must appear BEFORE its own early return',
+    ).toBeLessThan(earlyReturnIdx);
+    expect(
+      earlyReturnIdx,
+      'oidc.renewOrExchange( must appear AFTER the `if (!attemptGateOpen) {` early return — a ' +
+        'call hoisted above the gate contacts the auth service on behalf of every anonymous ' +
+        'tab, on every reconnect attempt (AUTH-43/44). THIS IS THE NAMED G17 MUTANT',
+    ).toBeLessThan(renewIdx);
+
+    // --- the short-circuit is the FIRST statement, not merely an early one -------------
+    // ANTI-VACUITY, ASSERTED FIRST: the region resolved and really is resolveCredential.
+    const region = resolveCredentialRegion(src);
+    expect(
+      region.includes('wasEverAuthenticated('),
+      'ANTI-VACUITY: resolveCredential`s body region must contain wasEverAuthenticated( — if ' +
+        'it does not, the region is mis-anchored and the first-statement pin below is vacuous',
+    ).toBe(true);
+    expect(
+      region.trimStart().startsWith(M21B2_FORCED_ANON_GUARD),
+      `resolveCredential's body must OPEN with \`${M21B2_FORCED_ANON_GUARD}\` — the FIRST ` +
+        'statement, before any read, any derivation and any await. Anything hoisted above it ' +
+        'runs on a tab whose player has explicitly asked to stop trying (AUTH-49). Region ' +
+        'starts: ' +
+        JSON.stringify(region.trimStart().slice(0, 160)),
+    ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W-M21B2-FORCED-ANON-STICKY (G25, AUTH-49) — `forcedAnon` is set once, never
+// cleared, and lives at connect() scope like every other cross-rebuild fact.
+// ---------------------------------------------------------------------------
+
+describe('★ connection.ts wiring (M21b-2 / AUTH-49, G25): W-M21B2-FORCED-ANON-STICKY — the decline is sticky and connect()-scoped', () => {
+  it('★ BITES: forcedAnon is declared once at connect() scope, read once, set once, and NEVER reset — and all three ladder variables live outside build()/attemptBuild()', () => {
+    // WRONG IMPL KILLED (a): `forcedAnon = false;` added anywhere after the declaration —
+    //   e.g. "reset the decline on a successful reconnect", which sounds helpful and
+    //   silently re-arms the auth ladder the player dismissed. AUTH-49's whole content is
+    //   that the decline lasts for the rest of this tab's page life.
+    // WRONG IMPL KILLED (b) ★ THE NAMED G25 MUTANT: any of the three ladder variables
+    //   declared INSIDE build() or attemptBuild(). This is the identical defect
+    //   W-NH4-GATE-CONSTRUCTED was written for and it is worth restating per variable:
+    //     • `consecutiveTransientErrors` per-attempt ⇒ it is ALWAYS 0 or 1 at the decision
+    //       point, AUTH_SERVICE_TRANSIENT_THRESHOLD is never reached, and a down auth
+    //       service produces an infinite silent retry loop instead of D17's
+    //       'auth-service-unreachable' terminal.
+    //     • `forcedAnon` per-attempt ⇒ "continue anonymously" survives exactly one build.
+    //     • `isReturnLegAttempt` per-attempt ⇒ the OIDC return leg's single-use hint is
+    //       re-created (as `false`) on the very attempt that needs it, so the first
+    //       sign-in never exchanges its code at all.
+    // WRONG IMPL KILLED (c): a SECOND reader of forcedAnon that branches differently — the
+    //   identifier census below.
+    const src = readConnectionTs();
+    const wholeSquashed = squashWhitespace(stripLineComments(src));
+
+    // --- (a) sticky ---------------------------------------------------------------------
+    expect(
+      countOccurrences(wholeSquashed, M21B2_FORCED_ANON_GUARD),
+      `the forcedAnon short-circuit \`${M21B2_FORCED_ANON_GUARD}\` must appear EXACTLY once ` +
+        '(D13/AUTH-49). Two guards is two policies',
+    ).toBe(1);
+    // NOTE (the file's own idiom — see the buildKind note the retired W-M21B-KIND-READ
+    // carried): a bare `forcedAnon = false` needle would red the CORRECT implementation,
+    // because the compliant declaration `let forcedAnon = false;` contains it. So the pin is
+    // "EXACTLY ONE occurrence", i.e. the declaration and nothing else.
+    expect(
+      countOccurrences(wholeSquashed, 'forcedAnon = false'),
+      '`forcedAnon = false` must occur EXACTLY once in connection.ts — the DECLARATION `let ' +
+        'forcedAnon = false;` and nothing else. A second occurrence is a RESET, and a reset ' +
+        're-arms the auth ladder the player explicitly declined (AUTH-49). If this reds, ' +
+        'delete the reset; do not raise the number',
+    ).toBe(1);
+    expect(
+      countOccurrences(wholeSquashed, 'forcedAnon = true;'),
+      '`forcedAnon = true;` must occur EXACTLY once — inside continueAnonymously(), which is ' +
+        "AUTH-49's only mechanism (D13/D17)",
+    ).toBe(1);
+    expect(
+      countOccurrences(wholeSquashed, 'forcedAnon'),
+      'the forcedAnon IDENTIFIER must occur EXACTLY 3 times in the comment-stripped source, ' +
+        'and the breakdown is: (1) the connect()-scope declaration `let forcedAnon = false;`; ' +
+        "(2) the ONE read in resolveCredential's opening short-circuit; (3) the ONE write " +
+        '`forcedAnon = true;` in continueAnonymously. A 4th occurrence is a second reader ' +
+        '(which can disagree with the short-circuit) or a reset (which breaks AUTH-49)',
+    ).toBe(3);
+
+    // --- (b) connect() scope, exactly as W-NH4-GATE-CONSTRUCTED pins the gate ------------
+    expectUniqueAnchor(src, M21B2_BUILD_ANCHOR);
+    expectUniqueAnchor(src, 'wireTables(conn);');
+    const buildIdx = src.indexOf(M21B2_BUILD_ANCHOR);
+    const buildBody = squashWhitespace(bodyRegion(src, M21B2_BUILD_ANCHOR, 'wireTables(conn);'));
+    const attemptBody = attemptBuildRegion(src);
+    // ANTI-VACUITY: both regions are non-degenerate before any negative is judged.
+    expect(
+      buildBody.trim().length,
+      'ANTI-VACUITY: build()`s body region must be non-empty',
+    ).toBeGreaterThan(0);
+    expect(
+      attemptBody.includes('= build('),
+      'ANTI-VACUITY: attemptBuild`s body region must contain the `= build(` call — if it does ' +
+        'not, the region is mis-anchored and every negative below is vacuous',
+    ).toBe(true);
+
+    for (const decl of [
+      'let isReturnLegAttempt',
+      'let consecutiveTransientErrors',
+      'let forcedAnon',
+    ]) {
+      const declIdx = src.indexOf(decl);
+      expect(
+        declIdx,
+        `connection.ts must declare \`${decl}\` at connect() scope (D13 declares all three ` +
+          'alongside buildGen/state/rebuildTimer/teardown)',
+      ).toBeGreaterThanOrEqual(0);
+      expect(
+        declIdx,
+        `\`${decl}\` must be declared BEFORE build() — it is a CROSS-REBUILD fact, and a ` +
+          'per-build copy resets on every reconnect attempt (the exact mutant ' +
+          'W-NH4-GATE-CONSTRUCTED exists for, restated per variable in this test`s comment)',
+      ).toBeLessThan(buildIdx);
+    }
+    for (const ident of ['isReturnLegAttempt', 'consecutiveTransientErrors', 'forcedAnon']) {
+      expect(
+        countOccurrences(buildBody, ident),
+        `build() must not mention \`${ident}\` — the ladder state belongs to connect(), and ` +
+          'build() is handed everything it needs as its `credential` parameter (D13)',
+      ).toBe(0);
+      expect(
+        countOccurrences(attemptBody, ident),
+        `attemptBuild() must not mention \`${ident}\` — resolveCredential owns the ladder ` +
+          'state; attemptBuild owns only the generation guard and the build call (D13)',
+      ).toBe(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W-M21B2-RESOLVE-THROW-SAFE (G27 + addendum §C F7, finalization review C1
+// CRITICAL) — the ONE await in the reconnect ladder can never strand the ladder.
+// ---------------------------------------------------------------------------
+
+describe('★ connection.ts wiring (M21b-2, G27 / C1 CRITICAL): W-M21B2-RESOLVE-THROW-SAFE — the await is inside a try whose catch climbs the ladder', () => {
+  it('★ BITES: `credential = await resolveCredential();` sits in a try; the catch opens with the stale re-check and then climbs the SAME backoff ladder', () => {
+    // THE FAILURE THIS PREVENTS is the worst class this codebase has: a PERMANENT SILENT
+    // FREEZE. `attemptBuild` is the only thing that ever calls build(); if the await
+    // rejects and nothing catches it, the promise is unhandled, `state` is stranded at
+    // 'reconnecting', no timer is pending and no further attempt is ever made — the player
+    // sees a frozen world with a hopeful status line, forever. RT-01 (connection.ts:138-141)
+    // exists for precisely this shape on build()'s SYNCHRONOUS half; this is its async twin,
+    // and the ADR names it C1 CRITICAL.
+    //
+    // resolveCredential's own I/O is REQUIRED to be total (oidc.renewOrExchange maps every
+    // internal fetch/crypto/JSON failure to 'transient-error' — proved behaviourally in
+    // oidc.test.ts, which is where that claim belongs). This try/catch is the BELT, not the
+    // trust: an ordinary Better Auth hiccup (mid-restart, CORS misconfig, a proxy's HTML
+    // error page) must never be able to stop the ladder even if a future edit to oidc.ts
+    // breaks totality.
+    //
+    // WRONG IMPL KILLED (a) ★ THE NAMED G27 MUTANT: the try/catch deleted entirely.
+    // WRONG IMPL KILLED (b): a catch that swallows — `catch { /* ignore */ }`. The ladder
+    //   never climbs, no rebuild is scheduled: the same permanent freeze, with a comment
+    //   claiming it is fine. The catch BODY pin sees it.
+    // WRONG IMPL KILLED (c) — addendum §C F7: the stale re-check MISSING or placed AFTER
+    //   the ladder calls. A superseded attempt's late rejection would then dirty the LIVE
+    //   attempt's state and schedule a competing rebuild — ADR-0085's RT-02 defect, on the
+    //   new async path. The body pin requires it to be the block's FIRST statement.
+    // WRONG IMPL KILLED (d): a second, unguarded `await` in attemptBuild (e.g. awaiting the
+    //   build, or an added `await sleep(...)`) — every await is a fresh window for the
+    //   generation to advance, and only the pinned one is re-checked afterwards.
+    const src = readConnectionTs();
+    const region = attemptBuildRegion(src);
+
+    // ANTI-VACUITY, ASSERTED FIRST.
+    expect(
+      region.includes('= build('),
+      'ANTI-VACUITY: attemptBuild`s region must contain the `= build(` call',
+    ).toBe(true);
+
+    // The try prefix: the await is INSIDE the try, and the catch closes it immediately.
+    // Deliberately binding-AGNOSTIC at the `catch` keyword: this repo writes `catch {` when
+    // the binding is unused (helpModel.test.ts:189) and `catch (err)` when it is used
+    // (connection.ts:144), and D13's own snippet leaves `err` unused. Pinning either
+    // spelling would be pinning a lint outcome, not a behaviour.
+    const TRY_PREFIX = 'try { credential = await resolveCredential(); } catch';
+    expect(
+      countOccurrences(region, TRY_PREFIX),
+      `attemptBuild must contain the contiguous \`${TRY_PREFIX}\` (ADR-0182 D13). The await ` +
+        'must be the ONLY statement in the try, and the catch must close it immediately — a ' +
+        'try that also wraps the build() call would route a synchronous build failure into ' +
+        "the wrong arm (RT-01's own catch, three lines below, is the right one for that)",
+    ).toBe(1);
+
+    const CATCH_BODY =
+      '{ ' + M21B2_STALE_RECHECK + ' state = onAttemptFailed(state); scheduleRebuild(); return; }';
+    expect(
+      countOccurrences(region, CATCH_BODY),
+      'the catch block must be EXACTLY `' +
+        CATCH_BODY +
+        '` — the stale re-check FIRST (addendum §C F7: a superseded attempt`s late rejection ' +
+        'must not dirty the live attempt), then the SAME ADR-0085 backoff ladder every other ' +
+        'failure path uses, then return. No bare `return;`, no `throw`, and no second retry ' +
+        'path may precede the ladder calls',
+    ).toBe(1);
+
+    // The catch body must be THIS try's catch — i.e. only the catch BINDING (` ` or ` (err) `)
+    // may sit between them. Anything longer means the two matched different statements.
+    const tryEnd = region.indexOf(TRY_PREFIX) + TRY_PREFIX.length;
+    const catchStart = region.indexOf(CATCH_BODY);
+    expect(
+      catchStart,
+      'the pinned catch body must FOLLOW the pinned try prefix — if it precedes it, the two ' +
+        'needles matched different statements and this tooth is judging the wrong pair',
+    ).toBeGreaterThan(tryEnd - 1);
+    expect(
+      catchStart - tryEnd,
+      'only the catch BINDING may sit between the try prefix and the pinned catch body (0 ' +
+        'characters for `catch {`, 7 for `catch (err) {`). A larger gap means the pinned ' +
+        'catch body belongs to some OTHER try in attemptBuild, and the await`s own catch is ' +
+        'unpinned',
+    ).toBeLessThanOrEqual(10);
+
+    // Exactly one await, and exactly two stale re-checks (D13: the catch's first statement,
+    // and the one immediately after the await on the success path).
+    expect(
+      countOccurrences(region, 'await'),
+      'attemptBuild must contain EXACTLY ONE `await` — the resolveCredential call. Every ' +
+        'additional await is another window for buildGen to advance without a re-check',
+    ).toBe(1);
+    expect(
+      countOccurrences(region, M21B2_STALE_RECHECK),
+      `\`${M21B2_STALE_RECHECK}\` must occur EXACTLY twice in attemptBuild (D13): once as the ` +
+        'catch block`s first statement, and once immediately after the await on the success ' +
+        'path. Dropping the second lets a superseded attempt build a connection and assign it ' +
+        'to `current`, replacing the live one',
+    ).toBe(2);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W-M21B2-RETRY-CLIMBS-LADDER (G24 + addendum §C F5, AUTH-45) — an ambiguous
+// transient outcome climbs the EXISTING backoff ladder and builds nothing.
+// ---------------------------------------------------------------------------
+
+describe('★ connection.ts wiring (M21b-2 / AUTH-45, G24): W-M21B2-RETRY-CLIMBS-LADDER — the `retry` credential never reaches build()', () => {
+  it('★ BITES: the `retry` branch is a unique anchor inside attemptBuild, contains the ladder pair AND a return, and sits BEFORE the build call', () => {
+    // WRONG IMPL KILLED (a) ★ THE NAMED G24 MUTANT: the `return;` deleted, so a 'retry'
+    //   credential FALLS THROUGH to `build(...)`. build()'s defensive belt returns
+    //   `undefined` for that kind (D13), so `current` becomes undefined, the link is never
+    //   frozen by any transition, and main.ts's `conn?.live()` guards silently suppress
+    //   every action with no status-line explanation — a dead client that looks connected.
+    // WRONG IMPL KILLED (b): the branch deleted entirely — 'retry' would reach build() as
+    //   above. The unique anchor sees it.
+    // WRONG IMPL KILLED (c): a branch that schedules its OWN retry (a bare `setTimeout`)
+    //   instead of `scheduleRebuild()`. ADR-0085 A7's single-timer rule is what makes the
+    //   double-schedule guard work; a second timer path re-opens the burst-reconnect bug.
+    // WRONG IMPL KILLED (d): a branch that returns WITHOUT `state = onAttemptFailed(state)`
+    //   — the backoff never advances, so a down auth service is retried at the 1s rung
+    //   forever, and `consecutiveTransientErrors` climbs to the D17 threshold in seconds
+    //   rather than over a sensible window.
+    const src = readConnectionTs();
+    const region = attemptBuildRegion(src);
+
+    const RETRY_ANCHOR = "if (credential.kind === 'retry') {";
+    // Addendum §C F5: expectUniqueAnchor, not a bare indexOf — a duplicated branch would
+    // let the region below bound against the wrong one.
+    expectUniqueAnchor(region, RETRY_ANCHOR);
+
+    // The branch BLOCK, bounded by the next terminal branch (D13's order: retry →
+    // session-expired → auth-service-unreachable → sign-in-failed → build). If a future
+    // edit genuinely reorders these, regionOrThrow throws with a legible message rather
+    // than silently scanning the wrong span — a hard red, never a vacuous pass.
+    const retryBlock = regionOrThrow(
+      region,
+      RETRY_ANCHOR,
+      "if (credential.kind === 'session-expired')",
+    );
+    for (const needle of ['state = onAttemptFailed(state);', 'scheduleRebuild();', 'return;']) {
+      expect(
+        retryBlock.includes(needle),
+        `the \`retry\` branch must contain \`${needle}\` — AUTH-45: an ambiguous/transient ` +
+          'outcome climbs the SAME ADR-0085 ladder a socket-level connect failure uses, and ' +
+          'then STOPS. Block=' +
+          JSON.stringify(retryBlock),
+      ).toBe(true);
+    }
+
+    // ORDERING: the branch must precede the build call, or the `return;` above is decorative.
+    const retryIdx = region.indexOf(RETRY_ANCHOR);
+    const buildCallIdx = region.indexOf('= build(');
+    expect(
+      buildCallIdx,
+      'ANTI-VACUITY: attemptBuild must contain the `= build(` call — needle chosen over a bare ' +
+        '`build(` because `scheduleRebuild(` contains that substring',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      retryIdx,
+      'the `retry` branch must appear BEFORE the build call in attemptBuild — a branch placed ' +
+        'after it has already let the ambiguous credential through',
+    ).toBeLessThan(buildCallIdx);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W-M21B2-LIVE-IS-CURRENT (G26 + addendum §C F6, AUTH-46/47) — `live()` has ONE
+// source of truth, and `current` has exactly three assignment sites.
+//
+// ★ NAMED RESIDUAL — READ BEFORE TRUSTING THIS TOOTH. ADR-0182 words G26 as
+// "exercised across five enumerated states". THAT IS NOT ACHIEVABLE IN THIS REPO
+// and this tooth does not claim it: connection.ts cannot be imported under vitest
+// at all (DOM/wasm side effects at module scope; it is coverage-EXCLUDED at
+// client/vite.config.ts:98 for exactly that reason), so NO test here can observe
+// `live()` returning anything. What follows is the strongest MECHANICAL form
+// available inside this slice's touches: the accessor has one body, the variable
+// has an enumerated set of writers, and the one transition that can report a
+// healthy link is region-bound to the callback that only fires on a live socket.
+// The behavioural half — `linkFrozen(onConnected(s)) === false` and its two
+// siblings over arbitrary states — lives in
+// client/src/prediction/reconnectPolicy.test.ts (a real import of a pure module).
+// Neither half is sufficient alone, and this comment exists so nobody reads the
+// pair as more than it is.
+// ---------------------------------------------------------------------------
+
+describe('★ connection.ts wiring (M21b-2 / AUTH-46/47, G26): W-M21B2-LIVE-IS-CURRENT — one accessor, three writers, and no unfrozen link without a connection', () => {
+  it('★ BITES: live() returns `current` and nothing else; current is assigned at exactly 3 enumerated sites; state = onConnected(state) lives INSIDE .onApplied', () => {
+    // WRONG IMPL KILLED (a): a `live()` that reconstructs or caches — e.g. `live: () =>
+    //   current ?? build({ kind: 'anon', token: auth.tokenForNextAttempt() })`. That turns
+    //   a read into a side effect, builds a second connection from a getter, and makes the
+    //   "parked" terminals (session-expired / auth-service-unreachable) silently
+    //   self-heal into an anonymous session the player never asked for — the exact
+    //   opposite of AUTH-46/47, which require the tab to STOP and show a terminal.
+    // WRONG IMPL KILLED (b): a SECOND `current = build(...)` outside attemptBuild (the most
+    //   likely being a "fast path" left in scheduleRebuild's timer body, which D13 replaces
+    //   with `void attemptBuild();`). Two builders means two connections racing for the
+    //   same `current` slot with no shared generation discipline.
+    // WRONG IMPL KILLED (c) — addendum §C F6, and why this is TWO separately-anchored
+    //   needles rather than one count of 2: an aggregate `current = undefined;` count of 2
+    //   is satisfied by putting BOTH in the session-expired branch and none in the
+    //   auth-service-unreachable branch. The unreachable branch would then leave the
+    //   previous (dead) connection in `current`, so `live()` hands main.ts a socket the
+    //   ladder has given up on and every send silently fails against it.
+    // WRONG IMPL KILLED (d): `state = onConnected(state)` hoisted out of `.onApplied` (say,
+    //   into `.onConnect`). onConnect fires BEFORE the initial snapshot applies; the link
+    //   would unfreeze with an empty store, and — worse for this slice — it is the only
+    //   way `linkFrozen() === false` can be reached while `current === undefined`, which is
+    //   the precise invariant `sendGuarded()` (main.ts:664, 20 call sites) relies on.
+    const src = readConnectionTs();
+    const wholeSquashed = squashWhitespace(stripLineComments(src));
+
+    // --- the accessor -------------------------------------------------------------------
+    // Contract: `live: () => current,` — the same arrow-property shape as its two siblings
+    // in the SAME returned object literal (`identity: () => identity,` and
+    // `linkFrozen: () => linkFrozen(state),`), so the accessor family stays one idiom.
+    expect(
+      countOccurrences(wholeSquashed, 'live: () => current,'),
+      'the Connection object must expose `live: () => current,` EXACTLY once — one source of ' +
+        'truth, no caching, no reconstruction (ADR-0182 D13`s Connection interface). It ' +
+        'mirrors the two sibling accessors in the same object literal',
+    ).toBe(1);
+    expect(
+      countOccurrences(wholeSquashed, 'linkFrozen: () => linkFrozen(state),'),
+      'CARRIED FORWARD UNCHANGED: `linkFrozen: () => linkFrozen(state),` must still occur ' +
+        'exactly once — main.ts`s 20 sendGuarded call sites and its 10 live() sites both ' +
+        'depend on this staying the one link-state accessor',
+    ).toBe(1);
+
+    // --- the writers --------------------------------------------------------------------
+    expect(
+      countOccurrences(wholeSquashed, M21B2_CURRENT_DECL),
+      `\`${M21B2_CURRENT_DECL}\` must appear EXACTLY once — one declaration, at connect() ` +
+        'scope, with the annotation that makes every main.ts consumer a compile error rather ' +
+        'than a runtime surprise',
+    ).toBe(1);
+    expect(
+      countOccurrences(wholeSquashed, 'current = build('),
+      '`current = build(` must occur EXACTLY once — inside attemptBuild, under the generation ' +
+        'guard. A second assignment site is a second, ungated builder',
+    ).toBe(1);
+    // NOTE (deliberate deviation from the plan's §3 G26 row, which asks for "total identifier
+    // occurrences pinned with a written breakdown"): the pin is on ASSIGNMENTS, not on the bare
+    // `current` identifier. Reason, measured on the live file: `current` is a SUBSTRING of
+    // `currentNodeId`, a real field in the locally-declared SdkConversationRow type
+    // (connection.ts:340), so a bare-identifier total is a co-tenanted number that reds when an
+    // unrelated conversation-row field is renamed — the recalibration treadmill this repo's
+    // ceiling teeth exist to end. Writers are what matter for the `live()` invariant, and they
+    // are fully enumerated here; readers are harmless.
+    expect(
+      countOccurrences(wholeSquashed, 'current ='),
+      'the identifier `current` must be ASSIGNED at exactly 3 sites, and the breakdown is: ' +
+        '(1) `current = build(...)` in attemptBuild; (2) `current = undefined;` in the ' +
+        'session-expired terminal; (3) `current = undefined;` in the auth-service-unreachable ' +
+        'terminal. (The declaration `let current: DbConnection | undefined;` carries no `=` ' +
+        'and is counted separately above.) A 4th assignment is an unenumerated writer of the ' +
+        'ONE slot every main.ts guard reads through',
+    ).toBe(3);
+
+    // Addendum §C F6: the two parking branches are pinned SEPARATELY and CONTIGUOUSLY, so
+    // neither can borrow the other's `current = undefined;`.
+    expect(
+      countOccurrences(wholeSquashed, M21B2_SESSION_EXPIRED_BRANCH),
+      `the session-expired terminal must be the contiguous \`${M21B2_SESSION_EXPIRED_BRANCH}\` ` +
+        '(ADR-0182 D13) — notify, PARK the slot, and stop. Dropping `current = undefined;` ' +
+        'leaves the dead connection live to every main.ts caller (AUTH-46)',
+    ).toBe(1);
+    expect(
+      countOccurrences(wholeSquashed, M21B2_UNREACHABLE_BRANCH),
+      `the auth-service-unreachable terminal must be the contiguous \`${M21B2_UNREACHABLE_BRANCH}\` ` +
+        '(ADR-0182 D13/D17) — same terminal shape as session-expired, distinct callback, ' +
+        'distinct copy (AUTH-47)',
+    ).toBe(1);
+    expect(
+      countOccurrences(wholeSquashed, 'current = undefined;'),
+      '`current = undefined;` must occur EXACTLY twice — once in EACH of the two terminals ' +
+        'pinned above. This count is deliberately asserted ALONGSIDE the two contiguous ' +
+        'needles, not instead of them: the count alone is satisfied by putting both in one ' +
+        'branch (addendum §C F6)',
+    ).toBe(2);
+
+    // --- the one transition that can report a healthy link ------------------------------
+    expect(
+      countOccurrences(wholeSquashed, 'state = onConnected(state)'),
+      'CARRIED FORWARD: `state = onConnected(state)` must occur exactly once in connection.ts',
+    ).toBe(1);
+    const applied = onAppliedRegion(src);
+    // ANTI-VACUITY, ASSERTED FIRST: the region really is the applied callback.
+    expect(
+      applied.includes('if (stale()) return;'),
+      'ANTI-VACUITY: the .onApplied region must contain the stale guard — if it does not, the ' +
+        'region is mis-anchored and the membership assertion below is vacuous',
+    ).toBe(true);
+    expect(
+      applied.includes('state = onConnected(state)'),
+      'the ONE `state = onConnected(state)` transition must live INSIDE the .onApplied ' +
+        'callback — it is the only place a live socket AND an applied snapshot are both ' +
+        'proven. Anywhere else, `linkFrozen()` can report false while `current` is undefined, ' +
+        'and every sendGuarded()-protected action in main.ts fires into nothing',
+    ).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W-M21B2-JOIN-GATE (G18 + addendum §C F2/F18, AUTH-52/53, D16) — the claim-code
+// veto is read FRESH per applied snapshot and is the SOLE veto.
+// ---------------------------------------------------------------------------
+
+describe('★ connection.ts wiring (M21b-2 / AUTH-52/53, G18): W-M21B2-JOIN-GATE — the claim-code veto is fresh, sole, and paired with a real re-issue', () => {
+  it('★ BITES: the fused hasUnconsumed read lives INSIDE .onApplied, shouldJoin has exactly D16`s shape, and the reissue arm actually calls completeGuestClaim', () => {
+    // THE BUG THIS EXISTS FOR (F2, re-opened twice in review): a guest mints a claim code,
+    // then signs in on the SAME tab. The account-kind build's first `onApplied` fires
+    // `joinGame`, the server creates a FRESH player row for the account identity, and
+    // `complete_guest_claim` then fails guard 11 ("already has game data") — permanently.
+    // The guest's progress is unreachable, and the failure is indistinguishable from a
+    // typo'd code. The veto below is the only thing standing in front of it.
+    //
+    // WRONG IMPL KILLED (a) ★ NAMED: `|| store.ownAccount(identity) === undefined` appended
+    //   to shouldJoin. It reads like defence-in-depth and is the F2 bug wearing a hat: the
+    //   `my_account` row has NOT arrived on the first applied snapshot of a fresh account
+    //   connection, so the OR is true, joinGame fires, and guard 11 trips. AUTH-52 is
+    //   explicit that my_account presence/absence is NEVER consulted in the veto. Killed by
+    //   the contiguous needle (which requires the `;` immediately after `!codeUnconsumed`).
+    // WRONG IMPL KILLED (b) ★ NAMED (F2/F18): `claimCode.hasUnconsumed(...)` HOISTED to
+    //   connect() or build() scope and cached. Across a reconnect the cached answer is
+    //   stale in the dangerous direction — the code was consumed on the previous
+    //   connection, the cache still says "outstanding", and the tab never re-joins at all.
+    //   Killed by region membership: the FUSED statement must be inside .onApplied.
+    // WRONG IMPL KILLED (c) ★ NAMED: the reissue arm reduced to a UI notification —
+    //   `opts.onClaimPending?.(code);` with no reducer call. This is the defect the ADR's
+    //   own completeness review caught in its FIRST draft: AUTH-53 mandates re-issuing
+    //   complete_guest_claim on the first applied snapshot, unconditionally, because
+    //   ADR-0085 D3 established that a pre-drop promise never settles. Without the reducer
+    //   call the claim silently never completes and the UI shows "pending" forever.
+    // WRONG IMPL KILLED (d): the reducer call made CONDITIONAL on the callback being
+    //   supplied (`if (opts.onClaimPending) { …completeGuestClaim… }`) — production wires
+    //   the callback, so this ships green and breaks only for embedders/tests. Killed by
+    //   requiring both needles independently inside the same arm.
+    const src = readConnectionTs();
+    const wholeSquashed = squashWhitespace(stripLineComments(src));
+    const applied = onAppliedRegion(src);
+
+    // ANTI-VACUITY, ASSERTED FIRST: the region really is D16's applied callback.
+    expect(
+      applied.includes('if (stale()) return;'),
+      'ANTI-VACUITY: the .onApplied region must contain the stale guard',
+    ).toBe(true);
+
+    // --- (a) the fused read, unique file-wide AND inside the region ---------------------
+    expectUniqueAnchor(wholeSquashed, M21B2_CODE_UNCONSUMED);
+    expect(
+      applied.includes(M21B2_CODE_UNCONSUMED),
+      `the fused read \`${M21B2_CODE_UNCONSUMED}\` must sit INSIDE the .onApplied callback — ` +
+        'read FRESH on every applied snapshot (D16 / addendum §C F2). A connect()- or ' +
+        'build()-scope read caches an answer across reconnects and re-opens F2. The statement ' +
+        'is pinned FUSED (declaration + call in one needle) because a bare ' +
+        '`claimCode.hasUnconsumed(` needle cannot tell a fresh read from a cached one',
+    ).toBe(true);
+    expect(
+      countOccurrences(wholeSquashed, 'claimCode.hasUnconsumed('),
+      'claimCode.hasUnconsumed( must be called from EXACTLY ONE site — a second caller is a ' +
+        'second answer, and the veto is only as good as its freshest reader',
+    ).toBe(1);
+
+    // --- (b) the veto itself ------------------------------------------------------------
+    expectUniqueAnchor(wholeSquashed, M21B2_SHOULD_JOIN);
+    expect(
+      applied.includes(M21B2_SHOULD_JOIN),
+      `the join veto must be the contiguous \`${M21B2_SHOULD_JOIN}\`, INSIDE .onApplied ` +
+        '(D16). The claim code is the SOLE veto: anon-kind builds are never vetoed (their ' +
+        'join is the idempotent "already joined" path AUTH-33 always allowed), and an ' +
+        'account-kind build is vetoed exactly while a code is outstanding',
+    ).toBe(true);
+    // Belt and braces on (a): `ownAccount` must not appear in the veto STATEMENT itself.
+    // The contiguous needle above already excludes an appended disjunct (it requires the `;`
+    // immediately after `!codeUnconsumed`); this states the RULE separately so the failure
+    // message names AUTH-52 rather than reporting a mismatched string.
+    const shouldJoinIdx = applied.indexOf(M21B2_SHOULD_JOIN);
+    const stmtEnd = applied.indexOf(';', shouldJoinIdx);
+    expect(stmtEnd, 'the shouldJoin statement must terminate').toBeGreaterThan(shouldJoinIdx);
+    expect(
+      countOccurrences(applied.slice(shouldJoinIdx, stmtEnd + 1), 'ownAccount('),
+      'the shouldJoin expression must NOT consult store.ownAccount( (AUTH-52 / D16 ' +
+        "anti-pattern 4) — my_account's presence only chooses BETWEEN the reissue arm and " +
+        'the awaiting-account UX arm; it is never an OR-branch in the veto',
+    ).toBe(0);
+
+    // --- (c) the join call is issued exactly once, from the extracted joiner ------------
+    expect(
+      countOccurrences(applied, 'attemptJoin('),
+      'the .onApplied callback must call attemptJoin( EXACTLY once — the single guarded join ' +
+        'path. attemptJoin may be DECLARED outside this region (D16 extracts it once to avoid ' +
+        'double-wrapping the devLog Proxy); only the CALL is region-bound',
+    ).toBe(1);
+
+    // --- (d) the reissue arm does real work --------------------------------------------
+    const REISSUE_ANCHOR = 'else if (store.ownAccount(identity) !== undefined) {';
+    const AWAITING_ARM = 'opts.onClaimAwaitingAccount?.();';
+    expectUniqueAnchor(applied, REISSUE_ANCHOR);
+    expectUniqueAnchor(applied, AWAITING_ARM);
+    const reissueArm = regionOrThrow(applied, REISSUE_ANCHOR, AWAITING_ARM);
+    expect(
+      reissueArm.includes('.reducers.completeGuestClaim({ code })'),
+      'the reissue arm must actually CALL the reducer — the contiguous ' +
+        '`.reducers.completeGuestClaim({ code })` (AUTH-53 / D16). A UI notification alone ' +
+        'leaves the claim permanently unfinished, because a pre-drop promise never settles ' +
+        '(ADR-0085 D3). Arm=' +
+        JSON.stringify(reissueArm),
+    ).toBe(true);
+    expect(
+      reissueArm.includes('opts.onClaimPending?.('),
+      'the reissue arm must ALSO fire `opts.onClaimPending?.(` — the UX notification is ' +
+        'ALONGSIDE the reducer call, never a substitute for it (D16)',
+    ).toBe(true);
+    // The notification must not GATE the reducer call: the reducer must be issued before
+    // (and independently of) the optional callback.
+    expect(
+      reissueArm.indexOf('.reducers.completeGuestClaim({ code })'),
+      'the reducer call must be issued BEFORE the onClaimPending notification — a reducer ' +
+        'call written inside an `if (opts.onClaimPending)` block ships green in production ' +
+        '(where the callback is always wired) and silently never claims anywhere else',
+    ).toBeLessThan(reissueArm.indexOf('opts.onClaimPending?.('));
+  });
+});
+
+// ---------------------------------------------------------------------------
+// W-M21B2-ACCOUNT-SUBSCRIBE / -INGEST (G28 + addendum §C F4, AUTH-50/51, D15) —
+// mirrors the my_wallet gate above byte-for-byte, plus the tripwire correction.
+// ---------------------------------------------------------------------------
+
+describe('★ connection.ts wiring (M21b-2 / AUTH-50, G28): W-M21B2-ACCOUNT-SUBSCRIBE — my_account joins the ONE subscribe array', () => {
+  it("★ BITES: the .subscribe([...]) array contains 'SELECT * FROM my_account' exactly once", () => {
+    // Modelled on W-UX2B-SUBSCRIBE above, deliberately and byte-for-byte: same anchor, same
+    // window, same anti-vacuity control, same ===1.
+    // WRONG IMPL KILLED (a): shipping rowConvert's accountRowToStore, store.upsertAccount
+    //   and both handlers and never subscribing the view — every other G28 needle passes
+    //   while no row ever arrives, `store.ownAccount(identity)` is undefined forever, and
+    //   AUTH-51's "sole authoritative signal" reports "not signed in" to a signed-in player.
+    // WRONG IMPL KILLED (b): parking the string in a module-level const or a second,
+    //   unreachable .subscribe() call — the WINDOW is what kills this (the precedent
+    //   reasoning is evals/conversation-privacy.eval.mjs:394-420, Finding 5).
+    // WRONG IMPL KILLED (c): subscribing it twice — the ===1, not a `toContain`.
+    // WRONG IMPL KILLED (d): subscribing the PRIVATE `account` table instead of the
+    //   owner-scoped `my_account` view. SpacetimeDB rejects the whole subscription BATCH,
+    //   onApplied never fires, and EVERY player gets a blank world.
+    const src = readConnectionTs();
+    expectUniqueAnchor(src, '.subscribe([');
+    const arrayBody = bodyRegion(src, '.subscribe([', ']);');
+
+    // ANTI-VACUITY: prove the window really is the subscription array before judging it.
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM my_conversation'"),
+      'the .subscribe([...]) window must still contain the my_conversation subscription — if ' +
+        'it does not, this gate is judging the wrong region and every assertion is vacuous',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM my_account'"),
+      "connection.ts's ONE .subscribe([...]) array must contain 'SELECT * FROM my_account' " +
+        'exactly once (ADR-0182 D15). RED AT AUTHORING TIME: `my_account` appears in ' +
+        'connection.ts only inside the M21b TRIPWIRE comment that says it is deliberately ' +
+        'absent',
+    ).toBe(1);
+
+    // The PRIVATE table must never be named inside the array (windowed, comment-stripped —
+    // the same soundness argument W-UX2B-SUBSCRIBE makes for player_wallet: the rewritten
+    // tripwire comment legitimately names it, and comments are stripped here).
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM account'"),
+      'the .subscribe([...]) array must NEVER name the PRIVATE `account` table — subscribing ' +
+        'it errors the entire subscription batch, onApplied never fires, and EVERY player ' +
+        'gets a blank world. Only the owner-scoped my_account view may be subscribed',
+    ).toBe(0);
+  });
+
+  it('★ BITES (§0.1(E) tripwire rot): the RAW source no longer claims my_account is DELIBERATELY ABSENT', () => {
+    // THE MIRROR-IMAGE OF W-UX2B-SUBSCRIBE's third test, and for the same reason. The M21b
+    // tripwire at connection.ts:664-672 says, inside the subscription array a reviewer reads
+    // to audit privacy, that `my_account` "is DELIBERATELY ABSENT … M21b-2 adds it". The
+    // instant M21b-2 lands that sentence is FALSE, in a security-sensitive file, and the
+    // next person auditing account privacy would be told by the file itself that no account
+    // subscription exists.
+    //
+    // THIS IS ONE OF ONLY TWO ASSERTIONS IN THIS FILE THAT MUST RUN ON RAW SOURCE — a
+    // comment-stripped scan is structurally incapable of seeing comment rot.
+    const raw = readConnectionTs();
+
+    // Anti-vacuity: we are scanning the file we think we are.
+    expectUniqueAnchor(raw, '.subscribe([');
+
+    expect(
+      countOccurrences(raw, 'DELIBERATELY ABSENT'),
+      'connection.ts must no longer contain the phrase "DELIBERATELY ABSENT" — that is the ' +
+        'M21b tripwire (connection.ts:664-672) declaring my_account unsubscribed, and this ' +
+        'slice subscribes it. RED AT AUTHORING TIME: the stale claim is still there',
+    ).toBe(0);
+
+    // WRONG IMPL KILLED: satisfying the assertion above by DELETING the comment outright.
+    // D15 mandates a REPLACEMENT tripwire — the my_wallet/profile idiom (connection.ts:448,
+    // :507), which deliberately NAMES the handler it is refusing to register so that the
+    // next author who "completes the set" trips over the reason first. The exact phrase is
+    // the CONTRACT for the implementer: the rewritten comment must contain
+    // `no conn.db.my_account.onDelete`.
+    //
+    // This cannot be satisfied by real code: a genuine `conn.db.my_account.onDelete(`
+    // handler reds the comment-stripped ===0 in the ingest tooth below.
+    expect(
+      countOccurrences(raw, 'no conn.db.my_account.onDelete') >= 1,
+      'the rewritten comment must still record WHY there is no my_account delete handler — it ' +
+        'must contain the phrase `no conn.db.my_account.onDelete` (D15: a view UPDATE arrives ' +
+        'as onInsert(new) + onDelete(old), so any onDelete delivered is the STALE half of an ' +
+        'update pair and would wipe the live account slot). Deleting the tripwire to satisfy ' +
+        'the stale-phrase check throws away the reason in the file where getting it wrong ' +
+        "silently signs the player out of their own account. Mirrors the my_wallet tripwire's " +
+        'own idiom at connection.ts:448',
+    ).toBe(true);
+  });
+});
+
+describe('★ connection.ts wiring (M21b-2 / AUTH-50/51, G28): W-M21B2-ACCOUNT-INGEST — insert AND update, never delete', () => {
+  it('★ BITES: both my_account ingest statements are exact and contiguous, upsertAccount has exactly 2 call sites, and NO onDelete handler exists', () => {
+    // WHY BOTH onInsert AND onUpdate (unlike my_wallet's insert-only shape, D15): `status`
+    // and `claimed_from` MUTATE after provisioning — a guest claim re-keys the account row
+    // mid-session, and delete_account flips status to PendingDeletion. Wiring only onInsert
+    // freezes `store.ownAccount(identity)` at its first snapshot, so the claim UI would show
+    // "not claimed" forever immediately after a successful claim.
+    //
+    // WRONG IMPL KILLED (a): the RAW SDK row handed to the store —
+    //   `store.upsertAccount(row as unknown as StoreAccount)`. The identity stays an SDK
+    //   Identity OBJECT, so store.ownAccount's `===` own-identity filter never matches and
+    //   the player is treated as anonymous forever while the row sits in the store.
+    // WRONG IMPL KILLED (b): omitting `batcher.schedule()` on either handler — the row lands
+    //   and nothing re-renders until some unrelated batch flushes. On the UPDATE handler
+    //   this is the claim-completion repaint, i.e. the one frame the whole claim flow exists
+    //   to produce.
+    // WRONG IMPL KILLED (c): a CONDITIONAL upsert (`if (store.ownAccount(identity) ===
+    //   undefined) { … }`) — compiles, reads like a plausible "insert-wins", and freezes the
+    //   account slot at its first value. A contiguous needle admits no `if` / `?:` / `&&`.
+    // WRONG IMPL KILLED (d) ★ NAMED (D15): wiring `onDelete`. Through a VIEW an update
+    //   arrives as unordered onInsert(new) + onDelete(old), so the delete half wipes the row
+    //   the insert half just wrote — and account rows are NEVER truly deleted server-side
+    //   (delete_account only flips status), so the handler is dead as well as wrong.
+    // WRONG IMPL KILLED (e): registering either handler twice — double schedule per row.
+    const squashed = squashedStrippedConnectionTs();
+
+    expect(
+      countOccurrences(squashed, M21B2_ACCOUNT_INSERT_INGEST),
+      'connection.ts must contain EXACTLY this statement, exactly once (ADR-0182 D15 / ' +
+        'addendum §C F4):\n  ' +
+        M21B2_ACCOUNT_INSERT_INGEST +
+        '\nIt is modelled on UX2B_WALLET_INGEST byte-for-byte, and the calibration fixture ' +
+        'W-UX2B-SCAN-SOUND above proves this needle FORM is achievable. If the implementation ' +
+        'is present but this reds, compare CHARACTER BY CHARACTER — the needle pins the table, ' +
+        'the handler kind, the callback signature, the conversion, the cast target, the store ' +
+        'call, the re-render kick AND their order, because each omitted separately is a real ' +
+        'shipped-and-broken outcome. Do NOT loosen it; correct the code, or re-derive it from D15',
+    ).toBe(1);
+    expect(
+      countOccurrences(squashed, M21B2_ACCOUNT_UPDATE_INGEST),
+      'connection.ts must contain EXACTLY this statement, exactly once (ADR-0182 D15):\n  ' +
+        M21B2_ACCOUNT_UPDATE_INGEST +
+        '\nNote the THREE-parameter callback `(_ctx, _old, row)` — an onUpdate handler written ' +
+        'with the two-parameter onInsert signature reads the OLD row as the new one and ' +
+        'writes the pre-claim state back into the store on every claim completion',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(squashed, 'store.upsertAccount('),
+      'store.upsertAccount( must be called from EXACTLY 2 sites in connection.ts, and the ' +
+        'breakdown is: (1) the my_account onInsert handler; (2) the my_account onUpdate ' +
+        'handler. A third call site is a fabricated/default account row — the same ' +
+        'invented-from-dark failure ADR-0154 D1/D6 refused for the wallet, and here it would ' +
+        'make an anonymous tab render as signed in',
+    ).toBe(2);
+
+    expect(
+      countOccurrences(squashed, 'conn.db.my_account.onDelete'),
+      'there must be NO conn.db.my_account.onDelete handler (ADR-0182 D15): a view UPDATE ' +
+        'arrives as unordered insert+delete, so the delete half of a claim-completion pair ' +
+        'would wipe the live account row and sign the player out of an account they still ' +
+        'have. No server path ever deletes an account row, so the handler is dead as well as ' +
+        'wrong',
+    ).toBe(0);
+    expect(
+      countOccurrences(squashed, 'removeAccount'),
+      'connection.ts must call no account-removal API — store.reset() on disconnect is the ' +
+        'ONLY path that may clear the account slot (mirroring the wallet rule at ' +
+        'store.ts:981-988)',
+    ).toBe(0);
   });
 });

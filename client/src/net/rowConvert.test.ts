@@ -3263,3 +3263,334 @@ describe('rowConvert 12r-d [E1]: healLocationRowToStore — costCurrency is a pa
     );
   });
 });
+
+// =============================================================================
+// M21b-2 (ADR-0182 D15) — accountRowToStore: the `my_account` view row converter.
+// APPENDED BLOCK — nothing above this line is weakened.
+//
+// EARS COVERED
+//   AUTH-50 (ingest half) — the client subscribes `SELECT * FROM my_account` on every
+//             (re)built connection; this converter is what that subscription's onInsert /
+//             onUpdate callbacks hand to `store.upsertAccount`.
+//   AUTH-51 — the stored row is the SOLE authority for every "signed in" / claim-eligible
+//             decision, so a field this converter drops or fabricates is a UI decision made
+//             on data the server never sent.
+//
+// THE EXACT FIELD LIST, verified against the SCHEMA rather than transcribed from prose:
+// `server-module/src/schema.rs:685-700` declares `Account { identity, auth_issuer,
+// created_at_ms, last_login_at_ms, status, deletion_requested_at_ms, claimed_from,
+// claimed_at_ms }`, and the generated binding at `client/src/module_bindings/types.ts:13-24`
+// mirrors it in camelCase with `__t.i64()` timestamps and `__t.option(...)` on the last
+// three. ADR-0182 D15 lists the same eight. EIGHT fields, no more, no fewer.
+//
+// CONTRACT (modelled byte-for-byte on `playerWalletRowToStore`, rowConvert.ts:537-574 —
+// explicit field mapping, NO spread, NO coercion, NO defaulting, NO throw):
+//
+//   export interface SdkAccountRow {
+//     readonly identity: { toHexString(): string };
+//     readonly authIssuer: string;
+//     readonly createdAtMs: bigint;
+//     readonly lastLoginAtMs: bigint;
+//     readonly status: { tag: string };
+//     readonly deletionRequestedAtMs: bigint | undefined;
+//     readonly claimedFrom: { toHexString(): string } | undefined;
+//     readonly claimedAtMs: bigint | undefined;
+//   }
+//   export function accountRowToStore(row: SdkAccountRow): StoreAccount;
+//
+// RED REASON (verified by reading client/src/net/rowConvert.ts this session): neither
+// `accountRowToStore` nor `SdkAccountRow` exists — the file's own-row converter family runs
+// `playerWalletRowToStore` (:569), `healLocationRowToStore` (:606), `profileRowToStore`
+// (:769) and nothing else. The import below fails at module-eval time and EVERY test in
+// this section reds. That is a MISSING IMPLEMENTATION, not a typo here. `StoreAccount` does
+// NOT exist either (store.test.ts's appended block is its gate), so the type import reds
+// with it.
+//
+// NOTE, as the 12r-d block above already records: client/tsconfig.json EXCLUDES
+// `**/*.test.ts`, so `npm run typecheck` does not see this file — the gating signal is the
+// runtime failure under vitest.
+// =============================================================================
+
+import { accountRowToStore, type SdkAccountRow } from './rowConvert';
+import type { StoreAccount } from './store';
+
+const ACCOUNT_HEX = 'ac0011223344aabb';
+const GUEST_HEX = 'be99887766554433';
+
+/** A well-formed SDK `my_account` row. Mirrors makeSdkWalletRow: the SDK hands rowConvert
+ *  an Identity OBJECT whose only contract is `toHexString()`, never a bare string. */
+function makeSdkAccountRow(overrides: Partial<Record<string, unknown>> = {}): SdkAccountRow {
+  return {
+    identity: { toHexString: () => ACCOUNT_HEX },
+    authIssuer: 'issuer-under-test',
+    createdAtMs: 1_700_000_000_000n,
+    lastLoginAtMs: 1_700_000_100_000n,
+    status: { tag: 'Active' },
+    deletionRequestedAtMs: undefined,
+    claimedFrom: undefined,
+    claimedAtMs: undefined,
+    ...overrides,
+  } as unknown as SdkAccountRow;
+}
+
+describe('rowConvert M21b-2: accountRowToStore — identities via toHexString() (RC-AC-01)', () => {
+  it('★ RC-AC-01a BITES: identity is the plain hex string — kills String(row.identity) => "[object Object]"', () => {
+    // WRONG IMPL KILLED: `String(row.identity)`, or storing the raw SDK Identity object.
+    // `store.ownAccount(identity)` compares `slot.identity === identity` against the hex
+    // string main.ts holds; an object (or the literal "[object Object]") NEVER matches, so
+    // AUTH-51's sole "is this connection authenticated" signal reads `undefined` forever —
+    // indistinguishable from an unwired feature, but with the subscription live.
+    const stored = accountRowToStore(makeSdkAccountRow());
+    expect(typeof stored.identity).toBe('string');
+    expect(stored.identity).toBe(ACCOUNT_HEX);
+    expect(stored.identity).not.toBe('[object Object]');
+  });
+
+  it('★★ RC-AC-01b BITES: claimedFrom is hex-converted when PRESENT and stays undefined when ABSENT', () => {
+    // `claimed_from` is `Option<Identity>` (schema.rs:698). Both arms are load-bearing and
+    // they fail in opposite directions:
+    //   * present-but-not-converted → claimModel's ERR_INVALID_CODE disambiguation
+    //     (ADR-0182 D16) compares an OBJECT and can never recognise a completed claim, so a
+    //     player whose claim SUCCEEDED is told the code was invalid;
+    //   * absent-but-fabricated (`?? ''`, `?? row.identity`) → the same disambiguation reads
+    //     a claim that never happened as proof one did.
+    const withClaim = accountRowToStore(
+      makeSdkAccountRow({ claimedFrom: { toHexString: () => GUEST_HEX } }),
+    );
+    expect(withClaim.claimedFrom).toBe(GUEST_HEX);
+    expect(typeof withClaim.claimedFrom).toBe('string');
+
+    const withoutClaim = accountRowToStore(makeSdkAccountRow({ claimedFrom: undefined }));
+    expect(withoutClaim.claimedFrom).toBeUndefined();
+    expect(withoutClaim.claimedFrom).not.toBe('');
+    expect(withoutClaim.claimedFrom).not.toBe(ACCOUNT_HEX);
+  });
+
+  it('★ RC-AC-01c BITES: hex strings are preserved VERBATIM — no case normalization, no trimming', () => {
+    // The owner filter is an exact `===` against the identity main.ts holds, so ANY
+    // normalization applied on one side and not the other silently disables the account UI.
+    const lower = accountRowToStore(
+      makeSdkAccountRow({ identity: { toHexString: () => 'aabbccdd' } }),
+    );
+    const upper = accountRowToStore(
+      makeSdkAccountRow({ identity: { toHexString: () => 'AABBCCDD' } }),
+    );
+    expect(lower.identity).toBe('aabbccdd');
+    expect(upper.identity).toBe('AABBCCDD');
+    expect(lower.identity).not.toBe(upper.identity);
+  });
+
+  it('★ RC-AC-01d BITES: toHexString() is called EXACTLY once per identity (no double-conversion)', () => {
+    let identityCalls = 0;
+    let claimedFromCalls = 0;
+    const row = makeSdkAccountRow({
+      identity: {
+        toHexString: () => {
+          identityCalls += 1;
+          return ACCOUNT_HEX;
+        },
+      },
+      claimedFrom: {
+        toHexString: () => {
+          claimedFromCalls += 1;
+          return GUEST_HEX;
+        },
+      },
+    });
+    accountRowToStore(row);
+    expect(identityCalls, 'identity.toHexString() must be called exactly once').toBe(1);
+    expect(claimedFromCalls, 'claimedFrom.toHexString() must be called exactly once').toBe(1);
+  });
+});
+
+describe('rowConvert M21b-2: accountRowToStore — timestamps are pass-through bigints (RC-AC-02)', () => {
+  it('★★ RC-AC-02a BITES: createdAtMs / lastLoginAtMs stay typeof "bigint" and byte-identical', () => {
+    // The columns are `i64` (schema.rs:692-693) and the generated binding decodes them as
+    // bigint (`types.ts:16-17`). WRONG IMPL KILLED: `Number(row.createdAtMs)` — lossy above
+    // 2^53, and `BigInt(Number(x))` restores the TYPE while keeping the WRONG VALUE.
+    const stored = accountRowToStore(makeSdkAccountRow());
+    expect(typeof stored.createdAtMs).toBe('bigint');
+    expect(typeof stored.lastLoginAtMs).toBe('bigint');
+    expect(stored.createdAtMs).toBe(1_700_000_000_000n);
+    expect(stored.lastLoginAtMs).toBe(1_700_000_100_000n);
+  });
+
+  it('★★ RC-AC-02b BITES: 2^53 + 1 survives byte-identically (the first value a JS number cannot hold)', () => {
+    const huge = 9007199254740993n;
+    const stored = accountRowToStore(makeSdkAccountRow({ createdAtMs: huge, lastLoginAtMs: huge }));
+    expect(stored.createdAtMs).toBe(huge);
+    expect(stored.createdAtMs).not.toBe(9007199254740992n);
+    expect(stored.lastLoginAtMs).toBe(huge);
+  });
+
+  it('★★ RC-AC-02c BITES (CRITICAL): the two OPTIONAL timestamps pass through as undefined — kills `?? 0n`', () => {
+    // `deletion_requested_at_ms` and `claimed_at_ms` are `Option<i64>` (schema.rs:695,699).
+    // WRONG IMPL KILLED: `row.deletionRequestedAtMs ?? 0n`. A fabricated `0n` turns "this
+    // account has NOT requested deletion" into "deletion was requested at the epoch" — and
+    // AUTH-54's `'account pending deletion'` copy hangs off exactly that distinction. This
+    // is the same fabrication ADR-0154 D1 refused to let `.unwrap_or(0)` reach the UI, one
+    // layer up (rowConvert.ts:543-568 states the doctrine).
+    const stored = accountRowToStore(makeSdkAccountRow());
+    expect(stored.deletionRequestedAtMs).toBeUndefined();
+    expect(stored.deletionRequestedAtMs).not.toBe(0n);
+    expect(stored.claimedAtMs).toBeUndefined();
+    expect(stored.claimedAtMs).not.toBe(0n);
+  });
+
+  it('★ RC-AC-02d BITES: a PRESENT optional timestamp is carried, and a genuine 0n is not dropped', () => {
+    // The mirror of RC-AC-02c: `0n` is a REAL value (the epoch) and must survive an impl
+    // that treats it as falsy-and-absent (`x ? x : undefined`).
+    const present = accountRowToStore(
+      makeSdkAccountRow({ deletionRequestedAtMs: 1_700_000_300_000n, claimedAtMs: 0n }),
+    );
+    expect(present.deletionRequestedAtMs).toBe(1_700_000_300_000n);
+    expect(present.claimedAtMs).toBe(0n);
+    expect(present.claimedAtMs).not.toBeUndefined();
+  });
+});
+
+describe('rowConvert M21b-2: accountRowToStore — status carries the enum TAG (RC-AC-03)', () => {
+  it('★★ RC-AC-03a BITES: status is the bare tag string, both variants', () => {
+    // `AccountStatus` is a unit enum (`schema.rs:669-672`, `types.ts:28-31`); the SDK
+    // delivers `{ tag: 'Active' | 'PendingDeletion' }`. Carried bare, exactly as
+    // characterRowToStore does for `facing`/`action` (rowConvert.ts:123-124).
+    //
+    // WRONG IMPL KILLED (a): storing the whole `{tag}` OBJECT — every downstream `===
+    // 'PendingDeletion'` comparison is then permanently false, so a pending-deletion account
+    // is rendered as a healthy one.
+    // WRONG IMPL KILLED (b): a boolean projection (`isActive: row.status.tag === 'Active'`),
+    // which throws away the distinction the moment a third variant is added server-side.
+    expect(accountRowToStore(makeSdkAccountRow()).status).toBe('Active');
+    expect(
+      accountRowToStore(makeSdkAccountRow({ status: { tag: 'PendingDeletion' } })).status,
+    ).toBe('PendingDeletion');
+  });
+
+  it('★ RC-AC-03b BITES: an UNKNOWN tag passes through RAW (fail-soft, never normalised away)', () => {
+    // A future server-side variant must not be silently rewritten to 'Active' — that would
+    // fail OPEN, presenting an account in an unknown state as healthy. Passing it through
+    // raw is the same fail-soft choice `narrowTag` makes (rowConvert.ts:79-83): log or
+    // carry, never default.
+    const stored = accountRowToStore(makeSdkAccountRow({ status: { tag: 'Suspended' } }));
+    expect(stored.status).toBe('Suspended');
+    expect(stored.status).not.toBe('Active');
+  });
+});
+
+describe('rowConvert M21b-2: accountRowToStore — exact key set, explicit mapping (RC-AC-04)', () => {
+  it('★★ RC-AC-04a BITES: the output has EXACTLY the eight D15 keys — kills the spread impl', () => {
+    // WRONG IMPL KILLED: `{ ...row, identity: row.identity.toHexString() }`. `my_account` is
+    // a PRIVATE table's owner-scoped view (schema.rs:674-711) and the account record is the
+    // one row in this client that is deliberately PII-free by construction; smuggling any
+    // future SDK-only field into the store puts it one `JSON.stringify` away from the F9 bug
+    // bundle. The exact key set is what proves the mapping is EXPLICIT — the same tooth
+    // RC-PW-04 applies to the wallet and RC-PR-02c to the profile.
+    const sdk = makeSdkAccountRow({
+      // A field the current generated binding does not have; a spread impl leaks it.
+      serverOnlyScratch: 'leak-me',
+    });
+    const stored = accountRowToStore(sdk);
+    expect(Object.keys(stored as unknown as Record<string, unknown>).sort()).toEqual(
+      [
+        'authIssuer',
+        'claimedAtMs',
+        'claimedFrom',
+        'createdAtMs',
+        'deletionRequestedAtMs',
+        'identity',
+        'lastLoginAtMs',
+        'status',
+      ].sort(),
+    );
+  });
+
+  it('★★ RC-AC-04b BITES: the OPTIONAL keys are PRESENT (as undefined), not omitted', () => {
+    // `Object.keys` on `{a: undefined}` includes 'a'; on `{}` it does not. An impl that
+    // conditionally spreads the optionals (`...(x !== undefined && {claimedAtMs: x})`)
+    // passes RC-AC-04a's sorted-key comparison ONLY when they are present — so this pins
+    // the absent case explicitly, and with it the "eight keys, always" contract that makes
+    // the key-set tooth mean something.
+    const stored = accountRowToStore(makeSdkAccountRow()) as unknown as Record<string, unknown>;
+    for (const key of ['deletionRequestedAtMs', 'claimedFrom', 'claimedAtMs']) {
+      expect(Object.hasOwn(stored, key), `${key} must be present-but-undefined, not omitted`).toBe(
+        true,
+      );
+    }
+  });
+
+  it('★ RC-AC-04c BITES: the result is a FRESH object, not the SDK row itself', () => {
+    // WRONG IMPL KILLED: `return row as unknown as StoreAccount` — a zero-work "converter"
+    // that satisfies naive field assertions while leaving the SDK Identity OBJECT in
+    // `identity` and aliasing SDK-owned memory into the store.
+    const sdk = makeSdkAccountRow();
+    expect(accountRowToStore(sdk) as unknown).not.toBe(sdk as unknown);
+  });
+
+  it('★ RC-AC-04d BITES: the result is assignable to StoreAccount (compile-time contract pin)', () => {
+    // A tsc tooth, not a runtime one — and, as RC-HL-CC-08 records, client/tsconfig.json
+    // excludes `**/*.test.ts`, so it surfaces in the editor and in review rather than in
+    // `npm run typecheck`. It pins the field NAMES against store.ts: a converter emitting
+    // `issuer`/`created` would fail here rather than mysteriously never matching.
+    const stored: StoreAccount = accountRowToStore(makeSdkAccountRow());
+    expect(stored.identity).toBe(ACCOUNT_HEX);
+    expect(stored.authIssuer).toBe('issuer-under-test');
+  });
+});
+
+describe('rowConvert M21b-2: accountRowToStore — totality (RC-AC-05)', () => {
+  it('★★ RC-AC-05a BITES: never throws for hostile/degenerate rows (fail-soft, not fail-loud)', () => {
+    // WRONG IMPL KILLED: a defensive converter that VALIDATES and throws
+    // (`if (typeof row.createdAtMs !== 'bigint') throw ...`). Rejecting a bad row loudly is
+    // the right instinct in a reducer and the WRONG one here: the throw escapes into the
+    // SDK's row-callback dispatch and takes the whole flushBatch with it — ADR-0085 A6, no
+    // per-listener isolation, so every SIBLING table's ingest starves for that transaction.
+    const hostile: readonly unknown[] = [
+      makeSdkAccountRow({ authIssuer: undefined }),
+      makeSdkAccountRow({ createdAtMs: undefined }),
+      makeSdkAccountRow({ lastLoginAtMs: null }),
+      makeSdkAccountRow({ status: undefined }),
+      makeSdkAccountRow({ status: { tag: undefined } }),
+      makeSdkAccountRow({ claimedFrom: null }),
+      makeSdkAccountRow({ deletionRequestedAtMs: 'not-a-bigint' }),
+      makeSdkAccountRow({ identity: { toHexString: () => '' } }),
+    ];
+    for (const row of hostile) {
+      expect(
+        () => accountRowToStore(row as SdkAccountRow),
+        'accountRowToStore must never throw — a throw inside a row callback kills the whole flushBatch (ADR-0085 A6)',
+      ).not.toThrow();
+    }
+  });
+
+  it('★★ RC-AC-05b BITES: an ABSENT authIssuer passes through as undefined — kills `?? ""`', () => {
+    // `auth_issuer` is audit provenance (schema.rs:688-691) and is the field the G22 e2e
+    // asserts on to prove an account was provisioned by the RIGHT issuer. Coercing an absent
+    // value to `''` fabricates "provisioned by the empty issuer", which reads as a valid
+    // (and equal-to-nothing) provenance rather than as "the client has no idea".
+    const stored = accountRowToStore(makeSdkAccountRow({ authIssuer: undefined }));
+    expect((stored as { authIssuer: unknown }).authIssuer).toBeUndefined();
+    expect((stored as { authIssuer: unknown }).authIssuer).not.toBe('');
+  });
+
+  it('★ RC-AC-05c BITES fast-check: every i64 timestamp pair round-trips exactly, and the converter never throws', () => {
+    // Property form over the signed 64-bit domain, so a Number()-based impl fails for most
+    // of it and shrinks to a named counterexample. Block-bodied arrow: fast-check reads an
+    // expression-bodied matcher's return value as a `false` predicate and fails spuriously.
+    fc.assert(
+      fc.property(
+        fc.bigIntN(64),
+        fc.bigIntN(64),
+        fc.string(),
+        (createdAtMs, lastLoginAtMs, issuer) => {
+          const stored = accountRowToStore(
+            makeSdkAccountRow({ createdAtMs, lastLoginAtMs, authIssuer: issuer }),
+          );
+          expect(typeof stored.createdAtMs).toBe('bigint');
+          expect(stored.createdAtMs).toBe(createdAtMs);
+          expect(stored.lastLoginAtMs).toBe(lastLoginAtMs);
+          expect(stored.authIssuer).toBe(issuer);
+        },
+      ),
+    );
+  });
+});
