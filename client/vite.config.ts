@@ -109,6 +109,8 @@ export default defineConfig({
         'src/ui/shopView.ts', // thin DOM shell for the shop overlay (M13d)
         'src/ui/tradeView.ts', // thin DOM shell for the trade overlay (m15b)
         'src/ui/pvpView.ts', // thin DOM shell for the PvP challenge overlay (m16b)
+        'src/ui/claimView.ts', // thin DOM shell for the guest-claim overlay (M21b-2, ADR-0182 D16)
+        'src/ui/sessionView.ts', // thin DOM shell for the session-lifecycle overlay (M21b-2, D17)
       ],
     },
   },

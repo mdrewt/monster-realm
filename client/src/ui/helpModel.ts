@@ -39,6 +39,7 @@ const CONTROLS: readonly { readonly key: string; readonly action: string }[] = [
   { key: 'L', action: 'Open the ranked Leaderboard' },
   { key: 'N', action: 'Rename your profile' },
   { key: 'O', action: 'Offer a trade (propose) to a nearby player' },
+  { key: 'C', action: 'Open account & sign-in' },
   { key: 'F9', action: 'Download a bug-report bundle' },
 ] as const;
 

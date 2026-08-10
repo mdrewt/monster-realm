@@ -9399,7 +9399,8 @@ describe('★ main.ts wiring (M21b-2/ADR-0182 D17, G20): W-M21B2-SESSION-GATE-FI
     //
     // All five surface anchors are asserted to RESOLVE (>= 0) first regardless (addendum §C
     // F1): a renamed or deleted surface is then a hard red here too, not a vacuous pass.
-    const code = m20cScan(readMainTs()).code;
+    const src = readMainTs();
+    const code = m20cScan(src).code;
 
     // --- (1) the gate exists, once, AS CODE, and is not inert --------------------------
     // ★ CODE-AWARE (coordinator review item 2): expectUniqueAnchor runs on string-PRESERVING
@@ -9465,28 +9466,65 @@ describe('★ main.ts wiring (M21b-2/ADR-0182 D17, G20): W-M21B2-SESSION-GATE-FI
     expect(gateIdx, 'the session gate must sit BEFORE the keyup listener').toBeLessThan(keyupIdx);
 
     // --- (3) ANTI-VACUITY: every compared anchor resolves BEFORE any ordering is judged --
-    // Including all five fan-out surfaces (addendum §C F1), even the four this tooth does not
-    // order against: a renamed surface must be a hard red here, not a silently-skipped clause.
+    // Split into two loops so RAW-src and comment-stripped-`code` indices are NEVER mixed:
+    //
+    //  (3a) the THREE ORDERED anchors — all real CODE, resolved in `code`. Their indices feed
+    //       the ordering in (4) and must be comparable with the code-index `gateIdx`.
+    //  (3b) the FOUR NON-ORDERED surface anchors (surfaces 1/2/4/5) — anti-vacuity ONLY. Two of
+    //       them (`NH2_RECONCILE_START` at main.ts:810, `NH2_RAF_START` at :2486) are COMMENT
+    //       phrases W-FANOUT anchors on RAW `src`; in the comment-stripped `code` they do not
+    //       exist. They are therefore resolved on RAW `src` here — presence only, never compared
+    //       against a code index.
+    //
+    // ⚠ Surface 3 is the one exception: its own W-FANOUT anchor `UXD3_SUPPRESS_START` is ALSO a
+    // comment phrase (main.ts:1392 `// Suppress movement input while an overlay is open.`), but
+    // surface 3 IS ordered against, so it needs a CODE anchor. It is the suppression block's
+    // guard `if (anyOverlayVisible()) {` — EXACTLY ONE code occurrence (main.ts:1393); the
+    // 818/1223/1573 sites are negated/compound `!anyOverlayVisible()` forms that do not match the
+    // bare positive-`{` needle. UXD3_SUPPRESS_START is left untouched where W-FANOUT (test:4981)
+    // uses it on raw source.
     const MENU_INTERCEPT = 'if (menuView?.visible) {';
     const BATTLE_ESCAPE = "if (e.code === 'Escape' && battleView?.visible) {";
-    const anchors: readonly (readonly [string, string])[] = [
+    const SURFACE3_SUPPRESS_CODE = 'if (anyOverlayVisible()) {';
+
+    // Code-aware first index (a surface surviving only as a decoy string must not count as
+    // "resolved"). -1 when the anchor is absent from code.
+    const codeIdx = (anchor: string): number => mwCodeOccurrences(code, anchor)[0] ?? -1;
+
+    // (3a) ORDERED anchors — resolve AS CODE.
+    const orderedAnchors: readonly (readonly [string, string])[] = [
       [MENU_INTERCEPT, 'the uxd3 menu-nav intercept (ordered against below)'],
       [BATTLE_ESCAPE, 'the battle Escape branch (ordered against below)'],
-      [UXD3_SUPPRESS_START, 'fan-out surface 3, the keydown suppression block (ordered below)'],
-      [UXD3_ANYOVERLAY_START, 'fan-out surface 1, the shared predicate (NOT ordered — residual)'],
-      [NH2_RECONCILE_START, 'fan-out surface 2, the reconcile re-issue (NOT ordered — residual)'],
-      [UXD3_PVPAGG_START, 'fan-out surface 4, the pvp batch listener (EXEMPT BY NAME)'],
-      [NH2_RAF_START, 'fan-out surface 5, the rAF re-issue (NOT ordered — residual)'],
+      [
+        SURFACE3_SUPPRESS_CODE,
+        'fan-out surface 3, the keydown suppression block guard (ordered below)',
+      ],
     ];
-    // Code-aware first index of every anchor (a surface that survives only as a decoy string
-    // must not count as "resolved"). -1 when the anchor is absent from code.
-    const codeIdx = (anchor: string): number => mwCodeOccurrences(code, anchor)[0] ?? -1;
-    for (const [anchor, label] of anchors) {
+    for (const [anchor, label] of orderedAnchors) {
       expect(
         codeIdx(anchor),
         `ANTI-VACUITY: the anchor for ${label} must still resolve AS CODE in main.ts. A renamed ` +
           'or deleted surface must red HERE rather than silently removing a clause from this ' +
           `gate. Anchor=${JSON.stringify(anchor)}`,
+      ).toBeGreaterThanOrEqual(0);
+    }
+
+    // (3b) NON-ORDERED surface anchors — presence on RAW `src` (their canonical W-FANOUT anchors,
+    // some of which are comment phrases). A renamed/deleted surface reds here too; these indices
+    // are NEVER compared against the code-index ordering below.
+    const nonOrderedSurfaceAnchors: readonly (readonly [string, string])[] = [
+      [UXD3_ANYOVERLAY_START, 'fan-out surface 1, the shared predicate (NOT ordered — residual)'],
+      [NH2_RECONCILE_START, 'fan-out surface 2, the reconcile re-issue (NOT ordered — residual)'],
+      [UXD3_PVPAGG_START, 'fan-out surface 4, the pvp batch listener (EXEMPT BY NAME)'],
+      [NH2_RAF_START, 'fan-out surface 5, the rAF re-issue (NOT ordered — residual)'],
+    ];
+    for (const [anchor, label] of nonOrderedSurfaceAnchors) {
+      expect(
+        src.indexOf(anchor),
+        `ANTI-VACUITY: the W-FANOUT anchor for ${label} must still resolve in RAW main.ts ` +
+          '(some of these are comment phrases, so they are checked on raw source, exactly as ' +
+          'W-FANOUT anchors them). A renamed or deleted surface must red HERE rather than ' +
+          `silently removing a clause from this gate. Anchor=${JSON.stringify(anchor)}`,
       ).toBeGreaterThanOrEqual(0);
     }
 
@@ -9512,9 +9550,10 @@ describe('★ main.ts wiring (M21b-2/ADR-0182 D17, G20): W-M21B2-SESSION-GATE-FI
     expect(
       gateIdx,
       'the session gate must precede fan-out surface 3 (the keydown movement-suppression ' +
-        'block) — the only one of the five that shares this listener. Below it, movement keys ' +
-        'reach KEY_DIR and the predictor keeps issuing Steps into a link that is gone',
-    ).toBeLessThan(codeIdx(UXD3_SUPPRESS_START));
+        'block guard `if (anyOverlayVisible()) {`) — the only one of the five that shares this ' +
+        'listener. Below it, movement keys reach KEY_DIR and the predictor keeps issuing Steps ' +
+        'into a link that is gone',
+    ).toBeLessThan(codeIdx(SURFACE3_SUPPRESS_CODE));
 
     // --- (5) the declaration is module scope, like anyOverlayVisible --------------------
     expect(

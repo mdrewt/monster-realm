@@ -286,8 +286,7 @@ export const MILESTONES = [
   'N3',
   'C-connect',
   'C-applied',
-  'E-connect',
-  'E-applied',
+  'E-rejected',
   'done',
 ];
 
@@ -337,17 +336,19 @@ export function checkMilestones(events, expected) {
     const e = seen.get(step);
     return e && e.data && typeof e.data === 'object' ? e.data : {};
   };
+  // E has no identity milestone: an allowed-issuer + wrong-audience token is
+  // refused at connect (AUTH-3 → client_connected Err → the host DISCONNECTS),
+  // so `.onConnect` never fires and E never gets an Identity. E is asserted via
+  // the E-rejected milestone below, not here.
   const aId = dataOf('A-connect').identity;
   const bId = dataOf('B-connect').identity;
   const cId = dataOf('C-connect').identity;
   const dId = dataOf('D-connect').identity;
-  const eId = dataOf('E-connect').identity;
   for (const [label, id] of [
     ['A', aId],
     ['B', bId],
     ['C', cId],
     ['D', dId],
-    ['E', eId],
   ]) {
     if (typeof id !== 'string' || normHex(id).length < 32) {
       return { ok: false, reason: `${label}-connect did not report an identity (${String(id)})` };
@@ -366,14 +367,6 @@ export function checkMilestones(events, expected) {
   }
   if (identityMatches(dId, aId) || identityMatches(dId, bId) || identityMatches(dId, cId)) {
     return { ok: false, reason: 'D (second account) reused an existing identity' };
-  }
-  if (
-    identityMatches(eId, aId) ||
-    identityMatches(eId, bId) ||
-    identityMatches(eId, cId) ||
-    identityMatches(eId, dId)
-  ) {
-    return { ok: false, reason: 'E (wrong-audience) reused an existing identity' };
   }
 
   const aApplied = dataOf('A-applied');
@@ -1156,8 +1149,8 @@ const DRIVER_SRC = [
   '}',
   '',
   'function accountRows(conn) {',
-  '  const h = conn.db.myAccount;',
-  '  if (!h) throw new Error("no myAccount table handle on the connection");',
+  '  const h = conn.db.my_account;',
+  '  if (!h) throw new Error("no my_account table handle on the connection");',
   '  const out = [];',
   '  for (const r of h.iter()) out.push(r);',
   '  return out;',
@@ -1193,7 +1186,7 @@ const DRIVER_SRC = [
   '  const b = await connectOnce(null);',
   '  emit("B-connect", true, { identity: b.identity });',
   '  await applied(b.conn, ["SELECT * FROM player"]);',
-  '  const joined = await tryReducer(b.conn.reducers.joinGame({ name: "guest-e2e" }));',
+  '  const joined = await tryReducer(b.conn.reducers.joinGame({ name: "guest e2e" }));',
   '  emit("B-join", joined.ok, { err: joined.err });',
   '',
   '  const code = hex32();',
