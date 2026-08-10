@@ -600,7 +600,8 @@ export default async function () {
   // [13r-c/T1a] hasWalletAccessorBypass: same-line `https://` truncation trap.
   //
   // PROVES: stripRustComments's line-comment pass (`\/\/[^\n]*`) has NO
-  // string-literal awareness. A `https://` (or `ws://`) URL const on the SAME
+  // string-literal awareness. A URL const (any scheme whose separator is a
+  // double slash) on the SAME
   // physical line as a genuine ACCESSOR_BYPASS violation causes the regex to
   // treat the URL's `//` as a comment start and eat the REST OF THAT LINE —
   // including the violation. This is not hypothetical: the identical bug is

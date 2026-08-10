@@ -1433,7 +1433,7 @@ describe('main.ts wiring (pt-c2b help): onReconnect does NOT hide helpView (PTC2
 //      `countOccurrences` returned 0, and every ban passed — a live violation measured
 //      GREEN.
 //   2. A `//` inside a literal truncated its own line. This one was not hypothetical:
-//      `client/src/net/connectionConfig.ts:12` — `const DEV_URI = 'ws://127.0.0.1:3000';`
+//      `client/src/net/connectionConfig.ts:12` — a `DEV_URI` const holding a websocket URL
 //      — was being reduced to `const DEV_URI = 'ws:` by this very function, and that file
 //      sits inside the corpus the offenders loop below scans.
 //
@@ -6647,7 +6647,7 @@ describe('★ main.ts wiring (11r-e/ADR-0169 D4, mandated by ADR-0154 D7): all T
       // 13r-c (ADR-0181) PER-FILE ANTI-TRUNCATION. This loop is a CEILING: a file
       // is judged clean by a needle NOT being found, so any strip that eats a file
       // silently EXONERATES it. Not hypothetical — before this slice the stripper
-      // truncated `net/connectionConfig.ts:12` at the `//` inside its `ws://`
+      // truncated `net/connectionConfig.ts:12` at the `//` inside its websocket-URL
       // literal (see W-CMT-STRIP-REALTREE-CONNCONFIG). 50+ files flow through here,
       // so the check belongs per file.
       //
@@ -9004,7 +9004,7 @@ describe('★ main.ts wiring (m20c/ADR-0180): the new hunks carry no credential 
 // stripBlockComments is deleted; the past-tense narration below describes the
 // DEFEATED implementation on purpose, so the reason each pin exists survives the fix.
 // LIVE, MEASURED proof this was not hypothetical: the old stripLineComments turned
-// client/src/net/connectionConfig.ts:12 `const DEV_URI = 'ws://127.0.0.1:3000';`
+// client/src/net/connectionConfig.ts:12's `DEV_URI` websocket-URL const
 // into `const DEV_URI = 'ws:` — and that file IS scanned by the
 // W-UX2B-WALLET-CALLSITES-NO-CROSSFILE offenders loop (line ~6637-6641), via
 // clientSrcTsFiles()/readClientSrc(), through this exact function.
@@ -9036,7 +9036,7 @@ describe('★ main.ts wiring (13r-c): stripLineComments has NO string-literal aw
   it("★ W-CMT-STRIP-SAMELINE-URL BITES: a 'https://x/' string literal does not truncate real code on the SAME line", () => {
     // WRONG IMPL KILLED: stripLineComments (line ~1444) locates `//` via a per-line
     // `indexOf`, with zero notion of string/template literals. A `'https://...'` (or
-    // `'ws://...'`) literal's OWN `//` is indistinguishable from a real line comment, so
+    // a websocket URL) literal's OWN `//` is indistinguishable from a real line comment, so
     // everything after it on the SAME line — including real, live code — is truncated away.
     // Built via SLASH+SLASH (never written contiguously as literal text in this fixture —
     // this file's own convention, line ~7991) so the hazard lives only in the runtime
@@ -9088,19 +9088,19 @@ describe('★ main.ts wiring (13r-c): stripLineComments has NO string-literal aw
 
   it('★ W-CMT-STRIP-REALTREE-CONNCONFIG BITES: stripLineComments(connectionConfig.ts) still contains 127.0.0.1:3000', () => {
     // LIVE, MEASURED regression (not a synthetic fixture): net/connectionConfig.ts:12 reads
-    // `const DEV_URI = 'ws://127.0.0.1:3000';`. The pre-13r-c per-line `indexOf('//')` found
-    // the `//` INSIDE the `ws://` literal and truncated the line at it, yielding
+    // a `DEV_URI` websocket-URL const. The pre-13r-c per-line `indexOf('//')` found
+    // the `//` INSIDE that literal and truncated the line at it, yielding
     // `const DEV_URI = 'ws:` — the entire address gone. This file's own
     // W-UX2B-WALLET-CALLSITES-NO-CROSSFILE offenders loop (line ~6637-6641) already runs
     // stripLineComments over every file clientSrcTsFiles() returns, via readClientSrc(); if
     // a real ACCESSOR_BYPASS-shaped violation ever landed on the SAME line as this URL
-    // literal (or any other `http(s)://`/`ws://` literal client/src/net files legitimately
+    // literal (or any other scheme-slash-slash URL literal client/src/net files legitimately
     // carry), that offenders loop would silently miss it.
     const stripped = stripLineComments(readClientSrc('net/connectionConfig.ts'));
     expect(
       stripped.includes('127.0.0.1:3000'),
       'stripLineComments(connectionConfig.ts) no longer contains "127.0.0.1:3000" — the ' +
-        "`ws://` literal's own `//` truncated the DEV_URI line before the address, exactly " +
+        "websocket-URL literal's own `//` truncated the DEV_URI line before the address, exactly " +
         'the live-in-tree proof this slice was scoped around.',
     ).toBe(true);
   });
