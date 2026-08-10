@@ -155,6 +155,30 @@ the previous behaviour — whereas over-detection would swallow real code. The
 Teeth `[13r-c/T3c]` and `★ W-CMT-STRIP-REGEX-PHANTOM-BLOCK` pin the closure; both
 were verified to bite by reverting only the fix.
 
+### Residual — `independentAnchorCount` can false-RED on a multi-line Rust string
+
+The desync detector is a quote-blind LINE scan, and it skips a line only if
+*that* line carries a quote. Rust allows a raw newline inside an ordinary `"…"`
+literal, so when a multi-line fixture string's **middle** lines contain
+`#[spacetimedb::` — with no quote of their own — the naive scanner counts them as
+real anchors while `stripRustSource` correctly blanks them as literal payload.
+The result is a **false desync report against a stripper that is behaving
+correctly** (`[STRIP/anchors]`), i.e. a false RED, not a false GREEN.
+
+Measured: exactly two files in the tree trip it today —
+`server-module/src/playtest_tests.rs` and `server-module/src/ranking_tests.rs`,
+both of which embed Rust source as multi-line test fixtures. It is **dormant**
+because every gate added by this slice filters `*_tests.rs` first, for the
+separate phantom-anchor reason above. It would surface if that exclusion were
+loosened, or if a NON-test `server-module/src/*.rs` adopted the same embed-source-
+as-a-multi-line-string pattern.
+
+Not fixed here: `independentAnchorCount` must stay naive and independent of the
+real stripper (D3) — teaching it about multi-line strings is exactly the coupling
+that would stop it detecting a desync. The right fix is to skip a line while a
+multi-line literal is open, tracked as a follow-up rather than smuggled into a
+landing slice.
+
 ### The soundness gate must match the ban surface, per eval
 
 `assertStripperSound` has to cover **every file the ban clauses actually needle**,
