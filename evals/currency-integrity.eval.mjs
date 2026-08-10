@@ -39,14 +39,38 @@
 //
 // No new RegExp() — all patterns are literal regex literals (Semgrep detect-non-literal-regexp).
 import { readFileSync } from 'node:fs';
+import { parseTables } from './conversation-privacy.eval.mjs';
+import { assertStripperSound, stripRustSource } from './rust-scan.mjs';
+
+// 13r-c: hazard characters as data, never written contiguously as literal text in
+// this file's own source (this file is itself scanned by other repo scanners —
+// precedent: evals/account-privacy.eval.mjs:180-185, client/src/main.wiring.test.ts:7991).
+const DQ = String.fromCharCode(0x22); // "
+const SLASH = String.fromCharCode(0x2f); // /
+const SLASH_STAR = String.fromCharCode(0x2f, 0x2a); // /*
+const STAR_SLASH = String.fromCharCode(0x2a, 0x2f); // */
 
 // ---------------------------------------------------------------------------
 // Source stripping helpers (re-usable)
 // ---------------------------------------------------------------------------
 
-/** Strip Rust line and block comments so doc-comment prose doesn't trip scanners. */
+/**
+ * Strip Rust comments so doc-comment prose doesn't trip scanners.
+ *
+ * 13r-c (ADR-0181): this used to be a two-regex pair with NO string-literal
+ * awareness, which made every ban below false-GREEN capable — a `https://` in a
+ * literal truncated the line at the scheme slashes, and a block-comment opener
+ * inside a literal deleted everything up to the next closer, violation included
+ * (teeth [13r-c/T1a] / [13r-c/T1b]). It now delegates to the shared, single-pass,
+ * offset-preserving scanner. The name is kept so the ~10 call sites below read
+ * unchanged; the semantics are strictly stronger (comments AND string payloads
+ * are blanked, and length/offsets are preserved instead of the text being
+ * deleted).
+ * @param {string} src Raw Rust source.
+ * @returns {string} Same-length source with comments and literal payloads blanked.
+ */
 export function stripRustComments(src) {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  return stripRustSource(src);
 }
 
 // ---------------------------------------------------------------------------
@@ -110,20 +134,26 @@ export function hasUncheckedBalanceDecrement(src) {
 // Good fixture: `#[spacetimedb::table(name = player_wallet)]` (no public)
 // ---------------------------------------------------------------------------
 export function walletTableIsPrivate(schemaSrc) {
-  // Find the player_wallet table attribute block.
-  // We look for the table(name = player_wallet...) attribute and check it does NOT
-  // include "public" after the name token (on the same attribute line/block).
-  const idx = schemaSrc.indexOf('name = player_wallet');
-  if (idx === -1) return null; // table not found — caller handles
-  // Extract the attribute from the opening `#[` before idx to the closing `]`.
-  const attrStart = schemaSrc.lastIndexOf('#[', idx);
-  const attrEnd = schemaSrc.indexOf(']', idx);
-  if (attrStart === -1 || attrEnd === -1) return false;
-  const attr = schemaSrc.slice(attrStart, attrEnd + 1);
-  // The attribute must NOT contain `public` after the table name.
-  // Strip comments first.
-  const clean = stripRustComments(attr);
-  return !/\bpublic\b/.test(clean);
+  // 13r-c (ADR-0181), red-team BLOCKER — this used to hand-roll the attribute
+  // span with `indexOf('name = player_wallet')` + `lastIndexOf('#[')` +
+  // `indexOf(']')` over RAW source. Both halves of that were wrong:
+  //
+  //   1. `indexOf` finds the FIRST textual occurrence anywhere in the file, so a
+  //      decoy that merely CONTAINS the phrase — proven with a one-line
+  //      `#[doc = <a quote>name = player_wallet<a quote>]` attached to any earlier
+  //      table — anchored the walk on the decoy. The real `player_wallet` table
+  //      could then be flipped `public` and this returned PRIVATE: a live
+  //      false-GREEN on the ADR-0015 must-never-leak criterion this check exists
+  //      to enforce.
+  //   2. `indexOf(']')` stops at the first `]` after the anchor, which is not the
+  //      attribute's balanced close whenever the attribute nests brackets.
+  //
+  // Both are fixed by reusing `parseTables` — the brace/paren-depth walker the
+  // other three privacy evals already share — over string-aware STRIPPED source,
+  // and selecting the table by its parsed NAME rather than by raw text position.
+  const table = parseTables(stripRustSource(schemaSrc)).find((t) => t.name === 'player_wallet');
+  if (table === undefined) return null; // table not found — caller handles
+  return !table.isPublic;
 }
 
 // ---------------------------------------------------------------------------
@@ -504,6 +534,48 @@ export default async function () {
     };
   }
 
+  // -------------------------------------------------------------------------
+  // [13r-c/T1b] hasDirectBalanceWrite: string-literal block-comment-opener trap.
+  //
+  // PROVES: stripRustComments (this file, line ~48) is a REGEX-ONLY comment
+  // stripper (`/\*[\s\S]*?\*\//g` then `\/\/[^\n]*`) with NO string-literal
+  // awareness. A Rust `&str` literal whose CONTENT happens to contain `/*` opens
+  // what the block-comment regex treats as a real comment; the regex then
+  // non-greedily searches for the NEXT `*/` in the file — which here is the
+  // content of a SECOND, unrelated string literal further down. Everything
+  // between the two literals, including a genuine `.balance = 999;` write, is
+  // deleted by `.replace(...)` before hasDirectBalanceWrite's regex ever runs.
+  //
+  // RED TODAY: hasDirectBalanceWrite is expected to return TRUE (a real
+  // SINGLE_SURFACE violation sits between the two literals) but the buggy
+  // stripper blanks it first, so the checker returns FALSE.
+  //
+  // VACUOUS IF: an implementer removes either literal (no opener/closer pair to
+  // pair across) or moves the violation outside the literal span — the point is
+  // specifically that a violation SANDWICHED between an unrelated opener and an
+  // unrelated closer, in two different string literals, is invisible today.
+  // -------------------------------------------------------------------------
+  const stringOpenerThenBalanceWriteThenCloserSrc =
+    `const OPEN: &str = ${DQ}${SLASH_STAR}${DQ};\n` +
+    'fn evil(ctx: &ReducerContext) { row.balance = 999; }\n' +
+    `const CLOSE: &str = ${DQ}${STAR_SLASH}${DQ};`;
+  if (hasDirectBalanceWrite(stringOpenerThenBalanceWriteThenCloserSrc) !== true) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED [13r-c/T1b]: hasDirectBalanceWrite did not flag a genuine ' +
+        '`row.balance = 999;` write that sits BETWEEN two Rust string literals — one ' +
+        `containing a block-comment OPENER (${DQ}${SLASH_STAR}${DQ}), one containing ` +
+        `the CLOSER (${DQ}${STAR_SLASH}${DQ}) — as unrelated string DATA. ` +
+        'stripRustComments has no string-literal awareness: its block-comment regex ' +
+        'treats the opener-in-a-string as a real comment start and deletes everything ' +
+        'up to the closer-in-a-later-string, including the violation between them. ' +
+        'A file outside economy.rs could hide a direct .balance= write this way and ' +
+        'this eval would report PASS.',
+    };
+  }
+
   // Teeth for criterion 6: ACCESSOR_BYPASS
   const badAccessor =
     'fn some_reducer(ctx) { ctx.db.player_wallet().insert(PlayerWallet { owner_identity: owner, balance: 999 }); }';
@@ -521,6 +593,47 @@ export default async function () {
       name,
       pass: false,
       detail: 'TEETH FAILED: hasWalletAccessorBypass falsely flagged a correct grant_currency call',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // [13r-c/T1a] hasWalletAccessorBypass: same-line `https://` truncation trap.
+  //
+  // PROVES: stripRustComments's line-comment pass (`\/\/[^\n]*`) has NO
+  // string-literal awareness. A `https://` (or `ws://`) URL const on the SAME
+  // physical line as a genuine ACCESSOR_BYPASS violation causes the regex to
+  // treat the URL's `//` as a comment start and eat the REST OF THAT LINE —
+  // including the violation. This is not hypothetical: the identical bug is
+  // proven live-in-tree against client/src/net/connectionConfig.ts:12 by this
+  // slice's T4 in client/src/main.wiring.test.ts.
+  //
+  // RED TODAY: hasWalletAccessorBypass is expected to return TRUE (the
+  // `ctx.db.player_wallet()...delete(who)` call on the same line is a real
+  // accessor-bypass violation) but the buggy stripper blanks it before the
+  // accessor regex ever runs, so the checker returns FALSE.
+  //
+  // VACUOUS IF: an implementer moves the violation to its own line — the whole
+  // point is the SAME-LINE truncation (the multi-line propagation case, where a
+  // truncated line leaves an unbalanced quote that then eats several FOLLOWING
+  // lines via a separate string-stripping pass, is covered by
+  // evals/ranking-security.eval.mjs's T2 fixture instead — this file's
+  // stripRustComments has no such separate string pass to propagate through).
+  // -------------------------------------------------------------------------
+  const httpsUrl = `https:${SLASH}${SLASH}issuer.example.com/token`;
+  const sameLineHttpsThenBypassSrc =
+    `const ISSUER: &str = ${DQ}${httpsUrl}${DQ}; ` +
+    'fn evil(ctx: &ReducerContext, who: Identity) { ctx.db.player_wallet().owner_identity().delete(who); }';
+  if (hasWalletAccessorBypass(sameLineHttpsThenBypassSrc) !== true) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED [13r-c/T1a]: hasWalletAccessorBypass did not flag a genuine ' +
+        `\`ctx.db.player_wallet()...delete(who)\` call sharing its physical line with a ` +
+        `${DQ}${httpsUrl}${DQ} string-literal const — stripRustComments' line-comment ` +
+        "regex truncates the line at the URL's `//`, blanking the real violation before " +
+        'the accessor regex ever runs. A file outside economy.rs could bury a wallet-row ' +
+        'DELETE on the same line as an issuer-URL const and this eval would report PASS.',
     };
   }
 
@@ -636,6 +749,19 @@ export default async function () {
   }
 
   const failures = [];
+
+  // 13r-c (ADR-0181) STRIPPER-SOUNDNESS GATE. A stripper desync is invisible to
+  // the clauses it blinds: it GREENS every ban below and reds only the presence
+  // checks. So it is caught HERE or not at all. `assertStripperSound` proves,
+  // per file, that the strip preserved length, is idempotent, and did not blank
+  // more structural anchors than a quote-blind line scan of the RAW source finds.
+  for (const [label, src] of [
+    ['economy.rs', economySrc],
+    ['schema.rs', schemaSrc],
+  ]) {
+    const desync = assertStripperSound(src, `server-module/src/${label}`);
+    if (desync !== null) failures.push(desync);
+  }
 
   // Criterion 1: SATURATING_CAP — economy.rs must not do direct += on balance.
   if (hasUncheckedBalanceIncrement(economySrc)) {
