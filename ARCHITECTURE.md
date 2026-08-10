@@ -172,8 +172,18 @@ invalidates downstream `touches:` declarations — **keep the file names stable.
 Behavior is provably unchanged because table/reducer **names are explicit**, so
 regenerated TypeScript bindings and the schema snapshot are byte-identical — the
 `bindings-drift` + `schema-snapshot` gates are M8.9's behavior-preservation proof.
-The 10 evals that statically parse the server module now glob
+The evals that statically parse the server module now glob
 `server-module/src/**/*.rs` (recursive, sorted) so the split is transparent to them.
+**Source-scan strippers (13r-c, ADR-0181):** `evals/rust-scan.mjs` is the SSOT
+string-literal-aware Rust scanner — it lexes comments and string literals in ONE
+pass (so a `//` inside a literal is data, not a comment start) and is length- and
+offset-preserving, blanking literal payloads. TypeScript scans use
+`stripTsComments` (`evals/conversation-privacy.eval.mjs`) instead, which keeps
+literal payloads VERBATIM: the client privacy evals BAN SQL text that lives inside
+a string literal, so payload-blanking would make those bans pass vacuously. Evals
+that scan Rust should import `rust-scan.mjs` rather than hand-rolling a
+comment-stripping regex; a regex that strips `//` without string awareness is
+false-GREEN capable, and ADR-0181 records the ~24 evals still carrying one.
 Two mechanical constraints (recorded in ADR-0056, surfaced by the M8.9a spike): a
 cross-module `ctx.db.<table>()` call must import the generated accessor trait
 (`use crate::schema::<table>;`), and a module name must not equal a table name
