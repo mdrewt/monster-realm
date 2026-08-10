@@ -197,10 +197,20 @@ export function isValidClaimCode(code) {
 // --- identity comparison over SQL cells ------------------------------------
 
 function normHex(s) {
-  return String(s == null ? '' : s)
+  let v = String(s == null ? '' : s)
     .trim()
-    .toLowerCase()
-    .replace(/^0x/, '');
+    .toLowerCase();
+  // `spacetime sql` renders a present Option<Identity> as
+  // "(some = (__identity__ = 0x<hex>))" and a bare Identity column as "0x<hex>".
+  // Unwrap the wrapper to the inner hex so a stamped provenance value (the
+  // `claimed_from` column) compares equal to a bare `toHexString()` identity.
+  // Keyed on the wrapper marker so bare/short-hex cells are untouched. Literal
+  // regex only (Semgrep detect-non-literal-regexp).
+  if (v.indexOf('__identity__') !== -1) {
+    const m = v.match(/0x[0-9a-f]+/);
+    v = m ? m[0] : '';
+  }
+  return v.replace(/^0x/, '');
 }
 
 export function identityMatches(cell, hex) {
@@ -222,7 +232,14 @@ export function looksLikeIdentity(cell) {
 }
 
 function looksLikeEpochMs(cell) {
-  const v = String(cell == null ? '' : cell).trim();
+  let v = String(cell == null ? '' : cell).trim();
+  // Option<i64> present renders as "(some = <digits>)"; unwrap to the digits so a
+  // stamped `claimed_at_ms` reads as a timestamp. `(none)` has no `some` and stays
+  // rejected. Literal regex only (Semgrep detect-non-literal-regexp).
+  if (v.indexOf('some') !== -1) {
+    const m = v.match(/[0-9]+/);
+    v = m ? m[0] : '';
+  }
   if (v.length < 10) return false;
   for (const ch of v) if ('0123456789'.indexOf(ch) === -1) return false;
   return true;
@@ -406,16 +423,22 @@ export function checkMilestones(events, expected) {
     };
   }
 
-  const eApplied = dataOf('E-applied');
-  if (eApplied.rows !== 0) {
+  // E: a token minted with the CORRECT (patched) issuer but a WRONG audience
+  // must be REFUSED at connect (AUTH-3). Unlike the wrong-ISSUER path (C), which
+  // returns Ok and stays anonymous, the allowed-issuer + wrong-audience path
+  // returns Err from client_connected, and the host drops the socket — a
+  // stronger, more explicit signal. `E-rejected.ok === true` means the driver
+  // observed `.onConnectError`/disconnect rather than `.onConnect`. This is the
+  // D18/CRITICAL-2 single-client control: if audience_allowed were inert (or
+  // later widened to a list), the connection would be ACCEPTED here instead.
+  if (dataOf('E-rejected').rejected !== true) {
     return {
       ok: false,
       reason:
-        `E connected with a CORRECT-issuer JWT but a WRONG audience and got ${eApplied.rows} ` +
-        'my_account row(s) — audience_allowed accepted a token minted for another application. ' +
-        'This is the D18/CRITICAL-2 single-client control: if the audience check is inert (or ' +
-        'later widened to a list), any issuer-valid token provisions here regardless of who it ' +
-        'was minted for',
+        'E connected with a CORRECT-issuer JWT but a WRONG audience and was NOT refused at ' +
+        'connect — audience_allowed accepted a token minted for another application (AUTH-3). ' +
+        'This is the D18/CRITICAL-2 single-client control: an issuer-valid token must never ' +
+        'provision here regardless of who it was minted for',
     };
   }
 
@@ -456,8 +479,15 @@ export function checkMilestones(events, expected) {
  *   account columns: identity, claimed_from, claimed_at_ms
  *   guest_claim: any columns (only the count matters)
  *   monster columns: owner_identity
- * `ids` = { a, b, c, d, e } hex identities.
+ * `ids` = { a, b, c, d } hex identities.
  * Returns { ok, reason }.
+ *
+ * The "exactly 2 rows (A + D)" assertion subsumes the negative controls: C
+ * (wrong issuer) connected anonymously and E (wrong audience) was refused at
+ * connect, so neither may have an account row — any third row is a violation.
+ * The explicit C check is kept as a clearer diagnostic; E has no identity
+ * milestone to check against (it never connected), and the row-count bound
+ * already forbids an E row.
  */
 export function checkSqlTruth(tables, ids) {
   const account = tables.account || [];
@@ -469,21 +499,14 @@ export function checkSqlTruth(tables, ids) {
       ok: false,
       reason:
         `account holds ${account.length} row(s), expected exactly 2 (A + D). C (unrecognized ` +
-        'issuer) and E (wrong audience) both connected and must NEVER have provisioned one',
+        'issuer, anonymous) and E (wrong audience, refused at connect) must NEVER have ' +
+        'provisioned one',
     };
   }
   if (account.some((r) => identityMatches(r[0], ids.c))) {
     return {
       ok: false,
       reason: 'an account row exists for C, whose JWT came from an issuer outside ALLOWED_ISSUERS',
-    };
-  }
-  if (ids.e && account.some((r) => identityMatches(r[0], ids.e))) {
-    return {
-      ok: false,
-      reason:
-        'an account row exists for E, whose JWT carried an audience outside ALLOWED_AUDIENCE ' +
-        '(D18/CRITICAL-2: the single-client audience gate did not hold)',
     };
   }
   const aRow = account.find((r) => identityMatches(r[0], ids.a));
@@ -863,7 +886,6 @@ const GOOD_ID_A = 'a'.repeat(64);
 const GOOD_ID_B = 'b'.repeat(64);
 const GOOD_ID_C = 'c'.repeat(64);
 const GOOD_ID_D = 'd'.repeat(64);
-const GOOD_ID_E = 'e'.repeat(64);
 const GOOD_CODE = '0123456789abcdef'.repeat(4);
 const GOOD_ISSUER = 'INTERNAL_SECRET_PLACEHOLDER_ISSUER';
 
@@ -882,8 +904,7 @@ function goodEvents() {
     { step: 'N3', ok: true, data: { err: ERR_INVALID_CODE } },
     { step: 'C-connect', ok: true, data: { identity: GOOD_ID_C } },
     { step: 'C-applied', ok: true, data: { rows: 0 } },
-    { step: 'E-connect', ok: true, data: { identity: GOOD_ID_E } },
-    { step: 'E-applied', ok: true, data: { rows: 0 } },
+    { step: 'E-rejected', ok: true, data: { rejected: true } },
     { step: 'done', ok: true, data: {} },
   ];
 }
@@ -906,7 +927,7 @@ function goodSqlTables() {
   };
 }
 
-const GOOD_IDS = { a: GOOD_ID_A, b: GOOD_ID_B, c: GOOD_ID_C, d: GOOD_ID_D, e: GOOD_ID_E };
+const GOOD_IDS = { a: GOOD_ID_A, b: GOOD_ID_B, c: GOOD_ID_C, d: GOOD_ID_D };
 
 // --- the synthetic runbook -------------------------------------------------
 // The document deliberately carries DECOYS in the section AFTER the Better Auth
@@ -1138,6 +1159,26 @@ const DRIVER_SRC = [
   '  });',
   '}',
   '',
+  '// AUTH-3 path: an allowed-issuer + wrong-audience token makes client_connected',
+  '// return Err, so the host DROPS the socket -> .onConnectError (or a disconnect)',
+  '// fires and .onConnect never does. Resolves { rejected:true } on refusal,',
+  '// { rejected:false, conn } if it unexpectedly connects. A 15s silence is treated',
+  '// as rejected:false so a hang is a LOUD failure (E-rejected.ok===false), never a',
+  '// false pass.',
+  'function connectExpectReject(token) {',
+  '  return new Promise(function (resolve) {',
+  '    let settled = false;',
+  '    const done = function (v) { if (!settled) { settled = true; resolve(v); } };',
+  '    const t = setTimeout(function () { done({ rejected: false, conn: null }); }, 15000);',
+  '    let b = DbConnection.builder().withUri(uri).withDatabaseName(db);',
+  '    if (token) b = b.withToken(token);',
+  '    b.onConnect(function (c) { clearTimeout(t); done({ rejected: false, conn: c }); })',
+  '      .onConnectError(function () { clearTimeout(t); done({ rejected: true }); })',
+  '      .onDisconnect(function () { clearTimeout(t); done({ rejected: true }); })',
+  '      .build();',
+  '  });',
+  '}',
+  '',
   'function applied(conn, queries) {',
   '  return new Promise(function (resolve, reject) {',
   '    conn',
@@ -1225,17 +1266,15 @@ const DRIVER_SRC = [
   '  await applied(c.conn, ["SELECT * FROM my_account"]);',
   '  emit("C-applied", true, { rows: accountRows(c.conn).length });',
   '',
-  '  const e = await connectOnce(jwtE);',
-  '  emit("E-connect", true, { identity: e.identity });',
-  '  await applied(e.conn, ["SELECT * FROM my_account"]);',
-  '  emit("E-applied", true, { rows: accountRows(e.conn).length });',
+  '  const eRej = await connectExpectReject(jwtE);',
+  '  emit("E-rejected", eRej.rejected === true, { rejected: eRej.rejected });',
+  '  if (eRej.conn) { try { eRej.conn.disconnect(); } catch (ignored) {} }',
   '',
   '  clearTimeout(killer);',
   '  emit("done", true, {});',
   '  a.conn.disconnect();',
   '  c.conn.disconnect();',
   '  d.conn.disconnect();',
-  '  e.conn.disconnect();',
   '  process.exit(0);',
   '} catch (e) {',
   '  bail("flow", e);',
@@ -1382,9 +1421,11 @@ async function runLivePhase() {
     const jwtC = await mintJwt(stub.k2, 'e2e-k2', stub.iss2, 'mallory-e2e', [E2E_CLIENT_ID]);
     // E: the CORRECT (patched) issuer + key, but an audience that is NOT the
     // patched ALLOWED_AUDIENCE. This exercises audience_allowed directly: today's
-    // `.any()` membership check against the single patched entry already rejects
-    // it (the deployment-time exact-equality tightening is 13r-c-2-gated and out
-    // of this slice), so E provisions no account and E-applied.rows === 0.
+    // `.any()` membership check against the single patched entry has no match, so
+    // client_connected returns Err (AUTH-3) and the host REFUSES the connection —
+    // .onConnect never fires. The E-rejected milestone asserts that refusal. (The
+    // deployment-time exact-equality tightening is 13r-c-2-gated and out of this
+    // slice; the `.any()` check against a single entry already rejects a mismatch.)
     const jwtE = await mintJwt(stub.k1, 'e2e-k1', stub.iss1, 'erin-e2e', [WRONG_AUDIENCE]);
 
     const clientDir = path.join(repoRoot, 'client');
@@ -1464,7 +1505,6 @@ async function runLivePhase() {
         b: events.find((e) => e.step === 'B-connect').data.identity,
         c: events.find((e) => e.step === 'C-connect').data.identity,
         d: events.find((e) => e.step === 'D-connect').data.identity,
-        e: events.find((e) => e.step === 'E-connect').data.identity,
       },
     );
     if (!truth.ok) throw new Error(`server truth: ${truth.reason} :: raw ${rawSql.join(' | ')}`);
@@ -1692,10 +1732,20 @@ export default async function () {
           'single assertion that makes the positive result meaningful (N1)',
       ],
       [
-        'E-provisioned',
-        mutateEvent('E-applied', { data: { rows: 1 } }),
-        'a CORRECT-issuer but WRONG-audience connection that provisioned an account was accepted ' +
-          '— audience_allowed accepted a token minted for another application (D18/CRITICAL-2)',
+        'E-accepted',
+        mutateEvent('E-rejected', { ok: false, data: { rejected: false } }),
+        'a CORRECT-issuer but WRONG-audience token that was ACCEPTED at connect (not refused) ' +
+          'was passed — audience_allowed let a token minted for another application connect ' +
+          '(AUTH-3 / D18/CRITICAL-2)',
+      ],
+      [
+        'E-rejected-inconsistent',
+        // ok:true (passes the generic per-milestone ok-check) but rejected:false —
+        // exercises the DEDICATED E clause, which must catch a driver that reports
+        // success while actually having connected the wrong-audience token.
+        mutateEvent('E-rejected', { ok: true, data: { rejected: false } }),
+        'an E-rejected milestone claiming success but carrying rejected:false was accepted — the ' +
+          'dedicated audience clause must not trust the ok flag alone',
       ],
       [
         'A-not-provisioned',
@@ -1896,6 +1946,27 @@ export default async function () {
     if (!looksLikeIdentity('0x' + GOOD_ID_A))
       return teeth('sql-id', 'a real identity was rejected');
     if (identityMatches('', GOOD_ID_A)) return teeth('sql-id-empty', 'an empty cell matched');
+    // A present Option<Identity> (`claimed_from`) renders wrapped; it must unwrap
+    // to its bare hex, else the AUTH-21 provenance check false-reds on a real claim.
+    if (!identityMatches('(some = (__identity__ = 0x' + GOOD_ID_A + '))', GOOD_ID_A))
+      return teeth(
+        'sql-id-option-wrap',
+        'a present Option<Identity> did not unwrap to its bare hex',
+      );
+    if (looksLikeIdentity('(some = (__identity__ = 0x' + GOOD_ID_A + '))') !== true)
+      return teeth(
+        'sql-id-option-shape',
+        'a wrapped present Option<Identity> was not recognized as identity-shaped',
+      );
+    // Option<i64> present (`claimed_at_ms`) renders "(some = <digits>)" — it must
+    // unwrap to a timestamp, while (none) stays rejected.
+    if (!looksLikeEpochMs('(some = 1786365710766)'))
+      return teeth(
+        'sql-epoch-option-wrap',
+        'a present Option<i64> claimed_at_ms did not unwrap to a timestamp',
+      );
+    if (looksLikeEpochMs('(none)'))
+      return teeth('sql-epoch-null', 'a (none) claimed_at_ms parsed as a timestamp');
   }
 
   // --- claim-code shape + marker round trip ---
