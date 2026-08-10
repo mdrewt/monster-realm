@@ -95,6 +95,16 @@ const SLASH13R = String.fromCharCode(0x2f); // /
 //
 // Length- and newline-preserving, as the previous contract promised: comment
 // characters are blanked to spaces, never deleted.
+//
+// KNOWN LIMIT, stated not hidden (13r-c review): there is no REGEX-LITERAL mode.
+// A comment marker inside a regex CHARACTER CLASS — `/[//]/` or `/[/*]/` — opens a
+// comment that is not one, blanking the rest of that line (measured). The common
+// escaped-slash form `/a\/\/b/` is SAFE: the backslashes interleave, so no two
+// slashes are ever adjacent. No regex of the dangerous shape exists in any file
+// this eval scans (verified by grep over the non-test corpus). Unlike the `${...}`
+// limit, the failure direction here is NOT self-announcing — a needle sharing a
+// line with such a regex would silently vanish — so if one is ever introduced,
+// add a regex mode rather than relying on luck.
 
 /** A bare double quote / backtick as data, so no scanner mistakes this file's own text. */
 const TS_DQ = String.fromCharCode(0x22);

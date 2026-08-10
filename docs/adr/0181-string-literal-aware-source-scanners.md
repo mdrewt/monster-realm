@@ -119,6 +119,31 @@ non-existent default export, synthesising a failure for every CI run.
   followed by a genuine violation LATER in the same file — that was observed RED
   before the fix.
 
+### Known limits of the TypeScript scanners (disclosed)
+
+Neither `stripTsComments` nor `m20cScan` has a **regex-literal mode**. A comment
+marker inside a regex CHARACTER CLASS — `/[//]/` or `/[/*]/` — opens a comment
+that is not one and blanks the rest of that line (measured). The common
+escaped-slash form `/a\/\/b/` is safe: the backslashes interleave, so no two
+slashes are ever adjacent. No regex of the dangerous shape exists anywhere in the
+scanned non-test corpus.
+
+This matters more than the `${…}` limit, because the failure direction differs:
+`${…}` yields a SHORTER `code` string, which reds a tooth rather than passing
+one, whereas the regex case would silently blank a needle sharing that line. If
+such a regex is ever introduced, add a regex mode rather than relying on luck.
+
+### The soundness gate must match the ban surface, per eval
+
+`assertStripperSound` has to cover **every file the ban clauses actually needle**,
+not just the file the eval is named after. `currency-integrity`'s criteria 5/6
+scan ~20 files beyond `economy.rs`/`schema.rs`, so gating only those two would
+have left the widest ban surface in that eval unprotected — the exact false-GREEN
+class this ADR closes. Gates are placed per eval over that eval's real scan set,
+NON-TEST only (the desync detector is quote-blind by design, so a
+`#[spacetimedb::` inside a `*_tests.rs` fixture STRING reads as real code to it —
+measured 7 phantom anchors across 9 files).
+
 ### Residual — the class is wider than this slice (disclosed, not closed)
 
 Measured across `evals/*.eval.mjs` at this slice's HEAD:

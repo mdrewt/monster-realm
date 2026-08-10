@@ -99,13 +99,17 @@
 //     REKEY_MANIFEST below is the transcription; the [G6/*] clauses cross-check
 //     it against live CODE in both directions instead.
 //
-// THE STRIPPER: a per-file LOCAL COPY of account-privacy.eval.mjs's canonical
-// hardened `stripRustSource` / `compactWs` / `assertStripperSound`, copied
-// VERBATIM. This is the repo convention (ranking-security.eval.mjs:51,
-// currency-integrity.eval.mjs:147), and ci-gate-wiring.eval.mjs:342-346
-// documents rejecting a shared stripper module outright: an eval that imports
-// its own scanner from a neighbour can be blinded tree-wide by one edit to the
-// neighbour. Strings are lexed FIRST (never comments first — a slash-slash
+// THE STRIPPER: imported from the SHARED `evals/rust-scan.mjs` (13r-c, ADR-0181
+// D1). This file used to carry a ~450-line VERBATIM copy of account-privacy's
+// scanner, justified as "the repo convention"; ADR-0179 §9 flagged that
+// duplication (the two copies' `splitArgs` had already silently diverged) and
+// ADR-0181 consolidates them. The old rationale — "an eval that imports its
+// scanner from a neighbour can be blinded tree-wide by one edit" — is answered,
+// not ignored: `assertStripperSound` runs on EVERY live source in this file, so
+// a bad edit to the shared module reds here loudly rather than blinding this
+// eval silently. (It also cited ci-gate-wiring.eval.mjs as rejecting a shared
+// stripper module; that note is about a different, much narrower helper
+// (`extractRecipeBodyLocal`), not a blanket prohibition.) Strings are lexed FIRST (never comments first — a slash-slash
 // inside a real issuer URL literal, accounts.rs:41-48, truncates the line and
 // unbalances every quote after it); raw strings take ANY hash count with no
 // escape processing; char literals are lexed with lifetime disambiguation. A
@@ -229,8 +233,9 @@ import {
 } from './rust-scan.mjs';
 
 // ---------------------------------------------------------------------------
-// Shared structural parsers (findFnBody / findCalls are copied from
-// account-privacy.eval.mjs; parseReducers and parseScheduledTargets are new).
+// Shared structural parsers: findFnBody / findCalls / splitArgs are IMPORTED from
+// evals/rust-scan.mjs (13r-c, ADR-0181); parseReducers and parseScheduledTargets
+// below are local to this eval.
 // ---------------------------------------------------------------------------
 
 /**

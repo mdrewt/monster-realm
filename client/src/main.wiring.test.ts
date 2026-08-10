@@ -7825,9 +7825,20 @@ interface M20cScan {
  * escapes inside the three string modes. An unescaped newline ends a `'…'`/`"…"` literal (JS
  * forbids one there), so a stray apostrophe cannot swallow the file either.
  *
- * KNOWN LIMIT, stated not hidden: `${…}` interpolation is not parsed, so a backtick inside an
- * interpolation expression would confuse template mode. No such construct exists in main.ts, and
- * the failure direction is a SHORTER `code` string — which reds a tooth rather than passing one.
+ * KNOWN LIMITS, stated not hidden. As of 13r-c this scanner serves the WHOLE file (all ~78
+ * `stripLineComments` call sites) and, through the offenders loop, every non-test file under
+ * `client/src` — so these are scoped to that corpus, not to main.ts alone:
+ *   1. `${…}` interpolation is not parsed, so a backtick inside an interpolation expression
+ *      would confuse template mode. No such construct exists anywhere under `client/src`
+ *      (verified by grep), and the failure direction is a SHORTER `code` string — which reds a
+ *      tooth rather than passing one.
+ *   2. There is no REGEX-LITERAL mode. A comment marker inside a regex CHARACTER CLASS —
+ *      `/[//]/` or `/[/*]/` — opens a comment that is not one and blanks the rest of that line
+ *      (measured). The common escaped-slash form `/a\/\/b/` is SAFE (the backslashes
+ *      interleave, so no two slashes are ever adjacent). No regex of the dangerous shape exists
+ *      in the scanned non-test corpus. Unlike limit 1, this failure is NOT self-announcing — a
+ *      needle sharing a line with such a regex would silently vanish — so if one is ever
+ *      introduced, add a regex mode rather than relying on luck.
  *
  * No `new RegExp` — banned repo-wide, in tests as much as in source.
  */

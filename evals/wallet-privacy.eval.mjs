@@ -52,9 +52,13 @@
 //                       fully-qualified form and would be BLIND to it).
 //      [B/F5-hidden]    the literal `#[spacetimedb::view(` occurs the same
 //                       number of times in the RAW and in the comment-stripped
-//                       source — a view hidden inside a comment (or inside a
-//                       comment FORGED with `const X: &str = "/*";`) is invisible
-//                       to every checker that consumes stripComments.
+//                       source — a view hidden inside a GENUINE comment is
+//                       invisible to every checker that consumes the stripped
+//                       text. (The FORGED-comment variant, `const X: &str` holding
+//                       a block-comment opener, is closed at the lexer as of 13r-c
+//                       / ADR-0181 — the forged comment no longer opens, so this
+//                       tripwire correctly stays silent for it and the real
+//                       structural clause sees the view directly. Fixture F18.)
 //      [B/2a] my_wallet exists as a view and its body reads the table.
 //      [B/2b] its body contains no `iter` substring.
 //      [B/2d] its signature is not AnonymousViewContext.
@@ -125,7 +129,7 @@ import { glob } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseTables, parseViews, stripTsComments } from './conversation-privacy.eval.mjs';
-import { assertStripperSound, stripRustSource } from './rust-scan.mjs';
+import { assertStripperSound, compactWs, countOccurrences, stripRustSource } from './rust-scan.mjs';
 
 // 13r-c (ADR-0181) — TWO scanners, deliberately, per the normative split:
 //   Rust sources (server-module *.rs)  -> stripRustSource  (blanks literal
@@ -147,27 +151,10 @@ const SLASH13R = String.fromCharCode(0x2f); // /
 // Small shared helpers.
 // ---------------------------------------------------------------------------
 
-/**
- * Remove ALL whitespace so needles survive line breaks and stray spaces
- * (`player_wallet ()` compiles; so does `Table :: iter`).
- * @param {string} s Source text.
- * @returns {string} Whitespace-free text.
- */
-export function compactWs(s) {
-  return s.replace(/\s+/g, '');
-}
-
-/**
- * Count non-overlapping occurrences of a literal needle.
- * @param {string} hay Text to search.
- * @param {string} needle Literal needle.
- * @returns {number} Occurrence count.
- */
-export function countOccurrences(hay, needle) {
-  let n = 0;
-  for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, at + needle.length)) n++;
-  return n;
-}
+// `compactWs` / `countOccurrences` were byte-identical local copies of
+// rust-scan.mjs's; 13r-c (ADR-0181) removes the duplication at its source. They are
+// RE-EXPORTED so this module's public surface is unchanged.
+export { compactWs, countOccurrences };
 
 // ---------------------------------------------------------------------------
 // parseFns — brace-walking fn collector (the call-graph substrate for check B).
@@ -351,12 +338,18 @@ export function checkWalletViewsSafe(serverSrc) {
   }
 
   // [B/F5-hidden] a view attribute present in the RAW source but absent from the
-  // comment-stripped source is hidden inside a comment — either a real comment
-  // (harmless, but reword it so this tripwire stays sharp) or, far worse, a
-  // comment FORGED out of string literals (`const OPEN: &str = "/*";` …
-  // `const CLOSE: &str = "*/";`), which blanks a REAL leaky view for every
-  // checker that consumes stripComments (red-team F-5; stripComments is
-  // string-literal-unaware by documented limitation).
+  // comment-stripped source is hidden inside a GENUINE comment. Reword it so this
+  // tripwire stays sharp.
+  //
+  // 13r-c (ADR-0181): the FORGED-comment attack this was originally built for
+  // (red-team F-5 — `const OPEN: &str` / `const CLOSE: &str` holding block-comment
+  // delimiters) is now closed at the LEXER: `stripRustSource` lexes strings and
+  // comments in one pass, so a delimiter inside a literal is data and the forged
+  // comment never opens. Raw and stripped counts therefore AGREE for that shape,
+  // this clause correctly stays silent, and the real leaky view is caught directly
+  // by [B/3a] instead — a strictly stronger outcome (fixture F18 asserts the
+  // stronger tag). The clause is KEPT because a genuine comment containing a view
+  // attribute is still a live, different shape.
   const rawViewAttrs = countOccurrences(serverSrc, VIEW_ATTR);
   const strippedViewAttrs = countOccurrences(stripped, VIEW_ATTR);
   if (rawViewAttrs > strippedViewAttrs) {
@@ -1234,12 +1227,13 @@ fn peek_wallet(_ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
   // [13r-c/T3a] a leaky view whose BODY-ONLY `player_wallet` reference sits on
   // the same physical line as a `https://` string literal.
   //
-  // PROVES: `stripComments` (imported from conversation-privacy.eval.mjs, used
-  // by checkWalletViewsSafe) is a REGEX-ONLY comment stripper with NO
-  // string-literal awareness. Its line-comment pass treats the `//` inside a
-  // `https://` URL literal as a comment start and blanks the REST OF THAT LINE
-  // — here, that is the trailing `ctx.db.player_wallet().iter().collect()`
-  // call, a genuine whole-table wallet leak.
+  // PROVES (regression pin): the PRE-13r-c stripper — a regex-only comment
+  // stripper with NO string-literal awareness, which `checkWalletViewsSafe` used
+  // to consume — treated the `//` inside a `https://` URL literal as a comment
+  // start and blanked the REST OF THAT LINE: here, the trailing
+  // `ctx.db.player_wallet().iter().collect()` call, a genuine whole-table wallet
+  // leak. `checkWalletViewsSafe` now uses `stripRustSource` (ADR-0181); if this
+  // tooth reds, that has been reverted.
   //
   // CONSTRUCTION NOTE (why the URL sits on the BODY line, not the attribute
   // line): putting the URL on the SAME line as `#[spacetimedb::view(...)]`
@@ -1278,10 +1272,10 @@ ${leakyBodyLine}
         'TEETH FAILED [13r-c/T3a]: checkWalletViewsSafe returned PASS for a fixture where ' +
         `view 'all_wallets' whole-table-leaks player_wallet via ` +
         '`ctx.db.player_wallet().iter().collect()` sharing its physical line with a ' +
-        `${DQ13R}${httpsUrl}${DQ13R} string literal — stripComments' line-comment regex ` +
-        "truncates that line at the URL's `//`, blanking the leak before parseViews/[B/3a] " +
-        'ever see it. The view attribute survives on its own line (so [B/F5-hidden] stays ' +
-        "silent), which is exactly why this hole is narrower and undetected by today's checks."
+        `${DQ13R}${httpsUrl}${DQ13R} string literal. The pre-13r-c line-comment regex ` +
+        "truncated that line at the URL's `//`, blanking the leak before parseViews/[B/3a] " +
+        'ever saw it. The view attribute sits on its own line (so [B/F5-hidden] stays ' +
+        'silent), which is exactly why this hole was narrower and undetected.'
       );
     }
   }

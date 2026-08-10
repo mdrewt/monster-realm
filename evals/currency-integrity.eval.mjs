@@ -830,6 +830,30 @@ export default async function () {
     .map((f) => normalizeSrcPath(f))
     .filter((f) => f.endsWith('.rs') && !isAccessorBypassAllowlisted(f));
 
+  // 13r-c (ADR-0181) STRIPPER-SOUNDNESS GATE — part 2, over the criteria-5/6
+  // scan set. The gate above covers only economy.rs + schema.rs (the sources
+  // criteria 1-4 read). Criteria 5 (SINGLE_SURFACE) and 6 (ACCESSOR_BYPASS) needle
+  // EVERY file in `srcs` — ~20 more — and both are BANS, so a desync in any one of
+  // them silently GREENS a real `.balance` write or `player_wallet()` bypass with
+  // no `[STRIP/*]` failure to show for it. Gating only the two named files would
+  // leave the widest ban surface in this eval unprotected, which is precisely the
+  // false-GREEN class ADR-0181 exists to close. (ranking-security.eval.mjs does the
+  // same union over its own scan set.)
+  //
+  // NON-TEST only, for the reason documented at the first gate: the desync detector
+  // is quote-blind by design, so a `#[spacetimedb::` inside a *_tests.rs fixture
+  // STRING reads as real code to it and reports a desync that did not happen.
+  for (const f of srcs.filter((f) => !f.endsWith('_tests.rs'))) {
+    let src;
+    try {
+      src = readFileSync(`server-module/src/${f}`, 'utf8');
+    } catch {
+      continue;
+    }
+    const desync = assertStripperSound(src, `server-module/src/${f}`);
+    if (desync !== null) failures.push(desync);
+  }
+
   // -------------------------------------------------------------------------
   // Clause [6b/scan-set-contains-accounts] (ADR-0179 G10) — the LOAD-BEARING
   // half of the accounts.rs contract. [6b/allowlist-negative] above only proves

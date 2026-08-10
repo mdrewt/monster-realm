@@ -111,11 +111,14 @@
 //                          `fn warn_issuer(..) { log::warn!(..) }` cannot slip
 //                          past a whole-segment-equality list. Fixture FA35.
 //
-// THE STRIPPER (canonical implementation — the sibling M21c eval copies it):
-// `stripRustSource` blanks strings and comments IN PLACE, offset- and
+// THE STRIPPER: imported from the SHARED `evals/rust-scan.mjs` (13r-c, ADR-0181
+// D1). This file used to HOLD the canonical implementation, with the M21c
+// sibling carrying a verbatim copy; ADR-0179 §9 flagged that duplication and
+// ADR-0181 extracted it into one module that six evals now consume. The
+// contract is unchanged and is restated here because the clauses below depend
+// on it: `stripRustSource` blanks strings and comments IN PLACE, offset- and
 // length-preserving, so the imported `parseTables` / `parseViews` consume it
-// unchanged (conversation-privacy.eval.mjs:79-81 does the same, which is why
-// substituting a different stripper is safe). It is single-pass and
+// unchanged. It is single-pass and
 // STRING-AWARE: strings are lexed FIRST, never comments first — a comments-first
 // pass truncates a literal containing a slash-slash, unbalances the remaining
 // quote pairing, and cascades into unrelated files (this exact bug reddened
