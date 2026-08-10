@@ -52,7 +52,10 @@
 //   export function senseInvalidCode(claimedFrom: string | undefined): InvalidCodeSense;
 //
 //   export type ClaimPhase =
-//     | 'hidden' | 'code-pending' | 'awaiting-account' | 'rejected' | 'sign-in-failed' | 'claimed';
+//     | 'hidden' | 'prompt' | 'code-pending' | 'awaiting-account' | 'rejected'
+//     | 'sign-in-failed' | 'claimed';
+//   // M21b-2 UI-completion review: `claim-ui-opened` now enters the VISIBLE 'prompt' phase
+//   // (was 'hidden' — the bug that made the whole claim/sign-in overlay unreachable).
 //   export interface ClaimModelState {
 //     readonly phase: ClaimPhase;
 //     readonly outcome: ClaimRejectOutcome | undefined;
@@ -738,13 +741,117 @@ describe('claimModel first-run nudge: shown once per tab on the first claim-UI o
     expect(quiet.nudge).toBeUndefined();
   });
 
-  it('★ BITES: opening the UI does not disturb the claim state (the nudge is decoration, not a transition)', () => {
+  it('★★ BITES: opening the UI is a VISIBLE transition (hidden → prompt) yet never clobbers an in-progress claim', () => {
+    // ★ REVISED FROM THE SPEC (M21b-2 UI-completion review). The assertion that stood here —
+    // `after.phase === before.phase`, framed "the nudge is decoration, NOT a transition" —
+    // encoded the exact bug the two reviews found: `claim-ui-opened` left the model in its
+    // prior phase (and, from the initial state, in 'hidden'), so buildClaimViewModel(...).visible
+    // was false and the overlay the menu 'account' leaf / KeyC opened rendered NOTHING. The
+    // review MANDATES that opening the claim UI becomes visible, so that old expectation is now
+    // wrong. It is revised, not deleted: the anti-clobber coverage below is carried forward
+    // verbatim, and the corrected positive (hidden → prompt) is added.
+    //
+    // (1) the corrected positive: from the initial hidden state, opening IS a transition — into
+    //     the new visible 'prompt' phase. WRONG IMPL KILLED: the model stays 'hidden' (the bug).
+    const opened = claimStep(CLAIM_INITIAL, {
+      kind: 'claim-ui-opened',
+      nudgeAlreadySeen: true,
+    }).next;
+    expect(opened.phase, 'claim-ui-opened must make a hidden model VISIBLE — hidden → prompt').toBe(
+      'prompt',
+    );
+
+    // (2) the safety coverage the old test carried, kept verbatim: opening the overlay while a
+    //     claim is already in progress must not delete the code, lift the veto, or disarm a
+    //     decline confirmation the player already reached. The resulting phase is NOT asserted
+    //     equal to the prior one (that is the ambiguity the revision removes), only that opening
+    //     never drops an active claim back to the invisible 'hidden' state.
     const before = pending({ confirmPending: true });
     const after = claimStep(before, { kind: 'claim-ui-opened', nudgeAlreadySeen: true }).next;
-    expect(after.phase).toBe(before.phase);
-    expect(after.codeRetained).toBe(before.codeRetained);
-    expect(after.joinPermitted).toBe(before.joinPermitted);
-    expect(after.confirmPending).toBe(before.confirmPending);
+    expect(after.phase, 'opening an in-progress claim must never make it invisible again').not.toBe(
+      'hidden',
+    );
+    expect(after.codeRetained, 'opening must not delete the live code').toBe(before.codeRetained);
+    expect(after.joinPermitted, 'opening must not lift the veto').toBe(before.joinPermitted);
+    expect(after.confirmPending, 'opening must not disarm an armed decline confirmation').toBe(
+      before.confirmPending,
+    );
+  });
+});
+
+// ===========================================================================
+// M21b-2 UI-completion review — `claim-ui-opened` opens a VISIBLE prompt.
+//
+// Two reviews found the claim/sign-in flow was fully built but UNREACHABLE from the UI:
+// `claim-ui-opened` returned phase 'hidden', so buildClaimViewModel(...).visible was false
+// and the overlay opened onto nothing. The fix is a new 'prompt' phase, entered by
+// claim-ui-opened, whose view model is VISIBLE and reuses the pending (claim-invitation)
+// copy. These teeth are RED until claimModel.ts gains the phase.
+// ===========================================================================
+
+describe('claimModel M21b-2 review: claim-ui-opened enters a visible prompt phase', () => {
+  it('★★ BITES: claim-ui-opened from the initial state reaches phase `prompt` and its view model is VISIBLE', () => {
+    // WRONG IMPL KILLED (a) ★ THE NAMED BUG: `claim-ui-opened` returns phase 'hidden'. The menu
+    //   'account' leaf and KeyC both open the overlay onto an invisible view model, so the whole
+    //   claim/sign-in feature — built and behaviourally tested — is dark from the UI.
+    // WRONG IMPL KILLED (b): a 'prompt' phase whose buildClaimViewModel(...).visible is false —
+    //   the same dark overlay, one indirection later.
+    const step = claimStep(CLAIM_INITIAL, { kind: 'claim-ui-opened', nudgeAlreadySeen: false });
+    expect(step.next.phase, 'claim-ui-opened must enter the new visible prompt phase').toBe(
+      'prompt',
+    );
+    expect(
+      buildClaimViewModel(step.next).visible,
+      'the prompt view model must be VISIBLE — this is the whole content of the bug the reviews found',
+    ).toBe(true);
+  });
+
+  it('★★ BITES: the prompt view model reuses the existing PENDING copy (title AND body)', () => {
+    // ★ COPY PIN (from the contract): the prompt shows the claim invitation, which is the SAME
+    // title/body the code-pending view model already renders. WRONG IMPL KILLED: a prompt whose
+    // body is empty or a placeholder — the overlay would open visible but say nothing, which is
+    // indistinguishable to the player from the dark-overlay bug this slice closes.
+    const prompt = buildClaimViewModel(
+      claimStep(CLAIM_INITIAL, { kind: 'claim-ui-opened', nudgeAlreadySeen: true }).next,
+    );
+    const pendingVm = buildClaimViewModel(pending());
+    expect(prompt.title, 'the prompt title reuses the PENDING copy').toBe(pendingVm.title);
+    expect(prompt.body, 'the prompt body reuses the PENDING copy').toBe(pendingVm.body);
+    expect(prompt.body.length, 'anti-vacuity: the shared copy is non-empty').toBeGreaterThan(0);
+  });
+
+  it('★★ BITES: the first-run nudge still shows exactly once — on the FIRST prompt open, latched by nudgeShown', () => {
+    // The nudge-once contract (ADR-0182 D16) must survive the phase change: an unseen flag shows
+    // the nudge on the first open and latches; a re-open in the same tab is quiet; and a tab whose
+    // stored flag is already set never shows it — all while the phase is now the visible 'prompt'.
+    // WRONG IMPL KILLED: the phase change resets or re-fires the nudge latch, so the multi-device
+    // warning nags on every open.
+    const NUDGE = 'Guest progress transfers only from the device you claim it on.';
+
+    const first = claimStep(CLAIM_INITIAL, {
+      kind: 'claim-ui-opened',
+      nudgeAlreadySeen: false,
+    }).next;
+    expect(first.phase).toBe('prompt');
+    expect(first.showFirstRunNudge, 'first open with an unseen flag shows the nudge').toBe(true);
+    expect(first.nudgeShown, 'and the model latches it').toBe(true);
+    expect(
+      String(buildClaimViewModel(first).nudge),
+      'the prompt VM renders the ADR-quoted nudge',
+    ).toBe(NUDGE);
+
+    const second = claimStep(first, { kind: 'claim-ui-opened', nudgeAlreadySeen: false }).next;
+    expect(second.showFirstRunNudge, 'a re-open in the same tab is quiet').toBe(false);
+
+    const alreadySeen = claimStep(CLAIM_INITIAL, {
+      kind: 'claim-ui-opened',
+      nudgeAlreadySeen: true,
+    }).next;
+    expect(
+      alreadySeen.phase,
+      'the phase is still the visible prompt even when the nudge is quiet',
+    ).toBe('prompt');
+    expect(alreadySeen.showFirstRunNudge, 'an already-seen nudge never shows').toBe(false);
   });
 });
 

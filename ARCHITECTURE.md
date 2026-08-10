@@ -714,6 +714,38 @@ Shop screen and wallet display client integration.
 - **Main integration (`main.ts`):** KeyG toggles shop overlay, Escape closes it, movement/action suppressed while open. Reducer calls (`buy`, `sell`) routed through async Promise pattern (ADR-0084); catch block on failure logs and renders error toast (or message-append feedback surface, deferred to M13.5/M23).
 - **ADR-0084 spec gap — CLOSED by ux2 (ADR-0154), and NOT the way this line predicted.** The gap was real (`player_wallet` privacy meant no client-side balance display), but the suggested remedy — a public `player_wallet_pub` projection table, by analogy with `monster_pub` — was rejected: a projection table is a second write surface over a balance, which ADR-0081's single-surface discipline exists to prevent. The chosen route is an owner-scoped `#[view]` (the ADR-0087 `my_conversation` pattern), which adds a read path and no write path.
 
+## Accounts & auth client (`client/src/`, M21b-2 — ADR-0179/0182)
+
+OIDC sign-in, guest→account claim UI, and session lifecycle on the imperative shell. The forward
+sign-in redirect only fully functions against a real deployed Better Auth issuer (a deployment-timed
+follow-up, hard-gated on `13r-c-2`); against the placeholder `.invalid` issuer it degrades to a
+handled sign-in-failed state.
+
+- **Pure core (`net/`):** `credentialDecision.ts` (`decideConnectCredential` — the full `outcome ×
+  everAuthenticated × consecutiveTransientErrors` branch table, injected-total, no I/O); `oidc.ts`
+  (hand-rolled over Better Auth's OIDC endpoints — discovery cache, `state`+PKCE S256 mint/scrub/
+  compare, `renewOrExchange` a total function, no new runtime dep); `claimCode.ts` (client-minted
+  256-bit code over per-tab `sessionStorage`, AUTH-60). All host/`fetch`/`crypto`/storage injected.
+- **Connection shell (`net/connection.ts`):** `resolveCredential` (async, the one I/O boundary) feeds
+  a synchronous `build(credential)` widened to `DbConnection | undefined`; every async/exception
+  boundary is defensively total so the reconnect ladder can't silently stop (ADR-0182 C1/RT-01).
+  `my_account` is subscribed and is the **sole** "is this connection authenticated" authority (D15);
+  the write-guard's credential class is in-memory provenance, never a storage re-read (D14). The
+  claim-code join-gate is an unconditional veto scoped to account-class connections, re-evaluated
+  fresh every `onApplied`, closing F2 across reconnects (D16). `startSignIn`/`reconnectNow` expose the
+  forward-redirect and session-retry through the `{kind, token}` seam — provider-agnostic by design
+  (a future Steamworks-ticket flow swaps in behind it, ADR-0182 Consequences).
+- **Session/claim UI (`ui/`):** paired pure-model/DOM-shell splits — `sessionModel`/`sessionView`
+  (registry-external `hidden|expired|unreachable`, driven directly by `conn.sessionState()`, D17) and
+  `claimModel`/`claimView` (`claimView` joins `overlayRegistry` as `GUARD_ONLY`; the 4-way reject
+  taxonomy mirrors `complete_guest_claim`'s guards). `menuModel`/`helpModel` add the `KeyC` account
+  leaf. No credential value or claim code ever reaches a log/telemetry sink (AUTH-57, `evals/
+  client-no-pii-logs.eval.mjs`).
+- **Deployment (`ops/auth/`, `docs/observability-dr-runbook.md` §8):** self-hosted Better Auth
+  (compose + `.env.example` + README recipe, no committed runtime/secret) with a DR posture whose
+  first line item is JWKS signing-key custody (ADR-0182 D20). Native email+password is dev/QA-only
+  (OQ5). The self-contained live claim flow is exercised end-to-end by `evals/account-e2e.eval.mjs`.
+
 ## Reducer-rejection feedback & app-level reconnect (`client/src/`, M13.5b — ADR-0085)
 
 Closes the silent phantom-intent desync and the dead-button/blank-reconnect gaps from the seventh review. SDK 2.6 has no per-reducer callbacks and no auto-reconnect on the raw builder path; each reducer call's Promise (rejects on `Err`, NEVER settles on a drop) is the rejection surface.

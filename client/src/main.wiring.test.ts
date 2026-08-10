@@ -9704,3 +9704,197 @@ describe('★ main.ts wiring (M21b-2/ADR-0182 D15, G29): W-M21B2-SIGNED-IN-IS-OW
     }
   });
 });
+
+// ===========================================================================
+// M21b-2 UI ENTRY POINTS (ADR-0182 D16/D17) — W-M21B2-CLAIM-UI-REACHABLE.
+//
+// TWO reviews found the claim/sign-in flow was fully built but NOT REACHABLE from the UI:
+// the model drivers and the Connection methods existed in isolation, but nothing in the
+// dispatch/handler wiring actually CALLED them. This block pins the six wiring seams that
+// make the feature reachable and non-fakeable:
+//   1. the menu Account leaf routes to openClaim()   (activateMenuLeaf`s void switch)
+//   2. the overlay Sign-in button starts the real flow (onSignIn → conn?.startSignIn())
+//   3. applyClaim consumes the model`s `join` effect by actually joining
+//   4. applySession consumes the model`s `retry-connect` effect via conn?.reconnectNow()
+//   5. all four hasLiveConnection sites guard on !conn.linkFrozen(), not the always-true form
+//   6. connect() is handed the OIDC config from import.meta.env.VITE_MR_OIDC_*
+//
+// These lock EXISTING correct wiring against regression and faking. They mirror the G20/G29
+// idiom: string-literal-aware m20cScan + mwCodeOccurrences (a decoy string cannot satisfy a
+// "the code does X" pin), region-bounded to the relevant function/handler where a file-wide
+// scan would be vacuous. NO `new RegExp`.
+//
+// ⚠ THE VOID-SWITCH HAZARD (tooth 1): main.ts`s `switch (leaf.id)` has NO default arm, so a
+// MISSING `case 'account'` does NOT fail tsc — the leaf silently no-ops and the overlay is
+// unreachable from the menu. That is precisely why this needs a source-scan tooth.
+// ===========================================================================
+
+/** A top-level `function name(…) {` region of main.ts, comment-stripped with the STRING-AWARE
+ *  m20c scanner and whitespace-squashed. Sliced from the declaration to the NEXT column-0
+ *  `function ` — NEVER to end-of-file, which would let a needle living anywhere later in main.ts
+ *  satisfy "the region contains X" vacuously (the exact hazard uxd3FunctionBody documents). */
+function m21b2FunctionCode(src: string, declNeedle: string): string {
+  const startIdx = src.indexOf(declNeedle);
+  if (startIdx < 0) {
+    throw new Error(
+      `main.ts must declare \`${declNeedle}…\` as a top-level function (M21b-2 UI entry point)`,
+    );
+  }
+  const endIdx = src.indexOf('\nfunction ', startIdx + declNeedle.length);
+  if (endIdx < 0) {
+    throw new Error(
+      `no top-level \`function \` declaration follows \`${declNeedle}\` in main.ts — refusing to ` +
+        'slice to end-of-file, which would make "the region contains X" vacuously satisfiable',
+    );
+  }
+  const region = squashWhitespace(m20cScan(src.slice(startIdx, endIdx)).code).trim();
+  expect(
+    region.length,
+    `the ${declNeedle} region is EMPTY after comment-stripping — refusing to scan a degenerate region`,
+  ).toBeGreaterThan(0);
+  return region;
+}
+
+describe('★ main.ts wiring (M21b-2 UI entry point, G20/G29 idiom): W-M21B2-CLAIM-UI-REACHABLE — the claim/sign-in flow is wired to the UI', () => {
+  it("★★ BITES: activateMenuLeaf`s switch routes `case 'account'` to openClaim() — the Account menu leaf actually opens the claim overlay", () => {
+    // WRONG IMPL KILLED (a) ★ NAMED: no `case 'account'` in the switch. Because the switch is a
+    //   VOID switch with no default arm, tsc does NOT flag the missing case — the Account leaf
+    //   dispatches into nothing and the overlay is unreachable from the menu.
+    // WRONG IMPL KILLED (b): `case 'account'` routing to a DIFFERENT open (a copy-paste from a
+    //   neighbouring leaf) — the wrong overlay opens.
+    const region = m21b2FunctionCode(readMainTs(), UXD3_ACTIVATE_DECL);
+    // ANTI-VACUITY: the region really is activateMenuLeaf`s leaf switch (its other cases survive).
+    expect(
+      mwCodeOccurrences(region, 'switch (leaf.id) {').length,
+      'ANTI-VACUITY: activateMenuLeaf must contain the `switch (leaf.id) {` — if it does not, this ' +
+        'gate is judging the wrong region',
+    ).toBe(1);
+    expect(
+      mwCodeOccurrences(region, "case 'account':").length,
+      "activateMenuLeaf`s switch must contain a `case 'account':` arm — the Account leaf`s route",
+    ).toBe(1);
+    expect(
+      mwCodeOccurrences(region, "case 'account': openClaim();").length,
+      "activateMenuLeaf`s switch must route `case 'account':` to `openClaim();` (code-aware, " +
+        'contiguous) — the void switch has no default, so a missing or mis-routed case is ' +
+        'invisible to tsc and the Account leaf silently no-ops',
+    ).toBe(1);
+  });
+
+  it('★★ BITES: the claim overlay`s onSignIn handler calls conn?.startSignIn(), and the old "temporarily unavailable" stub is GONE', () => {
+    // WRONG IMPL KILLED ★ NAMED: the placeholder that shipped before this slice —
+    //   `onSignIn: () => reportError('Sign-in is temporarily unavailable.')`. The overlay
+    //   rendered a Sign-in button that, when clicked, only apologised; the real flow was never
+    //   started. The handler must now call the Connection entry point.
+    const src = readMainTs();
+    const squashed = squashWhitespace(m20cWholeFile(src));
+    expect(
+      mwCodeOccurrences(squashed, 'onSignIn: () => { conn?.startSignIn(); }').length,
+      'the claim overlay`s onSignIn handler must be exactly `onSignIn: () => { conn?.startSignIn(); }` ' +
+        '(code-aware) — it starts the real OIDC sign-in flow (ADR-0182 D17/AUTH-48)',
+    ).toBe(1);
+    // The stub STRING must be gone. Counted on comment-stripped-but-string-PRESERVING source, so
+    // the reportError call`s literal would still be seen if it survived (a comment mentioning it
+    // is fine — comments are stripped).
+    expect(
+      countOccurrences(m20cWholeFile(src), 'Sign-in is temporarily unavailable'),
+      'the placeholder `Sign-in is temporarily unavailable` must be GONE from main.ts — the ' +
+        'onSignIn handler now starts the real flow, it does not apologise',
+    ).toBe(0);
+  });
+
+  it('★★ BITES: applyClaim consumes the model`s `join` effect by actually calling .reducers.joinGame()', () => {
+    // WRONG IMPL KILLED: a claimModel that emits `effect: 'join'` (proven in claimModel.test.ts)
+    //   wired to a main.ts that never joins — the Join button in the claim overlay is dead. The
+    //   join must be GUARDED on the effect (not issued unconditionally, which would re-open F2).
+    const region = m21b2FunctionCode(readMainTs(), 'function applyClaim(');
+    const guard = mwCodeOccurrences(region, "if (step.effect === 'join')");
+    const join = mwCodeOccurrences(region, '.reducers.joinGame(');
+    expect(guard.length, "applyClaim must gate on `if (step.effect === 'join')` (code-aware)").toBe(
+      1,
+    );
+    expect(
+      join.length,
+      'applyClaim must call `.reducers.joinGame(` when the effect is join — otherwise the claim ' +
+        'model`s join effect is computed and dropped, and the overlay`s Join action does nothing',
+    ).toBe(1);
+    expect(
+      guard[0]!,
+      'the join must be GUARDED on the `join` effect, not issued unconditionally (AUTH-52/F2)',
+    ).toBeLessThan(join[0]!);
+  });
+
+  it('★★ BITES: applySession consumes the model`s `retry-connect` effect via conn?.reconnectNow()', () => {
+    // WRONG IMPL KILLED: a sessionModel that emits `effect: 'retry-connect'` wired to a main.ts
+    //   that never reconnects — the Retry button on the session-expired / unreachable overlay is
+    //   dead, and the tab stays parked forever after the player asks to reconnect.
+    const region = m21b2FunctionCode(readMainTs(), 'function applySession(');
+    const guard = mwCodeOccurrences(region, "if (step.effect === 'retry-connect')");
+    const retry = mwCodeOccurrences(region, 'conn?.reconnectNow()');
+    expect(
+      guard.length,
+      "applySession must gate on `if (step.effect === 'retry-connect')` (code-aware)",
+    ).toBe(1);
+    expect(
+      retry.length,
+      'applySession must call `conn?.reconnectNow()` on the retry effect — otherwise the retry ' +
+        'effect is computed and dropped, and the session overlay`s Retry action does nothing',
+    ).toBe(1);
+    expect(
+      guard[0]!,
+      'reconnect must be GUARDED on the `retry-connect` effect, not issued unconditionally',
+    ).toBeLessThan(retry[0]!);
+  });
+
+  it('★★ BITES: all FOUR hasLiveConnection sites read `conn !== undefined && !conn.linkFrozen()` — never the always-true bare form', () => {
+    // WRONG IMPL KILLED ★ NAMED: `hasLiveConnection: conn !== undefined` (the bare form). It is
+    //   ALWAYS true once connected — even on a FROZEN link — so a join / decline-confirm / retry
+    //   action fires into a dead socket and is silently lost, exactly the disconnected feedback
+    //   AUTH-59 exists to surface. The bare form is a PREFIX of the correct one, so the
+    //   correct-form count (not the bare-form count) is what bites: a bugged site drops below four.
+    const src = readMainTs();
+    const squashed = squashWhitespace(m20cWholeFile(src));
+    expect(
+      mwCodeOccurrences(squashed, 'hasLiveConnection:').length,
+      'main.ts must wire EXACTLY four hasLiveConnection sites (claim onJoin / onDeclineConfirmed; ' +
+        'session onContinueConfirmed / onRetry) — a change to that count is a wiring change to ' +
+        're-derive, not to absorb',
+    ).toBe(4);
+    expect(
+      mwCodeOccurrences(squashed, 'hasLiveConnection: conn !== undefined && !conn.linkFrozen()')
+        .length,
+      'EVERY hasLiveConnection site must read `conn !== undefined && !conn.linkFrozen()` (code-aware) ' +
+        '— the bare `conn !== undefined` is always-true on a frozen link and drops the AUTH-59 ' +
+        'disconnected feedback, letting the action fire into a dead socket',
+    ).toBe(4);
+    // Region control: conn.linkFrozen() is consulted inside the claim/session handler block.
+    const region = m20cHunk(
+      src,
+      'const claimHandlers: ClaimViewHandlers = {',
+      'sessionView = new SessionViewClass(sessionHandlers);',
+    );
+    expect(
+      mwCodeOccurrences(region, 'conn.linkFrozen()').length,
+      'the claim/session handler region must consult `conn.linkFrozen()` (the live-link guard)',
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  it('★★ BITES: connect() is passed authIssuer/authClientId/authRedirectUri from import.meta.env.VITE_MR_OIDC_*', () => {
+    // WRONG IMPL KILLED: the OIDC config hardcoded to '' or read from the wrong env var — the
+    //   sign-in flow would have no issuer (or the wrong one) and every startSignIn would dead-end.
+    //   Each field is pinned to its EXACT source env var (ADR-0182 D11/D12).
+    const squashed = squashWhitespace(m20cWholeFile(readMainTs()));
+    const fields: readonly (readonly [string, string])[] = [
+      ['authIssuer', 'VITE_MR_OIDC_ISSUER'],
+      ['authClientId', 'VITE_MR_OIDC_CLIENT_ID'],
+      ['authRedirectUri', 'VITE_MR_OIDC_REDIRECT_URI'],
+    ];
+    for (const [field, envVar] of fields) {
+      expect(
+        mwCodeOccurrences(squashed, `${field}: import.meta.env.${envVar}`).length,
+        `connect() must wire \`${field}: import.meta.env.${envVar} …\` (ADR-0182 D11/D12) — the ` +
+          `OIDC ${field} comes from the build env; code-aware, so a decoy string does not count`,
+      ).toBe(1);
+    }
+  });
+});

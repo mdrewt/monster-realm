@@ -124,6 +124,10 @@ export interface Connection {
   continueAnonymously(): void;
   /** M21b-2 (ADR-0182 D17): the session terminal state driving the registry-external overlay. */
   sessionState(): SessionState;
+  /** M21b-2 (ADR-0182 D16/AUTH-48): mint a claim code, then begin the OIDC sign-in redirect. */
+  startSignIn(): void;
+  /** M21b-2 (ADR-0182 D17): fire a fresh connect attempt for the session 'retry' affordance. */
+  reconnectNow(): void;
 }
 
 export function connect(opts: ConnectionOptions): Connection {
@@ -851,6 +855,37 @@ export function connect(opts: ConnectionOptions): Connection {
     void attemptBuild();
   }
 
+  /** AUTH-48: mint the claim code (so the return-leg reissue has one), then hand off to the OIDC
+   *  redirect. beginSignIn is TOTAL (never rejects, oidc.ts C1) — the .catch is a belt only. On a
+   *  'ready' result the tab leaves the page; any other kind degrades to the claim UI's failure copy
+   *  (the intended behaviour against the `.invalid` placeholder issuer until 13r-c-2 deploys). */
+  function startSignIn(): void {
+    claimCode.mint(globalThis, opts.uri, opts.db);
+    // Bound to a short local so biome keeps `oidc.beginSignIn(` on one line (G-teeth pin it
+    // contiguous — a broken chain squashes to `oidc .beginSignIn(` and reads as a missing call).
+    const flow = oidc.beginSignIn();
+    flow
+      .then((result) => {
+        if (result.kind === 'ready') {
+          // `location?` guards a non-browser host; the navigation target is textually the URL
+          // beginSignIn produced (G-teeth pin `.assign(result.authorizationUrl` contiguous, hence
+          // the short-bound `nav` so biome does not break the call). A missing `assign` (never in a
+          // real browser) throws into the `.catch` belt below.
+          const nav = (globalThis as { location?: { assign(u: string): void } }).location;
+          nav?.assign(result.authorizationUrl);
+        } else {
+          opts.onSignInFailed?.(result.kind);
+        }
+      })
+      .catch(() => opts.onSignInFailed?.('transient-error'));
+  }
+
+  /** AUTH-45: the session 'retry' affordance — fire a fresh connect attempt through the one total
+   *  entry point (attemptBuild owns the resolve→build cycle and every exception boundary). */
+  function reconnectNow(): void {
+    void attemptBuild();
+  }
+
   // Cold start (ADR-0182 D13): resolve → build through the same total entry point every reconnect
   // uses. Even the zero-I/O anon fast path defers `current` by one microtask (accepted residual).
   void attemptBuild();
@@ -866,5 +901,7 @@ export function connect(opts: ConnectionOptions): Connection {
     linkFrozen: () => linkFrozen(state),
     continueAnonymously,
     sessionState: () => sessionMode,
+    startSignIn,
+    reconnectNow,
   };
 }

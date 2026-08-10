@@ -3301,3 +3301,253 @@ describe('★ connection.ts wiring (M21b-2 / AUTH-50/51, G28): W-M21B2-ACCOUNT-I
     ).toBe(0);
   });
 });
+
+// ===========================================================================
+// M21b-2 UI ENTRY POINTS (ADR-0182 D16/D17) — W-M21B2-ENTRY-POINTS.
+//
+// TWO reviews found the claim/sign-in flow was fully built (the pure models, the OIDC
+// client, the claim-code storage) but NOT reachable: the `Connection` surface had no
+// method for the UI to CALL to start a sign-in or to retry a parked connection, so
+// main.ts's `conn?.startSignIn()` / `conn?.reconnectNow()` sites pointed at methods that
+// did not exist. This block pins the two new entry points onto the Connection surface and
+// requires each to do REAL work — not a stub that satisfies the type but silently no-ops.
+//
+// RED UNTIL connection.ts LANDS: `startSignIn`, `reconnectNow`, `claimCode.mint` and
+// `oidc.beginSignIn` all occur ZERO times in connection.ts today, so every tooth below
+// reds on a missing implementation (most by THROWING out of the region helpers — a hard
+// red, never a vacuous pass).
+//
+// WHY SOURCE SCAN AND NOT BEHAVIOUR — unchanged from this file's header: connection.ts is
+// coverage-EXCLUDED (it touches DOM/wasm on import), so it cannot be imported under vitest.
+// The behaviour of `claimCode.mint` / `oidc.beginSignIn` is proven in their own pure-module
+// suites; this block proves ONLY that startSignIn/reconnectNow call them, in the right place.
+//
+// CODE-AWARE THROUGHOUT (the M21b-2 hardening this file already applies): every needle that
+// pins "the code does X" uses codeOccurrences/includesAsCode so an inert decoy string cannot
+// satisfy it. NO `new RegExp`; NO `://` — this file's standing conventions.
+// ===========================================================================
+
+/** The BODY between an opening brace at `openIdx` and its MATCHING closing brace, string- and
+ *  template-literal-aware (a `}` inside a literal never closes the body early). `code` must be
+ *  comment-stripped. Throws loud on an unbalanced brace — a hard red, never a vacuous pass. */
+function braceBodyAt(code: string, openIdx: number): string {
+  let depth = 0;
+  let mode = 0; // 0 code, 1 single, 2 double, 3 template
+  for (let i = openIdx; i < code.length; i += 1) {
+    const ch = code.charAt(i);
+    if (mode === 0) {
+      if (ch === "'") mode = 1;
+      else if (ch === '"') mode = 2;
+      else if (ch === '`') mode = 3;
+      else if (ch === '{') depth += 1;
+      else if (ch === '}') {
+        depth -= 1;
+        if (depth === 0) return code.slice(openIdx + 1, i);
+      }
+    } else {
+      if (ch === '\\') {
+        i += 1;
+        continue;
+      }
+      const closer = mode === 1 ? "'" : mode === 2 ? '"' : '`';
+      if (ch === closer) mode = 0;
+      else if (mode !== 3 && ch === '\n') mode = 0; // unterminated '…'/"…": bail to code
+    }
+  }
+  throw new Error('unbalanced braces in connection.ts — refusing to scan a runaway region');
+}
+
+/** The body of a construct whose declaration `declNeedle` (ending in `{`) occurs EXACTLY once
+ *  AS CODE — the code-occurrence index is used (never a bare indexOf), so a decoy string cannot
+ *  shift where the body is sliced. */
+function uniqueCodeBraceBody(squashed: string, declNeedle: string): string {
+  const hits = codeOccurrences(squashed, declNeedle);
+  if (hits.length !== 1) {
+    throw new Error(
+      `\`${declNeedle}\` must occur EXACTLY once AS CODE in connection.ts (found ${hits.length}) — ` +
+        'M21b-2 UI entry point. RED until connection.ts gains it',
+    );
+  }
+  const start = hits[0]!;
+  return braceBodyAt(squashed, start + declNeedle.length - 1); // declNeedle ends with '{'
+}
+
+/** The body of a newly-added Connection method, robust to the three shapes the specialist may
+ *  legitimately write it in: a top-level `function name(): void {` declaration (the codebase
+ *  idiom — cf. `function continueAnonymously(): void {`), an inline object arrow `name: () => {`,
+ *  or an object method `name(): void {`. Most-specific first; the first shape that resolves to
+ *  exactly one CODE occurrence wins. Throws loud if none does. */
+function newMethodBody(squashed: string, name: string): string {
+  for (const decl of [`function ${name}(): void {`, `${name}: () => {`, `${name}(): void {`]) {
+    if (codeOccurrences(squashed, decl).length === 1) return uniqueCodeBraceBody(squashed, decl);
+  }
+  throw new Error(
+    `connection.ts must declare a UNIQUE body for \`${name}\` in one of the sanctioned shapes ` +
+      `(function ${name}(): void { … } | ${name}: () => { … } | ${name}(): void { … }) — M21b-2 ` +
+      'UI entry point. RED until connection.ts gains it',
+  );
+}
+
+/** The BODY of the returned Connection object literal — the `return { get conn() { … } … };` at the
+ *  tail of connect() — string-aware. Anchored on the UNIQUE `return { get conn() {` opener (the
+ *  only `return {` followed by the getter; resolveCredential`s `return { kind: 'anon', … }` is not),
+ *  so it can never bind to the wrong `return {`. The object`s own `{` is exactly `'return '.length`
+ *  past the anchor start, and braceBodyAt walks past the nested getter braces. Scanning THIS region
+ *  is shorthand-accepting: the object lists `continueAnonymously,` / `startSignIn,` (shorthand,
+ *  which biome enforces here) OR the `key: () => …` form — either way the identifier appears in the
+ *  region, while a method that is interface-only (never added to the object) is absent and reds. */
+function returnedConnectionObject(squashed: string): string {
+  const anchor = 'return { get conn() {';
+  const hits = codeOccurrences(squashed, anchor);
+  if (hits.length !== 1) {
+    throw new Error(
+      `connection.ts must contain exactly one \`${anchor}\` (the returned Connection object) — ` +
+        `found ${hits.length}. If the getter was renamed, re-derive this anchor from the object`,
+    );
+  }
+  return braceBodyAt(squashed, hits[0]! + 'return '.length); // the object`s own opening `{`
+}
+
+describe('★ connection.ts wiring (M21b-2 UI entry point): W-M21B2-ENTRY-POINTS — startSignIn/reconnectNow exist and do real work', () => {
+  it('★ BITES: both methods are on the Connection INTERFACE and in the returned Connection object', () => {
+    // WRONG IMPL KILLED: a method declared on the interface but never added to the returned
+    //   object literal — main.ts's `conn?.startSignIn()` becomes a call to `undefined` at
+    //   runtime; and the mirror (in the object but not the interface) fails to typecheck main.ts.
+    const src = readConnectionTs();
+    const squashed = squashWhitespace(stripLineComments(src));
+
+    // The interface region, sliced by its matching brace (string-aware) so a stray `Connection`
+    // mention elsewhere cannot masquerade as the interface body.
+    const iface = uniqueCodeBraceBody(squashed, 'export interface Connection {');
+    // ANTI-VACUITY: the region really is the Connection interface (its existing methods survive).
+    expect(
+      iface.includes('continueAnonymously(): void;'),
+      'ANTI-VACUITY: the Connection interface body must still declare continueAnonymously(): void; ' +
+        '— if it does not, this scan is judging the wrong region',
+    ).toBe(true);
+    expect(
+      iface.includes('startSignIn(): void;'),
+      'the Connection interface must declare `startSignIn(): void;` (ADR-0182 D17/AUTH-48) — the ' +
+        'method the claim UI`s onSignIn calls. RED until connection.ts gains it',
+    ).toBe(true);
+    expect(
+      iface.includes('reconnectNow(): void;'),
+      'the Connection interface must declare `reconnectNow(): void;` (ADR-0182 D17) — the method ' +
+        'the session overlay`s retry calls. RED until connection.ts gains it',
+    ).toBe(true);
+
+    // The returned object literal must WIRE both methods — otherwise `conn?.startSignIn()` in
+    // main.ts calls `undefined` at runtime. Scanned in the returned-object REGION (not file-wide)
+    // and shorthand-accepting: the impl uses `startSignIn,` / `reconnectNow,` shorthand, exactly
+    // like the sibling `continueAnonymously,` in the same object (biome ENFORCES shorthand here).
+    // Scoping to the object region is what keeps the BAD fixture biting: a method declared on the
+    // interface but NEVER added to the returned object is absent from THIS region → red.
+    const objectBody = returnedConnectionObject(squashed);
+    // ANTI-VACUITY: this really is the returned object literal (its existing shorthand member,
+    // continueAnonymously, survives) — proving we are scanning the object, not the interface.
+    expect(
+      includesAsCode(objectBody, 'continueAnonymously'),
+      'ANTI-VACUITY: the returned Connection object must still list `continueAnonymously` — if it ' +
+        'does not, this scan is judging the wrong region (interface, or a mis-bound brace)',
+    ).toBe(true);
+    expect(
+      includesAsCode(objectBody, 'startSignIn'),
+      'the returned Connection object must wire `startSignIn` (shorthand or `startSignIn: …`) — a ' +
+        'method declared on the interface but not added to the object makes `conn?.startSignIn()` a ' +
+        'call to undefined at runtime. RED until connection.ts gains it',
+    ).toBe(true);
+    expect(
+      includesAsCode(objectBody, 'reconnectNow'),
+      'the returned Connection object must wire `reconnectNow` (shorthand or `reconnectNow: …`) — ' +
+        'an interface-only method makes `conn?.reconnectNow()` a call to undefined at runtime',
+    ).toBe(true);
+  });
+
+  it('★★ BITES: startSignIn MINTS a claim code AND begins the OIDC redirect, navigates to result.authorizationUrl, and reports failures', () => {
+    // THE BUG THIS EXISTS FOR: a sign-in entry point that satisfies the type but silently does
+    // half the job. Both halves are load-bearing and each omitted alone is a distinct shipped-
+    // and-broken outcome, so the calls are pinned INSIDE startSignIn`s own brace-body (not
+    // file-wide), and each is required independently.
+    const src = readConnectionTs();
+    const squashed = squashWhitespace(stripLineComments(src));
+    const body = newMethodBody(squashed, 'startSignIn');
+
+    // WRONG IMPL KILLED (a): REDIRECTS but never MINTS — the guest claim code is never created,
+    //   so after the OIDC round-trip there is nothing for the account to complete and the guest`s
+    //   progress is stranded behind a claim that can never be made.
+    expect(
+      includesAsCode(body, 'claimCode.mint('),
+      'startSignIn must MINT the guest claim code — `claimCode.mint(…)` inside its body (a stub ' +
+        'that redirects but never mints strands the guest`s progress)',
+    ).toBe(true);
+    // WRONG IMPL KILLED (b): MINTS but never REDIRECTS — the Sign-in button appears to do nothing;
+    //   the player is never sent to the identity provider.
+    expect(
+      includesAsCode(body, 'oidc.beginSignIn('),
+      'startSignIn must BEGIN the OIDC sign-in — `oidc.beginSignIn(…)` inside its body (a stub ' +
+        'that mints but never redirects leaves the button inert)',
+    ).toBe(true);
+    // WRONG IMPL KILLED (c): navigating to a hardcoded/wrong URL, or not navigating at all. The
+    //   authorization URL the flow just produced must be the navigation target.
+    expect(
+      body.indexOf('location'),
+      'startSignIn must navigate the tab via `location` (the redirect leg of the OIDC flow)',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      includesAsCode(body, '.assign(result.authorizationUrl'),
+      'startSignIn must navigate to `result.authorizationUrl` via location…assign(…) — the exact ' +
+        'authorization URL beginSignIn computed, not a placeholder',
+    ).toBe(true);
+    // WRONG IMPL KILLED (d): a sign-in whose failure is silently swallowed — the first-time
+    //   claimant sees a spinner forever. The error path must route to opts.onSignInFailed
+    //   (AUTH-48). Region-bound because attemptBuild ALSO calls opts.onSignInFailed?.( (the D13
+    //   fall-through at connection.ts:833), so a file-wide presence check would pass vacuously.
+    expect(
+      includesAsCode(body, 'opts.onSignInFailed?.('),
+      'startSignIn`s error path must call `opts.onSignInFailed?.(…)` (AUTH-48) — a failed first ' +
+        'sign-in routes to claimModel, it is never dropped',
+    ).toBe(true);
+
+    // The two brand-new calls exist ONLY in startSignIn (a second site is a second, un-guarded
+    // sign-in path).
+    expect(
+      countCodeOccurrences(squashed, 'claimCode.mint('),
+      'claimCode.mint( must be called from EXACTLY one site AS CODE in connection.ts',
+    ).toBe(1);
+    expect(
+      countCodeOccurrences(squashed, 'oidc.beginSignIn('),
+      'oidc.beginSignIn( must be called from EXACTLY one site AS CODE in connection.ts',
+    ).toBe(1);
+  });
+
+  it('★★ BITES: reconnectNow kicks a fresh attempt via `void attemptBuild();`, and attemptBuild now has EXACTLY four callers', () => {
+    const src = readConnectionTs();
+    const squashed = squashWhitespace(stripLineComments(src));
+    const body = newMethodBody(squashed, 'reconnectNow');
+
+    // WRONG IMPL KILLED (a): a reconnectNow that does nothing (or only resets a flag). The
+    //   session-expired / auth-service-unreachable terminals PARK `current = undefined` with NO
+    //   scheduled rebuild (ADR-0182 D13, pinned by G26), so a retry that never re-enters the
+    //   ladder leaves the tab permanently dead after the player asks to reconnect. The check is
+    //   bound to reconnectNow`s OWN brace-body, so the cold-start `void attemptBuild();` (a
+    //   separate statement blocks away) cannot satisfy it vacuously.
+    expect(
+      includesAsCode(body, 'void attemptBuild();'),
+      'reconnectNow must call `void attemptBuild();` — the one total reconnect entry point (D13). ' +
+        'RED until connection.ts gains it',
+    ).toBe(true);
+
+    // WRONG IMPL KILLED (b): the retry wired to a NEW ad-hoc rebuild path instead of the single
+    //   total entry point. `void attemptBuild();` was 3× before this slice — scheduleRebuild`s
+    //   timer body, continueAnonymously, and the cold start — and reconnectNow is the 4th and
+    //   last sanctioned caller. A 5th is a competing builder with no shared generation
+    //   discipline; a 3 means reconnectNow is not routing through attemptBuild at all.
+    expect(
+      countCodeOccurrences(squashed, 'void attemptBuild();'),
+      '`void attemptBuild();` must occur EXACTLY 4 times AS CODE in connection.ts: scheduleRebuild`s ' +
+        'timer body, continueAnonymously, the cold start, and reconnectNow (M21b-2 UI entry point). ' +
+        'If this reds at 3, reconnectNow is not routing through attemptBuild; re-derive from the ' +
+        'four sites, never raise the number to absorb a stray call',
+    ).toBe(4);
+  });
+});

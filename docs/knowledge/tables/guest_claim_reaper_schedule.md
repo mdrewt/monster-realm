@@ -5,7 +5,7 @@ slug: tables/guest_claim_reaper_schedule
 updated: 2026-08-08
 tags: [schema, spacetimedb, private]
 abstract: "PRIVATE scheduled table colocated with its reducer (ADR-0056 exception). `guest_identity` carries a btree index so the …"
-resource: server-module/src/accounts.rs#L489
+resource: server-module/src/accounts.rs#L495
 source: scripts/okf-export.mjs@server-module/src/accounts.rs
 visibility: private
 ---

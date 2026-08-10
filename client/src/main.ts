@@ -427,6 +427,7 @@ function applySession(event: SessionEvent): void {
   const step = sessionStep(sessionModelState, event);
   sessionModelState = step.next;
   if (step.effect === 'continue-anonymously') conn?.continueAnonymously();
+  if (step.effect === 'retry-connect') conn?.reconnectNow();
   renderSession();
 }
 
@@ -440,6 +441,7 @@ function applyClaim(event: ClaimEvent): void {
   // The AUTHORITATIVE claim-code veto lives in connection.ts's onApplied (G18); here we only mirror
   // the local storage effect so a declined / dead code stops vetoing the next connection's join.
   if (step.effect === 'delete-code-and-permit-join') claimCode.clear(globalThis, URI, DB);
+  if (step.effect === 'join') conn?.live()?.reducers.joinGame({ name: 'Player' });
   renderClaim();
 }
 
@@ -626,6 +628,9 @@ function activateMenuLeaf(leaf: MenuLeafDef): void {
         break;
       case 'rename':
         openRename();
+        break;
+      case 'account':
+        openClaim();
         break;
       case 'help':
         openHelp();
@@ -2404,14 +2409,19 @@ async function main(): Promise<void> {
     // the AUTHORITATIVE join veto lives in connection.ts's onApplied (G18), so these are UI-only.
     const claimHandlers: ClaimViewHandlers = {
       onSignIn: () => {
-        // The OIDC sign-in redirect (oidc.beginSignIn) is not exposed through the Connection
-        // interface this slice ships (live / continueAnonymously / sessionState) — deferred.
-        reportError('Sign-in is temporarily unavailable.');
+        conn?.startSignIn();
       },
-      onJoin: () => applyClaim({ kind: 'join-requested', hasLiveConnection: conn !== undefined }),
+      onJoin: () =>
+        applyClaim({
+          kind: 'join-requested',
+          hasLiveConnection: conn !== undefined && !conn.linkFrozen(),
+        }),
       onDeclineRequested: () => applyClaim({ kind: 'decline-requested' }),
       onDeclineConfirmed: () =>
-        applyClaim({ kind: 'decline-confirmed', hasLiveConnection: conn !== undefined }),
+        applyClaim({
+          kind: 'decline-confirmed',
+          hasLiveConnection: conn !== undefined && !conn.linkFrozen(),
+        }),
       onDeclineCancelled: () => applyClaim({ kind: 'decline-cancelled' }),
     };
     claimView = new ClaimViewClass(claimHandlers);
@@ -2422,11 +2432,14 @@ async function main(): Promise<void> {
       onContinueConfirmed: () =>
         applySession({
           kind: 'continue-anonymously-confirmed',
-          hasLiveConnection: conn !== undefined,
+          hasLiveConnection: conn !== undefined && !conn.linkFrozen(),
         }),
       onConfirmCancelled: () => applySession({ kind: 'confirm-cancelled' }),
       onRetry: () =>
-        applySession({ kind: 'retry-requested', hasLiveConnection: conn !== undefined }),
+        applySession({
+          kind: 'retry-requested',
+          hasLiveConnection: conn !== undefined && !conn.linkFrozen(),
+        }),
     };
     sessionView = new SessionViewClass(sessionHandlers);
     // pt-c1b (ADR-0133): rename overlay. onSubmit calls set_profile_name (ADR-0132) with the
@@ -2537,6 +2550,11 @@ async function main(): Promise<void> {
     db: DB,
     name: 'Player',
     store,
+    // M21b-2 (ADR-0182 D11/D12): OIDC config from env. The `?? ''` fallback degrades gracefully
+    // today (no issuer → the flow contacts no network, AUTH-44) and lights up once 13r-c-2 deploys.
+    authIssuer: import.meta.env.VITE_MR_OIDC_ISSUER ?? '',
+    authClientId: import.meta.env.VITE_MR_OIDC_CLIENT_ID ?? '',
+    authRedirectUri: import.meta.env.VITE_MR_OIDC_REDIRECT_URI ?? '',
     // ADR-0157: undefined unless VITE_MR_DEVLOG is set — then the connection installs the
     // outbound-log Proxy. Bare identifier by design (no inline sink: the ring must stay
     // unreachable from the send path).

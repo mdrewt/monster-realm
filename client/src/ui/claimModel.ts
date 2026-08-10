@@ -64,6 +64,7 @@ export function senseInvalidCode(claimedFrom: string | undefined): InvalidCodeSe
 
 export type ClaimPhase =
   | 'hidden'
+  | 'prompt'
   | 'code-pending'
   | 'awaiting-account'
   | 'rejected'
@@ -173,7 +174,10 @@ export function claimStep(state: ClaimModelState, event: ClaimEvent): ClaimStep 
   switch (event.kind) {
     case 'claim-ui-opened': {
       const show = !state.nudgeShown && !event.nudgeAlreadySeen;
-      return { next: { ...base, nudgeShown: true, showFirstRunNudge: show }, effect: 'none' };
+      return {
+        next: { ...base, phase: 'prompt', nudgeShown: true, showFirstRunNudge: show },
+        effect: 'none',
+      };
     }
     case 'claim-pending':
       return {
@@ -335,6 +339,15 @@ export function buildClaimViewModel(state: ClaimModelState): ClaimViewModel {
   let title = PENDING_TITLE;
   let body = PENDING_BODY;
   switch (state.phase) {
+    case 'prompt':
+      return {
+        visible: true,
+        title: PENDING_TITLE,
+        body: PENDING_BODY,
+        confirmPrompt: undefined,
+        nudge: state.showFirstRunNudge ? NUDGE_COPY : undefined,
+        feedback: state.feedback,
+      };
     case 'awaiting-account':
       title = AWAITING_TITLE;
       body = AWAITING_BODY;
