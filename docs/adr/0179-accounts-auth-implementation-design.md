@@ -489,6 +489,16 @@ proof-of-teeth discipline):
   own text for why the narrower (table-scoped) statement was tried first during this ceremony and
   found to conflict with its own worked example.
 
+### OQ1 resolution (2026-08-09, github issue #301) — Better Auth, self-hosted
+
+Operator answer, verbatim: "Go with the self-hosted Better Auth." `ALLOWED_ISSUERS`/`ALLOWED_AUDIENCE`
+now point at a self-hosted Better Auth instance for deployment config and M21b-2's client redirect
+wiring. The accepted-risk line above (IdP database loss permanently orphans every account) is now the
+live risk, not a hypothetical branch — a tested, restore-verified backup/DR plan for the Better Auth
+database is a hard launch prerequisite, to be scoped as part of M21b-2 or M-playtest deployment ops,
+not deferred further. No Steam-plugin path ships without a custom integration (Better Auth has none
+first-party) — revisit if Steam distribution becomes a real roadmap item.
+
 ### D8 amendment (added during M21b, 2026-08-08) — three verified facts that re-shape the client half
 
 M21b's plan review (two independent adversarial lenses) plus one static probe established the
