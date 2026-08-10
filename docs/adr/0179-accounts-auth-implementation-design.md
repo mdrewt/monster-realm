@@ -9,6 +9,7 @@ per `specs/monster-realm-v2/M21-accounts-auth.spec.md` §5)
 consequence line), ADR-0154 (extends the owner-scoped-view + single-surface pattern to a second
 never-delete table), ADR-0150 (extends the client token-handling contract to a second, short-lived
 credential class — additive, does not reverse the anonymous-token logic D2/D3 established)
+**Amended-by:** ADR-0182
 **Subsystems:** security-authz, schema-persistence, client-ui
 **Decision:** New `accounts.rs` domain module gated by a write-scoped module-isolation invariant
 (writes only `account`/`guest_claim`/`guest_claim_reaper_schedule`; delegates every other table write
