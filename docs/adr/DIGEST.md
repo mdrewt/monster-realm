@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 147 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 148 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -156,6 +156,7 @@ Generated from 147 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0179](./0179-accounts-auth-implementation-design.md) | 0179 — Accounts & authentication implementation design: OIDC gate, guest-claim, and the re-key SSOT | Accepted | security-authz, schema-persistence, client-ui | heavy-ceremony M21 planning pass (pre-slice; implementation elaborates in m21a/m21b/m21c | New `accounts.rs` domain module gated by a write-scoped module-isolation invariant |
 | [0180](./0180-observability-stack-selection.md) | 0180 — Observability stack selection: self-hosted OSS replaces Datadog, and the WASM-sandbox-crossing data path | Accepted | ci-gates, tooling-docs, schema-persistence | heavy-ceremony M20 planning pass (pre-slice; implementation elaborates in m20a–m20e per | An 8-container, all-open-source, self-hosted stack (Prometheus, Grafana Alloy, Loki, Tempo, |
 | [0181](./0181-string-literal-aware-source-scanners.md) | 0181 — String-literal-aware source scanners: one Rust scanner, one TypeScript scanner, and why they cannot be the same function | Accepted | ci-gates, security-authz, tooling-docs | 13r-c (post-gate thirteenth-review residuals — `specs/monster-realm-v2/M-postgate-thirteenth-review-residuals.spec.md` §13r-c) | Rust scanning in `evals/` moves to one string-literal-aware `evals/rust-scan.mjs` that lexes comments and strings in a single pass and preserves offsets by blanking literal payloads; TypeScript uses a separate literal-PRESERVING scanner. |
+| [0182](./0182-m21b2-oidc-client-claim-ui-better-auth-deployment.md) | 0182 — M21b-2: OIDC client wiring, claim-code UI, session lifecycle, Better Auth deployment | Accepted | security-authz, schema-persistence, client-ui | heavy-ceremony M21b-2 planning pass (pre-slice; implementation elaborates in the m21b-2 | A pure `decideConnectCredential()` fed by an async `resolveCredential()` (the one real |
 
 ## Harness design corpus (H- namespace)
 
@@ -347,6 +348,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0177](./0177-essence-graph-evolution-replaces-fuse.md) — EG5 (M-evolution-essence-graph — EARS EG5-1..EG5-7; closes the milestone) — 0177 — Essence-graph evolution replaces fuse(): milestone consolidation, Migration B, gate migration (EG5) (Accepted)
 - [0179](./0179-accounts-auth-implementation-design.md) — heavy-ceremony M21 planning pass (pre-slice; implementation elaborates in m21a/m21b/m21c — 0179 — Accounts & authentication implementation design: OIDC gate, guest-claim, and the re-key SSOT (Accepted)
 - [0180](./0180-observability-stack-selection.md) — heavy-ceremony M20 planning pass (pre-slice; implementation elaborates in m20a–m20e per — 0180 — Observability stack selection: self-hosted OSS replaces Datadog, and the WASM-sandbox-crossing data path (Accepted)
+- [0182](./0182-m21b2-oidc-client-claim-ui-better-auth-deployment.md) — heavy-ceremony M21b-2 planning pass (pre-slice; implementation elaborates in the m21b-2 — 0182 — M21b-2: OIDC client wiring, claim-code UI, session lifecycle, Better Auth deployment (Accepted)
 
 ### client-ui
 
@@ -397,6 +399,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0171](./0171-resume-from-idle-interpolation.md) — 11r-f (M-postgate-eleventh-review-residuals — resume-from-idle smoothness; EARS E1) — 0171 — Resume-from-idle interpolation smoothness: idle-gap-gated jitter EWMA + re-anchored lerp bracket (Accepted)
 - [0172](./0172-test-integrity-and-movement-rejection-diagnostics.md) — 11r-h (M-postgate-eleventh-review-residuals — test-integrity & diagnostics residuals; EARS E1-1..E1-2, E2-1..E2-3, E3-1..E3-4, E4-1..E4-4, E5-1..E5-9) — 0172 — Test-integrity residuals and movement-rejection diagnostics (Accepted)
 - [0179](./0179-accounts-auth-implementation-design.md) — heavy-ceremony M21 planning pass (pre-slice; implementation elaborates in m21a/m21b/m21c — 0179 — Accounts & authentication implementation design: OIDC gate, guest-claim, and the re-key SSOT (Accepted)
+- [0182](./0182-m21b2-oidc-client-claim-ui-better-auth-deployment.md) — heavy-ceremony M21b-2 planning pass (pre-slice; implementation elaborates in the m21b-2 — 0182 — M21b-2: OIDC client wiring, claim-code UI, session lifecycle, Better Auth deployment (Accepted)
 
 ### ci-gates
 
@@ -508,6 +511,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0169](./0169-wallet-view-runtime-path.md) — 11r-e (M-postgate-eleventh-review-residuals — ux2b wallet view completion; EARS 11r-e-1..11r-e-9) — 0169 — Wallet view runtime path: `my_wallet` subscription, insert-only ingest, and a three-site call-site tooth (Accepted)
 - [0179](./0179-accounts-auth-implementation-design.md) — heavy-ceremony M21 planning pass (pre-slice; implementation elaborates in m21a/m21b/m21c — 0179 — Accounts & authentication implementation design: OIDC gate, guest-claim, and the re-key SSOT (Accepted)
 - [0181](./0181-string-literal-aware-source-scanners.md) — 13r-c (post-gate thirteenth-review residuals — `specs/monster-realm-v2/M-postgate-thirteenth-review-residuals.spec.md` §13r-c) — 0181 — String-literal-aware source scanners: one Rust scanner, one TypeScript scanner, and why they cannot be the same function (Accepted)
+- [0182](./0182-m21b2-oidc-client-claim-ui-better-auth-deployment.md) — heavy-ceremony M21b-2 planning pass (pre-slice; implementation elaborates in the m21b-2 — 0182 — M21b-2: OIDC client wiring, claim-code UI, session lifecycle, Better Auth deployment (Accepted)
 
 ### economy-quests
 
