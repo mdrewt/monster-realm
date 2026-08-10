@@ -458,7 +458,11 @@ Better Auth's issuer URL becomes `ALLOWED_ISSUERS`, preserving the `concat!()` c
 **`concat!()` must be kept, not dropped.** Confirmed verbatim at
 `docs/adr/0181-string-literal-aware-source-scanners.md:207-216`: removing it is explicitly deferred to
 unlanded slice `13r-c-2` (the bare literal fails `evals/trade-escrow-guards.eval.mjs` TR-11). Two
-ideation lenses asserted the opposite; factually wrong as of HEAD `0d13923`, rejected.
+ideation lenses asserted the opposite; factually wrong as of HEAD `0d13923`, rejected. **Hard sequencing
+gate, per the 13r-c handoff entry (`memory/projects/monster-realm-handoff.md`, 2026-08-10T04:02Z):** the
+deployment-timed follow-up task that flips `ALLOWED_ISSUERS`/`ALLOWED_AUDIENCE` to real values must not
+land before `13r-c-2` lands — the rest of this ADR's design has no such dependency and is launchable
+now.
 
 **CRITICAL-2, confirmed verbatim** at `docs/adr/0179-...md:609-619`: the chosen OIDC issuer must be
 single-tenant/dedicated, or the deployment must verify an audience allowlist at connection
