@@ -647,8 +647,15 @@ export function connect(opts: ConnectionOptions): Connection {
               // unconditionally — a pre-drop promise never settles (ADR-0085 D3). onClaimPending is
               // a UX notification fired ALONGSIDE the reducer call, never a substitute for it.
               const code = claimCode.read(globalThis, opts.uri, opts.db)!;
-              wrapReducerLogging(c, opts.onSend)
-                .reducers.completeGuestClaim({ code })
+              // Call on the RAW connection, NOT wrapReducerLogging(c): the dev-observability
+              // Proxy JSON-stringifies reducer args to the onSend sink, and `code` is a bearer
+              // secret (whoever holds it can steal this guest's progress). joinGame's `{name}` is
+              // sanctioned free text; a claim code categorically is not (AUTH-57 spirit; the G21
+              // scanner can't see this indirect sink — its own residual R4). Assigned first so the
+              // `.reducers.completeGuestClaim({ code })` call stays contiguous (biome breaks a short
+              // receiver's method chain otherwise) — G18 pins that exact needle.
+              const pendingClaim = c.reducers.completeGuestClaim({ code });
+              pendingClaim
                 .then(() => opts.onClaimResult?.({ ok: true, message: '' }))
                 .catch((err) =>
                   opts.onClaimResult?.({ ok: false, message: (err as Error)?.message ?? '' }),

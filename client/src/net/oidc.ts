@@ -486,7 +486,7 @@ export function createOidcClient(host: OidcHost | undefined, config: OidcConfig)
             headers: { 'content-type': 'application/x-www-form-urlencoded' },
             body,
           });
-          return handleTokenResponse(res, false);
+          return await handleTokenResponse(res, false);
         }
         const refresh = readItem(host, REFRESH_KEY);
         if (refresh !== undefined) {
@@ -500,7 +500,7 @@ export function createOidcClient(host: OidcHost | undefined, config: OidcConfig)
             headers: { 'content-type': 'application/x-www-form-urlencoded' },
             body,
           });
-          return handleTokenResponse(res, true);
+          return await handleTokenResponse(res, true);
         }
         // Nothing in storage: no network at all (AUTH-44).
         return { kind: 'no-session' };

@@ -29,8 +29,12 @@ artifact (`./app/`) is created from the fenced blocks below.
 1. Create `.env` from `.env.example`; generate `BETTER_AUTH_SECRET` (32+ random
    bytes) and the JWKS key file.
 2. Create `./app/` from the two fenced blocks below.
-3. Stand the service up: `docker compose up -d`. Confirm it is loopback-bound:
-   `ss -tlnp | grep 8443` must show `127.0.0.1`.
+3. Stand the service up: `docker compose up -d`. Confirm it is loopback-bound AND
+   actually reachable — `ss -tlnp | grep 8443` showing `127.0.0.1` only proves
+   `docker-proxy`'s host socket exists, not that the container app accepts forwarded
+   traffic, so also curl it: `curl -fsS http://127.0.0.1:8443/health` (or any live
+   route) must succeed. The app binds `0.0.0.0` *inside* the container (`HOST` env);
+   the loopback restriction is Docker's `-p 127.0.0.1:8443:8443` on the host side.
 4. Register the game as an OAuth client, **server-side only** (never from browser
    code), as a **public client** with PKCE:
    ```sh
@@ -120,7 +124,8 @@ export const auth = betterAuth({
   ],
 });
 
-// Serve on 127.0.0.1:8443 with your framework of choice; expose Better Auth's
+// Serve on 0.0.0.0:8443 (HOST/PORT env) inside the container — the host-side
+// `-p 127.0.0.1:8443` is what keeps it loopback-only. Expose Better Auth's
 // routes plus the OIDC discovery metadata at
 // <issuer>/.well-known/openid-configuration (SpacetimeDB reads it to verify JWTs).
 ```

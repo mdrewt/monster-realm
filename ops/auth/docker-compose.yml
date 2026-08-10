@@ -34,7 +34,12 @@ services:
       DATABASE_PATH: ${DATABASE_PATH}
       JWKS_PRIVATE_KEY_PATH: ${JWKS_PRIVATE_KEY_PATH}
       PORT: "8443"
-      HOST: "127.0.0.1"
+      # Bind the app to 0.0.0.0 INSIDE the container: Docker's port-publish forwards
+      # host traffic in via the container's bridge interface, which a 127.0.0.1
+      # in-container bind would reject (the app would be unreachable, including from
+      # the SpacetimeDB module server hitting discovery/JWKS). The loopback
+      # restriction is enforced on the HOST side by `ports: 127.0.0.1:8443:8443`.
+      HOST: "0.0.0.0"
     volumes:
       # The app entrypoint (auth.mjs + package.json) — created at deploy time from
       # README.md's fenced blocks. Read-only into the container.

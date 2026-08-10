@@ -189,7 +189,7 @@ copy while the service runs):
 
 ```sh
 sqlite3 /var/lib/better-auth/auth.sqlite "VACUUM INTO '/var/backups/auth.sqlite'"
-restic backup --tag better-auth --tag stop-the-world /var/backups/auth.sqlite
+restic backup --tag better-auth /var/backups/auth.sqlite
 restic snapshots --tag better-auth --latest 1
 ```
 
