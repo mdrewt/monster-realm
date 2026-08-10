@@ -111,6 +111,25 @@ const TS_DQ = String.fromCharCode(0x22);
 const TS_BACKTICK = String.fromCharCode(0x60);
 
 /**
+ * Is the `/` at `i` the start of a REGEX LITERAL rather than a division or a
+ * comment opener? True only where a binary `/` is impossible — immediately after
+ * an operator/opening bracket/separator, or at the start of the source — so the
+ * answer is sound, never a guess. Returns false for `//` and for block-comment
+ * openers so the comment arms keep their precedence there.
+ * @param {string} src Source text.
+ * @param {number} i Index of the `/`.
+ * @returns {boolean} True if a regex literal starts here.
+ */
+function startsRegexLiteral(src, i) {
+  const next = src[i + 1];
+  if (next === '/' || next === '*' || next === undefined) return false;
+  let k = i - 1;
+  while (k >= 0 && (src[k] === ' ' || src[k] === '\t' || src[k] === '\n' || src[k] === '\r')) k--;
+  if (k < 0) return true;
+  return '=(,[{:;!?&|+-*%<>^~}'.indexOf(src[k]) !== -1;
+}
+
+/**
  * Strip line and block comments from TypeScript (or Rust) source, preserving
  * length, every newline, and every string/template literal PAYLOAD verbatim.
  * @param {string} src Raw source text.
@@ -126,6 +145,47 @@ export function stripTsComments(src) {
   let i = 0;
   while (i < len) {
     const c = src[i];
+
+    // REGEX LITERAL — consumed BEFORE the comment arms, and only where a binary
+    // `/` is IMPOSSIBLE, which makes this sound rather than heuristic. After one of
+    // `= ( , [ { : ; ! ? & | + - * % < > ^ ~ }` (or at start of file) there is no
+    // left operand, so a `/` there cannot be division and must open a regex.
+    //
+    // WHY (13r-c red-team BLOCKER, reproduced): a regex whose CLOSING slash abuts a
+    // `*` — `const RE = /ab/*` … `1 */ 2;` — used to form a phantom block-comment
+    // opener that swallowed every line between it and the next `*/`. That erased a
+    // real `.subscribe([...])` carrying a banned `FROM player_wallet` string and
+    // `checkNoPrivateWalletSubscription` returned PASS on a live ADR-0015 leak. The
+    // newline-count anti-truncation guard could not see it either, because block
+    // mode re-emits every newline it steps over.
+    //
+    // Deliberately CONSERVATIVE: a regex in KEYWORD position (`return /x/`,
+    // `typeof`, `case`) is not recognised, because distinguishing that from division
+    // needs real token history. Under-detection is safe — it simply leaves the
+    // previous behaviour — while over-detection would swallow real code, so the rule
+    // only fires where division is provably impossible. Character classes are
+    // tracked so `/[/]/` closes correctly.
+    if (c === '/' && startsRegexLiteral(src, i)) {
+      let j = i + 1;
+      let inClass = false;
+      while (j < len) {
+        const ch = src[j];
+        if (ch === '\\') {
+          j += 2;
+          continue;
+        }
+        if (ch === '\n') break; // unterminated: bail, never run away
+        if (ch === '[') inClass = true;
+        else if (ch === ']') inClass = false;
+        else if (ch === '/' && !inClass) {
+          j++;
+          break;
+        }
+        j++;
+      }
+      i = j;
+      continue;
+    }
 
     // Line comment — consume to EOL with NO quote tracking (see ADR-0169 D4).
     if (c === '/' && src[i + 1] === '/') {
@@ -1046,6 +1106,48 @@ fn braced_leak(ctx: &ViewContext) -> Vec<[PlayerConversation; {1}]> {
         "checkClientSubscription's / checkNoPrivateWalletSubscription's SQL-string needles. " +
         'The TS-side fix must strip COMMENTS ONLY and leave string/template literal ' +
         'contents byte-for-byte intact.'
+      );
+    }
+  }
+
+  // [13r-c/T3c] REGEX-LITERAL PHANTOM BLOCK COMMENT (red-team BLOCKER).
+  //
+  // PROVES: a regex literal whose CLOSING slash abuts a `*` must not open a block
+  // comment. Before the fix, `const RE = /ab/*` formed a `/` + `*` pair the scanner
+  // read as a real opener and swallowed every line to the next `*/` — here that is a
+  // genuine, compiling `.subscribe([...])` carrying the BANNED `FROM player_wallet`
+  // string, and `checkNoPrivateWalletSubscription` returned PASS on a live ADR-0015
+  // leak. This is the same false-GREEN class as T3a/T3b, reached through a regex
+  // instead of a string.
+  //
+  // A ban that stops firing is the worst failure mode in this file, so it gets its
+  // own tooth rather than riding on T3b.
+  {
+    const SL = String.fromCharCode(0x2f);
+    const ST = String.fromCharCode(0x2a);
+    const SQ = String.fromCharCode(0x27);
+    const fixture = [
+      `const RE = ${SL}ab${SL}${ST}`,
+      `conn.subscribe([${SQ}SELECT ${ST} FROM player_conversation${SQ}]);`,
+      `const noop = 1 ${ST}${SL} 2;`,
+    ].join('\n');
+
+    if (stripTsComments(fixture).indexOf('FROM player_conversation') === -1) {
+      return (
+        'TEETH FAILED [13r-c/T3c]: stripTsComments erased a genuine `.subscribe([...])` ' +
+        'line that sits between a regex literal abutting a star and a later star-slash — ' +
+        'the regex close + star was mistaken for a real block-comment opener. Every ban ' +
+        'in this file and in wallet-privacy goes VACUOUS for that shape, which is a ' +
+        'false-GREEN on a private-table subscription (ADR-0181).'
+      );
+    }
+
+    const banned = checkClientSubscription(fixture);
+    if (banned === null) {
+      return (
+        'TEETH FAILED [13r-c/T3c ban]: checkClientSubscription returned PASS for a fixture ' +
+        'whose `.subscribe([...])` names the PRIVATE player_conversation table, hidden ' +
+        'behind a phantom block comment opened by a regex literal abutting a star.'
       );
     }
   }

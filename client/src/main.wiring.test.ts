@@ -7842,6 +7842,23 @@ interface M20cScan {
  *
  * No `new RegExp` — banned repo-wide, in tests as much as in source.
  */
+/** Is the `/` at `i` the start of a REGEX LITERAL rather than a division or a comment
+ *  opener? True only where a binary `/` is impossible — immediately after an
+ *  operator/opening bracket/separator, or at the start of the source — so the answer is
+ *  sound rather than a guess. Deliberately CONSERVATIVE: a regex in keyword position
+ *  (`return /x/`) is not recognised, because telling that from division needs real token
+ *  history; under-detection just preserves the previous behaviour, whereas over-detection
+ *  would swallow real code. Returns false for `//` and block-comment openers so the
+ *  comment arms keep precedence there. */
+function startsRegexLiteral(src: string, i: number): boolean {
+  const next = src.charAt(i + 1);
+  if (next === '/' || next === '*' || next === '') return false;
+  let k = i - 1;
+  while (k >= 0 && (src[k] === ' ' || src[k] === '\t' || src[k] === '\n' || src[k] === '\r')) k--;
+  if (k < 0) return true;
+  return '=(,[{:;!?&|+-*%<>^~}'.indexOf(src.charAt(k)) !== -1;
+}
+
 function m20cScan(src: string): M20cScan {
   const CODE = 0;
   const LINE = 1;
@@ -7861,6 +7878,35 @@ function m20cScan(src: string): M20cScan {
     const next = src.charAt(i + 1);
 
     if (mode === CODE) {
+      // REGEX LITERAL, consumed BEFORE the comment arms and only where a binary `/`
+      // is IMPOSSIBLE (see `startsRegexLiteral`) — sound, not heuristic.
+      // 13r-c red-team BLOCKER, reproduced: a regex whose CLOSING slash abuts a `*`
+      // (`const RE = /ab/*` … `1 */ 2;`) formed a phantom block-comment opener that
+      // swallowed every line to the next `*/`, erasing real code from the scan. The
+      // newline-count guard in the offenders loop could NOT catch it, because BLOCK
+      // mode re-emits every newline it steps over.
+      if (ch === '/' && startsRegexLiteral(src, i)) {
+        let j = i + 1;
+        let inClass = false;
+        while (j < src.length) {
+          const rc = src.charAt(j);
+          if (rc === '\\') {
+            j += 2;
+            continue;
+          }
+          if (rc === '\n') break; // unterminated: bail, never run away
+          if (rc === '[') inClass = true;
+          else if (rc === ']') inClass = false;
+          else if (rc === '/' && !inClass) {
+            j++;
+            break;
+          }
+          j++;
+        }
+        code += src.slice(i, j); // kept VERBATIM, like a string literal
+        i = j;
+        continue;
+      }
       if (ch === '/' && next === '/') {
         mode = LINE;
         i += 2;
@@ -9095,6 +9141,46 @@ describe('★ main.ts wiring (13r-c): stripLineComments has NO string-literal aw
     expect(twice, 'stripLineComments(stripLineComments(x)) must equal stripLineComments(x)').toBe(
       once,
     );
+  });
+
+  it('★ W-CMT-STRIP-REGEX-PHANTOM-BLOCK BITES: a regex literal abutting a star does not open a phantom block comment', () => {
+    // 13r-c red-team BLOCKER, reproduced then closed. A regex literal whose CLOSING
+    // slash is immediately followed by `*` used to form a `/*` the scanner read as a
+    // real block-comment opener. It then swallowed every line up to the next `*/` —
+    // erasing genuine, compiling code from the scan. On the eval side that made
+    // `checkNoPrivateWalletSubscription` return PASS for a live `FROM player_wallet`
+    // subscription; here it would exonerate a file from the offenders ceiling.
+    //
+    // The newline-count anti-truncation guard CANNOT catch this (asserted below):
+    // block mode re-emits every newline it steps over, so the line structure is
+    // intact while the code between the markers is gone. That is exactly why this
+    // needs its own tooth.
+    //
+    // Hazard sequences are built via .join('') so this fixture cannot trip any other
+    // scanner reading this file's own source.
+    const star = ['*'].join('');
+    const slash = ['/'].join('');
+    const fixture = [
+      `const RE = ${slash}ab${slash}${star}`,
+      'realCallInsidePhantom();',
+      `const noop = 1 ${star}${slash} 2;`,
+    ].join('\n');
+
+    const stripped = stripLineComments(fixture);
+    expect(
+      stripped.includes('realCallInsidePhantom();'),
+      'a live statement between a regex literal abutting a star and a later star-slash must ' +
+        'survive stripLineComments. Before 13r-c the regex close + star was read as a real ' +
+        'block-comment opener and everything to the next star-slash was swallowed, silently ' +
+        'erasing real code from every tooth built on this stripper (ADR-0181).',
+    ).toBe(true);
+
+    // Pins WHY this tooth must exist independently of the offenders-loop guard.
+    expect(
+      (stripped.match(/\n/g) ?? []).length,
+      'the newline-count guard is structurally blind to this attack — block mode re-emits ' +
+        'every newline it steps over — so newline count alone can never detect it',
+    ).toBe((fixture.match(/\n/g) ?? []).length);
   });
 
   it('★ W-CMT-STRIP-REALTREE-CONNCONFIG BITES: stripLineComments(connectionConfig.ts) still contains 127.0.0.1:3000', () => {

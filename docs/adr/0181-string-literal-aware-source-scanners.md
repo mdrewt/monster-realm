@@ -119,19 +119,41 @@ non-existent default export, synthesising a failure for every CI run.
   followed by a genuine violation LATER in the same file — that was observed RED
   before the fix.
 
-### Known limits of the TypeScript scanners (disclosed)
+**D8 — the TypeScript scanners lex regex literals, by a SOUND rule.** Found by
+red-team as a BLOCKER and reproduced: a regex literal whose **closing** slash
+abuts a `*` —
 
-Neither `stripTsComments` nor `m20cScan` has a **regex-literal mode**. A comment
-marker inside a regex CHARACTER CLASS — `/[//]/` or `/[/*]/` — opens a comment
-that is not one and blanks the rest of that line (measured). The common
-escaped-slash form `/a\/\/b/` is safe: the backslashes interleave, so no two
-slashes are ever adjacent. No regex of the dangerous shape exists anywhere in the
-scanned non-test corpus.
+```js
+const RE = /ab/*
+conn.subscribe(['SELECT * FROM player_wallet']);
+const noop = 1 */ 2;
+```
 
-This matters more than the `${…}` limit, because the failure direction differs:
-`${…}` yields a SHORTER `code` string, which reds a tooth rather than passing
-one, whereas the regex case would silently blank a needle sharing that line. If
-such a regex is ever introduced, add a regex mode rather than relying on luck.
+— formed a `/` `*` pair the scanner read as a real block-comment opener and
+swallowed every line to the next `*/`. That erased a genuine, compiling
+subscription carrying a **banned** private-table query, and
+`checkNoPrivateWalletSubscription` returned **PASS** on a live ADR-0015 leak.
+The newline-count anti-truncation guard could not catch it either: block mode
+re-emits every newline it steps over, so line structure stays intact while the
+code between the markers is gone.
+
+Both TS scanners now consume a regex literal (tracking `[...]` classes and
+backslash escapes) **before** the comment arms, but only where a binary `/` is
+*impossible* — immediately after `= ( , [ { : ; ! ? & | + - * % < > ^ ~ }` or at
+start of source. After those tokens there is no left operand, so a `/` cannot be
+division and must open a regex. That makes the rule **sound rather than
+heuristic**, which is why it is safe to apply to a scanner that gates security
+checks.
+
+**Deliberately conservative residual:** a regex in *keyword* position
+(`return /x/`, `typeof`, `case`) is not recognised, because telling that from
+division needs real token history. Under-detection is safe — it simply preserves
+the previous behaviour — whereas over-detection would swallow real code. The
+`${…}` interpolation limit likewise remains, and is self-announcing (it yields a
+*shorter* `code` string, which reds a tooth rather than passing one).
+
+Teeth `[13r-c/T3c]` and `★ W-CMT-STRIP-REGEX-PHANTOM-BLOCK` pin the closure; both
+were verified to bite by reverting only the fix.
 
 ### The soundness gate must match the ban surface, per eval
 
