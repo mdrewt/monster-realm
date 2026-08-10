@@ -197,6 +197,63 @@ function countOccurrences(src: string, needle: string): number {
 }
 
 // ---------------------------------------------------------------------------
+// STRING-LITERAL-AWARE occurrence finder (M21b-2 hardening — coordinator review).
+//
+// THE HOLE THIS CLOSES: stripLineComments removes COMMENTS but PRESERVES string- and
+// template-literal TEXT verbatim (it must — a literal is code). So every tooth that
+// proves "the code does X" with a bare countOccurrences/indexOf/.includes on squashed
+// source can be satisfied by an INERT DECOY:
+//     const _decoy = 'const outcome = await oidc.renewOrExchange();';
+// leaves the needle present, at the right ordinal position, while the REAL call is
+// absent. The KeyC handler tooth in main.wiring.test.ts is immune because it uses exact
+// whole-block equality; the order/count teeth below were not, until this.
+//
+// `codeOccurrences` returns the start index of every occurrence of `needle` that BEGINS
+// in CODE — i.e. not inside a '…' / "…" / `…` literal — via a single quote-state-aware
+// forward pass (backslash-escape-aware; an unescaped newline ends a '…'/"…" literal, as
+// JS requires, so a stray apostrophe cannot swallow the file). A needle whose start is
+// code but which spans INTO a quote (e.g. `if (credential.kind === 'retry') {`) is still
+// matched — only a needle whose START sits inside a literal is excluded, which is exactly
+// the decoy class. NO `new RegExp` — this file's standing convention.
+//
+// NOTE ON APPLICABILITY: use this ONLY for needles that are CODE (statements, method
+// calls, identifiers). Needles that are string literals BY NATURE — the
+// `'SELECT * FROM my_account'` subscribe strings — must keep plain countOccurrences,
+// because their whole point is to be counted INSIDE a string.
+function codeOccurrences(code: string, needle: string): number[] {
+  const out: number[] = [];
+  let mode = 0; // 0 code, 1 single, 2 double, 3 template
+  for (let i = 0; i < code.length; i += 1) {
+    const ch = code.charAt(i); // charAt (not [i]) — always string, like m20cScan
+    if (mode === 0) {
+      if (ch === "'") mode = 1;
+      else if (ch === '"') mode = 2;
+      else if (ch === '`') mode = 3;
+      else if (code.startsWith(needle, i)) out.push(i);
+    } else {
+      if (ch === '\\') {
+        i += 1;
+        continue;
+      }
+      const closer = mode === 1 ? "'" : mode === 2 ? '"' : '`';
+      if (ch === closer) mode = 0;
+      else if (mode !== 3 && ch === '\n') mode = 0; // unterminated '…'/"…": bail to code
+    }
+  }
+  return out;
+}
+
+/** Count of occurrences of `needle` that begin in CODE (not inside a string literal). */
+function countCodeOccurrences(code: string, needle: string): number {
+  return codeOccurrences(code, needle).length;
+}
+
+/** True iff `needle` occurs at least once as CODE (not only inside a decoy string). */
+function includesAsCode(code: string, needle: string): boolean {
+  return codeOccurrences(code, needle).length >= 1;
+}
+
+// ---------------------------------------------------------------------------
 // M21b-2 (ADR-0182 D13) — THE ONE SHARED build() ANCHOR.
 //
 // ★★ RE-PIN JUSTIFICATION #1 (tester-owned; reviewer checklist item) ★★
@@ -379,7 +436,10 @@ describe('connection.ts wiring (nh4, RE-PINNED by M21b-2 / G13): W-NH4-TOKEN-SUP
     //   Rejected here by the contiguous needle AND, independently and at the
     //   argument-region level, by W-M21B2-CREDENTIAL-IS-PROVENANCE (G14) below.
     expect(
-      squashedBody.includes(M21B2_WITHTOKEN),
+      // CODE-AWARE (coordinator review): a decoy `const _x = '….withToken(credential.kind
+      // === 'account' …)';` would satisfy a bare .includes while build() supplied the anon
+      // token. The whole ternary begins in code, so codeOccurrences excludes the decoy.
+      includesAsCode(squashedBody, M21B2_WITHTOKEN),
       `build() builder chain must call ${M21B2_WITHTOKEN} exactly as written (ADR-0182 D14). ` +
         'RED AT AUTHORING TIME: connection.ts still ships the M21b literal ' +
         '`.withToken(auth.tokenForNextAttempt())`, which supplies the ANONYMOUS token on ' +
@@ -398,11 +458,13 @@ describe('connection.ts wiring (nh4, RE-PINNED by M21b-2 / G13): W-NH4-TOKEN-SUP
     // killed by the exactly-once file-wide count below. (CARRIED FORWARD UNCHANGED
     // from master — the count is not relaxed by the re-pin.)
     const wholeSquashed = squashWhitespace(stripLineComments(src));
-    const withTokenCount = wholeSquashed.split('.withToken(').length - 1;
     expect(
-      withTokenCount,
-      '.withToken( must occur exactly once in connection.ts — a second later call would ' +
-        'silently override the first, and zero occurrences is the RED-today bug',
+      // CODE-AWARE count: a decoy string containing `.withToken(` must not count, and — the
+      // real bypass — a decoy that IS the only `.withToken(` (real builder omits it) must red.
+      countCodeOccurrences(wholeSquashed, '.withToken('),
+      '.withToken( must occur exactly once AS CODE in connection.ts — a second later call ' +
+        'would silently override the first, zero code occurrences is the RED-today bug, and a ' +
+        'decoy inside a string literal does not count',
     ).toBe(1);
   });
 });
@@ -856,7 +918,9 @@ describe('connection.ts wiring (nh4, RE-PINNED by M21b then M21b-2/G13b): W-NH4-
     //   makes `readAuthKind` occur ZERO times file-wide; and `credential` is build()'s own
     //   PARAMETER (D13), so there is no mutable closure variable left to go stale.
     expect(
-      squashedWhole.includes(M21B2_SAVE_GUARDED),
+      // CODE-AWARE (coordinator review): the guard is an executable statement, so a decoy
+      // string of the same text must not satisfy it.
+      includesAsCode(squashedWhole, M21B2_SAVE_GUARDED),
       `connection.ts must contain the contiguous \`${M21B2_SAVE_GUARDED}\` — the anonymous ` +
         'token slot must NEVER receive an account JWT. An unconditional save writes the ' +
         'account credential into the anon slot, because the SDK echoes a client-supplied ' +
@@ -864,16 +928,19 @@ describe('connection.ts wiring (nh4, RE-PINNED by M21b then M21b-2/G13b): W-NH4-
         'it on every later build for the life of the tab (red-team C4)',
     ).toBe(true);
     expect(
-      countOccurrences(squashedWhole, M21B2_SAVE_GUARDED),
-      'the credential-guarded save must appear exactly once — two guarded sites means two ' +
-        'competing writers of the same slot',
+      countCodeOccurrences(squashedWhole, M21B2_SAVE_GUARDED),
+      'the credential-guarded save must appear exactly once AS CODE — two guarded sites ' +
+        'means two competing writers of the same slot',
     ).toBe(1);
 
     // ★ NO `else` ARM (CHEAT 1, killed a second, independent way). The counts above already
     // exclude it, but this pins the SHAPE directly so the failure message names the defect
     // instead of reporting a surprising number: whatever follows the guarded statement, it
     // is not an else. `if (a) f(); else g();` is a guard that guards nothing.
-    const guardEndIdx = squashedWhole.indexOf(M21B2_SAVE_GUARDED) + M21B2_SAVE_GUARDED.length;
+    // Code-aware index of the (single, code-verified) guard, so a decoy string cannot shift
+    // where the no-`else` slice is taken.
+    const guardCodeIdx = codeOccurrences(squashedWhole, M21B2_SAVE_GUARDED)[0]!;
+    const guardEndIdx = guardCodeIdx + M21B2_SAVE_GUARDED.length;
     expect(
       squashedWhole
         .slice(guardEndIdx, guardEndIdx + 6)
@@ -894,12 +961,17 @@ describe('connection.ts wiring (nh4, RE-PINNED by M21b then M21b-2/G13b): W-NH4-
       '.onConnectError((_ctx, err: Error) => {',
     );
     const squashedRegion = squashWhitespace(region);
-    const guardIdx = squashedRegion.indexOf('if (stale()) return;');
-    const savedIdx = squashedRegion.indexOf('auth.onConnected(token)');
-    expect(guardIdx, 'onConnect region must contain the stale guard').toBeGreaterThanOrEqual(0);
+    // Code-aware indices throughout (coordinator review): a decoy string of the stale guard or
+    // the saved-token call must not shift the ordering.
+    const guardIdx = codeOccurrences(squashedRegion, 'if (stale()) return;')[0] ?? -1;
+    const savedIdx = codeOccurrences(squashedRegion, 'auth.onConnected(token)')[0] ?? -1;
+    expect(
+      guardIdx,
+      'onConnect region must contain the stale guard AS CODE',
+    ).toBeGreaterThanOrEqual(0);
     expect(
       savedIdx,
-      'onConnect region must contain auth.onConnected(token)',
+      'onConnect region must contain auth.onConnected(token) AS CODE',
     ).toBeGreaterThanOrEqual(0);
     expect(
       savedIdx,
@@ -910,7 +982,7 @@ describe('connection.ts wiring (nh4, RE-PINNED by M21b then M21b-2/G13b): W-NH4-
     // The credential guard must live in the SAME region (not hoisted somewhere the callback
     // never reaches), and likewise after the stale guard.
     expect(
-      squashedRegion.indexOf(M21B2_SAVE_GUARDED),
+      codeOccurrences(squashedRegion, M21B2_SAVE_GUARDED)[0] ?? -1,
       'the credential-guarded save must sit INSIDE the onConnect callback, AFTER the stale guard',
     ).toBeGreaterThan(guardIdx);
 
@@ -2175,6 +2247,21 @@ const M21B2_UNREACHABLE_BRANCH =
 /** D13's post-await staleness re-check, in BOTH of its positions (see G27's breakdown). */
 const M21B2_STALE_RECHECK = 'if (gen !== buildGen || teardown) return;';
 
+/** D13's retry branch, as ONE exact contiguous block (G24). Any comment inside strips to
+ *  whitespace and squashes away, so a conforming implementation collapses to precisely this.
+ *  Exact-block equality (the KeyC-handler model) closes the three-independent-`.includes`
+ *  decoy bypass a per-needle check could not. */
+const M21B2_RETRY_BLOCK =
+  "if (credential.kind === 'retry') { state = onAttemptFailed(state); scheduleRebuild(); return; }";
+
+/** D13 (ADR-0182 line 220): the sign-in-failed → anon conversion at the build call site.
+ *  A FIRST-time claim-flow sign-in whose exchange fails (`sign-in-failed`, AUTH-48) must still
+ *  get a connection — an anonymous one — never be stranded with no connection at all. This is
+ *  the exact argument build() is handed; dropping it leaves a first-time claimant unable to
+ *  connect or even see the claim UI. */
+const M21B2_SIGNIN_FALLTHROUGH_BUILD =
+  "current = build(credential.kind === 'sign-in-failed' ? { kind: 'anon', token: auth.tokenForNextAttempt() } : credential);";
+
 /** D15 (addendum §C F4): the two my_account ingest statements, mirroring UX2B_WALLET_INGEST
  *  byte-for-byte in FORM. Formatter stability: the longest inner line is
  *  `      store.upsertAccount(accountRowToStore(row as unknown as SdkAccountRow));` = 78
@@ -2215,6 +2302,115 @@ function onAppliedRegion(src: string): string {
 }
 
 // ---------------------------------------------------------------------------
+// W-M21B2-IMPORT-EDGES (NEW — coordinator review item 4) — the three new pure
+// modules are IMPORTED, and the objects the wiring calls are the REAL ones.
+//
+// THE HOLE THIS CLOSES: every needle in G17/G18/G24/etc pins `oidc.renewOrExchange(`,
+// `claimCode.hasUnconsumed(`, `decideConnectCredential(` — but a LOCAL SHIM
+//     const oidc = { renewOrExchange: async () => ({ kind: 'no-session' }) };
+// satisfies all of them while importing NONE of the behaviourally-tested modules, so
+// the whole slice's behaviour (proved in oidc.test.ts / claimCode.test.ts /
+// credentialDecision.test.ts) is silently disconnected from production. This is the
+// exact W-CARE-IMPORT / F2 defect main.wiring.test.ts already guards for its own
+// imports; it applies here for the same reason. Modelled on the ./rowConvert
+// import-edge tooth below (W-UX2B: `} from './rowConvert';` + specifier-before-terminator).
+//
+// (`import * as oidc` / `import * as claimCode` — the namespace-shim vector — is ALREADY
+// banned whole-file by W-M21B2-CREDENTIAL-IS-PROVENANCE's `import *`===0 pin, so only the
+// LOCAL-DECLARATION shim remains to close here.)
+// ---------------------------------------------------------------------------
+
+describe('★ connection.ts wiring (M21b-2, G14/G16/G30 edge): W-M21B2-IMPORT-EDGES — oidc / claimCode / credentialDecision are the REAL imported modules', () => {
+  it('★ BITES: each module is imported by the exact specifier the wiring calls, and no local shim shadows it', () => {
+    const squashed = squashedStrippedConnectionTs();
+
+    // Helper: the import STATEMENT that terminates at `} from '<module>';`, sliced back to its
+    // own `import` keyword — robust to biome's specifier ORDERING (unlike a full-line pin).
+    const importStmt = (moduleSpec: string): string => {
+      const terminator = `} from '${moduleSpec}';`;
+      expectUniqueAnchor(squashed, terminator);
+      const end = squashed.indexOf(terminator);
+      const start = squashed.lastIndexOf('import', end);
+      expect(
+        start,
+        `the \`${terminator}\` clause must be preceded by an \`import\` keyword`,
+      ).toBeGreaterThanOrEqual(0);
+      return squashed.slice(start, end);
+    };
+
+    // --- oidc: imported factory createOidcClient, invoked as code, no object-literal shim ---
+    // WRONG IMPL KILLED: `const oidc = { renewOrExchange: async () => ({ kind: 'no-session' }) };`
+    //   — every renewOrExchange needle passes, the real oidc.ts (AUTH-39/40/41/42 + totality,
+    //   the G27 precondition) is never wired, and the anon population's exchange path is a stub.
+    expect(
+      importStmt('./oidc').includes('createOidcClient'),
+      "the './oidc' import must name `createOidcClient` (the factory that produces the `oidc` " +
+        'object whose `.renewOrExchange()` G17 pins). RED AT AUTHORING TIME: oidc.ts does not ' +
+        'exist',
+    ).toBe(true);
+    expect(
+      countCodeOccurrences(squashed, 'createOidcClient('),
+      'createOidcClient( must be INVOKED as code at least once — the `oidc` binding G17/G14 ' +
+        'call through must come from the real module, not a hand-rolled object literal',
+    ).toBeGreaterThanOrEqual(1);
+    for (const shim of ['const oidc = {', 'let oidc = {', 'var oidc = {']) {
+      expect(
+        countCodeOccurrences(squashed, shim),
+        `connection.ts must contain NO \`${shim}\` — an object-literal shim shadows the ` +
+          'imported oidc client and silently disconnects every renewOrExchange needle from the ' +
+          'behaviourally-tested module (W-CARE-IMPORT / F2)',
+      ).toBe(0);
+    }
+
+    // --- claimCode: imported object, no local shim -------------------------------------
+    // WRONG IMPL KILLED: `const claimCode = { hasUnconsumed: () => false, read: () => '' };`.
+    expect(
+      importStmt('./claimCode').includes('claimCode'),
+      "the './claimCode' import must name `claimCode` (the object whose `.hasUnconsumed()` / " +
+        '`.read()` G18 pins). RED AT AUTHORING TIME: claimCode.ts does not exist',
+    ).toBe(true);
+    for (const shim of ['const claimCode = {', 'let claimCode = {', 'var claimCode = {']) {
+      expect(
+        countCodeOccurrences(squashed, shim),
+        `connection.ts must contain NO \`${shim}\` — a local shim shadows the imported ` +
+          'claimCode module and disconnects the F2 join-veto from the tested storage logic',
+      ).toBe(0);
+    }
+
+    // --- credentialDecision: decideConnectCredential + type ConnectCredential ----------
+    // WRONG IMPL KILLED: a locally-defined `function decideConnectCredential` (the G16 branch
+    //   table re-implemented, untested, inside a coverage-excluded file).
+    const credImport = importStmt('./credentialDecision');
+    expect(
+      credImport.includes('decideConnectCredential'),
+      "the './credentialDecision' import must name `decideConnectCredential` (the pure branch " +
+        'table G16 proves and resolveCredential returns through). RED AT AUTHORING TIME: the ' +
+        'module does not exist',
+    ).toBe(true);
+    // ⚠ NOT a bare `.includes('ConnectCredential')` — that is a SUBSTRING of
+    // `decideConnectCredential` and would pass vacuously. The `type ` prefix is what pins the
+    // type specifier distinctly (verbatimModuleSyntax requires it for a type-only import; the
+    // repo writes `type X` in-line, e.g. main.wiring's `type CanOpenVerdict`). If the impl
+    // splits it into a separate `import type { ConnectCredential } from './credentialDecision'`,
+    // that is a SECOND `} from './credentialDecision';` and expectUniqueAnchor above reds.
+    expect(
+      credImport.includes('type ConnectCredential'),
+      "the './credentialDecision' import must also bring in `type ConnectCredential` — it is " +
+        'build()`s parameter type and resolveCredential`s return type (D13). (`type ` prefix ' +
+        'required: a bare ConnectCredential is a substring of decideConnectCredential)',
+    ).toBe(true);
+    for (const shim of ['function decideConnectCredential', 'const decideConnectCredential =']) {
+      expect(
+        countCodeOccurrences(squashed, shim),
+        `connection.ts must contain NO \`${shim}\` — decideConnectCredential is the SSOT ` +
+          'branch table (G16, credentialDecision.test.ts); a local re-implementation is ' +
+          'untested and lives in a coverage-excluded file',
+      ).toBe(0);
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // W-M21B2-ANON-NO-NETWORK (G17 + addendum §C F8, AUTH-43/44/49) — a tab that has
 // never authenticated, and a tab whose player has declined, make ZERO calls to the
 // auth service.
@@ -2245,31 +2441,83 @@ describe('★ connection.ts wiring (M21b-2 / AUTH-43/44/49, G17): W-M21B2-ANON-N
     // WRONG IMPL KILLED (d): a SECOND renewal call site (e.g. a retry loop inside
     //   resolveCredential) — the exactly-once count. Two call sites means two chances to
     //   consume the single-use code_verifier, and the second always fails.
+    // WRONG IMPL KILLED (e) ★ THE DECOY-STRING BYPASS (coordinator review): every needle in
+    //   this tooth used to be a bare count/index on comment-stripped-but-string-PRESERVING
+    //   source, so an inert `const _x = 'const outcome = await oidc.renewOrExchange();';`
+    //   parked AFTER the gate satisfied the ordering and the exactly-once count while the
+    //   REAL call was absent — resolveCredential would return before ever renewing, and every
+    //   returning player would be dropped to anonymous. Closed by binding the FULL EXECUTABLE
+    //   STATEMENT inside resolveCredential's region via codeOccurrences (a string decoy's
+    //   start sits inside a literal and is excluded), and by making the file-wide count and
+    //   every ordering index code-aware.
     const src = readConnectionTs();
     const wholeSquashed = squashWhitespace(stripLineComments(src));
 
-    // Addendum §C F8: the FULL derivation as a unique anchor, never a bare identifier.
-    expectUniqueAnchor(wholeSquashed, M21B2_ATTEMPT_GATE);
-    expectUniqueAnchor(wholeSquashed, M21B2_FORCED_ANON_GUARD);
+    // The renewal must appear as the FULL executable statement D13 specifies, not a bare
+    // `oidc.renewOrExchange(` substring — an executable statement a string decoy cannot
+    // legally reproduce as CODE without also being the real call.
+    const RENEW_STMT = 'const outcome = await oidc.renewOrExchange();';
+
+    // Addendum §C F8: the FULL derivation, code-anchored (a decoy-string copy does not count).
     expect(
-      countOccurrences(wholeSquashed, 'oidc.renewOrExchange('),
-      'oidc.renewOrExchange( must be called from EXACTLY ONE site in connection.ts. D13: it ' +
-        'takes NO flag argument and branches on WHAT IS IN STORAGE, so a second caller is a ' +
-        'second consumer of the same single-use code_verifier — the second one always loses',
+      countCodeOccurrences(wholeSquashed, M21B2_ATTEMPT_GATE),
+      'the full `const attemptGateOpen = wasEverAuthenticated(globalThis, opts.uri, opts.db) ' +
+        '|| isReturnLegAttempt;` derivation must occur EXACTLY once AS CODE (F8: the whole ' +
+        'statement is one anchor, so `= true` / dropping the return-leg disjunct both red)',
+    ).toBe(1);
+    expect(
+      countCodeOccurrences(wholeSquashed, M21B2_FORCED_ANON_GUARD),
+      'the forcedAnon short-circuit must occur EXACTLY once AS CODE',
     ).toBe(1);
 
-    const guardIdx = wholeSquashed.indexOf(M21B2_FORCED_ANON_GUARD);
-    const gateIdx = wholeSquashed.indexOf(M21B2_ATTEMPT_GATE);
-    const earlyReturnIdx = wholeSquashed.indexOf('if (!attemptGateOpen) {');
-    const renewIdx = wholeSquashed.indexOf('oidc.renewOrExchange(');
+    // The renewal call, region-bound to resolveCredential AND code-verified.
+    const region = resolveCredentialRegion(src);
+    // ANTI-VACUITY, ASSERTED FIRST: the region resolved and really is resolveCredential.
+    expect(
+      includesAsCode(region, 'wasEverAuthenticated('),
+      'ANTI-VACUITY: resolveCredential`s body region must call wasEverAuthenticated( AS CODE — ' +
+        'if it does not, the region is mis-anchored (or stubbed) and every pin below is vacuous',
+    ).toBe(true);
+    const renewInRegion = codeOccurrences(region, RENEW_STMT);
+    expect(
+      renewInRegion.length,
+      `resolveCredential must contain the executable statement \`${RENEW_STMT}\` EXACTLY once ` +
+        'AS CODE, INSIDE its own body region (ADR-0182 D13). A file-wide bare-substring pin was ' +
+        'satisfiable by a decoy string literal parked anywhere; binding the full statement to ' +
+        'this region as code closes that. RED AT AUTHORING TIME: resolveCredential does not exist',
+    ).toBe(1);
+    // The whole module holds exactly one renewal call site, and it is CODE (no decoy).
+    expect(
+      countCodeOccurrences(wholeSquashed, 'oidc.renewOrExchange('),
+      'oidc.renewOrExchange( must be called from EXACTLY ONE site AS CODE in connection.ts. ' +
+        'D13: it takes NO flag argument and branches on storage, so a second caller is a second ' +
+        'consumer of the same single-use code_verifier — the second one always loses',
+    ).toBe(1);
+
+    // --- ORDERING, all indices code-aware and region-relative --------------------------
+    // forcedAnon guard < attemptGate derivation < its early return < the renewal call. All
+    // four live in resolveCredential, so bound the ordering to its region (a decoy elsewhere
+    // in the file can no longer shift an indexOf).
+    const guardIdx = codeOccurrences(region, M21B2_FORCED_ANON_GUARD)[0] ?? -1;
+    const gateIdx = codeOccurrences(region, M21B2_ATTEMPT_GATE)[0] ?? -1;
+    const earlyReturn = codeOccurrences(region, 'if (!attemptGateOpen) {');
+    const renewIdx = renewInRegion[0]!;
 
     expect(
-      earlyReturnIdx,
-      'resolveCredential must contain the contiguous early return `if (!attemptGateOpen) {` — ' +
-        'without it the gate is computed and then ignored, which is the most common way a ' +
-        'guard ships inert (D13: the closed-gate arm returns an anon credential and makes ' +
-        'ZERO calls to Better Auth)',
+      guardIdx,
+      'the forcedAnon short-circuit must be present in the region',
     ).toBeGreaterThanOrEqual(0);
+    expect(
+      gateIdx,
+      'the attempt-gate derivation must be present in the region',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      earlyReturn.length,
+      'resolveCredential must contain the contiguous early return `if (!attemptGateOpen) {` AS ' +
+        'CODE — without it the gate is computed and then ignored, the most common way a guard ' +
+        'ships inert (D13: the closed-gate arm returns an anon credential, ZERO Better Auth calls)',
+    ).toBe(1);
+    const earlyReturnIdx = earlyReturn[0]!;
 
     expect(
       guardIdx,
@@ -2283,19 +2531,12 @@ describe('★ connection.ts wiring (M21b-2 / AUTH-43/44/49, G17): W-M21B2-ANON-N
     ).toBeLessThan(earlyReturnIdx);
     expect(
       earlyReturnIdx,
-      'oidc.renewOrExchange( must appear AFTER the `if (!attemptGateOpen) {` early return — a ' +
-        'call hoisted above the gate contacts the auth service on behalf of every anonymous ' +
-        'tab, on every reconnect attempt (AUTH-43/44). THIS IS THE NAMED G17 MUTANT',
+      'the renewal call must appear AFTER the `if (!attemptGateOpen) {` early return — a call ' +
+        'hoisted above the gate contacts the auth service on behalf of every anonymous tab, on ' +
+        'every reconnect attempt (AUTH-43/44). THIS IS THE NAMED G17 MUTANT',
     ).toBeLessThan(renewIdx);
 
     // --- the short-circuit is the FIRST statement, not merely an early one -------------
-    // ANTI-VACUITY, ASSERTED FIRST: the region resolved and really is resolveCredential.
-    const region = resolveCredentialRegion(src);
-    expect(
-      region.includes('wasEverAuthenticated('),
-      'ANTI-VACUITY: resolveCredential`s body region must contain wasEverAuthenticated( — if ' +
-        'it does not, the region is mis-anchored and the first-statement pin below is vacuous',
-    ).toBe(true);
     expect(
       region.trimStart().startsWith(M21B2_FORCED_ANON_GUARD),
       `resolveCredential's body must OPEN with \`${M21B2_FORCED_ANON_GUARD}\` — the FIRST ` +
@@ -2334,41 +2575,45 @@ describe('★ connection.ts wiring (M21b-2 / AUTH-49, G25): W-M21B2-FORCED-ANON-
     const src = readConnectionTs();
     const wholeSquashed = squashWhitespace(stripLineComments(src));
 
-    // --- (a) sticky ---------------------------------------------------------------------
+    // --- (a) sticky (all CODE-AWARE — coordinator review) -------------------------------
     expect(
-      countOccurrences(wholeSquashed, M21B2_FORCED_ANON_GUARD),
+      countCodeOccurrences(wholeSquashed, M21B2_FORCED_ANON_GUARD),
       `the forcedAnon short-circuit \`${M21B2_FORCED_ANON_GUARD}\` must appear EXACTLY once ` +
-        '(D13/AUTH-49). Two guards is two policies',
+        'AS CODE (D13/AUTH-49). Two guards is two policies',
     ).toBe(1);
     // NOTE (the file's own idiom — see the buildKind note the retired W-M21B-KIND-READ
     // carried): a bare `forcedAnon = false` needle would red the CORRECT implementation,
     // because the compliant declaration `let forcedAnon = false;` contains it. So the pin is
     // "EXACTLY ONE occurrence", i.e. the declaration and nothing else.
     expect(
-      countOccurrences(wholeSquashed, 'forcedAnon = false'),
-      '`forcedAnon = false` must occur EXACTLY once in connection.ts — the DECLARATION `let ' +
-        'forcedAnon = false;` and nothing else. A second occurrence is a RESET, and a reset ' +
+      countCodeOccurrences(wholeSquashed, 'forcedAnon = false'),
+      '`forcedAnon = false` must occur EXACTLY once AS CODE in connection.ts — the DECLARATION ' +
+        '`let forcedAnon = false;` and nothing else. A second occurrence is a RESET, and a reset ' +
         're-arms the auth ladder the player explicitly declined (AUTH-49). If this reds, ' +
         'delete the reset; do not raise the number',
     ).toBe(1);
     expect(
-      countOccurrences(wholeSquashed, 'forcedAnon = true;'),
-      '`forcedAnon = true;` must occur EXACTLY once — inside continueAnonymously(), which is ' +
-        "AUTH-49's only mechanism (D13/D17)",
+      countCodeOccurrences(wholeSquashed, 'forcedAnon = true;'),
+      '`forcedAnon = true;` must occur EXACTLY once AS CODE — inside continueAnonymously(), ' +
+        "which is AUTH-49's only mechanism (D13/D17)",
     ).toBe(1);
     expect(
-      countOccurrences(wholeSquashed, 'forcedAnon'),
-      'the forcedAnon IDENTIFIER must occur EXACTLY 3 times in the comment-stripped source, ' +
-        'and the breakdown is: (1) the connect()-scope declaration `let forcedAnon = false;`; ' +
-        "(2) the ONE read in resolveCredential's opening short-circuit; (3) the ONE write " +
-        '`forcedAnon = true;` in continueAnonymously. A 4th occurrence is a second reader ' +
-        '(which can disagree with the short-circuit) or a reset (which breaks AUTH-49)',
+      countCodeOccurrences(wholeSquashed, 'forcedAnon'),
+      'the forcedAnon IDENTIFIER must occur EXACTLY 3 times AS CODE, and the breakdown is: ' +
+        '(1) the connect()-scope declaration `let forcedAnon = false;`; (2) the ONE read in ' +
+        "resolveCredential's opening short-circuit; (3) the ONE write `forcedAnon = true;` in " +
+        'continueAnonymously. A 4th occurrence is a second reader (which can disagree with the ' +
+        'short-circuit) or a reset (which breaks AUTH-49); a decoy string does not count',
     ).toBe(3);
 
     // --- (b) connect() scope, exactly as W-NH4-GATE-CONSTRUCTED pins the gate ------------
+    // Ordering computed on CODE-AWARE indices (coordinator review): a decoy string carrying a
+    // `let forcedAnon …` declaration must not be able to satisfy the "declared before build()"
+    // check while the real declaration sits inside build().
     expectUniqueAnchor(src, M21B2_BUILD_ANCHOR);
     expectUniqueAnchor(src, 'wireTables(conn);');
-    const buildIdx = src.indexOf(M21B2_BUILD_ANCHOR);
+    const buildIdx = codeOccurrences(wholeSquashed, M21B2_BUILD_ANCHOR)[0] ?? -1;
+    expect(buildIdx, 'the build() anchor must resolve AS CODE').toBeGreaterThanOrEqual(0);
     const buildBody = squashWhitespace(bodyRegion(src, M21B2_BUILD_ANCHOR, 'wireTables(conn);'));
     const attemptBody = attemptBuildRegion(src);
     // ANTI-VACUITY: both regions are non-degenerate before any negative is judged.
@@ -2377,9 +2622,9 @@ describe('★ connection.ts wiring (M21b-2 / AUTH-49, G25): W-M21B2-FORCED-ANON-
       'ANTI-VACUITY: build()`s body region must be non-empty',
     ).toBeGreaterThan(0);
     expect(
-      attemptBody.includes('= build('),
-      'ANTI-VACUITY: attemptBuild`s body region must contain the `= build(` call — if it does ' +
-        'not, the region is mis-anchored and every negative below is vacuous',
+      includesAsCode(attemptBody, '= build('),
+      'ANTI-VACUITY: attemptBuild`s body region must contain the `= build(` call AS CODE — if ' +
+        'it does not, the region is mis-anchored and every negative below is vacuous',
     ).toBe(true);
 
     for (const decl of [
@@ -2387,11 +2632,11 @@ describe('★ connection.ts wiring (M21b-2 / AUTH-49, G25): W-M21B2-FORCED-ANON-
       'let consecutiveTransientErrors',
       'let forcedAnon',
     ]) {
-      const declIdx = src.indexOf(decl);
+      const declIdx = codeOccurrences(wholeSquashed, decl)[0] ?? -1;
       expect(
         declIdx,
-        `connection.ts must declare \`${decl}\` at connect() scope (D13 declares all three ` +
-          'alongside buildGen/state/rebuildTimer/teardown)',
+        `connection.ts must declare \`${decl}\` at connect() scope AS CODE (D13 declares all ` +
+          'three alongside buildGen/state/rebuildTimer/teardown)',
       ).toBeGreaterThanOrEqual(0);
       expect(
         declIdx,
@@ -2448,13 +2693,17 @@ describe('★ connection.ts wiring (M21b-2, G27 / C1 CRITICAL): W-M21B2-RESOLVE-
     // WRONG IMPL KILLED (d): a second, unguarded `await` in attemptBuild (e.g. awaiting the
     //   build, or an added `await sleep(...)`) — every await is a fresh window for the
     //   generation to advance, and only the pinned one is re-checked afterwards.
+    // WRONG IMPL KILLED (e) ★ THE DECOY-STRING BYPASS (coordinator review): the try prefix
+    //   and catch body were bare countOccurrences on string-preserving source, so a decoy
+    //   string literal of either text passed while the real await ran unguarded. Both are
+    //   pinned AS CODE below (their starts sit in code; a decoy's start sits in a literal).
     const src = readConnectionTs();
     const region = attemptBuildRegion(src);
 
     // ANTI-VACUITY, ASSERTED FIRST.
     expect(
-      region.includes('= build('),
-      'ANTI-VACUITY: attemptBuild`s region must contain the `= build(` call',
+      includesAsCode(region, '= build('),
+      'ANTI-VACUITY: attemptBuild`s region must contain the `= build(` call AS CODE',
     ).toBe(true);
 
     // The try prefix: the await is INSIDE the try, and the catch closes it immediately.
@@ -2463,30 +2712,32 @@ describe('★ connection.ts wiring (M21b-2, G27 / C1 CRITICAL): W-M21B2-RESOLVE-
     // (connection.ts:144), and D13's own snippet leaves `err` unused. Pinning either
     // spelling would be pinning a lint outcome, not a behaviour.
     const TRY_PREFIX = 'try { credential = await resolveCredential(); } catch';
+    const tryPrefixHits = codeOccurrences(region, TRY_PREFIX);
     expect(
-      countOccurrences(region, TRY_PREFIX),
-      `attemptBuild must contain the contiguous \`${TRY_PREFIX}\` (ADR-0182 D13). The await ` +
-        'must be the ONLY statement in the try, and the catch must close it immediately — a ' +
-        'try that also wraps the build() call would route a synchronous build failure into ' +
+      tryPrefixHits.length,
+      `attemptBuild must contain the contiguous \`${TRY_PREFIX}\` AS CODE (ADR-0182 D13). The ` +
+        'await must be the ONLY statement in the try, and the catch must close it immediately ' +
+        '— a try that also wraps the build() call would route a synchronous build failure into ' +
         "the wrong arm (RT-01's own catch, three lines below, is the right one for that)",
     ).toBe(1);
 
     const CATCH_BODY =
       '{ ' + M21B2_STALE_RECHECK + ' state = onAttemptFailed(state); scheduleRebuild(); return; }';
+    const catchBodyHits = codeOccurrences(region, CATCH_BODY);
     expect(
-      countOccurrences(region, CATCH_BODY),
+      catchBodyHits.length,
       'the catch block must be EXACTLY `' +
         CATCH_BODY +
-        '` — the stale re-check FIRST (addendum §C F7: a superseded attempt`s late rejection ' +
-        'must not dirty the live attempt), then the SAME ADR-0085 backoff ladder every other ' +
-        'failure path uses, then return. No bare `return;`, no `throw`, and no second retry ' +
-        'path may precede the ladder calls',
+        '` AS CODE — the stale re-check FIRST (addendum §C F7: a superseded attempt`s late ' +
+        'rejection must not dirty the live attempt), then the SAME ADR-0085 backoff ladder ' +
+        'every other failure path uses, then return. No bare `return;`, no `throw`, and no ' +
+        'second retry path may precede the ladder calls',
     ).toBe(1);
 
     // The catch body must be THIS try's catch — i.e. only the catch BINDING (` ` or ` (err) `)
     // may sit between them. Anything longer means the two matched different statements.
-    const tryEnd = region.indexOf(TRY_PREFIX) + TRY_PREFIX.length;
-    const catchStart = region.indexOf(CATCH_BODY);
+    const tryEnd = tryPrefixHits[0]! + TRY_PREFIX.length;
+    const catchStart = catchBodyHits[0]!;
     expect(
       catchStart,
       'the pinned catch body must FOLLOW the pinned try prefix — if it precedes it, the two ' +
@@ -2501,18 +2752,19 @@ describe('★ connection.ts wiring (M21b-2, G27 / C1 CRITICAL): W-M21B2-RESOLVE-
     ).toBeLessThanOrEqual(10);
 
     // Exactly one await, and exactly two stale re-checks (D13: the catch's first statement,
-    // and the one immediately after the await on the success path).
+    // and the one immediately after the await on the success path). Code-aware, so a decoy
+    // string mentioning `await`/the re-check cannot inflate either count into a false pass.
     expect(
-      countOccurrences(region, 'await'),
-      'attemptBuild must contain EXACTLY ONE `await` — the resolveCredential call. Every ' +
-        'additional await is another window for buildGen to advance without a re-check',
+      countCodeOccurrences(region, 'await'),
+      'attemptBuild must contain EXACTLY ONE `await` AS CODE — the resolveCredential call. ' +
+        'Every additional await is another window for buildGen to advance without a re-check',
     ).toBe(1);
     expect(
-      countOccurrences(region, M21B2_STALE_RECHECK),
-      `\`${M21B2_STALE_RECHECK}\` must occur EXACTLY twice in attemptBuild (D13): once as the ` +
-        'catch block`s first statement, and once immediately after the await on the success ' +
-        'path. Dropping the second lets a superseded attempt build a connection and assign it ' +
-        'to `current`, replacing the live one',
+      countCodeOccurrences(region, M21B2_STALE_RECHECK),
+      `\`${M21B2_STALE_RECHECK}\` must occur EXACTLY twice AS CODE in attemptBuild (D13): once ` +
+        'as the catch block`s first statement, and once immediately after the await on the ' +
+        'success path. Dropping the second lets a superseded attempt build a connection and ' +
+        'assign it to `current`, replacing the live one',
     ).toBe(2);
   });
 });
@@ -2538,46 +2790,50 @@ describe('★ connection.ts wiring (M21b-2 / AUTH-45, G24): W-M21B2-RETRY-CLIMBS
     //   — the backoff never advances, so a down auth service is retried at the 1s rung
     //   forever, and `consecutiveTransientErrors` climbs to the D17 threshold in seconds
     //   rather than over a sensible window.
+    // WRONG IMPL KILLED (e) ★ THE DECOY-STRING BYPASS (coordinator review): the three ladder
+    //   needles used to be `.includes`-checked INDEPENDENTLY, so ONE inert string literal
+    //   containing all three — `const _x = 'state = onAttemptFailed(state); scheduleRebuild();
+    //   return;';` — satisfied every one while the real branch did none of it and fell through
+    //   to build(). Closed by pinning the WHOLE retry block as one exact contiguous statement,
+    //   verified AS CODE (the KeyC-handler exact-block model the coordinator named): a decoy
+    //   string's start sits inside a literal and codeOccurrences excludes it, and an exact
+    //   block leaves no room for a dead `if (false)` wrapper or an early return either.
     const src = readConnectionTs();
     const region = attemptBuildRegion(src);
 
     const RETRY_ANCHOR = "if (credential.kind === 'retry') {";
     // Addendum §C F5: expectUniqueAnchor, not a bare indexOf — a duplicated branch would
-    // let the region below bound against the wrong one.
+    // let the ordering below bound against the wrong one. (Kept alongside the exact-block
+    // check: uniqueness gives the correct diagnosis on its own if the anchor is doubled.)
     expectUniqueAnchor(region, RETRY_ANCHOR);
 
-    // The branch BLOCK, bounded by the next terminal branch (D13's order: retry →
-    // session-expired → auth-service-unreachable → sign-in-failed → build). If a future
-    // edit genuinely reorders these, regionOrThrow throws with a legible message rather
-    // than silently scanning the wrong span — a hard red, never a vacuous pass.
-    const retryBlock = regionOrThrow(
-      region,
-      RETRY_ANCHOR,
-      "if (credential.kind === 'session-expired')",
-    );
-    for (const needle of ['state = onAttemptFailed(state);', 'scheduleRebuild();', 'return;']) {
-      expect(
-        retryBlock.includes(needle),
-        `the \`retry\` branch must contain \`${needle}\` — AUTH-45: an ambiguous/transient ` +
-          'outcome climbs the SAME ADR-0085 ladder a socket-level connect failure uses, and ' +
-          'then STOPS. Block=' +
-          JSON.stringify(retryBlock),
-      ).toBe(true);
-    }
-
-    // ORDERING: the branch must precede the build call, or the `return;` above is decorative.
-    const retryIdx = region.indexOf(RETRY_ANCHOR);
-    const buildCallIdx = region.indexOf('= build(');
+    // ★ EXACT CONTIGUOUS BLOCK (D13). The retry branch body is EXACTLY these three
+    // statements; any comment inside strips to whitespace and squashes away, so a conforming
+    // implementation collapses to precisely this. Verified AS CODE so no decoy string wins.
     expect(
-      buildCallIdx,
-      'ANTI-VACUITY: attemptBuild must contain the `= build(` call — needle chosen over a bare ' +
-        '`build(` because `scheduleRebuild(` contains that substring',
-    ).toBeGreaterThanOrEqual(0);
+      countCodeOccurrences(region, M21B2_RETRY_BLOCK),
+      `attemptBuild must contain the retry branch EXACTLY as \`${M21B2_RETRY_BLOCK}\` — one ` +
+        'contiguous executable block (AUTH-45: climb the SAME ADR-0085 ladder a socket-level ' +
+        'connect failure uses, then STOP). Exact-block equality is what closes the three-decoy ' +
+        'bypass a per-needle `.includes` could not; do NOT loosen it back to independent ' +
+        'substring checks. RED AT AUTHORING TIME: attemptBuild does not exist. Region=' +
+        JSON.stringify(region),
+    ).toBe(1);
+
+    // ORDERING: the branch must precede the build call, or its `return;` is decorative.
+    // Both indices are code-aware, so a decoy string cannot shift either.
+    const retryIdx = codeOccurrences(region, RETRY_ANCHOR)[0]!;
+    const buildCall = codeOccurrences(region, '= build(');
+    expect(
+      buildCall.length,
+      'ANTI-VACUITY: attemptBuild must contain the `= build(` call AS CODE — needle chosen over ' +
+        'a bare `build(` because `scheduleRebuild(` contains that substring',
+    ).toBeGreaterThanOrEqual(1);
     expect(
       retryIdx,
       'the `retry` branch must appear BEFORE the build call in attemptBuild — a branch placed ' +
         'after it has already let the ambiguous credential through',
-    ).toBeLessThan(buildCallIdx);
+    ).toBeLessThan(buildCall[0]!);
   });
 });
 
@@ -2632,10 +2888,12 @@ describe('★ connection.ts wiring (M21b-2 / AUTH-46/47, G26): W-M21B2-LIVE-IS-C
     // in the SAME returned object literal (`identity: () => identity,` and
     // `linkFrozen: () => linkFrozen(state),`), so the accessor family stays one idiom.
     expect(
-      countOccurrences(wholeSquashed, 'live: () => current,'),
-      'the Connection object must expose `live: () => current,` EXACTLY once — one source of ' +
-        'truth, no caching, no reconstruction (ADR-0182 D13`s Connection interface). It ' +
-        'mirrors the two sibling accessors in the same object literal',
+      // CODE-AWARE (coordinator review): the accessor is executable — a decoy string of the
+      // same text must not satisfy the "one source of truth" pin.
+      countCodeOccurrences(wholeSquashed, 'live: () => current,'),
+      'the Connection object must expose `live: () => current,` EXACTLY once AS CODE — one ' +
+        'source of truth, no caching, no reconstruction (ADR-0182 D13`s Connection interface). ' +
+        'It mirrors the two sibling accessors in the same object literal',
     ).toBe(1);
     expect(
       countOccurrences(wholeSquashed, 'linkFrozen: () => linkFrozen(state),'),
@@ -2652,9 +2910,28 @@ describe('★ connection.ts wiring (M21b-2 / AUTH-46/47, G26): W-M21B2-LIVE-IS-C
         'than a runtime surprise',
     ).toBe(1);
     expect(
-      countOccurrences(wholeSquashed, 'current = build('),
-      '`current = build(` must occur EXACTLY once — inside attemptBuild, under the generation ' +
-        'guard. A second assignment site is a second, ungated builder',
+      countCodeOccurrences(wholeSquashed, 'current = build('),
+      '`current = build(` must occur EXACTLY once AS CODE — inside attemptBuild, under the ' +
+        'generation guard. A second assignment site is a second, ungated builder',
+    ).toBe(1);
+
+    // ★ D13 (ADR-0182 line 220), G26 + coordinator review item 5: the sign-in-failed → anon
+    // CONVERSION at that build call, pinned as the exact executable statement. A first-time
+    // claim-flow sign-in whose exchange fails (`sign-in-failed`, AUTH-48) must still be handed
+    // an ANON credential to build — never `credential` (whose token field is a reason string,
+    // not a token) and never dropped with no connection at all, which would strand a
+    // first-time claimant unable to connect or even reach the claim UI.
+    // WRONG IMPL KILLED: `current = build(credential);` — the sign-in-failed branch falls
+    // through (D13 keeps it in the build path) and build()'s defensive belt returns undefined
+    // for that kind, so `current` is undefined and the tab is frozen. The exact conversion is
+    // the only shape that reaches an anon connection on that path.
+    expect(
+      countCodeOccurrences(attemptBuildRegion(src), M21B2_SIGNIN_FALLTHROUGH_BUILD),
+      'attemptBuild must build the sign-in-failed path as the exact conversion ' +
+        `\`${M21B2_SIGNIN_FALLTHROUGH_BUILD}\` (ADR-0182 D13 line 220) — occurring EXACTLY ` +
+        'once AS CODE. This IS the one `current = build(` call site, so it is consistent with ' +
+        'the count above; pinning the full ternary is what stops an implementer from dropping ' +
+        'the sign-in-failed→anon conversion and stranding a first-time claimant (AUTH-48)',
     ).toBe(1);
     // NOTE (deliberate deviation from the plan's §3 G26 row, which asks for "total identifier
     // occurrences pinned with a written breakdown"): the pin is on ASSIGNMENTS, not on the bare
@@ -2675,45 +2952,47 @@ describe('★ connection.ts wiring (M21b-2 / AUTH-46/47, G26): W-M21B2-LIVE-IS-C
     ).toBe(3);
 
     // Addendum §C F6: the two parking branches are pinned SEPARATELY and CONTIGUOUSLY, so
-    // neither can borrow the other's `current = undefined;`.
+    // neither can borrow the other's `current = undefined;`. CODE-AWARE: each is an executable
+    // block, so a decoy string of either cannot satisfy the ===1.
     expect(
-      countOccurrences(wholeSquashed, M21B2_SESSION_EXPIRED_BRANCH),
+      countCodeOccurrences(wholeSquashed, M21B2_SESSION_EXPIRED_BRANCH),
       `the session-expired terminal must be the contiguous \`${M21B2_SESSION_EXPIRED_BRANCH}\` ` +
-        '(ADR-0182 D13) — notify, PARK the slot, and stop. Dropping `current = undefined;` ' +
-        'leaves the dead connection live to every main.ts caller (AUTH-46)',
+        'AS CODE (ADR-0182 D13) — notify, PARK the slot, and stop. Dropping `current = ' +
+        'undefined;` leaves the dead connection live to every main.ts caller (AUTH-46)',
     ).toBe(1);
     expect(
-      countOccurrences(wholeSquashed, M21B2_UNREACHABLE_BRANCH),
+      countCodeOccurrences(wholeSquashed, M21B2_UNREACHABLE_BRANCH),
       `the auth-service-unreachable terminal must be the contiguous \`${M21B2_UNREACHABLE_BRANCH}\` ` +
-        '(ADR-0182 D13/D17) — same terminal shape as session-expired, distinct callback, ' +
-        'distinct copy (AUTH-47)',
+        'AS CODE (ADR-0182 D13/D17) — same terminal shape as session-expired, distinct ' +
+        'callback, distinct copy (AUTH-47)',
     ).toBe(1);
     expect(
-      countOccurrences(wholeSquashed, 'current = undefined;'),
-      '`current = undefined;` must occur EXACTLY twice — once in EACH of the two terminals ' +
-        'pinned above. This count is deliberately asserted ALONGSIDE the two contiguous ' +
-        'needles, not instead of them: the count alone is satisfied by putting both in one ' +
-        'branch (addendum §C F6)',
+      countCodeOccurrences(wholeSquashed, 'current = undefined;'),
+      '`current = undefined;` must occur EXACTLY twice AS CODE — once in EACH of the two ' +
+        'terminals pinned above. This count is deliberately asserted ALONGSIDE the two ' +
+        'contiguous needles, not instead of them: the count alone is satisfied by putting both ' +
+        'in one branch (addendum §C F6)',
     ).toBe(2);
 
-    // --- the one transition that can report a healthy link ------------------------------
+    // --- the one transition that can report a healthy link (code-aware) -----------------
     expect(
-      countOccurrences(wholeSquashed, 'state = onConnected(state)'),
-      'CARRIED FORWARD: `state = onConnected(state)` must occur exactly once in connection.ts',
+      countCodeOccurrences(wholeSquashed, 'state = onConnected(state)'),
+      'CARRIED FORWARD: `state = onConnected(state)` must occur exactly once AS CODE in ' +
+        'connection.ts',
     ).toBe(1);
     const applied = onAppliedRegion(src);
     // ANTI-VACUITY, ASSERTED FIRST: the region really is the applied callback.
     expect(
-      applied.includes('if (stale()) return;'),
-      'ANTI-VACUITY: the .onApplied region must contain the stale guard — if it does not, the ' +
-        'region is mis-anchored and the membership assertion below is vacuous',
+      includesAsCode(applied, 'if (stale()) return;'),
+      'ANTI-VACUITY: the .onApplied region must contain the stale guard AS CODE — if it does ' +
+        'not, the region is mis-anchored and the membership assertion below is vacuous',
     ).toBe(true);
     expect(
-      applied.includes('state = onConnected(state)'),
+      includesAsCode(applied, 'state = onConnected(state)'),
       'the ONE `state = onConnected(state)` transition must live INSIDE the .onApplied ' +
-        'callback — it is the only place a live socket AND an applied snapshot are both ' +
-        'proven. Anywhere else, `linkFrozen()` can report false while `current` is undefined, ' +
-        'and every sendGuarded()-protected action in main.ts fires into nothing',
+        'callback AS CODE — it is the only place a live socket AND an applied snapshot are ' +
+        'both proven. Anywhere else, `linkFrozen()` can report false while `current` is ' +
+        'undefined, and every sendGuarded()-protected action in main.ts fires into nothing',
     ).toBe(true);
   });
 });
@@ -2763,27 +3042,35 @@ describe('★ connection.ts wiring (M21b-2 / AUTH-52/53, G18): W-M21B2-JOIN-GATE
       'ANTI-VACUITY: the .onApplied region must contain the stale guard',
     ).toBe(true);
 
-    // --- (a) the fused read, unique file-wide AND inside the region ---------------------
-    expectUniqueAnchor(wholeSquashed, M21B2_CODE_UNCONSUMED);
+    // --- (a) the fused read, unique file-wide AND inside the region (code-aware) ---------
+    // CODE-AWARE (coordinator review): both the fused read and the veto are executable
+    // statements; a decoy string of either text must not satisfy the membership/count.
     expect(
-      applied.includes(M21B2_CODE_UNCONSUMED),
-      `the fused read \`${M21B2_CODE_UNCONSUMED}\` must sit INSIDE the .onApplied callback — ` +
-        'read FRESH on every applied snapshot (D16 / addendum §C F2). A connect()- or ' +
+      countCodeOccurrences(wholeSquashed, M21B2_CODE_UNCONSUMED),
+      `the fused read \`${M21B2_CODE_UNCONSUMED}\` must occur EXACTLY once AS CODE`,
+    ).toBe(1);
+    expect(
+      includesAsCode(applied, M21B2_CODE_UNCONSUMED),
+      `the fused read \`${M21B2_CODE_UNCONSUMED}\` must sit INSIDE the .onApplied callback AS ` +
+        'CODE — read FRESH on every applied snapshot (D16 / addendum §C F2). A connect()- or ' +
         'build()-scope read caches an answer across reconnects and re-opens F2. The statement ' +
         'is pinned FUSED (declaration + call in one needle) because a bare ' +
         '`claimCode.hasUnconsumed(` needle cannot tell a fresh read from a cached one',
     ).toBe(true);
     expect(
-      countOccurrences(wholeSquashed, 'claimCode.hasUnconsumed('),
-      'claimCode.hasUnconsumed( must be called from EXACTLY ONE site — a second caller is a ' +
-        'second answer, and the veto is only as good as its freshest reader',
+      countCodeOccurrences(wholeSquashed, 'claimCode.hasUnconsumed('),
+      'claimCode.hasUnconsumed( must be called from EXACTLY ONE site AS CODE — a second caller ' +
+        'is a second answer, and the veto is only as good as its freshest reader',
     ).toBe(1);
 
-    // --- (b) the veto itself ------------------------------------------------------------
-    expectUniqueAnchor(wholeSquashed, M21B2_SHOULD_JOIN);
+    // --- (b) the veto itself (code-aware) -----------------------------------------------
     expect(
-      applied.includes(M21B2_SHOULD_JOIN),
-      `the join veto must be the contiguous \`${M21B2_SHOULD_JOIN}\`, INSIDE .onApplied ` +
+      countCodeOccurrences(wholeSquashed, M21B2_SHOULD_JOIN),
+      `the join veto \`${M21B2_SHOULD_JOIN}\` must occur EXACTLY once AS CODE`,
+    ).toBe(1);
+    expect(
+      includesAsCode(applied, M21B2_SHOULD_JOIN),
+      `the join veto must be the contiguous \`${M21B2_SHOULD_JOIN}\`, INSIDE .onApplied AS CODE ` +
         '(D16). The claim code is the SOLE veto: anon-kind builds are never vetoed (their ' +
         'join is the idempotent "already joined" path AUTH-33 always allowed), and an ' +
         'account-kind build is vetoed exactly while a code is outstanding',
@@ -2802,41 +3089,44 @@ describe('★ connection.ts wiring (M21b-2 / AUTH-52/53, G18): W-M21B2-JOIN-GATE
         'the awaiting-account UX arm; it is never an OR-branch in the veto',
     ).toBe(0);
 
-    // --- (c) the join call is issued exactly once, from the extracted joiner ------------
+    // --- (c) the join call is issued exactly once, from the extracted joiner (code-aware) -
     expect(
-      countOccurrences(applied, 'attemptJoin('),
-      'the .onApplied callback must call attemptJoin( EXACTLY once — the single guarded join ' +
-        'path. attemptJoin may be DECLARED outside this region (D16 extracts it once to avoid ' +
-        'double-wrapping the devLog Proxy); only the CALL is region-bound',
+      countCodeOccurrences(applied, 'attemptJoin('),
+      'the .onApplied callback must call attemptJoin( EXACTLY once AS CODE — the single ' +
+        'guarded join path. attemptJoin may be DECLARED outside this region (D16 extracts it ' +
+        'once to avoid double-wrapping the devLog Proxy); only the CALL is region-bound',
     ).toBe(1);
 
-    // --- (d) the reissue arm does real work --------------------------------------------
+    // --- (d) the reissue arm does real work (code-aware) --------------------------------
     const REISSUE_ANCHOR = 'else if (store.ownAccount(identity) !== undefined) {';
     const AWAITING_ARM = 'opts.onClaimAwaitingAccount?.();';
     expectUniqueAnchor(applied, REISSUE_ANCHOR);
     expectUniqueAnchor(applied, AWAITING_ARM);
     const reissueArm = regionOrThrow(applied, REISSUE_ANCHOR, AWAITING_ARM);
+    const reducerInArm = codeOccurrences(reissueArm, '.reducers.completeGuestClaim({ code })');
+    const pendingInArm = codeOccurrences(reissueArm, 'opts.onClaimPending?.(');
     expect(
-      reissueArm.includes('.reducers.completeGuestClaim({ code })'),
+      reducerInArm.length,
       'the reissue arm must actually CALL the reducer — the contiguous ' +
-        '`.reducers.completeGuestClaim({ code })` (AUTH-53 / D16). A UI notification alone ' +
-        'leaves the claim permanently unfinished, because a pre-drop promise never settles ' +
-        '(ADR-0085 D3). Arm=' +
+        '`.reducers.completeGuestClaim({ code })` AS CODE (AUTH-53 / D16). A UI notification ' +
+        'alone leaves the claim permanently unfinished, because a pre-drop promise never ' +
+        'settles (ADR-0085 D3); a decoy string of the call text would satisfy a bare ' +
+        '.includes while nothing is actually re-issued. Arm=' +
         JSON.stringify(reissueArm),
-    ).toBe(true);
+    ).toBeGreaterThanOrEqual(1);
     expect(
-      reissueArm.includes('opts.onClaimPending?.('),
-      'the reissue arm must ALSO fire `opts.onClaimPending?.(` — the UX notification is ' +
-        'ALONGSIDE the reducer call, never a substitute for it (D16)',
-    ).toBe(true);
+      pendingInArm.length,
+      'the reissue arm must ALSO fire `opts.onClaimPending?.(` AS CODE — the UX notification ' +
+        'is ALONGSIDE the reducer call, never a substitute for it (D16)',
+    ).toBeGreaterThanOrEqual(1);
     // The notification must not GATE the reducer call: the reducer must be issued before
-    // (and independently of) the optional callback.
+    // (and independently of) the optional callback. Indices are code-aware.
     expect(
-      reissueArm.indexOf('.reducers.completeGuestClaim({ code })'),
+      reducerInArm[0]!,
       'the reducer call must be issued BEFORE the onClaimPending notification — a reducer ' +
         'call written inside an `if (opts.onClaimPending)` block ships green in production ' +
         '(where the callback is always wired) and silently never claims anywhere else',
-    ).toBeLessThan(reissueArm.indexOf('opts.onClaimPending?.('));
+    ).toBeLessThan(pendingInArm[0]!);
   });
 });
 
@@ -2958,11 +3248,14 @@ describe('★ connection.ts wiring (M21b-2 / AUTH-50/51, G28): W-M21B2-ACCOUNT-I
     //   the insert half just wrote — and account rows are NEVER truly deleted server-side
     //   (delete_account only flips status), so the handler is dead as well as wrong.
     // WRONG IMPL KILLED (e): registering either handler twice — double schedule per row.
+    // ALL FOUR pins below are CODE-AWARE (coordinator review): the ingest statements, the
+    // upsert call and the onDelete ban are executable code, so a decoy string of any of them
+    // cannot satisfy (or, for the ban, evade) the count.
     const squashed = squashedStrippedConnectionTs();
 
     expect(
-      countOccurrences(squashed, M21B2_ACCOUNT_INSERT_INGEST),
-      'connection.ts must contain EXACTLY this statement, exactly once (ADR-0182 D15 / ' +
+      countCodeOccurrences(squashed, M21B2_ACCOUNT_INSERT_INGEST),
+      'connection.ts must contain EXACTLY this statement, exactly once AS CODE (ADR-0182 D15 / ' +
         'addendum §C F4):\n  ' +
         M21B2_ACCOUNT_INSERT_INGEST +
         '\nIt is modelled on UX2B_WALLET_INGEST byte-for-byte, and the calibration fixture ' +
@@ -2973,8 +3266,8 @@ describe('★ connection.ts wiring (M21b-2 / AUTH-50/51, G28): W-M21B2-ACCOUNT-I
         'shipped-and-broken outcome. Do NOT loosen it; correct the code, or re-derive it from D15',
     ).toBe(1);
     expect(
-      countOccurrences(squashed, M21B2_ACCOUNT_UPDATE_INGEST),
-      'connection.ts must contain EXACTLY this statement, exactly once (ADR-0182 D15):\n  ' +
+      countCodeOccurrences(squashed, M21B2_ACCOUNT_UPDATE_INGEST),
+      'connection.ts must contain EXACTLY this statement, exactly once AS CODE (ADR-0182 D15):\n  ' +
         M21B2_ACCOUNT_UPDATE_INGEST +
         '\nNote the THREE-parameter callback `(_ctx, _old, row)` — an onUpdate handler written ' +
         'with the two-parameter onInsert signature reads the OLD row as the new one and ' +
@@ -2982,21 +3275,23 @@ describe('★ connection.ts wiring (M21b-2 / AUTH-50/51, G28): W-M21B2-ACCOUNT-I
     ).toBe(1);
 
     expect(
-      countOccurrences(squashed, 'store.upsertAccount('),
-      'store.upsertAccount( must be called from EXACTLY 2 sites in connection.ts, and the ' +
-        'breakdown is: (1) the my_account onInsert handler; (2) the my_account onUpdate ' +
+      countCodeOccurrences(squashed, 'store.upsertAccount('),
+      'store.upsertAccount( must be called from EXACTLY 2 sites AS CODE in connection.ts, and ' +
+        'the breakdown is: (1) the my_account onInsert handler; (2) the my_account onUpdate ' +
         'handler. A third call site is a fabricated/default account row — the same ' +
         'invented-from-dark failure ADR-0154 D1/D6 refused for the wallet, and here it would ' +
         'make an anonymous tab render as signed in',
     ).toBe(2);
 
     expect(
-      countOccurrences(squashed, 'conn.db.my_account.onDelete'),
-      'there must be NO conn.db.my_account.onDelete handler (ADR-0182 D15): a view UPDATE ' +
-        'arrives as unordered insert+delete, so the delete half of a claim-completion pair ' +
-        'would wipe the live account row and sign the player out of an account they still ' +
+      countCodeOccurrences(squashed, 'conn.db.my_account.onDelete'),
+      'there must be NO conn.db.my_account.onDelete handler AS CODE (ADR-0182 D15): a view ' +
+        'UPDATE arrives as unordered insert+delete, so the delete half of a claim-completion ' +
+        'pair would wipe the live account row and sign the player out of an account they still ' +
         'have. No server path ever deletes an account row, so the handler is dead as well as ' +
-        'wrong',
+        'wrong. (Code-aware so the rewritten tripwire COMMENT — which names this handler in ' +
+        'prose — cannot trip it; comments are already stripped, and a decoy string cannot ' +
+        'satisfy it either)',
     ).toBe(0);
     expect(
       countOccurrences(squashed, 'removeAccount'),

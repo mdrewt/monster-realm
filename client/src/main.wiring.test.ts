@@ -9310,6 +9310,42 @@ const M21B2_SESSION_GATE_DECL = 'function sessionGateBlocks(): boolean {';
 const M21B2_SESSION_GATE_CALL =
   'if (sessionGateBlocks()) { suppressNativeMovementDefault(e); return; }';
 
+/**
+ * STRING-LITERAL-AWARE occurrence finder for main.ts scans (coordinator review items 2/3).
+ *
+ * m20cScan strips comments but PRESERVES string/template-literal text as code, so a bare
+ * expectUniqueAnchor / indexOf on `m20cScan(...).code` is satisfied by an inert decoy such as
+ *     const _x = "if (sessionGateBlocks()) { suppressNativeMovementDefault(e); return; }";
+ * parked before the menu/battle branches while the keydown listener never actually gates.
+ * `mwCodeOccurrences` returns the start index of every occurrence whose START is in CODE — not
+ * inside a '…'/"…"/`…` literal — via a single quote-state-aware pass (backslash-escape-aware;
+ * an unescaped newline ends a '…'/"…"). It is the main.wiring twin of connection.test.ts's
+ * `codeOccurrences`; each file carries its own copy, as the file convention already does for
+ * stripLineComments / countOccurrences. NO `new RegExp`.
+ */
+function mwCodeOccurrences(code: string, needle: string): number[] {
+  const out: number[] = [];
+  let mode = 0; // 0 code, 1 ' , 2 " , 3 `
+  for (let i = 0; i < code.length; i += 1) {
+    const ch = code.charAt(i); // charAt (not [i]) — always string, like m20cScan
+    if (mode === 0) {
+      if (ch === "'") mode = 1;
+      else if (ch === '"') mode = 2;
+      else if (ch === '`') mode = 3;
+      else if (code.startsWith(needle, i)) out.push(i);
+    } else {
+      if (ch === '\\') {
+        i += 1;
+        continue;
+      }
+      const closer = mode === 1 ? "'" : mode === 2 ? '"' : '`';
+      if (ch === closer) mode = 0;
+      else if (mode !== 3 && ch === '\n') mode = 0;
+    }
+  }
+  return out;
+}
+
 describe('★ main.ts wiring (M21b-2/ADR-0182 D17, G20): W-M21B2-SESSION-GATE-FIRST — the session terminal outranks every keydown dispatch', () => {
   it('★ BITES: the session gate is a unique anchor inside the keydown listener and precedes the menu intercept, the battle-Escape branch and the movement-suppression surface', () => {
     // THE MUTANT G20 IS NAMED FOR: the gate placed BELOW the battle-Escape branch. The player's
@@ -9365,11 +9401,27 @@ describe('★ main.ts wiring (M21b-2/ADR-0182 D17, G20): W-M21B2-SESSION-GATE-FI
     // F1): a renamed or deleted surface is then a hard red here too, not a vacuous pass.
     const code = m20cScan(readMainTs()).code;
 
-    // --- (1) the gate exists, once, and is not inert -----------------------------------
-    expectUniqueAnchor(code, M21B2_SESSION_GATE_DECL);
-    expectUniqueAnchor(code, M21B2_SESSION_GATE_CALL);
-    const declIdx = code.indexOf(M21B2_SESSION_GATE_DECL);
-    const gateIdx = code.indexOf(M21B2_SESSION_GATE_CALL);
+    // --- (1) the gate exists, once, AS CODE, and is not inert --------------------------
+    // ★ CODE-AWARE (coordinator review item 2): expectUniqueAnchor runs on string-PRESERVING
+    // `code`, so a decoy string literal carrying the gate call's text before the menu/battle
+    // branches would pass while the keydown listener never gated. mwCodeOccurrences excludes a
+    // decoy whose start sits inside a literal, so the anchor and every ordering index below are
+    // the REAL statements.
+    const declHits = mwCodeOccurrences(code, M21B2_SESSION_GATE_DECL);
+    const gateHits = mwCodeOccurrences(code, M21B2_SESSION_GATE_CALL);
+    expect(
+      declHits.length,
+      `sessionGateBlocks must be declared EXACTLY once AS CODE — \`${M21B2_SESSION_GATE_DECL}\``,
+    ).toBe(1);
+    expect(
+      gateHits.length,
+      'the session gate call `' +
+        M21B2_SESSION_GATE_CALL +
+        '` must occur EXACTLY once AS CODE — a decoy string literal of this text must not ' +
+        'satisfy the anchor while the real keydown listener never gates (coordinator review 2)',
+    ).toBe(1);
+    const declIdx = declHits[0]!;
+    const gateIdx = gateHits[0]!;
 
     // The predicate must actually read the connection's session state. This is the ONLY
     // structural defence against `return false;` (main.ts is coverage-excluded, so no test in
@@ -9395,9 +9447,9 @@ describe('★ main.ts wiring (M21b-2/ADR-0182 D17, G20): W-M21B2-SESSION-GATE-FI
         'in the game for every player, anonymous ones included',
     ).toBe(0);
 
-    // --- (2) the call site lives INSIDE the keydown listener ---------------------------
-    const keydownIdx = code.indexOf("window.addEventListener('keydown'");
-    const keyupIdx = code.indexOf("window.addEventListener('keyup'");
+    // --- (2) the call site lives INSIDE the keydown listener (code-aware) --------------
+    const keydownIdx = mwCodeOccurrences(code, "window.addEventListener('keydown'")[0] ?? -1;
+    const keyupIdx = mwCodeOccurrences(code, "window.addEventListener('keyup'")[0] ?? -1;
     expect(keydownIdx, 'main.ts must register the keydown listener').toBeGreaterThanOrEqual(0);
     expect(
       keyupIdx,
@@ -9426,11 +9478,14 @@ describe('★ main.ts wiring (M21b-2/ADR-0182 D17, G20): W-M21B2-SESSION-GATE-FI
       [UXD3_PVPAGG_START, 'fan-out surface 4, the pvp batch listener (EXEMPT BY NAME)'],
       [NH2_RAF_START, 'fan-out surface 5, the rAF re-issue (NOT ordered — residual)'],
     ];
+    // Code-aware first index of every anchor (a surface that survives only as a decoy string
+    // must not count as "resolved"). -1 when the anchor is absent from code.
+    const codeIdx = (anchor: string): number => mwCodeOccurrences(code, anchor)[0] ?? -1;
     for (const [anchor, label] of anchors) {
       expect(
-        code.indexOf(anchor),
-        `ANTI-VACUITY: the anchor for ${label} must still resolve in main.ts. A renamed or ` +
-          'deleted surface must red HERE rather than silently removing a clause from this ' +
+        codeIdx(anchor),
+        `ANTI-VACUITY: the anchor for ${label} must still resolve AS CODE in main.ts. A renamed ` +
+          'or deleted surface must red HERE rather than silently removing a clause from this ' +
           `gate. Anchor=${JSON.stringify(anchor)}`,
       ).toBeGreaterThanOrEqual(0);
     }
@@ -9439,27 +9494,27 @@ describe('★ main.ts wiring (M21b-2/ADR-0182 D17, G20): W-M21B2-SESSION-GATE-FI
     // NOTE on MENU_INTERCEPT: `if (menuView?.visible) {` legitimately occurs TWICE in main.ts
     // (the keydown menu-nav intercept, and the toggle inside the KeyM handler ~190 lines
     // later), so expectUniqueAnchor must NOT be applied to it — it would red on correct
-    // source. `indexOf` resolves to the FIRST, which is the earlier of the two and therefore
-    // the STRICTER bound: a gate that precedes the first also precedes the second.
+    // source. The FIRST CODE occurrence is the earlier of the two and therefore the STRICTER
+    // bound: a gate that precedes the first also precedes the second.
     expect(
       gateIdx,
       'the session gate must precede `if (menuView?.visible) {` — otherwise the menu-nav ' +
         'intercept swallows arrows/Enter while the session terminal is on screen, and the ' +
         'player navigates a menu whose every leaf opens an overlay backed by a dead connection',
-    ).toBeLessThan(code.indexOf(MENU_INTERCEPT));
+    ).toBeLessThan(codeIdx(MENU_INTERCEPT));
     expect(
       gateIdx,
       'the session gate must precede the battle Escape branch — THIS IS THE NAMED G20 MUTANT: ' +
         'with the gate below it, Escape on an expired session dismisses the BATTLE instead of ' +
         'the session terminal, and sessionView is registry-external so no fan-out surface can ' +
         'see it',
-    ).toBeLessThan(code.indexOf(BATTLE_ESCAPE));
+    ).toBeLessThan(codeIdx(BATTLE_ESCAPE));
     expect(
       gateIdx,
       'the session gate must precede fan-out surface 3 (the keydown movement-suppression ' +
         'block) — the only one of the five that shares this listener. Below it, movement keys ' +
         'reach KEY_DIR and the predictor keeps issuing Steps into a link that is gone',
-    ).toBeLessThan(code.indexOf(UXD3_SUPPRESS_START));
+    ).toBeLessThan(codeIdx(UXD3_SUPPRESS_START));
 
     // --- (5) the declaration is module scope, like anyOverlayVisible --------------------
     expect(
@@ -9468,6 +9523,95 @@ describe('★ main.ts wiring (M21b-2/ADR-0182 D17, G20): W-M21B2-SESSION-GATE-FI
         'calls it (the same placement rule W-NH1-DECL-ORDER applies to ' +
         'suppressNativeMovementDefault)',
     ).toBeLessThan(keydownIdx);
+  });
+});
+
+describe('★ main.ts wiring (M21b-2/ADR-0182 D17, G20b): W-M21B2-SESSION-GATE-FRAME — the render/dispatch frame loop also gates on the session terminal', () => {
+  it('★ BITES: sessionGateBlocks() is consulted at TWO sites (keydown + frame), and the frame`s check precedes its first movement send', () => {
+    // D17 (ADR-0182 lines 441-442) requires the session gate "checked first, unconditionally,
+    // in main.ts's dispatch/render loop AND its own keydown handler." W-M21B2-SESSION-GATE-FIRST
+    // above pins the KEYDOWN half; this pins the FRAME half. Without it, a tab whose session has
+    // expired keeps running the per-frame prediction loop: the held-key re-issue at the top of
+    // the frame keeps firing `sendIntent({ Step })` into a dead link, and the predictor keeps
+    // advancing a character the server will never move — the visible "ghost walking" bug behind
+    // the session overlay.
+    //
+    // ★ THE CONTRACT FOR THE IMPLEMENTER: add `if (sessionGateBlocks()) return;` near the TOP of
+    // the frame try body (before `predictor.drain(now)` / the held-key re-issue). A bare
+    // `return;` is correct here — unlike the keydown handler, the frame re-arms rAF in its own
+    // `finally`, so returning early skips this frame's game logic without killing the loop.
+    //
+    // WHY THE MINIMAL INVARIANT AND NOT AN EXACT LITERAL (stated, not hidden): the frame body's
+    // exact early-out shape is a design choice (the implementer may guard just the held-key
+    // send, or return before the whole body). This tooth pins what D17 actually REQUIRES — that
+    // the gate is consulted in the frame loop, before the first movement send — and leaves the
+    // precise statement to the implementer. It is code-aware, so a decoy string cannot satisfy
+    // either half.
+    // WRONG IMPL KILLED (a): the frame half omitted entirely — the whole-file count stays at 1
+    //   (keydown only). The `>= 2` count and the in-region membership both red.
+    // WRONG IMPL KILLED (b): the gate placed AFTER the held-key re-issue in the frame — the
+    //   ghost-walk send still fires before the gate sees the expired session. The ordering reds.
+    const code = m20cScan(readMainTs()).code;
+
+    // Whole-file: the gate must be CALLED at >= 2 code sites (keydown + frame). ⚠ The zero-arg
+    // DECLARATION `function sessionGateBlocks(): boolean {` itself contains the substring
+    // `sessionGateBlocks()`, so a naive count of that would pass with declaration + keydown
+    // alone (frame missing). CALL sites = every code `sessionGateBlocks(` MINUS the one
+    // `function sessionGateBlocks(` declaration. A decoy string counts for neither.
+    const gateRefs = mwCodeOccurrences(code, 'sessionGateBlocks(').length;
+    const gateDecls = mwCodeOccurrences(code, 'function sessionGateBlocks(').length;
+    expect(
+      gateRefs - gateDecls,
+      'sessionGateBlocks() must be CALLED at >= 2 sites AS CODE in main.ts (ADR-0182 D17: the ' +
+        'keydown handler AND the render/dispatch frame loop), counting every code reference ' +
+        'minus the ONE `function sessionGateBlocks(` declaration. RED AT AUTHORING TIME: 0 — the ' +
+        'predicate does not exist. After the keydown half lands but before the frame half this ' +
+        'is 1 and still reds, which is the point',
+    ).toBeGreaterThanOrEqual(2);
+
+    // Bound the frame loop region and require a call INSIDE it, before its first movement send.
+    // The declaration sits at module scope (beside anyOverlayVisible, above main()), OUTSIDE
+    // this region, so every `sessionGateBlocks(` found here is a genuine call.
+    const FRAME_START = 'const frame = (): void => {';
+    const FRAME_END = 'void main();';
+    const frameStartHits = mwCodeOccurrences(code, FRAME_START);
+    const frameEndHits = mwCodeOccurrences(code, FRAME_END);
+    expect(
+      frameStartHits.length,
+      `main.ts must contain the frame loop \`${FRAME_START}\` exactly once AS CODE (its region ` +
+        'fence)',
+    ).toBe(1);
+    expect(
+      frameEndHits.length,
+      `main.ts must contain \`${FRAME_END}\` exactly once AS CODE (the frame region's right fence)`,
+    ).toBe(1);
+    const frameStart = frameStartHits[0]!;
+    const frameEnd = frameEndHits[0]!;
+    expect(frameEnd, 'the frame region fences must be ordered').toBeGreaterThan(frameStart);
+    const frameRegion = code.slice(frameStart, frameEnd);
+
+    const gateInFrame = mwCodeOccurrences(frameRegion, 'sessionGateBlocks(');
+    expect(
+      gateInFrame.length,
+      'the frame loop must consult sessionGateBlocks() AS CODE (ADR-0182 D17: the render/dispatch ' +
+        'loop checks the session terminal too, not only the keydown handler). The suggested ' +
+        'shape is `if (sessionGateBlocks()) return;` near the top of the frame try',
+    ).toBeGreaterThanOrEqual(1);
+
+    // ANTI-VACUITY + the ordering: the frame's first movement send is the held-key re-issue
+    // `sendIntent(`; the gate must precede it, or the ghost-walk send fires before the gate.
+    const sendInFrame = mwCodeOccurrences(frameRegion, 'sendIntent(');
+    expect(
+      sendInFrame.length,
+      'ANTI-VACUITY: the frame region must contain the held-key movement send `sendIntent(` — if ' +
+        'it does not, the region is mis-bounded and the ordering below is vacuous',
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      gateInFrame[0]!,
+      'the frame`s sessionGateBlocks() check must precede its first `sendIntent(` movement send ' +
+        '— a gate placed after the held-key re-issue still lets the ghost-walk Step fire into a ' +
+        'dead link on an expired session (ADR-0182 D17)',
+    ).toBeLessThan(sendInFrame[0]!);
   });
 });
 
@@ -9499,12 +9643,14 @@ describe('★ main.ts wiring (M21b-2/ADR-0182 D15, G29): W-M21B2-SIGNED-IN-IS-OW
     //   correctly under ANY implementation, and a bans-only tooth would call that GREEN.
     const code = m20cScan(readMainTs()).code;
 
-    // ANTI-VACUITY / POSITIVE CONTROL, ASSERTED FIRST.
+    // ANTI-VACUITY / POSITIVE CONTROL, ASSERTED FIRST. CODE-AWARE (coordinator review): a decoy
+    // string `'store.ownAccount('` must not satisfy this floor — if it did, the three bans below
+    // would pass vacuously over a main.ts with no real account UX at all.
     expect(
-      countOccurrences(code, 'store.ownAccount('),
-      'main.ts must consult `store.ownAccount(` at least once — it is the SOLE authoritative ' +
-        'signed-in signal (ADR-0182 D15 / AUTH-51). Zero occurrences means the three bans ' +
-        'below are vacuously satisfied by a main.ts that simply has no account UX at all',
+      mwCodeOccurrences(code, 'store.ownAccount(').length,
+      'main.ts must CALL `store.ownAccount(` at least once AS CODE — it is the SOLE ' +
+        'authoritative signed-in signal (ADR-0182 D15 / AUTH-51). Zero code occurrences means ' +
+        'the three bans below are vacuously satisfied by a main.ts that simply has no account UX',
     ).toBeGreaterThanOrEqual(1);
 
     for (const forbidden of ['readAuthKind', 'AuthKind', 'credential.kind']) {
