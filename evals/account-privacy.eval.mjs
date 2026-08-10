@@ -177,21 +177,17 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseTables, parseViews } from './conversation-privacy.eval.mjs';
 import {
-  DQ,
-  SLASH_STAR,
-  STAR_SLASH,
   assertStripperSound,
   compactWs,
   containsIdent,
-  countOccurrences,
+  DQ,
   findCalls,
   findFnBody,
   isWordChar,
-  matchRawString,
-  splitArgs,
+  SLASH_STAR,
+  STAR_SLASH,
   stripRustSource,
 } from './rust-scan.mjs';
-
 
 // ---------------------------------------------------------------------------
 // Check A: the three account tables are private and `my_account` is the only
@@ -415,7 +411,6 @@ const LOG_MACRO_NAMES = [
   'dbg',
 ];
 
-
 /**
  * Build the literal-`&str`-const map. The DECLARATION is located in the
  * stripped text (so a commented-out const cannot enter the map) and the VALUE is
@@ -435,8 +430,6 @@ export function parseStrConsts(src) {
   }
   return map;
 }
-
-
 
 /**
  * Is this callee the reject logger? Matches `log_reject`, `reject`,

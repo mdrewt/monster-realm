@@ -214,29 +214,24 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { parseTableSchemas } from './battle-schema-snapshot.eval.mjs';
 import {
-  DQ,
-  SLASH_STAR,
-  STAR_SLASH,
   assertStripperSound,
   compactWs,
   containsIdent,
   countOccurrences,
+  DQ,
   findCalls,
   findFnBody,
   isWordChar,
-  matchRawString,
+  SLASH_STAR,
+  STAR_SLASH,
   splitArgs,
   stripRustSource,
 } from './rust-scan.mjs';
-
 
 // ---------------------------------------------------------------------------
 // Shared structural parsers (findFnBody / findCalls are copied from
 // account-privacy.eval.mjs; parseReducers and parseScheduledTargets are new).
 // ---------------------------------------------------------------------------
-
-
-
 
 /**
  * The final identifier of a (possibly pathed, possibly `!`-prefixed) callee.

@@ -127,7 +127,7 @@ export function containsIdent(hay, name) {
  * @param {number} i Index of the `r`, `b` or `c`.
  * @returns {{openQuote:number, closeQuote:number, end:number}|null} Span, or null.
  */
-export function matchRawString(src, i) {
+function matchRawString(src, i) {
   let j = i;
   if (src[j] === 'b' || src[j] === 'c') j++;
   if (src[j] !== 'r') return null;
