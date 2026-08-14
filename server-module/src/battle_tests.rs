@@ -5256,7 +5256,13 @@ fn assert_pve_settle_logs_and_commits(reducer: &str, evt: &str) {
     // --- L2: this site is the prescribed log-and-continue shape --------------
     let squashed = squash_ws(&stripped);
     let lbrace = char::from(EA_PVE_LBRACE).to_string();
-    let shape = ["ifletErr(e)=", call.as_str(), "(ctx,&battle)", lbrace.as_str()].concat();
+    let shape = [
+        "ifletErr(e)=",
+        call.as_str(),
+        "(ctx,&battle)",
+        lbrace.as_str(),
+    ]
+    .concat();
     assert!(
         squashed.contains(shape.as_str()),
         "TEETH (14r-d L2, ADR-0185 D1) `{reducer}`: the whitespace-squashed body \
@@ -5336,7 +5342,13 @@ fn assert_pve_settle_logs_and_commits(reducer: &str, evt: &str) {
     // --- L7: `escaped` really came from `json_escape(&e)` --------------------
     let escape_fn = ["json", "_escape"].concat();
     let bind = ["letescaped", "="].concat();
-    let prov_full = [bind.as_str(), "crate::guards::", escape_fn.as_str(), "(&e);"].concat();
+    let prov_full = [
+        bind.as_str(),
+        "crate::guards::",
+        escape_fn.as_str(),
+        "(&e);",
+    ]
+    .concat();
     let prov_bare = [bind.as_str(), escape_fn.as_str(), "(&e);"].concat();
     assert!(
         sq_blk_str.contains(prov_full.as_str()) || sq_blk_str.contains(prov_bare.as_str()),
@@ -5397,7 +5409,9 @@ fn assert_pve_settle_logs_and_commits(reducer: &str, evt: &str) {
          deleted (the terminal outcome is then never written at all) or duplicated \
          (a second update whose position no single-offset ordering check can pin)."
     );
-    let at_upd = stripped.find(update.as_str()).expect("asserted present above");
+    let at_upd = stripped
+        .find(update.as_str())
+        .expect("asserted present above");
     assert!(
         at_upd > be,
         "TEETH (14r-d L10, ADR-0185 D1) `{reducer}`: `{update}` sits at body byte \
