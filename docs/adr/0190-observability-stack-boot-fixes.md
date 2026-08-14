@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** ADR-0180
 **Subsystems:** ci-gates, tooling-docs
-**Decision:** Alloy runs as its image's own uid 473 so `cap_drop: ALL` no longer EACCESes its storage path, the Caddy image strips the `cap_net_bind_service` file capability that made its own exec `EPERM` under `USER 10001` + `cap_drop: ALL`, and the Grafana alert group interval moves to a 10s-divisible 20s (with `for:` 45s→60s) so provisioning no longer aborts; tempo's undefined `-server.http-listen-address` flag is **parked**, not fixed, because removing it reds a gate that lives outside this slice's touch-set; and ADR-0180's `build_sha` cardinality residual is closed as a *mechanized tripwire* rather than a config change, because both remedies the brief proposed were disproved by live evidence.
+**Decision:** Alloy runs as the image own uid 473, the Caddy image strips the net-bind file capability that made its exec EPERM, and the alert group interval becomes a 10s-divisible 20s; tempo and Caddy port 80 stay parked out-of-touch-set.
 
 ## Context
 
@@ -154,6 +154,48 @@ that the final image discards, one with a `COPY --from=` *after* the setcap in t
 `G12c` is correspondingly stage-aware and last-writer-aware rather than index-aware, and the
 in-image assertion means a wrong-order Dockerfile fails `docker build` itself.
 
+### D3b — a FIFTH defect, reachable only once D3 was fixed: Caddy cannot bind its automatic HTTP redirect port. PARKED
+
+The premise this slice inherited — "the stack only binds high ports on loopback, so the capability
+buys nothing" — is **incomplete**, and the first boot after the D3 fix proved it. With the
+capability stripped, Caddy now gets all the way through config load and then dies on:
+
+```
+Error: loading initial config: … http app module: start:
+  listening on 127.0.0.1:80: listen tcp 127.0.0.1:80: bind: permission denied
+```
+
+Caddy's automatic HTTPS adds an implicit HTTP→HTTPS **redirect listener on port 80** for every
+`https://…` site, and the Caddyfile's global options block declares neither
+`auto_https disable_redirects` nor an `http_port`. Port 80 is privileged, `USER 10001` is not root,
+and the capability that made that bind possible is exactly what D3 removes. **This is not a
+regression introduced by D3** — before D3 the binary could not be exec'd at all, so no boot ever
+reached the bind. It is the next error in line, uncovered by fixing the one in front of it.
+
+**`cap_add: [NET_BIND_SERVICE]` does not fix it; that was tested, not assumed.** Docker does not
+place an added capability in the *ambient* set for a non-root user, so the process's effective set
+stays empty: the identical `permission denied` reproduces with `cap_add` present, and again with
+`no-new-privileges:true` additionally removed. There is no compose-side or Dockerfile-side remedy —
+`caddy run` exposes no flag for this, and the setting exists only as a Caddyfile global option.
+
+**The fix is one line in `ops/observability/Caddyfile`**, which is outside this slice's declared
+file set — the same hidden-dependency class as D1. It is **verified, not proposed**: adding
+
+```
+	auto_https disable_redirects
+```
+
+to that file's global options block and running the setcap'd image under the full hardened flags
+(`--user 10001:10001 --cap-drop ALL --security-opt no-new-privileges:true`) yields
+`msg="serving initial configuration"` with **zero** errors, running until killed. Disabling the
+redirects is the design-correct answer independently of the capability: an HTTP listener on port 80
+is unrequested surface in a stack whose whole posture is "loopback, high ports only", and no
+documented client of this stack speaks plain HTTP to it.
+
+Consequence: the D3 fix still ships — it is a strict prerequisite, moving Caddy from "cannot exec
+at all" to "loads its entire configuration" — and Caddy **still crash-loops** until the Caddyfile
+line lands. D6's table states that rather than smoothing it over.
+
 ### D4 — the alert group interval moves 15s → 20s, and `for:` 45s → 60s
 
 Grafana 13's alert scheduler runs on a fixed 10s base tick and refuses a group interval that is not
@@ -251,8 +293,8 @@ own VM).
 The slice's original EARS — *all seven services reach a non-restarting running state* — is not
 satisfiable while D1 is parked. It is re-scoped to: **WHEN `docker compose up -d --build` is run
 with a populated `.env`, THE SYSTEM SHALL reach a non-restarting running state for six of the seven
-services; tempo alone remains parked on D1, and its boot is demonstrated separately under an
-uncommitted flag-drop override.** No other service is pre-excused: an earlier draft carried a
+services; tempo remains parked on D1 and caddy on D3b, and tempo's boot is demonstrated
+separately under an uncommitted flag-drop override.** No other service is pre-excused: an earlier draft carried a
 node_exporter caveat inherited from ADR-0180:1031, which was withdrawn after node_exporter booted
 cleanly on this box under the exact committed configuration
 (`msg="Listening on" address=127.0.0.1:9100`).
@@ -260,11 +302,37 @@ cleanly on this box under the exact committed configuration
 Runtime facts are not statically checkable, so the boot evidence is recorded manually here, per the
 G11 precedent. The tripwires pin the known-bad *shapes*; only a boot proves the *outcome*.
 
-<!-- BOOT-EVIDENCE -->
+**Procedure of record.** `docker compose down -v --remove-orphans` first (D2's populated-volume
+trap), a hand-written `.env` (from the committed `.env.example`; never committed), then
+`docker compose up -d --build`. Box: WSL2 + Docker Desktop, 2026-08-14.
+
+**Result — `docker compose ps -a`, six minutes after start:**
+
+| service | state | `RestartCount` | reading |
+|---|---|---|---|
+| alloy | **running** | 0 | **D2 confirmed.** Zero `permission denied` in its log; `msg="Alloy is starting"` then `msg="now listening for http traffic" addr=127.0.0.1:12345`. This is the container that crash-looped before the fix. |
+| grafana | **running** | 0 | **D4 confirmed.** Zero occurrences of `Failed to provision alerting`; `logger=provisioning.alerting … msg="finished to provision alerting"`. |
+| loki | **running** | 0 | unchanged by this slice; recorded as a control. |
+| prometheus | **running** | 0 | unchanged by this slice; recorded as a control. |
+| tempo | restarting | 11 | **D1, as parked.** `flag provided but not defined: -server.http-listen-address`. Re-run with a `/tmp` compose override whose only difference is the deleted flag: **`running`**, and it stays up. That is the proof the sole remaining blocker is the out-of-touches checker, not tempo's own configuration. |
+| caddy | restarting | 11 | **D3 confirmed, D3b exposed.** It now *execs* and loads its whole Caddyfile — the pre-fix failure was `exec /usr/bin/caddy: operation not permitted` before any log line at all. It dies later, on D3b's port-80 redirect bind. With the verified one-line Caddyfile fix applied out-of-tree it reaches `msg="serving initial configuration"`, zero errors. |
+| node_exporter | **could not be created** | — | `Error response from daemon: path / is mounted on / but it is not a shared mount`. A **host** property of this WSL2/Docker Desktop box (`/` is not a shared mount, so `rslave` propagation on the rootfs bind is refused), not a defect in the committed configuration; a single-box Linux deploy has a shared `/`. Recorded as observed — an earlier draft of this ADR carried this as a *pre-written* caveat and that was withdrawn, because a standalone `docker run` of the identical arguments had succeeded; only the real `compose up` reproduced it. |
+
+**Two operator notes the run surfaced, neither a code change here:**
+
+- A bcrypt hash pasted into `.env` unescaped is silently mangled — Compose interpolates `$` in an
+  env file, so `MR_GRAFANA_BASIC_AUTH_HASH` arrives truncated and Caddy fails with
+  `base64-decoding password: illegal base64 data`. `.env.example`'s comment tells the operator to
+  generate the hash but not to escape it.
+- `docker compose up -d` **aborts the whole start** when one service fails to *create*
+  (node_exporter here), leaving the other six `Created` but never `Started`. That is a
+  create-time failure, not a run-time one; `docker compose start <the rest>` recovers.
+
+<!-- /BOOT-EVIDENCE -->
 
 ## Consequences
 
-- The stack boots for the first time since it was committed, minus tempo.
+- Four of the seven services boot clean where two of them previously crash-looped; tempo (D1) and caddy (D3b) remain parked on hidden dependencies, node_exporter on a host property of this box.
 - Five new always-on gates (`G12a`–`G12e`) and five new proof-of-teeth fixture groups
   (`T-h`–`T-l`) in `evals/observability-stack-config.eval.mjs`. Each was proven to bite against a
   bad fixture before the corresponding fix landed.
