@@ -10,12 +10,14 @@ import {
 
 // 14r-b — trading reducer NEGATIVE-PATH suite (ADR-0184).
 //
-// AUTHORED TEST-FIRST. This file is the 14r-b gating suite: it was written by the
-// tester against trading.rs / game-core rules.rs BEFORE any implementation work, and
-// the orchestrator proves its teeth by inverting one guard at a time in trading.rs
-// (proof-of-teeth register B1-B11) and checking that the named test goes RED. No
-// assertion in this file may ever be relaxed to match a buggy implementation — a wrong
-// assertion is re-derived FROM the reducer source, never from the observed behaviour.
+// AUTHORED TEST-FIRST. Precisely: the GUARDS under test already shipped (m15c / m16.5f,
+// ADR-0106 / ADR-0117) — "test-first" refers to THIS slice's teeth, not to the guards'
+// history. Every assertion below was derived by reading trading.rs and game-core
+// rules.rs, before running anything, and the orchestrator proves the teeth by inverting
+// one guard at a time in trading.rs (proof-of-teeth register B1-B11) and checking that
+// the named test goes RED. No assertion in this file may ever be relaxed to match a
+// buggy implementation — a wrong assertion is re-derived FROM the reducer source, never
+// from the observed behaviour.
 //
 // WHY THE FILE NAME IS `trade-zz-negative.spec.ts` (LOAD-BEARING)
 // ==============================================================
@@ -59,11 +61,19 @@ import {
 //   - Reducer rejections are asserted THREE-part: not-null, name === 'SenderError'
 //     (statusModel.ts:20 keys off the name string), message toBe EXACT. Never toContain:
 //     "insufficient inventory for item N" is emitted by BOTH trading.rs:331 AND the
-//     qty == 0 path in game-core rules.rs:93-97 via types.rs:114-116, and the two are
+//     qty == 0 path in game-core rules.rs:92-98 via types.rs:114-116, and the two are
 //     indistinguishable by substring.
-//   - Every Err test carries a DIFFERENTIAL CONTROL in the same test: the identical
-//     proposal MINUS the offending leg must resolve Ok. That is what attributes the
-//     rejection to the intended guard rather than to any earlier one.
+//   - Every Err test carries a CONTROL in the same test, but the controls are of two
+//     DIFFERENT kinds and neither should be described as the other:
+//       * LEG-DIFFERENTIAL (1a/1b/3a/3b): the identical proposal MINUS the offending leg
+//         must resolve Ok. That attributes the rejection to the intended guard rather
+//         than to any of the eight guards that run before it.
+//       * ROLE-DIFFERENTIAL (5a/6a): the SAME reducer, same offer, called by a party for
+//         whom it must succeed (5a's initiator cleanup cancel; 6a's counterparty accept),
+//         alongside the call by the identity for whom it must fail. What varies is the
+//         CALLER, not the payload.
+//       * 5b/5c are pure positive controls — they ARE the "must succeed" half of 5a.
+//       * 6b has NO same-reducer positive control in this file; see its header for why.
 //   - State is read from SERVER TRUTH via `spacetime sql`, always scoped to the A/B pair
 //     or to one trade_id — never `allTradeOffers()[0]`, never a global row count.
 //
@@ -102,6 +112,10 @@ import {
 // from, and page.evaluate crosses a structured-clone boundary the type system cannot
 // check. Verified against client/src/main.ts:1840-1955 this session.
 // ---------------------------------------------------------------------------
+// Only the members this file actually uses are declared. `__game().ownInventory` and
+// `__mrTrade.allTradeOffers()` / `.allPlayers()` are deliberately ABSENT: every state
+// assertion here reads server truth through `spacetime sql`, and re-declaring the client
+// readers would invite a future edit to assert on the subscription cache instead.
 interface GameSnap {
   identity: string;
   ownAuthTile: { x: number; y: number } | null;
@@ -113,7 +127,6 @@ interface GameSnap {
     level: number;
     partySlot: number;
   }>;
-  ownInventory: Array<{ invId: string; itemId: number; count: number }>;
 }
 
 interface MrTrade {
@@ -129,13 +142,6 @@ interface MrTrade {
   respondTrade(tradeId: string, accepted: boolean): Promise<void> | undefined;
   confirmTrade(tradeId: string): Promise<void> | undefined;
   cancelTrade(tradeId: string): Promise<void> | undefined;
-  allTradeOffers(): Array<{
-    tradeId: string;
-    initiator: string;
-    counterparty: string;
-    status: string;
-  }>;
-  allPlayers(): Array<{ identity: string; name: string }>;
 }
 
 /** One reducer-promise rejection, flattened to clonable primitives INSIDE the page
@@ -170,14 +176,39 @@ type TradeAction =
   | { kind: 'confirm'; tradeId: string }
   | { kind: 'cancel'; tradeId: string };
 
+/** The base proposal every test in this file builds on: A offers ONE monster, nothing
+ *  else, to `counterparty`. It is the >= 1 asset that satisfies the EmptyOffer rule and
+ *  it is the LEG-DIFFERENTIAL baseline — a test adds exactly one offending leg with a
+ *  spread (`{ ...monsterOnlyProposal(idB, monA), initiatorItems: [phantom] }`) so the
+ *  control and the negative differ in exactly that leg and nothing else.
+ *
+ *  A PURE FACTORY, deliberately: it closes over nothing and returns a fresh object each
+ *  call, so tests remain fully self-contained and a `-g`-selected single test still
+ *  builds its whole world. Do NOT hoist a shared object literal here. */
+function monsterOnlyProposal(
+  counterparty: string,
+  monsterId: string,
+): Extract<TradeAction, { kind: 'propose' }> {
+  return {
+    kind: 'propose',
+    counterparty,
+    initiatorMonsterIds: [monsterId],
+    initiatorItems: [],
+    initiatorCurrency: '0',
+    counterpartyMonsterIds: [],
+    counterpartyItems: [],
+    counterpartyCurrency: '0',
+  };
+}
+
 // ---------------------------------------------------------------------------
 // EXPECTED SERVER MESSAGES — the pinned strings, each with its source line.
 // Read from source this session; a change to any of them is a deliberate API change and
 // must be made HERE and in the ADR, never by loosening an assertion.
 // ---------------------------------------------------------------------------
 /** server-module/src/trading.rs:331 (guard :330). NOTE: byte-identical to the qty == 0
- *  rejection in game-core/src/trading/rules.rs:93-97 via types.rs:114-116 — which is
- *  precisely why test 1a asserts qty > 0 as a precondition and runs a differential
+ *  rejection in game-core/src/trading/rules.rs:92-98 via types.rs:114-116 — which is
+ *  precisely why test 1a guards the qty constant as > 0 and runs a leg-differential
  *  control instead of trusting the message alone. */
 const errInsufficientItem = (itemId: number): string => `insufficient inventory for item ${itemId}`;
 /** server-module/src/trading.rs:356-358 (guard :355). */
@@ -211,7 +242,7 @@ const ERR_NOT_CONFIRMED_BY_COUNTERPARTY = 'trade offer is not in ConfirmedByCoun
  *  never checks that an item id exists in content — it only counts inventory rows
  *  (trading.rs:312-330). So the inventory count is provably 0 and qty 1 > 0. */
 const PHANTOM_ITEM_ID = 424242;
-/** MUST be > 0: qty == 0 is rejected UPSTREAM by validate_proposal (rules.rs:92-97) with
+/** MUST be > 0: qty == 0 is rejected UPSTREAM by validate_proposal (rules.rs:92-98) with
  *  the IDENTICAL message, which would move the rejection off the guard under test. */
 const PHANTOM_ITEM_QTY = 1;
 /** 1 unit of currency against a provably empty wallet: a fresh identity has no
@@ -435,10 +466,18 @@ async function gameReady(p: Page): Promise<void> {
   );
 }
 
-/** EXACT presence, never `>=`: `>= 3` would pass while a fourth identity from a leaked
- *  browser is still joined, and that fourth player could hold an active offer that makes
- *  every propose in this file fail the one-active-offer rule for reasons unrelated to the
- *  guard under test. */
+/** EXACT presence, never `>=`, for two reasons — and NOT for the one you might assume.
+ *  (It is NOT about a foreign player's active offer: the one-active-offer rule checks only
+ *  `me` and `counterparty`, trading.rs:254-255, so a fourth identity's offer cannot make
+ *  A's proposal fail.)
+ *   1. MUTUAL-VISIBILITY CONVERGENCE. `presenceCount` is `store.playerCount`, so waiting
+ *      for exactly 3 on ALL THREE pages proves each page has actually received the other
+ *      two players' rows. Without it, A could propose to an identity B has not yet
+ *      observed, and the counterparty-joined guard (trading.rs:246-250) could fire on a
+ *      race instead of on the guard under test.
+ *   2. FAIL LOUD ON A LINGERING FOREIGN IDENTITY. `>= 3` would silently tolerate a leaked
+ *      browser from an earlier spec file; `=== 3` turns that shared-world contamination
+ *      into an immediate, named beforeAll failure instead of a mystery later. */
 async function waitForPresence3(p: Page): Promise<void> {
   await p.waitForFunction(
     () => (window as unknown as { __game: () => GameSnap }).__game().presenceCount === 3,
@@ -573,7 +612,10 @@ function expectRejection(
 // Suite
 // ---------------------------------------------------------------------------
 test.describe('14r-b — trading reducer negative paths, three identities, server truth', () => {
-  let browser: Browser;
+  // `Browser | undefined`, not `Browser`: if beforeAll throws (a ready-wait or the
+  // presence convergence), the teardown still runs and must not blow up on an
+  // unassigned handle before it can report the real failure.
+  let browser: Browser | undefined;
   let ctxA: BrowserContext;
   let ctxB: BrowserContext;
   let ctxC: BrowserContext;
@@ -584,14 +626,78 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
   let identityB = '';
   let identityC = '';
 
+  /** Cancel every live offer involving A, B or C and await it GONE from server truth.
+   *
+   *  Runs after EVERY test (afterEach) and once more at teardown (afterAll). The
+   *  afterEach call is the isolation guarantee: a test that fails midway — say a mutation
+   *  makes cancel_trade reject its own initiator — would otherwise leave an offer row
+   *  behind, and every later sibling's `expectPairOfferRows(..., 0, 'precondition')` would
+   *  fail on the debris rather than on its own guard, turning one real red into nine
+   *  misleading ones. It cannot weaken anything: it runs strictly AFTER a test's
+   *  expectations have been evaluated, and it only removes state.
+   *
+   *  It is also an ASSERTION, not best-effort cleanup: if a cancel cannot clear the row,
+   *  that is itself a finding and it fails loudly with the reducer's own rejection text. */
+  async function sweepPartyOffers(label: string): Promise<void> {
+    const parties: Array<{ page: Page; identity: string }> = [
+      { page: pageA, identity: identityA },
+      { page: pageB, identity: identityB },
+      { page: pageC, identity: identityC },
+    ];
+    const rows = allTradeOfferRows(label);
+    for (const row of rows) {
+      const initiator = normalizeIdentity(row.initiator ?? '');
+      const counterparty = normalizeIdentity(row.counterparty ?? '');
+      const owner = parties.find((p) => {
+        const norm = normalizeIdentity(p.identity);
+        // An EMPTY identity matches nothing. Without this, a beforeAll that failed before
+        // assigning the identities would leave norm === '' and, if a foreign row rendered
+        // an empty party cell, the sweep would "own" someone else's offer and try to
+        // cancel it from a page that is not a party.
+        if (norm === '') return false;
+        return norm === initiator || norm === counterparty;
+      });
+      if (owner === undefined) continue;
+      const tradeId = (row.trade_id ?? '').trim();
+      if (!/^[0-9]+$/.test(tradeId)) continue;
+      // Keep the rejection (if any) — a swept cancel that the server REFUSED is the most
+      // informative thing the teardown can report, and discarding it hides the cause of
+      // the row that then fails the assertions below.
+      const cancelRejection = await errorOf(owner.page, { kind: 'cancel', tradeId });
+      // Await it GONE from server truth — a fire-and-forget cancel would leave the next
+      // test (or the next spec file) racing a row this file created.
+      const remainingOffers = await pollSql(
+        () => allTradeOfferRows(label).filter((r) => (r.trade_id ?? '').trim() === tradeId),
+        (r) => r.length === 0,
+      );
+      expect(
+        remainingOffers.length,
+        `${label}: trade_offer trade_id=${tradeId} survived the sweep cancel — the world is ` +
+          `not clean for the next test or spec file. The cancel itself returned ` +
+          `${JSON.stringify(cancelRejection)}`,
+      ).toBe(0);
+      const remainingReapers = await pollSql(
+        () => reaperRowsFor(tradeId, label),
+        (r) => r.length === 0,
+      );
+      expect(
+        remainingReapers.length,
+        `${label}: trade_id=${tradeId} still has ${remainingReapers.length} armed reaper ` +
+          `row(s) after the sweep cancel. The cancel itself returned ` +
+          `${JSON.stringify(cancelRejection)}`,
+      ).toBe(0);
+    }
+  }
+
   test.beforeAll(async () => {
     // Three 30 s ready-waits plus three 30 s presence-waits can legitimately outrun the
     // 45 s config default under CI load.
     test.setTimeout(150_000);
-    browser = await chromium.launch();
-    ctxA = await browser.newContext();
-    ctxB = await browser.newContext();
-    ctxC = await browser.newContext();
+    const launched = await chromium.launch();
+    browser = launched;
+    ctxA = await launched.newContext();
+    ctxB = await launched.newContext();
+    ctxC = await launched.newContext();
     pageA = await ctxA.newPage();
     pageB = await ctxB.newPage();
     pageC = await ctxC.newPage();
@@ -626,55 +732,31 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
     ).not.toBe(identityC);
   });
 
+  test.afterEach(async () => {
+    // ISOLATION BOUNDARY. Runs after the test body's expectations, so it can only remove
+    // debris — never mask a failure. See sweepPartyOffers for the full rationale.
+    // NOTE ON BUDGET: a setTimeout call here would extend the TEST's timeout (Playwright
+    // semantics — only beforeAll/afterAll own a separate hook budget), and every test in
+    // this file already claims 120 s while spending ~20 s, so the sweep runs inside that
+    // slack. A sweep is one sql read on the common path.
+    await sweepPartyOffers('afterEach sweep');
+  });
+
   test.afterAll(async () => {
+    // A hook inherits the 45 s config default, and this sweep can legitimately run long
+    // when a cancel-breaking mutation forces every poll to burn its full settle window.
+    // Without this, the HOOK TIMEOUT would fire first and hide the sweep's diagnostic.
+    test.setTimeout(120_000);
     // Cancel anything this file left live BEFORE closing, or the next spec file inherits
     // an offer row (and, under the one-active-offer rule, a wedged player).
     // try/finally, not try/catch: the close still runs even if the sweep throws, and the
     // sweep's error still propagates — nothing is swallowed.
     try {
-      const parties: Array<{ page: Page; identity: string }> = [
-        { page: pageA, identity: identityA },
-        { page: pageB, identity: identityB },
-        { page: pageC, identity: identityC },
-      ];
-      const rows = allTradeOfferRows('afterAll sweep');
-      for (const row of rows) {
-        const initiator = normalizeIdentity(row.initiator ?? '');
-        const counterparty = normalizeIdentity(row.counterparty ?? '');
-        const owner = parties.find((p) => {
-          const norm = normalizeIdentity(p.identity);
-          return norm === initiator || norm === counterparty;
-        });
-        if (owner === undefined) continue;
-        const tradeId = (row.trade_id ?? '').trim();
-        if (!/^[0-9]+$/.test(tradeId)) continue;
-        await errorOf(owner.page, { kind: 'cancel', tradeId });
-        // Await it GONE from server truth — a fire-and-forget cancel would leave the next
-        // spec file racing a row this file created.
-        const remainingOffers = await pollSql(
-          () =>
-            allTradeOfferRows('afterAll sweep').filter(
-              (r) => (r.trade_id ?? '').trim() === tradeId,
-            ),
-          (r) => r.length === 0,
-        );
-        expect(
-          remainingOffers.length,
-          `afterAll sweep: trade_offer trade_id=${tradeId} survived the teardown cancel — ` +
-            `the world is not clean for the next spec file`,
-        ).toBe(0);
-        const remainingReapers = await pollSql(
-          () => reaperRowsFor(tradeId, 'afterAll sweep'),
-          (r) => r.length === 0,
-        );
-        expect(
-          remainingReapers.length,
-          `afterAll sweep: trade_id=${tradeId} still has ${remainingReapers.length} armed ` +
-            `reaper row(s) after cancel — the world is not clean for the next spec file`,
-        ).toBe(0);
-      }
+      await sweepPartyOffers('afterAll sweep');
     } finally {
-      await browser.close();
+      // Optional-call, not a try/catch: an unassigned handle (beforeAll threw before the
+      // launch resolved) is skipped, but a close that FAILS still propagates.
+      await browser?.close();
     }
   });
 
@@ -696,30 +778,21 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
   test('1a: propose listing a phantom item on the initiator leg is rejected — guard trading.rs:330', async () => {
     test.setTimeout(120_000);
     const label = '1a';
+    // CONSTANT GUARD, not a runtime precondition: this asserts on a literal const, so it
+    // can only ever fire when someone EDITS the constant. Its job is to make that edit
+    // fail here with an explanation rather than silently relocate the rejection to
+    // validate_proposal, which emits the identical message for qty == 0.
     expect(
       PHANTOM_ITEM_QTY,
-      '1a precondition: qty must be > 0. A qty of 0 is rejected UPSTREAM by ' +
+      '1a constant guard: PHANTOM_ITEM_QTY must be > 0. A qty of 0 is rejected UPSTREAM by ' +
         'validate_proposal with the IDENTICAL message, which would move this test off ' +
         'the guard it claims to cover',
     ).toBeGreaterThan(0);
     const monsterA = await starterMonsterId(pageA, label);
     await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
 
-    // --- DIFFERENTIAL CONTROL: identical proposal WITHOUT the item leg → Ok ---
-    await expectOk(
-      pageA,
-      {
-        kind: 'propose',
-        counterparty: identityB,
-        initiatorMonsterIds: [monsterA],
-        initiatorItems: [],
-        initiatorCurrency: '0',
-        counterpartyMonsterIds: [],
-        counterpartyItems: [],
-        counterpartyCurrency: '0',
-      },
-      `${label} control`,
-    );
+    // --- LEG-DIFFERENTIAL CONTROL: identical proposal WITHOUT the item leg → Ok ---
+    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} control`);
     const controlRows = await expectPairOfferRows(identityA, identityB, 1, `${label} control`);
     const controlTradeId = pairOfferTradeId(controlRows, `${label} control`);
     await expectOk(pageA, { kind: 'cancel', tradeId: controlTradeId }, `${label} control cancel`);
@@ -729,14 +802,8 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
 
     // --- NEGATIVE: the same proposal PLUS a phantom item on A's leg ---
     const rejection = await errorOf(pageA, {
-      kind: 'propose',
-      counterparty: identityB,
-      initiatorMonsterIds: [monsterA],
+      ...monsterOnlyProposal(identityB, monsterA),
       initiatorItems: [{ itemId: PHANTOM_ITEM_ID, qty: PHANTOM_ITEM_QTY }],
-      initiatorCurrency: '0',
-      counterpartyMonsterIds: [],
-      counterpartyItems: [],
-      counterpartyCurrency: '0',
     });
     expectRejection(rejection, errInsufficientItem(PHANTOM_ITEM_ID), label);
     // No row may have been written: a reject-then-insert impl would leave an offer behind.
@@ -746,47 +813,42 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
   // -------------------------------------------------------------------------
   // 1b — trading.rs:355 (counterparty item leg). Register: B8.
   //
-  // Same differential structure as 1a. The distinct message is the whole point: the two
-  // loops are copy-paste siblings, and only the message distinguishes which one fired.
-  // WHAT THIS KILLS: `>` → `<` at trading.rs:355 (B8), and any impl that checks only the
-  // initiator's inventory — the phantom item would then be accepted and the proposal
-  // would resolve.
+  // Same leg-differential structure as 1a. The distinct message is the whole point: the
+  // two loops are copy-paste siblings, and only the message distinguishes which one fired.
+  // WHAT THIS KILLS: `>` → `<` at trading.rs:355 (B8) — the phantom item is accepted and
+  // the proposal resolves.
+  //
+  // HONEST GAP — WRONG-PARTY OPERAND MUTANTS SURVIVE THIS TEST. Do NOT claim this test
+  // kills "an impl that checks only the initiator's inventory". It does not, and cannot
+  // in this world: BOTH identities hold ZERO of the phantom item, so
+  //   trading.rs:341  `.filter(counterparty)` → `.filter(me)`
+  // reads a different party's inventory and gets the SAME count (0), the same guard fires,
+  // and the same message is emitted. The mutant is invisible here by construction.
+  // Killing it needs an ASYMMETRIC world — one party holding N > 0 of the item — which
+  // needs an asset faucet reachable from a browser identity (parks P1/P2; the unblocker is
+  // the client/src grant-hook slice named in ADR-0184 D4). The same shape applies to the
+  // `escrowed_item_qty(...)` party operand at trading.rs:346-353.
   // -------------------------------------------------------------------------
   test('1b: propose listing a phantom item on the counterparty leg is rejected — guard trading.rs:355', async () => {
     test.setTimeout(120_000);
     const label = '1b';
-    expect(PHANTOM_ITEM_QTY, '1b precondition: qty must be > 0, see 1a').toBeGreaterThan(0);
+    // Constant guard (see 1a), not a runtime precondition.
+    expect(
+      PHANTOM_ITEM_QTY,
+      '1b constant guard: PHANTOM_ITEM_QTY must be > 0, see 1a',
+    ).toBeGreaterThan(0);
     const monsterA = await starterMonsterId(pageA, label);
     await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
 
-    await expectOk(
-      pageA,
-      {
-        kind: 'propose',
-        counterparty: identityB,
-        initiatorMonsterIds: [monsterA],
-        initiatorItems: [],
-        initiatorCurrency: '0',
-        counterpartyMonsterIds: [],
-        counterpartyItems: [],
-        counterpartyCurrency: '0',
-      },
-      `${label} control`,
-    );
+    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} control`);
     const controlRows = await expectPairOfferRows(identityA, identityB, 1, `${label} control`);
     const controlTradeId = pairOfferTradeId(controlRows, `${label} control`);
     await expectOk(pageA, { kind: 'cancel', tradeId: controlTradeId }, `${label} control cancel`);
     await expectPairOfferRows(identityA, identityB, 0, `${label} control cleared`);
 
     const rejection = await errorOf(pageA, {
-      kind: 'propose',
-      counterparty: identityB,
-      initiatorMonsterIds: [monsterA],
-      initiatorItems: [],
-      initiatorCurrency: '0',
-      counterpartyMonsterIds: [],
+      ...monsterOnlyProposal(identityB, monsterA),
       counterpartyItems: [{ itemId: PHANTOM_ITEM_ID, qty: PHANTOM_ITEM_QTY }],
-      counterpartyCurrency: '0',
     });
     expectRejection(rejection, errCounterpartyInsufficientItem(PHANTOM_ITEM_ID), label);
     await expectPairOfferRows(identityA, identityB, 0, `${label} no row written`);
@@ -807,34 +869,15 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
     const monsterA = await starterMonsterId(pageA, label);
     await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
 
-    await expectOk(
-      pageA,
-      {
-        kind: 'propose',
-        counterparty: identityB,
-        initiatorMonsterIds: [monsterA],
-        initiatorItems: [],
-        initiatorCurrency: '0',
-        counterpartyMonsterIds: [],
-        counterpartyItems: [],
-        counterpartyCurrency: '0',
-      },
-      `${label} control`,
-    );
+    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} control`);
     const controlRows = await expectPairOfferRows(identityA, identityB, 1, `${label} control`);
     const controlTradeId = pairOfferTradeId(controlRows, `${label} control`);
     await expectOk(pageA, { kind: 'cancel', tradeId: controlTradeId }, `${label} control cancel`);
     await expectPairOfferRows(identityA, identityB, 0, `${label} control cleared`);
 
     const rejection = await errorOf(pageA, {
-      kind: 'propose',
-      counterparty: identityB,
-      initiatorMonsterIds: [monsterA],
-      initiatorItems: [],
+      ...monsterOnlyProposal(identityB, monsterA),
       initiatorCurrency: OVERDRAWN_CURRENCY,
-      counterpartyMonsterIds: [],
-      counterpartyItems: [],
-      counterpartyCurrency: '0',
     });
     expectRejection(rejection, ERR_INSUFFICIENT_CURRENCY, label);
     await expectPairOfferRows(identityA, identityB, 0, `${label} no row written`);
@@ -846,8 +889,18 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
   // This is the anti-griefing guard: without it the initiator could name any
   // counterparty_currency at all, the offer would stick, and confirm would fail forever
   // while the counterparty's single trade slot stayed occupied.
-  // WHAT THIS KILLS: `>` → `<` at trading.rs:304 (B10), and any impl that balance-checks
-  // only the caller's own wallet.
+  // WHAT THIS KILLS: `>` → `<` at trading.rs:304 (B10) — the overdrawn counterparty leg
+  // is accepted and the proposal resolves.
+  //
+  // HONEST GAP — WRONG-PARTY OPERAND MUTANTS SURVIVE THIS TEST. Do NOT claim this test
+  // kills "an impl that balance-checks only the caller's own wallet". It does not: BOTH
+  // identities are freshly joined and hold ZERO gold (no player_wallet row at all), so
+  //   trading.rs:294  `wallet_balance(ctx, counterparty)` → `wallet_balance(ctx, me)`
+  // reads the wrong party's wallet and gets the SAME balance (0), the same guard fires,
+  // the same message is emitted. Killing it needs an ASYMMETRIC world — one party holding
+  // gold the other lacks — i.e. the quest_001 faucet, which is park P3 (4-6 min per run
+  // plus a flake history; ADR-0184 D4). The same shape applies to the
+  // `escrowed_currency_amount(...)` party operand at trading.rs:296-303.
   // -------------------------------------------------------------------------
   test('3b: propose listing currency the counterparty does not have is rejected — guard trading.rs:304', async () => {
     test.setTimeout(120_000);
@@ -855,33 +908,14 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
     const monsterA = await starterMonsterId(pageA, label);
     await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
 
-    await expectOk(
-      pageA,
-      {
-        kind: 'propose',
-        counterparty: identityB,
-        initiatorMonsterIds: [monsterA],
-        initiatorItems: [],
-        initiatorCurrency: '0',
-        counterpartyMonsterIds: [],
-        counterpartyItems: [],
-        counterpartyCurrency: '0',
-      },
-      `${label} control`,
-    );
+    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} control`);
     const controlRows = await expectPairOfferRows(identityA, identityB, 1, `${label} control`);
     const controlTradeId = pairOfferTradeId(controlRows, `${label} control`);
     await expectOk(pageA, { kind: 'cancel', tradeId: controlTradeId }, `${label} control cancel`);
     await expectPairOfferRows(identityA, identityB, 0, `${label} control cleared`);
 
     const rejection = await errorOf(pageA, {
-      kind: 'propose',
-      counterparty: identityB,
-      initiatorMonsterIds: [monsterA],
-      initiatorItems: [],
-      initiatorCurrency: '0',
-      counterpartyMonsterIds: [],
-      counterpartyItems: [],
+      ...monsterOnlyProposal(identityB, monsterA),
       counterpartyCurrency: OVERDRAWN_CURRENCY,
     });
     expectRejection(rejection, ERR_COUNTERPARTY_INSUFFICIENT_CURRENCY, label);
@@ -909,20 +943,7 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
     const monsterA = await starterMonsterId(pageA, label);
     await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
 
-    await expectOk(
-      pageA,
-      {
-        kind: 'propose',
-        counterparty: identityB,
-        initiatorMonsterIds: [monsterA],
-        initiatorItems: [],
-        initiatorCurrency: '0',
-        counterpartyMonsterIds: [],
-        counterpartyItems: [],
-        counterpartyCurrency: '0',
-      },
-      `${label} propose`,
-    );
+    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} propose`);
     const rows = await expectPairOfferRows(identityA, identityB, 1, `${label} after propose`);
     const tradeId = pairOfferTradeId(rows, `${label} after propose`);
     const proposed = rows[0];
@@ -951,11 +972,13 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
   });
 
   // -------------------------------------------------------------------------
-  // 5a — trading.rs:747: a non-party cannot cancel. Register: B3 (and B11 indirectly).
+  // 5a — trading.rs:747: a non-party cannot cancel. Register: B3.
   //
-  // C is joined but is neither initiator nor counterparty. Two assertions, both needed:
-  // the exact rejection, AND the offer SURVIVING in server truth. A guard that rejected
-  // AFTER deleting the row would satisfy the first alone.
+  // C is joined but is neither initiator nor counterparty. The load-bearing assertion is
+  // the EXACT rejection; the "offer survives" read that follows is a belt-and-braces
+  // regression pin, honestly labelled at its call site (transactional rollback means it
+  // cannot fail on its own). The other half of this criterion — that a real party CAN
+  // cancel — is the role-differential cleanup at the end of this test, and tests 5b/5c.
   //
   // WHAT THIS KILLS: both `!=` → `==` at trading.rs:747 (B3) — the condition becomes
   // `initiator == me && counterparty == me`, false for C, so C's cancel SUCCEEDS: the
@@ -968,30 +991,24 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
     const monsterA = await starterMonsterId(pageA, label);
     await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
 
-    await expectOk(
-      pageA,
-      {
-        kind: 'propose',
-        counterparty: identityB,
-        initiatorMonsterIds: [monsterA],
-        initiatorItems: [],
-        initiatorCurrency: '0',
-        counterpartyMonsterIds: [],
-        counterpartyItems: [],
-        counterpartyCurrency: '0',
-      },
-      `${label} propose`,
-    );
+    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} propose`);
     const rows = await expectPairOfferRows(identityA, identityB, 1, `${label} after propose`);
     const tradeId = pairOfferTradeId(rows, `${label} after propose`);
 
     const rejection = await errorOf(pageC, { kind: 'cancel', tradeId });
     expectRejection(rejection, ERR_NOT_A_PARTY, label);
-    // The offer must still be there — a rejection that also destroyed the offer would be
-    // just as broken as no rejection at all.
+    // BELT-AND-BRACES REGRESSION PIN ON TRANSACTIONAL ROLLBACK — stated honestly: this
+    // cannot fail independently of the message assertion above. SpacetimeDB rolls back the
+    // WHOLE transaction when a reducer returns Err, so a guard that deleted the row and
+    // then rejected would have its delete rolled back too; there is no reachable state in
+    // which the rejection fires and the row is gone. It stays because it is the assertion
+    // that would catch a future refactor moving the delete OUT of the reducer transaction
+    // (a scheduled or post-commit deletion), and it costs one sql read.
     await expectPairOfferRows(identityA, identityB, 1, `${label} offer survives non-party cancel`);
 
-    // Cleanup: the initiator cancels their own offer and the world returns to clean.
+    // ROLE-DIFFERENTIAL half: the SAME reducer on the SAME offer, called by a party, must
+    // succeed. Without it, "C was rejected" is consistent with cancel_trade rejecting
+    // everyone (the `||` mutant), and this test would pass on a completely dead guard.
     await expectOk(pageA, { kind: 'cancel', tradeId }, `${label} cleanup cancel`);
     await expectPairOfferRows(identityA, identityB, 0, `${label} cleanup verified`);
   });
@@ -1011,20 +1028,7 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
     const monsterA = await starterMonsterId(pageA, label);
     await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
 
-    await expectOk(
-      pageA,
-      {
-        kind: 'propose',
-        counterparty: identityB,
-        initiatorMonsterIds: [monsterA],
-        initiatorItems: [],
-        initiatorCurrency: '0',
-        counterpartyMonsterIds: [],
-        counterpartyItems: [],
-        counterpartyCurrency: '0',
-      },
-      `${label} propose`,
-    );
+    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} propose`);
     const rows = await expectPairOfferRows(identityA, identityB, 1, `${label} after propose`);
     const tradeId = pairOfferTradeId(rows, `${label} after propose`);
 
@@ -1047,20 +1051,7 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
     const monsterA = await starterMonsterId(pageA, label);
     await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
 
-    await expectOk(
-      pageA,
-      {
-        kind: 'propose',
-        counterparty: identityB,
-        initiatorMonsterIds: [monsterA],
-        initiatorItems: [],
-        initiatorCurrency: '0',
-        counterpartyMonsterIds: [],
-        counterpartyItems: [],
-        counterpartyCurrency: '0',
-      },
-      `${label} propose`,
-    );
+    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} propose`);
     const rows = await expectPairOfferRows(identityA, identityB, 1, `${label} after propose`);
     const tradeId = pairOfferTradeId(rows, `${label} after propose`);
 
@@ -1091,20 +1082,7 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
     const monsterA = await starterMonsterId(pageA, label);
     await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
 
-    await expectOk(
-      pageA,
-      {
-        kind: 'propose',
-        counterparty: identityB,
-        initiatorMonsterIds: [monsterA],
-        initiatorItems: [],
-        initiatorCurrency: '0',
-        counterpartyMonsterIds: [],
-        counterpartyItems: [],
-        counterpartyCurrency: '0',
-      },
-      `${label} propose`,
-    );
+    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} propose`);
     const rows = await expectPairOfferRows(identityA, identityB, 1, `${label} after propose`);
     const tradeId = pairOfferTradeId(rows, `${label} after propose`);
 
@@ -1146,6 +1124,15 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
   // as "the initiator", the role arm passes, and the STATUS arm fires instead — the
   // message flips to "trade offer is not in ConfirmedByCounterparty state" and this
   // exact-match assertion goes red. Both branches reject; only the message separates them.
+  //
+  // STRUCTURAL GAP, DISCLOSED: this test has NO same-reducer positive control — nothing in
+  // this file ever proves confirm_trade CAN succeed. That is deliberate, not an oversight:
+  // a successful confirm executes the atomic swap and moves A's starter monster to B,
+  // destroying the >= 1 asset every other test in this file proposes with. The positive
+  // control for confirm_trade lives OUT OF FILE, in trade-full.spec.ts (propose → respond →
+  // confirm → ownership transferred + row deleted) and trade-propose.spec.ts. Consequence
+  // to keep in view: a mutant that makes confirm_trade reject unconditionally is red in
+  // those files, not here.
   // -------------------------------------------------------------------------
   test('6b: the counterparty confirming a Pending offer gets the ROLE error, not the status — guard trading.rs:472', async () => {
     test.setTimeout(120_000);
@@ -1153,29 +1140,25 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
     const monsterA = await starterMonsterId(pageA, label);
     await expectPairOfferRows(identityA, identityB, 0, `${label} precondition`);
 
-    await expectOk(
-      pageA,
-      {
-        kind: 'propose',
-        counterparty: identityB,
-        initiatorMonsterIds: [monsterA],
-        initiatorItems: [],
-        initiatorCurrency: '0',
-        counterpartyMonsterIds: [],
-        counterpartyItems: [],
-        counterpartyCurrency: '0',
-      },
-      `${label} propose`,
-    );
+    await expectOk(pageA, monsterOnlyProposal(identityB, monsterA), `${label} propose`);
     const rows = await expectPairOfferRows(identityA, identityB, 1, `${label} after propose`);
     const tradeId = pairOfferTradeId(rows, `${label} after propose`);
     const pending = rows[0];
     if (pending === undefined) throw new Error(`${label}: pair row missing after a length check`);
+    // TWO-SIDED, mirroring test 4: the positive token alone would go vacuous the day a
+    // third TradeStatus variant whose name contains "Pending" is added, so the negative
+    // token pins that the offer is specifically NOT the confirmable status.
     expect(
       pending.status ?? '',
       `${label}: the offer must still be Pending when the counterparty confirms — that is ` +
-        `the wrong-status condition the role-first ordering is proven against`,
+        `the wrong-status condition the role-first ordering is proven against. Status cell ` +
+        `was ${JSON.stringify(pending.status ?? '')}`,
     ).toContain('Pending');
+    expect(
+      pending.status ?? '',
+      `${label}: the offer must NOT be ConfirmedByCounterparty — against that status the ` +
+        `role and status arms would agree and the message could not discriminate them`,
+    ).not.toContain('ConfirmedByCounterparty');
 
     const rejection = await errorOf(pageB, { kind: 'confirm', tradeId });
     expectRejection(
