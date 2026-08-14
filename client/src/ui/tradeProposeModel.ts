@@ -118,6 +118,22 @@ export function parseCurrency(raw: string): bigint {
 }
 
 /**
+ * Per-side monster-count cap for a proposed trade.
+ *
+ * NOT an SSOT — a MIRROR of `server-module/src/trading.rs:37`
+ * (`MAX_TRADE_MONSTERS_PER_SIDE: usize = 64`), kept honest by
+ * `evals/trade-cap-parity.eval.mjs`, which reads the Rust literal directly and
+ * reds if the two drift or if `buildProposeSubmission` stops reading this name.
+ * The server stays authoritative and rejects (never clamps); this exists only so
+ * an over-cap offer fails visibly in the UI instead of as an opaque reducer
+ * reject.
+ *
+ * The cap is INCLUSIVE: `trading.rs:44` compares `n_monsters > MAX`, so 64 is a
+ * legal offer and 65 is the first rejected one.
+ */
+export const MAX_TRADE_MONSTERS_PER_SIDE = 64;
+
+/**
  * Build the submission verdict from the rendered targets + the live draft.
  * - `canSubmit` = target non-empty AND present in `targets` AND at least one of
  *   {≥1 selectedMonsterId, offerCurrency > 0n, requestCurrency > 0n}. Mirrors the server
@@ -137,7 +153,10 @@ export function buildProposeSubmission(
     draft.targetIdentity !== '' && targets.some((t) => t.identity === draft.targetIdentity);
   const hasAsset =
     draft.selectedMonsterIds.length > 0 || offerCurrency > 0n || requestCurrency > 0n;
-  const canSubmit = targetValid && hasAsset;
+  // A VETO, ANDed in — never one more branch of `hasAsset`, which would let a
+  // 65-monster offer through as long as it also carried gold.
+  const withinCap = draft.selectedMonsterIds.length <= MAX_TRADE_MONSTERS_PER_SIDE;
+  const canSubmit = targetValid && hasAsset && withinCap;
 
   const args: TradeProposeArgs | null = canSubmit
     ? {

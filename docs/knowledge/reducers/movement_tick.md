@@ -5,7 +5,7 @@ slug: reducers/movement_tick
 updated: 2026-08-08
 tags: [reducer, spacetimedb, movement]
 abstract: "Per-zone, server-paced tick: drain ≤1 move per character in THIS zone, compute the outcome via `game_core::apply_move`,…"
-resource: server-module/src/movement.rs#L292
+resource: server-module/src/movement.rs#L291
 source: scripts/okf-export.mjs@server-module/src/movement.rs
 ---
 

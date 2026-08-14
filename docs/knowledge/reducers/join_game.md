@@ -5,7 +5,7 @@ slug: reducers/join_game
 updated: 2026-08-08
 tags: [reducer, spacetimedb, movement]
 abstract: "Join: one `player` + one `character` at the spawn + one starter `monster` (idempotent: a returning player gets characte…"
-resource: server-module/src/movement.rs#L50
+resource: server-module/src/movement.rs#L49
 source: scripts/okf-export.mjs@server-module/src/movement.rs
 ---
 

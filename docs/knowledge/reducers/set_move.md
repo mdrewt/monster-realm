@@ -5,7 +5,7 @@ slug: reducers/set_move
 updated: 2026-08-08
 tags: [reducer, spacetimedb, movement]
 abstract: "Replace the ENTIRE undrained queue with one input (a responsive turn/direction change). Cap-safe (length 1)."
-resource: server-module/src/movement.rs#L192
+resource: server-module/src/movement.rs#L191
 source: scripts/okf-export.mjs@server-module/src/movement.rs
 ---
 

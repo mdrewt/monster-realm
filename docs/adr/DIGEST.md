@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 153 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 154 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -162,6 +162,7 @@ Generated from 153 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0185](./0185-pve-settle-log-and-commit.md) | 0185 — PvE battle settle: log-and-commit the write-back error instead of aborting the reducer | Accepted | battle | 14r-d (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-d) | The three PvE terminal sites log the write-back error via `observability::mr_log` and commit the outcome instead of `?`-aborting into an ADR-0168 softlock; the two GC steps hoist above the fallible HP write to stay bounded. |
 | [0186](./0186-eval-scanner-migration-audit-and-behavioral-gating.md) | 0186 — Eval scanner migration: audit gate, behavioral+structural enforcement, name-derived gating, and parked residuals | Accepted | ci-gates, security-authz, tooling-docs | 14r-c (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-c) | `evals/scanner-migration-audit.eval.mjs` gates a name-derived eval set on two legs (a real `rust-scan.mjs` import plus `assertStripperSound`, and no naive stripper anywhere); six evals migrated, seven parked as capped self-retiring debt. |
 | [0187](./0187-dualkey-first-step-dedup-and-movement-input-e2e.md) | 0187 — dualkey first-step dedup + movement-input runtime e2e (mvi-e2e) | Accepted | movement-netcode, client-ui | 14r-e (M-postgate-fourteenth-review-residuals — ADR-0158 residuals 3+4) | Keydown's first step is skipped iff the direction is already held via the other key code (HeldDirections.isHeld membership, pure not-emit), and a keyboard-driven Playwright e2e now exercises main.ts's real frame body at runtime. |
+| [0188](./0188-small-hygiene-sweep-escape-ssot-and-trade-cap-mirror.md) | 0188 — small-hygiene sweep: evolution log escaping, both-role grass guard, trade-cap mirror | Accepted | evolution-fusion, movement-netcode, client-ui | 14r-f (M-postgate-fourteenth-review-residuals — ADR-0170 residual 8, ADR-0166 R4 + R6) | Escape `check_and_evolve`'s three JSON log reasons; route `movement_tick`'s grass pre-check through the both-role SSOT (hygiene, a verified no-op); mirror the server trade cap as an exported client const gated by a parity eval. |
 
 ## Harness design corpus (H- namespace)
 
@@ -269,6 +270,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0176](./0176-essence-graph-content-authoring.md) — EG3 (M-evolution-essence-graph — EARS EG3-1..EG3-9) — 0176 — Essence-graph content authoring (evolution_paths registry, essence items) (Accepted)
 - [0177](./0177-essence-graph-evolution-replaces-fuse.md) — EG5 (M-evolution-essence-graph — EARS EG5-1..EG5-7; closes the milestone) — 0177 — Essence-graph evolution replaces fuse(): milestone consolidation, Migration B, gate migration (EG5) (Accepted)
 - [0178](./0178-validator-and-core-hardening-tail.md) — 12r-e (M-postgate-twelfth-review-residuals) — 0178 — Validator & core hardening tail: R4 gate semantics, single duplicate-pair enforcement, ids-only party seam, cap-exhausted write elision (Accepted)
+- [0188](./0188-small-hygiene-sweep-escape-ssot-and-trade-cap-mirror.md) — 14r-f (M-postgate-fourteenth-review-residuals — ADR-0170 residual 8, ADR-0166 R4 + R6) — 0188 — small-hygiene sweep: evolution log escaping, both-role grass guard, trade-cap mirror (Accepted)
 
 ### movement-netcode
 
@@ -299,6 +301,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0175](./0175-essence-graph-reducers.md) — EG2 (M-evolution-essence-graph — EARS EG2-1..EG2-13) — 0175 — Essence-graph reducers: quality-time semantics, auto-evolution, battle credits (EG2) (Accepted)
 - [0178](./0178-validator-and-core-hardening-tail.md) — 12r-e (M-postgate-twelfth-review-residuals) — 0178 — Validator & core hardening tail: R4 gate semantics, single duplicate-pair enforcement, ids-only party seam, cap-exhausted write elision (Accepted)
 - [0187](./0187-dualkey-first-step-dedup-and-movement-input-e2e.md) — 14r-e (M-postgate-fourteenth-review-residuals — ADR-0158 residuals 3+4) — 0187 — dualkey first-step dedup + movement-input runtime e2e (mvi-e2e) (Accepted)
+- [0188](./0188-small-hygiene-sweep-escape-ssot-and-trade-cap-mirror.md) — 14r-f (M-postgate-fourteenth-review-residuals — ADR-0170 residual 8, ADR-0166 R4 + R6) — 0188 — small-hygiene sweep: evolution log escaping, both-role grass guard, trade-cap mirror (Accepted)
 
 ### content
 
@@ -408,6 +411,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0179](./0179-accounts-auth-implementation-design.md) — heavy-ceremony M21 planning pass (pre-slice; implementation elaborates in m21a/m21b/m21c — 0179 — Accounts & authentication implementation design: OIDC gate, guest-claim, and the re-key SSOT (Accepted)
 - [0182](./0182-m21b2-oidc-client-claim-ui-better-auth-deployment.md) — heavy-ceremony M21b-2 planning pass (pre-slice; implementation elaborates in the m21b-2 — 0182 — M21b-2: OIDC client wiring, claim-code UI, session lifecycle, Better Auth deployment (Accepted)
 - [0187](./0187-dualkey-first-step-dedup-and-movement-input-e2e.md) — 14r-e (M-postgate-fourteenth-review-residuals — ADR-0158 residuals 3+4) — 0187 — dualkey first-step dedup + movement-input runtime e2e (mvi-e2e) (Accepted)
+- [0188](./0188-small-hygiene-sweep-escape-ssot-and-trade-cap-mirror.md) — 14r-f (M-postgate-fourteenth-review-residuals — ADR-0170 residual 8, ADR-0166 R4 + R6) — 0188 — small-hygiene sweep: evolution log escaping, both-role grass guard, trade-cap mirror (Accepted)
 
 ### ci-gates
 
