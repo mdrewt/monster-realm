@@ -880,6 +880,18 @@ fn ea_conservation_headroom_02_check_headroom_before_build_swap_plan() {
 //       depth-matched `)`. Require `required_field` IN the span and `forbidden_field`
 //       NOT in the span. This kills: `authorize_respond(&s, offer.initiator == me)`
 //       when `offer.counterparty` appears only in an adjacent unrelated statement.
+//   (D) OPERATOR PIN (14r-b, ADR-0184): checks (A)-(C) are OPERATOR-BLIND —
+//       `authorize_respond(&offer.status, offer.counterparty != me)` satisfies all
+//       three, yet it authorizes exactly the callers it must reject (the role boolean
+//       is true for everyone who is NOT the counterparty). (D) requires the role
+//       expression to be an EQUALITY against `me` and treats a `!=` between the role
+//       field and `me` as a failure. Both operand orders are accepted
+//       (`<field> == me` and `me == <field>`); the production source uses the former.
+//       Whitespace is removed before matching so `cargo fmt` can never flip the gate.
+//       KNOWN FALSE-FLAG (accepted): a double-negated form such as
+//       `!(offer.counterparty != me)` is semantically correct but fails (D). If such a
+//       refactor ever lands, update this pin in the SAME PR — the behavioural authority
+//       for the role ordering is client/e2e/trade-zz-negative.spec.ts tests 6a and 6b.
 //
 // Returns Ok(()) on success; Err(message) describing the first violation.
 // ===========================================================================
@@ -928,6 +940,39 @@ fn check_authorize_call(
         return Err(format!(
             "`{forbidden_field}` found in {call_name}(...) argument span — \
              wrong-field aliasing: the wrong Identity field is used to compute the role boolean"
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // (D) OPERATOR PIN: the role boolean must be `<required_field> == me`
+    // (either operand order). Whitespace-stripped so formatting cannot flip it.
+    // -----------------------------------------------------------------------
+    let span_nows: String = arg_span.chars().filter(|c| !c.is_whitespace()).collect();
+    let field_nows: String = required_field
+        .chars()
+        .filter(|c| !c.is_whitespace())
+        .collect();
+    let inverted_field_first = format!("{field_nows}!=me");
+    let inverted_me_first = format!("me!={field_nows}");
+    if span_nows.contains(inverted_field_first.as_str())
+        || span_nows.contains(inverted_me_first.as_str())
+    {
+        return Err(format!(
+            "inverted-operator: `{required_field}` is compared to `me` with a NOT-EQUAL \
+             operator inside {call_name}(...) — the role boolean is then true for every \
+             caller who is NOT the authorized party, so the wrong role passes the gate"
+        ));
+    }
+    let equality_field_first = format!("{field_nows}==me");
+    let equality_me_first = format!("me=={field_nows}");
+    if !span_nows.contains(equality_field_first.as_str())
+        && !span_nows.contains(equality_me_first.as_str())
+    {
+        return Err(format!(
+            "operator-missing: no equality between `{required_field}` and `me` found in \
+             {call_name}(...) argument span — the role boolean must be computed as \
+             `{required_field} == me` (or `me == {required_field}`), never from an \
+             unrelated expression"
         ));
     }
 
@@ -1063,6 +1108,130 @@ fn ea_authorize_confirm_01_confirm_trade_propagates_authorize_result() {
         panic!(
             "EA-AUTHORIZE-CONFIRM-01 FAIL: confirm_trade authorization shape incorrect — {e}. \
              Any caller can finalize any trade without proper role+status enforcement."
+        )
+    });
+}
+
+// ===========================================================================
+// EA-AUTHORIZE-OPERATOR-01: the role boolean is an EQUALITY against `me`
+//                           (14r-b, ADR-0184 — closes the operator-blind gap)
+//
+// EA-AUTHORIZE-RESPOND-01 / EA-AUTHORIZE-CONFIRM-01 pin WHICH field feeds the role
+// boolean and that the Result is propagated, but they never look at the OPERATOR
+// between that field and `me`. So this shape passed both of them unchanged:
+//
+//     authorize_respond(&offer.status, offer.counterparty != me)?;
+//
+// which is the exact inversion of the authorization: every caller who is NOT the
+// counterparty clears the role gate, and the real counterparty is locked out.
+//
+// This test is the proof-of-teeth for check_authorize_call's new (D) operator pin: the
+// inverted fixtures MUST flag, and the two accepted production shapes MUST still pass.
+// The behavioural authority for the same invariant is client/e2e/trade-zz-negative.spec.ts
+// tests 6a and 6b; this in-process pin is what makes the mutation visible to
+// cargo-mutants, which cannot see an out-of-process e2e.
+//
+// TEETH: kills an operator-blind checker — one that accepts `!=` where the reducer
+//        must use `==`, or that accepts a role boolean not compared to `me` at all.
+// ===========================================================================
+
+#[test]
+fn ea_authorize_operator_01_role_boolean_uses_equality_against_me() {
+    let respond_call = concat!("authorize_", "respond");
+    let confirm_call = concat!("authorize_", "confirm");
+
+    // --- TOOTH 1: inverted operator, field-first, on respond_trade ---
+    let inverted_field_first = "fn respond_trade(ctx, trade_id, accepted) { \
+         authorize_respond(&offer.status, offer.counterparty != me).map_err(|e| e.to_string())?; \
+         Ok(()) }";
+    let e1 = check_authorize_call(
+        inverted_field_first,
+        respond_call,
+        "offer.counterparty",
+        "offer.initiator",
+    )
+    .expect_err(
+        "TEETH FAILED (EA-AUTHORIZE-OPERATOR-01 tooth 1): check_authorize_call ACCEPTED \
+         `offer.counterparty != me` as the respond role boolean. That inversion authorizes \
+         every caller who is NOT the counterparty to accept or reject the trade.",
+    );
+    assert!(
+        e1.contains("inverted-operator"),
+        "EA-AUTHORIZE-OPERATOR-01 tooth 1: the inverted fixture must fail on the OPERATOR \
+         pin, not incidentally on another check. Got: {e1}"
+    );
+
+    // --- TOOTH 2: inverted operator, me-first, on confirm_trade ---
+    let inverted_me_first = "fn confirm_trade(ctx, trade_id) { \
+         authorize_confirm(&offer.status, me != offer.initiator)?; Ok(()) }";
+    let e2 = check_authorize_call(
+        inverted_me_first,
+        confirm_call,
+        "offer.initiator",
+        "offer.counterparty",
+    )
+    .expect_err(
+        "TEETH FAILED (EA-AUTHORIZE-OPERATOR-01 tooth 2): check_authorize_call ACCEPTED \
+         `me != offer.initiator` as the confirm role boolean — the operand order must not \
+         create a hole in the pin.",
+    );
+    assert!(
+        e2.contains("inverted-operator"),
+        "EA-AUTHORIZE-OPERATOR-01 tooth 2: the reversed-operand inverted fixture must fail \
+         on the OPERATOR pin. Got: {e2}"
+    );
+
+    // --- TOOTH 3: an equality that is not against `me` ---
+    let equality_wrong_operand = "fn respond_trade(ctx, trade_id, accepted) { \
+         authorize_respond(&offer.status, offer.counterparty == spoofed)?; Ok(()) }";
+    let e3 = check_authorize_call(
+        equality_wrong_operand,
+        respond_call,
+        "offer.counterparty",
+        "offer.initiator",
+    )
+    .expect_err(
+        "TEETH FAILED (EA-AUTHORIZE-OPERATOR-01 tooth 3): check_authorize_call ACCEPTED a \
+         role boolean comparing the offer field against something other than the caller \
+         identity `me`.",
+    );
+    assert!(
+        e3.contains("operator-missing"),
+        "EA-AUTHORIZE-OPERATOR-01 tooth 3: a role boolean not compared to `me` must fail on \
+         the OPERATOR pin. Got: {e3}"
+    );
+
+    // --- CONTROL 1: the production shape (field-first equality) still passes ---
+    let good_field_first = "fn respond_trade(ctx, trade_id, accepted) { \
+         authorize_respond(&offer.status, offer.counterparty == me).map_err(|e| { \
+         let msg = e.to_string(); msg })?; Ok(()) }";
+    check_authorize_call(
+        good_field_first,
+        respond_call,
+        "offer.counterparty",
+        "offer.initiator",
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "EA-AUTHORIZE-OPERATOR-01 control 1 FAIL: the operator pin rejected the shape \
+             production actually ships — `offer.counterparty == me` — with: {e}. A pin that \
+             cannot pass the real source is a false gate, not a tooth."
+        )
+    });
+
+    // --- CONTROL 2: reversed operand order is also accepted ---
+    let good_me_first = "fn confirm_trade(ctx, trade_id) { \
+         authorize_confirm(&offer.status, me == offer.initiator)?; Ok(()) }";
+    check_authorize_call(
+        good_me_first,
+        confirm_call,
+        "offer.initiator",
+        "offer.counterparty",
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "EA-AUTHORIZE-OPERATOR-01 control 2 FAIL: the operator pin rejected \
+             `me == offer.initiator`, which is the same equality with the operands swapped: {e}"
         )
     });
 }

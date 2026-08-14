@@ -341,19 +341,49 @@ function hasConfirmDelete(body) {
 // The check should use `offer.initiator != me && offer.counterparty != me`.
 // bad fixture: only checks initiator → must flag.
 // good fixture: checks both with AND logic → must not flag.
+//
+// 14r-b (ADR-0184) TIGHTENING — two changes, both narrowing:
+//   1. stripRustStrings after stripRustComments (Finding C shape, already applied to
+//      REAPER_ARMED at :390): a dead `let _dead = "if offer.initiator != me && ...";`
+//      no longer satisfies the needle. Fixture RT-SEC-03 proves it.
+//   2. The `[^{]*?` bridge is replaced by an anchored `\s*&&\s*` join, so the two clauses
+//      must be joined by a CONJUNCTION. The old bridge accepted `||` between them, which
+//      is the single most damaging realistic mutation of this guard: with `||`, EVERY
+//      caller is rejected (a party fails the OTHER clause) and cancel_trade is dead for
+//      everyone. Fixture RT-SEC-02 proves it. `\(?` / `\)?` tolerate parenthesised clauses.
+//
+// THIS IS A SHAPE TRIPWIRE, NOT A SEMANTICS PROOF. It asserts that one specific,
+// currently-shipping textual form is present — nothing more. The SEMANTIC authority for
+// TR-17 is the behavioural suite client/e2e/trade-zz-negative.spec.ts, tests 5a (a
+// non-party is rejected AND the offer survives), 5b (the counterparty may cancel) and 5c
+// (the initiator may cancel). A legitimate refactor of the guard MAY update this regex in
+// the SAME PR, provided 5a/5b/5c stay green — that is the intended maintenance path, not
+// a loophole.
+//
+// KNOWN SURVIVORS (this check returns true although the guard is defeated) — do not
+// mistake a green here for a proof:
+//   - `if offer.initiator != me && offer.counterparty != me && false { ... }`
+//   - the guard placed inside dead code, e.g. `if false { if offer.initiator != me && ... }`
+//   - the correct `if` condition with an EMPTY body (no `return Err`)
+//   - (CLOSED by change 1) the whole guard text hiding inside a string literal
+//   Each of the survivors above is killed behaviourally by 5a/5b/5c.
+//
+// KNOWN FALSE-FLAG SHAPES (semantically correct code this check would REJECT). If any of
+// these lands, update the regex here in the same PR rather than weakening the tests:
+//   - `let is_party = offer.initiator == me || offer.counterparty == me; if !is_party {`
+//   - De Morgan: `if !(offer.initiator == me || offer.counterparty == me) {`
+//   - `if !matches!(me, m if m == offer.initiator || m == offer.counterparty) {`
+//   - an interposed third clause: `if offer.initiator != me && !is_admin(me) && offer.counterparty != me {`
 // ---------------------------------------------------------------------------
 function hasCancelPartyCheck(body) {
-  const code = stripRustComments(body);
-  // Require BOTH initiator and counterparty inequality checks to appear inside an `if`
-  // condition (directly after the `if` keyword). `[^{]*?` prevents matching across a
-  // block-open brace, so both must be in the SAME `if` condition — not split across
-  // nested ifs or macro arguments where the expressions appear but no gate is present.
+  const code = stripRustStrings(stripRustComments(body));
+  // Both party inequality checks must sit in the SAME `if` condition, joined by `&&`.
   const initiatorFirst =
-    /if\s+(?:offer\.initiator\s*!=\s*me|me\s*!=\s*offer\.initiator)[^{]*?(?:offer\.counterparty\s*!=\s*me|me\s*!=\s*offer\.counterparty)/.test(
+    /if\s+\(?\s*(?:offer\.initiator\s*!=\s*me|me\s*!=\s*offer\.initiator)\s*\)?\s*&&\s*\(?\s*(?:offer\.counterparty\s*!=\s*me|me\s*!=\s*offer\.counterparty)/.test(
       code,
     );
   const counterpartyFirst =
-    /if\s+(?:offer\.counterparty\s*!=\s*me|me\s*!=\s*offer\.counterparty)[^{]*?(?:offer\.initiator\s*!=\s*me|me\s*!=\s*offer\.initiator)/.test(
+    /if\s+\(?\s*(?:offer\.counterparty\s*!=\s*me|me\s*!=\s*offer\.counterparty)\s*\)?\s*&&\s*\(?\s*(?:offer\.initiator\s*!=\s*me|me\s*!=\s*offer\.initiator)/.test(
       code,
     );
   return initiatorFirst || counterpartyFirst;
@@ -844,6 +874,34 @@ export default async function () {
       pass: false,
       detail:
         'TEETH FAILED (RT-SEC-01): hasCancelPartyCheck passed a fixture where both expressions appear only in a log macro — authorization guard is absent but checker returned true',
+    };
+  }
+  // RT-SEC-02 (14r-b, ADR-0184): the two clauses joined by `||` instead of `&&`.
+  // Semantically this rejects EVERY caller — a party fails the other disjunct — so
+  // cancel_trade becomes uncancellable for initiator and counterparty alike. Both
+  // expressions are present and both are inside the same `if`, so the pre-14r-b
+  // `[^{]*?` bridge accepted this fixture; the anchored `\s*&&\s*` join rejects it.
+  const orJoinedCancelParty =
+    'fn cancel_trade(ctx, trade_id) { if offer.initiator != me || offer.counterparty != me { return Err("not a party"); } ctx.db.trade_offer().trade_id().delete(trade_id); Ok(()) }';
+  if (hasCancelPartyCheck(orJoinedCancelParty)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (RT-SEC-02): hasCancelPartyCheck passed a fixture whose clauses are joined by `||` instead of `&&` — that guard rejects BOTH parties, so cancel_trade can never succeed, yet the checker returned true',
+    };
+  }
+  // RT-SEC-03 (14r-b, ADR-0184): the correct guard text present ONLY inside a string
+  // literal, with the real guard deleted. Mirrors the REAPER_ARMED Finding C bypass;
+  // killed by the stripRustStrings pass now applied inside hasCancelPartyCheck.
+  const stringLiteralCancelParty =
+    'fn cancel_trade(ctx, trade_id) { let _dead = "if offer.initiator != me && offer.counterparty != me { return Err(); }"; ctx.db.trade_offer().trade_id().delete(trade_id); Ok(()) }';
+  if (hasCancelPartyCheck(stringLiteralCancelParty)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (RT-SEC-03): hasCancelPartyCheck passed a fixture where the guard text appears only inside a string literal and no real authorization guard exists (string-literal bypass)',
     };
   }
 
