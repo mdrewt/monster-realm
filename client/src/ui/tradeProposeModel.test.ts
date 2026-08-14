@@ -20,6 +20,14 @@
 
 import { describe, expect, it } from 'vitest';
 import type { StoreMonsterPub, StorePlayer } from '../net/store';
+// 14r-f / EARS-3 (ADR-0188): the trade-side monster cap is read through a NAMESPACE
+// import on purpose. A named import of a not-yet-existing export is an ESM LINK error,
+// which reds the WHOLE FILE and would hide the behavioural rows below behind a single
+// module-level failure. Through the namespace the missing export is `undefined`, so the
+// const-pin test reds on its own (`undefined !== 64`) while the 65/1000 boundary rows
+// red for their own, behavioural reason. The exact identifier is still pinned — a rename
+// of the export reds this test.
+import * as tradeProposeModelNs from './tradeProposeModel';
 import {
   buildProposeLists,
   buildProposeSubmission,
@@ -695,5 +703,202 @@ describe('buildProposeLists PTC2-7: model is TOTAL — never throws on garbage i
     expect(lists).toHaveProperty('offerableMonsters');
     expect(lists.targets).toHaveLength(0);
     expect(lists.offerableMonsters).toHaveLength(0);
+  });
+});
+
+// ===========================================================================
+// 14r-f EARS-3 (ADR-0188) — the client-side trade-side monster cap.
+//
+// EARS-3: WHEN a player selects >64 monsters for a trade, THE SYSTEM SHALL
+//         disable submission client-side.
+//
+// SERVER SSOT: `MAX_TRADE_MONSTERS_PER_SIDE: usize = 64`
+// (server-module/src/trading.rs:37). The server check at trading.rs:44 is
+//     if n_monsters > MAX_TRADE_MONSTERS_PER_SIDE { return Err(..) }
+// so the cap is INCLUSIVE: **64 is LEGAL and 65 rejects**. The client clause must
+// therefore be `<= 64`, NEVER `< 64` — a `< 64` clause disables a perfectly valid
+// 64-monster offer, i.e. a UX regression dressed up as a fix (plan anti-pattern 9).
+//
+// The client constant is a MIRROR of the server SSOT, not a second SSOT: the
+// numeric equality (and the fact that `canSubmit`'s clause actually READS the
+// named constant rather than an inlined literal) is gated by
+// `evals/trade-cap-parity.eval.mjs`. These vitest rows gate the BEHAVIOUR.
+//
+// Server semantics deliberately mirrored, not re-derived (VERIFIED-CLEAN in the
+// 14r-f plan): `check_trade_side_size` runs on the raw `.len()` BEFORE
+// `validate_proposal`'s duplicate-id rejection, so the client's raw `.length` is
+// the correct mirror — no dedup is applied here on purpose.
+//
+// RED AT HEAD: `tradeProposeModel.ts:129-152` has NO length cap of any kind, so
+// the 65 and 1000 rows currently return `canSubmit === true`, and
+// `MAX_TRADE_MONSTERS_PER_SIDE` is `undefined` on the module namespace.
+//
+// Do NOT edit these tests to match a buggy impl — correct from the spec only.
+// ===========================================================================
+
+/** N distinct monster ids (1n..Nn) — the only axis under test is `.length`. */
+function idsOfLength(n: number): bigint[] {
+  const out: bigint[] = [];
+  for (let i = 0; i < n; i++) out.push(BigInt(i + 1));
+  return out;
+}
+
+const CAP_TARGETS: TradeProposeTarget[] = [{ identity: '0xaaa1', label: 'Alice' }];
+
+/** A draft that is submittable on every axis EXCEPT the selection length. */
+function capDraft(n: number, offerCurrency: string): TradeProposeDraft {
+  return {
+    targetIdentity: '0xaaa1',
+    selectedMonsterIds: idsOfLength(n),
+    offerCurrency,
+    requestCurrency: '0',
+  };
+}
+
+describe('EARS-3a: MAX_TRADE_MONSTERS_PER_SIDE is exported from the model and === 64', () => {
+  it('★ BITES: the model exports MAX_TRADE_MONSTERS_PER_SIDE === 64 — kills a file-private const or an inlined magic 64', () => {
+    // WRONG IMPL KILLED: `const MAX = 64` without `export` (nothing outside the
+    // module can then assert on it, and the parity eval cannot prove the mirror);
+    // and a bare `64` inlined into the clause with no named constant at all.
+    // The VALUE is pinned to the server SSOT at trading.rs:37 — if the server cap
+    // ever moves, evals/trade-cap-parity.eval.mjs reds first and this row second.
+    expect(tradeProposeModelNs.MAX_TRADE_MONSTERS_PER_SIDE).toBe(64);
+    expect(typeof tradeProposeModelNs.MAX_TRADE_MONSTERS_PER_SIDE).toBe('number');
+  });
+});
+
+describe('EARS-3b: canSubmit boundary table on selectedMonsterIds.length (cap is INCLUSIVE)', () => {
+  // Every row below holds `offerCurrency: '1'` so the non-degeneracy gate (D3,
+  // `total_assets >= 1`) is satisfied independently of the selection — the ONLY
+  // variable is the selection length.
+  const rows: { n: number; expected: boolean; why: string }[] = [
+    {
+      n: 0,
+      expected: true,
+      why: 'empty selection + currency is a valid offer (n == 0 is legal server-side)',
+    },
+    { n: 1, expected: true, why: 'one monster is far below the cap' },
+    { n: 63, expected: true, why: 'one below the cap' },
+    { n: 64, expected: true, why: 'EXACTLY the cap — trading.rs:44 is `n > MAX`, so 64 is LEGAL' },
+    { n: 65, expected: false, why: 'one OVER the cap — trading.rs:44 rejects at 65' },
+    { n: 1000, expected: false, why: 'far over the cap' },
+  ];
+
+  for (const row of rows) {
+    it(`BITES: length ${row.n} → canSubmit ${row.expected} (${row.why})`, () => {
+      const sub = buildProposeSubmission(CAP_TARGETS, capDraft(row.n, '1'));
+      expect(sub.canSubmit, `selectedMonsterIds.length=${row.n}: ${row.why}`).toBe(row.expected);
+    });
+  }
+
+  it('★★ BITES: the 64-vs-65 pair — 64 submits, 65 does not (kills BOTH an off-by-one `< 64` and a missing cap)', () => {
+    // THE load-bearing pair. A `< 64` clause reds the first assertion (it would
+    // disable a legal 64-monster offer); a missing cap of any kind reds the
+    // second (65 would submit and the server would reject with
+    // "too many monsters in one trade side: 65 (max 64)").
+    const at = buildProposeSubmission(CAP_TARGETS, capDraft(64, '1'));
+    const over = buildProposeSubmission(CAP_TARGETS, capDraft(65, '1'));
+    expect(at.canSubmit, '64 monsters is LEGAL server-side (trading.rs:44 is `>`)').toBe(true);
+    expect(over.canSubmit, '65 monsters is REJECTED server-side (trading.rs:44 is `>`)').toBe(
+      false,
+    );
+  });
+
+  it('★ BITES: over-cap drafts also return args === null — kills an impl that flips canSubmit but still hands main.ts a payload', () => {
+    // `args` is the single source main.ts reads at the reducer boundary
+    // (tradeProposeView.ts:231 re-checks canSubmit, but the payload must not
+    // exist at all). An impl that only touches the boolean leaves a live
+    // 65-monster payload reachable.
+    for (const n of [65, 1000]) {
+      const sub = buildProposeSubmission(CAP_TARGETS, capDraft(n, '1'));
+      expect(sub.canSubmit, `n=${n}`).toBe(false);
+      expect(sub.args, `n=${n}: args must be null when !canSubmit`).toBeNull();
+    }
+  });
+
+  it('★ BITES: at the cap, args carries all 64 ids UNTRUNCATED — kills a clamp-instead-of-reject impl', () => {
+    // ADR-0106/0166 D3: the server REJECTS, it never truncates. A client that
+    // silently slices the selection to 64 would submit a *different* trade than
+    // the player composed. At n=64 nothing may be dropped.
+    const sub = buildProposeSubmission(CAP_TARGETS, capDraft(64, '1'));
+    expect(sub.canSubmit).toBe(true);
+    expect(sub.args).not.toBeNull();
+    expect(sub.args!.initiatorMonsterIds).toHaveLength(64);
+    expect(sub.args!.initiatorMonsterIds[63]).toBe(64n);
+  });
+});
+
+describe('EARS-3c: the cap is a hard VETO (AND), never one more OR-branch of hasAsset', () => {
+  it('★★ BITES: 65 monsters + offerCurrency 500 → canSubmit false — kills a cap folded into `hasAsset` as an OR term', () => {
+    // WRONG IMPL KILLED (the most plausible mis-wiring): adding
+    // `|| draft.selectedMonsterIds.length <= MAX` into the `hasAsset` disjunction
+    // instead of ANDing it into `canSubmit`. That impl passes the whole EARS-3b
+    // table above (every row there is true-by-currency or false-by-length only in
+    // the AND reading) but lets an over-cap draft through as soon as ANY other
+    // asset is present — which is exactly the shape the real UI produces, since
+    // a player selecting 65 monsters is very likely also asking for gold.
+    // Server truth: check_trade_side_size(n_monsters, n_items) rejects on the
+    // monster count ALONE, currency is not consulted (trading.rs:43-54).
+    const sub = buildProposeSubmission(CAP_TARGETS, capDraft(65, '500'));
+    expect(sub.canSubmit).toBe(false);
+    expect(sub.args).toBeNull();
+  });
+
+  it('★ BITES: 65 monsters + requestCurrency 500 → canSubmit false (same veto, other currency side)', () => {
+    const sub = buildProposeSubmission(CAP_TARGETS, {
+      targetIdentity: '0xaaa1',
+      selectedMonsterIds: idsOfLength(65),
+      offerCurrency: '0',
+      requestCurrency: '500',
+    });
+    expect(sub.canSubmit).toBe(false);
+    expect(sub.args).toBeNull();
+  });
+
+  it('BITES: 65 monsters and no currency → canSubmit false (cap veto survives with no other asset)', () => {
+    const sub = buildProposeSubmission(CAP_TARGETS, capDraft(65, '0'));
+    expect(sub.canSubmit).toBe(false);
+    expect(sub.args).toBeNull();
+  });
+
+  it('BITES: the cap does not resurrect an invalid target — 64 monsters at an unknown target stays false', () => {
+    // Anti-regression: the new clause must be ANDed in, not replace targetValid.
+    const sub = buildProposeSubmission(CAP_TARGETS, {
+      targetIdentity: '0xnope',
+      selectedMonsterIds: idsOfLength(64),
+      offerCurrency: '1',
+      requestCurrency: '0',
+    });
+    expect(sub.canSubmit).toBe(false);
+    expect(sub.args).toBeNull();
+  });
+});
+
+describe('EARS-3d: buildProposeSubmission stays TOTAL across the cap boundary', () => {
+  it('★ BITES: over-cap selections never throw — kills a `throw new Error("too many")` impl', () => {
+    // The model is called from live DOM input/change listeners (ADR-0134 header):
+    // a throw here starves sibling store batch-listeners. The cap must DISABLE,
+    // never throw. A checkbox handler firing at the 65th tick must return a
+    // verdict, not blow up the listener.
+    for (const n of [0, 1, 63, 64, 65, 1000, 5000]) {
+      expect(() => buildProposeSubmission(CAP_TARGETS, capDraft(n, '1')), `n=${n}`).not.toThrow();
+      expect(() => buildProposeSubmission(CAP_TARGETS, capDraft(n, 'abc')), `n=${n}`).not.toThrow();
+    }
+  });
+
+  it('BITES: over-cap drafts still expose the parsed currencies — kills an early-return that skips parseCurrency', () => {
+    // The verdict object's other fields are part of the contract even when
+    // !canSubmit (the existing PTC2-6 row pins this for the valid case); an
+    // impl that early-returns a bare `{ canSubmit: false }` on the cap breaks
+    // the shape the view reads.
+    const sub = buildProposeSubmission(CAP_TARGETS, {
+      targetIdentity: '0xaaa1',
+      selectedMonsterIds: idsOfLength(65),
+      offerCurrency: '30',
+      requestCurrency: '40',
+    });
+    expect(sub.canSubmit).toBe(false);
+    expect(sub.offerCurrency).toBe(30n);
+    expect(sub.requestCurrency).toBe(40n);
   });
 });

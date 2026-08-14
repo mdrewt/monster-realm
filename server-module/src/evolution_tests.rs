@@ -3466,3 +3466,1019 @@ impl TestEvolutionDb {
         self.monster_pubs.insert(p.monster_id, p);
     }
 }
+
+// ===========================================================================
+// 14r-f ITEM 1 / EARS E1 (ADR-0188) — `json_escape` at the hand-built JSON log
+// sites in `evolution.rs` that interpolate a reducer ERROR.
+//
+// EARS criterion covered:
+//
+//   E1  WHEN a reducer error is interpolated into a JSON log line in
+//       `evolution.rs`, THE SYSTEM SHALL escape it
+//       (`crate::guards::json_escape`, ADR-0170 D5).
+//
+// THE SITES. `check_and_evolve` builds FOUR hand-written JSON objects carrying a
+// `reason` field. Three interpolate a live `Err` binding and are IN SCOPE:
+//   evolution.rs:202-204  check_and_evolve_skip         (monster_to_instance)
+//   evolution.rs:220-222  check_and_evolve_skip_edge    (evolution_path_from_row)
+//   evolution.rs:233-235  check_and_evolve_apply_failed (apply_evolution)
+// One carries a CONSTANT reason and is deliberately OUT of scope
+// (evolution.rs:194-196, monster row missing) — a hand-written literal cannot
+// contain a quote it did not already contain. The fifth log line (:245-247,
+// the chain-cap signal) has no `reason` field at all: it interpolates `{steps}`,
+// a `u32`, which is structurally incapable of corrupting a JSON string.
+//
+// THE IN-SCOPE / OUT-OF-SCOPE SPLIT IS DERIVED, NOT HARD-CODED BY LINE NUMBER:
+// a site is in scope exactly when its reason VALUE contains an interpolation
+// brace. That classifier is stable across the fix (`{e}` becomes `{reason}`,
+// both interpolated) and it is the criterion itself, restated — which is why a
+// future slice that turns the constant reason into an interpolated one is
+// picked up automatically instead of silently inheriting an exemption.
+//
+// STRUCTURE PORTED from the 12r-d E3 precedent at `battle_tests.rs:3437-4183`
+// (`D12rLogSite`, `d12r_quote_delimits`, `d12r_format_string_at`,
+// `d12r_log_call_range`, `d12r_assert_escaped_log_sites`), with a DISTINCT
+// `eg14f_` prefix so the two copies cannot be confused in a concatenated scan
+// blob — and with one assertion the precedent does NOT have (the positional-arg
+// smuggle, layer 4 below), which was found by red-teaming the port.
+//
+// SUBSTRATE. Every needle here IS format-string content, so this section scans
+// the COMMENT-STRIPPED, STRINGS-INTACT view of `evolution.rs`
+// ([`strip_rust_comments`]) — NOT the file's usual `strip_comments_and_strings`
+// pipeline, which blanks exactly the bytes under test. Both strippers blank IN
+// PLACE, so the two views share byte offsets and the CODE-shaped needles (the
+// `json_escape` provenance counts) still run on the fully-stripped view where a
+// log message mentioning the helper cannot satisfy them.
+//
+// SCAN SUBSTRATE RULES honoured throughout: the two structural characters are
+// spelled as NUMBERS, never as bare char literals (the guards_tests G-5a
+// landmine), and every needle naming a production marker is assembled from
+// fragments (the measured poisoning incident recorded at :2611-2615 above).
+// ===========================================================================
+
+/// The ASCII backslash, spelled as a NUMBER. (`DQUOTE`, :1541, is the quote.)
+const EG14F_BACKSLASH: u8 = 0x5C;
+
+/// The ASCII double quote as a one-character `String`.
+fn eg14f_double_quote() -> String {
+    char::from(DQUOTE).to_string()
+}
+
+/// The ASCII backslash as a one-character `String`.
+fn eg14f_backslash() -> String {
+    char::from(EG14F_BACKSLASH).to_string()
+}
+
+/// The two-byte sequence a JSON structural quote is written as INSIDE a Rust
+/// string literal: backslash then double quote.
+fn eg14f_escaped_quote() -> String {
+    [eg14f_backslash().as_str(), eg14f_double_quote().as_str()].concat()
+}
+
+/// The SOURCE spelling of a JSON field opener for `key`: escaped quote, the key,
+/// escaped quote, colon, escaped quote — i.e. what the reader sees at the point
+/// where the field's string VALUE begins.
+///
+/// One builder, three call sites (the reason key, the evt key, and the capture
+/// needle), so the three cannot drift apart — and the quote bytes are never
+/// written as literal characters anywhere in this file.
+fn eg14f_field_opener(key: &str) -> String {
+    let q = eg14f_escaped_quote();
+    [q.as_str(), key, q.as_str(), ":", q.as_str()].concat()
+}
+
+/// All whitespace removed (the house squash — a rustfmt line split must never
+/// change a verdict).
+fn eg14f_squash_ws(src: &str) -> String {
+    src.split_whitespace().collect()
+}
+
+/// True when the quote byte at `idx` DELIMITS a string literal rather than being
+/// an escaped quote inside one: a delimiter is preceded by an EVEN number of
+/// consecutive backslashes.
+///
+/// Inlined rather than shared for the reason `battle_tests.rs:3493-3497` records:
+/// every `*_tests.rs` file is a `#[cfg(test)]` submodule of its own production
+/// file and none can reach another's bare `fn` items.
+fn eg14f_quote_delimits(bytes: &[u8], idx: usize) -> bool {
+    let mut n = 0usize;
+    let mut i = idx;
+    while i > 0 && bytes[i - 1] == EG14F_BACKSLASH {
+        n += 1;
+        i -= 1;
+    }
+    n.is_multiple_of(2)
+}
+
+/// Byte offsets `(open, close)` of the DELIMITERS of the string literal that
+/// contains byte offset `at`.
+///
+/// The hand-built JSON lines spell their structural quotes as an escaped quote
+/// INSIDE one literal, so a naive nearest-quote scan slices the wrong span;
+/// [`eg14f_quote_delimits`] is what tells the two apart. Offsets (not the text)
+/// are returned because the argument region below has to start where the format
+/// string ENDS.
+fn eg14f_format_string_span(src: &str, at: usize) -> Option<(usize, usize)> {
+    let bytes = src.as_bytes();
+    let mut i = at;
+    let open = loop {
+        if bytes[i] == DQUOTE && eg14f_quote_delimits(bytes, i) {
+            break i;
+        }
+        if i == 0 {
+            return None;
+        }
+        i -= 1;
+    };
+    let mut j = at;
+    while j < bytes.len() {
+        if bytes[j] == DQUOTE && eg14f_quote_delimits(bytes, j) {
+            return Some((open, j));
+        }
+        j += 1;
+    }
+    None
+}
+
+/// Byte range of the `log::<level>!( .. )` invocation that CONTAINS `at`; `end`
+/// is just past the closing paren.
+///
+/// Walks parens from the macro's `(`, JUMPING OVER string literals so a paren
+/// inside a message cannot unbalance the walk.
+fn eg14f_log_call_range(src: &str, at: usize) -> Option<(usize, usize)> {
+    let marker = ["log", "::"].concat();
+    let start = src[..at].rfind(marker.as_str())?;
+    let bytes = src.as_bytes();
+    let open = start + src[start..].find('(')?;
+    let mut depth = 0usize;
+    let mut i = open;
+    while i < bytes.len() {
+        if bytes[i] == DQUOTE && eg14f_quote_delimits(bytes, i) {
+            i += 1;
+            while i < bytes.len() {
+                if bytes[i] == DQUOTE && eg14f_quote_delimits(bytes, i) {
+                    break;
+                }
+                i += 1;
+            }
+        } else if bytes[i] == b'(' {
+            depth += 1;
+        } else if bytes[i] == b')' {
+            depth -= 1;
+            if depth == 0 {
+                return Some((start, i + 1));
+            }
+        }
+        i += 1;
+    }
+    None
+}
+
+/// The value of the JSON field whose opener starts at `from`, up to the closing
+/// escaped quote.
+///
+/// The opener is the escaped-quote / key / escaped-quote / colon / escaped-quote
+/// sequence as it is SPELLED IN RUST SOURCE, built by the caller from the two
+/// byte constants. It is never written out as literal characters here: this
+/// file's convention (:1536-1540) is that every double quote in it stays part of
+/// a balanced Rust string literal, because the evals concatenate these files and
+/// run a comment-unaware string stripper over the result.
+fn eg14f_field_value(fmt: &str, from: usize) -> Option<String> {
+    let end = fmt[from..].find(eg14f_escaped_quote().as_str())?;
+    Some(fmt[from..from + end].to_string())
+}
+
+/// The SOURCE text of the WHOLE sanctioned format string for one reason log:
+/// the doubled outer braces, the evt field, the NUMERIC monster_id field, and one
+/// reason field carrying the quote-wrapped escaped binding — and nothing else.
+///
+/// This is the post-fix spelling of what `evolution.rs` already writes at all
+/// three sites, with the raw `{e}` replaced by `{<binding>}`; every structural
+/// character is assembled from the two byte constants, so the file's own
+/// balanced-quote convention holds.
+///
+/// It exists because a red team defeated every SUBSTRING and TOKEN check at once
+/// by keeping a perfect reason field and adding a SECOND field fed by a one-hop
+/// ALIAS of the same error. Pinning the whole payload is the only assertion that
+/// makes an extra field unrepresentable.
+fn eg14f_expected_reason_line(evt: &str, binding: &str) -> String {
+    let q = eg14f_escaped_quote();
+    let evt_field = [eg14f_field_opener("evt").as_str(), evt, q.as_str()].concat();
+    // The id field's KEY is quoted; its VALUE is a `u64` interpolation, so it
+    // carries no quotes — a numeric slot cannot be corrupted by a string.
+    let id_field = [q.as_str(), "monster_id", q.as_str(), ":{monster_id}"].concat();
+    let reason_field = [
+        eg14f_field_opener(binding).as_str(),
+        "{",
+        binding,
+        "}",
+        q.as_str(),
+    ]
+    .concat();
+    [
+        "{{",
+        evt_field.as_str(),
+        ",",
+        id_field.as_str(),
+        ",",
+        reason_field.as_str(),
+        "}}",
+    ]
+    .concat()
+}
+
+/// One hand-built JSON log site in `check_and_evolve`, as the two views see it.
+struct Eg14fLogSite {
+    /// The `evt` name read out of the site's own format string.
+    evt: String,
+    /// The `reason` field's value — `{e}` at HEAD, a constant for the one
+    /// out-of-scope site, `{reason}` after the fix.
+    reason_value: String,
+    /// The whole format string, comments-only view (string content INTACT).
+    fmt: String,
+    /// The whole macro call, squashed, comments-only view.
+    call_sq: String,
+    /// Everything AFTER the format string and before the closing paren, from the
+    /// FULLY-STRIPPED view — so a format string mentioning a needle cannot
+    /// satisfy an assertion about the ARGUMENTS.
+    args_ns: String,
+}
+
+/// Every hand-built JSON log site in `body_ws` that carries a `reason` field.
+///
+/// `body_ws` (comments blanked, strings intact) and `body_ns` (comments AND
+/// strings blanked) MUST be the same byte range of the same file: both strippers
+/// blank in place, so an offset found in one indexes the other.
+///
+/// Fails LOUDLY rather than skipping when a site cannot be parsed — a silently
+/// dropped site is a silently vacuous assertion.
+fn eg14f_reason_sites(body_ws: &str, body_ns: &str) -> Vec<Eg14fLogSite> {
+    let reason_key = eg14f_field_opener("reason");
+    let evt_key = eg14f_field_opener("evt");
+
+    let mut out = Vec::new();
+    for (at, _) in body_ws.match_indices(reason_key.as_str()) {
+        let (open, close) = eg14f_format_string_span(body_ws, at).unwrap_or_else(|| {
+            panic!(
+                "14r-f E1: the reason field at byte {at} of `check_and_evolve` is not \
+                 inside a string literal — this scan locates a log site by its format \
+                 string, so the line must have been restructured. Re-derive the rows \
+                 DELIBERATELY rather than loosening the scan."
+            )
+        });
+        let fmt = &body_ws[open + 1..close];
+        let rel = at - (open + 1);
+
+        let reason_value = eg14f_field_value(fmt, rel + reason_key.len()).unwrap_or_else(|| {
+            panic!(
+                "14r-f E1: the reason field in format string {fmt:?} is never closed by \
+                 an escaped quote — the log line is malformed at the SOURCE level, before \
+                 any runtime value is interpolated."
+            )
+        });
+        let evt_at = fmt.find(evt_key.as_str()).unwrap_or_else(|| {
+            panic!(
+                "14r-f E1: format string {fmt:?} carries a reason field but no evt field. \
+                 Every hand-built JSON log line in this crate is keyed by evt; a line \
+                 without one cannot be attributed, and this scan identifies its sites by \
+                 that name."
+            )
+        });
+        let evt = eg14f_field_value(fmt, evt_at + evt_key.len()).unwrap_or_else(|| {
+            panic!("14r-f E1: the evt field in format string {fmt:?} is never closed")
+        });
+
+        let (cs, ce) = eg14f_log_call_range(body_ws, at).unwrap_or_else(|| {
+            panic!(
+                "14r-f E1: could not find the enclosing `log::<level>!( .. )` invocation \
+                 for evt {evt:?} — the scan needs it to prove the raw value is gone from \
+                 the WHOLE call, not just from the format string."
+            )
+        });
+        assert!(
+            cs <= open && close < ce,
+            "14r-f E1: the format string carrying evt {evt:?} is not inside the macro \
+             call the scan matched it to (call bytes {cs}..{ce}, literal {open}..{close}). \
+             The paren/quote walk has rotted; every verdict below would be meaningless."
+        );
+        let args_start = (close + 1).min(ce - 1);
+        out.push(Eg14fLogSite {
+            evt,
+            reason_value,
+            fmt: fmt.to_string(),
+            call_sq: eg14f_squash_ws(&body_ws[cs..ce]),
+            args_ns: body_ns[args_start..ce - 1].to_string(),
+        });
+    }
+    out
+}
+
+/// How many times the BARE token `e` occurs in `region` as a WHOLE WORD.
+///
+/// Word-boundary aware on both sides on purpose: `entity_id`, `enc_row`,
+/// `eligible`, `evolution` and `steps` must never count. This is the measurement
+/// that closes the positional-argument smuggle (layer 4 of C-1).
+fn eg14f_bare_e_count(region: &str) -> usize {
+    let bytes = region.as_bytes();
+    let mut n = 0usize;
+    for (i, b) in bytes.iter().enumerate() {
+        if *b != b'e' {
+            continue;
+        }
+        let left_free = i == 0 || !is_ident_byte(bytes[i - 1]);
+        let right_free = i + 1 >= bytes.len() || !is_ident_byte(bytes[i + 1]);
+        if left_free && right_free {
+            n += 1;
+        }
+    }
+    n
+}
+
+/// The two views of `check_and_evolve`'s body, cut at the SAME byte range:
+/// `(comments_only, fully_stripped)`.
+///
+/// Both strippers blank in place, so the ranges agree; the range itself is
+/// computed on the FULLY-STRIPPED view, where a brace inside a format string
+/// cannot corrupt the walk.
+fn eg14f_check_and_evolve_views() -> (String, String) {
+    let comments_only = strip_rust_comments(EVOLUTION_RS_SOURCE);
+    let fully_stripped = strip_comments_and_strings(EVOLUTION_RS_SOURCE);
+    assert_eq!(
+        comments_only.len(),
+        fully_stripped.len(),
+        "14r-f E1: the two strippers must be LENGTH-PRESERVING — every offset in this \
+         section is used to index both views, so a length difference silently \
+         mis-slices every region."
+    );
+    let decl = ["fn check_and", "_evolve("].concat();
+    let (start, end) = extract_fn_body_range(&fully_stripped, decl.as_str()).unwrap_or_else(|| {
+        panic!("14r-f E1: `check_and_evolve` (with a body) must exist in evolution.rs")
+    });
+    (
+        comments_only[start..end].to_string(),
+        fully_stripped[start..end].to_string(),
+    )
+}
+
+/// **C-1** (14r-f E1, ADR-0188 / ADR-0170 D5) — every hand-built JSON log line in
+/// `check_and_evolve` that interpolates a reducer `Err` must interpolate an
+/// ESCAPED binding named `reason`, and none may still carry the raw value.
+///
+/// ASSERTION-RED AT HEAD on layers 2, 3, 3b, 5, 6 and 7 — all three format
+/// strings interpolate `{e}` directly and `check_and_evolve` makes ZERO
+/// `json_escape` calls. Layers 1, 4a and 4b are GREEN at HEAD by design (the
+/// census and the two argument fences) and must STAY green; the first assertion
+/// to fire at HEAD is layer 2, on the first site.
+///
+/// NINE LAYERS, and what each one alone would fail to catch. Layers 3b and 4a
+/// were added after a red team EMPIRICALLY built a full-green bypass of the first
+/// seven (the ALIAS cheat described under 3b); the layers it beat are kept, because
+/// each still produces the sharpest message for the mistake it was written for.
+///
+///
+/// 1. **The site census (green at HEAD, and load-bearing).** FOUR reason-bearing
+///    sites, of which exactly THREE interpolate. Deleting or renaming a log line
+///    is the cheapest way to make every other layer vacuous; adding one is how an
+///    unescaped reason ships past a suite that only inspects known sites. The
+///    evt names are pinned as a set for the same reason.
+///
+/// 2. **The raw value is absent from the WHOLE macro call**, not merely from the
+///    format string — a positional argument is part of the call too.
+///
+/// 3. **The capture needle includes the JSON QUOTE BYTES on both sides.**
+///    A needle of just `{reason}` matches the QUOTED reason field and the
+///    UNQUOTED one alike (reason-key, colon, then the brace with no opening
+///    quote), and the unquoted form emits INVALID JSON no matter how well the
+///    value is escaped — the log ingest drops the line either way, so the defect
+///    survives its own fix. C-2 cannot see it either: C-2 composes its own
+///    reference line and never reads the real format string. So the needle is
+///    assembled with the escaped-quote bytes on both sides of `{reason}`.
+///
+/// 3b. **THE ALIAS KILL — the format string EQUALS the whole sanctioned line**
+///    (evt field, numeric monster_id field, one reason field, nothing else;
+///    whitespace-insensitive). Layers 2, 3, 4, 5, 6 and 7 are ALL satisfied by a
+///    site that keeps the sanctioned `let reason = json_escape(&e);` and its
+///    `{reason}` capture, adds `let f = &e;`, and appends a SECOND field to the
+///    same format string interpolating `{f}`.
+///    The escape is real, the capture is real and quote-wrapped, the literal token
+///    `e` occurs nowhere in the call, and the alias is an INLINE capture so there
+///    is no trailing argument to count — yet the fully unescaped, content-derived
+///    string ships in the extra field and corrupts the line exactly as before.
+///    Clippy is silent because `f` is read. NOTHING WEAKER THAN AN EXACT PAYLOAD
+///    PIN CLOSES THIS: the alias can be spelled `&e`, `e.clone()`, `e.as_str()`,
+///    `&*e`, `String::from(&e)`, a closure or a `format!` built earlier, and the
+///    extra field can be named anything. Pinning the payload makes the extra field
+///    itself unrepresentable, which is the only property that does not depend on
+///    recognising the alias.
+///
+/// 4a. **No trailing ARGUMENT at all** — the region after the format string must
+///    compact to nothing (or a lone comma). Defence in depth for the positional
+///    half of the same class, stated as a rule rather than inferred from 3b.
+///
+/// 4b. **The positional-argument smuggle (NOT in the ported precedent).** These
+///    two conditions —
+///      * the literal `{e}` is absent, and
+///      * `{reason}` is present —
+///    are BOTH satisfied by a `log::warn!` whose format string interpolates
+///    `{reason}` in the reason field AND adds a second field interpolating an
+///    empty positional slot, with the raw `e` passed as the trailing argument.
+///    Such a line logs the fully unescaped attacker-influenced string through the
+///    positional slot. There is no literal `{e}` anywhere in it, and Rust's
+///    -argument never used- rule does not fire because the positional slot
+///    consumes it. So the arguments-after-the-format-string region is measured
+///    directly: the count of the bare token `e` there must equal the number of
+///    `json_escape(` calls there. Both are 0 for the sanctioned inline-capture
+///    shape; the smuggle makes them 1 and 0.
+///
+/// 5. **`json_escape(` called EXACTLY once per interpolating site** in the
+///    region, so three correct sites cannot cover a fourth that has none.
+///
+/// 6. **Binding provenance: every `let reason =` in the region comes from
+///    `json_escape` applied to `&e)`.** The argument is pinned INCLUDING its
+///    closing paren — a bare `&e` also matches `&entity_id` — which kills the
+///    PLACEHOLDER-ARGUMENT cheat, `let reason = json_escape(<a literal>);`
+///    (the escape runs, its result IS read, nothing warns, and the line logs a
+///    constant instead of the error
+///    nobody will now ever see). The EQUALITY of the two counts kills the
+///    shadow-rebind `let reason = json_escape(&e); let reason = e.clone();`,
+///    which satisfies every name-based needle while the value at the point of use
+///    is the raw one. The discard `let _ = json_escape(&e);` beside a raw
+///    interpolation fails layers 2 and 5 together.
+///
+/// 7. **Whole-region raw sweep.** A SECOND statement anywhere in the body that
+///    interpolates the unescaped `Err` — a debug line, a duplicated log — while
+///    every sanctioned line is perfect.
+///
+/// HONEST LIMITS. (a) Source scan, not execution (ADR-0156 P7): `check_and_evolve`
+/// takes a live `ReducerContext` and cannot be called from a unit test at all.
+/// (b) It pins the INLINE-CAPTURE form, which is what makes -the escaped value
+/// reaches THIS line- checkable; ADR-0188 fixes that shape and `movement.rs`'s
+/// two escaped log sites are the shipped precedent for the alternative
+/// (positional) one, which this criterion deliberately does not adopt here.
+/// (c) It cannot see a correctly-escaped value interpolated into the WRONG SLOT
+/// of the right line; that residue belongs to
+/// [`escaped_evolution_reason_composes_a_well_framed_json_log_line`] below.
+#[test]
+fn evolution_reason_log_sites_interpolate_an_escaped_binding() {
+    let (body_ws, body_ns) = eg14f_check_and_evolve_views();
+    assert!(
+        !body_ws.trim().is_empty(),
+        "VACUITY GUARD (14r-f E1): the extracted `check_and_evolve` body is empty — the \
+         source scanner has rotted and every verdict below would be meaningless."
+    );
+
+    let binding = "reason";
+    let esc_q = eg14f_escaped_quote();
+    let reason_key = eg14f_field_opener(binding);
+    // R4: the capture carries the JSON quote bytes on BOTH sides. `{reason}`
+    // alone would also match the unquoted form, which emits invalid JSON however
+    // well the value is escaped.
+    let capture = [reason_key.as_str(), "{", binding, "}", esc_q.as_str()].concat();
+    let raw = ["{", "e}"].concat();
+    let escape_call = ["json", "_escape("].concat();
+
+    let sites = eg14f_reason_sites(&body_ws, &body_ns);
+
+    // --- Layer 1: the site census -------------------------------------------
+    assert_eq!(
+        sites.len(),
+        4,
+        "TEETH (14r-f E1, site census): `check_and_evolve` must contain EXACTLY 4 \
+         hand-built JSON log lines carrying a reason field; found {}. THE ARITHMETIC: \
+         3 interpolate a live `Err` (monster_to_instance, evolution_path_from_row, \
+         apply_evolution) + 1 carries a CONSTANT reason (the missing monster row). \
+         FEWER means a log line was deleted or renamed rather than escaped — the \
+         cheapest way to make every assertion below vacuous. MORE means a new site \
+         appeared and its escaping was never considered. Re-derive this count \
+         DELIBERATELY.",
+        sites.len()
+    );
+
+    let interpolating: Vec<&Eg14fLogSite> = sites
+        .iter()
+        .filter(|s| s.reason_value.contains('{'))
+        .collect();
+    assert_eq!(
+        interpolating.len(),
+        3,
+        "TEETH (14r-f E1, in-scope census): EXACTLY 3 of the reason fields must \
+         interpolate a value; found {}. The classifier is the CRITERION restated — a \
+         reason is in scope when it is interpolated, out of scope when it is a \
+         hand-written constant that cannot contain a character it did not already \
+         contain. A count of 2 means an in-scope line was turned into a constant \
+         (the diagnostic is gone, and the reason it existed with it); a count of 4 \
+         means the constant site started interpolating and must now be escaped too.",
+        interpolating.len()
+    );
+
+    let mut evts: Vec<String> = interpolating.iter().map(|s| s.evt.clone()).collect();
+    evts.sort();
+    let mut expected_evts = vec![
+        ["check_and_evolve", "_skip"].concat(),
+        ["check_and_evolve", "_skip_edge"].concat(),
+        ["check_and_evolve", "_apply_failed"].concat(),
+    ];
+    expected_evts.sort();
+    assert_eq!(
+        evts, expected_evts,
+        "TEETH (14r-f E1, site identity): the three interpolating reason logs must be \
+         exactly the known ones. Found {evts:?}, expected {expected_evts:?}. The count \
+         above cannot tell -the same three sites- from -one deleted and a different one \
+         added-; this can. If a log line is legitimately renamed, update this list \
+         DELIBERATELY and say so in the ADR — operators and log queries depend on \
+         these evt names."
+    );
+
+    // --- Layers 2-4: per-site -----------------------------------------------
+    for site in &interpolating {
+        let evt = &site.evt;
+        let fmt = &site.fmt;
+        let call = &site.call_sq;
+
+        // Layer 2: the raw value is gone from the WHOLE call.
+        assert!(
+            !call.contains(raw.as_str()),
+            "TEETH (14r-f E1, ADR-0170 D5) evolution.rs / {evt}: the log call still \
+             carries the RAW value {raw:?}. These reasons are `Err` strings from \
+             `monster_to_instance` / `evolution_path_from_row` / `apply_evolution` — \
+             marshalling and validator text, the exact shape ADR-0170 D5 calls out as \
+             liable to contain a double quote. ONE such character makes the emitted \
+             line unparseable JSON, the log ingest drops it, and the diagnostic \
+             vanishes precisely for the corrupt row that produced it. \
+             REMEDIATION: `let reason = crate::guards::json_escape(&e);` immediately \
+             above the log, then interpolate `{{reason}}`. Squashed call was: {call:?}"
+        );
+
+        // Layer 3 (R4): the capture is QUOTE-WRAPPED.
+        assert!(
+            fmt.contains(capture.as_str()),
+            "TEETH (14r-f E1, ADR-0170 D5) evolution.rs / {evt}: the format string must \
+             interpolate the escaped binding as a QUOTED JSON string — the needle is \
+             the reason key, an opening quote, `{{{binding}}}`, and the closing quote, \
+             all contiguous. Not found. \
+             TWO things are pinned. (a) The BINDING NAME `{binding}` ties the value \
+             that was escaped to the identifier this line interpolates, captured \
+             INLINE so a source scan can prove the escaped value reaches THIS line. \
+             (b) The surrounding QUOTE BYTES: a bare `{{{binding}}}` needle is also \
+             satisfied by an UNQUOTED reason field, which emits invalid JSON however \
+             perfectly the value is escaped — the line is dropped by the ingest either \
+             way, so the defect would survive its own fix. Format string was: {fmt:?}"
+        );
+
+        // Layer 3b (ALIAS KILL): the format string is the WHOLE sanctioned line.
+        // Layers 2, 3 and 4 are all SUBSTRING/TOKEN checks, and a red team beat
+        // every one of them at once by aliasing the error into a SECOND field:
+        //     let reason = json_escape(&e);
+        //     let f = &e;
+        //   then a format string whose reason field interpolates {reason} AND
+        //   which carries a SECOND field interpolating {f}.
+        // `reason` really is escaped and quote-wrapped, the literal token `e`
+        // appears nowhere, and no trailing argument exists (the alias is an
+        // INLINE capture), so a no-trailing-arguments fence does not see it
+        // either. Only pinning the ENTIRE payload does: an extra field cannot be
+        // added, whatever it is named and whatever spelling of the alias
+        // (`&e`, `e.clone()`, `e.as_str()`, `&*e`, `String::from(&e)`, a closure,
+        // a `format!` composed three lines earlier) feeds it.
+        let expected_fmt = eg14f_expected_reason_line(evt, binding);
+        assert_eq!(
+            eg14f_squash_ws(fmt),
+            eg14f_squash_ws(&expected_fmt),
+            "TEETH (14r-f E1, ALIAS KILL) evolution.rs / {evt}: the format string must \
+             be EXACTLY the sanctioned line — the evt field, the numeric monster_id \
+             field, and ONE reason field carrying the quote-wrapped escaped binding \
+             `{binding}`, and NOTHING ELSE. \
+             WHAT THIS KILLS, and why nothing weaker does: a red team kept a perfect \
+             escaped reason field and added a SECOND field fed by a one-hop alias of \
+             the same error (`let f = &e;` … `raw` field interpolating `{{f}}`). Every \
+             substring and token check passes — the escape is real, the capture is \
+             real, the literal `e` never appears, and because the alias is an INLINE \
+             capture there is no trailing argument to count — while the fully \
+             unescaped, content-influenced string ships in the extra field and breaks \
+             the line exactly as before. An exact payload pin is the only assertion \
+             that closes the whole alias class in one step. \
+             The comparison ignores whitespace, so a cosmetic reflow is safe. \
+             If a later slice legitimately adds a field to these log lines, extend \
+             `eg14f_expected_reason_line` DELIBERATELY and state in the ADR how the \
+             new field's value is escaped — never widen this back to a substring."
+        );
+
+        // Layer 4a (NO TRAILING ARGUMENTS): defence in depth for the positional
+        // half of the same class, independent of layer 3b's exactness.
+        let args_compact = eg14f_squash_ws(&site.args_ns);
+        assert!(
+            args_compact.is_empty() || args_compact == ",",
+            "TEETH (14r-f E1, NO-TRAILING-ARGUMENT FENCE) evolution.rs / {evt}: the \
+             `log::` call must pass NO argument after its format string — the \
+             sanctioned shape is inline capture only, so the argument region must be \
+             empty or a lone trailing comma; found {args_compact:?}. \
+             WHAT THIS KILLS: every positional smuggle of the raw error, whatever \
+             expression carries it — `e`, `&e`, `f` where `let f = &e;`, \
+             `e.clone()`, or a `format!` built elsewhere. It does NOT depend on \
+             recognising the value, only on the ABSENCE of the slot, which is why it \
+             survives spellings a token count cannot enumerate. \
+             Layer 3b already forbids a positional `{{}}` slot in the format string, \
+             which would make such an argument a compile error; this fence states the \
+             rule directly so it cannot be lost if that layer is ever relaxed."
+        );
+
+        // Layer 4b (R3, narrower — now subsumed by 3b/4a, kept as a third net).
+        let n_bare_e = eg14f_bare_e_count(&site.args_ns);
+        let n_escape_args = site.args_ns.matches(escape_call.as_str()).count();
+        assert_eq!(
+            n_bare_e, n_escape_args,
+            "TEETH (14r-f E1, POSITIONAL-ARG SMUGGLE KILL) evolution.rs / {evt}: the \
+             macro arguments AFTER the format string mention the bare `Err` binding `e` \
+             {n_bare_e} time(s) but make {n_escape_args} `json_escape(` call(s) there. \
+             WHAT THIS KILLS — a shape that passes every other layer: \
+             `log::warn!(\"..reason..{{{binding}}}..raw..{{}}\", e);` \
+             contains NO literal `{{e}}`, DOES contain `{{{binding}}}`, and still logs \
+             the fully unescaped string through the positional slot. Rust's \
+             -argument never used- rule does not stop it, because the slot consumes the \
+             argument. The sanctioned inline-capture shape passes this trivially: it \
+             has no trailing arguments at all, so both counts are 0. If a future slice \
+             legitimately uses a positional slot, it must pass `json_escape(&e)` there \
+             — which keeps the two counts equal. Argument region was: {:?}",
+            site.args_ns
+        );
+    }
+
+    // --- Layer 5: one escape per interpolating site --------------------------
+    let sq_ns = eg14f_squash_ws(&body_ns);
+    let n_escape = sq_ns.matches(escape_call.as_str()).count();
+    assert_eq!(
+        n_escape, 3,
+        "TEETH (14r-f E1, ADR-0170 D5): `check_and_evolve` must make EXACTLY 3 \
+         `json_escape(` calls — one per interpolated reason — but it makes \
+         {n_escape}. HEAD makes 0. The PAIRED counts are the point (the M-6 precedent \
+         in `movement_tests.rs`): three correct sites cannot cover a fourth that has \
+         none, and a new reason log added by a later slice trips this and forces the \
+         arithmetic to be re-derived rather than quietly shipping an unescaped reason. \
+         Counted on the fully-stripped view, so a log message or comment naming the \
+         helper cannot satisfy it, and the needle keeps its opening paren so the \
+         `use crate::guards::{{..}}` import does not count."
+    );
+
+    // --- Layer 6: binding provenance ----------------------------------------
+    let any_binding = ["let", binding, "="].concat();
+    let n_all = sq_ns.matches(any_binding.as_str()).count();
+    // All three reasons are `String` (`monster_to_instance`,
+    // `evolution_path_from_row` and `apply_evolution` all return
+    // `Result<_, String>`), so the reference and the `as_str()` spellings are
+    // equally correct and equally specific; a placeholder literal matches
+    // neither. The closing paren is part of each spelling on purpose — a bare
+    // `&e` would also match `&entity_id`.
+    let escape_args = ["&e)", "e.as_str())"];
+    let mut n_esc = 0usize;
+    for arg in escape_args {
+        for path in ["crate::guards::", "guards::", ""] {
+            let needle = ["let", binding, "=", path, escape_call.as_str(), arg].concat();
+            n_esc += sq_ns.matches(needle.as_str()).count();
+        }
+    }
+    assert_eq!(
+        n_esc, 3,
+        "TEETH (14r-f E1, ADR-0170 D5): the escaped value must be bound to the \
+         identifier `{binding}` by a statement of the form \
+         `let {binding} = crate::guards::json_escape(&e);` at each of the three sites \
+         (the bare and `guards::` path spellings are accepted); found {n_esc}. \
+         TWO things are pinned and both are load-bearing. The BINDING NAME ties the \
+         escaped value to the identifier the format string interpolates: a \
+         differently-named escape binding is the red team's proven cheat \
+         (npc_tests.rs:1117-1223) — `let _escaped = json_escape(&e);`, unused but not \
+         `let _ =`, so clippy stays silent — sitting beside a format string that still \
+         interpolates the raw value. The ARGUMENT is pinned INCLUDING its closing \
+         paren, which kills `json_escape(&\"placeholder\")` (the escape is called, its \
+         result IS read, nothing warns, and the line logs a constant instead of the \
+         error nobody will now ever see) and stops a bare `&e` needle from matching \
+         `&entity_id`. NOTE `let mut {binding} = ..` does not match this needle by \
+         design — a re-assignable escape binding is exactly the shape that gets \
+         overwritten with the raw value two lines later."
+    );
+    assert_eq!(
+        n_all, n_esc,
+        "TEETH (14r-f E1, shadow-rebind + placeholder kill): `{binding}` is `let`-bound \
+         {n_all} time(s) in `check_and_evolve` but only {n_esc} of those bindings come \
+         from `json_escape` applied to `&e)`. \
+         KILLS (a) the shadow-rebind that defeats every name-based assertion above — \
+         `let {binding} = crate::guards::json_escape(&e); let {binding} = e.clone();` \
+         satisfies BOTH -the escape statement is present- and -the format string \
+         interpolates {binding}-, while the VALUE at the point of use is the raw one \
+         and the compiler says nothing because the binding IS read, just not the \
+         escaped one; and (b) ONE site out of the three whose escape argument is a \
+         placeholder rather than the `Err` being logged — this equality catches it \
+         even when the other two are correct."
+    );
+
+    // --- Layer 7: whole-region raw sweep -------------------------------------
+    // The per-site checks inspect only the three sanctioned macro CALLS. This
+    // closes the remaining class (npc_tests T4-h): a SECOND statement anywhere
+    // else in the body that interpolates the un-escaped `Err`.
+    // THE ARITHMETIC IS EXACT: at HEAD `check_and_evolve` contains exactly 3
+    // interpolations of the bare `{e}` (the three sites; the cap-hit log at
+    // :245 interpolates `{steps}` and the missing-row log a constant). It must
+    // become 0.
+    let n_raw = eg14f_squash_ws(&body_ws).matches(raw.as_str()).count();
+    assert_eq!(
+        n_raw, 0,
+        "TEETH (14r-f E1, whole-region raw-leak sweep) evolution.rs / \
+         check_and_evolve: {n_raw} raw `{{e}}` interpolation(s) survive and there must \
+         be ZERO (HEAD has 3). Every reason this body logs is marshalling or validator \
+         text crossing into a hand-built JSON line; one un-escaped interpolation \
+         anywhere in the region re-opens the whole defect while the sanctioned lines \
+         look correct."
+    );
+}
+
+/// Compose the EXACT log LINE the post-14r-f source emits for a reason site: the
+/// hand-built JSON object with the ESCAPED reason interpolated into a QUOTED
+/// field.
+fn eg14f_compose_escaped_line(evt: &str, monster_id: u64, raw_reason: &str) -> String {
+    let reason = crate::guards::json_escape(raw_reason);
+    format!("{{\"evt\":\"{evt}\",\"monster_id\":{monster_id},\"reason\":\"{reason}\"}}")
+}
+
+/// The SAME shape with the reason interpolated RAW — HEAD's actual behaviour, and
+/// the negative control that proves the oracles below have teeth.
+fn eg14f_compose_raw_line(evt: &str, monster_id: u64, raw_reason: &str) -> String {
+    format!("{{\"evt\":\"{evt}\",\"monster_id\":{monster_id},\"reason\":\"{raw_reason}\"}}")
+}
+
+/// Structural framing verdict for a hand-built JSON log line — oracle 1.
+///
+/// HONEST LIMIT, stated up front: STRING-FRAMING validation, **not a JSON
+/// parser**. This crate has no `serde_json` dev-dependency and pulling one in to
+/// prove a log line is well-formed would be a heavier dependency than the
+/// property justifies. It verifies exactly what an unescaped reason can destroy:
+///   * every quote either DELIMITS a string or follows an unescaped backslash;
+///   * every backslash inside a string introduces a legal JSON escape;
+///   * no raw character below 0x20 appears inside a string;
+///   * every string that opens also closes.
+///
+/// Its blind spot — a line that is well-FRAMED but carries the WRONG VALUE — is
+/// exactly what oracle 2 covers.
+///
+/// Returns the number of string DELIMITERS on success.
+fn eg14f_json_framing(line: &str) -> Result<usize, String> {
+    let dq = char::from(DQUOTE);
+    let bs = char::from(EG14F_BACKSLASH);
+    let chars: Vec<char> = line.chars().collect();
+    let mut i = 0usize;
+    let mut delimiters = 0usize;
+    let mut in_string = false;
+
+    while i < chars.len() {
+        let c = chars[i];
+        if !in_string {
+            if c == dq {
+                in_string = true;
+                delimiters += 1;
+            }
+            i += 1;
+            continue;
+        }
+        if c == bs {
+            let Some(&next) = chars.get(i + 1) else {
+                return Err(
+                    "a backslash is the last character of the line, so its escape \
+                            sequence is truncated"
+                        .to_string(),
+                );
+            };
+            if next == 'u' {
+                let hex: String = chars.iter().skip(i + 2).take(4).collect();
+                if hex.chars().count() != 4 || !hex.chars().all(|h| h.is_ascii_hexdigit()) {
+                    return Err(format!(
+                        "a backslash-u escape is not followed by four hex digits (saw {hex:?})"
+                    ));
+                }
+                i += 6;
+                continue;
+            }
+            if next != dq && next != bs && !matches!(next, '/' | 'b' | 'f' | 'n' | 'r' | 't') {
+                return Err(format!(
+                    "a backslash introduces the illegal JSON escape {next:?}"
+                ));
+            }
+            i += 2;
+            continue;
+        }
+        if c == dq {
+            in_string = false;
+            delimiters += 1;
+            i += 1;
+            continue;
+        }
+        if (c as u32) < 0x20 {
+            return Err(format!(
+                "a RAW control character U+{:04X} appears inside a string",
+                c as u32
+            ));
+        }
+        i += 1;
+    }
+
+    if in_string {
+        return Err("the line ends inside an unterminated string".to_string());
+    }
+    Ok(delimiters)
+}
+
+/// Decode the value of the reason field out of a log line — oracle 2.
+///
+/// A minimal JSON string UNESCAPER, sufficient for the escapes `json_escape` can
+/// emit plus the pass-throughs it must not touch. It catches the class oracle 1
+/// structurally cannot: a line whose framing is intact but whose VALUE was
+/// silently altered. The adjacency input (a backslash immediately followed by a
+/// quote) is exactly that class — interpolated RAW it frames perfectly and
+/// decodes to ONE character instead of the two that were logged.
+fn eg14f_decode_reason(line: &str) -> Result<String, String> {
+    let dq = char::from(DQUOTE);
+    let bs = char::from(EG14F_BACKSLASH);
+    let q = eg14f_double_quote();
+    let marker = [q.as_str(), "reason", q.as_str(), ":", q.as_str()].concat();
+    let at = line
+        .find(marker.as_str())
+        .ok_or_else(|| format!("no {marker:?} field in the line"))?;
+    let rest: Vec<char> = line[at + marker.len()..].chars().collect();
+
+    let mut out = String::new();
+    let mut i = 0usize;
+    loop {
+        let Some(&c) = rest.get(i) else {
+            return Err("the reason string is never closed".to_string());
+        };
+        if c == dq {
+            return Ok(out);
+        }
+        if c == bs {
+            let Some(&next) = rest.get(i + 1) else {
+                return Err("a trailing backslash truncates the reason string".to_string());
+            };
+            if next == 'u' {
+                let hex: String = rest.iter().skip(i + 2).take(4).collect();
+                let cp = u32::from_str_radix(&hex, 16)
+                    .map_err(|_| format!("malformed backslash-u escape {hex:?}"))?;
+                let decoded =
+                    char::from_u32(cp).ok_or_else(|| format!("invalid codepoint U+{cp:04X}"))?;
+                out.push(decoded);
+                i += 6;
+                continue;
+            }
+            let decoded = match next {
+                'n' => char::from(0x0Au8),
+                'r' => char::from(0x0Du8),
+                't' => char::from(0x09u8),
+                other if other == dq || other == bs || other == '/' => other,
+                other => return Err(format!("illegal escape {other:?} in the reason string")),
+            };
+            out.push(decoded);
+            i += 2;
+            continue;
+        }
+        out.push(c);
+        i += 1;
+    }
+}
+
+/// **C-2** (14r-f E1) — the composed production line is well-framed and its reason
+/// round-trips for every adversarial input; and the UNESCAPED line HEAD emits
+/// today is rejected by at least one oracle.
+///
+/// GREEN AT HEAD BY DESIGN, and deliberately a SEPARATE `#[test]` from the red
+/// C-1 so it can actually be observed passing (folded into C-1 it would sit
+/// behind an assertion that fails at HEAD and could never prove anything).
+///
+/// WHY IT EXISTS GIVEN C-1 — the two halves are not redundant, they check
+/// different things and neither implies the other:
+///   * **C-1 is a SOURCE-SHAPE proof.** It can see that `evolution.rs` calls
+///     `json_escape` on the right value and interpolates the result into the
+///     right, quote-wrapped slot. It cannot see what `json_escape` DOES: a helper
+///     that escaped quotes but not backslashes would satisfy every needle in C-1.
+///   * **C-2 is the BEHAVIOURAL property.** It runs the real
+///     `crate::guards::json_escape` over adversarial inputs, composes the line the
+///     way the site does, and proves the result is parseable AND reversible. It
+///     cannot see whether `evolution.rs` actually calls it — C-2 would stay green
+///     if the fix were never applied, which is precisely why it carries its own
+///     BITE PROOF: for every input that can corrupt a line, it also composes
+///     HEAD's unescaped version and asserts that version fails an oracle. Without
+///     that, a passing C-2 would be evidence of nothing.
+///
+/// THE THREE SHAPES are the real ones: all three sites key on `monster_id` (a
+/// NUMERIC slot, which an unescaped string cannot corrupt, so only the reason
+/// field is modelled) and none has a literal prefix inside the reason value.
+///
+/// THE EIGHT INPUTS, and the wrong implementation each one kills:
+///   * `lone_double_quote` — the headline case: interpolated raw it closes the
+///     reason string early and the line ends mid-string. Kills an escape that
+///     handles backslashes only.
+///   * `lone_backslash` — raw, it escapes the reason string's own closing quote
+///     and the string never terminates. Kills a quote-only escape.
+///   * `backslash_then_quote` — THE ADJACENCY ATTACK (ADR-0170 D5). Raw, it
+///     produces a line that FRAMES perfectly and decodes to one character instead
+///     of two; only oracle 2 sees it. This row is why there are two oracles.
+///   * `newline` and `control_0x01` — a raw character below 0x20 inside a JSON
+///     string is a hard parse error, so the line is dropped by the ingest.
+///     `control_0x01` additionally exercises the four-digit escape form.
+///   * `plain`, `empty`, `non_ascii` — pass-through rows that kill an escape which
+///     mangles ordinary text. They are marked as NOT biting, because their
+///     unescaped line is legitimately well-formed: claiming otherwise would be a
+///     fake proof of teeth.
+///
+/// THE `plain` ROW IS THE REAL ERROR TEXT from this reducer's own failure path —
+/// `monster_to_instance` and `evolution_path_from_row` return marshalling
+/// diagnostics of exactly that shape.
+#[test]
+fn escaped_evolution_reason_composes_a_well_framed_json_log_line() {
+    let dq = eg14f_double_quote();
+    let bs = eg14f_backslash();
+
+    // (label, raw reason, does the UNESCAPED composition break an oracle?)
+    let inputs = [
+        ("lone_double_quote", dq.clone(), true),
+        ("lone_backslash", bs.clone(), true),
+        (
+            "backslash_then_quote",
+            [bs.as_str(), dq.as_str()].concat(),
+            true,
+        ),
+        ("newline", char::from(0x0Au8).to_string(), true),
+        ("control_0x01", char::from(0x01u8).to_string(), true),
+        (
+            "plain",
+            "unknown species row for monster 7".to_string(),
+            false,
+        ),
+        ("empty", String::new(), false),
+        (
+            "non_ascii",
+            "invalid level — out of range".to_string(),
+            false,
+        ),
+    ];
+
+    let shapes = [
+        ["check_and_evolve", "_skip"].concat(),
+        ["check_and_evolve", "_skip_edge"].concat(),
+        ["check_and_evolve", "_apply_failed"].concat(),
+    ];
+
+    for evt in &shapes {
+        for (label, reason, bites) in &inputs {
+            let line = eg14f_compose_escaped_line(evt, 42, reason);
+
+            // --- Oracle 1: framing ------------------------------------------
+            let delimiters = eg14f_json_framing(&line).unwrap_or_else(|why| {
+                panic!(
+                    "TEETH (14r-f C-2, ADR-0170 D5) {evt} / row `{label}`: the composed \
+                     log line is NOT well-framed — {why}. Line was {line:?}. A malformed \
+                     line is silently dropped by the log ingest, which is the whole \
+                     failure `json_escape` exists to prevent."
+                )
+            });
+            assert_eq!(
+                delimiters, 10,
+                "TEETH (14r-f C-2) {evt} / row `{label}`: the composed line contains \
+                 {delimiters} string delimiter(s); a correct line has exactly 10 (five \
+                 strings: the evt key and its value, the monster_id key, the reason key, \
+                 and the reason value — `monster_id`'s VALUE is a number, not a string). \
+                 An odd or inflated count means the reason string opened or closed \
+                 somewhere it must not, which is the structural corruption the escape \
+                 prevents. Line was {line:?}"
+            );
+
+            // --- Oracle 2: the reason round-trips ---------------------------
+            let decoded = eg14f_decode_reason(&line).unwrap_or_else(|why| {
+                panic!(
+                    "TEETH (14r-f C-2) {evt} / row `{label}`: the composed line's reason \
+                     field does not decode — {why}. Line was {line:?}"
+                )
+            });
+            assert_eq!(
+                &decoded, reason,
+                "TEETH (14r-f C-2) {evt} / row `{label}`: the reason field decodes to \
+                 {decoded:?} but the logged text was {reason:?}. The escape must be \
+                 REVERSIBLE — a log line that survives parsing while carrying altered \
+                 text is worse than one that is dropped, because nothing signals the \
+                 loss. Line was {line:?}"
+            );
+
+            // --- BITE PROOF: HEAD's unescaped line must FAIL an oracle ------
+            if *bites {
+                let bad = eg14f_compose_raw_line(evt, 42, reason);
+                let framing_ok = eg14f_json_framing(&bad).is_ok();
+                let decode_ok = eg14f_decode_reason(&bad)
+                    .map(|got| &got == reason)
+                    .unwrap_or(false);
+                assert!(
+                    !(framing_ok && decode_ok),
+                    "PROOF OF TEETH FAILED (14r-f C-2) {evt} / row `{label}`: the \
+                     UNESCAPED composition — which is exactly what evolution.rs emits at \
+                     HEAD — passed BOTH oracles. That means this row cannot distinguish \
+                     the fixed implementation from the broken one, so it proves nothing \
+                     and must be re-derived from the spec rather than kept. Unescaped \
+                     line was {bad:?}"
+                );
+            }
+        }
+    }
+}

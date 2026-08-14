@@ -5,11 +5,18 @@
 //! for **concat!-assembled** needles.  No needle is written verbatim in this
 //! file, so the scan can never pass by matching the test's own text.
 //!
-//! EARS criterion covered:
+//! EARS criteria covered:
 //!   E3  `movement_tick`'s warp branch SHALL reject the warp for a character in an
 //!       ongoing battle in EITHER role (side A *or* side B), by delegating to the
 //!       ADR-0122 both-role SSOT `guards::is_in_ongoing_battle(ctx, identity)` and
 //!       passing the **character's own player identity**.
+//!
+//!   EG  (14r-f / ADR-0188, closing ADR-0166 residual R4) WHEN either battle role
+//!       is Ongoing for the stepping character's player, `movement_tick` SHALL
+//!       skip the grass-encounter roll — through the SAME ADR-0122 both-role SSOT,
+//!       never through a second inline `battle()` scan of its own.
+//!       Pinned by [`grass_encounter_pre_check_uses_the_both_role_ssot`], which
+//!       states plainly why it is a SOURCE-SHAPE test and not a behavioural one.
 //!
 //! Why a source scan and not a behavioural test: `movement_tick` needs a live
 //! `ReducerContext` and this crate has no reducer-executing harness
@@ -21,9 +28,13 @@
 //! composite *adjacency* needle on the squashed body is both simpler and stronger
 //! than co-occurrence inside an extracted block — it pins `.map(|p| … )` →
 //! `is_in_ongoing_battle(ctx, p.identity)` → `.unwrap_or(true)` as one contiguous
-//! expression, so the legitimate `player_identity()` at `movement.rs:254` (the
-//! grass-encounter pre-check) stops being a hazard to design around.  Precedent:
-//! `raising_tests.rs:883-914`.
+//! expression, so the grass-encounter pre-check further down the same reducer
+//! stopped being a hazard to design around.  Precedent: `raising_tests.rs:883-914`.
+//! (Until 14r-f that pre-check kept its own single-role `player_identity()`
+//! lookup — ADR-0166 residual R4.  It is now routed through the same SSOT and the
+//! accessor is gone from `movement.rs` entirely, so the region scoping below
+//! survives on its OTHER justification: the three unrelated reducers above
+//! legitimately use `ctx.sender`.)
 
 // ---------------------------------------------------------------------------
 // Source constant
@@ -245,11 +256,17 @@ fn squashed_movement() -> String {
 ///
 /// Region-scoping (rather than whole-file counting) is what makes the
 /// `player_identity()` and `ctx.sender` assertions below both TIGHT and stable:
-/// the grass-encounter pre-check at `movement.rs:251-256` legitimately keeps its
-/// own single-role `player_identity()` lookup (ADR-0166 residual R4, deliberately
-/// out of scope for 11r-a), and three unrelated reducers above legitimately use
-/// `ctx.sender`. A whole-file count would have to encode those as magic numbers
-/// and would drift the moment anything else in the file changes.
+/// three unrelated reducers above legitimately use `ctx.sender`, and until 14r-f
+/// the grass-encounter pre-check further down kept its own single-role
+/// `player_identity()` lookup (ADR-0166 residual R4, out of scope for 11r-a). A
+/// whole-file count would have to encode those as magic numbers and would drift
+/// the moment anything else in the file changes.
+///
+/// R4 IS NOW CLOSED (14r-f / ADR-0188): the grass pre-check calls the same
+/// both-role SSOT, so `player_identity()` no longer occurs anywhere in
+/// `movement.rs`. The scoping stays regardless — `ctx.sender` alone still needs
+/// it, and [`grass_encounter_pre_check_uses_the_both_role_ssot`] asserts the
+/// grass tail separately, so the two regions keep independent teeth.
 ///
 /// Both tests in this file use it, so there is no dead code and no drift between
 /// two hand-copied slices.
@@ -313,20 +330,22 @@ fn warp_region(squashed: &str) -> &str {
 ///    contiguous needle closes it, and pins the ADR-0166 D4 `in_battle` →
 ///    `skip_warp` rename at the same time.
 ///
-///    **1c (EV-3b) — `battle()` exactly once, file-wide.**  The
+///    **1c (EV-3b) — `battle()` count ZERO, file-wide.**  The
 ///    spelling-independent backstop to layer 2: any inline re-implementation of
 ///    the battle scan, in ANY spelling, must name the `battle()` table accessor.
-///    HEAD has two (`:217` warp guard, `:253` grass pre-check); after the fix the
-///    warp guard reaches the table through `guards::is_in_ongoing_battle` and only
-///    the grass one remains.
+///    The arithmetic, twice re-derived: 11r-a HEAD had two (the warp guard and the
+///    grass pre-check); 11r-a routed the warp guard through
+///    `guards::is_in_ongoing_battle` and left the count at 1; 14r-f (ADR-0188)
+///    routes the grass pre-check through the SAME SSOT, so `movement.rs` must now
+///    reach the battle table ONLY through guards.rs and the count is **0**.
 ///
 /// 2. **`player_identity()` count == 0 in the warp branch (RED at HEAD).**
 ///    Scoped to `warp_at(` … `stepped_onto_grass(` rather than counted file-wide:
-///    same teeth, but immune to unrelated edits and to the eventual fix of
-///    ADR-0166 residual R4 (the grass-encounter pre-check at `:254` keeps its own
-///    single-role lookup on purpose — out of scope for 11r-a).  A count of 1
-///    alongside a passing layer 1 is the "belt-and-braces" shell that calls the
-///    SSOT *and* keeps the old filter.
+///    same teeth, but immune to unrelated edits.  It was also what made this
+///    assertion survive ADR-0166 residual R4 unchanged — the grass pre-check kept
+///    its own single-role lookup until 14r-f closed R4.  A count of 1 alongside a
+///    passing layer 1 is the "belt-and-braces" shell that calls the SSOT *and*
+///    keeps the old filter.
 ///
 /// 3. **ANTI-EVASION (green today): no `ctx.sender` between `warp_at(` and
 ///    `stepped_onto_grass(`.**  A second, independent line of defence against the
@@ -334,9 +353,12 @@ fn warp_region(squashed: &str) -> &str {
 ///    `let me = ctx.sender;` hoisted just above the guard and passed in under
 ///    another name.
 ///
-/// RED state at HEAD: layer 1 fails (no `is_in_ongoing_battle` in `movement.rs`);
-/// 1b fails (the local is named `in_battle`); 1c fails (`battle()` count is 2);
-/// layer 2 fails (`player_identity()` count in the warp branch is 1, not 0).
+/// RED state at the 11r-a HEAD: layer 1 failed (no `is_in_ongoing_battle` in
+/// `movement.rs`); 1b failed (the local was named `in_battle`); 1c failed
+/// (`battle()` count was 2); layer 2 failed (`player_identity()` count in the warp
+/// branch was 1, not 0).  Layers 1, 1b, 1d, 2 and 3 have been green since 11r-a
+/// landed; at the 14r-f HEAD the ONE red layer here is 1c, whose pin is ratcheted
+/// 1 → 0 by this slice (see the arithmetic in its own message).
 ///
 /// HONEST LIMITS.
 /// (a) Layers 1 and 1b pin exact spellings.  A semantically identical rewrite —
@@ -349,12 +371,14 @@ fn warp_region(squashed: &str) -> &str {
 /// the only property that distinguishes "the SSOT decides the branch" from "the
 /// SSOT is called somewhere nearby", and the latter was empirically shipped past
 /// the first draft of this test.
-/// (b) Layer 1c is a whole-file count with a hand-derived number (2 at HEAD → 1
-/// after the fix).  Unlike layer 2 it cannot be region-scoped, because its whole
-/// point is to catch a re-implementation wherever it is put.  It is therefore the
-/// one assertion here that an unrelated edit to `movement.rs` can disturb; when
-/// it fires, check whether the new `battle()` use is legitimate before changing
-/// the number.
+/// (b) Layer 1c is a whole-file count with a hand-derived number (2 at the 11r-a
+/// HEAD → 1 after 11r-a → **0** after 14r-f).  Unlike layer 2 it cannot be
+/// region-scoped, because its whole point is to catch a re-implementation wherever
+/// it is put.  It is therefore the one assertion here that an unrelated edit to
+/// `movement.rs` can disturb; when it fires, check whether the new `battle()` use
+/// is legitimate before changing the number.  At 0 the pin is also an ABSOLUTE
+/// rule rather than a budget, which is strictly easier to keep honest: any new
+/// inline battle scan, anywhere in the file, in any spelling, reds it.
 #[test]
 fn e3_warp_guard_uses_the_both_role_ssot_with_the_player_identity() {
     let squashed = squashed_movement();
@@ -462,19 +486,32 @@ fn e3_warp_guard_uses_the_both_role_ssot_with_the_player_identity() {
     let battle_accessor = ["battle", "()"].concat();
     let n_battle = squashed.matches(battle_accessor.as_str()).count();
     assert_eq!(
-        n_battle, 1,
-        "TEETH (E3/D4 layer 1c): `movement.rs` must contain the `ctx.db.battle()` \
-         table accessor EXACTLY ONCE; found {n_battle}. The arithmetic: HEAD has two \
-         — `:217` (the warp guard's inline single-role scan, which this slice \
-         REPLACES with the guards.rs SSOT) and `:253` (the grass-encounter \
-         pre-check, deliberately NOT touched here — ADR-0166 residual R4). After the \
-         fix only the grass one remains, because the warp guard reaches the battle \
-         table through `guards::is_in_ongoing_battle`. \
+        n_battle, 0,
+        "TEETH (E3/D4 layer 1c, ratcheted by 14r-f / ADR-0188): `movement.rs` must \
+         contain ZERO `ctx.db.battle()` table accessors; found {n_battle}. \
+         THE ARITHMETIC, RE-DERIVED: the 11r-a HEAD had two — the warp guard's \
+         inline single-role scan (replaced by the guards.rs SSOT in 11r-a) and the \
+         grass-encounter pre-check (left alone then as ADR-0166 residual R4, which \
+         is why this pin sat at 1 for three slices). 14r-f routes the grass \
+         pre-check through the same `guards::is_in_ongoing_battle`, so NOTHING in \
+         `movement.rs` reads the battle table directly any more: 2 - 1 - 1 = 0. \
+         THE INVARIANT IS NOW STRICTLY STRONGER THAN A BUDGET: after this slice \
+         `movement.rs` may contain NO inline battle-table scan in ANY spelling or \
+         quantity — every battle question it asks must go through the ADR-0122 \
+         both-role SSOT in guards.rs. That is the whole point of closing R4: a \
+         second, side-A-only implementation of the same predicate is what silently \
+         diverges from the SSOT when either one is edited. \
          This is the spelling-INDEPENDENT version of layer 2: it kills any inline \
          re-implementation regardless of whether it uses the `player_identity()` \
          btree accessor, `.iter().any(|b| b.player_identity == ..)`, or anything \
-         else — all of them must name `battle()`. If a later slice legitimately \
-         fixes R4, this number changes; update it DELIBERATELY."
+         else — all of them must name `battle()`. \
+         REMEDIATION when this fires at HEAD: replace the grass pre-check's inline \
+         scan with `let already = is_in_ongoing_battle(ctx, player_identity);` and \
+         drop BOTH now-unused imports — `BattleOutcome` from the `game_core` use \
+         and `battle` from the `crate::schema` use — or `-D warnings` fails. \
+         If a later slice legitimately needs a direct battle read here, re-derive \
+         this arithmetic and raise the number DELIBERATELY — never to make a red \
+         build green."
     );
     // NEW-3: layer 1 accepts the BARE `is_in_ongoing_battle(..)` call spelling, so
     // a file-local shim of the same name would satisfy it while answering `false`
@@ -568,6 +605,297 @@ fn movement_warp_guard_unwrap_or_true_is_preserved() {
          NPC (no `player` row) as not-in-battle and teleports it through warp tiles, \
          stranding it in a zone it can never wander back from. This is the exact \
          'cleanup' the `in_battle` → `skip_warp` rename exists to prevent."
+    );
+}
+
+// ===========================================================================
+// 14r-f ITEM 2 / EARS EG (ADR-0188) — the GRASS-encounter pre-check must ask the
+// ADR-0122 both-role SSOT, closing ADR-0166 residual R4.
+//
+// EARS EG: WHEN either battle role is Ongoing for the stepping character's
+// player, THE SYSTEM SHALL skip the grass-encounter roll.
+//
+// WHY THIS IS A SOURCE-SHAPE TEST AND NOT A BEHAVIOURAL ONE — read this before
+// asking for a behavioural test, because the honest answer is that NO behavioural
+// test can gate this change:
+//
+//   THE CHANGE IS A VERIFIED BEHAVIOURAL NO-OP. Three independent layers already
+//   make the single-role grass filter unreachable for a battling player:
+//     1. The ADR-0168 D1 drain-time lock (movement.rs, just above the drain)
+//        computes the BOTH-ROLE `is_in_ongoing_battle(ctx, p.identity)` for the
+//        SAME character and `continue`s — and it runs BEFORE the move applies, so
+//        a battle-locked character never reaches the grass block on that tick.
+//     2. The single-role predicate is literally one disjunct of the both-role OR,
+//        so both-role false at the drain lock implies single-role false at the
+//        grass block; nothing between the two can create a Battle row for this
+//        identity, because `begin_encounter` — the only reachable Battle writer —
+//        runs AFTER the check.
+//     3. `begin_encounter` re-guards with the both-role SSOT and rejects.
+//   ADR-0166 R4 itself records this as -Not a hole-.
+//
+//   So no reachable state distinguishes before from after: not the encounter
+//   roll, not the `ctx.random()` draw count or ordering (the R-E fairness
+//   invariant is untouched). A -behavioural- test written against this would pass
+//   at HEAD for reasons that have nothing to do with the change — the precise
+//   false-green shape this repo has been burned by before. What DOES change, and
+//   what is worth gating, is the SHAPE: a second, side-A-only implementation of a
+//   predicate that has an SSOT is deleted, so a future removal of the D1 drain
+//   lock cannot silently re-open R4. This is defensive SSOT-consistency hygiene,
+//   and the test says so rather than implying a vulnerability was patched.
+//
+// SCOPED to `grass_region(movement_tick_body(..))` — the tail from
+// `stepped_onto_grass(` to the end of the reducer — for the same reason
+// `warp_region` exists: file-wide counts of `player_identity()` and `ctx.sender`
+// would have to encode unrelated reducers as magic numbers. The two regions are
+// disjoint (`warp_region` ENDS where this one begins), so the 11r-a fences and
+// this one can never fight over the same bytes.
+// ===========================================================================
+
+/// **EG** (14r-f / ADR-0188, closes ADR-0166 residual R4) — `movement_tick`'s
+/// grass-encounter pre-check must bind the ADR-0122 both-role SSOT's VALUE, and
+/// no inline single-role scan may survive beside it.
+///
+/// Seven layers. 1, 2, 5 and 6 are RED at HEAD; 3, 4 and 7 are anti-evasion /
+/// anti-vacuity fences that are green today and must stay green.
+///
+/// Layers 6 and 7 were added after a red team EMPIRICALLY built a full-green
+/// bypass of the first five: a SHADOWING rebind between the bind and the guard
+/// (see layer 6). Layers 1 and 4 are kept beside them because each still gives
+/// the sharpest message for the mistake it was written for.
+///
+/// 1. **The contiguous binding needle (RED at HEAD).** The squashed grass region
+///    must contain `letalready=is_in_ongoing_battle(ctx,player_identity);` (the
+///    `guards::` / `crate::guards::` path spellings are accepted). Presence of the
+///    call somewhere nearby is NOT enough: the needle pins that the SSOT's RESULT
+///    is what `already` holds, which is the only way a scan can tell -the SSOT
+///    decides- from -the SSOT is called and its answer discarded beside the old
+///    filter- (the exact shell a red-team shipped past the first draft of the E3
+///    test, recorded at layer 1b above).
+///    The binding NAME is pinned deliberately: the `let _`-count-zero teeth in
+///    [`movement_tick_encounter_failures_are_logged_and_rate_limited`] are
+///    justified by an enumeration of every NAMED binding in `movement_tick`, and
+///    `already` is one of them. Renaming it silently weakens that test.
+///
+/// 2. **`player_identity()` count == 0 in the grass region (RED at HEAD).** That
+///    btree accessor IS the single-role filter — it matches only
+///    `battle.player_identity`, so a PvP side-B player (named in the row as
+///    `opponent_identity`) is invisible to it. A count of 1 alongside a passing
+///    layer 1 is the belt-and-braces shell that calls the SSOT and keeps the old
+///    filter as well.
+///
+/// 3. **ANTI-EVASION (green today): `ctx.sender` count == 0 in the grass region.**
+///    `movement_tick` is scheduler-only, so `ctx.sender` inside it is the MODULE
+///    identity and can never be a player. `is_in_ongoing_battle(ctx, ctx.sender)`
+///    would answer false for everyone and roll encounters for every player in
+///    every battle — strictly worse than the divergence being removed, and a
+///    thoroughly plausible copy-paste from `enqueue_move` / `set_move`, where the
+///    same expression IS correct. This is the same mutant the E3 test's layer 3
+///    kills in the warp region.
+///
+/// 4. **ANTI-VACUITY (green today): the guard still gates a `continue`.** The
+///    cheapest way to satisfy layers 2, 3 and 5 is to DELETE the pre-check
+///    outright, which would start a second battle for a player already in one.
+///    `ifalready{continue;}` must survive, and the encounter path below it
+///    (`begin_encounter(`) must still exist.
+///
+/// 5. **`BattleOutcome` count == 0 in the grass region (RED at HEAD).** The
+///    spelling-independent backstop to layer 2: any inline re-implementation must
+///    compare an outcome to `Ongoing`. Together with the E3 test's layer 1c
+///    (`battle()` count 0, file-wide) it leaves the inline scan nowhere to live.
+///
+/// 6. **THE SHADOW-REBIND KILL (RED at HEAD): bind and guard are ONE contiguous
+///    expression.** Layers 1 and 4 are separate needles, and BOTH are satisfied
+///    while the guard is dead code — bind the SSOT result, read it once in a
+///    throwaway statement, shadow it with `let already = false;`, and let the
+///    guard test the shadow. `unused_variables` stays silent because the first
+///    binding IS read before it is shadowed, and every count in this test and
+///    both ratcheted file-wide pins remain correct. Requiring no statement
+///    between the two makes it unrepresentable.
+///
+/// 7. **`already` is bound EXACTLY ONCE in the region (green at HEAD).** The
+///    spelling-independent partner to layer 6, and the one that also covers a
+///    rebind sitting AFTER the guard, where contiguity says nothing.
+///
+/// HONEST LIMITS. (a) Source scan, not execution — this crate has no
+/// reducer-executing harness (ADR-0156 P7), and per the header above there is no
+/// behaviour to execute against anyway. (b) Layer 1 pins an exact spelling; a
+/// semantically identical rewrite (an `if` with no binding, a `match`) false-REDs.
+/// That is the same deliberate trade 11r-a took, and ADR-0188 fixes the sanctioned
+/// text, which every failure message below restates verbatim.
+#[test]
+fn grass_encounter_pre_check_uses_the_both_role_ssot() {
+    let squashed = squashed_movement();
+    let body = movement_tick_body(&squashed);
+    let region = grass_region(body);
+
+    // --- Layer 0: the region extractor has not rotted ------------------------
+    // `grass_region` panics if the anchor is missing, but a region that no longer
+    // contains the encounter path would make layers 2, 3 and 5 vacuous.
+    let begin_call = ["begin_encounter", "("].concat();
+    assert!(
+        region.contains(begin_call.as_str()),
+        "VACUITY GUARD (EG/ADR-0188): the grass region does not contain \
+         `begin_encounter(` — either the extractor rotted or the encounter path was \
+         deleted. Every count below would be a vacuous zero, so no verdict here is \
+         trustworthy until this is explained."
+    );
+
+    // --- Layer 1: the SSOT's VALUE is the binding (RED at HEAD) --------------
+    let ssot = ["is_in_ongoing", "_battle("].concat();
+    let bind = ["let", "already="].concat();
+    let args = ["ctx,player", "_identity);"].concat();
+    let skip = ["ifalready{", "continue;}"].concat();
+    let mut variants: Vec<String> = Vec::new();
+    for path in ["", "guards::", "crate::guards::"] {
+        variants.push([bind.as_str(), path, ssot.as_str(), args.as_str()].concat());
+    }
+    assert!(
+        contains_any(region, &variants),
+        "TEETH (EG/ADR-0188 layer 1): the grass-encounter pre-check must read, \
+         whitespace-squashed and string-blanked, \
+         `letalready=is_in_ongoing_battle(ctx,player_identity);` — i.e. the source \
+         must say `let already = is_in_ongoing_battle(ctx, player_identity);` (the \
+         `guards::` and `crate::guards::` path spellings are also accepted). \
+         RED AT HEAD: the pre-check is an inline \
+         `ctx.db.battle().player_identity().filter(player_identity).any(|b| \
+         b.state.outcome == BattleOutcome::Ongoing)` — a SECOND implementation of a \
+         predicate that has an SSOT (`guards::is_in_ongoing_battle`, ADR-0122 D1), \
+         and one that sees side A only. \
+         THE ADJACENCY IS THE POINT: a bare `is_in_ongoing_battle(` anywhere in the \
+         region is satisfied by a call whose result is discarded while the old \
+         filter still decides — the shell a red-team shipped past the first draft \
+         of the E3 test. \
+         THE ARGUMENT IS `player_identity`, the local already bound from the \
+         character's own `player` row — never `ctx.sender`, which is the MODULE \
+         identity in this scheduler-only reducer (layer 3 below). \
+         THE NAME `already` IS PART OF THE CONTRACT: keep it. The `let _`-count-zero \
+         teeth further down this file are justified by an enumeration of every \
+         named binding in `movement_tick`, and `already` is in that list."
+    );
+
+    // --- Layer 2: the single-role filter is GONE (RED at HEAD) ---------------
+    let accessor = ["player_", "identity()"].concat();
+    let n_accessor = region.matches(accessor.as_str()).count();
+    assert_eq!(
+        n_accessor, 0,
+        "TEETH (EG/ADR-0188 layer 2): the grass region must contain ZERO \
+         `{accessor}` btree accessors; found {n_accessor} (HEAD has 1). That \
+         accessor IS the single-role filter: it matches only \
+         `battle.player_identity`, so a PvP side-B player — whose row names them as \
+         `opponent_identity` — is invisible to it. A count of 1 alongside a passing \
+         layer 1 means the SSOT call was ADDED BESIDE the old filter rather than \
+         replacing it, which layer 1's needle alone cannot see. \
+         Note this is the ACCESSOR, `player_identity()`; the local variable \
+         `player_identity` passed to the SSOT is a different token and is not \
+         counted here."
+    );
+
+    // --- Layer 3: ANTI-EVASION — no module identity in the grass region ------
+    let sender_needle = ["ctx.", "sender"].concat();
+    let n_sender = region.matches(sender_needle.as_str()).count();
+    assert_eq!(
+        n_sender, 0,
+        "ANTI-EVASION (EG/ADR-0188 layer 3, green at HEAD): `ctx.sender` appears \
+         {n_sender} time(s) in the grass region and must appear ZERO times. \
+         `movement_tick` is scheduler-only (it rejects any other sender), so \
+         `ctx.sender` inside it is the MODULE identity and can never be a player. \
+         `is_in_ongoing_battle(ctx, ctx.sender)` therefore answers false for \
+         everyone: every player already in a battle would roll a wild encounter on \
+         every grass step — strictly worse than the SSOT divergence this slice \
+         removes. It is a plausible copy-paste, because in `enqueue_move` and \
+         `set_move` (player-called) the identical expression is CORRECT. The grass \
+         pre-check must ask about `player_identity`, read from the character's own \
+         `player` row."
+    );
+
+    // --- Layer 4: ANTI-VACUITY — the guard still gates a `continue` ----------
+    assert!(
+        region.contains(skip.as_str()),
+        "ANTI-VACUITY (EG/ADR-0188 layer 4, green at HEAD): the grass region must \
+         still contain `ifalready{{continue;}}` (squashed). Layers 2, 3 and 5 are \
+         all ABSENCE assertions, and the cheapest way to satisfy every one of them \
+         is to DELETE the pre-check entirely — which would start a second battle for \
+         a player already in one and make this slice a regression rather than a \
+         hygiene fix. The guard must remain, and it must skip the roll with \
+         `continue` rather than falling through."
+    );
+
+    // --- Layer 5: no inline outcome comparison, in ANY spelling (RED at HEAD) -
+    let outcome = ["Battle", "Outcome"].concat();
+    let n_outcome = region.matches(outcome.as_str()).count();
+    assert_eq!(
+        n_outcome, 0,
+        "TEETH (EG/ADR-0188 layer 5): the grass region names `{outcome}` \
+         {n_outcome} time(s) and must name it ZERO times (HEAD has 1). This is the \
+         spelling-INDEPENDENT backstop to layer 2: ANY inline re-implementation of \
+         the predicate has to compare a battle row's outcome to `Ongoing`, whether \
+         it reaches the rows through the `player_identity()` btree accessor, \
+         `.iter().any(..)`, or anything else. Deciding -is this player in a battle- \
+         belongs to `guards::is_in_ongoing_battle` and nowhere else; the caller \
+         should never need the outcome enum at all. \
+         REMEDIATION: after the inline scan is gone, `BattleOutcome` has no other \
+         use in `movement.rs` — drop it from the `game_core` import (and drop \
+         `battle` from the `crate::schema` import) or `-D warnings` fails the build."
+    );
+
+    // --- Layer 6: THE SHADOW-REBIND KILL — bind and guard are ADJACENT -------
+    // Layers 1 and 4 are two SEPARATE needles, and a red team beat them both at
+    // once by putting a shadowing rebind between them:
+    //     let already = is_in_ongoing_battle(ctx, player_identity);
+    //     if already { log::debug!(..); }        // a throwaway READ
+    //     let already = false;                   // shadows it
+    //     if already { continue; }               // reads the WRONG one
+    // Layer 1's needle is present verbatim, layer 4's needle is present
+    // verbatim, `player_identity()` and `ctx.sender` are still 0, `BattleOutcome`
+    // is still 0, and both ratcheted file-wide counts are still correct — while
+    // the grass pre-check is now DEAD CODE and the block is strictly worse than
+    // the inline side-A filter it replaced. `unused_variables` does not fire:
+    // Rust does not warn when a shadowed binding is read before it is shadowed,
+    // which is exactly what the throwaway read buys.
+    // Requiring the two needles to be ONE contiguous expression makes any
+    // statement between them — shadowing or otherwise — unrepresentable. It is
+    // the same contiguity discipline this file already applies to the warp
+    // branch (layer 1b) and to the `id` binding of the D1 drain loop.
+    let mut block_variants: Vec<String> = Vec::new();
+    for v in &variants {
+        block_variants.push([v.as_str(), skip.as_str()].concat());
+    }
+    assert!(
+        contains_any(region, &block_variants),
+        "TEETH (EG/ADR-0188 layer 6, SHADOW-REBIND KILL): the bind and the guard \
+         must be ONE contiguous squashed expression — \
+         `letalready=is_in_ongoing_battle(ctx,player_identity);ifalready{{continue;}}` \
+         — with NO statement between them. \
+         WHAT THIS KILLS: layers 1 and 4 are separate needles, so both are \
+         satisfied by a block that binds the SSOT result, reads it once in a \
+         throwaway statement, then SHADOWS it (`let already = false;`) before the \
+         guard — which now tests the shadow and never skips anything. Every other \
+         layer in this test and both ratcheted file-wide counts stay correct, and \
+         the compiler is silent because Rust does not warn about a shadowed binding \
+         that was read before being shadowed. The result is DEAD grass-encounter \
+         guarding: strictly worse than the side-A-only filter this slice removes. \
+         RED AT HEAD for the original reason — the SSOT is not called here at all. \
+         A comment between the two statements is fine (comments and whitespace are \
+         stripped before matching); a STATEMENT is not."
+    );
+
+    // --- Layer 7: `already` is bound EXACTLY ONCE in the grass region --------
+    // The spelling-independent partner to layer 6: it also catches a rebind that
+    // sits AFTER the guard (where contiguity says nothing) and any second use of
+    // the name that would make a future reader unsure which value is live.
+    // Mirrors the discipline `evolution_tests.rs`'s escaped-binding provenance
+    // layer applies to `reason`.
+    let n_bind = region.matches(bind.as_str()).count();
+    assert_eq!(
+        n_bind, 1,
+        "TEETH (EG/ADR-0188 layer 7, single-binding fence): the grass region binds \
+         `already` {n_bind} time(s) and must bind it EXACTLY ONCE. A second \
+         `let already = ..` anywhere in the region is a SHADOW: whichever one the \
+         guard reads, a reader cannot tell from the guard alone, and the escape \
+         hatch that makes the pre-check inert is one line long. Note the needle is \
+         the immutable form — `let mut already` does not match it, which is \
+         deliberate: a re-assignable guard flag is the same defect written a \
+         different way and is caught by layer 1 instead."
     );
 }
 
@@ -1118,12 +1446,15 @@ fn movement_drain_loop_variable_id_is_not_shadowed() {
 ///   a preference, not a correctness property, so pinning it would be a fence
 ///   with no defect behind it.
 ///
-/// * **I3 — `is_in_ongoing_battle(` EXACTLY 4× file-wide.** The arithmetic:
+/// * **I3 — `is_in_ongoing_battle(` EXACTLY 5× file-wide.** The arithmetic:
 ///   1 (11r-a warp guard) + 1 (D1 drain guard) + 1 (`enqueue_move`) +
-///   1 (`set_move`) = 4. HEAD has 1, so this is RED. It is the wrapper-kill
+///   1 (`set_move`) + 1 (the 14r-f grass pre-check, ADR-0188) = 5. It stood at 4
+///   from 11r-c until 14r-f closed ADR-0166 R4 by replacing the grass block's
+///   inline single-role scan with a fifth call to the SSOT — the term is NEW, not
+///   a re-count of an existing site. It is the wrapper-kill
 ///   (red-team HIGH-4): a differently-named local helper — say
 ///   `fn move_blocked(ctx, who) -> bool { is_in_ongoing_battle(ctx, who) }` —
-///   re-introduces one EXTRA internal call, making 5, and trips this even though
+///   re-introduces one EXTRA internal call, making 6, and trips this even though
 ///   every block needle above could be satisfied by the wrapper's own body.
 ///   Combined with the E3 test's NEW-3 fence (`movement.rs` must not DEFINE
 ///   `is_in_ongoing_battle`) and with `clear_queue_is_deliberately_not_battle_guarded`
@@ -1235,16 +1566,25 @@ fn e2_intake_rejects_movement_intent_during_an_ongoing_battle() {
     let ssot_call = ["is_in_ongoing", "_battle("].concat();
     let n_calls = squashed.matches(ssot_call.as_str()).count();
     assert_eq!(
-        n_calls, 4,
-        "TEETH (E2/ADR-0168 D2, I3): `is_in_ongoing_battle(` must appear EXACTLY \
-         4 times in the squashed `movement.rs`; found {n_calls}. \
-         THE ARITHMETIC: 1 (the 11r-a warp guard, movement.rs:223) \
-         + 1 (the D1 drain-time lock) + 1 (`enqueue_move`) + 1 (`set_move`) = 4. \
+        n_calls, 5,
+        "TEETH (E2/ADR-0168 D2, I3 — ratcheted by 14r-f / ADR-0188): \
+         `is_in_ongoing_battle(` must appear EXACTLY 5 times in the squashed \
+         `movement.rs`; found {n_calls}. \
+         THE ARITHMETIC, RE-DERIVED TERM BY TERM: 1 (the 11r-a warp guard) \
+         + 1 (the ADR-0168 D1 drain-time lock) + 1 (`enqueue_move`'s intake reject) \
+         + 1 (`set_move`'s intake reject) + 1 (the grass-encounter pre-check, NEW in \
+         14r-f — it replaces the inline side-A-only `battle()` scan that ADR-0166 \
+         residual R4 left behind) = 5. \
          The `use crate::guards::{{..}}` import does not count — it has no `(`. \
-         HEAD has 1, so this assertion is RED until all three new call sites exist. \
+         THE FIFTH TERM IS A NEW CALL SITE, not a re-count of an old one: at the \
+         14r-f HEAD the count is 4, so this assertion is RED until the grass block \
+         asks the SSOT. Do NOT satisfy it by adding a call anywhere else — \
+         [`grass_encounter_pre_check_uses_the_both_role_ssot`] pins WHERE the new \
+         call lives and WHAT it is bound to, and layer 1c of the E3 test pins that \
+         the inline scan it replaces is gone (`battle()` count 0). \
          WHAT IT KILLS (red-team HIGH-4): a differently-named local wrapper — \
          `fn move_blocked(ctx, who) -> bool {{ is_in_ongoing_battle(ctx, who) }}` — \
-         adds one EXTRA internal call, making 5, and trips this even though the \
+         adds one EXTRA internal call, making 6, and trips this even though the \
          block needles above could be satisfied by the wrapper's own body. The \
          wrapper matters because it is the invisible way to re-guard `clear_queue`, \
          which ADR-0168 D3 deliberately leaves UNGUARDED. \
@@ -2877,8 +3217,10 @@ fn enqueue_move_body_loops_party_growth_tails() {
 //        in one and `(` in the other)                                       OK
 //   movement_tick_body_never_calls_growth_triggers ... untouched reducers    OK
 // And the pre-existing movement gates still hold: `is_in_ongoing_battle(`
-// stays at 4 file-wide (the tail adds none), `battle()` stays at 1 (the tail
-// reads `trade_offer()`, not `battle()`), and `clear_queue`'s body pin is
+// stays at its file-wide pin (5 since 14r-f / ADR-0188 added the grass
+// pre-check's call — the enqueue_move tail adds none), `battle()` stays at 0
+// (the tail reads `trade_offer()`, not `battle()`, and 14r-f removed the last
+// direct battle-table read from this file), and `clear_queue`'s body pin is
 // untouched.
 // ---------------------------------------------------------------------------
 

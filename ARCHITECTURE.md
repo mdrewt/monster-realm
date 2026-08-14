@@ -187,6 +187,28 @@ comment-stripping regex; a regex that strips `//` without string awareness is
 false-GREEN capable, and `evals/scanner-migration-audit.eval.mjs` (ADR-0186) is
 the live enforcing gate and measurement of which `*-security.eval.mjs` /
 `*-privacy.eval.mjs` files remain unmigrated.
+**Counting gates go HOLLOW, not red, when their region gains a legitimate
+occurrence (14r-f, ADR-0188 D4).** `zone-warp-server-runtime.eval.mjs`'s W3 counted
+`is_in_ongoing_battle(` anywhere after `warp_at(` and failed only on zero; routing
+`movement_tick`'s grass pre-check through the same SSOT added a second legitimate
+call downstream, so deleting the warp guard would have left the count at 1 and W3
+would have passed with the finding live. W3 is now region-scoped
+(`warp_at(` … `stepped_onto_grass(`, explicit `-1` end-fallback + `slice` — never
+`substring`, whose clamp-and-swap inverts the region onto the drain lock) and pins
+the guard EXPRESSION and that something BRANCHES on it, not mere presence. When a
+change adds a sanctioned occurrence inside any counted region, re-scope the gate in
+the same PR — a presence/count check that a decoy or telemetry call can satisfy
+reads as coverage while providing none.
+**Client mirrors of server constants are gated as mirrors (14r-f, ADR-0188 D3).**
+`client/src/ui/tradeProposeModel.ts` exports `MAX_TRADE_MONSTERS_PER_SIDE = 64`
+mirroring the private `server-module/src/trading.rs:37` SSOT (inclusive — the server
+compares `>`), so an over-cap trade fails in-UI instead of as an opaque reducer
+reject. The server stays authoritative and rejects, never clamps. A mirrored
+constant is a second source of truth unless mechanically tied to the first, so
+`evals/trade-cap-parity.eval.mjs` reads the Rust literal directly, requires an
+exported named const, asserts equality, and proves by dataflow that the clause
+reading it is a top-level `&&` conjunct of `canSubmit` — a decorative const beside a
+live bare literal is the drift shape it exists to kill.
 Two mechanical constraints (recorded in ADR-0056, surfaced by the M8.9a spike): a
 cross-module `ctx.db.<table>()` call must import the generated accessor trait
 (`use crate::schema::<table>;`), and a module name must not equal a table name

@@ -20,14 +20,13 @@ use crate::marshal::{
 };
 use crate::raising::accrue_quality_time;
 use crate::schema::{
-    battle, character, encounter, monster, monster_pub, npc, player, species_row, trade_offer,
-    Character, Player,
+    character, encounter, monster, monster_pub, npc, player, species_row, trade_offer, Character,
+    Player,
 };
 use crate::{SPRITE_PLAYER, STARTER_SPECIES_ID, ZONE_0};
 use game_core::{
     apply_move, map_for, npc_decide, resolve_encounter, roll_starter, spawn, stepped_onto_grass,
-    ActionState, BattleOutcome, Direction, Millis, MoveInput, StatBlock, TilePos, MOVE_QUEUE_CAP,
-    STEP_MS,
+    ActionState, Direction, Millis, MoveInput, StatBlock, TilePos, MOVE_QUEUE_CAP, STEP_MS,
 };
 use spacetimedb::{ReducerContext, ScheduleAt, Table};
 use std::sync::Mutex;
@@ -422,12 +421,13 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
             continue;
         };
         let player_identity = player.identity;
-        let already = ctx
-            .db
-            .battle()
-            .player_identity()
-            .filter(player_identity)
-            .any(|b| b.state.outcome == BattleOutcome::Ongoing);
+        // ADR-0166 R4, closed by ADR-0188: ask the ADR-0122 D1 both-role SSOT, not
+        // a second, side-A-only implementation of the same predicate. This is
+        // DEFENSIVE hygiene, not a reachable-bug fix — the ADR-0168 D1 drain lock
+        // above already skipped every battle-locked character before this point,
+        // and begin_encounter re-guards. Killing the divergent copy is what stops a
+        // future edit to that drain lock from silently reopening R4.
+        let already = is_in_ongoing_battle(ctx, player_identity);
         if already {
             continue;
         }
