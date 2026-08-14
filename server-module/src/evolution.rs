@@ -199,10 +199,12 @@ pub(crate) fn check_and_evolve(ctx: &ReducerContext, monster_id: u64) {
         let instance = match monster_to_instance(&m) {
             Ok(instance) => instance,
             Err(e) => {
-                // ADR-0170 D5 / ADR-0188: the reason is marshalling text and may
-                // carry a double quote. Escape it, or ONE such character makes the
-                // line unparseable and the ingest drops the diagnostic for exactly
-                // the corrupt row that produced it.
+                // ADR-0170 D5 / ADR-0188. Every reachable producer of this reason
+                // emits static ASCII or a numeric interpolation today, so no live
+                // injection exists here — but ONE double quote would make the line
+                // unparseable and the ingest would drop the diagnostic for exactly
+                // the corrupt row that produced it. The escape is the SSOT rule, not
+                // a dependency on that audit staying true.
                 let reason = crate::guards::json_escape(&e);
                 log::warn!(
                     "{{\"evt\":\"check_and_evolve_skip\",\"monster_id\":{monster_id},\"reason\":\"{reason}\"}}",
