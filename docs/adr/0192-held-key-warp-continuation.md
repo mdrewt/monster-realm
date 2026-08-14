@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** ADR-0152
 **Subsystems:** movement-netcode, client-ui
-**Decision:** `switchZone` captures the held-direction stack (original press stamps included) immediately before `resetPredictionState()` and restores it immediately after — warp arm ONLY; the reconnect arm and the shared reset body stay byte-identical, so ADR-0152's reconnect gap-closing guarantee is untouched.
+**Decision:** `switchZone` captures the held stack (original press stamps) before `resetPredictionState()` and restores it after — warp arm ONLY; the reconnect arm and shared reset body stay byte-identical, keeping ADR-0152's guarantee.
 
 ## Context
 
