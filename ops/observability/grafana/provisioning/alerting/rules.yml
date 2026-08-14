@@ -8,7 +8,7 @@
 # exists but notifies nobody (`receivers: []`, a placeholder URL). "The alert fires into
 # nothing" is the exact failure D4 exists to prevent, and it has two disguises, not one.
 #
-# NOT here: the `mr-trace-relay` dead-man's switch (OBS-46). Its service ships in m20b-2 and its
+# NOT here: the `mr-trace-relay` dead-man's switch (OBS-46). Its service ships in m20e-2 and its
 # rule ships with it — a rule watching a target that does not exist would sit permanently firing
 # (or permanently `up=0`) and train the operator to ignore a dead-man's switch.
 
@@ -18,20 +18,33 @@ groups:
   - orgId: 1
     name: meta-monitoring
     folder: Monster Realm
-    interval: 15s
+    # ADR-0190 D4. Grafana 13's alert scheduler runs on a FIXED 10s base tick and refuses any
+    # group interval that is not an exact multiple of it — provisioning aborts with
+    # `interval (15s) should be non-zero and divided exactly by scheduler interval: 10` and the
+    # container exits, i.e. the dead-man's-switch host itself crash-loops. 20s is the smallest
+    # legal value at or above the 15s this group originally carried, so it is derived, not picked.
+    interval: 20s
     rules:
       # OBS-39 — the sole telemetry agent's dead-man's switch. Alloy failing would black out
       # BOTH S2 and S4 ingestion at once with nothing else in the stack noticing; S1b's scrape
       # target doubles as the liveness probe, so this costs no new signal and no new container.
-      # 3 consecutive 15s scrape intervals = 45s.
+      #
+      # THREE DIFFERENT NUMBERS live here and only one of them belongs to this file:
+      #   15s — Prometheus `scrape_interval` (and `evaluation_interval`), prometheus.yml:14-15.
+      #         How often Alloy is scraped. UNCHANGED by ADR-0190.
+      #   20s — this group's `interval:` above. How often Grafana evaluates the rule.
+      #   60s — the `for:` below. How long the condition must hold before the alert fires.
+      # `for:` is 60s and not 45s because Grafana can only transition alert state on an
+      # evaluation boundary: under a 20s interval a `for: 45s` fires at 60s anyway, so writing
+      # 45 would state a number the scheduler never uses.
       - uid: mr-alloy-down
         title: AlloyDown
         condition: C
-        for: 45s
+        for: 60s
         labels:
           severity: critical
         annotations:
-          summary: Alloy has not been scraped for 3 consecutive intervals — S2 and S4 ingestion are both dark.
+          summary: Alloy has not been scraped for 60s — S2 and S4 ingestion are both dark.
         data:
           - refId: A
             relativeTimeRange:

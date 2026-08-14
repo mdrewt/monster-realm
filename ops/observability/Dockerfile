@@ -15,6 +15,24 @@ FROM caddy:2.11.4-alpine@sha256:98eb57d882ccd5213d1688764db10c1ca2c58a1ca3a6717a
 
 COPY --from=builder /usr/bin/caddy /usr/bin/caddy
 
+# ADR-0190 D3. The stock caddy binary carries the net-bind file capability, and buildkit
+# preserves file capabilities across `COPY --from=`, so the line above inherits it. A binary
+# whose EFFECTIVE capability set is not a subset of the process bounding set cannot be exec'd
+# at all: with `USER 10001` below plus the compose service's `cap_drop: [ALL]` and
+# `no-new-privileges:true`, `docker run … caddy version` died with
+# `exec /usr/bin/caddy: operation not permitted` (exit 255) — it failed without
+# `no-new-privileges` too, so that toggle was never the cause. Stripping it costs nothing here:
+# every listener in this stack is a high port on loopback (see Caddyfile / MR_CADDY_BIND_ADDR).
+# `setcap` already ships in caddy:2.11.4-alpine (/usr/sbin/setcap, libcap-setcap), so no
+# package install is added.
+#
+# The `&& ! getcap …` half is not decoration. Static text cannot prove this: a `setcap` placed
+# in an earlier build stage, or any `COPY --from=` that re-installs the binary AFTER this line,
+# would leave the capability on the shipped image while a source scan still saw the word
+# `setcap` before `USER`. Asserting the outcome inside the build makes that ordering mistake a
+# build failure. Keep this instruction the LAST one that writes /usr/bin/caddy.
+RUN setcap -r /usr/bin/caddy && ! getcap /usr/bin/caddy | grep -q cap_
+
 # Run as a non-root, numeric UID. The data/config dirs are chowned in the image so the named
 # volumes docker creates from them inherit that ownership on first use — otherwise a non-root
 # Caddy cannot persist its internal TLS CA and would regenerate certs on every restart.
