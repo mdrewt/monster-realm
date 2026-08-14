@@ -32,8 +32,21 @@ import { glob } from 'node:fs/promises';
 // Import shared helpers from encounter-privacy.eval.mjs (do NOT copy).
 // parseTables and stripComments are the canonical implementations already
 // battle-tested by the encounter-privacy eval.
+//
+// 14r-c (ADR-0181): encounter-privacy's `stripComments` now delegates to the
+// shared, string-literal-aware, offset-preserving scanner (evals/rust-scan.mjs),
+// so every scan below inherits the fix — a Rust literal carrying a URL scheme
+// can no longer truncate at its scheme slashes, orphan a quote, invert
+// string/code polarity and blind every check in this file (a false-GREEN that
+// reports PASS *because* the gate went blind).
+//
+// Delegating the STRIPPER is not the same as being covered by the SOUNDNESS
+// gate, though: a desync is per-FILE, and the files THIS eval globs are its own
+// business. So this eval wires `assertStripperSound` itself, over its own scan
+// set, below.
 // ---------------------------------------------------------------------------
 import { parseTables, stripComments } from './encounter-privacy.eval.mjs';
+import { assertStripperSound } from './rust-scan.mjs';
 
 // ---------------------------------------------------------------------------
 // Named checks
@@ -307,12 +320,32 @@ export default async function () {
   }
 
   // Parse tables from all source files combined.
+  //
+  // 14r-c (ADR-0181) STRIPPER-SOUNDNESS GATE, over THIS eval's REAL scan set,
+  // PER FILE (never over a concatenated blob — an offset in a blob is
+  // meaningless for diagnostics). A stripper desync is invisible to the clauses
+  // it blinds: it GREENS every check below and reds only the presence checks, so
+  // it is caught HERE or not at all. Every desync is COLLECTED as a failure.
+  //
+  // NON-TEST ONLY, per ADR-0181: `independentAnchorCount` is quote-BLIND by
+  // design (it must stay independent of the real stripper or it could not detect
+  // that stripper's desync), so a `#[spacetimedb::` inside a `*_tests.rs`
+  // fixture STRING reads as real code to it and false-REDs a correct stripper.
+  // The check surface below still scans every globbed file, test files included.
   const allTables = [];
+  const desyncFailures = [];
   for (const f of rsSources) {
     const raw = readFileSync(f, 'utf8');
+    if (!f.endsWith('_tests.rs')) {
+      const desync = assertStripperSound(raw, f);
+      if (desync !== null) desyncFailures.push(desync);
+    }
     const stripped = stripComments(raw);
     const fileTables = parseTables(stripped);
     allTables.push(...fileTables);
+  }
+  if (desyncFailures.length > 0) {
+    return { name, pass: false, detail: desyncFailures.join(' || ') };
   }
 
   // Check 1: playtest_event exists and is private.

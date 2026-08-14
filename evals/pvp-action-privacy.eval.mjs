@@ -19,13 +19,34 @@
 //
 // No new RegExp() — all patterns use literal regex literals or String.indexOf().
 import { readFileSync } from 'node:fs';
+import { assertStripperSound, stripRustSource } from './rust-scan.mjs';
+
+// The one Rust file this eval scans. Its ban clauses needle nothing else on the
+// Rust side (connection.ts is TypeScript and is deliberately NOT run through the
+// Rust scanner — ADR-0181 D4), so this single path IS this eval's Rust scan set
+// and is exactly what the soundness gate below must cover.
+const SCHEMA_PATH = 'server-module/src/schema.rs';
 
 // ---------------------------------------------------------------------------
 // Source helpers
+//
+// 14r-c (ADR-0181): `stripRustComments` used to be a two-regex pair with NO
+// string-literal awareness. A perfectly ordinary Rust literal carrying a URL
+// scheme truncates at its scheme slashes, orphans a quote, inverts string/code
+// polarity for the rest of the file, and blinds every ban clause below — the
+// gate then reports PASS *because* it went blind. It now delegates to the
+// shared, single-pass, offset-preserving scanner (evals/rust-scan.mjs), which
+// lexes comments and string literals in the SAME pass. The wrapper NAME is kept
+// so the call site below reads unchanged; only the engine underneath changed.
+//
+// Semantics are strictly stronger: comments AND string payloads are BLANKED to
+// spaces (length-, newline- and offset-preserving) instead of the text being
+// DELETED. `battleActionIsPublic` slices the LINE around its hit, and blanking
+// preserves line structure exactly, so that call site is unaffected.
 // ---------------------------------------------------------------------------
 
 function stripRustComments(src) {
-  return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+  return stripRustSource(src);
 }
 
 // ---------------------------------------------------------------------------
@@ -183,9 +204,9 @@ export default async function () {
   // -------------------------------------------------------------------------
   let schemaSrc, connSrc;
   try {
-    schemaSrc = readFileSync('server-module/src/schema.rs', 'utf8');
+    schemaSrc = readFileSync(SCHEMA_PATH, 'utf8');
   } catch {
-    return { name, pass: false, detail: 'server-module/src/schema.rs not found' };
+    return { name, pass: false, detail: `${SCHEMA_PATH} not found` };
   }
   try {
     connSrc = readFileSync('client/src/net/connection.ts', 'utf8');
@@ -194,6 +215,14 @@ export default async function () {
   }
 
   const failures = [];
+
+  // 14r-c (ADR-0181) STRIPPER-SOUNDNESS GATE, over this eval's REAL Rust scan
+  // set (schema.rs — the only Rust file needled here). A stripper desync is
+  // invisible to the clauses it blinds: it GREENS every ban below and reds only
+  // the presence checks, so it is caught HERE or not at all. A desync is
+  // COLLECTED as a failure, never a warning.
+  const desync = assertStripperSound(schemaSrc, SCHEMA_PATH);
+  if (desync !== null) failures.push(desync);
 
   // SCHEMA_PRIVATE: battle_action must NOT be public.
   const publicResult = battleActionIsPublic(schemaSrc);
