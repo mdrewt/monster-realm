@@ -5089,3 +5089,593 @@ fn lead_party_point_reads_the_lead_not_an_arbitrary_member() {
          `let lead_id = ids[0];`. Body scanned was:\n{body}"
     );
 }
+
+// ===========================================================================
+// 14r-d (ADR-0185) — PvE settle: log-and-commit the battle write-back error
+// instead of `?`-aborting the reducer.
+//
+// EARS criterion covered:
+//
+//   WHEN `write_back_battle_results` errors during PvE resolution, THE SYSTEM
+//   SHALL still commit the terminal battle outcome and log the error, not abort
+//   with the row `Ongoing`.
+//
+// WHY IT MATTERS (ADR-0185 Context). `?` propagates, which aborts the whole
+// SpacetimeDB transaction, so the `update(battle)` that commits the terminal
+// outcome never runs and the row stays `Ongoing`. Post-ADR-0168 D1 an `Ongoing`
+// row movement-freezes the connected player AND blocks `begin_encounter` /
+// `start_battle`, so a rare data-invariant fault becomes a TOTAL SOFTLOCK that
+// every retry reproduces identically (the fault is an invariant violation, not
+// a transient error). The two sibling paths that already have the right posture
+// are `pvp.rs::settle_pvp_battle` (ADR-0119 D3) and
+// `resolve_wild_battle_on_disconnect` (ADR-0138, battle.rs:1443).
+//
+// THE THREE SITES (verified at HEAD): submit_attack `battle.rs:737`,
+// swap_active `:871`, flee `:905`.
+//
+// SUBSTRATE. Static source-shape scans (ADR-0185 D4 / ADR-0156 P7 — this crate
+// has no reducer-executing harness and no `TestDb`). They reuse this module's
+// existing `fn_body_views` / `block_after` / `enclosing_block_headers` /
+// `squash_ws` / `statement_end` helpers; nothing new is re-implemented.
+//
+// EMISSION CHANNEL. `observability::mr_log`, NOT a bare `log::error!` — ADR-0185
+// D6: the OBS-2 ratchet (`server-module/src/.log-baseline`, gates G1/G7) pins the
+// grandfathered bare-`log::` count per file and requires every NEW emission to
+// route through the wrapper. So the needles below target `mr_log`, and the
+// accepted severity downgrade to info is ADR-0185 D6's recorded cost.
+//
+// RED AT HEAD: 01/02/03 fail at layer L2 (each site is still the bare `?` form,
+// so the prescribed `if let Err(e) = ..` shape is absent), 04 fails on the
+// per-statement `?` sweep at three of its four call sites, and 05 fails because
+// the fallible HP write currently precedes both GC statements.
+//
+// SCAN SUBSTRATE RULES honoured throughout: every needle naming a production
+// marker is assembled from fragments (the EG2 poisoning precedent — eval parsers
+// concatenate the `*_tests.rs` files into one scan blob), and the two brace
+// characters are spelled as NUMBERS rather than written verbatim, so this file's
+// own source can never satisfy a format-capture scan run over the crate.
+// ===========================================================================
+
+/// The ASCII opening brace, spelled as a NUMBER.
+const EA_PVE_LBRACE: u8 = 0x7B;
+
+/// The ASCII closing brace, spelled as a NUMBER.
+const EA_PVE_RBRACE: u8 = 0x7D;
+
+/// A `format!` capture spelling — `name` wrapped in the two brace characters.
+///
+/// Built from [`EA_PVE_LBRACE`] / [`EA_PVE_RBRACE`] rather than written verbatim
+/// so neither the escaped-capture needle nor (more importantly) the RAW-capture
+/// needle this test BANS exists as literal text anywhere in this file.
+fn ea_pve_capture(name: &str) -> String {
+    let mut s = String::new();
+    s.push(char::from(EA_PVE_LBRACE));
+    s.push_str(name);
+    s.push(char::from(EA_PVE_RBRACE));
+    s
+}
+
+/// The name of the battle write-back, assembled from fragments.
+fn ea_pve_writeback_call() -> String {
+    ["write_back", "_battle", "_results"].concat()
+}
+
+/// L8 ban reason — an early return.
+const EA_PVE_WHY_RETURN: &str = "an early return skips the update below, so the terminal \
+     outcome never commits and the row stays Ongoing — the exact softlock this slice removes";
+
+/// L8 ban reason — re-propagating the very Err the arm exists to swallow.
+const EA_PVE_WHY_PROPAGATE: &str = "a propagation operator inside the arm re-raises the Err \
+     the arm exists to swallow, restoring the transaction abort verbatim";
+
+/// L8 ban reason — the proven panic cheat.
+const EA_PVE_WHY_PANIC: &str = "THE PROVEN CHEAT: a panic aborts the SpacetimeDB transaction \
+     with no early return and no propagation operator, and passes clippy — so every naive \
+     shape gate stays green while the row is left Ongoing";
+
+/// L8 ban reason — a panicking macro under another name.
+const EA_PVE_WHY_PANIC_ALIAS: &str = "a panicking macro by another name — same transaction \
+     abort, reached by a spelling the panic ban alone would miss";
+
+/// L8 ban reason — the assert family.
+const EA_PVE_WHY_ASSERT: &str = "every assert family member panics on failure, and the \
+     failing branch is exactly the one this arm runs on";
+
+/// L8 ban reason — unwrap / expect on the error path.
+const EA_PVE_WHY_UNWRAP: &str = "an unwrap or expect on the error path panics, aborting the \
+     transaction with no early return and no propagation operator";
+
+/// L8 ban reason — killing the host process.
+const EA_PVE_WHY_PROCESS: &str = "kills the host process outright — strictly worse than the \
+     transaction abort, and it takes every other player's in-flight reducer with it";
+
+/// Transaction-aborting constructs the `Err` arm must contain NONE of (L8),
+/// each paired with the cheat its ban kills.
+///
+/// A blacklist is unavoidable here — any construct that unwinds or returns early
+/// defeats the commit — so it is written WIDE. `return` and the propagation
+/// operator are the obvious two; the one that actually beat a naive gate is
+/// `panic!`, which aborts the transaction with neither of them.
+fn ea_pve_abort_constructs() -> Vec<(String, &'static str)> {
+    vec![
+        (["ret", "urn"].concat(), EA_PVE_WHY_RETURN),
+        (String::from("?"), EA_PVE_WHY_PROPAGATE),
+        (["pan", "ic!"].concat(), EA_PVE_WHY_PANIC),
+        (["unreach", "able!"].concat(), EA_PVE_WHY_PANIC_ALIAS),
+        (["to", "do!"].concat(), EA_PVE_WHY_PANIC_ALIAS),
+        (["unimplem", "ented!"].concat(), EA_PVE_WHY_PANIC_ALIAS),
+        (["ass", "ert"].concat(), EA_PVE_WHY_ASSERT),
+        ([".unw", "rap("].concat(), EA_PVE_WHY_UNWRAP),
+        ([".exp", "ect("].concat(), EA_PVE_WHY_UNWRAP),
+        (["process::", "abort"].concat(), EA_PVE_WHY_PROCESS),
+        (["process::", "exit"].concat(), EA_PVE_WHY_PROCESS),
+    ]
+}
+
+/// The whole of `battle.rs` with comments AND string literals blanked in place.
+///
+/// Length-preserving, pure ASCII — so every byte offset is a char boundary and
+/// no needle can match text that exists only inside a comment or a log line.
+fn ea_pve_module_stripped() -> String {
+    strip_rust_strings(&strip_rust_comments(MODULE_SOURCE))
+}
+
+/// The shared driver behind `ea_pve_settle_01..03` — one PvE terminal site must
+/// LOG the write-back error and then COMMIT the terminal outcome (ADR-0185 D1).
+///
+/// Deliberately parameterised over `reducer` + `evt` and invoked from THREE
+/// separate `#[test]`s rather than looping inside one: a partial revert (one site
+/// restored to `?`) then reds exactly one NAMED test, which is what makes the
+/// regression diagnosable from the failure list alone.
+///
+/// Each layer kills a named cheat; the "kills" reason is written into the
+/// assertion message so a future reader cannot mistake a layer for ceremony.
+///
+/// L3 from an earlier draft — a separate NEGATIVE assertion that the body does
+/// not contain the call followed by its argument list and the propagation
+/// operator — is DELIBERATELY OMITTED, not an oversight: it is strictly implied
+/// by L1 (the call occurs exactly once) plus L2 (that one occurrence is the
+/// `if let Err` form). Do not read its absence as a gap, and do not add it back.
+fn assert_pve_settle_logs_and_commits(reducer: &str, evt: &str) {
+    let (with_strings, stripped) = fn_body_views(reducer);
+    let call = ea_pve_writeback_call();
+
+    // --- L1: the call appears EXACTLY once ----------------------------------
+    let n_call = stripped.matches(call.as_str()).count();
+    assert_eq!(
+        n_call, 1,
+        "TEETH (14r-d L1, ADR-0185 D1) `{reducer}`: the battle write-back is \
+         called {n_call} time(s) in this reducer's body; it must be called \
+         EXACTLY once. KILLS: (a) the call deleted outright — HP, XP, currency \
+         and both GC sweeps silently stop happening while every other layer \
+         below would still pass vacuously; (b) a SECOND, un-hardened call added \
+         alongside the hardened one, which re-introduces the `?` abort by a side \
+         door that a shape scan anchored on the FIRST occurrence would never see."
+    );
+
+    // --- L2: this site is the prescribed log-and-continue shape --------------
+    let squashed = squash_ws(&stripped);
+    let lbrace = char::from(EA_PVE_LBRACE).to_string();
+    let shape = ["ifletErr(e)=", call.as_str(), "(ctx,&battle)", lbrace.as_str()].concat();
+    assert!(
+        squashed.contains(shape.as_str()),
+        "TEETH (14r-d L2, ADR-0185 D1) `{reducer}`: the whitespace-squashed body \
+         does not contain `{shape}`. KILLS: this site reverted to (or never moved \
+         off) the bare `?` form. `?` propagates the Err, which aborts the whole \
+         SpacetimeDB transaction, so the `update(battle)` below never runs and the \
+         row stays `Ongoing` — and post-ADR-0168 D1 an `Ongoing` row freezes the \
+         player's movement AND blocks begin_encounter/start_battle, i.e. a total \
+         softlock that every retry reproduces. Write the ADR-0185 D1 block. \
+         (Whitespace is squashed first, so a rustfmt line split cannot false-RED \
+         this.)"
+    );
+
+    // --- L4: scope every remaining layer to the Err ARM, not to a window -----
+    let at_call = stripped
+        .find(call.as_str())
+        .expect("L1 asserted exactly one occurrence");
+    let (bs, be) = block_after(&stripped, at_call).unwrap_or_else(|| {
+        panic!(
+            "TEETH (14r-d L4, ADR-0185 D1) `{reducer}`: no brace block follows the \
+             battle write-back call at body byte {at_call}, so there is no Err arm \
+             to scope the emission assertions to. KILLS: a shape that merely calls \
+             the write-back and discards the Result (`let _ = ..;`) — silent, and \
+             indistinguishable from success to every operator."
+        )
+    });
+    let blk = &stripped[bs..be];
+    let blk_str = &with_strings[bs..be];
+    let sq_blk = squash_ws(blk);
+    let sq_blk_str = squash_ws(blk_str);
+
+    // --- L5: the Err arm actually EMITS, under this site's own evt -----------
+    let wrapper = ["mr", "_log("].concat();
+    assert!(
+        sq_blk.contains(wrapper.as_str()),
+        "TEETH (14r-d L5, ADR-0185 D1/D6) `{reducer}`: the Err arm makes no \
+         `{wrapper}..)` call. KILLS the commit-but-SILENT cheat — swallowing the \
+         Err satisfies the EARS criterion's `commit` half while destroying its \
+         `log` half, leaving a data-invariant fault with no diagnostic anywhere. \
+         The emission must go through `crate::observability::mr_log`, NOT a bare \
+         `log::` macro: ADR-0185 D6 / the OBS-2 ratchet pins battle.rs's \
+         grandfathered bare-log count and three new ones would red \
+         `evals/observability-log-wrapper.eval.mjs` and `observability_tests::g7_*`."
+    );
+    assert!(
+        blk_str.contains(evt),
+        "TEETH (14r-d L5, ADR-0185 D1) `{reducer}`: the Err arm does not carry the \
+         event name `{evt}`. KILLS a copy-pasted block — the three sites' payloads \
+         differ ONLY in `evt`, so a paste that keeps a sibling's name is the single \
+         most likely defect here, and it costs the operator the one field that says \
+         WHICH path faulted. Per-reducer names mirror the same-file precedent \
+         `wild_disconnect_writeback_err` (battle.rs:1446)."
+    );
+
+    // --- L6: the interpolated value is the ESCAPED binding, not the raw Err --
+    let escaped_capture = ea_pve_capture("escaped");
+    let raw_capture = ea_pve_capture("e");
+    assert!(
+        sq_blk_str.contains(escaped_capture.as_str()),
+        "TEETH (14r-d L6, ADR-0170 D5 / ADR-0185 D1) `{reducer}`: the Err arm's \
+         format string never interpolates `{escaped_capture}`. KILLS an \
+         un-escaped payload: `build_log_line` (observability.rs:47-48) escapes \
+         `evt` but treats the extra-fields fragment as a TRUSTED pre-rendered \
+         string, so the caller must escape its own values. A quote inside \
+         validator text otherwise makes the line unparseable JSON — losing the \
+         diagnostic for exactly the corrupt row that produced it."
+    );
+    assert!(
+        !sq_blk_str.contains(raw_capture.as_str()),
+        "TEETH (14r-d L6, ADR-0170 D5) `{reducer}`: the Err arm's format string \
+         still interpolates the RAW error binding (`{raw_capture}`). KILLS the \
+         escape-and-then-ignore-it shape — binding `escaped` and then \
+         interpolating the raw `e` anyway is a one-character slip that leaves the \
+         log line just as corruptible as before while looking fixed."
+    );
+
+    // --- L7: `escaped` really came from `json_escape(&e)` --------------------
+    let escape_fn = ["json", "_escape"].concat();
+    let bind = ["letescaped", "="].concat();
+    let prov_full = [bind.as_str(), "crate::guards::", escape_fn.as_str(), "(&e);"].concat();
+    let prov_bare = [bind.as_str(), escape_fn.as_str(), "(&e);"].concat();
+    assert!(
+        sq_blk_str.contains(prov_full.as_str()) || sq_blk_str.contains(prov_bare.as_str()),
+        "TEETH (14r-d L7, ADR-0170 D5) `{reducer}`: the Err arm does not bind \
+         `escaped` from the error via `{prov_full}` (the bare `{escape_fn}(&e)` \
+         spelling is also accepted). KILLS the PLACEHOLDER-ARGUMENT cheat: L6 only \
+         asks that a binding NAMED `escaped` be interpolated, so \
+         `let escaped = e;` — or escaping some other value entirely — passes L6 \
+         while emitting the raw text. This layer pins the provenance."
+    );
+    let n_bind = sq_blk.matches(bind.as_str()).count();
+    assert_eq!(
+        n_bind, 1,
+        "TEETH (14r-d L7, shadow-rebind kill) `{reducer}`: `escaped` is bound \
+         {n_bind} time(s) in the Err arm; it must be bound EXACTLY once. KILLS the \
+         SHADOW-REBIND cheat — `let escaped = json_escape(&e); let escaped = \
+         e.clone();` satisfies the provenance needle above with a first binding \
+         that is then thrown away, and the raw text is what reaches the log."
+    );
+
+    // --- L8: the Err arm contains NO transaction-aborting construct ----------
+    let aborts = ea_pve_abort_constructs();
+    for (needle, why) in &aborts {
+        assert!(
+            !sq_blk.contains(needle.as_str()),
+            "TEETH (14r-d L8, ADR-0185 D5) `{reducer}`: the Err arm contains \
+             `{needle}`. It must contain NONE of the transaction-aborting \
+             constructs. KILLS: {why}. The arm's entire job is to be a dead end \
+             that falls through to the commit — log, and nothing else."
+        );
+    }
+
+    // --- L9: the Err arm performs NO write to `battle.state` -----------------
+    // THE CHEAT THAT BEAT THE FIRST DESIGN OF THIS GATE.
+    let state = ["battle", ".state"].concat();
+    let n_state = sq_blk.matches(state.as_str()).count();
+    assert_eq!(
+        n_state, 0,
+        "TEETH (14r-d L9, ADR-0185 D5 — THE CHEAT THAT BEAT THE FIRST GATE DESIGN) \
+         `{reducer}`: the Err arm touches `{state}` {n_state} time(s); it must \
+         touch it ZERO times. A source scan can only prove that `update(battle)` \
+         is REACHED — never what VALUE it commits. So the single line \
+         `battle.state.outcome = BattleOutcome::Ongoing;` inside this arm \
+         satisfies L1, L2, L5, L6, L7, L8, L10, L11 and L12 in full while \
+         committing a row that is still Ongoing — silently re-creating the exact \
+         movement softlock the slice exists to remove, with a log line on top \
+         saying it was handled. This layer is what closes that hole; do not \
+         relax it into a spelling-specific ban."
+    );
+
+    // --- L10: the commit is reached, at top level, AFTER the arm -------------
+    let update = ["update", "(battle)"].concat();
+    let n_upd = stripped.matches(update.as_str()).count();
+    assert_eq!(
+        n_upd, 1,
+        "TEETH (14r-d L10, ADR-0185 D1) `{reducer}`: `{update}` occurs {n_upd} \
+         time(s) in the body; it must occur EXACTLY once. KILLS the commit being \
+         deleted (the terminal outcome is then never written at all) or duplicated \
+         (a second update whose position no single-offset ordering check can pin)."
+    );
+    let at_upd = stripped.find(update.as_str()).expect("asserted present above");
+    assert!(
+        at_upd > be,
+        "TEETH (14r-d L10, ADR-0185 D1) `{reducer}`: `{update}` sits at body byte \
+         {at_upd}, which is NOT after the Err arm (bytes {bs}..{be}). KILLS the \
+         commit being moved INSIDE the Err arm (it would then run only on failure, \
+         so the ordinary success path stops committing entirely) and the commit \
+         being hoisted ABOVE the write-back (which would break RT-M16-08: the GC \
+         sweep inside the write-back filters on `outcome != Ongoing` and relies on \
+         the in-flight row still being Ongoing, so an early update makes the sweep \
+         delete the current battle)."
+    );
+
+    // --- L11: the commit is unconditional -----------------------------------
+    let headers = enclosing_block_headers(&stripped, at_upd);
+    let n_headers = headers.len();
+    assert!(
+        headers.is_empty(),
+        "TEETH (14r-d L11, ADR-0185 D1) `{reducer}`: `{update}` is nested inside \
+         {n_headers} enclosing block(s) — headers: {headers:?} — but it must sit at \
+         the reducer body's TOP LEVEL. KILLS the commit being re-wrapped in a new \
+         conditional (`if true {{ .. }}`, `if write_back_ok {{ .. }}`, an `else` \
+         arm): a conditional commit is a conditional softlock, and the condition is \
+         precisely the failure case this slice is about."
+    );
+
+    // --- L12: nothing bails between the log and the commit -------------------
+    let between = &stripped[be..at_upd];
+    let ret = ["ret", "urn"].concat();
+    assert!(
+        !between.contains(ret.as_str()),
+        "TEETH (14r-d L12, ADR-0185 D1) `{reducer}`: a `{ret}` appears between the \
+         end of the Err arm and `{update}`. KILLS a bail inserted AFTER the log but \
+         BEFORE the commit — the log then reports a fault that was, in fact, not \
+         recovered from, which is worse than silence because it looks handled."
+    );
+    assert!(
+        !between.contains('?'),
+        "TEETH (14r-d L12, ADR-0185 D1) `{reducer}`: a `?` appears between the end \
+         of the Err arm and `{update}`. KILLS the same bail spelled as an early \
+         propagation: the arm swallows the write-back Err and the very next \
+         statement re-aborts the transaction, so the outcome still never commits."
+    );
+}
+
+/// **14r-d / ADR-0185 D1** — `submit_attack` logs and commits when the battle
+/// write-back errors.
+///
+/// RED at HEAD: `battle.rs:737` still calls the battle write-back with the bare
+/// propagation operator rather than the ADR-0185 D1 block, so layer L2 fires.
+#[test]
+fn ea_pve_settle_01_submit_attack_logs_and_commits_on_writeback_err() {
+    assert_pve_settle_logs_and_commits(
+        ["submit", "_attack"].concat().as_str(),
+        ["submit_attack", "_writeback", "_err"].concat().as_str(),
+    );
+}
+
+/// **14r-d / ADR-0185 D1** — `swap_active` logs and commits when the battle
+/// write-back errors.
+///
+/// RED at HEAD: `battle.rs:871`, same shape as `submit_attack`.
+#[test]
+fn ea_pve_settle_02_swap_active_logs_and_commits_on_writeback_err() {
+    assert_pve_settle_logs_and_commits(
+        ["swap", "_active"].concat().as_str(),
+        ["swap_active", "_writeback", "_err"].concat().as_str(),
+    );
+}
+
+/// **14r-d / ADR-0185 D1** — `flee` logs and commits when the battle write-back
+/// errors.
+///
+/// RED at HEAD: `battle.rs:905`. `flee` is the highest-value of the three sites:
+/// once it is hardened, a row stranded `Ongoing` by any OTHER path (including
+/// `taming.rs`'s two deliberately-unfixed siblings, ADR-0185 D3) has an exit
+/// again, so those faults degrade from softlock to recoverable stuck battle.
+///
+/// `flee`'s own `battle_flee` info log (`:908`) stays AFTER the commit and is
+/// untouched by this gate — the flee did commit, so suppressing it would
+/// misreport (ADR-0185 D1).
+#[test]
+fn ea_pve_settle_03_flee_logs_and_commits_on_writeback_err() {
+    assert_pve_settle_logs_and_commits(
+        ["fl", "ee"].concat().as_str(),
+        ["flee", "_writeback", "_err"].concat().as_str(),
+    );
+}
+
+/// **14r-d / ADR-0185 D1** — CENSUS: no caller of the battle write-back anywhere
+/// in `battle.rs` propagates its `Err`.
+///
+/// The three per-site tests above each pin ONE named reducer. This one is the
+/// completeness half: it enumerates EVERY occurrence of the write-back in
+/// `battle.rs` and holds each call site to the no-propagation rule, so a fourth
+/// PvE terminal path added later cannot quietly ship the `?` posture.
+///
+/// SCOPE BOUNDARY — READ BEFORE WIDENING THIS SCAN. It is bounded to `battle.rs`
+/// because [`MODULE_SOURCE`] IS `battle.rs` (`include_str!`). That bound is
+/// deliberate, not incidental (ADR-0185 D4). `server-module/src/taming.rs:270`
+/// (`write_back_battle_results` with `?`, recruit-FAIL path) and `taming.rs:169`
+/// (`write_back_party_hp` with `?`, recruit-SUCCESS path, after the recruited
+/// monster is already inserted) carry the IDENTICAL un-hardened shape with
+/// identical softlock consequences. They are outside 14r-d's declared `touches:`
+/// set, are left un-hardened deliberately and on the record in ADR-0185 D3, and
+/// have a named follow-up slice. Widening this scan to the crate would therefore
+/// go RED on known, tracked, deliberately-unfixed sites — a false alarm, not a
+/// finding. The follow-up's own gate is the place to scan them, and it must also
+/// scan for `write_back_party_hp` because the `:169` site is invisible to a
+/// write-back-results caller census.
+///
+/// The `?` check anchors on the CALL and scans the whole STATEMENT rather than
+/// matching one literal spelling. Pinning the exact argument-list-plus-operator
+/// text would miss `.map_err(|e| ..)?`, `.or_else(..)?` and every rustfmt-split
+/// form, all of which propagate just as fatally.
+///
+/// RED at HEAD: three of the four call sites (`:737`, `:871`, `:905`) still
+/// propagate. `:1443` (`resolve_wild_battle_on_disconnect`, ADR-0138) is already
+/// the log-and-continue shape and passes today — which is the point: it is the
+/// in-file reference the three PvE sites are being brought into line with.
+#[test]
+fn ea_pve_settle_04_battle_rs_has_no_question_mark_writeback_site() {
+    let src = ea_pve_module_stripped();
+    let call = ea_pve_writeback_call();
+    let needle = [call.as_str(), "("].concat();
+    let offsets: Vec<usize> = src.match_indices(needle.as_str()).map(|(i, _)| i).collect();
+    let n_seen = offsets.len();
+
+    assert_eq!(
+        n_seen, 5,
+        "CENSUS (14r-d, ADR-0185 D1): `{needle}..)` occurs {n_seen} time(s) in \
+         battle.rs (comments and string literals blanked); the pinned census is 5 \
+         — one definition (`:1096`) plus four call sites (`:737`, `:871`, `:905`, \
+         `:1443`). This count is a TRIPWIRE, not decoration: a new PvE terminal \
+         path added later without a deliberate error posture trips it and forces \
+         whoever adds it to re-derive this test from the spec — deciding, on the \
+         record, whether the new site log-and-commits or propagates. Do NOT bump \
+         the number to make it green."
+    );
+
+    let mut call_sites = 0usize;
+    for at in offsets {
+        // The definition is the one occurrence preceded by the `fn` keyword.
+        if src[..at].trim_end().ends_with("fn") {
+            continue;
+        }
+        call_sites += 1;
+        let end = statement_end(&src, at);
+        let stmt = &src[at..end];
+        assert!(
+            !stmt.contains('?'),
+            "TEETH (14r-d CENSUS, ADR-0185 D1): the call to the battle write-back \
+             at battle.rs byte {at} propagates its Err — the statement it heads \
+             contains `?`. Statement scanned was:\n{stmt}\n\
+             KILLS every propagating spelling, not just the bare one: this scan is \
+             anchored on the CALL and reads the whole STATEMENT, so \
+             `.map_err(|e| ..)?`, `.or_else(..)?` and any rustfmt-split form are \
+             caught too. `?` aborts the SpacetimeDB transaction, so the terminal \
+             outcome never commits and the row stays `Ongoing` — which, post \
+             ADR-0168 D1, freezes the player's movement and blocks \
+             begin_encounter/start_battle until an operator intervenes."
+        );
+    }
+
+    assert_eq!(
+        call_sites, 4,
+        "CENSUS (14r-d, ADR-0185 D1): {call_sites} call site(s) were classified \
+         (5 occurrences minus 1 definition should leave 4). A mismatch means the \
+         definition detector misfired — e.g. the function was re-declared or a \
+         call now sits directly after the `fn` keyword — and the per-site `?` \
+         sweep above may have skipped a real call site. Re-derive this test from \
+         the spec rather than adjusting the number."
+    );
+}
+
+/// **14r-d / ADR-0185 D7** — inside the battle write-back, BOTH GC statements run
+/// BEFORE the fallible party-HP write.
+///
+/// WHY THIS IS PART OF THE SAME SLICE, not a tidy-up. ADR-0185 D5's trade
+/// (atomic rollback + softlock  ->  partial write-back + progress) is only
+/// acceptable while the new failure mode stays BOUNDED. As shipped it is not.
+/// `write_back_battle_results` runs `check_team_coupling` -> the fallible
+/// `write_back_party_hp` -> the `battle_wild` sidecar delete (`:1117`) -> the
+/// prior-terminal `battle` GC sweep (`:1120-1156`). An `Err` from
+/// `write_back_party_hp` therefore skips BOTH GC steps.
+///
+/// Before D1 that was harmless: the row stayed `Ongoing`, the player was frozen,
+/// and exactly one stuck row existed. AFTER D1 the player keeps playing — so
+/// under a PERSISTENT invariant violation every subsequent battle leaks one
+/// orphaned `battle_wild` row AND one permanently-retained terminal `battle` row,
+/// unbounded, in a table that is `public` (`schema.rs:374`) and subscribed
+/// UNFILTERED by every client (`client/src/net/store.ts:817`), each row carrying
+/// a full two-team `BattleState`. `store.ts:853`'s "single current battle per
+/// player" assumption and `is_in_ongoing_battle`'s per-move O(N) scan both
+/// degrade with it. Trading a bounded softlock for unbounded public-table growth
+/// is not an acceptable trade — so the hoist is a precondition of D1, and this
+/// test is what couples them.
+///
+/// `check_team_coupling` must stay FIRST: it is the fail-loud precondition that
+/// makes the positional indexing downstream safe — `side_a.team[i]` is paired
+/// with `party_monster_ids[i]` by position and by nothing else.
+///
+/// Both GC statements are pure GC of OTHER rows: neither reads anything
+/// `write_back_party_hp` writes, and `write_back_party_hp` does not read
+/// `battle_wild`. The sweep's own precondition — that the current battle's DB row
+/// is still `Ongoing` here — is preserved a fortiori by running EARLIER, and
+/// RT-M16-08 is a property of the CALLER's ordering (write-back before
+/// `update`), which this does not touch.
+///
+/// RED at HEAD: `write_back_party_hp` is at `:1112`, ahead of both GC statements.
+///
+/// HONEST LIMIT: source order is not execution order in general. Here it is —
+/// all four are unconditional straight-line statements in one function body —
+/// but a future edit that wraps one in a branch would make this scan weaker than
+/// it reads. It is scoped to the single function body for that reason.
+#[test]
+fn ea_pve_settle_05_write_back_gc_precedes_the_fallible_hp_write() {
+    // Whitespace-squashed so a rustfmt line split cannot false-RED an ordering
+    // that is correct; squashing preserves relative order, which is the property.
+    let body = squash_ws(&write_back_body());
+
+    let coupling = ["check_team", "_coupling("].concat();
+    let hp_write = ["write_back", "_party_hp("].concat();
+    let wild_delete = ["battle_wild()", ".battle_id().", "delete("].concat();
+    let sweep = ["old_terminal", "_ids"].concat();
+
+    let find = |needle: &str, what: &str| -> usize {
+        body.find(needle).unwrap_or_else(|| {
+            panic!(
+                "SCAN PRECONDITION (14r-d, ADR-0185 D7): the battle write-back's \
+                 body no longer contains `{needle}` ({what}). Every ordering \
+                 assertion below would pass vacuously without it, so this fails \
+                 loud instead. If the statement genuinely moved or was renamed, \
+                 re-derive this test from ADR-0185 D7 rather than deleting it. \
+                 Body scanned was:\n{body}"
+            )
+        })
+    };
+
+    let at_coupling = find(coupling.as_str(), "the fail-loud coupling precondition");
+    let at_hp = find(hp_write.as_str(), "the fallible party-HP write");
+    let at_wild = find(wild_delete.as_str(), "the battle_wild sidecar GC delete");
+    let at_sweep = find(sweep.as_str(), "the prior-terminal battle GC sweep");
+
+    assert!(
+        at_coupling < at_wild && at_coupling < at_sweep,
+        "TEETH (14r-d, ADR-0185 D7): the coupling precondition (`{coupling}`, byte \
+         {at_coupling}) must remain the FIRST thing the write-back does — before \
+         the sidecar delete (byte {at_wild}) and before the GC sweep (byte \
+         {at_sweep}). It is the fail-loud assertion that makes every positional \
+         `side_a.team[i]` / `party_monster_ids[i]` index downstream safe; hoisting \
+         irreversible deletes above it would GC rows on behalf of a battle whose \
+         invariant has already been violated."
+    );
+
+    assert!(
+        at_wild < at_hp,
+        "TEETH (14r-d, ADR-0185 D7): the `battle_wild` sidecar delete sits at body \
+         byte {at_wild}, AFTER the fallible party-HP write at byte {at_hp}. It must \
+         run BEFORE it. If the HP write runs first, its `Err` skips this GC — and \
+         post-ADR-0185-D1 the caller no longer aborts, so the player keeps playing. \
+         Under a persistent invariant violation every subsequent battle then leaks \
+         one more orphaned `battle_wild` row, unbounded. The delete is pure GC of \
+         another row and reads nothing the HP write produces, so the hoist is free."
+    );
+
+    assert!(
+        at_sweep < at_hp,
+        "TEETH (14r-d, ADR-0185 D7): the prior-terminal GC sweep (anchored on \
+         `{sweep}`) sits at body byte {at_sweep}, AFTER the fallible party-HP write \
+         at byte {at_hp}. It must run BEFORE it. Same failure mode, worse blast \
+         radius: an `Err` from the HP write skips the sweep, and post-D1 the player \
+         keeps playing, so each subsequent battle permanently retains one more \
+         terminal `battle` row — in a `public` table (schema.rs:374) that every \
+         client subscribes to UNFILTERED (client/src/net/store.ts:817), each row \
+         carrying a full two-team `BattleState`. That also breaks store.ts:853's \
+         single-current-battle-per-player assumption and degrades \
+         `is_in_ongoing_battle`'s per-move O(N) scan. Trading a bounded softlock \
+         for unbounded public-table growth is not an acceptable trade, which is \
+         why this hoist is a precondition of D1 and not a separate cleanup."
+    );
+}
