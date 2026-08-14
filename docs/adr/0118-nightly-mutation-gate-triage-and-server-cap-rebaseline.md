@@ -5,6 +5,7 @@
 **Slice:** nightly-mut-triage
 **Supersedes:** —
 **Amends:** ADR-0050 (A2 mutate-server survivor cap: 180 → 309; A3 wiring-eval cap ceiling: 200 → 340)
+**Amended-by:** ADR-0183
 **Subsystems:** ci-gates
 **Decision:** Kill the 5 check_headroom survivors with counterparty accept-boundary + guard-contract tests (no exclusions, no production edits); re-baseline mutate-server cap 180→309 (exact measurement); raise the wiring-eval ceiling 200→340.
 

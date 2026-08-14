@@ -5,6 +5,7 @@
 **Slice:** m8.5c
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** ADR-0183
 **Subsystems:** ci-gates
 **Decision:** Run mutation and coverage gates nightly (not per-PR); include bindings-drift check in the fast per-PR ci job to catch schema/code divergence early.
 
@@ -168,6 +169,24 @@ nuance:** the `server-module/` directory's cargo package is **`monster-realm-mod
   in-crate set empty; miss ratio improved 71% → 62%). **Cap = 309** (exact
   measurement, same convention as the original 180); the wiring-eval cap ceiling
   raised 200 → 340 in the same commit. Full evidence + procedure: ADR-0118.
+- **Re-baseline (2026-08-14, ADR-0183):** slice head `4d789bd` (cargo-mutants 27.1.0,
+  `--test-tool nextest`, local 32-core): **753 mutants — 323 missed / 379 caught / 51
+  unviable — 26 min, 0 timeouts**; the previous baseline commit `9ef0b03` re-run for
+  comparability reproduced the committed 299/513 baseline **exactly**. The hosted
+  nightly (`ubuntu-latest`, run 31681643275 @ `8814416`, a tree differing from the
+  slice head only by a 6-line `accounts.rs` doc comment) measured **753 mutants — 324
+  missed / 377 caught / 52 unviable**, stable across 2026-08-11/12/13. **Cap = 324** —
+  the exact HOSTED measurement, because the gate executes on the hosted runner; the
+  single hosted-only survivor (`lib.rs` `replace == with != in sync_content`, a
+  reducer-body mutant) is documented in ADR-0183 rather than absorbed as headroom.
+  Growth is concentrated in files absent at `9ef0b03` (`accounts.rs` +27,
+  `playtest.rs` +11, `observability.rs` +2) while pre-existing files net **−16**; of
+  41 net-new survivors in pre-existing files, 32 are legitimate-shell and 9 are
+  weak-test. This cap is **DEBT-CARRYING**: ADR-0183 enumerates 12 in-crate-killable
+  survivors by `file:line` and names a required successor kill slice that must ratchet
+  the cap to **≤ 312**. The justfile `cap=` default and
+  `MUTATE_SERVER_CAP_BASELINE` moved together (ADR-0137 D4). Full evidence + triage:
+  ADR-0183.
 - **Threshold mechanism:** cargo-mutants has no built-in survivor-count cap, so the
   `mutate-server` justfile recipe (shebang) runs
   `cargo mutants -p monster-realm-module --test-tool nextest`, tolerates exit code 2
