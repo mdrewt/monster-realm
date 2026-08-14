@@ -337,12 +337,20 @@ test.describe
       // that WAS a tap and moved the wrong number of tiles fails immediately and is never
       // retried — retrying a wrong count is precisely how a suite stops detecting the defect
       // class it exists to catch.
-      await recenter(page, 4);
+      // Retry attempts are not free (tester/red-team, 14r-e resume): an UNSCORED overrun
+      // attempt has still physically moved the character >= 1 tile, so uncorrected drift
+      // across MAX_ATTEMPTS retries can walk x out of the [2, 7] corridor window and turn
+      // a harness-timing exhaustion into a MISLEADING corridor-precondition error. Each
+      // attempt therefore re-centers to column 4 first (recenter ends with converged(),
+      // so it subsumes the per-attempt convergence gate). Budget: 5 attempts of
+      // recenter + settle can brush the 45s default test timeout on a loaded runner —
+      // test.slow() buys the harness room without touching any behaviour assertion.
+      test.slow();
       for (const code of ['ArrowRight', 'ArrowLeft', 'ArrowRight'] as const) {
         const dx = code === 'ArrowRight' ? 1 : -1;
         let scoredAttempt = 0;
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-          await converged(page);
+          await recenter(page, 4);
           const t0 = await corridorEastWest(page, 2, 7);
           await resetKeyLog(page);
           await page.keyboard.down(code);
@@ -420,6 +428,12 @@ test.describe
       //   0 tiles, and this same assertion reds from the other side.
       //
       // Same retry rule as scenario A: retry ONLY on an over-long measured press.
+      // Same per-attempt recenter + test.slow() as scenario A, and doubly load-bearing
+      // here: B has no recenter of its own, so it used to inherit scenario A's exit
+      // column — East-rep retries starting at x=5 would walk to the window edge by the
+      // 4th unscored attempt and die on the corridor precondition instead of the
+      // intended "investigate machine load" exhaustion message.
+      test.slow();
       const reps = [
         { c1: 'ArrowRight', c2: 'KeyD', dx: 1 },
         { c1: 'ArrowLeft', c2: 'KeyA', dx: -1 },
@@ -427,7 +441,7 @@ test.describe
       for (const rep of reps) {
         let scoredAttempt = 0;
         for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt += 1) {
-          await converged(page);
+          await recenter(page, 4);
           const t0 = await corridorEastWest(page, 2, 7);
           await resetKeyLog(page);
           // 40ms gaps, not 55: the nominal press is first-down -> last-up, so two gaps put
