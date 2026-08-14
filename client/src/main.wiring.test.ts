@@ -10075,6 +10075,33 @@ describe('★ main.ts wiring (14r-e/ADR-0187): the DEV send/reject observability
         `main.ts must declare \`let ${counter} = 0;\` exactly once — a second declaration ` +
           'shadows the first and the exported reading stops tracking the incremented one',
       ).toBe(1);
+      // ★ TOTAL-REFERENCE COUNT (red-team, post-implementation). The two counts above pin
+      // the DECLARATION and the INCREMENT, and the positional assertions below pin WHERE
+      // each one sits — but between them they say nothing about a THIRD kind of reference.
+      // NAMED MUTANT: a bare reassignment `moveSendCount = 0;` (no `let`, no `+=`) planted
+      // anywhere else in main.ts — resetPredictionState, switchZone, a reconcile path.
+      // Every other assertion in this tooth stays green, and movement-input.spec.ts
+      // scenario D is silently VACUATED: the counter is zeroed between g0 and g1, so the
+      // delta stays under the 12-send budget no matter how hard the client floods. The
+      // observable would report "healthy" precisely in the world it exists to detect.
+      // EXACTLY THREE, and they are exactly the three this tooth already locates:
+      //   1. `let <counter> = 0;`  (module scope, beside moveRejectLimit)
+      //   2. `<counter> += 1;`     (the one instrumented seam)
+      //   3. the `snapshot()` returned field
+      // A FOURTH reference of any shape — reassignment, reset, read into a local, a second
+      // exposure — is a change to the observable's contract and must be re-derived here,
+      // not absorbed. Code-aware, so prose and string literals cannot pad or defeat it.
+      expect(
+        mwCodeOccurrences(code, counter).length,
+        `main.ts must reference \`${counter}\` at EXACTLY THREE code sites — the \`let\` ` +
+          'declaration, the single `+= 1` increment, and the `snapshot()` field. A fourth ' +
+          'reference is how the observable gets silently vacuated: a bare reassignment ' +
+          `\`${counter} = 0;\` (no \`let\`, no \`+=\`) planted in resetPredictionState or a ` +
+          "reconcile path survives every OTHER scan in this tooth and zeroes scenario D's " +
+          'measurement window, so the send-budget delta reads healthy while the client ' +
+          'floods the reducer. If a fourth site is genuinely needed, re-derive this count ' +
+          'and say why in the ADR — do not just raise the number',
+      ).toBe(3);
     }
 
     // --- moveSendCount: inside sendIntent, AFTER the reducer-issuing floor.

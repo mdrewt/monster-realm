@@ -496,7 +496,39 @@ test.describe
       ).toBeVisible({ timeout: 3_000 });
 
       const t1 = await tile(page);
-      await page.waitForTimeout(400);
+      // WAIT FOR THE IN-FLIGHT STEP TO DRAIN, DO NOT GUESS AT IT. This used to be a fixed
+      // 400ms sleep, which opens a false-red window: on a slow runner the one legitimately
+      // outstanding step can land AFTER T2 is sampled, i.e. inside the frozen window below,
+      // and the FROZEN assertion reds on a perfectly correct client.
+      //
+      // Two halves, and BOTH are needed — they close different races:
+      //  1. ONE CADENCE SLOT first. `ownAuthTile === ownPredictedTile` is also transiently
+      //     true in the narrow window where a continuation has been ENQUEUED locally but not
+      //     yet drained (prediction has not advanced yet, so it still agrees with authority).
+      //     Polling alone can return inside that window and let the step land during the
+      //     frozen window — the same false red, one frame narrower. A full STEP_MS slot is
+      //     longer than that window by construction.
+      //  2. THEN poll for convergence, generously. This is the exact "nothing is in flight
+      //     and prediction has settled" condition, so the 700ms frozen window below starts
+      //     only once the pipeline is genuinely quiet, however slow the runner is.
+      //
+      // The poll timeout is swallowed ON PURPOSE: in the mutant world the client keeps
+      // SENDING under the overlay, so prediction never settles and the poll would expire.
+      // Falling through hands the diagnosis to the two assertions below, which name the
+      // actual defect (a moved character) instead of reporting an opaque poll timeout.
+      await page.waitForTimeout(stepMs);
+      await page
+        .waitForFunction(
+          () => {
+            const g = (window as unknown as { __game: () => Snap }).__game();
+            const a = g.ownAuthTile;
+            const q = g.ownPredictedTile;
+            return a !== null && q !== null && a.x === q.x && a.y === q.y;
+          },
+          null,
+          { timeout: 3_000 },
+        )
+        .catch(() => undefined);
       const t2 = await tile(page);
       expect(
         Math.abs(t2.x - t1.x),

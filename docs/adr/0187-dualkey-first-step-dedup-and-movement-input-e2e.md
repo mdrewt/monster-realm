@@ -26,8 +26,9 @@ emitter outside the scanned region) survived the entire suite. Both residuals cl
 held stack (`#stack.some(e => e.dir === dir)`), deliberately NOT a stack-top (`active()`) check:
 with East held via ArrowRight and North pressed on top, a KeyD press must still be recognized as
 "East already held" (a stack-top equality check would wrongly re-emit — pinned by U-DK2 and the
-S11 sim scenario). `press()` shares the same predicate, so a mutation that breaks `isHeld` also
-breaks press-idempotence and reds the existing U-H3. The keydown becomes
+S11 sim scenario). `press()` shares the same predicate, so a mutation that breaks `isHeld`
+also breaks press-idempotence — the stack-top mutant agrees with U-H3's same-top inputs and is
+killed by U-DK2 (executed, see proof-of-teeth), not by U-H3 alone. The keydown becomes
 `if (!held.isHeld(dir)) step(dir);` with `held.press(...)` unchanged — brace-less, so the
 W-MVI-KEYDOWN-UNGATED needle stays contiguous. Nothing is cancelled and no predictor state is
 written (the ADR-0148 not-emit discipline). The ADR-0148 F3 freeze-escape is preserved BY
