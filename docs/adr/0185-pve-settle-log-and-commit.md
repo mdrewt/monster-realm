@@ -8,6 +8,13 @@
 **Subsystems:** battle
 **Decision:** The three PvE terminal sites log the write-back error via `observability::mr_log` and commit the outcome instead of `?`-aborting into an ADR-0168 softlock; the two GC steps hoist above the fallible HP write to stay bounded.
 
+> **Line references in this ADR are as of `origin/master@c85010d` — i.e. the code
+> *before* this slice.** The slice inserts ~33 lines above `write_back_battle_results`,
+> so every `battle.rs` line number below shifts in the merged tree. They are kept
+> pre-change deliberately: they are the coordinates of the defect being described, and
+> re-stamping them would only make them wrong again at the next edit. The gating tests
+> locate everything by byte offset, never by line, so nothing depends on these numbers.
+
 ## Context
 
 `submit_attack` (`battle.rs:737`), `swap_active` (`:871`) and `flee` (`:905`) each
@@ -129,14 +136,25 @@ sites of D3.
 `write_back_battle_results` (`:1096-1371`) has strictly ordered `Err` exits, so an error
 always leaves a **prefix** of its effects committed:
 
+**The table is stated POST-D7** — the hoist moved three GC statement groups above the
+fallible HP write, so every exit below the first one now also has those committed.
+
 | `Err` exit | Committed before it fires |
 |---|---|
-| `check_team_coupling` `:1106` | nothing |
-| `write_back_party_hp` `:1047-1051` / `:1055-1057` | party monsters `[0..i)` dual-written; `[i..]` not |
+| `check_team_coupling` `:1106` | nothing — it is still the first statement in the function |
+| *(D7 GC block: `battle_wild` delete + both prior-terminal sweeps — runs unconditionally after the coupling check, so every row below has it committed)* | — |
+| `write_back_party_hp` `:1047-1051` / `:1055-1057` | the D7 GC block; party monsters `[0..i)` dual-written, `[i..]` not |
 | `:1038-1040` index-oob | unreachable — coupling asserted at `:1033` |
-| faint-penalty loop `:1177-1179` | all party HP; `trust_unfavorable_count` for the fainted prefix |
+| faint-penalty loop `:1177-1179` | the D7 GC block; all party HP; `trust_unfavorable_count` for the fainted prefix |
 | XP loop `:1353-1355` | all the above **plus** `grant_currency` (`:1208`, once) plus essence / Trust-favorable / XP / level / stat recompute / `accrue_quality_time` / `check_and_evolve` for winners `[0..i)` |
 | `:1242-1244` index-oob | unreachable — coupling asserted |
+
+**Cost-before-reward is the ordering property that makes the partial commit safe**, and
+it survives the hoist: the two player-*cost* steps (party-HP persistence, the
+`trust_unfavorable_count` faint penalty) both run strictly before the first player-*reward*
+(`grant_currency`), and every reward is downstream of both. So an early `Err` retains
+strictly *less* than the player earned — there is no exit at which a cost is skipped while
+a reward is kept.
 
 (The `xp_skip_loser_*` paths at `:1202/:1222` `return Ok(())`, not `Err`.)
 
@@ -158,8 +176,29 @@ right trade:
    a transient fault: a retry would re-fail identically, which is the softlock we are
    removing. Party-HP atomicity is also lost — monsters `[0..i)` at post-battle HP and
    `[i..]` at pre-battle HP, a bounded partial free heal.
-4. **PvP is untouched:** `settle_pvp_battle` already log-and-commits, and all three
-   reducers reject ranked-PvP rows before the write-back (`:613`, `:762`, `:897`).
+4. **PvP's posture is untouched by D1** — `settle_pvp_battle` already log-and-commits, and
+   all three reducers reject ranked-PvP rows before the write-back (`:613`, `:762`, `:897`).
+   **D7 does change PvP, for the better:** `settle_pvp_battle` and
+   `resolve_wild_battle_on_disconnect` call the same modified helper, so on an `Err` their
+   GC sweeps now run where previously they were skipped. Pre-D7 the PvP funnel could
+   commit a second terminal row and violate the M8.7e keep-latest-per-player shape; it no
+   longer can.
+
+5. **The fail-open posture rests on an unreachability invariant — record it as such.**
+   Before this ADR a write-back fault rolled everything back, so no partial state could be
+   observed and reachability did not matter. It matters now. At this SHA every `Err` exit
+   of `write_back_battle_results` and `write_back_party_hp` is a non-client-inducible
+   invariant violation: `check_team_coupling`'s two operands are written together at battle
+   insert and `game-core` never resizes a team; the ownership-changed exit is blocked on
+   every transfer path (`trading.rs:376/385` propose, `:512/523` confirm re-check,
+   `accounts.rs:425` guest→account rekey); and the missing-`monster_pub` exits are
+   unreachable because the two `monster` insert sites each insert the twin on the next
+   line and neither row is ever deleted. **This is now a security invariant, not a
+   robustness nicety.** Concretely: if a future ownership-transfer path ships without an
+   in-battle guard, or a `game-core` change resizes `side_a.team` mid-battle, a client
+   could take damage, trip the exit, and `flee` — keeping pre-battle HP on the un-written
+   suffix (a free heal) and skipping the faint penalty, repeatably. Any change that makes
+   one of these exits client-reachable must revisit D1, not just the exit.
 
 **The cheat this analysis exposes, and the gate it forces.** Because the shape check only
 proves `update` is *reached*, a single line inside the `Err` arm —
@@ -196,7 +235,7 @@ level parameter) and migrate these three sites plus the grandfathered `error` si
 The choice costs no teeth: `evt` remains a call-site string literal, so it stays
 statically scannable, and `json_escape` remains at the call site.
 
-### D7 — Hoist the two GC statements above the fallible HP write
+### D7 — Hoist the three GC statement groups above the fallible HP write
 
 D5's trade is only acceptable if the new failure mode is **bounded**. As written it is
 not. `write_back_battle_results` performs, in order: `check_team_coupling` → the fallible
@@ -214,14 +253,35 @@ two-team `BattleState`; and `store.ts:853`'s "single current battle per player"
 assumption, plus `is_in_ongoing_battle`'s per-move O(N) scan, both degrade with it.
 Trading a bounded softlock for unbounded public-table growth is not an acceptable trade.
 
-**Decision:** move the `battle_wild` delete and the prior-terminal GC sweep to directly
-after `check_team_coupling`, above `write_back_party_hp`. Both are pure GC of *other*
-rows; neither reads anything `write_back_party_hp` writes, and `write_back_party_hp` does
-not read `battle_wild`. The sweep's own correctness precondition — that the current
-battle's DB row is still `Ongoing` at that point — is preserved a fortiori by running
-earlier, and RT-M16-08 is a property of the *caller's* ordering (write-back before
-`update`), which is untouched. With the hoist, a persistent fault leaks nothing: the
-failure mode returns to bounded, and the player is no longer frozen.
+**Decision:** move all **three** GC statement groups to directly after
+`check_team_coupling`, above `write_back_party_hp`:
+
+1. the `battle_wild` sidecar delete (`:1117`),
+2. the player prior-terminal sweep (`old_terminal_ids`, `:1120-1141`),
+3. the **RT-M16-03 PvP side-B opponent sweep** (`old_opp_terminal_ids`, `:1143-1156`) —
+   named explicitly because it is easy to miss and must move with the other two: it
+   deletes only `outcome != Ongoing` rows belonging to *other* battles, reads nothing the
+   HP write produces, and is skipped entirely for wild/practice battles.
+
+All three are pure GC of *other* rows; none reads anything `write_back_party_hp` writes,
+and `write_back_party_hp` touches only `monster`/`monster_pub`, never `battle_wild` or
+`battle`. The sweeps' correctness precondition — that the current battle's DB row is
+still `Ongoing` at that point — is not merely preserved but *identical*, since nothing
+between `check_team_coupling` and the old position writes the `battle` table. RT-M16-08
+is a property of the *caller's* ordering (write-back before `update`), which is untouched
+— note that D1's "nothing is reordered" claim is scoped to the call sites; D7 reorders
+inside the callee, and the two are consistent.
+
+**The bound this buys is partial, and the limit is deliberate.** The hoist eliminates the
+leak for the `write_back_party_hp` exit — the one with several distinct failure modes and
+the only one downstream of an unbounded loop. It does **not** cover the
+`check_team_coupling` exit, which still precedes all three GC groups, so a *persistent*
+coupling violation retains the unbounded shape: one orphaned `battle_wild` row and one
+permanently-retained terminal `battle` row per battle. That is accepted on purpose —
+`check_team_coupling` must stay the first fail-loud check, because running irreversible
+deletes on behalf of a battle whose positional invariant is already violated is worse
+than the leak. Both exits are unreachable at this SHA (D5.5); if that ever changes, the
+coupling exit needs its own answer.
 
 Deliberately **not** done: a belt-and-suspenders `battle_wild` delete inside the `Err`
 arm. That diverges from both reference shapes and puts a second table write on a path

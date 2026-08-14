@@ -1160,8 +1160,9 @@ pub(crate) fn write_back_battle_results(
 
     // GC prior terminal battles for this player (12.5e-1, ADR-0077).
     // Ordering invariant: the current battle's DB row is still Ongoing at this
-    // call site — the mutating callers (submit_attack, swap_active, flee) call
-    // update() AFTER write_back_battle_results returns, and the disconnect caller
+    // call site — every mutating caller (submit_attack, swap_active, flee,
+    // taming::attempt_recruit, pvp::settle_pvp_battle) calls update() AFTER
+    // write_back_battle_results returns, and the disconnect caller
     // (resolve_wild_battle_on_disconnect, ptc5b/ADR-0138) delete()s the row AFTER,
     // so the in-flight row is still Ongoing in the DB here either way. Running
     // before the HP write (ADR-0185 D7) preserves that precondition a fortiori.
@@ -1485,9 +1486,9 @@ pub(crate) fn resolve_wild_battle_on_disconnect(ctx: &ReducerContext, disconnect
         // Auto-flee: non-decisive terminal (no XP — outcome != SideAWins).
         battle.state.outcome = BattleOutcome::Fled;
         // Same write-back as `flee`: persists HP and GCs the `battle_wild` sidecar
-        // at its own line-999 delete. Log-and-continue — an Err (e.g. team-coupling)
-        // must NOT leave the `Ongoing` row alive (that re-creates the soft-lock);
-        // the deletes below run regardless.
+        // at its own delete. Log-and-continue — an Err (e.g. team-coupling) must
+        // NOT leave the `Ongoing` row alive (that re-creates the soft-lock); the
+        // deletes below run regardless.
         if let Err(e) = write_back_battle_results(ctx, &battle) {
             let escaped = crate::guards::json_escape(&e);
             log::error!(
@@ -1495,8 +1496,10 @@ pub(crate) fn resolve_wild_battle_on_disconnect(ctx: &ReducerContext, disconnect
             );
         }
         // Belt-and-suspenders (ADR-0138 D4): explicitly delete the private
-        // `battle_wild` sidecar — `write_back_battle_results` only reaches its own
-        // delete if it did not Err first. Then delete the main `battle` row (the new
+        // `battle_wild` sidecar. Post-ADR-0185 D7 the helper's own delete is hoisted
+        // above the fallible HP write, so only a `check_team_coupling` Err can skip
+        // it — this stays as depth-of-defence, idempotent either way. Then delete
+        // the main `battle` row (the new
         // behavior; unlike `flee` we do not `update()` it). Both deletes idempotent.
         ctx.db.battle_wild().battle_id().delete(id);
         ctx.db.battle().battle_id().delete(id);

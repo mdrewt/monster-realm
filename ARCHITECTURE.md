@@ -786,8 +786,10 @@ Tracked consciously so they stay visible, not forgotten.
   subsequent `update()`). Gap: `attempt_recruit` success path calls `write_back_party_hp`
   not `write_back_battle_results` — one prior terminal can persist until the next
   non-recruit terminal battle. Named follow-up, not silently dropped.
-  **14r-d (ADR-0185)**: both GC steps now run *above* the fallible party-HP write, so
-  an `Err` there can no longer skip them; and all four `battle.rs` terminal sites
+  **14r-d (ADR-0185)**: all three GC steps (the `battle_wild` delete, the player
+  prior-terminal sweep and the RT-M16-03 opponent sweep) now run *above* the fallible
+  party-HP write, so an `Err` there can no longer skip them — the `check_team_coupling`
+  exit still can, deliberately (ADR-0185 D7); and all four `battle.rs` terminal sites
   (`submit_attack`, `swap_active`, `flee`, the disconnect GC) log-and-commit rather
   than `?`-abort into an `Ongoing` row. The two `taming.rs` sites (`:169`, `:270`)
   still `?`-propagate — disclosed in ADR-0185 D3 as the named follow-up.
