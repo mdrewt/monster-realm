@@ -390,11 +390,412 @@ function checkTombstoneArgPin(rankingSrc) {
 }
 
 // ---------------------------------------------------------------------------
+// CHECKER D: RANKED_REQUIRES_ACCOUNT (14r-g, ADR-0189, issue #307).
+//
+// `challenge_pvp` and `accept_challenge` must reject unless BOTH parties hold
+// an `account` row, through ONE pure `ranked_account_gate` seam per reducer,
+// placed BEFORE that reducer's irreversible effect. Every human-vs-human battle
+// is ranked (`is_ranked_pvp`, ADR-0119 D4), and `start_pvp_battle` — the single
+// ranked-battle constructor — is reachable only from `accept_challenge`, so
+// these two handshake gates are the complete cover (ADR-0189 D1).
+//
+// This is the toolchain-boundary twin of `pvp_tests.rs` EA-RA-02/03/04/06c: it
+// runs in `just eval` even when the Rust test module is disabled. The
+// behavioural half (the gate's truth table, the reason VALUES, the
+// inert-until-activation canary) is NOT re-encoded here — it is executed for
+// real by EA-RA-01/05/06a/06b, and a JS restatement would be drift-prone SSOT
+// duplication with no extra coverage.
+//
+// SHAPE OF THE PIN — deliberately exact. A first-draft "does it mention
+// is_account_holder?" design was beaten 7/7 by a red-team pass (discarded
+// `Result`, hard-coded `true` leg, `gate(false, ..)`, swapped legs, a nested
+// `if false`, a gate after the insert, a local module shim). All seven are
+// killed by ONE exact-equality compacted statement needle plus a brace-depth
+// fence and an ordering check, so that is what this criterion pins. Deviating
+// from the statement text is therefore a PR-visible edit — which is the point.
+//
+// Clauses, each tagged so a fixture can assert WHICH one fired (the
+// account-privacy precedent: without the tag, deleting a clause can leave the
+// suite green because a neighbouring clause's message shares a word). EVERY
+// clause is fail-loud — an extraction failure or a missing anchor returns
+// {ok:false}, never a silent skip, including for the BAN clauses:
+//   [D/fn-missing]        `fn ranked_account_gate(` exists at all.
+//   [D/challenge-missing] `challenge_pvp`'s body can be extracted.
+//   [D/accept-missing]    `accept_challenge`'s body can be extracted.
+//   [D/challenge-stmt]    the exact compacted Guard 3a statement, count == 1.
+//   [D/challenge-depth]   it sits at brace depth 0 of the reducer body.
+//   [D/challenge-order]   it precedes `battle_challenge().insert(`.
+//   [D/accept-stmt]       ditto, challenger leg.
+//   [D/accept-depth]      ditto.
+//   [D/accept-order]      it precedes `start_pvp_battle(`.
+//   [D/no-has-jwt]        `has_jwt` count == 0 (true for EVERY connection —
+//                         a gate keyed off it is vacuous; ADR-0189 D2).
+//   [D/no-account-table]  `ctx.db.account(` count == 0 (no SSOT fork).
+//   [D/ctor-cover]        `start_pvp_battle(` == 2 and `.battle().insert(` == 1.
+//   [D/active-body]       the exact `ranked_enforcement_active` body.
+//
+// Needles are literal `indexOf`/`countOccurrences` only — NO `new RegExp(`
+// anywhere (Semgrep detect-non-literal-regexp is remote-only and would fail the
+// PR after every local gate has passed). They are WHITESPACE-FREE and matched
+// against `compactWs(stripBoth(src))`, because the live tree is rustfmt-wrapped
+// and a >100-column call is split one argument per line. Hazard characters come
+// from the DQ/SLASH constants above.
+// ---------------------------------------------------------------------------
+const D_GATE_FN = 'ranked_account_gate';
+const D_ACTIVE_FN = 'ranked_enforcement_active';
+const D_HOLDER_CALL = 'crate::accounts::is_account_holder';
+const D_CHALLENGE_FN = 'challenge_pvp';
+const D_ACCEPT_FN = 'accept_challenge';
+// Each reducer's own irreversible effect — the thing the gate must precede.
+const D_CHALLENGE_EFFECT = 'battle_challenge().insert(';
+const D_ACCEPT_EFFECT = 'start_pvp_battle(';
+const D_HAS_JWT_NEEDLE = 'has_jwt';
+const D_ACCOUNT_TABLE_NEEDLE = 'ctx.db.account(';
+const D_BATTLE_INSERT_NEEDLE = '.battle().insert(';
+// `fn ranked_enforcement_active() -> bool { issuers_configured(crate::accounts::ALLOWED_ISSUERS) }`
+const D_ACTIVE_BODY_PIN = `fn${D_ACTIVE_FN}()->bool{issuers_configured(crate::accounts::ALLOWED_ISSUERS)}`;
+
+// The pre-compaction spelling of the statement's opening line. Used ONLY by the
+// D-GOOD-wrapped fixture, to prove the wrapped fixture really is wrapped (if
+// this legacy spaced needle still matched it, the fixture would be contiguous
+// and would prove nothing about the squash) — the G8-BAD-*-wrapped precedent.
+const D_LEGACY_SPACED_NEEDLE = `if let Err(reason) = ${D_GATE_FN}(`;
+
+// Build the compacted Guard 3a needle. `thirdArg` is the opponent-leg subject
+// (`target` in challenge_pvp, `challenge.challenger` in accept_challenge).
+// `trailingComma` selects the rustfmt-split closing form: a >100-column call is
+// broken one argument per line WITH a trailing comma, which compacts to `,)`.
+// The log tag's payload is BLANKED by the stripper (quotes survive, contents do
+// not), so the needle carries an empty literal and this pin constrains the
+// decision logic rather than the log text.
+function dGuardNeedle(thirdArg, trailingComma) {
+  return (
+    `ifletErr(reason)=${D_GATE_FN}(` +
+    `${D_ACTIVE_FN}(),` +
+    `${D_HOLDER_CALL}(ctx,me),` +
+    `${D_HOLDER_CALL}(ctx,${thirdArg})` +
+    (trailingComma ? ',' : '') +
+    `){lete=reason.to_string();log_reject(${DQ}${DQ},me,&e);returnErr(e);}`
+  );
+}
+
+// Brace depth of `compacted[0..at)` — 0 means "top-level statement of the body".
+function dBraceDepthAt(compacted, at) {
+  let depth = 0;
+  for (let i = 0; i < at; i++) {
+    if (compacted[i] === '{') depth++;
+    else if (compacted[i] === '}') depth--;
+  }
+  return depth;
+}
+
+/**
+ * Criterion D: is the ranked-requires-account gate wired into both PvP
+ * handshake reducers exactly as ADR-0189 specifies?
+ * @param {string} pvpSrc Raw `server-module/src/pvp.rs` source.
+ * @returns {{ok: boolean, why: string}} `why` starts with the failing clause tag.
+ */
+export function checkRankedAccountGate(pvpSrc) {
+  const code = scanCode(pvpSrc); // stripped + whitespace-compacted, whole file
+  const stripped = stripBoth(pvpSrc); // stripped, UN-compacted: body extraction needs the spaces
+
+  if (code.indexOf(`fn${D_GATE_FN}(`) === -1) {
+    return {
+      ok: false,
+      why:
+        `[D/fn-missing] pvp.rs declares no \`fn ${D_GATE_FN}(\` — the ranked-requires-account ` +
+        'seam does not exist, so guests can enter ranked play through either handshake ' +
+        'reducer (ADR-0189 D1/D5, issue #307). Every clause below would pass vacuously ' +
+        'without this anchor (fail loud, never skip)',
+    };
+  }
+
+  const legs = [
+    {
+      tag: 'challenge',
+      fnName: D_CHALLENGE_FN,
+      thirdArg: 'target',
+      effect: D_CHALLENGE_EFFECT,
+      effectWhat: 'the challenge row insert',
+    },
+    {
+      tag: 'accept',
+      fnName: D_ACCEPT_FN,
+      thirdArg: 'challenge.challenger',
+      effect: D_ACCEPT_EFFECT,
+      effectWhat: 'the ranked battle construction',
+    },
+  ];
+
+  const bodies = {};
+  for (const leg of legs) {
+    const body = extractReducerBody(stripped, leg.fnName);
+    if (body === null) {
+      return {
+        ok: false,
+        why:
+          `[D/${leg.tag}-missing] \`fn ${leg.fnName}(\` could not be located in pvp.rs, so the ` +
+          'ranked-account statement pin for it cannot fire. A pin that goes quiet when its ' +
+          'anchor moves is worth nothing (fail loud, never skip)',
+      };
+    }
+    bodies[leg.tag] = compactWs(body);
+  }
+
+  for (const leg of legs) {
+    const compact = bodies[leg.tag];
+    const plain = dGuardNeedle(leg.thirdArg, false);
+    const trailing = dGuardNeedle(leg.thirdArg, true);
+    const hits = countOccurrences(compact, plain) + countOccurrences(compact, trailing);
+    if (hits !== 1) {
+      return {
+        ok: false,
+        why:
+          `[D/${leg.tag}-stmt] \`${leg.fnName}\` must carry the ADR-0189 Guard 3a statement ` +
+          `EXACTLY ONCE; found ${hits} match(es) of the compacted pin (both the \`)\` and the ` +
+          `rustfmt-split \`,)\` closing forms are accepted). This one exact-equality needle is ` +
+          'what kills the seven proven evasions at once: a discarded `Result` (`let _ = ' +
+          `${D_GATE_FN}(..)\`), a hard-coded \`true\`/\`false\` first argument in place of ` +
+          `\`${D_ACTIVE_FN}()\`, a \`true\` literal substituted for either ` +
+          '`is_account_holder` leg, swapped caller/opponent arguments, and a local ' +
+          '`use crate::accounts;` shim redirecting the SSOT predicate. Expected: ' +
+          `\`${trailing}\``,
+      };
+    }
+    let at = compact.indexOf(plain);
+    if (at === -1) at = compact.indexOf(trailing);
+
+    const depth = dBraceDepthAt(compact, at);
+    if (depth !== 0) {
+      return {
+        ok: false,
+        why:
+          `[D/${leg.tag}-depth] the Guard 3a statement in \`${leg.fnName}\` sits at brace depth ` +
+          `${depth}, not 0. Nesting it inside \`if false { .. }\` (or any other conditional ` +
+          'block) leaves the exact statement text in the file while never executing it — the ' +
+          'gate must be an unconditional top-level statement of the reducer body',
+      };
+    }
+
+    const effectAt = compact.indexOf(leg.effect);
+    if (effectAt === -1) {
+      return {
+        ok: false,
+        why:
+          `[D/${leg.tag}-order] the irreversible-effect anchor \`${leg.effect}\` was not found ` +
+          `in \`${leg.fnName}\`, so the decision-before-irreversible ordering cannot be ` +
+          'checked (fail loud, never skip)',
+      };
+    }
+    if (at > effectAt) {
+      return {
+        ok: false,
+        why:
+          `[D/${leg.tag}-order] the Guard 3a statement in \`${leg.fnName}\` is at compacted ` +
+          `offset ${at}, AFTER \`${leg.effect}\` at ${effectAt}. A gate that runs once ` +
+          `${leg.effectWhat} has already been committed does not gate anything`,
+      };
+    }
+  }
+
+  const jwtCount = countOccurrences(code, D_HAS_JWT_NEEDLE);
+  if (jwtCount !== 0) {
+    return {
+      ok: false,
+      why:
+        `[D/no-has-jwt] pvp.rs references \`${D_HAS_JWT_NEEDLE}\` ${jwtCount} time(s); it must ` +
+        'be 0. `has_jwt()` is true for EVERY connection — the SpacetimeDB host mints its own ' +
+        'identity token even for a tokenless connect — so a ranked gate keyed off it admits ' +
+        'every guest and is entirely vacuous. `crate::accounts::is_account_holder` (an ' +
+        '`account`-row lookup) is the SSOT predicate (ADR-0189 D2)',
+    };
+  }
+
+  const accountTableCount = countOccurrences(code, D_ACCOUNT_TABLE_NEEDLE);
+  if (accountTableCount !== 0) {
+    return {
+      ok: false,
+      why:
+        `[D/no-account-table] pvp.rs touches \`${D_ACCOUNT_TABLE_NEEDLE}\` ${accountTableCount} ` +
+        'time(s); it must be 0. Re-deriving "does this identity hold an account?" here forks ' +
+        'the SSOT: a future change to what account-holding means (status, expiry) would ' +
+        'silently miss the ranked gate. Call the accounts.rs predicate (ADR-0189 D2)',
+    };
+  }
+
+  const ctorCount = countOccurrences(code, D_ACCEPT_EFFECT);
+  const insertCount = countOccurrences(code, D_BATTLE_INSERT_NEEDLE);
+  if (ctorCount !== 2 || insertCount !== 1) {
+    return {
+      ok: false,
+      why:
+        `[D/ctor-cover] expected exactly 2 \`${D_ACCEPT_EFFECT}\` (the definition plus its ONE ` +
+        `caller, \`${D_ACCEPT_FN}\`) and exactly 1 \`${D_BATTLE_INSERT_NEEDLE}\` in pvp.rs; ` +
+        `found ${ctorCount} and ${insertCount}. Gating the two handshake reducers is the ` +
+        'COMPLETE cover for ranked-battle creation only while this holds (ADR-0189 D1) — a ' +
+        'second constructor (a quick-match reducer, a rematch path) would build ungated ' +
+        'ranked battles. Gate the new path and update ADR-0189 D1 rather than moving these ' +
+        'numbers',
+    };
+  }
+
+  const activeCount = countOccurrences(code, D_ACTIVE_BODY_PIN);
+  if (activeCount !== 1) {
+    return {
+      ok: false,
+      why:
+        `[D/active-body] pvp.rs must define \`${D_ACTIVE_FN}\` with EXACTLY the body ` +
+        '`issuers_configured(crate::accounts::ALLOWED_ISSUERS)` (compacted pin, found ' +
+        `${activeCount}). The value-exact pin kills the discard mutant ` +
+        '`{ let _ = issuers_configured(crate::accounts::ALLOWED_ISSUERS); false }`, which ' +
+        'keeps every reference alive while wiring enforcement permanently OFF, and it ties ' +
+        "activation to accounts.rs's REAL allowlist so the gate flips the day a provider " +
+        'lands (ADR-0189 D6)',
+    };
+  }
+
+  return { ok: true, why: '' };
+}
+
+// ---------------------------------------------------------------------------
+// Criterion D fixture apparatus. ONE template builder, so a BAD fixture can
+// never drift away from the GOOD one it is supposed to differ from by a single
+// mutation: every fixture below is `buildDSource(<one override>)`.
+// ---------------------------------------------------------------------------
+const D_GUARD_CHALLENGE = `    if let Err(reason) = ranked_account_gate(
+        ranked_enforcement_active(),
+        crate::accounts::is_account_holder(ctx, me),
+        crate::accounts::is_account_holder(ctx, target),
+    ) {
+        let e = reason.to_string();
+        log_reject(${DQ}challenge_pvp${DQ}, me, &e);
+        return Err(e);
+    }`;
+
+const D_GUARD_ACCEPT = `    if let Err(reason) = ranked_account_gate(
+        ranked_enforcement_active(),
+        crate::accounts::is_account_holder(ctx, me),
+        crate::accounts::is_account_holder(ctx, challenge.challenger),
+    ) {
+        let e = reason.to_string();
+        log_reject(${DQ}accept_challenge${DQ}, me, &e);
+        return Err(e);
+    }`;
+
+const D_GATE_DEF = `fn ranked_account_gate(
+    enforced: bool,
+    caller_has_account: bool,
+    opponent_has_account: bool,
+) -> Result<(), &'static str> {
+    if !enforced {
+        return Ok(());
+    }
+    if !caller_has_account {
+        return Err(ERR_RANKED_REQUIRES_ACCOUNT);
+    }
+    if !opponent_has_account {
+        return Err(ERR_RANKED_OPPONENT_NEEDS_ACCOUNT);
+    }
+    Ok(())
+}`;
+
+const D_ACTIVE_DEF = `fn ranked_enforcement_active() -> bool {
+    issuers_configured(crate::accounts::ALLOWED_ISSUERS)
+}`;
+
+const D_START_PVP_BATTLE_DEF = `pub(crate) fn start_pvp_battle(
+    ctx: &ReducerContext,
+    challenger: Identity,
+    challenger_party_ids: Vec<u64>,
+    opponent: Identity,
+    opponent_party_ids: Vec<u64>,
+) -> Result<u64, String> {
+    let battle = ctx.db.battle().insert(Battle {
+        battle_id: 0,
+        player_identity: challenger,
+        opponent_identity: opponent,
+    });
+    Ok(battle.battle_id)
+}`;
+
+// buildDSource: the GOOD pvp.rs shape, with named single-point overrides.
+//   gateDef / activeDef       — the two seam definitions
+//   challengeFn               — the whole challenge_pvp reducer (null = generated)
+//   challengeGuardPre / Post  — guard slot BEFORE / AFTER the challenge insert
+//   acceptGuard               — guard slot before start_pvp_battle
+//   extra                     — appended source (a second ctor, a stray helper)
+function buildDSource(over = {}) {
+  const o = {
+    gateDef: D_GATE_DEF,
+    activeDef: D_ACTIVE_DEF,
+    challengeFn: null,
+    challengeGuardPre: D_GUARD_CHALLENGE,
+    challengeGuardPost: '',
+    acceptGuard: D_GUARD_ACCEPT,
+    extra: '',
+    ...over,
+  };
+
+  const challengeFn =
+    o.challengeFn !== null
+      ? o.challengeFn
+      : `pub fn challenge_pvp(ctx: &ReducerContext, target: Identity, party_ids: Vec<u64>) -> Result<(), String> {
+    let me = ctx.sender;
+    if ctx.db.player().identity().find(me).is_none() {
+        let e = ${DQ}not joined${DQ}.to_string();
+        log_reject(${DQ}challenge_pvp${DQ}, me, &e);
+        return Err(e);
+    }
+${o.challengeGuardPre}
+    if let Err(e) = check_party_size(party_ids.len()) {
+        log_reject(${DQ}challenge_pvp${DQ}, me, &e);
+        return Err(e);
+    }
+    let challenge = ctx.db.battle_challenge().insert(BattleChallenge {
+        challenge_id: 0,
+        challenger: me,
+        target,
+        status: ChallengeStatus::Pending,
+        created_at_ms: now_ms(ctx),
+    });
+${o.challengeGuardPost}
+    schedule_challenge_reaper(ctx, challenge.challenge_id, challenge.created_at_ms);
+    Ok(())
+}`;
+
+  const acceptFn = `pub fn accept_challenge(ctx: &ReducerContext, challenge_id: u64, party_ids: Vec<u64>) -> Result<(), String> {
+    let me = ctx.sender;
+    let challenge = match ctx.db.battle_challenge().challenge_id().find(challenge_id) {
+        Some(c) => c,
+        None => return Err(${DQ}challenge not found${DQ}.to_string()),
+    };
+    if challenge.target != me {
+        let e = ${DQ}not the challenge target${DQ}.to_string();
+        log_reject(${DQ}accept_challenge${DQ}, me, &e);
+        return Err(e);
+    }
+${o.acceptGuard}
+    let battle_id = start_pvp_battle(
+        ctx,
+        challenge.challenger,
+        challenge.challenger_party_ids.clone(),
+        me,
+        party_ids,
+    )?;
+    schedule_deadline(ctx, battle_id, 0);
+    Ok(())
+}`;
+
+  const chunks = [o.gateDef, o.activeDef, challengeFn, acceptFn, D_START_PVP_BATTLE_DEF, o.extra];
+  return chunks.filter((chunk) => chunk !== '').join('\n\n');
+}
+
+// ---------------------------------------------------------------------------
 // Default export
 // ---------------------------------------------------------------------------
 export default async function () {
   const name =
-    'ranking-security (RL-16: MODULE_WRITE_ONLY A1/A2, ONCE_ONLY_CALLSITE B1/B2, NEVER_DELETED C1a/C1b/C2)';
+    'ranking-security (RL-16: MODULE_WRITE_ONLY A1/A2, ONCE_ONLY_CALLSITE B1/B2, NEVER_DELETED C1a/C1b/C2, RANKED_REQUIRES_ACCOUNT D)';
 
   // =========================================================================
   // TEETH FIXTURES — run FIRST, short-circuit TEETH FAILED if any bite is lost
@@ -1341,6 +1742,316 @@ export default async function () {
   }
 
   // =========================================================================
+  // CRITERION D TEETH — ranked-requires-account gate (14r-g, ADR-0189)
+  //
+  // Every fixture is `buildDSource(<one override>)`, so a BAD fixture can only
+  // differ from the GOOD one by the single mutation it is named after — the
+  // drift failure mode where a "bad" fixture is really bad for an unrelated
+  // reason (and the clause under test never fires) cannot occur here.
+  //
+  // Each BAD fixture asserts its SPECIFIC clause tag via `why.startsWith`. A
+  // bare "returned not-ok" assertion would keep passing after a clause is
+  // deleted, because a neighbouring clause would fire instead.
+  // =========================================================================
+
+  // -------------------------------------------------------------------------
+  // Fixture D-GOOD: the sanctioned ADR-0189 shape → must PASS.
+  // KILLS: a checker whose needle is unsatisfiable by the planned
+  // implementation (a false-positive gate is a gate the implementer deletes).
+  // -------------------------------------------------------------------------
+  const dGoodSrc = buildDSource();
+  const dGood = checkRankedAccountGate(dGoodSrc);
+  if (!dGood.ok) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (D-GOOD): checkRankedAccountGate rejected the sanctioned ADR-0189 ' +
+        `implementation shape — the pin is unsatisfiable. Reported: ${dGood.why}`,
+    };
+  }
+  if (stripBoth(dGoodSrc).indexOf(D_LEGACY_SPACED_NEEDLE) === -1) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (D-GOOD): fixture construction error — the contiguous GOOD fixture ' +
+        `does not contain the un-compacted spelling \`${D_LEGACY_SPACED_NEEDLE}\`, so the ` +
+        'D-GOOD-wrapped squash proof below would be vacuous',
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // Fixture D-GOOD-wrapped: the SAME statement, rustfmt-wrapped across lines
+  // (which is how the live tree is actually formatted — a >100-column call is
+  // split one argument per line) → must PASS, and must NOT be matchable
+  // without the whitespace squash.
+  // KILLS: a criterion-D that pins the statement in its spaced spelling. That
+  // version reports GREEN on the wrapped tree only by accident and goes RED the
+  // first time rustfmt rewraps the call — so it would be "fixed" by weakening,
+  // which is exactly how a security gate dies. The second assertion is the
+  // G8-BAD-*-wrapped precedent: prove the fixture really is wrapped, otherwise
+  // it proves nothing about the squash.
+  // -------------------------------------------------------------------------
+  const dWrappedGuard = `    if let Err(reason) =
+        ranked_account_gate(
+            ranked_enforcement_active(),
+            crate::accounts::is_account_holder(
+                ctx, me),
+            crate::accounts::is_account_holder(ctx,
+                target),
+        )
+    {
+        let e =
+            reason.to_string();
+        log_reject(
+            ${DQ}challenge_pvp${DQ}, me, &e);
+        return Err(e);
+    }`;
+  const dWrappedSrc = buildDSource({ challengeGuardPre: dWrappedGuard });
+  // Body-scoped on purpose: the fixture's ACCEPT guard is still contiguous, so a
+  // whole-file check would find the legacy spelling there and mis-report this as
+  // a construction error.
+  const dWrappedChallengeBody = extractReducerBody(stripBoth(dWrappedSrc), D_CHALLENGE_FN);
+  if (
+    dWrappedChallengeBody === null ||
+    dWrappedChallengeBody.indexOf(D_LEGACY_SPACED_NEEDLE) !== -1
+  ) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (D-GOOD-wrapped): fixture construction error — challenge_pvp is ' +
+        `unextractable, or its body is still matched by the un-compacted spelling ` +
+        `\`${D_LEGACY_SPACED_NEEDLE}\`, meaning the guard was written contiguously and the ` +
+        'fixture proves nothing about the whitespace squash',
+    };
+  }
+  const dWrapped = checkRankedAccountGate(dWrappedSrc);
+  if (!dWrapped.ok) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (D-GOOD-wrapped): checkRankedAccountGate rejected a correct gate that ' +
+        'is merely rustfmt-WRAPPED across lines. Every needle must be matched against ' +
+        `compactWs(stripBoth(src)) and written whitespace-free. Reported: ${dWrapped.why}`,
+    };
+  }
+
+  // -------------------------------------------------------------------------
+  // BAD fixtures: one mutation each, one clause tag each.
+  // `constructed` proves the mutation actually landed in the fixture BEFORE the
+  // checker runs, so a broken fixture is reported as a fixture bug rather than
+  // silently turning the tooth vacuous.
+  // -------------------------------------------------------------------------
+  const dGuardTrailingNeedleChallenge = dGuardNeedle('target', true);
+  const dBadFixtures = [
+    {
+      // The whole seam deleted: guests keep full ranked access (issue #307).
+      label: 'D-BAD-absent',
+      tag: '[D/fn-missing]',
+      what: 'a pvp.rs with no ranked_account_gate seam and no guard at either handshake',
+      src: buildDSource({ gateDef: '', challengeGuardPre: '', acceptGuard: '' }),
+      constructed: (src) => scanCode(src).indexOf(`fn${D_GATE_FN}(`) === -1,
+      constructedWhy: `the fixture still declares \`fn ${D_GATE_FN}(\``,
+    },
+    {
+      // The anchor vanished: every downstream clause must NOT go vacuously green.
+      label: 'D-BAD-challenge-missing',
+      tag: '[D/challenge-missing]',
+      what: 'a pvp.rs whose challenge_pvp reducer cannot be located at all',
+      src: buildDSource({ challengeFn: '' }),
+      constructed: (src) => extractReducerBody(stripBoth(src), D_CHALLENGE_FN) === null,
+      constructedWhy: 'challenge_pvp is still extractable from the fixture',
+    },
+    {
+      // Compiles, is clippy-clean (let_underscore_must_use is off by default),
+      // and rejects nobody: the gate is evaluated and thrown away.
+      label: 'D-BAD-discarded-result',
+      tag: '[D/challenge-stmt]',
+      what: 'a challenge_pvp that computes the gate and DISCARDS its Result (`let _ = ..`)',
+      src: buildDSource({
+        challengeGuardPre: `    let _ = ranked_account_gate(
+        ranked_enforcement_active(),
+        crate::accounts::is_account_holder(ctx, me),
+        crate::accounts::is_account_holder(ctx, target),
+    );`,
+      }),
+      constructed: (src) => scanCode(src).indexOf(`let_=${D_GATE_FN}(`) !== -1,
+      constructedWhy: 'the discard spelling `let _ = ranked_account_gate(` is not in the fixture',
+    },
+    {
+      // The caller leg hard-wired to "holds an account": half the gate is dead.
+      label: 'D-BAD-true-literal',
+      tag: '[D/challenge-stmt]',
+      what: 'a challenge_pvp whose CALLER leg is a hard-coded `true` instead of the predicate',
+      src: buildDSource({
+        challengeGuardPre: D_GUARD_CHALLENGE.replace(`${D_HOLDER_CALL}(ctx, me)`, 'true'),
+      }),
+      constructed: (src) => scanCode(src).indexOf(`${D_ACTIVE_FN}(),true,`) !== -1,
+      constructedWhy: 'the `true` literal did not replace the caller-leg predicate',
+    },
+    {
+      // Enforcement pinned OFF at the call site: the seam is decorative.
+      label: 'D-BAD-enforced-false',
+      tag: '[D/challenge-stmt]',
+      what: 'a challenge_pvp that passes a literal `false` for the enforced flag',
+      src: buildDSource({
+        challengeGuardPre: D_GUARD_CHALLENGE.replace(`${D_ACTIVE_FN}()`, 'false'),
+      }),
+      constructed: (src) => scanCode(src).indexOf(`${D_GATE_FN}(false,`) !== -1,
+      constructedWhy: 'the `false` literal did not replace ranked_enforcement_active()',
+    },
+    {
+      // Legs transposed: the caller is told the OPPONENT needs an account and
+      // vice versa — the parked client affordance then prompts the wrong player.
+      label: 'D-BAD-swapped-legs',
+      tag: '[D/challenge-stmt]',
+      what: 'a challenge_pvp whose caller and opponent legs are transposed',
+      src: buildDSource({
+        challengeGuardPre: D_GUARD_CHALLENGE.replace('(ctx, me),', '(ctx, __swap__),')
+          .replace('(ctx, target),', '(ctx, me),')
+          .replace('(ctx, __swap__),', '(ctx, target),'),
+      }),
+      constructed: (src) =>
+        scanCode(src).indexOf(`${D_HOLDER_CALL}(ctx,target),${D_HOLDER_CALL}(ctx,me),`) !== -1,
+      constructedWhy: 'the two legs are not transposed in the fixture',
+    },
+    {
+      // The exact statement text survives verbatim; it just never executes.
+      label: 'D-BAD-unreachable-if',
+      tag: '[D/challenge-depth]',
+      what: 'a challenge_pvp whose gate is nested inside an `if false { .. }` block',
+      src: buildDSource({
+        challengeGuardPre: `    if false {\n${D_GUARD_CHALLENGE}\n    }`,
+      }),
+      constructed: (src) => scanCode(src).indexOf('iffalse{ifletErr(reason)=') !== -1,
+      constructedWhy: 'the gate is not nested inside `if false {` in the fixture',
+    },
+    {
+      // The challenge row is already committed when the reject returns.
+      label: 'D-BAD-after-insert',
+      tag: '[D/challenge-order]',
+      what: 'a challenge_pvp whose gate runs AFTER the battle_challenge insert',
+      src: buildDSource({ challengeGuardPre: '', challengeGuardPost: D_GUARD_CHALLENGE }),
+      constructed: (src) => {
+        const body = extractReducerBody(stripBoth(src), D_CHALLENGE_FN);
+        if (body === null) return false;
+        const compact = compactWs(body);
+        const at = compact.indexOf(dGuardTrailingNeedleChallenge);
+        const effectAt = compact.indexOf(D_CHALLENGE_EFFECT);
+        return at !== -1 && effectAt !== -1 && at > effectAt;
+      },
+      constructedWhy: 'the gate is not positioned after the insert in the fixture',
+    },
+    {
+      // Challenge-time only. ADR-0189 D3: the accept-time re-check is the
+      // enforcement point (pre-activation Pending rows, future revocation).
+      label: 'D-BAD-accept-gateless',
+      tag: '[D/accept-stmt]',
+      what: 'a pvp.rs that gates challenge_pvp but leaves accept_challenge ungated',
+      src: buildDSource({ acceptGuard: '' }),
+      constructed: (src) => {
+        const body = extractReducerBody(stripBoth(src), D_ACCEPT_FN);
+        return body !== null && compactWs(body).indexOf(`${D_GATE_FN}(`) === -1;
+      },
+      constructedWhy: 'accept_challenge still references ranked_account_gate in the fixture',
+    },
+    {
+      // has_jwt() is true for EVERY connection: the vacuous-predicate trap.
+      label: 'D-BAD-has-jwt',
+      tag: '[D/no-has-jwt]',
+      what: 'a pvp.rs that reaches for has_jwt() (true for every connection, ADR-0189 D2)',
+      src: buildDSource({
+        extra: `fn peek_token(ctx: &ReducerContext) -> bool {
+    ctx.sender_auth().has_jwt()
+}`,
+      }),
+      constructed: (src) => scanCode(src).indexOf(D_HAS_JWT_NEEDLE) !== -1,
+      constructedWhy: 'the fixture does not reference has_jwt',
+    },
+    {
+      // SSOT fork: account-holding re-derived locally.
+      label: 'D-BAD-inline-table',
+      tag: '[D/no-account-table]',
+      what: 'a pvp.rs that re-derives account-holding from the account table inline',
+      src: buildDSource({
+        extra: `fn holds_account(ctx: &ReducerContext, id: Identity) -> bool {
+    ctx.db.account().identity().find(id).is_some()
+}`,
+      }),
+      constructed: (src) => scanCode(src).indexOf(D_ACCOUNT_TABLE_NEEDLE) !== -1,
+      constructedWhy: 'the fixture does not touch ctx.db.account(',
+    },
+    {
+      // A second ranked-battle constructor: both handshake gates stay perfect
+      // and ranked battles are created past them anyway (ADR-0189 D1).
+      label: 'D-BAD-second-ctor',
+      tag: '[D/ctor-cover]',
+      what: 'a pvp.rs with a SECOND reducer that calls start_pvp_battle (quick-match path)',
+      src: buildDSource({
+        extra: `pub fn quick_match(ctx: &ReducerContext, opponent: Identity, party_ids: Vec<u64>) -> Result<(), String> {
+    let me = ctx.sender;
+    let battle_id = start_pvp_battle(ctx, me, party_ids.clone(), opponent, party_ids)?;
+    schedule_deadline(ctx, battle_id, 0);
+    Ok(())
+}`,
+      }),
+      constructed: (src) => countOccurrences(scanCode(src), D_ACCEPT_EFFECT) === 3,
+      constructedWhy: 'the fixture does not contain a third start_pvp_battle( occurrence',
+    },
+    {
+      // Enforcement wired permanently OFF while every reference stays alive —
+      // a "is issuers_configured referenced?" check would report GREEN.
+      label: 'D-BAD-active-discard',
+      tag: '[D/active-body]',
+      what: 'a ranked_enforcement_active that discards issuers_configured and returns `false`',
+      src: buildDSource({
+        activeDef: `fn ranked_enforcement_active() -> bool {
+    let _ = issuers_configured(crate::accounts::ALLOWED_ISSUERS);
+    false
+}`,
+      }),
+      constructed: (src) =>
+        countOccurrences(scanCode(src), D_ACTIVE_BODY_PIN) === 0 &&
+        scanCode(src).indexOf('issuers_configured(crate::accounts::ALLOWED_ISSUERS)') !== -1,
+      constructedWhy:
+        'the fixture either still matches the exact body pin or dropped the ' +
+        'issuers_configured reference the mutation is supposed to preserve',
+    },
+  ];
+
+  for (const fixture of dBadFixtures) {
+    if (!fixture.constructed(fixture.src)) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH FAILED (${fixture.label}): fixture construction error — ${fixture.constructedWhy}`,
+      };
+    }
+    const dResult = checkRankedAccountGate(fixture.src);
+    if (dResult.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH FAILED (${fixture.label}): checkRankedAccountGate returned ok for ` +
+          `${fixture.what} — clause ${fixture.tag} must fire (ADR-0189)`,
+      };
+    }
+    if (!dResult.why.startsWith(fixture.tag)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH FAILED (${fixture.label}): ${fixture.what} must be caught by clause ` +
+          `${fixture.tag}, but the checker reported: ${dResult.why}`,
+      };
+    }
+  }
+
+  // =========================================================================
   // REAL-SOURCE SCAN
   // =========================================================================
 
@@ -1599,6 +2310,27 @@ export default async function () {
     );
   }
 
+  // -------------------------------------------------------------------------
+  // Criterion D RANKED_REQUIRES_ACCOUNT (14r-g, ADR-0189, issue #307):
+  // both PvP handshake reducers carry the exact ranked-account gate, before
+  // their irreversible effects, keyed off the accounts.rs SSOT predicate.
+  // See checkRankedAccountGate's header for the clause list and for why the
+  // statement is pinned by exact equality (7/7 red-team evasions of the weaker
+  // "does it mention is_account_holder?" design).
+  // -------------------------------------------------------------------------
+  const rankedGate = checkRankedAccountGate(pvpSrc);
+  if (!rankedGate.ok) {
+    failures.push(
+      `D RANKED_REQUIRES_ACCOUNT (ADR-0189, issue #307): ${rankedGate.why}. Ranked play ` +
+        'requires a full account on BOTH sides: every human-vs-human battle is ranked ' +
+        '(ADR-0119 D4), so an ungated handshake lets guest identities — which are ' +
+        'unbounded and free to mint — enter and shape the persistent ladder. The gate is ' +
+        'deployment-conditional (inert while accounts::ALLOWED_ISSUERS is the .invalid ' +
+        'placeholder, ADR-0189 D6), which is exactly why its STRUCTURE has to be pinned ' +
+        'statically: nothing can execute the active path in any environment today.',
+    );
+  }
+
   if (failures.length > 0) {
     return { name, pass: false, detail: failures.join('; ') };
   }
@@ -1618,8 +2350,12 @@ export default async function () {
       'C1b split-binding =ctx.db.profile() absent outside ranking.rs (AM-4); ' +
       'C2 on_disconnect body contains no profile( token (ADR-0119 D1); ' +
       "[G8/tombstone-arg-pin] rekey_profile's second profile update argument is exactly " +
-      'tombstoned_profile(guest) (AUTH-25, ADR-0179 D6). ' +
-      'A1/A2/C1a/C1b all matched against WHITESPACE-COMPACTED source (M21c A2 corollary), ' +
+      'tombstoned_profile(guest) (AUTH-25, ADR-0179 D6); ' +
+      'D RANKED_REQUIRES_ACCOUNT: challenge_pvp and accept_challenge each carry the exact ' +
+      'ADR-0189 ranked_account_gate statement once, at brace depth 0, before their ' +
+      'irreversible effects, with has_jwt and ctx.db.account( absent, start_pvp_battle( == 2, ' +
+      '.battle().insert( == 1 and the exact ranked_enforcement_active body (issue #307). ' +
+      'A1/A2/C1a/C1b/D all matched against WHITESPACE-COMPACTED source (M21c A2 corollary), ' +
       'so rustfmt-wrapped chains cannot evade them.',
   };
 }
