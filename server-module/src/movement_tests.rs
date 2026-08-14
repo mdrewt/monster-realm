@@ -655,8 +655,13 @@ fn movement_warp_guard_unwrap_or_true_is_preserved() {
 /// grass-encounter pre-check must bind the ADR-0122 both-role SSOT's VALUE, and
 /// no inline single-role scan may survive beside it.
 ///
-/// Five layers; 1, 2 and 5 are RED at HEAD, 3 and 4 are anti-evasion /
+/// Seven layers. 1, 2, 5 and 6 are RED at HEAD; 3, 4 and 7 are anti-evasion /
 /// anti-vacuity fences that are green today and must stay green.
+///
+/// Layers 6 and 7 were added after a red team EMPIRICALLY built a full-green
+/// bypass of the first five: a SHADOWING rebind between the bind and the guard
+/// (see layer 6). Layers 1 and 4 are kept beside them because each still gives
+/// the sharpest message for the mistake it was written for.
 ///
 /// 1. **The contiguous binding needle (RED at HEAD).** The squashed grass region
 ///    must contain `letalready=is_in_ongoing_battle(ctx,player_identity);` (the
@@ -698,6 +703,19 @@ fn movement_warp_guard_unwrap_or_true_is_preserved() {
 ///    compare an outcome to `Ongoing`. Together with the E3 test's layer 1c
 ///    (`battle()` count 0, file-wide) it leaves the inline scan nowhere to live.
 ///
+/// 6. **THE SHADOW-REBIND KILL (RED at HEAD): bind and guard are ONE contiguous
+///    expression.** Layers 1 and 4 are separate needles, and BOTH are satisfied
+///    while the guard is dead code — bind the SSOT result, read it once in a
+///    throwaway statement, shadow it with `let already = false;`, and let the
+///    guard test the shadow. `unused_variables` stays silent because the first
+///    binding IS read before it is shadowed, and every count in this test and
+///    both ratcheted file-wide pins remain correct. Requiring no statement
+///    between the two makes it unrepresentable.
+///
+/// 7. **`already` is bound EXACTLY ONCE in the region (green at HEAD).** The
+///    spelling-independent partner to layer 6, and the one that also covers a
+///    rebind sitting AFTER the guard, where contiguity says nothing.
+///
 /// HONEST LIMITS. (a) Source scan, not execution — this crate has no
 /// reducer-executing harness (ADR-0156 P7), and per the header above there is no
 /// behaviour to execute against anyway. (b) Layer 1 pins an exact spelling; a
@@ -726,6 +744,7 @@ fn grass_encounter_pre_check_uses_the_both_role_ssot() {
     let ssot = ["is_in_ongoing", "_battle("].concat();
     let bind = ["let", "already="].concat();
     let args = ["ctx,player", "_identity);"].concat();
+    let skip = ["ifalready{", "continue;}"].concat();
     let mut variants: Vec<String> = Vec::new();
     for path in ["", "guards::", "crate::guards::"] {
         variants.push([bind.as_str(), path, ssot.as_str(), args.as_str()].concat());
@@ -790,7 +809,6 @@ fn grass_encounter_pre_check_uses_the_both_role_ssot() {
     );
 
     // --- Layer 4: ANTI-VACUITY — the guard still gates a `continue` ----------
-    let skip = ["ifalready{", "continue;}"].concat();
     assert!(
         region.contains(skip.as_str()),
         "ANTI-VACUITY (EG/ADR-0188 layer 4, green at HEAD): the grass region must \
@@ -818,6 +836,66 @@ fn grass_encounter_pre_check_uses_the_both_role_ssot() {
          REMEDIATION: after the inline scan is gone, `BattleOutcome` has no other \
          use in `movement.rs` — drop it from the `game_core` import (and drop \
          `battle` from the `crate::schema` import) or `-D warnings` fails the build."
+    );
+
+    // --- Layer 6: THE SHADOW-REBIND KILL — bind and guard are ADJACENT -------
+    // Layers 1 and 4 are two SEPARATE needles, and a red team beat them both at
+    // once by putting a shadowing rebind between them:
+    //     let already = is_in_ongoing_battle(ctx, player_identity);
+    //     if already { log::debug!(..); }        // a throwaway READ
+    //     let already = false;                   // shadows it
+    //     if already { continue; }               // reads the WRONG one
+    // Layer 1's needle is present verbatim, layer 4's needle is present
+    // verbatim, `player_identity()` and `ctx.sender` are still 0, `BattleOutcome`
+    // is still 0, and both ratcheted file-wide counts are still correct — while
+    // the grass pre-check is now DEAD CODE and the block is strictly worse than
+    // the inline side-A filter it replaced. `unused_variables` does not fire:
+    // Rust does not warn when a shadowed binding is read before it is shadowed,
+    // which is exactly what the throwaway read buys.
+    // Requiring the two needles to be ONE contiguous expression makes any
+    // statement between them — shadowing or otherwise — unrepresentable. It is
+    // the same contiguity discipline this file already applies to the warp
+    // branch (layer 1b) and to the `id` binding of the D1 drain loop.
+    let mut block_variants: Vec<String> = Vec::new();
+    for v in &variants {
+        block_variants.push([v.as_str(), skip.as_str()].concat());
+    }
+    assert!(
+        contains_any(region, &block_variants),
+        "TEETH (EG/ADR-0188 layer 6, SHADOW-REBIND KILL): the bind and the guard \
+         must be ONE contiguous squashed expression — \
+         `letalready=is_in_ongoing_battle(ctx,player_identity);ifalready{{continue;}}` \
+         — with NO statement between them. \
+         WHAT THIS KILLS: layers 1 and 4 are separate needles, so both are \
+         satisfied by a block that binds the SSOT result, reads it once in a \
+         throwaway statement, then SHADOWS it (`let already = false;`) before the \
+         guard — which now tests the shadow and never skips anything. Every other \
+         layer in this test and both ratcheted file-wide counts stay correct, and \
+         the compiler is silent because Rust does not warn about a shadowed binding \
+         that was read before being shadowed. The result is DEAD grass-encounter \
+         guarding: strictly worse than the side-A-only filter this slice removes. \
+         RED AT HEAD for the original reason — the SSOT is not called here at all. \
+         A comment between the two statements is fine (comments and whitespace are \
+         stripped before matching); a STATEMENT is not."
+    );
+
+    // --- Layer 7: `already` is bound EXACTLY ONCE in the grass region --------
+    // The spelling-independent partner to layer 6: it also catches a rebind that
+    // sits AFTER the guard (where contiguity says nothing) and any second use of
+    // the name that would make a future reader unsure which value is live.
+    // Mirrors the discipline `evolution_tests.rs`'s escaped-binding provenance
+    // layer applies to `reason`.
+    let n_bind = region.matches(bind.as_str()).count();
+    assert_eq!(
+        n_bind, 1,
+        "TEETH (EG/ADR-0188 layer 7, single-binding fence): the grass region binds \
+         `already` {n_bind} time(s) and must bind it EXACTLY ONCE. A second \
+         `let already = ..` anywhere in the region is a SHADOW: whichever one the \
+         guard reads, a reader cannot tell from the guard alone, and the escape \
+         hatch that makes the pre-check inert is one line long. Note the needle is \
+         the immutable form — `let mut already` does not match it, which is \
+         deliberate: a re-assignable guard flag is the same defect written a \
+         different way and is caught by layer 1 instead."
     );
 }
 

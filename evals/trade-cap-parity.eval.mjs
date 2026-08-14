@@ -31,6 +31,38 @@
 //         and the literal that actually gates submission is never touched.
 //         Nothing reds. TCP4 is the "adjacency, not presence" pattern
 //         server-module/src/movement_tests.rs:306-314 already uses.
+//   TCP5  [red-team BYPASS 3 — TCP4 alone is PRESENCE, and presence is cheap]
+//         The clause must be a TOP-LEVEL CONJUNCT of `canSubmit`'s initializer,
+//         either written inline or reached through a binding whose ENTIRE
+//         right-hand side is the clause.
+//
+//         TCP4 only asks "does this text occur somewhere in the body". A
+//         red-team shipped, and measured GREEN, this:
+//             const decoyCapNote =
+//               false && draft.selectedMonsterIds.length <= MAX_TRADE_MONSTERS_PER_SIDE;
+//             const withinCap = draft.selectedMonsterIds.length <= 64;  // the REAL gate
+//             const canSubmit = targetValid && hasAsset && withinCap && (decoyCapNote || true);
+//         The needle text is present, `decoyCapNote` is even READ (so no
+//         unused-variable lint), and it is provably always `false` — so the live
+//         gate is the disconnected bare literal and the R2 drift story is fully
+//         restored. 61/61 vitest rows passed and this gate returned pass:true
+//         with a detail asserting "the constant is load-bearing", which was false.
+//
+//         The close is POSITIVE and structural, not a blacklist of dead-code
+//         spellings (this repo's memory: abort-construct blacklists are
+//         unclosable — 16 CI-clean bypasses beat one blacklist). Two shapes are
+//         accepted and NOTHING else:
+//             (a) inline:  const canSubmit = A && B && draft.selectedMonsterIds.length
+//                                                     <= MAX_TRADE_MONSTERS_PER_SIDE;
+//             (b) bound:   const withinCap = draft.selectedMonsterIds.length
+//                                            <= MAX_TRADE_MONSTERS_PER_SIDE;
+//                          const canSubmit = A && B && withinCap;
+//         `false && <clause>` is rejected because the binding's WHOLE RHS must
+//         equal the clause (exact equality, not `.includes` — the doc-vs-code
+//         SSOT lesson); `(decoyCapNote || true)` is rejected because a conjunct
+//         must be either the clause itself or a BARE identifier. Redundant
+//         parentheses around a conjunct or an RHS are stripped first, so a
+//         legitimate `&& (draft...length <= MAX...)` still passes.
 //
 // SCANNING (ADR-0181/0186 house standard). The RUST side goes through
 // evals/rust-scan.mjs `stripRustSource` + `assertStripperSound` — never a naive
@@ -366,7 +398,10 @@ export function checkClauseReadsTheConstant(tsSrc) {
   }
 
   const compact = compactWs(body);
-  if (compact.indexOf(CLAUSE_NEEDLE) !== -1) return null;
+  // TCP5 refines TCP4: only ask "is the occurrence WIRED to canSubmit" once we
+  // know an occurrence exists. Keeping them in this order also keeps the HEAD
+  // failure detail to the single, accurate TCP4 message.
+  if (compact.indexOf(CLAUSE_NEEDLE) !== -1) return checkClauseGatesCanSubmit(compact);
 
   // Attribute the failure as precisely as possible.
   const hasName = compact.indexOf(CAP_NAME) !== -1;
@@ -398,6 +433,228 @@ export function checkClauseReadsTheConstant(tsSrc) {
   return (
     `TCP4/clause: \`${TS_FN_NAME}\`'s body in ${TS_REL} does not contain the contiguous clause ` +
     `\`${CLAUSE_NEEDLE}\` (whitespace-insensitive) — ${diagnosis}`
+  );
+}
+
+// ---------------------------------------------------------------------------
+// TCP5 — the clause must actually GATE canSubmit (red-team BYPASS 3).
+//
+// Everything below operates on the COMPACTED (whitespace-free) body, so a
+// rustfmt/prettier reflow of the same code is invisible to it.
+// ---------------------------------------------------------------------------
+
+/** The binding whose initializer is the submission verdict. */
+const CANSUBMIT_NAME = 'canSubmit';
+
+/** @param {string|undefined} ch @returns {boolean} */
+function isWordCharJs(ch) {
+  return ch !== undefined && /[A-Za-z0-9_$]/.test(ch);
+}
+
+/** @param {string} s @returns {boolean} True for a bare JS identifier. */
+export function isPlainIdentifier(s) {
+  return /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(s);
+}
+
+/**
+ * Is the bracket opened at index 0 of `s` closed by the LAST character?
+ * (Distinguishes `(a&&b)` — one wrapper — from `(a)&&(b)`, which is not.)
+ * @param {string} s
+ * @returns {boolean}
+ */
+function outerBracketSpansAll(s) {
+  let depth = 0;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') {
+      depth--;
+      if (depth === 0) return i === s.length - 1;
+    }
+  }
+  return false;
+}
+
+/**
+ * Remove redundant wrapping parentheses so `(X)` and `((X))` compare equal to
+ * `X`. Without this a perfectly legitimate `&& (draft...length <= MAX...)`
+ * would be rejected — the gate must be strict about SEMANTICS, not about
+ * whether the author reached for a clarifying paren.
+ * @param {string} s
+ * @returns {string}
+ */
+export function stripOuterParens(s) {
+  let out = s;
+  while (out.length >= 2 && out[0] === '(' && outerBracketSpansAll(out)) out = out.slice(1, -1);
+  return out;
+}
+
+/**
+ * The offset of the `;` that ends the statement beginning at `from`, ignoring
+ * semicolons nested inside brackets. -1 if there is none.
+ * @param {string} compact
+ * @param {number} from
+ * @returns {number}
+ */
+function endOfStatement(compact, from) {
+  let depth = 0;
+  for (let i = from; i < compact.length; i++) {
+    const c = compact[i];
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (c === ';' && depth === 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * The right-hand side of the FIRST `const|let|var <ident> = …;` in `compact`.
+ * First-only is deliberate and is the STRICT direction: `const` cannot be
+ * redeclared in a scope, so a second binding of the same name is already a type
+ * error, and picking the first denies a "shadow the good binding with a bad
+ * one" evasion.
+ * @param {string} compact Whitespace-free code.
+ * @param {string} ident Identifier to look up.
+ * @returns {string|null} RHS text, or null when there is no such binding.
+ */
+export function findBindingRhs(compact, ident) {
+  for (const kw of ['const', 'let', 'var']) {
+    const head = kw + ident;
+    for (let at = compact.indexOf(head); at !== -1; at = compact.indexOf(head, at + 1)) {
+      if (isWordCharJs(compact[at - 1])) continue;
+      let p = at + head.length;
+      if (isWordCharJs(compact[p])) continue; // a LONGER identifier, not this one
+
+      // An optional TS type annotation sits between the name and the `=`
+      // (`const withinCap: boolean = …;`). Skipping it is required, not
+      // politeness: without it a perfectly correct annotated binding is
+      // invisible here and the gate false-REDs a working implementation.
+      if (compact[p] === ':') {
+        let depth = 0;
+        let eq = -1;
+        for (let i = p; i < compact.length; i++) {
+          const c = compact[i];
+          if (c === '(' || c === '[' || c === '{') depth++;
+          else if (c === ')' || c === ']' || c === '}') depth--;
+          else if (c === ';' && depth === 0) break;
+          else if (c === '=' && depth === 0 && compact[i + 1] !== '=' && compact[i + 1] !== '>') {
+            eq = i;
+            break;
+          }
+        }
+        if (eq === -1) continue;
+        p = eq;
+      }
+
+      if (compact[p] !== '=') continue;
+      const rhsStart = p + 1;
+      // `==`, `===` and `=>` are not initializers.
+      if (compact[rhsStart] === '=' || compact[rhsStart] === '>') continue;
+      const end = endOfStatement(compact, rhsStart);
+      if (end === -1) continue;
+      return compact.slice(rhsStart, end);
+    }
+  }
+  return null;
+}
+
+/**
+ * Is `expr` the cap clause and NOTHING ELSE?
+ *
+ * The clause needle deliberately omits the receiver (`draft.`), because the
+ * parameter could reasonably be destructured or renamed. So "exactly the
+ * clause" means: the expression ENDS with the needle, and everything before it
+ * is a pure member-access receiver — identifier characters and dots only.
+ *
+ * That admits `draft.selectedMonsterIds.length <= MAX_…` and
+ * `this.draft.selectedMonsterIds.length <= MAX_…`, and rejects
+ * `false && draft.selectedMonsterIds.length <= MAX_…` (the prefix carries an
+ * operator) and `draft.selectedMonsterIds.length <= MAX_… && true` (it does not
+ * end with the clause). Exact equality, not `.includes` — the doc-vs-code SSOT
+ * lesson: `.includes` is precisely what BYPASS 3 walked through.
+ *
+ * @param {string} expr Compacted expression text.
+ * @returns {boolean}
+ */
+export function isExactlyTheClause(expr) {
+  const e = stripOuterParens(expr);
+  const at = e.indexOf(CLAUSE_NEEDLE);
+  if (at === -1) return false;
+  if (at + CLAUSE_NEEDLE.length !== e.length) return false;
+  return /^[A-Za-z0-9_$.]*$/.test(e.slice(0, at));
+}
+
+/**
+ * Split an expression at `&&` operators that sit at bracket depth 0.
+ * @param {string} expr
+ * @returns {string[]}
+ */
+export function splitTopLevelConjuncts(expr) {
+  const parts = [];
+  let depth = 0;
+  let last = 0;
+  for (let i = 0; i < expr.length; i++) {
+    const c = expr[i];
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') depth--;
+    else if (depth === 0 && c === '&' && expr[i + 1] === '&') {
+      parts.push(expr.slice(last, i));
+      i++;
+      last = i + 1;
+    }
+  }
+  parts.push(expr.slice(last));
+  return parts;
+}
+
+/**
+ * TCP5 — the clause must be a TOP-LEVEL CONJUNCT of `canSubmit`'s initializer,
+ * inline or through a binding whose ENTIRE right-hand side is the clause.
+ *
+ * See the file header for the red-team bypass this closes and why the rule is
+ * an allow-list of two shapes rather than a blacklist of dead-code spellings.
+ *
+ * @param {string} compact Whitespace-free `buildProposeSubmission` body.
+ * @returns {string|null} Failure detail, or null on pass.
+ */
+export function checkClauseGatesCanSubmit(compact) {
+  const rhs = findBindingRhs(compact, CANSUBMIT_NAME);
+  if (rhs === null) {
+    return (
+      `TCP5/no-verdict-binding: \`${TS_FN_NAME}\`'s body in ${TS_REL} has no ` +
+      `\`const ${CANSUBMIT_NAME} = …;\` binding, so this gate cannot tell which expression the ` +
+      `cap clause is supposed to gate. This is a FAIL, never a skip: re-derive the check against ` +
+      `the new shape rather than deleting it. (HEAD spells it ` +
+      `\`const ${CANSUBMIT_NAME} = targetValid && hasAsset;\` at tradeProposeModel.ts:140.)`
+    );
+  }
+
+  const conjuncts = splitTopLevelConjuncts(stripOuterParens(rhs)).map(stripOuterParens);
+  for (const c of conjuncts) {
+    // (a) written inline as its own conjunct.
+    if (isExactlyTheClause(c)) return null;
+    // (b) reached through a binding whose WHOLE initializer is the clause.
+    if (isPlainIdentifier(c)) {
+      const bound = findBindingRhs(compact, c);
+      if (bound !== null && isExactlyTheClause(bound)) return null;
+    }
+  }
+
+  return (
+    `TCP5/dataflow: the clause \`${CLAUSE_NEEDLE}\` OCCURS in \`${TS_FN_NAME}\`'s body but does ` +
+    `not GATE \`${CANSUBMIT_NAME}\`. Its initializer is \`${CANSUBMIT_NAME} = ${rhs}\`, whose ` +
+    `top-level && conjuncts are [${conjuncts.join(' | ')}] — none of them is the clause itself, ` +
+    `and none is a bare identifier bound to exactly the clause. This is red-team BYPASS 3: an ` +
+    `occurrence in DEAD or NEUTRALISED code (\`const decoy = false && <clause>;\` read back as ` +
+    `\`(decoy || true)\`, a clause bound but never consumed, or the cap tucked behind \`||\` ` +
+    `instead of \`&&\`) satisfies a presence check while a disconnected bare literal remains the ` +
+    `real gate — restoring the exact R2 drift TCP4 exists to stop, and it measures GREEN on the ` +
+    `whole vitest boundary table. Ship ONE of the two sanctioned shapes: ` +
+    `(a) \`const ${CANSUBMIT_NAME} = targetValid && hasAsset && draft.selectedMonsterIds.length ` +
+    `<= ${CAP_NAME};\` or (b) \`const withinCap = draft.selectedMonsterIds.length <= ${CAP_NAME};\`` +
+    ` followed by \`const ${CANSUBMIT_NAME} = targetValid && hasAsset && withinCap;\`. ` +
+    `Redundant parentheses around a conjunct or an initializer are stripped before comparison, ` +
+    `so a clarifying paren is fine; anything that CHANGES the value is not.`
   );
 }
 
@@ -497,8 +754,13 @@ export function unrelatedHelper(n: number): boolean {
 }
 `;
 
-/** Build a tradeProposeModel-shaped fixture from a declaration and a clause. */
-function tsFixture(declLine, clauseLine) {
+/**
+ * Build a tradeProposeModel-shaped fixture.
+ * @param {string} declLine Module-level declaration text (may be empty).
+ * @param {string} clauseLine Statement(s) inside the function body.
+ * @param {string} canSubmitExpr The initializer of `const canSubmit = …;`.
+ */
+function tsFixture(declLine, clauseLine, canSubmitExpr = 'targetValid && hasAsset && withinCap') {
   return (
     TS_PREAMBLE +
     declLine +
@@ -511,7 +773,9 @@ export function buildProposeSubmission(targets, draft) {
   ` +
     clauseLine +
     `
-  const canSubmit = targetValid && hasAsset && withinCap;
+  const canSubmit = ` +
+    canSubmitExpr +
+    `;
   const args = canSubmit ? { initiatorMonsterIds: [...draft.selectedMonsterIds] } : null;
   return { canSubmit, offerCurrency, args };
 }
@@ -576,6 +840,63 @@ export function someOtherHelper(draft) {
 }
 `;
 
+// --- TCP5 fixtures (red-team BYPASS 3) -------------------------------------
+
+// THE BYPASS, verbatim. Measured GREEN against the TCP1-TCP4-only gate AND
+// against all 61 vitest rows: the needle text is present, `decoyCapNote` is
+// read (no unused-variable lint), it is provably always `false`, and the LIVE
+// gate is the disconnected bare literal.
+const TS_DEAD_CODE_DECOY_CLAUSE = tsFixture(
+  'export const MAX_TRADE_MONSTERS_PER_SIDE = 64;\n',
+  'const decoyCapNote =\n    false && draft.selectedMonsterIds.length <= MAX_TRADE_MONSTERS_PER_SIDE;\n' +
+    '  const withinCap = draft.selectedMonsterIds.length <= 64;',
+  'targetValid && hasAsset && withinCap && (decoyCapNote || true)',
+);
+
+// The clause IS bound to the constant, but the binding never reaches canSubmit:
+// a cap that is computed and thrown away enforces nothing.
+const TS_CLAUSE_BOUND_BUT_UNUSED = tsFixture(
+  'export const MAX_TRADE_MONSTERS_PER_SIDE = 64;\n',
+  'const withinCap = draft.selectedMonsterIds.length <= MAX_TRADE_MONSTERS_PER_SIDE;',
+  'targetValid && hasAsset',
+);
+
+// The cap wired in as an OR-branch instead of an AND-veto — the source-level
+// twin of the EARS-3c vitest row (65 monsters + 500 gold must NOT submit).
+const TS_CAP_AS_OR_BRANCH = tsFixture(
+  'export const MAX_TRADE_MONSTERS_PER_SIDE = 64;\n',
+  'const withinCap = draft.selectedMonsterIds.length <= MAX_TRADE_MONSTERS_PER_SIDE;',
+  'targetValid && (hasAsset || withinCap)',
+);
+
+// SANCTIONED SHAPE (a): the clause written inline as its own conjunct. Must PASS
+// — without this the TCP5 teeth are all satisfiable by an always-failing leg.
+const TS_INLINE_CLAUSE_GOOD = tsFixture(
+  'export const MAX_TRADE_MONSTERS_PER_SIDE = 64;\n',
+  'const withinCap = true;',
+  'targetValid && hasAsset && draft.selectedMonsterIds.length <= MAX_TRADE_MONSTERS_PER_SIDE',
+);
+
+// SANCTIONED SHAPE (a) with a clarifying paren. Must PASS: the gate is strict
+// about semantics, not about punctuation.
+const TS_INLINE_CLAUSE_PARENS_GOOD = tsFixture(
+  'export const MAX_TRADE_MONSTERS_PER_SIDE = 64;\n',
+  'const withinCap = true;',
+  'targetValid && hasAsset && (draft.selectedMonsterIds.length <= MAX_TRADE_MONSTERS_PER_SIDE)',
+);
+
+// No `canSubmit` binding at all — TCP5 must fail LOUD rather than skip.
+const TS_NO_CANSUBMIT_BINDING =
+  TS_PREAMBLE +
+  'export const MAX_TRADE_MONSTERS_PER_SIDE = 64;\n' +
+  `
+export function buildProposeSubmission(targets, draft) {
+  const withinCap = draft.selectedMonsterIds.length <= MAX_TRADE_MONSTERS_PER_SIDE;
+  return { verdict: withinCap, args: null };
+}
+` +
+  TS_TAIL;
+
 // ---------------------------------------------------------------------------
 // Default export: eval entry point.
 // ---------------------------------------------------------------------------
@@ -583,7 +904,7 @@ export function someOtherHelper(draft) {
 export default async function tradeCapParityEval() {
   const name =
     'trade-cap-parity (14r-f EARS-3 / ADR-0188: the client MAX_TRADE_MONSTERS_PER_SIDE mirrors ' +
-    'server-module/src/trading.rs:37, and buildProposeSubmission actually reads it)';
+    'server-module/src/trading.rs:37, and the clause reading it actually gates canSubmit)';
 
   // =========================================================================
   // PROOF-OF-TEETH — a broken checker must be caught before its verdict on the
@@ -744,6 +1065,117 @@ export default async function tradeCapParityEval() {
     'a Rust scan that reads a commented-out SSOT as live',
   );
 
+  // --- TCP5 teeth (red-team BYPASS 3) --------------------------------------
+
+  // Tk0 — ANTI-VACUITY for the whole TCP5 leg: both sanctioned shapes must PASS.
+  // Without these, an always-failing TCP5 would satisfy Tk/Tl/Tm/Tn for free and
+  // would also block the implementer from ever shipping a correct fix.
+  expectPass('TEETH Tk0a (sanctioned inline clause)', GOOD_RUST, TS_INLINE_CLAUSE_GOOD);
+  expectPass(
+    'TEETH Tk0b (sanctioned inline clause with a clarifying paren)',
+    GOOD_RUST,
+    TS_INLINE_CLAUSE_PARENS_GOOD,
+  );
+
+  // Tk — THE BYPASS 3 FIXTURE, verbatim. Adjacency needle present in NEUTRALISED
+  // code (`false && <clause>`, read back as `(decoy || true)`) beside a live
+  // bare-literal gate.
+  expectFail(
+    'TEETH Tk (BYPASS 3: needle present in dead/neutralised code, bare literal is the real gate)',
+    GOOD_RUST,
+    TS_DEAD_CODE_DECOY_CLAUSE,
+    ['TCP5/dataflow'],
+    'the MEASURED red-team bypass: TCP4 is presence-in-body, so `const decoy = false && <clause>;` ' +
+      'consumed as `(decoy || true)` satisfies it while `length <= 64` remains the live gate. ' +
+      'Passed all 61 vitest rows AND returned pass:true with a detail claiming the constant was ' +
+      'load-bearing. Kills: presence mistaken for dataflow',
+  );
+
+  // Tl — the clause is bound to the constant but the binding never reaches
+  // canSubmit. A cap that is computed and discarded enforces nothing.
+  expectFail(
+    'TEETH Tl (clause bound to the constant but never consumed by canSubmit)',
+    GOOD_RUST,
+    TS_CLAUSE_BOUND_BUT_UNUSED,
+    ['TCP5/dataflow'],
+    'a `const withinCap = <clause>;` that no verdict expression ever reads — the tidier, more ' +
+      'likely-to-survive-review cousin of the BYPASS 3 decoy',
+  );
+
+  // Tm — the cap wired as an OR-branch rather than an AND-veto. Source-level
+  // twin of the EARS-3c vitest row (65 monsters + 500 gold must not submit).
+  expectFail(
+    'TEETH Tm (cap folded into an OR branch instead of ANDed into canSubmit)',
+    GOOD_RUST,
+    TS_CAP_AS_OR_BRANCH,
+    ['TCP5/dataflow'],
+    'the OR-placement mis-wiring: `targetValid && (hasAsset || withinCap)` lets an over-cap draft ' +
+      'through as soon as any other asset is present. check_trade_side_size rejects on the monster ' +
+      'count ALONE (trading.rs:43-54)',
+  );
+
+  // Tn — no canSubmit binding: TCP5 must fail LOUD, never skip.
+  expectFail(
+    'TEETH Tn (no canSubmit binding to anchor the dataflow check)',
+    GOOD_RUST,
+    TS_NO_CANSUBMIT_BINDING,
+    ['TCP5/no-verdict-binding'],
+    'a dataflow check that silently passes when the expression it is supposed to trace has been ' +
+      'renamed away — the same "nothing to check" false green TCP1/TCP2 already refuse',
+  );
+
+  // To — unit-level pins on the two primitives BYPASS 3 turns on, so a
+  // regression in either is attributable rather than showing up as a mystery
+  // fixture flip.
+  {
+    const cases = [
+      ['draft.selectedMonsterIds.length<=MAX_TRADE_MONSTERS_PER_SIDE', true],
+      ['(draft.selectedMonsterIds.length<=MAX_TRADE_MONSTERS_PER_SIDE)', true],
+      ['selectedMonsterIds.length<=MAX_TRADE_MONSTERS_PER_SIDE', true],
+      ['false&&draft.selectedMonsterIds.length<=MAX_TRADE_MONSTERS_PER_SIDE', false],
+      ['draft.selectedMonsterIds.length<=MAX_TRADE_MONSTERS_PER_SIDE&&true', false],
+      ['draft.selectedMonsterIds.length<=64', false],
+      ['draft.selectedMonsterIds.length<MAX_TRADE_MONSTERS_PER_SIDE', false],
+    ];
+    for (const [expr, want] of cases) {
+      if (isExactlyTheClause(expr) !== want) {
+        teeth.push(
+          `TEETH To: isExactlyTheClause(${JSON.stringify(expr)}) returned ` +
+            `${String(isExactlyTheClause(expr))}, expected ${String(want)} — the exact-equality ` +
+            `primitive TCP5 rests on has regressed to a substring test, which is exactly what ` +
+            `BYPASS 3 walked through`,
+        );
+      }
+    }
+    const conj = splitTopLevelConjuncts('a&&(b||c)&&d');
+    if (conj.length !== 3 || conj[1] !== '(b||c)') {
+      teeth.push(
+        `TEETH To: splitTopLevelConjuncts('a&&(b||c)&&d') = ${JSON.stringify(conj)} — expected ` +
+          `three parts with the parenthesised group kept whole. A splitter that descends into ` +
+          `brackets would let \`(decoy || true)\` decompose into an acceptable bare identifier`,
+      );
+    }
+    // findBindingRhs must see through an optional TS type annotation, or an
+    // annotated-but-correct implementation false-REDs. Both spellings, plus the
+    // longer-identifier guard, are pinned here.
+    const bindingCases = [
+      ['constwithinCap=draft.x<=Y;', 'withinCap', 'draft.x<=Y'],
+      ['constwithinCap:boolean=draft.x<=Y;', 'withinCap', 'draft.x<=Y'],
+      ['letwithinCap=1;', 'withinCap', '1'],
+      ['constwithinCapExtra=9;', 'withinCap', null],
+    ];
+    for (const [src, ident, want] of bindingCases) {
+      const got = findBindingRhs(src, ident);
+      if (got !== want) {
+        teeth.push(
+          `TEETH To: findBindingRhs(${JSON.stringify(src)}, '${ident}') = ${JSON.stringify(got)}, ` +
+            `expected ${JSON.stringify(want)} — TCP5's binding lookup is broken, so it would ` +
+            `either false-RED a correct annotated implementation or match a longer identifier`,
+        );
+      }
+    }
+  }
+
   if (teeth.length > 0) {
     return { name, pass: false, detail: `TEETH FAILED: ${teeth.join(' || ')}` };
   }
@@ -774,13 +1206,19 @@ export default async function tradeCapParityEval() {
     name,
     pass: true,
     detail:
-      `TCP1-TCP4 pass: ${RUST_REL} and ${TS_REL} both declare MAX_TRADE_MONSTERS_PER_SIDE = ` +
-      `${cap} (server is the SSOT, client is the exported MIRROR), and ${TS_FN_NAME}'s own body ` +
-      `contains the contiguous clause \`${CLAUSE_NEEDLE}\` so the constant is load-bearing rather ` +
-      `than decorative. The cap is INCLUSIVE (trading.rs:44 is \`n > MAX\`): ${cap} is legal, ` +
-      `${cap + 1} rejects. Teeth verified: rust/ts mismatch, bare-literal clause beside a live ` +
-      `const (R2), either side absent, un-exported const, comment-only and string-only ` +
-      `declarations on both sides, the \`<\` off-by-one, and a clause sited outside ` +
-      `${TS_FN_NAME} are ALL flagged, while the sanctioned shape passes.`,
+      `TCP1-TCP5 pass: ${RUST_REL} and ${TS_REL} both declare MAX_TRADE_MONSTERS_PER_SIDE = ` +
+      `${cap} (server is the SSOT, client is the exported MIRROR); ${TS_FN_NAME}'s own body ` +
+      `contains the contiguous clause \`${CLAUSE_NEEDLE}\`, AND that clause is a top-level && ` +
+      `conjunct of the ${CANSUBMIT_NAME} initializer (directly, or via a binding whose entire ` +
+      `initializer is the clause) — so the constant is load-bearing rather than decorative, and ` +
+      `that is now a DATAFLOW claim, not a presence claim. The cap is INCLUSIVE (trading.rs:44 ` +
+      `is \`n > MAX\`): ${cap} is legal, ${cap + 1} rejects. Teeth verified: rust/ts mismatch, ` +
+      `bare-literal clause beside a live const (R2), either side absent, un-exported const, ` +
+      `comment-only and string-only declarations on both sides, the \`<\` off-by-one, a clause ` +
+      `sited outside ${TS_FN_NAME}, and — closing red-team BYPASS 3 — a clause occurring in dead ` +
+      `or neutralised code (\`false && <clause>\` read back as \`(decoy || true)\`), a clause ` +
+      `bound but never consumed, an OR-branch placement, and a missing ${CANSUBMIT_NAME} binding ` +
+      `are ALL flagged, while both sanctioned shapes (inline and bound, with or without a ` +
+      `clarifying paren) pass.`,
   };
 }

@@ -24,6 +24,12 @@
 //       REGION-SCOPED in 14r-f (ADR-0188 §W3): counting anywhere AFTER
 //       `warp_at(` went HOLLOW the moment the grass block started calling the
 //       same SSOT predicate. See checkWarpBattleGuard's docstring.
+//       Also in 14r-f, W3 gained two SHAPE layers ported from movement_tests.rs's
+//       E3 test (red-team BYPASS 4): W3b pins the guard expression
+//       (`p.identity` + `unwrap_or(true)`) and W3c pins that its value is the
+//       branch condition (`;if!skip_warp{`). Presence of the call alone was
+//       measurably bypassable by a telemetry-only witness beside an
+//       unconditional warp write.
 //   W4. sync_content_inner calls `validate_zone_maps(` before zone_def upserts.
 //   W5. `ensure_zone_schedules` is called from BOTH the `init` reducer body
 //       AND the public `sync_content` reducer body.
@@ -244,6 +250,22 @@ const WARP_ANCHOR = 'warp_at(';
 const GRASS_ANCHOR = 'stepped_onto_grass(';
 const SSOT_NEEDLE = 'is_in_ongoing_battle(';
 
+// The two CONTIGUOUS shape needles ported from the Rust-side E3 test
+// `e3_warp_guard_uses_the_both_role_ssot_with_the_player_identity`
+// (movement_tests.rs layers 1 and 1b) — see checkWarpBattleGuard's W3b/W3c.
+//
+// W3b pins the guard EXPRESSION: the SSOT is asked about the CHARACTER's own
+// `p.identity` (not `ctx.sender`, which inside a scheduler-only reducer is the
+// MODULE identity and would make the guard always false), and its Option is
+// defaulted with the ADR-0070 `unwrap_or(true)` POLICY (no player row => an NPC
+// => do not warp). Deliberately NOT `unwrap_or(false)`: that is the drain
+// lock's FACT-shaped default, and movement.rs:347-351 says in as many words
+// that the two must not be unified.
+const WARP_GUARD_EXPR_NEEDLE = '.map(|p|is_in_ongoing_battle(ctx,p.identity)).unwrap_or(true)';
+// W3c pins that the guard's VALUE IS THE BRANCH CONDITION, and pins the
+// ADR-0166 D4 `in_battle` -> `skip_warp` rename at the same time.
+const WARP_GUARD_BRANCH_NEEDLE = '.unwrap_or(true);if!skip_warp{';
+
 /**
  * Count non-overlapping occurrences of a literal needle (indexOf loop — no
  * dynamic RegExp).
@@ -366,11 +388,30 @@ function warpBranchRegion(compact) {
  *     SSOT (BAD_MOVEMENT_TICK_GRASS_SSOT_NO_WARP_GUARD). The unscoped
  *     predecessor PASSED this fixture; the teeth block asserts that explicitly
  *     so nobody reverts the narrowing;
- *   - the substring-swap mis-fix (BAD_MOVEMENT_TICK_DRAIN_LOCK_ONLY_NO_WARP_GUARD).
+ *   - the substring-swap mis-fix (BAD_MOVEMENT_TICK_DRAIN_LOCK_ONLY_NO_WARP_GUARD);
+ *   - a DECOY WITNESS: a textbook-perfect SSOT call bound to a telemetry
+ *     variable while the warp write runs unconditionally
+ *     (BAD_MOVEMENT_TICK_DECOY_TELEMETRY_WARP,
+ *     BAD_MOVEMENT_TICK_DECOY_WITNESS_UNGATED_WRITE) — red-team BYPASS 4.
+ *
+ * THREE LAYERS, in order, each strictly stronger than the last:
+ *   W3a  the SSOT predicate is CALLED inside the warp region (count > 0).
+ *   W3b  it is called in the sanctioned EXPRESSION — `p.identity` as the
+ *        argument, `unwrap_or(true)` as the ADR-0070 default.
+ *   W3c  its VALUE is the branch condition (`;if!skip_warp{`).
+ * W3a alone is presence, and presence was measurably bypassable: BYPASS 4 kept
+ * the call and wrote `row.zone_id` unconditionally. W3b and W3c are ported
+ * verbatim from `movement_tests.rs`'s E3 layers 1 and 1b, which already caught
+ * that fixture — the point of porting them is that this eval must be sound on
+ * its own rather than leaning on a sibling gate in the same `just ci` run.
  *
  * HONEST LIMIT: W3 covers the WARP guard only. The drain-time lock is W6's job,
  * and the drain lock sits BEFORE `warp_at(` so it is outside this region by
- * construction — the two checks stay independent.
+ * construction — the two checks stay independent. Second honest limit: W3b/W3c
+ * pin a SPELLING. A semantically-equivalent rewrite (a helper fn, a `match`
+ * instead of `unwrap_or`) will red them. That is deliberate and matches the
+ * Rust-side E3 discipline: re-derive the needle in the open, with the ADR that
+ * sanctions the new shape — never relax it to presence.
  *
  * @param {string} body  Comment-stripped movement_tick function body.
  * @returns {string|null}
@@ -400,6 +441,49 @@ function checkWarpBattleGuard(body) {
       'that is W6, deliberately independent) NOR the grass-encounter pre-check (ADR-0122 D1 / ' +
       'ADR-0166 R4, which sits after the grass anchor) can satisfy this check: both are outside ' +
       'the region by construction, which is the whole point of the ADR-0188 §W3 re-scoping'
+    );
+  }
+
+  // --- W3b/W3c (14r-f, red-team BYPASS 4) ---------------------------------
+  // Presence of the SSOT call inside the region is necessary but NOT sufficient.
+  // A red-team kept a textbook-perfect call, bound it to a telemetry variable,
+  // logged it, and wrote `row.zone_id = to_zone;` UNCONDITIONALLY — the C1
+  // finding fully reintroduced, and this check reported pass:true. The needles
+  // below are ported verbatim from the Rust-side E3 test, which already caught
+  // that fixture; they make the eval layer independently sound instead of
+  // relying on its sibling.
+  if (scoped.region.indexOf(WARP_GUARD_EXPR_NEEDLE) === -1) {
+    return (
+      'movement_tick: the warp branch calls the SSOT but not in the sanctioned guard EXPRESSION — ' +
+      'the contiguous needle ' +
+      WARP_GUARD_EXPR_NEEDLE +
+      ' does not appear in the warp region. Presence of ' +
+      SSOT_NEEDLE +
+      ' proves the predicate is CALLED; it proves nothing about WHICH identity is asked or what ' +
+      'happens to the answer. Two failures land here, both real: (1) the argument is not the ' +
+      "CHARACTER's own `p.identity` — `movement_tick` is scheduler-only, so `ctx.sender` here is " +
+      'the MODULE identity and `is_in_ongoing_battle(ctx, ctx.sender)` is ALWAYS FALSE, warping ' +
+      'every player out of every battle, strictly worse than the bug being fixed; (2) the Option ' +
+      'is defaulted with something other than the ADR-0070 `unwrap_or(true)` POLICY (no player ' +
+      "row => an NPC => do not warp). `unwrap_or(false)` is the DRAIN lock's FACT-shaped default " +
+      'and movement.rs:347-351 states explicitly that the two must not be unified. Ported from ' +
+      'movement_tests.rs `e3_warp_guard_uses_the_both_role_ssot_with_the_player_identity` layer 1'
+    );
+  }
+
+  if (scoped.region.indexOf(WARP_GUARD_BRANCH_NEEDLE) === -1) {
+    return (
+      'movement_tick: the warp guard is computed but its VALUE does not gate the warp write — ' +
+      'the contiguous needle ' +
+      WARP_GUARD_BRANCH_NEEDLE +
+      ' does not appear in the warp region. This is red-team BYPASS 4: a textbook-perfect SSOT ' +
+      'call bound to a witness variable, logged or compared for telemetry, while ' +
+      '`row.zone_id = to_zone;` runs UNCONDITIONALLY — every character warps, battling or not, ' +
+      'and a presence-only check reports PASS with the C1 security finding fully live. The ' +
+      "guard's result must be the branch condition, and the binding must be named `skip_warp` " +
+      '(ADR-0166 D4 renamed it from `in_battle` because the boolean decides whether to SKIP, not ' +
+      'whether the player is in a battle — the name is what keeps `unwrap_or(true)` readable as ' +
+      'correct). Ported from movement_tests.rs E3 layer 1b'
     );
   }
 
@@ -871,6 +955,124 @@ const BAD_MOVEMENT_TICK_DRAIN_LOCK_ONLY_NO_WARP_GUARD = `
               }
           }
           ctx.db.character().entity_id().update(row);
+      }
+      Ok(())
+  }
+`;
+
+// W3 BAD (14r-f, red-team BYPASS 4) — THE DECOY WITNESS. A textbook-perfect
+// both-role SSOT call sits inside the warp branch, is bound, and is even
+// consumed — by a telemetry log. The warp write is UNCONDITIONAL: every
+// character teleports, battling or not. The C1 security finding is fully
+// reintroduced, and a presence-only W3 reported `pass: true` on it.
+//
+// This fixture has NO `.unwrap_or(true)`, so it is killed by W3b (the guard
+// EXPRESSION needle). Its sibling below keeps `.unwrap_or(true)` and is killed
+// by W3c instead — together they prove the two layers are independently
+// load-bearing rather than one implying the other.
+const BAD_MOVEMENT_TICK_DECOY_TELEMETRY_WARP = `
+  #[spacetimedb::reducer]
+  pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Result<(), String> {
+      if ctx.sender != ctx.identity() { return Err("scheduler-only".to_string()); }
+      let zone = sched.zone_id;
+      let zone_maps = game_core::load_zone_maps().map_err(|e| e)?;
+      let map = game_core::map_for(zone, &zone_maps).map_err(|e| e)?;
+      let ids: Vec<u64> = ctx.db.character().zone_id().filter(zone).map(|c| c.entity_id).collect();
+      for id in ids {
+          let Some(mut row) = ctx.db.character().entity_id().find(id) else { continue; };
+          if row.move_queue.is_empty() { continue; }
+          let battle_locked = ctx.db.player().entity_id().filter(id).next()
+              .map(|p| is_in_ongoing_battle(ctx, p.identity))
+              .unwrap_or(false);
+          if battle_locked { continue; }
+          let input = row.move_queue.remove(0);
+          let prev = char_state(&row).pos;
+          let next = apply_move(&char_state(&row), input, &map, now);
+          apply_state(&mut row, &next);
+          let entity_id = row.entity_id;
+          if prev != next.pos {
+              if let Some(warp) = map.warp_at(next.pos) {
+                  let (to_zone, tx, ty) = (warp.to_zone, warp.to_tile.x, warp.to_tile.y);
+                  let decoy_witness = ctx.db.player().entity_id().filter(entity_id).next()
+                      .map(|p| is_in_ongoing_battle(ctx, p.identity));
+                  if decoy_witness == Some(true) {
+                      log::debug!("warp telemetry probe observed an ongoing battle");
+                  }
+                  row.zone_id = to_zone; row.tile_x = tx; row.tile_y = ty;
+                  row.move_queue.clear(); row.action = ActionState::Idle;
+                  ctx.db.character().entity_id().update(row);
+                  continue;
+              }
+          }
+          ctx.db.character().entity_id().update(row);
+          if !stepped_onto_grass(prev, next.pos, &map) {
+              continue;
+          }
+          let Some(player) = ctx.db.player().entity_id().filter(entity_id).next() else {
+              continue;
+          };
+          let player_identity = player.identity;
+          let already = is_in_ongoing_battle(ctx, player_identity);
+          if already { continue; }
+          begin_encounter(ctx, player_identity, zone);
+      }
+      Ok(())
+  }
+`;
+
+// W3 BAD (14r-f, red-team BYPASS 4, harder variant) — the SAME ungated write,
+// but the witness is spelled EXACTLY like the sanctioned guard, `skip_warp`
+// name and `unwrap_or(true)` default included. It therefore SATISFIES W3a and
+// W3b, and is caught only by W3c: the value never becomes the branch condition,
+// so `row.zone_id = to_zone;` still runs for a character in an ongoing battle.
+//
+// This is the fixture that makes W3c non-decorative. If a future edit collapses
+// W3b and W3c into one needle, this fixture goes green and the C1 finding is
+// reachable again.
+const BAD_MOVEMENT_TICK_DECOY_WITNESS_UNGATED_WRITE = `
+  #[spacetimedb::reducer]
+  pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Result<(), String> {
+      if ctx.sender != ctx.identity() { return Err("scheduler-only".to_string()); }
+      let zone = sched.zone_id;
+      let zone_maps = game_core::load_zone_maps().map_err(|e| e)?;
+      let map = game_core::map_for(zone, &zone_maps).map_err(|e| e)?;
+      let ids: Vec<u64> = ctx.db.character().zone_id().filter(zone).map(|c| c.entity_id).collect();
+      for id in ids {
+          let Some(mut row) = ctx.db.character().entity_id().find(id) else { continue; };
+          if row.move_queue.is_empty() { continue; }
+          let battle_locked = ctx.db.player().entity_id().filter(id).next()
+              .map(|p| is_in_ongoing_battle(ctx, p.identity))
+              .unwrap_or(false);
+          if battle_locked { continue; }
+          let input = row.move_queue.remove(0);
+          let prev = char_state(&row).pos;
+          let next = apply_move(&char_state(&row), input, &map, now);
+          apply_state(&mut row, &next);
+          let entity_id = row.entity_id;
+          if prev != next.pos {
+              if let Some(warp) = map.warp_at(next.pos) {
+                  let (to_zone, tx, ty) = (warp.to_zone, warp.to_tile.x, warp.to_tile.y);
+                  let skip_warp = ctx.db.player().entity_id().filter(entity_id).next()
+                      .map(|p| is_in_ongoing_battle(ctx, p.identity))
+                      .unwrap_or(true);
+                  log::debug!("warp telemetry probe recorded the skip decision");
+                  row.zone_id = to_zone; row.tile_x = tx; row.tile_y = ty;
+                  row.move_queue.clear(); row.action = ActionState::Idle;
+                  ctx.db.character().entity_id().update(row);
+                  continue;
+              }
+          }
+          ctx.db.character().entity_id().update(row);
+          if !stepped_onto_grass(prev, next.pos, &map) {
+              continue;
+          }
+          let Some(player) = ctx.db.player().entity_id().filter(entity_id).next() else {
+              continue;
+          };
+          let player_identity = player.identity;
+          let already = is_in_ongoing_battle(ctx, player_identity);
+          if already { continue; }
+          begin_encounter(ctx, player_identity, zone);
       }
       Ok(())
   }
@@ -1426,6 +1628,92 @@ export default async function () {
     }
   }
 
+  // --- Tooth W3b (14r-f / BYPASS 4): THE DECOY TELEMETRY WITNESS ------------
+  // A perfect SSOT call inside the warp branch, consumed by a log line, with an
+  // UNCONDITIONAL warp write. W3a (presence) reports PASS on this; W3b must not.
+  {
+    const body = extractFnBody(scrubRust(BAD_MOVEMENT_TICK_DECOY_TELEMETRY_WARP), 'movement_tick');
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract movement_tick body from BAD_MOVEMENT_TICK_DECOY_TELEMETRY_WARP',
+      };
+    }
+    const scoped = warpBranchRegion(body.replace(/\s+/g, ''));
+    if (scoped.error || countNeedle(scoped.region, SSOT_NEEDLE) === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_MOVEMENT_TICK_DECOY_TELEMETRY_WARP must CONTAIN an is_in_ongoing_battle( ' +
+          'call inside the warp region — otherwise it is killed by the trivial W3a presence ' +
+          'count and proves nothing about W3b (the failure must be attributable to the guard ' +
+          'EXPRESSION needle, not to the call being missing)',
+      };
+    }
+    if (!checkWarpBattleGuard(body)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_MOVEMENT_TICK_DECOY_TELEMETRY_WARP (textbook-perfect both-role SSOT call ' +
+          'bound to `decoy_witness`, consumed by a telemetry log, while row.zone_id = to_zone runs ' +
+          'UNCONDITIONALLY) was NOT flagged by checkWarpBattleGuard. This is red-team BYPASS 4: ' +
+          'W3 degenerates to "the predicate is mentioned somewhere in the warp branch" and reports ' +
+          'PASS with the C1 security finding fully live — every character warps, battling or not. ' +
+          'Kills: presence mistaken for a guard. The close is the ported movement_tests.rs E3 ' +
+          'layer-1 needle ' +
+          WARP_GUARD_EXPR_NEEDLE,
+      };
+    }
+  }
+
+  // --- Tooth W3c (14r-f / BYPASS 4, harder): VALUE MUST BE THE CONDITION -----
+  // Same ungated write, but the witness is spelled EXACTLY like the sanctioned
+  // guard — `skip_warp`, `unwrap_or(true)` and all. It satisfies W3a AND W3b;
+  // only W3c can see that the value never gates anything.
+  {
+    const body = extractFnBody(
+      scrubRust(BAD_MOVEMENT_TICK_DECOY_WITNESS_UNGATED_WRITE),
+      'movement_tick',
+    );
+    if (!body) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: could not extract movement_tick body from BAD_MOVEMENT_TICK_DECOY_WITNESS_UNGATED_WRITE',
+      };
+    }
+    const scoped = warpBranchRegion(body.replace(/\s+/g, ''));
+    if (scoped.error || scoped.region.indexOf(WARP_GUARD_EXPR_NEEDLE) === -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_MOVEMENT_TICK_DECOY_WITNESS_UNGATED_WRITE must SATISFY the W3b guard-' +
+          'expression needle so its rejection is attributable to W3c (the value-is-the-condition ' +
+          'layer) alone. Without that, W3c is unproven and could be deleted or folded into W3b ' +
+          'with nothing going red',
+      };
+    }
+    if (!checkWarpBattleGuard(body)) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: BAD_MOVEMENT_TICK_DECOY_WITNESS_UNGATED_WRITE (a guard expression that is ' +
+          'letter-perfect — `skip_warp`, p.identity, unwrap_or(true) — whose value is then merely ' +
+          'LOGGED while the warp write runs unconditionally) was NOT flagged by ' +
+          'checkWarpBattleGuard. Kills: a W3 that pins the guard EXPRESSION but never checks that ' +
+          'anything BRANCHES on it. The close is the ported movement_tests.rs E3 layer-1b needle ' +
+          WARP_GUARD_BRANCH_NEEDLE,
+      };
+    }
+  }
+
   // --- Tooth W3: a missing START anchor must FAIL LOUD, never pass vacuously --
   {
     const body = extractFnBody(scrubRust(BAD_MOVEMENT_TICK_NO_WARP_AT), 'movement_tick');
@@ -1798,7 +2086,7 @@ export default async function () {
     pass: allPass,
     checks,
     detail: allPass
-      ? 'W-pre + W0-W6 all pass: production source free of char-literal quote landmines; movement_tick uniquely defined; map_for+warp_at+SSOT warp guard (scanned in the warp REGION warp_at( .. stepped_onto_grass(, ADR-0188 §W3)+drain battle lock in movement_tick; validate_zone_maps in sync_content_inner; ensure_zone_schedules in init+sync_content (teeth: 28 fixture checks verified — 17 pre-14r-f plus 11 pinning the W3 region narrowing: the region excludes the grass trigger, the hollowing fixture and the substring-swap fixture are both flagged, two regression witnesses record that the retired unscoped strategy would have passed them, and a missing warp_at( anchor fails loud)'
+      ? 'W-pre + W0-W6 all pass: production source free of char-literal quote landmines; movement_tick uniquely defined; map_for+warp_at+SSOT warp guard (scanned in the warp REGION warp_at( .. stepped_onto_grass(, ADR-0188 §W3)+drain battle lock in movement_tick; validate_zone_maps in sync_content_inner; ensure_zone_schedules in init+sync_content (teeth: 32 fixture checks verified — 17 pre-14r-f, 11 pinning the ADR-0188 §W3 region narrowing (the region excludes the grass trigger; the hollowing and substring-swap fixtures are both flagged; two regression witnesses record that the retired unscoped strategy would have passed them; a missing warp_at( anchor fails loud), and 4 closing red-team BYPASS 4 (a decoy telemetry witness beside an unconditional warp write is flagged by the ported E3 guard-expression needle, and a letter-perfect witness whose value is only logged is flagged by the ported value-is-the-branch-condition needle))'
       : failures.join('; '),
   };
 }

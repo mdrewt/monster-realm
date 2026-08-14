@@ -3648,6 +3648,45 @@ fn eg14f_field_value(fmt: &str, from: usize) -> Option<String> {
     Some(fmt[from..from + end].to_string())
 }
 
+/// The SOURCE text of the WHOLE sanctioned format string for one reason log:
+/// the doubled outer braces, the evt field, the NUMERIC monster_id field, and one
+/// reason field carrying the quote-wrapped escaped binding — and nothing else.
+///
+/// This is the post-fix spelling of what `evolution.rs` already writes at all
+/// three sites, with the raw `{e}` replaced by `{<binding>}`; every structural
+/// character is assembled from the two byte constants, so the file's own
+/// balanced-quote convention holds.
+///
+/// It exists because a red team defeated every SUBSTRING and TOKEN check at once
+/// by keeping a perfect reason field and adding a SECOND field fed by a one-hop
+/// ALIAS of the same error. Pinning the whole payload is the only assertion that
+/// makes an extra field unrepresentable.
+fn eg14f_expected_reason_line(evt: &str, binding: &str) -> String {
+    let q = eg14f_escaped_quote();
+    let evt_field = [eg14f_field_opener("evt").as_str(), evt, q.as_str()].concat();
+    // The id field's KEY is quoted; its VALUE is a `u64` interpolation, so it
+    // carries no quotes — a numeric slot cannot be corrupted by a string.
+    let id_field = [q.as_str(), "monster_id", q.as_str(), ":{monster_id}"].concat();
+    let reason_field = [
+        eg14f_field_opener(binding).as_str(),
+        "{",
+        binding,
+        "}",
+        q.as_str(),
+    ]
+    .concat();
+    [
+        "{{",
+        evt_field.as_str(),
+        ",",
+        id_field.as_str(),
+        ",",
+        reason_field.as_str(),
+        "}}",
+    ]
+    .concat()
+}
+
 /// One hand-built JSON log site in `check_and_evolve`, as the two views see it.
 struct Eg14fLogSite {
     /// The `evt` name read out of the site's own format string.
@@ -3785,13 +3824,17 @@ fn eg14f_check_and_evolve_views() -> (String, String) {
 /// `check_and_evolve` that interpolates a reducer `Err` must interpolate an
 /// ESCAPED binding named `reason`, and none may still carry the raw value.
 ///
-/// ASSERTION-RED AT HEAD on layers 2, 3, 5, 6 and 7 — all three format strings
-/// interpolate `{e}` directly and `check_and_evolve` makes ZERO `json_escape`
-/// calls. Layers 1 and 4 are GREEN at HEAD by design: they are the census and the
-/// smuggle fence, and both must STAY green (the first assertion to fire at HEAD
-/// is layer 2, on the first site).
+/// ASSERTION-RED AT HEAD on layers 2, 3, 3b, 5, 6 and 7 — all three format
+/// strings interpolate `{e}` directly and `check_and_evolve` makes ZERO
+/// `json_escape` calls. Layers 1, 4a and 4b are GREEN at HEAD by design (the
+/// census and the two argument fences) and must STAY green; the first assertion
+/// to fire at HEAD is layer 2, on the first site.
 ///
-/// SEVEN LAYERS, and what each one alone would fail to catch:
+/// NINE LAYERS, and what each one alone would fail to catch. Layers 3b and 4a
+/// were added after a red team EMPIRICALLY built a full-green bypass of the first
+/// seven (the ALIAS cheat described under 3b); the layers it beat are kept, because
+/// each still produces the sharpest message for the mistake it was written for.
+///
 ///
 /// 1. **The site census (green at HEAD, and load-bearing).** FOUR reason-bearing
 ///    sites, of which exactly THREE interpolate. Deleting or renaming a log line
@@ -3811,7 +3854,28 @@ fn eg14f_check_and_evolve_views() -> (String, String) {
 ///    reference line and never reads the real format string. So the needle is
 ///    assembled with the escaped-quote bytes on both sides of `{reason}`.
 ///
-/// 4. **The positional-argument smuggle (NOT in the ported precedent).** These
+/// 3b. **THE ALIAS KILL — the format string EQUALS the whole sanctioned line**
+///    (evt field, numeric monster_id field, one reason field, nothing else;
+///    whitespace-insensitive). Layers 2, 3, 4, 5, 6 and 7 are ALL satisfied by a
+///    site that keeps the sanctioned `let reason = json_escape(&e);` and its
+///    `{reason}` capture, adds `let f = &e;`, and appends a SECOND field to the
+///    same format string interpolating `{f}`.
+///    The escape is real, the capture is real and quote-wrapped, the literal token
+///    `e` occurs nowhere in the call, and the alias is an INLINE capture so there
+///    is no trailing argument to count — yet the fully unescaped, content-derived
+///    string ships in the extra field and corrupts the line exactly as before.
+///    Clippy is silent because `f` is read. NOTHING WEAKER THAN AN EXACT PAYLOAD
+///    PIN CLOSES THIS: the alias can be spelled `&e`, `e.clone()`, `e.as_str()`,
+///    `&*e`, `String::from(&e)`, a closure or a `format!` built earlier, and the
+///    extra field can be named anything. Pinning the payload makes the extra field
+///    itself unrepresentable, which is the only property that does not depend on
+///    recognising the alias.
+///
+/// 4a. **No trailing ARGUMENT at all** — the region after the format string must
+///    compact to nothing (or a lone comma). Defence in depth for the positional
+///    half of the same class, stated as a rule rather than inferred from 3b.
+///
+/// 4b. **The positional-argument smuggle (NOT in the ported precedent).** These
 ///    two conditions —
 ///      * the literal `{e}` is absent, and
 ///      * `{reason}` is present —
@@ -3961,7 +4025,63 @@ fn evolution_reason_log_sites_interpolate_an_escaped_binding() {
              way, so the defect would survive its own fix. Format string was: {fmt:?}"
         );
 
-        // Layer 4 (R3): the positional-argument smuggle.
+        // Layer 3b (ALIAS KILL): the format string is the WHOLE sanctioned line.
+        // Layers 2, 3 and 4 are all SUBSTRING/TOKEN checks, and a red team beat
+        // every one of them at once by aliasing the error into a SECOND field:
+        //     let reason = json_escape(&e);
+        //     let f = &e;
+        //   then a format string whose reason field interpolates {reason} AND
+        //   which carries a SECOND field interpolating {f}.
+        // `reason` really is escaped and quote-wrapped, the literal token `e`
+        // appears nowhere, and no trailing argument exists (the alias is an
+        // INLINE capture), so a no-trailing-arguments fence does not see it
+        // either. Only pinning the ENTIRE payload does: an extra field cannot be
+        // added, whatever it is named and whatever spelling of the alias
+        // (`&e`, `e.clone()`, `e.as_str()`, `&*e`, `String::from(&e)`, a closure,
+        // a `format!` composed three lines earlier) feeds it.
+        let expected_fmt = eg14f_expected_reason_line(evt, binding);
+        assert_eq!(
+            eg14f_squash_ws(fmt),
+            eg14f_squash_ws(&expected_fmt),
+            "TEETH (14r-f E1, ALIAS KILL) evolution.rs / {evt}: the format string must \
+             be EXACTLY the sanctioned line — the evt field, the numeric monster_id \
+             field, and ONE reason field carrying the quote-wrapped escaped binding \
+             `{binding}`, and NOTHING ELSE. \
+             WHAT THIS KILLS, and why nothing weaker does: a red team kept a perfect \
+             escaped reason field and added a SECOND field fed by a one-hop alias of \
+             the same error (`let f = &e;` … `raw` field interpolating `{{f}}`). Every \
+             substring and token check passes — the escape is real, the capture is \
+             real, the literal `e` never appears, and because the alias is an INLINE \
+             capture there is no trailing argument to count — while the fully \
+             unescaped, content-influenced string ships in the extra field and breaks \
+             the line exactly as before. An exact payload pin is the only assertion \
+             that closes the whole alias class in one step. \
+             The comparison ignores whitespace, so a cosmetic reflow is safe. \
+             If a later slice legitimately adds a field to these log lines, extend \
+             `eg14f_expected_reason_line` DELIBERATELY and state in the ADR how the \
+             new field's value is escaped — never widen this back to a substring."
+        );
+
+        // Layer 4a (NO TRAILING ARGUMENTS): defence in depth for the positional
+        // half of the same class, independent of layer 3b's exactness.
+        let args_compact = eg14f_squash_ws(&site.args_ns);
+        assert!(
+            args_compact.is_empty() || args_compact == ",",
+            "TEETH (14r-f E1, NO-TRAILING-ARGUMENT FENCE) evolution.rs / {evt}: the \
+             `log::` call must pass NO argument after its format string — the \
+             sanctioned shape is inline capture only, so the argument region must be \
+             empty or a lone trailing comma; found {args_compact:?}. \
+             WHAT THIS KILLS: every positional smuggle of the raw error, whatever \
+             expression carries it — `e`, `&e`, `f` where `let f = &e;`, \
+             `e.clone()`, or a `format!` built elsewhere. It does NOT depend on \
+             recognising the value, only on the ABSENCE of the slot, which is why it \
+             survives spellings a token count cannot enumerate. \
+             Layer 3b already forbids a positional `{{}}` slot in the format string, \
+             which would make such an argument a compile error; this fence states the \
+             rule directly so it cannot be lost if that layer is ever relaxed."
+        );
+
+        // Layer 4b (R3, narrower — now subsumed by 3b/4a, kept as a third net).
         let n_bare_e = eg14f_bare_e_count(&site.args_ns);
         let n_escape_args = site.args_ns.matches(escape_call.as_str()).count();
         assert_eq!(
