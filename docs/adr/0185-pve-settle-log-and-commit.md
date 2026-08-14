@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** battle
-**Decision:** The three PvE terminal sites (`submit_attack`, `swap_active`, `flee`) log the write-back error through `observability::mr_log` and commit the terminal outcome instead of `?`-aborting, matching the PvP funnel; the GC statements hoist above the fallible HP write so the new failure mode stays bounded.
+**Decision:** The three PvE terminal sites log the write-back error via `observability::mr_log` and commit the outcome instead of `?`-aborting into an ADR-0168 softlock; the two GC steps hoist above the fallible HP write to stay bounded.
 
 ## Context
 

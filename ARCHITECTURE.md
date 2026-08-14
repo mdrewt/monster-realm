@@ -786,6 +786,11 @@ Tracked consciously so they stay visible, not forgotten.
   subsequent `update()`). Gap: `attempt_recruit` success path calls `write_back_party_hp`
   not `write_back_battle_results` — one prior terminal can persist until the next
   non-recruit terminal battle. Named follow-up, not silently dropped.
+  **14r-d (ADR-0185)**: both GC steps now run *above* the fallible party-HP write, so
+  an `Err` there can no longer skip them; and all four `battle.rs` terminal sites
+  (`submit_attack`, `swap_active`, `flee`, the disconnect GC) log-and-commit rather
+  than `?`-abort into an `Ongoing` row. The two `taming.rs` sites (`:169`, `:270`)
+  still `?`-propagate — disclosed in ADR-0185 D3 as the named follow-up.
 - **(b) `splitmix32` duplication** — the helper is present in both
   `taming/rules.rs` (`resolve_encounter`) and `monster/rolls.rs` (`roll_individuality`).
   Hoist to one `pub(crate)` fn to single-source the determinism contract that ADR-0045
