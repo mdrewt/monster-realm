@@ -866,23 +866,138 @@ fn ea_conservation_headroom_02_check_headroom_before_build_swap_plan() {
 }
 
 // ===========================================================================
-// Shared authorize-check helper (Finding A + B hardening, m16.5f review).
+// Shared authorize-check helper (Finding A + B hardening, m16.5f review; operator,
+// role-arg scoping and me-shadowing hardening 14r-b, ADR-0184).
+//
+// THE LETTERS ARE HISTORICAL LABELS, NOT THE EXECUTION ORDER. They are kept because
+// ADRs, PR bodies and the EA-AUTHORIZE-* tests cite them. The ACTUAL order of
+// evaluation is:
+//        (A) → (M) → (C) → (D) → (B)
+// call exists → `me` really is the caller → role field → operator → `?` propagation.
+// Ordered so the most security-relevant diagnosis wins: a body that both shadows `me`
+// and drops the Result reports the shadowing, not the missing `?`.
 //
 // check_authorize_call(body, call_name, required_field, forbidden_field):
 //   (A) `call_name` must appear in `body`.
+//   (M) me-BINDING PIN (14r-b): in the body text PRECEDING the call, the LAST `let me =`
+//       binding must be `let me = ctx.sender;` (whitespace-squashed compare, mirroring
+//       the E4-B/D3 first-statement pin at the bottom of this file). Without it, every
+//       other check in this function can be satisfied by a TAUTOLOGY:
+//           let me = offer.counterparty;
+//           authorize_respond(&offer.status, offer.counterparty == me)?;
+//       — the role boolean is then unconditionally true and any caller is authorized,
+//       while (C) and (D) see exactly the shape they demand.
+//   (C) ROLE-ARGUMENT FIELD CHECK: the argument span (from the opening `(` to its
+//       depth-matched `)`) is split on DEPTH-0 commas, and `required_field` must appear
+//       in the LAST argument — the role boolean itself. Scoping to the role argument
+//       kills a launderer that satisfies a span-wide check from the WRONG parameter:
+//           authorize_respond(&status_for(offer.counterparty == me), true)
+//       whose role argument is the constant `true`. `forbidden_field` is still checked
+//       against the WHOLE span (NOT narrowed — narrowing it would weaken the original
+//       Finding B check, which exists to catch the other field leaking into any slot).
+//       Caveat, stated: the splitter treats a depth-0 comma as an argument boundary, so
+//       a two-parameter closure passed at depth 0 would split wrongly. The authorize_*
+//       signatures are (&TradeStatus, bool); if that ever changes, revisit this.
+//   (D) OPERATOR PIN (14r-b): checks (A)-(C) are OPERATOR-BLIND —
+//       `authorize_respond(&offer.status, offer.counterparty != me)` satisfies all of
+//       them, yet it authorizes exactly the callers it must reject (the role boolean is
+//       true for everyone who is NOT the counterparty). (D) requires the role argument
+//       to be an EQUALITY against `me`, in either operand order (`<field> == me` /
+//       `me == <field>`; production uses the former), and rejects:
+//         - `!=` between the role field and `me`               → `inverted-operator`
+//         - a NEGATED equality `!(<field> == me)`              → `negated-equality`
+//         - no equality against `me` at all                    → `operator-missing`
+//       Matching is TOKEN-BOUNDED (see contains_token): a bare substring test would
+//       accept `offer.counterparty == me_spoof`, whose `me_spoof` is an attacker-chosen
+//       binding and not the caller at all.
+//       Whitespace is removed before matching so `cargo fmt` can never flip the gate.
+//   KNOWN FALSE-FLAGS of (D), BOTH DIRECTIONS — accepted, and neither may be "fixed"
+//   by loosening the pin:
+//     - `!(offer.counterparty != me)` — semantically CORRECT (double negation) but
+//       reported as `inverted-operator`, because the pin cannot see the outer `!`.
+//     - `!(offer.counterparty == me)` — semantically INVERTED and reported as
+//       `negated-equality`; this one is a true positive, listed here so the pair is
+//       not mistaken for one rule.
+//     If a refactor ever adopts either form, update this pin in the SAME PR. The
+//     behavioural authority is client/e2e/trade-zz-negative.spec.ts tests 6a and 6b.
 //   (B) STATEMENT-TERMINATOR SCAN: from the call's opening `(`, walk chars tracking
 //       paren+brace depth; find the first `;` at depth 0 (the production
 //       `.map_err(|e| { ...; msg })?;` has interior `;`s only at depth>0, so they
 //       are skipped); require the last non-whitespace char before that `;` to be `?`.
 //       This kills: `let _ = authorize_respond(...); other()?;` — the depth-0 `;`
 //       immediately after authorize_respond's `)` has last char `)`, not `?`.
-//   (C) ARGUMENT-SPAN FIELD CHECK: extract the span from the opening `(` to its
-//       depth-matched `)`. Require `required_field` IN the span and `forbidden_field`
-//       NOT in the span. This kills: `authorize_respond(&s, offer.initiator == me)`
-//       when `offer.counterparty` appears only in an adjacent unrelated statement.
 //
-// Returns Ok(()) on success; Err(message) describing the first violation.
+// Returns Ok(()) on success; Err(message) describing the first violation. Every Err
+// message opens with a stable lowercase token (`me-shadowed`, `role-arg`,
+// `inverted-operator`, `negated-equality`, `operator-missing`) so a proof-of-teeth test
+// can assert WHICH check fired rather than merely that one did.
 // ===========================================================================
+
+/// Identifier byte for token-boundary purposes: `[A-Za-z0-9_]`.
+fn is_ident_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Byte offsets at which `needle` occurs in `haystack` as a WHOLE TOKEN.
+///
+/// Why this exists (14r-b): a bare `contains("offer.counterparty==me")` is satisfied by
+/// `offer.counterparty==me_spoof`, where `me_spoof` is whatever the author bound it to.
+///
+/// BOUNDARY RULE — regex `\b` semantics, NOT "both sides always". A boundary is only
+/// enforced on a side where the needle itself ENDS in an identifier character:
+///   - `offer.counterparty==me` starts and ends with identifier chars → both sides checked,
+///     so the `me_spoof` suffix is rejected.
+///   - `letme=` ends in `=` → the RIGHT side is not checked, or the production
+///     `let me = ctx.sender;` (next char `c`) would never match its own needle.
+///
+/// Getting this wrong is not a subtle degradation: an unconditional right-boundary check
+/// makes every me-binding lookup fail and every caller of check_authorize_call red.
+fn token_positions(haystack: &str, needle: &str) -> Vec<usize> {
+    if needle.is_empty() {
+        return Vec::new();
+    }
+    let bytes = haystack.as_bytes();
+    let needle_bytes = needle.as_bytes();
+    let n = needle.len();
+    let check_left = needle_bytes.first().is_some_and(|b| is_ident_byte(*b));
+    let check_right = needle_bytes.last().is_some_and(|b| is_ident_byte(*b));
+    haystack
+        .match_indices(needle)
+        .map(|(i, _)| i)
+        .filter(|&i| {
+            let left_ok = !check_left || i == 0 || !is_ident_byte(bytes[i - 1]);
+            let right_ok = !check_right || i + n >= bytes.len() || !is_ident_byte(bytes[i + n]);
+            left_ok && right_ok
+        })
+        .collect()
+}
+
+/// True iff `needle` occurs in `haystack` as a whole token.
+fn contains_token(haystack: &str, needle: &str) -> bool {
+    !token_positions(haystack, needle).is_empty()
+}
+
+/// Split a call's argument span on DEPTH-0 commas. Nested calls, generics-free tuples,
+/// index expressions and blocks all raise depth, so only real argument separators split.
+fn split_top_level_args(span: &str) -> Vec<&str> {
+    let mut args: Vec<&str> = Vec::new();
+    let mut depth: i32 = 0;
+    let mut start: usize = 0;
+    for (i, b) in span.as_bytes().iter().enumerate() {
+        match *b {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth -= 1,
+            b',' if depth == 0 => {
+                args.push(&span[start..i]);
+                start = i + 1;
+            }
+            _ => {}
+        }
+    }
+    args.push(&span[start..]);
+    args
+}
+
 fn check_authorize_call(
     body: &str,
     call_name: &str,
@@ -918,16 +1033,98 @@ fn check_authorize_call(
     let arg_end = i - 1; // index of the depth-0 closing paren
     let arg_span = &body[arg_start..arg_end];
 
-    if !arg_span.contains(required_field) {
+    // -----------------------------------------------------------------------
+    // (M) me-BINDING PIN: the LAST `let me =` before the call must bind ctx.sender.
+    // -----------------------------------------------------------------------
+    let prefix_squashed = normalize_whitespace(&body[..call_idx]);
+    let bind_needle = concat!("letme", "=");
+    let caller_bind = concat!("letme=ctx.", "sender;");
+    match token_positions(&prefix_squashed, bind_needle)
+        .last()
+        .copied()
+    {
+        None => {
+            return Err(format!(
+                "me-shadowed: no `let me = ...` binding precedes {call_name}(...) — the role \
+                 boolean's `me` cannot be shown to be the CALLER, so the whole equality pin \
+                 below proves nothing"
+            ));
+        }
+        Some(pos) => {
+            if !prefix_squashed[pos..].starts_with(caller_bind) {
+                return Err(format!(
+                    "me-shadowed: the last `let me =` binding before {call_name}(...) is not \
+                     `let me = ctx.sender;` — a rebound `me` (e.g. `let me = offer.counterparty;`) \
+                     makes the role equality a TAUTOLOGY that authorizes every caller"
+                ));
+            }
+        }
+    }
+
+    // -----------------------------------------------------------------------
+    // (C) FIELD CHECKS: required_field must be in the ROLE ARGUMENT (the last
+    // depth-0 argument); forbidden_field must be absent from the WHOLE span.
+    // -----------------------------------------------------------------------
+    let top_args = split_top_level_args(arg_span);
+    let role_arg = *top_args
+        .last()
+        .expect("split_top_level_args always yields at least one element");
+    if !role_arg.contains(required_field) {
         return Err(format!(
-            "`{required_field}` not found in {call_name}(...) argument span — \
-             wrong-field attack: the is_role boolean is not computed from the correct field"
+            "role-arg: `{required_field}` not found in the ROLE ARGUMENT of {call_name}(...) \
+             (the last argument, `{role_arg}`) — wrong-field attack: the is_role boolean is \
+             not computed from the correct field. Note the field may appear in an EARLIER \
+             argument and still fail here: a `&status_for(offer.counterparty == me)` launderer \
+             passes a span-wide check while the role argument itself is a constant"
         ));
     }
     if arg_span.contains(forbidden_field) {
         return Err(format!(
             "`{forbidden_field}` found in {call_name}(...) argument span — \
              wrong-field aliasing: the wrong Identity field is used to compute the role boolean"
+        ));
+    }
+
+    // -----------------------------------------------------------------------
+    // (D) OPERATOR PIN: the ROLE ARGUMENT must be `<required_field> == me`
+    // (either operand order), token-bounded and whitespace-stripped so neither
+    // `cargo fmt` nor a `me_spoof`-style suffix can flip the gate.
+    // -----------------------------------------------------------------------
+    let role_nows = normalize_whitespace(role_arg);
+    let field_nows = normalize_whitespace(required_field);
+    let inverted_field_first = format!("{field_nows}!=me");
+    let inverted_me_first = format!("me!={field_nows}");
+    if contains_token(&role_nows, &inverted_field_first)
+        || contains_token(&role_nows, &inverted_me_first)
+    {
+        return Err(format!(
+            "inverted-operator: `{required_field}` is compared to `me` with a NOT-EQUAL \
+             operator inside {call_name}(...) — the role boolean is then true for every \
+             caller who is NOT the authorized party, so the wrong role passes the gate"
+        ));
+    }
+    let negated_field_first = format!("!({field_nows}==me");
+    let negated_me_first = format!("!(me=={field_nows}");
+    if role_nows.contains(negated_field_first.as_str())
+        || role_nows.contains(negated_me_first.as_str())
+    {
+        return Err(format!(
+            "negated-equality: the role argument of {call_name}(...) negates the equality \
+             (`!({required_field} == me)`) — semantically identical to the inverted operator: \
+             every caller who is NOT the authorized party passes the role gate"
+        ));
+    }
+    let equality_field_first = format!("{field_nows}==me");
+    let equality_me_first = format!("me=={field_nows}");
+    if !contains_token(&role_nows, &equality_field_first)
+        && !contains_token(&role_nows, &equality_me_first)
+    {
+        return Err(format!(
+            "operator-missing: no whole-token equality between `{required_field}` and `me` \
+             found in the role argument of {call_name}(...) (`{role_arg}`) — the role boolean \
+             must be computed as `{required_field} == me` (or `me == {required_field}`), never \
+             from an unrelated expression and never against a look-alike binding such as \
+             `me_spoof`"
         ));
     }
 
@@ -988,7 +1185,14 @@ fn check_authorize_call(
 
 #[test]
 fn ea_authorize_respond_01_respond_trade_propagates_authorize_result() {
-    let stripped = strip_rust_comments_trading(TRADING_RS);
+    // Strip comments AND string literals (14r-b, ADR-0184 — the Finding C shape already
+    // used by EA-REAPER-01/02). Comments alone left a bypass: delete the real call and
+    // leave `let _dead = "authorize_respond(&offer.status, offer.counterparty == me)?;";`
+    // behind, and every sub-check of check_authorize_call is satisfied by the literal
+    // while respond_trade performs no authorization at all. Verified safe: the production
+    // arg span and the `?;` terminator contain no inner string literals, and the
+    // log_reject("respond_trade", ...) argument that IS a literal sits outside both.
+    let stripped = strip_rust_strings_trading(&strip_rust_comments_trading(TRADING_RS));
 
     // Locate respond_trade body (ends where confirm_trade begins).
     let respond_fn = concat!("fn ", "respond_trade");
@@ -1035,7 +1239,10 @@ fn ea_authorize_respond_01_respond_trade_propagates_authorize_result() {
 
 #[test]
 fn ea_authorize_confirm_01_confirm_trade_propagates_authorize_result() {
-    let stripped = strip_rust_comments_trading(TRADING_RS);
+    // Strip comments AND string literals — see EA-AUTHORIZE-RESPOND-01. The stakes are
+    // higher here: confirm_trade executes the atomic swap, so a dead-literal bypass would
+    // certify a reducer in which any caller can move another player's monsters.
+    let stripped = strip_rust_strings_trading(&strip_rust_comments_trading(TRADING_RS));
 
     // Locate confirm_trade body (ends where cancel_trade begins).
     let confirm_fn = concat!("fn ", "confirm_trade");
@@ -1065,6 +1272,474 @@ fn ea_authorize_confirm_01_confirm_trade_propagates_authorize_result() {
              Any caller can finalize any trade without proper role+status enforcement."
         )
     });
+}
+
+// ===========================================================================
+// EA-AUTHORIZE-OPERATOR-01: the role boolean is an EQUALITY against `me`
+//                           (14r-b, ADR-0184 — closes the operator-blind gap)
+//
+// EA-AUTHORIZE-RESPOND-01 / EA-AUTHORIZE-CONFIRM-01 pin WHICH field feeds the role
+// boolean and that the Result is propagated, but they never look at the OPERATOR
+// between that field and `me`. So this shape passed both of them unchanged:
+//
+//     authorize_respond(&offer.status, offer.counterparty != me)?;
+//
+// which is the exact inversion of the authorization: every caller who is NOT the
+// counterparty clears the role gate, and the real counterparty is locked out.
+//
+// This test is the proof-of-teeth for check_authorize_call's new (D) operator pin: the
+// inverted fixtures MUST flag, and the two accepted production shapes MUST still pass.
+// The behavioural authority for the same invariant is client/e2e/trade-zz-negative.spec.ts
+// tests 6a and 6b; this in-process pin is what makes the mutation visible to
+// cargo-mutants, which cannot see an out-of-process e2e.
+//
+// TEETH: kills an operator-blind checker — one that accepts `!=` where the reducer
+//        must use `==`, or that accepts a role boolean not compared to `me` at all.
+// ===========================================================================
+
+#[test]
+fn ea_authorize_operator_01_role_boolean_uses_equality_against_me() {
+    let respond_call = concat!("authorize_", "respond");
+    let confirm_call = concat!("authorize_", "confirm");
+
+    // Every fixture below splits `fn respond_trade(` / `authorize_respond(` and their
+    // confirm twins with concat!, per this file's anti-self-match convention (see the
+    // needles at the EA-REAPER-02 helper): a future scanner that walks the crate source
+    // must not find a fake reducer definition or a fake delegation inside this test file.
+
+    // --- TOOTH 1: inverted operator, field-first, on respond_trade ---
+    let inverted_field_first = concat!(
+        "fn respond_",
+        "trade(ctx, trade_id, accepted) { let me = ctx.sender; ",
+        "authorize_",
+        "respond(&offer.status, offer.counterparty != me).map_err(|e| e.to_string())?; Ok(()) }"
+    );
+    let e1 = check_authorize_call(
+        inverted_field_first,
+        respond_call,
+        "offer.counterparty",
+        "offer.initiator",
+    )
+    .expect_err(
+        "TEETH FAILED (EA-AUTHORIZE-OPERATOR-01 tooth 1): check_authorize_call ACCEPTED \
+         `offer.counterparty != me` as the respond role boolean. That inversion authorizes \
+         every caller who is NOT the counterparty to accept or reject the trade.",
+    );
+    assert!(
+        e1.contains("inverted-operator"),
+        "EA-AUTHORIZE-OPERATOR-01 tooth 1: the inverted fixture must fail on the OPERATOR \
+         pin, not incidentally on another check. Got: {e1}"
+    );
+
+    // --- TOOTH 2: inverted operator, me-first, on confirm_trade ---
+    let inverted_me_first = concat!(
+        "fn confirm_",
+        "trade(ctx, trade_id) { let me = ctx.sender; ",
+        "authorize_",
+        "confirm(&offer.status, me != offer.initiator)?; Ok(()) }"
+    );
+    let e2 = check_authorize_call(
+        inverted_me_first,
+        confirm_call,
+        "offer.initiator",
+        "offer.counterparty",
+    )
+    .expect_err(
+        "TEETH FAILED (EA-AUTHORIZE-OPERATOR-01 tooth 2): check_authorize_call ACCEPTED \
+         `me != offer.initiator` as the confirm role boolean — the operand order must not \
+         create a hole in the pin.",
+    );
+    assert!(
+        e2.contains("inverted-operator"),
+        "EA-AUTHORIZE-OPERATOR-01 tooth 2: the reversed-operand inverted fixture must fail \
+         on the OPERATOR pin. Got: {e2}"
+    );
+
+    // --- TOOTH 3: an equality that is not against `me` ---
+    let equality_wrong_operand = concat!(
+        "fn respond_",
+        "trade(ctx, trade_id, accepted) { let me = ctx.sender; ",
+        "authorize_",
+        "respond(&offer.status, offer.counterparty == spoofed)?; Ok(()) }"
+    );
+    let e3 = check_authorize_call(
+        equality_wrong_operand,
+        respond_call,
+        "offer.counterparty",
+        "offer.initiator",
+    )
+    .expect_err(
+        "TEETH FAILED (EA-AUTHORIZE-OPERATOR-01 tooth 3): check_authorize_call ACCEPTED a \
+         role boolean comparing the offer field against something other than the caller \
+         identity `me`.",
+    );
+    assert!(
+        e3.contains("operator-missing"),
+        "EA-AUTHORIZE-OPERATOR-01 tooth 3: a role boolean not compared to `me` must fail on \
+         the OPERATOR pin. Got: {e3}"
+    );
+
+    // --- TOOTH 4: LOOK-ALIKE BINDING. `me_spoof` is not `me`, but a bare substring
+    // match for `offer.counterparty==me` finds it inside `offer.counterparty==me_spoof`
+    // and certifies a role boolean computed against an attacker-chosen local. Only the
+    // token-boundary check in contains_token rejects it. ---
+    let look_alike_binding = concat!(
+        "fn respond_",
+        "trade(ctx, trade_id, accepted) { let me = ctx.sender; let me_spoof = offer.initiator; ",
+        "authorize_",
+        "respond(&offer.status, offer.counterparty == me_spoof)?; Ok(()) }"
+    );
+    let e4 = check_authorize_call(
+        look_alike_binding,
+        respond_call,
+        "offer.counterparty",
+        "offer.initiator",
+    )
+    .expect_err(
+        "TEETH FAILED (EA-AUTHORIZE-OPERATOR-01 tooth 4): check_authorize_call ACCEPTED \
+         `offer.counterparty == me_spoof`. The needle matched as a bare substring, so the \
+         role boolean is compared against a local binding instead of the caller identity.",
+    );
+    assert!(
+        e4.contains("operator-missing"),
+        "EA-AUTHORIZE-OPERATOR-01 tooth 4: a look-alike binding must fail the OPERATOR pin \
+         on the token boundary. Got: {e4}"
+    );
+
+    // --- TOOTH 5: NEGATED EQUALITY. `!(x == me)` is the inverted operator wearing a
+    // different syntax; it satisfies the plain equality needle exactly. ---
+    let negated_equality = concat!(
+        "fn respond_",
+        "trade(ctx, trade_id, accepted) { let me = ctx.sender; ",
+        "authorize_",
+        "respond(&offer.status, !(offer.counterparty == me))?; Ok(()) }"
+    );
+    let e5 = check_authorize_call(
+        negated_equality,
+        respond_call,
+        "offer.counterparty",
+        "offer.initiator",
+    )
+    .expect_err(
+        "TEETH FAILED (EA-AUTHORIZE-OPERATOR-01 tooth 5): check_authorize_call ACCEPTED \
+         `!(offer.counterparty == me)` — semantically identical to the `!=` inversion the \
+         pin exists to reject.",
+    );
+    assert!(
+        e5.contains("negated-equality"),
+        "EA-AUTHORIZE-OPERATOR-01 tooth 5: the negated equality must fail with its OWN \
+         diagnosis, not be silently accepted by the equality needle. Got: {e5}"
+    );
+
+    // --- TOOTH 6: ROLE-ARGUMENT LAUNDERER. The correct equality is present in the
+    // argument list, but as part of a DIFFERENT parameter; the role boolean itself is a
+    // constant. A span-wide field check passes this; the role-arg scoping rejects it. ---
+    let role_arg_launderer = concat!(
+        "fn respond_",
+        "trade(ctx, trade_id, accepted) { let me = ctx.sender; ",
+        "authorize_",
+        "respond(&status_for(offer.counterparty == me), true)?; Ok(()) }"
+    );
+    let e6 = check_authorize_call(
+        role_arg_launderer,
+        respond_call,
+        "offer.counterparty",
+        "offer.initiator",
+    )
+    .expect_err(
+        "TEETH FAILED (EA-AUTHORIZE-OPERATOR-01 tooth 6): check_authorize_call ACCEPTED a \
+         call whose ROLE ARGUMENT is the constant `true` while the required field appears \
+         only inside an earlier argument — every caller is authorized.",
+    );
+    assert!(
+        e6.contains("role-arg"),
+        "EA-AUTHORIZE-OPERATOR-01 tooth 6: the launderer must fail on the ROLE-ARGUMENT \
+         scoping, which is the only check that can see it. Got: {e6}"
+    );
+
+    // --- TOOTH 7: me-SHADOWING. The shape is byte-perfect; `me` is simply no longer the
+    // caller, so the equality is a tautology and every caller passes. ---
+    let me_shadowed = concat!(
+        "fn respond_",
+        "trade(ctx, trade_id, accepted) { let me = ctx.sender; let me = offer.counterparty; ",
+        "authorize_",
+        "respond(&offer.status, offer.counterparty == me)?; Ok(()) }"
+    );
+    let e7 = check_authorize_call(
+        me_shadowed,
+        respond_call,
+        "offer.counterparty",
+        "offer.initiator",
+    )
+    .expect_err(
+        "TEETH FAILED (EA-AUTHORIZE-OPERATOR-01 tooth 7): check_authorize_call ACCEPTED a \
+         body that rebinds `me` to offer.counterparty before the call — the role equality \
+         is then a tautology and authorizes every caller.",
+    );
+    assert!(
+        e7.contains("me-shadowed"),
+        "EA-AUTHORIZE-OPERATOR-01 tooth 7: the rebound-`me` fixture must fail on the \
+         me-BINDING pin. Got: {e7}"
+    );
+
+    // --- CONTROL 1: the production shape (field-first equality) still passes ---
+    let good_field_first = concat!(
+        "fn respond_",
+        "trade(ctx, trade_id, accepted) { let me = ctx.sender; ",
+        "authorize_",
+        "respond(&offer.status, offer.counterparty == me).map_err(|e| { ",
+        "let msg = e.to_string(); msg })?; Ok(()) }"
+    );
+    check_authorize_call(
+        good_field_first,
+        respond_call,
+        "offer.counterparty",
+        "offer.initiator",
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "EA-AUTHORIZE-OPERATOR-01 control 1 FAIL: the operator pin rejected the shape \
+             production actually ships — `offer.counterparty == me` — with: {e}. A pin that \
+             cannot pass the real source is a false gate, not a tooth."
+        )
+    });
+
+    // --- CONTROL 2: reversed operand order is also accepted ---
+    let good_me_first = concat!(
+        "fn confirm_",
+        "trade(ctx, trade_id) { let me = ctx.sender; ",
+        "authorize_",
+        "confirm(&offer.status, me == offer.initiator)?; Ok(()) }"
+    );
+    check_authorize_call(
+        good_me_first,
+        confirm_call,
+        "offer.initiator",
+        "offer.counterparty",
+    )
+    .unwrap_or_else(|e| {
+        panic!(
+            "EA-AUTHORIZE-OPERATOR-01 control 2 FAIL: the operator pin rejected \
+             `me == offer.initiator`, which is the same equality with the operands swapped: {e}"
+        )
+    });
+}
+
+// ===========================================================================
+// Shared slice helper for the two placement pins below (14r-b, ADR-0184).
+//
+// Comments AND string literals stripped, then ALL whitespace squashed, then the slice
+// between two squashed needles. Squashing is what makes a needle rustfmt-proof: the
+// production signature is wrapped across four lines, and any needle written against the
+// unwrapped form would silently stop matching after a reformat.
+// ===========================================================================
+fn squashed_fn_slice(src: &str, start_needle: &str, end_needle: &str) -> String {
+    let stripped = strip_rust_strings_trading(&strip_rust_comments_trading(src));
+    let squashed = normalize_whitespace(&stripped);
+    let Some(start) = squashed.find(start_needle) else {
+        return String::new();
+    };
+    let end = squashed[start..]
+        .find(end_needle)
+        .map(|p| start + p)
+        .unwrap_or(squashed.len());
+    squashed[start..end].to_string()
+}
+
+// ===========================================================================
+// EA-REAPER-03: the scheduler-only guard is trade_offer_reaper's FIRST statement
+//               (14r-b, ADR-0184; guard at trading.rs:180)
+//
+// EARS criterion: trade_offer_reaper SHALL reject any caller other than the scheduler,
+// before doing anything else.
+//
+// WHY THIS PIN, GIVEN THE EVAL ALREADY LOOKS FOR THE GUARD: the eval criterion
+// REAPER_SCHEDULER_GUARD is a body-wide `indexOf` — PLACEMENT-BLIND and REACHABILITY-
+// BLIND. It is satisfied by a body that reads the offer, deletes it, and only then
+// checks the sender; and by a guard nested inside `if false { ... }`. It is also
+// invisible to cargo-mutants, which runs this crate's tests and never runs an eval, so
+// the mutation "delete the scheduler guard" was priced as a survivor. This test pins the
+// guard as the reducer's literal FIRST statement — the same prefix-anchor technique as
+// the E4-B/D3 pin at the bottom of this file — which makes both the reordering and the
+// dead-code wrapper unrepresentable, in-process.
+//
+// STAKES: without the guard, ANY client can call trade_offer_reaper directly with a
+// trade_id it names and delete a live offer belonging to two other players.
+//
+// TEETH: three in-test fixtures run through the SAME pipeline — guard moved after a
+// statement, guard deleted, and the production shape — proving the needle is placement-
+// sensitive rather than merely present-sensitive.
+// ===========================================================================
+
+#[test]
+fn ea_reaper_03_scheduler_guard_is_first_statement() {
+    // Needles split with concat! per this file's anti-self-match convention.
+    let reaper_start = concat!("fntrade_offer_", "reaper(");
+    let reaper_end = concat!("fnpropose_", "trade(");
+    let guard_anchor = concat!(
+        "->Result<(),String>{ifctx.sender!=ctx.",
+        "identity(){returnErr("
+    );
+
+    // --- TOOTH 1: guard present but NOT first (a DB read precedes it) ---
+    let guard_not_first = concat!(
+        "pub fn trade_offer_",
+        "reaper(ctx: &ReducerContext, args: TradeOfferReaperSchedule) -> Result<(), String> { ",
+        "let offer = ctx.db.trade_offer().trade_id().find(args.trade_id); ",
+        "if ctx.sender != ctx.identity() { return Err(String::new()); } Ok(()) } ",
+        "pub fn propose_",
+        "trade(ctx: &ReducerContext) -> Result<(), String> { Ok(()) }"
+    );
+    assert!(
+        !squashed_fn_slice(guard_not_first, reaper_start, reaper_end).contains(guard_anchor),
+        "TEETH FAILED (EA-REAPER-03 tooth 1): the anchor matched a body where a DB read \
+         precedes the scheduler guard. The pin must be PLACEMENT-sensitive — a guard that \
+         runs after the reducer has already touched the offer is not a guard."
+    );
+
+    // --- TOOTH 2: guard deleted entirely ---
+    let guard_deleted = concat!(
+        "pub fn trade_offer_",
+        "reaper(ctx: &ReducerContext, args: TradeOfferReaperSchedule) -> Result<(), String> { ",
+        "ctx.db.trade_offer().trade_id().delete(args.trade_id); Ok(()) } ",
+        "pub fn propose_",
+        "trade(ctx: &ReducerContext) -> Result<(), String> { Ok(()) }"
+    );
+    assert!(
+        !squashed_fn_slice(guard_deleted, reaper_start, reaper_end).contains(guard_anchor),
+        "TEETH FAILED (EA-REAPER-03 tooth 2): the anchor matched a body with no scheduler \
+         guard at all."
+    );
+
+    // --- TOOTH 3 (positive control on the pipeline): the production shape matches ---
+    let guard_first = concat!(
+        "pub fn trade_offer_",
+        "reaper(ctx: &ReducerContext, args: TradeOfferReaperSchedule) -> Result<(), String> { ",
+        "if ctx.sender != ctx.identity() { return Err(String::new()); } Ok(()) } ",
+        "pub fn propose_",
+        "trade(ctx: &ReducerContext) -> Result<(), String> { Ok(()) }"
+    );
+    assert!(
+        squashed_fn_slice(guard_first, reaper_start, reaper_end).contains(guard_anchor),
+        "TEETH FAILED (EA-REAPER-03 tooth 3): the anchor did NOT match a correct \
+         guard-first body — the pin is broken and would fail the real source for the wrong \
+         reason."
+    );
+
+    // --- REAL SOURCE ---
+    let real = squashed_fn_slice(TRADING_RS, reaper_start, reaper_end);
+    assert!(
+        !real.is_empty(),
+        "EA-REAPER-03 FAIL: `trade_offer_reaper` not found in trading.rs — the scheduler-only \
+         guard cannot be verified."
+    );
+    assert!(
+        real.contains(guard_anchor),
+        "EA-REAPER-03 FAIL: `trade_offer_reaper` does not OPEN with the scheduler-only guard. \
+         The squashed body must contain `{guard_anchor}` immediately at the signature end. \
+         Without it — or with it moved after any other statement, or wrapped in dead code — \
+         any client can call trade_offer_reaper directly and delete a live trade_offer row \
+         belonging to two other players (ADR-0056 scheduler-only convention, identical to \
+         pvp_deadline_reaper). Fix: make `if ctx.sender != ctx.identity() {{ return Err(..); }}` \
+         the reducer's first statement."
+    );
+}
+
+// ===========================================================================
+// EA-CANCEL-PARTY-01: cancel_trade's party guard is operator-exact
+//                     (14r-b, ADR-0184; guard at trading.rs:747)
+//
+// EARS criterion: cancel_trade SHALL reject a caller who is neither the initiator nor
+// the counterparty, and SHALL admit both of them.
+//
+// WHY IN-CRATE, GIVEN TWO OTHER GATES EXIST: the eval's CANCEL_PARTY_CHECK is a shape
+// tripwire in a file cargo-mutants never runs, and the behavioural authority
+// (client/e2e/trade-zz-negative.spec.ts 5a/5b/5c) is an OUT-OF-PROCESS e2e that
+// cargo-mutants also cannot see. So every mutation of this line — `&&`→`||`, either
+// `!=`→`==`, a clause replaced by `true` — was priced into the mutation cap as a
+// legitimate survivor. This test makes them in-process kills: the needle is exact in
+// BOTH operators and in the conjunction.
+//
+// It is a SHAPE pin, deliberately narrow, and it will reject a semantically equivalent
+// refactor (De Morgan, an `is_party` binding, `matches!`). That is the same trade-off the
+// eval criterion documents: if such a refactor lands, update this needle in the SAME PR
+// and keep 5a/5b/5c green — they are the semantic authority, this is the mutation-visible
+// tooth.
+//
+// TEETH: three in-test fixtures through the SAME pipeline — `||` instead of `&&`,
+// inverted operators, and the production shape.
+// ===========================================================================
+
+#[test]
+fn ea_cancel_party_01_guard_is_operator_exact() {
+    let cancel_start = concat!("fncancel_", "trade(");
+    let cancel_end = concat!("fncancel_trades_on_", "disconnect(");
+    let party_guard = concat!("ifoffer.initiator!=me&&offer.", "counterparty!=me{");
+
+    // --- TOOTH 1: `||` instead of `&&` — rejects BOTH parties, cancel becomes impossible.
+    let or_joined = concat!(
+        "pub fn cancel_",
+        "trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> { let me = ctx.sender; ",
+        "if offer.initiator != me || offer.counterparty != me { return Err(String::new()); } ",
+        "Ok(()) } ",
+        "pub(crate) fn cancel_trades_on_",
+        "disconnect(ctx: &ReducerContext, player: Identity) {}"
+    );
+    assert!(
+        !squashed_fn_slice(or_joined, cancel_start, cancel_end).contains(party_guard),
+        "TEETH FAILED (EA-CANCEL-PARTY-01 tooth 1): the needle matched a guard joined by \
+         `||`, which rejects the initiator AND the counterparty — no one can ever cancel."
+    );
+
+    // --- TOOTH 2: both operators inverted — admits every non-party, rejects both parties.
+    let inverted = concat!(
+        "pub fn cancel_",
+        "trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> { let me = ctx.sender; ",
+        "if offer.initiator == me && offer.counterparty == me { return Err(String::new()); } ",
+        "Ok(()) } ",
+        "pub(crate) fn cancel_trades_on_",
+        "disconnect(ctx: &ReducerContext, player: Identity) {}"
+    );
+    assert!(
+        !squashed_fn_slice(inverted, cancel_start, cancel_end).contains(party_guard),
+        "TEETH FAILED (EA-CANCEL-PARTY-01 tooth 2): the needle matched a guard whose \
+         comparisons are inverted — the condition is unsatisfiable, so ANY caller can cancel \
+         ANY offer."
+    );
+
+    // --- TOOTH 3 (positive control on the pipeline): the production shape matches.
+    let correct = concat!(
+        "pub fn cancel_",
+        "trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> { let me = ctx.sender; ",
+        "if offer.initiator != me && offer.counterparty != me { return Err(String::new()); } ",
+        "Ok(()) } ",
+        "pub(crate) fn cancel_trades_on_",
+        "disconnect(ctx: &ReducerContext, player: Identity) {}"
+    );
+    assert!(
+        squashed_fn_slice(correct, cancel_start, cancel_end).contains(party_guard),
+        "TEETH FAILED (EA-CANCEL-PARTY-01 tooth 3): the needle did NOT match a correct \
+         party guard — the pin is broken and would fail the real source for the wrong reason."
+    );
+
+    // --- REAL SOURCE ---
+    let real = squashed_fn_slice(TRADING_RS, cancel_start, cancel_end);
+    assert!(
+        !real.is_empty(),
+        "EA-CANCEL-PARTY-01 FAIL: `cancel_trade` not found in trading.rs."
+    );
+    assert!(
+        real.contains(party_guard),
+        "EA-CANCEL-PARTY-01 FAIL: `cancel_trade` does not contain the exact party guard \
+         `{party_guard}` (whitespace-squashed). Either operator flipped, or the conjunction \
+         became a disjunction, or a clause was replaced by a constant. Consequences, in order \
+         of severity: `&&`→`||` makes the offer uncancellable by either party (it can then \
+         only leave via the TTL reaper); `!=`→`==` on both clauses lets ANY player cancel ANY \
+         offer; replacing the first clause with `true` locks the initiator out of their own \
+         offer. Behavioural proof lives in client/e2e/trade-zz-negative.spec.ts 5a/5b/5c — if \
+         you are refactoring this guard deliberately, update this needle in the same PR and \
+         keep those three green."
+    );
 }
 
 // ===========================================================================
@@ -1277,6 +1952,12 @@ fn ea_reaper_02_disarm_called_at_all_offer_deletion_sites() {
 
 /// Whitespace normalizer: remove ALL whitespace characters for fmt-proof matching.
 /// `cargo fmt` must not flip any gate.
+///
+/// SHARED (14r-b, ADR-0184): also used by `check_authorize_call`'s operator pin and by
+/// `squashed_fn_slice` (the EA-REAPER-03 / EA-CANCEL-PARTY-01 placement pins), which is
+/// why it lives at module scope rather than inside the conservation test. Kept as ONE
+/// definition on purpose — a second squasher that drifted would silently change which
+/// needles match in which gate.
 fn normalize_whitespace(s: &str) -> String {
     s.chars().filter(|c| !c.is_whitespace()).collect()
 }

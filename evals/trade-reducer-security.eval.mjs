@@ -16,6 +16,10 @@
 //   CANCEL_PARTY_CHECK           — cancel_trade accepts BOTH initiator and counterparty
 //   TRADE_OFFER_PUBLIC           — trade_offer table is public in schema.rs
 //   REAPER_ARMED                 — propose_trade arms reaper AFTER offer insert
+//   REAPER_SCHEDULE_PRIVATE      — trade_offer_reaper_schedule table attr has NO `public`
+//                                  (14r-b, ADR-0184; mirrors pvp-challenge-reaper.eval.mjs
+//                                  CHAL_REAPER_SCHEDULE_PRIVATE, which cited THIS table as
+//                                  its precedent while the precedent itself was ungated)
 //   REAPER_SCHEDULER_GUARD       — trade_offer_reaper guards ctx.sender != ctx.identity()
 //   REAPER_STALE_CHECK           — trade_offer_reaper calls is_offer_stale
 //   REAPER_DELETES               — trade_offer_reaper deletes the offer row
@@ -44,6 +48,17 @@ function stripRustComments(src) {
  */
 function stripRustStrings(src) {
   return src.replace(/"(?:[^"\\]|\\[\s\S])*"/g, '""');
+}
+
+/**
+ * Remove ALL whitespace, so a needle matches regardless of how rustfmt wrapped the
+ * source. Copied verbatim from pvp-challenge-reaper.eval.mjs:54-56 alongside
+ * checkScheduleTablePrivate (14r-b, ADR-0184) — the attribute this scans is routinely
+ * split across lines by rustfmt, and a non-squashed `name = trade_offer_reaper_schedule`
+ * needle would silently stop matching after a reformat.
+ */
+function squashWs(src) {
+  return src.replace(/\s+/g, '');
 }
 
 /**
@@ -160,6 +175,17 @@ function hasCounterpartyJoinCheck(body) {
 //        `&offer.status, offer.initiator == me` has initiator but not counterparty,
 //        so it is correctly flagged even though counterparty appears nearby.
 //
+// DELIBERATELY STOPS AT (iii) — DO NOT PORT THE OPERATOR PIN HERE (14r-b, ADR-0184).
+// The Rust twin of this checker, `check_authorize_call` in
+// server-module/src/trading_tests.rs, carries a further check (D): the role expression
+// must be an EQUALITY against `me`, so `authorize_respond(&offer.status,
+// offer.counterparty != me)` is rejected. That pin lives ONLY in the Rust twin ON
+// PURPOSE: it exists to make the `==`→`!=` mutation visible to cargo-mutants, which runs
+// the crate's own tests and cannot see an eval (or the e2e). Duplicating it here would
+// double-gate one invariant across two files that drift independently — the failure mode
+// where a legitimate guard refactor has to be chased through three gates. Behavioural
+// authority stays client/e2e/trade-zz-negative.spec.ts 6a/6b.
+//
 // No new RegExp() — pure char-walk.
 // ---------------------------------------------------------------------------
 function checkAuthorizeCall(code, callName, requiredField, forbiddenField) {
@@ -251,10 +277,19 @@ function checkAuthorizeCall(code, callName, requiredField, forbiddenField) {
 // bad-nearby-question-mark:      let _ = authorize_respond(...); other()?; → must flag.
 // bad-wrong-field fixture:       offer.initiator in args, offer.counterparty not → must flag.
 // bad-wrong-field-nearby fixture: offer.initiator in args, offer.counterparty in adjacent stmt → must flag.
+// bad-string-literal fixture (RT-SEC-04): the whole delegation text inside a dead string
+//        literal with the real call deleted → must flag.
 // good-delegating fixture:       correct delegation shape → must pass.
+//
+// 14r-b (ADR-0184): strings are stripped as well as comments. Without it, deleting the
+// real call and leaving `let _dead = "authorize_respond(&offer.status, offer.counterparty
+// == me)?;";` behind satisfies EVERY sub-check — the call name is found, the argument span
+// parses, and the `?;` terminator is right there — while respond_trade performs no
+// authorization at all. Same Finding C shape already applied to REAPER_ARMED.
+// 14r-c migration surface (ADR-0181): legacy strip pair — replace with stripRustSource.
 // ---------------------------------------------------------------------------
 function checkRespondAuthorize(body) {
-  const code = stripRustComments(body);
+  const code = stripRustStrings(stripRustComments(body));
   return checkAuthorizeCall(code, 'authorize_respond', 'offer.counterparty', 'offer.initiator');
 }
 
@@ -270,10 +305,18 @@ function checkRespondAuthorize(body) {
 // bad-nearby-question-mark:      let _ = authorize_confirm(...); other()?; → must flag.
 // bad-wrong-field fixture:       offer.counterparty in args, offer.initiator not → must flag.
 // bad-wrong-field-nearby fixture: offer.counterparty in args, offer.initiator in adjacent → must flag.
+// bad-string-literal fixture (RT-SEC-05): the whole delegation text inside a dead string
+//        literal with the real call deleted → must flag.
 // good-delegating fixture:       correct delegation shape → must pass.
+//
+// 14r-b (ADR-0184): strings stripped as well as comments — see checkRespondAuthorize for
+// the bypass this closes. On confirm_trade the stakes are higher: an unauthorized confirm
+// executes the ATOMIC SWAP, so a dead-literal bypass here means any caller can move
+// another player's monsters.
+// 14r-c migration surface (ADR-0181): legacy strip pair — replace with stripRustSource.
 // ---------------------------------------------------------------------------
 function checkConfirmAuthorize(body) {
-  const code = stripRustComments(body);
+  const code = stripRustStrings(stripRustComments(body));
   return checkAuthorizeCall(code, 'authorize_confirm', 'offer.initiator', 'offer.counterparty');
 }
 
@@ -341,19 +384,60 @@ function hasConfirmDelete(body) {
 // The check should use `offer.initiator != me && offer.counterparty != me`.
 // bad fixture: only checks initiator → must flag.
 // good fixture: checks both with AND logic → must not flag.
+//
+// 14r-b (ADR-0184) TIGHTENING — two changes, both narrowing:
+//   1. stripRustStrings after stripRustComments (Finding C shape, already applied to
+//      REAPER_ARMED at :390): a dead `let _dead = "if offer.initiator != me && ...";`
+//      no longer satisfies the needle. Fixture RT-SEC-03 proves it.
+//   2. The `[^{]*?` bridge is replaced by an anchored `\s*&&\s*` join, so the two clauses
+//      must be joined by a CONJUNCTION. The old bridge accepted `||` between them, which
+//      is the single most damaging realistic mutation of this guard: with `||`, EVERY
+//      caller is rejected (a party fails the OTHER clause) and cancel_trade is dead for
+//      everyone. Fixture RT-SEC-02 proves it. `\(?` / `\)?` tolerate parenthesised clauses.
+//
+// THIS IS A SHAPE TRIPWIRE, NOT A SEMANTICS PROOF. It asserts that one specific,
+// currently-shipping textual form is present — nothing more. The SEMANTIC authority for
+// TR-17 is the behavioural suite client/e2e/trade-zz-negative.spec.ts, tests 5a (a
+// non-party is rejected AND the offer survives), 5b (the counterparty may cancel) and 5c
+// (the initiator may cancel). A legitimate refactor of the guard MAY update this regex in
+// the SAME PR, provided 5a/5b/5c stay green — that is the intended maintenance path, not
+// a loophole.
+//
+// KNOWN SURVIVORS (this check returns true although the guard is defeated) — do not
+// mistake a green here for a proof:
+//   - `if offer.initiator != me && offer.counterparty != me && false { ... }`
+//   - the guard placed inside dead code, e.g. `if false { if offer.initiator != me && ... }`
+//   - the correct `if` condition with an EMPTY body (no `return Err`)
+//   - (CLOSED by change 1) the whole guard text hiding inside a string literal
+//   Each of the survivors above is killed behaviourally by 5a/5b/5c.
+//
+// KNOWN FALSE-FLAG SHAPES (semantically correct code this check would REJECT). If any of
+// these lands, update the regex here in the same PR rather than weakening the tests:
+//   - `let is_party = offer.initiator == me || offer.counterparty == me; if !is_party {`
+//   - De Morgan: `if !(offer.initiator == me || offer.counterparty == me) {`
+//   - `if !matches!(me, m if m == offer.initiator || m == offer.counterparty) {`
+//   - an interposed third clause: `if offer.initiator != me && !is_admin(me) && offer.counterparty != me {`
+//
+// 14r-c MIGRATION SURFACE (ADR-0181). ADR-0181 is the governing scanner-consolidation
+// ADR: the file-local `stripRustComments` + `stripRustStrings` pair used below is the
+// LEGACY shape, kept here only because this eval has not yet been migrated. It is NOT
+// endorsed — the SSOT stripper is `stripRustSource` from evals/rust-scan.mjs, which is
+// string-literal-aware in ONE pass and is covered by the `assertStripperSound` gate that
+// the legacy pair has no equivalent of. When 14r-c migrates this file wholesale, THIS
+// call site (and the identical one inside checkReaperArmed, checkRespondAuthorize and
+// checkConfirmAuthorize) must be converted together; the 14r-b tightening below was
+// written to be a drop-in for that conversion, not a competing implementation.
 // ---------------------------------------------------------------------------
 function hasCancelPartyCheck(body) {
-  const code = stripRustComments(body);
-  // Require BOTH initiator and counterparty inequality checks to appear inside an `if`
-  // condition (directly after the `if` keyword). `[^{]*?` prevents matching across a
-  // block-open brace, so both must be in the SAME `if` condition — not split across
-  // nested ifs or macro arguments where the expressions appear but no gate is present.
+  // 14r-c migration surface (ADR-0181): legacy strip pair — replace with stripRustSource.
+  const code = stripRustStrings(stripRustComments(body));
+  // Both party inequality checks must sit in the SAME `if` condition, joined by `&&`.
   const initiatorFirst =
-    /if\s+(?:offer\.initiator\s*!=\s*me|me\s*!=\s*offer\.initiator)[^{]*?(?:offer\.counterparty\s*!=\s*me|me\s*!=\s*offer\.counterparty)/.test(
+    /if\s+\(?\s*(?:offer\.initiator\s*!=\s*me|me\s*!=\s*offer\.initiator)\s*\)?\s*&&\s*\(?\s*(?:offer\.counterparty\s*!=\s*me|me\s*!=\s*offer\.counterparty)/.test(
       code,
     );
   const counterpartyFirst =
-    /if\s+(?:offer\.counterparty\s*!=\s*me|me\s*!=\s*offer\.counterparty)[^{]*?(?:offer\.initiator\s*!=\s*me|me\s*!=\s*offer\.initiator)/.test(
+    /if\s+\(?\s*(?:offer\.counterparty\s*!=\s*me|me\s*!=\s*offer\.counterparty)\s*\)?\s*&&\s*\(?\s*(?:offer\.initiator\s*!=\s*me|me\s*!=\s*offer\.initiator)/.test(
       code,
     );
   return initiatorFirst || counterpartyFirst;
@@ -403,6 +487,50 @@ function checkReaperArmed(proposeBody) {
     return {
       ok: false,
       reason: `reaper arm (offset ${arm}) appears before offer insert (offset ${insertIdx})`,
+    };
+  return { ok: true };
+}
+
+// ---------------------------------------------------------------------------
+// Criterion: REAPER_SCHEDULE_PRIVATE (14r-b, ADR-0184)
+// The trade_offer_reaper_schedule table attribute in trading.rs (:113) must exist and
+// must NOT contain `public`.
+//
+// WHY THIS CRITERION WAS MISSING AND WHY IT MATTERS: trading.rs:112 states the intent
+// ("PRIVATE — prevents client schedule manipulation"), and pvp-challenge-reaper.eval.mjs
+// :322-349 gates the SAME property for battle_challenge_reaper_schedule while citing THIS
+// table as its precedent — but nothing ever gated the precedent itself. A scheduled table
+// is client-writable when public: rows in it are reducer arguments, so a public schedule
+// table lets a client insert a row that fires trade_offer_reaper with an arbitrary
+// trade_id. The scheduler-only sender guard (:180) still holds, so the direct call is
+// refused — this criterion protects the OTHER half, the row that the runtime itself will
+// deliver.
+//
+// checkScheduleTablePrivate is copied from pvp-challenge-reaper.eval.mjs:329-349 (comment
+// strip → string strip → whitespace squash, in that order) rather than re-derived, so the
+// two sibling gates cannot drift.
+// bad fixtures: table absent / table with `public` → must flag.
+// good fixture: private table attr → must not flag.
+// ---------------------------------------------------------------------------
+function checkScheduleTablePrivate(tradingSrc) {
+  const code = squashWs(stripRustStrings(stripRustComments(tradingSrc)));
+  const idx = code.indexOf('name=trade_offer_reaper_schedule');
+  if (idx === -1)
+    return {
+      ok: false,
+      reason: 'trade_offer_reaper_schedule table not declared in trading.rs',
+    };
+  const attrStart = code.lastIndexOf('#[', idx);
+  const attrEnd = code.indexOf(']', idx);
+  if (attrStart === -1 || attrEnd === -1)
+    return { ok: false, reason: 'malformed trade_offer_reaper_schedule table attribute' };
+  const attr = code.slice(attrStart, attrEnd + 1);
+  if (/\bpublic\b/.test(attr))
+    return {
+      ok: false,
+      reason:
+        'trade_offer_reaper_schedule table attribute contains `public` — must be PRIVATE ' +
+        '(a public scheduled table lets a client insert reaper rows for arbitrary trade_ids)',
     };
   return { ok: true };
 }
@@ -659,6 +787,24 @@ export default async function () {
       };
     }
   }
+  // RT-SEC-04 (14r-b, ADR-0184): the ENTIRE delegation — call name, argument span with the
+  // right field, and the `?;` terminator — hiding inside a dead string literal while the
+  // real call is deleted. Before the stripRustStrings pass was added to
+  // checkRespondAuthorize this fixture satisfied every sub-check of checkAuthorizeCall,
+  // certifying a respond_trade that performs NO authorization whatsoever.
+  const badRespondStringLiteral =
+    'fn respond_trade(ctx, trade_id, accepted) { let _dead = "authorize_respond(&offer.status, offer.counterparty == me)?;"; ctx.db.trade_offer().trade_id().delete(trade_id); Ok(()) }';
+  {
+    const r = checkRespondAuthorize(badRespondStringLiteral);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (RT-SEC-04): checkRespondAuthorize passed a fixture where the whole authorize_respond delegation appears only inside a string literal and the real call is absent (string-literal bypass)',
+      };
+    }
+  }
 
   // CONFIRM_AUTHORIZE: bad-missing-call fixture
   const badConfirmMissingCall =
@@ -741,6 +887,22 @@ export default async function () {
         name,
         pass: false,
         detail: `TEETH FAILED (CONFIRM_AUTHORIZE good-delegating): checkConfirmAuthorize rejected valid fixture: ${r.reason}`,
+      };
+    }
+  }
+  // RT-SEC-05 (14r-b, ADR-0184): the confirm_trade twin of RT-SEC-04. Worse consequence:
+  // confirm_trade executes the atomic swap, so a dead-literal bypass certifies a reducer
+  // in which ANY caller can move another player's monsters and currency.
+  const badConfirmStringLiteral =
+    'fn confirm_trade(ctx, trade_id) { let _dead = "authorize_confirm(&offer.status, offer.initiator == me)?;"; let plan = build_swap_plan(&i_live, &c_live)?; Ok(()) }';
+  {
+    const r = checkConfirmAuthorize(badConfirmStringLiteral);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (RT-SEC-05): checkConfirmAuthorize passed a fixture where the whole authorize_confirm delegation appears only inside a string literal and the real call is absent (string-literal bypass)',
       };
     }
   }
@@ -846,6 +1008,34 @@ export default async function () {
         'TEETH FAILED (RT-SEC-01): hasCancelPartyCheck passed a fixture where both expressions appear only in a log macro — authorization guard is absent but checker returned true',
     };
   }
+  // RT-SEC-02 (14r-b, ADR-0184): the two clauses joined by `||` instead of `&&`.
+  // Semantically this rejects EVERY caller — a party fails the other disjunct — so
+  // cancel_trade becomes uncancellable for initiator and counterparty alike. Both
+  // expressions are present and both are inside the same `if`, so the pre-14r-b
+  // `[^{]*?` bridge accepted this fixture; the anchored `\s*&&\s*` join rejects it.
+  const orJoinedCancelParty =
+    'fn cancel_trade(ctx, trade_id) { if offer.initiator != me || offer.counterparty != me { return Err("not a party"); } ctx.db.trade_offer().trade_id().delete(trade_id); Ok(()) }';
+  if (hasCancelPartyCheck(orJoinedCancelParty)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (RT-SEC-02): hasCancelPartyCheck passed a fixture whose clauses are joined by `||` instead of `&&` — that guard rejects BOTH parties, so cancel_trade can never succeed, yet the checker returned true',
+    };
+  }
+  // RT-SEC-03 (14r-b, ADR-0184): the correct guard text present ONLY inside a string
+  // literal, with the real guard deleted. Mirrors the REAPER_ARMED Finding C bypass;
+  // killed by the stripRustStrings pass now applied inside hasCancelPartyCheck.
+  const stringLiteralCancelParty =
+    'fn cancel_trade(ctx, trade_id) { let _dead = "if offer.initiator != me && offer.counterparty != me { return Err(); }"; ctx.db.trade_offer().trade_id().delete(trade_id); Ok(()) }';
+  if (hasCancelPartyCheck(stringLiteralCancelParty)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (RT-SEC-03): hasCancelPartyCheck passed a fixture where the guard text appears only inside a string literal and no real authorization guard exists (string-literal bypass)',
+    };
+  }
 
   // TRADE_OFFER_PUBLIC
   const badPublicSchema = '#[spacetimedb::table(name = trade_offer)] struct TradeOffer {}';
@@ -920,6 +1110,47 @@ export default async function () {
         name,
         pass: false,
         detail: `TEETH FAILED (REAPER_ARMED good): checkReaperArmed rejected valid fixture: ${r.reason}`,
+      };
+    }
+  }
+
+  // REAPER_SCHEDULE_PRIVATE: bad — table absent entirely.
+  const badSchedulePrivateMissing = 'struct Unrelated {}';
+  {
+    const r = checkScheduleTablePrivate(badSchedulePrivateMissing);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (REAPER_SCHEDULE_PRIVATE bad-missing): checkScheduleTablePrivate passed fixture with no trade_offer_reaper_schedule table',
+      };
+    }
+  }
+  // REAPER_SCHEDULE_PRIVATE: bad — table marked public.
+  const badSchedulePrivatePublic =
+    '#[spacetimedb::table(name = trade_offer_reaper_schedule, scheduled(trade_offer_reaper), public)] pub struct TradeOfferReaperSchedule {}';
+  {
+    const r = checkScheduleTablePrivate(badSchedulePrivatePublic);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH FAILED (REAPER_SCHEDULE_PRIVATE bad-public): checkScheduleTablePrivate passed fixture where the schedule table is public — clients could insert reaper rows for arbitrary trade_ids',
+      };
+    }
+  }
+  // REAPER_SCHEDULE_PRIVATE: good — private table (the production shape).
+  const goodSchedulePrivate =
+    '#[spacetimedb::table(name = trade_offer_reaper_schedule, scheduled(trade_offer_reaper))] pub struct TradeOfferReaperSchedule {}';
+  {
+    const r = checkScheduleTablePrivate(goodSchedulePrivate);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH FAILED (REAPER_SCHEDULE_PRIVATE good): checkScheduleTablePrivate rejected the valid private table: ${r.reason}`,
       };
     }
   }
@@ -1209,6 +1440,18 @@ export default async function () {
     }
   }
 
+  // REAPER_SCHEDULE_PRIVATE: the scheduled table must not be client-visible/writable.
+  {
+    const r = checkScheduleTablePrivate(tradingSrc);
+    if (!r.ok) {
+      failures.push(
+        `REAPER_SCHEDULE_PRIVATE: ${r.reason}. ` +
+          'Rows in a scheduled table are reducer arguments: a public trade_offer_reaper_schedule ' +
+          'lets a client arm the reaper against any trade_id it names.',
+      );
+    }
+  }
+
   // REAPER_SCHEDULER_GUARD: trade_offer_reaper must be scheduler-only.
   const reaperBody = extractFunctionBody(tradingSrc, 'trade_offer_reaper');
   {
@@ -1262,6 +1505,6 @@ export default async function () {
     name,
     pass: true,
     detail:
-      'all 16 trade-reducer-security criteria met (TR-19 no-genes, TR-18 disconnect, propose-validate, counterparty-join, respond/confirm authorize delegation, authorize_rules, confirm reread+delete, cancel party-check, trade_offer public, reaper armed+scheduler-guard+stale-check+deletes+disarm)',
+      'all 17 trade-reducer-security criteria met (TR-19 no-genes, TR-18 disconnect, propose-validate, counterparty-join, respond/confirm authorize delegation, authorize_rules, confirm reread+delete, cancel party-check, trade_offer public, reaper armed+schedule-private+scheduler-guard+stale-check+deletes+disarm)',
   };
 }
