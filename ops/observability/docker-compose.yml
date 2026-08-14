@@ -23,7 +23,7 @@
 # m20d (mr-load-driver, the thing that produces a real footprint figure), so no measured number
 # exists yet. Re-size at post-integration verification — do not read these as measured.
 #
-# The 8th service, `mr-trace-relay` (D15/D17), is NOT here: it lands in slice m20b-2, together
+# The 8th service, `mr-trace-relay` (D15/D17), is NOT here: it lands in slice m20e-2, together
 # with its Prometheus scrape job and its own dead-man's-switch alert rule. Shipping its scrape
 # target before the service exists would pin `up=0` forever and train the operator to ignore a
 # dead-man's switch.
@@ -59,6 +59,27 @@ services:
     image: grafana/alloy:v1.18.1@sha256:754409730f1a4ed9781f8a2ea3b6a8c55750ee125a267ecf8fb449f9a25c109a
     network_mode: host
     restart: unless-stopped
+    # ADR-0190 D2. The image's ENTRYPOINT runs as uid 0, but it ships /var/lib/alloy and
+    # /var/lib/alloy/data as mode 0770 owned by 473:473 (`alloy` in the image's own passwd file).
+    # Under `cap_drop: [ALL]` even uid 0 has no CAP_DAC_OVERRIDE, so it can neither traverse nor
+    # create them: `mkdir: cannot create directory '/var/lib/alloy': Permission denied`, then a
+    # crash-loop. Running as the image's own user fixes it while KEEPING cap_drop: ALL —
+    # `cap_add: [DAC_OVERRIDE]` was rejected as the alternative, since it hands a capability back
+    # to root to work around a directory the image already owns correctly.
+    #
+    # Numeric on purpose, matching prometheus/node_exporter above: compose passes this string
+    # straight to docker and a NAME would be resolved in-container against /etc/passwd, so an
+    # image rebuild could silently renumber `alloy` while this file still read correctly.
+    #
+    # Operator preconditions (neither is a regression — root had no DAC_OVERRIDE either):
+    #   * uid 473 needs host-side r-x on ${MR_SPACETIME_DATA_DIR}/replicas, the mount tailed
+    #     below. If it is wrong the failure is a silent tail stall, not a crash — which is what
+    #     the AlloyIngestStalled rule in grafana/provisioning/alerting/rules.yml exists to catch.
+    #   * a POPULATED root-owned `alloy-data` volume left by an earlier root-running boot is not
+    #     self-healing (`mkdir /var/lib/alloy/data/remotecfg: permission denied`, exit 1). An
+    #     empty named volume is auto-chowned from the image path and boots fine. Remedy is
+    #     `docker compose down -v`, which destroys all seven named volumes, not just this one.
+    user: "473:473"
     security_opt:
       - no-new-privileges:true
     cap_drop:
@@ -105,6 +126,14 @@ services:
     volumes:
       - ./tempo/tempo-config.yml:/etc/tempo/tempo-config.yml:ro
       - tempo-data:/var/tempo
+    # PARKED, ADR-0190 D1 — the second flag below DOES NOT EXIST in tempo 2.10.7 (nor 3.0.2):
+    # `flag provided but not defined`, and the container dies on start. It is retained only
+    # because deleting it reds `checkListenAddrsLoopback` in ops/observability/checks/
+    # stack-config-checks.mjs, which is outside slice 13r-a's declared file set. The follow-up
+    # teaches that predicate to read tempo's binding from tempo/tempo-config.yml:9,11 (where it
+    # is already declared as 127.0.0.1) and then deletes this line. Until then that predicate's
+    # tempo pass is EVIDENCE-FREE — the eval's G12a tripwire pins this shape and carries the
+    # full prescription in its failure message.
     command:
       - -config.file=/etc/tempo/tempo-config.yml
       - -server.http-listen-address=127.0.0.1
