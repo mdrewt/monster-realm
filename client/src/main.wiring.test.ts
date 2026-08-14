@@ -2847,7 +2847,7 @@ describe('★ main.ts wiring (mvi): the hold-commit threshold is wired into BOTH
     ).toBe(0);
   });
 
-  it('★ W-MVI-KEYDOWN-UNGATED BITES: the keydown movement branch is `step(dir); held.press(dir, performance.now());` — first step UNGATED, press timestamped', () => {
+  it('★ W-MVI-KEYDOWN-UNGATED BITES: the keydown movement branch is `step(dir); held.press(dir, performance.now());` — first step ungated by hold-DURATION (deduped by held-STATE since ADR-0187; see W-DK-KEYDOWN-DEDUPED), press timestamped', () => {
     // RED AT AUTHORING TIME: main.ts:1096 reads `held.press(dir);` with no timestamp.
     //
     // WRONG IMPL KILLED (1): GATING THE FIRST STEP. The single most tempting wrong fix is to
@@ -9895,6 +9895,282 @@ describe('★ main.ts wiring (M21b-2 UI entry point, G20/G29 idiom): W-M21B2-CLA
         `connect() must wire \`${field}: import.meta.env.${envVar} …\` (ADR-0182 D11/D12) — the ` +
           `OIDC ${field} comes from the build env; code-aware, so a decoy string does not count`,
       ).toBe(1);
+    }
+  });
+});
+
+// ===========================================================================
+// 14r-e (ADR-0187): the DUAL-CODE first-step dedup + the DEV observability counters.
+//
+// RED AT AUTHORING TIME (both teeth): `held.isHeld(`, `moveSendCount` and `moveRejectCount`
+// occur ZERO times in main.ts. Every count below is 0 or 1 short and every needle misses.
+//
+// KEY_DIR binds TWO codes per direction (ArrowRight AND KeyD → East), and the keydown fired
+// `step(dir)` unconditionally — so the second code fired a SECOND ungated first step while
+// the direction was already held. No hold-commit threshold can see that (both steps are
+// keydown-immediate, not continuations), which is why ADR-0158 named it its residual 3.
+//
+// The counters exist because tile positions alone cannot distinguish a gated from an
+// ungated continuation loop at runtime: ADR-0148 measured the reject storm at UNCHANGED
+// 5.00 tiles/s (the server's STEP_MS cadence paces acceptance, not the client send rate),
+// so only a send-budget observable separates the two worlds. movement-input.spec.ts
+// scenario D is what reads them.
+//
+// SAME ANCHOR DISCIPLINE as the rest of this file: needle-bounded regions, uniqueness
+// re-asserted, no fixed-width windows, no `new RegExp` — indexOf/includes/split only.
+// ===========================================================================
+
+/** The DEV `snapshot()` hook (the e2e's only view of client state). END is the next
+ *  module-scope declaration; both are grep-verified unique and re-asserted by m20cHunk. */
+const DK_SNAPSHOT_START = 'function snapshot() {';
+const DK_SNAPSHOT_END = 'const mrTradeHook = {';
+
+describe('★ main.ts wiring (14r-e/ADR-0187): the keydown first step is DEDUPED by held state', () => {
+  it('★ W-DK-KEYDOWN-DEDUPED BITES: the keydown movement branch is `if (!held.isHeld(dir)) step(dir); held.press(dir, performance.now());`', () => {
+    // RED AT AUTHORING TIME: main.ts:1404 reads a bare `step(dir);`, so `held.isHeld(`
+    // occurs 0 times in the whole file and the contiguous needle below misses.
+    //
+    // WRONG IMPL KILLED (1) — THE SLICE DEFECT, unfixed: `step(dir);` unconditional. Two key
+    //   codes for one direction ⇒ two ungated first steps ⇒ a same-direction double-move
+    //   that every hold-commit tooth is structurally blind to.
+    // WRONG IMPL KILLED (2): `if (!held.isHeld(dir)) { step(dir); held.press(...); }` — the
+    //   press moved INSIDE the guard. Harmless-looking (press is idempotent for an
+    //   already-held dir) but it breaks the contiguous two-statement needle W-MVI-KEYDOWN-
+    //   UNGATED also relies on, and it makes the press conditional on a predicate that has
+    //   nothing to do with recording the press. The brace-less form is the pinned shape.
+    // WRONG IMPL KILLED (3): the dedup placed AFTER the press (`held.press(...); if
+    //   (!held.isHeld(dir)) step(dir);`) — the dir is ALWAYS held by then, so the FIRST
+    //   press stops emitting too and movement dies on the first keypress. The explicit
+    //   index ordering catches it; this tooth does NOT lean on the neighbour tooth's needle.
+    // WRONG IMPL KILLED (4): a SECOND `step(dir)` smuggled into the same branch (e.g. an
+    //   `else` arm, or a duplicated emit under a decoy predicate) — the exactly-one count.
+    // WRONG IMPL KILLED (5): deduping on hold DURATION instead of held STATE
+    //   (`committedActive`) — the second code lands within milliseconds of the first, far
+    //   below HOLD_COMMIT_MS, so the gate is shut and it emits anyway: the fix would look
+    //   present and do nothing. The negative assertions are what make that unwriteable here.
+    // WRONG IMPL KILLED (6): a SECOND `held.isHeld(` call site elsewhere in main.ts (e.g. a
+    //   continuation emitter switched onto the ungated membership predicate, which would
+    //   re-open the ADR-0158 defect while `held.active(` stays at 0) — the whole-file count.
+    const src = readMainTs();
+    expectUniqueAnchor(src, MVI_KEYDOWN_START);
+    expectUniqueAnchor(src, MVI_KEYDOWN_END);
+    const region = squashWhitespace(bodyRegion(src, MVI_KEYDOWN_START, MVI_KEYDOWN_END));
+
+    // ANTI-VACUITY: prove the region really is the keydown movement branch before judging it.
+    expect(
+      region.includes('held.press(dir'),
+      'the keydown movement region must contain the held-key press — if it does not, these ' +
+        'anchors no longer bound the branch this tooth is about',
+    ).toBe(true);
+
+    // (a) the CONTIGUOUS shape (comment-stripped, whitespace-squashed): nothing may be
+    //     interposed between the guarded first step and the press that records it.
+    expect(
+      region.includes('if (!held.isHeld(dir)) step(dir); held.press(dir, performance.now());'),
+      'the keydown movement branch must read exactly `if (!held.isHeld(dir)) step(dir); ' +
+        'held.press(dir, performance.now());` (ADR-0187 (a)) — brace-less, so the contiguous ' +
+        'two-statement needle W-MVI-KEYDOWN-UNGATED pins stays intact, and the press stays ' +
+        'UNCONDITIONAL. Pressing the second key code bound to a direction that is already ' +
+        'held must move nothing: pure NOT-EMIT, nothing cancelled, no predictor state written',
+    ).toBe(true);
+
+    // (b) EXPLICIT ORDERING — stated independently of (a) so this tooth still bites if the
+    //     contiguous needle is ever relaxed: guard, then emit, then record.
+    const guardIdx = region.indexOf('held.isHeld(dir)');
+    const stepIdx = region.indexOf('step(dir)');
+    const pressIdx = region.indexOf('held.press(dir');
+    expect(guardIdx, 'the keydown branch must consult `held.isHeld(dir)`').toBeGreaterThanOrEqual(
+      0,
+    );
+    expect(stepIdx, 'the keydown branch must still emit `step(dir)`').toBeGreaterThanOrEqual(0);
+    expect(
+      guardIdx,
+      'the `held.isHeld(dir)` guard must precede `step(dir)` — an emit that runs before its ' +
+        'own guard is not guarded at all',
+    ).toBeLessThan(stepIdx);
+    expect(
+      stepIdx,
+      'the guarded `step(dir)` must precede `held.press(dir` — running the press FIRST makes ' +
+        'the dir unconditionally held by the time the guard reads it, so the very first press ' +
+        'of a direction stops emitting and continuous movement dies on the first keypress',
+    ).toBeLessThan(pressIdx);
+
+    // (c) EXACTLY ONE emitter in the branch.
+    expect(
+      countOccurrences(region, 'step(dir)'),
+      'the keydown movement branch must contain EXACTLY ONE `step(dir)` — a second emitter ' +
+        '(an else arm, a duplicated call under a decoy predicate) re-opens the double-move ' +
+        'while the guarded call above still satisfies every needle in this tooth',
+    ).toBe(1);
+
+    // (d) the dedup is held-STATE, never hold-DURATION or server-owed work. (These two
+    //     negatives are byte-identical in intent to W-MVI-KEYDOWN-UNGATED's; restated here
+    //     so this tooth is self-contained if that one is ever re-scoped.)
+    expect(
+      region.includes('committedActive'),
+      'the keydown branch must NOT consult committedActive: the first step stays UNGATED by ' +
+        'hold duration (ADR-0013 — gating it costs 150ms of input lag on every tap). The ' +
+        'dedup is MEMBERSHIP in the held set, which is true from the very first millisecond',
+    ).toBe(false);
+    expect(
+      region.includes('outstandingSteps'),
+      'the keydown branch must NOT consult predictor.outstandingSteps either — the ' +
+        'nh2/ADR-0148 gate applies to the CONTINUATION emitters only',
+    ).toBe(false);
+
+    // (e) WHOLE-FILE: exactly ONE `held.isHeld(` call site, and it is the keydown.
+    const code = m20cWholeFile(src);
+    expect(
+      mwCodeOccurrences(code, 'held.isHeld(').length,
+      'main.ts must have EXACTLY ONE `held.isHeld(` call site AS CODE — the keydown dedup. ' +
+        'Zero means the fix is absent; more than one means some other site (a continuation ' +
+        'emitter, a second listener) reads the UNGATED membership predicate, which is the ' +
+        'ADR-0148 residual (b) mutant wearing a new name: it would walk on a key held for ' +
+        '2ms while `held.active(` stays at 0 and W-MVI-COMMITTED-WIRED stays green',
+    ).toBe(1);
+  });
+});
+
+describe('★ main.ts wiring (14r-e/ADR-0187): the DEV send/reject observability counters', () => {
+  it('★ W-DK-COUNTERS BITES: moveSendCount increments after `lastSentSeq = seq;`, moveRejectCount first inside noteMoveRejection`s try, both on the snapshot', () => {
+    // RED AT AUTHORING TIME: neither identifier exists in main.ts.
+    //
+    // WHY THEY EXIST (ADR-0187 (b)): the e2e cannot tell a gated continuation loop from an
+    // ungated one by watching tiles — ADR-0148 MEASURED the reject-storm world at unchanged
+    // 5.00 tiles/s, because the server's 200ms movement_tick paces acceptance, not the client
+    // send rate. A send-budget observable is the minimal instrument that separates them, and
+    // `moveRejectCount === 0` is the healthy-contract half (a client that only sends when the
+    // server owes nothing is never queue-full rejected).
+    //
+    // WRONG IMPL KILLED (1): counters declared but never incremented — scenario D's
+    //   `ΔmoveSendCount <= 12` would pass at 0 while the client floods the reducer. The
+    //   whole-file `=== 1` counts plus the in-region placement close it.
+    // WRONG IMPL KILLED (2) ★ NAMED: `let moveSendCount = 0;` declared INSIDE sendIntent (or
+    //   the reject counter inside the helper). It re-initialises on every call, so the delta
+    //   is always <= 1 and scenario D's budget can never fail — the exact hazard the
+    //   `moveRejectLimit` MODULE-scope comment already in main.ts warns about.
+    // WRONG IMPL KILLED (3): `moveSendCount += 1` placed BEFORE the reducer-issuing floor
+    //   `lastSentSeq = seq;` — it would then also count sends that the frozen-link / declined-
+    //   enqueue early-returns never issued, inflating the budget with phantom sends and
+    //   making the `<= 12` assertion meaningless in the direction that matters.
+    // WRONG IMPL KILLED (4): `moveRejectCount += 1` placed after the `if (dropped)` filter (or
+    //   beside `telemetry.recordIntentReject()`), which counts DROPPED rejections only. The
+    //   contract is "every rejection callback, dropped or not" — deliberately broader than
+    //   the telemetry counter beside it — so it must be the FIRST statement in the try.
+    const src = readMainTs();
+    const code = m20cWholeFile(src);
+
+    // --- whole-file: exactly one increment each, and exactly one module-scope declaration.
+    for (const counter of ['moveSendCount', 'moveRejectCount'] as const) {
+      expect(
+        mwCodeOccurrences(code, `${counter} += 1`).length,
+        `main.ts must contain EXACTLY ONE \`${counter} += 1\` AS CODE (the pinned form is ` +
+          '`+= 1`, not `++`, matching the increment style this file already scans for). Zero ' +
+          'means the counter never moves and every budget assertion in movement-input.spec.ts ' +
+          'scenario D passes vacuously; more than one means it counts something other than ' +
+          'the single seam it names',
+      ).toBe(1);
+      expect(
+        mwCodeOccurrences(code, `let ${counter} = 0;`).length,
+        `main.ts must declare \`let ${counter} = 0;\` exactly once — a second declaration ` +
+          'shadows the first and the exported reading stops tracking the incremented one',
+      ).toBe(1);
+    }
+
+    // --- moveSendCount: inside sendIntent, AFTER the reducer-issuing floor.
+    const sendRegion = m20cSendRegion(src);
+    const floorIdx = sendRegion.indexOf('lastSentSeq = seq;');
+    const sendCountIdx = sendRegion.indexOf('moveSendCount += 1');
+    expect(
+      floorIdx,
+      'ANTI-VACUITY: the sendIntent region must still contain the send-seq floor ' +
+        '`lastSentSeq = seq;` — without it the ordering below measures nothing',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      sendCountIdx,
+      'sendIntent must increment `moveSendCount` — it is the ONLY observable that separates a ' +
+        'gated continuation loop from the ~60/s reject storm at runtime (ADR-0148 measured ' +
+        'identical tiles/s in both worlds)',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      floorIdx,
+      'the `moveSendCount += 1` must come AFTER `lastSentSeq = seq;` — that line is the ' +
+        'nh3 Case-M2 floor, reached ONLY when the reducer call below is actually issued. ' +
+        'Counting earlier also counts the frozen-link and declined-enqueue early-returns, ' +
+        'which inflates the budget with sends that never happened',
+    ).toBeLessThan(sendCountIdx);
+    expect(
+      sendRegion.includes('let moveSendCount'),
+      'the send counter must NOT be DECLARED inside sendIntent — a function-local `let` ' +
+        're-initialises on every call, so the delta scenario D measures is always <= 1 and the ' +
+        'budget assertion can never fail (main.ts already carries this exact warning on ' +
+        '`moveRejectLimit`)',
+    ).toBe(false);
+
+    // --- moveRejectCount: FIRST statement inside noteMoveRejection's try.
+    const helperBody = squashWhitespace(m20cHelperBody(src));
+    const tryIdx = helperBody.indexOf('try {');
+    const fateIdx = helperBody.indexOf('fateLogger?.(');
+    const rejectCountIdx = helperBody.indexOf('moveRejectCount += 1');
+    expect(
+      tryIdx,
+      'ANTI-VACUITY: the noteMoveRejection body must still open with `try {` (W-11RH-TOTAL)',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      fateIdx,
+      'ANTI-VACUITY: the helper body must still contain the `fateLogger?.(` call — it is the ' +
+        'existing first statement the new counter has to precede',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      rejectCountIdx,
+      'noteMoveRejection must increment `moveRejectCount` (ADR-0187 (b))',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      tryIdx,
+      'the `moveRejectCount += 1` must sit INSIDE the try — outside it, a throw from the ' +
+        'diagnostics above would skip it, and the counter would under-report exactly when ' +
+        'things are going wrong',
+    ).toBeLessThan(rejectCountIdx);
+    expect(
+      rejectCountIdx,
+      'the `moveRejectCount += 1` must be the FIRST statement in the try, i.e. BEFORE the ' +
+        '`fateLogger?.(` call — it counts EVERY rejection callback, dropped or not, which is ' +
+        'deliberately broader than the `if (dropped) telemetry.recordIntentReject()` beside ' +
+        'it. A counter placed under the dropped filter reports a different quantity than the ' +
+        'one scenario D asserts is zero',
+    ).toBeLessThan(fateIdx);
+    expect(
+      helperBody.includes('let moveRejectCount'),
+      'the reject counter must NOT be DECLARED inside noteMoveRejection — same function-local ' +
+        're-initialisation defect as the send counter above',
+    ).toBe(false);
+
+    // --- both must be RETURNED by the DEV snapshot() hook (declared-but-unexposed is dead).
+    const snapshotRegion = m20cHunk(src, DK_SNAPSHOT_START, DK_SNAPSHOT_END);
+    const returnIdx = snapshotRegion.indexOf('return {');
+    expect(
+      returnIdx,
+      'ANTI-VACUITY: the snapshot() region must contain its `return {` object literal — if it ' +
+        'does not, the anchors no longer bound the DEV hook',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      snapshotRegion.includes('ownPredictedTile'),
+      'ANTI-VACUITY: the snapshot() region must still expose ownPredictedTile — proof this is ' +
+        'the real hook and not a degenerate slice',
+    ).toBe(true);
+    for (const counter of ['moveSendCount', 'moveRejectCount'] as const) {
+      const idx = snapshotRegion.indexOf(counter);
+      expect(
+        idx,
+        `snapshot() must expose \`${counter}\` — a counter that is incremented but never ` +
+          'returned is dead code, and movement-input.spec.ts scenario D reads `undefined` ' +
+          'instead of a number',
+      ).toBeGreaterThanOrEqual(0);
+      expect(
+        returnIdx,
+        `\`${counter}\` must appear INSIDE the returned object literal, after \`return {\` — ` +
+          'a local binding above the return is not exposed to the e2e at all',
+      ).toBeLessThan(idx);
     }
   });
 });
