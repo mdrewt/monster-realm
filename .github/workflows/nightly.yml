@@ -17,6 +17,8 @@ permissions:
 jobs:
   # cargo-mutants scoped to the rule core (game-core). Surviving mutants fail
   # the job (default cargo-mutants behavior); policy in ADR-0050.
+  # Failure policy for `mutation`: triaged and inserted as the next slice in
+  # the milestone queue, same tier as fix-red-master, below it in ordering.
   mutation:
     runs-on: ubuntu-latest
     steps:
@@ -42,6 +44,9 @@ jobs:
   # 180 missed @ e875af0; cap policy in ADR-0050. Deliberately no soft-failure
   # keys on any step (a soft mutation gate is toothless); wiring + neuter-freedom
   # are guarded by evals/nightly-smoke-wiring.eval.mjs from this job's first commit.
+  # Failure policy for `mutation-server`: triaged and inserted as the next
+  # slice in the milestone queue, same tier as fix-red-master, below it in
+  # ordering.
   mutation-server:
     runs-on: ubuntu-latest
     steps:
@@ -63,6 +68,8 @@ jobs:
       - run: just mutate-server
 
   # vitest line-coverage threshold (vitest exits non-zero below the threshold).
+  # Failure policy for `coverage`: triaged and inserted as the next slice in
+  # the milestone queue, same tier as fix-red-master, below it in ordering.
   coverage:
     runs-on: ubuntu-latest
     steps:

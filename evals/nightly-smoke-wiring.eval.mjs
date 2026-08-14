@@ -306,14 +306,15 @@ export function coverageRecipeThresholdIntact(justfileText) {
 //     the header is malformed → return false (tightened per reviewer n4)
 
 // Wiring-eval cap ceiling == the committed justfile `mutate-server cap=` default
-// (the m17.5a re-measurement recorded under ADR-0118 §4 set both to 299; the
-// `just eval` run asserts the real justfile's cap parses ≤ this constant AND,
-// since 14r-a, EQUALS it — see justfileCapEqualsCeiling below).
+// (the m17.5a re-measurement recorded under ADR-0118 §4 set both to 299; 14r-a
+// re-baselined both to 324 per ADR-0183; the `just eval` run asserts the real
+// justfile's cap parses ≤ this constant AND, since 14r-a, EQUALS it — see
+// justfileCapEqualsCeiling below).
 // ADR-0137 D4 tightens this from 340 to the cap so EVERY cap move is eval-visible
 // (amends ADR-0118 §3/A3: headroom no longer lives in the ceiling). A legitimate
 // server-growth re-baseline bumps BOTH the justfile cap and this constant in the
 // same PR — the coupling is intentional (mechanical-enforcement-first).
-const MUTATE_SERVER_CAP_BASELINE = 299;
+const MUTATE_SERVER_CAP_BASELINE = 324;
 
 // Shared helper: parse the `cap=` default out of a `mutate-server …` recipe header
 // line (`mutate-server cap="299":`, `cap='299'`, `cap=299` all parse).
