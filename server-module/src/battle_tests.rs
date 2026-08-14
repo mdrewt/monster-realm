@@ -5110,8 +5110,9 @@ fn lead_party_point_reads_the_lead_not_an_arbitrary_member() {
 // are `pvp.rs::settle_pvp_battle` (ADR-0119 D3) and
 // `resolve_wild_battle_on_disconnect` (ADR-0138, battle.rs:1443).
 //
-// THE THREE SITES (verified at HEAD): submit_attack `battle.rs:737`,
-// swap_active `:871`, flee `:905`.
+// THE THREE SITES: submit_attack `battle.rs:748`, swap_active `:890`, flee
+// `:932` (post-change; they were `:737` / `:871` / `:905` at the pre-change
+// baseline origin/master@c85010d, which is where the "RED at" notes below point).
 //
 // SUBSTRATE. Static source-shape scans (ADR-0185 D4 / ADR-0156 P7 — this crate
 // has no reducer-executing harness and no `TestDb`). They reuse this module's
@@ -5124,10 +5125,27 @@ fn lead_party_point_reads_the_lead_not_an_arbitrary_member() {
 // route through the wrapper. So the needles below target `mr_log`, and the
 // accepted severity downgrade to info is ADR-0185 D6's recorded cost.
 //
-// RED AT HEAD: 01/02/03 fail at layer L2 (each site is still the bare `?` form,
-// so the prescribed `if let Err(e) = ..` shape is absent), 04 fails on the
-// per-statement `?` sweep at three of its four call sites, and 05 fails because
-// the fallible HP write currently precedes both GC statements.
+// RED AT THE PRE-CHANGE BASELINE (origin/master@c85010d): 01/02/03 fail at layer
+// L2 (each site was still the bare `?` form, so the prescribed `if let Err(e) =
+// ..` shape was absent), 04 failed on the per-statement `?` sweep at three of its
+// four call sites, and 05 failed because the fallible HP write preceded both GC
+// statements. All five are GREEN against the landed implementation.
+//
+// HARDENED AFTER A RED-TEAM PASS. The first design of this section was defeated
+// four ways, each proven by execution with clippy and fmt clean and the whole
+// suite green. What changed, and why, is recorded at the assertion that closes
+// each hole:
+//   S1  a `return Err(..)` placed AFTER the commit (nothing scanned past it)
+//       -> L13 / L13b, which pin the post-commit tail.
+//   S2  five ways to re-set the outcome without writing the token `battle.state`
+//       -> L8V (verbatim arm) + L12b (exact between-region pin).
+//   S3  seven transaction-aborting spellings outside the blacklist
+//       -> L8V, which replaced the blacklist with EQUALITY.
+//   S4  three ways to reorder or disable the GC while keeping needle order
+//       -> test 05 now pins the mutating `.delete(` calls, not the anchors.
+// The lesson, written down so it is not re-learned: for a block ADR-0185 D2
+// freezes byte-for-byte, EQUALITY is the honest gate and any absence-of-token
+// list is a guess about the next spelling.
 //
 // SCAN SUBSTRATE RULES honoured throughout: every needle naming a production
 // marker is assembled from fragments (the EG2 poisoning precedent — eval parsers
@@ -5160,56 +5178,92 @@ fn ea_pve_writeback_call() -> String {
     ["write_back", "_battle", "_results"].concat()
 }
 
-/// L8 ban reason — an early return.
-const EA_PVE_WHY_RETURN: &str = "an early return skips the update below, so the terminal \
-     outcome never commits and the row stays Ongoing — the exact softlock this slice removes";
-
-/// L8 ban reason — re-propagating the very Err the arm exists to swallow.
-const EA_PVE_WHY_PROPAGATE: &str = "a propagation operator inside the arm re-raises the Err \
-     the arm exists to swallow, restoring the transaction abort verbatim";
-
-/// L8 ban reason — the proven panic cheat.
-const EA_PVE_WHY_PANIC: &str = "THE PROVEN CHEAT: a panic aborts the SpacetimeDB transaction \
-     with no early return and no propagation operator, and passes clippy — so every naive \
-     shape gate stays green while the row is left Ongoing";
-
-/// L8 ban reason — a panicking macro under another name.
-const EA_PVE_WHY_PANIC_ALIAS: &str = "a panicking macro by another name — same transaction \
-     abort, reached by a spelling the panic ban alone would miss";
-
-/// L8 ban reason — the assert family.
-const EA_PVE_WHY_ASSERT: &str = "every assert family member panics on failure, and the \
-     failing branch is exactly the one this arm runs on";
-
-/// L8 ban reason — unwrap / expect on the error path.
-const EA_PVE_WHY_UNWRAP: &str = "an unwrap or expect on the error path panics, aborting the \
-     transaction with no early return and no propagation operator";
-
-/// L8 ban reason — killing the host process.
-const EA_PVE_WHY_PROCESS: &str = "kills the host process outright — strictly worse than the \
-     transaction abort, and it takes every other player's in-flight reducer with it";
-
-/// Transaction-aborting constructs the `Err` arm must contain NONE of (L8),
-/// each paired with the cheat its ban kills.
+/// The whitespace-squashed text the `Err` arm must equal EXACTLY, for `evt`.
 ///
-/// A blacklist is unavoidable here — any construct that unwinds or returns early
-/// defeats the commit — so it is written WIDE. `return` and the propagation
-/// operator are the obvious two; the one that actually beat a naive gate is
-/// `panic!`, which aborts the transaction with neither of them.
-fn ea_pve_abort_constructs() -> Vec<(String, &'static str)> {
-    vec![
-        (["ret", "urn"].concat(), EA_PVE_WHY_RETURN),
-        (String::from("?"), EA_PVE_WHY_PROPAGATE),
-        (["pan", "ic!"].concat(), EA_PVE_WHY_PANIC),
-        (["unreach", "able!"].concat(), EA_PVE_WHY_PANIC_ALIAS),
-        (["to", "do!"].concat(), EA_PVE_WHY_PANIC_ALIAS),
-        (["unimplem", "ented!"].concat(), EA_PVE_WHY_PANIC_ALIAS),
-        (["ass", "ert"].concat(), EA_PVE_WHY_ASSERT),
-        ([".unw", "rap("].concat(), EA_PVE_WHY_UNWRAP),
-        ([".exp", "ect("].concat(), EA_PVE_WHY_UNWRAP),
-        (["process::", "abort"].concat(), EA_PVE_WHY_PROCESS),
-        (["process::", "exit"].concat(), EA_PVE_WHY_PROCESS),
+/// WHY VERBATIM AND NOT A BLACKLIST. The first version of this gate enumerated
+/// forbidden constructs (`panic!`, `.unwrap(`, `battle.state`, …). A red team
+/// walked through it TWELVE ways with a clean `clippy -D warnings`, a clean
+/// `fmt`, and 598 green tests — every one of them a spelling the enumeration did
+/// not contain:
+///
+/// - **Aliased state writes** — `let rt_b = &mut battle; rt_b.state.outcome = ..;`
+///   carries no `battle.state` token at all.
+/// - **Indirection** — a module-level `fn rt_resoftlock(b: &mut Battle)` called
+///   from the arm; the write is not in the scanned body.
+/// - **Snapshot-and-restore** — `let rt_pre = battle.clone();` early, then
+///   `battle = rt_pre;` in the arm. No `.state` anywhere.
+/// - **Panics with no banned token** — `battle.party_monster_ids[usize::MAX]`,
+///   `Option::unwrap(None::<u8>)` (path form, so no `.unwrap(`),
+///   `Vec::<u64>::with_capacity(usize::MAX)`, `.expect_err(` / `.unwrap_err(`
+///   (the trailing underscore defeats `.expect(` / `.unwrap(`).
+/// - **Renamed aborts** — `use std::process::abort as rt_kill;` then `rt_kill();`,
+///   or a diverging `fn rt_boom() -> !` called from the arm.
+///
+/// A blacklist has to guess the next spelling and there is always one. ADR-0185
+/// D2 mandates three byte-identical inline blocks differing only in `evt` — so
+/// the honest gate is EQUALITY, not absence. Equality admits no alias, no helper
+/// call, no extra statement, and needs no enumeration to stay ahead of.
+///
+/// Assembled from the same fragment-concatenated needles the rest of this section
+/// uses (and from [`ea_pve_capture`] / [`d12r_double_quote`] / [`d12r_backslash`]
+/// for the structural characters), so this file's own source still cannot satisfy
+/// any scan that runs over the crate.
+///
+/// HONEST LIMIT: a verbatim pin is brittle by construction. A deliberate
+/// reformat or rename of the block must be mirrored here IN THE SAME EDIT — and
+/// that is the point: the block is frozen by ADR-0185 D2, so any change to it is
+/// a decision, not a drive-by.
+fn ea_pve_expected_arm(evt: &str) -> String {
+    let q = d12r_double_quote();
+    let esc_q = [d12r_backslash().as_str(), q.as_str()].concat();
+    let bind = ["letescaped", "="].concat();
+    let escape_fn = ["json", "_escape"].concat();
+    let wrapper = ["mr", "_log("].concat();
+    let id_cap = ea_pve_capture("battle_id");
+    let esc_cap = ea_pve_capture("escaped");
+    let guards_path = ["crate::", "guards::"].concat();
+    let obs_path = ["crate::", "observability::"].concat();
+    // The hand-built JSON fragment: "battle_id":<id>,"reason":"<escaped>"
+    // with every structural quote spelled as an escaped quote inside one literal.
+    let payload = [
+        q.as_str(),
+        esc_q.as_str(),
+        "battle_id",
+        esc_q.as_str(),
+        ":",
+        id_cap.as_str(),
+        ",",
+        esc_q.as_str(),
+        "reason",
+        esc_q.as_str(),
+        ":",
+        esc_q.as_str(),
+        esc_cap.as_str(),
+        esc_q.as_str(),
+        q.as_str(),
     ]
+    .concat();
+    [
+        bind.as_str(),
+        guards_path.as_str(),
+        escape_fn.as_str(),
+        "(&e);",
+        obs_path.as_str(),
+        wrapper.as_str(),
+        q.as_str(),
+        evt,
+        q.as_str(),
+        ",&format!(",
+        payload.as_str(),
+        "),);",
+    ]
+    .concat()
+}
+
+/// The squashed statement prefix that must be ALL that stands between the end of
+/// the terminal-outcome handling and the `update` that commits it.
+fn ea_pve_commit_prefix() -> String {
+    ["ctx.db.", "battle().", "battle_id()."].concat()
 }
 
 /// The whole of `battle.rs` with comments AND string literals blanked in place.
@@ -5314,7 +5368,7 @@ fn assert_pve_settle_logs_and_commits(reducer: &str, evt: &str) {
          differ ONLY in `evt`, so a paste that keeps a sibling's name is the single \
          most likely defect here, and it costs the operator the one field that says \
          WHICH path faulted. Per-reducer names mirror the same-file precedent \
-         `wild_disconnect_writeback_err` (battle.rs:1446)."
+         `wild_disconnect_writeback_err` (battle.rs:1493)."
     );
 
     // --- L6: the interpolated value is the ESCAPED binding, not the raw Err --
@@ -5369,34 +5423,33 @@ fn assert_pve_settle_logs_and_commits(reducer: &str, evt: &str) {
          that is then thrown away, and the raw text is what reaches the log."
     );
 
-    // --- L8: the Err arm contains NO transaction-aborting construct ----------
-    let aborts = ea_pve_abort_constructs();
-    for (needle, why) in &aborts {
-        assert!(
-            !sq_blk.contains(needle.as_str()),
-            "TEETH (14r-d L8, ADR-0185 D5) `{reducer}`: the Err arm contains \
-             `{needle}`. It must contain NONE of the transaction-aborting \
-             constructs. KILLS: {why}. The arm's entire job is to be a dead end \
-             that falls through to the commit — log, and nothing else."
-        );
-    }
-
-    // --- L9: the Err arm performs NO write to `battle.state` -----------------
-    // THE CHEAT THAT BEAT THE FIRST DESIGN OF THIS GATE.
-    let state = ["battle", ".state"].concat();
-    let n_state = sq_blk.matches(state.as_str()).count();
+    // --- L8V: the Err arm equals the ADR-0185 D2 block, VERBATIM -------------
+    // This assertion REPLACES the earlier L8 (a blacklist of transaction-aborting
+    // constructs) and L9 (a `battle.state` substring ban). Both were defeated by
+    // execution — twelve CI-clean bypasses, catalogued on `ea_pve_expected_arm`.
+    // Equality subsumes L6/L7/L8/L9 and, unlike them, needs no enumeration to
+    // stay ahead of: NOTHING may appear in the arm that is not in this string.
+    // L5/L6/L7 above are RETAINED as diagnostics only — each is strictly weaker
+    // than this pin, so neither can red where this one is green, and their
+    // targeted messages are far easier to act on than a whole-block diff.
+    let expected_arm = ea_pve_expected_arm(evt);
     assert_eq!(
-        n_state, 0,
-        "TEETH (14r-d L9, ADR-0185 D5 — THE CHEAT THAT BEAT THE FIRST GATE DESIGN) \
-         `{reducer}`: the Err arm touches `{state}` {n_state} time(s); it must \
-         touch it ZERO times. A source scan can only prove that `update(battle)` \
-         is REACHED — never what VALUE it commits. So the single line \
-         `battle.state.outcome = BattleOutcome::Ongoing;` inside this arm \
-         satisfies L1, L2, L5, L6, L7, L8, L10, L11 and L12 in full while \
-         committing a row that is still Ongoing — silently re-creating the exact \
-         movement softlock the slice exists to remove, with a log line on top \
-         saying it was handled. This layer is what closes that hole; do not \
-         relax it into a spelling-specific ban."
+        sq_blk_str, expected_arm,
+        "TEETH (14r-d L8V, ADR-0185 D1/D2 — VERBATIM ARM PIN) `{reducer}`: the \
+         `Err` arm is not byte-identical (modulo whitespace) to the ADR-0185 D1 \
+         block.\n  EXPECTED: {expected_arm}\n  ACTUAL:   {sq_blk_str}\n\
+         KILLS, without enumerating any of them: an ALIASED state write \
+         (`let rt_b = &mut battle; rt_b.state.outcome = ..`), a state write moved \
+         behind a HELPER call, a SNAPSHOT-AND-RESTORE that carries no `.state` \
+         token at all, every panic spelled without a banned token (an out-of-range \
+         index, the path form `Option::unwrap(None)`, `.expect_err(`, a huge \
+         `with_capacity`), a process abort imported under an ALIAS, a diverging \
+         helper returning the never type, and a flag SET here to be acted on after \
+         the commit (L13b kills the acting half). Each of those passed the \
+         previous blacklist gate with clippy and fmt clean. ADR-0185 D2 mandates \
+         three byte-identical inline blocks differing ONLY in `evt`, so equality \
+         is the honest contract; if the block is deliberately reformatted, update \
+         `ea_pve_expected_arm` IN THE SAME EDIT."
     );
 
     // --- L10: the commit is reached, at top level, AFTER the arm -------------
@@ -5437,9 +5490,16 @@ fn assert_pve_settle_logs_and_commits(reducer: &str, evt: &str) {
          precisely the failure case this slice is about."
     );
 
-    // --- L12: nothing bails between the log and the commit -------------------
+    // --- L12: nothing at all stands between the log and the commit -----------
+    // Named bans first (actionable messages), then an EXACT pin that admits
+    // nothing the bans failed to imagine. The scanned region deliberately starts
+    // at the Err arm's CLOSING brace, so it also spans the close of the enclosing
+    // `if battle.state.outcome != Ongoing { .. }` block in `submit_attack` /
+    // `swap_active` — a statement parked just outside the arm but still inside
+    // that `if` is inside this region too.
     let between = &stripped[be..at_upd];
     let ret = ["ret", "urn"].concat();
+    let state = ["battle", ".state"].concat();
     assert!(
         !between.contains(ret.as_str()),
         "TEETH (14r-d L12, ADR-0185 D1) `{reducer}`: a `{ret}` appears between the \
@@ -5454,13 +5514,94 @@ fn assert_pve_settle_logs_and_commits(reducer: &str, evt: &str) {
          propagation: the arm swallows the write-back Err and the very next \
          statement re-aborts the transaction, so the outcome still never commits."
     );
+    assert!(
+        !between.contains(state.as_str()),
+        "TEETH (14r-d L12, ADR-0185 D5) `{reducer}`: `{state}` is written between \
+         the Err arm and `{update}`. KILLS the FLAG-AND-ACT-LATER cheat: set a bool \
+         in the arm, then reset the outcome to `Ongoing` out here just before the \
+         commit. The arm itself stays byte-identical (so the verbatim pin above is \
+         green) and the row that commits is still `Ongoing` — the softlock, rebuilt \
+         one statement further down."
+    );
+
+    // --- L12b: EXACT pin of the whole region between the arm and the commit --
+    let commit_prefix = ea_pve_commit_prefix();
+    let between_squashed = squash_ws(between);
+    let between_core = between_squashed.trim_start_matches(char::from(EA_PVE_RBRACE));
+    assert_eq!(
+        between_core, commit_prefix,
+        "TEETH (14r-d L12b, ADR-0185 D1 — EXACT REGION PIN) `{reducer}`: the text \
+         between the Err arm and `{update}` must be nothing but closing braces \
+         followed by `{commit_prefix}`.\n  EXPECTED: {commit_prefix}\n  ACTUAL:   \
+         {between_core}\nKILLS every statement smuggled into the gap, without \
+         enumerating them: an aliased or helper-routed `battle.state` write that \
+         carries no `battle.state` token, a shadow-rebind \
+         (`let battle = if rt_ok {{ battle }} else {{ rt_pre }};`) that swaps in a \
+         pre-battle snapshot, and any diverging call (`rt_boom();`) placed just \
+         before the commit. Whitespace is squashed first, so a rustfmt split of \
+         the `ctx.db..` chain cannot false-RED this."
+    );
+
+    // --- L13: nothing AFTER the commit can undo it ---------------------------
+    // THE HOLE THAT BEAT THE FIRST DESIGN OF L12: L12 scanned only up to
+    // `update(battle)` and nothing scanned past it, so
+    // `if let Some(rt_e) = rt_err { return Err(rt_e); }` on the line AFTER the
+    // commit passed the entire suite. In SpacetimeDB an `Err` return rolls the
+    // whole transaction back, so that reverts the `update` and restores the exact
+    // softlock — with a log line claiming it was handled.
+    let after = &stripped[at_upd..];
+    let err_ctor = ["E", "rr"].concat();
+    assert!(
+        !after.contains(err_ctor.as_str()),
+        "TEETH (14r-d L13, ADR-0185 D1) `{reducer}`: `{err_ctor}` appears AFTER \
+         `{update}`. The reducer must not return an error once the terminal \
+         outcome has been committed — in SpacetimeDB an `{err_ctor}` return rolls \
+         the whole transaction back, UNDOING the commit. KILLS the deferred-bail \
+         cheat: stash the failure in an `Option` inside the arm, then re-raise it \
+         after the commit."
+    );
+    assert!(
+        !after.contains(ret.as_str()),
+        "TEETH (14r-d L13, ADR-0185 D1) `{reducer}`: a `{ret}` appears AFTER \
+         `{update}`. The tail of all three reducers is `Ok(())` and nothing else \
+         (plus `flee`'s post-commit info log). An early return out here can only \
+         be carrying a failure the commit was supposed to have absorbed."
+    );
+    assert!(
+        !after.contains('?'),
+        "TEETH (14r-d L13, ADR-0185 D1) `{reducer}`: a `?` appears AFTER \
+         `{update}`. Same rollback, spelled as a propagation."
+    );
+
+    // --- L13b: EXACT pin of the post-commit tail -----------------------------
+    // The ban list above cannot see a diverging call — `rt_boom();` between the
+    // commit and `Ok(())` aborts the transaction with no `return`, no `?` and no
+    // `Err`. Equality can. The ONE statement allowed besides the commit and the
+    // `Ok(())` tail is `flee`'s post-commit `battle_flee` info log (ADR-0185 D1
+    // keeps it, and keeps it after the commit: the flee DID commit).
+    let flee_log = ["log::", "info!();"].concat();
+    let expected_after = [update.as_str(), ";", "Ok(())"].concat();
+    let after_core = squash_ws(after).replace(flee_log.as_str(), "");
+    assert_eq!(
+        after_core, expected_after,
+        "TEETH (14r-d L13b, ADR-0185 D1 — EXACT TAIL PIN) `{reducer}`: everything \
+         after the commit must be the commit itself plus `Ok(())` (plus, for \
+         `flee` only, the one `battle_flee` info log whose argument list this scan \
+         blanks).\n  EXPECTED: {expected_after}\n  ACTUAL:   {after_core}\n\
+         KILLS the deferred abort that carries no banned token — a diverging \
+         helper returning the never type, or a process abort imported under an \
+         alias, called after the commit; a `match rt_err {{ .. }}` tail that \
+         yields a failure, or any other statement inserted between the commit and \
+         the reducer's `Ok(())`."
+    );
 }
 
 /// **14r-d / ADR-0185 D1** — `submit_attack` logs and commits when the battle
 /// write-back errors.
 ///
-/// RED at HEAD: `battle.rs:737` still calls the battle write-back with the bare
-/// propagation operator rather than the ADR-0185 D1 block, so layer L2 fires.
+/// Site: `battle.rs:748` (post-change). RED at the pre-change baseline, where
+/// `:737` called the battle write-back with the bare propagation operator rather
+/// than the ADR-0185 D1 block, so layer L2 fired.
 #[test]
 fn ea_pve_settle_01_submit_attack_logs_and_commits_on_writeback_err() {
     assert_pve_settle_logs_and_commits(
@@ -5472,7 +5613,9 @@ fn ea_pve_settle_01_submit_attack_logs_and_commits_on_writeback_err() {
 /// **14r-d / ADR-0185 D1** — `swap_active` logs and commits when the battle
 /// write-back errors.
 ///
-/// RED at HEAD: `battle.rs:871`, same shape as `submit_attack`.
+/// Site: `battle.rs:890` (post-change; `:871` pre-change). Same shape as
+/// `submit_attack` — ADR-0185 D2 mandates the two blocks be byte-identical apart
+/// from `evt`, and the verbatim pin in the shared driver enforces exactly that.
 #[test]
 fn ea_pve_settle_02_swap_active_logs_and_commits_on_writeback_err() {
     assert_pve_settle_logs_and_commits(
@@ -5484,14 +5627,16 @@ fn ea_pve_settle_02_swap_active_logs_and_commits_on_writeback_err() {
 /// **14r-d / ADR-0185 D1** — `flee` logs and commits when the battle write-back
 /// errors.
 ///
-/// RED at HEAD: `battle.rs:905`. `flee` is the highest-value of the three sites:
-/// once it is hardened, a row stranded `Ongoing` by any OTHER path (including
-/// `taming.rs`'s two deliberately-unfixed siblings, ADR-0185 D3) has an exit
-/// again, so those faults degrade from softlock to recoverable stuck battle.
+/// Site: `battle.rs:932` (post-change; `:905` pre-change). `flee` is the
+/// highest-value of the three: once it is hardened, a row stranded `Ongoing` by
+/// any OTHER path (including `taming.rs`'s two deliberately-unfixed siblings,
+/// ADR-0185 D3) has an exit again, so those faults degrade from softlock to
+/// recoverable stuck battle.
 ///
-/// `flee`'s own `battle_flee` info log (`:908`) stays AFTER the commit and is
-/// untouched by this gate — the flee did commit, so suppressing it would
-/// misreport (ADR-0185 D1).
+/// `flee`'s own `battle_flee` info log (`:941`) stays AFTER the commit — the flee
+/// did commit, so suppressing it would misreport (ADR-0185 D1). It is the ONE
+/// statement the L13b post-commit tail pin allows besides the commit and
+/// `Ok(())`, and it is allowed by exact spelling, not by a wildcard.
 #[test]
 fn ea_pve_settle_03_flee_logs_and_commits_on_writeback_err() {
     assert_pve_settle_logs_and_commits(
@@ -5510,7 +5655,8 @@ fn ea_pve_settle_03_flee_logs_and_commits_on_writeback_err() {
 ///
 /// SCOPE BOUNDARY — READ BEFORE WIDENING THIS SCAN. It is bounded to `battle.rs`
 /// because [`MODULE_SOURCE`] IS `battle.rs` (`include_str!`). That bound is
-/// deliberate, not incidental (ADR-0185 D4). `server-module/src/taming.rs:270`
+/// deliberate, not incidental (ADR-0185 D4). `server-module/src/taming.rs` line
+/// numbers below are as of the pre-change baseline. `taming.rs:270`
 /// (`write_back_battle_results` with `?`, recruit-FAIL path) and `taming.rs:169`
 /// (`write_back_party_hp` with `?`, recruit-SUCCESS path, after the recruited
 /// monster is already inserted) carry the IDENTICAL un-hardened shape with
@@ -5527,10 +5673,10 @@ fn ea_pve_settle_03_flee_logs_and_commits_on_writeback_err() {
 /// text would miss `.map_err(|e| ..)?`, `.or_else(..)?` and every rustfmt-split
 /// form, all of which propagate just as fatally.
 ///
-/// RED at HEAD: three of the four call sites (`:737`, `:871`, `:905`) still
-/// propagate. `:1443` (`resolve_wild_battle_on_disconnect`, ADR-0138) is already
-/// the log-and-continue shape and passes today — which is the point: it is the
-/// in-file reference the three PvE sites are being brought into line with.
+/// RED at the pre-change baseline: three of the four call sites propagated.
+/// `resolve_wild_battle_on_disconnect` (ADR-0138) already had the
+/// log-and-continue shape and passed then too — which is the point: it is the
+/// in-file reference the three PvE sites were brought into line with.
 #[test]
 fn ea_pve_settle_04_battle_rs_has_no_question_mark_writeback_site() {
     let src = ea_pve_module_stripped();
@@ -5620,22 +5766,52 @@ fn ea_pve_settle_04_battle_rs_has_no_question_mark_writeback_site() {
 /// RT-M16-08 is a property of the CALLER's ordering (write-back before
 /// `update`), which this does not touch.
 ///
-/// RED at HEAD: `write_back_party_hp` is at `:1112`, ahead of both GC statements.
+/// PINNED ON EFFECTS, NOT ON ANCHORS. The first version of this test located four
+/// NEEDLES (`check_team_coupling(`, `write_back_party_hp(`, the `battle_wild`
+/// delete, `old_terminal_ids`) and compared their offsets. A red team defeated it
+/// three ways, each CI-clean:
+///
+/// - **(a) Split the sweep.** Leave `let old_terminal_ids .. .collect();` where it
+///   is — the anchor is satisfied — and move only the
+///   `for id in old_terminal_ids { ..delete(id); }` loop below the HP write. The
+///   binding is inert; the DELETE is the effect, and the unbounded leak is fully
+///   restored.
+/// - **(b) Decoy anchors.** Plant `if false { ..delete(0u64); let old_terminal_ids:
+///   Vec<u64> = Vec::new(); }` early so both needles match dead code, and move the
+///   real block back below the HP write.
+/// - **(c) Gate the GC.** Wrap both steps in `if !is_wild_battle(battle) { .. }`.
+///   Source order is preserved and every offset comparison passes — but the
+///   sidecar is then NEVER collected for a wild battle, which is a leak on EVERY
+///   battle rather than only on a faulting one.
+///
+/// So this test asserts on the MUTATING CALLS: every `.delete(` in the body must
+/// precede the fallible HP write, and no `.delete(` may sit under a conditional
+/// header. (a) and (b) die on the first rule, (c) on the second, and (b)'s decoy
+/// dies twice over.
+///
+/// THE ONE SANCTIONED CONDITIONAL DELETE is the RT-M16-03 PvP side-B sweep, whose
+/// gate (`opponent != WILD_IDENTITY && opponent != player`) exists to avoid
+/// double-deleting the row the unconditional sweep just handled. It is
+/// whitelisted BY ITS GATE TEXT and its count is pinned at exactly one, so a
+/// fourth conditional delete — or a re-worded gate on one of the two D7 steps —
+/// still reds.
 ///
 /// HONEST LIMIT: source order is not execution order in general. Here it is —
-/// all four are unconditional straight-line statements in one function body —
-/// but a future edit that wraps one in a branch would make this scan weaker than
-/// it reads. It is scoped to the single function body for that reason.
+/// the two D7 steps are unconditional straight-line statements in one function
+/// body, which the enclosing-header assertions now PROVE rather than assume. What
+/// the scan still cannot see is a reordering hidden inside a called helper.
 #[test]
 fn ea_pve_settle_05_write_back_gc_precedes_the_fallible_hp_write() {
-    // Whitespace-squashed so a rustfmt line split cannot false-RED an ordering
-    // that is correct; squashing preserves relative order, which is the property.
-    let body = squash_ws(&write_back_body());
+    // NOT squashed: `enclosing_block_headers` needs real brace positions and
+    // readable headers. Relative offsets are all this test compares, and every
+    // needle below is contiguous in the source regardless of line breaks.
+    let body = write_back_body();
 
     let coupling = ["check_team", "_coupling("].concat();
     let hp_write = ["write_back", "_party_hp("].concat();
-    let wild_delete = ["battle_wild()", ".battle_id().", "delete("].concat();
+    let wild_sidecar = ["battle", "_wild()"].concat();
     let sweep = ["old_terminal", "_ids"].concat();
+    let delete_call = [".del", "ete("].concat();
 
     let find = |needle: &str, what: &str| -> usize {
         body.find(needle).unwrap_or_else(|| {
@@ -5652,9 +5828,10 @@ fn ea_pve_settle_05_write_back_gc_precedes_the_fallible_hp_write() {
 
     let at_coupling = find(coupling.as_str(), "the fail-loud coupling precondition");
     let at_hp = find(hp_write.as_str(), "the fallible party-HP write");
-    let at_wild = find(wild_delete.as_str(), "the battle_wild sidecar GC delete");
+    let at_wild = find(wild_sidecar.as_str(), "the battle_wild sidecar GC delete");
     let at_sweep = find(sweep.as_str(), "the prior-terminal battle GC sweep");
 
+    // --- Rule 0: the fail-loud precondition stays first ----------------------
     assert!(
         at_coupling < at_wild && at_coupling < at_sweep,
         "TEETH (14r-d, ADR-0185 D7): the coupling precondition (`{coupling}`, byte \
@@ -5666,30 +5843,97 @@ fn ea_pve_settle_05_write_back_gc_precedes_the_fallible_hp_write() {
          invariant has already been violated."
     );
 
+    // --- Rule 1: EVERY delete runs before the fallible HP write --------------
+    let deletes: Vec<usize> = body
+        .match_indices(delete_call.as_str())
+        .map(|(i, _)| i)
+        .collect();
+    let n_deletes = deletes.len();
     assert!(
-        at_wild < at_hp,
-        "TEETH (14r-d, ADR-0185 D7): the `battle_wild` sidecar delete sits at body \
-         byte {at_wild}, AFTER the fallible party-HP write at byte {at_hp}. It must \
-         run BEFORE it. If the HP write runs first, its `Err` skips this GC — and \
-         post-ADR-0185-D1 the caller no longer aborts, so the player keeps playing. \
-         Under a persistent invariant violation every subsequent battle then leaks \
-         one more orphaned `battle_wild` row, unbounded. The delete is pure GC of \
-         another row and reads nothing the HP write produces, so the hoist is free."
+        n_deletes >= 2,
+        "SCAN PRECONDITION (14r-d, ADR-0185 D7): the battle write-back's body \
+         contains only {n_deletes} `{delete_call}` call(s); the two D7 GC steps \
+         plus the RT-M16-03 opponent sweep make at least 2 (3 as shipped). Fewer \
+         means a GC step was deleted outright, which is a bigger regression than a \
+         reorder. Body scanned was:\n{body}"
     );
+    for at in &deletes {
+        assert!(
+            *at < at_hp,
+            "TEETH (14r-d, ADR-0185 D7 — EFFECT ORDERING): a row delete at body \
+             byte {at} runs AFTER the fallible party-HP write at byte {at_hp}. \
+             EVERY delete in this function must run BEFORE it. This asserts on the \
+             MUTATING CALL, not on a binding, because leaving \
+             `let {sweep} .. .collect();` in place while moving only the \
+             `for .. {{ ..{delete_call}id); }}` loop below the HP write satisfies \
+             every anchor-based check and fully restores the leak. If the HP write \
+             runs first, its `Err` skips the GC — and post-ADR-0185-D1 the caller \
+             no longer aborts, so the player keeps playing and every subsequent \
+             battle leaks one orphaned `battle_wild` row and one permanently \
+             retained terminal `battle` row, unbounded, in a `public` table \
+             (schema.rs:374) every client subscribes to UNFILTERED \
+             (client/src/net/store.ts:817), each carrying a full two-team \
+             `BattleState`."
+        );
+    }
 
-    assert!(
-        at_sweep < at_hp,
-        "TEETH (14r-d, ADR-0185 D7): the prior-terminal GC sweep (anchored on \
-         `{sweep}`) sits at body byte {at_sweep}, AFTER the fallible party-HP write \
-         at byte {at_hp}. It must run BEFORE it. Same failure mode, worse blast \
-         radius: an `Err` from the HP write skips the sweep, and post-D1 the player \
-         keeps playing, so each subsequent battle permanently retains one more \
-         terminal `battle` row — in a `public` table (schema.rs:374) that every \
-         client subscribes to UNFILTERED (client/src/net/store.ts:817), each row \
-         carrying a full two-team `BattleState`. That also breaks store.ts:853's \
-         single-current-battle-per-player assumption and degrades \
-         `is_in_ongoing_battle`'s per-move O(N) scan. Trading a bounded softlock \
-         for unbounded public-table growth is not an acceptable trade, which is \
-         why this hoist is a precondition of D1 and not a separate cleanup."
+    // --- Rule 2: no delete is hidden behind a conditional --------------------
+    // Loop headers are fine (the sweep iterates a collected id list); CONDITIONAL
+    // headers are not, because a gated GC step is a GC step that does not run.
+    let mut gated: Vec<(usize, String)> = Vec::new();
+    for at in &deletes {
+        let headers = enclosing_block_headers(&body, *at);
+        let conditional: Vec<&str> = headers
+            .iter()
+            .map(|(_, h)| *h)
+            .filter(|h| ea_pve_has_conditional_token(h))
+            .collect();
+        if !conditional.is_empty() {
+            gated.push((*at, conditional.concat()));
+        }
+    }
+    let opponent_gate = ["oppo", "nent"].concat();
+    let n_gated = gated.len();
+    assert_eq!(
+        n_gated, 1,
+        "TEETH (14r-d, ADR-0185 D7 — UNGATED GC): {n_gated} of the write-back's row \
+         deletes sit under a conditional header; EXACTLY ONE may (the RT-M16-03 \
+         PvP side-B sweep). Gated sites found: {gated:?}. KILLS wrapping the two D7 \
+         GC steps in a condition — `if !is_wild_battle(battle) {{ .. }}` preserves \
+         source order, so every offset comparison above still passes, while the \
+         `battle_wild` sidecar is then NEVER collected for a wild battle: a leak on \
+         EVERY battle instead of only on a faulting one. It also kills decoy \
+         anchors planted in an `if false {{ .. }}` block to satisfy a needle scan \
+         while the real GC moves below the HP write."
     );
+    let (gated_at, gated_header) = &gated[0];
+    assert!(
+        gated_header.contains(opponent_gate.as_str()),
+        "TEETH (14r-d, ADR-0185 D7 — UNGATED GC): the one conditionally-gated row \
+         delete (body byte {gated_at}) is guarded by `{gated_header}`, which does \
+         not mention `{opponent_gate}`. The ONLY sanctioned conditional delete here \
+         is the RT-M16-03 PvP side-B sweep, whose gate exists purely to avoid \
+         double-deleting the row the unconditional sweep already handled. A \
+         differently-worded gate on this line means one of the two ADR-0185 D7 GC \
+         steps has been made conditional and the other left bare — which reads as \
+         ordered and correct and is neither."
+    );
+}
+
+/// Does `header` contain a CONDITIONAL keyword as a whole token?
+///
+/// Tokenised rather than substring-matched so an identifier that merely spells a
+/// keyword inside itself cannot false-RED — and, more importantly, so `if` cannot
+/// be smuggled past a naive `contains` check. Loop headers (`for`, `while`) are
+/// deliberately NOT conditional: the shipped sweep iterates a collected id list,
+/// and iterating an empty list is the same no-op as having nothing to collect.
+fn ea_pve_has_conditional_token(header: &str) -> bool {
+    let conditionals = [
+        ["i", "f"].concat(),
+        ["els", "e"].concat(),
+        ["mat", "ch"].concat(),
+    ];
+    header
+        .split(|c: char| !c.is_alphanumeric() && c != '_')
+        .any(|tok| conditionals.iter().any(|k| k.as_str() == tok))
 }
