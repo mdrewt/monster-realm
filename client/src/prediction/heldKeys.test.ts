@@ -386,6 +386,94 @@ describe('[mvi] HeldDirections.committedActive: the hold-commit threshold', () =
 });
 
 // ================================================================================
+// 4b. [14r-e / ADR-0187] isHeld — MEMBERSHIP in the held set, deliberately NOT the
+//     stack top.
+//
+// WHY IT EXISTS: KEY_DIR binds TWO key codes to each direction (ArrowRight AND KeyD →
+// East). main.ts's keydown fired `step(dir)` unconditionally, so pressing the second
+// code while the direction was already held via the first fired a SECOND ungated first
+// step — a same-direction double-move. ADR-0148 disclosed it as residual 1b; ADR-0158
+// named it (its residual 3) the SOLE remaining same-direction double-move path. The fix
+// is `if (!held.isHeld(dir)) step(dir);` — a pure NOT-EMIT, nothing cancelled, no
+// predictor state written.
+//
+// RED REASON at authoring time: `HeldDirections.isHeld` DOES NOT EXIST. Every call below
+// throws `held.isHeld is not a function` — a missing implementation, loudly.
+//
+// THE CONTRACT (ADR-0187 (a)): `isHeld(dir)` is `#stack.some(e => e.dir === dir)` — the
+// SAME predicate `press()` already uses for its no-dup guard, so a mutation that breaks
+// one breaks the other and also reds U-H3 above.
+// ================================================================================
+
+describe('[14r-e] HeldDirections.isHeld (ADR-0187): membership in the held set', () => {
+  it('U-DK1: lifecycle — false when empty, true after press, false after release and after clear', () => {
+    // Kills: a stub `isHeld() { return false; }` (the dedup never fires — the defect
+    // survives untouched) and a stub `isHeld() { return true; }` (the FIRST press of a
+    // direction would stop emitting at all, i.e. movement dies on the first keypress).
+    // Also kills an isHeld that reads a parallel structure release()/clear() forgets to
+    // evict: after a release the dir must be emittable again, which is exactly what
+    // preserves the ADR-0148 F3 freeze-escape (release + re-press).
+    const held = new HeldDirections();
+    expect(held.isHeld('East')).toBe(false); // nothing held
+    held.press('East', 1000);
+    expect(held.isHeld('East')).toBe(true);
+    expect(held.isHeld('West')).toBe(false); // a DIFFERENT dir is unaffected
+
+    // A second, different dir must not evict the first from the held SET.
+    held.press('North', 1010);
+    expect(held.isHeld('East')).toBe(true);
+    expect(held.isHeld('North')).toBe(true);
+
+    held.release('East');
+    expect(held.isHeld('East')).toBe(false);
+    expect(held.isHeld('North')).toBe(true); // release is per-dir, not a wipe
+
+    held.clear();
+    expect(held.isHeld('North')).toBe(false);
+    expect(held.isHeld('East')).toBe(false);
+  });
+
+  it('U-DK2 BITES: isHeld is MEMBERSHIP, not stack-top — East is held while North is active', () => {
+    // ★ THE MUTANT THIS TOOTH EXISTS FOR: `isHeld(dir) { return this.active() === dir; }`.
+    // It type-checks, it passes U-DK1 (which only ever has one dir on top when it asks),
+    // and it is WRONG in the exact situation the fix is about: the player holds
+    // ArrowRight (East), presses ArrowUp (North goes on TOP), then presses KeyD — the
+    // second East code. A stack-top check answers "East is not held", the keydown emits,
+    // and the double-move is back for anyone who plays with two hands.
+    //
+    // It is also the shape ADR-0187 rejects in "Alternatives considered", and it would
+    // red the ADR-0158 whole-file `held.active(` === 0 tooth in main.wiring.test.ts.
+    // The sim-level version of this kill is movementSim's S11.
+    const held = new HeldDirections();
+    held.press('East', 0);
+    held.press('North', 10); // North is now the stack top / active dir
+    expect(held.active()).toBe('North'); // precondition: East is NOT the active dir
+    expect(held.isHeld('East')).toBe(true); // …and is nevertheless still HELD
+    expect(held.isHeld('North')).toBe(true);
+    expect(held.isHeld('South')).toBe(false); // never pressed — the negative control
+  });
+
+  it('U-DK3: isHeld is duration-INDEPENDENT — true immediately, while committedActive is still undefined', () => {
+    // Kills: `isHeld` implemented on top of the hold-commit threshold (e.g.
+    // `committedActive(now) === dir`, or any variant that takes a `nowMs`). Under that
+    // shape the dedup would not engage until 150ms after the first code went down, so a
+    // realistic two-code press (the two codes land within a few ms of each other) would
+    // still double-move — the fix would look present and do nothing.
+    // The two properties are ORTHOGONAL: `isHeld` answers "is this direction physically
+    // down", `committedActive` answers "has the top dir earned a CONTINUATION". This
+    // tooth pins that they disagree at t+0, which is where the dedup has to work.
+    const held = new HeldDirections(150);
+    held.press('East', 500);
+    expect(held.isHeld('East')).toBe(true); // held at the very instant of the press
+    expect(held.committedActive(500)).toBeUndefined(); // …but nowhere near committed
+    expect(held.committedActive(649)).toBeUndefined(); // 149ms: still below the threshold
+    expect(held.isHeld('East')).toBe(true); // membership never depended on the clock
+    expect(held.committedActive(650)).toBe('East'); // the threshold does its own job
+    expect(held.isHeld('East')).toBe(true);
+  });
+});
+
+// ================================================================================
 // 5. Integration: held-key / lag regression
 //    Wire HeldDirections + reissueDir + Predictor (cap-2 queue / small pendingCap)
 //    + injected applyMove over a fake frame loop with DELAYED acks.

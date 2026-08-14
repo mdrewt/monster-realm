@@ -927,9 +927,13 @@ const MOVE_REJECT_POLICY = { minGapMs: 3_000, cap: 16 };
 // MODULE scope: inside the helper this would re-initialise per rejection and the gap and
 // the cap would both silently do nothing.
 let moveRejectLimit = RATE_LIMIT_INITIAL;
+// ADR-0187 (b): DEV e2e observability — intents actually issued / rejection callbacks seen.
+let moveSendCount = 0;
+let moveRejectCount = 0;
 /** Record one rejected movement intent. TOTAL — see the catch. */
 function noteMoveRejection(seq: number, dropped: boolean): void {
   try {
+    moveRejectCount += 1; // ADR-0187: every rejection callback, dropped or not
     fateLogger?.('enqueueMove', 'rejected', [{ seq, dropped }]);
     // Monotonic clock, as elsewhere on this path. rateLimitTick is PURE — write it back.
     const tick = rateLimitTick(moveRejectLimit, performance.now(), MOVE_REJECT_POLICY);
@@ -958,6 +962,7 @@ function sendIntent(input: WasmMoveInput): void {
   const seq = intent.seq;
   const epoch = intent.epoch;
   lastSentSeq = seq; // nh3 Case-M2 floor: reached only when the reducer call below is issued
+  moveSendCount += 1; // ADR-0187: every intent issued to the reducer (DEV e2e send budget)
   const t0 = performance.now();
   // ADR-0182 D13: conn.conn widened to `DbConnection | undefined`; live() is the guarded read.
   // Unreachable-undefined given the frozen gate above (G26 invariant), but tsc requires the check.
@@ -1401,7 +1406,9 @@ window.addEventListener('keydown', (e) => {
   }
   const dir = KEY_DIR[e.code];
   if (dir !== undefined) {
-    step(dir); // immediate first step (latency + deliberate double-tap)
+    // ADR-0187 dualkey-dedup: KEY_DIR binds two codes per dir — a second code while the dir is
+    // already held must not fire another ungated first step (pure not-emit; F3 escape intact).
+    if (!held.isHeld(dir)) step(dir); // immediate first step (latency + deliberate double-tap)
     held.press(dir, performance.now()); // mark held (stamped) so the frame loop re-issues it once hold-committed (ADR-0158)
     e.preventDefault();
     return;
@@ -1848,6 +1855,8 @@ function snapshot() {
     ownPredictedTile: pred ? { x: pred.pos.x, y: pred.pos.y } : null,
     ownAuthTile: own ? { x: own.row.tileX, y: own.row.tileY } : null,
     sawFractionalOwnMotion,
+    moveSendCount,
+    moveRejectCount,
     characters: [...store.characters()].map((c) => ({
       entityId: c.row.entityId.toString(),
       tileX: c.row.tileX,

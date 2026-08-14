@@ -5,6 +5,7 @@
 **Slice:** movement-investigation (M-postgate-movement-investigation — r2 playtest ledger items 003/015/029/040-042)
 **Supersedes:** —
 **Amends:** 0148
+**Amended-by:** ADR-0187
 **Subsystems:** movement-netcode, client-ui
 **Decision:** Both held-key continuation emitters re-issue only via HeldDirections.committedActive(now): the active key must have been held >= HOLD_COMMIT_MS (150 ms, injected clock). Keydown's first step stays ungated. Pure not-emit.
 

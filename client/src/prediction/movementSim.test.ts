@@ -37,6 +37,11 @@
 // RED REASON at authoring time: heldKeys.ts exports no `HOLD_COMMIT_MS` and HeldDirections has
 // no `committedActive` / no timestamped `press` — the import and the construction below fail.
 //
+// RED REASON (14r-e, ADR-0187): ClientModel.keydown now mirrors the deduped keydown
+// (`if (!held.isHeld(dir)) step(dir);`), so until `HeldDirections.isHeld` exists EVERY
+// scenario that presses a key throws — see the S10/S11 block at the end of this file for
+// the full statement and for the one deliberate exception (S10-twin).
+//
 // Determinism: one virtual clock, one event queue ordered by (time, insertion-seq). No wall
 // clock, no RNG, no timers, no `new RegExp` (Semgrep ban).
 import { describe, expect, it } from 'vitest';
@@ -219,10 +224,15 @@ class ClientModel {
   readonly reconciles: { atMs: number; diverged: boolean; outstanding: number }[] = [];
   #send: Send;
   #source: Emission['source'] = 'keydown';
-  constructor(holdCommitMs: number | undefined, send: Send) {
+  /** [14r-e, ADR-0187] Mirrors the shipped keydown `if (!held.isHeld(dir)) step(dir);`.
+   *  DEFAULTS TRUE — the model tracks main.ts, and the flag exists ONLY so S10-twin can
+   *  run the dedup off and prove the S10 scenario is capable of seeing the double-move. */
+  readonly #dedupFirstStep: boolean;
+  constructor(holdCommitMs: number | undefined, send: Send, dedupFirstStep = true) {
     this.predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
     this.held = new HeldDirections(holdCommitMs);
     this.#send = send;
+    this.#dedupFirstStep = dedupFirstStep;
   }
   /** main.ts sendIntent (:470-505), conn always live, no overlays. */
   sendIntent(input: WasmMoveInput, at: number): void {
@@ -236,11 +246,20 @@ class ClientModel {
     });
     this.#send(input, intent.seq, intent.epoch, at);
   }
-  /** main.ts keydown movement branch (:1093-1099) — POST-FIX: the first step is UNGATED and
-   *  the press carries its own timestamp (`held.press(dir, performance.now())`). */
+  /** main.ts keydown movement branch (:1093-1099) — POST-FIX: the first step is UNGATED by
+   *  hold DURATION and the press carries its own timestamp
+   *  (`held.press(dir, performance.now())`), but it is DEDUPED by held STATE (ADR-0187):
+   *      if (!held.isHeld(dir)) step(dir);
+   *      held.press(dir, performance.now());
+   *  KEY_DIR maps BOTH key codes of a direction to the same `dir` before any held logic
+   *  runs, so the model's per-DIRECTION dedup is the faithful shape: a second keydown of
+   *  the SAME dir (the other code) is exactly what must not emit. A pure not-emit — the
+   *  press below still runs, and `press` is idempotent, so the FIRST stamp governs. */
   keydown(dir: WasmDirection, at: number): void {
     this.#source = 'keydown';
-    this.sendIntent({ Step: dir }, at); // immediate first step
+    if (!this.#dedupFirstStep || !this.held.isHeld(dir)) {
+      this.sendIntent({ Step: dir }, at); // immediate first step
+    }
     this.held.press(dir, at);
   }
   /** main.ts keyup (:1107-1110). */
@@ -298,6 +317,9 @@ interface SimConfig {
   startY: number;
   /** undefined ⇒ construct HeldDirections ARGLESS, i.e. exercise the shipped default. */
   holdCommitMs?: number;
+  /** [14r-e, ADR-0187] undefined ⇒ the SHIPPED deduped keydown. `false` is the S10-twin
+   *  anti-vacuity control only (the pre-fix "every keydown emits" wiring). */
+  dedupFirstStep?: boolean;
 }
 
 /** Scripted stimuli. `serverNudge` models an AUTHORITATIVE REPOSITION (a server-side write the
@@ -328,24 +350,28 @@ function runSim(cfg: SimConfig, script: readonly ScriptEvent[], untilMs: number)
   const server = new ServerModel(cfg.startX, cfg.startY);
   const probes: { atMs: number; x: number }[] = [];
   const latency = cfg.latencyMs;
-  const client = new ClientModel(cfg.holdCommitMs, (input, seq, epoch, sentAt) => {
-    // client → server transport
-    q.push(sentAt + latency, (at) => {
-      const res = server.enqueueMove(input, seq, at);
-      if (res === 'ok') {
-        // enqueue txn writes character+player in one batch (movement.rs:127-129,
-        // guards.rs:93-94) → one client reconcile on arrival.
-        const snap = server.snapshot();
-        q.push(at + latency, (a2) => client.onRowUpdate(snap, a2));
-      } else {
-        // Err rolls the txn back; the promise rejects → main.ts:481-504 .catch.
-        q.push(at + latency, (a2) => {
-          client.rejections.push({ seq, reason: res, atMs: a2 });
-          if (client.predictor.dropRejected(seq, epoch)) client.reconcileFromStore(a2);
-        });
-      }
-    });
-  });
+  const client = new ClientModel(
+    cfg.holdCommitMs,
+    (input, seq, epoch, sentAt) => {
+      // client → server transport
+      q.push(sentAt + latency, (at) => {
+        const res = server.enqueueMove(input, seq, at);
+        if (res === 'ok') {
+          // enqueue txn writes character+player in one batch (movement.rs:127-129,
+          // guards.rs:93-94) → one client reconcile on arrival.
+          const snap = server.snapshot();
+          q.push(at + latency, (a2) => client.onRowUpdate(snap, a2));
+        } else {
+          // Err rolls the txn back; the promise rejects → main.ts:481-504 .catch.
+          q.push(at + latency, (a2) => {
+            client.rejections.push({ seq, reason: res, atMs: a2 });
+            if (client.predictor.dropRejected(seq, epoch)) client.reconcileFromStore(a2);
+          });
+        }
+      });
+    },
+    cfg.dedupFirstStep,
+  );
   // bootstrap: initial row snapshot arrives at t=0 (login) → seeding reconcile
   const initialSnap = server.snapshot();
   q.push(0, (at) => client.onRowUpdate(initialSnap, at));
@@ -1064,5 +1090,208 @@ describe('[mvi] S9 divergence site: the reconcile re-issue uses the same hold-co
       'with the threshold disabled the exact same 80ms cell MUST re-issue from the divergence ' +
         'site — if it does not, S9b is vacuous',
     ).toBeGreaterThanOrEqual(1);
+  });
+});
+
+// ================================================================================
+// S10 / S11 — [14r-e, ADR-0187] the DUAL-CODE first step (EARS-1)
+//
+// KEY_DIR binds TWO key codes to each direction (ArrowRight AND KeyD → East). Pre-fix,
+// main.ts's keydown fired `step(dir)` unconditionally, so the second code fired a SECOND
+// ungated first step while the direction was already held — a same-direction double-move
+// that NO hold-commit threshold can see (both steps are keydown-immediate, not
+// continuations). ADR-0148 disclosed it as residual 1b, ADR-0158 named it the sole
+// remaining path (its residual 3), and ADR-0187 closes it with
+// `if (!held.isHeld(dir)) step(dir);` — modelled in ClientModel.keydown above.
+//
+// RED REASON at authoring time, STATED PRECISELY: `HeldDirections.isHeld` does not exist,
+// and ClientModel.keydown now calls it on EVERY press, so every scenario in this file that
+// presses a key throws `this.held.isHeld is not a function` until the implementation lands
+// — not just S10/S11. That is the same (correct, loud) signal this file's own header
+// records for the mvi slice, when the missing `HOLD_COMMIT_MS` export reddened the whole
+// module at link time. The ONE exception is S10-twin: `dedupFirstStep=false` short-circuits
+// before `isHeld` is ever reached, so it is GREEN both before and after the fix — which is
+// exactly what an anti-vacuity control has to be.
+//
+// NOTE on the model's fidelity: main.ts maps BOTH codes to one `dir` via KEY_DIR BEFORE
+// any held logic runs, so "the second key code" and "a second keydown of the same
+// direction" are the same event by the time `held` sees it. The model therefore scripts a
+// second same-direction keydown, which is the faithful stimulus.
+// ================================================================================
+
+/** The dual-code tap: first code down at t, second code down at t+60, both released at
+ *  t+120 — a 120ms total press, inside the <= 140ms tap-coverage contract (ADR-0158), so
+ *  the hold-commit gate emits NO continuation and every tile observed here comes from a
+ *  keydown. */
+const DUAL_TAP_T0 = 500;
+const DUAL_TAP_SECOND_CODE_AT = DUAL_TAP_T0 + 60;
+const DUAL_TAP_UP_AT = DUAL_TAP_T0 + 120;
+
+interface DualTapOutcome {
+  tilesMovedByTap: number;
+  keydownEmissions: number;
+  postTapEmissions: number;
+  postTapMovedDrains: number;
+  postTapRejections: number;
+}
+function runDualTap(fps: number, tickPhaseMs: number, dedupFirstStep?: boolean): DualTapOutcome {
+  const t = DUAL_TAP_T0;
+  const r = runSim(
+    { fps, tickPhaseMs, latencyMs: 1, startX: 5, startY: 5, dedupFirstStep },
+    [
+      { kind: 'probeServerX', atMs: t - 100 },
+      { kind: 'keydown', atMs: t, dir: 'East' }, // ArrowRight
+      { kind: 'keydown', atMs: DUAL_TAP_SECOND_CODE_AT, dir: 'East' }, // KeyD, same dir
+      { kind: 'keyup', atMs: DUAL_TAP_UP_AT, dir: 'East' },
+    ],
+    2000,
+  );
+  const preTapX = r.probes[0]?.x ?? Number.NaN;
+  return {
+    tilesMovedByTap: r.server.row.x - preTapX,
+    keydownEmissions: r.client.emissions.filter((e) => e.atMs >= t && e.source === 'keydown')
+      .length,
+    postTapEmissions: r.client.emissions.filter((e) => e.atMs >= t).length,
+    postTapMovedDrains: r.server.acceptedDrains.filter((d) => d.atMs >= t && d.moved).length,
+    postTapRejections: r.client.rejections.filter((x) => x.atMs >= t).length,
+  };
+}
+
+describe('[14r-e] S10 dual-code tap: both key codes of ONE direction move exactly ONE tile', () => {
+  it(
+    'S10 BITES: the second key code emits NOTHING — one tile, one accepted intent, in every cell',
+    () => {
+      // ★ THE SLICE DEFECT (EARS-1). WRONG IMPL KILLED (1): today's wiring — `step(dir)`
+      //   fires on EVERY keydown, so two codes produce two ungated first steps and the
+      //   server drains both: 2 tiles from one physical tap.
+      // WRONG IMPL KILLED (2): a dedup that also suppresses the FIRST press (e.g. an
+      //   inverted predicate) — `keydownEmissions` would be 0 and `tilesMovedByTap` 0.
+      // WRONG IMPL KILLED (3): "fixing" it by cancelling/clearing state on the second
+      //   press. `postTapMovedDrains === postTapEmissions` and `postTapRejections === 0`
+      //   pin the server innocent and pin the fix as a pure NOT-EMIT: it drains exactly
+      //   what the client sent, and nothing was ever rejected or rolled back.
+      // WRONG IMPL KILLED (4): dedup implemented on the hold-commit threshold instead of
+      //   held membership (`committedActive(...) === dir`) — the second code lands 60ms in,
+      //   below HOLD_COMMIT_MS, so the gate is still shut and it emits. (U-DK3 is the
+      //   parameter-free version of this kill.)
+      //
+      // The tickPhase sweep is what makes this exhaustive rather than anecdotal: the
+      // pre-fix double is not phase-dependent (unlike S1's), but sweeping proves the FIX
+      // is not phase-dependent either.
+      const bad: string[] = [];
+      for (const fps of [30, 60, 144]) {
+        for (let phase = 0; phase < STEP_MS; phase += 20) {
+          const o = runDualTap(fps, phase);
+          if (
+            o.tilesMovedByTap !== 1 ||
+            o.keydownEmissions !== 1 ||
+            o.postTapEmissions !== 1 ||
+            o.postTapMovedDrains !== o.postTapEmissions ||
+            o.postTapRejections !== 0
+          ) {
+            bad.push(
+              `fps=${fps} phase=${phase} → tiles=${o.tilesMovedByTap} ` +
+                `keydownEmissions=${o.keydownEmissions} emissions=${o.postTapEmissions} ` +
+                `movedDrains=${o.postTapMovedDrains} rejections=${o.postTapRejections}`,
+            );
+          }
+        }
+      }
+      expect(
+        bad.length,
+        'pressing BOTH key codes bound to one direction inside a single 120ms tap MUST move ' +
+          'exactly one tile and emit exactly one accepted intent, in every cell (ADR-0187 ' +
+          `EARS-1). Offending cells (first 8 of ${bad.length}):\n${bad.slice(0, 8).join('\n')}`,
+      ).toBe(0);
+    },
+    GRID_TIMEOUT_MS,
+  );
+
+  it(
+    'S10-twin ANTI-VACUITY: the SAME script with dedupFirstStep=false DOES observe 2 tiles',
+    () => {
+      // Proves S10 above is capable of going red. `dedupFirstStep=false` is exactly the
+      // pre-ADR-0187 keydown ("every keydown emits"), so this reproduces the defect and
+      // asserts the harness SEES it. Without this twin, a runDualTap that (say) mis-read
+      // `tilesMovedByTap` as always 1 — or a script whose second keydown never reached the
+      // model — would look like a passing gate.
+      let doubles = 0;
+      let maxTiles = 0;
+      for (const fps of [30, 60, 144]) {
+        for (let phase = 0; phase < STEP_MS; phase += 20) {
+          const o = runDualTap(fps, phase, false);
+          if (o.tilesMovedByTap >= 2) doubles += 1;
+          maxTiles = Math.max(maxTiles, o.tilesMovedByTap);
+        }
+      }
+      expect(
+        doubles,
+        'with the first-step dedup disabled the dual-code tap matrix MUST observe double-moves ' +
+          `(max tiles observed: ${maxTiles}) — if it observes none, the matrix cannot detect ` +
+          'the defect it is supposed to gate and S10 is vacuous',
+      ).toBeGreaterThan(0);
+    },
+    GRID_TIMEOUT_MS,
+  );
+});
+
+describe('[14r-e] S11 interleave: the dedup is MEMBERSHIP in the held set, not the stack top', () => {
+  it('S11 BITES: East held, North pressed ON TOP, then the second East code — no extra step', () => {
+    // ★ THE MUTANT THIS SCENARIO EXISTS FOR: `isHeld(dir) => held.active() === dir`.
+    // The player holds ArrowRight, then presses ArrowUp (North becomes the stack TOP),
+    // then presses KeyD — the other East code. A stack-top check answers "East is not
+    // held", the keydown emits, and the double-move is back for anyone playing with two
+    // hands. Membership answers "East IS held" and the step is not emitted.
+    // (U-DK2 in heldKeys.test.ts is the parameter-free unit version of this kill; the
+    // wiring-text version is W-DK-KEYDOWN-DEDUPED in main.wiring.test.ts.)
+    //
+    // All presses are short (East 120ms, North 70ms) so the hold-commit gate emits no
+    // CONTINUATION at all: every emission in this run is a keydown first step, which is
+    // what makes the ledger assertions below exact rather than approximate.
+    const t0 = 500;
+    const script: readonly ScriptEvent[] = [
+      { kind: 'keydown', atMs: t0, dir: 'East' }, // ArrowRight
+      { kind: 'keydown', atMs: t0 + 50, dir: 'North' }, // ArrowUp — North goes on top
+      { kind: 'keydown', atMs: t0 + 100, dir: 'East' }, // KeyD — East is held, NOT active
+      { kind: 'keyup', atMs: t0 + 120, dir: 'North' },
+      { kind: 'keyup', atMs: t0 + 120, dir: 'East' },
+    ];
+    const cfg = { fps: 60, tickPhaseMs: 0, latencyMs: 1, startX: 5, startY: 5 };
+    const r = runSim(cfg, script, 2000);
+
+    const keydowns = r.client.emissions.filter((e) => e.source === 'keydown');
+    expect(
+      keydowns.map((e) => `${e.dir}@${e.atMs}`),
+      'exactly TWO keydown first steps must be emitted — East at the first code and North ' +
+        'on top of it. The third keydown (the OTHER East code, at t0+100) must emit nothing: ' +
+        'East is already in the held set even though North is the stack top',
+    ).toEqual([`East@${t0}`, `North@${t0 + 50}`]);
+    expect(
+      keydowns.some((e) => e.atMs === t0 + 100),
+      'the second East key code must produce NO emission at all (pure not-emit — nothing is ' +
+        'cancelled and no predictor state is written)',
+    ).toBe(false);
+
+    // The behavioural half: one tile East, one tile North, and nothing else.
+    expect(
+      { x: r.server.row.x, y: r.server.row.y },
+      'the interleave must walk exactly one tile East and one tile North from (5,5). An ' +
+        '`active() === dir` dedup re-emits East at t0+100 and lands the character at x=7',
+    ).toEqual({ x: 6, y: 4 });
+
+    // ANTI-VACUITY CONTROL: the SAME script with the dedup disabled must show the extra
+    // East step — otherwise the assertions above could be passing because the third
+    // keydown never reached the model in the first place.
+    const control = runSim({ ...cfg, dedupFirstStep: false }, script, 2000);
+    expect(
+      control.client.emissions.filter((e) => e.source === 'keydown').length,
+      'CONTROL: with the dedup disabled the third keydown MUST emit, giving 3 keydown first ' +
+        'steps — if it does not, S11 proves nothing about the dedup',
+    ).toBe(3);
+    expect(
+      control.server.row.x,
+      'CONTROL: the un-deduped run must land one tile FURTHER east (x=7) — this is the ' +
+        'double-move S11 gates',
+    ).toBe(7);
   });
 });

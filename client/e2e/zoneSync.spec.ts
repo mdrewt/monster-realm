@@ -59,7 +59,7 @@ interface Tile {
 
 interface ZoneSyncSnap {
   identity: string;
-  map: { zone_id: number; width: number; height: number; walkable: boolean[] };
+  map: { zone_id: number; width: number; height: number; walkable: boolean[]; grass: boolean[] };
   ownEntityId: string | null;
   ownAuthTile: Tile | null;
   ownPredictedTile: Tile | null;
@@ -123,6 +123,35 @@ test.describe
       page = await ctx.newPage();
       await page.goto('/');
       await ready(page);
+      // LOUD world-fact guard (14r-e deflake, red-team finding): every hardcoded
+      // East/West step in this suite relies on the zone-0 y=1 corridor being walkable
+      // and GRASS-FREE — a grass tile there re-arms the wild-encounter flake this
+      // suite was cured of (encounter_rate 200/1000; an ongoing battle rejects every
+      // later enqueue_move, and the 12.5c-1-idempotent re-latch then times out with
+      // an error that names none of this). The (3..8, 1) tiles are NOT on the
+      // content-authoring protected list in game-core/src/world.rs, so a legal art
+      // edit could regress this silently; this guard makes it red BY NAME instead.
+      // Checked from the LIVE map (movement-input.spec.ts corridorEastWest idiom).
+      await page.evaluate(() => {
+        const g = (window as unknown as { __game: () => ZoneSyncSnap }).__game();
+        const { map } = g;
+        for (let x = 1; x <= 8; x += 1) {
+          const i = 1 * map.width + x;
+          if (map.walkable[i] !== true) {
+            throw new Error(
+              `zone-0 corridor precondition: (${x}, 1) is NOT walkable in the live map — ` +
+                'the y=1 corridor this suite steps along no longer exists; re-derive the trajectory',
+            );
+          }
+          if (map.grass[i] === true) {
+            throw new Error(
+              `zone-0 corridor precondition: (${x}, 1) is GRASS in the live map — a step there ` +
+                'rolls a wild encounter (zone-0 rate 200/1000) whose battle rejects every later ' +
+                'move; re-route this suite off grass or the 12.5c-1-idempotent re-latch will flake',
+            );
+          }
+        }
+      });
     });
 
     test.afterAll(async () => {
@@ -320,6 +349,14 @@ test.describe
       });
 
       // Step to trigger reconcile → switchZone(0) with real zone_map(0) parse.
+      // DEFLAKE (14r-e diagnosis, CI run 31806079496 attempt 2): 'East', NOT 'South'. The
+      // direction is incidental — the step exists only to trigger a server batch — but the
+      // trajectory through tests 1-2 (spawn (1,1) → East → East) parks the character at
+      // (3,1), and 'South' lands on (3,2), a GRASS tile in the frozen zone-0 art. Zone 0's
+      // encounter_rate is 200/1000, so that step started a wild battle in ~20% of runs;
+      // an ongoing battle rejects every later enqueue_move, and the NEXT test's
+      // sawFractionalOwnMotion re-latch then times out. 'East' → (4,1) stays on the
+      // grass-free y=1 corridor row ("#........#") and can never roll an encounter.
       await page.evaluate(() => {
         (
           window as unknown as {
@@ -327,7 +364,7 @@ test.describe
           }
         )
           .__game()
-          .step('South');
+          .step('East');
       });
 
       // The switch to zone 0 must succeed (parse of zone 0 map is valid).
@@ -338,6 +375,9 @@ test.describe
       );
 
       // Send a second step and confirm zone_id stays 0 (no additional unwanted mutation).
+      // 'West' undoes the 'East' above (grass-free corridor both ways), restoring the
+      // pre-test position so the next test's walkable-neighbour pick sees the same
+      // world it always has.
       await page.evaluate(() => {
         (
           window as unknown as {
@@ -345,7 +385,7 @@ test.describe
           }
         )
           .__game()
-          .step('North');
+          .step('West');
       });
 
       // Allow time for the batch to arrive and any errant mutation to manifest.
@@ -399,7 +439,19 @@ test.describe
           }
         ).__game();
         const { map, ownAuthTile: tile } = g;
-        // Find the first walkable neighbour: East → West → South → North.
+        // Find the first walkable NON-GRASS neighbour: East → West → South → North.
+        // Grass-aware since the 14r-e diagnosis: a grass step rolls a wild encounter
+        // (zone 0 rate 200/1000), and an ongoing battle rejects every later step —
+        // producing exactly the sawFractionalOwnMotion timeout this pick exists to
+        // prevent. Walkability alone is not enough for a step that must MOVE.
+        // FAIL-LOUD, never fall back to grass (tester finding): a fixture whose failure
+        // mode is a 10s timeout here plus rejected moves everywhere after must throw a
+        // named error, not gamble on a 200/1000 roll. Unreachable on today's trajectory
+        // (the beforeAll corridor guard proves East is always available) — this is the
+        // defence for the day the zone-0 art or the trajectory changes.
+        if (!tile) {
+          throw new Error('re-latch pick: ownAuthTile is null — the own character row is not live');
+        }
         const offsets: [string, number, number][] = [
           ['East', 1, 0],
           ['West', -1, 0],
@@ -407,7 +459,6 @@ test.describe
           ['North', 0, -1],
         ];
         for (const [dir, dx, dy] of offsets) {
-          if (!tile) break;
           const nx = tile.x + dx;
           const ny = tile.y + dy;
           if (
@@ -415,13 +466,18 @@ test.describe
             ny >= 0 &&
             nx < map.width &&
             ny < map.height &&
-            map.walkable[ny * map.width + nx]
+            map.walkable[ny * map.width + nx] &&
+            !map.grass[ny * map.width + nx]
           ) {
             g.step(dir);
             return;
           }
         }
-        g.step('East'); // fallback: character always has at least one walkable neighbour
+        throw new Error(
+          `re-latch pick: no walkable NON-GRASS neighbour at (${tile.x}, ${tile.y}) — the ` +
+            'zone-0 art or the suite trajectory changed; stepping onto grass here would ' +
+            'roll a wild battle (rate 200/1000) that rejects every later move',
+        );
       });
       await page.waitForFunction(
         () =>
