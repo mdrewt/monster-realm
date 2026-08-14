@@ -5,13 +5,34 @@
 //   - mutation-server job exists (ADR-0050 amendment) and is not neutered
 //   - nightly triggers on schedule + workflow_dispatch (not just push)
 //   - coverage recipe threshold ≥ 96 (not the placeholder =25)
-//   - mutate-server recipe is intact (missed.txt, no scope narrowing, cap ≤ 299)
+//   - mutate-server recipe is intact (missed.txt, no scope narrowing,
+//     cap ≤ MUTATE_SERVER_CAP_BASELINE)
 //
-// EXPECTED REAL-TREE STATE AT RED (m13.5a additions only):
+// Extended in 14r-a (nightly failure-policy documentation + cap/ceiling coupling):
+//   - each guarded nightly job (mutation, mutation-server, coverage) documents its
+//     failure policy in the contiguous comment preamble directly above its job key,
+//     mirroring the smoke-republish precedent at .github/workflows/nightly.yml:78-83
+//     (decision-hook mdrewt/claude-harness#14 — notification channel — is still open,
+//     so the reversible default is a documented policy, NOT a notification Action)
+//   - the committed justfile `mutate-server cap=` default EQUALS the wiring-eval
+//     ceiling MUTATE_SERVER_CAP_BASELINE (ADR-0137 D4: both move in the same commit;
+//     the pre-existing `cap ≤ ceiling` check alone makes a ceiling-only raise invisible)
+//
+// EXPECTED REAL-TREE STATE AT RED (m13.5a additions only — long since GREEN):
 //   nightlyHasServerMutationJob → FAIL (mutation-server job absent from nightly.yml)
 //   mutateServerRecipeIntact    → FAIL (mutate-server recipe absent from justfile)
 //   coverageRecipeThresholdIntact → FAIL (threshold still =25 in justfile)
 // All pre-existing checks (smoke-republish wiring) remain GREEN.
+//
+// EXPECTED REAL-TREE STATE AT RED (14r-a additions):
+//   Check 14 jobHasFailurePolicyComment(nightly, 'mutation')        → FAIL (no policy preamble)
+//   Check 15 jobHasFailurePolicyComment(nightly, 'mutation-server') → FAIL (no policy preamble)
+//   Check 16 jobHasFailurePolicyComment(nightly, 'coverage')        → FAIL (no policy preamble)
+//   Check 17 justfileCapEqualsCeiling(justfile)                     → GREEN today (the
+//            committed cap already equals the ceiling); it becomes load-bearing the
+//            moment either number moves without the other.
+//   Checks 1–13 stay GREEN. Because this eval returns on first failure, the runner
+//   reports Check 14 at RED; Checks 15/16 surface as the implementer fixes upward.
 //
 // Verifies that the nightly publish→republish→sync_content smoke test is
 // correctly wired: job lives in nightly.yml (not ci.yml), the smoke script
@@ -278,19 +299,54 @@ export function coverageRecipeThresholdIntact(justfileText) {
 //   - does NOT contain ` -o ` (space-delimited, F10: redirecting output to a different
 //     path leaves the recipe reading a stale or wrong missed.txt)
 //   - does NOT contain `--output` (F10 long form)
-//   - the `cap=` default in the recipe signature parses as an integer ≤ 299
-//     (catches cap="9999"; ceiling == committed cap so any inflation is eval-visible)
+//   - the `cap=` default in the recipe signature parses as an integer
+//     ≤ MUTATE_SERVER_CAP_BASELINE (catches cap="9999"; ceiling == committed cap
+//     so any inflation is eval-visible)
 //   - if `cap=` is present but no digit follows the `=` (after optional quote),
 //     the header is malformed → return false (tightened per reviewer n4)
 
 // Wiring-eval cap ceiling == the committed justfile `mutate-server cap=` default
-// (= 299, the m17.5a re-measurement recorded under ADR-0118 §4; the `just eval`
-// run also asserts the real justfile's cap parses ≤ this constant).
+// (the m17.5a re-measurement recorded under ADR-0118 §4 set both to 299; the
+// `just eval` run asserts the real justfile's cap parses ≤ this constant AND,
+// since 14r-a, EQUALS it — see justfileCapEqualsCeiling below).
 // ADR-0137 D4 tightens this from 340 to the cap so EVERY cap move is eval-visible
 // (amends ADR-0118 §3/A3: headroom no longer lives in the ceiling). A legitimate
 // server-growth re-baseline bumps BOTH the justfile cap and this constant in the
 // same PR — the coupling is intentional (mechanical-enforcement-first).
 const MUTATE_SERVER_CAP_BASELINE = 299;
+
+// Shared helper: parse the `cap=` default out of a `mutate-server …` recipe header
+// line (`mutate-server cap="299":`, `cap='299'`, `cap=299` all parse).
+// Returns { present, cap }:
+//   present === false             → the header declares no cap= parameter at all
+//   present === true, cap === null → cap= present but MALFORMED (no digits follow)
+//   present === true, cap === <int> → the parsed default
+// Lifted verbatim out of mutateServerRecipeIntact's inline parse (behaviour
+// unchanged — TEETH L pins it) so that predicate and justfileCapEqualsCeiling can
+// never disagree about what the committed cap IS: under ADR-0137 D4 they are two
+// views of ONE number (`cap ≤ ceiling` and `cap === ceiling`).
+function parseCapDefaultFromHeader(headerLine) {
+  const capIdx = headerLine.indexOf('cap=');
+  if (capIdx === -1) return { present: false, cap: null };
+  // Strip optional quotes, then read leading digits.
+  let capStr = headerLine.slice(capIdx + 4);
+  if (capStr.startsWith('"') || capStr.startsWith("'")) capStr = capStr.slice(1);
+  let numStr = '';
+  for (const ch of capStr) {
+    if (ch >= '0' && ch <= '9') numStr += ch;
+    else break;
+  }
+  if (!numStr) return { present: true, cap: null };
+  return { present: true, cap: parseInt(numStr, 10) };
+}
+
+// Shared helper: the `mutate-server` recipe header line (column 0), or null.
+function findMutateServerHeaderLine(justfileText) {
+  for (const line of justfileText.split('\n')) {
+    if (line.startsWith('mutate-server:') || line.startsWith('mutate-server ')) return line;
+  }
+  return null;
+}
 
 export function mutateServerRecipeIntact(justfileText) {
   // Find the recipe header: `mutate-server` at column 0.
@@ -307,25 +363,14 @@ export function mutateServerRecipeIntact(justfileText) {
   if (headerIdx === -1) return false;
 
   // Parse `cap=` default from the header (e.g. `mutate-server cap="150":` or
-  // `mutate-server cap='150':` or `mutate-server cap=150:`).
-  // We require a cap= parameter whose value is an integer ≤ MUTATE_SERVER_CAP_BASELINE (299).
+  // `mutate-server cap='150':` or `mutate-server cap=150:`) via the shared helper.
+  // We require a cap= parameter whose value is an integer ≤ MUTATE_SERVER_CAP_BASELINE.
   // If cap= is present but has no digits (malformed), return false.
-  const capMatch = headerLine.indexOf('cap=');
-  if (capMatch !== -1) {
-    const afterCap = headerLine.slice(capMatch + 4);
-    // Strip optional quotes.
-    let capStr = afterCap;
-    if (capStr.startsWith('"') || capStr.startsWith("'")) capStr = capStr.slice(1);
-    // Read digits.
-    let numStr = '';
-    for (const ch of capStr) {
-      if (ch >= '0' && ch <= '9') numStr += ch;
-      else break;
-    }
+  const capInfo = parseCapDefaultFromHeader(headerLine);
+  if (capInfo.present) {
     // Malformed: cap= present but no digits follow (e.g. `cap=:` or `cap="`).
-    if (!numStr) return false;
-    const cap = parseInt(numStr, 10);
-    if (cap > MUTATE_SERVER_CAP_BASELINE) return false;
+    if (capInfo.cap === null) return false;
+    if (capInfo.cap > MUTATE_SERVER_CAP_BASELINE) return false;
   }
   // cap= is optional in the recipe; absence is fine (no cap or handled differently).
 
@@ -357,6 +402,199 @@ export function mutateServerRecipeIntact(justfileText) {
   if (body.indexOf('--output') !== -1) return false;
 
   return true;
+}
+
+// ---------------------------------------------------------------------------
+// 14r-a NEW PREDICATES
+// ---------------------------------------------------------------------------
+
+// Routing vocabulary — deliberately the SAME set adrHasFailurePolicy accepts, so
+// an in-workflow policy comment and the ADR prose speak one language.
+const POLICY_ROUTING_KEYWORDS = ['next slice', 'queue', 'priority'];
+
+// Clause-3 normalisation for one preamble comment line: drop the leading `#`,
+// collapse every run of spaces/tabs to a single space, trim, lowercase.
+// Literal regex only — NO new RegExp (detect-non-literal-regexp has bitten 3×).
+function normalisePolicyCommentLine(line) {
+  let text = line.trim();
+  if (text.startsWith('#')) text = text.slice(1);
+  return text
+    .replace(/[ \t]+/g, ' ')
+    .trim()
+    .toLowerCase();
+}
+
+// ---------------------------------------------------------------------------
+// Pure predicate: the nightly job `jobName` carries a DOCUMENTED failure policy
+// in the contiguous comment preamble immediately ABOVE its job key — the
+// `smoke-republish` precedent at .github/workflows/nightly.yml:78-83.
+// Returns { ok: boolean, reason: string }.
+//
+// WHY A COMMENT AND NOT A NOTIFICATION ACTION: decision-hook
+// mdrewt/claude-harness#14 (nightly failure notification channel) is OPEN. The
+// reversible default is an in-workflow documented policy; no notification Action
+// may be added until that hook resolves. A comment costs nothing to unwind.
+//
+// SEMANTICS — each clause kills a specific false-green (teeth M1–M8):
+//   1. KEY SCAN ANCHORED UNDER `jobs:` — the key is only looked for at/after the
+//      first line that is exactly `jobs:` (indent 0), and is matched EXACTLY the
+//      way extractJobBlock matches it (a line equal to `  <job>:` or starting
+//      with `  <job>: `). Without the anchor, a 2-space key with a colliding
+//      name under `on:`/`env:` carrying a nice comment would satisfy the gate
+//      while the REAL job stays unannotated (tooth M8).
+//   2. CONTIGUOUS PREAMBLE WALK — from the key line UPWARD, collect lines while
+//      indent is exactly 2 AND the trimmed line starts with `#`. The first
+//      blank / non-comment / other-indent line stops the walk (teeth M4, M7).
+//      `indent === 2` is deliberately STRICT: relaxing it to `>= 2` re-opens the
+//      in-block-placement hole that tooth M5 exists to catch.
+//   3. PER-LINE NORMALISATION — see normalisePolicyCommentLine. Lines stay an
+//      ARRAY and are never joined into one blob; joining would let clause 4's
+//      phrase and the job name come from two different comment lines.
+//   4. ANCHORED, SINGLE-LINE, SELF-ATTRIBUTING PHRASE — at least ONE normalised
+//      line must contain the contiguous substring "failure policy for `<job>`:".
+//      Binding the phrase and the job name to the SAME line forecloses
+//      cross-attribution: a preamble that documents ANOTHER job's failure policy
+//      while merely mentioning this job's backticked name elsewhere must NOT
+//      satisfy (tooth M3c). The backticks also stop `mutation` ⊂
+//      `mutation-server` substring bleed (tooth M3b) without needing a regex.
+//   5. ROUTING KEYWORD — the preamble (any of its lines) must contain one of
+//      `next slice` / `queue` / `priority`.
+//
+// KNOWN LIMITATION (accepted, stated deliberately): a keyword gate cannot detect
+// NEGATED prose — "Failure policy for `coverage`: failures are NOT queued"
+// satisfies clauses 4 and 5. This gate proves the policy is DOCUMENTED and
+// ATTRIBUTED to the right job; it does not prove it is semantically affirmative.
+// Semantic review stays with the human reviewer and the ADR.
+export function jobHasFailurePolicyComment(yaml, jobName) {
+  const lines = yaml.split('\n');
+  const keyAbsent = `${jobName}: job key absent at 2-space indent under jobs:`;
+
+  // Clause 1: anchor the key scan at the top-level `jobs:` line.
+  let jobsIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i] === 'jobs:') {
+      jobsIdx = i;
+      break;
+    }
+  }
+  if (jobsIdx === -1) {
+    return { ok: false, reason: `${keyAbsent} (no top-level jobs: line in this workflow)` };
+  }
+  const keyLine = `  ${jobName}:`;
+  let keyIdx = -1;
+  for (let i = jobsIdx; i < lines.length; i++) {
+    if (lines[i] === keyLine || lines[i].startsWith(`${keyLine} `)) {
+      keyIdx = i;
+      break;
+    }
+  }
+  if (keyIdx === -1) {
+    return { ok: false, reason: keyAbsent };
+  }
+
+  // Clauses 2 + 3: walk upward, normalising as we go. Order does not matter —
+  // we only ever test membership — so we keep the natural bottom-up order.
+  const preamble = [];
+  for (let i = keyIdx - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (line.trim() === '') break;
+    const indent = line.length - line.trimStart().length;
+    if (indent !== 2) break;
+    if (!line.trim().startsWith('#')) break;
+    preamble.push(normalisePolicyCommentLine(line));
+  }
+
+  // Clause 4: anchored, single-line, self-attributing phrase.
+  const phrase = `failure policy for \`${jobName.toLowerCase()}\`:`;
+  const hasPhrase = preamble.some((ln) => ln.indexOf(phrase) !== -1);
+  if (!hasPhrase) {
+    return {
+      ok: false,
+      reason:
+        `${jobName}: the contiguous 2-space comment preamble directly above the job ` +
+        `key has no line containing the anchored policy phrase "${phrase}" — the ` +
+        'phrase must sit on a SINGLE comment line (do not line-wrap it between the ' +
+        'backticked job name and the colon) and must name THIS job, so a policy ' +
+        'written for a neighbouring job cannot be credited to this one',
+    };
+  }
+
+  // Clause 5: routing keyword, anywhere in the preamble.
+  let hasRouting = false;
+  for (const ln of preamble) {
+    for (const kw of POLICY_ROUTING_KEYWORDS) {
+      if (ln.indexOf(kw) !== -1) hasRouting = true;
+    }
+  }
+  if (!hasRouting) {
+    return {
+      ok: false,
+      reason:
+        `${jobName}: the failure-policy preamble never says where a failure is ` +
+        'routed — it must contain one of "next slice" / "queue" / "priority" (the ' +
+        'same vocabulary adrHasFailurePolicy accepts)',
+    };
+  }
+
+  return {
+    ok: true,
+    reason: `${jobName}: failure policy documented and attributed above the job key`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Pure predicate: the committed justfile `mutate-server cap=` default EQUALS the
+// wiring-eval ceiling MUTATE_SERVER_CAP_BASELINE. Returns { ok, reason }.
+//
+// WHY THIS EXISTS ALONGSIDE mutateServerRecipeIntact (ADR-0137 D4): that
+// predicate only asserts `cap ≤ MUTATE_SERVER_CAP_BASELINE`, so raising the
+// CEILING alone is invisible — no eval output changes — and a later slice could
+// then raise the justfile cap into the fresh headroom with no eval diff at all.
+// Pinning EQUALITY makes the two numbers one number: they move together, in the
+// same commit, or this check goes red.
+// The reason names BOTH numbers so a red tells you which side drifted.
+export function justfileCapEqualsCeiling(justfileText) {
+  const headerLine = findMutateServerHeaderLine(justfileText);
+  if (headerLine === null) {
+    return {
+      ok: false,
+      reason:
+        'justfile has no `mutate-server` recipe header at column 0 — nothing to ' +
+        `compare against MUTATE_SERVER_CAP_BASELINE=${MUTATE_SERVER_CAP_BASELINE}`,
+    };
+  }
+  const capInfo = parseCapDefaultFromHeader(headerLine);
+  if (!capInfo.present) {
+    return {
+      ok: false,
+      reason:
+        'justfile `mutate-server` header declares no cap= default, so the ceiling ' +
+        `MUTATE_SERVER_CAP_BASELINE=${MUTATE_SERVER_CAP_BASELINE} has nothing to equal`,
+    };
+  }
+  if (capInfo.cap === null) {
+    return {
+      ok: false,
+      reason:
+        'justfile `mutate-server` cap= default is malformed (no digits after cap=), ' +
+        `so it cannot equal MUTATE_SERVER_CAP_BASELINE=${MUTATE_SERVER_CAP_BASELINE}`,
+    };
+  }
+  if (capInfo.cap !== MUTATE_SERVER_CAP_BASELINE) {
+    return {
+      ok: false,
+      reason:
+        `justfile mutate-server cap=${capInfo.cap} but the wiring-eval ceiling ` +
+        `MUTATE_SERVER_CAP_BASELINE=${MUTATE_SERVER_CAP_BASELINE} — ADR-0137 D4 requires ` +
+        'them to be EQUAL and to move in the same commit',
+    };
+  }
+  return {
+    ok: true,
+    reason:
+      `justfile mutate-server cap=${capInfo.cap} === ` +
+      `MUTATE_SERVER_CAP_BASELINE=${MUTATE_SERVER_CAP_BASELINE}`,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -841,6 +1079,22 @@ jobs:
   }
 
   // --- TEETH L: mutateServerRecipeIntact ---
+  // CAP BOUNDARY FIXTURES ARE DERIVED FROM THE CONSTANT, NEVER HARD-CODED (14r-a).
+  // The cap is re-baselined upward from time to time (ADR-0118 §4, ADR-0137 D4).
+  // Hard-coded boundary fixtures (the old 299 / 300 / 309 literals) INVERT on the
+  // next re-baseline: the "accept at the ceiling" fixture goes vacuous (it sits far
+  // below the new ceiling) and the two "reject" fixtures start asserting the wrong
+  // side of the boundary — at which point a `>` → `>=` mutant at the cap comparison
+  // survives this ENTIRE block. Deriving every boundary fixture from
+  // MUTATE_SERVER_CAP_BASELINE keeps the bites pinned to the boundary wherever it
+  // moves, so a re-baseline is a one-line constant edit and nothing else.
+  const capFixture = (cap) =>
+    `mutate-server cap="${cap}":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n`;
+  const CAP_UNDER = MUTATE_SERVER_CAP_BASELINE - 1;
+  const CAP_AT = MUTATE_SERVER_CAP_BASELINE;
+  const CAP_OVER = MUTATE_SERVER_CAP_BASELINE + 1;
+  const CAP_WAY_OVER = MUTATE_SERVER_CAP_BASELINE + 10;
+
   // Bad: recipe absent.
   const justfileNoMutateServer = `ci: lint typecheck test\n\ntest:\n    cargo nextest run --workspace\n`;
   if (mutateServerRecipeIntact(justfileNoMutateServer)) {
@@ -872,14 +1126,17 @@ jobs:
         'TEETH L-shard: mutateServerRecipeIntact accepted a mutate-server recipe with --shard (scope-narrowing bypass)',
     };
   }
-  // Bad: cap=9999 (exceeds ceiling).
+  // Bad: cap=9999 (absurdly above any plausible re-baseline of the ceiling).
+  // Kept as a literal on purpose: it is the "someone typed a number to make the
+  // gate shut up" fixture, not a boundary bite (the boundary bites are derived).
   const justfileMutServerBigCap = `mutate-server cap="9999":\n    cargo mutants -p monster-realm-module --cap {{cap}} > missed.txt\n`;
   if (mutateServerRecipeIntact(justfileMutServerBigCap)) {
     return {
       name,
       pass: false,
       detail:
-        'TEETH L-bigcap: mutateServerRecipeIntact accepted cap=9999 (must reject cap > 299 per ADR-0137 D4 / ADR-0118)',
+        `TEETH L-bigcap: mutateServerRecipeIntact accepted cap=9999 (must reject cap > ` +
+        `MUTATE_SERVER_CAP_BASELINE=${MUTATE_SERVER_CAP_BASELINE} per ADR-0137 D4 / ADR-0118)`,
     };
   }
   // Bad: --file scope-narrowing bypass.
@@ -915,7 +1172,8 @@ jobs:
     };
   }
   // Good: all invariants satisfied (monster-realm-module, missed.txt, --test-tool nextest,
-  // cap ≤ 299, no scope-narrowing flags).
+  // cap ≤ MUTATE_SERVER_CAP_BASELINE, no scope-narrowing flags). cap=150 stays a
+  // literal on purpose: it is the "ordinary recipe" control, not a boundary bite.
   const justfileMutServerGood = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n`;
   if (!mutateServerRecipeIntact(justfileMutServerGood)) {
     return {
@@ -924,49 +1182,75 @@ jobs:
       detail: 'TEETH L-good: mutateServerRecipeIntact rejected a correct mutate-server recipe',
     };
   }
-  // Bad: cap=309 — exceeds tightened ceiling 299 (ADR-0137 amends ADR-0118 A3).
-  // Kills: impl that still uses the old ceiling of 340, silently accepting a 41-mutant
-  // loosening of the nightly survivor tolerance without any eval-visible signal.
-  // NOTE: this was previously asserted ACCEPTED (ceiling was 340). It is now REJECTED
-  // because ADR-0137 tightens the ceiling to the committed justfile cap=299 so every
-  // cap move is eval-visible. Correction rationale: spec §ptc5d-4 / ADR-0137 D4.
-  const justfileMutServerRecap = `mutate-server cap="309":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n`;
+  // Bad: cap = CEILING + 10 — a materially loosened ceiling (was the literal 309
+  // fixture against a 299 ceiling). Same intent, now re-pointed: ADR-0137 amends
+  // ADR-0118 A3 by tightening the ceiling from 340 to the committed justfile cap, so
+  // an impl that still carries ANY slack above the constant (the old 340, or a
+  // re-baselined constant that someone padded) accepts a double-digit loosening of
+  // the nightly survivor tolerance with no eval-visible signal.
+  // NOTE: this fixture was ORIGINALLY asserted ACCEPTED (ceiling was 340); it flipped
+  // to REJECTED under spec §ptc5d-4 / ADR-0137 D4. That flip is exactly the hazard the
+  // derivation removes — a literal cannot follow the boundary, so it must be derived.
+  const justfileMutServerRecap = capFixture(CAP_WAY_OVER);
   if (mutateServerRecipeIntact(justfileMutServerRecap)) {
     return {
       name,
       pass: false,
       detail:
-        'TEETH L-recap: mutateServerRecipeIntact accepted cap=309 — exceeds tightened ceiling 299 ' +
-        '(ADR-0137 amends ADR-0118 A3; ceiling tightened from 340 to the committed justfile cap so ' +
-        'every cap move is eval-visible; kills impl still using the old 340 ceiling)',
+        `TEETH L-recap: mutateServerRecipeIntact accepted cap=${CAP_WAY_OVER} — exceeds the ` +
+        `ceiling MUTATE_SERVER_CAP_BASELINE=${MUTATE_SERVER_CAP_BASELINE} (ADR-0137 amends ` +
+        'ADR-0118 A3; the ceiling IS the committed justfile cap so every cap move is ' +
+        'eval-visible; kills an impl that keeps headroom above the constant)',
     };
   }
 
-  // Bad: cap=300 — one above the ceiling (+ 1 boundary bite).
-  // Kills: impl using >= instead of > at the 299 boundary (off-by-one).
-  const justfileMutServerOvercap = `mutate-server cap="300":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n`;
+  // Bad: cap = CEILING + 1 — the +1 boundary bite (was the literal 300 fixture).
+  // Kills: an impl that compares against a looser number than the constant, or drops
+  // the comparison entirely. (The `>` → `>=` mutant is killed by the CEILING-accept
+  // tooth immediately below, not by this one — the two are a matched pair and only
+  // stay a pair while BOTH are derived from MUTATE_SERVER_CAP_BASELINE.)
+  const justfileMutServerOvercap = capFixture(CAP_OVER);
   if (mutateServerRecipeIntact(justfileMutServerOvercap)) {
     return {
       name,
       pass: false,
       detail:
-        'TEETH L-overcap: mutateServerRecipeIntact accepted cap=300 — must be rejected by the ' +
-        'tightened ceiling 299 (ADR-0137 D4); this is the +1 boundary bite; ' +
-        'kills impl using cap >= MUTATE_SERVER_CAP_BASELINE instead of cap > MUTATE_SERVER_CAP_BASELINE',
+        `TEETH L-overcap: mutateServerRecipeIntact accepted cap=${CAP_OVER} — must be rejected ` +
+        `by the ceiling MUTATE_SERVER_CAP_BASELINE=${MUTATE_SERVER_CAP_BASELINE} (ADR-0137 D4); ` +
+        'this is the +1 boundary bite; kills an impl comparing against a looser constant',
     };
   }
 
-  // Good: cap=299 — exactly at the ceiling (must be ACCEPTED, not rejected).
-  // Guards the > vs >= off-by-one: if the impl uses >= 299 it rejects 299 and this fires.
-  const justfileMutServer299 = `mutate-server cap="299":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n`;
-  if (!mutateServerRecipeIntact(justfileMutServer299)) {
+  // Good: cap = CEILING exactly — must be ACCEPTED, not rejected (was the literal 299
+  // fixture). Guards the > vs >= off-by-one: an impl using
+  // `cap >= MUTATE_SERVER_CAP_BASELINE` rejects the committed default and this fires.
+  // This is THE tooth that a re-baseline would have silently defanged as a literal.
+  const justfileMutServerAtCeiling = capFixture(CAP_AT);
+  if (!mutateServerRecipeIntact(justfileMutServerAtCeiling)) {
     return {
       name,
       pass: false,
       detail:
-        'TEETH L-299: mutateServerRecipeIntact rejected cap=299 — the committed justfile default ' +
-        'is cap=299 and must be accepted (ceiling check is cap > 299, not cap >= 299); ' +
-        'kills impl using >= MUTATE_SERVER_CAP_BASELINE (off-by-one)',
+        `TEETH L-at-ceiling: mutateServerRecipeIntact rejected cap=${CAP_AT} — the committed ` +
+        'justfile default equals MUTATE_SERVER_CAP_BASELINE and must be accepted (the check is ' +
+        'cap > MUTATE_SERVER_CAP_BASELINE, not cap >= MUTATE_SERVER_CAP_BASELINE); ' +
+        'kills the >= off-by-one mutant',
+    };
+  }
+
+  // Good: cap = CEILING - 1 — just inside the boundary (14r-a addition, completing the
+  // derived boundary quartet CEILING-1 accept / CEILING accept / CEILING+1 reject /
+  // 9999 reject). Kills an impl that rejects everything at or near the ceiling (e.g.
+  // an inverted comparison `cap < X` that would otherwise look green on the real file).
+  const justfileMutServerUnderCeiling = capFixture(CAP_UNDER);
+  if (!mutateServerRecipeIntact(justfileMutServerUnderCeiling)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        `TEETH L-under-ceiling: mutateServerRecipeIntact rejected cap=${CAP_UNDER} — one BELOW ` +
+        `MUTATE_SERVER_CAP_BASELINE=${MUTATE_SERVER_CAP_BASELINE} is comfortably legal; ` +
+        'kills an impl with an inverted or off-by-one cap comparison',
     };
   }
 
@@ -1130,6 +1414,603 @@ jobs:
       detail:
         'TEETH F10-good: mutateServerRecipeIntact rejected the canonical good recipe after F10 ban was added',
     };
+  }
+
+  // =========================================================================
+  // 14r-a PROOF-OF-TEETH
+  // =========================================================================
+
+  // --- TEETH M: jobHasFailurePolicyComment ---
+  // Every M-fixture below is a plausible thing a hurried author would actually
+  // write; each one names the false-green it kills.
+
+  // M1 — no preamble at all above `coverage:`.
+  // Kills: an impl that returns ok for any job it can find (presence ≠ policy).
+  const nightlyPolicyNone = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyNone, 'coverage');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M1: jobHasFailurePolicyComment accepted a coverage job with NO comment preamble ' +
+          'at all — job presence is not a documented failure policy',
+      };
+    }
+  }
+
+  // M2a — preamble mentions the backticked job name and a routing keyword but
+  // never says "failure policy for". Kills: an impl that only greps for the job
+  // name plus a keyword (any incidental sentence about the job would pass).
+  const nightlyPolicyNoPhrase = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  # The \`coverage\` job enforces the vitest line threshold; a red run is picked
+  # up as the next slice in the milestone queue.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyNoPhrase, 'coverage');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M2a: jobHasFailurePolicyComment accepted a preamble with the backticked job ' +
+          'name + a routing keyword but NO "failure policy for" phrase — kills an impl that ' +
+          'greps for name+keyword instead of the anchored phrase',
+      };
+    }
+  }
+
+  // M2b — anchored phrase present, routing keyword absent. Kills: an impl that
+  // drops clause 5, letting "we know it can fail" count as a policy.
+  const nightlyPolicyNoRouting = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  # Failure policy for \`coverage\`: the on-call human triages the run the same
+  # morning and records the outcome in the nightly log.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyNoRouting, 'coverage');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M2b: jobHasFailurePolicyComment accepted a preamble with the anchored phrase ' +
+          'but NO routing keyword (next slice / queue / priority) — a policy that never says ' +
+          'where the failure goes is not a policy',
+      };
+    }
+  }
+
+  // M2c — "failure policy" + routing keyword, but NO backticked job name anywhere.
+  // Kills: an impl that checks clause 4 as two independent substring tests
+  // ("failure policy" somewhere AND the name somewhere) rather than one anchored
+  // phrase. This is what proves the ATTRIBUTION half of clause 4 is enforced on
+  // its own, independently of M3's cross-preamble case.
+  const nightlyPolicyUnattributed = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  # Failure policy: any failure is inserted as the next slice in the milestone
+  # queue (same tier as fix-red-master).
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyUnattributed, 'coverage');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M2c: jobHasFailurePolicyComment accepted an UNATTRIBUTED "Failure policy:" ' +
+          'preamble (no backticked job name at all) — the phrase must name THIS job, or a ' +
+          'single generic sentence pasted above one job would cover jobs it never mentions',
+      };
+    }
+  }
+
+  // M3 — mis-attribution ACROSS preambles: a perfect preamble above `mutation:`,
+  // nothing above `coverage:`. Kills: any whole-file scan — the classic
+  // "one job documented, gate green for all" false pass. Two assertions, one fixture.
+  const nightlyPolicyMutationOnly = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  # Failure policy for \`mutation\`: a surviving mutant is inserted as the NEXT
+  # slice in the milestone queue.
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+  {
+    const rMutation = jobHasFailurePolicyComment(nightlyPolicyMutationOnly, 'mutation');
+    if (!rMutation.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH M3-good-leg: jobHasFailurePolicyComment rejected the correctly documented mutation job in the mis-attribution fixture: ${rMutation.reason}`,
+      };
+    }
+    const rCoverage = jobHasFailurePolicyComment(nightlyPolicyMutationOnly, 'coverage');
+    if (rCoverage.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          "TEETH M3: jobHasFailurePolicyComment credited the mutation job's failure policy to " +
+          'the undocumented coverage job — kills any whole-file (rather than per-preamble) scan',
+      };
+    }
+  }
+
+  // M3b — substring bleed: the preamble above `mutation:` is anchored on the
+  // NEIGHBOURING `mutation-server` job. Kills: an impl that matches the bare job
+  // name without the closing backtick+colon (`mutation` ⊂ `mutation-server`).
+  const nightlyPolicyBleed = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  # Failure policy for \`mutation-server\`: a survivor-count regression is
+  # inserted as the next slice in the milestone queue.
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyBleed, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M3b: jobHasFailurePolicyComment let a `mutation-server` policy satisfy the ' +
+          '`mutation` job — the anchored phrase must include the closing backtick and colon ' +
+          'so `mutation` cannot match inside `mutation-server`',
+      };
+    }
+  }
+
+  // M3c — cross-attribution WITHIN one preamble (the highest-value tooth): the
+  // preamble above `mutation-server:` mentions the backticked job name in
+  // unrelated prose on one line, and carries ANOTHER job's anchored policy
+  // (plus a routing keyword) on a different line. Kills: an impl that joins the
+  // preamble into one blob before searching — the blob contains "failure policy
+  // for", the backticked name, and a keyword, so it passes while this job's
+  // policy is in fact undocumented.
+  const nightlyPolicyCrossAttributed = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  # The \`mutation-server\` job shells cargo-mutants over the server crate.
+  # Failure policy for \`mutation\`: a surviving mutant is inserted as the next
+  # slice in the milestone queue.
+  mutation-server:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-server
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyCrossAttributed, 'mutation-server');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M3c: jobHasFailurePolicyComment accepted a preamble that documents ANOTHER ' +
+          "job's failure policy while merely name-dropping `mutation-server` on a different " +
+          'line — the phrase and the backticked job name must be on the SAME line (kills an ' +
+          'impl that joins the preamble lines into one blob)',
+      };
+    }
+  }
+
+  // M4 — non-contiguous: a perfect preamble separated from the key by ONE BLANK
+  // LINE. Kills: an impl that scans "the comments somewhere above" instead of the
+  // contiguous preamble; a blank line means the comment belongs to the previous
+  // job (that is exactly how the smoke-republish precedent reads).
+  const nightlyPolicyDetached = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  # Failure policy for \`coverage\`: a threshold breach is inserted as the next
+  # slice in the milestone queue.
+
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyDetached, 'coverage');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M4: jobHasFailurePolicyComment accepted a policy comment separated from the ' +
+          'coverage key by a blank line — the preamble must be CONTIGUOUS with the key',
+      };
+    }
+  }
+
+  // M5 — in-block placement, two legs.
+  // (i) 6-space indent INSIDE the mutation-server block: the comment sits in the
+  //     steps list, not above the key. Kills: an impl that searches the job BLOCK
+  //     (extractJobBlock) instead of the lines above the key.
+  const nightlyPolicyInBlockDeep = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  mutation-server:
+    runs-on: ubuntu-latest
+    steps:
+      # Failure policy for \`mutation-server\`: a survivor-count regression is
+      # inserted as the next slice in the milestone queue.
+      - run: just mutate-server
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyInBlockDeep, 'mutation-server');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M5-i: jobHasFailurePolicyComment accepted a policy comment placed INSIDE the ' +
+          'mutation-server steps list (6-space indent) — the preamble must sit ABOVE the job key',
+      };
+    }
+  }
+  // (ii) the same comment at 2-space indent inside the block. The predicate must
+  //      still be FALSE (it walks UP from the key, so it never sees this), and —
+  //      documented here because it is genuinely surprising — a 2-space comment
+  //      inside a job block TRUNCATES extractJobBlock: indent === 2 is the
+  //      block-terminator rule, so the `- run:` step below it falls outside the
+  //      block and nightlyHasServerMutationJob goes false. Anyone who "fixes" the
+  //      preamble walk by relaxing indent to >= 2 must confront this pair.
+  const nightlyPolicyInBlockShallow = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  mutation-server:
+    runs-on: ubuntu-latest
+    steps:
+  # Failure policy for \`mutation-server\`: a survivor-count regression is
+  # inserted as the next slice in the milestone queue.
+      - run: just mutate-server
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyInBlockShallow, 'mutation-server');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M5-ii: jobHasFailurePolicyComment accepted a 2-space policy comment placed ' +
+          'INSIDE the mutation-server block — the preamble must sit ABOVE the job key',
+      };
+    }
+    if (nightlyHasServerMutationJob(nightlyPolicyInBlockShallow) !== false) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M5-ii-extract: a 2-space comment inside the mutation-server block must ' +
+          'TRUNCATE extractJobBlock (indent === 2 terminates the block), so ' +
+          'nightlyHasServerMutationJob must go false — if it did not, the block-extraction ' +
+          'contract this eval relies on has changed and every job-block check needs re-review',
+      };
+    }
+  }
+
+  // M6 — commented-out key `  # coverage:` with a perfect preamble above it and no
+  // real coverage job. Kills: an impl that matches the job key with a loose
+  // `indexOf('coverage:')`, which would "find" the key inside the comment and then
+  // credit the (real, perfect) preamble above it.
+  const nightlyPolicyCommentedKey = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+  # Failure policy for \`coverage\`: a threshold breach is inserted as the next
+  # slice in the milestone queue.
+  # coverage:
+  #   runs-on: ubuntu-latest
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyCommentedKey, 'coverage');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M6: jobHasFailurePolicyComment accepted a COMMENTED-OUT `# coverage:` key — a ' +
+          'disabled job with a lovely policy comment above it is the worst false green available',
+      };
+    }
+    if (r.reason.indexOf('job key absent') === -1) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH M6-reason: jobHasFailurePolicyComment rejected the commented-out key for the WRONG reason — it must report the key-absent clause, not a missing phrase. Got: ${r.reason}`,
+      };
+    }
+  }
+
+  // M7 — header bleed: a perfect anchored policy sentence for `coverage` sits in
+  // the FILE'S top indent-0 comment block, nothing above the real key. Kills: an
+  // impl that walks up ignoring indent (it would sail past `jobs:`/`on:`/`name:`
+  // only if it also ignored non-comment lines — but a `# …` at indent 0 directly
+  // above a key is the realistic shape once someone moves the file header around).
+  const nightlyPolicyHeaderBleed = `# Nightly mutation + coverage gates (ADR-0050).
+# Failure policy for \`coverage\`: a threshold breach is inserted as the next
+# slice in the milestone queue.
+name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyHeaderBleed, 'coverage');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M7: jobHasFailurePolicyComment accepted a policy sentence living in the FILE ' +
+          "header comment block — a file-level comment is not the job's preamble",
+      };
+    }
+  }
+
+  // M8 — `jobs:` anchoring: a decoy 2-space `coverage:` key under `env:` carries a
+  // perfect preamble; the REAL coverage job under `jobs:` has none. Kills: an impl
+  // that finds the FIRST `  coverage:` line in the file (clause 1 exists for this).
+  const nightlyPolicyAboveJobs = `name: Nightly
+on:
+  workflow_dispatch:
+env:
+  # Failure policy for \`coverage\`: a threshold breach is inserted as the next
+  # slice in the milestone queue.
+  coverage: enabled
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyAboveJobs, 'coverage');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M8: jobHasFailurePolicyComment was satisfied by a documented `coverage:` key ' +
+          'under `env:` while the real job under `jobs:` is undocumented — the key scan must be ' +
+          'anchored at the top-level `jobs:` line',
+      };
+    }
+  }
+
+  // M-good-1 — three jobs, three correct preambles: all three must be ok.
+  const nightlyPolicyAllThree = `name: Nightly
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+jobs:
+  # Failure policy for \`mutation\`: a surviving mutant is inserted as the NEXT
+  # slice in the milestone queue (same tier as fix-red-master).
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@abc1234abc1234abc1234abc1234abc1234abc12 # v4
+      - run: just mutate-core
+  # Failure policy for \`mutation-server\`: a survivor-count regression is
+  # inserted as the next slice in the milestone queue.
+  mutation-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@abc1234abc1234abc1234abc1234abc1234abc12 # v4
+      - run: just mutate-server
+  # Failure policy for \`coverage\`: a threshold breach is inserted as the next
+  # slice in the milestone queue.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@abc1234abc1234abc1234abc1234abc1234abc12 # v4
+      - run: just coverage
+`;
+  for (const job of ['mutation', 'mutation-server', 'coverage']) {
+    const r = jobHasFailurePolicyComment(nightlyPolicyAllThree, job);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH M-good-1 (${job}): jobHasFailurePolicyComment rejected a correctly documented job — false negative would make the whole gate un-satisfiable. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // M-good-2 — multi-line preamble: the anchored phrase is on line 1 (with
+  // irregular internal spacing and a tab) and the routing keyword is on line 3.
+  // Proves normalisation collapses whitespace and that the keyword may live on a
+  // DIFFERENT line from the phrase (clause 5 is preamble-wide, clause 4 is not).
+  const nightlyPolicyIrregular = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  #   Failure   policy   for \`coverage\`:\tthe run is triaged the same morning.
+  # The outcome is recorded in the nightly log.
+  # The fix is scheduled as the next slice.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyIrregular, 'coverage');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH M-good-2: jobHasFailurePolicyComment rejected a valid multi-line preamble with collapsed whitespace/tab in the phrase and the routing keyword on a later line. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // M-good-3 — neighbour control: adding policy preambles must not disturb block
+  // extraction for ANY of the three jobs. Kills: a "fix" that inserts the comments
+  // at an indent which truncates extractJobBlock (see M5-ii) — the policy would be
+  // documented and the job silently unrun.
+  for (const [job, present] of [
+    ['mutation', nightlyHasMutationJob(nightlyPolicyAllThree)],
+    ['mutation-server', nightlyHasServerMutationJob(nightlyPolicyAllThree)],
+    ['coverage', nightlyHasCoverageJob(nightlyPolicyAllThree)],
+  ]) {
+    if (!present) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH M-good-3 (${job}): the 2-space policy preambles broke job-step detection — comments above a job key must not affect extractJobBlock`,
+      };
+    }
+  }
+  for (const job of ['mutation', 'mutation-server', 'coverage']) {
+    const r = jobIsNotNeutered(nightlyPolicyAllThree, job);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH M-good-3-neuter (${job}): jobIsNotNeutered went false on a documented, unneutered job — the preamble comments must not leak into the job block. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // --- TEETH N: justfileCapEqualsCeiling ---
+  // Fixture caps are DERIVED from MUTATE_SERVER_CAP_BASELINE (see the TEETH L
+  // note): a hard-coded literal here would silently invert on the next re-baseline.
+
+  // N1 — cap one BELOW the ceiling → FALSE. This is the invisible-drift case:
+  // mutateServerRecipeIntact accepts it happily (cap ≤ ceiling), so without the
+  // equality gate a slice could raise the CEILING alone with ZERO eval diff, and a
+  // later slice could raise the justfile cap into the fresh headroom — also with
+  // zero eval diff. Kills: an impl that reuses the `≤` comparison.
+  {
+    const r = justfileCapEqualsCeiling(capFixture(CAP_UNDER));
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH N1: justfileCapEqualsCeiling accepted cap=${CAP_UNDER} against ceiling ` +
+          `${MUTATE_SERVER_CAP_BASELINE} — a cap BELOW the ceiling is exactly the invisible ` +
+          'drift ADR-0137 D4 forbids; the predicate must assert EQUALITY, not ≤',
+      };
+    }
+    const namesBoth =
+      r.reason.indexOf(String(CAP_UNDER)) !== -1 &&
+      r.reason.indexOf(String(MUTATE_SERVER_CAP_BASELINE)) !== -1;
+    if (!namesBoth) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH N1-reason: justfileCapEqualsCeiling's reason must name BOTH numbers (justfile cap ${CAP_UNDER} and ceiling ${MUTATE_SERVER_CAP_BASELINE}) so a red says which side drifted. Got: ${r.reason}`,
+      };
+    }
+  }
+
+  // N2 — cap exactly at the ceiling → TRUE (the committed state; if this fails the
+  // gate is un-satisfiable and the real-file check is a permanent false red).
+  {
+    const r = justfileCapEqualsCeiling(capFixture(CAP_AT));
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH N2: justfileCapEqualsCeiling rejected cap=${CAP_AT} which EQUALS MUTATE_SERVER_CAP_BASELINE — this is the committed, correct state. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // N3 — cap one ABOVE the ceiling → FALSE. mutateServerRecipeIntact already
+  // rejects this; asserting it here too keeps the two views of the number aligned
+  // (kills an impl that only checks "cap is not lower than the ceiling").
+  {
+    const r = justfileCapEqualsCeiling(capFixture(CAP_OVER));
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH N3: justfileCapEqualsCeiling accepted cap=${CAP_OVER} against ceiling ` +
+          `${MUTATE_SERVER_CAP_BASELINE} — equality means equality in both directions`,
+      };
+    }
+    const namesBoth =
+      r.reason.indexOf(String(CAP_OVER)) !== -1 &&
+      r.reason.indexOf(String(MUTATE_SERVER_CAP_BASELINE)) !== -1;
+    if (!namesBoth) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH N3-reason: justfileCapEqualsCeiling's reason must name BOTH numbers (justfile cap ${CAP_OVER} and ceiling ${MUTATE_SERVER_CAP_BASELINE}). Got: ${r.reason}`,
+      };
+    }
+  }
+
+  // N4 — header with `cap=` but no digits → FALSE. Kills: an impl whose parse
+  // returns NaN (NaN !== ceiling is true by accident) or 0-defaults, and an impl
+  // that treats an unparseable header as "nothing to compare, therefore fine".
+  const justfileCapMalformed = `mutate-server cap=:\n    cargo mutants -p monster-realm-module --test-tool nextest 2>&1 | tee missed.txt\n`;
+  {
+    const r = justfileCapEqualsCeiling(justfileCapMalformed);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH N4: justfileCapEqualsCeiling accepted a malformed `cap=` header (no digits) — ' +
+          'an unparseable cap cannot be proven equal to the ceiling and must be rejected',
+      };
+    }
   }
 
   // =========================================================================
@@ -1340,20 +2221,89 @@ jobs:
 
   // Check 13: mutate-server recipe is intact (EXPECTED RED — recipe absent)
   // GREEN edit: add a mutate-server recipe to the justfile with monster-realm-module,
-  // missed.txt, cap ≤ 299, and no --shard/--file/--exclude-re narrowing.
+  // missed.txt, cap ≤ MUTATE_SERVER_CAP_BASELINE, and no --shard/--file/--exclude-re.
   if (!mutateServerRecipeIntact(justfile)) {
     return {
       name,
       pass: false,
       detail:
-        'justfile mutate-server recipe is absent or incomplete (EXPECTED RED — implementer must add the recipe: cargo mutants -p monster-realm-module --test-tool nextest with missed.txt count-compare, cap ≤ 299, no --shard/--file/--exclude-re)',
+        'justfile mutate-server recipe is absent or incomplete (EXPECTED RED — implementer must add the recipe: cargo mutants -p monster-realm-module --test-tool nextest with missed.txt count-compare, cap ≤ MUTATE_SERVER_CAP_BASELINE, no --shard/--file/--exclude-re)',
     };
+  }
+
+  // =========================================================================
+  // 14r-a REAL FILE CHECKS
+  //   Check 14/15/16 → EXPECTED RED (no job carries a policy preamble yet)
+  //   Check 17       → GREEN today, load-bearing from now on
+  // =========================================================================
+
+  // Checks 14–16: each guarded nightly job documents its OWN failure policy in the
+  // comment preamble directly above its job key (the smoke-republish precedent at
+  // .github/workflows/nightly.yml:78-83). Three SEPARATE checks, each passing its
+  // OWN job name — one loop variable copied into all three would leave two jobs
+  // unpinned, so the job name is spelled out per check and echoed in the detail.
+  //
+  // GREEN edit (per job): insert, immediately above the job key at 2-space indent,
+  // a comment preamble containing a line of the form
+  //   # Failure policy for `<job>`: … next slice / queue / priority …
+  // Decision-hook mdrewt/claude-harness#14 is OPEN — do NOT add a notification
+  // Action; the documented policy is the reversible default.
+
+  // Check 14: mutation job failure policy (EXPECTED RED)
+  {
+    const r = jobHasFailurePolicyComment(nightlyYml, 'mutation');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `nightly.yml job 'mutation' has no documented failure policy above its job key (EXPECTED RED): ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 15: mutation-server job failure policy (EXPECTED RED)
+  {
+    const r = jobHasFailurePolicyComment(nightlyYml, 'mutation-server');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `nightly.yml job 'mutation-server' has no documented failure policy above its job key (EXPECTED RED): ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 16: coverage job failure policy (EXPECTED RED)
+  {
+    const r = jobHasFailurePolicyComment(nightlyYml, 'coverage');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `nightly.yml job 'coverage' has no documented failure policy above its job key (EXPECTED RED): ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 17: the committed justfile cap EQUALS the wiring-eval ceiling (ADR-0137
+  // D4). GREEN today; it goes red the instant either number moves alone, which is
+  // the whole point — `mutateServerRecipeIntact`'s `cap ≤ ceiling` cannot see a
+  // ceiling-only raise.
+  {
+    const r = justfileCapEqualsCeiling(justfile);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `justfile mutate-server cap= default and the wiring-eval ceiling have drifted apart: ${r.reason}`,
+      };
+    }
   }
 
   return {
     name,
     pass: true,
     detail:
-      'nightly smoke-republish correctly wired: job exists in nightly.yml (not ci.yml), references smoke-republish.sh, justfile recipe present, script committed, ADR-0079 documents the failure policy; m13.5a additions: mutation/coverage/mutation-server jobs present and unneutered, schedule+dispatch triggers live, coverage threshold ≥96, mutate-server recipe intact',
+      'nightly smoke-republish correctly wired: job exists in nightly.yml (not ci.yml), references smoke-republish.sh, justfile recipe present, script committed, ADR-0079 documents the failure policy; m13.5a additions: mutation/coverage/mutation-server jobs present and unneutered, schedule+dispatch triggers live, coverage threshold ≥96, mutate-server recipe intact; 14r-a additions: all three guarded jobs document an attributed failure policy in their comment preamble, and the justfile mutate-server cap= default equals MUTATE_SERVER_CAP_BASELINE',
   };
 }
