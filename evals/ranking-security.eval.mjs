@@ -48,6 +48,11 @@
 //     depth 0, before their irreversible effects — plus the SSOT/ctor-cover
 //     counts and the anti-shadow pins. Full clause list and rationale live on
 //     the checker itself (search "CHECKER D").
+//     [D/ctor-cover-crossfile]: the bare `start_pvp_battle` identifier is absent
+//     from every OTHER non-test source (criterion B2's AM-1 logic retargeted —
+//     the in-file ctor counts are blind to a `pub(crate)` cross-file caller).
+//     Lives in the live-check section because it reads files the pure checker
+//     never sees.
 //
 //   G8 REKEY_PROFILE (M21c, ADR-0179 D6 / AUTH-23/25)
 //     [G8/tombstone-arg-pin]: inside `rekey_profile`'s body, the SECOND
@@ -78,7 +83,13 @@
 // No new RegExp() anywhere.
 
 import { readdirSync, readFileSync, statSync } from 'node:fs';
-import { assertStripperSound, compactWs, countOccurrences, stripRustSource } from './rust-scan.mjs';
+import {
+  assertStripperSound,
+  compactWs,
+  countOccurrences,
+  findFnBody,
+  stripRustSource,
+} from './rust-scan.mjs';
 
 const SERVER_SRC = 'server-module/src';
 
@@ -464,6 +475,10 @@ function checkTombstoneArgPin(rankingSrc) {
 //                         untouched), and `.battle().insert(` == 1.
 //   [D/active-body]       the exact `ranked_enforcement_active` body.
 //
+// One further clause, [D/ctor-cover-crossfile], is NOT part of this checker: it
+// reads every OTHER non-test source, so it lives in the live-check section
+// alongside criterion B2, whose logic it reuses. See `crossFileCtorRefCount`.
+//
 // Needles are literal `indexOf`/`countOccurrences` only — NO `new RegExp(`
 // anywhere (Semgrep detect-non-literal-regexp is remote-only and would fail the
 // PR after every local gate has passed). They are WHITESPACE-FREE and matched
@@ -479,8 +494,13 @@ const D_ACCEPT_FN = 'accept_challenge';
 // Each reducer's own irreversible effect — the thing the gate must precede.
 const D_CHALLENGE_EFFECT = 'battle_challenge().insert(';
 const D_ACCEPT_EFFECT = 'start_pvp_battle(';
+// The SAME text as D_ACCEPT_EFFECT, aliased for its OTHER role so the
+// ctor-cover clause never reads as if it were talking about accept_challenge's
+// ordering anchor. Aliased rather than duplicated: the two roles must not drift.
+const D_CTOR_PAREN = D_ACCEPT_EFFECT;
 // Bare token (no paren): a fn-POINTER alias `let ctor = start_pvp_battle;`
 // constructs ranked battles while leaving the paren count at 2 (red-team F4).
+// It is ALSO the cross-file needle — see crossFileCtorRefCount below.
 const D_CTOR_BARE = 'start_pvp_battle';
 const D_HAS_JWT_NEEDLE = 'has_jwt';
 const D_ACCOUNT_TABLE_NEEDLE = 'ctx.db.account(';
@@ -551,30 +571,19 @@ function dLogTagNeedle(tag) {
   return `log_reject(${DQ}${tag}${DQ}`;
 }
 
-// dReducerBodySpan: extractReducerBody's algorithm, returning OFFSETS instead of
-// text. `stripRustSource` is length- and offset-preserving, so brace matching
-// runs on the string-blanked text (correct: a brace inside a literal can never
-// desync it) while the SAME span still indexes the RAW source. That is what lets
-// [D/log-tag] read a literal that every other clause deliberately cannot see.
-// extractReducerBody itself is left untouched — it is A1/C2/G8's.
-function dReducerBodySpan(strippedSrc, fnName) {
-  let idx = strippedSrc.indexOf(`pub fn ${fnName}(`);
-  if (idx === -1) idx = strippedSrc.indexOf(`fn ${fnName}(`);
-  if (idx === -1) return null;
-  let i = idx;
-  while (i < strippedSrc.length && strippedSrc[i] !== '{') i++;
-  if (i >= strippedSrc.length) return null;
-  const start = i + 1;
-  let depth = 1;
-  i++;
-  while (i < strippedSrc.length && depth > 0) {
-    if (strippedSrc[i] === '{') depth++;
-    else if (strippedSrc[i] === '}') depth--;
-    i++;
-  }
-  if (depth !== 0) return null;
-  return { start, end: i - 1 };
-}
+// Criterion D uses rust-scan's exported `findFnBody(stripped, name)`, which
+// returns the body SPAN `{start, end}` rather than the text. Two reasons it is
+// the right tool here, and not a local copy (SSOT — reviewer m4):
+//   * `stripRustSource` is length- and offset-PRESERVING, so brace matching runs
+//     on the string-blanked text (a brace inside a literal can never desync it)
+//     while the SAME offsets still index the RAW source — that is what lets
+//     [D/log-tag] read a literal every other clause deliberately cannot see.
+//   * It is STRICTER than this file's `extractReducerBody`: it matches
+//     `fn <name>` as a WHOLE identifier and finds the body brace at zero
+//     angle/paren depth (with a `->` guard), so `fn challenge_pvp_v2` cannot be
+//     mistaken for `fn challenge_pvp`, and a `{` inside a generic bound cannot
+//     be mistaken for the body.
+// `extractReducerBody` is left untouched — it belongs to A1/C2/G8.
 
 /**
  * Criterion D: is the ranked-requires-account gate wired into both PvP
@@ -653,7 +662,7 @@ export function checkRankedAccountGate(pvpSrc) {
   const bodies = {};
   const rawBodies = {};
   for (const leg of legs) {
-    const span = dReducerBodySpan(stripped, leg.fnName);
+    const span = findFnBody(stripped, leg.fnName);
     if (span === null) {
       return {
         ok: false,
@@ -833,14 +842,14 @@ export function checkRankedAccountGate(pvpSrc) {
     };
   }
 
-  const ctorCount = countOccurrences(code, D_ACCEPT_EFFECT);
+  const ctorCount = countOccurrences(code, D_CTOR_PAREN);
   const ctorBareCount = countOccurrences(code, D_CTOR_BARE);
   const insertCount = countOccurrences(code, D_BATTLE_INSERT_NEEDLE);
   if (ctorCount !== 2 || ctorBareCount !== 2 || insertCount !== 1) {
     return {
       ok: false,
       why:
-        `[D/ctor-cover] expected exactly 2 \`${D_ACCEPT_EFFECT}\` (the definition plus its ONE ` +
+        `[D/ctor-cover] expected exactly 2 \`${D_CTOR_PAREN}\` (the definition plus its ONE ` +
         `caller, \`${D_ACCEPT_FN}\`), exactly 2 BARE \`${D_CTOR_BARE}\` tokens and exactly 1 ` +
         `\`${D_BATTLE_INSERT_NEEDLE}\` in pvp.rs; found ${ctorCount}, ${ctorBareCount} and ` +
         `${insertCount}. Gating the two handshake reducers is the COMPLETE cover for ` +
@@ -869,6 +878,33 @@ export function checkRankedAccountGate(pvpSrc) {
   }
 
   return { ok: true, why: '' };
+}
+
+// ---------------------------------------------------------------------------
+// [D/ctor-cover-crossfile] — the ctor-cover pins above are FILE-SCOPED to
+// pvp.rs, and `start_pvp_battle` is `pub(crate)` (reviewer M1).
+//
+// A future `matchmaking.rs` doing `crate::pvp::start_pvp_battle(ctx, ..)`
+// constructs a ranked human-vs-human battle that ran NEITHER handshake gate,
+// while every in-file count stays at exactly 2/2/1 and every statement pin,
+// depth fence and ordering check stays green. ADR-0189 D1's "the two handshake
+// reducers are the complete cover" claim is only true while pvp.rs is the sole
+// referencing file.
+//
+// This is criterion B2's exact logic (AM-1, ADR-0119 D3), retargeted: a
+// cross-file call MUST name the symbol at least once in that file — as a
+// path-qualified call, a bare call after `use crate::pvp::start_pvp_battle;`,
+// or a `use ... as alias;` import (the import line itself carries the bare
+// token). So a bare-identifier count of 0 in every OTHER non-test source is
+// necessary and sufficient.
+//
+// Extracted as a pure predicate — the A2 `hasProfileTableAccess` precedent — so
+// the teeth can exercise the EXACT expression the live check runs, without
+// fixturing the directory walk (the live check reads the real tree, which the
+// orchestrator proves with a live mutation).
+// ---------------------------------------------------------------------------
+export function crossFileCtorRefCount(src) {
+  return countOccurrences(stripBoth(src), D_CTOR_BARE);
 }
 
 // ---------------------------------------------------------------------------
@@ -2235,7 +2271,7 @@ export default async function () {
     Ok(())
 }`,
       }),
-      constructed: (src) => countOccurrences(scanCode(src), D_ACCEPT_EFFECT) === 3,
+      constructed: (src) => countOccurrences(scanCode(src), D_CTOR_PAREN) === 3,
       constructedWhy: 'the fixture does not contain a third start_pvp_battle( occurrence',
     },
     {
@@ -2434,7 +2470,7 @@ ${D_GUARD_CHALLENGE}
         ),
       }),
       constructed: (src) => {
-        const span = dReducerBodySpan(stripBoth(src), D_CHALLENGE_FN);
+        const span = findFnBody(stripBoth(src), D_CHALLENGE_FN);
         if (span === null) return false;
         return (
           compactWs(src.slice(span.start, span.end)).indexOf(dLogTagNeedle(D_ACCEPT_FN)) !== -1
@@ -2459,7 +2495,7 @@ ${D_GUARD_CHALLENGE}
 }`,
       }),
       constructed: (src) =>
-        countOccurrences(scanCode(src), D_ACCEPT_EFFECT) === 2 &&
+        countOccurrences(scanCode(src), D_CTOR_PAREN) === 2 &&
         countOccurrences(scanCode(src), D_CTOR_BARE) === 3,
       constructedWhy:
         'the alias fixture must leave the paren count at 2 (proving the paren pin is blind) ' +
@@ -2494,6 +2530,83 @@ ${D_GUARD_CHALLENGE}
           `${fixture.tag}, but the checker reported: ${dResult.why}`,
       };
     }
+  }
+
+  // -------------------------------------------------------------------------
+  // [D/ctor-cover-crossfile] teeth. The live check walks the real tree, so the
+  // needle logic is fixtured HERE through the same pure predicate — the A2 /
+  // B2 pattern. Three shapes, because the whole claim rests on "any cross-file
+  // call must NAME the symbol at least once".
+  // -------------------------------------------------------------------------
+  const dCrossFileQualified = `use crate::schema::Battle;
+
+pub fn find_match(ctx: &ReducerContext, a: Identity, b: Identity) -> Result<(), String> {
+    let battle_id = crate::pvp::start_pvp_battle(ctx, a, Vec::new(), b, Vec::new())?;
+    let _ = battle_id;
+    Ok(())
+}`;
+  if (crossFileCtorRefCount(dCrossFileQualified) === 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (D-BAD-crossfile-ctor-qualified): the bare-token count did not fire on ' +
+        'another module calling `crate::pvp::start_pvp_battle(..)`. That call builds a ranked ' +
+        'battle which ran NEITHER handshake gate, while every in-file ctor-cover count in ' +
+        'pvp.rs stays at 2/2/1 (ADR-0189 D1, reviewer M1)',
+    };
+  }
+
+  // The alias shape (criterion B2's B-BAD-BARE-ALIAS analogue): the CALL site is
+  // spelled `build_ranked(..)` and names nothing — but the `use ... as` import
+  // line still carries the bare token, which is exactly why counting the bare
+  // identifier per file (rather than the call spelling) is the right needle.
+  const dCrossFileAliased = `use crate::pvp::start_pvp_battle as build_ranked;
+
+pub fn find_match(ctx: &ReducerContext, a: Identity, b: Identity) -> Result<(), String> {
+    let battle_id = build_ranked(ctx, a, Vec::new(), b, Vec::new())?;
+    let _ = battle_id;
+    Ok(())
+}`;
+  if (dCrossFileAliased.indexOf(`${D_CTOR_BARE}(`) !== -1) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (D-BAD-crossfile-ctor-alias): fixture construction error — the alias ' +
+        `fixture still contains a literal \`${D_CTOR_BARE}(\` call, so it does not prove the ` +
+        'bare-identifier needle catches what a call-shaped needle would miss',
+    };
+  }
+  if (crossFileCtorRefCount(dCrossFileAliased) === 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (D-BAD-crossfile-ctor-alias): the bare-token count did not fire on a ' +
+        '`use crate::pvp::start_pvp_battle as build_ranked;` import whose call site names ' +
+        'only the alias. Counting the bare IDENTIFIER per file (criterion B2 / AM-1 logic) ' +
+        'is what closes this: the import line must name the real symbol',
+    };
+  }
+
+  // Non-vacuity: an ordinary sibling module must NOT trip the needle, or the
+  // live check would red on arrival and get "fixed" by deletion.
+  const dCrossFileClean = `use crate::schema::Battle;
+
+pub fn tidy(ctx: &ReducerContext) -> Result<(), String> {
+    let _ = ctx;
+    Ok(())
+}`;
+  if (crossFileCtorRefCount(dCrossFileClean) !== 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH FAILED (D-GOOD-crossfile-clean): the bare-token count fired on a sibling module ' +
+        `that never mentions \`${D_CTOR_BARE}\` — the [D/ctor-cover-crossfile] check would red ` +
+        'on the untouched tree, which is how a gate gets weakened away',
+    };
   }
 
   // =========================================================================
@@ -2776,6 +2889,36 @@ ${D_GUARD_CHALLENGE}
     );
   }
 
+  // -------------------------------------------------------------------------
+  // [D/ctor-cover-crossfile]: the bare `start_pvp_battle` identifier must be
+  // absent from every OTHER non-test source. Lives HERE rather than inside
+  // checkRankedAccountGate because it reads files the pure checker never sees —
+  // the same split criterion B2 uses, and it reuses B2's enumeration
+  // (allNonTestFiles, read individually, *_tests.rs already excluded).
+  // See crossFileCtorRefCount's header for why a bare-identifier count is both
+  // necessary and sufficient here (reviewer M1).
+  // -------------------------------------------------------------------------
+  for (const { name: fileName, src } of allNonTestFiles) {
+    if (fileName === 'pvp.rs') continue; // the in-file 2/2/1 pins own this one
+    const refs = crossFileCtorRefCount(src);
+    if (refs > 0) {
+      failures.push(
+        `[D/ctor-cover-crossfile] RANKED_REQUIRES_ACCOUNT (ADR-0189 D1, issue #307): found ` +
+          `${refs} occurrence(s) of the bare identifier \`${D_CTOR_BARE}\` in ${fileName}. ` +
+          '`start_pvp_battle` is `pub(crate)`, so another module can construct a ranked ' +
+          'human-vs-human battle that ran NEITHER handshake gate — and the ctor-cover counts ' +
+          'inside pvp.rs would still read exactly 2/2/1, with every statement pin, depth ' +
+          'fence and ordering check green. ADR-0189 D1 claims the two handshake reducers are ' +
+          'the COMPLETE cover for ranked-battle creation; that is only true while pvp.rs is ' +
+          'the sole referencing file. Gate the new path and amend ADR-0189 D1 (and widen this ' +
+          'allowlist in the same PR, never silently) rather than deleting this clause. The ' +
+          'needle is the bare IDENTIFIER, not the call spelling, so a ' +
+          '`use crate::pvp::start_pvp_battle as alias;` import is caught too (criterion B2 / ' +
+          'AM-1 precedent).',
+      );
+    }
+  }
+
   if (failures.length > 0) {
     return { name, pass: false, detail: failures.join('; ') };
   }
@@ -2803,7 +2946,9 @@ ${D_GUARD_CHALLENGE}
       'body, each filing its reject under its own log tag, no shadowed or duplicated seam / ' +
       'reducer declarations, has_jwt and ctx.db.account( absent, start_pvp_battle( == 2 in ' +
       'both the paren and bare-token forms, .battle().insert( == 1 and the exact ' +
-      'ranked_enforcement_active body (issue #307). ' +
+      'ranked_enforcement_active body (issue #307); [D/ctor-cover-crossfile] the bare ' +
+      `start_pvp_battle identifier absent from all ${allNonTestFiles.length - 1} other ` +
+      'non-test sources, so no cross-file caller can construct an ungated ranked battle. ' +
       'A1/A2/C1a/C1b/D all matched against WHITESPACE-COMPACTED source (M21c A2 corollary), ' +
       'so rustfmt-wrapped chains cannot evade them.',
   };

@@ -3926,7 +3926,39 @@ fn pvp_reason_log_sites_interpolate_an_escaped_binding() {
 /// apostrophes: this repo's text-level source scanners have no char-literal
 /// lexer, and a bare quote there inverts string/code polarity for the rest of
 /// the file (guards.rs:27-30 / guards_tests G-5a precedent).
-const RA_DQ: char = '\u{0022}';
+const RA_DQ_BYTE: u8 = 0x22;
+
+/// Count the DELIMITER double quotes in `src` — a quote preceded by an ODD run
+/// of backslashes is escaped payload (`\"` inside a JSON log format string),
+/// not a delimiter, and must not be counted.
+///
+/// Escape-awareness is load-bearing, not tidiness: pvp.rs's `log::info!` lines
+/// are full of `\"` pairs, and a single literal carrying an odd number of them
+/// would flip a naive count's parity and false-RED the canary in EA-RA-04 on a
+/// perfectly well-formed file.
+fn ra_delimiter_quote_count(src: &str) -> usize {
+    let bytes = src.as_bytes();
+    let mut n = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == RA_DQ_BYTE {
+            // Walk BACK over the run of backslashes immediately before this
+            // quote. An odd run escapes it (`\"`); an even run means the last
+            // backslash was itself escaped (`\\"`) and the quote is a delimiter.
+            let mut backslashes = 0usize;
+            let mut j = i;
+            while j > 0 && bytes[j - 1] == b'\\' {
+                backslashes += 1;
+                j -= 1;
+            }
+            if backslashes.is_multiple_of(2) {
+                n += 1;
+            }
+        }
+        i += 1;
+    }
+    n
+}
 
 /// The EA-RA normal form: comments out, string-literal payloads out (quotes
 /// kept), then ALL whitespace removed. Applied to production source it equals
@@ -4361,23 +4393,36 @@ fn ea_ra_04_ranked_gate_ssot_and_constructor_cover_counts() {
          prevent, or a literal hiding it from the string-stripped scan."
     );
 
-    // Quote-parity canary (red-team F6). `strip_rust_strings` is a whole-text
-    // quote-toggle walk with no line boundary: an ODD number of double quotes in
-    // the comment-stripped source means one literal is unterminated, the walker
-    // inverts string/code polarity from that point, and every ban above is
-    // measured against BLANKED code. Verified even on the pre-implementation
-    // tree (the only two odd-quote lines, pvp.rs:611-612, are the two halves of
-    // one continued literal and pair up).
-    let quote_count = strip_rust_comments(PVP_RS).matches(RA_DQ).count();
+    // Quote-parity canary (red-team F6). Every well-formed literal contributes
+    // exactly TWO delimiter quotes, so the comment-stripped source must carry an
+    // EVEN number of them. An odd count means the text handed to
+    // `strip_rust_strings` no longer has balanced delimiters, and from the
+    // orphan quote onward that walker treats real code as string data and blanks
+    // it — every ban clause above then reports PASS because it went BLIND.
+    //
+    // The two shapes this actually catches (NOT a missing escape handler —
+    // `strip_rust_strings` is escape-aware at :2065-2068, and this count is too):
+    //   1. a genuinely unterminated literal, or a raw string (`r#"…"#`) that
+    //      neither this stripper nor this counter understands;
+    //   2. a `//` INSIDE a literal — `strip_rust_comments` runs FIRST and is
+    //      string-unaware, so it truncates that line and eats the closing quote.
+    //      This is the 13r-c / ADR-0181 false-GREEN shape (an issuer URL is the
+    //      canonical trigger), and it is why no URL literal may be written
+    //      un-split in pvp.rs.
+    let quote_count = ra_delimiter_quote_count(&strip_rust_comments(PVP_RS));
     assert_eq!(
         quote_count % 2,
         0,
-        "EA-RA-04 FAIL (stripper desync canary): the comment-stripped pvp.rs contains \
-         {quote_count} double-quote characters — an ODD number. `strip_rust_strings` walks \
-         quote pairs with no line boundary, so from the unmatched quote onward it treats \
-         real code as string data and blanks it: every ban clause in this file then reports \
-         PASS because it went BLIND. Find the unterminated literal (or the raw string this \
-         stripper does not understand) before trusting any other EA-RA result."
+        "EA-RA-04 FAIL (stripper desync canary): the comment-stripped pvp.rs carries \
+         {quote_count} DELIMITER double quotes (escaped `\\\"` excluded) — an ODD number, so \
+         the delimiters are unbalanced. `strip_rust_strings` is a whole-text quote-toggle \
+         walk with no line boundary: from the orphan quote onward it treats real code as \
+         string data and blanks it, and every ban clause in this file then reports PASS \
+         because it went BLIND. Look for (a) an unterminated or raw (`r#\"…\"#`) literal, or \
+         (b) a `//` INSIDE a literal — `strip_rust_comments` runs first and is \
+         string-unaware, so it truncates the line and eats the closing quote (the ADR-0181 \
+         false-GREEN shape; split any URL with `concat!`). Fix that before trusting any \
+         other EA-RA result."
     );
 }
 
@@ -4689,7 +4734,13 @@ fn ea_ra_06a_ranked_enforcement_inert_until_activation_canary() {
          apparatus is the starting point; they are ci.yml merge gates and will red \
          otherwise. (3) Remove the deployment conditional AND this canary, and update \
          docs/adr/0189-ranked-requires-account.md to record the activation. (4) Regenerate \
-         the knowledge bundle (`just knowledge`). Do NOT silence this assertion."
+         the knowledge bundle (`just knowledge`). (5) Confirm no ongoing PvP battle \
+         STRADDLES the flip and settle the ladder-wipe question: ADR-0189 D7's accepted \
+         residual is that battles in flight at activation settle RATED, and guest `profile` \
+         rows persist (nothing deletes them; `rekey_profile` tombstones in place), so a \
+         guest-earned rating can survive the flip and be imported by a later claim. Decide \
+         DELIBERATELY whether to drain in-flight battles, wipe the ladder, or accept it — \
+         and record the decision in ADR-0189. Do NOT silence this assertion."
     );
 }
 

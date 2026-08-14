@@ -38,9 +38,13 @@ population whose ladder needs defending yet).
 human-vs-human battle; and `is_ranked_pvp` classifies every human-vs-human battle as ranked.
 Gating `challenge_pvp` + `accept_challenge` therefore covers all ranked-battle creation. Wild
 encounters and practice self-battles (the "friendly" class) are untouched — guests keep full
-PvE access. The cover is **pinned mechanically**: `pvp_tests.rs` EA-RA-04 and ranking-security
-criterion D `[D/ctor-cover]` count `start_pvp_battle(` == 2 (definition + the one call) and
-`.battle().insert(` == 1 in `pvp.rs`, so a future second constructor reds both gates.
+PvE access. The cover is **pinned mechanically**: within `pvp.rs`, EA-RA-04 and
+ranking-security criterion D `[D/ctor-cover]` count `start_pvp_battle` (bare token, so a
+fn-pointer alias also trips) == 2 and `.battle().insert(` == 1; and because
+`start_pvp_battle` is `pub(crate)`, `[D/ctor-cover-crossfile]` additionally requires the bare
+token to appear in **zero** other non-test domain files (any cross-file call must name the
+symbol at least once, `use`-alias included — the criterion-B2/AM-1 logic). A future second
+constructor, in-file or cross-file, reds the gate.
 
 ## D2 — `is_account_holder` is the predicate, never `has_jwt()`
 
@@ -101,13 +105,14 @@ The gate is live iff the deployment can actually mint accounts:
   flips **on** and the canary reds loudly — drift cannot be silent.
 
 Honest wording: **inert = enforcement OFF** — availability-biased, not "fail-closed" with
-respect to EARS-1. The EA-RA-06 canary (`assert!(!ranked_enforcement_active())`) self-expires
+respect to EARS-1. The EA-RA-06a canary (`assert!(!ranked_enforcement_active())`) self-expires
 the moment OQ1 lands a real issuer; its failure message carries the activation checklist the
 flipping slice must complete: **(1)** ship the EARS-3 client affordance (pvpModel/pvpView +
 main.ts wiring, claim-prompt reuse), **(2)** convert the three guest-PvP e2e specs to
 account-holding identities (the `evals/account-e2e.eval.mjs` `patchAllowedIssuers` apparatus is
 the starting point), **(3)** remove the conditional + this canary and update this ADR,
-**(4)** regenerate the knowledge bundle.
+**(4)** regenerate the knowledge bundle, **(5)** confirm no ongoing PvP battles straddle the
+flip and settle the ladder-wipe question (the D7 residual).
 
 Enforcement-shape choice: the call sites are pinned by **exact-equality squashed-statement
 needles** (tests + eval), which subsume argument identity, the enforced-flag literal, Result
@@ -131,9 +136,12 @@ rating via the claim rekey, and battles in flight at activation settle rated.
 The opponent-leg check runs **after** the target-joined+online guard in `challenge_pvp`, so
 account existence is only ever disclosed for a target the caller can already observe online —
 never for arbitrary 32-byte identities (the enumeration path ADR-0179 G1/D3 exists to prevent;
-`accept_challenge`'s challenger is a joined player by construction). Residual accepted: one bit
-of account status about *online, joined* players, inherent in EARS-1's distinct-reason
-requirement.
+`accept_challenge`'s challenger is a joined player by construction). The caller leg is
+evaluated first, so a guest caller never learns the opponent's status — the oracle is
+available only to account holders, about online joined players. Residual accepted: that one
+bit, unthrottled, inherent in EARS-1's distinct-reason requirement; if it ever matters, the
+mitigation is the `movement.rs` `RateLimiter` pattern on the reject path, not a guard reorder
+(which would fight this decision and its ordering pins).
 
 ## Relation to ADR-0179
 
@@ -159,7 +167,8 @@ supervisor may add the reciprocal `Amends`/`Amended-by` pair at doc reconcile.
 
 - `server-module/src/pvp_tests.rs` — EA-RA-01 (8-row value-exact truth table), EA-RA-02/03
   (exact-statement pins + depth fence + ordering vs the irreversible effects), EA-RA-04
-  (SSOT + ctor-cover counts), EA-RA-05 (reason-value pins), EA-RA-06 (canary +
+  (SSOT + ctor-cover counts + stripper-desync canary), EA-RA-04b (seam/reducer symbol
+  uniqueness + shadow-assignment bans), EA-RA-05 (reason-value pins), EA-RA-06a/b/c (canary +
   `issuers_configured` matrix + predicate-body pin).
 - `evals/ranking-security.eval.mjs` — criterion D (tagged fail-loud clauses mirroring the
   above, toolchain-boundary defense-in-depth) with per-tag proof-of-teeth BAD fixtures that
