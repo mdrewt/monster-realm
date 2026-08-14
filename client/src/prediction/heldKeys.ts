@@ -49,7 +49,13 @@ export class HeldDirections {
    *  input this can't double-fire because the keydown e.repeat guard filters OS
    *  repeats — but keep it idempotent.] */
   press(dir: WasmDirection, nowMs: number): void {
-    if (!this.#stack.some((e) => e.dir === dir)) this.#stack.push({ dir, pressedAtMs: nowMs });
+    if (!this.isHeld(dir)) this.#stack.push({ dir, pressedAtMs: nowMs });
+  }
+
+  /** True iff `dir` is currently held via ANY key code — membership, NOT stack-top (ADR-0187):
+   *  a dir buried under a newer press is still held, so its second key code must not re-emit. */
+  isHeld(dir: WasmDirection): boolean {
+    return this.#stack.some((e) => e.dir === dir);
   }
 
   /** Remove `dir` from the held set (no-op if not held). Evicts its stamp with it. */
