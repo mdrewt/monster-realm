@@ -5,6 +5,7 @@
 **Slice:** ptc5d (M-playtest-c.5 pre-gate residuals — tooling/eval hardening, EARS ptc5d-1..5)
 **Supersedes:** —
 **Amends:** ADR-0118 §3/A3 (wiring-eval cap ceiling: **340 → 299**, tightened to the committed cap so every cap move is eval-visible — reverses §3's ~10% headroom in favour of mechanical-enforcement-first, per the 2026-07-20 weekly review §5 item 5)
+**Amended-by:** ADR-0183
 **Subsystems:** tooling-docs, ci-gates
 **Decision:** Exclude `*_tests.rs` from the OKF bundle generator, assert no page is test-sourced, make RT-M14.5A-02's precondition an `assert!`, and tighten the mutate-server wiring ceiling 340→299 — each with a biting proof-of-teeth.
 

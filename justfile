@@ -93,15 +93,21 @@ mutate-core:
 # package for server-module/ is `monster-realm-module` (`-p server-module` fails
 # "Package not found in source tree"). Survivor-count RATCHET, not zero-tolerance:
 # the shell's reducers are covered by evals/integration/e2e rather than in-crate
-# units, so surviving mutants are counted against a cap (baseline 299 missed of
-# 513 mutants @ m17.5a, 2026-07-17, ADR-0118 §4 re-baseline; prior baselines 308
-# @ m17a 2026-07-17, 309 @ 908c99b 2026-07-15 per ADR-0118, 180 @ e875af0
-# 2026-07-04) instead of failing on any survivor (game-core's mutate-core
-# keeps zero-tolerance). `--test-tool nextest` is pinned for determinism with the
-# recorded baseline (zero doctests in the crate, so catch results are identical).
+# units, so surviving mutants are counted against a cap (baseline 324 missed of
+# 753 mutants @ 14r-a, 2026-08-14, ADR-0183 re-baseline — the exact count the
+# hosted nightly measured on three consecutive runs; the same tree measures 323
+# locally, the one-mutant delta being a reducer-body mutant documented in
+# ADR-0183. Prior baselines 299 @ m17.5a 2026-07-17, 308 @ m17a 2026-07-17, 309
+# @ 908c99b 2026-07-15 per ADR-0118, 180 @ e875af0 2026-07-04) instead of failing
+# on any survivor (game-core's mutate-core keeps zero-tolerance). This cap is
+# DEBT-CARRYING: ADR-0183 names 11 in-crate-killable survivors whose kill slice
+# must ratchet it to ≤313. `--test-tool nextest` is pinned for determinism with
+# the recorded baseline (zero doctests in the crate, so catch results are
+# identical).
 # Cap bumps must update ADR-0050. Runs in nightly.yml only (mutation-server job);
-# the recipe body is integrity-guarded by evals/nightly-smoke-wiring.eval.mjs.
-mutate-server cap="299":
+# the recipe body is integrity-guarded by evals/nightly-smoke-wiring.eval.mjs,
+# which also asserts this cap default EQUALS its MUTATE_SERVER_CAP_BASELINE.
+mutate-server cap="324":
     #!/usr/bin/env bash
     set -euo pipefail
     # Fail loud on a non-integer cap BEFORE the (minutes-long) mutants run: a
@@ -116,11 +122,25 @@ mutate-server cap="299":
         echo "cargo mutants failed with exit $status (build/config error, not 'mutants missed')" >&2
         exit "$status"
     fi
-    # missed.txt exists whenever cargo-mutants ran (exit 0 or 2); a missing file
-    # aborts via set -e — the correct fail-loud path. grep -c '' counts lines
-    # regardless of a trailing newline (wc -l undercounts a newline-less last
-    # line); || true keeps the empty-file (0 survivors) case alive under set -e.
+    # missed.txt exists whenever cargo-mutants ran (exit 0 or 2). The explicit
+    # existence guard is NOT redundant with set -e (ADR-0183 D7, proved by
+    # execution): `|| true` swallows grep's exit 2, leaving missed="", and the
+    # resulting `[ "" -gt N ]` error is EXEMPTED from set -e because it sits in
+    # an if-condition — so without this guard the ratchet block is skipped and
+    # the gate exits 0 vacuously green. Same fail-closed shape as mutate-core.
+    if [ ! -f mutants.out/missed.txt ]; then
+        echo "mutate-server: mutants.out/missed.txt absent — cannot verify the survivor count" >&2
+        exit 1
+    fi
+    # grep -c '' counts lines regardless of a trailing newline (wc -l undercounts
+    # a newline-less last line); || true keeps the empty-file (0 survivors) case
+    # alive under set -e.
     missed=$(grep -c '' mutants.out/missed.txt || true)
+    # Second belt: a non-numeric count would error inside the if-condition below
+    # and be set -e-exempt exactly as above.
+    case "$missed" in
+        ''|*[!0-9]*) echo "mutate-server: survivor count '$missed' is not an integer" >&2; exit 1;;
+    esac
     echo "surviving mutants: $missed (cap {{cap}})"
     if [ "$missed" -gt "{{cap}}" ]; then
         echo "survivor count $missed exceeds cap {{cap}} — mutation ratchet violated (ADR-0050)" >&2

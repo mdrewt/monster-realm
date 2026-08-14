@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 148 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 149 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -157,6 +157,7 @@ Generated from 148 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0180](./0180-observability-stack-selection.md) | 0180 — Observability stack selection: self-hosted OSS replaces Datadog, and the WASM-sandbox-crossing data path | Accepted | ci-gates, tooling-docs, schema-persistence | heavy-ceremony M20 planning pass (pre-slice; implementation elaborates in m20a–m20e per | An 8-container, all-open-source, self-hosted stack (Prometheus, Grafana Alloy, Loki, Tempo, |
 | [0181](./0181-string-literal-aware-source-scanners.md) | 0181 — String-literal-aware source scanners: one Rust scanner, one TypeScript scanner, and why they cannot be the same function | Accepted | ci-gates, security-authz, tooling-docs | 13r-c (post-gate thirteenth-review residuals — `specs/monster-realm-v2/M-postgate-thirteenth-review-residuals.spec.md` §13r-c) | Rust scanning in `evals/` moves to one string-literal-aware `evals/rust-scan.mjs` that lexes comments and strings in a single pass and preserves offsets by blanking literal payloads; TypeScript uses a separate literal-PRESERVING scanner. |
 | [0182](./0182-m21b2-oidc-client-claim-ui-better-auth-deployment.md) | 0182 — M21b-2: OIDC client wiring, claim-code UI, session lifecycle, Better Auth deployment | Accepted | security-authz, schema-persistence, client-ui | heavy-ceremony M21b-2 planning pass (pre-slice; implementation elaborates in the m21b-2 | A pure `decideConnectCredential()` fed by an async `resolveCredential()` (the one real |
+| [0183](./0183-nightly-mutation-gate-rebaseline-and-failure-visibility.md) | 0183 — Nightly mutation gate: cap re-baseline 299 → 324 as declared debt, and per-job failure-policy visibility | Accepted | ci-gates | 14r-a (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-a) | Re-baseline the `mutate-server` cap 299 → 324 (exact hosted count, moved with the eval ceiling) as debt-carrying — 11 killable survivors named, successor ratchets to ≤ 313; per-job failure-policy comments; missed.txt fail-closed guard. |
 
 ## Harness design corpus (H- namespace)
 
@@ -449,6 +450,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0177](./0177-essence-graph-evolution-replaces-fuse.md) — EG5 (M-evolution-essence-graph — EARS EG5-1..EG5-7; closes the milestone) — 0177 — Essence-graph evolution replaces fuse(): milestone consolidation, Migration B, gate migration (EG5) (Accepted)
 - [0180](./0180-observability-stack-selection.md) — heavy-ceremony M20 planning pass (pre-slice; implementation elaborates in m20a–m20e per — 0180 — Observability stack selection: self-hosted OSS replaces Datadog, and the WASM-sandbox-crossing data path (Accepted)
 - [0181](./0181-string-literal-aware-source-scanners.md) — 13r-c (post-gate thirteenth-review residuals — `specs/monster-realm-v2/M-postgate-thirteenth-review-residuals.spec.md` §13r-c) — 0181 — String-literal-aware source scanners: one Rust scanner, one TypeScript scanner, and why they cannot be the same function (Accepted)
+- [0183](./0183-nightly-mutation-gate-rebaseline-and-failure-visibility.md) — 14r-a (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-a) — 0183 — Nightly mutation gate: cap re-baseline 299 → 324 as declared debt, and per-job failure-policy visibility (Accepted)
 
 ### tooling-docs
 

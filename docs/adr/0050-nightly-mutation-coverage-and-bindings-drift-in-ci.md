@@ -5,6 +5,7 @@
 **Slice:** m8.5c
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** ADR-0183
 **Subsystems:** ci-gates
 **Decision:** Run mutation and coverage gates nightly (not per-PR); include bindings-drift check in the fast per-PR ci job to catch schema/code divergence early.
 
@@ -168,6 +169,26 @@ nuance:** the `server-module/` directory's cargo package is **`monster-realm-mod
   in-crate set empty; miss ratio improved 71% → 62%). **Cap = 309** (exact
   measurement, same convention as the original 180); the wiring-eval cap ceiling
   raised 200 → 340 in the same commit. Full evidence + procedure: ADR-0118.
+- **Re-baseline (2026-08-14, ADR-0183):** slice head `4d789bd` (cargo-mutants 27.1.0,
+  `--test-tool nextest`, local 32-core): **753 mutants — 323 missed / 379 caught / 51
+  unviable — 26 min, 0 timeouts**; the previous baseline commit `9ef0b03` re-run for
+  comparability reproduced the committed 299/513 baseline **exactly**. The hosted
+  nightly (`ubuntu-latest`, run 31681643275 @ `8814416`, a tree differing from the
+  slice head only by a 6-line `accounts.rs` doc comment) measured **753 mutants — 324
+  missed / 377 caught / 52 unviable**, stable across 2026-08-11/12/13. **Cap = 324** —
+  the exact HOSTED measurement, because the gate executes on the hosted runner; the
+  single hosted-only survivor (`lib.rs` `replace == with != in sync_content`, a
+  reducer-body mutant) is documented in ADR-0183 rather than absorbed as headroom.
+  Growth is concentrated in files absent at `9ef0b03` (`accounts.rs` +27,
+  `playtest.rs` +11, `observability.rs` +2) while pre-existing files net **−16**; of
+  41 net-new survivors in pre-existing files, 32 instances (17 functions) are
+  legitimate-shell and 9 instances (3 functions) are weak-test; the ~282 survivors
+  carried over from the 299 baseline were not re-triaged. This cap is
+  **DEBT-CARRYING**: ADR-0183 enumerates 11 in-crate-killable survivors by `file:line`
+  and names a required successor kill slice that must ratchet the cap to **≤ 313**.
+  The justfile `cap=` default and `MUTATE_SERVER_CAP_BASELINE` moved together
+  (ADR-0137 D4). ADR-0183 D7 also fixes a vacuous-green hole in the `mutate-server`
+  recipe (absent `missed.txt` exited 0). Full evidence + triage: ADR-0183.
 - **Threshold mechanism:** cargo-mutants has no built-in survivor-count cap, so the
   `mutate-server` justfile recipe (shebang) runs
   `cargo mutants -p monster-realm-module --test-tool nextest`, tolerates exit code 2
@@ -228,6 +249,15 @@ equally unguarded prose.
   `--shard`/`--file`/`--exclude-re` narrowing; cap default ≤ 200 — ceiling raised
   to 340 by ADR-0118, 2026-07-15).
 
+  **Forward amendment (2026-08-14, ADR-0183 — the sentence above is left as
+  written, not rewritten):** the `cap default ≤ ceiling` relation it describes no
+  longer holds. Under ADR-0137 D4 the ceiling was tightened to the committed cap,
+  and ADR-0183 D6 replaced the `≤` check with **exact equality**
+  (`justfileCapEqualsCeiling`): the justfile `mutate-server cap=` default and
+  `MUTATE_SERVER_CAP_BASELINE` are now one number (324) that must move in the same
+  commit or `just eval` reds. The recipe-body guard set has also grown — ADR-0183 D7
+  adds a required `[ ! -f mutants.out/missed.txt ]` fail-closed guard.
+
 **Accepted gaps (recorded honestly — threat model is honest error / lazy shortcut,
 not an adversary with admin):**
 
@@ -248,6 +278,13 @@ not an adversary with admin):**
 5. The `mutate-server` cap default is eval-ceiling-checked (≤ 200) (ceiling 340 as
    of ADR-0118) rather than pinned exactly, so a deliberate, reviewed bump inside
    the ceiling doesn't require an eval edit; bumps must update this ADR (see A2).
+   **Forward amendment (2026-08-14, ADR-0183 — original text kept for the record):**
+   this gap is CLOSED and its last clause now states the opposite of the enforced
+   invariant. ADR-0137 D4 tightened the ceiling to the committed cap and ADR-0183 D6
+   made the relation **exact equality**, so there is no in-ceiling headroom left to
+   bump into: **every** cap move requires the lockstep `MUTATE_SERVER_CAP_BASELINE`
+   edit in the same commit, and is therefore eval-visible. The requirement to update
+   this ADR (A2) is unchanged.
 6. `jobIsNotNeutered` is a flat block scan (unlike `ciStepsUnneutered`'s per-step
    scoping), so the three guarded nightly jobs (`mutation:`, `coverage:`,
    `mutation-server:`) must never carry a legitimate step-level `if:` (e.g. an
