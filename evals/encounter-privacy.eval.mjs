@@ -23,30 +23,39 @@
 
 import { readFileSync } from 'node:fs';
 import { glob } from 'node:fs/promises';
+import { assertStripperSound, stripRustSource } from './rust-scan.mjs';
 
 // ---------------------------------------------------------------------------
 // Pure predicate: strip comments from Rust source before regex scanning.
 // Stripping comments prevents a `}` inside a comment body from truncating
 // a struct body match, which was a known fragility in the monster-privacy
 // template regex.
+//
+// 14r-c (ADR-0181): this used to be a two-regex pair with NO string-literal
+// awareness. A perfectly ordinary Rust literal carrying a URL scheme truncates
+// at its scheme slashes, orphans a quote, inverts string/code polarity for the
+// rest of the file, and blinds every check below — the gate then reports PASS
+// *because* it went blind, a false-GREEN on a privacy gate. It now delegates to
+// the shared, single-pass, offset-preserving scanner (evals/rust-scan.mjs),
+// which lexes comments and string literals in the SAME pass, so a slash-slash
+// inside a literal is data and can never open a comment.
+//
+// The wrapper NAME and its export are deliberately KEPT: every call site below
+// reads unchanged, and evals/playtest-event-privacy.eval.mjs imports BOTH
+// `stripComments` and `parseTables` from this module. Only the engine changed.
+// Semantics are strictly stronger — comments AND string payloads are blanked to
+// spaces, and length/offsets are preserved rather than the text being deleted.
 // ---------------------------------------------------------------------------
 
 /**
- * Strip line comments and block comments from Rust source.
- * Preserves line count (replaces comment content with spaces, keeps newlines)
- * so line-number-based error messages remain approximately correct.
+ * Strip Rust comments and string-literal payloads (shared scanner, ADR-0181).
+ * Length-, newline- and offset-preserving: content is blanked to spaces, so
+ * line-number-based error messages remain exact.
  * @param {string} src Raw Rust source text.
- * @returns {string} Source with comment content blanked.
+ * @returns {string} Same-length source with comments and literal payloads blanked.
  */
 export function stripComments(src) {
-  // Replace block comments (non-greedy, dotAll).
-  // Written without the literal /* */ delimiters to survive any future formatter pass.
-  const blockRe = /\/\*[\s\S]*?\*\//g;
-  let out = src.replace(blockRe, (m) => m.replace(/[^\n]/g, ' '));
-  // Replace line comments (to end of line, preserve the newline).
-  const lineRe = /\/\/[^\n]*/g;
-  out = out.replace(lineRe, (m) => ' '.repeat(m.length));
-  return out;
+  return stripRustSource(src);
 }
 
 // ---------------------------------------------------------------------------
@@ -346,12 +355,35 @@ export default async function () {
   }
 
   // Parse tables from all source files combined.
+  //
+  // 14r-c (ADR-0181) STRIPPER-SOUNDNESS GATE, over this eval's REAL scan set,
+  // per file (never over a concatenated blob — an offset in a blob is
+  // meaningless for diagnostics). A stripper desync is invisible to the clauses
+  // it blinds: it GREENS every ban below and reds only the presence checks, so
+  // it is caught HERE or not at all. Desyncs are COLLECTED, and every one is
+  // reported — a single silent skip is the hole this gate exists to close.
+  //
+  // NON-TEST ONLY, for the reason ADR-0181 records: `independentAnchorCount` is
+  // quote-BLIND by design (it must stay independent of the real stripper or it
+  // could not detect that stripper's desync), so a `#[spacetimedb::` inside a
+  // `*_tests.rs` fixture STRING reads as real code to it and false-REDs a
+  // stripper that is behaving correctly. The BAN surface below still scans every
+  // globbed file, test files included — only the desync detector is narrowed,
+  // and narrowing it can only ever cost a diagnostic, never green a ban.
   const allTables = [];
+  const desyncFailures = [];
   for (const f of rsSources) {
     const raw = readFileSync(f, 'utf8');
+    if (!f.endsWith('_tests.rs')) {
+      const desync = assertStripperSound(raw, f);
+      if (desync !== null) desyncFailures.push(desync);
+    }
     const stripped = stripComments(raw);
     const fileTables = parseTables(stripped);
     allTables.push(...fileTables);
+  }
+  if (desyncFailures.length > 0) {
+    return { name, pass: false, detail: desyncFailures.join(' || ') };
   }
 
   // Check 1: encounter table exists and is private.

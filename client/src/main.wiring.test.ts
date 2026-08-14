@@ -7921,7 +7921,7 @@ function startsRegexLiteral(src: string, i: number): boolean {
   let k = i - 1;
   while (k >= 0 && (src[k] === ' ' || src[k] === '\t' || src[k] === '\n' || src[k] === '\r')) k--;
   if (k < 0) return true;
-  return '=(,[{:;!?&|+-*%<>^~}'.indexOf(src.charAt(k)) !== -1;
+  return '=(,[{:;!?&|+-*%<>^~'.indexOf(src.charAt(k)) !== -1;
 }
 
 function m20cScan(src: string): M20cScan {
@@ -8175,6 +8175,42 @@ describe('★ main.ts wiring (m20c/ADR-0180): SELF-TEST — the m20c scanner is 
     // And the ordinary cases still work: real comments really are removed.
     expect(scanned.code.includes('a real line comment')).toBe(false);
     expect(scanned.code.includes('a real block comment')).toBe(false);
+  });
+
+  it('★ W-14RC-BRACE-DIV-LITERAL BITES: an object-literal `}` immediately before a division does not swallow a following string literal as regex-interior', () => {
+    // 14r-c. `startsRegexLiteral`'s operator set (line ~7924) includes `}`, which is wrong for
+    // the ordinary "object literal followed by a division" shape: `{a: 1} / x`. Preceded by `}`,
+    // the `/` here is misread as OPENING a regex literal, and the regex-consuming walk (line
+    // ~7953) eats forward to the next unescaped `/` outside a character class — landing on the
+    // SECOND `/` in this fixture and swallowing everything between the two, including a quoted
+    // string, without ever entering SINGLE/DOUBLE mode.
+    //
+    // ADVERSARIAL-REVIEW NOTE, stated so a future reader does not "simplify" this tooth back to
+    // the vacuous shape: a bare `code`-output assertion here (e.g. `x = {} / 2 / 3;` then
+    // checking `.code`) proves NOTHING. The regex arm keeps the swallowed span VERBATIM
+    // (`code += src.slice(i, j)`, line ~7971) — a division misdetected as a regex is merely
+    // RELABELLED in `code`, never deleted, so `.code` is byte-identical whether `}` is in the
+    // operator set or not. The genuine discriminator is the `literals` COLLECTOR: a string
+    // literal is only ever pushed to it via the dedicated SINGLE/DOUBLE/TEMPLATE mode (line
+    // ~7985-8032, `literals.push(literal)` on the closing quote), which the regex-consuming walk
+    // never enters — so a needle that lands INSIDE the misdetected span is silently ABSENT from
+    // `literals` today, and present once `}` is dropped from the set.
+    const SL = ['/'].join(''); // this file's own convention (line ~7991) — never write two
+    // slashes/slash-star/star-slash contiguously as literal text; a lone `/` needs no building
+    // but the idiom is kept consistent with every other fixture in this file.
+    const fixture = `const cfg = {a: 1} ${SL} "needle-text" ${SL} 2;`;
+    const scanned = m20cScan(fixture);
+    expect(
+      scanned.literals.includes('needle-text'),
+      'the "needle-text" string literal, sitting between the `/` right after `{a: 1}` and the ' +
+        'next `/`, must be collected in `literals`. TODAY (RED, `}` still in the operator set): ' +
+        'the first `/` is misread as a regex opener, the regex-consuming walk swallows ' +
+        '` "needle-text" ` whole and closes on the SECOND `/` without ever transitioning to ' +
+        "string mode, so `literals` never sees it. Dropping `}` from startsRegexLiteral's " +
+        'operator set (14r-c) fixes this: the first `/` is then read as plain division, the ' +
+        'quoted text is parsed through the ordinary string-literal path, and it is pushed to ' +
+        '`literals` like any other string.',
+    ).toBe(true);
   });
 });
 
@@ -9265,6 +9301,183 @@ describe('★ main.ts wiring (13r-c): stripLineComments has NO string-literal aw
         "websocket-URL literal's own `//` truncated the DEV_URI line before the address, exactly " +
         'the live-in-tree proof this slice was scoped around.',
     ).toBe(true);
+  });
+});
+
+// ===========================================================================
+// 14r-c (ADR-0181 D8 dormant risk). Dropping `}` from startsRegexLiteral's operator
+// set (this slice) fixes the object-literal-division false-swallow proven above, but
+// a red-team PoC showed it reopens a DIFFERENT false-GREEN: a regex literal in
+// statement position immediately after a block-closing `}`, whose CLOSING slash abuts
+// a star. Schematically (see the DETECTOR SELF-TEST fixture (a) below for the exact,
+// safely-BUILT shape — a bare slash-star / star-slash pair is never written literally
+// in this file's own text, per this slice's convention): a block statement closes,
+// the very next token opens what reads as a short regex literal whose closing slash
+// is immediately followed by a star, a `.subscribe(...)` call naming a banned table
+// follows on its own line, and a later `1 <star><slash> 2;`-shaped statement supplies
+// the matching closer. That opens a phantom block comment that swallows every line
+// between the two markers. MEASURED: with `}` in the operator set (today) the banned
+// table name SURVIVES the scan; without it (post-14r-c) it is SWALLOWED — a live
+// ADR-0015 privacy ban going false-GREEN. It is DORMANT in both corpora today (both
+// scanners consume template literals wholesale, so no such construct is reachable via
+// a template interpolation immediately followed by a slash, and none exists in
+// non-template code either — verified by grep). This section converts that one-time
+// measurement into a STANDING gate so a future introduction of the shape reds by name
+// instead of silently disabling a ban.
+// ===========================================================================
+
+/** Structural detector for the ADR-0181 D8 shape: a `}` followed, after whitespace
+ *  only, by what reads as a regex literal (honouring `\` escapes and `[...]`
+ *  character classes, never crossing a newline — same discipline as m20cScan's own
+ *  regex arm) whose CLOSING slash is immediately followed by `*`.
+ *
+ *  Deliberately NOT built on `startsRegexLiteral`/`m20cScan`: those are exactly what
+ *  14r-c changes, so a detector layered on the SHIPPED function would stop seeing the
+ *  risk the moment the fix it exists to catch lands (post-fix, `}` no longer opens
+ *  regex mode in the real scanner, so `startsRegexLiteral`-based detection would go
+ *  permanently — and silently — vacuous). This walks the raw source directly and
+ *  independently, so the gate keeps meaning what it says regardless of which side of
+ *  the fix is currently shipped.
+ *
+ *  No `new RegExp` — banned repo-wide (Semgrep detect-non-literal-regexp).
+ *  @param src Raw source text (not comment/string stripped — the risk is a SOURCE
+ *    shape, and stripping first would hide the very thing this detects).
+ *  @returns the 0-based index of the offending `}`, or -1 if the source is clean. */
+function findBraceRegexStarConstruct(src: string): number {
+  let i = 0;
+  while (i < src.length) {
+    if (src.charAt(i) === '}') {
+      let k = i + 1;
+      while (
+        k < src.length &&
+        (src[k] === ' ' || src[k] === '\t' || src[k] === '\n' || src[k] === '\r')
+      ) {
+        k++;
+      }
+      if (src.charAt(k) === '/') {
+        const afterSlash = src.charAt(k + 1);
+        // Same exclusion `startsRegexLiteral` itself applies: `//` and `/*` right after the `}`
+        // are ordinary comments (handled, safely, elsewhere), not a regex-literal candidate.
+        if (afterSlash !== '/' && afterSlash !== '*' && afterSlash !== '') {
+          let j = k + 1;
+          let inClass = false;
+          let closed = -1;
+          while (j < src.length) {
+            const ch = src.charAt(j);
+            if (ch === '\\') {
+              j += 2;
+              continue;
+            }
+            if (ch === '\n') break; // regex literals cannot span a line: unterminated, bail
+            if (ch === '[') inClass = true;
+            else if (ch === ']') inClass = false;
+            else if (ch === '/' && !inClass) {
+              closed = j;
+              break;
+            }
+            j++;
+          }
+          if (closed !== -1 && src.charAt(closed + 1) === '*') {
+            return i;
+          }
+        }
+      }
+    }
+    i++;
+  }
+  return -1;
+}
+
+describe('★ main.ts wiring (14r-c/ADR-0181 D8): the brace-regex-star construct is a standing corpus ban', () => {
+  it('★ W-14RC-BRACE-REGEX-STAR-DETECTOR-SELFTEST BITES: the detector fires on the exact red-team shape and stays quiet on look-alikes', () => {
+    // Proof of teeth for the detector itself, run BEFORE the corpus scan below — this file's
+    // own convention (see the m20c SELF-TEST describe block above): a broken checker must be
+    // caught first, not silently exonerate the whole tree.
+    const SL = ['/'].join('');
+    const ST = ['*'].join('');
+    const SQ = ["'"].join('');
+
+    // (a) THE EXACT RED-TEAM SHAPE — must fire.
+    const hit = [
+      'if (flag) { setup(); }',
+      `${SL}ab${SL}${ST}`,
+      `conn.subscribe([${SQ}SELECT ${ST} FROM player_wallet${SQ}]);`,
+      `const noop = 1 ${ST}${SL} 2;`,
+    ].join('\n');
+    expect(
+      findBraceRegexStarConstruct(hit),
+      'the detector must find the `}`-then-regex-abutting-star construct in the exact red-team ' +
+        'shape this gate exists to ban (ADR-0181 D8)',
+    ).toBeGreaterThanOrEqual(0);
+
+    // (b) `}` FOLLOWED BY AN ORDINARY BLOCK COMMENT — must NOT fire (the char right after the
+    //     `/` is `*`, `startsRegexLiteral`'s own exclusion; it is a real, harmless comment
+    //     either way `}` is classified).
+    const ordinaryBlockComment = [
+      'if (flag) { setup(); }',
+      `${SL}${ST} a real comment ${ST}${SL}`,
+    ].join('\n');
+    expect(
+      findBraceRegexStarConstruct(ordinaryBlockComment),
+      'an ordinary block comment right after a `}` must not be flagged',
+    ).toBe(-1);
+
+    // (c) `}` FOLLOWED BY AN ORDINARY LINE COMMENT — must NOT fire, same reasoning.
+    const ordinaryLineComment = ['if (flag) { setup(); }', `${SL}${SL} a real comment`].join('\n');
+    expect(
+      findBraceRegexStarConstruct(ordinaryLineComment),
+      'an ordinary line comment right after a `}` must not be flagged',
+    ).toBe(-1);
+
+    // (d) `}` FOLLOWED BY A GENUINE, SAME-LINE DIVISION WITH NO SECOND `/` ON THE LINE — must
+    //     NOT fire (`closed === -1`). This is the FIRST tooth's own object-literal-division
+    //     shape (`{a: 1} / x;`) — the exact construct 14r-c's fix makes safe — proven quiet here
+    //     under a DIFFERENT gate that only bans the abutting-star compound.
+    const genuineDivisionNoSecondSlash = `const cfg = {a: 1} ${SL} weight_only_one_slash;`;
+    expect(
+      findBraceRegexStarConstruct(genuineDivisionNoSecondSlash),
+      'a `}` followed by an ordinary division with no closing `/` on the line must not be flagged',
+    ).toBe(-1);
+
+    // (e) `}` FOLLOWED BY A REGEX LITERAL THAT DOES NOT ABUT A STAR — must NOT fire. This is
+    //     the shape 14r-c's fix is meant to leave alone; it must stay unflagged here too.
+    const regexNoStar = ['if (flag) { setup(); }', `${SL}ab${SL}.test(x);`].join('\n');
+    expect(
+      findBraceRegexStarConstruct(regexNoStar),
+      'a `}`-then-regex construct whose closing slash does NOT abut a star must not be flagged',
+    ).toBe(-1);
+  });
+
+  it('★ W-14RC-BRACE-REGEX-STAR-CEILING BITES: no non-test client/src file contains the `}`-then-regex-abutting-star construct', () => {
+    // ADR-0181 D8. Scans the SAME corpus the W-UX2B-WALLET-CALLSITES-NO-CROSSFILE offenders
+    // loop (line ~6707) and the stripLineComments false-GREEN proofs above already cover: every
+    // non-test .ts file under client/src, via clientSrcTsFiles()/readClientSrc(). If this ever
+    // reds, do NOT weaken the detector to make it pass — rewrite the offending construct (add a
+    // space before the `*`, or reorder the statements) so the shipped scanner's block-comment
+    // arm can never mistake it for a real opener; see the section header above for the measured
+    // mechanism.
+    const files = clientSrcTsFiles().filter((rel) => !rel.endsWith('.test.ts'));
+
+    // Anti-vacuity: the walk must actually see the tree (mirrors the offenders-loop guard).
+    expect(
+      files.length,
+      'the client/src walk must find a substantial number of non-test .ts files — a small ' +
+        'number means the walk is broken and the ceiling below is vacuous',
+    ).toBeGreaterThan(50);
+
+    const offenders: string[] = [];
+    for (const rel of files) {
+      const raw = readClientSrc(rel);
+      if (findBraceRegexStarConstruct(raw) !== -1) offenders.push(rel);
+    }
+    expect(
+      offenders,
+      'the `}`-then-regex-abutting-star construct must not exist anywhere in client/src ' +
+        "(ADR-0181 D8): once 14r-c drops `}` from startsRegexLiteral's operator set, this exact " +
+        'shape opens a phantom block comment that swallows every line up to the next `*/`, ' +
+        'silently disabling every ban that reads the swallowed text — measured live against ' +
+        "checkNoPrivateWalletSubscription's FROM player_wallet needle.",
+    ).toEqual([]);
   });
 });
 

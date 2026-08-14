@@ -26,23 +26,37 @@
 //   NO `new RegExp(...)` with a non-literal argument anywhere in this file.
 import { readFileSync } from 'node:fs';
 import { glob } from 'node:fs/promises';
+import { assertStripperSound, stripRustSource } from './rust-scan.mjs';
 
 // ---------------------------------------------------------------------------
-// stripComments — verbatim from wild-individuality-privacy.eval.mjs.
-// Preserves line count; blanks comment content (preserves newlines).
+// stripComments — 14r-c (ADR-0181): the shared, string-literal-aware scanner.
+//
+// This was a two-regex pair cloned from wild-individuality-privacy.eval.mjs with
+// NO string-literal awareness. A perfectly ordinary Rust literal carrying a URL
+// scheme truncates at its scheme slashes, orphans a quote, inverts string/code
+// polarity for the rest of the file, and blinds every field/table check below —
+// the gate then reports PASS *because* it went blind, a false-GREEN on a privacy
+// gate. It now delegates to evals/rust-scan.mjs, which lexes comments and string
+// literals in the SAME pass, so a slash-slash inside a literal is data and can
+// never open a comment.
+//
+// The wrapper NAME and export are kept so every call site below reads unchanged;
+// only the engine underneath changed. Semantics are strictly stronger: comments
+// AND string payloads are blanked to spaces, length/newlines/offsets preserved
+// instead of text being deleted (so `parseTableFields`, which brace-walks from
+// `attrEnd`, stays exactly aligned with the raw source).
+//
+// NOTE: `checkInventoryDocPosture` deliberately reads the RAW source, not this
+// output — its whole job is to lint the doc COMMENT, which stripping blanks.
 // ---------------------------------------------------------------------------
 
 /**
- * Strip Rust line and block comments from source.
+ * Strip Rust comments and string-literal payloads (shared scanner, ADR-0181).
  * @param {string} src Raw Rust source text.
- * @returns {string} Source with comment content blanked.
+ * @returns {string} Same-length source with comments and literal payloads blanked.
  */
 export function stripComments(src) {
-  const blockRe = /\/\*[\s\S]*?\*\//g;
-  let out = src.replace(blockRe, (m) => m.replace(/[^\n]/g, ' '));
-  const lineRe = /\/\/[^\n]*/g;
-  out = out.replace(lineRe, (m) => ' '.repeat(m.length));
-  return out;
+  return stripRustSource(src);
 }
 
 // ---------------------------------------------------------------------------
@@ -642,15 +656,35 @@ export default async function () {
   // Collect all tables + per-file stripped sources for field scanning.
   // Also retain raw text per file for doc-comment checks (checkInventoryDocPosture
   // must see the raw source — doc claims live in comments which stripComments blanks).
+  //
+  // 14r-c (ADR-0181) STRIPPER-SOUNDNESS GATE, over this eval's REAL scan set,
+  // PER FILE (never over a concatenated blob — an offset in a blob is
+  // meaningless for diagnostics). A stripper desync is invisible to the clauses
+  // it blinds: it GREENS every ban below and reds only the presence checks, so
+  // it is caught HERE or not at all. Every desync is COLLECTED as a failure.
+  //
+  // NON-TEST ONLY, per ADR-0181: `independentAnchorCount` is quote-BLIND by
+  // design (it must stay independent of the real stripper or it could not detect
+  // that stripper's desync), so a `#[spacetimedb::` inside a `*_tests.rs`
+  // fixture STRING reads as real code to it and false-REDs a correct stripper.
+  // The ban surface below still scans every globbed file, test files included.
   const allTables = [];
   const strippedByFile = [];
   const rawByFile = [];
+  const desyncFailures = [];
   for (const f of rsSources) {
     const raw = readFileSync(f, 'utf8');
+    if (!f.endsWith('_tests.rs')) {
+      const desync = assertStripperSound(raw, f);
+      if (desync !== null) desyncFailures.push(desync);
+    }
     const stripped = stripComments(raw);
     rawByFile.push(raw);
     strippedByFile.push(stripped);
     allTables.push(...parseTables(stripped));
+  }
+  if (desyncFailures.length > 0) {
+    return { name, pass: false, detail: desyncFailures.join(' || ') };
   }
 
   // Check 1: inventory table must exist (absence is a FAIL).

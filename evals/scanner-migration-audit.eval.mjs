@@ -24,7 +24,20 @@
 // THE CONTRACT — read this before touching either leg.
 // -----------------------------------------------------------------------
 //
-// A gated file counts as MIGRATED only if it passes BOTH legs:
+// APPLICABILITY comes FIRST (14r-c). Legs 1+2 are a RUST-scanner migration
+// requirement, so they only apply to a gated file that ACTUALLY READS RUST
+// SOURCE. `evals/box-view-privacy.eval.mjs` scans exactly one file —
+// `client/src/net/store.ts` — and reads no Rust at all; demanding that it import
+// the Rust scanner is not merely noise, it directly contradicts ADR-0181 D4,
+// which FORBIDS pointing `stripRustSource` at TypeScript (blanking a payload
+// makes a ban on a needle that lives INSIDE a SQL string literal pass
+// vacuously). Such a file is classified NOT_APPLICABLE_TS_ONLY and is REPORTED
+// BY NAME WITH ITS REASON in `detail` — never silently dropped from the
+// enumeration, because a silent exclusion is exactly the hole this gate exists
+// to prevent. It does NOT count as migrated (tooth T8 pins that distinction).
+//
+// A gated file that DOES read Rust counts as MIGRATED only if it passes BOTH
+// legs:
 //
 //   LEG 1 (structural wiring) — the file contains a REAL static `import`
 //   of './rust-scan.mjs' (anchored to an actual `import` statement — a
@@ -99,16 +112,83 @@ const AUDIT_FILE_NAME = 'scanner-migration-audit.eval.mjs';
 const SECURITY_SUFFIX = '-security.eval.mjs';
 const PRIVACY_SUFFIX = '-privacy.eval.mjs';
 
-// Ratchets (14r-c HEAD, measured — see report for the measurement).
+// Ratchets (14r-c, measured — see report for the measurement).
 const GATED_FLOOR = 18; // the name-derived gated-set size must never drop below this
-const MIGRATED_FLOOR = 4; // account-privacy, conversation-privacy, wallet-privacy, ranking-security
-const KNOWN_UNMIGRATED_CAP = 5;
+// 10 = the 4 migrated by ADR-0181 (account-privacy, conversation-privacy,
+// wallet-privacy, ranking-security) + the 6 migrated by 14r-c (encounter-,
+// inventory-, wild-individuality-, pvp-action-, playtest-event-, monster-privacy).
+const MIGRATED_FLOOR = 10;
+// EXACTLY the number of KNOWN_UNMIGRATED entries below, so the debt list can
+// only ever shrink: adding an eleventh park requires editing this constant in
+// the same diff, in the open.
+const KNOWN_UNMIGRATED_CAP = 7;
 
-// Self-retiring named debt. Seeded EMPTY at 14r-c: this slice only writes the
-// audit; a future slice adds an entry ONLY for a file that genuinely needs to
-// park (and removes it the moment migration lands — T5 makes that automatic).
+// Self-retiring named debt. Every entry is validated: it must exist on disk, be
+// a member of the name-derived gated set, and STILL FAIL Legs 1+2 (the moment a
+// later slice migrates one, this gate REDs demanding the entry be deleted —
+// T5 pins that).
+//
+// All seven are budget-parked to slice 14r-c-2. Each reason below is MEASURED,
+// not asserted: the canary column is what THIS gate's own bonus behavioral
+// check reported for that file at 14r-c (an ADR-0181 canary — a URL-scheme
+// literal followed by a needle — fed to every strip/scan/prepare/blank export).
 export const KNOWN_UNMIGRATED = [
-  // { file: 'example-security.eval.mjs', owner: '15x-y', reason: '...' },
+  {
+    file: 'battle-reducer-security.eval.mjs',
+    owner: '14r-c-2',
+    reason:
+      'naive block+line comment stripper with no string-literal awareness (stripRustComments); ' +
+      'canary-measured NOT offset-preserving (61 vs 78) — it DELETES rather than blanks, so every ' +
+      'offset it hands downstream is misaligned. Budget-parked by 14r-c.',
+  },
+  {
+    file: 'evolution-reducer-security.eval.mjs',
+    owner: '14r-c-2',
+    reason:
+      'LIVE, REPRODUCIBLE ADR-0181 hazard, not a theoretical one: this gate canary-measured ' +
+      'evolution-reducer-security#prepareRustSource SWALLOWING the needle — the URL-scheme literal ' +
+      'truncates the scan and blinds every ban clause downstream (plus not offset-preserving, ' +
+      '61 vs 78). Highest-priority park. Budget-parked by 14r-c.',
+  },
+  {
+    file: 'npc-dialogue-quest-security.eval.mjs',
+    owner: '14r-c-2',
+    reason:
+      'naive block+line comment stripper with no string-literal awareness (stripRustComments); ' +
+      'canary-measured NOT offset-preserving (61 vs 78). Budget-parked by 14r-c.',
+  },
+  {
+    file: 'raising-reducer-security.eval.mjs',
+    owner: '14r-c-2',
+    reason:
+      'LIVE, REPRODUCIBLE ADR-0181 hazard, not a theoretical one: this gate canary-measured ' +
+      'raising-reducer-security#prepareRustSource SWALLOWING the needle — the URL-scheme literal ' +
+      'truncates the scan and blinds every ban clause downstream (plus not offset-preserving, ' +
+      '61 vs 78). Highest-priority park. Budget-parked by 14r-c.',
+  },
+  {
+    file: 'recruit-reducer-security.eval.mjs',
+    owner: '14r-c-2',
+    reason:
+      'naive block+line comment stripper with no string-literal awareness (stripRustComments); ' +
+      'canary-measured NOT offset-preserving (61 vs 78). Budget-parked by 14r-c.',
+  },
+  {
+    file: 'shop-reducer-security.eval.mjs',
+    owner: '14r-c-2',
+    reason:
+      'naive block+line comment stripper PLUS a separate stripRustStrings second pass — the exact ' +
+      'strip-comments-THEN-strip-strings ordering ADR-0181 names as the false-GREEN bug; both ' +
+      'canary-measured NOT offset-preserving (61 and 57 vs 78). Budget-parked by 14r-c.',
+  },
+  {
+    file: 'trade-reducer-security.eval.mjs',
+    owner: '14r-c-2',
+    reason:
+      'naive block+line comment stripper with no string-literal awareness; sibling of the ' +
+      'trade-escrow-guards whole-crate-blob scanner ADR-0181 flagged as the widest-blast-radius ' +
+      'shape, so it must be migrated alongside it. Budget-parked by 14r-c.',
+  },
 ];
 
 // ---------------------------------------------------------------------------
@@ -384,12 +464,72 @@ export function checkLeg2(rawSrc) {
   return null;
 }
 
+// ---------------------------------------------------------------------------
+// APPLICABILITY — does this gated file actually read RUST source?
+//
+// Legs 1+2 demand a RUST-scanner migration, so they are meaningless for a gated
+// file that never opens a `.rs` file. `evals/box-view-privacy.eval.mjs` scans
+// exactly one file, `client/src/net/store.ts`; requiring it to import
+// `rust-scan.mjs` would be a demand to VIOLATE ADR-0181 D4, which forbids
+// pointing `stripRustSource` at TypeScript.
+//
+// The probe is deliberately run over the RAW source, NOT `blankJsLiterals`
+// output. Every path a JS eval opens is a STRING literal
+// (`readFileSync('server-module/src/schema.rs')`, or a recursive glob of the
+// same tree),
+// so blanking the search surface would blank away the only evidence there is.
+//
+// The consequence of using raw text is that a mere MENTION of the path in a
+// comment also counts as "reads Rust". That direction is chosen on purpose: it
+// over-includes, and over-including only ever puts a file back UNDER the
+// migration requirement. The unsafe direction — a file wrongly excused from
+// Legs 1+2 — is unreachable through this predicate, because a file that really
+// does read Rust cannot do so without naming the path somewhere in its text.
+// ---------------------------------------------------------------------------
+// (A single slash is not one of this file's hazard sequences — only slash-slash,
+// slash-star, star-slash and colon-slash-slash are — so this path is safe to
+// write literally, exactly as `detectContentOnlyCandidates` below already does.)
+const SERVER_SRC_MARKER = 'server-module/src';
+
+/**
+ * Does this eval's source read Rust source under server-module/src?
+ * @param {string} rawSrc Raw eval-file text.
+ * @returns {boolean} True when the file references the Rust source tree.
+ */
+export function readsRustSource(rawSrc) {
+  return rawSrc.indexOf(SERVER_SRC_MARKER) !== -1;
+}
+
+export const CLASS_MIGRATED = 'MIGRATED';
+export const CLASS_UNMIGRATED = 'UNMIGRATED';
+export const CLASS_NOT_APPLICABLE = 'NOT_APPLICABLE_TS_ONLY';
+
 export function classifyGatedFile(f, rawSrc) {
+  if (!readsRustSource(rawSrc)) {
+    return {
+      file: f,
+      classification: CLASS_NOT_APPLICABLE,
+      migrated: false,
+      reasons: [
+        `NOT_APPLICABLE_TS_ONLY: this gated file never reads Rust source (no ${SERVER_SRC_MARKER} ` +
+          'reference anywhere in its text), so the Rust-scanner migration does not apply to it. ' +
+          'ADR-0181 D4 FORBIDS pointing stripRustSource at TypeScript: blanking a literal payload ' +
+          'makes a ban on a needle that lives INSIDE a string literal pass vacuously. Reported ' +
+          'here rather than dropped from the enumeration, and NOT counted as migrated',
+      ],
+    };
+  }
   const leg1 = checkLeg1(rawSrc);
   const leg2reason = checkLeg2(rawSrc);
   const reasons = [...leg1.problems];
   if (leg2reason !== null) reasons.push(leg2reason);
-  return { file: f, migrated: reasons.length === 0, reasons };
+  const migrated = reasons.length === 0;
+  return {
+    file: f,
+    classification: migrated ? CLASS_MIGRATED : CLASS_UNMIGRATED,
+    migrated,
+    reasons,
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -437,6 +577,10 @@ export function validateKnownUnmigratedEntries(
 // (a URL-scheme literal — CANARY_SRC below — followed by a needle) and
 // require the needle to SURVIVE and the output length to match the canary's.
 // An import failure counts as that file's FAIL — never a silent skip.
+//
+// Returns {file, message} pairs rather than bare strings so the caller can
+// attribute each result to its file — see the ENFORCED / CORROBORATING split at
+// the call site.
 // ---------------------------------------------------------------------------
 const CANARY_NEEDLE = 'NEEDLE_MARKER_9F3C1A_STILL_HERE';
 const CANARY_SRC =
@@ -460,10 +604,12 @@ async function runBonusBehavioralCheck(gatedFiles) {
     try {
       mod = await import(pathToFileURL(path.resolve('evals', f)).href);
     } catch (e) {
-      failures.push(
-        `BONUS/import: evals/${f} threw on import — ${e?.message ?? String(e)} (an import failure ` +
+      failures.push({
+        file: f,
+        message:
+          `BONUS/import: evals/${f} threw on import — ${e?.message ?? String(e)} (an import failure ` +
           "counts as this file's FAIL, never a silent skip)",
-      );
+      });
       continue;
     }
     for (const [exportName, fn] of Object.entries(mod)) {
@@ -473,26 +619,55 @@ async function runBonusBehavioralCheck(gatedFiles) {
       try {
         out = fn(CANARY_SRC);
       } catch (e) {
-        failures.push(
-          `BONUS/${f}#${exportName}: threw on ADR-0181 canary — ${e?.message ?? String(e)}`,
-        );
+        failures.push({
+          file: f,
+          message: `BONUS/${f}#${exportName}: threw on ADR-0181 canary — ${e?.message ?? String(e)}`,
+        });
         continue;
       }
       if (typeof out !== 'string') continue; // not a single-string source transform; not this check's business
       if (out.indexOf(CANARY_NEEDLE) === -1) {
-        failures.push(
-          `BONUS/${f}#${exportName}: canary needle was SWALLOWED — the canary's URL-scheme literal ` +
+        failures.push({
+          file: f,
+          message:
+            `BONUS/${f}#${exportName}: canary needle was SWALLOWED — the canary's URL-scheme literal ` +
             'truncated the scan (the exact ADR-0181 hazard) or the function is otherwise unsound',
-        );
+        });
       }
       if (out.length !== CANARY_SRC.length) {
-        failures.push(
-          `BONUS/${f}#${exportName}: output length ${out.length} != canary length ${CANARY_SRC.length} (not offset-preserving)`,
-        );
+        failures.push({
+          file: f,
+          message: `BONUS/${f}#${exportName}: output length ${out.length} != canary length ${CANARY_SRC.length} (not offset-preserving)`,
+        });
       }
     }
   }
   return failures;
+}
+
+/**
+ * Split canary failures into the ENFORCED set (hard failures) and the
+ * CORROBORATING set (canary failures on files already parked in
+ * KNOWN_UNMIGRATED, which ARE the measured evidence for those entries and are
+ * reported rather than double-counted as failures).
+ *
+ * The exemption is narrow by construction and cannot be used to silence a
+ * healthy file: `validateKnownUnmigratedEntries` REDs for any entry whose file
+ * already passes Legs 1+2, so a park is only ever accepted for a file that is
+ * genuinely unmigrated. Tooth T9 pins that a NON-parked file's canary failure is
+ * still enforced.
+ * @param {Array<{file:string, message:string}>} bonusFailures Canary results.
+ * @param {Set<string>} debtFileSet Files listed in KNOWN_UNMIGRATED.
+ * @returns {{enforced:string[], corroborating:string[]}} The split.
+ */
+export function partitionBonusFailures(bonusFailures, debtFileSet) {
+  const enforced = [];
+  const corroborating = [];
+  for (const b of bonusFailures) {
+    if (debtFileSet.has(b.file)) corroborating.push(b.message);
+    else enforced.push(b.message);
+  }
+  return { enforced, corroborating };
 }
 
 // ---------------------------------------------------------------------------
@@ -513,7 +688,7 @@ function detectContentOnlyCandidates(allEvalFiles, gatedFileSet) {
     } catch {
       continue;
     }
-    if (src.indexOf('server-module/src') === -1) continue;
+    if (!readsRustSource(src)) continue; // same "does it read Rust?" probe as classifyGatedFile
     if (checkLeg2(src) !== null) found.push(f);
   }
   return found.sort();
@@ -721,6 +896,107 @@ function runProofOfTeeth() {
     }
   }
 
+  // T8 — APPLICABILITY (14r-c). A gated file that reads NO Rust must classify as
+  // NOT_APPLICABLE_TS_ONLY — never as MIGRATED (which would silently inflate the
+  // migrated count and let a real regression hide behind the ratchet), and never
+  // as UNMIGRATED (which would demand it violate ADR-0181 D4). The three
+  // sub-checks together pin BOTH directions, so the exemption cannot widen into
+  // a blanket excuse.
+  {
+    // T8a — a TS-only gated file: no Rust reference, no import, no assert.
+    const tsOnly =
+      "import { readFileSync } from 'node:fs';\n" +
+      'export default async function () {\n' +
+      "  const src = readFileSync('client/src/net/store.ts', 'utf8');\n" +
+      "  return { pass: src.indexOf('iv_hp') === -1 };\n" +
+      '}\n';
+    const r8a = classifyGatedFile('zzz-ts-only-privacy.eval.mjs', tsOnly);
+    if (r8a.classification !== CLASS_NOT_APPLICABLE) {
+      teeth.push(
+        `T8a FAILED: a TS-only gated file (scans client/src only, reads no Rust) classified as ` +
+          `${r8a.classification} instead of ${CLASS_NOT_APPLICABLE} — kills: a gate that demands a ` +
+          'TypeScript-only eval import the Rust scanner, which ADR-0181 D4 explicitly FORBIDS',
+      );
+    }
+    if (r8a.migrated) {
+      teeth.push(
+        'T8a FAILED: a NOT_APPLICABLE_TS_ONLY file was counted as MIGRATED — kills: an ' +
+          'applicability exemption that inflates the migrated count and lets a real regression ' +
+          'hide behind MIGRATED_FLOOR',
+      );
+    }
+    if (r8a.reasons.length === 0) {
+      teeth.push(
+        'T8a FAILED: the NOT_APPLICABLE_TS_ONLY classification carried NO reason — kills: a ' +
+          'silent exclusion, which is the exact hole this gate exists to prevent',
+      );
+    }
+
+    // T8b — the SAME file, but now it reads Rust. It must fall straight back
+    // under the migration requirement. This is what stops T8a's exemption from
+    // being a blanket "any gated file may opt out".
+    const readsRust = tsOnly.replace('client/src/net/store.ts', `${SERVER_SRC_MARKER}/schema.rs`);
+    const r8b = classifyGatedFile('zzz-reads-rust-privacy.eval.mjs', readsRust);
+    if (r8b.classification !== CLASS_UNMIGRATED) {
+      teeth.push(
+        `T8b FAILED: an UNMIGRATED gated file that DOES read ${SERVER_SRC_MARKER} classified as ` +
+          `${r8b.classification} — kills: an applicability predicate that excuses every gated file, ` +
+          'turning the whole migration requirement off',
+      );
+    }
+
+    // T8c — the live tree: the applicability predicate must be answering from
+    // the file's real content, not from a name list. box-view-privacy.eval.mjs
+    // scans only client/src/net/store.ts.
+    let boxSrc = null;
+    try {
+      boxSrc = readFileSync('evals/box-view-privacy.eval.mjs', 'utf8');
+    } catch {
+      boxSrc = null;
+    }
+    if (boxSrc === null) {
+      teeth.push(
+        'T8c FAILED: evals/box-view-privacy.eval.mjs could not be read — the applicability tooth ' +
+          'cannot be evaluated against the live tree (a missing fixture is a FAIL, never a skip)',
+      );
+    } else if (
+      classifyGatedFile('box-view-privacy.eval.mjs', boxSrc).classification !== CLASS_NOT_APPLICABLE
+    ) {
+      teeth.push(
+        'T8c FAILED: the live evals/box-view-privacy.eval.mjs (a gated file that scans only ' +
+          'client/src/net/store.ts) did not classify as NOT_APPLICABLE_TS_ONLY',
+      );
+    }
+  }
+
+  // T9 — the debt canary exemption must stay NARROW. A canary failure on a file
+  // that is NOT parked in KNOWN_UNMIGRATED must still be ENFORCED; only a
+  // parked file's failure may be demoted to corroborating evidence. Kills: an
+  // exemption path that swallows every canary failure and greens the gate.
+  {
+    const split = partitionBonusFailures(
+      [
+        { file: 'parked-security.eval.mjs', message: 'PARKED canary failure' },
+        { file: 'live-security.eval.mjs', message: 'LIVE canary failure' },
+      ],
+      new Set(['parked-security.eval.mjs']),
+    );
+    if (split.enforced.length !== 1 || split.enforced[0] !== 'LIVE canary failure') {
+      teeth.push(
+        'T9 FAILED: a canary failure on a file that is NOT in KNOWN_UNMIGRATED was not ENFORCED ' +
+          `(enforced=${JSON.stringify(split.enforced)}) — kills: a debt exemption that swallows ` +
+          'every canary failure, greening the gate on a live ADR-0181 hazard',
+      );
+    }
+    if (split.corroborating.length !== 1 || split.corroborating[0] !== 'PARKED canary failure') {
+      teeth.push(
+        'T9 FAILED: a canary failure on a KNOWN_UNMIGRATED file was not recorded as ' +
+          `corroborating evidence (corroborating=${JSON.stringify(split.corroborating)}) — kills: ` +
+          'a split that DROPS the measured evidence for a debt entry instead of reporting it',
+      );
+    }
+  }
+
   return teeth;
 }
 
@@ -765,6 +1041,7 @@ export default async function scannerMigrationAuditEval() {
       failures.push(`CLASSIFY: cannot read evals/${f}: ${e?.message ?? String(e)}`);
       results.push({
         file: f,
+        classification: CLASS_UNMIGRATED,
         migrated: false,
         reasons: [`unreadable: ${e?.message ?? String(e)}`],
       });
@@ -787,7 +1064,14 @@ export default async function scannerMigrationAuditEval() {
   for (const p of debtProblems) failures.push(`DEBT: ${p}`);
 
   const debtFileSet = new Set(KNOWN_UNMIGRATED.map((e) => e.file));
-  const uncovered = results.filter((r) => !r.migrated && !debtFileSet.has(r.file));
+  const notApplicable = results.filter((r) => r.classification === CLASS_NOT_APPLICABLE);
+  const notApplicableSet = new Set(notApplicable.map((r) => r.file));
+  // Only files that are genuinely UNMIGRATED (i.e. they DO read Rust and still
+  // fail Legs 1+2) need debt cover. NOT_APPLICABLE files are excluded here and
+  // named in `detail` below instead — reported, never dropped.
+  const uncovered = results.filter(
+    (r) => r.classification === CLASS_UNMIGRATED && !debtFileSet.has(r.file),
+  );
   if (uncovered.length > 0) {
     failures.push(
       `MIGRATION: ${uncovered.length} gated file(s) are neither migrated (Legs 1+2) nor listed in ` +
@@ -808,25 +1092,65 @@ export default async function scannerMigrationAuditEval() {
     );
   }
 
+  // The ADR-0181 canary is RUST source, so it is fed only to gated files that
+  // actually scan Rust. Pointing it at a NOT_APPLICABLE_TS_ONLY file would be
+  // the mirror image of the D4 violation this gate just stopped demanding: that
+  // file's helpers are TypeScript scanners, deliberately literal-PRESERVING, and
+  // would false-RED on a Rust fixture. Measured at 14r-c: the single such file
+  // (box-view-privacy.eval.mjs) exports no strip/scan/prepare/blank function at
+  // all, so this exclusion is a no-op today — it is named in `detail` regardless.
+  const canaryFiles = gatedFiles.filter((f) => !notApplicableSet.has(f));
   let bonusFailures = [];
   try {
-    bonusFailures = await runBonusBehavioralCheck(gatedFiles);
+    bonusFailures = await runBonusBehavioralCheck(canaryFiles);
   } catch (e) {
     failures.push(`BONUS: bonus behavioral check threw unexpectedly — ${e?.message ?? String(e)}`);
   }
-  for (const b of bonusFailures) failures.push(b);
+
+  // ENFORCED vs CORROBORATING split. A canary failure on a file that is NOT
+  // parked is a hard failure. A canary failure on a KNOWN_UNMIGRATED file is the
+  // EVIDENCE FOR that entry, not news: the entry is an explicit, capped,
+  // membership-guarded, self-retiring admission that this file's scanner is
+  // unsound, and `validateKnownUnmigratedEntries` REDs the moment the file
+  // actually passes Legs 1+2 ("delete this entry"). So the exemption cannot be
+  // used to silence a canary on a file that is fine — parking a healthy file is
+  // itself a failure. Enforcing these would make a debt list impossible to hold
+  // at all; instead every one is printed under `debt-corroboration` below, so
+  // nothing is hidden.
+  const { enforced: enforcedBonus, corroborating: corroboratingBonus } = partitionBonusFailures(
+    bonusFailures,
+    debtFileSet,
+  );
+  for (const m of enforcedBonus) failures.push(m);
 
   const contentDetected = detectContentOnlyCandidates(allEvalFiles, gatedFileSet);
 
-  const summary = `${gatedFiles.length} gated / ${migratedCount} migrated / ${KNOWN_UNMIGRATED.length} debt`;
+  const summary =
+    `${gatedFiles.length} gated / ${migratedCount} migrated / ${KNOWN_UNMIGRATED.length} debt / ` +
+    `${notApplicable.length} not-applicable`;
+  const naNote =
+    notApplicable.length > 0
+      ? ` | not-applicable (${CLASS_NOT_APPLICABLE}, Legs 1+2 and the Rust canary do not apply — ` +
+        `ADR-0181 D4): ${notApplicable.map((r) => `${r.file} [${r.reasons.join('; ')}]`).join(' | ')}`
+      : ' | not-applicable: none';
+  const debtNote =
+    KNOWN_UNMIGRATED.length > 0
+      ? ` | debt (cap ${KNOWN_UNMIGRATED_CAP}, self-retiring): ${KNOWN_UNMIGRATED.map((e) => `${e.file} -> ${e.owner}`).join(', ')}`
+      : ' | debt: none';
+  const corroborationNote =
+    corroboratingBonus.length > 0
+      ? ` | debt-corroboration (canary failures on KNOWN_UNMIGRATED files — reported, not enforced, ` +
+        `because they ARE the evidence for the entry): ${corroboratingBonus.join(' ; ')}`
+      : ' | debt-corroboration: none';
   const contentNote =
     contentDetected.length > 0
       ? ` | content-detected (report-only, ungated by name, ADR-0181 disclosed gap): ${contentDetected.join(', ')}`
       : ' | content-detected (report-only): none found';
+  const tail = `${naNote}${debtNote}${corroborationNote}${contentNote}`;
   const detail =
     failures.length > 0
-      ? `${summary} — FAILURES: ${failures.join(' || ')}${contentNote}`
-      : `${summary}${contentNote}`;
+      ? `${summary} — FAILURES: ${failures.join(' || ')}${tail}`
+      : `${summary}${tail}`;
 
   return { name, pass: failures.length === 0, detail };
 }
