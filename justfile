@@ -100,8 +100,8 @@ mutate-core:
 # ADR-0183. Prior baselines 299 @ m17.5a 2026-07-17, 308 @ m17a 2026-07-17, 309
 # @ 908c99b 2026-07-15 per ADR-0118, 180 @ e875af0 2026-07-04) instead of failing
 # on any survivor (game-core's mutate-core keeps zero-tolerance). This cap is
-# DEBT-CARRYING: ADR-0183 names 12 in-crate-killable survivors whose kill slice
-# must ratchet it to ≤312. `--test-tool nextest` is pinned for determinism with
+# DEBT-CARRYING: ADR-0183 names 11 in-crate-killable survivors whose kill slice
+# must ratchet it to ≤313. `--test-tool nextest` is pinned for determinism with
 # the recorded baseline (zero doctests in the crate, so catch results are
 # identical).
 # Cap bumps must update ADR-0050. Runs in nightly.yml only (mutation-server job);
@@ -122,11 +122,25 @@ mutate-server cap="324":
         echo "cargo mutants failed with exit $status (build/config error, not 'mutants missed')" >&2
         exit "$status"
     fi
-    # missed.txt exists whenever cargo-mutants ran (exit 0 or 2); a missing file
-    # aborts via set -e — the correct fail-loud path. grep -c '' counts lines
-    # regardless of a trailing newline (wc -l undercounts a newline-less last
-    # line); || true keeps the empty-file (0 survivors) case alive under set -e.
+    # missed.txt exists whenever cargo-mutants ran (exit 0 or 2). The explicit
+    # existence guard is NOT redundant with set -e (ADR-0183 D7, proved by
+    # execution): `|| true` swallows grep's exit 2, leaving missed="", and the
+    # resulting `[ "" -gt N ]` error is EXEMPTED from set -e because it sits in
+    # an if-condition — so without this guard the ratchet block is skipped and
+    # the gate exits 0 vacuously green. Same fail-closed shape as mutate-core.
+    if [ ! -f mutants.out/missed.txt ]; then
+        echo "mutate-server: mutants.out/missed.txt absent — cannot verify the survivor count" >&2
+        exit 1
+    fi
+    # grep -c '' counts lines regardless of a trailing newline (wc -l undercounts
+    # a newline-less last line); || true keeps the empty-file (0 survivors) case
+    # alive under set -e.
     missed=$(grep -c '' mutants.out/missed.txt || true)
+    # Second belt: a non-numeric count would error inside the if-condition below
+    # and be set -e-exempt exactly as above.
+    case "$missed" in
+        ''|*[!0-9]*) echo "mutate-server: survivor count '$missed' is not an integer" >&2; exit 1;;
+    esac
     echo "surviving mutants: $missed (cap {{cap}})"
     if [ "$missed" -gt "{{cap}}" ]; then
         echo "survivor count $missed exceeds cap {{cap}} — mutation ratchet violated (ADR-0050)" >&2

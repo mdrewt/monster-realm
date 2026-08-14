@@ -11,12 +11,15 @@
 // Extended in 14r-a (nightly failure-policy documentation + cap/ceiling coupling):
 //   - each guarded nightly job (mutation, mutation-server, coverage) documents its
 //     failure policy in the contiguous comment preamble directly above its job key,
-//     mirroring the smoke-republish precedent at .github/workflows/nightly.yml:78-83
+//     mirroring the smoke-republish precedent at .github/workflows/nightly.yml:85-90
 //     (decision-hook mdrewt/claude-harness#14 — notification channel — is still open,
 //     so the reversible default is a documented policy, NOT a notification Action)
 //   - the committed justfile `mutate-server cap=` default EQUALS the wiring-eval
 //     ceiling MUTATE_SERVER_CAP_BASELINE (ADR-0137 D4: both move in the same commit;
 //     the pre-existing `cap ≤ ceiling` check alone makes a ceiling-only raise invisible)
+//   - the `mutate-server` recipe carries an explicit `[ ! -f mutants.out/missed.txt ]`
+//     existence guard (ADR-0183 D7 — without it an absent missed.txt makes the ratchet
+//     block set -e-exempt and skipped, so the gate exits 0 having measured nothing)
 //
 // EXPECTED REAL-TREE STATE AT RED (m13.5a additions only — long since GREEN):
 //   nightlyHasServerMutationJob → FAIL (mutation-server job absent from nightly.yml)
@@ -33,6 +36,9 @@
 //            moment either number moves without the other.
 //   Checks 1–13 stay GREEN. Because this eval returns on first failure, the runner
 //   reports Check 14 at RED; Checks 15/16 surface as the implementer fixes upward.
+//   Check 13 also carries the new ADR-0183 D7 missed.txt-guard clause; the committed
+//   recipe already has that guard, so Check 13 stays GREEN — the clause is a ratchet
+//   against REMOVING it, not a demand for new work.
 //
 // Verifies that the nightly publish→republish→sync_content smoke test is
 // correctly wired: job lives in nightly.yml (not ci.yml), the smoke script
@@ -299,6 +305,13 @@ export function coverageRecipeThresholdIntact(justfileText) {
 //   - does NOT contain ` -o ` (space-delimited, F10: redirecting output to a different
 //     path leaves the recipe reading a stale or wrong missed.txt)
 //   - does NOT contain `--output` (F10 long form)
+//   - contains an explicit missed.txt EXISTENCE GUARD (`-f mutants.out/missed.txt`),
+//     ADR-0183 D7. Proved by execution, not inspection: when the file is absent,
+//     `missed=$(grep -c '' mutants.out/missed.txt || true)` leaves missed="" and the
+//     following `[ "" -gt N ]` errors INSIDE an if-condition — which `set -e`
+//     deliberately exempts — so the ratchet block is skipped and the recipe exits 0,
+//     vacuously green. `mutate-core` already carries the same `[ ! -f … ]` guard;
+//     without this clause the server ratchet can silently measure nothing.
 //   - the `cap=` default in the recipe signature parses as an integer
 //     ≤ MUTATE_SERVER_CAP_BASELINE (catches cap="9999"; ceiling == committed cap
 //     so any inflation is eval-visible)
@@ -317,7 +330,7 @@ export function coverageRecipeThresholdIntact(justfileText) {
 const MUTATE_SERVER_CAP_BASELINE = 324;
 
 // Shared helper: parse the `cap=` default out of a `mutate-server …` recipe header
-// line (`mutate-server cap="299":`, `cap='299'`, `cap=299` all parse).
+// line (`mutate-server cap="324":`, `cap='324'`, `cap=324` all parse).
 // Returns { present, cap }:
 //   present === false             → the header declares no cap= parameter at all
 //   present === true, cap === null → cap= present but MALFORMED (no digits follow)
@@ -393,6 +406,13 @@ export function mutateServerRecipeIntact(justfileText) {
   if (body.indexOf('monster-realm-module') === -1) return false;
   if (body.indexOf('missed.txt') === -1) return false;
   if (body.indexOf('--test-tool nextest') === -1) return false;
+  // ADR-0183 D7 (14r-a): the ratchet is vacuously green when mutants.out/missed.txt
+  // is absent — the `[ "" -gt N ]` error is set -e-exempt inside an if-condition, so
+  // the whole ratchet block is skipped and the recipe exits 0. Require the explicit
+  // fail-closed existence guard (same shape mutate-core already uses).
+  // Clause ORDER matters: this sits AFTER the `missed.txt` clause so the L-no-missed
+  // fixture (no missed.txt anywhere) still bites on its own clause rather than here.
+  if (body.indexOf('-f mutants.out/missed.txt') === -1) return false;
   if (body.indexOf('--shard') !== -1) return false;
   if (body.indexOf('--file') !== -1) return false;
   if (body.indexOf('--exclude-re') !== -1) return false;
@@ -428,7 +448,7 @@ function normalisePolicyCommentLine(line) {
 // ---------------------------------------------------------------------------
 // Pure predicate: the nightly job `jobName` carries a DOCUMENTED failure policy
 // in the contiguous comment preamble immediately ABOVE its job key — the
-// `smoke-republish` precedent at .github/workflows/nightly.yml:78-83.
+// `smoke-republish` precedent at .github/workflows/nightly.yml:85-90.
 // Returns { ok: boolean, reason: string }.
 //
 // WHY A COMMENT AND NOT A NOTIFICATION ACTION: decision-hook
@@ -471,9 +491,15 @@ export function jobHasFailurePolicyComment(yaml, jobName) {
   const keyAbsent = `${jobName}: job key absent at 2-space indent under jobs:`;
 
   // Clause 1: anchor the key scan at the top-level `jobs:` line.
+  // A trailing comment on the mapping key (`jobs:   # all nightly jobs`) is legal
+  // YAML, so it is TOLERATED rather than treated as "no jobs: block" — rejecting it
+  // would be a confusing false red on a file that is perfectly well documented
+  // (decision pinned by teeth M10-tolerated / M10-absent). `startsWith` keeps the
+  // match anchored at column 0, so a nested `  jobs:` can never become the anchor.
   let jobsIdx = -1;
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i] === 'jobs:') {
+    const ln = lines[i];
+    if (ln === 'jobs:' || ln.startsWith('jobs: ') || ln.startsWith('jobs:\t')) {
       jobsIdx = i;
       break;
     }
@@ -1089,8 +1115,17 @@ jobs:
   // survives this ENTIRE block. Deriving every boundary fixture from
   // MUTATE_SERVER_CAP_BASELINE keeps the bites pinned to the boundary wherever it
   // moves, so a re-baseline is a one-line constant edit and nothing else.
+  //
+  // EVERY mutate-server fixture below also carries the missed.txt existence guard
+  // (ADR-0183 D7 clause). That is not decoration: a negative fixture that OMITS the
+  // guard would be rejected by the guard clause before its own clause is ever
+  // reached, and its tooth would go inert — precisely the L-bigcap failure the
+  // red-team found (that fixture also omitted --test-tool nextest, so it never once
+  // exercised the cap comparison). Rule for future fixtures: differ from the
+  // canonical recipe by EXACTLY ONE property.
+  const MISSED_GUARD = '    if [ ! -f mutants.out/missed.txt ]; then exit 1; fi\n';
   const capFixture = (cap) =>
-    `mutate-server cap="${cap}":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n`;
+    `mutate-server cap="${cap}":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n${MISSED_GUARD}`;
   const CAP_UNDER = MUTATE_SERVER_CAP_BASELINE - 1;
   const CAP_AT = MUTATE_SERVER_CAP_BASELINE;
   const CAP_OVER = MUTATE_SERVER_CAP_BASELINE + 1;
@@ -1108,6 +1143,10 @@ jobs:
   }
   // Bad: missed.txt absent.
   // Kills: impl that only checks module name.
+  // Deliberately WITHOUT the MISSED_GUARD suffix (unlike every other fixture): the
+  // guard line names mutants.out/missed.txt, which would satisfy the very clause
+  // this tooth removes. The `missed.txt` clause runs BEFORE the guard clause, so
+  // this fixture still bites on its own clause.
   const justfileMutServerNoMissed = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --cap {{cap}}\n`;
   if (mutateServerRecipeIntact(justfileMutServerNoMissed)) {
     return {
@@ -1118,7 +1157,7 @@ jobs:
     };
   }
   // Bad: --shard scope-narrowing bypass.
-  const justfileMutServerShard = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --cap {{cap}} --shard 1/64 > missed.txt\n`;
+  const justfileMutServerShard = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} --shard 1/64 > missed.txt\n${MISSED_GUARD}`;
   if (mutateServerRecipeIntact(justfileMutServerShard)) {
     return {
       name,
@@ -1128,9 +1167,15 @@ jobs:
     };
   }
   // Bad: cap=9999 (absurdly above any plausible re-baseline of the ceiling).
-  // Kept as a literal on purpose: it is the "someone typed a number to make the
-  // gate shut up" fixture, not a boundary bite (the boundary bites are derived).
-  const justfileMutServerBigCap = `mutate-server cap="9999":\n    cargo mutants -p monster-realm-module --cap {{cap}} > missed.txt\n`;
+  // 9999 stays a literal on purpose: it is the "someone typed a number to make the
+  // gate shut up" ABSOLUTE backstop, not a boundary bite (the boundary bites are
+  // derived from the constant and would all move with a re-baseline; this one must
+  // not). Built through capFixture so the recipe is canonical in every other
+  // respect — the previous hand-written literal omitted `--test-tool nextest`, so it
+  // was rejected on the nextest clause and never exercised the cap comparison at
+  // all. Red-team proof of the inertness: with the constant AND the justfile both
+  // set to 9999 the entire eval went green, i.e. there was no ceiling backstop.
+  const justfileMutServerBigCap = capFixture(9999);
   if (mutateServerRecipeIntact(justfileMutServerBigCap)) {
     return {
       name,
@@ -1140,8 +1185,19 @@ jobs:
         `MUTATE_SERVER_CAP_BASELINE=${MUTATE_SERVER_CAP_BASELINE} per ADR-0137 D4 / ADR-0118)`,
     };
   }
+  // L-bigcap-backstop — the backstop needs the constant to stay BELOW 9999, or the
+  // fixture above stops exceeding the ceiling and quietly goes inert (that is how
+  // the red-team turned the whole eval green: constant 9999 + justfile cap 9999).
+  // A survivor cap in the thousands is not a ratchet; refuse to run in that world.
+  if (MUTATE_SERVER_CAP_BASELINE >= 9999) {
+    return {
+      name,
+      pass: false,
+      detail: `TEETH L-bigcap-backstop: MUTATE_SERVER_CAP_BASELINE=${MUTATE_SERVER_CAP_BASELINE} is at or above the 9999 absolute backstop, which makes the L-bigcap fixture inert (no cap would ever exceed the ceiling). Re-baselining the ratchet that far is not a re-baseline — re-open ADR-0050/ADR-0183 instead`,
+    };
+  }
   // Bad: --file scope-narrowing bypass.
-  const justfileMutServerFile = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} --file shop.rs > missed.txt\n`;
+  const justfileMutServerFile = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} --file shop.rs > missed.txt\n${MISSED_GUARD}`;
   if (mutateServerRecipeIntact(justfileMutServerFile)) {
     return {
       name,
@@ -1152,7 +1208,7 @@ jobs:
   }
   // Bad: --test-tool nextest absent (M3 — removing it silently changes measurement methodology).
   // Kills: impl that doesn't require the flag.
-  const justfileMutServerNoNextest = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --cap {{cap}} 2>&1 | tee missed.txt\n`;
+  const justfileMutServerNoNextest = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --cap {{cap}} 2>&1 | tee missed.txt\n${MISSED_GUARD}`;
   if (mutateServerRecipeIntact(justfileMutServerNoNextest)) {
     return {
       name,
@@ -1163,7 +1219,7 @@ jobs:
   }
   // Bad: cap= present but malformed (no digits after =) — reviewer n4 tightening.
   // Kills: impl that silently allows malformed cap= headers.
-  const justfileMutServerMalformedCap = `mutate-server cap=:\n    cargo mutants -p monster-realm-module --test-tool nextest 2>&1 | tee missed.txt\n`;
+  const justfileMutServerMalformedCap = `mutate-server cap=:\n    cargo mutants -p monster-realm-module --test-tool nextest 2>&1 | tee missed.txt\n${MISSED_GUARD}`;
   if (mutateServerRecipeIntact(justfileMutServerMalformedCap)) {
     return {
       name,
@@ -1175,12 +1231,45 @@ jobs:
   // Good: all invariants satisfied (monster-realm-module, missed.txt, --test-tool nextest,
   // cap ≤ MUTATE_SERVER_CAP_BASELINE, no scope-narrowing flags). cap=150 stays a
   // literal on purpose: it is the "ordinary recipe" control, not a boundary bite.
-  const justfileMutServerGood = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n`;
+  const justfileMutServerGood = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n${MISSED_GUARD}`;
   if (!mutateServerRecipeIntact(justfileMutServerGood)) {
     return {
       name,
       pass: false,
       detail: 'TEETH L-good: mutateServerRecipeIntact rejected a correct mutate-server recipe',
+    };
+  }
+
+  // --- TEETH L-guard: the missed.txt EXISTENCE GUARD clause (ADR-0183 D7) ---
+  // Bad: the otherwise-canonical recipe with NO `[ ! -f mutants.out/missed.txt ]`
+  // guard — today's shape before hardening. Verified by execution, not inspection:
+  // with the file absent, `missed=$(grep -c '' … || true)` yields missed="" and the
+  // following `[ "" -gt N ]` errors inside an if-condition, which set -e EXEMPTS, so
+  // the ratchet block is skipped and the recipe exits 0 having measured nothing.
+  // Kills: an impl that treats "the recipe mentions missed.txt" as proof the count
+  // is actually compared — mentioning the file is not reading it.
+  const justfileMutServerNoGuard = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} 2>&1 | tee missed.txt\n    missed=$(grep -c '' mutants.out/missed.txt || true)\n`;
+  if (mutateServerRecipeIntact(justfileMutServerNoGuard)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH L-no-guard: mutateServerRecipeIntact accepted a mutate-server recipe with NO ' +
+        'explicit `[ ! -f mutants.out/missed.txt ]` existence guard — without it an absent ' +
+        'missed.txt makes the ratchet block set -e-exempt and skipped, so the gate exits 0 ' +
+        'vacuously green (ADR-0183 D7; mutate-core already carries the same guard)',
+    };
+  }
+  // Good: the same recipe WITH the guard must still be accepted (proves the new
+  // clause is satisfiable and did not just turn the predicate into a constant false).
+  const justfileMutServerGuarded = `${justfileMutServerNoGuard}${MISSED_GUARD}`;
+  if (!mutateServerRecipeIntact(justfileMutServerGuarded)) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'TEETH L-guard-good: mutateServerRecipeIntact rejected a recipe that DOES carry the ' +
+        'missed.txt existence guard — the ADR-0183 D7 clause must be satisfiable',
     };
   }
   // Bad: cap = CEILING + 10 — a materially loosened ceiling (was the literal 309
@@ -1388,7 +1477,7 @@ jobs:
   // --- TEETH F10: mutateServerRecipeIntact -o / --output ban ---
   // Bad: recipe uses `-o /tmp/x` (short-form redirect) — leaves recipe reading stale missed.txt.
   // Kills: impl that doesn't ban the -o flag.
-  const justfileMutServerDashO = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} -o /tmp/mutations.txt && wc -l /tmp/mutations.txt > missed.txt\n`;
+  const justfileMutServerDashO = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} -o /tmp/mutations.txt && wc -l /tmp/mutations.txt > missed.txt\n${MISSED_GUARD}`;
   if (mutateServerRecipeIntact(justfileMutServerDashO)) {
     return {
       name,
@@ -1398,7 +1487,7 @@ jobs:
     };
   }
   // Bad: recipe uses `--output`.
-  const justfileMutServerOutput = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} --output /tmp/mutations 2>&1 | tee missed.txt\n`;
+  const justfileMutServerOutput = `mutate-server cap="150":\n    cargo mutants -p monster-realm-module --test-tool nextest --cap {{cap}} --output /tmp/mutations 2>&1 | tee missed.txt\n${MISSED_GUARD}`;
   if (mutateServerRecipeIntact(justfileMutServerOutput)) {
     return {
       name,
@@ -1449,15 +1538,18 @@ jobs:
     }
   }
 
-  // M2a — preamble mentions the backticked job name and a routing keyword but
-  // never says "failure policy for". Kills: an impl that only greps for the job
-  // name plus a keyword (any incidental sentence about the job would pass).
+  // M2a — preamble mentions the backticked job name FOLLOWED BY A COLON and a
+  // routing keyword, but never says "failure policy for".
+  // Kills: an impl that drops the whole `failure policy for ` prefix from the
+  // anchored phrase (leaving just "`coverage`:").
+  // FIXTURE REPAIR (red-team): the original fixture wrote "The `coverage` job
+  // enforces …" — backtick then a SPACE, never a colon — so a prefix-dropping mutant
+  // still found no match and survived. The colon is what exercises the prefix.
   const nightlyPolicyNoPhrase = `name: Nightly
 on:
   workflow_dispatch:
 jobs:
-  # The \`coverage\` job enforces the vitest line threshold; a red run is picked
-  # up as the next slice in the milestone queue.
+  # The \`coverage\`: threshold job. Fixed in the next slice.
   coverage:
     runs-on: ubuntu-latest
     steps:
@@ -1471,8 +1563,38 @@ jobs:
         pass: false,
         detail:
           'TEETH M2a: jobHasFailurePolicyComment accepted a preamble with the backticked job ' +
-          'name + a routing keyword but NO "failure policy for" phrase — kills an impl that ' +
-          'greps for name+keyword instead of the anchored phrase',
+          'name + colon + a routing keyword but NO "failure policy for" phrase — kills an impl ' +
+          'that anchors on "`<job>`:" alone instead of the full phrase',
+      };
+    }
+  }
+
+  // M2a-2 — the same trap one word in: a preamble carrying a DIFFERENT kind of
+  // policy for this job, written as "<something> policy for `coverage`:".
+  // Kills: an impl that drops only the word "failure" from the anchored phrase
+  // (phrase becomes "policy for `coverage`:", which this line satisfies). M2a
+  // cannot kill that mutant — it has no "policy for" text at all — so the two
+  // fixtures are a pair, one per word of the prefix.
+  const nightlyPolicyOtherPolicy = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  # Retry policy for \`coverage\`: rerun once, then hand it to the next slice.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyOtherPolicy, 'coverage');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M2a-2: jobHasFailurePolicyComment accepted a RETRY policy as a failure policy ' +
+          '— the anchored phrase must retain the word "failure"; kills an impl that matches ' +
+          'only "policy for `<job>`:"',
       };
     }
   }
@@ -1635,6 +1757,66 @@ jobs:
     }
   }
 
+  // M3d — the LINE-WRAPPED phrase: exactly the shape the clause-4 reason string
+  // warns an editor not to write. Kills: a blob-join impl that reads TOP-DOWN, i.e.
+  // `preamble.slice().reverse().join(' ')` — the preamble is collected bottom-up, so
+  // reversing restores document order and stitches "failure policy for" onto
+  // "`coverage`: …", producing the anchored phrase that no single line contains.
+  // M3c cannot kill that mutant (its two lines do not concatenate into the phrase in
+  // either direction); the two fixtures are a matched pair against blob-joining.
+  const nightlyPolicyWrapped = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  # Failure policy for
+  # \`coverage\`: inserted as the next slice in the queue.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyWrapped, 'coverage');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M3d: jobHasFailurePolicyComment accepted a LINE-WRAPPED anchored phrase ' +
+          '("Failure policy for" / "`coverage`: …" on two lines) — clause 4 requires the ' +
+          'phrase on a SINGLE line; kills a top-down (reversed) blob-join impl',
+      };
+    }
+  }
+
+  // M9 — the trailing COLON is load-bearing. Witness prose that names the job and a
+  // routing keyword and even says "failure policy for `coverage`" — but as a
+  // statement that no policy exists. Kills: an impl that drops the `:` from the
+  // anchored phrase, which would accept this and every other passing mention.
+  const nightlyPolicyNoColon = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  # There is no agreed failure policy for \`coverage\` yet; see the triage queue.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyNoColon, 'coverage');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M9: jobHasFailurePolicyComment accepted "there is no agreed failure policy ' +
+          'for `coverage` yet" as a documented policy — the anchored phrase must end in a ' +
+          'COLON (the colon is what makes it a declaration rather than a mention)',
+      };
+    }
+  }
+
   // M4 — non-contiguous: a perfect preamble separated from the key by ONE BLANK
   // LINE. Kills: an impl that scans "the comments somewhere above" instead of the
   // contiguous preamble; a blank line means the comment belongs to the previous
@@ -1732,6 +1914,44 @@ jobs:
       };
     }
   }
+  // (iii) THE indent-strictness bite. The previous job's LAST line is a 6-space
+  //       comment carrying a perfect policy for the NEXT job — a trailing note left
+  //       inside `mutation-server`'s steps, immediately above `  coverage:`.
+  //       Kills three mutations of the upward-walk guard that M5-i cannot reach
+  //       (its fixture has no job key following the in-block comment, so the walk
+  //       never starts there): `indent !== 2` → `indent < 2`; → `indent === 0`;
+  //       and the guard deleted outright. Each of those keeps walking through the
+  //       6-space line, harvests the phrase, and reports a policy that is filed
+  //       under someone else's job — while the block-extraction contract (M5-ii)
+  //       means such a comment is also where it can truncate a job.
+  const nightlyPolicyPrevJobTail = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  mutation-server:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-server
+      # Failure policy for \`coverage\`: inserted as the next slice in the queue.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyPrevJobTail, 'coverage');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M5-iii: jobHasFailurePolicyComment accepted a 6-space comment that belongs to ' +
+          "the PREVIOUS job's step list as `coverage`'s preamble — the upward walk must stop " +
+          'at any indent other than exactly 2 (kills indent < 2, indent === 0, and the ' +
+          'guard removed entirely)',
+      };
+    }
+  }
 
   // M6 — commented-out key `  # coverage:` with a perfect preamble above it and no
   // real coverage job. Kills: an impl that matches the job key with a loose
@@ -1826,6 +2046,68 @@ jobs:
           'TEETH M8: jobHasFailurePolicyComment was satisfied by a documented `coverage:` key ' +
           'under `env:` while the real job under `jobs:` is undocumented — the key scan must be ' +
           'anchored at the top-level `jobs:` line',
+      };
+    }
+  }
+
+  // M10-tolerated — a trailing comment on the `jobs:` mapping key is legal YAML and
+  // is TOLERATED (decision recorded here, not just in the predicate): the jobs are
+  // properly documented, so rejecting the file would be a confusing false red. This
+  // is a positive control — it pins the tolerance so nobody "simplifies" the anchor
+  // back to an exact-equality match and turns a legal workflow red.
+  const nightlyPolicyJobsTrailingComment = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:   # all nightly jobs
+  # Failure policy for \`coverage\`: a threshold breach is inserted as the next
+  # slice in the milestone queue.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyJobsTrailingComment, 'coverage');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH M10-tolerated: jobHasFailurePolicyComment rejected a correctly documented job because the \`jobs:\` key carries a trailing comment — that is legal YAML and is deliberately tolerated. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // M10-absent — no top-level `jobs:` line at all (a workflow fragment, or a file
+  // where someone indented the block). The predicate must FAIL CLOSED even though a
+  // perfect preamble sits above a 2-space key. Kills: a mutant that returns ok:true
+  // from the jobs-anchor-missing branch — the branch M10-tolerated cannot reach.
+  const nightlyPolicyNoJobsKey = `name: Nightly
+on:
+  workflow_dispatch:
+  # Failure policy for \`coverage\`: a threshold breach is inserted as the next
+  # slice in the milestone queue.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+  {
+    const r = jobHasFailurePolicyComment(nightlyPolicyNoJobsKey, 'coverage');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH M10-absent: jobHasFailurePolicyComment returned ok for a workflow with NO ' +
+          'top-level `jobs:` line — with no anchor there is no proof the documented key is a ' +
+          'job at all; this branch must fail closed',
+      };
+    }
+    if (r.reason.indexOf('job key absent') === -1) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH M10-absent-reason: the jobs-anchor-missing branch must report the key-absent clause so the red is diagnosable. Got: ${r.reason}`,
       };
     }
   }
@@ -2010,6 +2292,45 @@ jobs:
         detail:
           'TEETH N4: justfileCapEqualsCeiling accepted a malformed `cap=` header (no digits) — ' +
           'an unparseable cap cannot be proven equal to the ceiling and must be rejected',
+      };
+    }
+  }
+
+  // N5 — header with NO `cap=` parameter at all, body otherwise canonical → FALSE.
+  // This is the load-bearing one: mutateServerRecipeIntact DELIBERATELY tolerates an
+  // absent cap= ("cap= is optional in the recipe"), so deleting the parameter
+  // silently deletes the ratchet — and this predicate is the only thing standing
+  // between that and a green eval. Kills: the `!capInfo.present → ok:true` mutant,
+  // and the parseCapDefaultFromHeader `capIdx === -1 → {present:true, cap: <the
+  // ceiling>}` mutant, which fakes agreement out of an absent parameter.
+  const justfileCapNoParam = `mutate-server:\n    cargo mutants -p monster-realm-module --test-tool nextest 2>&1 | tee missed.txt\n${MISSED_GUARD}`;
+  {
+    const r = justfileCapEqualsCeiling(justfileCapNoParam);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH N5: justfileCapEqualsCeiling accepted a mutate-server header with NO cap= ' +
+          'parameter — mutateServerRecipeIntact tolerates an absent cap= by design, so an ' +
+          'absent cap= must fail HERE or the cap/ceiling coupling disappears silently',
+      };
+    }
+  }
+
+  // N6 — no `mutate-server` recipe at all → FALSE. Kills: the
+  // `headerLine === null → ok:true` mutant. Without this, deleting the whole recipe
+  // would satisfy the coupling check (mutateServerRecipeIntact catches the deletion
+  // today, but the two predicates must not depend on each other's teeth).
+  {
+    const r = justfileCapEqualsCeiling(justfileNoMutateServer);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH N6: justfileCapEqualsCeiling accepted a justfile with NO mutate-server recipe ' +
+          '— an absent recipe cannot be proven equal to the ceiling and must fail closed',
       };
     }
   }
@@ -2240,7 +2561,7 @@ jobs:
 
   // Checks 14–16: each guarded nightly job documents its OWN failure policy in the
   // comment preamble directly above its job key (the smoke-republish precedent at
-  // .github/workflows/nightly.yml:78-83). Three SEPARATE checks, each passing its
+  // .github/workflows/nightly.yml:85-90). Three SEPARATE checks, each passing its
   // OWN job name — one loop variable copied into all three would leave two jobs
   // unpinned, so the job name is spelled out per check and echoed in the detail.
   //
