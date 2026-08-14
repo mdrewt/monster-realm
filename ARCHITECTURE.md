@@ -165,7 +165,7 @@ invalidates downstream `touches:` declarations — **keep the file names stable.
 | `npc.rs` | `talk`, `advance_dialogue`, `dismiss_dialogue` reducers; dialogue/quest state marshaling + helpers (M12b, ADR-0069) | `npc_tests.rs` |
 | `economy.rs` | `buy`, `sell` reducers + `grant_currency` / `spend_currency` / `wallet_balance` helpers (the single economy-mutation surface — M13, ADR-0081/0082) | `economy_tests.rs` |
 | `trading.rs` | `propose_trade`, `respond_trade`, `confirm_trade`, `cancel_trade`, `trade_offer_reaper` + the `trade_offer_reaper_schedule` scheduled table (M15a — ADR-0106; TTL reaper M16.5f — ADR-0117) | `trading_tests.rs` |
-| `pvp.rs` | `challenge_pvp`, `accept_challenge`, `decline_challenge`, `cancel_challenge`, `submit_pvp_action`, `pvp_deadline_reaper` + the `pvp_deadline_schedule` scheduled table (M16 — ADR-0109) | `pvp_tests.rs` |
+| `pvp.rs` | `challenge_pvp`, `accept_challenge`, `decline_challenge`, `cancel_challenge`, `submit_pvp_action`, `pvp_deadline_reaper` + the `pvp_deadline_schedule` scheduled table (M16 — ADR-0109); the ranked account gate (`ranked_account_gate` pure seam + `ranked_enforcement_active` deployment-conditional activation, Guard 3a in both handshake reducers — 14r-g, ADR-0189) | `pvp_tests.rs` |
 | `content_cache.rs` | `LazyLock` hot-path content caches (zone maps, evolutions, dialogue trees, quests, skills, items, abilities, heal locations) + the `content_version`-keyed rebuildable type-chart cache — no reducers; ADR-0089/ADR-0170 | `content_cache_tests.rs` |
 | `ranking.rs` | `get_or_init_profile` + `apply_pvp_rating` (module-write-only `profile` rating/W/L — applied only from the `settle_pvp_battle` funnel in `pvp.rs`; M17a — ADR-0119) + the module's one reducer `set_profile_name` (writes `player.name` only, profile-untouching; the ADR-0125 mirror surfaces the rename on the leaderboard — pt-c1, ADR-0132) | `ranking_tests.rs` |
 | `playtest.rs` | the PRIVATE append-only `playtest_event` capture table + its interval-singleton TTL+cap reaper (`playtest_reaper` scheduler-only reducer + `playtest_reaper_schedule` table, armed by `ensure_playtest_reaper` from init/sync_content); `record_recruit_event` fires from `attempt_recruit` at the H1 decision point; pure seams `hp_permille`/`plan_reap`/`plan_reaper_arm` (server-only observability, NOT a game rule; pt-b2 — ADR-0131; report via `just playtest-report`) | `playtest_tests.rs` |
@@ -818,6 +818,16 @@ Tracked consciously so they stay visible, not forgotten.
   (`submit_attack`, `swap_active`, `flee`, the disconnect GC) log-and-commit rather
   than `?`-abort into an `Ongoing` row. The two `taming.rs` sites (`:169`, `:270`)
   still `?`-propagate — disclosed in ADR-0185 D3 as the named follow-up.
+- **(a2) Ranked-requires-account activation debt (14r-g — ADR-0189)**: both PvP handshake
+  reducers now gate on `accounts::is_account_holder` for BOTH parties via the pure
+  `ranked_account_gate` seam (Drew's decision, issue #307; resolves ADR-0179 OQ2) — but the
+  gate is **deployment-conditionally INERT** while `accounts::ALLOWED_ISSUERS` is the
+  fail-closed `.invalid` placeholder (no account can exist in any environment until
+  OQ1/13r-c-2 lands a real issuer). The `ea_ra_06a` canary in `pvp_tests.rs` self-expires at
+  the issuer flip and its message carries the 5-item activation checklist the flipping slice
+  owes: EARS-3 client affordance (pvpModel/pvpView + main.ts wiring), converting the three
+  guest-PvP e2e specs to account-holding identities, removing the conditional + canary,
+  knowledge regen, and the D7 in-flight/ladder-wipe decision.
 - **(b) `splitmix32` duplication** — the helper is present in both
   `taming/rules.rs` (`resolve_encounter`) and `monster/rolls.rs` (`roll_individuality`).
   Hoist to one `pub(crate)` fn to single-source the determinism contract that ADR-0045

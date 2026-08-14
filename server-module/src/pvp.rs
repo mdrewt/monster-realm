@@ -51,6 +51,73 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table};
 const PVP_TURN_DEADLINE_MS: i64 = 60_000;
 
 // ===========================================================================
+// Ranked account gate (14r-g, ADR-0189, issue #307)
+// ===========================================================================
+
+/// The exact fail-closed placeholder committed in `accounts::ALLOWED_ISSUERS`
+/// (SSOT: accounts.rs, ADR-0182 D18 hard sequencing gate). Assembled with the
+/// same `concat!` split so this file's source text carries no contiguous
+/// scheme slashes (server-module source-scan hazard). If this value ever
+/// drifts from accounts.rs, `ranked_enforcement_active()` flips true and the
+/// EA-RA-06a canary reds loudly — drift cannot be silent.
+const RANKED_PLACEHOLDER_ISSUER: &str = concat!("https:/", "/auth.monster-realm.invalid/");
+
+/// EARS-1 reject reason, caller leg. The VALUE is a client contract — the
+/// parked EARS-3 affordance keys a sign-in prompt off it. Do not reword
+/// without updating ADR-0189, EA-RA-05, and ranking-security criterion D.
+const ERR_RANKED_REQUIRES_ACCOUNT: &str = "ranked play requires an account";
+
+/// EARS-1 reject reason, opponent leg (target in `challenge_pvp`, challenger
+/// in `accept_challenge`). Distinct from the caller leg so the EA-RA-01 truth
+/// table can pin which side failed and the client can phrase the two
+/// differently (ADR-0189 D5).
+const ERR_RANKED_OPPONENT_NEEDS_ACCOUNT: &str = "opponent must have an account for ranked play";
+
+/// PURE (ADR-0189 D6): true iff at least one configured issuer is real, i.e.
+/// differs from the committed fail-closed placeholder. Exact equality, not a
+/// substring sniff: a mixed allowlist (real + leftover placeholder) must
+/// ENFORCE, and a real issuer whose host merely contains `.invalid` as a
+/// substring must count as real. Empty slice: false (no issuer can mint an
+/// account, so the gate stays inert rather than bricking PvP for everyone).
+fn issuers_configured(issuers: &[&str]) -> bool {
+    issuers.iter().any(|i| *i != RANKED_PLACEHOLDER_ISSUER)
+}
+
+/// Deployment-conditional activation (ADR-0189 D6): the ranked account gate is
+/// live iff this deployment can actually mint accounts. Today
+/// `ALLOWED_ISSUERS` is the fail-closed placeholder, so the gate is INERT and
+/// every existing PvP flow (including the three merge-gate e2e specs) is
+/// unchanged. The moment a real issuer lands (OQ1 / 13r-c-2), enforcement
+/// activates automatically — the EA-RA-06a canary carries the activation
+/// checklist that slice must complete.
+fn ranked_enforcement_active() -> bool {
+    issuers_configured(crate::accounts::ALLOWED_ISSUERS)
+}
+
+/// The ranked-eligibility decision (ADR-0189 D5). PURE — no ctx, no I/O — so
+/// it is exhaustively unit-testable in-crate (reducer bodies are not). The
+/// CALLER leg is evaluated first: when both parties are guests the caller
+/// reason wins (EA-RA-01 pins this precedence). `is_account_holder` — never
+/// `has_jwt`, which is true for every connection — supplies both booleans at
+/// the call sites (ADR-0189 D2).
+fn ranked_account_gate(
+    enforced: bool,
+    caller_has_account: bool,
+    opponent_has_account: bool,
+) -> Result<(), &'static str> {
+    if !enforced {
+        return Ok(());
+    }
+    if !caller_has_account {
+        return Err(ERR_RANKED_REQUIRES_ACCOUNT);
+    }
+    if !opponent_has_account {
+        return Err(ERR_RANKED_OPPONENT_NEEDS_ACCOUNT);
+    }
+    Ok(())
+}
+
+// ===========================================================================
 // Scheduled table (colocated with its reducer, per ADR-0056 exception)
 // ===========================================================================
 
@@ -660,6 +727,7 @@ pub(crate) fn cancel_challenges_on_disconnect(ctx: &ReducerContext, player: Iden
 /// 1. Caller must be joined.
 /// 2. Cannot challenge self.
 /// 3. Target must be joined and online.
+///    3a. Both parties hold a full account (ranked-only; ADR-0189, issue #307).
 /// 4. Party size within bounds (1..=MAX_PARTY_SIZE).
 /// 5. Caller not already in an ongoing battle (either role).
 /// 6. Caller has no active outgoing challenge; target has no active incoming challenge targeting caller.
@@ -702,6 +770,21 @@ pub fn challenge_pvp(
             return Err(e);
         }
         _ => {}
+    }
+
+    // Guard 3a (ADR-0189, issue #307): ranked play requires a full account —
+    // BOTH parties. Placed after guard 3 so account existence is only ever
+    // disclosed for a target the caller can already observe online, never for
+    // arbitrary identities (ADR-0189 D8; ADR-0179 G1). The gate is inert
+    // until a real auth issuer is configured (ADR-0189 D6).
+    if let Err(reason) = ranked_account_gate(
+        ranked_enforcement_active(),
+        crate::accounts::is_account_holder(ctx, me),
+        crate::accounts::is_account_holder(ctx, target),
+    ) {
+        let e = reason.to_string();
+        log_reject("challenge_pvp", me, &e);
+        return Err(e);
     }
 
     // Guard 4: party size.
@@ -812,6 +895,7 @@ pub fn challenge_pvp(
 /// 1. Challenge exists.
 /// 2. ctx.sender == challenge.target (only the target accepts).
 /// 3. status == Pending.
+///    3a. Both parties hold a full account (re-checked at accept; ADR-0189 D3).
 /// 4. Neither party currently in an ongoing battle (re-checked here).
 /// 5. Opponent (target) party size + monster validation.
 /// 6. start_pvp_battle (creates the Battle row) — irreversible.
@@ -847,6 +931,20 @@ pub fn accept_challenge(
     // Guard 3: must be Pending.
     if challenge.status != ChallengeStatus::Pending {
         let e = "challenge is not pending".to_string();
+        log_reject("accept_challenge", me, &e);
+        return Err(e);
+    }
+
+    // Guard 3a (ADR-0189): re-checked at accept time — load-bearing, not
+    // redundant. Pending rows created before enforcement activation, and any
+    // future account-status revocation, must never create a ranked battle;
+    // start_pvp_battle (guard 6, irreversible) is reached ONLY from here.
+    if let Err(reason) = ranked_account_gate(
+        ranked_enforcement_active(),
+        crate::accounts::is_account_holder(ctx, me),
+        crate::accounts::is_account_holder(ctx, challenge.challenger),
+    ) {
+        let e = reason.to_string();
         log_reject("accept_challenge", me, &e);
         return Err(e);
     }

@@ -5,7 +5,7 @@ slug: reducers/challenge_pvp
 updated: 2026-08-08
 tags: [reducer, spacetimedb, pvp]
 abstract: "Send a PvP battle challenge to another online player. Guard order (reject-not-clamp, decision-before-irreversible): 1. …"
-resource: server-module/src/pvp.rs#L670
+resource: server-module/src/pvp.rs#L738
 source: scripts/okf-export.mjs@server-module/src/pvp.rs
 ---
 

@@ -3864,3 +3864,944 @@ fn pvp_reason_log_sites_interpolate_an_escaped_binding() {
         );
     }
 }
+
+// ===========================================================================
+// EA-RA: ranked-requires-account gate (14r-g, ADR-0189, issue #307)
+// ===========================================================================
+//
+// EARS-1  WHEN a player who holds no `account` row calls `challenge_pvp` or
+//         `accept_challenge` while ranked enforcement is active, the reducer
+//         SHALL reject before any irreversible effect, with a reason that
+//         distinguishes the caller leg from the opponent leg.
+// EARS-2  WHEN both parties hold accounts, the handshake SHALL be admitted
+//         with its behaviour unchanged.
+//
+// Register (14r-g plan; ADR-0189 Confirmation section):
+//   EA-RA-01  8-row truth table on `ranked_account_gate` — full-`Result`
+//             equality, so a swapped-reason mutant cannot survive.
+//   EA-RA-02  `challenge_pvp` carries the EXACT planned Guard 3a statement,
+//             exactly once, at brace depth 0, BEFORE `battle_challenge().insert(`
+//             and AFTER the target-presence guard (oracle bound, D8); plus the
+//             shared per-body pins: single `let me = ctx.sender;`, no `#[cfg`,
+//             no brace char literal, and the tagged log-provenance count.
+//   EA-RA-03  `accept_challenge` ditto (challenger leg), BEFORE `start_pvp_battle(`
+//             and with NO oracle bound (the challenger is joined by construction).
+//   EA-RA-04  file-wide counts: SSOT predicate usage + ranked-battle ctor cover
+//             (paren AND bare-token forms), the desync-proof ban recount and the
+//             quote-parity stripper canary.
+//   EA-RA-04b the gate's symbols are unique and unshadowed (first-match
+//             extractors are hijackable by a decoy or a nested/closure shadow).
+//   EA-RA-05  the two reject reasons are VALUE-pinned (client contract, D5).
+//   EA-RA-06  (a) inert-until-activation canary, (b) `issuers_configured`
+//             matrix, (c) `ranked_enforcement_active` body pin.
+//
+// TWO KINDS OF RED ON THE PRE-IMPLEMENTATION TREE — both are intended:
+//   * STRUCTURAL — EA-RA-02, EA-RA-03, EA-RA-04, EA-RA-04b and EA-RA-06c are
+//     pure source scans over `PVP_RS`. They compile standalone against today's
+//     pvp.rs and go red with a NAMED assertion message (needle absent / count
+//     wrong).
+//   * COMPILE-DEPENDENT — EA-RA-01, EA-RA-05, EA-RA-06a and EA-RA-06b (grouped
+//     at the very END of this file behind their own banner) name
+//     `super::ranked_account_gate`, `super::ranked_enforcement_active`,
+//     `super::issuers_configured`, `super::ERR_RANKED_REQUIRES_ACCOUNT` and
+//     `super::ERR_RANKED_OPPONENT_NEEDS_ACCOUNT`. `pvp_tests` is a `#[path]`
+//     child module of pvp.rs, so those PRIVATE items resolve through `super::`
+//     once they exist — and until then `cargo test` fails to BUILD (E0425 /
+//     E0433 "cannot find function/value in module `super`"). That build failure
+//     IS the red for the behavioural half, and it necessarily masks the
+//     structural asserts' own messages until the items land. Do NOT "fix" the
+//     build by declaring stubs here: pvp.rs owns those items, and a stub would
+//     make EA-RA-01 assert against the test file instead of the production one.
+//
+// Scan pipeline for every structural test below (identical to EA-CHR):
+//   strip_rust_comments -> strip_rust_strings -> squash_ws.
+// The EXPECTED statement text is pushed through the SAME pipeline (`ra_squash`)
+// so the pin can be written and reviewed in rustfmt-canonical Rust rather than
+// as a hand-squashed blob, and so any stripper quirk applies to both sides.
+// Every needle is `concat!()`-split, so this file can never satisfy a scan by
+// matching its own text.
+// ===========================================================================
+
+/// A bare double quote as DATA. Never written as a char literal between
+/// apostrophes: this repo's text-level source scanners have no char-literal
+/// lexer, and a bare quote there inverts string/code polarity for the rest of
+/// the file (guards.rs:27-30 / guards_tests G-5a precedent).
+const RA_DQ_BYTE: u8 = 0x22;
+
+/// Count the DELIMITER double quotes in `src` — a quote preceded by an ODD run
+/// of backslashes is escaped payload (`\"` inside a JSON log format string),
+/// not a delimiter, and must not be counted.
+///
+/// Escape-awareness is load-bearing, not tidiness: pvp.rs's `log::info!` lines
+/// are full of `\"` pairs, and a single literal carrying an odd number of them
+/// would flip a naive count's parity and false-RED the canary in EA-RA-04 on a
+/// perfectly well-formed file.
+fn ra_delimiter_quote_count(src: &str) -> usize {
+    let bytes = src.as_bytes();
+    let mut n = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == RA_DQ_BYTE {
+            // Walk BACK over the run of backslashes immediately before this
+            // quote. An odd run escapes it (`\"`); an even run means the last
+            // backslash was itself escaped (`\\"`) and the quote is a delimiter.
+            let mut backslashes = 0usize;
+            let mut j = i;
+            while j > 0 && bytes[j - 1] == b'\\' {
+                backslashes += 1;
+                j -= 1;
+            }
+            if backslashes.is_multiple_of(2) {
+                n += 1;
+            }
+        }
+        i += 1;
+    }
+    n
+}
+
+/// The EA-RA normal form: comments out, string-literal payloads out (quotes
+/// kept), then ALL whitespace removed. Applied to production source it equals
+/// `squash_ws(&stripped_pvp_for_scan())`; applied to an expected snippet it
+/// produces the needle that snippet must become in the real file.
+fn ra_squash(src: &str) -> String {
+    squash_ws(&strip_rust_strings(&strip_rust_comments(src)))
+}
+
+/// Comments out, STRINGS DELIBERATELY LEFT INTACT, whitespace squashed.
+///
+/// Two uses, both of which need string payloads to survive:
+/// (a) BAN clauses (`has_jwt`, `ctx.db.account(`) — over-inclusive is the
+///     correct posture for a ban, and it makes the ban immune to a
+///     string-stripper desync that would otherwise blank real code and turn the
+///     ban silently green (the 13r-c / ADR-0181 false-GREEN class);
+/// (b) the log-TAG cross-pin, whose whole point is to read the literal.
+fn ra_squash_comments_only(src: &str) -> String {
+    squash_ws(&strip_rust_comments(src))
+}
+
+/// The planned Guard 3a source text (ADR-0189), rustfmt-canonical.
+///
+/// `third_arg` is the opponent-leg predicate call (`target` in `challenge_pvp`,
+/// `challenge.challenger` in `accept_challenge`); `log_tag` is the reducer name
+/// handed to `log_reject`; `trailing_comma` selects the rustfmt-split closing
+/// form.
+///
+/// This text IS the contract: argument identity and order, the
+/// `ranked_enforcement_active()` first argument (not a `true` or `false`
+/// literal), the fully-qualified `crate::accounts::` path (no local module
+/// shim), the `if let Err(reason)` consumption of the `Result` (no `let _ =`
+/// discard), and the `return Err(e)` reject.
+fn ra_guard_src(third_arg: &str, log_tag: &str, trailing_comma: bool) -> String {
+    let comma = if trailing_comma { "," } else { "" };
+    format!(
+        concat!(
+            "    if let Err(reason) = ranked_account",
+            "_gate(\n",
+            "        ranked_enforcement",
+            "_active(),\n",
+            "        crate::accounts::is_account",
+            "_holder(ctx, me),\n",
+            "        {}{}\n",
+            "    ) {{\n",
+            "        let e = reason.to_string();\n",
+            "        log_reject(\"{}\", me, &e);\n",
+            "        return Err(e);\n",
+            "    }}\n"
+        ),
+        third_arg, comma, log_tag
+    )
+}
+
+/// The Guard 3a needle in the STRING-STRIPPED normal form. The log tag's own
+/// text is BLANKED here (the pipeline keeps the quotes and drops the payload),
+/// so this needle does NOT constrain the tag — `ra_guard_needle_tagged` below
+/// is what pins it.
+fn ra_guard_needle(third_arg: &str, log_tag: &str, trailing_comma: bool) -> String {
+    ra_squash(&ra_guard_src(third_arg, log_tag, trailing_comma))
+}
+
+/// The Guard 3a needle with the log tag's literal INTACT (comments-only
+/// pipeline). Counted file-wide, this is what kills the wrong-log-tag mutant:
+/// `challenge_pvp`'s guard filing its reject under the `accept_challenge` tag
+/// (or vice versa) makes BOTH tagged counts 0 while every string-stripped pin
+/// stays green. The reject log is the only record an operator has of which
+/// reducer refused a ranked handshake.
+fn ra_guard_needle_tagged(third_arg: &str, log_tag: &str, trailing_comma: bool) -> String {
+    ra_squash_comments_only(&ra_guard_src(third_arg, log_tag, trailing_comma))
+}
+
+/// Shared body of EA-RA-02 / EA-RA-03. Every failure path panics LOUDLY with a
+/// named message — a pin that silently skips when its anchor moves is worth
+/// nothing.
+///
+/// `oracle_anchor` is `Some(..)` only for `challenge_pvp` (ADR-0189 D8): the
+/// gate must sit AFTER the target-joined-and-online guard, so account existence
+/// is never disclosed for an arbitrary 32-byte identity.
+fn ra_assert_guard_pinned(
+    ea: &str,
+    fn_name: &str,
+    third_arg: &str,
+    log_tag: &str,
+    effect_anchor: &str,
+    oracle_anchor: Option<&str>,
+) {
+    let stripped = stripped_pvp_for_scan();
+    let body = extract_pvp_fn_body(&stripped, fn_name).unwrap_or_else(|| {
+        panic!(
+            "{ea} FAIL (ADR-0189): could not extract the brace-bounded body of `{fn_name}` \
+             from pvp.rs. The ranked-requires-account statement pin cannot fire, so it must \
+             fail LOUD rather than pass vacuously — if the reducer was renamed or removed, \
+             re-derive this pin DELIBERATELY from ADR-0189, never by relaxing it."
+        )
+    });
+    let squashed = squash_ws(body);
+
+    // (a) `me` PROVENANCE (red-team F2; the 12r-d E3 shadow-rebind precedent at
+    // pvp_tests.rs:3852). The pin below reads `is_account_holder(ctx, me)`, so a
+    // second `let me = target;` re-points the caller leg at the opponent while
+    // every needle in this test stays byte-identical.
+    let let_me = concat!("letme", "=");
+    let let_me_sender = concat!("letme=", "ctx.sender;");
+    let n_let_me = squashed.matches(let_me).count();
+    assert_eq!(
+        n_let_me, 1,
+        "{ea} FAIL (ADR-0189): `{fn_name}` binds `me` {n_let_me} time(s); it must bind it \
+         EXACTLY ONCE. A second binding (`let me = target;`) re-points the caller leg of \
+         the account gate at the opponent — the exact-statement pin below is byte-identical \
+         either way, so this count is the only thing that can see it."
+    );
+    assert!(
+        squashed.contains(let_me_sender),
+        "{ea} FAIL (ADR-0189): `{fn_name}` must bind `let me = ctx.sender;`. The caller leg \
+         of the account gate is only meaningful if `me` is the reducer's actual sender."
+    );
+
+    // (b) No conditional compilation inside the reducer body (red-team F3).
+    // Per-BODY on purpose: pvp.rs legitimately carries `#[cfg(test)] mod
+    // pvp_tests;` at file scope, so a file-wide ban would false-RED on arrival.
+    let cfg_attr = concat!("#[", "cfg");
+    assert!(
+        !squashed.contains(cfg_attr),
+        "{ea} FAIL (ADR-0189): `{fn_name}`'s body carries a `{cfg_attr}` attribute. A \
+         `#[cfg(..)]` on (or around) the account gate keeps the exact statement text in the \
+         file and in every source scan while compiling it OUT of the shipped wasm — the \
+         gate would be present in review and absent in production."
+    );
+
+    // (c) The local stripper is DOUBLE-QUOTE-only: it has no char-literal lexer,
+    // so a brace CHAR literal in the body survives into the squashed text and
+    // desyncs the depth fence below by one — which is exactly enough to make a
+    // nested (never-executed) gate report depth 0. Ban them rather than pretend
+    // the fence is sound in their presence (red-team F5).
+    let brace_open_char = concat!("'", "{", "'");
+    let brace_close_char = concat!("'", "}", "'");
+    assert!(
+        !squashed.contains(brace_open_char) && !squashed.contains(brace_close_char),
+        "{ea} FAIL (ADR-0189): `{fn_name}`'s body contains a brace CHAR literal. \
+         `strip_rust_strings` handles double-quoted literals only, so that brace survives \
+         into the squashed text and shifts the brace-depth fence below by one, blinding it \
+         to a nested gate. Move the char literal out of this reducer (or teach the local \
+         stripper about char literals) rather than deleting this assertion."
+    );
+
+    // (d) EXACT statement pin, count == 1. Two closing forms are accepted: `)`
+    // (single-line call) and `,)` (rustfmt splits a >100-column call one
+    // argument per line and adds a trailing comma, which squashes to `,)`) —
+    // the EA-CHR-01 tolerance precedent. Exactly ONE of them may match, once.
+    let needle_plain = ra_guard_needle(third_arg, log_tag, false);
+    let needle_trailing = ra_guard_needle(third_arg, log_tag, true);
+    let n_plain = squashed.matches(needle_plain.as_str()).count();
+    let n_trailing = squashed.matches(needle_trailing.as_str()).count();
+    let dump: String = squashed.chars().take(600).collect();
+    assert_eq!(
+        n_plain + n_trailing,
+        1,
+        "{ea} FAIL (ADR-0189 D1/D2/D5): `{fn_name}` must contain the ranked-account Guard 3a \
+         statement EXACTLY ONCE. Found {n_plain} single-line-form and {n_trailing} \
+         trailing-comma-form match(es) of the squashed pin. This is an exact-equality pin \
+         because it is the contract: it simultaneously kills (i) a missing gate, (ii) \
+         `let _ = ranked_account_gate(..)` and `if ranked_account_gate(..).is_ok()`-style \
+         discards that never return `Err`, (iii) a hard-coded `true`/`false` first argument \
+         in place of `ranked_enforcement_active()`, (iv) a `true` literal substituted for \
+         either `is_account_holder` leg, (v) swapped caller/opponent arguments, (vi) a \
+         `use crate::accounts;` shim redirecting the predicate — the path must be spelled \
+         `crate::accounts::is_account_holder` — and (vii) a guard that logs the reason but \
+         forgets to `return Err(e)`, admitting the guest anyway. A count of 2 is the \
+         duplicated-guard shape, which the ==1 half rejects. Expected (squashed, \
+         trailing-comma form): {needle_trailing:?}. Body began: {dump:?}"
+    );
+
+    let pin_pos = squashed
+        .find(needle_plain.as_str())
+        .or_else(|| squashed.find(needle_trailing.as_str()))
+        .unwrap_or_else(|| panic!("{ea}: statement pin counted 1 but could not be located"));
+
+    // (e) Brace-depth-0 fence: the guard must be a TOP-LEVEL statement of the
+    // reducer body, not nested inside some other block.
+    let opens = squashed[..pin_pos].matches('{').count();
+    let closes = squashed[..pin_pos].matches('}').count();
+    assert_eq!(
+        opens,
+        closes,
+        "{ea} FAIL (ADR-0189): the Guard 3a statement in `{fn_name}` sits at brace depth \
+         {} (from the reducer body's own top level), not 0. KILLS the unreachable-if \
+         mutant — wrapping the gate in `if false {{ .. }}`, in an `if cfg!(test)`, or in \
+         any other conditional block leaves the exact statement text in the file while \
+         never executing it. The gate must be an unconditional top-level statement of \
+         the reducer.",
+        opens as i64 - closes as i64
+    );
+
+    // (f) Ordering: the decision must precede the irreversible effect.
+    let effect_pos = squashed.find(effect_anchor).unwrap_or_else(|| {
+        panic!(
+            "{ea} FAIL (ADR-0189): the irreversible-effect anchor `{effect_anchor}` was not \
+             found in `{fn_name}` — the ordering pin cannot fire. Fail LOUD: without the \
+             anchor a moved gate would be invisible to this test."
+        )
+    });
+    assert!(
+        pin_pos < effect_pos,
+        "{ea} FAIL (ADR-0189, decision-before-irreversible): the Guard 3a statement in \
+         `{fn_name}` is at squashed offset {pin_pos}, AFTER `{effect_anchor}` at offset \
+         {effect_pos}. A gate that runs after the effect has already been committed does \
+         not gate anything — the challenge row (or the ranked `battle` row) already exists \
+         when the reject is returned."
+    );
+
+    // (g) Oracle bound (ADR-0189 D8, reviewer M1) — `challenge_pvp` only.
+    if let Some(anchor) = oracle_anchor {
+        let anchor_pos = squashed.find(anchor).unwrap_or_else(|| {
+            panic!(
+                "{ea} FAIL (ADR-0189 D8): the target-presence anchor `{anchor}` was not \
+                 found in `{fn_name}`, so the oracle-placement bound cannot fire. Fail \
+                 LOUD: the whole point of the bound is that the account probe never runs \
+                 before the caller has established the target is a joined, online player."
+            )
+        });
+        assert!(
+            pin_pos > anchor_pos,
+            "{ea} FAIL (ADR-0189 D8, account-existence oracle): the Guard 3a statement in \
+             `{fn_name}` is at squashed offset {pin_pos}, BEFORE the target-presence guard \
+             `{anchor}` at offset {anchor_pos}. Hoisting the account probe above that guard \
+             turns `challenge_pvp` into an enumeration oracle over ARBITRARY 32-byte \
+             identities: the caller learns `this identity holds an account` for players \
+             they cannot otherwise observe — the exact hole ADR-0179 G1/D3 exists to \
+             prevent. The residual disclosure is bounded to online, joined players ON \
+             PURPOSE; do not relax this by moving the gate earlier."
+        );
+    }
+
+    // (h) Log-tag provenance (reviewer m1). Counted file-wide on the
+    // comments-only pipeline, where the tag literal SURVIVES: a guard that files
+    // its reject under the other reducer's tag keeps every string-stripped pin
+    // above green and drives both tagged counts to 0.
+    let tagged_file = ra_squash_comments_only(PVP_RS);
+    let tagged_plain = ra_guard_needle_tagged(third_arg, log_tag, false);
+    let tagged_trailing = ra_guard_needle_tagged(third_arg, log_tag, true);
+    let n_tagged = tagged_file.matches(tagged_plain.as_str()).count()
+        + tagged_file.matches(tagged_trailing.as_str()).count();
+    assert_eq!(
+        n_tagged, 1,
+        "{ea} FAIL (ADR-0189): pvp.rs must contain EXACTLY ONE Guard 3a statement whose \
+         `log_reject` tag is `{log_tag}` and whose opponent leg is `{third_arg}` (found \
+         {n_tagged}). This pin is evaluated with string literals INTACT, so it is the only \
+         one that can see the tag: a guard that rejects correctly but files the reject \
+         under the OTHER reducer's name points the operator's only record of a refused \
+         ranked handshake at the wrong reducer."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EA-RA-02: challenge_pvp carries the exact Guard 3a statement, depth 0,
+//           before the challenge insert.
+//
+// Placement (ADR-0189 D8): AFTER guard 3 (target joined + online) so account
+// existence is only ever disclosed for a target the caller can already observe
+// online — never for arbitrary 32-byte identities (ADR-0179 G1 enumeration
+// oracle). That bound is ENFORCED here by the `oracle_anchor` argument
+// (`match &target_player {`), not merely documented (reviewer M1).
+//
+// TEETH: mutation-register rows 1 (delete the challenge gate), 3 (move it after
+//        the insert), 4 (`gate(false, ..)`), 5 (me-leg -> `true` literal); plus
+//        the red-team additions carried by the shared helper — `me` rebind (F2),
+//        `#[cfg]`-gated guard (F3), brace-char-literal fence desync (F5),
+//        log-tag swap (reviewer m1) and gate-above-guard-3 (M1).
+// RED now: the statement does not exist in pvp.rs -> count 0 != 1.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_ra_02_challenge_pvp_ranked_account_guard_pinned() {
+    ra_assert_guard_pinned(
+        "EA-RA-02",
+        "challenge_pvp",
+        concat!("crate::accounts::is_account", "_holder(ctx, target)"),
+        "challenge_pvp",
+        concat!("battle_challenge()", ".insert("),
+        Some(concat!("match&", "target_player{")),
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EA-RA-03: accept_challenge carries the exact Guard 3a statement (challenger
+//           leg), depth 0, before `start_pvp_battle(`.
+//
+// The accept-time re-check is load-bearing, not redundant (ADR-0189 D3): it
+// covers `Pending` rows created BEFORE activation and any future revocation
+// path. `start_pvp_battle` is the ranked-battle constructor and the invariant is
+// anchored there — no ranked battle exists unless both parties held accounts at
+// construction time.
+//
+// No oracle anchor (ADR-0189 D8): `accept_challenge`'s challenger is a joined
+// player BY CONSTRUCTION (the row could not exist otherwise), so there is no
+// arbitrary-identity probe to bound — hence `None`, not a weaker anchor.
+//
+// TEETH: mutation-register rows 2 (delete the accept gate) and 3 (ordering),
+//        plus every red-team addition carried by the shared helper.
+// RED now: the statement does not exist in pvp.rs -> count 0 != 1.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_ra_03_accept_challenge_ranked_account_guard_pinned() {
+    ra_assert_guard_pinned(
+        "EA-RA-03",
+        "accept_challenge",
+        concat!(
+            "crate::accounts::is_account",
+            "_holder(ctx, challenge.challenger)"
+        ),
+        "accept_challenge",
+        concat!("start_pvp", "_battle("),
+        None,
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EA-RA-04: file-wide counts on the squashed, stripped pvp.rs.
+//
+//   has_jwt                              == 0  (D2: NEVER the predicate)
+//   ctx.db.account(                      == 0  (D2: no inline re-derivation)
+//   crate::accounts::is_account_holder(  == 4  (2 legs x 2 reducers, qualified)
+//   start_pvp_battle(                    == 2  (definition + its ONE caller)
+//   .battle().insert(                    == 1  (the single ranked-battle ctor)
+//
+// The last two are the CTOR-COVER pin (ADR-0189 D1): gating the two handshake
+// reducers is the complete cover for ranked-battle creation only while
+// `start_pvp_battle` has exactly one caller and exactly one battle insert
+// exists in this file. A future `quick_match` reducer that calls
+// `start_pvp_battle` would create ungated ranked battles — and reds here.
+//
+// TEETH: mutation-register rows 5 (a `true` literal replaces a leg -> the
+//        holder count drops to 3) and 11 (a second ranked constructor).
+// RED now: `crate::accounts::is_account_holder(` occurs 0 times in pvp.rs.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_ra_04_ranked_gate_ssot_and_constructor_cover_counts() {
+    let squashed = ra_squash(PVP_RS);
+
+    let jwt_needle = concat!("has", "_jwt");
+    assert_eq!(
+        squashed.matches(jwt_needle).count(),
+        0,
+        "EA-RA-04 FAIL (ADR-0189 D2): pvp.rs references `{jwt_needle}`. It is true for EVERY \
+         connection (the SpacetimeDB host mints its own identity JWT for a tokenless \
+         connect), so a gate keyed off it is VACUOUS — every guest passes. The SSOT \
+         predicate is `crate::accounts::is_account_holder`, which asks whether an `account` \
+         row exists."
+    );
+
+    let account_table_needle = concat!("ctx.db.", "account(");
+    assert_eq!(
+        squashed.matches(account_table_needle).count(),
+        0,
+        "EA-RA-04 FAIL (ADR-0189 D2): pvp.rs touches the `account` table directly \
+         (`{account_table_needle}`). Re-deriving account-holding here forks the SSOT — the \
+         predicate lives in accounts.rs and every call site must go through it, so a future \
+         change to what 'holds an account' means (status, expiry) cannot silently miss the \
+         ranked gate."
+    );
+
+    let holder_needle = concat!("crate::accounts::is_account", "_holder(");
+    assert_eq!(
+        squashed.matches(holder_needle).count(),
+        4,
+        "EA-RA-04 FAIL (ADR-0189 D1/D2): expected EXACTLY 4 fully-qualified \
+         `{holder_needle}` calls in pvp.rs — the caller and opponent legs of BOTH handshake \
+         reducers. A count of 3 is a leg replaced by a literal or a leg deleted; a count of \
+         2 is a whole reducer left ungated; 0 is the un-implemented tree. The path is \
+         fully qualified on purpose: a `use crate::accounts;`-style local shim could \
+         otherwise redirect the predicate without touching any call site."
+    );
+
+    let ctor_needle = concat!("start_pvp", "_battle(");
+    assert_eq!(
+        squashed.matches(ctor_needle).count(),
+        2,
+        "EA-RA-04 FAIL (ADR-0189 D1, ctor-cover): expected EXACTLY 2 occurrences of \
+         `{ctor_needle}` in pvp.rs — the definition plus its ONE caller (`accept_challenge`). \
+         A third occurrence means a SECOND path constructs a ranked human-vs-human battle, \
+         and gating the two handshake reducers is then no longer the complete cover this \
+         slice claims. Gate the new path (and update ADR-0189 D1) rather than raising this \
+         number."
+    );
+
+    // Bare-token count (red-team F4): the paren-form count above is blind to
+    // `let ctor = start_pvp_battle;` followed by `ctor(ctx, ..)` — a function
+    // POINTER alias that constructs ranked battles from an ungated reducer while
+    // `start_pvp_battle(` stays at 2. The bare token catches the alias binding.
+    let ctor_bare = concat!("start_pvp", "_battle");
+    assert_eq!(
+        squashed.matches(ctor_bare).count(),
+        2,
+        "EA-RA-04 FAIL (ADR-0189 D1, ctor-cover): expected EXACTLY 2 bare `{ctor_bare}` \
+         tokens in pvp.rs. The paren-form count above cannot see a function-pointer alias \
+         (`let ctor = start_pvp_battle;` then `ctor(ctx, ..)`), which builds ranked battles \
+         from a reducer that never ran the account gate while leaving every paren count \
+         untouched. Both counts must be exactly 2."
+    );
+
+    let insert_needle = concat!(".battle()", ".insert(");
+    assert_eq!(
+        squashed.matches(insert_needle).count(),
+        1,
+        "EA-RA-04 FAIL (ADR-0189 D1, ctor-cover): expected EXACTLY 1 `{insert_needle}` in \
+         pvp.rs — the single ranked-battle row construction inside `start_pvp_battle`. A \
+         second insert bypasses the funnel the account gate protects."
+    );
+
+    // BAN RECOUNT on the comments-only pipeline (red-team F6). Everything above
+    // is measured on STRING-STRIPPED text; if `strip_rust_strings` ever desyncs
+    // (an unbalanced quote inverts its polarity and blanks real code), the two
+    // ban clauses go silently GREEN — a desync is invisible to exactly the
+    // clauses it blinds. Re-counting them with strings INTACT is over-inclusive,
+    // which is the correct posture for a ban and immune to that failure mode.
+    let comments_only = ra_squash_comments_only(PVP_RS);
+    assert_eq!(
+        comments_only.matches(jwt_needle).count(),
+        0,
+        "EA-RA-04 FAIL (ADR-0189 D2, desync-proof recount): `{jwt_needle}` appears in pvp.rs \
+         when string literals are left INTACT. Either the gate reaches for the vacuous \
+         `has_jwt()` predicate, or it hides the token in a literal. Both are rejected."
+    );
+    assert_eq!(
+        comments_only.matches(account_table_needle).count(),
+        0,
+        "EA-RA-04 FAIL (ADR-0189 D2, desync-proof recount): `{account_table_needle}` appears \
+         in pvp.rs when string literals are left INTACT — the SSOT fork this ban exists to \
+         prevent, or a literal hiding it from the string-stripped scan."
+    );
+
+    // Quote-parity canary (red-team F6). Every well-formed literal contributes
+    // exactly TWO delimiter quotes, so the comment-stripped source must carry an
+    // EVEN number of them. An odd count means the text handed to
+    // `strip_rust_strings` no longer has balanced delimiters, and from the
+    // orphan quote onward that walker treats real code as string data and blanks
+    // it — every ban clause above then reports PASS because it went BLIND.
+    //
+    // The two shapes this actually catches (NOT a missing escape handler —
+    // `strip_rust_strings` is escape-aware at :2065-2068, and this count is too):
+    //   1. a genuinely unterminated literal, or a raw string (`r#"…"#`) that
+    //      neither this stripper nor this counter understands;
+    //   2. a `//` INSIDE a literal — `strip_rust_comments` runs FIRST and is
+    //      string-unaware, so it truncates that line and eats the closing quote.
+    //      This is the 13r-c / ADR-0181 false-GREEN shape (an issuer URL is the
+    //      canonical trigger), and it is why no URL literal may be written
+    //      un-split in pvp.rs.
+    let quote_count = ra_delimiter_quote_count(&strip_rust_comments(PVP_RS));
+    assert_eq!(
+        quote_count % 2,
+        0,
+        "EA-RA-04 FAIL (stripper desync canary): the comment-stripped pvp.rs carries \
+         {quote_count} DELIMITER double quotes (escaped `\\\"` excluded) — an ODD number, so \
+         the delimiters are unbalanced. `strip_rust_strings` is a whole-text quote-toggle \
+         walk with no line boundary: from the orphan quote onward it treats real code as \
+         string data and blanks it, and every ban clause in this file then reports PASS \
+         because it went BLIND. Look for (a) an unterminated or raw (`r#\"…\"#`) literal, or \
+         (b) a `//` INSIDE a literal — `strip_rust_comments` runs first and is \
+         string-unaware, so it truncates the line and eats the closing quote (the ADR-0181 \
+         false-GREEN shape; split any URL with `concat!`). Fix that before trusting any \
+         other EA-RA result."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EA-RA-04 (b): the gate's symbols are UNIQUE and UNSHADOWED (red-team F2/F8).
+//
+// Both this file's `extract_pvp_fn_body` and the eval's `extractReducerBody`
+// are FIRST-MATCH extractors. A decoy `pub fn challenge_pvp(` in a nested
+// module would be extracted instead of the real reducer, and every body-scoped
+// pin above would be evaluated against the decoy while the real reducer runs
+// ungated. Likewise a nested `fn ranked_account_gate` inside a reducer, or a
+// closure binding `let ranked_enforcement_active = || false;`, shadows the real
+// item at the call site without touching a single needle.
+//
+// The `name=` bans are the discriminator for the closure shape: every LEGITIMATE
+// use of these two names is a call, so the next character is always `(`, never
+// `=`. (`if let Err(reason) = ranked_account_gate(` puts the `=` BEFORE the
+// name, so it does not trip the ban.)
+//
+// RED now: all four uniqueness counts are 0 (the items do not exist yet).
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_ra_04b_ranked_gate_symbols_unique_and_unshadowed() {
+    let squashed = ra_squash(PVP_RS);
+
+    let uniques: &[(&str, &str)] = &[
+        (
+            concat!("fnranked_account", "_gate("),
+            "the pure decision seam",
+        ),
+        (
+            concat!("fnranked_enforcement", "_active("),
+            "the activation predicate",
+        ),
+        (
+            concat!("pubfnchallenge", "_pvp("),
+            "the challenge handshake reducer",
+        ),
+        (
+            concat!("pubfnaccept", "_challenge("),
+            "the accept handshake reducer",
+        ),
+    ];
+    for (needle, what) in uniques {
+        let n = squashed.matches(needle).count();
+        assert_eq!(
+            n, 1,
+            "EA-RA-04b FAIL (ADR-0189): pvp.rs must declare `{needle}` (squashed) EXACTLY \
+             ONCE — it is {what}. Found {n}. A count of 0 means the item is missing; a \
+             count of 2+ means a SHADOW: the first-match body extractors used by every \
+             structural pin in this file (and by criterion D in \
+             evals/ranking-security.eval.mjs) would then verify the decoy while the real \
+             one runs unchecked."
+        );
+    }
+
+    let shadow_bans: &[&str] = &[
+        concat!("ranked_account", "_gate="),
+        concat!("ranked_enforcement", "_active="),
+    ];
+    for needle in shadow_bans {
+        let n = squashed.matches(needle).count();
+        assert_eq!(
+            n, 0,
+            "EA-RA-04b FAIL (ADR-0189): pvp.rs binds `{needle}` (squashed) {n} time(s); it \
+             must never appear. Every legitimate use of these names is a CALL, so the next \
+             character is `(` — a `=` means the name was rebound, e.g. \
+             `let ranked_enforcement_active = || false;`, which shadows the real predicate \
+             at the call site and wires enforcement permanently OFF while every needle in \
+             this file still matches."
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EA-RA-06 (c): `ranked_enforcement_active` body pin (structural half).
+//
+// Required squashed body, exactly once:
+//   fnranked_enforcement_active()->bool{issuers_configured(crate::accounts::ALLOWED_ISSUERS)}
+//
+// TEETH: mutation-register row 8 — `{ let _ = issuers_configured(..); false }`
+//        keeps the call (so any "is it referenced?" check stays green) while
+//        hard-wiring enforcement OFF forever. The exact body pin kills it. It
+//        also kills a body that reads a DIFFERENT allowlist than accounts.rs's,
+//        which would decouple activation from the real issuer configuration.
+// RED now: the function does not exist -> count 0 != 1.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_ra_06c_ranked_enforcement_active_body_pinned() {
+    let squashed = ra_squash(PVP_RS);
+    let body_needle = concat!(
+        "fnranked_enforcement",
+        "_active()->bool{issuers_configured(crate::accounts::ALLOWED_ISSUERS)}"
+    );
+    assert_eq!(
+        squashed.matches(body_needle).count(),
+        1,
+        "EA-RA-06c FAIL (ADR-0189 D6): pvp.rs must define `ranked_enforcement_active` with \
+         EXACTLY the body `issuers_configured(crate::accounts::ALLOWED_ISSUERS)` (squashed \
+         pin, found {} time(s)). The value-exact pin kills the discard mutant \
+         `{{ let _ = issuers_configured(crate::accounts::ALLOWED_ISSUERS); false }}`, which \
+         keeps every reference alive while wiring enforcement permanently OFF, and it ties \
+         activation to accounts.rs's REAL allowlist so the gate flips on the day OQ1 lands \
+         a provider — not on a separate, forgettable switch.",
+        squashed.matches(body_needle).count()
+    );
+}
+
+// ===========================================================================
+// EA-RA COMPILE-DEPENDENT GROUP — EA-RA-01 / 05 / 06a / 06b
+//
+// Everything below this banner names items that live in pvp.rs and do not
+// exist yet: `ranked_account_gate`, `ranked_enforcement_active`,
+// `issuers_configured`, `ERR_RANKED_REQUIRES_ACCOUNT`,
+// `ERR_RANKED_OPPONENT_NEEDS_ACCOUNT`. Until the implementer lands them,
+// `cargo test -p server-module` fails to BUILD — that build failure is this
+// half's RED, and it is deliberately localised to one contiguous block at the
+// end of the file so the structural asserts above stay reviewable.
+//
+// `pvp_tests` is `#[cfg(test)] #[path = "pvp_tests.rs"] mod pvp_tests;` inside
+// pvp.rs, so `super::` reaches pvp.rs's PRIVATE items — no `pub(crate)` is
+// needed and none should be added to widen this test's reach.
+// ===========================================================================
+
+// ---------------------------------------------------------------------------
+// EA-RA-01: the full 8-row truth table of `ranked_account_gate`.
+//
+// Signature (ADR-0189 D5):
+//   fn ranked_account_gate(enforced: bool, caller_has_account: bool,
+//                          opponent_has_account: bool) -> Result<(), &'static str>
+//
+// Every row asserts the FULL `Result` value, not just `is_err()` — the rows are
+// distinguishable ONLY by which reason comes back, which is exactly what makes
+// an argument swap or a merged reason detectable.
+//
+// TEETH: mutation-register rows 6 (body -> always `Ok(())`) and 7 (swap the two
+//        reason arms).
+//        NOT row 10 (reword a const): this test binds BOTH sides of every
+//        comparison to the same consts, so it is deliberately value-AGNOSTIC —
+//        a reworded reason still satisfies it. EA-RA-05 is the SOLE killer of
+//        row 10, which is exactly why EA-RA-05 pins the literal values.
+// RED now: compile error — `ranked_account_gate` does not exist.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_ra_01_ranked_account_gate_truth_table() {
+    // Named alias so clippy::type_complexity stays quiet on the table's type.
+    type RaRow = (bool, bool, bool, Result<(), &'static str>, &'static str);
+
+    let caller_reason = super::ERR_RANKED_REQUIRES_ACCOUNT;
+    let opponent_reason = super::ERR_RANKED_OPPONENT_NEEDS_ACCOUNT;
+
+    // (enforced, caller_has_account, opponent_has_account, expected, why)
+    let rows: [RaRow; 8] = [
+        // --- enforcement INERT: the gate is transparent in all four shapes.
+        // ADR-0189 D6 honest wording: inert means enforcement OFF
+        // (availability-biased), NOT fail-closed. No account can exist while
+        // ALLOWED_ISSUERS is the .invalid placeholder, so bricking PvP for
+        // every identity in every environment would protect nobody.
+        (
+            false,
+            false,
+            false,
+            Ok(()),
+            "inert: both guests must still play",
+        ),
+        (
+            false,
+            false,
+            true,
+            Ok(()),
+            "inert: guest caller must still play",
+        ),
+        (
+            false,
+            true,
+            false,
+            Ok(()),
+            "inert: guest opponent must still play",
+        ),
+        (
+            false,
+            true,
+            true,
+            Ok(()),
+            "inert: account holders unaffected",
+        ),
+        // --- enforcement ACTIVE.
+        // PRECEDENCE pin: when BOTH sides are guests the CALLER leg wins. The
+        // parked client affordance keys its sign-in CTA off the caller-side
+        // string; returning the opponent reason here would prompt the caller to
+        // sign in on behalf of someone else.
+        (
+            true,
+            false,
+            false,
+            Err(caller_reason),
+            "active + both guests: caller leg is evaluated FIRST (precedence pin)",
+        ),
+        (
+            true,
+            false,
+            true,
+            Err(caller_reason),
+            "active + guest caller vs account-holder opponent: caller reason",
+        ),
+        (
+            true,
+            true,
+            false,
+            Err(opponent_reason),
+            "active + account holder vs guest: OPPONENT reason (distinct string, D5)",
+        ),
+        (
+            true,
+            true,
+            true,
+            Ok(()),
+            "active: both hold accounts (EARS-2)",
+        ),
+    ];
+
+    for (enforced, caller_has, opponent_has, expected, why) in rows {
+        assert_eq!(
+            super::ranked_account_gate(enforced, caller_has, opponent_has),
+            expected,
+            "EA-RA-01 FAIL (ADR-0189 D5, EARS-1/EARS-2) — row (enforced={enforced}, \
+             caller_has_account={caller_has}, opponent_has_account={opponent_has}): {why}. \
+             The assertion compares the WHOLE Result, so an always-Ok body, a swapped pair \
+             of reason arms, and a single merged reason are each caught here and nowhere \
+             else — the source-scan pins can only see the CALL, never the decision."
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// EA-RA-05: the two reject reasons are a CLIENT CONTRACT (ADR-0189 D5).
+//
+// Two distinct `&'static str`s, not one merged reason: the parked EARS-3
+// affordance keys a sign-in CTA off the caller-side string, and the truth table
+// above distinguishes its rows only by these values. Rewording either one is a
+// deliberate cross-slice edit (EA-RA-05 + criterion D + the client slice).
+//
+// TEETH: mutation-register row 10 (reword a const).
+// RED now: compile error — the consts do not exist.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_ra_05_ranked_reject_reason_values_pinned() {
+    assert_eq!(
+        super::ERR_RANKED_REQUIRES_ACCOUNT,
+        concat!("ranked play requires ", "an account"),
+        "EA-RA-05 FAIL (ADR-0189 D5): the CALLER-leg ranked reject reason changed. This \
+         value is a client contract — the parked EARS-3 affordance matches it to decide \
+         whether to show the caller a sign-in prompt. Reword it only together with \
+         criterion D in evals/ranking-security.eval.mjs and the client slice."
+    );
+    assert_eq!(
+        super::ERR_RANKED_OPPONENT_NEEDS_ACCOUNT,
+        concat!("opponent must have an account ", "for ranked play"),
+        "EA-RA-05 FAIL (ADR-0189 D5): the OPPONENT-leg ranked reject reason changed. It \
+         must stay distinct from the caller-leg reason: a merged string would show the \
+         caller a sign-in prompt when the OPPONENT is the guest."
+    );
+    assert_ne!(
+        super::ERR_RANKED_REQUIRES_ACCOUNT,
+        super::ERR_RANKED_OPPONENT_NEEDS_ACCOUNT,
+        "EA-RA-05 FAIL (ADR-0189 D5): the two ranked reject reasons are IDENTICAL. The \
+         distinction is load-bearing twice over — it is what lets EA-RA-01 detect an \
+         argument swap, and what lets the client tell 'you need an account' from 'they \
+         need an account'."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EA-RA-06 (a): the inert-until-activation CANARY.
+//
+// `ALLOWED_ISSUERS` is the fail-closed RFC-2606 `.invalid` placeholder under
+// ADR-0182 D18's hard sequencing gate, and the only path that creates an
+// `account` row sits behind it — so no identity in ANY environment can be an
+// account holder today, and enforcement must be OFF. This canary self-expires
+// the moment OQ1/13r-c-2 lands a real issuer, and its message carries the
+// checklist the flipping slice must complete first.
+//
+// TEETH: mutation-register row 9 — weakening `issuers_configured` to
+//        `!issuers.is_empty()` activates enforcement on TODAY's placeholder
+//        allowlist, which would disable PvP everywhere and red three CI
+//        merge-gate e2e specs. This canary catches it in-crate first.
+// RED now: compile error — `ranked_enforcement_active` does not exist.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_ra_06a_ranked_enforcement_inert_until_activation_canary() {
+    assert!(
+        !super::ranked_enforcement_active(),
+        "EA-RA-06a CANARY FIRED (ADR-0189 D6): ranked account enforcement is now ACTIVE. \
+         Either accounts::ALLOWED_ISSUERS gained a real issuer (OQ1 / 13r-c-2 landed — \
+         expected, and this canary is doing its job), or pvp.rs's local placeholder const \
+         drifted from accounts.rs's value (a bug — drift flips enforcement ON, which is \
+         why the drift cannot be silent). Before this test may be deleted, the ACTIVATION \
+         CHECKLIST must be complete: (1) ship the EARS-3 client affordance — the \
+         account-required prompt in client/src/ui/pvpModel.ts + pvpView.ts wired through \
+         client/src/main.ts, reusing the claim-prompt shape; without it a guest sees only \
+         the raw reject string via sendGuarded. (2) Convert the three guest-PvP e2e specs \
+         (client/e2e/pvp-full.spec.ts, pvp-side-b.spec.ts, ranked-forfeit.spec.ts) to \
+         account-holding identities — evals/account-e2e.eval.mjs's patchAllowedIssuers \
+         apparatus is the starting point; they are ci.yml merge gates and will red \
+         otherwise. (3) Remove the deployment conditional AND this canary, and update \
+         docs/adr/0189-ranked-requires-account.md to record the activation. (4) Regenerate \
+         the knowledge bundle (`just knowledge`). (5) Confirm no ongoing PvP battle \
+         STRADDLES the flip and settle the ladder-wipe question: ADR-0189 D7's accepted \
+         residual is that battles in flight at activation settle RATED, and guest `profile` \
+         rows persist (nothing deletes them; `rekey_profile` tombstones in place), so a \
+         guest-earned rating can survive the flip and be imported by a later claim. Decide \
+         DELIBERATELY whether to drain in-flight battles, wipe the ladder, or accept it — \
+         and record the decision in ADR-0189. Do NOT silence this assertion."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// EA-RA-06 (b): the `issuers_configured` matrix (ADR-0189 D6).
+//
+// ANY-semantics with EXACT equality against the committed placeholder:
+//   [placeholder]            -> false  (today's tree: inert)
+//   []                       -> false  (no issuer can mint an account)
+//   [real]                   -> true   (activation)
+//   [real, placeholder]      -> true   (MIXED enforces: fail-closed for ranked
+//                                       integrity — a leftover placeholder must
+//                                       not disarm the gate once real accounts
+//                                       exist)
+//   [real host whose name contains .invalid] -> true (substring non-trap)
+//
+// TEETH: a substring sniff (`contains(".invalid")`) fails the last row; an
+//        ALL-semantics predicate fails the mixed row; `!issuers.is_empty()`
+//        fails the first row (and row 9 of the mutation register).
+// RED now: compile error — `issuers_configured` does not exist.
+// ---------------------------------------------------------------------------
+
+#[test]
+fn ea_ra_06b_issuers_configured_matrix() {
+    // Every URL literal is built with a concat! split across the scheme
+    // slashes — the same construction accounts.rs uses, because this repo's
+    // comment-first source scanners truncate at a contiguous scheme and
+    // unbalance their quote pairing for the rest of the file.
+    let placeholder = concat!("https:/", "/auth.monster-realm.invalid/");
+    let real = concat!("https:/", "/auth.monster-realm.example/");
+    let real_with_invalid_substring = concat!("https:/", "/auth.invalid-corp.example/");
+
+    assert!(
+        !super::issuers_configured(&[placeholder]),
+        "EA-RA-06b FAIL (ADR-0189 D6): the committed `.invalid` placeholder allowlist must \
+         read as NOT configured — this is today's tree, and enforcement must stay inert. \
+         If this row fails while the others pass, pvp.rs's RANKED_PLACEHOLDER_ISSUER has \
+         DRIFTED from accounts.rs's ALLOWED_ISSUERS value (SSOT: accounts.rs:54)."
+    );
+    assert!(
+        !super::issuers_configured(&[]),
+        "EA-RA-06b FAIL (ADR-0189 D6): an EMPTY allowlist must read as NOT configured. No \
+         issuer can mint an account, so enforcing would brick ranked play for everyone \
+         while protecting nobody — inert is the availability-biased answer."
+    );
+    assert!(
+        super::issuers_configured(&[real]),
+        "EA-RA-06b FAIL (ADR-0189 D6): a real issuer must read as configured — this is the \
+         activation trigger. If this row fails the gate can never turn on."
+    );
+    assert!(
+        super::issuers_configured(&[real, placeholder]),
+        "EA-RA-06b FAIL (ADR-0189 D6): a MIXED allowlist (real issuer plus a leftover \
+         placeholder) must ENFORCE. ANY-semantics, not ALL: once real accounts exist, a \
+         forgotten placeholder entry must not disarm the ranked gate."
+    );
+    assert!(
+        super::issuers_configured(&[real_with_invalid_substring]),
+        "EA-RA-06b FAIL (ADR-0189 D6): a REAL issuer whose host merely contains \
+         `.invalid` must read as configured. The predicate is exact equality against the \
+         committed placeholder, never a substring sniff — a substring sniff would silently \
+         keep enforcement off for a legitimate deployment."
+    );
+}

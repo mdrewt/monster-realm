@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 154 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 155 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -163,6 +163,7 @@ Generated from 154 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0186](./0186-eval-scanner-migration-audit-and-behavioral-gating.md) | 0186 — Eval scanner migration: audit gate, behavioral+structural enforcement, name-derived gating, and parked residuals | Accepted | ci-gates, security-authz, tooling-docs | 14r-c (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-c) | `evals/scanner-migration-audit.eval.mjs` gates a name-derived eval set on two legs (a real `rust-scan.mjs` import plus `assertStripperSound`, and no naive stripper anywhere); six evals migrated, seven parked as capped self-retiring debt. |
 | [0187](./0187-dualkey-first-step-dedup-and-movement-input-e2e.md) | 0187 — dualkey first-step dedup + movement-input runtime e2e (mvi-e2e) | Accepted | movement-netcode, client-ui | 14r-e (M-postgate-fourteenth-review-residuals — ADR-0158 residuals 3+4) | Keydown's first step is skipped iff the direction is already held via the other key code (HeldDirections.isHeld membership, pure not-emit), and a keyboard-driven Playwright e2e now exercises main.ts's real frame body at runtime. |
 | [0188](./0188-small-hygiene-sweep-escape-ssot-and-trade-cap-mirror.md) | 0188 — small-hygiene sweep: evolution log escaping, both-role grass guard, trade-cap mirror | Accepted | evolution-fusion, movement-netcode, client-ui | 14r-f (M-postgate-fourteenth-review-residuals — ADR-0170 residual 8, ADR-0166 R4 + R6) | Escape `check_and_evolve`'s three JSON log reasons; route `movement_tick`'s grass pre-check through the both-role SSOT (hygiene, a verified no-op); mirror the server trade cap as an exported client const gated by a parity eval. |
+| [0189](./0189-ranked-requires-account.md) | 0189 — Ranked play requires a full account: server enforcement at both PvP handshake gates | Accepted | security-authz, battle | 14r-g (M-postgate fourteenth-review residuals §14r-g) | Both PvP handshake reducers reject unless both parties hold an `account` row (`is_account_holder`, never `has_jwt()`), via one pure `ranked_account_gate` seam before any irreversible effect; inert until a real issuer is configured. |
 
 ## Harness design corpus (H- namespace)
 
@@ -251,6 +252,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0170](./0170-server-hardening-cache-completion-log-escaping.md) — 11r-g (M-postgate-eleventh-review-residuals — server hardening basket; EARS G-1..G-5, M-1..M-7, C-1..C-10, H-1..H-3, V-1..V-5) — 0170 — Server hardening basket: version-keyed type-chart cache, ADR-0089 completion, heal-cost seam split, and JSON log escaping (Accepted)
 - [0175](./0175-essence-graph-reducers.md) — EG2 (M-evolution-essence-graph — EARS EG2-1..EG2-13) — 0175 — Essence-graph reducers: quality-time semantics, auto-evolution, battle credits (EG2) (Accepted)
 - [0185](./0185-pve-settle-log-and-commit.md) — 14r-d (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-d) — 0185 — PvE battle settle: log-and-commit the write-back error instead of aborting the reducer (Accepted)
+- [0189](./0189-ranked-requires-account.md) — 14r-g (M-postgate fourteenth-review residuals §14r-g) — 0189 — Ranked play requires a full account: server enforcement at both PvP handshake gates (Accepted)
 
 ### evolution-fusion
 
@@ -530,6 +532,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0182](./0182-m21b2-oidc-client-claim-ui-better-auth-deployment.md) — heavy-ceremony M21b-2 planning pass (pre-slice; implementation elaborates in the m21b-2 — 0182 — M21b-2: OIDC client wiring, claim-code UI, session lifecycle, Better Auth deployment (Accepted)
 - [0184](./0184-trade-negative-path-dynamic-suite.md) — 14r-b (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-b) — 0184 — Trading reducer negative paths: a dynamic three-identity e2e suite, its mutation-visible pins, and its honest gaps (Accepted)
 - [0186](./0186-eval-scanner-migration-audit-and-behavioral-gating.md) — 14r-c (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-c) — 0186 — Eval scanner migration: audit gate, behavioral+structural enforcement, name-derived gating, and parked residuals (Accepted)
+- [0189](./0189-ranked-requires-account.md) — 14r-g (M-postgate fourteenth-review residuals §14r-g) — 0189 — Ranked play requires a full account: server enforcement at both PvP handshake gates (Accepted)
 
 ### economy-quests
 
