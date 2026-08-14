@@ -98,12 +98,19 @@ Scenarios and the mutant class each kills at runtime:
 7. ADR-0152 residual 1 (fresh-Predictor `outstandingSteps` under-count) — pinned by a tripwire
    unit test if the droppable last task landed; see the test file by that name, else still open.
 
-## Proof of teeth
+## Proof of teeth (executed 2026-08-14, real browser + WebSocket + SpacetimeDB stack)
 
-RED-first: scenario B fails (2 tiles ≠ 1) and scenario D fails (snapshot counters absent) against
-the pre-fix tree; U-DK1..3 and the W-DK teeth fail before the implementation lands. Post-fix
-bite-proofs (hand-applied single-file mutants, each must red its named tooth): whole-gate
-`|| true` ⇒ C; narrow `&& true ||` ⇒ D (empirically executed against the real stack — the
-sim-derived storm numbers were not trusted on their own); second ungated emitter below the
-scanned region ⇒ D; dedup revert ⇒ B; `active()===` shape ⇒ U-DK2 + S11 + W-DK-KEYDOWN-DEDUPED.
-Executed results are recorded in the PR.
+RED-first, observed: scenario B failed `Received: 2` (the dual-bind double-move live at runtime)
+and scenario D failed on the absent snapshot counters against the pre-fix tree; U-DK1..3, S10,
+S11 and both W-DK teeth failed as designed while S10-twin (dedup off ⇒ 2 tiles) stayed green.
+Hand-applied mutants, each single-file, applied → measured → reverted:
+
+| Mutant | Source scans | Runtime e2e |
+|---|---|---|
+| `isHeld` → stack-top equality | — | U-DK1 + U-DK2 + S11 red |
+| whole-gate `\|\| true` at the rAF emitter | W-NH2-GATE-WIRED red (the formatter re-parenthesizes mixed `&&`/`\|\|`, breaking the opensWith needle — the scans now cover post-format shapes) | **C red** (walked under the overlay) |
+| narrow `(outstandingSteps === 0 && true) \|\| !anyOverlayVisible()` | 2 wiring teeth red | **D red: 52 sends observed in a 1 s hold vs budget ≤ 12** (gated cadence ≈ 6) — the storm is real on the live stack, not only in the ADR-0148 simulation |
+| second ungated keydown emitter OUTSIDE every scanned region | **entire wiring suite GREEN** — the ADR-0158 "un-killable" class, confirmed live | **A red: `Received: 2`** — the e2e closes the class the scans structurally cannot |
+| dedup revert (the pre-fix tree itself) | W-DK-KEYDOWN-DEDUPED red | B red: `Received: 2` |
+
+Post-fix: full client suite 2396/2396 green; movement-input e2e green 4 consecutive runs.
