@@ -949,6 +949,7 @@ fn is_ident_byte(b: u8) -> bool {
 ///     so the `me_spoof` suffix is rejected.
 ///   - `letme=` ends in `=` → the RIGHT side is not checked, or the production
 ///     `let me = ctx.sender;` (next char `c`) would never match its own needle.
+///
 /// Getting this wrong is not a subtle degradation: an unconditional right-boundary check
 /// makes every me-binding lookup fail and every caller of check_authorize_call red.
 fn token_positions(haystack: &str, needle: &str) -> Vec<usize> {
@@ -1038,7 +1039,10 @@ fn check_authorize_call(
     let prefix_squashed = normalize_whitespace(&body[..call_idx]);
     let bind_needle = concat!("letme", "=");
     let caller_bind = concat!("letme=ctx.", "sender;");
-    match token_positions(&prefix_squashed, bind_needle).last().copied() {
+    match token_positions(&prefix_squashed, bind_needle)
+        .last()
+        .copied()
+    {
         None => {
             return Err(format!(
                 "me-shadowed: no `let me = ...` binding precedes {call_name}(...) — the role \
@@ -1572,7 +1576,10 @@ fn ea_reaper_03_scheduler_guard_is_first_statement() {
     // Needles split with concat! per this file's anti-self-match convention.
     let reaper_start = concat!("fntrade_offer_", "reaper(");
     let reaper_end = concat!("fnpropose_", "trade(");
-    let guard_anchor = concat!("->Result<(),String>{ifctx.sender!=ctx.", "identity(){returnErr(");
+    let guard_anchor = concat!(
+        "->Result<(),String>{ifctx.sender!=ctx.",
+        "identity(){returnErr("
+    );
 
     // --- TOOTH 1: guard present but NOT first (a DB read precedes it) ---
     let guard_not_first = concat!(

@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 149 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 150 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -158,6 +158,7 @@ Generated from 149 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0181](./0181-string-literal-aware-source-scanners.md) | 0181 — String-literal-aware source scanners: one Rust scanner, one TypeScript scanner, and why they cannot be the same function | Accepted | ci-gates, security-authz, tooling-docs | 13r-c (post-gate thirteenth-review residuals — `specs/monster-realm-v2/M-postgate-thirteenth-review-residuals.spec.md` §13r-c) | Rust scanning in `evals/` moves to one string-literal-aware `evals/rust-scan.mjs` that lexes comments and strings in a single pass and preserves offsets by blanking literal payloads; TypeScript uses a separate literal-PRESERVING scanner. |
 | [0182](./0182-m21b2-oidc-client-claim-ui-better-auth-deployment.md) | 0182 — M21b-2: OIDC client wiring, claim-code UI, session lifecycle, Better Auth deployment | Accepted | security-authz, schema-persistence, client-ui | heavy-ceremony M21b-2 planning pass (pre-slice; implementation elaborates in the m21b-2 | A pure `decideConnectCredential()` fed by an async `resolveCredential()` (the one real |
 | [0183](./0183-nightly-mutation-gate-rebaseline-and-failure-visibility.md) | 0183 — Nightly mutation gate: cap re-baseline 299 → 324 as declared debt, and per-job failure-policy visibility | Accepted | ci-gates | 14r-a (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-a) | Re-baseline the `mutate-server` cap 299 → 324 (exact hosted count, moved with the eval ceiling) as debt-carrying — 11 killable survivors named, successor ratchets to ≤ 313; per-job failure-policy comments; missed.txt fail-closed guard. |
+| [0184](./0184-trade-negative-path-dynamic-suite.md) | 0184 — Trading reducer negative paths: a dynamic three-identity e2e suite, its mutation-visible pins, and its honest gaps | Accepted | economy-quests, ci-gates, security-authz | 14r-b (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-b) | Gate the trading reducers' negative paths with a dynamic 3-identity Playwright suite (`client/e2e/trade-zz-negative.spec.ts`) plus mutation-visible in-crate pins; the exact-boundary-accept clause stays statically gated, recorded as debt. |
 
 ## Harness design corpus (H- namespace)
 
@@ -451,6 +452,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0180](./0180-observability-stack-selection.md) — heavy-ceremony M20 planning pass (pre-slice; implementation elaborates in m20a–m20e per — 0180 — Observability stack selection: self-hosted OSS replaces Datadog, and the WASM-sandbox-crossing data path (Accepted)
 - [0181](./0181-string-literal-aware-source-scanners.md) — 13r-c (post-gate thirteenth-review residuals — `specs/monster-realm-v2/M-postgate-thirteenth-review-residuals.spec.md` §13r-c) — 0181 — String-literal-aware source scanners: one Rust scanner, one TypeScript scanner, and why they cannot be the same function (Accepted)
 - [0183](./0183-nightly-mutation-gate-rebaseline-and-failure-visibility.md) — 14r-a (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-a) — 0183 — Nightly mutation gate: cap re-baseline 299 → 324 as declared debt, and per-job failure-policy visibility (Accepted)
+- [0184](./0184-trade-negative-path-dynamic-suite.md) — 14r-b (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-b) — 0184 — Trading reducer negative paths: a dynamic three-identity e2e suite, its mutation-visible pins, and its honest gaps (Accepted)
 
 ### tooling-docs
 
@@ -514,6 +516,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0179](./0179-accounts-auth-implementation-design.md) — heavy-ceremony M21 planning pass (pre-slice; implementation elaborates in m21a/m21b/m21c — 0179 — Accounts & authentication implementation design: OIDC gate, guest-claim, and the re-key SSOT (Accepted)
 - [0181](./0181-string-literal-aware-source-scanners.md) — 13r-c (post-gate thirteenth-review residuals — `specs/monster-realm-v2/M-postgate-thirteenth-review-residuals.spec.md` §13r-c) — 0181 — String-literal-aware source scanners: one Rust scanner, one TypeScript scanner, and why they cannot be the same function (Accepted)
 - [0182](./0182-m21b2-oidc-client-claim-ui-better-auth-deployment.md) — heavy-ceremony M21b-2 planning pass (pre-slice; implementation elaborates in the m21b-2 — 0182 — M21b-2: OIDC client wiring, claim-code UI, session lifecycle, Better Auth deployment (Accepted)
+- [0184](./0184-trade-negative-path-dynamic-suite.md) — 14r-b (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-b) — 0184 — Trading reducer negative paths: a dynamic three-identity e2e suite, its mutation-visible pins, and its honest gaps (Accepted)
 
 ### economy-quests
 
@@ -538,3 +541,4 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0154](./0154-owner-scoped-wallet-view.md) — ux2 (M-postgate-ux-hardening — owner-scoped `#[view]` over `player_wallet` + shop balance seam; EARS ux2-1..ux2-3) — 0154 — Owner-scoped `my_wallet` view over the private `player_wallet` table (Accepted)
 - [0169](./0169-wallet-view-runtime-path.md) — 11r-e (M-postgate-eleventh-review-residuals — ux2b wallet view completion; EARS 11r-e-1..11r-e-9) — 0169 — Wallet view runtime path: `my_wallet` subscription, insert-only ingest, and a three-site call-site tooth (Accepted)
 - [0170](./0170-server-hardening-cache-completion-log-escaping.md) — 11r-g (M-postgate-eleventh-review-residuals — server hardening basket; EARS G-1..G-5, M-1..M-7, C-1..C-10, H-1..H-3, V-1..V-5) — 0170 — Server hardening basket: version-keyed type-chart cache, ADR-0089 completion, heal-cost seam split, and JSON log escaping (Accepted)
+- [0184](./0184-trade-negative-path-dynamic-suite.md) — 14r-b (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-b) — 0184 — Trading reducer negative paths: a dynamic three-identity e2e suite, its mutation-visible pins, and its honest gaps (Accepted)
