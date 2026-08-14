@@ -4213,6 +4213,7 @@ fn eg14f_compose_raw_line(evt: &str, monster_id: u64, raw_reason: &str) -> Strin
 ///   * every backslash inside a string introduces a legal JSON escape;
 ///   * no raw character below 0x20 appears inside a string;
 ///   * every string that opens also closes.
+///
 /// Its blind spot — a line that is well-FRAMED but carries the WRONG VALUE — is
 /// exactly what oracle 2 covers.
 ///

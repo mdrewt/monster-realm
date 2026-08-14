@@ -199,8 +199,13 @@ pub(crate) fn check_and_evolve(ctx: &ReducerContext, monster_id: u64) {
         let instance = match monster_to_instance(&m) {
             Ok(instance) => instance,
             Err(e) => {
+                // ADR-0170 D5 / ADR-0188: the reason is marshalling text and may
+                // carry a double quote. Escape it, or ONE such character makes the
+                // line unparseable and the ingest drops the diagnostic for exactly
+                // the corrupt row that produced it.
+                let reason = crate::guards::json_escape(&e);
                 log::warn!(
-                    "{{\"evt\":\"check_and_evolve_skip\",\"monster_id\":{monster_id},\"reason\":\"{e}\"}}",
+                    "{{\"evt\":\"check_and_evolve_skip\",\"monster_id\":{monster_id},\"reason\":\"{reason}\"}}",
                 );
                 return;
             }
@@ -217,8 +222,10 @@ pub(crate) fn check_and_evolve(ctx: &ReducerContext, monster_id: u64) {
                 }
                 // A corrupt row is skipped, never fatal: this is a reducer tail.
                 Err(e) => {
+                    // ADR-0170 D5 / ADR-0188 — see the sibling site above.
+                    let reason = crate::guards::json_escape(&e);
                     log::warn!(
-                        "{{\"evt\":\"check_and_evolve_skip_edge\",\"monster_id\":{monster_id},\"reason\":\"{e}\"}}",
+                        "{{\"evt\":\"check_and_evolve_skip_edge\",\"monster_id\":{monster_id},\"reason\":\"{reason}\"}}",
                     );
                 }
             }
@@ -230,8 +237,10 @@ pub(crate) fn check_and_evolve(ctx: &ReducerContext, monster_id: u64) {
             return;
         }
         if let Err(e) = apply_evolution(ctx, monster_id, &candidate_rows[eligible[0]]) {
+            // ADR-0170 D5 / ADR-0188 — see the sibling sites above.
+            let reason = crate::guards::json_escape(&e);
             log::error!(
-                "{{\"evt\":\"check_and_evolve_apply_failed\",\"monster_id\":{monster_id},\"reason\":\"{e}\"}}",
+                "{{\"evt\":\"check_and_evolve_apply_failed\",\"monster_id\":{monster_id},\"reason\":\"{reason}\"}}",
             );
             return;
         }
