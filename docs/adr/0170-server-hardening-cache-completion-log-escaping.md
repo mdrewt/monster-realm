@@ -5,6 +5,7 @@
 **Slice:** 11r-g (M-postgate-eleventh-review-residuals — server hardening basket; EARS G-1..G-5, M-1..M-7, C-1..C-10, H-1..H-3, V-1..V-5)
 **Supersedes:** —
 **Amends:** ADR-0089
+**Amended-by:** ADR-0188
 **Subsystems:** battle, movement-netcode, economy-quests
 **Decision:** Cache abilities/heal-locations as LazyLock statics and the type chart behind a content_version-keyed rebuild; rate-limit + JSON-escape silent wild-encounter failure logs; ship heal-cost cached read + inert client seam, column parked.
 

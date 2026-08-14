@@ -5,6 +5,7 @@
 **Slice:** 11r-a (M-postgate-eleventh-review-residuals §2; EARS E1–E4)
 **Supersedes:** —
 **Amends:** ADR-0156, ADR-0122, ADR-0106
+**Amended-by:** ADR-0188
 **Subsystems:** security-authz, battle, movement-netcode
 **Decision:** PvP adopts `BattleSide::with_lead` at both start sites and rejects an Attack from a fainted active; the warp guard moves to the both-role ADR-0122 SSOT; `propose_trade` gains O(1) size bounds ahead of its O(N) dedup.
 

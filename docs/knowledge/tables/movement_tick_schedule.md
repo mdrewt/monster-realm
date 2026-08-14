@@ -5,7 +5,7 @@ slug: tables/movement_tick_schedule
 updated: 2026-08-08
 tags: [schema, spacetimedb, private]
 abstract: "Per-zone movement schedule: one interval-row per active zone makes the scheduler call `movement_tick` for THAT zone eve…"
-resource: server-module/src/movement.rs#L37
+resource: server-module/src/movement.rs#L36
 source: scripts/okf-export.mjs@server-module/src/movement.rs
 visibility: private
 ---
