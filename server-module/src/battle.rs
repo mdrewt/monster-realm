@@ -734,7 +734,24 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
 
     // Write back HP + XP if battle ended.
     if battle.state.outcome != BattleOutcome::Ongoing {
-        write_back_battle_results(ctx, &battle)?;
+        // ADR-0185 D1: log-and-commit, never propagate. A `?` here would abort the
+        // whole SpacetimeDB transaction, so the `update(battle)` below would never
+        // run and the row would stay `Ongoing` — and post-ADR-0168 D1 an `Ongoing`
+        // row freezes the player's movement AND blocks begin_encounter/start_battle,
+        // turning a rare data-invariant fault into a total softlock that every
+        // retry reproduces identically. Log-and-continue is the ADR-0077 posture
+        // already used by the PvP funnel and the wild-disconnect GC in this file.
+        // Emission goes through `observability::mr_log` (ADR-0185 D6), not a bare
+        // `log::` macro, because the OBS-2 ratchet pins this file's grandfathered
+        // bare-log count. Ordering is unchanged (RT-M16-08): the write-back still
+        // runs while the DB row is `Ongoing`, so its GC sweep cannot delete it.
+        if let Err(e) = write_back_battle_results(ctx, &battle) {
+            let escaped = crate::guards::json_escape(&e);
+            crate::observability::mr_log(
+                "submit_attack_writeback_err",
+                &format!("\"battle_id\":{battle_id},\"reason\":\"{escaped}\""),
+            );
+        }
     }
 
     ctx.db.battle().battle_id().update(battle);
@@ -868,7 +885,15 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
     }
 
     if battle.state.outcome != BattleOutcome::Ongoing {
-        write_back_battle_results(ctx, &battle)?;
+        // ADR-0185 D1 log-and-commit — see the full rationale at the matching
+        // block in `submit_attack`. Only the `evt` name differs.
+        if let Err(e) = write_back_battle_results(ctx, &battle) {
+            let escaped = crate::guards::json_escape(&e);
+            crate::observability::mr_log(
+                "swap_active_writeback_err",
+                &format!("\"battle_id\":{battle_id},\"reason\":\"{escaped}\""),
+            );
+        }
     }
 
     ctx.db.battle().battle_id().update(battle);
@@ -902,7 +927,15 @@ pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
     battle.state.outcome = BattleOutcome::Fled;
 
     // Write back HP via the shared path (no XP on flee — outcome != SideAWins).
-    write_back_battle_results(ctx, &battle)?;
+    // ADR-0185 D1 log-and-commit — see the full rationale at the matching block
+    // in `submit_attack`. Only the `evt` name differs.
+    if let Err(e) = write_back_battle_results(ctx, &battle) {
+        let escaped = crate::guards::json_escape(&e);
+        crate::observability::mr_log(
+            "flee_writeback_err",
+            &format!("\"battle_id\":{battle_id},\"reason\":\"{escaped}\""),
+        );
+    }
 
     ctx.db.battle().battle_id().update(battle);
     log::info!("{{\"evt\":\"battle_flee\",\"battle_id\":{battle_id},\"sender\":\"{me}\"}}");
@@ -1108,8 +1141,17 @@ pub(crate) fn write_back_battle_results(
         battle.party_monster_ids.len(),
     )?;
 
-    // Write back HP for player's team (HP-only; the XP block below is separate).
-    write_back_party_hp(ctx, battle)?;
+    // ADR-0185 D7: both GC steps run BEFORE the fallible `write_back_party_hp`.
+    // Since ADR-0185 D1 the PvE callers log-and-commit instead of aborting, so a
+    // persistent invariant violation would otherwise leak one orphaned
+    // `battle_wild` row and one permanently-retained terminal `battle` row per
+    // battle, unbounded, in a `public` table every client subscribes to
+    // unfiltered. Both are pure GC of OTHER rows: neither reads anything
+    // `write_back_party_hp` writes, and `write_back_party_hp` does not read
+    // `battle_wild`, so the hoist is behaviour-preserving on the success path.
+    // `check_team_coupling` stays first — it is the fail-loud precondition that
+    // makes the positional indexing below safe, and irreversible deletes must not
+    // run on behalf of a battle whose invariant is already violated.
 
     // GC the private wild-individuality row on ANY terminal outcome (no-op for
     // PvP battles with no `battle_wild` row; cleans wild battles that end via
@@ -1118,15 +1160,17 @@ pub(crate) fn write_back_battle_results(
 
     // GC prior terminal battles for this player (12.5e-1, ADR-0077).
     // Ordering invariant: the current battle's DB row is still Ongoing at this
-    // call site — the mutating callers (submit_attack, swap_active, flee) call
-    // update() AFTER write_back_battle_results returns, and the disconnect caller
+    // call site — every mutating caller (submit_attack, swap_active, flee,
+    // taming::attempt_recruit, pvp::settle_pvp_battle) calls update() AFTER
+    // write_back_battle_results returns, and the disconnect caller
     // (resolve_wild_battle_on_disconnect, ptc5b/ADR-0138) delete()s the row AFTER,
-    // so the in-flight row is still Ongoing in the DB here either way. Filtering
-    // outcome != Ongoing therefore only targets prior terminals, never the
-    // in-flight battle. After the mutating caller's update(), exactly one terminal
-    // battle remains per player, preserving the client's M8.7e outcome frame
-    // (keep-latest-per-player); the disconnect caller then deletes the row (no
-    // frame — a disconnected client has nothing to observe).
+    // so the in-flight row is still Ongoing in the DB here either way. Running
+    // before the HP write (ADR-0185 D7) preserves that precondition a fortiori.
+    // Filtering outcome != Ongoing therefore only targets prior terminals, never
+    // the in-flight battle. After the mutating caller's update(), exactly one
+    // terminal battle remains per player, preserving the client's M8.7e outcome
+    // frame (keep-latest-per-player); the disconnect caller then deletes the row
+    // (no frame — a disconnected client has nothing to observe).
     let player = battle.player_identity;
     let old_terminal_ids: Vec<u64> = ctx
         .db
@@ -1154,6 +1198,11 @@ pub(crate) fn write_back_battle_results(
             ctx.db.battle().battle_id().delete(id);
         }
     }
+
+    // Write back HP for player's team (HP-only; the XP block below is separate).
+    // Runs AFTER both GC steps above per ADR-0185 D7 — it is the first fallible
+    // statement whose Err would otherwise skip them.
+    write_back_party_hp(ctx, battle)?;
 
     // EG2-7 faint penalties (ADR-0175 D4): WILD battles only, per fainted party
     // member, on ANY outcome — its own pass BEFORE the win block, because that
@@ -1437,9 +1486,9 @@ pub(crate) fn resolve_wild_battle_on_disconnect(ctx: &ReducerContext, disconnect
         // Auto-flee: non-decisive terminal (no XP — outcome != SideAWins).
         battle.state.outcome = BattleOutcome::Fled;
         // Same write-back as `flee`: persists HP and GCs the `battle_wild` sidecar
-        // at its own line-999 delete. Log-and-continue — an Err (e.g. team-coupling)
-        // must NOT leave the `Ongoing` row alive (that re-creates the soft-lock);
-        // the deletes below run regardless.
+        // at its own delete. Log-and-continue — an Err (e.g. team-coupling) must
+        // NOT leave the `Ongoing` row alive (that re-creates the soft-lock); the
+        // deletes below run regardless.
         if let Err(e) = write_back_battle_results(ctx, &battle) {
             let escaped = crate::guards::json_escape(&e);
             log::error!(
@@ -1447,8 +1496,10 @@ pub(crate) fn resolve_wild_battle_on_disconnect(ctx: &ReducerContext, disconnect
             );
         }
         // Belt-and-suspenders (ADR-0138 D4): explicitly delete the private
-        // `battle_wild` sidecar — `write_back_battle_results` only reaches its own
-        // delete if it did not Err first. Then delete the main `battle` row (the new
+        // `battle_wild` sidecar. Post-ADR-0185 D7 the helper's own delete is hoisted
+        // above the fallible HP write, so only a `check_team_coupling` Err can skip
+        // it — this stays as depth-of-defence, idempotent either way. Then delete
+        // the main `battle` row (the new
         // behavior; unlike `flee` we do not `update()` it). Both deletes idempotent.
         ctx.db.battle_wild().battle_id().delete(id);
         ctx.db.battle().battle_id().delete(id);
