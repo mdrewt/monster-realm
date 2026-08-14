@@ -90,8 +90,11 @@ const TAP_BUDGET_MS = 140;
 /** The zone-0 corridor row every scenario measures along. */
 const CORRIDOR_Y = 1;
 /** Retries allowed per rep — and ONLY for an over-long measured press (see the retry rule
- *  at each call site). A within-budget rep with a wrong tile count fails immediately. */
-const MAX_ATTEMPTS = 3;
+ *  at each call site). A within-budget rep with a wrong tile count fails immediately.
+ *  5, not 3: CI run 31806079496 attempt 1 exhausted 3 attempts on a loaded 4-vCPU runner
+ *  whose waitForTimeout overshoot alone ate scenario B's headroom. More attempts do not
+ *  weaken the teeth — only harness-overrun reps are ever retried. */
+const MAX_ATTEMPTS = 5;
 
 /** STEP_MS, read from the hook in beforeAll (never hard-coded — golden.spec.ts idiom). */
 let stepMs = 200;
@@ -427,10 +430,16 @@ test.describe
           await converged(page);
           const t0 = await corridorEastWest(page, 2, 7);
           await resetKeyLog(page);
+          // 40ms gaps, not 55: the nominal press is first-down -> last-up, so two gaps put
+          // it at ~80ms — 60ms of headroom under TAP_BUDGET_MS for CI scheduling overshoot
+          // (55/55 left only 30ms; CI run 31806079496 attempt 1 overran it 3/3 times). The
+          // dedup under test is STATEFUL, not timed — both worlds emit (or not) on the
+          // keydown EVENT itself — so shrinking the gaps changes nothing about what the
+          // scenario proves, only how often a loaded runner can execute it inside the band.
           await page.keyboard.down(rep.c1);
-          await page.waitForTimeout(55);
+          await page.waitForTimeout(40);
           await page.keyboard.down(rep.c2); // the OTHER code for the SAME direction
-          await page.waitForTimeout(55);
+          await page.waitForTimeout(40);
           await page.keyboard.up(rep.c2);
           await page.keyboard.up(rep.c1);
           const pressedMs = await measuredPressMs(page); // first down -> last up

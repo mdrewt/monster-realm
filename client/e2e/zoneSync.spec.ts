@@ -59,7 +59,7 @@ interface Tile {
 
 interface ZoneSyncSnap {
   identity: string;
-  map: { zone_id: number; width: number; height: number; walkable: boolean[] };
+  map: { zone_id: number; width: number; height: number; walkable: boolean[]; grass: boolean[] };
   ownEntityId: string | null;
   ownAuthTile: Tile | null;
   ownPredictedTile: Tile | null;
@@ -320,6 +320,14 @@ test.describe
       });
 
       // Step to trigger reconcile → switchZone(0) with real zone_map(0) parse.
+      // DEFLAKE (14r-e diagnosis, CI run 31806079496 attempt 2): 'East', NOT 'South'. The
+      // direction is incidental — the step exists only to trigger a server batch — but the
+      // trajectory through tests 1-2 (spawn (1,1) → East → East) parks the character at
+      // (3,1), and 'South' lands on (3,2), a GRASS tile in the frozen zone-0 art. Zone 0's
+      // encounter_rate is 200/1000, so that step started a wild battle in ~20% of runs;
+      // an ongoing battle rejects every later enqueue_move, and the NEXT test's
+      // sawFractionalOwnMotion re-latch then times out. 'East' → (4,1) stays on the
+      // grass-free y=1 corridor row ("#........#") and can never roll an encounter.
       await page.evaluate(() => {
         (
           window as unknown as {
@@ -327,7 +335,7 @@ test.describe
           }
         )
           .__game()
-          .step('South');
+          .step('East');
       });
 
       // The switch to zone 0 must succeed (parse of zone 0 map is valid).
@@ -338,6 +346,9 @@ test.describe
       );
 
       // Send a second step and confirm zone_id stays 0 (no additional unwanted mutation).
+      // 'West' undoes the 'East' above (grass-free corridor both ways), restoring the
+      // pre-test position so the next test's walkable-neighbour pick sees the same
+      // world it always has.
       await page.evaluate(() => {
         (
           window as unknown as {
@@ -345,7 +356,7 @@ test.describe
           }
         )
           .__game()
-          .step('North');
+          .step('West');
       });
 
       // Allow time for the batch to arrive and any errant mutation to manifest.
@@ -399,26 +410,33 @@ test.describe
           }
         ).__game();
         const { map, ownAuthTile: tile } = g;
-        // Find the first walkable neighbour: East → West → South → North.
+        // Find the first walkable NON-GRASS neighbour: East → West → South → North.
+        // Grass-aware since the 14r-e diagnosis: a grass step rolls a wild encounter
+        // (zone 0 rate 200/1000), and an ongoing battle rejects every later step —
+        // producing exactly the sawFractionalOwnMotion timeout this pick exists to
+        // prevent. Walkability alone is not enough for a step that must MOVE.
         const offsets: [string, number, number][] = [
           ['East', 1, 0],
           ['West', -1, 0],
           ['South', 0, 1],
           ['North', 0, -1],
         ];
-        for (const [dir, dx, dy] of offsets) {
-          if (!tile) break;
-          const nx = tile.x + dx;
-          const ny = tile.y + dy;
-          if (
-            nx >= 0 &&
-            ny >= 0 &&
-            nx < map.width &&
-            ny < map.height &&
-            map.walkable[ny * map.width + nx]
-          ) {
-            g.step(dir);
-            return;
+        for (const grassAllowed of [false, true]) {
+          for (const [dir, dx, dy] of offsets) {
+            if (!tile) break;
+            const nx = tile.x + dx;
+            const ny = tile.y + dy;
+            if (
+              nx >= 0 &&
+              ny >= 0 &&
+              nx < map.width &&
+              ny < map.height &&
+              map.walkable[ny * map.width + nx] &&
+              (grassAllowed || !map.grass[ny * map.width + nx])
+            ) {
+              g.step(dir);
+              return;
+            }
           }
         }
         g.step('East'); // fallback: character always has at least one walkable neighbour
