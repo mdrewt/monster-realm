@@ -126,7 +126,7 @@ function startsRegexLiteral(src, i) {
   let k = i - 1;
   while (k >= 0 && (src[k] === ' ' || src[k] === '\t' || src[k] === '\n' || src[k] === '\r')) k--;
   if (k < 0) return true;
-  return '=(,[{:;!?&|+-*%<>^~}'.indexOf(src[k]) !== -1;
+  return '=(,[{:;!?&|+-*%<>^~'.indexOf(src[k]) !== -1;
 }
 
 /**
@@ -1152,6 +1152,50 @@ fn braced_leak(ctx: &ViewContext) -> Vec<[PlayerConversation; {1}]> {
     }
   }
 
+  // [14r-c/Tbrace] DISCRIMINATING TOOTH: an object-literal `}` directly before a division must
+  // not blind stripTsComments to a genuine `//` comment sharing the same line.
+  //
+  // PROVES the 14r-c fix (drop `}` from startsRegexLiteral's operator set, line ~129) actually
+  // changes behaviour — an adversarial review found the obvious `{} / 2 / 3;`-shaped tooth
+  // VACUOUS: the regex arm (line ~168-188) never calls blank() over the span it consumes, so a
+  // division misdetected as a regex is only RELABELLED in the output, never deleted — `code` is
+  // byte-identical whether `}` is in the operator set or not, for THAT shape. Unlike
+  // main.wiring.test.ts's m20cScan, this file's stripTsComments has no separate `literals`
+  // collector to read instead (single-string contract, checked above at line ~132-137), so the
+  // discriminator here has to be a REAL side effect of the misdetection on stripTsComments' one
+  // return value.
+  //
+  // That side effect: with `}` in the set, the `/` right after `{mode: 1}` is misread as opening
+  // a regex; the regex-consuming walk scans forward and closes on the FIRST unescaped `/` it
+  // meets — which is the FIRST slash of the following genuine `//` pair — leaving the SECOND
+  // slash ORPHANED (its own `src[i+1] === '/'` partner already consumed by the fake regex). The
+  // comment arm's `src[i+1] === '/'` check then fails on that orphan, so the `//` is never
+  // recognised as a comment and 'FROM my_conversation stray note' survives in stripTsComments'
+  // output UNBLANKED. That breaks this file's own stated contract ("comments are stripped first
+  // so prose can neither satisfy nor trip [needles]" — the C4 trap, same family as tooth T11
+  // above): a comment claiming a positive needle, or hiding text that should stay invisible to a
+  // downstream check, would leak through. Once `}` is dropped, the `/` is read as plain division,
+  // the REAL `//` is recognised on its own two adjacent slashes, and the comment text is blanked.
+  {
+    const cfgFixture =
+      'const cfg = {mode: 1} ' +
+      SLASH13R +
+      ' 1; ' +
+      SLASH13R +
+      SLASH13R +
+      ' FROM my_conversation stray note';
+    const strippedCfg = stripTsComments(cfgFixture);
+    if (strippedCfg.indexOf('FROM my_conversation stray note') !== -1) {
+      return (
+        "TEETH FAILED [14r-c/Tbrace]: stripTsComments left a genuine `//` comment's text " +
+        "('FROM my_conversation stray note') UNBLANKED. A `}`-then-division `/` sharing the " +
+        'SAME LINE as a real `//` comment causes the regex-literal misdetection to eat the ' +
+        "comment's OWN first slash, orphaning the second, so the comment arm never fires. " +
+        "Dropping `}` from startsRegexLiteral's operator set (14r-c) fixes this."
+      );
+    }
+  }
+
   return null;
 }
 
@@ -1245,7 +1289,7 @@ export default async function conversationPrivacyEval() {
       `${rsSources.length} server source file(s) scanned; player_conversation private, ` +
       'all views over it owner-scoped incl. my_conversation, bindings swapped, ' +
       'subscription swapped in .subscribe([...]) array, onDelete handler calls ' +
-      'shouldRemoveOnViewDelete (15 teeth verified)',
+      'shouldRemoveOnViewDelete (16 teeth verified)',
   };
 }
 
