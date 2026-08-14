@@ -184,7 +184,9 @@ literal payloads VERBATIM: the client privacy evals BAN SQL text that lives insi
 a string literal, so payload-blanking would make those bans pass vacuously. Evals
 that scan Rust should import `rust-scan.mjs` rather than hand-rolling a
 comment-stripping regex; a regex that strips `//` without string awareness is
-false-GREEN capable, and ADR-0181 records the ~24 evals still carrying one.
+false-GREEN capable, and `evals/scanner-migration-audit.eval.mjs` (ADR-0186) is
+the live enforcing gate and measurement of which `*-security.eval.mjs` /
+`*-privacy.eval.mjs` files remain unmigrated.
 Two mechanical constraints (recorded in ADR-0056, surfaced by the M8.9a spike): a
 cross-module `ctx.db.<table>()` call must import the generated accessor trait
 (`use crate::schema::<table>;`), and a module name must not equal a table name
