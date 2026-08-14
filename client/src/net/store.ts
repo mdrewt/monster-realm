@@ -230,6 +230,21 @@ export type StoreWallet = {
   readonly balance: bigint;
 };
 
+/** The caller's own account row, normalized (identities as hex strings; M21b-2, ADR-0182
+ *  D15). Sourced from the owner-scoped `my_account` VIEW — never a whole-table subscription.
+ *  `status` carries the AccountStatus tag bare; the three Option columns pass through as
+ *  `undefined` when absent (never fabricated to `0n`/`''` — ADR-0154's broke-vs-dark rule). */
+export type StoreAccount = {
+  readonly identity: string;
+  readonly authIssuer: string;
+  readonly createdAtMs: bigint;
+  readonly lastLoginAtMs: bigint;
+  readonly status: string;
+  readonly deletionRequestedAtMs: bigint | undefined;
+  readonly claimedFrom: string | undefined;
+  readonly claimedAtMs: bigint | undefined;
+};
+
 /** A player quest row, normalized (ownerIdentity as hex string; M12d). */
 export type StorePlayerQuest = {
   readonly pqId: bigint;
@@ -402,6 +417,11 @@ export class AuthoritativeStore {
   // Deliberately NO removeWallet: wallet rows are never deleted server-side, so
   // a view onDelete can only ever be the old half of an update pair.
   #ownWallet: StoreWallet | undefined;
+  // `my_account` view returns exactly one row — the caller's — so a single slot (not a
+  // keyed map) makes another player's account row structurally unrepresentable. Deliberately
+  // NO removeAccount: account rows are never truly deleted server-side (delete_account flips
+  // `status`), so a view onDelete can only be the old half of an update pair (ADR-0182 D15).
+  #ownAccount: StoreAccount | undefined;
   readonly #batchListeners = new Set<() => void>();
   #dirty = false;
   /** Nominal server step interval (ms), used for burst detection + jitter EWMA.
@@ -711,6 +731,10 @@ export class AuthoritativeStore {
     // can never be surfaced to the next one; repopulated from the `my_wallet` view's
     // initial onInsert when the subscription re-applies (ADR-0154).
     this.#ownWallet = undefined;
+    // M21b-2: own-account slot — cleared on disconnect so a previous identity's account row
+    // can never surface to the next one (every anonymous rebuild can mint a new identity);
+    // repopulated from the `my_account` view's initial onInsert on reconnect (ADR-0182 D15).
+    this.#ownAccount = undefined;
     this.#dirty = false;
   }
 
@@ -1050,6 +1074,23 @@ export class AuthoritativeStore {
   ownWallet(identity: string): StoreWallet | undefined {
     const slot = this.#ownWallet;
     return slot !== undefined && slot.ownerIdentity === identity ? slot : undefined;
+  }
+
+  /** Set the single own-account slot, replacing any prior row, and mark the batch dirty.
+   *  `my_account` is wired with BOTH onInsert AND onUpdate (`status`/`claimedFrom` mutate
+   *  post-provisioning, ADR-0182 D15), so every upsert must dirty the store. Deliberately NO
+   *  removeAccount — `reset()` is the sole clearing path (mirror of `upsertWallet`). */
+  upsertAccount(row: StoreAccount): void {
+    this.#ownAccount = row;
+    this.#dirty = true;
+  }
+
+  /** The own account ONLY when it belongs to `identity` — client-side owner filter (G29),
+   *  defense in depth behind the server-side owner-scoped view. A reconnect that mints a new
+   *  identity must never keep reading the previous identity's account row (AUTH-51). */
+  ownAccount(identity: string): StoreAccount | undefined {
+    const slot = this.#ownAccount;
+    return slot !== undefined && slot.identity === identity ? slot : undefined;
   }
 }
 

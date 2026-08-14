@@ -471,6 +471,19 @@ proof-of-teeth discipline):
 
 ## Amendments
 
+- **M21b-2 landed (2026-08-10) — the deferred client scope is now implemented.** The D8-deferred
+  client pieces (silent renewal + session-expired state, the client-minted claim-code UI, the
+  guest→account claim prompt + first-run nudge) shipped in the M21b-2 slice, designed in
+  [ADR-0182](./0182-m21b2-oidc-client-claim-ui-better-auth-deployment.md): `oidc.ts` (PKCE + `state`
+  redirect), a pure `decideConnectCredential`, `build(credential)` widened to `DbConnection |
+  undefined`, `my_account` subscribed as the sole reconciliation authority, the provenance write-guard
+  replacing the auth-kind marker (D14 as this ADR anticipated), and the unconditional claim-code
+  join-gate closing F2 across reconnects. The Better Auth self-hosted deployment recipe (`ops/auth/`)
+  and its DR posture (runbook §8) ship with it. **Still deferred, hard-gated on `13r-c-2`:** flipping
+  the real `ALLOWED_ISSUERS`/`ALLOWED_AUDIENCE` values and tightening `audience_allowed` — a
+  deployment-timed follow-up commit (ADR-0182 D18); until then the placeholder `.invalid` issuer means
+  the OIDC forward redirect degrades to a handled sign-in-failed state, and native email+password is
+  dev/QA-only (OQ5).
 - **To ADR-0030:** the "email/PII is must-never-leak (ADR-0015 → hashed/private)" consequence line is
   clarified to mean "if email is ever captured, it must be hashed/private" — this design captures no
   email at all (D9), because no secure hash pepper can be generated in-module and no consumer needs

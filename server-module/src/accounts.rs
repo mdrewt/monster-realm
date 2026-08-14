@@ -45,6 +45,12 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table, Timestamp};
 /// went red this way). A real issuer URL configured at OQ1 trips the same latent
 /// eval bug — M21c (which owns evals/) should make those strippers
 /// string-literal-aware. Compiles to `https:` + `//auth.monster-realm.invalid/`.
+///
+/// HARD SEQUENCING GATE (ADR-0182 D18): flipping ALLOWED_ISSUERS and ALLOWED_AUDIENCE to their
+/// real deployment values, tightening `audience_allowed` to exact single-value equality, and the
+/// live restore drill are ALL gated on `13r-c-2` landing and are explicitly OUT of the M21b-2
+/// slice. Keep the placeholder values, the `concat!()` construction, and `audience_allowed`
+/// unchanged here until that gate clears.
 pub(crate) const ALLOWED_ISSUERS: &[&str] = &[concat!("https:/", "/auth.monster-realm.invalid/")];
 /// Which `aud` values scope a token to THIS application (D1).
 pub(crate) const ALLOWED_AUDIENCE: &[&str] = &["monster-realm"];

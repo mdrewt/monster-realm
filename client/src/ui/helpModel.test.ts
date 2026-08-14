@@ -142,6 +142,56 @@ describe('buildHelpViewModel(): the SSOT covers the load-bearing keys (PTC2B-10)
     }
   });
 
+  it('★ M21b-2 BITES: the CONTROLS SSOT documents the account/claim key `C` with its EXACT action string', () => {
+    // ADR-0182 (D16/D17, spec AUTH-48/52/54-56/59-60). The account/claim overlay ships with a
+    // direct KeyC hotkey AND a System > "Account & Sign-in" menu leaf, and AC-18 makes this
+    // SSOT the source of the glyph that leaf displays.
+    //
+    // ★ THE EXACT ACTION STRING IS A CONTRACT, not a suggestion. Three gates read it and two
+    // of them compare it with EXACT equality:
+    //   • menuModel's MM-KEYGLYPH-FROM-HELP-SSOT reads the KEY token ('C');
+    //   • playtestControlsDoc.test.ts A2 requires docs/PLAYTEST.md §3's `C` row action to
+    //     EXACTLY EQUAL this string (not `.includes` — the red-team PoC'd that a containment
+    //     oracle passes a doc row that re-teaches a dead key), and A1/A3 require the row to
+    //     EXIST and the row COUNT to match. So this string is what must be pasted, verbatim,
+    //     into the doc table's `| \`C\` | … |` row.
+    //   • A4's whole-document single-char-code-span scan then accepts `` `C` `` in prose,
+    //     which it currently would NOT (it whitelists live CONTROLS keys only).
+    //
+    // WRONG IMPL KILLED (1): shipping the KeyC handler and the menu leaf with no CONTROLS row
+    //   — the one load-bearing key the help overlay never mentions (the exact defect the 'M'
+    //   row was added for in uxd3), and MM-KEYGLYPH-FROM-HELP-SSOT reds.
+    // WRONG IMPL KILLED (2): a row keyed 'c' (lower case) or ' C ' — the menu displays the
+    //   glyph verbatim and the doc gate compares verbatim. Trim + exact case, as the uxd2
+    //   sibling test below already established for G/H/T.
+    // WRONG IMPL KILLED (3): a DIFFERENT action string in helpModel vs docs/PLAYTEST.md —
+    //   caught by A2, but reported there as a doc failure. Pinning the exact string HERE is
+    //   what makes the SSOT side the one that has to be right first.
+    const vm = buildHelpViewModel();
+    const exactKeys = vm.controls.map((c) => c.key.trim().toUpperCase());
+    expect(exactKeys, 'the account/claim hotkey C must be documented (ADR-0182)').toContain('C');
+
+    const row = vm.controls.find((c) => c.key === 'C');
+    expect(
+      row,
+      'the C row must be keyed with the exact glyph `C` (no padding, upper case)',
+    ).toBeDefined();
+    expect(
+      row?.action,
+      'the `C` row action must be EXACTLY `Open account & sign-in` — docs/PLAYTEST.md §3 must ' +
+        'carry the identical string (playtestControlsDoc.test.ts A2 compares with exact ' +
+        'equality). If this reds, change the CODE or the DOC to agree; do not relax this ' +
+        'assertion, because the doc gate has no other anchor for the row it is checking',
+    ).toBe('Open account & sign-in');
+
+    // Exactly one C row: a duplicate would pass A1's set-equality (sets dedupe) while making
+    // the doc's row-count gate A3 unsatisfiable.
+    expect(
+      vm.controls.filter((c) => c.key.trim().toUpperCase() === 'C').length,
+      'the CONTROLS SSOT must contain EXACTLY ONE `C` row',
+    ).toBe(1);
+  });
+
   it('★ uxd2 BITES: NO controls row has key "G" or "H"; the "T" row still exists', () => {
     // uxd2 / AC-10′ (ADR-0161 D5). RED TODAY: helpModel.ts:32-33 still ship
     // `{ key: 'H', action: 'Heal your party' }` and `{ key: 'G', action: 'Open the shop' }`.

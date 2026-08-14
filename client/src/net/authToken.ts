@@ -264,44 +264,13 @@ export function readAuthKind(
  * Record the credential class for this target. Degrades silently on quota /
  * private-mode / blocked-storage failures, exactly as `onConnected` does.
  *
- * ⚠ NO PRODUCTION CALLER MAY WRITE `'account'` UNTIL THE READ-SIDE CREDENTIAL
- * GUARD LANDS (M21b-2). This slice ships only the WRITE-side guard — the
- * kind-gated `auth.onConnected(token)` in connection.ts. Writing `'account'`
- * before its other half exists causes THREE distinct harms, all of them silent
- * (enumerated because an earlier draft of this comment named only the first,
- * and the other two are strictly worse):
- *
- *   1. The next build still supplies the stale ANON token through the
- *      unchanged `.withToken(auth.tokenForNextAttempt())`, dropping the player
- *      onto a different identity — the harm D8 exists to prevent.
- *   2. `onConnected` is skipped entirely, and it is the ONLY place
- *      `rejectionsSinceSuccess` is reset. A SUCCESSFUL connect therefore stops
- *      clearing the counter, so after two classified rejections suppression
- *      LATCHES PERMANENTLY for the life of the tab and a perfectly good token
- *      sits unread in storage.
- *   3. With the slot never written, the host mints a FRESH identity on every
- *      build — and the server grants a new starter monster per identity that
- *      it never deletes, so each reconnect strands another permanently
- *      un-claimable identity (see ADR-0179's F2).
- *
- * The writer ships now only so the marker is a complete read/write pair; it is
- * exercised by tests alone. This is a NAMED YAGNI exception
- * (standards/principles.md): M21b-2's OIDC return leg is its intended producer,
- * and it must land together with the credential guard.
- *
- * ⚠ AND WHEN M21b-2 DOES LAND IT: the marker is the WRONG SHAPE for a security
- * guard and must be replaced, not extended. `readAuthKind` fails to `'anon'` on
- * every lossy path (absent host, blocked storage, quota, eviction) — and
- * `'anon'` is the PERMISSIVE direction for connection.ts's write guard, so a
- * lost marker silently re-opens the very replay this guards against. That fail
- * direction is not a bug here: AUTH-31 requires failing to `'anon'` (failing to
- * `'account'` would break every existing anonymous tab the moment storage is
- * blocked). The two requirements genuinely conflict, and one lossy boolean
- * cannot satisfy both. The resolution is to stop re-reading storage: the
- * discriminator must become the PROVENANCE of the credential this build
- * actually supplied, produced in memory alongside the token itself. That will
- * require re-pinning `W-NH4-TOKEN-SUPPLIED`, which currently pins
- * `.withToken(auth.tokenForNextAttempt())` byte-for-byte.
+ * LIVE CONSUMERS (M21b-2 landed — the marker is now a complete read/write pair):
+ * the read side is `wasEverAuthenticated` below (the AUTH-44 attempt gate, which
+ * decides only whether a tab may call Better Auth on reconnect), and connection.ts's
+ * provenance guard on `credential.kind`. That guard reads the credential this build
+ * resolved IN MEMORY, never a storage re-read — the marker is a hint about intent,
+ * not the security discriminator (ADR-0182 D14). `writeAuthKind` records the class
+ * the connection just established; its behaviour below is unchanged.
  */
 export function writeAuthKind(
   host: TokenStorageHost | undefined,
@@ -317,4 +286,27 @@ export function writeAuthKind(
     // Same silent degradation as onConnected: the live connection is
     // unaffected, only the marker's durability is lost.
   }
+}
+
+/**
+ * The ATTEMPT-GATING half of the marker (AUTH-44): true iff this target's marker slot
+ * holds exactly `'account'`. A tab for which this is `false` — never authenticated, no
+ * OIDC return leg, `continueAnonymously()` not invoked — makes ZERO calls to the Better
+ * Auth token endpoint on connect/reconnect.
+ *
+ * Delegates to `readAuthKind` (its SINGLE call site — G14(ii)) rather than reading storage
+ * itself: one marker, one meaning. It must never decide which token `.withToken()` receives
+ * — that is the in-memory provenance of the resolved credential (ADR-0182 D14).
+ *
+ * Fails to `false` on every absent/blocked/corrupt path, for `readAuthKind`'s exact reason
+ * (authToken.ts:233-248): a lost marker means "no evidence this tab ever authenticated", so
+ * the gate stays SHUT and the tab connects anonymously — today's behaviour. Failing OPEN
+ * would call Better Auth on every reconnect of every private-mode tab, forever.
+ */
+export function wasEverAuthenticated(
+  host: TokenStorageHost | undefined,
+  uri: string,
+  db: string,
+): boolean {
+  return readAuthKind(host, uri, db) === 'account';
 }

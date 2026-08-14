@@ -33,6 +33,7 @@ import {
 } from './convert/convert';
 import type { PvpAction } from './module_bindings/types';
 import { BUILD_INFO, formatBuildStamp } from './net/buildInfo';
+import { claimCode } from './net/claimCode';
 import { connect } from './net/connection';
 import { resolveConnectionConfig } from './net/connectionConfig';
 import {
@@ -80,6 +81,14 @@ import {
   serializeBugBundle,
 } from './ui/bugBundle';
 import { performCare } from './ui/careAction';
+import {
+  buildClaimViewModel,
+  CLAIM_INITIAL,
+  type ClaimEvent,
+  type ClaimModelState,
+  claimStep,
+} from './ui/claimModel';
+import type { ClaimView, ClaimViewHandlers } from './ui/claimView';
 import { DIALOGUE_TREES } from './ui/dialogueContent';
 import { buildDialogueViewModel } from './ui/dialogueModel';
 import type { DialogueView } from './ui/dialogueView';
@@ -145,6 +154,14 @@ import { buildRaisingViewModel } from './ui/raisingModel';
 import type { RaisingView } from './ui/raisingView';
 import { buildRenameViewModel } from './ui/renameModel';
 import type { RenameView } from './ui/renameView';
+import {
+  buildSessionViewModel,
+  SESSION_INITIAL,
+  type SessionEvent,
+  type SessionModelState,
+  sessionStep,
+} from './ui/sessionModel';
+import type { SessionView, SessionViewHandlers } from './ui/sessionView';
 import { buildShopViewModel, buildShopViewModelForShop } from './ui/shopModel';
 import type { ShopView } from './ui/shopView';
 import { reduceErrorMessage } from './ui/statusModel';
@@ -268,6 +285,13 @@ let tradeProposeView: TradeProposeView | undefined;
 let helpView: HelpView | undefined;
 // uxd3 (ADR-0162): the two-level main menu — the 15th mutual-exclusion overlay.
 let menuView: MenuView | undefined;
+// M21b-2 (ADR-0182 D16/D17): the guest-claim overlay (registry GUARD_ONLY) and the
+// session-lifecycle overlay (registry-EXTERNAL, driven by conn.sessionState()), each backed by
+// its pure model state carried at module scope.
+let claimView: ClaimView | undefined;
+let sessionView: SessionView | undefined;
+let claimModelState: ClaimModelState = CLAIM_INITIAL;
+let sessionModelState: SessionModelState = SESSION_INITIAL;
 // m16b: tracks the turn number at the time the player submitted a PvP action.
 // When the server resolves the turn (battle.turnNumber increments beyond this),
 // pvpPendingTurnNumber is cleared and pvpPendingSubmit becomes false.
@@ -313,6 +337,7 @@ const overlayProbes: OverlayProbes = {
   tradeProposeView: () => tradeProposeView?.visible ?? false,
   helpView: () => helpView?.visible ?? false,
   menuView: () => menuView?.visible ?? false,
+  claimView: () => claimView?.visible ?? false,
 };
 // UXD3B-PROBES-END
 
@@ -344,6 +369,7 @@ const overlayHandles: OverlayHandles = {
   tradeProposeView: () => tradeProposeView?.hide(),
   helpView: () => helpView?.hide(),
   menuView: () => menuView?.hide(),
+  claimView: () => claimView?.hide(),
 };
 // UXD3C-HANDLES-END
 
@@ -381,6 +407,54 @@ function characterTileMap(): Map<bigint, { zoneId: number; tileX: number; tileY:
       { zoneId: c.row.zoneId, tileX: c.row.tileX, tileY: c.row.tileY },
     ]),
   );
+}
+
+// M21b-2 (ADR-0182 D17): true while the session terminal (expired / unreachable) owns the
+// screen. sessionView is registry-EXTERNAL, so anyOverlayVisible() cannot see it — this predicate
+// is the ONE SSOT the keydown handler AND the frame loop both consult, checked first on every
+// input path. `hidden` is the ordinary case and must NOT block.
+function sessionGateBlocks(): boolean {
+  const s = conn?.sessionState();
+  return s !== undefined && s !== 'hidden';
+}
+
+// --- M21b-2 (ADR-0182 D16/D17): claim / session model drivers ------------------------------
+function renderSession(): void {
+  sessionView?.render(buildSessionViewModel(sessionModelState));
+}
+
+function applySession(event: SessionEvent): void {
+  const step = sessionStep(sessionModelState, event);
+  sessionModelState = step.next;
+  if (step.effect === 'continue-anonymously') conn?.continueAnonymously();
+  if (step.effect === 'retry-connect') conn?.reconnectNow();
+  renderSession();
+}
+
+function renderClaim(): void {
+  claimView?.render(buildClaimViewModel(claimModelState));
+}
+
+function applyClaim(event: ClaimEvent): void {
+  const step = claimStep(claimModelState, event);
+  claimModelState = step.next;
+  // The AUTHORITATIVE claim-code veto lives in connection.ts's onApplied (G18); here we only mirror
+  // the local storage effect so a declined / dead code stops vetoing the next connection's join.
+  if (step.effect === 'delete-code-and-permit-join') claimCode.clear(globalThis, URI, DB);
+  if (step.effect === 'join') conn?.live()?.reducers.joinGame({ name: 'Player' });
+  renderClaim();
+}
+
+// AUTH-51: "signed in" is store.ownAccount(identity) !== undefined — the row the SERVER wrote —
+// never a storage marker or the credential kind (ADR-0182 D15).
+function openClaim(): void {
+  applyClaim({
+    kind: 'claim-ui-opened',
+    nudgeAlreadySeen: claimCode.hasSeenFirstRunNudge(globalThis, URI, DB),
+  });
+  claimCode.markFirstRunNudgeSeen(globalThis, URI, DB);
+  claimView?.show();
+  renderClaim();
 }
 // --- uxd3 (ADR-0162): the main menu ------------------------------------------------
 //
@@ -463,7 +537,7 @@ function interactAtNearest(): void {
   switch (target.kind) {
     case 'dialogue':
     case 'shop':
-      sendGuarded('talk', () => conn?.conn.reducers.talk({ npcEntityId: target.npcEntityId }));
+      sendGuarded('talk', () => conn?.live()?.reducers.talk({ npcEntityId: target.npcEntityId }));
       break;
     case 'heal':
       boundHealLocationId = target.locationId;
@@ -554,6 +628,9 @@ function activateMenuLeaf(leaf: MenuLeafDef): void {
         break;
       case 'rename':
         openRename();
+        break;
+      case 'account':
+        openClaim();
         break;
       case 'help':
         openHelp();
@@ -882,7 +959,11 @@ function sendIntent(input: WasmMoveInput): void {
   const epoch = intent.epoch;
   lastSentSeq = seq; // nh3 Case-M2 floor: reached only when the reducer call below is issued
   const t0 = performance.now();
-  const sent = conn.conn.reducers.enqueueMove({ input: moveInputToSdk(input), seq: BigInt(seq) });
+  // ADR-0182 D13: conn.conn widened to `DbConnection | undefined`; live() is the guarded read.
+  // Unreachable-undefined given the frozen gate above (G26 invariant), but tsc requires the check.
+  const live = conn.live();
+  if (live === undefined) return;
+  const sent = live.reducers.enqueueMove({ input: moveInputToSdk(input), seq: BigInt(seq) });
   sent
     .then(() => {
       // m20c RTT sample — self-guarded (AM8) so no fault here can reach the rejection handler.
@@ -959,6 +1040,11 @@ const suppressNativeMovementDefault = (e: KeyboardEvent): void => {
 };
 
 window.addEventListener('keydown', (e) => {
+  // M21b-2 (ADR-0182 D17, G20): the session terminal outranks every input path — checked FIRST,
+  // before the menu intercept, the battle-Escape branch and the movement-suppression surface.
+  // Suppress the native default (not a bare return) so a held arrow does not scroll on key-repeat.
+  // biome-ignore format: pinned single-line session gate (main.wiring.test.ts W-M21B2-SESSION-GATE-FIRST).
+  if (sessionGateBlocks()) { suppressNativeMovementDefault(e); return; }
   if (e.repeat) {
     // ignore OS key-repeat (the frame loop re-issues held keys) — but still cancel its default
     suppressNativeMovementDefault(e);
@@ -1182,6 +1268,21 @@ window.addEventListener('keydown', (e) => {
     }
     return;
   }
+  // M21b-2 (ADR-0182 D16/D17, AUTH-48): the account/claim front door. carriesIdentity is FALSE on
+  // purpose — a failed FIRST sign-in has never joined (identity === ''), and the claim overlay
+  // reads store.ownAccount(identity) whose own-identity filter returns undefined for '' (no throw).
+  if (e.code === 'KeyC') {
+    e.preventDefault();
+    if (overlayVerdict('claimView').kind === 'allow') {
+      if (claimView?.visible) {
+        claimView.hide();
+      } else {
+        held.clear();
+        openClaim();
+      }
+    }
+    return;
+  }
   // pt-c1b (ADR-0133 PTC1B-6): Escape closes the rename overlay. Highest priority so a
   // text-input overlay never traps Escape behind another overlay's branch. The rename
   // input's OWN keydown listener also handles Escape while focused (D3-1, stopPropagation'd);
@@ -1249,10 +1350,13 @@ window.addEventListener('keydown', (e) => {
       // The rethrow keeps sendGuarded's catch as the single status reporter.
       sendGuarded('dismiss', () => {
         dismissPending = true;
-        return conn?.conn.reducers.dismissDialogue({}).catch((err: unknown) => {
-          dismissPending = false;
-          throw err;
-        });
+        return conn
+          ?.live()
+          ?.reducers.dismissDialogue({})
+          .catch((err: unknown) => {
+            dismissPending = false;
+            throw err;
+          });
       });
     }
     e.preventDefault();
@@ -1683,11 +1787,14 @@ document.addEventListener('click', (e) => {
       if (!dismissPending) {
         sendGuarded('dismiss', () => {
           dismissPending = true;
-          return conn?.conn.reducers.dismissDialogue({}).catch((err: unknown) => {
-            dismissPending = false;
-            pendingShopId = null;
-            throw err;
-          });
+          return conn
+            ?.live()
+            ?.reducers.dismissDialogue({})
+            .catch((err: unknown) => {
+              dismissPending = false;
+              pendingShopId = null;
+              throw err;
+            });
         });
       }
     }
@@ -1722,7 +1829,7 @@ document.addEventListener('click', (e) => {
   if (raw === undefined) return;
   const choiceIdx = parseInt(raw, 10);
   if (!Number.isNaN(choiceIdx)) {
-    sendGuarded('advance', () => conn?.conn.reducers.advanceDialogue({ choiceIdx }));
+    sendGuarded('advance', () => conn?.live()?.reducers.advanceDialogue({ choiceIdx }));
   }
 });
 
@@ -1810,7 +1917,7 @@ const mrTradeHook = {
     counterpartyItems: { itemId: number; qty: number }[];
     counterpartyCurrency: string;
   }): Promise<void> | undefined {
-    return conn?.conn.reducers.proposeTrade({
+    return conn?.live()?.reducers.proposeTrade({
       counterparty: new Identity(args.counterparty),
       initiatorMonsterIds: args.initiatorMonsterIds.map(BigInt),
       initiatorItems: args.initiatorItems,
@@ -1821,13 +1928,13 @@ const mrTradeHook = {
     });
   },
   respondTrade(tradeId: string, accepted: boolean): Promise<void> | undefined {
-    return conn?.conn.reducers.respondTrade({ tradeId: BigInt(tradeId), accepted });
+    return conn?.live()?.reducers.respondTrade({ tradeId: BigInt(tradeId), accepted });
   },
   confirmTrade(tradeId: string): Promise<void> | undefined {
-    return conn?.conn.reducers.confirmTrade({ tradeId: BigInt(tradeId) });
+    return conn?.live()?.reducers.confirmTrade({ tradeId: BigInt(tradeId) });
   },
   cancelTrade(tradeId: string): Promise<void> | undefined {
-    return conn?.conn.reducers.cancelTrade({ tradeId: BigInt(tradeId) });
+    return conn?.live()?.reducers.cancelTrade({ tradeId: BigInt(tradeId) });
   },
   allTradeOffers(): Array<{
     tradeId: string;
@@ -1863,22 +1970,22 @@ const mrTradeHook = {
 // `--minify false` build would retain it; server-side ctx.sender authz still holds).
 const mrPvpHook = {
   challengePvp(targetHex: string, partyIds: string[]): Promise<void> | undefined {
-    return conn?.conn.reducers.challengePvp({
+    return conn?.live()?.reducers.challengePvp({
       target: new Identity(targetHex),
       partyIds: partyIds.map(BigInt),
     });
   },
   acceptChallenge(challengeId: string, partyIds: string[]): Promise<void> | undefined {
-    return conn?.conn.reducers.acceptChallenge({
+    return conn?.live()?.reducers.acceptChallenge({
       challengeId: BigInt(challengeId),
       partyIds: partyIds.map(BigInt),
     });
   },
   declineChallenge(challengeId: string): Promise<void> | undefined {
-    return conn?.conn.reducers.declineChallenge({ challengeId: BigInt(challengeId) });
+    return conn?.live()?.reducers.declineChallenge({ challengeId: BigInt(challengeId) });
   },
   cancelChallenge(challengeId: string): Promise<void> | undefined {
-    return conn?.conn.reducers.cancelChallenge({ challengeId: BigInt(challengeId) });
+    return conn?.live()?.reducers.cancelChallenge({ challengeId: BigInt(challengeId) });
   },
   submitPvpAction(
     battleId: string,
@@ -1886,7 +1993,7 @@ const mrPvpHook = {
   ): Promise<void> | undefined {
     // The structured-clone boundary erases the PvpAction union type; the cast restores
     // it. An unknown tag would fail BSATN encode/server decode — never a silent no-op.
-    return conn?.conn.reducers.submitPvpAction({
+    return conn?.live()?.reducers.submitPvpAction({
       battleId: BigInt(battleId),
       action: action as PvpAction,
     });
@@ -2029,6 +2136,8 @@ async function main(): Promise<void> {
     { TradeProposeView: TradeProposeViewClass },
     { HelpView: HelpViewClass },
     { MenuView: MenuViewClass },
+    { ClaimView: ClaimViewClass },
+    { SessionView: SessionViewClass },
   ] = await Promise.all([
     import('./ui/boxView'),
     import('./ui/battleView'),
@@ -2045,6 +2154,8 @@ async function main(): Promise<void> {
     import('./ui/tradeProposeView'),
     import('./ui/helpView'),
     import('./ui/menuView'),
+    import('./ui/claimView'),
+    import('./ui/sessionView'),
   ]);
   renderer = new WorldRenderer();
   const mount = document.getElementById('app');
@@ -2053,7 +2164,7 @@ async function main(): Promise<void> {
     installResizeHandler(renderer, window); // fit the stage to the window + on resize
     boxView = new BoxViewClass(mount, {
       onSetNickname: (monsterId, nickname) => {
-        sendGuarded('nickname', () => conn?.conn.reducers.setNickname({ monsterId, nickname }));
+        sendGuarded('nickname', () => conn?.live()?.reducers.setNickname({ monsterId, nickname }));
       },
       onSetPartySlot: (monsterId, slot) => {
         const finalSlot =
@@ -2061,7 +2172,7 @@ async function main(): Promise<void> {
             ? (nextFreePartySlot(store.ownMonsters(identity), PARTY_SIZE) ?? PARTY_SLOT_NONE)
             : slot;
         sendGuarded('party', () =>
-          conn?.conn.reducers.setPartySlot({ monsterId, slot: finalSlot }),
+          conn?.live()?.reducers.setPartySlot({ monsterId, slot: finalSlot }),
         );
       },
       onHealParty: () => {
@@ -2074,25 +2185,27 @@ async function main(): Promise<void> {
         if (locationId === undefined) {
           reportError('heal: no heal location available');
         } else {
-          sendGuarded('heal', () => conn?.conn.reducers.healParty({ locationId }));
+          sendGuarded('heal', () => conn?.live()?.reducers.healParty({ locationId }));
         }
       },
     });
     battleView = new BattleViewClass(mount, {
       onAttack: (battleId, skillId) => {
-        sendGuarded('attack', () => conn?.conn.reducers.submitAttack({ battleId, skillId }));
+        sendGuarded('attack', () => conn?.live()?.reducers.submitAttack({ battleId, skillId }));
       },
       onFlee: (battleId) => {
-        sendGuarded('flee', () => conn?.conn.reducers.flee({ battleId }));
+        sendGuarded('flee', () => conn?.live()?.reducers.flee({ battleId }));
       },
       onSwap: (battleId, teamIndex) => {
-        sendGuarded('swap', () => conn?.conn.reducers.swapActive({ battleId, teamIndex }));
+        sendGuarded('swap', () => conn?.live()?.reducers.swapActive({ battleId, teamIndex }));
       },
       onRecruit: (battleId, baitItemId) => {
-        sendGuarded('recruit', () => conn?.conn.reducers.attemptRecruit({ battleId, baitItemId }));
+        sendGuarded('recruit', () =>
+          conn?.live()?.reducers.attemptRecruit({ battleId, baitItemId }),
+        );
       },
       onUseItem: (battleId, itemId) => {
-        sendGuarded('use-item', () => conn?.conn.reducers.useBattleItem({ battleId, itemId }));
+        sendGuarded('use-item', () => conn?.live()?.reducers.useBattleItem({ battleId, itemId }));
       },
       // m16b: PvP action submission. pvpPendingTurnNumber is set INSIDE the lambda
       // so sendGuarded's frozen-check runs first — a frozen-link click must not
@@ -2101,8 +2214,9 @@ async function main(): Promise<void> {
       onPvpAttack: (battleId, skillId) => {
         sendGuarded('pvp-attack', () => {
           pvpPendingTurnNumber = store.latestPlayerBattle(identity)?.turnNumber ?? null;
-          return conn?.conn.reducers
-            .submitPvpAction({ battleId, action: { tag: 'Attack', value: skillId } })
+          return conn
+            ?.live()
+            ?.reducers.submitPvpAction({ battleId, action: { tag: 'Attack', value: skillId } })
             ?.catch((err: unknown) => {
               pvpPendingTurnNumber = null;
               throw err;
@@ -2112,8 +2226,9 @@ async function main(): Promise<void> {
       onPvpSwap: (battleId, teamIndex) => {
         sendGuarded('pvp-swap', () => {
           pvpPendingTurnNumber = store.latestPlayerBattle(identity)?.turnNumber ?? null;
-          return conn?.conn.reducers
-            .submitPvpAction({ battleId, action: { tag: 'Swap', value: teamIndex } })
+          return conn
+            ?.live()
+            ?.reducers.submitPvpAction({ battleId, action: { tag: 'Swap', value: teamIndex } })
             ?.catch((err: unknown) => {
               pvpPendingTurnNumber = null;
               throw err;
@@ -2123,7 +2238,7 @@ async function main(): Promise<void> {
     });
     raisingView = new RaisingViewClass(mount, {
       onTrain: (monsterId, foodItemId) => {
-        sendGuarded('train', () => conn?.conn.reducers.train({ monsterId, foodItemId }));
+        sendGuarded('train', () => conn?.live()?.reducers.train({ monsterId, foodItemId }));
       },
       // ADR-0159 D1: care used to run through sendGuarded, which attaches ONLY a
       // .catch — a successful care was acknowledged by nothing, and the rejection
@@ -2140,7 +2255,7 @@ async function main(): Promise<void> {
           callCare: () =>
             conn === undefined || conn.linkFrozen()
               ? undefined
-              : conn.conn.reducers.care({ monsterId }),
+              : conn.live()?.reducers.care({ monsterId }),
           // Visibility gate (onBuy/onSell idiom): KeyB/KeyE call
           // raisingView.hide() unconditionally, which clears the feedback
           // line. Without this check a care that settles after the overlay
@@ -2156,7 +2271,7 @@ async function main(): Promise<void> {
       // never resolves an ambiguous evolution itself (EG4-2) — the player picks, and the
       // server re-validates the same gates before applying.
       onEvolve: (monsterId, toSpecies) => {
-        sendGuarded('evolve', () => conn?.conn.reducers.evolve({ monsterId, toSpecies }));
+        sendGuarded('evolve', () => conn?.live()?.reducers.evolve({ monsterId, toSpecies }));
       },
     });
     // M12d: dialogue / quest log / heal DOM shells (ADR-0071).
@@ -2178,7 +2293,7 @@ async function main(): Promise<void> {
           return;
         }
         try {
-          await conn.conn.reducers.buy({ shopId, itemId, qty: SHOP_QTY });
+          await conn.live()?.reducers.buy({ shopId, itemId, qty: SHOP_QTY });
           if (shopView?.visible) shopView.showFeedback('Purchase complete!');
         } catch (err) {
           // ADR-0085 A6: route through reduceErrorMessage — SenderError reasons pass
@@ -2193,7 +2308,7 @@ async function main(): Promise<void> {
           return;
         }
         try {
-          await conn.conn.reducers.sell({ itemId, qty: SHOP_QTY });
+          await conn.live()?.reducers.sell({ itemId, qty: SHOP_QTY });
           if (shopView?.visible) shopView.showFeedback('Sale complete!');
         } catch (err) {
           if (shopView?.visible) shopView.showFeedback(reduceErrorMessage(err, 'sell'));
@@ -2210,7 +2325,7 @@ async function main(): Promise<void> {
           return;
         }
         try {
-          await conn.conn.reducers.respondTrade({ tradeId, accepted: true });
+          await conn.live()?.reducers.respondTrade({ tradeId, accepted: true });
           if (tradeView?.visible) tradeView.showFeedback('Trade accepted!');
         } catch (err) {
           if (tradeView?.visible) tradeView.showFeedback(reduceErrorMessage(err, 'respond-trade'));
@@ -2222,7 +2337,7 @@ async function main(): Promise<void> {
           return;
         }
         try {
-          await conn.conn.reducers.respondTrade({ tradeId, accepted: false });
+          await conn.live()?.reducers.respondTrade({ tradeId, accepted: false });
           if (tradeView?.visible) tradeView.showFeedback('Trade rejected.');
         } catch (err) {
           if (tradeView?.visible) tradeView.showFeedback(reduceErrorMessage(err, 'respond-trade'));
@@ -2234,7 +2349,7 @@ async function main(): Promise<void> {
           return;
         }
         try {
-          await conn.conn.reducers.confirmTrade({ tradeId });
+          await conn.live()?.reducers.confirmTrade({ tradeId });
           if (tradeView?.visible) tradeView.showFeedback('Trade complete!');
         } catch (err) {
           if (tradeView?.visible) tradeView.showFeedback(reduceErrorMessage(err, 'confirm-trade'));
@@ -2246,7 +2361,7 @@ async function main(): Promise<void> {
           return;
         }
         try {
-          await conn.conn.reducers.cancelTrade({ tradeId });
+          await conn.live()?.reducers.cancelTrade({ tradeId });
           if (tradeView?.visible) tradeView.showFeedback('Trade cancelled.');
         } catch (err) {
           if (tradeView?.visible) tradeView.showFeedback(reduceErrorMessage(err, 'cancel-trade'));
@@ -2262,7 +2377,7 @@ async function main(): Promise<void> {
           .filter((m) => m.partySlot !== PARTY_SLOT_NONE)
           .map((m) => m.monsterId);
         sendGuarded('pvp-challenge', () =>
-          conn?.conn.reducers.challengePvp({ target: new Identity(targetIdentity), partyIds }),
+          conn?.live()?.reducers.challengePvp({ target: new Identity(targetIdentity), partyIds }),
         );
       },
       onAccept: (challengeId) => {
@@ -2271,14 +2386,14 @@ async function main(): Promise<void> {
           .filter((m) => m.partySlot !== PARTY_SLOT_NONE)
           .map((m) => m.monsterId);
         sendGuarded('pvp-accept', () =>
-          conn?.conn.reducers.acceptChallenge({ challengeId, partyIds }),
+          conn?.live()?.reducers.acceptChallenge({ challengeId, partyIds }),
         );
       },
       onDecline: (challengeId) => {
-        sendGuarded('pvp-decline', () => conn?.conn.reducers.declineChallenge({ challengeId }));
+        sendGuarded('pvp-decline', () => conn?.live()?.reducers.declineChallenge({ challengeId }));
       },
       onCancel: (challengeId) => {
-        sendGuarded('pvp-cancel', () => conn?.conn.reducers.cancelChallenge({ challengeId }));
+        sendGuarded('pvp-cancel', () => conn?.live()?.reducers.cancelChallenge({ challengeId }));
       },
     });
     // m17b: leaderboard DOM shell (ADR-0120). ZERO-arg construction — RL-15: the
@@ -2290,6 +2405,43 @@ async function main(): Promise<void> {
     // uxd3 (ADR-0162): the menu forwards every input to the pure menuStep reducer; it
     // decides nothing itself (ADR-0014 functional core / imperative shell).
     menuView = new MenuViewClass({ onInput: handleMenuInput });
+    // M21b-2 (ADR-0182 D16): the guest-claim overlay. Its actions drive the pure claimModel;
+    // the AUTHORITATIVE join veto lives in connection.ts's onApplied (G18), so these are UI-only.
+    const claimHandlers: ClaimViewHandlers = {
+      onSignIn: () => {
+        conn?.startSignIn();
+      },
+      onJoin: () =>
+        applyClaim({
+          kind: 'join-requested',
+          hasLiveConnection: conn !== undefined && !conn.linkFrozen(),
+        }),
+      onDeclineRequested: () => applyClaim({ kind: 'decline-requested' }),
+      onDeclineConfirmed: () =>
+        applyClaim({
+          kind: 'decline-confirmed',
+          hasLiveConnection: conn !== undefined && !conn.linkFrozen(),
+        }),
+      onDeclineCancelled: () => applyClaim({ kind: 'decline-cancelled' }),
+    };
+    claimView = new ClaimViewClass(claimHandlers);
+    // M21b-2 (ADR-0182 D17): the session-lifecycle overlay (registry-external). Its actions drive
+    // the pure sessionModel; a confirmed continue-anonymously routes to conn.continueAnonymously().
+    const sessionHandlers: SessionViewHandlers = {
+      onContinueRequested: () => applySession({ kind: 'continue-anonymously-requested' }),
+      onContinueConfirmed: () =>
+        applySession({
+          kind: 'continue-anonymously-confirmed',
+          hasLiveConnection: conn !== undefined && !conn.linkFrozen(),
+        }),
+      onConfirmCancelled: () => applySession({ kind: 'confirm-cancelled' }),
+      onRetry: () =>
+        applySession({
+          kind: 'retry-requested',
+          hasLiveConnection: conn !== undefined && !conn.linkFrozen(),
+        }),
+    };
+    sessionView = new SessionViewClass(sessionHandlers);
     // pt-c1b (ADR-0133): rename overlay. onSubmit calls set_profile_name (ADR-0132) with the
     // frozen-link gate FIRST (ADR-0085 A1) — never send on a dead link. Feedback goes into
     // #rename-feedback via reduceErrorMessage on reject (no InternalError leak, PTC1B-4);
@@ -2302,7 +2454,7 @@ async function main(): Promise<void> {
           return;
         }
         try {
-          await conn.conn.reducers.setProfileName({ name });
+          await conn.live()?.reducers.setProfileName({ name });
           if (renameView?.visible) renameView.showFeedback('Name updated!');
         } catch (err) {
           if (renameView?.visible) {
@@ -2324,7 +2476,7 @@ async function main(): Promise<void> {
           return;
         }
         try {
-          await conn.conn.reducers.proposeTrade({
+          await conn.live()?.reducers.proposeTrade({
             counterparty: new Identity(args.targetIdentity),
             initiatorMonsterIds: [...args.initiatorMonsterIds],
             initiatorItems: [],
@@ -2398,6 +2550,11 @@ async function main(): Promise<void> {
     db: DB,
     name: 'Player',
     store,
+    // M21b-2 (ADR-0182 D11/D12): OIDC config from env. The `?? ''` fallback degrades gracefully
+    // today (no issuer → the flow contacts no network, AUTH-44) and lights up once 13r-c-2 deploys.
+    authIssuer: import.meta.env.VITE_MR_OIDC_ISSUER ?? '',
+    authClientId: import.meta.env.VITE_MR_OIDC_CLIENT_ID ?? '',
+    authRedirectUri: import.meta.env.VITE_MR_OIDC_REDIRECT_URI ?? '',
     // ADR-0157: undefined unless VITE_MR_DEVLOG is set — then the connection installs the
     // outbound-log Proxy. Bare identifier by design (no inline sink: the ring must stay
     // unreachable from the send path).
@@ -2407,6 +2564,8 @@ async function main(): Promise<void> {
       // pt-b1: record the connect edge (identity-hex is the allowed field, U-3).
       eventRing.push(makeConnect(identity));
       resolveReady();
+      // M21b-2 (ADR-0182 D17): a successful connection clears any session terminal overlay.
+      applySession({ kind: 'connected' });
     },
     onReconnect: () => {
       // Clean re-init: the store already dropped stale rows; rebuild prediction and
@@ -2450,6 +2609,8 @@ async function main(): Promise<void> {
       clearStatus();
       // pt-b1: record the reconnect edge as a fresh connect (retained module identity).
       eventRing.push(makeConnect(identity));
+      // M21b-2 (ADR-0182 D17): a successful reconnect clears any session terminal overlay.
+      applySession({ kind: 'connected' });
     },
     // 12.5c-1: onOwnWarp delegates to switchZone (idempotent — no-op if rawMap
     // already matches). Fires on live-warp character onUpdate (lower latency path);
@@ -2467,6 +2628,31 @@ async function main(): Promise<void> {
       // values (which fire for non-link failures too).
       if (where === 'link') eventRing.push(makeDisconnect());
     },
+    // M21b-2 (ADR-0182 D17): the session-lifecycle terminals drive the registry-external overlay.
+    onSessionExpired: () => applySession({ kind: 'session-expired' }),
+    onAuthServiceUnreachable: () => applySession({ kind: 'auth-service-unreachable' }),
+    // AUTH-48: a failed FIRST sign-in routes to the claim UI (never the session overlay).
+    onSignInFailed: (reason) => {
+      applyClaim({ kind: 'sign-in-failed', reason });
+      claimView?.show();
+      renderClaim();
+    },
+    // M21b-2 (ADR-0182 D16): the reconnect-triggered guest-claim lifecycle.
+    onClaimPending: (code) => applyClaim({ kind: 'claim-pending', code }),
+    onClaimAwaitingAccount: () => applyClaim({ kind: 'claim-awaiting-account' }),
+    onClaimResult: (result) => {
+      if (result.ok) {
+        applyClaim({ kind: 'claim-succeeded' });
+        return;
+      }
+      // AUTH-51 / D15: the ONLY authoritative "am I signed in" signal is store.ownAccount(identity),
+      // the row the SERVER wrote — its claimedFrom disambiguates ERR_INVALID_CODE (ADR-0182 D16).
+      applyClaim({
+        kind: 'claim-rejected',
+        message: result.message,
+        claimedFrom: store.ownAccount(identity)?.claimedFrom,
+      });
+    },
   });
 
   // 12.5c-4: frame loop is wrapped in try/catch so a wasm/predictor throw does not
@@ -2474,6 +2660,10 @@ async function main(): Promise<void> {
   // on error. The reconcile call is inside the batch-listener's try-catch (above).
   const frame = (): void => {
     try {
+      // M21b-2 (ADR-0182 D17, G20b): the session terminal also outranks the render/dispatch loop —
+      // skip this frame's held-key re-issue so the predictor never ghost-walks into a dead link.
+      // The rAF re-arm lives in this loop's finally, so an early return skips work, not the loop.
+      if (sessionGateBlocks()) return;
       const now = performance.now();
       // nh2 (ADR-0148 R1): drain BEFORE the continuation re-issue, so a step emitted below is
       // never drained by the frame that issued it. This is a RESIDUAL fix, not the primary one:

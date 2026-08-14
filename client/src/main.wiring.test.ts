@@ -5170,12 +5170,18 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
       stripLineComments(regionOrThrow(src, UXD3B_PROBES_BEGIN, UXD3B_PROBES_END)),
     );
 
-    // ANTI-VACUITY, ASSERTED FIRST: a real, non-degenerate region over the real 15-id manifest.
+    // ANTI-VACUITY, ASSERTED FIRST: a real, non-degenerate region over the real 16-id manifest.
+    // M21b-2 (ADR-0182 D17 / G19): 15 -> 16 as `claimView` joins the manifest. The per-id loop
+    // below is a STATIC import of OVERLAY_IDS, so it grows on its own — which means main.ts
+    // must gain the byte-identical probe entry `claimView: () => claimView?.visible ?? false,`
+    // inside the UXD3B-PROBES markers, in OVERLAY_IDS declaration order. That is exactly the
+    // bidirectionality this tooth's own WRONG IMPL KILLED (7) describes: a 16th manifest member
+    // with no probe entry reds HERE, automatically, with no edit to this file.
     expect(
       OVERLAY_IDS.length,
-      'the imported manifest must hold 15 overlays (anti-vacuity: a shrunken manifest would ' +
+      'the imported manifest must hold 16 overlays (anti-vacuity: a shrunken manifest would ' +
         'make the per-id loop below trivially satisfiable by an under-wired table)',
-    ).toBe(15);
+    ).toBe(16);
     expect(
       region.includes('overlayProbes'),
       'ANTI-VACUITY: the marked region must actually contain the `overlayProbes` declaration — ' +
@@ -5599,7 +5605,8 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): the AC-12 click front door is a 
 // ===========================================================================
 
 describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes through canOpen() (replaces W-OVERLAY-FANOUT-MUTEX)', () => {
-  // The SAME 12 open-handler anchors W-OVERLAY-FANOUT-MUTEX uses, plus the Escape sentinel, feed
+  // The SAME 12 open-handler anchors W-OVERLAY-FANOUT-MUTEX uses — plus M21b-2's KeyC claim
+  // front door, 13 in total — and the Escape sentinel, feed
   // the SAME order-independent block-slicer (main.wiring.test.ts, the W-OVERLAY-FANOUT-MUTEX
   // idiom): slice each handler from its own anchor to the MINIMUM forward indexOf of every OTHER
   // anchor (or the Escape sentinel), so handler ORDER in main.ts can change without breaking this
@@ -5813,6 +5820,53 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
   }
   if (`,
     },
+    // ★ M21b-2 (ADR-0182 D16/D17, spec AUTH-48/52/54-56/59-60): the 13th open handler.
+    //
+    // WHY KeyC IS A DIRECT HOTKEY AND NOT ONLY A MENU LEAF (plan ADDENDUM §D/§E, binding):
+    // the claim flow's whole point is reachable in the moment a player decides to keep their
+    // guest progress, and the menu front door (KeyM) carries `identity !== ''` — it is dead
+    // before join. The claim overlay must be openable in exactly the states where the menu is
+    // not, which is why this entry's `carriesIdentity` is FALSE.
+    //
+    // carriesIdentity: FALSE, and it is load-bearing, not an omission. B7(b)'s census asserts
+    // this in BOTH directions, so adding `&& identity !== ''` here would red — deliberately:
+    //   • AUTH-48 routes a FAILED FIRST SIGN-IN to this overlay. A first-time claim-flow
+    //     redirect whose exchange fails has, by construction, never joined, so `identity` is
+    //     still `''` and an identity-gated handler would be a dead key precisely when the
+    //     player most needs the feedback.
+    //   • it is SAFE, unlike the KeyO/KeyT/KeyM cases the census exists for: those gate
+    //     because `store.ownCharacter(identity)` is consulted pre-join inside an uncaught
+    //     window listener. The claim overlay reads `store.ownAccount(identity)`, whose
+    //     own-identity filter returns `undefined` for `''` (store.ts's ownWallet idiom) —
+    //     a defined value, not a throw.
+    //
+    // SHAPE: copied from the KeyN/'?'/KeyM family (preventDefault FIRST, then the verdict,
+    // then toggle-or-open with `held.clear()` before opening) because claimView owns a TEXT
+    // INPUT: without `held.clear()` a movement key still held at open time keeps re-issuing
+    // Steps under the overlay while the player types their code.
+    //
+    // PLACEMENT: immediately after KeyM and before the first Escape branch. That position is
+    // what keeps KeyM's `expectedRaw` above byte-identical (its block still ends at the next
+    // `  if (`), and it makes this entry's own boundary residue the same `  if (` every other
+    // entry carries — the slicer's blockEnd lands on the Escape sentinel.
+    {
+      anchor: "e.code === 'KeyC'",
+      selfAnchor: "'claimView'",
+      carriesIdentity: false,
+      expectedRaw: `e.code === 'KeyC') {
+    e.preventDefault();
+    if (overlayVerdict('claimView').kind === 'allow') {
+      if (claimView?.visible) {
+        claimView.hide();
+      } else {
+        held.clear();
+        openClaim();
+      }
+    }
+    return;
+  }
+  if (`,
+    },
   ] as const;
 
   it('★ W-UXD3C-OPENGUARDS-ROUTE-THROUGH-CANOPEN BITES: each handler EQUALS its exact post-migration body — replaces W-OVERLAY-FANOUT-MUTEX', () => {
@@ -5829,7 +5883,7 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
     // there is no room left for a wrong view, a dead wrapper or an early return without changing
     // the string.
     //
-    // ADJUDICATION B2 (kills red-team F2): expectUniqueAnchor on ALL 12 anchors. The reused
+    // ADJUDICATION B2 (kills red-team F2): expectUniqueAnchor on ALL 13 anchors. The reused
     // slicer does `src.indexOf(anchor)` — first occurrence only. A duplicate EARLIER shadow block
     // (e.g. a stray `if (e.code === 'KeyB') { e.preventDefault(); return; }` copy-pasted above the
     // real handler) is invisible to a slice that spans both blocks; the needle is still found
@@ -5840,7 +5894,9 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
     //
     // ADJUDICATION B7 clause (b): the identity census — `block.includes("identity !== ''") ===
     // carriesIdentity`, asserted as an EQUALITY IN BOTH DIRECTIONS. Carries it: KeyO, KeyT, KeyM.
-    // Does not: KeyB/I/E/Q/U/P/L/N/'?'. Kept independently of the equality check above (the
+    // Does not: KeyB/I/E/Q/U/P/L/N/'?' and (M21b-2) KeyC — see the reasoning at that entry: the
+    // claim overlay must be reachable BEFORE join, because AUTH-48 routes a failed first
+    // sign-in to it. Kept independently of the equality check above (the
     // file's own "state it independently, don't just derive it" precedent — UXD3_KEYM_SIBLINGS)
     // despite being formally redundant with it: its failure mode (a pre-join
     // `store.ownCharacter(identity)` throw inside an uncaught listener) is silent, and it costs
@@ -5930,7 +5986,11 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
 
       handlersChecked += 1;
     }
-    expect(handlersChecked, 'ANTI-VACUITY: all 12 open-handlers must have been exercised').toBe(12);
+    expect(
+      handlersChecked,
+      'ANTI-VACUITY: all 13 open-handlers must have been exercised (M21b-2: 12 -> 13 with the ' +
+        'KeyC claim front door)',
+    ).toBe(13);
   });
 });
 
@@ -5953,7 +6013,12 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): the force-hide handle table mirr
     );
 
     // ANTI-VACUITY, ASSERTED FIRST.
-    expect(OVERLAY_IDS.length, 'the imported manifest must hold 15 overlays').toBe(15);
+    // M21b-2 (ADR-0182 D17 / G19): 15 -> 16 as `claimView` joins the manifest. The per-id loop
+    // below is driven by the STATIC OVERLAY_IDS import, so main.ts must gain the byte-identical
+    // hide thunk `claimView: () => claimView?.hide(),` inside the UXD3C-HANDLES markers — a
+    // manifest member with no handle entry reds here automatically. claimView is NOT a
+    // NEVER_FORCE_HIDE member (only dialogueView is), so it gets a real thunk, not `undefined`.
+    expect(OVERLAY_IDS.length, 'the imported manifest must hold 16 overlays').toBe(16);
     expect(
       NEVER_FORCE_HIDE.length,
       'the imported NEVER_FORCE_HIDE must hold exactly 1 member',
@@ -6014,10 +6079,10 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): the force-hide handle table mirr
 
     expect(
       countOccurrences(region, '?.hide(),'),
-      'the handle table must contain EXACTLY 14 `?.hide(),` thunks — one per non-dialogue ' +
-        'manifest member. A different count means an id was smuggled in, dropped, or given a ' +
-        'malformed thunk.',
-    ).toBe(14);
+      'the handle table must contain EXACTLY 15 `?.hide(),` thunks — one per non-dialogue ' +
+        'manifest member (M21b-2/G19: 14 -> 15 with claimView). A different count means an id ' +
+        'was smuggled in, dropped, or given a malformed thunk.',
+    ).toBe(OVERLAY_IDS.length - NEVER_FORCE_HIDE.length);
     expect(
       region.includes('...'),
       'the handle table must be a FLAT object literal with no `...` spread — a spread source ' +
@@ -9200,5 +9265,636 @@ describe('★ main.ts wiring (13r-c): stripLineComments has NO string-literal aw
         "websocket-URL literal's own `//` truncated the DEV_URI line before the address, exactly " +
         'the live-in-tree proof this slice was scoped around.',
     ).toBe(true);
+  });
+});
+
+// ===========================================================================
+// M21b-2 (ADR-0182 D15/D17, gates G20 + G29) — the session terminal outranks every
+// input path, and "am I signed in?" has exactly ONE answer in main.ts.
+//
+// SOURCE OF TRUTH: docs/adr/0182-…md D17 (sessionView is registry-EXTERNAL, driven
+// directly by `conn?.sessionState()`, "checked first, unconditionally") and D15's
+// reconciliation rule (`store.ownAccount(identity) !== undefined` is the SOLE
+// authoritative signal), plus memory/projects/monster-realm-M21b-2-plan.md §3
+// G20/G29 and its ADDENDUM §C F1.
+//
+// RED REASON: `sessionGateBlocks`, `sessionState`, `claimView` and `store.ownAccount`
+// all occur ZERO times in main.ts today. G20 fails on a missing anchor (a THROW out
+// of expectUniqueAnchor — a hard red, never a vacuous pass); G29's positive control
+// fails on the missing `store.ownAccount(` call.
+// ===========================================================================
+
+/** ★ THE M21b-2 SESSION-GATE CONTRACT — the implementer builds to THESE two literals.
+ *
+ *  main.ts gains a module-scope predicate declared alongside `anyOverlayVisible()`:
+ *      function sessionGateBlocks(): boolean { … conn?.sessionState() … }
+ *  returning true exactly while the session overlay owns the screen (D17's `expired` /
+ *  `unreachable`; `hidden` is the ordinary case and must NOT block).
+ *
+ *  WHY A NAMED PREDICATE RATHER THAN AN INLINE `conn?.sessionState() !== 'hidden'`:
+ *   • ONE SSOT with TWO consumers. D17 requires the check in main.ts's dispatch/render
+ *     loop AND in the keydown handler; an inline expression duplicated at two sites is
+ *     two policies, and the render-loop copy is the one nobody notices drifting.
+ *   • It gives this scan a unique anchor. An inline `conn?.sessionState()` expression
+ *     legitimately appears wherever the session VIEW is rendered, so it cannot anchor an
+ *     ordering assertion.
+ *   • It mirrors `anyOverlayVisible()`, the file's existing "one predicate, many
+ *     surfaces" shape, so the two gates read as one family rather than two idioms.
+ *
+ *  The keydown call site is spelled with `suppressNativeMovementDefault(e)` — NOT a bare
+ *  `return;` — because it is a THIRD early-return path in the same listener as nh1's two,
+ *  and W-NH1-REPEAT exists precisely because a half-fix wired suppression into one early
+ *  return and not the other: an arrow key held while the session overlay is up would
+ *  otherwise scroll the page on every OS key-repeat tick (ADR-0146). */
+const M21B2_SESSION_GATE_DECL = 'function sessionGateBlocks(): boolean {';
+const M21B2_SESSION_GATE_CALL =
+  'if (sessionGateBlocks()) { suppressNativeMovementDefault(e); return; }';
+
+/**
+ * STRING-LITERAL-AWARE occurrence finder for main.ts scans (coordinator review items 2/3).
+ *
+ * m20cScan strips comments but PRESERVES string/template-literal text as code, so a bare
+ * expectUniqueAnchor / indexOf on `m20cScan(...).code` is satisfied by an inert decoy such as
+ *     const _x = "if (sessionGateBlocks()) { suppressNativeMovementDefault(e); return; }";
+ * parked before the menu/battle branches while the keydown listener never actually gates.
+ * `mwCodeOccurrences` returns the start index of every occurrence whose START is in CODE — not
+ * inside a '…'/"…"/`…` literal — via a single quote-state-aware pass (backslash-escape-aware;
+ * an unescaped newline ends a '…'/"…"). It is the main.wiring twin of connection.test.ts's
+ * `codeOccurrences`; each file carries its own copy, as the file convention already does for
+ * stripLineComments / countOccurrences. NO `new RegExp`.
+ */
+function mwCodeOccurrences(code: string, needle: string): number[] {
+  const out: number[] = [];
+  let mode = 0; // 0 code, 1 ' , 2 " , 3 `
+  for (let i = 0; i < code.length; i += 1) {
+    const ch = code.charAt(i); // charAt (not [i]) — always string, like m20cScan
+    if (mode === 0) {
+      if (ch === "'") mode = 1;
+      else if (ch === '"') mode = 2;
+      else if (ch === '`') mode = 3;
+      else if (code.startsWith(needle, i)) out.push(i);
+    } else {
+      if (ch === '\\') {
+        i += 1;
+        continue;
+      }
+      const closer = mode === 1 ? "'" : mode === 2 ? '"' : '`';
+      if (ch === closer) mode = 0;
+      else if (mode !== 3 && ch === '\n') mode = 0;
+    }
+  }
+  return out;
+}
+
+describe('★ main.ts wiring (M21b-2/ADR-0182 D17, G20): W-M21B2-SESSION-GATE-FIRST — the session terminal outranks every keydown dispatch', () => {
+  it('★ BITES: the session gate is a unique anchor inside the keydown listener and precedes the menu intercept, the battle-Escape branch and the movement-suppression surface', () => {
+    // THE MUTANT G20 IS NAMED FOR: the gate placed BELOW the battle-Escape branch. The player's
+    // session has expired (their JWT is dead; every reducer the server accepts is now being
+    // rejected), the session overlay is up telling them so — and Escape, which the muscle
+    // memory of every other overlay says will dismiss it, instead falls through to
+    // `battleView.hide()` and dismisses the BATTLE, leaving the session overlay painted over a
+    // battle the player can no longer act in. `sessionView` is registry-EXTERNAL (D17), so
+    // NOTHING else in this file can see that: `anyOverlayVisible()` iterates OVERLAY_IDS and
+    // returns FALSE while the session overlay is on screen.
+    //
+    // WRONG IMPL KILLED (a) ★ NAMED: the gate below `if (menuView?.visible) {`. The menu
+    //   intercept swallows arrows/Enter and routes them into menuStep, so an expired session
+    //   would leave the player navigating a menu whose every leaf opens an overlay backed by
+    //   a connection that is gone.
+    // WRONG IMPL KILLED (b) ★ NAMED: the gate below the battle-Escape branch (above).
+    // WRONG IMPL KILLED (c): the gate below surface 3's movement-suppression block — movement
+    //   keys would reach KEY_DIR and the predictor would keep issuing Steps into a dead link.
+    // WRONG IMPL KILLED (d): the gate hoisted OUT of the keydown listener entirely (e.g. into
+    //   the frame loop only). The region-membership assertion below sees it. D17 requires the
+    //   check in BOTH places; this tooth pins the keydown one, which is the one with an
+    //   ordering that can be got wrong.
+    // WRONG IMPL KILLED (e): the predicate stubbed inert — `return false;`. The declaration
+    //   region must actually consult `conn?.sessionState()`.
+    //
+    // ★ NAMED RESIDUAL — WHAT THIS TOOTH DELIBERATELY DOES NOT ASSERT, and why. The plan's §3
+    // G20 row asks for `S < the index of EACH of the five anyOverlayVisible fan-out surfaces`.
+    // Two of those comparisons are UNSATISFIABLE and one is meaningless, and writing them
+    // would have produced a gate no correct implementation can pass:
+    //   • surface 1 (`function anyOverlayVisible(`, main.ts:368) and surface 2 (the reconcile
+    //     divergence emitter, :810) both sit ABOVE the keydown listener (:961). No statement
+    //     inside that listener can precede them in file order.
+    //   • surfaces 2 and 5 (the two movement RE-ISSUE paths) are pinned BYTE-FOR-BYTE by
+    //     W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY-ROUTES with CLOSE-PAREN-BOUNDED needles
+    //     (`…&& !anyOverlayVisible()) {`), and surface 1 by EXACT EQUALITY. Folding a session
+    //     conjunct into any of them REDS those pre-existing teeth. The two requirements are
+    //     therefore in direct contradiction, and the pre-existing teeth win.
+    //   • surface 4 (the pvp batch listener) is EXEMPT BY NAME: it is not an input path at
+    //     all. It repaints an overlay in response to a server-pushed challenge, and a repaint
+    //     while the session terminal is up is harmless — the overlay is behind it and every
+    //     action it offers routes through sendGuarded()/live(), which G26 pins to a parked
+    //     `current`.
+    // THE RESIDUAL THIS LEAVES OPEN, stated rather than hidden: a movement key ALREADY HELD
+    // when the session expires can still be re-issued by surfaces 2 and 5, because those
+    // surfaces read `anyOverlayVisible()` and sessionView is registry-external. The keydown
+    // gate below stops NEW input, not in-flight held keys. Closing it belongs to whoever
+    // owns the held-key set at the transition (a `held.clear()` on the session transition is
+    // the obvious shape) and is NOT pinned here — because pinning it would require editing
+    // one of the byte-for-byte surface teeth this slice is required to carry forward
+    // unmodified. Escalate rather than silently widen.
+    //
+    // All five surface anchors are asserted to RESOLVE (>= 0) first regardless (addendum §C
+    // F1): a renamed or deleted surface is then a hard red here too, not a vacuous pass.
+    const src = readMainTs();
+    const code = m20cScan(src).code;
+
+    // --- (1) the gate exists, once, AS CODE, and is not inert --------------------------
+    // ★ CODE-AWARE (coordinator review item 2): expectUniqueAnchor runs on string-PRESERVING
+    // `code`, so a decoy string literal carrying the gate call's text before the menu/battle
+    // branches would pass while the keydown listener never gated. mwCodeOccurrences excludes a
+    // decoy whose start sits inside a literal, so the anchor and every ordering index below are
+    // the REAL statements.
+    const declHits = mwCodeOccurrences(code, M21B2_SESSION_GATE_DECL);
+    const gateHits = mwCodeOccurrences(code, M21B2_SESSION_GATE_CALL);
+    expect(
+      declHits.length,
+      `sessionGateBlocks must be declared EXACTLY once AS CODE — \`${M21B2_SESSION_GATE_DECL}\``,
+    ).toBe(1);
+    expect(
+      gateHits.length,
+      'the session gate call `' +
+        M21B2_SESSION_GATE_CALL +
+        '` must occur EXACTLY once AS CODE — a decoy string literal of this text must not ' +
+        'satisfy the anchor while the real keydown listener never gates (coordinator review 2)',
+    ).toBe(1);
+    const declIdx = declHits[0]!;
+    const gateIdx = gateHits[0]!;
+
+    // The predicate must actually read the connection's session state. This is the ONLY
+    // structural defence against `return false;` (main.ts is coverage-excluded, so no test in
+    // this repo can execute it) — and it is a floor, not a proof: see the residual note above.
+    const declEnd = code.indexOf('\n}', declIdx);
+    expect(
+      declEnd,
+      'sessionGateBlocks must be a block-bodied function declaration whose closing brace is at ' +
+        'column 0 (module scope) — if this fails, the predicate is nested somewhere the ordering ' +
+        'assertions below cannot reason about',
+    ).toBeGreaterThan(declIdx);
+    const declBody = code.slice(declIdx, declEnd);
+    expect(
+      declBody.includes('conn?.sessionState()'),
+      'sessionGateBlocks must consult `conn?.sessionState()` (ADR-0182 D17) — a predicate that ' +
+        'does not read the session state is either inert (`return false;`, so the terminal ' +
+        'never blocks anything) or a constant blocker (`return true;`, which kills ALL input ' +
+        `for every player). Body=${JSON.stringify(declBody)}`,
+    ).toBe(true);
+    expect(
+      countOccurrences(declBody, 'return true;'),
+      'sessionGateBlocks must not unconditionally return true — that suppresses every keydown ' +
+        'in the game for every player, anonymous ones included',
+    ).toBe(0);
+
+    // --- (2) the call site lives INSIDE the keydown listener (code-aware) --------------
+    const keydownIdx = mwCodeOccurrences(code, "window.addEventListener('keydown'")[0] ?? -1;
+    const keyupIdx = mwCodeOccurrences(code, "window.addEventListener('keyup'")[0] ?? -1;
+    expect(keydownIdx, 'main.ts must register the keydown listener').toBeGreaterThanOrEqual(0);
+    expect(
+      keyupIdx,
+      'main.ts must register the keyup listener — it is this region`s right-hand fence',
+    ).toBeGreaterThan(keydownIdx);
+    expect(
+      gateIdx,
+      'the session gate must be called INSIDE the keydown listener (ADR-0182 D17: "checked ' +
+        'first, unconditionally, in main.ts`s dispatch/render loop and its own keydown ' +
+        'handler"). A gate that exists only in the frame loop leaves every hotkey live while ' +
+        'the session terminal is on screen',
+    ).toBeGreaterThan(keydownIdx);
+    expect(gateIdx, 'the session gate must sit BEFORE the keyup listener').toBeLessThan(keyupIdx);
+
+    // --- (3) ANTI-VACUITY: every compared anchor resolves BEFORE any ordering is judged --
+    // Split into two loops so RAW-src and comment-stripped-`code` indices are NEVER mixed:
+    //
+    //  (3a) the THREE ORDERED anchors — all real CODE, resolved in `code`. Their indices feed
+    //       the ordering in (4) and must be comparable with the code-index `gateIdx`.
+    //  (3b) the FOUR NON-ORDERED surface anchors (surfaces 1/2/4/5) — anti-vacuity ONLY. Two of
+    //       them (`NH2_RECONCILE_START` at main.ts:810, `NH2_RAF_START` at :2486) are COMMENT
+    //       phrases W-FANOUT anchors on RAW `src`; in the comment-stripped `code` they do not
+    //       exist. They are therefore resolved on RAW `src` here — presence only, never compared
+    //       against a code index.
+    //
+    // ⚠ Surface 3 is the one exception: its own W-FANOUT anchor `UXD3_SUPPRESS_START` is ALSO a
+    // comment phrase (main.ts:1392 `// Suppress movement input while an overlay is open.`), but
+    // surface 3 IS ordered against, so it needs a CODE anchor. It is the suppression block's
+    // guard `if (anyOverlayVisible()) {` — EXACTLY ONE code occurrence (main.ts:1393); the
+    // 818/1223/1573 sites are negated/compound `!anyOverlayVisible()` forms that do not match the
+    // bare positive-`{` needle. UXD3_SUPPRESS_START is left untouched where W-FANOUT (test:4981)
+    // uses it on raw source.
+    const MENU_INTERCEPT = 'if (menuView?.visible) {';
+    const BATTLE_ESCAPE = "if (e.code === 'Escape' && battleView?.visible) {";
+    const SURFACE3_SUPPRESS_CODE = 'if (anyOverlayVisible()) {';
+
+    // Code-aware first index (a surface surviving only as a decoy string must not count as
+    // "resolved"). -1 when the anchor is absent from code.
+    const codeIdx = (anchor: string): number => mwCodeOccurrences(code, anchor)[0] ?? -1;
+
+    // (3a) ORDERED anchors — resolve AS CODE.
+    const orderedAnchors: readonly (readonly [string, string])[] = [
+      [MENU_INTERCEPT, 'the uxd3 menu-nav intercept (ordered against below)'],
+      [BATTLE_ESCAPE, 'the battle Escape branch (ordered against below)'],
+      [
+        SURFACE3_SUPPRESS_CODE,
+        'fan-out surface 3, the keydown suppression block guard (ordered below)',
+      ],
+    ];
+    for (const [anchor, label] of orderedAnchors) {
+      expect(
+        codeIdx(anchor),
+        `ANTI-VACUITY: the anchor for ${label} must still resolve AS CODE in main.ts. A renamed ` +
+          'or deleted surface must red HERE rather than silently removing a clause from this ' +
+          `gate. Anchor=${JSON.stringify(anchor)}`,
+      ).toBeGreaterThanOrEqual(0);
+    }
+
+    // (3b) NON-ORDERED surface anchors — presence on RAW `src` (their canonical W-FANOUT anchors,
+    // some of which are comment phrases). A renamed/deleted surface reds here too; these indices
+    // are NEVER compared against the code-index ordering below.
+    const nonOrderedSurfaceAnchors: readonly (readonly [string, string])[] = [
+      [UXD3_ANYOVERLAY_START, 'fan-out surface 1, the shared predicate (NOT ordered — residual)'],
+      [NH2_RECONCILE_START, 'fan-out surface 2, the reconcile re-issue (NOT ordered — residual)'],
+      [UXD3_PVPAGG_START, 'fan-out surface 4, the pvp batch listener (EXEMPT BY NAME)'],
+      [NH2_RAF_START, 'fan-out surface 5, the rAF re-issue (NOT ordered — residual)'],
+    ];
+    for (const [anchor, label] of nonOrderedSurfaceAnchors) {
+      expect(
+        src.indexOf(anchor),
+        `ANTI-VACUITY: the W-FANOUT anchor for ${label} must still resolve in RAW main.ts ` +
+          '(some of these are comment phrases, so they are checked on raw source, exactly as ' +
+          'W-FANOUT anchors them). A renamed or deleted surface must red HERE rather than ' +
+          `silently removing a clause from this gate. Anchor=${JSON.stringify(anchor)}`,
+      ).toBeGreaterThanOrEqual(0);
+    }
+
+    // --- (4) the ordering that carries the gate's whole value ---------------------------
+    // NOTE on MENU_INTERCEPT: `if (menuView?.visible) {` legitimately occurs TWICE in main.ts
+    // (the keydown menu-nav intercept, and the toggle inside the KeyM handler ~190 lines
+    // later), so expectUniqueAnchor must NOT be applied to it — it would red on correct
+    // source. The FIRST CODE occurrence is the earlier of the two and therefore the STRICTER
+    // bound: a gate that precedes the first also precedes the second.
+    expect(
+      gateIdx,
+      'the session gate must precede `if (menuView?.visible) {` — otherwise the menu-nav ' +
+        'intercept swallows arrows/Enter while the session terminal is on screen, and the ' +
+        'player navigates a menu whose every leaf opens an overlay backed by a dead connection',
+    ).toBeLessThan(codeIdx(MENU_INTERCEPT));
+    expect(
+      gateIdx,
+      'the session gate must precede the battle Escape branch — THIS IS THE NAMED G20 MUTANT: ' +
+        'with the gate below it, Escape on an expired session dismisses the BATTLE instead of ' +
+        'the session terminal, and sessionView is registry-external so no fan-out surface can ' +
+        'see it',
+    ).toBeLessThan(codeIdx(BATTLE_ESCAPE));
+    expect(
+      gateIdx,
+      'the session gate must precede fan-out surface 3 (the keydown movement-suppression ' +
+        'block guard `if (anyOverlayVisible()) {`) — the only one of the five that shares this ' +
+        'listener. Below it, movement keys reach KEY_DIR and the predictor keeps issuing Steps ' +
+        'into a link that is gone',
+    ).toBeLessThan(codeIdx(SURFACE3_SUPPRESS_CODE));
+
+    // --- (5) the declaration is module scope, like anyOverlayVisible --------------------
+    expect(
+      declIdx,
+      'sessionGateBlocks must be DECLARED at module scope, before the keydown listener that ' +
+        'calls it (the same placement rule W-NH1-DECL-ORDER applies to ' +
+        'suppressNativeMovementDefault)',
+    ).toBeLessThan(keydownIdx);
+  });
+});
+
+describe('★ main.ts wiring (M21b-2/ADR-0182 D17, G20b): W-M21B2-SESSION-GATE-FRAME — the render/dispatch frame loop also gates on the session terminal', () => {
+  it('★ BITES: sessionGateBlocks() is consulted at TWO sites (keydown + frame), and the frame`s check precedes its first movement send', () => {
+    // D17 (ADR-0182 lines 441-442) requires the session gate "checked first, unconditionally,
+    // in main.ts's dispatch/render loop AND its own keydown handler." W-M21B2-SESSION-GATE-FIRST
+    // above pins the KEYDOWN half; this pins the FRAME half. Without it, a tab whose session has
+    // expired keeps running the per-frame prediction loop: the held-key re-issue at the top of
+    // the frame keeps firing `sendIntent({ Step })` into a dead link, and the predictor keeps
+    // advancing a character the server will never move — the visible "ghost walking" bug behind
+    // the session overlay.
+    //
+    // ★ THE CONTRACT FOR THE IMPLEMENTER: add `if (sessionGateBlocks()) return;` near the TOP of
+    // the frame try body (before `predictor.drain(now)` / the held-key re-issue). A bare
+    // `return;` is correct here — unlike the keydown handler, the frame re-arms rAF in its own
+    // `finally`, so returning early skips this frame's game logic without killing the loop.
+    //
+    // WHY THE MINIMAL INVARIANT AND NOT AN EXACT LITERAL (stated, not hidden): the frame body's
+    // exact early-out shape is a design choice (the implementer may guard just the held-key
+    // send, or return before the whole body). This tooth pins what D17 actually REQUIRES — that
+    // the gate is consulted in the frame loop, before the first movement send — and leaves the
+    // precise statement to the implementer. It is code-aware, so a decoy string cannot satisfy
+    // either half.
+    // WRONG IMPL KILLED (a): the frame half omitted entirely — the whole-file count stays at 1
+    //   (keydown only). The `>= 2` count and the in-region membership both red.
+    // WRONG IMPL KILLED (b): the gate placed AFTER the held-key re-issue in the frame — the
+    //   ghost-walk send still fires before the gate sees the expired session. The ordering reds.
+    const code = m20cScan(readMainTs()).code;
+
+    // Whole-file: the gate must be CALLED at >= 2 code sites (keydown + frame). ⚠ The zero-arg
+    // DECLARATION `function sessionGateBlocks(): boolean {` itself contains the substring
+    // `sessionGateBlocks()`, so a naive count of that would pass with declaration + keydown
+    // alone (frame missing). CALL sites = every code `sessionGateBlocks(` MINUS the one
+    // `function sessionGateBlocks(` declaration. A decoy string counts for neither.
+    const gateRefs = mwCodeOccurrences(code, 'sessionGateBlocks(').length;
+    const gateDecls = mwCodeOccurrences(code, 'function sessionGateBlocks(').length;
+    expect(
+      gateRefs - gateDecls,
+      'sessionGateBlocks() must be CALLED at >= 2 sites AS CODE in main.ts (ADR-0182 D17: the ' +
+        'keydown handler AND the render/dispatch frame loop), counting every code reference ' +
+        'minus the ONE `function sessionGateBlocks(` declaration. RED AT AUTHORING TIME: 0 — the ' +
+        'predicate does not exist. After the keydown half lands but before the frame half this ' +
+        'is 1 and still reds, which is the point',
+    ).toBeGreaterThanOrEqual(2);
+
+    // Bound the frame loop region and require a call INSIDE it, before its first movement send.
+    // The declaration sits at module scope (beside anyOverlayVisible, above main()), OUTSIDE
+    // this region, so every `sessionGateBlocks(` found here is a genuine call.
+    const FRAME_START = 'const frame = (): void => {';
+    const FRAME_END = 'void main();';
+    const frameStartHits = mwCodeOccurrences(code, FRAME_START);
+    const frameEndHits = mwCodeOccurrences(code, FRAME_END);
+    expect(
+      frameStartHits.length,
+      `main.ts must contain the frame loop \`${FRAME_START}\` exactly once AS CODE (its region ` +
+        'fence)',
+    ).toBe(1);
+    expect(
+      frameEndHits.length,
+      `main.ts must contain \`${FRAME_END}\` exactly once AS CODE (the frame region's right fence)`,
+    ).toBe(1);
+    const frameStart = frameStartHits[0]!;
+    const frameEnd = frameEndHits[0]!;
+    expect(frameEnd, 'the frame region fences must be ordered').toBeGreaterThan(frameStart);
+    const frameRegion = code.slice(frameStart, frameEnd);
+
+    const gateInFrame = mwCodeOccurrences(frameRegion, 'sessionGateBlocks(');
+    expect(
+      gateInFrame.length,
+      'the frame loop must consult sessionGateBlocks() AS CODE (ADR-0182 D17: the render/dispatch ' +
+        'loop checks the session terminal too, not only the keydown handler). The suggested ' +
+        'shape is `if (sessionGateBlocks()) return;` near the top of the frame try',
+    ).toBeGreaterThanOrEqual(1);
+
+    // ANTI-VACUITY + the ordering: the frame's first movement send is the held-key re-issue
+    // `sendIntent(`; the gate must precede it, or the ghost-walk send fires before the gate.
+    const sendInFrame = mwCodeOccurrences(frameRegion, 'sendIntent(');
+    expect(
+      sendInFrame.length,
+      'ANTI-VACUITY: the frame region must contain the held-key movement send `sendIntent(` — if ' +
+        'it does not, the region is mis-bounded and the ordering below is vacuous',
+    ).toBeGreaterThanOrEqual(1);
+    expect(
+      gateInFrame[0]!,
+      'the frame`s sessionGateBlocks() check must precede its first `sendIntent(` movement send ' +
+        '— a gate placed after the held-key re-issue still lets the ghost-walk Step fire into a ' +
+        'dead link on an expired session (ADR-0182 D17)',
+    ).toBeLessThan(sendInFrame[0]!);
+  });
+});
+
+describe('★ main.ts wiring (M21b-2/ADR-0182 D15, G29): W-M21B2-SIGNED-IN-IS-OWNACCOUNT — main.ts never re-derives auth state from storage or from the credential', () => {
+  it('★ BITES: readAuthKind / AuthKind / credential.kind occur ZERO times in main.ts, and store.ownAccount( is actually consulted', () => {
+    // AUTH-51 / D15's reconciliation rule: `store.ownAccount(identity) !== undefined` is the
+    // SOLE authoritative "is this connection actually authenticated" signal for every UI
+    // purpose. The two things it must never be re-derived from are exactly the two things
+    // that are cheaply available and quietly wrong:
+    //   • `readAuthKind(...)` — the sessionStorage marker. It records INTENT, not fact: it
+    //     fails to 'anon' on every blocked/evicted/quota path, and with the fail-closed
+    //     `.invalid` issuer placeholder the server currently leaves EVERY connection
+    //     anonymous, so a client reading the marker can believe it is authenticated when the
+    //     server has never agreed (the M21b tripwire in connection.ts says exactly this).
+    //   • `credential.kind` — which token this build SUPPLIED, not what the server ACCEPTED.
+    //     A rejected JWT still produces an 'account'-kind credential.
+    // Either one reaching a UI branch produces the worst outcome this slice can ship: a
+    // player shown "signed in" chrome, and a claim flow offered, on a connection the server
+    // treats as anonymous — where every claim attempt fails guard 1 ("sign in required")
+    // with no explanation the client can give.
+    //
+    // WRONG IMPL KILLED (a) ★ NAMED: `if (readAuthKind(globalThis, uri, db) === 'account')`
+    //   in a UI branch (or a `conn?.credentialKind()` accessor added to feed one).
+    // WRONG IMPL KILLED (b): a `type AuthKind` import used to type a main.ts UI flag — the
+    //   first step of the same mistake, and the count sees it.
+    // WRONG IMPL KILLED (c): the whole family deleted along with the real predicate, leaving
+    //   nothing consulting account state at all. The positive control below is the floor:
+    //   a main.ts that never calls `store.ownAccount(` cannot render the claim/session UX
+    //   correctly under ANY implementation, and a bans-only tooth would call that GREEN.
+    const code = m20cScan(readMainTs()).code;
+
+    // ANTI-VACUITY / POSITIVE CONTROL, ASSERTED FIRST. CODE-AWARE (coordinator review): a decoy
+    // string `'store.ownAccount('` must not satisfy this floor — if it did, the three bans below
+    // would pass vacuously over a main.ts with no real account UX at all.
+    expect(
+      mwCodeOccurrences(code, 'store.ownAccount(').length,
+      'main.ts must CALL `store.ownAccount(` at least once AS CODE — it is the SOLE ' +
+        'authoritative signed-in signal (ADR-0182 D15 / AUTH-51). Zero code occurrences means ' +
+        'the three bans below are vacuously satisfied by a main.ts that simply has no account UX',
+    ).toBeGreaterThanOrEqual(1);
+
+    for (const forbidden of ['readAuthKind', 'AuthKind', 'credential.kind']) {
+      expect(
+        countOccurrences(code, forbidden),
+        `main.ts must contain ZERO occurrences of "${forbidden}" (comment-stripped, ` +
+          'string-literal-preserving). "Is this connection authenticated?" has exactly ONE ' +
+          'answer in this codebase — `store.ownAccount(identity) !== undefined`, the row the ' +
+          'SERVER wrote — and every other spelling is a client-side belief the server has ' +
+          'never confirmed (ADR-0182 D15 reconciliation rule, D14 anti-pattern 2)',
+      ).toBe(0);
+    }
+  });
+});
+
+// ===========================================================================
+// M21b-2 UI ENTRY POINTS (ADR-0182 D16/D17) — W-M21B2-CLAIM-UI-REACHABLE.
+//
+// TWO reviews found the claim/sign-in flow was fully built but NOT REACHABLE from the UI:
+// the model drivers and the Connection methods existed in isolation, but nothing in the
+// dispatch/handler wiring actually CALLED them. This block pins the six wiring seams that
+// make the feature reachable and non-fakeable:
+//   1. the menu Account leaf routes to openClaim()   (activateMenuLeaf`s void switch)
+//   2. the overlay Sign-in button starts the real flow (onSignIn → conn?.startSignIn())
+//   3. applyClaim consumes the model`s `join` effect by actually joining
+//   4. applySession consumes the model`s `retry-connect` effect via conn?.reconnectNow()
+//   5. all four hasLiveConnection sites guard on !conn.linkFrozen(), not the always-true form
+//   6. connect() is handed the OIDC config from import.meta.env.VITE_MR_OIDC_*
+//
+// These lock EXISTING correct wiring against regression and faking. They mirror the G20/G29
+// idiom: string-literal-aware m20cScan + mwCodeOccurrences (a decoy string cannot satisfy a
+// "the code does X" pin), region-bounded to the relevant function/handler where a file-wide
+// scan would be vacuous. NO `new RegExp`.
+//
+// ⚠ THE VOID-SWITCH HAZARD (tooth 1): main.ts`s `switch (leaf.id)` has NO default arm, so a
+// MISSING `case 'account'` does NOT fail tsc — the leaf silently no-ops and the overlay is
+// unreachable from the menu. That is precisely why this needs a source-scan tooth.
+// ===========================================================================
+
+/** A top-level `function name(…) {` region of main.ts, comment-stripped with the STRING-AWARE
+ *  m20c scanner and whitespace-squashed. Sliced from the declaration to the NEXT column-0
+ *  `function ` — NEVER to end-of-file, which would let a needle living anywhere later in main.ts
+ *  satisfy "the region contains X" vacuously (the exact hazard uxd3FunctionBody documents). */
+function m21b2FunctionCode(src: string, declNeedle: string): string {
+  const startIdx = src.indexOf(declNeedle);
+  if (startIdx < 0) {
+    throw new Error(
+      `main.ts must declare \`${declNeedle}…\` as a top-level function (M21b-2 UI entry point)`,
+    );
+  }
+  const endIdx = src.indexOf('\nfunction ', startIdx + declNeedle.length);
+  if (endIdx < 0) {
+    throw new Error(
+      `no top-level \`function \` declaration follows \`${declNeedle}\` in main.ts — refusing to ` +
+        'slice to end-of-file, which would make "the region contains X" vacuously satisfiable',
+    );
+  }
+  const region = squashWhitespace(m20cScan(src.slice(startIdx, endIdx)).code).trim();
+  expect(
+    region.length,
+    `the ${declNeedle} region is EMPTY after comment-stripping — refusing to scan a degenerate region`,
+  ).toBeGreaterThan(0);
+  return region;
+}
+
+describe('★ main.ts wiring (M21b-2 UI entry point, G20/G29 idiom): W-M21B2-CLAIM-UI-REACHABLE — the claim/sign-in flow is wired to the UI', () => {
+  it("★★ BITES: activateMenuLeaf`s switch routes `case 'account'` to openClaim() — the Account menu leaf actually opens the claim overlay", () => {
+    // WRONG IMPL KILLED (a) ★ NAMED: no `case 'account'` in the switch. Because the switch is a
+    //   VOID switch with no default arm, tsc does NOT flag the missing case — the Account leaf
+    //   dispatches into nothing and the overlay is unreachable from the menu.
+    // WRONG IMPL KILLED (b): `case 'account'` routing to a DIFFERENT open (a copy-paste from a
+    //   neighbouring leaf) — the wrong overlay opens.
+    const region = m21b2FunctionCode(readMainTs(), UXD3_ACTIVATE_DECL);
+    // ANTI-VACUITY: the region really is activateMenuLeaf`s leaf switch (its other cases survive).
+    expect(
+      mwCodeOccurrences(region, 'switch (leaf.id) {').length,
+      'ANTI-VACUITY: activateMenuLeaf must contain the `switch (leaf.id) {` — if it does not, this ' +
+        'gate is judging the wrong region',
+    ).toBe(1);
+    expect(
+      mwCodeOccurrences(region, "case 'account':").length,
+      "activateMenuLeaf`s switch must contain a `case 'account':` arm — the Account leaf`s route",
+    ).toBe(1);
+    expect(
+      mwCodeOccurrences(region, "case 'account': openClaim();").length,
+      "activateMenuLeaf`s switch must route `case 'account':` to `openClaim();` (code-aware, " +
+        'contiguous) — the void switch has no default, so a missing or mis-routed case is ' +
+        'invisible to tsc and the Account leaf silently no-ops',
+    ).toBe(1);
+  });
+
+  it('★★ BITES: the claim overlay`s onSignIn handler calls conn?.startSignIn(), and the old "temporarily unavailable" stub is GONE', () => {
+    // WRONG IMPL KILLED ★ NAMED: the placeholder that shipped before this slice —
+    //   `onSignIn: () => reportError('Sign-in is temporarily unavailable.')`. The overlay
+    //   rendered a Sign-in button that, when clicked, only apologised; the real flow was never
+    //   started. The handler must now call the Connection entry point.
+    const src = readMainTs();
+    const squashed = squashWhitespace(m20cWholeFile(src));
+    expect(
+      mwCodeOccurrences(squashed, 'onSignIn: () => { conn?.startSignIn(); }').length,
+      'the claim overlay`s onSignIn handler must be exactly `onSignIn: () => { conn?.startSignIn(); }` ' +
+        '(code-aware) — it starts the real OIDC sign-in flow (ADR-0182 D17/AUTH-48)',
+    ).toBe(1);
+    // The stub STRING must be gone. Counted on comment-stripped-but-string-PRESERVING source, so
+    // the reportError call`s literal would still be seen if it survived (a comment mentioning it
+    // is fine — comments are stripped).
+    expect(
+      countOccurrences(m20cWholeFile(src), 'Sign-in is temporarily unavailable'),
+      'the placeholder `Sign-in is temporarily unavailable` must be GONE from main.ts — the ' +
+        'onSignIn handler now starts the real flow, it does not apologise',
+    ).toBe(0);
+  });
+
+  it('★★ BITES: applyClaim consumes the model`s `join` effect by actually calling .reducers.joinGame()', () => {
+    // WRONG IMPL KILLED: a claimModel that emits `effect: 'join'` (proven in claimModel.test.ts)
+    //   wired to a main.ts that never joins — the Join button in the claim overlay is dead. The
+    //   join must be GUARDED on the effect (not issued unconditionally, which would re-open F2).
+    const region = m21b2FunctionCode(readMainTs(), 'function applyClaim(');
+    const guard = mwCodeOccurrences(region, "if (step.effect === 'join')");
+    const join = mwCodeOccurrences(region, '.reducers.joinGame(');
+    expect(guard.length, "applyClaim must gate on `if (step.effect === 'join')` (code-aware)").toBe(
+      1,
+    );
+    expect(
+      join.length,
+      'applyClaim must call `.reducers.joinGame(` when the effect is join — otherwise the claim ' +
+        'model`s join effect is computed and dropped, and the overlay`s Join action does nothing',
+    ).toBe(1);
+    expect(
+      guard[0]!,
+      'the join must be GUARDED on the `join` effect, not issued unconditionally (AUTH-52/F2)',
+    ).toBeLessThan(join[0]!);
+  });
+
+  it('★★ BITES: applySession consumes the model`s `retry-connect` effect via conn?.reconnectNow()', () => {
+    // WRONG IMPL KILLED: a sessionModel that emits `effect: 'retry-connect'` wired to a main.ts
+    //   that never reconnects — the Retry button on the session-expired / unreachable overlay is
+    //   dead, and the tab stays parked forever after the player asks to reconnect.
+    const region = m21b2FunctionCode(readMainTs(), 'function applySession(');
+    const guard = mwCodeOccurrences(region, "if (step.effect === 'retry-connect')");
+    const retry = mwCodeOccurrences(region, 'conn?.reconnectNow()');
+    expect(
+      guard.length,
+      "applySession must gate on `if (step.effect === 'retry-connect')` (code-aware)",
+    ).toBe(1);
+    expect(
+      retry.length,
+      'applySession must call `conn?.reconnectNow()` on the retry effect — otherwise the retry ' +
+        'effect is computed and dropped, and the session overlay`s Retry action does nothing',
+    ).toBe(1);
+    expect(
+      guard[0]!,
+      'reconnect must be GUARDED on the `retry-connect` effect, not issued unconditionally',
+    ).toBeLessThan(retry[0]!);
+  });
+
+  it('★★ BITES: all FOUR hasLiveConnection sites read `conn !== undefined && !conn.linkFrozen()` — never the always-true bare form', () => {
+    // WRONG IMPL KILLED ★ NAMED: `hasLiveConnection: conn !== undefined` (the bare form). It is
+    //   ALWAYS true once connected — even on a FROZEN link — so a join / decline-confirm / retry
+    //   action fires into a dead socket and is silently lost, exactly the disconnected feedback
+    //   AUTH-59 exists to surface. The bare form is a PREFIX of the correct one, so the
+    //   correct-form count (not the bare-form count) is what bites: a bugged site drops below four.
+    const src = readMainTs();
+    const squashed = squashWhitespace(m20cWholeFile(src));
+    expect(
+      mwCodeOccurrences(squashed, 'hasLiveConnection:').length,
+      'main.ts must wire EXACTLY four hasLiveConnection sites (claim onJoin / onDeclineConfirmed; ' +
+        'session onContinueConfirmed / onRetry) — a change to that count is a wiring change to ' +
+        're-derive, not to absorb',
+    ).toBe(4);
+    expect(
+      mwCodeOccurrences(squashed, 'hasLiveConnection: conn !== undefined && !conn.linkFrozen()')
+        .length,
+      'EVERY hasLiveConnection site must read `conn !== undefined && !conn.linkFrozen()` (code-aware) ' +
+        '— the bare `conn !== undefined` is always-true on a frozen link and drops the AUTH-59 ' +
+        'disconnected feedback, letting the action fire into a dead socket',
+    ).toBe(4);
+    // Region control: conn.linkFrozen() is consulted inside the claim/session handler block.
+    const region = m20cHunk(
+      src,
+      'const claimHandlers: ClaimViewHandlers = {',
+      'sessionView = new SessionViewClass(sessionHandlers);',
+    );
+    expect(
+      mwCodeOccurrences(region, 'conn.linkFrozen()').length,
+      'the claim/session handler region must consult `conn.linkFrozen()` (the live-link guard)',
+    ).toBeGreaterThanOrEqual(1);
+  });
+
+  it('★★ BITES: connect() is passed authIssuer/authClientId/authRedirectUri from import.meta.env.VITE_MR_OIDC_*', () => {
+    // WRONG IMPL KILLED: the OIDC config hardcoded to '' or read from the wrong env var — the
+    //   sign-in flow would have no issuer (or the wrong one) and every startSignIn would dead-end.
+    //   Each field is pinned to its EXACT source env var (ADR-0182 D11/D12).
+    const squashed = squashWhitespace(m20cWholeFile(readMainTs()));
+    const fields: readonly (readonly [string, string])[] = [
+      ['authIssuer', 'VITE_MR_OIDC_ISSUER'],
+      ['authClientId', 'VITE_MR_OIDC_CLIENT_ID'],
+      ['authRedirectUri', 'VITE_MR_OIDC_REDIRECT_URI'],
+    ];
+    for (const [field, envVar] of fields) {
+      expect(
+        mwCodeOccurrences(squashed, `${field}: import.meta.env.${envVar}`).length,
+        `connect() must wire \`${field}: import.meta.env.${envVar} …\` (ADR-0182 D11/D12) — the ` +
+          `OIDC ${field} comes from the build env; code-aware, so a decoy string does not count`,
+      ).toBe(1);
+    }
   });
 });

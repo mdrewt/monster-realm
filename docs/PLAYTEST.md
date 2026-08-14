@@ -58,6 +58,7 @@ table drifts from it, so edit both together.)
 | `P` | Challenge a nearby player to a PvP battle |
 | `L` | Open the ranked Leaderboard |
 | `N` | Rename your profile |
+| `C` | Open account & sign-in |
 | `F9` | Download a bug-report bundle |
 
 Only one overlay is open at a time — opening another (or a battle) closes the current

@@ -51,6 +51,9 @@ const DOM_SHELLS = [
   'src/ui/tradeView.ts',
   // m16b: PvP challenge DOM shell (ADR-0110)
   'src/ui/pvpView.ts',
+  // M21b-2: claim-code + session-lifecycle DOM shells (ADR-0182)
+  'src/ui/claimView.ts',
+  'src/ui/sessionView.ts',
 ];
 
 // Denominator-hygiene excludes that MUST be present (not merely sanctioned): the unit

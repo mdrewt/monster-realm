@@ -37,6 +37,7 @@ export type MenuLeafId =
   | 'pvp'
   | 'leaderboard'
   | 'rename'
+  | 'account'
   | 'help';
 
 export interface MenuLeafDef {
@@ -96,6 +97,10 @@ export const MENU_TREE: readonly MenuCategoryDef[] = [
     title: 'System',
     leaves: [
       { id: 'rename', title: 'Rename Profile', keyGlyph: 'N', target: 'renameView' },
+      // M21b-2 (ADR-0182 D16/D17): the discoverable path to the account & guest-claim UI. Its
+      // KeyC direct hotkey ships alongside (AUTH-48 needs it reachable before join); the leaf is
+      // NON-contextual (always available) — session-level chrome, like Rename and Help beside it.
+      { id: 'account', title: 'Account & Sign-in', keyGlyph: 'C', target: 'claimView' },
       { id: 'help', title: 'Controls & Help', keyGlyph: '?', target: 'helpView' },
     ],
   },

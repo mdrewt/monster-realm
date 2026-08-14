@@ -21,11 +21,16 @@ import {
 } from '../prediction/reconnectPolicy';
 // statusModel is a pure MODEL (no DOM, no SDK) — importing it here creates no
 // net→view dependency (see the layering note in statusModel.ts).
+import type { SessionState } from '../ui/sessionModel';
 import { subscriptionErrorMessage } from '../ui/statusModel';
-import { createAuthTokenGate, readAuthKind } from './authToken';
+import { createAuthTokenGate, wasEverAuthenticated, writeAuthKind } from './authToken';
 import { MicrotaskBatcher } from './batch';
+import { claimCode } from './claimCode';
+import { type ConnectCredential, decideConnectCredential } from './credentialDecision';
 import { type SendLogger, wrapReducerLogging } from './devLog';
+import { createOidcClient } from './oidc';
 import {
+  accountRowToStore,
   battleChallengeRowToStore,
   battleRowToStore,
   characterRowToStore,
@@ -40,6 +45,7 @@ import {
   playerRowToStore,
   playerWalletRowToStore,
   profileRowToStore,
+  type SdkAccountRow,
   type SdkBattleChallengeRow,
   type SdkBattleRow,
   type SdkCharacterRow,
@@ -82,16 +88,46 @@ export interface ConnectionOptions {
   /** dev-observability (ADR-0157): outbound reducer-call sink. `undefined` (the default
    *  production build) makes wrapReducerLogging strict identity — no Proxy is installed. */
   readonly onSend?: SendLogger;
+  /** M21b-2 (ADR-0182 D17): a previously-authenticated session was definitively rejected. */
+  readonly onSessionExpired?: () => void;
+  /** M21b-2 (ADR-0182 D17): the auth service stayed unreachable past the transient threshold. */
+  readonly onAuthServiceUnreachable?: () => void;
+  /** M21b-2 (ADR-0182 D17/AUTH-48): a FIRST sign-in exchange failed — routes to claimModel.
+   *  `reason` is a static classifier-mapped string (AUTH-57), never raw provider text. */
+  readonly onSignInFailed?: (reason: string) => void;
+  /** M21b-2 (ADR-0182 D16): a guest-claim reissue fired on the first applied snapshot. */
+  readonly onClaimPending?: (code: string) => void;
+  /** M21b-2 (ADR-0182 D16): a claim code is outstanding but no account row has arrived yet. */
+  readonly onClaimAwaitingAccount?: () => void;
+  /** M21b-2 (ADR-0182 D16): the guest-claim reducer settled. */
+  readonly onClaimResult?: (result: { readonly ok: boolean; readonly message: string }) => void;
+  /** M21b-2 (ADR-0182 D11/D12): the OIDC issuer / client-id / redirect for this target. Absent
+   *  in anonymous-only builds — with no issuer the flow contacts no network (AUTH-44). */
+  readonly authIssuer?: string;
+  readonly authClientId?: string;
+  readonly authRedirectUri?: string;
 }
 
 export interface Connection {
-  /** The CURRENT live DbConnection (getter-backed — see the return literal below). */
-  readonly conn: DbConnection;
+  /** The CURRENT live DbConnection, or undefined while no connection is built (cold start,
+   *  mid-attempt, or a parked terminal state — ADR-0182 D13). Getter-backed. */
+  readonly conn: DbConnection | undefined;
+  /** The current live DbConnection, or undefined — the same slot the getter reads, exposed as
+   *  a method so callers `const live = conn?.live()` and guard once (ADR-0182 D13, G26). */
+  live(): DbConnection | undefined;
   identity(): string;
   /** Whether input/sends must be gated off (ADR-0085 D3): true while disconnected
    *  or reconnecting. Event-driven, never promise-driven — in-flight reducer
    *  promises never settle after a drop. */
   linkFrozen(): boolean;
+  /** M21b-2 (ADR-0182 D17/AUTH-49): sticky decline — connect anonymously and stop retrying. */
+  continueAnonymously(): void;
+  /** M21b-2 (ADR-0182 D17): the session terminal state driving the registry-external overlay. */
+  sessionState(): SessionState;
+  /** M21b-2 (ADR-0182 D16/AUTH-48): mint a claim code, then begin the OIDC sign-in redirect. */
+  startSignIn(): void;
+  /** M21b-2 (ADR-0182 D17): fire a fresh connect attempt for the session 'retry' affordance. */
+  reconnectNow(): void;
 }
 
 export function connect(opts: ConnectionOptions): Connection {
@@ -127,6 +163,26 @@ export function connect(opts: ConnectionOptions): Connection {
   // must never reset the store, dirty the status line, or clobber identity/state
   // owned by the current build.
   let buildGen = 0;
+  // M21b-2 (ADR-0182 D11/D12): the OIDC client for this target. INJECTED host (globalThis) —
+  // storage/crypto/fetch all go through it, never an ambient reach from this shell. With no
+  // issuer (an anonymous-only build) renewOrExchange returns no session and contacts no network.
+  const oidc = createOidcClient(globalThis, {
+    issuer: opts.authIssuer ?? '',
+    clientId: opts.authClientId ?? '',
+    redirectUri: opts.authRedirectUri ?? '',
+    uri: opts.uri,
+    db: opts.db,
+  });
+  // M21b-2 (ADR-0182 D13) — the three cross-rebuild ladder facts, declared at connect() scope
+  // (NOT per build/attempt): a per-attempt copy resets on every reconnect and defeats each one.
+  let isReturnLegAttempt = false; // set once from the OIDC return leg below; SINGLE-USE (D12)
+  let consecutiveTransientErrors = 0; // AUTH_SERVICE_TRANSIENT_THRESHOLD's counter (D17)
+  let forcedAnon = false; // set ONLY by continueAnonymously(); sticky for the tab's page life
+  // The session terminal state the registry-external overlay reads through sessionState().
+  let sessionMode: SessionState = 'hidden';
+  // Consume the OIDC return leg exactly once on cold start (D12): a matched state records the
+  // authorization code and arms this attempt's gate so the first sign-in exchanges its verifier.
+  if (oidc.consumeReturnLeg()) isReturnLegAttempt = true;
 
   /** Schedule ONE rebuild after the current backoff delay (ADR-0085 D3/A7). */
   function scheduleRebuild(): void {
@@ -135,17 +191,10 @@ export function connect(opts: ConnectionOptions): Connection {
     rebuildTimer = setTimeout(() => {
       rebuildTimer = undefined;
       state = onReconnectAttempt(state);
-      // RT-01: build() can throw synchronously (malformed URI, SDK version check).
-      // An uncaught throw here would strand state at 'reconnecting' with no timer
-      // and no further attempts — a permanent silent freeze. Treat it exactly like
-      // a failed connect attempt: surface, climb the ladder, reschedule.
-      try {
-        current = build();
-      } catch (err) {
-        opts.onError('connect', err instanceof Error ? err.message : 'rebuild failed');
-        state = onAttemptFailed(state);
-        scheduleRebuild();
-      }
+      // ADR-0182 D13: attemptBuild owns the whole resolve→build cycle and is defensively total
+      // (RT-01's synchronous-throw protection and C1's async-throw protection both live inside
+      // it), so the timer body is a bare fire-and-forget of the one reconnect entry point.
+      void attemptBuild();
     }, delay);
   }
 
@@ -514,93 +563,111 @@ export function connect(opts: ConnectionOptions): Connection {
     };
     conn.db.profile.onInsert((_ctx, row) => ingestProfile(row as unknown as SdkProfileRow));
     conn.db.profile.onUpdate((_ctx, _old, row) => ingestProfile(row as unknown as SdkProfileRow));
+
+    // M21b-2 (ADR-0182 D15): my_account is the owner-scoped VIEW over the PRIVATE account table
+    // (subscribed above) and is the sole reconciliation authority for "am I signed in" (AUTH-51).
+    // It needs BOTH onInsert AND onUpdate — status/claimed_from MUTATE after provisioning (a guest
+    // claim re-keys the row mid-session; delete_account flips status to PendingDeletion). But
+    // deliberately there is no conn.db.my_account.onDelete handler: through a view an UPDATE
+    // arrives as unordered onInsert(new) + onDelete(old), so any delete delivered is the STALE
+    // half of an update pair and would wipe the live account slot — and no server path ever truly
+    // deletes an account row. store.reset() on disconnect is the SOLE clearing path (mirrors the
+    // my_wallet TRIPWIRE above), which is why store.ts ships upsertAccount with no removeAccount.
+    conn.db.my_account.onInsert((_ctx, row) => {
+      store.upsertAccount(accountRowToStore(row as unknown as SdkAccountRow));
+      batcher.schedule();
+    });
+    conn.db.my_account.onUpdate((_ctx, _old, row) => {
+      store.upsertAccount(accountRowToStore(row as unknown as SdkAccountRow));
+      batcher.schedule();
+    });
+  }
+
+  /** Issue the connection-internal joinGame through the WRAPPED connection (ADR-0157 §1) — the
+   *  ONE outbound call that bypasses the get conn() accessor. Extracted ONCE (ADR-0182 D16):
+   *  devLog builds a fresh Proxy per call, so an inline re-wrap double-logs every reducer call. */
+  function attemptJoin(
+    conn: DbConnection,
+    name: string,
+    onError: ConnectionOptions['onError'],
+  ): void {
+    conn.reducers.joinGame({ name }).catch((err) => {
+      const msg = (err as Error)?.message ?? '';
+      // "already joined" is benign: the server has not processed the old session's drop yet — the
+      // rows still live and the new subscription re-hydrates them (ADR-0085 A4). EXACT match.
+      if (msg !== 'already joined') onError('join', msg || 'join failed');
+    });
   }
 
   /**
-   * Build a fresh DbConnection with lifecycle + table handlers wired. Called once
-   * synchronously below and again by scheduleRebuild() after every drop / failed
-   * attempt (the SDK has no auto-reconnect on this raw builder path — ADR-0085).
+   * Build a fresh DbConnection for `credential`, lifecycle + table handlers wired. Called ONLY
+   * from attemptBuild(), which owns the generation bump and the resolve→build sequencing
+   * (ADR-0182 D13). Stays SYNCHRONOUS; widens its return to `DbConnection | undefined` only so a
+   * future non-anon/account variant fails closed rather than leaking an unintended token.
    */
-  function build(): DbConnection {
-    // Capture this build's generation; `stale()` is true once a newer build exists.
-    // Number-token (not instance) comparison: callbacks can safely close over `gen`
-    // without any TDZ/ordering dependence on the `current` assignment below.
-    const gen = ++buildGen;
+  function build(credential: ConnectCredential): DbConnection | undefined {
+    // Defensive belt (D13): attemptBuild never calls build() with a terminal kind, but a future
+    // variant must DECLINE rather than leak an unintended token to the builder.
+    if (credential.kind !== 'anon' && credential.kind !== 'account') return undefined;
+    // Capture this build's generation (bumped by attemptBuild BEFORE the async gap); `stale()` is
+    // true once a newer attempt exists. Number-token comparison, no TDZ dependence on `current`.
+    const gen = buildGen;
     const stale = (): boolean => gen !== buildGen;
-    // M21b (ADR-0179 D8): which credential class THIS build is supplying. Read
-    // FRESH per build — the mirror image of the gate above, which is built once
-    // on purpose: the gate's counter must survive rebuilds, whereas a marker
-    // that flipped mid-session must be observed by the very next build. It is
-    // captured HERE, not re-read inside onConnect, because onConnect fires an
-    // arbitrary time later against mutable sessionStorage — a re-read there
-    // could report 'anon' for a build that supplied an account credential
-    // (TOCTOU), which is exactly the write this guards against.
-    const buildKind = readAuthKind(globalThis, opts.uri, opts.db);
     const conn = DbConnection.builder()
       .withUri(opts.uri)
       .withDatabaseName(opts.db)
-      // nh4 (ADR-0150): resume the SAME anonymous identity across a page reload. Read
-      // FRESH on every build — hoisting this to connect() scope would pin one value for
-      // the process lifetime, making the gate's suppression inert and a rejected-token
-      // reconnect loop permanent.
-      .withToken(auth.tokenForNextAttempt())
+      // ADR-0182 D14: the token is decided by THIS build's `credential` ALONE, computed in memory
+      // on this same attempt — never re-derived from mutable storage. `=== 'account'` is
+      // fail-closed on the permissive value, so a future variant can never leak an account token.
+      .withToken(credential.kind === 'account' ? credential.token : auth.tokenForNextAttempt())
       .onConnect((c, id, token) => {
         if (stale()) return; // superseded build: never clobber identity/subscriptions
-        // Persist AFTER the stale guard: a superseded build's late onConnect must not
-        // overwrite the credential the live build already stored.
-        //
-        // M21b (ADR-0179 D8): and ONLY for an anonymous build. The SDK echoes the
-        // credential we supplied back as `token` (dist/index.mjs:5765 + :6226-6231 —
-        // the host's own token is adopted only when we supplied none), so on an
-        // authenticated build this argument IS the short-lived account JWT. Storing it
-        // here would put it in the ANONYMOUS slot, which `tokenForNextAttempt()` hands
-        // straight back to `.withToken()` on the next build — replaying an account JWT
-        // past its `exp`, the exact case D8 forbids. `=== 'anon'` (not `!== 'account'`)
-        // is the fail-CLOSED direction ON THE VALUE: if AuthKind ever gains a third
-        // member, a `!==` guard would start writing that kind's credential into the
-        // anonymous slot by default.
-        //
-        // BEST-EFFORT, NOT STRUCTURAL — do not read more into this than it gives.
-        // `readAuthKind` fails to 'anon' on every lossy path (blocked storage, quota,
-        // eviction), and 'anon' is the PERMISSIVE direction here, so a lost marker
-        // silently re-opens the replay. That fail direction is forced by AUTH-31 and is
-        // not fixable with a marker at all; the discriminator must become the provenance
-        // of the credential actually supplied, carried in memory beside the token
-        // (M21b-2 — see the ⚠ block on writeAuthKind). Until then this guard is the sole
-        // enforcer of "the anon slot never contains an account JWT" and no production
-        // code may write an 'account' marker.
-        //
-        // NOTE this also gates `rejectionsSinceSuccess = 0`, which lives inside
-        // onConnected — see harm 2 in that same ⚠ block.
-        if (buildKind === 'anon') auth.onConnected(token);
+        // Save the anon reconnect token ONLY for an anon build: the SDK echoes the supplied JWT
+        // back as `token`, so on an account build this argument is the short-lived account JWT and
+        // must never enter the anonymous slot (ADR-0182 D14; `=== 'anon'` is the fail-closed side).
+        if (credential.kind === 'anon') auth.onConnected(token);
+        // D13/D14: a first-paint HINT for account builds, superseded by my_account's first snapshot
+        // (D15) and never a security input — provenance is `credential`, never this marker.
+        if (credential.kind === 'account') writeAuthKind(globalThis, opts.uri, opts.db, 'account');
         identity = id.toHexString();
         const reconnecting = hadSession;
         c.subscriptionBuilder()
           .onApplied(() => {
             if (stale()) return; // superseded build: never unfreeze/join on a dead link
-            // The link is fully usable only once the initial snapshot is applied:
-            // unfreeze + reset the backoff ladder here (the ONLY attempt reset).
-            // NOTE: the link unfreezes HERE, a few statements before the caller's
-            // opts.onReconnect() resets the predictor below — safe: this whole
-            // callback is one synchronous JS block, so no input event or microtask
-            // can interleave between the unfreeze and the predictor reset.
+            // The link is fully usable only once the initial snapshot applies: unfreeze + reset
+            // the backoff ladder here (the ONLY attempt reset), and clear any session terminal.
             state = onConnected(state);
-            // joinGame stays UNCONDITIONAL: server on_disconnect DELETES the player +
-            // character rows, so a reconnect MUST re-join (ADR-0085 A4).
-            // ADR-0157 §1: the ONE outbound site that does not go through the get conn()
-            // accessor, so the build()-return wrap cannot cover it — wrap it explicitly.
-            wrapReducerLogging(c, opts.onSend)
-              .reducers.joinGame({ name })
-              .catch((err) => {
-                const msg = (err as Error)?.message ?? '';
-                // "already joined" is benign: the server hasn't processed the old
-                // session's drop yet — rows still live; the new subscription
-                // re-hydrates them (ADR-0085 A4). EXACT match (RT-JB-01): the SDK
-                // delivers the reducer's Err string verbatim (SenderError(errorString))
-                // and movement.rs errs exactly this — a substring test would swallow
-                // hypothetical non-benign messages that merely contain the phrase.
-                if (msg !== 'already joined') opts.onError('join', msg || 'join failed');
-              });
+            sessionMode = 'hidden';
+            // ADR-0182 D16 join gate, re-evaluated FRESH every applied snapshot. The claim-code
+            // veto is the SOLE veto and is scoped to account-kind builds; my_account presence is
+            // NEVER consulted in it (AUTH-52). Anon builds always join — the idempotent A4 re-join
+            // (server on_disconnect deletes the player + character rows, so a reconnect must join).
+            const codeUnconsumed = claimCode.hasUnconsumed(globalThis, opts.uri, opts.db);
+            const shouldJoin = credential.kind !== 'account' || !codeUnconsumed;
+            if (shouldJoin) {
+              attemptJoin(wrapReducerLogging(c, opts.onSend), name, opts.onError);
+            } else if (store.ownAccount(identity) !== undefined) {
+              // AUTH-53: re-issue complete_guest_claim on THIS connection's first applied snapshot,
+              // unconditionally — a pre-drop promise never settles (ADR-0085 D3). onClaimPending is
+              // a UX notification fired ALONGSIDE the reducer call, never a substitute for it.
+              const code = claimCode.read(globalThis, opts.uri, opts.db)!;
+              // Call on the RAW connection, NOT wrapReducerLogging(c): the dev-observability
+              // Proxy JSON-stringifies reducer args to the onSend sink, and `code` is a bearer
+              // secret (whoever holds it can steal this guest's progress). joinGame's `{name}` is
+              // sanctioned free text; a claim code categorically is not (AUTH-57 spirit; the G21
+              // scanner can't see this indirect sink — its own residual R4). Assigned first so the
+              // `.reducers.completeGuestClaim({ code })` call stays contiguous (biome breaks a short
+              // receiver's method chain otherwise) — G18 pins that exact needle.
+              const pendingClaim = c.reducers.completeGuestClaim({ code });
+              pendingClaim
+                .then(() => opts.onClaimResult?.({ ok: true, message: '' }))
+                .catch((err) =>
+                  opts.onClaimResult?.({ ok: false, message: (err as Error)?.message ?? '' }),
+                );
+              opts.onClaimPending?.(code);
+            } else {
+              opts.onClaimAwaitingAccount?.(); // UX polish only — the veto above is what makes F2 safe
+            }
             hadSession = true;
             if (reconnecting) opts.onReconnect();
             else opts.onReady(identity);
@@ -661,15 +728,11 @@ export function connect(opts: ConnectionOptions): Connection {
             // m17b: profile is a PUBLIC regular table (world-readable leaderboard —
             // RL-13/ADR-0119); onUpdate fires normally (unlike the my_conversation view).
             'SELECT * FROM profile',
-            // M21b TRIPWIRE — `my_account` is DELIBERATELY ABSENT (M21a generated its
-            // bindings; this is not an oversight). Nothing in M21b consumes it, and
-            // subscribing it would drag rowConvert.ts + store.ts into a slice whose
-            // touches: set excludes them. It is NOT optional later, though: per
-            // ADR-0179 the kind marker records INTENT, while `my_account` is the only
-            // observable of the connection FACT (with the fail-closed `.invalid`
-            // issuer placeholder the server leaves every connection anonymous, so a
-            // client can currently believe it is authenticated when it is not).
-            // M21b-2 adds it, and `my_account` is authoritative where the two disagree.
+            // M21b-2 (ADR-0182 D15): my_account is the owner-scoped VIEW over the PRIVATE account
+            // table — the sole reconciliation authority for "am I signed in" (AUTH-51). Ingested
+            // with onInsert + onUpdate (and NO onDelete) in wireTables above. Subscribing the
+            // private `account` table itself would error the whole batch and onApplied never fires.
+            'SELECT * FROM my_account',
           ]);
       })
       .onConnectError((_ctx, err: Error) => {
@@ -701,20 +764,144 @@ export function connect(opts: ConnectionOptions): Connection {
     return wrapReducerLogging(conn, opts.onSend);
   }
 
-  // Cold-start note (ADR-0085 D3): `attempt` counts consecutive FAILED builds, so a
-  // failed INITIAL build's first retry sits on the 2 s rung (the instant first
-  // attempt was rung one), while a drop-triggered rebuild — no failed build yet —
-  // schedules at 1 s. Same formula both ways; the asymmetry is intended.
-  let current = build();
+  // ADR-0182 D13: the current live connection, undefined until an attempt builds one (and reset
+  // to undefined by the parked session terminals). Declared immediately after build().
+  let current: DbConnection | undefined;
+
+  /**
+   * The ONE real I/O boundary (ADR-0182 D13). Decides which credential build() should act on,
+   * consulting Better Auth ONLY when the attempt gate is open — a never-authenticated or
+   * declined tab makes ZERO network calls (AUTH-43/44/49). TOTAL by contract (oidc.renewOrExchange
+   * maps every internal error to 'transient-error'); attemptBuild's try/catch is the belt.
+   */
+  async function resolveCredential(): Promise<ConnectCredential> {
+    if (forcedAnon) return { kind: 'anon', token: auth.tokenForNextAttempt() };
+    const attemptGateOpen =
+      wasEverAuthenticated(globalThis, opts.uri, opts.db) || isReturnLegAttempt;
+    // SINGLE-USE (D12): consumed on this read regardless of outcome, so a later ordinary reconnect
+    // never re-drives the exchange with no stored verifier left to act on.
+    isReturnLegAttempt = false;
+    if (!attemptGateOpen) {
+      return { kind: 'anon', token: auth.tokenForNextAttempt() };
+    }
+    const outcome = await oidc.renewOrExchange();
+    consecutiveTransientErrors =
+      outcome.kind === 'transient-error' ? consecutiveTransientErrors + 1 : 0;
+    return decideConnectCredential(
+      outcome,
+      wasEverAuthenticated(globalThis, opts.uri, opts.db),
+      consecutiveTransientErrors,
+      auth.tokenForNextAttempt(),
+    );
+  }
+
+  /**
+   * The ONE caller of build() (ADR-0182 D13). Bumps the generation before the async gap, resolves
+   * the credential inside an exception boundary (C1: an ordinary Better Auth hiccup must never
+   * stop the ladder), re-checks staleness after the await, and routes each terminal kind.
+   */
+  async function attemptBuild(): Promise<void> {
+    buildGen += 1; // opens the generation BEFORE the async gap
+    const gen = buildGen;
+    let credential: ConnectCredential;
+    try {
+      credential = await resolveCredential();
+    } catch {
+      if (gen !== buildGen || teardown) return;
+      state = onAttemptFailed(state);
+      scheduleRebuild();
+      return;
+    }
+    if (gen !== buildGen || teardown) return; // re-checked AFTER the await
+    if (credential.kind === 'retry') {
+      // AUTH-45: an ambiguous transient outcome climbs the SAME backoff ladder a socket-level
+      // failure uses and builds nothing — it must never reach build().
+      state = onAttemptFailed(state);
+      scheduleRebuild();
+      return;
+    }
+    if (credential.kind === 'session-expired' || credential.kind === 'auth-service-unreachable') {
+      sessionMode = credential.kind === 'session-expired' ? 'expired' : 'unreachable';
+    }
+    if (credential.kind === 'session-expired') {
+      opts.onSessionExpired?.();
+      current = undefined;
+      return;
+    }
+    if (credential.kind === 'auth-service-unreachable') {
+      opts.onAuthServiceUnreachable?.();
+      current = undefined;
+      return;
+    }
+    if (credential.kind === 'sign-in-failed') {
+      opts.onSignInFailed?.(credential.reason); // routes to claimModel (AUTH-48); falls through to anon
+    }
+    try {
+      // RT-01 preserved: build() can still throw synchronously (malformed URI, SDK version check).
+      // A first-time sign-in-failed still gets an ANON connection — never `credential` (whose token
+      // field is a reason string) and never no connection at all, which would strand the claimant.
+      // biome-ignore format: ADR-0182 D13 line 220 — pinned single-line literal (W-M21B2-LIVE-IS-CURRENT).
+      current = build(credential.kind === 'sign-in-failed' ? { kind: 'anon', token: auth.tokenForNextAttempt() } : credential);
+    } catch (err) {
+      opts.onError('connect', err instanceof Error ? err.message : 'rebuild failed');
+      state = onAttemptFailed(state);
+      scheduleRebuild();
+    }
+  }
+
+  /** AUTH-49: the sticky decline — connect anonymously and stop asking Better Auth. */
+  function continueAnonymously(): void {
+    forcedAnon = true;
+    void attemptBuild();
+  }
+
+  /** AUTH-48: mint the claim code (so the return-leg reissue has one), then hand off to the OIDC
+   *  redirect. beginSignIn is TOTAL (never rejects, oidc.ts C1) — the .catch is a belt only. On a
+   *  'ready' result the tab leaves the page; any other kind degrades to the claim UI's failure copy
+   *  (the intended behaviour against the `.invalid` placeholder issuer until 13r-c-2 deploys). */
+  function startSignIn(): void {
+    claimCode.mint(globalThis, opts.uri, opts.db);
+    // Bound to a short local so biome keeps `oidc.beginSignIn(` on one line (G-teeth pin it
+    // contiguous — a broken chain squashes to `oidc .beginSignIn(` and reads as a missing call).
+    const flow = oidc.beginSignIn();
+    flow
+      .then((result) => {
+        if (result.kind === 'ready') {
+          // `location?` guards a non-browser host; the navigation target is textually the URL
+          // beginSignIn produced (G-teeth pin `.assign(result.authorizationUrl` contiguous, hence
+          // the short-bound `nav` so biome does not break the call). A missing `assign` (never in a
+          // real browser) throws into the `.catch` belt below.
+          const nav = (globalThis as { location?: { assign(u: string): void } }).location;
+          nav?.assign(result.authorizationUrl);
+        } else {
+          opts.onSignInFailed?.(result.kind);
+        }
+      })
+      .catch(() => opts.onSignInFailed?.('transient-error'));
+  }
+
+  /** AUTH-45: the session 'retry' affordance — fire a fresh connect attempt through the one total
+   *  entry point (attemptBuild owns the resolve→build cycle and every exception boundary). */
+  function reconnectNow(): void {
+    void attemptBuild();
+  }
+
+  // Cold start (ADR-0182 D13): resolve → build through the same total entry point every reconnect
+  // uses. Even the zero-I/O anon fast path defers `current` by one microtask (accepted residual).
+  void attemptBuild();
 
   return {
-    // Getter: returns the CURRENT live connection across rebuilds — callers must not
-    // cache `conn.conn` across await points; a rebuild may have replaced the
-    // instance underneath them (ADR-0085 C9; name kept for call-site compatibility).
+    // Getter: returns the CURRENT live connection across rebuilds — callers must not cache
+    // `conn.conn` across await points; a rebuild may have replaced the instance (ADR-0085 C9).
     get conn() {
       return current;
     },
+    live: () => current,
     identity: () => identity,
     linkFrozen: () => linkFrozen(state),
+    continueAnonymously,
+    sessionState: () => sessionMode,
+    startSignIn,
+    reconnectNow,
   };
 }

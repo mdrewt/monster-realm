@@ -17,13 +17,22 @@
 // { key: 'M', action: 'Open the main menu' } row (plan T1.5). Nothing below guesses at an
 // API shape — the contract is the one the plan hands the specialist verbatim.
 //
+// AMENDED by M21b-2 (ADR-0182 D17 / spec AUTH task checklist): the System category gains an
+// `'account'` leaf (keyGlyph 'C', target 'claimView'), taking the tree to 5 categories / 12
+// leaves. THE MENU LEAF AND THE DIRECT KeyC HOTKEY BOTH SHIP — they are not alternatives: the
+// hotkey is the fast path AND the pre-join path (main.ts's KeyM front door carries
+// `identity !== ''`, so the menu is dead before join, while a failed FIRST sign-in must still
+// be able to reach the claim/account UI — AUTH-48). The leaf is the discoverable path, and
+// AC-18's SSOT rule means adding it MECHANICALLY forces a `C` row in helpModel.ts CONTROLS
+// (and, through playtestControlsDoc.test.ts's bidirectional A1/A3 gate, in docs/PLAYTEST.md).
+//
 // PINNED CONTRACT (the specialist matches this EXACTLY):
 //   export type MenuCategoryId = 'party' | 'world' | 'trade' | 'compete' | 'system';
 //   export type MenuLeafId = 'box' | 'backpack' | 'evolve' | 'interact' | 'journal'
-//     | 'incomingTrade' | 'offerTrade' | 'pvp' | 'leaderboard' | 'rename' | 'help';
+//     | 'incomingTrade' | 'offerTrade' | 'pvp' | 'leaderboard' | 'rename' | 'account' | 'help';
 //   export interface MenuLeafDef { id; title; keyGlyph; target: OverlayId | 'interact' }
 //   export interface MenuCategoryDef { id; title; leaves: readonly MenuLeafDef[] }
-//   export const MENU_TREE: readonly MenuCategoryDef[];            // 5 categories, 11 leaves
+//   export const MENU_TREE: readonly MenuCategoryDef[];            // 5 categories, 12 leaves
 //   export interface MenuAvailability {
 //     hasInteractTarget: boolean; hasTradeTargets: boolean; hasPvpTargets: boolean }
 //   export function leafAvailable(leaf: MenuLeafId, a: MenuAvailability): boolean;
@@ -108,7 +117,8 @@ function expectedDisabled(id: MenuLeafId, a: MenuAvailability): boolean {
   return flag === undefined ? false : !a[flag];
 }
 
-/** AC-18 / A13: the explicit MenuLeafId -> keyGlyph expectation table (11 pairs). */
+/** AC-18 / A13: the explicit MenuLeafId -> keyGlyph expectation table (12 pairs since M21b-2).
+ *  The order is `flat` order (MENU_TREE flattened), so it also pins WHERE the new leaf sits. */
 const EXPECTED_KEY_GLYPHS: readonly (readonly [MenuLeafId, string])[] = [
   ['box', 'B'],
   ['backpack', 'I'],
@@ -120,6 +130,11 @@ const EXPECTED_KEY_GLYPHS: readonly (readonly [MenuLeafId, string])[] = [
   ['pvp', 'P'],
   ['leaderboard', 'L'],
   ['rename', 'N'],
+  // ★ M21b-2 (ADR-0182): 'C' for Claim/aCcount. Deliberately NOT 'A' — `KeyA` is a MOVEMENT
+  // key (menuKeyInput maps it to `left`, and KEY_DIR binds it in the world), so an 'A' glyph
+  // would advertise a shortcut that walks the player left instead. 'C' was verified UNBOUND
+  // in main.ts before this slice, the same check KeyM got in uxd3.
+  ['account', 'C'],
   ['help', '?'],
 ];
 
@@ -128,7 +143,7 @@ const EXPECTED_KEY_GLYPHS: readonly (readonly [MenuLeafId, string])[] = [
 // ===========================================================================
 
 describe('menuModel — MENU_TREE', () => {
-  it('MM-TREE-SHAPE BITES: 5 categories / 11 leaves, with Backpack and Journal as LEAVES and no Shop or Heal leaf', () => {
+  it('MM-TREE-SHAPE BITES: 5 categories / 12 leaves, with Backpack and Journal as LEAVES and no Shop or Heal leaf', () => {
     // WRONG IMPL KILLED (1): a 6th "Settings" category (anti-pattern 10 — future slot only).
     // WRONG IMPL KILLED (2): a top-level "Backpack" or "Journal" CATEGORY — each would hold a
     //   single leaf pointing at raisingView/questLogView, i.e. a duplicated source of truth and
@@ -142,19 +157,24 @@ describe('menuModel — MENU_TREE', () => {
     expect(MENU_TREE.map((c) => c.id)).toEqual(['party', 'world', 'trade', 'compete', 'system']);
     expect(MENU_TREE.map((c) => c.title)).toEqual(['Party', 'World', 'Trade', 'Compete', 'System']);
 
+    // ★ M21b-2 (ADR-0182): the 12th leaf. It joins SYSTEM (beside Rename Profile and Controls
+    // & Help), not a new 6th category — anti-pattern 10 forbids a category per feature, and
+    // "your account" is exactly the kind of session-level chrome System already holds.
+    // Positioned BETWEEN rename and help deliberately: Help stays LAST because it is the
+    // recovery affordance a lost player scans to the bottom for.
     const flat = MENU_TREE.flatMap((c) => c.leaves);
-    expect(flat.length, 'ANTI-VACUITY: the tree must hold exactly 11 leaves').toBe(11);
-    expect(new Set(flat.map((l) => l.id)).size, 'leaf ids must be unique').toBe(11);
+    expect(flat.length, 'ANTI-VACUITY: the tree must hold exactly 12 leaves').toBe(12);
+    expect(new Set(flat.map((l) => l.id)).size, 'leaf ids must be unique').toBe(12);
 
     expect(
       MENU_TREE.map((c) => c.leaves.map((l) => l.id)),
-      'the exact leaf assignment per category (plan §3)',
+      'the exact leaf assignment per category (plan §3, + M21b-2`s account leaf in System)',
     ).toEqual([
       ['box', 'backpack', 'evolve'],
       ['interact', 'journal'],
       ['incomingTrade', 'offerTrade'],
       ['pvp', 'leaderboard'],
-      ['rename', 'help'],
+      ['rename', 'account', 'help'],
     ]);
 
     expect(flat.map((l) => l.title)).toEqual([
@@ -168,12 +188,16 @@ describe('menuModel — MENU_TREE', () => {
       'PvP Challenge',
       'Leaderboard',
       'Rename Profile',
+      'Account & Sign-in',
       'Controls & Help',
     ]);
 
     expect(
       flat.map((l) => l.target),
-      'each leaf points at its registry member; Interact dispatches (talk/shop/heal)',
+      'each leaf points at its registry member; Interact dispatches (talk/shop/heal). The ' +
+        'account leaf targets `claimView` — the registry member (GUARD_ONLY, G19) — and NOT ' +
+        '`sessionView`, which is registry-EXTERNAL by design (ADR-0182 D17) and therefore not ' +
+        'a legal MenuLeafDef.target at all',
     ).toEqual([
       'boxView',
       'raisingView',
@@ -185,11 +209,12 @@ describe('menuModel — MENU_TREE', () => {
       'pvpView',
       'leaderboardView',
       'renameView',
+      'claimView',
       'helpView',
     ]);
   });
 
-  it('MM-KEYGLYPH-FROM-HELP-SSOT BITES: every leaf glyph matches the 11-pair table AND is documented in the helpModel CONTROLS SSOT, incl. the new M row (AC-18)', () => {
+  it('MM-KEYGLYPH-FROM-HELP-SSOT BITES: every leaf glyph matches the 12-pair table AND is documented in the helpModel CONTROLS SSOT, incl. the M and C rows (AC-18)', () => {
     // WRONG IMPL KILLED (1): a leaf advertising a key the help overlay does not document — the
     //   menu would teach a shortcut that does nothing.
     // WRONG IMPL KILLED (2, the A13 reason this test is not membership-only): a Journal leaf
@@ -224,6 +249,19 @@ describe('menuModel — MENU_TREE', () => {
       ssotKeys.includes('M'),
       "helpModel's CONTROLS SSOT must document the 'M' menu front-door key (spec `:125`)",
     ).toBe(true);
+    // ★ M21b-2. Stated on its own line for the same reason the 'M' clause is: the per-leaf
+    // loop above reports "leaf 'account' advertises key 'C', which the SSOT does not
+    // document", which is true but buries the ACTION. WRONG IMPL KILLED: shipping the account
+    // leaf and the KeyC handler without adding the CONTROLS row — KeyC would be the one
+    // load-bearing key the help overlay never mentions, and (through
+    // playtestControlsDoc.test.ts's bidirectional A1/A3 gate) docs/PLAYTEST.md would silently
+    // disagree with the shipped keymap.
+    expect(
+      ssotKeys.includes('C'),
+      "helpModel's CONTROLS SSOT must document the 'C' account/claim key (ADR-0182). Adding " +
+        'this row is NOT optional bookkeeping: it is what makes the menu leaf`s advertised ' +
+        'glyph true, and it mechanically forces the matching docs/PLAYTEST.md §3 row',
+    ).toBe(true);
   });
 
   it('MM-AVAILABILITY-SEMANTICS BITES: only Interact / Offer / PvP are contextual, and each reads its OWN flag (AC-16)', () => {
@@ -236,7 +274,7 @@ describe('menuModel — MENU_TREE', () => {
     // WRONG IMPL KILLED (3): making a non-contextual leaf (Box, Journal, Help, Rename...)
     //   conditional — Help in particular must NEVER be greyed, it is the recovery affordance.
     const flat = MENU_TREE.flatMap((c) => c.leaves);
-    expect(flat.length, 'ANTI-VACUITY').toBe(11);
+    expect(flat.length, 'ANTI-VACUITY').toBe(12);
 
     // One flag true at a time: only the leaf that owns the flag flips.
     const singles: readonly (keyof MenuAvailability)[] = [
@@ -464,7 +502,7 @@ describe('menuModel — leaf activation', () => {
         activated += 1;
       }
     }
-    expect(activated, 'ANTI-VACUITY: all 11 leaves must have been activated').toBe(11);
+    expect(activated, 'ANTI-VACUITY: all 12 leaves must have been activated').toBe(12);
   });
 
   it('MM-LEAF-DISABLED-EMITS-NONE-AND-KEEPS-STATE BITES: an unavailable leaf routes NOTHING and leaves the menu open (AC-15)', () => {
@@ -485,8 +523,10 @@ describe('menuModel — leaf activation', () => {
         effect: { kind: 'none' },
       });
     }
-    // The other 8 leaves still activate under the SAME (all-false) availability — a disabled
-    // leaf must not disable its neighbours.
+    // The other 9 leaves still activate under the SAME (all-false) availability — a disabled
+    // leaf must not disable its neighbours. M21b-2: 8 -> 9 with the account leaf, which is
+    // NON-contextual on purpose — the claim/account UI must be reachable with no nearby NPC,
+    // no trade partner and (per AUTH-48) before the player has even joined.
     let stillLive = 0;
     for (let c = 0; c < MENU_TREE.length; c += 1) {
       const cat = MENU_TREE[c]!;
@@ -496,7 +536,7 @@ describe('menuModel — leaf activation', () => {
         stillLive += 1;
       }
     }
-    expect(stillLive, 'ANTI-VACUITY: 8 non-contextual leaves stay live').toBe(8);
+    expect(stillLive, 'ANTI-VACUITY: 9 non-contextual leaves stay live').toBe(9);
   });
 
   it('MM-ACTIVATE-RESETS-STATE BITES: an activate always returns state === MENU_INITIAL, so nothing remembers a pending menu (AC-17)', () => {
@@ -583,7 +623,8 @@ describe('menuModel — buildMenuViewModel', () => {
 
     const oobCat = buildMenuViewModel(leaves(99, 0), ALL);
     expect(oobCat.heading).toBe('System');
-    expect(oobCat.rows.length).toBe(2);
+    // M21b-2: System holds 3 leaves now (rename / account / help).
+    expect(oobCat.rows.length).toBe(3);
   });
 
   it('MM-DISABLED-LEAF-ALWAYS-RENDERED BITES: the row count is invariant across all 2^3 availability combos — a dead leaf is GREYED, never removed (AC-15)', () => {
@@ -644,7 +685,21 @@ describe('menuModel — menuKeyInput', () => {
     expect(menuKeyInput('KeyA')).toEqual({ kind: 'left' });
     expect(menuKeyInput('Escape')).toEqual({ kind: 'escape' });
 
-    for (const code of ['KeyM', 'Space', 'KeyB', 'KeyQ', 'F9', 'Tab', 'ArrowRightExtra', '']) {
+    // M21b-2 adds 'KeyC' to this list for the same reason 'KeyM' is on it: the nav intercept
+    // calls preventDefault()+return on ANY defined result, so mapping the account/claim hotkey
+    // here would make it dead while the menu is open — and the menu is exactly where a player
+    // who just read the 'C — …' glyph is standing.
+    for (const code of [
+      'KeyM',
+      'KeyC',
+      'Space',
+      'KeyB',
+      'KeyQ',
+      'F9',
+      'Tab',
+      'ArrowRightExtra',
+      '',
+    ]) {
       expect(menuKeyInput(code), `'${code}' must not be swallowed by the menu`).toBeUndefined();
     }
   });

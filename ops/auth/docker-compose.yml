@@ -1,0 +1,59 @@
+# Self-hosted Better Auth issuer for Monster Realm accounts (ADR-0179 / ADR-0182).
+#
+# Better Auth is a TypeScript library, not a shipped server image, so this compose
+# file runs the stock pinned Node image and installs the exact pinned Better Auth
+# packages at start, then runs the operator-supplied entrypoint from ./app (its
+# full, copy-pasteable content is in README.md — this repo commits the deployment
+# recipe, never a running secret). Mirrors ops/observability/: compose + README +
+# config, all reviewable, no committed runtime credential.
+#
+# Posture (matches the DR runbook §7/§8): ONE service, LOOPBACK-BOUND on 8443,
+# never 0.0.0.0. All secrets arrive via env_file + ${VAR} indirection — no secret
+# value is ever written literally in this file.
+
+services:
+  better-auth:
+    # Digest-pin the base image at deploy time (node:24-alpine@sha256:...) — the
+    # tag alone is mutable. Pinned to the Node major the client engines field uses.
+    image: node:24-alpine
+    container_name: mr-better-auth
+    restart: unless-stopped
+    working_dir: /app
+    # Loopback only. The host side MUST stay 127.0.0.1 — a wider bind exposes the
+    # issuer (and its /token endpoint) to the network with no other guard.
+    ports:
+      - "127.0.0.1:8443:8443"
+    env_file:
+      - .env
+    environment:
+      # Indirection only — the real values live in .env (gitignored). Never inline
+      # a credential-shaped literal here (scripts/check-secrets.mjs / gitleaks).
+      BETTER_AUTH_SECRET: ${BETTER_AUTH_SECRET}
+      BETTER_AUTH_URL: ${BETTER_AUTH_URL}
+      OAUTH_CLIENT_ID: ${OAUTH_CLIENT_ID}
+      DATABASE_PATH: ${DATABASE_PATH}
+      JWKS_PRIVATE_KEY_PATH: ${JWKS_PRIVATE_KEY_PATH}
+      PORT: "8443"
+      # Bind the app to 0.0.0.0 INSIDE the container: Docker's port-publish forwards
+      # host traffic in via the container's bridge interface, which a 127.0.0.1
+      # in-container bind would reject (the app would be unreachable, including from
+      # the SpacetimeDB module server hitting discovery/JWKS). The loopback
+      # restriction is enforced on the HOST side by `ports: 127.0.0.1:8443:8443`.
+      HOST: "0.0.0.0"
+    volumes:
+      # The app entrypoint (auth.mjs + package.json) — created at deploy time from
+      # README.md's fenced blocks. Read-only into the container.
+      - ./app:/app:ro
+      # The SQLite database. This host path is what the runbook §8 restic sweep
+      # backs up (VACUUM INTO a sibling, then tag better-auth).
+      - ./data:/var/lib/better-auth
+      # The JWKS signing key, held OUTSIDE the database and outside the routine
+      # backup sweep (runbook §8, D20 signing-key custody). A separate, narrowly
+      # scoped secret mount.
+      - ./secrets/jwks.key:/run/secrets/jwks.key:ro
+    # Install the pinned Better Auth stack, then run the operator entrypoint. Pin
+    # exact versions at deploy time (this is a recipe, not a lockfile).
+    command:
+      - sh
+      - -c
+      - "npm install --no-save better-auth @better-auth/oauth-provider better-sqlite3 && node auth.mjs"

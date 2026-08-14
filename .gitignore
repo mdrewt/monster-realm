@@ -76,3 +76,11 @@ Thumbs.db
 .idea/
 *.swp
 *.log
+
+# ── Better Auth deployment (ops/auth) ─────────────────
+# Deploy-time artifacts: the app entrypoint (created from README's fenced blocks),
+# the SQLite database, and the JWKS signing key. NONE may ever be committed — the
+# signing key especially forges tokens for every player forever (ADR-0182 D20).
+ops/auth/app/
+ops/auth/data/
+ops/auth/secrets/

@@ -47,7 +47,11 @@ export type OverlayId =
   | 'renameView'
   | 'tradeProposeView'
   | 'helpView'
-  | 'menuView';
+  | 'menuView'
+  // M21b-2 (ADR-0182 D17 / G19): the claim overlay owns a text input, so it must GUARD movement
+  // input while open — GUARD_ONLY registration gives that for free. sessionView is DELIBERATELY
+  // NOT a member (a second EXCLUSIVE_TOP breaks decide(); D17): it is driven by conn.sessionState().
+  | 'claimView';
 
 /**
  * How an overlay behaves when something else wants to open over it.
@@ -85,6 +89,7 @@ export const OVERLAY_TIERS: Readonly<Record<OverlayId, OverlayTier>> = {
   tradeProposeView: 'GUARD_ONLY',
   helpView: 'GUARD_ONLY',
   menuView: 'GUARD_ONLY',
+  claimView: 'GUARD_ONLY',
 };
 
 /**

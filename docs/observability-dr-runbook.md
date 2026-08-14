@@ -156,3 +156,57 @@ ss -tlnp | grep -E '3000|3001|3100|3200|8443|9090|9100|12345'
 
 Every line should show `127.0.0.1`. Anything else means the posture has drifted and
 `M-playtest-a2` owes this deployment a reverse proxy in front of SpacetimeDB itself (OBS-17).
+
+The Better Auth identity provider (M21b-2, ADR-0182 D18/D20) adds one more loopback service on
+port `8443` — already in the `ss -tlnp` grep above. Its own backup/DR posture is §8 below, because
+its database is a *different* kind of loss than the game's: the game DB is regenerable content, but
+the issuer DB derives every player's permanent `Identity` and its loss orphans them all.
+
+## 8. Better Auth (accounts)
+
+Scope: the self-hosted Better Auth issuer that backs M21's OIDC accounts (ADR-0179/0182). Deployed
+per `ops/auth/` — a single loopback-bound service on port `8443` with a SQLite database. This section
+extends §1–§7's local-only, single-operator posture to that service; it does **not** replace it. The
+game database and the issuer database are backed up independently (`restic` tags `monster-realm`
+vs. `better-auth`) because they fail differently: a lost game DB is regenerable, a lost issuer DB
+permanently orphans every account (`Identity = f(iss, sub)`).
+
+- **Signing-key custody (FIRST line item, D20).** The `jwt` plugin's JWKS **signing key** is the
+  crown jewel: anyone holding it can forge a token for any player, forever, offline. Confirm where
+  Better Auth stores it (its own config/secret file vs. inside the shared SQLite database — check
+  Better Auth's docs at deploy time, assume neither). If it lives in the database, **exclude** that
+  table/file from the nightly `restic` sweep and hold the key in a separate, narrowly-scoped secret
+  store; a backup set that also contains the signing key is a second copy of the credential, not a
+  backup. If exclusion is infeasible, the compensating control is a documented, mandatory **key
+  rotation** on any suspected backup exposure. OQ6's backup destination is a second machine Drew
+  already owns — only as secure as that machine, which makes the exclusion/rotation rule *more*
+  load-bearing, not less.
+- The service is loopback-bound on port `8443` (audited by §7's `ss -tlnp` line).
+- Retention mirrors §3: nightly, `14d` / `8w` / `6m`.
+
+Nightly backup — an online snapshot (no stop-the-world; SQLite `VACUUM INTO` produces a consistent
+copy while the service runs):
+
+```sh
+sqlite3 /var/lib/better-auth/auth.sqlite "VACUUM INTO '/var/backups/auth.sqlite'"
+restic backup --tag better-auth /var/backups/auth.sqlite
+restic snapshots --tag better-auth --latest 1
+```
+
+Restore drill — the drill proves **identity equality**, not merely that the file mounts. Restore the
+snapshot, stand the issuer back up, mint a token for a **known** `sub`, and confirm SpacetimeDB
+still derives the *same* `Identity` from it. That derivation is `BLAKE3` over the issuer and subject,
+applied by `Identity::from_claims`, so an unchanged issuer URL yields an unchanged `Identity` and a
+changed one re-keys every player — which is exactly what the drill must catch:
+
+```sh
+restic restore latest --target /var/restore --tag better-auth
+# stand the restored issuer up on 127.0.0.1:8443, then mint for a known subject:
+curl -s -X POST "$AUTH_BASE/api/auth/token" -d '{"sub":"dr-drill-user"}' | jq -r .token
+# feed that token to a throwaway client and confirm the derived Identity is unchanged:
+spacetime logs monster-realm | tail -n 20
+```
+
+Caveat carried from ADR-0182 D20: the `BLAKE3(iss|sub)` construction is cited against the vendored
+`spacetimedb-lib-1.12.0` source at high confidence and was **not** byte-verified by any review pass —
+treat the drill's identity-equality check as the authority, not this prose.
