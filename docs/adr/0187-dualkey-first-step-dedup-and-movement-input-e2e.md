@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** 0158
 **Subsystems:** movement-netcode, client-ui
-**Decision:** Keydown's ungated first step is skipped iff the direction is already physically held via the other key code (new HeldDirections.isHeld membership query, pure not-emit), and a keyboard-driven Playwright e2e now executes main.ts's real frame body at runtime.
+**Decision:** Keydown's first step is skipped iff the direction is already held via the other key code (HeldDirections.isHeld membership, pure not-emit), and a keyboard-driven Playwright e2e now exercises main.ts's real frame body at runtime.
 
 ## Context
 
