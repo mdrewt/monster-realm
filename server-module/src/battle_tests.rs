@@ -5108,7 +5108,7 @@ fn lead_party_point_reads_the_lead_not_an_arbitrary_member() {
 // every retry reproduces identically (the fault is an invariant violation, not
 // a transient error). The two sibling paths that already have the right posture
 // are `pvp.rs::settle_pvp_battle` (ADR-0119 D3) and
-// `resolve_wild_battle_on_disconnect` (ADR-0138, battle.rs:1443).
+// `resolve_wild_battle_on_disconnect` (ADR-0138, battle.rs:1491).
 //
 // THE THREE SITES: submit_attack `battle.rs:748`, swap_active `:890`, flee
 // `:932` (post-change; they were `:737` / `:871` / `:905` at the pre-change
@@ -5188,16 +5188,16 @@ fn ea_pve_writeback_call() -> String {
 ///
 /// - **Aliased state writes** — `let rt_b = &mut battle; rt_b.state.outcome = ..;`
 ///   carries no `battle.state` token at all.
-/// - **Indirection** — a module-level `fn rt_resoftlock(b: &mut Battle)` called
-///   from the arm; the write is not in the scanned body.
+/// - **Indirection** — a module-level helper taking `&mut Battle`, called from the
+///   arm; the write is not in the scanned body at all.
 /// - **Snapshot-and-restore** — `let rt_pre = battle.clone();` early, then
-///   `battle = rt_pre;` in the arm. No `.state` anywhere.
-/// - **Panics with no banned token** — `battle.party_monster_ids[usize::MAX]`,
-///   `Option::unwrap(None::<u8>)` (path form, so no `.unwrap(`),
-///   `Vec::<u64>::with_capacity(usize::MAX)`, `.expect_err(` / `.unwrap_err(`
-///   (the trailing underscore defeats `.expect(` / `.unwrap(`).
-/// - **Renamed aborts** — `use std::process::abort as rt_kill;` then `rt_kill();`,
-///   or a diverging `fn rt_boom() -> !` called from the arm.
+///   `battle = rt_pre;` in the arm. No `.state` token anywhere.
+/// - **Panics with no banned token** — an index at `usize::MAX`; the path form of
+///   `unwrap` applied to a `None` (so no dotted `.unwrap` needle); a huge
+///   `with_capacity`; `.expect_err` / `.unwrap_err` (the trailing underscore
+///   defeats a needle ending in an open paren).
+/// - **Renamed aborts** — the std process abort imported under an alias and called
+///   through it, or a diverging helper returning the never type.
 ///
 /// A blacklist has to guess the next spelling and there is always one. ADR-0185
 /// D2 mandates three byte-identical inline blocks differing only in `evt` — so
@@ -5689,8 +5689,8 @@ fn ea_pve_settle_04_battle_rs_has_no_question_mark_writeback_site() {
         n_seen, 5,
         "CENSUS (14r-d, ADR-0185 D1): `{needle}..)` occurs {n_seen} time(s) in \
          battle.rs (comments and string literals blanked); the pinned census is 5 \
-         — one definition (`:1096`) plus four call sites (`:737`, `:871`, `:905`, \
-         `:1443`). This count is a TRIPWIRE, not decoration: a new PvE terminal \
+         — one definition (`:1129`) plus four call sites (`:748`, `:890`, `:932`, \
+         `:1491`). This count is a TRIPWIRE, not decoration: a new PvE terminal \
          path added later without a deliberate error posture trips it and forces \
          whoever adds it to re-derive this test from the spec — deciding, on the \
          record, whether the new site log-and-commits or propagates. Do NOT bump \
@@ -5737,11 +5737,14 @@ fn ea_pve_settle_04_battle_rs_has_no_question_mark_writeback_site() {
 ///
 /// WHY THIS IS PART OF THE SAME SLICE, not a tidy-up. ADR-0185 D5's trade
 /// (atomic rollback + softlock  ->  partial write-back + progress) is only
-/// acceptable while the new failure mode stays BOUNDED. As shipped it is not.
-/// `write_back_battle_results` runs `check_team_coupling` -> the fallible
-/// `write_back_party_hp` -> the `battle_wild` sidecar delete (`:1117`) -> the
-/// prior-terminal `battle` GC sweep (`:1120-1156`). An `Err` from
-/// `write_back_party_hp` therefore skips BOTH GC steps.
+/// acceptable while the new failure mode stays BOUNDED. At the pre-change
+/// baseline it was not: `write_back_battle_results` ran `check_team_coupling`,
+/// then the fallible `write_back_party_hp`, then the `battle_wild` sidecar
+/// delete, then the prior-terminal `battle` GC sweep — so an `Err` from
+/// `write_back_party_hp` skipped BOTH GC steps.
+///
+/// Post-change (`battle.rs:1139` / `:1159` / `:1174` / `:1204`) the order is
+/// `check_team_coupling` -> sidecar delete -> prior-terminal sweep -> HP write.
 ///
 /// Before D1 that was harmless: the row stayed `Ongoing`, the player was frozen,
 /// and exactly one stuck row existed. AFTER D1 the player keeps playing — so
@@ -5767,25 +5770,26 @@ fn ea_pve_settle_04_battle_rs_has_no_question_mark_writeback_site() {
 /// `update`), which this does not touch.
 ///
 /// PINNED ON EFFECTS, NOT ON ANCHORS. The first version of this test located four
-/// NEEDLES (`check_team_coupling(`, `write_back_party_hp(`, the `battle_wild`
-/// delete, `old_terminal_ids`) and compared their offsets. A red team defeated it
-/// three ways, each CI-clean:
+/// NEEDLES — the coupling check, the HP write, the sidecar delete and the sweep's
+/// id binding — and compared their offsets. A red team defeated it three ways,
+/// each CI-clean. (House rule, as elsewhere in this file: a space is written
+/// before each `(` below so no comment here contains a production call verbatim.)
 ///
-/// - **(a) Split the sweep.** Leave `let old_terminal_ids .. .collect();` where it
-///   is — the anchor is satisfied — and move only the
-///   `for id in old_terminal_ids { ..delete(id); }` loop below the HP write. The
+/// - **(a) Split the sweep.** Leave the `let old_terminal_ids .. .collect ();`
+///   binding where it is — the anchor is satisfied — and move only the
+///   `for id in old_terminal_ids ..delete (id);` loop below the HP write. The
 ///   binding is inert; the DELETE is the effect, and the unbounded leak is fully
 ///   restored.
-/// - **(b) Decoy anchors.** Plant `if false { ..delete(0u64); let old_terminal_ids:
-///   Vec<u64> = Vec::new(); }` early so both needles match dead code, and move the
-///   real block back below the HP write.
-/// - **(c) Gate the GC.** Wrap both steps in `if !is_wild_battle(battle) { .. }`.
+/// - **(b) Decoy anchors.** Plant a dead `if false` block early containing a
+///   `delete (0u64)` and a same-named empty id binding, so both needles match dead
+///   code, and move the real block back below the HP write.
+/// - **(c) Gate the GC.** Wrap both steps in `if !is_wild_battle (battle)`.
 ///   Source order is preserved and every offset comparison passes — but the
 ///   sidecar is then NEVER collected for a wild battle, which is a leak on EVERY
 ///   battle rather than only on a faulting one.
 ///
-/// So this test asserts on the MUTATING CALLS: every `.delete(` in the body must
-/// precede the fallible HP write, and no `.delete(` may sit under a conditional
+/// So this test asserts on the MUTATING CALLS: every row delete in the body must
+/// precede the fallible HP write, and no row delete may sit under a conditional
 /// header. (a) and (b) die on the first rule, (c) on the second, and (b)'s decoy
 /// dies twice over.
 ///
