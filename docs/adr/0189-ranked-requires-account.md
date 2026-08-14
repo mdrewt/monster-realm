@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** security-authz, battle
-**Decision:** `challenge_pvp` and `accept_challenge` reject unless BOTH parties hold an `account` row (`crate::accounts::is_account_holder`, never `has_jwt()`), via one pure `ranked_account_gate` seam per reducer, before any irreversible effect — deployment-conditionally active (inert until a real auth issuer is configured).
+**Decision:** Both PvP handshake reducers reject unless both parties hold an `account` row (`is_account_holder`, never `has_jwt()`), via one pure `ranked_account_gate` seam before any irreversible effect; inert until a real issuer is configured.
 
 ## Context
 

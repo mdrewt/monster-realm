@@ -42,6 +42,13 @@
 //          (mirrors pvp_tests.rs:1206 needle — AM-4)
 //     C2: on_disconnect body (extracted from lib.rs) contains no `profile(` token
 //
+//   D RANKED_REQUIRES_ACCOUNT (14r-g, ADR-0189, issue #307)
+//     checkRankedAccountGate(pvpSrc): challenge_pvp and accept_challenge each
+//     carry the exact ADR-0189 ranked-account gate statement, once, at brace
+//     depth 0, before their irreversible effects — plus the SSOT/ctor-cover
+//     counts and the anti-shadow pins. Full clause list and rationale live on
+//     the checker itself (search "CHECKER D").
+//
 //   G8 REKEY_PROFILE (M21c, ADR-0179 D6 / AUTH-23/25)
 //     [G8/tombstone-arg-pin]: inside `rekey_profile`'s body, the SECOND
 //          `.profile().identity().update(` call's argument must be EXACTLY
@@ -420,18 +427,41 @@ function checkTombstoneArgPin(rankingSrc) {
 // clause is fail-loud — an extraction failure or a missing anchor returns
 // {ok:false}, never a silent skip, including for the BAN clauses:
 //   [D/fn-missing]        `fn ranked_account_gate(` exists at all.
+//   [D/gate-fn-unique]    each of the four load-bearing declarations appears
+//                         EXACTLY once, and neither seam name is ever REBOUND
+//                         (`name=`). Both body extractors here and in
+//                         pvp_tests.rs are FIRST-MATCH, so a decoy
+//                         `pub fn challenge_pvp(` in a nested module, a nested
+//                         `fn ranked_account_gate`, or a
+//                         `let ranked_enforcement_active = || false;` closure
+//                         shadows the real item while every needle still matches.
 //   [D/challenge-missing] `challenge_pvp`'s body can be extracted.
 //   [D/accept-missing]    `accept_challenge`'s body can be extracted.
+//   [D/me-provenance]     each reducer body binds `me` exactly once, from
+//                         `ctx.sender` (a `let me = target;` rebind re-points the
+//                         caller leg at the opponent, byte-identically).
+//   [D/no-cfg-gate]       no `#[cfg` inside either reducer body (a cfg-gated
+//                         guard is present in review and absent in the wasm).
+//                         Per-BODY: pvp.rs's file-scope `#[cfg(test)] mod` is fine.
 //   [D/challenge-stmt]    the exact compacted Guard 3a statement, count == 1.
 //   [D/challenge-depth]   it sits at brace depth 0 of the reducer body.
 //   [D/challenge-order]   it precedes `battle_challenge().insert(`.
+//   [D/challenge-oracle-bound]
+//                         it FOLLOWS the target-presence guard (ADR-0189 D8):
+//                         account existence is disclosed only for a target the
+//                         caller can already observe online.
 //   [D/accept-stmt]       ditto, challenger leg.
 //   [D/accept-depth]      ditto.
 //   [D/accept-order]      it precedes `start_pvp_battle(`.
+//   [D/log-tag]           each guard files its reject under its OWN reducer tag
+//                         (checked on the RAW body, where the literal survives).
 //   [D/no-has-jwt]        `has_jwt` count == 0 (true for EVERY connection —
 //                         a gate keyed off it is vacuous; ADR-0189 D2).
 //   [D/no-account-table]  `ctx.db.account(` count == 0 (no SSOT fork).
-//   [D/ctor-cover]        `start_pvp_battle(` == 2 and `.battle().insert(` == 1.
+//   [D/ctor-cover]        `start_pvp_battle(` == 2, the BARE token
+//                         `start_pvp_battle` == 2 (a fn-POINTER alias
+//                         `let ctor = start_pvp_battle;` leaves the paren count
+//                         untouched), and `.battle().insert(` == 1.
 //   [D/active-body]       the exact `ranked_enforcement_active` body.
 //
 // Needles are literal `indexOf`/`countOccurrences` only — NO `new RegExp(`
@@ -449,9 +479,34 @@ const D_ACCEPT_FN = 'accept_challenge';
 // Each reducer's own irreversible effect — the thing the gate must precede.
 const D_CHALLENGE_EFFECT = 'battle_challenge().insert(';
 const D_ACCEPT_EFFECT = 'start_pvp_battle(';
+// Bare token (no paren): a fn-POINTER alias `let ctor = start_pvp_battle;`
+// constructs ranked battles while leaving the paren count at 2 (red-team F4).
+const D_CTOR_BARE = 'start_pvp_battle';
 const D_HAS_JWT_NEEDLE = 'has_jwt';
 const D_ACCOUNT_TABLE_NEEDLE = 'ctx.db.account(';
 const D_BATTLE_INSERT_NEEDLE = '.battle().insert(';
+// ADR-0189 D8: the target-joined-and-online guard the account probe must follow.
+const D_TARGET_GUARD_ANCHOR = 'match&target_player{';
+const D_CFG_ATTR = '#[cfg';
+const D_LET_ME = 'letme=';
+const D_LET_ME_SENDER = 'letme=ctx.sender;';
+// Uniqueness sets (red-team F2/F8). Compacted declaration prefixes.
+// SEAM decls are checked EARLY (a count of 0 is itself a violation). REDUCER
+// decls are checked AFTER body extraction on purpose: a count of 0 there must
+// surface as [D/challenge-missing] / [D/accept-missing], the clauses that own
+// "the anchor vanished", so the duplicate check only ever reports a SHADOW.
+const D_SEAM_DECLS = [
+  [`fn${D_GATE_FN}(`, 'the pure decision seam'],
+  [`fn${D_ACTIVE_FN}(`, 'the activation predicate'],
+];
+const D_REDUCER_DECLS = [
+  [`pubfn${D_CHALLENGE_FN}(`, 'the challenge handshake reducer'],
+  [`pubfn${D_ACCEPT_FN}(`, 'the accept handshake reducer'],
+];
+// Rebinding bans. EVERY legitimate use of these names is a CALL, so the next
+// character is `(`, never `=`. (`if let Err(reason) = ranked_account_gate(` puts
+// the `=` BEFORE the name, so the sanctioned shape does not trip this.)
+const D_SHADOW_BANS = [`${D_GATE_FN}=`, `${D_ACTIVE_FN}=`];
 // `fn ranked_enforcement_active() -> bool { issuers_configured(crate::accounts::ALLOWED_ISSUERS) }`
 const D_ACTIVE_BODY_PIN = `fn${D_ACTIVE_FN}()->bool{issuers_configured(crate::accounts::ALLOWED_ISSUERS)}`;
 
@@ -489,6 +544,38 @@ function dBraceDepthAt(compacted, at) {
   return depth;
 }
 
+// The compacted `log_reject(<tag>` prefix. Read against the RAW body, where the
+// literal survives — `stripBoth` blanks it, so no stripped-text clause can see
+// which reducer a reject was filed under.
+function dLogTagNeedle(tag) {
+  return `log_reject(${DQ}${tag}${DQ}`;
+}
+
+// dReducerBodySpan: extractReducerBody's algorithm, returning OFFSETS instead of
+// text. `stripRustSource` is length- and offset-preserving, so brace matching
+// runs on the string-blanked text (correct: a brace inside a literal can never
+// desync it) while the SAME span still indexes the RAW source. That is what lets
+// [D/log-tag] read a literal that every other clause deliberately cannot see.
+// extractReducerBody itself is left untouched — it is A1/C2/G8's.
+function dReducerBodySpan(strippedSrc, fnName) {
+  let idx = strippedSrc.indexOf(`pub fn ${fnName}(`);
+  if (idx === -1) idx = strippedSrc.indexOf(`fn ${fnName}(`);
+  if (idx === -1) return null;
+  let i = idx;
+  while (i < strippedSrc.length && strippedSrc[i] !== '{') i++;
+  if (i >= strippedSrc.length) return null;
+  const start = i + 1;
+  let depth = 1;
+  i++;
+  while (i < strippedSrc.length && depth > 0) {
+    if (strippedSrc[i] === '{') depth++;
+    else if (strippedSrc[i] === '}') depth--;
+    i++;
+  }
+  if (depth !== 0) return null;
+  return { start, end: i - 1 };
+}
+
 /**
  * Criterion D: is the ranked-requires-account gate wired into both PvP
  * handshake reducers exactly as ADR-0189 specifies?
@@ -510,6 +597,35 @@ export function checkRankedAccountGate(pvpSrc) {
     };
   }
 
+  for (const [decl, what] of D_SEAM_DECLS) {
+    const n = countOccurrences(code, decl);
+    if (n !== 1) {
+      return {
+        ok: false,
+        why:
+          `[D/gate-fn-unique] pvp.rs declares \`${decl}\` (compacted) ${n} time(s); it must ` +
+          `be exactly 1 — it is ${what}. 0 means the item is missing; 2+ means a SHADOW, ` +
+          'and every body-scoped clause below uses a FIRST-MATCH extractor, so a decoy ' +
+          'declaration (a nested module, a fn declared inside a reducer) would be verified ' +
+          'in place of the real one while the real one runs unchecked',
+      };
+    }
+  }
+  for (const ban of D_SHADOW_BANS) {
+    const n = countOccurrences(code, ban);
+    if (n !== 0) {
+      return {
+        ok: false,
+        why:
+          `[D/gate-fn-unique] pvp.rs binds \`${ban}\` (compacted) ${n} time(s); it must never ` +
+          'appear. Every legitimate use of these names is a CALL, so the next character is ' +
+          '`(` — a `=` means the name was REBOUND, e.g. ' +
+          '`let ranked_enforcement_active = || false;`, which shadows the real predicate at ' +
+          'the call site and wires enforcement permanently OFF while every needle still matches',
+      };
+    }
+  }
+
   const legs = [
     {
       tag: 'challenge',
@@ -517,6 +633,8 @@ export function checkRankedAccountGate(pvpSrc) {
       thirdArg: 'target',
       effect: D_CHALLENGE_EFFECT,
       effectWhat: 'the challenge row insert',
+      oracleAnchor: D_TARGET_GUARD_ANCHOR,
+      otherTag: D_ACCEPT_FN,
     },
     {
       tag: 'accept',
@@ -524,13 +642,19 @@ export function checkRankedAccountGate(pvpSrc) {
       thirdArg: 'challenge.challenger',
       effect: D_ACCEPT_EFFECT,
       effectWhat: 'the ranked battle construction',
+      // No oracle bound: accept_challenge's challenger is a joined player BY
+      // CONSTRUCTION (the challenge row could not exist otherwise), so there is
+      // no arbitrary-identity probe to bound.
+      oracleAnchor: null,
+      otherTag: D_CHALLENGE_FN,
     },
   ];
 
   const bodies = {};
+  const rawBodies = {};
   for (const leg of legs) {
-    const body = extractReducerBody(stripped, leg.fnName);
-    if (body === null) {
+    const span = dReducerBodySpan(stripped, leg.fnName);
+    if (span === null) {
       return {
         ok: false,
         why:
@@ -539,11 +663,55 @@ export function checkRankedAccountGate(pvpSrc) {
           'anchor moves is worth nothing (fail loud, never skip)',
       };
     }
-    bodies[leg.tag] = compactWs(body);
+    bodies[leg.tag] = compactWs(stripped.slice(span.start, span.end));
+    rawBodies[leg.tag] = compactWs(pvpSrc.slice(span.start, span.end));
+  }
+
+  // Reducer-declaration uniqueness, AFTER extraction (see D_REDUCER_DECLS): by
+  // here both bodies were found, so this can only report a duplicate — the
+  // first-match decoy that would otherwise be verified in the real one's place.
+  for (const [decl, what] of D_REDUCER_DECLS) {
+    const n = countOccurrences(code, decl);
+    if (n !== 1) {
+      return {
+        ok: false,
+        why:
+          `[D/gate-fn-unique] pvp.rs declares \`${decl}\` (compacted) ${n} time(s); it must ` +
+          `be exactly 1 — it is ${what}. A second declaration (a nested module, a compat ` +
+          'shim) is extracted FIRST by both this eval and pvp_tests.rs, so every body-scoped ' +
+          'clause below would verify the decoy while the real reducer runs ungated',
+      };
+    }
   }
 
   for (const leg of legs) {
     const compact = bodies[leg.tag];
+
+    const nLetMe = countOccurrences(compact, D_LET_ME);
+    if (nLetMe !== 1 || compact.indexOf(D_LET_ME_SENDER) === -1) {
+      return {
+        ok: false,
+        why:
+          `[D/me-provenance] \`${leg.fnName}\` binds \`me\` ${nLetMe} time(s) and ` +
+          `${compact.indexOf(D_LET_ME_SENDER) === -1 ? 'does NOT' : 'does'} bind it from ` +
+          '`ctx.sender`. It must bind `me` EXACTLY ONCE, from `ctx.sender`: a second ' +
+          '`let me = target;` re-points the caller leg of the account gate at the opponent ' +
+          'while the exact-statement pin below stays byte-identical, so this is the only ' +
+          'clause that can see it',
+      };
+    }
+
+    if (compact.indexOf(D_CFG_ATTR) !== -1) {
+      return {
+        ok: false,
+        why:
+          `[D/no-cfg-gate] \`${leg.fnName}\`'s body carries a \`${D_CFG_ATTR}\` attribute. A ` +
+          'conditional-compilation attribute on (or around) the account gate keeps the exact ' +
+          'statement text in the file and in every source scan while compiling it OUT of the ' +
+          'shipped wasm — present in review, absent in production. Scoped to the BODY on ' +
+          "purpose: pvp.rs's file-scope `#[cfg(test)] mod pvp_tests;` is legitimate",
+      };
+    }
     const plain = dGuardNeedle(leg.thirdArg, false);
     const trailing = dGuardNeedle(leg.thirdArg, true);
     const hits = countOccurrences(compact, plain) + countOccurrences(compact, trailing);
@@ -596,6 +764,48 @@ export function checkRankedAccountGate(pvpSrc) {
           `${leg.effectWhat} has already been committed does not gate anything`,
       };
     }
+
+    if (leg.oracleAnchor !== null) {
+      const anchorAt = compact.indexOf(leg.oracleAnchor);
+      if (anchorAt === -1) {
+        return {
+          ok: false,
+          why:
+            `[D/${leg.tag}-oracle-bound] the target-presence anchor \`${leg.oracleAnchor}\` ` +
+            `was not found in \`${leg.fnName}\`, so the ADR-0189 D8 oracle bound cannot be ` +
+            'checked (fail loud, never skip)',
+        };
+      }
+      if (at < anchorAt) {
+        return {
+          ok: false,
+          why:
+            `[D/${leg.tag}-oracle-bound] the Guard 3a statement in \`${leg.fnName}\` is at ` +
+            `compacted offset ${at}, BEFORE the target-presence guard \`${leg.oracleAnchor}\` ` +
+            `at ${anchorAt}. Hoisting the account probe above that guard turns the reducer ` +
+            'into an enumeration oracle over ARBITRARY 32-byte identities — the caller learns ' +
+            '"this identity holds an account" for players they cannot otherwise observe, the ' +
+            'exact hole ADR-0179 G1/D3 exists to prevent. ADR-0189 D8 bounds the residual ' +
+            'disclosure to online, joined players ON PURPOSE',
+        };
+      }
+    }
+
+    const rawBody = rawBodies[leg.tag];
+    const ownTag = dLogTagNeedle(leg.fnName);
+    const wrongTag = dLogTagNeedle(leg.otherTag);
+    if (rawBody.indexOf(ownTag) === -1 || rawBody.indexOf(wrongTag) !== -1) {
+      return {
+        ok: false,
+        why:
+          `[D/log-tag] \`${leg.fnName}\` must file its rejects under its OWN tag ` +
+          `(\`${ownTag}\`) and never under \`${wrongTag}\`. This clause reads the RAW body, ` +
+          'where the literal survives — every other clause runs on stripped text in which ' +
+          'the tag is blanked, so a guard that rejects correctly but files the reject under ' +
+          "the other reducer's name is invisible to all of them, and the reject log is the " +
+          'only record an operator has of which reducer refused a ranked handshake',
+      };
+    }
   }
 
   const jwtCount = countOccurrences(code, D_HAS_JWT_NEEDLE);
@@ -624,18 +834,22 @@ export function checkRankedAccountGate(pvpSrc) {
   }
 
   const ctorCount = countOccurrences(code, D_ACCEPT_EFFECT);
+  const ctorBareCount = countOccurrences(code, D_CTOR_BARE);
   const insertCount = countOccurrences(code, D_BATTLE_INSERT_NEEDLE);
-  if (ctorCount !== 2 || insertCount !== 1) {
+  if (ctorCount !== 2 || ctorBareCount !== 2 || insertCount !== 1) {
     return {
       ok: false,
       why:
         `[D/ctor-cover] expected exactly 2 \`${D_ACCEPT_EFFECT}\` (the definition plus its ONE ` +
-        `caller, \`${D_ACCEPT_FN}\`) and exactly 1 \`${D_BATTLE_INSERT_NEEDLE}\` in pvp.rs; ` +
-        `found ${ctorCount} and ${insertCount}. Gating the two handshake reducers is the ` +
-        'COMPLETE cover for ranked-battle creation only while this holds (ADR-0189 D1) — a ' +
-        'second constructor (a quick-match reducer, a rematch path) would build ungated ' +
-        'ranked battles. Gate the new path and update ADR-0189 D1 rather than moving these ' +
-        'numbers',
+        `caller, \`${D_ACCEPT_FN}\`), exactly 2 BARE \`${D_CTOR_BARE}\` tokens and exactly 1 ` +
+        `\`${D_BATTLE_INSERT_NEEDLE}\` in pvp.rs; found ${ctorCount}, ${ctorBareCount} and ` +
+        `${insertCount}. Gating the two handshake reducers is the COMPLETE cover for ` +
+        'ranked-battle creation only while this holds (ADR-0189 D1) — a second constructor ' +
+        '(a quick-match reducer, a rematch path) would build ungated ranked battles. The ' +
+        'BARE count is separate on purpose: a function-POINTER alias ' +
+        '(`let ctor = start_pvp_battle;` then `ctor(ctx, ..)`) constructs ranked battles ' +
+        'while leaving the paren count at exactly 2. Gate the new path and update ADR-0189 ' +
+        'D1 rather than moving these numbers',
     };
   }
 
@@ -721,14 +935,22 @@ const D_START_PVP_BATTLE_DEF = `pub(crate) fn start_pvp_battle(
 // buildDSource: the GOOD pvp.rs shape, with named single-point overrides.
 //   gateDef / activeDef       — the two seam definitions
 //   challengeFn               — the whole challenge_pvp reducer (null = generated)
+//   challengeGuardPreTarget   — guard slot ABOVE the target-presence guard
+//                               (the ADR-0189 D8 oracle-bound violation)
 //   challengeGuardPre / Post  — guard slot BEFORE / AFTER the challenge insert
 //   acceptGuard               — guard slot before start_pvp_battle
 //   extra                     — appended source (a second ctor, a stray helper)
+//
+// The generated challenge_pvp carries the real reducer's guard 3 (target joined
+// AND online) because [D/challenge-oracle-bound] pins the gate BELOW it — a
+// template without that guard would make the clause fail loud on the GOOD
+// fixture instead of on the mutants.
 function buildDSource(over = {}) {
   const o = {
     gateDef: D_GATE_DEF,
     activeDef: D_ACTIVE_DEF,
     challengeFn: null,
+    challengeGuardPreTarget: '',
     challengeGuardPre: D_GUARD_CHALLENGE,
     challengeGuardPost: '',
     acceptGuard: D_GUARD_ACCEPT,
@@ -745,6 +967,21 @@ function buildDSource(over = {}) {
         let e = ${DQ}not joined${DQ}.to_string();
         log_reject(${DQ}challenge_pvp${DQ}, me, &e);
         return Err(e);
+    }
+${o.challengeGuardPreTarget}
+    let target_player = ctx.db.player().identity().find(target);
+    match &target_player {
+        None => {
+            let e = ${DQ}target player not found${DQ}.to_string();
+            log_reject(${DQ}challenge_pvp${DQ}, me, &e);
+            return Err(e);
+        }
+        Some(p) if !p.online => {
+            let e = ${DQ}target player is offline${DQ}.to_string();
+            log_reject(${DQ}challenge_pvp${DQ}, me, &e);
+            return Err(e);
+        }
+        _ => {}
     }
 ${o.challengeGuardPre}
     if let Err(e) = check_party_size(party_ids.len()) {
@@ -2020,6 +2257,214 @@ export default async function () {
         'the fixture either still matches the exact body pin or dropped the ' +
         'issuers_configured reference the mutation is supposed to preserve',
     },
+    {
+      // Red-team F2: a nested `fn ranked_account_gate` inside challenge_pvp
+      // shadows the real seam at the call site. Every statement needle still
+      // matches — it is the SAME text — but the gate it calls always returns Ok.
+      label: 'D-BAD-shadow-gate-fn',
+      tag: '[D/gate-fn-unique]',
+      what: 'a challenge_pvp that declares its OWN always-Ok ranked_account_gate inline',
+      src: buildDSource({
+        challengeGuardPre: `    fn ranked_account_gate(_e: bool, _c: bool, _o: bool) -> Result<(), &'static str> {
+        Ok(())
+    }
+${D_GUARD_CHALLENGE}`,
+      }),
+      constructed: (src) => countOccurrences(scanCode(src), `fn${D_GATE_FN}(`) === 2,
+      constructedWhy: `the fixture does not declare \`fn ${D_GATE_FN}(\` twice`,
+    },
+    {
+      // Red-team F2: a closure binding shadows the activation predicate. The
+      // call site `ranked_enforcement_active()` is byte-identical and now
+      // evaluates a closure that is hard-wired to `false`.
+      label: 'D-BAD-closure-shadow',
+      tag: '[D/gate-fn-unique]',
+      what: 'a challenge_pvp that shadows ranked_enforcement_active with a `|| false` closure',
+      src: buildDSource({
+        challengeGuardPre: `    let ranked_enforcement_active = || false;
+${D_GUARD_CHALLENGE}`,
+      }),
+      constructed: (src) => countOccurrences(scanCode(src), `${D_ACTIVE_FN}=`) === 1,
+      constructedWhy: `the fixture does not rebind \`${D_ACTIVE_FN}\``,
+    },
+    {
+      // Red-team F8: the body extractors here and in pvp_tests.rs are
+      // FIRST-MATCH, so a decoy reducer declaration is enough to redirect every
+      // body-scoped clause onto a shape that was written to satisfy them.
+      label: 'D-BAD-decoy-challenge-fn',
+      tag: '[D/gate-fn-unique]',
+      what: 'a pvp.rs carrying a SECOND `pub fn challenge_pvp(` in a nested module',
+      src: buildDSource({
+        extra: `mod compat {
+    pub fn challenge_pvp(ctx: &ReducerContext, target: Identity, party_ids: Vec<u64>) -> Result<(), String> {
+        let me = ctx.sender;
+        let _ = (target, party_ids, me);
+        Ok(())
+    }
+}`,
+      }),
+      constructed: (src) => countOccurrences(scanCode(src), `pubfn${D_CHALLENGE_FN}(`) === 2,
+      constructedWhy: `the fixture does not declare \`pub fn ${D_CHALLENGE_FN}(\` twice`,
+    },
+    {
+      // Red-team F2 / 12r-d E3 shadow-rebind: the gate statement is PERFECT and
+      // still checks the wrong identity, because `me` was re-pointed first.
+      label: 'D-BAD-me-rebind',
+      tag: '[D/me-provenance]',
+      what: 'a challenge_pvp that rebinds `let me = target;` before the gate',
+      src: buildDSource({
+        challengeGuardPre: `    let me = target;
+${D_GUARD_CHALLENGE}`,
+      }),
+      constructed: (src) => {
+        const body = extractReducerBody(stripBoth(src), D_CHALLENGE_FN);
+        return body !== null && countOccurrences(compactWs(body), D_LET_ME) === 2;
+      },
+      constructedWhy: 'the fixture does not bind `me` twice in challenge_pvp',
+    },
+    {
+      // Red-team F3: present in review, absent in the shipped wasm.
+      label: 'D-BAD-cfg-gated',
+      tag: '[D/no-cfg-gate]',
+      what: 'a challenge_pvp whose gate is `#[cfg(test)]`-gated out of the release build',
+      src: buildDSource({
+        challengeGuardPre: `    #[cfg(test)]
+${D_GUARD_CHALLENGE}`,
+      }),
+      constructed: (src) => {
+        const body = extractReducerBody(stripBoth(src), D_CHALLENGE_FN);
+        return body !== null && compactWs(body).indexOf(D_CFG_ATTR) !== -1;
+      },
+      constructedWhy: `the fixture's challenge_pvp body carries no \`${D_CFG_ATTR}\``,
+    },
+    {
+      // Red-team F7: the guard logs the reason and falls through, admitting the
+      // guest anyway. Everything up to `return Err(e);` is byte-identical.
+      label: 'D-BAD-log-no-return',
+      tag: '[D/challenge-stmt]',
+      what: 'a challenge_pvp whose gate logs the rejection but never returns Err',
+      src: buildDSource({
+        challengeGuardPre: D_GUARD_CHALLENGE.replace('\n        return Err(e);', ''),
+      }),
+      constructed: (src) => {
+        const body = extractReducerBody(stripBoth(src), D_CHALLENGE_FN);
+        if (body === null) return false;
+        const compact = compactWs(body);
+        // The gate block is still THERE (so this is not an "absent gate"
+        // fixture in disguise) but the full pin no longer matches. Checking for
+        // the absence of `returnErr(e);}` outright would be wrong: the
+        // template's OTHER guards legitimately end that way.
+        return (
+          compact.indexOf(`ifletErr(reason)=${D_GATE_FN}(`) !== -1 &&
+          countOccurrences(compact, dGuardTrailingNeedleChallenge) === 0 &&
+          countOccurrences(compact, dGuardNeedle('target', false)) === 0
+        );
+      },
+      constructedWhy:
+        'the fixture is not the log-without-return shape (the gate statement is missing, ' +
+        'or the full pin still matches)',
+    },
+    {
+      // Red-team F7: pins the ==1 half of the statement count. A duplicated
+      // guard is the shape a careless merge produces, and a >=1 formulation
+      // would accept it (and with it, a second copy someone later edits).
+      label: 'D-BAD-double-guard',
+      tag: '[D/challenge-stmt]',
+      what: 'a challenge_pvp carrying the gate statement TWICE',
+      src: buildDSource({
+        challengeGuardPre: `${D_GUARD_CHALLENGE}\n${D_GUARD_CHALLENGE}`,
+      }),
+      constructed: (src) => {
+        const body = extractReducerBody(stripBoth(src), D_CHALLENGE_FN);
+        return (
+          body !== null && countOccurrences(compactWs(body), dGuardTrailingNeedleChallenge) === 2
+        );
+      },
+      constructedWhy: 'the fixture does not contain the gate statement exactly twice',
+    },
+    {
+      // Red-team F7: the fail-loud arm of the ordering clause. Deleting the
+      // anchor must RED, never silently skip the ordering check.
+      label: 'D-BAD-no-effect-anchor',
+      tag: '[D/challenge-order]',
+      what: 'a challenge_pvp with no battle_challenge().insert( anchor at all',
+      src: buildDSource({
+        challengeFn: `pub fn challenge_pvp(ctx: &ReducerContext, target: Identity, party_ids: Vec<u64>) -> Result<(), String> {
+    let me = ctx.sender;
+    let _ = (target, party_ids);
+${D_GUARD_CHALLENGE}
+    Ok(())
+}`,
+      }),
+      constructed: (src) => {
+        const body = extractReducerBody(stripBoth(src), D_CHALLENGE_FN);
+        return body !== null && compactWs(body).indexOf(D_CHALLENGE_EFFECT) === -1;
+      },
+      constructedWhy: 'the fixture still contains the challenge-insert anchor',
+    },
+    {
+      // Reviewer M1 / ADR-0189 D8: the gate is present, correct and before the
+      // insert — but hoisted ABOVE the target-presence guard, which turns
+      // challenge_pvp into an account-existence oracle over arbitrary identities.
+      label: 'D-BAD-gate-before-target-check',
+      tag: '[D/challenge-oracle-bound]',
+      what: 'a challenge_pvp whose gate runs BEFORE the target joined-and-online guard',
+      src: buildDSource({ challengeGuardPreTarget: D_GUARD_CHALLENGE, challengeGuardPre: '' }),
+      constructed: (src) => {
+        const body = extractReducerBody(stripBoth(src), D_CHALLENGE_FN);
+        if (body === null) return false;
+        const compact = compactWs(body);
+        const at = compact.indexOf(dGuardTrailingNeedleChallenge);
+        const anchorAt = compact.indexOf(D_TARGET_GUARD_ANCHOR);
+        return at !== -1 && anchorAt !== -1 && at < anchorAt;
+      },
+      constructedWhy: 'the gate is not positioned above the target-presence guard in the fixture',
+    },
+    {
+      // Reviewer m1: the gate rejects correctly and files the reject under the
+      // OTHER reducer's name. Invisible to every stripped-text clause, because
+      // the stripper blanks the literal.
+      label: 'D-BAD-wrong-log-tag',
+      tag: '[D/log-tag]',
+      what: 'a challenge_pvp gate that logs its reject under the accept_challenge tag',
+      src: buildDSource({
+        challengeGuardPre: D_GUARD_CHALLENGE.replace(
+          dLogTagNeedle(D_CHALLENGE_FN),
+          dLogTagNeedle(D_ACCEPT_FN),
+        ),
+      }),
+      constructed: (src) => {
+        const span = dReducerBodySpan(stripBoth(src), D_CHALLENGE_FN);
+        if (span === null) return false;
+        return (
+          compactWs(src.slice(span.start, span.end)).indexOf(dLogTagNeedle(D_ACCEPT_FN)) !== -1
+        );
+      },
+      constructedWhy: "challenge_pvp's body does not carry the accept_challenge log tag",
+    },
+    {
+      // Red-team F4: a fn-POINTER alias builds ranked battles from an ungated
+      // reducer while `start_pvp_battle(` stays at exactly 2 — which is why the
+      // BARE-token count exists alongside the paren count.
+      label: 'D-BAD-fnptr-ctor',
+      tag: '[D/ctor-cover]',
+      what: 'a second reducer that constructs ranked battles through a fn-pointer alias',
+      src: buildDSource({
+        extra: `pub fn quick_match(ctx: &ReducerContext, opponent: Identity, party_ids: Vec<u64>) -> Result<(), String> {
+    let ctor = start_pvp_battle;
+    let me = ctx.sender;
+    let battle_id = ctor(ctx, me, party_ids.clone(), opponent, party_ids)?;
+    schedule_deadline(ctx, battle_id, 0);
+    Ok(())
+}`,
+      }),
+      constructed: (src) =>
+        countOccurrences(scanCode(src), D_ACCEPT_EFFECT) === 2 &&
+        countOccurrences(scanCode(src), D_CTOR_BARE) === 3,
+      constructedWhy:
+        'the alias fixture must leave the paren count at 2 (proving the paren pin is blind) ' +
+        'while raising the bare-token count to 3',
+    },
   ];
 
   for (const fixture of dBadFixtures) {
@@ -2353,8 +2798,12 @@ export default async function () {
       'tombstoned_profile(guest) (AUTH-25, ADR-0179 D6); ' +
       'D RANKED_REQUIRES_ACCOUNT: challenge_pvp and accept_challenge each carry the exact ' +
       'ADR-0189 ranked_account_gate statement once, at brace depth 0, before their ' +
-      'irreversible effects, with has_jwt and ctx.db.account( absent, start_pvp_battle( == 2, ' +
-      '.battle().insert( == 1 and the exact ranked_enforcement_active body (issue #307). ' +
+      'irreversible effects (and, for challenge_pvp, after the target-presence guard — the ' +
+      'D8 oracle bound), each binding `me` once from ctx.sender, with no #[cfg inside either ' +
+      'body, each filing its reject under its own log tag, no shadowed or duplicated seam / ' +
+      'reducer declarations, has_jwt and ctx.db.account( absent, start_pvp_battle( == 2 in ' +
+      'both the paren and bare-token forms, .battle().insert( == 1 and the exact ' +
+      'ranked_enforcement_active body (issue #307). ' +
       'A1/A2/C1a/C1b/D all matched against WHITESPACE-COMPACTED source (M21c A2 corollary), ' +
       'so rustfmt-wrapped chains cannot evade them.',
   };
