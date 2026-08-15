@@ -94,7 +94,7 @@ of them streams:
 
 - **stdout** — one OTLP/HTTP JSON trace document per poll that produced at
   least one span. Nothing consumes it: **the OTLP POST client is deferred**
-  (13r-c), so `docker compose logs mr-trace-relay` is the sink today. That
+  (the P5-otlp-export follow-up slice), so `docker compose logs mr-trace-relay` is the sink today. That
   costs no observability while `$trace_pair_set` is empty, because the
   document would be `{"resourceSpans":[]}` regardless of sink — but it does
   mean no trace reaches Tempo from this process yet. A poll with no spans
@@ -129,7 +129,7 @@ on a stack that is merely young. The daemon warns once and keeps polling.
   whole: one identity comparison cannot count rotations.
 - **A truncation re-emits the surviving prefix.** `truncated` restarts at
   offset 0 and there is no dedup, by decision.
-- **The OTLP POST client is deferred to 13r-c** (see stdout, above). The ban
+- **The OTLP POST client is deferred to the P5-otlp-export follow-up slice** (see stdout, above). The ban
   on egress in `daemon.mjs` is asserted flatly by G9j, so the moment an
   outbound POST lands there without the park being graduated, the eval reds.
 - **The cross-poll carry-over is bounded twice.** An enter waiting for an exit

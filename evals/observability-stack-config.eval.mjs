@@ -1,6 +1,6 @@
 // observability-stack-config.eval.mjs — m20e gates G6 (m20b carryover) + G9
 // (relay/correlation/$trace_pair_set + the 13r-b mr-trace-relay integration)
-// + the 13r-a and 13r-c park tripwires.
+// + the 13r-a and P5-otlp-export park tripwires.
 //
 // WHAT THIS PROVES, AND WHERE
 //   T-a..T-g (always, FIRST) — PROOF-OF-TEETH over inline fixtures. Every
@@ -49,7 +49,7 @@
 //                    filename-keyed tier map otherwise fails OPEN for a file
 //                    nobody remembered to list, and the lists are hand-edited.
 //                    The DAEMON tier's EGRESS ban is the P5 TRIPWIRE — see the
-//                    `PARKED — 13r-c` block below.
+//                    `PARKED — P5-otlp-export` block below.
 //   G9k (always)   — runs `node --test` over the relay suites AND the m20b
 //                    checks suites. This is the only door those suites have:
 //                    nothing else in `just ci` executes them.
@@ -176,7 +176,7 @@
 //   P4 -> G9p  the grafana dead-man's switch on that target's `up`, DISTINCT
 //              from AlloyDown and able to FIRE (OBS-46; spec:656-657)
 //
-// PARKED — 13r-c (verbatim; do NOT paraphrase into a TBD, anti-pattern 11):
+// PARKED — P5-otlp-export (verbatim; do NOT paraphrase into a TBD, anti-pattern 11):
 //   P5  the OTLP POST client. As shipped in 13r-b the daemon emits its OTLP/HTTP
 //       JSON document to STDOUT — the identical contract the batch CLI already
 //       carries (relay/mr-trace-relay.mjs:4-12) — and `docker compose logs
@@ -239,7 +239,7 @@ import {
 // ===========================================================================
 
 const NAME =
-  'observability-stack-config (G6 + G9 + mr-trace-relay integration + 13r-a/13r-c park ' +
+  'observability-stack-config (G6 + G9 + mr-trace-relay integration + 13r-a/P5 park ' +
   'tripwires, ADR-0180/0190/0191)';
 
 const OPS = 'ops/observability';
@@ -2068,7 +2068,7 @@ const WRITE_APIS = [
  * Semgrep, so the round trip costs a squash onto a fresh branch after the push
  * — force-push is hook-blocked. Both literals are cheap for
  * the relay to obey: it takes its listen address from `--web.listen-address` and
- * has no outbound URL at all (see the 13r-c park).
+ * has no outbound URL at all (see the P5-otlp-export park).
  */
 const NETWORK_LITERAL_BANS = ['0.0.0.0', '://'];
 
@@ -2134,11 +2134,11 @@ const DAEMON_RELAXED_BANS = ['node:http', '.listen(', 'setinterval(', 'settimeou
 const DAEMON_TIMER_CALLS = ['setinterval(', 'settimeout('];
 
 /**
- * THE P5 TRIPWIRE (AM6). The OTLP POST client is deferred to 13r-c, so the
+ * THE P5 TRIPWIRE (AM6). The OTLP POST client is deferred to the P5-otlp-export follow-up slice, so the
  * daemon has ZERO egress — which makes this a FLAT ban rather than a
  * conditional "egress must be to an allowed host" rule, i.e. both stronger and
  * smaller than the alternative. The moment an outbound POST lands in daemon.mjs
- * without the `PARKED — 13r-c` block being graduated, G9j reds here.
+ * without the `PARKED — P5-otlp-export` block being graduated, G9j reds here.
  */
 const DAEMON_EGRESS_BANS = ['fetch(', '.request(', '.connect(', 'node:https', 'node:net', 'undici'];
 
@@ -2204,7 +2204,7 @@ export function checkRelayBanTiers(files) {
         `G9j (AM8): ${RELAY_REL}/${file.name} is in the ${tier.id.toUpperCase()} tier and ` +
           `contains a banned construct (${ban}).` +
           (isEgress
-            ? ' This is the P5 TRIPWIRE: the OTLP POST client is PARKED to 13r-c (see this ' +
+            ? ' This is the P5 TRIPWIRE: the OTLP POST client is PARKED to the P5-otlp-export follow-up slice (see this ' +
               "file's header), so the daemon has ZERO egress and this ban is flat. If an " +
               'outbound POST is genuinely landing, GRADUATE the park — add the transport as an ' +
               'injected seam with its outgoing header key set asserted exactly, relax only the ' +
@@ -4940,7 +4940,7 @@ const TEETH = [
       for (const [source, label] of egressCheats) {
         const result = one(RELAY_DAEMON_FILE, source);
         if (result.ok) {
-          return `a daemon containing \`${label}\` was accepted — the OTLP POST client is PARKED to 13r-c, so the daemon has ZERO egress and this ban is flat`;
+          return `a daemon containing \`${label}\` was accepted — the OTLP POST client is PARKED to the P5-otlp-export follow-up slice, so the daemon has ZERO egress and this ban is flat`;
         }
         if (!result.detail.includes('P5')) {
           return `the egress failure for \`${label}\` does not name the P5 park it is the tripwire for: ${result.detail}`;
@@ -5707,7 +5707,7 @@ export async function observabilityStackConfigEval() {
       `reducer bodies in ${Object.keys(srcMap).length} files; G9h no supersession due; ` +
       `G9i/G9j ${RELAY_PRODUCTION_FILES.length} relay production files clean and every relay ` +
       `.mjs in exactly one of ${RELAY_BAN_TIERS.length} ban tiers (the DAEMON tier's egress ban ` +
-      "is the 13r-c/P5 tripwire); G9n the relay mounts alloy's own replicas path read-only and " +
+      "is the P5-otlp-export tripwire); G9n the relay mounts alloy's own replicas path read-only and " +
       `accepts exactly [${RELAY_COMMAND_FLAGS.join(', ')}] with no entrypoint/env_file/` +
       'environment; G9o its scrape job resolves inside scrape_configs: on /health at the port ' +
       "its own compose block binds; G9p its dead-man's switch is distinct from AlloyDown, not " +

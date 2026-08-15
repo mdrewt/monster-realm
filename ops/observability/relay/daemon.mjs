@@ -19,7 +19,7 @@
 //     `now` seam to inject and no wall-clock skew to reason about.
 //   * it has ZERO egress. The reconstructed OTLP/HTTP JSON document is written
 //     to STDOUT, exactly as the batch CLI writes it, and nothing ingests it
-//     today: the OTLP POST client is parked to 13r-c. That costs no
+//     today: the OTLP POST client is parked to the P5-otlp-export follow-up slice. That costs no
 //     observability while `$trace_pair_set` is empty, because the document is
 //     `{"resourceSpans":[]}` regardless of sink.
 //   * it accepts three flags and no credential. `ACCEPTED_FLAGS` is an
