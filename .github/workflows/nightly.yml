@@ -132,3 +132,37 @@ jobs:
       - name: Dump SpacetimeDB logs on failure
         if: failure()
         run: cat /tmp/stdb-smoke.log || true
+
+  # Changelog ledger-freshness drift check — ADR-0165's Accepted decision, finally
+  # implemented in 13r-g (ADR-0196). Nightly and NOT per-PR by deliberate design: the
+  # ledger is allowed to lag by up to one open milestone (ARCHITECTURE.md m17.5g), so a
+  # per-PR gate would fire red on essentially every feature PR for a condition that PR did
+  # not cause — the nag-then-bypass mode ADR-0165 rejected.
+  # The job runs the checker's own test suite first, then the checker. It fails only on a
+  # ledger that is BOTH far behind and behind for days (see the threshold provenance in
+  # scripts/changelog-freshness.mjs); a healthy mid-milestone wave prints an advisory and
+  # exits 0.
+  # Failure policy for `changelog-freshness`: triaged and inserted as the next slice in
+  # the milestone queue, same tier as fix-red-master, below it in ordering.
+  changelog-freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+        # `fetch-depth: 0` is load-bearing, not hygiene: at the default depth 1 git-cliff
+        # generates a ONE-entry changelog silently and exits 0, which would read as
+        # "nothing missing" — a permanently green gate. The script asserts
+        # `git rev-parse --is-shallow-repository` at runtime as well, so deleting this
+        # line to speed the job up fails loudly instead of going quietly vacuous.
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        # No npm cache: the checker is node-stdlib-only and installs nothing.
+        with: { node-version: '24.13.1' }
+      # Pinned to the EXACT git-cliff that generated the committed CHANGELOG.md. An
+      # unpinned `latest` would let an upstream rendering change flip every entry to
+      # missing+extra at once and red this job for a reason unrelated to freshness.
+      - uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
+        with: { tool: git-cliff@2.13.1 }
+      # Two separate steps, never one `;`-joined line: a joined command would report only
+      # the last exit status and silently discard the suite's result.
+      - run: node --test scripts/changelog-freshness.test.mjs
+      - run: node scripts/changelog-freshness.mjs --check
