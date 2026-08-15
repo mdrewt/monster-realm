@@ -503,6 +503,15 @@ function findStructBody(src, structName) {
 /**
  * Ordered field list of a struct, each with the attribute lines that immediately
  * precede it.
+ *
+ * Struct-keyed and retained deliberately: ADR-0193 (13r-d) generalized the
+ * append-at-end + `#[default(` SHAPE rule to every table in
+ * `evals/battle-schema-snapshot.eval.mjs` (`parseTableColumnOrder`,
+ * `checkColumnOrder`, `checkDefaultsSuffix`, `checkBaselineAppendOnly`), keyed on
+ * the `#[spacetimedb::table(name = ...)]` attribute and stripping comments only.
+ * This helper keys on the STRUCT name over comment- AND string-stripped source,
+ * which is the substrate the EG1 pin below needs; the two are not interchangeable.
+ *
  * @param {string} rustSrc Raw Rust source.
  * @param {string} structName
  * @returns {{ name: string, attrs: string[] }[] | null}
@@ -1618,6 +1627,9 @@ export default async function () {
   // + 1 SpeciesRow columns must each be APPENDED after that struct's last
   // pre-migration column AND carry an explicit #[default(...)] — the only shape
   // live spacetime 2.6.0 accepts without --delete-data.
+  // Still needed after ADR-0193 (13r-d): that slice made the SHAPE rule always-on
+  // for every table, but only this block pins these NAMED columns in this ORDER,
+  // which is what freezes Migration A's wire layout.
   const eg1Violations = [
     // Anchors moved by Migration B (EG5-6/ADR-0177 D2): `evolves_to` (and `bond`)
     // were removed, so the last PRE-Migration-A column is now `last_care_at_ms`
