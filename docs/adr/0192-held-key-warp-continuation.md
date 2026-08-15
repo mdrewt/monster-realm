@@ -122,4 +122,23 @@ self-check binding 'preserve' to the production seam), `main.wiring.test.ts` W-N
 wiring teeth incl. same-nesting-depth anti-dead-branch assertion). RED-first evidence and
 the live mutation table (mutants (a)–(h), each killed by a named tooth) are recorded below.
 
-<!-- TEETH-TABLE: filled at doc-close after the live mutation run (T6). -->
+RED-first evidence: at the RED checkpoint (wip 71f243c) the three files ran exactly 13 RED
+(U-W1..U-W8, S12b/c/d, W-NH5-WARP-PRESERVES, W-NH5-SEAM-COUNT — TWO wiring teeth red
+pre-impl, as adjudicated) with all 234 pre-existing tests plus S12-SELF/S12a/S12e/
+W-NH5-RECONNECT-CLEARS/W-NH5-RESET-BODY-UNCHANGED green; S12a green IS the deterministic
+reproduction of the defect under the 'clear' policy.
+
+Live mutation run (each applied to the working tree, run, reverted):
+
+| Mutation | Killed by |
+|---|---|
+| (a) delete `held.restore(heldSnapshot);` | W-NH5-WARP-PRESERVES + W-NH5-SEAM-COUNT |
+| (b) restore BEFORE reset (swap order) | W-NH5-WARP-PRESERVES (idx ordering) |
+| (c) restore re-stamps to a later time | U-W2/U-W3/U-W4/U-W5/U-W8 + S12b/S12c/S12d |
+| (c2) restore stamps `pressedAtMs: 0` | U-W2 (−1ms boundary probe) + U-W3/U-W4/U-W8 |
+| (d) pair moved INTO `resetPredictionState()` | W-NH5-WARP-PRESERVES + W-NH5-RESET-BODY-UNCHANGED |
+| (e) pair ALSO added to `onReconnect` | W-NH5-RECONNECT-CLEARS + W-NH5-SEAM-COUNT |
+| (f) `snapshot()` returns the live stack (alias) | U-W5 + U-W8 |
+| (g) `restore()` merges instead of replacing | U-W5 + U-W7 |
+| (h) tautological dead-branch wrap (`if (rawMap.zone_id !== newZoneId)` around the pair, bare reset in else — the red-team K1 PoC that beat naive text teeth while making the reset dead) | W-NH5-WARP-PRESERVES (same-nesting-depth assertion) + W-NH5-RESET-BODY-UNCHANGED (whole-file reset-call count) |
+| (i) capture moved BEFORE `TileMap.fromRaw` validation | W-NH5-WARP-PRESERVES (AM7: idx(fromRaw) < idx(capture)) |
