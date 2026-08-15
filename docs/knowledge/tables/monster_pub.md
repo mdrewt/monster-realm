@@ -2,12 +2,12 @@
 type: SpacetimeDB Table
 title: monster_pub
 slug: tables/monster_pub
-updated: 2026-08-08
-tags: [schema, spacetimedb, public]
-abstract: "Public projection of the monster table — NO hidden fields (no IVs, EVs, nature). Clients subscribe to this for the box/…"
-resource: server-module/src/schema.rs#L306
+updated: 2026-08-15
+tags: [schema, spacetimedb, private]
+abstract: "Safe projection of the monster table — NO hidden fields (no IVs, EVs, nature). PRIVATE since issue #284 / ADR-0194 (nee…"
+resource: server-module/src/schema.rs#L309
 source: scripts/okf-export.mjs@server-module/src/schema.rs
-visibility: public
+visibility: private
 ---
 
 ## Columns

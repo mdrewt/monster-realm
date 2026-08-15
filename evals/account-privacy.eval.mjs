@@ -72,7 +72,10 @@
 //                             one-expression sender-keyed lookup (this clause
 //                             absorbs the old presence-only [A/2a]).
 //      [A/view-set]           `parseViews` over the whole non-test tree yields
-//                             EXACTLY ['my_account','my_conversation','my_wallet'].
+//                             EXACTLY ['my_account','my_conversation',
+//                             'my_monster_pub','my_wallet'] (13r-e/ADR-0194 added
+//                             the fourth; evals/monster-privacy.eval.mjs pins the
+//                             same set and owns my_monster_pub's own shape).
 //                             This REPLACES a transitive reader-closure walk,
 //                             which a red-team defeated with a function pointer
 //                             (`const HOPS: [fn(&ViewContext)->Vec<Row>;1] =
@@ -203,7 +206,7 @@ const SCHED_TABLE = 'guest_claim_reaper_schedule';
 const VIEW_NAME = 'my_account';
 // The whole sanctioned view inventory, sorted. Any addition is a
 // privacy-relevant event that must be re-reviewed here.
-const EXPECTED_VIEWS = ['my_account', 'my_conversation', 'my_wallet'];
+const EXPECTED_VIEWS = ['my_account', 'my_conversation', 'my_monster_pub', 'my_wallet'];
 // The ONE sanctioned body, whitespace-compacted. `&ctx.sender` is an
 // equally-correct borrow spelling of the same unique-index lookup.
 const SANCTIONED_BODY = 'ctx.db.account().identity().find(ctx.sender)';
@@ -746,6 +749,11 @@ fn my_conversation(ctx: &spacetimedb::ViewContext) -> Option<PlayerConversation>
 #[spacetimedb::view(name = my_wallet, public)]
 fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
     ctx.db.player_wallet().owner_identity().find(ctx.sender)
+}
+
+#[spacetimedb::view(name = my_monster_pub, public)]
+fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
+    ctx.db.monster_pub().owner_identity().filter(ctx.sender).collect()
 }
 
 #[derive(Clone)]

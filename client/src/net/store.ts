@@ -557,6 +557,35 @@ export class AuthoritativeStore {
     if (this.#monsters.delete(monsterId)) this.#dirty = true;
   }
 
+  /** 13r-e (ADR-0194 D4): reconcile the monster map to EXACTLY `rows` — the
+   *  SDK's post-burst row set for the `my_monster_pub` view. The view has no
+   *  primary key in 1.12.0 bindings, so updates arrive as unordered
+   *  insert+delete pairs; rebuilding membership from the cache is
+   *  ordering-immune and immune to multi-transaction coalescing. Every given
+   *  row is upserted (payloads are authoritative), every absent id removed.
+   *  The connection adapter calls this in EVERY batcher flush (any table's
+   *  burst), so an unchanged row must NOT mark the batch dirty — a per-tick
+   *  movement burst re-notifying every UI listener would be a render storm.
+   *  Change detection is a generic own-key shallow compare so a future
+   *  appended MonsterPub column can never silently drop out of it. */
+  reconcileMonstersFromView(rows: readonly StoreMonsterPub[]): void {
+    const keep = new Set<bigint>();
+    for (const m of rows) {
+      keep.add(m.monsterId);
+      const prev = this.#monsters.get(m.monsterId);
+      if (prev === undefined || !shallowRowEq(prev, m)) {
+        this.#monsters.set(m.monsterId, m);
+        this.#dirty = true;
+      }
+    }
+    for (const id of [...this.#monsters.keys()]) {
+      if (!keep.has(id)) {
+        this.#monsters.delete(id);
+        this.#dirty = true;
+      }
+    }
+  }
+
   upsertSpecies(s: StoreSpeciesRow): void {
     this.#species.set(s.id, s);
     this.#dirty = true;
@@ -772,14 +801,12 @@ export class AuthoritativeStore {
   }
 
   // --- monster + species read (M6c box/party view reads truth here) ----------
-
-  monster(monsterId: bigint): StoreMonsterPub | undefined {
-    return this.#monsters.get(monsterId);
-  }
-
-  monsters(): IterableIterator<StoreMonsterPub> {
-    return this.#monsters.values();
-  }
+  // 13r-e (ADR-0194 D3): the `monster(id)` / `monsters()` accessors were
+  // DELETED — they had zero production callers, and their absence is what
+  // mechanically enforces the engaged-view deferral: no client code can read
+  // another player's monster row, because no API can surface one. (Post-flip
+  // the map only ever holds the caller's own rows anyway, so `monsterCount`
+  // now equals `ownMonsters(identity).length` — the e2e leans on that.)
 
   ownMonsters(identity: string): StoreMonsterPub[] {
     const out: StoreMonsterPub[] = [];
@@ -1158,4 +1185,42 @@ function swapWinnerTag(outcome: string): string {
   if (outcome === 'SideAWins') return 'SideBWins';
   if (outcome === 'SideBWins') return 'SideAWins';
   return outcome;
+}
+
+/** Generic own-key equality over plain row objects (13r-e reconcile change
+ *  detection). Key-set + `===` per field, with ONE level of recursion into
+ *  plain-object values: `StoreMonsterPub.essence` is a nested
+ *  `Record<AffinityName, number>` rebuilt as a FRESH literal by every
+ *  `monsterPubRowToStore` call, so a reference compare on it reports every
+ *  unchanged row as changed — re-arming the exact render storm this guard
+ *  exists to prevent (tester-caught). An appended primitive column is covered
+ *  automatically (a hand-listed field compare would silently rot). */
+function shallowRowEq(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
+  const ka = Object.keys(a);
+  const kb = Object.keys(b);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) {
+    const av = a[k];
+    const bv = b[k];
+    if (av === bv) continue;
+    if (!nestedRecordEq(av, bv)) return false;
+  }
+  return true;
+}
+
+/** One-level nested compare: both values must be plain non-null objects whose
+ *  own values are `===`-equal primitives (the `essence` shape). Anything
+ *  deeper or non-object reports unequal — the safe direction (a spurious
+ *  re-set, never a missed update). */
+function nestedRecordEq(av: unknown, bv: unknown): boolean {
+  if (typeof av !== 'object' || av === null || typeof bv !== 'object' || bv === null) return false;
+  const ra = av as Record<string, unknown>;
+  const rb = bv as Record<string, unknown>;
+  const ka = Object.keys(ra);
+  const kb = Object.keys(rb);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) {
+    if (ra[k] !== rb[k]) return false;
+  }
+  return true;
 }

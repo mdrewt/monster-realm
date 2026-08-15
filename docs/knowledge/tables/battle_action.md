@@ -2,10 +2,10 @@
 type: SpacetimeDB Table
 title: battle_action
 slug: tables/battle_action
-updated: 2026-08-08
+updated: 2026-08-15
 tags: [schema, spacetimedb, private]
 abstract: "PRIVATE per-turn secret action submitted by one PvP player (M16a, ADR-0109). MUST-NEVER-LEAK (ADR-0015, ADR-0109 D2): a…"
-resource: server-module/src/schema.rs#L807
+resource: server-module/src/schema.rs#L832
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: private
 ---

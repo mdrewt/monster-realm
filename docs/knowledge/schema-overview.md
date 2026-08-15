@@ -2,7 +2,7 @@
 type: Schema Overview
 title: Monster Realm Schema Overview
 slug: schema-overview
-updated: 2026-08-08
+updated: 2026-08-15
 tags: [schema, spacetimedb, overview]
 abstract: "38-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 50 reducers."
 source: scripts/okf-export.mjs@server-module/src/
@@ -10,7 +10,7 @@ source: scripts/okf-export.mjs@server-module/src/
 
 ## Tables
 
-### Public (20)
+### Public (19)
 
 - [battle](tables/battle.md)
 - [battle_challenge](tables/battle_challenge.md)
@@ -20,7 +20,6 @@ source: scripts/okf-export.mjs@server-module/src/
 - [heal_location_row](tables/heal_location_row.md)
 - [inventory](tables/inventory.md)
 - [item_row](tables/item_row.md)
-- [monster_pub](tables/monster_pub.md)
 - [npc](tables/npc.md)
 - [player](tables/player.md)
 - [player_quest](tables/player_quest.md)
@@ -33,7 +32,7 @@ source: scripts/okf-export.mjs@server-module/src/
 - [type_relation_row](tables/type_relation_row.md)
 - [zone_def](tables/zone_def.md)
 
-### Private (18)
+### Private (19)
 
 - [account](tables/account.md)
 - [battle_action](tables/battle_action.md)
@@ -44,6 +43,7 @@ source: scripts/okf-export.mjs@server-module/src/
 - [guest_claim_reaper_schedule](tables/guest_claim_reaper_schedule.md)
 - [heal_cooldown](tables/heal_cooldown.md)
 - [monster](tables/monster.md) → public projection: [monster_pub](tables/monster_pub.md)
+- [monster_pub](tables/monster_pub.md)
 - [movement_tick_schedule](tables/movement_tick_schedule.md)
 - [mr_heartbeat_schedule](tables/mr_heartbeat_schedule.md)
 - [player_conversation](tables/player_conversation.md)

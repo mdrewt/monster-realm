@@ -382,15 +382,22 @@ function speciesRow(id: number): StoreSpeciesRow {
   };
 }
 
+// 13r-e (ADR-0194 D3): `store.monster(id)` and `store.monsters()` are DELETED —
+// they had zero production callers, and deleting them is what mechanically
+// enforces the engaged-view deferral ("no client code reads another player's
+// monster row" becomes unrepresentable rather than merely true today). The three
+// assertions below that used to read `monster(id)` now read the SAME facts
+// through `ownMonsters(identity)` / `monsterCount`, so no coverage is lost — the
+// contract each test was written to kill is unchanged.
 describe('AuthoritativeStore M6c: monster upsert + batch signal', () => {
-  it('BITES: upsertMonster stores the row and monster() retrieves it; flushBatch fires', () => {
+  it('BITES: upsertMonster stores the row and ownMonsters retrieves it; flushBatch fires', () => {
     // Kills: an impl that ignores upsertMonster or never marks the batch dirty.
     const s = new AuthoritativeStore();
     const cb = vi.fn();
     s.onBatchApplied(cb);
     const m = monsterPub(1n, 'abc');
     s.upsertMonster(m);
-    expect(s.monster(1n)).toEqual(m);
+    expect(s.ownMonsters('abc')).toEqual([m]);
     s.flushBatch();
     expect(cb).toHaveBeenCalledTimes(1);
   });
@@ -408,20 +415,21 @@ describe('AuthoritativeStore M6c: monster upsert + batch signal', () => {
     const s = new AuthoritativeStore();
     s.upsertMonster(monsterPub(1n, 'alice'));
     s.upsertMonster({ ...monsterPub(1n, 'alice'), nickname: 'Sparky' });
-    expect(s.monster(1n)!.nickname).toBe('Sparky');
+    expect(s.ownMonsters('alice')).toHaveLength(1);
+    expect(s.ownMonsters('alice')[0]!.nickname).toBe('Sparky');
   });
 });
 
 describe('AuthoritativeStore M6c: removeMonster', () => {
-  it('BITES: removeMonster deletes the row; monster() returns undefined; batch is dirty', () => {
+  it('BITES: removeMonster deletes the row; the owner keeps none; batch is dirty', () => {
     // Kills: an impl that deletes but forgets to mark dirty, or soft-deletes.
     const s = new AuthoritativeStore();
-    s.upsertMonster(monsterPub(7n));
+    s.upsertMonster(monsterPub(7n)); // monsterPub()'s default ownerIdentity is 'dead'
     s.flushBatch(); // clear dirty
     const cb = vi.fn();
     s.onBatchApplied(cb);
     s.removeMonster(7n);
-    expect(s.monster(7n)).toBeUndefined();
+    expect(s.ownMonsters('dead')).toEqual([]);
     expect(s.monsterCount).toBe(0);
     s.flushBatch();
     expect(cb).toHaveBeenCalledTimes(1);
@@ -584,6 +592,264 @@ describe('AuthoritativeStore M6c: monsterCount property (fast-check)', () => {
         expect(s.monsterCount).toBe(new Set(ids).size);
       }),
     );
+  });
+});
+
+// =============================================================================
+// 13r-e (ADR-0194 D4): reconcileMonstersFromView — the view-cache reconcile.
+//
+// SOURCE OF TRUTH: docs/adr/0194-monster-pub-need-to-know-privacy.md D4.
+//
+// WHY THIS METHOD EXISTS AT ALL. `my_monster_pub` is a VIEW, and in spacetimedb
+// 1.12.0 bindings a view has NO primary key, so the SDK never fires onUpdate:
+// every row change arrives as unordered `onInsert(new)` + `onDelete(old)` inside
+// one transaction burst. Neither in-tree precedent is safe here — `my_wallet`'s
+// insert-only wiring would STRAND a traded-away monster in the client forever,
+// and `my_conversation`'s pairwise content-match delete gate has a documented
+// coalescing-wipe failure. So the store rebuilds membership from the SDK's
+// post-burst row set instead: ordering-immune by construction, immune to
+// multi-transaction coalescing, no id-set arithmetic.
+//
+// THE CONTRACT, in one sentence: after `reconcileMonstersFromView(rows)`, the
+// store's monster map contains EXACTLY `rows` — every given row upserted, every
+// absent id removed — with change notification batched the same way the existing
+// upsert/remove paths batch it.
+//
+// RED REASON (at authoring time): `AuthoritativeStore` has no
+// `reconcileMonstersFromView` method, so every test below fails with
+// "s.reconcileMonstersFromView is not a function".
+// =============================================================================
+
+describe('AuthoritativeStore 13r-e: the whole-map monster accessors are DELETED (ADR-0194 D3)', () => {
+  it('BITES: store.monster(id) and store.monsters() do not exist on AuthoritativeStore', () => {
+    // ADR-0194 D3 DEFERS the `engaged_monster_pub` view on a verified claim: NO
+    // client code reads another player's monster row. `store.monster(id)` and
+    // `store.monsters()` had zero production callers, and the ADR deletes them so
+    // that fact is MECHANICALLY ENFORCED rather than merely true today — the
+    // illegal state becomes unrepresentable (the ADR-0154 D5 analogue). Leaving
+    // them in place would let the next author reach for a whole-map read, get an
+    // owner-scoped result that looks right in single-player testing, and quietly
+    // depend on rows that only ever arrive for the caller.
+    //
+    // This is the ONLY test that enforces the deletion; every other monster test
+    // in this file now reads through ownMonsters/monsterCount, so removing the
+    // accessors is otherwise invisible to the suite.
+    //
+    // RED AT AUTHORING TIME: both methods still exist (store.ts:776-782).
+    const s = new AuthoritativeStore();
+    const probe = s as unknown as Record<string, unknown>;
+    expect(
+      probe.monster,
+      'store.monster(id) must be DELETED (ADR-0194 D3): a per-id read over the whole monster ' +
+        'map is exactly the "read another player\'s row" shape the deferred engaged view would ' +
+        'have served. Read through ownMonsters(identity) instead',
+    ).toBeUndefined();
+    expect(
+      probe.monsters,
+      'store.monsters() must be DELETED (ADR-0194 D3): it iterates the WHOLE monster map, ' +
+        'which is the unrestricted read the need-to-know decision (#284) removes. Read through ' +
+        'ownMonsters(identity) instead',
+    ).toBeUndefined();
+  });
+});
+
+describe('AuthoritativeStore 13r-e: reconcileMonstersFromView post-condition', () => {
+  it('BITES (a): the map ends up EXACTLY equal to the rows argument (upsert + remove in one call)', () => {
+    // Kills: an impl that only upserts the given rows (an absent id is STRANDED —
+    // a monster traded away stays in the client's box forever, which is precisely
+    // the my_wallet insert-only failure ADR-0194 D4 names), and one that only
+    // removes-then-inserts a subset.
+    const s = new AuthoritativeStore();
+    s.upsertMonster(monsterPub(1n, 'alice'));
+    s.upsertMonster(monsterPub(2n, 'alice'));
+    s.upsertMonster(monsterPub(3n, 'bob'));
+
+    const kept = { ...monsterPub(1n, 'alice'), nickname: 'Kept' };
+    const fresh = monsterPub(4n, 'alice');
+    s.reconcileMonstersFromView([kept, fresh]);
+
+    // Exactly two rows survive, and they are exactly the two supplied.
+    expect(s.monsterCount).toBe(2);
+    expect(s.ownMonsters('alice')).toEqual([kept, fresh]);
+    // 2n was present and is absent from `rows` -> removed.
+    // 3n belonged to another owner and is absent from `rows` -> removed too (the
+    // view only ever delivers the caller's own rows, so a foreign row lingering
+    // in the map is exactly the leak this slice closes).
+    expect(s.ownMonsters('bob')).toEqual([]);
+  });
+
+  it('BITES (b): an EMPTY rows argument empties the map', () => {
+    // Kills: an impl that treats [] as "nothing to do" (the guard an author adds
+    // to "avoid wiping the store on an empty burst"). An empty view result is
+    // AUTHORITATIVE: the player owns no monsters, or the last one was traded away.
+    const s = new AuthoritativeStore();
+    s.upsertMonster(monsterPub(1n, 'alice'));
+    s.upsertMonster(monsterPub(2n, 'alice'));
+
+    s.reconcileMonstersFromView([]);
+
+    expect(s.monsterCount).toBe(0);
+    expect(s.ownMonsters('alice')).toEqual([]);
+  });
+
+  it('BITES (c): a newer payload for an already-stored id WINS (rows are authoritative)', () => {
+    // Kills: an insert-if-absent impl (`if (!map.has(id)) map.set(id, row)`),
+    // which compiles, reads like a plausible "the snapshot already has it", and
+    // FREEZES every stat/level/nickname after the first delivery.
+    const s = new AuthoritativeStore();
+    s.upsertMonster({ ...monsterPub(9n, 'alice'), level: 5, nickname: 'Old' });
+
+    const newer = { ...monsterPub(9n, 'alice'), level: 6, nickname: 'New' };
+    s.reconcileMonstersFromView([newer]);
+
+    expect(s.monsterCount).toBe(1);
+    expect(s.ownMonsters('alice')).toEqual([newer]);
+  });
+
+  it('BITES (d): the whole reconcile coalesces into ONE batch notification, fired by flushBatch', () => {
+    // Kills: an impl that notifies listeners per row (N re-renders per burst), and
+    // one that mutates the map without marking the batch dirty at all (the rows
+    // land but nothing re-renders until some UNRELATED table happens to flush —
+    // invisible to any e2e, because the next NPC wander tick self-heals it).
+    const s = new AuthoritativeStore();
+    s.upsertMonster(monsterPub(1n, 'alice'));
+    s.upsertMonster(monsterPub(2n, 'alice'));
+    s.flushBatch(); // clear dirty
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+
+    // Three distinct effects in ONE call: 1n updated, 2n removed, 5n added.
+    s.reconcileMonstersFromView([
+      { ...monsterPub(1n, 'alice'), nickname: 'Updated' },
+      monsterPub(5n, 'alice'),
+    ]);
+
+    expect(cb, 'listeners must not be called mid-batch').toHaveBeenCalledTimes(0);
+    s.flushBatch();
+    expect(cb, 'one coherent snapshot -> exactly one notification').toHaveBeenCalledTimes(1);
+  });
+
+  it('BITES (e): ownMonsters(identity) reflects the post-reconcile state', () => {
+    // Kills: an impl that writes to a second map / shadow list the read accessors
+    // never consult (the box screen would render the pre-reconcile roster).
+    const s = new AuthoritativeStore();
+    s.upsertMonster(monsterPub(1n, 'alice'));
+
+    s.reconcileMonstersFromView([monsterPub(2n, 'alice'), monsterPub(3n, 'alice')]);
+
+    const ids = s.ownMonsters('alice').map((m) => m.monsterId);
+    expect(ids).toHaveLength(2);
+    expect(ids).toContain(2n);
+    expect(ids).toContain(3n);
+    expect(ids).not.toContain(1n);
+  });
+
+  it('BITES (f): an OWNERSHIP TRANSFER migrates the row between owners with no reconnect', () => {
+    // THE trade case, end to end in the store. The server transfers monster 42
+    // from alice to bob; through the view alice's client sees the row LEAVE and
+    // bob's sees it ARRIVE, both as an unordered insert+delete burst that the
+    // reconcile resolves from the SDK's post-burst row set.
+    //
+    // Kills: an impl keyed on ownerIdentity rather than monsterId (the row would
+    // be duplicated under both owners); one that removes only ids it has "seen
+    // deleted" (alice keeps a monster she no longer owns — a live privacy leak,
+    // since the row now belongs to someone else); and any impl that requires a
+    // store.reset()/reconnect to converge.
+    const aliceView = new AuthoritativeStore();
+    aliceView.upsertMonster(monsterPub(42n, 'alice'));
+    aliceView.upsertMonster(monsterPub(7n, 'alice'));
+    // Alice's view now returns only the monster she still owns.
+    aliceView.reconcileMonstersFromView([monsterPub(7n, 'alice')]);
+    expect(aliceView.ownMonsters('alice').map((m) => m.monsterId)).toEqual([7n]);
+    expect(aliceView.ownMonsters('bob')).toEqual([]);
+    expect(aliceView.monsterCount).toBe(1);
+
+    const bobView = new AuthoritativeStore();
+    bobView.upsertMonster(monsterPub(8n, 'bob'));
+    // Bob's view gains the transferred row, whose ownerIdentity is now bob.
+    bobView.reconcileMonstersFromView([monsterPub(8n, 'bob'), monsterPub(42n, 'bob')]);
+    const bobIds = bobView.ownMonsters('bob').map((m) => m.monsterId);
+    expect(bobIds).toHaveLength(2);
+    expect(bobIds).toContain(42n);
+    expect(bobView.ownMonsters('alice')).toEqual([]);
+  });
+
+  it('BITES: an UNCHANGED row set marks NOTHING dirty, while a changed field marks exactly one batch (render-storm guard)', () => {
+    // WHAT THIS PINS (verifier advisory A, ADR-0194 D4). The connection adapter
+    // calls reconcileMonstersFromView in EVERY batcher flush — i.e. on every
+    // table's burst, including the ~5/s movement ticks — so the reconcile must be
+    // a NO-OP for an unchanged row set. Without change detection, every movement
+    // tick marks the batch dirty and re-notifies every UI listener: a render storm
+    // that no other test in this file can see (all of them assert a REAL change).
+    //
+    // MUTANTS THIS KILLS: `shallowRowEq -> false` and deletion of the
+    // `prev === undefined || !shallowRowEq(prev, m)` guard (both make the
+    // no-change half notify); `shallowRowEq -> true` (makes the changed half
+    // silently drop a real update — the balance-freeze failure mode).
+    //
+    // THE FIXTURE IS PRODUCTION-SHAPED ON PURPOSE. The rows are rebuilt by calling
+    // the factory again, so they are structurally equal but NON-IDENTICAL objects,
+    // *including a freshly-built nested `essence` record* — which is exactly what
+    // the boundary converter emits: monsterPubRowToStore (rowConvert.ts:214-223)
+    // constructs a new `essence: { Fire: …, … }` literal on EVERY call, so the
+    // store never sees the same nested object twice in production. That shape is
+    // what makes this test meaningful: it kills a `prev === m` reference-equality
+    // cheat, and it is the only shape the guard will ever actually face.
+    //
+    // ⚠ RED AT AUTHORING TIME — AND IT IS THE IMPLEMENTATION, NOT THE FIXTURE.
+    // store.ts's `shallowRowEq` is a generic own-key `===` compare, and `essence`
+    // is a nested OBJECT, so `prev.essence !== m.essence` for two converter
+    // outputs that carry identical numbers. The guard therefore reports "changed"
+    // on every flush and suppresses nothing: the render storm it exists to prevent
+    // is still live. Two sanctioned fixes, both in store.ts:
+    //   (a) compare `essence` field-wise (it is a fixed 8-key affinity record), or
+    //   (b) make shallowRowEq recurse ONE level into plain-object values.
+    // The forbidden "fix" is editing THIS test to share one `essence` reference
+    // between the two arrays: that fixture shape never occurs in production, so it
+    // would make the assertion pass while the storm continues.
+    const s = new AuthoritativeStore();
+    s.reconcileMonstersFromView([monsterPub(1n, 'alice'), monsterPub(2n, 'alice')]);
+    s.flushBatch(); // clear dirty from the initial population
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+
+    // Half 1 — the SAME row set, delivered as fresh objects (a movement-tick flush).
+    s.reconcileMonstersFromView([monsterPub(1n, 'alice'), monsterPub(2n, 'alice')]);
+    s.flushBatch();
+    expect(
+      cb,
+      'an unchanged row set must not mark the batch dirty — the reconcile runs on EVERY ' +
+        'batcher flush, so a dirty mark here re-renders the whole UI on every movement tick',
+    ).toHaveBeenCalledTimes(0);
+
+    // Half 2 — one field changed on one row: a REAL update must still get through.
+    cb.mockClear();
+    s.reconcileMonstersFromView([
+      { ...monsterPub(1n, 'alice'), level: 6 },
+      monsterPub(2n, 'alice'),
+    ]);
+    s.flushBatch();
+    expect(
+      cb,
+      'a changed field must mark the batch dirty exactly once — over-suppression is the ' +
+        'freeze failure mode (the row lands in the store and nothing ever re-renders)',
+    ).toHaveBeenCalledTimes(1);
+  });
+
+  it('BITES: a stale row for the SAME id under a DIFFERENT owner never survives the reconcile', () => {
+    // The single-store form of (f): the map is keyed by monsterId, so the
+    // incoming row must REPLACE the stored one rather than coexist with it.
+    // Kills: an impl that keys the map by `${ownerIdentity}:${monsterId}` (a
+    // plausible "make ownMonsters O(1)" refactor) — alice would still see monster
+    // 42 after it changed hands.
+    const s = new AuthoritativeStore();
+    s.upsertMonster(monsterPub(42n, 'alice'));
+
+    s.reconcileMonstersFromView([monsterPub(42n, 'bob')]);
+
+    expect(s.monsterCount).toBe(1);
+    expect(s.ownMonsters('alice')).toEqual([]);
+    expect(s.ownMonsters('bob').map((m) => m.monsterId)).toEqual([42n]);
   });
 });
 
@@ -1905,11 +2171,12 @@ describe('AuthoritativeStore M11c C3: resetCharacters() clears only the characte
 
   it('BITES: resetCharacters() does NOT clear monsters', () => {
     // Kills: an impl that wipes all maps instead of just #chars.
+    // 13r-e: reads the same fact through ownMonsters (store.monster(id) is gone).
     const s = new AuthoritativeStore();
     s.upsertMonster(monsterPub(7n, 'bob'));
     s.upsertCharacter(char(1n, 0, 0), 100);
     s.resetCharacters();
-    expect(s.monster(7n)).toBeDefined();
+    expect(s.ownMonsters('bob')).toHaveLength(1);
     expect(s.monsterCount).toBe(1);
   });
 

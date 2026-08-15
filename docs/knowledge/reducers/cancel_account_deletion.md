@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: cancel_account_deletion
 slug: reducers/cancel_account_deletion
-updated: 2026-08-08
+updated: 2026-08-15
 tags: [reducer, spacetimedb, accounts]
 abstract: "Reverse a pending deletion. Idempotent no-op on an already-`Active` account (AUTH-38), so `PendingDeletion` is never a …"
 resource: server-module/src/accounts.rs#L471

@@ -2,10 +2,10 @@
 type: SpacetimeDB Table
 title: guest_claim
 slug: tables/guest_claim
-updated: 2026-08-08
+updated: 2026-08-15
 tags: [schema, spacetimedb, private]
 abstract: "PRIVATE in-flight guest→account claim (no `public`) — one row per guest identity (ADR-0179 D2/D3). `code` is CLIENT-min…"
-resource: server-module/src/schema.rs#L722
+resource: server-module/src/schema.rs#L747
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: private
 ---

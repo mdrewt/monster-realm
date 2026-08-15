@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: zone_def
 slug: tables/zone_def
-updated: 2026-08-08
+updated: 2026-08-15
 tags: [schema, spacetimedb, public]
 abstract: "Zone definitions seeded from the `game-core` RON registry by `sync_content`."
 resource: server-module/src/schema.rs#L67

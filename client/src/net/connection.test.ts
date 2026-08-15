@@ -1953,10 +1953,19 @@ describe('★ connection.ts wiring (EG4): W-EG4-SUBSCRIBE — evolution_path is 
     const arrayBody = bodyRegion(src, '.subscribe([', ']);');
 
     // Anti-vacuity: prove the window really is the subscription array before judging it.
+    //
+    // 13r-e (ADR-0194): RETARGETED from `'SELECT * FROM monster_pub'` to the owner-scoped
+    // VIEW. monster_pub is PRIVATE now and its subscription string is deleted outright, so
+    // the old anchor would never match again — and an anti-vacuity anchor that can never
+    // match does not fail loud here, it makes THIS gate (and the fusion negative below)
+    // judge a region it can no longer prove is the subscription array. Retargeting is
+    // mandatory, not cosmetic.
     expect(
-      countOccurrences(arrayBody, "'SELECT * FROM monster_pub'"),
-      'the .subscribe([...]) window must still contain the monster_pub subscription — if it ' +
-        'does not, this gate is judging the wrong region and every assertion here is vacuous',
+      countOccurrences(arrayBody, "'SELECT * FROM my_monster_pub'"),
+      'the .subscribe([...]) window must still contain the my_monster_pub subscription (the ' +
+        'owner-scoped view that replaced the private monster_pub table in 13r-e/ADR-0194) — ' +
+        'if it does not, this gate is judging the wrong region and every assertion here is ' +
+        'vacuous',
     ).toBe(1);
 
     expect(
@@ -3549,5 +3558,310 @@ describe('★ connection.ts wiring (M21b-2 UI entry point): W-M21B2-ENTRY-POINTS
         'If this reds at 3, reconnectNow is not routing through attemptBuild; re-derive from the ' +
         'four sites, never raise the number to absorb a stray call',
     ).toBe(4);
+  });
+});
+
+// ===========================================================================
+// 13r-e (ADR-0194 D4) — W-13RE-MONSTER-VIEW: the my_monster_pub wiring.
+//
+// SOURCE OF TRUTH: docs/adr/0194-monster-pub-need-to-know-privacy.md D4.
+//
+// WHAT CHANGED. `monster_pub` becomes PRIVATE and the client subscribes the
+// owner-scoped `my_monster_pub` VIEW instead. A view has NO primary key in
+// 1.12.0 bindings, so the SDK never fires onUpdate: every row change arrives as
+// unordered `onInsert(new)` + `onDelete(old)` inside one transaction burst.
+//
+// WHY THE STORE IS RECONCILED FROM THE SDK CACHE RATHER THAN FROM THE EVENTS.
+// Neither in-tree precedent is safe at this churn:
+//   * `my_wallet`'s insert-only wiring (no onDelete at all) would STRAND a
+//     traded-away monster in the box forever;
+//   * `my_conversation`'s pairwise content-match delete gate
+//     (shouldRemoveOnViewDelete) has a documented coalescing-wipe failure — with
+//     a burst coalesced across transactions the delete half removes the row the
+//     insert half just wrote.
+// So the batcher's FLUSH closure rebuilds membership from
+// `conn.db.my_monster_pub.iter()` — the SDK's post-burst row set, which is
+// value-precise and authoritative — and the row handlers only SCHEDULE. That
+// makes ordering irrelevant by construction.
+//
+// RED AT AUTHORING TIME (verified against connection.ts this session):
+//   * `conn.db.my_monster_pub` appears NOWHERE; `conn.db.monster_pub.onInsert /
+//     onUpdate / onDelete` are still wired at :289-296 through `ingestMonster`;
+//   * the batcher is `new MicrotaskBatcher(() => store.flushBatch());` (:141),
+//     with no reconcile of any kind;
+//   * `store.reconcileMonstersFromView(` does not exist in the client at all.
+// Every gate below therefore reds on a MISSING IMPLEMENTATION, not on a typo.
+//
+// CODE-AWARE THROUGHOUT: every needle uses codeOccurrences/includesAsCode, so a
+// decoy string (or the sanctioned explanatory comment, already stripped) can
+// neither satisfy a positive nor evade a ban.
+// ===========================================================================
+
+/** The argument text of `needle(` … `)`, paren-walked from the needle's own open
+ *  paren. Throws loud when the needle is absent or unbalanced — a hard red, never
+ *  a vacuous pass. `code` must be comment-stripped. */
+function parenArgsAt(code: string, needle: string): string {
+  const at = code.indexOf(needle);
+  if (at < 0) {
+    throw new Error(`connection.ts must contain "${needle}" (13r-e region start)`);
+  }
+  const open = at + needle.length - 1;
+  if (code.charAt(open) !== '(') {
+    throw new Error(`"${needle}" must end at its own opening paren (13r-e region)`);
+  }
+  let depth = 0;
+  for (let i = open; i < code.length; i += 1) {
+    const ch = code.charAt(i);
+    if (ch === '(') depth += 1;
+    else if (ch === ')') {
+      depth -= 1;
+      if (depth === 0) return code.slice(open + 1, i);
+    }
+  }
+  throw new Error(`unbalanced parens after "${needle}" — refusing to scan a runaway region`);
+}
+
+describe('★ connection.ts wiring (13r-e / ADR-0194 D4): W-13RE-SUBSCRIBE — the private table is gone, the view is subscribed', () => {
+  it('★ BITES: the ONE .subscribe([...]) array contains the view exactly once and never names monster_pub', () => {
+    // WRONG IMPL KILLED (a): subscribing the now-PRIVATE `monster_pub` table.
+    //   SpacetimeDB rejects the whole subscription BATCH, `onApplied` never fires,
+    //   and EVERY player gets a blank world — not a missing box screen (the T0
+    //   rollout probe recorded in ADR-0087, re-confirmed by ADR-0194's live probe).
+    // WRONG IMPL KILLED (b): adding the view subscription and leaving the old table
+    //   string behind (same blank world).
+    // WRONG IMPL KILLED (c): parking the view SQL in a dead module constant — the
+    //   WINDOW is what kills that.
+    const src = readConnectionTs();
+    expectUniqueAnchor(src, '.subscribe([');
+    const arrayBody = bodyRegion(src, '.subscribe([', ']);');
+
+    // Anti-vacuity: a sibling owner-scoped VIEW subscription proves the region
+    // resolved and that comment-stripping did not eat the array's contents.
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM my_conversation'"),
+      'the .subscribe([...]) window must still contain the my_conversation subscription — if ' +
+        'it does not, this gate is judging the wrong region and every assertion below is vacuous',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM my_monster_pub'"),
+      "connection.ts's ONE .subscribe([...]) array must contain 'SELECT * FROM my_monster_pub' " +
+        'exactly once (ADR-0194 D4). The name is EXACT: a wrong view name errors the WHOLE ' +
+        'subscription batch and onApplied never fires — every player gets a blank world, not ' +
+        'just an empty box screen. RED AT AUTHORING TIME: my_monster_pub appears nowhere',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM monster_pub'"),
+      "the .subscribe([...]) array must NOT contain 'SELECT * FROM monster_pub' — the table is " +
+        'PRIVATE since ADR-0194, and subscribing a private table errors the entire batch',
+    ).toBe(0);
+  });
+});
+
+describe('★ connection.ts wiring (13r-e / ADR-0194 D4): W-13RE-INGEST — my_monster_pub is insert+delete, NEVER update', () => {
+  it('★ BITES: onInsert AND onDelete are each registered exactly once on conn.db.my_monster_pub, and the old monster_pub table wiring is gone', () => {
+    // WHY BOTH HANDLERS (unlike my_wallet's insert-only shape): a monster row LEAVES
+    //   the view when it is traded away, evolves out of the owner's roster, or the
+    //   owner disconnects. With no onDelete the batcher is never scheduled for that
+    //   burst, so the reconcile below never runs and the stale row stays on screen.
+    // WRONG IMPL KILLED: leaving `conn.db.monster_pub.*` wired. The generated
+    //   binding for a private table no longer exists, so this is also a tsc error —
+    //   but stating it here means a future slice that re-publishes the table cannot
+    //   quietly re-wire the direct handlers.
+    const squashed = squashedStrippedConnectionTs();
+
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.my_monster_pub.onInsert('),
+      'conn.db.my_monster_pub.onInsert( must be registered EXACTLY once AS CODE (ADR-0194 D4). ' +
+        'RED AT AUTHORING TIME: conn.db.my_monster_pub appears nowhere in connection.ts',
+    ).toBe(1);
+
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.my_monster_pub.onDelete('),
+      'conn.db.my_monster_pub.onDelete( must be registered EXACTLY once AS CODE. Unlike ' +
+        'my_wallet (whose rows are never deleted server-side), a monster row LEAVES this ' +
+        'view on every trade/transfer — insert-only wiring strands it in the client forever',
+    ).toBe(1);
+
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.monster_pub.'),
+      'the OLD direct handlers on the private table (conn.db.monster_pub.onInsert/onUpdate/' +
+        'onDelete, connection.ts:289-296) must be GONE — monster_pub emits no client binding ' +
+        'once it is private',
+    ).toBe(0);
+  });
+
+  it('★ BITES (tripwire): NO conn.db.my_monster_pub.onUpdate handler exists anywhere in the file', () => {
+    // WRONG IMPL KILLED — and it is the single most likely mistake here, because the
+    // handler being replaced (conn.db.monster_pub, :289-296) HAS an onUpdate and a
+    // copy-paste keeps it: a view has no primary key in 1.12.0 bindings, so the SDK
+    // has nothing to correlate old and new rows with and onUpdate NEVER FIRES. Wiring
+    // one is dead code that implies a delivery guarantee the transport does not make —
+    // and, worse, it invites the author to reason about updates as ordered events when
+    // the whole reconcile design exists because they are not.
+    //
+    // SCOPED to my_monster_pub on purpose: `conn.db.my_account.onUpdate` at
+    // connection.ts:580-583 is LEGITIMATE and mandated by ADR-0182 D15 (status and
+    // claimed_from mutate after provisioning). A blanket "no view onUpdate" ban would
+    // red on correct, shipped code — and the natural "fix" would be deleting the
+    // account-claim repaint. The anti-vacuity assertion below pins exactly that.
+    const squashed = squashedStrippedConnectionTs();
+
+    // Anti-vacuity #1: the ingest must exist before "no update handler" means anything.
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.my_monster_pub.onInsert('),
+      'precondition: the my_monster_pub insert handler must exist before the onUpdate ban ' +
+        'means anything. RED AT AUTHORING TIME',
+    ).toBe(1);
+
+    // Anti-vacuity #2: the needle SHAPE demonstrably matches a real, shipped
+    // registration — so a zero below is a genuine absence, not a blind scan.
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.my_account.onUpdate('),
+      'the sanctioned my_account onUpdate handler (ADR-0182 D15) must still be wired — it is ' +
+        'this gate calibration: it proves a `conn.db.<view>.onUpdate(` needle CAN match, so ' +
+        'the zero asserted next is a real absence rather than a broken scan. Do NOT delete ' +
+        'the account handler to make anything green',
+    ).toBe(1);
+
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.my_monster_pub.onUpdate'),
+      'there must be NO conn.db.my_monster_pub.onUpdate handler (ADR-0194 D4): the view has no ' +
+        'primary key in 1.12.0 bindings, so the SDK never fires onUpdate — every change arrives ' +
+        'as unordered onInsert(new) + onDelete(old). A copy-pasted onUpdate (the replaced ' +
+        'monster_pub wiring at :289-296 had one) is dead code that misrepresents the transport',
+    ).toBe(0);
+  });
+});
+
+describe('★ connection.ts wiring (13r-e / ADR-0194 D4): W-13RE-RECONCILE — the flush closure reconciles from the SDK cache BEFORE flushBatch', () => {
+  it('★★ BITES: the MicrotaskBatcher flush closure reads the view cache, converts via monsterPubRowToStore, and reconciles BEFORE store.flushBatch()', () => {
+    // THE ORDER IS THE POINT. `store.flushBatch()` is what notifies every listener
+    // (the render loop reads the store on that signal). Reconciling AFTER it means the
+    // frame that just rendered used the PRE-burst roster and nothing re-renders until
+    // some unrelated table flushes — a traded-away monster stays on screen, and a
+    // received one is invisible, for an unbounded time. No e2e in this slice can see
+    // that (the NPC wander tick re-renders every ~200 ms and the run self-heals), which
+    // is exactly why this source pin is load-bearing.
+    //
+    // WRONG IMPL KILLED (a): reconciling inside the ROW HANDLERS instead of the flush
+    //   closure. That is per-row reconciliation against a mid-burst SDK cache — the
+    //   ordering-dependence the whole design exists to avoid, and it re-introduces the
+    //   my_conversation coalescing wipe. The region bound (the batcher's own call
+    //   arguments) is what kills it.
+    // WRONG IMPL KILLED (b): reconciling from the row EVENTS (id-set arithmetic over
+    //   inserts and deletes) rather than from the SDK's post-burst row set. The
+    //   `my_monster_pub.iter()` needle is what kills it.
+    // WRONG IMPL KILLED (c): handing the store RAW SDK rows —
+    //   `store.reconcileMonstersFromView([...conn.db.my_monster_pub.iter()])`. The
+    //   ownerIdentity would stay an SDK Identity OBJECT, so ownMonsters' `===` filter
+    //   never matches and the box screen renders empty while the rows sit in the store.
+    //   The `monsterPubRowToStore` needle is what kills it.
+    const squashed = squashedStrippedConnectionTs();
+
+    // Region = the batcher construction's OWN argument list (paren-walked). Throws
+    // loud if the anchor is missing, so a deleted batcher is a hard red.
+    expectUniqueAnchor(squashed, 'new MicrotaskBatcher(');
+    const flushClosure = parenArgsAt(squashed, 'new MicrotaskBatcher(');
+
+    const reconcileIdx = flushClosure.indexOf('store.reconcileMonstersFromView(');
+    const flushIdx = flushClosure.indexOf('store.flushBatch()');
+
+    expect(
+      reconcileIdx,
+      'the MicrotaskBatcher flush closure must call `store.reconcileMonstersFromView(…)` ' +
+        '(ADR-0194 D4). RED AT AUTHORING TIME: the batcher is ' +
+        '`new MicrotaskBatcher(() => store.flushBatch());` with no reconcile at all',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      flushIdx,
+      'the MicrotaskBatcher flush closure must still call `store.flushBatch()` — if this ' +
+        'anchor is gone the whole per-transaction reconcile signal is gone with it',
+    ).toBeGreaterThanOrEqual(0);
+    expect(
+      reconcileIdx,
+      'the monster reconcile must run BEFORE store.flushBatch() inside the flush closure ' +
+        '(ADR-0194 D4). flushBatch() is what notifies the render loop; reconciling after it ' +
+        'means the frame that just rendered used the PRE-burst roster',
+    ).toBeLessThan(flushIdx);
+
+    expect(
+      includesAsCode(flushClosure, 'my_monster_pub.iter()'),
+      "the flush closure must rebuild membership from the SDK's own post-burst row set — " +
+        '`[...conn.db.my_monster_pub.iter()]`. Reconstructing it from the insert/delete ' +
+        'EVENTS is id-set arithmetic over an unordered burst, which is the ordering ' +
+        'dependence this design exists to remove (ADR-0194 D4)',
+    ).toBe(true);
+    expect(
+      includesAsCode(flushClosure, 'monsterPubRowToStore'),
+      'the flush closure must map the SDK rows through `monsterPubRowToStore` — a raw SDK row ' +
+        'keeps ownerIdentity as an Identity OBJECT, so store.ownMonsters(identity) never ' +
+        'matches and the box screen renders empty while the rows sit in the store',
+    ).toBe(true);
+
+    // Exactly one reconcile call site in the whole file: a second one is a second,
+    // unbatched reconciliation path (typically the per-row handler variant above).
+    expect(
+      countCodeOccurrences(squashed, 'store.reconcileMonstersFromView('),
+      'store.reconcileMonstersFromView( must be called from EXACTLY ONE site AS CODE — the ' +
+        'batcher flush closure. A second call site is a per-row reconcile against a mid-burst ' +
+        'SDK cache',
+    ).toBe(1);
+
+    // The replaced per-row store calls must be gone: with the cache reconcile in place,
+    // upsertMonster/removeMonster from connection.ts would race it.
+    expect(
+      countCodeOccurrences(squashed, 'store.upsertMonster('),
+      'store.upsertMonster( must no longer be called from connection.ts — the flush-time ' +
+        'reconcile from the SDK cache is the ONE write path for monster rows (ADR-0194 D4)',
+    ).toBe(0);
+    expect(
+      countCodeOccurrences(squashed, 'store.removeMonster('),
+      'store.removeMonster( must no longer be called from connection.ts — a per-row delete ' +
+        'racing the flush-time reconcile is exactly the my_conversation coalescing wipe',
+    ).toBe(0);
+  });
+
+  it('★ BITES: the flush closure is stale-build guarded (ADR-0085 C2) — it never reconciles from a superseded connection', () => {
+    // WRONG IMPL KILLED: capturing `conn` from the LATEST build in a module-scope
+    // variable and reading it unconditionally. ONE batcher serves ALL rebuilds
+    // (connection.ts:137-141 says so explicitly), so a flush scheduled by a dying
+    // connection can fire AFTER store.reset() and re-seed the store with the dead
+    // socket's rows — the exact stale-flush hazard ADR-0085 C2 named when it mandated
+    // the single shared batcher. The guard shape is the implementer's choice (an
+    // `if (stale())`, a generation compare, or an undefined-check on the live
+    // connection); what is pinned is that the closure does not reach the SDK cache
+    // unconditionally.
+    //
+    // ⚠ SPELLING WARNING (read before writing the guard). The obvious
+    // `if (current === undefined) return;` is a CROSS-GATE TRAP: the M21b-2 pin at
+    // :2953-2961 counts the ASSIGNMENT token `current =` and requires EXACTLY 3, and
+    // the substring `current =` occurs inside `current === undefined`. Writing the
+    // guard that way turns an unrelated, correct gate red for a reason that has
+    // nothing to do with this slice. Use one of the sanctioned spellings below
+    // instead; do NOT "fix" it by raising the M21b-2 count.
+    const squashed = squashedStrippedConnectionTs();
+    const flushClosure = parenArgsAt(squashed, 'new MicrotaskBatcher(');
+
+    const guarded =
+      includesAsCode(flushClosure, 'if (') ||
+      includesAsCode(flushClosure, '?.') ||
+      includesAsCode(flushClosure, '!== undefined');
+    expect(
+      guarded,
+      'the MicrotaskBatcher flush closure must GUARD its read of the SDK cache against a ' +
+        'superseded/absent connection (ADR-0085 C2): ONE batcher serves ALL rebuilds, so a ' +
+        'flush scheduled by a dying connection can fire after store.reset() and re-seed the ' +
+        "store from the dead socket's cache. Any of an `if (…)` early return, an optional " +
+        'chain, or an explicit `!== undefined` check satisfies this — an UNGUARDED ' +
+        '`[...conn.db.my_monster_pub.iter()]` does not.\n' +
+        'SANCTIONED SPELLINGS: `const live = current; if (live !== undefined) { … }`, or an ' +
+        'optional chain (`current?.db.my_monster_pub`). AVOID ' +
+        '`if (current === undefined) return;` — its `current =` substring is counted by the ' +
+        'UNRELATED M21b-2 assignment pin at connection.test.ts:2953-2961 ' +
+        "(countOccurrences('current =') === 3) and would red that gate instead of this one. " +
+        'The fix there is to re-spell the guard, NEVER to raise the M21b-2 count',
+    ).toBe(true);
   });
 });

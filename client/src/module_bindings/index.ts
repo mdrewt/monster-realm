@@ -84,9 +84,9 @@ import EvolutionPathRow from "./evolution_path_table";
 import HealLocationRowRow from "./heal_location_row_table";
 import InventoryRow from "./inventory_table";
 import ItemRowRow from "./item_row_table";
-import MonsterPubRow from "./monster_pub_table";
 import MyAccountRow from "./my_account_table";
 import MyConversationRow from "./my_conversation_table";
+import MyMonsterPubRow from "./my_monster_pub_table";
 import MyWalletRow from "./my_wallet_table";
 import NpcRow from "./npc_table";
 import PlayerRow from "./player_table";
@@ -216,20 +216,6 @@ const tablesSchema = __schema({
       { name: 'item_row_id_key', constraint: 'unique', columns: ['id'] },
     ],
   }, ItemRowRow),
-  monster_pub: __table({
-    name: 'monster_pub',
-    indexes: [
-      { accessor: 'monster_id', name: 'monster_pub_monster_id_idx_btree', algorithm: 'btree', columns: [
-        'monsterId',
-      ] },
-      { accessor: 'owner_identity', name: 'monster_pub_owner_identity_idx_btree', algorithm: 'btree', columns: [
-        'ownerIdentity',
-      ] },
-    ],
-    constraints: [
-      { name: 'monster_pub_monster_id_key', constraint: 'unique', columns: ['monsterId'] },
-    ],
-  }, MonsterPubRow),
   npc: __table({
     name: 'npc',
     indexes: [
@@ -387,6 +373,13 @@ const tablesSchema = __schema({
     constraints: [
     ],
   }, MyConversationRow),
+  my_monster_pub: __table({
+    name: 'my_monster_pub',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyMonsterPubRow),
   my_wallet: __table({
     name: 'my_wallet',
     indexes: [

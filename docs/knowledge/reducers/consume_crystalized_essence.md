@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: consume_crystalized_essence
 slug: reducers/consume_crystalized_essence
-updated: 2026-08-08
+updated: 2026-08-15
 tags: [reducer, spacetimedb, raising]
 abstract: "Consume a crystalized-essence item: grant the ITEM's essence to the matching pool, sharing `essence_train`'s cooldown c…"
 resource: server-module/src/raising.rs#L672
