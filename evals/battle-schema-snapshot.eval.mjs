@@ -4,15 +4,21 @@
 // (M8.9b split the former single lib.rs into domain submodules; this eval globs
 // the whole src tree — see readServerModuleSources below.)
 //
-// The baseline is a committed generated artifact. To regenerate after an
-// intentional schema change: run parseTableSchemas (below) over
-// server-module/src/** (all .rs files, sorted), write the sorted result to
-// evals/baselines/table-schemas.json, and commit the diff for review.
+// Regeneration (ADR-0193 D6) — always RE-DERIVE from source, never hand-merge:
+// run parseTableSchemas + parseTableColumnOrder over readServerModuleSources(
+// server-module/src), emit { pk, columns, order } per table with `order` as the
+// LAST key, keep the existing top-level table key order (do NOT re-sort), write
+// JSON.stringify(out, null, 2) + '\n', and commit the diff for review. The git
+// append-only layer (D4, below) polices the RESULT against the previously
+// committed baseline, so a mid-struct insert cannot be laundered by
+// regenerating.
 //
 // Implementation note on Semgrep detect-non-literal-regexp:
 //   All pattern matching uses literal /regex/ patterns — NO new RegExp(...).
+import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
+import { stripRustSource } from './rust-scan.mjs';
 
 const BASELINE_PATH = path.resolve('evals/baselines/table-schemas.json');
 const SERVER_SRC = path.resolve('server-module/src');
@@ -43,39 +49,551 @@ export function stripRustComments(src) {
  * @returns {{ [tableName: string]: { pk: string|null, columns: { [field]: string } } }}
  */
 export function parseTableSchemas(rawSrc) {
-  const src = stripRustComments(rawSrc);
+  const parsed = parseTableFields(rawSrc);
   const tables = {};
+  for (const tableName of Object.keys(parsed)) {
+    const columns = {};
+    // Insertion order == declaration order: scripts/okf-export.mjs renders
+    // docs/knowledge/** from it (ADR-0193 D1).
+    for (const f of parsed[tableName].fields) columns[f.name] = f.type;
+    tables[tableName] = { pk: parsed[tableName].pk, columns };
+  }
+  return tables;
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0193 D1 — parse once, project twice. parseTableFields owns the ONLY
+// table regex and the ONLY field-line regex in this file; parseTableSchemas
+// (unordered name->type map, unchanged shape) and parseTableColumnOrder
+// (ordered + hasDefault) are thin projections over it.
+// ---------------------------------------------------------------------------
+
+/**
+ * Match every `#[spacetimedb::table(name = X, ...)] pub struct Y { ... }` block.
+ * The /g regex is declared INSIDE the function on purpose: a module-level /g
+ * regex carries `lastIndex` across calls, so a second call would return fewer
+ * tables and silently exempt them.
+ *
+ * @param {string} src Comment-stripped Rust source.
+ * @returns {{ table: string, body: string }[]}
+ */
+function matchTableBlocks(src) {
   const tableRe =
     /#\[spacetimedb::table\(name\s*=\s*(\w+)[^\]]*\)\]\s*pub struct \w+\s*\{([\s\S]*?)\n\s*\}/g;
+  const blocks = [];
   let m = tableRe.exec(src);
   while (m !== null) {
-    const tableName = m[1];
-    const body = m[2];
-    const columns = {};
+    blocks.push({ table: m[1], body: m[2] });
+    m = tableRe.exec(src);
+  }
+  return blocks;
+}
+
+/**
+ * The single field-line pattern (literal, non-global — no shared lastIndex).
+ * @param {string} line Trimmed table-body line.
+ * @returns {RegExpExecArray|null}
+ */
+function matchFieldLine(line) {
+  return /^pub\s+(\w+)\s*:\s*(.+?),?\s*$/.exec(line);
+}
+
+/** Count `pub <ident>:` field starts on one line (>1 == two fields per line). */
+function countFieldStarts(line) {
+  const re = /\bpub\s+\w+\s*:/g;
+  let n = 0;
+  while (re.exec(line) !== null) n++;
+  return n;
+}
+
+/**
+ * Ordered per-table field parse with a per-field `hasDefault`, derived from the
+ * field's OWN immediately-preceding attribute lines — never from a file-level
+ * search (content_tests.rs / marshal_tests.rs carry `#[default(` inside Rust
+ * string literals and this eval concatenates every .rs file).
+ *
+ * @param {string} rawSrc Raw Rust source (comments stripped internally).
+ * @returns {{ [tableName: string]: { pk: string|null, fields: { name: string, type: string, hasDefault: boolean }[] } }}
+ */
+function parseTableFields(rawSrc) {
+  if (typeof rawSrc !== 'string') return {};
+  const src = stripRustComments(rawSrc);
+  const tables = {};
+  for (const { table, body } of matchTableBlocks(src)) {
+    const fields = [];
     let pk = null;
     let pendingPk = false;
+    let pendingDefault = false;
     for (const line of body.split('\n')) {
       const t = line.trim();
       if (t.length === 0) continue;
       if (t.startsWith('#[')) {
         if (t.includes('primary_key')) pendingPk = true;
+        if (t.startsWith('#[default(')) pendingDefault = true;
         continue;
       }
-      const fm = /^pub\s+(\w+)\s*:\s*(.+?),?\s*$/.exec(t);
+      const fm = matchFieldLine(t);
       if (fm) {
         const fname = fm[1];
-        const ftype = fm[2].replace(/,$/, '').trim();
-        columns[fname] = ftype;
+        fields.push({
+          name: fname,
+          type: fm[2].replace(/,$/, '').trim(),
+          hasDefault: pendingDefault,
+        });
         if (pendingPk) pk = fname;
-        pendingPk = false;
-      } else {
-        pendingPk = false;
       }
+      // A field line AND any unclassifiable line both clear the pending
+      // attributes (preserves the pre-ADR-0193 pendingPk semantics exactly).
+      pendingPk = false;
+      pendingDefault = false;
     }
-    tables[tableName] = { pk, columns };
-    m = tableRe.exec(src);
+    tables[table] = { pk, fields };
   }
   return tables;
+}
+
+/**
+ * Per-table column order in SOURCE DECLARATION order, with each column's own
+ * `#[default(` presence.
+ *
+ * @param {string} rawSrc Raw Rust source.
+ * @returns {{ [tableName: string]: { name: string, hasDefault: boolean }[] }}
+ */
+export function parseTableColumnOrder(rawSrc) {
+  const parsed = parseTableFields(rawSrc);
+  const out = {};
+  for (const tableName of Object.keys(parsed)) {
+    out[tableName] = parsed[tableName].fields.map((f) => ({
+      name: f.name,
+      hasDefault: f.hasDefault,
+    }));
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0193 D3/D4 — six always-on, individually tagged rules. Every checker is
+// pure and NEVER throws for ANY input: malformed input yields a TAGGED
+// diagnostic string, not a TypeError (checkAppendOnly guard style,
+// evals/spacetime-type-snapshot.eval.mjs).
+// ---------------------------------------------------------------------------
+
+const TABLE_ATTR_NEEDLE = '#[spacetimedb::table(name';
+
+const AUTOMIGRATION_RULE =
+  'live spacetime 2.6.0 accepts only TAIL-appended columns each carrying an explicit ' +
+  '#[default(...)] (ADR-0173 D5)';
+
+const DEFAULTS_ESCAPES =
+  'two sanctioned escapes: (1) move the column to the TAIL of the struct or give it a ' +
+  '#[default(...)]; or (2) perform a delete-data migration per the ADR-0177 runbook and drop ' +
+  'the now-stale #[default(...)] attributes in the same change';
+
+const isObj = (v) => v !== null && typeof v === 'object';
+
+/**
+ * The recorded column order of a baseline entry.
+ *
+ * Legacy fallback: a baseline committed BEFORE ADR-0193 D2 has no `order` key,
+ * but its `columns` object was generated in source declaration order, so its
+ * key insertion order IS the recorded order. Without this, every table in the
+ * bootstrap commit (prev = pre-D2 baseline) would report a malformed entry and
+ * the append-only layer would be vacuous exactly when it first matters. This
+ * applies to the PREVIOUS baseline only — the working-tree one is held to the
+ * explicit `order` key by [order-shape].
+ *
+ * @param {object} entry Baseline table entry.
+ * @returns {string[]|null} null == no recorded order at all.
+ */
+const recordedOrder = (entry) => {
+  if (!isObj(entry)) return null;
+  if (Array.isArray(entry.order)) return entry.order;
+  if (isObj(entry.columns)) return Object.keys(entry.columns);
+  return null;
+};
+
+/** Column name of a parsed-order entry (entries may be malformed). */
+const entryName = (f) => {
+  if (typeof f === 'string') return f;
+  return isObj(f) && typeof f.name === 'string' ? f.name : undefined;
+};
+
+/**
+ * [parse-shape] + [table-count]: make previously-SILENT parser blindness loud.
+ * A body line the parser cannot classify is an invisible column, and a table
+ * the table regex never matches is exempt from every other rule here.
+ *
+ * @param {string} rawSrc Raw Rust source.
+ * @returns {string[]} [] = clean.
+ */
+export function checkParseShape(rawSrc) {
+  if (typeof rawSrc !== 'string') {
+    return [`[parse-shape] malformed input: expected a source string, got ${typeof rawSrc}`];
+  }
+  const violations = [];
+  for (const { table, body } of matchTableBlocks(stripRustComments(rawSrc))) {
+    for (const line of body.split('\n')) {
+      const t = line.trim();
+      if (t.length === 0) continue;
+      if (t.startsWith('#[')) {
+        if (/\spub\s+\w+\s*:/.test(t)) {
+          violations.push(
+            `[parse-shape] table '${table}': attribute AND field on one line — '${t}'. The ` +
+              'parser reads the whole line as a bare attribute, so the column is invisible to ' +
+              'the snapshot; put the attribute on its own line',
+          );
+        }
+        continue;
+      }
+      if (matchFieldLine(t) === null) {
+        violations.push(
+          `[parse-shape] table '${table}': unparsable body line '${t}' — every non-blank line ` +
+            'in a table body must be an attribute (#[...]) or a `pub name: Type,` field on one ' +
+            'line; anything else is a column the snapshot cannot see',
+        );
+        continue;
+      }
+      if (countFieldStarts(t) > 1) {
+        violations.push(
+          `[parse-shape] table '${table}': two 'pub' fields on one line — '${t}'. Only the ` +
+            'first is parsed; the rest are invisible to the snapshot',
+        );
+      }
+    }
+  }
+  // [table-count] — string- AND comment-aware strip (evals/rust-scan.mjs): a
+  // naive comment-only strip counts the decoy attributes that live inside Rust
+  // string literals in server-module/src/economy_tests.rs.
+  const declared = stripRustSource(rawSrc).split(TABLE_ATTR_NEEDLE).length - 1;
+  const parsedCount = Object.keys(parseTableFields(rawSrc)).length;
+  if (declared !== parsedCount) {
+    violations.push(
+      `[table-count] source declares ${declared} '${TABLE_ATTR_NEEDLE}' attribute(s) but the ` +
+        `parser produced ${parsedCount} table(s) — an unparsed table is silently exempt from ` +
+        'every schema rule (e.g. a `]` inside the table attribute defeats the table regex)',
+    );
+  }
+  return violations;
+}
+
+/**
+ * [order-shape] + [order-mismatch] + [order-append]: the recorded per-table
+ * `order` must be well-formed, and the source column order must agree with it.
+ *
+ * @param {{ [t: string]: { name: string, hasDefault: boolean }[] }} parsedOrder
+ * @param {{ [t: string]: { columns?: object, order?: string[] } }} baseline
+ * @returns {string[]} [] = clean.
+ */
+export function checkColumnOrder(parsedOrder, baseline) {
+  if (!isObj(parsedOrder) || !isObj(baseline)) {
+    return [
+      '[order-shape] malformed input: checkColumnOrder requires two non-null objects (got ' +
+        `${typeof parsedOrder}, ${typeof baseline})`,
+    ];
+  }
+  const violations = [];
+  for (const table of Object.keys(baseline)) {
+    const b = baseline[table];
+    if (!isObj(b)) {
+      violations.push(
+        `[order-shape] table '${table}': baseline entry is not an object (got ${typeof b})`,
+      );
+      continue;
+    }
+    const cols = isObj(b.columns) ? Object.keys(b.columns) : [];
+    const order = b.order;
+    if (!Array.isArray(order)) {
+      violations.push(
+        `[order-shape] table '${table}': baseline records no "order" array (got ${typeof order}) ` +
+          '— regenerate the baseline (ADR-0193 D2/D6); a table without a recorded order is ' +
+          'silently exempt from [order-mismatch] and [order-append]',
+      );
+      continue;
+    }
+    const nonString = order.filter((c) => typeof c !== 'string');
+    if (nonString.length > 0) {
+      violations.push(
+        `[order-shape] table '${table}': recorded order contains ${nonString.length} non-string ` +
+          `entr(y|ies) — expected column names, got ${JSON.stringify(order)}`,
+      );
+      continue;
+    }
+    const dupes = order.filter((c, i) => order.indexOf(c) !== i);
+    if (dupes.length > 0) {
+      violations.push(
+        `[order-shape] table '${table}': recorded order repeats column(s) ` +
+          `${JSON.stringify([...new Set(dupes)])} — order must be a duplicate-free permutation ` +
+          'of the recorded columns (a length-only check passes this)',
+      );
+      continue;
+    }
+    const missing = cols.filter((c) => !order.includes(c));
+    const extra = order.filter((c) => !cols.includes(c));
+    if (missing.length > 0 || extra.length > 0) {
+      violations.push(
+        `[order-shape] table '${table}': recorded order is not a permutation of the recorded ` +
+          `columns — missing ${JSON.stringify(missing)}, unknown ${JSON.stringify(extra)}`,
+      );
+      continue;
+    }
+
+    const src = parsedOrder[table];
+    if (src === undefined || src === null) continue; // absent from source: checkSchemaDrift's job
+    if (!Array.isArray(src)) {
+      violations.push(
+        `[order-shape] table '${table}': parsed source order is not an array (got ${typeof src})`,
+      );
+      continue;
+    }
+    const srcNames = src.map(entryName).filter((n) => typeof n === 'string');
+    const defaults = new Map();
+    for (const f of src) {
+      const n = entryName(f);
+      if (typeof n === 'string' && !defaults.has(n)) {
+        defaults.set(n, isObj(f) ? f.hasDefault : undefined);
+      }
+    }
+
+    // [order-mismatch] — positional, over the columns the two sides SHARE.
+    const known = new Set(order);
+    const srcSet = new Set(srcNames);
+    const filteredSrc = srcNames.filter((n) => known.has(n));
+    const filteredOrder = order.filter((n) => srcSet.has(n));
+    const shared = Math.min(filteredSrc.length, filteredOrder.length);
+    for (let i = 0; i < shared; i++) {
+      if (filteredSrc[i] !== filteredOrder[i]) {
+        violations.push(
+          `[order-mismatch] table '${table}': column '${filteredSrc[i]}' sits at source ` +
+            `position ${i} but at baseline position ${filteredOrder.indexOf(filteredSrc[i])} ` +
+            `(the baseline records '${filteredOrder[i]}' at position ${i}) — column position is ` +
+            `persisted, ${AUTOMIGRATION_RULE}`,
+        );
+      }
+    }
+
+    // [order-append] — a source column the ledger does not know must sit after
+    // EVERY ledger-known column and must carry a #[default(...)].
+    let lastKnownIdx = -1;
+    for (let i = 0; i < srcNames.length; i++) {
+      if (known.has(srcNames[i])) lastKnownIdx = i;
+    }
+    for (let i = 0; i < srcNames.length; i++) {
+      const nm = srcNames[i];
+      if (known.has(nm)) continue;
+      const reasons = [];
+      if (i < lastKnownIdx) {
+        reasons.push(
+          `it sits at source position ${i}, before baseline-known column ` +
+            `'${srcNames[lastKnownIdx]}' at position ${lastKnownIdx} (not a tail append)`,
+        );
+      }
+      if (defaults.get(nm) !== true) {
+        reasons.push('it carries no #[default(...)] attribute (the plain `#[default(` form)');
+      }
+      if (reasons.length > 0) {
+        violations.push(
+          `[order-append] table '${table}': new column '${nm}' — ${reasons.join('; ')}. ` +
+            `${AUTOMIGRATION_RULE}`,
+        );
+      }
+    }
+  }
+  return violations;
+}
+
+/**
+ * [defaults-not-suffix]: within a baseline-KNOWN table, no non-defaulted column
+ * may follow a defaulted one. Scoped to baseline-known tables (a brand-new
+ * table has no live rows) and, per ADR-0193 D5, has NO exemption parameter.
+ *
+ * @param {{ [t: string]: { name: string, hasDefault: boolean }[] }} parsedOrder
+ * @param {{ [t: string]: object }} baseline
+ * @returns {string[]} [] = clean.
+ */
+export function checkDefaultsSuffix(parsedOrder, baseline) {
+  if (!isObj(parsedOrder) || !isObj(baseline)) {
+    return [
+      '[defaults-not-suffix] malformed input: checkDefaultsSuffix requires two non-null objects ' +
+        `(got ${typeof parsedOrder}, ${typeof baseline})`,
+    ];
+  }
+  const violations = [];
+  for (const table of Object.keys(parsedOrder)) {
+    if (!(table in baseline)) continue;
+    const src = parsedOrder[table];
+    if (src === undefined || src === null) continue;
+    if (!Array.isArray(src)) {
+      violations.push(
+        `[defaults-not-suffix] table '${table}': parsed source order is not an array (got ` +
+          `${typeof src})`,
+      );
+      continue;
+    }
+    let firstDefaulted = null;
+    for (const f of src) {
+      const nm = entryName(f);
+      if (nm === undefined) continue;
+      if (isObj(f) && f.hasDefault === true) {
+        if (firstDefaulted === null) firstDefaulted = nm;
+        continue;
+      }
+      if (firstDefaulted !== null) {
+        violations.push(
+          `[defaults-not-suffix] table '${table}': column '${nm}' has no #[default(...)] but ` +
+            `follows defaulted column '${firstDefaulted}' — defaulted columns must be a SUFFIX ` +
+            `of the struct (${AUTOMIGRATION_RULE}). ${DEFAULTS_ESCAPES}`,
+        );
+      }
+    }
+  }
+  return violations;
+}
+
+/**
+ * [append-only] — the re-baseline-proof rule (ADR-0193 D4). Compares the
+ * PREVIOUSLY COMMITTED baseline against the working-tree one: each table's
+ * previous `order` must be a positional PREFIX of the new one, every column
+ * beyond that prefix must carry a #[default(...)] in source, and a table
+ * present in prev and absent from next is a live-DB break.
+ *
+ * Pure; NEVER throws for any input.
+ *
+ * @param {{ [t: string]: { order?: string[] } }} prevBaseline
+ * @param {{ [t: string]: { order?: string[] } }} nextBaseline
+ * @param {{ [t: string]: { name: string, hasDefault: boolean }[] }} parsedOrder
+ * @returns {string[]} [] = clean.
+ */
+export function checkBaselineAppendOnly(prevBaseline, nextBaseline, parsedOrder) {
+  if (!isObj(prevBaseline) || !isObj(nextBaseline)) {
+    return [
+      '[append-only] malformed input: checkBaselineAppendOnly requires two non-null baseline ' +
+        `objects (got ${typeof prevBaseline}, ${typeof nextBaseline})`,
+    ];
+  }
+  const violations = [];
+  for (const table of Object.keys(prevBaseline).sort()) {
+    if (!(table in nextBaseline)) {
+      violations.push(
+        `[append-only] table '${table}': present in the previously committed baseline and absent ` +
+          'from the new one — a table drop is never accepted by automigration (ADR-0177 runbook)',
+      );
+      continue;
+    }
+    const prev = prevBaseline[table];
+    const next = nextBaseline[table];
+    const prevOrder = recordedOrder(prev);
+    const nextOrder = recordedOrder(next);
+    if (prevOrder === null || nextOrder === null) {
+      violations.push(
+        `[append-only] table '${table}': malformed baseline entry — no recorded column order ` +
+          `(prev=${prevOrder !== null}, next=${nextOrder !== null}); neither an "order" array nor ` +
+          'a "columns" object, so the append-only comparison cannot run for this table',
+      );
+      continue;
+    }
+    if (
+      prevOrder.some((c) => typeof c !== 'string') ||
+      nextOrder.some((c) => typeof c !== 'string')
+    ) {
+      violations.push(
+        `[append-only] table '${table}': malformed baseline entry — the recorded column order ` +
+          'contains non-string entries; the append-only comparison cannot run for this table',
+      );
+      continue;
+    }
+    if (nextOrder.length < prevOrder.length) {
+      violations.push(
+        `[append-only] table '${table}': column count shrank from ${prevOrder.length} (prev ` +
+          `committed) to ${nextOrder.length} (new) — dropped ` +
+          `${JSON.stringify(prevOrder.filter((c) => !nextOrder.includes(c)))}; a column removal ` +
+          'is never accepted by automigration (ADR-0177 runbook)',
+      );
+      continue;
+    }
+    for (let i = 0; i < prevOrder.length; i++) {
+      if (nextOrder[i] !== prevOrder[i]) {
+        violations.push(
+          `[append-only] table '${table}': column at position ${i} changed from ` +
+            `'${prevOrder[i]}' (prev committed) to '${nextOrder[i]}' (new) — the previously ` +
+            'committed order must be a positional PREFIX of the new one; re-baselining does not ' +
+            `make a mid-struct insert or a reorder legal (${AUTOMIGRATION_RULE})`,
+        );
+      }
+    }
+    const srcFields = isObj(parsedOrder) ? parsedOrder[table] : undefined;
+    for (let i = prevOrder.length; i < nextOrder.length; i++) {
+      const nm = nextOrder[i];
+      if (!Array.isArray(srcFields)) {
+        violations.push(
+          `[append-only] table '${table}': appended column '${nm}' (position ${i}) cannot be ` +
+            'checked for #[default(...)] — the table has no parsed source order ' +
+            `(got ${typeof srcFields})`,
+        );
+        continue;
+      }
+      const hit = srcFields.find((f) => entryName(f) === nm);
+      if (hit === undefined) {
+        violations.push(
+          `[append-only] table '${table}': appended column '${nm}' (position ${i}) is not present ` +
+            'in the parsed source order — cannot confirm it carries #[default(...)]',
+        );
+        continue;
+      }
+      if (!(isObj(hit) && hit.hasDefault === true)) {
+        violations.push(
+          `[append-only] table '${table}': appended column '${nm}' (position ${i}) carries no ` +
+            `#[default(...)] in source — ${AUTOMIGRATION_RULE}, so this append is rejected by ` +
+            'the live publish',
+        );
+      }
+    }
+  }
+  return violations;
+}
+
+// ---------------------------------------------------------------------------
+// ADR-0193 D4 — previous-baseline resolution via git. I/O isolated from the
+// pure checkers above. execFileSync('git', [constant args]) only (precedent:
+// evals/spacetime-type-snapshot.eval.mjs, ADR-0116 D3) — NO shell strings.
+// ---------------------------------------------------------------------------
+
+const BASELINE_GIT_PATH = 'evals/baselines/table-schemas.json';
+
+/** `git show <ref>:evals/baselines/table-schemas.json` parsed as JSON, or null. */
+function gitShowBaselineJson(ref) {
+  try {
+    const out = execFileSync('git', ['show', `${ref}:${BASELINE_GIT_PATH}`], {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    });
+    return JSON.parse(out);
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Resolve the previously committed baseline (ADR-0116 D3 resolution order):
+ *   (1) git merge-base HEAD origin/master -> git show <sha>:<baseline>
+ *   (2) git show origin/master:<baseline>
+ *   (3) give up -> { source: 'none', data: null }  (D4: fail-open-LOUD)
+ */
+function readPrevBaseline() {
+  try {
+    const sha = execFileSync('git', ['merge-base', 'HEAD', 'origin/master'], {
+      encoding: 'utf8',
+      stdio: ['pipe', 'pipe', 'ignore'],
+    }).trim();
+    if (sha) {
+      const data = gitShowBaselineJson(sha);
+      if (data !== null) return { source: `merge-base ${sha.slice(0, 7)}`, data };
+    }
+  } catch {
+    // merge-base unavailable (no origin/master, shallow clone, no git) — fall through
+  }
+  const tip = gitShowBaselineJson('origin/master');
+  if (tip !== null) return { source: 'origin/master', data: tip };
+  return { source: 'none', data: null };
 }
 
 /**
@@ -838,6 +1356,38 @@ pub struct PartySlot {
     };
   }
 
+  // -------------------------------------------------------------------------
+  // ADR-0193 D3/D4 — the real gate: the five in-tree rules over the real source
+  // vs the working-tree baseline, plus the git-resolved append-only layer that
+  // survives a full, sanctioned re-baseline.
+  // -------------------------------------------------------------------------
+  const sourceOrder = parseTableColumnOrder(rawSrc);
+  const violations = [
+    ...checkParseShape(rawSrc),
+    ...checkColumnOrder(sourceOrder, baseline),
+    ...checkDefaultsSuffix(sourceOrder, baseline),
+  ];
+  const prevBaseline = readPrevBaseline();
+  const appendOnlyRan = isObj(prevBaseline.data);
+  if (appendOnlyRan) {
+    violations.push(...checkBaselineAppendOnly(prevBaseline.data, baseline, sourceOrder));
+  }
+  // Fail-open-LOUD (ADR-0116 D2 precedent): when the previous baseline cannot be
+  // resolved the five in-tree rules still bite, but the run MUST say so.
+  const appendOnlyNote = appendOnlyRan
+    ? `append-only layer ran against the previously committed baseline (${prevBaseline.source})`
+    : 'WARNING — the ADR-0193 D4 append-only layer DID NOT RUN: the previously committed ' +
+      `baseline could not be resolved from git (${prevBaseline.source}; no origin/master, a ` +
+      'shallow clone, or no git). A mid-struct insert laundered through a full re-baseline is ' +
+      'NOT policed by this run';
+  if (violations.length > 0) {
+    return {
+      name,
+      pass: false,
+      detail: `ADR-0193 schema-order violations (${violations.length}): ${violations.join('; ')} [${appendOnlyNote}]`,
+    };
+  }
+
   const tableCount = Object.keys(parsed).length;
   return {
     name,
@@ -846,7 +1396,7 @@ pub struct PartySlot {
       `${tableCount} tables parsed; all match baseline exactly (columns, types, PKs); ` +
       `EncounterEntryRow excluded; column-drop tooth verified; ADR-0193 order teeth verified ` +
       `(T-MANDATE/B1/NODEFAULT/LEGAL/SWAP/SHAPE/REMOVE/PARSE/COUNT/IDEMPOTENT/NOTHROW/REAL); ` +
-      `${orderChecked}/${baselineTables.length} baseline tables order-checked`,
+      `${orderChecked}/${baselineTables.length} baseline tables order-checked; ${appendOnlyNote}`,
   };
 }
 
@@ -855,7 +1405,10 @@ pub struct PartySlot {
 // deterministic order) so this static check parses the whole crate, surviving the
 // split. Mirrors the glob pattern already used by encounter-privacy / spec-gap-
 // revival. The set of tables/reducers/fns is unchanged — only their files moved.
-function readServerModuleSources(dir) {
+// Exported so the ADR-0193 D6 regeneration one-shot reads the byte-identical
+// concatenation this gate parses (a divergent reader would bake drift into the
+// baseline it writes).
+export function readServerModuleSources(dir) {
   const parts = [];
   for (const entry of readdirSync(dir).sort()) {
     const full = `${dir}/${entry}`;
