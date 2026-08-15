@@ -5,7 +5,7 @@ slug: tables/battle_wild
 updated: 2026-08-15
 tags: [schema, spacetimedb, private]
 abstract: "PRIVATE wild-individuality side-table (M8c, ADR-0045). Keyed 1:1 by `battle_id`. Stores the splitmix32 `individuality_s…"
-resource: server-module/src/schema.rs#L413
+resource: server-module/src/schema.rs#L417
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: private
 ---

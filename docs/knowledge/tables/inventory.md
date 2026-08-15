@@ -5,7 +5,7 @@ slug: tables/inventory
 updated: 2026-08-15
 tags: [schema, spacetimedb, public]
 abstract: "Player item inventory (M8d, ADR-0046). PUBLIC / world-readable counts: transport RLS is unavailable — `client_visibilit…"
-resource: server-module/src/schema.rs#L435
+resource: server-module/src/schema.rs#L439
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---
