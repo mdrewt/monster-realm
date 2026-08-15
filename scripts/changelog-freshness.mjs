@@ -83,7 +83,16 @@ export const MIN_GENERATED_ENTRIES = 341;
 // this script because `evals/**` is outside this slice's touches.
 export const SIBLING_TEST_FILE = 'changelog-freshness.test.mjs';
 export const SIBLING_TEST_MARKER = '\n  it(';
-export const MIN_SIBLING_TESTS = 38;
+// Floor, not an equality pin: set below the committed count (66 at 13r-g) so ordinary
+// test consolidation does not red the nightly, but far enough above zero that a
+// commented-out or emptied suite cannot pass.
+export const MIN_SIBLING_TESTS = 50;
+// Every generated entry should be reproducible from some commit subject via
+// entryTextForSubject — measured 341/341 (100%) at origin/master@7eb6980. The floor
+// guards the AGE arm of the conjunction: if that transform silently stops matching,
+// oldestMissingAgeDays returns null on every night, `stale` becomes unreachable, and the
+// gate is permanently green — the same failure class as deriving age from file mtime.
+export const MIN_MAPPED_FRACTION = 0.9;
 
 const LOG_PREFIX = 'changelog-freshness: ';
 const TITLE_LINE = '# Changelog';
@@ -230,7 +239,19 @@ export function classifyChangelogDrift({
   const committed = parseChangelogEntries(committedText);
   const missing = multisetDifference(generated, committed);
   const extra = multisetDifference(committed, generated);
-  const result = { verdict: 'fresh', missing, extra, lag: missing.length, ageDays };
+  // `rendersIdentically` is carried on the result even when the verdict is decided by a
+  // higher-precedence rule: `lagging` outranks `rendering`, so without this field a
+  // git-cliff version bump that lands MID-WAVE (lag >= warn) would be reported as a
+  // routine advisory and its rendering drift would be invisible. formatVerdict always
+  // names it.
+  const result = {
+    verdict: 'fresh',
+    missing,
+    extra,
+    lag: missing.length,
+    ageDays,
+    rendersIdentically: normalizeText(generatedText) === normalizeText(committedText),
+  };
 
   // Either side empty is never a statement about freshness — it is a broken input.
   if (generated.size === 0 || committed.size === 0) {
@@ -276,6 +297,9 @@ export function formatVerdict(result) {
   const lines = [];
   const lag = result.lag;
   const age = result.ageDays === null ? 'undatable' : `${result.ageDays.toFixed(1)}d`;
+  // Machine-greppable trailer first: the nightly log is read by grep far more often than
+  // by a human, and the prose below is free to change.
+  lines.push(`verdict=${result.verdict} lag=${lag} age=${age} extra=${result.extra.length}`);
   switch (result.verdict) {
     case 'fresh':
       lines.push(
@@ -318,6 +342,15 @@ export function formatVerdict(result) {
       `note: ${result.extra.length} committed entries are not reproducible from history — the branch-tip-regen signature (ADR-0196); regen from master`,
     );
   }
+  // Deliberately NOT reported under `lagging`: once even one entry is missing the two
+  // texts necessarily differ, so "rendering also differs" carries no information there.
+  // A mid-wave git-cliff version bump surfaces as `extra` instead (entries flip on both
+  // sides at once), which the note above names. `rendersIdentically` stays on the result
+  // for callers that want the raw signal.
+  // Name the offending entries, not just their count — a bare number sends the reader
+  // back to run the tool themselves.
+  for (const key of result.extra.slice(0, 3))
+    lines.push(`  not-in-history: ${entryTextFromKey(key)}`);
   for (const key of result.missing.slice(0, 3)) lines.push(`  behind: ${entryTextFromKey(key)}`);
   return lines.map((line) => LOG_PREFIX + line).join('\n');
 }
@@ -440,13 +473,17 @@ const SELF_TEST_CASES = [
   },
 ];
 
-export function runSelfTest() {
+// The comparator is INJECTED so the teeth can be proven to bite: the gating suite calls
+// runSelfTest with a deliberately wrong comparator and asserts it reports failures.
+// Without that seam, `return { ok: true, failures: [] }` is an undetectable neutering of
+// the entire inline fixture table — a surviving mutant when this was bite-proofed.
+export function runSelfTest(classify = classifyChangelogDrift) {
   const failures = [];
   for (const testCase of SELF_TEST_CASES) {
     let verdict;
     let lag;
     try {
-      const result = classifyChangelogDrift(testCase.input);
+      const result = classify(testCase.input);
       verdict = result.verdict;
       lag = result.lag;
     } catch (err) {
@@ -547,7 +584,10 @@ function main(argv) {
   // 5. Prove the generated side really came from git history: the newest Conventional
   // Commit on HEAD must appear in it. This is what kills a self-compare — a stale
   // committed file cannot contain the newest subject's entry.
-  const log = git(['log', '--format=%cI%x1f%s', '-n', '400']);
+  // The FULL log, not a window: the mapped-fraction guard below compares against every
+  // entry the generation contains, and a windowed log would make old entries look
+  // unmappable.
+  const log = git(['log', '--format=%cI%x1f%s']);
   const commits = log
     .split('\n')
     .filter((line) => line.length > 0)
@@ -557,12 +597,26 @@ function main(argv) {
     });
   const newest = commits.map((c) => entryTextForSubject(c.subject)).find((t) => t !== null);
   if (newest === undefined)
-    die(2, 'no Conventional Commit found in the last 400 commits — cannot validate the generation');
+    die(2, 'no Conventional Commit found on HEAD — cannot validate the generation');
   const generatedTexts = new Set([...generated.keys()].map(entryTextFromKey));
   if (!generatedTexts.has(newest)) {
     die(
       2,
       `the generated changelog does not contain the newest commit's entry (${newest}) — it did not come from git history`,
+    );
+  }
+
+  // 5b. The subject->entry transform must still track git-cliff's rendering, or the age
+  // arm of the conjunction silently dies (see MIN_MAPPED_FRACTION).
+  const subjectTexts = new Set(
+    commits.map((c) => entryTextForSubject(c.subject)).filter((t) => t !== null),
+  );
+  const mapped = [...generatedTexts].filter((t) => subjectTexts.has(t)).length;
+  const fraction = mapped / generatedTexts.size;
+  if (fraction < MIN_MAPPED_FRACTION) {
+    die(
+      2,
+      `only ${mapped}/${generatedTexts.size} (${(fraction * 100).toFixed(1)}%) generated entries map back to a commit subject, floor ${(MIN_MAPPED_FRACTION * 100).toFixed(0)}% — entryTextForSubject no longer tracks the cliff.toml template, so the age signal cannot be trusted`,
     );
   }
 

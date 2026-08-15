@@ -330,6 +330,14 @@ milestone close** (the close/reconciliation chore runs `just changelog`), so the
 ledger can lag by at most the open milestone — the tenth review found it 8 merges
 behind. A slice's own squash line lands at the NEXT regen: git-cliff reads committed
 master history, so regenerate at the branch point, never after `wip:` commits.
+**Enforcement since 13r-g (ADR-0196):** `scripts/changelog-freshness.mjs` runs in the
+`changelog-freshness` nightly job, comparing a fresh generation's entry multiset against
+the committed ledger. It fails only on the CONJUNCTION — at least 15 entries missing AND
+the oldest missing entry at least 6 days old — because the lag is a weekly sawtooth that
+reaches 20-26 on a healthy wave, so a bare count either nags (66% of nights) or misses
+half the real episodes; from 8 entries behind it prints an advisory and exits 0. There is
+no per-PR gate and no `just` recipe: `justfile` and `evals/**` were outside 13r-g's
+touches, so the nightly job is the only caller.
 
 **ADR back-link reciprocity (12r-f):** ADR-0104 D1 already required that "an ADR
 that only *amends* another stays `Accepted`; the amended ADR gains
