@@ -24,7 +24,14 @@ const BASELINE_PATH = path.resolve('evals/baselines/table-schemas.json');
 const SERVER_SRC = path.resolve('server-module/src');
 
 // ---------------------------------------------------------------------------
-// Pure parser helpers (exported for gate-teeth and regeneration)
+// Pure parser helpers. `parseTableSchemas` is imported by scripts/okf-export.mjs
+// (it renders docs/knowledge/** from the `columns` key INSERTION ORDER),
+// evals/gate-teeth.eval.mjs and evals/guest-claim-integrity.eval.mjs — its
+// return shape and that key order are load-bearing outside this file.
+// The struct-keyed counterpart of the order rules below lives in
+// evals/bsatn-compat-smoke.eval.mjs (`parseStructFieldOrder`/`checkAppendedColumns`),
+// which pins ONE migration's exact column list; this file gates the SHAPE for
+// every table (ADR-0193).
 // ---------------------------------------------------------------------------
 
 /**
