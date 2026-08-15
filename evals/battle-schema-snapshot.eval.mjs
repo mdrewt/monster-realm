@@ -881,7 +881,7 @@ pub struct Inventory {
   const clean = (r) => isArr(r) && r.length === 0;
   const hasTag = (r, tag) => isArr(r) && r.some((s) => String(s).indexOf(tag) !== -1);
   const show = (r) => (isArr(r) ? JSON.stringify(r) : `NOT-AN-ARRAY(${typeof r})`);
-  const colNames = (entries) => (isArr(entries) ? entries.map((f) => f && f.name) : []);
+  const colNames = (entries) => (isArr(entries) ? entries.map((f) => f?.name) : []);
   const defaultOf = (entries, col) => {
     const hit = isArr(entries) ? entries.find((f) => f && f.name === col) : undefined;
     return hit === undefined ? 'MISSING' : hit.hasDefault;
@@ -1648,7 +1648,7 @@ pub struct PartySlot {
         teeth.push(`T-NOTHROW FAILED: ${label} returned ${show(result)}, expected an array`);
       }
     } catch (e) {
-      teeth.push(`T-NOTHROW FAILED: ${label} THREW ${e && e.message} — checkers must never throw`);
+      teeth.push(`T-NOTHROW FAILED: ${label} THREW ${e?.message} — checkers must never throw`);
     }
   }
 
@@ -1659,7 +1659,7 @@ pub struct PartySlot {
   const realOrder = parseTableColumnOrder(rawSrc);
   const baselineTables = Object.keys(baseline);
   const orderChecked = baselineTables.filter(
-    (t) => isArr(baseline[t] && baseline[t].order) && isArr(realOrder[t]),
+    (t) => isArr(baseline[t]?.order) && isArr(realOrder[t]),
   ).length;
   // COVERAGE only. The real-source VERDICT belongs to the gate block below, which
   // runs the identical checks with the right attribution: a genuine schema
@@ -1750,7 +1750,7 @@ const neverThrows =
       const out = fn(...args);
       return Array.isArray(out) ? out : [`${tag} checker returned a non-array (${typeof out})`];
     } catch (e) {
-      return [`${tag} checker threw on malformed input — ${e && e.message}`];
+      return [`${tag} checker threw on malformed input — ${e?.message}`];
     }
   };
 export const checkParseShape = neverThrows('[parse-shape]', checkParseShapeCore);
