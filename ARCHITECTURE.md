@@ -317,6 +317,12 @@ concept page's `resource:`/`source:` frontmatter points at a `*_tests.rs` file
 committed==regenerated drift gate stays green). Recipes: `just
 knowledge` regenerates; `just knowledge-check` drift-checks.
 
+**Schema-gate order-awareness (13r-d, ADR-0193):** that same gate is now column-ORDER
+aware — `evals/baselines/table-schemas.json` records each table's `order`, and a git-resolved
+append-only comparison against the previously committed baseline keeps a mid-struct insert RED
+even after a sanctioned full re-baseline (live spacetime accepts only tail-appended
+`#[default(...)]` columns, ADR-0173 D5). `parseTableSchemas()`'s return shape is unchanged.
+
 **Generated changelog (m17.5g):** `CHANGELOG.md` is likewise a generated ledger —
 `git-cliff` renders it from committed Conventional Commit history (`just changelog`
 is the sole writer; never hand-edit). Policy since m17.5g: **regenerate at every

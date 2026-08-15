@@ -18,7 +18,7 @@
 import { execFileSync } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import path from 'node:path';
-import { stripRustSource } from './rust-scan.mjs';
+import { compactWs, stripRustSource } from './rust-scan.mjs';
 
 const BASELINE_PATH = path.resolve('evals/baselines/table-schemas.json');
 const SERVER_SRC = path.resolve('server-module/src');
@@ -185,11 +185,21 @@ export function parseTableColumnOrder(rawSrc) {
 // evals/spacetime-type-snapshot.eval.mjs).
 // ---------------------------------------------------------------------------
 
-const TABLE_ATTR_NEEDLE = '#[spacetimedb::table(name';
+// Whitespace-insensitive: the parser's own regex needs the attribute on ONE line
+// with `name` first, so a rustfmt-wrapped or argument-reordered attribute must
+// still be COUNTED here — otherwise the table vanishes from both sides at once
+// and the count agrees vacuously (13r-d red-team F3).
+const TABLE_ATTR_NEEDLE = '#[spacetimedb::table(';
+
+// ADR-0193 D7: the per-table, self-expiring escape for a change that only the
+// ADR-0177 delete-data runbook can make legal. Value must be a string naming an
+// ADR; see checkBaselineAppendOnly.
+const MANUAL_MIGRATION_KEY = 'manual_migration';
 
 const AUTOMIGRATION_RULE =
-  'live spacetime 2.6.0 accepts only TAIL-appended columns each carrying an explicit ' +
-  '#[default(...)] (ADR-0173 D5)';
+  "as a change to an EXISTING table's columns, live spacetime 2.6.0 accepts only " +
+  'TAIL-appended columns each carrying an explicit #[default(...)] (ADR-0173 D5; adding a new ' +
+  'table or an index is separately safe)';
 
 const DEFAULTS_ESCAPES =
   'two sanctioned escapes: (1) move the column to the TAIL of the struct or give it a ' +
@@ -233,7 +243,7 @@ const entryName = (f) => {
  * @param {string} rawSrc Raw Rust source.
  * @returns {string[]} [] = clean.
  */
-export function checkParseShape(rawSrc) {
+function checkParseShapeCore(rawSrc) {
   if (typeof rawSrc !== 'string') {
     return [`[parse-shape] malformed input: expected a source string, got ${typeof rawSrc}`];
   }
@@ -243,7 +253,7 @@ export function checkParseShape(rawSrc) {
       const t = line.trim();
       if (t.length === 0) continue;
       if (t.startsWith('#[')) {
-        if (/\spub\s+\w+\s*:/.test(t)) {
+        if (/\]\s*pub\s+\w+\s*:/.test(t)) {
           violations.push(
             `[parse-shape] table '${table}': attribute AND field on one line — '${t}'. The ` +
               'parser reads the whole line as a bare attribute, so the column is invisible to ' +
@@ -271,7 +281,7 @@ export function checkParseShape(rawSrc) {
   // [table-count] — string- AND comment-aware strip (evals/rust-scan.mjs): a
   // naive comment-only strip counts the decoy attributes that live inside Rust
   // string literals in server-module/src/economy_tests.rs.
-  const declared = stripRustSource(rawSrc).split(TABLE_ATTR_NEEDLE).length - 1;
+  const declared = compactWs(stripRustSource(rawSrc)).split(TABLE_ATTR_NEEDLE).length - 1;
   const parsedCount = Object.keys(parseTableFields(rawSrc)).length;
   if (declared !== parsedCount) {
     violations.push(
@@ -291,7 +301,7 @@ export function checkParseShape(rawSrc) {
  * @param {{ [t: string]: { columns?: object, order?: string[] } }} baseline
  * @returns {string[]} [] = clean.
  */
-export function checkColumnOrder(parsedOrder, baseline) {
+function checkColumnOrderCore(parsedOrder, baseline) {
   if (!isObj(parsedOrder) || !isObj(baseline)) {
     return [
       '[order-shape] malformed input: checkColumnOrder requires two non-null objects (got ' +
@@ -417,7 +427,7 @@ export function checkColumnOrder(parsedOrder, baseline) {
  * @param {{ [t: string]: object }} baseline
  * @returns {string[]} [] = clean.
  */
-export function checkDefaultsSuffix(parsedOrder, baseline) {
+function checkDefaultsSuffixCore(parsedOrder, baseline) {
   if (!isObj(parsedOrder) || !isObj(baseline)) {
     return [
       '[defaults-not-suffix] malformed input: checkDefaultsSuffix requires two non-null objects ' +
@@ -470,7 +480,7 @@ export function checkDefaultsSuffix(parsedOrder, baseline) {
  * @param {{ [t: string]: { name: string, hasDefault: boolean }[] }} parsedOrder
  * @returns {string[]} [] = clean.
  */
-export function checkBaselineAppendOnly(prevBaseline, nextBaseline, parsedOrder) {
+function checkBaselineAppendOnlyCore(prevBaseline, nextBaseline, parsedOrder) {
   if (!isObj(prevBaseline) || !isObj(nextBaseline)) {
     return [
       '[append-only] malformed input: checkBaselineAppendOnly requires two non-null baseline ' +
@@ -479,81 +489,131 @@ export function checkBaselineAppendOnly(prevBaseline, nextBaseline, parsedOrder)
   }
   const violations = [];
   for (const table of Object.keys(prevBaseline).sort()) {
+    // Per-table findings are collected separately so the MANUAL_MIGRATION_KEY
+    // escape (below) can suppress exactly this table's findings and nothing else.
+    const found = [];
+    const next = nextBaseline[table];
+    const prev = prevBaseline[table];
+    const marker = isObj(next) ? next[MANUAL_MIGRATION_KEY] : undefined;
+    const escaped = typeof marker === 'string' && marker.indexOf('ADR-') !== -1;
     if (!(table in nextBaseline)) {
-      violations.push(
+      found.push(
         `[append-only] table '${table}': present in the previously committed baseline and absent ` +
           'from the new one — a table drop is never accepted by automigration (ADR-0177 runbook)',
       );
-      continue;
-    }
-    const prev = prevBaseline[table];
-    const next = nextBaseline[table];
-    const prevOrder = recordedOrder(prev);
-    const nextOrder = recordedOrder(next);
-    if (prevOrder === null || nextOrder === null) {
-      violations.push(
-        `[append-only] table '${table}': malformed baseline entry — no recorded column order ` +
-          `(prev=${prevOrder !== null}, next=${nextOrder !== null}); neither an "order" array nor ` +
-          'a "columns" object, so the append-only comparison cannot run for this table',
-      );
-      continue;
-    }
-    if (
-      prevOrder.some((c) => typeof c !== 'string') ||
-      nextOrder.some((c) => typeof c !== 'string')
-    ) {
-      violations.push(
-        `[append-only] table '${table}': malformed baseline entry — the recorded column order ` +
-          'contains non-string entries; the append-only comparison cannot run for this table',
-      );
-      continue;
-    }
-    if (nextOrder.length < prevOrder.length) {
-      violations.push(
-        `[append-only] table '${table}': column count shrank from ${prevOrder.length} (prev ` +
-          `committed) to ${nextOrder.length} (new) — dropped ` +
-          `${JSON.stringify(prevOrder.filter((c) => !nextOrder.includes(c)))}; a column removal ` +
-          'is never accepted by automigration (ADR-0177 runbook)',
-      );
-      continue;
-    }
-    for (let i = 0; i < prevOrder.length; i++) {
-      if (nextOrder[i] !== prevOrder[i]) {
-        violations.push(
-          `[append-only] table '${table}': column at position ${i} changed from ` +
-            `'${prevOrder[i]}' (prev committed) to '${nextOrder[i]}' (new) — the previously ` +
-            'committed order must be a positional PREFIX of the new one; re-baselining does not ' +
-            `make a mid-struct insert or a reorder legal (${AUTOMIGRATION_RULE})`,
+    } else {
+      const prevOrder = recordedOrder(prev);
+      const nextOrder = recordedOrder(next);
+      if (prevOrder === null || nextOrder === null) {
+        found.push(
+          `[append-only] table '${table}': malformed baseline entry — no recorded column order ` +
+            `(prev=${prevOrder !== null}, next=${nextOrder !== null}); neither an "order" array ` +
+            'nor a "columns" object, so the append-only comparison cannot run for this table',
         );
+      } else if (
+        prevOrder.some((c) => typeof c !== 'string') ||
+        nextOrder.some((c) => typeof c !== 'string')
+      ) {
+        found.push(
+          `[append-only] table '${table}': malformed baseline entry — the recorded column order ` +
+            'contains non-string entries; the append-only comparison cannot run for this table',
+        );
+      } else {
+        const dropped = prevOrder.filter((c) => !nextOrder.includes(c));
+        if (dropped.length > 0) {
+          found.push(
+            `[append-only] table '${table}': column(s) ${JSON.stringify(dropped)} present in the ` +
+              'previously committed baseline are gone — a column removal is never accepted by ' +
+              'automigration; it needs the ADR-0177 delete-data runbook, recorded as a ' +
+              `"${MANUAL_MIGRATION_KEY}" note on this table`,
+          );
+        }
+        // Positional prefix over the columns that SURVIVED (a removal is already
+        // reported above; without this filter one removal cascades into a
+        // violation for every following column).
+        const expected = prevOrder.filter((c) => nextOrder.includes(c));
+        for (let i = 0; i < expected.length; i++) {
+          if (nextOrder[i] !== expected[i]) {
+            found.push(
+              `[append-only] table '${table}': column at position ${i} changed from ` +
+                `'${expected[i]}' (prev committed) to '${nextOrder[i]}' (new) — the previously ` +
+                'committed order must be a positional PREFIX of the new one; re-baselining does ' +
+                `not make a mid-struct insert or a reorder legal (${AUTOMIGRATION_RULE})`,
+            );
+            break; // one message per table: the first divergence names the defect
+          }
+        }
+        // A persisted column's declared TYPE and the table's PK are as immutable
+        // as its position — and `checkSchemaDrift` cannot see either of them once
+        // the baseline has been regenerated (13r-d red-team F1).
+        const prevCols = isObj(prev) && isObj(prev.columns) ? prev.columns : null;
+        const nextCols = isObj(next) && isObj(next.columns) ? next.columns : null;
+        if (prevCols !== null && nextCols !== null) {
+          for (const c of expected) {
+            if (c in prevCols && c in nextCols && prevCols[c] !== nextCols[c]) {
+              found.push(
+                `[append-only] table '${table}': column '${c}' changed type from ` +
+                  `'${prevCols[c]}' (prev committed) to '${nextCols[c]}' (new) — modifying a ` +
+                  'persisted column is never accepted by automigration (ADR-0177 runbook)',
+              );
+            }
+          }
+        }
+        if (isObj(prev) && isObj(next) && prev.pk !== next.pk) {
+          found.push(
+            `[append-only] table '${table}': primary key changed from '${prev.pk}' (prev ` +
+              `committed) to '${next.pk}' (new) — adding or moving a primary-key constraint is ` +
+              'never accepted by automigration (ADR-0177 runbook)',
+          );
+        }
+        const srcFields = isObj(parsedOrder) ? parsedOrder[table] : undefined;
+        for (let i = expected.length; i < nextOrder.length; i++) {
+          const nm = nextOrder[i];
+          if (!Array.isArray(srcFields)) {
+            found.push(
+              `[append-only] table '${table}': appended column '${nm}' (position ${i}) cannot be ` +
+                'checked for #[default(...)] — the table has no parsed source order ' +
+                `(got ${typeof srcFields})`,
+            );
+            continue;
+          }
+          const hit = srcFields.find((f) => entryName(f) === nm);
+          if (hit === undefined) {
+            found.push(
+              `[append-only] table '${table}': appended column '${nm}' (position ${i}) is not ` +
+                'present in the parsed source order — cannot confirm it carries #[default(...)]',
+            );
+            continue;
+          }
+          if (!(isObj(hit) && hit.hasDefault === true)) {
+            found.push(
+              `[append-only] table '${table}': appended column '${nm}' (position ${i}) carries ` +
+                `no #[default(...)] in source — ${AUTOMIGRATION_RULE}, so this append is ` +
+                'rejected by the live publish',
+            );
+          }
+        }
       }
     }
-    const srcFields = isObj(parsedOrder) ? parsedOrder[table] : undefined;
-    for (let i = prevOrder.length; i < nextOrder.length; i++) {
-      const nm = nextOrder[i];
-      if (!Array.isArray(srcFields)) {
+
+    // ADR-0193 D7 — the ONLY escape, and it is self-expiring. A live-DB change
+    // that automigration rejects is legal exactly once: via the ADR-0177
+    // delete-data runbook. Recording that on the table (a string naming the ADR)
+    // suppresses this table's findings for the one commit that lands it. Once
+    // merged, prev == next, there is nothing left to suppress, and the marker
+    // must be removed — a stale marker is itself a violation, so the escape
+    // cannot silently disarm the rule.
+    if (escaped) {
+      if (found.length === 0) {
         violations.push(
-          `[append-only] table '${table}': appended column '${nm}' (position ${i}) cannot be ` +
-            'checked for #[default(...)] — the table has no parsed source order ' +
-            `(got ${typeof srcFields})`,
-        );
-        continue;
-      }
-      const hit = srcFields.find((f) => entryName(f) === nm);
-      if (hit === undefined) {
-        violations.push(
-          `[append-only] table '${table}': appended column '${nm}' (position ${i}) is not present ` +
-            'in the parsed source order — cannot confirm it carries #[default(...)]',
-        );
-        continue;
-      }
-      if (!(isObj(hit) && hit.hasDefault === true)) {
-        violations.push(
-          `[append-only] table '${table}': appended column '${nm}' (position ${i}) carries no ` +
-            `#[default(...)] in source — ${AUTOMIGRATION_RULE}, so this append is rejected by ` +
-            'the live publish',
+          `[append-only] table '${table}': stale "${MANUAL_MIGRATION_KEY}" marker — it suppresses ` +
+            'nothing now that the migration has landed, and left in place it would hide the next ' +
+            'illegal change. Remove it from the baseline entry',
         );
       }
+      continue;
     }
+    for (const v of found) violations.push(v);
   }
   return violations;
 }
@@ -579,13 +639,40 @@ function gitShowBaselineJson(ref) {
   }
 }
 
+/** Is this process running inside a git work tree at all? */
+function insideGitWorkTree() {
+  try {
+    return (
+      execFileSync('git', ['rev-parse', '--is-inside-work-tree'], {
+        encoding: 'utf8',
+        stdio: ['pipe', 'pipe', 'ignore'],
+      }).trim() === 'true'
+    );
+  } catch {
+    return false;
+  }
+}
+
 /**
  * Resolve the previously committed baseline (ADR-0116 D3 resolution order):
  *   (1) git merge-base HEAD origin/master -> git show <sha>:<baseline>
  *   (2) git show origin/master:<baseline>
- *   (3) give up -> { source: 'none', data: null }  (D4: fail-open-LOUD)
+ *   (3) give up -> { source: 'none', data: null }
+ *
+ * D3's third element matters as much as the first two: on a master-PUSH run the
+ * merge-base IS HEAD, so the resolved baseline deep-equals the working one and
+ * the comparison is vacuous. In that case validate the last TRANSITION instead
+ * (HEAD~1 vs HEAD), which is exactly the change that just landed.
  */
-function readPrevBaseline() {
+function readPrevBaseline(workingBaseline) {
+  const selfIdentical = (data) =>
+    data !== null && JSON.stringify(data) === JSON.stringify(workingBaseline);
+  const lastTransition = () => {
+    const prior = gitShowBaselineJson('HEAD~1');
+    return prior === null
+      ? { source: 'none', data: null }
+      : { source: 'HEAD~1 (self-compare would be vacuous)', data: prior };
+  };
   try {
     const sha = execFileSync('git', ['merge-base', 'HEAD', 'origin/master'], {
       encoding: 'utf8',
@@ -593,12 +680,14 @@ function readPrevBaseline() {
     }).trim();
     if (sha) {
       const data = gitShowBaselineJson(sha);
+      if (selfIdentical(data)) return lastTransition();
       if (data !== null) return { source: `merge-base ${sha.slice(0, 7)}`, data };
     }
   } catch {
     // merge-base unavailable (no origin/master, shallow clone, no git) — fall through
   }
   const tip = gitShowBaselineJson('origin/master');
+  if (selfIdentical(tip)) return lastTransition();
   if (tip !== null) return { source: 'origin/master', data: tip };
   return { source: 'none', data: null };
 }
@@ -809,6 +898,9 @@ pub struct Inventory {
     }
     return out;
   };
+
+  // A baseline that knows no tables at all — the state a brand-new table is in.
+  const PREV_BASELINE_EMPTY = {};
 
   // The pre-change committed baseline for `inventory` (4 columns, no defaults).
   const PREV_BASELINE = {
@@ -1075,6 +1167,197 @@ pub struct Inventory {
   }
 
   // -------------------------------------------------------------------------
+  // T-APPEND — [order-append]'s TWO distinct failure modes, against a baseline
+  // that was NOT regenerated (the only state in which a source column can be
+  // absent from the recorded order at all). Every OTHER checkColumnOrder tooth
+  // either asserts the result is CLEAN (T-MANDATE(b), T-LEGAL, T-REAL) or keys
+  // on [order-mismatch]/[order-shape], so deleting the whole [order-append]
+  // branch — one of ADR-0193 D3's six rules — survives all of them.
+  // (a) kills a rule that only checks POSITION (the tail append with no
+  // default is at the tail); (b) kills one that only checks the DEFAULT (the
+  // mid-struct insert carries one).
+  // -------------------------------------------------------------------------
+  const appendCases = [
+    ['tail append with NO #[default(', noDefOrder, wantNoDefNames, 'tail_no_default', false],
+    ['mid-struct insert (not a tail append)', insertOrder, wantInsertNames, 'inserted', true],
+  ];
+  for (const [label, order, wantNames, col, wantDefault] of appendCases) {
+    const gotNames = colNames(order.inventory);
+    if (!eq(gotNames, wantNames) || defaultOf(order.inventory, col) !== wantDefault) {
+      teeth.push(
+        `T-APPEND VACUOUS (${label}): parsed order ${JSON.stringify(gotNames)} with hasDefault ` +
+          `${JSON.stringify(defaultOf(order.inventory, col))} for '${col}', expected ` +
+          `${JSON.stringify(wantNames)} with ${wantDefault}`,
+      );
+      continue;
+    }
+    const appendResult = checkColumnOrder(order, PREV_BASELINE);
+    if (!hasTag(appendResult, '[order-append]')) {
+      teeth.push(
+        `T-APPEND FAILED (${label}): '${col}' is present in source and absent from the recorded ` +
+          `order, but checkColumnOrder reported no [order-append] — got ${show(appendResult)}. ` +
+          AUTOMIGRATION_RULE,
+      );
+    } else if (!hasTag(appendResult, col)) {
+      teeth.push(
+        `T-APPEND (${label}): the [order-append] violation does not name the offending column ` +
+          `'${col}' — got ${show(appendResult)}; a message that cannot identify the column ` +
+          'cannot be acted on',
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // T-LAUNDER — the same laundering attack as T-MANDATE, on the TYPE and PK
+  // axes. A retype or a PK move at a persisted position is rejected by live
+  // spacetime exactly like a reorder; `checkSchemaDrift` cannot see either once
+  // the baseline has been regenerated. Kills a checkBaselineAppendOnly that
+  // compares column NAMES only.
+  // -------------------------------------------------------------------------
+  const retypedBaseline = {
+    inventory: {
+      pk: 'inv_id',
+      columns: { inv_id: 'u64', owner_identity: 'Identity', item_id: 'u64', count: 'u32' },
+      order: ['inv_id', 'owner_identity', 'item_id', 'count'],
+    },
+  };
+  const retypeDrift = checkSchemaDrift(
+    { inventory: { pk: 'inv_id', columns: retypedBaseline.inventory.columns } },
+    retypedBaseline,
+  );
+  if (!clean(retypeDrift)) {
+    teeth.push(
+      `T-LAUNDER VACUOUS: the re-baselined map must be self-consistent, got ${show(retypeDrift)}`,
+    );
+  } else {
+    const retyped = checkBaselineAppendOnly(PREV_BASELINE, retypedBaseline, {
+      inventory: colNames(PREV_BASELINE.inventory.order).map((n) => ({ name: n })),
+    });
+    if (!hasTag(retyped, '[append-only]') || !hasTag(retyped, 'item_id')) {
+      teeth.push(
+        'T-LAUNDER(a) FAILED: inventory.item_id retyped u32 -> u64 at a persisted position, ' +
+          `then fully re-baselined, was not flagged [append-only] naming the column — got ${show(retyped)}`,
+      );
+    }
+    const pkMoved = {
+      inventory: {
+        pk: 'owner_identity',
+        columns: PREV_BASELINE.inventory.columns,
+        order: PREV_BASELINE.inventory.order,
+      },
+    };
+    const pkResult = checkBaselineAppendOnly(PREV_BASELINE, pkMoved, {});
+    if (!hasTag(pkResult, '[append-only]')) {
+      teeth.push(
+        `T-LAUNDER(b) FAILED: the primary key moved from inv_id to owner_identity across a ` +
+          `re-baseline and was not flagged [append-only] — got ${show(pkResult)}`,
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-SWAP-REBASED — a pure REORDER (no column added or removed) survives a full
+  // re-baseline. Kills a checkBaselineAppendOnly that only compares the last
+  // prefix position or the column count.
+  // -------------------------------------------------------------------------
+  const swapRebased = rebaseline(SWAP_SRC);
+  const swapAppendOnly = checkBaselineAppendOnly(PREV_BASELINE, swapRebased, swapOrder);
+  if (!hasTag(swapAppendOnly, '[append-only]')) {
+    teeth.push(
+      'T-SWAP-REBASED FAILED: item_id and count swapped and then FULLY re-baselined (same ' +
+        'column set, same count, same types) was not flagged [append-only] — got ' +
+        `${show(swapAppendOnly)}. A length-preserving reorder is a live-DB rejection`,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // T-B1-INTERIOR — a non-defaulted column BETWEEN two defaulted ones. Kills a
+  // checkDefaultsSuffix that only inspects the last column.
+  // -------------------------------------------------------------------------
+  const INTERIOR_SRC = `
+#[spacetimedb::table(name = inventory, public)]
+pub struct Inventory {
+    #[primary_key]
+    pub inv_id: u64,
+    #[default(0)]
+    pub a: u32,
+    pub gap: u32,
+    #[default(0)]
+    pub z: u32,
+}
+`;
+  const interiorOrder = parseTableColumnOrder(INTERIOR_SRC);
+  const wantInterior = ['inv_id', 'a', 'gap', 'z'];
+  if (!eq(colNames(interiorOrder.inventory), wantInterior)) {
+    teeth.push(
+      `T-B1-INTERIOR VACUOUS: order = ${JSON.stringify(colNames(interiorOrder.inventory))}`,
+    );
+  } else {
+    const interior = checkDefaultsSuffix(interiorOrder, rebaseline(INTERIOR_SRC));
+    if (!hasTag(interior, '[defaults-not-suffix]') || !hasTag(interior, 'gap')) {
+      teeth.push(
+        "T-B1-INTERIOR FAILED: a non-defaulted column ('gap') declared BETWEEN two defaulted " +
+          `columns was not flagged naming it — got ${show(interior)}. An implementation that ` +
+          'only inspects the LAST column passes without this tooth',
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-ESCAPE — the ADR-0193 D7 manual-migration escape must (a) suppress the
+  // findings of the ONE table it names when the ADR-0177 runbook is recorded,
+  // and (b) be self-expiring: a marker with nothing left to suppress is itself
+  // a violation, so it can never silently disarm the rule.
+  // -------------------------------------------------------------------------
+  const removedCol = {
+    inventory: {
+      pk: 'inv_id',
+      columns: { inv_id: 'u64', owner_identity: 'Identity', item_id: 'u32' },
+      order: ['inv_id', 'owner_identity', 'item_id'],
+    },
+  };
+  if (!hasTag(checkBaselineAppendOnly(PREV_BASELINE, removedCol, {}), '[append-only]')) {
+    teeth.push('T-ESCAPE VACUOUS: the un-escaped column removal must be flagged first');
+  } else {
+    const escaped = {
+      inventory: { ...removedCol.inventory, manual_migration: 'ADR-0177 delete-data runbook' },
+    };
+    const escapedResult = checkBaselineAppendOnly(PREV_BASELINE, escaped, {});
+    if (!clean(escapedResult)) {
+      teeth.push(
+        'T-ESCAPE(a) FAILED: a removal recorded with a manual_migration note naming an ADR must ' +
+          `be accepted for that table — got ${show(escapedResult)}`,
+      );
+    }
+    const stale = {
+      inventory: { ...PREV_BASELINE.inventory, manual_migration: 'ADR-0177 delete-data runbook' },
+    };
+    const staleResult = checkBaselineAppendOnly(PREV_BASELINE, stale, {});
+    if (!hasTag(staleResult, '[append-only]') || !hasTag(staleResult, 'stale')) {
+      teeth.push(
+        'T-ESCAPE(b) FAILED: a manual_migration marker left behind once the migration has landed ' +
+          `(nothing to suppress) must be flagged as STALE — got ${show(staleResult)}. An escape ` +
+          'that outlives its migration silently disarms the rule for that table',
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-NEWTABLE — ADR-0193 D5: a brand-new table cannot break a migration, so
+  // [defaults-not-suffix] must NOT fire for a table absent from the (previously
+  // committed) baseline. Kills a rule scoped to the regenerated working baseline,
+  // which false-REDs every new table the next slice adds.
+  // -------------------------------------------------------------------------
+  const newTableOrder = parseTableColumnOrder(INTERIOR_SRC);
+  const newTableResult = checkDefaultsSuffix(newTableOrder, PREV_BASELINE_EMPTY);
+  if (!clean(newTableResult)) {
+    teeth.push(
+      'T-NEWTABLE FAILED: [defaults-not-suffix] fired for a table that is NOT in the baseline ' +
+        `— got ${show(newTableResult)}. ADR-0193 D5 scopes the rule to already-published tables`,
+    );
+  }
+
   // T-SHAPE — the recorded `order` itself must be well-formed. Sub-case (c),
   // a RIGHT-LENGTH array with a duplicate, kills a length-only permutation
   // check; (a) kills "absent order == nothing to check" (vacuous green).
@@ -1210,6 +1493,47 @@ pub struct Inventory {
   }
 
   // -------------------------------------------------------------------------
+  // T-PARSE(c) — TWO `pub` fields on ONE line. Unlike the two fixtures above,
+  // this line DOES match the field pattern: the second field is swallowed into
+  // the first one's TYPE, so the unparsable-line branch stays silent, the table
+  // count is right, and the second column is invisible to the snapshot (the
+  // non-vacuity assertion below proves that blindness). Kills a [parse-shape]
+  // that ships only the attribute-and-field and unparsable-line branches and
+  // drops the per-line `pub <ident>:` COUNT (ADR-0193 D3 lists two fields per
+  // line as a distinct kill).
+  // -------------------------------------------------------------------------
+  const TWO_FIELD_SRC = `
+#[spacetimedb::table(name = inventory, public)]
+pub struct Inventory {
+    #[primary_key]
+    pub inv_id: u64,
+    pub item_id: u32, pub count: u32,
+}
+`;
+  const twoFieldEntry = parseTableSchemas(TWO_FIELD_SRC).inventory;
+  const twoFieldTypes = isObj(twoFieldEntry) ? twoFieldEntry.columns : null;
+  const twoFieldCols = isObj(twoFieldTypes) ? Object.keys(twoFieldTypes) : [];
+  if (!eq(twoFieldCols, ['inv_id', 'item_id'])) {
+    teeth.push(
+      'T-PARSE(c) VACUOUS: the two-fields-on-one-line fixture was expected to parse to exactly ' +
+        "['inv_id','item_id'] with 'count' INVISIBLE, but parsed to " +
+        `${JSON.stringify(twoFieldCols)} — the parser changed; re-derive this tooth from ` +
+        'ADR-0193 D3',
+    );
+  } else {
+    const twoFieldShape = checkParseShape(TWO_FIELD_SRC);
+    if (!hasTag(twoFieldShape, '[parse-shape]')) {
+      teeth.push(
+        'T-PARSE(c) FAILED: `pub item_id: u32, pub count: u32,` on ONE line hides the `count` ' +
+          "column from the snapshot (it is parsed as part of item_id's type) but " +
+          `checkParseShape did not report [parse-shape] — got ${show(twoFieldShape)}. The field ` +
+          'pattern MATCHES this line and the table count is unchanged, so only a per-line ' +
+          '`pub <ident>:` count can see it',
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
   // T-COUNT — a `]` inside the table attribute defeats the table regex and the
   // whole table VANISHES from the parse. Silent blindness must become loud.
   // (If a future parser learns this attribute shape, revise this tooth from
@@ -1337,16 +1661,10 @@ pub struct PartySlot {
   const orderChecked = baselineTables.filter(
     (t) => isArr(baseline[t] && baseline[t].order) && isArr(realOrder[t]),
   ).length;
-  const realChecks = [
-    ['checkParseShape(real source)', checkParseShape(rawSrc)],
-    ['checkColumnOrder(real, baseline)', checkColumnOrder(realOrder, baseline)],
-    ['checkDefaultsSuffix(real, baseline)', checkDefaultsSuffix(realOrder, baseline)],
-  ];
-  for (const [label, result] of realChecks) {
-    if (!clean(result)) {
-      teeth.push(`T-REAL: ${label} must be clean but returned ${show(result)}`);
-    }
-  }
+  // COVERAGE only. The real-source VERDICT belongs to the gate block below, which
+  // runs the identical checks with the right attribution: a genuine schema
+  // violation must read as "schema-order violations", not "teeth FAILED" (a
+  // message that sends the author to audit the gate instead of their own diff).
   if (orderChecked !== baselineTables.length) {
     teeth.push(
       `T-REAL FAILED: only ${orderChecked} of ${baselineTables.length} baseline tables have BOTH ` +
@@ -1369,24 +1687,37 @@ pub struct PartySlot {
   // survives a full, sanctioned re-baseline.
   // -------------------------------------------------------------------------
   const sourceOrder = parseTableColumnOrder(rawSrc);
+  const prevBaseline = readPrevBaseline(baseline);
+  const appendOnlyRan = isObj(prevBaseline.data) && Object.keys(prevBaseline.data).length > 0;
+  // ADR-0193 D5: [defaults-not-suffix] is scoped to tables that already EXIST in
+  // the published schema. The working-tree baseline cannot express that — the
+  // mandatory regeneration puts a brand-new table in it before this runs — so the
+  // scope comes from the previously committed baseline whenever git resolves it.
+  const defaultsScope = appendOnlyRan ? prevBaseline.data : baseline;
   const violations = [
     ...checkParseShape(rawSrc),
     ...checkColumnOrder(sourceOrder, baseline),
-    ...checkDefaultsSuffix(sourceOrder, baseline),
+    ...checkDefaultsSuffix(sourceOrder, defaultsScope),
   ];
-  const prevBaseline = readPrevBaseline();
-  const appendOnlyRan = isObj(prevBaseline.data);
   if (appendOnlyRan) {
     violations.push(...checkBaselineAppendOnly(prevBaseline.data, baseline, sourceOrder));
+  } else if (insideGitWorkTree()) {
+    // Fail-CLOSED inside a repo. For the 33 tables that carry no defaulted column,
+    // the append-only layer is the ONLY rule that survives a full re-baseline, so a
+    // silently unresolvable prev baseline (shallow clone, renamed default branch,
+    // pruned remote ref) would disarm the gate while it still reported green.
+    violations.push(
+      '[append-only] the previously committed baseline could not be resolved from git ' +
+        `(${prevBaseline.source}) even though this IS a git work tree — the ADR-0193 D4 layer ` +
+        'cannot run, and it is the only rule that survives a full re-baseline. Fetch the ' +
+        'default branch (git fetch origin master) or run outside a repo to accept the reduced gate',
+    );
   }
-  // Fail-open-LOUD (ADR-0116 D2 precedent): when the previous baseline cannot be
-  // resolved the five in-tree rules still bite, but the run MUST say so.
   const appendOnlyNote = appendOnlyRan
     ? `append-only layer ran against the previously committed baseline (${prevBaseline.source})`
-    : 'WARNING — the ADR-0193 D4 append-only layer DID NOT RUN: the previously committed ' +
-      `baseline could not be resolved from git (${prevBaseline.source}; no origin/master, a ` +
-      'shallow clone, or no git). A mid-struct insert laundered through a full re-baseline is ' +
-      'NOT policed by this run';
+    : 'WARNING — the ADR-0193 D4 append-only layer DID NOT RUN: no git work tree, so the ' +
+      'previously committed baseline is unavailable. A mid-struct insert laundered through a ' +
+      'full re-baseline is NOT policed by this run';
   if (violations.length > 0) {
     return {
       name,
@@ -1402,10 +1733,30 @@ pub struct PartySlot {
     detail:
       `${tableCount} tables parsed; all match baseline exactly (columns, types, PKs); ` +
       `EncounterEntryRow excluded; column-drop tooth verified; ADR-0193 order teeth verified ` +
-      `(T-MANDATE/B1/NODEFAULT/LEGAL/SWAP/SHAPE/REMOVE/PARSE/COUNT/IDEMPOTENT/NOTHROW/REAL); ` +
+      `(T-MANDATE/B1/NODEFAULT/LEGAL/SWAP/SWAP-REBASED/LAUNDER/APPEND/SHAPE/REMOVE/ESCAPE/` +
+      `NEWTABLE/B1-INTERIOR/PARSE/COUNT/IDEMPOTENT/NOTHROW/REAL); ` +
       `${orderChecked}/${baselineTables.length} baseline tables order-checked; ${appendOnlyNote}`,
   };
 }
+
+// ADR-0193 D3 — the never-throws contract, mechanically. The rule bodies above
+// guard their inputs, but an exotic value (a throwing getter, a Proxy, a BigInt
+// inside JSON.stringify) must still yield a TAGGED diagnostic rather than kill
+// the eval: a checker that throws is a checker that cannot fail loudly.
+const neverThrows =
+  (tag, fn) =>
+  (...args) => {
+    try {
+      const out = fn(...args);
+      return Array.isArray(out) ? out : [`${tag} checker returned a non-array (${typeof out})`];
+    } catch (e) {
+      return [`${tag} checker threw on malformed input — ${e && e.message}`];
+    }
+  };
+export const checkParseShape = neverThrows('[parse-shape]', checkParseShapeCore);
+export const checkColumnOrder = neverThrows('[order-shape]', checkColumnOrderCore);
+export const checkDefaultsSuffix = neverThrows('[defaults-not-suffix]', checkDefaultsSuffixCore);
+export const checkBaselineAppendOnly = neverThrows('[append-only]', checkBaselineAppendOnlyCore);
 
 // M8.9b (ADR-0056): server-module/src was split from a single lib.rs into cohesive
 // domain submodules. Concatenate ALL .rs files under it (sorted, recursive — a
