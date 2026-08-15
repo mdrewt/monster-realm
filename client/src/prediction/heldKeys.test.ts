@@ -474,6 +474,264 @@ describe('[14r-e] HeldDirections.isHeld (ADR-0187): membership in the held set',
 });
 
 // ================================================================================
+// 4c. [13r-f / ADR-0192] snapshot / restore — the pure seam that lets the WARP arm's
+//     prediction rebuild keep the player's held keys.
+//
+// THE DEFECT (nh5, ADR-0152 residual #4): `resetPredictionState()` calls `held.clear()`,
+// and switchZone calls it on every zone change. The keydown handler ignores `e.repeat`,
+// so a key that is PHYSICALLY still down is never re-registered — walking through a zone
+// boundary mid-hold stops the player dead until release + re-press.
+//
+// THE CONTRACT (ADR-0192 Decision 1):
+//   `snapshot()` returns an opaque, COPIED capture of the held stack (order + each
+//   entry's ORIGINAL press stamp). `restore(snap)` REPLACES the stack with copies of
+//   that capture. It never re-stamps and never merges.
+// Both halves matter: preserving the ORIGINAL stamps is what makes a warp neither a free
+// re-commit (a mid-tap hold must still earn its window from the original press) nor a
+// fresh 150ms halt (an already-committed hold resumes on the first post-warp frame).
+//
+// RED REASON at authoring time: `HeldDirections.snapshot` / `.restore` DO NOT EXIST, so
+// every tooth below throws `held.snapshot is not a function` — a missing implementation,
+// loudly. (vitest does not typecheck, so this is a runtime TypeError, not a compile error.)
+// ================================================================================
+
+const ALL_DIRS: readonly WasmDirection[] = ['North', 'South', 'East', 'West'];
+
+/** Everything an outside caller can learn about a HeldDirections, as plain data.
+ *  `restore(snapshot())` must be the IDENTITY on this observation — that is the whole
+ *  contract, and expressing it as one comparable value is what makes U-W8 a property
+ *  rather than a hand-picked pair of assertions. */
+interface HeldObservation {
+  readonly active: WasmDirection | undefined;
+  readonly held: readonly boolean[];
+  readonly committed: readonly (WasmDirection | undefined)[];
+}
+function observeHeld(h: HeldDirections, probesMs: readonly number[]): HeldObservation {
+  return {
+    active: h.active(),
+    held: ALL_DIRS.map((d) => h.isHeld(d)),
+    committed: probesMs.map((t) => h.committedActive(t)),
+  };
+}
+
+describe('[13r-f] HeldDirections.snapshot/restore (ADR-0192)', () => {
+  it('U-W1: round-trip — a held dir survives clear() when it was captured first', () => {
+    // Kills: the DEFECT ITSELF as a unit (no seam at all), and a `restore` that is a no-op
+    // stub — after the rebuild the player is holding East and the tracker says nothing is
+    // held, so no continuation can ever be re-issued and movement halts at the boundary.
+    const held = new HeldDirections();
+    held.press('East', 1000);
+    const snap = held.snapshot();
+    held.clear(); // ← resetPredictionState()
+    expect(held.active(), 'precondition: the rebuild really does empty the stack').toBeUndefined();
+    held.restore(snap);
+    expect(held.active()).toBe('East');
+    expect(held.isHeld('East')).toBe(true);
+  });
+
+  it('U-W2 BITES: the ORIGINAL press stamp survives the capture — boundary table at ±1ms', () => {
+    // ★ THE STAMP TOOTH. The press happens at t=1000 and the capture/restore happen
+    // CONCEPTUALLY LATER (nonzero press→warp gap — AM6): if `restore` re-stamped entries to
+    // "now", the commit window would restart and the player would suffer a fresh 150ms halt
+    // at every boundary, which is the defect wearing a different hat (ADR-0192 Decision 3).
+    // The two probes straddle the threshold measured from the ORIGINAL press, so:
+    //   - a RE-STAMP to any later instant reds the `1000 + X` probe (still uncommitted), and
+    //   - a stamp of 0 (or any earlier instant) reds the `1000 + X - 1` probe (committed too
+    //     early — a free re-commit, i.e. the ADR-0158 double-move handed back).
+    // Only the verbatim original stamp satisfies BOTH.
+    const held = new HeldDirections();
+    held.press('East', 1000);
+    const snap = held.snapshot();
+    held.clear();
+    held.restore(snap);
+    expect(held.committedActive(1000 + HOLD_COMMIT_MS - 1)).toBeUndefined();
+    expect(held.committedActive(1000 + HOLD_COMMIT_MS)).toBe('East');
+    // …and the un-restored control: the same instance re-pressed at the RESTORE instant
+    // would commit only at 1050 + X. The two tables must disagree, or the tooth is blind.
+    const restamped = new HeldDirections();
+    restamped.press('East', 1050);
+    expect(restamped.committedActive(1000 + HOLD_COMMIT_MS)).toBeUndefined();
+  });
+
+  it('U-W3 BITES: a MID-TAP hold stays uncommitted across the capture (no free re-commit)', () => {
+    // ADR-0192 Decision 3, the other direction of U-W2: a key pressed 1ms before the warp
+    // must NOT be instantly eligible for a continuation afterwards.
+    // Kills: `restore` writing `pressedAtMs: 0` (or any sentinel), which makes every restored
+    // entry read as "held since the epoch" — a guaranteed extra tile on every warp taken
+    // during a tap, i.e. Drew's r2 double-move re-opened at the zone boundary.
+    const held = new HeldDirections(150);
+    held.press('East', 1000);
+    const snap = held.snapshot();
+    held.clear();
+    held.restore(snap);
+    expect(held.committedActive(1100)).toBeUndefined(); // 100ms after the ORIGINAL press
+    expect(held.committedActive(1150)).toBe('East'); // …and committed exactly at 150ms
+  });
+
+  it('U-W4 BITES: stack ORDER survives, and the BURIED key keeps its own stamp', () => {
+    // Kills: a `restore` that rebuilds the stack in reverse (active() would answer 'North'
+    // — the player would walk the wrong way out of the boundary), and any impl that collapses
+    // the per-entry stamps onto one shared value (the buried North's 1000 stamp is what makes
+    // the post-release fallback resume IMMEDIATELY instead of stuttering a fresh window —
+    // U-H4's invariant, now across a rebuild).
+    const held = new HeldDirections(150);
+    held.press('North', 1000); // buried
+    held.press('East', 1010); // stack top
+    const snap = held.snapshot();
+    held.clear();
+    held.restore(snap);
+    expect(held.active()).toBe('East'); // ORDER: the top is still the top
+    expect(held.isHeld('North')).toBe(true); // …and the buried key is still held
+    held.release('East');
+    expect(held.active()).toBe('North'); // fallback to the still-held key
+    expect(held.committedActive(1149)).toBeUndefined(); // North's OWN stamp (1000) governs…
+    expect(held.committedActive(1160)).toBe('North'); // …so it resumes on its own window
+  });
+
+  it('U-W5 BITES: snapshot is a COPY (not an alias) and restore REPLACES (not merges)', () => {
+    // ★ AM6. The probe deliberately perturbs the LIVE instance with press()/release() AFTER
+    // the capture — never with clear(), which REASSIGNS the internal array and would leave an
+    // aliased snapshot untouched (a false negative that hides the bug).
+    //
+    // (i) Kills: `snapshot() { return this.#stack; }` (ADR-0192 rejected alternative #4) —
+    //     the returned array is the live one, so the South press lands INSIDE the capture and
+    //     comes back through restore. Also kills MERGE semantics (rejected alternative #5):
+    //     a merge would keep South on top and the player would walk south out of the warp.
+    const a = new HeldDirections(150);
+    a.press('East', 1000);
+    const snapA = a.snapshot();
+    a.press('South', 2000); // perturb the LIVE stack after the capture
+    a.restore(snapA);
+    expect(a.isHeld('South')).toBe(false);
+    expect(a.isHeld('East')).toBe(true);
+    expect(a.active()).toBe('East');
+    expect(a.committedActive(1150)).toBe('East'); // East's ORIGINAL 1000 stamp, still
+
+    // (ii) The mirror image: a release AFTER the capture must not reach into the capture.
+    //     Kills: an entry-level alias (`this.#stack.slice()` sharing entry OBJECTS is fine,
+    //     but returning the live array means `release`'s filter rebuilds it) — restore would
+    //     then bring back an EMPTY stack and the player would still be frozen.
+    //     Restoring a released key is SAFE here by ADR-0192's synchrony argument: capture and
+    //     restore run in one synchronous block, so no keyup can interleave in production.
+    const b = new HeldDirections(150);
+    b.press('East', 1000);
+    const snapB = b.snapshot();
+    b.release('East');
+    expect(b.active(), 'precondition: the live release really did empty the stack').toBeUndefined();
+    b.restore(snapB);
+    expect(b.isHeld('East')).toBe(true);
+    expect(b.committedActive(1150)).toBe('East');
+  });
+
+  it('U-W6 BITES: after restore, a release still evicts — and a re-press opens a FRESH window', () => {
+    // The U-H7 stale-stamp killer, now across a rebuild. Kills: a `restore` that writes the
+    // stamps into a PARALLEL map (or any structure `release` does not evict) — `active()`
+    // stays correct, every other tooth here stays green, and the next re-tap of that
+    // direction commits INSTANTLY: a guaranteed double-move on the first tap after a warp.
+    const held = new HeldDirections(150);
+    held.press('East', 1000);
+    const snap = held.snapshot();
+    held.clear();
+    held.restore(snap);
+    held.release('East');
+    expect(held.active()).toBeUndefined(); // the restored entry is evictable, not sticky
+    expect(held.committedActive(9999)).toBeUndefined();
+    held.press('East', 3000); // the re-tap
+    expect(held.committedActive(3149)).toBeUndefined(); // 149ms into the FRESH window
+    expect(held.committedActive(3150)).toBe('East'); // 150ms into the FRESH window
+  });
+
+  it('U-W7 BITES: an EMPTY snapshot restored onto a NON-EMPTY stack wipes it; restore is idempotent', () => {
+    // ★ AM6 — the empty-onto-EMPTY fixture is the known blind spot (a no-op `restore` passes
+    // it), so the replace proof is done the only way that bites: onto a POPULATED instance.
+    // Kills: merge semantics, and a `restore` that early-returns on an empty capture — either
+    // one leaves the pre-rebuild keys latched. In production this is AC-5's "nothing held"
+    // case: a warp with no key down must leave the tracker empty, not resurrect the last hold.
+    const empty = new HeldDirections(150);
+    const emptySnap = empty.snapshot();
+    const held = new HeldDirections(150);
+    held.press('East', 1000);
+    held.press('North', 1010);
+    expect(held.active(), 'precondition: the target instance is NOT empty').toBe('North');
+    held.restore(emptySnap);
+    expect(held.active()).toBeUndefined();
+    for (const d of ALL_DIRS) {
+      expect(held.isHeld(d), `restoring an EMPTY capture must leave ${d} unheld`).toBe(false);
+    }
+    expect(held.committedActive(999_999)).toBeUndefined();
+
+    // IDEMPOTENCE: restoring the same capture twice is observationally one restore. Kills a
+    // restore that APPENDS: the second call would double every entry, and then a single
+    // release would leave a duplicate behind — the no-dup invariant the M8.6c stack exists
+    // to hold (`press` of an already-held dir is a no-op for exactly this reason).
+    const twice = new HeldDirections(150);
+    twice.press('North', 1000);
+    twice.press('East', 1010);
+    const snap = twice.snapshot();
+    twice.clear();
+    twice.restore(snap);
+    const afterOne = observeHeld(twice, [1010, 1149, 1160, 1500]);
+    twice.restore(snap);
+    expect(observeHeld(twice, [1010, 1149, 1160, 1500])).toEqual(afterOne);
+    twice.release('East');
+    expect(twice.isHeld('East'), 'ONE release must clear East — no duplicate entry survives').toBe(
+      false,
+    );
+    expect(twice.active()).toBe('North');
+  });
+
+  it('U-W8 PROPERTY: restore(pre-taken snapshot) is observationally the pre-snapshot instance', () => {
+    // The general statement of AC-1: for ANY reachable held state, capture → (arbitrary
+    // perturbation) → clear → restore returns the instance to EXACTLY the observable state it
+    // had at capture time — same active(), same isHeld() for all four dirs, same
+    // committedActive() across a probe grid that straddles the threshold.
+    //
+    // Kills, in one shot, every shape the hand-written teeth above pin one at a time:
+    // re-stamping, stamp-0, order reversal, merge, alias, partial copy, and any impl that is
+    // only correct for a single held key. The perturbation phase (ops applied AFTER the
+    // capture) is what makes the alias/merge kills hold in general rather than for one fixture.
+    const dirArb = fc.constantFrom<WasmDirection>('North', 'South', 'East', 'West');
+    type Op = { kind: 'press' | 'release'; dir: WasmDirection; dt: number };
+    const opArb: fc.Arbitrary<Op> = fc.record({
+      kind: fc.constantFrom<'press' | 'release'>('press', 'release'),
+      dir: dirArb,
+      dt: fc.integer({ min: 0, max: 300 }), // monotonic time: cumulative, never negative
+    });
+    fc.assert(
+      fc.property(
+        fc.array(opArb, { maxLength: 24 }),
+        fc.array(opArb, { maxLength: 8 }),
+        (ops, perturbation) => {
+          const held = new HeldDirections();
+          let t = 1000;
+          for (const op of ops) {
+            t += op.dt;
+            if (op.kind === 'press') held.press(op.dir, t);
+            else held.release(op.dir);
+          }
+          const probes = [t, t + HOLD_COMMIT_MS - 1, t + HOLD_COMMIT_MS, t + 400];
+          const before = observeHeld(held, probes);
+
+          const snap = held.snapshot();
+          // Perturb the LIVE instance after the capture (aliasing / merge probe), then do
+          // exactly what switchZone does: reset the tracker, then restore the capture.
+          let pt = t;
+          for (const op of perturbation) {
+            pt += op.dt;
+            if (op.kind === 'press') held.press(op.dir, pt);
+            else held.release(op.dir);
+          }
+          held.clear();
+          held.restore(snap);
+
+          expect(observeHeld(held, probes)).toEqual(before);
+        },
+      ),
+    );
+  });
+});
+
+// ================================================================================
 // 5. Integration: held-key / lag regression
 //    Wire HeldDirections + reissueDir + Predictor (cap-2 queue / small pendingCap)
 //    + injected applyMove over a fake frame loop with DELAYED acks.

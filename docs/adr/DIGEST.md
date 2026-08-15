@@ -166,6 +166,7 @@ Generated from 157 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0189](./0189-ranked-requires-account.md) | 0189 — Ranked play requires a full account: server enforcement at both PvP handshake gates | Accepted | security-authz, battle | 14r-g (M-postgate fourteenth-review residuals §14r-g) | Both PvP handshake reducers reject unless both parties hold an `account` row (`is_account_holder`, never `has_jwt()`), via one pure `ranked_account_gate` seam before any irreversible effect; inert until a real issuer is configured. |
 | [0190](./0190-observability-stack-boot-fixes.md) | 0190 — The observability stack could not boot: three committed config defects fixed, tempo parked, `build_sha` residual mechanized | Accepted | ci-gates, tooling-docs | 13r-a (M-postgate thirteenth-review residuals §13r-a) | Alloy runs as the image own uid 473, the Caddy image strips the net-bind file capability that made its exec EPERM, and the alert group interval becomes a 10s-divisible 20s; tempo and Caddy port 80 stay parked out-of-touch-set. |
 | [0191](./0191-mr-trace-relay-integration.md) | 0191 — `mr-trace-relay` integration: the 8th service, its scrape target and its dead-man's switch land as one change | Accepted | ci-gates, tooling-docs | 13r-b (M-postgate thirteenth-review residuals §13r-b) | Ship the relay as an 8th compose service (node, uid 473, Alloy's read-only replicas mount) serving a one-counter exposition body on `/health`, plus its scrape job and a distinct dead-man's-switch rule. OTLP POST deferred. |
+| [0192](./0192-held-key-warp-continuation.md) | 0192 — Held-key warp continuation: the held stack survives the WARP arm's prediction rebuild (nh5) | Accepted | movement-netcode, client-ui | 13r-f (M-postgate thirteenth-review residuals §13r-f — the nh5 candidate named by ADR-0152 residual #4 and nh3-plan R6) | `switchZone` captures the held stack (original press stamps) before `resetPredictionState()` and restores it after — warp arm ONLY; the reconnect arm and shared reset body stay byte-identical, keeping ADR-0152's guarantee. |
 
 ## Harness design corpus (H- namespace)
 
@@ -306,6 +307,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0178](./0178-validator-and-core-hardening-tail.md) — 12r-e (M-postgate-twelfth-review-residuals) — 0178 — Validator & core hardening tail: R4 gate semantics, single duplicate-pair enforcement, ids-only party seam, cap-exhausted write elision (Accepted)
 - [0187](./0187-dualkey-first-step-dedup-and-movement-input-e2e.md) — 14r-e (M-postgate-fourteenth-review-residuals — ADR-0158 residuals 3+4) — 0187 — dualkey first-step dedup + movement-input runtime e2e (mvi-e2e) (Accepted)
 - [0188](./0188-small-hygiene-sweep-escape-ssot-and-trade-cap-mirror.md) — 14r-f (M-postgate-fourteenth-review-residuals — ADR-0170 residual 8, ADR-0166 R4 + R6) — 0188 — small-hygiene sweep: evolution log escaping, both-role grass guard, trade-cap mirror (Accepted)
+- [0192](./0192-held-key-warp-continuation.md) — 13r-f (M-postgate thirteenth-review residuals §13r-f — the nh5 candidate named by ADR-0152 residual #4 and nh3-plan R6) — 0192 — Held-key warp continuation: the held stack survives the WARP arm's prediction rebuild (nh5) (Accepted)
 
 ### content
 
@@ -416,6 +418,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0182](./0182-m21b2-oidc-client-claim-ui-better-auth-deployment.md) — heavy-ceremony M21b-2 planning pass (pre-slice; implementation elaborates in the m21b-2 — 0182 — M21b-2: OIDC client wiring, claim-code UI, session lifecycle, Better Auth deployment (Accepted)
 - [0187](./0187-dualkey-first-step-dedup-and-movement-input-e2e.md) — 14r-e (M-postgate-fourteenth-review-residuals — ADR-0158 residuals 3+4) — 0187 — dualkey first-step dedup + movement-input runtime e2e (mvi-e2e) (Accepted)
 - [0188](./0188-small-hygiene-sweep-escape-ssot-and-trade-cap-mirror.md) — 14r-f (M-postgate-fourteenth-review-residuals — ADR-0170 residual 8, ADR-0166 R4 + R6) — 0188 — small-hygiene sweep: evolution log escaping, both-role grass guard, trade-cap mirror (Accepted)
+- [0192](./0192-held-key-warp-continuation.md) — 13r-f (M-postgate thirteenth-review residuals §13r-f — the nh5 candidate named by ADR-0152 residual #4 and nh3-plan R6) — 0192 — Held-key warp continuation: the held stack survives the WARP arm's prediction rebuild (nh5) (Accepted)
 
 ### ci-gates
 

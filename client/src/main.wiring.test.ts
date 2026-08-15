@@ -9919,6 +9919,340 @@ describe('★ main.ts wiring (M21b-2/ADR-0182 D15, G29): W-M21B2-SIGNED-IN-IS-OW
 });
 
 // ===========================================================================
+// nh5 / ADR-0192 — the held stack survives the WARP arm's prediction rebuild.
+//
+// SOURCE OF TRUTH: docs/adr/0192-held-key-warp-continuation.md Decision 2 — switchZone
+// brackets its EXISTING `resetPredictionState()` call with
+//     const heldSnapshot = held.snapshot();
+//     resetPredictionState();
+//     held.restore(heldSnapshot);
+// warp arm ONLY; `resetPredictionState()`'s body and the `onReconnect` arm stay
+// byte-identical, because ADR-0152's per-path invariant makes `held.clear()` ALONE the
+// guard for the reconnect path's deferred-reconcile gap.
+//
+// RED TODAY (AM5, measured): W-NH5-WARP-PRESERVES and W-NH5-SEAM-COUNT — `held.snapshot(`
+// and `held.restore(` each occur ZERO times in main.ts. W-NH5-RECONNECT-CLEARS and
+// W-NH5-RESET-BODY-UNCHANGED are GREEN today and are the permanent guards that the fix
+// stays on the arm it belongs to.
+// ===========================================================================
+
+const NH5_SWITCHZONE_START = 'function switchZone(';
+const NH5_SWITCHZONE_END = 'function reconcileFromStore(';
+const NH5_RESET_START = 'function resetPredictionState(): void {';
+const NH5_RECONNECT_START = 'onReconnect: () => {';
+const NH5_RECONNECT_END = 'onOwnWarp: (newZoneId) => {';
+const NH5_CAPTURE_STMT = 'const heldSnapshot = held.snapshot();';
+const NH5_RESTORE_STMT = 'held.restore(heldSnapshot);';
+const NH5_RESET_CALL = 'resetPredictionState();';
+const NH5_STREAK_RESET = 'zoneSyncFailureCount = 0;';
+
+/** Brace-nesting depth of `idx` within `text`: `{` minus `}` over the prefix, counting only
+ *  braces in CODE position. `text` is expected to be comment-stripped (bodyRegion output);
+ *  m20cScan keeps STRING LITERALS verbatim, so this walk carries the same tiny single/double/
+ *  template state machine `mwCodeOccurrences` uses, and a brace inside a literal is data.
+ *  Total and dumb by design: no lookahead, no `new RegExp`, no error paths. Its failure
+ *  direction is a WRONG (typically depressed) depth for every index after the confusing
+ *  construct, which reds an equality check rather than manufacturing agreement. */
+function nh5BraceDepthAt(text: string, idx: number): number {
+  let depth = 0;
+  let mode = 0; // 0 code, 1 ' , 2 " , 3 `
+  const limit = Math.min(idx, text.length);
+  for (let i = 0; i < limit; i += 1) {
+    const ch = text.charAt(i);
+    if (mode === 0) {
+      if (ch === '{') depth += 1;
+      else if (ch === '}') depth -= 1;
+      else if (ch === "'") mode = 1;
+      else if (ch === '"') mode = 2;
+      else if (ch === '`') mode = 3;
+      continue;
+    }
+    if (ch === '\\') {
+      i += 1;
+      continue;
+    }
+    const closer = mode === 1 ? "'" : mode === 2 ? '"' : '`';
+    if (ch === closer) mode = 0;
+    else if (mode !== 3 && ch === '\n') mode = 0; // an unescaped newline ends '…' / "…"
+  }
+  return depth;
+}
+
+describe('★ main.ts wiring (nh5/ADR-0192): held-key warp continuation', () => {
+  it('★ W-NH5-WARP-PRESERVES BITES: switchZone captures the held stack before resetPredictionState() and restores it after', () => {
+    // RED TODAY: main.ts:808 is a bare `resetPredictionState();` — `held.snapshot(` and
+    // `held.restore(` occur zero times in the file, so the two needles below fail.
+    //
+    // WRONG IMPL KILLED (1) ★ THE DEFECT: no capture/restore at all — `held.clear()` inside
+    //   resetPredictionState empties the stack on every zone change, and because keydown
+    //   ignores `e.repeat` the still-down key is never re-registered: the player stops dead at
+    //   every boundary crossed mid-hold until they release and re-press (ADR-0152 residual #4).
+    // WRONG IMPL KILLED (2): capture and restore SWAPPED (restore before the reset) — the
+    //   restore is then undone by `held.clear()` one line later and the defect is untouched
+    //   while both needles are present. The index ordering is what sees it.
+    // WRONG IMPL KILLED (3): `held.restore(held.snapshot())` or a restore fed from anything
+    //   other than the const captured before the reset — the CONTIGUOUS statement needle pins
+    //   the argument, so a fresh capture taken AFTER the clear (i.e. an empty one) cannot hide.
+    // WRONG IMPL KILLED (4): the pair moved INTO `resetPredictionState()` or duplicated onto
+    //   another arm — `held.` occurs exactly twice in this region, and the reconnect/reset
+    //   teeth below own the other two halves of that.
+    // WRONG IMPL KILLED (5) ★ AM1, PoC'd by red-team: the three statements wrapped in a
+    //   TAUTOLOGICAL dead branch (e.g. `if (rawMap.zone_id !== newZoneId) { … }`, always false
+    //   after the `rawMap = newRawMap;` commit) — every needle and every ordering check above
+    //   still passes while `resetPredictionState()` itself becomes DEAD CODE, which is worse
+    //   than the defect. The nesting-depth check is the killer: the three statements must sit
+    //   at the SAME brace depth as `zoneSyncFailureCount = 0;`, which is unconditionally
+    //   reachable on the success path.
+    // WRONG IMPL KILLED (6) ★ AM7 / AC-5: the capture hoisted ABOVE the throwing map
+    //   validation — `TileMap.fromRaw(` must come FIRST, so a failed switch never reaches the
+    //   capture and the catch path leaves held state exactly as it was.
+    const src = readMainTs();
+    expectUniqueAnchor(src, NH5_SWITCHZONE_START);
+    expectUniqueAnchor(src, NH5_SWITCHZONE_END);
+    const region = bodyRegion(src, NH5_SWITCHZONE_START, NH5_SWITCHZONE_END);
+
+    // ANTI-VACUITY: prove the anchors still bound the real zone-switch body before judging it.
+    expect(
+      region.includes(NH5_RESET_CALL),
+      'the switchZone region must contain the prediction rebuild `resetPredictionState();` — ' +
+        'if it does not, these anchors no longer bound the block this tooth is about',
+    ).toBe(true);
+    expect(
+      region.includes('set_active_zone('),
+      'the switchZone region must contain the zone commit `set_active_zone(` — same bail-out',
+    ).toBe(true);
+
+    // CODE-AWARE occurrences (the W-MVI-COMMITTED-WIRED post-mortem: a decoy string literal
+    // reproducing a needle satisfies `.includes` while the real statement is reverted).
+    const captureHits = mwCodeOccurrences(region, NH5_CAPTURE_STMT);
+    const restoreHits = mwCodeOccurrences(region, NH5_RESTORE_STMT);
+    expect(
+      captureHits.length,
+      `switchZone must capture the held stack AS CODE, exactly once: \`${NH5_CAPTURE_STMT}\`. ` +
+        'Without it the rebuild wipes the stack and a key held through a zone boundary stops ' +
+        'the player dead until release + re-press (ADR-0192 Decision 2)',
+    ).toBe(1);
+    expect(
+      restoreHits.length,
+      `switchZone must restore it AS CODE, exactly once, from the captured const: ` +
+        `\`${NH5_RESTORE_STMT}\`. The contiguous needle pins the ARGUMENT — a restore fed by a ` +
+        'fresh `held.snapshot()` taken after the reset would restore an empty stack',
+    ).toBe(1);
+
+    const fromRawHits = mwCodeOccurrences(region, 'TileMap.fromRaw(');
+    const resetHits = mwCodeOccurrences(region, NH5_RESET_CALL);
+    const streakHits = mwCodeOccurrences(region, NH5_STREAK_RESET);
+    expect(
+      fromRawHits.length,
+      'the switchZone region must contain exactly one `TileMap.fromRaw(` validation call — ' +
+        'the AC-5 ordering below is measured against it',
+    ).toBe(1);
+    expect(
+      resetHits.length,
+      'the switchZone region must call `resetPredictionState();` exactly once',
+    ).toBe(1);
+    expect(
+      streakHits.length,
+      `the switchZone region must contain exactly one \`${NH5_STREAK_RESET}\` — it is the ` +
+        'unconditionally-reachable success-path statement the depth check is measured against',
+    ).toBe(1);
+
+    const fromRawIdx = fromRawHits[0] as number;
+    const captureIdx = captureHits[0] as number;
+    const resetIdx = resetHits[0] as number;
+    const restoreIdx = restoreHits[0] as number;
+    const streakIdx = streakHits[0] as number;
+
+    expect(
+      fromRawIdx,
+      'AC-5 (AM7): the capture must come AFTER the throwing map validation `TileMap.fromRaw(` ' +
+        '— a switch that fails validation must leave held state byte-identical, which it does ' +
+        'by never reaching the capture at all',
+    ).toBeLessThan(captureIdx);
+    expect(
+      captureIdx,
+      'the capture must precede `resetPredictionState();` — captured after the reset it would ' +
+        'capture the stack the reset just emptied, which restores nothing',
+    ).toBeLessThan(resetIdx);
+    expect(
+      resetIdx,
+      'the restore must come AFTER `resetPredictionState();` — restored before it, the very ' +
+        'next statement (`held.clear()` inside the reset) wipes it again and the defect stands',
+    ).toBeLessThan(restoreIdx);
+
+    expect(
+      countOccurrences(region, 'held.'),
+      'the switchZone region must touch `held.` EXACTLY twice — the capture and the restore. ' +
+        'A third touch means an extra held-key mutation nothing in this slice models; fewer ' +
+        'means half the seam is missing (or a decoy literal is standing in for it)',
+    ).toBe(2);
+
+    // ★ AM1: same brace-nesting depth as the unconditionally-reachable streak reset.
+    const streakDepth = nh5BraceDepthAt(region, streakIdx);
+    const named: readonly (readonly [number, string])[] = [
+      [captureIdx, NH5_CAPTURE_STMT],
+      [resetIdx, NH5_RESET_CALL],
+      [restoreIdx, NH5_RESTORE_STMT],
+    ];
+    for (const [idx, label] of named) {
+      expect(
+        nh5BraceDepthAt(region, idx),
+        `\`${label}\` must sit at the SAME brace-nesting depth (${streakDepth}) as the ` +
+          `unconditionally-reachable \`${NH5_STREAK_RESET}\` on switchZone's success path. A ` +
+          'deeper depth means the seam (and, worse, the prediction rebuild itself) has been ' +
+          'wrapped in a conditional — the red-team PoC was a tautological ' +
+          '`if (rawMap.zone_id !== newZoneId) { … }`, always false after the rawMap commit, ' +
+          'which passes every needle and ordering check while making resetPredictionState DEAD',
+      ).toBe(streakDepth);
+    }
+  });
+
+  it('★ W-NH5-RECONNECT-CLEARS BITES: the onReconnect arm contains NO held-key touch at all (GREEN guard)', () => {
+    // GREEN TODAY — a permanent guard, not a red-first tooth, and labelled so deliberately.
+    //
+    // ADR-0152 "Per-path invariant" (0152:87-93), verbatim in substance: on the WARP path the
+    // rebuild is followed in the SAME microtask flush by a reconcile, but on the RECONNECT path
+    // that reconcile is DEFERRED — the server's `on_disconnect` deleted the player/character
+    // rows, so `reconcileFromStore` early-returns until `joinGame` round-trips. In that gap the
+    // fresh predictor's `#lastAuthQueueLen` is 0 while the server may still owe a queued step,
+    // so the outstanding-steps gate is wide open and held-key continuation is prevented by
+    // `held.clear()` ALONE. It is LOAD-BEARING and MUST NOT change (ADR-0192 re-affirms it).
+    //
+    // WRONG IMPL KILLED: copying the warp arm's capture/restore pair here "for symmetry"
+    // (anti-pattern #7) — a preserved hold would then emit Steps into a link whose authority
+    // the client cannot see, which is the desync class ADR-0152 closed. movementSim's S12e is
+    // the behavioural half of this statement.
+    const src = readMainTs();
+    expectUniqueAnchor(src, NH5_RECONNECT_START);
+    expectUniqueAnchor(src, NH5_RECONNECT_END);
+    const region = bodyRegion(src, NH5_RECONNECT_START, NH5_RECONNECT_END);
+
+    // ANTI-VACUITY: the region must really be the reconnect arm before "zero touches" means
+    // anything — an empty or mis-bounded region satisfies a ban for free.
+    expect(
+      region.includes(NH5_RESET_CALL),
+      'the onReconnect region must contain `resetPredictionState();` — if it does not, these ' +
+        'anchors no longer bound the reconnect arm and the ban below is vacuous',
+    ).toBe(true);
+    expect(
+      region.includes('renameView?.hide();'),
+      'the onReconnect region must contain `renameView?.hide();` — same bail-out',
+    ).toBe(true);
+
+    expect(
+      countOccurrences(region, 'held.'),
+      'the onReconnect arm must contain ZERO `held.` touches. ADR-0152 per-path invariant: on ' +
+        'the reconnect path the reconcile is DEFERRED (the rows are gone until joinGame ' +
+        'round-trips), so the held stack being EMPTY is the only thing preventing a ' +
+        'continuation from being emitted into that gap — `held.clear()` inside the shared ' +
+        'resetPredictionState() is load-bearing here, and ADR-0192 preserves it by touching ' +
+        'the WARP arm only. A capture/restore pair added here for symmetry re-opens it',
+    ).toBe(0);
+  });
+
+  it('★ W-NH5-RESET-BODY-UNCHANGED BITES: the shared resetPredictionState() body still clears, and knows nothing about snapshots (GREEN guard)', () => {
+    // GREEN TODAY. ADR-0192 Decision 2 requires the SHARED body to stay byte-identical: both
+    // arms call it, and every shape that makes it configurable manufactures the reconnect
+    // misuse the reconnect tooth above exists to prevent.
+    //
+    // WRONG IMPL KILLED (1): a `preserveHeld` flag parameter (ADR-0192 rejected alternative 1)
+    //   — one flipped call site at the reconnect arm re-opens ADR-0152's unguarded gap. The
+    //   unique ARGLESS declaration anchor reds on a parameter, and the whole-file call census
+    //   reds on any argful call site.
+    // WRONG IMPL KILLED (2): the capture/restore pair moved INTO the shared body — it would
+    //   then run on the reconnect arm too. Zero snapshot/restore in this region sees it.
+    // WRONG IMPL KILLED (3): `held.clear();` deleted from the shared body "because switchZone
+    //   restores anyway" — the reconnect arm would stop clearing at all.
+    // WRONG IMPL KILLED (4): a `resetPredictionStatePreservingHold()` sibling helper (rejected
+    //   alternative 2) — the whole-file count of `resetPredictionState(` is exactly 3 (one
+    //   declaration, two call sites), so a second entry point cannot hide.
+    const src = readMainTs();
+    expectUniqueAnchor(src, NH5_RESET_START);
+    expectUniqueAnchor(src, NH5_SWITCHZONE_START);
+    const region = bodyRegion(src, NH5_RESET_START, NH5_SWITCHZONE_START);
+
+    // ANTI-VACUITY: this really is the prediction-reset body.
+    expect(
+      region.includes('predictor = new Predictor('),
+      'the resetPredictionState region must rebuild the predictor — if it does not, these ' +
+        'anchors no longer bound the shared body this tooth is about',
+    ).toBe(true);
+    expect(
+      region.includes('resolver.reset();'),
+      'the resetPredictionState region must reset the slide resolver — same bail-out',
+    ).toBe(true);
+
+    expect(
+      countOccurrences(region, 'held.clear();'),
+      'the shared resetPredictionState() body must clear the held stack exactly once — it is ' +
+        "the reconnect arm's ONLY guard for the deferred-reconcile gap (ADR-0152)",
+    ).toBe(1);
+    expect(
+      countOccurrences(region, 'held.snapshot('),
+      'the SHARED body must never capture the held stack: it runs on the reconnect arm too, ' +
+        'where preserving a hold is exactly the desync ADR-0152 closed (ADR-0192 keeps the ' +
+        'seam in switchZone alone)',
+    ).toBe(0);
+    expect(
+      countOccurrences(region, 'held.restore('),
+      'the SHARED body must never restore the held stack — same reason as the capture ban',
+    ).toBe(0);
+
+    const live = stripLineComments(src);
+    expect(
+      live.length,
+      'comment-stripped main.ts collapsed to under half its raw size — the scanner bailed ' +
+        'early, so the whole-file counts below would cover only a prefix',
+    ).toBeGreaterThan(src.length / 2);
+    expect(
+      countOccurrences(live, NH5_RESET_CALL),
+      'main.ts must call `resetPredictionState();` from EXACTLY two sites — the switchZone warp ' +
+        'arm and the onReconnect arm. A third caller is a rebuild path no ADR describes',
+    ).toBe(2);
+    expect(
+      countOccurrences(live, 'resetPredictionState('),
+      'main.ts must mention `resetPredictionState(` exactly three times: the argless ' +
+        'declaration plus those two argless call sites. A fourth occurrence means an ARGFUL ' +
+        'call (`resetPredictionState(true)`) — i.e. the rejected flag-parameter design, whose ' +
+        'one flipped call site re-opens the reconnect gap',
+    ).toBe(3);
+  });
+
+  it('★ W-NH5-SEAM-COUNT BITES: main.ts has exactly ONE held.snapshot( and ONE held.restore( in the whole file', () => {
+    // RED TODAY (AM5, measured: both counts are 0). Do NOT loosen this when it reds before the
+    // implementation lands — it is the whole-file census that the region-bounded teeth above
+    // are structurally blind to (the uxd3-b F3 lesson: a statement one line outside the markers
+    // is invisible to a needle-bounded region).
+    //
+    // WRONG IMPL KILLED (1): a SECOND capture/restore pair anywhere else in the 2600-line file
+    //   — the reconnect arm (caught here even if someone also moves the region anchors), a new
+    //   overlay open/close handler, or a blur handler "restoring" a hold the player released.
+    // WRONG IMPL KILLED (2): the pair deleted from switchZone and re-added inside
+    //   resetPredictionState — the count stays 1/1 here, which is exactly why
+    //   W-NH5-RESET-BODY-UNCHANGED bans them in the shared body as well: the two teeth are a
+    //   pair and neither is sufficient alone.
+    const src = readMainTs();
+    const live = stripLineComments(src);
+    expect(
+      live.length,
+      'comment-stripped main.ts collapsed to under half its raw size — the scanner bailed ' +
+        'early and these whole-file counts would cover only a prefix',
+    ).toBeGreaterThan(src.length / 2);
+    expect(
+      countOccurrences(live, 'held.snapshot('),
+      'main.ts must contain EXACTLY ONE `held.snapshot(` call site — the switchZone warp seam ' +
+        '(ADR-0192 Decision 2). Zero means the fix is absent; more than one means a second ' +
+        'rebuild path is preserving held keys with no ADR and no behavioural tooth behind it',
+    ).toBe(1);
+    expect(
+      countOccurrences(live, 'held.restore('),
+      'main.ts must contain EXACTLY ONE `held.restore(` call site — the same seam. A second ' +
+        'one is a held stack being resurrected somewhere nothing in this slice models',
+    ).toBe(1);
+  });
+});
+
+// ===========================================================================
 // M21b-2 UI ENTRY POINTS (ADR-0182 D16/D17) — W-M21B2-CLAIM-UI-REACHABLE.
 //
 // TWO reviews found the claim/sign-in flow was fully built but NOT REACHABLE from the UI:

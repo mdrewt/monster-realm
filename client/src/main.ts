@@ -805,7 +805,11 @@ function switchZone(newZoneId: number): void {
     // M20C-ZONE-BEGIN
     telemetry.setZone(newZoneId);
     // M20C-ZONE-END
+    // nh5 (ADR-0192): preserve the held stack across the WARP rebuild only — the
+    // reconnect arm's clear is load-bearing (ADR-0152 per-path invariant).
+    const heldSnapshot = held.snapshot();
     resetPredictionState();
+    held.restore(heldSnapshot);
     zoneSyncFailureCount = 0; // success: reset streak
     // pt-b1: emit the zone-change event ONLY on the success path, after set_active_zone.
     eventRing.push(makeZoneChange(fromZone, newZoneId));
