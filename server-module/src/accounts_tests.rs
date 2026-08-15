@@ -860,6 +860,82 @@ fn auth5_touch_login_updates_only_last_login() {
     );
 }
 
+/// AUTH-5 (pure): `touch_login` on a NON-Active account stamps ONLY
+/// `last_login_at_ms` and leaves every lifecycle + claim field byte-identical.
+///
+/// `provision_or_touch_account` calls `touch_login` on ANY existing row on every
+/// reconnect — including a `PendingDeletion` account that has already claimed a
+/// guest — but `auth5_touch_login_updates_only_last_login` only exercises the
+/// fresh-Active fixture. A regression that clobbered `status` /
+/// `deletion_requested_at_ms` / `claimed_from` / `claimed_at_ms` on the
+/// reconnect path would silently resurrect a deletion-pending account (or wipe
+/// its claim provenance) and still pass every current test. The precondition
+/// `account_state_is_legal` check pins that the fixture is a real legal
+/// PendingDeletion+claimed state, not an accidentally-illegal straw man.
+///
+/// Kills: a `touch_login` regression that resets `status` to Active, drops the
+///        deletion timestamp, or clears either half of the claim provenance pair
+///        when re-stamping the login time on a non-Active account.
+#[test]
+fn auth5_touch_login_preserves_non_active_lifecycle_and_claim_fields() {
+    let before = Account {
+        status: AccountStatus::PendingDeletion,
+        deletion_requested_at_ms: Some(500),
+        claimed_from: Some(ident(9)),
+        claimed_at_ms: Some(600),
+        ..base_account(4)
+    };
+    // Precondition: the fixture must be a LEGAL PendingDeletion+claimed state, so
+    // the test proves preservation of a real state rather than of a straw man
+    // the invariant would have rejected anyway.
+    assert!(
+        account_state_is_legal(&before),
+        "AUTH-5 precondition: the PendingDeletion+claimed fixture must itself be a \
+         legal account state before touch_login can be asked to preserve it."
+    );
+
+    let after = touch_login(before.clone(), 777);
+
+    assert_eq!(
+        after.last_login_at_ms, 777,
+        "AUTH-5: last_login_at_ms := now, even on a non-Active account."
+    );
+    assert_eq!(
+        after.status, before.status,
+        "AUTH-5: status MUST NOT change on reconnect — a login must never resurrect \
+         a PendingDeletion account to Active."
+    );
+    assert_eq!(
+        after.deletion_requested_at_ms, before.deletion_requested_at_ms,
+        "AUTH-5: the deletion timestamp MUST survive a reconnect (dropping it would \
+         silently cancel a pending deletion)."
+    );
+    assert_eq!(
+        after.claimed_from, before.claimed_from,
+        "AUTH-5: claimed_from (audit provenance, AUTH-21) MUST survive a reconnect."
+    );
+    assert_eq!(
+        after.claimed_at_ms, before.claimed_at_ms,
+        "AUTH-5: claimed_at_ms MUST survive a reconnect."
+    );
+    assert_eq!(
+        after.created_at_ms, before.created_at_ms,
+        "AUTH-5: created_at_ms unchanged."
+    );
+    assert_eq!(
+        after.identity, before.identity,
+        "AUTH-5: identity unchanged."
+    );
+    assert_eq!(
+        after.auth_issuer, before.auth_issuer,
+        "AUTH-5: auth_issuer unchanged."
+    );
+    assert!(
+        account_state_is_legal(&after),
+        "AUTH-5: the reconnected account must remain a legal state."
+    );
+}
+
 /// AUTH-8 (pure): `is_valid_claim_code` accepts EXACTLY 64 lowercase-hex chars.
 ///
 /// Kills (proof-of-teeth): swapping the explicit `b'0'..=b'9' | b'a'..=b'f'`
@@ -2891,4 +2967,47 @@ fn machinery_g2_unbalanced_param_list_panics() {
     ]
     .concat();
     let _ = parse_reducers(&truncated);
+}
+
+/// Proves the `]`/`(` attribute-disambiguation guard in `parse_reducers`
+/// discriminates: a longer identifier that merely STARTS with `reducer`
+/// (`spacetimedb::reducer_helper`) attached to a `pub fn` is NOT enumerated,
+/// while a real `spacetimedb::reducer` fn in the SAME fixture IS. The fixture
+/// carries both so it proves the guard discriminates, not that it drops
+/// everything.
+///
+/// kills: dropping the `after != Some(b']') && after != Some(b'(')` check, which
+///        would treat every `reducer`-prefixed attribute (a `reducer_helper`
+///        derive/macro, say) as a reducer — enumerating a fn that is NOT a
+///        client entry point, poisoning both the exact name-set pin and the
+///        wire-safe param scan with a phantom reducer.
+#[test]
+fn machinery_g2_attr_disambiguation_guard_teeth() {
+    let helper_attr = concat!("#[spacetimedb::", "reducer_helper]");
+    let helper_fn = concat!(
+        "pub",
+        "fn",
+        "not_a_reducer(ctx:&ReducerContext)->Result<(),String>{Ok(())}"
+    );
+    let real_attr = fx_reducer_attr();
+    let real_fn = concat!(
+        "pub",
+        "fn",
+        "real_one(ctx:&ReducerContext,code:String)->Result<(),String>{Ok(())}"
+    );
+
+    let fixture = [helper_attr, helper_fn, real_attr, real_fn].concat();
+    let names: Vec<String> = parse_reducers(&fixture)
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(
+        names,
+        vec!["real_one".to_string()],
+        "machinery: the `]`/`(` guard must enumerate ONLY the real \
+         `spacetimedb::reducer` fn. A longer identifier that merely starts with \
+         `reducer` (`spacetimedb::reducer_helper`) is NOT a client-callable \
+         reducer and must not be classified as one — otherwise a phantom fn \
+         poisons the name-set pin and the param scan. Enumerated: {names:?}"
+    );
 }

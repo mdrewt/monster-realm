@@ -119,15 +119,40 @@ weaker than the evals they mirror. A mirror weaker than its twin is a false assu
   adds discovery without false positives.
 - The `debug_assert` half of the Account invariant exists only in debug profiles; the
   table-driven predicate test and the shape tripwire are the profile-independent teeth.
+  The invariant's contract is deliberately the field-PAIRING shape (status↔timestamp,
+  claim-from↔claim-at), NOT value-level provenance: a self-referential claim
+  (`claimed_from == Some(identity)`) is domain-illegal but passes this predicate — it is
+  enforced separately at `complete_guest_claim` Guard 8 (AUTH-17) and tested there, and
+  intentionally left out of the storage-shape invariant.
 - Benign-but-shape-changing edits (e.g. a future `#[index]` on an Account field, or a
   field reorder) trip the tripwire deliberately — BSATN layout is order-sensitive, so a
   reorder SHOULD red until consciously re-pinned.
-- Named residuals still open (unchanged by this slice): G12 identifier-list parity;
-  `write_target_accessors`' unbounded `rfind`; the `//`-before-strings stripper ordering
-  in wallet-privacy/ranking-security/currency-integrity; a shared Rust-side scanner
-  library; the phantom-brace local-truncation hazard inside a single fn's body
-  (`observability.rs`'s `'}'` literal truncates `build_log_line`'s own stripped body —
-  benign today, guarded for the two new reducers by body anchors); the tombstone rating
-  re-anchor (issue #307 / OQ2, explicitly excluded).
+- Stripper soundness for the G2 Rust mirror is deliberately an eval-only clause: the JS
+  twin runs `assertStripperSound` (`rust-scan.mjs`) over all scanned files including the
+  test files as part of `just ci`'s eval stage, so a stripper desync is caught at CI; the
+  Rust mirror does not re-implement that self-check (porting it is the shared-Rust-scanner
+  follow-up below). Not exploitable today — `accounts.rs` contains no char literal or
+  odd-quote comment that would desync the strip.
+- Named residuals still open (unchanged or newly surfaced by this slice's review — all
+  need a follow-up slice that may touch `evals/**` and the shared strippers, both outside
+  13r-h's `touches:`): G12 identifier-list parity; `write_target_accessors`' unbounded
+  `rfind`; the `//`-before-strings stripper ordering in
+  wallet-privacy/ranking-security/currency-integrity; a shared Rust-side scanner library
+  (would also carry `assertStripperSound` into the Rust mirrors); the **char-literal
+  brace-walk truncation class** — a `'{'`/`'}'` char literal inside a scheduled reducer's
+  own body truncates the EG2-9 body extraction (and the twin `no-idle-accrual.eval.mjs`
+  `extractReducerBody`, which has no mitigation at all) short of a hidden growth call;
+  benign today (no scheduled reducer body contains such a literal — verified at landing),
+  partially guarded for `guest_claim_reaper`/`mr_heartbeat` by positive body anchors, but
+  the five pre-existing scheduled reducers remain anchor-free and the real fix (blank
+  char-literal interiors in the shared stripper, or a walk that skips them) touches shared
+  machinery; the **identity-constructor ban list gap** — both the G2 Rust mirror and its
+  JS twin ban only `from_hex`/`from_byte_array`/`from_be_byte_array`/`from_str`, missing
+  `Identity::from_claims(` / `from_u256(` (arbitrary-victim construction) — a SHARED gap,
+  latent (no such call in `accounts.rs` today), whose true-parity fix must extend both the
+  Rust needle list and `guest-claim-integrity.eval.mjs` in lockstep; the phantom-brace
+  local-truncation of `build_log_line`'s own stripped body (`observability.rs`'s `'}'`,
+  benign, subsumed by the truncation class above); the tombstone rating re-anchor
+  (issue #307 / OQ2, explicitly excluded).
 - Knowledge-bundle line pins over `schema.rs`/`accounts.rs` and the ADR digest are
   regenerated with this slice.
