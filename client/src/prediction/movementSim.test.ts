@@ -1547,6 +1547,14 @@ describe('[13r-f] S12 held-key warp continuation (ADR-0192): the WARP rebuild ke
         '— same self-fulfilling-sim failure as above (AM2)',
     ).toBe(true);
     expect(
+      body.includes('this.held.restore(heldSnapshot)'),
+      'the restore must be fed the CAPTURE taken before the reset — the contiguous needle ' +
+        '`this.held.restore(heldSnapshot)` pins the ARGUMENT (mirroring the wiring tooth`s ' +
+        'NH5_RESTORE_STMT). Calling both methods proves nothing on its own: a body that ' +
+        'restores a FRESH `this.held.snapshot()` taken after `this.held.clear()` routes through ' +
+        'the real seam, satisfies both presence checks above, and restores an EMPTY stack',
+    ).toBe(true);
+    expect(
       body.includes('.press('),
       'rebuildPrediction must NOT re-press anything: a re-press is the shadow-log cheat, and ' +
         'in production it is also anti-pattern #1 (fresh stamps → a 150ms halt at every warp)',
@@ -1591,8 +1599,12 @@ describe('[13r-f] S12 held-key warp continuation (ADR-0192): the WARP rebuild ke
     // preserved held stack.
     // WRONG IMPL KILLED (1): no seam at all (today) — S12a's freeze, here a hard red.
     // WRONG IMPL KILLED (2): `restore` that drops entries / restores an empty capture.
-    // WRONG IMPL KILLED (3): a rebuild that preserves the hold but breaks the send-seq floor
-    //   (the continuations would be rejected as stale and no tile would move).
+    // WRONG IMPL KILLED (3), NARROWLY: a rebuild that floors the fresh predictor's seq at
+    //   NOTHING — every continuation would carry an already-acked seq, the server would reject
+    //   it as stale and no tile would move. The floor's FIDELITY is NOT claimed here: this sim
+    //   floors from the server ack (`lastRow.lastInputSeq`), which coincides with production's
+    //   `lastSentSeq` only under the AM8 all-acked precondition asserted above. The ack-vs-sent
+    //   distinction (nh3 Case M2) is owned by predictor.test.ts's nh3-2 block.
     // WRONG IMPL KILLED (4): a preserved hold that DOUBLE-advances (a merge that leaves two
     //   entries, or an emitter that fires twice per slot) — the cadence assertion below pins
     //   one tile per 200ms movement_tick slot across the whole run (ADR-0013/0141, R3).

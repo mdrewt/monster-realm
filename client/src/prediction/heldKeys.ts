@@ -45,7 +45,7 @@ export const HOLD_COMMIT_MS = 150;
 export class HeldDirections {
   // Ordered array, last element = most-recently-pressed still-held dir. Bounded
   // domain (≤4 dirs), so the `some`/`filter` scans are O(1) in practice.
-  #stack: { dir: WasmDirection; pressedAtMs: number }[] = [];
+  #stack: HeldEntry[] = [];
 
   readonly #holdCommitMs: number;
 

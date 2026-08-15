@@ -73,12 +73,21 @@ warp-arm closure of residual #1 now rests on flush ordering ALONE, which still h
 deferred-reconcile gap), and a wiring tooth mechanically rejects any held-key capture,
 restore, or other touch appearing in the `onReconnect` region.
 
-## Accepted external dependency (recorded, unpinned)
+## External dependencies of the warp-path argument (audited)
 
-The warp-path argument depends on `onOwnWarp` firing synchronously inside
-`character.onUpdate` BEFORE `ingestChar` schedules the batcher (`client/src/net/connection.ts`
-~:249-268). No test pins that ordering and `connection.ts` is outside this slice's touch
-set. Follow-up flagged: a `connection.test.ts` ordering pin.
+The desync-guard audit sharpened what is actually load-bearing here:
+
+- **Load-bearing and PINNED:** the store batcher flushes via `queueMicrotask`
+  (`client/src/net/batch.ts:22`) — microtasks drain before rAF, which is what puts the
+  reconcile ahead of any frame. `batch.test.ts:13-32` mechanically pins the
+  microtask (not macrotask) scheduling.
+- **NOT load-bearing (belt-and-suspenders):** the `onOwnWarp`-before-`ingestChar` call
+  order inside `character.onUpdate` (`connection.ts` ~:255-267). Both run in the same
+  synchronous task, so the reconcile microtask lands after the seam either way — and even
+  a hypothetically DEFERRED `onOwnWarp` is subsumed by the state-based zone check inside
+  `reconcileFromStore` itself (same-call-stack switchZone → fall-through reconcile).
+  No test pins this order (red-team verified: zero `onOwnWarp` hits in
+  `connection.test.ts`); an optional hardening pin is follow-up-flagged, not owed.
 
 ## Considered alternatives (rejected)
 
@@ -106,7 +115,14 @@ set. Follow-up flagged: a `connection.test.ts` ordering pin.
 2. **`predictor.ts` residual-note comment** (~:377-393) still says an nh5-style change
    "must revisit this residual" — the revisit is this ADR; the comment is now a stale
    pointer but `predictor.ts` is outside the touch set. Follow-up flagged.
-3. **Parked e2e (now non-vacuous):** nh3 R7 declared a hold-through-warp e2e vacuous-green;
+3. **Warp-chain content risk (red-team, new-reachable):** `validate_zone_maps`
+   (`game-core/src/world.rs` ~:245-355) does not forbid a warp's `to_tile` being one
+   cardinal tile from another warp's `from` tile. Pre-13r-f a chain needed a deliberate
+   post-warp re-press; a preserved hold now walks it with zero input. Not exploitable with
+   current content (the only warp pair is anchored at the identical coordinate, so the
+   continuation always steps away). Follow-up flagged: a `validate_zone_maps` adjacency
+   check (game-core is outside this slice's touch set).
+4. **Parked e2e (now non-vacuous):** nh3 R7 declared a hold-through-warp e2e vacuous-green;
    with this fix it becomes meaningful. Sketch for a follow-up slice in
    `client/e2e/zoneSync.spec.ts`: focus the page, `keyboard.down('KeyD')`, walk east across
    the boundary, assert the own tile continues advancing in the destination zone with NO
