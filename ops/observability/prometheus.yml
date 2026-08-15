@@ -40,6 +40,14 @@ scrape_configs:
     static_configs:
       - targets: ['127.0.0.1:9100']
 
-  # NOTE: no `mr-trace-relay` scrape job here — that service ships in slice m20b-2 (OBS-46).
-  # Adding its target before the process exists would pin up=0 forever and train the operator to
-  # ignore a dead-man's switch.
+  # OBS-46 — the trace relay's own liveness. `metrics_path` is NOT optional here: Prometheus
+  # defaults to /metrics, the relay serves /health and nothing else (its route set is exactly one
+  # key), so omitting this line would 404 every scrape, pin up=0 and leave the dead-man's switch in
+  # grafana/provisioning/alerting/rules.yml permanently firing. The body is a real exposition
+  # document carrying mr_trace_relay_lines_read_total, so a SILENTLY stalled tail — the failure a
+  # wrong mount mode produces, which `up` alone cannot see — shows up as a flat counter.
+  # The port must equal the relay's own `--web.listen-address` in docker-compose.yml.
+  - job_name: mr-trace-relay
+    metrics_path: /health
+    static_configs:
+      - targets: ['127.0.0.1:9101']

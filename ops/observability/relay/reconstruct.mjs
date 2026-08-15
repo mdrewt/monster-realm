@@ -11,20 +11,64 @@
 
 import { encodeTraceDocument } from './otlp.mjs';
 import { pairBreadcrumbs } from './pair.mjs';
-import { parseBreadcrumb, parseHostLine } from './parse.mjs';
+import { correlationKey, parseBreadcrumb, parseHostLine } from './parse.mjs';
+
+/**
+ * Re-attach each leftover from `pairBreadcrumbs` to the crumb it came from.
+ *
+ * `pairBreadcrumbs` reports its leftovers in the KEYED shape { key, reducer,
+ * ts, phase }, which is enough to diagnose but NOT enough to pair again: the
+ * `cause`/`sched` fields the correlation key is derived from are gone, so a
+ * leftover fed straight back in would key as null and be counted skippedNoKey.
+ * A tail-follow caller (AM2) has to carry its open enters into the NEXT batch,
+ * so this returns each leftover in the FULL crumb shape with its `key`
+ * alongside — the exact value `carryOverCrumbs` accepts.
+ */
+function rejoinLeftovers(leftovers, pool) {
+  const bySignature = new Map();
+  for (const crumb of pool) {
+    const key = correlationKey(crumb);
+    if (key === null) continue;
+    const signature = JSON.stringify([crumb.reducer, key, crumb.ts, crumb.phase]);
+    const queue = bySignature.get(signature);
+    if (queue === undefined) bySignature.set(signature, [crumb]);
+    else queue.push(crumb);
+  }
+  return leftovers.map((entry) => {
+    const signature = JSON.stringify([entry.reducer, entry.key, entry.ts, entry.phase]);
+    const queue = bySignature.get(signature);
+    if (queue === undefined || queue.length === 0) return { ...entry };
+    return { ...queue.shift(), key: entry.key };
+  });
+}
 
 /**
  * Reconstruct an OTLP trace document from raw host log lines.
  *
- * Returns { document, diagnostics } where diagnostics is a closed book:
- *   linesRead === parsed + parseFailures            (blank lines are ignored)
- *   breadcrumbs === filteredOut + paired*2 + unpaired + skippedNoKey
+ * Returns { document, spans, unpaired, diagnostics }:
+ *   document   the OTLP/HTTP JSON trace document for `spans`
+ *   spans      the paired spans in domain form (see pair.mjs)
+ *   unpaired   the leftover crumbs in FULL form, each carrying its correlation
+ *              `key` — diagnostic-only here, and the value a tail-follow caller
+ *              carries into the next batch through `carryOverCrumbs` (AM2)
+ *   diagnostics a closed book:
+ *     linesRead === parsed + parseFailures            (blank lines are ignored)
+ *     breadcrumbs === filteredOut + paired*2 + unpaired + skippedNoKey
+ *
+ * `carryOverCrumbs` (default []) are crumbs read in an EARLIER batch that are
+ * still open. They join the pairing pool without being re-parsed, which is what
+ * lets an enter in poll N pair with its exit in poll N+1 — `pairBreadcrumbs`
+ * matches FIFO within ONE invocation, so without this every reducer whose
+ * enter and exit straddle a poll boundary would lose its span silently. They
+ * ARE counted in `breadcrumbs` (which therefore means "crumbs entering the
+ * pairing pool", not "crumbs parsed from `lines`") so the closed book above
+ * stays closed; `linesRead`/`parsed` are untouched by them.
  *
  * Throws when `tracePairSet` is absent or null — absence is not the empty set.
  * Accepts the membership as an Array or a Set of reducer names.
  */
 export function reconstruct(lines, options = {}) {
-  const { tracePairSet, serviceName = 'mr-trace-relay' } = options;
+  const { tracePairSet, serviceName = 'mr-trace-relay', carryOverCrumbs = [] } = options;
   if (tracePairSet === undefined || tracePairSet === null) {
     throw new Error(
       'reconstruct: no trace_pair_set membership was supplied — absence is NOT the empty set; ' +
@@ -69,8 +113,10 @@ export function reconstruct(lines, options = {}) {
     crumbs.push(candidate.crumb);
   }
 
-  const { spans, counts } = pairBreadcrumbs(crumbs);
+  const pool = carryOverCrumbs.length === 0 ? crumbs : [...carryOverCrumbs, ...crumbs];
+  const { spans, unpaired: leftovers, counts } = pairBreadcrumbs(pool);
   const document = encodeTraceDocument(spans, { serviceName });
+  const unpaired = rejoinLeftovers(leftovers, pool);
 
   const emptyTracePairSet = allowed.size === 0;
   const notes = [];
@@ -83,11 +129,13 @@ export function reconstruct(lines, options = {}) {
 
   return {
     document,
+    spans,
+    unpaired,
     diagnostics: {
       linesRead,
       parsed,
       parseFailures,
-      breadcrumbs,
+      breadcrumbs: breadcrumbs + carryOverCrumbs.length,
       filteredOut,
       paired: counts.paired,
       unpaired: counts.unpaired,

@@ -340,20 +340,19 @@ const TRACE_PAIR_SET_REL = `${RELAY_REL}/trace-pair-set.json`;
  * Before 13r-b: parse 21 + pair 18 + otlp 14 + reconstruct 12 = 65 relay, plus
  * checks 103 + redteam 13 = 116, total 181.
  *
- * TODO(13r-b): re-derive NODE_TEST_PASS_FLOOR once `tail.test.mjs` and
- * `daemon.test.mjs` exist. Run the grep above VERBATIM, sum the counts, and
- * replace both the arithmetic line and the number below in the SAME edit. Do
- * NOT guess: a floor set below the real count is a suite that can silently stop
- * running, and a floor set above it reds a green tree. The value below is the
- * pre-13r-b figure and is therefore a LOWER BOUND that no longer bites on the
- * two new suites.
+ * At 13r-b: parse 21 + pair 18 + otlp 14 + reconstruct 12 + tail 29 +
+ * daemon 33 = 127 relay, plus checks 103 + redteam 13 = 116, total 243.
+ * Re-derived with the grep above run VERBATIM, not carried forward by
+ * arithmetic on the old figure. Do NOT guess this number: a floor set below the
+ * real count is a suite that can silently stop running, and a floor set above
+ * it reds a green tree.
  */
 const NODE_TEST_FILES = [
   ...RELAY_TEST_FILES.map((f) => `${RELAY_REL}/${f}`),
   `${OPS}/checks/stack-config-checks.test.mjs`,
   `${OPS}/checks/stack-config-checks.redteam.test.mjs`,
 ];
-const NODE_TEST_PASS_FLOOR = 181;
+const NODE_TEST_PASS_FLOOR = 243;
 const NODE_TEST_TIMEOUT_MS = 60_000;
 
 /**

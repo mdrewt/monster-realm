@@ -6,8 +6,12 @@
 // STDOUT. Diagnostics go to STDERR. There is deliberately no output-file
 // flag and no write call of any kind: redirect stdout instead (OBS-45 — the
 // relay never writes, and it neither requires nor accepts any module-owner
-// credential). The tail-follow daemon, the OTLP POST client, and the /health
-// endpoint are parked to m20e-2 and must not creep in here.
+// credential). The tail-follow daemon and the /health endpoint live in
+// daemon.mjs (13r-b) and must not creep in here — this file stays a one-shot
+// batch pass over whole files. The OTLP POST client is parked to 13r-c and
+// exists in neither shell. daemon.mjs IMPORTS `collectLogFiles` and
+// `loadTracePairSet` from here (AM15); both are exported for that reason and
+// the module is main-guarded at the bottom, so importing it runs nothing.
 //
 // The only filesystem calls in this file are readFileSync and readdirSync.
 
@@ -19,7 +23,13 @@ import { fileURLToPath } from 'node:url';
 import { reconstruct } from './reconstruct.mjs';
 
 const SERVICE_NAME = 'mr-trace-relay';
-const DEFAULT_TRACE_PAIR_SET = path.join(import.meta.dirname, 'trace-pair-set.json');
+
+/**
+ * The committed membership file next to this module. Exported so the daemon
+ * shell defaults to the SAME path rather than re-deciding it (AM15): a second
+ * spelling of this default is a second thing to drift.
+ */
+export const DEFAULT_TRACE_PAIR_SET = path.join(import.meta.dirname, 'trace-pair-set.json');
 
 const USAGE = [
   'usage: node mr-trace-relay.mjs --logs-dir <dir> [--trace-pair-set <path>]',
@@ -56,7 +66,11 @@ function parseCliArgs(argv) {
 // The committed membership, read in the same 4 fail-loud stages the G9d gate
 // uses: absent file, unparseable JSON, wrong shape, positively-read array.
 // ABSENCE IS NOT THE EMPTY SET.
-function loadTracePairSet(filePath) {
+//
+// Exported (AM15) so the daemon shell IMPORTS this contract instead of carrying
+// a second copy of it. A duplicated 4-stage reader is a duplicated chance for
+// one copy to start treating a missing file as "nothing is instrumented".
+export function loadTracePairSet(filePath) {
   let text;
   try {
     text = readFileSync(filePath, 'utf8');
@@ -104,7 +118,9 @@ function loadTracePairSet(filePath) {
 }
 
 // Every *.log file under dir, walked recursively, sorted for determinism.
-function collectLogFiles(dir) {
+// Exported (AM15) for the same reason as loadTracePairSet above: the daemon
+// discovers its files through this walker, not through a second one.
+export function collectLogFiles(dir) {
   const files = [];
   const walk = (current) => {
     const entries = readdirSync(current, { withFileTypes: true }).sort((a, b) =>

@@ -151,7 +151,7 @@ port-forward — that endpoint becomes reachable from that network with **no war
 in this stack**.
 
 ```sh
-ss -tlnp | grep -E '3000|3001|3100|3200|8443|9090|9100|12345'
+ss -tlnp | grep -E '3000|3001|3100|3200|8443|9090|9100|9101|12345'
 ```
 
 Every line should show `127.0.0.1`. Anything else means the posture has drifted and
@@ -161,6 +161,34 @@ The Better Auth identity provider (M21b-2, ADR-0182 D18/D20) adds one more loopb
 port `8443` — already in the `ss -tlnp` grep above. Its own backup/DR posture is §8 below, because
 its database is a *different* kind of loss than the game's: the game DB is regenerable content, but
 the issuer DB derives every player's permanent `Identity` and its loss orphans them all.
+
+### 7.1 Mount-permission precondition for the log tailers
+
+**Two** containers bind-mount `${MR_SPACETIME_DATA_DIR}/replicas` read-only and tail the module
+logs out of it: `alloy` and `mr-trace-relay`. Both run as **uid 473** — deliberately the same one,
+so this precondition is a single fact about a single identity rather than two:
+
+```sh
+# every component of the path needs r-x for uid 473, and the tree itself r-x
+sudo -u '#473' test -r "$MR_SPACETIME_DATA_DIR/replicas" && echo readable || echo BLOCKED
+namei -l "$MR_SPACETIME_DATA_DIR/replicas"
+```
+
+If the mode is wrong the failure is **silent**, and it is silent in the worst possible way: the
+containers start, stay up, and answer their scrapes, so `up` stays `1` and **neither dead-man's
+switch fires**. What actually happens is that no log bytes are ever read.
+
+Two signals catch it, and both are the reason they exist:
+
+| Symptom | Where to look |
+|---|---|
+| Alloy alive but reading nothing | the `AlloyIngestStalled` alert (throughput, not liveness) |
+| The relay alive but reading nothing | `curl -s 127.0.0.1:9101/health` — `mr_trace_relay_lines_read_total` stays **flat** while `mr_trace_relay_last_read_timestamp_seconds` stops advancing |
+
+A flat counter on a process that is `up` is the signature of this fault. Fix the host-side mode
+(or the ownership) rather than widening the container's capabilities: both services run
+`cap_drop: [ALL]`, so a `DAC_OVERRIDE` workaround would hand back exactly what that posture took
+away, and `read_only: true` plus the `:ro` mount are the controls OBS-45 is asserting.
 
 ## 8. Better Auth (accounts)
 

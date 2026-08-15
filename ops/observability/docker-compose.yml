@@ -23,10 +23,11 @@
 # m20d (mr-load-driver, the thing that produces a real footprint figure), so no measured number
 # exists yet. Re-size at post-integration verification — do not read these as measured.
 #
-# The 8th service, `mr-trace-relay` (D15/D17), is NOT here: it lands in slice m20e-2, together
-# with its Prometheus scrape job and its own dead-man's-switch alert rule. Shipping its scrape
-# target before the service exists would pin `up=0` forever and train the operator to ignore a
-# dead-man's switch.
+# The 8th service, `mr-trace-relay` (D15/D17), is at the bottom of this file. It landed in slice
+# 13r-b together with its Prometheus scrape job (prometheus.yml) and its own dead-man's-switch
+# alert rule (grafana/provisioning/alerting/rules.yml) — all three in ONE change, because a scrape
+# target without a process pins `up=0` forever and trains the operator to ignore a dead-man's
+# switch, while a process with no switch is one whose death nobody notices.
 
 services:
   prometheus:
@@ -208,6 +209,51 @@ services:
       - MR_GRAFANA_BASIC_AUTH_USER=${MR_GRAFANA_BASIC_AUTH_USER:-operator}
       - MR_GRAFANA_BASIC_AUTH_HASH=${MR_GRAFANA_BASIC_AUTH_HASH:?generate with caddy hash-password, then set it in ops/observability/.env}
       - MR_OTLP_ALLOWED_ORIGIN=${MR_OTLP_ALLOWED_ORIGIN:-https://localhost:5173}
+    mem_limit: 256m
+    cpus: 0.5
+
+  # D15/D17/OBS-45/OBS-46 — the trace relay: it tails the SAME read-only replicas bind mount
+  # Alloy does, reconstructs enter/exit spans, serves /health as a scrape target and prints its
+  # OTLP/HTTP JSON document on stdout. Nothing ingests that document yet (the OTLP POST client is
+  # parked to 13r-c) and `$trace_pair_set` is empty, so today it is a dead-man's-switched process
+  # emitting an empty span list — deliberately, and stated in ADR-0191 rather than implied.
+  #
+  # Three properties of this block are load-bearing and each is mechanically gated (eval G9n):
+  #   * `user: "473:473"` is ALLOY's uid, not a second one. Both services read the same host
+  #     directory, so a second identity would force the operator to widen host-side r-x to another
+  #     uid for no benefit. The operator precondition is therefore unchanged — see the alloy block
+  #     above and docs/observability-dr-runbook.md; a wrong mode is a SILENT tail stall, which is
+  #     what the mr_trace_relay_lines_read_total counter on /health exists to make visible.
+  #   * the `command:` list BEGINS with `node`. The node image's entrypoint does `set -- node "$@"`
+  #     only when $1 does not start with `-`, so a bare `--logs-dir=...` first item would be parsed
+  #     as a NODE option and the container would die on start. There is still no `entrypoint:`.
+  #   * the container target is `/data/module-logs`, NOT `/data/replicas`. checkModuleLogsMountReadOnly
+  #     reads ANY whole-file line trimming to `- ...replicas...` as a mount and requires it to end
+  #     `:ro`, so a `- --logs-dir=/data/replicas` command item would be read as a writable mount and
+  #     fail that check. The mount SOURCE — which is what "the same bind mount as Alloy" is a claim
+  #     about — is byte-identical to alloy's above.
+  # There is deliberately no `environment:`, no `env_file:` and no `entrypoint:`: the node runtime
+  # reads NODE_OPTIONS, HTTPS_PROXY and friends from the environment, so a denylist of variable
+  # names would be unclosable. This service's entire configuration surface is its three flags.
+  mr-trace-relay:
+    image: node:24-alpine@sha256:d32cdf619f63fe0471182d08996dd516c6275bb5fd31ae06e55a570bd9e1ad43
+    network_mode: host
+    restart: unless-stopped
+    user: "473:473"
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    volumes:
+      - ./relay:/opt/relay:ro
+      - ${MR_SPACETIME_DATA_DIR:-/var/lib/spacetime}/replicas:/data/module-logs:ro
+    command:
+      - node
+      - /opt/relay/daemon.mjs
+      - --logs-dir=/data/module-logs
+      - --web.listen-address=127.0.0.1:9101
+      - --trace-pair-set=/opt/relay/trace-pair-set.json
     mem_limit: 256m
     cpus: 0.5
 

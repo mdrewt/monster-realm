@@ -8,9 +8,12 @@
 # exists but notifies nobody (`receivers: []`, a placeholder URL). "The alert fires into
 # nothing" is the exact failure D4 exists to prevent, and it has two disguises, not one.
 #
-# NOT here: the `mr-trace-relay` dead-man's switch (OBS-46). Its service ships in m20e-2 and its
-# rule ships with it — a rule watching a target that does not exist would sit permanently firing
-# (or permanently `up=0`) and train the operator to ignore a dead-man's switch.
+# The `mr-trace-relay` dead-man's switch (OBS-46) is the third rule below. It landed in slice 13r-b
+# together with the service and its scrape job, in one change: a rule watching a target that does
+# not exist sits permanently firing and trains the operator to ignore a dead-man's switch, and a
+# service with no rule is a process whose death nobody notices. It is a DISTINCT rule on a DISTINCT
+# target rather than an `or`-widened AlloyDown, because one rule watching two processes fires for
+# either and names neither.
 
 apiVersion: 1
 
@@ -56,6 +59,45 @@ groups:
               editorMode: code
               instant: true
               expr: up{job="alloy"}
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: lt
+                    params:
+                      - 1
+
+      # OBS-46 — the trace relay's dead-man's switch. Every number here MIRRORS AlloyDown above,
+      # deliberately: the same 60s pending period (this group's 20s interval divides it exactly),
+      # the same `lt 1` threshold on the same `mr-prometheus` datasource, and the same
+      # `severity: critical` label — notification-policies.yml:8-9 routes on that label, so a
+      # relay rule without it would silently take the catch-all 4h repeat interval instead of the
+      # 1h one its sibling gets. The uid is distinct: Grafana keys provisioned rules by uid, so a
+      # shared one would silently REPLACE the first rule and leave one where the operator reads two.
+      # `up` is 1 when the target is healthy, so the direction is `lt`, never `gt`.
+      - uid: mr-trace-relay-down
+        title: TraceRelayDown
+        condition: C
+        for: 60s
+        labels:
+          severity: critical
+        annotations:
+          summary: mr-trace-relay has not been scraped for 60s — module trace reconstruction is dark.
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 300
+              to: 0
+            datasourceUid: mr-prometheus
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              expr: up{job="mr-trace-relay"}
           - refId: C
             datasourceUid: __expr__
             model:
