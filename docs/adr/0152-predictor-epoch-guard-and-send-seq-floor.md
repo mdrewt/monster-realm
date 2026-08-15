@@ -5,7 +5,7 @@
 **Slice:** nh3 (M-postgate-netcode-hardening — predictor generation guard + send-seq floor to close the ptc5f/ADR-0142 accepted-risk window; EARS nh3-1/2/3)
 **Supersedes:** —
 **Amends:** 0085
-**Amended-by:** —
+**Amended-by:** ADR-0192
 **Subsystems:** movement-netcode, client-ui
 **Decision:** Ship BOTH: branded-epoch guard on dropRejected (closes M1, cross-generation eviction) and the lastSentSeq→seedSeq floor on rebuild (closes M2, the re-issued "stale seq" rejection). The ADR-0085 window closes only with both.
 
