@@ -5,6 +5,7 @@
 **Slice:** ux2 (M-postgate-ux-hardening — owner-scoped `#[view]` over `player_wallet` + shop balance seam; EARS ux2-1..ux2-3)
 **Supersedes:** —
 **Amends:** 0081, 0084
+**Amended-by:** 0194
 **Subsystems:** security-authz, economy-quests, client-ui
 **Decision:** Expose the caller's own balance through an owner-scoped `#[view] my_wallet -> Option<PlayerWallet>` (the ADR-0087 pattern), keep `player_wallet` private, and gate leak-shape with a call-graph-derived eval rather than body-anchored scanning.
 

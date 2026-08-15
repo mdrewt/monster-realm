@@ -5,6 +5,7 @@
 **Slice:** m8d
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** 0194
 **Subsystems:** economy-quests, schema-persistence
 **Decision:** Player inventory is a public owner-scoped stack table; bait item-type is classified by data (recruit_bonus > 0), not by a separate enum variant.
 

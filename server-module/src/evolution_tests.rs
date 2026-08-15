@@ -3154,6 +3154,340 @@ fn a3_no_call_site_fabricates_a_tier() {
 }
 
 // ---------------------------------------------------------------------------
+// 13r-e (ADR-0194) — the Rust MIRROR TOOTH for monster_pub need-to-know privacy.
+//
+// WHY IT EXISTS ALONGSIDE evals/monster-privacy.eval.mjs: `cargo mutants` runs
+// `cargo test`, never `just eval`. Without a Rust-side pin, the mutation harness
+// has free rein over the one expression that IS the privacy boundary — the
+// "replace body with Default::default()" mutant on the view would produce an
+// empty projection (client dark) and, more dangerously, any mutant that survives
+// here is a change to the sanctioned read path that no `cargo test` run notices.
+//
+// SOURCE: a RELATIVE `include_str!("schema.rs")` (ADR-0154 D8, precedent
+// `eg5_6_schema_rs_declares_no_bond_evolves_to_or_fusion_table` above). Relative
+// matters: cargo-mutants copies the crate into a scratch tree and mutates THERE,
+// so an absolute or workspace-rooted path would serve the pristine file and
+// every mutant would survive silently.
+//
+// THE ATTRIBUTE WALK, and why a name lookup is banned: a red-team PoC defeats a
+// first-match `fn <name>` lookup by adding a SECOND, un-attributed fn of the same
+// name — the pin then judges the decoy while the real, attributed view leaks (or
+// vice versa). Everything below is derived from the fn that IMMEDIATELY FOLLOWS
+// the sanctioned attribute, and the declaration count is asserted separately.
+//
+// Every needle is split across `concat!`/`[..].concat()` fragments so this file
+// never self-matches: several evals parse the CONCATENATED server source for
+// these markers, and a contiguous copy here poisons their scan (the same idiom,
+// for the same reason, as `TABLE_ATTR` in the EG5-6 test above).
+// ---------------------------------------------------------------------------
+
+/// Every `<marker>…)` attribute in `stripped`, as (args text, index just past
+/// the closing paren). Paren-WALKED, so neither a nested
+/// `index(btree, columns = [..])` argument nor a rustfmt-wrapped attribute can
+/// truncate the region (both defeat a `[^)]*` scan).
+fn spacetimedb_attr_sites(stripped: &str, marker: &str) -> Vec<(String, usize)> {
+    let mut out = Vec::new();
+    for start in occurrences(stripped, marker) {
+        let args_start = start + marker.len();
+        let mut depth: usize = 1;
+        let mut end = args_start;
+        for (off, ch) in stripped[args_start..].char_indices() {
+            if ch == '(' {
+                depth += 1;
+            } else if ch == ')' {
+                depth -= 1;
+                if depth == 0 {
+                    end = args_start + off;
+                    break;
+                }
+            }
+        }
+        out.push((stripped[args_start..end].to_string(), end + 1));
+    }
+    out
+}
+
+/// The `name = <ident>` argument of a spacetimedb attribute, if any.
+fn attr_name_arg(args: &str) -> Option<String> {
+    let idx = args.find("name")?;
+    let value: String = args[idx + "name".len()..]
+        .trim_start()
+        .strip_prefix('=')?
+        .trim_start()
+        .chars()
+        .take_while(|c| is_word_char(*c))
+        .collect();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
+}
+
+/// Does `args` carry `word` as a WHOLE identifier? (`monster_pub` must never
+/// read as `public`, and `public` inside prose is already stripped.)
+fn attr_has_word(args: &str, word: &str) -> bool {
+    args.split(|c: char| !is_word_char(c)).any(|w| w == word)
+}
+
+/// Remove ALL whitespace, so neither rustfmt line-wrapping nor a stray space
+/// (`monster_pub ()` compiles) changes any verdict below.
+fn squash_ws(s: &str) -> String {
+    s.split_whitespace().collect::<String>()
+}
+
+/// 13r-e (ADR-0194 D1/D2): `monster_pub` carries no `public`, and the ONE
+/// owner-scoped view over it has exactly the sanctioned attribute, signature,
+/// return type and body.
+///
+/// kills:
+///  - `cargo mutants` on the view body (any mutant loses the exact pin);
+///  - a revert (or a never-applied flip) of the table's visibility — issue #284
+///    decided other players' monster rows are private;
+///  - THE caller-chosen-owner leak: spacetimedb 1.12.0 views accept arbitrary
+///    extra arguments, so `fn my_monster_pub(ctx: &ViewContext, owner: Identity)`
+///    compiles and serves ANY player's roster while the body still "filters by
+///    the owner index". The signature is pinned to exactly one parameter;
+///  - the decoy-line leak (`let _decoy = …filter(ctx.sender); … filter(victim)`),
+///    which passes every presence-only check;
+///  - a same-named un-attributed decoy fn (the name-lookup defeat above);
+///  - a view moved to some OTHER module — schema.rs would not contain it, and
+///    ADR-0194 D2 requires it to live next to the table it projects.
+#[test]
+fn e13r_e_monster_pub_is_private_and_its_view_is_owner_scoped() {
+    const SCHEMA_RS_SOURCE: &str = include_str!("schema.rs");
+    const TABLE_ATTR: &str = concat!("#[spacetimedb::", "table(");
+    const VIEW_ATTR: &str = concat!("#[spacetimedb::", "view(");
+
+    let stripped = strip_comments_and_strings(SCHEMA_RS_SOURCE);
+
+    // Vacuity guard: an absence claim over a hollow haystack proves nothing.
+    // (`include_str!` already makes a MISSING schema.rs a compile error, which is
+    // louder than anything a runtime check could say.)
+    assert!(
+        stripped.len() > 2000,
+        "vacuity guard(13r-e): schema.rs is only {} bytes — the file was \
+         truncated, emptied or moved, and every assertion below would judge an \
+         empty string",
+        stripped.len()
+    );
+
+    let view_name = ["my", "_monster_pub"].concat();
+    let pub_table = ["monster", "_pub"].concat();
+
+    // --- (1) the table lost `public` (ADR-0194 D1) --------------------------
+    let table_sites = spacetimedb_attr_sites(&stripped, TABLE_ATTR);
+    assert!(
+        !table_sites.is_empty(),
+        "vacuity guard(13r-e): the table-attribute walk found ZERO tables in \
+         schema.rs — the scanner (or the concat!-assembled marker) has rotted, \
+         and a rotted scanner must never read as a private schema"
+    );
+    let pub_table_attrs: Vec<&(String, usize)> = table_sites
+        .iter()
+        .filter(|(args, _)| attr_name_arg(args).as_deref() == Some(pub_table.as_str()))
+        .collect();
+    assert_eq!(
+        pub_table_attrs.len(),
+        1,
+        "TEETH(13r-e ADR-0194): expected EXACTLY ONE table attribute named \
+         {pub_table:?} in schema.rs, found {}. Zero means the empty-target blind \
+         spot (renamed/moved: every clause below goes vacuous); two or more means \
+         a STACKED second attribute, which is how a public re-declaration hides \
+         behind a private-looking first one",
+        pub_table_attrs.len()
+    );
+    assert!(
+        !attr_has_word(&pub_table_attrs[0].0, "public"),
+        "TEETH(13r-e ADR-0194 D1): the {pub_table:?} table attribute still carries \
+         `public` (args: {:?}). Issue #284 decided that data about OTHER players' \
+         monsters is revealed only on a need-to-know basis; a public projection \
+         hands every connected client every player's entire roster — 26 columns \
+         including the eight essence pools, trust_tier, quality_time_tier, \
+         nutrition_pct and the owner_identity mapping. Drop `public` and let the \
+         owner-scoped view be the sole read path",
+        pub_table_attrs[0].0
+    );
+
+    // --- (2) exactly ONE sanctioned view ------------------------------------
+    let view_sites = spacetimedb_attr_sites(&stripped, VIEW_ATTR);
+    let mine: Vec<&(String, usize)> = view_sites
+        .iter()
+        .filter(|(args, _)| attr_name_arg(args).as_deref() == Some(view_name.as_str()))
+        .collect();
+    assert_eq!(
+        mine.len(),
+        1,
+        "TEETH(13r-e ADR-0194 D2): expected EXACTLY ONE view attribute named \
+         {view_name:?} in schema.rs, found {}. With none, {pub_table} is private \
+         and the client is DARK (the box/party screen can never hydrate); with \
+         two, one of them is unreviewed. It must live next to the table it \
+         projects (the ADR-0087/0154/0179 convention)",
+        mine.len()
+    );
+    let (view_args, after_attr) = mine[0];
+    assert!(
+        attr_has_word(view_args, "public"),
+        "TEETH(13r-e ADR-0194 D2): the {view_name:?} view attribute is missing the \
+         `public` keyword (args: {view_args:?}) — it is MANDATORY on a view \
+         attribute in spacetimedb 1.12.0 (it has no visibility effect of its own; \
+         per-caller scoping comes from the host reconstructing `sender`)"
+    );
+
+    // --- (3) the fn that IMMEDIATELY FOLLOWS the attribute ------------------
+    let attr_end = *after_attr;
+    let fn_rel = stripped[attr_end..].find("fn ").unwrap_or_else(|| {
+        panic!(
+            "TEETH(13r-e): no `fn` follows the {view_name:?} view attribute — the \
+             attribute decorates nothing"
+        )
+    });
+    let fn_idx = attr_end + fn_rel;
+    let brace_rel = stripped[fn_idx..].find('{').unwrap_or_else(|| {
+        panic!("TEETH(13r-e): the {view_name:?} view fn has no body brace")
+    });
+    let brace_idx = fn_idx + brace_rel;
+    let raw_sig = &stripped[fn_idx..brace_idx];
+
+    // Exactly ONE parameter. Stated separately from the exact-signature pin
+    // below so the caller-chosen-owner shape reports the reason it is fatal,
+    // rather than a generic "signature differs".
+    let params = {
+        let open = raw_sig.find('(').unwrap_or_else(|| {
+            panic!("TEETH(13r-e): the {view_name:?} view fn has no parameter list")
+        });
+        let mut depth: usize = 0;
+        let mut close = open;
+        for (off, ch) in raw_sig[open..].char_indices() {
+            if ch == '(' {
+                depth += 1;
+            } else if ch == ')' {
+                depth -= 1;
+                if depth == 0 {
+                    close = open + off;
+                    break;
+                }
+            }
+        }
+        raw_sig[open + 1..close].to_string()
+    };
+    let top_level_commas = {
+        let mut depth: i32 = 0;
+        let mut n = 0usize;
+        for ch in params.chars() {
+            match ch {
+                '(' | '[' | '<' => depth += 1,
+                ')' | ']' | '>' => depth -= 1,
+                ',' if depth == 0 => n += 1,
+                _ => {}
+            }
+        }
+        n
+    };
+    assert_eq!(
+        top_level_commas, 0,
+        "TEETH(13r-e ADR-0194 D2 SIGNATURE): the {view_name:?} view takes more than \
+         one parameter (params: {params:?}). spacetimedb 1.12.0 views accept \
+         ARBITRARY extra arguments, so an extra `owner: Identity` turns the \
+         owner-scoped projection into a caller-chosen-owner endpoint that serves \
+         ANY player's whole roster — while the attribute, the return type and even \
+         an `owner_identity().filter(..)` body all still look canonical"
+    );
+
+    let sanctioned_sig = [
+        "fn",
+        view_name.as_str(),
+        "(ctx:&spacetimedb::",
+        "ViewContext)->Vec<",
+        "MonsterPub>",
+    ]
+    .concat();
+    assert_eq!(
+        squash_ws(raw_sig),
+        sanctioned_sig,
+        "TEETH(13r-e ADR-0194 D2 SIGNATURE): the {view_name:?} view signature is not \
+         EXACTLY the sanctioned one.\n  expected (whitespace-insensitive): \
+         {sanctioned_sig}\n  found: {}\n\
+         The context type is load-bearing (an &AnonymousViewContext has NO sender, \
+         so the projection could not be per-caller) and so is the return type (it \
+         is what the generated client binding is shaped from).",
+        squash_ws(raw_sig)
+    );
+
+    // --- (4) the EXACT body -------------------------------------------------
+    let (body_start, body_end) = brace_block_range(&stripped, brace_idx);
+    let body = squash_ws(&stripped[body_start..body_end]);
+    let sanctioned = [
+        "ctx.db.",
+        "monster",
+        "_pub().",
+        "owner",
+        "_identity().filter(ctx",
+        ".sender).collect()",
+    ]
+    .concat();
+    let sanctioned_ref = [
+        "ctx.db.",
+        "monster",
+        "_pub().",
+        "owner",
+        "_identity().filter(&ctx",
+        ".sender).collect()",
+    ]
+    .concat();
+    assert!(
+        body == sanctioned || body == sanctioned_ref,
+        "TEETH(13r-e ADR-0194 D2 EXACT-BODY): the {view_name:?} view body is not \
+         EXACTLY the sanctioned owner-scoped filter.\n  expected \
+         (whitespace-insensitive): {sanctioned}\n  found: {body}\n\
+         This pin is exact ON PURPOSE. ADR-0154 D3 warned that a collection return \
+         type no longer BOUNDS the result set; for a genuinely multi-row owner \
+         projection `Vec<MonsterPub>` is correct, so the body IS the entire \
+         boundary. A presence-only check is passed by a decoy line \
+         (`let _decoy = ...filter(ctx.sender);` followed by a real read keyed on \
+         some OTHER identity), which compiles, passes clippy and rustfmt, and \
+         serves an arbitrary player's roster. It also kills every cargo-mutants \
+         rewrite of this body. If the body must legitimately change, re-review the \
+         new shape HERE and in evals/monster-privacy.eval.mjs clause [V/body]."
+    );
+
+    // --- (5) the fn is declared exactly ONCE in schema.rs -------------------
+    // The attribute walk above already found the RIGHT fn; this proves no second
+    // fn of the same name exists to confuse a reader, a mutant, or any gate that
+    // (wrongly) looks the view up by name.
+    let bytes = stripped.as_bytes();
+    let mut decls = 0usize;
+    for at in occurrences(&stripped, view_name.as_str()) {
+        if at > 0 && is_ident_byte(bytes[at - 1]) {
+            continue;
+        }
+        let after_ident = at + view_name.len();
+        if after_ident < bytes.len() && is_ident_byte(bytes[after_ident]) {
+            continue;
+        }
+        let mut k = at;
+        while k > 0 && (bytes[k - 1] as char).is_ascii_whitespace() {
+            k -= 1;
+        }
+        if k >= 2
+            && bytes[k - 2] == b'f'
+            && bytes[k - 1] == b'n'
+            && (k == 2 || !is_ident_byte(bytes[k - 3]))
+        {
+            decls += 1;
+        }
+    }
+    assert_eq!(
+        decls, 1,
+        "TEETH(13r-e ADR-0194): `fn {view_name}` is declared {decls} time(s) in \
+         schema.rs; exactly ONE is sanctioned. A second, un-attributed fn of the \
+         same name is the red-team shape that defeats every name-anchored body pin \
+         — the real (attributed) view can then leak while a decoy satisfies the \
+         lookup"
+    );
+}
+
+// ---------------------------------------------------------------------------
 // Test seam — `evolve_seam` lives HERE (not in evolution.rs) so the
 // no-idle-accrual eval, which excludes _tests.rs files from its growth-field
 // scan, does not flag it. It is test infrastructure, not production code.

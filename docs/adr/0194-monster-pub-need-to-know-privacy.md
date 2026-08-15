@@ -5,8 +5,8 @@
 **Slice:** 13r-e
 **Supersedes:** —
 **Amends:** 0046, 0154
-**Subsystems:** `schema-persistence` · `security-authz` · `client-ui`
-**Decision:** `monster_pub` becomes PRIVATE with exactly one sanctioned read path — the owner-scoped `my_monster_pub` view (`Vec<MonsterPub>`); other players' monster_pub rows are no longer delivered to any client; an engagement view is deferred until a client consumer exists.
+**Subsystems:** schema-persistence, security-authz, client-ui
+**Decision:** `monster_pub` becomes PRIVATE with one sanctioned read path — the owner-scoped `my_monster_pub` view; other players' monster_pub rows are never delivered; an engagement view is deferred until a client consumer exists.
 
 ## Context
 
