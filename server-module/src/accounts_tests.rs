@@ -2566,8 +2566,8 @@ fn machinery_g12_log_reject_teeth() {
 // ---------------------------------------------------------------------------
 // G2 ENUMERATOR SELF-TEETH (ADR-0195 D6) — every fixture below is a SQUASHED
 // synthetic source, fragment-assembled with `concat!` so this test file can
-// never self-match when an eval concatenates `server-module/src/**` and
-// comment-strips WITHOUT blanking string literals.
+// never self-match when an eval concatenates the whole `server-module` src tree
+// and comment-strips WITHOUT blanking string literals.
 //
 // Both polarities are covered on purpose: BAD fixtures prove the checker bites,
 // GOOD fixtures prove it is not simply always-red (an always-red checker is
