@@ -15,7 +15,7 @@ import {
 
 
 export default __t.row({
-  monsterId: __t.u64().primaryKey().name("monster_id"),
+  monsterId: __t.u64().name("monster_id"),
   ownerIdentity: __t.identity().name("owner_identity"),
   speciesId: __t.u32().name("species_id"),
   nickname: __t.string(),

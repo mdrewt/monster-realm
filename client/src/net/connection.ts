@@ -138,7 +138,24 @@ export function connect(opts: ConnectionOptions): Connection {
   // stale flush after store.reset() wiped the rows it was coalescing. wireTables
   // re-registers row handlers per build, but every handler schedules through THIS
   // single instance, so a scheduled flush always reflects the current store.
-  const batcher = new MicrotaskBatcher(() => store.flushBatch());
+  const batcher = new MicrotaskBatcher(() => {
+    // 13r-e (ADR-0194 D4): reconcile the monster map from the SDK's post-burst
+    // `my_monster_pub` cache BEFORE notifying listeners. The view has no PK in
+    // 1.12.0 bindings, so the SDK never fires onUpdate — every row change is an
+    // unordered insert+delete pair; rebuilding membership from the cache is
+    // ordering-immune and immune to multi-transaction coalescing. Stale-build
+    // guarded (ADR-0085 C2): `live !== undefined` is the sanctioned spelling —
+    // `current === undefined` would collide with the M21b-2 assignment-count pin.
+    const live = current;
+    if (live !== undefined) {
+      store.reconcileMonstersFromView(
+        [...live.db.my_monster_pub.iter()].map((row) =>
+          monsterPubRowToStore(row as unknown as SdkMonsterPubRow),
+        ),
+      );
+    }
+    store.flushBatch();
+  });
   // Reconnect-credential gate (nh4, ADR-0150). Built ONCE per connect() — NEVER inside
   // build(): its consecutive-rejection counter lives in this closure and is not persisted,
   // so a per-build gate would reset the counter on every scheduleRebuild() attempt,
@@ -282,18 +299,13 @@ export function connect(opts: ConnectionOptions): Connection {
       batcher.schedule();
     });
 
-    const ingestMonster = (row: SdkMonsterPubRow): void => {
-      store.upsertMonster(monsterPubRowToStore(row));
-      batcher.schedule();
-    };
-    conn.db.monster_pub.onInsert((_ctx, row) => ingestMonster(row as unknown as SdkMonsterPubRow));
-    conn.db.monster_pub.onUpdate((_ctx, _old, row) =>
-      ingestMonster(row as unknown as SdkMonsterPubRow),
-    );
-    conn.db.monster_pub.onDelete((_ctx, row) => {
-      store.removeMonster((row as unknown as SdkMonsterPubRow).monsterId);
-      batcher.schedule();
-    });
+    // 13r-e (ADR-0194 D4): `my_monster_pub` is a PK-less VIEW — the SDK never
+    // fires onUpdate for it, so do NOT wire one (W-13RE-INGEST tripwire), and
+    // per-row store writes are banned here: the batcher's flush closure
+    // reconciles the whole monster map from the SDK cache, so these handlers
+    // only schedule that flush.
+    conn.db.my_monster_pub.onInsert(() => batcher.schedule());
+    conn.db.my_monster_pub.onDelete(() => batcher.schedule());
 
     const ingestSpecies = (row: SdkSpeciesRowRow): void => {
       store.upsertSpecies(speciesRowToStore(row));
@@ -683,7 +695,11 @@ export function connect(opts: ConnectionOptions): Connection {
             // wired into switchZone; correcting a stale comment, ptc5e-4.)
             'SELECT * FROM character',
             'SELECT * FROM player',
-            'SELECT * FROM monster_pub',
+            // 13r-e (ADR-0194, issue #284): monster_pub is PRIVATE — subscribe
+            // the owner-scoped my_monster_pub view instead (the my_conversation /
+            // my_wallet pattern). Other players' monster rows are need-to-know
+            // and are not delivered at all (no client consumer exists).
+            'SELECT * FROM my_monster_pub',
             'SELECT * FROM species_row',
             // battle: unfiltered by design. The server only inserts rows for the
             // participant identities (both sides of the battle); no private fields

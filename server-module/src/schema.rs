@@ -299,11 +299,14 @@ pub struct Monster {
     pub last_essence_train_at_ms: i64,
 }
 
-/// Public projection of the monster table — NO hidden fields (no IVs, EVs,
-/// nature). Clients subscribe to this for the box/party view. Server writes
-/// this alongside every `monster` mutation (dual-write discipline).
+/// Safe projection of the monster table — NO hidden fields (no IVs, EVs,
+/// nature). PRIVATE since issue #284 / ADR-0194 (need-to-know): clients read
+/// ONLY their OWN rows through the owner-scoped `my_monster_pub` view below;
+/// other players' rows are never delivered. Server writes this alongside every
+/// `monster` mutation (dual-write discipline, unchanged — visibility is
+/// transport-only, server reads/writes are unaffected).
 #[derive(Clone)]
-#[spacetimedb::table(name = monster_pub, public)]
+#[spacetimedb::table(name = monster_pub)]
 pub struct MonsterPub {
     #[primary_key]
     pub monster_id: u64,
@@ -359,6 +362,21 @@ pub struct MonsterPub {
     pub nutrition_pct: u8,
 }
 
+/// Owner-scoped read path for `monster_pub` (ADR-0194, issue #284): each
+/// client's subscription sees ONLY its own rows, via the `owner_identity`
+/// btree index — a point index scan, never a table scan. First multi-row
+/// (`Vec`) view in the module: the return type no longer bounds the result
+/// set (ADR-0154 D3's concern), so THIS BODY is the entire security boundary
+/// and is pinned exactly — by `evals/monster-privacy.eval.mjs` and the
+/// `e13r_e` mirror in `evolution_tests.rs` — signature included (a 1.12.0
+/// view accepts extra args; an extra `owner` param is a caller-chosen-owner
+/// leak). Lives next to the table it projects (visibility is a schema
+/// artifact — the `my_conversation`/`my_wallet`/`my_account` convention).
+#[spacetimedb::view(name = my_monster_pub, public)]
+fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
+    ctx.db.monster_pub().owner_identity().filter(ctx.sender).collect()
+}
+
 // --- Battle table (M7b, public, ADR-0042) ------------------------------------
 
 /// A single PvE or PvP battle. The `state` column holds the full `BattleState`
@@ -401,11 +419,14 @@ pub struct BattleWild {
     pub individuality_seed: u32,
 }
 
-/// Player item inventory (M8d, ADR-0046). PUBLIC / world-readable counts: there
-/// is NO transport RLS (no `client_visibility_filter` exists in this toolchain —
-/// ADR-0040/0046), so every client can read every owner's counts. Owner-scoping
-/// is only a CLIENT subscription filter; per-owner transport RLS is deferred
-/// until per-row RLS lands. Carries ONLY ownership + count — NO gene/seed
+/// Player item inventory (M8d, ADR-0046). PUBLIC / world-readable counts:
+/// transport RLS is unavailable — `client_visibility_filter` exists in the
+/// spacetimedb crate only behind `feature = "unstable"`, and its `Filter::Sql`
+/// form cannot express per-id membership in a `Vec<u64>` column (ADR-0194
+/// corrects ADR-0040/0046's "does not exist" wording) — so every client can
+/// read every owner's counts. Owner-scoping is only a CLIENT subscription
+/// filter; per-owner transport scoping would follow the owner-view pattern
+/// (`my_monster_pub`, ADR-0194) if inventory is ever reclassified. Carries ONLY ownership + count — NO gene/seed
 /// fields; individuality stays
 /// in the private `monster` table. Single-stack invariant: at most ONE row per
 /// `(owner_identity, item_id)`, enforced by routing every insert through
