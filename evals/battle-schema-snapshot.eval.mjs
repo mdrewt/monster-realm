@@ -220,11 +220,633 @@ pub struct Inventory {
     };
   }
 
+  // ===========================================================================
+  // ADR-0193 (13r-d) PROOF-OF-TEETH — column-ORDER awareness + re-baseline
+  // proofing. `checkSchemaDrift` compares columns as an UNORDERED name->type
+  // map, so a mid-struct insert PLUS the sanctioned full re-baseline is GREEN
+  // today while live spacetime 2.6.0 rejects the publish. Everything below is
+  // the gating suite for the five new pure checkers.
+  //
+  // These teeth are revised only FROM ADR-0193 — never to match an
+  // implementation. Every assertion keys on the rule's bracket TAG.
+  // ===========================================================================
+
+  // Import guard (gate-teeth.eval.mjs precedent): a missing export must yield a
+  // readable RED, never a stack trace. The self-import hits the ESM cache — the
+  // module has finished evaluating by the time the runner calls this default.
+  const selfMod = await import('./battle-schema-snapshot.eval.mjs').catch((e) => e);
+  if (selfMod instanceof Error) {
+    return {
+      name,
+      pass: false,
+      detail: `RED: cannot self-import battle-schema-snapshot.eval.mjs — ${selfMod.message}`,
+    };
+  }
+  const { parseTableColumnOrder, checkParseShape } = selfMod;
+  const { checkColumnOrder, checkDefaultsSuffix, checkBaselineAppendOnly } = selfMod;
+  for (const [fnName, fn] of [
+    ['parseTableColumnOrder', parseTableColumnOrder],
+    ['checkParseShape', checkParseShape],
+    ['checkColumnOrder', checkColumnOrder],
+    ['checkDefaultsSuffix', checkDefaultsSuffix],
+    ['checkBaselineAppendOnly', checkBaselineAppendOnly],
+  ]) {
+    if (typeof fn !== 'function') {
+      return {
+        name,
+        pass: false,
+        detail:
+          `RED: ${fnName} not exported from battle-schema-snapshot.eval.mjs ` +
+          '(specialist has not implemented it yet)',
+      };
+    }
+  }
+
+  const teeth = [];
+  const isArr = (r) => Array.isArray(r);
+  const clean = (r) => isArr(r) && r.length === 0;
+  const hasTag = (r, tag) => isArr(r) && r.some((s) => String(s).indexOf(tag) !== -1);
+  const show = (r) => (isArr(r) ? JSON.stringify(r) : `NOT-AN-ARRAY(${typeof r})`);
+  const colNames = (entries) => (isArr(entries) ? entries.map((f) => f && f.name) : []);
+  const defaultOf = (entries, col) => {
+    const hit = isArr(entries) ? entries.find((f) => f && f.name === col) : undefined;
+    return hit === undefined ? 'MISSING' : hit.hasDefault;
+  };
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  // A FULL re-baseline, exactly as the sanctioned regeneration produces it:
+  // columns AND order both re-derived from the (already edited) source.
+  const rebaseline = (src) => {
+    const cols = parseTableSchemas(src);
+    const ord = parseTableColumnOrder(src);
+    const out = {};
+    for (const t of Object.keys(cols)) {
+      out[t] = { pk: cols[t].pk, columns: cols[t].columns, order: colNames(ord[t]) };
+    }
+    return out;
+  };
+
+  // The pre-change committed baseline for `inventory` (4 columns, no defaults).
+  const PREV_BASELINE = {
+    inventory: {
+      pk: 'inv_id',
+      columns: { inv_id: 'u64', owner_identity: 'Identity', item_id: 'u32', count: 'u32' },
+      order: ['inv_id', 'owner_identity', 'item_id', 'count'],
+    },
+  };
+
+  // -------------------------------------------------------------------------
+  // T-MANDATE — the mandated tooth. A mid-struct insert WITH a default, plus a
+  // FULL re-baseline. Kills: any gate that only diffs source-vs-working-tree
+  // baseline (empty by construction after regeneration) and any order rule that
+  // does not reach back to the previously committed baseline.
+  // -------------------------------------------------------------------------
+  const INSERT_SRC = `
+#[spacetimedb::table(name = inventory, public)]
+pub struct Inventory {
+    #[primary_key]
+    #[auto_inc]
+    pub inv_id: u64,
+    #[index(btree)]
+    pub owner_identity: Identity,
+    #[default(0)]
+    pub inserted: u32,
+    pub item_id: u32,
+    pub count: u32,
+}
+`;
+  const insertParsed = parseTableSchemas(INSERT_SRC);
+  const insertOrder = parseTableColumnOrder(INSERT_SRC);
+  const insertRebased = rebaseline(INSERT_SRC);
+  const insertNames = colNames(insertOrder.inventory);
+  const wantInsertNames = ['inv_id', 'owner_identity', 'inserted', 'item_id', 'count'];
+  if (!eq(insertNames, wantInsertNames)) {
+    teeth.push(
+      `T-MANDATE VACUOUS: parseTableColumnOrder(inventory) = ${JSON.stringify(insertNames)}, ` +
+        `expected declaration order ${JSON.stringify(wantInsertNames)}`,
+    );
+  } else if (defaultOf(insertOrder.inventory, 'inserted') !== true) {
+    teeth.push(
+      "T-MANDATE VACUOUS: column 'inserted' carries #[default(0)] in the fixture but " +
+        `hasDefault = ${JSON.stringify(defaultOf(insertOrder.inventory, 'inserted'))}`,
+    );
+  } else {
+    // (a) The OLD gate is provably blind — this is the defect ADR-0193 closes.
+    const blindDrift = checkSchemaDrift(insertParsed, insertRebased);
+    if (!clean(blindDrift)) {
+      teeth.push(
+        `T-MANDATE(a): checkSchemaDrift was expected to be BLIND to the mid-struct insert ` +
+          `after a full re-baseline (that blindness is the whole defect) but returned ` +
+          `${show(blindDrift)} — the fixture or the drift contract changed; re-derive this ` +
+          'tooth from ADR-0193',
+      );
+    }
+    // (b) The in-tree order rules are ALSO blind after a full re-baseline
+    // (ADR-0193 Context: "empty by construction"). Pinned so nobody claims the
+    // in-tree layer alone closes the hole.
+    const blindOrder = checkColumnOrder(insertOrder, insertRebased);
+    if (!clean(blindOrder)) {
+      teeth.push(
+        `T-MANDATE(b): checkColumnOrder against a FULLY re-baselined baseline must be clean ` +
+          `([order-mismatch] cannot fire — the recorded order was regenerated from this very ` +
+          `source) but returned ${show(blindOrder)}`,
+      );
+    }
+    // (c) THE BITE: prev-committed vs re-baselined, resolved by the git layer.
+    const appendOnly = checkBaselineAppendOnly(PREV_BASELINE, insertRebased, insertOrder);
+    if (!hasTag(appendOnly, '[append-only]')) {
+      teeth.push(
+        'T-MANDATE(c) FAILED: a mid-struct insert of `inserted` between owner_identity and ' +
+          'item_id, followed by the sanctioned FULL re-baseline, was NOT flagged with ' +
+          `[append-only] by checkBaselineAppendOnly — got ${show(appendOnly)}. This is the ` +
+          'exact change live spacetime 2.6.0 rejects (reordering + non-tail position)',
+      );
+    } else if (!hasTag(appendOnly, 'inserted')) {
+      teeth.push(
+        'T-MANDATE(c): the [append-only] violation does not name the offending column ' +
+          `'inserted' — got ${show(appendOnly)}; a message that cannot identify the column ` +
+          'cannot be acted on',
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-B1 — an INDEPENDENT bite on the same fixture with no order/append
+  // machinery at all. Kills: an implementation whose only order awareness is
+  // the git layer (which is fail-open-loud and can be unavailable offline).
+  // -------------------------------------------------------------------------
+  if (colNames(insertOrder.inventory).length !== 5) {
+    teeth.push(
+      `T-B1 VACUOUS: expected 5 parsed columns on the insert fixture, got ` +
+        `${colNames(insertOrder.inventory).length}`,
+    );
+  } else {
+    const suffix = checkDefaultsSuffix(insertOrder, insertRebased);
+    if (!hasTag(suffix, '[defaults-not-suffix]')) {
+      teeth.push(
+        'T-B1 FAILED: checkDefaultsSuffix did not flag [defaults-not-suffix] for a defaulted ' +
+          "column ('inserted') followed by two non-defaulted columns (item_id, count) — got " +
+          `${show(suffix)}. This rule needs NO baseline order and must bite on its own`,
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-NODEFAULT — a TAIL append with NO #[default(...)], on a table with no
+  // other defaulted column, fully re-baselined. This is the exact class a
+  // red-team prototype measured GREEN on 33 of 38 tables (ADR-0193 Context).
+  // -------------------------------------------------------------------------
+  const NODEFAULT_SRC = `
+#[spacetimedb::table(name = inventory, public)]
+pub struct Inventory {
+    #[primary_key]
+    #[auto_inc]
+    pub inv_id: u64,
+    #[index(btree)]
+    pub owner_identity: Identity,
+    pub item_id: u32,
+    pub count: u32,
+    pub tail_no_default: u32,
+}
+`;
+  const noDefOrder = parseTableColumnOrder(NODEFAULT_SRC);
+  const noDefRebased = rebaseline(NODEFAULT_SRC);
+  const wantNoDefNames = ['inv_id', 'owner_identity', 'item_id', 'count', 'tail_no_default'];
+  if (!eq(colNames(noDefOrder.inventory), wantNoDefNames)) {
+    teeth.push(
+      `T-NODEFAULT VACUOUS: order = ${JSON.stringify(colNames(noDefOrder.inventory))}, ` +
+        `expected ${JSON.stringify(wantNoDefNames)}`,
+    );
+  } else if (defaultOf(noDefOrder.inventory, 'tail_no_default') !== false) {
+    teeth.push(
+      "T-NODEFAULT VACUOUS: 'tail_no_default' has no #[default( in the fixture but " +
+        `hasDefault = ${JSON.stringify(defaultOf(noDefOrder.inventory, 'tail_no_default'))}`,
+    );
+  } else {
+    const appendNoDef = checkBaselineAppendOnly(PREV_BASELINE, noDefRebased, noDefOrder);
+    if (!hasTag(appendNoDef, '[append-only]')) {
+      teeth.push(
+        'T-NODEFAULT FAILED: a tail append WITHOUT #[default( — rejected by live automigration ' +
+          `— was not flagged [append-only] after a full re-baseline; got ${show(appendNoDef)}`,
+      );
+    }
+    // Proof that [append-only] is what bites here: the defaults-suffix rule is
+    // vacuous on a table with zero defaulted columns (33/38 of the real corpus).
+    const noDefSuffix = checkDefaultsSuffix(noDefOrder, noDefRebased);
+    if (!clean(noDefSuffix)) {
+      teeth.push(
+        'T-NODEFAULT: checkDefaultsSuffix must be CLEAN on a table with no defaulted column ' +
+          `(no non-defaulted column follows a defaulted one) but returned ${show(noDefSuffix)}`,
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-LEGAL — false-RED guard. A LEGAL tail append with a default must be
+  // clean through ALL FIVE checkers, against BOTH the pre-change baseline and
+  // the re-baselined one. Kills: a checker that fires on every diff.
+  // -------------------------------------------------------------------------
+  const LEGAL_SRC = `
+#[spacetimedb::table(name = inventory, public)]
+pub struct Inventory {
+    #[primary_key]
+    #[auto_inc]
+    pub inv_id: u64,
+    #[index(btree)]
+    pub owner_identity: Identity,
+    pub item_id: u32,
+    pub count: u32,
+    #[default(0)]
+    pub appended: u32,
+}
+`;
+  const legalParsed = parseTableSchemas(LEGAL_SRC);
+  const legalOrder = parseTableColumnOrder(LEGAL_SRC);
+  const legalRebased = rebaseline(LEGAL_SRC);
+  const legalTables = Object.keys(legalParsed);
+  const wantLegalNames = ['inv_id', 'owner_identity', 'item_id', 'count', 'appended'];
+  if (legalTables.length !== 1 || legalTables[0] !== 'inventory') {
+    teeth.push(
+      `T-LEGAL VACUOUS: expected exactly 1 parsed table 'inventory', got ` +
+        JSON.stringify(legalTables),
+    );
+  } else if (Object.keys(legalParsed.inventory.columns).length !== 5) {
+    teeth.push(
+      `T-LEGAL VACUOUS: expected 5 columns, got ` +
+        JSON.stringify(Object.keys(legalParsed.inventory.columns)),
+    );
+  } else if (!eq(colNames(legalOrder.inventory), wantLegalNames)) {
+    teeth.push(
+      `T-LEGAL VACUOUS: order = ${JSON.stringify(colNames(legalOrder.inventory))}, expected ` +
+        JSON.stringify(wantLegalNames),
+    );
+  } else if (defaultOf(legalOrder.inventory, 'appended') !== true) {
+    teeth.push(
+      "T-LEGAL VACUOUS: 'appended' carries #[default(0)] but hasDefault = " +
+        JSON.stringify(defaultOf(legalOrder.inventory, 'appended')),
+    );
+  } else {
+    const legalChecks = [
+      ['checkParseShape', checkParseShape(LEGAL_SRC)],
+      ['checkColumnOrder(re-baselined)', checkColumnOrder(legalOrder, legalRebased)],
+      // [order-append]'s POSITIVE path: a source column absent from the recorded
+      // order, sitting after every recorded column, carrying a default.
+      ['checkColumnOrder(prev baseline)', checkColumnOrder(legalOrder, PREV_BASELINE)],
+      ['checkDefaultsSuffix', checkDefaultsSuffix(legalOrder, legalRebased)],
+      ['checkSchemaDrift', checkSchemaDrift(legalParsed, legalRebased)],
+      ['checkBaselineAppendOnly', checkBaselineAppendOnly(PREV_BASELINE, legalRebased, legalOrder)],
+    ];
+    for (const [label, result] of legalChecks) {
+      if (!clean(result)) {
+        teeth.push(
+          `T-LEGAL FALSE-RED: ${label} flagged a LEGAL tail append ` +
+            `(#[default(0)] pub appended: u32 at the tail) — got ${show(result)}. Live ` +
+            'automigration accepts exactly this shape; the gate must too',
+        );
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-SWAP — two existing columns swapped. The name->type map is IDENTICAL, so
+  // checkSchemaDrift is blind; only [order-mismatch] can see it.
+  // -------------------------------------------------------------------------
+  const SWAP_SRC = `
+#[spacetimedb::table(name = inventory, public)]
+pub struct Inventory {
+    #[primary_key]
+    #[auto_inc]
+    pub inv_id: u64,
+    #[index(btree)]
+    pub owner_identity: Identity,
+    pub count: u32,
+    pub item_id: u32,
+}
+`;
+  const swapParsed = parseTableSchemas(SWAP_SRC);
+  const swapOrder = parseTableColumnOrder(SWAP_SRC);
+  const wantSwapNames = ['inv_id', 'owner_identity', 'count', 'item_id'];
+  if (!eq(colNames(swapOrder.inventory), wantSwapNames)) {
+    teeth.push(
+      `T-SWAP VACUOUS: order = ${JSON.stringify(colNames(swapOrder.inventory))}, expected ` +
+        JSON.stringify(wantSwapNames),
+    );
+  } else {
+    const swapDrift = checkSchemaDrift(swapParsed, PREV_BASELINE);
+    if (!clean(swapDrift)) {
+      teeth.push(
+        `T-SWAP: checkSchemaDrift must be blind to a pure swap (same names, same types) but ` +
+          `returned ${show(swapDrift)} — the fixture drifted from the baseline entry`,
+      );
+    }
+    const swapOrderResult = checkColumnOrder(swapOrder, PREV_BASELINE);
+    if (!hasTag(swapOrderResult, '[order-mismatch]')) {
+      teeth.push(
+        'T-SWAP FAILED: item_id and count were swapped relative to the recorded order but ' +
+          `checkColumnOrder did not report [order-mismatch] — got ${show(swapOrderResult)}. A ` +
+          'set/sorted comparison of column names passes this fixture; only an element-wise ' +
+          'positional comparison catches it',
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-SHAPE — the recorded `order` itself must be well-formed. Sub-case (c),
+  // a RIGHT-LENGTH array with a duplicate, kills a length-only permutation
+  // check; (a) kills "absent order == nothing to check" (vacuous green).
+  // -------------------------------------------------------------------------
+  const baseOrder = parseTableColumnOrder(dropFixtureSrc); // inv_id, owner_identity, item_id
+  const DUP_SRC = `
+#[spacetimedb::table(name = inventory, public)]
+pub struct Inventory {
+    #[primary_key]
+    pub inv_id: u64,
+    pub item_id: u32,
+    pub count: u32,
+}
+`;
+  const dupOrder = parseTableColumnOrder(DUP_SRC);
+  const shapeCases = [
+    [
+      'order key ABSENT',
+      baseOrder,
+      { inventory: { pk: 'inv_id', columns: PREV_BASELINE.inventory.columns } },
+    ],
+    [
+      'order MISSING a column that is in columns',
+      baseOrder,
+      {
+        inventory: {
+          pk: 'inv_id',
+          columns: PREV_BASELINE.inventory.columns,
+          order: ['inv_id', 'owner_identity', 'item_id'],
+        },
+      },
+    ],
+    [
+      'order of the RIGHT LENGTH with a DUPLICATE entry',
+      dupOrder,
+      {
+        inventory: {
+          pk: 'inv_id',
+          columns: { inv_id: 'u64', item_id: 'u32', count: 'u32' },
+          order: ['inv_id', 'item_id', 'item_id'],
+        },
+      },
+    ],
+  ];
+  for (const [label, order, bl] of shapeCases) {
+    const result = checkColumnOrder(order, bl);
+    if (!hasTag(result, '[order-shape]')) {
+      teeth.push(
+        `T-SHAPE FAILED (${label}): checkColumnOrder did not report [order-shape] — got ` +
+          `${show(result)}. A baseline whose recorded order is not a duplicate-free ` +
+          'permutation of its own columns must fail LOUD, never be silently skipped',
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-REMOVE — automigration never accepts a column or table removal.
+  // -------------------------------------------------------------------------
+  const dropRebased = rebaseline(dropFixtureSrc); // inventory minus `count`
+  const removeCol = checkBaselineAppendOnly(PREV_BASELINE, dropRebased, baseOrder);
+  if (!hasTag(removeCol, '[append-only]')) {
+    teeth.push(
+      "T-REMOVE(a) FAILED: column 'count' present in the prev committed baseline and dropped " +
+        `from the next baseline was not flagged [append-only] — got ${show(removeCol)}`,
+    );
+  }
+  const baseSrcOrder = parseTableColumnOrder(`
+#[spacetimedb::table(name = inventory, public)]
+pub struct Inventory {
+    #[primary_key]
+    #[auto_inc]
+    pub inv_id: u64,
+    #[index(btree)]
+    pub owner_identity: Identity,
+    pub item_id: u32,
+    pub count: u32,
+}
+`);
+  const prevWithGhost = {
+    inventory: PREV_BASELINE.inventory,
+    ghost_table: { pk: 'g_id', columns: { g_id: 'u64' }, order: ['g_id'] },
+  };
+  const removeTable = checkBaselineAppendOnly(
+    prevWithGhost,
+    { inventory: PREV_BASELINE.inventory },
+    baseSrcOrder,
+  );
+  if (!hasTag(removeTable, '[append-only]')) {
+    teeth.push(
+      "T-REMOVE(b) FAILED: table 'ghost_table' present in the prev committed baseline and " +
+        `absent from the next baseline was not flagged [append-only] — got ${show(removeTable)}`,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // T-PARSE — a table body line the parser cannot classify is a SILENT column.
+  // Both fixtures are invisible to the current parser: (a) drops a private
+  // field, (b) treats `#[default(0)] pub sneaky: u32,` as a bare attribute.
+  // -------------------------------------------------------------------------
+  const RAW_LINE_SRC = `
+#[spacetimedb::table(name = inventory, public)]
+pub struct Inventory {
+    #[primary_key]
+    pub inv_id: u64,
+    item_id: u32,
+    pub count: u32,
+}
+`;
+  const ONE_LINE_SRC = `
+#[spacetimedb::table(name = inventory, public)]
+pub struct Inventory {
+    #[primary_key]
+    pub inv_id: u64,
+    #[default(0)] pub sneaky: u32,
+}
+`;
+  for (const [label, src] of [
+    ['unparsable body line (`item_id: u32,` — no `pub`)', RAW_LINE_SRC],
+    ['attribute AND field on ONE line (`#[default(0)] pub sneaky: u32,`)', ONE_LINE_SRC],
+  ]) {
+    if (!('inventory' in parseTableSchemas(src))) {
+      teeth.push(`T-PARSE VACUOUS (${label}): the fixture's table did not parse at all`);
+      continue;
+    }
+    const result = checkParseShape(src);
+    if (!hasTag(result, '[parse-shape]')) {
+      teeth.push(
+        `T-PARSE FAILED (${label}): checkParseShape did not report [parse-shape] — got ` +
+          `${show(result)}. The column is invisible to the snapshot, so every downstream ` +
+          'order/default rule is vacuous on it',
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-COUNT — a `]` inside the table attribute defeats the table regex and the
+  // whole table VANISHES from the parse. Silent blindness must become loud.
+  // (If a future parser learns this attribute shape, revise this tooth from
+  // ADR-0193 D3 — do not delete it.)
+  // -------------------------------------------------------------------------
+  const HIDDEN_TABLE_SRC = `
+#[spacetimedb::table(name = alpha_beta, public, index(btree, name = ab, columns = [alpha, beta]))]
+pub struct AlphaBeta {
+    #[primary_key]
+    pub alpha: u32,
+    pub beta: u32,
+}
+`;
+  const hiddenCount = Object.keys(parseTableSchemas(HIDDEN_TABLE_SRC)).length;
+  const hiddenResult = checkParseShape(HIDDEN_TABLE_SRC);
+  if (!hasTag(hiddenResult, '[table-count]')) {
+    teeth.push(
+      'T-COUNT FAILED: a table attribute carrying `columns = [alpha, beta]` parsed to ' +
+        `${hiddenCount} table(s) while the source declares 1 #[spacetimedb::table(name ` +
+        `attribute, and checkParseShape did not report [table-count] — got ` +
+        `${show(hiddenResult)}. An unparsed table is exempt from every other rule here`,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // T-IDEMPOTENT — kills a module-level /g regex whose lastIndex survives the
+  // call (the second call then returns fewer tables, silently exempting them).
+  // -------------------------------------------------------------------------
+  const TWO_TABLE_SRC = `${LEGAL_SRC}
+#[spacetimedb::table(name = party_slot, public)]
+pub struct PartySlot {
+    #[primary_key]
+    pub slot_id: u64,
+    pub monster_id: u64,
+}
+`;
+  const orderA = parseTableColumnOrder(TWO_TABLE_SRC);
+  const orderB = parseTableColumnOrder(TWO_TABLE_SRC);
+  const schemaA = parseTableSchemas(TWO_TABLE_SRC);
+  const schemaB = parseTableSchemas(TWO_TABLE_SRC);
+  if (Object.keys(orderA).length !== 2 || Object.keys(schemaA).length !== 2) {
+    teeth.push(
+      'T-IDEMPOTENT VACUOUS: the two-table fixture parsed to ' +
+        `${Object.keys(orderA).length} order entries / ${Object.keys(schemaA).length} schema ` +
+        'entries on the FIRST call, expected 2 and 2',
+    );
+  }
+  if (!eq(orderA, orderB)) {
+    teeth.push(
+      'T-IDEMPOTENT FAILED: parseTableColumnOrder returned different results on two identical ' +
+        `calls — first ${JSON.stringify(orderA)}, second ${JSON.stringify(orderB)} (a shared ` +
+        '/g regex leaking lastIndex across calls)',
+    );
+  }
+  if (!eq(schemaA, schemaB)) {
+    teeth.push(
+      'T-IDEMPOTENT FAILED: parseTableSchemas returned different results on two identical ' +
+        `calls — first ${JSON.stringify(schemaA)}, second ${JSON.stringify(schemaB)}`,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // T-NOTHROW — every checker is pure and NEVER throws, on ANY input. A throw
+  // inside the eval runner is an unhandled failure mode, not a gate result.
+  // -------------------------------------------------------------------------
+  const badOrder = { t: [{ name: 'a', hasDefault: false }] };
+  const nothrowCases = [
+    ['checkParseShape(null)', () => checkParseShape(null)],
+    ['checkParseShape(undefined)', () => checkParseShape(undefined)],
+    ['checkParseShape(42)', () => checkParseShape(42)],
+    ['checkColumnOrder(null, null)', () => checkColumnOrder(null, null)],
+    ['checkColumnOrder({}, {})', () => checkColumnOrder({}, {})],
+    ['checkColumnOrder({t:{}}, {t:{}})', () => checkColumnOrder({ t: {} }, { t: {} })],
+    [
+      'checkColumnOrder(order is a string)',
+      () => checkColumnOrder(badOrder, { t: { columns: { a: 'u32' }, order: 'nope' } }),
+    ],
+    [
+      'checkColumnOrder(parsed table undefined)',
+      () => checkColumnOrder({ t: undefined }, { t: { columns: { a: 'u32' }, order: ['a'] } }),
+    ],
+    ['checkDefaultsSuffix(null, null)', () => checkDefaultsSuffix(null, null)],
+    ['checkDefaultsSuffix({}, {})', () => checkDefaultsSuffix({}, {})],
+    [
+      'checkDefaultsSuffix(parsed table undefined)',
+      () => checkDefaultsSuffix({ t: undefined }, { t: {} }),
+    ],
+    [
+      'checkDefaultsSuffix(order is a string)',
+      () => checkDefaultsSuffix({ t: 'nope' }, { t: { columns: {}, order: 'nope' } }),
+    ],
+    ['checkBaselineAppendOnly(null,null,null)', () => checkBaselineAppendOnly(null, null, null)],
+    ['checkBaselineAppendOnly({},{},{})', () => checkBaselineAppendOnly({}, {}, {})],
+    [
+      'checkBaselineAppendOnly({t:{}},{t:{}},{t:undefined})',
+      () => checkBaselineAppendOnly({ t: {} }, { t: {} }, { t: undefined }),
+    ],
+    [
+      'checkBaselineAppendOnly(prev.order is a string)',
+      () => checkBaselineAppendOnly({ t: { order: 'nope' } }, { t: { order: ['a'] } }, {}),
+    ],
+    [
+      'checkBaselineAppendOnly(parsedOrder table is a string)',
+      () =>
+        checkBaselineAppendOnly({ t: { order: ['a'] } }, { t: { order: ['a', 'b'] } }, { t: 'x' }),
+    ],
+  ];
+  for (const [label, run] of nothrowCases) {
+    try {
+      const result = run();
+      if (!isArr(result)) {
+        teeth.push(`T-NOTHROW FAILED: ${label} returned ${show(result)}, expected an array`);
+      }
+    } catch (e) {
+      teeth.push(`T-NOTHROW FAILED: ${label} THREW ${e && e.message} — checkers must never throw`);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-REAL — the real server-module source against the real committed baseline.
+  // RED until evals/baselines/table-schemas.json gains per-table "order".
+  // -------------------------------------------------------------------------
+  const realOrder = parseTableColumnOrder(rawSrc);
+  const baselineTables = Object.keys(baseline);
+  const orderChecked = baselineTables.filter(
+    (t) => isArr(baseline[t] && baseline[t].order) && isArr(realOrder[t]),
+  ).length;
+  const realChecks = [
+    ['checkParseShape(real source)', checkParseShape(rawSrc)],
+    ['checkColumnOrder(real, baseline)', checkColumnOrder(realOrder, baseline)],
+    ['checkDefaultsSuffix(real, baseline)', checkDefaultsSuffix(realOrder, baseline)],
+  ];
+  for (const [label, result] of realChecks) {
+    if (!clean(result)) {
+      teeth.push(`T-REAL: ${label} must be clean but returned ${show(result)}`);
+    }
+  }
+  if (orderChecked !== baselineTables.length) {
+    teeth.push(
+      `T-REAL FAILED: only ${orderChecked} of ${baselineTables.length} baseline tables have BOTH ` +
+        'a recorded "order" array and a parsed source order — every table without a recorded ' +
+        'order is silently exempt from [order-mismatch] and [order-append]',
+    );
+  }
+
+  if (teeth.length > 0) {
+    return {
+      name,
+      pass: false,
+      detail: `ADR-0193 teeth FAILED (${teeth.length}): ${teeth.join(' ;; ')}`,
+    };
+  }
+
   const tableCount = Object.keys(parsed).length;
   return {
     name,
     pass: true,
-    detail: `${tableCount} tables parsed; all match baseline exactly (columns, types, PKs); EncounterEntryRow excluded; column-drop tooth verified`,
+    detail:
+      `${tableCount} tables parsed; all match baseline exactly (columns, types, PKs); ` +
+      `EncounterEntryRow excluded; column-drop tooth verified; ADR-0193 order teeth verified ` +
+      `(T-MANDATE/B1/NODEFAULT/LEGAL/SWAP/SHAPE/REMOVE/PARSE/COUNT/IDEMPOTENT/NOTHROW/REAL); ` +
+      `${orderChecked}/${baselineTables.length} baseline tables order-checked`,
   };
 }
 
