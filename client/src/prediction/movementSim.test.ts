@@ -213,7 +213,9 @@ interface Emission {
 type Send = (input: WasmMoveInput, seq: number, epoch: PredictorEpoch, at: number) => void;
 
 class ClientModel {
-  readonly predictor: Predictor;
+  /** [13r-f, AM4] NOT `readonly`: `rebuildPrediction` below replaces the instance, exactly as
+   *  main.ts's `resetPredictionState()` does (`predictor = new Predictor(...)`). */
+  predictor: Predictor;
   readonly held: HeldDirections;
   lastRow: ServerRow | undefined;
   readonly emissions: Emission[] = [];
@@ -304,6 +306,37 @@ class ClientModel {
         this.sendIntent({ Step: heldDir }, at);
       }
     }
+  }
+
+  /** [13r-f, ADR-0192] The WARP arm's prediction rebuild, in BOTH policies.
+   *
+   *  'clear' is today's shipped shape — `resetPredictionState()` (fresh Predictor, seq floor,
+   *  `held.clear()`). 'preserve' is the ADR-0192 bracket that switchZone gains, in the
+   *  PRODUCTION ORDER: capture BEFORE the reset, restore AFTER it.
+   *
+   *  AM2: this MUST call `this.held.snapshot()` / `this.held.restore(...)` for real — a
+   *  shadow-log of presses replayed through `press()` would make S12b/c/d self-fulfilling
+   *  (they would pass without the production seam ever existing). S12-SELF below pins it.
+   *  AM3: the rebuild ends by reconciling from the last authoritative row IN THE SAME CALL
+   *  STACK — the state-based warp path (main.ts:848-855), where `reconcileFromStore` calls
+   *  `switchZone` and then falls through to its own reconcile. */
+  rebuildPrediction(mode: 'clear' | 'preserve', atMs: number): void {
+    const heldSnapshot = mode === 'preserve' ? this.held.snapshot() : undefined;
+    this.predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
+    this.predictor.seedSeq(this.lastRow?.lastInputSeq ?? 0); // nh3 Case M2 send-seq floor
+    this.held.clear();
+    if (heldSnapshot !== undefined) this.held.restore(heldSnapshot);
+    this.reconcileFromStore(atMs);
+  }
+
+  /** [13r-f] The RECONNECT shape (ADR-0152 per-path invariant): the same rebuild with NO
+   *  reconcile — the server's `on_disconnect` deleted the rows, so `reconcileFromStore`
+   *  early-returns until `joinGame` round-trips. 'clear' is the shipped body; 'leak' is the
+   *  anti-vacuity control that models `held.clear()` being removed from the shared body. */
+  rebuildPredictionDeferredReconcile(mode: 'clear' | 'leak'): void {
+    this.predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
+    this.predictor.seedSeq(this.lastRow?.lastInputSeq ?? 0);
+    if (mode === 'clear') this.held.clear();
   }
 }
 
@@ -1293,5 +1326,426 @@ describe('[14r-e] S11 interleave: the dedup is MEMBERSHIP in the held set, not t
       'CONTROL: the un-deduped run must land one tile FURTHER east (x=7) — this is the ' +
         'double-move S11 gates',
     ).toBe(7);
+  });
+});
+
+// ================================================================================
+// S12 — [13r-f, ADR-0192] the HELD KEY survives the WARP arm's prediction rebuild (nh5)
+//
+// THE DEFECT: `resetPredictionState()` calls `held.clear()` and `switchZone` calls it on
+// every zone change. The keydown handler ignores `e.repeat`, so a key that is PHYSICALLY
+// still down is never re-registered — the player walking through a zone boundary stops
+// dead until release + re-press. ADR-0152 residual #4 / nh3-plan R6 named it "nh5".
+//
+// WHAT IS MODELLED: `ClientModel.rebuildPrediction(mode, at)` above — the rebuild in both
+// policies. 'clear' is today's shipped shape; 'preserve' is the ADR-0192 bracket
+// (`held.snapshot()` → `resetPredictionState()` → `held.restore(...)`), which reaches into
+// the REAL `HeldDirections` seam (AM2 — S12-SELF pins that it is not a shadow-log replay).
+// AM3: the rebuild reconciles from the last authoritative row in the SAME call stack, which
+// is the state-based warp path; S12b/c/d assert that reconcile genuinely ran.
+//
+// AM8: every S12 script triggers its rebuild in the steady-state window where the pipeline
+// is fully acked (`pendingCount === 0`, server queue drained) — asserted as a PRECONDITION —
+// so the fresh predictor's `seedSeq` floor is exact and nothing in flight can confuse the
+// measurement. Cell: 60fps / tickPhase 0 / L=1, rebuild at t=2005, i.e. 4ms after the
+// t=2001 drain-snapshot reconcile and 11.67ms before the t=2016.67 frame.
+//
+// RED REASON at authoring time: `HeldDirections.snapshot` / `.restore` do not exist, so
+// every 'preserve' scenario throws `this.held.snapshot is not a function` — S12b/c/d are
+// RED on a MISSING IMPLEMENTATION. S12a (the defect repro under 'clear'), S12e (the
+// reconnect gap) and S12-SELF never touch the seam and are GREEN today by design.
+// ================================================================================
+
+import { readFileSync } from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+type WarpMode = 'clear' | 'preserve' | 'deferred-clear' | 'deferred-leak';
+
+interface WarpSimConfig {
+  fps: number;
+  tickPhaseMs: number;
+  latencyMs: number;
+  startX: number;
+  startY: number;
+  holdCommitMs?: number;
+  rebuildAtMs: number;
+  rebuildMode: WarpMode;
+  untilMs: number;
+}
+
+/** State captured AT the rebuild instant — the preconditions every S12 tooth asserts before
+ *  it is allowed to judge anything (a tooth whose stimulus never ran proves nothing). */
+interface WarpProbe {
+  ran: boolean;
+  xAtRebuild: number;
+  emissionsBefore: number;
+  pendingAtRebuild: number;
+  outstandingAtRebuild: number;
+  reconcilesBefore: number;
+  reconcilesAfter: number;
+}
+
+interface WarpSimResult extends SimResult {
+  readonly probe: WarpProbe;
+  readonly framePeriodMs: number;
+  readonly rebuildAtMs: number;
+}
+
+/** The S12 driver. Deliberately a SEPARATE function from `runSim` (whose ScriptEvent union
+ *  and switch are untouched by this slice): identical transport/tick/frame wiring, plus one
+ *  scheduled rebuild event that records the pipeline state around itself. */
+function runWarpSim(cfg: WarpSimConfig, script: readonly ScriptEvent[]): WarpSimResult {
+  const q = new EventQueue();
+  const server = new ServerModel(cfg.startX, cfg.startY);
+  const latency = cfg.latencyMs;
+  const client = new ClientModel(cfg.holdCommitMs, (input, seq, epoch, sentAt) => {
+    q.push(sentAt + latency, (at) => {
+      const res = server.enqueueMove(input, seq, at);
+      if (res === 'ok') {
+        const snap = server.snapshot();
+        q.push(at + latency, (a2) => client.onRowUpdate(snap, a2));
+      } else {
+        q.push(at + latency, (a2) => {
+          client.rejections.push({ seq, reason: res, atMs: a2 });
+          if (client.predictor.dropRejected(seq, epoch)) client.reconcileFromStore(a2);
+        });
+      }
+    });
+  });
+  const initialSnap = server.snapshot();
+  q.push(0, (at) => client.onRowUpdate(initialSnap, at));
+  const framePeriod = 1000 / cfg.fps;
+  for (let n = 0; ; n++) {
+    const t = n * framePeriod;
+    if (t > cfg.untilMs) break;
+    q.push(t, (at) => client.frame(at));
+  }
+  for (let t = cfg.tickPhaseMs; t <= cfg.untilMs; t += STEP_MS) {
+    q.push(t, (at) => {
+      if (server.tick(at)) {
+        const snap = server.snapshot();
+        q.push(at + latency, (a2) => client.onRowUpdate(snap, a2));
+      }
+    });
+  }
+  for (const ev of script) {
+    if (ev.kind === 'keydown') {
+      q.push(ev.atMs, (at) => client.keydown(ev.dir, at));
+    } else if (ev.kind === 'keyup') {
+      q.push(ev.atMs, () => client.keyup(ev.dir));
+    } else {
+      // Fail loud rather than silently ignoring a stimulus the driver cannot deliver.
+      throw new Error(`runWarpSim: unsupported script event kind "${ev.kind}"`);
+    }
+  }
+  const probe: WarpProbe = {
+    ran: false,
+    xAtRebuild: Number.NaN,
+    emissionsBefore: -1,
+    pendingAtRebuild: -1,
+    outstandingAtRebuild: -1,
+    reconcilesBefore: -1,
+    reconcilesAfter: -1,
+  };
+  // Pushed LAST so a rebuild scheduled on a frame/tick boundary runs after them.
+  q.push(cfg.rebuildAtMs, (at) => {
+    probe.ran = true;
+    probe.xAtRebuild = server.row.x;
+    probe.emissionsBefore = client.emissions.length;
+    probe.pendingAtRebuild = client.predictor.pendingCount;
+    probe.outstandingAtRebuild = client.predictor.outstandingSteps;
+    probe.reconcilesBefore = client.reconciles.length;
+    if (cfg.rebuildMode === 'deferred-clear') client.rebuildPredictionDeferredReconcile('clear');
+    else if (cfg.rebuildMode === 'deferred-leak') client.rebuildPredictionDeferredReconcile('leak');
+    else client.rebuildPrediction(cfg.rebuildMode, at);
+    probe.reconcilesAfter = client.reconciles.length;
+  });
+  q.run(cfg.untilMs);
+  return {
+    server,
+    client,
+    probes: [],
+    probe,
+    framePeriodMs: framePeriod,
+    rebuildAtMs: cfg.rebuildAtMs,
+  };
+}
+
+/** Every emission recorded AFTER the rebuild ran — sliced by LEDGER INDEX, not by timestamp,
+ *  so an emission that shares the rebuild's instant cannot be mis-attributed either way. */
+function afterRebuild(r: WarpSimResult): Emission[] {
+  return r.client.emissions.slice(r.probe.emissionsBefore);
+}
+
+/** The steady-state cell every S12 scenario uses (see the AM8 note above). */
+const S12_REBUILD_AT = 2005;
+const S12_CELL = {
+  fps: 60,
+  tickPhaseMs: 0,
+  latencyMs: 1,
+  startX: 5,
+  startY: 5,
+  rebuildAtMs: S12_REBUILD_AT,
+} as const;
+
+/** The AM8 precondition + "the stimulus really ran", asserted by every tooth below. */
+function expectWarpPreconditions(r: WarpSimResult): void {
+  expect(r.probe.ran, 'PRECONDITION: the scheduled rebuild event must have run').toBe(true);
+  expect(
+    r.probe.pendingAtRebuild,
+    'PRECONDITION (AM8): the rebuild must happen with the pipeline FULLY ACKED ' +
+      '(pendingCount === 0) — otherwise the fresh predictor seq floor, not the held stack, ' +
+      'would be what this tooth is measuring',
+  ).toBe(0);
+}
+
+describe('[13r-f] S12 held-key warp continuation (ADR-0192): the WARP rebuild keeps the hold', () => {
+  it('S12-SELF (AM2): rebuildPrediction really calls this.held.snapshot()/restore() — not a shadow-log replay', () => {
+    // ★ THE SELF-FULFILLING-SIM KILL. S12b/c/d could be made green WITHOUT the production
+    // seam ever existing: model 'preserve' as "remember which dirs were down and re-press
+    // them at their old timestamps" (a shadow log replayed through `press()`), and the sim
+    // would walk beautifully across the rebuild while `HeldDirections` still had no
+    // snapshot/restore at all — the behavioural gate would be proving a property of the TEST
+    // FILE. This tooth reads this file's own source and requires the method body to route
+    // through the REAL seam, so S12b/c/d are RED until heldKeys.ts grows it.
+    const selfPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'movementSim.test.ts');
+    let src: string;
+    try {
+      src = readFileSync(selfPath, 'utf8');
+    } catch (err) {
+      // Fail loud — a missing file must never make a scan vacuously pass.
+      throw new Error(`movementSim.test.ts unreadable at ${selfPath} — ${String(err)}`);
+    }
+    // Assembled from two fragments ON PURPOSE: written as one literal, THIS line would itself
+    // be a second match for the needle and the uniqueness check below would always read 2.
+    const sigHead = 'rebuildPrediction(mode:';
+    const sigTail = "'clear' | 'preserve', atMs: number): void {";
+    const sig = `${sigHead} ${sigTail}`;
+    expect(
+      src.split(sig).length - 1,
+      `this file must declare EXACTLY ONE \`${sig}\` — a second (or missing) declaration means ` +
+        'the slice below is reading the wrong method body',
+    ).toBe(1);
+    const start = src.indexOf(sig);
+    const end = src.indexOf('\n  }', start);
+    expect(
+      end,
+      'the rebuildPrediction method body must be delimited by its closing brace',
+    ).toBeGreaterThan(start);
+    const body = src.slice(start + sig.length, end);
+
+    expect(
+      body.includes('this.held.snapshot('),
+      "rebuildPrediction('preserve') MUST capture through the REAL seam `this.held.snapshot()`. " +
+        'A shadow log of pressed dirs replayed through `press()` makes S12b/c/d pass while ' +
+        'heldKeys.ts has no snapshot/restore — the sim would be proving itself (AM2)',
+    ).toBe(true);
+    expect(
+      body.includes('this.held.restore('),
+      "rebuildPrediction('preserve') MUST restore through the REAL seam `this.held.restore(...)` " +
+        '— same self-fulfilling-sim failure as above (AM2)',
+    ).toBe(true);
+    expect(
+      body.includes('.press('),
+      'rebuildPrediction must NOT re-press anything: a re-press is the shadow-log cheat, and ' +
+        'in production it is also anti-pattern #1 (fresh stamps → a 150ms halt at every warp)',
+    ).toBe(false);
+  });
+
+  it("S12a (GREEN today — the DEFECT, reproduced): under 'clear' a still-held key stops the walk dead", () => {
+    // ★ THE nh5 DEFECT AS A BEHAVIOURAL FACT. East is held from t=500 and NEVER released;
+    // the rebuild happens mid-walk with no keydown after it. Today's shipped `held.clear()`
+    // empties the stack, `committedActive` answers undefined forever, and the character
+    // freezes on the far side of the boundary until the player releases and re-presses.
+    // This is GREEN today and MUST STAY GREEN as the 'clear' policy's specification — it is
+    // what makes S12b's ≥2 tiles a genuine change of behaviour rather than an artefact.
+    const r = runWarpSim({ ...S12_CELL, rebuildMode: 'clear', untilMs: 3000 }, [
+      { kind: 'keydown', atMs: 500, dir: 'East' },
+    ]);
+    expectWarpPreconditions(r);
+    expect(
+      r.probe.xAtRebuild - S12_CELL.startX,
+      'ANTI-VACUITY: the pre-rebuild hold must actually have walked several tiles — if it did ' +
+        'not, "the walk stopped" is true for the wrong reason',
+    ).toBeGreaterThanOrEqual(3);
+    expect(
+      afterRebuild(r).filter((e) => e.source === 'keydown').length,
+      'the script must contain NO keydown after the rebuild — the whole question is whether a ' +
+        'key that is ALREADY down keeps working',
+    ).toBe(0);
+    expect(
+      afterRebuild(r).length,
+      "under the 'clear' policy the cleared stack can re-issue nothing at all",
+    ).toBe(0);
+    expect(
+      r.server.row.x,
+      'THE DEFECT: with the held stack cleared by the rebuild, the character stops advancing ' +
+        'at the boundary even though the key is still physically down (ADR-0152 residual #4)',
+    ).toBe(r.probe.xAtRebuild);
+  });
+
+  it("S12b (RED today): under 'preserve' the walk continues ≥2 further tiles with NO keydown after the rebuild", () => {
+    // ★ THE SLICE'S BEHAVIOURAL GATE (AC-1 + AC-2). Identical script and identical instant to
+    // S12a — only the policy differs — so the ≥2 tiles can come from nothing but the
+    // preserved held stack.
+    // WRONG IMPL KILLED (1): no seam at all (today) — S12a's freeze, here a hard red.
+    // WRONG IMPL KILLED (2): `restore` that drops entries / restores an empty capture.
+    // WRONG IMPL KILLED (3): a rebuild that preserves the hold but breaks the send-seq floor
+    //   (the continuations would be rejected as stale and no tile would move).
+    // WRONG IMPL KILLED (4): a preserved hold that DOUBLE-advances (a merge that leaves two
+    //   entries, or an emitter that fires twice per slot) — the cadence assertion below pins
+    //   one tile per 200ms movement_tick slot across the whole run (ADR-0013/0141, R3).
+    const r = runWarpSim({ ...S12_CELL, rebuildMode: 'preserve', untilMs: 3000 }, [
+      { kind: 'keydown', atMs: 500, dir: 'East' },
+    ]);
+    expectWarpPreconditions(r);
+    expect(
+      r.probe.reconcilesAfter - r.probe.reconcilesBefore,
+      'PRECONDITION (AM3): the rebuild must reconcile from server truth in the SAME call ' +
+        'stack exactly once — an omitted chain would make this tooth measure a different ' +
+        'pipeline than the one main.ts runs',
+    ).toBe(1);
+    expect(
+      afterRebuild(r).filter((e) => e.source === 'keydown').length,
+      'no keydown may be scripted after the rebuild — a re-press would make this vacuous',
+    ).toBe(0);
+    expect(
+      r.server.row.x - r.probe.xAtRebuild,
+      'AC-2: a key held past the commit threshold when the warp rebuild happens must keep ' +
+        'walking on the far side with NO fresh keydown — the continuation emitters read the ' +
+        'restored stack and its ORIGINAL press stamp',
+    ).toBeGreaterThanOrEqual(2);
+    expect(
+      cadenceOf(r).missedSlots,
+      'R3 smoothness: every consecutive moved-drain gap across the warp must be exactly one ' +
+        `${STEP_MS}ms movement_tick slot — the preserved hold must neither skip a slot nor ` +
+        'double-advance',
+    ).toBe(0);
+  });
+
+  it('S12c (RED today): the first post-rebuild continuation lands within ONE FRAME, not one commit window later', () => {
+    // ★ THE RE-STAMP KILL, behaviourally (AC-2, ADR-0192 Decision 3). A `restore` that
+    // re-stamps entries to "now" satisfies S12b — the walk resumes, just 150ms late — and the
+    // player feels a hitch at every boundary, which is the defect in a smaller size. With the
+    // ORIGINAL stamp the hold is ALREADY committed, so the very next frame after the rebuild
+    // (11.67ms later at 60fps) emits the continuation.
+    const r = runWarpSim({ ...S12_CELL, rebuildMode: 'preserve', untilMs: 3000 }, [
+      { kind: 'keydown', atMs: 500, dir: 'East' },
+    ]);
+    expectWarpPreconditions(r);
+    expect(
+      r.probe.reconcilesAfter - r.probe.reconcilesBefore,
+      'PRECONDITION (AM3): the rebuild must reconcile from server truth in the same call stack',
+    ).toBe(1);
+    const first = afterRebuild(r)[0];
+    expect(
+      first,
+      'the preserved hold must produce a continuation at all after the rebuild',
+    ).toBeDefined();
+    const delay = (first as Emission).atMs - r.rebuildAtMs;
+    expect(
+      delay,
+      `the first post-warp continuation must arrive within one frame period ` +
+        `(${r.framePeriodMs}ms) of the rebuild — a re-stamping restore delays it by a whole ` +
+        `commit window (${HOLD_COMMIT_MS}ms), which is a visible hitch at every boundary`,
+    ).toBeLessThanOrEqual(r.framePeriodMs + EPS);
+    expect(
+      delay,
+      'the post-warp continuation must NOT wait out a fresh commit window — that is ' +
+        'anti-pattern #1 (re-press with fresh stamps) surviving as a restore that re-stamps',
+    ).toBeLessThan(HOLD_COMMIT_MS);
+  });
+
+  it('S12d (RED today): a 50ms-old hold stays uncommitted until the ORIGINAL press ages the commit window', () => {
+    // ★ AC-3. The mirror image of S12c: a warp taken 50ms into a press is NOT a free
+    // re-commit. The key goes down at t=1955 and the rebuild is at t=2005, so at rebuild time
+    // the hold is 50ms old.
+    // WRONG IMPL KILLED (1): `restore` writing `pressedAtMs: 0` (or any sentinel) — the hold
+    //   would read as committed immediately and the warp would hand the player a free extra
+    //   tile, re-opening the ADR-0158 double-move at every boundary. Caught by the lower bound.
+    // WRONG IMPL KILLED (2): `restore` re-stamping to the rebuild instant — the continuation
+    //   would appear at 2005+150 instead of 1955+150. Caught by the upper bound.
+    const pressAt = 1955;
+    const r = runWarpSim({ ...S12_CELL, rebuildMode: 'preserve', untilMs: 2400 }, [
+      { kind: 'keydown', atMs: pressAt, dir: 'East' },
+    ]);
+    expectWarpPreconditions(r);
+    expect(
+      r.probe.reconcilesAfter - r.probe.reconcilesBefore,
+      'PRECONDITION (AM3): the rebuild must reconcile from server truth in the same call stack',
+    ).toBe(1);
+    const post = afterRebuild(r);
+    expect(
+      post.filter((e) => e.atMs <= r.rebuildAtMs + r.framePeriodMs + EPS).length,
+      'AC-3: the first frame after the rebuild must emit NOTHING — the hold is only 50ms old ' +
+        'and has not earned a continuation from its ORIGINAL press yet',
+    ).toBe(0);
+    const first = post[0];
+    expect(first, 'the hold must eventually commit and continue on its own').toBeDefined();
+    expect(
+      (first as Emission).atMs,
+      `AC-3: the continuation may not appear before the ORIGINAL press (t=${pressAt}) has aged ` +
+        'a full commit window — a restored stamp of 0 would emit immediately (a free tile)',
+    ).toBeGreaterThanOrEqual(pressAt + HOLD_COMMIT_MS);
+    expect(
+      (first as Emission).atMs,
+      `…and it must appear on the FIRST frame after t=${pressAt + HOLD_COMMIT_MS}: a restore ` +
+        'that re-stamps to the rebuild instant would push it a further 50ms out',
+    ).toBeLessThanOrEqual(pressAt + HOLD_COMMIT_MS + r.framePeriodMs + EPS);
+
+    // CONTROL (green today): the SAME script under 'clear' emits nothing at all, so the
+    // emission measured above is produced by the PRESERVED stack and by nothing else.
+    const control = runWarpSim({ ...S12_CELL, rebuildMode: 'clear', untilMs: 2400 }, [
+      { kind: 'keydown', atMs: pressAt, dir: 'East' },
+    ]);
+    expect(
+      afterRebuild(control).length,
+      "CONTROL: under 'clear' the same 50ms hold produces NO continuation ever — if it does, " +
+        'S12d is not measuring the restored stack',
+    ).toBe(0);
+  });
+
+  it('S12e (GREEN today): on the RECONNECT shape (rebuild with DEFERRED reconcile) held.clear() alone guards the gap', () => {
+    // ★ THE ADR-0152 PER-PATH INVARIANT, behaviourally (AC-4). On reconnect the reconcile is
+    // DEFERRED (the server's on_disconnect deleted the rows, so reconcileFromStore
+    // early-returns until joinGame round-trips). In that gap the fresh predictor's
+    // `#lastAuthQueueLen` is 0 while the server may still owe a queued step, so the
+    // outstanding-steps gate is WIDE OPEN — and the only thing standing between a held key
+    // and a continuation emitted against unknown authority is `held.clear()`.
+    // THIS IS WHY 13r-f DOES NOT TOUCH THE RECONNECT ARM. The wiring tooth
+    // W-NH5-RECONNECT-CLEARS is the source-level half of the same statement.
+    const gapUntil = 2200; // the next server tick; its snapshot would end the deferral
+    const script: readonly ScriptEvent[] = [{ kind: 'keydown', atMs: 500, dir: 'East' }];
+    const r = runWarpSim({ ...S12_CELL, rebuildMode: 'deferred-clear', untilMs: gapUntil }, script);
+    expect(r.probe.ran, 'PRECONDITION: the scheduled rebuild event must have run').toBe(true);
+    expect(
+      r.probe.reconcilesAfter - r.probe.reconcilesBefore,
+      'PRECONDITION: the reconnect-shaped rebuild must NOT reconcile — that deferral is the ' +
+        'whole point of this scenario',
+    ).toBe(0);
+    expect(
+      r.client.reconciles.length,
+      'PRECONDITION: no reconcile may land anywhere in the observed gap either',
+    ).toBe(r.probe.reconcilesBefore);
+    expect(
+      afterRebuild(r).length,
+      'AC-4: with the held stack cleared, ZERO intents are emitted into the deferred-reconcile ' +
+        'gap — this is the guarantee ADR-0152 rests on and the reason the reconnect arm keeps ' +
+        'a bare held.clear() with no capture/restore around it',
+    ).toBe(0);
+
+    // ANTI-VACUITY CONTROL: the SAME gap with the clear REMOVED does emit — so the zero above
+    // is produced by held.clear() and not by the gap being inert (the frames are running, the
+    // gate is open, the key is committed).
+    const leak = runWarpSim(
+      { ...S12_CELL, rebuildMode: 'deferred-leak', untilMs: gapUntil },
+      script,
+    );
+    expect(
+      afterRebuild(leak).length,
+      'CONTROL: a rebuild that does NOT clear the held stack emits into the deferred gap — if ' +
+        'it does not, S12e proves nothing about held.clear() being load-bearing',
+    ).toBeGreaterThanOrEqual(1);
   });
 });
