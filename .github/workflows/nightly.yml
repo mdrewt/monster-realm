@@ -164,5 +164,20 @@ jobs:
         with: { tool: git-cliff@2.13.1 }
       # Two separate steps, never one `;`-joined line: a joined command would report only
       # the last exit status and silently discard the suite's result.
-      - run: node --test scripts/changelog-freshness.test.mjs
+      #
+      # The TAP pass-count assertion is the SEMANTIC half of the zero-test countermeasure.
+      # `node --test <file>` exits 0 when a file defines no tests, and the checker's own
+      # floor counts an `it(` STRING — which a block comment containing 60 of them
+      # satisfies with zero real tests (demonstrated). Only the runner's own tally proves
+      # tests actually executed.
+      - name: Gating suite (with a pass-count floor)
+        run: |
+          node --test --test-reporter=tap scripts/changelog-freshness.test.mjs | tee /tmp/changelog-freshness.tap
+          pass=$(sed -n 's/^# pass \([0-9]*\)$/\1/p' /tmp/changelog-freshness.tap | tail -n 1)
+          fail=$(sed -n 's/^# fail \([0-9]*\)$/\1/p' /tmp/changelog-freshness.tap | tail -n 1)
+          echo "changelog-freshness suite: pass=$pass fail=$fail"
+          if [ -z "$pass" ] || [ "$pass" -lt 50 ] || [ "$fail" != "0" ]; then
+            echo "changelog-freshness: suite reported pass=$pass fail=$fail — floor is 50 passing, 0 failing" >&2
+            exit 1
+          fi
       - run: node scripts/changelog-freshness.mjs --check

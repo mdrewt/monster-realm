@@ -20,7 +20,7 @@
 // WHY A CONJUNCTION AND NOT A THRESHOLD — see THRESHOLDS below. A bare entry-count
 // threshold cannot separate a healthy weekly wave from real rot in this repo.
 //
-// EXIT CODES (house convention, scripts/adr-digest.mjs:840-861): 0 = fresh or advisory,
+// EXIT CODES (house convention, scripts/adr-digest.mjs:90,230,840-861): 0 = fresh or advisory,
 // 1 = drift the ledger owner must fix, 2 = environment / the script cannot trust itself.
 //
 // IMPORTANT: NO `new RegExp(...)` anywhere — only literal regex literals and String
@@ -71,7 +71,10 @@ export const LAG_WARN_ENTRIES = 8;
 // version change flips hundreds at once — that is the shape worth a red.
 export const EXTRA_HARD_FLOOR = 3;
 // Fail-closed floor on the generation itself. History here is append-only (squash-merge
-// only; force-push is hook-blocked), so a generation can never shrink. 341 = measured at
+// only; force-push is hook-blocked), so a generation can never shrink. 341 is
+// `generated.size` — DISTINCT group-scoped keys, not a `grep -c '^- '` line count; the two
+// coincide today only because the ledger happens to have no duplicate entry within a
+// group, which the multiset rationale below says is not guaranteed. Measured at
 // origin/master@7eb6980. This single number kills the whole vacuous-green family at once:
 // git-cliff absent with its error swallowed to '' (0 entries), a shallow checkout
 // (1 entry), a truncated read.
@@ -83,7 +86,7 @@ export const MIN_GENERATED_ENTRIES = 341;
 // this script because `evals/**` is outside this slice's touches.
 export const SIBLING_TEST_FILE = 'changelog-freshness.test.mjs';
 export const SIBLING_TEST_MARKER = '\n  it(';
-// Floor, not an equality pin: set below the committed count (66 at 13r-g) so ordinary
+// Floor, not an equality pin: set below the committed count (72 at 13r-g, derived with: grep -c '^  it(' scripts/changelog-freshness.test.mjs) so ordinary
 // test consolidation does not red the nightly, but far enough above zero that a
 // commented-out or emptied suite cannot pass.
 export const MIN_SIBLING_TESTS = 50;
@@ -219,6 +222,23 @@ function multisetDifference(a, b) {
   return out;
 }
 
+// Exported so the shell can compute `missing` ONCE, date it, and then classify once.
+// Without this seam main() had to call classifyChangelogDrift twice (once to learn what is
+// missing, once with the resulting age) — and dropping the second call's `ageDays`, the
+// obvious "why do we call this twice" refactor, silently makes `stale` unreachable. That
+// mutation shipped suite-green when it was bite-proofed; removing the bait is cheaper than
+// guarding it.
+export function diffChangelogEntries({ generatedText, committedText }) {
+  const generated = parseChangelogEntries(generatedText);
+  const committed = parseChangelogEntries(committedText);
+  return {
+    generated,
+    committed,
+    missing: multisetDifference(generated, committed),
+    extra: multisetDifference(committed, generated),
+  };
+}
+
 export const DEFAULT_THRESHOLDS = {
   failEntries: LAG_FAIL_ENTRIES,
   failAgeDays: LAG_FAIL_AGE_DAYS,
@@ -235,15 +255,14 @@ export function classifyChangelogDrift({
   thresholds,
 }) {
   const t = { ...DEFAULT_THRESHOLDS, ...(thresholds ?? {}) };
-  const generated = parseChangelogEntries(generatedText);
-  const committed = parseChangelogEntries(committedText);
-  const missing = multisetDifference(generated, committed);
-  const extra = multisetDifference(committed, generated);
+  const { generated, committed, missing, extra } = diffChangelogEntries({
+    generatedText,
+    committedText,
+  });
   // `rendersIdentically` is carried on the result even when the verdict is decided by a
-  // higher-precedence rule: `lagging` outranks `rendering`, so without this field a
-  // git-cliff version bump that lands MID-WAVE (lag >= warn) would be reported as a
-  // routine advisory and its rendering drift would be invisible. formatVerdict always
-  // names it.
+  // higher-precedence rule (`lagging` outranks `rendering`), and formatVerdict prints it
+  // in the machine-greppable trailer so the raw signal is never lost. It is deliberately
+  // NOT given its own prose line under `lagging` — see the note in formatVerdict.
   const result = {
     verdict: 'fresh',
     missing,
@@ -299,7 +318,9 @@ export function formatVerdict(result) {
   const age = result.ageDays === null ? 'undatable' : `${result.ageDays.toFixed(1)}d`;
   // Machine-greppable trailer first: the nightly log is read by grep far more often than
   // by a human, and the prose below is free to change.
-  lines.push(`verdict=${result.verdict} lag=${lag} age=${age} extra=${result.extra.length}`);
+  lines.push(
+    `verdict=${result.verdict} lag=${lag} age=${age} extra=${result.extra.length} renders=${result.rendersIdentically ? 'same' : 'differs'}`,
+  );
   switch (result.verdict) {
     case 'fresh':
       lines.push(
@@ -331,10 +352,16 @@ export function formatVerdict(result) {
       );
       lines.push('remedy: run `just changelog` on master and commit CHANGELOG.md');
       break;
-    default:
+    case 'vacuous':
       lines.push(
         `VACUOUS: one side parsed to zero entries (generated-missing=${lag}) — refusing to report freshness`,
       );
+      break;
+    // exitCodeForVerdict already fails closed on an unknown verdict; the formatter must
+    // not label it "VACUOUS" as well, or a future verdict typo prints a confident, wrong
+    // diagnosis alongside the right exit code.
+    default:
+      lines.push(`UNKNOWN VERDICT '${result.verdict}' — refusing to interpret it`);
       break;
   }
   if (result.extra.length > 0 && result.verdict !== 'drift') {
@@ -602,7 +629,7 @@ function main(argv) {
   if (!generatedTexts.has(newest)) {
     die(
       2,
-      `the generated changelog does not contain the newest commit's entry (${newest}) — it did not come from git history`,
+      `the generated changelog does not contain the newest commit's entry (${newest}) — it did not come from git history, or entryTextForSubject no longer tracks the cliff.toml template`,
     );
   }
 
@@ -630,20 +657,42 @@ function main(argv) {
   const problems = findStructuralProblems(committedText);
   if (problems.length > 0) die(2, `CHANGELOG.md is malformed:\n${problems.join('\n')}`);
 
-  // 7. Classify.
-  const preliminary = classifyChangelogDrift({ generatedText, committedText });
-  const ageDays = oldestMissingAgeDays({
-    missingTexts: preliminary.missing.map(entryTextFromKey),
-    commits,
-    nowMs: Date.now(),
-  });
+  // 7. Diff once, then date the missing set.
+  const { missing } = diffChangelogEntries({ generatedText, committedText });
+  const missingTexts = missing.map(entryTextFromKey);
+
+  // 7b. The guard that actually protects the age arm. The whole-generation fraction above
+  // is scoped to ~342 entries, so at a 0.9 floor it tolerates ~34 unmappable entries —
+  // MORE than the entire missing set on every stale night this gate exists to catch. A
+  // partially-rotted transform therefore passed 5b while dating a 27-entry, 6.5-day-old
+  // lag as 0.3 days: exit 0 on a genuinely stale ledger (measured). The missing set must
+  // map at its OWN floor. False-red risk measured at zero: the missing-set mapped
+  // fraction is 100% at all 150 of the last master commits.
+  if (missingTexts.length > 0) {
+    const missingMapped = missingTexts.filter((t) => subjectTexts.has(t)).length;
+    const missingFraction = missingMapped / missingTexts.length;
+    if (missingFraction < MIN_MAPPED_FRACTION) {
+      die(
+        2,
+        `only ${missingMapped}/${missingTexts.length} (${(missingFraction * 100).toFixed(1)}%) MISSING entries map back to a commit subject, floor ${(MIN_MAPPED_FRACTION * 100).toFixed(0)}% — the lag cannot be dated, so a stale ledger would report as young`,
+      );
+    }
+  }
+
+  const ageDays = oldestMissingAgeDays({ missingTexts, commits, nowMs: Date.now() });
   const result = classifyChangelogDrift({ generatedText, committedText, ageDays });
   console.log(formatVerdict(result));
-  process.exit(exitCodeForVerdict(result.verdict));
+  // exitCode rather than process.exit: on a piped stdout (every GitHub Actions run) the
+  // write is asynchronous and process.exit can truncate it — and this job's whole value
+  // is that log line.
+  process.exitCode = exitCodeForVerdict(result.verdict);
 }
 
 // Main-guard: the sibling test file imports this module, and an unguarded shell would
-// shell out to git and process.exit() mid-test-run.
-if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+// shell out to git and process.exit() mid-test-run. `import.meta.main` (node >= 24.2; the
+// job pins 24.13.1) rather than comparing paths: `import.meta.url` is realpath-resolved
+// while `process.argv[1]` is not, so a symlinked invocation would silently skip main()
+// and exit 0 with no output — the exact vacuous green this script exists to prevent.
+if (import.meta.main) {
   main(process.argv.slice(2));
 }
