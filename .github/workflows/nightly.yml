@@ -171,6 +171,10 @@ jobs:
       # satisfies with zero real tests (demonstrated). Only the runner's own tally proves
       # tests actually executed.
       - name: Gating suite (with a pass-count floor)
+        # `shell: bash` for the `-o pipefail` it brings: the default Linux shell is
+        # `bash -e` WITHOUT pipefail, so `node --test | tee` would discard node's exit
+        # status. The explicit pass/fail parse below is the belt; this is the suspenders.
+        shell: bash
         run: |
           node --test --test-reporter=tap scripts/changelog-freshness.test.mjs | tee /tmp/changelog-freshness.tap
           pass=$(sed -n 's/^# pass \([0-9]*\)$/\1/p' /tmp/changelog-freshness.tap | tail -n 1)
