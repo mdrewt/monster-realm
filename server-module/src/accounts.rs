@@ -38,13 +38,13 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table, Timestamp};
 /// own anonymous issuer is NEVER placed here — it is not an account provider,
 /// and that is what keeps the audience-disconnect branch outage-safe.
 /// The URL is assembled from two literals so the SOURCE TEXT carries no
-/// contiguous slash-slash token: several server-module source-scan evals strip
-/// slash-slash line-comments BEFORE string literals, so a bare literal with the
-/// scheme slashes would truncate there, unbalance their quote-pairing, and
-/// cascade a spurious failure into unrelated files (trade-escrow-guards TR-11
-/// went red this way). A real issuer URL configured at OQ1 trips the same latent
-/// eval bug — M21c (which owns evals/) should make those strippers
-/// string-literal-aware. Compiles to `https:` + `//auth.monster-realm.invalid/`.
+/// contiguous slash-slash token; it compiles to `https:` + `//auth.monster-realm.invalid/`.
+/// Most source-scan evals are string-literal-aware now, via the shared
+/// `evals/rust-scan.mjs` (ADR-0181, ADR-0186) — but two still require this form, and
+/// `13r-c-2` owns both: `trade-escrow-guards.eval.mjs` strips slash-slash line-comments
+/// BEFORE string literals, so a bare literal unbalances quote-pairing and blanks later
+/// files from its whole-crate blob (TR-11 reds; re-measured 2026-08-15), and
+/// `account-e2e.eval.mjs`'s `ISSUER_NEEDLE` matches the `concat!()` token exactly (N4 throw).
 ///
 /// HARD SEQUENCING GATE (ADR-0182 D18): flipping ALLOWED_ISSUERS and ALLOWED_AUDIENCE to their
 /// real deployment values, tightening `audience_allowed` to exact single-value equality, and the
