@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 161 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 162 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -169,6 +169,7 @@ Generated from 161 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0192](./0192-held-key-warp-continuation.md) | 0192 — Held-key warp continuation: the held stack survives the WARP arm's prediction rebuild (nh5) | Accepted | movement-netcode, client-ui | 13r-f (M-postgate thirteenth-review residuals §13r-f — the nh5 candidate named by ADR-0152 residual #4 and nh3-plan R6) | `switchZone` captures the held stack (original press stamps) before `resetPredictionState()` and restores it after — warp arm ONLY; the reconnect arm and shared reset body stay byte-identical, keeping ADR-0152's guarantee. |
 | [0193](./0193-append-at-end-schema-gate.md) | 0193 — Append-at-end schema-gate generalization: order-aware, re-baseline-proof additive-schema enforcement | Accepted | ci-gates, schema-persistence | 13r-d (M-postgate thirteenth-review residuals §13r-d) | The schema-snapshot gate becomes column-ORDER aware: the baseline records each table column order, and a git-resolved comparison against the prior committed baseline keeps a mid-struct insert RED even after a full re-baseline. |
 | [0194](./0194-monster-pub-need-to-know-privacy.md) | 0194 — monster_pub need-to-know privacy: private table + owner-scoped multi-row view | Accepted | schema-persistence, security-authz, client-ui | 13r-e | `monster_pub` becomes PRIVATE with one sanctioned read path — the owner-scoped `my_monster_pub` view; other players' monster_pub rows are never delivered; an engagement view is deferred until a client consumer exists. |
+| [0195](./0195-rust-test-mirror-parity.md) | 0195 — Rust test-mirror parity: derived scan sets, source-derived reducer enumeration, and the Account legal-state invariant | Accepted | ci-gates, security-authz, schema-persistence | 13r-h | Close ADR-0179 §9's parity residuals: EG2-9 scans src/ per-file via read_dir, the G2 mirror ports the JS eval's full defenses, and Account gets a debug_assert'd invariant + exact shape tripwire instead of an enum fold. |
 | [0196](./0196-changelog-freshness-nightly-check.md) | 0196 — Changelog freshness: the nightly check ADR-0165 deferred, as a lag×age conjunction | Accepted | tooling-docs, ci-gates | 13r-g | Implement ADR-0165's nightly changelog check as an entry-multiset comparison of a fresh `git cliff` generation against the committed ledger, failing only when >= 15 entries are missing AND the oldest is >= 6 days old; advisory from 8. |
 
 ## Harness design corpus (H- namespace)
@@ -370,6 +371,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0182](./0182-m21b2-oidc-client-claim-ui-better-auth-deployment.md) — heavy-ceremony M21b-2 planning pass (pre-slice; implementation elaborates in the m21b-2 — 0182 — M21b-2: OIDC client wiring, claim-code UI, session lifecycle, Better Auth deployment (Accepted)
 - [0193](./0193-append-at-end-schema-gate.md) — 13r-d (M-postgate thirteenth-review residuals §13r-d) — 0193 — Append-at-end schema-gate generalization: order-aware, re-baseline-proof additive-schema enforcement (Accepted)
 - [0194](./0194-monster-pub-need-to-know-privacy.md) — 13r-e — 0194 — monster_pub need-to-know privacy: private table + owner-scoped multi-row view (Accepted)
+- [0195](./0195-rust-test-mirror-parity.md) — 13r-h — 0195 — Rust test-mirror parity: derived scan sets, source-derived reducer enumeration, and the Account legal-state invariant (Accepted)
 
 ### client-ui
 
@@ -480,6 +482,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0190](./0190-observability-stack-boot-fixes.md) — 13r-a (M-postgate thirteenth-review residuals §13r-a) — 0190 — The observability stack could not boot: three committed config defects fixed, tempo parked, `build_sha` residual mechanized (Accepted)
 - [0191](./0191-mr-trace-relay-integration.md) — 13r-b (M-postgate thirteenth-review residuals §13r-b) — 0191 — `mr-trace-relay` integration: the 8th service, its scrape target and its dead-man's switch land as one change (Accepted)
 - [0193](./0193-append-at-end-schema-gate.md) — 13r-d (M-postgate thirteenth-review residuals §13r-d) — 0193 — Append-at-end schema-gate generalization: order-aware, re-baseline-proof additive-schema enforcement (Accepted)
+- [0195](./0195-rust-test-mirror-parity.md) — 13r-h — 0195 — Rust test-mirror parity: derived scan sets, source-derived reducer enumeration, and the Account legal-state invariant (Accepted)
 - [0196](./0196-changelog-freshness-nightly-check.md) — 13r-g — 0196 — Changelog freshness: the nightly check ADR-0165 deferred, as a lag×age conjunction (Accepted)
 
 ### tooling-docs
@@ -552,6 +555,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0186](./0186-eval-scanner-migration-audit-and-behavioral-gating.md) — 14r-c (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-c) — 0186 — Eval scanner migration: audit gate, behavioral+structural enforcement, name-derived gating, and parked residuals (Accepted)
 - [0189](./0189-ranked-requires-account.md) — 14r-g (M-postgate fourteenth-review residuals §14r-g) — 0189 — Ranked play requires a full account: server enforcement at both PvP handshake gates (Accepted)
 - [0194](./0194-monster-pub-need-to-know-privacy.md) — 13r-e — 0194 — monster_pub need-to-know privacy: private table + owner-scoped multi-row view (Accepted)
+- [0195](./0195-rust-test-mirror-parity.md) — 13r-h — 0195 — Rust test-mirror parity: derived scan sets, source-derived reducer enumeration, and the Account legal-state invariant (Accepted)
 
 ### economy-quests
 

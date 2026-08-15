@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** ADR-0179
 **Subsystems:** ci-gates, security-authz, schema-persistence
-**Decision:** Close ADR-0179 §9's three parity residuals: EG2-9's scan set is derived per-file by recursive read_dir; the G2 Rust mirror enumerates reducers from source with the JS eval's full param/ctor defenses; Account's legal-state invariant is a debug_assert'd pure predicate plus an exact-equality struct-shape tripwire, not an enum fold.
+**Decision:** Close ADR-0179 §9's parity residuals: EG2-9 scans src/ per-file via read_dir, the G2 mirror ports the JS eval's full defenses, and Account gets a debug_assert'd invariant + exact shape tripwire instead of an enum fold.
 
 ## Context
 
