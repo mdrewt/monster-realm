@@ -27,6 +27,12 @@
 - Cbm 0.9.0 snapshot phrasing in AGENTS.md graph bullet
 - Make vitest-fast-check reference an actionable Read path
 - Ledger & backlog reconciliation — changelog regen #240-#269, README catalog to generated DIGEST, 0119/0122 back-links, shops registry row (ADR-0165) (#270)
+- 0179 accounts/auth + 0180 observability-stack implementation designs (#294)
+- 0180 amendment — server tracing via log-relay, not Procedures; stack stays (#296)
+- 0179/0180 review fixes — REKEY_COMPLETENESS gap, stale figures, real gates (#297)
+- Resolve OQ1 — Better Auth self-hosted (issue #301) (#308)
+- ADR-0182 — M21b-2 OIDC client wiring, claim UI, session lifecycle, Better Auth deployment (#310)
+- State the 13r-c-2 sequencing gate explicitly (D18) (#311)
 
 ### Features
 
@@ -174,6 +180,18 @@
 - Essence-graph reducers — auto-evolution cascade, essence_train/consume_crystalized_essence, Trust/Quality-Time credits (ADR-0175) (#283)
 - Essence-graph client UI — requirements/progress panel replaces the fusion overlay, 2+-only choice UI, party-roster badge (#285)
 - Eval-gate migration + Migration B + docs/ADR tail — closes M-evolution-essence-graph (#286)
+- Accounts/auth structural spine — schema, guest-claim reducers, re-key manifest (ADR-0179) (#298)
+- Auth-kind marker + guard the anonymous token slot against account JWTs (#299)
+- Self-hosted observability stack config — 7-container stack, DR runbook (ADR-0180) (#302)
+- Layer-1 observability retrofit — mr_log + heartbeat + perf-budget gate (ADR-0180) (#303)
+- Client OTel Web SDK wiring — S4 browser metrics, 8 main.ts hooks, no-PII/no-credential gates (ADR-0180) (#304)
+- Mr-load-driver — std-only WS load driver, OBS-27 breaking-point measurement (ADR-0180 D9) (#305)
+- Evals tail — stack-config eval (G9), mr-trace-relay pure core + G8, G5 third assertion, Rust mirrors, G11 noise floor (ADR-0180) (#306)
+- OIDC client wiring, guest→account claim UI, session lifecycle, Better Auth deployment (#312)
+- Ranked-requires-account enforcement — deployment-conditional gate at both PvP handshakes (ADR-0189) (#321)
+- Mr-trace-relay integration — tail-follow daemon, /health, scrape job, dead-man's switch (ADR-0191) (#324)
+- Order-aware, re-baseline-proof schema-snapshot gate (ADR-0193) (#325)
+- Monster_pub need-to-know privacy — private table + owner-scoped my_monster_pub view (ADR-0194) (#326)
 
 ### Fixes
 
@@ -207,6 +225,19 @@
 - Kill 3 nightly mutation-gate survivors from EG1 (2 killing tests + 1 self-expiring blessed exclusion) (#281)
 - Reconcile docs/PLAYTEST.md's control table with the helpModel SSOT + a doc-drift gate (#287)
 - Restore append-only id-baseline protection for species/item/skill + bidirectional growth guard (#288)
+- CHANGELOG regen + four ADR back-links + a bidirectional Amends/Amended-by gate with teeth (#290)
+- Monster-dual-write eval recognises pub(crate) fn boundaries (#291)
+- ADR-0170 residual closure — heal cost_currency display path, pvp/taming cache swaps, 12 JSON log sites escaped (#292)
+- Validator & core hardening tail — R4 gate semantics, single duplicate-pair enforcement, ids-only party seam, cap-exhausted write elision (#293)
+- ADR-0179 Subsystems trimmed to 3 valid vocabulary values (#295)
+- String-literal-aware source scanners — shared evals/rust-scan.mjs, three security gates de-blinded (ADR-0181) (#309)
+- Nightly mutation gate — cap re-baseline 299→324 with named debt, per-job failure-policy visibility (ADR-0183) (#314)
+- PvE settle log-and-commit hardening — no softlock on write-back error (ADR-0185) (#316)
+- Scanner-migration wave onto rust-scan — behavioral migration gate, 6 privacy evals de-blinded (ADR-0186) (#319)
+- Dualkey first-step dedup + movement-input runtime e2e (ADR-0187) (#318)
+- Evolution log escaping, both-role grass guard, trade-cap mirror (ADR-0188) (#320)
+- Observability stack boot — alloy uid, caddy file-capability, grafana alert interval (ADR-0190) (#322)
+- Held-key warp continuation — preserve held stack across the warp-arm rebuild (ADR-0192) (#323)
 
 ### M8.8b
 
@@ -305,6 +336,7 @@
 - Two-graph routing — agent grants, allowlists, AGENTS.md (harness ADR-0010)
 - Revert fc71741 — accidental commit of worktree gitlink + .codegraph/.gitignore to master (11r-f session cwd slip, no source files affected)
 - Regenerate docs/knowledge bundle post-merge (#280)
+- Reconcile next-free index 183->184 (14r-a consumed ADR-0183) (#315)
 
 ### Refactor
 
@@ -328,6 +360,8 @@
 - Deflake dialogue 13.5c-5 — soft-retry slow row-delete propagation (#182)
 - Ranked-ladder evals tail — ranking-security + PvE-exclusion evals + ranked-forfeit e2e (ADR-0121)
 - Test-integrity & diagnostics residuals — de-vacuified RT-SZ-02/F-5f/M14d pins, grantBait revival tripwire, movement-rejection breadcrumb (ADR-0172) (#276)
+- Accounts/auth eval gates — 11 proven bypasses closed (ADR-0179 G1-G12) (#300)
+- Trading reducer behavioral negative-path suite (dynamic e2e, eval tighten, operator pins) (#317)
 
 ### Wip
 
