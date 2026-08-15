@@ -288,6 +288,418 @@ fn allowed_write_tables() -> [String; 3] {
 }
 
 // ===========================================================================
+// G2 SOURCE-DERIVED REDUCER ENUMERATION (ADR-0195 D6) — the Rust port of
+// `evals/guest-claim-integrity.eval.mjs`'s `parseReducers`,
+// `parseScheduledTargets`, `isWireSafeType` and `checkNoClientIdentity`.
+//
+// WHY A PORT AND NOT A NEEDLE LIST: the shipped G2 mirror iterated FIVE
+// hardcoded reducer needles, so an ADDED reducer was invisible to it — which is
+// precisely the shape of both PROVEN account-takeover bypasses:
+//   E1  a struct-wrapped Identity (`ClaimTarget { guest_identity: Identity }`)
+//       passed as a reducer argument. It declares no `: Identity` parameter, so
+//       a substring ban is green on it.
+//   E2  a wire-safe `String` parameter plus an `Identity::from_hex` call in the
+//       body. A parameter-type analysis alone never sees it.
+// Both compile and pass `clippy --all-targets -D warnings`. The defense is
+// therefore a POSITIVE wire-safe-scalar allowlist plus an Identity-constructor
+// ban plus an EXACT name-set pin — never "the type text contains Identity".
+//
+// EVERYTHING BELOW RUNS OVER `stripped_for_scan` OUTPUT: strings blanked ->
+// comments blanked -> ALL whitespace squashed. So the `spacetimedb::reducer`
+// attribute reads as one contiguous token and a parameter reads `name:&Type`.
+// The one place this matters structurally is the `fn` token walk: whitespace
+// squashing fuses `pub fn` into `pubfn`, so a naive word-boundary test would
+// reject every `pub` reducer in the tree (see `is_fn_token_at`).
+// ===========================================================================
+
+/// Is `b` a Rust identifier byte? (Word-boundary tests over squashed source.)
+fn is_word_byte(b: u8) -> bool {
+    b.is_ascii_alphanumeric() || b == b'_'
+}
+
+/// Is `c` a Rust identifier char?
+fn is_word_char(c: char) -> bool {
+    c.is_ascii_alphanumeric() || c == '_'
+}
+
+/// Does a standalone `fn` TOKEN start at byte `k` of an already-squashed source?
+///
+/// Two conditions, and the first is not decoration:
+///   - a word char must FOLLOW `fn` (the function's name). This is what rejects
+///     the fn-POINTER type form `handler:fn(u8)->u8`, whose `fn` is followed by
+///     `(`;
+///   - the preceding byte must not be a word char — EXCEPT for the `pub`
+///     visibility keyword, which whitespace squashing has fused onto the front
+///     (`pub fn` -> `pubfn`). Missing that exception would make this enumerator
+///     see zero reducers in the live tree and report "clean" about nothing.
+fn is_fn_token_at(squashed: &str, k: usize) -> bool {
+    let bytes = squashed.as_bytes();
+    if k + 2 >= bytes.len() || !is_word_byte(bytes[k + 2]) {
+        return false;
+    }
+    if k == 0 || !is_word_byte(bytes[k - 1]) {
+        return true;
+    }
+    let before = &squashed[..k];
+    before.ends_with("pub") && (before.len() == 3 || !is_word_byte(bytes[before.len() - 4]))
+}
+
+/// Every `spacetimedb::reducer`-attributed fn in an already-squashed source, as
+/// `(fn name, [(param name, param type)])`.
+///
+/// PARAMS ONLY: the walk stops at the balanced close of the parameter list, so a
+/// return type is out of scope — return values are not client input, which is
+/// exactly the scope the JS twin uses.
+///
+/// TOLERANT walk-forward to the next `fn` token: stacked attributes between the
+/// reducer attribute and the fn are LEGAL and precedented (`trading.rs` stacks
+/// `#[allow(clippy::too_many_arguments)]` on a reducer), so requiring "nothing
+/// but optional `pub`" would false-RED on arrival. Parity with `parseReducers`.
+///
+/// FAIL-LOUD, never `continue` (ADR-0195 D7): an attribute with no following
+/// `fn`, or an unbalanced parameter list, PANICS. Refusing to classify is the
+/// safe direction — an unparsed reducer is an UNGATED reducer.
+fn parse_reducers(squashed: &str) -> Vec<(String, Vec<(String, String)>)> {
+    const ATTR: &str = concat!("#[spacetimedb::", "reducer");
+    let bytes = squashed.as_bytes();
+    let mut out: Vec<(String, Vec<(String, String)>)> = Vec::new();
+    let mut pos = 0usize;
+    while let Some(rel) = squashed[pos..].find(ATTR) {
+        let at = pos + rel;
+        pos = at + ATTR.len();
+        // Parity with parseReducers' `]`/`(` guard: accept ONLY the bare
+        // `spacetimedb::reducer` attribute and its parenthesised
+        // `spacetimedb::reducer(..)` form, never a longer identifier that merely
+        // STARTS with `reducer`.
+        let after = bytes.get(pos).copied();
+        if after != Some(b']') && after != Some(b'(') {
+            continue;
+        }
+
+        let mut fn_at: Option<usize> = None;
+        let mut k = pos;
+        while k + 1 < bytes.len() {
+            if bytes[k] == b'f' && bytes[k + 1] == b'n' && is_fn_token_at(squashed, k) {
+                fn_at = Some(k);
+                break;
+            }
+            k += 1;
+        }
+        let fn_at = fn_at.unwrap_or_else(|| {
+            panic!(
+                "G2 PARSE FAIL: the reducer attribute at byte {at} of the squashed \
+                 source is not followed by any `fn` token. Refusing to classify is \
+                 the fail-loud direction: an unparsed reducer is an UNGATED reducer."
+            )
+        });
+
+        let name_start = fn_at + 2;
+        let mut name_end = name_start;
+        while name_end < bytes.len() && is_word_byte(bytes[name_end]) {
+            name_end += 1;
+        }
+        let name = squashed[name_start..name_end].to_string();
+        assert!(
+            !name.is_empty(),
+            "G2 PARSE FAIL: a reducer's `fn` token at byte {fn_at} is followed by no \
+             name — an unparsed reducer is an UNGATED reducer."
+        );
+
+        let open = squashed[name_end..]
+            .find('(')
+            .map(|r| name_end + r)
+            .unwrap_or_else(|| {
+                panic!(
+                    "G2 PARSE FAIL: reducer `{name}` has no parameter list at all — \
+                     refusing to classify it as parameterless."
+                )
+            });
+        let mut depth: usize = 0;
+        let mut close: Option<usize> = None;
+        for (off, ch) in squashed[open..].char_indices() {
+            if ch == '(' {
+                depth += 1;
+            } else if ch == ')' {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(open + off);
+                    break;
+                }
+            }
+        }
+        let close = close.unwrap_or_else(|| {
+            panic!(
+                "G2 PARSE FAIL: reducer `{name}`'s parameter list has UNBALANCED \
+                 parens — the scan cannot say what it takes from the wire, so it \
+                 must not say `clean` either."
+            )
+        });
+
+        let mut params: Vec<(String, String)> = Vec::new();
+        for seg in split_param_list(&squashed[open + 1..close]) {
+            params.push(split_param_name_and_type(&seg));
+        }
+        out.push((name, params));
+    }
+    out
+}
+
+/// Split a squashed parameter list at DEPTH-0 commas.
+///
+/// An EMPTY trailing segment is skipped: rustfmt writes a trailing comma into
+/// every wrapped signature, and `guest_claim_reaper`'s signature is wrapped in
+/// the live tree today — without the skip its parameter list parses as
+/// `[ctx, args, <empty>]` and the empty segment is classified as a non-scalar
+/// parameter, false-REDing the gate on arrival.
+///
+/// Angle depth is tracked alongside paren/bracket depth (a `-` before `>` is the
+/// `->` arrow, not a close) so a generic parameter type is never split at a
+/// comma INSIDE its type arguments. Braces are deliberately NOT tracked: a Rust
+/// parameter type cannot contain one, and this file's scan hygiene forbids
+/// spelling a brace char literal.
+fn split_param_list(inner: &str) -> Vec<String> {
+    let bytes = inner.as_bytes();
+    let mut out: Vec<String> = Vec::new();
+    let mut depth: i32 = 0;
+    let mut angle: i32 = 0;
+    let mut last = 0usize;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth -= 1,
+            b'<' => angle += 1,
+            b'>' => {
+                if i == 0 || bytes[i - 1] != b'-' {
+                    angle = (angle - 1).max(0);
+                }
+            }
+            b',' if depth == 0 && angle == 0 => {
+                out.push(inner[last..i].to_string());
+                last = i + 1;
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    out.push(inner[last..].to_string());
+    out.retain(|seg| !seg.is_empty());
+    out
+}
+
+/// Split one squashed parameter segment into `(name, type)` at the FIRST
+/// depth-0 colon that is not part of a `::` path separator. A segment with no
+/// such colon yields `(text, text)` — JS parity, and it keeps an unparseable
+/// segment VISIBLE to the wire-safe allowlist instead of dropping it.
+fn split_param_name_and_type(seg: &str) -> (String, String) {
+    let bytes = seg.as_bytes();
+    let mut depth: i32 = 0;
+    let mut angle: i32 = 0;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' | b'[' => depth += 1,
+            b')' | b']' => depth -= 1,
+            b'<' => angle += 1,
+            b'>' => {
+                if i == 0 || bytes[i - 1] != b'-' {
+                    angle = (angle - 1).max(0);
+                }
+            }
+            b':' if depth == 0 && angle == 0 => {
+                if i + 1 < bytes.len() && bytes[i + 1] == b':' {
+                    i += 2;
+                    continue;
+                }
+                return (seg[..i].to_string(), seg[i + 1..].to_string());
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    (seg.to_string(), seg.to_string())
+}
+
+/// Is this parameter type a wire-safe scalar, recursing through `Option<..>` and
+/// `Vec<..>`?
+///
+/// A POSITIVE allowlist is the whole point (ADR-0195 D6): "the type text
+/// contains Identity" misses E1's `ClaimTarget` and any type ALIAS
+/// (`type Ident = Identity;` -> `guest: Ident`) by construction, while the
+/// allowlist rejects every composite with one rule.
+fn is_wire_safe_type(ty: &str) -> bool {
+    const WIRE_SCALARS: [&str; 14] = [
+        "String", "bool", "u8", "u16", "u32", "u64", "u128", "i8", "i16", "i32", "i64", "i128",
+        "f32", "f64",
+    ];
+    let t: String = ty.chars().filter(|c| !c.is_whitespace()).collect();
+    if WIRE_SCALARS.contains(&t.as_str()) {
+        return true;
+    }
+    for wrapper in ["Option<", "Vec<"] {
+        if t.starts_with(wrapper) && t.ends_with('>') {
+            return is_wire_safe_type(&t[wrapper.len()..t.len() - 1]);
+        }
+    }
+    false
+}
+
+/// Every `scheduled(<reducer>)` table declared in an already-squashed source,
+/// mapped to the struct name that follows it: `(reducer name, struct name)`.
+///
+/// Only a SAME-FILE scheduled table can justify a struct-typed reducer argument
+/// — its `Identity` fields are written by the scheduler, not by a client.
+fn parse_scheduled_targets(squashed: &str) -> Vec<(String, String)> {
+    const ATTR: &str = concat!("#[spacetimedb::", "table(");
+    const SCHED: &str = concat!("sched", "uled(");
+    const STRUCT: &str = concat!("pub", "struct");
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut pos = 0usize;
+    while let Some(rel) = squashed[pos..].find(ATTR) {
+        let at = pos + rel;
+        pos = at + ATTR.len();
+        // The `(` of `table(` is the last byte of ATTR.
+        let open = at + ATTR.len() - 1;
+        let mut depth: usize = 0;
+        let mut close: Option<usize> = None;
+        for (off, ch) in squashed[open..].char_indices() {
+            if ch == '(' {
+                depth += 1;
+            } else if ch == ')' {
+                depth -= 1;
+                if depth == 0 {
+                    close = Some(open + off);
+                    break;
+                }
+            }
+        }
+        let Some(close) = close else { continue };
+        let attr_args = &squashed[open + 1..close];
+        let Some(sched_rel) = attr_args.find(SCHED) else {
+            continue;
+        };
+        let reducer: String = attr_args[sched_rel + SCHED.len()..]
+            .chars()
+            .take_while(|c| is_word_char(*c))
+            .collect();
+        if reducer.is_empty() {
+            continue;
+        }
+        let Some(struct_rel) = squashed[close..].find(STRUCT) else {
+            continue;
+        };
+        let s = close + struct_rel + STRUCT.len();
+        let struct_name: String = squashed[s..]
+            .chars()
+            .take_while(|c| is_word_char(*c))
+            .collect();
+        out.push((reducer, struct_name));
+    }
+    out
+}
+
+/// The scheduler guard, pinned as a REJECTING EARLY RETURN rather than as a bare
+/// comparison, in squashed form.
+///
+/// The eval's adversarial pass found the carve-out was satisfied by
+/// `let scheduler_only = ctx.sender != ctx.identity(); let _ = scheduler_only;`
+/// — which contains the comparison, compiles, is clippy-clean, and rejects
+/// NOBODY, so any client can invoke the scheduled reducer with a hand-built row
+/// naming any victim identity. `{return` rather than `{returnErr(` so a future
+/// refactor to the equally valid silent-ignore `return Ok(());` form does not
+/// false-RED.
+fn scheduler_guard_needle() -> String {
+    concat!("ifctx.sender!=", "ctx.identity(){", "return").to_string()
+}
+
+/// The Identity CONSTRUCTORS banned outright in `accounts.rs` (E2 defense).
+/// Nothing in this module legitimately CONSTRUCTS an Identity: every identity it
+/// handles arrives from `ctx.sender` or from a row it read.
+fn identity_ctor_needles() -> [String; 4] {
+    [
+        concat!("Identity::", "from_hex(").to_string(),
+        concat!("Identity::", "from_byte_array(").to_string(),
+        concat!("Identity::", "from_be_byte_array(").to_string(),
+        concat!("Identity::", "from_str(").to_string(),
+    ]
+}
+
+/// The FULL G2 param rule over an already-squashed source: `Err(reason)` naming
+/// the first violation, `Ok(())` when every enumerated reducer's every parameter
+/// is either the ctx handle, a wire-safe scalar, or the guarded scheduled
+/// struct.
+///
+/// Returning a value instead of asserting inline is what lets the machinery
+/// self-teeth drive this checker over synthetic fixtures — an always-red checker
+/// is indistinguishable from a working one until a GOOD fixture proves
+/// otherwise.
+fn g2_client_identity_violation(squashed: &str) -> Result<(), String> {
+    let reducers = parse_reducers(squashed);
+    let scheduled = parse_scheduled_targets(squashed);
+
+    // Non-vacuity — the Rust twin of the eval's [R/name-set] empty guard. With
+    // zero reducers parsed, every clause below passes on an empty source, so
+    // this is a hard failure rather than a skip.
+    if reducers.is_empty() {
+        return Err(
+            "[R/name-set] no reducer declaration was parsed out of the scanned source — the \
+             scan reached the wrong file, the attribute spelling changed, or the stripper \
+             blanked the declarations. Every clause below would pass VACUOUSLY"
+                .to_string(),
+        );
+    }
+
+    for (name, params) in &reducers {
+        for (k, (p_name, p_type)) in params.iter().enumerate() {
+            // (a) The ctx handle. Mirrors the eval's [R/param-types] exemption
+            // exactly: position 0 AND a type ending in `ReducerContext`, so a
+            // context smuggled into a later position is still classified.
+            if k == 0 && p_type.ends_with("ReducerContext") {
+                continue;
+            }
+            // (b) A wire-safe scalar.
+            if is_wire_safe_type(p_type) {
+                continue;
+            }
+            // (c) The scheduled-struct carve-out — same-file `scheduled(..)`
+            // target, param type EQUAL to the scheduled struct, AND a rejecting
+            // scheduler guard in the body. Narrow enough that E1's `ClaimTarget`
+            // is still rejected.
+            let sched_struct = scheduled
+                .iter()
+                .find(|(r, _)| r == name)
+                .map(|(_, s)| s.as_str());
+            if sched_struct == Some(p_type.as_str()) {
+                let needle = format!("fn{name}(");
+                let body = extract_squashed_fn_body(squashed, &needle).unwrap_or("");
+                if body.contains(&scheduler_guard_needle()) {
+                    continue;
+                }
+                return Err(format!(
+                    "[R/param-types] reducer `{name}` takes the scheduled struct `{p_type}` \
+                     but its body does not contain the rejecting scheduler guard `{}` — \
+                     without it ANY client can invoke the scheduled reducer directly and \
+                     hand it a hand-built row, which is precisely the \
+                     client-supplied-Identity hole the carve-out assumes is closed",
+                    scheduler_guard_needle()
+                ));
+            }
+            return Err(format!(
+                "[R/param-types] reducer `{name}` declares the parameter `{p_name}:{p_type}`, \
+                 which is not a wire-safe scalar (String / bool / u8..u128 / i8..i128 / f32 / \
+                 f64, or Option<..>/Vec<..> of those). A red-team PROVED this exact shape: a \
+                 `SpacetimeType` struct with one Identity field, taken as a reducer argument \
+                 and re-keyed onto ctx.sender — it declares no `: Identity` parameter, \
+                 compiles, passes clippy -D warnings, and is a code-less transfer of ANY \
+                 identity's game data. The ONLY sanctioned composite argument is the \
+                 same-file scheduled struct whose reducer body carries the scheduler guard"
+            ));
+        }
+    }
+    Ok(())
+}
+
+// ===========================================================================
 // PURE-UNIT TESTS over the functional core (no ReducerContext required).
 // ===========================================================================
 
@@ -445,6 +857,82 @@ fn auth5_touch_login_updates_only_last_login() {
     assert_eq!(
         after.claimed_at_ms, before.claimed_at_ms,
         "AUTH-5: claimed_at_ms unchanged."
+    );
+}
+
+/// AUTH-5 (pure): `touch_login` on a NON-Active account stamps ONLY
+/// `last_login_at_ms` and leaves every lifecycle + claim field byte-identical.
+///
+/// `provision_or_touch_account` calls `touch_login` on ANY existing row on every
+/// reconnect — including a `PendingDeletion` account that has already claimed a
+/// guest — but `auth5_touch_login_updates_only_last_login` only exercises the
+/// fresh-Active fixture. A regression that clobbered `status` /
+/// `deletion_requested_at_ms` / `claimed_from` / `claimed_at_ms` on the
+/// reconnect path would silently resurrect a deletion-pending account (or wipe
+/// its claim provenance) and still pass every current test. The precondition
+/// `account_state_is_legal` check pins that the fixture is a real legal
+/// PendingDeletion+claimed state, not an accidentally-illegal straw man.
+///
+/// Kills: a `touch_login` regression that resets `status` to Active, drops the
+///        deletion timestamp, or clears either half of the claim provenance pair
+///        when re-stamping the login time on a non-Active account.
+#[test]
+fn auth5_touch_login_preserves_non_active_lifecycle_and_claim_fields() {
+    let before = Account {
+        status: AccountStatus::PendingDeletion,
+        deletion_requested_at_ms: Some(500),
+        claimed_from: Some(ident(9)),
+        claimed_at_ms: Some(600),
+        ..base_account(4)
+    };
+    // Precondition: the fixture must be a LEGAL PendingDeletion+claimed state, so
+    // the test proves preservation of a real state rather than of a straw man
+    // the invariant would have rejected anyway.
+    assert!(
+        account_state_is_legal(&before),
+        "AUTH-5 precondition: the PendingDeletion+claimed fixture must itself be a \
+         legal account state before touch_login can be asked to preserve it."
+    );
+
+    let after = touch_login(before.clone(), 777);
+
+    assert_eq!(
+        after.last_login_at_ms, 777,
+        "AUTH-5: last_login_at_ms := now, even on a non-Active account."
+    );
+    assert_eq!(
+        after.status, before.status,
+        "AUTH-5: status MUST NOT change on reconnect — a login must never resurrect \
+         a PendingDeletion account to Active."
+    );
+    assert_eq!(
+        after.deletion_requested_at_ms, before.deletion_requested_at_ms,
+        "AUTH-5: the deletion timestamp MUST survive a reconnect (dropping it would \
+         silently cancel a pending deletion)."
+    );
+    assert_eq!(
+        after.claimed_from, before.claimed_from,
+        "AUTH-5: claimed_from (audit provenance, AUTH-21) MUST survive a reconnect."
+    );
+    assert_eq!(
+        after.claimed_at_ms, before.claimed_at_ms,
+        "AUTH-5: claimed_at_ms MUST survive a reconnect."
+    );
+    assert_eq!(
+        after.created_at_ms, before.created_at_ms,
+        "AUTH-5: created_at_ms unchanged."
+    );
+    assert_eq!(
+        after.identity, before.identity,
+        "AUTH-5: identity unchanged."
+    );
+    assert_eq!(
+        after.auth_issuer, before.auth_issuer,
+        "AUTH-5: auth_issuer unchanged."
+    );
+    assert!(
+        account_state_is_legal(&after),
+        "AUTH-5: the reconnected account must remain a legal state."
     );
 }
 
@@ -1507,29 +1995,96 @@ fn auth38_cancel_account_deletion_shape() {
     );
 }
 
-/// G2 (NO_CLIENT_IDENTITY): no client-callable reducer in accounts.rs takes an
-/// `Identity` parameter — every identity is `ctx.sender`, never trusted from the
-/// wire.
+/// G2 (NO_CLIENT_IDENTITY): every parameter of every reducer ENUMERATED FROM
+/// SOURCE in accounts.rs is either the `ctx` handle, a wire-safe scalar, or the
+/// same-file scheduled struct WITH its rejecting scheduler guard. The subject
+/// identity is `ctx.sender` and nothing else (ADR-0179 G2 / AUTH-6).
 ///
-/// Kills: adding a `guest: Identity` parameter to any reducer (an attacker could
-/// then claim/delete on behalf of another identity).
+/// This replaces a five-needle hardcoded loop with the full defense set its JS
+/// twin (`guest-claim-integrity.eval.mjs::checkNoClientIdentity`) carries —
+/// ADR-0195 D6. The needle loop was blind to an ADDED reducer, and its
+/// `:Identity` substring ban was blind to BOTH proven takeover shapes.
+///
+/// Kills:
+///   - adding a `guest: Identity` (or `Option<Identity>`, or `Vec<Identity>`)
+///     parameter to ANY reducer, including one this file never heard of;
+///   - E1, the struct-wrapped Identity (`target: ClaimTarget`) — no `: Identity`
+///     parameter appears anywhere, so a substring ban is green on it;
+///   - a type ALIAS (`guest: Ident`), invisible to any Identity-spelling ban;
+///   - neutering the scheduler guard on `guest_claim_reaper` to the
+///     `let scheduler_only = ...; let _ = ...;` form, which keeps the comparison,
+///     compiles, passes clippy — and rejects nobody;
+///   - a scan that reached the wrong file / a stripper that blanked the
+///     declarations: zero parsed reducers is a hard failure, not a pass.
 #[test]
 fn g2_no_reducer_takes_identity_parameter() {
     let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let reducers = [
-        nd_start(),
-        nd_complete(),
-        concat!("fndelete", "_account(").to_string(),
-        concat!("fncancel_account", "_deletion(").to_string(),
-        nd_reaper(),
+    if let Err(reason) = g2_client_identity_violation(&squashed) {
+        panic!("G2 (NO_CLIENT_IDENTITY) FAIL over accounts.rs: {reason}");
+    }
+}
+
+/// G2 ([R/name-set]): the reducer surface of accounts.rs is EXACTLY the five
+/// sanctioned names — pinned by sorted SET EQUALITY, never by a count and never
+/// by containment.
+///
+/// Every reducer in this module is a client-reachable entry point into the
+/// re-key machinery, so ADDING one is a security-relevant event that must be
+/// re-reviewed right here; a MISSING name means a client entry point silently
+/// disappeared. The maintenance tax (one conscious line per new reducer) is the
+/// intended cost.
+///
+/// Kills: both proven takeover bypasses, which are ADDITIVE reducers — a `>= 5`
+///        count check and an "each expected name is present" check are green on
+///        both; a rotted enumerator that parses zero reducers (the empty set is
+///        itself a set mismatch).
+#[test]
+fn g2_reducer_name_set_is_pinned() {
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    let mut found: Vec<String> = parse_reducers(&squashed)
+        .into_iter()
+        .map(|(name, _)| name)
+        .collect();
+    found.sort();
+    let expected: Vec<String> = vec![
+        concat!("cancel_account", "_deletion").to_string(),
+        concat!("complete_guest", "_claim").to_string(),
+        concat!("delete", "_account").to_string(),
+        concat!("guest_claim", "_reaper").to_string(),
+        concat!("start_guest", "_claim").to_string(),
     ];
-    for needle in reducers {
-        let sig = extract_squashed_fn_sig(&squashed, &needle)
-            .unwrap_or_else(|| panic!("G2: reducer signature not found: {needle}"));
+    assert_eq!(
+        found, expected,
+        "G2 [R/name-set]: the enumerated reducer surface of accounts.rs changed. \
+         Set equality, not a count and not containment: the two PROVEN takeover \
+         bypasses are ADDITIVE reducers. If this addition/removal is intended, \
+         re-review the new entry point against ADR-0179 G2 (does it take only \
+         wire-safe scalars? does it derive identity from ctx.sender alone?) and \
+         then update this pin CONSCIOUSLY."
+    );
+}
+
+/// G2 ([R/identity-ctor], E2 defense): accounts.rs never CONSTRUCTS an Identity.
+///
+/// Every identity this module handles comes from `ctx.sender` or from a row it
+/// read. `Identity::from_hex` is `pub` in spacetimedb-lib, which is what makes
+/// E2 a two-line unauthenticated account-takeover reducer: a wire-safe `String`
+/// parameter plus an `Identity::from_hex` call on it in the body. The parameter
+/// analysis above never sees it, because the parameter is perfectly wire-safe.
+///
+/// Kills: E2 in every spelling of the constructor.
+#[test]
+fn g2_no_identity_constructor() {
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    for ctor in identity_ctor_needles() {
         assert!(
-            !sig.contains(":Identity"),
-            "G2: reducer `{needle}` must not take an Identity parameter (use ctx.sender). \
-             Signature: {sig:?}"
+            !squashed.contains(ctor.as_str()),
+            "G2 [R/identity-ctor]: accounts.rs calls `{ctor}` — nothing in this module \
+             legitimately constructs an Identity. A red-team PROVED the constructor is \
+             the whole attack: a reducer taking a wire-safe `String` hex code, turning \
+             it into an Identity and re-keying that identity's monsters, inventory, \
+             wallet, NPC state and profile onto ctx.sender. Derive identity from \
+             ctx.sender or from a row you read, never from client text."
         );
     }
 }
@@ -1604,6 +2159,272 @@ fn g5_no_wallet_accessor_in_accounts() {
     assert!(
         !kept.contains(token.as_str()),
         "G5/D0: accounts.rs must not reference the wallet table directly (delegate to economy)."
+    );
+}
+
+// ===========================================================================
+// ACCOUNT LEGAL-STATE INVARIANT (ADR-0195 D1/D3) — `Account` permits illegal
+// states by construction: `status: AccountStatus` plus an INDEPENDENT
+// `deletion_requested_at_ms: Option<i64>`, and a half-settable
+// `claimed_from`/`claimed_at_ms` pair. Folding those into the enum would change
+// live column TYPES (non-additive under ADR-0006/ADR-0173 D5), so the invariant
+// is expressed as ONE pure predicate that every Account-returning constructor
+// `debug_assert!`s, plus an exact struct-shape tripwire that forces M22 to
+// re-derive the predicate consciously when the shape moves.
+//
+// PROFILE INDEPENDENCE: the `debug_assert!`s compile out of release wasm
+// (ADR-0049 policy), so the two tests below — a direct table-driven test of the
+// predicate and the shape tripwire — are the teeth that exist in EVERY profile.
+// ===========================================================================
+
+/// W3-1 (pure, table-driven): `account_state_is_legal` accepts exactly the legal
+/// (status, deletion stamp, claim pair) combinations and rejects every illegal
+/// one.
+///
+/// The clauses:
+///   - `Active` implies `deletion_requested_at_ms.is_none()`;
+///   - `PendingDeletion` implies `deletion_requested_at_ms.is_some()`;
+///   - `claimed_from.is_some() == claimed_at_ms.is_some()` (provenance is a
+///     PAIR — a half-set pair is an account that was claimed at no time, or at a
+///     time by nobody).
+///
+/// Kills: a predicate mutated to a constant `true` (the four illegal rows fire)
+///        or to a constant `false` (the three legal rows fire) — this is the
+///        mutation-cap defense, and it is the ONLY invariant test that survives
+///        a release build where `debug_assert!` is a no-op;
+///        a predicate that checks only the status half and leaves the claim pair
+///        unconstrained (rows 6 and 7), or only the claim pair (rows 4 and 5).
+#[test]
+fn auth_account_state_invariant_table() {
+    let cases: [(&str, Account, bool); 7] = [
+        ("LEGAL: Active, no deletion stamp", base_account(1), true),
+        (
+            "LEGAL: PendingDeletion with a stamp",
+            Account {
+                status: AccountStatus::PendingDeletion,
+                deletion_requested_at_ms: Some(50),
+                ..base_account(1)
+            },
+            true,
+        ),
+        (
+            "LEGAL: both halves of the claim provenance set",
+            Account {
+                claimed_from: Some(ident(2)),
+                claimed_at_ms: Some(30),
+                ..base_account(1)
+            },
+            true,
+        ),
+        (
+            "ILLEGAL: Active but a deletion stamp survives",
+            Account {
+                status: AccountStatus::Active,
+                deletion_requested_at_ms: Some(50),
+                ..base_account(1)
+            },
+            false,
+        ),
+        (
+            "ILLEGAL: PendingDeletion with no stamp",
+            Account {
+                status: AccountStatus::PendingDeletion,
+                deletion_requested_at_ms: None,
+                ..base_account(1)
+            },
+            false,
+        ),
+        (
+            "ILLEGAL: claimed_from set, claimed_at_ms missing",
+            Account {
+                claimed_from: Some(ident(2)),
+                claimed_at_ms: None,
+                ..base_account(1)
+            },
+            false,
+        ),
+        (
+            "ILLEGAL: claimed_at_ms set, claimed_from missing",
+            Account {
+                claimed_from: None,
+                claimed_at_ms: Some(30),
+                ..base_account(1)
+            },
+            false,
+        ),
+    ];
+
+    for (label, account, expected) in cases {
+        assert_eq!(
+            account_state_is_legal(&account),
+            expected,
+            "W3-1: account_state_is_legal disagreed on the case {label:?}. The invariant \
+             is: Active implies no deletion stamp; PendingDeletion implies a stamp; \
+             claimed_from and claimed_at_ms are set together or not at all. A predicate \
+             that answers the same thing for every input is not an invariant."
+        );
+    }
+}
+
+/// W3-2 (pure): all FIVE Account-returning constructors return a LEGAL state,
+/// chained fresh -> touched -> requested -> cancelled -> claimed so each one is
+/// fed a real predecessor rather than a hand-built fixture.
+///
+/// The `debug_assert!`s inside the constructors are debug-profile-only; these
+/// assertions are not, which is why the chain is checked here as well as there.
+///
+/// Kills: `requested_deletion` setting `PendingDeletion` without stamping the
+///        timestamp (or stamping without transitioning); `cancelled_deletion`
+///        returning to `Active` while leaving the stamp behind;
+///        `claimed_account` setting only one half of the provenance pair;
+///        `new_account_row` minting a row that is already `PendingDeletion`.
+///        The transition assertions alongside each legality check stop a
+///        constructor that satisfies the invariant by doing NOTHING.
+#[test]
+fn auth_constructors_return_legal_states() {
+    let fresh = new_account_row(ident(7), "issuer-under-test".to_string(), 100);
+    assert!(
+        account_state_is_legal(&fresh),
+        "W3-2: new_account_row must return a legal state (Active, no deletion stamp, \
+         no claim provenance). Got status {:?} / stamp {:?} / claim {:?}+{:?}",
+        fresh.status,
+        fresh.deletion_requested_at_ms,
+        fresh.claimed_from,
+        fresh.claimed_at_ms
+    );
+
+    let touched = touch_login(fresh.clone(), 200);
+    assert!(
+        account_state_is_legal(&touched),
+        "W3-2: touch_login must return a legal state (it stamps last_login only)."
+    );
+    assert_eq!(
+        touched.last_login_at_ms, 200,
+        "W3-2 vacuity: touch_login must actually stamp the login time — a constructor \
+         that returns its input unchanged satisfies every invariant trivially."
+    );
+
+    let requested = requested_deletion(touched.clone(), 300);
+    assert!(
+        account_state_is_legal(&requested),
+        "W3-2: requested_deletion must return a legal state — PendingDeletion IMPLIES \
+         a deletion timestamp. Got status {:?} / stamp {:?}",
+        requested.status,
+        requested.deletion_requested_at_ms
+    );
+    assert_eq!(
+        requested.status,
+        AccountStatus::PendingDeletion,
+        "W3-2 vacuity: requested_deletion must transition the status."
+    );
+    assert_eq!(
+        requested.deletion_requested_at_ms,
+        Some(300),
+        "W3-2 vacuity: requested_deletion must stamp the request time."
+    );
+
+    let cancelled = cancelled_deletion(requested.clone());
+    assert!(
+        account_state_is_legal(&cancelled),
+        "W3-2: cancelled_deletion must return a legal state — Active IMPLIES no \
+         deletion timestamp. Got status {:?} / stamp {:?}",
+        cancelled.status,
+        cancelled.deletion_requested_at_ms
+    );
+    assert_eq!(
+        cancelled.status,
+        AccountStatus::Active,
+        "W3-2 vacuity: cancelled_deletion must transition the status back."
+    );
+
+    let claimed = claimed_account(cancelled.clone(), ident(8), 400);
+    assert!(
+        account_state_is_legal(&claimed),
+        "W3-2: claimed_account must return a legal state — the provenance pair is set \
+         together or not at all. Got claim {:?}+{:?}",
+        claimed.claimed_from,
+        claimed.claimed_at_ms
+    );
+    assert_eq!(
+        claimed.claimed_from,
+        Some(ident(8)),
+        "W3-2 vacuity: claimed_account must stamp the claimed-from identity."
+    );
+    assert_eq!(
+        claimed.claimed_at_ms,
+        Some(400),
+        "W3-2 vacuity: claimed_account must stamp the claim time."
+    );
+}
+
+/// W3-4 (scan): the `Account` field list and the `AccountStatus` variant list are
+/// pinned by EXACT EQUALITY against the current shape.
+///
+/// EXACT EQUALITY, never `.contains`: an APPENDED field (the shape M22 is most
+/// likely to add — a grace window) survives every containment check while
+/// silently widening the state space the invariant reasons about. A reorder must
+/// red too: BSATN layout is order-sensitive.
+///
+/// The extraction mirrors `auth6_no_email_or_subject_stored`'s (comments
+/// stripped, string content preserved, whitespace squashed, brace-walked from
+/// the struct marker), so a doc-comment edit on the struct — which ADR-0195 D5
+/// explicitly expects — does NOT trip this pin. Only the declaration text does.
+///
+/// Kills: appending `pub grace_until_ms: Option<i64>` to `Account`, or adding a
+///        `Deleted,` variant to `AccountStatus`, without re-deriving the
+///        legality predicate and the five constructor postconditions; a
+///        containment-based pin (which is green on both).
+#[test]
+fn schema_account_struct_shape_tripwire() {
+    let schema = stripped_keep_strings(SCHEMA_RS);
+
+    let account_marker = concat!("struct", "Account{");
+    let fields = extract_squashed_fn_body(&schema, account_marker).unwrap_or_else(|| {
+        panic!(
+            "W3-4: the Account struct declaration was not found in schema.rs (marker \
+             {account_marker:?} over the comment-stripped, whitespace-squashed source). \
+             The tripwire cannot pin a shape it cannot read — this is a hard failure, \
+             not a skip."
+        )
+    });
+    let expected_fields = concat!(
+        "#[primary",
+        "_key]",
+        "pubidentity:Identity,",
+        "pubauth_issuer:String,",
+        "pubcreated_at_ms:i64,",
+        "publast_login_at_ms:i64,",
+        "pubstatus:AccountStatus,",
+        "pubdeletion_requested_at_ms:Opt",
+        "ion<i64>,",
+        "pubclaimed_from:Opt",
+        "ion<Identity>,",
+        "pubclaimed_at_ms:Opt",
+        "ion<i64>,",
+    );
+    assert_eq!(
+        fields, expected_fields,
+        "W3-4: Account's shape changed — re-derive account_state_is_legal + the \
+         constructor debug_asserts (ADR-0195), then update this pin consciously. \
+         A new field can widen the illegal-state space the predicate is blind to \
+         (that is exactly how `deletion_requested_at_ms` came to float free of \
+         `status`), and a field REORDER changes the BSATN layout of a live table."
+    );
+
+    let status_marker = concat!("enum", "AccountStatus{");
+    let variants = extract_squashed_fn_body(&schema, status_marker).unwrap_or_else(|| {
+        panic!(
+            "W3-4: the AccountStatus enum declaration was not found in schema.rs \
+             (marker {status_marker:?}). The tripwire cannot pin a variant list it \
+             cannot read."
+        )
+    });
+    assert_eq!(
+        variants, "Active,PendingDeletion,",
+        "W3-4: AccountStatus's variant list changed — re-derive account_state_is_legal \
+         + the constructor debug_asserts (ADR-0195), then update this pin consciously. \
+         Every new variant needs its own answer to `which timestamp fields must be set \
+         in this state?`, and the predicate's match arms are where that answer lives."
     );
 }
 
@@ -1739,5 +2560,454 @@ fn machinery_g12_log_reject_teeth() {
     assert!(
         !good_spans[0].contains(concat!("form", "at!")),
         "machinery: a static-const reason must carry no format!."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// G2 ENUMERATOR SELF-TEETH (ADR-0195 D6) — every fixture below is a SQUASHED
+// synthetic source, fragment-assembled with `concat!` so this test file can
+// never self-match when an eval concatenates the whole `server-module` src tree
+// and comment-strips WITHOUT blanking string literals.
+//
+// Both polarities are covered on purpose: BAD fixtures prove the checker bites,
+// GOOD fixtures prove it is not simply always-red (an always-red checker is
+// indistinguishable from a working one until a GOOD fixture says otherwise).
+// ---------------------------------------------------------------------------
+
+/// The squashed reducer attribute, fragment-assembled once for every fixture.
+fn fx_reducer_attr() -> &'static str {
+    concat!("#[spacetimedb::", "reducer]")
+}
+
+/// Proves the source-derived enumerator sees BOTH reducers in a two-reducer
+/// source and that the E1 struct-wrapped-Identity shape is FLAGGED while a
+/// scalar-only reducer PASSES.
+///
+/// kills: the hardcoded five-needle loop this replaced (it cannot see an ADDED
+///        reducer at all); a `contains(":Identity")` substring ban — the fixture
+///        asserts that needle is absent from the E1 text, so the old check was
+///        provably green on a code-less account-takeover reducer.
+#[test]
+fn machinery_g2_enumerator_and_e1_teeth() {
+    let attr = fx_reducer_attr();
+    let e1 = concat!(
+        "pub",
+        "fn",
+        "complete_claim_for(ctx:&ReducerContext,target:ClaimTarget)",
+        "->Result<(),String>{rekey(ctx,target.guest_identity,ctx.sender)}"
+    );
+    let clean = concat!(
+        "pub",
+        "fn",
+        "set_nickname(ctx:&ReducerContext,nickname:String,slot:u8)",
+        "->Result<(),String>{Ok(())}"
+    );
+
+    let both = [attr, e1, attr, clean].concat();
+    let reducers = parse_reducers(&both);
+    assert_eq!(
+        reducers.len(),
+        2,
+        "machinery: BOTH attributed fns must be enumerated from source — an \
+         enumerator that finds one is the hardcoded-list failure mode with extra \
+         steps. Parsed: {reducers:?}"
+    );
+    assert_eq!(
+        reducers[0].0, "complete_claim_for",
+        "machinery: the walk-forward must land on the fn the attribute decorates."
+    );
+    assert_eq!(
+        reducers[1].0, "set_nickname",
+        "machinery: the second attribute must be found after the first fn's body."
+    );
+    assert_eq!(
+        reducers[0].1,
+        vec![
+            ("ctx".to_string(), "&ReducerContext".to_string()),
+            ("target".to_string(), "ClaimTarget".to_string()),
+        ],
+        "machinery: the parameter list must split at the depth-0 comma and at the \
+         first non-`::` colon."
+    );
+
+    // The whole point of the positive allowlist: the OLD substring ban is
+    // provably blind to this fixture.
+    assert!(
+        !both.contains(concat!(":Ident", "ity")),
+        "machinery: the E1 fixture must contain NO `: Identity` parameter text — that \
+         absence is exactly why a substring ban was green on a proven takeover."
+    );
+
+    let reason = g2_client_identity_violation(&both).expect_err(
+        "machinery: a reducer taking a `SpacetimeType` struct with an Identity field \
+         must be FLAGGED — it is a code-less transfer of any identity's game data.",
+    );
+    assert!(
+        reason.contains("complete_claim_for") && reason.contains("ClaimTarget"),
+        "machinery: the violation must NAME the reducer and the offending type. Got: \
+         {reason:?}"
+    );
+
+    // GOOD: the scalar-only reducer alone must PASS.
+    let good = [attr, clean].concat();
+    if let Err(reason) = g2_client_identity_violation(&good) {
+        panic!("machinery: a ctx + String + u8 reducer must PASS, got: {reason}");
+    }
+}
+
+/// Proves the wire-safe allowlist accepts exactly the scalar surface (recursing
+/// through `Option<..>` / `Vec<..>`) and rejects every composite.
+///
+/// kills: an allowlist widened to "anything that is not spelled Identity" — the
+///        alias `Ident` and the struct `ClaimTarget` are both caught here by the
+///        POSITIVE rule and by nothing else.
+#[test]
+fn machinery_g2_wire_safe_allowlist_teeth() {
+    for good in [
+        "String",
+        "bool",
+        "u8",
+        "u128",
+        "i64",
+        "f32",
+        "Option<i64>",
+        "Vec<String>",
+        "Option<Vec<u32>>",
+    ] {
+        assert!(
+            is_wire_safe_type(good),
+            "machinery: `{good}` is a wire-safe scalar (or a wrapper of one) and must \
+             be accepted — a false RED here blocks legitimate reducers."
+        );
+    }
+    for bad in [
+        "Identity",
+        "Option<Identity>",
+        "Vec<Identity>",
+        "ClaimTarget",
+        "Ident",
+        "&ReducerContext",
+        "Option<ClaimTarget>",
+    ] {
+        assert!(
+            !is_wire_safe_type(bad),
+            "machinery: `{bad}` is NOT a wire-safe scalar — a composite argument is one \
+             whose fields the server cannot vouch for, and the positive allowlist is \
+             the only rule that catches a type ALIAS."
+        );
+    }
+}
+
+/// Proves the two client-supplied-Identity parameter shapes a substring ban
+/// misses are both FLAGGED end-to-end through the checker.
+///
+/// kills: `guest: Option<Identity>` (the old `:Identity` needle never matched
+///        `:Option<Identity>` — the fixture asserts that absence);
+///        `guest: Ident`, a type alias that spells nothing at all.
+#[test]
+fn machinery_g2_identity_param_shapes_are_flagged() {
+    let attr = fx_reducer_attr();
+
+    let optioned = [
+        attr,
+        concat!(
+            "pub",
+            "fn",
+            "adopt(ctx:&ReducerContext,guest:Opt",
+            "ion<Identity>)->Result<(),String>{Ok(())}"
+        ),
+    ]
+    .concat();
+    assert!(
+        !optioned.contains(concat!(":Ident", "ity")),
+        "machinery: `:Option<Identity>` contains no `:Identity` substring — that is why \
+         the substring ban had to go."
+    );
+    let reason = g2_client_identity_violation(&optioned)
+        .expect_err("machinery: an `Option<Identity>` parameter must be FLAGGED.");
+    assert!(
+        reason.contains("adopt"),
+        "machinery: the violation must name the reducer. Got: {reason:?}"
+    );
+
+    let aliased = [
+        attr,
+        concat!(
+            "pub",
+            "fn",
+            "adopt(ctx:&ReducerContext,guest:Ident)->Result<(),String>{Ok(())}"
+        ),
+    ]
+    .concat();
+    assert!(
+        !aliased.contains(concat!(":Ident", "ity")),
+        "machinery: a `type Ident = Identity;` alias spells no Identity anywhere."
+    );
+    let reason = g2_client_identity_violation(&aliased).expect_err(
+        "machinery: a type-alias identity parameter must be FLAGGED by the positive \
+         wire-safe allowlist.",
+    );
+    assert!(
+        reason.contains("adopt") && reason.contains("Ident"),
+        "machinery: the violation must name the reducer and the alias. Got: {reason:?}"
+    );
+}
+
+/// Proves an EMPTY enumeration is a hard failure, never a vacuous pass (the Rust
+/// twin of the eval's `[R/name-set]` non-vacuity guard).
+///
+/// kills: commenting out every reducer attribute (or pointing the scan at the
+///        wrong file, or a stripper that blanks the declarations) and reading the
+///        resulting silence as "no reducer takes an Identity".
+#[test]
+fn machinery_g2_empty_enumeration_fails_loud() {
+    let reason = g2_client_identity_violation("")
+        .expect_err("machinery: an EMPTY source must FAIL — every clause is vacuous on it.");
+    assert!(
+        reason.contains("[R/name-set]"),
+        "machinery: the empty set must be reported as a name-set failure. Got: {reason:?}"
+    );
+
+    // The realistic spelling of the same hole: the attributes are all commented
+    // out, so the stripped source carries none of them.
+    let commented_out = format!(
+        "//{}\npub fn f(ctx: &ReducerContext) {{}}",
+        fx_reducer_attr()
+    );
+    let squashed = stripped_for_scan(&commented_out);
+    assert!(
+        parse_reducers(&squashed).is_empty(),
+        "machinery: the fixture must strip to zero reducers for this case to be the \
+         empty-set case at all."
+    );
+    let reason = g2_client_identity_violation(&squashed)
+        .expect_err("machinery: an all-commented-out reducer surface must FAIL LOUD.");
+    assert!(reason.contains("[R/name-set]"), "machinery: got {reason:?}");
+}
+
+/// GOOD fixtures — the three legal shapes that must NOT red.
+///
+/// kills: a strict "nothing but optional `pub` between the attribute and the fn"
+///        walk (`trading.rs` already stacks `#[allow(clippy::too_many_arguments)]`
+///        on a reducer, so that rule false-REDs on arrival);
+///        a comma split that classifies rustfmt's trailing empty segment as a
+///        non-scalar parameter (the live `guest_claim_reaper` signature is
+///        wrapped and carries that comma today);
+///        a paren-walk that runs past the parameter list into the return type
+///        and flags `-> Result<Identity, String>` (return values are not client
+///        input — JS parity).
+#[test]
+fn machinery_g2_good_fixtures_pass() {
+    let attr = fx_reducer_attr();
+
+    let stacked = [
+        attr,
+        "#[allow(clippy::too_many_arguments)]",
+        concat!(
+            "pub",
+            "fn",
+            "noisy(ctx:&ReducerContext,a:u8,b:u8,c:u8)->Result<(),String>{Ok(())}"
+        ),
+    ]
+    .concat();
+    let parsed = parse_reducers(&stacked);
+    assert_eq!(
+        parsed.len(),
+        1,
+        "machinery: a stacked attribute must not hide the reducer. Parsed: {parsed:?}"
+    );
+    assert_eq!(parsed[0].0, "noisy", "machinery: wrong fn name parsed.");
+    assert_eq!(
+        parsed[0].1.len(),
+        4,
+        "machinery: ctx + three scalars = four parameters. Parsed: {:?}",
+        parsed[0].1
+    );
+    if let Err(reason) = g2_client_identity_violation(&stacked) {
+        panic!("machinery: the stacked-attribute reducer must PASS, got: {reason}");
+    }
+
+    let trailing = [
+        attr,
+        concat!(
+            "pub",
+            "fn",
+            "wrapped(ctx:&ReducerContext,code:String,slot:u8,)->Result<(),String>{Ok(())}"
+        ),
+    ]
+    .concat();
+    let parsed = parse_reducers(&trailing);
+    assert_eq!(
+        parsed[0].1.len(),
+        3,
+        "machinery: rustfmt's trailing comma leaves an EMPTY segment that must be \
+         skipped, not classified as a non-scalar parameter. Parsed: {:?}",
+        parsed[0].1
+    );
+    if let Err(reason) = g2_client_identity_violation(&trailing) {
+        panic!("machinery: the trailing-comma signature must PASS, got: {reason}");
+    }
+
+    let returning = [
+        attr,
+        concat!(
+            "pub",
+            "fn",
+            "mint(ctx:&ReducerContext,seed:String)->Result<Identity,String>{Ok(ctx.sender)}"
+        ),
+    ]
+    .concat();
+    let parsed = parse_reducers(&returning);
+    assert_eq!(
+        parsed[0].1.len(),
+        2,
+        "machinery: the paren-walk must stop at the balanced close of the PARAMETER \
+         list. Parsed: {:?}",
+        parsed[0].1
+    );
+    assert!(
+        !parsed[0].1.iter().any(|(_, t)| t.contains("Result")),
+        "machinery: no return-type text may leak into the parameter list. Parsed: {:?}",
+        parsed[0].1
+    );
+    if let Err(reason) = g2_client_identity_violation(&returning) {
+        panic!(
+            "machinery: an Identity in the RETURN type is out of scope (params only, \
+                JS parity), got: {reason}"
+        );
+    }
+}
+
+/// Proves the scheduled-struct carve-out is gated on the REJECTING guard, not on
+/// the mere presence of the comparison.
+///
+/// kills: neutering `guest_claim_reaper`'s guard to
+///        `let scheduler_only = ctx.sender != ctx.identity(); let _ = scheduler_only;`
+///        — it keeps the comparison, compiles, passes clippy, and rejects NOBODY,
+///        so any client can invoke the scheduled reducer with a hand-built row
+///        naming any victim identity;
+///        a carve-out widened to "any struct argument" (the GOOD half proves the
+///        legitimate shape still passes, so the fix for the BAD half cannot be
+///        `always red`).
+#[test]
+fn machinery_g2_scheduler_carveout_teeth() {
+    let table_attr = concat!(
+        "#[spacetimedb::",
+        "table(",
+        "name=x_schedule,",
+        "sched",
+        "uled(",
+        "reap_x))]"
+    );
+    let struct_decl = concat!("pub", "struct", "XSchedule{pubid:u64,}");
+    let attr = fx_reducer_attr();
+    let sig = concat!(
+        "pub",
+        "fn",
+        "reap_x(ctx:&ReducerContext,args:XSchedule)->Result<(),String>{"
+    );
+    let rejecting_guard = concat!("ifctx.sender!=", "ctx.identity(){", "returnErr(e);}");
+    let neutered_guard = "letscheduler_only=ctx.sender!=ctx.identity();let_=scheduler_only;";
+    let tail = "delete_x(ctx,args.id);}";
+
+    assert_eq!(
+        parse_scheduled_targets(&[table_attr, struct_decl].concat()),
+        vec![("reap_x".to_string(), "XSchedule".to_string())],
+        "machinery: the scheduled table must map to the struct that follows it — \
+         without that mapping the carve-out below can never apply and the gate is \
+         merely always-red."
+    );
+
+    let bad = [table_attr, struct_decl, attr, sig, neutered_guard, tail].concat();
+    let reason = g2_client_identity_violation(&bad).expect_err(
+        "machinery: the scheduled struct argument must be REJECTED when the body \
+         carries no rejecting early return.",
+    );
+    assert!(
+        reason.contains("reap_x") && reason.contains("scheduler guard"),
+        "machinery: the violation must name the reducer and the missing guard. Got: \
+         {reason:?}"
+    );
+
+    let good = [table_attr, struct_decl, attr, sig, rejecting_guard, tail].concat();
+    if let Err(reason) = g2_client_identity_violation(&good) {
+        panic!(
+            "machinery: the legitimate scheduled reducer (same-file scheduled table, \
+             param type EQUAL to the scheduled struct, rejecting guard present) must \
+             PASS, got: {reason}"
+        );
+    }
+}
+
+/// Proves the enumerator PANICS instead of `continue`-ing when an attribute is
+/// not followed by any `fn` (ADR-0195 D7 fail-loud).
+///
+/// kills: a `continue` that silently drops an attribute the parser did not
+///        understand — an unparsed reducer is an UNGATED reducer, and the
+///        remaining clauses would report `clean` about a surface they never saw.
+#[test]
+#[should_panic(expected = "G2 PARSE FAIL")]
+fn machinery_g2_attribute_without_fn_panics() {
+    let orphan = [
+        fx_reducer_attr(),
+        concat!("pub", "structNotAFunction{puba:u8,}"),
+    ]
+    .concat();
+    let _ = parse_reducers(&orphan);
+}
+
+/// Proves an unbalanced parameter list PANICS rather than parsing as
+/// `no parameters` (which would be a silent pass for every clause).
+#[test]
+#[should_panic(expected = "UNBALANCED")]
+fn machinery_g2_unbalanced_param_list_panics() {
+    let truncated = [
+        fx_reducer_attr(),
+        concat!("pub", "fn", "half(ctx:&ReducerContext,code:String"),
+    ]
+    .concat();
+    let _ = parse_reducers(&truncated);
+}
+
+/// Proves the `]`/`(` attribute-disambiguation guard in `parse_reducers`
+/// discriminates: a longer identifier that merely STARTS with `reducer`
+/// (`spacetimedb::reducer_helper`) attached to a `pub fn` is NOT enumerated,
+/// while a real `spacetimedb::reducer` fn in the SAME fixture IS. The fixture
+/// carries both so it proves the guard discriminates, not that it drops
+/// everything.
+///
+/// kills: dropping the `after != Some(b']') && after != Some(b'(')` check, which
+///        would treat every `reducer`-prefixed attribute (a `reducer_helper`
+///        derive/macro, say) as a reducer — enumerating a fn that is NOT a
+///        client entry point, poisoning both the exact name-set pin and the
+///        wire-safe param scan with a phantom reducer.
+#[test]
+fn machinery_g2_attr_disambiguation_guard_teeth() {
+    let helper_attr = concat!("#[spacetimedb::", "reducer_helper]");
+    let helper_fn = concat!(
+        "pub",
+        "fn",
+        "not_a_reducer(ctx:&ReducerContext)->Result<(),String>{Ok(())}"
+    );
+    let real_attr = fx_reducer_attr();
+    let real_fn = concat!(
+        "pub",
+        "fn",
+        "real_one(ctx:&ReducerContext,code:String)->Result<(),String>{Ok(())}"
+    );
+
+    let fixture = [helper_attr, helper_fn, real_attr, real_fn].concat();
+    let names: Vec<String> = parse_reducers(&fixture)
+        .into_iter()
+        .map(|(n, _)| n)
+        .collect();
+    assert_eq!(
+        names,
+        vec!["real_one".to_string()],
+        "machinery: the `]`/`(` guard must enumerate ONLY the real \
+         `spacetimedb::reducer` fn. A longer identifier that merely starts with \
+         `reducer` (`spacetimedb::reducer_helper`) is NOT a client-callable \
+         reducer and must not be classified as one — otherwise a phantom fn \
+         poisons the name-set pin and the param scan. Enumerated: {names:?}"
     );
 }

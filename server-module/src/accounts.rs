@@ -109,9 +109,31 @@ pub(crate) fn claim_is_expired(expires_at_ms: i64, now_ms: i64) -> bool {
     now_ms >= expires_at_ms
 }
 
+/// The `Account` legal-state invariant (ADR-0195 D3) — ONE pure predicate,
+/// `debug_assert!`ed at the return of every Account-returning constructor
+/// below. True iff ALL of:
+///   - `Active` implies `deletion_requested_at_ms.is_none()`;
+///   - `PendingDeletion` implies `deletion_requested_at_ms.is_some()`;
+///   - `claimed_from.is_some() == claimed_at_ms.is_some()` (claim provenance
+///     is a PAIR — set together or not at all).
+///
+/// The `match` on `status` is deliberately exhaustive with NO wildcard arm:
+/// when M22 extends `delete_account` and adds a variant, this fn fails to
+/// compile until the new state's timestamp rules are derived here. The
+/// struct-shape tripwire in `accounts_tests.rs` pins `Account`'s field list
+/// for the same reason — a shape change forces a conscious re-derivation of
+/// this predicate rather than a silent widening of the state space.
+pub(crate) fn account_state_is_legal(account: &Account) -> bool {
+    let status_stamp_paired = match account.status {
+        AccountStatus::Active => account.deletion_requested_at_ms.is_none(),
+        AccountStatus::PendingDeletion => account.deletion_requested_at_ms.is_some(),
+    };
+    status_stamp_paired && (account.claimed_from.is_some() == account.claimed_at_ms.is_some())
+}
+
 /// A fresh `Active` account row (AUTH-4). `created_at_ms == last_login_at_ms`.
 pub(crate) fn new_account_row(identity: Identity, auth_issuer: String, now_ms: i64) -> Account {
-    Account {
+    let out = Account {
         identity,
         auth_issuer,
         created_at_ms: now_ms,
@@ -120,15 +142,25 @@ pub(crate) fn new_account_row(identity: Identity, auth_issuer: String, now_ms: i
         deletion_requested_at_ms: None,
         claimed_from: None,
         claimed_at_ms: None,
-    }
+    };
+    debug_assert!(
+        account_state_is_legal(&out),
+        "new_account_row: illegal Account state (ADR-0195 D3)"
+    );
+    out
 }
 
 /// Stamp ONLY `last_login_at_ms` on an existing account (AUTH-5).
 pub(crate) fn touch_login(existing: Account, now_ms: i64) -> Account {
-    Account {
+    let out = Account {
         last_login_at_ms: now_ms,
         ..existing
-    }
+    };
+    debug_assert!(
+        account_state_is_legal(&out),
+        "touch_login: illegal Account state (ADR-0195 D3)"
+    );
+    out
 }
 
 /// A new in-flight claim row (AUTH-9). `guest_name` is the caller's own
@@ -162,30 +194,45 @@ pub(crate) fn needs_cancel_write(status: AccountStatus) -> bool {
 
 /// Transition to `PendingDeletion` (AUTH-28 half of D7).
 pub(crate) fn requested_deletion(existing: Account, now_ms: i64) -> Account {
-    Account {
+    let out = Account {
         status: AccountStatus::PendingDeletion,
         deletion_requested_at_ms: Some(now_ms),
         ..existing
-    }
+    };
+    debug_assert!(
+        account_state_is_legal(&out),
+        "requested_deletion: illegal Account state (ADR-0195 D3)"
+    );
+    out
 }
 
 /// Reverse a pending deletion (AUTH-29). `claimed_from`/`claimed_at_ms` survive —
 /// a cancel must never resurrect a spent claim.
 pub(crate) fn cancelled_deletion(existing: Account) -> Account {
-    Account {
+    let out = Account {
         status: AccountStatus::Active,
         deletion_requested_at_ms: None,
         ..existing
-    }
+    };
+    debug_assert!(
+        account_state_is_legal(&out),
+        "cancelled_deletion: illegal Account state (ADR-0195 D3)"
+    );
+    out
 }
 
 /// Stamp claim provenance on the destination account (AUTH-21). Set once.
 pub(crate) fn claimed_account(existing: Account, guest: Identity, now_ms: i64) -> Account {
-    Account {
+    let out = Account {
         claimed_from: Some(guest),
         claimed_at_ms: Some(now_ms),
         ..existing
-    }
+    };
+    debug_assert!(
+        account_state_is_legal(&out),
+        "claimed_account: illegal Account state (ADR-0195 D3)"
+    );
+    out
 }
 
 // --- Context-bound predicates (SSOT) ------------------------------------------

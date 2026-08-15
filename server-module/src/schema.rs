@@ -705,6 +705,15 @@ pub enum AccountStatus {
 /// attr — the `player_quest` precedent, so the schema-snapshot regex still
 /// matches `#[spacetimedb::table(...)] pub struct`) supports value-style unit
 /// tests over the pure seams that take an `Account` by value.
+///
+/// LEGAL-STATE INVARIANT (ADR-0195): the `status`/`deletion_requested_at_ms`
+/// pairing and the `claimed_from`/`claimed_at_ms` pairing are enforced by
+/// `accounts::account_state_is_legal`, checked via `debug_assert!` in the five
+/// pure Account-returning constructors, and pinned by
+/// `schema_account_struct_shape_tripwire` in `accounts_tests.rs`. The enum
+/// fold that would make those illegal states unrepresentable is deliberately
+/// deferred: it changes live column TYPES, a non-additive migration
+/// (ADR-0195 D1).
 #[derive(Clone)]
 #[spacetimedb::table(name = account)]
 pub struct Account {
