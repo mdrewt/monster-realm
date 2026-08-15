@@ -10,6 +10,16 @@
 // (press stamp and decision instant) are injected parameters.
 import type { WasmDirection } from '../convert/convert';
 
+/** One captured held entry (dir + its ORIGINAL press stamp). Not exported: callers
+ *  hold snapshots opaquely and hand them back verbatim (ADR-0192). */
+interface HeldEntry {
+  readonly dir: WasmDirection;
+  readonly pressedAtMs: number;
+}
+
+/** Opaque capture of the held stack for the warp-arm preserve (ADR-0192). */
+export type HeldSnapshot = readonly HeldEntry[];
+
 /**
  * The hold-commit threshold (ms): a held dir earns CONTINUATION re-issues only after
  * being down this long. Squeezed from BOTH sides (ADR-0158):
@@ -68,14 +78,31 @@ export class HeldDirections {
     this.#stack = [];
   }
 
+  /** Capture the held stack (order + ORIGINAL press stamps) as entry COPIES — a
+   *  snapshot never aliases the live stack, so later mutations can't drain it
+   *  (ADR-0192). */
+  snapshot(): HeldSnapshot {
+    return this.#stack.map((e) => ({ ...e }));
+  }
+
+  /** REPLACE the held stack with copies of `snap`'s entries — order and original
+   *  stamps preserved, never re-stamped (a restore re-stamp would turn every zone
+   *  warp into a fresh commit-window halt, ADR-0158/ADR-0192). Replace (not merge)
+   *  is safe: capture and restore run in one synchronous block, so no key event can
+   *  interleave — and merge would admit duplicate dirs. */
+  restore(snap: HeldSnapshot): void {
+    this.#stack = snap.map((e) => ({ ...e }));
+  }
+
   /** The most-recently-pressed STILL-HELD dir, or undefined if none held. */
   active(): WasmDirection | undefined {
     return this.#stack[this.#stack.length - 1]?.dir;
   }
 
   /** The active (stack-top) dir iff it has been held for at least the commit
-   *  threshold at `nowMs` (>= semantics), else undefined. The press timestamp never
-   *  leaves the class — callers only learn committed-or-not. */
+   *  threshold at `nowMs` (>= semantics), else undefined. The press timestamp is
+   *  never INTERPRETED by a caller — callers learn committed-or-not; it leaves the
+   *  class only inside an opaque snapshot() capture handed back verbatim (ADR-0192). */
   committedActive(nowMs: number): WasmDirection | undefined {
     const top = this.#stack[this.#stack.length - 1];
     if (top === undefined) return undefined;
