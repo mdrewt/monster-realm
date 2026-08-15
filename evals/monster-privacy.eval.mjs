@@ -741,8 +741,10 @@ export function checkViewInventory(files) {
 }
 
 // ---------------------------------------------------------------------------
-// Check A: attribute laundering. `cfg_attr` applies an attribute conditionally,
-// so `#[cfg_attr(all(), spacetimedb::table(name = monster_pub, public))]`
+// Check A: attribute laundering — TWO clauses, one shape of attack.
+//
+// [A/cfg-attr] `cfg_attr` applies an attribute CONDITIONALLY, so
+// `#[cfg_attr(all(), spacetimedb::table(name = monster_pub, public))]`
 // re-publishes the table while the visible attribute list looks private — and
 // every table/view parser in this repo anchors on the direct `#[spacetimedb::`
 // form, so none of them can see it.
@@ -751,7 +753,29 @@ export function checkViewInventory(files) {
 // server-module/src (game-core's `cfg_attr(feature = "spacetimedb", derive(..))`
 // pattern lives OUTSIDE server-module, which is why scoping the ban to this
 // tree keeps it green).
+//
+// [A/bare-attr] the BARE (unqualified) attribute spelling, which is the same
+// blindness reached without any conditional at all:
+//     use spacetimedb::view;
+//     #[view(name = all_monsters, public)]
+//     fn all_monsters(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> { … }
+// `parseViews` and this file's `viewSites` BOTH anchor on the fully-qualified
+// `#[spacetimedb::view(` marker, so a bare-attr view is invisible to them: it
+// never enters the inventory, [I/set] stays GREEN, and the roster leaks. The
+// identical hole exists for a stacked bare `#[table(name = monster_pub, public)]`
+// on an otherwise-private struct. Rather than teach every parser both spellings
+// (two grammars, one source of truth — ADR-0003), the bare forms are BANNED
+// outright: the project convention is fully-qualified everywhere, so this clause
+// is green on arrival and a bare attr fails LOUD instead of going unscanned.
+// `#[client_visibility_filter` rides along as a belt — it is an unstable-feature
+// RLS attribute (ADR-0194 "Alternatives rejected") whose appearance would be a
+// dependency-surface change needing its own ADR, not a drive-by.
+//
+// The fully-qualified forms can never trip these needles (`#[spacetimedb::view(`
+// does not contain `#[view(`), so there is no false-red surface.
 // ---------------------------------------------------------------------------
+
+const BARE_ATTR_MARKERS = ['#[table(', '#[view(', '#[reducer(', '#[client_visibility_filter'];
 
 /**
  * @param {Array<{path:string, src:string}>} files Raw non-test server sources.
@@ -761,6 +785,25 @@ export function checkNoCfgAttrLaundering(files) {
   const marker = 'cfg_attr(';
   for (const f of files) {
     const stripped = stripRustSource(f.src);
+
+    // [A/bare-attr] runs FIRST: an unqualified attribute is invisible to every
+    // parser downstream, so a verdict from those parsers on a file containing one
+    // is worth nothing.
+    for (const bare of BARE_ATTR_MARKERS) {
+      const at = stripped.indexOf(bare);
+      if (at !== -1) {
+        return (
+          `[A/bare-attr] ${f.path} uses the BARE attribute spelling \`${bare}…\` — excerpt: ` +
+          `...${compactWs(stripped.slice(Math.max(0, at - 40), at + 80))}... The project ` +
+          'convention is the fully-qualified `#[spacetimedb::…]` form, and BOTH view/table ' +
+          "parsers (the shared parseViews and this file's attribute walk) anchor on it. A bare " +
+          '`#[view(name = all_monsters, public)]` is therefore INVISIBLE to them: it never ' +
+          'enters the pinned inventory, [I/set] stays green, and the view serves every ' +
+          "player's roster. Rewrite it fully-qualified"
+        );
+      }
+    }
+
     let pos = 0;
     while (pos < stripped.length) {
       const at = stripped.indexOf(marker, pos);
@@ -840,7 +883,14 @@ export function checkNoForgedViewContext(files) {
         `\`${CTX_PARAM_PREFIX}${CTX_IDENT}\` parameter — excerpt: ...${excerpt}... Only the ` +
         'SpacetimeDB host may build a ViewContext (that is what makes `sender` authentic); a ' +
         'constructed, aliased or struct-literal context lets any view call the owner-scoped ' +
-        "view with a FORGED sender and read an arbitrary player's roster"
+        "view with a FORGED sender and read an arbitrary player's roster.\n" +
+        'NOTE — if this fired on a plain parameter written as `ctx: &ViewContext` (imported ' +
+        'unqualified), that is INTENDED, not a false positive: the unqualified spelling is ' +
+        'banned here on purpose, exactly as the bare `#[view(` attribute is under ' +
+        '[A/bare-attr]. Requiring the fully-qualified `&spacetimedb::ViewContext` is what lets ' +
+        'this clause be a positive structural rule ("every ViewContext is a parameter") ' +
+        'instead of an unclosable blacklist of constructor spellings. Write ' +
+        `\`${CTX_PARAM_PREFIX}${CTX_IDENT}\` and this passes`
       );
     }
   }
@@ -1579,6 +1629,67 @@ ${GOOD_SERVER}`;
     if (err) return `A3: a benign cfg_attr (no spacetimedb path) was incorrectly flagged: ${err}`;
   }
 
+  // A4 (THE bare-attribute hole) — a FIFTH view written with the unqualified
+  // `#[view(...)]` spelling. The fixture asserts BOTH halves of the argument:
+  //   1. [A/bare-attr] fires, and
+  //   2. checkViewInventory stays GREEN on the very same source — proving the
+  //      leak really is invisible to the inventory pin, and therefore that this
+  //      clause is the only thing standing between a bare attr and a roster leak.
+  // Without (2) a reader could reasonably assume [I/set] already covers it.
+  {
+    const fixture = `${GOOD_SERVER}
+use spacetimedb::view;
+
+#[view(name = all_monsters, public)]
+fn all_monsters(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
+    Table::iter(&ctx.db.monster_pub()).collect()
+}
+`;
+    const bad = expectTag(checkNoCfgAttrLaundering(asFiles(fixture)), '[A/bare-attr]', 'A4');
+    if (bad) return bad;
+    const blind = checkViewInventory(asFiles(fixture));
+    if (blind) {
+      return (
+        'A4: checkViewInventory FLAGGED the bare-attr fixture — the parsers apparently do see ' +
+        `the unqualified spelling now (${blind}). That is a stronger outcome, but this ` +
+        "fixture's whole point is that they do NOT; re-derive the [A/bare-attr] rationale " +
+        'from the source rather than leaving a fixture that asserts a false premise'
+      );
+    }
+  }
+
+  // A5 — the table half: a STACKED bare `#[table(...)]` re-publishing an
+  // otherwise-private monster_pub. Same two-part assertion: the ban fires, and
+  // checkMonsterPubClean stays GREEN (it cannot see the bare attr either).
+  {
+    const fixture = `
+#[spacetimedb::table(name = monster_pub)]
+#[table(name = monster_pub, public)]
+pub struct MonsterPub {
+    pub monster_id: u64,
+    pub species_id: u32,
+}
+`;
+    const bad = expectTag(checkNoCfgAttrLaundering(asFiles(fixture)), '[A/bare-attr]', 'A5');
+    if (bad) return bad;
+    const blind = checkMonsterPubClean(parseTableStructs(stripRustSource(fixture)));
+    if (blind && blind.indexOf('[P/public]') !== -1) {
+      return (
+        'A5: checkMonsterPubClean flagged the bare stacked table attr as public — the table ' +
+        'parsers apparently see the unqualified spelling now. Stronger, but this fixture ' +
+        'asserts the opposite premise; re-derive it from the source'
+      );
+    }
+  }
+
+  // A6 — GOOD: the sanctioned server fixture uses ONLY fully-qualified attributes
+  // and must PASS. `#[spacetimedb::view(` does not contain `#[view(`, so the bare
+  // needles have no false-red surface — this fixture is what pins that.
+  {
+    const err = checkNoCfgAttrLaundering(asFiles(GOOD_SERVER));
+    if (err) return `A6: the fully-qualified GOOD server fixture was incorrectly flagged: ${err}`;
+  }
+
   // -------------------------------------------------------------------------
   // F — the structural ViewContext forge ban.
   // -------------------------------------------------------------------------
@@ -1847,6 +1958,7 @@ export default async function monsterPrivacyEval() {
 
   // 13r-e: the SCAN SURFACE excludes *_tests.rs — a decoy table or view inside a
   // cfg(test) fixture must never shadow or stand in for the real definition.
+  //
   const prodFiles = rustFiles
     .filter((f) => !f.path.endsWith('_tests.rs'))
     .map((f) => ({ path: f.path, src: f.raw }));
@@ -1855,6 +1967,64 @@ export default async function monsterPrivacyEval() {
       name,
       pass: false,
       detail: 'No NON-TEST .rs files found under server-module/src — the scan surface is empty',
+    };
+  }
+
+  // THE EXCLUSION MUST JUSTIFY ITSELF, or it is a hole rather than a scope: every
+  // file this scan drops is asserted to actually BE test-only. Without that, a
+  // production module renamed to end in `_tests.rs` (or a test file that quietly
+  // lost its cfg gate and now compiles into the PUBLISHED module) would be
+  // silently dropped from EVERY clause below — a filename-shaped bypass of the
+  // whole eval. Fails loud, naming the file.
+  //
+  // BOTH sanctioned spellings count, because this tree uses both (measured):
+  //   (a) the file carries its own `#[cfg(test)]` (e.g. economy_tests.rs), or
+  //   (b) its PARENT declares it gated — `#[cfg(test)] #[path = "x_tests.rs"]
+  //       mod x_tests;` — which is how accounts/movement/ranking/m14_5d_1a and
+  //       evolution_tests are wired. Accepting only (a) would false-RED four
+  //       correct files on arrival, and "the gate reds on correct code" is how a
+  //       scope assertion gets deleted instead of fixed.
+  // Parents are searched COMMENT-STRIPPED, and EVERY occurrence of the
+  // declaration is considered: movement.rs carries a prose `mod movement_tests;`
+  // in a comment ABOVE the real gated declaration, so a first-match-on-raw-text
+  // lookup would examine the comment, find no attribute, and false-RED a
+  // correctly-gated file.
+  const prodStripped = prodFiles.map((p) => stripRustSource(p.src));
+  const excluded = rustFiles.filter((f) => f.path.endsWith('_tests.rs'));
+  const unjustified = [];
+  for (const f of excluded) {
+    if (f.raw.indexOf('#[cfg(test)]') !== -1) continue;
+    const modName = f.path.slice(f.path.lastIndexOf('/') + 1, -'.rs'.length);
+    const decl = `mod ${modName};`;
+    let gatedByParent = false;
+    for (const src of prodStripped) {
+      for (
+        let at = src.indexOf(decl);
+        at !== -1 && !gatedByParent;
+        at = src.indexOf(decl, at + 1)
+      ) {
+        // The attribute stack sits directly above the declaration; a bounded
+        // look-back keeps an unrelated `#[cfg(test)]` elsewhere in the file from
+        // vouching for it.
+        if (src.slice(Math.max(0, at - 160), at).indexOf('#[cfg(test)]') !== -1) {
+          gatedByParent = true;
+        }
+      }
+      if (gatedByParent) break;
+    }
+    if (!gatedByParent) unjustified.push(f.path);
+  }
+  if (unjustified.length > 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        `[SCOPE] ${unjustified.join(', ')} is excluded from this eval's scan surface by its ` +
+        '`_tests.rs` filename, but nothing gates it behind `#[cfg(test)]` — neither the file ' +
+        'itself nor a `#[cfg(test)] #[path = …] mod …;` declaration in a non-test parent. It is ' +
+        'therefore compiled into the PUBLISHED module while being invisible to every privacy ' +
+        'clause here. Restore the cfg gate or rename the file; never let a filename alone ' +
+        'decide what this gate can see',
     };
   }
 

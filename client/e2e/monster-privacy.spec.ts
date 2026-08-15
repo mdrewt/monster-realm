@@ -63,6 +63,20 @@ import {
 //   13r-e-3  a live ownership transfer migrates the row between the two clients'
 //            views with NO reconnect (the reveal/revoke analogue)
 //
+// WHAT EARS 3 CAN AND CANNOT BE TESTED FOR HERE — stated so the coverage is not
+// over-read. EARS 3 has two halves: (i) revelation CEASES when an engagement
+// ends, and (ii) the client converges on the new row set live. Half (i) is
+// VACUOUSLY satisfied in this slice and is untestable by construction:
+// `engaged_monster_pub` is DEFERRED (ADR-0194 D3), so the engaged delivery set is
+// EMPTY — nothing is ever revealed by engagement, therefore nothing has to cease.
+// The battle test above is the evidence FOR that emptiness (a fully rendered
+// overlay with zero foreign rows), not a test of a cessation path that does not
+// exist. Half (ii) is the NON-VACUOUS half and is what the transfer test below
+// actually exercises: the view's row set changes under a live subscription and
+// both clients converge — A gains a row it could never see before, B loses one it
+// still holds, in the same transaction, with no reconnect. When the engaged view
+// is eventually built, half (i) needs its own e2e; this file does not cover it.
+//
 // NO `new RegExp(...)` — Semgrep's detect-non-literal-regexp is an active CI gate
 // here (the pvp-side-b.spec.ts convention). Literal regexes and string methods only.
 
@@ -390,9 +404,25 @@ test.describe
 
       // --- the overlay renders FULLY, on BOTH sides ---------------------------
       // The opponent card header is `${opponentName}: ${speciesName}`
-      // (battleView.ts:170,209). A real species name proves the species resolved
-      // from the PUBLIC species_row table via battle.state — not from a
-      // monster_pub row that no longer arrives.
+      // (battleView.ts:170,209).
+      //
+      // WHAT THESE CLAUSES DO AND DO NOT PROVE (stated precisely, because the
+      // obvious over-claim is tempting): they prove the overlay RENDERED — a real
+      // species name, real HP numbers, both cards present — under the new privacy
+      // regime. They do NOT prove non-dependence on monster_pub, and cannot:
+      // battleModel resolves the name from `speciesMap` (the PUBLIC species_row
+      // table) keyed by the speciesId carried in `battle.state`, so it never had a
+      // monster_pub dependency to lose. `Unknown (#<id>)` is battleModel's
+      // species-lookup fallback (client/src/ui/battleModel.ts:190), not a
+      // monster_pub sentinel.
+      //
+      // The load-bearing pairing is what follows the loop: a FULLY rendered
+      // overlay AT THE SAME INSTANT as `monsterCount === ownMonsters.length`. That
+      // is the evidence for ADR-0194 D3's deferral — the engaged delivery set is
+      // empty and the engagement UI is complete anyway — and it is a behavioural
+      // observation, not a proof of the code path. The static half of that claim
+      // (nothing in the client reads a non-own monster row) is owned by the store
+      // accessor deletion and its test in client/src/net/store.test.ts.
       for (const [page, opponentName, label] of [
         [pageA, nameB, 'client A'],
         [pageB, nameA, 'client B'],
@@ -409,10 +439,12 @@ test.describe
         ).toBeGreaterThan(0);
         expect(
           species.startsWith('Unknown (#'),
-          `${label}: the opponent card degraded to a placeholder species name (${species}). ` +
-            'That is the signature of a card that needs data it no longer receives — ' +
-            'ADR-0194 D3 defers engaged_monster_pub on the claim that NOTHING reads another ' +
-            "player's monster_pub row, and this is where that claim gets tested",
+          `${label}: the opponent card fell back to battleModel's placeholder species name ` +
+            `(${species}, client/src/ui/battleModel.ts:190) — the overlay did not render ` +
+            'completely. This says the ENGAGEMENT UI is incomplete under the new regime; it ' +
+            'does not by itself say monster_pub is implicated (the name is resolved from the ' +
+            'PUBLIC species_row map keyed by battle.state), so read it together with the ' +
+            'monsterCount assertion after this loop',
         ).toBe(false);
 
         const bodyText = await page.evaluate(() => document.body.innerText);
@@ -539,31 +571,52 @@ test.describe
 
       // Both sides see the Pending offer (trade_offer is a PUBLIC table; both
       // parties subscribe it).
+      //
+      // MATCHED BY PARTY, never by index: `trade_offer` is world-readable and the
+      // e2e world is shared, so `allTradeOffers()[0]` can be a LEFTOVER offer
+      // between two other players from an earlier spec (or an earlier run that
+      // exited before its cancel). Grabbing its tradeId would drive the rest of
+      // this test against someone else's trade and fail somewhere unrelated.
       await Promise.all([
         pageA.waitForFunction(
-          () => {
+          (args: { a: string; b: string }) => {
             const w = window as unknown as { __mrTrade?: MrTrade };
-            return w.__mrTrade !== undefined && w.__mrTrade.allTradeOffers().length > 0;
+            if (!w.__mrTrade) return false;
+            return w.__mrTrade
+              .allTradeOffers()
+              .some((o) => o.initiator === args.b && o.counterparty === args.a);
           },
-          null,
+          { a: identityA, b: identityB },
           { timeout: 20_000 },
         ),
         pageB.waitForFunction(
-          () => {
+          (args: { a: string; b: string }) => {
             const w = window as unknown as { __mrTrade?: MrTrade };
-            return w.__mrTrade !== undefined && w.__mrTrade.allTradeOffers().length > 0;
+            if (!w.__mrTrade) return false;
+            return w.__mrTrade
+              .allTradeOffers()
+              .some((o) => o.initiator === args.b && o.counterparty === args.a);
           },
-          null,
+          { a: identityA, b: identityB },
           { timeout: 20_000 },
         ),
       ]);
 
       // --- EARS 13r-e-2 (trade half): BOTH parties' cards render fully --------
       // The trade window renders from the MonsterCard snapshots embedded in the
-      // trade_offer row (ADR-0194 D3), NOT from monster_pub. So `#trade-their-side`
-      // on A — the counterparty's offered monster, a row A no longer receives —
-      // must still show a real species name. A `Unknown (#N)` here is the exact
-      // symptom of a window that was silently reading monster_pub.
+      // trade_offer row, so `#trade-their-side` on A shows B's offered monster —
+      // a monster_pub row A no longer receives — and must still name a real
+      // species.
+      //
+      // WHAT THIS PROVES, PRECISELY: that the trade UI is COMPLETE under the new
+      // privacy regime, at the same instant as the monsterCount assertion below.
+      // It is NOT a proof of non-dependence: tradeModel resolves the name from
+      // `speciesMap` (the PUBLIC species_row table) keyed by the speciesId carried
+      // in the offer's MonsterCard (client/src/ui/tradeModel.ts:119), so it never
+      // had a monster_pub dependency to lose either. `Unknown (#N)` is that
+      // lookup's fallback, not a monster_pub sentinel. The pairing — full render
+      // WITH an empty foreign-row set — is the evidence for ADR-0194 D3's
+      // deferral; the static half is owned by the store-accessor deletion test.
       for (const [page, label] of [
         [pageA, 'client A'],
         [pageB, 'client B'],
@@ -609,11 +662,22 @@ test.describe
       expectNoForeignIds(midA, midB, 'client A (offer pending)');
 
       // --- complete the trade -------------------------------------------------
-      const tradeId = await pageA.evaluate(() => {
-        const w = window as unknown as { __mrTrade: MrTrade };
-        return w.__mrTrade.allTradeOffers()[0]?.tradeId ?? '';
-      });
-      expect(tradeId, 'tradeId must be a non-empty string').not.toBe('');
+      // Resolved by PARTY PAIR, never by index (see the wait above): a leftover
+      // world-readable offer between two other players must not be able to supply
+      // the tradeId this test then responds to and confirms.
+      const tradeId = await pageA.evaluate(
+        (args: { a: string; b: string }) => {
+          const w = window as unknown as { __mrTrade: MrTrade };
+          const ours = w.__mrTrade
+            .allTradeOffers()
+            .find((o) => o.initiator === args.b && o.counterparty === args.a);
+          return ours?.tradeId ?? '';
+        },
+        { a: identityA, b: identityB },
+      );
+      expect(tradeId, 'the tradeId for the offer B->A must resolve to a non-empty string').not.toBe(
+        '',
+      );
 
       // A (the counterparty) accepts.
       await pageA.evaluate((tid: string) => {

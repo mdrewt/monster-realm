@@ -3833,6 +3833,14 @@ describe('★ connection.ts wiring (13r-e / ADR-0194 D4): W-13RE-RECONCILE — t
     // `if (stale())`, a generation compare, or an undefined-check on the live
     // connection); what is pinned is that the closure does not reach the SDK cache
     // unconditionally.
+    //
+    // ⚠ SPELLING WARNING (read before writing the guard). The obvious
+    // `if (current === undefined) return;` is a CROSS-GATE TRAP: the M21b-2 pin at
+    // :2953-2961 counts the ASSIGNMENT token `current =` and requires EXACTLY 3, and
+    // the substring `current =` occurs inside `current === undefined`. Writing the
+    // guard that way turns an unrelated, correct gate red for a reason that has
+    // nothing to do with this slice. Use one of the sanctioned spellings below
+    // instead; do NOT "fix" it by raising the M21b-2 count.
     const squashed = squashedStrippedConnectionTs();
     const flushClosure = parenArgsAt(squashed, 'new MicrotaskBatcher(');
 
@@ -3847,7 +3855,13 @@ describe('★ connection.ts wiring (13r-e / ADR-0194 D4): W-13RE-RECONCILE — t
         'flush scheduled by a dying connection can fire after store.reset() and re-seed the ' +
         "store from the dead socket's cache. Any of an `if (…)` early return, an optional " +
         'chain, or an explicit `!== undefined` check satisfies this — an UNGUARDED ' +
-        '`[...conn.db.my_monster_pub.iter()]` does not',
+        '`[...conn.db.my_monster_pub.iter()]` does not.\n' +
+        'SANCTIONED SPELLINGS: `const live = current; if (live !== undefined) { … }`, or an ' +
+        'optional chain (`current?.db.my_monster_pub`). AVOID ' +
+        '`if (current === undefined) return;` — its `current =` substring is counted by the ' +
+        'UNRELATED M21b-2 assignment pin at connection.test.ts:2953-2961 ' +
+        "(countOccurrences('current =') === 3) and would red that gate instead of this one. " +
+        'The fix there is to re-spell the guard, NEVER to raise the M21b-2 count',
     ).toBe(true);
   });
 });

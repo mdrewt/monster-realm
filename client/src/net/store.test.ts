@@ -620,6 +620,39 @@ describe('AuthoritativeStore M6c: monsterCount property (fast-check)', () => {
 // "s.reconcileMonstersFromView is not a function".
 // =============================================================================
 
+describe('AuthoritativeStore 13r-e: the whole-map monster accessors are DELETED (ADR-0194 D3)', () => {
+  it('BITES: store.monster(id) and store.monsters() do not exist on AuthoritativeStore', () => {
+    // ADR-0194 D3 DEFERS the `engaged_monster_pub` view on a verified claim: NO
+    // client code reads another player's monster row. `store.monster(id)` and
+    // `store.monsters()` had zero production callers, and the ADR deletes them so
+    // that fact is MECHANICALLY ENFORCED rather than merely true today — the
+    // illegal state becomes unrepresentable (the ADR-0154 D5 analogue). Leaving
+    // them in place would let the next author reach for a whole-map read, get an
+    // owner-scoped result that looks right in single-player testing, and quietly
+    // depend on rows that only ever arrive for the caller.
+    //
+    // This is the ONLY test that enforces the deletion; every other monster test
+    // in this file now reads through ownMonsters/monsterCount, so removing the
+    // accessors is otherwise invisible to the suite.
+    //
+    // RED AT AUTHORING TIME: both methods still exist (store.ts:776-782).
+    const s = new AuthoritativeStore();
+    const probe = s as unknown as Record<string, unknown>;
+    expect(
+      probe.monster,
+      'store.monster(id) must be DELETED (ADR-0194 D3): a per-id read over the whole monster ' +
+        'map is exactly the "read another player\'s row" shape the deferred engaged view would ' +
+        'have served. Read through ownMonsters(identity) instead',
+    ).toBeUndefined();
+    expect(
+      probe.monsters,
+      'store.monsters() must be DELETED (ADR-0194 D3): it iterates the WHOLE monster map, ' +
+        'which is the unrestricted read the need-to-know decision (#284) removes. Read through ' +
+        'ownMonsters(identity) instead',
+    ).toBeUndefined();
+  });
+});
+
 describe('AuthoritativeStore 13r-e: reconcileMonstersFromView post-condition', () => {
   it('BITES (a): the map ends up EXACTLY equal to the rows argument (upsert + remove in one call)', () => {
     // Kills: an impl that only upserts the given rows (an absent id is STRANDED —

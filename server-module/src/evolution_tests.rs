@@ -3275,6 +3275,43 @@ fn e13r_e_monster_pub_is_private_and_its_view_is_owner_scoped() {
     let view_name = ["my", "_monster_pub"].concat();
     let pub_table = ["monster", "_pub"].concat();
 
+    // --- (0) NO BARE (unqualified) spacetimedb attributes -------------------
+    // A bare `#[view(name = all_monsters, public)]` (reachable with
+    // `use spacetimedb::view;`) declares a REAL view that is invisible to every
+    // attribute walk in this repo — this test's, and both parsers in
+    // evals/monster-privacy.eval.mjs — because they all anchor on the
+    // fully-qualified marker. The inventory pin then stays green while the extra
+    // view serves every player's roster. Same hole for a stacked bare
+    // `#[table(name = monster_pub, public)]` on an otherwise-private struct.
+    // Rather than teach two grammars to one parser (ADR-0003), the bare forms are
+    // banned: the project convention is fully-qualified everywhere, so this is
+    // green on arrival and a bare attr fails LOUD instead of going unscanned.
+    // `#[client_visibility_filter` rides along as a belt (an unstable-feature RLS
+    // attribute; its arrival is a dependency-surface change needing its own ADR —
+    // ADR-0194 "Alternatives rejected").
+    //
+    // The needles are fragment-assembled so this file never self-matches, and the
+    // fully-qualified spelling can never trip them (`#[spacetimedb::view(` does
+    // not contain `#[view(`).
+    let bare_markers = [
+        concat!("#[", "table("),
+        concat!("#[", "view("),
+        concat!("#[", "reducer("),
+        concat!("#[", "client_visibility_filter"),
+    ];
+    for bare in bare_markers {
+        assert_eq!(
+            stripped.matches(bare).count(),
+            0,
+            "TEETH(13r-e ADR-0194): schema.rs uses the BARE attribute spelling {bare:?} — the \
+             project convention is the fully-qualified `#[spacetimedb::...]` form, and every \
+             attribute walk that guards monster privacy (this test and both parsers in \
+             evals/monster-privacy.eval.mjs) anchors on it. A bare attribute declares a REAL \
+             table or view that NONE of them can see: the pinned view inventory stays green \
+             while the extra view serves every player's roster. Rewrite it fully-qualified"
+        );
+    }
+
     // --- (1) the table lost `public` (ADR-0194 D1) --------------------------
     let table_sites = spacetimedb_attr_sites(&stripped, TABLE_ATTR);
     assert!(
