@@ -374,7 +374,11 @@ pub struct MonsterPub {
 /// artifact — the `my_conversation`/`my_wallet`/`my_account` convention).
 #[spacetimedb::view(name = my_monster_pub, public)]
 fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
-    ctx.db.monster_pub().owner_identity().filter(ctx.sender).collect()
+    ctx.db
+        .monster_pub()
+        .owner_identity()
+        .filter(ctx.sender)
+        .collect()
 }
 
 // --- Battle table (M7b, public, ADR-0042) ------------------------------------

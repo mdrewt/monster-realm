@@ -3380,9 +3380,9 @@ fn e13r_e_monster_pub_is_private_and_its_view_is_owner_scoped() {
         )
     });
     let fn_idx = attr_end + fn_rel;
-    let brace_rel = stripped[fn_idx..].find('{').unwrap_or_else(|| {
-        panic!("TEETH(13r-e): the {view_name:?} view fn has no body brace")
-    });
+    let brace_rel = stripped[fn_idx..]
+        .find('{')
+        .unwrap_or_else(|| panic!("TEETH(13r-e): the {view_name:?} view fn has no body brace"));
     let brace_idx = fn_idx + brace_rel;
     let raw_sig = &stripped[fn_idx..brace_idx];
 
