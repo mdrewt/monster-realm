@@ -20,10 +20,10 @@
 | tables/guest_claim_reaper_schedule | SpacetimeDB Table | guest_claim_reaper_schedule | PRIVATE scheduled table colocated with its reducer (ADR-0056 exception). `guest_ |
 | tables/heal_cooldown | SpacetimeDB Table | heal_cooldown | PRIVATE per-player heal cooldown anchor. Must-never-leak: timestamp reveals heal |
 | tables/heal_location_row | SpacetimeDB Table | heal_location_row | Healing location content seeded by `sync_content`. Public (world-readable). |
-| tables/inventory | SpacetimeDB Table | inventory | Player item inventory (M8d, ADR-0046). PUBLIC / world-readable counts: there is  |
+| tables/inventory | SpacetimeDB Table | inventory | Player item inventory (M8d, ADR-0046). PUBLIC / world-readable counts: transport |
 | tables/item_row | SpacetimeDB Table | item_row | Item definitions seeded from the `game-core` RON registry. |
 | tables/monster | SpacetimeDB Table | monster | The authoritative monster record — PRIVATE (no `public`). Contains hidden genes  |
-| tables/monster_pub | SpacetimeDB Table | monster_pub | Public projection of the monster table — NO hidden fields (no IVs, EVs, nature). |
+| tables/monster_pub | SpacetimeDB Table | monster_pub | Safe projection of the monster table — NO hidden fields (no IVs, EVs, nature). P |
 | tables/movement_tick_schedule | SpacetimeDB Table | movement_tick_schedule | Per-zone movement schedule: one interval-row per active zone makes the scheduler |
 | tables/mr_heartbeat_schedule | SpacetimeDB Table | mr_heartbeat_schedule | SpacetimeDB table mr_heartbeat_schedule. |
 | tables/npc | SpacetimeDB Table | npc | NPC entity role row. Entity/component: an NPC is a `character` row + this. `zone |

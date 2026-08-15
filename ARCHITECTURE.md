@@ -429,13 +429,17 @@ with privacy, starter grant, and management reducers.
   `type_relation_row`, `item_row` — seeded from game-core RON registries by
   `sync_content_inner` (upsert by stable id; type chart: clear-and-reinsert).
   `sync_content` is guarded to module-identity only.
-- **Monster privacy (ADR-0040)**: RLS (`client_visibility_filter`) is confirmed
-  non-functional in STDB crate 1.12. Fallback: **private** `monster` table
-  (hidden genes: IVs, EVs, nature) + **public** `monster_pub` projection (safe
-  fields only). Dual-write discipline enforced by programmer + the
-  `monster-privacy` eval (proof-of-teeth: flags public monster table, flags
-  hidden fields in projection, flags `monster_table.ts` in bindings). Codegen
-  confirms: "Skipping private tables during codegen: monster."
+- **Monster privacy (ADR-0040, hardened by ADR-0194 / issue #284)**: RLS
+  (`client_visibility_filter`) is unavailable (crate-`unstable` feature only;
+  `Filter::Sql` cannot express `Vec<u64>` membership). Mechanism: **private**
+  `monster` table (hidden genes: IVs, EVs, nature) + since 13r-e a **private**
+  `monster_pub` projection (safe fields only) read exclusively through the
+  owner-scoped **`my_monster_pub`** view — other players' monster_pub rows are
+  need-to-know and are not delivered at all (no client consumer exists; the
+  engagement view is a specified deferral in ADR-0194). Dual-write discipline
+  unchanged; the `monster-privacy` eval pins the view body/signature/inventory,
+  the subscription allowlist, and the bindings file set (proof-of-teeth for
+  each clause).
 - **Starter grant** (`join_game`): idempotent — checks `monster.owner_identity`
   before granting. Seed from `ctx.random()` (server-side entropy, not the
   predictable Identity hash). Species reconstructed from `species_row` table →
@@ -467,9 +471,11 @@ from the `AuthoritativeStore`, mutates only via ownership-checked reducers
   Rename via `prompt()`, party/box management via callbacks. Renders with
   `textContent` (no `innerHTML` — XSS-safe). Refreshed on `onBatchApplied`
   when visible.
-- **Connection wiring** (`net/connection.ts`): subscribes to `monster_pub` and
-  `species_row` tables, wires `onInsert/onUpdate/onDelete` callbacks to store
-  via `MicrotaskBatcher`.
+- **Connection wiring** (`net/connection.ts`): subscribes to the owner-scoped
+  `my_monster_pub` view (13r-e, ADR-0194) and the `species_row` table. The
+  PK-less view never fires `onUpdate`; its handlers only schedule the
+  `MicrotaskBatcher`, whose flush closure reconciles the store's monster map
+  from the SDK cache before `flushBatch()`.
 - **Main integration** (`main.ts`): 'B' key toggles box overlay, Escape closes
   it, movement input suppressed while open. Reducer calls (`setNickname`,
   `setPartySlot`) routed through the connection. `__game()` snapshot extended

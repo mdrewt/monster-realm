@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: submit_attack
 slug: reducers/submit_attack
-updated: 2026-08-08
+updated: 2026-08-15
 tags: [reducer, spacetimedb, battle]
 abstract: "Submit an attack: resolve one turn where the player attacks with `skill_id` and the opponent uses AI. Ownership + outco…"
 resource: server-module/src/battle.rs#L596

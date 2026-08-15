@@ -160,11 +160,22 @@ defeats name-lookup pins — red-team PoC'd against the live wallet gate, follow
 
 Red-team round PoC'd five green cheats against a naive clause set; the shipped gate therefore:
 pins the view **inventory** (exact set) and the sanctioned view's signature/return type; bans
-`cfg_attr(…spacetimedb::…)` in non-test server source (attribute laundering); bans any other
-view whose return type or body references `MonsterPub`/`monster_pub(`/`monster(`/
-`pub_from_monster(`; parses tables with the shared paren-walking parser (stacked attrs,
-`name=`-no-space, wrapped attrs, `]`-in-attr); excludes `*_tests.rs` from the scan surface;
-asserts the subscribe array as an exact string-literal allowlist (concat/backtick ban) and that
-`connection.ts` is the only `.subscribe(` site in `client/src`; and keeps the `iter` ban as
-defense-in-depth only (views cannot iterate at runtime — the leak shapes all use `.filter`).
-Every clause carries a BAD fixture that must bite (ADR-0010).
+`cfg_attr(…spacetimedb::…)` AND the bare attribute spellings `#[table(`/`#[view(`/`#[reducer(`
+in non-test server source (attribute laundering — the parsers anchor on the fully-qualified
+`#[spacetimedb::…` forms, which the repo uses exclusively); bans any other view whose return
+type or body references `MonsterPub`/`monster_pub(`/`monster(`/`pub_from_monster(`; parses
+tables with the shared paren-walking parser (stacked attrs, `name=`-no-space, wrapped attrs,
+`]`-in-attr); excludes `*_tests.rs` from the scan surface (each exclusion proven
+`#[cfg(test)]`-gated); asserts the subscribe array as an exact string-literal allowlist
+(concat/backtick ban) and that `connection.ts` is the only `.subscribe(` site in `client/src`;
+and keeps the `iter` ban as defense-in-depth only (views cannot iterate at runtime — the leak
+shapes all use `.filter`). Every clause carries a BAD fixture that must bite (ADR-0010).
+
+**Known residuals of the gate itself:** the scan surface is `server-module/src` only — whether
+a `#[spacetimedb::view]` declared in a *linked crate* (e.g. `game-core`, which legitimately
+carries `cfg_attr(feature = "spacetimedb", …)` derives) could register with the module is
+unverified; no such view exists and `game-core` has no `spacetimedb` macro dependency today,
+but a future cross-crate view would evade `[I/set]` — re-verify if `game-core` ever grows the
+dependency. A new public *mirror table* dual-written from `monster` is likewise unbanned
+(deliberately: the subscription allowlist + the e2e's store probe make it useless to a lazy
+implementer, and the schema-snapshot baseline flags every new table for review).
