@@ -14,7 +14,7 @@ ADR-0165 (Accepted 2026-07-31, slice 11r-d) chose a **nightly** changelog-freshn
 check over a per-PR gate and over manual-only discipline, and deferred implementation to
 slice **11r-i** because `.github/workflows/nightly.yml` and `scripts/` were outside 11r-d's
 declared `touches:`. **11r-i never implemented it.** One milestone after 12r-f reconciled
-the ledger, `CHANGELOG.md` had re-drifted **18 PRs / 34 entries** behind master — the third
+the ledger, `CHANGELOG.md` had re-drifted **18 PRs / 34 entries** (measured at `7eb6980`, this slice's branch point) behind master — the third
 episode of the same drift ADR-0165 was written about, and the second since the policy was
 recorded.
 
@@ -40,9 +40,11 @@ group**, in `parseChangelogEntries` / `classifyChangelogDrift`. Three reasons, i
 force:
 
 - **Byte equality is red-by-construction.** The regen commit cannot contain its own entry, so
-  `missing === 0` is structurally unreachable at a regen commit. Verified at **all 11
-  historical regen commits**: ten had `missing === 1`, one had 5. A byte-diff gate would be
-  permanently red on a perfectly reconciled ledger.
+  `missing === 0` is structurally unreachable at a regen commit. Verified across **all 23
+  commits that touch `CHANGELOG.md` on master**: every one has `missing >= 1` (twelve of the
+  fifteen modern ones sit at exactly 1; one is at 5, where four direct-to-master commits landed
+  between the branch regen and the merge). A byte-diff gate would be permanently red on a
+  perfectly reconciled ledger.
 - **Only a count can express the existing policy.** ARCHITECTURE.md m17.5g grants a lag of up
   to one open milestone. That tolerance is a quantity; a byte diff is a boolean.
 - **A multiset, not a set.** 25 real entries carry no `(#NNN)` suffix and can render
@@ -71,8 +73,17 @@ The drift is a **weekly sawtooth**: it reaches 20–26 on a perfectly HEALTHY wa
 | byte equality | 32 | permanently red (D1) |
 | `missing > 15` | 21 (66%) | nag-then-bypass |
 | `missing > 25` (planner's first proposal) | 4 | misses the 20–24 episodes, i.e. half the real ones |
-| age only (`oldest >= 6d`) | 1 | fires once in 32 nights |
+| age only (`oldest >= 6d`) | 5 | fires on exactly the same 5 nights as the conjunction |
 | **`missing >= 15` AND `oldest >= 6d`** | **5** (07-30, 08-06, 08-13, 08-14, 08-15) | **chosen** |
+
+**Honest reading of that table:** on this 32-night series the **age arm alone is the entire
+discriminator** — the count arm never changes a verdict, so the conjunction and age-only are
+empirically indistinguishable here. The count arm is kept as **defence-in-depth, not as a
+discriminator**: it is the only thing that still fails a ledger hundreds of entries behind if
+the age signal is ever wrong (a clock defect, a rotted subject→entry transform, a rebase that
+rewrites committer dates), and the age arm is the one that fails OPEN by design when it cannot
+date the lag. Two independent arms, each covering the other's failure mode, is the reason to
+prefer the conjunction over age-only — not a difference in observed firing.
 
 A 66%-red nightly is the documented failure mode of this repo's nightly channel: ADR-0183
 records `mutation-server` red **five consecutive nights, unnoticed**, with no notification
@@ -134,7 +145,18 @@ the vacuous greens that `extra` is the accidental sole defense for. So: `extra <
 `extra > 3` is verdict `drift` and fails — a `cliff.toml` template edit or a git-cliff version
 change flips hundreds at once, which is the shape worth a red.
 
+**Why the floor is 3 and not 1** — measured `extra` at every CHANGELOG-touching commit on
+master: `b6363dc` (2026-07-10) had **exactly 3**; `74f9dbe` had 2, persisting across **eight
+consecutive commits**; `5188db2` and `34250d5` had 1. A floor of 1 red-lines three of those
+episodes and a floor of 2 red-lines `b6363dc` — all of them legitimate branch-tip regens, none
+of them the pathology. 3 is the tight, evidence-backed value, not a round number.
+
 **Consequence, stated plainly: a hand-edit of ≤ 3 entries is now invisible to this gate.**
+The exposure is narrower than it first reads: only pure *additions* are durable. A rewrite or
+a deletion plants a permanently-old entry in the `missing` set, so the first night the wave
+reaches 15 the age arm reports that old date and reds — and `formatVerdict` prints each
+offending entry verbatim (`not-in-history: …`) either way.
+
 Correspondingly, **ordering is load-bearing** — the regen must be the FIRST commit on a branch,
 and nothing after it may be regenerated.
 
@@ -176,18 +198,23 @@ Compensating measures, all inside the touch set:
   the teeth bite by feeding a deliberately wrong comparator. Without that seam,
   `return { ok: true, failures: [] }` is an undetectable neutering of the whole table — it was
   a surviving mutant until the seam was added;
-- a **67-test sibling suite** (`scripts/changelog-freshness.test.mjs`) runs as the nightly
+- a **72-test sibling suite** (`scripts/changelog-freshness.test.mjs`) runs as the nightly
   job's **first** step, in its own `run:` step (never `;`-joined, which would report only the
   last exit status);
 - because **`node --test <file>` EXITS 0 WHEN THE FILE DEFINES ZERO TESTS** (verified on node
   24.13.1: it counts the file itself as one passing test), the script itself counts the sibling
-  suite's tests and exits 2 below a floor of **50** (`MIN_SIBLING_TESTS`; committed count 66 —
+  suite's tests and exits 2 below a floor of **50** (`MIN_SIBLING_TESTS`; committed count 72 —
   a floor, not an equality pin). This is the same countermeasure
   `evals/observability-stack-config.eval.mjs:334-349` documents for globbed test discovery,
   relocated into the script because `evals/**` was out of touches.
 
 **Bite-proofed by mutation:** 15 mutations applied to a copy of the checker, **all 15 killed**
-— the 15th only after the injection seam above was added.
+— the 15th only after the injection seam above was added. An adversarial second pass then showed
+that the *shell* has no such coverage: 18 shell mutations all ship suite-green, because the suite
+imports only pure functions. One of them was not malice but the obvious refactor — dropping
+`ageDays` from a second `classifyChangelogDrift` call — so the bait was removed structurally
+(`diffChangelogEntries` lets `main()` diff once, date the lag, then classify once). The residual
+shell-mutation exposure is recorded as follow-up (4).
 
 ### D8 — git-cliff is version-pinned in the workflow
 
@@ -222,10 +249,22 @@ to missing+extra at once and red the job for a reason unrelated to freshness.
 
 **Named follow-ups** — all blocked on a slice whose `touches:` include `evals/` or `justfile`:
 
-1. `evals/changelog-freshness-teeth.eval.mjs`, importing the pure comparator + the fixture
-   table, so `just ci` catches comparator rot per-PR and pins the thresholds cross-directory.
-2. A `just changelog-check` recipe for local ergonomics.
+1. **Move** (not duplicate) the gating into `evals/changelog-freshness-teeth.eval.mjs`,
+   importing the pure comparator + the fixture table, so `just ci` catches comparator rot
+   per-PR and pins the thresholds cross-directory. Duplicating it would leave two copies of the
+   same fixtures to drift apart.
+2. A `just changelog-check` recipe — and, its real motivation, a `just changelog` that **pins
+   the git-cliff version**. Today the workflow pins `git-cliff@2.13.1` on the *reader* while
+   `justfile:172` runs whatever version the developer has installed; a regen from a different
+   version reds the nightly as `rendering`/`drift`, and the remedy string ("run `just
+   changelog`") would reproduce the mismatch rather than fix it.
 3. Extend `nightly-smoke-wiring`'s guarded-job list to include `changelog-freshness`.
+4. **Shell coverage.** The sibling suite imports only pure functions, so all 18 shell mutations
+   tried against it ship suite-green (`main()` neutered, guards reordered after the verdict,
+   the exit downgraded). The refactor-shaped one was removed structurally (D7); the rest need
+   deliberate malice, but the honest state is that `main()` has no automated coverage. A
+   subprocess smoke test — run the script against two inline fixture repos and assert the exit
+   codes — is the fix, and it belongs in the eval of follow-up (1).
 
 ## Confirmation
 
@@ -233,8 +272,8 @@ to missing+extra at once and red the job for a reason unrelated to freshness.
   `git-cliff@2.13.1`, then `node --test scripts/changelog-freshness.test.mjs`, then
   `node scripts/changelog-freshness.mjs --check`.
 - `scripts/changelog-freshness.mjs` — the 15-case self-test runs before any I/O on every
-  invocation and exits 2 on a failed tooth or a shrunken table; the six D6 guards precede the
-  verdict; `scripts/changelog-freshness.test.mjs` (67 tests) is counted against a floor of 50.
+  invocation and exits 2 on a failed tooth or a shrunken table; the two D7 self-integrity floors run first, then D6's five environment
+  guards, all before any verdict; `scripts/changelog-freshness.test.mjs` (72 tests) is counted against a floor of 50, and the workflow additionally asserts the runner's own TAP `# pass` count (>= 50, `# fail 0`) — the `MIN_SIBLING_TESTS` marker is textual, and a block comment containing 60 `it(` occurrences satisfies it with zero real tests.
 - **Acceptance checkpoint:** WHEN the ledger is >= 15 entries behind AND the oldest missing
   entry is >= 6 days old, the nightly `changelog-freshness` job fails and is triaged per its
   documented failure policy within one nightly cycle.
