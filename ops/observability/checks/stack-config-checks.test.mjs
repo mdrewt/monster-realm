@@ -62,6 +62,7 @@ const EXPECTED_SERVICE_NAMES = [
   'grafana',
   'node_exporter',
   'caddy',
+  'mr-trace-relay',
 ];
 
 // Tempo is pinned to the 2.x LTS track, not current stable: `tempo:3.0.x`
@@ -252,7 +253,7 @@ test('checkRulesAreRecordOnly: non-vacuity — a rule file with blank text is re
 // 3. checkServiceSetExact(composeText, expectedServiceNames) — OBS-19/37/D3
 // =============================================================================
 
-const COMPOSE_SEVEN_SERVICES = [
+const COMPOSE_EIGHT_SERVICES = [
   'services:',
   '  prometheus:',
   `    image: ${PINNED_IMAGES.prometheus}`,
@@ -268,12 +269,14 @@ const COMPOSE_SEVEN_SERVICES = [
   `    image: ${PINNED_IMAGES.node_exporter}`,
   '  caddy:',
   '    build: .',
+  '  mr-trace-relay:',
+  '    image: node:24-alpine@sha256:0c0c',
 ].join('\n');
 
-test('checkServiceSetExact: GOOD — exact 7-service set matches', () => {
+test('checkServiceSetExact: GOOD — exact 8-service set matches', () => {
   assertOk(
-    checkServiceSetExact(COMPOSE_SEVEN_SERVICES, EXPECTED_SERVICE_NAMES),
-    'GOOD exact 7-service compose',
+    checkServiceSetExact(COMPOSE_EIGHT_SERVICES, EXPECTED_SERVICE_NAMES),
+    'GOOD exact 8-service compose',
   );
 });
 
@@ -294,18 +297,20 @@ test('checkServiceSetExact: BAD — same COUNT, substituted name (alertmanager f
     `    image: ${PINNED_IMAGES.node_exporter}`,
     '  caddy:',
     '    build: .',
+    '  mr-trace-relay:',
+    '    image: node:24-alpine@sha256:0c0c',
   ].join('\n');
   assertNotOk(
     checkServiceSetExact(compose, EXPECTED_SERVICE_NAMES),
-    'same count of 7 services but alertmanager substituted for grafana — a count check would miss this, a name-SET check must not',
+    'same count of 8 services but alertmanager substituted for grafana — a count check would miss this, a name-SET check must not',
   );
 });
 
-test('checkServiceSetExact: BAD — an 8th service (addition) is rejected', () => {
-  const compose = `${COMPOSE_SEVEN_SERVICES}\n  mr-trace-relay:\n    build: ./relay\n`;
+test('checkServiceSetExact: BAD — a 9th service (addition) is rejected', () => {
+  const compose = `${COMPOSE_EIGHT_SERVICES}\n  alertmanager:\n    image: prom/alertmanager:v0.27.0\n`;
   assertNotOk(
     checkServiceSetExact(compose, EXPECTED_SERVICE_NAMES),
-    'an added 8th service must be rejected',
+    'an added 9th service must be rejected',
   );
 });
 
@@ -324,6 +329,8 @@ test('checkServiceSetExact: BAD — a missing service (omission) is rejected', (
     `    image: ${PINNED_IMAGES.grafana}`,
     '  node_exporter:',
     `    image: ${PINNED_IMAGES.node_exporter}`,
+    '  mr-trace-relay:',
+    '    image: node:24-alpine@sha256:0c0c',
   ].join('\n');
   assertNotOk(
     checkServiceSetExact(compose, EXPECTED_SERVICE_NAMES),
@@ -342,7 +349,7 @@ test('checkServiceSetExact: non-vacuity — empty compose text is rejected again
   );
 });
 
-test('checkServiceSetExact: parameterization — the expected set is a PARAMETER, not hardcoded to 7', () => {
+test('checkServiceSetExact: parameterization — the expected set is a PARAMETER, not hardcoded to 8', () => {
   const twoServiceCompose = [
     'services:',
     '  prometheus:',
@@ -352,11 +359,11 @@ test('checkServiceSetExact: parameterization — the expected set is a PARAMETER
   ].join('\n');
   assertOk(
     checkServiceSetExact(twoServiceCompose, ['prometheus', 'alloy']),
-    'a smaller expected set must be honored, proving the check is parameterized (7 now, 8 in m20b-2)',
+    'a smaller expected set must be honored, proving the check is parameterized (8 in the real file)',
   );
   assertNotOk(
-    checkServiceSetExact(COMPOSE_SEVEN_SERVICES, ['prometheus', 'alloy']),
-    'the 7-service compose must fail against a 2-name expected set',
+    checkServiceSetExact(COMPOSE_EIGHT_SERVICES, ['prometheus', 'alloy']),
+    'the 8-service compose must fail against a 2-name expected set',
   );
 });
 
@@ -1626,7 +1633,7 @@ test('REAL FILES: checkRulesAreRecordOnly passes against ops/observability/rules
   );
 });
 
-test('REAL FILES: checkServiceSetExact passes against ops/observability/docker-compose.yml (exact 7)', () => {
+test('REAL FILES: checkServiceSetExact passes against ops/observability/docker-compose.yml (exact 8)', () => {
   const text = readOps('docker-compose.yml');
   assertOk(
     checkServiceSetExact(text, EXPECTED_SERVICE_NAMES),

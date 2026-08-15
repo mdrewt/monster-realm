@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 157 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 158 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -165,6 +165,7 @@ Generated from 157 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0188](./0188-small-hygiene-sweep-escape-ssot-and-trade-cap-mirror.md) | 0188 — small-hygiene sweep: evolution log escaping, both-role grass guard, trade-cap mirror | Accepted | evolution-fusion, movement-netcode, client-ui | 14r-f (M-postgate-fourteenth-review-residuals — ADR-0170 residual 8, ADR-0166 R4 + R6) | Escape `check_and_evolve`'s three JSON log reasons; route `movement_tick`'s grass pre-check through the both-role SSOT (hygiene, a verified no-op); mirror the server trade cap as an exported client const gated by a parity eval. |
 | [0189](./0189-ranked-requires-account.md) | 0189 — Ranked play requires a full account: server enforcement at both PvP handshake gates | Accepted | security-authz, battle | 14r-g (M-postgate fourteenth-review residuals §14r-g) | Both PvP handshake reducers reject unless both parties hold an `account` row (`is_account_holder`, never `has_jwt()`), via one pure `ranked_account_gate` seam before any irreversible effect; inert until a real issuer is configured. |
 | [0190](./0190-observability-stack-boot-fixes.md) | 0190 — The observability stack could not boot: three committed config defects fixed, tempo parked, `build_sha` residual mechanized | Accepted | ci-gates, tooling-docs | 13r-a (M-postgate thirteenth-review residuals §13r-a) | Alloy runs as the image own uid 473, the Caddy image strips the net-bind file capability that made its exec EPERM, and the alert group interval becomes a 10s-divisible 20s; tempo and Caddy port 80 stay parked out-of-touch-set. |
+| [0191](./0191-mr-trace-relay-integration.md) | 0191 — `mr-trace-relay` integration: the 8th service, its scrape target and its dead-man's switch land as one change | Accepted | ci-gates, tooling-docs | 13r-b (M-postgate thirteenth-review residuals §13r-b) | Ship the relay as an 8th compose service (node, uid 473, Alloy's read-only replicas mount) serving a one-counter exposition body on `/health`, plus its scrape job and a distinct dead-man's-switch rule. OTLP POST deferred. |
 | [0192](./0192-held-key-warp-continuation.md) | 0192 — Held-key warp continuation: the held stack survives the WARP arm's prediction rebuild (nh5) | Accepted | movement-netcode, client-ui | 13r-f (M-postgate thirteenth-review residuals §13r-f — the nh5 candidate named by ADR-0152 residual #4 and nh3-plan R6) | `switchZone` captures the held stack (original press stamps) before `resetPredictionState()` and restores it after — warp arm ONLY; the reconnect arm and shared reset body stay byte-identical, keeping ADR-0152's guarantee. |
 
 ## Harness design corpus (H- namespace)
@@ -471,6 +472,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0184](./0184-trade-negative-path-dynamic-suite.md) — 14r-b (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-b) — 0184 — Trading reducer negative paths: a dynamic three-identity e2e suite, its mutation-visible pins, and its honest gaps (Accepted)
 - [0186](./0186-eval-scanner-migration-audit-and-behavioral-gating.md) — 14r-c (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-c) — 0186 — Eval scanner migration: audit gate, behavioral+structural enforcement, name-derived gating, and parked residuals (Accepted)
 - [0190](./0190-observability-stack-boot-fixes.md) — 13r-a (M-postgate thirteenth-review residuals §13r-a) — 0190 — The observability stack could not boot: three committed config defects fixed, tempo parked, `build_sha` residual mechanized (Accepted)
+- [0191](./0191-mr-trace-relay-integration.md) — 13r-b (M-postgate thirteenth-review residuals §13r-b) — 0191 — `mr-trace-relay` integration: the 8th service, its scrape target and its dead-man's switch land as one change (Accepted)
 
 ### tooling-docs
 
@@ -500,6 +502,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0181](./0181-string-literal-aware-source-scanners.md) — 13r-c (post-gate thirteenth-review residuals — `specs/monster-realm-v2/M-postgate-thirteenth-review-residuals.spec.md` §13r-c) — 0181 — String-literal-aware source scanners: one Rust scanner, one TypeScript scanner, and why they cannot be the same function (Accepted)
 - [0186](./0186-eval-scanner-migration-audit-and-behavioral-gating.md) — 14r-c (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-c) — 0186 — Eval scanner migration: audit gate, behavioral+structural enforcement, name-derived gating, and parked residuals (Accepted)
 - [0190](./0190-observability-stack-boot-fixes.md) — 13r-a (M-postgate thirteenth-review residuals §13r-a) — 0190 — The observability stack could not boot: three committed config defects fixed, tempo parked, `build_sha` residual mechanized (Accepted)
+- [0191](./0191-mr-trace-relay-integration.md) — 13r-b (M-postgate thirteenth-review residuals §13r-b) — 0191 — `mr-trace-relay` integration: the 8th service, its scrape target and its dead-man's switch land as one change (Accepted)
 
 ### security-authz
 

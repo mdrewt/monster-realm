@@ -17,17 +17,21 @@ exporter reducer, no polling loop, and no instrumentation seam inside the module
 ```text
   SpacetimeDB (host process, 127.0.0.1:3000)
     ├── /v1/metrics ─────────── scrape ──> Prometheus :9090
-    └── module_logs/*.log ── read-only ──> Alloy :12345 ──> Loki :3100
-                                             │  └── log-derived counters, scraped as S1b
-  browser (OTel Web SDK, m20c)               │
+    └── module_logs/*.log ─┬─ read-only ──> Alloy :12345 ──> Loki :3100
+                           │                   │  └── log-derived counters, scraped as S1b
+                           └─ read-only ──> mr-trace-relay :9101 ──> stdout (no ingest yet)
+                                                 └── /health ── scrape ──> Prometheus
+  browser (OTel Web SDK, m20c)                 │
     └── OTLP/HTTP ──> Caddy :8443 ──────> Alloy ──┬──> Tempo :3200        (traces)
                                                   └──> Prometheus remote-write (metrics)
   node_exporter :9100 ──────── scrape ──> Prometheus
   Prometheus + Loki + Tempo ── query ───> Grafana :3001 ──> unified alerting ──> webhook
 ```
 
-Seven containers. The 8th, `mr-trace-relay` (ADR-0180 D15/D17 — server-side causal spans
-reconstructed from paired log breadcrumbs), ships in slice **m20b-2**; see *Deliberately absent*
+Eight containers. The 8th, `mr-trace-relay` (ADR-0180 D15/D17 — server-side causal spans
+reconstructed from paired log breadcrumbs), landed in slice **13r-b** with its scrape job and its
+dead-man's-switch alert rule. It reads the SAME read-only bind mount Alloy does and prints its
+trace document on stdout; nothing ingests that document yet (ADR-0191) — see *Known limitations*
 below.
 
 ## Quick start
@@ -142,17 +146,15 @@ Prometheus 30d · Loki 30d · Tempo 7d. See [the runbook](../../docs/observabili
 ## Licensing (OBS-33)
 
 Loki, Tempo and Grafana OSS are **AGPLv3**; Prometheus, Alloy, node_exporter and Caddy are
-Apache-2.0. AGPL's network-copyleft clause triggers on distributing a *modified* copy to other
-users over a network. This deployment runs **stock, unmodified** vendor images — configured only,
+Apache-2.0, and `mr-trace-relay` runs the stock MIT-licensed `node` image with this repo's own
+scripts bind-mounted read-only (no image is built for it). AGPL's network-copyleft clause triggers
+on distributing a *modified* copy to other users over a network. This deployment runs **stock, unmodified** vendor images — configured only,
 for a single operator — so nothing triggers it. **That conclusion is contingent on staying
 stock**, which is why the images are digest-pinned and the pins are asserted by a test. Caddy is
 the sole built image, and Caddy is Apache-2.0.
 
 ## Deliberately absent
 
-- **`mr-trace-relay`** and its Prometheus scrape job and dead-man's-switch alert rule (m20b-2).
-  A scrape target for a process that does not exist would pin `up=0` forever and train the
-  operator to ignore a dead-man's switch.
 - **Alertmanager, Datadog, Vector, a standalone OTel Collector, Pushgateway, any bespoke exporter**
   (OBS-37). Asserted by exact service-set equality, not by absence checks.
 - **A reverse proxy in front of SpacetimeDB itself** (OBS-17) — not triggered, because OQ1
@@ -163,8 +165,13 @@ the sole built image, and Caddy is Apache-2.0.
 - **Resource caps are placeholders.** M20 §5 sequences this slice in *parallel* with m20d
   (`mr-load-driver`), so no measured footprint exists yet. Re-size at post-integration
   verification.
+- **Nothing ingests the relay's trace document yet.** `mr-trace-relay` runs, is scraped and is
+  dead-man's-switched, but its OTLP/HTTP JSON document goes to stdout: the OTLP POST client is
+  deferred to a follow-up slice (ADR-0191). It costs no signal today because `$trace_pair_set` is
+  empty, so the document is `{"resourceSpans":[]}` whatever the sink.
 - **The `connection_id` correlation pivot is not verifiable end-to-end yet.** Tempo holds no
-  server spans until m20b-2 and no client spans until m20c. The config is correct and inert.
+  server spans until the relay POSTs them and no client spans until m20c. The config is correct
+  and inert.
 - **The `heartbeat` half of the `evt` vocabulary is written against an unmerged contract.**
   `mr_log`/`mr_heartbeat` are m20a's, and m20a may still adjust the envelope. Per M20 §5's own
   stated mitigation, drift is caught by m20e's post-merge integration eval, not by a pre-merge
