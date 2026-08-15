@@ -5,6 +5,7 @@
 **Slice:** 11r-d
 **Supersedes:** —
 **Amends:** ADR-0142
+**Amended-by:** ADR-0196
 **Subsystems:** tooling-docs, ci-gates
 **Decision:** Changelog freshness is enforced as a nightly drift check (spec D4's default), not a per-PR gate nor manual-only discipline; implementation defers to 11r-i, being outside 11r-d's declared `touches:`.
 
