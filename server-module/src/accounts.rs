@@ -39,12 +39,12 @@ use spacetimedb::{Identity, ReducerContext, ScheduleAt, Table, Timestamp};
 /// and that is what keeps the audience-disconnect branch outage-safe.
 /// The URL is assembled from two literals so the SOURCE TEXT carries no
 /// contiguous slash-slash token; it compiles to `https:` + `//auth.monster-realm.invalid/`.
-/// Most source-scan evals are string-literal-aware now, via the shared
-/// `evals/rust-scan.mjs` (ADR-0181, ADR-0186) — but two still require this form, and
-/// `13r-c-2` owns both: `trade-escrow-guards.eval.mjs` strips slash-slash line-comments
-/// BEFORE string literals, so a bare literal unbalances quote-pairing and blanks later
-/// files from its whole-crate blob (TR-11 reds; re-measured 2026-08-15), and
-/// `account-e2e.eval.mjs`'s `ISSUER_NEEDLE` matches the `concat!()` token exactly (N4 throw).
+/// Exactly two gates RED on a bare literal (ADR-0181; re-measured 2026-08-15 @ 7eb6980):
+/// `trade-escrow-guards.eval.mjs`, which strips slash-slash line-comments BEFORE string
+/// literals, so a bare literal unbalances quote-pairing and blanks later files from its
+/// whole-crate blob (TR-11); and `account-e2e.eval.mjs`, whose `ISSUER_NEEDLE` pins this
+/// exact token (N4 throw). `13r-c-2` owns the first. Other scanners are still unmigrated
+/// and can go silently BLIND instead — `evals/scanner-migration-audit.eval.mjs` is the SSOT.
 ///
 /// HARD SEQUENCING GATE (ADR-0182 D18): flipping ALLOWED_ISSUERS and ALLOWED_AUDIENCE to their
 /// real deployment values, tightening `audience_allowed` to exact single-value equality, and the
