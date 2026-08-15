@@ -1481,9 +1481,6 @@ const BATTLE_RS_SOURCE: &str = include_str!("battle.rs");
 const CONTENT_RS_SOURCE: &str = include_str!("content.rs");
 const MONSTER_MGMT_RS_SOURCE: &str = include_str!("monster_mgmt.rs");
 const MOVEMENT_RS_SOURCE: &str = include_str!("movement.rs");
-// Included for the EG2-9 scheduled-reducer scan ONLY (it hosts `playtest_reaper`);
-// it calls no `pub_from_monster`, so it is deliberately NOT in the A3 file set.
-const PLAYTEST_RS_SOURCE: &str = include_str!("playtest.rs");
 const PVP_RS_SOURCE: &str = include_str!("pvp.rs");
 const RAISING_RS_SOURCE: &str = include_str!("raising.rs");
 const TAMING_RS_SOURCE: &str = include_str!("taming.rs");
@@ -2585,22 +2582,104 @@ fn eg2_13_chain_has_explicit_iteration_cap() {
 // argued allowlist entry rather than by weakening the rule).
 // ---------------------------------------------------------------------------
 
-/// Every production source scanned for scheduled reducers. Superset of the A3
-/// file set: `playtest.rs` hosts `playtest_reaper` but calls no
-/// `pub_from_monster`, so it belongs here and not there.
-fn scheduled_scan_sources() -> [(&'static str, &'static str); 10] {
-    [
-        ("evolution.rs", EVOLUTION_RS_SOURCE),
-        ("battle.rs", BATTLE_RS_SOURCE),
-        ("content.rs", CONTENT_RS_SOURCE),
-        ("monster_mgmt.rs", MONSTER_MGMT_RS_SOURCE),
-        ("movement.rs", MOVEMENT_RS_SOURCE),
-        ("playtest.rs", PLAYTEST_RS_SOURCE),
-        ("pvp.rs", PVP_RS_SOURCE),
-        ("raising.rs", RAISING_RS_SOURCE),
-        ("taming.rs", TAMING_RS_SOURCE),
-        ("trading.rs", TRADING_RS_SOURCE),
-    ]
+/// Last path segment of a `/`-separated relative path produced by
+/// `scheduled_scan_sources`. The derived set carries subdirectory prefixes when
+/// a module lives in `src/<subdir>/`, so the basename anchor guard must compare
+/// BASENAMES — an exact compare would red the moment an anchor module
+/// legitimately moves into a subdirectory, reporting "the derivation is broken"
+/// when the derivation is the thing that still works. (Mirrors the
+/// `pvp_tests.rs` helper of the same shape; deliberately a local copy —
+/// `_tests.rs` modules never import from one another, per-module convention.)
+fn scan_basename(rel_path: &str) -> &str {
+    rel_path.rsplit('/').next().unwrap_or(rel_path)
+}
+
+/// Every production source scanned for scheduled reducers, DERIVED from the live
+/// tree rather than hand-listed (ADR-0195 D4, extending the pattern ADR-0179
+/// amendment 1 ratified for `pvp_tests.rs::collect_scan_sources`): a recursive
+/// `read_dir` of `CARGO_MANIFEST_DIR/src`, keeping `*.rs` minus `*_tests.rs`,
+/// sorted, as `(relative path, file text)` pairs.
+///
+/// The hardcoded 10-file list this replaces omitted `accounts.rs`
+/// (`guest_claim_reaper`) and `observability.rs` (`mr_heartbeat`), so EG2-9's
+/// Rust mirror did not cover the two newest scheduled reducers at all while its
+/// JS twin (`no-idle-accrual.eval.mjs` Check B) read the directory dynamically.
+/// A derived set cannot rot that way: a reaper added in a module nobody
+/// remembered to list is scanned on arrival.
+///
+/// Fails LOUD on every I/O error (`read_dir`, entry, stat, read): a file this
+/// helper silently skipped would be a file the invariant does not cover, and a
+/// skip is indistinguishable from a pass.
+fn scheduled_scan_sources() -> Vec<(String, String)> {
+    let src_dir = std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src"));
+    collect_scheduled_scan_sources(src_dir, "")
+}
+
+/// Recursive worker for `scheduled_scan_sources` — one `(relative path, text)`
+/// pair per non-test Rust source under `dir`.
+fn collect_scheduled_scan_sources(
+    dir: &std::path::Path,
+    rel_prefix: &str,
+) -> Vec<(String, String)> {
+    let read = std::fs::read_dir(dir).unwrap_or_else(|e| {
+        panic!(
+            "EG2-9 IO FAIL: read_dir(`{}`) failed: {} — the scheduled-reducer scan \
+             derives its file set from the live tree, so an unreadable directory must \
+             fail LOUD rather than silently scan nothing (a vacuous pass would report \
+             `no scheduled reducer calls a growth helper` about ZERO files).",
+            dir.display(),
+            e
+        )
+    });
+    let mut entries: Vec<(String, std::path::PathBuf)> = Vec::new();
+    for entry in read {
+        let entry = entry.unwrap_or_else(|e| {
+            panic!(
+                "EG2-9 IO FAIL: a directory entry under `{}` could not be read: {} — \
+                 the scan must fail LOUD, never skip an entry.",
+                dir.display(),
+                e
+            )
+        });
+        entries.push((
+            entry.file_name().to_string_lossy().into_owned(),
+            entry.path(),
+        ));
+    }
+    // Sorted so the scan order (and therefore every failure message) is stable
+    // across filesystems.
+    entries.sort();
+
+    let mut out: Vec<(String, String)> = Vec::new();
+    for (name, path) in entries {
+        let rel = if rel_prefix.is_empty() {
+            name.clone()
+        } else {
+            format!("{rel_prefix}/{name}")
+        };
+        let meta = std::fs::metadata(&path).unwrap_or_else(|e| {
+            panic!(
+                "EG2-9 IO FAIL: cannot stat `{}`: {} — the scan must fail LOUD, never \
+                 skip a path it cannot classify.",
+                path.display(),
+                e
+            )
+        });
+        if meta.is_dir() {
+            out.extend(collect_scheduled_scan_sources(&path, &rel));
+        } else if name.ends_with(".rs") && !name.ends_with("_tests.rs") {
+            let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+                panic!(
+                    "EG2-9 IO FAIL: cannot read `{}`: {} — the scan must fail LOUD, \
+                     never `continue` past an unreadable source file.",
+                    path.display(),
+                    e
+                )
+            });
+            out.push((rel, src));
+        }
+    }
+    out
 }
 
 /// Every scheduled reducer NAME declared in `src`, read out of the
@@ -2698,47 +2777,143 @@ fn find_named_fn_body(stripped: &str, name: &str) -> Option<String> {
 /// false positive; Check A (growth writes confined to allowlisted writers)
 /// remains the independent backstop at the write site itself.
 ///
-/// ABSENCE-IS-FAIL, four ways:
+/// PER-FILE, NEVER A JOINED BLOB (ADR-0195 D5): scheduled-name discovery, the L1
+/// fn-body enumeration and the body lookup all run against ONE file's stripped
+/// text, and every failure message names that file. In a concatenated blob a
+/// phantom-open brace char literal near one file's end makes the brace-walk
+/// consume the NEXT file, so a real violation on the far side of a file boundary
+/// is swallowed by a body that was never supposed to extend that far. (A
+/// per-file net-brace-balance assert was deliberately REJECTED: char literals
+/// are preserved on purpose by `strip_comments_and_strings`, and
+/// `observability.rs` pushes a closing-brace CHARACTER, so that file is
+/// legitimately net-imbalanced today and the assert would false-RED.)
+///
+/// ABSENCE-IS-FAIL, six ways:
+///   0. the DERIVED scan set must contain the named BASENAME anchors
+///      (`accounts.rs`, `observability.rs`, `movement.rs`, `playtest.rs`,
+///      `pvp.rs`) — a broken `read_dir` derivation reds instead of vacuously
+///      scanning nothing. Named anchors, never a `>= N` count floor: a floor is
+///      green on a derivation that found N of the WRONG files;
 ///   1. at least one scheduled reducer must be discovered (`movement_tick` must
-///      exist) — a rotted attribute scanner would otherwise pass vacuously;
-///   2. every discovered scheduled reducer's body must be FOUND in the scanned
-///      sources — a scheduled reducer in an un-included file would otherwise be
-///      checked by nobody;
-///   3. both banned helpers must EXIST in the scanned production sources — you
-///      cannot prove a scheduled reducer does not call a function that has not
-///      been written yet;
+///      exist) — a rotted attribute scanner would otherwise pass vacuously — and
+///      all SEVEN known reapers must be among them;
+///   2. every discovered scheduled reducer's body must be FOUND in the file that
+///      declares its schedule table — a scheduled reducer nobody can see is a
+///      hole, not a pass;
+///   3. both banned helpers must EXIST in the derived production sources, as a
+///      UNION across files (`accrue_quality_time` is declared in `raising.rs`,
+///      `check_and_evolve` in `evolution.rs`, so no single file carries both) —
+///      you cannot prove a scheduled reducer does not call a function that has
+///      not been written yet;
 ///   4. L1 must be non-empty — an empty wrapper set means the fn enumerator
-///      rotted (the helpers exist, so somebody calls them).
+///      rotted (the helpers exist, so somebody calls them);
+///   5. the two NEWLY covered reducers' extracted bodies must be non-empty AND
+///      carry a known anchor call (`guest_claim_reaper` -> `delete_claim(`,
+///      `mr_heartbeat` -> `mr_log(`). A body truncated by a phantom brace
+///      contains no growth call either, which is a SILENT vacuous pass; the
+///      positive anchors turn that into a loud one. This is the cheap partial
+///      guard on the named residual (ADR-0195 D5) that a closing-brace char
+///      literal can truncate its OWN fn's stripped body.
 ///
 /// kills: `movement_tick` (or any reaper) growing an `accrue_quality_time(` /
 ///        `check_and_evolve(` tail — the AFK-farming vector this whole invariant
 ///        exists to close; the one-line wrapper that hides that tail one call
-///        away; a scan that silently misses a reaper because its file is not in
-///        the include list.
+///        away; a scan that silently misses a reaper because its file was never
+///        added to a hardcoded include list (the exact rot that left
+///        `guest_claim_reaper` and `mr_heartbeat` uncovered by this mirror);
+///        a body extraction that silently truncates to nothing.
 #[test]
 fn eg2_9_no_scheduled_reducer_body_calls_growth_triggers() {
-    let stripped: String = scheduled_scan_sources()
-        .iter()
-        .map(|(_, src)| strip_comments_and_strings(src))
-        .collect::<Vec<String>>()
-        .join("\n");
+    let sources = scheduled_scan_sources();
+    let derived: Vec<&str> = sources.iter().map(|(n, _)| n.as_str()).collect();
 
-    // (3) The ban must not be vacuous.
-    for decl in ["fn accrue_quality_time(", "fn check_and_evolve("] {
+    // (0) The DERIVATION must still be seeing the modules that matter. Named
+    // BASENAME anchors, deliberately NOT a `>= N` count floor: a floor is green
+    // on a derivation that found N of the WRONG files, and it silently rots into
+    // a lie every time a module is added. Basenames, because the recursion
+    // exists precisely so a future `src/<subdir>/<mod>.rs` is covered.
+    for anchor in [
+        "accounts.rs",
+        "observability.rs",
+        "movement.rs",
+        "playtest.rs",
+        "pvp.rs",
+    ] {
         assert!(
-            stripped.contains(decl),
-            "vacuity guard(EG2-9): {decl:?} does not exist in the scanned \
-             production sources — until both growth helpers are written, \
-             asserting that no scheduled reducer calls them proves nothing"
+            derived.iter().any(|d| scan_basename(d) == anchor),
+            "vacuity guard(EG2-9): the DERIVED scan set does not contain \
+             `{anchor}`. The set comes from a recursive read_dir of \
+             CARGO_MANIFEST_DIR/src (`*.rs` minus `*_tests.rs`); a missing anchor \
+             means the derivation itself is broken and every ban below is \
+             vacuous. Derived {} file(s): [{}]",
+            derived.len(),
+            derived.join(", ")
         );
     }
 
+    // PER FILE (ADR-0195 D5) — the sources are stripped INDIVIDUALLY and never
+    // concatenated, so no brace-walk can ever cross a file boundary.
+    let stripped_sources: Vec<(&str, String)> = sources
+        .iter()
+        .map(|(name, src)| (name.as_str(), strip_comments_and_strings(src)))
+        .collect();
+
+    // (3) The ban must not be vacuous. UNION across files.
+    for decl in ["fn accrue_quality_time(", "fn check_and_evolve("] {
+        assert!(
+            stripped_sources.iter().any(|(_, s)| s.contains(decl)),
+            "vacuity guard(EG2-9): {decl:?} does not exist in ANY of the {} \
+             derived production sources — until both growth helpers are written, \
+             asserting that no scheduled reducer calls them proves nothing",
+            stripped_sources.len()
+        );
+    }
+
+    let banned = ["accrue_quality_time(", "check_and_evolve("];
+
+    // Pass 1, PER FILE: discover this file's scheduled reducers, extract their
+    // bodies from THIS file's stripped text, and union this file's L1 wrappers.
+    // L1 — every fn whose OWN body calls a growth helper (the wrapper set).
+    // `write_back_battle_results` is the ONE documented legitimate entry: it is
+    // already transitively reachable from movement_tick (grass encounter) and
+    // pvp_deadline_reaper (forfeit funnel), and EG2-7's wild-battle-only
+    // exemption — not a callgraph rule — is what prevents accrual through it.
+    let mut scheduled: Vec<(&str, String, String)> = Vec::new();
+    let mut l1: Vec<String> = Vec::new();
+    for (file, stripped) in &stripped_sources {
+        for name in scheduled_reducer_names(stripped) {
+            // (2) A scheduled reducer whose body we cannot see is a hole, not a
+            // pass.
+            let body = find_named_fn_body(stripped, &name).unwrap_or_else(|| {
+                panic!(
+                    "vacuity guard(EG2-9): {file} declares the schedule table for \
+                     scheduled reducer {name:?}, but no `fn {name}(` body was found \
+                     in THAT file. The scan set is DERIVED (recursive read_dir of \
+                     CARGO_MANIFEST_DIR/src, `*.rs` minus `*_tests.rs`) and is \
+                     processed per file, so the body either lives outside \
+                     `server-module/src/`, or in a `*_tests.rs` file the derivation \
+                     deliberately excludes, or it was split away from the \
+                     `scheduled(..)` table that names it (ADR-0056 colocates the \
+                     two on purpose). Put it back beside its schedule table, \
+                     otherwise this invariant silently skips it"
+                )
+            });
+            scheduled.push((*file, name, body));
+        }
+        for (fn_name, fn_body) in enumerate_fn_bodies(stripped) {
+            if banned.iter().any(|needle| fn_body.contains(*needle)) && !l1.contains(&fn_name) {
+                l1.push(fn_name);
+            }
+        }
+    }
+
     // (1) The attribute scanner must actually find the live scheduled reducers.
-    let names = scheduled_reducer_names(&stripped);
     assert!(
-        !names.is_empty(),
+        !scheduled.is_empty(),
         "vacuity guard(EG2-9): no table attribute carrying a scheduled(..) \
-         declaration found — movement_tick must exist; the scanner has rotted"
+         declaration was found in any of the {} derived sources — movement_tick \
+         must exist; the scanner has rotted",
+        stripped_sources.len()
     );
     for known in [
         "movement_tick",
@@ -2746,59 +2921,74 @@ fn eg2_9_no_scheduled_reducer_body_calls_growth_triggers() {
         "battle_challenge_reaper",
         "trade_offer_reaper",
         "playtest_reaper",
+        "guest_claim_reaper",
+        "mr_heartbeat",
     ] {
         assert!(
-            names.iter().any(|n| n.as_str() == known),
+            scheduled.iter().any(|(_, n, _)| n.as_str() == known),
             "vacuity guard(EG2-9): the scheduled reducer {known:?} was not \
              discovered — either it was renamed/removed (update this list \
-             consciously, the way GROWTH_WRITERS is updated) or the scan no longer \
-             covers its file. Discovered: {names:?}"
+             consciously, the way GROWTH_WRITERS is updated) or the derived scan \
+             no longer covers its file. Discovered: {:?}",
+            scheduled
+                .iter()
+                .map(|(f, n, _)| format!("{f}:{n}"))
+                .collect::<Vec<String>>()
         );
     }
 
-    let banned = ["accrue_quality_time(", "check_and_evolve("];
-
-    // L1 — every fn whose OWN body calls a growth helper (the wrapper set).
-    // `write_back_battle_results` is the ONE documented legitimate entry: it is
-    // already transitively reachable from movement_tick (grass encounter) and
-    // pvp_deadline_reaper (forfeit funnel), and EG2-7's wild-battle-only
-    // exemption — not a callgraph rule — is what prevents accrual through it.
-    const L1_ALLOWED: [&str; 1] = ["write_back_battle_results"];
-    let mut l1: Vec<String> = Vec::new();
-    for (fn_name, fn_body) in enumerate_fn_bodies(&stripped) {
-        if banned.iter().any(|needle| fn_body.contains(*needle)) && !l1.contains(&fn_name) {
-            l1.push(fn_name);
-        }
+    // (5) Positive body anchors for the two reducers the old hardcoded 10-file
+    // list never covered. An EMPTY or TRUNCATED extraction contains no growth
+    // call, so it passes every ban below while proving nothing.
+    for (reducer, anchor) in [
+        ("guest_claim_reaper", concat!("delete", "_claim(")),
+        ("mr_heartbeat", concat!("mr", "_log(")),
+    ] {
+        let (file, _, body) = scheduled
+            .iter()
+            .find(|(_, n, _)| n.as_str() == reducer)
+            .unwrap_or_else(|| panic!("{reducer} was asserted discovered just above"));
+        assert!(
+            !body.trim().is_empty(),
+            "vacuity guard(EG2-9): the extracted body of the scheduled reducer \
+             {reducer:?} ({file}) is EMPTY. An empty body satisfies every ban \
+             below vacuously — the brace-walk anchored on the wrong `fn`, or a \
+             preserved char literal closed the block on its first byte"
+        );
+        assert!(
+            body.contains(anchor),
+            "vacuity guard(EG2-9): the extracted body of the scheduled reducer \
+             {reducer:?} ({file}) does not contain its known anchor call \
+             {anchor:?}, so the extraction is TRUNCATED (or the reducer was \
+             rewritten). `strip_comments_and_strings` preserves char literals \
+             deliberately, so a closing-brace character inside a body ends the \
+             brace-walk early and everything after it becomes invisible to the \
+             growth-call ban — a silent vacuous pass. Extracted body: {body:?}"
+        );
     }
+
     // (4) An empty wrapper set means the enumerator rotted, not that the code is
     // clean: the guards above already proved both helpers exist, so SOMETHING
     // calls them.
+    const L1_ALLOWED: [&str; 1] = ["write_back_battle_results"];
     assert!(
         !l1.is_empty(),
-        "vacuity guard(EG2-9): no function in the scanned sources calls \
+        "vacuity guard(EG2-9): no function in the derived sources calls \
          `accrue_quality_time(`/`check_and_evolve(`, yet both are declared — the \
          fn enumerator has rotted and the one-hop closure below is meaningless"
     );
 
-    for name in &names {
-        // (2) A scheduled reducer whose body we cannot see is a hole, not a pass.
-        let body = find_named_fn_body(&stripped, name).unwrap_or_else(|| {
-            panic!(
-                "vacuity guard(EG2-9): scheduled reducer {name:?} is declared but \
-                 its `fn` body is not in the scanned source set — extend \
-                 `scheduled_scan_sources()` with the file that defines it, \
-                 otherwise this invariant silently skips it"
-            )
-        });
+    // Pass 2: the bans themselves, over the per-file bodies collected above.
+    for (file, name, body) in &scheduled {
         for needle in banned {
             assert!(
                 !body.contains(needle),
-                "TEETH(EG2-9): the SCHEDULED reducer {name:?} directly calls \
-                 {needle:?} in its own body. Quality-Time and auto-evolution may \
-                 only be driven by deliberate player action: a timer-driven call \
-                 lets a player tape down a movement key (or simply stay connected) \
-                 and farm Trust / Quality-Time / evolutions while AFK. The hook \
-                 belongs on `enqueue_move`, not `movement_tick` (EG2-12). \
+                "TEETH(EG2-9) in {file}: the SCHEDULED reducer {name:?} directly \
+                 calls {needle:?} in its own body. Quality-Time and auto-evolution \
+                 may only be driven by deliberate player action: a timer-driven \
+                 call lets a player tape down a movement key (or simply stay \
+                 connected) and farm Trust / Quality-Time / evolutions while AFK. \
+                 The hook belongs on `enqueue_move`, not `movement_tick` (EG2-12). \
                  (Direct-call only: `write_back_battle_results` staying \
                  transitively reachable from movement_tick/pvp_deadline_reaper is \
                  INTENDED — EG2-7's wild-battle-only exemption, not a callgraph \
@@ -2811,9 +3001,9 @@ fn eg2_9_no_scheduled_reducer_body_calls_growth_triggers() {
                 continue;
             }
             assert!(
-                !body_calls(&body, wrapper),
-                "TEETH(EG2-9, one-hop): the SCHEDULED reducer {name:?} calls \
-                 {wrapper:?}, whose own body calls `accrue_quality_time(` or \
+                !body_calls(body, wrapper),
+                "TEETH(EG2-9, one-hop) in {file}: the SCHEDULED reducer {name:?} \
+                 calls {wrapper:?}, whose own body calls `accrue_quality_time(` or \
                  `check_and_evolve(`. A one-line wrapper is the cheapest way to \
                  put growth back on a timer while passing a direct-call scan, and \
                  it has NO backstop: unlike `write_back_battle_results` (the sole \
