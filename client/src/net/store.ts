@@ -1187,16 +1187,40 @@ function swapWinnerTag(outcome: string): string {
   return outcome;
 }
 
-/** Generic own-key shallow equality over plain row objects (13r-e reconcile
- *  change detection). Key-set + `===` per field: bigint/string/number/boolean
- *  columns all compare correctly, and an appended column is covered
+/** Generic own-key equality over plain row objects (13r-e reconcile change
+ *  detection). Key-set + `===` per field, with ONE level of recursion into
+ *  plain-object values: `StoreMonsterPub.essence` is a nested
+ *  `Record<AffinityName, number>` rebuilt as a FRESH literal by every
+ *  `monsterPubRowToStore` call, so a reference compare on it reports every
+ *  unchanged row as changed — re-arming the exact render storm this guard
+ *  exists to prevent (tester-caught). An appended primitive column is covered
  *  automatically (a hand-listed field compare would silently rot). */
 function shallowRowEq(a: Record<string, unknown>, b: Record<string, unknown>): boolean {
   const ka = Object.keys(a);
   const kb = Object.keys(b);
   if (ka.length !== kb.length) return false;
   for (const k of ka) {
-    if (a[k] !== b[k]) return false;
+    const av = a[k];
+    const bv = b[k];
+    if (av === bv) continue;
+    if (!nestedRecordEq(av, bv)) return false;
+  }
+  return true;
+}
+
+/** One-level nested compare: both values must be plain non-null objects whose
+ *  own values are `===`-equal primitives (the `essence` shape). Anything
+ *  deeper or non-object reports unequal — the safe direction (a spurious
+ *  re-set, never a missed update). */
+function nestedRecordEq(av: unknown, bv: unknown): boolean {
+  if (typeof av !== 'object' || av === null || typeof bv !== 'object' || bv === null) return false;
+  const ra = av as Record<string, unknown>;
+  const rb = bv as Record<string, unknown>;
+  const ka = Object.keys(ra);
+  const kb = Object.keys(rb);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) {
+    if (ra[k] !== rb[k]) return false;
   }
   return true;
 }

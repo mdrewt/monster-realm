@@ -774,6 +774,68 @@ describe('AuthoritativeStore 13r-e: reconcileMonstersFromView post-condition', (
     expect(bobView.ownMonsters('alice')).toEqual([]);
   });
 
+  it('BITES: an UNCHANGED row set marks NOTHING dirty, while a changed field marks exactly one batch (render-storm guard)', () => {
+    // WHAT THIS PINS (verifier advisory A, ADR-0194 D4). The connection adapter
+    // calls reconcileMonstersFromView in EVERY batcher flush — i.e. on every
+    // table's burst, including the ~5/s movement ticks — so the reconcile must be
+    // a NO-OP for an unchanged row set. Without change detection, every movement
+    // tick marks the batch dirty and re-notifies every UI listener: a render storm
+    // that no other test in this file can see (all of them assert a REAL change).
+    //
+    // MUTANTS THIS KILLS: `shallowRowEq -> false` and deletion of the
+    // `prev === undefined || !shallowRowEq(prev, m)` guard (both make the
+    // no-change half notify); `shallowRowEq -> true` (makes the changed half
+    // silently drop a real update — the balance-freeze failure mode).
+    //
+    // THE FIXTURE IS PRODUCTION-SHAPED ON PURPOSE. The rows are rebuilt by calling
+    // the factory again, so they are structurally equal but NON-IDENTICAL objects,
+    // *including a freshly-built nested `essence` record* — which is exactly what
+    // the boundary converter emits: monsterPubRowToStore (rowConvert.ts:214-223)
+    // constructs a new `essence: { Fire: …, … }` literal on EVERY call, so the
+    // store never sees the same nested object twice in production. That shape is
+    // what makes this test meaningful: it kills a `prev === m` reference-equality
+    // cheat, and it is the only shape the guard will ever actually face.
+    //
+    // ⚠ RED AT AUTHORING TIME — AND IT IS THE IMPLEMENTATION, NOT THE FIXTURE.
+    // store.ts's `shallowRowEq` is a generic own-key `===` compare, and `essence`
+    // is a nested OBJECT, so `prev.essence !== m.essence` for two converter
+    // outputs that carry identical numbers. The guard therefore reports "changed"
+    // on every flush and suppresses nothing: the render storm it exists to prevent
+    // is still live. Two sanctioned fixes, both in store.ts:
+    //   (a) compare `essence` field-wise (it is a fixed 8-key affinity record), or
+    //   (b) make shallowRowEq recurse ONE level into plain-object values.
+    // The forbidden "fix" is editing THIS test to share one `essence` reference
+    // between the two arrays: that fixture shape never occurs in production, so it
+    // would make the assertion pass while the storm continues.
+    const s = new AuthoritativeStore();
+    s.reconcileMonstersFromView([monsterPub(1n, 'alice'), monsterPub(2n, 'alice')]);
+    s.flushBatch(); // clear dirty from the initial population
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+
+    // Half 1 — the SAME row set, delivered as fresh objects (a movement-tick flush).
+    s.reconcileMonstersFromView([monsterPub(1n, 'alice'), monsterPub(2n, 'alice')]);
+    s.flushBatch();
+    expect(
+      cb,
+      'an unchanged row set must not mark the batch dirty — the reconcile runs on EVERY ' +
+        'batcher flush, so a dirty mark here re-renders the whole UI on every movement tick',
+    ).toHaveBeenCalledTimes(0);
+
+    // Half 2 — one field changed on one row: a REAL update must still get through.
+    cb.mockClear();
+    s.reconcileMonstersFromView([
+      { ...monsterPub(1n, 'alice'), level: 6 },
+      monsterPub(2n, 'alice'),
+    ]);
+    s.flushBatch();
+    expect(
+      cb,
+      'a changed field must mark the batch dirty exactly once — over-suppression is the ' +
+        'freeze failure mode (the row lands in the store and nothing ever re-renders)',
+    ).toHaveBeenCalledTimes(1);
+  });
+
   it('BITES: a stale row for the SAME id under a DIFFERENT owner never survives the reconcile', () => {
     // The single-store form of (f): the map is keyed by monsterId, so the
     // incoming row must REPLACE the stored one rather than coexist with it.

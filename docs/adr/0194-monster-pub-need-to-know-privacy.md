@@ -43,9 +43,11 @@ re-classifies `monster_pub` from world-readable to owner-scoped within that fram
 
    The body is pinned exactly by `evals/monster-privacy.eval.mjs` and a Rust mirror tooth in
    `evolution_tests.rs` (relative `include_str!("schema.rs")` so cargo-mutants' scratch tree
-   serves mutated text — ADR-0154 D8). The signature is pinned to **exactly one parameter**:
-   spacetimedb 1.12.0 views accept arbitrary extra arguments, so an unpinned signature admits a
-   caller-chosen-owner endpoint.
+   serves mutated text — ADR-0154 D8). The signature is pinned to **exactly one parameter** as
+   belt-and-braces: the installed 1.12.0 macro rejects extra view parameters at compile time
+   ("Views do not take parameters other than '&ViewContext'…" — verifier-measured), but the
+   crate documents multi-arg views as a direction of travel, and the pin costs nothing while
+   protecting against a future macro relaxation admitting a caller-chosen-owner endpoint.
 3. **`engaged_monster_pub` is DEFERRED.** Verified at plan time (two code graphs + grep, twice
    independently): NO client code reads another player's monster_pub row. The PvP battle overlay
    renders from `battle.state`; the trade window renders from `MonsterCard` snapshots embedded in
