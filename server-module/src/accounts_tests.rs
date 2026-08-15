@@ -2694,7 +2694,10 @@ fn machinery_g2_empty_enumeration_fails_loud() {
 
     // The realistic spelling of the same hole: the attributes are all commented
     // out, so the stripped source carries none of them.
-    let commented_out = format!("//{}\npub fn f(ctx: &ReducerContext) {{}}", fx_reducer_attr());
+    let commented_out = format!(
+        "//{}\npub fn f(ctx: &ReducerContext) {{}}",
+        fx_reducer_attr()
+    );
     let squashed = stripped_for_scan(&commented_out);
     assert!(
         parse_reducers(&squashed).is_empty(),
@@ -2703,10 +2706,7 @@ fn machinery_g2_empty_enumeration_fails_loud() {
     );
     let reason = g2_client_identity_violation(&squashed)
         .expect_err("machinery: an all-commented-out reducer surface must FAIL LOUD.");
-    assert!(
-        reason.contains("[R/name-set]"),
-        "machinery: got {reason:?}"
-    );
+    assert!(reason.contains("[R/name-set]"), "machinery: got {reason:?}");
 }
 
 /// GOOD fixtures — the three legal shapes that must NOT red.
@@ -2795,8 +2795,10 @@ fn machinery_g2_good_fixtures_pass() {
         parsed[0].1
     );
     if let Err(reason) = g2_client_identity_violation(&returning) {
-        panic!("machinery: an Identity in the RETURN type is out of scope (params only, \
-                JS parity), got: {reason}");
+        panic!(
+            "machinery: an Identity in the RETURN type is out of scope (params only, \
+                JS parity), got: {reason}"
+        );
     }
 }
 
