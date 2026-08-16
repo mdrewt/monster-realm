@@ -101,7 +101,7 @@ pub(crate) fn heartbeat_fields(content_version: u32) -> String {
 pub(crate) const MR_HEARTBEAT_INTERVAL: Duration = Duration::from_secs(60);
 
 // PRIVATE scheduled table colocated with its reducer (ADR-0056 exception).
-#[spacetimedb::table(name = mr_heartbeat_schedule, scheduled(mr_heartbeat))]
+#[spacetimedb::table(accessor = mr_heartbeat_schedule, scheduled(mr_heartbeat))]
 pub struct MrHeartbeatSchedule {
     #[primary_key]
     #[auto_inc]
@@ -113,7 +113,7 @@ pub struct MrHeartbeatSchedule {
 /// (`playtest_reaper` precedent); exactly one emission; never a row write.
 #[spacetimedb::reducer]
 pub fn mr_heartbeat(ctx: &ReducerContext, _sched: MrHeartbeatSchedule) -> Result<(), String> {
-    if ctx.sender != ctx.identity() {
+    if ctx.sender() != ctx.database_identity() {
         return Err("mr_heartbeat is scheduler-only".to_string());
     }
     let content_version = ctx

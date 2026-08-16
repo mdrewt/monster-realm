@@ -1,7 +1,7 @@
-//! monster-realm server module (SpacetimeDB 2.6 / `spacetimedb` crate 1.12).
+//! monster-realm server module (`spacetimedb` crate 1.12.0 against a 2.8.1 host — see ADR-0197).
 //!
 //! The authoritative imperative shell: tables hold the world's truth; reducers are
-//! the ONLY writers. Reducers are THIN — validate `ctx.sender` + legality, delegate
+//! the ONLY writers. Reducers are THIN — validate `ctx.sender()` + legality, delegate
 //! the rule to `game-core` (the SSOT `apply_move`), write tables; reject with `Err`,
 //! never clamp. Movement is **server-paced and per-zone** (ADR-0011/0007): clients
 //! buffer intent; a per-zone scheduled `movement_tick` drains one move/character/tick.
@@ -152,7 +152,7 @@ pub fn init(ctx: &ReducerContext) {
         // Unseeded sentinel (0 != CONTENT_VERSION) so sync_content_inner ALWAYS
         // seeds on first init; the early-return only fires on a redundant re-sync.
         content_version: 0,
-        owner_identity: ctx.sender,
+        owner_identity: ctx.sender(),
     });
     sync_content_inner(ctx).expect("content seeding failed on init");
     ensure_zone_schedules(ctx);
@@ -185,7 +185,7 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
                 .to_string(),
         );
     }
-    if ctx.sender != cfg.owner_identity {
+    if ctx.sender() != cfg.owner_identity {
         return Err("sync_content: caller is not the module owner".to_string());
     }
     sync_content_inner(ctx)?;
@@ -212,7 +212,7 @@ pub fn on_connect(ctx: &ReducerContext) -> Result<(), String> {
 
 #[spacetimedb::reducer(client_disconnected)]
 pub fn on_disconnect(ctx: &ReducerContext) {
-    let me = ctx.sender;
+    let me = ctx.sender();
     // Cancel any active trade offers (TR-18, ADR-0106). Must run before player row
     // deletion so the offer lookup still resolves player identity. No assets move —
     // assets are never physically escrowed (ADR-0106 D3). Uses indexed filters.

@@ -24,7 +24,7 @@ use spacetimedb::Identity;
 /// One renderable entity. The enum/queue columns are the EXACT M1 `game-core`
 /// types (the shared type IS the schema, never re-declared). `move_queue` is
 /// bounded + public so the owner's client reconciles against the undrained queue.
-#[spacetimedb::table(name = character, public)]
+#[spacetimedb::table(accessor = character, public)]
 pub struct Character {
     #[primary_key]
     #[auto_inc]
@@ -42,7 +42,7 @@ pub struct Character {
 
 /// Links a connection identity to its character. `last_input_seq` is the
 /// reconciliation ack (set at accept-time) — NEVER trusted for authority.
-#[spacetimedb::table(name = player, public)]
+#[spacetimedb::table(accessor = player, public)]
 pub struct Player {
     #[primary_key]
     pub identity: Identity,
@@ -54,7 +54,7 @@ pub struct Player {
 }
 
 /// Singleton world config.
-#[spacetimedb::table(name = config, public)]
+#[spacetimedb::table(accessor = config, public)]
 pub struct Config {
     #[primary_key]
     pub id: u32,
@@ -64,7 +64,7 @@ pub struct Config {
 }
 
 /// Zone definitions seeded from the `game-core` RON registry by `sync_content`.
-#[spacetimedb::table(name = zone_def, public)]
+#[spacetimedb::table(accessor = zone_def, public)]
 pub struct ZoneDefRow {
     #[primary_key]
     pub zone_id: u32,
@@ -77,7 +77,7 @@ pub struct ZoneDefRow {
 
 /// Species definitions seeded from the `game-core` RON registry by `sync_content`.
 #[derive(Clone)]
-#[spacetimedb::table(name = species_row, public)]
+#[spacetimedb::table(accessor = species_row, public)]
 pub struct SpeciesRow {
     #[primary_key]
     pub id: u32,
@@ -99,7 +99,7 @@ pub struct SpeciesRow {
 }
 
 /// Skill definitions seeded from the `game-core` RON registry.
-#[spacetimedb::table(name = skill_row, public)]
+#[spacetimedb::table(accessor = skill_row, public)]
 pub struct SkillRow {
     #[primary_key]
     pub id: u32,
@@ -111,7 +111,7 @@ pub struct SkillRow {
 }
 
 /// Type effectiveness chart seeded from the `game-core` RON registry.
-#[spacetimedb::table(name = type_relation_row, public)]
+#[spacetimedb::table(accessor = type_relation_row, public)]
 pub struct TypeRelationRow {
     #[primary_key]
     #[auto_inc]
@@ -122,7 +122,7 @@ pub struct TypeRelationRow {
 }
 
 /// Item definitions seeded from the `game-core` RON registry.
-#[spacetimedb::table(name = item_row, public)]
+#[spacetimedb::table(accessor = item_row, public)]
 pub struct ItemRow {
     #[primary_key]
     pub id: u32,
@@ -153,7 +153,7 @@ pub struct ItemRow {
 
 /// Shop definitions seeded from the `game-core` RON registry.
 /// Public (world-readable content, like `item_row` — shop names are not private).
-#[spacetimedb::table(name = shop_row, public)]
+#[spacetimedb::table(accessor = shop_row, public)]
 pub struct ShopRow {
     #[primary_key]
     pub shop_id: u32,
@@ -163,7 +163,7 @@ pub struct ShopRow {
 /// Shop stock entries seeded from the `game-core` RON registry.
 /// One row per (shop, item) pair. Looked up by shop_id index in the `buy` reducer.
 /// Public (world-readable — shop prices are game content, not sensitive).
-#[spacetimedb::table(name = shop_item_row, public)]
+#[spacetimedb::table(accessor = shop_item_row, public)]
 pub struct ShopItemRow {
     #[primary_key]
     #[auto_inc]
@@ -190,7 +190,7 @@ pub struct EncounterEntryRow {
 /// PRIVATE encounter table (no `public`). Spawn weights/level bands are
 /// server-only truth that must NEVER reach any client — there is no public
 /// projection and no RLS filter (ADR-0040: the second visibility mode).
-#[spacetimedb::table(name = encounter)]
+#[spacetimedb::table(accessor = encounter)]
 pub struct EncounterRow {
     #[primary_key]
     pub zone_id: u32,
@@ -204,7 +204,7 @@ pub struct EncounterRow {
 /// genes (IVs, EVs, nature) that must NEVER reach a non-owner client. Only
 /// server-side reducers read/write this table; no client can subscribe.
 #[derive(Clone)]
-#[spacetimedb::table(name = monster)]
+#[spacetimedb::table(accessor = monster)]
 pub struct Monster {
     #[primary_key]
     #[auto_inc]
@@ -306,7 +306,7 @@ pub struct Monster {
 /// `monster` mutation (dual-write discipline, unchanged — visibility is
 /// transport-only, server reads/writes are unaffected).
 #[derive(Clone)]
-#[spacetimedb::table(name = monster_pub)]
+#[spacetimedb::table(accessor = monster_pub)]
 pub struct MonsterPub {
     #[primary_key]
     pub monster_id: u64,
@@ -372,12 +372,12 @@ pub struct MonsterPub {
 /// view accepts extra args; an extra `owner` param is a caller-chosen-owner
 /// leak). Lives next to the table it projects (visibility is a schema
 /// artifact — the `my_conversation`/`my_wallet`/`my_account` convention).
-#[spacetimedb::view(name = my_monster_pub, public)]
+#[spacetimedb::view(accessor = my_monster_pub, public)]
 fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
     ctx.db
         .monster_pub()
         .owner_identity()
-        .filter(ctx.sender)
+        .filter(ctx.sender())
         .collect()
 }
 
@@ -393,7 +393,7 @@ fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
 /// the opponent (side B).  Adding an index is additive (ADR-0006): no column or PK
 /// change; the schema-snapshot eval tracks columns+PK only, not index presence.
 #[derive(Clone)]
-#[spacetimedb::table(name = battle, public)]
+#[spacetimedb::table(accessor = battle, public)]
 pub struct Battle {
     #[primary_key]
     #[auto_inc]
@@ -414,7 +414,7 @@ pub struct Battle {
 /// the raw RNG-derived seed must never reach any client (no projection, no RLS
 /// filter, no generated accessor — mirrors the private `encounter` table,
 /// ADR-0044). M8c only WRITES this row; M8d reads/clears it.
-#[spacetimedb::table(name = battle_wild)]
+#[spacetimedb::table(accessor = battle_wild)]
 pub struct BattleWild {
     #[primary_key]
     pub battle_id: u64,
@@ -436,7 +436,7 @@ pub struct BattleWild {
 /// `(owner_identity, item_id)`, enforced by routing every insert through
 /// `grant_item` (the `inventory-single-stack` parity eval, ADR-0054) — there is
 /// no DB-level composite unique constraint (unsupported in this toolchain).
-#[spacetimedb::table(name = inventory, public)]
+#[spacetimedb::table(accessor = inventory, public)]
 pub struct Inventory {
     #[primary_key]
     #[auto_inc]
@@ -479,7 +479,7 @@ pub struct EssenceRequirementRow {
 /// R1 — no duplicate (from, to) pair — has NO DB-level backstop; it is enforced
 /// by validate_evolution_paths at the content gate plus the sync_content
 /// duplicate-pair seed check.
-#[spacetimedb::table(name = evolution_path, public)]
+#[spacetimedb::table(accessor = evolution_path, public)]
 pub struct EvolutionPathRow {
     #[primary_key]
     #[auto_inc]
@@ -499,7 +499,7 @@ pub struct EvolutionPathRow {
 
 /// NPC entity role row. Entity/component: an NPC is a `character` row + this.
 /// `zone_id` mirrors `character.zone_id` (kept in sync on zone crossings, M12c).
-#[spacetimedb::table(name = npc, public)]
+#[spacetimedb::table(accessor = npc, public)]
 pub struct Npc {
     #[primary_key]
     pub entity_id: u64,
@@ -520,7 +520,7 @@ pub struct Npc {
 /// PRIVATE per-player dialogue state: flags + done-quest history.
 /// Must-never-leak: flags gate content branches (ADR-0015, ADR-0069).
 /// `active_quests` is NOT stored here — derived from `player_quest` rows.
-#[spacetimedb::table(name = player_dialogue_state)]
+#[spacetimedb::table(accessor = player_dialogue_state)]
 pub struct PlayerDialogueStateRow {
     #[primary_key]
     pub owner_identity: Identity,
@@ -531,7 +531,7 @@ pub struct PlayerDialogueStateRow {
 /// Active quest progress. Public (quest log is world-readable like `inventory`).
 /// Per-owner transport RLS deferred until per-row RLS lands.
 #[derive(Clone)]
-#[spacetimedb::table(name = player_quest, public)]
+#[spacetimedb::table(accessor = player_quest, public)]
 pub struct PlayerQuestRow {
     #[primary_key]
     #[auto_inc]
@@ -546,7 +546,7 @@ pub struct PlayerQuestRow {
 /// PRIVATE since M13.5c (ADR-0087): `npc_entity_id` + `current_node_id` leak
 /// private quest/dialogue progress — clients read ONLY through the owner-scoped
 /// `my_conversation` view below.
-#[spacetimedb::table(name = player_conversation)]
+#[spacetimedb::table(accessor = player_conversation)]
 pub struct PlayerConversation {
     #[primary_key]
     pub owner_identity: Identity,
@@ -558,16 +558,16 @@ pub struct PlayerConversation {
 /// subscription sees ONLY its own row, via the `owner_identity` unique index —
 /// never a whole-table scan. Lives next to the table it projects (visibility is
 /// a schema artifact, like `monster`/`monster_pub`).
-#[spacetimedb::view(name = my_conversation, public)]
+#[spacetimedb::view(accessor = my_conversation, public)]
 fn my_conversation(ctx: &spacetimedb::ViewContext) -> Option<PlayerConversation> {
     ctx.db
         .player_conversation()
         .owner_identity()
-        .find(ctx.sender)
+        .find(ctx.sender())
 }
 
 /// Healing location content seeded by `sync_content`. Public (world-readable).
-#[spacetimedb::table(name = heal_location_row, public)]
+#[spacetimedb::table(accessor = heal_location_row, public)]
 pub struct HealLocationRow {
     #[primary_key]
     pub location_id: u32,
@@ -588,7 +588,7 @@ pub struct HealLocationRow {
 
 /// PRIVATE per-player heal cooldown anchor.
 /// Must-never-leak: timestamp reveals heal timing (ADR-0015, ADR-0069).
-#[spacetimedb::table(name = heal_cooldown)]
+#[spacetimedb::table(accessor = heal_cooldown)]
 pub struct HealCooldown {
     #[primary_key]
     pub owner_identity: Identity,
@@ -618,7 +618,7 @@ pub struct HealCooldown {
 /// Terminal state: the row is DELETED (not updated to Cancelled) — mirrors battle
 /// terminal GC (M12.5e, ADR-0077). This means no trade history is retained; a
 /// history table is a follow-up concern (M16+).
-#[spacetimedb::table(name = trade_offer, public)]
+#[spacetimedb::table(accessor = trade_offer, public)]
 pub struct TradeOffer {
     #[primary_key]
     #[auto_inc]
@@ -663,7 +663,7 @@ pub struct TradeOffer {
 /// STUB: this table declaration is additive (ADR-0006). The implementer must
 /// leave it WITHOUT the `public` attribute (privacy invariant test bites if
 /// `public` is added).
-#[spacetimedb::table(name = player_wallet)]
+#[spacetimedb::table(accessor = player_wallet)]
 pub struct PlayerWallet {
     #[primary_key]
     pub owner_identity: Identity,
@@ -677,9 +677,9 @@ pub struct PlayerWallet {
 /// path, so `Option` is load-bearing — "no row" stays distinguishable from
 /// "balance 0" and must never be flattened through `economy::wallet_balance`.
 /// Lives next to the table it projects (visibility is a schema artifact).
-#[spacetimedb::view(name = my_wallet, public)]
+#[spacetimedb::view(accessor = my_wallet, public)]
 fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
-    ctx.db.player_wallet().owner_identity().find(ctx.sender)
+    ctx.db.player_wallet().owner_identity().find(ctx.sender())
 }
 
 // --- M21 account tables (ADR-0179 D2) ------------------------------------------
@@ -715,7 +715,7 @@ pub enum AccountStatus {
 /// deferred: it changes live column TYPES, a non-additive migration
 /// (ADR-0195 D1).
 #[derive(Clone)]
-#[spacetimedb::table(name = account)]
+#[spacetimedb::table(accessor = account)]
 pub struct Account {
     #[primary_key]
     pub identity: Identity,
@@ -736,12 +736,12 @@ pub struct Account {
 /// Owner-scoped read path for `account` (ADR-0179 D2, mirroring `my_wallet`
 /// above / ADR-0154 D2). `public` on the `#[view]` keyword is a mandatory,
 /// inert token — THIS BODY is the entire security boundary and must stay pinned
-/// to exactly this expression, not merely contain it (a decoy `find(ctx.sender)`
+/// to exactly this expression, not merely contain it (a decoy `find(ctx.sender())`
 /// followed by `find(other)` compiles clean and leaks; ADR-0154 D2's attack
 /// applies identically here).
-#[spacetimedb::view(name = my_account, public)]
+#[spacetimedb::view(accessor = my_account, public)]
 fn my_account(ctx: &spacetimedb::ViewContext) -> Option<Account> {
-    ctx.db.account().identity().find(ctx.sender)
+    ctx.db.account().identity().find(ctx.sender())
 }
 
 /// PRIVATE in-flight guest→account claim (no `public`) — one row per guest
@@ -753,7 +753,7 @@ fn my_account(ctx: &spacetimedb::ViewContext) -> Option<Account> {
 /// argument (AUTH-9), rendered back only to the same person completing the claim.
 /// `Clone` derived before the table attr (see `Account`) for value-style tests.
 #[derive(Clone)]
-#[spacetimedb::table(name = guest_claim)]
+#[spacetimedb::table(accessor = guest_claim)]
 pub struct GuestClaim {
     #[primary_key]
     pub guest_identity: Identity,
@@ -777,7 +777,7 @@ pub struct GuestClaim {
 /// bump (ADR-0106 D7 precedent, mirrors `trade_offer`). No `#[index(btree)]`
 /// on `rating` in m17a — the m17b leaderboard sorts client-side over a full
 /// `profile` subscription; add an index if/when server-side range queries land.
-#[spacetimedb::table(name = profile, public)]
+#[spacetimedb::table(accessor = profile, public)]
 pub struct Profile {
     #[primary_key]
     pub identity: Identity,
@@ -811,7 +811,7 @@ pub enum ChallengeStatus {
 /// Declined, Cancelled) are DELETED immediately after processing — no history
 /// table in M16; follow-up in M17+.
 /// Pending rows expire via the challenge TTL reaper (pvp.rs, ADR-0126).
-#[spacetimedb::table(name = battle_challenge, public)]
+#[spacetimedb::table(accessor = battle_challenge, public)]
 pub struct BattleChallenge {
     #[primary_key]
     #[auto_inc]
@@ -838,7 +838,7 @@ pub struct BattleChallenge {
 ///
 /// Two rows exist per turn (one per side); both are deleted atomically when
 /// `resolve_pvp_turn_if_ready` fires in the same transaction.
-#[spacetimedb::table(name = battle_action)]
+#[spacetimedb::table(accessor = battle_action)]
 pub struct BattleAction {
     #[primary_key]
     #[auto_inc]

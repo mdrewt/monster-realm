@@ -46,7 +46,7 @@ jobs:
       - uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
         with: { tool: cargo-nextest }
       - run: just setup
-      # Pinned SpacetimeDB CLI (2.6.0) so `just eval` → bindings-drift runs the
+      # Pinned SpacetimeDB CLI (2.8.1) so `just eval` → bindings-drift runs the
       # REAL `spacetime generate` + diff in the fast ci job (without the CLI it
       # SKIPS, so committed-binding drift was catchable only in the slow e2e job
       # — a correctness hole; see ADR-0050). Mirrors the e2e job's install/pin.
@@ -60,10 +60,10 @@ jobs:
           curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
           sh /tmp/spacetime-install.sh --yes
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Pin spacetime 2.6.0
+      - name: Pin spacetime 2.8.1
         run: |
-          spacetime version install 2.6.0
-          spacetime version use 2.6.0
+          spacetime version install 2.8.1
+          spacetime version use 2.8.1
           spacetime --version
       - run: just lint
       - run: just typecheck
@@ -115,7 +115,7 @@ jobs:
       # cannot hide the check (non-self-sealing point, spec 13.5a-1). Must stay a bare
       # exact `- run:` line — evals/ci-gate-wiring.eval.mjs matches this step form.
       - run: node evals/ci-gate-wiring.eval.mjs
-      # Pinned SpacetimeDB CLI (2.6.0) so publish + `spacetime generate` protocol,
+      # Pinned SpacetimeDB CLI (2.8.1) so publish + `spacetime generate` protocol,
       # the committed TS bindings, and the module all agree (ADR-0009).
       - name: Install SpacetimeDB CLI
         # `--yes`: the installer prompts to confirm and aborts on a non-tty CI
@@ -128,10 +128,10 @@ jobs:
           curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
           sh /tmp/spacetime-install.sh --yes
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Pin spacetime 2.6.0
+      - name: Pin spacetime 2.8.1
         run: |
-          spacetime version install 2.6.0
-          spacetime version use 2.6.0
+          spacetime version install 2.8.1
+          spacetime version use 2.8.1
           spacetime --version
       # 13.5h (ADR-0086): pre-build the module wasm WITH dev_reducers, then
       # global-setup publishes this artifact via `--bin-path` at its publish

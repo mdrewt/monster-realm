@@ -8,7 +8,7 @@
 //   CHAL_REAPER_ARMED            — challenge_pvp arms the reaper AFTER the challenge
 //                                  insert with the EXACT args (ctx, challenge.challenge_id,
 //                                  challenge.created_at_ms) — F1 arg-identity pin
-//   CHAL_REAPER_SCHEDULER_GUARD  — battle_challenge_reaper guards ctx.sender != ctx.identity()
+//   CHAL_REAPER_SCHEDULER_GUARD  — battle_challenge_reaper guards ctx.sender() != ctx.database_identity()
 //   CHAL_REAPER_STALE_CHECK      — battle_challenge_reaper re-checks staleness via the
 //                                  negation-guard shape `if !is_challenge_stale(` … `return Ok(())`
 //                                  (an ignored-result `let _ = is_challenge_stale(...)` fails — F4)
@@ -127,7 +127,7 @@ function checkChalReaperArmed(challengeBody) {
 
 // ---------------------------------------------------------------------------
 // Criterion: CHAL_REAPER_SCHEDULER_GUARD
-// battle_challenge_reaper body must contain ctx.sender != ctx.identity()
+// battle_challenge_reaper body must contain ctx.sender() != ctx.database_identity()
 // (either comparison order).  Without it any client can call the reaper and
 // delete other players' pending challenges.
 // bad fixture: no guard → must flag.  good fixture: guard present.
@@ -135,11 +135,11 @@ function checkChalReaperArmed(challengeBody) {
 function checkChalReaperSchedulerGuard(reaperBody) {
   if (!reaperBody) return { ok: false, reason: 'battle_challenge_reaper function not found' };
   const code = scanCode(reaperBody);
-  if (code.indexOf('ctx.sender!=ctx.identity()') !== -1) return { ok: true };
-  if (code.indexOf('ctx.identity()!=ctx.sender') !== -1) return { ok: true };
+  if (code.indexOf('ctx.sender()!=ctx.database_identity()') !== -1) return { ok: true };
+  if (code.indexOf('ctx.database_identity()!=ctx.sender()') !== -1) return { ok: true };
   return {
     ok: false,
-    reason: 'battle_challenge_reaper body missing ctx.sender != ctx.identity() guard',
+    reason: 'battle_challenge_reaper body missing ctx.sender() != ctx.database_identity() guard',
   };
 }
 
@@ -328,7 +328,7 @@ function checkChalReaperDisarm(pvpSrc) {
 // ---------------------------------------------------------------------------
 function checkScheduleTablePrivate(pvpSrc) {
   const code = squashWs(stripRustStrings(stripRustComments(pvpSrc)));
-  const idx = code.indexOf('name=battle_challenge_reaper_schedule');
+  const idx = code.indexOf('accessor=battle_challenge_reaper_schedule');
   if (idx === -1)
     return {
       ok: false,
@@ -508,13 +508,13 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH FAILED (CHAL_REAPER_SCHEDULER_GUARD bad): checker passed fixture without ctx.sender != ctx.identity() guard',
+          'TEETH FAILED (CHAL_REAPER_SCHEDULER_GUARD bad): checker passed fixture without ctx.sender() != ctx.database_identity() guard',
       };
     }
   }
   // CHAL_REAPER_SCHEDULER_GUARD: good fixture.
   const goodGuard =
-    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender != ctx.identity() { return Err("battle_challenge_reaper is scheduler-only".to_string()); } Ok(()) }';
+    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender() != ctx.database_identity() { return Err("battle_challenge_reaper is scheduler-only".to_string()); } Ok(()) }';
   {
     const r = checkChalReaperSchedulerGuard(goodGuard);
     if (!r.ok) {
@@ -528,7 +528,7 @@ export default async function () {
 
   // CHAL_REAPER_STALE_CHECK: bad — no stale call at all.
   const badStaleMissing =
-    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender != ctx.identity() { return Err("".to_string()); } ctx.db.battle_challenge().challenge_id().delete(args.challenge_id); Ok(()) }';
+    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender() != ctx.database_identity() { return Err("".to_string()); } ctx.db.battle_challenge().challenge_id().delete(args.challenge_id); Ok(()) }';
   {
     const r = checkChalReaperStaleCheck(badStaleMissing);
     if (r.ok) {
@@ -544,7 +544,7 @@ export default async function () {
   // is computed but never gates the delete; the reaper reaps fresh rows on an
   // early fire.
   const badStaleIgnored =
-    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender != ctx.identity() { return Err("".to_string()); } let _ = is_challenge_stale(row.created_at_ms, now_ms(ctx)); ctx.db.battle_challenge().challenge_id().delete(args.challenge_id); Ok(()) }';
+    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender() != ctx.database_identity() { return Err("".to_string()); } let _ = is_challenge_stale(row.created_at_ms, now_ms(ctx)); ctx.db.battle_challenge().challenge_id().delete(args.challenge_id); Ok(()) }';
   {
     const r = checkChalReaperStaleCheck(badStaleIgnored);
     if (r.ok) {
@@ -561,7 +561,7 @@ export default async function () {
   // elapsed → the reaper permanently no-ops (the exact bug class this slice
   // exists to fix — the negation flips, the delete is never reached).
   const badStaleTransposed =
-    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender != ctx.identity() { return Err("".to_string()); } let Some(row) = ctx.db.battle_challenge().challenge_id().find(args.challenge_id) else { return Ok(()); }; if !is_challenge_stale(now_ms(ctx), row.created_at_ms) { return Ok(()); } ctx.db.battle_challenge().challenge_id().delete(args.challenge_id); Ok(()) }';
+    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender() != ctx.database_identity() { return Err("".to_string()); } let Some(row) = ctx.db.battle_challenge().challenge_id().find(args.challenge_id) else { return Ok(()); }; if !is_challenge_stale(now_ms(ctx), row.created_at_ms) { return Ok(()); } ctx.db.battle_challenge().challenge_id().delete(args.challenge_id); Ok(()) }';
   {
     const r = checkChalReaperStaleCheck(badStaleTransposed);
     if (r.ok) {
@@ -580,7 +580,7 @@ export default async function () {
   // `return Ok(())` looks correct but fires the reaper on every invocation
   // regardless of staleness.
   const badStaleEmptyBlock =
-    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender != ctx.identity() { return Err("".to_string()); } let Some(row) = ctx.db.battle_challenge().challenge_id().find(args.challenge_id) else { return Ok(()); }; if !is_challenge_stale(row.created_at_ms, now_ms(ctx)) { } ctx.db.battle_challenge().challenge_id().delete(args.challenge_id); return Ok(()); }';
+    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender() != ctx.database_identity() { return Err("".to_string()); } let Some(row) = ctx.db.battle_challenge().challenge_id().find(args.challenge_id) else { return Ok(()); }; if !is_challenge_stale(row.created_at_ms, now_ms(ctx)) { } ctx.db.battle_challenge().challenge_id().delete(args.challenge_id); return Ok(()); }';
   {
     const r = checkChalReaperStaleCheck(badStaleEmptyBlock);
     if (r.ok) {
@@ -598,7 +598,7 @@ export default async function () {
   // existence-check else-branch also contains `return Ok(())` BEFORE the guard
   // — the checker must anchor its search AFTER the negation guard).
   const goodStale =
-    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender != ctx.identity() { return Err("".to_string()); } let Some(row) = ctx.db.battle_challenge().challenge_id().find(args.challenge_id) else { return Ok(()); }; if !is_challenge_stale(row.created_at_ms, now_ms(ctx)) { return Ok(()); } ctx.db.battle_challenge().challenge_id().delete(args.challenge_id); Ok(()) }';
+    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender() != ctx.database_identity() { return Err("".to_string()); } let Some(row) = ctx.db.battle_challenge().challenge_id().find(args.challenge_id) else { return Ok(()); }; if !is_challenge_stale(row.created_at_ms, now_ms(ctx)) { return Ok(()); } ctx.db.battle_challenge().challenge_id().delete(args.challenge_id); Ok(()) }';
   {
     const r = checkChalReaperStaleCheck(goodStale);
     if (!r.ok) {
@@ -612,7 +612,7 @@ export default async function () {
 
   // CHAL_REAPER_DELETES: bad fixture.
   const badDeletes =
-    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender != ctx.identity() { return Err("".to_string()); } if !is_challenge_stale(row.created_at_ms, now_ms(ctx)) { return Ok(()); } Ok(()) }';
+    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender() != ctx.database_identity() { return Err("".to_string()); } if !is_challenge_stale(row.created_at_ms, now_ms(ctx)) { return Ok(()); } Ok(()) }';
   {
     const r = checkChalReaperDeletes(badDeletes);
     if (r.ok) {
@@ -627,7 +627,7 @@ export default async function () {
   // CHAL_REAPER_DELETES: bad — decorative .delete(0) (MEDIUM gate-hole fix).
   // A literal-0 delete passes the open-paren needle but reaps a non-existent row.
   const badDeleteLiteralZero =
-    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender != ctx.identity() { return Err("".to_string()); } if !is_challenge_stale(row.created_at_ms, now_ms(ctx)) { return Ok(()); } ctx.db.battle_challenge().challenge_id().delete(0); Ok(()) }';
+    'fn battle_challenge_reaper(ctx: &ReducerContext, args: BattleChallengeReaperSchedule) { if ctx.sender() != ctx.database_identity() { return Err("".to_string()); } if !is_challenge_stale(row.created_at_ms, now_ms(ctx)) { return Ok(()); } ctx.db.battle_challenge().challenge_id().delete(0); Ok(()) }';
   {
     const r = checkChalReaperDeletes(badDeleteLiteralZero);
     if (r.ok) {
@@ -755,7 +755,7 @@ export default async function () {
   }
   // CHAL_REAPER_SCHEDULE_PRIVATE: bad — table marked public.
   const badPrivatePublic =
-    '#[spacetimedb::table(name = battle_challenge_reaper_schedule, scheduled(battle_challenge_reaper), public)] struct BattleChallengeReaperSchedule {}';
+    '#[spacetimedb::table(accessor = battle_challenge_reaper_schedule, scheduled(battle_challenge_reaper), public)] struct BattleChallengeReaperSchedule {}';
   {
     const r = checkScheduleTablePrivate(badPrivatePublic);
     if (r.ok) {
@@ -769,7 +769,7 @@ export default async function () {
   }
   // CHAL_REAPER_SCHEDULE_PRIVATE: good — private table.
   const goodPrivate =
-    '#[spacetimedb::table(name = battle_challenge_reaper_schedule, scheduled(battle_challenge_reaper))] struct BattleChallengeReaperSchedule {}';
+    '#[spacetimedb::table(accessor = battle_challenge_reaper_schedule, scheduled(battle_challenge_reaper))] struct BattleChallengeReaperSchedule {}';
   {
     const r = checkScheduleTablePrivate(goodPrivate);
     if (!r.ok) {

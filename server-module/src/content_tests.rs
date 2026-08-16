@@ -2283,7 +2283,7 @@ fn d12r_braced_block<'a>(src: &'a str, head: &str) -> Option<&'a str> {
 /// H4 — THE BLOCK IS ANCHORED ON THE TABLE ATTRIBUTE, not on the first textual
 /// match of `struct HealLocationRow`. The scan runs on the whitespace-squashed,
 /// comment-stripped whole file and requires the sequence
-/// `#[spacetimedb::table(name=heal_location_row` followed WITHIN A SHORT WINDOW
+/// `#[spacetimedb::table(accessor=heal_location_row` followed WITHIN A SHORT WINDOW
 /// by `pub struct HealLocationRow {`. Anchoring on the struct name alone would
 /// let a decoy — a same-named struct declared earlier in the file, or one whose
 /// table attribute was removed — become the scanned block, so every assertion
@@ -2295,7 +2295,7 @@ fn heal_location_row_cost_currency_is_appended_with_a_default() {
     let sq_all = d12r_squash(&stripped);
 
     // H4 anchor: the table attribute, then the struct head it decorates.
-    let attr = ["#[spacetimedb::", "table(name=heal_location", "_row"].concat();
+    let attr = ["#[spacetimedb::", "table(accessor=heal_location", "_row"].concat();
     let attr_at = sq_all.find(attr.as_str()).unwrap_or_else(|| {
         panic!(
             "12r-d A1 (E1, H4 anchor): server-module/src/schema.rs must declare the \

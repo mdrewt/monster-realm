@@ -20,7 +20,8 @@ effectful shells.
 - **`client-wasm`** — thin `wasm-bindgen` exports wrapping `game-core` for client
   prediction (ADR-0036). Built with `wasm-pack`. Depends on `game-core` **without**
   the `spacetimedb` feature (the feature-isolation eval proves it).
-- **`server-module`** — the SpacetimeDB module (crate 1.12 / CLI 2.6). Reducers are
+- **`server-module`** — the SpacetimeDB module (crate 2.8.1 / CLI 2.8.1 —
+  kept in lockstep; the crate version IS the product version, ADR-0197). Reducers are
   THIN: validate `ctx.sender` + legality → delegate to `game-core` → write tables;
   reject with `Err`, never clamp. Shared types flatten into table columns.
 - **`sim-harness`** — headless, deterministic, multi-client driver (injected
@@ -440,7 +441,8 @@ with privacy, starter grant, and management reducers.
   `sync_content` is guarded to module-identity only.
 - **Monster privacy (ADR-0040, hardened by ADR-0194 / issue #284)**: RLS
   (`client_visibility_filter`) is unavailable (crate-`unstable` feature only;
-  `Filter::Sql` cannot express `Vec<u64>` membership). Mechanism: **private**
+  `Filter::Sql` cannot express `Vec<u64>` membership) — re-verified unchanged
+  at 2.8.1 (ADR-0197). Mechanism: **private**
   `monster` table (hidden genes: IVs, EVs, nature) + since 13r-e a **private**
   `monster_pub` projection (safe fields only) read exclusively through the
   owner-scoped **`my_monster_pub`** view — other players' monster_pub rows are

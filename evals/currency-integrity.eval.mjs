@@ -130,8 +130,8 @@ export function hasUncheckedBalanceDecrement(src) {
 // ---------------------------------------------------------------------------
 // Criterion 3: PRIVATE_TABLE
 // player_wallet table must NOT have `public` in its table attribute.
-// Bad fixture: `#[spacetimedb::table(name = player_wallet, public)]`
-// Good fixture: `#[spacetimedb::table(name = player_wallet)]` (no public)
+// Bad fixture: `#[spacetimedb::table(accessor = player_wallet, public)]`
+// Good fixture: `#[spacetimedb::table(accessor = player_wallet)]` (no public)
 // ---------------------------------------------------------------------------
 export function walletTableIsPrivate(schemaSrc) {
   // 13r-c (ADR-0181), red-team BLOCKER — this used to hand-roll the attribute
@@ -467,7 +467,8 @@ export default async function () {
     };
   }
 
-  const badSchema = '#[spacetimedb::table(name = player_wallet, public)] struct PlayerWallet {}';
+  const badSchema =
+    '#[spacetimedb::table(accessor = player_wallet, public)] struct PlayerWallet {}';
   if (walletTableIsPrivate(badSchema) !== false) {
     return {
       name,
@@ -476,7 +477,7 @@ export default async function () {
     };
   }
 
-  const goodSchema = '#[spacetimedb::table(name = player_wallet)] struct PlayerWallet {}';
+  const goodSchema = '#[spacetimedb::table(accessor = player_wallet)] struct PlayerWallet {}';
   if (walletTableIsPrivate(goodSchema) !== true) {
     return {
       name,

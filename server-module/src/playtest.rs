@@ -13,7 +13,7 @@ const PLAYTEST_REAP_INTERVAL: Duration = Duration::from_secs(300); // 5 min
 pub(crate) const PLAYTEST_REAP_MAX_DELETE_PER_TICK: usize = 8192;
 
 // PRIVATE table (NO `public`): must-never-leak per-identity behaviour data (ADR-0015).
-#[spacetimedb::table(name = playtest_event)]
+#[spacetimedb::table(accessor = playtest_event)]
 pub struct PlaytestEvent {
     #[primary_key]
     #[auto_inc]
@@ -29,7 +29,7 @@ pub struct PlaytestEvent {
 }
 
 // PRIVATE scheduled table colocated with its reducer (ADR-0056 exception).
-#[spacetimedb::table(name = playtest_reaper_schedule, scheduled(playtest_reaper))]
+#[spacetimedb::table(accessor = playtest_reaper_schedule, scheduled(playtest_reaper))]
 pub struct PlaytestReaperSchedule {
     #[primary_key]
     #[auto_inc]
@@ -156,7 +156,7 @@ pub(crate) fn record_recruit_event(
 // Scheduler-only reducer. GUARD FIRST (before any delete). Interval singleton.
 #[spacetimedb::reducer]
 pub fn playtest_reaper(ctx: &ReducerContext, _sched: PlaytestReaperSchedule) -> Result<(), String> {
-    if ctx.sender != ctx.identity() {
+    if ctx.sender() != ctx.database_identity() {
         return Err("playtest_reaper is scheduler-only".to_string());
     }
     let mut rows: Vec<(u64, i64)> = ctx

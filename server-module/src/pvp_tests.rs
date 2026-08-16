@@ -92,7 +92,7 @@ fn strip_rust_comments(src: &str) -> String {
 // EA-PVP-01: battle_action table must NOT be public (ADR-0015)
 //
 // Proof-of-teeth: kills any impl that accidentally marks battle_action as
-// `public` — e.g. `#[spacetimedb::table(name = battle_action, public)]`.
+// `public` — e.g. `#[spacetimedb::table(accessor = battle_action, public)]`.
 // `battle_action` is a private table so clients can never query submitted picks,
 // preserving secret-pick semantics.
 //
@@ -105,10 +105,10 @@ fn ea_pvp_01_battle_action_is_not_public() {
     let stripped = strip_rust_comments(SCHEMA_RS);
     // Find the battle_action table declaration and assert no `public` on the same
     // attribute line.
-    let needle_table = concat!("name = ", "battle_action");
+    let needle_table = concat!("accessor = ", "battle_action");
     let public_str = "public";
     let pos = stripped.find(needle_table).expect(
-        "EA-PVP-01: `name = battle_action` declaration not found in schema.rs — \
+        "EA-PVP-01: `accessor = battle_action` declaration not found in schema.rs — \
          the BattleAction table must be declared there",
     );
     // Look at the line containing this declaration.
@@ -132,7 +132,8 @@ fn ea_pvp_01_battle_action_is_not_public() {
 //
 // Proof-of-teeth: kills an impl that forgets the scheduler-only guard,
 // allowing any client to call pvp_deadline_reaper and trigger forfeits.
-// The guard pattern: `ctx.sender != ctx.identity()`.
+// The guard pattern: `ctx.sender() != ctx.database_identity()` (SpacetimeDB 2.x
+// spelling, ADR-0197 — `ctx.identity()` is the deprecated 1.x alias).
 //
 // m17.5e T0 (plan B1/F3 — STRENGTHENING edit by the tester): the scan is
 // re-bounded from the former unbounded suffix slice (`&stripped[fn_pos..]`)
@@ -149,17 +150,17 @@ fn ea_pvp_02_deadline_reaper_has_scheduler_guard() {
     // consistency with the EA-CHR pipeline (a guard token inside a dead-code
     // string literal cannot satisfy the search).  The brace-bounded body
     // extraction operates on the comment+string-stripped text; the guard token
-    // `ctx.sender != ctx.identity()` is not inside any string in pvp.rs so
-    // this does not change the match — only closes the pipeline gap.
+    // `ctx.sender() != ctx.database_identity()` is not inside any string in
+    // pvp.rs so this does not change the match — only closes the pipeline gap.
     let stripped = strip_rust_strings(&strip_rust_comments(PVP_RS));
     // The guard must appear in pvp_deadline_reaper (exact body slice, T0).
-    let guard_pattern = concat!("ctx.sender", " != ", "ctx.identity()");
+    let guard_pattern = concat!("ctx.sender()", " != ", "ctx.database_identity()");
     let fn_body = extract_pvp_fn_body(&stripped, "pvp_deadline_reaper")
         .expect("EA-PVP-02: `pvp_deadline_reaper` function not found in pvp.rs");
     assert!(
         fn_body.contains(guard_pattern),
         "EA-PVP-02 FAIL: `pvp_deadline_reaper` in pvp.rs is missing the \
-         scheduler-only identity guard (`ctx.sender != ctx.identity()`). \
+         scheduler-only identity guard (`ctx.sender() != ctx.database_identity()`). \
          Without this guard, any client can call the reaper and trigger \
          arbitrary forfeits. This guard is required (ADR-0109, matches the \
          `movement_tick` pattern in movement.rs)."
@@ -341,9 +342,9 @@ fn ea_pvp_08_pvp_module_declared_in_lib_rs() {
 #[test]
 fn ea_pvp_09_battle_challenge_is_public() {
     let stripped = strip_rust_comments(SCHEMA_RS);
-    let needle_table = concat!("name = ", "battle_challenge");
+    let needle_table = concat!("accessor = ", "battle_challenge");
     let pos = stripped.find(needle_table).expect(
-        "EA-PVP-09: `name = battle_challenge` not found in schema.rs — \
+        "EA-PVP-09: `accessor = battle_challenge` not found in schema.rs — \
          BattleChallenge must be declared there",
     );
     let line_start = stripped[..pos].rfind('\n').map(|p| p + 1).unwrap_or(0);
@@ -485,7 +486,7 @@ fn rt_m16_01_challenge_pvp_guards_target_not_in_battle() {
 // they beat a real opponent. PvP victory XP must be full-rate, not 1/10.
 //
 // The fix is to distinguish a true practice/sandbox battle
-// (opponent_identity == ctx.sender at start_battle time, where the opponent
+// (opponent_identity == ctx.sender() at start_battle time, where the opponent
 // IS the challenger's own self) from a real PvP battle. One correct expression:
 //   `let is_practice = battle.player_identity == battle.opponent_identity;`
 //
@@ -1708,9 +1709,10 @@ fn m17a_rl2_profile_never_deleted_scan() {
 /// RL-1/RL-2 (g1): schema.rs must declare `profile` table as public with correct fields.
 ///
 /// F4+F8/M-3 hardening — two-step pattern:
-///   Step 1: find the line containing `name = profile` and verify it also contains `public`.
-///           This is a robustness improvement over a single `name = profile, public` needle:
-///           it catches orderings like `public, name = profile` and avoids a brittle
+///   Step 1: find the line containing `accessor = profile` and verify it also contains
+///           `public`. This is a robustness improvement over a single
+///           `accessor = profile, public` needle: it catches orderings like
+///           `public, accessor = profile` and avoids a brittle
 ///           attribute-argument-order dependency.
 ///   Step 2: verify field needles `identity: Identity`, `name: String`, `rating: i32`,
 ///           `wins: u32`, `losses: u32` are present in the schema.
@@ -1725,9 +1727,9 @@ fn m17a_rl2_profile_never_deleted_scan() {
 fn m17a_rl1_profile_table_exists_public_correct_fields() {
     let stripped = strip_rust_comments(SCHEMA_RS);
 
-    // Step 1 (F4): find the line containing `name = profile` and assert it also
-    // contains `public`. This tolerates attribute argument reordering.
-    let name_needle = concat!("name = ", "profile");
+    // Step 1 (F4): find the line containing `accessor = profile` and assert it
+    // also contains `public`. This tolerates attribute argument reordering.
+    let name_needle = concat!("accessor = ", "profile");
     let profile_line = stripped
         .lines()
         .find(|line| line.contains(name_needle))
@@ -2279,7 +2281,7 @@ fn ea_chr_02_disarm_called_at_all_challenge_deletion_sites() {
 // EA-CHR-03: battle_challenge_reaper has the scheduler-only identity guard
 //            (plan F3 — brace-bounded body scan, never a suffix scan)
 //
-// TEETH: kills an impl that forgets `ctx.sender != ctx.identity()` — any
+// TEETH: kills an impl that forgets `ctx.sender() != ctx.database_identity()` — any
 //        client could then call the reaper directly and delete other players'
 //        pending challenges at will.  Body-scoped so the guard in
 //        pvp_deadline_reaper (same token, same file) cannot satisfy it.
@@ -2295,11 +2297,12 @@ fn ea_chr_03_challenge_reaper_has_scheduler_guard() {
         )
     });
     let squashed = squash_ws(body);
-    let guard_needle = concat!("ctx.sender", "!=", "ctx.identity()");
+    let guard_needle = concat!("ctx.sender()", "!=", "ctx.database_identity()");
     assert!(
         squashed.contains(guard_needle),
         "EA-CHR-03 FAIL: `battle_challenge_reaper` body is missing the scheduler-only \
-         identity guard `ctx.sender != ctx.identity()` (squash_ws'd, brace-bounded scan). \
+         identity guard `ctx.sender() != ctx.database_identity()` (squash_ws'd, brace-bounded \
+         scan). \
          Without it any client can invoke the reaper and delete other players' pending \
          challenges (ADR-0109 pvp_deadline_reaper / ADR-0117 trade_offer_reaper pattern)."
     );
@@ -2455,10 +2458,10 @@ fn ea_chr_05_reaper_schedule_table_baselined_and_private() {
 
     // (b) The real attribute in pvp.rs has no `public`.
     let stripped = stripped_pvp_for_scan();
-    let name_needle = concat!("name = ", "battle_challenge_reaper_schedule");
+    let name_needle = concat!("accessor = ", "battle_challenge_reaper_schedule");
     let pos = stripped.find(name_needle).unwrap_or_else(|| {
         panic!(
-            "EA-CHR-05 FAIL: `name = battle_challenge_reaper_schedule` not found in pvp.rs — \
+            "EA-CHR-05 FAIL: `accessor = battle_challenge_reaper_schedule` not found in pvp.rs — \
              the schedule table must be declared there, colocated with its reducer \
              (trade_offer_reaper_schedule precedent, ADR-0056 exception). \
              RED: table absent (m17.5e)."
@@ -2466,11 +2469,10 @@ fn ea_chr_05_reaper_schedule_table_baselined_and_private() {
     });
     let attr_start = stripped[..pos]
         .rfind("#[")
-        .expect("EA-CHR-05: malformed table attribute — no `#[` before the name argument");
-    let attr_end = stripped[pos..]
-        .find(']')
-        .map(|p| pos + p)
-        .expect("EA-CHR-05: malformed table attribute — no closing `]` after the name argument");
+        .expect("EA-CHR-05: malformed table attribute — no `#[` before the accessor argument");
+    let attr_end = stripped[pos..].find(']').map(|p| pos + p).expect(
+        "EA-CHR-05: malformed table attribute — no closing `]` after the accessor argument",
+    );
     let attr = &stripped[attr_start..=attr_end];
     assert!(
         !attr.contains("public"),
@@ -2644,14 +2646,14 @@ fn ea_chr_06_schedule_challenge_reaper_deadline_ms_floored() {
 ///
 /// 4. **L4 — the audit, and WHO it names (EV-8).** Exactly one `log_reject(` in
 ///    each rejection closure's window, plus `,challenger,` in side A's and
-///    `,opponent,` in side B's, plus zero `ctx.sender` in the body. The
+///    `,opponent,` in side B's, plus zero `ctx.sender()` in the body. The
 ///    per-window counts replace a whole-body `== 2` deliberately (M1): that form
 ///    is what `battle_tests.rs:1864-1870` calls "too loose AND a false-positive
 ///    landmine", and it is satisfied by putting both audits in one closure.
 ///    The identity pins matter because a call-site count says nothing about the
-///    argument: `log_reject("start_pvp_battle", ctx.sender, &e)` in both closures
+///    argument: `log_reject("start_pvp_battle", ctx.sender(), &e)` in both closures
 ///    passes a count check and IS the ADR-0166 D1 defect — `start_pvp_battle` is
-///    reached only from `accept_challenge`, where `ctx.sender` is the ACCEPTOR.
+///    reached only from `accept_challenge`, where `ctx.sender()` is the ACCEPTOR.
 ///    The error STRINGS are deliberately NOT pinned: they have no consumer
 ///    outside `pvp.rs`, so pinning them would turn any future rewording RED.
 ///
@@ -2660,7 +2662,7 @@ fn ea_chr_06_schedule_challenge_reaper_deadline_ms_floored() {
 /// `is_fainted` pre-checks (`pvp.rs:252-257`), `team_a`/`team_b` named 3× each,
 /// and ZERO `log_reject(` calls. GREEN at HEAD and required to stay green:
 /// L2a `set_active`, L2b (bare `.active` == 1 file-wide, `-> BattleSide` == 0),
-/// L2c, L2f, and the `ctx.sender` == 0 fence.
+/// L2c, L2f, and the `ctx.sender()` == 0 fence.
 ///
 /// **HONEST LIMITS.**
 /// (a) A same-named permutation of the kind `battle_tests.rs:1727-1735` records
@@ -3028,10 +3030,10 @@ fn e1_start_pvp_battle_constructs_both_sides_via_with_lead() {
         "TEETH (E1/D1 L4 / ADR-0166 D1, plan R6): the side-A rejection must be \
          audited against `challenger` — the squashed window must contain \
          `,challenger,` as the `log_reject` identity argument. \
-         `log_reject(\"start_pvp_battle\", ctx.sender, &e)` in both closures passes a \
+         `log_reject(\"start_pvp_battle\", ctx.sender(), &e)` in both closures passes a \
          call-site COUNT unchanged, and it is precisely the defect ADR-0166 D1 calls \
          out: `start_pvp_battle` is reached only from `accept_challenge`, where \
-         `ctx.sender` is the ACCEPTOR — so a side-A rejection would be filed against \
+         `ctx.sender()` is the ACCEPTOR — so a side-A rejection would be filed against \
          the opponent's identity, pointing any abuse investigation at the wrong \
          player. The sibling helper in this same file already gets it right \
          (`build_pvp_team` takes an `owner` param, pvp.rs:195-216)."
@@ -3050,8 +3052,8 @@ fn e1_start_pvp_battle_constructs_both_sides_via_with_lead() {
     assert_eq!(
         n_sender, 0,
         "ANTI-EVASION (E1/D1 L4, green at HEAD): `start_pvp_battle` must not mention \
-         `ctx.sender` at all; found {n_sender}. It is not a reducer — it is an \
-         internal helper reached only from `accept_challenge`, so `ctx.sender` is the \
+         `ctx.sender()` at all; found {n_sender}. It is not a reducer — it is an \
+         internal helper reached only from `accept_challenge`, so `ctx.sender()` is the \
          ACCEPTOR and is never the right identity for anything in this body. Naming \
          it here is the shape of the audit defect the two assertions above reject."
     );
@@ -3882,7 +3884,7 @@ fn pvp_reason_log_sites_interpolate_an_escaped_binding() {
 //   EA-RA-02  `challenge_pvp` carries the EXACT planned Guard 3a statement,
 //             exactly once, at brace depth 0, BEFORE `battle_challenge().insert(`
 //             and AFTER the target-presence guard (oracle bound, D8); plus the
-//             shared per-body pins: single `let me = ctx.sender;`, no `#[cfg`,
+//             shared per-body pins: single `let me = ctx.sender();`, no `#[cfg`,
 //             no brace char literal, and the tagged log-provenance count.
 //   EA-RA-03  `accept_challenge` ditto (challenger leg), BEFORE `start_pvp_battle(`
 //             and with NO oracle bound (the challenger is joined by construction).
@@ -4062,7 +4064,7 @@ fn ra_assert_guard_pinned(
     // second `let me = target;` re-points the caller leg at the opponent while
     // every needle in this test stays byte-identical.
     let let_me = concat!("letme", "=");
-    let let_me_sender = concat!("letme=", "ctx.sender;");
+    let let_me_sender = concat!("letme=", "ctx.sender();");
     let n_let_me = squashed.matches(let_me).count();
     assert_eq!(
         n_let_me, 1,
@@ -4073,7 +4075,7 @@ fn ra_assert_guard_pinned(
     );
     assert!(
         squashed.contains(let_me_sender),
-        "{ea} FAIL (ADR-0189): `{fn_name}` must bind `let me = ctx.sender;`. The caller leg \
+        "{ea} FAIL (ADR-0189): `{fn_name}` must bind `let me = ctx.sender();`. The caller leg \
          of the account gate is only meaningful if `me` is the reducer's actual sender."
     );
 

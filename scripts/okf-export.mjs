@@ -125,7 +125,13 @@ function parseTableMetadata(filePath) {
   const src = readFileSync(filePath, 'utf8');
   const lines = src.split('\n');
   const meta = {};
-  const tableAttrRe = /#\[spacetimedb::table\(name\s*=\s*(\w+)([^)]*)\)/;
+  // SpacetimeDB 2.x spells the Rust accessor `accessor = X`; 1.x spelled it
+  // `name = X` (in 2.x, `name` is an optional STRING literal overriding the
+  // canonical SQL name, which otherwise defaults to the accessor identifier).
+  // Accept both so this exporter cannot silently emit a table-less bundle across
+  // a version bump — see ADR-0197; a bare `name =` regex here produced exactly
+  // that (0 tables, 50 reducers) during the 1.12.0 -> 2.8.1 migration.
+  const tableAttrRe = /#\[spacetimedb::table\((?:accessor|name)\s*=\s*(\w+)([^)]*)\)/;
 
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
@@ -137,6 +143,7 @@ function parseTableMetadata(filePath) {
     const visibility =
       attrRest.indexOf('public') !== -1 ||
       line.indexOf(', public)') !== -1 ||
+      line.indexOf(`(accessor = ${name}, public`) !== -1 ||
       line.indexOf(`(name = ${name}, public`) !== -1
         ? 'public'
         : 'private';

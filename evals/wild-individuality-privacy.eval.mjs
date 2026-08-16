@@ -55,7 +55,7 @@ export function stripComments(src) {
 
 // ---------------------------------------------------------------------------
 // parseTables — VERBATIM clone of encounter-privacy.eval.mjs (name-agnostic).
-// Extracts the table name from `name = ident` specifically, tolerant of arg
+// Extracts the table name from `accessor = ident` specifically, tolerant of arg
 // order and multi-line attributes.
 // ---------------------------------------------------------------------------
 
@@ -88,7 +88,7 @@ export function parseTables(src) {
     }
     const attrArgText = src.slice(argStart + 1, i); // text between the outer ( )
 
-    const nameMatch = attrArgText.match(/\bname\s*=\s*(\w+)/);
+    const nameMatch = attrArgText.match(/\baccessor\s*=\s*(\w+)/);
     if (!nameMatch) {
       pos = i + 1;
       continue;
@@ -253,10 +253,10 @@ export default async function () {
   // real source. If any fails to bite, return FAIL so the gate never goes blind.
   // -------------------------------------------------------------------------
 
-  // TOOTH 1a: `(name = battle_wild, public)` — standard arg order — must be flagged.
+  // TOOTH 1a: `(accessor = battle_wild, public)` — standard arg order — must be flagged.
   {
     const fixture = stripComments(
-      '#[spacetimedb::table(name = battle_wild, public)]\nstruct BattleWild { battle_id: u64, }',
+      '#[spacetimedb::table(accessor = battle_wild, public)]\nstruct BattleWild { battle_id: u64, }',
     );
     const tables = parseTables(fixture);
     if (!checkBattleWildPrivate(tables)) {
@@ -264,15 +264,15 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH: (name = battle_wild, public) fixture was NOT flagged — parseTables or checkBattleWildPrivate is broken',
+          'TEETH: (accessor = battle_wild, public) fixture was NOT flagged — parseTables or checkBattleWildPrivate is broken',
       };
     }
   }
 
-  // TOOTH 1b: `(public, name = battle_wild)` — reversed arg order — must be flagged.
+  // TOOTH 1b: `(public, accessor = battle_wild)` — reversed arg order — must be flagged.
   {
     const fixture = stripComments(
-      '#[spacetimedb::table(public, name = battle_wild)]\nstruct BattleWild { battle_id: u64, }',
+      '#[spacetimedb::table(public, accessor = battle_wild)]\nstruct BattleWild { battle_id: u64, }',
     );
     const tables = parseTables(fixture);
     if (!checkBattleWildPrivate(tables)) {
@@ -280,7 +280,7 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH: (public, name = battle_wild) reversed-args fixture was NOT flagged — name extraction fails when public comes first',
+          'TEETH: (public, accessor = battle_wild) reversed-args fixture was NOT flagged — name extraction fails when public comes first',
       };
     }
     if (!tables.find((t) => t.name === 'battle_wild')) {
@@ -310,7 +310,7 @@ export default async function () {
   // battle_wild-PREFIX check; AND a clean public `battle` must NOT be flagged by it.
   {
     const fixture = stripComments(
-      '#[spacetimedb::table(name = battle_wild_pub, public)]\nstruct BattleWildPub { battle_id: u64, }',
+      '#[spacetimedb::table(accessor = battle_wild_pub, public)]\nstruct BattleWildPub { battle_id: u64, }',
     );
     const tables = parseTables(fixture);
     if (!checkNoPublicBattleWildProjection(tables)) {
@@ -324,7 +324,7 @@ export default async function () {
     // Negative control: a legitimately public `battle` table must NOT be flagged
     // by the projection check (a `battle`-prefix check would wrongly bite it).
     const okFixture = stripComments(
-      '#[spacetimedb::table(name = battle, public)]\nstruct Battle { battle_id: u64, }',
+      '#[spacetimedb::table(accessor = battle, public)]\nstruct Battle { battle_id: u64, }',
     );
     const okTables = parseTables(okFixture);
     if (checkNoPublicBattleWildProjection(okTables)) {
@@ -340,7 +340,7 @@ export default async function () {
   // TOOTH 4: a wild gene column on the PUBLIC `battle` table must be flagged.
   {
     const src = stripComments(
-      '#[spacetimedb::table(name = battle, public)]\nstruct Battle { #[primary_key] battle_id: u64, wild_iv_hp: u8, }',
+      '#[spacetimedb::table(accessor = battle, public)]\nstruct Battle { #[primary_key] battle_id: u64, wild_iv_hp: u8, }',
     );
     const tables = parseTables(src);
     if (!checkNoWildColumnsOnPublicBattle(src, tables)) {
@@ -353,7 +353,7 @@ export default async function () {
     }
     // Also bite a bare `nature_kind` column.
     const src2 = stripComments(
-      '#[spacetimedb::table(name = battle, public)]\nstruct Battle { battle_id: u64, wild_nature: u8, }',
+      '#[spacetimedb::table(accessor = battle, public)]\nstruct Battle { battle_id: u64, wild_nature: u8, }',
     );
     if (!checkNoWildColumnsOnPublicBattle(src2, parseTables(src2))) {
       return {
@@ -367,7 +367,7 @@ export default async function () {
   // TOOTH 5: `client_visibility_filter` on battle_wild — must be flagged.
   {
     const fixture = stripComments(
-      '#[spacetimedb::table(name = battle_wild, client_visibility_filter = some_fn)]\nstruct BattleWild { battle_id: u64, }',
+      '#[spacetimedb::table(accessor = battle_wild, client_visibility_filter = some_fn)]\nstruct BattleWild { battle_id: u64, }',
     );
     const tables = parseTables(fixture);
     if (!checkNoVisibilityFilterOnBattleWild(tables)) {
@@ -384,9 +384,9 @@ export default async function () {
   // public battle (no wild_/iv_/nature) must produce NO error from any check.
   {
     const src = stripComments(
-      '#[spacetimedb::table(name = battle, public)]\n' +
+      '#[spacetimedb::table(accessor = battle, public)]\n' +
         'struct Battle { #[primary_key] battle_id: u64, player_identity: Identity, created_at_ms: i64, }\n' +
-        '#[spacetimedb::table(name = battle_wild)]\n' +
+        '#[spacetimedb::table(accessor = battle_wild)]\n' +
         'struct BattleWild { #[primary_key] battle_id: u64, wild_species_id: u32, wild_level: u8, individuality_seed: u32, }',
     );
     const tables = parseTables(src);
@@ -411,7 +411,7 @@ export default async function () {
   // TOOTH 8 (comment-stripping): a `public` inside a comment must NOT count.
   {
     const fixture = stripComments(
-      '// #[spacetimedb::table(name = battle_wild, public)]\n#[spacetimedb::table(name = battle_wild)]\nstruct BattleWild { battle_id: u64, }',
+      '// #[spacetimedb::table(accessor = battle_wild, public)]\n#[spacetimedb::table(accessor = battle_wild)]\nstruct BattleWild { battle_id: u64, }',
     );
     const tables = parseTables(fixture);
     const t = tables.find((x) => x.name === 'battle_wild');

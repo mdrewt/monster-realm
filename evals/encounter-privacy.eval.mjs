@@ -62,7 +62,7 @@ export function stripComments(src) {
 // Pure predicate: parse spacetimedb::table(...) declarations.
 //
 // Tolerant of:
-//   - attribute argument order: (name = encounter, public) or (public, name = encounter)
+//   - attribute argument order: (accessor = encounter, public) or (public, accessor = encounter)
 //   - multi-line attributes spanning several lines
 //   - both pub struct and bare struct (private tables have no pub on the struct)
 //
@@ -72,9 +72,9 @@ export function stripComments(src) {
 
 /*
  * Parse all spacetimedb table attribute declarations from comment-stripped Rust source.
- * Extracts the table name from the "name = ident" argument specifically, not from the
+ * Extracts the table name from the "accessor = ident" argument specifically, not from the
  * first identifier in the attribute list — so "public" is never mis-captured as the name
- * when it appears before "name = encounter" in the argument list.
+ * when it appears before "accessor = encounter" in the argument list.
  *
  * @param {string} src Comment-stripped Rust source.
  * @returns {Array<{name:string, isPublic:boolean, hasVisibilityFilter:boolean, attrText:string}>}
@@ -105,8 +105,8 @@ export function parseTables(src) {
     }
     const attrArgText = src.slice(argStart + 1, i); // text between the outer ( )
 
-    // Extract `name = <ident>` — look for the pattern specifically.
-    const nameMatch = attrArgText.match(/\bname\s*=\s*(\w+)/);
+    // Extract `accessor = <ident>` — look for the pattern specifically.
+    const nameMatch = attrArgText.match(/\baccessor\s*=\s*(\w+)/);
     if (!nameMatch) {
       pos = i + 1;
       continue;
@@ -196,10 +196,10 @@ export default async function () {
   // goes silently blind.
   // -------------------------------------------------------------------------
 
-  // TOOTH 1: `(name = encounter, public)` — standard arg order — must be flagged.
+  // TOOTH 1: `(accessor = encounter, public)` — standard arg order — must be flagged.
   {
     const fixture = stripComments(
-      '#[spacetimedb::table(name = encounter, public)]\nstruct EncounterRow { zone_id: u32, }',
+      '#[spacetimedb::table(accessor = encounter, public)]\nstruct EncounterRow { zone_id: u32, }',
     );
     const tables = parseTables(fixture);
     const err = checkEncounterPrivate(tables);
@@ -208,22 +208,23 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH: (name = encounter, public) fixture was NOT flagged — parseTables or checkEncounterPrivate is broken',
+          'TEETH: (accessor = encounter, public) fixture was NOT flagged — parseTables or checkEncounterPrivate is broken',
       };
     }
     if (!tables.find((t) => t.name === 'encounter' && t.isPublic)) {
       return {
         name,
         pass: false,
-        detail: 'TEETH: (name = encounter, public) fixture: encounter table not detected as public',
+        detail:
+          'TEETH: (accessor = encounter, public) fixture: encounter table not detected as public',
       };
     }
   }
 
-  // TOOTH 2: `(public, name = encounter)` — reversed arg order — must be flagged.
+  // TOOTH 2: `(public, accessor = encounter)` — reversed arg order — must be flagged.
   {
     const fixture = stripComments(
-      '#[spacetimedb::table(public, name = encounter)]\nstruct EncounterRow { zone_id: u32, }',
+      '#[spacetimedb::table(public, accessor = encounter)]\nstruct EncounterRow { zone_id: u32, }',
     );
     const tables = parseTables(fixture);
     const err = checkEncounterPrivate(tables);
@@ -232,7 +233,7 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH: (public, name = encounter) reversed-args fixture was NOT flagged — name extraction fails when public comes first',
+          'TEETH: (public, accessor = encounter) reversed-args fixture was NOT flagged — name extraction fails when public comes first',
       };
     }
     // Also verify name extraction did not mis-capture `public` as the table name.
@@ -242,7 +243,7 @@ export default async function () {
         name,
         pass: false,
         detail:
-          "TEETH: reversed-args fixture: table name extracted as 'public' instead of 'encounter' — name = <ident> extraction is broken",
+          "TEETH: reversed-args fixture: table name extracted as 'public' instead of 'encounter' — accessor = <ident> extraction is broken",
       };
     }
   }
@@ -250,7 +251,7 @@ export default async function () {
   // TOOTH 3: public `encounter_pub` projection — must be flagged by checkNoPublicEncounterProjection.
   {
     const fixture = stripComments(
-      '#[spacetimedb::table(name = encounter_pub, public)]\nstruct EncounterPub { zone_id: u32, }',
+      '#[spacetimedb::table(accessor = encounter_pub, public)]\nstruct EncounterPub { zone_id: u32, }',
     );
     const tables = parseTables(fixture);
     const err = checkNoPublicEncounterProjection(tables);
@@ -267,7 +268,7 @@ export default async function () {
   // TOOTH 4: `client_visibility_filter` on encounter — must be flagged.
   {
     const fixture = stripComments(
-      '#[spacetimedb::table(name = encounter, client_visibility_filter = some_fn)]\nstruct EncounterRow { zone_id: u32, }',
+      '#[spacetimedb::table(accessor = encounter, client_visibility_filter = some_fn)]\nstruct EncounterRow { zone_id: u32, }',
     );
     const tables = parseTables(fixture);
     const err = checkNoVisibilityFilterOnEncounter(tables);
@@ -285,7 +286,7 @@ export default async function () {
   // Without this tooth, a stub that always errors can never legitimately go green.
   {
     const fixture = stripComments(
-      '#[spacetimedb::table(name = encounter)]\nstruct EncounterRow { zone_id: u32, }',
+      '#[spacetimedb::table(accessor = encounter)]\nstruct EncounterRow { zone_id: u32, }',
     );
     const tables = parseTables(fixture);
     const err = checkEncounterPrivate(tables);
@@ -317,7 +318,7 @@ export default async function () {
   // TOOTH 6: comment-stripping — a `public` inside a comment must NOT be detected.
   {
     const fixture = stripComments(
-      '// #[spacetimedb::table(name = encounter, public)]\n#[spacetimedb::table(name = encounter)]\nstruct EncounterRow { zone_id: u32, }',
+      '// #[spacetimedb::table(accessor = encounter, public)]\n#[spacetimedb::table(accessor = encounter)]\nstruct EncounterRow { zone_id: u32, }',
     );
     const tables = parseTables(fixture);
     const enc = tables.find((t) => t.name === 'encounter');

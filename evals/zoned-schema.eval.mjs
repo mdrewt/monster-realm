@@ -23,7 +23,7 @@ function stripRustComments(src) {
 }
 
 /**
- * Parse `#[spacetimedb::table(name = X, ...)] pub struct ... { ... }` blocks.
+ * Parse `#[spacetimedb::table(accessor = X, ...)] pub struct ... { ... }` blocks.
  * Each entry carries:
  *   - name: the table name (X)
  *   - attr: the full attribute text (from `#[spacetimedb::table(` through `)]`)
@@ -45,7 +45,7 @@ export function parseTables(rawSrc) {
     const attr = m[1];
     const body = m[2];
     // Extract table name from the attribute
-    const nameMatch = /name\s*=\s*(\w+)/.exec(attr);
+    const nameMatch = /accessor\s*=\s*(\w+)/.exec(attr);
     if (nameMatch) {
       tables.push({ name: nameMatch[1], attr, body });
     }
@@ -124,7 +124,7 @@ export default async function () {
   // Proof-of-teeth: ghost table (tile_x/tile_y, no indexed zone_id) must flag
   // -------------------------------------------------------------------------
   const ghostSrc =
-    '#[spacetimedb::table(name = ghost, public)]\npub struct Ghost {\n  pub tile_x: i32,\n  pub tile_y: i32,\n}';
+    '#[spacetimedb::table(accessor = ghost, public)]\npub struct Ghost {\n  pub tile_x: i32,\n  pub tile_y: i32,\n}';
   const ghostTables = parseTables(ghostSrc);
   if (zoningViolations(ghostTables).length === 0) {
     return {
@@ -138,7 +138,7 @@ export default async function () {
   // Proof-of-teeth: bare zone_id (no PK, no index, no scheduler) must flag
   // -------------------------------------------------------------------------
   const bareZoneSrc = `
-#[spacetimedb::table(name = stray_zone, public)]
+#[spacetimedb::table(accessor = stray_zone, public)]
 pub struct StrayZone {
     #[primary_key]
     #[auto_inc]
@@ -159,7 +159,7 @@ pub struct StrayZone {
   // Proof-of-teeth: scheduler table with bare zone_id must NOT flag
   // -------------------------------------------------------------------------
   const schedSrc = `
-#[spacetimedb::table(name = movement_tick_schedule, scheduled(movement_tick))]
+#[spacetimedb::table(accessor = movement_tick_schedule, scheduled(movement_tick))]
 pub struct MovementTickSchedule {
     #[primary_key]
     #[auto_inc]
@@ -182,6 +182,22 @@ pub struct MovementTickSchedule {
   // -------------------------------------------------------------------------
   const src = readServerModuleSources('server-module/src');
   const tables = parseTables(src);
+  // VACUITY GUARD (added 2026-08-16, ADR-0197). Without this, a parser that stops
+  // matching the table attribute returns zero tables, `zoningViolations([])` is
+  // empty, and this eval reports PASS — which is exactly what happened silently
+  // through the 1.12.0 -> 2.8.1 rename (`name =` -> `accessor =`): it was the only
+  // scanner in this family that did NOT go red, because it had no non-empty-scan
+  // assertion. A rotted scanner must never read as a compliant schema.
+  if (tables.length === 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        'vacuity guard: the table scan found ZERO tables in server-module/src — the parser has ' +
+        'rotted (e.g. the #[spacetimedb::table(...)] attribute spelling changed) and every ' +
+        'zone_id/map_id clause below would pass vacuously. Fix the parser, do not relax this.',
+    };
+  }
   const v = zoningViolations(tables);
   return {
     name,

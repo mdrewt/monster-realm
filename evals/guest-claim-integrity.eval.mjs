@@ -2,7 +2,7 @@
 // G3 ANON_PASSTHROUGH + ISSUER_AND_AUDIENCE_CHECKED, G4 NO_SERVER_RNG,
 // G5 MODULE_WRITE_ISOLATION, G11 SINGLE_USE_CONSUMED, G6 REKEY_COMPLETENESS).
 //
-// The accounts subsystem derives identity ONLY from `ctx.sender`, never from a
+// The accounts subsystem derives identity ONLY from `ctx.sender()`, never from a
 // client-supplied value; anonymous play survives the connect hook untouched; the
 // JWT issuer AND audience are both allowlist-checked before an `account` row is
 // ever inserted; the module mints no randomness; it writes exactly three tables
@@ -23,11 +23,11 @@
 //               pub guest_identity: Identity }
 //           #[spacetimedb::reducer] pub fn complete_guest_claim_for(
 //               ctx: &ReducerContext, target: ClaimTarget) -> Result<(),String> {
-//               rekey_all(ctx, target.guest_identity, ctx.sender) }
+//               rekey_all(ctx, target.guest_identity, ctx.sender()) }
 //       E2  #[spacetimedb::reducer] pub fn adopt_guest(
 //               ctx: &ReducerContext, guest_hex: String) -> Result<(),String> {
 //               let g = Identity::from_hex(&guest_hex)?;
-//               rekey_all(ctx, g, ctx.sender) }
+//               rekey_all(ctx, g, ctx.sender()) }
 //     Neither declares an `: Identity` PARAMETER, so the naive "no reducer takes
 //     an Identity" clause is green on both. E1 is caught by [R/param-types]
 //     (a non-wire-scalar argument type), E2 by [R/identity-ctor] (nothing in
@@ -41,13 +41,13 @@
 //     `scheduled(guest_claim_reaper)` target table declared in the same file
 //     (accounts.rs:489), so its `guest_identity: Identity` field is written by
 //     the SCHEDULER, not by a client, and accounts.rs:509's
-//     `ctx.sender != ctx.identity()` guard rejects any client that calls it.
+//     `ctx.sender() != ctx.database_identity()` guard rejects any client that calls it.
 //     [R/param-types] carves out exactly that shape — same-file scheduled table,
 //     param type EQUAL to the scheduled struct, guard present — which is narrow
 //     enough that E1's `ClaimTarget` is still rejected. The GUARD half is pinned
-//     as a REJECTING EARLY RETURN (`if ctx.sender != ctx.identity() { return`),
+//     as a REJECTING EARLY RETURN (`if ctx.sender() != ctx.database_identity() { return`),
 //     not as a bare comparison: the adversarial pass showed that
-//       let scheduler_only = ctx.sender != ctx.identity();
+//       let scheduler_only = ctx.sender() != ctx.database_identity();
 //       let _ = scheduler_only;
 //     satisfies a substring test, compiles, is clippy-clean — and rejects
 //     nobody, so any client can invoke the scheduled reducer with a hand-built
@@ -413,7 +413,7 @@ const WIRE_SCALARS = [
 ];
 
 // Nothing in accounts.rs legitimately CONSTRUCTS an Identity — every identity it
-// handles arrives from `ctx.sender` or from a row it read. `Identity::from_hex`
+// handles arrives from `ctx.sender()` or from a row it read. `Identity::from_hex`
 // is `pub` (spacetimedb-lib-1.12.0/src/identity.rs:245), which is what makes E2
 // a two-line, unauthenticated account-takeover reducer.
 const IDENTITY_CTORS = [
@@ -425,14 +425,14 @@ const IDENTITY_CTORS = [
 
 // The scheduler guard, pinned as a REJECTING EARLY RETURN rather than as a bare
 // comparison. The adversarial pass found the carve-out was satisfied by
-//     let scheduler_only = ctx.sender != ctx.identity();
+//     let scheduler_only = ctx.sender() != ctx.database_identity();
 //     let _ = scheduler_only;
 // which contains the comparison, compiles, is clippy-clean — and lets ANY client
 // invoke the scheduled reducer with a hand-built row naming any victim identity,
 // i.e. exactly the client-supplied-Identity hole the carve-out assumes is
 // closed. `{return` (not `{returnErr(`) so a future refactor to the equally
 // valid `{ return Ok(()); }` silent-ignore form does not false-RED.
-const SCHEDULER_GUARD = 'ifctx.sender!=ctx.identity(){return';
+const SCHEDULER_GUARD = 'ifctx.sender()!=ctx.database_identity(){return';
 
 /**
  * Is this reducer parameter type a wire-safe scalar (recursively through
@@ -452,7 +452,7 @@ export function isWireSafeType(type) {
 }
 
 /**
- * G2 NO_CLIENT_IDENTITY — the server derives identity from `ctx.sender`, never
+ * G2 NO_CLIENT_IDENTITY — the server derives identity from `ctx.sender()`, never
  * from a client-supplied value.
  * @param {string} accountsSrc Raw server-module/src/accounts.rs source.
  * @returns {string|null} Error string, or null on pass.
@@ -497,7 +497,7 @@ export function checkNoClientIdentity(accountsSrc) {
         'reducer that accepts an Identity from the wire lets any client name ANY other player as ' +
         'the subject of the call, which for this module is an unauthenticated transfer of that ' +
         "identity's monsters, inventory, wallet, NPC state and profile. The subject identity is " +
-        '`ctx.sender` and nothing else (ADR-0179 G2 / AUTH-6)'
+        '`ctx.sender()` and nothing else (ADR-0179 G2 / AUTH-6)'
       );
     }
   }
@@ -524,7 +524,7 @@ export function checkNoClientIdentity(accountsSrc) {
           'can invoke the scheduled reducer directly and hand it a hand-built row, which is ' +
           'precisely the client-supplied-Identity hole the carve-out assumes is closed. The guard ' +
           'is pinned as a REJECTING EARLY RETURN, not as a bare comparison: `let scheduler_only = ' +
-          'ctx.sender != ctx.identity(); let _ = scheduler_only;` contains the comparison, ' +
+          'ctx.sender() != ctx.database_identity(); let _ = scheduler_only;` contains the comparison, ' +
           'compiles, passes clippy — and rejects nobody'
         );
       }
@@ -535,7 +535,7 @@ export function checkNoClientIdentity(accountsSrc) {
         'Option<..> of those). A red-team PROVED this exact shape:\n' +
         '  #[derive(spacetimedb::SpacetimeType)] pub struct ClaimTarget { pub guest_identity: Identity }\n' +
         '  #[spacetimedb::reducer] pub fn complete_guest_claim_for(ctx: &ReducerContext, target: ClaimTarget)\n' +
-        '      -> Result<(),String> { rekey_all(ctx, target.guest_identity, ctx.sender) }\n' +
+        '      -> Result<(),String> { rekey_all(ctx, target.guest_identity, ctx.sender()) }\n' +
         'It declares no `: Identity` parameter, compiles, passes `clippy --all-targets ' +
         '-D warnings`, and is a code-less transfer of ANY identity\u2019s game data. The ONLY ' +
         'sanctioned composite argument is the same-file `scheduled(...)` struct, whose fields the ' +
@@ -552,10 +552,10 @@ export function checkNoClientIdentity(accountsSrc) {
     if (flat.indexOf(compactWs(ctor)) === -1) continue;
     return (
       `[R/identity-ctor] ${ACCOUNTS_PATH} calls \`${ctor}\` — nothing in this module legitimately ` +
-      'CONSTRUCTS an Identity; every identity it handles comes from `ctx.sender` or from a row it ' +
+      'CONSTRUCTS an Identity; every identity it handles comes from `ctx.sender()` or from a row it ' +
       'read. A red-team PROVED the constructor is the whole attack:\n' +
       '  #[spacetimedb::reducer] pub fn adopt_guest(ctx: &ReducerContext, guest_hex: String)\n' +
-      '      -> Result<(),String> { let g = Identity::from_hex(&guest_hex)?; rekey_all(ctx, g, ctx.sender) }\n' +
+      '      -> Result<(),String> { let g = Identity::from_hex(&guest_hex)?; rekey_all(ctx, g, ctx.sender()) }\n' +
       'The parameter is a wire-safe String, so a parameter-type analysis alone never sees it. ' +
       '`Identity::from_hex` is `pub` in spacetimedb-lib'
     );
@@ -1488,10 +1488,10 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
   // column in that struct — silently, and from the schema-snapshot baseline too
   // (a table absent from BOTH parsed and baseline is in neither side of the
   // union, so it reports no drift). Two live-legal spellings do exactly that:
-  //   #[spacetimedb::table(name = t, index(btree, name = i, columns = [a, b]))]
+  //   #[spacetimedb::table(accessor = t, index(btree, accessor = i, columns = [a, b]))]
   //     — the parser's `[^\]]*\)\]` sub-pattern cannot span the `]` of `[a, b]`;
-  //   #[spacetimedb::table(public, name = t)]
-  //     — the parser requires `name =` as the FIRST attribute argument.
+  //   #[spacetimedb::table(public, accessor = t)]
+  //     — the parser requires `accessor =` as the FIRST attribute argument.
   // So: every `#[spacetimedb::table(` in each stripped source must yield exactly
   // one parsed table. Verified equal across the live tree (37 attributes in the
   // 6 non-test files that declare tables, 37 parsed, 37 baseline entries).
@@ -1508,8 +1508,8 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
         'stop covering it — and the battle-schema-snapshot baseline would not notice either, ' +
         'because a table missing from BOTH parsed and baseline appears in neither side of that ' +
         'union. The two known unreadable spellings are a multi-column index inside the attribute ' +
-        '(`index(btree, name = i, columns = [a, b])` — the parser cannot span the inner `]`) and ' +
-        '`name =` not being the first attribute argument. Fix the declaration, or teach ' +
+        '(`index(btree, accessor = i, columns = [a, b])` — the parser cannot span the inner `]`) and ' +
+        '`accessor =` not being the first attribute argument. Fix the declaration, or teach ' +
         'parseTableSchemas the new form in the same PR'
       );
     }
@@ -1735,15 +1735,15 @@ pub(crate) fn provision_or_touch_account(ctx: &ReducerContext) -> Result<(), Str
     };
     let issuer = claims.issuer();
     if !issuer_allowed(issuer, ALLOWED_ISSUERS) {
-        log_reject("client_connected", ctx.sender, REJECT_UNRECOGNIZED_ISSUER);
+        log_reject("client_connected", ctx.sender(), REJECT_UNRECOGNIZED_ISSUER);
         return Ok(());
     }
     if !audience_allowed(claims.audience(), ALLOWED_AUDIENCE) {
-        log_reject("client_connected", ctx.sender, REJECT_UNRECOGNIZED_AUDIENCE);
+        log_reject("client_connected", ctx.sender(), REJECT_UNRECOGNIZED_AUDIENCE);
         return Err(REJECT_UNRECOGNIZED_AUDIENCE.to_string());
     }
     let now = now_ms(ctx);
-    match ctx.db.account().identity().find(ctx.sender) {
+    match ctx.db.account().identity().find(ctx.sender()) {
         Some(existing) => {
             ctx.db
                 .account()
@@ -1753,7 +1753,7 @@ pub(crate) fn provision_or_touch_account(ctx: &ReducerContext) -> Result<(), Str
         None => {
             ctx.db
                 .account()
-                .insert(new_account_row(ctx.sender, issuer.to_string(), now));
+                .insert(new_account_row(ctx.sender(), issuer.to_string(), now));
         }
     }
     Ok(())
@@ -1761,7 +1761,7 @@ pub(crate) fn provision_or_touch_account(ctx: &ReducerContext) -> Result<(), Str
 
 #[spacetimedb::reducer]
 pub fn start_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let Some(player) = ctx.db.player().identity().find(me) else {
         return reject("start_guest_claim", me, "not joined");
     };
@@ -1784,7 +1784,7 @@ pub fn start_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), Strin
 
 #[spacetimedb::reducer]
 pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let Some(account) = ctx.db.account().identity().find(me) else {
         return reject("complete_guest_claim", me, "no account");
     };
@@ -1812,7 +1812,7 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
 
 #[spacetimedb::reducer]
 pub fn delete_account(ctx: &ReducerContext) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let Some(account) = ctx.db.account().identity().find(me) else {
         return reject("delete_account", me, "no account");
     };
@@ -1825,7 +1825,7 @@ pub fn delete_account(ctx: &ReducerContext) -> Result<(), String> {
 
 #[spacetimedb::reducer]
 pub fn cancel_account_deletion(ctx: &ReducerContext) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let Some(account) = ctx.db.account().identity().find(me) else {
         return reject("cancel_account_deletion", me, "no account");
     };
@@ -1836,7 +1836,7 @@ pub fn cancel_account_deletion(ctx: &ReducerContext) -> Result<(), String> {
     Ok(())
 }
 
-#[spacetimedb::table(name = guest_claim_reaper_schedule, scheduled(guest_claim_reaper))]
+#[spacetimedb::table(accessor = guest_claim_reaper_schedule, scheduled(guest_claim_reaper))]
 pub struct GuestClaimReaperSchedule {
     #[primary_key]
     #[auto_inc]
@@ -1851,7 +1851,7 @@ pub fn guest_claim_reaper(
     ctx: &ReducerContext,
     args: GuestClaimReaperSchedule,
 ) -> Result<(), String> {
-    if ctx.sender != ctx.identity() {
+    if ctx.sender() != ctx.database_identity() {
         return Err("guest_claim_reaper is scheduler-only".to_string());
     }
     delete_claim(ctx, args.guest_identity);
@@ -1871,7 +1871,7 @@ pub fn on_connect(ctx: &ReducerContext) -> Result<(), String> {
 
 #[spacetimedb::reducer(client_disconnected)]
 pub fn on_disconnect(ctx: &ReducerContext) {
-    ctx.db.player().identity().delete(ctx.sender);
+    ctx.db.player().identity().delete(ctx.sender());
 }
 `;
 
@@ -1884,7 +1884,7 @@ pub struct ClaimTarget {
 
 #[spacetimedb::reducer]
 pub fn complete_guest_claim_for(ctx: &ReducerContext, target: ClaimTarget) -> Result<(), String> {
-    rekey_all(ctx, target.guest_identity, ctx.sender)
+    rekey_all(ctx, target.guest_identity, ctx.sender())
 }
 `;
 
@@ -1893,7 +1893,7 @@ const E2_FROM_HEX_REDUCER = `
 #[spacetimedb::reducer]
 pub fn adopt_guest(ctx: &ReducerContext, guest_hex: String) -> Result<(), String> {
     let g = Identity::from_hex(&guest_hex).map_err(|_| "bad hex".to_string())?;
-    rekey_all(ctx, g, ctx.sender)
+    rekey_all(ctx, g, ctx.sender())
 }
 `;
 
@@ -1952,7 +1952,7 @@ function synthSchemaSrc(keys) {
   }
   let out = '// synthesized schema fixture\n';
   for (const [table, fields] of byTable) {
-    out += `#[spacetimedb::table(name = ${table})]\npub struct Row_${table} {\n`;
+    out += `#[spacetimedb::table(accessor = ${table})]\npub struct Row_${table} {\n`;
     for (const field of fields) {
       // `claimed_from` is the one Option<Identity> column in the live schema —
       // spelled that way here so the Option path is genuinely exercised.
@@ -2026,7 +2026,7 @@ fn probe(ctx: &Ctx) {
     ];
     for (let k = 0; k < forms.length; k++) {
       const src = `${forms[k]}
-#[spacetimedb::table(name = guest_claim_reaper_schedule, scheduled(guest_claim_reaper))]
+#[spacetimedb::table(accessor = guest_claim_reaper_schedule, scheduled(guest_claim_reaper))]
 pub struct GuestClaimReaperSchedule {
     pub guest_identity: Identity,
 }
@@ -2083,7 +2083,7 @@ pub struct GuestClaimReaperSchedule {
   // FG6 — GOOD: the shipped reducer surface, INCLUDING the real scheduled-reducer
   // shape (a table struct carrying `guest_identity: Identity`, a
   // `fn guest_claim_reaper(ctx, args: GuestClaimReaperSchedule)` signature and
-  // the `ctx.sender != ctx.identity()` guard) must PASS.
+  // the `ctx.sender() != ctx.database_identity()` guard) must PASS.
   // Kills: an always-red G2 checker, and a blanket "no struct arguments" rule
   // that would false-RED the legitimate scheduled reducer on arrival.
   {
@@ -2170,7 +2170,7 @@ pub struct ClaimTarget {
   {
     const src = mut(
       GOOD_ACCOUNTS,
-      `    if ctx.sender != ctx.identity() {
+      `    if ctx.sender() != ctx.database_identity() {
         return Err("guest_claim_reaper is scheduler-only".to_string());
     }
 `,
@@ -2213,7 +2213,7 @@ pub struct ClaimTarget {
 #[spacetimedb::reducer]
 pub fn adopt_guest_by_code(ctx: &ReducerContext, code: String) -> Result<(), String> {
     let claim = ctx.db.guest_claim().code().find(&code).ok_or("no")?;
-    rekey_all(ctx, claim.guest_identity, ctx.sender)
+    rekey_all(ctx, claim.guest_identity, ctx.sender())
 }
 `;
     const bad = expectTag(checkNoClientIdentity(src), '[R/name-set]', 'FG15');
@@ -2314,7 +2314,7 @@ pub fn adopt_guest_by_code(ctx: &ReducerContext, code: String) -> Result<(), Str
     const src = mut(
       GOOD_ACCOUNTS,
       `    if !issuer_allowed(issuer, ALLOWED_ISSUERS) {
-        log_reject("client_connected", ctx.sender, REJECT_UNRECOGNIZED_ISSUER);
+        log_reject("client_connected", ctx.sender(), REJECT_UNRECOGNIZED_ISSUER);
         return Ok(());
     }
 `,
@@ -2344,7 +2344,7 @@ pub fn adopt_guest_by_code(ctx: &ReducerContext, code: String) -> Result<(), Str
     const src = mut(
       GOOD_ACCOUNTS,
       `    if !audience_allowed(claims.audience(), ALLOWED_AUDIENCE) {
-        log_reject("client_connected", ctx.sender, REJECT_UNRECOGNIZED_AUDIENCE);
+        log_reject("client_connected", ctx.sender(), REJECT_UNRECOGNIZED_AUDIENCE);
         return Err(REJECT_UNRECOGNIZED_AUDIENCE.to_string());
     }
 `,
@@ -2376,7 +2376,7 @@ pub fn adopt_guest_by_code(ctx: &ReducerContext, code: String) -> Result<(), Str
       `    let issuer = claims.issuer();
     ctx.db
         .account()
-        .insert(new_account_row(ctx.sender, issuer.to_string(), now_ms(ctx)));
+        .insert(new_account_row(ctx.sender(), issuer.to_string(), now_ms(ctx)));
 `,
     );
     const bad = expectTag(checkIssuerAndAudience(src), '[I/before-insert]', 'FG27');
@@ -2698,7 +2698,7 @@ fn probe(ctx: &ReducerContext, g: Identity) -> bool {
         path: 'fixture/schema.rs',
         src:
           GOOD_TREE[0].src +
-          `#[spacetimedb::table(name = guild_member)]
+          `#[spacetimedb::table(accessor = guild_member)]
 pub struct GuildMember {
     pub owner_identity: Identity,
     pub guild_id: u64,
@@ -2882,7 +2882,7 @@ fn probe(ctx: &ReducerContext, row: GuestClaim, g: Identity) -> usize {
 
   // FG58 (adversarial pass) — the scheduled-reducer carve-out abused from the
   // GUARD side: the reaper keeps its scheduled struct argument and still
-  // CONTAINS `ctx.sender != ctx.identity()`, but only as an audit-only binding
+  // CONTAINS `ctx.sender() != ctx.database_identity()`, but only as an audit-only binding
   // that rejects nobody. Any client can then invoke the scheduled reducer with a
   // hand-built row naming any victim identity — the exact client-supplied
   // Identity hole the carve-out assumes is closed.
@@ -2891,11 +2891,11 @@ fn probe(ctx: &ReducerContext, row: GuestClaim, g: Identity) -> usize {
   {
     const src = mut(
       GOOD_ACCOUNTS,
-      `    if ctx.sender != ctx.identity() {
+      `    if ctx.sender() != ctx.database_identity() {
         return Err("guest_claim_reaper is scheduler-only".to_string());
     }
 `,
-      `    let scheduler_only = ctx.sender != ctx.identity();
+      `    let scheduler_only = ctx.sender() != ctx.database_identity();
     let _ = scheduler_only;
 `,
     );
@@ -2915,7 +2915,7 @@ fn probe(ctx: &ReducerContext, row: GuestClaim, g: Identity) -> usize {
         path: 'fixture/schema.rs',
         src:
           GOOD_TREE[0].src +
-          `#[spacetimedb::table(name = guild_member, index(btree, name = by_owner, columns = [owner_identity, guild_id]))]
+          `#[spacetimedb::table(accessor = guild_member, index(btree, accessor = by_owner, columns = [owner_identity, guild_id]))]
 pub struct GuildMember {
     pub owner_identity: Identity,
     pub guild_id: u64,

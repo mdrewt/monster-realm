@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 162 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 163 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -171,6 +171,7 @@ Generated from 162 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0194](./0194-monster-pub-need-to-know-privacy.md) | 0194 — monster_pub need-to-know privacy: private table + owner-scoped multi-row view | Accepted | schema-persistence, security-authz, client-ui | 13r-e | `monster_pub` becomes PRIVATE with one sanctioned read path — the owner-scoped `my_monster_pub` view; other players' monster_pub rows are never delivered; an engagement view is deferred until a client consumer exists. |
 | [0195](./0195-rust-test-mirror-parity.md) | 0195 — Rust test-mirror parity: derived scan sets, source-derived reducer enumeration, and the Account legal-state invariant | Accepted | ci-gates, security-authz, schema-persistence | 13r-h | Close ADR-0179 §9's parity residuals: EG2-9 scans src/ per-file via read_dir, the G2 mirror ports the JS eval's full defenses, and Account gets a debug_assert'd invariant + exact shape tripwire instead of an enum fold. |
 | [0196](./0196-changelog-freshness-nightly-check.md) | 0196 — Changelog freshness: the nightly check ADR-0165 deferred, as a lag×age conjunction | Accepted | tooling-docs, ci-gates | 13r-g | Implement ADR-0165's nightly changelog check as an entry-multiset comparison of a fresh `git cliff` generation against the committed ledger, failing only when >= 15 entries are missing AND the oldest is >= 6 days old; advisory from 8. |
+| [0197](./0197-spacetimedb-2.8.1-upgrade.md) | 0197 — SpacetimeDB 2.8.1: upgrade the CLI/host AND the module SDK (1.12.0 → 2.8.1), and correct four load-bearing false facts | Accepted | tooling-docs, schema-persistence, ci-gates | stdb-281 (toolchain upgrade; operator-initiated) | Upgrade the spacetime CLI/host 2.6.0 to 2.8.1 and the module crate 1.12.0 to 2.8.1 in one slice via a mechanical source port; accept a `--delete-data` republish (2.8.1 renames enum variants); correct four recorded false facts. |
 
 ## Harness design corpus (H- namespace)
 
@@ -372,6 +373,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0193](./0193-append-at-end-schema-gate.md) — 13r-d (M-postgate thirteenth-review residuals §13r-d) — 0193 — Append-at-end schema-gate generalization: order-aware, re-baseline-proof additive-schema enforcement (Accepted)
 - [0194](./0194-monster-pub-need-to-know-privacy.md) — 13r-e — 0194 — monster_pub need-to-know privacy: private table + owner-scoped multi-row view (Accepted)
 - [0195](./0195-rust-test-mirror-parity.md) — 13r-h — 0195 — Rust test-mirror parity: derived scan sets, source-derived reducer enumeration, and the Account legal-state invariant (Accepted)
+- [0197](./0197-spacetimedb-2.8.1-upgrade.md) — stdb-281 (toolchain upgrade; operator-initiated) — 0197 — SpacetimeDB 2.8.1: upgrade the CLI/host AND the module SDK (1.12.0 → 2.8.1), and correct four load-bearing false facts (Accepted)
 
 ### client-ui
 
@@ -484,6 +486,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0193](./0193-append-at-end-schema-gate.md) — 13r-d (M-postgate thirteenth-review residuals §13r-d) — 0193 — Append-at-end schema-gate generalization: order-aware, re-baseline-proof additive-schema enforcement (Accepted)
 - [0195](./0195-rust-test-mirror-parity.md) — 13r-h — 0195 — Rust test-mirror parity: derived scan sets, source-derived reducer enumeration, and the Account legal-state invariant (Accepted)
 - [0196](./0196-changelog-freshness-nightly-check.md) — 13r-g — 0196 — Changelog freshness: the nightly check ADR-0165 deferred, as a lag×age conjunction (Accepted)
+- [0197](./0197-spacetimedb-2.8.1-upgrade.md) — stdb-281 (toolchain upgrade; operator-initiated) — 0197 — SpacetimeDB 2.8.1: upgrade the CLI/host AND the module SDK (1.12.0 → 2.8.1), and correct four load-bearing false facts (Accepted)
 
 ### tooling-docs
 
@@ -515,6 +518,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0190](./0190-observability-stack-boot-fixes.md) — 13r-a (M-postgate thirteenth-review residuals §13r-a) — 0190 — The observability stack could not boot: three committed config defects fixed, tempo parked, `build_sha` residual mechanized (Accepted)
 - [0191](./0191-mr-trace-relay-integration.md) — 13r-b (M-postgate thirteenth-review residuals §13r-b) — 0191 — `mr-trace-relay` integration: the 8th service, its scrape target and its dead-man's switch land as one change (Accepted)
 - [0196](./0196-changelog-freshness-nightly-check.md) — 13r-g — 0196 — Changelog freshness: the nightly check ADR-0165 deferred, as a lag×age conjunction (Accepted)
+- [0197](./0197-spacetimedb-2.8.1-upgrade.md) — stdb-281 (toolchain upgrade; operator-initiated) — 0197 — SpacetimeDB 2.8.1: upgrade the CLI/host AND the module SDK (1.12.0 → 2.8.1), and correct four load-bearing false facts (Accepted)
 
 ### security-authz
 

@@ -18,7 +18,7 @@
 //   * `public` on a `#[spacetimedb::view]` is a mandatory, inert keyword. THE
 //     VIEW BODY is the entire security boundary, which is why [A/2c] pins it by
 //     EXACT equality: a presence-only check is passed by
-//       let _decoy = ctx.db.account().identity().find(ctx.sender);
+//       let _decoy = ctx.db.account().identity().find(ctx.sender());
 //       let v = Identity::from_byte_array([7u8; 32]);
 //       ctx.db.account().identity().find(v)
 //     which compiles, is clippy-clean and rustfmt-clean, and leaks an arbitrary
@@ -27,7 +27,7 @@
 //     and its own comment (:48-51) calls the first-argument name literal "an
 //     unenforced convention". So a 3rd-argument-only PII check is beaten by
 //       let src_tag = claims.issuer();
-//       log_reject(src_tag, ctx.sender, REJECT_UNRECOGNIZED_ISSUER);
+//       log_reject(src_tag, ctx.sender(), REJECT_UNRECOGNIZED_ISSUER);
 //     which writes the raw JWT `iss` to the warn log. [G12/not-literal]
 //     therefore constrains EVERY argument, not just the reason.
 //
@@ -97,7 +97,7 @@
 //      [G12/not-literal]   EVERY argument of every `log_reject(` / `reject(` call
 //                          is a bare "..." literal or an identifier resolving in
 //                          a literal-&str-const map built from the source;
-//                          argument 2 is exactly `ctx.sender` or `me`.
+//                          argument 2 is exactly `ctx.sender()` or `me`.
 //      [G12/value-pin]     the resolved reason SET equals exactly
 //                          {"unrecognized issuer", "unrecognized audience"}.
 //      [G12/claim-binding] no local bound from claims.issuer()/.audience()/
@@ -207,10 +207,10 @@ const VIEW_NAME = 'my_account';
 // The whole sanctioned view inventory, sorted. Any addition is a
 // privacy-relevant event that must be re-reviewed here.
 const EXPECTED_VIEWS = ['my_account', 'my_conversation', 'my_monster_pub', 'my_wallet'];
-// The ONE sanctioned body, whitespace-compacted. `&ctx.sender` is an
+// The ONE sanctioned body, whitespace-compacted. `&ctx.sender()` is an
 // equally-correct borrow spelling of the same unique-index lookup.
-const SANCTIONED_BODY = 'ctx.db.account().identity().find(ctx.sender)';
-const SANCTIONED_BODY_REF = 'ctx.db.account().identity().find(&ctx.sender)';
+const SANCTIONED_BODY = 'ctx.db.account().identity().find(ctx.sender())';
+const SANCTIONED_BODY_REF = 'ctx.db.account().identity().find(&ctx.sender())';
 
 /**
  * @param {{schemaSrc: string, accountsSrc: string,
@@ -241,7 +241,7 @@ export function checkAccountViewsSafe({ schemaSrc, accountsSrc, treeSrcs }) {
   const account = schemaTables.find((t) => t.name === ACCOUNT_TABLE);
   if (!account) {
     return (
-      `[A/0-table] no \`#[spacetimedb::table(name = ${ACCOUNT_TABLE})]\` declaration was ` +
+      `[A/0-table] no \`#[spacetimedb::table(accessor = ${ACCOUNT_TABLE})]\` declaration was ` +
       'found in schema.rs — the scan reached the wrong tree, the table was renamed, or ' +
       'the stripper blanked it. Every privacy clause below would pass VACUOUSLY, so this ' +
       'is a hard failure rather than a skip'
@@ -259,7 +259,7 @@ export function checkAccountViewsSafe({ schemaSrc, accountsSrc, treeSrcs }) {
   const guestClaim = schemaTables.find((t) => t.name === GUEST_CLAIM_TABLE);
   if (!guestClaim) {
     return (
-      `[A/missing-guest-claim] no \`#[spacetimedb::table(name = ${GUEST_CLAIM_TABLE})]\` ` +
+      `[A/missing-guest-claim] no \`#[spacetimedb::table(accessor = ${GUEST_CLAIM_TABLE})]\` ` +
       'declaration was found in schema.rs. This is the empty-target blind spot: a checker ' +
       'that only inspects the tables it happens to find is GREEN the moment its target ' +
       'disappears (renamed, moved to another file, or blanked by a stripper desync)'
@@ -277,7 +277,7 @@ export function checkAccountViewsSafe({ schemaSrc, accountsSrc, treeSrcs }) {
   const sched = accountsTables.find((t) => t.name === SCHED_TABLE);
   if (!sched) {
     return (
-      `[A/missing-sched] no \`#[spacetimedb::table(name = ${SCHED_TABLE})]\` declaration ` +
+      `[A/missing-sched] no \`#[spacetimedb::table(accessor = ${SCHED_TABLE})]\` declaration ` +
       'was found in accounts.rs. It lives THERE, not in schema.rs (the ADR-0056 ' +
       'colocation exception, so `scheduled(guest_claim_reaper)` resolves as a bare ident) ' +
       '— a checker that scans only schema.rs leaves this table entirely ungated'
@@ -297,7 +297,7 @@ export function checkAccountViewsSafe({ schemaSrc, accountsSrc, treeSrcs }) {
   const mine = views.find((v) => v.name === VIEW_NAME || v.fnName === VIEW_NAME);
   if (!mine) {
     return (
-      `[A/2c] no \`#[spacetimedb::view(name = ${VIEW_NAME}, public)]\` exists in schema.rs ` +
+      `[A/2c] no \`#[spacetimedb::view(accessor = ${VIEW_NAME}, public)]\` exists in schema.rs ` +
       `— \`${ACCOUNT_TABLE}\` is PRIVATE, so without the owner-scoped view the client is ` +
       `dark (it can never learn its own account state). Add it with body: ${SANCTIONED_BODY}`
     );
@@ -308,7 +308,7 @@ export function checkAccountViewsSafe({ schemaSrc, accountsSrc, treeSrcs }) {
       `[A/2c] view '${VIEW_NAME}' body is not EXACTLY the sanctioned sender-keyed lookup. ` +
       `Expected (whitespace-insensitive): ${SANCTIONED_BODY} — got: ${body}. This clause is ` +
       'exact ON PURPOSE: a presence check is passed by a decoy line (`let _decoy = ' +
-      '...find(ctx.sender);` followed by `...find(some_other_identity)`), which compiles ' +
+      '...find(ctx.sender());` followed by `...find(some_other_identity)`), which compiles ' +
       'clean, passes clippy and rustfmt, and returns an ARBITRARY account row. `public` on ' +
       'the view attribute is inert — this body is the entire security boundary, so any ' +
       'legitimate change to it must be re-reviewed right here'
@@ -393,7 +393,7 @@ export function checkBindings(fsProbe) {
 
 const EXPECTED_REASONS = ['unrecognized audience', 'unrecognized issuer'];
 const CLAIM_ACCESSORS = ['claims.issuer()', 'claims.audience()', 'claims.subject()'];
-const SANCTIONED_SENDER_ARGS = ['ctx.sender', 'me'];
+const SANCTIONED_SENDER_ARGS = ['ctx.sender()', 'me'];
 // Every callee segment that can put its argument into the module log. The
 // panic family is here because a panicking reducer's message IS logged by the
 // SpacetimeDB host: `panic!("bad issuer {iss}")` is a G12 violation that a
@@ -637,7 +637,7 @@ export function checkNoPiiInRejectLogs({ accountsSrc, libSrc }) {
             'const declared in the source. EVERY argument is constrained, not just the ' +
             'reason: guards.rs:47 takes the reducer NAME as a `&str` too and its own comment ' +
             '(:48-51) calls a name literal there "an unenforced convention", so ' +
-            '`let src_tag = claims.issuer(); log_reject(src_tag, ctx.sender, REASON);` ' +
+            '`let src_tag = claims.issuer(); log_reject(src_tag, ctx.sender(), REASON);` ' +
             'writes the raw JWT `iss` into the structured warn log while a reason-only ' +
             'check stays GREEN'
           );
@@ -724,7 +724,7 @@ function expectTag(err, tag, label) {
 const GOOD_SCHEMA = String.raw`
 /// PRIVATE account record (no public keyword) — ADR-0179 D2.
 #[derive(Clone)]
-#[spacetimedb::table(name = account)]
+#[spacetimedb::table(accessor = account)]
 pub struct Account {
     #[primary_key]
     pub identity: Identity,
@@ -733,31 +733,31 @@ pub struct Account {
 }
 
 /// Owner-scoped read path. Never an iter() here: exactly one row.
-#[spacetimedb::view(name = my_account, public)]
+#[spacetimedb::view(accessor = my_account, public)]
 fn my_account(ctx: &spacetimedb::ViewContext) -> Option<Account> {
     ctx.db
         .account()
         .identity()
-        .find(ctx.sender)
+        .find(ctx.sender())
 }
 
-#[spacetimedb::view(name = my_conversation, public)]
+#[spacetimedb::view(accessor = my_conversation, public)]
 fn my_conversation(ctx: &spacetimedb::ViewContext) -> Option<PlayerConversation> {
-    ctx.db.player_conversation().player_identity().find(ctx.sender)
+    ctx.db.player_conversation().player_identity().find(ctx.sender())
 }
 
-#[spacetimedb::view(name = my_wallet, public)]
+#[spacetimedb::view(accessor = my_wallet, public)]
 fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
-    ctx.db.player_wallet().owner_identity().find(ctx.sender)
+    ctx.db.player_wallet().owner_identity().find(ctx.sender())
 }
 
-#[spacetimedb::view(name = my_monster_pub, public)]
+#[spacetimedb::view(accessor = my_monster_pub, public)]
 fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
-    ctx.db.monster_pub().owner_identity().filter(ctx.sender).collect()
+    ctx.db.monster_pub().owner_identity().filter(ctx.sender()).collect()
 }
 
 #[derive(Clone)]
-#[spacetimedb::table(name = guest_claim)]
+#[spacetimedb::table(accessor = guest_claim)]
 pub struct GuestClaim {
     #[primary_key]
     pub guest_identity: Identity,
@@ -769,7 +769,7 @@ pub const DOC_URL: &str = "https://auth.example.invalid/oidc";
 pub const OPENER: &str = "SLASH_STAR_PLACEHOLDER";
 pub const RNG_NOTE: &str = "the words rng, iter and public are data here";
 pub const LEAK_DECOY: &str =
-    "#[spacetimedb::view(name = all_accounts, public)] fn all_accounts(c: &V) -> Vec<Account> { c.db.account().iter().collect() }";
+    "#[spacetimedb::view(accessor = all_accounts, public)] fn all_accounts(c: &V) -> Vec<Account> { c.db.account().iter().collect() }";
 pub const WIN_PATH: &str = r"C:\";
 `.replace('SLASH_STAR_PLACEHOLDER', SLASH_STAR + ' not a comment ' + STAR_SLASH);
 
@@ -777,7 +777,7 @@ pub const WIN_PATH: &str = r"C:\";
 // string, char literals, byte-char literals and lifetimes for the lexer.
 const GOOD_ACCOUNTS = String.raw`
 /// PRIVATE scheduled table colocated with its reducer (ADR-0056 exception).
-#[spacetimedb::table(name = guest_claim_reaper_schedule, scheduled(guest_claim_reaper))]
+#[spacetimedb::table(accessor = guest_claim_reaper_schedule, scheduled(guest_claim_reaper))]
 pub struct GuestClaimReaperSchedule {
     #[primary_key]
     #[auto_inc]
@@ -816,16 +816,16 @@ pub(crate) fn provision_or_touch_account(ctx: &ReducerContext) -> Result<(), Str
             .check(now_ms(ctx), UNRECOGNIZED_ISSUER_LOG_WINDOW_MS)
             .is_some()
         {
-            log_reject("client_connected", ctx.sender, REJECT_UNRECOGNIZED_ISSUER);
+            log_reject("client_connected", ctx.sender(), REJECT_UNRECOGNIZED_ISSUER);
         }
         return Ok(());
     }
     if !audience_allowed(claims.audience(), ALLOWED_AUDIENCE) {
-        log_reject("client_connected", ctx.sender, REJECT_UNRECOGNIZED_AUDIENCE);
+        log_reject("client_connected", ctx.sender(), REJECT_UNRECOGNIZED_AUDIENCE);
         return Err(REJECT_UNRECOGNIZED_AUDIENCE.to_string());
     }
     let now = now_ms(ctx);
-    match ctx.db.account().identity().find(ctx.sender) {
+    match ctx.db.account().identity().find(ctx.sender()) {
         Some(existing) => {
             ctx.db
                 .account()
@@ -835,7 +835,7 @@ pub(crate) fn provision_or_touch_account(ctx: &ReducerContext) -> Result<(), Str
         None => {
             ctx.db
                 .account()
-                .insert(new_account_row(ctx.sender, issuer.to_string(), now));
+                .insert(new_account_row(ctx.sender(), issuer.to_string(), now));
         }
     }
     Ok(())
@@ -896,20 +896,20 @@ function fakeRawBlindStrip(src) {
  */
 function schemaWithRawConstAndPublicClaim(rawConst) {
   return `
-#[spacetimedb::table(name = account)]
+#[spacetimedb::table(accessor = account)]
 pub struct Account {
     #[primary_key]
     pub identity: Identity,
 }
 
-#[spacetimedb::view(name = my_account, public)]
+#[spacetimedb::view(accessor = my_account, public)]
 fn my_account(ctx: &spacetimedb::ViewContext) -> Option<Account> {
-    ctx.db.account().identity().find(ctx.sender)
+    ctx.db.account().identity().find(ctx.sender())
 }
 
 ${rawConst}
 
-#[spacetimedb::table(name = guest_claim, public)]
+#[spacetimedb::table(accessor = guest_claim, public)]
 pub struct GuestClaim {
     #[primary_key]
     pub guest_identity: Identity,
@@ -1023,7 +1023,7 @@ fn probe(ctx: &Ctx) {
 
   // FA8 — `account` published public.
   {
-    const schemaSrc = GOOD_SCHEMA.replace('(name = account)', '(name = account, public)');
+    const schemaSrc = GOOD_SCHEMA.replace('(accessor = account)', '(accessor = account, public)');
     const bad = expectTag(
       checkAccountViewsSafe({ schemaSrc, accountsSrc: GOOD_ACCOUNTS }),
       '[A/priv-account]',
@@ -1035,7 +1035,7 @@ fn probe(ctx: &Ctx) {
   // FA9 — the guest_claim table renamed out from under the clause.
   // Kills: the empty-target blind spot for the SECOND table.
   {
-    const schemaSrc = GOOD_SCHEMA.replace('(name = guest_claim)', '(name = claim_ticket)');
+    const schemaSrc = GOOD_SCHEMA.replace('(accessor = guest_claim)', '(accessor = claim_ticket)');
     const bad = expectTag(
       checkAccountViewsSafe({ schemaSrc, accountsSrc: GOOD_ACCOUNTS }),
       '[A/missing-guest-claim]',
@@ -1046,7 +1046,10 @@ fn probe(ctx: &Ctx) {
 
   // FA10 — `guest_claim` published public (the plaintext claim code leaks).
   {
-    const schemaSrc = GOOD_SCHEMA.replace('(name = guest_claim)', '(name = guest_claim, public)');
+    const schemaSrc = GOOD_SCHEMA.replace(
+      '(accessor = guest_claim)',
+      '(accessor = guest_claim, public)',
+    );
     const bad = expectTag(
       checkAccountViewsSafe({ schemaSrc, accountsSrc: GOOD_ACCOUNTS }),
       '[A/priv-guest-claim]',
@@ -1072,8 +1075,8 @@ fn probe(ctx: &Ctx) {
   // FA12 — the scheduled table published public.
   {
     const accountsSrc = GOOD_ACCOUNTS.replace(
-      'name = guest_claim_reaper_schedule,',
-      'name = guest_claim_reaper_schedule, public,',
+      'accessor = guest_claim_reaper_schedule,',
+      'accessor = guest_claim_reaper_schedule, public,',
     );
     const bad = expectTag(
       checkAccountViewsSafe({ schemaSrc: GOOD_SCHEMA, accountsSrc }),
@@ -1085,12 +1088,12 @@ fn probe(ctx: &Ctx) {
 
   // FA13 — the my_account view is missing entirely (client goes dark). BOTH the
   // attr name and the fn identifier are renamed, because the view is looked up
-  // by EITHER (a view declared `name = my_account` on `fn account_read` is
+  // by EITHER (a view declared `accessor = my_account` on `fn account_read` is
   // legitimate, so a fn-name-only match must keep working).
   {
     const schemaSrc = GOOD_SCHEMA.replace(
-      '#[spacetimedb::view(name = my_account, public)]\nfn my_account(',
-      '#[spacetimedb::view(name = acct_peek, public)]\nfn acct_peek(',
+      '#[spacetimedb::view(accessor = my_account, public)]\nfn my_account(',
+      '#[spacetimedb::view(accessor = acct_peek, public)]\nfn acct_peek(',
     );
     if (schemaSrc === GOOD_SCHEMA) {
       return 'FA13: the fixture substitution did not apply — the view was never renamed';
@@ -1103,7 +1106,7 @@ fn probe(ctx: &Ctx) {
     if (bad) return bad;
   }
 
-  // FA14 — THE decoy-line leak: a conforming find(ctx.sender) kept alive only to
+  // FA14 — THE decoy-line leak: a conforming find(ctx.sender()) kept alive only to
   // satisfy a presence check, followed by the real read keyed on an arbitrary
   // identity. Compiles, clippy-clean, rustfmt-clean, leaks any account row.
   // Kills: ANY presence-only spelling of [A/2c].
@@ -1112,8 +1115,8 @@ fn probe(ctx: &Ctx) {
       `    ctx.db
         .account()
         .identity()
-        .find(ctx.sender)`,
-      `    let _decoy = ctx.db.account().identity().find(ctx.sender);
+        .find(ctx.sender())`,
+      `    let _decoy = ctx.db.account().identity().find(ctx.sender());
     let victim = Identity::from_byte_array([7u8; 32]);
     ctx.db.account().identity().find(victim)`,
     );
@@ -1128,12 +1131,12 @@ fn probe(ctx: &Ctx) {
     if (bad) return bad;
   }
 
-  // FA15 — GOOD: the `&ctx.sender` borrow spelling is the same lookup and must
+  // FA15 — GOOD: the `&ctx.sender()` borrow spelling is the same lookup and must
   // PASS. Kills: an over-tight pin that would false-RED a legitimate rewrite.
   {
-    const schemaSrc = GOOD_SCHEMA.replace('.find(ctx.sender)\n}', '.find(&ctx.sender)\n}');
+    const schemaSrc = GOOD_SCHEMA.replace('.find(ctx.sender())\n}', '.find(&ctx.sender())\n}');
     const err = checkAccountViewsSafe({ schemaSrc, accountsSrc: GOOD_ACCOUNTS });
-    if (err) return `FA15: the &ctx.sender borrow spelling was incorrectly flagged: ${err}`;
+    if (err) return `FA15: the &ctx.sender() borrow spelling was incorrectly flagged: ${err}`;
   }
 
   // FA16 — a FOURTH view is added (here: one that launders the read through a
@@ -1141,7 +1144,7 @@ fn probe(ctx: &Ctx) {
   // Kills: any per-view audit; the inventory pin makes it unrepresentable.
   {
     const schemaSrc = `${GOOD_SCHEMA}
-#[spacetimedb::view(name = account_roster, public)]
+#[spacetimedb::view(accessor = account_roster, public)]
 fn account_roster(ctx: &spacetimedb::ViewContext) -> Vec<Account> {
     const HOPS: [fn(&spacetimedb::ViewContext) -> Vec<Account>; 1] = [roster];
     HOPS[0](ctx)
@@ -1159,7 +1162,10 @@ fn account_roster(ctx: &spacetimedb::ViewContext) -> Vec<Account> {
   // a deletion reads identically to the pin). Kills: a one-sided "no NEW views"
   // check, which would stay green while the client silently goes dark.
   {
-    const schemaSrc = GOOD_SCHEMA.replace('name = my_wallet, public', 'name = my_walet, public');
+    const schemaSrc = GOOD_SCHEMA.replace(
+      'accessor = my_wallet, public',
+      'accessor = my_walet, public',
+    );
     const bad = expectTag(
       checkAccountViewsSafe({ schemaSrc, accountsSrc: GOOD_ACCOUNTS }),
       '[A/view-set]',
@@ -1334,9 +1340,9 @@ pub(crate) fn provision_or_touch_account(ctx: &ReducerContext) -> Result<(), Str
   // is what the shipped Rust twin and the drafted JS clause both were.
   {
     const accountsSrc = GOOD_ACCOUNTS_PII.replace(
-      '            log_reject("client_connected", ctx.sender, REJECT_UNRECOGNIZED_ISSUER);',
+      '            log_reject("client_connected", ctx.sender(), REJECT_UNRECOGNIZED_ISSUER);',
       `            let src_tag = claims.issuer();
-            log_reject(src_tag, ctx.sender, REJECT_UNRECOGNIZED_ISSUER);`,
+            log_reject(src_tag, ctx.sender(), REJECT_UNRECOGNIZED_ISSUER);`,
     );
     const bad = expectTag(
       checkNoPiiInRejectLogs({ accountsSrc, libSrc: GOOD_LIB_PII }),
@@ -1349,9 +1355,9 @@ pub(crate) fn provision_or_touch_account(ctx: &ReducerContext) -> Result<(), Str
   // FA28 — a dynamic reason (a local, not a literal const).
   {
     const accountsSrc = GOOD_ACCOUNTS_PII.replace(
-      '        log_reject("client_connected", ctx.sender, REJECT_UNRECOGNIZED_AUDIENCE);',
+      '        log_reject("client_connected", ctx.sender(), REJECT_UNRECOGNIZED_AUDIENCE);',
       `        let detail = claims.audience().join(",");
-        log_reject("client_connected", ctx.sender, &detail);`,
+        log_reject("client_connected", ctx.sender(), &detail);`,
     );
     const bad = expectTag(
       checkNoPiiInRejectLogs({ accountsSrc, libSrc: GOOD_LIB_PII }),
@@ -1364,7 +1370,7 @@ pub(crate) fn provision_or_touch_account(ctx: &ReducerContext) -> Result<(), Str
   // FA29 — argument TWO is some other identity, misattributing the reject.
   {
     const accountsSrc = GOOD_ACCOUNTS_PII.replace(
-      'log_reject("client_connected", ctx.sender, REJECT_UNRECOGNIZED_AUDIENCE);',
+      'log_reject("client_connected", ctx.sender(), REJECT_UNRECOGNIZED_AUDIENCE);',
       'log_reject("client_connected", victim, REJECT_UNRECOGNIZED_AUDIENCE);',
     );
     const bad = expectTag(

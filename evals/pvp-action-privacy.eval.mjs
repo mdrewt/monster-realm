@@ -52,13 +52,13 @@ function stripRustComments(src) {
 // ---------------------------------------------------------------------------
 // Criterion: SCHEMA_PRIVATE
 // The `battle_action` table declaration in schema.rs must NOT have `public`.
-// bad fixture: `#[spacetimedb::table(name = battle_action, public)]` → must flag.
-// good fixture: `#[spacetimedb::table(name = battle_action)]` → must not flag.
+// bad fixture: `#[spacetimedb::table(accessor = battle_action, public)]` → must flag.
+// good fixture: `#[spacetimedb::table(accessor = battle_action)]` → must not flag.
 // ---------------------------------------------------------------------------
 
 function battleActionIsPublic(schemaSrc) {
   const src = stripRustComments(schemaSrc);
-  const idx = src.indexOf('name = battle_action');
+  const idx = src.indexOf('accessor = battle_action');
   if (idx === -1) return null; // not found
   const lineStart = src.lastIndexOf('\n', idx) + 1;
   const lineEnd = src.indexOf('\n', idx);
@@ -119,7 +119,7 @@ export default async function () {
 
   // SCHEMA_PRIVATE teeth
   const badSchema =
-    '#[spacetimedb::table(name = battle_action, public)] pub struct BattleAction {}';
+    '#[spacetimedb::table(accessor = battle_action, public)] pub struct BattleAction {}';
   if (battleActionIsPublic(badSchema) !== true) {
     return {
       name,
@@ -127,7 +127,7 @@ export default async function () {
       detail: 'TEETH FAILED: battleActionIsPublic should return true for bad fixture with `public`',
     };
   }
-  const goodSchema = '#[spacetimedb::table(name = battle_action)] pub struct BattleAction {}';
+  const goodSchema = '#[spacetimedb::table(accessor = battle_action)] pub struct BattleAction {}';
   if (battleActionIsPublic(goodSchema) !== false) {
     return {
       name,
@@ -228,7 +228,7 @@ export default async function () {
   const publicResult = battleActionIsPublic(schemaSrc);
   if (publicResult === null) {
     failures.push(
-      'SCHEMA_PRIVATE: `name = battle_action` declaration not found in schema.rs — ' +
+      'SCHEMA_PRIVATE: `accessor = battle_action` declaration not found in schema.rs — ' +
         'BattleAction table must be declared there (ADR-0056)',
     );
   } else if (publicResult === true) {

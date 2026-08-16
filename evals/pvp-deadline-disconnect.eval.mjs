@@ -5,7 +5,7 @@
 //
 // Criteria (5 liveness invariants):
 //
-//   SCHEDULER_GUARD   — pvp_deadline_reaper has `ctx.sender != ctx.identity()` guard
+//   SCHEDULER_GUARD   — pvp_deadline_reaper has `ctx.sender() != ctx.database_identity()` guard
 //                       (scheduler-only; prevents clients from triggering forced forfeits)
 //   STALE_TURN_CHECK  — pvp_deadline_reaper checks `battle.state.turn_number != scheduled_turn`
 //                       (prevents double-forfeit when both sides submitted before deadline)
@@ -53,14 +53,14 @@ function extractFunctionBody(rawSrc, fnName) {
 // ---------------------------------------------------------------------------
 // Criterion: SCHEDULER_GUARD
 // pvp_deadline_reaper must have the scheduler-only identity guard:
-//   `ctx.sender != ctx.identity()`
+//   `ctx.sender() != ctx.database_identity()`
 // This mirrors the `movement_tick` guard in movement.rs (ADR-0056).
 // bad fixture: body without the guard → must flag.
 // good fixture: body with the guard → must not flag.
 // ---------------------------------------------------------------------------
 function hasSchedulerGuard(body) {
   const code = stripRustComments(body);
-  return /ctx\.sender\s*!=\s*ctx\.identity\s*\(\s*\)/.test(code);
+  return /ctx\.sender\s*\(\s*\)\s*!=\s*ctx\.database_identity\s*\(\s*\)/.test(code);
 }
 
 // ---------------------------------------------------------------------------
@@ -144,23 +144,23 @@ export default async function () {
       name,
       pass: false,
       detail:
-        'TEETH FAILED: hasSchedulerGuard should NOT pass fixture without `ctx.sender != ctx.identity()` guard',
+        'TEETH FAILED: hasSchedulerGuard should NOT pass fixture without `ctx.sender() != ctx.database_identity()` guard',
     };
   }
   const goodScheduler =
-    'fn pvp_deadline_reaper(ctx, args: PvpDeadlineSchedule) { if ctx.sender != ctx.identity() { return Err("scheduler-only"); } }';
+    'fn pvp_deadline_reaper(ctx, args: PvpDeadlineSchedule) { if ctx.sender() != ctx.database_identity() { return Err("scheduler-only"); } }';
   if (!hasSchedulerGuard(goodScheduler)) {
     return {
       name,
       pass: false,
       detail:
-        'TEETH FAILED: hasSchedulerGuard should detect `ctx.sender != ctx.identity()` in good fixture',
+        'TEETH FAILED: hasSchedulerGuard should detect `ctx.sender() != ctx.database_identity()` in good fixture',
     };
   }
 
   // STALE_TURN_CHECK
   const badStale =
-    'fn pvp_deadline_reaper(ctx, args) { if ctx.sender != ctx.identity() { return Err(""); } let forfeited = pvp_deadline_forfeit_side(a_sub, b_sub); apply_pvp_forfeit(ctx, battle, forfeited); }';
+    'fn pvp_deadline_reaper(ctx, args) { if ctx.sender() != ctx.database_identity() { return Err(""); } let forfeited = pvp_deadline_forfeit_side(a_sub, b_sub); apply_pvp_forfeit(ctx, battle, forfeited); }';
   if (hasStaleTurnCheck(badStale)) {
     return {
       name,
@@ -288,7 +288,7 @@ export default async function () {
   } else {
     if (!hasSchedulerGuard(reaperBody)) {
       failures.push(
-        'SCHEDULER_GUARD (ADR-0109): `pvp_deadline_reaper` is missing the `ctx.sender != ctx.identity()` ' +
+        'SCHEDULER_GUARD (ADR-0109): `pvp_deadline_reaper` is missing the `ctx.sender() != ctx.database_identity()` ' +
           'guard — any client can call pvp_deadline_reaper directly, forcing an immediate forfeit ' +
           'of the non-calling side without waiting for the real deadline',
       );

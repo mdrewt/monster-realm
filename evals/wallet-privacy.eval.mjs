@@ -1,7 +1,7 @@
 // Wallet privacy eval (ux2 / ADR-0154): `player_wallet` is PRIVATE
 // (ADR-0015 must-never-leak, ADR-0081) and ux2 opens exactly ONE client read
 // path — an owner-scoped `#[spacetimedb::view]` named `my_wallet` in schema.rs
-// returning `Option<PlayerWallet>` for `ctx.sender` and NOTHING else.
+// returning `Option<PlayerWallet>` for `ctx.sender()` and NOTHING else.
 //
 // VERIFIED SEMANTICS (spacetimedb-bindings-macro-1.12.0, spacetimedb-1.12.0):
 //   * `public` on `#[spacetimedb::view]` is a MANDATORY keyword with NO
@@ -17,7 +17,7 @@
 //     already forbids — they are kept as defense in depth and as parser guards,
 //     but the LOAD-BEARING clause is 2c: the body must be EXACTLY the
 //     sender-keyed lookup. A presence-only 2c is defeated by
-//     `let _decoy = …find(ctx.sender); …find(victim)` — a compiling, clippy-
+//     `let _decoy = …find(ctx.sender()); …find(victim)` — a compiling, clippy-
 //     clean, fmt-clean, arbitrary-wallet leak (red-team F-1, CRITICAL).
 //
 // OWNERSHIP / SSOT — what this eval does NOT do:
@@ -233,7 +233,7 @@ export function parseFns(src) {
 // ---------------------------------------------------------------------------
 
 // The wallet accessor, paren-anchored: a future `player_wallet_archive()` table
-// must not alias the needle (and the table ATTR `name = player_wallet)` has no
+// must not alias the needle (and the table ATTR `accessor = player_wallet)` has no
 // paren after the name, so a declaration alone never counts as a read).
 const WALLET_ACCESSOR = 'player_wallet(';
 // A generated handle type (`player_wallet__TableHandle` / `player_wallet__ViewHandle`)
@@ -246,10 +246,10 @@ const VIEW_ATTR = '#[spacetimedb::view(';
 // is a PUB constructor; only the host may legitimately call it.
 const FORGED_CTX_NEW = 'ViewContext::new(';
 const FORGED_CTX_STRUCT = 'ViewContext{';
-// The ONE sanctioned body, whitespace-compacted. `&ctx.sender` is an
+// The ONE sanctioned body, whitespace-compacted. `&ctx.sender()` is an
 // equally-correct borrow spelling of the same unique-index lookup.
-const SANCTIONED_BODY = 'ctx.db.player_wallet().owner_identity().find(ctx.sender)';
-const SANCTIONED_BODY_REF = 'ctx.db.player_wallet().owner_identity().find(&ctx.sender)';
+const SANCTIONED_BODY = 'ctx.db.player_wallet().owner_identity().find(ctx.sender())';
+const SANCTIONED_BODY_REF = 'ctx.db.player_wallet().owner_identity().find(&ctx.sender())';
 
 /**
  * Does this fn reach the wallet table directly (body accessor or handle param)?
@@ -326,7 +326,7 @@ export function checkWalletViewsSafe(serverSrc) {
 
   // [B/M2-shortform] parseViews anchors on the fully-qualified attr path (the
   // project-wide convention). A short-form `use spacetimedb::view;` +
-  // `#[view(name = all_wallets, public)]` would be INVISIBLE to it, so a leaky
+  // `#[view(accessor = all_wallets, public)]` would be INVISIBLE to it, so a leaky
   // view could be added under the parser's nose. Fail loudly instead.
   if (/#\[view\(/.test(compactWs(stripped))) {
     return (
@@ -440,7 +440,7 @@ export function checkWalletViewsSafe(serverSrc) {
 
   // [B/2c] LOAD-BEARING: the body must be EXACTLY the sanctioned lookup.
   // Presence-only matching is defeated by a decoy line (red-team F-1, CRITICAL):
-  //   let _decoy = ctx.db.player_wallet().owner_identity().find(ctx.sender);
+  //   let _decoy = ctx.db.player_wallet().owner_identity().find(ctx.sender());
   //   let victim = Identity::from_byte_array([7u8; 32]);
   //   ctx.db.player_wallet().owner_identity().find(victim)
   // — compiles, clippy-clean, fmt-clean, contains every needle, and returns an
@@ -450,7 +450,7 @@ export function checkWalletViewsSafe(serverSrc) {
       `[B/2c] view '${VIEW_NAME}' body is not EXACTLY the sanctioned sender-keyed ` +
       `lookup. Expected (whitespace-insensitive): ${SANCTIONED_BODY} — got: ` +
       `${compactBody}. This clause is exact ON PURPOSE: a presence check is passed ` +
-      'by a decoy line (`let _decoy = …find(ctx.sender);` followed by ' +
+      'by a decoy line (`let _decoy = …find(ctx.sender());` followed by ' +
       '`…find(some_other_identity)`), which compiles clean and leaks an arbitrary ' +
       "player's wallet. Any legitimate change to this body must be re-reviewed here"
     );
@@ -542,7 +542,7 @@ export function checkWalletViewsSafe(serverSrc) {
 //
 // Whitespace-compacted per fn (red-team F-6: `player_wallet ()` compiles), and
 // the view fn is located by the VIEW'S REAL fnName (red-team F-8: a view
-// declared `#[spacetimedb::view(name = my_wallet)] fn wallet_read(…)` must not
+// declared `#[spacetimedb::view(accessor = my_wallet)] fn wallet_read(…)` must not
 // false-red).
 // ---------------------------------------------------------------------------
 
@@ -735,7 +735,7 @@ export function checkNoPrivateWalletSubscription(connectionSrc) {
 // ---------------------------------------------------------------------------
 
 const TABLE_DECL = `
-#[spacetimedb::table(name = player_wallet)]
+#[spacetimedb::table(accessor = player_wallet)]
 pub struct PlayerWallet {
     #[primary_key]
     pub owner_identity: Identity,
@@ -744,12 +744,12 @@ pub struct PlayerWallet {
 `;
 
 const GOOD_VIEW = `
-#[spacetimedb::view(name = my_wallet, public)]
+#[spacetimedb::view(accessor = my_wallet, public)]
 fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
     ctx.db
         .player_wallet()
         .owner_identity()
-        .find(ctx.sender)
+        .find(ctx.sender())
 }
 `;
 
@@ -775,7 +775,7 @@ function runTeeth() {
   // Kills: a name-anchored checker that only inspects `my_wallet`.
   {
     const fixture = `${TABLE_DECL}${GOOD_VIEW}
-#[spacetimedb::view(name = all_wallets, public)]
+#[spacetimedb::view(accessor = all_wallets, public)]
 fn all_wallets(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
     ctx.db.player_wallet().iter().collect()
 }
@@ -793,8 +793,8 @@ fn all_wallets(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
   // stub that satisfies the name requirement while leaving the client dark.
   {
     const fixture = `${TABLE_DECL}
-/// Reads ctx.db.player_wallet().owner_identity().find(ctx.sender) — one day.
-#[spacetimedb::view(name = my_wallet, public)]
+/// Reads ctx.db.player_wallet().owner_identity().find(ctx.sender()) — one day.
+#[spacetimedb::view(accessor = my_wallet, public)]
 fn my_wallet(_ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
     None
 }
@@ -808,10 +808,10 @@ fn my_wallet(_ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
   // deleting clause 2e cannot be masked by clause 2f (whose message also says Vec).
   {
     const fixture = `${TABLE_DECL}
-#[spacetimedb::view(name = my_wallet, public)]
+#[spacetimedb::view(accessor = my_wallet, public)]
 fn my_wallet(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
     let mut out = Vec::new();
-    if let Some(row) = ctx.db.player_wallet().owner_identity().find(ctx.sender) {
+    if let Some(row) = ctx.db.player_wallet().owner_identity().find(ctx.sender()) {
         out.push(row);
     }
     out
@@ -825,9 +825,9 @@ fn my_wallet(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
   // decoy line, returning Option. Kills: a literal `.iter()` needle.
   {
     const fixture = `${TABLE_DECL}
-#[spacetimedb::view(name = my_wallet, public)]
+#[spacetimedb::view(accessor = my_wallet, public)]
 fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
-    let _scoped = ctx.db.player_wallet().owner_identity().find(ctx.sender);
+    let _scoped = ctx.db.player_wallet().owner_identity().find(ctx.sender());
     let everyone: Vec<PlayerWallet> = Table::iter(&ctx.db.player_wallet()).collect();
     everyone.into_iter().next()
 }
@@ -846,7 +846,7 @@ fn census(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
     Table::iter(&ctx.db.player_wallet()).collect()
 }
 
-#[spacetimedb::view(name = rich_list, public)]
+#[spacetimedb::view(accessor = rich_list, public)]
 fn rich_list(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
     census(ctx)
 }
@@ -868,9 +868,9 @@ fn rich_list(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
   // F6 — `&AnonymousViewContext` signature with an otherwise perfect body.
   {
     const fixture = `${TABLE_DECL}
-#[spacetimedb::view(name = my_wallet, public)]
+#[spacetimedb::view(accessor = my_wallet, public)]
 fn my_wallet(ctx: &spacetimedb::AnonymousViewContext) -> Option<PlayerWallet> {
-    ctx.db.player_wallet().owner_identity().find(ctx.sender)
+    ctx.db.player_wallet().owner_identity().find(ctx.sender())
 }
 `;
     const bad = expectTag(checkWalletViewsSafe(fixture), '[B/2d]', 'F6');
@@ -887,13 +887,13 @@ fn my_wallet(ctx: &spacetimedb::AnonymousViewContext) -> Option<PlayerWallet> {
 /// PRIVATE wallet (ADR-0015/0081): never public, never projected wholesale.
 ${TABLE_DECL}
 /// Owner-scoped read path (ADR-0154).
-#[spacetimedb::view(name = my_wallet, public)]
+#[spacetimedb::view(accessor = my_wallet, public)]
 fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
     // Never a whole-table iter(...) here: exactly one row, via the unique index.
     ctx.db
         .player_wallet()
         .owner_identity()
-        .find(ctx.sender)
+        .find(ctx.sender())
 }
 `;
     const errB = checkWalletViewsSafe(fixture);
@@ -985,15 +985,15 @@ fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
   }
 
   // F13 (red-team F-1, CRITICAL) — THE decoy-line leak: a conforming
-  // `find(ctx.sender)` line kept alive only to satisfy a presence check,
+  // `find(ctx.sender())` line kept alive only to satisfy a presence check,
   // followed by the real read keyed on an ARBITRARY identity. Compiles, passes
   // clippy and rustfmt, and returns another player's wallet.
   // Kills: ANY presence-only spelling of clause 2c.
   {
     const fixture = `${TABLE_DECL}
-#[spacetimedb::view(name = my_wallet, public)]
+#[spacetimedb::view(accessor = my_wallet, public)]
 fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
-    let _decoy = ctx.db.player_wallet().owner_identity().find(ctx.sender);
+    let _decoy = ctx.db.player_wallet().owner_identity().find(ctx.sender());
     let victim = Identity::from_byte_array([7u8; 32]);
     ctx.db.player_wallet().owner_identity().find(victim)
 }
@@ -1007,9 +1007,9 @@ fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
   // "no row" vs "balance 0" distinction the Option is there to preserve.
   {
     const fixture = `${TABLE_DECL}
-#[spacetimedb::view(name = my_wallet, public)]
+#[spacetimedb::view(accessor = my_wallet, public)]
 fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<Wallet> {
-    ctx.db.player_wallet().owner_identity().find(ctx.sender)
+    ctx.db.player_wallet().owner_identity().find(ctx.sender())
 }
 `;
     const bad = expectTag(checkWalletViewsSafe(fixture), '[B/2f]', 'F14');
@@ -1031,7 +1031,7 @@ fn roster(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
     census(ctx)
 }
 
-#[spacetimedb::view(name = rich_list, public)]
+#[spacetimedb::view(accessor = rich_list, public)]
 fn rich_list(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
     roster(ctx)
 }
@@ -1056,9 +1056,9 @@ fn purge(h: &crate::schema::player_wallet__TableHandle, owner: Identity) {
     h.owner_identity().delete(owner);
 }
 
-#[spacetimedb::view(name = purge_view, public)]
+#[spacetimedb::view(accessor = purge_view, public)]
 fn purge_view(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
-    purge(ctx.db.player_wallet(), ctx.sender);
+    purge(ctx.db.player_wallet(), ctx.sender());
     None
 }
 `;
@@ -1111,7 +1111,7 @@ fn purge_view(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
     const fixture = `${TABLE_DECL}${GOOD_VIEW}
 const BLOCK_OPEN: &str = "/*";
 
-#[spacetimedb::view(name = all_wallets, public)]
+#[spacetimedb::view(accessor = all_wallets, public)]
 fn all_wallets(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
     Table::iter(&ctx.db.player_wallet()).collect()
 }
@@ -1125,7 +1125,7 @@ const BLOCK_CLOSE: &str = "*/";
   // F19 (reviewer M2) — short-form view attribute, invisible to parseViews.
   {
     const fixture = `${TABLE_DECL}${GOOD_VIEW}
-#[view(name = all_wallets, public)]
+#[view(accessor = all_wallets, public)]
 fn all_wallets(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
     Table::iter(&ctx.db.player_wallet()).collect()
 }
@@ -1178,7 +1178,7 @@ export function buildQueries(): string[] {
   // D2b makes about this eval.
   {
     const fixture = `${TABLE_DECL}${GOOD_VIEW}
-#[spacetimedb::view(name = peek_wallet, public)]
+#[spacetimedb::view(accessor = peek_wallet, public)]
 fn peek_wallet(_ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
     let victim = Identity::from_byte_array([7u8; 32]);
     my_wallet(&spacetimedb::ViewContext::new(victim))
@@ -1195,7 +1195,7 @@ fn peek_wallet(_ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
   // always-red clause that closes a legitimate path.
   {
     const fixture = `${TABLE_DECL}${GOOD_VIEW}
-#[spacetimedb::view(name = wallet_hud, public)]
+#[spacetimedb::view(accessor = wallet_hud, public)]
 fn wallet_hud(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
     my_wallet(ctx)
 }
@@ -1213,7 +1213,7 @@ fn wallet_hud(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
   // unfixtured-clause dishonesty the red-team flagged as F-4.
   {
     const fixture = `${TABLE_DECL}${GOOD_VIEW}
-#[spacetimedb::view(name = peek_wallet, public)]
+#[spacetimedb::view(accessor = peek_wallet, public)]
 fn peek_wallet(_ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
     let laundered = ctx_for(Identity::from_byte_array([7u8; 32]));
     my_wallet(laundered)
@@ -1261,7 +1261,7 @@ fn peek_wallet(_ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
       `    const ISSUER: &str = ${DQ13R}${httpsUrl}${DQ13R}; ` +
       'ctx.db.player_wallet().iter().collect()';
     const fixture = `${TABLE_DECL}${GOOD_VIEW}
-#[spacetimedb::view(name = all_wallets, public)]
+#[spacetimedb::view(accessor = all_wallets, public)]
 fn all_wallets(ctx: &spacetimedb::ViewContext) -> Vec<PlayerWallet> {
 ${leakyBodyLine}
 }

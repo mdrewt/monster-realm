@@ -229,7 +229,7 @@ fn apply_quest_trigger(
 /// Zone + range checked. auto_effects applied. quest trigger fired for Talk event.
 #[spacetimedb::reducer]
 pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
 
     // Step 1: player must be joined
     let Some(p) = ctx.db.player().identity().find(me) else {
@@ -320,10 +320,10 @@ pub fn talk(ctx: &ReducerContext, npc_entity_id: u64) -> Result<(), String> {
 }
 
 /// Advance dialogue by selecting a choice. Security gate: `apply_choice` re-checks
-/// conditions internally. `player_conversation` lookup is PK-scoped to ctx.sender (F1).
+/// conditions internally. `player_conversation` lookup is PK-scoped to ctx.sender() (F1).
 #[spacetimedb::reducer]
 pub fn advance_dialogue(ctx: &ReducerContext, choice_idx: u32) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
 
     // Step 1: PK-scoped lookup (F1: Player A cannot advance Player B's conversation)
     let Some(conv) = ctx.db.player_conversation().owner_identity().find(me) else {
@@ -412,7 +412,7 @@ pub fn dismiss_dialogue(ctx: &ReducerContext) -> Result<(), String> {
     ctx.db
         .player_conversation()
         .owner_identity()
-        .delete(ctx.sender);
+        .delete(ctx.sender());
     Ok(())
 }
 

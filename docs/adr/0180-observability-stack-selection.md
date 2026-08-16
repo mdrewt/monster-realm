@@ -8,7 +8,7 @@
 **Amends:** ADR-0029 (harness spec corpus — elaborates the 2026-08-08 Datadog→self-hosted-OSS amendment
 there into concrete tool selection + data-path architecture; corrects ADR-0029's own "M0 already wired the
 substrate" consequence line)
-**Amended-by:** ADR-0190, ADR-0191
+**Amended-by:** ADR-0190, ADR-0191, ADR-0197
 **Subsystems:** ci-gates, tooling-docs, schema-persistence
 **Decision:** An 8-container, all-open-source, self-hosted stack (Prometheus, Grafana Alloy, Loki, Tempo,
 Grafana OSS, node_exporter, Caddy, and `mr-trace-relay`) replaces the harness-default Datadog sink; the

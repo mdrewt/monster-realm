@@ -5,6 +5,7 @@
 **Slice:** m8.7b
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** ADR-0197
 **Subsystems:** security-authz, ci-gates
 **Decision:** Gate dev/test reducers behind #[cfg(feature="dev_reducers")] so they compile-exclude from release/bench wasm; zone movement uses reject-not-clamp.
 

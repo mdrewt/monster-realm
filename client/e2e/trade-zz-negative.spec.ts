@@ -351,6 +351,19 @@ function normalizeIdentity(id: string): string {
   return lower.startsWith('0x') ? lower.slice(2) : lower;
 }
 
+/** Sum-type cells are rendered differently by different CLI versions: 2.6.0 printed the bare
+ *  variant name (`Pending`); 2.8.1 prints a tagged form (`(pending = ())`). Normalising both sides
+ *  to lowercase alphanumerics makes the token check survive that.
+ *
+ *  This is a STRENGTHENING, not a loosening, and the negative asserts are why. Under 2.8.1
+ *  rendering the literal string `ConfirmedByCounterparty` appears in NO status cell, so
+ *  `.not.toContain('ConfirmedByCounterparty')` passed for every possible status — vacuous, a gate
+ *  that could no longer fail. Normalising restores its teeth. The two variant tokens stay disjoint
+ *  after normalisation (`pending` vs `confirmedbycounterparty`), so the check is still exact. */
+function statusToken(cell: string): string {
+  return (cell ?? '').toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 /** Every trade_offer row whose party pair is exactly {a, b}, in EITHER direction.
  *  PAIR-SCOPED ON PURPOSE: a global count would be satisfied (or broken) by any other
  *  identity's offer, and `allTradeOffers()[0]` is the exact anti-pattern this file exists
@@ -951,14 +964,14 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
     // TradeStatus is a sum type; its CLI rendering is not pinned by anything in this repo,
     // but the two variant names are disjoint tokens, so a two-sided token check is exact.
     expect(
-      proposed.status ?? '',
+      statusToken(proposed.status ?? ''),
       `${label}: a freshly proposed offer must be Pending in server truth — status cell was ` +
         `${JSON.stringify(proposed.status ?? '')}`,
-    ).toContain('Pending');
+    ).toContain(statusToken('Pending'));
     expect(
-      proposed.status ?? '',
+      statusToken(proposed.status ?? ''),
       `${label}: a freshly proposed offer must NOT already be ConfirmedByCounterparty`,
-    ).not.toContain('ConfirmedByCounterparty');
+    ).not.toContain(statusToken('ConfirmedByCounterparty'));
     // ARMED side of the two-sided assert.
     await expectReaperRows(tradeId, 1, `${label} armed after propose`);
 
@@ -1095,11 +1108,11 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
     );
     const advancedRow = advanced[0];
     expect(
-      advancedRow?.status ?? '',
+      statusToken(advancedRow?.status ?? ''),
       `${label}: the offer must be ConfirmedByCounterparty in server truth before the ` +
         `non-party responds — otherwise this test degenerates into "a non-party responded ` +
         `to a Pending offer", which a status-first implementation also passes`,
-    ).toContain('ConfirmedByCounterparty');
+    ).toContain(statusToken('ConfirmedByCounterparty'));
 
     // A non-party responds to a NON-Pending offer. Role first ⇒ the ROLE message.
     const rejection = await errorOf(pageC, { kind: 'respond', tradeId, accepted: true });
@@ -1149,16 +1162,16 @@ test.describe('14r-b — trading reducer negative paths, three identities, serve
     // third TradeStatus variant whose name contains "Pending" is added, so the negative
     // token pins that the offer is specifically NOT the confirmable status.
     expect(
-      pending.status ?? '',
+      statusToken(pending.status ?? ''),
       `${label}: the offer must still be Pending when the counterparty confirms — that is ` +
         `the wrong-status condition the role-first ordering is proven against. Status cell ` +
         `was ${JSON.stringify(pending.status ?? '')}`,
-    ).toContain('Pending');
+    ).toContain(statusToken('Pending'));
     expect(
-      pending.status ?? '',
+      statusToken(pending.status ?? ''),
       `${label}: the offer must NOT be ConfirmedByCounterparty — against that status the ` +
         `role and status arms would agree and the message could not discriminate them`,
-    ).not.toContain('ConfirmedByCounterparty');
+    ).not.toContain(statusToken('ConfirmedByCounterparty'));
 
     const rejection = await errorOf(pageB, { kind: 'confirm', tradeId });
     expectRejection(

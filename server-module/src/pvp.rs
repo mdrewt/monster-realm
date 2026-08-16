@@ -126,7 +126,7 @@ fn ranked_account_gate(
 /// Colocated with `pvp_deadline_reaper` so the `scheduled(...)` attribute
 /// reference resolves within this module (mirrors `movement_tick_schedule`
 /// in movement.rs).
-#[spacetimedb::table(name = pvp_deadline_schedule, scheduled(pvp_deadline_reaper))]
+#[spacetimedb::table(accessor = pvp_deadline_schedule, scheduled(pvp_deadline_reaper))]
 pub struct PvpDeadlineSchedule {
     #[primary_key]
     #[auto_inc]
@@ -165,7 +165,7 @@ fn schedule_deadline(ctx: &ReducerContext, battle_id: u64, turn_number: u16) {
 
 // Scheduled table colocated with its reducer (ADR-0056 exception, mirrors pvp_deadline_schedule).
 // PRIVATE — prevents client schedule manipulation; the underlying facts are already public via battle_challenge.
-#[spacetimedb::table(name = battle_challenge_reaper_schedule, scheduled(battle_challenge_reaper))]
+#[spacetimedb::table(accessor = battle_challenge_reaper_schedule, scheduled(battle_challenge_reaper))]
 pub struct BattleChallengeReaperSchedule {
     #[primary_key]
     #[auto_inc]
@@ -318,8 +318,8 @@ pub(crate) fn start_pvp_battle(
     // the former `any(|m| !m.is_fainted())` pre-checks are gone rather than kept
     // alongside. Team order is preserved, so `team[i]` stays coupled to
     // `*_monster_ids[i]` for HP write-back and to `ability_ids_*[i]` for the
-    // entry ability. The audited identity is the SIDE'S OWNER, never `ctx.sender`
-    // — this helper is reached only from `accept_challenge`, where `ctx.sender`
+    // entry ability. The audited identity is the SIDE'S OWNER, never `ctx.sender()`
+    // — this helper is reached only from `accept_challenge`, where `ctx.sender()`
     // is the ACCEPTOR.
     let side_a = BattleSide::with_lead(team_a).ok_or_else(|| {
         let e = "challenger party has no conscious monster".to_string();
@@ -740,7 +740,7 @@ pub fn challenge_pvp(
     target: Identity,
     party_ids: Vec<u64>,
 ) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
 
     // Guard 1: joined.
     if ctx.db.player().identity().find(me).is_none() {
@@ -893,7 +893,7 @@ pub fn challenge_pvp(
 ///
 /// Guard order:
 /// 1. Challenge exists.
-/// 2. ctx.sender == challenge.target (only the target accepts).
+/// 2. ctx.sender() == challenge.target (only the target accepts).
 /// 3. status == Pending.
 ///    3a. Both parties hold a full account (re-checked at accept; ADR-0189 D3).
 /// 4. Neither party currently in an ongoing battle (re-checked here).
@@ -907,7 +907,7 @@ pub fn accept_challenge(
     challenge_id: u64,
     party_ids: Vec<u64>,
 ) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
 
     // Guard 1: challenge exists.
     let challenge = ctx
@@ -1008,7 +1008,7 @@ pub fn accept_challenge(
 /// Decline a pending PvP challenge. Deletes the challenge row.
 #[spacetimedb::reducer]
 pub fn decline_challenge(ctx: &ReducerContext, challenge_id: u64) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
 
     let challenge = ctx
         .db
@@ -1043,7 +1043,7 @@ pub fn decline_challenge(ctx: &ReducerContext, challenge_id: u64) -> Result<(), 
 /// Cancel a pending PvP challenge (initiator-only).
 #[spacetimedb::reducer]
 pub fn cancel_challenge(ctx: &ReducerContext, challenge_id: u64) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
 
     let challenge = ctx
         .db
@@ -1079,7 +1079,7 @@ pub fn cancel_challenge(ctx: &ReducerContext, challenge_id: u64) -> Result<(), S
 ///
 /// Guard order:
 /// 1. Battle exists.
-/// 2. ctx.sender is player_identity (side A) or opponent_identity (side B).
+/// 2. ctx.sender() is player_identity (side A) or opponent_identity (side B).
 /// 3. battle is PvP (opponent_identity != WILD_IDENTITY).
 /// 4. outcome == Ongoing.
 /// 5. Validate action against caller's active monster: for Attack, reject when the
@@ -1098,7 +1098,7 @@ pub fn submit_pvp_action(
     battle_id: u64,
     action: PvpAction,
 ) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
 
     // Guard 1: battle exists.
     let battle = ctx.db.battle().battle_id().find(battle_id).ok_or_else(|| {
@@ -1207,7 +1207,7 @@ pub fn submit_pvp_action(
 /// `CHALLENGE_TTL_MS` (17.5e-1, ADR-0126).
 ///
 /// This is a SCHEDULER-ONLY reducer — clients must never call it directly.
-/// Guard: `ctx.sender != ctx.identity()` (identical to `pvp_deadline_reaper`,
+/// Guard: `ctx.sender() != ctx.database_identity()` (identical to `pvp_deadline_reaper`,
 /// ADR-0056). Staleness is re-checked via `is_challenge_stale` so an early
 /// fire or clock skew never reaps a fresh challenge. No status re-check:
 /// non-Pending rows never persist (ADR-0109 D6), so the existence check is
@@ -1222,7 +1222,7 @@ pub fn battle_challenge_reaper(
     ctx: &ReducerContext,
     args: BattleChallengeReaperSchedule,
 ) -> Result<(), String> {
-    if ctx.sender != ctx.identity() {
+    if ctx.sender() != ctx.database_identity() {
         return Err("battle_challenge_reaper is scheduler-only".to_string());
     }
     let Some(challenge) = ctx
@@ -1248,12 +1248,12 @@ pub fn battle_challenge_reaper(
 /// Scheduled reaper: forfeit the non-submitting side when the turn deadline fires.
 ///
 /// This is a SCHEDULER-ONLY reducer — clients must never call it directly.
-/// Guard: `ctx.sender != ctx.identity()` (identical to `movement_tick` at
+/// Guard: `ctx.sender() != ctx.database_identity()` (identical to `movement_tick` at
 /// movement.rs:156, ADR-0056).
 #[spacetimedb::reducer]
 pub fn pvp_deadline_reaper(ctx: &ReducerContext, args: PvpDeadlineSchedule) -> Result<(), String> {
     // Scheduler-only guard (mirrors movement_tick).
-    if ctx.sender != ctx.identity() {
+    if ctx.sender() != ctx.database_identity() {
         return Err("pvp_deadline_reaper is scheduler-only".to_string());
     }
 

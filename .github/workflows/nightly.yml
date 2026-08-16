@@ -105,10 +105,10 @@ jobs:
           curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
           sh /tmp/spacetime-install.sh --yes
           echo "$HOME/.local/bin" >> "$GITHUB_PATH"
-      - name: Pin spacetime 2.6.0
+      - name: Pin spacetime 2.8.1
         run: |
-          spacetime version install 2.6.0
-          spacetime version use 2.6.0
+          spacetime version install 2.8.1
+          spacetime version use 2.8.1
           spacetime --version
       # Ephemeral in-memory SpacetimeDB instance on 127.0.0.1:3000.
       - name: Start SpacetimeDB

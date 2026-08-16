@@ -82,7 +82,7 @@ pub fn care(ctx: &ReducerContext, monster_id: u64) -> Result<(), String> {
     // cannot care — closes the bounded mid-battle HP-laundering path where a
     // live-EV bump would fold extra HP into the level-up heal. Reuses the SSOT
     // is_in_ongoing_battle helper (WILD_IDENTITY-refined), same as heal_party.
-    if is_in_ongoing_battle(ctx, ctx.sender) {
+    if is_in_ongoing_battle(ctx, ctx.sender()) {
         return Err("cannot care during an ongoing battle".to_string());
     }
     // Trade escrow guard (TR-6, ADR-0106).
@@ -155,7 +155,7 @@ pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result
     // who is mid-battle cannot train — a mid-battle EV bump would inflate the
     // in-battle level-up heal (the HP-laundering vector). Reuses the SSOT
     // is_in_ongoing_battle helper (WILD_IDENTITY-refined), same as heal_party.
-    if is_in_ongoing_battle(ctx, ctx.sender) {
+    if is_in_ongoing_battle(ctx, ctx.sender()) {
         return Err("cannot train during an ongoing battle".to_string());
     }
     // Trade escrow guards (TR-7, ADR-0106): monster and food item must be free.
@@ -239,7 +239,7 @@ pub fn train(ctx: &ReducerContext, monster_id: u64, food_item_id: u32) -> Result
     )?;
 
     // Irreversible spend of the caller's OWN food (consume_one filters by owner).
-    consume_one(ctx, ctx.sender, food_item_id)?;
+    consume_one(ctx, ctx.sender(), food_item_id)?;
 
     // Write back topped-off EVs + re-derived stats. current_hp UNCHANGED.
     m.ev_hp = result.evs.get(StatKind::Hp);
@@ -298,7 +298,7 @@ pub(crate) fn evaluate_heal(
 /// In-battle + cooldown + zone checked. Cost consumed before heal.
 #[spacetimedb::reducer]
 pub fn heal_party(ctx: &ReducerContext, location_id: u32) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
 
     // Step 1-2: player must be joined + have a character
     let Some(p) = ctx.db.player().identity().find(me) else {
@@ -632,7 +632,7 @@ pub fn essence_train(
     };
     require_owner(ctx, "essence_train", m.owner_identity)?;
     // Both-role ongoing-battle guard (ADR-0136 amends ADR-0122 §D7), as in care.
-    if is_in_ongoing_battle(ctx, ctx.sender) {
+    if is_in_ongoing_battle(ctx, ctx.sender()) {
         return Err("cannot essence-train during an ongoing battle".to_string());
     }
     // Trade escrow guard (ADR-0106): an escrowed monster must not be mutated.
@@ -679,7 +679,7 @@ pub fn consume_crystalized_essence(
     };
     require_owner(ctx, "consume_crystalized_essence", m.owner_identity)?;
     // Both-role ongoing-battle guard (ADR-0136 amends ADR-0122 §D7), as in care.
-    if is_in_ongoing_battle(ctx, ctx.sender) {
+    if is_in_ongoing_battle(ctx, ctx.sender()) {
         return Err("cannot consume essence during an ongoing battle".to_string());
     }
     // Trade escrow guard (ADR-0106): an escrowed monster must not be mutated.
@@ -726,7 +726,7 @@ pub fn consume_crystalized_essence(
     // DECISION before the irreversible spend (reject-never-burns, EG2-10).
     let (item_affinity, amount) =
         evaluate_consume_crystalized(item, m.last_essence_train_at_ms, now)?;
-    consume_one(ctx, ctx.sender, item_id)?;
+    consume_one(ctx, ctx.sender(), item_id)?;
     grant_essence(&mut m, item_affinity, amount);
     m.last_essence_train_at_ms = now;
     // Copy-forward tier (ADR-0174 D7/A3): fail loud on a missing monster_pub row.

@@ -90,7 +90,7 @@ export function parseTables(src) {
     }
     const attrArgText = src.slice(attrStart + marker.length - 1 + 1, i);
 
-    const nameMatch = attrArgText.match(/\bname\s*=\s*(\w+)/);
+    const nameMatch = attrArgText.match(/\baccessor\s*=\s*(\w+)/);
     if (!nameMatch) {
       pos = i + 1;
       continue;
@@ -320,7 +320,7 @@ export function checkInventoryHasMinimumFields(src, tables) {
  * @returns {string|null} Error string, or null on pass.
  */
 export function checkInventoryDocPosture(rawSrc) {
-  const marker = '#[spacetimedb::table(name = inventory';
+  const marker = '#[spacetimedb::table(accessor = inventory';
   const idx = rawSrc.indexOf(marker);
   if (idx === -1) return null; // absence handled by checkInventoryExists
 
@@ -391,7 +391,7 @@ export default async function () {
   // TOOTH 1: inventory table with iv_hp field MUST be flagged.
   {
     const badSrc = stripComments(
-      '#[spacetimedb::table(name = inventory, public)]\n' +
+      '#[spacetimedb::table(accessor = inventory, public)]\n' +
         'struct Inventory {\n' +
         '  #[primary_key] owner: Identity,\n' +
         '  item_id: u32,\n' +
@@ -414,7 +414,7 @@ export default async function () {
   // TOOTH 2: inventory table with nature_kind field MUST be flagged.
   {
     const badSrc = stripComments(
-      '#[spacetimedb::table(name = inventory, public)]\n' +
+      '#[spacetimedb::table(accessor = inventory, public)]\n' +
         'struct Inventory {\n' +
         '  #[primary_key] owner: Identity,\n' +
         '  item_id: u32,\n' +
@@ -437,7 +437,7 @@ export default async function () {
   // TOOTH 3: inventory table with individuality_seed field MUST be flagged.
   {
     const badSrc = stripComments(
-      '#[spacetimedb::table(name = inventory, public)]\n' +
+      '#[spacetimedb::table(accessor = inventory, public)]\n' +
         'struct Inventory {\n' +
         '  #[primary_key] owner: Identity,\n' +
         '  item_id: u32,\n' +
@@ -474,7 +474,7 @@ export default async function () {
   // MUST pass all checks (no false positives).
   {
     const goodSrc = stripComments(
-      '#[spacetimedb::table(name = inventory, public)]\n' +
+      '#[spacetimedb::table(accessor = inventory, public)]\n' +
         'struct InventoryRow {\n' +
         '  #[primary_key] owner_identity: Identity,\n' +
         '  #[primary_key] item_id: u32,\n' +
@@ -500,7 +500,7 @@ export default async function () {
   {
     const src = stripComments(
       '// iv_hp: u8, — old design; removed\n' +
-        '#[spacetimedb::table(name = inventory, public)]\n' +
+        '#[spacetimedb::table(accessor = inventory, public)]\n' +
         'struct InventoryRow { owner: Identity, item_id: u32, count: u32, }',
     );
     const tables = parseTables(src);
@@ -522,7 +522,7 @@ export default async function () {
       '/// Player item inventory (M8d, ADR-0046). PUBLIC so a client sees its OWN items\n' +
       '/// (RLS by `owner_identity`). Carries ONLY ownership + count — NO gene/seed\n' +
       '/// fields; individuality stays in the private `monster` table.\n' +
-      '#[spacetimedb::table(name = inventory, public)]\n' +
+      '#[spacetimedb::table(accessor = inventory, public)]\n' +
       'struct Inventory { #[primary_key] #[auto_inc] inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }';
     const err = checkInventoryDocPosture(badSrc);
     if (!err) {
@@ -542,7 +542,7 @@ export default async function () {
       '/// PUBLIC / world-readable counts: NO transport RLS (no client_visibility_filter\n' +
       '/// in this toolchain). Owner-scoping is a client subscription filter only;\n' +
       '/// per-owner transport RLS is tracked for M16.\n' +
-      '#[spacetimedb::table(name = inventory, public)]\n' +
+      '#[spacetimedb::table(accessor = inventory, public)]\n' +
       'struct Inventory { #[primary_key] #[auto_inc] inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }';
     const err = checkInventoryDocPosture(goodSrc);
     if (err !== null) {
@@ -575,19 +575,19 @@ export default async function () {
     const paraphrases = [
       // "row-level security on owner_identity" variant
       '/// Player item inventory. Row-level security on owner_identity enforced.\n' +
-        '#[spacetimedb::table(name = inventory, public)]\n' +
+        '#[spacetimedb::table(accessor = inventory, public)]\n' +
         'struct Inventory { inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }',
       // "RLS keyed by owner" variant
       '/// Inventory table — RLS keyed by owner so each client sees only its rows.\n' +
-        '#[spacetimedb::table(name = inventory, public)]\n' +
+        '#[spacetimedb::table(accessor = inventory, public)]\n' +
         'struct Inventory { inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }',
       // "owner sees only their own items" variant (sees only their own)
       '/// PUBLIC table. Each owner sees only their own items via RLS.\n' +
-        '#[spacetimedb::table(name = inventory, public)]\n' +
+        '#[spacetimedb::table(accessor = inventory, public)]\n' +
         'struct Inventory { inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }',
       // "owner-only visibility" variant
       '/// Inventory row. Owner-only visibility guaranteed by transport filter.\n' +
-        '#[spacetimedb::table(name = inventory, public)]\n' +
+        '#[spacetimedb::table(accessor = inventory, public)]\n' +
         'struct Inventory { inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }',
     ];
     for (const fixture of paraphrases) {
@@ -613,7 +613,7 @@ export default async function () {
   {
     const blockSrc =
       '/** RLS by `owner_identity` — each client sees only its own inventory rows. */\n' +
-      '#[spacetimedb::table(name = inventory, public)]\n' +
+      '#[spacetimedb::table(accessor = inventory, public)]\n' +
       'struct Inventory { inv_id: u64, owner_identity: Identity, item_id: u32, count: u32, }';
     const err = checkInventoryDocPosture(blockSrc);
     if (!err) {

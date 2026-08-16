@@ -128,11 +128,11 @@ export default async function () {
   // goes silently blind.
   // =========================================================================
 
-  // ── TOOTH 1: (name = playtest_event, public) BAD — standard arg order — must be flagged.
+  // ── TOOTH 1: (accessor = playtest_event, public) BAD — standard arg order — must be flagged.
   // Kills: parseTables or checkPlaytestEventPrivate that misses the public keyword.
   {
     const fixture = stripComments(
-      '#[spacetimedb::table(name = playtest_event, public)]\nstruct PlaytestEventRow { event_id: u64, }',
+      '#[spacetimedb::table(accessor = playtest_event, public)]\nstruct PlaytestEventRow { event_id: u64, }',
     );
     const tables = parseTables(fixture);
     const err = checkPlaytestEventPrivate(tables);
@@ -141,7 +141,7 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH T1: (name = playtest_event, public) fixture was NOT flagged — parseTables or checkPlaytestEventPrivate is broken',
+          'TEETH T1: (accessor = playtest_event, public) fixture was NOT flagged — parseTables or checkPlaytestEventPrivate is broken',
       };
     }
     const t = tables.find((r) => r.name === 'playtest_event' && r.isPublic);
@@ -150,16 +150,16 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH T1: (name = playtest_event, public) fixture: playtest_event not detected as public — isPublic extraction broken',
+          'TEETH T1: (accessor = playtest_event, public) fixture: playtest_event not detected as public — isPublic extraction broken',
       };
     }
   }
 
-  // ── TOOTH 2: (public, name = playtest_event) BAD — reversed arg order — must be flagged.
+  // ── TOOTH 2: (public, accessor = playtest_event) BAD — reversed arg order — must be flagged.
   // Kills: name extraction that mis-captures `public` as the table name when it appears first.
   {
     const fixture = stripComments(
-      '#[spacetimedb::table(public, name = playtest_event)]\nstruct PlaytestEventRow { event_id: u64, }',
+      '#[spacetimedb::table(public, accessor = playtest_event)]\nstruct PlaytestEventRow { event_id: u64, }',
     );
     const tables = parseTables(fixture);
     const err = checkPlaytestEventPrivate(tables);
@@ -168,7 +168,7 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH T2: (public, name = playtest_event) reversed-args fixture was NOT flagged — name extraction fails when public comes first',
+          'TEETH T2: (public, accessor = playtest_event) reversed-args fixture was NOT flagged — name extraction fails when public comes first',
       };
     }
     const t = tables.find((r) => r.name === 'playtest_event');
@@ -177,7 +177,7 @@ export default async function () {
         name,
         pass: false,
         detail:
-          "TEETH T2: reversed-args fixture: table name extracted as 'public' instead of 'playtest_event' — name = <ident> extraction is broken",
+          "TEETH T2: reversed-args fixture: table name extracted as 'public' instead of 'playtest_event' — accessor = <ident> extraction is broken",
       };
     }
   }
@@ -186,7 +186,7 @@ export default async function () {
   // Without this tooth a stub that always errors can never legitimately go green.
   {
     const fixture = stripComments(
-      '#[spacetimedb::table(name = playtest_event)]\nstruct PlaytestEventRow { event_id: u64, }',
+      '#[spacetimedb::table(accessor = playtest_event)]\nstruct PlaytestEventRow { event_id: u64, }',
     );
     const tables = parseTables(fixture);
     const err = checkPlaytestEventPrivate(tables);
@@ -211,7 +211,7 @@ export default async function () {
   // Kills: checkNoPublicPlaytestProjection that only checks exact name 'playtest_event'.
   {
     const fixture = stripComments(
-      '#[spacetimedb::table(name = playtest_event_pub, public)]\nstruct PlaytestEventPub { event_id: u64, }',
+      '#[spacetimedb::table(accessor = playtest_event_pub, public)]\nstruct PlaytestEventPub { event_id: u64, }',
     );
     const tables = parseTables(fixture);
     const err = checkNoPublicPlaytestProjection(tables);
@@ -229,7 +229,7 @@ export default async function () {
   // Kills: checkNoVisibilityFilterOnPlaytest that silently passes RLS bypass.
   {
     const fixture = stripComments(
-      '#[spacetimedb::table(name = playtest_event, client_visibility_filter = some_fn)]\nstruct PlaytestEventRow { event_id: u64, }',
+      '#[spacetimedb::table(accessor = playtest_event, client_visibility_filter = some_fn)]\nstruct PlaytestEventRow { event_id: u64, }',
     );
     const tables = parseTables(fixture);
     const err = checkNoVisibilityFilterOnPlaytest(tables);
@@ -247,7 +247,7 @@ export default async function () {
   // Kills: impl that does not strip comments before checking isPublic.
   {
     const fixture = stripComments(
-      '// #[spacetimedb::table(name = playtest_event, public)]\n#[spacetimedb::table(name = playtest_event)]\nstruct PlaytestEventRow { event_id: u64, }',
+      '// #[spacetimedb::table(accessor = playtest_event, public)]\n#[spacetimedb::table(accessor = playtest_event)]\nstruct PlaytestEventRow { event_id: u64, }',
     );
     const tables = parseTables(fixture);
     const t = tables.find((r) => r.name === 'playtest_event');
@@ -264,7 +264,7 @@ export default async function () {
   // ── TOOTH 7: playtest_reaper_schedule private GOOD — must NOT produce an error.
   {
     const fixture = stripComments(
-      '#[spacetimedb::table(name = playtest_reaper_schedule, scheduled(playtest_reaper))]\nstruct PlaytestReaperSchedule { id: u64, }',
+      '#[spacetimedb::table(accessor = playtest_reaper_schedule, scheduled(playtest_reaper))]\nstruct PlaytestReaperSchedule { id: u64, }',
     );
     const tables = parseTables(fixture);
     const err = checkPlaytestReaperSchedulePrivate(tables);
@@ -280,7 +280,7 @@ export default async function () {
   // ── TOOTH 8: playtest_reaper_schedule public BAD — must be flagged.
   {
     const fixture = stripComments(
-      '#[spacetimedb::table(name = playtest_reaper_schedule, public)]\nstruct PlaytestReaperSchedule { id: u64, }',
+      '#[spacetimedb::table(accessor = playtest_reaper_schedule, public)]\nstruct PlaytestReaperSchedule { id: u64, }',
     );
     const tables = parseTables(fixture);
     const err = checkPlaytestReaperSchedulePrivate(tables);
@@ -289,7 +289,7 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH T8: (name = playtest_reaper_schedule, public) fixture was NOT flagged — checkPlaytestReaperSchedulePrivate is broken',
+          'TEETH T8: (accessor = playtest_reaper_schedule, public) fixture was NOT flagged — checkPlaytestReaperSchedulePrivate is broken',
       };
     }
   }

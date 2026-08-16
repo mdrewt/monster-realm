@@ -970,12 +970,16 @@ test.describe
         );
       }
 
-      // The sql output must include 'SideAWins' (variant name).
+      // The sql output must name the SideAWins variant.
       // Kills: an impl that GC's the battle row on recruit success — the row would
-      // not exist in the query result, sqlOutput would not contain 'SideAWins'.
+      // not exist in the query result, so no rendering of the variant would appear.
+      // Rendering-agnostic on purpose: 2.6.0 printed the bare variant name (`SideAWins`),
+      // 2.8.1 prints a snake_case tagged form (`(side_a_wins = ())`). The optional
+      // separators match both without widening to a substring that could straddle columns.
+      const sideAWins = /side_?a_?wins/i;
       expect(
-        sqlOutput.includes('SideAWins'),
-        `R3: expected spacetime sql output to include 'SideAWins' for battleId=${winningBattleId}, got: ${sqlOutput.slice(0, 200)}`,
+        sideAWins.test(sqlOutput),
+        `R3: expected spacetime sql output to name the SideAWins variant for battleId=${winningBattleId}, got: ${sqlOutput.slice(0, 200)}`,
       ).toBe(true);
     });
 

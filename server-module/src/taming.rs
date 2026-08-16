@@ -45,7 +45,7 @@ pub fn attempt_recruit(
     battle_id: u64,
     bait_item_id: Option<u32>,
 ) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let mut battle = match ctx.db.battle().battle_id().find(battle_id) {
         Some(b) => b,
         None => {
@@ -274,13 +274,13 @@ pub fn attempt_recruit(
     Ok(())
 }
 
-/// DEV/TEST: grant bait to the CALLER only (self-scoped to `ctx.sender`; no
+/// DEV/TEST: grant bait to the CALLER only (self-scoped to `ctx.sender()`; no
 /// arbitrary-recipient parameter). Rejects non-bait items. Superseded by the M9
 /// shop. Capped at 99 per call.
 #[cfg(feature = "dev_reducers")]
 #[spacetimedb::reducer]
 pub fn grant_bait(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let Some(item) = ctx.db.item_row().id().find(item_id) else {
         let e = "item not found".to_string();
         log_reject("grant_bait", me, &e);
@@ -292,7 +292,7 @@ pub fn grant_bait(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), St
         return Err(e);
     }
     let capped = qty.min(99);
-    grant_item(ctx, ctx.sender, item_id, capped);
+    grant_item(ctx, ctx.sender(), item_id, capped);
     Ok(())
 }
 

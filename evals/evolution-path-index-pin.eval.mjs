@@ -43,18 +43,18 @@ export function stripRustComments(src) {
 }
 
 /**
- * Parse the `#[spacetimedb::table(name = <tableName> ...)] pub struct X { ... }`
+ * Parse the `#[spacetimedb::table(accessor = <tableName> ...)] pub struct X { ... }`
  * block for one table and return its ordered fields, each with the attribute
  * lines immediately preceding it.
  *
  * @param {string} rustSrc Raw schema source.
- * @param {string} tableName The `name = ` value in the table attribute.
+ * @param {string} tableName The `accessor = ` value in the table attribute.
  * @returns {{ structName: string, fields: { name: string, attrs: string[] }[] } | null}
  */
 export function parseTableStructFields(rustSrc, tableName) {
   const src = stripRustComments(rustSrc);
   const tableRe =
-    /#\[spacetimedb::table\(\s*name\s*=\s*(\w+)[^\]]*\)\]\s*pub struct (\w+)\s*\{([\s\S]*?)\n\s*\}/g;
+    /#\[spacetimedb::table\(\s*accessor\s*=\s*(\w+)[^\]]*\)\]\s*pub struct (\w+)\s*\{([\s\S]*?)\n\s*\}/g;
   let m = tableRe.exec(src);
   while (m !== null) {
     if (m[1] === tableName) {
@@ -117,7 +117,7 @@ export default async function () {
   // -------------------------------------------------------------------------
 
   const goodFixture =
-    '#[spacetimedb::table(name = evolution_path, public)]\n' +
+    '#[spacetimedb::table(accessor = evolution_path, public)]\n' +
     'pub struct EvolutionPathRow {\n' +
     '    #[primary_key]\n' +
     '    #[auto_inc]\n' +
@@ -144,7 +144,7 @@ export default async function () {
   // regression the eval exists to catch (an unindexed table still compiles,
   // publishes, and returns identical rows).
   const missingIndexFixture =
-    '#[spacetimedb::table(name = evolution_path, public)]\n' +
+    '#[spacetimedb::table(accessor = evolution_path, public)]\n' +
     'pub struct EvolutionPathRow {\n' +
     '    #[primary_key]\n' +
     '    #[auto_inc]\n' +
@@ -167,7 +167,7 @@ export default async function () {
   // (to_species indexed, from_species not — the lookup EG2-1 performs would
   // still be a full scan.)
   const indexOnWrongFieldFixture =
-    '#[spacetimedb::table(name = evolution_path, public)]\n' +
+    '#[spacetimedb::table(accessor = evolution_path, public)]\n' +
     'pub struct EvolutionPathRow {\n' +
     '    #[primary_key]\n' +
     '    #[auto_inc]\n' +
@@ -190,14 +190,14 @@ export default async function () {
   // (table scoping — `monster.owner_identity` is btree-indexed in the real
   // schema and must not leak across the table boundary).
   const otherTableFixture =
-    '#[spacetimedb::table(name = monster)]\n' +
+    '#[spacetimedb::table(accessor = monster)]\n' +
     'pub struct Monster {\n' +
     '    #[primary_key]\n' +
     '    pub monster_id: u64,\n' +
     '    #[index(btree)]\n' +
     '    pub from_species: u32,\n' +
     '}\n' +
-    '#[spacetimedb::table(name = evolution_path, public)]\n' +
+    '#[spacetimedb::table(accessor = evolution_path, public)]\n' +
     'pub struct EvolutionPathRow {\n' +
     '    #[primary_key]\n' +
     '    pub path_id: u64,\n' +
@@ -215,7 +215,7 @@ export default async function () {
 
   // Tooth D: a comment claiming the index does not count.
   const commentOnlyFixture =
-    '#[spacetimedb::table(name = evolution_path, public)]\n' +
+    '#[spacetimedb::table(accessor = evolution_path, public)]\n' +
     'pub struct EvolutionPathRow {\n' +
     '    #[primary_key]\n' +
     '    pub path_id: u64,\n' +

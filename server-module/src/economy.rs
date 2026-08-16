@@ -100,7 +100,7 @@ pub(crate) fn spend_currency(
 /// ADR-0082 §D1).
 #[spacetimedb::reducer]
 pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
 
     // ADR-0081 forward obligation: require_owner before spend_currency.
     let p = ctx
@@ -187,7 +187,7 @@ pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) -> Result
 /// a price (ADR-0082 §D2 / §D1).
 #[spacetimedb::reducer]
 pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
 
     // ADR-0081 forward obligation: require_owner before any resource modification.
     let p = ctx

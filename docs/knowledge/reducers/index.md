@@ -26,7 +26,7 @@
 | reducers/essence_train | SpacetimeDB Reducer | essence_train | Essence-train a monster: +ESSENCE_TRAIN_AMOUNT to ONE pool, gated by the shared  |
 | reducers/evolve | SpacetimeDB Reducer | evolve | Evolve a monster along one authored evolution-graph edge (EG2-1 shape). Steps: 1 |
 | reducers/flee | SpacetimeDB Reducer | flee | Flee from a battle. Sets outcome to `Fled`; no XP awarded. |
-| reducers/grant_bait | SpacetimeDB Reducer | grant_bait | DEV/TEST: grant bait to the CALLER only (self-scoped to `ctx.sender`; no arbitra |
+| reducers/grant_bait | SpacetimeDB Reducer | grant_bait | DEV/TEST: grant bait to the CALLER only (self-scoped to `ctx.sender()`; no arbit |
 | reducers/guest_claim_reaper | SpacetimeDB Reducer | guest_claim_reaper | Reap a single expired `guest_claim` row (AUTH-27). Scheduler-only. Deletes exact |
 | reducers/heal_party | SpacetimeDB Reducer | heal_party | Restore all party monsters to full HP at a heal location. Reject-never-burns: al |
 | reducers/init | SpacetimeDB Reducer | init | SpacetimeDB reducer init. |

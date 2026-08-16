@@ -602,19 +602,24 @@ fn parse_scheduled_targets(squashed: &str) -> Vec<(String, String)> {
 /// comparison, in squashed form.
 ///
 /// The eval's adversarial pass found the carve-out was satisfied by
-/// `let scheduler_only = ctx.sender != ctx.identity(); let _ = scheduler_only;`
+/// `let scheduler_only = ctx.sender() != ctx.database_identity(); let _ = scheduler_only;`
 /// — which contains the comparison, compiles, is clippy-clean, and rejects
 /// NOBODY, so any client can invoke the scheduled reducer with a hand-built row
 /// naming any victim identity. `{return` rather than `{returnErr(` so a future
 /// refactor to the equally valid silent-ignore `return Ok(());` form does not
 /// false-RED.
+///
+/// SDK 2.x spelling (ADR-0197): `sender` is a METHOD (`ctx.sender()`), and the
+/// module identity is `ctx.database_identity()` — `ctx.identity()` is deprecated.
+/// Both halves are pinned: a body that compares `ctx.sender()` against anything
+/// else is not the scheduler-only guard.
 fn scheduler_guard_needle() -> String {
-    concat!("ifctx.sender!=", "ctx.identity(){", "return").to_string()
+    concat!("ifctx.sender()!=", "ctx.database_identity(){", "return").to_string()
 }
 
 /// The Identity CONSTRUCTORS banned outright in `accounts.rs` (E2 defense).
 /// Nothing in this module legitimately CONSTRUCTS an Identity: every identity it
-/// handles arrives from `ctx.sender` or from a row it read.
+/// handles arrives from `ctx.sender()` or from a row it read.
 fn identity_ctor_needles() -> [String; 4] {
     [
         concat!("Identity::", "from_hex(").to_string(),
@@ -689,7 +694,7 @@ fn g2_client_identity_violation(squashed: &str) -> Result<(), String> {
                  which is not a wire-safe scalar (String / bool / u8..u128 / i8..i128 / f32 / \
                  f64, or Option<..>/Vec<..> of those). A red-team PROVED this exact shape: a \
                  `SpacetimeType` struct with one Identity field, taken as a reducer argument \
-                 and re-keyed onto ctx.sender — it declares no `: Identity` parameter, \
+                 and re-keyed onto ctx.sender() — it declares no `: Identity` parameter, \
                  compiles, passes clippy -D warnings, and is a code-less transfer of ANY \
                  identity's game data. The ONLY sanctioned composite argument is the \
                  same-file scheduled struct whose reducer body carries the scheduler guard"
@@ -800,7 +805,7 @@ fn auth3_audience_allowed_semantics() {
 #[test]
 fn auth4_new_account_row_is_fresh_active() {
     let row = new_account_row(ident(7), "iss-abc".to_string(), 42);
-    assert_eq!(row.identity, ident(7), "AUTH-4: identity is ctx.sender.");
+    assert_eq!(row.identity, ident(7), "AUTH-4: identity is ctx.sender().");
     assert_eq!(row.auth_issuer, "iss-abc", "AUTH-4: auth_issuer recorded.");
     assert_eq!(
         row.status,
@@ -1003,7 +1008,11 @@ fn auth8_is_valid_claim_code_charset_and_length() {
 #[test]
 fn auth9_claim_row_binds_fields_and_derives_expiry() {
     let row = claim_row(ident(5), "deadbeef".to_string(), "Ash".to_string(), 1000);
-    assert_eq!(row.guest_identity, ident(5), "AUTH-9: bound to ctx.sender.");
+    assert_eq!(
+        row.guest_identity,
+        ident(5),
+        "AUTH-9: bound to ctx.sender()."
+    );
     assert_eq!(row.code, "deadbeef", "AUTH-9: code stored verbatim.");
     assert_eq!(
         row.guest_name, "Ash",
@@ -1911,8 +1920,9 @@ fn auth27_reaper_scheduler_only_keyed_delete_no_self_disarm() {
         .expect("AUTH-27: fn guest_claim_reaper not found");
 
     assert!(
-        body.contains(concat!("ctx.sender!=ctx.", "identity()")),
-        "AUTH-27: the reaper must guard scheduler-only (ctx.sender != ctx.identity())."
+        body.contains(concat!("ctx.sender()!=ctx.", "database_identity()")),
+        "AUTH-27: the reaper must guard scheduler-only \
+         (ctx.sender() != ctx.database_identity())."
     );
     assert!(
         body.contains(concat!("claim_is", "_expired(")),
@@ -1998,7 +2008,7 @@ fn auth38_cancel_account_deletion_shape() {
 /// G2 (NO_CLIENT_IDENTITY): every parameter of every reducer ENUMERATED FROM
 /// SOURCE in accounts.rs is either the `ctx` handle, a wire-safe scalar, or the
 /// same-file scheduled struct WITH its rejecting scheduler guard. The subject
-/// identity is `ctx.sender` and nothing else (ADR-0179 G2 / AUTH-6).
+/// identity is `ctx.sender()` and nothing else (ADR-0179 G2 / AUTH-6).
 ///
 /// This replaces a five-needle hardcoded loop with the full defense set its JS
 /// twin (`guest-claim-integrity.eval.mjs::checkNoClientIdentity`) carries —
@@ -2059,14 +2069,14 @@ fn g2_reducer_name_set_is_pinned() {
          Set equality, not a count and not containment: the two PROVEN takeover \
          bypasses are ADDITIVE reducers. If this addition/removal is intended, \
          re-review the new entry point against ADR-0179 G2 (does it take only \
-         wire-safe scalars? does it derive identity from ctx.sender alone?) and \
+         wire-safe scalars? does it derive identity from ctx.sender() alone?) and \
          then update this pin CONSCIOUSLY."
     );
 }
 
 /// G2 ([R/identity-ctor], E2 defense): accounts.rs never CONSTRUCTS an Identity.
 ///
-/// Every identity this module handles comes from `ctx.sender` or from a row it
+/// Every identity this module handles comes from `ctx.sender()` or from a row it
 /// read. `Identity::from_hex` is `pub` in spacetimedb-lib, which is what makes
 /// E2 a two-line unauthenticated account-takeover reducer: a wire-safe `String`
 /// parameter plus an `Identity::from_hex` call on it in the body. The parameter
@@ -2083,8 +2093,8 @@ fn g2_no_identity_constructor() {
              legitimately constructs an Identity. A red-team PROVED the constructor is \
              the whole attack: a reducer taking a wire-safe `String` hex code, turning \
              it into an Identity and re-keying that identity's monsters, inventory, \
-             wallet, NPC state and profile onto ctx.sender. Derive identity from \
-             ctx.sender or from a row you read, never from client text."
+             wallet, NPC state and profile onto ctx.sender(). Derive identity from \
+             ctx.sender() or from a row you read, never from client text."
         );
     }
 }
@@ -2594,7 +2604,7 @@ fn machinery_g2_enumerator_and_e1_teeth() {
         "pub",
         "fn",
         "complete_claim_for(ctx:&ReducerContext,target:ClaimTarget)",
-        "->Result<(),String>{rekey(ctx,target.guest_identity,ctx.sender)}"
+        "->Result<(),String>{rekey(ctx,target.guest_identity,ctx.sender())}"
     );
     let clean = concat!(
         "pub",
@@ -2853,7 +2863,7 @@ fn machinery_g2_good_fixtures_pass() {
         concat!(
             "pub",
             "fn",
-            "mint(ctx:&ReducerContext,seed:String)->Result<Identity,String>{Ok(ctx.sender)}"
+            "mint(ctx:&ReducerContext,seed:String)->Result<Identity,String>{Ok(ctx.sender())}"
         ),
     ]
     .concat();
@@ -2882,7 +2892,7 @@ fn machinery_g2_good_fixtures_pass() {
 /// the mere presence of the comparison.
 ///
 /// kills: neutering `guest_claim_reaper`'s guard to
-///        `let scheduler_only = ctx.sender != ctx.identity(); let _ = scheduler_only;`
+///        `let scheduler_only = ctx.sender() != ctx.database_identity(); let _ = scheduler_only;`
 ///        — it keeps the comparison, compiles, passes clippy, and rejects NOBODY,
 ///        so any client can invoke the scheduled reducer with a hand-built row
 ///        naming any victim identity;
@@ -2894,7 +2904,7 @@ fn machinery_g2_scheduler_carveout_teeth() {
     let table_attr = concat!(
         "#[spacetimedb::",
         "table(",
-        "name=x_schedule,",
+        "accessor=x_schedule,",
         "sched",
         "uled(",
         "reap_x))]"
@@ -2906,8 +2916,13 @@ fn machinery_g2_scheduler_carveout_teeth() {
         "fn",
         "reap_x(ctx:&ReducerContext,args:XSchedule)->Result<(),String>{"
     );
-    let rejecting_guard = concat!("ifctx.sender!=", "ctx.identity(){", "returnErr(e);}");
-    let neutered_guard = "letscheduler_only=ctx.sender!=ctx.identity();let_=scheduler_only;";
+    let rejecting_guard = concat!(
+        "ifctx.sender()!=",
+        "ctx.database_identity(){",
+        "returnErr(e);}"
+    );
+    let neutered_guard =
+        "letscheduler_only=ctx.sender()!=ctx.database_identity();let_=scheduler_only;";
     let tail = "delete_x(ctx,args.id);}";
 
     assert_eq!(

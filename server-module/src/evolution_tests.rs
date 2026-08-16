@@ -2135,8 +2135,9 @@ fn eg5_6_schema_rs_declares_no_bond_evolves_to_or_fusion_table() {
     );
 
     // Every table declared in schema.rs, read out of the table attribute's
-    // `name = <ident>` argument (paren-walked, so a nested `scheduled(..)` cannot
-    // truncate the argument region).
+    // `accessor = <ident>` argument (SpacetimeDB 2.x spelling, ADR-0197 — 1.x's
+    // `name = <ident>` no longer compiles; paren-walked, so a nested
+    // `scheduled(..)` cannot truncate the argument region).
     let mut table_names: Vec<String> = Vec::new();
     let mut pos = 0usize;
     while let Some(idx) = stripped[pos..].find(TABLE_ATTR) {
@@ -2156,8 +2157,8 @@ fn eg5_6_schema_rs_declares_no_bond_evolves_to_or_fusion_table() {
             }
         }
         let attr_args = &stripped[args_start..attr_end];
-        if let Some(name_idx) = attr_args.find("name") {
-            let value: String = attr_args[name_idx + "name".len()..]
+        if let Some(name_idx) = attr_args.find("accessor") {
+            let value: String = attr_args[name_idx + "accessor".len()..]
                 .trim_start()
                 .strip_prefix('=')
                 .unwrap_or("")
@@ -3397,10 +3398,15 @@ fn spacetimedb_attr_sites(stripped: &str, marker: &str) -> Vec<(String, usize)> 
     out
 }
 
-/// The `name = <ident>` argument of a spacetimedb attribute, if any.
-fn attr_name_arg(args: &str) -> Option<String> {
-    let idx = args.find("name")?;
-    let value: String = args[idx + "name".len()..]
+/// The `accessor = <ident>` argument of a spacetimedb attribute, if any.
+///
+/// SpacetimeDB 2.x (ADR-0197) renamed the 1.x `name = <ident>` argument to
+/// `accessor = <ident>`; `name` in 2.x is a *string literal* SQL-name override
+/// this repo never uses. Matching `accessor` is therefore the exact 2.x
+/// equivalent of what this walk pinned before, not a relaxation.
+fn attr_accessor_arg(args: &str) -> Option<String> {
+    let idx = args.find("accessor")?;
+    let value: String = args[idx + "accessor".len()..]
         .trim_start()
         .strip_prefix('=')?
         .trim_start()
@@ -3438,7 +3444,7 @@ fn squash_ws(s: &str) -> String {
 ///    extra arguments, so `fn my_monster_pub(ctx: &ViewContext, owner: Identity)`
 ///    compiles and serves ANY player's roster while the body still "filters by
 ///    the owner index". The signature is pinned to exactly one parameter;
-///  - the decoy-line leak (`let _decoy = …filter(ctx.sender); … filter(victim)`),
+///  - the decoy-line leak (`let _decoy = …filter(ctx.sender()); … filter(victim)`),
 ///    which passes every presence-only check;
 ///  - a same-named un-attributed decoy fn (the name-lookup defeat above);
 ///  - a view moved to some OTHER module — schema.rs would not contain it, and
@@ -3466,13 +3472,13 @@ fn e13r_e_monster_pub_is_private_and_its_view_is_owner_scoped() {
     let pub_table = ["monster", "_pub"].concat();
 
     // --- (0) NO BARE (unqualified) spacetimedb attributes -------------------
-    // A bare `#[view(name = all_monsters, public)]` (reachable with
+    // A bare `#[view(accessor = all_monsters, public)]` (reachable with
     // `use spacetimedb::view;`) declares a REAL view that is invisible to every
     // attribute walk in this repo — this test's, and both parsers in
     // evals/monster-privacy.eval.mjs — because they all anchor on the
     // fully-qualified marker. The inventory pin then stays green while the extra
     // view serves every player's roster. Same hole for a stacked bare
-    // `#[table(name = monster_pub, public)]` on an otherwise-private struct.
+    // `#[table(accessor = monster_pub, public)]` on an otherwise-private struct.
     // Rather than teach two grammars to one parser (ADR-0003), the bare forms are
     // banned: the project convention is fully-qualified everywhere, so this is
     // green on arrival and a bare attr fails LOUD instead of going unscanned.
@@ -3512,7 +3518,7 @@ fn e13r_e_monster_pub_is_private_and_its_view_is_owner_scoped() {
     );
     let pub_table_attrs: Vec<&(String, usize)> = table_sites
         .iter()
-        .filter(|(args, _)| attr_name_arg(args).as_deref() == Some(pub_table.as_str()))
+        .filter(|(args, _)| attr_accessor_arg(args).as_deref() == Some(pub_table.as_str()))
         .collect();
     assert_eq!(
         pub_table_attrs.len(),
@@ -3540,7 +3546,7 @@ fn e13r_e_monster_pub_is_private_and_its_view_is_owner_scoped() {
     let view_sites = spacetimedb_attr_sites(&stripped, VIEW_ATTR);
     let mine: Vec<&(String, usize)> = view_sites
         .iter()
-        .filter(|(args, _)| attr_name_arg(args).as_deref() == Some(view_name.as_str()))
+        .filter(|(args, _)| attr_accessor_arg(args).as_deref() == Some(view_name.as_str()))
         .collect();
     assert_eq!(
         mine.len(),
@@ -3650,7 +3656,7 @@ fn e13r_e_monster_pub_is_private_and_its_view_is_owner_scoped() {
         "_pub().",
         "owner",
         "_identity().filter(ctx",
-        ".sender).collect()",
+        ".sender()).collect()",
     ]
     .concat();
     let sanctioned_ref = [
@@ -3659,7 +3665,7 @@ fn e13r_e_monster_pub_is_private_and_its_view_is_owner_scoped() {
         "_pub().",
         "owner",
         "_identity().filter(&ctx",
-        ".sender).collect()",
+        ".sender()).collect()",
     ]
     .concat();
     assert!(
@@ -3671,7 +3677,7 @@ fn e13r_e_monster_pub_is_private_and_its_view_is_owner_scoped() {
          type no longer BOUNDS the result set; for a genuinely multi-row owner \
          projection `Vec<MonsterPub>` is correct, so the body IS the entire \
          boundary. A presence-only check is passed by a decoy line \
-         (`let _decoy = ...filter(ctx.sender);` followed by a real read keyed on \
+         (`let _decoy = ...filter(ctx.sender());` followed by a real read keyed on \
          some OTHER identity), which compiles, passes clippy and rustfmt, and \
          serves an arbitrary player's roster. It also kills every cargo-mutants \
          rewrite of this body. If the body must legitimately change, re-review the \

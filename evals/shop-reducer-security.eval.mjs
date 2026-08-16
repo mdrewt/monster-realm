@@ -235,7 +235,7 @@ export function buyComputesTotalFromDB(src) {
 // correct visibility for content tables, private is for player data).
 //
 // Bad fixture: shop_row declared without `public`.
-// Good fixture: `#[spacetimedb::table(name = shop_row, public)]`.
+// Good fixture: `#[spacetimedb::table(accessor = shop_row, public)]`.
 // ---------------------------------------------------------------------------
 
 /**
@@ -244,8 +244,8 @@ export function buyComputesTotalFromDB(src) {
  */
 export function shopTablesArePublic(schemaSrc) {
   // Look for the SpacetimeDB table attribute pattern for each table.
-  // We search for `name = shop_row` followed (within the same attribute) by `public`.
-  // Strategy: find the attribute containing `name = shop_row` and check it has `public`.
+  // We search for `accessor = shop_row` followed (within the same attribute) by `public`.
+  // Strategy: find the attribute containing `accessor = shop_row` and check it has `public`.
   const hasShopRow = checkTableIsPublic(schemaSrc, 'shop_row');
   const hasShopItemRow = checkTableIsPublic(schemaSrc, 'shop_item_row');
   return hasShopRow && hasShopItemRow;
@@ -257,7 +257,7 @@ export function shopTablesArePublic(schemaSrc) {
  * of `public` (shop tables must be public, wallet must not be).
  */
 function checkTableIsPublic(schemaSrc, tableName) {
-  const needle = `name = ${tableName}`;
+  const needle = `accessor = ${tableName}`;
   const idx = schemaSrc.indexOf(needle);
   if (idx === -1) return false;
   // Extract the attribute from `#[` before idx to `]` after idx.
@@ -403,7 +403,7 @@ export default async function () {
   // Bad: spend_currency called before require_owner.
   const badBuyOrder =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
-    'spend_currency(ctx, ctx.sender, total); require_owner(ctx, "buy", ctx.sender); }';
+    'spend_currency(ctx, ctx.sender(), total); require_owner(ctx, "buy", ctx.sender()); }';
   if (buyHasRequireOwnerBeforeSpend(badBuyOrder)) {
     return {
       name,
@@ -418,7 +418,7 @@ export default async function () {
   // Bad: require_owner absent entirely.
   const badBuyNoOwner =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
-    'spend_currency(ctx, ctx.sender, total); }';
+    'spend_currency(ctx, ctx.sender(), total); }';
   if (buyHasRequireOwnerBeforeSpend(badBuyNoOwner)) {
     return {
       name,
@@ -432,7 +432,7 @@ export default async function () {
   // Good: require_owner before spend_currency.
   const goodBuyOrder =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "buy", ctx.sender); spend_currency(ctx, ctx.sender, total); }';
+    'require_owner(ctx, "buy", ctx.sender()); spend_currency(ctx, ctx.sender(), total); }';
   if (!buyHasRequireOwnerBeforeSpend(goodBuyOrder)) {
     return {
       name,
@@ -448,7 +448,7 @@ export default async function () {
   // Bad: grant_currency called before require_owner.
   const badSellOrder =
     'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) { ' +
-    'grant_currency(ctx, ctx.sender, total); require_owner(ctx, "sell", ctx.sender); }';
+    'grant_currency(ctx, ctx.sender(), total); require_owner(ctx, "sell", ctx.sender()); }';
   if (sellHasRequireOwnerBeforeGrant(badSellOrder)) {
     return {
       name,
@@ -462,7 +462,7 @@ export default async function () {
   // Bad: require_owner absent from sell.
   const badSellNoOwner =
     'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) { ' +
-    'grant_currency(ctx, ctx.sender, total); }';
+    'grant_currency(ctx, ctx.sender(), total); }';
   if (sellHasRequireOwnerBeforeGrant(badSellNoOwner)) {
     return {
       name,
@@ -476,7 +476,7 @@ export default async function () {
   // Good: require_owner before grant_currency.
   const goodSellOrder =
     'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "sell", ctx.sender); grant_currency(ctx, ctx.sender, total); }';
+    'require_owner(ctx, "sell", ctx.sender()); grant_currency(ctx, ctx.sender(), total); }';
   if (!sellHasRequireOwnerBeforeGrant(goodSellOrder)) {
     return {
       name,
@@ -492,7 +492,7 @@ export default async function () {
   // Bad: buy signature contains `price` parameter.
   const badBuyPriceParam =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32, price: u64) { ' +
-    'require_owner(ctx, "buy", ctx.sender); spend_currency(ctx, ctx.sender, price * qty as u64); }';
+    'require_owner(ctx, "buy", ctx.sender()); spend_currency(ctx, ctx.sender(), price * qty as u64); }';
   if (buySignatureHasNoPriceParam(badBuyPriceParam)) {
     return {
       name,
@@ -506,7 +506,7 @@ export default async function () {
   // Bad: buy signature contains `total` parameter.
   const badBuyTotalParam =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32, total: u64) { ' +
-    'require_owner(ctx, "buy", ctx.sender); spend_currency(ctx, ctx.sender, total); }';
+    'require_owner(ctx, "buy", ctx.sender()); spend_currency(ctx, ctx.sender(), total); }';
   if (buySignatureHasNoPriceParam(badBuyTotalParam)) {
     return {
       name,
@@ -520,7 +520,7 @@ export default async function () {
   // Good: buy signature has only the correct parameters (no price/total).
   const goodBuyNoPrice =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "buy", ctx.sender); spend_currency(ctx, ctx.sender, total); }';
+    'require_owner(ctx, "buy", ctx.sender()); spend_currency(ctx, ctx.sender(), total); }';
   if (!buySignatureHasNoPriceParam(goodBuyNoPrice)) {
     return {
       name,
@@ -537,9 +537,9 @@ export default async function () {
   // only uses a client-supplied price parameter.
   const badBuyClientPrice =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32, price: u64) { ' +
-    'require_owner(ctx, "buy", ctx.sender); ' +
+    'require_owner(ctx, "buy", ctx.sender()); ' +
     'let total = price * qty as u64; ' +
-    'spend_currency(ctx, ctx.sender, total).expect("spend"); }';
+    'spend_currency(ctx, ctx.sender(), total).expect("spend"); }';
   if (buyComputesTotalFromDB(badBuyClientPrice)) {
     return {
       name,
@@ -554,10 +554,10 @@ export default async function () {
   // Good: buy body references shop_item_row (DB lookup).
   const goodBuyDBLookup =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "buy", ctx.sender); ' +
+    'require_owner(ctx, "buy", ctx.sender()); ' +
     'let entry = ctx.db.shop_item_row().filter(...); ' +
     'let total = entry.buy_price * qty as u64; ' +
-    'spend_currency(ctx, ctx.sender, total).expect("spend"); }';
+    'spend_currency(ctx, ctx.sender(), total).expect("spend"); }';
   if (!buyComputesTotalFromDB(goodBuyDBLookup)) {
     return {
       name,
@@ -572,10 +572,10 @@ export default async function () {
   // but the field read implies the row was fetched from the DB).
   const goodBuyPriceField =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "buy", ctx.sender); ' +
+    'require_owner(ctx, "buy", ctx.sender()); ' +
     'let row = find_shop_stock(ctx, shop_id, item_id)?; ' +
     'let total = row.buy_price * qty as u64; ' +
-    'spend_currency(ctx, ctx.sender, total).expect("spend"); }';
+    'spend_currency(ctx, ctx.sender(), total).expect("spend"); }';
   if (!buyComputesTotalFromDB(goodBuyPriceField)) {
     return {
       name,
@@ -590,8 +590,8 @@ export default async function () {
 
   // Bad: shop_row declared without `public`.
   const badSchemaNoPublic =
-    '#[spacetimedb::table(name = shop_row)] pub struct ShopRow { pub shop_id: u32, pub name: String } ' +
-    '#[spacetimedb::table(name = shop_item_row)] pub struct ShopItemRow { pub shop_item_id: u64 }';
+    '#[spacetimedb::table(accessor = shop_row)] pub struct ShopRow { pub shop_id: u32, pub name: String } ' +
+    '#[spacetimedb::table(accessor = shop_item_row)] pub struct ShopItemRow { pub shop_item_id: u64 }';
   if (shopTablesArePublic(badSchemaNoPublic)) {
     return {
       name,
@@ -605,8 +605,8 @@ export default async function () {
 
   // Bad: only shop_row is public (shop_item_row is private).
   const badSchemaMixedPublic =
-    '#[spacetimedb::table(name = shop_row, public)] pub struct ShopRow { pub shop_id: u32 } ' +
-    '#[spacetimedb::table(name = shop_item_row)] pub struct ShopItemRow { pub shop_item_id: u64 }';
+    '#[spacetimedb::table(accessor = shop_row, public)] pub struct ShopRow { pub shop_id: u32 } ' +
+    '#[spacetimedb::table(accessor = shop_item_row)] pub struct ShopItemRow { pub shop_item_id: u64 }';
   if (shopTablesArePublic(badSchemaMixedPublic)) {
     return {
       name,
@@ -619,8 +619,8 @@ export default async function () {
 
   // Good: both tables are public.
   const goodSchemaPublic =
-    '#[spacetimedb::table(name = shop_row, public)] pub struct ShopRow { pub shop_id: u32, pub name: String } ' +
-    '#[spacetimedb::table(name = shop_item_row, public)] pub struct ShopItemRow { pub shop_item_id: u64, pub shop_id: u32, pub item_id: u32, pub buy_price: u64 }';
+    '#[spacetimedb::table(accessor = shop_row, public)] pub struct ShopRow { pub shop_id: u32, pub name: String } ' +
+    '#[spacetimedb::table(accessor = shop_item_row, public)] pub struct ShopItemRow { pub shop_item_id: u64, pub shop_id: u32, pub item_id: u32, pub buy_price: u64 }';
   if (!shopTablesArePublic(goodSchemaPublic)) {
     return {
       name,
@@ -644,12 +644,12 @@ export default async function () {
   // Bad A: check_item_headroom( absent entirely from buy — must flag.
   const badBuyHeadroomAbsent =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "buy", ctx.sender); ' +
+    'require_owner(ctx, "buy", ctx.sender()); ' +
     'let row = ctx.db.shop_item_row().filter(item_id).unwrap(); ' +
     'let total = row.buy_price.checked_mul(qty as u64).ok_or("")?; ' +
     'let current = ctx.db.inventory().owner_identity().filter(me).find(|r| r.item_id == item_id).map(|r| r.count).unwrap_or(0); ' +
-    'spend_currency(ctx, ctx.sender, total).map_err(|e| e.to_string())?; ' +
-    'grant_item(ctx, ctx.sender, item_id, qty); }';
+    'spend_currency(ctx, ctx.sender(), total).map_err(|e| e.to_string())?; ' +
+    'grant_item(ctx, ctx.sender(), item_id, qty); }';
   if (buyHasHeadroomBeforeSpend(badBuyHeadroomAbsent)) {
     return {
       name,
@@ -664,13 +664,13 @@ export default async function () {
   // Bad B: check_item_headroom( AFTER spend_currency( — must flag (wrong order).
   const badBuyHeadroomAfterSpend =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "buy", ctx.sender); ' +
+    'require_owner(ctx, "buy", ctx.sender()); ' +
     'let row = ctx.db.shop_item_row().filter(item_id).unwrap(); ' +
     'let total = row.buy_price.checked_mul(qty as u64).ok_or("")?; ' +
-    'spend_currency(ctx, ctx.sender, total).map_err(|e| e.to_string())?; ' +
+    'spend_currency(ctx, ctx.sender(), total).map_err(|e| e.to_string())?; ' +
     'let current = ctx.db.inventory().owner_identity().filter(me).find(|r| r.item_id == item_id).map(|r| r.count).unwrap_or(0); ' +
     'check_item_headroom(current, qty, item_id).map_err(|e| e.to_string())?; ' +
-    'grant_item(ctx, ctx.sender, item_id, qty); }';
+    'grant_item(ctx, ctx.sender(), item_id, qty); }';
   if (buyHasHeadroomBeforeSpend(badBuyHeadroomAfterSpend)) {
     return {
       name,
@@ -685,13 +685,13 @@ export default async function () {
   // Bad C: check_item_headroom( present BEFORE spend_currency( but discarded — must flag.
   const badBuyHeadroomDiscarded =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "buy", ctx.sender); ' +
+    'require_owner(ctx, "buy", ctx.sender()); ' +
     'let row = ctx.db.shop_item_row().filter(item_id).unwrap(); ' +
     'let total = row.buy_price.checked_mul(qty as u64).ok_or("")?; ' +
     'let current = ctx.db.inventory().owner_identity().filter(me).find(|r| r.item_id == item_id).map(|r| r.count).unwrap_or(0); ' +
     'let _ = check_item_headroom(current, qty, item_id); ' +
-    'spend_currency(ctx, ctx.sender, total).map_err(|e| e.to_string())?; ' +
-    'grant_item(ctx, ctx.sender, item_id, qty); }';
+    'spend_currency(ctx, ctx.sender(), total).map_err(|e| e.to_string())?; ' +
+    'grant_item(ctx, ctx.sender(), item_id, qty); }';
   if (buyHasHeadroomBeforeSpend(badBuyHeadroomDiscarded)) {
     return {
       name,
@@ -711,12 +711,12 @@ export default async function () {
   //        or below MAX_ITEM_STACK even when the buyer already holds MAX_ITEM_STACK items.
   const badBuyHardcodedZero =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "buy", ctx.sender); ' +
+    'require_owner(ctx, "buy", ctx.sender()); ' +
     'let row = ctx.db.shop_item_row().filter(item_id).unwrap(); ' +
     'let total = row.buy_price.checked_mul(qty as u64).ok_or("")?; ' +
     'check_item_headroom(0, qty, item_id).map_err(|e| e.to_string())?; ' +
-    'spend_currency(ctx, ctx.sender, total).map_err(|e| e.to_string())?; ' +
-    'grant_item(ctx, ctx.sender, item_id, qty); }';
+    'spend_currency(ctx, ctx.sender(), total).map_err(|e| e.to_string())?; ' +
+    'grant_item(ctx, ctx.sender(), item_id, qty); }';
   if (buyHasHeadroomBeforeSpend(badBuyHardcodedZero)) {
     return {
       name,
@@ -736,12 +736,12 @@ export default async function () {
   //        to make a naive source scan pass while never executing the guard.
   const badBuyPlantedString =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "buy", ctx.sender); ' +
+    'require_owner(ctx, "buy", ctx.sender()); ' +
     'let _hint = "check_item_headroom(current, qty, item_id).map_err(|e| e.to_string())?; inventory() unwrap_or(0)"; ' +
     'let row = ctx.db.shop_item_row().filter(item_id).unwrap(); ' +
     'let total = row.buy_price.checked_mul(qty as u64).ok_or("")?; ' +
-    'spend_currency(ctx, ctx.sender, total).map_err(|e| e.to_string())?; ' +
-    'grant_item(ctx, ctx.sender, item_id, qty); }';
+    'spend_currency(ctx, ctx.sender(), total).map_err(|e| e.to_string())?; ' +
+    'grant_item(ctx, ctx.sender(), item_id, qty); }';
   if (buyHasHeadroomBeforeSpend(badBuyPlantedString)) {
     return {
       name,
@@ -759,13 +759,13 @@ export default async function () {
   // Kills: impl that wraps the guard in `if cfg!(test) { ... }` making it test-only.
   const badBuyCfgWrapped =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "buy", ctx.sender); ' +
+    'require_owner(ctx, "buy", ctx.sender()); ' +
     'let row = ctx.db.shop_item_row().filter(item_id).unwrap(); ' +
     'let total = row.buy_price.checked_mul(qty as u64).ok_or("")?; ' +
     'let current = ctx.db.inventory().owner_identity().filter(me).map(|r| r.count).unwrap_or(0); ' +
     'if cfg!(test) { check_item_headroom(current, qty, item_id).map_err(|e| e.to_string())?; } ' +
-    'spend_currency(ctx, ctx.sender, total).map_err(|e| e.to_string())?; ' +
-    'grant_item(ctx, ctx.sender, item_id, qty); }';
+    'spend_currency(ctx, ctx.sender(), total).map_err(|e| e.to_string())?; ' +
+    'grant_item(ctx, ctx.sender(), item_id, qty); }';
   if (buyHasHeadroomBeforeSpend(badBuyCfgWrapped)) {
     return {
       name,
@@ -785,13 +785,13 @@ export default async function () {
   //        so the cap check always succeeds regardless of how many items the buyer holds.
   const badBuyArgIdentity =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "buy", ctx.sender); ' +
+    'require_owner(ctx, "buy", ctx.sender()); ' +
     'let row = ctx.db.shop_item_row().filter(item_id).unwrap(); ' +
     'let total = row.buy_price.checked_mul(qty as u64).ok_or("")?; ' +
     'let current_count = ctx.db.inventory().owner_identity().filter(me).find(|r| r.item_id == item_id).map(|r| r.count).unwrap_or(0); ' +
     'check_item_headroom(0, qty, item_id).map_err(|e| e.to_string())?; ' +
-    'spend_currency(ctx, ctx.sender, total).map_err(|e| e.to_string())?; ' +
-    'grant_item(ctx, ctx.sender, item_id, qty); }';
+    'spend_currency(ctx, ctx.sender(), total).map_err(|e| e.to_string())?; ' +
+    'grant_item(ctx, ctx.sender(), item_id, qty); }';
   if (buyHasHeadroomBeforeSpend(badBuyArgIdentity)) {
     return {
       name,
@@ -813,13 +813,13 @@ export default async function () {
   // String-stripping erases the empty ok_or("") content → ok_or("") which is brace-safe.
   const goodBuyHeadroom =
     'pub fn buy(ctx: &ReducerContext, shop_id: u32, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "buy", ctx.sender); ' +
+    'require_owner(ctx, "buy", ctx.sender()); ' +
     'let row = ctx.db.shop_item_row().filter(item_id).unwrap(); ' +
     'let total = row.buy_price.checked_mul(qty as u64).ok_or("")?; ' +
     'let current_count = ctx.db.inventory().owner_identity().filter(me).find(|r| r.item_id == item_id).map(|r| r.count).unwrap_or(0); ' +
     'check_item_headroom(current_count, qty, item_id).map_err(|e| e.to_string())?; ' +
-    'spend_currency(ctx, ctx.sender, total).map_err(|e| e.to_string())?; ' +
-    'grant_item(ctx, ctx.sender, item_id, qty); }';
+    'spend_currency(ctx, ctx.sender(), total).map_err(|e| e.to_string())?; ' +
+    'grant_item(ctx, ctx.sender(), item_id, qty); }';
   if (!buyHasHeadroomBeforeSpend(goodBuyHeadroom)) {
     return {
       name,
@@ -844,12 +844,12 @@ export default async function () {
   // Bad A: check_currency_headroom( absent entirely from sell — must flag.
   const badSellHeadroomAbsent =
     'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "sell", ctx.sender); ' +
+    'require_owner(ctx, "sell", ctx.sender()); ' +
     'let row = ctx.db.item_row().filter(item_id).unwrap(); ' +
     'let total = row.sell_price.checked_mul(qty as u64).ok_or("")?; ' +
-    'let balance = wallet_balance(ctx, ctx.sender); ' +
-    'for _ in 0..qty { consume_one(ctx, ctx.sender, item_id)?; } ' +
-    'grant_currency(ctx, ctx.sender, total); }';
+    'let balance = wallet_balance(ctx, ctx.sender()); ' +
+    'for _ in 0..qty { consume_one(ctx, ctx.sender(), item_id)?; } ' +
+    'grant_currency(ctx, ctx.sender(), total); }';
   if (sellHasHeadroomBeforeConsume(badSellHeadroomAbsent)) {
     return {
       name,
@@ -864,13 +864,13 @@ export default async function () {
   // Bad B: check_currency_headroom( AFTER consume_one( — must flag (wrong order).
   const badSellHeadroomAfterConsume =
     'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "sell", ctx.sender); ' +
+    'require_owner(ctx, "sell", ctx.sender()); ' +
     'let row = ctx.db.item_row().filter(item_id).unwrap(); ' +
     'let total = row.sell_price.checked_mul(qty as u64).ok_or("")?; ' +
-    'let balance = wallet_balance(ctx, ctx.sender); ' +
-    'for _ in 0..qty { consume_one(ctx, ctx.sender, item_id)?; } ' +
+    'let balance = wallet_balance(ctx, ctx.sender()); ' +
+    'for _ in 0..qty { consume_one(ctx, ctx.sender(), item_id)?; } ' +
     'check_currency_headroom(balance, total).map_err(|e| e.to_string())?; ' +
-    'grant_currency(ctx, ctx.sender, total); }';
+    'grant_currency(ctx, ctx.sender(), total); }';
   if (sellHasHeadroomBeforeConsume(badSellHeadroomAfterConsume)) {
     return {
       name,
@@ -886,13 +886,13 @@ export default async function () {
   // Bad C: check_currency_headroom( present BEFORE consume_one( but discarded — must flag.
   const badSellHeadroomDiscarded =
     'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "sell", ctx.sender); ' +
+    'require_owner(ctx, "sell", ctx.sender()); ' +
     'let row = ctx.db.item_row().filter(item_id).unwrap(); ' +
     'let total = row.sell_price.checked_mul(qty as u64).ok_or("")?; ' +
-    'let balance = wallet_balance(ctx, ctx.sender); ' +
+    'let balance = wallet_balance(ctx, ctx.sender()); ' +
     'let _ = check_currency_headroom(balance, total); ' +
-    'for _ in 0..qty { consume_one(ctx, ctx.sender, item_id)?; } ' +
-    'grant_currency(ctx, ctx.sender, total); }';
+    'for _ in 0..qty { consume_one(ctx, ctx.sender(), item_id)?; } ' +
+    'grant_currency(ctx, ctx.sender(), total); }';
   if (sellHasHeadroomBeforeConsume(badSellHeadroomDiscarded)) {
     return {
       name,
@@ -911,12 +911,12 @@ export default async function () {
   //        voids the invariant for sellers at or near MAX_BALANCE (items destroyed, ADR-0124).
   const badSellHardcodedZero =
     'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "sell", ctx.sender); ' +
+    'require_owner(ctx, "sell", ctx.sender()); ' +
     'let row = ctx.db.item_row().filter(item_id).unwrap(); ' +
     'let total = row.sell_price.checked_mul(qty as u64).ok_or("")?; ' +
     'check_currency_headroom(0, total).map_err(|e| e.to_string())?; ' +
-    'for _ in 0..qty { consume_one(ctx, ctx.sender, item_id)?; } ' +
-    'grant_currency(ctx, ctx.sender, total); }';
+    'for _ in 0..qty { consume_one(ctx, ctx.sender(), item_id)?; } ' +
+    'grant_currency(ctx, ctx.sender(), total); }';
   if (sellHasHeadroomBeforeConsume(badSellHardcodedZero)) {
     return {
       name,
@@ -935,13 +935,13 @@ export default async function () {
   // Kills: impl that plants a string literal to defeat raw-source needle search.
   const badSellPlantedString =
     'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "sell", ctx.sender); ' +
+    'require_owner(ctx, "sell", ctx.sender()); ' +
     'let _hint = "check_currency_headroom(balance, total).map_err(|e| e.to_string())?; wallet_balance checked_mul("; ' +
     'let row = ctx.db.item_row().filter(item_id).unwrap(); ' +
     'let total = row.sell_price.checked_mul(qty as u64).ok_or("")?; ' +
-    'let balance = wallet_balance(ctx, ctx.sender); ' +
-    'for _ in 0..qty { consume_one(ctx, ctx.sender, item_id)?; } ' +
-    'grant_currency(ctx, ctx.sender, total); }';
+    'let balance = wallet_balance(ctx, ctx.sender()); ' +
+    'for _ in 0..qty { consume_one(ctx, ctx.sender(), item_id)?; } ' +
+    'grant_currency(ctx, ctx.sender(), total); }';
   if (sellHasHeadroomBeforeConsume(badSellPlantedString)) {
     return {
       name,
@@ -958,13 +958,13 @@ export default async function () {
   // Bad F: check_currency_headroom( inside cfg!(test) block — must flag (cfg-forbidden F4).
   const badSellCfgWrapped =
     'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "sell", ctx.sender); ' +
+    'require_owner(ctx, "sell", ctx.sender()); ' +
     'let row = ctx.db.item_row().filter(item_id).unwrap(); ' +
     'let total = row.sell_price.checked_mul(qty as u64).ok_or("")?; ' +
-    'let balance = wallet_balance(ctx, ctx.sender); ' +
+    'let balance = wallet_balance(ctx, ctx.sender()); ' +
     'if cfg!(test) { check_currency_headroom(balance, total).map_err(|e| e.to_string())?; } ' +
-    'for _ in 0..qty { consume_one(ctx, ctx.sender, item_id)?; } ' +
-    'grant_currency(ctx, ctx.sender, total); }';
+    'for _ in 0..qty { consume_one(ctx, ctx.sender(), item_id)?; } ' +
+    'grant_currency(ctx, ctx.sender(), total); }';
   if (sellHasHeadroomBeforeConsume(badSellCfgWrapped)) {
     return {
       name,
@@ -984,13 +984,13 @@ export default async function () {
   //        missing the case where balance is near MAX_BALANCE — items destroyed, ADR-0124.
   const badSellArgIdentity =
     'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "sell", ctx.sender); ' +
+    'require_owner(ctx, "sell", ctx.sender()); ' +
     'let row = ctx.db.item_row().filter(item_id).unwrap(); ' +
     'let total = row.sell_price.checked_mul(qty as u64).ok_or("")?; ' +
-    'let balance = wallet_balance(ctx, ctx.sender); ' +
+    'let balance = wallet_balance(ctx, ctx.sender()); ' +
     'check_currency_headroom(0, total).map_err(|e| e.to_string())?; ' +
-    'for _ in 0..qty { consume_one(ctx, ctx.sender, item_id)?; } ' +
-    'grant_currency(ctx, ctx.sender, total); }';
+    'for _ in 0..qty { consume_one(ctx, ctx.sender(), item_id)?; } ' +
+    'grant_currency(ctx, ctx.sender(), total); }';
   if (sellHasHeadroomBeforeConsume(badSellArgIdentity)) {
     return {
       name,
@@ -1011,13 +1011,13 @@ export default async function () {
   // Note: variable name `balance` matches the argument-identity pin.
   const goodSellHeadroom =
     'pub fn sell(ctx: &ReducerContext, item_id: u32, qty: u32) { ' +
-    'require_owner(ctx, "sell", ctx.sender); ' +
+    'require_owner(ctx, "sell", ctx.sender()); ' +
     'let row = ctx.db.item_row().filter(item_id).unwrap(); ' +
     'let total = row.sell_price.checked_mul(qty as u64).ok_or("")?; ' +
-    'let balance = wallet_balance(ctx, ctx.sender); ' +
+    'let balance = wallet_balance(ctx, ctx.sender()); ' +
     'check_currency_headroom(balance, total).map_err(|e| e.to_string())?; ' +
-    'for _ in 0..qty { consume_one(ctx, ctx.sender, item_id)?; } ' +
-    'grant_currency(ctx, ctx.sender, total); }';
+    'for _ in 0..qty { consume_one(ctx, ctx.sender(), item_id)?; } ' +
+    'grant_currency(ctx, ctx.sender(), total); }';
   if (!sellHasHeadroomBeforeConsume(goodSellHeadroom)) {
     return {
       name,
@@ -1056,7 +1056,7 @@ export default async function () {
     } else if (body.indexOf('require_owner') === -1) {
       failures.push(
         'BUY_REQUIRE_OWNER: require_owner not found in buy reducer body — ' +
-          'add `require_owner(ctx, "buy", ctx.sender);` as the first call (ADR-0081)',
+          'add `require_owner(ctx, "buy", ctx.sender());` as the first call (ADR-0081)',
       );
     } else if (body.indexOf('spend_currency') === -1) {
       failures.push(
@@ -1066,7 +1066,7 @@ export default async function () {
     } else {
       failures.push(
         'BUY_REQUIRE_OWNER: spend_currency appears before require_owner in buy — ' +
-          'move require_owner(ctx, "buy", ctx.sender) to be the FIRST call',
+          'move require_owner(ctx, "buy", ctx.sender()) to be the FIRST call',
       );
     }
   }
@@ -1079,7 +1079,7 @@ export default async function () {
     } else if (body.indexOf('require_owner') === -1) {
       failures.push(
         'SELL_REQUIRE_OWNER: require_owner not found in sell reducer body — ' +
-          'add `require_owner(ctx, "sell", ctx.sender);` as the first call (ADR-0081)',
+          'add `require_owner(ctx, "sell", ctx.sender());` as the first call (ADR-0081)',
       );
     } else if (body.indexOf('grant_currency') === -1) {
       failures.push(
@@ -1089,7 +1089,7 @@ export default async function () {
     } else {
       failures.push(
         'SELL_REQUIRE_OWNER: grant_currency appears before require_owner in sell — ' +
-          'move require_owner(ctx, "sell", ctx.sender) to be the FIRST call',
+          'move require_owner(ctx, "sell", ctx.sender()) to be the FIRST call',
       );
     }
   }
@@ -1124,12 +1124,12 @@ export default async function () {
 
   // Criterion 5: SHOP_TABLES_PUBLIC (unchanged)
   if (!shopTablesArePublic(schemaSrc)) {
-    const hasSR = schemaSrc.indexOf('name = shop_row') !== -1;
-    const hasSIR = schemaSrc.indexOf('name = shop_item_row') !== -1;
+    const hasSR = schemaSrc.indexOf('accessor = shop_row') !== -1;
+    const hasSIR = schemaSrc.indexOf('accessor = shop_item_row') !== -1;
     if (!hasSR) {
       failures.push(
         'SHOP_TABLES_PUBLIC: shop_row table not declared in schema.rs — ' +
-          'add `#[spacetimedb::table(name = shop_row, public)]`',
+          'add `#[spacetimedb::table(accessor = shop_row, public)]`',
       );
     } else if (!checkTableIsPublic(schemaSrc, 'shop_row')) {
       failures.push(
@@ -1140,7 +1140,7 @@ export default async function () {
     if (!hasSIR) {
       failures.push(
         'SHOP_TABLES_PUBLIC: shop_item_row table not declared in schema.rs — ' +
-          'add `#[spacetimedb::table(name = shop_item_row, public)]`',
+          'add `#[spacetimedb::table(accessor = shop_item_row, public)]`',
       );
     } else if (!checkTableIsPublic(schemaSrc, 'shop_item_row')) {
       failures.push(

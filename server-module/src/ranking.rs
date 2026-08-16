@@ -137,7 +137,7 @@ pub(crate) fn apply_pvp_rating(ctx: &ReducerContext, battle: &Battle) {
 /// and keeps the RL-2 split-binding pins green.
 #[spacetimedb::reducer]
 pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let mut player = match ctx.db.player().identity().find(me) {
         Some(p) => p,
         None => {

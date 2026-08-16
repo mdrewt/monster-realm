@@ -449,7 +449,7 @@ function checkTombstoneArgPin(rankingSrc) {
 //   [D/challenge-missing] `challenge_pvp`'s body can be extracted.
 //   [D/accept-missing]    `accept_challenge`'s body can be extracted.
 //   [D/me-provenance]     each reducer body binds `me` exactly once, from
-//                         `ctx.sender` (a `let me = target;` rebind re-points the
+//                         `ctx.sender()` (a `let me = target;` rebind re-points the
 //                         caller leg at the opponent, byte-identically).
 //   [D/no-cfg-gate]       no `#[cfg` inside either reducer body (a cfg-gated
 //                         guard is present in review and absent in the wasm).
@@ -509,7 +509,7 @@ const D_BATTLE_INSERT_NEEDLE = '.battle().insert(';
 const D_TARGET_GUARD_ANCHOR = 'match&target_player{';
 const D_CFG_ATTR = '#[cfg';
 const D_LET_ME = 'letme=';
-const D_LET_ME_SENDER = 'letme=ctx.sender;';
+const D_LET_ME_SENDER = 'letme=ctx.sender();';
 // Uniqueness sets (red-team F2/F8). Compacted declaration prefixes.
 // SEAM decls are checked EARLY (a count of 0 is itself a violation). REDUCER
 // decls are checked AFTER body extraction on purpose: a count of 0 there must
@@ -703,7 +703,7 @@ export function checkRankedAccountGate(pvpSrc) {
         why:
           `[D/me-provenance] \`${leg.fnName}\` binds \`me\` ${nLetMe} time(s) and ` +
           `${compact.indexOf(D_LET_ME_SENDER) === -1 ? 'does NOT' : 'does'} bind it from ` +
-          '`ctx.sender`. It must bind `me` EXACTLY ONCE, from `ctx.sender`: a second ' +
+          '`ctx.sender()`. It must bind `me` EXACTLY ONCE, from `ctx.sender()`: a second ' +
           '`let me = target;` re-points the caller leg of the account gate at the opponent ' +
           'while the exact-statement pin below stays byte-identical, so this is the only ' +
           'clause that can see it',
@@ -998,7 +998,7 @@ function buildDSource(over = {}) {
     o.challengeFn !== null
       ? o.challengeFn
       : `pub fn challenge_pvp(ctx: &ReducerContext, target: Identity, party_ids: Vec<u64>) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     if ctx.db.player().identity().find(me).is_none() {
         let e = ${DQ}not joined${DQ}.to_string();
         log_reject(${DQ}challenge_pvp${DQ}, me, &e);
@@ -1037,7 +1037,7 @@ ${o.challengeGuardPost}
 }`;
 
   const acceptFn = `pub fn accept_challenge(ctx: &ReducerContext, challenge_id: u64, party_ids: Vec<u64>) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let challenge = match ctx.db.battle_challenge().challenge_id().find(challenge_id) {
         Some(c) => c,
         None => return Err(${DQ}challenge not found${DQ}.to_string()),
@@ -1082,7 +1082,7 @@ export default async function () {
   const goodNameReducerSrc = `
     #[spacetimedb::reducer]
     pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
-        let me = ctx.sender;
+        let me = ctx.sender();
         let mut player = match ctx.db.player().identity().find(me) {
             Some(p) => p,
             None => {
@@ -1140,14 +1140,14 @@ export default async function () {
   const badTwoReducersSrc = `
     #[spacetimedb::reducer]
     pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
-        let mut player = match ctx.db.player().identity().find(ctx.sender) { Some(p) => p, None => return Err("x".to_string()) };
+        let mut player = match ctx.db.player().identity().find(ctx.sender()) { Some(p) => p, None => return Err("x".to_string()) };
         player.name = validate_name(&name)?;
         ctx.db.player().identity().update(player);
         Ok(())
     }
     #[spacetimedb::reducer]
     pub fn boost_rating(ctx: &ReducerContext) -> Result<(), String> {
-        let mut p = ctx.db.profile().identity().find(ctx.sender).unwrap();
+        let mut p = ctx.db.profile().identity().find(ctx.sender()).unwrap();
         p.rating = 9999;
         ctx.db.profile().identity().update(p);
         Ok(())
@@ -1175,7 +1175,7 @@ export default async function () {
   const badProfileTouchMutSrc = `
     #[spacetimedb::reducer]
     pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
-        let me = ctx.sender;
+        let me = ctx.sender();
         let validated = validate_name(&name)?;
         let mut p = ctx.db.profile().identity().find(me).unwrap();
         p.name = validated;
@@ -1207,7 +1207,7 @@ export default async function () {
   const badProfileTouchInitSrc = `
     #[spacetimedb::reducer]
     pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
-        let me = ctx.sender;
+        let me = ctx.sender();
         let validated = validate_name(&name)?;
         get_or_init_profile(ctx, me);
         let mut player = ctx.db.player().identity().find(me).unwrap();
@@ -1239,7 +1239,7 @@ export default async function () {
     // TODO: this should really be set_profile_name(ctx, name) but we shipped a rating booster
     #[spacetimedb::reducer]
     pub fn boost_rating(ctx: &ReducerContext) -> Result<(), String> {
-        let mut p = ctx.db.profile().identity().find(ctx.sender).unwrap();
+        let mut p = ctx.db.profile().identity().find(ctx.sender()).unwrap();
         p.rating = 9999;
         ctx.db.profile().identity().update(p);
         Ok(())
@@ -1268,7 +1268,7 @@ export default async function () {
     #[spacetimedb::reducer]
     pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
         let _dead = "#[spacetimedb::reducer] pub fn evil() { ctx.db.profile().insert(x); }";
-        let mut player = match ctx.db.player().identity().find(ctx.sender) { Some(p) => p, None => return Err("not joined".to_string()) };
+        let mut player = match ctx.db.player().identity().find(ctx.sender()) { Some(p) => p, None => return Err("not joined".to_string()) };
         player.name = validate_name(&name)?;
         ctx.db.player().identity().update(player);
         Ok(())
@@ -1480,7 +1480,7 @@ export default async function () {
   // -------------------------------------------------------------------------
   const badOnDisconnectSrc = `
     pub fn on_disconnect(ctx: &ReducerContext) {
-        let me = ctx.sender;
+        let me = ctx.sender();
         trading::cancel_trades_on_disconnect(ctx, me);
         pvp::forfeit_on_disconnect(ctx, me);
         // BUG: on_disconnect must not touch profile
@@ -1516,7 +1516,7 @@ export default async function () {
   // -------------------------------------------------------------------------
   const goodOnDisconnectSrc = `
     pub fn on_disconnect(ctx: &ReducerContext) {
-        let me = ctx.sender;
+        let me = ctx.sender();
         trading::cancel_trades_on_disconnect(ctx, me);
         pvp::forfeit_on_disconnect(ctx, me);
         pvp::cancel_challenges_on_disconnect(ctx, me);
@@ -1781,7 +1781,7 @@ export default async function () {
   const badWrappedProfileTouchSrc = `
     #[spacetimedb::reducer]
     pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
-        let me = ctx.sender;
+        let me = ctx.sender();
         let validated = validate_name(&name)?;
         let mut p = ctx.db
             .profile()
@@ -1824,7 +1824,7 @@ export default async function () {
   const goodRekeyProfileSrc = `
     #[spacetimedb::reducer]
     pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
-        let mut player = match ctx.db.player().identity().find(ctx.sender) {
+        let mut player = match ctx.db.player().identity().find(ctx.sender()) {
             Some(p) => p,
             None => return Err("not joined".to_string()),
         };
@@ -1888,7 +1888,7 @@ export default async function () {
   const badRekeyIsReducerSrc = `
     #[spacetimedb::reducer]
     pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
-        let mut player = match ctx.db.player().identity().find(ctx.sender) {
+        let mut player = match ctx.db.player().identity().find(ctx.sender()) {
             Some(p) => p,
             None => return Err("not joined".to_string()),
         };
@@ -2265,7 +2265,7 @@ export default async function () {
       what: 'a pvp.rs with a SECOND reducer that calls start_pvp_battle (quick-match path)',
       src: buildDSource({
         extra: `pub fn quick_match(ctx: &ReducerContext, opponent: Identity, party_ids: Vec<u64>) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let battle_id = start_pvp_battle(ctx, me, party_ids.clone(), opponent, party_ids)?;
     schedule_deadline(ctx, battle_id, 0);
     Ok(())
@@ -2333,7 +2333,7 @@ ${D_GUARD_CHALLENGE}`,
       src: buildDSource({
         extra: `mod compat {
     pub fn challenge_pvp(ctx: &ReducerContext, target: Identity, party_ids: Vec<u64>) -> Result<(), String> {
-        let me = ctx.sender;
+        let me = ctx.sender();
         let _ = (target, party_ids, me);
         Ok(())
     }
@@ -2426,7 +2426,7 @@ ${D_GUARD_CHALLENGE}`,
       what: 'a challenge_pvp with no battle_challenge().insert( anchor at all',
       src: buildDSource({
         challengeFn: `pub fn challenge_pvp(ctx: &ReducerContext, target: Identity, party_ids: Vec<u64>) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let _ = (target, party_ids);
 ${D_GUARD_CHALLENGE}
     Ok(())
@@ -2488,7 +2488,7 @@ ${D_GUARD_CHALLENGE}
       src: buildDSource({
         extra: `pub fn quick_match(ctx: &ReducerContext, opponent: Identity, party_ids: Vec<u64>) -> Result<(), String> {
     let ctor = start_pvp_battle;
-    let me = ctx.sender;
+    let me = ctx.sender();
     let battle_id = ctor(ctx, me, party_ids.clone(), opponent, party_ids)?;
     schedule_deadline(ctx, battle_id, 0);
     Ok(())
@@ -2942,7 +2942,7 @@ pub fn tidy(ctx: &ReducerContext) -> Result<(), String> {
       'D RANKED_REQUIRES_ACCOUNT: challenge_pvp and accept_challenge each carry the exact ' +
       'ADR-0189 ranked_account_gate statement once, at brace depth 0, before their ' +
       'irreversible effects (and, for challenge_pvp, after the target-presence guard — the ' +
-      'D8 oracle bound), each binding `me` once from ctx.sender, with no #[cfg inside either ' +
+      'D8 oracle bound), each binding `me` once from ctx.sender(), with no #[cfg inside either ' +
       'body, each filing its reject under its own log tag, no shadowed or duplicated seam / ' +
       'reducer declarations, has_jwt and ctx.db.account( absent, start_pvp_battle( == 2 in ' +
       'both the paren and bare-token forms, .battle().insert( == 1 and the exact ' +

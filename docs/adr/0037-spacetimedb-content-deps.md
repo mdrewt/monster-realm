@@ -7,7 +7,7 @@
 **Amends:** —
 **Subsystems:** schema-persistence, content
 **Decision:** Pin SpacetimeDB module SDK + RON (serde-ron) as the server/content dependencies; sync_content reducer updates content without table deletion.
-**Amended-by:** ADR-0073
+**Amended-by:** ADR-0073, ADR-0197
 
 
 - **Status:** Accepted

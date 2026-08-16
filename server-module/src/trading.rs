@@ -79,7 +79,7 @@ fn build_cards(
     expected_owner: Identity,
     reducer: &str,
 ) -> Result<Vec<MonsterCard>, String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let mut cards = Vec::with_capacity(monster_ids.len());
     for &mid in monster_ids {
         let Some(m) = ctx.db.monster().monster_id().find(mid) else {
@@ -110,7 +110,7 @@ fn build_cards(
 
 // Scheduled table colocated with its reducer (ADR-0056 exception, mirrors pvp_deadline_schedule).
 // PRIVATE — prevents client schedule manipulation; the underlying facts are already public via trade_offer.
-#[spacetimedb::table(name = trade_offer_reaper_schedule, scheduled(trade_offer_reaper))]
+#[spacetimedb::table(accessor = trade_offer_reaper_schedule, scheduled(trade_offer_reaper))]
 pub struct TradeOfferReaperSchedule {
     #[primary_key]
     #[auto_inc]
@@ -164,7 +164,7 @@ fn disarm_trade_reaper(ctx: &ReducerContext, trade_id: u64) {
 /// Scheduled reaper: delete a trade offer that has outlived `TRADE_OFFER_TTL_MS`.
 ///
 /// This is a SCHEDULER-ONLY reducer — clients must never call it directly.
-/// Guard: `ctx.sender != ctx.identity()` (identical to `pvp_deadline_reaper`,
+/// Guard: `ctx.sender() != ctx.database_identity()` (identical to `pvp_deadline_reaper`,
 /// ADR-0056). Staleness is re-checked via `is_offer_stale` so an early fire or
 /// clock skew never reaps a fresh offer.
 ///
@@ -177,7 +177,7 @@ pub fn trade_offer_reaper(
     ctx: &ReducerContext,
     args: TradeOfferReaperSchedule,
 ) -> Result<(), String> {
-    if ctx.sender != ctx.identity() {
+    if ctx.sender() != ctx.database_identity() {
         return Err("trade_offer_reaper is scheduler-only".to_string());
     }
     let Some(offer) = ctx.db.trade_offer().trade_id().find(args.trade_id) else {
@@ -228,7 +228,7 @@ pub fn propose_trade(
     counterparty_items: Vec<TradeItem>,
     counterparty_currency: u64,
 ) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
 
     // Guard 0 (ADR-0166 D3): bound both sides BEFORE any DB read, following
     // battle.rs:62-75's bound-before-any-DB-read ordering.
@@ -425,7 +425,7 @@ pub fn propose_trade(
 /// - `accepted = true` → status → ConfirmedByCounterparty (TR-14).
 #[spacetimedb::reducer]
 pub fn respond_trade(ctx: &ReducerContext, trade_id: u64, accepted: bool) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
 
     let Some(offer) = ctx.db.trade_offer().trade_id().find(trade_id) else {
         return Err("trade offer not found".to_string());
@@ -464,7 +464,7 @@ pub fn respond_trade(ctx: &ReducerContext, trade_id: u64, accepted: bool) -> Res
 /// wallet.
 #[spacetimedb::reducer]
 pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
 
     let Some(offer) = ctx.db.trade_offer().trade_id().find(trade_id) else {
         return Err("trade offer not found".to_string());
@@ -739,7 +739,7 @@ pub fn confirm_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> 
 /// Both Pending and ConfirmedByCounterparty can be cancelled.
 #[spacetimedb::reducer]
 pub fn cancel_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
 
     let Some(offer) = ctx.db.trade_offer().trade_id().find(trade_id) else {
         return Err("trade offer not found".to_string());

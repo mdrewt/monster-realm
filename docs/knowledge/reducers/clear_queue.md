@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: clear_queue
 slug: reducers/clear_queue
-updated: 2026-08-15
+updated: 2026-08-16
 tags: [reducer, spacetimedb, movement]
 abstract: "Empty the queue (key release)."
 resource: server-module/src/movement.rs#L208

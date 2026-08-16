@@ -807,23 +807,23 @@ mod tests {
     // =========================================================================
     // 12.5b-1: sync_content guard must use owner_identity (NOT ctx.identity())
     //
-    // Criterion: the `sync_content` guard must check `ctx.sender` against a stored
+    // Criterion: the `sync_content` guard must check `ctx.sender()` against a stored
     // `owner_identity` in `Config`, NOT against `ctx.identity()` (module identity).
     //
-    // RED state: lib.rs currently contains `ctx.sender != ctx.identity()` and does NOT
+    // RED state: lib.rs currently contains `ctx.sender() != ctx.identity()` and does NOT
     // reference `owner_identity` in the guard. Both assertions below will fail today:
     //   - negative: the forbidden pattern IS present → assertion fires
     //   - positive: `owner_identity` is NOT in the guard body → assertion fires
     //
     // This test starts RED because the current guard in lib.rs reads:
-    //   if ctx.sender != ctx.identity() {
+    //   if ctx.sender() != ctx.identity() {
     //       return Err("sync_content is module-only".to_string());
     //   }
     // The fix requires replacing that with an owner_identity lookup in Config.
     // =========================================================================
 
     /// 12.5b-1: sync_content must NOT gate on `ctx.identity()` (module identity).
-    /// KILLS: the current guard `ctx.sender != ctx.identity()` which blocks any DB
+    /// KILLS: the current guard `ctx.sender() != ctx.identity()` which blocks any DB
     /// owner from calling sync_content (only the module itself can call ctx.identity()).
     /// The correct guard checks a stored `owner_identity` in the Config row.
     #[test]
@@ -833,7 +833,7 @@ mod tests {
         // Assemble the forbidden pattern from parts so the literal does not appear
         // verbatim in this test source (which is inside the include_str! captured file).
         let _forbidden_a = ["ctx", ".identity()"].concat();
-        let forbidden_b = ["ctx.sender", " != ctx.identity()"].concat();
+        let forbidden_b = ["ctx.sender()", " != ctx.identity()"].concat();
 
         // Locate the sync_content function body to scope the check.
         // We search the full stripped source for the guard because extract_fn_body is
@@ -841,7 +841,7 @@ mod tests {
         // searching the whole stripped lib.rs is adequate for this structural check.
         assert!(
             !stripped.contains(forbidden_b.as_str()),
-            "TEETH(12.5b-1): lib.rs `sync_content` must NOT guard with `ctx.sender != ctx.identity()`; \
+            "TEETH(12.5b-1): lib.rs `sync_content` must NOT guard with `ctx.sender() != ctx.identity()`; \
              that pattern blocks any DB owner from calling sync_content (only the module itself can \
              produce ctx.identity()). Replace the guard with an owner_identity lookup in Config. \
              The forbidden fragment `{}` was found in lib.rs.",
@@ -903,10 +903,10 @@ mod tests {
             body.contains(guard_field.as_str()),
             "TEETH(12.5b-1): the `sync_content` reducer body must reference `owner_identity` \
              to gate the call; the correct implementation reads Config.owner_identity and \
-             compares it to ctx.sender. Currently the body contains only the `ctx.identity()` \
+             compares it to ctx.sender(). Currently the body contains only the `ctx.identity()` \
              pattern (wrong) and does not reference owner_identity at all. \
              Add `Config.owner_identity` field and guard with: \
-             `if cfg.owner_identity != ctx.sender {{ return Err(...); }}`"
+             `if cfg.owner_identity != ctx.sender() {{ return Err(...); }}`"
         );
     }
 

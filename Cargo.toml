@@ -11,8 +11,7 @@ edition = "2021"
 license = "MIT"
 
 # SSOT for shared dependency versions: declare once here, reference with
-# `dep.workspace = true` in members. Populated as crates take real deps —
-# spacetimedb (M2, matched to the installed CLI 2.6.0; crate ≠ product version).
+# `dep.workspace = true` in members.
 [workspace.dependencies]
 # Perf-budget bench harness (m20a, OBS-5/OBS-6, ADR-0180 D7) — game-core
 # dev-dep ONLY. EXACT pin: the harness reads criterion's documented-private
@@ -30,8 +29,24 @@ wasm-bindgen = "0.2"
 # the no-logic-in-wrapper eval proves no rules cross here.
 serde-wasm-bindgen = "0.6"
 console_error_panic_hook = "0.1"
-# Server module SDK (ADR-0037) — crate 1.12 matches CLI 2.6.0 (crate != product).
-spacetimedb = "1.12"
+# Server module SDK (ADR-0037). Pin it to the SAME version as the `spacetime`
+# CLI/host: the crate version IS the product version (it always has been — the
+# monorepo's [workspace.package] version equals the product version at every tag,
+# in both majors). The old comment here claimed "crate 1.12 matches CLI 2.6.0
+# (crate != product)"; that was FALSE and left the module a full major behind for
+# six months. See ADR-0197.
+#
+# 2026-08-16: bumped 1.12.0 -> 2.8.1 alongside the CLI (M-stdb-2x-module-sdk,
+# EXECUTED). The 1.x -> 2.x source port was mechanical and schema-neutral:
+#   #[table|view(name = X)] -> accessor = X   (the canonical SQL table name
+#                                              defaults to the accessor ident, so
+#                                              no table was renamed — proven by a
+#                                              77/77 identical table-name diff)
+#   ctx.sender  (field)     -> ctx.sender()   (method)
+#   ctx.identity()          -> ctx.database_identity()  (the former is deprecated)
+# When bumping again, remember the gates move too: ~21 Rust source-scanning teeth
+# tests and several evals/ scanners encode this attribute syntax literally.
+spacetimedb = "2.8.1"
 # Content: serde derive + RON parser (pure; safe under the determinism guard).
 serde = { version = "1", features = ["derive"] }
 ron = "0.8"

@@ -738,7 +738,9 @@ fn build_playtest_event_passthrough_fields() {
 /// PT-B2-SCAN-01: `playtest_reaper` reducer body has the scheduler-only identity
 /// guard BEFORE any table delete.
 ///
-/// The guard shape must be `ctx.sender != ctx.identity()` in the reducer body.
+/// The guard shape must be `ctx.sender() != ctx.database_identity()` in the
+/// reducer body (SpacetimeDB 2.x spelling, ADR-0197 — `ctx.identity()` is the
+/// deprecated 1.x alias).
 /// This is the same pattern as pvp_deadline_reaper (EA-PVP-02) and
 /// battle_challenge_reaper (EA-CHR-03) — a consistent project convention.
 ///
@@ -761,13 +763,13 @@ fn scan_playtest_reaper_has_scheduler_guard_before_delete() {
     let body = extract_fn_body(&stripped, "playtest_reaper")
         .expect("PT-B2-SCAN-01: `playtest_reaper` function not found in playtest.rs");
 
-    let guard = concat!("ctx.sender", " != ", "ctx.identity()");
+    let guard = concat!("ctx.sender()", " != ", "ctx.database_identity()");
     let delete_needle = concat!("playtest_event()", ".event_id().delete");
 
     assert!(
         body.contains(guard),
         "PT-B2-SCAN-01 FAIL: `playtest_reaper` body does not contain the \
-         scheduler-only identity guard `ctx.sender != ctx.identity()`. \
+         scheduler-only identity guard `ctx.sender() != ctx.database_identity()`. \
          Without this guard, any client can call the reaper and delete \
          arbitrary playtest_event rows (ADR-0126 precedent / EA-PVP-02 / EA-CHR-03)."
     );
@@ -931,13 +933,13 @@ fn scan_wiring_needles() {
 #[test]
 fn scan_machinery_self_teeth() {
     // Use the scheduler-guard needle (same as scan_playtest_reaper_has_scheduler_guard_before_delete).
-    let needle_squashed = squash_ws(concat!("ctx.sender", " != ", "ctx.identity()"));
+    let needle_squashed = squash_ws(concat!("ctx.sender()", " != ", "ctx.database_identity()"));
 
     // BAD fixture: guard only in a comment.
     let bad_fixture = r#"
         #[spacetimedb::reducer]
         pub fn playtest_reaper(ctx: &ReducerContext, _sched: PlaytestReaperSchedule) -> Result<(), String> {
-            // ctx.sender != ctx.identity() — just a comment, not enforced!
+            // ctx.sender() != ctx.database_identity() — just a comment, not enforced!
             for row in ctx.db.playtest_event().iter() {
                 ctx.db.playtest_event().event_id().delete(row.event_id);
             }
@@ -955,7 +957,7 @@ fn scan_machinery_self_teeth() {
     let good_fixture = r#"
         #[spacetimedb::reducer]
         pub fn playtest_reaper(ctx: &ReducerContext, _sched: PlaytestReaperSchedule) -> Result<(), String> {
-            if ctx.sender != ctx.identity() {
+            if ctx.sender() != ctx.database_identity() {
                 return Err("scheduler only".to_string());
             }
             Ok(())
@@ -975,7 +977,7 @@ fn scan_machinery_self_teeth() {
             let _guard_evasion = "{}";
         }}
         "#,
-        concat!("ctx.sender", " != ", "ctx.identity()")
+        concat!("ctx.sender()", " != ", "ctx.database_identity()")
     );
     let evasion_squashed = stripped_for_scan(&evasion_fixture);
     assert!(

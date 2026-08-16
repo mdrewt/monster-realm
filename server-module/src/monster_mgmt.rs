@@ -19,7 +19,7 @@ use spacetimedb::{Identity, ReducerContext};
 /// Ownership-checked: only the monster's owner may rename it.
 #[spacetimedb::reducer]
 pub fn set_nickname(ctx: &ReducerContext, monster_id: u64, nickname: String) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
         let e = "monster not found".to_string();
         log_reject("set_nickname", me, &e);
@@ -57,7 +57,7 @@ pub fn set_nickname(ctx: &ReducerContext, monster_id: u64, nickname: String) -> 
 /// pure game-core check (`game_core::check_party_slot`, ADR-0053 SlotError pattern).
 #[spacetimedb::reducer]
 pub fn set_party_slot(ctx: &ReducerContext, monster_id: u64, slot: u8) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let Some(mut m) = ctx.db.monster().monster_id().find(monster_id) else {
         let e = "monster not found".to_string();
         log_reject("set_party_slot", me, &e);

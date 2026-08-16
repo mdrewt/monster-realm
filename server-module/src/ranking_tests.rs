@@ -1250,7 +1250,7 @@ fn ptc1_scan_rejects_not_joined_teeth() {
     let bad_fixture = "
         #[spacetimedb::reducer]
         pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
-            let me = ctx.sender;
+            let me = ctx.sender();
             let mut player = ctx.db.player().identity().find(me).unwrap_or_default();
             let validated = validate_name(&name)?;
             player.name = validated;
@@ -1285,7 +1285,7 @@ fn ptc1_scan_rejects_not_joined_teeth() {
     let good_fixture = "
         #[spacetimedb::reducer]
         pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
-            let me = ctx.sender;
+            let me = ctx.sender();
             let mut player = match ctx.db.player().identity().find(me) {
                 Some(p) => p,
                 None => {
@@ -1379,7 +1379,7 @@ fn ptc1_scan_machinery_teeth() {
     let bad_fixture = "
         #[spacetimedb::reducer]
         pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
-            let me = ctx.sender;
+            let me = ctx.sender();
             let validated = validate_name(&name)?;
             let mut p = ctx.db.profile().identity().find(me).unwrap();
             p.rating = 9999;
@@ -1402,7 +1402,7 @@ fn ptc1_scan_machinery_teeth() {
     let good_fixture = "
         #[spacetimedb::reducer]
         pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {
-            let me = ctx.sender;
+            let me = ctx.sender();
             let mut player = match ctx.db.player().identity().find(me) {
                 Some(p) => p,
                 None => return Err(\"not joined\".to_string()),
@@ -1441,7 +1441,7 @@ fn ptc1_scan_machinery_teeth() {
         #[spacetimedb::reducer]
         pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String> {{
             let _ = \"{}\";
-            let mut player = match ctx.db.player().identity().find(ctx.sender) {{
+            let mut player = match ctx.db.player().identity().find(ctx.sender()) {{
                 Some(p) => p,
                 None => return Err(\"not joined\".to_string()),
             }};

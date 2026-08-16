@@ -880,7 +880,7 @@ fn ea_conservation_headroom_02_check_headroom_before_build_swap_plan() {
 // check_authorize_call(body, call_name, required_field, forbidden_field):
 //   (A) `call_name` must appear in `body`.
 //   (M) me-BINDING PIN (14r-b): in the body text PRECEDING the call, the LAST `let me =`
-//       binding must be `let me = ctx.sender;` (whitespace-squashed compare, mirroring
+//       binding must be `let me = ctx.sender();` (whitespace-squashed compare, mirroring
 //       the E4-B/D3 first-statement pin at the bottom of this file). Without it, every
 //       other check in this function can be satisfied by a TAUTOLOGY:
 //           let me = offer.counterparty;
@@ -948,7 +948,7 @@ fn is_ident_byte(b: u8) -> bool {
 ///   - `offer.counterparty==me` starts and ends with identifier chars → both sides checked,
 ///     so the `me_spoof` suffix is rejected.
 ///   - `letme=` ends in `=` → the RIGHT side is not checked, or the production
-///     `let me = ctx.sender;` (next char `c`) would never match its own needle.
+///     `let me = ctx.sender();` (next char `c`) would never match its own needle.
 ///
 /// Getting this wrong is not a subtle degradation: an unconditional right-boundary check
 /// makes every me-binding lookup fail and every caller of check_authorize_call red.
@@ -1034,11 +1034,11 @@ fn check_authorize_call(
     let arg_span = &body[arg_start..arg_end];
 
     // -----------------------------------------------------------------------
-    // (M) me-BINDING PIN: the LAST `let me =` before the call must bind ctx.sender.
+    // (M) me-BINDING PIN: the LAST `let me =` before the call must bind ctx.sender().
     // -----------------------------------------------------------------------
     let prefix_squashed = normalize_whitespace(&body[..call_idx]);
     let bind_needle = concat!("letme", "=");
-    let caller_bind = concat!("letme=ctx.", "sender;");
+    let caller_bind = concat!("letme=ctx.", "sender();");
     match token_positions(&prefix_squashed, bind_needle)
         .last()
         .copied()
@@ -1054,7 +1054,7 @@ fn check_authorize_call(
             if !prefix_squashed[pos..].starts_with(caller_bind) {
                 return Err(format!(
                     "me-shadowed: the last `let me =` binding before {call_name}(...) is not \
-                     `let me = ctx.sender;` — a rebound `me` (e.g. `let me = offer.counterparty;`) \
+                     `let me = ctx.sender();` — a rebound `me` (e.g. `let me = offer.counterparty;`) \
                      makes the role equality a TAUTOLOGY that authorizes every caller"
                 ));
             }
@@ -1310,7 +1310,7 @@ fn ea_authorize_operator_01_role_boolean_uses_equality_against_me() {
     // --- TOOTH 1: inverted operator, field-first, on respond_trade ---
     let inverted_field_first = concat!(
         "fn respond_",
-        "trade(ctx, trade_id, accepted) { let me = ctx.sender; ",
+        "trade(ctx, trade_id, accepted) { let me = ctx.sender(); ",
         "authorize_",
         "respond(&offer.status, offer.counterparty != me).map_err(|e| e.to_string())?; Ok(()) }"
     );
@@ -1334,7 +1334,7 @@ fn ea_authorize_operator_01_role_boolean_uses_equality_against_me() {
     // --- TOOTH 2: inverted operator, me-first, on confirm_trade ---
     let inverted_me_first = concat!(
         "fn confirm_",
-        "trade(ctx, trade_id) { let me = ctx.sender; ",
+        "trade(ctx, trade_id) { let me = ctx.sender(); ",
         "authorize_",
         "confirm(&offer.status, me != offer.initiator)?; Ok(()) }"
     );
@@ -1358,7 +1358,7 @@ fn ea_authorize_operator_01_role_boolean_uses_equality_against_me() {
     // --- TOOTH 3: an equality that is not against `me` ---
     let equality_wrong_operand = concat!(
         "fn respond_",
-        "trade(ctx, trade_id, accepted) { let me = ctx.sender; ",
+        "trade(ctx, trade_id, accepted) { let me = ctx.sender(); ",
         "authorize_",
         "respond(&offer.status, offer.counterparty == spoofed)?; Ok(()) }"
     );
@@ -1385,7 +1385,7 @@ fn ea_authorize_operator_01_role_boolean_uses_equality_against_me() {
     // token-boundary check in contains_token rejects it. ---
     let look_alike_binding = concat!(
         "fn respond_",
-        "trade(ctx, trade_id, accepted) { let me = ctx.sender; let me_spoof = offer.initiator; ",
+        "trade(ctx, trade_id, accepted) { let me = ctx.sender(); let me_spoof = offer.initiator; ",
         "authorize_",
         "respond(&offer.status, offer.counterparty == me_spoof)?; Ok(()) }"
     );
@@ -1410,7 +1410,7 @@ fn ea_authorize_operator_01_role_boolean_uses_equality_against_me() {
     // different syntax; it satisfies the plain equality needle exactly. ---
     let negated_equality = concat!(
         "fn respond_",
-        "trade(ctx, trade_id, accepted) { let me = ctx.sender; ",
+        "trade(ctx, trade_id, accepted) { let me = ctx.sender(); ",
         "authorize_",
         "respond(&offer.status, !(offer.counterparty == me))?; Ok(()) }"
     );
@@ -1436,7 +1436,7 @@ fn ea_authorize_operator_01_role_boolean_uses_equality_against_me() {
     // constant. A span-wide field check passes this; the role-arg scoping rejects it. ---
     let role_arg_launderer = concat!(
         "fn respond_",
-        "trade(ctx, trade_id, accepted) { let me = ctx.sender; ",
+        "trade(ctx, trade_id, accepted) { let me = ctx.sender(); ",
         "authorize_",
         "respond(&status_for(offer.counterparty == me), true)?; Ok(()) }"
     );
@@ -1461,7 +1461,7 @@ fn ea_authorize_operator_01_role_boolean_uses_equality_against_me() {
     // caller, so the equality is a tautology and every caller passes. ---
     let me_shadowed = concat!(
         "fn respond_",
-        "trade(ctx, trade_id, accepted) { let me = ctx.sender; let me = offer.counterparty; ",
+        "trade(ctx, trade_id, accepted) { let me = ctx.sender(); let me = offer.counterparty; ",
         "authorize_",
         "respond(&offer.status, offer.counterparty == me)?; Ok(()) }"
     );
@@ -1485,7 +1485,7 @@ fn ea_authorize_operator_01_role_boolean_uses_equality_against_me() {
     // --- CONTROL 1: the production shape (field-first equality) still passes ---
     let good_field_first = concat!(
         "fn respond_",
-        "trade(ctx, trade_id, accepted) { let me = ctx.sender; ",
+        "trade(ctx, trade_id, accepted) { let me = ctx.sender(); ",
         "authorize_",
         "respond(&offer.status, offer.counterparty == me).map_err(|e| { ",
         "let msg = e.to_string(); msg })?; Ok(()) }"
@@ -1507,7 +1507,7 @@ fn ea_authorize_operator_01_role_boolean_uses_equality_against_me() {
     // --- CONTROL 2: reversed operand order is also accepted ---
     let good_me_first = concat!(
         "fn confirm_",
-        "trade(ctx, trade_id) { let me = ctx.sender; ",
+        "trade(ctx, trade_id) { let me = ctx.sender(); ",
         "authorize_",
         "confirm(&offer.status, me == offer.initiator)?; Ok(()) }"
     );
@@ -1577,8 +1577,8 @@ fn ea_reaper_03_scheduler_guard_is_first_statement() {
     let reaper_start = concat!("fntrade_offer_", "reaper(");
     let reaper_end = concat!("fnpropose_", "trade(");
     let guard_anchor = concat!(
-        "->Result<(),String>{ifctx.sender!=ctx.",
-        "identity(){returnErr("
+        "->Result<(),String>{ifctx.sender()!=ctx.",
+        "database_identity(){returnErr("
     );
 
     // --- TOOTH 1: guard present but NOT first (a DB read precedes it) ---
@@ -1586,7 +1586,7 @@ fn ea_reaper_03_scheduler_guard_is_first_statement() {
         "pub fn trade_offer_",
         "reaper(ctx: &ReducerContext, args: TradeOfferReaperSchedule) -> Result<(), String> { ",
         "let offer = ctx.db.trade_offer().trade_id().find(args.trade_id); ",
-        "if ctx.sender != ctx.identity() { return Err(String::new()); } Ok(()) } ",
+        "if ctx.sender() != ctx.database_identity() { return Err(String::new()); } Ok(()) } ",
         "pub fn propose_",
         "trade(ctx: &ReducerContext) -> Result<(), String> { Ok(()) }"
     );
@@ -1615,7 +1615,7 @@ fn ea_reaper_03_scheduler_guard_is_first_statement() {
     let guard_first = concat!(
         "pub fn trade_offer_",
         "reaper(ctx: &ReducerContext, args: TradeOfferReaperSchedule) -> Result<(), String> { ",
-        "if ctx.sender != ctx.identity() { return Err(String::new()); } Ok(()) } ",
+        "if ctx.sender() != ctx.database_identity() { return Err(String::new()); } Ok(()) } ",
         "pub fn propose_",
         "trade(ctx: &ReducerContext) -> Result<(), String> { Ok(()) }"
     );
@@ -1640,7 +1640,8 @@ fn ea_reaper_03_scheduler_guard_is_first_statement() {
          Without it — or with it moved after any other statement, or wrapped in dead code — \
          any client can call trade_offer_reaper directly and delete a live trade_offer row \
          belonging to two other players (ADR-0056 scheduler-only convention, identical to \
-         pvp_deadline_reaper). Fix: make `if ctx.sender != ctx.identity() {{ return Err(..); }}` \
+         pvp_deadline_reaper). Fix: make \
+         `if ctx.sender() != ctx.database_identity() {{ return Err(..); }}` \
          the reducer's first statement."
     );
 }
@@ -1679,7 +1680,7 @@ fn ea_cancel_party_01_guard_is_operator_exact() {
     // --- TOOTH 1: `||` instead of `&&` — rejects BOTH parties, cancel becomes impossible.
     let or_joined = concat!(
         "pub fn cancel_",
-        "trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> { let me = ctx.sender; ",
+        "trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> { let me = ctx.sender(); ",
         "if offer.initiator != me || offer.counterparty != me { return Err(String::new()); } ",
         "Ok(()) } ",
         "pub(crate) fn cancel_trades_on_",
@@ -1694,7 +1695,7 @@ fn ea_cancel_party_01_guard_is_operator_exact() {
     // --- TOOTH 2: both operators inverted — admits every non-party, rejects both parties.
     let inverted = concat!(
         "pub fn cancel_",
-        "trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> { let me = ctx.sender; ",
+        "trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> { let me = ctx.sender(); ",
         "if offer.initiator == me && offer.counterparty == me { return Err(String::new()); } ",
         "Ok(()) } ",
         "pub(crate) fn cancel_trades_on_",
@@ -1710,7 +1711,7 @@ fn ea_cancel_party_01_guard_is_operator_exact() {
     // --- TOOTH 3 (positive control on the pipeline): the production shape matches.
     let correct = concat!(
         "pub fn cancel_",
-        "trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> { let me = ctx.sender; ",
+        "trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> { let me = ctx.sender(); ",
         "if offer.initiator != me && offer.counterparty != me { return Err(String::new()); } ",
         "Ok(()) } ",
         "pub(crate) fn cancel_trades_on_",
@@ -2767,7 +2768,7 @@ fn e4_propose_trade_bounds_both_sides_before_validate_proposal() {
         "TEETH (E4-B/D3 placement): the first size bound (squashed offset \
          {pos_first_cap}) must precede the FIRST `ctx.db` access ({pos_db}) in \
          `propose_trade`. ADR-0166 D3 decides the caps are the reducer's first \
-         statement after `let me = ctx.sender;`, following battle.rs:62-75's \
+         statement after `let me = ctx.sender();`, following battle.rs:62-75's \
          bound-before-any-DB-read ordering. The weaker `< validate_proposal` \
          assertions above still admit bounding AFTER the two joined-player lookups \
          (trading.rs:205-216) — which is the ordering pvp.rs's own siblings use \
@@ -2784,18 +2785,18 @@ fn e4_propose_trade_bounds_both_sides_before_validate_proposal() {
     // not. Pinning the caps as the reducer's literal FIRST statements makes the
     // dead-code wrapper unrepresentable — and it is the placement ADR-0166 D3
     // decided anyway ("as the reducer's first statement after `let me =
-    // ctx.sender;`"), so this assertion and the D3 decision are the same claim.
-    let first_stmt = concat!("letme=ctx.sender;check_trade_", "side_size(");
+    // ctx.sender();`"), so this assertion and the D3 decision are the same claim.
+    let first_stmt = concat!("letme=ctx.sender();check_trade_", "side_size(");
     assert!(
         squashed.contains(first_stmt),
         "TEETH (E4-B/D3, NEW-5): the first size bound must be the reducer's literal \
          FIRST statement — the squashed body must contain \
-         `letme=ctx.sender;check_trade_side_size(`. Every other assertion in this \
+         `letme=ctx.sender();check_trade_side_size(`. Every other assertion in this \
          test is position-based and therefore blind to REACHABILITY: \
          `if false {{ check_trade_side_size(..)?; check_trade_side_size(..)?; }}` \
          satisfies both tuple pins, both `?` pins, and both ordering pins while the \
          caps bound nothing (same class as E2's EV-9). Anything between \
-         `let me = ctx.sender;` and the first cap — a condition, a DB read, a \
+         `let me = ctx.sender();` and the first cap — a condition, a DB read, a \
          binding — either makes the caps skippable or violates D3's \
          bound-before-any-DB-read ordering."
     );

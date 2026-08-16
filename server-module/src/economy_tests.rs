@@ -65,15 +65,15 @@ const SCHEMA_SOURCE: &str = include_str!("schema.rs");
 ///        copy-paste from inventory, or intentionally as a "convenience").
 ///
 /// Pattern: we search for the player_wallet table macro and assert there is no
-/// `public` on that specific table. We search for `name = player_wallet, public`
-/// (the pattern SpacetimeDB uses for public tables) and assert it is ABSENT.
+/// `public` on that specific table. We search for `accessor = player_wallet, public`
+/// (the pattern SpacetimeDB 2.x uses for public tables) and assert it is ABSENT.
 #[test]
 fn player_wallet_table_is_not_public() {
-    // The private pattern (correct): `#[spacetimedb::table(name = player_wallet)]`
-    // The forbidden pattern: `#[spacetimedb::table(name = player_wallet, public)]`
+    // The private pattern (correct): `#[spacetimedb::table(accessor = player_wallet)]`
+    // The forbidden pattern: `#[spacetimedb::table(accessor = player_wallet, public)]`
     // We assemble from parts to avoid this test file matching itself if ever
     // included in a source scan.
-    let public_pattern = ["name = player_wallet", ", public"].concat();
+    let public_pattern = ["accessor = player_wallet", ", public"].concat();
     assert!(
         !SCHEMA_SOURCE.contains(public_pattern.as_str()),
         "TEETH(ADR-0015): player_wallet table MUST NOT have `public` attribute — \
@@ -83,7 +83,7 @@ fn player_wallet_table_is_not_public() {
     );
 
     // Also assert the table itself IS declared (so a missing table doesn't pass).
-    let table_declaration = ["name = player_wallet"].concat();
+    let table_declaration = ["accessor = player_wallet"].concat();
     assert!(
         SCHEMA_SOURCE.contains(table_declaration.as_str()),
         "player_wallet table must be declared in schema.rs; found nothing matching \
@@ -301,7 +301,7 @@ fn buy_reducer_calls_require_owner_before_spend() {
 
     let ro_pos = buy_body.find(require_owner_pat.as_str()).expect(
         "TEETH(M13b EARS-SEC-1): require_owner not found inside the buy reducer body — \
-         add `require_owner(ctx, \"buy\", ctx.sender);` as the FIRST call in buy",
+         add `require_owner(ctx, \"buy\", ctx.sender());` as the FIRST call in buy",
     );
     let spend_pos = buy_body.find(spend_pat.as_str()).expect(
         "TEETH(M13b EARS-SEC-1): spend_currency not found inside the buy reducer body — \
@@ -365,7 +365,7 @@ fn sell_reducer_calls_require_owner_before_grant() {
 
     let ro_pos = sell_body.find(require_owner_pat.as_str()).expect(
         "TEETH(M13b EARS-SEC-1): require_owner not found inside the sell reducer body — \
-         add `require_owner(ctx, \"sell\", ctx.sender);` as the FIRST call in sell",
+         add `require_owner(ctx, \"sell\", ctx.sender());` as the FIRST call in sell",
     );
     let grant_pos = sell_body.find(grant_pat.as_str()).expect(
         "TEETH(M13b EARS-SEC-1): grant_currency not found inside the sell reducer body — \
@@ -470,23 +470,23 @@ fn dead_code_allow_removed() {
 #[test]
 fn shop_tables_are_public() {
     // The required pattern for a public SpacetimeDB table:
-    //   #[spacetimedb::table(name = shop_row, public)]
+    //   #[spacetimedb::table(accessor = shop_row, public)]
     // We assemble from parts to avoid self-match in source scans.
-    let shop_row_public = ["name = shop_row", ", public"].concat();
-    let shop_item_row_public = ["name = shop_item_row", ", public"].concat();
+    let shop_row_public = ["accessor = shop_row", ", public"].concat();
+    let shop_item_row_public = ["accessor = shop_item_row", ", public"].concat();
 
     assert!(
         SCHEMA_SOURCE.contains(shop_row_public.as_str()),
         "TEETH(M13b EARS-PRIVACY-1): schema.rs must contain `{}` — \
          shop_row must be public so clients can subscribe to shop definitions. \
-         Add `#[spacetimedb::table(name = shop_row, public)]`.",
+         Add `#[spacetimedb::table(accessor = shop_row, public)]`.",
         shop_row_public
     );
     assert!(
         SCHEMA_SOURCE.contains(shop_item_row_public.as_str()),
         "TEETH(M13b EARS-PRIVACY-1): schema.rs must contain `{}` — \
          shop_item_row must be public so clients can subscribe to shop stock. \
-         Add `#[spacetimedb::table(name = shop_item_row, public)]`.",
+         Add `#[spacetimedb::table(accessor = shop_item_row, public)]`.",
         shop_item_row_public
     );
 }
@@ -662,7 +662,7 @@ fn require_owner_before_spend_in_heal_party() {
 
     let ro_pos = body.find(require_owner_pat.as_str()).expect(
         "TEETH(M13c EARS-HEAL-SEC-1): require_owner not found inside the heal_party body — \
-         add `require_owner(ctx, \"heal_party\", ctx.sender);` before spend_currency",
+         add `require_owner(ctx, \"heal_party\", ctx.sender());` before spend_currency",
     );
     let spend_pos = body.find(spend_pat.as_str()).expect(
         "TEETH(M13c EARS-HEAL-SEC-1): spend_currency not found inside the heal_party body — \
@@ -800,8 +800,8 @@ fn write_back_battle_results_calls_grant_currency() {
 // RT-M13C-01: heal_party require_owner is tautological (never rejects)
 //
 // Finding: `heal_party` calls `require_owner(ctx, "heal_party", me)` where
-// `me = ctx.sender`. Since `require_owner` checks `owner != ctx.sender`,
-// and here `owner = ctx.sender`, this check ALWAYS returns Ok — it tests
+// `me = ctx.sender()`. Since `require_owner` checks `owner != ctx.sender()`,
+// and here `owner = ctx.sender()`, this check ALWAYS returns Ok — it tests
 // that the caller is themselves, not that they own any resource.
 //
 // This call is placed inside `if currency_cost > 0 { ... }`, meaning:
@@ -816,17 +816,17 @@ fn write_back_battle_results_calls_grant_currency() {
 // security theater.
 //
 // Repro: search for `require_owner(ctx, "heal_party", me)` in raising.rs —
-// `me` is bound to `ctx.sender` on the first line of heal_party. Calling
-// `require_owner` with `ctx.sender` as the `owner` argument always returns
-// Ok(()) because `require_owner` only rejects when `owner != ctx.sender`.
+// `me` is bound to `ctx.sender()` on the first line of heal_party. Calling
+// `require_owner` with `ctx.sender()` as the `owner` argument always returns
+// Ok(()) because `require_owner` only rejects when `owner != ctx.sender()`.
 // ===========================================================================
 
 /// RT-M13C-01: the `require_owner` call inside `heal_party`'s currency-cost
-/// branch uses `me` as the owner argument, where `me = ctx.sender`.
+/// branch uses `me` as the owner argument, where `me = ctx.sender()`.
 ///
-/// `require_owner(ctx, reducer, owner)` only rejects when `owner != ctx.sender`.
-/// When called as `require_owner(ctx, "heal_party", me)` with `me = ctx.sender`,
-/// the check is `ctx.sender != ctx.sender` which is always false — the guard
+/// `require_owner(ctx, reducer, owner)` only rejects when `owner != ctx.sender()`.
+/// When called as `require_owner(ctx, "heal_party", me)` with `me = ctx.sender()`,
+/// the check is `ctx.sender() != ctx.sender()` which is always false — the guard
 /// always returns Ok and provides no authorization protection.
 ///
 /// This test is a permanent record of the finding. It is GREEN in the buggy
@@ -871,7 +871,7 @@ fn rt_m13c_01_heal_party_require_owner_is_tautological() {
 
     let body = &RAISING_SOURCE[open_abs..=close_abs];
 
-    // The tautological pattern: require_owner called with `me` where `me = ctx.sender`.
+    // The tautological pattern: require_owner called with `me` where `me = ctx.sender()`.
     // Built from parts to avoid self-match in source scans.
     let tautological_call = ["require_owner(ctx, \"heal_party\"", ", me)"].concat();
 
@@ -884,13 +884,13 @@ fn rt_m13c_01_heal_party_require_owner_is_tautological() {
          provides real authorization and update or remove this test accordingly.",
     );
 
-    // Companion assertion: `me` must be bound to `ctx.sender` in the body,
+    // Companion assertion: `me` must be bound to `ctx.sender()` in the body,
     // confirming the tautological nature of the ownership check.
     let me_binding = ["let me = ctx", ".sender"].concat();
     assert!(
         body.contains(me_binding.as_str()),
-        "RT-M13C-01: `let me = ctx.sender` not found in heal_party body — \
-         the variable `me` used in require_owner must be bound to ctx.sender \
+        "RT-M13C-01: `let me = ctx.sender()` not found in heal_party body — \
+         the variable `me` used in require_owner must be bound to ctx.sender() \
          for this finding to apply. Re-evaluate whether require_owner is tautological.",
     );
 }
@@ -1572,15 +1572,15 @@ fn rust_fn_bodies(src: &str) -> Vec<(String, String, String)> {
 
 /// ux2 (ADR-0154): schema.rs must declare `fn my_wallet`, and its BODY must
 /// read the wallet through the `owner_identity` unique index keyed on
-/// `ctx.sender` — i.e. it must contain all of `player_wallet()`,
-/// `owner_identity()` and `.find(ctx.sender)` (the `&ctx.sender` borrow
+/// `ctx.sender()` — i.e. it must contain all of `player_wallet()`,
+/// `owner_identity()` and `.find(ctx.sender())` (the `&ctx.sender()` borrow
 /// spelling is an equally-correct form of the same scoping and is accepted).
 ///
 /// EXACTNESS (red-team F-1, CRITICAL): the presence assertions alone are NOT
 /// enough.  This body compiles, is clippy-clean and rustfmt-clean, contains
 /// every needle below, and returns an ARBITRARY player's wallet:
 /// ```ignore
-/// let _decoy = <accessor>.owner_identity().find(ctx.sender);
+/// let _decoy = <accessor>.owner_identity().find(ctx.sender());
 /// let victim = Identity::from_byte_array([7u8; 32]);
 /// <accessor>.owner_identity().find(victim)
 /// ```
@@ -1596,7 +1596,7 @@ fn rust_fn_bodies(src: &str) -> Vec<(String, String, String)> {
 ///    scratch tree);
 ///  - the decoy-line leak above (exact pin);
 ///  - a body that scans the table and filters afterwards;
-///  - a body keyed on any identity other than `ctx.sender`;
+///  - a body keyed on any identity other than `ctx.sender()`;
 ///  - a view placed in some OTHER module (SCHEMA_SOURCE would not contain it) —
 ///    which also matters because currency-integrity.eval.mjs's ACCESSOR_BYPASS
 ///    criterion only exempts economy.rs / schema.rs / economy_tests.rs.
@@ -1624,17 +1624,17 @@ fn my_wallet_view_is_owner_scoped() {
                 "TEETH(ux2 ADR-0154): `fn {view_fn_name}` not found in schema.rs — the \
                  owner-scoped view is the ONLY sanctioned client read path for the PRIVATE \
                  wallet table. Add it immediately after the PlayerWallet table, carrying the \
-                 spacetimedb view attribute (name = {view_fn_name}, public), taking a \
+                 spacetimedb view attribute (accessor = {view_fn_name}, public), taking a \
                  &spacetimedb::ViewContext, returning Option<PlayerWallet>, with a body that \
                  is the sender-keyed unique-index lookup on the wallet accessor \
-                 (owner_identity().find(ctx.sender)) and nothing else."
+                 (owner_identity().find(ctx.sender())) and nothing else."
             )
         });
 
     let accessor = ["player", "_wallet()"].concat();
     let unique_index = ["owner", "_identity()"].concat();
-    let find_sender = [".find(ctx", ".sender)"].concat();
-    let find_sender_ref = [".find(&ctx", ".sender)"].concat();
+    let find_sender = [".find(ctx", ".sender())"].concat();
+    let find_sender_ref = [".find(&ctx", ".sender())"].concat();
 
     // All needles are matched on the whitespace-COMPACTED body (with the outer
     // braces peeled), so neither a rustfmt line break nor a stray space
@@ -1664,7 +1664,7 @@ fn my_wallet_view_is_owner_scoped() {
     assert!(
         inner.contains(find_sender.as_str()) || inner.contains(find_sender_ref.as_str()),
         "TEETH(ux2 ADR-0154 R1): the `my_wallet` view BODY contains neither `{}` nor `{}` — \
-         the index lookup MUST be keyed on `ctx.sender` (the host reconstructs `sender` \
+         the index lookup MUST be keyed on `ctx.sender()` (the host reconstructs `sender` \
          per caller; that is the ONLY thing making this view per-player). Body was: {:?}",
         find_sender,
         find_sender_ref,
@@ -1680,7 +1680,7 @@ fn my_wallet_view_is_owner_scoped() {
         "_wallet().",
         "owner",
         "_identity().find(ctx",
-        ".sender)",
+        ".sender())",
     ]
     .concat();
     let sanctioned_ref = [
@@ -1689,7 +1689,7 @@ fn my_wallet_view_is_owner_scoped() {
         "_wallet().",
         "owner",
         "_identity().find(&ctx",
-        ".sender)",
+        ".sender())",
     ]
     .concat();
 
@@ -1699,7 +1699,7 @@ fn my_wallet_view_is_owner_scoped() {
          sanctioned sender-keyed lookup.\n  expected (whitespace-insensitive): {}\n  \
          found:                            {}\n\
          This pin is exact ON PURPOSE: a presence check is passed by a decoy line \
-         (`let _decoy = <accessor>.owner_identity().find(ctx.sender);` followed by a real \
+         (`let _decoy = <accessor>.owner_identity().find(ctx.sender());` followed by a real \
          read keyed on some OTHER identity), which compiles clean, passes clippy and \
          rustfmt, and returns an arbitrary player's wallet. If this body must legitimately \
          change, the new shape has to be re-reviewed for sender-scoping HERE and in \
@@ -1738,7 +1738,7 @@ fn my_wallet_view_is_owner_scoped() {
 /// }
 /// #[spacetimedb::reducer]
 /// pub fn purge_wallet(ctx: &ReducerContext) -> Result<(), String> {
-///     purge(ctx.db.player_wallet(), ctx.sender); // caller has no `.delete(`
+///     purge(ctx.db.player_wallet(), ctx.sender()); // caller has no `.delete(`
 ///     Ok(())
 /// }
 /// ```
@@ -1854,7 +1854,7 @@ fn player_wallet_rows_are_never_deleted() {
 /// (spacetimedb-1.12.0/src/lib.rs:902-911).  A second view can therefore
 /// launder a read THROUGH the owner-scoped view with a sender it chose:
 /// ```ignore
-/// #[spacetimedb::view(name = peek_wallet, public)]
+/// #[spacetimedb::view(accessor = peek_wallet, public)]
 /// fn peek_wallet(_ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
 ///     let victim = Identity::from_byte_array([7u8; 32]);
 ///     my_wallet(&spacetimedb::ViewContext::new(victim))   // arbitrary wallet
@@ -1894,7 +1894,7 @@ fn no_forged_view_context_construction() {
                 !compact.contains(needle),
                 "TEETH(ux2 ADR-0154 R3 FORGED-CTX): {} constructs a view context (`{}`) — \
                  only the SpacetimeDB host may build a ViewContext; that is what makes \
-                 `ctx.sender` authentic, and authenticity of the sender is the ENTIRE \
+                 `ctx.sender()` authentic, and authenticity of the sender is the ENTIRE \
                  privacy mechanism of the owner-scoped `my_wallet` view. A constructed \
                  context lets any view call `my_wallet` with a sender it picked and read \
                  an arbitrary player's wallet while naming neither the wallet table nor \

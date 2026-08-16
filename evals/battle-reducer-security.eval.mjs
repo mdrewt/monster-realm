@@ -1553,15 +1553,15 @@ export default async function () {
   // Per-reducer identTok values (ADR-0122 §1.2 + ADR-0136):
   //   start_battle / heal_party / start_wild_battle → 'me'
   //   begin_encounter → 'player_identity'
-  //   care / train → 'ctx.sender'
+  //   care / train → 'ctx.sender()'
   // -------------------------------------------------------------------------
   const BOTH_ROLE_GUARD_REDUCERS = [
     { name: 'start_battle', identTok: 'me' },
     { name: 'begin_encounter', identTok: 'player_identity' },
     { name: 'heal_party', identTok: 'me' },
     { name: 'start_wild_battle', identTok: 'me' },
-    { name: 'care', identTok: 'ctx.sender' },
-    { name: 'train', identTok: 'ctx.sender' },
+    { name: 'care', identTok: 'ctx.sender()' },
+    { name: 'train', identTok: 'ctx.sender()' },
   ];
   for (const { name: reducerName, identTok } of BOTH_ROLE_GUARD_REDUCERS) {
     const body = extractReducerBody(src, reducerName);

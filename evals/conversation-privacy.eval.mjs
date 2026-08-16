@@ -16,7 +16,7 @@
 //     and does NOT carry `public` (any attr-arg order).
 //   B checkViewsOwnerScoped(serverSrc)  — invariant over ALL #[spacetimedb::view]
 //     blocks whose BODY references player_conversation (RT-H2: NOT name-anchored):
-//     each must contain owner_identity().find(ctx.sender) (whitespace-compacted)
+//     each must contain owner_identity().find(ctx.sender()) (whitespace-compacted)
 //     and must NOT contain .iter(); ADDITIONALLY, once the table parses as
 //     private, at least one conforming view named `my_conversation` must exist
 //     (client-dark guard).
@@ -33,7 +33,7 @@
 //     a naive handler wipes the conversation on every advance_dialogue).
 //
 // RED STATE TODAY (all against schema.rs:384 / connection.ts / committed bindings):
-//   A RED — table is `#[spacetimedb::table(name = player_conversation, public)]`.
+//   A RED — table is `#[spacetimedb::table(accessor = player_conversation, public)]`.
 //   B GREEN-VACUOUS today: no views exist and the table is PUBLIC, so the
 //     required-once-private branch does not fire — the overall eval is RED via
 //     check A. The branch is proven NON-vacuous by teeth T5/T6 below: the moment
@@ -265,9 +265,9 @@ export function parseTables(src) {
     }
     const attrArgText = src.slice(attrStart + marker.length, i);
 
-    // Extract `name = <ident>` specifically — never mis-capture `public` as the
+    // Extract `accessor = <ident>` specifically — never mis-capture `public` as the
     // name when it appears first in the arg list.
-    const nameMatch = attrArgText.match(/\bname\s*=\s*(\w+)/);
+    const nameMatch = attrArgText.match(/\baccessor\s*=\s*(\w+)/);
     if (!nameMatch) {
       pos = i + 1;
       continue;
@@ -288,7 +288,7 @@ export function parseTables(src) {
 // ---------------------------------------------------------------------------
 // parseViews — NEW (same brace-walking discipline). Collects EVERY
 // #[spacetimedb::view(...)] block: attr args (paren-walked) + fn signature +
-// brace-walked fn body. View name from `name = <ident>` in the attr, falling
+// brace-walked fn body. View name from `accessor = <ident>` in the attr, falling
 // back to the fn identifier. NOTE: anchored to the fully-qualified attr path,
 // which is the project-wide convention for spacetimedb attributes.
 // ---------------------------------------------------------------------------
@@ -364,7 +364,7 @@ export function parseViews(src) {
     }
     const bodyText = src.slice(bodyOpen + 1, j);
 
-    const nameMatch = attrText.match(/\bname\s*=\s*(\w+)/);
+    const nameMatch = attrText.match(/\baccessor\s*=\s*(\w+)/);
     views.push({
       name: nameMatch ? nameMatch[1] : fnName,
       fnName,
@@ -414,11 +414,11 @@ export function checkTablePrivate(serverSrc) {
 // moment check A would otherwise go green without a real view.
 // ---------------------------------------------------------------------------
 
-// Sender-scoped code shape, compared whitespace-compacted. `&ctx.sender` is an
+// Sender-scoped code shape, compared whitespace-compacted. `&ctx.sender()` is an
 // equally-correct borrow spelling of the same scoping — accepting it cannot
-// produce a false green (still ctx.sender-keyed unique-index lookup).
-const SCOPED_NEEDLE = 'owner_identity().find(ctx.sender)';
-const SCOPED_NEEDLE_REF = 'owner_identity().find(&ctx.sender)';
+// produce a false green (still ctx.sender()-keyed unique-index lookup).
+const SCOPED_NEEDLE = 'owner_identity().find(ctx.sender())';
+const SCOPED_NEEDLE_REF = 'owner_identity().find(&ctx.sender())';
 
 /**
  * @param {string} serverSrc Raw (unstripped) combined Rust source.
@@ -446,7 +446,7 @@ export function checkViewsOwnerScoped(serverSrc) {
     if (compact.indexOf(SCOPED_NEEDLE) === -1 && compact.indexOf(SCOPED_NEEDLE_REF) === -1) {
       return (
         `view '${v.name}' references player_conversation but is not ` +
-        'sender-scoped — its body must contain owner_identity().find(ctx.sender)'
+        'sender-scoped — its body must contain owner_identity().find(ctx.sender())'
       );
     }
   }
@@ -700,7 +700,7 @@ function runTeeth() {
   // Kills: an impl (or check) that leaves/ignores `public` on the table attr.
   {
     const fixture = `
-#[spacetimedb::table(name = player_conversation, public)]
+#[spacetimedb::table(accessor = player_conversation, public)]
 pub struct PlayerConversation {
     #[primary_key]
     pub owner_identity: Identity,
@@ -716,10 +716,10 @@ pub struct PlayerConversation {
 
   // T2 — public table, REVERSED arg order → still flagged, and the name must be
   // extracted as player_conversation (not mis-captured as 'public').
-  // Kills: a first-identifier name parser that goes blind on (public, name = ...).
+  // Kills: a first-identifier name parser that goes blind on (public, accessor = ...).
   {
     const fixture = `
-#[spacetimedb::table(public, name = player_conversation)]
+#[spacetimedb::table(public, accessor = player_conversation)]
 pub struct PlayerConversation {
     pub owner_identity: Identity,
 }
@@ -731,7 +731,7 @@ pub struct PlayerConversation {
     const tables = parseTables(stripRustSource(fixture));
     const t = tables.find((x) => x.name === 'player_conversation');
     if (!t?.isPublic) {
-      return "T2: reversed-args fixture: name not extracted as 'player_conversation' with isPublic=true — name = <ident> extraction is broken";
+      return "T2: reversed-args fixture: name not extracted as 'player_conversation' with isPublic=true — accessor = <ident> extraction is broken";
     }
   }
 
@@ -741,12 +741,12 @@ pub struct PlayerConversation {
   // Kills: an impl that "makes it private" but re-leaks the whole table via a view.
   {
     const fixture = `
-#[spacetimedb::table(name = player_conversation)]
+#[spacetimedb::table(accessor = player_conversation)]
 pub struct PlayerConversation {
     pub owner_identity: Identity,
 }
 
-#[spacetimedb::view(name = my_conversation, public)]
+#[spacetimedb::view(accessor = my_conversation, public)]
 fn my_conversation(ctx: &ViewContext) -> Vec<PlayerConversation> {
     ctx.db.player_conversation().iter().collect()
 }
@@ -766,17 +766,17 @@ fn my_conversation(ctx: &ViewContext) -> Vec<PlayerConversation> {
   // Kills: a name-anchored checker that only inspects the view called my_conversation.
   {
     const fixture = `
-#[spacetimedb::table(name = player_conversation)]
+#[spacetimedb::table(accessor = player_conversation)]
 pub struct PlayerConversation {
     pub owner_identity: Identity,
 }
 
-#[spacetimedb::view(name = my_conversation, public)]
+#[spacetimedb::view(accessor = my_conversation, public)]
 fn my_conversation(ctx: &ViewContext) -> Option<PlayerConversation> {
-    ctx.db.player_conversation().owner_identity().find(ctx.sender)
+    ctx.db.player_conversation().owner_identity().find(ctx.sender())
 }
 
-#[spacetimedb::view(name = all_conversations, public)]
+#[spacetimedb::view(accessor = all_conversations, public)]
 fn all_conversations(ctx: &ViewContext) -> Vec<PlayerConversation> {
     ctx.db.player_conversation().iter().collect()
 }
@@ -797,11 +797,11 @@ fn all_conversations(ctx: &ViewContext) -> Vec<PlayerConversation> {
   // and a checker that reads needles out of comments.
   {
     const fixture = `
-#[spacetimedb::table(name = player_conversation)]
+#[spacetimedb::table(accessor = player_conversation)]
 pub struct PlayerConversation {
     pub owner_identity: Identity,
 }
-// TODO: add owner_identity().find(ctx.sender) view — this comment must not count.
+// TODO: add owner_identity().find(ctx.sender()) view — this comment must not count.
 `;
     const err = checkViewsOwnerScoped(fixture);
     if (!err) {
@@ -814,12 +814,12 @@ pub struct PlayerConversation {
   // Kills: satisfying the name requirement with a stub that returns None.
   {
     const fixture = `
-#[spacetimedb::table(name = player_conversation)]
+#[spacetimedb::table(accessor = player_conversation)]
 pub struct PlayerConversation {
     pub owner_identity: Identity,
 }
 
-#[spacetimedb::view(name = my_conversation, public)]
+#[spacetimedb::view(accessor = my_conversation, public)]
 fn my_conversation(_ctx: &ViewContext) -> Option<PlayerConversation> {
     None
 }
@@ -900,7 +900,7 @@ fn my_conversation(_ctx: &ViewContext) -> Option<PlayerConversation> {
   {
     const serverGood = `
 /// In-progress dialogue node. Was public pre-M13.5c; private since ADR-0087.
-#[spacetimedb::table(name = player_conversation)]
+#[spacetimedb::table(accessor = player_conversation)]
 pub struct PlayerConversation {
     #[primary_key]
     pub owner_identity: Identity,
@@ -909,12 +909,12 @@ pub struct PlayerConversation {
 }
 
 /// Owner-scoped read path (ADR-0087): sender sees only their own row.
-#[spacetimedb::view(name = my_conversation, public)]
+#[spacetimedb::view(accessor = my_conversation, public)]
 fn my_conversation(ctx: &ViewContext) -> Option<PlayerConversation> {
     ctx.db
         .player_conversation()
         .owner_identity()
-        .find(ctx.sender)
+        .find(ctx.sender())
 }
 `;
     const errA = checkTablePrivate(serverGood);
@@ -1011,17 +1011,17 @@ conn.db.my_conversation.onDelete((_ctx, row) => {
   // (it would capture `{1}` as the body and never scan the real .iter() body).
   {
     const fixture = `
-#[spacetimedb::table(name = player_conversation)]
+#[spacetimedb::table(accessor = player_conversation)]
 pub struct PlayerConversation {
     pub owner_identity: Identity,
 }
 
-#[spacetimedb::view(name = my_conversation, public)]
+#[spacetimedb::view(accessor = my_conversation, public)]
 fn my_conversation(ctx: &ViewContext) -> Option<PlayerConversation> {
-    ctx.db.player_conversation().owner_identity().find(ctx.sender)
+    ctx.db.player_conversation().owner_identity().find(ctx.sender())
 }
 
-#[spacetimedb::view(name = braced_leak, public)]
+#[spacetimedb::view(accessor = braced_leak, public)]
 fn braced_leak(ctx: &ViewContext) -> Vec<[PlayerConversation; {1}]> {
     ctx.db.player_conversation().iter().collect()
 }

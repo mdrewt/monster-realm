@@ -734,7 +734,7 @@ fn mutator_needles() -> [&'static str; 3] {
 /// `concat!`-assembled, like every other needle here, so this test file never
 /// spells it contiguously and can never satisfy a crate-wide scan with its own
 /// text — including the fixtures below, which are all built FROM this constant.
-const GUARD_NEEDLE: &str = concat!("ctx.sender != ", "ctx.identity()");
+const GUARD_NEEDLE: &str = concat!("ctx.sender() != ", "ctx.database_identity()");
 
 /// Predicate half of [`g7_mr_heartbeat_guard_is_pinned_first`], separated so the
 /// teeth can drive it with fixtures through exactly the `fn_body` path the real
@@ -2131,7 +2131,7 @@ fn scanner_teeth_phase_pair_scan_detects_a_real_pair() {
         "synthetic_paired",
         &[
             breadcrumb_call(PHASE_ENTER).as_str(),
-            "    if ctx.sender != ctx.identity() { return Err(e); }",
+            "    if ctx.sender() != ctx.database_identity() { return Err(e); }",
             breadcrumb_call(PHASE_EXIT).as_str(),
         ],
     );

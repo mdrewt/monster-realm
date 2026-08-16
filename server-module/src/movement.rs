@@ -33,7 +33,7 @@ use std::sync::Mutex;
 
 /// Per-zone movement schedule: one interval-row per active zone makes the
 /// scheduler call `movement_tick` for THAT zone every `STEP_MS`.
-#[spacetimedb::table(name = movement_tick_schedule, scheduled(movement_tick))]
+#[spacetimedb::table(accessor = movement_tick_schedule, scheduled(movement_tick))]
 pub struct MovementTickSchedule {
     #[primary_key]
     #[auto_inc]
@@ -47,7 +47,7 @@ pub struct MovementTickSchedule {
 /// monster). Rejects a double-join within the same session.
 #[spacetimedb::reducer]
 pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let name = validate_name(&name).inspect_err(|e| log_reject("join_game", me, e))?;
     if ctx.db.player().identity().find(me).is_some() {
         let e = "already joined".to_string();
@@ -127,17 +127,17 @@ pub fn join_game(ctx: &ReducerContext, name: String) -> Result<(), String> {
 #[spacetimedb::reducer]
 pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), String> {
     // Intake battle lock (ADR-0168 D2): reject-not-clamp movement intent while
-    // the caller is in an ongoing battle, either role. `ctx.sender` is correct
+    // the caller is in an ongoing battle, either role. `ctx.sender()` is correct
     // here — this is a player-called reducer (unlike scheduler-only movement_tick).
-    if is_in_ongoing_battle(ctx, ctx.sender) {
+    if is_in_ongoing_battle(ctx, ctx.sender()) {
         let e = "cannot move during an ongoing battle".to_string();
-        log_reject("enqueue_move", ctx.sender, &e);
+        log_reject("enqueue_move", ctx.sender(), &e);
         return Err(e);
     }
     let mut ch = authorize_move(ctx, "enqueue_move", seq)?;
     if ch.move_queue.len() >= MOVE_QUEUE_CAP {
         let e = "queue full".to_string();
-        log_reject("enqueue_move", ctx.sender, &e);
+        log_reject("enqueue_move", ctx.sender(), &e);
         return Err(e);
     }
     ch.move_queue.push(input);
@@ -146,7 +146,7 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
     // player-triggered reducer (never movement_tick, EG2-9). Once per party
     // monster over lead_party's FULL id list (not just the lead); accrual
     // first, auto-evolution check LAST. No party -> credit nothing.
-    if let Some(party_ids) = lead_party_ids(ctx, ctx.sender) {
+    if let Some(party_ids) = lead_party_ids(ctx, ctx.sender()) {
         // Trade escrow (TR-6, ADR-0106): an escrowed party monster keeps its
         // party slot until settlement, so without this it would keep accruing
         // Quality Time and could AUTO-EVOLVE out from under the counterparty's
@@ -160,8 +160,8 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
             .db
             .trade_offer()
             .initiator()
-            .filter(ctx.sender)
-            .chain(ctx.db.trade_offer().counterparty().filter(ctx.sender))
+            .filter(ctx.sender())
+            .chain(ctx.db.trade_offer().counterparty().filter(ctx.sender()))
             .filter(|t| t.status.is_active())
             .flat_map(|t| {
                 t.initiator_monster_ids
@@ -191,9 +191,9 @@ pub fn enqueue_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<
 pub fn set_move(ctx: &ReducerContext, input: MoveInput, seq: u64) -> Result<(), String> {
     // Intake battle lock (ADR-0168 D2): same reject as enqueue_move — set_move
     // also ADDS movement intent, and the client is hostile.
-    if is_in_ongoing_battle(ctx, ctx.sender) {
+    if is_in_ongoing_battle(ctx, ctx.sender()) {
         let e = "cannot move during an ongoing battle".to_string();
-        log_reject("set_move", ctx.sender, &e);
+        log_reject("set_move", ctx.sender(), &e);
         return Err(e);
     }
     let mut ch = authorize_move(ctx, "set_move", seq)?;
@@ -289,7 +289,7 @@ static BEGIN_ENCOUNTER_ERR_LIMITER: RateLimiter = RateLimiter::new();
 /// the outcome via `game_core::apply_move`, write back. Scheduler-only.
 #[spacetimedb::reducer]
 pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Result<(), String> {
-    if ctx.sender != ctx.identity() {
+    if ctx.sender() != ctx.database_identity() {
         return Err("movement_tick is scheduler-only".to_string());
     }
     let zone = sched.zone_id;
@@ -341,7 +341,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
         // INTACT — the same semantics the sim-harness models — normalising
         // `action` to Idle write-on-change; the lock self-releases the tick after
         // the battle's outcome leaves Ongoing. The argument is the CHARACTER's
-        // own `p.identity`: `movement_tick` is scheduler-only, so `ctx.sender`
+        // own `p.identity`: `movement_tick` is scheduler-only, so `ctx.sender()`
         // here is the MODULE identity and would make the guard always false.
         // `unwrap_or(false)` states a FACT — a character with no `player` row is
         // not a player and can never appear in a `battle` row, so it is not
@@ -380,7 +380,7 @@ pub fn movement_tick(ctx: &ReducerContext, sched: MovementTickSchedule) -> Resul
                 // ongoing battle in EITHER role (ADR-0122 D1 SSOT — the former inline
                 // filter saw side A only, so a PvP side-B player walked through a warp
                 // tile mid-ranked-battle; ADR-0166 D4). The argument is the CHARACTER's
-                // own `p.identity`: `movement_tick` is scheduler-only, so `ctx.sender`
+                // own `p.identity`: `movement_tick` is scheduler-only, so `ctx.sender()`
                 // here is the MODULE identity and would make the guard always false.
                 // `skip_warp` is named for what it decides, NOT for "is in battle":
                 // `unwrap_or(true)` means "no player row ⇒ an NPC ⇒ SKIP the warp"

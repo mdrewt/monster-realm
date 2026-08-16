@@ -2,7 +2,7 @@
 //!
 //! Validation/authorization helpers shared by the reducer modules: the reject
 //! logger, the name validator, the move authorizer, and the pure battle-input
-//! validators. `require_owner` (the consolidated `owner != ctx.sender` preamble)
+//! validators. `require_owner` (the consolidated `owner != ctx.sender()` preamble)
 //! is added in the M8.9b ownership-guard consolidation phase.
 //!
 //! This file name is part of the canonical `touches:` vocabulary fixed by
@@ -55,19 +55,19 @@ pub(crate) fn log_reject(reducer: &str, sender: Identity, reason: &str) {
     log::warn!("{{\"evt\":\"reject\",\"reducer\":\"{reducer}\",\"sender\":\"{sender}\",\"reason\":\"{reason}\"}}");
 }
 
-/// Shared resource-ownership guard: reject when the caller (`ctx.sender`) does not
-/// own `owner`. Generalizes the repeated `owner != ctx.sender -> log_reject ->
+/// Shared resource-ownership guard: reject when the caller (`ctx.sender()`) does not
+/// own `owner`. Generalizes the repeated `owner != ctx.sender() -> log_reject ->
 /// Err("not owner")` preamble that recurs across the ownership-checked reducers
 /// (M8.9b de-dup, ADR-0056). Behavior is identical to the inlined form: same
-/// `"not owner"` `Err` + same `log_reject(reducer, ctx.sender, "not owner")`.
+/// `"not owner"` `Err` + same `log_reject(reducer, ctx.sender(), "not owner")`.
 pub(crate) fn require_owner(
     ctx: &ReducerContext,
     reducer: &str,
     owner: Identity,
 ) -> Result<(), String> {
-    if owner != ctx.sender {
+    if owner != ctx.sender() {
         let e = "not owner".to_string();
-        log_reject(reducer, ctx.sender, &e);
+        log_reject(reducer, ctx.sender(), &e);
         return Err(e);
     }
     Ok(())
@@ -106,7 +106,7 @@ pub(crate) fn authorize_move(
     reducer: &str,
     seq: u64,
 ) -> Result<Character, String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let Some(mut player) = ctx.db.player().identity().find(me) else {
         let e = "not joined".to_string();
         log_reject(reducer, me, &e);
@@ -320,15 +320,15 @@ pub(crate) fn saturating_sub_u32(a: u32, b: u32) -> u32 {
 /// and return which side they are on. Called from `submit_pvp_action` BEFORE the
 /// `WILD_IDENTITY` / ongoing checks so the error message is accurate.
 ///
-/// Returns `SideId::SideA` if `ctx.sender == battle.player_identity` (challenger),
-/// `SideId::SideB` if `ctx.sender == battle.opponent_identity`.
+/// Returns `SideId::SideA` if `ctx.sender() == battle.player_identity` (challenger),
+/// `SideId::SideB` if `ctx.sender() == battle.opponent_identity`.
 /// Returns `Err("not a participant in this battle")` otherwise.
 pub(crate) fn require_pvp_participant(
     ctx: &ReducerContext,
     reducer: &str,
     battle: &Battle,
 ) -> Result<SideId, String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     if battle.player_identity == me {
         Ok(SideId::SideA)
     } else if battle.opponent_identity == me {

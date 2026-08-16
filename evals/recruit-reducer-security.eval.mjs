@@ -2,7 +2,7 @@
 // and grant_bait reducers/helpers in server-module must satisfy a ladder of security
 // invariants:
 //
-//   1. Ownership guard  — attempt_recruit checks player_identity vs ctx.sender.
+//   1. Ownership guard  — attempt_recruit checks player_identity vs ctx.sender().
 //   2. Outcome guard    — attempt_recruit checks BattleOutcome::Ongoing.
 //   3. Wild-battle guard — attempt_recruit reads the battle_wild side-table.
 //   4. Consume-before-roll ordering — consume_one precedes ctx.random/recruit_chance.
@@ -11,7 +11,7 @@
 //   6. checked_sub in consume_one / no bare decrement; saturating_add in grant_item.
 //   7. Classify bait by data (recruit_bonus field), not by a magic hardcoded item id.
 //   8. battle_wild GC — both attempt_recruit and write_back_battle_results delete battle_wild rows.
-//   9. grant_bait self-scoped — body uses ctx.sender, signature has no Identity param.
+//   9. grant_bait self-scoped — body uses ctx.sender(), signature has no Identity param.
 //
 // Every check comes with a proof-of-teeth fixture — a deliberately-bad inline
 // string that MUST be flagged — and a green fixture that MUST pass.
@@ -90,12 +90,12 @@ export function extractReducerBody(src, fnName) {
  *
  * Requires a `player_identity != <sender>` comparison followed by an Err(
  * within a bounded window (~200 chars). Accepts both:
- *   (a) alias form:  let me = ctx.sender; ... player_identity != me ... Err(
- *   (b) direct form: player_identity != ctx.sender ... Err(
+ *   (a) alias form:  let me = ctx.sender(); ... player_identity != me ... Err(
+ *   (b) direct form: player_identity != ctx.sender() ... Err(
  *
  * Algorithm (operates on whitespace-collapsed copy):
- *   1. Resolve sender tokens: default `ctx.sender`; collect ALL aliases bound by
- *      `let<alias>=ctx.sender;` (a body may bind ctx.sender to more than one
+ *   1. Resolve sender tokens: default `ctx.sender()`; collect ALL aliases bound by
+ *      `let<alias>=ctx.sender();` (a body may bind ctx.sender() to more than one
  *      local and guard with any of them).
  *   2. Require `player_identity!=<sender>` present for any accepted sender token.
  *   3. Require `Err(` within ~320 chars after that comparison.
@@ -108,11 +108,11 @@ export function extractReducerBody(src, fnName) {
 export function checkOwnershipGuard(body) {
   const compact = body.replace(/\s+/g, '');
 
-  // Resolve ALL aliases bound to ctx.sender: `let<alias>=ctx.sender;`
-  // (global match — a body may bind ctx.sender to more than one local and guard
+  // Resolve ALL aliases bound to ctx.sender(): `let<alias>=ctx.sender();`
+  // (global match — a body may bind ctx.sender() to more than one local and guard
   // with any of them, e.g. `let caller = ...; let me = ...; ... != me`).
-  const senderTokens = ['ctx.sender'];
-  const aliasRe = /let(\w+)=ctx\.sender;/g;
+  const senderTokens = ['ctx.sender()'];
+  const aliasRe = /let(\w+)=ctx\.sender\(\);/g;
   let am = aliasRe.exec(compact);
   while (am !== null) {
     senderTokens.push(am[1]);
@@ -132,8 +132,8 @@ export function checkOwnershipGuard(body) {
   if (cmpIdx === -1) {
     return (
       'attempt_recruit: missing rejecting ownership comparison — ' +
-      'require `player_identity != me` (alias form) or `player_identity != ctx.sender` (direct form) ' +
-      'followed by Err( (pure substring presence of player_identity or ctx.sender is insufficient)'
+      'require `player_identity != me` (alias form) or `player_identity != ctx.sender()` (direct form) ' +
+      'followed by Err( (pure substring presence of player_identity or ctx.sender() is insufficient)'
     );
   }
 
@@ -559,10 +559,10 @@ export function checkGrantItemMonotoneCap(grantBody) {
 }
 
 /**
- * Check 9: grant_bait self-scoped to ctx.sender.
- * The grant_bait reducer must use ctx.sender (no arbitrary Identity param).
+ * Check 9: grant_bait self-scoped to ctx.sender().
+ * The grant_bait reducer must use ctx.sender() (no arbitrary Identity param).
  * We check: the function signature does NOT contain `Identity` as a parameter
- * type (after the mandatory `ctx: &ReducerContext`), and the body uses `ctx.sender`.
+ * type (after the mandatory `ctx: &ReducerContext`), and the body uses `ctx.sender()`.
  *
  * Strategy: extract both the signature (the text before the opening brace) and
  * the body. The signature check is on the raw snippet around `pub fn grant_bait(`.
@@ -572,8 +572,8 @@ export function checkGrantItemMonotoneCap(grantBody) {
  * @returns {string|null}
  */
 export function checkGrantBaitSelfScoped(src, body) {
-  if (body.indexOf('ctx.sender') === -1) {
-    return 'grant_bait: body does not reference ctx.sender — it must self-scope to the caller, not accept an arbitrary identity';
+  if (body.indexOf('ctx.sender()') === -1) {
+    return 'grant_bait: body does not reference ctx.sender() — it must self-scope to the caller, not accept an arbitrary identity';
   }
 
   // Extract the signature (from `pub fn grant_bait(` to the first `{`).
@@ -597,7 +597,7 @@ export function checkGrantBaitSelfScoped(src, body) {
   }
   const restSig = sig.slice(ctxEnd);
   if (restSig.indexOf('Identity') !== -1) {
-    return 'grant_bait: signature contains an Identity parameter after ctx — grant_bait must be self-scoped to ctx.sender, not accept an arbitrary recipient identity';
+    return 'grant_bait: signature contains an Identity parameter after ctx — grant_bait must be self-scoped to ctx.sender(), not accept an arbitrary recipient identity';
   }
   return null;
 }
@@ -613,7 +613,7 @@ const BAD_NO_OWNERSHIP = `
   pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64, bait_item_id: Option<u32>) -> Result<(), String> {
       let mut battle = ctx.db.battle().battle_id().find(battle_id)
           .ok_or_else(|| "battle not found".to_string())?;
-      // DELIBERATELY MISSING: no player_identity != ctx.sender check
+      // DELIBERATELY MISSING: no player_identity != ctx.sender() check
       if battle.state.outcome != BattleOutcome::Ongoing {
           return Err("not ongoing".to_string());
       }
@@ -634,7 +634,7 @@ const BAD_NO_OUTCOME = `
   pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64, bait_item_id: Option<u32>) -> Result<(), String> {
       let mut battle = ctx.db.battle().battle_id().find(battle_id)
           .ok_or_else(|| "battle not found".to_string())?;
-      if battle.player_identity != ctx.sender {
+      if battle.player_identity != ctx.sender() {
           return Err("not owner".to_string());
       }
       // DELIBERATELY MISSING: no outcome == Ongoing check
@@ -655,7 +655,7 @@ const BAD_NO_WILD_GUARD = `
   pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64, bait_item_id: Option<u32>) -> Result<(), String> {
       let mut battle = ctx.db.battle().battle_id().find(battle_id)
           .ok_or_else(|| "battle not found".to_string())?;
-      if battle.player_identity != ctx.sender {
+      if battle.player_identity != ctx.sender() {
           return Err("not owner".to_string());
       }
       if battle.state.outcome != BattleOutcome::Ongoing {
@@ -676,7 +676,7 @@ const BAD_CONSUME_AFTER_ROLL = `
   pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64, bait_item_id: Option<u32>) -> Result<(), String> {
       let mut battle = ctx.db.battle().battle_id().find(battle_id)
           .ok_or_else(|| "battle not found".to_string())?;
-      if battle.player_identity != ctx.sender {
+      if battle.player_identity != ctx.sender() {
           return Err("not owner".to_string());
       }
       if battle.state.outcome != BattleOutcome::Ongoing {
@@ -686,7 +686,7 @@ const BAD_CONSUME_AFTER_ROLL = `
           .ok_or_else(|| "not a wild battle".to_string())?;
       let roll: u32 = ctx.random();
       // DELIBERATELY WRONG: consume_one AFTER ctx.random — should be before
-      consume_one(ctx, ctx.sender, 1);
+      consume_one(ctx, ctx.sender(), 1);
       let chance = recruit_chance(wild.max_hp, wild.current_hp, RECRUIT_BASE_RATE, 0);
       write_back_party_hp(ctx, &battle);
       ctx.db.battle_wild().battle_id().delete(battle_id);
@@ -700,7 +700,7 @@ const BAD_XP_ON_RECRUIT = `
   pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64, bait_item_id: Option<u32>) -> Result<(), String> {
       let mut battle = ctx.db.battle().battle_id().find(battle_id)
           .ok_or_else(|| "battle not found".to_string())?;
-      if battle.player_identity != ctx.sender {
+      if battle.player_identity != ctx.sender() {
           return Err("not owner".to_string());
       }
       if battle.state.outcome != BattleOutcome::Ongoing {
@@ -756,7 +756,7 @@ const BAD_MAGIC_ID_BAIT = `
   pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64, bait_item_id: Option<u32>) -> Result<(), String> {
       let mut battle = ctx.db.battle().battle_id().find(battle_id)
           .ok_or_else(|| "battle not found".to_string())?;
-      if battle.player_identity != ctx.sender {
+      if battle.player_identity != ctx.sender() {
           return Err("not owner".to_string());
       }
       if battle.state.outcome != BattleOutcome::Ongoing {
@@ -780,7 +780,7 @@ const BAD_NO_GC_IN_RECRUIT = `
   pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64, bait_item_id: Option<u32>) -> Result<(), String> {
       let mut battle = ctx.db.battle().battle_id().find(battle_id)
           .ok_or_else(|| "battle not found".to_string())?;
-      if battle.player_identity != ctx.sender {
+      if battle.player_identity != ctx.sender() {
           return Err("not owner".to_string());
       }
       if battle.state.outcome != BattleOutcome::Ongoing {
@@ -880,7 +880,7 @@ const BAD_GRANT_NO_MONOTONE_GUARD = `
 /** Fixture: grant_bait accepts an arbitrary Identity param. Must be flagged by checkGrantBaitSelfScoped. */
 const BAD_GRANT_BAIT_ARBITRARY_IDENTITY = `
   pub fn grant_bait(ctx: &ReducerContext, recipient: Identity, item_id: u32, qty: u32) -> Result<(), String> {
-      // DELIBERATELY WRONG: should self-scope to ctx.sender, not accept arbitrary Identity
+      // DELIBERATELY WRONG: should self-scope to ctx.sender(), not accept arbitrary Identity
       grant_item(ctx, recipient, item_id, qty);
       Ok(())
   }
@@ -889,10 +889,10 @@ const BAD_GRANT_BAIT_ARBITRARY_IDENTITY = `
 /** A fully-compliant attempt_recruit that must pass ALL checks. */
 const GOOD_ATTEMPT_RECRUIT = `
   pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64, bait_item_id: Option<u32>) -> Result<(), String> {
-      let me = ctx.sender;
+      let me = ctx.sender();
       let mut battle = ctx.db.battle().battle_id().find(battle_id)
           .ok_or_else(|| "battle not found".to_string())?;
-      if battle.player_identity != ctx.sender {
+      if battle.player_identity != ctx.sender() {
           return Err("not owner".to_string());
       }
       if battle.state.outcome != BattleOutcome::Ongoing {
@@ -971,7 +971,7 @@ const GOOD_GRANT_ITEM = `
 /** A compliant grant_bait. Must pass checkGrantBaitSelfScoped. */
 const GOOD_GRANT_BAIT = `
   pub fn grant_bait(ctx: &ReducerContext, item_id: u32, qty: u32) -> Result<(), String> {
-      grant_item(ctx, ctx.sender, item_id, qty);
+      grant_item(ctx, ctx.sender(), item_id, qty);
       Ok(())
   }
 `;

@@ -48,7 +48,7 @@
 //   [P/*] checkMonsterPubClean(tables)         — `monster_pub` exists, carries no
 //         hidden field, and is NOT public (#284 / ADR-0194).
 //   [V/*] checkMonsterPubView(files)           — exactly ONE
-//         `#[spacetimedb::view(name = my_monster_pub, public)]`, its body pinned
+//         `#[spacetimedb::view(accessor = my_monster_pub, public)]`, its body pinned
 //         by compactWs EQUALITY taken from the ATTRIBUTE WALK, its signature
 //         pinned to exactly `(ctx: &spacetimedb::ViewContext)`, its return type
 //         to `Vec<MonsterPub>`, exactly one `.filter(` in the body, and
@@ -81,7 +81,7 @@ import { fileURLToPath } from 'node:url';
 // THE ESTABLISHED REUSE (precedent: evals/wallet-privacy.eval.mjs:131,
 // evals/account-privacy.eval.mjs:181): the shared paren-walking / brace-walking
 // parsers live in conversation-privacy.eval.mjs. 13r-e replaces this file's own
-// fragile `#[spacetimedb::table(name = (\w+)[^\]]*\)\]\s*pub struct ...` regex
+// fragile `#[spacetimedb::table(accessor = (\w+)[^\]]*\)\]\s*pub struct ...` regex
 // with them. That regex was defeated by FOUR shapes the red-team demonstrated,
 // every one of which compiles: stacked table attrs on one struct, `name=x` with
 // no spaces, an attribute wrapped across lines, and a `]` INSIDE the attribute
@@ -138,9 +138,9 @@ const TABLE_ATTR_MARKER = '#[spacetimedb::table(';
 const EXPECTED_VIEWS = ['my_account', 'my_conversation', 'my_monster_pub', 'my_wallet'];
 
 // The ONE sanctioned attribute and body, whitespace-compacted (ADR-0194 D2).
-const SANCTIONED_ATTR = 'name=my_monster_pub,public';
-const SANCTIONED_BODY = 'ctx.db.monster_pub().owner_identity().filter(ctx.sender).collect()';
-const SANCTIONED_BODY_REF = 'ctx.db.monster_pub().owner_identity().filter(&ctx.sender).collect()';
+const SANCTIONED_ATTR = 'accessor=my_monster_pub,public';
+const SANCTIONED_BODY = 'ctx.db.monster_pub().owner_identity().filter(ctx.sender()).collect()';
+const SANCTIONED_BODY_REF = 'ctx.db.monster_pub().owner_identity().filter(&ctx.sender()).collect()';
 // The signature is pinned to EXACTLY one parameter: spacetimedb 1.12.0 views
 // accept arbitrary extra arguments, so an unpinned signature admits
 // `fn my_monster_pub(ctx: &spacetimedb::ViewContext, owner: Identity)` — a
@@ -192,7 +192,7 @@ export function parseTableStructs(stripped) {
       i++;
     }
     const attrText = stripped.slice(attrStart + TABLE_ATTR_MARKER.length, i);
-    const nameMatch = attrText.match(/\bname\s*=\s*(\w+)/);
+    const nameMatch = attrText.match(/\baccessor\s*=\s*(\w+)/);
     if (!nameMatch) {
       pos = i + 1;
       continue;
@@ -337,7 +337,7 @@ export function viewSites(stripped) {
 
     const sigText = stripped.slice(fnIdx, bodyOpen);
     const bodyText = stripped.slice(bodyOpen + 1, j);
-    const nameMatch = attrText.match(/\bname\s*=\s*(\w+)/);
+    const nameMatch = attrText.match(/\baccessor\s*=\s*(\w+)/);
     const fnMatch = sigText.match(/^fn\s+(\w+)/);
     const fnName = fnMatch ? fnMatch[1] : '';
     sites.push({
@@ -493,7 +493,7 @@ export function checkMonsterPrivate(tables) {
 // `public`) still bites on the clause it was written for.
 //
 // EVERY declaration named monster_pub is inspected, not just the first: stacked
-// `#[spacetimedb::table(name = monster_pub, ...)]` attributes on ONE struct are
+// `#[spacetimedb::table(accessor = monster_pub, ...)]` attributes on ONE struct are
 // legal, and a private-looking first attr followed by a public second one is a
 // live bypass shape.
 // ---------------------------------------------------------------------------
@@ -510,7 +510,7 @@ export function checkMonsterPubClean(tables) {
   // would be satisfied by an empty source.
   if (pubs.length === 0) {
     return (
-      '[P/missing] no `#[spacetimedb::table(name = monster_pub)]` declaration was found in the ' +
+      '[P/missing] no `#[spacetimedb::table(accessor = monster_pub)]` declaration was found in the ' +
       'scanned server source — the scan reached the wrong tree, the table was renamed/moved, ' +
       'or the stripper blanked it. Every privacy clause here would then pass VACUOUSLY'
     );
@@ -559,7 +559,7 @@ export function checkMonsterPubView(files) {
   const mine = sites.filter((v) => v.name === VIEW_NAME);
   if (mine.length !== 1) {
     return (
-      `[V/count] expected EXACTLY ONE \`${VIEW_ATTR_MARKER}name = ${VIEW_NAME}, public)]\` in the ` +
+      `[V/count] expected EXACTLY ONE \`${VIEW_ATTR_MARKER}accessor = ${VIEW_NAME}, public)]\` in the ` +
       `non-test server source, found ${mine.length}. monster_pub is PRIVATE (ADR-0194), so with ` +
       'no such view the client goes dark (the box/party screen can never hydrate); with two, one ' +
       'of them is unreviewed'
@@ -632,7 +632,7 @@ export function checkMonsterPubView(files) {
     return (
       `[V/filter] view '${VIEW_NAME}' body contains ${filterCount} \`.filter(\` call(s); exactly ` +
       'ONE is sanctioned. Two is the decoy-line shape: a conforming ' +
-      '`let _decoy = ...filter(ctx.sender)...;` kept alive only to satisfy a presence check, ' +
+      '`let _decoy = ...filter(ctx.sender())...;` kept alive only to satisfy a presence check, ' +
       'followed by the real read keyed on an ARBITRARY identity'
     );
   }
@@ -744,7 +744,7 @@ export function checkViewInventory(files) {
 // Check A: attribute laundering — TWO clauses, one shape of attack.
 //
 // [A/cfg-attr] `cfg_attr` applies an attribute CONDITIONALLY, so
-// `#[cfg_attr(all(), spacetimedb::table(name = monster_pub, public))]`
+// `#[cfg_attr(all(), spacetimedb::table(accessor = monster_pub, public))]`
 // re-publishes the table while the visible attribute list looks private — and
 // every table/view parser in this repo anchors on the direct `#[spacetimedb::`
 // form, so none of them can see it.
@@ -757,12 +757,12 @@ export function checkViewInventory(files) {
 // [A/bare-attr] the BARE (unqualified) attribute spelling, which is the same
 // blindness reached without any conditional at all:
 //     use spacetimedb::view;
-//     #[view(name = all_monsters, public)]
+//     #[view(accessor = all_monsters, public)]
 //     fn all_monsters(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> { … }
 // `parseViews` and this file's `viewSites` BOTH anchor on the fully-qualified
 // `#[spacetimedb::view(` marker, so a bare-attr view is invisible to them: it
 // never enters the inventory, [I/set] stays GREEN, and the roster leaks. The
-// identical hole exists for a stacked bare `#[table(name = monster_pub, public)]`
+// identical hole exists for a stacked bare `#[table(accessor = monster_pub, public)]`
 // on an otherwise-private struct. Rather than teach every parser both spellings
 // (two grammars, one source of truth — ADR-0003), the bare forms are BANNED
 // outright: the project convention is fully-qualified everywhere, so this clause
@@ -797,7 +797,7 @@ export function checkNoCfgAttrLaundering(files) {
           `...${compactWs(stripped.slice(Math.max(0, at - 40), at + 80))}... The project ` +
           'convention is the fully-qualified `#[spacetimedb::…]` form, and BOTH view/table ' +
           "parsers (the shared parseViews and this file's attribute walk) anchor on it. A bare " +
-          '`#[view(name = all_monsters, public)]` is therefore INVISIBLE to them: it never ' +
+          '`#[view(accessor = all_monsters, public)]` is therefore INVISIBLE to them: it never ' +
           'enters the pinned inventory, [I/set] stays green, and the view serves every ' +
           "player's roster. Rewrite it fully-qualified"
         );
@@ -1175,7 +1175,7 @@ function asFiles(src, p = 'server-module/src/fixture.rs') {
 }
 
 const PRIVATE_MONSTER_TABLE = `
-#[spacetimedb::table(name = monster)]
+#[spacetimedb::table(accessor = monster)]
 pub struct Monster {
     #[primary_key]
     pub monster_id: u64,
@@ -1185,7 +1185,7 @@ pub struct Monster {
 `;
 
 const PRIVATE_PUB_TABLE = `
-#[spacetimedb::table(name = monster_pub)]
+#[spacetimedb::table(accessor = monster_pub)]
 pub struct MonsterPub {
     #[primary_key]
     pub monster_id: u64,
@@ -1196,26 +1196,26 @@ pub struct MonsterPub {
 `;
 
 const GOOD_VIEW = `
-#[spacetimedb::view(name = my_monster_pub, public)]
+#[spacetimedb::view(accessor = my_monster_pub, public)]
 fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
-    ctx.db.monster_pub().owner_identity().filter(ctx.sender).collect()
+    ctx.db.monster_pub().owner_identity().filter(ctx.sender()).collect()
 }
 `;
 
 const OTHER_SANCTIONED_VIEWS = `
-#[spacetimedb::view(name = my_conversation, public)]
+#[spacetimedb::view(accessor = my_conversation, public)]
 fn my_conversation(ctx: &spacetimedb::ViewContext) -> Option<PlayerConversation> {
-    ctx.db.player_conversation().owner_identity().find(ctx.sender)
+    ctx.db.player_conversation().owner_identity().find(ctx.sender())
 }
 
-#[spacetimedb::view(name = my_wallet, public)]
+#[spacetimedb::view(accessor = my_wallet, public)]
 fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
-    ctx.db.player_wallet().owner_identity().find(ctx.sender)
+    ctx.db.player_wallet().owner_identity().find(ctx.sender())
 }
 
-#[spacetimedb::view(name = my_account, public)]
+#[spacetimedb::view(accessor = my_account, public)]
 fn my_account(ctx: &spacetimedb::ViewContext) -> Option<Account> {
-    ctx.db.account().identity().find(ctx.sender)
+    ctx.db.account().identity().find(ctx.sender())
 }
 `;
 
@@ -1245,7 +1245,7 @@ function runTeeth() {
   {
     const badPublicMonster = parseTableStructs(
       stripRustSource(
-        '#[spacetimedb::table(name = monster, public)]\npub struct Monster {\n  pub iv_hp: u8,\n  pub owner_identity: Identity,\n}',
+        '#[spacetimedb::table(accessor = monster, public)]\npub struct Monster {\n  pub iv_hp: u8,\n  pub owner_identity: Identity,\n}',
       ),
     );
     const teethPublic = checkMonsterPrivate(badPublicMonster);
@@ -1258,7 +1258,7 @@ function runTeeth() {
   {
     const badPubLeak = parseTableStructs(
       stripRustSource(
-        '#[spacetimedb::table(name = monster_pub, public)]\npub struct MonsterPub {\n  pub iv_hp: u8,\n  pub species_id: u32,\n}',
+        '#[spacetimedb::table(accessor = monster_pub, public)]\npub struct MonsterPub {\n  pub iv_hp: u8,\n  pub species_id: u32,\n}',
       ),
     );
     const bad = expectTag(checkMonsterPubClean(badPubLeak), '[P/hidden]', 'L2');
@@ -1281,7 +1281,10 @@ function runTeeth() {
   // Kills: an implementation that regenerates bindings and wires the view while
   // leaving `public` on the table — every other clause would go green.
   {
-    const fixture = PRIVATE_PUB_TABLE.replace('name = monster_pub', 'name = monster_pub, public');
+    const fixture = PRIVATE_PUB_TABLE.replace(
+      'accessor = monster_pub',
+      'accessor = monster_pub, public',
+    );
     const tables = parseTableStructs(stripRustSource(fixture));
     const bad = expectTag(checkMonsterPubClean(tables), '[P/public]', 'P2');
     if (bad) return bad;
@@ -1315,19 +1318,19 @@ function runTeeth() {
       [
         'stacked attrs',
         `
-#[spacetimedb::table(name = monster_pub)]
-#[spacetimedb::table(name = monster_pub, public)]
+#[spacetimedb::table(accessor = monster_pub)]
+#[spacetimedb::table(accessor = monster_pub, public)]
 pub struct MonsterPub {
     pub monster_id: u64,
     pub species_id: u32,
 }
 `,
       ],
-      // (b) `name=monster_pub` with NO SPACES around the `=`.
+      // (b) `accessor=monster_pub` with NO SPACES around the `=`.
       [
         'no-space name',
         `
-#[spacetimedb::table(name=monster_pub, public)]
+#[spacetimedb::table(accessor=monster_pub, public)]
 pub struct MonsterPub {
     pub monster_id: u64,
 }
@@ -1339,7 +1342,7 @@ pub struct MonsterPub {
         'wrapped attr',
         `
 #[spacetimedb::table(
-    name = monster_pub,
+    accessor = monster_pub,
     public
 )]
 pub struct MonsterPub {
@@ -1352,7 +1355,7 @@ pub struct MonsterPub {
       [
         'bracket in attr',
         `
-#[spacetimedb::table(name = monster_pub, public, index(btree, name = by_owner, columns = [owner_identity]))]
+#[spacetimedb::table(accessor = monster_pub, public, index(btree, accessor = by_owner, columns = [owner_identity]))]
 pub struct MonsterPub {
     pub monster_id: u64,
     pub owner_identity: Identity,
@@ -1375,7 +1378,7 @@ pub struct MonsterPub {
   // HIDDEN_FIELDS scan entirely. Only a brace-walk sees it.
   {
     const fixture = `
-#[spacetimedb::table(name = monster_pub)]
+#[spacetimedb::table(accessor = monster_pub)]
 pub struct MonsterPub {
     pub monster_id: u64,
     #[default(Nature {
@@ -1422,8 +1425,8 @@ pub struct MonsterPub {
   // V3 — the attribute loses `public` (a mandatory keyword in 1.12.0).
   {
     const fixture = `${PRIVATE_PUB_TABLE}${GOOD_VIEW.replace(
-      'name = my_monster_pub, public',
-      'name = my_monster_pub',
+      'accessor = my_monster_pub, public',
+      'accessor = my_monster_pub',
     )}`;
     const bad = expectTag(checkMonsterPubView(asFiles(fixture)), '[V/attr]', 'V3');
     if (bad) return bad;
@@ -1445,7 +1448,7 @@ pub struct MonsterPub {
   // clause is happy. Kills: any gate that pins only the body and the return type.
   {
     const fixture = `${PRIVATE_PUB_TABLE}
-#[spacetimedb::view(name = my_monster_pub, public)]
+#[spacetimedb::view(accessor = my_monster_pub, public)]
 fn my_monster_pub(ctx: &spacetimedb::ViewContext, owner: Identity) -> Vec<MonsterPub> {
     ctx.db.monster_pub().owner_identity().filter(owner).collect()
 }
@@ -1467,7 +1470,7 @@ fn my_monster_pub(ctx: &spacetimedb::ViewContext, owner: Identity) -> Vec<Monste
   // V7 — the `iter` defense-in-depth ban (NOT load-bearing; documented as such).
   {
     const fixture = `${PRIVATE_PUB_TABLE}
-#[spacetimedb::view(name = my_monster_pub, public)]
+#[spacetimedb::view(accessor = my_monster_pub, public)]
 fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
     Table::iter(&ctx.db.monster_pub()).collect()
 }
@@ -1481,9 +1484,9 @@ fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
   // Compiles, clippy-clean, rustfmt-clean, contains every needle.
   {
     const fixture = `${PRIVATE_PUB_TABLE}
-#[spacetimedb::view(name = my_monster_pub, public)]
+#[spacetimedb::view(accessor = my_monster_pub, public)]
 fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
-    let _decoy = ctx.db.monster_pub().owner_identity().filter(ctx.sender);
+    let _decoy = ctx.db.monster_pub().owner_identity().filter(ctx.sender());
     let victim = Identity::from_byte_array([7u8; 32]);
     ctx.db.monster_pub().owner_identity().filter(victim).collect()
 }
@@ -1496,7 +1499,7 @@ fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
   // cannot see). Kills: a presence-only spelling of the body pin.
   {
     const fixture = `${PRIVATE_PUB_TABLE}
-#[spacetimedb::view(name = my_monster_pub, public)]
+#[spacetimedb::view(accessor = my_monster_pub, public)]
 fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
     ctx.db.monster_pub().owner_identity().filter(Identity::from_byte_array([7u8; 32])).collect()
 }
@@ -1521,15 +1524,15 @@ ${GOOD_VIEW}`;
     if (bad) return bad;
   }
 
-  // V11 — GOOD: the `&ctx.sender` borrow spelling is the same lookup and must
+  // V11 — GOOD: the `&ctx.sender()` borrow spelling is the same lookup and must
   // PASS. Kills: an over-tight pin that would false-RED a legitimate rewrite.
   {
     const fixture = `${PRIVATE_PUB_TABLE}${GOOD_VIEW.replace(
-      'filter(ctx.sender)',
-      'filter(&ctx.sender)',
+      'filter(ctx.sender())',
+      'filter(&ctx.sender())',
     )}`;
     const err = checkMonsterPubView(asFiles(fixture));
-    if (err) return `V11: the &ctx.sender borrow spelling was incorrectly flagged: ${err}`;
+    if (err) return `V11: the &ctx.sender() borrow spelling was incorrectly flagged: ${err}`;
   }
 
   // -------------------------------------------------------------------------
@@ -1546,9 +1549,9 @@ ${GOOD_VIEW}`;
   // laundering view unrepresentable rather than merely detectable.
   {
     const fixture = `${GOOD_SERVER}
-#[spacetimedb::view(name = all_monsters, public)]
+#[spacetimedb::view(accessor = all_monsters, public)]
 fn all_monsters(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
-    ctx.db.monster_pub().owner_identity().filter(ctx.sender).collect()
+    ctx.db.monster_pub().owner_identity().filter(ctx.sender()).collect()
 }
 `;
     const bad = expectTag(checkViewInventory(asFiles(fixture)), '[I/set]', 'I1');
@@ -1559,7 +1562,10 @@ fn all_monsters(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
   // an addition through the pin). Kills: a one-sided "no NEW views" check, which
   // would stay green while the client silently goes dark.
   {
-    const fixture = GOOD_SERVER.replace('name = my_wallet, public', 'name = my_wallett, public');
+    const fixture = GOOD_SERVER.replace(
+      'accessor = my_wallet, public',
+      'accessor = my_wallett, public',
+    );
     const bad = expectTag(checkViewInventory(asFiles(fixture)), '[I/set]', 'I2');
     if (bad) return bad;
   }
@@ -1570,7 +1576,7 @@ fn all_monsters(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
   // monster_pub, so a monster_pub-only ban misses it entirely.
   {
     const fixture = GOOD_SERVER.replace(
-      'ctx.db.player_wallet().owner_identity().find(ctx.sender)',
+      'ctx.db.player_wallet().owner_identity().find(ctx.sender())',
       'pub_from_monster(&ctx.db.monster().monster_id().find(1).unwrap(), 0)',
     );
     const bad = expectTag(checkViewInventory(asFiles(fixture)), '[I/launder]', 'I3');
@@ -1596,7 +1602,7 @@ fn all_monsters(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
   // in this repo, and it re-publishes the private table.
   {
     const fixture = `
-#[cfg_attr(all(), spacetimedb::table(name = monster_pub, public))]
+#[cfg_attr(all(), spacetimedb::table(accessor = monster_pub, public))]
 pub struct MonsterPub {
     pub monster_id: u64,
 }
@@ -1640,7 +1646,7 @@ ${GOOD_SERVER}`;
     const fixture = `${GOOD_SERVER}
 use spacetimedb::view;
 
-#[view(name = all_monsters, public)]
+#[view(accessor = all_monsters, public)]
 fn all_monsters(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
     Table::iter(&ctx.db.monster_pub()).collect()
 }
@@ -1663,8 +1669,8 @@ fn all_monsters(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
   // checkMonsterPubClean stays GREEN (it cannot see the bare attr either).
   {
     const fixture = `
-#[spacetimedb::table(name = monster_pub)]
-#[table(name = monster_pub, public)]
+#[spacetimedb::table(accessor = monster_pub)]
+#[table(accessor = monster_pub, public)]
 pub struct MonsterPub {
     pub monster_id: u64,
     pub species_id: u32,

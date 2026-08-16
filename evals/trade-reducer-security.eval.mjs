@@ -20,7 +20,7 @@
 //                                  (14r-b, ADR-0184; mirrors pvp-challenge-reaper.eval.mjs
 //                                  CHAL_REAPER_SCHEDULE_PRIVATE, which cited THIS table as
 //                                  its precedent while the precedent itself was ungated)
-//   REAPER_SCHEDULER_GUARD       — trade_offer_reaper guards ctx.sender != ctx.identity()
+//   REAPER_SCHEDULER_GUARD       — trade_offer_reaper guards ctx.sender() != ctx.database_identity()
 //   REAPER_STALE_CHECK           — trade_offer_reaper calls is_offer_stale
 //   REAPER_DELETES               — trade_offer_reaper deletes the offer row
 //   REAPER_DISARM                — disarm_trade_reaper called at all four deletion sites
@@ -54,7 +54,7 @@ function stripRustStrings(src) {
  * Remove ALL whitespace, so a needle matches regardless of how rustfmt wrapped the
  * source. Copied verbatim from pvp-challenge-reaper.eval.mjs:54-56 alongside
  * checkScheduleTablePrivate (14r-b, ADR-0184) — the attribute this scans is routinely
- * split across lines by rustfmt, and a non-squashed `name = trade_offer_reaper_schedule`
+ * split across lines by rustfmt, and a non-squashed `accessor = trade_offer_reaper_schedule`
  * needle would silently stop matching after a reformat.
  */
 function squashWs(src) {
@@ -452,7 +452,7 @@ function hasCancelPartyCheck(body) {
 // ---------------------------------------------------------------------------
 function tradeOfferTableIsPublic(schemaSrc) {
   const code = stripRustComments(schemaSrc);
-  const idx = code.indexOf('name = trade_offer');
+  const idx = code.indexOf('accessor = trade_offer');
   if (idx === -1) return null;
   // Find the enclosing attribute block.
   const attrStart = code.lastIndexOf('#[', idx);
@@ -514,7 +514,7 @@ function checkReaperArmed(proposeBody) {
 // ---------------------------------------------------------------------------
 function checkScheduleTablePrivate(tradingSrc) {
   const code = squashWs(stripRustStrings(stripRustComments(tradingSrc)));
-  const idx = code.indexOf('name=trade_offer_reaper_schedule');
+  const idx = code.indexOf('accessor=trade_offer_reaper_schedule');
   if (idx === -1)
     return {
       ok: false,
@@ -537,21 +537,21 @@ function checkScheduleTablePrivate(tradingSrc) {
 
 // ---------------------------------------------------------------------------
 // Criterion: REAPER_SCHEDULER_GUARD (m16.5f)
-// trade_offer_reaper body must contain ctx.sender != ctx.identity()
+// trade_offer_reaper body must contain ctx.sender() != ctx.database_identity()
 // (scheduler-only guard: rejects any non-scheduler caller).
 // Finding C: stripRustStrings applied — the production log line
 // `"trade_offer_reaper is scheduler-only"` is stripped to `""` so the token
-// `ctx.sender != ctx.identity()` is still found as a code token, not in a literal.
+// `ctx.sender() != ctx.database_identity()` is still found as a code token, not in a literal.
 // ---------------------------------------------------------------------------
 function checkReaperSchedulerGuard(reaperBody) {
   if (!reaperBody) return { ok: false, reason: 'trade_offer_reaper function not found' };
   const code = stripRustStrings(stripRustComments(reaperBody));
   // Accept either ordering of the comparison.
-  if (code.indexOf('ctx.sender != ctx.identity()') !== -1) return { ok: true };
-  if (code.indexOf('ctx.identity() != ctx.sender') !== -1) return { ok: true };
+  if (code.indexOf('ctx.sender() != ctx.database_identity()') !== -1) return { ok: true };
+  if (code.indexOf('ctx.database_identity() != ctx.sender()') !== -1) return { ok: true };
   return {
     ok: false,
-    reason: 'trade_offer_reaper body missing ctx.sender != ctx.identity() guard',
+    reason: 'trade_offer_reaper body missing ctx.sender() != ctx.database_identity() guard',
   };
 }
 
@@ -680,7 +680,7 @@ export default async function () {
 
   // PROPOSE_COUNTERPARTY_JOIN
   const badCPJoin =
-    'fn propose_trade(ctx, counterparty) { let me = ctx.sender; validate_proposal(false, false, false, side_a, side_b)?; }';
+    'fn propose_trade(ctx, counterparty) { let me = ctx.sender(); validate_proposal(false, false, false, side_a, side_b)?; }';
   if (hasCounterpartyJoinCheck(badCPJoin)) {
     return {
       name,
@@ -1038,7 +1038,7 @@ export default async function () {
   }
 
   // TRADE_OFFER_PUBLIC
-  const badPublicSchema = '#[spacetimedb::table(name = trade_offer)] struct TradeOffer {}';
+  const badPublicSchema = '#[spacetimedb::table(accessor = trade_offer)] struct TradeOffer {}';
   if (tradeOfferTableIsPublic(badPublicSchema) !== false) {
     return {
       name,
@@ -1046,7 +1046,8 @@ export default async function () {
       detail: 'TEETH FAILED: tradeOfferTableIsPublic should return false for table without public',
     };
   }
-  const goodPublicSchema = '#[spacetimedb::table(name = trade_offer, public)] struct TradeOffer {}';
+  const goodPublicSchema =
+    '#[spacetimedb::table(accessor = trade_offer, public)] struct TradeOffer {}';
   if (tradeOfferTableIsPublic(goodPublicSchema) !== true) {
     return {
       name,
@@ -1129,7 +1130,7 @@ export default async function () {
   }
   // REAPER_SCHEDULE_PRIVATE: bad — table marked public.
   const badSchedulePrivatePublic =
-    '#[spacetimedb::table(name = trade_offer_reaper_schedule, scheduled(trade_offer_reaper), public)] pub struct TradeOfferReaperSchedule {}';
+    '#[spacetimedb::table(accessor = trade_offer_reaper_schedule, scheduled(trade_offer_reaper), public)] pub struct TradeOfferReaperSchedule {}';
   {
     const r = checkScheduleTablePrivate(badSchedulePrivatePublic);
     if (r.ok) {
@@ -1143,7 +1144,7 @@ export default async function () {
   }
   // REAPER_SCHEDULE_PRIVATE: good — private table (the production shape).
   const goodSchedulePrivate =
-    '#[spacetimedb::table(name = trade_offer_reaper_schedule, scheduled(trade_offer_reaper))] pub struct TradeOfferReaperSchedule {}';
+    '#[spacetimedb::table(accessor = trade_offer_reaper_schedule, scheduled(trade_offer_reaper))] pub struct TradeOfferReaperSchedule {}';
   {
     const r = checkScheduleTablePrivate(goodSchedulePrivate);
     if (!r.ok) {
@@ -1165,13 +1166,13 @@ export default async function () {
         name,
         pass: false,
         detail:
-          'TEETH FAILED (REAPER_SCHEDULER_GUARD bad): checkReaperSchedulerGuard passed fixture without ctx.sender != ctx.identity() guard',
+          'TEETH FAILED (REAPER_SCHEDULER_GUARD bad): checkReaperSchedulerGuard passed fixture without ctx.sender() != ctx.database_identity() guard',
       };
     }
   }
   // REAPER_SCHEDULER_GUARD: good fixture
   const goodReaperGuard =
-    'fn trade_offer_reaper(ctx, args) { if ctx.sender != ctx.identity() { return Err("scheduler only".to_string()); } Ok(()) }';
+    'fn trade_offer_reaper(ctx, args) { if ctx.sender() != ctx.database_identity() { return Err("scheduler only".to_string()); } Ok(()) }';
   {
     const r = checkReaperSchedulerGuard(goodReaperGuard);
     if (!r.ok) {
@@ -1185,7 +1186,7 @@ export default async function () {
 
   // REAPER_STALE_CHECK: bad fixture
   const badReaperStale =
-    'fn trade_offer_reaper(ctx, args) { if ctx.sender != ctx.identity() { return Err(""); } ctx.db.trade_offer().trade_id().delete(args.trade_id); Ok(()) }';
+    'fn trade_offer_reaper(ctx, args) { if ctx.sender() != ctx.database_identity() { return Err(""); } ctx.db.trade_offer().trade_id().delete(args.trade_id); Ok(()) }';
   {
     const r = checkReaperStaleCheck(badReaperStale);
     if (r.ok) {
@@ -1199,7 +1200,7 @@ export default async function () {
   }
   // REAPER_STALE_CHECK: good fixture
   const goodReaperStale =
-    'fn trade_offer_reaper(ctx, args) { if ctx.sender != ctx.identity() { return Err(""); } let offer = ctx.db.trade_offer().trade_id().find(args.trade_id); if !is_offer_stale(offer.created_at_ms, now_ms(ctx)) { return Ok(()); } ctx.db.trade_offer().trade_id().delete(args.trade_id); Ok(()) }';
+    'fn trade_offer_reaper(ctx, args) { if ctx.sender() != ctx.database_identity() { return Err(""); } let offer = ctx.db.trade_offer().trade_id().find(args.trade_id); if !is_offer_stale(offer.created_at_ms, now_ms(ctx)) { return Ok(()); } ctx.db.trade_offer().trade_id().delete(args.trade_id); Ok(()) }';
   {
     const r = checkReaperStaleCheck(goodReaperStale);
     if (!r.ok) {
@@ -1213,7 +1214,7 @@ export default async function () {
 
   // REAPER_DELETES: bad fixture
   const badReaperDeletes =
-    'fn trade_offer_reaper(ctx, args) { if ctx.sender != ctx.identity() { return Err(""); } if !is_offer_stale(offer.created_at_ms, now_ms(ctx)) { return Ok(()); } Ok(()) }';
+    'fn trade_offer_reaper(ctx, args) { if ctx.sender() != ctx.database_identity() { return Err(""); } if !is_offer_stale(offer.created_at_ms, now_ms(ctx)) { return Ok(()); } Ok(()) }';
   {
     const r = checkReaperDeletes(badReaperDeletes);
     if (r.ok) {
@@ -1227,7 +1228,7 @@ export default async function () {
   }
   // REAPER_DELETES: good fixture
   const goodReaperDeletes =
-    'fn trade_offer_reaper(ctx, args) { if ctx.sender != ctx.identity() { return Err(""); } if !is_offer_stale(offer.created_at_ms, now_ms(ctx)) { return Ok(()); } ctx.db.trade_offer().trade_id().delete(args.trade_id); Ok(()) }';
+    'fn trade_offer_reaper(ctx, args) { if ctx.sender() != ctx.database_identity() { return Err(""); } if !is_offer_stale(offer.created_at_ms, now_ms(ctx)) { return Ok(()); } ctx.db.trade_offer().trade_id().delete(args.trade_id); Ok(()) }';
   {
     const r = checkReaperDeletes(goodReaperDeletes);
     if (!r.ok) {

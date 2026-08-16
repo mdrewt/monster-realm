@@ -16,8 +16,10 @@ local instance (`127.0.0.1:3000`). Date: 2026-06-25.
 
 ## Tier-2 (confirmed early while wiring M0b)
 
-- **#6 crate ≠ product version:** `spacetimedb` **crate 1.12** matches **CLI 2.6.0**
-  (from the v1 reference, not memory). Compiles on host and to wasm.
+- **#6 crate ≠ product version:** `spacetimedb` **crate 1.12.0** is the last **1.x**
+  crate; the CLI/host is **2.8.1**. These are a major apart on purpose — the crate
+  version DOES track the product version (corrected by ADR-0197; the original
+  'crate ≠ product' claim here was wrong). Compiles on host and to wasm.
 - **#7 `ctx.timestamp` → ms:** `ctx.timestamp.to_micros_since_unix_epoch().max(0) / 1000`
   yields `i64` ms since epoch (round-trips with `game_core::Millis`).
 - **#9 `ScheduleAt::Interval`:** `ScheduleAt::Interval(Duration::from_millis(N).into())`

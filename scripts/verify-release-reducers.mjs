@@ -32,6 +32,18 @@ export const FORBIDDEN_REDUCERS = ['start_wild_battle', 'grant_bait'];
 // THROWS on empty/whitespace input, JSON.parse failure, or a zero-length reducer
 // list (§K B-1/H-2: zero reducers means the introspection failed or the JSON
 // path is wrong — a published module always has join_game/sync_content).
+//
+// TWO WIRE SHAPES (ADR-0197). The shape is chosen by the CLI, NOT the host:
+// `crates/cli/src/api.rs::module_def` requests schema `version=9` at CLI <= 2.7.1
+// and `version=10` at CLI >= 2.8.0 (falling back to v9 and UPGRADING the result to
+// V10 before printing). So a 2.8.x CLI emits V10 even against an old host.
+// Branch on the PAYLOAD SHAPE, never on a probed CLI/host version.
+//
+//   V9  (CLI <= 2.7.1): { "reducers": [ { "name": "join_game", ... } ], ... }
+//   V10 (CLI >= 2.8.0): { "sections": [ … , { "Reducers": [ { "source_name": "join_game", … } ] } ] }
+//
+// V10 renamed the field `name` -> `source_name` and moved reducers into an
+// externally-tagged `sections` array. Both verified against a live 2.8.1 instance.
 export function parseReducerNames(describeOutput) {
   if (!describeOutput?.trim()) {
     throw new Error('parseReducerNames: empty output — describe may have failed');
@@ -42,26 +54,33 @@ export function parseReducerNames(describeOutput) {
   } catch {
     throw new Error('parseReducerNames: output is not valid JSON — describe may have failed');
   }
-  // Candidate paths: flat `reducers` array (confirmed 2.6.0 shape) or nested
-  // `schema.reducers` fallback (path robustness, §K F8).
+  // Candidate paths, in order: V9 flat `reducers`; V9 nested `schema.reducers`
+  // (path robustness, §K F8); V10 `sections[].Reducers`.
   let reducers = null;
   if (Array.isArray(parsed.reducers)) {
     reducers = parsed.reducers;
   } else if (parsed.schema && Array.isArray(parsed.schema.reducers)) {
     reducers = parsed.schema.reducers;
+  } else if (Array.isArray(parsed.sections)) {
+    const section = parsed.sections.find(
+      (s) => s !== null && typeof s === 'object' && Array.isArray(s.Reducers),
+    );
+    if (section) reducers = section.Reducers;
   }
   if (!reducers || reducers.length === 0) {
     throw new Error(
       'parseReducerNames: zero reducers — introspection may have failed or the JSON path is wrong',
     );
   }
-  const names = reducers.map((r) => r.name).filter(Boolean);
+  // V9 spells it `name`; V10 spells it `source_name`. Accept either, per entry.
+  const names = reducers.map((r) => r?.name ?? r?.source_name).filter(Boolean);
   if (names.length === 0) {
-    // Reducer entries exist but none has a usable `name` — the JSON `name` field
-    // may have been renamed by a spacetime version bump. Fail loud rather than
-    // return an empty list (which findForbiddenReducers would read as "clean").
+    // Reducer entries exist but none has a usable name under EITHER spelling —
+    // the field may have been renamed again by a spacetime version bump. Fail
+    // loud rather than return an empty list (which findForbiddenReducers would
+    // read as "clean").
     throw new Error(
-      'parseReducerNames: reducer entries present but all lack a name field — the describe --json schema may have changed',
+      'parseReducerNames: reducer entries present but all lack a name/source_name field — the describe --json schema may have changed',
     );
   }
   return names;

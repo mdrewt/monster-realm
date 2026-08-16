@@ -627,7 +627,7 @@ fn care_cooldown_ms_is_six_hours_in_milliseconds() {
 // (see ADR-0136 §2 and Test 4 differential below).
 //
 // Tests 1+2 are SOURCE-SCAN RED until the implementer adds:
-//   if is_in_ongoing_battle(ctx, ctx.sender) {
+//   if is_in_ongoing_battle(ctx, ctx.sender()) {
 //       return Err("cannot care/train during an ongoing battle".to_string());
 //   }
 // immediately after `require_owner(ctx, …)?` in each reducer.
@@ -673,15 +673,15 @@ fn reducer_body<'a>(stripped: &'a str, fn_needle: &str) -> &'a str {
 }
 
 /// ptc5a Test 1 — care reducer source-scan: the `care` body must contain
-/// `if is_in_ongoing_battle(ctx, ctx.sender)` in its conditional form.
+/// `if is_in_ongoing_battle(ctx, ctx.sender())` in its conditional form.
 ///
 /// TEETH(ptc5a-1): the care reducer body must contain
-/// `if is_in_ongoing_battle(ctx, ctx.sender)` after `require_owner`.
+/// `if is_in_ongoing_battle(ctx, ctx.sender())` after `require_owner`.
 ///
 /// Kills:
 ///   - deleting the guard entirely (needle absent → RED).
-///   - a dead-code evasion `let _ = is_in_ongoing_battle(ctx, ctx.sender);`
-///     (no `if` prefix → whitespace-collapsed needle `ifis_in_ongoing_battle(ctx,ctx.sender)`
+///   - a dead-code evasion `let _ = is_in_ongoing_battle(ctx, ctx.sender());`
+///     (no `if` prefix → whitespace-collapsed needle `ifis_in_ongoing_battle(ctx,ctx.sender())`
 ///     is absent → RED).
 ///
 /// MUST START RED until the implementer adds the guard.
@@ -697,36 +697,36 @@ fn care_battle_guard_wired() {
     // Needle assembled from parts to prevent self-match in the included source text.
     // The trailing `{` (the opening brace of the if-block) is load-bearing: it
     // rejects a string-literal fake like `log::info!("if is_in_ongoing_battle(ctx,
-    // ctx.sender)")` (which collapses to `..."ifis_in_ongoing_battle(ctx,ctx.sender)"`
+    // ctx.sender())")` (which collapses to `..."ifis_in_ongoing_battle(ctx,ctx.sender())"`
     // — no `){`) while matching any real guard body shape. The eval
     // (battle-reducer-security C1) additionally strips string literals and is the
     // authoritative gate; this Rust layer is the fast first check (red-team ptc5a F2).
-    let needle = ["ifis_in_ongoing", "_battle(ctx,ctx.sender){"].concat();
+    let needle = ["ifis_in_ongoing", "_battle(ctx,ctx.sender()){"].concat();
 
     assert!(
         collapsed.contains(needle.as_str()),
         "TEETH(ptc5a-1): the `care` reducer body must contain \
-         `if is_in_ongoing_battle(ctx, ctx.sender) {{` (whitespace-collapsed: \
-         `ifis_in_ongoing_battle(ctx,ctx.sender){{`) immediately after `require_owner`. \
+         `if is_in_ongoing_battle(ctx, ctx.sender()) {{` (whitespace-collapsed: \
+         `ifis_in_ongoing_battle(ctx,ctx.sender()){{`) immediately after `require_owner`. \
          This guard blocks mid-battle bond-raising that would feed the HP-laundering \
          vector (ADR-0136). \
          Kills: deleting the guard (needle absent) AND a dead-code `let _ = ...` \
          evasion (no `if` prefix → needle absent). \
          RED until implementer adds: \
-         `if is_in_ongoing_battle(ctx, ctx.sender) {{ \
+         `if is_in_ongoing_battle(ctx, ctx.sender()) {{ \
              return Err(\"cannot care during an ongoing battle\".to_string()); \
          }}`"
     );
 }
 
 /// ptc5a Test 2 — train reducer source-scan: the `train` body must contain
-/// `if is_in_ongoing_battle(ctx, ctx.sender)` in its conditional form.
+/// `if is_in_ongoing_battle(ctx, ctx.sender())` in its conditional form.
 ///
 /// TEETH(ptc5a-1): same needle as Test 1 but scoped to the `train` reducer body.
 ///
 /// Kills:
 ///   - deleting the guard from `train` (needle absent → RED).
-///   - a dead-code `let _ = is_in_ongoing_battle(ctx, ctx.sender);` evasion
+///   - a dead-code `let _ = is_in_ongoing_battle(ctx, ctx.sender());` evasion
 ///     (no `if` prefix → whitespace-collapsed needle absent → RED).
 ///
 /// MUST START RED until the implementer adds the guard.
@@ -739,22 +739,22 @@ fn train_battle_guard_wired() {
     // Whitespace-collapse so rustfmt line splits never produce false RED.
     let collapsed: String = body.split_whitespace().collect();
 
-    // Same needle as care: both reducers use ctx.sender as the identity token.
+    // Same needle as care: both reducers use ctx.sender() as the identity token.
     // The trailing `{` rejects a string-literal fake (see care_battle_guard_wired);
     // the eval (battle-reducer-security C1) is the authoritative string-stripped gate.
-    let needle = ["ifis_in_ongoing", "_battle(ctx,ctx.sender){"].concat();
+    let needle = ["ifis_in_ongoing", "_battle(ctx,ctx.sender()){"].concat();
 
     assert!(
         collapsed.contains(needle.as_str()),
         "TEETH(ptc5a-1): the `train` reducer body must contain \
-         `if is_in_ongoing_battle(ctx, ctx.sender)` (whitespace-collapsed: \
-         `ifis_in_ongoing_battle(ctx,ctx.sender)`) immediately after `require_owner`. \
+         `if is_in_ongoing_battle(ctx, ctx.sender())` (whitespace-collapsed: \
+         `ifis_in_ongoing_battle(ctx,ctx.sender())`) immediately after `require_owner`. \
          This guard blocks mid-battle EV training that enables HP laundering via the \
          level-up heal formula (ADR-0136). \
          Kills: deleting the guard (needle absent) AND a dead-code `let _ = ...` \
          evasion (no `if` prefix → needle absent). \
          RED until implementer adds: \
-         `if is_in_ongoing_battle(ctx, ctx.sender) {{ \
+         `if is_in_ongoing_battle(ctx, ctx.sender()) {{ \
              return Err(\"cannot train during an ongoing battle\".to_string()); \
          }}`"
     );
@@ -2493,7 +2493,7 @@ fn essence_train_body_has_full_guard_set() {
     assert_body_has(
         &body,
         label,
-        &["ifis_in_ongoing", "_battle(ctx,ctx.sender){"].concat(),
+        &["ifis_in_ongoing", "_battle(ctx,ctx.sender()){"].concat(),
         "EG2-3 mirrors `care`'s both-role battle guard (ADR-0136).",
     );
     assert_body_has(
@@ -2596,7 +2596,7 @@ fn consume_body_has_item_escrow_and_decision_before_consume() {
     assert_body_has(
         &body,
         label,
-        &["ifis_in_ongoing", "_battle(ctx,ctx.sender){"].concat(),
+        &["ifis_in_ongoing", "_battle(ctx,ctx.sender()){"].concat(),
         "EG2-4 specifies the both-role battle guard.",
     );
     assert_body_has(

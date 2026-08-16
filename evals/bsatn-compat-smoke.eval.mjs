@@ -230,14 +230,14 @@ function isWordChar(ch) {
 }
 
 /**
- * Parse schema.rs table structs: for each #[spacetimedb::table(name = X ...)]
+ * Parse schema.rs table structs: for each #[spacetimedb::table(accessor = X ...)]
  * attribute, capture the following struct and its Option<...> fields.
  * Returns { [structName]: { tableName, optionFields: string[] } }.
  */
 export function parseContentTableStructs(schemaSrc) {
   const src = stripRustCommentsAndStrings(schemaSrc);
   const out = {};
-  const tableAttrRe = /#\[spacetimedb::table\(\s*name\s*=\s*(\w+)/g;
+  const tableAttrRe = /#\[spacetimedb::table\(\s*accessor\s*=\s*(\w+)/g;
   const attrMatches = Array.from(src.matchAll(tableAttrRe));
   for (let a = 0; a < attrMatches.length; a++) {
     const m = attrMatches[a];
@@ -508,7 +508,7 @@ function findStructBody(src, structName) {
  * append-at-end + `#[default(` SHAPE rule to every table in
  * `evals/battle-schema-snapshot.eval.mjs` (`parseTableColumnOrder`,
  * `checkColumnOrder`, `checkDefaultsSuffix`, `checkBaselineAppendOnly`), keyed on
- * the `#[spacetimedb::table(name = ...)]` attribute and stripping comments only.
+ * the `#[spacetimedb::table(accessor = ...)]` attribute and stripping comments only.
  * This helper keys on the STRUCT name over comment- AND string-stripped source,
  * which is the substrate the EG1 pin below needs; the two are not interchangeable.
  *
@@ -886,7 +886,7 @@ export default async function () {
   // The function:
   //   1. Calls parseContentTableStructs(schemaSrc) to get:
   //        { [structName: string]: { tableName: string, optionFields: string[] } }
-  //      for each #[spacetimedb::table(name = <tableName>)] + struct with Option<…> fields.
+  //      for each #[spacetimedb::table(accessor = <tableName>)] + struct with Option<…> fields.
   //   2. Calls parseSyncedTables(contentSrc) to get Set<string> of table names
   //      written to in content.rs (via ctx.db.<tableName>().<op>( pattern).
   //   3. For each struct where tableName is in the synced set, for each Option field,
@@ -907,7 +907,7 @@ export default async function () {
   {
     // Schema fixture: shop_item table with a struct containing Option<StatusKind> cure_status.
     const schemaC1 =
-      '#[spacetimedb::table(name = shop_item, public)]\n' +
+      '#[spacetimedb::table(accessor = shop_item, public)]\n' +
       'pub struct ShopItemRow {\n' +
       '    pub item_id: u32,\n' +
       '    pub price: u32,\n' +
@@ -958,7 +958,7 @@ export default async function () {
   {
     // Upsert shape: one row literal feeds both update and insert paths.
     const schemaC2Upsert =
-      '#[spacetimedb::table(name = item_def, public)]\n' +
+      '#[spacetimedb::table(accessor = item_def, public)]\n' +
       'pub struct ItemDefRow {\n' +
       '    pub item_id: u32,\n' +
       '    pub train_stat: Option<StatKind>,\n' +
@@ -997,7 +997,7 @@ export default async function () {
     // Clear-and-reinsert shape: delete all then insert fresh rows (no update branch).
     // This is the shop_item_row/type_relation_row/fusion shape.
     const schemaC2Clear =
-      '#[spacetimedb::table(name = shop_item, public)]\n' +
+      '#[spacetimedb::table(accessor = shop_item, public)]\n' +
       'pub struct ShopItemRow {\n' +
       '    pub item_id: u32,\n' +
       '    pub cure_status: Option<StatusKind>,\n' +
@@ -1039,7 +1039,7 @@ export default async function () {
   // Kills any impl that skips the vacuity guard and returns [] when the parser finds nothing.
   {
     const schemaC3NoOptions =
-      '#[spacetimedb::table(name = simple_table, public)]\n' +
+      '#[spacetimedb::table(accessor = simple_table, public)]\n' +
       'pub struct SimpleRow {\n' +
       '    pub id: u32,\n' +
       '    pub name: String,\n' +
@@ -1127,12 +1127,12 @@ export default async function () {
   // content.rs does not write to it.
   {
     const schemaC5 =
-      '#[spacetimedb::table(name = species, public)]\n' +
+      '#[spacetimedb::table(accessor = species, public)]\n' +
       'pub struct SpeciesRow {\n' +
       '    pub species_id: u32,\n' +
       '    pub ability: Option<AbilityKind>,\n' +
       '}\n' +
-      '#[spacetimedb::table(name = monster, public)]\n' +
+      '#[spacetimedb::table(accessor = monster, public)]\n' +
       'pub struct MonsterRow {\n' +
       '    pub monster_id: u64,\n' +
       '    pub evolves_to: Option<u32>,\n' +
@@ -1181,7 +1181,7 @@ export default async function () {
   // Also exercises multi-line chain and intermediate accessor patterns (review m-4).
   {
     const schemaC6 =
-      '#[spacetimedb::table(name = heal_location, public)]\n' +
+      '#[spacetimedb::table(accessor = heal_location, public)]\n' +
       'pub struct HealLocationRow {\n' +
       '    pub location_id: u32,\n' +
       '    pub cost_item_id: Option<u32>,\n' +
@@ -1242,7 +1242,7 @@ export default async function () {
   // Kills any impl that does a naive indexOf('ability:') which matches inside 'stability:'.
   {
     const schemaWB =
-      '#[spacetimedb::table(name = species, public)]\n' +
+      '#[spacetimedb::table(accessor = species, public)]\n' +
       'pub struct SpeciesRow {\n' +
       '    pub species_id: u32,\n' +
       '    pub ability: Option<AbilityKind>,\n' +

@@ -577,19 +577,27 @@ function _refParseReducerNames(describeOutput) {
   } catch {
     throw new Error('parseReducerNames: not valid JSON');
   }
-  // Candidate paths: flat `reducers` array, or nested `schema.reducers`.
+  // Candidate paths: V9 flat `reducers`; V9 nested `schema.reducers`; V10
+  // `sections[].Reducers` (CLI >= 2.8.0 — ADR-0197). Mirrors the real parser in
+  // scripts/verify-release-reducers.mjs; keep the two in lockstep.
   let reducers = null;
   if (Array.isArray(parsed.reducers)) {
     reducers = parsed.reducers;
   } else if (parsed.schema && Array.isArray(parsed.schema.reducers)) {
     reducers = parsed.schema.reducers;
+  } else if (Array.isArray(parsed.sections)) {
+    const section = parsed.sections.find(
+      (s) => s !== null && typeof s === 'object' && Array.isArray(s.Reducers),
+    );
+    if (section) reducers = section.Reducers;
   }
   if (!reducers || reducers.length === 0) {
     throw new Error(
       'parseReducerNames: zero reducers — introspection may have failed or wrong JSON path',
     );
   }
-  return reducers.map((r) => r.name).filter(Boolean);
+  // V9 spells it `name`; V10 spells it `source_name`.
+  return reducers.map((r) => r?.name ?? r?.source_name).filter(Boolean);
 }
 
 function _refFindForbiddenReducers(reducerNames, forbidden) {
@@ -1163,6 +1171,33 @@ export default async function () {
     }
   }
 
+  // --- Tooth R1e-v10: GOOD (real 2.8.1 V10 sections shape) — ADR-0197 ---
+  // CLI >= 2.8.0 emits RawModuleDefV10: reducers move into an externally-tagged
+  // `sections` array AND the field is `source_name`, not `name`. Captured from a
+  // live 2.8.1 instance. The V9 tooth above is kept deliberately: the parser must
+  // accept BOTH, because the shape is chosen by the CLI, not the host.
+  {
+    const goodV10 =
+      '{"sections":[{"Typespace":{"types":[]}},{"Tables":[]},{"Reducers":[{"source_name":"join_game","params":{"elements":[]},"visibility":{"Public":[]}},{"source_name":"sync_content","params":{"elements":[]},"visibility":{"Public":[]}}]}]}';
+    let names;
+    try {
+      names = _refParseReducerNames(goodV10);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH R1e-v10: parseReducerNames threw on a valid 2.8.1 V10 describe output (sections[].Reducers[].source_name): ${e.message}`,
+      };
+    }
+    if (!Array.isArray(names) || !names.includes('join_game') || !names.includes('sync_content')) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH R1e-v10: parseReducerNames returned ${JSON.stringify(names)} for a valid 2.8.1 V10 describe output — expected join_game and sync_content. A V10 payload read as "no reducers" would make findForbiddenReducers report a dev-reducer leak as clean.`,
+      };
+    }
+  }
+
   // --- Tooth R1f: GOOD nested shape (F8 path-robustness) ---
   // A nested `{"schema":{"reducers":[...]}}` fixture also parses correctly.
   {
@@ -1583,6 +1618,31 @@ export default async function () {
         name,
         pass: false,
         detail: `TEETH (real) R1e: parseReducerNames returned ${JSON.stringify(names)} for valid 2.6.0 output — expected array containing join_game + sync_content`,
+      };
+    }
+  }
+
+  {
+    // Real 2.8.1 V10 `sections` shape (ADR-0197, captured from a live instance):
+    // reducers are externally tagged under `sections[].Reducers` and the name
+    // field is `source_name`. Runs against the REAL exported parser.
+    const goodV10 =
+      '{"sections":[{"Typespace":{"types":[]}},{"Tables":[]},{"Reducers":[{"source_name":"join_game","params":{"elements":[]},"visibility":{"Public":[]}},{"source_name":"sync_content","params":{"elements":[]},"visibility":{"Public":[]}}]}]}';
+    let names;
+    try {
+      names = parseReducerNames(goodV10);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH (real) R1e-v10: parseReducerNames threw on valid 2.8.1 V10 describe output: ${e.message}`,
+      };
+    }
+    if (!Array.isArray(names) || !names.includes('join_game') || !names.includes('sync_content')) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH (real) R1e-v10: parseReducerNames returned ${JSON.stringify(names)} for valid 2.8.1 V10 output — expected array containing join_game + sync_content`,
       };
     }
   }

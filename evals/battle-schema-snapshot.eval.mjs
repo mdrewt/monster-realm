@@ -46,7 +46,7 @@ export function stripRustComments(src) {
 }
 
 /**
- * Parse all `#[spacetimedb::table(name = X, ...)] pub struct Y { ... }` blocks
+ * Parse all `#[spacetimedb::table(accessor = X, ...)] pub struct Y { ... }` blocks
  * and return a map of tableName -> { pk: string|null, columns: { [field]: type } }.
  *
  * Keys only on #[spacetimedb::table( — excludes #[derive(SpacetimeType)] structs
@@ -76,7 +76,7 @@ export function parseTableSchemas(rawSrc) {
 // ---------------------------------------------------------------------------
 
 /**
- * Match every `#[spacetimedb::table(name = X, ...)] pub struct Y { ... }` block.
+ * Match every `#[spacetimedb::table(accessor = X, ...)] pub struct Y { ... }` block.
  * The /g regex is declared INSIDE the function on purpose: a module-level /g
  * regex carries `lastIndex` across calls, so a second call would return fewer
  * tables and silently exempt them.
@@ -86,7 +86,7 @@ export function parseTableSchemas(rawSrc) {
  */
 function matchTableBlocks(src) {
   const tableRe =
-    /#\[spacetimedb::table\(name\s*=\s*(\w+)[^\]]*\)\]\s*pub struct \w+\s*\{([\s\S]*?)\n\s*\}/g;
+    /#\[spacetimedb::table\(accessor\s*=\s*(\w+)[^\]]*\)\]\s*pub struct \w+\s*\{([\s\S]*?)\n\s*\}/g;
   const blocks = [];
   let m = tableRe.exec(src);
   while (m !== null) {
@@ -186,7 +186,7 @@ export function parseTableColumnOrder(rawSrc) {
 // ---------------------------------------------------------------------------
 
 // Whitespace-insensitive: the parser's own regex needs the attribute on ONE line
-// with `name` first, so a rustfmt-wrapped or argument-reordered attribute must
+// with `accessor` first, so a rustfmt-wrapped or argument-reordered attribute must
 // still be COUNTED here — otherwise the table vanishes from both sides at once
 // and the count agrees vacuously (13r-d red-team F3).
 const TABLE_ATTR_NEEDLE = '#[spacetimedb::table(';
@@ -778,7 +778,7 @@ export default async function () {
   // (inventory.count removed — exercises bidirectional exact-match)
   // -------------------------------------------------------------------------
   const dropFixtureSrc = `
-#[spacetimedb::table(name = inventory, public)]
+#[spacetimedb::table(accessor = inventory, public)]
 pub struct Inventory {
     #[primary_key]
     #[auto_inc]
@@ -918,7 +918,7 @@ pub struct Inventory {
   // does not reach back to the previously committed baseline.
   // -------------------------------------------------------------------------
   const INSERT_SRC = `
-#[spacetimedb::table(name = inventory, public)]
+#[spacetimedb::table(accessor = inventory, public)]
 pub struct Inventory {
     #[primary_key]
     #[auto_inc]
@@ -1013,7 +1013,7 @@ pub struct Inventory {
   // red-team prototype measured GREEN on 33 of 38 tables (ADR-0193 Context).
   // -------------------------------------------------------------------------
   const NODEFAULT_SRC = `
-#[spacetimedb::table(name = inventory, public)]
+#[spacetimedb::table(accessor = inventory, public)]
 pub struct Inventory {
     #[primary_key]
     #[auto_inc]
@@ -1063,7 +1063,7 @@ pub struct Inventory {
   // the re-baselined one. Kills: a checker that fires on every diff.
   // -------------------------------------------------------------------------
   const LEGAL_SRC = `
-#[spacetimedb::table(name = inventory, public)]
+#[spacetimedb::table(accessor = inventory, public)]
 pub struct Inventory {
     #[primary_key]
     #[auto_inc]
@@ -1128,7 +1128,7 @@ pub struct Inventory {
   // checkSchemaDrift is blind; only [order-mismatch] can see it.
   // -------------------------------------------------------------------------
   const SWAP_SRC = `
-#[spacetimedb::table(name = inventory, public)]
+#[spacetimedb::table(accessor = inventory, public)]
 pub struct Inventory {
     #[primary_key]
     #[auto_inc]
@@ -1276,7 +1276,7 @@ pub struct Inventory {
   // checkDefaultsSuffix that only inspects the last column.
   // -------------------------------------------------------------------------
   const INTERIOR_SRC = `
-#[spacetimedb::table(name = inventory, public)]
+#[spacetimedb::table(accessor = inventory, public)]
 pub struct Inventory {
     #[primary_key]
     pub inv_id: u64,
@@ -1364,7 +1364,7 @@ pub struct Inventory {
   // -------------------------------------------------------------------------
   const baseOrder = parseTableColumnOrder(dropFixtureSrc); // inv_id, owner_identity, item_id
   const DUP_SRC = `
-#[spacetimedb::table(name = inventory, public)]
+#[spacetimedb::table(accessor = inventory, public)]
 pub struct Inventory {
     #[primary_key]
     pub inv_id: u64,
@@ -1425,7 +1425,7 @@ pub struct Inventory {
     );
   }
   const baseSrcOrder = parseTableColumnOrder(`
-#[spacetimedb::table(name = inventory, public)]
+#[spacetimedb::table(accessor = inventory, public)]
 pub struct Inventory {
     #[primary_key]
     #[auto_inc]
@@ -1458,7 +1458,7 @@ pub struct Inventory {
   // field, (b) treats `#[default(0)] pub sneaky: u32,` as a bare attribute.
   // -------------------------------------------------------------------------
   const RAW_LINE_SRC = `
-#[spacetimedb::table(name = inventory, public)]
+#[spacetimedb::table(accessor = inventory, public)]
 pub struct Inventory {
     #[primary_key]
     pub inv_id: u64,
@@ -1467,7 +1467,7 @@ pub struct Inventory {
 }
 `;
   const ONE_LINE_SRC = `
-#[spacetimedb::table(name = inventory, public)]
+#[spacetimedb::table(accessor = inventory, public)]
 pub struct Inventory {
     #[primary_key]
     pub inv_id: u64,
@@ -1503,7 +1503,7 @@ pub struct Inventory {
   // line as a distinct kill).
   // -------------------------------------------------------------------------
   const TWO_FIELD_SRC = `
-#[spacetimedb::table(name = inventory, public)]
+#[spacetimedb::table(accessor = inventory, public)]
 pub struct Inventory {
     #[primary_key]
     pub inv_id: u64,
@@ -1540,7 +1540,7 @@ pub struct Inventory {
   // ADR-0193 D3 — do not delete it.)
   // -------------------------------------------------------------------------
   const HIDDEN_TABLE_SRC = `
-#[spacetimedb::table(name = alpha_beta, public, index(btree, name = ab, columns = [alpha, beta]))]
+#[spacetimedb::table(accessor = alpha_beta, public, index(btree, accessor = ab, columns = [alpha, beta]))]
 pub struct AlphaBeta {
     #[primary_key]
     pub alpha: u32,
@@ -1552,7 +1552,7 @@ pub struct AlphaBeta {
   if (!hasTag(hiddenResult, '[table-count]')) {
     teeth.push(
       'T-COUNT FAILED: a table attribute carrying `columns = [alpha, beta]` parsed to ' +
-        `${hiddenCount} table(s) while the source declares 1 #[spacetimedb::table(name ` +
+        `${hiddenCount} table(s) while the source declares 1 #[spacetimedb::table(accessor ` +
         `attribute, and checkParseShape did not report [table-count] — got ` +
         `${show(hiddenResult)}. An unparsed table is exempt from every other rule here`,
     );
@@ -1563,7 +1563,7 @@ pub struct AlphaBeta {
   // call (the second call then returns fewer tables, silently exempting them).
   // -------------------------------------------------------------------------
   const TWO_TABLE_SRC = `${LEGAL_SRC}
-#[spacetimedb::table(name = party_slot, public)]
+#[spacetimedb::table(accessor = party_slot, public)]
 pub struct PartySlot {
     #[primary_key]
     pub slot_id: u64,

@@ -355,16 +355,20 @@ pub(crate) fn provision_or_touch_account(ctx: &ReducerContext) -> Result<(), Str
             .check(now_ms(ctx), UNRECOGNIZED_ISSUER_LOG_WINDOW_MS)
             .is_some()
         {
-            log_reject("client_connected", ctx.sender, REJECT_UNRECOGNIZED_ISSUER);
+            log_reject("client_connected", ctx.sender(), REJECT_UNRECOGNIZED_ISSUER);
         }
         return Ok(());
     }
     if !audience_allowed(claims.audience(), ALLOWED_AUDIENCE) {
-        log_reject("client_connected", ctx.sender, REJECT_UNRECOGNIZED_AUDIENCE);
+        log_reject(
+            "client_connected",
+            ctx.sender(),
+            REJECT_UNRECOGNIZED_AUDIENCE,
+        );
         return Err(REJECT_UNRECOGNIZED_AUDIENCE.to_string());
     }
     let now = now_ms(ctx);
-    match ctx.db.account().identity().find(ctx.sender) {
+    match ctx.db.account().identity().find(ctx.sender()) {
         Some(existing) => {
             ctx.db
                 .account()
@@ -374,7 +378,7 @@ pub(crate) fn provision_or_touch_account(ctx: &ReducerContext) -> Result<(), Str
         None => {
             ctx.db
                 .account()
-                .insert(new_account_row(ctx.sender, issuer.to_string(), now));
+                .insert(new_account_row(ctx.sender(), issuer.to_string(), now));
         }
     }
     Ok(())
@@ -384,10 +388,10 @@ pub(crate) fn provision_or_touch_account(ctx: &ReducerContext) -> Result<(), Str
 
 /// Bind a CLIENT-minted claim code to the anonymous caller (AUTH-7..11). The
 /// server performs zero randomness; the code is a caller-invented secret, the
-/// identity comes from `ctx.sender`.
+/// identity comes from `ctx.sender()`.
 #[spacetimedb::reducer]
 pub fn start_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     // AUTH-7 — an account holder cannot start a guest claim (D4′).
     if is_account_holder(ctx, me) {
         return reject("start_guest_claim", me, "already signed in");
@@ -422,7 +426,7 @@ pub fn start_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), Strin
 /// (a reducer `Err` cannot persist a delete; the reaper owns expired cleanup).
 #[spacetimedb::reducer]
 pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     // Guard 1 (AUTH-12) — cheap JWT pre-filter (belt; guard 2 is load-bearing).
     if !ctx.sender_auth().has_jwt() {
         return reject("complete_guest_claim", me, "sign in required");
@@ -493,7 +497,7 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
 /// this same body with the grace window + cascade). Idempotent (AUTH-28).
 #[spacetimedb::reducer]
 pub fn delete_account(ctx: &ReducerContext) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     // AUTH-37 — reject a caller with no JWT (symmetric with AUTH-7/12).
     if !ctx.sender_auth().has_jwt() {
         return reject("delete_account", me, "sign in required");
@@ -516,7 +520,7 @@ pub fn delete_account(ctx: &ReducerContext) -> Result<(), String> {
 /// (AUTH-38), so `PendingDeletion` is never a trap state within M21.
 #[spacetimedb::reducer]
 pub fn cancel_account_deletion(ctx: &ReducerContext) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     if !ctx.sender_auth().has_jwt() {
         return reject("cancel_account_deletion", me, "sign in required");
     }
@@ -539,7 +543,7 @@ pub fn cancel_account_deletion(ctx: &ReducerContext) -> Result<(), String> {
 /// PRIVATE scheduled table colocated with its reducer (ADR-0056 exception).
 /// `guest_identity` carries a btree index so the DISARM path filters instead of
 /// scanning — mirrors `battle_challenge_reaper_schedule.challenge_id` (ADR-0126).
-#[spacetimedb::table(name = guest_claim_reaper_schedule, scheduled(guest_claim_reaper))]
+#[spacetimedb::table(accessor = guest_claim_reaper_schedule, scheduled(guest_claim_reaper))]
 pub struct GuestClaimReaperSchedule {
     #[primary_key]
     #[auto_inc]
@@ -559,7 +563,7 @@ pub fn guest_claim_reaper(
     ctx: &ReducerContext,
     args: GuestClaimReaperSchedule,
 ) -> Result<(), String> {
-    if ctx.sender != ctx.identity() {
+    if ctx.sender() != ctx.database_identity() {
         return Err("guest_claim_reaper is scheduler-only".to_string());
     }
     let Some(claim) = ctx

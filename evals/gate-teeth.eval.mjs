@@ -252,7 +252,7 @@ export default async function () {
   // would wrongly PASS a parsed map that is a subset of baseline.
   {
     const dropFixtureSrc = `
-#[spacetimedb::table(name = inventory, public)]
+#[spacetimedb::table(accessor = inventory, public)]
 pub struct Inventory {
     #[primary_key]
     #[auto_inc]
@@ -294,7 +294,7 @@ pub struct Inventory {
   // Kills: a checkSchemaDrift that ignores PK changes (checks only column sets).
   {
     const pkFixtureSrc = `
-#[spacetimedb::table(name = encounter)]
+#[spacetimedb::table(accessor = encounter)]
 pub struct EncounterRow {
     pub zone_id: u32,
     #[primary_key]
@@ -332,7 +332,7 @@ pub struct EncounterRow {
   // Kills: a checkSchemaDrift that only checks field names, not declared types.
   {
     const typeFixtureSrc = `
-#[spacetimedb::table(name = inventory, public)]
+#[spacetimedb::table(accessor = inventory, public)]
 pub struct Inventory {
     #[primary_key]
     #[auto_inc]
@@ -415,7 +415,7 @@ pub struct Inventory {
   // Kills: an impl that removed the tile_x/tile_y check while adding zone_id support.
   {
     const ghostSrc =
-      '#[spacetimedb::table(name = ghost, public)]\npub struct Ghost {\n  pub tile_x: i32,\n  pub tile_y: i32,\n}';
+      '#[spacetimedb::table(accessor = ghost, public)]\npub struct Ghost {\n  pub tile_x: i32,\n  pub tile_y: i32,\n}';
     let ghostTables, ghostViolations;
     try {
       ghostTables = parseTables(ghostSrc);
@@ -441,7 +441,7 @@ pub struct Inventory {
   // Kills: an impl that only accepts #[index(btree)] and not #[primary_key] for zone_id.
   {
     const encounterFixtureSrc = `
-#[spacetimedb::table(name = encounter)]
+#[spacetimedb::table(accessor = encounter)]
 pub struct EncounterRow {
     #[primary_key]
     pub zone_id: u32,
@@ -474,7 +474,7 @@ pub struct EncounterRow {
   // This is the KEY new behavior of the broadened eval.
   {
     const bareZoneFixtureSrc = `
-#[spacetimedb::table(name = stray_zone, public)]
+#[spacetimedb::table(accessor = stray_zone, public)]
 pub struct StrayZone {
     #[primary_key]
     #[auto_inc]
@@ -509,7 +509,7 @@ pub struct StrayZone {
   // Kills: an impl that ignores the scheduled( carve-out.
   {
     const schedFixtureSrc = `
-#[spacetimedb::table(name = movement_tick_schedule, scheduled(movement_tick))]
+#[spacetimedb::table(accessor = movement_tick_schedule, scheduled(movement_tick))]
 pub struct MovementTickSchedule {
     #[primary_key]
     #[auto_inc]
@@ -569,7 +569,7 @@ pub struct MovementTickSchedule {
 
   // --- TOOTH 12: real attempt_recruit PASSES both STRENGTHENED checks ---
   // The real code (lib.rs:1927–1953) uses:
-  //   let me = ctx.sender;
+  //   let me = ctx.sender();
   //   if battle.player_identity != me { ...; return Err(e); }
   //   match ctx.db.battle_wild().battle_id().find(battle_id) { Some(bw) => bw, None => { ...; return Err(e); } }
   // The STRENGTHENED checkOwnershipGuard must recognise the `me` alias pattern.
@@ -611,7 +611,7 @@ pub struct MovementTickSchedule {
         }
         if (ownerErr !== null && ownerErr !== undefined) {
           failures.push(
-            `TOOTH 12 FAILED: checkOwnershipGuard REJECTED real attempt_recruit (which correctly uses 'let me = ctx.sender; if battle.player_identity != me { return Err }') — the strengthened check must recognise the me-alias pattern. Error: ${ownerErr}`,
+            `TOOTH 12 FAILED: checkOwnershipGuard REJECTED real attempt_recruit (which correctly uses 'let me = ctx.sender(); if battle.player_identity != me { return Err }') — the strengthened check must recognise the me-alias pattern. Error: ${ownerErr}`,
           );
         }
         if (wildErr !== null && wildErr !== undefined) {
@@ -626,19 +626,19 @@ pub struct MovementTickSchedule {
   }
 
   // --- TOOTH 13: ownership no-rejection bad fixture BITES ---
-  // This body MENTIONS player_identity AND ctx.sender but wires NO != comparison
+  // This body MENTIONS player_identity AND ctx.sender() but wires NO != comparison
   // that leads to Err. The OLD substring check wrongly passes it (both tokens present).
   // The STRENGTHENED check must require the rejecting comparison.
   // Kills: the old checkOwnershipGuard (pure substring presence).
   {
     const BAD_OWNERSHIP_NO_REJECTION = `
 pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64, bait_item_id: Option<u32>) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let mut battle = ctx.db.battle().battle_id().find(battle_id)
         .ok_or_else(|| "battle not found".to_string())?;
     // DELIBERATELY WEAK: both tokens present but no != comparison that leads to Err.
     // A logging call that mentions player_identity should NOT satisfy the ownership guard.
-    log::info!("attempt_recruit: caller={:?}, battle.player_identity={:?}", ctx.sender, battle.player_identity);
+    log::info!("attempt_recruit: caller={:?}, battle.player_identity={:?}", ctx.sender(), battle.player_identity);
     if battle.state.outcome != BattleOutcome::Ongoing {
         return Err("not ongoing".to_string());
     }
@@ -673,7 +673,7 @@ pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64, bait_item_id: Optio
       }
       if (badOwnerResult === null || badOwnerResult === undefined) {
         failures.push(
-          'TOOTH 13 FAILED: ownership no-rejection fixture (player_identity + ctx.sender present, but no != then Err) NOT flagged by checkOwnershipGuard. The OLD substring-presence check wrongly passes this — the STRENGTHENED check must require a rejecting != comparison followed by Err (see spec §3 "reject-comparison" requirement).',
+          'TOOTH 13 FAILED: ownership no-rejection fixture (player_identity + ctx.sender() present, but no != then Err) NOT flagged by checkOwnershipGuard. The OLD substring-presence check wrongly passes this — the STRENGTHENED check must require a rejecting != comparison followed by Err (see spec §3 "reject-comparison" requirement).',
         );
       }
     }
@@ -688,7 +688,7 @@ pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64, bait_item_id: Optio
   {
     const BAD_WILD_NO_REJECTION = `
 pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64, bait_item_id: Option<u32>) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let mut battle = ctx.db.battle().battle_id().find(battle_id)
         .ok_or_else(|| "battle not found".to_string())?;
     if battle.player_identity != me {
@@ -734,13 +734,13 @@ pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64, bait_item_id: Optio
 
   // --- TOOTH 15: ownership GOOD fixtures PASS (alias form AND direct form) ---
   // The strengthened check must accept BOTH:
-  //   (a) alias form:  let me = ctx.sender; if battle.player_identity != me { return Err(...); }
-  //   (b) direct form: if battle.player_identity != ctx.sender { return Err(...) }
+  //   (a) alias form:  let me = ctx.sender(); if battle.player_identity != me { return Err(...); }
+  //   (b) direct form: if battle.player_identity != ctx.sender() { return Err(...) }
   // Kills: an impl that is too narrow and only accepts one form.
   {
     const GOOD_ALIAS_FORM = `
 pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let mut battle = ctx.db.battle().battle_id().find(battle_id)
         .ok_or_else(|| "not found".to_string())?;
     if battle.player_identity != me {
@@ -755,7 +755,7 @@ pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64) -> Result<(), Strin
 pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
     let mut battle = ctx.db.battle().battle_id().find(battle_id)
         .ok_or_else(|| "not found".to_string())?;
-    if battle.player_identity != ctx.sender {
+    if battle.player_identity != ctx.sender() {
         return Err("not owner".to_string());
     }
     let bw = ctx.db.battle_wild().battle_id().find(battle_id)
@@ -765,8 +765,8 @@ pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64) -> Result<(), Strin
 `;
 
     for (const [label, src] of [
-      ['alias (let me = ctx.sender)', GOOD_ALIAS_FORM],
-      ['direct (ctx.sender)', GOOD_DIRECT_FORM],
+      ['alias (let me = ctx.sender())', GOOD_ALIAS_FORM],
+      ['direct (ctx.sender())', GOOD_DIRECT_FORM],
     ]) {
       let goodBody, goodResult;
       try {
@@ -784,7 +784,7 @@ pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64) -> Result<(), Strin
         }
         if (goodResult !== null && goodResult !== undefined) {
           failures.push(
-            `TOOTH 15 FAILED [${label}]: GOOD ownership fixture incorrectly flagged by checkOwnershipGuard: ${goodResult}. The strengthened check must accept both alias form (let me = ctx.sender; ... != me) and direct form (... != ctx.sender).`,
+            `TOOTH 15 FAILED [${label}]: GOOD ownership fixture incorrectly flagged by checkOwnershipGuard: ${goodResult}. The strengthened check must accept both alias form (let me = ctx.sender(); ... != me) and direct form (... != ctx.sender()).`,
           );
         }
       }
@@ -834,7 +834,7 @@ pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64) -> Result<(), Strin
   // wrongly pass this fixture because it sees `ScheduleAt` in the struct body.
   {
     const notSchedulerFixtureSrc = `
-#[spacetimedb::table(name = not_a_scheduler, public)]
+#[spacetimedb::table(accessor = not_a_scheduler, public)]
 pub struct NotAScheduler {
     #[primary_key]
     #[auto_inc]
@@ -881,16 +881,16 @@ pub struct NotAScheduler {
   // =========================================================================
   // TOOTH 19 — ownership: two-alias GOOD fixture must PASS
   // =========================================================================
-  // A body that declares TWO `ctx.sender` aliases and guards with the SECOND
+  // A body that declares TWO `ctx.sender()` aliases and guards with the SECOND
   // must pass checkOwnershipGuard. Kills: a first-alias-only capture that binds
   // `caller` (the first alias) and then fails to recognise `!= me` (the second).
-  // Currently RED: the current check captures only the first `let <alias> = ctx.sender`
+  // Currently RED: the current check captures only the first `let <alias> = ctx.sender()`
   // binding, so `player_identity != me` is not recognised when `caller` was first.
   {
     const GOOD_TWO_ALIAS = `
 pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
-    let caller = ctx.sender;
-    let me = ctx.sender;
+    let caller = ctx.sender();
+    let me = ctx.sender();
     let mut battle = ctx.db.battle().battle_id().find(battle_id)
         .ok_or_else(|| "not found".to_string())?;
     if battle.player_identity != me {
@@ -922,7 +922,7 @@ pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64) -> Result<(), Strin
       }
       if (t19Result !== null && t19Result !== undefined) {
         failures.push(
-          `TOOTH 19 FAILED: two-alias GOOD fixture (let caller = ctx.sender; let me = ctx.sender; ... if battle.player_identity != me { return Err }) was INCORRECTLY FLAGGED by checkOwnershipGuard: ${t19Result}. A first-alias-only capture binds 'caller' and then fails to recognise '!= me' — the strengthened check must collect ALL aliases bound to ctx.sender and accept any of them in the != comparison.`,
+          `TOOTH 19 FAILED: two-alias GOOD fixture (let caller = ctx.sender(); let me = ctx.sender(); ... if battle.player_identity != me { return Err }) was INCORRECTLY FLAGGED by checkOwnershipGuard: ${t19Result}. A first-alias-only capture binds 'caller' and then fails to recognise '!= me' — the strengthened check must collect ALL aliases bound to ctx.sender() and accept any of them in the != comparison.`,
         );
       }
     }
@@ -941,7 +941,7 @@ pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64) -> Result<(), Strin
   {
     const BAD_WILD_DISCARDED = `
 pub fn attempt_recruit(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let mut battle = ctx.db.battle().battle_id().find(battle_id)
         .ok_or_else(|| "battle not found".to_string())?;
     if battle.player_identity != me {

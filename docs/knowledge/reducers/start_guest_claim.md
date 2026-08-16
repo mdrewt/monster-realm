@@ -2,10 +2,10 @@
 type: SpacetimeDB Reducer
 title: start_guest_claim
 slug: reducers/start_guest_claim
-updated: 2026-08-15
+updated: 2026-08-16
 tags: [reducer, spacetimedb, accounts]
 abstract: "Bind a CLIENT-minted claim code to the anonymous caller (AUTH-7..11). The server performs zero randomness; the code is …"
-resource: server-module/src/accounts.rs#L389
+resource: server-module/src/accounts.rs#L393
 source: scripts/okf-export.mjs@server-module/src/accounts.rs
 ---
 

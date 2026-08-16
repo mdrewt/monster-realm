@@ -50,7 +50,7 @@ use game_core::resolve_encounter;
 /// a side with no conscious member at all has no legal lead and is rejected.
 ///
 /// Opponent provenance (ADR-0048): only a self/sandbox opponent
-/// (`opponent_identity == ctx.sender`) or the server/NPC sentinel
+/// (`opponent_identity == ctx.sender()`) or the server/NPC sentinel
 /// (`WILD_IDENTITY`) is accepted. A client may NOT name another player as the
 /// opponent — that would conscript their monsters into the public `battle` row.
 #[spacetimedb::reducer]
@@ -60,7 +60,7 @@ pub fn start_battle(
     party_monster_ids: Vec<u64>,
     opponent_monster_ids: Vec<u64>,
 ) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
 
     // Bound BOTH parties to 1..=MAX_PARTY_SIZE (reject empty AND oversized —
     // never truncate; an unbounded list is N species lookups + N skill scans +
@@ -78,7 +78,7 @@ pub fn start_battle(
     }
 
     // Opponent-provenance authorization (ADR-0048): accept ONLY self/sandbox
-    // (opponent_identity == ctx.sender) or the server/NPC sentinel
+    // (opponent_identity == ctx.sender()) or the server/NPC sentinel
     // (WILD_IDENTITY). Naming another player would conscript their monsters into
     // the public `battle` row (info-leak / grief / XP farm). Reject before the
     // dedup scan and any side-B DB read so a foreign roster never reaches the
@@ -528,7 +528,7 @@ pub(crate) fn begin_encounter(
 #[cfg(feature = "dev_reducers")]
 #[spacetimedb::reducer]
 pub fn start_wild_battle(ctx: &ReducerContext, zone_id: u32) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     // Must be joined (has a player + character).
     let Some(player) = ctx.db.player().identity().find(me) else {
         let e = "not joined".to_string();
@@ -594,7 +594,7 @@ pub fn start_wild_battle(ctx: &ReducerContext, zone_id: u32) -> Result<(), Strin
 /// and the opponent uses AI. Ownership + outcome guards enforced.
 #[spacetimedb::reducer]
 pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let mut battle = ctx
         .db
         .battle()
@@ -761,7 +761,7 @@ pub fn submit_attack(ctx: &ReducerContext, battle_id: u64, skill_id: u32) -> Res
 /// Swap the player's active monster. Ownership + outcome guards enforced.
 #[spacetimedb::reducer]
 pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let mut battle = ctx
         .db
         .battle()
@@ -903,7 +903,7 @@ pub fn swap_active(ctx: &ReducerContext, battle_id: u64, team_index: u32) -> Res
 /// Flee from a battle. Sets outcome to `Fled`; no XP awarded.
 #[spacetimedb::reducer]
 pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let mut battle = ctx
         .db
         .battle()
@@ -959,7 +959,7 @@ pub fn flee(ctx: &ReducerContext, battle_id: u64) -> Result<(), String> {
 ///    battle row. No turn advance: using an item is a between-turn passive action.
 #[spacetimedb::reducer]
 pub fn use_battle_item(ctx: &ReducerContext, battle_id: u64, item_id: u32) -> Result<(), String> {
-    let me = ctx.sender;
+    let me = ctx.sender();
     let mut battle = ctx
         .db
         .battle()

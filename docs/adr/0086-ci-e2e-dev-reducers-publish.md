@@ -5,6 +5,7 @@
 **Slice:** m13.5h
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** ADR-0197
 **Subsystems:** ci-gates
 **Decision:** CI e2e pre-builds dev_reducers wasm via --bin-path and publishes it; recruit e2e tests R1–R4 are revived using gameplay flows without dev-reducer calls.
 

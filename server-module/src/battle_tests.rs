@@ -4381,7 +4381,7 @@ fn e2_is_failure_arm_header(header: &str) -> bool {
 ///    nor the slot sort is delegating to something, whatever it is named; layer 2
 ///    only bans one spelling. All four needles are taken verbatim from
 ///    battle.rs:284-292 — `owner_identity()` (the index accessor),
-///    `filter(owner` (filtering on the `owner` PARAMETER, not on `ctx.sender`),
+///    `filter(owner` (filtering on the `owner` PARAMETER, not on `ctx.sender()`),
 ///    `PARTY_SLOT_NONE` (the party-membership filter) and `sort_by_key(`
 ///    (the slot ordering that makes `ids[0]` the lead, which `lead_party` then
 ///    point-reads). `filter(owner` deliberately omits the closing paren so a
@@ -4489,7 +4489,7 @@ fn lead_party_ids_does_not_parse_a_level() {
         (
             ["filter", "(owner"].concat(),
             "the filter must be on the `owner` PARAMETER (both call sites pass an \
-             identity that is NOT always `ctx.sender` — `movement_tick` passes the \
+             identity that is NOT always `ctx.sender()` — `movement_tick` passes the \
              scanned character's player identity)",
         ),
         (

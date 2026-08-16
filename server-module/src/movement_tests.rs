@@ -34,7 +34,7 @@
 //! lookup — ADR-0166 residual R4.  It is now routed through the same SSOT and the
 //! accessor is gone from `movement.rs` entirely, so the region scoping below
 //! survives on its OTHER justification: the three unrelated reducers above
-//! legitimately use `ctx.sender`.)
+//! legitimately use `ctx.sender()`.)
 
 // ---------------------------------------------------------------------------
 // Source constant
@@ -255,8 +255,8 @@ fn squashed_movement() -> String {
 /// grass-encounter trigger `stepped_onto_grass(`.
 ///
 /// Region-scoping (rather than whole-file counting) is what makes the
-/// `player_identity()` and `ctx.sender` assertions below both TIGHT and stable:
-/// three unrelated reducers above legitimately use `ctx.sender`, and until 14r-f
+/// `player_identity()` and `ctx.sender()` assertions below both TIGHT and stable:
+/// three unrelated reducers above legitimately use `ctx.sender()`, and until 14r-f
 /// the grass-encounter pre-check further down kept its own single-role
 /// `player_identity()` lookup (ADR-0166 residual R4, out of scope for 11r-a). A
 /// whole-file count would have to encode those as magic numbers and would drift
@@ -264,7 +264,7 @@ fn squashed_movement() -> String {
 ///
 /// R4 IS NOW CLOSED (14r-f / ADR-0188): the grass pre-check calls the same
 /// both-role SSOT, so `player_identity()` no longer occurs anywhere in
-/// `movement.rs`. The scoping stays regardless — `ctx.sender` alone still needs
+/// `movement.rs`. The scoping stays regardless — `ctx.sender()` alone still needs
 /// it, and [`grass_encounter_pre_check_uses_the_both_role_ssot`] asserts the
 /// grass tail separately, so the two regions keep independent teeth.
 ///
@@ -312,9 +312,9 @@ fn warp_region(squashed: &str) -> &str {
 ///    old single-role filter remains the effective condition.
 ///
 ///    **The `p.identity` argument is the load-bearing part.** `movement_tick` is
-///    scheduler-only (`movement.rs:156`), so inside it `ctx.sender` is the
-///    **module** identity, and `let me = ctx.sender;` opens nearly every other
-///    reducer in this file — making `is_in_ongoing_battle(ctx, ctx.sender)` a
+///    scheduler-only (`movement.rs:156`), so inside it `ctx.sender()` is the
+///    **module** identity, and `let me = ctx.sender();` opens nearly every other
+///    reducer in this file — making `is_in_ongoing_battle(ctx, ctx.sender())` a
 ///    thoroughly plausible copy-paste.  It would make the guard *always false* and
 ///    warp EVERY player out of EVERY battle, PvE and PvP alike: strictly worse
 ///    than the bug being fixed.  A presence-only needle cannot see that; this one
@@ -347,10 +347,10 @@ fn warp_region(squashed: &str) -> &str {
 ///    passing layer 1 is the "belt-and-braces" shell that calls the SSOT *and*
 ///    keeps the old filter.
 ///
-/// 3. **ANTI-EVASION (green today): no `ctx.sender` between `warp_at(` and
+/// 3. **ANTI-EVASION (green today): no `ctx.sender()` between `warp_at(` and
 ///    `stepped_onto_grass(`.**  A second, independent line of defence against the
 ///    module-identity mutant described in layer 1 — it also catches a
-///    `let me = ctx.sender;` hoisted just above the guard and passed in under
+///    `let me = ctx.sender();` hoisted just above the guard and passed in under
 ///    another name.
 ///
 /// RED state at the 11r-a HEAD: layer 1 failed (no `is_in_ongoing_battle` in
@@ -409,8 +409,8 @@ fn e3_warp_guard_uses_the_both_role_ssot_with_the_player_identity() {
          `battle().player_identity().filter(..)` at HEAD sees side A only, so a PvP \
          side-B player walks through a warp tile mid-ranked-battle; (b) the argument \
          is `p.identity` — the CHARACTER's player identity. `movement_tick` is \
-         scheduler-only, so `ctx.sender` here is the MODULE identity: \
-         `is_in_ongoing_battle(ctx, ctx.sender)` would make the guard always false \
+         scheduler-only, so `ctx.sender()` here is the MODULE identity: \
+         `is_in_ongoing_battle(ctx, ctx.sender())` would make the guard always false \
          and warp every player out of every battle, PvE and PvP alike — strictly \
          worse than the bug being fixed. RED at HEAD: the SSOT is not called."
     );
@@ -556,10 +556,10 @@ fn e3_warp_guard_uses_the_both_role_ssot_with_the_player_identity() {
     let sender_count = region.matches(sender_needle.as_str()).count();
     assert_eq!(
         sender_count, 0,
-        "ANTI-EVASION (E3/D4 layer 3, green at HEAD): `ctx.sender` appears \
+        "ANTI-EVASION (E3/D4 layer 3, green at HEAD): `ctx.sender()` appears \
          {sender_count} time(s) between `warp_at(` and `stepped_onto_grass(`. \
          `movement_tick` is scheduler-only (`movement.rs:156` rejects any other \
-         sender), so `ctx.sender` inside it is the MODULE identity and can never be a \
+         sender), so `ctx.sender()` inside it is the MODULE identity and can never be a \
          player. Asking the battle guard about it returns false for everyone, warping \
          every player out of every battle. The warp guard must ask about the \
          character's own `p.identity`."
@@ -645,7 +645,7 @@ fn movement_warp_guard_unwrap_or_true_is_preserved() {
 //
 // SCOPED to `grass_region(movement_tick_body(..))` — the tail from
 // `stepped_onto_grass(` to the end of the reducer — for the same reason
-// `warp_region` exists: file-wide counts of `player_identity()` and `ctx.sender`
+// `warp_region` exists: file-wide counts of `player_identity()` and `ctx.sender()`
 // would have to encode unrelated reducers as magic numbers. The two regions are
 // disjoint (`warp_region` ENDS where this one begins), so the 11r-a fences and
 // this one can never fight over the same bytes.
@@ -683,9 +683,9 @@ fn movement_warp_guard_unwrap_or_true_is_preserved() {
 ///    layer 1 is the belt-and-braces shell that calls the SSOT and keeps the old
 ///    filter as well.
 ///
-/// 3. **ANTI-EVASION (green today): `ctx.sender` count == 0 in the grass region.**
-///    `movement_tick` is scheduler-only, so `ctx.sender` inside it is the MODULE
-///    identity and can never be a player. `is_in_ongoing_battle(ctx, ctx.sender)`
+/// 3. **ANTI-EVASION (green today): `ctx.sender()` count == 0 in the grass region.**
+///    `movement_tick` is scheduler-only, so `ctx.sender()` inside it is the MODULE
+///    identity and can never be a player. `is_in_ongoing_battle(ctx, ctx.sender())`
 ///    would answer false for everyone and roll encounters for every player in
 ///    every battle — strictly worse than the divergence being removed, and a
 ///    thoroughly plausible copy-paste from `enqueue_move` / `set_move`, where the
@@ -766,7 +766,7 @@ fn grass_encounter_pre_check_uses_the_both_role_ssot() {
          filter still decides — the shell a red-team shipped past the first draft \
          of the E3 test. \
          THE ARGUMENT IS `player_identity`, the local already bound from the \
-         character's own `player` row — never `ctx.sender`, which is the MODULE \
+         character's own `player` row — never `ctx.sender()`, which is the MODULE \
          identity in this scheduler-only reducer (layer 3 below). \
          THE NAME `already` IS PART OF THE CONTRACT: keep it. The `let _`-count-zero \
          teeth further down this file are justified by an enumeration of every \
@@ -795,11 +795,11 @@ fn grass_encounter_pre_check_uses_the_both_role_ssot() {
     let n_sender = region.matches(sender_needle.as_str()).count();
     assert_eq!(
         n_sender, 0,
-        "ANTI-EVASION (EG/ADR-0188 layer 3, green at HEAD): `ctx.sender` appears \
+        "ANTI-EVASION (EG/ADR-0188 layer 3, green at HEAD): `ctx.sender()` appears \
          {n_sender} time(s) in the grass region and must appear ZERO times. \
          `movement_tick` is scheduler-only (it rejects any other sender), so \
-         `ctx.sender` inside it is the MODULE identity and can never be a player. \
-         `is_in_ongoing_battle(ctx, ctx.sender)` therefore answers false for \
+         `ctx.sender()` inside it is the MODULE identity and can never be a player. \
+         `is_in_ongoing_battle(ctx, ctx.sender())` therefore answers false for \
          everyone: every player already in a battle would roll a wild encounter on \
          every grass step — strictly worse than the SSOT divergence this slice \
          removes. It is a plausible copy-paste, because in `enqueue_move` and \
@@ -846,7 +846,7 @@ fn grass_encounter_pre_check_uses_the_both_role_ssot() {
     //     let already = false;                   // shadows it
     //     if already { continue; }               // reads the WRONG one
     // Layer 1's needle is present verbatim, layer 4's needle is present
-    // verbatim, `player_identity()` and `ctx.sender` are still 0, `BattleOutcome`
+    // verbatim, `player_identity()` and `ctx.sender()` are still 0, `BattleOutcome`
     // is still 0, and both ratcheted file-wide counts are still correct — while
     // the grass pre-check is now DEAD CODE and the block is strictly worse than
     // the inline side-A filter it replaced. `unused_variables` does not fire:
@@ -986,7 +986,7 @@ fn contains_any(region: &str, variants: &[String]) -> bool {
 /// the ADR-0168 D2 intake-reject block, as the STRING-STRIPPED squash sees it.
 ///
 /// The block's two string literals are blanked before matching, so the needle is
-/// `…{lete=.to_string();log_reject(,ctx.sender,&e);returnErr(e);}`. That is a
+/// `…{lete=.to_string();log_reject(,ctx.sender(),&e);returnErr(e);}`. That is a
 /// deliberate trade made when string-blanking closed the decoy-literal hole: the
 /// error MESSAGE and the reducer NAME in the log call are no longer pinned, which
 /// makes this needle identical for `enqueue_move` and `set_move` — the per-reducer
@@ -1010,9 +1010,9 @@ fn contains_any(region: &str, variants: &[String]) -> bool {
 /// <dir>" instead.
 fn intake_reject_variants() -> Vec<String> {
     let ssot = ["is_in_ongoing", "_battle"].concat();
-    let args = ["(ctx,ctx.", "sender){"].concat();
+    let args = ["(ctx,ctx.", "sender()){"].concat();
     let bind = ["lete=.to", "_string();"].concat();
-    let log = ["log_re", "ject(,ctx.sender,&e);"].concat();
+    let log = ["log_re", "ject(,ctx.sender(),&e);"].concat();
     let ret = ["return", "Err(e);}"].concat();
     let body = [bind.as_str(), log.as_str(), ret.as_str()].concat();
     let mut out = Vec::new();
@@ -1056,9 +1056,9 @@ fn intake_reject_variants() -> Vec<String> {
 ///      while presenting a textbook-perfect SSOT call to any presence needle.
 ///      `.filter(id)` is exactly right because the loop variable `id` IS the
 ///      character's `entity_id` (movement.rs:184-185).
-///    * **`p.identity`, never `ctx.sender`.** `movement_tick` is scheduler-only
-///      (movement.rs:156), so `ctx.sender` inside it is the MODULE identity;
-///      `is_in_ongoing_battle(ctx, ctx.sender)` is false for everyone and the
+///    * **`p.identity`, never `ctx.sender()`.** `movement_tick` is scheduler-only
+///      (movement.rs:156), so `ctx.sender()` inside it is the MODULE identity;
+///      `is_in_ongoing_battle(ctx, ctx.sender())` is false for everyone and the
 ///      lock never fires — strictly worse than the bug, because it *looks* fixed.
 ///      (The sibling sentinel [`movement_drain_region_uses_no_module_identity`]
 ///      is the independent, spelling-free line of defence against this.)
@@ -1161,7 +1161,7 @@ fn e1_drain_time_battle_lock_freezes_an_in_battle_character() {
          player up by anything else yields None -> unwrap_or(false) -> never \
          locks, while still showing a perfect SSOT call to a presence-only needle; \
          (2) the argument is `p.identity`, the CHARACTER's player identity — \
-         `movement_tick` is scheduler-only, so `ctx.sender` here is the MODULE \
+         `movement_tick` is scheduler-only, so `ctx.sender()` here is the MODULE \
          identity and would make the guard always false (strictly worse than the \
          bug, because it looks fixed); (3) `.unwrap_or(false)` is a FACT (no \
          `player` row => not a player => can never appear in a `battle` row), NOT \
@@ -1242,26 +1242,26 @@ fn e1_drain_time_battle_lock_freezes_an_in_battle_character() {
 /// **E1 ANTI-EVASION sentinel** — no module identity anywhere in the drain region.
 ///
 /// GREEN at HEAD and GREEN after the fix; RED only if someone reaches for
-/// `ctx.sender` inside `movement_tick`'s drain path. A SEPARATE `#[test]` on
+/// `ctx.sender()` inside `movement_tick`'s drain path. A SEPARATE `#[test]` on
 /// purpose: folded into `e1_drain_time_battle_lock_freezes_an_in_battle_character`
 /// it would sit behind layer 1, which panics at HEAD, so it could never be
 /// observed passing and would prove nothing (the same reasoning that split
 /// [`movement_warp_guard_unwrap_or_true_is_preserved`] out of the E3 test).
 ///
 /// WHY IT MATTERS: `movement_tick` is scheduler-only (`movement.rs:156` rejects
-/// any other sender), so `ctx.sender` inside it is the MODULE identity — never a
-/// player. `is_in_ongoing_battle(ctx, ctx.sender)` there is false for every
+/// any other sender), so `ctx.sender()` inside it is the MODULE identity — never a
+/// player. `is_in_ongoing_battle(ctx, ctx.sender())` there is false for every
 /// character on every tick: the lock never fires, yet the code reads as a
 /// complete, correctly-named, SSOT-delegating guard. That is strictly worse than
 /// today's missing check, because it retires the finding. And it is a thoroughly
-/// plausible slip: `let me = ctx.sender;` opens nearly every other reducer in
+/// plausible slip: `let me = ctx.sender();` opens nearly every other reducer in
 /// this file, and the ADR-0168 D2 intake guards being added in the SAME slice use
-/// `ctx.sender` legitimately (there the caller IS a player) — so the wrong line is
+/// `ctx.sender()` legitimately (there the caller IS a player) — so the wrong line is
 /// literally on screen while the drain guard is written.
 ///
 /// This is the spelling-INDEPENDENT half of the E1 layer-1 argument: layer 1 pins
 /// `p.identity` inside one exact expression, while this sees a `let me =
-/// ctx.sender;` hoisted above the guard and passed in under any other name.
+/// ctx.sender();` hoisted above the guard and passed in under any other name.
 ///
 /// The region anchor's uniqueness is asserted first: a silently-missing or
 /// duplicated `move_queue.is_empty()` would make the scoped count vacuous.
@@ -1290,19 +1290,19 @@ fn movement_drain_region_uses_no_module_identity() {
     let sender_count = region.matches(sender_needle.as_str()).count();
     assert_eq!(
         sender_count, 0,
-        "ANTI-EVASION (E1/ADR-0168 D1, green at HEAD): `ctx.sender` appears \
+        "ANTI-EVASION (E1/ADR-0168 D1, green at HEAD): `ctx.sender()` appears \
          {sender_count} time(s) in the drain region (`move_queue.is_empty()` … \
          `warp_at(`), which must contain ZERO. `movement_tick` is scheduler-only \
-         (movement.rs:156 rejects any other sender), so `ctx.sender` inside it is \
+         (movement.rs:156 rejects any other sender), so `ctx.sender()` inside it is \
          the MODULE identity and can never be a player: a drain guard asking \
-         `is_in_ongoing_battle(ctx, ctx.sender)` is false for every character on \
+         `is_in_ongoing_battle(ctx, ctx.sender())` is false for every character on \
          every tick — the lock never fires, while the code reads as a complete, \
          well-named, SSOT-delegating guard. That is strictly WORSE than the bug it \
          claims to fix, because it retires the finding. The drain guard must ask \
          about the character's own `p.identity` (E1 layer 1 pins the expression; \
-         this catches a `let me = ctx.sender;` hoisted above it and passed under \
+         this catches a `let me = ctx.sender();` hoisted above it and passed under \
          another name). NOTE: the intake guards added by the same slice \
-         (`enqueue_move` / `set_move`) DO use `ctx.sender` and that is correct — \
+         (`enqueue_move` / `set_move`) DO use `ctx.sender()` and that is correct — \
          those are player-called reducers, and they live outside this region."
     );
 }
@@ -1416,12 +1416,12 @@ fn movement_drain_loop_variable_id_is_not_shadowed() {
 ///
 /// * **I1 / I2 — the full-block needle, per reducer.** The reducer's region must
 ///   contain, contiguously, squashed and string-blanked:
-///   `ifis_in_ongoing_battle(ctx,ctx.sender){lete=.to_string();
-///   log_reject(,ctx.sender,&e);returnErr(e);}`
+///   `ifis_in_ongoing_battle(ctx,ctx.sender()){lete=.to_string();
+///   log_reject(,ctx.sender(),&e);returnErr(e);}`
 ///   (bare / `guards::` / `crate::guards::` path spellings accepted) — i.e. the
-///   source must read `if is_in_ongoing_battle(ctx, ctx.sender) { let e = "cannot
+///   source must read `if is_in_ongoing_battle(ctx, ctx.sender()) { let e = "cannot
 ///   move during an ongoing battle".to_string(); log_reject("<reducer>",
-///   ctx.sender, &e); return Err(e); }`.
+///   ctx.sender(), &e); return Err(e); }`.
 ///
 ///   The two string literals are blanked by the scan, so I1 and I2 use the SAME
 ///   needle text and the per-reducer REGION is what proves each reducer carries
@@ -1429,13 +1429,13 @@ fn movement_drain_loop_variable_id_is_not_shadowed() {
 ///   in `enqueue_move` cannot satisfy I2, and vice versa.
 ///
 ///   The BLOCK is what has teeth. Red-team CRITICAL-2 shipped
-///   `if is_in_ongoing_battle(ctx, ctx.sender) { if seq == 0 { return Err(..) } }`
+///   `if is_in_ongoing_battle(ctx, ctx.sender()) { if seq == 0 { return Err(..) } }`
 ///   past every presence and ordering needle drafted for this slice: correct
 ///   predicate, correct argument, correct position, and the reject fires for
 ///   essentially nobody. Pinning the block whole also kills log-without-return
 ///   (a guard that logs a rejection and then falls through and enqueues anyway).
 ///
-///   `ctx.sender` is CORRECT here and only here — these are player-called
+///   `ctx.sender()` is CORRECT here and only here — these are player-called
 ///   reducers, unlike the scheduler-only `movement_tick`.
 ///
 ///   No ordering assertion accompanies these needles, by design: placing the
@@ -1518,19 +1518,19 @@ fn e2_intake_rejects_movement_intent_during_an_ongoing_battle() {
         "TEETH (E2/ADR-0168 D2, I1): `enqueue_move` must contain the intake reject \
          as ONE contiguous block. Whitespace-squashed AND string-literal-blanked \
          (which is how this scan sees the file), the required text is: \
-         `ifis_in_ongoing_battle(ctx,ctx.sender){{lete=.to_string();\
-         log_reject(,ctx.sender,&e);returnErr(e);}}` — i.e. the source must read \
-         `if is_in_ongoing_battle(ctx, ctx.sender) {{ let e = \"cannot move during \
-         an ongoing battle\".to_string(); log_reject(\"enqueue_move\", ctx.sender, \
+         `ifis_in_ongoing_battle(ctx,ctx.sender()){{lete=.to_string();\
+         log_reject(,ctx.sender(),&e);returnErr(e);}}` — i.e. the source must read \
+         `if is_in_ongoing_battle(ctx, ctx.sender()) {{ let e = \"cannot move during \
+         an ongoing battle\".to_string(); log_reject(\"enqueue_move\", ctx.sender(), \
          &e); return Err(e); }}` \
          (the `guards::` / `crate::guards::` path spellings are also accepted). \
          The BLOCK is the point, not the call: a red-team shipped \
-         `if is_in_ongoing_battle(ctx, ctx.sender) {{ if seq == 0 {{ return \
+         `if is_in_ongoing_battle(ctx, ctx.sender()) {{ if seq == 0 {{ return \
          Err(..); }} }}` past every presence-and-ordering needle drafted for this \
          slice — correct predicate, correct argument, correct position, rejects \
          essentially nobody (red-team CRITICAL-2). The same pin kills \
          log-without-return (log the rejection, fall through, enqueue anyway) and \
-         a swallowed `Err`. `ctx.sender` is CORRECT here — `enqueue_move` is \
+         a swallowed `Err`. `ctx.sender()` is CORRECT here — `enqueue_move` is \
          player-called (unlike the scheduler-only `movement_tick`, where the same \
          expression would be the module identity). Placement inside the reducer is \
          NOT asserted: an `Err` rolls the whole SpacetimeDB transaction back, ack \
@@ -1547,8 +1547,8 @@ fn e2_intake_rejects_movement_intent_during_an_ongoing_battle() {
         set_ok,
         "TEETH (E2/ADR-0168 D2, I2): `set_move` must contain the same intake reject \
          block INSIDE ITS OWN BODY — squashed and string-blanked: \
-         `ifis_in_ongoing_battle(ctx,ctx.sender){{lete=.to_string();\
-         log_reject(,ctx.sender,&e);returnErr(e);}}`, written with `set_move`'s own \
+         `ifis_in_ongoing_battle(ctx,ctx.sender()){{lete=.to_string();\
+         log_reject(,ctx.sender(),&e);returnErr(e);}}`, written with `set_move`'s own \
          name in the log call (the name is blanked before matching, so it is I1/I2's \
          REGION scoping — not the needle text — that proves each reducer is guarded \
          separately; a single shared guard placed in one reducer fails the other). \
@@ -3049,7 +3049,7 @@ fn enqueue_move_body_loops_party_growth_tails() {
     let lead_at = body.find(lead.as_str()).unwrap_or_else(|| {
         panic!(
             "TEETH (EG2-8 + 12r-e E2): `enqueue_move` must resolve the caller's \
-             active party through `lead_party_ids(ctx, ctx.sender)` — the id-only \
+             active party through `lead_party_ids(ctx, ctx.sender())` — the id-only \
              helper. RED at HEAD: it calls `lead_party(` instead, which additionally \
              parses the LEAD's level and returns `None` for the WHOLE party if that \
              byte is out of range, silently disabling both growth tails for every \
@@ -3184,11 +3184,11 @@ fn enqueue_move_body_loops_party_growth_tails() {
 //       // 12r-e E2: the ID-ONLY resolver. `lead_party` would additionally parse
 //       // the LEAD's level and return None for the WHOLE party if it is out of
 //       // range — silently killing both tails for every party monster.
-//       if let Some(party_ids) = lead_party_ids(ctx, ctx.sender) {       [L]
+//       if let Some(party_ids) = lead_party_ids(ctx, ctx.sender()) {       [L]
 //           let escrowed: Vec<u64> = ctx.db.trade_offer()               [T]
-//               .initiator().filter(ctx.sender)                          [I]
+//               .initiator().filter(ctx.sender())                          [I]
 //               .chain(ctx.db.trade_offer().counterparty()               [C]
-//                          .filter(ctx.sender))
+//                          .filter(ctx.sender()))
 //               ..active-offer filter + both monster-id lists.., collect();
 //           for mid in party_ids {                                       [F]
 //               if escrowed.contains(&mid) { continue; }                 [S]
@@ -3319,8 +3319,8 @@ fn enqueue_move_skips_trade_escrowed_party_monsters() {
                  MonsterCard snapshot, and confirm_trade never revalidates it: the \
                  trade settles on a monster that silently changed species. Collect \
                  the caller's escrowed ids from BOTH roles \
-                 (`trade_offer().initiator().filter(ctx.sender)` chained with \
-                 `trade_offer().counterparty().filter(ctx.sender)` — the same shape \
+                 (`trade_offer().initiator().filter(ctx.sender())` chained with \
+                 `trade_offer().counterparty().filter(ctx.sender())` — the same shape \
                  `care` uses at raising.rs:96-103) and skip those ids in the loop. \
                  RED at HEAD: `enqueue_move` reads no trade offers at all."
             )
@@ -3790,7 +3790,7 @@ fn enqueue_move_growth_tail_does_not_depend_on_the_lead_level() {
     // Layer 2 bans the HELPER, not the BEHAVIOUR. A red-team reintroduced the
     // whole-party disable at this call site and ran 501/501 green:
     //
-    //     if let Some(party_ids) = lead_party_ids(ctx, ctx.sender) {
+    //     if let Some(party_ids) = lead_party_ids(ctx, ctx.sender()) {
     //         let Some(lead_row) = ctx.db.monster().monster_id().find(party_ids[0])
     //             else { return Ok(()); };
     //         if Level::new(lead_row.level).is_err() { return Ok(()); }
