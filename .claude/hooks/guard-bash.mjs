@@ -14,12 +14,23 @@ process.stdin.on("end", () => {
   }
   // Defense-in-depth: catch common flag spellings (-rf, -fr, -r -f, --recursive
   // / --force), not only the literal "rm -rf" the deny-list matches.
+  // ANCHORED AT COMMAND POSITION (lp-11a), matching the harness copy. `\brm\s+-rf` matched those
+  // characters ANYWHERE, including inside a quoted argument, so `grep -n 'rm -rf' notes.md` was
+  // refused: reading about the command was as forbidden as running it. Anchoring alone would lose
+  // indirection, so `xargs`/`find -exec` are restored explicitly below.
+  //
+  // NOTE ON DRIFT: this copy is the slim one — the harness copy at
+  // ../../../.claude/hooks/guard-bash.mjs carries the `--selftest` fixture suite (58 of them) that
+  // pins every rule here in BOTH directions. These two files have drifted before (this copy still
+  // had lp-09's pre-widening kill-switch anchors, fixed below), so change them together.
   const danger = [
-    /\brm\s+-\w*r\w*f\w*/i, // rm -rf, -Rf, -rfv ...
-    /\brm\s+-\w*f\w*r\w*/i, // rm -fr ...
-    /\brm\s+-\w*r\w*\s+-\w*f/i, // rm -r -f
-    /\brm\s+(-\w+\s+)*--recursive/i, // rm --recursive ...
-    /\brm\s+-\w*r\w*\s+.*(\/|~|\*)/i, // rm -r <root/home/glob>
+    /(^\s*|[;&|(\n]\s*)rm\s+-\w*r\w*f\w*/i, // rm -rf, -Rf, -rfv ...
+    /(^\s*|[;&|(\n]\s*)rm\s+-\w*f\w*r\w*/i, // rm -fr ...
+    /(^\s*|[;&|(\n]\s*)rm\s+-\w*r\w*\s+-\w*f/i, // rm -r -f
+    /(^\s*|[;&|(\n]\s*)rm\s+(-\w+\s+)*--recursive/i, // rm --recursive ...
+    /(^\s*|[;&|(\n]\s*)rm\s+-\w*r\w*\s+.*(\/|~|\*)/i, // rm -r <root/home/glob>
+    /(^\s*|[;&|(\n]\s*)(xargs|parallel)\s+(-\S+\s+)*rm\b/i, // find … | xargs rm -rf
+    /\bfind\b[^\n;&|]*-exec\s+rm\b/i, // find … -exec rm -rf {} \;
     /git\s+push\s+(--force|-f)\b/i,
     /git\s+reset\s+--hard\s+origin/i,
     // lp-09: the supervisor kill switch. The tick only ever READS this flag — every clear came from
@@ -33,9 +44,14 @@ process.stdin.on("end", () => {
     // kill switch — it blocked this slice's own documentation and test scripts. An over-firing guard
     // is worse than a narrow one: it gets switched off, which is how decorative gates are born. This
     // is defense-in-depth behind `mr-hold`'s provenance check, not a sandbox.
-    /(^|[;&|(]\s*)rm\s+[^\n;&|]*\.native-supervisor-disabled/i,
-    /(^|[;&|(]\s*)mv\s+[^\n;&|]*\.native-supervisor-disabled/i,
-    /(^|[;&|(]\s*)mr-supervisor-enable\b/i,
+    // Anchor WIDENED to parity with the harness copy (lp-09 found this by execution, lp-11a
+    // carried it across): `(^|…)` without `\s*` and without `\n` required the verb at literal
+    // index 0 — these regexes carry no `m` flag — so an ordinary two-line Bash call, or a single
+    // leading space, matched nothing at all. Widening can only ever block MORE, which is the
+    // fail-safe direction for a kill switch.
+    /(^\s*|[;&|(\n]\s*)rm\s+[^\n;&|]*\.native-supervisor-disabled/i,
+    /(^\s*|[;&|(\n]\s*)mv\s+[^\n;&|]*\.native-supervisor-disabled/i,
+    /(^\s*|[;&|(\n]\s*)mr-supervisor-enable\b/i,
     /\bdrop\s+database\b/i,
     /\btruncate\s+table\b/i,
   ];
