@@ -1271,12 +1271,24 @@ function runProofOfTeeth() {
             'KNOWN_UNMIGRATED.length / KNOWN_UNMIGRATED_CAP',
         );
       }
-      // HONESTY NOTE (precedent: this file's own HONESTY NOTE, lines 59-67):
-      // this needle proves the call SITE exists with the live constants, but
-      // it cannot prove reachability — a deliberately SHADOWED local
-      // buildDetailTail remains a known theoretical bypass. Sub-checks
-      // (a)-(c) above are what carry the actual behavioral guarantee; this
-      // one is corroborating structural evidence, not sole proof.
+      // HONESTY NOTE (precedent: this file's own HONESTY NOTE, lines 59-67).
+      // Stated precisely, because an overclaiming tooth is worse than a
+      // disclosed gap. (d) proves only that a call site with that exact
+      // shape exists somewhere in executable code, with the live constants.
+      // (a)-(c) prove only that the MODULE-SCOPE buildDetailTail is
+      // behaviorally correct in isolation. Neither observes the value the
+      // default export actually returns, so three bypasses are MEASURED to
+      // survive all of T10a/b/c and T10-WIRED(a)-(d): a local
+      // buildDetailTail SHADOWING the module-scope one inside the default
+      // export; a dead-code decoy call site satisfying (d) while the real
+      // `tail` is reverted to an inline template; and stripping the advisory
+      // back out of `detail` after a fully correct call.
+      // WHY THAT RESIDUAL IS ACCEPTED, not closed: the advisory is
+      // NON-BLOCKING, and no ENFORCEMENT path runs through buildDetailTail.
+      // All three bypasses leave the cap check, the completeness check, debt
+      // self-retirement, the GATED/MIGRATED ratchets, Legs 1+2 and the
+      // enforced-canary split untouched (measured). The worst outcome is a
+      // lost informational note — never a false-GREEN on a security gate.
     }
   }
 
