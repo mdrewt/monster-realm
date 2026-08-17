@@ -13,6 +13,7 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { stripRustSource } from '../evals/rust-scan.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const PROJECT_ROOT = resolve(__dirname, '..');
@@ -29,7 +30,12 @@ if (!existsSync(EVAL_PATH)) {
   );
   process.exit(2);
 }
-const { parseTableSchemas } = await import(EVAL_PATH);
+// ADR-0199 D2: visibility is derived by the eval's exported exact-token helper,
+// never re-implemented here — the security gate and the docs/knowledge/**
+// privacy pages must share ONE derivation. The superseded inline form
+// (`attrRest.indexOf('public')`) false-positived on `index(btree, name =
+// public_view, …)`.
+const { parseTableSchemas, visibilityFromAttrArgs } = await import(EVAL_PATH);
 
 const SERVER_SRC = join(PROJECT_ROOT, 'server-module', 'src');
 const BUNDLE_SOURCE_TAG = 'scripts/okf-export.mjs';
@@ -126,6 +132,13 @@ function relSrc(filePath) {
 function parseTableMetadata(filePath) {
   const src = readFileSync(filePath, 'utf8');
   const lines = src.split('\n');
+  // The attribute is matched on COMMENT- and STRING-blanked text so a table
+  // attribute quoted inside a doc comment or a Rust string literal cannot
+  // declare a table (server-module/src/economy_tests.rs:73 carries exactly such
+  // a decoy for player_wallet). stripRustSource is contractually offset-,
+  // length- and newline-preserving (evals/rust-scan.mjs), so strippedLines[i]
+  // still aligns with the raw lines[i] that supply docComment/lineNumber.
+  const strippedLines = stripRustSource(src).split('\n');
   const meta = {};
   // SpacetimeDB 2.x spells the Rust accessor `accessor = X`; 1.x spelled it
   // `name = X` (in 2.x, `name` is an optional STRING literal overriding the
@@ -136,19 +149,12 @@ function parseTableMetadata(filePath) {
   const tableAttrRe = /#\[spacetimedb::table\((?:accessor|name)\s*=\s*(\w+)([^)]*)\)/;
 
   for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
+    const line = strippedLines[i] ?? '';
     if (line.indexOf('#[spacetimedb::table(') === -1) continue;
     const m = tableAttrRe.exec(line);
     if (!m) continue;
     const name = m[1];
-    const attrRest = m[2] || '';
-    const visibility =
-      attrRest.indexOf('public') !== -1 ||
-      line.indexOf(', public)') !== -1 ||
-      line.indexOf(`(accessor = ${name}, public`) !== -1 ||
-      line.indexOf(`(name = ${name}, public`) !== -1
-        ? 'public'
-        : 'private';
+    const visibility = visibilityFromAttrArgs(m[2] || '');
 
     // Gather doc comment lines above this line (skip #[...] and blank lines).
     const docLines = [];

@@ -1,6 +1,7 @@
 {
   "guest_claim_reaper_schedule": {
     "pk": "scheduled_id",
+    "visibility": "private",
     "columns": {
       "scheduled_id": "u64",
       "scheduled_at": "ScheduleAt",
@@ -14,6 +15,7 @@
   },
   "movement_tick_schedule": {
     "pk": "id",
+    "visibility": "private",
     "columns": {
       "id": "u64",
       "zone_id": "u32",
@@ -27,6 +29,7 @@
   },
   "mr_heartbeat_schedule": {
     "pk": "id",
+    "visibility": "private",
     "columns": {
       "id": "u64",
       "scheduled_at": "ScheduleAt"
@@ -38,6 +41,7 @@
   },
   "playtest_event": {
     "pk": "event_id",
+    "visibility": "private",
     "columns": {
       "event_id": "u64",
       "identity": "Identity",
@@ -63,6 +67,7 @@
   },
   "playtest_reaper_schedule": {
     "pk": "id",
+    "visibility": "private",
     "columns": {
       "id": "u64",
       "scheduled_at": "ScheduleAt"
@@ -74,6 +79,7 @@
   },
   "pvp_deadline_schedule": {
     "pk": "scheduled_id",
+    "visibility": "private",
     "columns": {
       "scheduled_id": "u64",
       "scheduled_at": "ScheduleAt",
@@ -89,6 +95,7 @@
   },
   "battle_challenge_reaper_schedule": {
     "pk": "scheduled_id",
+    "visibility": "private",
     "columns": {
       "scheduled_id": "u64",
       "scheduled_at": "ScheduleAt",
@@ -102,6 +109,7 @@
   },
   "character": {
     "pk": "entity_id",
+    "visibility": "public",
     "columns": {
       "entity_id": "u64",
       "zone_id": "u32",
@@ -127,6 +135,7 @@
   },
   "player": {
     "pk": "identity",
+    "visibility": "public",
     "columns": {
       "identity": "Identity",
       "entity_id": "u64",
@@ -144,6 +153,7 @@
   },
   "config": {
     "pk": "id",
+    "visibility": "public",
     "columns": {
       "id": "u32",
       "content_version": "u32",
@@ -157,6 +167,7 @@
   },
   "zone_def": {
     "pk": "zone_id",
+    "visibility": "public",
     "columns": {
       "zone_id": "u32",
       "name": "String",
@@ -172,6 +183,7 @@
   },
   "species_row": {
     "pk": "id",
+    "visibility": "public",
     "columns": {
       "id": "u32",
       "name": "String",
@@ -203,6 +215,7 @@
   },
   "skill_row": {
     "pk": "id",
+    "visibility": "public",
     "columns": {
       "id": "u32",
       "name": "String",
@@ -222,6 +235,7 @@
   },
   "type_relation_row": {
     "pk": "id",
+    "visibility": "public",
     "columns": {
       "id": "u64",
       "attacker": "Affinity",
@@ -237,6 +251,7 @@
   },
   "item_row": {
     "pk": "id",
+    "visibility": "public",
     "columns": {
       "id": "u32",
       "name": "String",
@@ -260,6 +275,7 @@
   },
   "shop_row": {
     "pk": "shop_id",
+    "visibility": "public",
     "columns": {
       "shop_id": "u32",
       "name": "String"
@@ -271,6 +287,7 @@
   },
   "shop_item_row": {
     "pk": "shop_item_id",
+    "visibility": "public",
     "columns": {
       "shop_item_id": "u64",
       "shop_id": "u32",
@@ -286,6 +303,7 @@
   },
   "encounter": {
     "pk": "zone_id",
+    "visibility": "private",
     "columns": {
       "zone_id": "u32",
       "encounter_rate": "u16",
@@ -299,6 +317,7 @@
   },
   "monster": {
     "pk": "monster_id",
+    "visibility": "private",
     "columns": {
       "monster_id": "u64",
       "owner_identity": "Identity",
@@ -394,6 +413,7 @@
   },
   "monster_pub": {
     "pk": "monster_id",
+    "visibility": "private",
     "columns": {
       "monster_id": "u64",
       "owner_identity": "Identity",
@@ -453,6 +473,7 @@
   },
   "battle": {
     "pk": "battle_id",
+    "visibility": "private",
     "columns": {
       "battle_id": "u64",
       "player_identity": "Identity",
@@ -474,6 +495,7 @@
   },
   "battle_wild": {
     "pk": "battle_id",
+    "visibility": "private",
     "columns": {
       "battle_id": "u64",
       "wild_species_id": "u32",
@@ -489,6 +511,7 @@
   },
   "inventory": {
     "pk": "inv_id",
+    "visibility": "public",
     "columns": {
       "inv_id": "u64",
       "owner_identity": "Identity",
@@ -504,6 +527,7 @@
   },
   "evolution_path": {
     "pk": "path_id",
+    "visibility": "public",
     "columns": {
       "path_id": "u64",
       "edge_id": "u32",
@@ -529,6 +553,7 @@
   },
   "npc": {
     "pk": "entity_id",
+    "visibility": "public",
     "columns": {
       "entity_id": "u64",
       "npc_id": "String",
@@ -552,6 +577,7 @@
   },
   "player_dialogue_state": {
     "pk": "owner_identity",
+    "visibility": "private",
     "columns": {
       "owner_identity": "Identity",
       "flags": "Vec<String>",
@@ -565,6 +591,7 @@
   },
   "player_quest": {
     "pk": "pq_id",
+    "visibility": "public",
     "columns": {
       "pq_id": "u64",
       "owner_identity": "Identity",
@@ -580,6 +607,7 @@
   },
   "player_conversation": {
     "pk": "owner_identity",
+    "visibility": "private",
     "columns": {
       "owner_identity": "Identity",
       "npc_entity_id": "u64",
@@ -593,6 +621,7 @@
   },
   "heal_location_row": {
     "pk": "location_id",
+    "visibility": "public",
     "columns": {
       "location_id": "u32",
       "zone_id": "u32",
@@ -616,6 +645,7 @@
   },
   "heal_cooldown": {
     "pk": "owner_identity",
+    "visibility": "private",
     "columns": {
       "owner_identity": "Identity",
       "last_heal_at_ms": "i64"
@@ -627,6 +657,7 @@
   },
   "trade_offer": {
     "pk": "trade_id",
+    "visibility": "public",
     "columns": {
       "trade_id": "u64",
       "initiator": "Identity",
@@ -660,6 +691,7 @@
   },
   "player_wallet": {
     "pk": "owner_identity",
+    "visibility": "private",
     "columns": {
       "owner_identity": "Identity",
       "balance": "u64"
@@ -671,6 +703,7 @@
   },
   "account": {
     "pk": "identity",
+    "visibility": "private",
     "columns": {
       "identity": "Identity",
       "auth_issuer": "String",
@@ -694,6 +727,7 @@
   },
   "guest_claim": {
     "pk": "guest_identity",
+    "visibility": "private",
     "columns": {
       "guest_identity": "Identity",
       "code": "String",
@@ -711,6 +745,7 @@
   },
   "profile": {
     "pk": "identity",
+    "visibility": "public",
     "columns": {
       "identity": "Identity",
       "name": "String",
@@ -728,6 +763,7 @@
   },
   "battle_challenge": {
     "pk": "challenge_id",
+    "visibility": "public",
     "columns": {
       "challenge_id": "u64",
       "challenger": "Identity",
@@ -747,6 +783,7 @@
   },
   "battle_action": {
     "pk": "action_id",
+    "visibility": "private",
     "columns": {
       "action_id": "u64",
       "battle_id": "u64",
@@ -766,6 +803,7 @@
   },
   "trade_offer_reaper_schedule": {
     "pk": "scheduled_id",
+    "visibility": "private",
     "columns": {
       "scheduled_id": "u64",
       "scheduled_at": "ScheduleAt",
