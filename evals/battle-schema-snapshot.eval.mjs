@@ -863,6 +863,25 @@ pub struct Inventory {
   // the pure regenerator.
   const { parseTableVisibility, visibilityFromAttrArgs } = selfMod;
   const { checkVisibility, checkVisibilityEscalation, formatBaseline } = selfMod;
+  // ADR-0199 — the WIRING contract. Reviewer BLOCKER: neither new checker was
+  // reachable from the real verdict block, so a perfect implementation of both
+  // could still ship a gate that never calls them. `computeViolations` is the
+  // SSOT aggregation the default export's verdict block (below, ~:2650) MUST
+  // call instead of inlining its own spread list, so this is the ONE place a
+  // wiring regression can hide.
+  //
+  // computeViolations(rawSrc, baseline, prevData, appendOnlyRan) -> string[]
+  //   - always: checkParseShape(rawSrc) + checkColumnOrder(sourceOrder, baseline)
+  //     + checkDefaultsSuffix(sourceOrder, defaultsScope) violations, where
+  //     sourceOrder = parseTableColumnOrder(rawSrc) and defaultsScope follows
+  //     ADR-0193 D5 (prevData when appendOnlyRan, else baseline);
+  //   - always: checkVisibility(parseTableVisibility(rawSrc), baseline)
+  //     violations (EARS 1/2 — this one is UNCONDITIONAL, git-independent);
+  //   - only when appendOnlyRan: checkBaselineAppendOnly(prevData, baseline,
+  //     sourceOrder) AND checkVisibilityEscalation(prevData, baseline)
+  //     violations (EARS 3 — both are git-resolved, so both are gated on the
+  //     same appendOnlyRan flag the existing ADR-0193 layer already uses).
+  const { computeViolations } = selfMod;
   for (const [fnName, fn] of [
     ['parseTableColumnOrder', parseTableColumnOrder],
     ['checkParseShape', checkParseShape],
@@ -874,6 +893,7 @@ pub struct Inventory {
     ['checkVisibility', checkVisibility],
     ['checkVisibilityEscalation', checkVisibilityEscalation],
     ['formatBaseline', formatBaseline],
+    ['computeViolations', computeViolations],
   ]) {
     if (typeof fn !== 'function') {
       return {
@@ -1732,6 +1752,32 @@ pub struct PartySlot {
       'ADR-0199 — world-readable because …',
       true,
     ],
+    // Reviewer MAJOR: the digit-count / position-0 boundary was untested — a
+    // `\d{3,}` implementation and a fixed `\d{4}$` implementation both passed
+    // every case above. Kills either, plus a `.trim()` before the anchor check.
+    [
+      'note "ADR-123 too short" — only 3 digits, on a PUBLIC entry',
+      'public',
+      'ADR-123 too short',
+      false,
+    ],
+    [
+      'note "ADR-12345 five digits" — 5 digits clears the >=4 minimum, on a PUBLIC entry',
+      'public',
+      'ADR-12345 five digits',
+      true,
+    ],
+    [
+      'note " ADR-0199 leading space" — anchor is position 0, not position 0 after trim, on a PUBLIC entry',
+      'public',
+      ' ADR-0199 leading space',
+      false,
+    ],
+    // Reviewer MINOR: visibility_note is never fed a non-string. Kills an
+    // impl doing `String(note).startsWith('ADR-')` instead of
+    // `typeof note === 'string' && ...`.
+    ['note is 42 (not a string), on a PUBLIC entry', 'public', 42, false],
+    ['note is {} (not a string), on a PUBLIC entry', 'public', {}, false],
   ];
   for (const [label, vis, note, wantClean] of visNoteCases) {
     const bl = {
@@ -2159,8 +2205,12 @@ pub struct Inventory {
   // (b) a formatBaseline that emits unknown/marker keys in INPUT order
   // instead of canonical placement — the reviewer's MAJOR finding: without
   // this a legitimate hand-added note REDs the gate on first use; (c) a
-  // formatBaseline that re-sorts top-level keys or inserts a new table
-  // anywhere but the end.
+  // formatBaseline that hardcodes a single hidden marker slot or sorts
+  // unknown keys alphabetically — (b) alone, with only ONE unknown key,
+  // cannot distinguish "canonical placement" from "the only marker this impl
+  // knows about"; TWO markers in a deliberately non-alphabetical relative
+  // order close that gap; (d) a formatBaseline that re-sorts top-level keys
+  // or inserts a new table anywhere but the end.
   // -------------------------------------------------------------------------
   const regenSourceOrder = parseTableColumnOrder(rawSrc);
   const regenSourceVisibility = parseTableVisibility(rawSrc);
@@ -2231,6 +2281,45 @@ pub struct Inventory {
     );
   }
 
+  // Reviewer MINOR: the previous case exercises only ONE unknown key
+  // (`manual_migration`), so a formatBaseline that hardcodes a single
+  // hidden slot for it — or sorts unknown keys — still passes. TWO unknown
+  // markers, authored in a deliberately NON-alphabetical relative order
+  // (`zzz_marker` before `aaa_marker`), must keep exactly that relative
+  // order after `order`. Kills: a hardcoded-one-slot impl and an
+  // alphabetical-sort impl (both would move `aaa_marker` first).
+  const twoMarkerExisting = {
+    inventory: {
+      pk: 'inv_id',
+      visibility: 'public',
+      columns: PREV_BASELINE.inventory.columns,
+      order: PREV_BASELINE.inventory.order,
+      zzz_marker: 'authored FIRST',
+      aaa_marker: 'authored SECOND',
+    },
+  };
+  const twoMarkerOut = formatBaseline(
+    arbitrarySchemas,
+    arbitraryOrderParam,
+    arbitraryVisibility,
+    twoMarkerExisting,
+  );
+  let twoMarkerEntryKeys;
+  try {
+    twoMarkerEntryKeys = Object.keys(JSON.parse(twoMarkerOut).inventory);
+  } catch (e) {
+    twoMarkerEntryKeys = [`PARSE ERROR: ${e.message}`];
+  }
+  const wantTwoMarkerKeys = ['pk', 'visibility', 'columns', 'order', 'zzz_marker', 'aaa_marker'];
+  if (!eq(twoMarkerEntryKeys, wantTwoMarkerKeys)) {
+    teeth.push(
+      `T-VIS-REGEN(c) FAILED: TWO unknown marker keys ('zzz_marker' authored before ` +
+        `'aaa_marker') must keep their PRIOR RELATIVE ORDER after "order" — expected ` +
+        `${JSON.stringify(wantTwoMarkerKeys)} but formatBaseline produced ` +
+        `${JSON.stringify(twoMarkerEntryKeys)}`,
+    );
+  }
+
   const orderPreserveExisting = {
     zebra_table: { pk: 'z_id', visibility: 'private', columns: { z_id: 'u64' }, order: ['z_id'] },
     alpha_table: { pk: 'a_id', visibility: 'private', columns: { a_id: 'u64' }, order: ['a_id'] },
@@ -2265,7 +2354,7 @@ pub struct Inventory {
   const wantTopKeys = ['zebra_table', 'alpha_table', 'brand_new_table'];
   if (!eq(orderPreserveTopKeys, wantTopKeys)) {
     teeth.push(
-      `T-VIS-REGEN(c) FAILED: formatBaseline must iterate the EXISTING baseline's top-level key ` +
+      `T-VIS-REGEN(d) FAILED: formatBaseline must iterate the EXISTING baseline's top-level key ` +
         `order first (never re-sort — 'zebra_table' stays before 'alpha_table' despite ` +
         `alphabetical order) and append the parsed-only 'brand_new_table' at the END, but produced ` +
         `top-level key order ${JSON.stringify(orderPreserveTopKeys)}, expected ` +
@@ -2291,6 +2380,100 @@ pub struct Inventory {
     teeth.push(
       `T-VIS-LEGAL FALSE-RED: checkVisibilityEscalation against a prev built by RE-DERIVING the ` +
         `real baseline (no flip occurred) must be clean but returned ${show(legalEscalationResult)}`,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // T-VIS-WIRED — reviewer BLOCKER. Every tooth above calls checkVisibility /
+  // checkVisibilityEscalation DIRECTLY, so a perfect implementation of both
+  // could still ship a real verdict block (below) that never calls either —
+  // every existing tooth would pass, and a live commit flipping a table to
+  // `public` would still return `pass:true`. This tooth is the ONLY one that
+  // exercises the AGGREGATION (`computeViolations`) the verdict block must
+  // actually call, closing that gap. Kills: a `computeViolations` that wires
+  // in the four ADR-0193 rules but forgets one or both new checkers, wires
+  // `checkVisibility` but gates it on `appendOnlyRan` (EARS 1/2 must NOT
+  // depend on git resolving), or wires `checkVisibilityEscalation`
+  // unconditionally (EARS 3 is deliberately git-gated, mirroring
+  // checkBaselineAppendOnly's own appendOnlyRan gate) — and a
+  // `computeViolations` that silently drops one of the four PRE-EXISTING
+  // ADR-0193 rules while adding the new ones (the anti-regression case).
+  // -------------------------------------------------------------------------
+  const wiredBaselineStillPublic = {
+    inventory: {
+      pk: 'inv_id',
+      visibility: 'public',
+      columns: PREV_BASELINE.inventory.columns,
+      order: PREV_BASELINE.inventory.order,
+    },
+  };
+  const wiredDriftResult = computeViolations(
+    FLIP_TO_PRIVATE_SRC,
+    wiredBaselineStillPublic,
+    null,
+    false,
+  );
+  if (!hasTag(wiredDriftResult, '[visibility-drift]') || !hasTag(wiredDriftResult, 'inventory')) {
+    teeth.push(
+      `T-VIS-WIRED FAILED (drift): computeViolations(rawSrc, baseline, null, false) over a ` +
+        `source/baseline pair whose ONLY defect is a visibility flip did not carry ` +
+        `[visibility-drift] naming 'inventory' — got ${show(wiredDriftResult)}. checkVisibility ` +
+        `is not reachable from the aggregation`,
+    );
+  }
+  const wiredEscalationOn = computeViolations(
+    FLIP_TO_PUBLIC_SRC,
+    launderRebased,
+    PREV_BASELINE_VIS_PRIVATE,
+    true,
+  );
+  if (
+    !hasTag(wiredEscalationOn, '[visibility-escalation]') ||
+    !hasTag(wiredEscalationOn, 'inventory')
+  ) {
+    teeth.push(
+      `T-VIS-WIRED FAILED (escalation, appendOnlyRan=true): computeViolations over a ` +
+        `prevData/baseline pair whose ONLY defect is an un-noted private->public escalation did ` +
+        `not carry [visibility-escalation] naming 'inventory' — got ${show(wiredEscalationOn)}. ` +
+        `checkVisibilityEscalation is not reachable from the aggregation`,
+    );
+  }
+  const wiredEscalationOff = computeViolations(
+    FLIP_TO_PUBLIC_SRC,
+    launderRebased,
+    PREV_BASELINE_VIS_PRIVATE,
+    false,
+  );
+  if (hasTag(wiredEscalationOff, '[visibility-escalation]')) {
+    teeth.push(
+      `T-VIS-WIRED FAILED (escalation, appendOnlyRan=false): the IDENTICAL escalation pair with ` +
+        `appendOnlyRan=false must NOT carry [visibility-escalation] (the git-layer gate must be ` +
+        `deliberate, mirroring checkBaselineAppendOnly's own gate) — got ${show(wiredEscalationOff)}`,
+    );
+  }
+  const wiredLegalResult = computeViolations(rawSrc, baseline, realBaselineRederived, true);
+  if (
+    hasTag(wiredLegalResult, '[visibility-shape]') ||
+    hasTag(wiredLegalResult, '[visibility-drift]') ||
+    hasTag(wiredLegalResult, '[visibility-escalation]')
+  ) {
+    teeth.push(
+      `T-VIS-WIRED FALSE-RED: computeViolations(realSrc, realBaseline, prevRederivedFromReal, ` +
+        `true) must carry NONE of [visibility-shape]/[visibility-drift]/[visibility-escalation] ` +
+        `but returned ${show(wiredLegalResult)}`,
+    );
+  }
+  // Anti-regression: a fixture that trips ONLY a PRE-EXISTING ADR-0193 rule
+  // ([order-mismatch], via the file's own T-SWAP fixture) must still surface
+  // through computeViolations — a rewrite that adds the two new checkers must
+  // not silently drop an old one.
+  const wiredOldRuleResult = computeViolations(SWAP_SRC, PREV_BASELINE, null, false);
+  if (!hasTag(wiredOldRuleResult, '[order-mismatch]') || !hasTag(wiredOldRuleResult, 'inventory')) {
+    teeth.push(
+      `T-VIS-WIRED FAILED (anti-regression): computeViolations over the T-SWAP fixture (a pure ` +
+        `column reorder, no visibility defect) did not carry [order-mismatch] naming 'inventory' ` +
+        `— got ${show(wiredOldRuleResult)}. A pre-existing ADR-0193 rule was dropped from the ` +
+        `aggregation`,
     );
   }
 
@@ -2448,7 +2631,7 @@ pub struct Inventory {
       `(T-MANDATE/B1/NODEFAULT/LEGAL/SWAP/SWAP-REBASED/LAUNDER/APPEND/SHAPE/REMOVE/ESCAPE/` +
       `NEWTABLE/B1-INTERIOR/PARSE/COUNT/IDEMPOTENT/NOTHROW/REAL); ADR-0199 visibility teeth ` +
       `verified (T-VIS-SHAPE/NOTE/DRIFT/LAUNDER/NEWPUB/PREARM/TAMPER/COMMENT/TOKEN/ANCHORS/` +
-      `REGEN/LEGAL); ${orderChecked}/${baselineTables.length} baseline tables order-checked; ` +
+      `REGEN/LEGAL/WIRED); ${orderChecked}/${baselineTables.length} baseline tables order-checked; ` +
       `${appendOnlyNote}`,
   };
 }
