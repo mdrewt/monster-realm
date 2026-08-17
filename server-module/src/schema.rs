@@ -381,7 +381,7 @@ fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
         .collect()
 }
 
-// --- Battle table (M7b, public, ADR-0042) ------------------------------------
+// --- Battle table (M7b, ADR-0042; private since 15r-sec-a, ADR-0198) ----------
 
 /// A single PvE or PvP battle. The `state` column holds the full `BattleState`
 /// (pure data from `game-core`); the server module is the ONLY writer. PRIVATE
