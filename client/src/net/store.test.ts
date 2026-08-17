@@ -4774,3 +4774,273 @@ describe('AuthoritativeStore M21b-2 A3: reset() clears the account slot; no remo
     expect(typeof (s as unknown as Record<string, unknown>).removeAccount).not.toBe('function');
   });
 });
+
+// =============================================================================
+// 15r-sec-a (ADR-0198): reconcileBattlesFromView + battleCount — the battle half
+// of the view-cache reconcile.
+//
+// SOURCE OF TRUTH: docs/adr/0198-participant-scoped-battle-view.md;
+// specs/monster-realm-v2/M-postgate-fifteenth-review-residuals.spec.md:75-79.
+//
+// WHY THIS METHOD EXISTS AT ALL. `my_battle` is a VIEW, and a view binding carries
+// NO primary key, so the SDK never fires onUpdate: every row change arrives as
+// unordered `onInsert(new)` + `onDelete(old)` inside one transaction burst. That
+// matters far more for battle than it did for monsters — the battle row changes on
+// EVERY turn, so the delete half of a mis-handled pair takes the live battle off
+// the screen mid-fight. The adapter therefore rebuilds the whole battle map from
+// the SDK's post-burst row set, which is ordering-immune by construction, and the
+// row handlers only schedule the flush.
+//
+// THE CONTRACT, in one sentence: after `reconcileBattlesFromView(rows)`, the
+// store's battle map contains EXACTLY `rows` keyed by battleId — every given row
+// upserted, every absent id removed — and the batch is marked dirty ONLY if
+// something actually changed.
+//
+// WHY `shallowRowEq` (store.ts:1198) CANNOT BE REUSED FOR THE CHANGE DETECTION.
+// It is a generic own-key `===` compare. `StoreBattle` (store.ts:164-177) nests
+// `sideA`/`sideB` OBJECTS, each holding an ARRAY of monster objects, and the
+// boundary converter `battleRowToStore` (rowConvert.ts:321-348) builds all of them
+// fresh on every call — so `prev.sideA !== next.sideA` for two conversions of the
+// SAME server row, every time. Reusing it makes the reconcile mark the batch dirty
+// on EVERY flush (i.e. on every ~5/s movement tick), which is a render storm. The
+// sanctioned answer is a deep comparator that recurses plain objects AND arrays
+// and compares primitives with `===` (bigint-safe: `JSON.stringify` THROWS on a
+// BigInt, and StoreBattle carries four of them). 13r-e's helpers are left alone.
+//
+// AND WHY A TURN-NUMBER COMPARATOR IS UNSOUND (the tempting shortcut): `flee`
+// (battle.rs:927) and `apply_pvp_forfeit` (pvp.rs:644-700) both mutate
+// `state.outcome` WITHOUT bumping turn_number, so "same id, same turn ⇒ unchanged"
+// silently drops the transition that ends the battle.
+//
+// RED REASON (at authoring time): `AuthoritativeStore` has neither
+// `reconcileBattlesFromView` nor a `battleCount` getter, so every test below fails
+// with "s.reconcileBattlesFromView is not a function" / `battleCount` undefined.
+// store.test.ts:938 records the absence of the getter in as many words.
+// =============================================================================
+
+describe('AuthoritativeStore 15r-sec-a: reconcileBattlesFromView post-condition', () => {
+  it('★ BITES (1): a mid-battle change is applied and the row is NOT dropped — in EITHER array order', () => {
+    // EARS 15r-sec-a-4, at the unit seam: "WHEN a battle's state changes
+    // mid-battle, the client store SHALL reflect it and SHALL NOT drop the row."
+    //
+    // WHAT ORDERING SURVIVES THIS FAR. The unordered insert/delete PAIR is dissolved
+    // by taking the SDK's post-burst row SET as the argument — that is the whole
+    // design. The only ordering still visible at this seam is the order of the array,
+    // and it must not matter either.
+    //
+    // WRONG IMPL KILLED (a): id-set arithmetic that applies "deletes" after
+    //   "inserts" — the classic rebuild-from-events shape, which removes the row the
+    //   insert half just wrote and blanks the battle overlay mid-fight.
+    // WRONG IMPL KILLED (b): an insert-if-absent upsert (`if (!map.has(id))`), which
+    //   compiles, looks like "the snapshot already has it", and FREEZES the battle at
+    //   turn 1 forever.
+    const staleRow = { ...battle(7n, 'alice'), turnNumber: 3 };
+    const freshRow = { ...battle(7n, 'alice'), turnNumber: 4 };
+    const bystander = battle(8n, 'alice');
+
+    for (const [label, rows] of [
+      ['changed row first', [freshRow, bystander]],
+      ['changed row last', [bystander, freshRow]],
+    ] as const) {
+      const s = new AuthoritativeStore();
+      s.upsertBattle(staleRow);
+      s.upsertBattle(bystander);
+
+      s.reconcileBattlesFromView(rows);
+
+      expect(
+        s.battle(7n),
+        `${label}: the battle row must SURVIVE its own update — a dropped row blanks the ` +
+          'battle overlay mid-fight, which is exactly what the delete half of a PK-less ' +
+          'insert+delete pair does to an event-driven ingest',
+      ).toBeDefined();
+      // biome-ignore lint/style/noNonNullAssertion: asserted defined immediately above
+      expect(s.battle(7n)!.turnNumber, `${label}: the NEW payload is authoritative`).toBe(4);
+      expect(s.battleCount, `${label}: the bystander row is untouched`).toBe(2);
+    }
+  });
+
+  it('★ BITES (2): the map ends up EXACTLY equal to the rows argument (upsert + remove in one call), and [] empties it', () => {
+    // Kills: an impl that only upserts the given rows (a finished, GC'd battle is
+    // STRANDED — its terminal outcome frame never clears); and one that treats an
+    // EMPTY argument as "nothing to do" (the guard an author adds to "avoid wiping
+    // the store on an empty burst"). An empty view result is AUTHORITATIVE: the
+    // player is in no battle.
+    const s = new AuthoritativeStore();
+    s.upsertBattle(battle(1n, 'alice'));
+    s.upsertBattle(battle(2n, 'alice'));
+    s.upsertBattle(battle(3n, 'bob'));
+
+    s.reconcileBattlesFromView([{ ...battle(1n, 'alice'), turnNumber: 9 }, battle(4n, 'alice')]);
+
+    expect(s.battleCount, 'exactly the two supplied rows survive').toBe(2);
+    // biome-ignore lint/style/noNonNullAssertion: battleCount === 2 proves both are present
+    expect(s.battle(1n)!.turnNumber, 'the supplied payload wins').toBe(9);
+    expect(s.battle(4n), 'a row absent from the store is ADDED').toBeDefined();
+    expect(s.battle(2n), 'a stored row absent from `rows` is REMOVED').toBeUndefined();
+    expect(
+      s.battle(3n),
+      'a row belonging to another player is removed too — the view only ever delivers rows the ' +
+        'caller participates in, so a foreign row lingering in the map IS the leak this slice ' +
+        'closes',
+    ).toBeUndefined();
+
+    s.reconcileBattlesFromView([]);
+    expect(s.battleCount, 'an empty view result is authoritative, not a no-op').toBe(0);
+    expect(s.battle(1n)).toBeUndefined();
+    expect(s.battle(4n)).toBeUndefined();
+  });
+
+  it('★ BITES (3): a PRACTICE battle delivered TWICE in one row set is stored ONCE', () => {
+    // EARS 15r-sec-a-3, client half: "WHEN a player is both participants (a practice
+    // battle), THE SYSTEM SHALL deliver that row exactly once."
+    //
+    // The server-side half is the view's trailing dedup filter (pinned in
+    // evals/monster-privacy.eval.mjs [VB/body] and the evolution_tests.rs mirror).
+    // THIS is the client-side backstop: a view returns a Vec, not a set, so if the
+    // dedup filter is ever lost the SAME row arrives twice in one post-burst set.
+    //
+    // Kills: an impl that pushes rows into an ARRAY (the battle screen would render
+    // the practice battle as two battles, and ongoingBattle's highest-id tiebreak
+    // would compare a row against itself).
+    const s = new AuthoritativeStore();
+    // Practice = self-vs-self (server-module/src/battle.rs:1274-1278): the SAME
+    // identity in BOTH participant columns. Legal, and delivered exactly once.
+    const practice = battle(11n, 'alice', 'Ongoing', 'alice');
+
+    s.reconcileBattlesFromView([practice, { ...practice }]);
+
+    expect(s.battleCount, 'keyed by battleId — one row, however many times delivered').toBe(1);
+    // biome-ignore lint/style/noNonNullAssertion: battleCount === 1 proves it is present
+    expect(s.battle(11n)!.playerIdentity).toBe('alice');
+    // biome-ignore lint/style/noNonNullAssertion: same row
+    expect(s.battle(11n)!.opponentIdentity, 'a practice battle is self-vs-self').toBe('alice');
+    expect(
+      s.ongoingBattle('alice')?.battleId,
+      'the practice battle resolves to ONE ongoing battle for its owner',
+    ).toBe(11n);
+  });
+
+  it('★ BITES (4): an UNCHANGED row set marks NOTHING dirty (render-storm guard)', () => {
+    // WHAT THIS PINS. The connection adapter calls reconcileBattlesFromView in EVERY
+    // batcher flush — i.e. on every table's burst, including the ~5/s movement ticks —
+    // so the reconcile must be a NO-OP for an unchanged row set. Without change
+    // detection every movement tick marks the batch dirty and re-notifies every UI
+    // listener: a render storm no e2e in this slice can see.
+    //
+    // THE FIXTURE IS PRODUCTION-SHAPED ON PURPOSE, and that is the whole test: the
+    // rows are rebuilt by calling the factory again, so they are structurally equal
+    // but NON-IDENTICAL objects *including freshly-built nested sideA/sideB and team
+    // arrays* — exactly what battleRowToStore (rowConvert.ts:321-348) emits on every
+    // call. The store never sees the same nested object twice in production.
+    //
+    // MUTANTS THIS KILLS: reusing store.ts's `shallowRowEq` (a generic own-key ===
+    // compare) — `prev.sideA !== next.sideA` for two conversions of the SAME server
+    // row, so it reports "changed" every flush and suppresses nothing; and deleting
+    // the change guard altogether.
+    //
+    // THE FORBIDDEN "FIX" is editing this test to share one `sideA` reference between
+    // the two arrays. That fixture shape never occurs in production, so it would make
+    // the assertion pass while the storm continues.
+    const s = new AuthoritativeStore();
+    s.reconcileBattlesFromView([battle(1n, 'alice'), battle(2n, 'alice')]);
+    s.flushBatch(); // clear the dirty flag from the initial population
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+
+    s.reconcileBattlesFromView([battle(1n, 'alice'), battle(2n, 'alice')]);
+    s.flushBatch();
+
+    expect(
+      cb,
+      'an unchanged row set must not mark the batch dirty — the reconcile runs on EVERY batcher ' +
+        'flush, so a dirty mark here re-renders the whole UI on every movement tick. Change ' +
+        'detection must be a DEEP compare: StoreBattle nests sideA/sideB objects holding arrays ' +
+        'of monster objects, all rebuilt fresh by battleRowToStore on every conversion',
+    ).toHaveBeenCalledTimes(0);
+  });
+
+  it('★ BITES (5): a change NESTED inside sideA.team[0] is detected (over-suppression is the freeze bug)', () => {
+    // The other half of clause (4): a comparator tightened until nothing is ever
+    // dirty passes (4) trivially. This is the balancing assertion, and it is aimed at
+    // the SHALLOWEST plausible comparators:
+    //   * `prev.turnNumber === next.turnNumber` — UNSOUND for a real reason, not a
+    //     hypothetical one: `flee` (battle.rs:927) and `apply_pvp_forfeit`
+    //     (pvp.rs:644-700) mutate `state.outcome` WITHOUT bumping turn_number;
+    //   * a one-level compare that stops at `sideA` and never looks inside `team`.
+    // Damage lands in `team[i].currentHp` on every single turn, so a comparator that
+    // cannot see it freezes the HP bars for the whole battle while the turn counter
+    // keeps moving.
+    const s = new AuthoritativeStore();
+    const before = { ...battle(5n, 'alice'), sideA: battleSide({ team: [battleMonster()] }) };
+    s.reconcileBattlesFromView([before]);
+    s.flushBatch();
+    const cb = vi.fn();
+    s.onBatchApplied(cb);
+
+    // Same id, same turn number, same outcome — ONE nested HP value differs.
+    const after = {
+      ...battle(5n, 'alice'),
+      sideA: battleSide({ team: [battleMonster({ currentHp: 12 })] }),
+    };
+    s.reconcileBattlesFromView([after]);
+    s.flushBatch();
+
+    expect(
+      cb,
+      'a change nested in sideA.team[0].currentHp must mark the batch dirty exactly once — ' +
+        'over-suppression is the FREEZE failure mode: the new row lands in the store and the HP ' +
+        'bar never re-renders. turnNumber-only and one-level comparisons both fail here',
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      s.battle(5n)?.sideA.team[0]?.currentHp,
+      'and the new payload must actually be the one stored',
+    ).toBe(12);
+  });
+
+  it('★ BITES (6): battleCount equals the number of DISTINCT battleIds reconciled (fast-check)', () => {
+    // Kills: an impl that counts rows from an array (inflates whenever the view
+    // double-emits a practice battle, or whenever a row is re-delivered), and a
+    // battleCount getter wired to anything other than the battle map's size.
+    fc.assert(
+      fc.property(fc.array(fc.bigInt({ min: 0n, max: 30n }), { maxLength: 50 }), (ids) => {
+        const s = new AuthoritativeStore();
+        s.reconcileBattlesFromView(ids.map((id) => battle(id, 'alice')));
+        expect(s.battleCount).toBe(new Set(ids).size);
+      }),
+    );
+  });
+
+  it('★ BITES (7): a value-changing reconcile REPLACES the stored object, never mutates it in place', () => {
+    // THE IN-PLACE-MUTATION CHEAT this kills (red-team PoC — it passes clauses 1-6):
+    //     const prev = this.#battles.get(row.battleId);
+    //     if (prev !== undefined) { Object.assign(prev, row); }   // same object!
+    // Every count, membership and dirty-flag assertion above still holds, because the
+    // MAP is right. What breaks is everything downstream that holds a reference:
+    //   * `StoreBattle` is declared `readonly` field-by-field — mutating it violates
+    //     the store's stated one-way `server -> store -> render` contract;
+    //   * a view model or an outcome-frame latch that captured the previous row (or
+    //     any memo keyed on object identity) silently observes the row change under
+    //     it, so a "did this change?" reference compare in a consumer reads FALSE for
+    //     a real update and the frame is never redrawn.
+    const s = new AuthoritativeStore();
+    s.reconcileBattlesFromView([{ ...battle(3n, 'alice'), turnNumber: 1 }]);
+    const captured = s.battle(3n);
+    expect(captured, 'precondition: the row was stored').toBeDefined();
+
+    s.reconcileBattlesFromView([{ ...battle(3n, 'alice'), turnNumber: 2 }]);
+
+    expect(
+      s.battle(3n),
+      'the stored row must be the NEW object, not the previous one mutated in place — ' +
+        '`Object.assign(prev, row)` keeps the map correct and every other assertion in this ' +
+        'block green while silently rewriting a row a consumer is still holding',
+    ).not.toBe(captured);
+    expect(
+      captured?.turnNumber,
+      'the previously handed-out object must be UNCHANGED — if this reads 2, the store mutated ' +
+        'a row it had already published (StoreBattle is readonly field-by-field for exactly ' +
+        'this reason)',
+    ).toBe(1);
+  });
+});

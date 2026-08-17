@@ -5,6 +5,13 @@
 //! production module stays lean. Assertions are unchanged; `include_str!`
 //! still targets the production `battle.rs` in this same directory.
 
+// 15r-sec-a (ADR-0198): the `battle` table's PRIVACY and the exact body of the
+// participant-scoped `my_battle` view are pinned in
+// `evolution_tests.rs::e15r_sec_a_battle_is_private_and_its_view_is_participant_scoped`,
+// NOT here — that file already owns the schema.rs attribute-walk helpers, and a
+// second walker would be a second grammar for one source of truth (ADR-0003).
+// Nothing in this file scans schema.rs; look there before adding one.
+
 // =========================================================================
 // M8.8b-C: SSOT-wiring source-guard tests
 //

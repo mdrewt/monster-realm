@@ -72,10 +72,11 @@
 //                             one-expression sender-keyed lookup (this clause
 //                             absorbs the old presence-only [A/2a]).
 //      [A/view-set]           `parseViews` over the whole non-test tree yields
-//                             EXACTLY ['my_account','my_conversation',
+//                             EXACTLY ['my_account','my_battle','my_conversation',
 //                             'my_monster_pub','my_wallet'] (13r-e/ADR-0194 added
-//                             the fourth; evals/monster-privacy.eval.mjs pins the
-//                             same set and owns my_monster_pub's own shape).
+//                             my_monster_pub; 15r-sec-a/ADR-0198 added my_battle;
+//                             evals/monster-privacy.eval.mjs pins the same set and
+//                             owns both of those views' own shapes).
 //                             This REPLACES a transitive reader-closure walk,
 //                             which a red-team defeated with a function pointer
 //                             (`const HOPS: [fn(&ViewContext)->Vec<Row>;1] =
@@ -204,9 +205,18 @@ const ACCOUNT_TABLE = 'account';
 const GUEST_CLAIM_TABLE = 'guest_claim';
 const SCHED_TABLE = 'guest_claim_reaper_schedule';
 const VIEW_NAME = 'my_account';
-// The whole sanctioned view inventory, sorted. Any addition is a
+// The whole sanctioned view inventory, SORTED. Any addition is a
 // privacy-relevant event that must be re-reviewed here.
-const EXPECTED_VIEWS = ['my_account', 'my_conversation', 'my_monster_pub', 'my_wallet'];
+// KEEP THIS ARRAY SORTED: [A/view-set] compares `found.sort()` INDEX-WISE against
+// this literal, so appending a new name instead of inserting it in sort order
+// false-REDs the gate on correct code (15r-sec-a inserted `my_battle` second).
+const EXPECTED_VIEWS = [
+  'my_account',
+  'my_battle',
+  'my_conversation',
+  'my_monster_pub',
+  'my_wallet',
+];
 // The ONE sanctioned body, whitespace-compacted. `&ctx.sender()` is an
 // equally-correct borrow spelling of the same unique-index lookup.
 const SANCTIONED_BODY = 'ctx.db.account().identity().find(ctx.sender())';
@@ -754,6 +764,11 @@ fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
 #[spacetimedb::view(accessor = my_monster_pub, public)]
 fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
     ctx.db.monster_pub().owner_identity().filter(ctx.sender()).collect()
+}
+
+#[spacetimedb::view(accessor = my_battle, public)]
+fn my_battle(ctx: &spacetimedb::ViewContext) -> Vec<Battle> {
+    ctx.db.battle().player_identity().filter(ctx.sender()).chain(ctx.db.battle().opponent_identity().filter(ctx.sender()).filter(|b| b.player_identity != ctx.sender())).collect()
 }
 
 #[derive(Clone)]

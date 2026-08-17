@@ -3865,3 +3865,376 @@ describe('★ connection.ts wiring (13r-e / ADR-0194 D4): W-13RE-RECONCILE — t
     ).toBe(true);
   });
 });
+
+// ===========================================================================
+// 15r-sec-a (ADR-0198) — W-15RSECA-*: the my_battle wiring.
+//
+// SOURCE OF TRUTH: docs/adr/0198-participant-scoped-battle-view.md.
+//
+// WHAT CHANGED. `battle` becomes PRIVATE (reversing ADR-0042's public table) and
+// the client subscribes the participant-scoped `my_battle` VIEW instead: the
+// server delivers only rows where the caller is `player_identity` or
+// `opponent_identity`.
+//
+// WHY THIS IS NOT A MECHANICAL RENAME — the single most important fact in this
+// block. A view binding carries NO primary key (re-verified against the
+// regenerated bindings at the 2.8.1 bump: all view registrations have empty
+// indexes/constraints), so the SDK never fires onUpdate for it. Every mid-battle
+// state change therefore arrives as an unordered `onInsert(new)` + `onDelete(old)`
+// pair. The battle row changes on EVERY turn, so a rename that keeps the old
+// per-row `ingestBattle` upsert/remove handlers stays type-correct, keeps `just ci`
+// green, and drops the battle off the screen mid-fight. The countermeasure is the
+// one 13r-e already established: the row handlers only SCHEDULE, and the batcher's
+// FLUSH closure rebuilds the battle map from the SDK's post-burst cache.
+//
+// RED AT AUTHORING TIME (verified against connection.ts this session):
+//   * `.subscribe([...])` still carries `'SELECT * FROM battle'` (:709) and the
+//     stale `battle: unfiltered by design` comment above it (:704-708);
+//   * `conn.db.battle.onInsert/onUpdate/onDelete` are still wired at :323-332
+//     through `ingestBattle`, so `conn.db.battle.` occurs 3 times;
+//   * `store.reconcileBattlesFromView(` does not exist in the client at all.
+// Every gate below therefore reds on a MISSING IMPLEMENTATION, not on a typo.
+//
+// CODE-AWARE THROUGHOUT, except where the needle IS a string literal by nature
+// (the `'SELECT * FROM …'` subscription texts, which must be counted INSIDE a
+// string — the applicability note at :219-222).
+// ===========================================================================
+
+describe('★ connection.ts wiring (15r-sec-a / ADR-0198): W-15RSECA-SUBSCRIBE — the private table is gone, the view is subscribed', () => {
+  it('★ BITES: the ONE .subscribe([...]) array contains my_battle exactly once and never names the battle table', () => {
+    // WRONG IMPL KILLED (a): subscribing the now-PRIVATE `battle` table. SpacetimeDB
+    //   rejects the whole subscription BATCH, `onApplied` never fires, and EVERY
+    //   player gets a blank world — not merely a missing battle overlay.
+    // WRONG IMPL KILLED (b): adding the view subscription and leaving the old table
+    //   string behind (same blank world).
+    // WRONG IMPL KILLED (c): parking the view SQL in a dead module constant — the
+    //   WINDOW is what kills that.
+    //
+    // NEEDLE SHAPE: every needle carries its CLOSING quote. That is load-bearing
+    // here — `'SELECT * FROM battle'` (with the closing quote) is NOT a substring of
+    // `'SELECT * FROM my_battle'`, so the ban and the requirement cannot alias. The
+    // sibling literal `'SELECT * FROM battle_challenge'` is likewise unreachable by
+    // the ban, which is why the quote-terminated form is the only correct one (a bare
+    // `FROM battle` ban would false-RED on the still-PUBLIC battle_challenge table).
+    const src = readConnectionTs();
+    expectUniqueAnchor(src, '.subscribe([');
+    const arrayBody = bodyRegion(src, '.subscribe([', ']);');
+
+    // Anti-vacuity: a sibling owner-scoped VIEW subscription proves the region
+    // resolved and that comment-stripping did not eat the array's contents.
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM my_conversation'"),
+      'the .subscribe([...]) window must still contain the my_conversation subscription — if ' +
+        'it does not, this gate is judging the wrong region and every assertion below is vacuous',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM my_battle'"),
+      "connection.ts's ONE .subscribe([...]) array must contain 'SELECT * FROM my_battle' " +
+        'exactly once (ADR-0198). The name is EXACT and it is the SQL (snake) spelling, not the ' +
+        'camelCase binding handle: a wrong view name errors the WHOLE subscription batch and ' +
+        'onApplied never fires — every player gets a blank world, not just a missing battle ' +
+        'overlay. RED AT AUTHORING TIME: my_battle appears nowhere',
+    ).toBe(1);
+
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM battle'"),
+      "the .subscribe([...]) array must NOT contain 'SELECT * FROM battle' — the table is " +
+        'PRIVATE since ADR-0198, and subscribing a private table errors the entire batch. RED ' +
+        'AT AUTHORING TIME: connection.ts:709 subscribes exactly this',
+    ).toBe(0);
+
+    // Regression anchor: battle_challenge is a DIFFERENT, still-PUBLIC table
+    // (ADR-0109) that both challenger and target subscribe. This slice must not
+    // touch it, and its presence also proves the ban above is not matching by prefix.
+    expect(
+      countOccurrences(arrayBody, "'SELECT * FROM battle_challenge'"),
+      'the .subscribe([...]) array must still contain battle_challenge — it is a separate, ' +
+        'PUBLIC runtime table (ADR-0109) and nothing in this slice makes it private. If this ' +
+        'went to zero, the battle-table ban above was written as a prefix match',
+    ).toBe(1);
+  });
+
+  it('★ BITES: .subscribe( is called from exactly ONE site in connection.ts', () => {
+    // WRONG IMPL KILLED: a SECOND subscribe call site that is not the pinned
+    //   bracketed array — `conn.subscriptionBuilder().subscribe('SELECT * FROM battle')`
+    //   (the single-query overload) re-subscribes the private table while the
+    //   windowed clauses above only ever walk the ONE `.subscribe([` array and stay
+    //   green. The anchor uniqueness check above cannot see it: it counts
+    //   `.subscribe([`, and this shape has no bracket.
+    // Green on arrival (connection.ts has exactly one call site today) — it is a
+    // tripwire on the window's own premise, not a change request.
+    const squashed = squashedStrippedConnectionTs();
+    expect(
+      countCodeOccurrences(squashed, '.subscribe('),
+      'connection.ts must contain EXACTLY ONE `.subscribe(` call site AS CODE. A second one is ' +
+        'a second, unreviewed subscription batch that no needle-bounded window in this file can ' +
+        'see — and a non-bracket overload would evade the `.subscribe([` anchor entirely',
+    ).toBe(1);
+  });
+});
+
+describe('★ connection.ts wiring (15r-sec-a / ADR-0198): W-15RSECA-INGEST — my_battle is insert+delete, NEVER update', () => {
+  it('★ BITES: onInsert AND onDelete are each registered exactly once on conn.db.myBattle, and the old battle table wiring is gone', () => {
+    // WHY BOTH HANDLERS: a battle row leaves the view when it is GC'd after a
+    //   terminal outcome, and (for the row that arrives mid-burst) the delete half of
+    //   every PK-less update pair. With no onDelete the batcher is never scheduled for
+    //   that burst, so the reconcile below never runs and a finished battle stays on
+    //   screen.
+    // WRONG IMPL KILLED: leaving `conn.db.battle.*` wired. The generated binding for a
+    //   private table no longer exists, so this is also a tsc error — but stating it
+    //   here means a future slice that re-publishes the table cannot quietly re-wire
+    //   the direct handlers. RED AT AUTHORING TIME: `conn.db.battle.` occurs 3 times
+    //   (connection.ts:327-329, through `ingestBattle`).
+    const squashed = squashedStrippedConnectionTs();
+
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.myBattle.onInsert('),
+      'conn.db.myBattle.onInsert( must be registered EXACTLY once AS CODE (ADR-0198). The ' +
+        'handle is camelCase (the SDK binding); only the SQL text uses my_battle. RED AT ' +
+        'AUTHORING TIME: conn.db.myBattle appears nowhere in connection.ts',
+    ).toBe(1);
+
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.myBattle.onDelete('),
+      'conn.db.myBattle.onDelete( must be registered EXACTLY once AS CODE. A view has no ' +
+        'primary key, so every mid-battle change arrives as an unordered insert+delete pair — ' +
+        'insert-only wiring (the my_wallet shape) leaves the batcher unscheduled for the delete ' +
+        'half of that pair',
+    ).toBe(1);
+
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.battle.'),
+      'the OLD direct handlers on the now-private table (conn.db.battle.onInsert/onUpdate/' +
+        'onDelete, connection.ts:323-332) must be GONE — `battle` emits no client table binding ' +
+        'once it is private. RED AT AUTHORING TIME: this is 3',
+    ).toBe(0);
+  });
+
+  it('★ BITES (tripwire): NO onUpdate handler exists for the battle view, in EITHER binding spelling', () => {
+    // WRONG IMPL KILLED — and it is the single most likely mistake in this slice,
+    // because the handler being replaced (conn.db.battle, :327-329) HAS an onUpdate
+    // and a copy-paste keeps it: a view has no primary key in the generated bindings,
+    // so the SDK has nothing to correlate old and new rows with and onUpdate NEVER
+    // FIRES. Wiring one is dead code that implies a delivery guarantee the transport
+    // does not make — and, worse, the battle row changes on EVERY turn, so an author
+    // who believes onUpdate fires will reason about turn advances as ordered events
+    // when the whole reconcile design exists because they are not.
+    //
+    // BOTH SPELLINGS ARE BANNED, and that is not belt-and-braces. The generated
+    // bindings ship a deprecated snake_case ALIAS map (module_bindings/index.ts:508-522)
+    // in which `conn.db.my_battle` is the SAME LIVE OBJECT as `conn.db.myBattle` — so a
+    // snake-spelled `conn.db.my_battle.onUpdate(...)` registers a real handler that a
+    // camelCase-only needle cannot see. Scoped to the battle view on purpose: the
+    // existing my_monster_pub / my_wallet wirings are snake-spelled 13r-e-and-earlier
+    // code, and retro-churning them is not this slice.
+    //
+    // SCOPED, also on purpose: `conn.db.my_account.onUpdate` (connection.ts:580-583) is
+    // LEGITIMATE and mandated by ADR-0182 D15. A blanket "no view onUpdate" ban would
+    // red on correct, shipped code — and the natural "fix" would be deleting the
+    // account-claim repaint. The anti-vacuity assertion below pins exactly that.
+    const squashed = squashedStrippedConnectionTs();
+
+    // Anti-vacuity #1: the ingest must exist before "no update handler" means anything.
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.myBattle.onInsert('),
+      'precondition: the my_battle insert handler must exist before the onUpdate ban means ' +
+        'anything. RED AT AUTHORING TIME',
+    ).toBe(1);
+
+    // Anti-vacuity #2: the needle SHAPE demonstrably matches a real, shipped
+    // registration — so the zeros below are genuine absences, not a blind scan.
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.my_account.onUpdate('),
+      'the sanctioned my_account onUpdate handler (ADR-0182 D15) must still be wired — it is ' +
+        'this gate calibration: it proves a `conn.db.<view>.onUpdate(` needle CAN match, so the ' +
+        'zeros asserted next are real absences rather than a broken scan. Do NOT delete the ' +
+        'account handler to make anything green',
+    ).toBe(1);
+
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.myBattle.onUpdate'),
+      'there must be NO conn.db.myBattle.onUpdate handler (ADR-0198): the view has no primary ' +
+        'key in the generated bindings, so the SDK never fires onUpdate — every change arrives ' +
+        'as unordered onInsert(new) + onDelete(old). A copy-pasted onUpdate (the replaced ' +
+        'battle wiring at :328 had one) is dead code that misrepresents the transport',
+    ).toBe(0);
+
+    expect(
+      countCodeOccurrences(squashed, 'conn.db.my_battle.'),
+      'the deprecated snake_case ALIAS `conn.db.my_battle` must not be used at all — it is the ' +
+        'same live object as conn.db.myBattle (module_bindings/index.ts:508-522), so a ' +
+        'snake-spelled handler registration is REAL while being invisible to the camelCase ' +
+        'needles above. New wiring is camelCase (the spacetimedb-client convention); only the ' +
+        'SQL string keeps the snake spelling',
+    ).toBe(0);
+
+    expect(
+      countCodeOccurrences(squashed, 'db.my_battle'),
+      'no accessor of ANY receiver may reach the battle view through the deprecated snake_case ' +
+        'alias (`conn.db.my_battle`, `live.db.my_battle`, `current?.db.my_battle`) — see the ' +
+        'alias-map note above. The camelCase handle is the one spelling this slice uses',
+    ).toBe(0);
+  });
+});
+
+describe('★ connection.ts wiring (15r-sec-a / ADR-0198): W-15RSECA-RECONCILE — the flush closure reconciles battles from the SDK cache BEFORE flushBatch', () => {
+  it('★★ BITES: the reconcile call sits INSIDE the stale-build guard, reads the view cache, converts via battleRowToStore, and runs BEFORE store.flushBatch()', () => {
+    // THE ORDER IS THE POINT. `store.flushBatch()` is what notifies every listener
+    // (the render loop reads the store on that signal). Reconciling AFTER it means the
+    // frame that just rendered used the PRE-burst battle state — the HP bar and the
+    // turn counter lag one full transaction behind, and nothing re-renders until some
+    // unrelated table flushes.
+    //
+    // THE SCOPE IS EQUALLY THE POINT (red-team VERIFIED BYPASS). Asserting only that
+    // the guard TOKENS appear somewhere in the closure is satisfied by:
+    //     const live = current;
+    //     if (live !== undefined) { store.reconcileMonstersFromView(...); }
+    //     store.reconcileBattlesFromView([...current.db.myBattle.iter()]...);
+    // which reads a SUPERSEDED connection's cache on every flush a dying socket
+    // scheduled — re-seeding the store after store.reset() with a dead socket's rows
+    // (the ADR-0085 C2 hazard the single shared batcher exists to bound). So the guard
+    // BLOCK is brace-walked and the call must occur INSIDE it, and any direct
+    // `current.db.` read anywhere in the closure is banned outright.
+    //
+    // WRONG IMPL KILLED (a): reconciling inside the ROW HANDLERS instead of the flush
+    //   closure — per-row reconciliation against a mid-burst SDK cache, which is the
+    //   ordering-dependence the whole design exists to avoid. The region bound (the
+    //   batcher's own call arguments) kills it.
+    // WRONG IMPL KILLED (b): reconciling from the row EVENTS (id-set arithmetic over
+    //   inserts and deletes) rather than from the SDK's post-burst row set. The
+    //   `myBattle.iter()` needle kills it.
+    // WRONG IMPL KILLED (c): handing the store RAW SDK rows —
+    //   `store.reconcileBattlesFromView([...live.db.myBattle.iter()])`. The identities
+    //   would stay SDK Identity OBJECTS and battleId a raw bigint-ish SDK value, so
+    //   store.ongoingBattle(identity)'s `===` participant match never fires and the
+    //   overlay never opens while the rows sit in the store. The `battleRowToStore`
+    //   needle kills it.
+    const squashed = squashedStrippedConnectionTs();
+
+    // Region = the batcher construction's OWN argument list (paren-walked). Throws
+    // loud if the anchor is missing, so a deleted batcher is a hard red.
+    expectUniqueAnchor(squashed, 'new MicrotaskBatcher(');
+    const flushClosure = parenArgsAt(squashed, 'new MicrotaskBatcher(');
+
+    // --- (a) the reconcile is INSIDE the stale-build guard block ---------------
+    // The guard spelling is pinned to the one connection.ts already uses (:150) and
+    // that W-13RE's stale-build tooth documents as sanctioned at :3859-3864. If it is
+    // ever legitimately re-spelled, BOTH teeth are re-derived together — never this
+    // one alone, and never by dropping the scope bound.
+    const guardDecl = 'if (live !== undefined) {';
+    const guardHits = codeOccurrences(flushClosure, guardDecl);
+    expect(
+      guardHits.length,
+      `the MicrotaskBatcher flush closure must contain EXACTLY ONE \`${guardDecl}\` block AS ` +
+        'CODE — the ADR-0085 C2 stale-build guard the monster reconcile already lives in ' +
+        '(connection.ts:149-156). Zero means the guard was deleted or re-spelled (see ' +
+        'connection.test.ts:3859-3864 for why `current === undefined` is the one spelling that ' +
+        'must NOT be used); two means this scan cannot tell which block it is judging',
+    ).toBe(1);
+    const guardBody = braceBodyAt(flushClosure, guardHits[0]! + guardDecl.length - 1);
+
+    expect(
+      countCodeOccurrences(guardBody, 'store.reconcileBattlesFromView('),
+      'store.reconcileBattlesFromView(…) must be called INSIDE the `if (live !== undefined)` ' +
+        'block, not merely somewhere in the flush closure (ADR-0198 / ADR-0085 C2). ONE batcher ' +
+        "serves ALL rebuilds, so an unguarded read of a dying connection's cache can fire after " +
+        'store.reset() and re-seed the store from a dead socket. RED AT AUTHORING TIME: ' +
+        'store.reconcileBattlesFromView does not exist in the client at all',
+    ).toBe(1);
+
+    // --- (b) no direct read of the possibly-superseded connection --------------
+    expect(
+      countCodeOccurrences(flushClosure, 'current.db.'),
+      'the flush closure must never read `current.db.…` directly — `current` is the LATEST ' +
+        'build, and the closure may be running for a flush a SUPERSEDED build scheduled. Read ' +
+        'through the guarded `live` binding only. (This also retroactively covers the 13r-e ' +
+        'monster reconcile, which is why it is stated as a flat ban rather than a battle-only ' +
+        'one)',
+    ).toBe(0);
+
+    // --- (c) ordering: reconcile BEFORE the listener notification --------------
+    const reconcileHits = codeOccurrences(flushClosure, 'store.reconcileBattlesFromView(');
+    const flushHits = codeOccurrences(flushClosure, 'store.flushBatch()');
+    expect(
+      reconcileHits.length,
+      'the MicrotaskBatcher flush closure must call `store.reconcileBattlesFromView(…)` AS CODE ' +
+        '(ADR-0198). RED AT AUTHORING TIME: the closure reconciles monsters only',
+    ).toBe(1);
+    expect(
+      flushHits.length,
+      'the MicrotaskBatcher flush closure must still call `store.flushBatch()` — if this anchor ' +
+        'is gone the whole per-transaction reconcile signal is gone with it',
+    ).toBe(1);
+    expect(
+      reconcileHits[0],
+      'the battle reconcile must run BEFORE store.flushBatch() inside the flush closure ' +
+        '(ADR-0198). flushBatch() is what notifies the render loop; reconciling after it means ' +
+        'the frame that just rendered used the PRE-burst battle state, so the overlay shows the ' +
+        'previous turn until some unrelated table happens to flush',
+    ).toBeLessThan(flushHits[0]!);
+
+    // --- (d) the SOURCE of truth and the CONVERSION ---------------------------
+    expect(
+      includesAsCode(flushClosure, 'myBattle.iter()'),
+      "the flush closure must rebuild the battle map from the SDK's own post-burst row set — " +
+        '`[...live.db.myBattle.iter()]`. Reconstructing it from the insert/delete EVENTS is ' +
+        'id-set arithmetic over an unordered burst, which is the ordering dependence this ' +
+        'design exists to remove',
+    ).toBe(true);
+    expect(
+      includesAsCode(flushClosure, 'battleRowToStore'),
+      'the flush closure must map the SDK rows through `battleRowToStore` (rowConvert.ts:321) — ' +
+        'a raw SDK row keeps the two identities as Identity OBJECTS, so the participant match ' +
+        'in the store (store.ts:846, exact === on hex strings) never fires and no battle renders',
+    ).toBe(true);
+
+    // --- (e) exactly one reconcile site, and no per-row store writes -----------
+    expect(
+      countCodeOccurrences(squashed, 'store.reconcileBattlesFromView('),
+      'store.reconcileBattlesFromView( must be called from EXACTLY ONE site AS CODE — the ' +
+        'batcher flush closure. A second call site is a per-row reconcile against a mid-burst ' +
+        'SDK cache',
+    ).toBe(1);
+    expect(
+      countCodeOccurrences(squashed, 'store.upsertBattle('),
+      'store.upsertBattle( must no longer be called from connection.ts — the flush-time ' +
+        'reconcile from the SDK cache is the ONE write path for battle rows (ADR-0198). The ' +
+        'method stays ON THE STORE (its own unit tests use it); what is banned is the adapter ' +
+        'racing the reconcile with it. RED AT AUTHORING TIME: this is 1 (connection.ts:324)',
+    ).toBe(0);
+    expect(
+      countCodeOccurrences(squashed, 'store.removeBattle('),
+      'store.removeBattle( must no longer be called from connection.ts — a per-row delete ' +
+        'racing the flush-time reconcile is exactly the my_conversation coalescing wipe. RED AT ' +
+        'AUTHORING TIME: this is 1 (connection.ts:330)',
+    ).toBe(0);
+
+    // --- (f) regression anchor: the monster reconcile is untouched -------------
+    expect(
+      countCodeOccurrences(squashed, 'store.reconcileMonstersFromView('),
+      'the 13r-e monster reconcile must still be called exactly once from the same flush ' +
+        'closure — this slice ADDS a second reconcile, it does not replace the first',
+    ).toBe(1);
+  });
+
+  it('★ BITES: the stale `battle: unfiltered by design` comment is gone from connection.ts', () => {
+    // Scanned on the RAW source on purpose — this needle IS a comment, and every other
+    // tooth in this block reads the comment-stripped text.
+    //
+    // WRONG IMPL KILLED: a correct implementation that leaves the old rationale in
+    // place. The comment (connection.ts:704-708) states the exact opposite of what
+    // this slice makes true — that battle is subscribed unfiltered, that no
+    // owner-scoped view exists, and that client-side filtering is the only control.
+    // A future reader trusting it would "restore" the unfiltered subscription, and
+    // it also cites a line range that no longer exists.
+    const raw = readConnectionTs();
+    expect(
+      raw.indexOf('battle: unfiltered by design'),
+      'the stale comment `battle: unfiltered by design` (connection.ts:704) must be replaced ' +
+        'when the subscription becomes the participant-scoped view — it asserts the precise ' +
+        'claim ADR-0198 reverses, and a stale rationale is how a privacy fix gets undone by ' +
+        'someone doing what the comment says',
+    ).toBe(-1);
+  });
+});
