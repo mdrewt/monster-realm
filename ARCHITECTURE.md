@@ -187,7 +187,11 @@ that scan Rust should import `rust-scan.mjs` rather than hand-rolling a
 comment-stripping regex; a regex that strips `//` without string awareness is
 false-GREEN capable, and `evals/scanner-migration-audit.eval.mjs` (ADR-0186) is
 the live enforcing gate and measurement of which `*-security.eval.mjs` /
-`*-privacy.eval.mjs` files remain unmigrated.
+`*-privacy.eval.mjs` files remain unmigrated. **Its `KNOWN_UNMIGRATED_CAP` is an
+UPPER BOUND, never an exact equality (15r-a2):** under-cap prints a non-blocking
+advisory and exits 0, so each queued migration slice can delete its debt entry
+without the shared cap literal becoming cross-slice state that REDs `master` for
+doing *more* migration.
 **Rust test-mirror parity (13r-h, ADR-0195):** three bundled test-mirror repairs, all ADR-disclosed (ADR-0179 §9), none previously queued. `accounts_tests.rs` G2 mirror replaced a hardcoded 5-reducer needle list with dynamic source-derived reducer enumeration at parity with `guest-claim-integrity.eval.mjs`'s `checkNoClientIdentity` — positive wire-safe-scalar param allowlist, scheduled-struct-with-guard carve-out, Identity-constructor ban, and an exact reducer name-set pin. `evolution_tests.rs` EG2-9 swapped a hardcoded 10-file `scheduled_scan_sources()` for a recursive `read_dir` of `server-module/src/*.rs` (minus `*_tests.rs`) processed PER-FILE (no cross-file brace bleed), extended to seven scheduled-reducer anchors (added `guest_claim_reaper` + `mr_heartbeat`) with per-new-reducer body anchors. `accounts.rs` gained a pure `account_state_is_legal` predicate (the Account legal-state pairing invariant) `debug_assert!`'d in all five pure constructors, plus a `schema.rs` doc note and an exact-equality struct-shape tripwire so M22's `delete_account` extension must re-derive the invariant consciously.
 **Counting gates go HOLLOW, not red, when their region gains a legitimate
 occurrence (14r-f, ADR-0188 D4).** `zone-warp-server-runtime.eval.mjs`'s W3 counted
