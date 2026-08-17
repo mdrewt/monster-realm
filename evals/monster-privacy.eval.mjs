@@ -886,10 +886,13 @@ export function checkBattleView(files) {
   if (params !== SANCTIONED_PARAMS) {
     return (
       `[VB/sig] view '${VIEW_NAME_BATTLE}' has parameter list '(${params})' but the sanctioned ` +
-      `signature is exactly '(${SANCTIONED_PARAMS})'. A spacetimedb view accepts ARBITRARY ` +
-      'extra arguments, so an extra `who: Identity` parameter turns the participant-scoped ' +
-      "view into a caller-chosen-participant endpoint that reads any player's live battles — " +
-      'while the body, the return type and the attribute all stay canonical'
+      `signature is exactly '(${SANCTIONED_PARAMS})'. An extra \`who: Identity\` parameter turns ` +
+      'the participant-scoped view into a caller-chosen-participant endpoint that reads any ' +
+      "player's live battles — while the body, the return type and the attribute all stay " +
+      'canonical. VERSION-INDEPENDENT defense-in-depth: spacetimedb 1.12.0 accepted extra view ' +
+      'parameters SILENTLY (the caller-chosen-owner leak); 2.8.1 documents a context-only view ' +
+      'signature, so this shape is expected to be a COMPILE error now. The clause is kept ' +
+      'because it is free and still binds a future regression or a macro-generated variant'
     );
   }
 
@@ -2115,10 +2118,19 @@ fn my_battle(ctx: &spacetimedb::ViewContext) -> Vec<Battle> {
     if (bad) return bad;
   }
 
-  // VB7 (THE caller-chosen-participant leak — the ADR-0010 shape the spec names) —
-  // an EXTRA parameter. A spacetimedb view accepts it, the body stays canonical
-  // apart from the key, and the attribute, the return type and the filter COUNT
-  // are all still exactly right. Kills: any gate that pins only the body shape.
+  // VB7 (the caller-chosen-participant signature — the ADR-0010 shape the spec
+  // names) — an EXTRA parameter, with the body keyed on it: the attribute, the
+  // return type and the filter COUNT are all still exactly right. Kills: any gate
+  // that pins only the body shape.
+  //
+  // VERSION NOTE, so the fixture is not read as a claim about today's compiler:
+  // spacetimedb 1.12.0 accepted extra view parameters SILENTLY, which is what made
+  // this a live leak when 13r-e wrote the monster equivalent. 2.8.1 documents a
+  // context-only view signature, so this source is expected to be a COMPILE error
+  // now. The clause and this fixture are kept as version-independent
+  // defense-in-depth — they cost nothing and still bind a future regression or a
+  // macro-generated variant — and the fixture is a STRING here, so it is never
+  // compiled either way.
   {
     const fixture = `${PRIVATE_BATTLE_TABLE}
 #[spacetimedb::view(accessor = my_battle, public)]

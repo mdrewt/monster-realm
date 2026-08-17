@@ -1257,7 +1257,11 @@ function shallowRowEq(a: Record<string, unknown>, b: Record<string, unknown>): b
  *  one-level compare reports as changed on every rebuild — under-suppression is
  *  the render storm, over-suppression (e.g. comparing `turnNumber` alone) is a
  *  frozen HP bar, because `flee` and a PvP forfeit mutate `state.outcome`
- *  without bumping the turn. Cost is bounded: the battle map holds 0-2 rows. */
+ *  without bumping the turn. Cost is bounded: the battle map holds 0-2 rows —
+ *  a SERVER invariant (battle.rs keep-latest-per-player GC, pinned by
+ *  evals/battle-lifecycle-gc.eval.mjs), not a client guarantee. PLAIN DATA
+ *  ONLY: a non-plain object with no own enumerable keys (Date, Map, Set)
+ *  compares equal always — never add such a field to a store row type. */
 function deepRowEq(a: unknown, b: unknown): boolean {
   if (a === b) return true;
   if (Array.isArray(a) || Array.isArray(b)) {

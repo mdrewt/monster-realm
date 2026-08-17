@@ -3736,12 +3736,18 @@ fn e13r_e_monster_pub_is_private_and_its_view_is_owner_scoped() {
 ///  - a revert (or a never-applied flip) of the table's visibility. ADR-0042 made
 ///    `battle` public so BOTH participants could subscribe; a public battle table
 ///    also hands every connected client every other player's live battle state;
-///  - THE caller-chosen-owner leak: a spacetimedb view accepts ARBITRARY extra
-///    arguments, so `fn my_battle(ctx: &ViewContext, who: Identity)` compiles and
-///    serves any player's battles while the attribute, the return type and even an
-///    index-keyed body all still look canonical. The signature is pinned to exactly
-///    one parameter, and the parameter-count clause is stated SEPARATELY so that
-///    shape reports the reason it is fatal;
+///  - a caller-chosen-participant signature, pinned as VERSION-INDEPENDENT
+///    defense-in-depth rather than on a live-hole claim. On 1.12.0 a view silently
+///    accepted ARBITRARY extra arguments, so `fn my_battle(ctx: &ViewContext,
+///    who: Identity)` compiled and served any player's battles while the attribute,
+///    the return type and even an index-keyed body all still looked canonical (the
+///    caller-chosen-owner leak 13r-e was written against). On 2.8.1 the documented
+///    view signature is context-only, so that shape is expected to be a COMPILE
+///    ERROR today — the pin is kept because it costs nothing and still catches a
+///    future regression, a macro-generated variant, or an argument form the current
+///    macro accepts that the docs do not describe. The parameter-count clause is
+///    stated SEPARATELY from the exact-signature pin so that shape reports the
+///    reason it is fatal rather than a generic mismatch;
 ///  - the decoy-line leak (a conforming filter kept alive only to satisfy a
 ///    presence check, followed by the real read keyed on some other identity), and
 ///    every cargo-mutants rewrite of this body;
@@ -3855,7 +3861,11 @@ fn e15r_sec_a_battle_is_private_and_its_view_is_participant_scoped() {
     let raw_sig = &stripped[fn_idx..brace_idx];
 
     // Exactly ONE parameter. Stated separately from the exact-signature pin below
-    // so the caller-chosen-owner shape reports the reason it is fatal.
+    // so the caller-chosen-participant shape reports the reason it is fatal.
+    // VERSION-INDEPENDENT defense-in-depth: on 1.12.0 an extra view parameter was
+    // accepted silently; on 2.8.1 the documented signature is context-only, so it
+    // should not even compile. The clause stays because it is free and still binds
+    // a future regression or a macro-generated variant.
     let params = {
         let open = raw_sig.find('(').unwrap_or_else(|| {
             panic!("TEETH(15r-sec-a): the {view_name:?} view fn has no parameter list")
@@ -3891,11 +3901,17 @@ fn e15r_sec_a_battle_is_private_and_its_view_is_participant_scoped() {
     assert_eq!(
         top_level_commas, 0,
         "TEETH(15r-sec-a ADR-0198 D2 SIGNATURE): the {view_name:?} view takes more \
-         than one parameter (params: {params:?}). A spacetimedb view accepts \
-         ARBITRARY extra arguments, so an extra `who: Identity` turns the \
-         participant-scoped projection into a caller-chosen-participant endpoint \
-         that serves ANY player's live battles — while the attribute, the return \
-         type and even a `player_identity().filter(..)` body all still look canonical"
+         than one parameter (params: {params:?}). An extra `who: Identity` turns \
+         the participant-scoped projection into a caller-chosen-participant \
+         endpoint that serves ANY player's live battles — while the attribute, the \
+         return type and even a `player_identity().filter(..)` body all still look \
+         canonical. VERSION-INDEPENDENT defense-in-depth: spacetimedb 1.12.0 \
+         accepted extra view parameters SILENTLY (that is the caller-chosen-owner \
+         leak 13r-e was written against); 2.8.1 documents a context-only view \
+         signature, so this shape is expected to fail at COMPILE time now. The pin \
+         is kept because it is free and still binds a future regression, a \
+         macro-generated variant, or an argument form the macro accepts and the \
+         docs do not describe"
     );
 
     let sanctioned_sig = [

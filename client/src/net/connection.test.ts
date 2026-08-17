@@ -4143,6 +4143,34 @@ describe('★ connection.ts wiring (15r-sec-a / ADR-0198): W-15RSECA-RECONCILE �
         'store.reconcileBattlesFromView does not exist in the client at all',
     ).toBe(1);
 
+    // --- (a2) the guard must NOT swallow the flush -----------------------------
+    // Sited here because `guardBody` is already the brace-walked block, and the
+    // brace walk is BALANCED, so it now spans the desync-guard `try { … } catch { … }`
+    // that wraps the two reconciles (connection.ts:156-173) — nested braces and all.
+    //
+    // WRONG IMPL KILLED: moving `store.flushBatch()` inside this block. Two distinct
+    //   regressions collapse into that one edit, which is why the ban is stated over
+    //   the whole guard body rather than over the try alone:
+    //   (i) inside the `try`, a converter throw (bindings skew, a partially decoded
+    //       row) once again starves EVERY batch listener — the exact failure the
+    //       try/catch was added to prevent, silently re-introduced by relocating one
+    //       line into the block it protects;
+    //   (ii) anywhere inside `if (live !== undefined)`, the flush is skipped entirely
+    //       whenever there is no live connection — so after a drop, listeners stop
+    //       being notified at all, including the movement reconcile.
+    // flushBatch belongs UNCONDITIONALLY at the tail of the closure. This is a
+    // one-line pin on a regression surface no test in this slice exercises at
+    // runtime (nothing injects a throwing converter).
+    expect(
+      countCodeOccurrences(guardBody, 'store.flushBatch()'),
+      'store.flushBatch() must NOT appear inside the `if (live !== undefined)` block — it runs ' +
+        'UNCONDITIONALLY at the tail of the flush closure. Inside the block it is skipped ' +
+        'whenever no live connection exists (every listener starves after a drop), and inside ' +
+        'the desync-guard `try` a throwing converter starves them too — which is the precise ' +
+        'failure that try/catch exists to prevent. A stale view map is recoverable; a starved ' +
+        'flush is not',
+    ).toBe(0);
+
     // --- (b) no direct read of the possibly-superseded connection --------------
     expect(
       countCodeOccurrences(flushClosure, 'current.db.'),
@@ -4216,6 +4244,98 @@ describe('★ connection.ts wiring (15r-sec-a / ADR-0198): W-15RSECA-RECONCILE �
       'the 13r-e monster reconcile must still be called exactly once from the same flush ' +
         'closure — this slice ADDS a second reconcile, it does not replace the first',
     ).toBe(1);
+  });
+
+  it('★★ BITES: the reconcile ARGUMENT is EXACTLY the whole view cache, mapped — nothing sliced, filtered or dropped in between', () => {
+    // THE MUTATION SURVIVOR THIS CLOSES (test-reviewer, impl stage). Every other
+    // assertion in this block is a PRESENCE or POSITION check, and all of them are
+    // satisfied by an argument that quietly truncates the row set:
+    //     store.reconcileBattlesFromView(
+    //       [...live.db.myBattle.iter()].slice(0, 1).map((row) => battleRowToStore(…)),
+    //     );
+    // The `myBattle.iter()` needle is present, `battleRowToStore` is present, the
+    // call is inside the guard, before flushBatch, at exactly one site. It still
+    // hands the store a SUBSET, and because reconcileBattlesFromView is
+    // authoritative-by-design (every id absent from the argument is REMOVED), the
+    // dropped rows are deleted from the store on every flush. Same for an inserted
+    // `.filter(…)`, `.reduce(…)`, a `for` accumulator, or a `.map` that returns the
+    // wrong thing.
+    //
+    // NOTHING ELSE IN THE SLICE CAN SEE IT: store.test.ts calls the store method
+    // with hand-built arrays (the adapter's argument never appears there), and the
+    // e2e only ever gives a client ONE battle, so a `slice(0, 1)` is invisible
+    // end to end. This pin is therefore load-bearing, not defence in depth.
+    //
+    // PINNED AS AN EXACT EXPRESSION, NOT A BAN-LIST. A blacklist of `.slice(` /
+    // `.filter(` / `.reduce(` is unclosable — an index loop, a destructure, a
+    // helper call or `Array.from(…, fn)` each dodge one — so the whole argument is
+    // compared for equality instead, which makes every one of those unrepresentable
+    // at once. The comparison is WHITESPACE-INSENSITIVE (squashWhitespace has
+    // already collapsed every run to one ASCII space, so removing spaces here is a
+    // total whitespace strip): biome's line-wrapping choices depend on the width of
+    // the identifiers around it, and an exact pin that flips red on a pure reformat
+    // is an exact pin that gets deleted.
+    //
+    // THE ACCEPTED SET IS A 2x2 CROSS PRODUCT OF TWO INERT DEGREES OF FREEDOM, and
+    // both are trailing commas biome inserts when it wraps a call across lines and
+    // omits when the call fits on one — a trailing comma inside an argument list
+    // changes no behaviour whatsoever:
+    //   * OUTER — after the `.map(…)` argument of `reconcileBattlesFromView(`;
+    //   * INNER — after the `battleRowToStore(…)` call inside the `.map` closure,
+    //     which appears once biome wraps the arrow body onto its own line.
+    // Both are LIVE spellings of the same production line, not hypotheticals: the
+    // slice shipped with the outer comma only, and the desync-guard `try {` wrapper
+    // added around the two reconciles (connection.ts:156-173) indented the call by
+    // two more columns, pushed it past the print width, and made biome wrap the
+    // arrow body — producing the inner comma as well. Nothing about the expression
+    // changed; only where the formatter chose to break it.
+    //
+    // IF THIS FIRES ON A LEGITIMATE CHANGE: re-review the new expression HERE and
+    // in the ADR. Do NOT relax it to a substring check — that is the shape the
+    // mutant above already beat.
+    const squashed = squashedStrippedConnectionTs();
+    expectUniqueAnchor(squashed, 'new MicrotaskBatcher(');
+    const flushClosure = parenArgsAt(squashed, 'new MicrotaskBatcher(');
+
+    const callNeedle = 'store.reconcileBattlesFromView(';
+    const hits = codeOccurrences(flushClosure, callNeedle);
+    expect(
+      hits.length,
+      `\`${callNeedle}\` must occur EXACTLY once AS CODE inside the MicrotaskBatcher flush ` +
+        'closure before its argument can be pinned — zero means the reconcile is gone, two ' +
+        'means this scan cannot tell which call it is judging',
+    ).toBe(1);
+
+    // Sliced from the CODE occurrence, never handed the raw needle: parenArgsAt
+    // resolves its anchor with a plain indexOf, so a decoy string carrying the same
+    // text earlier in the closure would otherwise steer the walk to the wrong parens.
+    // biome-ignore lint/style/noNonNullAssertion: hits.length === 1 asserted above
+    const argRegion = parenArgsAt(flushClosure.slice(hits[0]!), callNeedle);
+    const compactArg = argRegion.split(' ').join('');
+
+    // ONE expression, composed mechanically over the two inert comma slots — so the
+    // set can never drift from the single source of truth above it, and a future
+    // formatter change is a one-character edit here rather than a new literal.
+    const reconcileArg = (inner: string, outer: string): string =>
+      `[...live.db.myBattle.iter()].map((row)=>battleRowToStore(rowasunknownasSdkBattleRow)${inner})${outer}`;
+    const sanctionedArgs = ['', ','].flatMap((inner) =>
+      ['', ','].map((outer) => reconcileArg(inner, outer)),
+    );
+    expect(
+      sanctionedArgs.includes(compactArg),
+      'the argument to store.reconcileBattlesFromView( must be EXACTLY the whole post-burst ' +
+        'view cache, mapped through the boundary converter and nothing else (ADR-0198 D4).\n' +
+        `  expected (whitespace-insensitive, any trailing-comma spelling): ${reconcileArg('', '')}\n` +
+        `  found: ${compactArg}\n` +
+        'Anything interposed between `.iter()]` and `.map(` — a `.slice(`, a `.filter(`, a ' +
+        '`.reduce(`, an index loop — hands the store a SUBSET, and the reconcile is ' +
+        'authoritative: every battle id absent from this argument is DELETED from the store on ' +
+        'every flush. A truncating mutant passes every other assertion in this block, is ' +
+        'invisible to store.test.ts (which calls the store method directly with its own ' +
+        'arrays), and is invisible to the e2e (one battle per client). The spread of ' +
+        '`.iter()` is what makes the set complete; the `.map` is what normalises the two ' +
+        'identities to hex strings so the participant match can fire',
+    ).toBe(true);
   });
 
   it('★ BITES: the stale `battle: unfiltered by design` comment is gone from connection.ts', () => {

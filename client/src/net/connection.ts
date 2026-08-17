@@ -148,18 +148,29 @@ export function connect(opts: ConnectionOptions): Connection {
     // `current === undefined` would collide with the M21b-2 assignment-count pin.
     const live = current;
     if (live !== undefined) {
-      store.reconcileMonstersFromView(
-        [...live.db.my_monster_pub.iter()].map((row) =>
-          monsterPubRowToStore(row as unknown as SdkMonsterPubRow),
-        ),
-      );
-      // 15r-sec-a (ADR-0198 D4): same countermeasure for the `my_battle` view —
-      // no PK in the view binding even on 2.8.1 codegen, so onUpdate never
-      // fires and every turn arrives as an unordered insert+delete pair;
-      // rebuild the battle map from the post-burst cache instead.
-      store.reconcileBattlesFromView(
-        [...live.db.myBattle.iter()].map((row) => battleRowToStore(row as unknown as SdkBattleRow)),
-      );
+      // 15r-sec-a hardening: the reconciles run UPSTREAM of flushBatch in this
+      // shared closure, so a converter throw (bindings skew, a partially
+      // decoded row) would starve EVERY batch listener — including the
+      // movement reconcile that drives prediction snap. Catch and continue:
+      // a stale battle map is recoverable, a starved flush is not.
+      try {
+        store.reconcileMonstersFromView(
+          [...live.db.my_monster_pub.iter()].map((row) =>
+            monsterPubRowToStore(row as unknown as SdkMonsterPubRow),
+          ),
+        );
+        // 15r-sec-a (ADR-0198 D4): same countermeasure for the `my_battle` view —
+        // no PK in the view binding even on 2.8.1 codegen, so onUpdate never
+        // fires and every turn arrives as an unordered insert+delete pair;
+        // rebuild the battle map from the post-burst cache instead.
+        store.reconcileBattlesFromView(
+          [...live.db.myBattle.iter()].map((row) =>
+            battleRowToStore(row as unknown as SdkBattleRow),
+          ),
+        );
+      } catch (err) {
+        console.error('[net] view reconcile threw; flushing anyway', err);
+      }
     }
     store.flushBatch();
   });

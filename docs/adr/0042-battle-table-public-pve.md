@@ -5,6 +5,7 @@
 **Slice:** m7b
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** ADR-0198
 **Subsystems:** battle, security-authz
 **Decision:** Battle table is public for PvE scope; derived stats are acceptable to expose for NPC opponents; revisit per-side privacy when PvP ships in M16.
 
