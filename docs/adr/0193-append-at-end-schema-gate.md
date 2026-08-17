@@ -5,6 +5,7 @@
 **Slice:** 13r-d (M-postgate thirteenth-review residuals §13r-d)
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** ADR-0199
 **Subsystems:** ci-gates, schema-persistence
 **Decision:** The schema-snapshot gate becomes column-ORDER aware: the baseline records each table column order, and a git-resolved comparison against the prior committed baseline keeps a mid-struct insert RED even after a full re-baseline.
 
