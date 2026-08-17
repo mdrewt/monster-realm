@@ -250,7 +250,15 @@ export function parseTableVisibility(rawSrc) {
 // with `accessor` first, so a rustfmt-wrapped or argument-reordered attribute must
 // still be COUNTED here — otherwise the table vanishes from both sides at once
 // and the count agrees vacuously (13r-d red-team F3).
-const TABLE_ATTR_NEEDLE = '#[spacetimedb::table(';
+// Deliberately NOT prefixed with '#[': a `#[cfg_attr(pred, spacetimedb::table(...))]`
+// wrapper is real, compiling SpacetimeDB 2.8.1 syntax that `matchTableBlocks` cannot
+// match. Anchoring this needle on '#[' too made BOTH sides of the [table-count]
+// comparison blind to such a table at once, so the count balanced vacuously and the
+// table vanished from every axis — columns, PK, order AND visibility (ADR-0199,
+// red-team, measured). Counting the macro path itself keeps `declared` honest, so the
+// table shows up as a count mismatch even though the block regex skipped it. On the
+// 2026-08-17 corpus both spellings count 38, so this widening is a no-op today.
+const TABLE_ATTR_NEEDLE = 'spacetimedb::table(';
 
 // ADR-0193 D7: the per-table, self-expiring escape for a change that only the
 // ADR-0177 delete-data runbook can make legal. Value must be a string naming an
@@ -2484,6 +2492,52 @@ pub struct Inventory {
   }
 
   // -------------------------------------------------------------------------
+  // -------------------------------------------------------------------------
+  // T-VIS-CFGATTR — a `#[cfg_attr(pred, spacetimedb::table(...))]` wrapper is
+  // real, compiling SpacetimeDB 2.8.1 syntax (verified with `cargo check`
+  // against the pinned toolchain) that `matchTableBlocks` cannot match. Before
+  // ADR-0199 widened TABLE_ATTR_NEEDLE, BOTH sides of the [table-count]
+  // comparison were blind to it simultaneously — `declared` and `parsedCount`
+  // both skipped it, the count balanced VACUOUSLY, and the table disappeared
+  // from every axis at once: columns, PK, order AND visibility. A hostile
+  // `public` table was therefore invisible to the whole gate.
+  // Kills: re-anchoring the needle on '#[', which restores that vacuous
+  // balance. This is the ONE tooth standing between the block regex's
+  // limitation and a silently unscanned table.
+  // -------------------------------------------------------------------------
+  const CFGATTR_SRC = [
+    '#[cfg_attr(not(test), spacetimedb::table(accessor = shadow_secrets, public))]',
+    'pub struct ShadowSecrets {',
+    '    #[primary_key]',
+    '    pub owner: Identity,',
+    '}',
+    '',
+    '#[spacetimedb::table(accessor = inventory, public)]',
+    'pub struct Inventory {',
+    '    #[primary_key]',
+    '    pub inv_id: u64,',
+    '}',
+  ].join('\n');
+  const cfgAttrParsed = parseTableSchemas(CFGATTR_SRC);
+  if ('shadow_secrets' in cfgAttrParsed) {
+    teeth.push(
+      'T-VIS-CFGATTR VACUOUS: matchTableBlocks unexpectedly MATCHED the cfg_attr-wrapped table, ' +
+        'so this tooth no longer exercises the count-mismatch path it was written for — ' +
+        're-derive it against the current regex',
+    );
+  } else {
+    const cfgAttrResult = checkParseShape(CFGATTR_SRC);
+    if (!hasTag(cfgAttrResult, '[table-count]')) {
+      teeth.push(
+        'T-VIS-CFGATTR FAILED: a #[cfg_attr(..., spacetimedb::table(accessor = shadow_secrets, ' +
+          'public))] table is skipped by matchTableBlocks, so [table-count] MUST flag the ' +
+          `mismatch — it did not: ${show(cfgAttrResult)}. TABLE_ATTR_NEEDLE has been re-anchored ` +
+          'on "#[", which makes the declared/parsed comparison balance vacuously and hides the ' +
+          'table from columns, PK, order AND visibility at once (ADR-0199)',
+      );
+    }
+  }
+
   // T-VIS-ANCHORS — baseline-INDEPENDENT, run against the REAL corpus. Kills:
   // an all-'private' (or all-'public') derivation that would be
   // self-consistently green after `--write`, and a derivation shared with
@@ -2504,22 +2558,91 @@ pub struct Inventory {
         `from ADR-0199, not to silence a red`,
     );
   }
+  // The pinned SET, not just the count. A count-only pin is evaded by a COMPENSATING
+  // DOUBLE FLIP — one private table promoted and one public table demoted in the same
+  // change keeps 18/20 balanced (ADR-0199, red-team, measured against the D7 bootstrap
+  // window where [visibility-escalation] is skipped and `--write` silences
+  // [visibility-drift], leaving this tooth as the only remaining backstop). Pinning
+  // every name makes any single flip a RED regardless of what else moved.
+  const pinnedPublicTables = [
+    'character',
+    'player',
+    'config',
+    'zone_def',
+    'species_row',
+    'skill_row',
+    'type_relation_row',
+    'item_row',
+    'shop_row',
+    'shop_item_row',
+    'inventory',
+    'evolution_path',
+    'npc',
+    'player_quest',
+    'heal_location_row',
+    'trade_offer',
+    'profile',
+    'battle_challenge',
+  ];
+  for (const t of pinnedPublicTables) {
+    if (realVisAll[t] !== 'public') {
+      teeth.push(
+        `T-VIS-ANCHORS FAILED: '${t}' is pinned 'public' (measured a6ae43c) but ` +
+          `parseTableVisibility(realSrc) got ${JSON.stringify(realVisAll[t])} — a demotion is ` +
+          `welcome, but it must update this pin DELIBERATELY so it cannot be used as the ` +
+          `counterweight in a compensating double flip`,
+      );
+    }
+  }
+  // ADR-0015 (must-never-leak), ADR-0198 (battle), ADR-0040/0044 (server-only truth),
+  // ADR-0179 (auth material), ADR-0194 (monster_pub). Every private table is pinned:
+  // this is the ONLY independent cross-check on the derivation once
+  // scripts/okf-export.mjs consumes it (the knowledge bundle and this gate now share
+  // one derivation, so `just knowledge-check` cannot catch a bug in it — ADR-0199).
   const pinnedPrivateTables = [
     'player_wallet',
     'battle',
+    'battle_wild',
+    'battle_action',
     'encounter',
     'monster',
+    'monster_pub',
     'account',
     'guest_claim',
+    'heal_cooldown',
+    'player_dialogue_state',
+    'player_conversation',
+    'guest_claim_reaper_schedule',
+    'movement_tick_schedule',
+    'mr_heartbeat_schedule',
+    'playtest_event',
+    'playtest_reaper_schedule',
+    'pvp_deadline_schedule',
+    'battle_challenge_reaper_schedule',
+    'trade_offer_reaper_schedule',
   ];
   for (const t of pinnedPrivateTables) {
     if (realVisAll[t] !== 'private') {
       teeth.push(
         `T-VIS-ANCHORS FAILED: '${t}' must derive 'private' (ADR-0015/ADR-0198/ADR-0040/ADR-0044/` +
-          `ADR-0179) but parseTableVisibility(realSrc) got ${JSON.stringify(realVisAll[t])} — this ` +
-          `is the ONLY independent cross-check on visibility derivation once ` +
-          `scripts/okf-export.mjs consumes it; a legitimate visibility change is expected to ` +
+          `ADR-0179/ADR-0194) but parseTableVisibility(realSrc) got ` +
+          `${JSON.stringify(realVisAll[t])} — a legitimate visibility change is expected to ` +
           `update this tooth deliberately, not silence it`,
+      );
+    }
+  }
+  // Set EQUALITY, not just membership: a NEW public table would pass both loops above
+  // (they only iterate the pinned names) while keeping nothing else pinned. Combined
+  // with the count check, this makes the pinned sets exhaustive.
+  for (const t of realVisTableNames) {
+    const pinned =
+      realVisAll[t] === 'public' ? pinnedPublicTables.includes(t) : pinnedPrivateTables.includes(t);
+    if (!pinned) {
+      teeth.push(
+        `T-VIS-ANCHORS FAILED: table '${t}' derives ${JSON.stringify(realVisAll[t])} but appears ` +
+          `in NEITHER pinned set — a new table must be added to this tooth deliberately, which ` +
+          `is the point: during the ADR-0199 D7 bootstrap window this tooth is the only ` +
+          `enforcement a NEW public table meets`,
       );
     }
   }

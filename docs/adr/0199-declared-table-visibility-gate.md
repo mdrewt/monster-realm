@@ -76,6 +76,29 @@ transition comparison. **This slice deliberately does not fix D7's own degenerat
 a different rule with different callers, and rewriting a gating rule outside this slice's criteria
 is not in scope. It is recorded as a follow-up.
 
+Three limits of the marker, measured rather than assumed, so no reader over-trusts it:
+the anchor is purely lexical, so `"ADR-9999"` — an ADR that does not exist — releases a transition
+exactly as a real citation would; one note string pasted onto several entries releases all of those
+transitions in one commit, so the marker count is not the transition count; and for a table
+**absent from `prev`** the absent-or-different test degenerates to "any anchored note", so a
+pre-existing note carried along by an accessor rename is accepted without fresh authorship.
+"Authored in this transition" therefore holds strictly only for tables that existed in `prev`. In
+every one of these cases the marker is a hand-written line in a reviewed diff, and reviewer
+attention — not the gate — is the control. The gate's job is to make the flip **impossible to land
+silently**, not to adjudicate the justification.
+
+**D9 — `[table-count]`'s needle counts the macro path, not `#[` + the macro path.** This amends
+ADR-0193 D3. `#[cfg_attr(pred, spacetimedb::table(accessor = x, public))]` is real, compiling
+SpacetimeDB 2.8.1 syntax (verified with `cargo check` against the pinned toolchain) that
+`matchTableBlocks` cannot match. With the needle anchored on `#[`, **both** sides of the
+declared-vs-parsed comparison were blind to such a table at once: the count balanced vacuously and
+the table vanished from every axis simultaneously — columns, PK, order and visibility — with the
+gate reporting green. Counting `spacetimedb::table(` keeps `declared` honest, so the table surfaces
+as a count mismatch even though the block regex skipped it. On the 2026-08-17 corpus both spellings
+count 38, so the widening is a no-op today; the `T-VIS-CFGATTR` tooth pins it, and reverting the
+needle turns that tooth RED. This does not make `matchTableBlocks` `cfg_attr`-aware — such a table
+still fails loudly as unparsed rather than being scanned, which is the correct fail-closed outcome.
+
 **D6 — `visibility_note` is permanent and has no staleness rule** — deliberately unlike D7's
 self-expiring `manual_migration`. The reason is mechanical, not stylistic: once the flip has landed,
 `prev` and `next` are both `public`, so the escalation trigger **self-disarms** and a lingering note
@@ -93,8 +116,15 @@ key — a tamper vector to re-enter the skip path — and it **fails**.
 evals/battle-schema-snapshot.eval.mjs --write`, a thin main-guard over a pure
 `formatBaseline(schemas, order, visibility, existingBaseline)` that iterates the existing baseline's
 top-level key order first (never re-sorting), appends parsed-only tables after, and carries unknown
-keys forward verbatim. `[baseline-stale]` asserts byte-identity against the committed file, making
-the baseline a provable pure function of source plus hand-authored markers. The main guard is inert
+keys forward verbatim. The `T-VIS-REGEN(a)` **proof-of-teeth** asserts byte-identity between
+`formatBaseline` over the real corpus and the committed file, making the baseline a provable pure
+function of source plus hand-authored markers. It is a tooth, not a tagged gate rule — there is no
+`[baseline-stale]` violation string — so it runs on every invocation but reports a stale baseline as
+`ADR-0193 teeth FAILED` rather than as a schema violation. That attribution is imprecise (it points
+an author at the gate rather than at their own diff, the very thing `T-REAL`'s comment warns
+about), and it means the well-worded `[visibility-drift]` message is not what an un-regenerated
+flip actually surfaces first. The security property is unaffected — the gate still fails — so this
+is recorded as a known wart rather than fixed under this slice's criteria. The main guard is inert
 under `evals/run.mjs`, which imports the module rather than executing it (precedent:
 `evals/observability-log-wrapper.eval.mjs:1629`). D6 previously held that regeneration needed no new
 rule because D4 polices the result; that remains true — `--write` removes a hand-transcription step,
@@ -109,10 +139,23 @@ it does not replace the policing.
   `public_view` false positive but also means the security gate and the `docs/knowledge/**` privacy
   documentation share one derivation. `just knowledge-check` is a regeneration-freshness check, not
   an independent second opinion, so it cannot catch a bug in that shared function. The
-  **T-VIS-ANCHORS** tooth is the independent cross-check: it pins the 18/20 public/private split and
-  pins `player_wallet`, `battle`, `encounter`, `monster`, `account` and `guest_claim` as private
-  (ADR-0015, ADR-0198, ADR-0040/0044, ADR-0179). A legitimate visibility change is expected to update
-  that tooth deliberately — that churn is the point, not a defect.
+  **T-VIS-ANCHORS** tooth is the independent cross-check. It pins the 18/20 split, **every table
+  name in both sets**, and set *equality* (a table in neither set fails). The name-level pin is not
+  belt-and-braces: a count-only pin is evaded by a **compensating double flip** — promoting one
+  private table while demoting one public table keeps 18/20 balanced — which was demonstrated to
+  pass the whole gate during the D7 bootstrap window, where escalation is skipped and `--write`
+  silences drift. A legitimate visibility change is expected to update that tooth deliberately;
+  that churn is the point, not a defect.
+- **This gate records the split; it does not bless it.** Two of ADR-0194's three residual
+  disclosure channels are still open and are recorded here as plain `public`: `trade_offer`
+  (`schema.rs:654` — `propose_trade` publishes the *counterparty's* `MonsterCard` snapshots into a
+  world-readable table without their consent, and its distinguishable errors form a
+  monster→owner oracle) and `battle_challenge` (`schema.rs:847` — `challenger_party_ids` reaches
+  every client, not just the target). ADR-0198 closed the third. Both predate this slice and both
+  are fixable with the same two-identity view pattern `my_battle` uses. **A green
+  `[visibility-shape]` on those two entries is not an approval**, and because D5 requires no
+  `visibility_note` on standing public tables, nothing in the baseline says so — hence this
+  paragraph.
 - D7's skip is bounded by this repository's **serialized-merge operating model**, not by the
   mechanism. A long-lived branch whose merge-base predates this slice resolves a pre-axis `prev` and
   stays in the skip state for its lifetime; `[visibility-drift]` still holds there, and the
