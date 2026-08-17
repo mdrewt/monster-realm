@@ -106,7 +106,7 @@
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { containsIdent } from './rust-scan.mjs';
+import { compactWs, containsIdent } from './rust-scan.mjs';
 
 const AUDIT_FILE_NAME = 'scanner-migration-audit.eval.mjs';
 const SECURITY_SUFFIX = '-security.eval.mjs';
@@ -994,6 +994,179 @@ function runProofOfTeeth() {
           `corroborating evidence (corroborating=${JSON.stringify(split.corroborating)}) — kills: ` +
           'a split that DROPS the measured evidence for a debt entry instead of reporting it',
       );
+    }
+  }
+
+  // T10 — cap advisory (15r-a2). `KNOWN_UNMIGRATED_CAP` must stay an upper
+  // bound with an advisory NOTE below it (E1), never an exact-equality trap
+  // that REDs the moment a queued migration slice deletes an entry — and the
+  // advisory itself must fall SILENT the instant the debt list is legally at
+  // cap (E2), because a printed note at the steady state is permanent noise.
+  //
+  // FIXTURE RULE (do not "fix" this): 6, 7, 8 and the cap 7 below are LITERALS
+  // on purpose, never `KNOWN_UNMIGRATED.length` / `KNOWN_UNMIGRATED_CAP`. Four
+  // queued migration slices each delete one KNOWN_UNMIGRATED entry; a tooth
+  // coupled to the live count passes today at 7/7 and REDs the moment one
+  // lands — verbatim the cross-slice race this slice exists to remove
+  // (reproduced and measured by red-team, not hypothesized).
+  const capProblems = (n, cap) => {
+    const entries = [];
+    for (let k = 0; k < n; k++) {
+      entries.push({
+        file: `synthetic-cap-${k}-security.eval.mjs`,
+        owner: '15r-a2',
+        reason: 'T10 fixture',
+      });
+    }
+    // existsFn always true; every entry is a member of the gated set; none is
+    // in the migrated set — so the three per-entry checks (existence,
+    // membership, already-migrated) all pass, isolating the cap check alone.
+    return validateKnownUnmigratedEntries(
+      entries,
+      new Set(entries.map((e) => e.file)),
+      new Set(),
+      () => true,
+      cap,
+    );
+  };
+
+  // T10a — under cap (6/7): advisory fires, nothing fails.
+  {
+    const problems = capProblems(6, 7);
+    if (problems.length !== 0) {
+      teeth.push(
+        `T10a FAILED: an under-cap (6/7) KNOWN_UNMIGRATED fixture produced ${problems.length} cap ` +
+          "problem(s) — kills: a cap check widened from '>' to '!==' or '<', which would RED master " +
+          'FOR DOING MORE MIGRATION the moment a queued migration slice deletes an entry',
+      );
+    }
+    const note = capAdvisoryNote(6, 7);
+    if (note.indexOf('NON-BLOCKING') === -1 || note.indexOf('1 below the cap of 7') === -1) {
+      teeth.push(
+        `T10a FAILED: capAdvisoryNote(6, 7) was '${note}', missing 'NON-BLOCKING' and/or '1 below ` +
+          "the cap of 7' — kills: an advisory that is silent when it should speak, so a shrinking " +
+          'debt list is never reported',
+      );
+    }
+  }
+
+  // T10b — exactly at cap (7/7): silent, nothing fails. THE LOAD-BEARING
+  // FIXTURE: the ONLY tooth that catches a `>` -> `>=` widening of the cap
+  // predicate (T10a at 6/7 and T10c at 8/7 both SURVIVE that mutation), and it
+  // also catches an advisory predicate widened from `<` to `<=`, which would
+  // turn the legal steady state into permanent noise. Do NOT assert the live
+  // run's overall `pass` here — that would couple the tooth to live state.
+  {
+    const problems = capProblems(7, 7);
+    if (problems.length !== 0) {
+      teeth.push(
+        `T10b FAILED: an at-cap (7/7) KNOWN_UNMIGRATED fixture produced ${problems.length} cap ` +
+          "problem(s) — kills: a cap check widened from '>' to '>=', which would RED the legal " +
+          'steady state (entries === cap)',
+      );
+    }
+    const note = capAdvisoryNote(7, 7);
+    if (note !== '') {
+      teeth.push(
+        `T10b FAILED: capAdvisoryNote(7, 7) was '${note}', not the empty string — kills: an advisory ` +
+          "predicate widened from '<' to '<=', which would turn the legal at-cap steady state into " +
+          'permanent noise',
+      );
+    }
+  }
+
+  // T10c — over cap (8/7): fails, with a message true of the observed state,
+  // and NO advisory (merged from the cut T10d). The three anchors ('8
+  // entries', 'cap 7', 'entries - cap = 1') are all required together:
+  // red-team MEASURED that anchoring on 'entries - cap = 1' alone is
+  // satisfiable by a message naming neither number.
+  {
+    const problems = capProblems(8, 7);
+    const hit = problems.find(
+      (p) =>
+        p.indexOf('8 entries') !== -1 &&
+        p.indexOf('cap 7') !== -1 &&
+        p.indexOf('entries - cap = 1') !== -1,
+    );
+    if (hit === undefined) {
+      teeth.push(
+        'T10c FAILED: an over-cap (8/7) KNOWN_UNMIGRATED fixture did not produce a problem ' +
+          "containing ALL of '8 entries', 'cap 7', and 'entries - cap = 1' " +
+          `(problems=${JSON.stringify(problems)}) — kills: a cap check deleted or weakened so debt ` +
+          "accumulates silently, and a message that asserts a relation as prose ('exceeding the cap " +
+          "of N') instead of reporting the measured numbers",
+      );
+    }
+    const note = capAdvisoryNote(8, 7);
+    if (note !== '') {
+      teeth.push(
+        `T10c FAILED: capAdvisoryNote(8, 7) was '${note}', not the empty string — kills: an ` +
+          "advisory predicate written '!==' instead of '<', which would print '1 below the cap of " +
+          "7' in the SAME detail line as an over-cap FAILURE, a false statement emitted by the gate " +
+          'itself',
+      );
+    }
+  }
+
+  // T10-WIRED — the advisory must actually be WIRED into `detail`. Red-team
+  // MEASURED a capAdvisoryNote that satisfies T10a/T10b/T10c while never
+  // reaching `detail` at all (pass=true, advisory absent from the output).
+  // Unit-fixture teeth alone cannot see that — this is the same hole
+  // 15r-sec-vis found and closed with `computeViolations` + `T-VIS-WIRED`.
+  {
+    // (a) buildDetailTail must preserve its capNote argument AND fragment
+    // order — kills a tail assembler that silently drops its capNote argument
+    // or reorders the fragments.
+    const wiredTail = buildDetailTail('ZA', 'ZB', 'ZZ_CAP_MARKER', 'ZC', 'ZD');
+    if (wiredTail.indexOf('ZZ_CAP_MARKER') === -1 || wiredTail !== 'ZAZBZZ_CAP_MARKERZCZD') {
+      teeth.push(
+        "T10-WIRED FAILED: buildDetailTail('ZA', 'ZB', 'ZZ_CAP_MARKER', 'ZC', 'ZD') returned " +
+          `'${wiredTail}' — kills: a tail assembler that silently drops its capNote argument or ` +
+          'reorders the fragments',
+      );
+    }
+
+    // (b) SELF-SOURCE ADJACENCY, this file's own T8c idiom: a read failure is
+    // a tooth FAILURE, never a skip. Blanking is what makes this sound rather
+    // than self-satisfying: the needles' own string literals inside THIS file
+    // are blanked to spaces, so this check cannot match itself, and a decoy
+    // occurrence in a comment or string cannot satisfy it either — only a
+    // real call site in executable code can. This is exactly why
+    // buildDetailTail must be a CALL, not an inline template literal:
+    // blankJsLiterals blanks template payloads, so an inline `tail` template
+    // would be invisible to this check.
+    let selfSrc = null;
+    try {
+      selfSrc = readFileSync('evals/scanner-migration-audit.eval.mjs', 'utf8');
+    } catch (e) {
+      teeth.push(
+        'T10-WIRED FAILED: could not read evals/scanner-migration-audit.eval.mjs — ' +
+          `${e?.message ?? String(e)} (a missing fixture is a FAIL, never a skip)`,
+      );
+    }
+    if (selfSrc !== null) {
+      const compacted = compactWs(blankJsLiterals(selfSrc).blanked);
+      if (
+        compacted.indexOf('capAdvisoryNote(KNOWN_UNMIGRATED.length,KNOWN_UNMIGRATED_CAP)') === -1
+      ) {
+        teeth.push(
+          'T10-WIRED FAILED: no live call site capAdvisoryNote(KNOWN_UNMIGRATED.length, ' +
+            'KNOWN_UNMIGRATED_CAP) found in executable code — kills: an advisory computed from ' +
+            'hardcoded numbers instead of the live KNOWN_UNMIGRATED.length / KNOWN_UNMIGRATED_CAP',
+        );
+      }
+      if (
+        compacted.indexOf(
+          'buildDetailTail(naNote,debtNote,capNote,corroborationNote,contentNote)',
+        ) === -1
+      ) {
+        teeth.push(
+          'T10-WIRED FAILED: no live call site buildDetailTail(naNote, debtNote, capNote, ' +
+            'corroborationNote, contentNote) found in executable code — kills: an advisory that is ' +
+            'computed but never spliced into `detail`, and a `tail` reverted to an inline template ' +
+            'that this check cannot audit',
+        );
+      }
     }
   }
 
