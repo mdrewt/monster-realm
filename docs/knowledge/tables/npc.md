@@ -2,10 +2,10 @@
 type: SpacetimeDB Table
 title: npc
 slug: tables/npc
-updated: 2026-08-16
+updated: 2026-08-17
 tags: [schema, spacetimedb, public]
 abstract: "NPC entity role row. Entity/component: an NPC is a `character` row + this. `zone_id` mirrors `character.zone_id` (kept …"
-resource: server-module/src/schema.rs#L502
+resource: server-module/src/schema.rs#L535
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---

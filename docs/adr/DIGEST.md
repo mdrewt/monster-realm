@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 163 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 164 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -172,6 +172,7 @@ Generated from 163 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0195](./0195-rust-test-mirror-parity.md) | 0195 — Rust test-mirror parity: derived scan sets, source-derived reducer enumeration, and the Account legal-state invariant | Accepted | ci-gates, security-authz, schema-persistence | 13r-h | Close ADR-0179 §9's parity residuals: EG2-9 scans src/ per-file via read_dir, the G2 mirror ports the JS eval's full defenses, and Account gets a debug_assert'd invariant + exact shape tripwire instead of an enum fold. |
 | [0196](./0196-changelog-freshness-nightly-check.md) | 0196 — Changelog freshness: the nightly check ADR-0165 deferred, as a lag×age conjunction | Accepted | tooling-docs, ci-gates | 13r-g | Implement ADR-0165's nightly changelog check as an entry-multiset comparison of a fresh `git cliff` generation against the committed ledger, failing only when >= 15 entries are missing AND the oldest is >= 6 days old; advisory from 8. |
 | [0197](./0197-spacetimedb-2.8.1-upgrade.md) | 0197 — SpacetimeDB 2.8.1: upgrade the CLI/host AND the module SDK (1.12.0 → 2.8.1), and correct four load-bearing false facts | Accepted | tooling-docs, schema-persistence, ci-gates | stdb-281 (toolchain upgrade; operator-initiated) | Upgrade the spacetime CLI/host 2.6.0 to 2.8.1 and the module crate 1.12.0 to 2.8.1 in one slice via a mechanical source port; accept a `--delete-data` republish (2.8.1 renames enum variants); correct four recorded false facts. |
+| [0198](./0198-participant-scoped-battle-view.md) | Participant-scoped `battle` via a two-identity view | Accepted | battle, security-authz, client-ui | 15r-sec-a | `battle` table becomes PRIVATE; participants read their own rows exclusively through the two-identity-scoped `my_battle` view; client ingest reconciles from SDK cache (view carries no PK). |
 
 ## Harness design corpus (H- namespace)
 
@@ -261,6 +262,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0175](./0175-essence-graph-reducers.md) — EG2 (M-evolution-essence-graph — EARS EG2-1..EG2-13) — 0175 — Essence-graph reducers: quality-time semantics, auto-evolution, battle credits (EG2) (Accepted)
 - [0185](./0185-pve-settle-log-and-commit.md) — 14r-d (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-d) — 0185 — PvE battle settle: log-and-commit the write-back error instead of aborting the reducer (Accepted)
 - [0189](./0189-ranked-requires-account.md) — 14r-g (M-postgate fourteenth-review residuals §14r-g) — 0189 — Ranked play requires a full account: server enforcement at both PvP handshake gates (Accepted)
+- [0198](./0198-participant-scoped-battle-view.md) — 15r-sec-a — Participant-scoped `battle` via a two-identity view (Accepted)
 
 ### evolution-fusion
 
@@ -429,6 +431,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0188](./0188-small-hygiene-sweep-escape-ssot-and-trade-cap-mirror.md) — 14r-f (M-postgate-fourteenth-review-residuals — ADR-0170 residual 8, ADR-0166 R4 + R6) — 0188 — small-hygiene sweep: evolution log escaping, both-role grass guard, trade-cap mirror (Accepted)
 - [0192](./0192-held-key-warp-continuation.md) — 13r-f (M-postgate thirteenth-review residuals §13r-f — the nh5 candidate named by ADR-0152 residual #4 and nh3-plan R6) — 0192 — Held-key warp continuation: the held stack survives the WARP arm's prediction rebuild (nh5) (Accepted)
 - [0194](./0194-monster-pub-need-to-know-privacy.md) — 13r-e — 0194 — monster_pub need-to-know privacy: private table + owner-scoped multi-row view (Accepted)
+- [0198](./0198-participant-scoped-battle-view.md) — 15r-sec-a — Participant-scoped `battle` via a two-identity view (Accepted)
 
 ### ci-gates
 
@@ -560,6 +563,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0189](./0189-ranked-requires-account.md) — 14r-g (M-postgate fourteenth-review residuals §14r-g) — 0189 — Ranked play requires a full account: server enforcement at both PvP handshake gates (Accepted)
 - [0194](./0194-monster-pub-need-to-know-privacy.md) — 13r-e — 0194 — monster_pub need-to-know privacy: private table + owner-scoped multi-row view (Accepted)
 - [0195](./0195-rust-test-mirror-parity.md) — 13r-h — 0195 — Rust test-mirror parity: derived scan sets, source-derived reducer enumeration, and the Account legal-state invariant (Accepted)
+- [0198](./0198-participant-scoped-battle-view.md) — 15r-sec-a — Participant-scoped `battle` via a two-identity view (Accepted)
 
 ### economy-quests
 

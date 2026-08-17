@@ -15,7 +15,7 @@ import {
 
 
 export default __t.row({
-  battleId: __t.u64().primaryKey().name("battle_id"),
+  battleId: __t.u64().name("battle_id"),
   playerIdentity: __t.identity().name("player_identity"),
   opponentIdentity: __t.identity().name("opponent_identity"),
   get state() {

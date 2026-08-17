@@ -53,16 +53,31 @@
 //         pinned to exactly `(ctx: &spacetimedb::ViewContext)`, its return type
 //         to `Vec<MonsterPub>`, exactly one `.filter(` in the body, and
 //         `fn my_monster_pub` declared exactly once in the whole scanned tree.
+//   [PB/*] checkBattlePrivate(tables)          — 15r-sec-a (ADR-0198 D1): the
+//         `battle` table exists, is declared exactly once, and is NOT public. The
+//         structural mirror of [P/*], and the eval-side pin of EARS 15r-sec-a-1:
+//         [VB/*] and [I/set] are BOTH green on a tree that adds the view and never
+//         flips the table, so nothing else here can see that leak.
+//   [VB/*] checkBattleView(files)              — 15r-sec-a (ADR-0198): the same
+//         family for `battle`, which is PRIVATE since this slice: exactly ONE
+//         `#[spacetimedb::view(accessor = my_battle, public)]`, its body pinned by
+//         compactWs EQUALITY taken from the ATTRIBUTE WALK, its signature pinned to
+//         exactly `(ctx: &spacetimedb::ViewContext)`, its return type to
+//         `Vec<Battle>`, exactly THREE `.filter(` in the body (two index scans plus
+//         the dedup filter), and `fn my_battle` declared exactly once.
 //   [I/*] checkViewInventory(files)            — the EXACT set of view names in
 //         non-test server source, plus the laundering ban (no OTHER view may
-//         reach monster_pub / monster / pub_from_monster, or return a Monster).
+//         reach monster_pub / monster / pub_from_monster / battle, or return a
+//         Monster).
 //   [A/*] checkNoCfgAttrLaundering(files)      — no `cfg_attr(` whose args carry
 //         `spacetimedb::` (attribute laundering; zero legitimate occurrences).
 //   [F/*] checkNoForgedViewContext(files)      — every `ViewContext` identifier is
 //         a `&spacetimedb::ViewContext` PARAMETER (or AnonymousViewContext);
 //         aliases, `::new(`, and struct literals are all banned structurally.
 //   [C/*] checkBindings(fsProbe)               — monster_pub_table.ts ABSENT,
-//         my_monster_pub_table.ts PRESENT, monster_table.ts ABSENT.
+//         my_monster_pub_table.ts PRESENT, monster_table.ts ABSENT; 15r-sec-a adds
+//         battle_table.ts ABSENT and my_battle_table.ts PRESENT (the only
+//         mechanical proof the post-flip bindings regen actually ran).
 //   [S/*] checkSubscriptionShape(connSrc)      — the ONE `.subscribe([...])`
 //         array's element set EXACTLY equals a pinned allowlist, every element is
 //         a single-quoted literal (no backtick / no `+` concat), `FROM
@@ -132,10 +147,23 @@ const VIEW_NAME = 'my_monster_pub';
 const VIEW_ATTR_MARKER = '#[spacetimedb::view(';
 const TABLE_ATTR_MARKER = '#[spacetimedb::table(';
 
-// The whole sanctioned view inventory, sorted. Any addition or removal is a
+// 15r-sec-a (ADR-0198): the battle half of the same family.
+const BATTLE_TABLE = 'battle';
+const VIEW_NAME_BATTLE = 'my_battle';
+
+// The whole sanctioned view inventory, SORTED. Any addition or removal is a
 // privacy-relevant event that must be re-reviewed HERE (and in
 // evals/account-privacy.eval.mjs, which pins the same set).
-const EXPECTED_VIEWS = ['my_account', 'my_conversation', 'my_monster_pub', 'my_wallet'];
+// KEEP THIS ARRAY SORTED: the enforcement below compares `found.sort()` INDEX-WISE
+// against this literal, so appending a new name instead of inserting it in sort
+// order false-REDs the gate on correct code.
+const EXPECTED_VIEWS = [
+  'my_account',
+  'my_battle',
+  'my_conversation',
+  'my_monster_pub',
+  'my_wallet',
+];
 
 // The ONE sanctioned attribute and body, whitespace-compacted (ADR-0194 D2).
 const SANCTIONED_ATTR = 'accessor=my_monster_pub,public';
@@ -148,6 +176,56 @@ const SANCTIONED_BODY_REF = 'ctx.db.monster_pub().owner_identity().filter(&ctx.s
 // other clause here stays green.
 const SANCTIONED_PARAMS = 'ctx:&spacetimedb::ViewContext';
 const SANCTIONED_RETURN = 'Vec<MonsterPub>';
+
+// ---------------------------------------------------------------------------
+// 15r-sec-a (ADR-0198 D2): the ONE sanctioned my_battle attribute / return type /
+// body, whitespace-compacted.
+//
+// WHY A FOUR-ELEMENT BODY SET AND NOT ONE STRING. Every difference between the
+// four is INERT: `&ctx.sender()` is the same index lookup, borrowed (the
+// my_monster_pub pin above accepts the identical pair), and the optional trailing
+// comma is what rustfmt emits when it wraps the `.chain(...)` argument across
+// lines. Neither changes a row that is delivered, and a formatting-driven false
+// RED is how an exact pin gets "fixed" by loosening it. Everything else about the
+// body is pinned exactly.
+//
+// WHY THE TRAILING FILTER IS NOT AN INEQUALITY INVARIANT (read before editing):
+// `.filter(|b| b.player_identity != ctx.sender())` is DEDUP BY CONSTRUCTION — it
+// drops exactly the rows the first (player_identity) scan already emitted, so a
+// row on which the sender holds BOTH identity columns is delivered ONCE. It says
+// nothing about the row itself. Rewriting it as
+// `b.player_identity != b.opponent_identity` type-checks and reads like the same
+// idea, but it DELETES every practice battle from the caller's own result set:
+// server-module/src/battle.rs:1274-1278 defines a practice battle as exactly
+// `player_identity == opponent_identity`, which is legal and must arrive exactly
+// once, not zero times.
+// ---------------------------------------------------------------------------
+const SANCTIONED_ATTR_BATTLE = 'accessor=my_battle,public';
+const SANCTIONED_RETURN_BATTLE = 'Vec<Battle>';
+/**
+ * Build one sanctioned my_battle body spelling.
+ * @param {string} sender Sender expression as written inside `.filter(`.
+ * @param {string} tail Trailing comma rustfmt may leave inside `.chain(`.
+ * @returns {string} The whitespace-compacted body.
+ */
+function battleViewBody(sender, tail) {
+  return (
+    `ctx.db.battle().player_identity().filter(${sender})` +
+    `.chain(ctx.db.battle().opponent_identity().filter(${sender})` +
+    `.filter(|b|b.player_identity!=ctx.sender())${tail}).collect()`
+  );
+}
+const SANCTIONED_BODY_BATTLE = battleViewBody('ctx.sender()', '');
+const SANCTIONED_BODY_BATTLE_REF = battleViewBody('&ctx.sender()', '');
+const SANCTIONED_BODIES_BATTLE = [
+  SANCTIONED_BODY_BATTLE,
+  SANCTIONED_BODY_BATTLE_REF,
+  battleViewBody('ctx.sender()', ','),
+  battleViewBody('&ctx.sender()', ','),
+];
+// Two point index scans plus the dedup filter. Anything else is a decoy line
+// (four) or a dropped dedup (two).
+const SANCTIONED_FILTER_COUNT_BATTLE = 3;
 
 // ---------------------------------------------------------------------------
 // parseTableStructs — the shared paren-walking table parser PLUS a brace-walked
@@ -541,6 +619,80 @@ export function checkMonsterPubClean(tables) {
 }
 
 // ---------------------------------------------------------------------------
+// Check PB: `battle` exists and is NOT public (15r-sec-a, ADR-0198 D1).
+//
+// THIS IS THE EVAL-SIDE PIN OF EARS 15r-sec-a-1 — "WHEN the module is
+// published, `battle` SHALL NOT be declared public". It is the exact structural
+// mirror of Check P above, for the same reason Check P exists: the VIEW clauses
+// ([VB]) and the INVENTORY clause ([I/set]) all stay GREEN on a tree where the
+// participant-scoped view was added and the table was never flipped. That
+// combination is not a hypothetical — it is the CURRENT master shape plus one
+// commit, and it leaks everything the view was built to protect while every
+// other clause in this file reports success. Fixture PB1 pins exactly that.
+//
+// WHAT A PUBLIC `battle` DELIVERS to every connected client: the whole
+// BattleState of every live fight in the world — both teams' derived stats, HP,
+// status and weather, plus the two participant identities. ADR-0042 accepted
+// that because no per-caller read path existed; ADR-0198 supplies one, so the
+// table has no reason to stay public.
+//
+// CLAUSE ORDER: missing (fail loud) -> public (the security verdict) -> count.
+// The public verdict deliberately runs BEFORE the count so a STACKED
+// private-then-public attribute pair reports the LEAK rather than the
+// duplication — the same ordering rationale Check P records.
+//
+// EVERY declaration named `battle` is inspected, not just the first: stacked
+// `#[spacetimedb::table(accessor = battle, ...)]` attributes on ONE struct are
+// legal, and a private-looking first attr followed by a public second one is a
+// live bypass shape (fixture PB4, the P5 shape for this table).
+//
+// NAME MATCHING IS WHOLE-TOKEN, via the shared parseTables output: `battle_wild`,
+// `battle_challenge` and `battle_action` are DIFFERENT tables with their own
+// gates, and a prefix match here would either false-RED on them or judge the
+// wrong struct. PB3 exercises that boundary.
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {Array<{name:string, isPublic:boolean, body:string}>} tables Parsed tables.
+ * @returns {string|null} Error string, or null on pass.
+ */
+export function checkBattlePrivate(tables) {
+  const rows = tables.filter((t) => t.name === BATTLE_TABLE);
+  // FAIL-LOUD NON-VACUITY (the empty-target blind spot): an unfound `battle` is a
+  // HARD failure, never a skip. With no such table in the scanned text this
+  // clause — and the whole reason the my_battle view exists — would be satisfied
+  // by an empty source.
+  if (rows.length === 0) {
+    return (
+      `[PB/missing] no \`${TABLE_ATTR_MARKER}accessor = ${BATTLE_TABLE})]\` declaration was ` +
+      'found in the scanned server source — the scan reached the wrong tree, the table was ' +
+      'renamed/moved, or the stripper blanked it. Every battle-privacy clause here would then ' +
+      'pass VACUOUSLY'
+    );
+  }
+  if (rows.some((t) => t.isPublic)) {
+    return (
+      `[PB/public] the \`${BATTLE_TABLE}\` table is declared \`public\` — since 15r-sec-a / ` +
+      'ADR-0198 D1 it is PRIVATE, and the participant-scoped `my_battle` view is its ONLY ' +
+      "client read path. A public battle table delivers EVERY live battle's full BattleState " +
+      "(both teams' derived stats, HP, status and weather) plus both participant identities to " +
+      'every connected client — which is what ADR-0042 conceded when no per-caller read path ' +
+      'existed. Drop `public` from the table attr (a stacked second table attribute counts ' +
+      'too). NOTE: no other clause in this file can see this. [VB/*] and [I/set] are both ' +
+      'GREEN on a tree that adds the view and never flips the table'
+    );
+  }
+  if (rows.length !== 1) {
+    return (
+      `[PB/count] found ${rows.length} table declarations named \`${BATTLE_TABLE}\`; exactly ONE ` +
+      'is sanctioned. A stacked second attribute is unreviewed by construction, and it is the ' +
+      'shape a public re-declaration hides behind'
+    );
+  }
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Check V: the ONE sanctioned view. Every clause is derived from the ATTRIBUTE
 // WALK — never a name lookup over fns.
 // ---------------------------------------------------------------------------
@@ -669,6 +821,155 @@ export function checkMonsterPubView(files) {
 }
 
 // ---------------------------------------------------------------------------
+// Check VB: the ONE sanctioned my_battle view (15r-sec-a, ADR-0198 D2).
+//
+// Structurally identical to Check V above — same attribute walk, same clause
+// ORDER (shape clauses BEFORE the exact-body pin, so a fixture aimed at one of
+// them is not short-circuited by the body pin) — with three battle-specific
+// facts:
+//   * the return type is `Vec<Battle>` and genuinely multi-row PER CALLER (a
+//     player can hold one row as side A and another as side B), so the type
+//     bounds nothing and the body is the whole boundary;
+//   * the body performs TWO point index scans (`player_identity`,
+//     `opponent_identity` — both btree-indexed at schema.rs:401-404) joined by
+//     `.chain(`, and a `Vec` is not a set, so the sanctioned body ends with a
+//     DEDUP filter;
+//   * that dedup filter is NOT an inequality invariant — see the constant block
+//     above, and the [VB/body] message below, for why the obvious
+//     `b.player_identity != b.opponent_identity` rewrite silently deletes every
+//     practice battle.
+// ---------------------------------------------------------------------------
+
+/**
+ * @param {Array<{path:string, src:string}>} files Raw non-test server sources.
+ * @returns {string|null} Error string, or null on pass.
+ */
+export function checkBattleView(files) {
+  const stripped = strippedBlob(files);
+
+  const divergence = viewParserAgrees(stripped);
+  if (divergence) return divergence;
+
+  const sites = viewSites(stripped);
+  const mine = sites.filter((v) => v.name === VIEW_NAME_BATTLE);
+  if (mine.length !== 1) {
+    return (
+      `[VB/count] expected EXACTLY ONE \`${VIEW_ATTR_MARKER}accessor = ${VIEW_NAME_BATTLE}, ` +
+      `public)]\` in the non-test server source, found ${mine.length}. \`${BATTLE_TABLE}\` is ` +
+      'PRIVATE since ADR-0198, so with no such view NO battle can ever render on either side ' +
+      '(the client is dark, not merely degraded); with two, one of them is unreviewed'
+    );
+  }
+  const v = mine[0];
+
+  const attr = compactWs(v.attrText);
+  if (attr !== SANCTIONED_ATTR_BATTLE) {
+    return (
+      `[VB/attr] the ${VIEW_NAME_BATTLE} view attribute args are '${attr}' but the sanctioned ` +
+      `form is '${SANCTIONED_ATTR_BATTLE}' (ADR-0198 D2). \`public\` on a view attribute is a ` +
+      'MANDATORY keyword (it grants no visibility of its own — per-caller scoping comes from ' +
+      'the host reconstructing `sender`); a missing or reordered arg list is a deliberate eval ' +
+      'edit, not a drive-by'
+    );
+  }
+
+  const compactSig = compactWs(v.sigText);
+  if (compactSig.indexOf('AnonymousViewContext') !== -1) {
+    return (
+      `[VB/anon] view '${VIEW_NAME_BATTLE}' takes an &AnonymousViewContext — an anonymous view ` +
+      'context has NO sender, so the projection cannot be per-participant: it must take ' +
+      '&spacetimedb::ViewContext'
+    );
+  }
+
+  const params = compactParams(v.sigText);
+  if (params !== SANCTIONED_PARAMS) {
+    return (
+      `[VB/sig] view '${VIEW_NAME_BATTLE}' has parameter list '(${params})' but the sanctioned ` +
+      `signature is exactly '(${SANCTIONED_PARAMS})'. An extra \`who: Identity\` parameter turns ` +
+      'the participant-scoped view into a caller-chosen-participant endpoint that reads any ' +
+      "player's live battles — while the body, the return type and the attribute all stay " +
+      'canonical. VERSION-INDEPENDENT defense-in-depth: spacetimedb 1.12.0 accepted extra view ' +
+      'parameters SILENTLY (the caller-chosen-owner leak); 2.8.1 documents a context-only view ' +
+      'signature, so this shape is expected to be a COMPILE error now. The clause is kept ' +
+      'because it is free and still binds a future regression or a macro-generated variant'
+    );
+  }
+
+  const ret = compactReturnType(v.sigText);
+  if (ret !== SANCTIONED_RETURN_BATTLE) {
+    return (
+      `[VB/ret] view '${VIEW_NAME_BATTLE}' returns '${ret}' but must return exactly ` +
+      `'${SANCTIONED_RETURN_BATTLE}' (ADR-0198 D2). The return type is what the generated ` +
+      'client binding is shaped from, and it must stay multi-row: a player can hold one row ' +
+      'as side A and a second as side B at the same time, so an Option would silently drop one'
+    );
+  }
+
+  const compactBody = compactWs(v.bodyText);
+
+  // DEFENSE IN DEPTH ONLY — NOT load-bearing, and documented as such so nobody
+  // mistakes it for the boundary (exactly as [V/iter] is). A whole-table scan
+  // over `battle` would hand every caller every player's live battle.
+  if (compactBody.indexOf('iter') !== -1) {
+    return (
+      `[VB/iter] view '${VIEW_NAME_BATTLE}' body contains the substring 'iter' — a whole-table ` +
+      "scan over battle leaks every player's live battle state. (Defense in depth: the " +
+      'LOAD-BEARING clause is [VB/body])'
+    );
+  }
+
+  const filterCount = countOccurrences(compactBody, '.filter(');
+  if (filterCount !== SANCTIONED_FILTER_COUNT_BATTLE) {
+    return (
+      `[VB/filter] view '${VIEW_NAME_BATTLE}' body contains ${filterCount} \`.filter(\` call(s); ` +
+      `exactly ${SANCTIONED_FILTER_COUNT_BATTLE} are sanctioned — one per point index scan ` +
+      '(player_identity, opponent_identity) plus the trailing DEDUP filter. TWO means the dedup ' +
+      'filter was dropped, and a Vec is not a set: a practice battle (player_identity == ' +
+      'opponent_identity, battle.rs:1274-1278) would then be delivered TWICE, and the client ' +
+      'store would show one battle as two. FOUR is the decoy-line shape: a conforming ' +
+      '`let _decoy = ...filter(ctx.sender())...;` kept alive only to satisfy a presence check, ' +
+      'followed by the real read keyed on an ARBITRARY identity'
+    );
+  }
+
+  // LOAD-BEARING.
+  if (SANCTIONED_BODIES_BATTLE.indexOf(compactBody) === -1) {
+    return (
+      `[VB/body] view '${VIEW_NAME_BATTLE}' body is not EXACTLY the sanctioned ` +
+      `participant-scoped projection.\n  expected (whitespace-insensitive): ` +
+      `${SANCTIONED_BODY_BATTLE}\n  found: ${compactBody}\n` +
+      'This clause is exact ON PURPOSE: with a Vec return type the type no longer bounds the ' +
+      'result set (ADR-0154 D3), so the body IS the entire boundary, and a presence-only ' +
+      'spelling is defeated by the decoy line [VB/filter] describes.\n' +
+      'IF THE TRAILING FILTER IS WHAT DIFFERS, READ THIS FIRST: ' +
+      '`.filter(|b| b.player_identity != ctx.sender())` is DEDUP BY CONSTRUCTION — it excludes ' +
+      'exactly the rows the first scan already emitted, so a row on which the sender holds BOTH ' +
+      'identity columns arrives ONCE. It is NOT an invariant about the row, and it must NEVER ' +
+      'be rewritten as `b.player_identity != b.opponent_identity`: battle.rs:1274-1278 defines ' +
+      'a PRACTICE battle as exactly `player_identity == opponent_identity`, that form is legal, ' +
+      "and the inequality rewrite deletes every one of them from the caller's own result set " +
+      '(zero deliveries instead of one).\n' +
+      'Any legitimate change must be re-reviewed here AND in ' +
+      'server-module/src/evolution_tests.rs::' +
+      'e15r_sec_a_battle_is_private_and_its_view_is_participant_scoped'
+    );
+  }
+
+  const decls = countFnDeclarations(stripped, VIEW_NAME_BATTLE);
+  if (decls !== 1) {
+    return (
+      `[VB/fn-once] \`fn ${VIEW_NAME_BATTLE}\` is declared ${decls} time(s) in the non-test ` +
+      'server source; exactly ONE is sanctioned. A second, un-attributed fn of the same name is ' +
+      'the red-team shape that defeats every name-anchored body pin — the real (attributed) ' +
+      'view can then leak while a decoy satisfies the lookup'
+    );
+  }
+
+  return null;
+}
+
+// ---------------------------------------------------------------------------
 // Check I: the EXACT view inventory, plus the laundering ban.
 //
 // Views are the ONLY client read path into a private table, so the inventory is
@@ -681,7 +982,20 @@ export function checkMonsterPubView(files) {
 // that never names monster_pub at all can still serve other players' rosters.
 // ---------------------------------------------------------------------------
 
-const LAUNDER_NEEDLES = ['monster_pub(', 'monster(', 'pub_from_monster('];
+const LAUNDER_NEEDLES = ['monster_pub(', 'monster(', 'pub_from_monster(', 'battle('];
+
+// 15r-sec-a (ADR-0198): each needle names the ONE view sanctioned to reach it;
+// EVERY other view is banned from it. A single "skip the owning view" rule cannot
+// express this any more — with two private tables in the family, exempting
+// my_monster_pub wholesale would also let it reach `battle(`, and exempting
+// my_battle wholesale would let it rebuild a monster roster. Cross-view reach is
+// the laundering shape, so the exemption is per-needle, not per-view.
+const LAUNDER_OWNER = {
+  'monster_pub(': VIEW_NAME,
+  'monster(': VIEW_NAME,
+  'pub_from_monster(': VIEW_NAME,
+  'battle(': VIEW_NAME_BATTLE,
+};
 
 /**
  * @param {Array<{path:string, src:string}>} files Raw non-test server sources.
@@ -713,19 +1027,20 @@ export function checkViewInventory(files) {
   }
 
   for (const v of all) {
-    if (v.name === VIEW_NAME) continue;
     const body = compactWs(v.bodyText);
     for (const needle of LAUNDER_NEEDLES) {
+      if (LAUNDER_OWNER[needle] === v.name) continue;
       if (body.indexOf(needle) !== -1) {
         return (
-          `[I/launder] view '${v.name}' (${v.path}) reaches \`${needle}\` — ${VIEW_NAME} is the ` +
-          'ONLY sanctioned read path for monster data. A view can rebuild the public ' +
-          'projection from the PRIVATE monster table via marshal::pub_from_monster without ever ' +
-          'naming monster_pub, which is why this ban covers the projection helper and the ' +
-          'private accessor too'
+          `[I/launder] view '${v.name}' (${v.path}) reaches \`${needle}\` — ` +
+          `${LAUNDER_OWNER[needle]} is the ONLY sanctioned read path for that data. A view can ` +
+          'rebuild the public monster projection from the PRIVATE monster table via ' +
+          'marshal::pub_from_monster without ever naming monster_pub, which is why this ban ' +
+          'covers the projection helper and the private accessors too'
         );
       }
     }
+    if (v.name === VIEW_NAME) continue;
     const ret = compactReturnType(v.sigText);
     for (const rowType of ['MonsterPub', 'Monster']) {
       if (hasIdent(ret, rowType)) {
@@ -905,6 +1220,13 @@ export function checkNoForgedViewContext(files) {
 const LEGACY_PUB_BINDING = 'client/src/module_bindings/monster_pub_table.ts';
 const VIEW_BINDING = 'client/src/module_bindings/my_monster_pub_table.ts';
 const PRIVATE_MONSTER_BINDING = 'client/src/module_bindings/monster_table.ts';
+// 15r-sec-a (ADR-0198). This pair is the ONLY mechanical proof that the bindings
+// regen actually ran AFTER the visibility flip: a publish that flips the table but
+// skips `just gen` leaves battle_table.ts on disk, the adapter keeps compiling
+// against a binding the module no longer emits, and every source-scan clause here
+// stays green.
+const LEGACY_BATTLE_BINDING = 'client/src/module_bindings/battle_table.ts';
+const BATTLE_VIEW_BINDING = 'client/src/module_bindings/my_battle_table.ts';
 
 /**
  * @param {(relPath: string) => boolean} fsProbe Returns true iff the path exists.
@@ -932,6 +1254,23 @@ export function checkBindings(fsProbe) {
       'never hydrate'
     );
   }
+  if (fsProbe(LEGACY_BATTLE_BINDING)) {
+    return (
+      `[C/legacy-battle] ${LEGACY_BATTLE_BINDING} exists — since ADR-0198 \`battle\` is PRIVATE ` +
+      'and a private table emits no client table binding. Its presence means the visibility flip ' +
+      'was reverted, or the bindings were never regenerated after the publish (`just gen`; ' +
+      'never hand-edit module_bindings). This is the one check that can tell those apart from a ' +
+      'correct flip, because every source scan in this file reads the SERVER tree'
+    );
+  }
+  if (!fsProbe(BATTLE_VIEW_BINDING)) {
+    return (
+      `[C/missing-battle-view] ${BATTLE_VIEW_BINDING} missing — the participant-scoped view ` +
+      'binding was not generated, so the client cannot subscribe my_battle: no battle renders ' +
+      'on either side, and (because a subscription naming a nonexistent view errors the WHOLE ' +
+      'batch) every player gets a blank world'
+    );
+  }
   return null;
 }
 
@@ -951,7 +1290,13 @@ const EXPECTED_SUBSCRIPTIONS = [
   'SELECT * FROM player',
   'SELECT * FROM my_monster_pub',
   'SELECT * FROM species_row',
-  'SELECT * FROM battle',
+  // 15r-sec-a (ADR-0198): `battle` is PRIVATE — the participant-scoped view is
+  // subscribed instead. NOTE for anyone tempted to add a raw `FROM battle` ban
+  // alongside [S/private]: that string is a strict PREFIX of the still-legitimate
+  // `SELECT * FROM battle_challenge` below (a PUBLIC table), so such a clause
+  // false-REDs on correct code. The exact allowlist here already makes the stale
+  // literal unrepresentable, which is the stronger control.
+  'SELECT * FROM my_battle',
   'SELECT * FROM skill_row',
   'SELECT * FROM inventory',
   'SELECT * FROM item_row',
@@ -1202,6 +1547,33 @@ fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
 }
 `;
 
+// 15r-sec-a (ADR-0198): the battle half. Both identity columns are btree-indexed,
+// which is what makes the two-scan `.chain(` shape a pair of POINT lookups rather
+// than a table scan.
+const PRIVATE_BATTLE_TABLE = `
+#[spacetimedb::table(accessor = battle)]
+pub struct Battle {
+    #[primary_key]
+    pub battle_id: u64,
+    #[index(btree)]
+    pub player_identity: Identity,
+    #[index(btree)]
+    pub opponent_identity: Identity,
+    pub created_at_ms: i64,
+}
+`;
+
+// The sanctioned my_battle view, on ONE line: compactWs of this body is exactly
+// SANCTIONED_BODY_BATTLE. The rustfmt-wrapped (trailing-comma) spelling of the
+// same body gets its own GOOD fixture below, because that is the shape the LIVE
+// tree carries.
+const GOOD_BATTLE_VIEW = `
+#[spacetimedb::view(accessor = my_battle, public)]
+fn my_battle(ctx: &spacetimedb::ViewContext) -> Vec<Battle> {
+    ctx.db.battle().player_identity().filter(ctx.sender()).chain(ctx.db.battle().opponent_identity().filter(ctx.sender()).filter(|b| b.player_identity != ctx.sender())).collect()
+}
+`;
+
 const OTHER_SANCTIONED_VIEWS = `
 #[spacetimedb::view(accessor = my_conversation, public)]
 fn my_conversation(ctx: &spacetimedb::ViewContext) -> Option<PlayerConversation> {
@@ -1220,7 +1592,7 @@ fn my_account(ctx: &spacetimedb::ViewContext) -> Option<Account> {
 `;
 
 /** The complete sanctioned server-side end state, as one fixture file. */
-const GOOD_SERVER = `${PRIVATE_MONSTER_TABLE}${PRIVATE_PUB_TABLE}${GOOD_VIEW}${OTHER_SANCTIONED_VIEWS}`;
+const GOOD_SERVER = `${PRIVATE_MONSTER_TABLE}${PRIVATE_PUB_TABLE}${GOOD_VIEW}${PRIVATE_BATTLE_TABLE}${GOOD_BATTLE_VIEW}${OTHER_SANCTIONED_VIEWS}`;
 
 /** A GOOD connection.ts stand-in, built from the pinned allowlist. */
 function goodConnectionSrc() {
@@ -1536,6 +1908,387 @@ ${GOOD_VIEW}`;
   }
 
   // -------------------------------------------------------------------------
+  // PB — the `battle` table is PRIVATE (15r-sec-a, ADR-0198 D1). The Check P
+  // fixture set, for the second private table.
+  // -------------------------------------------------------------------------
+
+  // PB1 (THE reason this clause exists) — the view SHIPPED and the table was
+  // never flipped. This is the current master shape plus one commit: the
+  // participant-scoped view is present and canonical, the inventory is exactly
+  // the sanctioned five, the bindings story is untouched — and every battle in
+  // the world is still broadcast to every connected client.
+  //
+  // BOTH HALVES ARE ASSERTED, the A4/A5 discipline:
+  //   1. [PB/public] fires, and
+  //   2. checkBattleView AND checkViewInventory AND checkMonsterPubClean stay
+  //      GREEN on the very same source — which is the whole argument for adding
+  //      this clause rather than assuming the view clauses already cover it.
+  {
+    const fixture = GOOD_SERVER.replace(
+      '#[spacetimedb::table(accessor = battle)]',
+      '#[spacetimedb::table(accessor = battle, public)]',
+    );
+    if (fixture === GOOD_SERVER) {
+      return 'PB1: the fixture substitution did not apply — the table was never re-publicised';
+    }
+    const tables = parseTableStructs(stripRustSource(fixture));
+    const bad = expectTag(checkBattlePrivate(tables), '[PB/public]', 'PB1');
+    if (bad) return bad;
+
+    const blindV = checkBattleView(asFiles(fixture));
+    if (blindV) {
+      return (
+        'PB1: checkBattleView FLAGGED the still-public-table fixture — the view clauses ' +
+        `apparently do read table visibility now (${blindV}). That is a stronger outcome, but ` +
+        "this fixture's whole point is that they do NOT; re-derive the [PB/*] rationale from " +
+        'the source rather than leaving a fixture that asserts a false premise'
+      );
+    }
+    const blindI = checkViewInventory(asFiles(fixture));
+    if (blindI) return `PB1: checkViewInventory flagged the still-public-table fixture: ${blindI}`;
+    const blindP = checkMonsterPubClean(tables);
+    if (blindP)
+      return `PB1: checkMonsterPubClean flagged the still-public-table fixture: ${blindP}`;
+  }
+
+  // PB2 — `battle` is GONE (renamed/moved/blanked) -> hard failure, never a
+  // vacuous pass. Kills: the empty-target blind spot.
+  {
+    const tables = parseTableStructs(stripRustSource(PRIVATE_PUB_TABLE));
+    const bad = expectTag(checkBattlePrivate(tables), '[PB/missing]', 'PB2');
+    if (bad) return bad;
+  }
+
+  // PB3 — GOOD: a private `battle` must PASS, and the neighbouring `battle_wild`
+  // table must not be mistaken for it in EITHER direction. The name match is
+  // whole-token (the shared parseTables `accessor = (\w+)` capture), so a private
+  // `battle` next to a `battle_wild` is clean, and the PUBLIC-battle half below
+  // proves the clause is still judging the right struct when both are present.
+  {
+    const wild = `
+#[spacetimedb::table(accessor = battle_wild)]
+pub struct BattleWild {
+    #[primary_key]
+    pub battle_id: u64,
+    pub individuality_seed: u32,
+}
+`;
+    const good = parseTableStructs(stripRustSource(`${PRIVATE_BATTLE_TABLE}${wild}`));
+    const err = checkBattlePrivate(good);
+    if (err) return `PB3: a private battle table (beside battle_wild) was flagged: ${err}`;
+
+    const leaky = parseTableStructs(
+      stripRustSource(
+        `${PRIVATE_BATTLE_TABLE.replace('accessor = battle)', 'accessor = battle, public)')}${wild}`,
+      ),
+    );
+    const bad = expectTag(checkBattlePrivate(leaky), '[PB/public]', 'PB3 (public beside wild)');
+    if (bad) return bad;
+  }
+
+  // PB4 — STACKED table attributes (the P5 parser-evasion shape for this table):
+  // the first looks private, the second re-declares the same struct public. The
+  // clause inspects EVERY declaration named `battle`, so the leak is reported —
+  // and it is reported as [PB/public], not [PB/count], because the visibility
+  // verdict deliberately runs first.
+  {
+    const fixture = `
+#[spacetimedb::table(accessor = battle)]
+#[spacetimedb::table(accessor = battle, public)]
+pub struct Battle {
+    #[primary_key]
+    pub battle_id: u64,
+    #[index(btree)]
+    pub player_identity: Identity,
+    #[index(btree)]
+    pub opponent_identity: Identity,
+}
+`;
+    const tables = parseTableStructs(stripRustSource(fixture));
+    const bad = expectTag(checkBattlePrivate(tables), '[PB/public]', 'PB4');
+    if (bad) return bad;
+    const divergence = tableParserAgrees(stripRustSource(fixture));
+    if (divergence) return `PB4: ${divergence}`;
+  }
+
+  // PB5 — a stacked DUPLICATE that is private on both attrs: no leak, but an
+  // unreviewed second declaration. Kills: collapsing the count clause into the
+  // visibility one.
+  {
+    const fixture = `${PRIVATE_BATTLE_TABLE.replace(
+      '#[spacetimedb::table(accessor = battle)]',
+      '#[spacetimedb::table(accessor = battle)]\n#[spacetimedb::table(accessor = battle)]',
+    )}`;
+    const tables = parseTableStructs(stripRustSource(fixture));
+    const bad = expectTag(checkBattlePrivate(tables), '[PB/count]', 'PB5');
+    if (bad) return bad;
+  }
+
+  // PB6 — GOOD: the whole sanctioned server fixture must PASS (an always-red
+  // checker is indistinguishable from a working one).
+  {
+    const err = checkBattlePrivate(parseTableStructs(stripRustSource(GOOD_SERVER)));
+    if (err) return `PB6: the GOOD server fixture was flagged by checkBattlePrivate: ${err}`;
+  }
+
+  // -------------------------------------------------------------------------
+  // VB — the sanctioned my_battle view (15r-sec-a, ADR-0198).
+  // -------------------------------------------------------------------------
+
+  // VB0 — GOOD: the sanctioned end state must PASS.
+  {
+    const err = checkBattleView(asFiles(GOOD_SERVER));
+    if (err) return `VB0: the GOOD server fixture was flagged by checkBattleView: ${err}`;
+  }
+
+  // VB1 — GOOD, and this is the shape the LIVE tree actually carries: rustfmt
+  // wraps the `.chain(...)` argument across lines and leaves a TRAILING COMMA
+  // before the closing paren. Kills: a body pin transcribed by hand from the ADR
+  // that omits the comma and then false-REDs the moment `cargo fmt` runs — the
+  // failure mode that gets an exact pin loosened instead of fixed.
+  {
+    const fixture = `${PRIVATE_BATTLE_TABLE}
+#[spacetimedb::view(accessor = my_battle, public)]
+fn my_battle(ctx: &spacetimedb::ViewContext) -> Vec<Battle> {
+    ctx.db
+        .battle()
+        .player_identity()
+        .filter(ctx.sender())
+        .chain(
+            ctx.db
+                .battle()
+                .opponent_identity()
+                .filter(ctx.sender())
+                .filter(|b| b.player_identity != ctx.sender()),
+        )
+        .collect()
+}
+`;
+    const err = checkBattleView(asFiles(fixture));
+    if (err) return `VB1: the rustfmt-wrapped sanctioned body was incorrectly flagged: ${err}`;
+  }
+
+  // VB2 — GOOD: the `&ctx.sender()` borrow spelling is the same pair of index
+  // lookups and must PASS (the V11 argument, for this view).
+  {
+    // replaceAll: BOTH index scans take the borrow; the trailing dedup predicate
+    // (`filter(|b| …`) does not contain this needle and is left alone.
+    const fixture = `${PRIVATE_BATTLE_TABLE}${GOOD_BATTLE_VIEW.replaceAll(
+      'filter(ctx.sender())',
+      'filter(&ctx.sender())',
+    )}`;
+    const err = checkBattleView(asFiles(fixture));
+    if (err) return `VB2: the &ctx.sender() borrow spelling was incorrectly flagged: ${err}`;
+  }
+
+  // VB3 — the table is private and there is NO view: no battle can render.
+  {
+    const bad = expectTag(checkBattleView(asFiles(PRIVATE_BATTLE_TABLE)), '[VB/count]', 'VB3');
+    if (bad) return bad;
+  }
+
+  // VB4 — TWO views claim the sanctioned name; one of them is unreviewed.
+  {
+    const bad = expectTag(
+      checkBattleView(asFiles(`${PRIVATE_BATTLE_TABLE}${GOOD_BATTLE_VIEW}${GOOD_BATTLE_VIEW}`)),
+      '[VB/count]',
+      'VB4',
+    );
+    if (bad) return bad;
+  }
+
+  // VB5 — the attribute loses `public` (a mandatory keyword on a view attr).
+  {
+    const fixture = `${PRIVATE_BATTLE_TABLE}${GOOD_BATTLE_VIEW.replace(
+      'accessor = my_battle, public',
+      'accessor = my_battle',
+    )}`;
+    const bad = expectTag(checkBattleView(asFiles(fixture)), '[VB/attr]', 'VB5');
+    if (bad) return bad;
+  }
+
+  // VB6 — &AnonymousViewContext: no sender at all, so the projection cannot be
+  // per-participant.
+  {
+    const fixture = `${PRIVATE_BATTLE_TABLE}${GOOD_BATTLE_VIEW.replace(
+      '&spacetimedb::ViewContext',
+      '&spacetimedb::AnonymousViewContext',
+    )}`;
+    const bad = expectTag(checkBattleView(asFiles(fixture)), '[VB/anon]', 'VB6');
+    if (bad) return bad;
+  }
+
+  // VB7 (the caller-chosen-participant signature — the ADR-0010 shape the spec
+  // names) — an EXTRA parameter, with the body keyed on it: the attribute, the
+  // return type and the filter COUNT are all still exactly right. Kills: any gate
+  // that pins only the body shape.
+  //
+  // VERSION NOTE, so the fixture is not read as a claim about today's compiler:
+  // spacetimedb 1.12.0 accepted extra view parameters SILENTLY, which is what made
+  // this a live leak when 13r-e wrote the monster equivalent. 2.8.1 documents a
+  // context-only view signature, so this source is expected to be a COMPILE error
+  // now. The clause and this fixture are kept as version-independent
+  // defense-in-depth — they cost nothing and still bind a future regression or a
+  // macro-generated variant — and the fixture is a STRING here, so it is never
+  // compiled either way.
+  {
+    const fixture = `${PRIVATE_BATTLE_TABLE}
+#[spacetimedb::view(accessor = my_battle, public)]
+fn my_battle(ctx: &spacetimedb::ViewContext, who: Identity) -> Vec<Battle> {
+    ctx.db.battle().player_identity().filter(who).chain(ctx.db.battle().opponent_identity().filter(who).filter(|b| b.player_identity != who)).collect()
+}
+`;
+    const bad = expectTag(checkBattleView(asFiles(fixture)), '[VB/sig]', 'VB7');
+    if (bad) return bad;
+  }
+
+  // VB8 — a NARROWED return type. This one compiles (`Iterator::next` yields
+  // `Option<Battle>`) and is the plausible regression: "a player has at most one
+  // battle". They do not — a player can hold one row as side A and a second as
+  // side B at the same time, and the Option silently drops whichever the chain
+  // reaches second.
+  {
+    const fixture = `${PRIVATE_BATTLE_TABLE}
+#[spacetimedb::view(accessor = my_battle, public)]
+fn my_battle(ctx: &spacetimedb::ViewContext) -> Option<Battle> {
+    ctx.db.battle().player_identity().filter(ctx.sender()).chain(ctx.db.battle().opponent_identity().filter(ctx.sender()).filter(|b| b.player_identity != ctx.sender())).next()
+}
+`;
+    const bad = expectTag(checkBattleView(asFiles(fixture)), '[VB/ret]', 'VB8');
+    if (bad) return bad;
+  }
+
+  // VB9 (THE decoy-line leak) — a conforming filter kept alive only to satisfy a
+  // presence check, followed by a WHOLE-TABLE read. Every needle a presence-only
+  // gate looks for is present.
+  {
+    const fixture = `${PRIVATE_BATTLE_TABLE}
+#[spacetimedb::view(accessor = my_battle, public)]
+fn my_battle(ctx: &spacetimedb::ViewContext) -> Vec<Battle> {
+    let _decoy = ctx.db.battle().player_identity().filter(ctx.sender());
+    Table::iter(&ctx.db.battle()).collect()
+}
+`;
+    const bad = expectTag(checkBattleView(asFiles(fixture)), '[VB/iter]', 'VB9');
+    if (bad) return bad;
+  }
+
+  // VB10 — the DEDUP FILTER IS DROPPED. Two point scans, no third filter: correct
+  // for every ordinary battle and wrong for a practice battle, which the caller
+  // then receives TWICE (a Vec is not a set). The count clause is what sees it.
+  {
+    const fixture = `${PRIVATE_BATTLE_TABLE}
+#[spacetimedb::view(accessor = my_battle, public)]
+fn my_battle(ctx: &spacetimedb::ViewContext) -> Vec<Battle> {
+    ctx.db.battle().player_identity().filter(ctx.sender()).chain(ctx.db.battle().opponent_identity().filter(ctx.sender())).collect()
+}
+`;
+    const bad = expectTag(checkBattleView(asFiles(fixture)), '[VB/filter]', 'VB10');
+    if (bad) return bad;
+  }
+
+  // VB11 (THE inequality-invariant rewrite — the R2 tooth) — the trailing filter
+  // is respelled as `b.player_identity != b.opponent_identity`. It type-checks, it
+  // keeps the filter COUNT at three, it reads like the same intent, and it deletes
+  // every practice battle from the caller's own result set. Only the exact-body
+  // pin sees it — and the message must SAY why, or the next author "fixes" the pin.
+  {
+    const fixture = `${PRIVATE_BATTLE_TABLE}${GOOD_BATTLE_VIEW.replace(
+      '.filter(|b| b.player_identity != ctx.sender())',
+      '.filter(|b| b.player_identity != b.opponent_identity)',
+    )}`;
+    const err = checkBattleView(asFiles(fixture));
+    const bad = expectTag(err, '[VB/body]', 'VB11');
+    if (bad) return bad;
+    if (err.indexOf('PRACTICE') === -1) {
+      return (
+        'VB11: the [VB/body] message does not explain the practice-battle consequence of the ' +
+        `inequality rewrite — without it the pin reads as arbitrary strictness: ${err}`
+      );
+    }
+  }
+
+  // VB12 (THE name-lookup PoC) — a SECOND, un-attributed `fn my_battle` placed
+  // BEFORE the real view, keyed on an arbitrary identity. A name-anchored pin finds
+  // the DECOY first; the attribute walk finds the real view's canonical body, so
+  // the ONLY failure left is the declaration count. Asserting [VB/fn-once] — and
+  // not [VB/body] — is what proves the walk is attribute-anchored.
+  {
+    const fixture = `${PRIVATE_BATTLE_TABLE}
+fn my_battle(ctx: &spacetimedb::ViewContext) -> Vec<Battle> {
+    ctx.db.battle().player_identity().filter(Identity::from_byte_array([9u8; 32])).collect()
+}
+${GOOD_BATTLE_VIEW}`;
+    const bad = expectTag(checkBattleView(asFiles(fixture)), '[VB/fn-once]', 'VB12');
+    if (bad) return bad;
+  }
+
+  // VB13 (the bare-attribute hole, battle edition) — a SIXTH view written with the
+  // unqualified `#[view(...)]` spelling. Both halves are asserted, as A4 does:
+  //   1. [A/bare-attr] fires, and
+  //   2. checkBattleView AND checkViewInventory stay GREEN on the very same
+  //      source — proving the leak really is invisible to them, and therefore that
+  //      the bare-attr ban is the only thing standing between it and a leak of
+  //      every player's live battle state.
+  {
+    const fixture = `${GOOD_SERVER}
+use spacetimedb::view;
+
+#[view(accessor = all_battles, public)]
+fn all_battles(ctx: &spacetimedb::ViewContext) -> Vec<Battle> {
+    Table::iter(&ctx.db.battle()).collect()
+}
+`;
+    const bad = expectTag(checkNoCfgAttrLaundering(asFiles(fixture)), '[A/bare-attr]', 'VB13');
+    if (bad) return bad;
+    const blindV = checkBattleView(asFiles(fixture));
+    if (blindV) {
+      return (
+        'VB13: checkBattleView FLAGGED the bare-attr fixture — the attribute walk apparently ' +
+        `does see the unqualified spelling now (${blindV}). That is a stronger outcome, but ` +
+        "this fixture's whole point is that it does NOT; re-derive the [A/bare-attr] rationale " +
+        'from the source rather than leaving a fixture that asserts a false premise'
+      );
+    }
+    const blindI = checkViewInventory(asFiles(fixture));
+    if (blindI) {
+      return `VB13: checkViewInventory flagged the bare-attr fixture (${blindI}) — same note`;
+    }
+  }
+
+  // VB14 (AM8, cross-view laundering) — the inventory is EXACTLY the sanctioned
+  // five, but `my_wallet` has quietly grown a read of the battle table. Nothing
+  // about its name, its attribute or its return type changed.
+  {
+    const fixture = GOOD_SERVER.replace(
+      'ctx.db.player_wallet().owner_identity().find(ctx.sender())',
+      'ctx.db.battle().battle_id().find(1).map(|_| PlayerWallet::default())',
+    );
+    const err = checkViewInventory(asFiles(fixture));
+    const bad = expectTag(err, '[I/launder]', 'VB14');
+    if (bad) return bad;
+    if (err.indexOf('battle(') === -1) {
+      return `VB14: the laundering message does not name the offending accessor: ${err}`;
+    }
+  }
+
+  // VB15 (the mirror of VB14, and the reason the exemption is PER NEEDLE) — the
+  // sanctioned my_battle view reaches monster_pub. Kills the obvious simplification
+  // "skip the laundering scan for whichever view owns a private table": that would
+  // let each owner-scoped view read the OTHER private table freely.
+  {
+    const fixture = `${PRIVATE_PUB_TABLE}${PRIVATE_BATTLE_TABLE}${GOOD_VIEW}${OTHER_SANCTIONED_VIEWS}
+#[spacetimedb::view(accessor = my_battle, public)]
+fn my_battle(ctx: &spacetimedb::ViewContext) -> Vec<Battle> {
+    let _rosters: Vec<MonsterPub> = ctx.db.monster_pub().owner_identity().filter(ctx.sender()).collect();
+    ctx.db.battle().player_identity().filter(ctx.sender()).chain(ctx.db.battle().opponent_identity().filter(ctx.sender()).filter(|b| b.player_identity != ctx.sender())).collect()
+}
+`;
+    const bad = expectTag(checkViewInventory(asFiles(fixture)), '[I/launder]', 'VB15');
+    if (bad) return bad;
+  }
+
+  // -------------------------------------------------------------------------
   // I — the view inventory pin + the laundering ban.
   // -------------------------------------------------------------------------
 
@@ -1790,10 +2543,35 @@ fn peek(_ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
     if (bad) return bad;
   }
   {
-    // GOOD: only the view binding exists.
-    const err = checkBindings((p) => p.indexOf('my_monster_pub_table.ts') !== -1);
+    // GOOD: only the two VIEW bindings exist.
+    // EXACT path equality, never indexOf: `my_battle_table.ts` CONTAINS
+    // `battle_table.ts` as a substring (and `my_monster_pub_table.ts` contains
+    // `monster_pub_table.ts`), so a containment probe here would make the correct
+    // end state look like the reverted one — the trap this fixture also documents
+    // for anyone extending the checker.
+    const err = checkBindings((p) => p === VIEW_BINDING || p === BATTLE_VIEW_BINDING);
     if (err)
-      return `C4: the GOOD bindings probe (view present, both tables absent) was flagged: ${err}`;
+      return `C4: the GOOD bindings probe (both views present, all tables absent) was flagged: ${err}`;
+  }
+  {
+    // C5 — the flip shipped but `just gen` never ran: the private table's binding
+    // is still on disk.
+    const bad = expectTag(
+      checkBindings((p) => p !== LEGACY_PUB_BINDING && p !== PRIVATE_MONSTER_BINDING),
+      '[C/legacy-battle]',
+      'C5',
+    );
+    if (bad) return bad;
+  }
+  {
+    // C6 — the view binding was never generated: the client cannot subscribe
+    // my_battle at all, and the whole subscription batch errors.
+    const bad = expectTag(
+      checkBindings((p) => p === VIEW_BINDING),
+      '[C/missing-battle-view]',
+      'C6',
+    );
+    if (bad) return bad;
   }
 
   // -------------------------------------------------------------------------
@@ -1925,7 +2703,9 @@ fn peek(_ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
 export default async function monsterPrivacyEval() {
   const name =
     'monster-privacy (hidden genes private, monster_pub PRIVATE since #284/ADR-0194, ' +
-    'owner-scoped my_monster_pub view pinned exactly, view inventory + subscription set pinned)';
+    'owner-scoped my_monster_pub view pinned exactly, battle PRIVATE + participant-scoped ' +
+    'my_battle view pinned exactly since 15r-sec-a/ADR-0198, view inventory + subscription set ' +
+    'pinned)';
 
   const toothErr = runTeeth();
   if (toothErr) {
@@ -2047,8 +2827,14 @@ export default async function monsterPrivacyEval() {
   const errP = checkMonsterPubClean(tables);
   if (errP) failures.push(`[P monster-pub-private] ${errP}`);
 
+  const errPB = checkBattlePrivate(tables);
+  if (errPB) failures.push(`[PB battle-private] ${errPB}`);
+
   const errV = checkMonsterPubView(prodFiles);
   if (errV) failures.push(`[V view-owner-scoped] ${errV}`);
+
+  const errVB = checkBattleView(prodFiles);
+  if (errVB) failures.push(`[VB view-participant-scoped] ${errVB}`);
 
   const errI = checkViewInventory(prodFiles);
   if (errI) failures.push(`[I view-inventory] ${errI}`);
@@ -2089,9 +2875,10 @@ export default async function monsterPrivacyEval() {
     name,
     pass: true,
     detail:
-      `${prodFiles.length} non-test server source file(s) scanned; monster and monster_pub are ` +
-      "both PRIVATE, my_monster_pub's attribute/signature/return type/body are pinned exactly " +
-      `(attribute walk, ${countFnDeclarations(strippedSrc, VIEW_NAME)} declaration), the view ` +
+      `${prodFiles.length} non-test server source file(s) scanned; monster, monster_pub and ` +
+      "battle are all PRIVATE, my_monster_pub's and my_battle's attribute/signature/return type/body are " +
+      `pinned exactly (attribute walk, ${countFnDeclarations(strippedSrc, VIEW_NAME)} + ` +
+      `${countFnDeclarations(strippedSrc, VIEW_NAME_BATTLE)} declaration), the view ` +
       `inventory is exactly [${EXPECTED_VIEWS.join(', ')}] with no laundering path, no cfg_attr ` +
       'or forged ViewContext, bindings are view-only, and the ONE subscribe array matches the ' +
       'pinned allowlist (teeth verified)',

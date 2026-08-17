@@ -604,6 +604,40 @@ export class AuthoritativeStore {
     if (this.#battles.delete(battleId)) this.#dirty = true;
   }
 
+  /** 15r-sec-a (ADR-0198 D4): reconcile the battle map to EXACTLY `rows` — the
+   *  SDK's post-burst row set for the `my_battle` view. Like `my_monster_pub`
+   *  above (ADR-0194 D4), the view binding carries no primary key even on the
+   *  2.8.1 codegen, so every state change arrives as an unordered
+   *  insert+delete pair and `onUpdate` never fires; rebuilding membership from
+   *  the cache is ordering-immune. Payloads are authoritative: every given row
+   *  is upserted, every absent id removed, and an empty `rows` empties the map
+   *  (the player is in no battle). Duplicate ids in one delivery collapse via
+   *  the map key — a practice battle is stored once however often the view
+   *  emits it. Change detection must be `deepRowEq`, not `shallowRowEq`:
+   *  `StoreBattle` nests sideA/sideB team ARRAYS of monster objects rebuilt
+   *  fresh by every `battleRowToStore` call, and the one-level compare reports
+   *  those as changed on every flush — the render storm the monster reconcile's
+   *  docstring warns about (ADR-0198 D5). Rows are REPLACED, never mutated in
+   *  place: `StoreBattle` is readonly field-by-field and consumers hold
+   *  references to published rows. */
+  reconcileBattlesFromView(rows: readonly StoreBattle[]): void {
+    const keep = new Set<bigint>();
+    for (const b of rows) {
+      keep.add(b.battleId);
+      const prev = this.#battles.get(b.battleId);
+      if (prev === undefined || !deepRowEq(prev, b)) {
+        this.#battles.set(b.battleId, b);
+        this.#dirty = true;
+      }
+    }
+    for (const id of [...this.#battles.keys()]) {
+      if (!keep.has(id)) {
+        this.#battles.delete(id);
+        this.#dirty = true;
+      }
+    }
+  }
+
   upsertSkill(s: StoreSkillRow): void {
     this.#skills.set(s.id, s);
     this.#dirty = true;
@@ -830,6 +864,13 @@ export class AuthoritativeStore {
     return this.#monsters.size;
   }
 
+  /** Distinct battle rows currently held — the e2e leak witness (15r-sec-a):
+   *  a non-participant client must read 0 here while a battle it is not in
+   *  runs elsewhere. */
+  get battleCount(): number {
+    return this.#battles.size;
+  }
+
   // --- battle + skill read (M7c battle view reads truth here) ----------------
 
   battle(battleId: bigint): StoreBattle | undefined {
@@ -840,15 +881,15 @@ export class AuthoritativeStore {
    *  in `opponentIdentity` (server-module/src/pvp.rs:289-297), so a `playerIdentity`-only
    *  match left side B with no battle at all (11r-b, ADR-0167 D1). ONE condition shared by
    *  both accessors below, deliberately — two hand-written copies can drift (a fix landed
-   *  on one and forgotten on the other). Exact equality against participant columns only:
-   *  the `battle` table is subscribed unfiltered (connection.ts:554-559), so this is what
-   *  keeps a stranger's row out. */
+   *  on one and forgotten on the other). Exact equality against participant columns only.
+   *  Since 15r-sec-a (ADR-0198) the transport already scopes rows to participants via the
+   *  `my_battle` view, so this filter is defense-in-depth, not the primary boundary. */
   #isParticipant(b: StoreBattle, identity: string): boolean {
     return b.playerIdentity === identity || b.opponentIdentity === identity;
   }
 
   /** The player's own ongoing battle — matched in EITHER PvP role, `playerIdentity` OR
-   *  `opponentIdentity` (11r-b/ADR-0167 D1; ADR-0042: public table, client-side filter).
+   *  `opponentIdentity` (11r-b/ADR-0167 D1; participant-scoped transport since ADR-0198).
    *  Returns the RAW server row: the store stays a mirror of server truth, and the
    *  own-side-is-sideA view projection lives in `ownPerspective()` below. When more than
    *  one Ongoing row matches, the HIGHEST battleId wins — the same tiebreak
@@ -1204,6 +1245,40 @@ function shallowRowEq(a: Record<string, unknown>, b: Record<string, unknown>): b
     const bv = b[k];
     if (av === bv) continue;
     if (!nestedRecordEq(av, bv)) return false;
+  }
+  return true;
+}
+
+/** Full structural equality over row values: `===` on primitives (bigint-safe —
+ *  `JSON.stringify` throws on bigint, so serialization is not an option here),
+ *  element-wise recursion into arrays, own-key recursion into plain objects.
+ *  Exists for the battle reconcile (ADR-0198 D5): `StoreBattle` nests
+ *  sideA/sideB `team` ARRAYS of monster objects, which `shallowRowEq`'s
+ *  one-level compare reports as changed on every rebuild — under-suppression is
+ *  the render storm, over-suppression (e.g. comparing `turnNumber` alone) is a
+ *  frozen HP bar, because `flee` and a PvP forfeit mutate `state.outcome`
+ *  without bumping the turn. Cost is bounded: the battle map holds 0-2 rows —
+ *  a SERVER invariant (battle.rs keep-latest-per-player GC, pinned by
+ *  evals/battle-lifecycle-gc.eval.mjs), not a client guarantee. PLAIN DATA
+ *  ONLY: a non-plain object with no own enumerable keys (Date, Map, Set)
+ *  compares equal always — never add such a field to a store row type. */
+function deepRowEq(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    if (!Array.isArray(a) || !Array.isArray(b) || a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      if (!deepRowEq(a[i], b[i])) return false;
+    }
+    return true;
+  }
+  if (typeof a !== 'object' || a === null || typeof b !== 'object' || b === null) return false;
+  const ra = a as Record<string, unknown>;
+  const rb = b as Record<string, unknown>;
+  const ka = Object.keys(ra);
+  const kb = Object.keys(rb);
+  if (ka.length !== kb.length) return false;
+  for (const k of ka) {
+    if (!deepRowEq(ra[k], rb[k])) return false;
   }
   return true;
 }

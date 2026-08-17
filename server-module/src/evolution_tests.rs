@@ -3720,6 +3720,310 @@ fn e13r_e_monster_pub_is_private_and_its_view_is_owner_scoped() {
     );
 }
 
+/// 15r-sec-a (ADR-0198 D1/D2): `battle` carries no `public`, and the ONE
+/// participant-scoped view over it has exactly the sanctioned attribute,
+/// signature, return type and body.
+///
+/// STRUCTURAL SIBLING of `e13r_e_monster_pub_is_private_and_its_view_is_owner_scoped`
+/// above: same module-private helpers, same ATTRIBUTE-WALK discipline (never a
+/// name lookup over fns). The BARE-attribute ban that test already asserts over
+/// this same schema.rs is deliberately NOT duplicated here — one grammar, one
+/// parser (ADR-0003); a second copy would be a second thing to keep in step.
+/// It is load-bearing for this test too: every walk below anchors on the
+/// fully-qualified marker, so a bare `#[view(...)]` would be invisible to it.
+///
+/// kills:
+///  - a revert (or a never-applied flip) of the table's visibility. ADR-0042 made
+///    `battle` public so BOTH participants could subscribe; a public battle table
+///    also hands every connected client every other player's live battle state;
+///  - a caller-chosen-participant signature, pinned as VERSION-INDEPENDENT
+///    defense-in-depth rather than on a live-hole claim. On 1.12.0 a view silently
+///    accepted ARBITRARY extra arguments, so `fn my_battle(ctx: &ViewContext,
+///    who: Identity)` compiled and served any player's battles while the attribute,
+///    the return type and even an index-keyed body all still looked canonical (the
+///    caller-chosen-owner leak 13r-e was written against). On 2.8.1 the documented
+///    view signature is context-only, so that shape is expected to be a COMPILE
+///    ERROR today — the pin is kept because it costs nothing and still catches a
+///    future regression, a macro-generated variant, or an argument form the current
+///    macro accepts that the docs do not describe. The parameter-count clause is
+///    stated SEPARATELY from the exact-signature pin so that shape reports the
+///    reason it is fatal rather than a generic mismatch;
+///  - the decoy-line leak (a conforming filter kept alive only to satisfy a
+///    presence check, followed by the real read keyed on some other identity), and
+///    every cargo-mutants rewrite of this body;
+///  - THE INEQUALITY-INVARIANT REWRITE. The trailing `.filter(|b| b.player_identity
+///    != ctx.sender())` is DEDUP BY CONSTRUCTION: it drops exactly the rows the
+///    first (player_identity) scan already emitted, so a row where the sender holds
+///    BOTH columns is delivered once rather than twice. It is NOT an invariant
+///    about the row. Rewriting it as `b.player_identity != b.opponent_identity`
+///    type-checks and reads like the same idea, but it DELETES every practice
+///    battle from the result: battle.rs:1274-1278 defines a practice battle as
+///    exactly `player_identity == opponent_identity`, which is legal and must be
+///    delivered EXACTLY ONCE, not zero times;
+///  - a same-named un-attributed decoy fn (the name-lookup defeat);
+///  - a view moved to some OTHER module — schema.rs would not contain it, and the
+///    convention is that a view lives next to the table it projects.
+#[test]
+fn e15r_sec_a_battle_is_private_and_its_view_is_participant_scoped() {
+    const SCHEMA_RS_SOURCE: &str = include_str!("schema.rs");
+    const TABLE_ATTR: &str = concat!("#[spacetimedb::", "table(");
+    const VIEW_ATTR: &str = concat!("#[spacetimedb::", "view(");
+
+    let stripped = strip_comments_and_strings(SCHEMA_RS_SOURCE);
+
+    // Vacuity guard: an absence claim over a hollow haystack proves nothing.
+    assert!(
+        stripped.len() > 2000,
+        "vacuity guard(15r-sec-a): schema.rs is only {} bytes — the file was \
+         truncated, emptied or moved, and every assertion below would judge an \
+         empty string",
+        stripped.len()
+    );
+
+    // Fragment-assembled, exactly as the sibling test assembles its markers:
+    // several evals parse the CONCATENATED server source for these spellings, and
+    // a contiguous copy in a test file poisons their scan.
+    let view_name = ["my", "_battle"].concat();
+    let table_name = ["bat", "tle"].concat();
+    let db_table = ["ctx.db.", "bat", "tle()"].concat();
+
+    // --- (1) the table lost `public` (ADR-0198 D1) --------------------------
+    let table_sites = spacetimedb_attr_sites(&stripped, TABLE_ATTR);
+    assert!(
+        !table_sites.is_empty(),
+        "vacuity guard(15r-sec-a): the table-attribute walk found ZERO tables in \
+         schema.rs — the scanner (or the concat!-assembled marker) has rotted, and \
+         a rotted scanner must never read as a private schema"
+    );
+    let battle_attrs: Vec<&(String, usize)> = table_sites
+        .iter()
+        .filter(|(args, _)| attr_accessor_arg(args).as_deref() == Some(table_name.as_str()))
+        .collect();
+    assert_eq!(
+        battle_attrs.len(),
+        1,
+        "TEETH(15r-sec-a ADR-0198): expected EXACTLY ONE table attribute named \
+         {table_name:?} in schema.rs, found {}. Zero means the empty-target blind \
+         spot (renamed/moved: every clause below goes vacuous); two or more means a \
+         STACKED second attribute, which is how a public re-declaration hides behind \
+         a private-looking first one",
+        battle_attrs.len()
+    );
+    assert!(
+        !attr_has_word(&battle_attrs[0].0, "public"),
+        "TEETH(15r-sec-a ADR-0198 D1): the {table_name:?} table attribute still \
+         carries `public` (args: {:?}). A public battle table is delivered to EVERY \
+         connected client: the full BattleState of every other player's live battle \
+         — both teams' derived stats, HP, status, weather and the two participant \
+         identities. ADR-0042 accepted that only because no per-caller read path \
+         existed; the participant-scoped view IS that read path now. Drop `public` \
+         and let the view be the sole client read path",
+        battle_attrs[0].0
+    );
+
+    // --- (2) exactly ONE sanctioned view ------------------------------------
+    let view_sites = spacetimedb_attr_sites(&stripped, VIEW_ATTR);
+    let mine: Vec<&(String, usize)> = view_sites
+        .iter()
+        .filter(|(args, _)| attr_accessor_arg(args).as_deref() == Some(view_name.as_str()))
+        .collect();
+    assert_eq!(
+        mine.len(),
+        1,
+        "TEETH(15r-sec-a ADR-0198 D2): expected EXACTLY ONE view attribute named \
+         {view_name:?} in schema.rs, found {}. With none, {table_name} is private and \
+         the client is DARK (no battle can ever render, on either side); with two, \
+         one of them is unreviewed. It must live next to the table it projects",
+        mine.len()
+    );
+    let (view_args, after_attr) = mine[0];
+    assert!(
+        attr_has_word(view_args, "public"),
+        "TEETH(15r-sec-a ADR-0198 D2): the {view_name:?} view attribute is missing \
+         the `public` keyword (args: {view_args:?}) — it is MANDATORY on a view \
+         attribute (it has no visibility effect of its own; per-caller scoping comes \
+         from the host reconstructing `sender`)"
+    );
+
+    // --- (3) the fn that IMMEDIATELY FOLLOWS the attribute ------------------
+    let attr_end = *after_attr;
+    let fn_rel = stripped[attr_end..].find("fn ").unwrap_or_else(|| {
+        panic!(
+            "TEETH(15r-sec-a): no `fn` follows the {view_name:?} view attribute — the \
+             attribute decorates nothing"
+        )
+    });
+    let fn_idx = attr_end + fn_rel;
+    let brace_rel = stripped[fn_idx..]
+        .find('{')
+        .unwrap_or_else(|| panic!("TEETH(15r-sec-a): the {view_name:?} view fn has no body brace"));
+    let brace_idx = fn_idx + brace_rel;
+    let raw_sig = &stripped[fn_idx..brace_idx];
+
+    // Exactly ONE parameter. Stated separately from the exact-signature pin below
+    // so the caller-chosen-participant shape reports the reason it is fatal.
+    // VERSION-INDEPENDENT defense-in-depth: on 1.12.0 an extra view parameter was
+    // accepted silently; on 2.8.1 the documented signature is context-only, so it
+    // should not even compile. The clause stays because it is free and still binds
+    // a future regression or a macro-generated variant.
+    let params = {
+        let open = raw_sig.find('(').unwrap_or_else(|| {
+            panic!("TEETH(15r-sec-a): the {view_name:?} view fn has no parameter list")
+        });
+        let mut depth: usize = 0;
+        let mut close = open;
+        for (off, ch) in raw_sig[open..].char_indices() {
+            if ch == '(' {
+                depth += 1;
+            } else if ch == ')' {
+                depth -= 1;
+                if depth == 0 {
+                    close = open + off;
+                    break;
+                }
+            }
+        }
+        raw_sig[open + 1..close].to_string()
+    };
+    let top_level_commas = {
+        let mut depth: i32 = 0;
+        let mut n = 0usize;
+        for ch in params.chars() {
+            match ch {
+                '(' | '[' | '<' => depth += 1,
+                ')' | ']' | '>' => depth -= 1,
+                ',' if depth == 0 => n += 1,
+                _ => {}
+            }
+        }
+        n
+    };
+    assert_eq!(
+        top_level_commas, 0,
+        "TEETH(15r-sec-a ADR-0198 D2 SIGNATURE): the {view_name:?} view takes more \
+         than one parameter (params: {params:?}). An extra `who: Identity` turns \
+         the participant-scoped projection into a caller-chosen-participant \
+         endpoint that serves ANY player's live battles — while the attribute, the \
+         return type and even a `player_identity().filter(..)` body all still look \
+         canonical. VERSION-INDEPENDENT defense-in-depth: spacetimedb 1.12.0 \
+         accepted extra view parameters SILENTLY (that is the caller-chosen-owner \
+         leak 13r-e was written against); 2.8.1 documents a context-only view \
+         signature, so this shape is expected to fail at COMPILE time now. The pin \
+         is kept because it is free and still binds a future regression, a \
+         macro-generated variant, or an argument form the macro accepts and the \
+         docs do not describe"
+    );
+
+    let sanctioned_sig = [
+        "fn",
+        view_name.as_str(),
+        "(ctx:&spacetimedb::",
+        "ViewContext)->Vec<",
+        "Battle>",
+    ]
+    .concat();
+    assert_eq!(
+        squash_ws(raw_sig),
+        sanctioned_sig,
+        "TEETH(15r-sec-a ADR-0198 D2 SIGNATURE): the {view_name:?} view signature is \
+         not EXACTLY the sanctioned one.\n  expected (whitespace-insensitive): \
+         {sanctioned_sig}\n  found: {}\n\
+         The context type is load-bearing (an &AnonymousViewContext has NO sender, so \
+         the projection could not be per-caller) and so is the return type: a battle \
+         is genuinely multi-row per caller (a player can hold one row as side A and \
+         another as side B), so `Vec<Battle>` is correct and `Option<Battle>` would \
+         silently drop one of them.",
+        squash_ws(raw_sig)
+    );
+
+    // --- (4) the EXACT body -------------------------------------------------
+    // FOUR sanctioned spellings, not one, and every difference between them is
+    // INERT: `&ctx.sender()` is the same index lookup borrowed (the sibling pin at
+    // evals/monster-privacy.eval.mjs:142-143 accepts the same pair), and the
+    // optional trailing comma is what rustfmt emits when it wraps the `.chain(...)`
+    // argument across lines. Neither changes a row that is delivered. Everything
+    // else about the body is pinned exactly.
+    let (body_start, body_end) = brace_block_range(&stripped, brace_idx);
+    let body = squash_ws(&stripped[body_start..body_end]);
+    let mut sanctioned: Vec<String> = Vec::new();
+    for sender in ["ctx.sender()", "&ctx.sender()"] {
+        for tail in ["", ","] {
+            sanctioned.push(
+                [
+                    db_table.as_str(),
+                    ".player_identity().filter(",
+                    sender,
+                    ").chain(",
+                    db_table.as_str(),
+                    ".opponent_identity().filter(",
+                    sender,
+                    ").filter(|b|b.player_identity!=ctx.sender())",
+                    tail,
+                    ").collect()",
+                ]
+                .concat(),
+            );
+        }
+    }
+    assert!(
+        sanctioned.contains(&body),
+        "TEETH(15r-sec-a ADR-0198 D2 EXACT-BODY): the {view_name:?} view body is not \
+         EXACTLY the sanctioned participant-scoped projection.\n  expected one of \
+         (whitespace-insensitive): {sanctioned:?}\n  found: {body}\n\
+         This pin is exact ON PURPOSE. The return type is a Vec, so it no longer \
+         BOUNDS the result set (ADR-0154 D3) — the body IS the entire boundary — and \
+         a presence-only check is passed by a decoy line (`let _decoy = \
+         ...filter(ctx.sender());` followed by a real read keyed on some OTHER \
+         identity), which compiles, passes clippy and rustfmt, and serves an \
+         arbitrary player's battles.\n\
+         READ THIS BEFORE CHANGING THE TRAILING FILTER. \
+         `.filter(|b| b.player_identity != ctx.sender())` is DEDUP BY CONSTRUCTION: \
+         it removes exactly the rows the first scan already emitted, so a row on \
+         which the sender holds BOTH identity columns arrives ONCE. It is NOT an \
+         invariant about the row, and it must NEVER be rewritten as \
+         `b.player_identity != b.opponent_identity` — battle.rs:1274-1278 defines a \
+         PRACTICE battle as exactly `player_identity == opponent_identity`; that \
+         form is legal, and the inequality rewrite deletes every one of them from \
+         the caller's own result set (zero deliveries instead of one).\n\
+         If the body must legitimately change, re-review the new shape HERE and in \
+         evals/monster-privacy.eval.mjs clause [VB/body]."
+    );
+
+    // --- (5) the fn is declared exactly ONCE in schema.rs -------------------
+    // The attribute walk above already found the RIGHT fn; this proves no second fn
+    // of the same name exists to confuse a reader, a mutant, or any gate that
+    // (wrongly) looks the view up by name.
+    let bytes = stripped.as_bytes();
+    let mut decls = 0usize;
+    for at in occurrences(&stripped, view_name.as_str()) {
+        if at > 0 && is_ident_byte(bytes[at - 1]) {
+            continue;
+        }
+        let after_ident = at + view_name.len();
+        if after_ident < bytes.len() && is_ident_byte(bytes[after_ident]) {
+            continue;
+        }
+        let mut k = at;
+        while k > 0 && (bytes[k - 1] as char).is_ascii_whitespace() {
+            k -= 1;
+        }
+        if k >= 2
+            && bytes[k - 2] == b'f'
+            && bytes[k - 1] == b'n'
+            && (k == 2 || !is_ident_byte(bytes[k - 3]))
+        {
+            decls += 1;
+        }
+    }
+    assert_eq!(
+        decls, 1,
+        "TEETH(15r-sec-a ADR-0198): `fn {view_name}` is declared {decls} time(s) in \
+         schema.rs; exactly ONE is sanctioned. A second, un-attributed fn of the same \
+         name is the red-team shape that defeats every name-anchored body pin — the \
+         real (attributed) view can then leak while a decoy satisfies the lookup"
+    );
+}
+
 // ---------------------------------------------------------------------------
 // Test seam — `evolve_seam` lives HERE (not in evolution.rs) so the
 // no-idle-accrual eval, which excludes _tests.rs files from its growth-field

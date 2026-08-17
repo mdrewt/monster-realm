@@ -1869,6 +1869,7 @@ function snapshot() {
       action: c.row.action,
     })),
     monsterCount: store.monsterCount,
+    battleCount: store.battleCount,
     ownMonsters: store.ownMonsters(identity).map((m) => ({
       monsterId: m.monsterId.toString(),
       speciesId: m.speciesId,
@@ -2227,11 +2228,16 @@ async function main(): Promise<void> {
       onPvpAttack: (battleId, skillId) => {
         sendGuarded('pvp-attack', () => {
           pvpPendingTurnNumber = store.latestPlayerBattle(identity)?.turnNumber ?? null;
+          // 15r-sec-a: refresh explicitly — the pending flag is client-local, and
+          // since ADR-0198 D5 an unchanged battle row no longer re-notifies the
+          // batch (the old banner render piggybacked on that spurious notify).
+          refreshBattle();
           return conn
             ?.live()
             ?.reducers.submitPvpAction({ battleId, action: { tag: 'Attack', value: skillId } })
             ?.catch((err: unknown) => {
               pvpPendingTurnNumber = null;
+              refreshBattle();
               throw err;
             });
         });
@@ -2239,11 +2245,14 @@ async function main(): Promise<void> {
       onPvpSwap: (battleId, teamIndex) => {
         sendGuarded('pvp-swap', () => {
           pvpPendingTurnNumber = store.latestPlayerBattle(identity)?.turnNumber ?? null;
+          // 15r-sec-a: same explicit refresh as onPvpAttack above (ADR-0198 D5).
+          refreshBattle();
           return conn
             ?.live()
             ?.reducers.submitPvpAction({ battleId, action: { tag: 'Swap', value: teamIndex } })
             ?.catch((err: unknown) => {
               pvpPendingTurnNumber = null;
+              refreshBattle();
               throw err;
             });
         });

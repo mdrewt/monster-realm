@@ -39,6 +39,8 @@ const BUNDLE_SOURCE_TAG = 'scripts/okf-export.mjs';
 // ---------------------------------------------------------------------------
 
 const PRIVATE_ADRS = {
+  battle:
+    'ADR-0198 — need-to-know: participants read their own rows via the my_battle view; no world-readable battle state.',
   monster: 'ADR-0015/0040 — hidden genes (IVs/EVs/nature) must never reach non-owner clients.',
   encounter: 'ADR-0040 — spawn weights/level bands are server-only truth; no public projection.',
   battle_wild: 'ADR-0045 — RNG individuality seed must never reach any client; no projection.',
