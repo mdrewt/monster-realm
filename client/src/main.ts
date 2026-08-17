@@ -1869,6 +1869,7 @@ function snapshot() {
       action: c.row.action,
     })),
     monsterCount: store.monsterCount,
+    battleCount: store.battleCount,
     ownMonsters: store.ownMonsters(identity).map((m) => ({
       monsterId: m.monsterId.toString(),
       speciesId: m.speciesId,
