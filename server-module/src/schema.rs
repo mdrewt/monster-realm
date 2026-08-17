@@ -384,16 +384,21 @@ fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
 // --- Battle table (M7b, public, ADR-0042) ------------------------------------
 
 /// A single PvE or PvP battle. The `state` column holds the full `BattleState`
-/// (pure data from `game-core`); the server module is the ONLY writer. Public so
-/// both participants can subscribe; hidden fields (IVs/EVs) are NOT in
-/// `BattleState` — only derived stats appear there (ADR-0015 satisfied).
+/// (pure data from `game-core`); the server module is the ONLY writer. PRIVATE
+/// since 15r-sec-a (ADR-0198): a public battle table delivered every live
+/// battle's both-side derived stats, HP, skills and status to every connected
+/// client (the exposure ADR-0042:30 flagged before M16 reused the schema).
+/// Participants read ONLY their own rows through the `my_battle` view below.
+/// Hidden fields (IVs/EVs) are NOT in `BattleState` — only derived stats appear
+/// there (ADR-0015 satisfied) — so the view leaks nothing hidden to the two
+/// players who are already in the fight.
 ///
 /// `opponent_identity` gains a btree index in M16a (ADR-0109) to support O(log n)
 /// lookup in `forfeit_on_disconnect` for the case where the disconnecting player is
 /// the opponent (side B).  Adding an index is additive (ADR-0006): no column or PK
 /// change; the schema-snapshot eval tracks columns+PK only, not index presence.
 #[derive(Clone)]
-#[spacetimedb::table(accessor = battle, public)]
+#[spacetimedb::table(accessor = battle)]
 pub struct Battle {
     #[primary_key]
     #[auto_inc]
@@ -406,6 +411,34 @@ pub struct Battle {
     pub party_monster_ids: Vec<u64>,
     pub opponent_monster_ids: Vec<u64>,
     pub created_at_ms: i64,
+}
+
+/// Participant-scoped read path for `battle` (ADR-0198): each client's
+/// subscription sees ONLY rows where it holds `player_identity` OR
+/// `opponent_identity` — a chain of two point index scans over the btree
+/// indexes above, never a table scan. Like `my_monster_pub`, THIS BODY is the
+/// entire security boundary and is pinned exactly — by
+/// `evals/monster-privacy.eval.mjs` and the `e15r_sec_a` mirror in
+/// `evolution_tests.rs` — signature included (an extra param is a
+/// caller-chosen-owner leak). The trailing filter is DEDUP BY CONSTRUCTION,
+/// not an invariant: it excludes the rows the first scan already emitted, so a
+/// practice battle (`player_identity == opponent_identity`, battle.rs) arrives
+/// exactly once. Rewriting it as `b.player_identity != b.opponent_identity`
+/// would delete every practice battle from its own player's view.
+#[spacetimedb::view(accessor = my_battle, public)]
+fn my_battle(ctx: &spacetimedb::ViewContext) -> Vec<Battle> {
+    ctx.db
+        .battle()
+        .player_identity()
+        .filter(ctx.sender())
+        .chain(
+            ctx.db
+                .battle()
+                .opponent_identity()
+                .filter(ctx.sender())
+                .filter(|b| b.player_identity != ctx.sender()),
+        )
+        .collect()
 }
 
 /// PRIVATE wild-individuality side-table (M8c, ADR-0045). Keyed 1:1 by

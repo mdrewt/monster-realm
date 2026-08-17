@@ -52,7 +52,8 @@ use game_core::resolve_encounter;
 /// Opponent provenance (ADR-0048): only a self/sandbox opponent
 /// (`opponent_identity == ctx.sender()`) or the server/NPC sentinel
 /// (`WILD_IDENTITY`) is accepted. A client may NOT name another player as the
-/// opponent — that would conscript their monsters into the public `battle` row.
+/// opponent — that would conscript their monsters into a `battle` row delivered
+/// to both named participants via the `my_battle` view (ADR-0198).
 #[spacetimedb::reducer]
 pub fn start_battle(
     ctx: &ReducerContext,
@@ -80,7 +81,8 @@ pub fn start_battle(
     // Opponent-provenance authorization (ADR-0048): accept ONLY self/sandbox
     // (opponent_identity == ctx.sender()) or the server/NPC sentinel
     // (WILD_IDENTITY). Naming another player would conscript their monsters into
-    // the public `battle` row (info-leak / grief / XP farm). Reject before the
+    // a `battle` row the my_battle view then delivers to that player too
+    // (info-leak / grief / XP farm; ADR-0198). Reject before the
     // dedup scan and any side-B DB read so a foreign roster never reaches the
     // row. reject-not-clamp.
     if opponent_identity != me && opponent_identity != WILD_IDENTITY {
@@ -1145,8 +1147,8 @@ pub(crate) fn write_back_battle_results(
     // Since ADR-0185 D1 the PvE callers log-and-commit instead of aborting, so a
     // persistent invariant violation would otherwise leak one orphaned
     // `battle_wild` row and one permanently-retained terminal `battle` row per
-    // battle, unbounded, in a `public` table every client subscribes to
-    // unfiltered. Both are pure GC of OTHER rows: neither reads anything
+    // battle, unbounded, still delivered to its participants via the
+    // `my_battle` view (ADR-0198). Both are pure GC of OTHER rows: neither reads anything
     // `write_back_party_hp` writes, and `write_back_party_hp` does not read
     // `battle_wild`, so the hoist is behaviour-preserving on the success path.
     // `check_team_coupling` stays first — it is the fail-loud precondition that
@@ -1446,8 +1448,9 @@ pub(crate) fn is_ongoing_wild_battle(b: &Battle, player: Identity) -> bool {
 /// (`write_back_battle_results` — persists damaged HP clamped to `stat_hp`, no XP
 /// on `Fled`, GCs the `battle_wild` sidecar), then DELETE the `battle` row. Unlike
 /// manual `flee`, we do NOT `update()` it to `Fled`: a disconnected client has no
-/// subscription to observe a terminal frame, and a lingering row is both a leak
-/// and a stale-overlay hazard on reconnect. Persisting damage (not a pre-battle-HP
+/// subscription to observe a terminal frame, and a lingering row is a
+/// stale-overlay hazard on reconnect (pre-ADR-0198 it was also a world-readable
+/// leak). Persisting damage (not a pre-battle-HP
 /// restore) keeps disconnect ≈ flee — no "disconnect-to-heal" advantage.
 ///
 /// Idempotent + caller-scoped (ADR-0138 D4): a no-op when the caller has no wild

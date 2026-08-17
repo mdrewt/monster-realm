@@ -9,7 +9,8 @@
 //!
 //! Design invariants (ADR-0109):
 //! - `battle_action` is PRIVATE (must-never-leak). Clients detect turn resolution
-//!   by watching `battle.state.turn_number` increment on the public `battle` table.
+//!   by watching `battle.state.turn_number` increment on their own rows of the
+//!   participant-scoped `my_battle` view (ADR-0198; `battle` itself is private).
 //! - `start_battle` (the public reducer) retains its ADR-0048 provenance guard.
 //!   PvP battles are created by the internal `start_pvp_battle` helper, never
 //!   by routing through `start_battle`.

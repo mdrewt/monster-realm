@@ -76,7 +76,6 @@ import UseBattleItemReducer from "./use_battle_item_reducer";
 // Import all procedure arg schemas
 
 // Import all table schema definitions
-import BattleRow from "./battle_table";
 import BattleChallengeRow from "./battle_challenge_table";
 import CharacterRow from "./character_table";
 import ConfigRow from "./config_table";
@@ -85,6 +84,7 @@ import HealLocationRowRow from "./heal_location_row_table";
 import InventoryRow from "./inventory_table";
 import ItemRowRow from "./item_row_table";
 import MyAccountRow from "./my_account_table";
+import MyBattleRow from "./my_battle_table";
 import MyConversationRow from "./my_conversation_table";
 import MyMonsterPubRow from "./my_monster_pub_table";
 import MyWalletRow from "./my_wallet_table";
@@ -104,23 +104,6 @@ import ZoneDefRow from "./zone_def_table";
 
 /** The schema information for all tables in this module. This is defined the same was as the tables would have been defined in the server. */
 const tablesSchema = __schema({
-  battle: __table({
-    name: 'battle',
-    indexes: [
-      { accessor: 'battle_id', name: 'battle_battle_id_idx_btree', algorithm: 'btree', columns: [
-        'battleId',
-      ] },
-      { accessor: 'opponent_identity', name: 'battle_opponent_identity_idx_btree', algorithm: 'btree', columns: [
-        'opponentIdentity',
-      ] },
-      { accessor: 'player_identity', name: 'battle_player_identity_idx_btree', algorithm: 'btree', columns: [
-        'playerIdentity',
-      ] },
-    ],
-    constraints: [
-      { name: 'battle_battle_id_key', constraint: 'unique', columns: ['battleId'] },
-    ],
-  }, BattleRow),
   battleChallenge: __table({
     name: 'battle_challenge',
     indexes: [
@@ -366,6 +349,13 @@ const tablesSchema = __schema({
     constraints: [
     ],
   }, MyAccountRow),
+  myBattle: __table({
+    name: 'my_battle',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyBattleRow),
   myConversation: __table({
     name: 'my_conversation',
     indexes: [
@@ -463,6 +453,8 @@ type __SchemaWithTableAccessorAliases = Omit<typeof tablesSchema.schemaType, "ta
     readonly "zone_def": Omit<typeof tablesSchema.schemaType.tables["zoneDef"], "accessorName"> & { readonly accessorName: "zone_def" };
     /** @deprecated Use `myAccount` instead. This alias will be removed in the next major version. */
     readonly "my_account": Omit<typeof tablesSchema.schemaType.tables["myAccount"], "accessorName"> & { readonly accessorName: "my_account" };
+    /** @deprecated Use `myBattle` instead. This alias will be removed in the next major version. */
+    readonly "my_battle": Omit<typeof tablesSchema.schemaType.tables["myBattle"], "accessorName"> & { readonly accessorName: "my_battle" };
     /** @deprecated Use `myConversation` instead. This alias will be removed in the next major version. */
     readonly "my_conversation": Omit<typeof tablesSchema.schemaType.tables["myConversation"], "accessorName"> & { readonly accessorName: "my_conversation" };
     /** @deprecated Use `myMonsterPub` instead. This alias will be removed in the next major version. */
@@ -500,6 +492,7 @@ const tableAccessorAliases = {
   "type_relation_row": "typeRelationRow",
   "zone_def": "zoneDef",
   "my_account": "myAccount",
+  "my_battle": "myBattle",
   "my_conversation": "myConversation",
   "my_monster_pub": "myMonsterPub",
   "my_wallet": "myWallet",
@@ -549,6 +542,8 @@ export type DbView = __DbViewBase & {
   readonly "zone_def": __DbViewBase["zoneDef"];
   /** @deprecated Use `myAccount` instead. This alias will be removed in the next major version. */
   readonly "my_account": __DbViewBase["myAccount"];
+  /** @deprecated Use `myBattle` instead. This alias will be removed in the next major version. */
+  readonly "my_battle": __DbViewBase["myBattle"];
   /** @deprecated Use `myConversation` instead. This alias will be removed in the next major version. */
   readonly "my_conversation": __DbViewBase["myConversation"];
   /** @deprecated Use `myMonsterPub` instead. This alias will be removed in the next major version. */
@@ -585,6 +580,8 @@ export type Tables = __TablesBase & {
   readonly "zone_def": __TablesBase["zoneDef"];
   /** @deprecated Use `myAccount` instead. This alias will be removed in the next major version. */
   readonly "my_account": __TablesBase["myAccount"];
+  /** @deprecated Use `myBattle` instead. This alias will be removed in the next major version. */
+  readonly "my_battle": __TablesBase["myBattle"];
   /** @deprecated Use `myConversation` instead. This alias will be removed in the next major version. */
   readonly "my_conversation": __TablesBase["myConversation"];
   /** @deprecated Use `myMonsterPub` instead. This alias will be removed in the next major version. */

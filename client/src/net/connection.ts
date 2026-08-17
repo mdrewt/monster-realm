@@ -153,6 +153,13 @@ export function connect(opts: ConnectionOptions): Connection {
           monsterPubRowToStore(row as unknown as SdkMonsterPubRow),
         ),
       );
+      // 15r-sec-a (ADR-0198 D4): same countermeasure for the `my_battle` view —
+      // no PK in the view binding even on 2.8.1 codegen, so onUpdate never
+      // fires and every turn arrives as an unordered insert+delete pair;
+      // rebuild the battle map from the post-burst cache instead.
+      store.reconcileBattlesFromView(
+        [...live.db.myBattle.iter()].map((row) => battleRowToStore(row as unknown as SdkBattleRow)),
+      );
     }
     store.flushBatch();
   });
@@ -320,16 +327,13 @@ export function connect(opts: ConnectionOptions): Connection {
       batcher.schedule();
     });
 
-    const ingestBattle = (row: SdkBattleRow): void => {
-      store.upsertBattle(battleRowToStore(row));
-      batcher.schedule();
-    };
-    conn.db.battle.onInsert((_ctx, row) => ingestBattle(row as unknown as SdkBattleRow));
-    conn.db.battle.onUpdate((_ctx, _old, row) => ingestBattle(row as unknown as SdkBattleRow));
-    conn.db.battle.onDelete((_ctx, row) => {
-      store.removeBattle((row as unknown as SdkBattleRow).battleId);
-      batcher.schedule();
-    });
+    // 15r-sec-a (ADR-0198 D4): `my_battle` is a PK-less VIEW — the SDK never
+    // fires onUpdate for it, so do NOT wire one (W-15RSECA-INGEST tripwire),
+    // and per-row store writes are banned here: the batcher's flush closure
+    // reconciles the whole battle map from the SDK cache, so these handlers
+    // only schedule that flush (the my_monster_pub pattern above).
+    conn.db.myBattle.onInsert(() => batcher.schedule());
+    conn.db.myBattle.onDelete(() => batcher.schedule());
 
     const ingestSkill = (row: SdkSkillRowRow): void => {
       store.upsertSkill(skillRowToStore(row));
@@ -701,12 +705,12 @@ export function connect(opts: ConnectionOptions): Connection {
             // and are not delivered at all (no client consumer exists).
             'SELECT * FROM my_monster_pub',
             'SELECT * FROM species_row',
-            // battle: unfiltered by design. The server only inserts rows for the
-            // participant identities (both sides of the battle); no private fields
-            // are exposed. An owner-scoped view does not exist yet (transport RLS →
-            // M16). The client further gates display to own-identity rows via
-            // store.ongoingBattle(identity) — ADR-0015 V1 defense-in-depth pattern.
-            'SELECT * FROM battle',
+            // 15r-sec-a (ADR-0198): battle is PRIVATE — subscribe the
+            // participant-scoped my_battle view instead (the my_monster_pub /
+            // my_wallet pattern). Each client receives only rows where it is
+            // player_identity or opponent_identity; store.ongoingBattle's
+            // own-identity filter remains as defense-in-depth.
+            'SELECT * FROM my_battle',
             'SELECT * FROM skill_row',
             // Unfiltered subscribe + client-side owner filter (store.ownInventory) is the
             // established defense-in-depth pattern (ADR-0015/0046 V1; transport RLS → M16),
