@@ -1003,11 +1003,11 @@ function runProofOfTeeth() {
   // advisory itself must fall SILENT the instant the debt list is legally at
   // cap (E2), because a printed note at the steady state is permanent noise.
   //
-  // FIXTURE RULE (do not "fix" this): 6, 7, 8 and the cap 7 below are LITERALS
-  // on purpose, never `KNOWN_UNMIGRATED.length` / `KNOWN_UNMIGRATED_CAP`. Four
-  // queued migration slices each delete one KNOWN_UNMIGRATED entry; a tooth
-  // coupled to the live count passes today at 7/7 and REDs the moment one
-  // lands — verbatim the cross-slice race this slice exists to remove
+  // FIXTURE RULE (do not "fix" this): 4, 6, 7, 8 and the cap 7 below are
+  // LITERALS on purpose, never `KNOWN_UNMIGRATED.length` / `KNOWN_UNMIGRATED_CAP`.
+  // Four queued migration slices each delete one KNOWN_UNMIGRATED entry; a
+  // tooth coupled to the live count passes today at 7/7 and REDs the moment
+  // one lands — verbatim the cross-slice race this slice exists to remove
   // (reproduced and measured by red-team, not hypothesized).
   const capProblems = (n, cap) => {
     const entries = [];
@@ -1030,7 +1030,8 @@ function runProofOfTeeth() {
     );
   };
 
-  // T10a — under cap (6/7): advisory fires, nothing fails.
+  // T10a — under cap (6/7): advisory fires, nothing fails. Two data points
+  // (6/7 and 4/7) pin the linear relation, not just one fixture's text.
   {
     const problems = capProblems(6, 7);
     if (problems.length !== 0) {
@@ -1040,12 +1041,33 @@ function runProofOfTeeth() {
           'FOR DOING MORE MIGRATION the moment a queued migration slice deletes an entry',
       );
     }
-    const note = capAdvisoryNote(6, 7);
-    if (note.indexOf('NON-BLOCKING') === -1 || note.indexOf('1 below the cap of 7') === -1) {
+    const note6 = capAdvisoryNote(6, 7);
+    // The leading space before '1' AND the explicit '-1' ban together defeat a
+    // sign-flipped difference (entryCount - cap instead of cap - entryCount):
+    // '-1 below the cap of 7' CONTAINS the unanchored substring '1 below the
+    // cap of 7', but not ' 1 below the cap of 7' (space, then '1', never '-1').
+    if (
+      note6.indexOf('NON-BLOCKING') === -1 ||
+      note6.indexOf(' 1 below the cap of 7') === -1 ||
+      note6.indexOf('-1') !== -1
+    ) {
       teeth.push(
-        `T10a FAILED: capAdvisoryNote(6, 7) was '${note}', missing 'NON-BLOCKING' and/or '1 below ` +
-          "the cap of 7' — kills: an advisory that is silent when it should speak, so a shrinking " +
-          'debt list is never reported',
+        `T10a FAILED: capAdvisoryNote(6, 7) was '${note6}', missing 'NON-BLOCKING' and/or ` +
+          "' 1 below the cap of 7', or contained a sign-flipped '-1' — kills: an advisory that is " +
+          'silent when it should speak, and a difference computed as entryCount - cap instead of ' +
+          'cap - entryCount',
+      );
+    }
+    // A second under-cap point (4/7): kills an advisory hardcoded to the
+    // single tested fixture's text, which would keep shipping '1 below the
+    // cap of 7' once the debt list actually reaches 4 or 5 entries.
+    const note4 = capAdvisoryNote(4, 7);
+    if (note4.indexOf('NON-BLOCKING') === -1 || note4.indexOf(' 3 below the cap of 7') === -1) {
+      teeth.push(
+        `T10a FAILED: capAdvisoryNote(4, 7) was '${note4}', missing 'NON-BLOCKING' and/or ` +
+          "' 3 below the cap of 7' — kills: an advisory hardcoded to a single tested fixture's text " +
+          "instead of computing cap - entryCount, which would ship a stale '1 below the cap of 7' " +
+          'once the debt list actually shrinks further',
       );
     }
   }
@@ -1076,25 +1098,28 @@ function runProofOfTeeth() {
   }
 
   // T10c — over cap (8/7): fails, with a message true of the observed state,
-  // and NO advisory (merged from the cut T10d). The three anchors ('8
-  // entries', 'cap 7', 'entries - cap = 1') are all required together:
-  // red-team MEASURED that anchoring on 'entries - cap = 1' alone is
-  // satisfiable by a message naming neither number.
+  // and NO advisory (merged from the cut T10d). The anchors ('8 entries',
+  // 'cap 7', 'entries - cap = 1', and the ABSENCE of 'exceeding the cap of')
+  // are all required together: red-team MEASURED that anchoring on
+  // 'entries - cap = 1' alone is satisfiable by a message naming neither
+  // number, and that keeping the old prose ALONGSIDE the new anchors would
+  // otherwise pass unnoticed without the negative check.
   {
     const problems = capProblems(8, 7);
     const hit = problems.find(
       (p) =>
         p.indexOf('8 entries') !== -1 &&
         p.indexOf('cap 7') !== -1 &&
-        p.indexOf('entries - cap = 1') !== -1,
+        p.indexOf('entries - cap = 1') !== -1 &&
+        p.indexOf('exceeding the cap of') === -1,
     );
     if (hit === undefined) {
       teeth.push(
         'T10c FAILED: an over-cap (8/7) KNOWN_UNMIGRATED fixture did not produce a problem ' +
-          "containing ALL of '8 entries', 'cap 7', and 'entries - cap = 1' " +
-          `(problems=${JSON.stringify(problems)}) — kills: a cap check deleted or weakened so debt ` +
-          "accumulates silently, and a message that asserts a relation as prose ('exceeding the cap " +
-          "of N') instead of reporting the measured numbers",
+          "containing ALL of '8 entries', 'cap 7', 'entries - cap = 1' and NONE of 'exceeding the " +
+          `cap of' (problems=${JSON.stringify(problems)}) — kills: a cap check deleted or weakened ` +
+          'so debt accumulates silently, and a message that asserts a relation as prose instead of ' +
+          '(or alongside) reporting the measured numbers',
       );
     }
     const note = capAdvisoryNote(8, 7);
@@ -1108,65 +1133,127 @@ function runProofOfTeeth() {
     }
   }
 
-  // T10-WIRED — the advisory must actually be WIRED into `detail`. Red-team
-  // MEASURED a capAdvisoryNote that satisfies T10a/T10b/T10c while never
-  // reaching `detail` at all (pass=true, advisory absent from the output).
-  // Unit-fixture teeth alone cannot see that — this is the same hole
-  // 15r-sec-vis found and closed with `computeViolations` + `T-VIS-WIRED`.
+  // T10-WIRED — the advisory must actually be WIRED into `detail`, proved
+  // BEHAVIORALLY rather than textually. Red-team MEASURED four working cheats
+  // against a textual-needle version of this tooth (a never-called
+  // declaration matching a parameter-name needle; a local shadowing
+  // buildDetailTail dropping capNote while satisfying the needle; dead code
+  // behind `if (false)`; a hardcoded '' capNote fed into an otherwise-real
+  // call) — all reported pass=true with the advisory absent from `detail`.
+  // Sub-checks (a)-(c) close all four by calling the REAL exported function
+  // and asserting its RETURN VALUE; (d) is corroborating structural evidence
+  // only (see its own comment below).
   {
-    // (a) buildDetailTail must preserve its capNote argument AND fragment
-    // order — kills a tail assembler that silently drops its capNote argument
-    // or reorders the fragments.
-    const wiredTail = buildDetailTail('ZA', 'ZB', 'ZZ_CAP_MARKER', 'ZC', 'ZD');
-    if (wiredTail.indexOf('ZZ_CAP_MARKER') === -1 || wiredTail !== 'ZAZBZZ_CAP_MARKERZCZD') {
+    // (a) BEHAVIORAL, under cap. Asserts the advisory's content is present
+    // AND that it sits strictly between debtNote and corroborationNote —
+    // kills a tail assembler that computes the advisory and then drops it, or
+    // that reorders the fragments (the exact computed-but-unwired hole).
+    const under = buildDetailTail({
+      entryCount: 6,
+      cap: 7,
+      naNote: 'ZA',
+      debtNote: 'ZB',
+      corroborationNote: 'ZC',
+      contentNote: 'ZD',
+    });
+    if (
+      under.indexOf('NON-BLOCKING') === -1 ||
+      under.indexOf(' 1 below the cap of 7') === -1 ||
+      under.indexOf('ZAZB') !== 0 ||
+      under.slice(-4) !== 'ZCZD'
+    ) {
       teeth.push(
-        "T10-WIRED FAILED: buildDetailTail('ZA', 'ZB', 'ZZ_CAP_MARKER', 'ZC', 'ZD') returned " +
-          `'${wiredTail}' — kills: a tail assembler that silently drops its capNote argument or ` +
-          'reorders the fragments',
+        'T10-WIRED FAILED (a): buildDetailTail({entryCount: 6, cap: 7, ...}) returned ' +
+          `'${under}' — kills: a tail assembler that computes the advisory and then drops it, or ` +
+          'reorders the fragments (the exact computed-but-unwired hole)',
       );
     }
 
-    // (b) SELF-SOURCE ADJACENCY, this file's own T8c idiom: a read failure is
-    // a tooth FAILURE, never a skip. Blanking is what makes this sound rather
-    // than self-satisfying: the needles' own string literals inside THIS file
-    // are blanked to spaces, so this check cannot match itself, and a decoy
-    // occurrence in a comment or string cannot satisfy it either — only a
-    // real call site in executable code can. This is exactly why
-    // buildDetailTail must be a CALL, not an inline template literal:
-    // blankJsLiterals blanks template payloads, so an inline `tail` template
-    // would be invisible to this check.
+    // (b) BEHAVIORAL, at cap. Strict equality — kills any advisory leaking
+    // into the legal steady state, and confirms silence is real rather than
+    // merely ''-shaped.
+    const atCap = buildDetailTail({
+      entryCount: 7,
+      cap: 7,
+      naNote: 'ZA',
+      debtNote: 'ZB',
+      corroborationNote: 'ZC',
+      contentNote: 'ZD',
+    });
+    if (atCap !== 'ZAZBZCZD') {
+      teeth.push(
+        'T10-WIRED FAILED (b): buildDetailTail({entryCount: 7, cap: 7, ...}) returned ' +
+          `'${atCap}', not the exact string 'ZAZBZCZD' — kills: any advisory leaking into the ` +
+          "legal steady state, and confirms silence is real rather than merely ''-shaped",
+      );
+    }
+
+    // (c) BEHAVIORAL, over cap. Strict equality — kills an advisory printed
+    // alongside an over-cap FAILURE.
+    const overCap = buildDetailTail({
+      entryCount: 8,
+      cap: 7,
+      naNote: 'ZA',
+      debtNote: 'ZB',
+      corroborationNote: 'ZC',
+      contentNote: 'ZD',
+    });
+    if (overCap !== 'ZAZBZCZD') {
+      teeth.push(
+        'T10-WIRED FAILED (c): buildDetailTail({entryCount: 8, cap: 7, ...}) returned ' +
+          `'${overCap}', not the exact string 'ZAZBZCZD' — kills: an advisory printed alongside an ` +
+          'over-cap FAILURE',
+      );
+    }
+
+    // (d) SELF-SOURCE, narrowed and hardened (this file's own T8c idiom: a
+    // read failure is a tooth FAILURE, never a skip). Blanking is what makes
+    // this sound rather than self-satisfying: the needle's own string
+    // literals inside THIS file are blanked to spaces, so this check cannot
+    // match itself, and a decoy occurrence in a comment or string cannot
+    // satisfy it either — only a real call site in executable code can.
     let selfSrc = null;
     try {
       selfSrc = readFileSync('evals/scanner-migration-audit.eval.mjs', 'utf8');
     } catch (e) {
       teeth.push(
-        'T10-WIRED FAILED: could not read evals/scanner-migration-audit.eval.mjs — ' +
+        'T10-WIRED FAILED (d): could not read evals/scanner-migration-audit.eval.mjs — ' +
           `${e?.message ?? String(e)} (a missing fixture is a FAIL, never a skip)`,
       );
     }
     if (selfSrc !== null) {
-      const compacted = compactWs(blankJsLiterals(selfSrc).blanked);
-      if (
-        compacted.indexOf('capAdvisoryNote(KNOWN_UNMIGRATED.length,KNOWN_UNMIGRATED_CAP)') === -1
-      ) {
-        teeth.push(
-          'T10-WIRED FAILED: no live call site capAdvisoryNote(KNOWN_UNMIGRATED.length, ' +
-            'KNOWN_UNMIGRATED_CAP) found in executable code — kills: an advisory computed from ' +
-            'hardcoded numbers instead of the live KNOWN_UNMIGRATED.length / KNOWN_UNMIGRATED_CAP',
-        );
-      }
+      // Biome (lineWidth 100, trailingComma "all") may insert a trailing
+      // comma before a closing paren when it reflows a call across lines;
+      // compactWs strips only whitespace, so a correctly-formatted
+      // implementation would otherwise FALSE-RED here without this
+      // normalization (cheap insurance; the exact reflow is not triggered by
+      // today's call length, but the hazard is real).
+      const compacted = compactWs(blankJsLiterals(selfSrc).blanked).split(',)').join(')');
+      // An OBJECT-LITERAL ARGUMENT pattern (`{entryCount:...,cap:...,`), not a
+      // parameter-name pattern: a `function buildDetailTail({entryCount, cap,
+      // ...})` DECLARATION destructures with no `:` value bindings, so a
+      // declaration line can never satisfy this needle — the fix for the
+      // measured defeat where a never-called declaration matched a
+      // parameter-name needle. It also pins that the LIVE constants, not
+      // hardcoded numbers, are what get passed at the call site.
       if (
         compacted.indexOf(
-          'buildDetailTail(naNote,debtNote,capNote,corroborationNote,contentNote)',
+          'buildDetailTail({entryCount:KNOWN_UNMIGRATED.length,cap:KNOWN_UNMIGRATED_CAP,',
         ) === -1
       ) {
         teeth.push(
-          'T10-WIRED FAILED: no live call site buildDetailTail(naNote, debtNote, capNote, ' +
-            'corroborationNote, contentNote) found in executable code — kills: an advisory that is ' +
-            'computed but never spliced into `detail`, and a `tail` reverted to an inline template ' +
-            'that this check cannot audit',
+          'T10-WIRED FAILED (d): no live call site buildDetailTail({entryCount: ' +
+            'KNOWN_UNMIGRATED.length, cap: KNOWN_UNMIGRATED_CAP, ...}) found in executable code — ' +
+            'kills: a call built from hardcoded numbers instead of the live ' +
+            'KNOWN_UNMIGRATED.length / KNOWN_UNMIGRATED_CAP',
         );
       }
+      // HONESTY NOTE (precedent: this file's own HONESTY NOTE, lines 59-67):
+      // this needle proves the call SITE exists with the live constants, but
+      // it cannot prove reachability — a deliberately SHADOWED local
+      // buildDetailTail remains a known theoretical bypass. Sub-checks
+      // (a)-(c) above are what carry the actual behavioral guarantee; this
+      // one is corroborating structural evidence, not sole proof.
     }
   }
 
