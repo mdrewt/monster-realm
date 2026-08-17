@@ -2,10 +2,10 @@
 type: SpacetimeDB Table
 title: heal_location_row
 slug: tables/heal_location_row
-updated: 2026-08-16
+updated: 2026-08-17
 tags: [schema, spacetimedb, public]
 abstract: "Healing location content seeded by `sync_content`. Public (world-readable)."
-resource: server-module/src/schema.rs#L570
+resource: server-module/src/schema.rs#L603
 source: scripts/okf-export.mjs@server-module/src/schema.rs
 visibility: public
 ---

@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: guest_claim_reaper_schedule
 slug: tables/guest_claim_reaper_schedule
-updated: 2026-08-16
+updated: 2026-08-17
 tags: [schema, spacetimedb, private]
 abstract: "PRIVATE scheduled table colocated with its reducer (ADR-0056 exception). `guest_identity` carries a btree index so the …"
 resource: server-module/src/accounts.rs#L546

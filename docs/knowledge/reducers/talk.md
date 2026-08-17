@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: talk
 slug: reducers/talk
-updated: 2026-08-16
+updated: 2026-08-17
 tags: [reducer, spacetimedb, npc]
 abstract: "Initiate a dialogue with an NPC. Creates/replaces the player_conversation row. Zone + range checked. auto_effects appli…"
 resource: server-module/src/npc.rs#L231
