@@ -16,9 +16,9 @@
 // THIS FILE does not migrate anything. It is a TRACKING GATE: it enumerates
 // every eval file that is a security/privacy gate BY NAME, classifies each as
 // migrated or not, and fails loud — by name — for every one that is neither
-// migrated nor explicitly, cap-boundedly parked in KNOWN_UNMIGRATED. It is
-// expected to be RED at 14r-c HEAD (most gated files are not yet migrated);
-// closing it is the indicated follow-up across future slices.
+// migrated nor explicitly, cap-boundedly parked in KNOWN_UNMIGRATED. It was
+// expected to be RED at 14r-c HEAD; it is GREEN once every remaining unmigrated
+// file is named in KNOWN_UNMIGRATED. Closing the parks is the indicated follow-up.
 //
 // -----------------------------------------------------------------------
 // THE CONTRACT — read this before touching either leg.
@@ -118,9 +118,9 @@ const GATED_FLOOR = 18; // the name-derived gated-set size must never drop below
 // wallet-privacy, ranking-security) + the 6 migrated by 14r-c (encounter-,
 // inventory-, wild-individuality-, pvp-action-, playtest-event-, monster-privacy).
 const MIGRATED_FLOOR = 10;
-// EXACTLY the number of KNOWN_UNMIGRATED entries below, so the debt list can
-// only ever shrink: adding an eleventh park requires editing this constant in
-// the same diff, in the open.
+// UPPER BOUND (not an equality) on KNOWN_UNMIGRATED.length: an EIGHTH park needs
+// this constant raised in the same diff, in the open. Under-cap is a NON-BLOCKING
+// advisory instead — see capAdvisoryNote.
 const KNOWN_UNMIGRATED_CAP = 7;
 
 // Self-retiring named debt. Every entry is validated: it must exist on disk, be
@@ -544,7 +544,9 @@ export function validateKnownUnmigratedEntries(
 ) {
   const problems = [];
   if (entries.length > cap) {
-    problems.push(`KNOWN_UNMIGRATED has ${entries.length} entries, exceeding the cap of ${cap}`);
+    problems.push(
+      `KNOWN_UNMIGRATED has ${entries.length} entries (cap ${cap}); entries - cap = ${entries.length - cap}`,
+    );
   }
   for (const entry of entries) {
     if (!existsFn(entry.file)) {
@@ -568,6 +570,27 @@ export function validateKnownUnmigratedEntries(
     }
   }
   return problems;
+}
+
+// '' at or above cap = silence (the legal steady state); below cap = a NON-BLOCKING advisory.
+// Deleted together with KNOWN_UNMIGRATED and its cap by slice 15r-sec-mig-d.
+export function capAdvisoryNote(entryCount, cap) {
+  if (entryCount >= cap) return '';
+  return ` | cap-advisory (NON-BLOCKING): ${cap - entryCount} below the cap of ${cap}`;
+}
+
+// Assembles `detail`'s trailing fragments. The advisory is computed HERE, not passed
+// in, so no call site can drop it or hardcode it away.
+export function buildDetailTail({
+  entryCount,
+  cap,
+  naNote,
+  debtNote,
+  corroborationNote,
+  contentNote,
+}) {
+  const advisory = capAdvisoryNote(entryCount, cap);
+  return `${naNote}${debtNote}${advisory}${corroborationNote}${contentNote}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1406,7 +1429,16 @@ export default async function scannerMigrationAuditEval() {
     contentDetected.length > 0
       ? ` | content-detected (report-only, ungated by name, ADR-0181 disclosed gap): ${contentDetected.join(', ')}`
       : ' | content-detected (report-only): none found';
-  const tail = `${naNote}${debtNote}${corroborationNote}${contentNote}`;
+  // Unlike the sibling `| X: none` notes, the cap advisory is deliberately SILENT at
+  // (and above) the cap — do not "fix" that into an always-present fragment.
+  const tail = buildDetailTail({
+    entryCount: KNOWN_UNMIGRATED.length,
+    cap: KNOWN_UNMIGRATED_CAP,
+    naNote,
+    debtNote,
+    corroborationNote,
+    contentNote,
+  });
   const detail =
     failures.length > 0
       ? `${summary} — FAILURES: ${failures.join(' || ')}${tail}`
