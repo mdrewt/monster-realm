@@ -858,12 +858,22 @@ pub struct Inventory {
   }
   const { parseTableColumnOrder, checkParseShape } = selfMod;
   const { checkColumnOrder, checkDefaultsSuffix, checkBaselineAppendOnly } = selfMod;
+  // ADR-0199 (15r-sec-vis) — the visibility axis: a third projection over
+  // parseTableFields, its low-level token helper, the two new checkers, and
+  // the pure regenerator.
+  const { parseTableVisibility, visibilityFromAttrArgs } = selfMod;
+  const { checkVisibility, checkVisibilityEscalation, formatBaseline } = selfMod;
   for (const [fnName, fn] of [
     ['parseTableColumnOrder', parseTableColumnOrder],
     ['checkParseShape', checkParseShape],
     ['checkColumnOrder', checkColumnOrder],
     ['checkDefaultsSuffix', checkDefaultsSuffix],
     ['checkBaselineAppendOnly', checkBaselineAppendOnly],
+    ['parseTableVisibility', parseTableVisibility],
+    ['visibilityFromAttrArgs', visibilityFromAttrArgs],
+    ['checkVisibility', checkVisibility],
+    ['checkVisibilityEscalation', checkVisibilityEscalation],
+    ['formatBaseline', formatBaseline],
   ]) {
     if (typeof fn !== 'function') {
       return {
@@ -899,6 +909,25 @@ pub struct Inventory {
     return out;
   };
 
+  // ADR-0199 — the same FULL re-baseline, plus the visibility axis. Mirrors
+  // `formatBaseline`'s canonical key order (pk, visibility, columns, order) so
+  // fixtures built with it look like real `--write` output.
+  const rebaselineVis = (src) => {
+    const cols = parseTableSchemas(src);
+    const ord = parseTableColumnOrder(src);
+    const vis = parseTableVisibility(src);
+    const out = {};
+    for (const t of Object.keys(cols)) {
+      out[t] = {
+        pk: cols[t].pk,
+        visibility: vis[t],
+        columns: cols[t].columns,
+        order: colNames(ord[t]),
+      };
+    }
+    return out;
+  };
+
   // A baseline that knows no tables at all — the state a brand-new table is in.
   const PREV_BASELINE_EMPTY = {};
 
@@ -908,6 +937,18 @@ pub struct Inventory {
       pk: 'inv_id',
       columns: { inv_id: 'u64', owner_identity: 'Identity', item_id: 'u32', count: 'u32' },
       order: ['inv_id', 'owner_identity', 'item_id', 'count'],
+    },
+  };
+
+  // ADR-0199 — the same table, but the prev baseline ALREADY carries the
+  // visibility axis and records it as 'private'. Used by every escalation
+  // tooth that needs a non-bootstrap prev (some entry already carries the key).
+  const PREV_BASELINE_VIS_PRIVATE = {
+    inventory: {
+      pk: 'inv_id',
+      visibility: 'private',
+      columns: PREV_BASELINE.inventory.columns,
+      order: PREV_BASELINE.inventory.order,
     },
   };
 
@@ -1595,6 +1636,664 @@ pub struct PartySlot {
     );
   }
 
+  // ===========================================================================
+  // ADR-0199 (15r-sec-vis) PROOF-OF-TEETH — declared table visibility as a
+  // gated axis of the schema snapshot. `checkSchemaDrift`/`checkColumnOrder`/
+  // etc. never look at `public`/`private` at all, so a table flip is silently
+  // GREEN through every rule above — including after the sanctioned FULL
+  // re-baseline (the exact laundering shape ADR-0193's own Context describes).
+  // Everything below gates the two new pure checkers + the regenerator.
+  //
+  // These teeth are revised only FROM ADR-0199 — never to match an
+  // implementation. Every assertion keys on the rule's bracket TAG and, where
+  // a table is involved, the table NAME.
+  // ===========================================================================
+
+  // -------------------------------------------------------------------------
+  // T-VIS-SHAPE — four malformed baselines. Kills: a checkVisibility that
+  // treats a missing `visibility` key as an implicit default (e.g. `?? 'private'`
+  // — the fail-secure default `scripts/okf-export.mjs` uses for its OWN,
+  // non-gating purpose) instead of failing loud — the empty-target blind spot.
+  // -------------------------------------------------------------------------
+  const visShapeCases = [
+    [
+      'visibility key ABSENT',
+      {
+        pk: 'inv_id',
+        columns: PREV_BASELINE.inventory.columns,
+        order: PREV_BASELINE.inventory.order,
+      },
+    ],
+    [
+      'visibility "Public" (wrong case)',
+      {
+        pk: 'inv_id',
+        visibility: 'Public',
+        columns: PREV_BASELINE.inventory.columns,
+        order: PREV_BASELINE.inventory.order,
+      },
+    ],
+    [
+      'visibility true (not a string)',
+      {
+        pk: 'inv_id',
+        visibility: true,
+        columns: PREV_BASELINE.inventory.columns,
+        order: PREV_BASELINE.inventory.order,
+      },
+    ],
+    [
+      'visibility "" (empty string)',
+      {
+        pk: 'inv_id',
+        visibility: '',
+        columns: PREV_BASELINE.inventory.columns,
+        order: PREV_BASELINE.inventory.order,
+      },
+    ],
+  ];
+  for (const [label, entry] of visShapeCases) {
+    const result = checkVisibility({ inventory: 'private' }, { inventory: entry });
+    if (!hasTag(result, '[visibility-shape]') || !hasTag(result, 'inventory')) {
+      teeth.push(
+        `T-VIS-SHAPE FAILED (${label}): checkVisibility did not report [visibility-shape] naming ` +
+          `'inventory' — got ${show(result)}`,
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-VIS-NOTE — the escape marker's shape. Kills: (a)/(b) an unanchored
+  // `marker.indexOf('ADR-') !== -1` escape — RT-1, empirically demonstrated
+  // against the PRE-EXISTING `manual_migration` escape at :497-498, which this
+  // slice deliberately does NOT fix (a different rule, out of EARS scope) but
+  // whose degenerate shape `visibility_note` must not repeat; (c) an anchor
+  // that only requires `ADR-\d{4,}` to appear SOMEWHERE rather than at
+  // position 0; (d) a note pre-armed on a still-private entry — RT-2a.
+  // -------------------------------------------------------------------------
+  const visNoteCases = [
+    ['note "ADR-" — no digits, on a PUBLIC entry', 'public', 'ADR-', false],
+    [
+      'note substring cheat "trust me ADR- not a real adr", on a PUBLIC entry',
+      'public',
+      'trust me ADR- not a real adr',
+      false,
+    ],
+    [
+      'note "see ADR-0199" — matches but NOT at position 0, on a PUBLIC entry',
+      'public',
+      'see ADR-0199',
+      false,
+    ],
+    ['note present on a PRIVATE entry (pre-arming)', 'private', 'ADR-0199 — pre-armed', false],
+    [
+      'note "ADR-0199 — world-readable because …" on a PUBLIC entry',
+      'public',
+      'ADR-0199 — world-readable because …',
+      true,
+    ],
+  ];
+  for (const [label, vis, note, wantClean] of visNoteCases) {
+    const bl = {
+      inventory: {
+        pk: 'inv_id',
+        visibility: vis,
+        visibility_note: note,
+        columns: PREV_BASELINE.inventory.columns,
+        order: PREV_BASELINE.inventory.order,
+      },
+    };
+    const result = checkVisibility({ inventory: vis }, bl);
+    if (wantClean) {
+      if (!clean(result)) {
+        teeth.push(
+          `T-VIS-NOTE FALSE-RED (${label}): expected checkVisibility to be clean, got ${show(result)}`,
+        );
+      }
+    } else if (!hasTag(result, '[visibility-shape]') || !hasTag(result, 'inventory')) {
+      teeth.push(
+        `T-VIS-NOTE FAILED (${label}): checkVisibility did not report [visibility-shape] naming ` +
+          `'inventory' — got ${show(result)}`,
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-VIS-DRIFT — source says one thing, baseline records the other, in BOTH
+  // directions. Pre-asserts `checkSchemaDrift` is CLEAN on the identical pair
+  // (the file's own T-MANDATE/T-LAUNDER triple-assertion idiom) — proving the
+  // bite is a NEW axis, not a pre-existing column/PK rule. Kills: a
+  // checkVisibility that validates baseline SHAPE but never re-derives
+  // visibility from source at all.
+  // -------------------------------------------------------------------------
+  const FLIP_TO_PRIVATE_SRC = `
+#[spacetimedb::table(accessor = inventory)]
+pub struct Inventory {
+    #[primary_key]
+    #[auto_inc]
+    pub inv_id: u64,
+    #[index(btree)]
+    pub owner_identity: Identity,
+    pub item_id: u32,
+    pub count: u32,
+}
+`;
+  const FLIP_TO_PUBLIC_SRC = `
+#[spacetimedb::table(accessor = inventory, public)]
+pub struct Inventory {
+    #[primary_key]
+    #[auto_inc]
+    pub inv_id: u64,
+    #[index(btree)]
+    pub owner_identity: Identity,
+    pub item_id: u32,
+    pub count: u32,
+}
+`;
+  const flipToPrivateVis = parseTableVisibility(FLIP_TO_PRIVATE_SRC);
+  const flipToPublicVis = parseTableVisibility(FLIP_TO_PUBLIC_SRC);
+  if (flipToPrivateVis.inventory !== 'private' || flipToPublicVis.inventory !== 'public') {
+    teeth.push(
+      `T-VIS-DRIFT VACUOUS: expected the two flip fixtures to derive private/public respectively, ` +
+        `got ${JSON.stringify(flipToPrivateVis.inventory)}/${JSON.stringify(flipToPublicVis.inventory)}`,
+    );
+  } else {
+    const baselineStillPublic = {
+      inventory: {
+        pk: 'inv_id',
+        visibility: 'public',
+        columns: PREV_BASELINE.inventory.columns,
+        order: PREV_BASELINE.inventory.order,
+      },
+    };
+    const baselineStillPrivate = {
+      inventory: {
+        pk: 'inv_id',
+        visibility: 'private',
+        columns: PREV_BASELINE.inventory.columns,
+        order: PREV_BASELINE.inventory.order,
+      },
+    };
+    const preDriftA = checkSchemaDrift(parseTableSchemas(FLIP_TO_PRIVATE_SRC), baselineStillPublic);
+    if (!clean(preDriftA)) {
+      teeth.push(
+        `T-VIS-DRIFT VACUOUS (public->private): checkSchemaDrift must be clean on this pair — got ` +
+          `${show(preDriftA)}`,
+      );
+    } else {
+      const driftA = checkVisibility(flipToPrivateVis, baselineStillPublic);
+      if (!hasTag(driftA, '[visibility-drift]') || !hasTag(driftA, 'inventory')) {
+        teeth.push(
+          `T-VIS-DRIFT FAILED (public->private): source declares inventory PRIVATE (no ` +
+            `'public' token) but the baseline still records "public" — checkSchemaDrift is CLEAN ` +
+            `on the identical pair, yet checkVisibility did not report [visibility-drift] naming ` +
+            `'inventory' — got ${show(driftA)}`,
+        );
+      }
+    }
+    const preDriftB = checkSchemaDrift(parseTableSchemas(FLIP_TO_PUBLIC_SRC), baselineStillPrivate);
+    if (!clean(preDriftB)) {
+      teeth.push(
+        `T-VIS-DRIFT VACUOUS (private->public): checkSchemaDrift must be clean on this pair — got ` +
+          `${show(preDriftB)}`,
+      );
+    } else {
+      const driftB = checkVisibility(flipToPublicVis, baselineStillPrivate);
+      if (!hasTag(driftB, '[visibility-drift]') || !hasTag(driftB, 'inventory')) {
+        teeth.push(
+          `T-VIS-DRIFT FAILED (private->public): source declares inventory PUBLIC but the ` +
+            `baseline still records "private" — checkSchemaDrift is CLEAN on the identical pair, ` +
+            `yet checkVisibility did not report [visibility-drift] naming 'inventory' — got ` +
+            `${show(driftB)}`,
+        );
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-VIS-LAUNDER — the flip PLUS a full re-baseline (the sanctioned
+  // regeneration). Kills: an escalation checker that only compares against
+  // the WORKING baseline (empty by construction after regeneration, exactly
+  // ADR-0193's own laundering argument) instead of the previously COMMITTED
+  // one — the whole point of the git layer.
+  // -------------------------------------------------------------------------
+  const launderVis = parseTableVisibility(FLIP_TO_PUBLIC_SRC);
+  const launderRebased = rebaselineVis(FLIP_TO_PUBLIC_SRC);
+  if (launderVis.inventory !== 'public') {
+    teeth.push(
+      `T-VIS-LAUNDER VACUOUS: expected the fully-public flip fixture to derive 'public', got ` +
+        `${JSON.stringify(launderVis.inventory)}`,
+    );
+  } else {
+    const launderShape = checkVisibility(launderVis, launderRebased);
+    if (!clean(launderShape)) {
+      teeth.push(
+        `T-VIS-LAUNDER(a) FAILED: after a FULL re-baseline, checkVisibility must be clean ` +
+          `([visibility-shape]/[visibility-drift] cannot fire — the recorded visibility was ` +
+          `regenerated from this very source) but returned ${show(launderShape)}`,
+      );
+    }
+    const launderEscalation = checkVisibilityEscalation(PREV_BASELINE_VIS_PRIVATE, launderRebased);
+    if (
+      !hasTag(launderEscalation, '[visibility-escalation]') ||
+      !hasTag(launderEscalation, 'inventory')
+    ) {
+      teeth.push(
+        `T-VIS-LAUNDER(b) FAILED: 'inventory' flipped private->public and was fully re-baselined ` +
+          `(the sanctioned regeneration, which makes [visibility-drift] clean by construction — ` +
+          `pinned above) — but checkVisibilityEscalation(prev, rebased) did not report ` +
+          `[visibility-escalation] naming 'inventory' — got ${show(launderEscalation)}. Laundering ` +
+          `through regeneration must not disarm the gate`,
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-VIS-NEWPUB — a brand-new `public` table, fully re-baselined against a
+  // prev that does not know it. Triple assertion proving independence from
+  // checkSchemaDrift and checkVisibility. Kills: an escalation checker whose
+  // only signal is "table not in baseline" — already reported by
+  // checkSchemaDrift and empty by construction after the mandated
+  // regeneration (ADR-0193's own argument); the triple proves
+  // [visibility-escalation] fires from a genuinely INDEPENDENT axis.
+  // -------------------------------------------------------------------------
+  const NEWPUB_SRC = `
+#[spacetimedb::table(accessor = party_slot, public)]
+pub struct PartySlot {
+    #[primary_key]
+    pub slot_id: u64,
+    pub monster_id: u64,
+}
+`;
+  const newPubParsed = parseTableSchemas(NEWPUB_SRC);
+  const newPubVis = parseTableVisibility(NEWPUB_SRC);
+  const newPubRebased = rebaselineVis(NEWPUB_SRC);
+  if (newPubVis.party_slot !== 'public') {
+    teeth.push(
+      `T-VIS-NEWPUB VACUOUS: expected the new-table fixture to derive 'public', got ` +
+        `${JSON.stringify(newPubVis.party_slot)}`,
+    );
+  } else {
+    const npDrift = checkSchemaDrift(newPubParsed, newPubRebased);
+    const npShape = checkVisibility(newPubVis, newPubRebased);
+    if (!clean(npDrift) || !clean(npShape)) {
+      teeth.push(
+        `T-VIS-NEWPUB VACUOUS: a FULLY re-baselined brand-new table must be clean through both ` +
+          `checkSchemaDrift (got ${show(npDrift)}) and checkVisibility (got ${show(npShape)})`,
+      );
+    } else {
+      const npEscalation = checkVisibilityEscalation(PREV_BASELINE_VIS_PRIVATE, newPubRebased);
+      if (!hasTag(npEscalation, '[visibility-escalation]') || !hasTag(npEscalation, 'party_slot')) {
+        teeth.push(
+          `T-VIS-NEWPUB FAILED: a brand-new table 'party_slot' declared public, fully ` +
+            `re-baselined (checkSchemaDrift AND checkVisibility are BOTH clean, proven above), was ` +
+            `not flagged by checkVisibilityEscalation against a prev that does not know it — got ` +
+            `${show(npEscalation)}`,
+        );
+      }
+      const newPubNoted = {
+        party_slot: {
+          ...newPubRebased.party_slot,
+          visibility_note: 'ADR-0199 — party slots are intentionally public',
+        },
+      };
+      const npEscalationNoted = checkVisibilityEscalation(PREV_BASELINE_VIS_PRIVATE, newPubNoted);
+      if (!clean(npEscalationNoted)) {
+        teeth.push(
+          `T-VIS-NEWPUB FALSE-RED: a valid visibility_note authored on the new public table must ` +
+            `clear [visibility-escalation] but returned ${show(npEscalationNoted)}`,
+        );
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-VIS-PREARM — a `visibility_note` pre-armed weeks ahead on a
+  // still-private entry, kept IDENTICAL when the entry flips to public.
+  // Kills: an escalation escape that checks only "does next carry a note"
+  // instead of "is the note DIFFERENT from prev" — RT-2's pre-arming attack.
+  // -------------------------------------------------------------------------
+  const PREARM_NOTE = 'ADR-0199 — pre-armed weeks ahead';
+  const prearmPrev = {
+    inventory: {
+      pk: 'inv_id',
+      visibility: 'private',
+      visibility_note: PREARM_NOTE,
+      columns: PREV_BASELINE.inventory.columns,
+      order: PREV_BASELINE.inventory.order,
+    },
+  };
+  const prearmNextSameNote = {
+    inventory: { ...prearmPrev.inventory, visibility: 'public' },
+  };
+  const prearmResult = checkVisibilityEscalation(prearmPrev, prearmNextSameNote);
+  if (!hasTag(prearmResult, '[visibility-escalation]') || !hasTag(prearmResult, 'inventory')) {
+    teeth.push(
+      `T-VIS-PREARM FAILED: 'inventory' flipped private->public but its visibility_note is ` +
+        `IDENTICAL in prev and next (not authored in this transition) — the escape must be ` +
+        `DENIED, but checkVisibilityEscalation did not report [visibility-escalation] naming ` +
+        `'inventory' — got ${show(prearmResult)}`,
+    );
+  }
+  const prearmNextChangedNote = {
+    inventory: {
+      ...prearmNextSameNote.inventory,
+      visibility_note: `${PREARM_NOTE} — updated in this PR`,
+    },
+  };
+  const prearmChangedResult = checkVisibilityEscalation(prearmPrev, prearmNextChangedNote);
+  if (!clean(prearmChangedResult)) {
+    teeth.push(
+      `T-VIS-PREARM FALSE-RED: a visibility_note that CHANGED between prev and next (authored in ` +
+        `this transition) must clear [visibility-escalation] but returned ${show(prearmChangedResult)}`,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // T-VIS-TAMPER — prev where SOME entries carry `visibility` and the table
+  // under test does NOT (a deleted key). Kills: a bootstrap-skip test that
+  // checks "does prev[t] carry visibility" per-table instead of scanning the
+  // WHOLE prev baseline — a deleted key on one table would silently re-enter
+  // the skip path table-by-table.
+  // -------------------------------------------------------------------------
+  const tamperTableCols = { slot_id: 'u64', monster_id: 'u64' };
+  const tamperPrev = {
+    inventory: {
+      pk: 'inv_id',
+      visibility: 'private',
+      columns: PREV_BASELINE.inventory.columns,
+      order: PREV_BASELINE.inventory.order,
+    },
+    party_slot: { pk: 'slot_id', columns: tamperTableCols, order: ['slot_id', 'monster_id'] }, // no visibility key
+  };
+  const tamperNext = {
+    inventory: {
+      pk: 'inv_id',
+      visibility: 'private',
+      columns: PREV_BASELINE.inventory.columns,
+      order: PREV_BASELINE.inventory.order,
+    },
+    party_slot: {
+      pk: 'slot_id',
+      visibility: 'public',
+      columns: tamperTableCols,
+      order: ['slot_id', 'monster_id'],
+    },
+  };
+  const tamperResult = checkVisibilityEscalation(tamperPrev, tamperNext);
+  if (!hasTag(tamperResult, '[visibility-escalation]') || !hasTag(tamperResult, 'party_slot')) {
+    teeth.push(
+      `T-VIS-TAMPER FAILED: prev baseline has SOME entries carrying "visibility" ('inventory') ` +
+        `but 'party_slot' does not (a deleted-key tamper vector re-entering the bootstrap-skip ` +
+        `path) — must FAIL, not silently skip; got ${show(tamperResult)}`,
+    );
+  }
+  const wholesalePrev = {
+    inventory: {
+      pk: 'inv_id',
+      columns: PREV_BASELINE.inventory.columns,
+      order: PREV_BASELINE.inventory.order,
+    },
+    party_slot: { pk: 'slot_id', columns: tamperTableCols, order: ['slot_id', 'monster_id'] },
+  };
+  const wholesaleResult = checkVisibilityEscalation(wholesalePrev, tamperNext);
+  if (!clean(wholesaleResult)) {
+    teeth.push(
+      `T-VIS-TAMPER FALSE-RED: a WHOLESALE pre-axis prev baseline (NO entry carries "visibility" ` +
+        `at all) must SKIP escalation entirely (bootstrap) and be clean — got ${show(wholesaleResult)}`,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // T-VIS-COMMENT — the only `public` spelling for a table appears (i) inside
+  // a `//` line comment and (ii) inside a Rust string literal. Assembled from
+  // concat/join-broken parts so this eval file cannot match itself if it is
+  // ever included in a source scan — mirrors
+  // server-module/src/economy_tests.rs:73-76's decoy for `player_wallet`
+  // (which T-VIS-ANCHORS below pins as private). Kills: a naive
+  // raw-line/whole-source scan for the `public` token instead of one anchored
+  // to the captured `#[spacetimedb::table(...)]` block belonging to THIS table.
+  // -------------------------------------------------------------------------
+  const commentDecoyText = ['#[spacetimedb::table(accessor = inventory', ', public)]'].join('');
+  const COMMENT_DECOY_SRC = `
+// The forbidden pattern: ${commentDecoyText}
+let s = "${commentDecoyText}";
+#[spacetimedb::table(accessor = inventory)]
+pub struct Inventory {
+    #[primary_key]
+    pub inv_id: u64,
+    pub item_id: u32,
+}
+`;
+  const decoyVis = parseTableVisibility(COMMENT_DECOY_SRC);
+  if (decoyVis.inventory !== 'private') {
+    teeth.push(
+      `T-VIS-COMMENT FAILED: the only 'public' spelling for 'inventory' appears inside a '//' ` +
+        `comment and inside a Rust string literal; the REAL declaration carries no 'public' ` +
+        `token, so parseTableVisibility must derive 'private' but got ` +
+        `${JSON.stringify(decoyVis.inventory)}`,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // T-VIS-TOKEN — visibilityFromAttrArgs must be exact-token, never substring.
+  // Kills: the shipped scripts/okf-export.mjs derivation
+  // `attrRest.indexOf('public') !== -1` (RT-5, demonstrated to false-positive
+  // on `index(btree, name = public_view, ...)`) and a comma-split that does
+  // not track paren depth.
+  // -------------------------------------------------------------------------
+  const tokenCases = [
+    [
+      "index(btree, name = public_view, columns = [x]) must NOT match on the substring 'public'",
+      ', index(btree, name = public_view, columns = [x])',
+      'private',
+    ],
+    ["', public' — simple top-level token", ', public', 'public'],
+    ["',public' — no leading space", ',public', 'public'],
+    [
+      "', scheduled(reaper), public' — public after a nested-paren clause",
+      ', scheduled(reaper), public',
+      'public',
+    ],
+    [
+      "', scheduled(guest_claim_reaper)' — nested parens must not mis-split",
+      ', scheduled(guest_claim_reaper)',
+      'private',
+    ],
+  ];
+  for (const [label, tail, want] of tokenCases) {
+    const got = visibilityFromAttrArgs(tail);
+    if (got !== want) {
+      teeth.push(
+        `T-VIS-TOKEN FAILED (${label}): visibilityFromAttrArgs(${JSON.stringify(tail)}) = ` +
+          `${JSON.stringify(got)}, expected ${JSON.stringify(want)}`,
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-VIS-ANCHORS — baseline-INDEPENDENT, run against the REAL corpus. Kills:
+  // an all-'private' (or all-'public') derivation that would be
+  // self-consistently green after `--write`, and a derivation shared with
+  // scripts/okf-export.mjs's docs bundle that `just knowledge-check` cannot
+  // independently catch (RT-6). If a table's declared visibility legitimately
+  // changes, update this tooth's pinned counts/names DELIBERATELY from
+  // ADR-0199 — that churn is the point, not a defect.
+  // -------------------------------------------------------------------------
+  const realVisAll = parseTableVisibility(rawSrc);
+  const realVisTableNames = Object.keys(realVisAll);
+  const realPublicCount = realVisTableNames.filter((t) => realVisAll[t] === 'public').length;
+  const realPrivateCount = realVisTableNames.filter((t) => realVisAll[t] === 'private').length;
+  if (realPublicCount !== 18 || realPrivateCount !== 20) {
+    teeth.push(
+      `T-VIS-ANCHORS FAILED: the real corpus derives ${realPublicCount} public / ` +
+        `${realPrivateCount} private table(s), expected 18/20 (measured a6ae43c) — if a table's ` +
+        `declared visibility legitimately changed, update this tooth's pinned counts DELIBERATELY ` +
+        `from ADR-0199, not to silence a red`,
+    );
+  }
+  const pinnedPrivateTables = [
+    'player_wallet',
+    'battle',
+    'encounter',
+    'monster',
+    'account',
+    'guest_claim',
+  ];
+  for (const t of pinnedPrivateTables) {
+    if (realVisAll[t] !== 'private') {
+      teeth.push(
+        `T-VIS-ANCHORS FAILED: '${t}' must derive 'private' (ADR-0015/ADR-0198/ADR-0040/ADR-0044/` +
+          `ADR-0179) but parseTableVisibility(realSrc) got ${JSON.stringify(realVisAll[t])} — this ` +
+          `is the ONLY independent cross-check on visibility derivation once ` +
+          `scripts/okf-export.mjs consumes it; a legitimate visibility change is expected to ` +
+          `update this tooth deliberately, not silence it`,
+      );
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // T-VIS-REGEN — formatBaseline. Kills: (a) a regenerator that emits a
+  // semantically-equal-but-differently-formatted baseline (whitespace, key
+  // order, trailing newline) — [baseline-stale] would then RED on every run;
+  // (b) a formatBaseline that emits unknown/marker keys in INPUT order
+  // instead of canonical placement — the reviewer's MAJOR finding: without
+  // this a legitimate hand-added note REDs the gate on first use; (c) a
+  // formatBaseline that re-sorts top-level keys or inserts a new table
+  // anywhere but the end.
+  // -------------------------------------------------------------------------
+  const regenSourceOrder = parseTableColumnOrder(rawSrc);
+  const regenSourceVisibility = parseTableVisibility(rawSrc);
+  let baselineRaw;
+  try {
+    baselineRaw = readFileSync(BASELINE_PATH, 'utf8');
+  } catch (e) {
+    teeth.push(
+      `T-VIS-REGEN VACUOUS: cannot re-read ${BASELINE_PATH} for the byte round-trip — ${e.message}`,
+    );
+  }
+  if (typeof baselineRaw === 'string') {
+    const roundTrip = formatBaseline(parsed, regenSourceOrder, regenSourceVisibility, baseline);
+    if (roundTrip !== baselineRaw) {
+      teeth.push(
+        `T-VIS-REGEN(a) FAILED: formatBaseline(realSchemas, realOrder, realVisibility, ` +
+          `committedBaseline) did not byte-for-byte equal the committed ${BASELINE_PATH} — the ` +
+          `regenerator is not idempotent against the real corpus`,
+      );
+    }
+  }
+
+  const arbitraryOrderParam = {
+    inventory: PREV_BASELINE.inventory.order.map((n) => ({ name: n, hasDefault: false })),
+  };
+  const arbitrarySchemas = {
+    inventory: { pk: 'inv_id', columns: PREV_BASELINE.inventory.columns },
+  };
+  const arbitraryVisibility = { inventory: 'public' };
+  const arbitraryExisting = {
+    inventory: {
+      // Deliberately SCRAMBLED key order — proves formatBaseline CANONICALIZES
+      // rather than mirroring input key order.
+      manual_migration: 'ADR-0177 delete-data runbook',
+      order: PREV_BASELINE.inventory.order,
+      pk: 'inv_id',
+      visibility_note: 'ADR-0199 — hand-added note',
+      columns: PREV_BASELINE.inventory.columns,
+      visibility: 'public',
+    },
+  };
+  const arbitraryOut = formatBaseline(
+    arbitrarySchemas,
+    arbitraryOrderParam,
+    arbitraryVisibility,
+    arbitraryExisting,
+  );
+  let arbitraryEntryKeys;
+  try {
+    arbitraryEntryKeys = Object.keys(JSON.parse(arbitraryOut).inventory);
+  } catch (e) {
+    arbitraryEntryKeys = [`PARSE ERROR: ${e.message}`];
+  }
+  const wantEntryKeys = [
+    'pk',
+    'visibility',
+    'visibility_note',
+    'columns',
+    'order',
+    'manual_migration',
+  ];
+  if (!eq(arbitraryEntryKeys, wantEntryKeys)) {
+    teeth.push(
+      `T-VIS-REGEN(b) FAILED: an existing entry carrying "visibility_note" AND "manual_migration" ` +
+        `in ARBITRARY key positions must round-trip to the canonical key order ` +
+        `${JSON.stringify(wantEntryKeys)} but formatBaseline produced ` +
+        `${JSON.stringify(arbitraryEntryKeys)}`,
+    );
+  }
+
+  const orderPreserveExisting = {
+    zebra_table: { pk: 'z_id', visibility: 'private', columns: { z_id: 'u64' }, order: ['z_id'] },
+    alpha_table: { pk: 'a_id', visibility: 'private', columns: { a_id: 'u64' }, order: ['a_id'] },
+  };
+  const orderPreserveSchemas = {
+    zebra_table: { pk: 'z_id', columns: { z_id: 'u64' } },
+    alpha_table: { pk: 'a_id', columns: { a_id: 'u64' } },
+    brand_new_table: { pk: 'n_id', columns: { n_id: 'u64' } },
+  };
+  const orderPreserveOrderParam = {
+    zebra_table: [{ name: 'z_id', hasDefault: false }],
+    alpha_table: [{ name: 'a_id', hasDefault: false }],
+    brand_new_table: [{ name: 'n_id', hasDefault: false }],
+  };
+  const orderPreserveVisibility = {
+    zebra_table: 'private',
+    alpha_table: 'private',
+    brand_new_table: 'private',
+  };
+  const orderPreserveOut = formatBaseline(
+    orderPreserveSchemas,
+    orderPreserveOrderParam,
+    orderPreserveVisibility,
+    orderPreserveExisting,
+  );
+  let orderPreserveTopKeys;
+  try {
+    orderPreserveTopKeys = Object.keys(JSON.parse(orderPreserveOut));
+  } catch (e) {
+    orderPreserveTopKeys = [`PARSE ERROR: ${e.message}`];
+  }
+  const wantTopKeys = ['zebra_table', 'alpha_table', 'brand_new_table'];
+  if (!eq(orderPreserveTopKeys, wantTopKeys)) {
+    teeth.push(
+      `T-VIS-REGEN(c) FAILED: formatBaseline must iterate the EXISTING baseline's top-level key ` +
+        `order first (never re-sort — 'zebra_table' stays before 'alpha_table' despite ` +
+        `alphabetical order) and append the parsed-only 'brand_new_table' at the END, but produced ` +
+        `top-level key order ${JSON.stringify(orderPreserveTopKeys)}, expected ` +
+        `${JSON.stringify(wantTopKeys)}`,
+    );
+  }
+
+  // -------------------------------------------------------------------------
+  // T-VIS-LEGAL — false-RED guard. Kills: a checkVisibility/
+  // checkVisibilityEscalation that fires on every diff — a checker with these
+  // false positives is worse than no checker at all.
+  // -------------------------------------------------------------------------
+  const legalVisResult = checkVisibility(realVisAll, baseline);
+  if (!clean(legalVisResult)) {
+    teeth.push(
+      `T-VIS-LEGAL FALSE-RED: checkVisibility(realVisibility, realBaseline) must be clean on the ` +
+        `unchanged real corpus but returned ${show(legalVisResult)}`,
+    );
+  }
+  const realBaselineRederived = rebaselineVis(rawSrc);
+  const legalEscalationResult = checkVisibilityEscalation(realBaselineRederived, baseline);
+  if (!clean(legalEscalationResult)) {
+    teeth.push(
+      `T-VIS-LEGAL FALSE-RED: checkVisibilityEscalation against a prev built by RE-DERIVING the ` +
+        `real baseline (no flip occurred) must be clean but returned ${show(legalEscalationResult)}`,
+    );
+  }
+
   // -------------------------------------------------------------------------
   // T-NOTHROW — every checker is pure and NEVER throws, on ANY input. A throw
   // inside the eval runner is an unhandled failure mode, not a gate result.
@@ -1639,6 +2338,19 @@ pub struct PartySlot {
       'checkBaselineAppendOnly(parsedOrder table is a string)',
       () =>
         checkBaselineAppendOnly({ t: { order: ['a'] } }, { t: { order: ['a', 'b'] } }, { t: 'x' }),
+    ],
+    // ADR-0199 (15r-sec-vis) — the two new checkers must never throw either.
+    ['checkVisibility(null, null)', () => checkVisibility(null, null)],
+    ['checkVisibility(42)', () => checkVisibility(42)],
+    ["checkVisibility({t:'x'}, {t:{}})", () => checkVisibility({ t: 'x' }, { t: {} })],
+    ['checkVisibilityEscalation(null, null)', () => checkVisibilityEscalation(null, null)],
+    [
+      'checkVisibilityEscalation({t:{visibility:1}}, {t:{}})',
+      () => checkVisibilityEscalation({ t: { visibility: 1 } }, { t: {} }),
+    ],
+    [
+      'checkVisibilityEscalation({}, {t:undefined})',
+      () => checkVisibilityEscalation({}, { t: undefined }),
     ],
   ];
   for (const [label, run] of nothrowCases) {
@@ -1734,8 +2446,10 @@ pub struct PartySlot {
       `${tableCount} tables parsed; all match baseline exactly (columns, types, PKs); ` +
       `EncounterEntryRow excluded; column-drop tooth verified; ADR-0193 order teeth verified ` +
       `(T-MANDATE/B1/NODEFAULT/LEGAL/SWAP/SWAP-REBASED/LAUNDER/APPEND/SHAPE/REMOVE/ESCAPE/` +
-      `NEWTABLE/B1-INTERIOR/PARSE/COUNT/IDEMPOTENT/NOTHROW/REAL); ` +
-      `${orderChecked}/${baselineTables.length} baseline tables order-checked; ${appendOnlyNote}`,
+      `NEWTABLE/B1-INTERIOR/PARSE/COUNT/IDEMPOTENT/NOTHROW/REAL); ADR-0199 visibility teeth ` +
+      `verified (T-VIS-SHAPE/NOTE/DRIFT/LAUNDER/NEWPUB/PREARM/TAMPER/COMMENT/TOKEN/ANCHORS/` +
+      `REGEN/LEGAL); ${orderChecked}/${baselineTables.length} baseline tables order-checked; ` +
+      `${appendOnlyNote}`,
   };
 }
 
