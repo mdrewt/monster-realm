@@ -38,11 +38,13 @@ jobs:
       # ADR-0200 D7. `if: always()` is LOAD-BEARING, not hygiene: the GitHub
       # default is `success()`, which uploads the survivor list only on the
       # nights it is worthless and skips it on exactly the nights someone needs
-      # it to triage. `if-no-files-found: warn` (never `error`) so a job that
-      # died in the toolchain install — before cargo-mutants ever produced
-      # mutants.out/ — reports its REAL failure instead of being masked by a
-      # failing upload step. The artifact name is distinct per job because
-      # upload-artifact v4 hard-errors on a duplicate name within one run.
+      # it to triage. `if-no-files-found: warn` is pinned EXPLICITLY even though
+      # `warn` is already the action's default — it is a ratchet against someone
+      # raising it to `error`, not an override: at `error` a job that died in the
+      # toolchain install, before cargo-mutants ever produced mutants.out/, would
+      # report a failing upload step instead of its REAL failure. The artifact
+      # name is distinct per job because upload-artifact v4 hard-errors on a
+      # duplicate name within one run.
       - name: Upload mutants.out (failure evidence)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
@@ -84,9 +86,10 @@ jobs:
       - run: just mutate-server
       # ADR-0200 D7 — same reasoning as the `mutation` job above. `if: always()`
       # is load-bearing: the default `success()` uploads the survivor list only
-      # on the nights it is worthless. `warn` (not `error`) on a missing path so
-      # a job that died before cargo-mutants wrote mutants.out/ is not masked by
-      # a failing upload step. The name differs from `mutants-out-core` because
+      # on the nights it is worthless. `warn` is the action's OWN default; pinning
+      # it here is a ratchet against a later raise to `error`, which would mask a
+      # job that died before cargo-mutants wrote mutants.out/ behind a failing
+      # upload step. The name differs from `mutants-out-core` because
       # upload-artifact v4 hard-errors on a duplicate name within one run.
       - name: Upload mutants.out (failure evidence)
         if: always()
@@ -228,11 +231,21 @@ jobs:
   # `continue-on-error` and no `|| true`: a notifier that swallows its own errors
   # is indistinguishable from a green night, which is the exact bug being fixed.
   #
-  # D2a — the condition admits `skipped`, not just `failure()`. GitHub evaluates
-  # `failure()` true only when a needed job actually FAILED, so a job neutered
-  # into `skipped` would leave this job skipped too, reproducing "red and silent"
-  # one level up. It stays quiet on a fully green night (so D6's zero-guard
-  # cannot misfire) and does not fire on an outright run cancellation.
+  # D2a — the condition admits THREE non-success results, not just `failure()`.
+  # GitHub evaluates `failure()` true only when a needed job actually FAILED, so a
+  # job neutered into `skipped` would leave this job skipped too, reproducing "red
+  # and silent" one level up. `cancelled` is the third term because a
+  # `timeout-minutes` expiry concludes the job as CANCELLED, satisfying neither
+  # `failure` nor `skipped`: `smoke-republish` carries a 20-minute timeout and the
+  # mutation jobs run 1.5-2.5 h against the 6 h hosted cap, so that is a real
+  # red-and-silent night, not a hypothetical one.
+  # The leading `!cancelled()` is a different predicate from the
+  # `contains(needs.*.result, 'cancelled')` term and still does what it always did:
+  # `cancelled()` is true only when the WHOLE RUN was cancelled (someone hit Cancel,
+  # or a newer run superseded this one), which is a human action needing no issue —
+  # whereas a single needed job concluding `cancelled` leaves the run itself
+  # uncancelled and must be reported. It also keeps the job quiet on a fully green
+  # night, so D6's zero-guard cannot misfire.
   #
   # D3 — the `issues: write` grant is JOB-scoped. Top-level `permissions:` stays
   # `contents: read`, so the mutation jobs, which compile third-party build
@@ -247,7 +260,7 @@ jobs:
   # silent-failure surface.
   notify:
     needs: [mutation, mutation-server, coverage, smoke-republish, changelog-freshness]
-    if: ${{ !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped')) }}
+    if: ${{ !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped') || contains(needs.*.result, 'cancelled')) }}
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -263,6 +276,11 @@ jobs:
           NEEDS_JSON: ${{ toJSON(needs) }}
           RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
           RUN_ID: ${{ github.run_id }}
+        # `shell: bash` for the `-o pipefail` it brings, the same discipline the
+        # `changelog-freshness` job documents: the default Linux shell is `bash -e`
+        # WITHOUT pipefail, and were it ever to fall back to `sh -e {0}` the
+        # `set -o pipefail` below would itself error out.
+        shell: bash
         run: |
           set -euo pipefail
           # D2: the failing set is ENUMERATED from toJSON(needs), never hardcoded —
@@ -270,9 +288,17 @@ jobs:
           # job the day someone adds one. Selecting non-success (rather than
           # == "failure") also reports a `skipped` job, which is what a successful
           # job-level neuter looks like at runtime.
+          #
+          # The enumeration is CAPTURED INTO A VARIABLE first, never inlined as
+          # `for job in $(jq …)`: a command substitution in a `for` list is
+          # `set -e`-EXEMPT, so a malformed NEEDS_JSON or a missing jq would yield
+          # zero iterations and then be laundered into D6's "enumerated zero
+          # non-success jobs" message — reporting the wrong cause for the red. An
+          # assignment DOES trip `set -e`, so the notifier fails on its real error.
+          failed_jobs=$(printf '%s' "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key')
           opened=0
-          for job in $(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key'); do
-            result=$(echo "$NEEDS_JSON" | jq -r --arg j "$job" '.[$j].result')
+          for job in $failed_jobs; do
+            result=$(printf '%s' "$NEEDS_JSON" | jq -r --arg j "$job" '.[$j].result')
             gh issue create --title "nightly failure: $job (run $RUN_ID)" --body "Nightly job $job finished with result $result. Run: $RUN_URL"
             # An assignment, NOT a bare `$((opened + 1))` command: under
             # `set -euo pipefail` a bare arithmetic expansion evaluating to 0

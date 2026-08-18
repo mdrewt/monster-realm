@@ -57,11 +57,15 @@ makes D2's skipped-job clause dead code: GitHub evaluates `failure()` true only 
 actually *failed*, so a job neutered into `skipped` leaves `notify` skipped too — the original bug
 (a gate that is red and silent) reproduced one level up. The condition is therefore
 
-    if: ${{ !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped')) }}
+    if: ${{ !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped') || contains(needs.*.result, 'cancelled')) }}
 
-which stays quiet on a fully green night (so D6's zero-guard cannot misfire), fires on a failure
-OR a skip, and does not fire on an outright run cancellation. No nightly job carries an `if:`, so
-`skipped` can only mean someone neutered one.
+which stays quiet on a fully green night (so D6's zero-guard cannot misfire) and fires on a
+failure, a skip OR a per-job cancellation. No nightly job carries an `if:`, so `skipped` can only
+mean someone neutered one. The third term is not hypothetical: a `timeout-minutes` expiry concludes
+a job as `cancelled`, `smoke-republish` carries a 20-minute timeout, and the mutation jobs run
+1.5–2.5 h against the 6 h hosted-runner cap — a night that ended that way would have been red and
+silent. The leading `!cancelled()` is a different predicate: it is true only when the WHOLE RUN was
+cancelled (a human action, or a superseding run), which needs no issue.
 
 **D3 — the grant is job-scoped, not workflow-scoped.** Top-level `permissions:` stays
 `contents: read`; the `notify` job carries `permissions: { contents: read, issues: write }`. The
@@ -120,6 +124,14 @@ changes ride along because the flat scan they replace was bypassable by string t
   blacklist admitted `continue-on-error: ${{ github.event_name == 'schedule' }}` — false under the
   `workflow_dispatch` a drill uses and true on every real cron night, i.e. a neuter calibrated to
   hide from its own verification.
+- **the recipe must be the FIRST `run:` step in a guarded job**, and no `env:` mapping in such a job
+  may carry a `PATH` key. A step running BEFORE the gate can write a shim `just` onto
+  `$GITHUB_PATH` and nothing else notices: the exact `- run: just mutate-core` text is still there,
+  there is no `if:` and no `continue-on-error`, and the job reports success having tested nothing.
+  A red-team pass demonstrated exactly that against this slice's own first implementation and kept
+  the whole eval green. (A `uses:` step ahead of the gate can still alter `PATH` — that is what
+  `setup-just` and `rust-toolchain` legitimately do — so this closes the shell-step class, not
+  every route; the remaining route requires adding a new pinned action, which is visible in review.)
 - **fail closed on unparseable shapes.** Flow-style steps (`- { run: …, if: false }`), a flow
   `steps:` sequence, YAML aliases/merge keys, a missing `steps:` key and a missing step dash all
   return not-ok rather than a confident `ok: true` over text the scanner cannot read.
@@ -137,8 +149,9 @@ changes ride along because the flat scan they replace was bypassable by string t
   "a step exists" while failing every EARS clause about attribution.
 - **Accepted gaps (named, not silent):** `smoke-republish` and `changelog-freshness` are in the
   fan-in but are still not covered by `jobIsNotNeutered` (unchanged from before this slice —
-  `smoke-republish` legitimately carries `if: failure()`); a run cancelled outright cancels `notify`
-  with it, so cancellation is not notified; and the notify job has no meta-monitor — if it breaks,
+  `smoke-republish` legitimately carries `if: failure()`); a run cancelled OUTRIGHT cancels `notify`
+  with it, so a whole-run cancellation is not notified (a per-job cancellation IS — D2a); and the
+  notify job has no meta-monitor — if it breaks,
   the nightly run is red and nothing announces it, which is one level better than before but not
   self-healing.
 

@@ -353,6 +353,56 @@ function normaliseUsesValue(value) {
   return (at === -1 ? noComment : noComment.slice(0, at)).trim();
 }
 
+// Strip a YAML inline `#` comment from an already-trimmed scalar VALUE. YAML starts a
+// comment at a `#` that is preceded by whitespace (or opens the scalar), so
+// `true # …failure…skipped…` is the runtime value `true` — the whole point of tooth
+// U3a's comment-laundering bypass: matching `failure`/`skipped` against the RAW line
+// text launders ANY condition through its own trailing comment.
+function stripInlineYamlComment(value) {
+  if (value.startsWith('#')) return '';
+  const spaceHash = value.indexOf(' #');
+  const tabHash = value.indexOf('\t#');
+  let cut = spaceHash;
+  if (cut === -1 || (tabHash !== -1 && tabHash < cut)) cut = tabHash;
+  return (cut === -1 ? value : value.slice(0, cut)).trim();
+}
+
+// Drop one layer of surrounding quotes from a flow-mapping value.
+function unquoteScalar(value) {
+  if (value.length >= 2) {
+    const first = value[0];
+    if ((first === '"' || first === "'") && value[value.length - 1] === first) {
+      return value.slice(1, value.length - 1);
+    }
+  }
+  return value;
+}
+
+// Parse a FLOW-style mapping value (`{ k: v, k2: v2 }`) into [key, value] pairs, or
+// null when the shape is not readable.
+// nightly.yml already writes `with: { prefix-key: v1-nightly }` / `with: { tool: … }`
+// (house style), so a scanner that reads ONLY block mappings FALSE-REDs a legitimately
+// styled upload step (tooth U5a). Reading it means REAL key/value parsing, never a
+// blanket "with: is flow-style → assume compliant" pass (tooth U5b), and a nested
+// flow collection (whose commas this comma-splitter would misread) returns null so the
+// caller fails closed rather than guessing.
+function parseFlowMapping(value) {
+  const open = value.indexOf('{');
+  const close = value.lastIndexOf('}');
+  if (open === -1 || close === -1 || close < open) return null;
+  const inner = value.slice(open + 1, close);
+  if (inner.indexOf('{') !== -1 || inner.indexOf('[') !== -1) return null;
+  const pairs = [];
+  for (const entry of inner.split(',')) {
+    const text = entry.trim();
+    if (text === '') continue;
+    const kv = parseYamlKeyLine(text);
+    if (kv === null) return null;
+    pairs.push([kv.key, unquoteScalar(kv.value)]);
+  }
+  return pairs;
+}
+
 const UPLOAD_ARTIFACT_ACTION = 'actions/upload-artifact';
 
 // A step is an UPLOAD step iff one of its OWN keys is `uses:` whose normalised value
@@ -370,6 +420,78 @@ function stepIsUploadArtifact(step) {
 // `false` and every other expression RED (teeth O8, O9).
 function isAlwaysCondition(value) {
   return value === 'always()' || /^\$\{\{\s*always\(\)\s*\}\}$/.test(value);
+}
+
+// Record a step's `with:` keys from EITHER form (tooth U5): the block form (`with:`
+// with an empty value, keys on the following, more-indented lines) or the flow form
+// (`with: { name: …, path: … }`). An unreadable flow value leaves withKeys empty, so
+// the D7 path/name assertions fail closed instead of granting a blanket pass.
+function collectWithKeys(step, value, blockChildIndent) {
+  if (value === '') {
+    step.withIndent = blockChildIndent;
+    return;
+  }
+  const pairs = parseFlowMapping(value);
+  if (pairs === null) return;
+  for (const [key, val] of pairs) step.withKeys.set(key, val);
+}
+
+// Every key declared inside an `env:` mapping anywhere in a job block — job-level or
+// step-level, block form or flow form (tooth U2). A `PATH` key there is the SAME
+// toolchain-shim attack as U1's extra run step with no extra step to count: it
+// prepends an attacker directory to PATH for the steps it covers, so the gate's
+// `just` resolves to a shim that exits 0 while every existing predicate (exact
+// run-step text, no if:, no continue-on-error) reads clean.
+// Block-scalar bodies are skipped: a `run: |` body is DATA, not keys (tooth O13's
+// discipline), so a script that happens to print `env:` cannot forge a finding.
+function envMappingKeys(block) {
+  const lines = block.split('\n');
+  const keys = [];
+  let blockScalarIndent = -1;
+  let envIndent = -1;
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (trimmed === '') continue;
+    const indent = indentOfLine(raw);
+    if (blockScalarIndent !== -1) {
+      if (indent > blockScalarIndent) continue;
+      blockScalarIndent = -1;
+    }
+    if (trimmed.startsWith('#')) continue;
+    // A `- ` dash shifts the effective key column two to the right, so `- env:` at
+    // indent 6 owns keys at indent 10 while its SIBLING keys sit at indent 8.
+    const isDash = trimmed.startsWith('- ');
+    const text = isDash ? trimmed.slice(2).trim() : trimmed;
+    const keyIndent = isDash ? indent + 2 : indent;
+    if (envIndent !== -1) {
+      if (keyIndent > envIndent) {
+        const envKv = parseYamlKeyLine(text);
+        if (envKv !== null) {
+          keys.push(envKv.key);
+          if (isBlockScalarValue(envKv.value)) blockScalarIndent = keyIndent;
+        }
+        continue;
+      }
+      envIndent = -1;
+    }
+    const kv = parseYamlKeyLine(text);
+    if (kv === null) continue;
+    if (isBlockScalarValue(kv.value)) {
+      blockScalarIndent = keyIndent;
+      continue;
+    }
+    if (kv.key !== 'env') continue;
+    if (kv.value === '') {
+      envIndent = keyIndent;
+      continue;
+    }
+    const pairs = parseFlowMapping(kv.value);
+    // An unreadable flow `env:` value is reported as a PATH key so the caller fails
+    // closed — an env: mapping this scanner cannot read must never read as clean.
+    if (pairs === null) keys.push('PATH');
+    else for (const [key] of pairs) keys.push(key);
+  }
+  return keys;
 }
 
 // Segment a strict job block into its job-level mapping entries and its steps.
@@ -465,7 +587,7 @@ function segmentJobBlock(block, jobName) {
         if (kv !== null) {
           current.ownKeys.set(kv.key, kv.value);
           if (isBlockScalarValue(kv.value)) blockScalarKeyIndent = stepIndent + 2;
-          if (kv.key === 'with' && kv.value === '') current.withIndent = stepIndent + 4;
+          if (kv.key === 'with') collectWithKeys(current, kv.value, stepIndent + 4);
         }
       }
       continue;
@@ -486,7 +608,7 @@ function segmentJobBlock(block, jobName) {
       if (kv !== null) {
         current.ownKeys.set(kv.key, kv.value);
         if (isBlockScalarValue(kv.value)) blockScalarKeyIndent = indent;
-        if (kv.key === 'with' && kv.value === '') current.withIndent = indent + 2;
+        if (kv.key === 'with') collectWithKeys(current, kv.value, indent + 2);
       }
       continue;
     }
@@ -568,6 +690,51 @@ export function jobIsNotNeutered(yaml, jobName) {
         reason: `${jobName} upload step has if: ${condition} — only always() / \${{ always() }} is admitted`,
       };
     }
+  }
+
+  // U2 (round-3 BLOCKER) — no `PATH` key in ANY env: mapping in the job, job-level or
+  // step-level. `env: { PATH: /tmp/.shim:$PATH }` prepends an attacker directory to the
+  // search path for every step it covers, so `just mutate-core` resolves to a shim that
+  // exits 0 while the exact-run-step-text / no-if / no-continue-on-error clauses above
+  // all read clean. It needs no second step, so U1's ordering rule cannot see it.
+  for (const key of envMappingKeys(block)) {
+    if (key === 'PATH') {
+      return {
+        ok: false,
+        reason: `${jobName} declares a PATH key inside an env: mapping — a PATH override shims the toolchain (a fake \`just\` that exits 0) without touching a single guarded key`,
+      };
+    }
+  }
+
+  // U1 (round-3 BLOCKER) — NO shell may execute before the gate invocation. Red-team's
+  // full-eval bypass: a step BEFORE `- run: just mutate-core` writes `#!/bin/bash exit 0`
+  // to /tmp/.shim/just and appends /tmp/.shim to "$GITHUB_PATH"; the recipe step then
+  // resolves `just` to the shim and the mutation gate silently never runs, while every
+  // pre-existing predicate reads clean.
+  //
+  // The rule is positional rather than the flat "AT MOST ONE run: step" the round-3
+  // spec words it as, because tooth O13 (pre-existing, untouched) pins a job with a
+  // SECOND run: step — a `run: |` diagnostic AFTER the gate — as legitimately ok. A
+  // post-gate step cannot shim a binary the gate already invoked, so requiring the
+  // gate to be the FIRST run: step kills exactly the attack class without contradicting
+  // O13. It bites both U1 fixtures: the shim step (U1a) and a bare `- run: echo hi`
+  // (U1b) are each a run: step preceding the gate.
+  const runSteps = segmented.steps.filter((step) => step.ownKeys.has('run'));
+  const gateIndex = runSteps.findIndex((step) => {
+    const command = step.ownKeys.get('run').trim();
+    return command === 'just' || command.startsWith('just ');
+  });
+  if (gateIndex === -1) {
+    return {
+      ok: false,
+      reason: `${jobName} has no \`run: just <recipe>\` gate step — failing closed rather than guessing which step is the gate`,
+    };
+  }
+  if (gateIndex > 0) {
+    return {
+      ok: false,
+      reason: `${jobName} runs ${gateIndex} shell step(s) BEFORE its \`just\` gate step — a step that executes first can write a shim \`just\` (exit 0) onto $GITHUB_PATH and shadow the gate; the gate must be the FIRST run: step`,
+    };
   }
 
   return { ok: true, reason: `${jobName} job is present and not neutered` };
@@ -710,10 +877,21 @@ function linesGrantIssuesWrite(lines, start, end) {
 }
 
 // The workflow-level `permissions:` block, as { found, grantsIssuesWrite }.
+// The anchor tolerates a trailing comment / trailing whitespace on the mapping key
+// line (`permissions: # least privilege — see ADR-0200`), matching findJobsAnchor and
+// jobHasFailurePolicyComment's clause 1. An EXACT `=== 'permissions:'` match made a
+// legally-commented grant invisible and false-RED'd the whole notify wiring (tooth U6a).
 function topLevelPermissions(yaml) {
   const lines = yaml.split('\n');
   for (let i = 0; i < lines.length; i++) {
-    if (lines[i] !== 'permissions:') continue;
+    const anchor = lines[i];
+    if (
+      anchor !== 'permissions:' &&
+      !anchor.startsWith('permissions: ') &&
+      !anchor.startsWith('permissions:\t')
+    ) {
+      continue;
+    }
     let end = lines.length;
     for (let j = i + 1; j < lines.length; j++) {
       const trimmed = lines[j].trim();
@@ -877,10 +1055,26 @@ export function nightlyNotifyIsWired(yaml) {
         'notify job has no job-level if: — it would only run on the (never-happens) all-succeeded path',
     };
   }
-  if (condition.indexOf('failure') === -1 || condition.indexOf('skipped') === -1) {
+  // U3 — match the RUNTIME condition, not the raw line. `if: true # …failure…skipped…`
+  // evaluates to the bare `true` (YAML drops the trailing comment), so scanning the raw
+  // text launders ANY condition through its own comment: notify would then fire on every
+  // green night and red D6's zero-guard nightly (tooth U3a).
+  const conditionCode = stripInlineYamlComment(condition);
+  // Each term must appear as a QUOTED result literal — `contains(needs.*.result,
+  // 'cancelled')` — never as the bare `cancelled()` FUNCTION. The `!cancelled()` guard
+  // that every compliant condition carries contains the substring "cancelled", so an
+  // unquoted indexOf would score the two-term form as three-term (tooth U3b).
+  const admitsResult = (term) =>
+    conditionCode.indexOf(`'${term}'`) !== -1 || conditionCode.indexOf(`"${term}"`) !== -1;
+  // `cancelled` is the third required term as of lp-03 round 3: a timeout-minutes expiry
+  // concludes `cancelled` (smoke-republish carries a 20-minute timeout; the mutation jobs
+  // run 1.5-2.5h against the 6h hosted cap) and satisfies neither `failure` nor `skipped`,
+  // so a two-term condition leaves that whole class of red night silent.
+  const missingTerms = ['failure', 'skipped', 'cancelled'].filter((term) => !admitsResult(term));
+  if (missingTerms.length > 0) {
     return {
       ok: false,
-      reason: `notify job-level if: ${condition} does not admit BOTH failure and skipped (ADR-0200 D2a)`,
+      reason: `notify job-level if: ${conditionCode} does not admit ${missingTerms.join(' + ')} as a quoted needs.*.result value (ADR-0200 D2a)`,
     };
   }
   if (jobLevelCoe !== null && jobLevelCoe !== 'false') {
@@ -912,6 +1106,16 @@ export function nightlyNotifyIsWired(yaml) {
   const createLines = live.filter((ln) => ln.indexOf('gh issue create') !== -1);
   if (createLines.length === 0) {
     return { ok: false, reason: 'notify body never calls gh issue create as live code' };
+  }
+  // U4 — EXACTLY one live invocation. The EARS clause is "SHALL NOT open more than one
+  // issue per job"; a lower bound alone lets a second create inside the same enumeration
+  // loop double-file every failing job, turning the notification into noise the team
+  // learns to ignore — the same silence the ADR exists to fix (tooth U4a).
+  if (createLines.length > 1) {
+    return {
+      ok: false,
+      reason: `notify body calls gh issue create ${createLines.length} times as live code — exactly one invocation is admitted (never more than one issue per enumerated job)`,
+    };
   }
 
   // Clause 4 — per-job attribution: the create call must reference the ENUMERATED job,
