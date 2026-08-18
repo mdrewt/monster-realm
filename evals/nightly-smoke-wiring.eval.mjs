@@ -12,8 +12,13 @@
 //   - each guarded nightly job (mutation, mutation-server, coverage) documents its
 //     failure policy in the contiguous comment preamble directly above its job key,
 //     mirroring the smoke-republish precedent at .github/workflows/nightly.yml:85-90
-//     (decision-hook mdrewt/claude-harness#14 — notification channel — is still open,
-//     so the reversible default is a documented policy, NOT a notification Action)
+//     (at the time these three checks were written, decision-hook
+//     mdrewt/claude-harness#14 — notification channel — was still open, so the
+//     reversible default was a documented policy and NOT a notification Action.
+//     lp-03 EXERCISED that recorded reversibility: ADR-0200 adds a `notify` job that
+//     opens one GitHub issue per non-success job. The policy comments remain
+//     required — they are the human triage ROUTING the issue body cannot carry —
+//     but they are no longer the only failure channel.)
 //   - the committed justfile `mutate-server cap=` default EQUALS the wiring-eval
 //     ceiling MUTATE_SERVER_CAP_BASELINE (ADR-0137 D4: both move in the same commit;
 //     the pre-existing `cap ≤ ceiling` check alone makes a ceiling-only raise invisible)
@@ -158,10 +163,11 @@ export function ciDoesNotWireSmokeRepublish(yaml) {
 // m13.5a NEW PREDICATES (EARS 13.5a-2 + 13.5a-6)
 // ---------------------------------------------------------------------------
 
-// Truthy continue-on-error forms (mirror e2e-desync-teeth).
-function isTruthyCoeNightly(value) {
-  return /^(true|yes|on|True)\b/.test(value) || /\$\{\{\s*true\s*\}\}/.test(value);
-}
+// (The old `isTruthyCoeNightly` truthy-BLACKLIST helper was deleted in lp-03: per
+// ADR-0200 D8 `continue-on-error:` is now an ALLOWLIST — only the literal `false`
+// passes — because the blacklist admitted `${{ github.event_name == 'schedule' }}`,
+// a neuter calibrated to read false under the workflow_dispatch a drill uses and
+// true on every real cron night.)
 
 // Helper: check that the job block extracted from yaml for jobName contains
 // EXACTLY `- run: just <verb>` as a trimmed non-comment line.
@@ -193,43 +199,732 @@ export function nightlyHasServerMutationJob(yaml) {
   return jobBlockHasExactStep(yaml, 'mutation-server', 'mutate-server');
 }
 
+// ---------------------------------------------------------------------------
+// ADR-0200 D8 SUPPORT LAYER: strict block extraction + an anchored, step-aware
+// YAML line scanner. Everything below is deliberately String/literal-regex only
+// — NO `new RegExp(` (Semgrep detect-non-literal-regexp, remote-only, has bitten
+// this project 3×).
+// ---------------------------------------------------------------------------
+
+// Indentation (count of leading spaces) of a raw line.
+function indentOfLine(line) {
+  return line.length - line.trimStart().length;
+}
+
+// STRICT job-block extraction (ADR-0200 D8, "own block extraction").
+// Same shape as the imported `extractJobBlock`, with ONE difference that is the
+// whole point: the shared helper terminates at ANY line at indent 2, which a
+// 2-space `  # decoy` comment satisfies — so a neutered step parked BELOW such a
+// comment fell outside the scanned block entirely and the gate read clean
+// (tooth O17). This variant terminates only at a non-blank, NON-comment line at
+// indent <= 2.
+//
+// `extractJobBlock` itself is deliberately NOT modified or re-exported: it has
+// ten callers across four evals and lives outside this slice's `touches:` set.
+export function strictJobBlock(yaml, jobName) {
+  const lines = yaml.split('\n');
+  const keyLine = `  ${jobName}:`;
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    // Anchored, exact key match — `  mutation:` must never match `  mutation-server:`.
+    if (lines[i] === keyLine || lines[i].startsWith(`${keyLine} `)) {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return '';
+  const block = [lines[start]];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    // Blank lines belong to the block (they sit between steps).
+    if (line.trim() === '') {
+      block.push(line);
+      continue;
+    }
+    // The ONLY terminator: a real, non-comment line at job-key indent or shallower.
+    if (indentOfLine(line) <= 2 && !line.trim().startsWith('#')) break;
+    block.push(line);
+  }
+  return `${block.join('\n')}\n`;
+}
+
+// ANCHORED key parsing (ADR-0200 D8, "anchored key matching"). `trim().startsWith('if:')`
+// never sees `"if": false`, `'if': false` or `if : false` — all three are valid YAML and
+// all three neuter a job. Returns { key, value } or null when the line is not a mapping
+// entry at all. `text` must already be trimmed and have any leading `- ` removed.
+function parseYamlKeyLine(text) {
+  let rest = text;
+  let key = null;
+  if (rest.startsWith('"') || rest.startsWith("'")) {
+    const quote = rest[0];
+    const end = rest.indexOf(quote, 1);
+    if (end === -1) return null;
+    key = rest.slice(1, end);
+    rest = rest.slice(end + 1);
+  } else {
+    const colon = rest.indexOf(':');
+    if (colon === -1) return null;
+    // trimEnd() is what tolerates `if : false` (space BEFORE the colon).
+    key = rest.slice(0, colon).trimEnd();
+    rest = rest.slice(colon);
+  }
+  rest = rest.trimStart();
+  if (!rest.startsWith(':')) return null;
+  return { key, value: rest.slice(1).trim() };
+}
+
+// FAIL CLOSED on YAML indirection (ADR-0200 D8). A merge key (`<<: *defaults`) or a bare
+// alias (`- *shared_checkout`) can inject an `if:`/`continue-on-error:` this text scanner
+// cannot resolve; returning a confident ok:true over text we cannot read is exactly the
+// false-green this gate exists to prevent.
+function isYamlIndirection(trimmed) {
+  let text = trimmed;
+  if (text === '-') return false;
+  if (text.startsWith('- ')) text = text.slice(2).trim();
+  if (text.startsWith('<<:')) return true;
+  if (text.startsWith('*')) return true;
+  const kv = parseYamlKeyLine(text);
+  if (kv === null) return false;
+  return kv.value.startsWith('*');
+}
+
+// Block-scalar indicators: `|`, `>`, and their chomping/indentation variants
+// (`|-`, `|+`, `>-`, `>+`, `|2`, …). A block scalar's BODY is DATA, so a body line
+// reading `if: false` must not be mistaken for a key (tooth O13), and a body line
+// reading `uses: actions/upload-artifact@…` must not turn a run step into an
+// upload step (tooth O12).
+function isBlockScalarValue(value) {
+  return /^[|>][-+]?[0-9]*$/.test(value);
+}
+
+// `uses:` value normalisation: strip the inline `#` comment FIRST (otherwise the
+// ` # v4` tag rides along), THEN drop the `@<ref>` tail. Callers compare the result
+// with EXACT equality — `indexOf`/`endsWith` would admit `evil/upload-artifact`
+// (tooth O10) and `actions/upload-artifact-fake` (tooth O11).
+function normaliseUsesValue(value) {
+  const hash = value.indexOf('#');
+  const noComment = (hash === -1 ? value : value.slice(0, hash)).trim();
+  const at = noComment.indexOf('@');
+  return (at === -1 ? noComment : noComment.slice(0, at)).trim();
+}
+
+const UPLOAD_ARTIFACT_ACTION = 'actions/upload-artifact';
+
+// A step is an UPLOAD step iff one of its OWN keys is `uses:` whose normalised value
+// EQUALS actions/upload-artifact AND it has no `run:` key. The `run:` exclusion is what
+// makes tooth O12 bite: a run step can print anything it likes into its block-scalar
+// body, including a fake `uses:` line, and must never inherit the carve-out.
+function stepIsUploadArtifact(step) {
+  if (step.ownKeys.has('run')) return false;
+  const uses = step.ownKeys.get('uses');
+  if (uses === undefined) return false;
+  return normaliseUsesValue(uses) === UPLOAD_ARTIFACT_ACTION;
+}
+
+// The ONLY two admitted `if:` values on an upload step (ADR-0200 D8). `success()`,
+// `false` and every other expression RED (teeth O8, O9).
+function isAlwaysCondition(value) {
+  return value === 'always()' || /^\$\{\{\s*always\(\)\s*\}\}$/.test(value);
+}
+
+// Segment a strict job block into its job-level mapping entries and its steps.
+// Returns { ok: true, jobLevel, steps } or { ok: false, reason } — the second form
+// is the FAIL-CLOSED path for every shape this scanner cannot read.
+//
+// A step's OWN keys are its dash-line key plus the lines at stepIndent + 2. Anything
+// deeper (a `with:` mapping, a block-scalar body) belongs to the step but is NOT an
+// own key — which is what stops `if-no-files-found:` inside `with:` from being read as
+// an `if:` (tooth O14) and stops a following step's `if:` from being misattributed to
+// the upload step above it (tooth O4).
+function segmentJobBlock(block, jobName) {
+  const lines = block.split('\n');
+  const jobIndent = indentOfLine(lines[0]);
+  const childIndent = jobIndent + 2;
+
+  // The `steps:` key is located by an ANCHORED whole-line match (trim() === 'steps:'),
+  // never indexOf('steps:') — a `run: echo steps:` line would otherwise win the race
+  // and move the job-level/step boundary wherever an attacker likes.
+  let stepsIdx = -1;
+  for (let i = 1; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    if (indentOfLine(lines[i]) !== childIndent) continue;
+    if (trimmed === 'steps:') {
+      stepsIdx = i;
+      break;
+    }
+    const kv = parseYamlKeyLine(trimmed);
+    if (kv !== null && kv.key === 'steps') {
+      // `steps: [ { run: … } ]` — a flow sequence this scanner cannot read (tooth O22).
+      return { ok: false, reason: `${jobName} uses a flow-style steps: sequence — unreadable` };
+    }
+  }
+  if (stepsIdx === -1) {
+    return { ok: false, reason: `${jobName} job block has no anchored steps: key line` };
+  }
+
+  const jobLevel = [];
+  for (let i = 1; i < stepsIdx; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    if (isYamlIndirection(trimmed)) {
+      return {
+        ok: false,
+        reason: `${jobName} job-level line uses a YAML alias/merge key: ${trimmed}`,
+      };
+    }
+    const kv = parseYamlKeyLine(trimmed);
+    if (kv !== null) jobLevel.push(kv);
+  }
+
+  // Step-dash indent is DERIVED from the first dash line, not assumed to be 6.
+  let stepIndent = -1;
+  for (let i = stepsIdx + 1; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    if (trimmed === '-' || trimmed.startsWith('- ')) {
+      stepIndent = indentOfLine(lines[i]);
+      break;
+    }
+  }
+  if (stepIndent === -1) {
+    return { ok: false, reason: `${jobName} steps: block contains no step dash` };
+  }
+
+  const steps = [];
+  let current = null;
+  // -1 = not inside a block scalar; otherwise the column of the key that opened it.
+  let blockScalarKeyIndent = -1;
+  for (let i = stepsIdx + 1; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (trimmed === '') continue;
+    const indent = indentOfLine(raw);
+    if (blockScalarKeyIndent !== -1) {
+      if (indent > blockScalarKeyIndent) continue; // block-scalar BODY: data, not keys
+      blockScalarKeyIndent = -1;
+    }
+    if (trimmed.startsWith('#')) continue;
+    if (isYamlIndirection(trimmed)) {
+      return { ok: false, reason: `${jobName} step line uses a YAML alias/merge key: ${trimmed}` };
+    }
+    if (indent === stepIndent && (trimmed === '-' || trimmed.startsWith('- '))) {
+      const rest = trimmed === '-' ? '' : trimmed.slice(2).trim();
+      if (rest.startsWith('{')) {
+        return { ok: false, reason: `${jobName} has a flow-style step (- { … }) — unreadable` };
+      }
+      current = { ownKeys: new Map(), withKeys: new Map(), withIndent: -1 };
+      steps.push(current);
+      if (rest !== '') {
+        const kv = parseYamlKeyLine(rest);
+        if (kv !== null) {
+          current.ownKeys.set(kv.key, kv.value);
+          if (isBlockScalarValue(kv.value)) blockScalarKeyIndent = stepIndent + 2;
+          if (kv.key === 'with' && kv.value === '') current.withIndent = stepIndent + 4;
+        }
+      }
+      continue;
+    }
+    // A non-dash line back at (or above) job-child indent ENDS the steps sequence —
+    // YAML mapping keys have no required order, so `if: false` parked BELOW `steps:`
+    // is still a job-level neuter. Collecting it into jobLevel closes that hole; a
+    // "job level == everything before steps:" reading would walk straight past it.
+    if (indent <= childIndent) {
+      const kv = parseYamlKeyLine(trimmed);
+      if (kv !== null) jobLevel.push(kv);
+      current = null;
+      continue;
+    }
+    if (current === null) continue;
+    if (indent === stepIndent + 2) {
+      const kv = parseYamlKeyLine(trimmed);
+      if (kv !== null) {
+        current.ownKeys.set(kv.key, kv.value);
+        if (isBlockScalarValue(kv.value)) blockScalarKeyIndent = indent;
+        if (kv.key === 'with' && kv.value === '') current.withIndent = indent + 2;
+      }
+      continue;
+    }
+    if (current.withIndent !== -1 && indent === current.withIndent) {
+      const kv = parseYamlKeyLine(trimmed);
+      if (kv !== null) current.withKeys.set(kv.key, kv.value);
+    }
+  }
+
+  return { ok: true, jobLevel, steps };
+}
+
 // Pure predicate: the named nightly job is not neutered.
 // Returns { ok: boolean, reason: string }.
-// Empty block → not-ok. Checks both job-level and step-level if:/continue-on-error:.
 // Applied to mutation, coverage, mutation-server (NOT smoke-republish — its
 // `if: failure()` log-dump step is legitimate; we do not call this on smoke-republish).
 //
-// FLAT-SCAN CONSTRAINT (deliberate, per ADR-0050): this is a flat line scan over
-// the entire job block — it flags ANY `if:` key at any indent, including step-level.
-// Consequence: mutation/coverage/mutation-server jobs must carry NO `if:` steps
-// whatsoever (e.g. no `if: failure()` log-dump steps). If a guarded job ever needs
-// a log-dump step, the step must use a different mechanism (e.g. always-run wrapper
-// script) or this predicate must be extended with a step-scoped carve-out.
+// STEP-SCOPED CARVE-OUT (ADR-0200 D8 — this REPLACES the old flat line scan, whose
+// "any `if:` line anywhere in the block" rule made the D7 artifact step impossible).
+// The scan is now segmented, and each clause kills a named attack:
+//   - strictJobBlock, not extractJobBlock: a 2-space decoy comment can no longer
+//     truncate the block and hide a neutered step below it (tooth O17).
+//   - job-level region (everything before the anchored `steps:` line) rejects ANY
+//     `if:` — a job-level condition is a neuter with no legitimate form (O6/O18/O19).
+//   - `if:` on a step is admitted ONLY on an upload-artifact step (exact `uses:`
+//     equality, no `run:` key) and ONLY when the value is `always()` or
+//     `${{ always() }}` (O3/O5/O8/O9/O10/O11/O12).
+//   - `continue-on-error:` is an ALLOWLIST: only the literal `false` passes. The old
+//     truthy blacklist admitted `${{ github.event_name == 'schedule' }}` — false under
+//     the workflow_dispatch a drill uses, true on every real cron night, i.e. a neuter
+//     calibrated to hide from its own verification (tooth O20).
+//   - unreadable shapes fail CLOSED: a missing `steps:` key, a missing step dash, a
+//     flow step, a flow `steps:` sequence, a merge key or a bare alias
+//     (O16/O21/O22/O23a/O23b).
 export function jobIsNotNeutered(yaml, jobName) {
-  const block = extractJobBlock(yaml, jobName);
+  const block = strictJobBlock(yaml, jobName);
   if (!block || block.trim() === '') {
     return { ok: false, reason: `${jobName} job block is empty or absent` };
   }
-  for (const line of block.split('\n')) {
-    const tr = line.trim();
-    if (tr.startsWith('#')) continue;
-    if (tr.startsWith('if:')) {
+  const segmented = segmentJobBlock(block, jobName);
+  if (!segmented.ok) {
+    return { ok: false, reason: `${segmented.reason} — failing closed` };
+  }
+
+  for (const kv of segmented.jobLevel) {
+    if (kv.key === 'if') {
       return {
         ok: false,
-        reason: `${jobName} job/step has an if: condition — can disable or skip the job`,
+        reason: `${jobName} has a JOB-level if: ${kv.value} — can disable or skip the whole job`,
       };
     }
-    if (tr.startsWith('continue-on-error:')) {
-      const value = tr.slice('continue-on-error:'.length).trim();
-      if (isTruthyCoeNightly(value)) {
-        return {
-          ok: false,
-          reason: `${jobName} job/step has a truthy continue-on-error: ${value}`,
-        };
-      }
+    if (kv.key === 'continue-on-error' && kv.value !== 'false') {
+      return {
+        ok: false,
+        reason: `${jobName} has a job-level continue-on-error: ${kv.value} (only the literal false is allowed)`,
+      };
     }
   }
+
+  for (const step of segmented.steps) {
+    const coe = step.ownKeys.get('continue-on-error');
+    if (coe !== undefined && coe !== 'false') {
+      return {
+        ok: false,
+        reason: `${jobName} has a step with continue-on-error: ${coe} (only the literal false is allowed)`,
+      };
+    }
+    const condition = step.ownKeys.get('if');
+    if (condition === undefined) continue;
+    if (!stepIsUploadArtifact(step)) {
+      return {
+        ok: false,
+        reason: `${jobName} has a non-upload step with if: ${condition} — the D8 carve-out is restricted to an actions/upload-artifact step`,
+      };
+    }
+    if (!isAlwaysCondition(condition)) {
+      return {
+        ok: false,
+        reason: `${jobName} upload step has if: ${condition} — only always() / \${{ always() }} is admitted`,
+      };
+    }
+  }
+
   return { ok: true, reason: `${jobName} job is present and not neutered` };
+}
+
+// ---------------------------------------------------------------------------
+// lp-03 NEW PREDICATES (ADR-0200 D3 / D6 / D7 — nightly failure notification)
+// ---------------------------------------------------------------------------
+
+// Returns the upload-artifact steps of a job, or null when the block is absent or
+// unreadable. Shared by the D7 predicates so both read `uses:` the SAME way — the
+// artifact checks must verify `uses:` THEMSELVES rather than assume jobIsNotNeutered
+// already rejected a spoofed action upstream (teeth P7/P8).
+function uploadArtifactSteps(yaml, jobName) {
+  const block = strictJobBlock(yaml, jobName);
+  if (!block || block.trim() === '') return null;
+  const segmented = segmentJobBlock(block, jobName);
+  if (!segmented.ok) return null;
+  return segmented.steps.filter(stepIsUploadArtifact);
+}
+
+// Pure predicate (ADR-0200 D7): the named mutation job uploads mutants.out/ on a RED
+// night. Returns { ok, reason }.
+// A missing `if:` is a FAILURE, not a pass: the GitHub default is `success()`, which
+// uploads the survivor list only on the nights it is worthless (tooth P2).
+export function mutationJobUploadsMutantsOutOnFailure(yaml, jobName) {
+  const uploads = uploadArtifactSteps(yaml, jobName);
+  if (uploads === null) {
+    return { ok: false, reason: `${jobName} job block is absent or unreadable` };
+  }
+  if (uploads.length === 0) {
+    return {
+      ok: false,
+      reason: `${jobName} has no step whose uses: equals ${UPLOAD_ARTIFACT_ACTION} (a # comment mentioning it does not count)`,
+    };
+  }
+  let reason = '';
+  for (const step of uploads) {
+    const condition = step.ownKeys.get('if');
+    if (condition === undefined) {
+      reason = `${jobName} upload step has NO if: — the default is success(), which skips the upload on the one night it matters`;
+      continue;
+    }
+    if (!isAlwaysCondition(condition)) {
+      reason = `${jobName} upload step has if: ${condition} — must be always() / \${{ always() }}`;
+      continue;
+    }
+    const uploadPath = step.withKeys.get('path');
+    if (uploadPath !== 'mutants.out/' && uploadPath !== 'mutants.out') {
+      reason = `${jobName} upload step has path: ${uploadPath} — must be mutants.out/ (or mutants.out)`;
+      continue;
+    }
+    const artifactName = step.withKeys.get('name');
+    if (artifactName === undefined || artifactName.trim() === '') {
+      reason = `${jobName} upload step has no non-empty name: — upload-artifact v4 requires one`;
+      continue;
+    }
+    return { ok: true, reason: `${jobName} uploads ${uploadPath} as ${artifactName} on always()` };
+  }
+  return { ok: false, reason };
+}
+
+// Returns the first upload-artifact step's `name:` for a job, or null when there is no
+// upload step or it carries no name. Returning null (rather than undefined) is
+// load-bearing for tooth T3: a MISSING name must never compare "distinct" from the
+// sibling job's real name.
+function uploadArtifactName(yaml, jobName) {
+  const uploads = uploadArtifactSteps(yaml, jobName);
+  if (uploads === null || uploads.length === 0) return null;
+  for (const step of uploads) {
+    const artifactName = step.withKeys.get('name');
+    if (artifactName !== undefined && artifactName.trim() !== '') return artifactName.trim();
+  }
+  return null;
+}
+
+// Pure predicate (ADR-0200 D7): the mutation and mutation-server upload steps use
+// DISTINCT artifact names — upload-artifact v4 hard-errors on a duplicate name within
+// one run, so identical names would turn the evidence upload itself into a red step.
+export function notifyArtifactNamesAreDistinct(yaml) {
+  const core = uploadArtifactName(yaml, 'mutation');
+  const server = uploadArtifactName(yaml, 'mutation-server');
+  if (core === null) {
+    return { ok: false, reason: 'mutation job has no upload-artifact step with a non-empty name:' };
+  }
+  if (server === null) {
+    return {
+      ok: false,
+      reason: 'mutation-server job has no upload-artifact step with a non-empty name:',
+    };
+  }
+  if (core === server) {
+    return { ok: false, reason: `mutation and mutation-server both upload as "${core}"` };
+  }
+  return { ok: true, reason: `artifact names are distinct: ${core} / ${server}` };
+}
+
+// Index of the top-level `jobs:` line (indent 0), or -1. A trailing comment on the
+// mapping key is tolerated, matching jobHasFailurePolicyComment's clause 1.
+function findJobsAnchor(lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    if (ln === 'jobs:' || ln.startsWith('jobs: ') || ln.startsWith('jobs:\t')) return i;
+  }
+  return -1;
+}
+
+// Every job key declared at the 2-space job-key indent under `jobs:`, in file order.
+// DERIVED from the file — never a hardcoded list — so an unwired sixth job REDs the
+// day it is added (tooth R2).
+function declaredJobKeys(yaml) {
+  const lines = yaml.split('\n');
+  const jobsIdx = findJobsAnchor(lines);
+  if (jobsIdx === -1) return [];
+  const keys = [];
+  for (let i = jobsIdx + 1; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const indent = indentOfLine(raw);
+    if (indent === 0) break;
+    if (indent !== 2) continue;
+    const kv = parseYamlKeyLine(trimmed);
+    if (kv !== null && kv.value === '') keys.push(kv.key);
+  }
+  return keys;
+}
+
+// Does the block spanning [start, end) contain a LIVE `issues: write` key?
+// Comment lines are excluded — a commented-out grant is not a grant (tooth Q4) — and
+// `issues: read` is not a write grant (tooth Q5).
+function linesGrantIssuesWrite(lines, start, end) {
+  for (let i = start; i < end && i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const kv = parseYamlKeyLine(trimmed);
+    if (kv !== null && kv.key === 'issues' && kv.value === 'write') return true;
+  }
+  return false;
+}
+
+// The workflow-level `permissions:` block, as { found, grantsIssuesWrite }.
+function topLevelPermissions(yaml) {
+  const lines = yaml.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i] !== 'permissions:') continue;
+    let end = lines.length;
+    for (let j = i + 1; j < lines.length; j++) {
+      const trimmed = lines[j].trim();
+      if (trimmed === '') continue;
+      if (indentOfLine(lines[j]) === 0) {
+        end = j;
+        break;
+      }
+    }
+    return { found: true, grantsIssuesWrite: linesGrantIssuesWrite(lines, i + 1, end) };
+  }
+  return { found: false, grantsIssuesWrite: false };
+}
+
+// A job's OWN `permissions:` block (at job-child indent only, so a step's keys can
+// never be mistaken for it), as { found, grantsIssuesWrite }.
+function jobOwnPermissions(block) {
+  const lines = block.split('\n');
+  const childIndent = indentOfLine(lines[0]) + 2;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() !== 'permissions:') continue;
+    if (indentOfLine(lines[i]) !== childIndent) continue;
+    let end = lines.length;
+    for (let j = i + 1; j < lines.length; j++) {
+      const trimmed = lines[j].trim();
+      if (trimmed === '') continue;
+      if (indentOfLine(lines[j]) <= childIndent) {
+        end = j;
+        break;
+      }
+    }
+    return { found: true, grantsIssuesWrite: linesGrantIssuesWrite(lines, i + 1, end) };
+  }
+  return { found: false, grantsIssuesWrite: false };
+}
+
+// Pure predicate (ADR-0200 D3): the `notify` job EFFECTIVELY holds `issues: write`.
+// A job-level `permissions:` block REPLACES the workflow-level one in GitHub's real
+// semantics, so a notify job with its OWN block that omits `issues:` is INEFFECTIVE
+// even when the top level grants it — an "OR both blocks together" implementation
+// misses that (tooth Q6).
+export function nightlyNotifyCanOpenIssues(yaml) {
+  const block = strictJobBlock(yaml, 'notify');
+  if (!block || block.trim() === '') {
+    return { ok: false, reason: 'no notify: job exists' };
+  }
+  const own = jobOwnPermissions(block);
+  if (own.found) {
+    return own.grantsIssuesWrite
+      ? { ok: true, reason: "notify's own permissions: block grants issues: write" }
+      : {
+          ok: false,
+          reason:
+            'notify has its OWN permissions: block without issues: write — a job-level block REPLACES the workflow-level one, so any top-level grant is dead here',
+        };
+  }
+  const top = topLevelPermissions(yaml);
+  return top.grantsIssuesWrite
+    ? { ok: true, reason: 'notify inherits issues: write from the workflow-level permissions:' }
+    : {
+        ok: false,
+        reason:
+          'issues: write is granted nowhere (notify declares no permissions: and the workflow-level block does not grant it)',
+      };
+}
+
+// Pure predicate (ADR-0200 D3, negative space): no job other than `notify`, and not the
+// top-level block, carries a live `issues: write`.
+// PER-JOB ATTRIBUTION, never a whole-file occurrence count: tooth S4 declares notify
+// FIRST (valid own grant) and mutation SECOND (illegitimate grant), so a
+// first-occurrence / last-occurrence / total-count implementation reads it as clean.
+export function noOtherJobHoldsIssuesWrite(yaml) {
+  const lines = yaml.split('\n');
+  const jobsIdx = findJobsAnchor(lines);
+  let owner = 'the top-level permissions: block';
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    if (jobsIdx !== -1 && i > jobsIdx && indentOfLine(raw) === 2) {
+      const jobKv = parseYamlKeyLine(trimmed);
+      if (jobKv !== null && jobKv.value === '') owner = jobKv.key;
+    }
+    const kv = parseYamlKeyLine(trimmed);
+    if (kv === null || kv.key !== 'issues' || kv.value !== 'write') continue;
+    if (owner !== 'notify') {
+      return { ok: false, reason: `issues: write is held by ${owner}` };
+    }
+  }
+  return { ok: true, reason: 'issues: write is held by the notify job only' };
+}
+
+// Pure predicate (ADR-0200 D1/D2/D2a/D5/D6): the notify job is genuinely wired.
+// This gates the ENUMERATION, not merely "a gh issue create line exists" — a single
+// hardcoded create call satisfies "a step exists" while failing every EARS clause about
+// attribution (teeth R10-R14).
+export function nightlyNotifyIsWired(yaml) {
+  const block = strictJobBlock(yaml, 'notify');
+  if (!block || block.trim() === '') {
+    return { ok: false, reason: 'no notify: job exists' };
+  }
+  const blockLines = block.split('\n');
+  const childIndent = indentOfLine(blockLines[0]) + 2;
+
+  // Clause 1 — needs: must cover EVERY other declared job key, derived from the file.
+  let needs = null;
+  for (let i = 1; i < blockLines.length; i++) {
+    const trimmed = blockLines[i].trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    if (indentOfLine(blockLines[i]) !== childIndent) continue;
+    const kv = parseYamlKeyLine(trimmed);
+    if (kv === null || kv.key !== 'needs') continue;
+    if (kv.value.startsWith('[')) {
+      // Flow form: needs: [a, b, c]
+      const close = kv.value.lastIndexOf(']');
+      const inner = close === -1 ? kv.value.slice(1) : kv.value.slice(1, close);
+      needs = inner
+        .split(',')
+        .map((entry) => entry.trim().replace(/^['"]/, '').replace(/['"]$/, ''))
+        .filter((entry) => entry !== '');
+    } else if (kv.value === '') {
+      // Block-sequence form.
+      needs = [];
+      for (let j = i + 1; j < blockLines.length; j++) {
+        const item = blockLines[j].trim();
+        if (item === '' || item.startsWith('#')) continue;
+        if (indentOfLine(blockLines[j]) <= childIndent) break;
+        if (!item.startsWith('- ')) break;
+        needs.push(item.slice(2).trim().replace(/^['"]/, '').replace(/['"]$/, ''));
+      }
+    }
+    break;
+  }
+  if (needs === null) {
+    return { ok: false, reason: 'notify job has no needs: key' };
+  }
+  const required = declaredJobKeys(yaml).filter((key) => key !== 'notify');
+  const missing = required.filter((key) => !needs.includes(key));
+  if (missing.length > 0) {
+    return { ok: false, reason: `notify needs: omits declared job(s): ${missing.join(', ')}` };
+  }
+
+  // Clause 2 — the job-level if: must admit BOTH failure and skipped (ADR-0200 D2a).
+  // A bare failure() leaves notify skipped when a job is neutered into `skipped`
+  // (tooth R3b); a bare always() fires on green nights and would red D6's zero-guard
+  // every single night (tooth R3c).
+  let condition = null;
+  let jobLevelCoe = null;
+  for (let i = 1; i < blockLines.length; i++) {
+    const trimmed = blockLines[i].trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const kv = parseYamlKeyLine(trimmed);
+    if (kv === null) continue;
+    if (kv.key === 'if' && indentOfLine(blockLines[i]) === childIndent) condition = kv.value;
+    if (kv.key === 'continue-on-error') jobLevelCoe = kv.value;
+  }
+  if (condition === null) {
+    return {
+      ok: false,
+      reason:
+        'notify job has no job-level if: — it would only run on the (never-happens) all-succeeded path',
+    };
+  }
+  if (condition.indexOf('failure') === -1 || condition.indexOf('skipped') === -1) {
+    return {
+      ok: false,
+      reason: `notify job-level if: ${condition} does not admit BOTH failure and skipped (ADR-0200 D2a)`,
+    };
+  }
+  if (jobLevelCoe !== null && jobLevelCoe !== 'false') {
+    return {
+      ok: false,
+      reason: `notify carries continue-on-error: ${jobLevelCoe} — a soft-failing notifier is a silently broken one`,
+    };
+  }
+
+  // LIVE lines only: text living inside a `#` comment is not executable code, so a
+  // commented-out `gh issue create` must not satisfy anything (teeth R14, P5-style).
+  const live = blockLines.filter((ln) => ln.trim() !== '' && !ln.trim().startsWith('#'));
+  const liveText = live.join('\n');
+
+  if (liveText.indexOf('|| true') !== -1) {
+    return { ok: false, reason: 'notify body softens a command with `|| true`' };
+  }
+  if (liveText.indexOf('set +e') !== -1) {
+    return { ok: false, reason: 'notify body disables error handling with `set +e`' };
+  }
+  if (liveText.indexOf('toJSON(needs)') === -1) {
+    return {
+      ok: false,
+      reason:
+        'notify body never reads toJSON(needs) — the failing set must be ENUMERATED, never hardcoded (ADR-0200 D2)',
+    };
+  }
+
+  const createLines = live.filter((ln) => ln.indexOf('gh issue create') !== -1);
+  if (createLines.length === 0) {
+    return { ok: false, reason: 'notify body never calls gh issue create as live code' };
+  }
+
+  // Clause 4 — per-job attribution: the create call must reference the ENUMERATED job,
+  // not open one generic issue per run (tooth R11).
+  let loopVar = null;
+  for (const ln of live) {
+    const match = ln.match(/\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b/);
+    if (match) {
+      loopVar = match[1];
+      break;
+    }
+  }
+  if (loopVar === null) {
+    return { ok: false, reason: 'notify body has no per-job enumeration loop' };
+  }
+  const attributed = createLines.some(
+    (ln) => ln.indexOf(`$${loopVar}`) !== -1 || ln.indexOf(`\${${loopVar}`) !== -1,
+  );
+  if (!attributed) {
+    return {
+      ok: false,
+      reason: `gh issue create never references the enumerated job ($${loopVar}) — every issue would be generically titled`,
+    };
+  }
+
+  // Clause 5 — the issue must LINK THE RUN. The link is traced from the env vars whose
+  // VALUE is derived from github.run_id, so a body that merely mentions a job name
+  // without a run reference REDs (tooth R12).
+  const runVars = [];
+  for (const ln of live) {
+    const kv = parseYamlKeyLine(ln.trim());
+    if (kv !== null && kv.value.indexOf('github.run_id') !== -1) runVars.push(kv.key);
+  }
+  const linksRun = createLines.some((ln) =>
+    runVars.some((v) => ln.indexOf(`$${v}`) !== -1 || ln.indexOf(`\${${v}`) !== -1),
+  );
+  if (!linksRun) {
+    return {
+      ok: false,
+      reason:
+        'gh issue create never references a run id / run URL env var derived from github.run_id',
+    };
+  }
+
+  // Clause 6 — D6's zero-enumerated guard: a notifier that fires and quietly opens
+  // nothing is indistinguishable from a green night (tooth R13).
+  const hasZeroTest = live.some(
+    (ln) => ln.indexOf('-eq 0') !== -1 || ln.indexOf('== 0') !== -1 || ln.indexOf('-lt 1') !== -1,
+  );
+  const hasExit1 = live.some((ln) => ln.indexOf('exit 1') !== -1);
+  if (!hasZeroTest || !hasExit1) {
+    return {
+      ok: false,
+      reason: 'notify body has no zero-enumerated `exit 1` guard (ADR-0200 D6)',
+    };
+  }
+
+  return { ok: true, reason: 'notify job fans in over every job and enumerates per-job issues' };
 }
 
 // Pure predicate: nightly triggers on schedule (with a cron: line) AND
@@ -492,10 +1187,12 @@ function normalisePolicyCommentLine(line) {
 // `smoke-republish` precedent at .github/workflows/nightly.yml:85-90.
 // Returns { ok: boolean, reason: string }.
 //
-// WHY A COMMENT AND NOT A NOTIFICATION ACTION: decision-hook
-// mdrewt/claude-harness#14 (nightly failure notification channel) is OPEN. The
-// reversible default is an in-workflow documented policy; no notification Action
-// may be added until that hook resolves. A comment costs nothing to unwind.
+// WHY A COMMENT *AS WELL AS* A NOTIFIER: decision-hook mdrewt/claude-harness#14
+// (nightly failure notification channel) was answered in lp-03 — ADR-0200 ships a
+// `notify` job that opens one GitHub issue per non-success job via `gh` (D1/D2/D5).
+// This preamble gate is NOT superseded by it: the issue says WHICH job failed, the
+// preamble says WHAT HAPPENS NEXT (routing/priority, ADR-0050), and only the latter
+// survives in the repo where a reader of the workflow can find it. Both are required.
 //
 // SEMANTICS — each clause kills a specific false-green (teeth M1–M8):
 //   1. KEY SCAN ANCHORED UNDER `jobs:` — the key is only looked for at/after the
@@ -4570,8 +5267,10 @@ jobs:
   // GREEN edit (per job): insert, immediately above the job key at 2-space indent,
   // a comment preamble containing a line of the form
   //   # Failure policy for `<job>`: … next slice / queue / priority …
-  // Decision-hook mdrewt/claude-harness#14 is OPEN — do NOT add a notification
-  // Action; the documented policy is the reversible default.
+  // Decision-hook mdrewt/claude-harness#14 was ANSWERED in lp-03: the `notify` job
+  // added by ADR-0200 (Checks 21–23 below) now opens a GitHub issue per non-success
+  // job. That does not retire these three checks — the issue names the failing job,
+  // the preamble records the triage ROUTING (ADR-0050) — so the preamble stays.
 
   // Check 14: mutation job failure policy (EXPECTED RED)
   {

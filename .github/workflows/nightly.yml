@@ -35,6 +35,22 @@ jobs:
       # coverage job below. cargo-mutants policy is unchanged (ADR-0050).
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
       - run: just mutate-core
+      # ADR-0200 D7. `if: always()` is LOAD-BEARING, not hygiene: the GitHub
+      # default is `success()`, which uploads the survivor list only on the
+      # nights it is worthless and skips it on exactly the nights someone needs
+      # it to triage. `if-no-files-found: warn` (never `error`) so a job that
+      # died in the toolchain install — before cargo-mutants ever produced
+      # mutants.out/ — reports its REAL failure instead of being masked by a
+      # failing upload step. The artifact name is distinct per job because
+      # upload-artifact v4 hard-errors on a duplicate name within one run.
+      - name: Upload mutants.out (failure evidence)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+          if-no-files-found: warn
+          retention-days: 14
 
   # cargo-mutants over the server shell (ADR-0050 amendment A2 / D-13.5-2). The
   # cargo package is `monster-realm-module` (the server-module/ directory's crate
@@ -66,6 +82,20 @@ jobs:
         with: { tool: cargo-nextest }
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
       - run: just mutate-server
+      # ADR-0200 D7 — same reasoning as the `mutation` job above. `if: always()`
+      # is load-bearing: the default `success()` uploads the survivor list only
+      # on the nights it is worthless. `warn` (not `error`) on a missing path so
+      # a job that died before cargo-mutants wrote mutants.out/ is not masked by
+      # a failing upload step. The name differs from `mutants-out-core` because
+      # upload-artifact v4 hard-errors on a duplicate name within one run.
+      - name: Upload mutants.out (failure evidence)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutants-out-server
+          path: mutants.out/
+          if-no-files-found: warn
+          retention-days: 14
 
   # vitest line-coverage threshold (vitest exits non-zero below the threshold).
   # Failure policy for `coverage`: triaged and inserted as the next slice in
@@ -185,3 +215,73 @@ jobs:
             exit 1
           fi
       - run: node scripts/changelog-freshness.mjs --check
+
+  # Failure NOTIFICATION fan-in (ADR-0200). The five gates above had teeth and no
+  # voice: `mutation-server` was RED for five consecutive nights with nobody
+  # reacting, because failure handling existed only as the prose triage comments
+  # above each job. This job is that voice.
+  #
+  # Failure policy for `notify`: a failure here means the notifier itself is
+  # broken (a 403 on the API call, a malformed jq filter, or the D6 zero-guard
+  # firing) — triaged and inserted as the next slice in the milestone queue, same
+  # tier as fix-red-master, below it in ordering. There is deliberately NO
+  # `continue-on-error` and no `|| true`: a notifier that swallows its own errors
+  # is indistinguishable from a green night, which is the exact bug being fixed.
+  #
+  # D2a — the condition admits `skipped`, not just `failure()`. GitHub evaluates
+  # `failure()` true only when a needed job actually FAILED, so a job neutered
+  # into `skipped` would leave this job skipped too, reproducing "red and silent"
+  # one level up. It stays quiet on a fully green night (so D6's zero-guard
+  # cannot misfire) and does not fire on an outright run cancellation.
+  #
+  # D3 — the `issues: write` grant is JOB-scoped. Top-level `permissions:` stays
+  # `contents: read`, so the mutation jobs, which compile third-party build
+  # scripts under cargo-mutants, never hold issue-write.
+  #
+  # D1/D5 — `gh` (preinstalled on ubuntu-latest) rather than a third-party
+  # notification Action: nothing extra to pin, trust or renovate, and a 403 exits
+  # non-zero and REDs the job loudly. Every `${{ }}` value is passed through
+  # `env:` and referenced as `$VAR`, never interpolated into the script body.
+  # No `--label`: `gh issue create --label X` fails the API call when X does not
+  # exist in the repo (D4), which would convert the notification back into a
+  # silent-failure surface.
+  notify:
+    needs: [mutation, mutation-server, coverage, smoke-republish, changelog-freshness]
+    if: ${{ !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped')) }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - name: Open one issue per non-success job
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # `gh` resolves the target repo from the current git remote, and this
+          # job deliberately has no checkout step — without GH_REPO every
+          # `gh issue create` dies with "not a git repository".
+          GH_REPO: ${{ github.repository }}
+          NEEDS_JSON: ${{ toJSON(needs) }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          RUN_ID: ${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          # D2: the failing set is ENUMERATED from toJSON(needs), never hardcoded —
+          # five hardcoded needs.<job>.result branches would silently drop the sixth
+          # job the day someone adds one. Selecting non-success (rather than
+          # == "failure") also reports a `skipped` job, which is what a successful
+          # job-level neuter looks like at runtime.
+          opened=0
+          for job in $(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key'); do
+            result=$(echo "$NEEDS_JSON" | jq -r --arg j "$job" '.[$j].result')
+            gh issue create --title "nightly failure: $job (run $RUN_ID)" --body "Nightly job $job finished with result $result. Run: $RUN_URL"
+            # An assignment, NOT a bare `$((opened + 1))` command: under
+            # `set -euo pipefail` a bare arithmetic expansion evaluating to 0
+            # exits non-zero and would abort the loop on the very first issue.
+            opened=$((opened + 1))
+          done
+          # D6: a notification path that runs and quietly creates nothing is
+          # indistinguishable from a green night — the failure mode being fixed.
+          if [ "$opened" -eq 0 ]; then
+            echo "notify fired but enumerated zero non-success jobs: $NEEDS_JSON" >&2
+            exit 1
+          fi
