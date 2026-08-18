@@ -41,8 +41,8 @@
 //   against REMOVING it, not a demand for new work.
 //
 // EXPECTED REAL-TREE STATE AT RED (lp-03 additions — ADR-0200 nightly failure
-// notification: a `notify` job per ADR-0200 D1-D6, mutants.out upload-on-failure
-// per D7, and a step-scoped `jobIsNotNeutered` carve-out per D8):
+// notification: a `notify` job per ADR-0200 D1/D2/D2a/D3-D8, mutants.out
+// upload-on-failure per D7, and a step-scoped `jobIsNotNeutered` carve-out per D8):
 //   None of the five brand-new predicates this slice's teeth call
 //   (mutationJobUploadsMutantsOutOnFailure, notifyArtifactNamesAreDistinct,
 //   nightlyNotifyCanOpenIssues, noOtherJobHoldsIssuesWrite, nightlyNotifyIsWired) exist in
@@ -54,6 +54,18 @@
 //   reaches TEETH P onward, where the undefined new predicates would otherwise throw a
 //   ReferenceError. That IS the expected RED, not a defect in the fixtures (the tester does
 //   not implement the specialist's predicates).
+//   Round 2 (red-team hardening): every positive-control notify body/condition in TEETH
+//   Q/R now uses the shared NOTIFY_D2A_IF / NOTIFY_CANONICAL_STEPS constants — the REAL
+//   D1/D2/D2a/D5/D6-compliant shape (toJSON(needs) enumeration, per-job attribution, a run
+//   link, a zero-enumerated exit 1 guard, and the `!cancelled() && (failure OR skipped)`
+//   condition) — so `nightlyNotifyIsWired` is proven satisfiable ONLY by a genuinely
+//   compliant notify job, never by a single hardcoded `gh issue create`. TEETH R10-R14 and
+//   R3b/R3c are new negative teeth pinning each compliance clause separately; TEETH S4 pins
+//   per-job attribution against a whole-file `issues: write` occurrence-count cheat; TEETH
+//   P7/P8 and T3 close three MINOR gaps (spoofed uses: values checked directly by
+//   mutationJobUploadsMutantsOutOnFailure rather than assumed caught upstream by
+//   jobIsNotNeutered; a missing name: key must not compare "distinct" from nothing). None of
+//   this moves the RED location — it still REDs at TEETH O1 first.
 //   Once the predicates land, the real-file checks read the committed tree as follows:
 //   Check 18 mutationJobUploadsMutantsOutOnFailure(nightly, 'mutation')        → FAIL
 //            (no upload-artifact step exists in the mutation job yet)
@@ -3170,11 +3182,122 @@ jobs:
     }
   }
 
+  // P7 — spoofed `uses: evil/upload-artifact@<40hex>` with if: always() + path:
+  // mutants.out/. This predicate must check uses: DIRECTLY — it must NOT rely on
+  // jobIsNotNeutered (a different predicate, tested separately in TEETH O) to
+  // have already rejected the spoofed step upstream. [NOT ok]
+  const pEvilUploadArtifact = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: evil/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+`;
+  {
+    const r = mutationJobUploadsMutantsOutOnFailure(pEvilUploadArtifact, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH P7: mutationJobUploadsMutantsOutOnFailure accepted a step using ' +
+          'evil/upload-artifact (not actions/upload-artifact) with if: always() and ' +
+          'path: mutants.out/ — this predicate must verify uses: itself, independently of jobIsNotNeutered',
+      };
+    }
+  }
+
+  // P8 — spoofed `uses: actions/upload-artifact-fake@<40hex>` (lookalike name),
+  // same shape. [NOT ok]
+  const pUploadArtifactFake = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: actions/upload-artifact-fake@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+`;
+  {
+    const r = mutationJobUploadsMutantsOutOnFailure(pUploadArtifactFake, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH P8: mutationJobUploadsMutantsOutOnFailure accepted a step using ' +
+          'actions/upload-artifact-fake (lookalike name) with if: always() and path: mutants.out/',
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Shared canonical notify-job fragments (ADR-0200 D1/D2/D2a/D5/D6), reused
+  // by TEETH Q and TEETH R below. Declared once so every positive control in
+  // this file describes the SAME real canonical shape, and so a fixture that
+  // deliberately varies exactly one property is visibly a one-property diff
+  // from these constants rather than from a hand-copied near-duplicate.
+  //
+  // NOTIFY_D2A_IF — the job-level condition (ADR-0200 D2a). Plain `if:
+  // failure()` never fires when a needed job is merely `skipped` — exactly
+  // what a successful job-level neuter looks like at runtime — so the
+  // condition must explicitly admit `skipped` alongside `failure`, while
+  // staying quiet on a fully green night (protects D6's zero-guard) and not
+  // firing on an outright cancellation.
+  //
+  // NOTIFY_CANONICAL_STEPS — the step body (ADR-0200 D1/D2/D5/D6): enumerates
+  // the non-success job set from `toJSON(needs)` via `jq` (never hardcoded),
+  // opens one `gh issue create` per enumerated job with the job name AND a
+  // run URL built from `github.run_id` in the title/body (D5 attribution),
+  // and exits 1 if the loop opened zero issues (D6).
+  //
+  // These are declared as plain (non-template-literal) constants where
+  // possible so `${{ ... }}` GitHub Actions expressions do not need escaping;
+  // NOTIFY_CANONICAL_STEPS is a template literal (it is multi-line) so every
+  // `${{ ... }}` inside it IS escaped as `\${{ ... }}`.
+  // -------------------------------------------------------------------------
+  const NOTIFY_D2A_IF =
+    "if: ${{ !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped')) }}";
+
+  const NOTIFY_CANONICAL_STEPS = `    steps:
+      - name: Open issues for failing jobs
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: \${{ toJSON(needs) }}
+          RUN_URL: https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          opened=0
+          for job in $(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key'); do
+            gh issue create --title "nightly failure: $job" --body "Job $job failed. See $RUN_URL"
+            opened=$((opened + 1))
+          done
+          if [ "$opened" -eq 0 ]; then
+            echo "notify fired but enumerated zero failing jobs" >&2
+            exit 1
+          fi
+`;
+
+  const NOTIFY_PERMISSIONS = `    permissions:
+      contents: read
+      issues: write
+`;
+
   // -------------------------------------------------------------------------
   // TEETH Q: nightlyNotifyCanOpenIssues (ADR-0200 D3)
   // -------------------------------------------------------------------------
 
-  // Q1 — the notify job's OWN permissions: block carries a live issues: write key. [ok]
+  // Q1 — the notify job's OWN permissions: block carries a live issues: write key.
+  // Uses the real canonical body/condition (BLOCKER 1/2 fix) so this fixture is
+  // never satisfiable ONLY by luck of a non-compliant shape. [ok]
   const qOwnPermissionsGrant = `name: Nightly
 on:
   workflow_dispatch:
@@ -3187,14 +3310,9 @@ jobs:
       - run: just mutate-core
   notify:
     needs: [mutation]
-    if: failure()
+    ${NOTIFY_D2A_IF}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-    steps:
-      - run: gh issue create --title x --body y
-`;
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
   {
     const r = nightlyNotifyCanOpenIssues(qOwnPermissionsGrant);
     if (!r.ok) {
@@ -3221,11 +3339,9 @@ jobs:
       - run: just mutate-core
   notify:
     needs: [mutation]
-    if: failure()
+    ${NOTIFY_D2A_IF}
     runs-on: ubuntu-latest
-    steps:
-      - run: gh issue create --title x --body y
-`;
+${NOTIFY_CANONICAL_STEPS}`;
   {
     const r = nightlyNotifyCanOpenIssues(qTopLevelGrantNoOwnBlock);
     if (!r.ok) {
@@ -3401,19 +3517,9 @@ jobs:
       - run: node scripts/changelog-freshness.mjs --check
   notify:
     needs: [mutation, mutation-server, coverage, smoke-republish, changelog-freshness]
-    if: failure()
+    ${NOTIFY_D2A_IF}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-    steps:
-      - name: Open issues for failing jobs
-        env:
-          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh issue create --title "nightly failure" --body "see the run"
-`;
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
   {
     const r = nightlyNotifyCanOpenIssues(qPositiveControlCanonical);
     if (!r.ok) {
@@ -3426,10 +3532,37 @@ jobs:
   }
 
   // -------------------------------------------------------------------------
-  // TEETH R: nightlyNotifyIsWired (ADR-0200 D1/D2/D5/D6)
+  // TEETH R: nightlyNotifyIsWired (ADR-0200 D1/D2/D2a/D5/D6)
+  // STRENGTHENED CONTRACT (red-team round 1 finding — BLOCKER 1/2): this
+  // predicate must gate the ENUMERATION itself, not merely "a gh issue create
+  // line exists somewhere". ok: true requires ALL of:
+  //   1. the notify job exists and its needs: covers EVERY other job key in
+  //      the file (derived from the file, never hardcoded — R2);
+  //   2. the job-level if: is the ADR-0200 D2a condition — admits BOTH
+  //      failure and skipped, stays quiet on green, ignores cancellation —
+  //      not bare failure() (R3b) and not bare always() (R3c), and not
+  //      absent (R3);
+  //   3. the body references toJSON(needs) (or an equivalent NEEDS_JSON env
+  //      var sourced from it) — a single hardcoded gh issue create with no
+  //      enumeration REDs even though a create call is present (R10);
+  //   4. each opened issue's title/body is attributed to the ENUMERATED job
+  //      (the loop variable, or an equivalent per-job token) — a generic,
+  //      un-attributed title REDs even with real enumeration (R11);
+  //   5. the body references the run (an id or URL derived from
+  //      github.run_id) — no run link REDs even with per-job attribution (R12);
+  //   6. the body has a zero-enumerated exit 1 guard (D6) — enumeration
+  //      without it REDs (R13);
+  //   7. the gh issue create invocation is REAL code, not text living only
+  //      inside a `#` comment line (R14, R4);
+  //   8. it is not softened — no `|| true`, no `set +e`, no truthy
+  //      continue-on-error (R5, R6, R7).
   // A shared 3-sibling-job base (mutation, mutation-server, coverage) is enough
   // to prove the "needs: covers every OTHER job key" derivation; the real file
-  // has 5 siblings, which Check 21 exercises directly.
+  // has 5 siblings, which Check 21 exercises directly. NOTIFY_D2A_IF and
+  // NOTIFY_CANONICAL_STEPS (declared above, ahead of TEETH Q) are the single
+  // source of the compliant shape — every [ok] fixture below uses them
+  // unmodified, and every [NOT ok] fixture differs from them by exactly one
+  // named property.
   // -------------------------------------------------------------------------
 
   const R_SIBLING_JOBS = `  mutation:
@@ -3463,27 +3596,18 @@ ${R_SIBLING_JOBS}`;
     }
   }
 
-  // R2 — needs: omits one job key that is present in the file (coverage). Kills:
-  // an impl that hardcodes the required set instead of deriving it from the file. [NOT ok]
+  // R2 — needs: omits one job key that is present in the file (coverage), body
+  // and if: otherwise canonical. Kills: an impl that hardcodes the required set
+  // instead of deriving it from the file. [NOT ok]
   const rNeedsOmitsJob = `name: Nightly
 on:
   workflow_dispatch:
 jobs:
 ${R_SIBLING_JOBS}  notify:
     needs: [mutation, mutation-server]
-    if: failure()
+    ${NOTIFY_D2A_IF}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-    steps:
-      - name: Open issues for failing jobs
-        env:
-          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh issue create --title "nightly failure" --body "see the run"
-`;
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
   {
     const r = nightlyNotifyIsWired(rNeedsOmitsJob);
     if (r.ok) {
@@ -3498,7 +3622,7 @@ ${R_SIBLING_JOBS}  notify:
     }
   }
 
-  // R3 — notify job has no job-level if: at all. [NOT ok]
+  // R3 — notify job has no job-level if: at all, everything else canonical. [NOT ok]
   const rNoIfKey = `name: Nightly
 on:
   workflow_dispatch:
@@ -3506,17 +3630,7 @@ jobs:
 ${R_SIBLING_JOBS}  notify:
     needs: [mutation, mutation-server, coverage]
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-    steps:
-      - name: Open issues for failing jobs
-        env:
-          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh issue create --title "nightly failure" --body "see the run"
-`;
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
   {
     const r = nightlyNotifyIsWired(rNoIfKey);
     if (r.ok) {
@@ -3524,7 +3638,63 @@ ${R_SIBLING_JOBS}  notify:
         name,
         pass: false,
         detail:
-          'TEETH R3: nightlyNotifyIsWired accepted a notify job with no job-level if: at all — without if: failure() the job only runs on the (never-happens) all-succeeded path',
+          'TEETH R3: nightlyNotifyIsWired accepted a notify job with no job-level if: at all — without a condition the job only runs on the (never-happens) all-succeeded path',
+      };
+    }
+  }
+
+  // R3b — job-level `if: failure()` ALONE (the OLD, now-wrong canonical form),
+  // everything else canonical (ADR-0200 D2a). Kills: an impl that accepts any
+  // non-empty if: line without checking it admits `skipped` — a job neutered
+  // into `skipped` would leave notify silently skipped too, reproducing the
+  // original "red and silent" bug one level up. [NOT ok]
+  const rIfFailureAlone = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    if: failure()
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyIsWired(rIfFailureAlone);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R3b: nightlyNotifyIsWired accepted job-level if: failure() ALONE — per ADR-0200 ' +
+          'D2a this does not admit a `skipped` job (exactly what a successful job-level neuter ' +
+          'looks like at runtime), so it must RED; only the D2a condition is admitted',
+      };
+    }
+  }
+
+  // R3c — job-level `if: always()` ALONE. Kills: an impl that accepts any
+  // "obviously always-run" condition — always() fires on a fully green night
+  // too, which would make D6's zero-enumerated exit 1 guard red EVERY green
+  // night (the guard is meant to fire only when the condition fired and found
+  // nothing, not every single night). [NOT ok]
+  const rIfAlwaysAlone = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    if: always()
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyIsWired(rIfAlwaysAlone);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R3c: nightlyNotifyIsWired accepted job-level if: always() ALONE — this fires on ' +
+          "a fully green night and would make D6's zero-guard red every green night; only the " +
+          'D2a condition (quiet on green, admits failure OR skipped, ignores cancellation) is admitted',
       };
     }
   }
@@ -3536,14 +3706,13 @@ on:
 jobs:
 ${R_SIBLING_JOBS}  notify:
     needs: [mutation, mutation-server, coverage]
-    if: failure()
+    ${NOTIFY_D2A_IF}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-    steps:
+${NOTIFY_PERMISSIONS}    steps:
       - name: Notify
-        run: echo "something failed, please look"
+        env:
+          NEEDS_JSON: \${{ toJSON(needs) }}
+        run: echo "something failed, please look at $NEEDS_JSON"
 `;
   {
     const r = nightlyNotifyIsWired(rNoGhIssueCreate);
@@ -3564,18 +3733,25 @@ on:
 jobs:
 ${R_SIBLING_JOBS}  notify:
     needs: [mutation, mutation-server, coverage]
-    if: failure()
+    ${NOTIFY_D2A_IF}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-    steps:
+${NOTIFY_PERMISSIONS}    steps:
       - name: Open issues for failing jobs
         env:
           GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: \${{ toJSON(needs) }}
+          RUN_URL: https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }}
         run: |
           set -euo pipefail
-          gh issue create --title "nightly failure" --body "see the run" || true
+          opened=0
+          for job in $(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key'); do
+            gh issue create --title "nightly failure: $job" --body "Job $job failed. See $RUN_URL" || true
+            opened=$((opened + 1))
+          done
+          if [ "$opened" -eq 0 ]; then
+            echo "notify fired but enumerated zero failing jobs" >&2
+            exit 1
+          fi
 `;
   {
     const r = nightlyNotifyIsWired(rCreateThenOrTrue);
@@ -3589,25 +3765,34 @@ ${R_SIBLING_JOBS}  notify:
     }
   }
 
-  // R6 — `set +e` in the body (defeats set -euo pipefail's protection). [NOT ok]
+  // R6 — `set +e` in the body (defeats set -euo pipefail's protection),
+  // otherwise fully canonical enumeration. [NOT ok]
   const rSetPlusE = `name: Nightly
 on:
   workflow_dispatch:
 jobs:
 ${R_SIBLING_JOBS}  notify:
     needs: [mutation, mutation-server, coverage]
-    if: failure()
+    ${NOTIFY_D2A_IF}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-    steps:
+${NOTIFY_PERMISSIONS}    steps:
       - name: Open issues for failing jobs
         env:
           GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: \${{ toJSON(needs) }}
+          RUN_URL: https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }}
         run: |
+          set -euo pipefail
           set +e
-          gh issue create --title "nightly failure" --body "see the run"
+          opened=0
+          for job in $(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key'); do
+            gh issue create --title "nightly failure: $job" --body "Job $job failed. See $RUN_URL"
+            opened=$((opened + 1))
+          done
+          if [ "$opened" -eq 0 ]; then
+            echo "notify fired but enumerated zero failing jobs" >&2
+            exit 1
+          fi
 `;
   {
     const r = nightlyNotifyIsWired(rSetPlusE);
@@ -3621,27 +3806,18 @@ ${R_SIBLING_JOBS}  notify:
     }
   }
 
-  // R7 — truthy continue-on-error on the notify job itself. [NOT ok]
+  // R7 — truthy continue-on-error on the notify job itself, body otherwise
+  // fully canonical. [NOT ok]
   const rTruthyCoe = `name: Nightly
 on:
   workflow_dispatch:
 jobs:
 ${R_SIBLING_JOBS}  notify:
     needs: [mutation, mutation-server, coverage]
-    if: failure()
+    ${NOTIFY_D2A_IF}
     continue-on-error: true
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-    steps:
-      - name: Open issues for failing jobs
-        env:
-          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh issue create --title "nightly failure" --body "see the run"
-`;
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
   {
     const r = nightlyNotifyIsWired(rTruthyCoe);
     if (r.ok) {
@@ -3654,7 +3830,204 @@ ${R_SIBLING_JOBS}  notify:
     }
   }
 
-  // R8 — canonical, needs: as a BLOCK sequence. [ok]
+  // R10 — a SINGLE hardcoded `gh issue create`, with NO toJSON(needs) (or any
+  // NEEDS_JSON-equivalent) anywhere in the job. This is the exact non-compliant
+  // shape a red-team implementation shipped as its "notify job" — a create call
+  // is present, but there is no enumeration behind it, so it opens exactly one
+  // generic issue no matter how many jobs actually failed (violates D2/D5). [NOT ok]
+  const rHardcodedNoEnumeration = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}    steps:
+      - name: Open issue
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh issue create --title "nightly failure" --body "see the run"
+`;
+  {
+    const r = nightlyNotifyIsWired(rHardcodedNoEnumeration);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R10: nightlyNotifyIsWired accepted a notify job with a SINGLE hardcoded gh issue ' +
+          'create and no toJSON(needs) enumeration anywhere — this opens exactly one generic issue ' +
+          'no matter how many jobs failed, violating D2/D5; "a create call exists" is not enough',
+      };
+    }
+  }
+
+  // R11 — enumerates via toJSON(needs)/jq/a real loop, but the issue title/body
+  // never reference the loop variable or any per-job token — every opened issue
+  // is generically titled "nightly failure" regardless of which job it is for.
+  // Kills: an impl that only checks "gh issue create appears inside a for loop"
+  // without checking the create call is actually attributed to the enumerated
+  // job (EARS: "naming the failing job"). [NOT ok]
+  const rEnumeratesNoAttribution = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}    steps:
+      - name: Open issues for failing jobs
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: \${{ toJSON(needs) }}
+          RUN_URL: https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          opened=0
+          for job in $(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key'); do
+            gh issue create --title "nightly failure" --body "See $RUN_URL"
+            opened=$((opened + 1))
+          done
+          if [ "$opened" -eq 0 ]; then
+            echo "notify fired but enumerated zero failing jobs" >&2
+            exit 1
+          fi
+`;
+  {
+    const r = nightlyNotifyIsWired(rEnumeratesNoAttribution);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R11: nightlyNotifyIsWired accepted a notify job that enumerates the failing set ' +
+          'in a real loop but never references the loop variable ($job) or any per-job token in ' +
+          'the issue title/body — every issue is generically titled, which fails EARS attribution',
+      };
+    }
+  }
+
+  // R12 — enumerates with real per-job attribution, but NEVER references the
+  // run (no run id, no run URL, no github.run_id anywhere). Kills: an impl
+  // that checks "per-job title present" without also requiring the run to be
+  // linked (EARS: "linking the run"). [NOT ok]
+  const rNoRunLink = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}    steps:
+      - name: Open issues for failing jobs
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: \${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          opened=0
+          for job in $(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key'); do
+            gh issue create --title "nightly failure: $job" --body "Job $job failed"
+            opened=$((opened + 1))
+          done
+          if [ "$opened" -eq 0 ]; then
+            echo "notify fired but enumerated zero failing jobs" >&2
+            exit 1
+          fi
+`;
+  {
+    const r = nightlyNotifyIsWired(rNoRunLink);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R12: nightlyNotifyIsWired accepted a notify job with real per-job attribution ' +
+          'but NO run id / run URL reference anywhere in the body — EARS requires the opened ' +
+          'issue to also LINK THE RUN, not just name the job',
+      };
+    }
+  }
+
+  // R13 — enumerates with real per-job attribution and a run link, but has NO
+  // zero-enumerated exit 1 guard (D6). Kills: an impl that stops checking once
+  // it has seen a compliant-looking loop, without requiring the trailing guard
+  // that makes "the condition fired and found nothing" loud instead of silent. [NOT ok]
+  const rNoZeroGuard = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}    steps:
+      - name: Open issues for failing jobs
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: \${{ toJSON(needs) }}
+          RUN_URL: https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          for job in $(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key'); do
+            gh issue create --title "nightly failure: $job" --body "Job $job failed. See $RUN_URL"
+          done
+`;
+  {
+    const r = nightlyNotifyIsWired(rNoZeroGuard);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R13: nightlyNotifyIsWired accepted a notify job with a real enumeration loop but ' +
+          'NO zero-enumerated exit 1 guard (ADR-0200 D6) — a run that fires and quietly opens ' +
+          'nothing must be loud, not indistinguishable from a green night',
+      };
+    }
+  }
+
+  // R14 — the ONLY `gh issue create` text in the whole job is inside a `#`
+  // comment line; the actual run: step does something else entirely. Kills: an
+  // impl that greps for the substring "gh issue create" anywhere in the block
+  // text instead of checking it is live, executable code. [NOT ok]
+  const rCreateOnlyInComment = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}    steps:
+      - name: Open issues for failing jobs
+        env:
+          NEEDS_JSON: \${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          # gh issue create --title "nightly failure" --body "see the run"
+          echo "TODO: wire this up for real"
+`;
+  {
+    const r = nightlyNotifyIsWired(rCreateOnlyInComment);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R14: nightlyNotifyIsWired accepted a notify job whose ONLY gh issue create text ' +
+          'lives inside a # comment line — the real run: step just echoes a TODO',
+      };
+    }
+  }
+
+  // R8 — canonical, needs: as a BLOCK sequence, D2a condition, full compliant
+  // enumeration (toJSON(needs), per-job attribution, run link, zero-guard). [ok]
   const rGoodBlock = `name: Nightly
 on:
   workflow_dispatch:
@@ -3664,57 +4037,37 @@ ${R_SIBLING_JOBS}  notify:
       - mutation
       - mutation-server
       - coverage
-    if: failure()
+    ${NOTIFY_D2A_IF}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-    steps:
-      - name: Open issues for failing jobs
-        env:
-          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh issue create --title "nightly failure" --body "see the run"
-`;
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
   {
     const r = nightlyNotifyIsWired(rGoodBlock);
     if (!r.ok) {
       return {
         name,
         pass: false,
-        detail: `TEETH R8: nightlyNotifyIsWired rejected a correctly wired notify job using the BLOCK-sequence needs: form. Reason: ${r.reason}`,
+        detail: `TEETH R8: nightlyNotifyIsWired rejected a correctly wired, fully compliant notify job using the BLOCK-sequence needs: form. Reason: ${r.reason}`,
       };
     }
   }
 
-  // R9 — canonical, needs: as a FLOW sequence. [ok]
+  // R9 — canonical, needs: as a FLOW sequence, same compliant shape as R8. [ok]
   const rGoodFlow = `name: Nightly
 on:
   workflow_dispatch:
 jobs:
 ${R_SIBLING_JOBS}  notify:
     needs: [mutation, mutation-server, coverage]
-    if: failure()
+    ${NOTIFY_D2A_IF}
     runs-on: ubuntu-latest
-    permissions:
-      contents: read
-      issues: write
-    steps:
-      - name: Open issues for failing jobs
-        env:
-          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
-        run: |
-          set -euo pipefail
-          gh issue create --title "nightly failure" --body "see the run"
-`;
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
   {
     const r = nightlyNotifyIsWired(rGoodFlow);
     if (!r.ok) {
       return {
         name,
         pass: false,
-        detail: `TEETH R9: nightlyNotifyIsWired rejected a correctly wired notify job using the FLOW needs: [a, b, c] form. Reason: ${r.reason}`,
+        detail: `TEETH R9: nightlyNotifyIsWired rejected a correctly wired, fully compliant notify job using the FLOW needs: [a, b, c] form. Reason: ${r.reason}`,
       };
     }
   }
@@ -3820,6 +4173,53 @@ jobs:
     }
   }
 
+  // S4 — MAJOR (red-team round 1): a whole-file "count `issues: write`
+  // occurrences" cheat is passable by S1-S3 alone if it merely checks the
+  // total count is not "too many", because S1/S2 both put the SECOND grant
+  // after notify's own (textually last) and a "does the LAST occurrence sit
+  // in notify's block" cheat also reads clean. This fixture reverses the
+  // order — `notify` is declared FIRST, `mutation` SECOND — so notify's valid
+  // own grant is the FIRST occurrence in the file and mutation's illegitimate
+  // grant is the LAST. A cheat that only inspects the first (or only counts
+  // total occurrences without attributing each one to its own job) reads this
+  // as clean; only a predicate that attributes EVERY occurrence to its
+  // enclosing job, independently, will RED it. [NOT ok]
+  const sNotifyFirstMutationSecondBothGrant = `name: Nightly
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - run: gh issue create --title x --body y
+  mutation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - run: just mutate-core
+`;
+  {
+    const r = noOtherJobHoldsIssuesWrite(sNotifyFirstMutationSecondBothGrant);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH S4: noOtherJobHoldsIssuesWrite accepted a workflow where notify (declared FIRST, ' +
+          'with a valid own grant) is followed by mutation (declared SECOND, ALSO holding its own ' +
+          'issues: write) — a first-occurrence-only or total-count cheat reads this as clean; the ' +
+          'predicate must attribute EVERY issues: write occurrence to its own enclosing job',
+      };
+    }
+  }
+
   // -------------------------------------------------------------------------
   // TEETH T: notifyArtifactNamesAreDistinct (ADR-0200 D7)
   // -------------------------------------------------------------------------
@@ -3891,6 +4291,48 @@ jobs:
         name,
         pass: false,
         detail: `TEETH T2: notifyArtifactNamesAreDistinct rejected distinct artifact names (mutants-out-core / mutants-out-server). Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // T3 — MINOR (red-team round 1): the mutation job's upload step has NO name:
+  // key at all (upload-artifact v4 actually requires one; an absent name: is
+  // itself invalid). Kills: an impl that reads a missing name: as `undefined`
+  // and compares it to mutation-server's real name with `!==`, which is true
+  // (undefined !== 'mutants-out-server'), so a naive inequality check would
+  // wrongly call this "distinct" — a missing name must not silently compare as
+  // different-therefore-fine. [NOT ok]
+  const tMissingNameKey = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: ${UPLOAD_USES}
+        with:
+          path: mutants.out/
+  mutation-server:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-server
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-server
+          path: mutants.out/
+`;
+  {
+    const r = notifyArtifactNamesAreDistinct(tMissingNameKey);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T3: notifyArtifactNamesAreDistinct accepted a mutation job whose upload step has ' +
+          "NO name: key at all — a missing name must not compare as 'distinct' from the sibling " +
+          "job's real name; upload-artifact v4 requires a name: on every step",
       };
     }
   }

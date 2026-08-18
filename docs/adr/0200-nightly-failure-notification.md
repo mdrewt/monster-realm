@@ -46,10 +46,22 @@ non-zero and REDs the job loudly. Cost: shell-quoting discipline. Every `${{ }}`
 through `env:` and referenced as `$VAR` — never interpolated into the script body.
 
 **D2 — the failing set is enumerated from `toJSON(needs)`, never hardcoded.** The step selects
-`.value.result != "success"` over the `needs` map with `jq`. Five hardcoded
-`needs.<job>.result` branches would silently drop the sixth job the day someone adds one — the very
-drift this slice exists to kill. Selecting *non-success* (rather than `== "failure"`) also reports
-a `skipped` job, which is what a successful job-level neuter looks like at runtime.
+`.value.result != "success"` over the `needs` map with `jq`, and the issue title carries the
+enumerated job name and the run id. Five hardcoded `needs.<job>.result` branches would silently
+drop the sixth job the day someone adds one — the very drift this slice exists to kill. Selecting
+*non-success* (rather than `== "failure"`) also reports a `skipped` job, which is what a successful
+job-level neuter looks like at runtime.
+
+**D2a — the job condition must admit `skipped`, not just `failure()`.** A plain `if: failure()`
+makes D2's skipped-job clause dead code: GitHub evaluates `failure()` true only when a needed job
+actually *failed*, so a job neutered into `skipped` leaves `notify` skipped too — the original bug
+(a gate that is red and silent) reproduced one level up. The condition is therefore
+
+    if: ${{ !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped')) }}
+
+which stays quiet on a fully green night (so D6's zero-guard cannot misfire), fires on a failure
+OR a skip, and does not fire on an outright run cancellation. No nightly job carries an `if:`, so
+`skipped` can only mean someone neutered one.
 
 **D3 — the grant is job-scoped, not workflow-scoped.** Top-level `permissions:` stays
 `contents: read`; the `notify` job carries `permissions: { contents: read, issues: write }`. The
@@ -76,7 +88,7 @@ permanent in-repo test without moving the logic to a committed script, which is 
 therefore opens one issue per night until it is fixed; noise reduction is a named follow-up
 (`lp-03b`), not silent scope.
 
-**D6 — the step fails loudly when it enumerates nothing.** If `if: failure()` fired and the loop
+**D6 — the step fails loudly when it enumerates nothing.** If the job condition fired and the loop
 opened zero issues, the step exits 1. A notification path that runs and quietly creates nothing is
 indistinguishable from a green night, which is the failure mode being fixed.
 
@@ -118,6 +130,10 @@ changes ride along because the flat scan they replace was bypassable by string t
 - `jobIsNotNeutered` is a stricter gate than before on every axis except the one carve-out, so an
   existing legitimate pattern that used a non-`false` `continue-on-error` expression in a guarded
   job would now RED. None exists today.
+- The wiring predicate gates the enumeration itself, not merely the presence of a create call: a
+  single hardcoded `gh issue create` with no `toJSON(needs)`, no per-job title, no run link or no
+  zero-enumerated guard REDs. A notification that always opens one generic issue would satisfy
+  "a step exists" while failing every EARS clause about attribution.
 - **Accepted gaps (named, not silent):** `smoke-republish` and `changelog-freshness` are in the
   fan-in but are still not covered by `jobIsNotNeutered` (unchanged from before this slice —
   `smoke-republish` legitimately carries `if: failure()`); a run cancelled outright cancels `notify`
