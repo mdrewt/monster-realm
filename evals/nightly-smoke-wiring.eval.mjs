@@ -12,8 +12,13 @@
 //   - each guarded nightly job (mutation, mutation-server, coverage) documents its
 //     failure policy in the contiguous comment preamble directly above its job key,
 //     mirroring the smoke-republish precedent at .github/workflows/nightly.yml:85-90
-//     (decision-hook mdrewt/claude-harness#14 — notification channel — is still open,
-//     so the reversible default is a documented policy, NOT a notification Action)
+//     (at the time these three checks were written, decision-hook
+//     mdrewt/claude-harness#14 — notification channel — was still open, so the
+//     reversible default was a documented policy and NOT a notification Action.
+//     lp-03 EXERCISED that recorded reversibility: ADR-0200 adds a `notify` job that
+//     opens one GitHub issue per non-success job. The policy comments remain
+//     required — they are the human triage ROUTING the issue body cannot carry —
+//     but they are no longer the only failure channel.)
 //   - the committed justfile `mutate-server cap=` default EQUALS the wiring-eval
 //     ceiling MUTATE_SERVER_CAP_BASELINE (ADR-0137 D4: both move in the same commit;
 //     the pre-existing `cap ≤ ceiling` check alone makes a ceiling-only raise invisible)
@@ -39,6 +44,92 @@
 //   Check 13 also carries the new ADR-0183 D7 missed.txt-guard clause; the committed
 //   recipe already has that guard, so Check 13 stays GREEN — the clause is a ratchet
 //   against REMOVING it, not a demand for new work.
+//
+// EXPECTED REAL-TREE STATE AT RED (lp-03 additions — ADR-0200 nightly failure
+// notification: a `notify` job per ADR-0200 D1/D2/D2a/D3-D8, mutants.out
+// upload-on-failure per D7, and a step-scoped `jobIsNotNeutered` carve-out per D8):
+//   None of the five brand-new predicates this slice's teeth call
+//   (mutationJobUploadsMutantsOutOnFailure, notifyArtifactNamesAreDistinct,
+//   nightlyNotifyCanOpenIssues, noOtherJobHoldsIssuesWrite, nightlyNotifyIsWired) exist in
+//   this file yet, and jobIsNotNeutered has NOT yet been rewritten with the ADR-0200 D8
+//   step-scoped carve-out (it is still today's flat line scan, which flags ANY `if:` line
+//   anywhere in the job block, including a legitimate `if: always()` on an upload step).
+//   Consequence: the eval REDs at TEETH O1 — the very first carve-out fixture — because
+//   today's jobIsNotNeutered rejects the canonical upload step as neutered. It never
+//   reaches TEETH P onward, where the undefined new predicates would otherwise throw a
+//   ReferenceError. That IS the expected RED, not a defect in the fixtures (the tester does
+//   not implement the specialist's predicates).
+//   Round 2 (red-team hardening): every positive-control notify body/condition in TEETH
+//   Q/R now uses the shared NOTIFY_D2A_IF / NOTIFY_CANONICAL_STEPS constants — the REAL
+//   D1/D2/D2a/D5/D6-compliant shape (toJSON(needs) enumeration, per-job attribution, a run
+//   link, a zero-enumerated exit 1 guard, and the `!cancelled() && (failure OR skipped)`
+//   condition) — so `nightlyNotifyIsWired` is proven satisfiable ONLY by a genuinely
+//   compliant notify job, never by a single hardcoded `gh issue create`. TEETH R10-R14 and
+//   R3b/R3c are new negative teeth pinning each compliance clause separately; TEETH S4 pins
+//   per-job attribution against a whole-file `issues: write` occurrence-count cheat; TEETH
+//   P7/P8 and T3 close three MINOR gaps (spoofed uses: values checked directly by
+//   mutationJobUploadsMutantsOutOnFailure rather than assumed caught upstream by
+//   jobIsNotNeutered; a missing name: key must not compare "distinct" from nothing). None of
+//   this moves the RED location — it still REDs at TEETH O1 first.
+//
+// EXPECTED REAL-TREE STATE AT RED (lp-03 ROUND 3 additions — three independent
+// review lenses [red-team on the SHIPPED implementation, a code reviewer, and a
+// GitHub-Actions-semantics auditor] found one BLOCKER-class bypass, two MAJOR
+// gate holes, and two false-RED risks; TEETH U continues the lettering after
+// TEETH T, and none of TEETH A-T are touched):
+//   jobIsNotNeutered exists and is GREEN on the committed tree, but it has NOT
+//   yet been extended with (U1) "a guarded job may contain AT MOST ONE run:
+//   step" or (U2) "no env: mapping inside a guarded job may declare a PATH
+//   key" — red-team demonstrated a full-eval-stays-GREEN bypass on both axes: a
+//   step that writes a `just` shim onto $GITHUB_PATH before the real recipe
+//   step, or an equivalent env: PATH: override, either of which shadows the
+//   real `just mutate-core`/`mutate-server` invocation while every EXISTING
+//   predicate (exact run-step text, no if:, no continue-on-error) reads clean.
+//   mutationJobUploadsMutantsOutOnFailure has NOT yet been extended to parse a
+//   flow-style `with: { key: value, ... }` mapping (U5) — nightly.yml already
+//   uses this style for several actions (house style), and today the predicate
+//   silently fails to read `path:`/`name:` out of a flow mapping at all, which
+//   is a FALSE RED on a legitimately-styled upload step, not merely a missing
+//   feature.
+//   nightlyNotifyIsWired's D2a condition clause (U3) still matches the
+//   condition VALUE as raw text including any trailing `#` comment (a
+//   comment-laundering bypass: `if: true # ...failure...skipped...` reads as
+//   compliant today though the runtime condition is the bare `true`), and still
+//   admits a bare two-term failure-or-skipped condition with no third
+//   `cancelled` term (a job that times out concludes `cancelled`, which
+//   satisfies neither term). nightlyNotifyIsWired also has no dedicated upper
+//   bound (U4) on `gh issue create` invocations per enumerated job — only a
+//   `createLines.length === 0` lower-bound check exists today.
+//   topLevelPermissions (used by nightlyNotifyCanOpenIssues) still requires an
+//   EXACT `lines[i] !== 'permissions:'` line match (U6) — a trailing comment on
+//   that mapping key (`permissions: # least privilege — see ADR-0200`, legal
+//   YAML) makes the top-level grant invisible to it, a false RED.
+//   Consequence: the eval now REDs at TEETH U1a — the literal red-team
+//   $GITHUB_PATH-shim fixture, the first round-3 fixture in file order. TEETH
+//   U1b/U1c, U2a-c, U3a-c, U4a, U5a-b, U6a are not reached this run; each
+//   surfaces in turn as the specialist closes the corresponding rule, exactly
+//   as TEETH O1 gated the round-1 D8 carve-out. All of TEETH A-T and Checks
+//   1-23 were GREEN on the committed tree immediately before this round's teeth
+//   were added, and remain untouched by this round.
+//   Once the predicates land, TEETH U1c/U2c/U5a/U6a (the positive controls /
+//   false-RED guards) and every pre-existing positive control that composes
+//   NOTIFY_D2A_IF (now three-term) must ALSO stay GREEN — the round updates one
+//   shared constant rather than hand-editing each of the dozen fixtures that
+//   reference it.
+//   Once the predicates land, the real-file checks read the committed tree as follows:
+//   Check 18 mutationJobUploadsMutantsOutOnFailure(nightly, 'mutation')        → FAIL
+//            (no upload-artifact step exists in the mutation job yet)
+//   Check 19 mutationJobUploadsMutantsOutOnFailure(nightly, 'mutation-server') → FAIL for
+//            the identical reason (not reached today — the eval returns at Check 18 first)
+//   Check 20 notifyArtifactNamesAreDistinct(nightly)   → FAIL (no upload-artifact steps
+//            exist at all yet, so there is nothing to name distinctly) — not reached today
+//   Check 21 nightlyNotifyIsWired(nightly)             → FAIL (no `notify:` job exists) —
+//            not reached today
+//   Check 22 nightlyNotifyCanOpenIssues(nightly)       → FAIL (top-level permissions: is
+//            `contents: read` only and there is no `notify:` job) — not reached today
+//   Check 23 noOtherJobHoldsIssuesWrite(nightly)       → would PASS in isolation today (no
+//            job holds issues: write yet) but the eval never reaches it — Check 18 REDs first
+//   All prior checks (1–17) and TEETH A–N are untouched by this slice and stay GREEN.
 //
 // Verifies that the nightly publish→republish→sync_content smoke test is
 // correctly wired: job lives in nightly.yml (not ci.yml), the smoke script
@@ -117,10 +208,11 @@ export function ciDoesNotWireSmokeRepublish(yaml) {
 // m13.5a NEW PREDICATES (EARS 13.5a-2 + 13.5a-6)
 // ---------------------------------------------------------------------------
 
-// Truthy continue-on-error forms (mirror e2e-desync-teeth).
-function isTruthyCoeNightly(value) {
-  return /^(true|yes|on|True)\b/.test(value) || /\$\{\{\s*true\s*\}\}/.test(value);
-}
+// (The old `isTruthyCoeNightly` truthy-BLACKLIST helper was deleted in lp-03: per
+// ADR-0200 D8 `continue-on-error:` is now an ALLOWLIST — only the literal `false`
+// passes — because the blacklist admitted `${{ github.event_name == 'schedule' }}`,
+// a neuter calibrated to read false under the workflow_dispatch a drill uses and
+// true on every real cron night.)
 
 // Helper: check that the job block extracted from yaml for jobName contains
 // EXACTLY `- run: just <verb>` as a trimmed non-comment line.
@@ -152,43 +244,936 @@ export function nightlyHasServerMutationJob(yaml) {
   return jobBlockHasExactStep(yaml, 'mutation-server', 'mutate-server');
 }
 
+// ---------------------------------------------------------------------------
+// ADR-0200 D8 SUPPORT LAYER: strict block extraction + an anchored, step-aware
+// YAML line scanner. Everything below is deliberately String/literal-regex only
+// — NO `new RegExp(` (Semgrep detect-non-literal-regexp, remote-only, has bitten
+// this project 3×).
+// ---------------------------------------------------------------------------
+
+// Indentation (count of leading spaces) of a raw line.
+function indentOfLine(line) {
+  return line.length - line.trimStart().length;
+}
+
+// STRICT job-block extraction (ADR-0200 D8, "own block extraction").
+// Same shape as the imported `extractJobBlock`, with ONE difference that is the
+// whole point: the shared helper terminates at ANY line at indent 2, which a
+// 2-space `  # decoy` comment satisfies — so a neutered step parked BELOW such a
+// comment fell outside the scanned block entirely and the gate read clean
+// (tooth O17). This variant terminates only at a non-blank, NON-comment line at
+// indent <= 2.
+//
+// `extractJobBlock` itself is deliberately NOT modified or re-exported: it has
+// ten callers across four evals and lives outside this slice's `touches:` set.
+export function strictJobBlock(yaml, jobName) {
+  const lines = yaml.split('\n');
+  const keyLine = `  ${jobName}:`;
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    // Anchored, exact key match — `  mutation:` must never match `  mutation-server:`.
+    if (lines[i] === keyLine || lines[i].startsWith(`${keyLine} `)) {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return '';
+  const block = [lines[start]];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    // Blank lines belong to the block (they sit between steps).
+    if (line.trim() === '') {
+      block.push(line);
+      continue;
+    }
+    // The ONLY terminator: a real, non-comment line at job-key indent or shallower.
+    if (indentOfLine(line) <= 2 && !line.trim().startsWith('#')) break;
+    block.push(line);
+  }
+  return `${block.join('\n')}\n`;
+}
+
+// ANCHORED key parsing (ADR-0200 D8, "anchored key matching"). `trim().startsWith('if:')`
+// never sees `"if": false`, `'if': false` or `if : false` — all three are valid YAML and
+// all three neuter a job. Returns { key, value } or null when the line is not a mapping
+// entry at all. `text` must already be trimmed and have any leading `- ` removed.
+function parseYamlKeyLine(text) {
+  let rest = text;
+  let key = null;
+  if (rest.startsWith('"') || rest.startsWith("'")) {
+    const quote = rest[0];
+    const end = rest.indexOf(quote, 1);
+    if (end === -1) return null;
+    key = rest.slice(1, end);
+    rest = rest.slice(end + 1);
+  } else {
+    const colon = rest.indexOf(':');
+    if (colon === -1) return null;
+    // trimEnd() is what tolerates `if : false` (space BEFORE the colon).
+    key = rest.slice(0, colon).trimEnd();
+    rest = rest.slice(colon);
+  }
+  rest = rest.trimStart();
+  if (!rest.startsWith(':')) return null;
+  return { key, value: rest.slice(1).trim() };
+}
+
+// FAIL CLOSED on YAML indirection (ADR-0200 D8). A merge key (`<<: *defaults`) or a bare
+// alias (`- *shared_checkout`) can inject an `if:`/`continue-on-error:` this text scanner
+// cannot resolve; returning a confident ok:true over text we cannot read is exactly the
+// false-green this gate exists to prevent.
+function isYamlIndirection(trimmed) {
+  let text = trimmed;
+  if (text === '-') return false;
+  if (text.startsWith('- ')) text = text.slice(2).trim();
+  if (text.startsWith('<<:')) return true;
+  if (text.startsWith('*')) return true;
+  const kv = parseYamlKeyLine(text);
+  if (kv === null) return false;
+  return kv.value.startsWith('*');
+}
+
+// Block-scalar indicators: `|`, `>`, and their chomping/indentation variants
+// (`|-`, `|+`, `>-`, `>+`, `|2`, …). A block scalar's BODY is DATA, so a body line
+// reading `if: false` must not be mistaken for a key (tooth O13), and a body line
+// reading `uses: actions/upload-artifact@…` must not turn a run step into an
+// upload step (tooth O12).
+function isBlockScalarValue(value) {
+  return /^[|>][-+]?[0-9]*$/.test(value);
+}
+
+// `uses:` value normalisation: strip the inline `#` comment FIRST (otherwise the
+// ` # v4` tag rides along), THEN drop the `@<ref>` tail. Callers compare the result
+// with EXACT equality — `indexOf`/`endsWith` would admit `evil/upload-artifact`
+// (tooth O10) and `actions/upload-artifact-fake` (tooth O11).
+function normaliseUsesValue(value) {
+  const hash = value.indexOf('#');
+  const noComment = (hash === -1 ? value : value.slice(0, hash)).trim();
+  const at = noComment.indexOf('@');
+  return (at === -1 ? noComment : noComment.slice(0, at)).trim();
+}
+
+// Strip a YAML inline `#` comment from an already-trimmed scalar VALUE. YAML starts a
+// comment at a `#` that is preceded by whitespace (or opens the scalar), so
+// `true # …failure…skipped…` is the runtime value `true` — the whole point of tooth
+// U3a's comment-laundering bypass: matching `failure`/`skipped` against the RAW line
+// text launders ANY condition through its own trailing comment.
+function stripInlineYamlComment(value) {
+  if (value.startsWith('#')) return '';
+  const spaceHash = value.indexOf(' #');
+  const tabHash = value.indexOf('\t#');
+  let cut = spaceHash;
+  if (cut === -1 || (tabHash !== -1 && tabHash < cut)) cut = tabHash;
+  return (cut === -1 ? value : value.slice(0, cut)).trim();
+}
+
+// Drop one layer of surrounding quotes from a flow-mapping value.
+function unquoteScalar(value) {
+  if (value.length >= 2) {
+    const first = value[0];
+    if ((first === '"' || first === "'") && value[value.length - 1] === first) {
+      return value.slice(1, value.length - 1);
+    }
+  }
+  return value;
+}
+
+// Parse a FLOW-style mapping value (`{ k: v, k2: v2 }`) into [key, value] pairs, or
+// null when the shape is not readable.
+// nightly.yml already writes `with: { prefix-key: v1-nightly }` / `with: { tool: … }`
+// (house style), so a scanner that reads ONLY block mappings FALSE-REDs a legitimately
+// styled upload step (tooth U5a). Reading it means REAL key/value parsing, never a
+// blanket "with: is flow-style → assume compliant" pass (tooth U5b), and a nested
+// flow collection (whose commas this comma-splitter would misread) returns null so the
+// caller fails closed rather than guessing.
+function parseFlowMapping(value) {
+  const open = value.indexOf('{');
+  const close = value.lastIndexOf('}');
+  if (open === -1 || close === -1 || close < open) return null;
+  const inner = value.slice(open + 1, close);
+  if (inner.indexOf('{') !== -1 || inner.indexOf('[') !== -1) return null;
+  const pairs = [];
+  for (const entry of inner.split(',')) {
+    const text = entry.trim();
+    if (text === '') continue;
+    const kv = parseYamlKeyLine(text);
+    if (kv === null) return null;
+    pairs.push([kv.key, unquoteScalar(kv.value)]);
+  }
+  return pairs;
+}
+
+const UPLOAD_ARTIFACT_ACTION = 'actions/upload-artifact';
+
+// A step is an UPLOAD step iff one of its OWN keys is `uses:` whose normalised value
+// EQUALS actions/upload-artifact AND it has no `run:` key. The `run:` exclusion is what
+// makes tooth O12 bite: a run step can print anything it likes into its block-scalar
+// body, including a fake `uses:` line, and must never inherit the carve-out.
+function stepIsUploadArtifact(step) {
+  if (step.ownKeys.has('run')) return false;
+  const uses = step.ownKeys.get('uses');
+  if (uses === undefined) return false;
+  return normaliseUsesValue(uses) === UPLOAD_ARTIFACT_ACTION;
+}
+
+// The ONLY two admitted `if:` values on an upload step (ADR-0200 D8). `success()`,
+// `false` and every other expression RED (teeth O8, O9).
+function isAlwaysCondition(value) {
+  return value === 'always()' || /^\$\{\{\s*always\(\)\s*\}\}$/.test(value);
+}
+
+// Record a step's `with:` keys from EITHER form (tooth U5): the block form (`with:`
+// with an empty value, keys on the following, more-indented lines) or the flow form
+// (`with: { name: …, path: … }`). An unreadable flow value leaves withKeys empty, so
+// the D7 path/name assertions fail closed instead of granting a blanket pass.
+function collectWithKeys(step, value, blockChildIndent) {
+  if (value === '') {
+    step.withIndent = blockChildIndent;
+    return;
+  }
+  const pairs = parseFlowMapping(value);
+  if (pairs === null) return;
+  for (const [key, val] of pairs) step.withKeys.set(key, val);
+}
+
+// Every key declared inside an `env:` mapping anywhere in a job block — job-level or
+// step-level, block form or flow form (tooth U2). A `PATH` key there is the SAME
+// toolchain-shim attack as U1's extra run step with no extra step to count: it
+// prepends an attacker directory to PATH for the steps it covers, so the gate's
+// `just` resolves to a shim that exits 0 while every existing predicate (exact
+// run-step text, no if:, no continue-on-error) reads clean.
+// Block-scalar bodies are skipped: a `run: |` body is DATA, not keys (tooth O13's
+// discipline), so a script that happens to print `env:` cannot forge a finding.
+function envMappingKeys(block) {
+  const lines = block.split('\n');
+  const keys = [];
+  let blockScalarIndent = -1;
+  let envIndent = -1;
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (trimmed === '') continue;
+    const indent = indentOfLine(raw);
+    if (blockScalarIndent !== -1) {
+      if (indent > blockScalarIndent) continue;
+      blockScalarIndent = -1;
+    }
+    if (trimmed.startsWith('#')) continue;
+    // A `- ` dash shifts the effective key column two to the right, so `- env:` at
+    // indent 6 owns keys at indent 10 while its SIBLING keys sit at indent 8.
+    const isDash = trimmed.startsWith('- ');
+    const text = isDash ? trimmed.slice(2).trim() : trimmed;
+    const keyIndent = isDash ? indent + 2 : indent;
+    if (envIndent !== -1) {
+      if (keyIndent > envIndent) {
+        const envKv = parseYamlKeyLine(text);
+        if (envKv !== null) {
+          keys.push(envKv.key);
+          if (isBlockScalarValue(envKv.value)) blockScalarIndent = keyIndent;
+        }
+        continue;
+      }
+      envIndent = -1;
+    }
+    const kv = parseYamlKeyLine(text);
+    if (kv === null) continue;
+    if (isBlockScalarValue(kv.value)) {
+      blockScalarIndent = keyIndent;
+      continue;
+    }
+    if (kv.key !== 'env') continue;
+    if (kv.value === '') {
+      envIndent = keyIndent;
+      continue;
+    }
+    const pairs = parseFlowMapping(kv.value);
+    // An unreadable flow `env:` value is reported as a PATH key so the caller fails
+    // closed — an env: mapping this scanner cannot read must never read as clean.
+    if (pairs === null) keys.push('PATH');
+    else for (const [key] of pairs) keys.push(key);
+  }
+  return keys;
+}
+
+// Segment a strict job block into its job-level mapping entries and its steps.
+// Returns { ok: true, jobLevel, steps } or { ok: false, reason } — the second form
+// is the FAIL-CLOSED path for every shape this scanner cannot read.
+//
+// A step's OWN keys are its dash-line key plus the lines at stepIndent + 2. Anything
+// deeper (a `with:` mapping, a block-scalar body) belongs to the step but is NOT an
+// own key — which is what stops `if-no-files-found:` inside `with:` from being read as
+// an `if:` (tooth O14) and stops a following step's `if:` from being misattributed to
+// the upload step above it (tooth O4).
+function segmentJobBlock(block, jobName) {
+  const lines = block.split('\n');
+  const jobIndent = indentOfLine(lines[0]);
+  const childIndent = jobIndent + 2;
+
+  // The `steps:` key is located by an ANCHORED whole-line match (trim() === 'steps:'),
+  // never indexOf('steps:') — a `run: echo steps:` line would otherwise win the race
+  // and move the job-level/step boundary wherever an attacker likes.
+  let stepsIdx = -1;
+  for (let i = 1; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    if (indentOfLine(lines[i]) !== childIndent) continue;
+    if (trimmed === 'steps:') {
+      stepsIdx = i;
+      break;
+    }
+    const kv = parseYamlKeyLine(trimmed);
+    if (kv !== null && kv.key === 'steps') {
+      // `steps: [ { run: … } ]` — a flow sequence this scanner cannot read (tooth O22).
+      return { ok: false, reason: `${jobName} uses a flow-style steps: sequence — unreadable` };
+    }
+  }
+  if (stepsIdx === -1) {
+    return { ok: false, reason: `${jobName} job block has no anchored steps: key line` };
+  }
+
+  const jobLevel = [];
+  for (let i = 1; i < stepsIdx; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    if (isYamlIndirection(trimmed)) {
+      return {
+        ok: false,
+        reason: `${jobName} job-level line uses a YAML alias/merge key: ${trimmed}`,
+      };
+    }
+    const kv = parseYamlKeyLine(trimmed);
+    if (kv !== null) jobLevel.push(kv);
+  }
+
+  // Step-dash indent is DERIVED from the first dash line, not assumed to be 6.
+  let stepIndent = -1;
+  for (let i = stepsIdx + 1; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    if (trimmed === '-' || trimmed.startsWith('- ')) {
+      stepIndent = indentOfLine(lines[i]);
+      break;
+    }
+  }
+  if (stepIndent === -1) {
+    return { ok: false, reason: `${jobName} steps: block contains no step dash` };
+  }
+
+  const steps = [];
+  let current = null;
+  // -1 = not inside a block scalar; otherwise the column of the key that opened it.
+  let blockScalarKeyIndent = -1;
+  for (let i = stepsIdx + 1; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (trimmed === '') continue;
+    const indent = indentOfLine(raw);
+    if (blockScalarKeyIndent !== -1) {
+      if (indent > blockScalarKeyIndent) continue; // block-scalar BODY: data, not keys
+      blockScalarKeyIndent = -1;
+    }
+    if (trimmed.startsWith('#')) continue;
+    if (isYamlIndirection(trimmed)) {
+      return { ok: false, reason: `${jobName} step line uses a YAML alias/merge key: ${trimmed}` };
+    }
+    if (indent === stepIndent && (trimmed === '-' || trimmed.startsWith('- '))) {
+      const rest = trimmed === '-' ? '' : trimmed.slice(2).trim();
+      if (rest.startsWith('{')) {
+        return { ok: false, reason: `${jobName} has a flow-style step (- { … }) — unreadable` };
+      }
+      current = { ownKeys: new Map(), withKeys: new Map(), withIndent: -1 };
+      steps.push(current);
+      if (rest !== '') {
+        const kv = parseYamlKeyLine(rest);
+        if (kv !== null) {
+          current.ownKeys.set(kv.key, kv.value);
+          if (isBlockScalarValue(kv.value)) blockScalarKeyIndent = stepIndent + 2;
+          if (kv.key === 'with') collectWithKeys(current, kv.value, stepIndent + 4);
+        }
+      }
+      continue;
+    }
+    // A non-dash line back at (or above) job-child indent ENDS the steps sequence —
+    // YAML mapping keys have no required order, so `if: false` parked BELOW `steps:`
+    // is still a job-level neuter. Collecting it into jobLevel closes that hole; a
+    // "job level == everything before steps:" reading would walk straight past it.
+    if (indent <= childIndent) {
+      const kv = parseYamlKeyLine(trimmed);
+      if (kv !== null) jobLevel.push(kv);
+      current = null;
+      continue;
+    }
+    if (current === null) continue;
+    if (indent === stepIndent + 2) {
+      const kv = parseYamlKeyLine(trimmed);
+      if (kv !== null) {
+        current.ownKeys.set(kv.key, kv.value);
+        if (isBlockScalarValue(kv.value)) blockScalarKeyIndent = indent;
+        if (kv.key === 'with') collectWithKeys(current, kv.value, indent + 2);
+      }
+      continue;
+    }
+    if (current.withIndent !== -1 && indent === current.withIndent) {
+      const kv = parseYamlKeyLine(trimmed);
+      if (kv !== null) current.withKeys.set(kv.key, kv.value);
+    }
+  }
+
+  return { ok: true, jobLevel, steps };
+}
+
 // Pure predicate: the named nightly job is not neutered.
 // Returns { ok: boolean, reason: string }.
-// Empty block → not-ok. Checks both job-level and step-level if:/continue-on-error:.
 // Applied to mutation, coverage, mutation-server (NOT smoke-republish — its
 // `if: failure()` log-dump step is legitimate; we do not call this on smoke-republish).
 //
-// FLAT-SCAN CONSTRAINT (deliberate, per ADR-0050): this is a flat line scan over
-// the entire job block — it flags ANY `if:` key at any indent, including step-level.
-// Consequence: mutation/coverage/mutation-server jobs must carry NO `if:` steps
-// whatsoever (e.g. no `if: failure()` log-dump steps). If a guarded job ever needs
-// a log-dump step, the step must use a different mechanism (e.g. always-run wrapper
-// script) or this predicate must be extended with a step-scoped carve-out.
+// STEP-SCOPED CARVE-OUT (ADR-0200 D8 — this REPLACES the old flat line scan, whose
+// "any `if:` line anywhere in the block" rule made the D7 artifact step impossible).
+// The scan is now segmented, and each clause kills a named attack:
+//   - strictJobBlock, not extractJobBlock: a 2-space decoy comment can no longer
+//     truncate the block and hide a neutered step below it (tooth O17).
+//   - job-level region (everything before the anchored `steps:` line) rejects ANY
+//     `if:` — a job-level condition is a neuter with no legitimate form (O6/O18/O19).
+//   - `if:` on a step is admitted ONLY on an upload-artifact step (exact `uses:`
+//     equality, no `run:` key) and ONLY when the value is `always()` or
+//     `${{ always() }}` (O3/O5/O8/O9/O10/O11/O12).
+//   - `continue-on-error:` is an ALLOWLIST: only the literal `false` passes. The old
+//     truthy blacklist admitted `${{ github.event_name == 'schedule' }}` — false under
+//     the workflow_dispatch a drill uses, true on every real cron night, i.e. a neuter
+//     calibrated to hide from its own verification (tooth O20).
+//   - unreadable shapes fail CLOSED: a missing `steps:` key, a missing step dash, a
+//     flow step, a flow `steps:` sequence, a merge key or a bare alias
+//     (O16/O21/O22/O23a/O23b).
 export function jobIsNotNeutered(yaml, jobName) {
-  const block = extractJobBlock(yaml, jobName);
+  const block = strictJobBlock(yaml, jobName);
   if (!block || block.trim() === '') {
     return { ok: false, reason: `${jobName} job block is empty or absent` };
   }
-  for (const line of block.split('\n')) {
-    const tr = line.trim();
-    if (tr.startsWith('#')) continue;
-    if (tr.startsWith('if:')) {
+  const segmented = segmentJobBlock(block, jobName);
+  if (!segmented.ok) {
+    return { ok: false, reason: `${segmented.reason} — failing closed` };
+  }
+
+  for (const kv of segmented.jobLevel) {
+    if (kv.key === 'if') {
       return {
         ok: false,
-        reason: `${jobName} job/step has an if: condition — can disable or skip the job`,
+        reason: `${jobName} has a JOB-level if: ${kv.value} — can disable or skip the whole job`,
       };
     }
-    if (tr.startsWith('continue-on-error:')) {
-      const value = tr.slice('continue-on-error:'.length).trim();
-      if (isTruthyCoeNightly(value)) {
-        return {
-          ok: false,
-          reason: `${jobName} job/step has a truthy continue-on-error: ${value}`,
-        };
-      }
+    if (kv.key === 'continue-on-error' && kv.value !== 'false') {
+      return {
+        ok: false,
+        reason: `${jobName} has a job-level continue-on-error: ${kv.value} (only the literal false is allowed)`,
+      };
     }
   }
+
+  for (const step of segmented.steps) {
+    const coe = step.ownKeys.get('continue-on-error');
+    if (coe !== undefined && coe !== 'false') {
+      return {
+        ok: false,
+        reason: `${jobName} has a step with continue-on-error: ${coe} (only the literal false is allowed)`,
+      };
+    }
+    const condition = step.ownKeys.get('if');
+    if (condition === undefined) continue;
+    if (!stepIsUploadArtifact(step)) {
+      return {
+        ok: false,
+        reason: `${jobName} has a non-upload step with if: ${condition} — the D8 carve-out is restricted to an actions/upload-artifact step`,
+      };
+    }
+    if (!isAlwaysCondition(condition)) {
+      return {
+        ok: false,
+        reason: `${jobName} upload step has if: ${condition} — only always() / \${{ always() }} is admitted`,
+      };
+    }
+  }
+
+  // U2 (round-3 BLOCKER) — no `PATH` key in ANY env: mapping in the job, job-level or
+  // step-level. `env: { PATH: /tmp/.shim:$PATH }` prepends an attacker directory to the
+  // search path for every step it covers, so `just mutate-core` resolves to a shim that
+  // exits 0 while the exact-run-step-text / no-if / no-continue-on-error clauses above
+  // all read clean. It needs no second step, so U1's ordering rule cannot see it.
+  for (const key of envMappingKeys(block)) {
+    if (key === 'PATH') {
+      return {
+        ok: false,
+        reason: `${jobName} declares a PATH key inside an env: mapping — a PATH override shims the toolchain (a fake \`just\` that exits 0) without touching a single guarded key`,
+      };
+    }
+  }
+
+  // U1 (round-3 BLOCKER) — NO shell may execute before the gate invocation. Red-team's
+  // full-eval bypass: a step BEFORE `- run: just mutate-core` writes `#!/bin/bash exit 0`
+  // to /tmp/.shim/just and appends /tmp/.shim to "$GITHUB_PATH"; the recipe step then
+  // resolves `just` to the shim and the mutation gate silently never runs, while every
+  // pre-existing predicate reads clean.
+  //
+  // The rule is positional rather than the flat "AT MOST ONE run: step" the round-3
+  // spec words it as, because tooth O13 (pre-existing, untouched) pins a job with a
+  // SECOND run: step — a `run: |` diagnostic AFTER the gate — as legitimately ok. A
+  // post-gate step cannot shim a binary the gate already invoked, so requiring the
+  // gate to be the FIRST run: step kills exactly the attack class without contradicting
+  // O13. It bites both U1 fixtures: the shim step (U1a) and a bare `- run: echo hi`
+  // (U1b) are each a run: step preceding the gate.
+  const runSteps = segmented.steps.filter((step) => step.ownKeys.has('run'));
+  const gateIndex = runSteps.findIndex((step) => {
+    const command = step.ownKeys.get('run').trim();
+    return command === 'just' || command.startsWith('just ');
+  });
+  if (gateIndex === -1) {
+    return {
+      ok: false,
+      reason: `${jobName} has no \`run: just <recipe>\` gate step — failing closed rather than guessing which step is the gate`,
+    };
+  }
+  if (gateIndex > 0) {
+    return {
+      ok: false,
+      reason: `${jobName} runs ${gateIndex} shell step(s) BEFORE its \`just\` gate step — a step that executes first can write a shim \`just\` (exit 0) onto $GITHUB_PATH and shadow the gate; the gate must be the FIRST run: step`,
+    };
+  }
+
   return { ok: true, reason: `${jobName} job is present and not neutered` };
+}
+
+// ---------------------------------------------------------------------------
+// lp-03 NEW PREDICATES (ADR-0200 D3 / D6 / D7 — nightly failure notification)
+// ---------------------------------------------------------------------------
+
+// Returns the upload-artifact steps of a job, or null when the block is absent or
+// unreadable. Shared by the D7 predicates so both read `uses:` the SAME way — the
+// artifact checks must verify `uses:` THEMSELVES rather than assume jobIsNotNeutered
+// already rejected a spoofed action upstream (teeth P7/P8).
+function uploadArtifactSteps(yaml, jobName) {
+  const block = strictJobBlock(yaml, jobName);
+  if (!block || block.trim() === '') return null;
+  const segmented = segmentJobBlock(block, jobName);
+  if (!segmented.ok) return null;
+  return segmented.steps.filter(stepIsUploadArtifact);
+}
+
+// Pure predicate (ADR-0200 D7): the named mutation job uploads mutants.out/ on a RED
+// night. Returns { ok, reason }.
+// A missing `if:` is a FAILURE, not a pass: the GitHub default is `success()`, which
+// uploads the survivor list only on the nights it is worthless (tooth P2).
+export function mutationJobUploadsMutantsOutOnFailure(yaml, jobName) {
+  const uploads = uploadArtifactSteps(yaml, jobName);
+  if (uploads === null) {
+    return { ok: false, reason: `${jobName} job block is absent or unreadable` };
+  }
+  if (uploads.length === 0) {
+    return {
+      ok: false,
+      reason: `${jobName} has no step whose uses: equals ${UPLOAD_ARTIFACT_ACTION} (a # comment mentioning it does not count)`,
+    };
+  }
+  let reason = '';
+  for (const step of uploads) {
+    const condition = step.ownKeys.get('if');
+    if (condition === undefined) {
+      reason = `${jobName} upload step has NO if: — the default is success(), which skips the upload on the one night it matters`;
+      continue;
+    }
+    if (!isAlwaysCondition(condition)) {
+      reason = `${jobName} upload step has if: ${condition} — must be always() / \${{ always() }}`;
+      continue;
+    }
+    const uploadPath = step.withKeys.get('path');
+    if (uploadPath !== 'mutants.out/' && uploadPath !== 'mutants.out') {
+      reason = `${jobName} upload step has path: ${uploadPath} — must be mutants.out/ (or mutants.out)`;
+      continue;
+    }
+    const artifactName = step.withKeys.get('name');
+    if (artifactName === undefined || artifactName.trim() === '') {
+      reason = `${jobName} upload step has no non-empty name: — upload-artifact v4 requires one`;
+      continue;
+    }
+    return { ok: true, reason: `${jobName} uploads ${uploadPath} as ${artifactName} on always()` };
+  }
+  return { ok: false, reason };
+}
+
+// Returns the first upload-artifact step's `name:` for a job, or null when there is no
+// upload step or it carries no name. Returning null (rather than undefined) is
+// load-bearing for tooth T3: a MISSING name must never compare "distinct" from the
+// sibling job's real name.
+function uploadArtifactName(yaml, jobName) {
+  const uploads = uploadArtifactSteps(yaml, jobName);
+  if (uploads === null || uploads.length === 0) return null;
+  for (const step of uploads) {
+    const artifactName = step.withKeys.get('name');
+    if (artifactName !== undefined && artifactName.trim() !== '') return artifactName.trim();
+  }
+  return null;
+}
+
+// Pure predicate (ADR-0200 D7): the mutation and mutation-server upload steps use
+// DISTINCT artifact names — upload-artifact v4 hard-errors on a duplicate name within
+// one run, so identical names would turn the evidence upload itself into a red step.
+export function notifyArtifactNamesAreDistinct(yaml) {
+  const core = uploadArtifactName(yaml, 'mutation');
+  const server = uploadArtifactName(yaml, 'mutation-server');
+  if (core === null) {
+    return { ok: false, reason: 'mutation job has no upload-artifact step with a non-empty name:' };
+  }
+  if (server === null) {
+    return {
+      ok: false,
+      reason: 'mutation-server job has no upload-artifact step with a non-empty name:',
+    };
+  }
+  if (core === server) {
+    return { ok: false, reason: `mutation and mutation-server both upload as "${core}"` };
+  }
+  return { ok: true, reason: `artifact names are distinct: ${core} / ${server}` };
+}
+
+// Index of the top-level `jobs:` line (indent 0), or -1. A trailing comment on the
+// mapping key is tolerated, matching jobHasFailurePolicyComment's clause 1.
+function findJobsAnchor(lines) {
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    if (ln === 'jobs:' || ln.startsWith('jobs: ') || ln.startsWith('jobs:\t')) return i;
+  }
+  return -1;
+}
+
+// Every job key declared at the 2-space job-key indent under `jobs:`, in file order.
+// DERIVED from the file — never a hardcoded list — so an unwired sixth job REDs the
+// day it is added (tooth R2).
+function declaredJobKeys(yaml) {
+  const lines = yaml.split('\n');
+  const jobsIdx = findJobsAnchor(lines);
+  if (jobsIdx === -1) return [];
+  const keys = [];
+  for (let i = jobsIdx + 1; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const indent = indentOfLine(raw);
+    if (indent === 0) break;
+    if (indent !== 2) continue;
+    const kv = parseYamlKeyLine(trimmed);
+    if (kv !== null && kv.value === '') keys.push(kv.key);
+  }
+  return keys;
+}
+
+// Does the block spanning [start, end) contain a LIVE `issues: write` key?
+// Comment lines are excluded — a commented-out grant is not a grant (tooth Q4) — and
+// `issues: read` is not a write grant (tooth Q5).
+function linesGrantIssuesWrite(lines, start, end) {
+  for (let i = start; i < end && i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const kv = parseYamlKeyLine(trimmed);
+    if (kv !== null && kv.key === 'issues' && kv.value === 'write') return true;
+  }
+  return false;
+}
+
+// The workflow-level `permissions:` block, as { found, grantsIssuesWrite }.
+// The anchor tolerates a trailing comment / trailing whitespace on the mapping key
+// line (`permissions: # least privilege — see ADR-0200`), matching findJobsAnchor and
+// jobHasFailurePolicyComment's clause 1. An EXACT `=== 'permissions:'` match made a
+// legally-commented grant invisible and false-RED'd the whole notify wiring (tooth U6a).
+function topLevelPermissions(yaml) {
+  const lines = yaml.split('\n');
+  for (let i = 0; i < lines.length; i++) {
+    const anchor = lines[i];
+    if (
+      anchor !== 'permissions:' &&
+      !anchor.startsWith('permissions: ') &&
+      !anchor.startsWith('permissions:\t')
+    ) {
+      continue;
+    }
+    let end = lines.length;
+    for (let j = i + 1; j < lines.length; j++) {
+      const trimmed = lines[j].trim();
+      if (trimmed === '') continue;
+      if (indentOfLine(lines[j]) === 0) {
+        end = j;
+        break;
+      }
+    }
+    return { found: true, grantsIssuesWrite: linesGrantIssuesWrite(lines, i + 1, end) };
+  }
+  return { found: false, grantsIssuesWrite: false };
+}
+
+// A job's OWN `permissions:` block (at job-child indent only, so a step's keys can
+// never be mistaken for it), as { found, grantsIssuesWrite }.
+function jobOwnPermissions(block) {
+  const lines = block.split('\n');
+  const childIndent = indentOfLine(lines[0]) + 2;
+  for (let i = 1; i < lines.length; i++) {
+    if (lines[i].trim() !== 'permissions:') continue;
+    if (indentOfLine(lines[i]) !== childIndent) continue;
+    let end = lines.length;
+    for (let j = i + 1; j < lines.length; j++) {
+      const trimmed = lines[j].trim();
+      if (trimmed === '') continue;
+      if (indentOfLine(lines[j]) <= childIndent) {
+        end = j;
+        break;
+      }
+    }
+    return { found: true, grantsIssuesWrite: linesGrantIssuesWrite(lines, i + 1, end) };
+  }
+  return { found: false, grantsIssuesWrite: false };
+}
+
+// Pure predicate (ADR-0200 D3): the `notify` job EFFECTIVELY holds `issues: write`.
+// A job-level `permissions:` block REPLACES the workflow-level one in GitHub's real
+// semantics, so a notify job with its OWN block that omits `issues:` is INEFFECTIVE
+// even when the top level grants it — an "OR both blocks together" implementation
+// misses that (tooth Q6).
+export function nightlyNotifyCanOpenIssues(yaml) {
+  const block = strictJobBlock(yaml, 'notify');
+  if (!block || block.trim() === '') {
+    return { ok: false, reason: 'no notify: job exists' };
+  }
+  const own = jobOwnPermissions(block);
+  if (own.found) {
+    return own.grantsIssuesWrite
+      ? { ok: true, reason: "notify's own permissions: block grants issues: write" }
+      : {
+          ok: false,
+          reason:
+            'notify has its OWN permissions: block without issues: write — a job-level block REPLACES the workflow-level one, so any top-level grant is dead here',
+        };
+  }
+  const top = topLevelPermissions(yaml);
+  return top.grantsIssuesWrite
+    ? { ok: true, reason: 'notify inherits issues: write from the workflow-level permissions:' }
+    : {
+        ok: false,
+        reason:
+          'issues: write is granted nowhere (notify declares no permissions: and the workflow-level block does not grant it)',
+      };
+}
+
+// Pure predicate (ADR-0200 D3, negative space): no job other than `notify`, and not the
+// top-level block, carries a live `issues: write`.
+// PER-JOB ATTRIBUTION, never a whole-file occurrence count: tooth S4 declares notify
+// FIRST (valid own grant) and mutation SECOND (illegitimate grant), so a
+// first-occurrence / last-occurrence / total-count implementation reads it as clean.
+export function noOtherJobHoldsIssuesWrite(yaml) {
+  const lines = yaml.split('\n');
+  const jobsIdx = findJobsAnchor(lines);
+  let owner = 'the top-level permissions: block';
+  for (let i = 0; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    if (jobsIdx !== -1 && i > jobsIdx && indentOfLine(raw) === 2) {
+      const jobKv = parseYamlKeyLine(trimmed);
+      if (jobKv !== null && jobKv.value === '') owner = jobKv.key;
+    }
+    const kv = parseYamlKeyLine(trimmed);
+    if (kv === null || kv.key !== 'issues' || kv.value !== 'write') continue;
+    if (owner !== 'notify') {
+      return { ok: false, reason: `issues: write is held by ${owner}` };
+    }
+  }
+  return { ok: true, reason: 'issues: write is held by the notify job only' };
+}
+
+// Pure predicate (ADR-0200 D1/D2/D2a/D5/D6): the notify job is genuinely wired.
+// This gates the ENUMERATION, not merely "a gh issue create line exists" — a single
+// hardcoded create call satisfies "a step exists" while failing every EARS clause about
+// attribution (teeth R10-R14).
+export function nightlyNotifyIsWired(yaml) {
+  const block = strictJobBlock(yaml, 'notify');
+  if (!block || block.trim() === '') {
+    return { ok: false, reason: 'no notify: job exists' };
+  }
+  const blockLines = block.split('\n');
+  const childIndent = indentOfLine(blockLines[0]) + 2;
+
+  // Clause 1 — needs: must cover EVERY other declared job key, derived from the file.
+  let needs = null;
+  for (let i = 1; i < blockLines.length; i++) {
+    const trimmed = blockLines[i].trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    if (indentOfLine(blockLines[i]) !== childIndent) continue;
+    const kv = parseYamlKeyLine(trimmed);
+    if (kv === null || kv.key !== 'needs') continue;
+    if (kv.value.startsWith('[')) {
+      // Flow form: needs: [a, b, c]
+      const close = kv.value.lastIndexOf(']');
+      const inner = close === -1 ? kv.value.slice(1) : kv.value.slice(1, close);
+      needs = inner
+        .split(',')
+        .map((entry) => entry.trim().replace(/^['"]/, '').replace(/['"]$/, ''))
+        .filter((entry) => entry !== '');
+    } else if (kv.value === '') {
+      // Block-sequence form.
+      needs = [];
+      for (let j = i + 1; j < blockLines.length; j++) {
+        const item = blockLines[j].trim();
+        if (item === '' || item.startsWith('#')) continue;
+        if (indentOfLine(blockLines[j]) <= childIndent) break;
+        if (!item.startsWith('- ')) break;
+        needs.push(item.slice(2).trim().replace(/^['"]/, '').replace(/['"]$/, ''));
+      }
+    }
+    break;
+  }
+  if (needs === null) {
+    return { ok: false, reason: 'notify job has no needs: key' };
+  }
+  const required = declaredJobKeys(yaml).filter((key) => key !== 'notify');
+  const missing = required.filter((key) => !needs.includes(key));
+  if (missing.length > 0) {
+    return { ok: false, reason: `notify needs: omits declared job(s): ${missing.join(', ')}` };
+  }
+
+  // Clause 2 — the job-level if: must admit BOTH failure and skipped (ADR-0200 D2a).
+  // A bare failure() leaves notify skipped when a job is neutered into `skipped`
+  // (tooth R3b); a bare always() fires on green nights and would red D6's zero-guard
+  // every single night (tooth R3c).
+  let condition = null;
+  let jobLevelCoe = null;
+  for (let i = 1; i < blockLines.length; i++) {
+    const trimmed = blockLines[i].trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const kv = parseYamlKeyLine(trimmed);
+    if (kv === null) continue;
+    if (kv.key === 'if' && indentOfLine(blockLines[i]) === childIndent) condition = kv.value;
+    if (kv.key === 'continue-on-error') jobLevelCoe = kv.value;
+  }
+  if (condition === null) {
+    return {
+      ok: false,
+      reason:
+        'notify job has no job-level if: — it would only run on the (never-happens) all-succeeded path',
+    };
+  }
+  // U3 — match the RUNTIME condition, not the raw line. `if: true # …failure…skipped…`
+  // evaluates to the bare `true` (YAML drops the trailing comment), so scanning the raw
+  // text launders ANY condition through its own comment: notify would then fire on every
+  // green night and red D6's zero-guard nightly (tooth U3a).
+  const conditionCode = stripInlineYamlComment(condition);
+  // Each term must appear as a QUOTED result literal — `contains(needs.*.result,
+  // 'cancelled')` — never as the bare `cancelled()` FUNCTION. The `!cancelled()` guard
+  // that every compliant condition carries contains the substring "cancelled", so an
+  // unquoted indexOf would score the two-term form as three-term (tooth U3b).
+  const admitsResult = (term) =>
+    conditionCode.indexOf(`'${term}'`) !== -1 || conditionCode.indexOf(`"${term}"`) !== -1;
+  // `cancelled` is the third required term as of lp-03 round 3: a timeout-minutes expiry
+  // concludes `cancelled` (smoke-republish carries a 20-minute timeout; the mutation jobs
+  // run 1.5-2.5h against the 6h hosted cap) and satisfies neither `failure` nor `skipped`,
+  // so a two-term condition leaves that whole class of red night silent.
+  const missingTerms = ['failure', 'skipped', 'cancelled'].filter((term) => !admitsResult(term));
+  if (missingTerms.length > 0) {
+    return {
+      ok: false,
+      reason: `notify job-level if: ${conditionCode} does not admit ${missingTerms.join(' + ')} as a quoted needs.*.result value (ADR-0200 D2a)`,
+    };
+  }
+  if (jobLevelCoe !== null && jobLevelCoe !== 'false') {
+    return {
+      ok: false,
+      reason: `notify carries continue-on-error: ${jobLevelCoe} — a soft-failing notifier is a silently broken one`,
+    };
+  }
+
+  // LIVE lines only: text living inside a `#` comment is not executable code, so a
+  // commented-out `gh issue create` must not satisfy anything (teeth R14, P5-style).
+  const live = blockLines.filter((ln) => ln.trim() !== '' && !ln.trim().startsWith('#'));
+  const liveText = live.join('\n');
+
+  if (liveText.indexOf('|| true') !== -1) {
+    return { ok: false, reason: 'notify body softens a command with `|| true`' };
+  }
+  if (liveText.indexOf('set +e') !== -1) {
+    return { ok: false, reason: 'notify body disables error handling with `set +e`' };
+  }
+  if (liveText.indexOf('toJSON(needs)') === -1) {
+    return {
+      ok: false,
+      reason:
+        'notify body never reads toJSON(needs) — the failing set must be ENUMERATED, never hardcoded (ADR-0200 D2)',
+    };
+  }
+
+  const createLines = live.filter((ln) => ln.indexOf('gh issue create') !== -1);
+  if (createLines.length === 0) {
+    return { ok: false, reason: 'notify body never calls gh issue create as live code' };
+  }
+  // U4 — EXACTLY one live invocation. The EARS clause is "SHALL NOT open more than one
+  // issue per job"; a lower bound alone lets a second create inside the same enumeration
+  // loop double-file every failing job, turning the notification into noise the team
+  // learns to ignore — the same silence the ADR exists to fix (tooth U4a).
+  if (createLines.length > 1) {
+    return {
+      ok: false,
+      reason: `notify body calls gh issue create ${createLines.length} times as live code — exactly one invocation is admitted (never more than one issue per enumerated job)`,
+    };
+  }
+
+  // Clause 4 — per-job attribution: the create call must reference the ENUMERATED job,
+  // not open one generic issue per run (tooth R11).
+  let loopVar = null;
+  for (const ln of live) {
+    const match = ln.match(/\bfor\s+([A-Za-z_][A-Za-z0-9_]*)\s+in\b/);
+    if (match) {
+      loopVar = match[1];
+      break;
+    }
+  }
+  if (loopVar === null) {
+    return { ok: false, reason: 'notify body has no per-job enumeration loop' };
+  }
+  const attributed = createLines.some(
+    (ln) => ln.indexOf(`$${loopVar}`) !== -1 || ln.indexOf(`\${${loopVar}`) !== -1,
+  );
+  if (!attributed) {
+    return {
+      ok: false,
+      reason: `gh issue create never references the enumerated job ($${loopVar}) — every issue would be generically titled`,
+    };
+  }
+
+  // Clause 5 — the issue must LINK THE RUN. The link is traced from the env vars whose
+  // VALUE is derived from github.run_id, so a body that merely mentions a job name
+  // without a run reference REDs (tooth R12).
+  const runVars = [];
+  for (const ln of live) {
+    const kv = parseYamlKeyLine(ln.trim());
+    if (kv !== null && kv.value.indexOf('github.run_id') !== -1) runVars.push(kv.key);
+  }
+  const linksRun = createLines.some((ln) =>
+    runVars.some((v) => ln.indexOf(`$${v}`) !== -1 || ln.indexOf(`\${${v}`) !== -1),
+  );
+  if (!linksRun) {
+    return {
+      ok: false,
+      reason:
+        'gh issue create never references a run id / run URL env var derived from github.run_id',
+    };
+  }
+
+  // Clause 6 — D6's zero-enumerated guard: a notifier that fires and quietly opens
+  // nothing is indistinguishable from a green night (tooth R13).
+  const hasZeroTest = live.some(
+    (ln) => ln.indexOf('-eq 0') !== -1 || ln.indexOf('== 0') !== -1 || ln.indexOf('-lt 1') !== -1,
+  );
+  const hasExit1 = live.some((ln) => ln.indexOf('exit 1') !== -1);
+  if (!hasZeroTest || !hasExit1) {
+    return {
+      ok: false,
+      reason: 'notify body has no zero-enumerated `exit 1` guard (ADR-0200 D6)',
+    };
+  }
+
+  return { ok: true, reason: 'notify job fans in over every job and enumerates per-job issues' };
 }
 
 // Pure predicate: nightly triggers on schedule (with a cron: line) AND
@@ -451,10 +1436,12 @@ function normalisePolicyCommentLine(line) {
 // `smoke-republish` precedent at .github/workflows/nightly.yml:85-90.
 // Returns { ok: boolean, reason: string }.
 //
-// WHY A COMMENT AND NOT A NOTIFICATION ACTION: decision-hook
-// mdrewt/claude-harness#14 (nightly failure notification channel) is OPEN. The
-// reversible default is an in-workflow documented policy; no notification Action
-// may be added until that hook resolves. A comment costs nothing to unwind.
+// WHY A COMMENT *AS WELL AS* A NOTIFIER: decision-hook mdrewt/claude-harness#14
+// (nightly failure notification channel) was answered in lp-03 — ADR-0200 ships a
+// `notify` job that opens one GitHub issue per non-success job via `gh` (D1/D2/D5).
+// This preamble gate is NOT superseded by it: the issue says WHICH job failed, the
+// preamble says WHAT HAPPENS NEXT (routing/priority, ADR-0050), and only the latter
+// survives in the repo where a reader of the workflow can find it. Both are required.
 //
 // SEMANTICS — each clause kills a specific false-green (teeth M1–M8):
 //   1. KEY SCAN ANCHORED UNDER `jobs:` — the key is only looked for at/after the
@@ -2336,6 +3323,2424 @@ jobs:
   }
 
   // =========================================================================
+  // lp-03 PROOF-OF-TEETH (ADR-0200 — nightly failure notification)
+  // Section letters continue from the existing TEETH A–N; the pre-existing
+  // "TEETH N" above is justfileCapEqualsCeiling (14r-a), so the six new
+  // predicate groups below are lettered O–T to avoid colliding with it.
+  // The predicates under test (strictJobBlock, jobIsNotNeutered [rewritten],
+  // mutationJobUploadsMutantsOutOnFailure, notifyArtifactNamesAreDistinct,
+  // nightlyNotifyCanOpenIssues, noOtherJobHoldsIssuesWrite, nightlyNotifyIsWired)
+  // do not exist in this file yet — every fixture below is calling forward to
+  // code the specialist has not written, which is the deliberate RED.
+  // =========================================================================
+
+  // -------------------------------------------------------------------------
+  // TEETH O: jobIsNotNeutered's step-scoped upload-artifact carve-out
+  // (ADR-0200 D8). Every fixture uses job name 'mutation'.
+  // -------------------------------------------------------------------------
+
+  const UPLOAD_USES = 'actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4';
+
+  // O1 — canonical: run step + upload step with `if: always()`. [ok]
+  const oCanonicalAlways = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@abc1234abc1234abc1234abc1234abc1234abc12 # v4
+      - run: just mutate-core
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+          if-no-files-found: warn
+          retention-days: 14
+`;
+  {
+    const r = jobIsNotNeutered(oCanonicalAlways, 'mutation');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH O1: jobIsNotNeutered rejected the canonical upload step with if: always() — the D8 carve-out must be satisfiable. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // O2 — canonical, expression form: `if: \${{ always() }}`. [ok]
+  const oCanonicalExprAlways = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out on failure
+        if: \${{ always() }}
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+`;
+  {
+    const r = jobIsNotNeutered(oCanonicalExprAlways, 'mutation');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH O2: jobIsNotNeutered rejected the upload step with if: \${{ always() }} (expression form) — both spellings of always() must be admitted. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // O3 — `if: always()` moved onto the RUN step, valid upload step present without
+  // its own if:. Kills: an impl that admits if: always() anywhere in the job once
+  // an upload-artifact step exists, instead of requiring the if: to sit ON the
+  // upload step itself. [NOT ok]
+  const oIfOnRunStep = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run mutation
+        if: always()
+        run: just mutate-core
+      - name: Upload mutants.out on failure
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+`;
+  {
+    const r = jobIsNotNeutered(oIfOnRunStep, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH O3: jobIsNotNeutered accepted if: always() on the RUN step merely because a ' +
+          'valid upload step exists elsewhere in the job — the carve-out is per-step, not per-job',
+      };
+    }
+  }
+
+  // O4 — adjacency-smuggle: an upload step with no if: sits immediately ABOVE a
+  // run step carrying if: false. Kills: an impl that scans "the next if: line
+  // after a uses: upload-artifact line" instead of a step's OWN keys, which
+  // could misattribute the following step's if: to the upload step. [NOT ok]
+  const oAdjacencySmuggle = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Upload mutants.out on failure
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+      - name: Run mutation
+        if: false
+        run: just mutate-core
+`;
+  {
+    const r = jobIsNotNeutered(oAdjacencySmuggle, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH O4: jobIsNotNeutered accepted a run step with if: false sitting immediately ' +
+          'below an upload step — step boundaries must be respected regardless of adjacency',
+      };
+    }
+  }
+
+  // O5 — `if:` on the checkout step (a `uses:` step, but not upload-artifact). [NOT ok]
+  const oIfOnCheckout = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        if: always()
+        uses: actions/checkout@abc1234abc1234abc1234abc1234abc1234abc12 # v4
+      - run: just mutate-core
+`;
+  {
+    const r = jobIsNotNeutered(oIfOnCheckout, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH O5: jobIsNotNeutered accepted if: always() on the checkout step — the ' +
+          'carve-out is restricted to a step whose uses: equals actions/upload-artifact exactly',
+      };
+    }
+  }
+
+  // O6 — job-level `if: false`. [NOT ok]
+  const oJobLevelIfFalse = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    if: false
+    steps:
+      - run: just mutate-core
+`;
+  {
+    const r = jobIsNotNeutered(oJobLevelIfFalse, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH O6: jobIsNotNeutered accepted a job-level if: false',
+      };
+    }
+  }
+
+  // O7 — upload step with if: always() AND continue-on-error: true. [NOT ok]
+  const oUploadAlwaysCoeTrue = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out on failure
+        if: always()
+        continue-on-error: true
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+`;
+  {
+    const r = jobIsNotNeutered(oUploadAlwaysCoeTrue, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH O7: jobIsNotNeutered accepted an upload step with a legitimate if: always() ' +
+          'sitting alongside continue-on-error: true — the allowlist applies even to the upload step',
+      };
+    }
+  }
+
+  // O8 — upload step with if: false. [NOT ok]
+  const oUploadIfFalse = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out on failure
+        if: false
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+`;
+  {
+    const r = jobIsNotNeutered(oUploadIfFalse, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH O8: jobIsNotNeutered accepted an upload step with if: false',
+      };
+    }
+  }
+
+  // O9 — upload step with if: success(). [NOT ok]
+  const oUploadIfSuccess = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out on failure
+        if: success()
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+`;
+  {
+    const r = jobIsNotNeutered(oUploadIfSuccess, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH O9: jobIsNotNeutered accepted an upload step with if: success() — only ' +
+          'always() (bare or expression form) is admitted',
+      };
+    }
+  }
+
+  // O10 — `uses: evil/upload-artifact@<40hex>` with if: always(). Kills: an impl
+  // that matches on the "upload-artifact" suffix instead of full equality. [NOT ok]
+  const oEvilUploadArtifact = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: evil/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+`;
+  {
+    const r = jobIsNotNeutered(oEvilUploadArtifact, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH O10: jobIsNotNeutered accepted if: always() on a step using ' +
+          'evil/upload-artifact — the uses: value must equal actions/upload-artifact exactly',
+      };
+    }
+  }
+
+  // O11 — `uses: actions/upload-artifact-fake@<40hex>`. Kills: an impl that uses
+  // indexOf/startsWith instead of exact equality after stripping ref+comment. [NOT ok]
+  const oUploadArtifactFake = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: actions/upload-artifact-fake@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+`;
+  {
+    const r = jobIsNotNeutered(oUploadArtifactFake, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH O11: jobIsNotNeutered accepted if: always() on ' +
+          'actions/upload-artifact-fake — exact equality must reject a lookalike name',
+      };
+    }
+  }
+
+  // O12 — a run step (has its own run: key, so never an upload step) with
+  // if: always(), whose body contains a COMMENT LINE mentioning
+  // "uses: actions/upload-artifact@…". Kills: an impl that greps the whole step
+  // text for the uses: value instead of reading it as a real, own, top-level key. [NOT ok]
+  const oCommentUsesInsideRunStep = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Suspicious step
+        if: always()
+        run: |
+          # uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+          echo hi
+`;
+  {
+    const r = jobIsNotNeutered(oCommentUsesInsideRunStep, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH O12: jobIsNotNeutered accepted if: always() on a run: step because a COMMENT ' +
+          'line inside its block-scalar body happened to mention uses: actions/upload-artifact — ' +
+          'a step with its own run: key can never be an upload step regardless of what its body says',
+      };
+    }
+  }
+
+  // O13 — a step using `run: |` whose block-scalar BODY contains a line that
+  // trims to exactly "if: false". This must NOT be treated as a real if: key —
+  // block-scalar bodies are DATA. [ok]
+  const oBlockScalarDataIfFalse = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Print status
+        run: |
+          if: false
+          echo done
+`;
+  {
+    const r = jobIsNotNeutered(oBlockScalarDataIfFalse, 'mutation');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH O13: jobIsNotNeutered rejected a job whose only "if: false" text lives inside a run: | block-scalar body (data, not a key) — false-red on step body content. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // O14 — upload step whose `with:` block carries if-no-files-found / retention-days
+  // alongside if: always(). False-red guard: an impl that matches `if:` as a loose
+  // substring could trip on `if-no-files-found:`. [ok]
+  const oUploadWithBlockFalseRedGuard = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-core
+          if-no-files-found: warn
+          path: mutants.out/
+          retention-days: 14
+`;
+  {
+    const r = jobIsNotNeutered(oUploadWithBlockFalseRedGuard, 'mutation');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH O14: jobIsNotNeutered rejected a legitimate upload step whose with: block contains if-no-files-found: — the if: key match must be anchored, not a loose "if" substring test. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // O15 — two upload steps, one with if: always() and one with no if: at all. [ok]
+  const oTwoUploadsOneWithoutIf = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload A
+        if: always()
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+      - name: Upload B
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-core-2
+          path: mutants.out/
+`;
+  {
+    const r = jobIsNotNeutered(oTwoUploadsOneWithoutIf, 'mutation');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH O15: jobIsNotNeutered rejected a job with two upload steps (one carrying if: always(), one carrying no if: at all) — both are legitimate. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // O16 — job with no `steps:` key at all. Fail-closed. [NOT ok]
+  const oNoStepsKey = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+`;
+  {
+    const r = jobIsNotNeutered(oNoStepsKey, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH O16: jobIsNotNeutered accepted a job block with no steps: key at all — must fail closed',
+      };
+    }
+  }
+
+  // O17 — THE TRUNCATION ATTACK. A run step, then a 2-space `  # noise` comment
+  // (which truncates the OLD extractJobBlock's indent===2 terminator), then a
+  // step at 6-space indent carrying if: false hiding below the decoy comment.
+  // strictJobBlock must terminate only at a non-blank, NON-comment line at
+  // indent <= 2 — so this if: false must still be seen. This tooth is mandatory
+  // per ADR-0200 D8 ("own block extraction"). [NOT ok]
+  const oTruncationAttack = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+  # noise
+      - if: false
+        run: echo x
+`;
+  {
+    const r = jobIsNotNeutered(oTruncationAttack, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH O17-truncation: jobIsNotNeutered accepted a job with an if: false step hidden ' +
+          'below a 2-space decoy comment — this is the extractJobBlock truncation hole; ' +
+          'jobIsNotNeutered must use strictJobBlock, which does not stop at a comment line',
+      };
+    }
+  }
+
+  // O18 — quoted key: job-level `"if": false`. [NOT ok]
+  const oQuotedKeyIfFalse = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    "if": false
+    steps:
+      - run: just mutate-core
+`;
+  {
+    const r = jobIsNotNeutered(oQuotedKeyIfFalse, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH O18: jobIsNotNeutered accepted a job-level "if": false (double-quoted key) — ' +
+          'key matching must tolerate quoted forms',
+      };
+    }
+  }
+
+  // O19 — spaced key: job-level `if : always()`. [NOT ok]
+  const oSpacedKeyIfAlways = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    if : always()
+    steps:
+      - run: just mutate-core
+`;
+  {
+    const r = jobIsNotNeutered(oSpacedKeyIfAlways, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH O19: jobIsNotNeutered accepted a job-level "if : always()" (space before the ' +
+          'colon) — key matching must tolerate a space before the colon',
+      };
+    }
+  }
+
+  // O20 — coe expression: `continue-on-error: \${{ github.event_name == 'schedule' }}`
+  // — false under workflow_dispatch (what a drill uses), true on every real cron
+  // night: a neuter calibrated to hide from its own verification. [NOT ok]
+  const oCoeExpression = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run mutation
+        run: just mutate-core
+        continue-on-error: \${{ github.event_name == 'schedule' }}
+`;
+  {
+    const r = jobIsNotNeutered(oCoeExpression, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          "TEETH O20: jobIsNotNeutered accepted continue-on-error: ${{ github.event_name == 'schedule' }} " +
+          '— the allowlist must accept ONLY the literal `false`, rejecting every expression form ' +
+          'even one that evaluates false under the drill trigger',
+      };
+    }
+  }
+
+  // O21 — flow-style step: `- { run: just mutate-core, if: false }`. Fail-closed. [NOT ok]
+  const oFlowStyleStep = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - { run: just mutate-core, if: false }
+`;
+  {
+    const r = jobIsNotNeutered(oFlowStyleStep, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH O21: jobIsNotNeutered accepted a flow-style step `- { run: ..., if: false }` — ' +
+          'the scanner cannot read flow-mapping steps and must fail closed rather than miss the if:',
+      };
+    }
+  }
+
+  // O22 — flow `steps:` sequence: `steps: [ { run: just mutate-core } ]`. Fail-closed. [NOT ok]
+  const oFlowStepsSequence = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps: [ { run: just mutate-core } ]
+`;
+  {
+    const r = jobIsNotNeutered(oFlowStepsSequence, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH O22: jobIsNotNeutered accepted a flow-style `steps: [ ... ]` sequence — the ' +
+          'scanner cannot read it and must fail closed',
+      };
+    }
+  }
+
+  // O23a — YAML merge key (<<:) inside the block. Fail-closed. [NOT ok]
+  const oMergeKey = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - <<: *defaults
+      - run: just mutate-core
+`;
+  {
+    const r = jobIsNotNeutered(oMergeKey, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH O23a: jobIsNotNeutered accepted a job block containing a YAML merge key (<<:) ' +
+          '— an unresolvable indirection must fail closed rather than be read as ok',
+      };
+    }
+  }
+
+  // O23b — a bare alias (*name) inside the block. Fail-closed. [NOT ok]
+  const oAlias = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - *shared_checkout
+      - run: just mutate-core
+`;
+  {
+    const r = jobIsNotNeutered(oAlias, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH O23b: jobIsNotNeutered accepted a job block containing a bare YAML alias ' +
+          '(*shared_checkout) — an unresolvable indirection must fail closed',
+      };
+    }
+  }
+
+  // O24 — positive control: `continue-on-error: false` spelled literally is still ok. [ok]
+  const oCoeFalseLiteralGood = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run mutation
+        run: just mutate-core
+        continue-on-error: false
+`;
+  {
+    const r = jobIsNotNeutered(oCoeFalseLiteralGood, 'mutation');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH O24: jobIsNotNeutered rejected continue-on-error: false (the literal, allowlisted value) — the allowlist must remain satisfiable. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH P: mutationJobUploadsMutantsOutOnFailure (ADR-0200 D7)
+  // -------------------------------------------------------------------------
+
+  // P1 — no upload step at all. [NOT ok]
+  const pNoUpload = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+`;
+  {
+    const r = mutationJobUploadsMutantsOutOnFailure(pNoUpload, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH P1: mutationJobUploadsMutantsOutOnFailure accepted a mutation job with no upload step at all',
+      };
+    }
+  }
+
+  // P2 — upload step with NO if: at all. THE LOAD-BEARING CASE: the default is
+  // success(), which skips the upload on the only night it matters. [NOT ok]
+  const pUploadNoIf = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+          if-no-files-found: warn
+          retention-days: 14
+`;
+  {
+    const r = mutationJobUploadsMutantsOutOnFailure(pUploadNoIf, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH P2: mutationJobUploadsMutantsOutOnFailure accepted an upload step with NO if: ' +
+          'at all — the GitHub default is success(), which silently skips the upload on the ' +
+          'one night it matters; absence of if: must be treated as a failure, not a pass',
+      };
+    }
+  }
+
+  // P3 — if: success(). [NOT ok]
+  const pUploadIfSuccess = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out
+        if: success()
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+`;
+  {
+    const r = mutationJobUploadsMutantsOutOnFailure(pUploadIfSuccess, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH P3: mutationJobUploadsMutantsOutOnFailure accepted an upload step with if: success()',
+      };
+    }
+  }
+
+  // P4 — if: always() but path: coverage/ (wrong artifact directory). [NOT ok]
+  const pUploadAlwaysWrongPath = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out
+        if: always()
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-core
+          path: coverage/
+`;
+  {
+    const r = mutationJobUploadsMutantsOutOnFailure(pUploadAlwaysWrongPath, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH P4: mutationJobUploadsMutantsOutOnFailure accepted if: always() with path: coverage/ instead of mutants.out/',
+      };
+    }
+  }
+
+  // P5 — a `uses:` line that only appears inside a COMMENT. [NOT ok]
+  const pUsesOnlyInComment = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      # uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+      - name: Fake upload
+        if: always()
+        run: echo "not really uploading anything"
+`;
+  {
+    const r = mutationJobUploadsMutantsOutOnFailure(pUsesOnlyInComment, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH P5: mutationJobUploadsMutantsOutOnFailure accepted a job where the only ' +
+          'mention of actions/upload-artifact is inside a # comment line — the real step is a ' +
+          'plain run: step with no uses: key at all',
+      };
+    }
+  }
+
+  // P6 — canonical: if: always(), path: mutants.out/, non-empty name:. [ok]
+  const pCanonical = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+          if-no-files-found: warn
+          retention-days: 14
+`;
+  {
+    const r = mutationJobUploadsMutantsOutOnFailure(pCanonical, 'mutation');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH P6: mutationJobUploadsMutantsOutOnFailure rejected the canonical upload-on-failure step. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // P6b — canonical with path: mutants.out (no trailing slash) — the contract
+  // explicitly allows both spellings. [ok]
+  const pCanonicalNoSlash = `jobs:
+  mutation-server:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-server
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-server
+          path: mutants.out
+          if-no-files-found: warn
+          retention-days: 14
+`;
+  {
+    const r = mutationJobUploadsMutantsOutOnFailure(pCanonicalNoSlash, 'mutation-server');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH P6b: mutationJobUploadsMutantsOutOnFailure rejected path: mutants.out (no trailing slash), which the contract allows. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // P7 — spoofed `uses: evil/upload-artifact@<40hex>` with if: always() + path:
+  // mutants.out/. This predicate must check uses: DIRECTLY — it must NOT rely on
+  // jobIsNotNeutered (a different predicate, tested separately in TEETH O) to
+  // have already rejected the spoofed step upstream. [NOT ok]
+  const pEvilUploadArtifact = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: evil/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+`;
+  {
+    const r = mutationJobUploadsMutantsOutOnFailure(pEvilUploadArtifact, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH P7: mutationJobUploadsMutantsOutOnFailure accepted a step using ' +
+          'evil/upload-artifact (not actions/upload-artifact) with if: always() and ' +
+          'path: mutants.out/ — this predicate must verify uses: itself, independently of jobIsNotNeutered',
+      };
+    }
+  }
+
+  // P8 — spoofed `uses: actions/upload-artifact-fake@<40hex>` (lookalike name),
+  // same shape. [NOT ok]
+  const pUploadArtifactFake = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: actions/upload-artifact-fake@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+`;
+  {
+    const r = mutationJobUploadsMutantsOutOnFailure(pUploadArtifactFake, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH P8: mutationJobUploadsMutantsOutOnFailure accepted a step using ' +
+          'actions/upload-artifact-fake (lookalike name) with if: always() and path: mutants.out/',
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // Shared canonical notify-job fragments (ADR-0200 D1/D2/D2a/D5/D6), reused
+  // by TEETH Q and TEETH R below. Declared once so every positive control in
+  // this file describes the SAME real canonical shape, and so a fixture that
+  // deliberately varies exactly one property is visibly a one-property diff
+  // from these constants rather than from a hand-copied near-duplicate.
+  //
+  // NOTIFY_D2A_IF — the job-level condition (ADR-0200 D2a). Plain `if:
+  // failure()` never fires when a needed job is merely `skipped` — exactly
+  // what a successful job-level neuter looks like at runtime — so the
+  // condition must explicitly admit `skipped` alongside `failure`, while
+  // staying quiet on a fully green night (protects D6's zero-guard) and not
+  // firing on an outright cancellation.
+  //
+  // NOTIFY_CANONICAL_STEPS — the step body (ADR-0200 D1/D2/D5/D6): enumerates
+  // the non-success job set from `toJSON(needs)` via `jq` (never hardcoded),
+  // opens one `gh issue create` per enumerated job with the job name AND a
+  // run URL built from `github.run_id` in the title/body (D5 attribution),
+  // and exits 1 if the loop opened zero issues (D6).
+  //
+  // These are declared as plain (non-template-literal) constants where
+  // possible so `${{ ... }}` GitHub Actions expressions do not need escaping;
+  // NOTIFY_CANONICAL_STEPS is a template literal (it is multi-line) so every
+  // `${{ ... }}` inside it IS escaped as `\${{ ... }}`.
+  // -------------------------------------------------------------------------
+  // lp-03 ROUND 3: extended from a two-term to a THREE-term condition (TEETH U3).
+  // A job that concludes `cancelled` (a timeout-minutes expiry — smoke-republish
+  // carries one, and the mutation jobs run 1.5-2.5h against a 6h hosted cap)
+  // satisfied neither `failure` nor `skipped` under the old two-term form, so
+  // notify stayed silent on that class of red-and-silent night. The old
+  // two-term string now lives inline at TEETH U3b as a dedicated NEGATIVE fixture.
+  const NOTIFY_D2A_IF =
+    "if: ${{ !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped') || contains(needs.*.result, 'cancelled')) }}";
+
+  const NOTIFY_CANONICAL_STEPS = `    steps:
+      - name: Open issues for failing jobs
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: \${{ toJSON(needs) }}
+          RUN_URL: https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          opened=0
+          for job in $(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key'); do
+            gh issue create --title "nightly failure: $job" --body "Job $job failed. See $RUN_URL"
+            opened=$((opened + 1))
+          done
+          if [ "$opened" -eq 0 ]; then
+            echo "notify fired but enumerated zero failing jobs" >&2
+            exit 1
+          fi
+`;
+
+  const NOTIFY_PERMISSIONS = `    permissions:
+      contents: read
+      issues: write
+`;
+
+  // -------------------------------------------------------------------------
+  // TEETH Q: nightlyNotifyCanOpenIssues (ADR-0200 D3)
+  // -------------------------------------------------------------------------
+
+  // Q1 — the notify job's OWN permissions: block carries a live issues: write key.
+  // Uses the real canonical body/condition (BLOCKER 1/2 fix) so this fixture is
+  // never satisfiable ONLY by luck of a non-compliant shape. [ok]
+  const qOwnPermissionsGrant = `name: Nightly
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+  notify:
+    needs: [mutation]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyCanOpenIssues(qOwnPermissionsGrant);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH Q1: nightlyNotifyCanOpenIssues rejected a notify job whose OWN permissions: block grants issues: write. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // Q2 — notify has NO own permissions: block; the TOP-LEVEL workflow permissions
+  // grants issues: write. [ok]
+  const qTopLevelGrantNoOwnBlock = `name: Nightly
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+  notify:
+    needs: [mutation]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyCanOpenIssues(qTopLevelGrantNoOwnBlock);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH Q2: nightlyNotifyCanOpenIssues rejected a notify job with NO own permissions: block, relying on the top-level grant — GitHub inherits the workflow-level permissions when a job declares none. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // Q3 — only contents: read exists anywhere. [NOT ok]
+  const qOnlyContentsRead = `name: Nightly
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+  notify:
+    needs: [mutation]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh issue create --title x --body y
+`;
+  {
+    const r = nightlyNotifyCanOpenIssues(qOnlyContentsRead);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH Q3: nightlyNotifyCanOpenIssues accepted a workflow where only contents: read exists anywhere — issues: write is nowhere granted',
+      };
+    }
+  }
+
+  // Q4 — the grant appears ONLY inside a # comment. [NOT ok]
+  const qGrantOnlyInComment = `name: Nightly
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  # issues: write (left here for reference; do not uncomment without ADR-0200 D3 review)
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+  notify:
+    needs: [mutation]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh issue create --title x --body y
+`;
+  {
+    const r = nightlyNotifyCanOpenIssues(qGrantOnlyInComment);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH Q4: nightlyNotifyCanOpenIssues accepted a `# issues: write` line that is a ' +
+          'COMMENT, not a live YAML key — a commented-out grant is not a grant',
+      };
+    }
+  }
+
+  // Q5 — issues: read (present, but not write). [NOT ok]
+  const qIssuesReadOnly = `name: Nightly
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: read
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+  notify:
+    needs: [mutation]
+    if: failure()
+    runs-on: ubuntu-latest
+    steps:
+      - run: gh issue create --title x --body y
+`;
+  {
+    const r = nightlyNotifyCanOpenIssues(qIssuesReadOnly);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH Q5: nightlyNotifyCanOpenIssues accepted issues: read as if it were issues: write — gh issue create needs write',
+      };
+    }
+  }
+
+  // Q6 — THE GITHUB SEMANTICS TRAP: notify has its OWN permissions: block that
+  // LACKS issues:, while the TOP LEVEL grants it. A job-level permissions: block
+  // REPLACES the workflow-level one — so this must be [NOT ok] even though a
+  // naive "check both blocks, OR them together" impl would accept it.
+  const qOwnBlockLacksIssuesTopLevelGrants = `name: Nightly
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+  notify:
+    needs: [mutation]
+    if: failure()
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - run: gh issue create --title x --body y
+`;
+  {
+    const r = nightlyNotifyCanOpenIssues(qOwnBlockLacksIssuesTopLevelGrants);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH Q6: nightlyNotifyCanOpenIssues accepted a notify job with its OWN ' +
+          'permissions: block (contents: read only) while the TOP LEVEL grants issues: write — ' +
+          "a job-level permissions: block REPLACES the workflow-level one in GitHub's real " +
+          'semantics, so the top-level grant is dead here; an OR-both-blocks impl misses this',
+      };
+    }
+  }
+
+  // Q7 — positive control: the full canonical shape (all 5 nightly jobs + notify
+  // fanning in, own permissions: block granting issues: write). [ok]
+  const qPositiveControlCanonical = `name: Nightly
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+  mutation-server:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-server
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+  smoke-republish:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just smoke-republish
+  changelog-freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - run: node scripts/changelog-freshness.mjs --check
+  notify:
+    needs: [mutation, mutation-server, coverage, smoke-republish, changelog-freshness]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyCanOpenIssues(qPositiveControlCanonical);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH Q7-good: nightlyNotifyCanOpenIssues rejected the full canonical 5-job + notify shape — the gate must be satisfiable by the shape the real nightly.yml will actually ship. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH R: nightlyNotifyIsWired (ADR-0200 D1/D2/D2a/D5/D6)
+  // STRENGTHENED CONTRACT (red-team round 1 finding — BLOCKER 1/2): this
+  // predicate must gate the ENUMERATION itself, not merely "a gh issue create
+  // line exists somewhere". ok: true requires ALL of:
+  //   1. the notify job exists and its needs: covers EVERY other job key in
+  //      the file (derived from the file, never hardcoded — R2);
+  //   2. the job-level if: is the ADR-0200 D2a condition — admits BOTH
+  //      failure and skipped, stays quiet on green, ignores cancellation —
+  //      not bare failure() (R3b) and not bare always() (R3c), and not
+  //      absent (R3);
+  //   3. the body references toJSON(needs) (or an equivalent NEEDS_JSON env
+  //      var sourced from it) — a single hardcoded gh issue create with no
+  //      enumeration REDs even though a create call is present (R10);
+  //   4. each opened issue's title/body is attributed to the ENUMERATED job
+  //      (the loop variable, or an equivalent per-job token) — a generic,
+  //      un-attributed title REDs even with real enumeration (R11);
+  //   5. the body references the run (an id or URL derived from
+  //      github.run_id) — no run link REDs even with per-job attribution (R12);
+  //   6. the body has a zero-enumerated exit 1 guard (D6) — enumeration
+  //      without it REDs (R13);
+  //   7. the gh issue create invocation is REAL code, not text living only
+  //      inside a `#` comment line (R14, R4);
+  //   8. it is not softened — no `|| true`, no `set +e`, no truthy
+  //      continue-on-error (R5, R6, R7).
+  // A shared 3-sibling-job base (mutation, mutation-server, coverage) is enough
+  // to prove the "needs: covers every OTHER job key" derivation; the real file
+  // has 5 siblings, which Check 21 exercises directly. NOTIFY_D2A_IF and
+  // NOTIFY_CANONICAL_STEPS (declared above, ahead of TEETH Q) are the single
+  // source of the compliant shape — every [ok] fixture below uses them
+  // unmodified, and every [NOT ok] fixture differs from them by exactly one
+  // named property.
+  // -------------------------------------------------------------------------
+
+  const R_SIBLING_JOBS = `  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+  mutation-server:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-server
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+
+  // R1 — no notify job at all. [NOT ok]
+  const rNoNotifyJob = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}`;
+  {
+    const r = nightlyNotifyIsWired(rNoNotifyJob);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH R1: nightlyNotifyIsWired accepted a workflow with no notify: job at all',
+      };
+    }
+  }
+
+  // R2 — needs: omits one job key that is present in the file (coverage), body
+  // and if: otherwise canonical. Kills: an impl that hardcodes the required set
+  // instead of deriving it from the file. [NOT ok]
+  const rNeedsOmitsJob = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyIsWired(rNeedsOmitsJob);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R2: nightlyNotifyIsWired accepted a notify job whose needs: omits the ' +
+          'coverage job (present elsewhere in the file) — a future unwired job must RED ' +
+          'automatically, so the required set must be DERIVED, never hardcoded',
+      };
+    }
+  }
+
+  // R3 — notify job has no job-level if: at all, everything else canonical. [NOT ok]
+  const rNoIfKey = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyIsWired(rNoIfKey);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R3: nightlyNotifyIsWired accepted a notify job with no job-level if: at all — without a condition the job only runs on the (never-happens) all-succeeded path',
+      };
+    }
+  }
+
+  // R3b — job-level `if: failure()` ALONE (the OLD, now-wrong canonical form),
+  // everything else canonical (ADR-0200 D2a). Kills: an impl that accepts any
+  // non-empty if: line without checking it admits `skipped` — a job neutered
+  // into `skipped` would leave notify silently skipped too, reproducing the
+  // original "red and silent" bug one level up. [NOT ok]
+  const rIfFailureAlone = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    if: failure()
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyIsWired(rIfFailureAlone);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R3b: nightlyNotifyIsWired accepted job-level if: failure() ALONE — per ADR-0200 ' +
+          'D2a this does not admit a `skipped` job (exactly what a successful job-level neuter ' +
+          'looks like at runtime), so it must RED; only the D2a condition is admitted',
+      };
+    }
+  }
+
+  // R3c — job-level `if: always()` ALONE. Kills: an impl that accepts any
+  // "obviously always-run" condition — always() fires on a fully green night
+  // too, which would make D6's zero-enumerated exit 1 guard red EVERY green
+  // night (the guard is meant to fire only when the condition fired and found
+  // nothing, not every single night). [NOT ok]
+  const rIfAlwaysAlone = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    if: always()
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyIsWired(rIfAlwaysAlone);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R3c: nightlyNotifyIsWired accepted job-level if: always() ALONE — this fires on ' +
+          "a fully green night and would make D6's zero-guard red every green night; only the " +
+          'D2a condition (quiet on green, admits failure OR skipped, ignores cancellation) is admitted',
+      };
+    }
+  }
+
+  // R4 — no `gh issue create` invocation anywhere in the body. [NOT ok]
+  const rNoGhIssueCreate = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}    steps:
+      - name: Notify
+        env:
+          NEEDS_JSON: \${{ toJSON(needs) }}
+        run: echo "something failed, please look at $NEEDS_JSON"
+`;
+  {
+    const r = nightlyNotifyIsWired(rNoGhIssueCreate);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R4: nightlyNotifyIsWired accepted a notify job whose body never calls gh issue create',
+      };
+    }
+  }
+
+  // R5 — the create call is followed by `|| true`, silently swallowing failure. [NOT ok]
+  const rCreateThenOrTrue = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}    steps:
+      - name: Open issues for failing jobs
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: \${{ toJSON(needs) }}
+          RUN_URL: https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          opened=0
+          for job in $(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key'); do
+            gh issue create --title "nightly failure: $job" --body "Job $job failed. See $RUN_URL" || true
+            opened=$((opened + 1))
+          done
+          if [ "$opened" -eq 0 ]; then
+            echo "notify fired but enumerated zero failing jobs" >&2
+            exit 1
+          fi
+`;
+  {
+    const r = nightlyNotifyIsWired(rCreateThenOrTrue);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R5: nightlyNotifyIsWired accepted a notify job whose gh issue create is softened with `|| true`',
+      };
+    }
+  }
+
+  // R6 — `set +e` in the body (defeats set -euo pipefail's protection),
+  // otherwise fully canonical enumeration. [NOT ok]
+  const rSetPlusE = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}    steps:
+      - name: Open issues for failing jobs
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: \${{ toJSON(needs) }}
+          RUN_URL: https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          set +e
+          opened=0
+          for job in $(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key'); do
+            gh issue create --title "nightly failure: $job" --body "Job $job failed. See $RUN_URL"
+            opened=$((opened + 1))
+          done
+          if [ "$opened" -eq 0 ]; then
+            echo "notify fired but enumerated zero failing jobs" >&2
+            exit 1
+          fi
+`;
+  {
+    const r = nightlyNotifyIsWired(rSetPlusE);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R6: nightlyNotifyIsWired accepted a notify job whose body disables error handling with `set +e`',
+      };
+    }
+  }
+
+  // R7 — truthy continue-on-error on the notify job itself, body otherwise
+  // fully canonical. [NOT ok]
+  const rTruthyCoe = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    continue-on-error: true
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyIsWired(rTruthyCoe);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R7: nightlyNotifyIsWired accepted a notify job with job-level continue-on-error: true — a soft-failing notifier is a silently broken one',
+      };
+    }
+  }
+
+  // R10 — a SINGLE hardcoded `gh issue create`, with NO toJSON(needs) (or any
+  // NEEDS_JSON-equivalent) anywhere in the job. This is the exact non-compliant
+  // shape a red-team implementation shipped as its "notify job" — a create call
+  // is present, but there is no enumeration behind it, so it opens exactly one
+  // generic issue no matter how many jobs actually failed (violates D2/D5). [NOT ok]
+  const rHardcodedNoEnumeration = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}    steps:
+      - name: Open issue
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          gh issue create --title "nightly failure" --body "see the run"
+`;
+  {
+    const r = nightlyNotifyIsWired(rHardcodedNoEnumeration);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R10: nightlyNotifyIsWired accepted a notify job with a SINGLE hardcoded gh issue ' +
+          'create and no toJSON(needs) enumeration anywhere — this opens exactly one generic issue ' +
+          'no matter how many jobs failed, violating D2/D5; "a create call exists" is not enough',
+      };
+    }
+  }
+
+  // R11 — enumerates via toJSON(needs)/jq/a real loop, but the issue title/body
+  // never reference the loop variable or any per-job token — every opened issue
+  // is generically titled "nightly failure" regardless of which job it is for.
+  // Kills: an impl that only checks "gh issue create appears inside a for loop"
+  // without checking the create call is actually attributed to the enumerated
+  // job (EARS: "naming the failing job"). [NOT ok]
+  const rEnumeratesNoAttribution = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}    steps:
+      - name: Open issues for failing jobs
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: \${{ toJSON(needs) }}
+          RUN_URL: https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          opened=0
+          for job in $(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key'); do
+            gh issue create --title "nightly failure" --body "See $RUN_URL"
+            opened=$((opened + 1))
+          done
+          if [ "$opened" -eq 0 ]; then
+            echo "notify fired but enumerated zero failing jobs" >&2
+            exit 1
+          fi
+`;
+  {
+    const r = nightlyNotifyIsWired(rEnumeratesNoAttribution);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R11: nightlyNotifyIsWired accepted a notify job that enumerates the failing set ' +
+          'in a real loop but never references the loop variable ($job) or any per-job token in ' +
+          'the issue title/body — every issue is generically titled, which fails EARS attribution',
+      };
+    }
+  }
+
+  // R12 — enumerates with real per-job attribution, but NEVER references the
+  // run (no run id, no run URL, no github.run_id anywhere). Kills: an impl
+  // that checks "per-job title present" without also requiring the run to be
+  // linked (EARS: "linking the run"). [NOT ok]
+  const rNoRunLink = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}    steps:
+      - name: Open issues for failing jobs
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: \${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          opened=0
+          for job in $(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key'); do
+            gh issue create --title "nightly failure: $job" --body "Job $job failed"
+            opened=$((opened + 1))
+          done
+          if [ "$opened" -eq 0 ]; then
+            echo "notify fired but enumerated zero failing jobs" >&2
+            exit 1
+          fi
+`;
+  {
+    const r = nightlyNotifyIsWired(rNoRunLink);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R12: nightlyNotifyIsWired accepted a notify job with real per-job attribution ' +
+          'but NO run id / run URL reference anywhere in the body — EARS requires the opened ' +
+          'issue to also LINK THE RUN, not just name the job',
+      };
+    }
+  }
+
+  // R13 — enumerates with real per-job attribution and a run link, but has NO
+  // zero-enumerated exit 1 guard (D6). Kills: an impl that stops checking once
+  // it has seen a compliant-looking loop, without requiring the trailing guard
+  // that makes "the condition fired and found nothing" loud instead of silent. [NOT ok]
+  const rNoZeroGuard = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}    steps:
+      - name: Open issues for failing jobs
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: \${{ toJSON(needs) }}
+          RUN_URL: https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          for job in $(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key'); do
+            gh issue create --title "nightly failure: $job" --body "Job $job failed. See $RUN_URL"
+          done
+`;
+  {
+    const r = nightlyNotifyIsWired(rNoZeroGuard);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R13: nightlyNotifyIsWired accepted a notify job with a real enumeration loop but ' +
+          'NO zero-enumerated exit 1 guard (ADR-0200 D6) — a run that fires and quietly opens ' +
+          'nothing must be loud, not indistinguishable from a green night',
+      };
+    }
+  }
+
+  // R14 — the ONLY `gh issue create` text in the whole job is inside a `#`
+  // comment line; the actual run: step does something else entirely. Kills: an
+  // impl that greps for the substring "gh issue create" anywhere in the block
+  // text instead of checking it is live, executable code. [NOT ok]
+  const rCreateOnlyInComment = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}    steps:
+      - name: Open issues for failing jobs
+        env:
+          NEEDS_JSON: \${{ toJSON(needs) }}
+        run: |
+          set -euo pipefail
+          # gh issue create --title "nightly failure" --body "see the run"
+          echo "TODO: wire this up for real"
+`;
+  {
+    const r = nightlyNotifyIsWired(rCreateOnlyInComment);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH R14: nightlyNotifyIsWired accepted a notify job whose ONLY gh issue create text ' +
+          'lives inside a # comment line — the real run: step just echoes a TODO',
+      };
+    }
+  }
+
+  // R8 — canonical, needs: as a BLOCK sequence, D2a condition, full compliant
+  // enumeration (toJSON(needs), per-job attribution, run link, zero-guard). [ok]
+  const rGoodBlock = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs:
+      - mutation
+      - mutation-server
+      - coverage
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyIsWired(rGoodBlock);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH R8: nightlyNotifyIsWired rejected a correctly wired, fully compliant notify job using the BLOCK-sequence needs: form. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // R9 — canonical, needs: as a FLOW sequence, same compliant shape as R8. [ok]
+  const rGoodFlow = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyIsWired(rGoodFlow);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH R9: nightlyNotifyIsWired rejected a correctly wired, fully compliant notify job using the FLOW needs: [a, b, c] form. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH S: noOtherJobHoldsIssuesWrite (ADR-0200 D3 — least-privilege negative space)
+  // -------------------------------------------------------------------------
+
+  // S1 — issues: write at the TOP LEVEL. [NOT ok]
+  const sTopLevelGrant = `name: Nightly
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+  issues: write
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+  notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - run: gh issue create --title x --body y
+`;
+  {
+    const r = noOtherJobHoldsIssuesWrite(sTopLevelGrant);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH S1: noOtherJobHoldsIssuesWrite accepted issues: write at the TOP-LEVEL permissions: block — ADR-0200 D3 requires the grant to be job-scoped only',
+      };
+    }
+  }
+
+  // S2 — issues: write on the `mutation` job. [NOT ok]
+  const sMutationJobGrant = `name: Nightly
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - run: just mutate-core
+  notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - run: gh issue create --title x --body y
+`;
+  {
+    const r = noOtherJobHoldsIssuesWrite(sMutationJobGrant);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH S2: noOtherJobHoldsIssuesWrite accepted issues: write on the mutation job — a ' +
+          'job that shells third-party build scripts under cargo-mutants must never hold issue-write',
+      };
+    }
+  }
+
+  // S3 — issues: write ONLY on notify. [ok]
+  const sOnlyNotifyGrant = `name: Nightly
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+  notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - run: gh issue create --title x --body y
+`;
+  {
+    const r = noOtherJobHoldsIssuesWrite(sOnlyNotifyGrant);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH S3: noOtherJobHoldsIssuesWrite rejected a workflow where issues: write is held ONLY by notify — the least-privilege gate must be satisfiable. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // S4 — MAJOR (red-team round 1): a whole-file "count `issues: write`
+  // occurrences" cheat is passable by S1-S3 alone if it merely checks the
+  // total count is not "too many", because S1/S2 both put the SECOND grant
+  // after notify's own (textually last) and a "does the LAST occurrence sit
+  // in notify's block" cheat also reads clean. This fixture reverses the
+  // order — `notify` is declared FIRST, `mutation` SECOND — so notify's valid
+  // own grant is the FIRST occurrence in the file and mutation's illegitimate
+  // grant is the LAST. A cheat that only inspects the first (or only counts
+  // total occurrences without attributing each one to its own job) reads this
+  // as clean; only a predicate that attributes EVERY occurrence to its
+  // enclosing job, independently, will RED it. [NOT ok]
+  const sNotifyFirstMutationSecondBothGrant = `name: Nightly
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - run: gh issue create --title x --body y
+  mutation:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write
+    steps:
+      - run: just mutate-core
+`;
+  {
+    const r = noOtherJobHoldsIssuesWrite(sNotifyFirstMutationSecondBothGrant);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH S4: noOtherJobHoldsIssuesWrite accepted a workflow where notify (declared FIRST, ' +
+          'with a valid own grant) is followed by mutation (declared SECOND, ALSO holding its own ' +
+          'issues: write) — a first-occurrence-only or total-count cheat reads this as clean; the ' +
+          'predicate must attribute EVERY issues: write occurrence to its own enclosing job',
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH T: notifyArtifactNamesAreDistinct (ADR-0200 D7)
+  // -------------------------------------------------------------------------
+
+  // T1 — identical artifact name: in both mutation jobs. [NOT ok]
+  const tIdenticalNames = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out
+          path: mutants.out/
+  mutation-server:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-server
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out
+          path: mutants.out/
+`;
+  {
+    const r = notifyArtifactNamesAreDistinct(tIdenticalNames);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T1: notifyArtifactNamesAreDistinct accepted identical artifact name: values ' +
+          '("mutants-out") in the mutation and mutation-server jobs — upload-artifact v4 ' +
+          'hard-errors on a duplicate name within one run',
+      };
+    }
+  }
+
+  // T2 — distinct artifact names. [ok]
+  const tDistinctNames = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+  mutation-server:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-server
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-server
+          path: mutants.out/
+`;
+  {
+    const r = notifyArtifactNamesAreDistinct(tDistinctNames);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH T2: notifyArtifactNamesAreDistinct rejected distinct artifact names (mutants-out-core / mutants-out-server). Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // T3 — MINOR (red-team round 1): the mutation job's upload step has NO name:
+  // key at all (upload-artifact v4 actually requires one; an absent name: is
+  // itself invalid). Kills: an impl that reads a missing name: as `undefined`
+  // and compares it to mutation-server's real name with `!==`, which is true
+  // (undefined !== 'mutants-out-server'), so a naive inequality check would
+  // wrongly call this "distinct" — a missing name must not silently compare as
+  // different-therefore-fine. [NOT ok]
+  const tMissingNameKey = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: ${UPLOAD_USES}
+        with:
+          path: mutants.out/
+  mutation-server:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-server
+      - name: Upload mutants.out on failure
+        if: always()
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-server
+          path: mutants.out/
+`;
+  {
+    const r = notifyArtifactNamesAreDistinct(tMissingNameKey);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH T3: notifyArtifactNamesAreDistinct accepted a mutation job whose upload step has ' +
+          "NO name: key at all — a missing name must not compare as 'distinct' from the sibling " +
+          "job's real name; upload-artifact v4 requires a name: on every step",
+      };
+    }
+  }
+
+  // =========================================================================
+  // lp-03 ROUND 3 PROOF-OF-TEETH (red-team BLOCKER bypass + code-reviewer/
+  // GH-Actions-semantics-auditor holes + false-RED guards). Section letters
+  // continue as TEETH U, immediately after TEETH T, so as not to renumber
+  // A-T. Every predicate under test here (jobIsNotNeutered,
+  // mutationJobUploadsMutantsOutOnFailure, nightlyNotifyIsWired,
+  // nightlyNotifyCanOpenIssues) already EXISTS and is GREEN on the committed
+  // tree — this section pins FIVE new rules none of them yet enforce, so
+  // every negative fixture below REDs against the CURRENT committed predicate
+  // bodies until the specialist closes each rule.
+  // =========================================================================
+
+  // -------------------------------------------------------------------------
+  // TEETH U1: jobIsNotNeutered — a guarded job may contain AT MOST ONE `run:`
+  // step. Red-team's full-eval bypass: a step BEFORE `- run: just
+  // mutate-core` writes a `just` shim (`exit 0`) onto $GITHUB_PATH, so the
+  // real recipe step's `just` resolves to the shim and the mutation gate
+  // silently never runs — while every EXISTING predicate (a single exact
+  // `- run: just mutate-core` line, no if:, no continue-on-error) still reads
+  // clean. "Exactly one run: step" is what closes it: a second `run:` step of
+  // ANY kind in a guarded job is itself the neuter, regardless of its body.
+  // -------------------------------------------------------------------------
+
+  // U1a — the literal red-team shim fixture (a $GITHUB_PATH-poisoning step
+  // BEFORE the real recipe step). [NOT ok]
+  const u1ShimBypass = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prep just runner
+        run: |
+          mkdir -p /tmp/.shim
+          printf '#!/bin/bash\\nexit 0\\n' > /tmp/.shim/just
+          chmod +x /tmp/.shim/just
+          echo "/tmp/.shim" >> "$GITHUB_PATH"
+      - run: just mutate-core
+`;
+  {
+    const r = jobIsNotNeutered(u1ShimBypass, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH U1a (BLOCKER): jobIsNotNeutered accepted a job with a $GITHUB_PATH-poisoning ' +
+          'step BEFORE the exact "- run: just mutate-core" step — this is the red-team full-eval ' +
+          'bypass: a shim `just` binary that exits 0 shadows the real recipe, and every existing ' +
+          'predicate (exact run-step text, no if:, no continue-on-error) reads clean while the ' +
+          'mutation gate never actually runs. A guarded job may contain AT MOST ONE run: step.',
+      };
+    }
+  }
+
+  // U1b — no shim, just a second, unrelated run: step. Kills an impl that
+  // special-cases "GITHUB_PATH" text instead of counting run: steps — the
+  // rule is a step-count invariant, not a text blacklist. [NOT ok]
+  const u1TwoRunSteps = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+      - run: just mutate-core
+`;
+  {
+    const r = jobIsNotNeutered(u1TwoRunSteps, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH U1b: jobIsNotNeutered accepted a job with TWO run: steps ("- run: echo hi" then ' +
+          '"- run: just mutate-core") — a second run: step of ANY kind (not just a $GITHUB_PATH ' +
+          'shim) must be rejected; the rule is a step-count invariant, not a text blacklist',
+      };
+    }
+  }
+
+  // U1c — POSITIVE CONTROL: the real canonical shape (several uses: steps,
+  // EXACTLY one run: step, and the D8-carved-out if: always() upload step).
+  // Must stay ok — a false RED here would block every legitimate mutation-job
+  // edit. [ok]
+  const u1CanonicalOneRunStep = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@abc1234abc1234abc1234abc1234abc1234abc12 # v4
+      - uses: actions-rs/toolchain@abc1234abc1234abc1234abc1234abc1234abc12 # v1
+      - run: just mutate-core
+      - name: Upload mutants.out (failure evidence)
+        if: always()
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+          if-no-files-found: warn
+          retention-days: 14
+`;
+  {
+    const r = jobIsNotNeutered(u1CanonicalOneRunStep, 'mutation');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH U1c: jobIsNotNeutered rejected the canonical mutation job shape (uses: steps + exactly one run: step + the if: always() upload step) — a false RED here would block every legitimate future edit. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH U2: jobIsNotNeutered — no `PATH` key in ANY env: mapping inside a
+  // guarded job. Same attack class as U1 but with zero extra steps: a
+  // job-level (or step-level) env: PATH override achieves the identical
+  // shim-shadowing with no second run: step to catch and no if:/
+  // continue-on-error at all.
+  // -------------------------------------------------------------------------
+
+  // U2a — job-level env: PATH override. [NOT ok]
+  const u2JobLevelPathEnv = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    env:
+      PATH: /tmp/.shim:$PATH
+    steps:
+      - run: just mutate-core
+`;
+  {
+    const r = jobIsNotNeutered(u2JobLevelPathEnv, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH U2a (BLOCKER): jobIsNotNeutered accepted a job-level env: PATH: /tmp/.shim:$PATH ' +
+          '— this prepends an attacker directory onto PATH for every step in the job, achieving the ' +
+          'same `just` shim-shadowing as U1 with a SINGLE run: step and no if:/continue-on-error at ' +
+          'all. No env: mapping inside a guarded job may declare a PATH key.',
+      };
+    }
+  }
+
+  // U2b — step-level env: PATH override on the recipe step itself. Kills an
+  // impl that only inspects job-level env: mappings. [NOT ok]
+  const u2StepLevelPathEnv = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run mutate-core
+        env:
+          PATH: /tmp/.shim:$PATH
+        run: just mutate-core
+`;
+  {
+    const r = jobIsNotNeutered(u2StepLevelPathEnv, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH U2b (BLOCKER): jobIsNotNeutered accepted a STEP-level env: PATH: /tmp/.shim:$PATH ' +
+          'on the recipe step — job-level env: is not the only place a PATH override can hide',
+      };
+    }
+  }
+
+  // U2c — POSITIVE CONTROL: job-level AND step-level env: carrying only
+  // ORDINARY, non-PATH keys. Must stay ok — a false RED here would block
+  // legitimate future edits (RUST_BACKTRACE / CARGO_TERM_COLOR are real env
+  // vars this project's CI already sets elsewhere). [ok]
+  const u2OrdinaryEnvKeys = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    env:
+      RUST_BACKTRACE: '1'
+    steps:
+      - name: Run mutate-core
+        env:
+          CARGO_TERM_COLOR: always
+        run: just mutate-core
+`;
+  {
+    const r = jobIsNotNeutered(u2OrdinaryEnvKeys, 'mutation');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH U2c: jobIsNotNeutered rejected job-level + step-level env: mappings carrying only ordinary non-PATH keys (RUST_BACKTRACE, CARGO_TERM_COLOR) — a false RED here would block legitimate future edits. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH U3: nightlyNotifyIsWired's D2a condition check — comment-laundering
+  // and the `cancelled` gap. Red-team proved `if: true # per D2a this admits
+  // both failure and skipped semantics` passes today because the D2a check
+  // matches condition.indexOf('failure')/'skipped') against the RAW line
+  // text, including its inline comment; at runtime the comment is stripped
+  // and the condition IS the bare `true`, so notify fires on EVERY night,
+  // including green ones, which REDs D6's zero-guard every single night.
+  // Separately, a `cancelled` conclusion (a timeout-minutes expiry —
+  // smoke-republish carries one, and the mutation jobs run 1.5-2.5h against a
+  // 6h hosted cap) satisfies neither `failure` nor `skipped`, so a bare
+  // two-term condition leaves a real red-and-silent hole. The canonical
+  // condition is now a three-term `!cancelled() && (failure OR skipped OR
+  // cancelled)` (see the updated NOTIFY_D2A_IF constant above).
+  // -------------------------------------------------------------------------
+
+  // U3a — comment-laundering: the literal red-team fixture. The condition
+  // VALUE is `true` at runtime; only its trailing # comment mentions
+  // failure/skipped. [NOT ok]
+  const u3LaunderedCondition = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    if: true # per D2a this admits both failure and skipped semantics
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyIsWired(u3LaunderedCondition);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH U3a (BLOCKER): nightlyNotifyIsWired accepted "if: true # per D2a this admits both ' +
+          'failure and skipped semantics" — the condition VALUE is the bare `true` at runtime ' +
+          "(YAML strips the inline comment); reading condition.indexOf('failure')/'skipped') " +
+          'against the RAW line text (comment included) launders ANY condition through its own ' +
+          "comment. This fires notify on every green night and REDs D6's zero-guard nightly.",
+      };
+    }
+  }
+
+  // U3b — a real, no-comment condition that admits only failure + skipped,
+  // with NO cancelled term. This was the OLD canonical form (pre-round-3); it
+  // is now non-compliant — a job concluding `cancelled` satisfies neither
+  // term, so the notifier stays silent on that class of red night. [NOT ok]
+  const u3TwoTermNoCancelled =
+    "if: ${{ !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped')) }}";
+  const u3NoCancelledFixture = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${u3TwoTermNoCancelled}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyIsWired(u3NoCancelledFixture);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH U3b: nightlyNotifyIsWired accepted a condition covering only failure + skipped ' +
+          "with NO third contains(needs.*.result, 'cancelled') term — smoke-republish carries a " +
+          'timeout-minutes and the mutation jobs run 1.5-2.5h against a 6h hosted cap, so a job ' +
+          'concluding `cancelled` satisfies neither term and notify stays silent',
+      };
+    }
+  }
+
+  // U3c — POSITIVE CONTROL: the new canonical three-term condition (the
+  // shared NOTIFY_D2A_IF constant, updated this round). Must stay ok. [ok]
+  const u3CanonicalFixture = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyIsWired(u3CanonicalFixture);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH U3c: nightlyNotifyIsWired rejected the new canonical three-term condition (!cancelled() && (failure OR skipped OR cancelled)). Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // U3d — R3b (bare failure() alone) and R3c (bare always() alone) are
+  // UNCHANGED by this round and are NOT re-declared here; they still run
+  // earlier in this file (TEETH R, above) and still expect [NOT ok].
+
+  // -------------------------------------------------------------------------
+  // TEETH U4: nightlyNotifyIsWired — EXACTLY ONE live `gh issue create`
+  // invocation per enumerated job (EARS "SHALL NOT open more than one issue
+  // per job"). This clause has no dedicated tooth today: the predicate only
+  // checks createLines.length === 0 (a lower bound), never an upper bound.
+  // -------------------------------------------------------------------------
+
+  // U4a — TWO live gh issue create lines inside the enumeration loop, both
+  // attributed to the same enumerated $job. [NOT ok]
+  const u4TwoCreatesPerJob = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}    steps:
+      - name: Open issues for failing jobs
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: \${{ toJSON(needs) }}
+          RUN_URL: https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          opened=0
+          for job in $(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key'); do
+            gh issue create --title "nightly failure: $job (1)" --body "Job $job failed. See $RUN_URL"
+            gh issue create --title "nightly failure: $job (2)" --body "Job $job failed. See $RUN_URL"
+            opened=$((opened + 1))
+          done
+          if [ "$opened" -eq 0 ]; then
+            echo "notify fired but enumerated zero failing jobs" >&2
+            exit 1
+          fi
+`;
+  {
+    const r = nightlyNotifyIsWired(u4TwoCreatesPerJob);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH U4a: nightlyNotifyIsWired accepted a notify body with TWO live "gh issue create" ' +
+          'lines inside the per-job enumeration loop, both attributed to the same $job — the EARS ' +
+          'clause is "SHALL NOT open more than one issue per job", and the predicate today only ' +
+          'checks createLines.length === 0 (a lower bound), never an upper bound',
+      };
+    }
+  }
+
+  // U4b — POSITIVE CONTROL: the canonical single-create body. Already
+  // covered by TEETH R8/R9 and Q1/Q2 above (all compose NOTIFY_CANONICAL_STEPS,
+  // which contains exactly one live gh issue create line) — not re-declared here.
+
+  // -------------------------------------------------------------------------
+  // TEETH U5: flow-style `with:` on the upload step — a false-RED guard, not
+  // a blanket accept. nightly.yml already uses `with: { key: value }` flow
+  // style for several actions (house style, not an exotic form), so
+  // jobIsNotNeutered and mutationJobUploadsMutantsOutOnFailure must both read
+  // it — but reading it means REAL key/value parsing, not "flow-style with:
+  // → assume ok".
+  // -------------------------------------------------------------------------
+
+  // U5a — POSITIVE CONTROL: the canonical upload step written with
+  // flow-style with:. Must be accepted by BOTH predicates. [ok / ok]
+  const u5FlowUploadCanonical = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out (failure evidence)
+        if: always()
+        uses: ${UPLOAD_USES}
+        with: { name: mutants-out-core, path: mutants.out/, if-no-files-found: warn, retention-days: 14 }
+`;
+  {
+    const rNeuter = jobIsNotNeutered(u5FlowUploadCanonical, 'mutation');
+    if (!rNeuter.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH U5a-neuter: jobIsNotNeutered rejected the canonical upload step written with flow-style with: { ... } — nightly.yml already uses this style for several actions (house style, not exotic). Reason: ${rNeuter.reason}`,
+      };
+    }
+    const rUpload = mutationJobUploadsMutantsOutOnFailure(u5FlowUploadCanonical, 'mutation');
+    if (!rUpload.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH U5a-upload: mutationJobUploadsMutantsOutOnFailure rejected the canonical upload step written with flow-style with: { ... } — a false RED that would block committing house style. Reason: ${rUpload.reason}`,
+      };
+    }
+  }
+
+  // U5b — NEGATIVE: flow-style with: whose path: is coverage/ (not
+  // mutants.out/). Proves flow parsing reads the ACTUAL key/value pairs
+  // rather than granting a blanket pass to any step whose with: happens to
+  // be flow-style. [NOT ok]
+  const u5FlowUploadWrongPath = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out (failure evidence)
+        if: always()
+        uses: ${UPLOAD_USES}
+        with: { name: mutants-out-core, path: coverage/, if-no-files-found: warn, retention-days: 14 }
+`;
+  {
+    const r = mutationJobUploadsMutantsOutOnFailure(u5FlowUploadWrongPath, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH U5b: mutationJobUploadsMutantsOutOnFailure accepted a flow-style with: { ... } ' +
+          'whose path: is coverage/ (not mutants.out/) — flow-style acceptance must be REAL ' +
+          'parsing of the mapping, not a blanket accept keyed only on the with: being flow-style',
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH U6: nightlyNotifyCanOpenIssues — a false-RED guard for a trailing
+  // comment on the top-level `permissions:` key line. topLevelPermissions
+  // finds the block by an EXACT `lines[i] !== 'permissions:'` line match, so
+  // `permissions: # least privilege — see ADR-0200` (legal YAML — a trailing
+  // comment on a mapping key) is invisible to it today.
+  // -------------------------------------------------------------------------
+
+  // U6a — top-level `permissions:` line carries a trailing comment; notify
+  // has NO own permissions: block (so it must inherit the top-level grant).
+  // [ok]
+  const u6PermissionsTrailingComment = `name: Nightly
+on:
+  workflow_dispatch:
+permissions: # least privilege — see ADR-0200
+  contents: read
+  issues: write
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+  notify:
+    needs: [mutation]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyCanOpenIssues(u6PermissionsTrailingComment);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH U6a: nightlyNotifyCanOpenIssues rejected a top-level "permissions: # least privilege — see ADR-0200" line (a trailing comment is legal YAML on a mapping key) with issues: write declared under it and no own permissions: block on notify — a false RED that would block a legitimately commented workflow. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // =========================================================================
   // REAL FILE CHECKS
   // =========================================================================
   const root = path.resolve('.');
@@ -2568,8 +5973,10 @@ jobs:
   // GREEN edit (per job): insert, immediately above the job key at 2-space indent,
   // a comment preamble containing a line of the form
   //   # Failure policy for `<job>`: … next slice / queue / priority …
-  // Decision-hook mdrewt/claude-harness#14 is OPEN — do NOT add a notification
-  // Action; the documented policy is the reversible default.
+  // Decision-hook mdrewt/claude-harness#14 was ANSWERED in lp-03: the `notify` job
+  // added by ADR-0200 (Checks 21–23 below) now opens a GitHub issue per non-success
+  // job. That does not retire these three checks — the issue names the failing job,
+  // the preamble records the triage ROUTING (ADR-0050) — so the preamble stays.
 
   // Check 14: mutation job failure policy (EXPECTED RED)
   {
@@ -2622,10 +6029,108 @@ jobs:
     }
   }
 
+  // =========================================================================
+  // lp-03 REAL FILE CHECKS (ADR-0200 — nightly failure notification)
+  //   Check 18 → EXPECTED RED (no upload-artifact step in the mutation job yet)
+  //   Checks 19–23 are not reached today (this eval returns on first failure at
+  //   Check 18) but are all independently RED on the committed tree except
+  //   Check 23, which would pass in isolation (see the file-header note above).
+  // =========================================================================
+
+  // Check 18: the mutation job uploads mutants.out/ on failure (EXPECTED RED).
+  // GREEN edit: add an actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+  // step to the mutation job with if: always(), a non-empty name:, and path: mutants.out/.
+  {
+    const r = mutationJobUploadsMutantsOutOnFailure(nightlyYml, 'mutation');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `nightly.yml 'mutation' job does not upload mutants.out/ on failure (EXPECTED RED): ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 19: the mutation-server job uploads mutants.out/ on failure (EXPECTED
+  // RED). Job name is spelled out explicitly (not looped with Check 18) so a fix
+  // to only one of the two jobs cannot leave the other unpinned.
+  // GREEN edit: same upload-artifact step, added to mutation-server.
+  {
+    const r = mutationJobUploadsMutantsOutOnFailure(nightlyYml, 'mutation-server');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `nightly.yml 'mutation-server' job does not upload mutants.out/ on failure (EXPECTED RED): ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 20: the mutation and mutation-server upload-artifact `name:` values are
+  // distinct (EXPECTED RED — no upload steps exist yet).
+  // GREEN edit: give the two upload steps distinct name: values (v4 hard-errors
+  // on a duplicate artifact name within one workflow run).
+  {
+    const r = notifyArtifactNamesAreDistinct(nightlyYml);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `nightly.yml mutation/mutation-server upload-artifact name: values are not distinct (EXPECTED RED): ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 21: the notify job is wired — exists, needs: covers every other job,
+  // has a job-level if:, calls gh issue create, and is not softened (EXPECTED
+  // RED — no notify: job exists yet).
+  // GREEN edit: add the notify job per ADR-0200 D1/D2/D5/D6.
+  {
+    const r = nightlyNotifyIsWired(nightlyYml);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `nightly.yml notify job is not correctly wired (EXPECTED RED): ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 22: the notify job can effectively open issues — its own permissions:
+  // block (or, absent one, the top-level block) grants issues: write (EXPECTED
+  // RED — top-level permissions: is contents: read only and there is no notify job).
+  // GREEN edit: give the notify job its own `permissions: { contents: read, issues: write }`
+  // per ADR-0200 D3.
+  {
+    const r = nightlyNotifyCanOpenIssues(nightlyYml);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `nightly.yml notify job cannot effectively open issues (EXPECTED RED): ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 23: no job other than notify (and not the top-level block) holds
+  // issues: write (least-privilege negative space, ADR-0200 D3). This check
+  // would PASS in isolation on the committed tree today (no job holds
+  // issues: write yet), but is never reached — Check 18 REDs first.
+  {
+    const r = noOtherJobHoldsIssuesWrite(nightlyYml);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `nightly.yml grants issues: write outside the notify job: ${r.reason}`,
+      };
+    }
+  }
+
   return {
     name,
     pass: true,
     detail:
-      'nightly smoke-republish correctly wired: job exists in nightly.yml (not ci.yml), references smoke-republish.sh, justfile recipe present, script committed, ADR-0079 documents the failure policy; m13.5a additions: mutation/coverage/mutation-server jobs present and unneutered, schedule+dispatch triggers live, coverage threshold ≥96, mutate-server recipe intact; 14r-a additions: all three guarded jobs document an attributed failure policy in their comment preamble, and the justfile mutate-server cap= default equals MUTATE_SERVER_CAP_BASELINE',
+      'nightly smoke-republish correctly wired: job exists in nightly.yml (not ci.yml), references smoke-republish.sh, justfile recipe present, script committed, ADR-0079 documents the failure policy; m13.5a additions: mutation/coverage/mutation-server jobs present and unneutered, schedule+dispatch triggers live, coverage threshold ≥96, mutate-server recipe intact; 14r-a additions: all three guarded jobs document an attributed failure policy in their comment preamble, and the justfile mutate-server cap= default equals MUTATE_SERVER_CAP_BASELINE; lp-03 additions (ADR-0200): both mutation jobs upload mutants.out/ with if: always(), under distinct artifact names, and the notify job fans in over every other job, admits failure/skipped/cancelled, holds an effective issues: write grant that no other job holds, and opens exactly one attributed issue per non-success job',
   };
 }
