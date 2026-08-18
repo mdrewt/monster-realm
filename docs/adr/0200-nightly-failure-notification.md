@@ -157,7 +157,24 @@ changes ride along because the flat scan they replace was bypassable by string t
 
 ## Evidence
 
-The forced-red drill (ADR-0010 — assert the ISSUE EXISTS, not that a step exited 0) is recorded in
-the slice PR: a negative control with the grant reverted (notify fails at the API call, no issue),
-then the positive run (two jobs broken, exactly two issues with correct per-job attribution and the
-run URL in each body, `mutants.out` artifact present on the failing path), then cleanup.
+The forced-red drill (ADR-0010 — assert the ISSUE EXISTS, not that a step exited 0) was RUN, on a
+throwaway `drill/lp-03-forced-red` branch whose gate jobs were stubbed so the fan-in completed in
+minutes. Both arms behaved exactly as designed:
+
+**Arm A — negative control, grant reverted** (run
+[32088740459](https://github.com/mdrewt/monster-realm/actions/runs/32088740459)): `mutation` RED,
+`notify` fired, and `gh issue create` failed with `GraphQL: Resource not accessible by integration
+(createIssue)`; the step exited 1 and `notify` concluded **failure**. `gh issue list` was unchanged.
+This is the empirical proof of the premise this slice is built on: a notification step under
+`contents: read` fails AT THE API CALL, and it fails LOUDLY only because there is no `|| true`.
+
+**Arm B — grant restored, two jobs RED** (run
+[32088793844](https://github.com/mdrewt/monster-realm/actions/runs/32088793844)): `mutation` and
+`mutation-server` both failed; `notify` concluded **success** while the run concluded failure, and
+exactly TWO issues were opened — `nightly failure: mutation (run 32088793844)` and `nightly
+failure: mutation-server (run 32088793844)` — each body naming its own job and linking that run.
+No issue was opened for `coverage`, `smoke-republish` or `changelog-freshness` (attribution proof),
+and the `mutants-out-core` artifact was present on the failing path (EARS: upload on the RED night).
+
+Cleanup: both drill issues closed with a synthetic-failure note, the drill branch deleted local and
+remote, and `gh issue list --state open` diffed back to its pre-drill baseline (`[313]`).
