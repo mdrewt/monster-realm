@@ -348,18 +348,6 @@ half the real episodes; from 8 entries behind it prints an advisory and exits 0.
 no per-PR gate and no `just` recipe: `justfile` and `evals/**` were outside 13r-g's
 touches, so the nightly job is the only caller.
 
-**Nightly failure notification (lp-03, ADR-0200):** the five nightly gates had teeth and no
-voice — `mutation-server` was RED for five consecutive nights with nobody reacting. A `notify`
-job now fans in over all five (`needs:`), fires on a `failure`/`skipped`/`cancelled` result and
-opens exactly one GitHub issue per non-success job via `gh`, naming the job and linking the run,
-under a **job-scoped** `issues: write` grant (top-level stays `contents: read`; the mutation jobs
-compile third-party build scripts and must not hold issue-write). Both mutation jobs upload
-`mutants.out/` with `if: always()` so the survivor list exists on the night it is needed. That
-`if:` is why `evals/nightly-smoke-wiring.eval.mjs`'s `jobIsNotNeutered` gained a step-scoped
-carve-out — admitted only on an upload-artifact step and only for `always()`, with the scan
-otherwise hardened (own block extraction, an anchored key match, a `continue-on-error` allowlist,
-the recipe pinned as the first `run:` step, and fail-closed on shapes it cannot read).
-
 **ADR back-link reciprocity (12r-f):** ADR-0104 D1 already required that "an ADR
 that only *amends* another stays `Accepted`; the amended ADR gains
 `**Amended-by:**`", but only `checkRefs` enforced anything — a one-directional
