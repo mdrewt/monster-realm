@@ -71,6 +71,51 @@
 //   mutationJobUploadsMutantsOutOnFailure rather than assumed caught upstream by
 //   jobIsNotNeutered; a missing name: key must not compare "distinct" from nothing). None of
 //   this moves the RED location — it still REDs at TEETH O1 first.
+//
+// EXPECTED REAL-TREE STATE AT RED (lp-03 ROUND 3 additions — three independent
+// review lenses [red-team on the SHIPPED implementation, a code reviewer, and a
+// GitHub-Actions-semantics auditor] found one BLOCKER-class bypass, two MAJOR
+// gate holes, and two false-RED risks; TEETH U continues the lettering after
+// TEETH T, and none of TEETH A-T are touched):
+//   jobIsNotNeutered exists and is GREEN on the committed tree, but it has NOT
+//   yet been extended with (U1) "a guarded job may contain AT MOST ONE run:
+//   step" or (U2) "no env: mapping inside a guarded job may declare a PATH
+//   key" — red-team demonstrated a full-eval-stays-GREEN bypass on both axes: a
+//   step that writes a `just` shim onto $GITHUB_PATH before the real recipe
+//   step, or an equivalent env: PATH: override, either of which shadows the
+//   real `just mutate-core`/`mutate-server` invocation while every EXISTING
+//   predicate (exact run-step text, no if:, no continue-on-error) reads clean.
+//   mutationJobUploadsMutantsOutOnFailure has NOT yet been extended to parse a
+//   flow-style `with: { key: value, ... }` mapping (U5) — nightly.yml already
+//   uses this style for several actions (house style), and today the predicate
+//   silently fails to read `path:`/`name:` out of a flow mapping at all, which
+//   is a FALSE RED on a legitimately-styled upload step, not merely a missing
+//   feature.
+//   nightlyNotifyIsWired's D2a condition clause (U3) still matches the
+//   condition VALUE as raw text including any trailing `#` comment (a
+//   comment-laundering bypass: `if: true # ...failure...skipped...` reads as
+//   compliant today though the runtime condition is the bare `true`), and still
+//   admits a bare two-term failure-or-skipped condition with no third
+//   `cancelled` term (a job that times out concludes `cancelled`, which
+//   satisfies neither term). nightlyNotifyIsWired also has no dedicated upper
+//   bound (U4) on `gh issue create` invocations per enumerated job — only a
+//   `createLines.length === 0` lower-bound check exists today.
+//   topLevelPermissions (used by nightlyNotifyCanOpenIssues) still requires an
+//   EXACT `lines[i] !== 'permissions:'` line match (U6) — a trailing comment on
+//   that mapping key (`permissions: # least privilege — see ADR-0200`, legal
+//   YAML) makes the top-level grant invisible to it, a false RED.
+//   Consequence: the eval now REDs at TEETH U1a — the literal red-team
+//   $GITHUB_PATH-shim fixture, the first round-3 fixture in file order. TEETH
+//   U1b/U1c, U2a-c, U3a-c, U4a, U5a-b, U6a are not reached this run; each
+//   surfaces in turn as the specialist closes the corresponding rule, exactly
+//   as TEETH O1 gated the round-1 D8 carve-out. All of TEETH A-T and Checks
+//   1-23 were GREEN on the committed tree immediately before this round's teeth
+//   were added, and remain untouched by this round.
+//   Once the predicates land, TEETH U1c/U2c/U5a/U6a (the positive controls /
+//   false-RED guards) and every pre-existing positive control that composes
+//   NOTIFY_D2A_IF (now three-term) must ALSO stay GREEN — the round updates one
+//   shared constant rather than hand-editing each of the dozen fixtures that
+//   reference it.
 //   Once the predicates land, the real-file checks read the committed tree as follows:
 //   Check 18 mutationJobUploadsMutantsOutOnFailure(nightly, 'mutation')        → FAIL
 //            (no upload-artifact step exists in the mutation job yet)
@@ -3961,8 +4006,14 @@ jobs:
   // NOTIFY_CANONICAL_STEPS is a template literal (it is multi-line) so every
   // `${{ ... }}` inside it IS escaped as `\${{ ... }}`.
   // -------------------------------------------------------------------------
+  // lp-03 ROUND 3: extended from a two-term to a THREE-term condition (TEETH U3).
+  // A job that concludes `cancelled` (a timeout-minutes expiry — smoke-republish
+  // carries one, and the mutation jobs run 1.5-2.5h against a 6h hosted cap)
+  // satisfied neither `failure` nor `skipped` under the old two-term form, so
+  // notify stayed silent on that class of red-and-silent night. The old
+  // two-term string now lives inline at TEETH U3b as a dedicated NEGATIVE fixture.
   const NOTIFY_D2A_IF =
-    "if: ${{ !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped')) }}";
+    "if: ${{ !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped') || contains(needs.*.result, 'cancelled')) }}";
 
   const NOTIFY_CANONICAL_STEPS = `    steps:
       - name: Open issues for failing jobs
@@ -5030,6 +5081,457 @@ jobs:
           'TEETH T3: notifyArtifactNamesAreDistinct accepted a mutation job whose upload step has ' +
           "NO name: key at all — a missing name must not compare as 'distinct' from the sibling " +
           "job's real name; upload-artifact v4 requires a name: on every step",
+      };
+    }
+  }
+
+  // =========================================================================
+  // lp-03 ROUND 3 PROOF-OF-TEETH (red-team BLOCKER bypass + code-reviewer/
+  // GH-Actions-semantics-auditor holes + false-RED guards). Section letters
+  // continue as TEETH U, immediately after TEETH T, so as not to renumber
+  // A-T. Every predicate under test here (jobIsNotNeutered,
+  // mutationJobUploadsMutantsOutOnFailure, nightlyNotifyIsWired,
+  // nightlyNotifyCanOpenIssues) already EXISTS and is GREEN on the committed
+  // tree — this section pins FIVE new rules none of them yet enforce, so
+  // every negative fixture below REDs against the CURRENT committed predicate
+  // bodies until the specialist closes each rule.
+  // =========================================================================
+
+  // -------------------------------------------------------------------------
+  // TEETH U1: jobIsNotNeutered — a guarded job may contain AT MOST ONE `run:`
+  // step. Red-team's full-eval bypass: a step BEFORE `- run: just
+  // mutate-core` writes a `just` shim (`exit 0`) onto $GITHUB_PATH, so the
+  // real recipe step's `just` resolves to the shim and the mutation gate
+  // silently never runs — while every EXISTING predicate (a single exact
+  // `- run: just mutate-core` line, no if:, no continue-on-error) still reads
+  // clean. "Exactly one run: step" is what closes it: a second `run:` step of
+  // ANY kind in a guarded job is itself the neuter, regardless of its body.
+  // -------------------------------------------------------------------------
+
+  // U1a — the literal red-team shim fixture (a $GITHUB_PATH-poisoning step
+  // BEFORE the real recipe step). [NOT ok]
+  const u1ShimBypass = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Prep just runner
+        run: |
+          mkdir -p /tmp/.shim
+          printf '#!/bin/bash\\nexit 0\\n' > /tmp/.shim/just
+          chmod +x /tmp/.shim/just
+          echo "/tmp/.shim" >> "$GITHUB_PATH"
+      - run: just mutate-core
+`;
+  {
+    const r = jobIsNotNeutered(u1ShimBypass, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH U1a (BLOCKER): jobIsNotNeutered accepted a job with a $GITHUB_PATH-poisoning ' +
+          'step BEFORE the exact "- run: just mutate-core" step — this is the red-team full-eval ' +
+          'bypass: a shim `just` binary that exits 0 shadows the real recipe, and every existing ' +
+          'predicate (exact run-step text, no if:, no continue-on-error) reads clean while the ' +
+          'mutation gate never actually runs. A guarded job may contain AT MOST ONE run: step.',
+      };
+    }
+  }
+
+  // U1b — no shim, just a second, unrelated run: step. Kills an impl that
+  // special-cases "GITHUB_PATH" text instead of counting run: steps — the
+  // rule is a step-count invariant, not a text blacklist. [NOT ok]
+  const u1TwoRunSteps = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+      - run: just mutate-core
+`;
+  {
+    const r = jobIsNotNeutered(u1TwoRunSteps, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH U1b: jobIsNotNeutered accepted a job with TWO run: steps ("- run: echo hi" then ' +
+          '"- run: just mutate-core") — a second run: step of ANY kind (not just a $GITHUB_PATH ' +
+          'shim) must be rejected; the rule is a step-count invariant, not a text blacklist',
+      };
+    }
+  }
+
+  // U1c — POSITIVE CONTROL: the real canonical shape (several uses: steps,
+  // EXACTLY one run: step, and the D8-carved-out if: always() upload step).
+  // Must stay ok — a false RED here would block every legitimate mutation-job
+  // edit. [ok]
+  const u1CanonicalOneRunStep = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@abc1234abc1234abc1234abc1234abc1234abc12 # v4
+      - uses: actions-rs/toolchain@abc1234abc1234abc1234abc1234abc1234abc12 # v1
+      - run: just mutate-core
+      - name: Upload mutants.out (failure evidence)
+        if: always()
+        uses: ${UPLOAD_USES}
+        with:
+          name: mutants-out-core
+          path: mutants.out/
+          if-no-files-found: warn
+          retention-days: 14
+`;
+  {
+    const r = jobIsNotNeutered(u1CanonicalOneRunStep, 'mutation');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH U1c: jobIsNotNeutered rejected the canonical mutation job shape (uses: steps + exactly one run: step + the if: always() upload step) — a false RED here would block every legitimate future edit. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH U2: jobIsNotNeutered — no `PATH` key in ANY env: mapping inside a
+  // guarded job. Same attack class as U1 but with zero extra steps: a
+  // job-level (or step-level) env: PATH override achieves the identical
+  // shim-shadowing with no second run: step to catch and no if:/
+  // continue-on-error at all.
+  // -------------------------------------------------------------------------
+
+  // U2a — job-level env: PATH override. [NOT ok]
+  const u2JobLevelPathEnv = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    env:
+      PATH: /tmp/.shim:$PATH
+    steps:
+      - run: just mutate-core
+`;
+  {
+    const r = jobIsNotNeutered(u2JobLevelPathEnv, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH U2a (BLOCKER): jobIsNotNeutered accepted a job-level env: PATH: /tmp/.shim:$PATH ' +
+          '— this prepends an attacker directory onto PATH for every step in the job, achieving the ' +
+          'same `just` shim-shadowing as U1 with a SINGLE run: step and no if:/continue-on-error at ' +
+          'all. No env: mapping inside a guarded job may declare a PATH key.',
+      };
+    }
+  }
+
+  // U2b — step-level env: PATH override on the recipe step itself. Kills an
+  // impl that only inspects job-level env: mappings. [NOT ok]
+  const u2StepLevelPathEnv = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Run mutate-core
+        env:
+          PATH: /tmp/.shim:$PATH
+        run: just mutate-core
+`;
+  {
+    const r = jobIsNotNeutered(u2StepLevelPathEnv, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH U2b (BLOCKER): jobIsNotNeutered accepted a STEP-level env: PATH: /tmp/.shim:$PATH ' +
+          'on the recipe step — job-level env: is not the only place a PATH override can hide',
+      };
+    }
+  }
+
+  // U2c — POSITIVE CONTROL: job-level AND step-level env: carrying only
+  // ORDINARY, non-PATH keys. Must stay ok — a false RED here would block
+  // legitimate future edits (RUST_BACKTRACE / CARGO_TERM_COLOR are real env
+  // vars this project's CI already sets elsewhere). [ok]
+  const u2OrdinaryEnvKeys = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    env:
+      RUST_BACKTRACE: '1'
+    steps:
+      - name: Run mutate-core
+        env:
+          CARGO_TERM_COLOR: always
+        run: just mutate-core
+`;
+  {
+    const r = jobIsNotNeutered(u2OrdinaryEnvKeys, 'mutation');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH U2c: jobIsNotNeutered rejected job-level + step-level env: mappings carrying only ordinary non-PATH keys (RUST_BACKTRACE, CARGO_TERM_COLOR) — a false RED here would block legitimate future edits. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH U3: nightlyNotifyIsWired's D2a condition check — comment-laundering
+  // and the `cancelled` gap. Red-team proved `if: true # per D2a this admits
+  // both failure and skipped semantics` passes today because the D2a check
+  // matches condition.indexOf('failure')/'skipped') against the RAW line
+  // text, including its inline comment; at runtime the comment is stripped
+  // and the condition IS the bare `true`, so notify fires on EVERY night,
+  // including green ones, which REDs D6's zero-guard every single night.
+  // Separately, a `cancelled` conclusion (a timeout-minutes expiry —
+  // smoke-republish carries one, and the mutation jobs run 1.5-2.5h against a
+  // 6h hosted cap) satisfies neither `failure` nor `skipped`, so a bare
+  // two-term condition leaves a real red-and-silent hole. The canonical
+  // condition is now a three-term `!cancelled() && (failure OR skipped OR
+  // cancelled)` (see the updated NOTIFY_D2A_IF constant above).
+  // -------------------------------------------------------------------------
+
+  // U3a — comment-laundering: the literal red-team fixture. The condition
+  // VALUE is `true` at runtime; only its trailing # comment mentions
+  // failure/skipped. [NOT ok]
+  const u3LaunderedCondition = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    if: true # per D2a this admits both failure and skipped semantics
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyIsWired(u3LaunderedCondition);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH U3a (BLOCKER): nightlyNotifyIsWired accepted "if: true # per D2a this admits both ' +
+          'failure and skipped semantics" — the condition VALUE is the bare `true` at runtime ' +
+          "(YAML strips the inline comment); reading condition.indexOf('failure')/'skipped') " +
+          'against the RAW line text (comment included) launders ANY condition through its own ' +
+          "comment. This fires notify on every green night and REDs D6's zero-guard nightly.",
+      };
+    }
+  }
+
+  // U3b — a real, no-comment condition that admits only failure + skipped,
+  // with NO cancelled term. This was the OLD canonical form (pre-round-3); it
+  // is now non-compliant — a job concluding `cancelled` satisfies neither
+  // term, so the notifier stays silent on that class of red night. [NOT ok]
+  const u3TwoTermNoCancelled =
+    "if: ${{ !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped')) }}";
+  const u3NoCancelledFixture = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${u3TwoTermNoCancelled}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyIsWired(u3NoCancelledFixture);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH U3b: nightlyNotifyIsWired accepted a condition covering only failure + skipped ' +
+          "with NO third contains(needs.*.result, 'cancelled') term — smoke-republish carries a " +
+          'timeout-minutes and the mutation jobs run 1.5-2.5h against a 6h hosted cap, so a job ' +
+          'concluding `cancelled` satisfies neither term and notify stays silent',
+      };
+    }
+  }
+
+  // U3c — POSITIVE CONTROL: the new canonical three-term condition (the
+  // shared NOTIFY_D2A_IF constant, updated this round). Must stay ok. [ok]
+  const u3CanonicalFixture = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyIsWired(u3CanonicalFixture);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH U3c: nightlyNotifyIsWired rejected the new canonical three-term condition (!cancelled() && (failure OR skipped OR cancelled)). Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // U3d — R3b (bare failure() alone) and R3c (bare always() alone) are
+  // UNCHANGED by this round and are NOT re-declared here; they still run
+  // earlier in this file (TEETH R, above) and still expect [NOT ok].
+
+  // -------------------------------------------------------------------------
+  // TEETH U4: nightlyNotifyIsWired — EXACTLY ONE live `gh issue create`
+  // invocation per enumerated job (EARS "SHALL NOT open more than one issue
+  // per job"). This clause has no dedicated tooth today: the predicate only
+  // checks createLines.length === 0 (a lower bound), never an upper bound.
+  // -------------------------------------------------------------------------
+
+  // U4a — TWO live gh issue create lines inside the enumeration loop, both
+  // attributed to the same enumerated $job. [NOT ok]
+  const u4TwoCreatesPerJob = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}    steps:
+      - name: Open issues for failing jobs
+        env:
+          GH_TOKEN: \${{ secrets.GITHUB_TOKEN }}
+          NEEDS_JSON: \${{ toJSON(needs) }}
+          RUN_URL: https://github.com/\${{ github.repository }}/actions/runs/\${{ github.run_id }}
+        run: |
+          set -euo pipefail
+          opened=0
+          for job in $(echo "$NEEDS_JSON" | jq -r 'to_entries[] | select(.value.result != "success") | .key'); do
+            gh issue create --title "nightly failure: $job (1)" --body "Job $job failed. See $RUN_URL"
+            gh issue create --title "nightly failure: $job (2)" --body "Job $job failed. See $RUN_URL"
+            opened=$((opened + 1))
+          done
+          if [ "$opened" -eq 0 ]; then
+            echo "notify fired but enumerated zero failing jobs" >&2
+            exit 1
+          fi
+`;
+  {
+    const r = nightlyNotifyIsWired(u4TwoCreatesPerJob);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH U4a: nightlyNotifyIsWired accepted a notify body with TWO live "gh issue create" ' +
+          'lines inside the per-job enumeration loop, both attributed to the same $job — the EARS ' +
+          'clause is "SHALL NOT open more than one issue per job", and the predicate today only ' +
+          'checks createLines.length === 0 (a lower bound), never an upper bound',
+      };
+    }
+  }
+
+  // U4b — POSITIVE CONTROL: the canonical single-create body. Already
+  // covered by TEETH R8/R9 and Q1/Q2 above (all compose NOTIFY_CANONICAL_STEPS,
+  // which contains exactly one live gh issue create line) — not re-declared here.
+
+  // -------------------------------------------------------------------------
+  // TEETH U5: flow-style `with:` on the upload step — a false-RED guard, not
+  // a blanket accept. nightly.yml already uses `with: { key: value }` flow
+  // style for several actions (house style, not an exotic form), so
+  // jobIsNotNeutered and mutationJobUploadsMutantsOutOnFailure must both read
+  // it — but reading it means REAL key/value parsing, not "flow-style with:
+  // → assume ok".
+  // -------------------------------------------------------------------------
+
+  // U5a — POSITIVE CONTROL: the canonical upload step written with
+  // flow-style with:. Must be accepted by BOTH predicates. [ok / ok]
+  const u5FlowUploadCanonical = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out (failure evidence)
+        if: always()
+        uses: ${UPLOAD_USES}
+        with: { name: mutants-out-core, path: mutants.out/, if-no-files-found: warn, retention-days: 14 }
+`;
+  {
+    const rNeuter = jobIsNotNeutered(u5FlowUploadCanonical, 'mutation');
+    if (!rNeuter.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH U5a-neuter: jobIsNotNeutered rejected the canonical upload step written with flow-style with: { ... } — nightly.yml already uses this style for several actions (house style, not exotic). Reason: ${rNeuter.reason}`,
+      };
+    }
+    const rUpload = mutationJobUploadsMutantsOutOnFailure(u5FlowUploadCanonical, 'mutation');
+    if (!rUpload.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH U5a-upload: mutationJobUploadsMutantsOutOnFailure rejected the canonical upload step written with flow-style with: { ... } — a false RED that would block committing house style. Reason: ${rUpload.reason}`,
+      };
+    }
+  }
+
+  // U5b — NEGATIVE: flow-style with: whose path: is coverage/ (not
+  // mutants.out/). Proves flow parsing reads the ACTUAL key/value pairs
+  // rather than granting a blanket pass to any step whose with: happens to
+  // be flow-style. [NOT ok]
+  const u5FlowUploadWrongPath = `jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+      - name: Upload mutants.out (failure evidence)
+        if: always()
+        uses: ${UPLOAD_USES}
+        with: { name: mutants-out-core, path: coverage/, if-no-files-found: warn, retention-days: 14 }
+`;
+  {
+    const r = mutationJobUploadsMutantsOutOnFailure(u5FlowUploadWrongPath, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH U5b: mutationJobUploadsMutantsOutOnFailure accepted a flow-style with: { ... } ' +
+          'whose path: is coverage/ (not mutants.out/) — flow-style acceptance must be REAL ' +
+          'parsing of the mapping, not a blanket accept keyed only on the with: being flow-style',
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH U6: nightlyNotifyCanOpenIssues — a false-RED guard for a trailing
+  // comment on the top-level `permissions:` key line. topLevelPermissions
+  // finds the block by an EXACT `lines[i] !== 'permissions:'` line match, so
+  // `permissions: # least privilege — see ADR-0200` (legal YAML — a trailing
+  // comment on a mapping key) is invisible to it today.
+  // -------------------------------------------------------------------------
+
+  // U6a — top-level `permissions:` line carries a trailing comment; notify
+  // has NO own permissions: block (so it must inherit the top-level grant).
+  // [ok]
+  const u6PermissionsTrailingComment = `name: Nightly
+on:
+  workflow_dispatch:
+permissions: # least privilege — see ADR-0200
+  contents: read
+  issues: write
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+  notify:
+    needs: [mutation]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_CANONICAL_STEPS}`;
+  {
+    const r = nightlyNotifyCanOpenIssues(u6PermissionsTrailingComment);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH U6a: nightlyNotifyCanOpenIssues rejected a top-level "permissions: # least privilege — see ADR-0200" line (a trailing comment is legal YAML on a mapping key) with issues: write declared under it and no own permissions: block on notify — a false RED that would block a legitimately commented workflow. Reason: ${r.reason}`,
       };
     }
   }

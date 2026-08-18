@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** ci-gates, tooling-docs
-**Decision:** A `notify` job fans in over all five nightly jobs and opens one GitHub issue per non-success job via `gh` under a job-scoped `issues: write` grant, and `jobIsNotNeutered` gains a step-scoped carve-out admitting `if: always()` on an artifact-upload step only.
+**Decision:** A `notify` job fans in over all five nightly jobs and opens one issue per non-success job via `gh` under a job-scoped `issues: write` grant; `jobIsNotNeutered` gains a step-scoped carve-out for `if: always()` on an upload step.
 
 ## Context
 
@@ -96,9 +96,10 @@ indistinguishable from a green night, which is the failure mode being fixed.
 Both mutation jobs upload `mutants.out/` (`actions/upload-artifact@v4`, 40-hex pinned per the M8.5d
 convention). Without `if: always()` the default is `success()` and the artifact is uploaded only on
 the nights it is worthless. The two jobs use distinct artifact names because upload-artifact v4
-hard-errors on a duplicate name in one run, and a committed check asserts they differ. `warn` (not
-`error`) on a missing path so a job that died in the toolchain install, before `cargo-mutants` ever
-ran, is not masked by a failing upload step.
+hard-errors on a duplicate name in one run, and a committed check asserts they differ. `if-no-files-found: warn` is pinned
+explicitly — it is already the action's default, so this is a ratchet against someone raising it to
+`error`, not an override: a job that died in the toolchain install, before `cargo-mutants` ever ran,
+must report its REAL failure rather than be masked by a failing upload step.
 
 **D8 — the carve-out is step-scoped and value-restricted, and everything else fails closed.**
 `jobIsNotNeutered` now segments the job block into steps and admits `if:` on a step whose own
