@@ -21,9 +21,36 @@ lint:
 typecheck:
     cargo check --workspace --all-targets
 
+# Fail-closed wrapper around the Tier-2 observability gating suite (lp-05).
+# WHY the wrapper: `node --test` exits 0 on a zero-test file, a 0-byte file, an
+# all-`skip` file, and on a failing test followed by a top-level process.exit(0)
+# — all four measured. So the exit code alone is not a verdict: the summary is
+# parsed, an unparsed count is FATAL, `fail` must be 0, and `pass` must clear a
+# floor. Node 24's DEFAULT reporter prints `ℹ pass N`, not the TAP `# pass N`,
+# so both spellings are matched. `pipefail` is load-bearing: without it the
+# `node --test ... | tee` pipeline reports tee's exit status. Mirrors the
+# fail-closed idiom in `mutate-core` above.
 test:
+    #!/usr/bin/env bash
+    set -euo pipefail
     cargo nextest run --workspace
     cargo test --doc --workspace
+    out="$(mktemp)"
+    node --test ops/observability/validate.test.mjs 2>&1 | tee "$out"
+    pass="$(grep -Eo '^(ℹ|#) pass [0-9]+' "$out" | grep -Eo '[0-9]+$' | tail -1)"
+    fail="$(grep -Eo '^(ℹ|#) fail [0-9]+' "$out" | grep -Eo '[0-9]+$' | tail -1)"
+    if [ -z "$pass" ] || [ -z "$fail" ]; then
+        echo "observability validate suite: could not parse the node --test summary" >&2
+        exit 1
+    fi
+    if [ "$fail" -ne 0 ]; then
+        echo "observability validate suite: $fail failing test(s)" >&2
+        exit 1
+    fi
+    if [ "$pass" -lt 62 ]; then
+        echo "observability validate suite: only $pass test(s) passed, floor is 62" >&2
+        exit 1
+    fi
 
 eval:
     node evals/run.mjs
@@ -393,4 +420,11 @@ playtest-report:
     export MR_PLAYTEST_DB="${MR_PLAYTEST_DB:-monster-realm-playtest}"
     node scripts/playtest-report.mjs
 
-ci: lint typecheck test eval security wasm client-typecheck client-test
+# Tier-2 observability validation (lp-05, ADR-0201): runs each upstream config
+# validator inside the digest-pinned image the stack deploys. `--require-docker`
+# is what makes this a GATE — without it a missing docker reports `skipped` and
+# exits 0, which in CI is a pass that checked nothing (EARS-2).
+observability-validate:
+    node ops/observability/validate.mjs --require-docker
+
+ci: lint typecheck test eval security wasm client-typecheck client-test observability-validate

@@ -75,6 +75,10 @@ jobs:
       # Client prediction layer (M3): headless TS typecheck + vitest/fast-check.
       - run: just client-typecheck
       - run: just client-test
+      # Tier-2 observability validation (lp-05, ADR-0201): the digest-pinned
+      # image validators over ops/observability/**. Strict: a missing docker
+      # FAILS here rather than skipping (EARS-2).
+      - run: just observability-validate
       - uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
         with: { tool: cargo-audit }
       - name: SCA (cargo audit)
