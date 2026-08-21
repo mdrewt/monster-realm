@@ -5,7 +5,7 @@
 **Slice:** m13.5b
 **Supersedes:** —
 **Amends:** —
-**Amended-by:** ADR-0142, ADR-0152
+**Amended-by:** ADR-0142, ADR-0152, ADR-0202
 **Subsystems:** movement-netcode, client-ui
 **Decision:** Reducer rejections surface as UI feedback; enqueue_move drops rejected seq and forces reconcile; app-level reconnect uses exponential backoff capped at 30s.
 
@@ -268,4 +268,4 @@ The deferred epoch/generation guard is now BUILT (nh3 slice, ADR-0152). The acce
 - Zone warp: the rebuild is followed in the same microtask flush by a reconcile (the warp's own row burst triggers the reconcile listener).
 - Reconnect: the reconcile is deferred (the server's `on_disconnect` deleted the rows, so reconcile early-returns until `joinGame` round-trips). The gap is guarded by `held.clear()` alone.
 
-This demarcation is load-bearing: a future nh5 change to held-key retention across rebuilds must revisit the reconnect path's guarantee.
+This demarcation is load-bearing: a future nh5 change to held-key retention across rebuilds must revisit the reconnect path's guarantee. **[STILL OPEN — the nh5 change landed (13r-f, `7e08d36`, ADR-0192) and the revisit happened: retention is added to the WARP arm only; this reconnect-path demarcation is unchanged and still load-bearing. Twin of ADR-0152 residual #1; recorded by ADR-0202]**

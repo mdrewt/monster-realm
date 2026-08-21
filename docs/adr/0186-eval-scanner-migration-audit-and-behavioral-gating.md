@@ -5,6 +5,7 @@
 **Slice:** 14r-c (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-c)
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** ADR-0202
 **Subsystems:** ci-gates, security-authz, tooling-docs
 **Decision:** `evals/scanner-migration-audit.eval.mjs` gates a name-derived eval set on two legs (a real `rust-scan.mjs` import plus `assertStripperSound`, and no naive stripper anywhere); six evals migrated, seven parked as capped self-retiring debt.
 
@@ -78,7 +79,7 @@ without enforcing on it; the report helps future slices identify candidates.
 
 Seven `*-reducer-security.eval.mjs` files (`battle`, `evolution`, `npc-dialogue-quest`,
 `raising`, `recruit`, `shop`, `trade`) remain unmigrated and were budget-parked to
-slice 14r-c-2. Each `KNOWN_UNMIGRATED` entry is validated by the gate:
+slice 14r-c-2. **[STILL OPEN — same re-ownership as the Consequences mark below: the seven moved to `15r-sec-mig-a`/`-b`/`-c` and `15r-sec-mig-d`; recorded by ADR-0202]** Each `KNOWN_UNMIGRATED` entry is validated by the gate:
 
 - The file must exist on disk (T1 pins a removal-detection tooth).
 - The file must be a member of the gated set (`*-security.eval.mjs` / `*-privacy.eval.mjs`).
@@ -174,10 +175,16 @@ to 14r-c-2: it is in `touches:` but is pure dedup with zero EARS progress and a
 
 ## Consequences
 
-- The audit gate (`scanner-migration-audit.eval.mjs`) is EXPECTED to be RED at 14r-c
-  HEAD: seven evals remain unmigrated and parked, and the content-detected set is
-  non-empty. Closing the gate is the indicated follow-up across future slices (14r-c-2
-  and beyond).
+- **Corrected 2026-08-21 (lp-doc-a, ADR-0202) — the original bullet claimed the audit gate
+  is expected to be red, and that is no longer true.** The audit gate
+  (`scanner-migration-audit.eval.mjs`) is **GREEN**, reporting `18 gated / 10 migrated /
+  7 debt / 1 not-applicable`. It is green in the shape the eval's own header already
+  describes in the past tense: it *was* expected to be red at 14r-c HEAD, and it *is*
+  green once every remaining unmigrated file is named in `KNOWN_UNMIGRATED`. Green is
+  therefore **not** a claim that the hazard is gone — seven evals remain unmigrated as
+  cap-bounded self-retiring debt, two of which the eval documents as live, reproducible
+  needle-swallowers (`evolution-reducer-security`, `raising-reducer-security`), and the
+  content-detected set is report-only. Closing the debt is still the indicated follow-up.
 - Six evals are now provisioned with string-literal-aware scanning: `encounter-privacy`,
   `inventory-privacy`, `wild-individuality-privacy`, `pvp-action-privacy`, `playtest-event-privacy`,
   `monster-privacy`. Each carries a proof-of-teeth fixture — a URL-scheme literal
@@ -191,4 +198,4 @@ to 14r-c-2: it is in `touches:` but is pure dedup with zero EARS progress and a
 ## EARS status
 
 - **Criterion 1 (migrated evals strip with string-literal-aware scanning and `assertStripperSound` wired):** MET for the six evals migrated by this slice, and the four from ADR-0181.
-- **Criterion 2 (zero `*-security`/`*-privacy` evals on comment-strip-without-string-pass):** NOT fully met. Seven remain, as capped self-retiring debt owned by 14r-c-2. Do not overstate this in later design docs — name it plainly as parked.
+- **Criterion 2 (zero `*-security`/`*-privacy` evals on comment-strip-without-string-pass):** NOT fully met. Seven remain, as capped self-retiring debt owned by 14r-c-2. Do not overstate this in later design docs — name it plainly as parked. **[STILL OPEN — ownership moved: the seven were re-owned to `15r-sec-mig-a`/`-b`/`-c` (the evals) and `15r-sec-mig-d` (the ledger) by the fifteenth-review-residuals spec. The eval's own `owner:` fields still read `14r-c-2`; updating them is assigned to `15r-sec-mig-a`, not to this slice; recorded by ADR-0202]**

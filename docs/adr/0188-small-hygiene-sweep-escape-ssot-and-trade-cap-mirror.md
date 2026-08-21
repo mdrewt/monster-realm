@@ -5,6 +5,7 @@
 **Slice:** 14r-f (M-postgate-fourteenth-review-residuals — ADR-0170 residual 8, ADR-0166 R4 + R6)
 **Supersedes:** —
 **Amends:** 0166, 0170
+**Amended-by:** ADR-0202
 **Subsystems:** evolution-fusion, movement-netcode, client-ui
 **Decision:** Escape `check_and_evolve`'s three JSON log reasons; route `movement_tick`'s grass pre-check through the both-role SSOT (hygiene, a verified no-op); mirror the server trade cap as an exported client const gated by a parity eval.
 
@@ -134,7 +135,7 @@ rediscovering it as a finding.
 **Deferred: the id-rebind blind spot remains OPEN and disclosed.** The species/item/skill baselines
 are flat id arrays, so they catch removal and unpinned growth but not id *reuse* — reusing id 20 for
 an entirely different creature stays green. The map-shaped fix (mirroring
-`evolution-path-edge-ids.json`) is deferred to slice `14r-f-2` because it is roughly the size of
+`evolution-path-edge-ids.json`) is deferred to slice `14r-f-2` **[STILL OPEN — re-verified at `a5179ac`: `evals/baselines/species-ids.json` and its item/skill siblings are still flat id arrays, so id REUSE stays green. No slice `14r-f-2` was ever created: the id is carried only as an untriaged residual (`M-loop-infrastructure.spec.md:404`, `M-postgate-fifteenth-review-residuals.spec.md:744`) and no spec assigns it as an owner. Creating that slice is a harness `specs/` edit, outside this slice's `touches:`; escalated 2026-08-21; recorded by ADR-0202]** because it is roughly the size of
 this whole slice on its own and carries two undecided policy questions: whether a *rename* counts as
 a rebind (a name-keyed map reds on flavour renames; a content-hash key reds on every stat tune), and
 which retired-id rule wins (`evolution-path-edge-ids.json` permits removal-with-permanent-entry;
