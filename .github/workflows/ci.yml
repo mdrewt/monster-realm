@@ -16,7 +16,7 @@ jobs:
     steps:
       # fetch-depth: 0 so gitleaks-action can diff the PR commit range on
       # pull_request events (a shallow clone => "stderr is not empty").
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
+      - uses: actions/checkout@v6 # v6
         with: { fetch-depth: 0 }
       - uses: gitleaks/gitleaks-action@ff98106e4c7b2bc287b24eaf42907196329070c7 # v2
         env:
@@ -30,22 +30,22 @@ jobs:
         if: github.event_name == 'pull_request'
         continue-on-error: true
         uses: actions/dependency-review-action@2031cfc080254a8a887f58cffee85186f0e49e48 # v4
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: dtolnay/rust-toolchain@stable # stable
         with: { components: clippy, rustfmt, targets: wasm32-unknown-unknown }
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@v2 # v2
         with: { prefix-key: v1-ci }
       # wasm-pack builds the client-wasm pkg the prediction/movement-parity evals
       # consume (`just eval`) — the runner has no wasm-pack otherwise.
       - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
         with: { version: 'v0.15.0' }
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@v7 # v7
         with:
           node-version: '24.13.1'
           cache: npm
           cache-dependency-path: client/package-lock.json
       - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
       # Prebuilt binary installs (M-infra-a) — faster than cargo install from source.
-      - uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
+      - uses: taiki-e/install-action@v2 # v2
         with: { tool: cargo-nextest }
       - run: just setup
       # Pinned SpacetimeDB CLI (2.8.1) so `just eval` → bindings-drift runs the
@@ -81,7 +81,7 @@ jobs:
       # image validators over ops/observability/**. Strict: a missing docker
       # FAILS here rather than skipping (EARS-2).
       - run: just observability-validate
-      - uses: taiki-e/install-action@bffeee26d4db9be238a4ea78d8826604ebcb594d # v2
+      - uses: taiki-e/install-action@v2 # v2
         with: { tool: cargo-audit }
       - name: SCA (cargo audit)
         run: cargo audit --file Cargo.lock
@@ -103,14 +103,14 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4
-      - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable
+      - uses: actions/checkout@v6 # v6
+      - uses: dtolnay/rust-toolchain@stable # stable
         with: { targets: wasm32-unknown-unknown }
-      - uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2
+      - uses: Swatinem/rust-cache@v2 # v2
         with: { prefix-key: v1-e2e }
       - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
         with: { version: 'v0.15.0' }
-      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+      - uses: actions/setup-node@v7 # v7
         with:
           node-version: '24.13.1'
           cache: npm
