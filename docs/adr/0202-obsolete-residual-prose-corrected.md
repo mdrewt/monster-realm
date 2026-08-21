@@ -221,7 +221,7 @@ So the EARS evidence is prose review plus one mechanical discriminator, which is
 diff check, not a standing gate** — stated that way because invoking a discriminator one sentence
 after calling it impossible would be incoherent. The check classifies every removed line in
 `git diff a5179ac -- docs/adr ARCHITECTURE.md ':(exclude)docs/adr/DIGEST.md'` against the added line
-that replaces it. Measured on the shipped diff — 19 removed, 407 added:
+that replaces it. Measured on the shipped diff — 19 removed, 434 added:
 
 | class | count | meaning |
 |---|---|---|
@@ -232,8 +232,13 @@ that replaces it. Measured on the shipped diff — 19 removed, 407 added:
 | **whole-line deletion** | **0** | — |
 
 Both totals must be non-zero or the check is vacuous (a pathspec typo or a wrong base yields an
-empty diff and a meaningless zero). It is run by the verifier, not by CI; no `justfile`/`evals` home
-for it exists and adding one is out of this slice's `touches:`.
+empty diff and a meaningless zero). Take the totals from `git diff --numstat`, not from an
+`awk '/^\+/'` count: markdown bullet lines and blank lines both defeat the naive pattern, which is
+how an earlier draft of this table published a figure 21 low. And note the totals are
+**self-referential** — this ADR is the largest file in the diff it measures, so editing this
+paragraph changes them. The *classification* is the durable claim; re-run the command rather than
+trusting the frozen numbers. It is run by the verifier, not by CI; no `justfile`/`evals` home for it
+exists and adding one is out of this slice's `touches:`.
 
 What the gate does prove, demonstrated this slice:
 
@@ -278,8 +283,9 @@ about ADRs that *assert* a currently-green gate is red, and after this slice the
 
 Two consequences for the tooth. First, it must difference against a reviewable allowlist of
 sentence fragments, or it will red on its own documentation forever. Second, **do not implement it
-as a case-sensitive scan for the literal `EXPECTED to be RED`** — that string now occurs exactly
-once in the corpus, in this very paragraph, so the naive spelling reds on ADR-0202 the day it lands.
+as a case-sensitive scan for the literal `EXPECTED to be RED`** — within `docs/adr/` that string now
+occurs exactly once, in this very paragraph, so the naive spelling reds on ADR-0202 the day it lands
+(and twice repo-wide: `ARCHITECTURE.md` quotes the phrase in this slice's entry).
 The pattern also misses every paraphrase that matters (`known-failing`, `red until X lands`,
 `is currently RED`, `red by design`), which is the real reason a grep alone was never sufficient.
 
