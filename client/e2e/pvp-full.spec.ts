@@ -406,7 +406,7 @@ test.describe
         const w = window as unknown as { __mrPvp: MrPvp };
         const others = w.__mrPvp.allPlayers().filter((pl) => pl.identity !== myIdentity);
         if (others.length < 1) throw new Error('17.5f-1: no other player found in allPlayers()');
-        return others[0]!.identity;
+        return others[0]?.identity;
       }, identityA);
 
       expect(targetHex, 'targetHex must resolve to a non-empty identity').not.toBe('');
@@ -500,7 +500,10 @@ test.describe
       const { battleId, turnNumber0 } = await pageA.evaluate(() => {
         const g = (window as unknown as { __game: () => GameSnap }).__game();
         if (!g.ongoingBattle) throw new Error('17.5f-1: ongoingBattle is null after wait');
-        return { battleId: g.ongoingBattle.battleId, turnNumber0: g.ongoingBattle.turnNumber };
+        return {
+          battleId: g.ongoingBattle.battleId,
+          turnNumber0: g.ongoingBattle.turnNumber,
+        };
       });
 
       expect(battleId, 'battleId must be a non-empty string').not.toBe('');

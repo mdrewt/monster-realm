@@ -205,7 +205,7 @@ test.describe
         const w = window as unknown as { __mrTrade: MrTrade };
         const others = w.__mrTrade.allPlayers().filter((pl) => pl.identity !== myIdentity);
         if (others.length !== 1) throw new Error(`Expected 1 other player, found ${others.length}`);
-        return others[0]!.identity;
+        return others[0]?.identity;
       }, identityA);
 
       expect(counterpartyId, 'counterpartyId must resolve to a non-empty identity').not.toBe('');
