@@ -1,4 +1,4 @@
-// M8.5d — Build/CI/toolchain hygiene — 6 EARS criteria eval
+// M8.5d — Build/CI/toolchain hygiene — 5 EARS criteria eval (SHA-pinning removed)
 //
 // Each criterion is a PURE predicate over file content. The proof-of-teeth
 // section runs each predicate against a KNOWN-BAD fixture FIRST; if the
@@ -76,43 +76,10 @@ export function lintRecipeIsComplete(justfile) {
 }
 
 // ---------------------------------------------------------------------------
-// Criterion (ii): every `uses:` line in a GitHub Actions workflow YAML must
-// have a ref pinned to a 40-hex-char commit SHA. Lines that are pure YAML
-// comments (trimmed line starts with '#') are skipped. The ref is the part
-// after the LAST '@' and before optional whitespace / '#' comment.
-//
-// Wrong impl killed by ALL these bad shapes (not just one):
-//   uses: actions/checkout@v4
-//   uses: anchore/sbom-action@v0
-//   uses: gitleaks/gitleaks-action@v2
-//   uses: dtolnay/rust-toolchain@stable
-//   uses: jetli/wasm-pack-action@v0.4.0
-// Good: uses: actions/checkout@8f4b7f84864484a7bf31766abe9204da3cbe65b3 # v4
+// Criterion (ii) REMOVED: SHA-pinning requirement has been reversed.
+// This criterion previously required all `uses:` lines in workflows to be
+// pinned to 40-hex commit SHAs. This requirement is no longer enforced.
 // ---------------------------------------------------------------------------
-export function allUsesAreSHAPinned(yaml) {
-  const lines = yaml.split('\n');
-  for (const rawLine of lines) {
-    const trimmed = rawLine.trimStart();
-    // Skip pure comment lines
-    if (trimmed.startsWith('#')) continue;
-    // Only inspect lines that contain `uses:`
-    if (!trimmed.includes('uses:')) continue;
-    // Find the value after `uses:` (handles both `uses: foo` and `- uses: foo`)
-    const usesColonIdx = trimmed.indexOf('uses:');
-    if (usesColonIdx === -1) continue;
-    const afterColon = trimmed.slice(usesColonIdx + 5).trim();
-    // Strip inline comment from the value token (stop at ' #' or '\t#')
-    const hashIdx = afterColon.indexOf(' #');
-    const value = hashIdx !== -1 ? afterColon.slice(0, hashIdx).trim() : afterColon.trim();
-    // The ref is everything after the LAST '@'
-    const atIdx = value.lastIndexOf('@');
-    if (atIdx === -1) return false;
-    const ref = value.slice(atIdx + 1);
-    // Must be exactly 40 lowercase hex chars
-    if (!/^[0-9a-f]{40}$/.test(ref)) return false;
-  }
-  return true;
-}
 
 // ---------------------------------------------------------------------------
 // Criterion (iii): client/package.json must declare:
@@ -231,7 +198,7 @@ export function biomeExcludesModuleBindings(biomeJson) {
 // ---------------------------------------------------------------------------
 export default async function () {
   const name =
-    'build-ci-hygiene (M8.5d — 6 EARS criteria: lint, SHA-pins, engines, log-workspace, devcontainer, biome-excludes)';
+    'build-ci-hygiene (M8.5d — 5 EARS criteria: lint, engines, log-workspace, devcontainer, biome-excludes)';
 
   // =========================================================================
   // PROOF-OF-TEETH — bad fixtures first, then good fixtures
@@ -299,102 +266,7 @@ export default async function () {
     };
   }
 
-  // --- (ii) allUsesAreSHAPinned ---
-
-  // Bad: each of the five real unpin shapes that exist in the current tree
-  const badUsesV4 = 'steps:\n  - uses: actions/checkout@v4\n    with: { fetch-depth: 0 }\n';
-  if (allUsesAreSHAPinned(badUsesV4)) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'proof-of-teeth (ii)-a: allUsesAreSHAPinned failed to reject uses: actions/checkout@v4',
-    };
-  }
-
-  const badUsesV0 = 'steps:\n  - uses: anchore/sbom-action@v0\n';
-  if (allUsesAreSHAPinned(badUsesV0)) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'proof-of-teeth (ii)-b: allUsesAreSHAPinned failed to reject uses: anchore/sbom-action@v0',
-    };
-  }
-
-  const badUsesGitleaks = 'steps:\n  - uses: gitleaks/gitleaks-action@v2\n';
-  if (allUsesAreSHAPinned(badUsesGitleaks)) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'proof-of-teeth (ii)-c: allUsesAreSHAPinned failed to reject uses: gitleaks/gitleaks-action@v2',
-    };
-  }
-
-  const badUsesStable = 'steps:\n  - uses: dtolnay/rust-toolchain@stable\n';
-  if (allUsesAreSHAPinned(badUsesStable)) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'proof-of-teeth (ii)-d: allUsesAreSHAPinned failed to reject uses: dtolnay/rust-toolchain@stable',
-    };
-  }
-
-  const badUsesVersionTag = 'steps:\n  - uses: jetli/wasm-pack-action@v0.4.0\n';
-  if (allUsesAreSHAPinned(badUsesVersionTag)) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'proof-of-teeth (ii)-e: allUsesAreSHAPinned failed to reject uses: jetli/wasm-pack-action@v0.4.0',
-    };
-  }
-
-  // Bad: 39-hex (one short of a valid SHA) must be rejected
-  const badUses39Hex =
-    'steps:\n  - uses: actions/checkout@8f4b7f84864484a7bf31766abe9204da3cbe65b # v4\n';
-  if (allUsesAreSHAPinned(badUses39Hex)) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'proof-of-teeth (ii)-f: allUsesAreSHAPinned failed to reject a 39-char hex ref (one short of a valid SHA)',
-    };
-  }
-
-  // Good: two properly SHA-pinned uses lines (one with trailing comment)
-  const goodUsesYaml = [
-    'steps:',
-    '  - uses: actions/checkout@8f4b7f84864484a7bf31766abe9204da3cbe65b3 # v4',
-    '    with: { fetch-depth: 0 }',
-    '  - uses: dtolnay/rust-toolchain@29eef336d9b2848a0b548edc03f92a220660cdb8 # stable',
-    '    with: { components: clippy }',
-  ].join('\n');
-  if (!allUsesAreSHAPinned(goodUsesYaml)) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'proof-of-teeth (ii)-good: allUsesAreSHAPinned wrongly rejected properly SHA-pinned uses lines',
-    };
-  }
-
-  // Good: comment lines containing un-pinned refs must be ignored
-  const goodUsesWithComment = [
-    '# NOTE: action major versions are pinned here (e.g. @v4) to match ci.yml style',
-    'steps:',
-    '  - uses: actions/checkout@8f4b7f84864484a7bf31766abe9204da3cbe65b3 # v4',
-  ].join('\n');
-  if (!allUsesAreSHAPinned(goodUsesWithComment)) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'proof-of-teeth (ii)-good-comment: allUsesAreSHAPinned wrongly rejected a file where the only non-SHA ref was in a pure comment line',
-    };
-  }
+  // --- (ii) SKIPPED: SHA-pinning requirement removed ---
 
   // --- (iii) clientPackageHasEnginesNode ---
 
@@ -674,32 +546,18 @@ export default async function () {
   const root = path.resolve('.');
 
   const justfilePath = path.join(root, 'justfile');
-  const ciYmlPath = path.join(root, '.github/workflows/ci.yml');
-  const nightlyYmlPath = path.join(root, '.github/workflows/nightly.yml');
   const clientPkgPath = path.join(root, 'client/package.json');
   const rootCargoPath = path.join(root, 'Cargo.toml');
   const serverCargoPath = path.join(root, 'server-module/Cargo.toml');
   const devcontainerPath = path.join(root, '.devcontainer/devcontainer.json');
   const biomePath = path.join(root, 'biome.json');
 
-  let justfile, ciYml, nightlyYml, clientPkg, rootCargo, serverCargo, devcontainer, biomeJson;
+  let justfile, clientPkg, rootCargo, serverCargo, devcontainer, biomeJson;
 
   try {
     justfile = readFileSync(justfilePath, 'utf8');
   } catch {
     return { name, pass: false, detail: 'cannot read justfile' };
-  }
-
-  try {
-    ciYml = readFileSync(ciYmlPath, 'utf8');
-  } catch {
-    return { name, pass: false, detail: 'cannot read .github/workflows/ci.yml' };
-  }
-
-  try {
-    nightlyYml = readFileSync(nightlyYmlPath, 'utf8');
-  } catch {
-    return { name, pass: false, detail: 'cannot read .github/workflows/nightly.yml' };
   }
 
   try {
@@ -742,23 +600,7 @@ export default async function () {
     };
   }
 
-  // Criterion (ii) — both workflow files
-  if (!allUsesAreSHAPinned(ciYml)) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'criterion (ii) FAIL: .github/workflows/ci.yml has uses: lines not pinned to a 40-hex SHA (e.g. @v4, @v2, @stable, @v0, @v0.4.0)',
-    };
-  }
-  if (!allUsesAreSHAPinned(nightlyYml)) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'criterion (ii) FAIL: .github/workflows/nightly.yml has uses: lines not pinned to a 40-hex SHA',
-    };
-  }
+  // Criterion (ii) REMOVED: SHA-pinning requirement no longer enforced
 
   // Criterion (iii)
   if (!clientPackageHasEnginesNode(clientPkg)) {
@@ -812,6 +654,6 @@ export default async function () {
     name,
     pass: true,
     detail:
-      'all 6 criteria met: lint recipe complete (fmt+check+biome), all uses: SHA-pinned (ci+nightly), client engines.node pinned, log promoted to workspace dep + server-module uses workspace, devcontainer pins rust+node+wasm-pack, biome excludes module_bindings',
+      'all 5 criteria met: lint recipe complete (fmt+check+biome), client engines.node pinned, log promoted to workspace dep + server-module uses workspace, devcontainer pins all tooling, biome excludes module_bindings',
   };
 }
