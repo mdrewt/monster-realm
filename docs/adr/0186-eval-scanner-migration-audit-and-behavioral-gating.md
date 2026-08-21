@@ -5,8 +5,8 @@
 **Slice:** 14r-c (M-postgate fourteenth-review residuals — `specs/monster-realm-v2/M-postgate-fourteenth-review-residuals.spec.md` §14r-c)
 **Supersedes:** —
 **Amends:** —
-**Subsystems:** ci-gates, security-authz, tooling-docs
 **Amended-by:** ADR-0202
+**Subsystems:** ci-gates, security-authz, tooling-docs
 **Decision:** `evals/scanner-migration-audit.eval.mjs` gates a name-derived eval set on two legs (a real `rust-scan.mjs` import plus `assertStripperSound`, and no naive stripper anywhere); six evals migrated, seven parked as capped self-retiring debt.
 
 > **Carries out** ADR-0181's disclosed residual — "~24 + ~8 remain" to migrate onto
@@ -79,7 +79,7 @@ without enforcing on it; the report helps future slices identify candidates.
 
 Seven `*-reducer-security.eval.mjs` files (`battle`, `evolution`, `npc-dialogue-quest`,
 `raising`, `recruit`, `shop`, `trade`) remain unmigrated and were budget-parked to
-slice 14r-c-2. Each `KNOWN_UNMIGRATED` entry is validated by the gate:
+slice 14r-c-2. **[STILL OPEN — same re-ownership as the Consequences mark below: the seven moved to `15r-sec-mig-a`/`-b`/`-c` and `15r-sec-mig-d`; recorded by ADR-0202]** Each `KNOWN_UNMIGRATED` entry is validated by the gate:
 
 - The file must exist on disk (T1 pins a removal-detection tooth).
 - The file must be a member of the gated set (`*-security.eval.mjs` / `*-privacy.eval.mjs`).

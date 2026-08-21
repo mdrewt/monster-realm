@@ -1029,7 +1029,7 @@ The committed `.env.example` default `MR_OTLP_ALLOWED_ORIGIN=https://localhost:5
 - **G11/OBS-51 (null A/B, said out loud):** with membership ∅ there is no pairing toggle, so the fixed-concurrency A/B (`--clients-start 50 --clients-max 50 --move-rate 100 --hold-scrapes 8 --seed 20260809`, run-ids `…-pairing-off-a/-b` — deliberately NOT labeled pairing-on) measures the harness's own run-to-run variance: **|Δp95| = 0.028 ms noise floor** (A: 0.459 ms, B: 0.487 ms; both `not_reached`, breaking_point null; identical accepted-move deltas of 1800; zero send errors). This floor is the standing benchmark the FIRST membership addition's real pairing-on/off A/B must be judged against; `not_reached` at ≤400 concurrent remains this hardware's documented floor (m20d amendment above).
 - **Alloy's exposed counter name confirmed:** exactly `mr_log_events_total` (the config's `prefix`+`name` verbatim; no component prefixing), with an additional per-file `filename` label from the tail source. The eval's B6 static tripwire pins the config side.
 
-**First real boot of the m20b stack — four committed-config defects found (fixes belong to m20e-2/supervisor; none fixable inside m20e's touches).** m20b shipped the stack statically validated but never booted; `docker compose up -d` on this box surfaced: (1) **tempo**: compose passes `-server.http-listen-address=127.0.0.1`, a flag Tempo 2.10.7 does not define (start-loop crash); `tempo-config.yml` already sets the loopback bind, so the fix is deleting the flag. (2) **alloy**: the image's `/var/lib/alloy` is `770 alloy:alloy` while the service runs as root with `cap_drop: ALL` (no `CAP_DAC_OVERRIDE`) — `mkdir /var/lib/alloy/data` EACCES crash-loop; fix: run as the alloy user, or mount the volume at a root-writable path, or add `DAC_OVERRIDE`. (3) **caddy**: the built image's `/usr/bin/caddy` carries the file capability `cap_net_bind_service=ep`; `USER 10001` + `cap_drop: ALL` + `no-new-privileges:true` makes exec fail EPERM (reproduced minimally); fix: `setcap -r` in the Dockerfile (only high loopback ports are bound). (4) **grafana**: the provisioned alert-rule group interval 15 s is rejected by Grafana 13's fixed 10 s scheduler tick (crash-loop, "should be … divided exactly"); fix: a divisible interval (20 s/30 s) or the `configurableSchedulerTick` feature toggle + 5 s tick. m20e's live evidence was captured with an **uncommitted runtime override** (`/tmp` compose override: tempo command minus the bad flag; alloy `+DAC_OVERRIDE`; grafana toggle+5 s tick) — the committed files were not touched. Environment caveats, documented not massaged: **node_exporter** cannot bind-mount `/` on WSL2/Docker Desktop ("not a shared mount") and was left down; **Docker Desktop scopes `network_mode: host` to its own VM**, so the stack's loopback endpoints are invisible to WSL-native processes (and Prometheus cannot scrape the WSL-native SpacetimeDB host's `/v1/metrics` from inside the VM) — the metrics-contract eval gained an injectable `MR_OBS_ALLOY_FETCH` argv seam (production default: plain in-process HTTP) and the G5 poll ran through a host-network curl container. On the real single-box Linux deployment none of these environment caveats apply. **[PARTLY CLOSED by 13r-a, ADR-0190 — NOT m20e-2: alloy (D2), caddy setcap (D3) and the grafana interval (D4) are fixed; the tempo undefined-flag defect (D1) and a FIFTH defect discovered by D3, caddy’s port-80 redirect bind (D3b), are STILL OPEN with no owner slice; recorded by ADR-0202]**
+**First real boot of the m20b stack — four committed-config defects found (fixes belong to m20e-2/supervisor; none fixable inside m20e's touches).** m20b shipped the stack statically validated but never booted; `docker compose up -d` on this box surfaced: (1) **tempo**: compose passes `-server.http-listen-address=127.0.0.1`, a flag Tempo 2.10.7 does not define (start-loop crash); `tempo-config.yml` already sets the loopback bind, so the fix is deleting the flag. (2) **alloy**: the image's `/var/lib/alloy` is `770 alloy:alloy` while the service runs as root with `cap_drop: ALL` (no `CAP_DAC_OVERRIDE`) — `mkdir /var/lib/alloy/data` EACCES crash-loop; fix: run as the alloy user, or mount the volume at a root-writable path, or add `DAC_OVERRIDE`. (3) **caddy**: the built image's `/usr/bin/caddy` carries the file capability `cap_net_bind_service=ep`; `USER 10001` + `cap_drop: ALL` + `no-new-privileges:true` makes exec fail EPERM (reproduced minimally); fix: `setcap -r` in the Dockerfile (only high loopback ports are bound). (4) **grafana**: the provisioned alert-rule group interval 15 s is rejected by Grafana 13's fixed 10 s scheduler tick (crash-loop, "should be … divided exactly"); fix: a divisible interval (20 s/30 s) or the `configurableSchedulerTick` feature toggle + 5 s tick. m20e's live evidence was captured with an **uncommitted runtime override** (`/tmp` compose override: tempo command minus the bad flag; alloy `+DAC_OVERRIDE`; grafana toggle+5 s tick) — the committed files were not touched. Environment caveats, documented not massaged: **node_exporter** cannot bind-mount `/` on WSL2/Docker Desktop ("not a shared mount") and was left down; **Docker Desktop scopes `network_mode: host` to its own VM**, so the stack's loopback endpoints are invisible to WSL-native processes (and Prometheus cannot scrape the WSL-native SpacetimeDB host's `/v1/metrics` from inside the VM) — the metrics-contract eval gained an injectable `MR_OBS_ALLOY_FETCH` argv seam (production default: plain in-process HTTP) and the G5 poll ran through a host-network curl container. On the real single-box Linux deployment none of these environment caveats apply. **[PARTLY CLOSED by 13r-a, `1d68c33`, ADR-0190 — NOT m20e-2: alloy (D2), caddy setcap (D3) and the grafana interval (D4) are fixed; the tempo undefined-flag defect (D1) and a FIFTH defect discovered by D3, caddy's port-80 redirect bind (D3b), are STILL OPEN. D1 is catalogued as `S23-obs-parks` in the Wave-6 backlog but uncommitted; D3b appears in no spec at all; recorded by ADR-0202]**
 
 **The checks-suite activation decision.** m20b's 1,869 lines of stack-config predicate tests were CI-dark (nothing ran them — `just test` is cargo-only and `justfile` is outside m20e's touches). The new stack-config eval is the door: its G9k stage spawns `node --test` over the six suites (4 relay + 2 checks) with the exit code authoritative, a mechanically-derived pass floor (181), and TAP-summary corroboration tolerant of format drift.
 
@@ -1054,25 +1054,33 @@ mechanized SSOT — rather than a third scheme invented here.
 | P3 | the `job="mr-trace-relay"` scrape target | **CLOSED** | 13r-b, `7bba44e`, ADR-0191 | G9o |
 | P4 | the Grafana dead-man's-switch alert rule | **CLOSED** | 13r-b, `7bba44e`, ADR-0191 | G9p |
 | — | the `/health` endpoint | **CLOSED** | 13r-b, `7bba44e`, ADR-0191 D1 | folded into P1/P3 |
-| — | the tail-follow daemon | **CLOSED** | 13r-b, `7bba44e`, ADR-0191 D5–D6 | G9j egress bans |
+| — | the tail-follow daemon | **CLOSED** | 13r-b, `7bba44e`, ADR-0191 D5–D6 | G9k (`node --test`, floor 243) + G9n |
 | **P5** | **the OTLP POST client** | **STILL OPEN** | — | re-parked verbatim in the eval; un-defer trigger G9h |
 
 **Three corrections to the park paragraph itself**, each now false as written:
 
 1. *"the integration half is re-parked as m20e-2 … i.e. all of OBS-46 parked as a unit"* — the unit
-   was split on delivery. Five of the six artifacts shipped; only the OTLP POST client remains, and
-   it is re-parked under a **new** id (`P5`), not under `m20e-2`. The id `m20e-2` is **retired**: no
-   work is tracked under it any more.
+   was split on delivery. The paragraph enumerates **six** artifacts; the table above has **seven**
+   rows because the eval splits the compose service into P1 (the service) and P2 (its mount). Either
+   enumeration leaves exactly one item outstanding: only the OTLP POST client remains, and it is
+   re-parked under a **new** id (`P5`), not under `m20e-2`.
+   The id `m20b-2`/`m20e-2` **[RETIRED — the park it named is split: the rest closed by 13r-b, `7bba44e`, ADR-0191, and the remainder re-parked under the new id `P5`. No work is tracked under `m20b-2`/`m20e-2` any more; recorded by ADR-0202]**
 2. *"The stale `m20b-2` labels in `docker-compose.yml`/`prometheus.yml` comments are a forward
-   obligation on m20e-2"* — **discharged as written** by 13r-b for those two files plus
-   `grafana/provisioning/alerting/rules.yml`. Two label sites the obligation never named survive:
-   `ops/observability/tempo/tempo-config.yml` and
-   `ops/observability/grafana/provisioning/datasources/datasources.yml`. Both are outside
-   `lp-doc-a`'s declared `touches:` and are escalated, not fixed here.
+   obligation on m20e-2"* — **discharged in substance, but the sentence mis-describes its own
+   scope.** Measured at `7bba44e~1`: of the three files 13r-b rewrote, only `prometheus.yml:43`
+   actually carried an `m20b-2` label — `docker-compose.yml:26` and
+   `grafana/provisioning/alerting/rules.yml:11` carried **`m20e-2`**. Four genuine `m20b-2` sites
+   the obligation never named were cleaned in passing (`ops/observability/README.md` ×3,
+   `ops/observability/checks/stack-config-checks.test.mjs`). **Two survive**, both unnamed by the
+   obligation and both outside `lp-doc-a`'s declared `touches:`:
+   `ops/observability/tempo/tempo-config.yml:5` and
+   `ops/observability/grafana/provisioning/datasources/datasources.yml:16`. Escalated, not fixed
+   here.
 3. *"the stack-config eval's **G9g park tripwire** fails the moment any of the three integration
    files gains its relay half"* — all three gained it, and **G9g was deleted rather than inverted**
-   (ADR-0191). No tripwire named G9g exists. The live un-defer tripwire is **G9h**, and it guards
-   P5, not P1–P4.
+   (ADR-0191). No `G9g` identifier survives in any executable file. The live un-defer tripwire is
+   **G9h**, and it guards P5, not P1–P4. The eval's own header comment still describes G9g as live
+   — obsolete prose in the very file this section elevates to SSOT; escalated, not fixed here.
 
 ### The four boot defects (the paragraph above this section) belong to 13r-a, not m20e-2
 
@@ -1081,9 +1089,9 @@ slice **13r-a**, ADR-0190:
 
 | defect | state | where |
 |---|---|---|
-| alloy `/var/lib/alloy` EACCES | **CLOSED** | 13r-a, ADR-0190 D2 (uid 473) |
-| caddy `cap_net_bind_service` EPERM | **CLOSED** | 13r-a, ADR-0190 D3 |
-| grafana 15 s alert-group interval | **CLOSED** | 13r-a, ADR-0190 D4 (20 s) |
+| alloy `/var/lib/alloy` EACCES | **CLOSED** | 13r-a, `1d68c33`, ADR-0190 D2 (uid 473) |
+| caddy `cap_net_bind_service` EPERM | **CLOSED** | 13r-a, `1d68c33`, ADR-0190 D3 |
+| grafana 15 s alert-group interval | **CLOSED** | 13r-a, `1d68c33`, ADR-0190 D4 (20 s) |
 | tempo `-server.http-listen-address` undefined flag | **STILL OPEN** | 13r-a, ADR-0190 D1 — parked out of touch-set |
 | *(fifth, discovered by D3)* caddy port-80 redirect bind | **STILL OPEN** | 13r-a, ADR-0190 D3b — parked out of touch-set |
 
