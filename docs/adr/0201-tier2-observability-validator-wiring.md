@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** ci-gates, tooling-docs
-**Decision:** `ops/observability/validate.mjs` becomes a `ci:` dep invoked with `--require-docker`, so the gate fails rather than skips when docker is absent; the bare invocation keeps the loud skip-and-exit-0 laptop behaviour, and `summarize()` is fail-closed on unknown statuses and on a shrinking check set.
+**Decision:** The Tier-2 observability validator becomes a `ci:` dep run with `--require-docker`, so the gate fails instead of skipping when docker is absent; `summarize()` is fail-closed on unknown status.
 
 ## Context
 
