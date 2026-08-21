@@ -12,7 +12,7 @@
 
 ADR-0180 selected and m20b committed a seven-container self-hosted observability stack
 (`ops/observability/`). m20e performed the **first real boot** of that committed configuration and
-found four defects that made the stack unstartable; ADR-0180:1031 root-caused all four, but the
+found four defects that made the stack unstartable; ADR-0180:1032 root-caused all four, but the
 fixes were never committed — m20e's touch-set did not include `ops/observability/**` and its live
 evidence ran under an uncommitted `/tmp` compose override. Every defect had been invisible to 1869
 lines of static predicates and 18 CI-dark checks, which is the whole lesson of that finding: a
@@ -243,7 +243,7 @@ future author burning an hour believing the platform rejected their rule.
 
 ### D5 — the `build_sha` cardinality residual: both proposed remedies are rejected on evidence; the residual is mechanized instead
 
-ADR-0180:992 recorded that Alloy's S4 attribute filter bounds `build_sha` only to
+ADR-0180:993 recorded that Alloy's S4 attribute filter bounds `build_sha` only to
 `^[0-9a-f]{7,40}$`, leaving a scriptable cardinality vector on the public OTLP path
 (~120 series/min/IP, within Caddy's rate limit). The slice brief proposed closing it by pinning to
 a fixed 40-hex length **or** a deployed-SHA allowlist. Both were investigated and both are wrong
@@ -295,7 +295,7 @@ satisfiable while D1 is parked. It is re-scoped to: **WHEN `docker compose up -d
 with a populated `.env`, THE SYSTEM SHALL reach a non-restarting running state for six of the seven
 services; tempo remains parked on D1 and caddy on D3b, and tempo's boot is demonstrated
 separately under an uncommitted flag-drop override.** No other service is pre-excused: an earlier draft carried a
-node_exporter caveat inherited from ADR-0180:1031, which was withdrawn after node_exporter booted
+node_exporter caveat inherited from ADR-0180:1032, which was withdrawn after node_exporter booted
 cleanly on this box under the exact committed configuration
 (`msg="Listening on" address=127.0.0.1:9100`).
 

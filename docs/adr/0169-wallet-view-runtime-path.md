@@ -6,6 +6,7 @@
 **Supersedes:** —
 **Amends:** ADR-0154
 **Subsystems:** client-ui, economy-quests, security-authz
+**Amended-by:** ADR-0202
 **Decision:** Subscribe the owner-scoped `my_wallet` view, ingest it insert-only with no delete handler, and pass `store.ownWallet(identity)` at all THREE `buildShopViewModel*` call sites, pinned by a contiguous-needle ingest tooth and a count tooth.
 
 ## Context
@@ -145,6 +146,12 @@ turns its negative assertion from a spot check into a whole-session claim.
 
 The player can finally see their own gold, sourced from server-authoritative state that cannot
 drift. `player_wallet` stays private; no write surface was added.
+
+**Note added 2026-08-21 (lp-doc-a, ADR-0202):** `11r-e-1`, `11r-e-3` and `11r-e-9` are the
+EARS acceptance-criterion ids of THIS slice, which shipped — they are **not** outstanding
+residuals, and an upstream plan that listed them as untriaged residual ids was wrong. Each
+is live-tested (`client/src/net/connection.test.ts`, `client/e2e/wallet-balance.spec.ts`).
+Recorded so the false lead is not re-derived; see ADR-0202.
 
 **Which gate owns what** (so no later slice cuts the "redundant" one): 11r-e-3's `batcher.schedule()`
 and 11r-e-3b's no-`onDelete` are **structurally unreachable by any e2e** — with `schedule()` omitted

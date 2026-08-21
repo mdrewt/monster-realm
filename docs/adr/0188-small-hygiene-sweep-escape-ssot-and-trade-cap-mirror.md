@@ -6,6 +6,7 @@
 **Supersedes:** —
 **Amends:** 0166, 0170
 **Subsystems:** evolution-fusion, movement-netcode, client-ui
+**Amended-by:** ADR-0202
 **Decision:** Escape `check_and_evolve`'s three JSON log reasons; route `movement_tick`'s grass pre-check through the both-role SSOT (hygiene, a verified no-op); mirror the server trade cap as an exported client const gated by a parity eval.
 
 ## Context
@@ -142,7 +143,7 @@ which retired-id rule wins (`evolution-path-edge-ids.json` permits removal-with-
 and the tooth-owned `baselineFloor` table keep working unchanged. A pre-flight warning for that
 slice: the map-shaped gate needs a comment-needle guard like `append-only-ids.eval.mjs:307-372`, and
 if any content RON carries a trailing comment with an `id: N` needle the remediation is a
-`game-core/content/**` edit — outside the path-set assumed here.
+`game-core/content/**` edit — outside the path-set assumed here. **[STILL OPEN — re-verified at `a5179ac`: `evals/baselines/species-ids.json` and its item/skill siblings are still flat id arrays, so id REUSE stays green. **Slice `14r-f-2` does not exist**: this sentence is its only occurrence in the repo and it appears in no spec, so the deferral names an owner that was never created. Creating it is a harness `specs/` edit, outside this slice's `touches:`; escalated 2026-08-21; recorded by ADR-0202]**
 
 ## Alternatives considered
 
