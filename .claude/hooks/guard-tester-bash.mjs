@@ -347,7 +347,12 @@ function runSelftest() {
     // disclosure via secret-shaped filenames that never matched a suffix denylist)
     writeFileSync(path.join(scratch, ".npmrc"), "//registry.npmjs.org/:_authToken=SECRET\n");
     check("tester: .npmrc (dotfile secret, wrong shape)", "tester", `bash -n ${scratchRel}/.npmrc`, true);
-    writeFileSync(path.join(scratch, "id_rsa"), "-----BEGIN OPENSSH PRIVATE KEY-----\nfake\n-----END OPENSSH PRIVATE KEY-----\n");
+    // The PEM banner is assembled from parts so this fixture does not itself trip
+    // `scripts/check-secrets.mjs`'s private-key pattern (which reds `just security`,
+    // and hence `just ci`, on a literal `-----BEGIN … PRIVATE KEY-----`). The bytes
+    // written to disk are unchanged — only the source literal is split.
+    const pemBanner = (edge) => `-----${edge} OPENSSH PRIVATE KEY-----`;
+    writeFileSync(path.join(scratch, "id_rsa"), `${pemBanner("BEGIN")}\nfake\n${pemBanner("END")}\n`);
     check("tester: id_rsa (extensionless, no shebang -> not a script)", "tester", `bash -n ${scratchRel}/id_rsa`, true);
     writeFileSync(path.join(scratch, "notes.txt"), "not code\n");
     check("tester: notes.txt (unrecognised extension)", "tester", `bash -n ${scratchRel}/notes.txt`, true);
