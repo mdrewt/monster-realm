@@ -299,14 +299,15 @@ to missing+extra at once and red the job for a reason unrelated to freshness.
 
 Follow-ups **#3** and **#2** land; **#1** and **#4** remain deferred.
 
-**#3 done:** `evals/nightly-smoke-wiring.eval.mjs` gained six real checks (24-30) over the
+**#3 done:** `evals/nightly-smoke-wiring.eval.mjs` gained seven real checks (24-30) over the
 `changelog-freshness` job: structure-unambiguous, workflow-scope-neuter-free, job declared, not
 neutered (against a verbatim gate pin), documents its failure policy, git-cliff pins agree, and
 the `changelog-check:` recipe body is intact. `jobIsNotNeutered` gained an additive
 `opts.gates` array of DATA descriptors (default `[{kind:'just'}]`, byte-equivalent to prior
 behavior); `CHANGELOG_FRESHNESS_GATES` pins the job's two gate steps (the TAP gating suite,
-`node scripts/changelog-freshness.mjs --check`) verbatim and in order. 43 tester-authored teeth
-(V0-V28, W1-W15) plus 9 orchestrator-authored round-2 teeth (V29-V34, W16-W17). All three EARS
+`node scripts/changelog-freshness.mjs --check`) verbatim and in order. 52 tester-authored teeth
+(V0-V28, W1-W15 and their sub-labels) plus 13 orchestrator-authored round-2 teeth
+(V29-V34, W16-W17 and their sub-labels), counted as distinct TEETH labels. All three EARS
 neuter modes proven RED end-to-end against a copy of the real workflow: `continue-on-error` →
 Check 27; removal from `notify`'s `needs:` fan-in → the pre-existing Check 21; whole-job
 deletion → the new Check 26.
@@ -326,20 +327,32 @@ rendering, so a template error destroys the committed ledger. The pinned recipe 
 `GIT_CLIFF_*`, passes `--config cliff.toml` explicitly, and renders to a temp file it `mv`s only
 on success.
 
-**Three pre-existing BLOCKER-class holes closed in passing** (each affects `mutation`,
-`mutation-server`, and `coverage` too, not just this job): a job-level `defaults: run: shell:`
-no-ops every run step while pinned `run:` text stays intact — a third neuter scope the
-workflow-scope and step-scope rules each half-covered; `strictJobBlock` scanned from line 0, so
-a decoy job block parked inside a top-level `run-name:` block scalar won the first-match race
-against the real, `if: false`-carrying definition; `justRecipeBody` was first-wins, so a just
-`'''` string literal holding the pinned recipe body verbatim could sit above the real, tampered
-`changelog:` recipe. Also now rejected: `working-directory:` on a gate step, and a folded
-(`run: >`) block scalar.
+**TWO pre-existing BLOCKER-class holes closed in passing** — each verified absent at the fork
+point `2290f47` and each affecting `mutation`, `mutation-server` and `coverage` too, not just
+this job: a job-level `defaults: run: shell:` no-ops every run step while pinned `run:` text
+stays intact — a third neuter scope the workflow-scope and step-scope rules each half-covered;
+and `strictJobBlock` scanned from line 0, so a decoy job block parked inside a top-level
+`run-name:` block scalar won the first-match race against the real, `if: false`-carrying
+definition. Also now rejected: `working-directory:` on a gate step, and a folded (`run: >`)
+block scalar.
 
-**Regression introduced and fixed in-slice:** round 1 widened the `{kind:'just'}` matcher to
-read block-scalar bodies, which loosened the pre-existing gate — a `run: |` gate step, previously
-fail-closed, became satisfiable by a body merely starting with `just`. Fixed by requiring
-single-line run text for that kind; tooth V29 pins it.
+A THIRD hole of the same class was found and closed but is **not** pre-existing and is
+corrected here rather than left overstated: `justRecipeBody` is NEW in 16r-c, and its
+first-wins scan let a just `'''` string literal holding the pinned recipe body verbatim sit
+above the real, tampered `changelog:` recipe. It was self-inflicted in round 1, its only callers
+are changelog-specific, and it never affected the three mutation/coverage jobs.
+
+**Regression introduced and NARROWED — not fully reverted — in-slice.** Round 1 widened the
+`{kind:'just'}` matcher to read block-scalar bodies, which loosened the pre-existing gate: a
+`run: |` gate step, previously fail-closed, became satisfiable by a body merely starting with
+`just`. Tooth V29 and the single-line rule kill the MULTI-COMMAND class, which was the dangerous
+one. Measured honestly, a residual remains: a SINGLE-LINE `run: |` body starting with `just `
+— including `just mutate-core || true` and the wrong-recipe `just --list` — is accepted at HEAD
+where `2290f47` fail-closed. This is a second SPELLING of an already-open hole rather than a new
+class: the `{kind:'just'}` matcher has always been a prefix test that accepts `just <anything>`
+in the inline form the committed workflow actually uses, so `… || true` was already accepted
+inline before this slice. The real fix is to promote the three mutation/coverage gates to
+`{kind:'script'}` verbatim pins, which use EQUALITY — carried in the residual list below.
 
 **#1 and #4 remain deferred**, dated 2026-08-22: both require exporting the pure comparator and
 fixture table out of `scripts/changelog-freshness.mjs`, and `scripts/**` was outside 16r-c's
@@ -358,7 +371,15 @@ env keys are accepted — re-authoring that tooth is its own decision); a job-le
 skip when a sibling reds — `notify`'s `skipped` term is a partial runtime backstop for both, but
 the static gate is blind; `runs-on:`/`container:` can relocate a guarded job onto an
 attacker-chosen toolchain. Closing these needs a step-key / `uses:` / `env:` allowlist across
-all guarded jobs — its own slice, with the U2c decision made deliberately.
+all guarded jobs — its own slice, with the U2c decision made deliberately. Add to that slice:
+promoting `mutation`/`mutation-server`/`coverage` from the prefix-matching `{kind:'just'}` gate
+to `{kind:'script'}` verbatim pins, which closes the `just <anything>` prefix hole named in the
+regression paragraph above for all three at once.
+
+One precision note on the U2c claim: a PERMISSIVE allowlist naming `RUST_BACKTRACE` and
+`CARGO_TERM_COLOR` would still satisfy U2c. What the frozen tooth blocks is a STRICT
+(empty-by-default) allowlist, which is the shape that would actually close the `NODE_OPTIONS`
+class.
 
 **Accepted coupling cost, not a bug:** `just --unstable --fmt` would reformat
 `{{GIT_CLIFF_VERSION}}` and RED the verbatim recipe pin; a git-cliff re-pin must move all three
