@@ -94,3 +94,68 @@ groups:
       - record: mr:heartbeat:rate5m
         expr: |
           sum(rate(mr_log_events_total{evt="heartbeat"}[5m])) or vector(0)
+
+  - name: mr-scheduler
+    interval: 15s
+    rules:
+      # OBS-24b — scheduled-function LATENESS (delay between a scheduled function's due time and
+      # its actual start). Provenance is NUMBERED because three separate instruments with three
+      # different numbers meet here, and only one of those numbers is a bucket edge of the
+      # histogram this group reads.
+      #
+      #   (1) 30 ms is SpacetimeDB's OWN late-start threshold, not ours: the host emits a
+      #       `log::warn!` when a scheduled function starts more than 30 ms after its due time
+      #       (docs/spacetimedb-2.8.1-upgrade-runbook.md:160 — the 2.8.0 release note's "50ms"
+      #       is wrong; 30 ms is what the source does). 30 ms is not a bucket edge of this
+      #       histogram, and it is deliberately NOT used below. It belongs to a different
+      #       instrument — a log line, read in Loki — while this group reads the histogram.
+      #       Naming it here so the next reader does not conflate the two and "correct" the
+      #       0.05 below to 0.03.
+      #
+      #   (2) The bucket lattice, MEASURED from a live SpacetimeDB 2.8.1 `/v1/metrics` scrape
+      #       (2026-08-22), is exactly:
+      #           0.001 0.005 0.01 0.05 0.1 0.5 1 5 10 30 60 300 +Inf
+      #       There is no 0.03 edge. PromQL matches nothing — silently, forever — on an `le=`
+      #       value the exposition does not contain, so an `le="0.03"` selector would record
+      #       zero on-time events and pin the ratio at 100% lateness regardless of reality.
+      #       0.05 is chosen because it is the smallest REAL edge at or above the host's own
+      #       30 ms concern, not because 50 ms is a nicer number.
+      #
+      #   (3) The design is an OVER-EDGE RATIO at that real 0.05 edge, not a quantile, and that
+      #       is a measured choice rather than a stylistic one. On the same scrape p95 lands
+      #       inside the (0.001, 0.005] bucket while 158 of 15186 starts (1.04%) exceeded 50 ms
+      #       and 48 exceeded 60 SECONDS. p95 is structurally blind to that tail: it would read
+      #       "about 5 ms, healthy" straight through the excursion. `histogram_quantile` also
+      #       INTERPOLATES within a bucket, so a threshold at 0.03 would be a number linear
+      #       interpolation invented rather than one the buckets actually contain. Counting
+      #       starts on either side of a real edge counts events that really happened.
+      #
+      #   (4) The label is `function`, NOT the `reducer` label every other rule in this file
+      #       uses. The asymmetry is the host's: this metric family is labelled {db, function,
+      #       le}. PromQL matches nothing on a non-existent label KEY — silently, forever, with
+      #       no error — so "harmonising" these selectors to `reducer=` would record a
+      #       permanently empty series that reads exactly like a quiet game. Do not harmonise it.
+      #
+      #   (5) The four in-scope functions are `movement_tick` (the interval tick whose lateness
+      #       is player-visible as stutter) plus the `trade_offer_reaper`, `pvp_deadline_reaper`
+      #       and `battle_challenge_reaper` one-shot deadline reapers (a late reap is a stale
+      #       offer or a missed deadline). DELIBERATELY EXCLUDED, listed so the exclusion is
+      #       auditable rather than an oversight: `guest_claim_reaper` (a long-horizon account
+      #       sweep where minutes of lateness are harmless), `mr_heartbeat` (the pipeline's own
+      #       dead-man's-switch feed — its liveness is already watched by mr:heartbeat:rate5m
+      #       above, and alerting on the watchdog's own lateness is circular) and
+      #       `playtest_reaper` (a dev-fixture sweep that does not run in a real deployment).
+      #
+      # The allowlist appears EXACTLY TWICE below — once in the starts selector, once in the
+      # on-time selector. The ratio rule DERIVES from the two recorded series and carries no
+      # third copy of the list: two independently maintained copies of one allowlist is the
+      # drift trap ADR-0180 caught for `$trace_pair_set`.
+      - record: mr:scheduled_function_starts:rate5m
+        expr: |
+          sum by (function) (rate(spacetime_scheduled_function_delay_seconds_bucket{function=~"movement_tick|trade_offer_reaper|pvp_deadline_reaper|battle_challenge_reaper",le="+Inf"}[5m]))
+      - record: mr:scheduled_function_on_time:rate5m
+        expr: |
+          sum by (function) (rate(spacetime_scheduled_function_delay_seconds_bucket{function=~"movement_tick|trade_offer_reaper|pvp_deadline_reaper|battle_challenge_reaper",le="0.05"}[5m]))
+      - record: mr:scheduled_function_late:ratio5m
+        expr: |
+          1 - (mr:scheduled_function_on_time:rate5m / mr:scheduled_function_starts:rate5m)
