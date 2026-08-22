@@ -148,7 +148,16 @@
 //                    ratio rule DERIVES from the two recorded series names and
 //                    inlines no `function=~` matcher of its own, so the
 //                    allowlist appears exactly TWICE in the whole file for
-//                    this metric.
+//                    this metric. Round 3 adds: a structural WHITELIST over
+//                    each of the three exprs (reconstructed from that rule's
+//                    OWN parsed selector, never a denylist of neutering
+//                    tokens — `clamp_max(..., 0)` and a trailing `* 0` both
+//                    survived every check above until this landed), and a
+//                    scoped uniqueness check (inside the shared recording-
+//                    rule parser, so `rateWindowSeconds` benefits too) that
+//                    each of the three scheduler series names is a
+//                    `record:` output exactly once across the whole file —
+//                    Prometheus does not statically forbid a duplicate name.
 //   G13b (always)  — the dashboard panel for
 //                    `mr:scheduled_function_late:ratio5m`: exactly one panel, a
 //                    unique `id`, a `gridPos` rectangle DISJOINT from every
@@ -171,7 +180,14 @@
 //                    of its OWN group interval AND strictly greater than the
 //                    recorded series' `[5m]` rate window — DERIVED from that
 //                    literal, not restated — the debounce that keeps one late
-//                    one-shot reaper invocation from firing the alert.
+//                    one-shot reaper invocation from firing the alert. Round 3
+//                    adds: the threshold node's `expression:` refId must equal
+//                    the refId that actually carries the ratio query (mirrors
+//                    checkRelayDeadMansSwitch's own clause) — a stray refId
+//                    is structurally dead in Grafana while every other clause
+//                    stays green. `parseAlertingRules` itself now rejects a
+//                    duplicate `refId` inside one rule's `data:` list, which
+//                    benefits G9p too.
 //   G13d (always)  — number identity + lattice: the alert's evaluator param and
 //                    the panel's threshold step must be the SAME number, and
 //                    the on-time selector's `le=` value must be a MEMBER of
@@ -3438,7 +3454,52 @@ function parseRecordingGroups(recordingRulesText) {
     }
   }
   if (rules.length === 0) return fail('zero recording rules were parsed — nothing was scanned');
+
+  // Round 3 (Gap 4). Prometheus does NOT statically forbid a duplicate
+  // `record:` output name (measured against a live dockerized `promtool
+  // check rules` — it passes), so which rule actually feeds Grafana is
+  // otherwise implementation-defined. Scoped to the three scheduler series
+  // names specifically (not every `record:` in the file) — this is the SSOT
+  // this slice owns; a name collision elsewhere in the file is a pre-existing
+  // convention this slice does not police. Runs HERE, inside the shared
+  // parser, rather than inside `checkSchedulerRecordingRules`, so every
+  // caller — including `rateWindowSeconds`/`schedulerOnTimeLeValue`, which
+  // call this parser FIRST — gets the correct attribution: a duplicate name
+  // placed BEFORE the real group must never be misread by a first-match
+  // lookup as "no rate window to derive from".
+  for (const name of [SCHEDULED_STARTS_SERIES, SCHEDULED_ON_TIME_SERIES, SCHEDULED_LATE_SERIES]) {
+    const count = rules.filter((r) => r.name === name).length;
+    if (count > 1) {
+      return fail(
+        `\`record: ${name}\` appears ${count} times across the recording rules document; ` +
+          'exactly 1 is required — Prometheus does not statically forbid a duplicate output ' +
+          'name, so which rule actually feeds this series is otherwise implementation-defined',
+      );
+    }
+  }
   return { ok: true, rules, detail: `${rules.length} recording rule(s) parsed` };
+}
+
+/**
+ * Collapse any run of whitespace (spaces, tabs, newlines) to a single space
+ * and trim the ends — hand-rolled, no regex, so a wrapped or padded expr
+ * compares equal to its un-wrapped canonical form for the WHITELIST checks
+ * below (Round 3, Gap 1) without this file reaching for `String.split(/\s+/)`.
+ */
+function normalizeWhitespace(text) {
+  const out = [];
+  let inWs = false;
+  for (const ch of text) {
+    const isWs = ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
+    if (isWs) {
+      inWs = true;
+      continue;
+    }
+    if (inWs && out.length > 0) out.push(' ');
+    inWs = false;
+    out.push(ch);
+  }
+  return out.join('');
 }
 
 /**
@@ -3449,30 +3510,6 @@ function parseRecordingGroups(recordingRulesText) {
 export function checkSchedulerRecordingRules(recordingRulesText) {
   const parsed = parseRecordingGroups(recordingRulesText);
   if (!parsed.ok) return fail(`G13a: ${parsed.detail}`);
-
-  // Round 3 (Gap 4) — RECORD-NAME UNIQUENESS, asserted BEFORE anything resolves a
-  // series by name. Prometheus does not statically forbid two `record:` rules
-  // emitting the SAME output series, and `promtool check rules` accepts it:
-  // measured, a decoy group re-recording `mr:scheduled_function_starts:rate5m`
-  // as `vector(0)` passed both this eval and the real dockerized promtool. Two
-  // rules writing one series is a silent, order-dependent override at eval time.
-  // This clause runs FIRST because every by-name lookup below (and
-  // `rateWindowSeconds`' own `.find`) is first-wins: without it, a decoy placed
-  // ahead of the real group makes a later clause fail for the WRONG reason.
-  for (const seriesName of [
-    SCHEDULED_STARTS_SERIES,
-    SCHEDULED_ON_TIME_SERIES,
-    SCHEDULED_LATE_SERIES,
-  ]) {
-    const named = parsed.rules.filter((r) => r.name === seriesName);
-    if (named.length > 1) {
-      return fail(
-        `G13a: ${named.length} recording rules emit the series \`${seriesName}\` — Prometheus ` +
-          'accepts duplicate `record:` names (promtool does not reject them), so the winner is ' +
-          'an order-dependent override and every by-name lookup in this gate is first-wins',
-      );
-    }
-  }
 
   const withMetric = parsed.rules.filter((r) => r.expr.includes(SCHEDULED_FN_METRIC));
   if (withMetric.length === 0) {
@@ -3600,45 +3637,44 @@ export function checkSchedulerRecordingRules(recordingRulesText) {
     );
   }
 
-  // Round 3 (Gap 1) — STRUCTURAL WHITELIST on each expr, not a denylist of
-  // neutering tokens. Measured bypasses that passed every clause above:
-  //   ratio   -> `clamp_max(1 - (on_time / starts), 0)`  (pins <=0: NEVER fires)
-  //   on_time -> `sum by (function) (rate(...[5m])) * 0`  (pins 0: ALWAYS fires)
-  // Both keep every gated token — the metric name, the matcher, the `sum by
-  // (function)`, the rate window — and change only the ARITHMETIC, which no
-  // token-level check can see. A denylist of `clamp_max(`/`* 0`/`or vector(0)`/
-  // `offset`/`and on()` is the wrong shape: this repo's own recorded finding is
-  // that abort-construct blacklists are unclosable, 16 CI-clean bypasses beat
-  // one list. So this asserts the WHOLE normalised expr equals a template
-  // REBUILT FROM THE RULE'S OWN PARTS (its metric, its selector body, its
-  // window) — nothing may exist outside it. The names and the `le=` value are
-  // taken from the rule itself, so this clause adds no third copy of either.
-  const normalise = (text) => text.replace(/\s+/g, ' ').trim();
-  for (const { rule, sel } of [infRules[0], edgeRules[0]]) {
-    if (!rule.expr.includes('[5m]')) {
-      return fail(
-        `G13a: rule \`${rule.name}\` declares no \`[5m]\` rate window — the alert's \`for:\` is ` +
-          'derived from that window, so it must be readable here',
-      );
-    }
-    const expected = `sum by (function) (rate(${SCHEDULED_FN_METRIC}{${sel.body}}[5m]))`;
-    if (normalise(rule.expr) !== normalise(expected)) {
-      return fail(
-        `G13a: rule \`${rule.name}\` computes something other than a bare windowed rate of its ` +
-          `own selector.\n  expected: ${normalise(expected)}\n  actual:   ${normalise(rule.expr)}\n` +
-          'Anything outside that template — `* 0`, `clamp_max(...)`, `or vector(0)`, `offset` — ' +
-          'silently pins the ratio and makes the alert un-fireable or permanently firing while ' +
-          'every token-level check above stays green.',
-      );
-    }
-  }
-  const expectedRatio = `1 - (${SCHEDULED_ON_TIME_SERIES} / ${SCHEDULED_STARTS_SERIES})`;
-  if (normalise(ratio.expr) !== normalise(expectedRatio)) {
+  // Round 3 (Gap 1). A WHITELIST, not a denylist of neutering tokens — this
+  // repo has a recorded finding that abort-construct blacklists are
+  // unclosable (16 CI-clean bypasses beat one such list). Every clause above
+  // DERIVES the name set, the aggregation and the le= value and stays green
+  // even when the whole expr is wrapped: `clamp_max(1 - (on_time / starts),
+  // 0)` pins the ratio at <= 0 forever (the `gt 0.01` alert can never fire),
+  // and `sum by (function) (rate(...)[5m])) * 0` pins on-time at 0 forever
+  // (a permanent false page) — both MEASURED to survive every check above.
+  // Each expected string below is RECONSTRUCTED from that rule's own
+  // already-parsed pieces (the metric name, its OWN selector body sliced
+  // straight out of its own expr) rather than a second, independently
+  // maintained template, so this stays a DERIVED check, not a restated one.
+  const infExpected = `sum by (function) (rate(${SCHEDULED_FN_METRIC}{${infRules[0].sel.body}}[5m]))`;
+  if (normalizeWhitespace(infRules[0].rule.expr) !== normalizeWhitespace(infExpected)) {
     return fail(
-      `G13a: rule \`${SCHEDULED_LATE_SERIES}\` is not the bare over-edge ratio.\n  expected: ` +
-        `${normalise(expectedRatio)}\n  actual:   ${normalise(ratio.expr)}\n` +
-        'A wrapper such as `clamp_max(..., 0)` keeps every referenced series intact while pinning ' +
-        'the recorded value, so the `gt` alert can never fire.',
+      `G13a: rule \`${infRules[0].rule.name}\`'s expr is not EXACTLY \`${infExpected}\` — found ` +
+        `\`${infRules[0].rule.expr}\`. This is a WHITELIST, not a denylist of neutering tokens: a ` +
+        'wrapper like `clamp_max(..., 0)` or a trailing `* 0` keeps every derived check above ' +
+        'green (the name set, the aggregation, the le= value) while silently pinning the series ' +
+        'at a constant, so nothing outside this exact template is permitted.',
+    );
+  }
+  const edgeExpected = `sum by (function) (rate(${SCHEDULED_FN_METRIC}{${edgeRules[0].sel.body}}[5m]))`;
+  if (normalizeWhitespace(edgeRules[0].rule.expr) !== normalizeWhitespace(edgeExpected)) {
+    return fail(
+      `G13a: rule \`${edgeRules[0].rule.name}\`'s expr is not EXACTLY \`${edgeExpected}\` — found ` +
+        `\`${edgeRules[0].rule.expr}\`. Same WHITELIST as the starts selector: nothing outside ` +
+        'the template is permitted.',
+    );
+  }
+  const ratioExpected = `1 - (${SCHEDULED_ON_TIME_SERIES} / ${SCHEDULED_STARTS_SERIES})`;
+  if (normalizeWhitespace(ratio.expr) !== normalizeWhitespace(ratioExpected)) {
+    return fail(
+      `G13a: rule \`${SCHEDULED_LATE_SERIES}\`'s expr is not EXACTLY \`${ratioExpected}\` — found ` +
+        `\`${ratio.expr}\`. This is a WHITELIST: a wrapper like \`clamp_max(..., 0)\` pins the ` +
+        'ratio at <= 0 permanently, which disables the `gt 0.01` alert forever while every ' +
+        'derived reference check above (both series names present, no function=~ of its own) ' +
+        'stays green.',
     );
   }
 
@@ -3871,32 +3907,6 @@ export function checkSchedulerAlertRule(alertRulesText, recordingRulesText) {
     );
   }
 
-  // Round 3 (Gap 2) — the threshold node's OWN `expression:` must resolve to the
-  // `data:` entry that actually carries the ratio query. `condition:` and
-  // `expression:` are two SEPARATE references and only the first was checked
-  // above: measured, rewriting `expression: A` to `expression: ZZ` (a refId
-  // declared nowhere) left every clause green while the rule errors on every
-  // evaluation in real Grafana — structurally dead, gate-green. G9p already
-  // makes exactly this assertion for AlloyDown (`alloyShape.expression !==
-  // alloyExprEntry.refId`); this is that same clause, not a new idea.
-  const queryEntry = rule.data.find(
-    (d) => typeof d.expr === 'string' && d.expr.includes(SCHEDULED_LATE_SERIES),
-  );
-  if (queryEntry === undefined) {
-    return fail(
-      `G13c: rule \`${rule.uid}\` has no \`data:\` entry whose \`expr:\` queries ` +
-        `\`${SCHEDULED_LATE_SERIES}\``,
-    );
-  }
-  if (shape.expression !== queryEntry.refId) {
-    return fail(
-      `G13c: rule \`${rule.uid}\`'s threshold node reads \`expression: ${shape.expression}\` but ` +
-        `the entry carrying the \`${SCHEDULED_LATE_SERIES}\` query is refId ` +
-        `\`${queryEntry.refId}\`. A threshold pointed at a refId that does not carry the query ` +
-        'either errors on every evaluation or silently thresholds a different series.',
-    );
-  }
-
   const stalled = parsed.rules.find((r) => r.uid === 'mr-alloy-ingest-stalled');
   if (stalled === undefined) {
     return fail(
@@ -3915,6 +3925,23 @@ export function checkSchedulerAlertRule(alertRulesText, recordingRulesText) {
       `G13c: rule \`${rule.uid}\` queries datasource \`${ruleExprEntry.datasourceUid}\`, expected ` +
         `AlloyIngestStalled's \`${stalledExprEntry.datasourceUid}\` — read from that rule, not ` +
         'restated here',
+    );
+  }
+
+  // Round 3 (Gap 2). Mirrors the sibling gate's own check
+  // (checkRelayDeadMansSwitch's `relayShape.expression !== relayExprEntry.refId`):
+  // the threshold node's `expression:` must resolve to the SAME refId that
+  // carries the scheduled-function lateness query, not merely to SOME node
+  // in `data:`. Measured: `expression: A` changed to `expression: ZZ` (a
+  // refId nowhere in `data:`) survived every clause above — in real Grafana
+  // that rule errors on every evaluation, structurally dead.
+  if (shape.expression !== ruleExprEntry.refId) {
+    return fail(
+      `G13c: rule \`${rule.uid}\`'s condition node thresholds refId \`${shape.expression}\`, but ` +
+        `the entry carrying \`${SCHEDULED_LATE_SERIES}\` is refId \`${ruleExprEntry.refId}\` — ` +
+        'the threshold is applied to a DIFFERENT query than the one that watches scheduled-' +
+        'function lateness (or, if that refId names no `data:` entry at all, Grafana errors on ' +
+        'every evaluation of this rule).',
     );
   }
 
@@ -4577,6 +4604,10 @@ function alertRuleLines(o = {}) {
   lines.push(`                    type: ${o.evaluatorType ?? 'lt'}`);
   lines.push('                    params:');
   for (const param of o.params ?? ['1']) lines.push(`                      - ${param}`);
+  // Round 3 (Gap 3 teeth): an extra, raw `data:` list item — additive, only
+  // present when a caller passes it, so every existing call site (which
+  // never does) is byte-for-byte unaffected.
+  if (o.extraDataLines !== undefined) lines.push(...o.extraDataLines);
   return lines;
 }
 
@@ -4753,8 +4784,17 @@ const DAEMON_WITH_CREDENTIAL = `${DAEMON_GOOD}\nconst auth = process.env.MR_RELA
 // (the T-o idiom).
 // ---------------------------------------------------------------------------
 
-/** One `- record:` rule in the exact `expr: |` block-scalar shape the real file uses. */
+/**
+ * One `- record:` rule in the exact `expr: |` block-scalar shape the real
+ * file uses. `o.expr`, when given, bypasses the templated construction
+ * entirely — Round 3's Gap 1 teeth use it to build the exact NEUTERED
+ * mutations measured to survive every derived check (`clamp_max(..., 0)`,
+ * a trailing `* 0`), which the templated form cannot express.
+ */
 function schedulerRuleLines(o) {
+  if (o.expr !== undefined) {
+    return [`      - record: ${o.name}`, '        expr: |', `          ${o.expr}`];
+  }
   const matcher = o.names.join('|');
   return [
     `      - record: ${o.name}`,
@@ -4872,6 +4912,7 @@ function schedulerAlertRulesDoc(o = {}) {
         condition: o.condition,
         expression: o.expression,
         noDataState: o.omitNoDataState === true ? undefined : (o.noDataState ?? 'OK'),
+        extraDataLines: o.extraDataLines,
       }),
     );
   }
@@ -6184,6 +6225,62 @@ const TEETH = [
       if (checkSchedulerRecordingRules('groups: []\n').ok) {
         return 'a recording.rules.yml with zero groups was accepted';
       }
+
+      // Round 3, Gap 1: a WHITELIST, not a denylist of neutering tokens
+      // (abort-construct blacklists are unclosable — 16 CI-clean bypasses
+      // beat one such list). Both mutations below were MEASURED to survive
+      // every derived check above (the name set, the aggregation, the le=
+      // value are all still there) while silently neutering the series.
+      const neuteredRatio = checkSchedulerRecordingRules(
+        schedulerRecordingDoc({
+          ratio: {
+            expr: `clamp_max(1 - (${SCHEDULED_ON_TIME_SERIES} / ${SCHEDULED_STARTS_SERIES}), 0)`,
+          },
+        }),
+      );
+      if (neuteredRatio.ok) {
+        return 'the ratio expr wrapped in `clamp_max(..., 0)` was accepted — that pins the ratio at <= 0 forever, so the `gt 0.01` alert can NEVER fire, while the name-set/aggregation/reference-to-both-series checks all stay green';
+      }
+      if (!neuteredRatio.detail.includes('EXACTLY')) {
+        return `the neutered-ratio failure does not name the whitelist mechanism: ${neuteredRatio.detail}`;
+      }
+
+      const neuteredOnTime = checkSchedulerRecordingRules(
+        schedulerRecordingDoc({
+          onTime: {
+            expr:
+              `sum by (function) (rate(${SCHEDULED_FN_METRIC}{function=~"` +
+              `${SCHEDULED_FN_NAMES.join('|')}",le="${SCHEDULED_DELAY_OVER_EDGE}"}[5m])) * 0`,
+          },
+        }),
+      );
+      if (neuteredOnTime.ok) {
+        return 'the on-time expr multiplied by `* 0` was accepted — that pins on-time at 0 forever (100% lateness, a permanent false page), while the le=/name-set/aggregation checks all stay green';
+      }
+      if (!neuteredOnTime.detail.includes('EXACTLY')) {
+        return `the neutered-on-time failure does not name the whitelist mechanism: ${neuteredOnTime.detail}`;
+      }
+
+      // Round 3, Gap 4: Prometheus does NOT statically forbid a duplicate
+      // `record:` output name (measured against a live dockerized `promtool
+      // check rules` — it passes), so a second group recording the SAME name
+      // survives promtool AND (without this check) this eval.
+      const decoyGroup = [
+        schedulerRecordingDoc(),
+        '  - name: mr-scheduler-decoy',
+        '    interval: 15s',
+        '    rules:',
+        `      - record: ${SCHEDULED_STARTS_SERIES}`,
+        '        expr: |',
+        '          vector(0)',
+      ].join('\n');
+      const duplicateName = checkSchedulerRecordingRules(decoyGroup);
+      if (duplicateName.ok) {
+        return 'a SECOND `- record: mr:scheduled_function_starts:rate5m` in a separate group was accepted — which rule actually feeds Grafana is then implementation-defined';
+      }
+      if (!duplicateName.detail.includes('duplicate')) {
+        return `the duplicate-name failure does not name the mechanism: ${duplicateName.detail}`;
+      }
       return null;
     },
   },
@@ -6374,6 +6471,70 @@ const TEETH = [
       }
       if (!widerWindow.detail.includes('STRICTLY GREATER')) {
         return `the wider-window leg was rejected for the WRONG reason: ${widerWindow.detail}`;
+      }
+
+      // Round 3, Gap 2: G13c never asserted the threshold node's
+      // `expression:` refId equals the refId carrying the ratio query — the
+      // sibling gate G9p already does this (checkRelayDeadMansSwitch). A
+      // `expression: ZZ` (a refId nowhere in `data:`) errors on every
+      // Grafana evaluation while every other clause above stays green.
+      const badExpression = checkSchedulerAlertRule(
+        schedulerAlertRulesDoc({ expression: 'ZZ' }),
+        goodRecording,
+      );
+      if (badExpression.ok) {
+        return 'a condition node thresholding refId `ZZ` (which names no `data:` entry) was accepted — Grafana errors on every evaluation of a rule like this';
+      }
+      if (!badExpression.detail.includes('DIFFERENT query')) {
+        return `the bad-expression failure does not name the mechanism: ${badExpression.detail}`;
+      }
+
+      // Round 3, Gap 3 (shared with G9p via parseAlertingRules): a SECOND
+      // `data:` entry also carrying `refId: A` — which one wins for
+      // `expression: A` is implementation-defined. MEASURED to survive
+      // every clause above (each entry is independently well-formed).
+      const dupRefId = checkSchedulerAlertRule(
+        schedulerAlertRulesDoc({
+          extraDataLines: [
+            '          - refId: A',
+            '            datasourceUid: mr-prometheus',
+            '            model:',
+            '              refId: A',
+            '              instant: true',
+            '              expr: vector(0)',
+          ],
+        }),
+        goodRecording,
+      );
+      if (dupRefId.ok) {
+        return 'a rule with TWO `data:` entries both carrying `refId: A` was accepted — which one wins for `expression: A` is implementation-defined';
+      }
+      if (!dupRefId.detail.includes('duplicate refId')) {
+        return `the duplicate-refId failure does not name the mechanism: ${dupRefId.detail}`;
+      }
+
+      // Round 3, Gap 4 attribution (shared with G13a's uniqueness clause via
+      // `rateWindowSeconds`/parseRecordingGroups): a duplicate scheduler
+      // series name placed BEFORE the real mr-scheduler group must still be
+      // attributed to "duplicate", never misread by rateWindowSeconds' own
+      // first-match lookup as "no rate window to derive from".
+      const schedulerBodyOnly = schedulerRecordingDoc().split('\n').slice(1).join('\n');
+      const decoyFirstDoc = [
+        'groups:',
+        '  - name: mr-scheduler-decoy',
+        '    interval: 15s',
+        '    rules:',
+        `      - record: ${SCHEDULED_STARTS_SERIES}`,
+        '        expr: |',
+        '          vector(0)',
+        schedulerBodyOnly,
+      ].join('\n');
+      const decoyFirst = checkSchedulerAlertRule(goodAlert, decoyFirstDoc);
+      if (decoyFirst.ok) {
+        return 'a duplicate scheduler-series record name placed BEFORE the real group was accepted by G13c';
+      }
+      if (!decoyFirst.detail.includes('duplicate')) {
+        return `a duplicate record name placed BEFORE the real group was misattributed (expected "duplicate", got): ${decoyFirst.detail}`;
       }
       return null;
     },
