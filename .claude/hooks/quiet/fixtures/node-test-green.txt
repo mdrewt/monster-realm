@@ -1,0 +1,80 @@
+validate.mjs: unrecognised argument(s): -r
+usage: node ops/observability/validate.mjs [--require-docker]
+validate.mjs: unrecognised argument(s): --require-docker=false
+usage: node ops/observability/validate.mjs [--require-docker]
+validate.mjs: unrecognised argument(s): --nope
+usage: node ops/observability/validate.mjs [--require-docker]
+validate.mjs: unrecognised argument(s): positional
+usage: node ops/observability/validate.mjs [--require-docker]
+validate.mjs: unrecognised argument(s): --require-docker extra
+usage: node ops/observability/validate.mjs [--require-docker]
+✔ §A1 the module exports the contracted API (0.968206ms)
+✔ §A2 EXPECTED_MIN_CHECKS is DERIVED from IMAGES (Object.keys(IMAGES).length + 3), not hand-typed (0.066156ms)
+✔ §A3 every IMAGES value is the digest-pinned image the committed compose file deploys (0.195212ms)
+✔ §A4 summarize rule 1 (fail-closed allowlist): status 'Skipped' (capital S — the printer's .toUpperCase() makes the log read SKIPPED while the process exits 0) → exitCode 1 (0.264631ms)
+✔ §A4 summarize rule 1 (fail-closed allowlist): status 'SKIPPED' (already upper-cased) → exitCode 1 (0.17026ms)
+✔ §A4 summarize rule 1 (fail-closed allowlist): status 'skip' (truncated) → exitCode 1 (0.055091ms)
+✔ §A4 summarize rule 1 (fail-closed allowlist): status 'failed' (past tense — a blacklist on 'fail' misses it) → exitCode 1 (0.082371ms)
+✔ §A4 summarize rule 1 (fail-closed allowlist): status 'error' → exitCode 1 (0.099778ms)
+✔ §A4 summarize rule 1 (fail-closed allowlist): status 'n/a' (the measured /tmp/rtA cheat's label for six deleted checks) → exitCode 1 (0.106149ms)
+✔ §A4 summarize rule 1 (fail-closed allowlist): status undefined (a result object with no status key at all) → exitCode 1 (0.130092ms)
+✔ §A5 summarize rule 2: any fail result → exitCode 1 (and failed counts it) (0.123969ms)
+✔ §A6 summarize rule 3 (EARS-2): a skipped result with requireDocker:true → exitCode 1, reason names the label (0.052488ms)
+✔ §A7 summarize rule 3 inverted (EARS-3): the SAME skipped result with requireDocker:false → exitCode 0 (0.026492ms)
+✔ §A8 summarize rule 4: an empty results array → exitCode 1 (scanning nothing is never green) (0.023054ms)
+✔ §A9 summarize rule 4: EXPECTED_MIN_CHECKS - 1 all-pass results, no skips → exitCode 1 (the shrink floor) (0.024136ms)
+✔ §A10 summarize rule 5: exactly EXPECTED_MIN_CHECKS all-pass results, no skips → exitCode 0 (0.025365ms)
+✔ §B1 main(argv) rejects ['-r'] — a short alias nobody defined with exit code 64 (1.028806ms)
+✔ §B1 main(argv) rejects ['--require-docker=false'] — the =value form must not silently disable the gate with exit code 64 (0.472255ms)
+✔ §B1 main(argv) rejects ['--nope'] — an unknown flag with exit code 64 (0.463904ms)
+✔ §B1 main(argv) rejects ['positional'] — a stray positional argument with exit code 64 (0.521177ms)
+✔ §B1 main(argv) rejects ['--require-docker','extra'] — the right flag plus a trailing argument with exit code 64 (0.577286ms)
+✔ §B2 main([]) and main([--require-docker]) are ACCEPTED shapes — they must not return 64 (41.288258ms)
+✔ §B3 the usage message for a rejected argv goes to STDERR, not stdout (0.762488ms)
+✔ §C1 EARS-2: --require-docker with docker absent → exit 1, marked FAIL, with no false-comfort skip line (21.649976ms)
+✔ §C2 EARS-3: no flag with docker absent → exit 0, output says SKIPPED and "this is not a pass" (22.055168ms)
+✔ §C3 the entry guard is BEHAVIOURAL: importing the module invokes docker ZERO times (22.642235ms)
+✔ §C4 the entry guard survives SYMLINKED invocation (realpathSync, not path.resolve) (43.329723ms)
+✔ §D1 positive control: with an all-succeeding docker shim the validator exits 0 (41.775015ms)
+✔ §D2 'prometheus.yml' is validated BY the pinned prometheus image, in one real invocation (0.279133ms)
+✔ §D2 'rules/recording.rules.yml' is validated BY the pinned prometheus image, in one real invocation (0.051296ms)
+✔ §D2 'alloy/config.alloy' is validated BY the pinned alloy image, in one real invocation (0.029599ms)
+✔ §D2 'loki/loki-config.yml' is validated BY the pinned loki image, in one real invocation (0.024291ms)
+✔ §D2 'tempo/tempo-config.yml' is validated BY the pinned tempo image, in one real invocation (0.020918ms)
+✔ §D3 every -v mount SOURCE is the real ops/observability directory, mounted read-only (0.179932ms)
+✔ §D4 the compose check names the REAL docker-compose.yml by absolute path, and the build context is the real tree (0.136426ms)
+✔ §D5 the committed config 'docker-compose.yml' is named in a real run/compose/build invocation (0.079612ms)
+✔ §D5 the committed config 'prometheus.yml' is named in a real run/compose/build invocation (0.13408ms)
+✔ §D5 the committed config 'rules/recording.rules.yml' is named in a real run/compose/build invocation (0.133713ms)
+✔ §D5 the committed config 'alloy/config.alloy' is named in a real run/compose/build invocation (0.072893ms)
+✔ §D5 the committed config 'loki/loki-config.yml' is named in a real run/compose/build invocation (0.78743ms)
+✔ §D5 the committed config 'tempo/tempo-config.yml' is named in a real run/compose/build invocation (0.044128ms)
+✔ §D5 the committed config 'Caddyfile' is named in a real run/compose/build invocation (0.020973ms)
+✔ §D6 invocation SHAPE: exactly one `version` probe, everything else is run/compose/build (0.258563ms)
+✔ §D7 the number of VALIDATING invocations is at least EXPECTED_MIN_CHECKS (the check set did not shrink) (0.053881ms)
+✔ §D8 a rejected argv shape returns 64 WITHOUT invoking docker even once (19.998974ms)
+✔ §D9 RUNTIME status allowlist: every printed status is PASS / FAIL / SKIPPED (0.209054ms)
+✔ §D10 the validator’s OWN report line counts at least EXPECTED_MIN_CHECKS checks (0.153642ms)
+✔ §D11 negative control: a real check failure propagates — `docker compose config` fails → exit 1 and the check is named (35.229025ms)
+✔ §E1 teeth: recipeHeaderDeps is scoped to the ci: header line and strips inline comments (0.279325ms)
+✔ §E2 EARS-1: the REAL justfile ci: recipe depends on observability-validate (per `just --dump`) (0.413038ms)
+✔ §E3 teeth: recipeBodyIsExactly rejects every neutering prefix/suffix and any extra command line (0.196313ms)
+✔ §E4 teeth: the two measured text-parser bypasses are rejected by the dump oracle and by header integrity (7.57021ms)
+✔ §E5 EARS-1: the REAL observability-validate recipe body is exactly the strict invocation (0.221246ms)
+✔ §E6 teeth: jobHasExactStep is scoped to the ci: job and demands exact equality (0.215406ms)
+✔ §E7 EARS-1: the REAL ci.yml ci: job runs the step, exactly (0.207587ms)
+✔ §E8 teeth: continue-on-error is an ALLOWLIST — every non-`false` value neuters the step (0.365363ms)
+✔ §E9 teeth: a JOB-LEVEL if:/continue-on-error: disables the gate wholesale and must be REJECTED (0.246692ms)
+✔ §E10 EARS-1: the REAL step and the REAL ci: job are both unneutered (0.146309ms)
+✔ §E11 exactly ONE non-comment line in the REAL ci.yml RUNS observability-validate (0.120394ms)
+✔ §E12 teeth: the test: recipe predicate is body-scoped and comment-blind (0.062874ms)
+✔ §E13 teeth: every measured substring-match bypass of the test: gate is REJECTED (0.422627ms)
+✔ §E13b EARS-1: the REAL justfile test: recipe runs this suite behind a fail-closed wrapper (0.255739ms)
+ℹ tests 62
+ℹ suites 0
+ℹ pass 62
+ℹ fail 0
+ℹ cancelled 0
+ℹ skipped 0
+ℹ todo 0
+ℹ duration_ms 329.385585

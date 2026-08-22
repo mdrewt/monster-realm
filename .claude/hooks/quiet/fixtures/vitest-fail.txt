@@ -1,0 +1,53 @@
+
+ RUN  v4.1.10 /tmp/claude-1000/-home-mdrewt-projects-ai-apps-claude-harness/a20c8e7c-f7fa-4a1e-8803-819ae0621da4/scratchpad/fail2/vt
+
+ ❯ src/a.test.ts (4 tests | 2 failed) 6ms
+     × fails deep equal 4ms
+     × throws 0ms
+
+⎯⎯⎯⎯⎯⎯⎯ Failed Tests 2 ⎯⎯⎯⎯⎯⎯⎯
+
+ FAIL  src/a.test.ts > group one > fails deep equal
+AssertionError: expected { a: 1, b: [ 1, 2 ] } to deeply equal { a: 2, b: [ 1, 3 ] }
+
+- Expected
++ Received
+
+  {
+-   "a": 2,
++   "a": 1,
+    "b": [
+      1,
+-     3,
++     2,
+    ],
+  }
+
+ ❯ src/a.test.ts:5:62
+      3|   it('passes a', () => { expect(1 + 1).toBe(2); });
+      4|   it('passes b', () => { expect('x').toBe('x'); });
+      5|   it('fails deep equal', () => { expect({ a: 1, b: [1, 2] }).toEqual({…
+       |                                                              ^
+      6|   it('throws', () => { throw new Error('kaboom'); });
+      7| });
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[1/2]⎯
+
+ FAIL  src/a.test.ts > group one > throws
+Error: kaboom
+ ❯ src/a.test.ts:6:30
+      4|   it('passes b', () => { expect('x').toBe('x'); });
+      5|   it('fails deep equal', () => { expect({ a: 1, b: [1, 2] }).toEqual({…
+      6|   it('throws', () => { throw new Error('kaboom'); });
+       |                              ^
+      7| });
+      8|
+
+⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯⎯[2/2]⎯
+
+
+ Test Files  1 failed | 1 passed (2)
+      Tests  2 failed | 3 passed (5)
+   Start at  17:44:04
+   Duration  129ms (transform 40ms, setup 0ms, import 51ms, tests 9ms, environment 0ms)
+

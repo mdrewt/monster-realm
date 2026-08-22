@@ -1,0 +1,9 @@
+
+ RUN  v4.1.10 /home/mdrewt/projects/ai-apps/claude-harness/projects/monster-realm/client
+
+
+ Test Files  82 passed (82)
+      Tests  2463 passed (2463)
+   Start at  17:44:19
+   Duration  2.62s (transform 26.67s, setup 0ms, import 35.69s, tests 5.82s, environment 3.64s)
+

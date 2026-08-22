@@ -1,0 +1,30 @@
+biome.json:16:13 deserialize  DEPRECATED  ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i The use of the recommended field has been deprecated, and will removed in the next major version of Biome. Use preset instead.
+  
+    14 │   },
+    15 │   "formatter": { "enabled": true, "indentStyle": "space", "indentWidth": 2, "lineWidth": 100 },
+  > 16 │   "linter": { "enabled": true, "rules": { "recommended": true } },
+       │             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    17 │   "javascript": { "formatter": { "quoteStyle": "single", "semicolons": "always" } },
+    18 │   "overrides": [
+  
+  i Migrate the configuration with the proper command
+  
+  $ biome migrate
+  
+
+client/src/net/connection.test.ts:2734:7 lint/style/useTemplate  FIXABLE  ━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+  i Template literals are preferred over string concatenation.
+  
+    2733 │     const CATCH_BODY =
+  > 2734 │       '{ ' + M21B2_STALE_RECHECK + ' state = onAttemptFailed(state); scheduleRebuild(); return; }';
+         │       ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    2735 │     const catchBodyHits = codeOccurrences(region, CATCH_BODY);
+    2736 │     expect(
+  
+  i Unsafe fix: Use a template literal.
+  
+    2732 2732 │   
+    2733 2733 │       const CATCH_BODY =

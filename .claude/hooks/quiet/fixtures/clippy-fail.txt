@@ -1,0 +1,99 @@
+    Checking libc v0.2.189
+    Checking cfg-if v1.0.4
+    Checking linux-raw-sys v0.12.1
+    Checking bitflags v2.13.1
+    Checking fastrand v2.5.0
+    Checking once_cell v1.21.4
+    Checking quick-error v1.2.3
+    Checking fnv v1.0.7
+    Checking bit-vec v0.8.0
+    Checking unarray v0.1.4
+    Checking regex-syntax v0.8.11
+    Checking cargoprobe v0.1.0 (/tmp/claude-1000/-home-mdrewt-projects-ai-apps-claude-harness/a20c8e7c-f7fa-4a1e-8803-819ae0621da4/scratchpad/cargo-sandbox)
+    Checking zerocopy v0.8.56
+    Checking num-traits v0.2.19
+error: value assigned to `s` is never read
+  --> src/lib.rs:12:5
+   |
+12 |     s = s + "x";
+   |     ^
+   |
+   = help: maybe it is overwritten before being read?
+   = note: `-D unused-assignments` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(unused_assignments)]`
+
+error: unneeded `return` statement
+  --> src/lib.rs:13:23
+   |
+13 |     if v.len() == 0 { return true; } else { return false; }
+   |                       ^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#needless_return
+   = note: `-D clippy::needless-return` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::needless_return)]`
+help: remove `return`
+   |
+13 -     if v.len() == 0 { return true; } else { return false; }
+13 +     if v.len() == 0 { true} else { return false; }
+   |
+
+error: unneeded `return` statement
+  --> src/lib.rs:13:45
+   |
+13 |     if v.len() == 0 { return true; } else { return false; }
+   |                                             ^^^^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#needless_return
+help: remove `return`
+   |
+13 -     if v.len() == 0 { return true; } else { return false; }
+13 +     if v.len() == 0 { return true; } else { false}
+   |
+
+error: writing `&Vec` instead of `&[_]` involves a new object where a slice will do
+  --> src/lib.rs:10:23
+   |
+10 | pub fn clippy_bait(v: &Vec<i64>) -> bool {
+   |                       ^^^^^^^^^
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#ptr_arg
+   = note: `-D clippy::ptr-arg` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::ptr_arg)]`
+help: change this to
+   |
+10 - pub fn clippy_bait(v: &Vec<i64>) -> bool {
+10 + pub fn clippy_bait(v: &[i64]) -> bool {
+   |
+
+error: manual implementation of an assign operation
+  --> src/lib.rs:12:5
+   |
+12 |     s = s + "x";
+   |     ^^^^^^^^^^^ help: replace it with: `s += "x"`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#assign_op_pattern
+   = note: `-D clippy::assign-op-pattern` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::assign_op_pattern)]`
+
+error: this if-then-else expression returns a bool literal
+  --> src/lib.rs:13:5
+   |
+13 |     if v.len() == 0 { return true; } else { return false; }
+   |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ help: you can reduce it to: `return v.len() == 0`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#needless_bool
+   = note: `-D clippy::needless-bool` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::needless_bool)]`
+
+error: length comparison to zero
+  --> src/lib.rs:13:8
+   |
+13 |     if v.len() == 0 { return true; } else { return false; }
+   |        ^^^^^^^^^^^^ help: using `is_empty` is clearer and more explicit: `v.is_empty()`
+   |
+   = help: for further information visit https://rust-lang.github.io/rust-clippy/rust-1.96.0/index.html#len_zero
+   = note: `-D clippy::len-zero` implied by `-D warnings`
+   = help: to override `-D warnings` add `#[allow(clippy::len_zero)]`
+
+error: could not compile `cargoprobe` (lib) due to 7 previous errors
+warning: build failed, waiting for other jobs to finish...
