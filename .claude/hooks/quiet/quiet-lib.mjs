@@ -73,7 +73,10 @@ export function peelEnv(command) {
   const env = [];
   let rest = command.trim();
   for (;;) {
-    const m = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)=(?:"[^"]*"|'[^']*'|[^\s]*)\s+/);
+    // The unquoted branch must not swallow a shell operator: `FOO=a;bar baz` would
+    // otherwise peel a value of `a;bar`, hiding the `;` from the operator test while
+    // bash still executes it as a second command.
+    const m = rest.match(/^([A-Za-z_][A-Za-z0-9_]*)=(?:"[^"\\]*"|'[^']*'|[^\s;&|<>()`$\\]*)\s+/);
     if (!m) break;
     env.push(m[1]);
     rest = rest.slice(m[0].length);
@@ -81,11 +84,61 @@ export function peelEnv(command) {
   return { env, command: rest };
 }
 
-/** Replace every quoted span with a placeholder so operator detection cannot
- *  trip over an operator character that is merely part of an argument —
- *  `cargo nextest run -E 'test(foo)'` is one simple command, parentheses and all. */
+/**
+ * Blank out every quoted span so operator detection cannot trip over an operator
+ * character that is merely part of an argument — `cargo nextest run -E 'test(foo)'`
+ * is one simple command, parentheses and all. Returns null when the quoting does not
+ * terminate, which callers must treat as "unreadable, do not rewrite".
+ *
+ * THIS IS A SCANNER, NOT A REGEX, AND THAT IS THE WHOLE POINT. The previous version
+ * was `.replace(/'[^']*'/g, "''")`, which reads a BACKSLASH-ESCAPED quote as the
+ * start of a quoted span. bash does the opposite: `\'` is a literal quote and the
+ * word stays unquoted, so every operator between two escaped quotes is live. That
+ * gap let `cargo test \'a; git reset --hard HEAD~10\'` pass the shape gate and be
+ * rewritten into an opaque `node quiet-run.mjs --b64=…` call — laundering a second,
+ * destructive shell operation past the permission layer, which only ever sees the
+ * wrapper invocation. Measured, on every operator class.
+ */
 function blankQuoted(s) {
-  return s.replace(/"(?:[^"\\]|\\.)*"/g, '""').replace(/'[^']*'/g, "''");
+  let out = '';
+  let i = 0;
+  while (i < s.length) {
+    const c = s[i];
+    if (c === '\\') {
+      // Escapes the next character, whatever it is. Emit ONE inert placeholder for
+      // the pair so an escaped `;` can never reach the operator test.
+      i += 2;
+      if (i > s.length) return null; // trailing backslash: unterminated
+      out += 'x';
+      continue;
+    }
+    if (c === "'") {
+      // Single quotes are literal in bash: no escapes inside, ends at the next quote.
+      const end = s.indexOf("'", i + 1);
+      if (end === -1) return null;
+      out += "''";
+      i = end + 1;
+      continue;
+    }
+    if (c === '"') {
+      let j = i + 1;
+      for (;;) {
+        if (j >= s.length) return null;
+        if (s[j] === '\\') {
+          j += 2;
+          continue;
+        }
+        if (s[j] === '"') break;
+        j += 1;
+      }
+      out += '""';
+      i = j + 1;
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
 }
 
 // Shell metacharacters that make a command more than one simple command. `$` is
@@ -119,9 +172,7 @@ export function isRewritableShape(command) {
   if (!bodyNoEnv) return false;
   if (LONG_LIVED.test(bodyNoEnv)) return false;
   const probe = blankQuoted(bodyNoEnv);
-  // An unbalanced quote means blankQuoted left something unaccounted for.
-  if ((probe.match(/"/g)?.length ?? 0) % 2 !== 0) return false;
-  if ((probe.match(/'/g)?.length ?? 0) % 2 !== 0) return false;
+  if (probe === null) return false; // unterminated quoting — unreadable, so untouched
   return !OPERATORS.test(probe);
 }
 
@@ -149,6 +200,21 @@ export function commandBody(command) {
 //
 // The rule tables live in quiet-profiles.mjs so this engine holds no tool trivia.
 
+/**
+ * Whether a command is scoped to something specific. Exported so there is exactly ONE
+ * place that peels `cd …` / env before asking: quiet-run used to ask with the RAW
+ * command, and the `just` predicate is `^`-anchored, so `cd projects/monster-realm &&
+ * just ci-fast` was classified as a full sweep and withheld the 100 pass lines that
+ * were the entire point of a scoped run.
+ */
+export function isTargeted(profile, command) {
+  try {
+    return Boolean(profile.targeted?.(commandBody(command)));
+  } catch {
+    return false;
+  }
+}
+
 export function selectProfile(profiles, command) {
   if (!isRewritableShape(command)) return null;
   const body = commandBody(command);
@@ -167,8 +233,14 @@ export function selectProfile(profiles, command) {
 // A `path.ext:line` reference — the thing an agent needs in order to go and look.
 // Extensions are enumerated rather than left open so that ordinary prose with a
 // colon-number (`Duration 2.62s`, `finished in 0.00s`) does not qualify.
+// NOTE THE CLASS EXCLUDES `.` — that is a fix, not an oversight. With `.` inside it,
+// `[\w./~-]+\.` is ambiguous at every position, and the engine tries every split: a
+// 128 KB non-matching line took 6.9 s, and one such line stalled a real wrapped
+// command by 10.5 s against 0.017 s unwrapped. Excluding `.` makes each attempt stop
+// at the next dot, which is linear — and costs nothing, because the regex is
+// unanchored, so `src/foo.bar.ts:12` simply matches starting at `bar`.
 const SOURCE_LOCATION =
-  /[\w./~-]+\.(?:rs|ts|tsx|js|jsx|mjs|cjs|py|toml|json|ron|wgsl|glsl|md|yml|yaml|sh|mjs)\b[:(]\d+/;
+  /[\w/~-]+\.(?:rs|ts|tsx|js|jsx|mjs|cjs|py|toml|json|ron|wgsl|glsl|md|yml|yaml|sh)\b[:(]\d+/;
 
 // ---------------------------------------------------------------------------
 // The filter
@@ -187,6 +259,10 @@ const DEFAULT_OPTS = {
   // single-line payload is unbounded. Retention stops at whichever comes first.
   deferRetainBytes: 2 * 1024 * 1024,
   targeted: false,
+  // Threaded through so the withheld-lines notice cannot promise a raw log that the
+  // wrapper failed to open. It used to say "full text in the raw log" on the same
+  // screen as "(log unavailable)".
+  logAvailable: true,
   // Positional ceiling, used only by the `search` profile. Past it, further KEEPs
   // become deferred and are counted. Null = no ceiling (every other profile).
   capKeptAt: null,
@@ -205,6 +281,8 @@ export function createFilter(profile, opts = {}) {
     deferredLines: [],
     profile: profile.name,
     targeted: o.targeted,
+    // Read by profile summarisers so none of them can promise a log that is not there.
+    logAvailable: o.logAvailable,
   };
   // NO TAIL GUARD. An earlier build always re-emitted the last N withheld lines, on
   // the theory that every tool states its verdict there. Measured: on a short run it
@@ -269,7 +347,10 @@ export function createFilter(profile, opts = {}) {
       // file:line references — letting the guard override the cap would exempt the
       // one profile the cap exists for.
       if (action !== 'keep' && SOURCE_LOCATION.test(line)) {
-        ruleId = '_source-location';
+        // Count the promotion SEPARATELY. Overwriting ruleId stole the credit from the
+        // rule that actually matched, so `summariseEvals` — which reads
+        // byRule.get('evals/pass') — reported 85 of 87 on the real suite.
+        bump('_source-location');
         action = 'keep';
       }
 
@@ -335,13 +416,14 @@ export function createFilter(profile, opts = {}) {
           state.replayed = state.deferredLines.length;
           out.push(...state.deferredLines);
         } else if (!profile.suppressDeferNotice) {
+          const where = o.logAvailable
+            ? 'full text in the raw log'
+            : 'raw log UNAVAILABLE — re-run with NOFILTER=1 to see them';
           // Profiles whose own summariser already accounts for what was withheld
           // opt out — two notices saying the same thing in different words is
           // itself noise, and "routine line(s)" is actively wrong for a capped
           // search result.
-          out.push(
-            `[quiet-run] withheld ${state.deferred} routine line(s) — full text in the raw log`,
-          );
+          out.push(`[quiet-run] withheld ${state.deferred} routine line(s) — ${where}`);
         }
       }
 

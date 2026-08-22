@@ -26,12 +26,20 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { createWriteStream, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { constants as osConstants, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
+import { StringDecoder } from 'node:string_decoder';
 import { fileURLToPath } from 'node:url';
 
-import { createFilter, selectProfile } from './quiet-lib.mjs';
+import { createFilter, isTargeted, selectProfile } from './quiet-lib.mjs';
 import { PROFILES } from './quiet-profiles.mjs';
+
+// A vanished reader (quiet-run invoked inside a pipeline) must degrade to a silent
+// no-op, never to an unhandled EPIPE that replaces the child's real exit code with a
+// Node stack trace — this hook becoming the wall of text it exists to delete.
+process.stdout.on('error', (err) => {
+  if (err?.code !== 'EPIPE') throw err;
+});
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 // Overridable so the test suite can point at a throwaway directory. Without it
@@ -126,13 +134,26 @@ const sessionId = (arg('sid') || process.env.CLAUDE_SESSION_ID || 'adhoc').repla
 const logDir = join(LOG_ROOT, sessionId);
 const stamp = new Date().toISOString().replace(/[:.]/g, '-');
 const slug = createHash('sha256').update(command).digest('hex').slice(0, 8);
-const logPath = join(logDir, `${stamp}-${profile.name}-${slug}.log`);
+// pid + O_EXCL. The old name was timestamp+command-hash only, so concurrent agents
+// running the SAME command (the supervisor runs several at once, and worktrees share
+// a cwd-independent hash) opened the same path with flags 'w' and truncated each
+// other's logs — the recovery path the banner points at.
+let logPath = join(logDir, `${stamp}-${process.pid}-${profile.name}-${slug}.log`);
 
 let logStream = null;
 try {
   mkdirSync(logDir, { recursive: true });
   pruneLogs();
-  logStream = createWriteStream(logPath);
+  for (let n = 0; ; n += 1) {
+    const candidate = n === 0 ? logPath : logPath.replace(/\.log$/, `.${n}.log`);
+    try {
+      logStream = createWriteStream(candidate, { flags: 'wx' });
+      logPath = candidate;
+      break;
+    } catch (err) {
+      if (err?.code !== 'EEXIST' || n > 50) throw err;
+    }
+  }
   logStream.on('error', () => {
     logStream = null;
   });
@@ -184,8 +205,12 @@ function pruneLogs() {
 
 // --- run --------------------------------------------------------------------
 
-const targeted = Boolean(profile.targeted?.(command));
-const filter = createFilter(profile, { targeted, capKeptAt: profile.capKeptAt ?? null });
+const targeted = isTargeted(profile, command);
+const filter = createFilter(profile, {
+  targeted,
+  capKeptAt: profile.capKeptAt ?? null,
+  logAvailable: Boolean(logStream),
+});
 
 const scope = targeted ? 'targeted' : 'sweep';
 const flags = scope;
@@ -229,13 +254,20 @@ function writeSynthetic(line) {
   process.stdout.write(`${line}\n`);
 }
 function emit(rawLine) {
-  if (logStream) logStream.write(`${rawLine}\n`);
   const out = filter.push(rawLine);
   if (out !== null) write(out);
 }
 
-child.stdout.setEncoding('utf8');
-child.stdout.on('data', consume);
+// Tee the BYTES, decode separately. `setEncoding('utf8')` + a per-line log write
+// replaced every non-UTF-8 byte with U+FFFD before it reached the log, so the file
+// the banner calls "full raw output" was a lossy transcription — which is exactly
+// what it exists not to be. The decoder still buffers incomplete sequences across
+// chunk boundaries, so multi-byte characters are not split.
+const decoder = new StringDecoder('utf8');
+child.stdout.on('data', (chunk) => {
+  if (logStream) logStream.write(chunk);
+  consume(decoder.write(chunk));
+});
 
 for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP']) {
   process.on(sig, () => {
@@ -252,6 +284,7 @@ child.on('error', (err) => {
 });
 
 child.on('close', (code, signal) => {
+  pending += decoder.end();
   if (pending.length) emit(pending);
   const exitCode = signal ? 128 + (osSignalNumber(signal) ?? 15) : (code ?? 0);
 
@@ -299,5 +332,8 @@ child.on('close', (code, signal) => {
 });
 
 function osSignalNumber(name) {
-  return { SIGINT: 2, SIGKILL: 9, SIGTERM: 15, SIGHUP: 1 }[name];
+  // The OS's table, not a four-entry guess. SIGABRT/SIGSEGV/SIGBUS/SIGILL/SIGFPE all
+  // fell through the old subset and were reported as 143 — the code that means "the
+  // harness killed me" — pointing diagnosis of a genuine crash at the wrong layer.
+  return osConstants.signals[name];
 }

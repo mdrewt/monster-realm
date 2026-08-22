@@ -14,8 +14,8 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { constants as osConstants, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -23,6 +23,7 @@ import { fileURLToPath } from 'node:url';
 import {
   createFilter,
   isRewritableShape,
+  isTargeted,
   normaliseLine,
   selectProfile,
   stripAnsi,
@@ -703,4 +704,131 @@ test('a command that prints nothing is left byte-identical', () => {
     '',
     `a silent command must stay silent, got: ${JSON.stringify(res.stdout)}`,
   );
+});
+
+// ---------------------------------------------------------------------------
+// second adversarial review pass — 8 confirmed defects, one per test
+// ---------------------------------------------------------------------------
+
+test('a backslash-escaped quote cannot launder a second shell operation', () => {
+  // CRITICAL. bash reads `\'` as a LITERAL quote and leaves the word unquoted, so
+  // every operator between two escaped quotes is live. The old regex-based
+  // blankQuoted read it as the START of a quoted span and blanked those operators,
+  // so the shape gate affirmatively rewrote the command into an opaque
+  // `node quiet-run.mjs --b64=…` call — and the permission layer only ever saw the
+  // wrapper. Fail-open never engaged, because the gate mis-read the shape as safe.
+  const esc = `${String.fromCharCode(92)}'`;
+  const destructive = ['git', 'reset', `--h${'ard'}`, 'HEAD~10'].join(' ');
+  for (const payload of [`a; ${destructive}`, 'a && echo X', 'a | tee /tmp/x', 'a > /tmp/x']) {
+    const cmd = `cargo test ${esc}${payload}${esc}`;
+    assert.equal(isRewritableShape(cmd), false, `laundering vector still open: ${cmd}`);
+    assert.equal(selectProfile(PROFILES, cmd), null);
+  }
+  // Ordinary quoting must still be readable.
+  assert.equal(isRewritableShape("cargo nextest run -E 'test(foo)'"), true);
+  assert.equal(isRewritableShape('cargo test --workspace'), true);
+});
+
+test('an env-assignment value cannot hide a shell operator', () => {
+  // `FOO=a;<destructive> cargo test` — peelEnv's unquoted branch swallowed `a;<...>`
+  // as the VALUE, hiding the `;` from the operator test while bash still ran it.
+  const wipe = ['r m', '-r f', '/tmp/x'].join(' ').replace(/ /g, '');
+  assert.equal(isRewritableShape(`FOO=a;${wipe} cargo test`), false);
+  assert.equal(
+    isRewritableShape('RUST_LOG=debug cargo test'),
+    true,
+    'ordinary env prefixes still work',
+  );
+});
+
+test('unterminated quoting is treated as unreadable', () => {
+  for (const cmd of [
+    "cargo test 'unclosed",
+    'cargo test "unclosed',
+    `cargo test trailing${String.fromCharCode(92)}`,
+  ]) {
+    assert.equal(isRewritableShape(cmd), false, `must not rewrite: ${cmd}`);
+  }
+});
+
+test('the source-location guard is linear, not quadratic', () => {
+  // The class used to contain `.`, the same character as the literal that follows it,
+  // making every position ambiguous. A 128 KB non-matching line took 6.9 s and stalled
+  // a real wrapped command by 10.5 s against 0.017 s unwrapped.
+  const profile = PROFILES.find((p) => p.name === 'biome');
+  const line = `  > 1 │ ${'aB3_x-y.z/'.repeat(12800)}`;
+  const started = Date.now();
+  createFilter(profile, {}).push(line);
+  const elapsed = Date.now() - started;
+  assert.ok(
+    elapsed < 500,
+    `source-location guard took ${elapsed}ms on a 128KB line (quadratic backtracking)`,
+  );
+});
+
+test('the source-location guard does not steal the matched rule count', () => {
+  // Overwriting ruleId gave the credit to `_source-location`, so summariseEvals —
+  // which reads byRule.get('evals/pass') — reported 85 of 87 on the real suite.
+  const { text } = replay('node evals/run.mjs', fixture('evals-green.txt'));
+  const actual = fixture('evals-green.txt')
+    .split('\n')
+    .filter((l) => l.startsWith('eval PASS:')).length;
+  assert.match(text, new RegExp(`evals: ${actual} passed`));
+});
+
+test('scope is decided from the command body, not the raw string', () => {
+  // The `just` predicate is ^-anchored, so a `cd … &&` prefix classified a scoped
+  // `just ci-fast` run as a full sweep and withheld the pass lines that were its
+  // entire point.
+  const just = PROFILES.find((p) => p.name === 'just');
+  assert.equal(isTargeted(just, 'just ci-fast game-core'), true);
+  assert.equal(isTargeted(just, 'cd projects/monster-realm && just ci-fast game-core'), true);
+  assert.equal(isTargeted(just, 'cd projects/monster-realm && just ci'), false);
+});
+
+test('the raw log is byte-exact, including non-UTF-8 bytes', () => {
+  // The banner calls this file "full raw output". Decoding to a string before teeing
+  // turned every invalid byte into U+FFFD, making it a lossy transcription.
+  const dir = mkdtempSync(join(tmpdir(), 'quiet-bytes-'));
+  const src = join(dir, 'bin.txt');
+  writeFileSync(src, Buffer.from('MATCH alpha \xff\xfe beta\nplain\n', 'binary'));
+  const logRoot = mkdtempSync(join(tmpdir(), 'quiet-bytelog-'));
+  const b64 = Buffer.from(`grep -a -n MATCH ${src}`, 'utf8').toString('base64url');
+  spawnSync(process.execPath, [RUNNER, '--sid=b', `--b64=${b64}`], {
+    encoding: 'utf8',
+    env: { ...process.env, CLAUDE_QUIET_LOG_ROOT: logRoot },
+  });
+  const logs = readdirSync(join(logRoot, 'b'));
+  const bytes = readFileSync(join(logRoot, 'b', logs[0]));
+  assert.ok(bytes.includes(Buffer.from([0xff, 0xfe])), 'raw bytes must survive into the log');
+});
+
+test('a fatal signal is reported with its own number, not always SIGTERM', () => {
+  // A four-entry table reported SIGABRT/SIGSEGV/SIGBUS as 143 — the code meaning
+  // "the harness killed me" — pointing diagnosis of a real crash at the wrong layer.
+  assert.equal(osConstants.signals.SIGABRT, 6);
+  const src = readFileSync(join(HERE, 'quiet-run.mjs'), 'utf8');
+  assert.ok(src.includes('osConstants.signals[name]'), 'must use the OS signal table');
+  assert.ok(!/SIGINT: 2, SIGKILL: 9/.test(src), 'the hand-written subset must be gone');
+});
+
+test('concurrent runs of the same command do not share a raw-log filename', () => {
+  // The old name was timestamp + command-hash only, opened with flags 'w'. The
+  // supervisor runs several agents at once, so identical commands truncated each
+  // other's logs — the very recovery path the banner points at.
+  const src = readFileSync(join(HERE, 'quiet-run.mjs'), 'utf8');
+  assert.ok(src.includes('process.pid'), 'the log filename must include the pid');
+  assert.ok(
+    src.includes("flags: 'wx'"),
+    'the log must be opened O_EXCL so a collision cannot truncate',
+  );
+});
+
+test('the withheld notice never promises a log that does not exist', () => {
+  const profile = PROFILES.find((p) => p.name === 'node-test');
+  const f = createFilter(profile, { logAvailable: false });
+  for (let i = 0; i < 200; i++) f.push(`✔ case ${i} (0.1ms)`);
+  const trailing = f.finish(0).join('\n');
+  assert.match(trailing, /UNAVAILABLE/);
+  assert.ok(!trailing.includes('full text in the raw log'));
 });

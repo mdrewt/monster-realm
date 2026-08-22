@@ -389,8 +389,11 @@ export const PROFILES = [
       // both wrong and annoying.
       const hidden = state.deferred - state.replayed;
       if (hidden <= 0) return [];
+      const where = state.logAvailable
+        ? 'are in the raw log'
+        : 'were NOT captured (raw log unavailable)';
       return [
-        `[quiet-run] search: showed the first ${state.kept} matches; ${hidden} more are in the raw log. ` +
+        `[quiet-run] search: showed the first ${state.kept} matches; ${hidden} more ${where}. ` +
           'Narrow the pattern, add a path filter, or use the Grep tool for the rest.',
       ];
     },
