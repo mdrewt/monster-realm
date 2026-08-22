@@ -4,7 +4,8 @@
  * (slice 16r-f; ADR-0130 reseed latch).
  *
  * SOURCE OF TRUTH: 16r-f EARS-1 / EARS-2, plus the two plan-review additions (T3
- * sticky-forever cheat-kill, T9 double-reconnect guard).
+ * sticky-forever cheat-kill, T9 double-reconnect guard) and the implementation-review
+ * addition (T10 two fully-RESOLVED reseed episodes).
  *   EARS-1: WHEN a reconnect completes and the first store flush carries no battle rows
  *           THE reseed latch SHALL survive until a flush that observes definite battle state.
  *   EARS-2: WHEN an Ongoing battle survives a reconnect THE event ring SHALL NOT receive a
@@ -37,7 +38,7 @@
  * RED REASON: T1 and T8 fail against the current main.ts:1729-1735 reseed branch, which
  * (a) burns the latch even when latestPlayerBattle() returned undefined, and (b) silently
  * re-baselines ANY Ongoing battle instead of only the one that survived the drop.
- * T2 / T3 / T4 / T5 / T6 / T7 / T7b / T9 are GREEN at the fork — regression pins and
+ * T2 / T3 / T4 / T5 / T6 / T7 / T7b / T9 / T10 are GREEN at the fork — regression pins and
  * cheat-kills for the wrong implementations the fix could otherwise take.
  *
  * WRONG IMPL KILLED: recorded per test, above each `it`.
@@ -489,5 +490,34 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     flushBattles(makeBattle(B1, 'Ongoing'));
 
     expect(battleEvents(pressF9AndReadRing())).toEqual([startOf(B1)]);
+  });
+
+  // GREEN at fork (traced): master's episode-2 reseed branch burns the latch and silently
+  // baselines any Ongoing battle, which happens to produce this same list. The teeth here are
+  // against the CAPTURE-STALENESS / NEVER-CLEAR cheat class, which T9 cannot reach because T9's
+  // first episode is never RESOLVED (no flush between its two reconnects). This is the only
+  // fixture with two fully-resolved episodes, so it is the only one where the second episode's
+  // capture has to run again on a DIFFERENT battle id.
+  // WRONG IMPL KILLED:
+  //   (a) "capture the drop-time battle id only on the first reconnect ever, never update it":
+  //       the captured id stays B1, so episode 2's re-sight of B2 does not match, falls through
+  //       to the emit logic and duplicates startOf(B2).
+  //   (b) "resolution never clears battleReseedPending (and/or the captured id)": the latch is
+  //       still pending at step 6, so the `if (!battleReseedPending)` guard SKIPS episode 2's
+  //       capture, the captured id is stale/null, and step 7 duplicates startOf(B2) the same way.
+  it('T10: two fully-resolved reseed episodes re-capture per episode (no duplicate start)', () => {
+    flushBattles(makeBattle(B1, 'Ongoing')); // start B1
+    simulateReconnect(); // episode 1 captures B1
+    flushBattles(makeBattle(B1, 'Ongoing')); // silent re-baseline — episode 1 RESOLVED
+    flushBattles(makeBattle(B1, 'SideAWins', 5)); // end B1
+    flushBattles(makeBattle(B2, 'Ongoing')); // start B2
+    simulateReconnect(); // episode 2 must capture B2, not the stale B1
+    flushBattles(makeBattle(B2, 'Ongoing')); // silent re-baseline — no duplicate start
+
+    expect(battleEvents(pressF9AndReadRing())).toEqual([
+      startOf(B1),
+      endOf(B1, 'SideAWins', 5),
+      startOf(B2),
+    ]);
   });
 });
