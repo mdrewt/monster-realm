@@ -38,10 +38,12 @@ spacetime publish -s "$SERVER" --module-path server-module --delete-data -y "$DB
 # RT-SR-01: on_disconnect deletes the player row the moment the CLI disconnects,
 # so player-table assertions after a one-shot `spacetime call` are vacuous.
 log "Phase 2: calling join_game to create starter monster"
-# Each reducer arg is its own JSON value on the spacetime 2.6.0 CLI (the CLI
-# assembles the args array itself). Wrapping in a JSON array double-nests and
-# the server rejects with "invalid arguments ... trailing characters" — this
-# exact bug kept the smoke job red from its first nightly run (ADR-0088).
+# Each reducer arg is its own JSON value on the pinned spacetime 2.8.1 CLI (the
+# CLI assembles the args array itself). Wrapping in a JSON array double-nests and
+# the server rejects with "Invalid arguments provided for reducer" — this exact
+# bug kept the smoke job red from its first nightly run (ADR-0088). Re-verified
+# live 2026-08-22 against 2.8.1: join_game '"Name"' succeeds, while the wrapped
+# form '["Name"]' STILL fails.
 spacetime call -s "$SERVER" "$DB" join_game '"SmokePlayer"'
 
 # Poll until the starter monster row appears (SQL query may lag one step).
@@ -104,6 +106,9 @@ log "monster rows after republish: $MONSTER_ROWS_AFTER"
 log "Phase 6: asserting new content version served"
 CFG_ROWS=$(spacetime sql -s "$SERVER" "$DB" "SELECT content_version FROM config")
 log "config rows after sync_content: $CFG_ROWS"
+# This grep (like the two monster-row greps above) deliberately reads the CLI's
+# text/display output: it is a presence check, not a value decode, and switching
+# to --format json would need jq, which is not guaranteed on the nightly runner.
 # Use word-boundary anchoring to prevent false-positive substring matches
 # (e.g., version 3 matching "13" or "30" in formatted table output).
 if ! echo "$CFG_ROWS" | grep -qE "(^|[^0-9])${BUMP_VERSION}([^0-9]|$)"; then

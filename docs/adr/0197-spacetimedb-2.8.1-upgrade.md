@@ -306,3 +306,124 @@ dev-reducer-leak check into a no-op had the parser's fail-loud guard not caught 
   the new `spacetime_scheduled_function_delay_seconds` metric and `spacetime lock` for the
   playtest DB (M20); consider `spacetime sql --format json`, which may unblock the
   `just playtest-report` JSON gap recorded in the 2026-07-25 playtest-gate decision.
+
+---
+
+## Amendment (2026-08-22, slice `16r-d`) — the `spacetime sql --format json` follow-up is CLOSED: adopted
+
+The final Consequences follow-up above ("consider `spacetime sql --format json`, which may unblock
+the `just playtest-report` JSON gap") is resolved **ADOPT**. `scripts/playtest-report.mjs` now
+consumes `--format json` and its hand-written pipe-table parser (`parseSqlTable`) is deleted.
+
+Header block deliberately untouched: appending a header line shifts every inbound `ADR-0197:<line>`
+citation (7 of 13 were broken once by exactly that), and the ADR digest gate reads headers only.
+
+### D19 — consume `--format json`, not the rendered pipe table
+
+`--format json` exists on the pinned 2.8.1 CLI (`--format <text|json>`, default `text`) and prints
+the **raw HTTP response body verbatim** to stdout — `crates/cli/src/subcommands/sql.rs` at `v2.8.1`
+short-circuits with `if format == Format::Json { println!("{json}"); return Ok(()) }` before any
+rendering. The `WARNING: UNSTABLE` banner stays on stderr, so stdout is pure JSON.
+
+The decisive argument is **not** that the pipe table is broken — it is not; verified below that it
+still parses correctly at 2.8.1. It is that the text output is a *human display* format rendered
+through `PsqlWrapper` with no stability contract, and this ADR already documents it changing
+silently across exactly this version bump: sum variants went `Mild` → `mild` (D2a). A display-format
+change is invisible to every gate this repo has, and its failure mode in a rates report is a **wrong
+number**, not a crash. `--format json` is the same payload the SDKs consume and carries the column
+schema authoritatively instead of inferring it from a header line.
+
+Accepted residual: the JSON envelope is itself unversioned and under the same UNSTABLE banner. It is
+made safe by the fail-loud contract in D21 — a future envelope change must exit non-zero with a
+diagnostic, never emit a plausible-looking report.
+
+### D20 — the verified 2.8.1 envelope shape (this ADR is its durable home)
+
+Captured live 2026-08-22 from a 2.8.1 standalone instance, querying the real `playtest_event` table
+(`spacetime sql -s <server> --format json <db> 'SELECT event_id, kind, identity, species_id,
+hp_permille, bait_item_id, success FROM playtest_event'`):
+
+```json
+[{"schema":{"elements":[{"name":{"some":"event_id"},"algebraic_type":{"U64":[]}},
+                        {"name":{"some":"identity"},"algebraic_type":{"Product":{"elements":[
+                           {"name":{"some":"__identity__"},"algebraic_type":{"U256":[]}}]}}}]},
+  "rows":[[10,1,["0xc200…7da6"],7,300,0,true]],
+  "total_duration_micros":316,
+  "stats":{"rows_inserted":0,"rows_deleted":0,"rows_updated":0}}]
+```
+
+Load-bearing properties, each observed rather than inferred:
+
+- The top level is an **array of statement results**, one per statement.
+- `rows` are **positional arrays** aligned to `schema.elements` order — *not* objects keyed by
+  column name. Row arity is therefore the corruption detector.
+- Column names live at `schema.elements[i].name.some`; the `name` is an Option, so an unnamed
+  column would arrive as `{"none":{}}`.
+- Integers (`U8`/`U16`/`U32`/`U64`/`I64`) arrive as **bare JSON numbers**; `bool` as a real JSON
+  boolean; `String` as a JSON string.
+- `Identity` is typed `Product{[__identity__: U256]}` and its **value is a one-element array holding
+  the hex string**: `["0xc200…"]`. `String(["0x…"])` happens to yield the bare hex, so a naive
+  decoder appears to work — but a two-element array would join to `"a,b"` and silently **merge two
+  players into one aggregation group key**. The unwrap is validated, not incidental.
+- Sum/enum values arrive as `[variantIndex, payload]` (e.g. `[16,[]]`).
+
+### D21 — parse-don't-validate at the boundary: fail loud, never a plausible-looking empty report
+
+`decodeSqlJson(stdout)` replaces `parseSqlTable`. It throws — never returns `[]`, never returns
+partial rows — on: non-JSON stdout; a non-array top level; a top-level array whose length is not
+exactly 1; a non-object statement result; missing/non-array `schema.elements`; zero columns; any
+column `name` that is not `{some:<non-empty string>}`; duplicate column names; missing/non-array
+`rows`; a non-array row; and **any row whose length differs from the column count**. `rows: []`
+(a validated-empty result) returns `[]` without throwing.
+
+This preserves the property the pipe parser was hardened for (reviewer finding m-3): a bogus
+"0 events captured" report is worse than a crash. Three specific traps drove the rules:
+
+- **Arity mismatch is the critical one.** A short row zipped positionally leaves
+  `bait_item_id === undefined`; `Number(undefined)` is `NaN`; and `aggregateReport` counts bait via
+  `bait_item_id !== 0` — `NaN !== 0` is **`true`**, so a truncated row silently *inflates*
+  `baitRate`. The same latent bug existed in `parseSqlTable`'s short-line case and is now closed.
+- **No `?.`/`??` in the decoder.** `envelope[0]?.rows ?? []` would turn every malformed shape back
+  into a silent empty report — the exact regression this slice exists to prevent.
+- **Row objects use `Object.create(null)`.** The decoder keys an object by server-supplied column
+  names; a column literally named `__proto__` would otherwise reassign that row's prototype.
+  Low likelihood (it needs control of the catalog), zero cost to defend.
+
+`coerceRow` correspondingly stops being type-tolerant. Under the text format it accepted
+`true | 'true' | 1 | '1'` for `success` because rendering erased types; under JSON `success` is a
+real boolean, so the tolerance is deleted — carrying it forward would *mask* a shape change instead
+of surfacing it. `coerceRow` now also throws on a missing key, a non-finite numeric field, and an
+`identity` that is neither a string nor a one-element array of a string.
+
+Accepted, documented residual: `u64` values above 2^53 lose precision inside `JSON.parse` before the
+decoder ever sees them. `event_id` is `#[auto_inc]` from 1, so this is unreachable in practice, and
+the same precision is lost today the moment `Number()` is applied to a pipe-table digit string. No
+BigInt reviver — that would be gold-plating an unreachable path.
+
+### D22 — three version-sensitive claims re-verified against 2.8.1 (EARS: comments must match the pin)
+
+All three were labelled "2.6.0" in the scripts. The **constraints are all still true**; only the
+version labels were stale, and both scripts now say 2.8.1 with the re-verification date.
+
+| Claim | Verified 2026-08-22 on CLI 2.8.1 | Verdict |
+|---|---|---|
+| `spacetime sql` rejects `ORDER BY` | `Error: Unsupported: SELECT … ORDER BY …` → 400 Bad Request | still true — `sortByEventId` stays client-side (PT-B2-RT-01) |
+| `spacetime call` takes **per-arg** JSON, never a wrapped array | `join_game '"Name"'` succeeds; `join_game '["Name"]'` fails *Invalid arguments provided for reducer* | still true — `smoke-republish.sh`'s form is correct (ADR-0088) |
+| the pinned CLI has no JSON output mode | **false at 2.8.1** — `--format json` exists (2.7.0+) | corrected; this is what D19 adopts |
+
+### D23 — `smoke-republish.sh` keeps its text-output greps (comment-only change)
+
+Its three `spacetime sql` calls are **presence** checks (`grep -qE '[0-9]+'` for a surviving monster
+row; a word-anchored match for the bumped `content_version`), not value decodes. Converting them to
+JSON would need `jq` — not guaranteed on the nightly runner — or a Node helper, to harden a nightly
+assertion that already works. Declined as scope creep; recorded here so the omission reads as a
+decision rather than an oversight. Its stale "2.6.0" comment is corrected, which is the EARS
+obligation actually in scope.
+
+### Non-scope (flagged, deliberately untouched)
+
+`client/e2e/wallet-balance.spec.ts` and `client/e2e/trade-zz-negative.spec.ts` each carry their
+**own independent** local `parseSqlTable` pipe-table helper (verified: neither imports the script;
+ADR-0184's `parseSqlTable (:317)` citation points at the e2e copy and stays valid). They inherit the
+same display-format coupling and are candidates for the same treatment in a later slice. Out of this
+slice's `touches:` set — flagged, not touched.
