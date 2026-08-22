@@ -3450,6 +3450,30 @@ export function checkSchedulerRecordingRules(recordingRulesText) {
   const parsed = parseRecordingGroups(recordingRulesText);
   if (!parsed.ok) return fail(`G13a: ${parsed.detail}`);
 
+  // Round 3 (Gap 4) — RECORD-NAME UNIQUENESS, asserted BEFORE anything resolves a
+  // series by name. Prometheus does not statically forbid two `record:` rules
+  // emitting the SAME output series, and `promtool check rules` accepts it:
+  // measured, a decoy group re-recording `mr:scheduled_function_starts:rate5m`
+  // as `vector(0)` passed both this eval and the real dockerized promtool. Two
+  // rules writing one series is a silent, order-dependent override at eval time.
+  // This clause runs FIRST because every by-name lookup below (and
+  // `rateWindowSeconds`' own `.find`) is first-wins: without it, a decoy placed
+  // ahead of the real group makes a later clause fail for the WRONG reason.
+  for (const seriesName of [
+    SCHEDULED_STARTS_SERIES,
+    SCHEDULED_ON_TIME_SERIES,
+    SCHEDULED_LATE_SERIES,
+  ]) {
+    const named = parsed.rules.filter((r) => r.name === seriesName);
+    if (named.length > 1) {
+      return fail(
+        `G13a: ${named.length} recording rules emit the series \`${seriesName}\` — Prometheus ` +
+          'accepts duplicate `record:` names (promtool does not reject them), so the winner is ' +
+          'an order-dependent override and every by-name lookup in this gate is first-wins',
+      );
+    }
+  }
+
   const withMetric = parsed.rules.filter((r) => r.expr.includes(SCHEDULED_FN_METRIC));
   if (withMetric.length === 0) {
     return fail(
@@ -3571,6 +3595,48 @@ export function checkSchedulerRecordingRules(recordingRulesText) {
       `G13a: \`function=~"\` appears ${matcherOccurrences} time(s) in recording.rules.yml; ` +
         'exactly 2 (the starts and on-time selectors) is required — a third copy is a restated ' +
         'allowlist the ratio rule was supposed to derive from, not repeat',
+    );
+  }
+
+  // Round 3 (Gap 1) — STRUCTURAL WHITELIST on each expr, not a denylist of
+  // neutering tokens. Measured bypasses that passed every clause above:
+  //   ratio   -> `clamp_max(1 - (on_time / starts), 0)`  (pins <=0: NEVER fires)
+  //   on_time -> `sum by (function) (rate(...[5m])) * 0`  (pins 0: ALWAYS fires)
+  // Both keep every gated token — the metric name, the matcher, the `sum by
+  // (function)`, the rate window — and change only the ARITHMETIC, which no
+  // token-level check can see. A denylist of `clamp_max(`/`* 0`/`or vector(0)`/
+  // `offset`/`and on()` is the wrong shape: this repo's own recorded finding is
+  // that abort-construct blacklists are unclosable, 16 CI-clean bypasses beat
+  // one list. So this asserts the WHOLE normalised expr equals a template
+  // REBUILT FROM THE RULE'S OWN PARTS (its metric, its selector body, its
+  // window) — nothing may exist outside it. The names and the `le=` value are
+  // taken from the rule itself, so this clause adds no third copy of either.
+  const normalise = (text) => text.replace(/\s+/g, ' ').trim();
+  for (const { rule, sel } of [infRules[0], edgeRules[0]]) {
+    if (!rule.expr.includes('[5m]')) {
+      return fail(
+        `G13a: rule \`${rule.name}\` declares no \`[5m]\` rate window — the alert's \`for:\` is ` +
+          'derived from that window, so it must be readable here',
+      );
+    }
+    const expected = `sum by (function) (rate(${SCHEDULED_FN_METRIC}{${sel.body}}[5m]))`;
+    if (normalise(rule.expr) !== normalise(expected)) {
+      return fail(
+        `G13a: rule \`${rule.name}\` computes something other than a bare windowed rate of its ` +
+          `own selector.\n  expected: ${normalise(expected)}\n  actual:   ${normalise(rule.expr)}\n` +
+          'Anything outside that template — `* 0`, `clamp_max(...)`, `or vector(0)`, `offset` — ' +
+          'silently pins the ratio and makes the alert un-fireable or permanently firing while ' +
+          'every token-level check above stays green.',
+      );
+    }
+  }
+  const expectedRatio = `1 - (${SCHEDULED_ON_TIME_SERIES} / ${SCHEDULED_STARTS_SERIES})`;
+  if (normalise(ratio.expr) !== normalise(expectedRatio)) {
+    return fail(
+      `G13a: rule \`${SCHEDULED_LATE_SERIES}\` is not the bare over-edge ratio.\n  expected: ` +
+        `${normalise(expectedRatio)}\n  actual:   ${normalise(ratio.expr)}\n` +
+        'A wrapper such as `clamp_max(..., 0)` keeps every referenced series intact while pinning ' +
+        'the recorded value, so the `gt` alert can never fire.',
     );
   }
 
@@ -3796,6 +3862,32 @@ export function checkSchedulerAlertRule(alertRulesText, recordingRulesText) {
   if (shape.params.length !== 1) {
     return fail(
       `G13c: rule \`${rule.uid}\`'s evaluator declares ${shape.params.length} params, need 1`,
+    );
+  }
+
+  // Round 3 (Gap 2) — the threshold node's OWN `expression:` must resolve to the
+  // `data:` entry that actually carries the ratio query. `condition:` and
+  // `expression:` are two SEPARATE references and only the first was checked
+  // above: measured, rewriting `expression: A` to `expression: ZZ` (a refId
+  // declared nowhere) left every clause green while the rule errors on every
+  // evaluation in real Grafana — structurally dead, gate-green. G9p already
+  // makes exactly this assertion for AlloyDown (`alloyShape.expression !==
+  // alloyExprEntry.refId`); this is that same clause, not a new idea.
+  const queryEntry = rule.data.find(
+    (d) => typeof d.expr === 'string' && d.expr.includes(SCHEDULED_LATE_SERIES),
+  );
+  if (queryEntry === undefined) {
+    return fail(
+      `G13c: rule \`${rule.uid}\` has no \`data:\` entry whose \`expr:\` queries ` +
+        `\`${SCHEDULED_LATE_SERIES}\``,
+    );
+  }
+  if (shape.expression !== queryEntry.refId) {
+    return fail(
+      `G13c: rule \`${rule.uid}\`'s threshold node reads \`expression: ${shape.expression}\` but ` +
+        `the entry carrying the \`${SCHEDULED_LATE_SERIES}\` query is refId ` +
+        `\`${queryEntry.refId}\`. A threshold pointed at a refId that does not carry the query ` +
+        'either errors on every evaluation or silently thresholds a different series.',
     );
   }
 
