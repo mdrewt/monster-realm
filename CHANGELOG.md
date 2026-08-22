@@ -33,6 +33,9 @@
 - Resolve OQ1 — Better Auth self-hosted (issue #301) (#308)
 - ADR-0182 — M21b-2 OIDC client wiring, claim UI, session lifecycle, Better Auth deployment (#310)
 - State the 13r-c-2 sequencing gate explicitly (D18) (#311)
+- Correct the accounts.rs scanner-hazard comment to the measured blocker set (#327)
+- Close the obsolete residual prose — m20e-2/nh5 dispositioned per item, 14r-f-2 escalated, ADR-0186's expected-RED claim retracted (ADR-0202) (#344)
+- Update M8.5d plan to reflect SHA-pinning requirement removal
 
 ### Features
 
@@ -192,6 +195,15 @@
 - Mr-trace-relay integration — tail-follow daemon, /health, scrape job, dead-man's switch (ADR-0191) (#324)
 - Order-aware, re-baseline-proof schema-snapshot gate (ADR-0193) (#325)
 - Monster_pub need-to-know privacy — private table + owner-scoped my_monster_pub view (ADR-0194) (#326)
+- Nightly changelog-freshness check (ADR-0165 implemented) + ledger regen + docs rehome (ADR-0196) (#328)
+- Rust test-mirror parity — derived scans, source-derived reducer enumeration, Account legal-state invariant (ADR-0195) (#329)
+- Upgrade SpacetimeDB 2.6.0 -> 2.8.1, module SDK 1.12.0 -> 2.8.1 (ADR-0197)
+- Block clearing the supervisor kill switch from a Bash tool call
+- Participant-scoped battle via a two-identity view — battle table private (ADR-0198) (#336)
+- Table visibility as declared snapshot data + a class regression gate (ADR-0199) (#337)
+- Scanner-audit cap as an advisory upper bound, not exact-equality (#338)
+- Nightly failure notification — one issue per failing job, with the neuter-gate carve-out it costs (#341)
+- Wire the Tier-2 observability validator into the gate, and stop it silently skipping (#343)
 
 ### Fixes
 
@@ -238,6 +250,12 @@
 - Evolution log escaping, both-role grass guard, trade-cap mirror (ADR-0188) (#320)
 - Observability stack boot — alloy uid, caddy file-capability, grafana alert interval (ADR-0190) (#322)
 - Held-key warp continuation — preserve held stack across the warp-arm rebuild (ADR-0192) (#323)
+- Anchor the rm rules at command position and close the two indirection gaps
+- Tolerate wrapper prefixes at command position; block mr-supervisor-disable
+
+### M8.5d
+
+- Remove SHA-pinning requirement (criterion ii) from build-ci-hygiene eval
 
 ### M8.8b
 
@@ -371,3 +389,4 @@
 - Project-side changes — warpDetect wire-in, @types/node ^24, root lockfile delete, CONTENT_VERSION history, main.ts comments, ARCHITECTURE/AGENTS/ADR fixes (#131)
 - Regen knowledge bundle — UTC date rollover (2026-07-13→2026-07-14) (#166)
 - Docs — ARCHITECTURE.md 11r-f block, ADR-0171 final; graphs refreshed; full just ci exit 0
+- Drill evidence in ADR-0200 + ARCHITECTURE note
