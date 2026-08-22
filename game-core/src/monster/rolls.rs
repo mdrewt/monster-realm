@@ -153,8 +153,8 @@ mod tests {
     /// #50 (EG1-7 REWRITE): a fresh monster starts with all 8 essence pools,
     /// both Trust counters and its Quality-Time total at zero.
     /// `bond` no longer exists on `MonsterInstance` — the old default-bond
-    /// assertion's subject is gone (`Bond::default_bond()` itself is still
-    /// pinned by `types.rs::bond_default_is_70`, since raising still uses it).
+    /// assertion's subject is gone (and `Bond` itself was retired from game-core
+    /// at 16r-g, ADR-0177 D3).
     /// Kills: an impl that seeds a new monster with non-zero growth state.
     #[test]
     fn roll_starter_has_zero_growth_state() {

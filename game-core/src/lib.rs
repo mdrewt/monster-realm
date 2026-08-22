@@ -65,7 +65,7 @@ pub use evolution::{
 };
 pub use monster::{
     build_monster, derive_stats, level_bounds, level_for_xp, roll_individuality, roll_starter,
-    xp_for_level, Affinity, Bond, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock,
+    xp_for_level, Affinity, EVs, IVs, Level, MonsterInstance, Nature, NatureKind, StatBlock,
     StatKind, Xp,
 };
 pub use npc::npc_decide;
@@ -74,8 +74,7 @@ pub use quest::{
     QuestReward, QuestStep, RewardItem, StepTrigger, TriggerEvent,
 };
 pub use raising::{
-    apply_care, focus_train, is_cooldown_ready, CareError, FocusTrainError, FocusTrainResult,
-    CARE_BOND_AMOUNT, CARE_COOLDOWN_MS,
+    focus_train, is_cooldown_ready, FocusTrainError, FocusTrainResult, CARE_COOLDOWN_MS,
 };
 pub use ranking::{apply_elo, compute_rating_update, INITIAL_RATING};
 pub use taming::{
