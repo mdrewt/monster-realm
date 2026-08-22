@@ -6,6 +6,11 @@ set windows-shell := ["cmd.exe", "/c"]
 # client/playwright.config.ts) and not collide on one db/port (one shared
 # SpacetimeDB instance hosts both; distinct db names isolate their data).
 db := env_var_or_default("VITE_STDB_DB", "monster-realm")
+# The EXACT git-cliff that generated the committed CHANGELOG.md. Must stay equal to the
+# `taiki-e/install-action` pin in `.github/workflows/nightly.yml`'s changelog-freshness
+# job — `evals/nightly-smoke-wiring.eval.mjs` (gitCliffPinsAgree) fails the eval if the
+# two ever disagree. See the `changelog:` recipe below for why.
+GIT_CLIFF_VERSION := "2.13.1"
 # monster-realm cargo workspace verbs. Pure logic is testable offline;
 # build/publish/e2e need the spacetime CLI + an instance (see README).
 
@@ -196,8 +201,53 @@ build:
 publish:
     spacetime publish --module-path server-module {{db}}
 
+# Regenerate the committed CHANGELOG.md (ADR-0165 / ADR-0196).
+#
+# WHY THE VERSION ASSERTION. The nightly `changelog-freshness` job installs
+# `git-cliff@{{GIT_CLIFF_VERSION}}` on the READER side, while a local regeneration used
+# whatever git-cliff happened to be on PATH. A mismatch re-renders every entry, so the
+# checker reports the whole ledger as missing+extra at once and REDS the nightly as
+# drift — for a reason that has nothing to do with ledger freshness. Worse, the remedy
+# it prints ("run `just changelog`") REPRODUCES the mismatch, which is exactly the
+# nag-then-bypass mode ADR-0165 rejected. Failing loud with the install command is the
+# only honest outcome.
+#
+# Asserting on `git cliff` (the binary this recipe then INVOKES), never on some other
+# path, is deliberate: asserting one binary and mutating with another is the classic
+# bypass.
+#
+# The `#!/usr/bin/env bash` shebang form BYPASSES `windows-shell` (justfile:1) — this
+# recipe is bash-only on Windows. That is the same tradeoff `test:` already takes, and
+# the reason is the same: the body needs `set -euo pipefail` and a multi-line `if`,
+# which just's line-by-line default execution cannot express.
 changelog:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    have="$(git cliff --version 2>/dev/null || true)"
+    want="git-cliff {{GIT_CLIFF_VERSION}}"
+    if [ "$have" != "$want" ]; then
+        echo "changelog: git-cliff version mismatch — have '${have:-<not installed>}', want '$want'" >&2
+        echo "changelog: install with: cargo install git-cliff --version {{GIT_CLIFF_VERSION}} --locked" >&2
+        exit 1
+    fi
     git cliff -o CHANGELOG.md
+
+# The local half of the nightly `changelog-freshness` gate: the SAME version assertion,
+# then the drift checker. Deliberately NOT in `ci:` — ADR-0196's accepted decision is
+# that this check is nightly-and-not-per-PR (the ledger may lag by up to one open
+# milestone, so a per-PR gate would red on essentially every feature PR for a condition
+# that PR did not cause).
+changelog-check:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    have="$(git cliff --version 2>/dev/null || true)"
+    want="git-cliff {{GIT_CLIFF_VERSION}}"
+    if [ "$have" != "$want" ]; then
+        echo "changelog-check: git-cliff version mismatch — have '${have:-<not installed>}', want '$want'" >&2
+        echo "changelog-check: install with: cargo install git-cliff --version {{GIT_CLIFF_VERSION}} --locked" >&2
+        exit 1
+    fi
+    node scripts/changelog-freshness.mjs --check
 
 # Client (PixiJS) — needs Linux node on PATH (CI setup-node; local asdf node 24.13.1).
 client-setup:
