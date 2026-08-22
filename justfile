@@ -214,7 +214,16 @@ publish:
 #
 # Asserting on `git cliff` (the binary this recipe then INVOKES), never on some other
 # path, is deliberate: asserting one binary and mutating with another is the classic
-# bypass.
+# bypass. The assertion alone is NOT sufficient, so the generation line adds two more
+# clauses (both measured as live bypasses of a version-check-only recipe):
+#   - `env -u GIT_CLIFF_*` — git-cliff gives EVERY cli option an environment twin, so a
+#     genuine, correctly-pinned binary will happily render an attacker's template with
+#     `GIT_CLIFF_CONFIG` set and the version assertion fully satisfied. `--config
+#     cliff.toml` then names the SSOT template explicitly rather than relying on
+#     discovery.
+#   - render to a temp file, `mv` on success — `git cliff -o CHANGELOG.md` TRUNCATES the
+#     target BEFORE rendering, so a template error leaves the committed ledger destroyed
+#     and exits 1. `set -euo pipefail` does not protect a partially-written output file.
 #
 # The `#!/usr/bin/env bash` shebang form BYPASSES `windows-shell` (justfile:1) — this
 # recipe is bash-only on Windows. That is the same tradeoff `test:` already takes, and
@@ -230,7 +239,9 @@ changelog:
         echo "changelog: install with: cargo install git-cliff --version {{GIT_CLIFF_VERSION}} --locked" >&2
         exit 1
     fi
-    git cliff -o CHANGELOG.md
+    tmp="$(mktemp)"
+    env -u GIT_CLIFF_CONFIG -u GIT_CLIFF_TEMPLATE -u GIT_CLIFF_TAG_PATTERN -u GIT_CLIFF_OUTPUT -u GIT_CLIFF_WORKDIR git cliff --config cliff.toml -o "$tmp"
+    mv "$tmp" CHANGELOG.md
 
 # The local half of the nightly `changelog-freshness` gate: the SAME version assertion,
 # then the drift checker. Deliberately NOT in `ci:` — ADR-0196's accepted decision is

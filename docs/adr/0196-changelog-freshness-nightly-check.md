@@ -294,3 +294,72 @@ to missing+extra at once and red the job for a reason unrelated to freshness.
 - Threshold provenance: `git cliff` replayed at the last 150 master commits, series measured
   2026-08-15; generation floor and transform fidelity measured at `origin/master@7eb6980`
   (341/341); branch-tip-regen signature at commit `34250d5` (2026-07-04).
+
+## Update — 16r-c (2026-08-22)
+
+Follow-ups **#3** and **#2** land; **#1** and **#4** remain deferred.
+
+**#3 done:** `evals/nightly-smoke-wiring.eval.mjs` gained six real checks (24-30) over the
+`changelog-freshness` job: structure-unambiguous, workflow-scope-neuter-free, job declared, not
+neutered (against a verbatim gate pin), documents its failure policy, git-cliff pins agree, and
+the `changelog-check:` recipe body is intact. `jobIsNotNeutered` gained an additive
+`opts.gates` array of DATA descriptors (default `[{kind:'just'}]`, byte-equivalent to prior
+behavior); `CHANGELOG_FRESHNESS_GATES` pins the job's two gate steps (the TAP gating suite,
+`node scripts/changelog-freshness.mjs --check`) verbatim and in order. 43 tester-authored teeth
+(V0-V28, W1-W15) plus 9 orchestrator-authored round-2 teeth (V29-V34, W16-W17). All three EARS
+neuter modes proven RED end-to-end against a copy of the real workflow: `continue-on-error` →
+Check 27; removal from `notify`'s `needs:` fan-in → the pre-existing Check 21; whole-job
+deletion → the new Check 26.
+
+**#2 done:** `justfile` gained `GIT_CLIFF_VERSION := "2.13.1"` and a `#!/usr/bin/env bash`
+`changelog:` recipe that asserts `git cliff --version` matches the pin before writing a byte,
+plus a sibling `changelog-check:`. Pinned three ways (justfile variable, the workflow's
+`tool: git-cliff@2.13.1`, the eval's `GIT_CLIFF_PINNED_VERSION`) in the `justfileCapEqualsCeiling`
+shape. `changelog-check` is deliberately NOT in `just ci` — the nightly-not-per-PR decision (D7)
+stands; adding it to `just ci` would need a matching `ci.yml` step per
+`evals/ci-gate-wiring.eval.mjs`, out of scope for this slice.
+
+**Recipe hardening, measured not theoretical:** git-cliff gives every CLI option an environment
+twin, so a genuine pinned binary renders an attacker's template with `GIT_CLIFF_CONFIG` set and
+a version-only assertion satisfied; and `git cliff -o CHANGELOG.md` truncates the target before
+rendering, so a template error destroys the committed ledger. The pinned recipe body scrubs
+`GIT_CLIFF_*`, passes `--config cliff.toml` explicitly, and renders to a temp file it `mv`s only
+on success.
+
+**Three pre-existing BLOCKER-class holes closed in passing** (each affects `mutation`,
+`mutation-server`, and `coverage` too, not just this job): a job-level `defaults: run: shell:`
+no-ops every run step while pinned `run:` text stays intact — a third neuter scope the
+workflow-scope and step-scope rules each half-covered; `strictJobBlock` scanned from line 0, so
+a decoy job block parked inside a top-level `run-name:` block scalar won the first-match race
+against the real, `if: false`-carrying definition; `justRecipeBody` was first-wins, so a just
+`'''` string literal holding the pinned recipe body verbatim could sit above the real, tampered
+`changelog:` recipe. Also now rejected: `working-directory:` on a gate step, and a folded
+(`run: >`) block scalar.
+
+**Regression introduced and fixed in-slice:** round 1 widened the `{kind:'just'}` matcher to
+read block-scalar bodies, which loosened the pre-existing gate — a `run: |` gate step, previously
+fail-closed, became satisfiable by a body merely starting with `just`. Fixed by requiring
+single-line run text for that kind; tooth V29 pins it.
+
+**#1 and #4 remain deferred**, dated 2026-08-22: both require exporting the pure comparator and
+fixture table out of `scripts/changelog-freshness.mjs`, and `scripts/**` was outside 16r-c's
+declared `touches:` (#4 is downstream of #1 by this ADR's own wording). Unchanged by 16r-c:
+`main()` still has no automated coverage, and comparator rot is still caught only at 07:00 UTC.
+Next carrier: the next slice whose `touches:` include both `scripts/` and `evals/`.
+
+**Named residuals still open**, all measured live, all pre-existing and affecting every guarded
+job, not unique to `changelog-freshness`: a `uses:` step can run arbitrary shell before the
+gates (`actions/github-script` with a `with: script:` payload, or a local composite action) —
+the "no shell before the gate" rule counts only `run:` steps; `env: NODE_OPTIONS: --require …`
+on a gate step defeats both node gates, because the env scan is a PATH-only denylist (flipping
+it to an allowlist is blocked in-slice by frozen tooth U2c, which pins that ordinary non-PATH
+env keys are accepted — re-authoring that tooth is its own decision); a job-level
+`strategy: matrix:` resolving to zero instances, and a job-level `needs:` that makes the job
+skip when a sibling reds — `notify`'s `skipped` term is a partial runtime backstop for both, but
+the static gate is blind; `runs-on:`/`container:` can relocate a guarded job onto an
+attacker-chosen toolchain. Closing these needs a step-key / `uses:` / `env:` allowlist across
+all guarded jobs — its own slice, with the U2c decision made deliberately.
+
+**Accepted coupling cost, not a bug:** `just --unstable --fmt` would reformat
+`{{GIT_CLIFF_VERSION}}` and RED the verbatim recipe pin; a git-cliff re-pin must move all three
+sites (justfile, workflow, eval) in one commit.
