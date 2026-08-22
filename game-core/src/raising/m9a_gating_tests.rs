@@ -3,22 +3,18 @@
 //!
 //! EARS criteria covered:
 //!   Criterion A — focus_train (EV top-off → re-derive; reject precedence)
-//!   Criterion B — apply_care (saturating bond raise; reject precedence)
 //!
 //! Each test carries a `/// kills:` comment naming which wrong implementation it
 //! catches, so the verifier can match failing assertion → eliminated bug class.
 //!
-//! Red state: every test will PANIC on the `todo!()` stubs in `rules.rs`
-//! (for `focus_train` and `apply_care`).
+//! Red state: every test will PANIC on the `todo!()` stub in `rules.rs`
+//! (for `focus_train`).
 //!
 //! Run: cargo test m9a_gating -- --nocapture
 
 use crate::monster::rules::derive_stats;
-use crate::monster::types::{Bond, EVs, IVs, Level, Nature, NatureKind, StatBlock, StatKind};
-use crate::raising::{
-    apply_care, focus_train, is_cooldown_ready, CareError, FocusTrainError, CARE_BOND_AMOUNT,
-    CARE_COOLDOWN_MS,
-};
+use crate::monster::types::{EVs, IVs, Level, Nature, NatureKind, StatBlock, StatKind};
+use crate::raising::{focus_train, is_cooldown_ready, FocusTrainError, CARE_COOLDOWN_MS};
 
 use proptest::prelude::*;
 
@@ -473,81 +469,6 @@ fn focus_train_hp_monotonic_on_train() {
     );
 }
 
-// ---------------------------------------------------------------------------
-// CRITERION B — apply_care (example-based)
-// ---------------------------------------------------------------------------
-
-// Test 13
-/// Saturating addition: never wraps past 255.
-/// kills: an impl that uses wrapping_add (254+2=0, 200+MAX=wraps).
-#[test]
-fn apply_care_saturates_not_wraps() {
-    // 254 + 2 would overflow to 0 with wrapping; saturation gives 255.
-    let r1 = apply_care(Bond::new(254), 2).expect("should succeed: bond < 255");
-    assert_eq!(
-        r1.value(),
-        255,
-        "254 + 2 must saturate to 255, not wrap to 0"
-    );
-
-    // 200 + u8::MAX would overflow with wrapping; saturation gives 255.
-    let r2 = apply_care(Bond::new(200), u8::MAX).expect("should succeed: bond < 255");
-    assert_eq!(r2.value(), 255, "200 + 255 must saturate to 255, not wrap");
-
-    // 254 + 1 = exactly 255 (no saturation needed, but is the max).
-    let r3 = apply_care(Bond::new(254), 1).expect("should succeed: bond < 255");
-    assert_eq!(r3.value(), 255, "254 + 1 must equal exactly 255");
-}
-
-// Test 14
-/// Normal bond raise (no saturation, no rejection).
-/// kills: an impl with an off-by-one or wrong addition.
-#[test]
-fn apply_care_normal_raise() {
-    let result = apply_care(Bond::new(70), 5).expect("should succeed: bond is 70, not at max");
-    assert_eq!(result.value(), 75, "70 + 5 must equal 75");
-}
-
-// Test 15
-/// AtMaxBond is returned when bond is already at 255.
-/// kills: an impl that returns Ok (letting bond saturate from an already-max bond),
-/// or one that returns NoEffect.
-#[test]
-fn apply_care_rejects_at_max_bond() {
-    let err = apply_care(Bond::new(255), 5).expect_err("should fail: bond already at max");
-
-    assert_eq!(
-        err,
-        CareError::AtMaxBond,
-        "must be AtMaxBond (not NoEffect)"
-    );
-}
-
-// Test 16
-/// NoEffect is returned when amount is 0.
-/// kills: an impl that returns Ok(bond) unchanged for amount=0.
-#[test]
-fn apply_care_rejects_no_effect_amount_zero() {
-    let err = apply_care(Bond::new(50), 0).expect_err("should fail: amount is 0");
-
-    assert_eq!(err, CareError::NoEffect, "amount=0 must produce NoEffect");
-}
-
-// Test 17
-/// Precedence: amount=0 wins over AtMaxBond (NoEffect is checked FIRST).
-/// kills: an impl that checks AtMaxBond before NoEffect, returning AtMaxBond for amount=0.
-#[test]
-fn apply_care_noeffect_precedes_at_max_bond() {
-    // Bond is at max (255) AND amount is 0 — NoEffect must win.
-    let err = apply_care(Bond::new(255), 0).expect_err("should fail");
-
-    assert_eq!(
-        err,
-        CareError::NoEffect,
-        "amount=0 must produce NoEffect even when bond is also at max (NoEffect checked first)"
-    );
-}
-
 // Test 25 — red-team M9a finding #1
 /// Guard-order precedence: StatAtCap PRECEDES BudgetExhausted when BOTH hold simultaneously.
 /// Fixture: attack=252 (per-stat cap hit), total=510 (budget exhausted), amount=1.
@@ -724,11 +645,11 @@ fn focus_train_all_stat_targets_field_mapping() {
 }
 
 // ---------------------------------------------------------------------------
-// CRITERION A+B — Determinism
+// CRITERION A — Determinism
 // ---------------------------------------------------------------------------
 
 // Test 18
-/// Same inputs → same outputs for both focus_train and apply_care.
+/// Same inputs → same outputs for focus_train.
 /// kills: any impl that reads global mutable state, the system clock, or thread-local RNG.
 #[test]
 fn rules_are_deterministic() {
@@ -741,10 +662,6 @@ fn rules_are_deterministic() {
     let r1 = focus_train(&base, &ivs, &evs, &nature, level, StatKind::Attack, 10);
     let r2 = focus_train(&base, &ivs, &evs, &nature, level, StatKind::Attack, 10);
     assert_eq!(r1, r2, "focus_train must be deterministic");
-
-    let c1 = apply_care(Bond::new(100), 15);
-    let c2 = apply_care(Bond::new(100), 15);
-    assert_eq!(c1, c2, "apply_care must be deterministic");
 }
 
 // ---------------------------------------------------------------------------
@@ -973,62 +890,14 @@ proptest! {
 }
 
 // ---------------------------------------------------------------------------
-// CRITERION B — Property-based (apply_care)
-// ---------------------------------------------------------------------------
-
-proptest! {
-    // Test 24
-    /// apply_care property: guard order + saturating value on Ok.
-    /// Guard order: NoEffect (amount==0) FIRST; AtMaxBond (bond==255) SECOND; else Ok.
-    /// On Ok, value == min(255, bond as u16 + amount as u16) computed via u16 to avoid wrap.
-    /// kills: an impl with wrong guard order, wrapping addition, or wrong Ok value.
-    #[test]
-    fn apply_care_branch_and_value(
-        bond_val in 0u8..=255,
-        amount in 0u8..=255,
-    ) {
-        let bond = Bond::new(bond_val);
-        let result = apply_care(bond, amount);
-
-        if amount == 0 {
-            // First guard: NoEffect regardless of bond state.
-            prop_assert_eq!(
-                result,
-                Err(CareError::NoEffect),
-                "amount==0 must produce NoEffect (first guard)"
-            );
-        } else if bond_val == 255 {
-            // Second guard: AtMaxBond (only when amount > 0).
-            prop_assert_eq!(
-                result,
-                Err(CareError::AtMaxBond),
-                "bond==255, amount>0 must produce AtMaxBond (second guard)"
-            );
-        } else {
-            // Else: Ok with saturating value.
-            // Use u16 arithmetic to compute the expected saturated value without
-            // wrapping in the test itself.
-            let expected_val = ((bond_val as u16) + (amount as u16)).min(255) as u8;
-            let ok_bond = result.expect("expected Ok but got Err");
-            prop_assert_eq!(
-                ok_bond.value(),
-                expected_val,
-                "bond must be min(255, bond+amount) = {}",
-                expected_val
-            );
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// ptc5e e-1 — CARE_COOLDOWN_MS / CARE_BOND_AMOUNT constants + is_cooldown_ready
+// ptc5e e-1 — CARE_COOLDOWN_MS constant + is_cooldown_ready
 //
-// RED state: CARE_COOLDOWN_MS, CARE_BOND_AMOUNT, and is_cooldown_ready do not
-// yet exist in game-core/src/raising/rules.rs (compile-RED: E0432 on the new
-// names in the import above until the implementer adds them).
+// RED state: CARE_COOLDOWN_MS and is_cooldown_ready do not yet exist in
+// game-core/src/raising/rules.rs (compile-RED: E0432 on the new names in the
+// import above until the implementer adds them).
 //
 // EARS criteria covered (ptc5e §e-1):
-//   Const pin — CARE_COOLDOWN_MS and CARE_BOND_AMOUNT have exact values.
+//   Const pin — CARE_COOLDOWN_MS has an exact value.
 //   Boundary triad — is_cooldown_ready boundary at ==, ==−1, and future clock.
 //   Non-zero base — predicate works from an arbitrary non-zero last_ms.
 //   Shared heal — a non-CARE cooldown length returns the right bool (generic fn).
@@ -1047,19 +916,6 @@ fn care_cooldown_ms_exact_value() {
     assert_eq!(
         CARE_COOLDOWN_MS, 21_600_000i64,
         "CARE_COOLDOWN_MS must be exactly 6*60*60*1000 = 21_600_000 ms (6 hours)"
-    );
-}
-
-// Test e-1b
-/// CARE_BOND_AMOUNT == 5u8.
-///
-/// kills: an off-by-one bond magnitude (4 or 6 would pass apply_care but
-/// change the game balance; 0 would always return NoEffect in production).
-#[test]
-fn care_bond_amount_exact_value() {
-    assert_eq!(
-        CARE_BOND_AMOUNT, 5u8,
-        "CARE_BOND_AMOUNT must be exactly 5 (ptc5e spec e-1)"
     );
 }
 

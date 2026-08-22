@@ -1,20 +1,20 @@
-//! Raising rule functions — focus-training (EV top-off → re-derive) and care
-//! (bond raise). All pure and deterministic (ADR-0003 / ADR-0058): no clock,
-//! no RNG, no I/O. The care cooldown time is read from `ctx.timestamp` in the
-//! M9b reducer, never here.
+//! Raising rule functions — focus-training (EV top-off → re-derive) and the
+//! shared cooldown-ready predicate. All pure and deterministic (ADR-0003 /
+//! ADR-0058): no clock, no RNG, no I/O. The care cooldown time is read from
+//! `ctx.timestamp` in the M9b reducer, never here.
 //!
-//! Both rules are **reject-not-clamp**: a maxed target stat / exhausted EV
-//! budget / max bond returns `Err` so the M9b reducer rejects the action and
-//! does NOT consume the food / burn the cooldown for nothing (M9 spec §3).
+//! `focus_train` is **reject-not-clamp**: a maxed target stat / exhausted EV
+//! budget returns `Err` so the M9b reducer rejects the action and does NOT
+//! consume the food for nothing (M9 spec §3).
 //! Stat derivation is **not** duplicated here — the topped-off EVs are fed back
 //! through the single-source `derive_stats` (ADR-0016 derive-on-write).
 
 use crate::monster::rules::derive_stats;
 use crate::monster::types::{
-    Bond, EVs, IVs, Level, Nature, StatBlock, StatKind, EV_PER_STAT_CAP, EV_TOTAL_CAP,
+    EVs, IVs, Level, Nature, StatBlock, StatKind, EV_PER_STAT_CAP, EV_TOTAL_CAP,
 };
 
-use super::types::{CareError, FocusTrainError, FocusTrainResult};
+use super::types::{FocusTrainError, FocusTrainResult};
 
 // The per-stat (252) and total (510) EV caps are imported from `monster::types`
 // — one SSOT for the caps the `EVs` constructor enforces (ADR-0058 residual (b)
@@ -74,31 +74,6 @@ pub fn focus_train(
         derived_stats,
     })
 }
-
-/// Raise a monster's bond by `amount`, **saturating** at the maximum (`u8::MAX`).
-///
-/// Reject-not-clamp in a pinned guard order (ADR-0058 §3 — input-validity before
-/// state): `NoEffect` if `amount == 0`; else `AtMaxBond` if bond is already at
-/// the maximum (so the M9b reducer rejects before burning the care cooldown).
-///
-/// # Errors
-/// `CareError` whenever the application would raise bond by zero (see above).
-pub fn apply_care(bond: Bond, amount: u8) -> Result<Bond, CareError> {
-    if amount == 0 {
-        return Err(CareError::NoEffect);
-    }
-    if bond.value() == u8::MAX {
-        return Err(CareError::AtMaxBond);
-    }
-    Ok(Bond::new(bond.value().saturating_add(amount)))
-}
-
-/// Fixed bond raise granted by one successful `care` (ptc5e-1 SSOT: moved here
-/// from the M9b shell so the magnitude lives in game-core beside its consuming
-/// rule `apply_care`, a sibling of `CHALLENGE_TTL_MS` / `RECRUIT_BASE_RATE` /
-/// the EV caps). Documented as a playtest-tunable policy magnitude (M9 spec §6),
-/// not a contract — retuning it is a one-line game-core edit + a value test.
-pub const CARE_BOND_AMOUNT: u8 = 5;
 
 /// Per-monster care cooldown in ms (6 h). Playtest-tunable (M9 spec §6). Moved to
 /// game-core in ptc5e-1 (a single global duration is a sibling of `CHALLENGE_TTL_MS`,
