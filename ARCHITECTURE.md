@@ -2,6 +2,10 @@
 
 The durable design record (links the ADRs in `docs/adr/`; not a milestone
 narrative). The spec corpus is the source of truth; this records the shape.
+The per-milestone sections from `## Decisions` down quote code **as it shipped
+at that milestone**: entries predating the 2026-08-16 SDK upgrade show 1.x
+SpacetimeDB spellings (`#[table(name = x)]`, `ctx.sender` as a field) that no
+longer compile. Current syntax is 2.x — see ADR-0197 and `AGENTS.md`.
 
 ## The spine (load-bearing, do not "simplify")
 
@@ -22,7 +26,7 @@ effectful shells.
   the `spacetimedb` feature (the feature-isolation eval proves it).
 - **`server-module`** — the SpacetimeDB module (crate 2.8.1 / CLI 2.8.1 —
   kept in lockstep; the crate version IS the product version, ADR-0197). Reducers are
-  THIN: validate `ctx.sender` + legality → delegate to `game-core` → write tables;
+  THIN: validate `ctx.sender()` + legality → delegate to `game-core` → write tables;
   reject with `Err`, never clamp. Shared types flatten into table columns.
 - **`sim-harness`** — headless, deterministic, multi-client driver (injected
   clock + seed) with a seeded netcode `Link` (latency/loss/reorder) for in-CI
@@ -121,8 +125,9 @@ latch + party-slot sentinel routing, `battleView`'s bait-id parse, `boxView`'s
 nickname-changed guard) — e2e-validated today; extracting it into pure cores so it is
 unit-covered is a separate client slice (M-infra-c does not touch `client/src` logic).
 **e2e dev_reducers publish topology** (M13.5h, ADR-0086): the CI `e2e` job pre-builds
-the module wasm with `--features dev_reducers` (spacetime 2.6 `publish` has no
-cargo-feature passthrough — ADR-0054) and hands the artifact to
+the module wasm with `--features dev_reducers` (`publish` has no cargo-feature
+passthrough — ADR-0054, premise corrected by ADR-0197 FF2: a hidden
+`build --features` does exist; `--bin-path` is kept deliberately) and hands the artifact to
 `client/e2e/global-setup.ts` via `MR_DEV_MODULE_WASM`; when set, global-setup
 publishes it with `--bin-path` instead of `--module-path` (unset ⇒ the plain publish,
 local runs unchanged). `spec-gap-revival.eval.mjs` now enforces mechanically that no
@@ -435,7 +440,7 @@ Pure, deterministic rule layer for monster individuality and progression.
 
 - **`types`** — value objects: `IVs` (0–31, custom Deserialize), `EVs` (252/510
   caps, custom Deserialize), `Nature` (25-variant 5×5 grid), `Level` (1–100,
-  custom Deserialize), `Xp`, `Bond`, `StatBlock`, `MonsterInstance`. Parse-don't-
+  custom Deserialize), `Xp`, `StatBlock`, `MonsterInstance`. Parse-don't-
   validate: invariants enforced at construction AND deserialization boundaries.
 - **`rules`** — integer-only stat derivation (u32 intermediates, truncating
   division, no floats → native/wasm parity). HP formula: `((2*base + iv + ev/4)
@@ -737,7 +742,7 @@ public additive owner-scoped table; bait classified by data.
 
 M9 closed the "tame → raise" arc: originally bond accrual via care (Bond retired at EG5 — `care` now credits Trust, EG2/ADR-0175/0177), EV training via consumables, and NPC healing.
 
-- **Pure rules (game-core):** `evaluate_care(last_care_at_ms, now) → Result<(), String>` (cooldown-only seam since EG5/ADR-0177 — Bond retired; lives in `server-module/src/raising.rs`, delegating to the shared `is_cooldown_ready` SSOT, the same shape as `evaluate_heal`); `evaluate_train(monster, item_def) → Result<TrainResult>` (SSOT via `focus_train`: EV-grant capped at 252/510, `current_hp` never written per ADR-0058); `evaluate_heal` seam (HP + status restore). The care magnitudes `CARE_BOND_AMOUNT`/`CARE_COOLDOWN_MS` and the cooldown-ready predicate `is_cooldown_ready(last, now, cooldown) = now.saturating_sub(last) >= cooldown` live in `game-core/src/raising/rules.rs` (ptc5e, ADR-0140) — one SSOT predicate shared by both the care and heal cooldown gates (siblings of `CHALLENGE_TTL_MS`/`is_challenge_stale`).
+- **Pure rules (game-core):** `evaluate_care(last_care_at_ms, now) → Result<(), String>` (cooldown-only seam since EG5/ADR-0177 — Bond retired; lives in `server-module/src/raising.rs`, delegating to the shared `is_cooldown_ready` SSOT, the same shape as `evaluate_heal`); `evaluate_train(monster, item_def) → Result<TrainResult>` (SSOT via `focus_train`: EV-grant capped at 252/510, `current_hp` never written per ADR-0058); `evaluate_heal` seam (HP + status restore). The care magnitude `CARE_COOLDOWN_MS` and the cooldown-ready predicate `is_cooldown_ready(last, now, cooldown) = now.saturating_sub(last) >= cooldown` live in `game-core/src/raising/rules.rs` (ptc5e, ADR-0140) — one SSOT predicate shared by both the care and heal cooldown gates (siblings of `CHALLENGE_TTL_MS`/`is_challenge_stale`).
 - **Server — `raising.rs`:** `care` reducer (ownership-checked → `evaluate_care` cooldown gate → Trust-favorable increment + `trust_tier` recompute + `accrue_quality_time` + `check_and_evolve`, EG2/ADR-0175; cooldown from `ctx.timestamp` via the shared `is_cooldown_ready` seam; `last_care_at_ms: i64` additive column on `monster`); `train` reducer (ownership-checked; decision-before-`consume_one` ordering: reject never charges bait; calls `evaluate_train` then `consume_one`); `heal_party` reducer (in-battle SideA-won-only guard, zone + F7 position guards, full HP restore, upsert cooldown via the shared `is_cooldown_ready` seam — M12b, ADR-0069). Both `care` and `train` also carry the both-role ongoing-battle guard `is_in_ongoing_battle(ctx, ctx.sender)` (same SSOT helper as `heal_party`), rejecting mid-battle to close the bounded HP-laundering path where a mid-battle EV bump would inflate the in-battle level-up heal (ptc5a, ADR-0136 amends ADR-0122 §D7). Item definitions extended: `train_stat: Option<StatKind>` + `train_amount` additive columns; item id 2 = "Power Root" (first training food, CONTENT_VERSION 1→2).
 - **Server — `inventory.rs`:** `grant_item`/`consume_one` — the single item-mutation surface (ADR-0059): every grant/consume path for the `inventory` table routes through these two helpers, enforcing the single-stack-per-`(owner, item_id)` discipline and delete-at-zero / capped qty.
 - **Client (M9c):** `raisingModel.ts` (pure subscription view — verbatim server stats, `canTrain` data-driven from `item_row.train_stat`, owner-filtered `ownInventory` deep-copy + `itemDefs` structure-copy); `raisingView.ts` (text overlay, coverage-excluded); 'I' key toggle with mutual exclusion (box/battle supersede per ADR-0014). No new ADR for client (pure subscription pattern, ADR-0016).
@@ -989,7 +994,8 @@ close gate (verified at M8.9d):** `bindings-drift` = 0 (committed
 `schema-snapshot` unchanged (15 tables), and `content-parity` green (the five
 `m8_9e_*_migration_parity` tests reproduce the pre-migration rows in order).
 **M9b** (raising server — `care` reducer: bond accrual + cooldown via `evaluate_care` seam →
-`apply_care` game-core SSOT; `train` reducer: EV-grant food spend via `evaluate_train` →
+`apply_care` game-core SSOT — bond accrual retired at EG5/ADR-0177 D3, and `apply_care`/`Bond`/
+`CareError`/`CARE_BOND_AMOUNT` deleted from game-core at 16r-g; `train` reducer: EV-grant food spend via `evaluate_train` →
 `focus_train`; `last_care_at_ms: i64` additive column on `monster`; consume-after-decision
 ordering; ADR-0058/0059; raising-reducer-security eval extended) complete.
 **M9c** (raising client — pure `raisingModel` subscription view, `canTrain` data-driven from

@@ -1,5 +1,5 @@
-//! Raising value types — the focus-training result and the reject-not-clamp
-//! error enums. Pure data: no I/O, no clock, no RNG (ADR-0003 / ADR-0058).
+//! Raising value types — the focus-training result and its reject-not-clamp
+//! error enum. Pure data: no I/O, no clock, no RNG (ADR-0003 / ADR-0058).
 
 use crate::monster::types::{EVs, StatBlock};
 
@@ -27,14 +27,5 @@ pub enum FocusTrainError {
     BudgetExhausted,
     /// The food grants nothing (`amount == 0`) — a content/contract error,
     /// checked before the cap guards (ADR-0058 §2: input-validity precedence).
-    NoEffect,
-}
-
-/// Why a care application was rejected (reject-not-clamp, ADR-0058 §3).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum CareError {
-    /// Bond is already at the maximum (`u8::MAX` = 255) — no headroom.
-    AtMaxBond,
-    /// The care action raises bond by nothing (`amount == 0`).
     NoEffect,
 }

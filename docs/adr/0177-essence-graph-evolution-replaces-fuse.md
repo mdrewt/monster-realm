@@ -211,7 +211,7 @@ server auto-applied it (EG2-11) before the roster could render one.
 
 ## Consequences / follow-ups (named, non-blocking)
 
-- Retire `Bond`/`apply_care`/`CareError`/`CARE_BOND_AMOUNT` from game-core (D3).
+- Retire `Bond`/`apply_care`/`CareError`/`CARE_BOND_AMOUNT` from game-core (D3). **DELIVERED 2026-08-22 (slice 16r-g).** All four symbols are deleted from `monster/types.rs` and `raising/{rules,types}.rs`, together with their `lib.rs` / `monster/mod.rs` / `raising/mod.rs` re-exports and the 8 tests whose only subject was a deleted symbol (7 in `raising/m9a_gating_tests.rs`, plus `bond_default_is_70` in `monster/types.rs`); `CARE_COOLDOWN_MS`, `is_cooldown_ready`, `focus_train`, `FocusTrainError` and `FocusTrainResult` are unaffected. D3's judgement that no gate fires on unused `pub` items in a lib crate still holds — the removal is gated by the compiler plus the existing suite, not by a new eval.
 - Consider exporting the gate-comparison predicate via client-wasm; delete the TS port (D11).
 - Baseline-edit laundering + no eval-set manifest: pre-existing mechanism-class
   limitations (PR review is the control) — unchanged, noted (D4).

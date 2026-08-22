@@ -291,13 +291,18 @@ dev-reducer-leak check into a no-op had the parser's fail-loud guard not caught 
 - (+) The module-SDK port is now a measured, bounded slice (two transforms + scanner updates)
   instead of an unknown.
 - (+) The module is on the current SDK: 2.x context capabilities, view primary keys and stable
-  Procedures all become available, and every doc an agent can fetch now matches the code.
+  Procedures all become **available** (available, **not yet adopted** — see below), and every
+  doc an agent can fetch now matches the code.
 - (−) Agents must write **2.x** syntax; anything copied from a pre-2026-08-16 ADR, memory card or
   commit will not compile. Both SpacetimeDB skills now lead with the three changed spellings.
 - (+) `just playtest-publish` keeps working: the `describe --json` parser now accepts V9 and V10.
 - (→) Follow-ups: bump npm `spacetimedb` to 2.8.1 behind a live reconnect check (D2b); re-verify
   `mr-trace-relay` breadcrumbs against 2.8.0's quieter host logs; re-adjudicate M20 OBS-48 now
-  that Procedures are stable (FF4); revisit `15r-sec-a` now that view primary keys exist; consider
+  that Procedures are stable (FF4); revisit `15r-sec-a` now that view primary keys exist — note
+  they are **available but NOT yet adopted**: none of the five `#[spacetimedb::view(…)]`
+  declarations in `schema.rs` carries `primary_key`, so `client/src/net/store.ts`'s hand-rolled
+  insert/delete reconciliation (ADR-0194) remains load-bearing; adoption is tracked as the
+  `M-stdb-2x-module-sdk` **sdk-d** opportunistic follow-up; consider
   the new `spacetime_scheduled_function_delay_seconds` metric and `spacetime lock` for the
   playtest DB (M20); consider `spacetime sql --format json`, which may unblock the
   `just playtest-report` JSON gap recorded in the 2026-07-25 playtest-gate decision.

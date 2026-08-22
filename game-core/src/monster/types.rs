@@ -497,28 +497,6 @@ impl Nature {
     }
 }
 
-/// Bond — friendship/affection, full u8 range [0, 255].
-#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
-pub struct Bond(u8);
-
-impl Bond {
-    #[must_use]
-    pub fn new(val: u8) -> Bond {
-        Bond(val)
-    }
-
-    /// The default starting bond for a newly obtained monster.
-    #[must_use]
-    pub fn default_bond() -> Bond {
-        Bond(70)
-    }
-
-    #[must_use]
-    pub fn value(&self) -> u8 {
-        self.0
-    }
-}
-
 /// Level — [1, 100].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 pub struct Level(u8);
@@ -844,15 +822,6 @@ mod tests {
         assert_eq!(Nature::from_index(25).kind(), Nature::from_index(0).kind());
         assert_eq!(Nature::from_index(50).kind(), Nature::from_index(0).kind());
         assert_eq!(Nature::from_index(26).kind(), Nature::from_index(1).kind());
-    }
-
-    // --- Bond --------------------------------------------------------------
-
-    /// #19: default_bond is 70.
-    /// Kills: an impl with a wrong default bond value.
-    #[test]
-    fn bond_default_is_70() {
-        assert_eq!(Bond::default_bond().value(), 70);
     }
 
     // --- StatBlock ---------------------------------------------------------
