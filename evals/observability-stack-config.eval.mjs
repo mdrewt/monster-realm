@@ -3560,7 +3560,9 @@ export function checkSchedulerRecordingRules(recordingRulesText) {
   }
   const edgeGroups = promByClauses(edgeRules[0].rule.expr);
   if (edgeGroups === null || !edgeGroups.some((g) => g.length === 1 && g[0] === 'function')) {
-    return fail(`G13a: rule \`${edgeRules[0].rule.name}\` does not aggregate \`sum by (function)\``);
+    return fail(
+      `G13a: rule \`${edgeRules[0].rule.name}\` does not aggregate \`sum by (function)\``,
+    );
   }
 
   const ratioRules = parsed.rules.filter((r) => r.name === SCHEDULED_LATE_SERIES);
@@ -3655,7 +3657,9 @@ export function checkSchedulerRecordingRules(recordingRulesText) {
 function schedulerAlertRule(alertRulesText) {
   const parsed = parseAlertingRules(alertRulesText);
   if (!parsed.ok) return fail(parsed.detail);
-  const matches = parsed.rules.filter((r) => r.exprs.some((e) => e.includes(SCHEDULED_LATE_SERIES)));
+  const matches = parsed.rules.filter((r) =>
+    r.exprs.some((e) => e.includes(SCHEDULED_LATE_SERIES)),
+  );
   if (matches.length !== 1) {
     return fail(
       `found ${matches.length} alert rules whose \`expr:\` references \`${SCHEDULED_LATE_SERIES}\`; ` +
@@ -3715,7 +3719,7 @@ export function checkSchedulerLatencyPanel(dashboardJsonText, alertRulesText) {
 
   const box = gridBox(panel.gridPos);
   if (box === null) {
-    return fail("G13b: the scheduler-lateness panel has no readable `gridPos` rectangle");
+    return fail('G13b: the scheduler-lateness panel has no readable `gridPos` rectangle');
   }
   for (const other of panelRes.allPanels) {
     if (other === panel) continue;
@@ -3806,7 +3810,9 @@ export function checkSchedulerAlertRule(alertRulesText, recordingRulesText) {
   const parsed = parseAlertingRules(alertRulesText);
   if (!parsed.ok) return fail(`G13c: ${parsed.detail}`);
 
-  const matches = parsed.rules.filter((r) => r.exprs.some((e) => e.includes(SCHEDULED_LATE_SERIES)));
+  const matches = parsed.rules.filter((r) =>
+    r.exprs.some((e) => e.includes(SCHEDULED_LATE_SERIES)),
+  );
   if (matches.length !== 1) {
     return fail(
       `G13c: found ${matches.length} alert rules whose \`expr:\` references ` +
@@ -3991,7 +3997,11 @@ function schedulerOnTimeLeValue(recordingRulesText) {
  * threshold value, never two independently maintained literals) plus the
  * bucket-edge LATTICE (the on-time selector's `le=` must be a REAL edge).
  */
-export function checkSchedulerNumberIdentity(alertRulesText, dashboardJsonText, recordingRulesText) {
+export function checkSchedulerNumberIdentity(
+  alertRulesText,
+  dashboardJsonText,
+  recordingRulesText,
+) {
   const alertParam = schedulerAlertEvaluatorParam(alertRulesText);
   if (!alertParam.ok) return fail(`G13d: ${alertParam.detail}`);
 
@@ -4780,7 +4790,13 @@ function schedulerRecordingDoc(o = {}) {
     window: '5m',
     ...o.onTime,
   };
-  const r = { name: SCHEDULED_LATE_SERIES, expr: null, omit: false, extraMatcher: false, ...o.ratio };
+  const r = {
+    name: SCHEDULED_LATE_SERIES,
+    expr: null,
+    omit: false,
+    extraMatcher: false,
+    ...o.ratio,
+  };
 
   const lines = ['groups:', '  - name: mr-scheduler', '    interval: 15s', '    rules:'];
   if (s.omit !== true) {
@@ -4812,7 +4828,7 @@ const SCHEDULER_PROVENANCE_BLOCK = [
   '#       0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60, 300, +Inf -- there is no 0.03 edge.',
   '#   (2) p95 on the measured data lands inside (0.001, 0.005]; 158/15186 invocations (1.04%)',
   '#       exceeded 50 ms and 48 exceeded 60 SECONDS -- p95 is blind to the tail.',
-  '#   (3) 30 ms is SpacetimeDB\'s OWN late-start `log::warn!` threshold, a DIFFERENT instrument,',
+  "#   (3) 30 ms is SpacetimeDB's OWN late-start `log::warn!` threshold, a DIFFERENT instrument,",
   '#       and is deliberately not a bucket edge.',
 ].join('\n');
 
@@ -4882,12 +4898,10 @@ function schedulerDashboardFixture(o = {}) {
           unit: o.unit ?? 'percentunit',
           thresholds: {
             mode: 'absolute',
-            steps:
-              o.steps ??
-              [
-                { color: 'green', value: null },
-                { color: 'red', value: Number(o.thresholdValue ?? SCHEDULED_ALERT_PARAM_DEFAULT) },
-              ],
+            steps: o.steps ?? [
+              { color: 'green', value: null },
+              { color: 'red', value: Number(o.thresholdValue ?? SCHEDULED_ALERT_PARAM_DEFAULT) },
+            ],
           },
         },
       },
@@ -6118,7 +6132,9 @@ const TEETH = [
       }
 
       const fifthName = [...SCHEDULED_FN_NAMES, 'battle_matchmaker'];
-      if (checkSchedulerRecordingRules(schedulerRecordingDoc({ starts: { names: fifthName } })).ok) {
+      if (
+        checkSchedulerRecordingRules(schedulerRecordingDoc({ starts: { names: fifthName } })).ok
+      ) {
         return 'a FIFTH function name added to the starts selector was accepted — set equality, never a count';
       }
       const threeOfFour = SCHEDULED_FN_NAMES.slice(0, 3);
@@ -6150,7 +6166,9 @@ const TEETH = [
         return 'the whole starts rule commented out was accepted';
       }
 
-      if (checkSchedulerRecordingRules(schedulerRecordingDoc({ ratio: { extraMatcher: true } })).ok) {
+      if (
+        checkSchedulerRecordingRules(schedulerRecordingDoc({ ratio: { extraMatcher: true } })).ok
+      ) {
         return 'the ratio rule inlining its own `function=~` matcher was accepted — the allowlist must appear exactly twice in the file, never restated a third time';
       }
 
@@ -6184,7 +6202,9 @@ const TEETH = [
       if (checkSchedulerLatencyPanel(schedulerDashboardFixture({ expr: '' }), goodAlert).ok) {
         return 'a panel with an EMPTY `expr` was accepted as targeting the ratio series';
       }
-      if (checkSchedulerLatencyPanel(schedulerDashboardFixture({ omitPanel: true }), goodAlert).ok) {
+      if (
+        checkSchedulerLatencyPanel(schedulerDashboardFixture({ omitPanel: true }), goodAlert).ok
+      ) {
         return 'a dashboard with NO scheduler-lateness panel at all was accepted';
       }
 
@@ -6201,12 +6221,17 @@ const TEETH = [
         return `the overlap failure does not name the mechanism: ${overlapping.detail}`;
       }
 
-      const duplicateId = checkSchedulerLatencyPanel(schedulerDashboardFixture({ id: 1 }), goodAlert);
+      const duplicateId = checkSchedulerLatencyPanel(
+        schedulerDashboardFixture({ id: 1 }),
+        goodAlert,
+      );
       if (duplicateId.ok) return 'a scheduler panel reusing an EXISTING panel `id` was accepted';
 
       if (
-        checkSchedulerLatencyPanel(schedulerDashboardFixture({ legendFormat: 'lateness' }), goodAlert)
-          .ok
+        checkSchedulerLatencyPanel(
+          schedulerDashboardFixture({ legendFormat: 'lateness' }),
+          goodAlert,
+        ).ok
       ) {
         return 'a `legendFormat` missing `{{function}}` was accepted';
       }
@@ -6241,16 +6266,24 @@ const TEETH = [
       if (checkSchedulerAlertRule(schedulerAlertRulesDoc({ omitRule: true }), goodRecording).ok) {
         return 'a rules.yml with no scheduler alert at all was accepted';
       }
-      if (checkSchedulerAlertRule(schedulerAlertRulesDoc({ omitNoDataState: true }), goodRecording).ok) {
+      if (
+        checkSchedulerAlertRule(schedulerAlertRulesDoc({ omitNoDataState: true }), goodRecording).ok
+      ) {
         return '`noDataState:` ABSENT was accepted';
       }
-      if (checkSchedulerAlertRule(schedulerAlertRulesDoc({ noDataState: 'NoData' }), goodRecording).ok) {
+      if (
+        checkSchedulerAlertRule(schedulerAlertRulesDoc({ noDataState: 'NoData' }), goodRecording).ok
+      ) {
         return 'an explicit `noDataState: NoData` was accepted — it fires on a legitimately quiet window';
       }
-      if (checkSchedulerAlertRule(schedulerAlertRulesDoc({ evaluatorType: 'lt' }), goodRecording).ok) {
+      if (
+        checkSchedulerAlertRule(schedulerAlertRulesDoc({ evaluatorType: 'lt' }), goodRecording).ok
+      ) {
         return 'a `lt` evaluator was accepted — a delay alert firing when lateness is LOW is inverted';
       }
-      if (checkSchedulerAlertRule(schedulerAlertRulesDoc({ severity: 'critical' }), goodRecording).ok) {
+      if (
+        checkSchedulerAlertRule(schedulerAlertRulesDoc({ severity: 'critical' }), goodRecording).ok
+      ) {
         return '`severity: critical` was accepted, expected `warning`';
       }
       if (checkSchedulerAlertRule(schedulerAlertRulesDoc({ isPaused: 'true' }), goodRecording).ok) {
@@ -6265,11 +6298,15 @@ const TEETH = [
         schedulerAlertRulesDoc({ condition: 'Z' }),
         goodRecording,
       );
-      if (dangling.ok) return 'a `condition:` naming a refId no `data:` entry declares was accepted';
+      if (dangling.ok)
+        return 'a `condition:` naming a refId no `data:` entry declares was accepted';
       if (!dangling.detail.includes('DANGLING')) {
         return `the dangling-refId failure does not name the mechanism: ${dangling.detail}`;
       }
-      if (checkSchedulerAlertRule(schedulerAlertRulesDoc({ datasourceUid: 'mr-loki' }), goodRecording).ok) {
+      if (
+        checkSchedulerAlertRule(schedulerAlertRulesDoc({ datasourceUid: 'mr-loki' }), goodRecording)
+          .ok
+      ) {
         return "a query datasource that does not match AlloyIngestStalled's was accepted";
       }
 
@@ -6333,7 +6370,7 @@ const TEETH = [
         schedulerRecordingDoc({ starts: { window: '10m' } }),
       );
       if (widerWindow.ok) {
-        return "a 10m recorded rate window paired with the committed 10m `for:` was accepted — `for:` must be STRICTLY greater";
+        return 'a 10m recorded rate window paired with the committed 10m `for:` was accepted — `for:` must be STRICTLY greater';
       }
       if (!widerWindow.detail.includes('STRICTLY GREATER')) {
         return `the wider-window leg was rejected for the WRONG reason: ${widerWindow.detail}`;
@@ -7157,8 +7194,8 @@ export async function observabilityStackConfigEval() {
       `[${SCHEDULED_FN_NAMES.join(', ')}] allowlist with no reducer= harmonisation trap and the ` +
       'ratio rule derives without a third matcher; G13b the dashboard panel is unique, ' +
       "non-overlapping, unit percentunit and its threshold equals the alert's own param; G13c " +
-      "the ScheduledFunctionDelayed alert is warning/not-paused/noDataState OK with a `for:` " +
-      "DERIVED as a multiple of its group interval and strictly greater than the recorded 5m " +
+      'the ScheduledFunctionDelayed alert is warning/not-paused/noDataState OK with a `for:` ' +
+      'DERIVED as a multiple of its group interval and strictly greater than the recorded 5m ' +
       'rate window; G13d the alert param and panel threshold are the SAME number and the ' +
       `on-time \`le=\` sits on the measured bucket lattice; G13e the numbered-provenance block ` +
       `names 30ms as SpacetimeDB's own log::warn! threshold, not a bucket edge; ${liveNote}`,
@@ -7187,4 +7224,3 @@ if (path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)) {
   );
   process.exit(result.pass ? 0 : 1);
 }
-
