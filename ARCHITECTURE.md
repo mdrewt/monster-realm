@@ -2,6 +2,10 @@
 
 The durable design record (links the ADRs in `docs/adr/`; not a milestone
 narrative). The spec corpus is the source of truth; this records the shape.
+The per-milestone sections from `## Decisions` down quote code **as it shipped
+at that milestone**: entries predating the 2026-08-16 SDK upgrade show 1.x
+SpacetimeDB spellings (`#[table(name = x)]`, `ctx.sender` as a field) that no
+longer compile. Current syntax is 2.x — see ADR-0197 and `AGENTS.md`.
 
 ## The spine (load-bearing, do not "simplify")
 
@@ -22,7 +26,7 @@ effectful shells.
   the `spacetimedb` feature (the feature-isolation eval proves it).
 - **`server-module`** — the SpacetimeDB module (crate 2.8.1 / CLI 2.8.1 —
   kept in lockstep; the crate version IS the product version, ADR-0197). Reducers are
-  THIN: validate `ctx.sender` + legality → delegate to `game-core` → write tables;
+  THIN: validate `ctx.sender()` + legality → delegate to `game-core` → write tables;
   reject with `Err`, never clamp. Shared types flatten into table columns.
 - **`sim-harness`** — headless, deterministic, multi-client driver (injected
   clock + seed) with a seeded netcode `Link` (latency/loss/reorder) for in-CI
