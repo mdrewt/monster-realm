@@ -92,6 +92,14 @@ const NUMERIC_ROW_KEYS = ['event_id', 'kind', 'species_id', 'hp_permille', 'bait
 //   - Identity arrives as a ONE-ELEMENT array holding the hex string, which is
 //     unwrapped here. A two-element array through String(...) yields "a,b" and
 //     would silently MERGE two distinct players into one aggregation group key.
+//     A BARE string is rejected too: `decodeSqlJson` never unwraps, so the wire
+//     shape is always the array (ADR-0197 D20) and the bare-string tolerance was
+//     an untested door onto arbitrary garbage. An EMPTY string is rejected for
+//     the same merge reason — it is never a real player, and two malformed rows
+//     both yielding '' would collapse into ONE group key.
+//   - Every rejection message below reports the SHAPE ONLY, never the value:
+//     `playtest_event` is PRIVATE per-identity data and the driver prints these
+//     messages to stderr/CI logs (PII firewall, ADR-0131).
 //
 // Accepted residual: u64 values above 2^53 lose precision inside JSON.parse
 // before this fn ever sees them; `event_id` is `#[auto_inc]` from 1, so that is
@@ -122,21 +130,29 @@ export function coerceRow(raw) {
   }
 
   const rawIdentity = raw.identity;
-  let identity;
-  if (typeof rawIdentity === 'string') {
-    identity = rawIdentity;
-  } else if (
-    Array.isArray(rawIdentity) &&
-    rawIdentity.length === 1 &&
-    typeof rawIdentity[0] === 'string'
+  if (
+    !Array.isArray(rawIdentity) ||
+    rawIdentity.length !== 1 ||
+    typeof rawIdentity[0] !== 'string' ||
+    rawIdentity[0].length === 0
   ) {
-    identity = rawIdentity[0];
-  } else {
+    // SHAPE ONLY in the message — never the contents (PII firewall): this error
+    // reaches stderr/CI logs through the driver's `console.error`.
+    let shape;
+    if (!Array.isArray(rawIdentity)) {
+      shape = `a non-array value of type ${typeof rawIdentity}`;
+    } else if (rawIdentity.length !== 1) {
+      shape = `an array of length ${rawIdentity.length}`;
+    } else if (typeof rawIdentity[0] !== 'string') {
+      shape = `a one-element array holding a value of type ${typeof rawIdentity[0]}`;
+    } else {
+      shape = 'a one-element array holding an EMPTY string';
+    }
     throw new Error(
-      `playtest-report: column "identity" must be a hex string or a ONE-element array holding one (got ${JSON.stringify(rawIdentity)}) — anything else would merge distinct players into one aggregation group`,
+      `playtest-report: column "identity" must be a ONE-element array holding a non-empty hex string (got ${shape}) — anything else would merge distinct players into one aggregation group`,
     );
   }
-  out.identity = identity;
+  out.identity = rawIdentity[0];
 
   if (typeof raw.success !== 'boolean') {
     throw new Error(
@@ -203,10 +219,16 @@ export function decodeSqlJson(stdout) {
   try {
     envelope = JSON.parse(stdout);
   } catch {
-    const received =
-      typeof stdout === 'string' ? stdout.slice(0, 200) : String(stdout).slice(0, 200);
+    // NON-CONTENT diagnostics only. The body is the raw response of a query
+    // against the PRIVATE `playtest_event` table — `identity` is column 3 of 7,
+    // so it appears early in every row and ANY slice of a truncated/garbled body
+    // would leak a real identity into stderr/CI logs (PII firewall, ADR-0131).
+    // The underlying SyntaxError is dropped for the same reason: Node's
+    // JSON.parse messages quote the surrounding source text.
+    const text = typeof stdout === 'string' ? stdout : String(stdout);
+    const emptyNote = text.trim().length === 0 ? ' (empty or whitespace-only)' : '';
     throw new Error(
-      `playtest-report: the \`spacetime\` SQL query did not return valid JSON — received: ${JSON.stringify(received)}`,
+      `playtest-report: the \`spacetime\` SQL query did not return valid JSON; ${text.length} char(s) received${emptyNote} — the body is not echoed here because it carries raw identities`,
     );
   }
 
