@@ -1719,6 +1719,19 @@ function parseAlertingRules(alertRulesText) {
         const di = indentOf(entry[0]);
         const refId = scopedScalar(entry, 'refId', di, `a \`data:\` entry of rule \`${rule.uid}\``);
         if (!refId.ok) return refId;
+        // Round 3 (Gap 3, shared with G13c via this SAME parser): a SECOND
+        // `data:` entry carrying the SAME refId. Which one a threshold node's
+        // `expression:`/`condition:` actually resolves to is
+        // implementation-defined, so a duplicate is never valid — measured:
+        // adding a second `refId: A` alongside the real one survived every
+        // check above (each entry is independently well-formed).
+        if (rule.data.some((d) => d.refId === refId.value)) {
+          return fail(
+            `rule \`${rule.uid}\` declares 2+ \`data:\` entries with \`refId: ${refId.value}\` — ` +
+              "which one wins for a threshold node's `expression:` or `condition:` reference is " +
+              'implementation-defined, so a duplicate refId is never valid',
+          );
+        }
         const ds = scopedScalar(
           entry,
           'datasourceUid',
