@@ -90,7 +90,13 @@ jobs:
         # not shipped product code — exclude it from the product SAST gate so
         # tooling commits cannot red product CI. --exclude is subtractive only
         # (unlike a bare .semgrepignore, which replaces Semgrep's defaults).
-        run: pipx run semgrep scan --config auto --error --exclude '.claude'
+        # github-actions-mutable-action-tag excluded: M8.5d (docs/m8.5d-plan.md)
+        # removed the project's own SHA-pinning requirement 2026-08-21 — version
+        # tags (@v2, @stable, ...) are now accepted policy — but this generic
+        # `auto`-config rule enforces the same thing independently and was left
+        # blocking master CI since. --exclude-rule is a targeted rule opt-out,
+        # not a blanket weakening of the SAST gate.
+        run: pipx run semgrep scan --config auto --error --exclude '.claude' --exclude-rule 'yaml.github-actions.security.github-actions-mutable-action-tag.github-actions-mutable-action-tag'
       - name: SBOM
         uses: anchore/sbom-action@e22c389904149dbc22b58101806040fa8d37a610 # v0
 
