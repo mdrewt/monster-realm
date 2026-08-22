@@ -359,7 +359,7 @@ export const PROFILES = [
     // the RISKIEST to touch, because unlike a test runner's pass wall, every line
     // is content the agent explicitly asked for.
     //
-    // So this profile removes NOTHING. It only caps: the first CAP matches stream
+    // So this profile removes no MATCH CONTENT. It only caps: the first CAP matches stream
     // through untouched, and anything past that is counted and reported. That is
     // strictly better than the status quo, which is Claude Code truncating the
     // result at 30 000 characters mid-line with no indication of how much was lost.
@@ -377,6 +377,10 @@ export const PROFILES = [
       ),
     targeted: () => false,
     capKeptAt: 400,
+    // No carriage-return collapse here. That collapse exists for progress bars, and a
+    // grep hit on a file containing a CR is content, not ceremony — without this the
+    // profile silently truncated `data.txt:3: before<CR>after` to `after`.
+    preserveContent: true,
     suppressDeferNotice: true,
     rules: [],
     summarise: (state) => {

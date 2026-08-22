@@ -36,9 +36,16 @@ export function stripAnsi(s) {
  * The CR collapse is load-bearing, not cosmetic: npm, cargo and wasm-pack all
  * redraw a spinner by rewriting one physical line, so treating each frame as a
  * line would MULTIPLY the output this hook exists to shrink.
+ *
+ * `preserveContent` turns the CR collapse OFF. A tool's progress bar is ceremony, but
+ * a grep hit on a file that CONTAINS a carriage return is content: measured, the
+ * search profile turned `data.txt:3: before\rafter` into `after`, silently losing the
+ * first half of a line in the one profile that promises to remove nothing. ANSI is
+ * still stripped either way — an escape sequence is never content.
  */
-export function normaliseLine(line) {
+export function normaliseLine(line, preserveContent = false) {
   const flat = stripAnsi(line).replace(/\r+$/, '');
+  if (preserveContent) return flat;
   const idx = flat.lastIndexOf('\r');
   return idx === -1 ? flat : flat.slice(idx + 1);
 }
@@ -208,6 +215,7 @@ export function createFilter(profile, opts = {}) {
   // explicit keep rule for its summary line, asserted per profile by the test suite.
   let deferredBytes = 0;
   let lastEmittedBlank = false;
+  const preserveContent = Boolean(profile.preserveContent);
 
   function bump(id) {
     state.byRule.set(id, (state.byRule.get(id) ?? 0) + 1);
@@ -218,7 +226,7 @@ export function createFilter(profile, opts = {}) {
 
     /** @returns {string|null} the line to emit now, or null to withhold it */
     push(rawLine) {
-      const line = normaliseLine(rawLine);
+      const line = normaliseLine(rawLine, preserveContent);
       state.total += 1;
 
       let action = null;

@@ -14,7 +14,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, readFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { test } from 'node:test';
@@ -529,13 +529,20 @@ test('a test filter that matched nothing is never mistaken for a green run', () 
   // `cargo test some_typo` EXITS 0. The only line distinguishing it from success is
   // the `N filtered out` tally. An earlier build dropped that whole line shape, which
   // made a typo indistinguishable from a passing run — a false green.
-  const { text } = replay('cargo test nonexistent_filter_typo', [
-    '   Compiling cp v0.1.0 (/x)',
-    '     Running unittests src/lib.rs (target/debug/deps/cp-abc)',
-    'running 0 tests',
-    'test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s',
-  ].join('\n'));
-  assert.match(text, /2 filtered out/, 'the agent must be able to see that its filter matched nothing');
+  const { text } = replay(
+    'cargo test nonexistent_filter_typo',
+    [
+      '   Compiling cp v0.1.0 (/x)',
+      '     Running unittests src/lib.rs (target/debug/deps/cp-abc)',
+      'running 0 tests',
+      'test result: ok. 0 passed; 0 failed; 0 ignored; 0 measured; 2 filtered out; finished in 0.00s',
+    ].join('\n'),
+  );
+  assert.match(
+    text,
+    /2 filtered out/,
+    'the agent must be able to see that its filter matched nothing',
+  );
 });
 
 test('withheld routine lines are NOT replayed after a failure verdict', () => {
@@ -557,12 +564,15 @@ test('withheld routine lines are NOT replayed after a failure verdict', () => {
 test('dependency-graph changes are never treated as build progress', () => {
   // AGENTS.md requires an ADR for a new dependency, so `Adding`/`Removing`/`Locking`
   // report a decision, not progress.
-  const { text } = replay('cargo build --workspace', [
-    '   Compiling serde v1.0.0',
-    '      Adding serde_json v1.0.999',
-    '    Removing tokio v1.40.0',
-    '     Locking 3 packages to latest compatible versions',
-  ].join('\n'));
+  const { text } = replay(
+    'cargo build --workspace',
+    [
+      '   Compiling serde v1.0.0',
+      '      Adding serde_json v1.0.999',
+      '    Removing tokio v1.40.0',
+      '     Locking 3 packages to latest compatible versions',
+    ].join('\n'),
+  );
   assert.ok(!text.includes('Compiling serde'), 'progress is still withheld');
   for (const kept of ['Adding serde_json', 'Removing tokio', 'Locking 3 packages']) {
     assert.ok(text.includes(kept), `dependency change must survive: ${kept}`);
@@ -572,7 +582,10 @@ test('dependency-graph changes are never treated as build progress', () => {
 test('biome prose rules do not eat other tools failure glyphs in the just composite', () => {
   // BIOME's rules are unioned into `just`. An earlier build's prose rule matched
   // `✖` and `⚠`, which belong to other tools' failure and warning lines.
-  const { text } = replay('just ci', ['  ⚠ Deprecated API used in client/src/main.ts', '  ✖ something failed'].join('\n'));
+  const { text } = replay(
+    'just ci',
+    ['  ⚠ Deprecated API used in client/src/main.ts', '  ✖ something failed'].join('\n'),
+  );
   assert.ok(text.includes('⚠ Deprecated API'), 'another tool warning must survive');
   assert.ok(text.includes('✖ something failed'), 'another tool failure must survive');
 });
@@ -593,8 +606,14 @@ test('the escape hatch works after a cd prefix', () => {
   // filtered anyway, because the env prefix was only ever looked for at the very
   // start of the command.
   assert.equal(rewrittenCommand({ command: 'cd client && NOFILTER=1 npm test' }), null);
-  assert.equal(rewrittenCommand({ command: 'cd client && CLAUDE_QUIET_BASH=0 npx vitest run' }), null);
-  assert.ok(rewrittenCommand({ command: 'cd client && npx vitest run' }), 'without the prefix it still filters');
+  assert.equal(
+    rewrittenCommand({ command: 'cd client && CLAUDE_QUIET_BASH=0 npx vitest run' }),
+    null,
+  );
+  assert.ok(
+    rewrittenCommand({ command: 'cd client && npx vitest run' }),
+    'without the prefix it still filters',
+  );
 });
 
 test('the search profile really removes nothing — including blank and -- separators', () => {
@@ -617,7 +636,10 @@ test('a very long command still produces complete, parseable hook JSON', () => {
   });
   const parsed = JSON.parse(res.stdout);
   assert.equal(
-    Buffer.from(parsed.hookSpecificOutput.updatedInput.command.match(/--b64=([A-Za-z0-9_-]+)$/)[1], 'base64url').toString('utf8'),
+    Buffer.from(
+      parsed.hookSpecificOutput.updatedInput.command.match(/--b64=([A-Za-z0-9_-]+)$/)[1],
+      'base64url',
+    ).toString('utf8'),
     long,
   );
 });
@@ -625,7 +647,60 @@ test('a very long command still produces complete, parseable hook JSON', () => {
 test('no source file carries a NUL byte', () => {
   // A raw NUL makes the file binary to git and grep — no line-level diff and no
   // `git grep`, in a repo whose entire review workflow is diffs.
-  for (const f of ['quiet-lib.mjs', 'quiet-profiles.mjs', 'quiet-run.mjs', 'quiet-bash.mjs', 'quiet.test.mjs']) {
+  for (const f of [
+    'quiet-lib.mjs',
+    'quiet-profiles.mjs',
+    'quiet-run.mjs',
+    'quiet-bash.mjs',
+    'quiet.test.mjs',
+  ]) {
     assert.ok(!readFileSync(join(HERE, f)).includes(0), `${f} contains a NUL byte`);
   }
+});
+
+test('the search profile preserves a carriage return inside match content', () => {
+  // The CR collapse exists for progress bars. A grep hit on a file that CONTAINS a
+  // carriage return is content, not ceremony — this silently truncated
+  // `data.txt:3: before<CR>after` to `after` in the one profile that promises to
+  // remove no match content.
+  const line = `data.txt:3: before${String.fromCharCode(13)}after`;
+  const { lines } = replay('grep -rn foo .', line);
+  assert.deepEqual(lines, [line]);
+});
+
+test('progress-bar redraws still collapse everywhere else', () => {
+  const { lines } = replay('npm ci', `10%${String.fromCharCode(13)}100% done`);
+  assert.deepEqual(lines, ['100% done']);
+});
+
+test('the wrapper keeps no cross-run state', () => {
+  // A "verbose on re-run after failure" mode was removed because every safe version
+  // of it changed zero output bytes. Its bookkeeping outlived it: the wrapper kept
+  // reading, pruning and rewriting a shared JSON file on every single command that
+  // nothing ever read back. Dead I/O in the hot path of every filtered command.
+  const src = readFileSync(join(HERE, 'quiet-run.mjs'), 'utf8');
+  for (const gone of ['recent-failures', 'recordOutcome', 'readState', 'RERUN_WINDOW_MS']) {
+    assert.ok(!src.includes(gone), `quiet-run.mjs still carries dead re-run state: ${gone}`);
+  }
+});
+
+test('a command that prints nothing is left byte-identical', () => {
+  // `cargo fmt --all --check` and `tsc --noEmit` are silent when clean, and both run
+  // constantly. A banner there is pure cost with no signal behind it — the filter must
+  // never turn a zero-byte result into a non-zero one. Uses grep-with-no-match as a
+  // deterministic silent command that is guaranteed present and exits non-zero.
+  const dir = mkdtempSync(join(tmpdir(), 'quiet-silent-'));
+  const file = join(dir, 'haystack.txt');
+  writeFileSync(file, 'alpha\nbeta\n');
+  const b64 = Buffer.from(`grep -rn zzz-definitely-no-match ${file}`, 'utf8').toString('base64url');
+  const res = spawnSync(process.execPath, [RUNNER, '--sid=t', `--b64=${b64}`], {
+    encoding: 'utf8',
+    env: WRAPPER_ENV,
+  });
+  assert.equal(res.status, 1, 'grep with no match exits 1, and that must pass through');
+  assert.equal(
+    res.stdout,
+    '',
+    `a silent command must stay silent, got: ${JSON.stringify(res.stdout)}`,
+  );
 });

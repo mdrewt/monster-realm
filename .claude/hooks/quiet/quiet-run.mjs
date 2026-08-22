@@ -25,16 +25,7 @@
 
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import {
-  createWriteStream,
-  mkdirSync,
-  readdirSync,
-  readFileSync,
-  renameSync,
-  statSync,
-  unlinkSync,
-  writeFileSync,
-} from 'node:fs';
+import { createWriteStream, mkdirSync, readdirSync, statSync, unlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -49,7 +40,6 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const LOG_ROOT = process.env.CLAUDE_QUIET_LOG_ROOT || join(tmpdir(), 'claude-quiet-logs');
 const LOG_MAX_AGE_MS = 3 * 24 * 60 * 60 * 1000;
 const LOG_MAX_BYTES = 512 * 1024 * 1024;
-const RERUN_WINDOW_MS = 30 * 60 * 1000;
 
 function arg(name) {
   const hit = process.argv.slice(2).find((a) => a.startsWith(`--${name}=`));
@@ -67,7 +57,8 @@ function die(code, message) {
 }
 
 /** Bound anything echoed back into an error message. */
-const clip = (text, max = 400) => (text.length > max ? `${text.slice(0, max)}… (${text.length} chars)` : text);
+const clip = (text, max = 400) =>
+  text.length > max ? `${text.slice(0, max)}… (${text.length} chars)` : text;
 
 // --- decode -----------------------------------------------------------------
 
@@ -191,47 +182,6 @@ function pruneLogs() {
   }
 }
 
-// --- verbose (re-run after failure) -----------------------------------------
-//
-// An agent re-running a command it just saw fail is debugging. Hand it more, but
-// do NOT disable the filter: a red `just ci` re-run would otherwise dump the full
-// green compile wall again, which is exactly the cost this hook exists to remove.
-
-const stateFile = join(LOG_ROOT, 'recent-failures.json');
-function readState() {
-  try {
-    return JSON.parse(readFileSync(stateFile, 'utf8'));
-  } catch {
-    return {};
-  }
-}
-function recordOutcome(key, code) {
-  try {
-    const st = readState();
-    const now = Date.now();
-    for (const [k, v] of Object.entries(st)) if (now - v > RERUN_WINDOW_MS) delete st[k];
-    if (code === 0) delete st[key];
-    else st[key] = now;
-    // Write-then-rename: the supervisor runs several agents concurrently, and a
-    // half-written state file would be read back as "no recent failure" at best,
-    // or throw at worst. rename(2) within one directory is atomic.
-    const tmp = `${stateFile}.${process.pid}.tmp`;
-    writeFileSync(tmp, JSON.stringify(st));
-    renameSync(tmp, stateFile);
-  } catch {
-    /* best-effort */
-  }
-}
-
-// Retained purely so a future change can reintroduce a re-run behaviour deliberately;
-// nothing reads the recorded outcome today (see ADR-0012, rejected alternatives).
-const runKey = createHash('sha256')
-  .update(process.cwd())
-  .update('\n')
-  .update(command)
-  .digest('hex')
-  .slice(0, 16);
-
 // --- run --------------------------------------------------------------------
 
 const targeted = Boolean(profile.targeted?.(command));
@@ -322,7 +272,14 @@ child.on('close', (code, signal) => {
   const withheld = s.dropped + (s.deferred - s.replayed);
   const pct = s.total > 0 ? Math.round((withheld / s.total) * 100) : 0;
 
-  if (withheld === 0) {
+  if (s.total === 0) {
+    // The command printed nothing at all, so there is nothing to report and nothing
+    // to recover. Staying silent keeps the result byte-identical to an unfiltered
+    // run — `cargo fmt --all --check` and `tsc --noEmit` are silent when clean and
+    // are run constantly, and a banner there is pure cost with no signal behind it.
+    // (A run that DID produce output and had all of it withheld still gets the full
+    // banner below — that case genuinely needs saying.)
+  } else if (withheld === 0) {
     // Nothing was filtered, so there is nothing to audit — say so in one short line
     // rather than paying for a log path and a recovery hint that recover nothing.
     process.stdout.write(`[quiet-run:${profile.name}] exit ${exitCode} · nothing withheld\n`);
@@ -337,7 +294,6 @@ child.on('close', (code, signal) => {
     );
   }
 
-  recordOutcome(runKey, exitCode);
   if (logStream) logStream.end();
   process.exitCode = exitCode;
 });

@@ -88,18 +88,16 @@ function main(payload) {
   // rejected outright (measured). base64url contains no shell metacharacter.
   const rewritten = `node ${JSON.stringify(runner)} --profile=${profile.name} --sid=${sid} --b64=${b64}`;
 
-  return JSON.stringify(
-    {
-      hookSpecificOutput: {
-        hookEventName: 'PreToolUse',
-        updatedInput: {
-          ...payload.tool_input,
-          command: rewritten,
-          // Keep the transcript legible: `command` is now an opaque wrapper call,
-          // so the human-readable original lives here.
-          description: `${payload.tool_input.description ?? command} [noise-filtered: ${profile.name}]`,
-        },
+  return JSON.stringify({
+    hookSpecificOutput: {
+      hookEventName: 'PreToolUse',
+      updatedInput: {
+        ...payload.tool_input,
+        command: rewritten,
+        // Keep the transcript legible: `command` is now an opaque wrapper call,
+        // so the human-readable original lives here.
+        description: `${payload.tool_input.description ?? command} [noise-filtered: ${profile.name}]`,
       },
     },
-  );
+  });
 }
