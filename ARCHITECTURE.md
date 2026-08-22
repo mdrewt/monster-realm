@@ -125,8 +125,9 @@ latch + party-slot sentinel routing, `battleView`'s bait-id parse, `boxView`'s
 nickname-changed guard) — e2e-validated today; extracting it into pure cores so it is
 unit-covered is a separate client slice (M-infra-c does not touch `client/src` logic).
 **e2e dev_reducers publish topology** (M13.5h, ADR-0086): the CI `e2e` job pre-builds
-the module wasm with `--features dev_reducers` (spacetime 2.6 `publish` has no
-cargo-feature passthrough — ADR-0054) and hands the artifact to
+the module wasm with `--features dev_reducers` (`publish` has no cargo-feature
+passthrough — ADR-0054, premise corrected by ADR-0197 FF2: a hidden
+`build --features` does exist; `--bin-path` is kept deliberately) and hands the artifact to
 `client/e2e/global-setup.ts` via `MR_DEV_MODULE_WASM`; when set, global-setup
 publishes it with `--bin-path` instead of `--module-path` (unset ⇒ the plain publish,
 local runs unchanged). `spec-gap-revival.eval.mjs` now enforces mechanically that no
