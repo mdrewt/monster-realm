@@ -141,6 +141,90 @@
 //
 // IMPORTANT: NO new RegExp(...) — use only literal regex literals or String
 // methods (detect-non-literal-regexp Semgrep rule has bitten this project 3×).
+//
+// ===========================================================================
+// 16r-c (ADR-0196 changelog-freshness gate: neuter-freedom + the git-cliff pin)
+// ===========================================================================
+// The `changelog-freshness` job shipped in 13r-g is the FIFTH nightly gate and
+// the only one no wiring check has ever looked at: it appears in no predicate
+// in this file, so today it can be deleted, `if: false`d, softened with
+// continue-on-error, or hollowed out step-by-step and this eval stays green.
+// TEETH V + TEETH W and Checks 24-29 close that, and generalise two rules the
+// other four gates already enjoy.
+//
+// WHAT IS NEW (the contract the specialist implements):
+//   - jobIsNotNeutered(yaml, jobName, opts = {}) grows an ADDITIVE third
+//     parameter. `opts.gates` is an ORDERED array of DATA descriptors — never
+//     functions; a callback gate would be a predicate the fixtures could not
+//     pin — defaulting to [{ kind: 'just' }], which MUST be byte-equivalent to
+//     today's behaviour (tooth V15). `{ kind: 'script', text }` demands the
+//     step's normalised live run text EQUAL `text`; an unrecognised kind FAILS
+//     CLOSED (V16). gates[k] must match the k-th `run:` step IN ORDER, and run
+//     steps after the last gate stay legal — tooth O13 depends on that, and
+//     V13 re-pins it for this job. A gate step may not carry a `shell:` own key
+//     other than the literal `bash`: `shell: 'true {0}'` makes GitHub run
+//     `true <script>`, so the step exits 0 having executed nothing while an
+//     exact run-text match reads perfectly clean (V14 / V14b).
+//   - CHANGELOG_FRESHNESS_GATES pins the job's TWO gate steps VERBATIM (the TAP
+//     gating-suite body, then `node scripts/changelog-freshness.mjs --check`).
+//     This is the MUTATE_SERVER_CAP_BASELINE precedent applied to text: a
+//     needle list ("mentions node --test", "mentions --check") is satisfied by
+//     a single `echo` that merely NAMES the real command — the red-team's
+//     proven BLOCKER, pinned as tooth V12. Every V fixture is RENDERED FROM the
+//     constant, so V1 is a ROUND TRIP: a pin that would false-RED the committed
+//     tree cannot pass V1 either.
+//   - nightlyDeclaresJob / nightlyJobStructureIsUnambiguous /
+//     nightlyHasNoWorkflowScopeNeuters cover the neuters that live OUTSIDE any
+//     job block and are therefore invisible to every job-scoped scanner in this
+//     file: deleting the job key; declaring it TWICE (last-wins in a real YAML
+//     parser, FIRST-wins in this file's text scanners, so a second `if: false`
+//     copy reads green today); a top-level `defaults: run: shell:` that no-ops
+//     EVERY run step in EVERY job; and a top-level `env: PATH:` that shims the
+//     toolchain for all five gates at once.
+//   - GIT_CLIFF_PINNED_VERSION / CHANGELOG_RECIPE_BODY / gitCliffPinsAgree
+//     couple the justfile `changelog:` recipe to the workflow's
+//     `git-cliff@<version>` install pin. Both sides generate the SAME
+//     CHANGELOG.md the freshness checker diffs against; when they drift, an
+//     upstream rendering change flips every entry to missing+extra at once and
+//     REDs the gate for a reason that has nothing to do with freshness.
+//
+// EXPECTED REAL-TREE STATE AT RED (16r-c):
+//   None of CHANGELOG_FRESHNESS_GATES, nightlyDeclaresJob,
+//   nightlyJobStructureIsUnambiguous, nightlyHasNoWorkflowScopeNeuters,
+//   GIT_CLIFF_PINNED_VERSION, CHANGELOG_RECIPE_BODY or gitCliffPinsAgree exists
+//   in this file yet, and jobIsNotNeutered still takes two parameters.
+//   Consequence: the eval THROWS at TEETH V0 — the fixture-integrity backstop,
+//   the first line of the new section — with `ReferenceError:
+//   CHANGELOG_FRESHNESS_GATES is not defined`. evals/run.mjs wraps each eval in
+//   its own try/catch and records a thrower as a synthetic pass:false, so that
+//   IS the RED, not a crashed harness. TEETH V1 onward and TEETH W surface in
+//   turn as the specialist lands each constant/predicate, exactly as TEETH O1
+//   gated the round-1 D8 carve-out and TEETH U1a gated round 3.
+//   Of the six new real-file checks, 24-28 are GREEN on the committed tree the
+//   moment the predicates exist — they are regression ratchets on wiring that
+//   is already correct. Check 29 gitCliffPinsAgree is the sole
+//   genuinely-EXPECTED-RED: the justfile declares no GIT_CLIFF_VERSION at all
+//   today and its `changelog:` recipe is the single unguarded line
+//   `git cliff -o CHANGELOG.md`.
+//   All of TEETH A-U and Checks 1-23 are untouched by this slice.
+//
+// DEFERRED RESIDUALS (proved live by the red-team, deliberately NOT closed
+// here). Each is PRE-EXISTING and affects ALL FIVE guarded jobs equally, so
+// closing them for changelog-freshness alone would be theatre:
+//   - a `uses:` step running arbitrary shell BEFORE the gates: an
+//     actions/github-script step carrying a `with: script:` payload, or a local
+//     `./.github/actions/…` composite. The positional rule counts `run:` steps
+//     only, so neither is seen.
+//   - `env: NODE_OPTIONS: --require …` on a gate step — the env scan is a PATH
+//     DENYLIST, not an allowlist, so every other injection key walks through.
+//   - a job-level `strategy: matrix:` that resolves to ZERO instances (the job
+//     concludes success having run nothing).
+//   - a job-level `needs:` that makes the job SKIP when a sibling reds.
+//   - step- or job-level `working-directory:` (relocates the whole gate).
+//   Closing them needs a step-key / uses / env ALLOWLIST applied across all
+//   guarded jobs, not one more denylist entry — its own slice. Until then,
+//   `notify`'s `skipped` term is the PARTIAL RUNTIME backstop for the
+//   matrix/needs pair: a job that concludes `skipped` still opens an issue.
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { extractJobBlock } from './e2e-desync-teeth.eval.mjs';
@@ -269,8 +353,18 @@ function indentOfLine(line) {
 export function strictJobBlock(yaml, jobName) {
   const lines = yaml.split('\n');
   const keyLine = `  ${jobName}:`;
+  // ANCHORED UNDER `jobs:` (16r-c round-2 BLOCKER). Scanning from line 0 made this
+  // first-match race winnable by any top-level STRING that happens to contain a line
+  // reading `  <job>:` at 2-space indent — `run-name: |`, a `name:` block scalar, an
+  // `env:` value. A decoy holding a healthy job definition parked above `jobs:` was
+  // read as THE job block while the real definition, carrying `if: false`, sat
+  // untouched below (measured: six predicates GREEN, `mutation`/`coverage`/
+  // `mutation-server`/`changelog-freshness` all affected). A workflow with no `jobs:`
+  // anchor at all has no job blocks to extract, so it fails closed.
+  const jobsIdx = findJobsAnchor(lines);
+  if (jobsIdx === -1) return '';
   let start = -1;
-  for (let i = 0; i < lines.length; i++) {
+  for (let i = jobsIdx + 1; i < lines.length; i++) {
     // Anchored, exact key match — `  mutation:` must never match `  mutation-server:`.
     if (lines[i] === keyLine || lines[i].startsWith(`${keyLine} `)) {
       start = i;
@@ -503,6 +597,15 @@ function envMappingKeys(block) {
 // own key — which is what stops `if-no-files-found:` inside `with:` from being read as
 // an `if:` (tooth O14) and stops a following step's `if:` from being misattributed to
 // the upload step above it (tooth O4).
+//
+// 16r-c ADDITIVE: each step also carries `runBody` — the RAW body lines of a block
+// scalar opened by a key literally named `run`, joined with \n. Nothing else changes:
+// the body lines are still `continue`d past, so they still never reach `ownKeys` (a
+// body line reading `if: false` must stay DATA — tooth O13) and `envMappingKeys` is
+// untouched. Only a `run` block scalar is captured, so a `with: { script: | … }`
+// payload cannot masquerade as the gate's live command text. Without this the
+// `{ kind: 'script' }` gates of TEETH V could not see the committed gating suite at
+// all: its command lives entirely inside a `run: |` body.
 function segmentJobBlock(block, jobName) {
   const lines = block.split('\n');
   const jobIndent = indentOfLine(lines[0]);
@@ -562,14 +665,29 @@ function segmentJobBlock(block, jobName) {
   let current = null;
   // -1 = not inside a block scalar; otherwise the column of the key that opened it.
   let blockScalarKeyIndent = -1;
+  // The step whose `run:` key opened the block scalar we are currently inside, or null
+  // when the open key was anything else (`with:`-nested `script:`, a `name:` folded
+  // scalar, …). Body retention is scoped to `run` ALONE so a non-run block scalar can
+  // never be read back as a gate's live command text.
+  let blockScalarRunStep = null;
   for (let i = stepsIdx + 1; i < lines.length; i++) {
     const raw = lines[i];
     const trimmed = raw.trim();
     if (trimmed === '') continue;
     const indent = indentOfLine(raw);
     if (blockScalarKeyIndent !== -1) {
-      if (indent > blockScalarKeyIndent) continue; // block-scalar BODY: data, not keys
+      if (indent > blockScalarKeyIndent) {
+        // Block-scalar BODY: still data, not keys (unchanged). We merely REMEMBER it
+        // when the opening key was `run:`, verbatim and un-normalised — every
+        // normalisation choice lives in stepRunText, one door for all callers.
+        if (blockScalarRunStep !== null) {
+          blockScalarRunStep.runBody =
+            blockScalarRunStep.runBody === '' ? raw : `${blockScalarRunStep.runBody}\n${raw}`;
+        }
+        continue;
+      }
       blockScalarKeyIndent = -1;
+      blockScalarRunStep = null;
     }
     if (trimmed.startsWith('#')) continue;
     if (isYamlIndirection(trimmed)) {
@@ -580,13 +698,18 @@ function segmentJobBlock(block, jobName) {
       if (rest.startsWith('{')) {
         return { ok: false, reason: `${jobName} has a flow-style step (- { … }) — unreadable` };
       }
-      current = { ownKeys: new Map(), withKeys: new Map(), withIndent: -1 };
+      current = { ownKeys: new Map(), withKeys: new Map(), withIndent: -1, runBody: '' };
       steps.push(current);
       if (rest !== '') {
         const kv = parseYamlKeyLine(rest);
         if (kv !== null) {
           current.ownKeys.set(kv.key, kv.value);
-          if (isBlockScalarValue(kv.value)) blockScalarKeyIndent = stepIndent + 2;
+          if (isBlockScalarValue(kv.value)) {
+            blockScalarKeyIndent = stepIndent + 2;
+            // `- run: |` — the dash-line open site. Exact key equality, never a
+            // startsWith: a `run-if:` key must not hand its body to the gate matcher.
+            blockScalarRunStep = kv.key === 'run' ? current : null;
+          }
           if (kv.key === 'with') collectWithKeys(current, kv.value, stepIndent + 4);
         }
       }
@@ -607,7 +730,12 @@ function segmentJobBlock(block, jobName) {
       const kv = parseYamlKeyLine(trimmed);
       if (kv !== null) {
         current.ownKeys.set(kv.key, kv.value);
-        if (isBlockScalarValue(kv.value)) blockScalarKeyIndent = indent;
+        if (isBlockScalarValue(kv.value)) {
+          blockScalarKeyIndent = indent;
+          // The own-key open site (`run: |` under a `- name:` step) — the shape the
+          // committed gating suite uses.
+          blockScalarRunStep = kv.key === 'run' ? current : null;
+        }
         if (kv.key === 'with') collectWithKeys(current, kv.value, indent + 2);
       }
       continue;
@@ -619,6 +747,100 @@ function segmentJobBlock(block, jobName) {
   }
 
   return { ok: true, jobLevel, steps };
+}
+
+// The NORMALISED LIVE RUN TEXT of a step, or null when the step has no `run:` own key.
+// One door for every gate comparison, so the inline-form `- run: <cmd>` and the block
+// form `run: |` normalise to the SAME text (TEETH V1 renders one of each and demands
+// they read alike).
+//   - a block-scalar value reads the retained body; any other value is the scalar
+//     itself, comment-stripped (a YAML plain scalar ENDS at ` #`, so the runtime
+//     command really is the text before it) and unquoted.
+//   - `#` comment lines and blank lines are dropped: neither executes, so neither may
+//     move the comparison — otherwise a pinned body could be defeated by appending a
+//     comment, or false-RED'd by a maintainer documenting a line.
+//   - the COMMON LEADING MARGIN is stripped, never a per-line trim: the relative
+//     indentation INSIDE the body is preserved, which is what makes tooth V12b bite
+//     (`if false; then` + the real body indented under it is NOT the pinned body).
+function stepRunText(step) {
+  const value = step.ownKeys.get('run');
+  if (value === undefined) return null;
+  const raw = isBlockScalarValue(value)
+    ? step.runBody
+    : unquoteScalar(stripInlineYamlComment(value));
+  const lines = raw.split('\n').filter((ln) => ln.trim() !== '' && !ln.trim().startsWith('#'));
+  if (lines.length === 0) return '';
+  let margin = -1;
+  for (const ln of lines) {
+    const indent = indentOfLine(ln);
+    if (margin === -1 || indent < margin) margin = indent;
+  }
+  return lines.map((ln) => ln.slice(margin)).join('\n');
+}
+
+// The ONE `shell:` value a GATE step may carry. `shell: 'true {0}'` makes GitHub run
+// `true <script-path>`: the step exits 0 having executed NOTHING while its `run:` text
+// still equals the pin byte for byte — the single neuter a perfect run-text pin cannot
+// see (tooth V14). `bash` is admitted because the committed gating suite needs it for
+// the `-o pipefail` it brings; banning `shell:` outright would false-RED the real
+// workflow (tooth V14b).
+const GATE_STEP_ALLOWED_SHELL = 'bash';
+
+// The DEFAULT gate list — byte-equivalent to the pre-16r-c behaviour (tooth V15).
+// Gates are DATA, never functions: a callback gate would be a predicate the fixtures
+// could not pin, and an eval whose teeth cannot reach a rule does not have that rule.
+const DEFAULT_GATES = [{ kind: 'just' }];
+
+// Is the gate DESCRIPTOR itself readable? Checked BEFORE any step is inspected, so a
+// typo'd kind reds even in a job with zero run steps (tooth V16: a `default:` arm that
+// falls through to "matched" disables the gate silently for every future typo).
+function gateDescriptorIsReadable(gate) {
+  if (gate === null || typeof gate !== 'object') return false;
+  if (gate.kind === 'just') return true;
+  if (gate.kind === 'script') return typeof gate.text === 'string';
+  return false;
+}
+
+// Does `step` satisfy the (already-validated) gate descriptor?
+function gateMatchesStep(gate, step) {
+  const text = stepRunText(step);
+  if (text === null) return false;
+  if (gate.kind === 'just') {
+    // SINGLE-LINE is load-bearing, not tidiness (round-2 red-team BLOCKER, tooth V29).
+    // Pre-16r-c this branch read `ownKeys.get('run').trim()`, which for a block scalar
+    // is the literal `|` — so a `run: |` gate step ALWAYS failed closed. Once
+    // stepRunText started reading the body, a bare prefix test would have LOOSENED the
+    // pre-existing mutation/coverage/mutation-server gate: `run: |` + `just --list
+    // >/dev/null` + `echo "gate parked"` starts with `just ` while never invoking the
+    // recipe, and RED at 2290f47 would have become GREEN. Requiring one line restores
+    // byte-equivalence for every real gate step (all three are inline one-liners) and
+    // kills the whole multi-command class. A multi-line gate wanting more than one
+    // command must be pinned with `{ kind: 'script' }`, which uses EQUALITY.
+    if (text.indexOf('\n') !== -1) return false;
+    return text === 'just' || text.startsWith('just ');
+  }
+  // A FOLDED block scalar (`>`, `>-`, `>+`) must never satisfy a pinned gate (tooth
+  // V33). YAML folds a `>` body into ONE space-joined line, so what GitHub executes is
+  // a different string from what stepRunText reconstructs — the pin would be asserting
+  // something the runner never runs. Only the LITERAL `|` family preserves the newlines
+  // the pin is written in. Reject rather than fold: guessing YAML's folding rules here
+  // would be a second, unpinned parser.
+  const runValue = step.ownKeys.get('run');
+  if (isBlockScalarValue(runValue) && runValue.startsWith('>')) return false;
+  // EQUALITY, never containment: `… --check || true` (V10) and the pinned body wrapped
+  // in `if false; then … fi` (V12b) both CONTAIN the pin and execute nothing.
+  return text === gate.text;
+}
+
+// A one-line, human-readable label for a gate descriptor, used in reason strings so a
+// red says WHICH gate went missing rather than just "a gate".
+function gateLabel(gate, index) {
+  if (gate !== null && typeof gate === 'object' && gate.kind === 'just') return '`just`';
+  const text = gate !== null && typeof gate === 'object' ? gate.text : undefined;
+  if (typeof text !== 'string') return `gates[${index}]`;
+  const firstLine = text.split('\n')[0];
+  const ellipsis = text.indexOf('\n') === -1 ? '' : ' …';
+  return `gates[${index}] (\`${firstLine}\`${ellipsis})`;
 }
 
 // Pure predicate: the named nightly job is not neutered.
@@ -643,7 +865,14 @@ function segmentJobBlock(block, jobName) {
 //   - unreadable shapes fail CLOSED: a missing `steps:` key, a missing step dash, a
 //     flow step, a flow `steps:` sequence, a merge key or a bare alias
 //     (O16/O21/O22/O23a/O23b).
-export function jobIsNotNeutered(yaml, jobName) {
+//
+// 16r-c ADDITIVE THIRD PARAMETER. `opts.gates` is an ORDERED array of DATA gate
+// descriptors defaulting to `[{ kind: 'just' }]`, i.e. exactly what the two-parameter
+// predicate always demanded (tooth V15 pins that equivalence on the canonical mutation
+// job). gates[k] pins the k-th `run:` step; run steps AFTER the last gate stay legal
+// (tooth O13 / V13 — a step that runs after the gates cannot shim a binary they have
+// already invoked). A malformed or unrecognised descriptor FAILS CLOSED (V16).
+export function jobIsNotNeutered(yaml, jobName, opts = {}) {
   const block = strictJobBlock(yaml, jobName);
   if (!block || block.trim() === '') {
     return { ok: false, reason: `${jobName} job block is empty or absent` };
@@ -664,6 +893,22 @@ export function jobIsNotNeutered(yaml, jobName) {
       return {
         ok: false,
         reason: `${jobName} has a job-level continue-on-error: ${kv.value} (only the literal false is allowed)`,
+      };
+    }
+    // 16r-c round-2 BLOCKER (teeth V30/V31) — a JOB-level `defaults:` is the third
+    // scope of the same neuter. `defaults: { run: { shell: 'true {0}' } }` makes GitHub
+    // run `true <script>` for EVERY run step in THIS job, and
+    // `defaults: { run: { working-directory: … } }` points every gate at a decoy tree —
+    // while every run: text still matches its pin byte for byte. The workflow-scope ban
+    // (nightlyHasNoWorkflowScopeNeuters) only looks at indent 0 and the step-scope
+    // `shell:` allowlist only reads a step's OWN key, so neither can see this. The whole
+    // key is rejected rather than its `shell:`/`working-directory:` children: a guarded
+    // job has no legitimate use for run defaults, and an allowlist of nothing cannot be
+    // walked around by a child key nobody thought of.
+    if (kv.key === 'defaults') {
+      return {
+        ok: false,
+        reason: `${jobName} declares a JOB-level defaults: key — \`defaults: run: shell:\` no-ops every run step in the job and \`defaults: run: working-directory:\` relocates them, in both cases leaving the pinned run: text intact; a guarded job may not declare run defaults`,
       };
     }
   }
@@ -719,22 +964,78 @@ export function jobIsNotNeutered(yaml, jobName) {
   // gate to be the FIRST run: step kills exactly the attack class without contradicting
   // O13. It bites both U1 fixtures: the shim step (U1a) and a bare `- run: echo hi`
   // (U1b) are each a run: step preceding the gate.
-  const runSteps = segmented.steps.filter((step) => step.ownKeys.has('run'));
-  const gateIndex = runSteps.findIndex((step) => {
-    const command = step.ownKeys.get('run').trim();
-    return command === 'just' || command.startsWith('just ');
-  });
-  if (gateIndex === -1) {
+  //
+  // 16r-c generalises the ONE `just` gate into the ORDERED `opts.gates` array. The
+  // positional rule is unchanged and now applies per gate: gates[k] must be satisfied
+  // by runSteps[k]. An `opts.gates` that is present but not an array is a MALFORMED
+  // descriptor list — it fails closed rather than silently falling back to the default,
+  // which would turn a caller's typo into a disabled gate.
+  if (opts.gates !== undefined && (!Array.isArray(opts.gates) || opts.gates.length === 0)) {
     return {
       ok: false,
-      reason: `${jobName} has no \`run: just <recipe>\` gate step — failing closed rather than guessing which step is the gate`,
+      reason: `${jobName} was checked with a malformed opts.gates (not a non-empty array) — failing closed rather than gating on nothing`,
     };
   }
-  if (gateIndex > 0) {
-    return {
-      ok: false,
-      reason: `${jobName} runs ${gateIndex} shell step(s) BEFORE its \`just\` gate step — a step that executes first can write a shim \`just\` (exit 0) onto $GITHUB_PATH and shadow the gate; the gate must be the FIRST run: step`,
-    };
+  const gates = opts.gates === undefined ? DEFAULT_GATES : opts.gates;
+  const runSteps = segmented.steps.filter((step) => step.ownKeys.has('run'));
+  for (let k = 0; k < gates.length; k++) {
+    const gate = gates[k];
+    if (!gateDescriptorIsReadable(gate)) {
+      return {
+        ok: false,
+        reason: `${jobName} was checked with an unreadable gate descriptor at gates[${k}] — an unrecognised kind must fail CLOSED, never fall through to "matched"`,
+      };
+    }
+    const label = gateLabel(gate, k);
+    // Search from k, not from 0: gates[0..k-1] are already bound to runSteps[0..k-1],
+    // so an unordered "matches SOME run step" reading (which tooth V7 kills by
+    // REVERSING the two gate steps) is structurally impossible here.
+    let found = -1;
+    for (let i = k; i < runSteps.length; i++) {
+      if (gateMatchesStep(gate, runSteps[i])) {
+        found = i;
+        break;
+      }
+    }
+    if (found === -1) {
+      return {
+        ok: false,
+        reason:
+          gate.kind === 'just'
+            ? `${jobName} has no \`run: just <recipe>\` gate step — failing closed rather than guessing which step is the gate`
+            : `${jobName} has no \`run:\` step matching ${label} — failing closed rather than guessing which step is the gate`,
+      };
+    }
+    if (found > k) {
+      const position = k === 0 ? 'the FIRST run: step' : `run: step #${k} (0-indexed)`;
+      return {
+        ok: false,
+        reason: `${jobName} runs ${found - k} shell step(s) BEFORE its ${label} gate step — a step that executes first can write a shim \`just\` (exit 0) onto $GITHUB_PATH and shadow the gate; the gate must be ${position}`,
+      };
+    }
+    // V14 — the one neuter an exact run-text pin cannot see. `shell: 'true {0}'` makes
+    // GitHub invoke `true <script-path>`, so the step exits 0 having run nothing.
+    // 16r-c round-2 (tooth V32) — `working-directory:` is the sibling of the `shell:`
+    // neuter: the pinned command runs verbatim, in a different tree. A committed
+    // `tools/sandbox/scripts/changelog-freshness.mjs` that exits 0 turns both gates into
+    // theatre with the pin untouched. No gate step has a legitimate working-directory.
+    const workdir = runSteps[found].ownKeys.get('working-directory');
+    if (workdir !== undefined) {
+      return {
+        ok: false,
+        reason: `${jobName} gate step ${label} carries working-directory: ${workdir} — the pinned command then runs against a different tree while its run: text still matches; a gate step must run at the repository root`,
+      };
+    }
+    const shell = runSteps[found].ownKeys.get('shell');
+    if (shell !== undefined) {
+      const shellValue = unquoteScalar(stripInlineYamlComment(shell));
+      if (shellValue !== GATE_STEP_ALLOWED_SHELL) {
+        return {
+          ok: false,
+          reason: `${jobName} gate step ${label} carries shell: ${shell} — GitHub then runs \`${shellValue} <script>\` and the step exits 0 having executed nothing while its run: text still matches; only the literal \`${GATE_STEP_ALLOWED_SHELL}\` is admitted on a gate step`,
+        };
+      }
+    }
   }
 
   return { ok: true, reason: `${jobName} job is present and not neutered` };
@@ -858,9 +1159,170 @@ function declaredJobKeys(yaml) {
     if (indent === 0) break;
     if (indent !== 2) continue;
     const kv = parseYamlKeyLine(trimmed);
-    if (kv !== null && kv.value === '') keys.push(kv.key);
+    // 16r-c: the value is COMMENT-STRIPPED before the "is this a mapping key" test.
+    // A trailing comment is legal YAML (`  coverage: # slow gate`) and the raw
+    // `kv.value === ''` test silently DROPPED such a key — which would let anyone
+    // shrink nightlyNotifyIsWired's derived required-needs set, and so excuse the
+    // notify job from fanning in over that gate, by adding a cosmetic comment.
+    if (kv !== null && stripInlineYamlComment(kv.value) === '') keys.push(kv.key);
   }
   return keys;
+}
+
+// ---------------------------------------------------------------------------
+// 16r-c NEW PREDICATES (ADR-0196 — the changelog-freshness gate). These cover the
+// neuters that live OUTSIDE any job block and are therefore invisible to every
+// job-scoped scanner above.
+// ---------------------------------------------------------------------------
+
+// Pure predicate: `jobName` is DECLARED as a live mapping key at the 2-space job-key
+// indent under the top-level `jobs:` anchor. Returns { ok, reason }.
+//
+// Deleting a job is invisible to every other predicate in this file —
+// nightlyNotifyIsWired derives its required needs: set FROM the file, so a job dropped
+// from both `jobs:` and `needs:` leaves the workflow internally consistent (tooth V18).
+// The scan is ANCHORED at `jobs:` (a colliding 2-space key under `on:` must not
+// satisfy — tooth V20), LIVE-lines-only (a `  # changelog-freshness:` comment is not a
+// job — tooth V19) and TOLERANT of a legal trailing comment on the key line (tooth
+// V21: `declaredJobKeys`' raw `kv.value === ''` test would have false-RED'd it).
+export function nightlyDeclaresJob(yaml, jobName) {
+  const lines = yaml.split('\n');
+  const jobsIdx = findJobsAnchor(lines);
+  if (jobsIdx === -1) {
+    return { ok: false, reason: 'the workflow has no top-level jobs: mapping key' };
+  }
+  for (let i = jobsIdx + 1; i < lines.length; i++) {
+    const raw = lines[i];
+    const trimmed = raw.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const indent = indentOfLine(raw);
+    if (indent === 0) break; // left the jobs: mapping entirely
+    if (indent !== 2) continue;
+    const kv = parseYamlKeyLine(trimmed);
+    if (kv === null || kv.key !== jobName) continue;
+    // A job key maps to a BLOCK (`changelog-freshness:` with nothing but an optional
+    // comment after it). `changelog-freshness: skipped` is a scalar, not a job.
+    if (stripInlineYamlComment(kv.value) !== '') continue;
+    return { ok: true, reason: `${jobName} is declared at 2-space indent under jobs:` };
+  }
+  return {
+    ok: false,
+    reason: `the workflow declares no live \`${jobName}:\` job key at 2-space indent under jobs: — the job has been deleted, commented out, or renamed`,
+  };
+}
+
+// Pure predicate: the workflow's job structure is UNAMBIGUOUS — exactly one top-level
+// `jobs:` mapping, and no job key declared twice under it. Returns { ok, reason }.
+//
+// This is a fail-closed PRECONDITION for every job-scoped check in this file, not a
+// style rule. A real YAML parser is LAST-WINS on a duplicate key while every text
+// scanner here is FIRST-WINS, so a second `if: false` copy of a job leaves GitHub
+// running the neutered definition while `strictJobBlock` hands each predicate the
+// healthy one (tooth V22). A second top-level `jobs:` mapping is the same bug one
+// level up: `findJobsAnchor` returns the first, GitHub uses the last (tooth V23).
+export function nightlyJobStructureIsUnambiguous(yaml) {
+  const lines = yaml.split('\n');
+  let jobsMappings = 0;
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    if (indentOfLine(raw) !== 0) continue;
+    const kv = parseYamlKeyLine(trimmed);
+    if (kv === null || kv.key !== 'jobs') continue;
+    if (stripInlineYamlComment(kv.value) !== '') continue;
+    jobsMappings++;
+  }
+  if (jobsMappings !== 1) {
+    return {
+      ok: false,
+      reason: `the workflow declares ${jobsMappings} top-level jobs: mapping key(s) — exactly one is readable; with two, every job-scoped predicate here reads the FIRST while GitHub runs the LAST`,
+    };
+  }
+  const seen = new Set();
+  for (const key of declaredJobKeys(yaml)) {
+    if (seen.has(key)) {
+      return {
+        ok: false,
+        reason: `the job key \`${key}:\` is declared TWICE at 2-space indent under jobs: — YAML is last-wins and this file's scanners are first-wins, so the definition inspected here is not the one that runs`,
+      };
+    }
+    seen.add(key);
+  }
+  return {
+    ok: true,
+    reason: 'exactly one top-level jobs: mapping, no duplicate job keys',
+  };
+}
+
+// Pure predicate: the workflow carries no WORKFLOW-SCOPE neuter. Returns { ok, reason }.
+//   - no top-level `defaults:` key. `defaults: run: shell: 'true {0}'` makes GitHub run
+//     `true <script>` for EVERY run step in EVERY job — all five nightly gates exit 0
+//     having executed nothing — and it declares no key inside any job, so neither the
+//     gate-step shell rule nor any other job-scoped scanner can see it (tooth V25).
+//   - no `PATH` key inside the top-level `env:` mapping: the U2 shim attack hoisted one
+//     level up, where the per-job env scan never looks (tooth V26).
+// The rule is a PATH KEY, not the mapping: the committed file's top-level `env:` holds
+// FORCE_JAVASCRIPT_ACTIONS_TO_NODE24 and must stay green (tooth V27). Comment lines
+// neither satisfy nor trip it (tooth V28), the same live-lines-only discipline teeth Q4
+// and R14 pin elsewhere.
+export function nightlyHasNoWorkflowScopeNeuters(yaml) {
+  const lines = yaml.split('\n');
+  // -1 = not inside the top-level env: mapping; 0 = inside it (its key indent).
+  let envIndent = -1;
+  for (const raw of lines) {
+    const trimmed = raw.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const indent = indentOfLine(raw);
+    if (envIndent !== -1) {
+      if (indent > envIndent) {
+        const envKv = parseYamlKeyLine(trimmed);
+        if (envKv !== null && envKv.key === 'PATH') {
+          return {
+            ok: false,
+            reason: `the top-level env: mapping declares PATH: ${envKv.value} — a workflow-scope PATH override shims the toolchain for every job at once, and no job-scoped env scan in this file reaches it`,
+          };
+        }
+        continue;
+      }
+      envIndent = -1;
+    }
+    if (indent !== 0) continue;
+    const kv = parseYamlKeyLine(trimmed);
+    if (kv === null) continue;
+    if (kv.key === 'defaults') {
+      return {
+        ok: false,
+        reason: `the workflow declares a top-level defaults: key — \`defaults: run: shell:\` no-ops EVERY run step in EVERY job (the step exits 0 having executed nothing) while declaring no key inside any job block`,
+      };
+    }
+    if (kv.key !== 'env') continue;
+    const value = stripInlineYamlComment(kv.value);
+    if (value === '') {
+      envIndent = 0;
+      continue;
+    }
+    const pairs = parseFlowMapping(value);
+    // An unreadable flow env: fails CLOSED — a top-level env: this scanner cannot read
+    // must never report as clean.
+    if (pairs === null) {
+      return {
+        ok: false,
+        reason: `the top-level env: value \`${value}\` is not a readable flow mapping — failing closed rather than assuming it declares no PATH`,
+      };
+    }
+    for (const [key, val] of pairs) {
+      if (key === 'PATH') {
+        return {
+          ok: false,
+          reason: `the top-level env: mapping declares PATH: ${val} — a workflow-scope PATH override shims the toolchain for every job at once, and no job-scoped env scan in this file reaches it`,
+        };
+      }
+    }
+  }
+  return {
+    ok: true,
+    reason: 'no top-level defaults: key and no PATH key in the top-level env: mapping',
+  };
 }
 
 // Does the block spanning [start, end) contain a LIVE `issues: write` key?
@@ -1609,6 +2071,313 @@ export function justfileCapEqualsCeiling(justfileText) {
       `justfile mutate-server cap=${capInfo.cap} === ` +
       `MUTATE_SERVER_CAP_BASELINE=${MUTATE_SERVER_CAP_BASELINE}`,
   };
+}
+
+// ---------------------------------------------------------------------------
+// 16r-c CONSTANTS + PREDICATES (ADR-0196 — the git-cliff pin)
+// ---------------------------------------------------------------------------
+
+// The two GATE STEPS of the `changelog-freshness` job, pinned VERBATIM as
+// `stepRunText` normalises them (comment lines dropped, blank lines dropped, common
+// leading margin stripped — the committed body is indented 10 spaces under `run: |`).
+//
+// This is the MUTATE_SERVER_CAP_BASELINE discipline applied to TEXT instead of a
+// number. A needle list ("mentions node --test", "mentions --check") is satisfied by a
+// single `echo` that merely NAMES the real command while executing nothing — the
+// red-team's proven BLOCKER, pinned as tooth V12 — and only EQUALITY against a
+// constant kills it. The consequence is deliberate: this gate can be lowered ONLY by
+// editing a constant, in a diff a human reads.
+//
+// Gate 0 is the TAP gating suite. Its pass-count floor is the SEMANTIC half of the
+// zero-test countermeasure: `node --test <file>` exits 0 when a file defines no tests,
+// so without the floor the suite passes on an empty test file (tooth V11).
+// Gate 1 is the checker itself. Softening it to `… --check || true` must not match,
+// which is why the comparison is equality and not a prefix test (tooth V10).
+export const CHANGELOG_FRESHNESS_GATES = [
+  {
+    kind: 'script',
+    text: [
+      'node --test --test-reporter=tap scripts/changelog-freshness.test.mjs | tee /tmp/changelog-freshness.tap',
+      "pass=$(sed -n 's/^# pass \\([0-9]*\\)$/\\1/p' /tmp/changelog-freshness.tap | tail -n 1)",
+      "fail=$(sed -n 's/^# fail \\([0-9]*\\)$/\\1/p' /tmp/changelog-freshness.tap | tail -n 1)",
+      'echo "changelog-freshness suite: pass=$pass fail=$fail"',
+      'if [ -z "$pass" ] || [ "$pass" -lt 50 ] || [ "$fail" != "0" ]; then',
+      '  echo "changelog-freshness: suite reported pass=$pass fail=$fail — floor is 50 passing, 0 failing" >&2',
+      '  exit 1',
+      'fi',
+    ].join('\n'),
+  },
+  { kind: 'script', text: 'node scripts/changelog-freshness.mjs --check' },
+];
+
+// The git-cliff version BOTH sides must agree on: the workflow's
+// `taiki-e/install-action` pin and the justfile's `GIT_CLIFF_VERSION`. One constant, so
+// a re-pin is a one-line edit and no fixture rots (the TEETH L cap-boundary lesson).
+export const GIT_CLIFF_PINNED_VERSION = '2.13.1';
+
+// The verbatim expected body of the justfile `changelog:` recipe, carrying its 4-space
+// recipe indentation, exactly as `justRecipeBody` reads it back.
+//
+// The first line `#!/usr/bin/env bash` is NOT a comment to be stripped: it is what
+// makes this a just SHEBANG recipe. Dropping it changes execution from one script to
+// line-by-line, which silently discards `set -euo pipefail` — so the extractor keeps
+// `#` lines, unlike `mutateServerRecipeIntact`'s.
+//
+// EQUALITY (not "the recipe references {{GIT_CLIFF_VERSION}}") is the rule, because the
+// red-team's M4 cheat keeps the reference and the mismatch message while turning the
+// fatal `exit 1` into an echo (tooth W13), and because asserting the version of
+// `git cliff` on PATH while generating with `~/.cargo/bin/git-cliff` passes any
+// reference test (tooth W14) — assert on the MUTATING call, never on the binding.
+//
+// Three clauses beyond the version assertion, each closing a measured round-2 attack:
+//   - `env -u` scrubs every GIT_CLIFF_* override. git-cliff gives EVERY cli option an
+//     environment twin (GIT_CLIFF_CONFIG, GIT_CLIFF_TEMPLATE, GIT_CLIFF_TAG_PATTERN,
+//     GIT_CLIFF_OUTPUT, GIT_CLIFF_WORKDIR), so a genuine, correctly-pinned 2.13.1
+//     binary renders an attacker's template with the assertion fully satisfied.
+//   - `--config cliff.toml` names the SSOT template explicitly rather than relying on
+//     discovery, so the render cannot be steered by cwd or by a stray config.
+//   - generate to a temp file and `mv` only on success. `git cliff -o CHANGELOG.md`
+//     TRUNCATES the target before rendering, so a template error destroys the committed
+//     ledger and exits 1 — `set -euo pipefail` gives no protection against a
+//     partially-written output file, only against continuing past the error.
+export const CHANGELOG_RECIPE_BODY = [
+  '    #!/usr/bin/env bash',
+  '    set -euo pipefail',
+  '    have="$(git cliff --version 2>/dev/null || true)"',
+  '    want="git-cliff {{GIT_CLIFF_VERSION}}"',
+  '    if [ "$have" != "$want" ]; then',
+  "        echo \"changelog: git-cliff version mismatch — have '${have:-<not installed>}', want '$want'\" >&2",
+  '        echo "changelog: install with: cargo install git-cliff --version {{GIT_CLIFF_VERSION}} --locked" >&2',
+  '        exit 1',
+  '    fi',
+  '    tmp="$(mktemp)"',
+  '    env -u GIT_CLIFF_CONFIG -u GIT_CLIFF_TEMPLATE -u GIT_CLIFF_TAG_PATTERN -u GIT_CLIFF_OUTPUT -u GIT_CLIFF_WORKDIR git cliff --config cliff.toml -o "$tmp"',
+  '    mv "$tmp" CHANGELOG.md',
+].join('\n');
+
+// The verbatim expected body of the sibling `changelog-check:` recipe. Pinned for the
+// same reason as `changelog:` and in the SAME commit: without it the check recipe's copy
+// of the version guard could have its `exit 1` softened, or the recipe deleted outright,
+// with this eval green — a duplicated source of truth with coverage on only one copy
+// (round-2 reviewer finding; tooth W17).
+export const CHANGELOG_CHECK_RECIPE_BODY = [
+  '    #!/usr/bin/env bash',
+  '    set -euo pipefail',
+  '    have="$(git cliff --version 2>/dev/null || true)"',
+  '    want="git-cliff {{GIT_CLIFF_VERSION}}"',
+  '    if [ "$have" != "$want" ]; then',
+  "        echo \"changelog-check: git-cliff version mismatch — have '${have:-<not installed>}', want '$want'\" >&2",
+  '        echo "changelog-check: install with: cargo install git-cliff --version {{GIT_CLIFF_VERSION}} --locked" >&2',
+  '        exit 1',
+  '    fi',
+  '    node scripts/changelog-freshness.mjs --check',
+].join('\n');
+
+// The body of a just recipe, or null when no such recipe exists.
+// The header match is an EXACT whole-line `<name>:` at column 0: a `startsWith(name)`
+// test would read the body of the sibling `changelog-check:` recipe instead (which is
+// why TEETH W declares that sibling FIRST). Trailing blank lines are normalised away so
+// the constant is comparable whichever trailing-newline convention a file ships with;
+// the INDENTATION is preserved, because that is the half of the round trip worth
+// pinning (a body flattened to column 0 is a different script).
+function justRecipeBody(justfileText, recipeName) {
+  const lines = justfileText.split('\n');
+  const header = `${recipeName}:`;
+  // FAIL CLOSED ON AMBIGUITY (16r-c round-2 BLOCKER, tooth W16). just's `'''` string
+  // literals put arbitrary text at column 0, so a DECOY holding the pinned body
+  // verbatim can be parked above the real recipe:
+  //     CHANGELOG_RECIPE_DOC := '''
+  //     changelog:
+  //         … the pinned body …
+  //     '''
+  //     changelog:
+  //         git cliff --config attacker.toml -o CHANGELOG.md
+  // A first-match scan reads the decoy back byte-identical while `just changelog` runs
+  // the tampered recipe (verified against just 1.55.1). Counting the header lines and
+  // refusing anything but exactly one closes it without teaching this scanner to lex
+  // just's string syntax — the same "fail loud on parse ambiguity" rule the
+  // GIT_CLIFF_VERSION assignment counter already follows.
+  let start = -1;
+  let headerCount = 0;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i] === header) {
+      headerCount += 1;
+      if (start === -1) start = i;
+    }
+  }
+  if (headerCount > 1) return null;
+  if (start === -1) return null;
+  const body = [];
+  for (let i = start + 1; i < lines.length; i++) {
+    const line = lines[i];
+    // A just recipe body ends at the first NON-BLANK line at column 0. Blank lines
+    // belong to the body until then (just keeps them).
+    if (line.trim() !== '' && line[0] !== ' ' && line[0] !== '\t') break;
+    body.push(line);
+  }
+  while (body.length > 0 && body[body.length - 1].trim() === '') body.pop();
+  return body.join('\n');
+}
+
+// Every LIVE (non-comment) `GIT_CLIFF_VERSION := <value>` assignment in a justfile, in
+// file order. A commented decoy holding the correct pin above a live assignment holding
+// the wrong one must not count (tooth W5), and the whitespace/quote variants
+// `:= "x"` / `:='x'` / `:="x"` are all valid just (teeth W11, W12).
+const GIT_CLIFF_ASSIGNMENT = /^GIT_CLIFF_VERSION\s*:=\s*(.*)$/;
+
+function gitCliffAssignedVersions(justfileText) {
+  const values = [];
+  for (const raw of justfileText.split('\n')) {
+    const trimmed = raw.trim();
+    if (trimmed === '' || trimmed.startsWith('#')) continue;
+    const match = GIT_CLIFF_ASSIGNMENT.exec(trimmed);
+    if (match === null) continue;
+    let rest = match[1].trim();
+    if (rest.startsWith('"') || rest.startsWith("'")) {
+      const quote = rest[0];
+      const end = rest.indexOf(quote, 1);
+      rest = end === -1 ? rest.slice(1) : rest.slice(1, end);
+    } else {
+      // Unquoted: the value ends at whitespace or a trailing comment.
+      const hash = rest.indexOf('#');
+      if (hash !== -1) rest = rest.slice(0, hash).trim();
+    }
+    values.push(rest);
+  }
+  return values;
+}
+
+// The `tool:` values of every LIVE step in `jobName` whose `with:` mapping installs
+// something whose name mentions git-cliff. Read through strictJobBlock +
+// segmentJobBlock + withKeys — NEVER a whole-file indexOf, which a decoy pin parked in
+// the `coverage` job would satisfy (tooth W8). Returns null when the job is absent or
+// its block is unreadable, so the caller fails closed.
+function gitCliffInstallTools(nightlyYml, jobName) {
+  const block = strictJobBlock(nightlyYml, jobName);
+  if (!block || block.trim() === '') return null;
+  const segmented = segmentJobBlock(block, jobName);
+  if (!segmented.ok) return null;
+  const tools = [];
+  for (const step of segmented.steps) {
+    const raw = step.withKeys.get('tool');
+    if (raw === undefined) continue;
+    const tool = unquoteScalar(stripInlineYamlComment(raw));
+    if (tool.indexOf('git-cliff') === -1) continue;
+    tools.push(tool);
+  }
+  return tools;
+}
+
+// Pure predicate: the git-cliff pin AGREES across the justfile and nightly.yml, and the
+// `changelog:` recipe body is intact. Returns { ok, reason }.
+//
+// WHY THIS IS A GATE AND NOT HYGIENE. Both sides generate the CHANGELOG.md the
+// freshness checker diffs against. When they drift, an upstream rendering change flips
+// every entry to missing+extra at once and REDs the nightly for a reason that has
+// nothing to do with ledger freshness — and the remedy the checker prints
+// ("run `just changelog`") REPRODUCES the mismatch, which is the nag-then-bypass mode
+// ADR-0165 rejected arriving through the back door.
+//
+// Every reason names the values involved, so a red says WHICH SIDE drifted rather than
+// sending the reader to the wrong file (the justfileCapEqualsCeiling precedent).
+export function gitCliffPinsAgree(justfileText, nightlyYml) {
+  // (a) EXACTLY ONE live assignment, and it matches. "Some assignment matches" is not
+  // the rule: just is last-wins and this scanner is first-wins, so two assignments are
+  // an ambiguity the scanner cannot resolve and must fail LOUD even when both happen to
+  // hold the right value (tooth W6). Zero is equally loud — nothing to compare must
+  // never read as "they agree" (tooth W4).
+  const assigned = gitCliffAssignedVersions(justfileText);
+  if (assigned.length !== 1) {
+    return {
+      ok: false,
+      reason: `the justfile declares ${assigned.length} live \`GIT_CLIFF_VERSION :=\` assignment(s) (expected exactly 1, pinned to ${GIT_CLIFF_PINNED_VERSION}) — an absent or ambiguous pin cannot be proven equal to the workflow's`,
+    };
+  }
+  if (assigned[0] !== GIT_CLIFF_PINNED_VERSION) {
+    return {
+      ok: false,
+      reason: `the justfile pins GIT_CLIFF_VERSION := ${assigned[0]} but GIT_CLIFF_PINNED_VERSION is ${GIT_CLIFF_PINNED_VERSION} — a local \`just changelog\` would render a CHANGELOG.md the nightly job cannot reproduce`,
+    };
+  }
+
+  // (b) EXACTLY ONE live git-cliff install step in the changelog-freshness job, pinned
+  // by EXACT equality. A later install overwrites the binary, so a second unpinned step
+  // makes the job run `latest` while a first-match extractor still finds the pinned one
+  // (tooth W15); and `git-cliff@2.13.10` is a real shipping version that any
+  // startsWith/indexOf compare would read as `2.13.1` (tooth W9).
+  const tools = gitCliffInstallTools(nightlyYml, 'changelog-freshness');
+  if (tools === null) {
+    return {
+      ok: false,
+      reason:
+        'the changelog-freshness job block is absent or unreadable in nightly.yml — failing closed rather than guessing where the git-cliff pin lives',
+    };
+  }
+  const expectedTool = `git-cliff@${GIT_CLIFF_PINNED_VERSION}`;
+  if (tools.length !== 1) {
+    return {
+      ok: false,
+      reason: `the changelog-freshness job declares ${tools.length} live git-cliff install step(s) (expected exactly 1, \`tool: ${expectedTool}\`; found: ${tools.join(', ') || 'none'}) — a pin in another job does not install this job's binary, and a second install overwrites the first`,
+    };
+  }
+  if (tools[0] !== expectedTool) {
+    return {
+      ok: false,
+      reason: `the changelog-freshness job installs \`tool: ${tools[0]}\` but GIT_CLIFF_PINNED_VERSION is ${GIT_CLIFF_PINNED_VERSION} (expected \`tool: ${expectedTool}\`) — an unpinned or drifted install resolves to a renderer the committed CHANGELOG.md was not generated with`,
+    };
+  }
+
+  // (c) the `changelog:` recipe body is the pinned one, VERBATIM.
+  const body = justRecipeBody(justfileText, 'changelog');
+  if (body === null) {
+    return {
+      ok: false,
+      reason:
+        'the justfile declares no `changelog:` recipe — the pinned regeneration path is the only thing that makes the justfile pin binding on a human',
+    };
+  }
+  if (body !== CHANGELOG_RECIPE_BODY) {
+    return {
+      ok: false,
+      reason: `the justfile \`changelog:\` recipe body has drifted from CHANGELOG_RECIPE_BODY — got:\n${body}\n--- expected:\n${CHANGELOG_RECIPE_BODY}`,
+    };
+  }
+
+  return {
+    ok: true,
+    reason: `justfile GIT_CLIFF_VERSION, the changelog-freshness \`tool: ${expectedTool}\` install pin and the pinned \`changelog:\` recipe body all agree on git-cliff ${GIT_CLIFF_PINNED_VERSION}`,
+  };
+}
+
+// Pure predicate (16r-c round 2): the sibling `changelog-check:` recipe body is pinned.
+// Returns { ok, reason }.
+//
+// SEPARATE from gitCliffPinsAgree ON PURPOSE, not for tidiness: TEETH W's justfile
+// fixtures declare a DECOY `changelog-check:` stub first (that decoy is what proves
+// justRecipeBody's header match is exact rather than a startsWith), so folding this
+// clause into gitCliffPinsAgree would have false-RED'd its own frozen positive control.
+//
+// WHY IT NEEDS A GUARD AT ALL: `changelog-check:` carries a byte-identical copy of
+// `changelog:`'s version assertion — a duplicated source of truth. Nothing else reaches
+// it: the nightly job invokes `scripts/changelog-freshness.mjs` directly and `just ci`
+// deliberately does not depend on it (ADR-0196's nightly-not-per-PR decision). So
+// softening its `exit 1` to an echo, or deleting the recipe outright, was invisible.
+export function changelogCheckRecipeIntact(justfileText) {
+  const body = justRecipeBody(justfileText, 'changelog-check');
+  if (body === null) {
+    return {
+      ok: false,
+      reason:
+        'the justfile declares no `changelog-check:` recipe, or declares it more than once at column 0 — the local half of the freshness gate must exist and be unambiguous',
+    };
+  }
+  if (body !== CHANGELOG_CHECK_RECIPE_BODY) {
+    return {
+      ok: false,
+      reason: `the justfile \`changelog-check:\` recipe body has drifted from CHANGELOG_CHECK_RECIPE_BODY — got:\n${body}\n--- expected:\n${CHANGELOG_CHECK_RECIPE_BODY}`,
+    };
+  }
+  return { ok: true, reason: 'the changelog-check: recipe body matches its pin' };
 }
 
 // ---------------------------------------------------------------------------
@@ -5741,6 +6510,1527 @@ ${NOTIFY_CANONICAL_STEPS}`;
   }
 
   // =========================================================================
+  // 16r-c PROOF-OF-TEETH (ADR-0196 changelog-freshness gate). Section letters
+  // continue as TEETH V (D1 — the gate is declared, ordered and un-neutered)
+  // and TEETH W (D2 — the git-cliff pin agrees across justfile + workflow),
+  // immediately after TEETH U, so TEETH A-U are neither touched nor
+  // renumbered. Every constant and predicate under test below is called
+  // FORWARD to code the specialist has not written yet: the first reference
+  // (TEETH V0) throws a ReferenceError, which evals/run.mjs records as this
+  // eval's pass:false. That IS the deliberate RED.
+  // =========================================================================
+
+  // -------------------------------------------------------------------------
+  // TEETH V: jobIsNotNeutered's ordered `opts.gates` descriptors,
+  // CHANGELOG_FRESHNESS_GATES, nightlyDeclaresJob,
+  // nightlyJobStructureIsUnambiguous, nightlyHasNoWorkflowScopeNeuters.
+  //
+  // WHY A VERBATIM BODY PIN AND NOT A NEEDLE LIST. The red-team's proven
+  // BLOCKER against every needle formulation is tooth V12: replace the entire
+  // gating-suite body with ONE inert line that merely MENTIONS the real
+  // command, and "mentions node --test" / "mentions --test-reporter=tap" /
+  // "mentions exit 1" are all satisfied by a step that executes nothing. Only
+  // EQUALITY against a pinned constant kills it — the same
+  // MUTATE_SERVER_CAP_BASELINE discipline applied to text instead of a number.
+  //
+  // WHY EVERY FIXTURE IS RENDERED FROM THAT CONSTANT. A hand-copied positive
+  // control drifts silently the day the suite body changes: V1 would keep
+  // passing against a stale copy while the REAL job no longer matches the pin,
+  // i.e. the eval would ship a pin that false-REDs the committed tree. Building
+  // the fixtures out of CHANGELOG_FRESHNESS_GATES makes V1 a ROUND TRIP — "the
+  // pinned text, re-emitted as YAML, must read back as the pinned text" — so
+  // the pin cannot drift away from its own positive control.
+  // -------------------------------------------------------------------------
+
+  // V0 — FIXTURE-INTEGRITY BACKSTOP (the L-bigcap-backstop precedent). Every
+  // fixture below is derived from CHANGELOG_FRESHNESS_GATES, so a DEGENERATE
+  // pin silently guts this whole section: with `[]` every gates loop matches
+  // vacuously and V6/V7/V8/V9/V10/V11/V12 all go inert while still "passing".
+  // The shape is therefore asserted before anything uses it. The three content
+  // needles are the ones a softened PIN would have to drop in order to
+  // verbatim-match a softened workflow — pinning the *pin* is the point: this
+  // gate can only be lowered by editing a constant, in a diff a human reads.
+  {
+    const gates = CHANGELOG_FRESHNESS_GATES;
+    const shapeOk =
+      Array.isArray(gates) &&
+      gates.length === 2 &&
+      gates.every((g) => g !== null && typeof g === 'object' && g.kind === 'script') &&
+      typeof gates[0].text === 'string' &&
+      typeof gates[1].text === 'string';
+    if (!shapeOk) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V0: CHANGELOG_FRESHNESS_GATES is not an array of exactly two ' +
+          "{ kind: 'script', text } descriptors — every TEETH V fixture is rendered from it, so a " +
+          'degenerate pin (an empty array, a function-valued gate, a missing text) would make ' +
+          'V6-V12 vacuously pass while measuring nothing',
+      };
+    }
+    if (gates[1].text !== 'node scripts/changelog-freshness.mjs --check') {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH V0: CHANGELOG_FRESHNESS_GATES[1].text is "${gates[1].text}" — the second gate is ` +
+          'pinned to the EXACT string `node scripts/changelog-freshness.mjs --check`; a pin that ' +
+          'admits a softened form (`… --check || true`) would verbatim-match a softened workflow ' +
+          'and this eval would report the softening as compliant',
+      };
+    }
+    const suite = gates[0].text;
+    if (
+      suite.split('\n').length < 2 ||
+      suite.split('\n')[0].indexOf('node --test') === -1 ||
+      suite.indexOf('| tee') === -1 ||
+      suite.indexOf('exit 1') === -1
+    ) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V0: CHANGELOG_FRESHNESS_GATES[0].text does not look like the committed gating ' +
+          'suite (first line running `node --test`, a `| tee` capture, and an `exit 1` failure ' +
+          'path over at least two lines). Tooth V11 is built by keeping ONLY that first line, so a ' +
+          'one-line or floor-less pin makes V11 identical to V1 and the verbatim-body proof inert',
+      };
+    }
+  }
+
+  // The pinned gate texts, used to RENDER every changelog-freshness fixture
+  // below (never hand-copied out of nightly.yml — see the section header).
+  const V_SUITE_BODY = CHANGELOG_FRESHNESS_GATES[0].text;
+  const V_CHECK_CMD = CHANGELOG_FRESHNESS_GATES[1].text;
+
+  // Render one `run:` step at the house step indent. A single-line body with no
+  // extra own keys is emitted as the bare `- run: <scalar>` form the real file
+  // uses for the `--check` step; anything else becomes `name:` + own keys +
+  // `run: |` block scalar, which is the real file's shape for the gating suite.
+  // Both spellings must normalise to the SAME live run text — that equivalence
+  // is itself part of the contract (V1 uses one of each).
+  const vRunStep = (body, ownKeys = []) => {
+    if (body.indexOf('\n') === -1 && ownKeys.length === 0) return `      - run: ${body}\n`;
+    const keys = ownKeys.map((k) => `        ${k}\n`).join('');
+    const scalar = body
+      .split('\n')
+      .map((ln) => `          ${ln}`)
+      .join('\n');
+    return `      - name: gate step\n${keys}        run: |\n${scalar}\n`;
+  };
+
+  // Render a whole workflow around a changelog-freshness job.
+  //   opts.topLevel — extra top-level mapping text spliced between `on:` and `jobs:`
+  //   opts.keyTail  — text appended to the job KEY line (a legal trailing comment)
+  //   opts.jobKeys  — extra job-level keys (4-space indented, already newline-terminated)
+  // The two leading `uses:` steps are load-bearing, not decoration: they prove the
+  // gates array indexes RUN steps, not steps in general.
+  const vJob = (steps, opts = {}) => `name: Nightly
+on:
+  workflow_dispatch:
+${opts.topLevel ?? ''}jobs:
+  # Failure policy for \`changelog-freshness\`: triaged and inserted as the next
+  # slice in the milestone queue, same tier as fix-red-master, below it in ordering.
+  changelog-freshness:${opts.keyTail ?? ''}
+    runs-on: ubuntu-latest
+${opts.jobKeys ?? ''}    steps:
+      - uses: actions/checkout@abc1234abc1234abc1234abc1234abc1234abc12 # v6
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-node@abc1234abc1234abc1234abc1234abc1234abc12 # v7
+        with: { node-version: '24.13.1' }
+${steps.join('')}`;
+
+  const V_SUITE_STEP = vRunStep(V_SUITE_BODY, ['shell: bash']);
+  const V_CHECK_STEP = vRunStep(V_CHECK_CMD);
+  const V_CANONICAL_STEPS = [V_SUITE_STEP, V_CHECK_STEP];
+  const V_GATES = { gates: CHANGELOG_FRESHNESS_GATES };
+  const vCanonical = vJob(V_CANONICAL_STEPS);
+
+  // V1 — THE MOST IMPORTANT FIXTURE IN THIS SECTION. The canonical job, rendered
+  // from the pin itself, under the pin. It forbids shipping a
+  // CHANGELOG_FRESHNESS_GATES value that would false-RED the committed tree:
+  // Check 27 runs the same predicate against the real nightly.yml, and a pin
+  // that cannot accept its own round trip cannot accept the real file either.
+  // [ok]
+  {
+    const r = jobIsNotNeutered(vCanonical, 'changelog-freshness', V_GATES);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH V1: jobIsNotNeutered rejected the canonical changelog-freshness job RENDERED FROM CHANGELOG_FRESHNESS_GATES itself — the pin must accept its own round trip, or it will false-RED the committed workflow at Check 27. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // V2 — step-level `continue-on-error: true` on the `--check` step. Kills a
+  // gates implementation that verifies run TEXT and forgets to keep running the
+  // pre-existing soft-failure allowlist over the same steps. [NOT ok]
+  {
+    const fixture = vJob([V_SUITE_STEP, vRunStep(V_CHECK_CMD, ['continue-on-error: true'])]);
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V2: jobIsNotNeutered accepted continue-on-error: true on the ' +
+          '`node scripts/changelog-freshness.mjs --check` step — the drift check would report its ' +
+          'red as a green job; only the literal false is admitted',
+      };
+    }
+  }
+
+  // V3 — job-level `continue-on-error: true`. [NOT ok]
+  {
+    const fixture = vJob(V_CANONICAL_STEPS, { jobKeys: '    continue-on-error: true\n' });
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V3: jobIsNotNeutered accepted a JOB-level continue-on-error: true on ' +
+          'changelog-freshness — the whole job would report success no matter what either gate step did',
+      };
+    }
+  }
+
+  // V3b — the O20 CALIBRATED neuter, retargeted at this job: a
+  // continue-on-error expression that reads false under the workflow_dispatch a
+  // verification drill uses and true on every real cron night. This tooth
+  // exists to prove the ADR-0200 D8 ALLOWLIST is INHERITED by the gates path
+  // rather than re-implemented next to it as a truthy blacklist. [NOT ok]
+  {
+    const fixture = vJob([
+      V_SUITE_STEP,
+      vRunStep(V_CHECK_CMD, ["continue-on-error: ${{ github.event_name == 'schedule' }}"]),
+    ]);
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V3b: jobIsNotNeutered accepted continue-on-error: ' +
+          "${{ github.event_name == 'schedule' }} on a changelog-freshness gate step — false under " +
+          'the workflow_dispatch a drill uses, true on every real cron night, i.e. a neuter ' +
+          'calibrated to hide from its own verification. The D8 allowlist (only the literal false) ' +
+          'must be INHERITED by the gates path, not re-implemented beside it',
+      };
+    }
+  }
+
+  // V4 — job-level `if: false` (the EARS "disabled" mode). [NOT ok]
+  {
+    const fixture = vJob(V_CANONICAL_STEPS, { jobKeys: '    if: false\n' });
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH V4: jobIsNotNeutered accepted a job-level if: false on changelog-freshness',
+      };
+    }
+  }
+
+  // V5 — `if: false` on the `--check` step only. The job still runs, still
+  // reports success, and the drift check never executes. [NOT ok]
+  {
+    const fixture = vJob([V_SUITE_STEP, vRunStep(V_CHECK_CMD, ['if: false'])]);
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V5: jobIsNotNeutered accepted if: false on the `--check` step — the D8 carve-out ' +
+          'admits an if: ONLY on an actions/upload-artifact step, and this job has none',
+      };
+    }
+  }
+
+  // V6 — the TEETH U1 shim bypass retargeted at this job: a $GITHUB_PATH-poisoning
+  // step BEFORE the gating suite. Kills a generalisation that swapped the
+  // "gate must be the FIRST run: step" positional rule for a set-membership
+  // test while widening jobIsNotNeutered to take gates. [NOT ok]
+  {
+    const fixture = vJob([
+      vRunStep('echo /tmp/.shim >> "$GITHUB_PATH"'),
+      V_SUITE_STEP,
+      V_CHECK_STEP,
+    ]);
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V6: jobIsNotNeutered accepted a `- run: echo /tmp/.shim >> "$GITHUB_PATH"` step ' +
+          'BEFORE the gating suite — a step that executes first can shim `node` (or `git`) and ' +
+          'shadow both gates while their run text matches the pin byte for byte. gates[k] must ' +
+          'match the k-th run: step, so a pre-gate step is itself the neuter (the U1 rule, kept)',
+      };
+    }
+  }
+
+  // V7 — the two gate steps REORDERED. Running the drift check BEFORE its own
+  // test suite is not a cosmetic difference: the suite is the countermeasure
+  // that proves the checker still has teeth, and a checker that has silently
+  // gone vacuous exits 0 first, so the reordered job goes green on a broken
+  // checker. Kills a set-based / unordered "every gate matches SOME run step"
+  // matcher. [NOT ok]
+  {
+    const fixture = vJob([V_CHECK_STEP, V_SUITE_STEP]);
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V7: jobIsNotNeutered accepted the two gate steps in REVERSED order — `opts.gates` ' +
+          'is an ORDERED array (gates[k] pins the k-th run: step); an unordered set-membership ' +
+          'matcher reads a reordered job as compliant',
+      };
+    }
+  }
+
+  // V8 — gating suite DELETED, `--check` step remains. [NOT ok]
+  {
+    const fixture = vJob([V_CHECK_STEP]);
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V8: jobIsNotNeutered accepted a changelog-freshness job whose TAP gating suite ' +
+          'step was deleted — without it a checker whose own tests have gone vacuous still exits ' +
+          '0 and the drift gate measures nothing',
+      };
+    }
+  }
+
+  // V9 — `--check` step DELETED, suite remains. Complementary to V8 by
+  // construction: a one-sided implementation (one that verifies only gates[0],
+  // or only "some step matches the last gate") passes exactly ONE of V8/V9, so
+  // the pair cannot both be satisfied by a half-built loop. [NOT ok]
+  {
+    const fixture = vJob([V_SUITE_STEP]);
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V9: jobIsNotNeutered accepted a changelog-freshness job whose ' +
+          '`node scripts/changelog-freshness.mjs --check` step was deleted, leaving only the ' +
+          'suite — the job would then test the checker and never RUN it',
+      };
+    }
+  }
+
+  // V10 — `--check` softened with `|| true`. Kills substring/indexOf matching
+  // of the gate text (the F6 discipline, restated for script gates). [NOT ok]
+  {
+    const fixture = vJob([V_SUITE_STEP, vRunStep(`${V_CHECK_CMD} || true`)]);
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V10: jobIsNotNeutered accepted `node scripts/changelog-freshness.mjs --check || ' +
+          'true` — the normalised live run text must EQUAL the pinned gate text; an indexOf/' +
+          'startsWith comparison admits every `|| true`, `; exit 0` and `&& true` suffix',
+      };
+    }
+  }
+
+  // V11 — THE FIXTURE THAT PROVES THE VERBATIM BODY PIN. The suite body keeps
+  // its first line (the real `node --test … | tee` invocation) and DROPS the TAP
+  // pass-count floor that follows. Under a substring/needle matcher V1 and V11
+  // are indistinguishable — both "mention node --test" — yet this one is the
+  // documented zero-test hole: `node --test <file>` exits 0 when a file defines
+  // no tests, so without the floor the suite passes on an empty test file. Built
+  // by DERIVATION from the pin (first line only), never hand-copied; V0 refuses
+  // to run if that derivation would produce the whole body. [NOT ok]
+  {
+    const fixture = vJob([vRunStep(V_SUITE_BODY.split('\n')[0], ['shell: bash']), V_CHECK_STEP]);
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V11: jobIsNotNeutered accepted a gating-suite step that runs `node --test … | ' +
+          'tee` but DROPS the TAP pass-count floor — `node --test` exits 0 on a file that defines ' +
+          'no tests at all, so the floor is the semantic half of the countermeasure. A needle ' +
+          'matcher cannot tell this fixture from V1; only equality against the pinned body can',
+      };
+    }
+  }
+
+  // V12 — THE RED-TEAM'S PROVEN BLOCKER. The entire suite body replaced by ONE
+  // inert line that merely MENTIONS the real command and its failure mode. It
+  // beats any needle list ever proposed for this gate: it "mentions node --test",
+  // it "mentions the test file", it "mentions exit 1", and it executes nothing.
+  // Written as a LITERAL on purpose — a decoy derived from the pin would stop
+  // being a decoy. [NOT ok]
+  {
+    const inert =
+      'echo "node --test scripts/changelog-freshness.test.mjs prints \'# pass N\'; on drift we exit 1"';
+    const fixture = vJob([vRunStep(inert, ['shell: bash']), V_CHECK_STEP]);
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V12 (BLOCKER): jobIsNotNeutered accepted a gating-suite step whose whole body is ' +
+          'a single `echo` NAMING the real command — every needle-list formulation of this gate ' +
+          '("mentions node --test", "mentions the test file", "mentions exit 1") is satisfied by a ' +
+          'step that runs nothing. Only EQUALITY against CHANGELOG_FRESHNESS_GATES[0].text kills it',
+      };
+    }
+  }
+
+  // V12b — the REAL suite body, present verbatim, wrapped in `if false; then …
+  // fi`. Kills an implementation that normalises the body to a SET of lines, or
+  // one that asks "does the pinned text appear inside the step body" instead of
+  // "is the step body the pinned text". [NOT ok]
+  {
+    const wrapped = `if false; then\n${V_SUITE_BODY.split('\n')
+      .map((ln) => `  ${ln}`)
+      .join('\n')}\nfi`;
+    const fixture = vJob([vRunStep(wrapped, ['shell: bash']), V_CHECK_STEP]);
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V12b: jobIsNotNeutered accepted the real gating-suite body wrapped in ' +
+          '`if false; then … fi` — the pinned text is present in full and executes never; the ' +
+          'comparison must be equality over the normalised body, not containment',
+      };
+    }
+  }
+
+  // V13 — canonical PLUS an extra POST-gate `- run: |` diagnostic step. The
+  // O13 analogue for this job: run steps after the last gate stay legal (a step
+  // that runs AFTER both gates cannot shim a binary they already invoked), so an
+  // "exactly N run: steps" implementation is wrong and this fixture says so.
+  // A false RED here would block every future diagnostic addition. [ok]
+  {
+    const diagnostic = vRunStep('echo "tap tail:"\ntail -n 5 /tmp/changelog-freshness.tap');
+    const fixture = vJob([V_SUITE_STEP, V_CHECK_STEP, diagnostic]);
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH V13: jobIsNotNeutered rejected an extra POST-gate diagnostic run: step — gates[k] pins the k-th run: step for k = 0..gates.length-1 and says nothing about later steps (tooth O13 pins the same rule for the mutation job). Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // V14 — the `--check` step carries `shell: 'true {0}'`. GitHub then runs
+  // `true <script-path>`: the step exits 0 having executed NOTHING, while the
+  // run text still equals the pin byte for byte. This is the one neuter a
+  // perfect run-text pin cannot see, which is why the gate-step shell key is
+  // itself allowlisted. [NOT ok]
+  {
+    const fixture = vJob([V_SUITE_STEP, vRunStep(V_CHECK_CMD, ["shell: 'true {0}'"])]);
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          "TEETH V14: jobIsNotNeutered accepted `shell: 'true {0}'` on a gate step — GitHub runs " +
+          '`true <script>`, so the step exits 0 having executed nothing while its run: text still ' +
+          'matches the pin exactly. A gate step may carry no shell: other than the literal bash',
+      };
+    }
+  }
+
+  // V14b — FALSE-RED GUARD: `shell: bash` on a gate step. The committed gating
+  // suite carries exactly that, deliberately, for the `-o pipefail` it brings
+  // (without it `node --test | tee` discards node's exit status). Rejecting it
+  // would false-RED the real workflow at Check 27. [ok]
+  {
+    const fixture = vJob([V_SUITE_STEP, vRunStep(V_CHECK_CMD, ['shell: bash'])]);
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH V14b: jobIsNotNeutered rejected \`shell: bash\` on a gate step — bash is the ONE admitted value (the committed suite uses it for -o pipefail); banning shell: outright is a false RED on the real workflow. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // V15 — DEFAULT-PATH BYTE-EQUIVALENCE CONTROL. The third parameter is
+  // ADDITIVE: omitting it, and passing an empty object, must both behave
+  // exactly as today's two-parameter predicate did. The fixture is TEETH U1c's
+  // canonical mutation job, reused deliberately — if the default path has
+  // drifted, this fails on the same shape U1c already pins as ok. [ok / ok]
+  {
+    const rNoOpts = jobIsNotNeutered(u1CanonicalOneRunStep, 'mutation');
+    if (!rNoOpts.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH V15-omitted: jobIsNotNeutered(yaml, 'mutation') with NO third argument rejected the canonical mutation job — the opts parameter is ADDITIVE and its default [{ kind: 'just' }] must be byte-equivalent to the pre-16r-c behaviour. Reason: ${rNoOpts.reason}`,
+      };
+    }
+    const rEmptyOpts = jobIsNotNeutered(u1CanonicalOneRunStep, 'mutation', {});
+    if (!rEmptyOpts.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH V15-empty: jobIsNotNeutered(yaml, 'mutation', {}) rejected the canonical mutation job — an opts object with no gates key must fall back to the default [{ kind: 'just' }], not to an empty gate list or a fail-closed. Reason: ${rEmptyOpts.reason}`,
+      };
+    }
+  }
+
+  // V16 — an UNRECOGNISED gate kind must FAIL CLOSED. A `switch` whose default
+  // arm falls through to "matched" turns every future typo'd descriptor into a
+  // silently disabled gate; the fixture is otherwise a perfectly healthy job, so
+  // only the unknown kind can be what bites. [NOT ok]
+  {
+    const r = jobIsNotNeutered(u1CanonicalOneRunStep, 'mutation', { gates: [{ kind: 'wat' }] });
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          "TEETH V16: jobIsNotNeutered accepted an unrecognised gate descriptor { kind: 'wat' } " +
+          'against an otherwise-healthy job — an unknown kind must fail CLOSED; a default arm that ' +
+          'falls through to "matched" disables the gate silently for every future typo',
+      };
+    }
+  }
+
+  // V17 — nightlyDeclaresJob POSITIVE CONTROL. [ok]
+  {
+    const r = nightlyDeclaresJob(vCanonical, 'changelog-freshness');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH V17: nightlyDeclaresJob rejected a workflow that declares changelog-freshness at 2-space indent under jobs:. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // V18 — the EARS "deleted" mode: the job is gone entirely AND removed from
+  // notify's needs:, so `nightlyNotifyIsWired` (which derives its required set
+  // from the file) reads the workflow as perfectly consistent. That is the
+  // whole point — deletion is invisible to every other predicate in this file,
+  // which is why presence needs its own check. [NOT ok]
+  {
+    const vJobDeleted = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${R_SIBLING_JOBS}  notify:
+    needs: [mutation, mutation-server, coverage]
+    ${NOTIFY_D2A_IF}
+    runs-on: ubuntu-latest
+${NOTIFY_PERMISSIONS}${NOTIFY_CANONICAL_STEPS}`;
+    const r = nightlyDeclaresJob(vJobDeleted, 'changelog-freshness');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V18: nightlyDeclaresJob accepted a workflow with NO changelog-freshness job — the ' +
+          "job is deleted and also removed from notify's needs:, so the fan-in predicate reads " +
+          'the file as internally consistent and nothing else in this eval notices the deletion',
+      };
+    }
+  }
+
+  // V19 — the job key exists ONLY as a comment (`  # changelog-freshness:`).
+  // Kills an indexOf-presence implementation. [NOT ok]
+  {
+    const vKeyOnlyInComment = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  # changelog-freshness:
+  #   runs-on: ubuntu-latest
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+`;
+    const r = nightlyDeclaresJob(vKeyOnlyInComment, 'changelog-freshness');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V19: nightlyDeclaresJob accepted a commented-out `  # changelog-freshness:` key — ' +
+          'a commented job is not a job; presence must be a LIVE mapping key, never an indexOf hit',
+      };
+    }
+  }
+
+  // V20 — a 2-space `changelog-freshness:` key under `on:` rather than `jobs:`
+  // (the tooth M8 anchoring lesson, restated for presence). [NOT ok]
+  {
+    const vKeyUnderOn = `name: Nightly
+on:
+  changelog-freshness:
+  workflow_dispatch:
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+`;
+    const r = nightlyDeclaresJob(vKeyUnderOn, 'changelog-freshness');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V20: nightlyDeclaresJob accepted a 2-space `changelog-freshness:` key declared ' +
+          'under `on:` rather than under `jobs:` — the key scan must be ANCHORED at the top-level ' +
+          'jobs: line, or a colliding key anywhere in the file satisfies the gate',
+      };
+    }
+  }
+
+  // V21 — FALSE-RED GUARD: a legal trailing comment on the job key line.
+  // `declaredJobKeys` drops such a key today (it requires kv.value === ''), so a
+  // presence check built by copying that helper would REJECT a perfectly valid,
+  // well-annotated workflow. [ok]
+  {
+    const fixture = vJob(V_CANONICAL_STEPS, { keyTail: ' # ledger drift, ADR-0196' });
+    const r = nightlyDeclaresJob(fixture, 'changelog-freshness');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH V21: nightlyDeclaresJob rejected "  changelog-freshness: # ledger drift, ADR-0196" — a trailing comment on a mapping key is legal YAML and is tolerated by findJobsAnchor / jobHasFailurePolicyComment clause 1; declaredJobKeys' kv.value === '' test drops it, and copying that test here is a false RED. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // V22 — nightlyJobStructureIsUnambiguous: the job declared TWICE, the second
+  // copy `if: false`. A real YAML parser is LAST-WINS, so GitHub runs the
+  // neutered copy; every text scanner in this file is FIRST-WINS, so
+  // strictJobBlock hands each predicate the healthy copy and the whole eval
+  // reads green. Nothing else in this file can see this. [NOT ok]
+  {
+    const vDuplicateJobKey = `${vCanonical}  changelog-freshness:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo neutered
+`;
+    const r = nightlyJobStructureIsUnambiguous(vDuplicateJobKey);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V22: nightlyJobStructureIsUnambiguous accepted a workflow declaring ' +
+          'changelog-freshness TWICE at 2-space indent, the second copy carrying if: false — YAML ' +
+          "is last-wins and this file's scanners are first-wins, so GitHub runs the neutered " +
+          'definition while every predicate here inspects the healthy one',
+      };
+    }
+  }
+
+  // V23 — a SECOND top-level `jobs:` mapping. findJobsAnchor returns the FIRST
+  // one, so every job under the second mapping is unreachable to this eval while
+  // being the mapping GitHub actually uses. Fail closed. [NOT ok]
+  {
+    const vTwoJobsMappings = `${vCanonical}jobs:
+  changelog-freshness:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo neutered
+`;
+    const r = nightlyJobStructureIsUnambiguous(vTwoJobsMappings);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V23: nightlyJobStructureIsUnambiguous accepted a workflow with TWO top-level ' +
+          'jobs: mappings — findJobsAnchor takes the first, GitHub takes the last, and every ' +
+          'job-scoped predicate in this file is then reading a mapping that never runs',
+      };
+    }
+  }
+
+  // V24 — POSITIVE CONTROL on a healthy workflow. [ok]
+  {
+    const r = nightlyJobStructureIsUnambiguous(vCanonical);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH V24: nightlyJobStructureIsUnambiguous rejected a workflow with exactly one jobs: mapping and no duplicate job keys — a false RED here blocks every edit to nightly.yml. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // V25 — nightlyHasNoWorkflowScopeNeuters: a top-level `defaults: run: shell:
+  // 'true {0}'`. This no-ops EVERY run step in EVERY job — all five gates at
+  // once — and is structurally invisible to every job-scoped scanner in this
+  // file, including the V14 gate-step shell rule, because it declares no shell:
+  // key inside any job. [NOT ok]
+  {
+    const fixture = vJob(V_CANONICAL_STEPS, {
+      topLevel: "defaults:\n  run:\n    shell: 'true {0}'\n",
+    });
+    const r = nightlyHasNoWorkflowScopeNeuters(fixture);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V25: nightlyHasNoWorkflowScopeNeuters accepted a top-level defaults: run: shell: ' +
+          "'true {0}' — GitHub then runs `true <script>` for EVERY run step in EVERY job, so all " +
+          'five nightly gates exit 0 having executed nothing, and no job-scoped scanner can see it',
+      };
+    }
+  }
+
+  // V26 — a `PATH` key inside the top-level `env:` mapping: the TEETH U2 shim
+  // attack hoisted to workflow scope, where the per-job env scan never looks.
+  // [NOT ok]
+  {
+    const fixture = vJob(V_CANONICAL_STEPS, {
+      topLevel: 'env:\n  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true\n  PATH: /tmp/.shim:$PATH\n',
+    });
+    const r = nightlyHasNoWorkflowScopeNeuters(fixture);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V26: nightlyHasNoWorkflowScopeNeuters accepted a top-level env: PATH: ' +
+          '/tmp/.shim:$PATH — the same shim-shadowing tooth U2 kills inside a job, hoisted one ' +
+          'level up where it covers all five gates and no job-scoped env scan reaches it',
+      };
+    }
+  }
+
+  // V27 — FALSE-RED GUARD: the REAL shape. The committed nightly.yml has a
+  // top-level env: mapping carrying exactly one key
+  // (FORCE_JAVASCRIPT_ACTIONS_TO_NODE24). Banning top-level env: outright, or
+  // treating any top-level env: as suspicious, false-REDs the committed tree at
+  // Check 25 — the rule is a PATH key, not the mapping. [ok]
+  {
+    const fixture = vJob(V_CANONICAL_STEPS, {
+      topLevel: 'env:\n  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true\n',
+    });
+    const r = nightlyHasNoWorkflowScopeNeuters(fixture);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH V27: nightlyHasNoWorkflowScopeNeuters rejected the REAL committed shape (a top-level env: whose only key is FORCE_JAVASCRIPT_ACTIONS_TO_NODE24) — the rule is "no PATH key in the top-level env:", not "no top-level env:". Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // V28 — FALSE-RED GUARD: a COMMENTED `# defaults:` block. Comment lines must
+  // neither satisfy nor trip the rule — the same live-lines-only discipline
+  // teeth Q4 and R14 pin elsewhere in this file. [ok]
+  {
+    const fixture = vJob(V_CANONICAL_STEPS, {
+      topLevel: "# defaults:\n#   run:\n#     shell: 'true {0}'\n",
+    });
+    const r = nightlyHasNoWorkflowScopeNeuters(fixture);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH V28: nightlyHasNoWorkflowScopeNeuters rejected a workflow whose only defaults: text is a # COMMENT — a commented-out neuter is not a neuter, and rejecting it blocks documenting why the key is deliberately absent. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH V — EQUIVALENT MUTANTS, DECLARED RATHER THAN TESTED. Each of these
+  // would be a fixture that exercises a code path ALREADY pinned by an existing
+  // tooth; writing them would grow the file without adding a single bite, and
+  // an inert tooth is worse than no tooth because it reads as coverage:
+  //   - `env: PATH:` INSIDE the changelog-freshness job (job- or step-level).
+  //     jobIsNotNeutered's env scan is job-name-agnostic — it runs
+  //     envMappingKeys over the extracted block — so this is byte-identical to
+  //     the path teeth U2a/U2b/U2c already pin, with the job name swapped.
+  //   - the fail-closed unreadable-shape clauses for this job (no steps: key,
+  //     no step dash, a flow-style step, a flow steps: sequence, a merge key, a
+  //     bare alias). Teeth O16/O21/O22/O23a/O23b pin them in segmentJobBlock,
+  //     which every caller shares; a changelog-freshness copy tests the same
+  //     lines through the same door.
+  //   - the upload-artifact `if: always()` carve-out. This job has no upload
+  //     step, so a carve-out fixture here would assert nothing about it.
+  //   - the k = 1..n-1 ordering loop under the DEFAULT one-element gates array.
+  //     For mutation / mutation-server / coverage the array has length 1 BY
+  //     CONSTRUCTION, so the loop body past k = 0 is unreachable for those jobs.
+  //     It is exercised only through CHANGELOG_FRESHNESS_GATES — which is why
+  //     V7/V8/V9 carry the entire ordering proof for the whole predicate.
+  // -------------------------------------------------------------------------
+
+  // -------------------------------------------------------------------------
+  // TEETH W: GIT_CLIFF_PINNED_VERSION, CHANGELOG_RECIPE_BODY, gitCliffPinsAgree.
+  //
+  // The justfile recipe and the workflow's install step both produce the
+  // CHANGELOG.md that the freshness checker diffs against. When they drift, an
+  // upstream rendering change flips every entry to missing+extra at once and
+  // REDs the gate for a reason unrelated to freshness — the nag-then-bypass mode
+  // ADR-0165 rejected, arriving through the back door.
+  //
+  // EVERY fixture derives its version from GIT_CLIFF_PINNED_VERSION and its
+  // recipe from CHANGELOG_RECIPE_BODY, so a re-pin is a one-constant edit and
+  // no fixture rots (the TEETH L cap-boundary lesson).
+  //
+  // CONTRACT NOTE FOR CHANGELOG_RECIPE_BODY: it is the recipe body AS IT APPEARS
+  // IN THE FILE — carrying its 4-space recipe indentation, lines joined with
+  // \n, trailing newlines insignificant. W1 splices it straight under a
+  // `changelog:` header, so clause (c) is a ROUND TRIP: whatever the extractor
+  // reads back out of a real justfile must equal the constant. The body's first
+  // line `#!/usr/bin/env bash` is NOT a comment to be stripped — it makes this a
+  // just SHEBANG recipe, and dropping it changes execution from a single script
+  // to line-by-line, which silently discards `set -euo pipefail`. A body
+  // extractor copied from mutateServerRecipeIntact (which drops #-lines) will
+  // fail W1 for exactly that reason.
+  // -------------------------------------------------------------------------
+
+  // A version that must NEVER equal the pin — the backstop below refuses to run
+  // in a world where it does (the L-bigcap-backstop precedent: a drift fixture
+  // that stops drifting goes inert silently).
+  const W_DRIFTED = '1.0.0';
+  if (W_DRIFTED === GIT_CLIFF_PINNED_VERSION) {
+    return {
+      name,
+      pass: false,
+      detail:
+        `TEETH W-backstop: the drift fixture version W_DRIFTED=${W_DRIFTED} equals ` +
+        `GIT_CLIFF_PINNED_VERSION — every "pins disagree" fixture in TEETH W would silently ` +
+        'become a positive control. Pick a different W_DRIFTED',
+    };
+  }
+
+  const W_PIN = GIT_CLIFF_PINNED_VERSION;
+
+  // A sibling recipe whose name has `changelog` as a strict PREFIX, declared
+  // FIRST on purpose: a body extractor keyed on startsWith('changelog') rather
+  // than on the exact `changelog:` header line reads THIS recipe's body and
+  // compares the wrong text.
+  const W_CHECK_RECIPE_BODY = `    #!/usr/bin/env bash
+    set -euo pipefail
+    want="git-cliff {{GIT_CLIFF_VERSION}}"
+    if [ "$(git cliff --version 2>/dev/null || true)" != "$want" ]; then
+        echo "changelog-check: git-cliff version mismatch — want '$want'" >&2
+        exit 1
+    fi
+    node scripts/changelog-freshness.mjs --check
+`;
+
+  // Trailing newlines are normalised away so the fixture is a valid justfile
+  // whichever convention the constant ships with; the INDENTATION is not
+  // normalised, because that is the half of the round trip worth pinning.
+  const wJustfile = (assignments, recipeBody) => `# fixture justfile (16r-c TEETH W)
+${assignments}
+
+changelog-check:
+${W_CHECK_RECIPE_BODY}
+changelog:
+${recipeBody.replace(/\n+$/, '')}
+
+ci: lint typecheck test eval
+`;
+
+  const W_INSTALL_FLOW = (
+    tool,
+  ) => `      - uses: taiki-e/install-action@abc1234abc1234abc1234abc1234abc1234abc12 # v2
+        with: { tool: ${tool} }
+`;
+  const W_INSTALL_BLOCK = (
+    tool,
+  ) => `      - uses: taiki-e/install-action@abc1234abc1234abc1234abc1234abc1234abc12 # v2
+        with:
+          tool: ${tool}
+`;
+
+  // The workflow side. A `coverage` job sits above changelog-freshness so every
+  // negative fixture can park a decoy pin in a DIFFERENT job: clause (b) must
+  // read the pin through strictJobBlock + segmentJobBlock + withKeys, never by
+  // an indexOf over the whole file.
+  const wNightly = (freshnessInstall, coverageInstall = '') => `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@abc1234abc1234abc1234abc1234abc1234abc12 # v6
+${coverageInstall}      - run: just coverage
+  changelog-freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@abc1234abc1234abc1234abc1234abc1234abc12 # v6
+        with: { fetch-depth: 0 }
+${freshnessInstall}      - run: node scripts/changelog-freshness.mjs --check
+`;
+
+  const W_LIVE_PIN_ASSIGN = `GIT_CLIFF_VERSION := "${W_PIN}"`;
+  const W_CANONICAL_JUSTFILE = wJustfile(W_LIVE_PIN_ASSIGN, CHANGELOG_RECIPE_BODY);
+  const W_CANONICAL_NIGHTLY = wNightly(W_INSTALL_FLOW(`git-cliff@${W_PIN}`));
+
+  // W1 — POSITIVE CONTROL: both sides pinned to the constant, recipe body equal
+  // to CHANGELOG_RECIPE_BODY. Like V1 this is a round trip, and like V1 it
+  // forbids shipping constants that would false-RED the committed tree once the
+  // justfile is written. [ok]
+  {
+    const r = gitCliffPinsAgree(W_CANONICAL_JUSTFILE, W_CANONICAL_NIGHTLY);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH W1: gitCliffPinsAgree rejected a justfile and workflow that BOTH pin git-cliff to GIT_CLIFF_PINNED_VERSION with a changelog: body spliced straight from CHANGELOG_RECIPE_BODY — the constants must accept their own round trip. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // W2 — the JUSTFILE side drifts. The reason must name BOTH values, so a red
+  // says which side moved (the justfileCapEqualsCeiling precedent). [NOT ok]
+  {
+    const drifted = wJustfile(`GIT_CLIFF_VERSION := "${W_DRIFTED}"`, CHANGELOG_RECIPE_BODY);
+    const r = gitCliffPinsAgree(drifted, W_CANONICAL_NIGHTLY);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH W2: gitCliffPinsAgree accepted justfile GIT_CLIFF_VERSION=${W_DRIFTED} against ` +
+          `GIT_CLIFF_PINNED_VERSION=${W_PIN} — a local regeneration would then write a CHANGELOG.md ` +
+          'the nightly job cannot reproduce',
+      };
+    }
+    if (r.reason.indexOf(W_DRIFTED) === -1 || r.reason.indexOf(W_PIN) === -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH W2-reason: gitCliffPinsAgree reported a drift without naming both values ` +
+          `(expected ${W_DRIFTED} and ${W_PIN} in the reason, got: ${r.reason}) — a red that does ` +
+          'not say which side drifted sends the reader to the wrong file',
+      };
+    }
+  }
+
+  // W3 — the WORKFLOW side drifts. [NOT ok]
+  {
+    const r = gitCliffPinsAgree(
+      W_CANONICAL_JUSTFILE,
+      wNightly(W_INSTALL_FLOW(`git-cliff@${W_DRIFTED}`)),
+    );
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH W3: gitCliffPinsAgree accepted a workflow pinning git-cliff@${W_DRIFTED} while the ` +
+          `justfile and GIT_CLIFF_PINNED_VERSION both say ${W_PIN} — the nightly job would then ` +
+          'render a changelog nobody can reproduce locally',
+      };
+    }
+  }
+
+  // W4 — no live GIT_CLIFF_VERSION assignment anywhere. Fails LOUD: with zero
+  // assignments there is nothing to compare, and "nothing to compare" must never
+  // read as "they agree". [NOT ok]
+  {
+    const noAssign = wJustfile('# (no version pin here)', CHANGELOG_RECIPE_BODY);
+    const r = gitCliffPinsAgree(noAssign, W_CANONICAL_NIGHTLY);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH W4: gitCliffPinsAgree accepted a justfile with NO live GIT_CLIFF_VERSION := ' +
+          'assignment — an absent pin cannot be proven equal to anything and must fail loud, not ' +
+          'fall through to ok',
+      };
+    }
+  }
+
+  // W5 — a COMMENTED decoy carrying the correct pin sits above the LIVE
+  // assignment, which carries the wrong one. Kills a first-match indexOf scan:
+  // the live value is the drifted one. [NOT ok]
+  {
+    const decoy = wJustfile(
+      `# GIT_CLIFF_VERSION := "${W_PIN}"\nGIT_CLIFF_VERSION := "${W_DRIFTED}"`,
+      CHANGELOG_RECIPE_BODY,
+    );
+    const r = gitCliffPinsAgree(decoy, W_CANONICAL_NIGHTLY);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH W5: gitCliffPinsAgree accepted a justfile whose FIRST GIT_CLIFF_VERSION line is a ` +
+          `# comment holding the correct ${W_PIN} while the LIVE assignment holds ${W_DRIFTED} — a ` +
+          'first-match indexOf reads the comment; only live (non-comment) assignments count',
+      };
+    }
+  }
+
+  // W6 — TWO live assignments, BOTH holding the correct pin. Parse ambiguity
+  // must fail LOUD even when every candidate would have passed: just is
+  // last-wins, this scanner is first-wins, and a later edit to either line is
+  // then invisible. "Some assignment matches" is not the rule; "exactly one
+  // assignment, and it matches" is. [NOT ok]
+  {
+    const twoAssigns = wJustfile(
+      `GIT_CLIFF_VERSION := "${W_PIN}"\nGIT_CLIFF_VERSION := "${W_PIN}"`,
+      CHANGELOG_RECIPE_BODY,
+    );
+    const r = gitCliffPinsAgree(twoAssigns, W_CANONICAL_NIGHTLY);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH W6: gitCliffPinsAgree accepted TWO live GIT_CLIFF_VERSION := assignments (both ' +
+          'holding the correct value) — the clause is "exactly one live assignment, and it ' +
+          'matches", not "some assignment matches"; ambiguity the scanner cannot resolve must fail ' +
+          'loud (the ADR-0200 D8 fail-closed discipline)',
+      };
+    }
+  }
+
+  // W7 — the workflow installs `tool: git-cliff` with NO @version at all, which
+  // resolves to whatever upstream ships that night. [NOT ok]
+  {
+    const r = gitCliffPinsAgree(W_CANONICAL_JUSTFILE, wNightly(W_INSTALL_FLOW('git-cliff')));
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH W7: gitCliffPinsAgree accepted `with: { tool: git-cliff }` with no @version — an ' +
+          'unpinned install resolves to whatever upstream ships that night, and one rendering ' +
+          'change flips every entry to missing+extra at once',
+      };
+    }
+  }
+
+  // W8 — the only `git-cliff@<pin>` in the whole file lives in the COVERAGE
+  // job; changelog-freshness installs nothing. Kills a whole-file indexOf: the
+  // pin must be attributed to the job that actually uses it. [NOT ok]
+  {
+    const r = gitCliffPinsAgree(
+      W_CANONICAL_JUSTFILE,
+      wNightly('', W_INSTALL_FLOW(`git-cliff@${W_PIN}`)),
+    );
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH W8: gitCliffPinsAgree accepted a workflow whose only git-cliff@${W_PIN} install ` +
+          'sits in the COVERAGE job while changelog-freshness installs nothing — the pin must be ' +
+          'read through strictJobBlock + segmentJobBlock + withKeys for THIS job, never by an ' +
+          'indexOf over the whole file',
+      };
+    }
+  }
+
+  // W9 — prefix collision in the version compare: the workflow pins
+  // `git-cliff@<pin>0` (e.g. 2.13.10 against a 2.13.1 constant), a real and
+  // shipping version number. Kills startsWith/indexOf on the version. [NOT ok]
+  {
+    const r = gitCliffPinsAgree(
+      W_CANONICAL_JUSTFILE,
+      wNightly(W_INSTALL_FLOW(`git-cliff@${W_PIN}0`)),
+    );
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH W9: gitCliffPinsAgree accepted git-cliff@${W_PIN}0 against ` +
+          `GIT_CLIFF_PINNED_VERSION=${W_PIN} — a startsWith/indexOf version compare cannot tell ` +
+          '2.13.10 from 2.13.1; the tool value must EQUAL git-cliff@<pin> exactly',
+      };
+    }
+  }
+
+  // W10 — FALSE-RED GUARD, the U5a lesson: nightly.yml writes this step in the
+  // FLOW form (`with: { tool: … }`), which is house style, not an exotic shape.
+  // Declared standalone rather than leaning on W1's builder so the flow-form
+  // proof survives any later change to that builder. [ok]
+  {
+    const flowNightly = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  changelog-freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@abc1234abc1234abc1234abc1234abc1234abc12 # v6
+        with: { fetch-depth: 0 }
+      - uses: taiki-e/install-action@abc1234abc1234abc1234abc1234abc1234abc12 # v2
+        with: { tool: git-cliff@${W_PIN} }
+      - run: node scripts/changelog-freshness.mjs --check
+`;
+    const r = gitCliffPinsAgree(W_CANONICAL_JUSTFILE, flowNightly);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH W10: gitCliffPinsAgree rejected the house FLOW form \`with: { tool: git-cliff@${W_PIN} }\` — that is exactly how the committed nightly.yml writes it, so rejecting it false-REDs the real tree at Check 29. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // W10b — the BLOCK form of the same step must read identically. A parser that
+  // handles only the form the real file happens to use today silently stops
+  // gating the day someone reformats it. [ok]
+  {
+    const r = gitCliffPinsAgree(
+      W_CANONICAL_JUSTFILE,
+      wNightly(W_INSTALL_BLOCK(`git-cliff@${W_PIN}`)),
+    );
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH W10b: gitCliffPinsAgree rejected the BLOCK form (with: on its own line, tool: beneath it) of an identically-pinned install step — both with: forms are legal YAML and collectWithKeys already reads both. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // W11 — FALSE-RED GUARD: the justfile pin quoted with single quotes. Valid
+  // just; an assignment parser that hard-codes `"` REDs a legal file. [ok]
+  {
+    const r = gitCliffPinsAgree(
+      wJustfile(`GIT_CLIFF_VERSION := '${W_PIN}'`, CHANGELOG_RECIPE_BODY),
+      W_CANONICAL_NIGHTLY,
+    );
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH W11: gitCliffPinsAgree rejected GIT_CLIFF_VERSION := '${W_PIN}' (single quotes) — both quote styles are valid just, and parseCapDefaultFromHeader already tolerates both for cap=. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // W12 — FALSE-RED GUARD: no whitespace around `:=`. Also valid just. [ok]
+  {
+    const r = gitCliffPinsAgree(
+      wJustfile(`GIT_CLIFF_VERSION:="${W_PIN}"`, CHANGELOG_RECIPE_BODY),
+      W_CANONICAL_NIGHTLY,
+    );
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH W12: gitCliffPinsAgree rejected \`GIT_CLIFF_VERSION:="${W_PIN}"\` with no spaces around := — that is valid just, and an assignment parser matching only the spaced spelling is a false RED waiting on a formatting change. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // W13 — THE M4 CHEAT, proven by the red-team: the recipe still REFERENCES
+  // {{GIT_CLIFF_VERSION}} and still prints the mismatch, but the fatal `exit 1`
+  // becomes a non-fatal echo, so `just changelog` regenerates the ledger with
+  // whatever git-cliff happens to be installed. Any "the recipe references the
+  // variable" clause is satisfied by an echo; only equality with
+  // CHANGELOG_RECIPE_BODY is not. Derived from the constant by a single
+  // substitution, with an integrity guard so it can never become a no-op.
+  // [NOT ok]
+  {
+    const W_EXIT_NEEDLE = '\n        exit 1\n';
+    const softened = CHANGELOG_RECIPE_BODY.replace(
+      W_EXIT_NEEDLE,
+      '\n        echo "(continuing anyway)"\n',
+    );
+    if (softened === CHANGELOG_RECIPE_BODY) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH W13-integrity: the fixture substitution found no `exit 1` line to soften in ' +
+          'CHANGELOG_RECIPE_BODY, so W13 would test the CANONICAL body and pass vacuously. Either ' +
+          'the pinned recipe lost its fatal assertion (which is the bug W13 exists to catch) or ' +
+          'the needle needs re-pinning alongside the constant',
+      };
+    }
+    const r = gitCliffPinsAgree(wJustfile(W_LIVE_PIN_ASSIGN, softened), W_CANONICAL_NIGHTLY);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH W13: gitCliffPinsAgree accepted a changelog: recipe whose version assertion prints ' +
+          '"(continuing anyway)" instead of exiting 1 — the recipe still MENTIONS ' +
+          '{{GIT_CLIFF_VERSION}}, so every "references the variable" clause passes while the ' +
+          'guard is dead; the body must EQUAL CHANGELOG_RECIPE_BODY',
+      };
+    }
+  }
+
+  // W14 — asserts one binary, RUNS another: the version check passes against
+  // `git cliff` on PATH and the generation step invokes
+  // `~/.cargo/bin/git-cliff`, which may be any version at all. Assert on the
+  // MUTATING call, never on the binding (the recorded
+  // abort-construct-blacklist lesson). [NOT ok]
+  {
+    // Needle RE-PINNED in 16r-c round 2 alongside the hardened CHANGELOG_RECIPE_BODY,
+    // exactly as this tooth's own integrity guard below instructs. The fixture's
+    // SEMANTICS are unchanged: assert the version of `git cliff`, mutate with a
+    // different binary.
+    const W_INVOKE_NEEDLE = ' git cliff --config cliff.toml -o "$tmp"';
+    const wrongBinary = CHANGELOG_RECIPE_BODY.replace(
+      W_INVOKE_NEEDLE,
+      ' ~/.cargo/bin/git-cliff --config cliff.toml -o "$tmp"',
+    );
+    if (wrongBinary === CHANGELOG_RECIPE_BODY) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH W14-integrity: the fixture substitution found no live `git cliff` generation call ' +
+          'in CHANGELOG_RECIPE_BODY, so W14 would test the CANONICAL body and pass vacuously — ' +
+          're-pin the needle alongside the constant',
+      };
+    }
+    const r = gitCliffPinsAgree(wJustfile(W_LIVE_PIN_ASSIGN, wrongBinary), W_CANONICAL_NIGHTLY);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH W14: gitCliffPinsAgree accepted a recipe that asserts the version of `git cliff` ' +
+          'on PATH and then generates the changelog with `~/.cargo/bin/git-cliff` — asserting one ' +
+          'binary and mutating with another is the classic bypass; the pin must cover the ' +
+          'MUTATING call',
+      };
+    }
+  }
+
+  // W15 — TWO live install steps in changelog-freshness: the first correctly
+  // pinned, the second unpinned. The later install OVERWRITES the binary, so
+  // the job runs `latest` — while an extractor that stops at the first match
+  // still finds the pinned one and reports agreement. [NOT ok]
+  {
+    const twoInstalls = wNightly(
+      `${W_INSTALL_FLOW(`git-cliff@${W_PIN}`)}${W_INSTALL_FLOW('git-cliff')}`,
+    );
+    const r = gitCliffPinsAgree(W_CANONICAL_JUSTFILE, twoInstalls);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH W15: gitCliffPinsAgree accepted TWO live git-cliff install steps in ' +
+          'changelog-freshness, the second unpinned — the later install overwrites the binary so ' +
+          'the job runs latest, while a first-match extractor still finds the pinned one. Clause ' +
+          '(b) is EXACTLY ONE live git-cliff install step',
+      };
+    }
+  }
+
+  // =========================================================================
+  // 16r-c ROUND-2 PROOF-OF-TEETH (V29-V34, W16-W17).
+  //
+  // PROVENANCE, stated plainly: TEETH V/W above were authored by the `tester`
+  // agent before implementation. The fixtures in THIS block were authored by the
+  // orchestrator during the review round, each pinning a defect that the
+  // `reviewer` / `red-team` / `tester` lenses proved live against the round-1
+  // implementation — every one demonstrated with a running artifact, not argued.
+  // They are held to the same bar: a fixture, a named attack, a stated bite.
+  // =========================================================================
+
+  // V29 — THE REGRESSION TOOTH. Round 1 widened `{kind:'just'}` from the raw
+  // `run:` scalar to stepRunText, which reads block-scalar BODIES. Before 16r-c a
+  // `run: |` gate step ALWAYS failed closed (the scalar value is the literal `|`,
+  // which never starts with `just `), so this fixture was RED at 2290f47 and went
+  // GREEN — a measured LOOSENING of the pre-existing mutation / coverage /
+  // mutation-server gate, in the slice meant to tighten it. The gate recipe is
+  // never invoked here; only the word `just` survives. [NOT ok]
+  {
+    const jRegression = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@abc1234abc1234abc1234abc1234abc1234abc12 # v6
+      - run: |
+          just --list >/dev/null
+          echo "mutation gate temporarily parked - see MR-1234"
+`;
+    const r = jobIsNotNeutered(jRegression, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V29 (REGRESSION): jobIsNotNeutered accepted a mutation job whose gate step is a ' +
+          'multi-line `run: |` body starting with `just --list` and never invoking `just ' +
+          'mutate-core` — a prefix test over a multi-command body LOOSENS the pre-16r-c gate, ' +
+          'which failed closed on every block-scalar gate step; the just gate must require a ' +
+          'SINGLE-LINE run text',
+      };
+    }
+  }
+
+  // V29b — POSITIVE CONTROL for V29: the pre-existing inline one-liner must still
+  // be accepted, or V29's fix would be a false-RED on the committed file. [ok]
+  {
+    const r = jobIsNotNeutered(nightlyFull, 'mutation');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH V29b: jobIsNotNeutered rejected the canonical inline gate step after the V29 single-line rule landed — the fix must not false-RED the committed workflow. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // V30 — JOB-level `defaults: run: shell:`. The third scope of the V14/V25 neuter
+  // and the one neither covered: V25 scans indent 0 only, V14 reads a STEP's own
+  // key. GitHub applies job defaults to every run step in the job, so all gates
+  // exit 0 having executed nothing with their pinned run: text intact. Measured
+  // GREEN against the round-1 implementation on all four guarded jobs. [NOT ok]
+  {
+    const fixture = vJob(V_CANONICAL_STEPS, {
+      jobKeys: "    defaults:\n      run:\n        shell: 'true {0}'\n",
+    });
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V30 (BLOCKER): jobIsNotNeutered accepted a JOB-level defaults: run: shell: ' +
+          'override — GitHub then runs `<shell> <script>` for every run step in the job, so both ' +
+          'gate steps exit 0 having executed nothing while their run: text still equals the pin',
+      };
+    }
+  }
+
+  // V31 — the sibling shape: JOB-level `defaults: run: working-directory:` points
+  // every gate at a decoy tree. Same clause, and the reason it rejects the whole
+  // `defaults:` key rather than allowlisting its children. [NOT ok]
+  {
+    const fixture = vJob(V_CANONICAL_STEPS, {
+      jobKeys: '    defaults:\n      run:\n        working-directory: tools/sandbox\n',
+    });
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V31: jobIsNotNeutered accepted a JOB-level defaults: run: working-directory: — ' +
+          'the pinned commands then run against a committed sandbox tree whose checker exits 0',
+      };
+    }
+  }
+
+  // V32 — STEP-level `working-directory:` on a gate step. The pin covers WHAT
+  // runs, never WHERE; a committed tools/sandbox/scripts/changelog-freshness.mjs
+  // turns both gates into theatre with the pinned text untouched. [NOT ok]
+  {
+    const fixture = vJob([
+      V_SUITE_STEP,
+      vRunStep(V_CHECK_CMD, ['working-directory: tools/sandbox']),
+    ]);
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V32: jobIsNotNeutered accepted working-directory: on a gate step — the pinned ' +
+          'command runs verbatim against a different tree, which a run-text pin cannot see',
+      };
+    }
+  }
+
+  // V33 — a FOLDED (`>`) block scalar carrying the pinned body. YAML folds it into
+  // one space-joined line, so GitHub executes a DIFFERENT string from the one the
+  // pin reconstructs: the gate would assert text that never runs. Rejecting is the
+  // honest outcome; folding it here would be a second, unpinned YAML parser. [NOT ok]
+  {
+    const foldedBody = V_SUITE_BODY.split('\n')
+      .map((ln) => `          ${ln}`)
+      .join('\n');
+    const folded = `      - name: gate step
+        shell: bash
+        run: >
+${foldedBody}
+`;
+    const fixture = vJob([folded, V_CHECK_STEP]);
+    const r = jobIsNotNeutered(fixture, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V33: jobIsNotNeutered accepted a FOLDED `run: >` gate step whose reconstructed ' +
+          'text equals the pin — YAML folds a `>` body into one space-joined line, so what ' +
+          'GitHub executes is not what the pin asserts; only the literal `|` family is admitted',
+      };
+    }
+  }
+
+  // V34 — DECOY JOB BLOCK above `jobs:`. `run-name:` is a documented top-level
+  // workflow key taking a string, so a block scalar there can hold a complete,
+  // healthy job definition at 2-space indent. A first-match block scan reads THAT
+  // as the job while the real definition below carries a job-level `if:`. Measured
+  // GREEN against the round-1 implementation for every guarded job — which is why
+  // strictJobBlock now anchors at the `jobs:` line. [NOT ok]
+  {
+    const decoy = `name: Nightly
+run-name: |
+  changelog-freshness:
+    runs-on: ubuntu-latest
+    steps:
+${V_SUITE_STEP}${V_CHECK_STEP}on:
+  workflow_dispatch:
+jobs:
+  changelog-freshness:
+    if: false
+    runs-on: ubuntu-latest
+    steps:
+${V_SUITE_STEP}${V_CHECK_STEP}`;
+    const r = jobIsNotNeutered(decoy, 'changelog-freshness', V_GATES);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH V34 (BLOCKER): jobIsNotNeutered read a decoy changelog-freshness block parked ' +
+          'inside a top-level `run-name:` block-scalar string and reported ok, while the REAL ' +
+          'job under `jobs:` carries if: false — the job-block scan must be anchored at jobs:',
+      };
+    }
+  }
+
+  // W16 — a just STRING-LITERAL DECOY holding the pinned recipe body verbatim,
+  // parked above the real, tampered `changelog:`. just string literals put
+  // arbitrary text at column 0, so a first-match extractor reads the decoy back
+  // byte-identical while `just changelog` (verified against just 1.55.1) runs the
+  // tampered recipe. Counting the header lines and refusing anything but exactly
+  // one closes it without teaching this scanner just's string syntax. [NOT ok]
+  {
+    const tripleQuote = "'''";
+    const decoyJustfile = `# fixture justfile (16r-c TEETH W16)
+${W_LIVE_PIN_ASSIGN}
+
+CHANGELOG_RECIPE_DOC := ${tripleQuote}
+changelog:
+${CHANGELOG_RECIPE_BODY}
+${tripleQuote}
+
+changelog-check:
+${W_CHECK_RECIPE_BODY}
+changelog:
+    #!/usr/bin/env bash
+    git cliff --config attacker.toml -o CHANGELOG.md
+
+ci: lint typecheck test eval
+`;
+    const r = gitCliffPinsAgree(decoyJustfile, W_CANONICAL_NIGHTLY);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH W16 (BLOCKER): gitCliffPinsAgree accepted a justfile declaring `changelog:` at ' +
+          'column 0 TWICE — once inside a just string literal holding the pinned body verbatim, ' +
+          'once as the real, tampered recipe below it; an ambiguous recipe header must fail LOUD',
+      };
+    }
+  }
+
+  // W17 — changelogCheckRecipeIntact. The check recipe carries a byte-identical
+  // COPY of the version guard and nothing else in the repo reaches it (the nightly
+  // calls the script directly; `just ci` deliberately does not depend on it), so
+  // without this pin its `exit 1` could be softened to an echo, or the whole
+  // recipe deleted, with this eval green.
+  {
+    const w17Canonical = `# fixture justfile (16r-c TEETH W17)
+${W_LIVE_PIN_ASSIGN}
+
+changelog-check:
+${CHANGELOG_CHECK_RECIPE_BODY}
+
+ci: lint typecheck test eval
+`;
+    // W17a — POSITIVE CONTROL: the pin must accept its own round trip. [ok]
+    const good = changelogCheckRecipeIntact(w17Canonical);
+    if (!good.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH W17a: changelogCheckRecipeIntact rejected a changelog-check: body spliced straight from CHANGELOG_CHECK_RECIPE_BODY — the constant must accept its own round trip. Reason: ${good.reason}`,
+      };
+    }
+    // W17b — the fatal `exit 1` softened to a warning. [NOT ok]
+    const w17ExitNeedle = '\n        exit 1\n';
+    const softened = CHANGELOG_CHECK_RECIPE_BODY.replace(
+      w17ExitNeedle,
+      '\n        echo "(continuing anyway)"\n',
+    );
+    if (softened === CHANGELOG_CHECK_RECIPE_BODY) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH W17b-integrity: the fixture substitution found no `exit 1` line in ' +
+          'CHANGELOG_CHECK_RECIPE_BODY, so W17b would test the CANONICAL body and pass ' +
+          'vacuously — re-pin the needle alongside the constant',
+      };
+    }
+    const r = changelogCheckRecipeIntact(
+      w17Canonical.replace(CHANGELOG_CHECK_RECIPE_BODY, softened),
+    );
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH W17b: changelogCheckRecipeIntact accepted a changelog-check: recipe whose ' +
+          'version assertion prints a warning instead of exiting 1 — the guard would then run ' +
+          'the checker with the wrong git-cliff and report the resulting drift as staleness',
+      };
+    }
+    // W17c — the recipe deleted outright. [NOT ok]
+    const absent = changelogCheckRecipeIntact(`${W_LIVE_PIN_ASSIGN}\n\nci: lint\n`);
+    if (absent.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH W17c: changelogCheckRecipeIntact accepted a justfile with no `changelog-check:` ' +
+          'recipe at all — a deleted local gate must not read as an intact one',
+      };
+    }
+  }
+
+  // =========================================================================
   // REAL FILE CHECKS
   // =========================================================================
   const root = path.resolve('.');
@@ -6127,10 +8417,149 @@ ${NOTIFY_CANONICAL_STEPS}`;
     }
   }
 
+  // =========================================================================
+  // 16r-c REAL FILE CHECKS (ADR-0196 — the changelog-freshness gate)
+  // The ORDER is a DIAGNOSIS order, not an arbitrary one: structure → workflow
+  // scope → presence → neuter → policy → pins. Each step narrows what a red can
+  // mean, and each earlier check is a precondition for the next being readable
+  // at all — asking "is this job neutered?" of a file with two `jobs:` mappings
+  // is asking about a block that may never run.
+  //   Check 24 nightlyJobStructureIsUnambiguous → GREEN today (one jobs: mapping,
+  //            no duplicate job keys) — a regression ratchet, not new work
+  //   Check 25 nightlyHasNoWorkflowScopeNeuters → GREEN today (no top-level
+  //            defaults:; the top-level env: holds only
+  //            FORCE_JAVASCRIPT_ACTIONS_TO_NODE24)
+  //   Check 26 nightlyDeclaresJob('changelog-freshness') → GREEN today
+  //   Check 27 jobIsNotNeutered(…, { gates: CHANGELOG_FRESHNESS_GATES }) → GREEN
+  //            today; this is where a pin that does not match the committed job
+  //            body would surface as a FALSE red, which is why TEETH V1 renders
+  //            its positive control from the same constant
+  //   Check 28 jobHasFailurePolicyComment('changelog-freshness') → GREEN today
+  //            (the preamble at .github/workflows/nightly.yml:180-181)
+  //   Check 29 gitCliffPinsAgree → THE SOLE GENUINELY-EXPECTED RED: the justfile
+  //            declares no GIT_CLIFF_VERSION at all and its `changelog:` recipe
+  //            is the single unguarded line `git cliff -o CHANGELOG.md`, while
+  //            nightly.yml already pins git-cliff@2.13.1
+  // =========================================================================
+
+  // Check 24: exactly one top-level jobs: mapping, no job key declared twice.
+  // GREEN today. It is a fail-closed precondition for Checks 26-28: YAML is
+  // last-wins on a duplicate key and every text scanner in this file is
+  // first-wins, so a second `if: false` copy of any job would let the checks
+  // below inspect a definition GitHub never runs.
+  {
+    const r = nightlyJobStructureIsUnambiguous(nightlyYml);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `nightly.yml job structure is ambiguous, so every job-scoped check below may be reading a definition that never runs: ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 25: no workflow-SCOPE neuter. GREEN today. A top-level `defaults: run:
+  // shell:` no-ops every run step in every job, and a top-level `env: PATH:`
+  // shims the toolchain for all five gates at once; both are invisible to every
+  // job-scoped predicate in this file, including the gate-step shell rule.
+  {
+    const r = nightlyHasNoWorkflowScopeNeuters(nightlyYml);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `nightly.yml carries a workflow-scope neuter that silently disables every job at once: ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 26: the changelog-freshness job is DECLARED. GREEN today. Deleting the
+  // job (and dropping it from notify's needs:) is invisible to every other
+  // predicate here — nightlyNotifyIsWired derives its required set FROM the
+  // file, so a deleted job leaves the fan-in internally consistent.
+  {
+    const r = nightlyDeclaresJob(nightlyYml, 'changelog-freshness');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `nightly.yml no longer declares the changelog-freshness job (ADR-0196): ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 27: the changelog-freshness job is not neutered AND its two gate steps
+  // match CHANGELOG_FRESHNESS_GATES verbatim, in order. GREEN today. This is the
+  // check TEETH V1's round trip protects: a pin that cannot accept its own
+  // rendering would false-RED here on a perfectly healthy workflow.
+  {
+    const r = jobIsNotNeutered(nightlyYml, 'changelog-freshness', {
+      gates: CHANGELOG_FRESHNESS_GATES,
+    });
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `changelog-freshness job is neutered or its gate steps have drifted from CHANGELOG_FRESHNESS_GATES in nightly.yml: ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 28: the changelog-freshness job documents its failure policy in the
+  // contiguous 2-space comment preamble above its job key, exactly as the other
+  // four guarded jobs do (Checks 14-16). GREEN today — the preamble already
+  // exists at .github/workflows/nightly.yml:180-181; this is a ratchet against
+  // REMOVING it, not a demand for new work. The notify job says WHICH job
+  // failed; the preamble says WHAT HAPPENS NEXT.
+  {
+    const r = jobHasFailurePolicyComment(nightlyYml, 'changelog-freshness');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `nightly.yml job 'changelog-freshness' has no documented failure policy above its job key: ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 29: the git-cliff pin agrees across the justfile and the workflow, and
+  // the `changelog:` recipe body is intact (EXPECTED RED — the sole one this
+  // slice adds).
+  // GREEN edit: add `GIT_CLIFF_VERSION := "<GIT_CLIFF_PINNED_VERSION>"` to the
+  // justfile and replace the one-line `changelog:` recipe with the version-
+  // asserting shebang recipe pinned by CHANGELOG_RECIPE_BODY (plus the sibling
+  // `changelog-check:` recipe). Both sides then generate the SAME CHANGELOG.md
+  // the freshness checker diffs against; today a local `just changelog` run with
+  // any other git-cliff rewrites every entry and the nightly gate reds for a
+  // reason that has nothing to do with ledger freshness.
+  {
+    const r = gitCliffPinsAgree(justfile, nightlyYml);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `the git-cliff pin does not agree between the justfile and nightly.yml (EXPECTED RED): ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 30: the `changelog-check:` recipe body is intact (16r-c round 2).
+  // GREEN today; load-bearing from now on — it is the ONLY guard on that recipe.
+  {
+    const r = changelogCheckRecipeIntact(justfile);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `justfile changelog-check: recipe has drifted from its pin: ${r.reason}`,
+      };
+    }
+  }
+
   return {
     name,
     pass: true,
     detail:
-      'nightly smoke-republish correctly wired: job exists in nightly.yml (not ci.yml), references smoke-republish.sh, justfile recipe present, script committed, ADR-0079 documents the failure policy; m13.5a additions: mutation/coverage/mutation-server jobs present and unneutered, schedule+dispatch triggers live, coverage threshold ≥96, mutate-server recipe intact; 14r-a additions: all three guarded jobs document an attributed failure policy in their comment preamble, and the justfile mutate-server cap= default equals MUTATE_SERVER_CAP_BASELINE; lp-03 additions (ADR-0200): both mutation jobs upload mutants.out/ with if: always(), under distinct artifact names, and the notify job fans in over every other job, admits failure/skipped/cancelled, holds an effective issues: write grant that no other job holds, and opens exactly one attributed issue per non-success job',
+      'nightly smoke-republish correctly wired: job exists in nightly.yml (not ci.yml), references smoke-republish.sh, justfile recipe present, script committed, ADR-0079 documents the failure policy; m13.5a additions: mutation/coverage/mutation-server jobs present and unneutered, schedule+dispatch triggers live, coverage threshold ≥96, mutate-server recipe intact; 14r-a additions: all three guarded jobs document an attributed failure policy in their comment preamble, and the justfile mutate-server cap= default equals MUTATE_SERVER_CAP_BASELINE; lp-03 additions (ADR-0200): both mutation jobs upload mutants.out/ with if: always(), under distinct artifact names, and the notify job fans in over every other job, admits failure/skipped/cancelled, holds an effective issues: write grant that no other job holds, and opens exactly one attributed issue per non-success job; 16r-c additions (ADR-0196): nightly.yml has exactly one jobs: mapping with no duplicate job keys and no workflow-scope neuter (no top-level defaults:, no PATH key in the top-level env:), and the changelog-freshness job is declared, documents an attributed failure policy, and runs its two gate steps — the TAP gating suite and `node scripts/changelog-freshness.mjs --check` — verbatim and in order per CHANGELOG_FRESHNESS_GATES, with the justfile GIT_CLIFF_VERSION, the workflow git-cliff@<version> install pin and the pinned `changelog:` recipe body all in agreement',
   };
 }
