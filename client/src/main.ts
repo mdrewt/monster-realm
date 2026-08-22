@@ -257,10 +257,11 @@ let identity = '';
 // reconnect/zone-switch (resetPredictionState) so they re-baseline — the RINGS do NOT reset.
 let activeBattleId: bigint | null = null;
 let lastOwnRating: number | null = null;
-// pt-b1 review (red-team M-1): set on RECONNECT only. On the first post-reconnect batch a
-// still-Ongoing battle that survived the drop must NOT re-emit battleStart (store.reset cleared
-// it + the latch, so it looks "new"). The flag re-baselines that one sighting without emitting.
+// pt-b1 review (red-team M-1) + 16r-f: set on RECONNECT only. A still-Ongoing battle that
+// survived the drop must NOT re-emit battleStart. STICKY until a flush observes definite
+// battle state; reseedPrevBattleId is the drop-time battle so only ITS re-sighting is silent.
 let battleReseedPending = false;
+let reseedPrevBattleId: bigint | null = null;
 let conn: ReturnType<typeof connect> | undefined;
 let boxView: BoxView | undefined;
 let battleView: BattleView | undefined;
@@ -1724,11 +1725,15 @@ store.onBatchApplied(() => {
   if (identity === '') return;
   try {
     const latest = store.latestPlayerBattle(identity);
-    // red-team M-1: on the first post-reconnect batch, re-baseline a surviving Ongoing
-    // battle WITHOUT emitting (store.reset cleared the latch so it would look "new").
+    // red-team M-1 + 16r-f: re-baseline ONLY the battle that survived the drop, without
+    // emitting. Sticky: an undefined read keeps the latch armed (a pre-hydration flush must
+    // not burn it — drops the ADR-0198 D7 atomicity assumption); any definite row resolves it.
     if (battleReseedPending) {
+      if (latest === undefined) return;
       battleReseedPending = false;
-      if (latest && latest.outcome === 'Ongoing') {
+      const survivedId = reseedPrevBattleId;
+      reseedPrevBattleId = null;
+      if (latest.outcome === 'Ongoing' && latest.battleId === survivedId) {
         activeBattleId = latest.battleId;
         return;
       }
@@ -2590,6 +2595,9 @@ async function main(): Promise<void> {
       applySession({ kind: 'connected' });
     },
     onReconnect: () => {
+      // 16r-f: capture BEFORE resetPredictionState nulls activeBattleId; a 2nd drop while a
+      // reseed is still pending must keep the FIRST capture (not overwrite it with null).
+      if (!battleReseedPending) reseedPrevBattleId = activeBattleId;
       // Clean re-init: the store already dropped stale rows; rebuild prediction and
       // drop the own slide clock so the post-reconnect re-seed starts fresh.
       // Zone state is corrected by the reconcile listener's state-based check on
