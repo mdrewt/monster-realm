@@ -169,8 +169,8 @@ function unpinnedIds(baselineIds, currentIds) {
 // would satisfy them.
 const BASELINE_ID_FLOORS = {
   zones: 2,
-  species: 16,
-  skills: 11,
+  species: 20,
+  skills: 15,
   items: 5,
   abilities: 3,
   shops: 1,
@@ -1349,8 +1349,8 @@ export default async function () {
   // --------------------------------------------------------------------
   const baselineFloor = [
     { key: 'zones', baseline: 'evals/baselines/zone-ids.json', floor: 2 },
-    { key: 'species', baseline: 'evals/baselines/species-ids.json', floor: 16 },
-    { key: 'skills', baseline: 'evals/baselines/skill-ids.json', floor: 11 },
+    { key: 'species', baseline: 'evals/baselines/species-ids.json', floor: 20 },
+    { key: 'skills', baseline: 'evals/baselines/skill-ids.json', floor: 15 },
     { key: 'items', baseline: 'evals/baselines/item-ids.json', floor: 5 },
     { key: 'abilities', baseline: 'evals/baselines/ability-ids.json', floor: 3 },
     { key: 'shops', baseline: 'evals/baselines/shop-ids.json', floor: 1 },

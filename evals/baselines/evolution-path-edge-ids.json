@@ -1,15 +1,53 @@
 {
   "_comment": "EVER-ISSUED edge_id ledger (spec M-evolution-essence-graph §5 R12, ADR-0177 D7). Consumed by evals/evolution-content-integrity.eval.mjs. Semantics differ deliberately from the species_id/quest_id append-only baselines: R12 permits an edge to be REMOVED, but an edge_id SHALL NEVER be reused or reassigned to a different (from, to). So this is a MAP, not a list. Rules: a live edge_id missing here -> FAIL (append it consciously); a live edge_id whose from/to differs from its entry here -> FAIL (reassignment); an entry here with no live edge -> OK, it is retired, and the entry is NEVER deleted. Hand-derived by reading game-core/content/evolution_paths/000-core.ron directly (EG5-1), then cross-checked against parseEdgeIdLiterals - a baseline generated FROM the extractor under test is self-confirming and forbidden.",
   "evolution_paths": {
-    "1": { "from": 1, "to": 4 },
-    "2": { "from": 1, "to": 5 },
-    "3": { "from": 1, "to": 6 },
-    "4": { "from": 2, "to": 6 },
-    "5": { "from": 7, "to": 9 },
-    "6": { "from": 7, "to": 30 },
-    "7": { "from": 8, "to": 10 },
-    "8": { "from": 8, "to": 31 },
-    "9": { "from": 20, "to": 22 },
-    "10": { "from": 21, "to": 23 }
+    "1": {
+      "from": 1,
+      "to": 4
+    },
+    "2": {
+      "from": 1,
+      "to": 5
+    },
+    "3": {
+      "from": 1,
+      "to": 6
+    },
+    "4": {
+      "from": 2,
+      "to": 6
+    },
+    "5": {
+      "from": 7,
+      "to": 9
+    },
+    "6": {
+      "from": 7,
+      "to": 30
+    },
+    "7": {
+      "from": 8,
+      "to": 10
+    },
+    "8": {
+      "from": 8,
+      "to": 31
+    },
+    "9": {
+      "from": 20,
+      "to": 22
+    },
+    "10": {
+      "from": 21,
+      "to": 23
+    },
+    "100": {
+      "from": 40,
+      "to": 41
+    },
+    "101": {
+      "from": 42,
+      "to": 43
+    }
   }
 }
