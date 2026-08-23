@@ -16,7 +16,7 @@
 //
 // DERIVED FORMS (4, 5, 6, 9, 10, 22, 23) MUST NEVER APPEAR HERE — they are
 // evolution/fusion-only and validate_evolution_fusion step 6 rejects them.
-// Wild-legal base forms are exactly: 1, 2, 3, 7, 8, 20, 21.
+// Wild-legal base forms are exactly: 1, 2, 3, 7, 8, 20, 21, 40, 42.
 [
     // ---------------------------------------------------------------------
     // Zone 0 "Verdant Hollow" — FROZEN. Do not edit this table.
@@ -88,6 +88,31 @@
             // Rare (late). Rarest late spawn — a non-starter route to a Fire
             // line for players who never picked one.
             (species_id: 1, weight: 3, min_level: 14, max_level: 20),
+            // ---- Roster wave 3 (rw3c, ADR-0204) --------------------------
+            // Uncommon (mid/late). Voltkit, the Electric line's tier-0 form —
+            // weight 6 deliberately equals the existing fast attacker it rivals
+            // as an archetype, so Electric is met reliably enough for the
+            // playtest to report on without out-appearing the mid commons.
+            //
+            // BAND CEILING IS AN INVARIANT, NOT TUNING: max_level 19 sits
+            // STRICTLY BELOW this form's only outgoing evolution edge (gate 20).
+            // level_gate_met is an inclusive comparison and ADR-0176 D2
+            // auto-evolution fires immediately when exactly one path is
+            // eligible, so a band that reached the gate would ship wild catches
+            // that evolve on capture and the tier-0 form would never be
+            // obtainable at all. Gated by rw3c_wave3_tuning.rs and by the
+            // T-BANDS check in evals/rw3c-wave-3-tuning.eval.mjs. The margin is
+            // one level by design: the catch-to-evolve window is deliberately
+            // narrow, which is a playtest question, not a correctness one.
+            (species_id: 40, weight: 6, min_level: 10, max_level: 19),
+            // Rare (late). Aurelet, the Light line's tier-0 form. Rarer than
+            // Voltkit because a special wall is the slower fight and the
+            // marquee reward, and because Light reads strong into the doubled
+            // Dark roster while the type chart itself is out of scope here.
+            // Opens one level later, mirroring the +2 offset the two evolution
+            // gates already encode. max_level 20 is again strictly below its
+            // gate of 22.
+            (species_id: 42, weight: 4, min_level: 11, max_level: 20),
         ],
     ),
 ]
