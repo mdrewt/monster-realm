@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: swap_active
 slug: reducers/swap_active
-updated: 2026-08-17
+updated: 2026-08-23
 tags: [reducer, spacetimedb, battle]
 abstract: "Swap the player's active monster. Ownership + outcome guards enforced."
 resource: server-module/src/battle.rs#L765

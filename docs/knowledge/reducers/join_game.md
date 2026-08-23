@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: join_game
 slug: reducers/join_game
-updated: 2026-08-17
+updated: 2026-08-23
 tags: [reducer, spacetimedb, movement]
 abstract: "Join: one `player` + one `character` at the spawn + one starter `monster` (idempotent: a returning player gets characte…"
 resource: server-module/src/movement.rs#L49

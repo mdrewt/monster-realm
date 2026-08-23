@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: cancel_challenge
 slug: reducers/cancel_challenge
-updated: 2026-08-17
+updated: 2026-08-23
 tags: [reducer, spacetimedb, pvp]
 abstract: "Cancel a pending PvP challenge (initiator-only)."
 resource: server-module/src/pvp.rs#L1046
