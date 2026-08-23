@@ -2601,6 +2601,12 @@ export function parseNightlyPolicyMatrix(docText) {
   const headerIdx = headerLines[0];
 
   // A3 — the header row must sit inside the anchor's own section.
+  // The heading granularity DIFFERS between clauses on purpose, and a future reader
+  // should not "fix" the inconsistency: A3's section boundary is H2-only (`## `), because
+  // a `### ` subheading under the matrix is still inside the matrix's section; A5's
+  // row-terminator below accepts ANY heading level, because a row run must stop at the
+  // first heading of any depth. Unifying them would either swallow a sibling section or
+  // truncate the section at a subheading.
   let sectionEnd = lines.length;
   for (let i = anchorIdx + 1; i < lines.length; i++) {
     if (lines[i].startsWith('## ')) {

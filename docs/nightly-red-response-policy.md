@@ -72,8 +72,16 @@ Response must name a route, its Owner must be one of the two enum members exactl
 and its Escalation must cite an ADR that actually exists in `docs/adr/`.
 
 One authoring constraint follows from how the matrix is parsed, and it is the one a future
-editor will otherwise trip: **no second pipe table may appear anywhere in this file** — not
-even an illustrative copy of the matrix, and not inside a fenced block. A decoy table is
-invisible to a parser that stops at the first blank line while being the more prominent of
-the two to a human reader, so the parser rejects any pipe row outside the one table above.
-Illustrate with prose or a list instead.
+editor will otherwise trip: **the matrix above is the only table this file may contain, in
+any format** — not an illustrative copy of it, not a variant "superseding" it, and not one
+tucked inside a fenced block. A decoy table is invisible to a parser that stops at the first
+blank line while being the more prominent of the two to a human reader.
+
+Only part of that constraint is mechanical, and the gap is worth knowing. The parser rejects
+**any line anywhere in this file whose first character is `|`**, which closes the Markdown
+form completely — including a shell example whose continuation line begins with a pipe, so
+indent such an example or rewrite it. It cannot see an HTML `<table>`, and it cannot see
+prose that simply contradicts a row. Those remain a review obligation, not a gate: a change
+to what a job's response IS belongs in the row, never in a note beside it. Illustrate with
+prose or a list, and keep the numbers out — a cap or threshold written into this file goes
+stale silently, because nothing here is checked against the recipes that own it.

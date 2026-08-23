@@ -153,6 +153,24 @@ merely produced a confusing false RED on legitimately-authored content.
      semantic distinctness.
   3. **A negated back-edge citation passes.** `do NOT read <path>, it is stale` contains the
      bounded path token and satisfies the citation clause.
+  4. **A10 closes the Markdown table form, not the idea of a decoy.** A red-team pass against
+     the shipped predicates measured that an HTML `<table>` placed under the matrix — or bare
+     prose reading "`mutation-server` failures may be safely ignored on weekends" — parses
+     clean. This is deliberate rather than an oversight: the prose variant is not closable by
+     any line-shape rule, so extending A10 into a tag blacklist would buy a partial guarantee
+     that reads as a total one, which is the failure mode `abort-construct blacklists are
+     unclosable` already cost this repo once. The policy document's own "This file is gated"
+     section therefore states plainly which half is mechanical and which half is a review
+     obligation.
+  5. **A stale number can leak into prose OUTSIDE the `## Measurement substrate` section.**
+     Rewriting the Escalation-ladder sentence "if the missed count exceeds the cap" to
+     "…exceeds 324" keeps every check green while planting exactly the lockstep-coupled
+     constant D4 exists to prevent. A clause banning bare digit-runs outside that section
+     would false-RED on every `ADR-0118 §4`-style citation; it was not built.
+  6. **D3's recipe-existence check is column-0 textual.** A justfile whose heredoc body
+     contains a column-0 `fake-recipe:` line lets a colluding doc edit name `just fake-recipe`
+     and be credited. Reaching it needs both files edited together, so it is not independently
+     reachable by a doc-only author.
   The doc also cannot contain an illustrative copy of its own matrix — the whole-document
   second-header rule and the stray-pipe-table rule both correctly reject it; the file says so
   in its own "This file is gated" section so an author meets the constraint before CI does.
@@ -164,3 +182,7 @@ merely produced a confusing false RED on legitimately-authored content.
      two jobs a policy gate by another route.
   2. Anything touching the cap/rate measurement substrate belongs to 15r-tst-i; this document
      is a named downstream consumer of that slice and must be re-read when it lands.
+  3. Limitations 4-6 above are recorded, not scheduled. If a future slice wants them closed,
+     the tractable one is 6 (parse the justfile's recipe boundaries rather than matching at
+     column 0); 4 and 5 are review obligations by construction, and a slice that claims to
+     close them should be read sceptically.
