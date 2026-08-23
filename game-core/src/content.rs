@@ -3169,13 +3169,17 @@ mod tests {
     }
 
     // -----------------------------------------------------------------------
-    // EG1-3 — explicit `tier: 1` authoring for the nine derived species
+    // EG1-3 — explicit `tier: 1` authoring for the eleven derived species
     // -----------------------------------------------------------------------
 
-    /// The nine currently-shipped derived species (spec EG1-3).
-    const EG1_TIER_ONE_IDS: [u32; 9] = [4, 5, 6, 9, 10, 22, 23, 30, 31];
+    /// The eleven currently-shipped derived species (spec EG1-3). Every content
+    /// wave that ships a derived form MUST extend this list in the same commit:
+    /// the second loop below asserts every species NOT named here is tier 0, so
+    /// an unlisted derived form fails loud rather than silently un-pinning.
+    /// Wave 3 (rw3b, ADR-0204) appended 41 Voltarion and 43 Aurelith.
+    const EG1_TIER_ONE_IDS: [u32; 11] = [4, 5, 6, 9, 10, 22, 23, 30, 31, 41, 43];
 
-    /// EG1-3 TEETH: species 4, 5, 6, 9, 10, 22, 23, 30, 31 each carry
+    /// EG1-3 TEETH: species 4, 5, 6, 9, 10, 22, 23, 30, 31, 41, 43 each carry
     /// `tier: 1`, and EVERY other shipped species carries `tier: 0`.
     ///
     /// `Species.tier` is `#[serde(default)]`, so the value 1 can ONLY come from

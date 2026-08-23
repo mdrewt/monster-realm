@@ -106,13 +106,24 @@ fn affinity_counts(species: &[Species], skills: &[SkillDef]) -> (usize, usize, u
         .iter()
         .filter(|s| s.affinity == Affinity::Electric)
         .count();
-    let light_species = species.iter().filter(|s| s.affinity == Affinity::Light).count();
+    let light_species = species
+        .iter()
+        .filter(|s| s.affinity == Affinity::Light)
+        .count();
     let electric_skills = skills
         .iter()
         .filter(|s| s.affinity == Affinity::Electric)
         .count();
-    let light_skills = skills.iter().filter(|s| s.affinity == Affinity::Light).count();
-    (electric_species, light_species, electric_skills, light_skills)
+    let light_skills = skills
+        .iter()
+        .filter(|s| s.affinity == Affinity::Light)
+        .count();
+    (
+        electric_species,
+        light_species,
+        electric_skills,
+        light_skills,
+    )
 }
 
 /// RW3-02 predicate, SCOPED to the wave-3 id band `40..=49` only (a sibling
@@ -321,9 +332,18 @@ fn rw3b_1_electric_and_light_have_species_and_skills() {
     let species = load_species().expect("species registry must parse");
     let skills = load_skills().expect("skills registry must parse");
     let (e_sp, l_sp, e_sk, l_sk) = affinity_counts(&species, &skills);
-    assert!(e_sp >= 1, "rw3b-1: expected >=1 Electric species, found {e_sp}");
-    assert!(l_sp >= 1, "rw3b-1: expected >=1 Light species, found {l_sp}");
-    assert!(e_sk >= 2, "rw3b-1: expected >=2 Electric skills, found {e_sk}");
+    assert!(
+        e_sp >= 1,
+        "rw3b-1: expected >=1 Electric species, found {e_sp}"
+    );
+    assert!(
+        l_sp >= 1,
+        "rw3b-1: expected >=1 Light species, found {l_sp}"
+    );
+    assert!(
+        e_sk >= 2,
+        "rw3b-1: expected >=2 Electric skills, found {e_sk}"
+    );
     assert!(l_sk >= 2, "rw3b-1: expected >=2 Light skills, found {l_sk}");
 }
 
@@ -519,13 +539,11 @@ fn rw3b_4_base_forms_tier0_derived_forms_are_edge_targets_at_tier_plus_one() {
 
     let base = parse_species(&base_txt).expect("species/070-wave3.ron must parse");
     let derived = parse_species(&derived_txt).expect("species/071-wave3-derived.ron must parse");
-    let edges = parse_evolution_paths(&edges_txt).expect("evolution_paths/070-wave3.ron must parse");
+    let edges =
+        parse_evolution_paths(&edges_txt).expect("evolution_paths/070-wave3.ron must parse");
 
     let violations = wave3_tier_and_edge_violations(&base, &derived, &edges);
-    assert!(
-        violations.is_empty(),
-        "rw3b-4: {violations:?}"
-    );
+    assert!(violations.is_empty(), "rw3b-4: {violations:?}");
 }
 
 #[test]
@@ -592,7 +610,8 @@ fn rw3b_4_teeth_tier_and_edge_helper_bites() {
 fn rw3b_5_no_auto_evolution_race_among_wave3_species_with_multiple_edges() {
     let edges_txt = std::fs::read_to_string(content_dir_file("evolution_paths/070-wave3.ron"))
         .expect("evolution_paths/070-wave3.ron must be readable");
-    let edges = parse_evolution_paths(&edges_txt).expect("evolution_paths/070-wave3.ron must parse");
+    let edges =
+        parse_evolution_paths(&edges_txt).expect("evolution_paths/070-wave3.ron must parse");
     // Vacuous today over the SHIPPED content: wave 3 ships exactly one outgoing
     // edge per base species (the safe default the spec's own anti-pattern note
     // recommends). The teeth below prove the predicate itself is NOT vacuous.
@@ -777,8 +796,8 @@ fn rw3b_comment_hygiene_over_the_four_new_wave3_files() {
     ];
     let mut violations = Vec::new();
     for path in &files {
-        let src =
-            std::fs::read_to_string(path).unwrap_or_else(|e| panic!("rw3b: {path} must be readable: {e}"));
+        let src = std::fs::read_to_string(path)
+            .unwrap_or_else(|e| panic!("rw3b: {path} must be readable: {e}"));
         let label = path.rsplit('/').next().unwrap_or(path.as_str()).to_string();
         violations.extend(comment_needle_violations(&label, &src));
     }

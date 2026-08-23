@@ -303,7 +303,8 @@ export function checkAffinityCoverage(speciesList, skillsList, allowed = ALLOWED
     if (!spAffinities.has(want)) violations.push(`no wave-3 species has affinity ${want}`);
   }
   for (const got of spAffinities) {
-    if (!allowed.has(got)) violations.push(`wave-3 species affinity ${got} is not in {${[...allowed].join(', ')}}`);
+    if (!allowed.has(got))
+      violations.push(`wave-3 species affinity ${got} is not in {${[...allowed].join(', ')}}`);
   }
   for (const want of allowed) {
     const count = skillsList.filter((s) => s.affinity === want).length;
@@ -339,7 +340,10 @@ export function findOrphanDerivedForms(derivedSpeciesList, edges) {
   return derivedSpeciesList
     .filter((s) => s.tier >= 1)
     .filter((s) => !targets.has(s.id))
-    .map((s) => `derived species ${s.id} (${s.name}, tier ${s.tier}) is not the to_species of any wave-3 edge`);
+    .map(
+      (s) =>
+        `derived species ${s.id} (${s.name}, tier ${s.tier}) is not the to_species of any wave-3 edge`,
+    );
 }
 
 export function findEvoTargetsInEncounters(edges, encounterSpeciesIds) {
@@ -348,7 +352,9 @@ export function findEvoTargetsInEncounters(edges, encounterSpeciesIds) {
   const violations = [];
   for (const t of targets) {
     if (encSet.has(t)) {
-      violations.push(`wave-3 evolution target species ${t} appears in an encounter table (must stay wild-illegal)`);
+      violations.push(
+        `wave-3 evolution target species ${t} appears in an encounter table (must stay wild-illegal)`,
+      );
     }
   }
   return violations;
@@ -382,7 +388,9 @@ export function findZone0Drift(parsedZone0) {
       p.minLevel !== l.minLevel ||
       p.maxLevel !== l.maxLevel
     ) {
-      violations.push(`zone 0 entry ${i} changed: pinned ${JSON.stringify(p)}, live ${JSON.stringify(l)}`);
+      violations.push(
+        `zone 0 entry ${i} changed: pinned ${JSON.stringify(p)}, live ${JSON.stringify(l)}`,
+      );
     }
   }
   return violations;
@@ -440,7 +448,9 @@ export function findCommentNeedleViolations(label, text) {
     const needles = ['to_species:', 'species_id:', 'id:'];
     const hit = needles.find((n) => comment.includes(n));
     if (hit) {
-      violations.push(`${label}:${i + 1}: trailing comment contains \`${hit}\` — use the id=N form`);
+      violations.push(
+        `${label}:${i + 1}: trailing comment contains \`${hit}\` — use the id=N form`,
+      );
     }
   }
   return violations;
@@ -451,7 +461,12 @@ export function findCommentNeedleViolations(label, text) {
 // ---------------------------------------------------------------------------
 
 function spriteFileNames(slug) {
-  return [`monster-${slug}.png`, `monster-${slug}.json`, `monster-${slug}-normal.png`, `monster-${slug}-normal.json`];
+  return [
+    `monster-${slug}.png`,
+    `monster-${slug}.json`,
+    `monster-${slug}-normal.png`,
+    `monster-${slug}-normal.json`,
+  ];
 }
 
 export function findMissingWave3SpriteFiles(slugs, existingFiles) {
@@ -525,7 +540,8 @@ export function findDuplicatePlanRows(rows) {
 // ---------------------------------------------------------------------------
 
 export default async function () {
-  const name = 'rw3b roster wave 3 (Electric + Light: id band, STAB, evolution wiring, zone-0 freeze, version, sprites)';
+  const name =
+    'rw3b roster wave 3 (Electric + Light: id band, STAB, evolution wiring, zone-0 freeze, version, sprites)';
 
   // =========================================================================
   // PROOFS-OF-TEETH — every checker must bite a BAD fixture and pass a GOOD one.
@@ -535,29 +551,49 @@ export default async function () {
   {
     const ids = parseSpeciesFile(ronSpecies({ id: 7 })).map((s) => s.id);
     if (findOutOfBand(ids, SPECIES_MIN, SPECIES_MAX).length === 0) {
-      return { name, pass: false, detail: 'TEETH: W3-BAND — species id 7 (outside 40..=49) was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-BAND — species id 7 (outside 40..=49) was NOT flagged',
+      };
     }
   }
   {
     const ids = parseEdgeFile(ronEdge({ edgeId: 50, from: 40, to: 41 })).map((e) => e.edgeId);
     if (findOutOfBand(ids, EDGE_MIN, EDGE_MAX).length === 0) {
-      return { name, pass: false, detail: 'TEETH: W3-BAND — edge id 50 (outside 100..=199) was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-BAND — edge id 50 (outside 100..=199) was NOT flagged',
+      };
     }
   }
   {
-    const ids = parseSpeciesFile(`[${ronSpecies({ id: 40 })}${ronSpecies({ id: 42 })}]`).map((s) => s.id);
+    const ids = parseSpeciesFile(`[${ronSpecies({ id: 40 })}${ronSpecies({ id: 42 })}]`).map(
+      (s) => s.id,
+    );
     if (findOutOfBand(ids, SPECIES_MIN, SPECIES_MAX).length > 0) {
-      return { name, pass: false, detail: 'TEETH: W3-BAND — GOOD ids [40,42] were incorrectly flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-BAND — GOOD ids [40,42] were incorrectly flagged',
+      };
     }
   }
 
   // --- W3-AFFINITY: missing an affinity entirely --------------------------------
   {
     const species = parseSpeciesFile(ronSpecies({ id: 40, affinity: 'Electric' }));
-    const skills = parseSkillFile(`[${ronSkill({ id: 40, affinity: 'Electric' })}${ronSkill({ id: 41, affinity: 'Electric' })}]`);
+    const skills = parseSkillFile(
+      `[${ronSkill({ id: 40, affinity: 'Electric' })}${ronSkill({ id: 41, affinity: 'Electric' })}]`,
+    );
     const v = checkAffinityCoverage(species, skills);
     if (!v.some((x) => x.includes('no wave-3 species has affinity Light'))) {
-      return { name, pass: false, detail: 'TEETH: W3-AFFINITY — a wave-3 drop missing Light species entirely was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-AFFINITY — a wave-3 drop missing Light species entirely was NOT flagged',
+      };
     }
   }
   // --- W3-AFFINITY: an off-band affinity --------------------------------------
@@ -567,7 +603,11 @@ export default async function () {
     );
     const v = checkAffinityCoverage(species, []);
     if (!v.some((x) => x.includes('Fire'))) {
-      return { name, pass: false, detail: 'TEETH: W3-AFFINITY — an off-band Fire species was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-AFFINITY — an off-band Fire species was NOT flagged',
+      };
     }
   }
   // --- W3-AFFINITY: too few skills of one affinity ----------------------------
@@ -580,7 +620,11 @@ export default async function () {
     );
     const v = checkAffinityCoverage(species, skills);
     if (!v.some((x) => x.includes('affinity Light: found 1'))) {
-      return { name, pass: false, detail: 'TEETH: W3-AFFINITY — only 1 Light skill was NOT flagged as short of 2' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-AFFINITY — only 1 Light skill was NOT flagged as short of 2',
+      };
     }
   }
   // --- W3-AFFINITY: GOOD --------------------------------------------------------
@@ -592,7 +636,11 @@ export default async function () {
       `[${ronSkill({ id: 40, affinity: 'Electric' })}${ronSkill({ id: 41, affinity: 'Electric' })}${ronSkill({ id: 42, affinity: 'Light' })}${ronSkill({ id: 43, affinity: 'Light' })}]`,
     );
     if (checkAffinityCoverage(species, skills).length > 0) {
-      return { name, pass: false, detail: 'TEETH: W3-AFFINITY — a GOOD {Electric, Light} x2 drop was incorrectly flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-AFFINITY — a GOOD {Electric, Light} x2 drop was incorrectly flagged',
+      };
     }
   }
 
@@ -604,7 +652,11 @@ export default async function () {
     ]);
     const species = parseSpeciesFile(ronSpecies({ id: 40, affinity: 'Electric', skills: [1] }));
     if (findMissingWave3STAB(species, skillAffinityById).length === 0) {
-      return { name, pass: false, detail: 'TEETH: W3-STAB — Electric species with only a Fire skill was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-STAB — Electric species with only a Fire skill was NOT flagged',
+      };
     }
   }
   // --- W3-STAB: GOOD ---------------------------------------------------------------
@@ -615,7 +667,11 @@ export default async function () {
     ]);
     const species = parseSpeciesFile(ronSpecies({ id: 40, affinity: 'Electric', skills: [1, 40] }));
     if (findMissingWave3STAB(species, skillAffinityById).length > 0) {
-      return { name, pass: false, detail: 'TEETH: W3-STAB — GOOD learnset [1,40] was incorrectly flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-STAB — GOOD learnset [1,40] was incorrectly flagged',
+      };
     }
   }
 
@@ -623,7 +679,11 @@ export default async function () {
   {
     const derived = parseSpeciesFile(ronSpecies({ id: 41, tier: 1 }));
     if (findOrphanDerivedForms(derived, []).length === 0) {
-      return { name, pass: false, detail: 'TEETH: W3-EVO — a tier-1 derived form with no inbound edge was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-EVO — a tier-1 derived form with no inbound edge was NOT flagged',
+      };
     }
   }
   // --- W3-EVO: orphan GOOD ---------------------------------------------------------
@@ -631,21 +691,34 @@ export default async function () {
     const derived = parseSpeciesFile(ronSpecies({ id: 41, tier: 1 }));
     const edges = parseEdgeFile(ronEdge({ edgeId: 100, from: 40, to: 41 }));
     if (findOrphanDerivedForms(derived, edges).length > 0) {
-      return { name, pass: false, detail: 'TEETH: W3-EVO — a GOOD derived form with an inbound edge was incorrectly flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-EVO — a GOOD derived form with an inbound edge was incorrectly flagged',
+      };
     }
   }
   // --- W3-EVO: evolution target placed in an encounter table -----------------------
   {
     const edges = parseEdgeFile(ronEdge({ edgeId: 100, from: 40, to: 41 }));
     if (findEvoTargetsInEncounters(edges, [41]).length === 0) {
-      return { name, pass: false, detail: 'TEETH: W3-EVO — evolution target 41 present in an encounter table was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-EVO — evolution target 41 present in an encounter table was NOT flagged',
+      };
     }
   }
   // --- W3-EVO: evo-in-encounters GOOD -----------------------------------------------
   {
     const edges = parseEdgeFile(ronEdge({ edgeId: 100, from: 40, to: 41 }));
     if (findEvoTargetsInEncounters(edges, [40, 1, 2]).length > 0) {
-      return { name, pass: false, detail: 'TEETH: W3-EVO — an encounter table without the evolution target was incorrectly flagged' };
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: W3-EVO — an encounter table without the evolution target was incorrectly flagged',
+      };
     }
   }
 
@@ -656,7 +729,11 @@ export default async function () {
     );
     const parsed = parseZoneEncounterBlock(text, 0);
     if (findZone0Drift(parsed).length === 0) {
-      return { name, pass: false, detail: 'TEETH: W3-ZONE0-FROZEN — a retuned zone-0 weight (10 -> 99) was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-ZONE0-FROZEN — a retuned zone-0 weight (10 -> 99) was NOT flagged',
+      };
     }
   }
   // --- W3-ZONE0-FROZEN: a missing zone 0 must be caught -----------------------------
@@ -664,7 +741,11 @@ export default async function () {
     const text = stripLineComments('[(zone_id: 1, encounter_rate: 150, entries: [])]');
     const parsed = parseZoneEncounterBlock(text, 0);
     if (findZone0Drift(parsed).length === 0) {
-      return { name, pass: false, detail: 'TEETH: W3-ZONE0-FROZEN — a missing zone-0 table was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-ZONE0-FROZEN — a missing zone-0 table was NOT flagged',
+      };
     }
   }
   // --- W3-ZONE0-FROZEN: GOOD — the exact pinned shape --------------------------------
@@ -674,7 +755,11 @@ export default async function () {
     );
     const parsed = parseZoneEncounterBlock(text, 0);
     if (findZone0Drift(parsed).length > 0) {
-      return { name, pass: false, detail: `TEETH: W3-ZONE0-FROZEN — the GOOD unchanged zone-0 shape was incorrectly flagged: ${findZone0Drift(parsed).join('; ')}` };
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: W3-ZONE0-FROZEN — the GOOD unchanged zone-0 shape was incorrectly flagged: ${findZone0Drift(parsed).join('; ')}`,
+      };
     }
   }
 
@@ -682,47 +767,70 @@ export default async function () {
   {
     const v1 = checkVersionFloorAndBaseline(19, 19);
     if (!v1.some((x) => x.includes('must bump it'))) {
-      return { name, pass: false, detail: 'TEETH: W3-VERSION — CONTENT_VERSION 19 (< 20) was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-VERSION — CONTENT_VERSION 19 (< 20) was NOT flagged',
+      };
     }
     const v2 = checkVersionFloorAndBaseline(20, 19);
     if (!v2.some((x) => x.includes('does not match'))) {
-      return { name, pass: false, detail: 'TEETH: W3-VERSION — a baseline/version mismatch was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-VERSION — a baseline/version mismatch was NOT flagged',
+      };
     }
   }
-  // --- W3-VERSION: GOOD --------------------------------------------------------------
-  {
-    if (checkVersionFloorAndBaseline(20, 20).length > 0) {
-      return { name, pass: false, detail: 'TEETH: W3-VERSION — a GOOD version=20/baseline=20 pair was incorrectly flagged' };
-    }
+  if (checkVersionFloorAndBaseline(20, 20).length > 0) {
+    return {
+      name,
+      pass: false,
+      detail: 'TEETH: W3-VERSION — a GOOD version=20/baseline=20 pair was incorrectly flagged',
+    };
   }
-  // --- W3-VERSION: readContentVersion parses the canonical declaration --------------
-  {
-    if (readContentVersion('pub(crate) const CONTENT_VERSION: u32 = 20;') !== 20) {
-      return { name, pass: false, detail: 'TEETH: W3-VERSION — readContentVersion failed on a canonical declaration' };
-    }
-    if (readContentVersion('no such constant here') !== null) {
-      return { name, pass: false, detail: 'TEETH: W3-VERSION — readContentVersion must return null when the needle is absent' };
-    }
+  if (readContentVersion('pub(crate) const CONTENT_VERSION: u32 = 20;') !== 20) {
+    return {
+      name,
+      pass: false,
+      detail: 'TEETH: W3-VERSION — readContentVersion failed on a canonical declaration',
+    };
+  }
+  if (readContentVersion('no such constant here') !== null) {
+    return {
+      name,
+      pass: false,
+      detail: 'TEETH: W3-VERSION — readContentVersion must return null when the needle is absent',
+    };
   }
 
   // --- W3-COMMENT-HYGIENE: trailing needle ------------------------------------------
   for (const needle of ['id:', 'species_id:', 'to_species:']) {
     const bad = `    learnable_skill_ids: [40], // pairs with ${needle} 5\n`;
     if (findCommentNeedleViolations('f.ron', bad).length !== 1) {
-      return { name, pass: false, detail: `TEETH: W3-COMMENT-HYGIENE — a trailing comment carrying \`${needle}\` was NOT flagged` };
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: W3-COMMENT-HYGIENE — a trailing comment carrying \`${needle}\` was NOT flagged`,
+      };
     }
   }
-  // --- W3-COMMENT-HYGIENE: whole-line comment stays legal ---------------------------
-  {
-    if (findCommentNeedleViolations('f.ron', '    // block for species_id: 40 below\n').length > 0) {
-      return { name, pass: false, detail: 'TEETH: W3-COMMENT-HYGIENE — a whole-line comment was incorrectly flagged' };
-    }
+  if (findCommentNeedleViolations('f.ron', '    // block for species_id: 40 below\n').length > 0) {
+    return {
+      name,
+      pass: false,
+      detail: 'TEETH: W3-COMMENT-HYGIENE — a whole-line comment was incorrectly flagged',
+    };
   }
-  // --- W3-COMMENT-HYGIENE: sanctioned id=N form stays legal -------------------------
-  {
-    if (findCommentNeedleViolations('f.ron', '    ability: Some(2), // Vital Spirit (id=2)\n').length > 0) {
-      return { name, pass: false, detail: 'TEETH: W3-COMMENT-HYGIENE — the sanctioned id=N form was incorrectly flagged' };
-    }
+  if (
+    findCommentNeedleViolations('f.ron', '    ability: Some(2), // Vital Spirit (id=2)\n').length >
+    0
+  ) {
+    return {
+      name,
+      pass: false,
+      detail: 'TEETH: W3-COMMENT-HYGIENE — the sanctioned id=N form was incorrectly flagged',
+    };
   }
 
   // --- W3-SPRITES: missing sprite file ----------------------------------------------
@@ -730,21 +838,33 @@ export default async function () {
     const existing = new Set(spriteFileNames('voltkit'));
     const v = findMissingWave3SpriteFiles(['voltkit', 'voltarion'], existing);
     if (v.length === 0) {
-      return { name, pass: false, detail: 'TEETH: W3-SPRITES — a missing voltarion sprite set was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-SPRITES — a missing voltarion sprite set was NOT flagged',
+      };
     }
   }
   // --- W3-SPRITES: GOOD --------------------------------------------------------------
   {
     const existing = new Set(spriteFileNames('voltkit'));
     if (findMissingWave3SpriteFiles(['voltkit'], existing).length > 0) {
-      return { name, pass: false, detail: 'TEETH: W3-SPRITES — a GOOD complete sprite set was incorrectly flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-SPRITES — a GOOD complete sprite set was incorrectly flagged',
+      };
     }
   }
   // --- W3-SPRITES: slug missing from the plan table --------------------------------
   {
     const rows = [{ slug: 'voltkit', plan: 'orb', size: 'small', features: 'sparks' }];
     if (findSlugRowCountViolations(['voltkit', 'voltarion'], rows).length === 0) {
-      return { name, pass: false, detail: 'TEETH: W3-SPRITES — voltarion missing from the plan table was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-SPRITES — voltarion missing from the plan table was NOT flagged',
+      };
     }
   }
   // --- W3-SPRITES: slug duplicated in the plan table --------------------------------
@@ -754,15 +874,24 @@ export default async function () {
       { slug: 'voltkit', plan: 'orb', size: 'small', features: 'sparks-v2' },
     ];
     if (findSlugRowCountViolations(['voltkit'], rows).length === 0) {
-      return { name, pass: false, detail: 'TEETH: W3-SPRITES — voltkit appearing twice in the plan table was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-SPRITES — voltkit appearing twice in the plan table was NOT flagged',
+      };
     }
   }
   // --- W3-SPRITES: parsePlanTable basic parse + missing markers throw --------------
   {
-    const src = '# PLAN-TABLE-BEGIN\nPLAN = [\n    ("voltkit", "orb", "small", "sparks"),\n]\n# PLAN-TABLE-END\n';
+    const src =
+      '# PLAN-TABLE-BEGIN\nPLAN = [\n    ("voltkit", "orb", "small", "sparks"),\n]\n# PLAN-TABLE-END\n';
     const rows = parsePlanTable(src);
     if (rows.length !== 1 || rows[0].slug !== 'voltkit' || rows[0].plan !== 'orb') {
-      return { name, pass: false, detail: 'TEETH: parsePlanTable failed to parse the basic fixture' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: parsePlanTable failed to parse the basic fixture',
+      };
     }
     let threw = false;
     try {
@@ -781,7 +910,11 @@ export default async function () {
       { slug: 'aurelet', plan: 'orb', size: 'small', features: 'sparks' },
     ];
     if (findDuplicatePlanRows(rows).length === 0) {
-      return { name, pass: false, detail: 'TEETH: W3-SPRITES — a duplicated plan tuple across two slugs was NOT flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-SPRITES — a duplicated plan tuple across two slugs was NOT flagged',
+      };
     }
   }
   // --- W3-SPRITES: GOOD distinct tuples -----------------------------------------------
@@ -791,7 +924,11 @@ export default async function () {
       { slug: 'aurelet', plan: 'sprout', size: 'small', features: 'halo' },
     ];
     if (findDuplicatePlanRows(rows).length > 0) {
-      return { name, pass: false, detail: 'TEETH: W3-SPRITES — GOOD distinct plan tuples were incorrectly flagged' };
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-SPRITES — GOOD distinct plan tuples were incorrectly flagged',
+      };
     }
   }
 
@@ -835,9 +972,27 @@ export default async function () {
   }
 
   // --- W3-BAND ---
-  failures.push(...findOutOfBand(wave3Species.map((s) => s.id), SPECIES_MIN, SPECIES_MAX));
-  failures.push(...findOutOfBand(wave3Skills.map((s) => s.id), SPECIES_MIN, SPECIES_MAX));
-  failures.push(...findOutOfBand(wave3Edges.map((e) => e.edgeId), EDGE_MIN, EDGE_MAX));
+  failures.push(
+    ...findOutOfBand(
+      wave3Species.map((s) => s.id),
+      SPECIES_MIN,
+      SPECIES_MAX,
+    ),
+  );
+  failures.push(
+    ...findOutOfBand(
+      wave3Skills.map((s) => s.id),
+      SPECIES_MIN,
+      SPECIES_MAX,
+    ),
+  );
+  failures.push(
+    ...findOutOfBand(
+      wave3Edges.map((e) => e.edgeId),
+      EDGE_MIN,
+      EDGE_MAX,
+    ),
+  );
 
   // --- W3-AFFINITY ---
   failures.push(...checkAffinityCoverage(wave3Species, wave3Skills));
