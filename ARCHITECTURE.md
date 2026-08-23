@@ -368,6 +368,23 @@ carve-out — admitted only on an upload-artifact step and only for `always()`, 
 otherwise hardened (own block extraction, an anchored key match, a `continue-on-error` allowlist,
 the recipe pinned as the first `run:` step, and fail-closed on shapes it cannot read).
 
+**Nightly red-response policy (16r-h, ADR-0203):** ADR-0200's `notify` job says WHICH job
+failed; it never said what the required response is or who owes it.
+`docs/nightly-red-response-policy.md` is now that answer for every job declared in
+`nightly.yml`, held to the workflow in BOTH directions by `evals/nightly-smoke-wiring.eval.mjs`
+Checks 31-35: the matrix's job-key set must be exactly equal to the workflow's declared jobs (a
+job with no row and a row for a deleted job are both red, and the reason names which way it
+drifted), and every job's comment preamble must cite the doc path as a bounded token — so a
+seventh job added tomorrow is red until it is both rowed and cited. The Owner column is a
+closed two-member enum (`build-loop supervisor` / `operator (Drew)`) of which BOTH must appear,
+because a constant owner column carries no information, and every Escalation cell must cite an
+ADR that exists on disk. The doc names recipes (`just mutate-core`, `just mutate-server`, `just
+coverage`) and never numbers, so 15r-tst-i's pending rate ratchet can replace the
+absolute-count baseline without editing it. One clause exists only because a red-team prototype
+measured the bypass: no stray pipe table may appear anywhere in the file, since a
+blank-line-separated decoy with re-cased headers is invisible to the parser and more prominent
+to a human.
+
 **ADR back-link reciprocity (12r-f):** ADR-0104 D1 already required that "an ADR
 that only *amends* another stays `Accepted`; the amended ADR gains
 `**Amended-by:**`", but only `checkRefs` enforced anything — a one-directional

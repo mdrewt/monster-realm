@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 168 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 169 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -177,6 +177,7 @@ Generated from 168 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0200](./0200-nightly-failure-notification.md) | 0200 — Nightly failure notification: an issue per failing job, and a step-scoped carve-out for the neuter gate | Accepted | ci-gates, tooling-docs | lp-03 (M-loop-infrastructure §lp-03) | A `notify` job fans in over all five nightly jobs and opens one issue per non-success job via `gh` under a job-scoped `issues: write` grant; `jobIsNotNeutered` gains a step-scoped carve-out for `if: always()` on an upload step. |
 | [0201](./0201-tier2-observability-validator-wiring.md) | 0201 — Wire the Tier-2 observability validator, and make the gate strict by default | Accepted | ci-gates, tooling-docs | lp-05 (M-loop-infrastructure §lp-05) | The Tier-2 observability validator becomes a `ci:` dep run with `--require-docker`, so the gate fails instead of skipping when docker is absent; `summarize()` is fail-closed on unknown status. |
 | [0202](./0202-obsolete-residual-prose-corrected.md) | 0202 — Obsolete residual prose corrected: m20e-2 and nh5 closed per item, 14r-f-2 open and unowned, the 11r-e ids retired | Accepted | tooling-docs, ci-gates | lp-doc-a (`specs/monster-realm-v2/M-loop-infrastructure.spec.md` §lp-doc-a) | Mark the m20b-2/m20e-2 and nh5 parks closed PER ITEM with their closing commit and ADR, retire the 11r-e-* false-residual lead with a recorded reason, record 14r-f-2 as open-and-unowned, and retract ADR-0186's expected-RED claim. |
+| [0203](./0203-nightly-red-response-policy.md) | 0203 — Nightly red-response policy: one machine-checked file, key-set-equal to the wired workflow, cited back from every job | Accepted | ci-gates, tooling-docs | 16r-h (`specs/monster-realm-v2/M-postgate-sixteenth-review-residuals.spec.md` §16r-h) | Record the nightly red-response policy in one gated file, `docs/nightly-red-response-policy.md`, whose job matrix must be key-set-EQUAL to the workflow's declared jobs and which every job preamble must cite back. |
 
 ## Harness design corpus (H- namespace)
 
@@ -499,6 +500,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0200](./0200-nightly-failure-notification.md) — lp-03 (M-loop-infrastructure §lp-03) — 0200 — Nightly failure notification: an issue per failing job, and a step-scoped carve-out for the neuter gate (Accepted)
 - [0201](./0201-tier2-observability-validator-wiring.md) — lp-05 (M-loop-infrastructure §lp-05) — 0201 — Wire the Tier-2 observability validator, and make the gate strict by default (Accepted)
 - [0202](./0202-obsolete-residual-prose-corrected.md) — lp-doc-a (`specs/monster-realm-v2/M-loop-infrastructure.spec.md` §lp-doc-a) — 0202 — Obsolete residual prose corrected: m20e-2 and nh5 closed per item, 14r-f-2 open and unowned, the 11r-e ids retired (Accepted)
+- [0203](./0203-nightly-red-response-policy.md) — 16r-h (`specs/monster-realm-v2/M-postgate-sixteenth-review-residuals.spec.md` §16r-h) — 0203 — Nightly red-response policy: one machine-checked file, key-set-equal to the wired workflow, cited back from every job (Accepted)
 
 ### tooling-docs
 
@@ -534,6 +536,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0200](./0200-nightly-failure-notification.md) — lp-03 (M-loop-infrastructure §lp-03) — 0200 — Nightly failure notification: an issue per failing job, and a step-scoped carve-out for the neuter gate (Accepted)
 - [0201](./0201-tier2-observability-validator-wiring.md) — lp-05 (M-loop-infrastructure §lp-05) — 0201 — Wire the Tier-2 observability validator, and make the gate strict by default (Accepted)
 - [0202](./0202-obsolete-residual-prose-corrected.md) — lp-doc-a (`specs/monster-realm-v2/M-loop-infrastructure.spec.md` §lp-doc-a) — 0202 — Obsolete residual prose corrected: m20e-2 and nh5 closed per item, 14r-f-2 open and unowned, the 11r-e ids retired (Accepted)
+- [0203](./0203-nightly-red-response-policy.md) — 16r-h (`specs/monster-realm-v2/M-postgate-sixteenth-review-residuals.spec.md` §16r-h) — 0203 — Nightly red-response policy: one machine-checked file, key-set-equal to the wired workflow, cited back from every job (Accepted)
 
 ### security-authz
 
