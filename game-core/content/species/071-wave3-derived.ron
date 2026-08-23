@@ -16,11 +16,12 @@
 // name in prose — write id=N.
 [
     // Voltarion (Electric, special glass cannon) — the payoff is sp_attack 102,
-    // deliberately one below Cindershade's 104 and speed 98 deliberately below
+    // deliberately BELOW Cindershade's 104, and speed 98, deliberately below
     // Venumbra's 100, so every superlative wave 2 and the item-evolution wave
     // wrote into their own comments survives this wave intact (ADR-0204).
     // Defense 64 stays near the tier-1 floor. BST 470, inside the 450..=479
-    // derived band.
+    // span the shipped tier-1 forms already occupy (Steamveil 450, Pyroleo
+    // 479) — a description of the roster, not a gated rail.
     (
         id: 41,
         name: "Voltarion",
@@ -35,7 +36,7 @@
     // Tempestrix owns the Regeneration pivot, and a second copy would make the
     // two walls interchangeable. Skill id=5 Vine Whip is added so the wall has
     // a non-Light attacking option that is not blanked by the Dark matchup.
-    // BST 476, top of the 450..=479 derived band.
+    // BST 476, high in the 450..=479 tier-1 span but still under Pyroleo's 479.
     (
         id: 43,
         name: "Aurelith",

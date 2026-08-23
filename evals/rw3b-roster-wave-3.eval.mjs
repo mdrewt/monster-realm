@@ -45,6 +45,12 @@ import { readdirSync, readFileSync } from 'node:fs';
 
 const SPECIES_MIN = 40;
 const SPECIES_MAX = 49;
+// Numerically equal to the species band today, and deliberately a SEPARATE
+// constant: species ids and skill ids are independent registries (spec
+// "Reserved bands"), so a future wave may split them. Sharing one constant
+// would silently validate skill ids against the species band.
+const SKILL_MIN = 40;
+const SKILL_MAX = 49;
 const EDGE_MIN = 100;
 const EDGE_MAX = 199;
 const ALLOWED_AFFINITIES = new Set(['Electric', 'Light']);
@@ -90,6 +96,56 @@ const PINNED_ZONE0 = {
  */
 export function stripLineComments(text) {
   return text.replace(/^[ \t]*\/\/.*$/gm, '');
+}
+
+/**
+ * Strip `/* ... *\/` BLOCK comments.
+ *
+ * Why this exists, separately from `stripLineComments`: every field reader in
+ * this file takes the FIRST regex match inside a block, so a block comment
+ * placed BEFORE the real field is a decoy that wins. A red-team pass proved the
+ * zone-0 freeze (RW3-07) fully bypassable that way — `(species_id: 1, /*
+ * weight: 10 *\/ weight: 99, ...)` parsed as the pinned weight 10 while the
+ * game shipped 99, and RW3-07 has no Rust counterpart to catch it. RON's own
+ * grammar accepts block comments, so refusing them outright would reject legal
+ * content; stripping them first is what makes "first match wins" sound.
+ *
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripBlockComments(text) {
+  const out = [];
+  let i = 0;
+  let depth = 0;
+  while (i < text.length) {
+    if (text.startsWith('/*', i)) {
+      depth++;
+      i += 2;
+      continue;
+    }
+    if (depth > 0 && text.startsWith('*/', i)) {
+      depth--;
+      i += 2;
+      continue;
+    }
+    // Newlines survive so 1-indexed line numbers stay meaningful downstream.
+    if (depth === 0) out.push(text[i]);
+    else if (text[i] === '\n') out.push('\n');
+    i++;
+  }
+  return out.join('');
+}
+
+/**
+ * The comment scrub every parser in this file must run first: block comments
+ * THEN whole-line `//` comments (that order — a `//` inside a block comment is
+ * not a line comment, and stripping lines first would leave the block's
+ * delimiters stranded).
+ * @param {string} text
+ * @returns {string}
+ */
+export function stripComments(text) {
+  return stripLineComments(stripBlockComments(text));
 }
 
 /**
@@ -261,7 +317,7 @@ function readDirTextSorted(dirPath) {
   return readdirSync(dirPath)
     .filter((n) => n.endsWith('.ron'))
     .sort()
-    .map((n) => stripLineComments(readFileSync(`${dirPath}/${n}`, 'utf8')))
+    .map((n) => stripComments(readFileSync(`${dirPath}/${n}`, 'utf8')))
     .join('\n');
 }
 
@@ -337,8 +393,13 @@ export function findMissingWave3STAB(speciesList, skillAffinityById) {
 
 export function findOrphanDerivedForms(derivedSpeciesList, edges) {
   const targets = new Set(edges.map((e) => e.toSpecies));
+  // Deliberately NOT filtered by the parsed `tier` (red-team finding): the
+  // invariant is "every species physically present in 071-wave3-derived.ron is
+  // an edge target", and filtering on a parsed field lets a `tier` decoy switch
+  // the check off for exactly the row it is hiding. The Rust gate asserts the
+  // same unconditional shape; this keeps the two independent gates AGREEING
+  // rather than one silently weaker than the other.
   return derivedSpeciesList
-    .filter((s) => s.tier >= 1)
     .filter((s) => !targets.has(s.id))
     .map(
       (s) =>
@@ -436,16 +497,59 @@ export function checkVersionFloorAndBaseline(version, baselineVersion, min = MIN
 // Checker: W3-COMMENT-HYGIENE (ADR-0143 D7) over the four new files
 // ---------------------------------------------------------------------------
 
+/**
+ * Index of the `//` that actually starts a comment on `line`, or -1.
+ *
+ * Quote-aware, unlike a bare `indexOf('//')`: a URL or lore string such as
+ * `name: "see http://wiki/lore#id: 5"` is DATA, not a comment, and flagging it
+ * is a false RED that blocks legitimate content. Mirrors the character-by-
+ * character `in_string` tracking in `game-core/tests/pt_d3_tuning.rs`.
+ *
+ * @param {string} line
+ * @returns {number}
+ */
+export function commentStart(line) {
+  let inString = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (ch === '\\') {
+      i++;
+      continue;
+    }
+    if (ch === '"') {
+      inString = !inString;
+      continue;
+    }
+    if (!inString && ch === '/' && line[i + 1] === '/') return i;
+  }
+  return -1;
+}
+
 export function findCommentNeedleViolations(label, text) {
   const violations = [];
   const lines = text.split('\n');
   for (let i = 0; i < lines.length; i++) {
     const line = lines[i];
-    const pos = line.indexOf('//');
+    const pos = commentStart(line);
     if (pos === -1) continue;
     if (line.slice(0, pos).trim() === '') continue; // whole-line comment: stripped elsewhere, safe
     const comment = line.slice(pos);
-    const needles = ['to_species:', 'species_id:', 'id:'];
+    // EVERY field name any parser in this file reads by "first match wins" —
+    // not just the three id-shaped ones ADR-0143 D7 names. A red-team pass
+    // showed the narrow list left `tier:`, `weight:`, `min_level:`,
+    // `max_level:` and `encounter_rate:` as unguarded decoy slots.
+    const needles = [
+      'to_species:',
+      'from_species:',
+      'species_id:',
+      'edge_id:',
+      'id:',
+      'tier:',
+      'weight:',
+      'min_level:',
+      'max_level:',
+      'encounter_rate:',
+    ];
     const hit = needles.find((n) => comment.includes(n));
     if (hit) {
       violations.push(
@@ -722,6 +826,113 @@ export default async function () {
     }
   }
 
+  // --- W3-EVO: a `tier` decoy must NOT switch the orphan check off ------------------
+  // Red-team regression: `findOrphanDerivedForms` used to filter on the PARSED
+  // tier, so a `/* tier: 0 */` block-comment decoy in front of the real
+  // `tier: 1` removed the very row it was hiding from the check.
+  {
+    const decoyed = stripComments(
+      '[(id: 41, name: "X", affinity: Electric, base_stats: (hp: 1, attack: 1, defense: 1, speed: 1, sp_attack: 1, sp_defense: 1), learnable_skill_ids: [40], /* tier: 0 */ tier: 1),]',
+    );
+    const derived = parseSpeciesFile(decoyed);
+    if (findOrphanDerivedForms(derived, []).length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: W3-EVO — a derived row carrying a `tier` decoy comment escaped the orphan check',
+      };
+    }
+  }
+
+  // --- COMMENT SCRUB: a block comment must not survive into the parsers -------------
+  {
+    const scrubbed = stripComments('(weight: /* weight: 10 */ 99)');
+    if (scrubbed.includes('10')) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: stripComments left a block comment in place — decoy fields would win',
+      };
+    }
+    if (!scrubbed.includes('99')) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: stripComments ate real data outside the block comment',
+      };
+    }
+  }
+  // --- COMMENT SCRUB: line numbers survive the block strip --------------------------
+  {
+    const scrubbed = stripComments('a\n/* one\ntwo */\nb');
+    if (scrubbed.split('\n').length !== 4) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: stripComments collapsed newlines — reported line numbers would be wrong',
+      };
+    }
+  }
+  // --- COMMENT SCRUB: `//` inside a quoted string is DATA, not a comment ------------
+  {
+    const legit = '    name: "see http://wiki/lore#id: 5",';
+    if (findCommentNeedleViolations('probe', legit).length > 0) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: a `//` inside a quoted string was misread as a trailing comment',
+      };
+    }
+    if (findCommentNeedleViolations('probe', '    (id: 40), // tier: 1').length === 0) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: a trailing comment carrying a `tier:` needle was NOT flagged',
+      };
+    }
+    if (findCommentNeedleViolations('probe', '    (id: 40), // weight: 3').length === 0) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: a trailing comment carrying a `weight:` needle was NOT flagged',
+      };
+    }
+  }
+
+  // --- W3-ZONE0-FROZEN: a BLOCK-COMMENT decoy weight must be caught -----------------
+  // Red-team regression, the highest-severity finding on this file: zone 0's
+  // pin read the FIRST `weight:` match in each entry, so a commented-out decoy
+  // carrying the pinned value made a live retune invisible.
+  {
+    const doctored = stripComments(
+      '[(zone_id: 0, encounter_rate: 12, entries: [(species_id: 1, /* weight: 10 */ weight: 99, min_level: 3, max_level: 7),]),]',
+    );
+    const parsed = parseZoneEncounterBlock(doctored, 0);
+    if (parsed === null) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: W3-ZONE0-FROZEN — decoy fixture failed to parse',
+      };
+    }
+    if (parsed.entries[0].weight !== 99) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: W3-ZONE0-FROZEN — a block-comment decoy won over the live weight (read ${parsed.entries[0].weight}, live 99)`,
+      };
+    }
+    if (findZone0Drift(parsed).length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: W3-ZONE0-FROZEN — a zone-0 retune hidden behind a decoy comment was NOT flagged',
+      };
+    }
+  }
+
   // --- W3-ZONE0-FROZEN: a retuned weight must be caught -----------------------------
   {
     const text = stripLineComments(
@@ -982,8 +1193,8 @@ export default async function () {
   failures.push(
     ...findOutOfBand(
       wave3Skills.map((s) => s.id),
-      SPECIES_MIN,
-      SPECIES_MAX,
+      SKILL_MIN,
+      SKILL_MAX,
     ),
   );
   failures.push(

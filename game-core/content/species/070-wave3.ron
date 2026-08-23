@@ -29,7 +29,7 @@
     // paid for with defense 40, the lowest of ANY form in the roster (the
     // previous floor was 44). Kit is the Electric pair id=40 Spark and id=41
     // Thunder Fang, so STAB holds in both slots. BST 322, inside the
-    // 318..=328 base band wave 1 established.
+    // 318..=328 span the 000-core trio established (318/328/318).
     (
         id: 40,
         name: "Voltkit",

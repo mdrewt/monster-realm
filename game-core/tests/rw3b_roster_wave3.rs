@@ -250,20 +250,33 @@ fn racing_violations(edges: &[EvolutionPath]) -> Vec<String> {
         if levels.iter().all(|&l| l == lowest_level) {
             continue;
         }
-        let lowest = group
-            .iter()
-            .min_by_key(|e| e.min_level.as_u8())
-            .expect("group has >= 2 entries");
-        let has_extra_gate = !lowest.essence.is_empty()
-            || lowest.min_trust_tier.is_some()
-            || lowest.min_quality_time_tier.is_some()
-            || lowest.min_nutrition_pct.is_some();
-        if !has_extra_gate {
-            out.push(format!(
-                "species {from} has racing outgoing edges with min_levels {levels:?}; the \
-                 lowest (edge {}) carries no additional non-level gate (ADR-0176 D2)",
-                lowest.edge_id
-            ));
+        // EVERY edge sitting at the lowest level, not just the first one
+        // `min_by_key` happens to return. A red-team pass proved the
+        // single-edge form order-dependent: `[gated@10, ungated@10,
+        // outlier@30]` came back clean while the byte-identical
+        // `[ungated@10, gated@10, outlier@30]` was flagged. The ungated
+        // sibling is unconditionally eligible at level 10, so auto-evolution
+        // fires and forecloses the outlier — precisely the D2 defect.
+        for lowest in group.iter().filter(|e| e.min_level.as_u8() == lowest_level) {
+            // "Binding", NOT merely "present" — mirrors the `binds` expression
+            // in `validate_evolution_paths`' rule R4 (game-core/src/content.rs).
+            // Testing presence accepts the four toothless encodings R4 itself
+            // enumerates (`amount: 0`, `Some(Hostile)`, `Some(0)`, `Some(0)`),
+            // every one of which each monster already clears — so a "gated"
+            // low edge would still race. Keep this aligned with R4's `binds`.
+            let has_extra_gate = lowest.essence.iter().any(|req| req.amount > 0)
+                || lowest
+                    .min_trust_tier
+                    .is_some_and(|t| t > game_core::TrustTier::Hostile)
+                || lowest.min_quality_time_tier.is_some_and(|t| t > 0)
+                || lowest.min_nutrition_pct.is_some_and(|p| p > 0);
+            if !has_extra_gate {
+                out.push(format!(
+                    "species {from} has racing outgoing edges with min_levels {levels:?}; the \
+                     lowest (edge {}) carries no BINDING non-level gate (ADR-0176 D2)",
+                    lowest.edge_id
+                ));
+            }
         }
     }
     out
@@ -280,9 +293,16 @@ fn comment_needle_violations(file_label: &str, src: &str) -> Vec<String> {
             continue;
         }
         let comment = &line[pos..];
-        if let Some(needle) = ["to_species:", "species_id:", "id:"]
-            .into_iter()
-            .find(|n| comment.contains(n))
+        if let Some(needle) = [
+            "to_species:",
+            "from_species:",
+            "species_id:",
+            "edge_id:",
+            "id:",
+            "tier:",
+        ]
+        .into_iter()
+        .find(|n| comment.contains(n))
         {
             out.push(format!(
                 "{file_label}:{}: trailing comment contains `{needle}` — use the `id=N` form",
@@ -653,6 +673,54 @@ fn rw3b_5_teeth_racing_predicate_flags_unshared_min_level_with_no_extra_gate() {
         racing_violations(&trust_gated).is_empty(),
         "TEETH(rw3b-5/D): the lower edge carrying a min_trust_tier gate must NOT be flagged"
     );
+
+    // Non-vacuity arm C2 (red-team regression): a PRESENT-but-TOOTHLESS essence
+    // gate must NOT legitimize the race. `amount: 0` is one of the four
+    // encodings rule R4 in game-core/src/content.rs explicitly names as
+    // non-binding — every monster already clears it — and `min_level > 1` alone
+    // keeps the edge valid under R4, so this shape ships CI-clean. The
+    // presence-only form of this predicate passed it.
+    let mut toothless_essence = vec![synth_edge(900, 40, 41, 10), synth_edge(901, 40, 44, 20)];
+    toothless_essence[0].essence = vec![EssenceRequirement {
+        affinity: Affinity::Electric,
+        amount: 0,
+    }];
+    assert!(
+        !racing_violations(&toothless_essence).is_empty(),
+        "TEETH(rw3b-5/C2): an `amount: 0` essence gate is toothless and must NOT excuse the race"
+    );
+
+    // Non-vacuity arm D2 (red-team regression): `Some(Hostile)` is the minimum
+    // of its own comparison in `path_satisfied`, so it excludes no monster.
+    let mut toothless_trust = vec![synth_edge(900, 40, 41, 10), synth_edge(901, 40, 44, 20)];
+    toothless_trust[0].min_trust_tier = Some(TrustTier::Hostile);
+    assert!(
+        !racing_violations(&toothless_trust).is_empty(),
+        "TEETH(rw3b-5/D2): a `Some(Hostile)` trust gate is toothless and must NOT excuse the race"
+    );
+
+    // Non-vacuity arm F (red-team regression): with two edges TIED at the
+    // lowest level — one gated, one not — plus a higher outlier, the ungated
+    // sibling is unconditionally eligible at that level and forecloses the
+    // outlier. The predicate must flag it REGARDLESS of slice order; the
+    // `min_by_key` form inspected only the first tied edge, so the same data
+    // passed in one order and failed in the other.
+    for (label, order) in [
+        ("gated-first", [0usize, 1, 2]),
+        ("ungated-first", [1, 0, 2]),
+    ] {
+        let mut gated = synth_edge(900, 40, 41, 10);
+        gated.min_trust_tier = Some(TrustTier::Friendly);
+        let ungated = synth_edge(901, 40, 44, 10);
+        let outlier = synth_edge(902, 40, 45, 30);
+        let all = [gated, ungated, outlier];
+        let permuted: Vec<EvolutionPath> = order.iter().map(|&i| all[i].clone()).collect();
+        assert!(
+            !racing_violations(&permuted).is_empty(),
+            "TEETH(rw3b-5/F/{label}): an UNGATED edge tied at the lowest min_level must be \
+             flagged whatever the slice order"
+        );
+    }
 
     // Non-vacuity arm E: a species with exactly one outgoing edge is never in scope.
     let single = vec![synth_edge(900, 40, 41, 1)];

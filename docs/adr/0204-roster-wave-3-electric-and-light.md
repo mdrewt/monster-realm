@@ -44,7 +44,7 @@ Level 20 is the registry's common-branch convention. The Light branch sits at 22
 
 ### D4 — Numeric superlatives written into content comments are load-bearing design constraints on later waves
 
-Voltarion's `sp_attack` is deliberately 102, exactly one below Cindershade's 104 (which `species/060-item-evo-derived.ron` names as "the roster's highest sp_attack"). Its speed is deliberately 98, exactly below Venumbra's 100 (which `species/051-wave2-derived.ron` names as "the fastest form in the roster").
+Voltarion's `sp_attack` is deliberately 102, below Cindershade's 104 (which `species/060-item-evo-derived.ron` names as "the roster's highest sp_attack"). Its speed is deliberately 98, below Venumbra's 100 (which `species/051-wave2-derived.ron` names as "the fastest form in the roster").
 
 These numeric superlatives have no gate — no Rust validator enforces them. But they are public, committed prose in the content tree. A wave that ignored them would leave two silent doc-truth regressions in files this slice otherwise never touches.
 
@@ -54,7 +54,12 @@ This decision establishes the general rule: a numeric superlative written into a
 
 RW3-08 states: "The slice SHALL NOT modify Rust source other than `CONTENT_VERSION` and its own new test files."
 
-That is mechanically impossible for ANY slice that adds an evolution edge. `game-core/tests/eg3_evolution_graph.rs` pins the edge set EXACTLY: `t2` asserted `paths.len() == 10` and `t7` asserted `edge_ids == (1..=10)`. Both were extended.
+That is mechanically impossible for ANY slice that adds an evolution edge OR a derived species, and TWO pre-existing Rust files had to be edited, not one:
+
+1. `game-core/tests/eg3_evolution_graph.rs` pins the edge set EXACTLY — `t2` asserted `paths.len() == 10` and `t7` asserted `edge_ids == (1..=10)`.
+2. `game-core/src/content.rs`'s test-only `EG1_TIER_ONE_IDS` pins the derived-species set EXACTLY (`[4, 5, 6, 9, 10, 22, 23, 30, 31]`), and its companion loop asserts every species NOT in that list is `tier: 0` — so an unlisted derived form fails loud.
+
+Both were extended.
 
 `expected_edges()` now pins edges 100 and 101 field-for-field alongside the original ten. The count literal became 12. Test `t7` now writes out the expected edge vector literally (because edge_ids are banded and deliberately non-contiguous: `[1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 100, 101]`).
 
