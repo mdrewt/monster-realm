@@ -139,6 +139,48 @@ fn edge_targets_present_in_wild(edges: &[EvolutionPath], wild: &BTreeSet<u32>) -
     out
 }
 
+/// Structural invariant (review finding F1) — the shape RW3-06 actually
+/// promises for the whole wave-3 id band, WITHOUT a hardcoded species count
+/// that would rot on the next wave: every species with `id in 40..=49` must
+/// be EITHER (`tier == 0` AND present in >= 1 encounter entry) OR
+/// (`tier > 0` AND the `to_species` of some evolution edge) — never neither.
+///
+/// WHY this is needed in addition to `wave3_tier0_species` /
+/// `missing_from_wild`: those two functions FILTER by `tier == 0` first, so a
+/// species that silently mis-declares `tier: 1` (while its encounter row goes
+/// untouched, and while it is NOT actually anyone's evolution-edge target)
+/// drops out of the tier-0 set entirely and is never checked by either
+/// missing-placement or band logic — RW3-06 is violated with every existing
+/// gate green. This predicate iterates the WHOLE 40..=49 band regardless of
+/// declared tier, so a species that is neither an honest wild base form nor
+/// an honest evolution target has nowhere left to hide.
+fn wave3_band_membership_violations(
+    species: &[Species],
+    encounters: &[EncounterTable],
+    edges: &[EvolutionPath],
+) -> Vec<String> {
+    let wild = wild_legal_ids(encounters);
+    let edge_targets: BTreeSet<u32> = edges.iter().map(|e| e.to_species).collect();
+    let mut out = Vec::new();
+    for sp in species.iter().filter(|s| (40..=49).contains(&s.id)) {
+        if sp.tier == 0 {
+            if !wild.contains(&sp.id) {
+                out.push(format!(
+                    "species {} declares tier 0 but is not present in any encounter entry",
+                    sp.id
+                ));
+            }
+        } else if !edge_targets.contains(&sp.id) {
+            out.push(format!(
+                "species {} declares tier {} but is not the to_species of any evolution edge \
+                 — it is neither a wild-legal base form nor an honest evolution target",
+                sp.id, sp.tier
+            ));
+        }
+    }
+    out
+}
+
 /// Every zone id in which `species_id` appears in at least one entry, sorted
 /// and deduplicated — a species placed in two zones reports BOTH, it never
 /// collapses to a single membership.
@@ -164,10 +206,29 @@ fn zone_membership(species_id: u32, encounters: &[EncounterTable]) -> Vec<u32> {
     zones
 }
 
-/// RW3-07 predicate: zone 0's `encounter_rate` and ordered entries pinned
-/// exactly to the pre-rw3c shape. Structural counterpart to the JS eval's
-/// text-level pin.
-fn zone0_pin_violations(zone0: &EncounterTable) -> Vec<String> {
+/// RW3-07 predicate: exactly ONE `zone_id == 0` table exists across the
+/// WHOLE encounters registry, and that table's `encounter_rate`/ordered
+/// entries are pinned exactly to the pre-rw3c shape. Structural counterpart
+/// to the JS eval's text-level pin.
+///
+/// Iterates ALL tables (review finding F3) — never `.find()`, which is
+/// first-match-wins and therefore blind to a SHADOW `zone_id: 0` table
+/// shipped by a second part file (the same split-part-file convention this
+/// gate's own `zone_membership` dedup fix already had to account for). A
+/// count != 1 is itself a violation, independent of whether either candidate
+/// individually matches the pin — RW3-07's own check must not rely on
+/// `validate_encounters`'s separate duplicate-`zone_id` rule to catch this.
+fn zone0_pin_violations(encounters: &[EncounterTable]) -> Vec<String> {
+    let zone0_tables: Vec<&EncounterTable> = encounters.iter().filter(|t| t.zone_id == 0).collect();
+    if zone0_tables.len() != 1 {
+        return vec![format!(
+            "expected exactly ONE zone_id=0 table across the encounters registry, found {} — a \
+             duplicate (or missing) zone-0 table means RW3-07's freeze is not being checked \
+             against a single unambiguous source",
+            zone0_tables.len()
+        )];
+    }
+    let zone0 = zone0_tables[0];
     let mut out = Vec::new();
     if zone0.encounter_rate != 200 {
         out.push(format!(
@@ -412,15 +473,81 @@ fn rw3c_6_placement_is_zone_1_only() {
         );
     }
 
-    let zone0 = encounters
-        .iter()
-        .find(|t| t.zone_id == 0)
-        .expect("rw3c-7: zone 0 must still exist in the encounter registry");
-    let violations = zone0_pin_violations(zone0);
+    let violations = zone0_pin_violations(&encounters);
     assert!(
         violations.is_empty(),
-        "rw3c-7: zone 0 must stay byte-identical (entries, weights, encounter_rate): \
-         {violations:?}"
+        "rw3c-7: zone 0 must stay byte-identical (entries, weights, encounter_rate) and unique \
+         (exactly one zone_id=0 table): {violations:?}"
+    );
+}
+
+// ===========================================================================
+// RW3-06 (structural, review finding F1) — every wave-3-band species is
+// EITHER a wild-legal tier-0 base form OR an honest evolution-edge target
+// ===========================================================================
+
+#[test]
+fn rw3c_6_wave3_band_species_are_either_wild_tier0_or_evolution_targets() {
+    let species = load_species().expect("species registry must parse");
+    let encounters = load_encounters().expect("encounters registry must parse");
+    let edges = load_evolution_paths().expect("evolution_paths registry must parse");
+
+    let violations = wave3_band_membership_violations(&species, &encounters, &edges);
+    assert!(
+        violations.is_empty(),
+        "rw3c-6 (structural): every species in the 40..=49 band must be EITHER a wild-legal \
+         tier-0 base form OR the to_species of some evolution edge: {violations:?}"
+    );
+}
+
+#[test]
+fn rw3c_teeth_band_membership_bites_a_tier_flip() {
+    // Mirrors the F1 red-team bypass exactly: Aurelet (42) mis-declared
+    // tier:1 while its encounter row stays untouched, and while it is NOT
+    // the to_species of any edge (43 is the real target). The tier==0-
+    // filtered predicates (`wave3_tier0_species` / `missing_from_wild`)
+    // silently drop 42 out of scope the moment its tier flips; this
+    // structural predicate must still catch it because it iterates the
+    // WHOLE 40..=49 band regardless of declared tier.
+    let edges = vec![synth_edge(100, 40, 41, 20), synth_edge(101, 42, 43, 22)];
+    let encounters = vec![EncounterTable {
+        zone_id: 1,
+        encounter_rate: 150,
+        entries: vec![synth_entry(40, 6, 10, 19), synth_entry(42, 4, 11, 20)],
+    }];
+
+    let bad_species = vec![
+        synth_species(40, Affinity::Electric, &[40], stats(1, 1, 1, 1, 1, 1), 0),
+        synth_species(41, Affinity::Electric, &[40], stats(1, 1, 1, 1, 1, 1), 1),
+        synth_species(42, Affinity::Light, &[42], stats(1, 1, 1, 1, 1, 1), 1), // BAD: flipped
+        synth_species(43, Affinity::Light, &[42], stats(1, 1, 1, 1, 1, 1), 1),
+    ];
+    let violations = wave3_band_membership_violations(&bad_species, &encounters, &edges);
+    assert!(
+        violations
+            .iter()
+            .any(|v| v.contains("species 42") && v.contains("not the to_species")),
+        "TEETH(F1): a tier-flipped species that is neither a wild tier-0 form nor an honest \
+         evolution-edge target must be flagged: {violations:?}"
+    );
+    assert_eq!(
+        violations.len(),
+        1,
+        "TEETH(F1): ONLY species 42 should be flagged — 40 is wild tier-0, 41/43 are honest \
+         edge targets: {violations:?}"
+    );
+
+    // GOOD: the honest current shape — 42 correctly stays tier:0.
+    let good_species = vec![
+        synth_species(40, Affinity::Electric, &[40], stats(1, 1, 1, 1, 1, 1), 0),
+        synth_species(41, Affinity::Electric, &[40], stats(1, 1, 1, 1, 1, 1), 1),
+        synth_species(42, Affinity::Light, &[42], stats(1, 1, 1, 1, 1, 1), 0),
+        synth_species(43, Affinity::Light, &[42], stats(1, 1, 1, 1, 1, 1), 1),
+    ];
+    assert!(
+        wave3_band_membership_violations(&good_species, &encounters, &edges).is_empty(),
+        "TEETH(F1/GOOD): the honest tier assignment (base forms tier:0, evolution targets \
+         tier:1) must not be flagged"
     );
 }
 
@@ -537,15 +664,67 @@ fn rw3c_teeth_zone0_pin_bites_a_drifted_weight() {
         ],
     };
     assert!(
-        zone0_pin_violations(&good).is_empty(),
+        zone0_pin_violations(&[good.clone()]).is_empty(),
         "TEETH(f/GOOD): the verbatim pinned zone-0 shape must NOT be flagged"
     );
 
     let mut drifted = good.clone();
     drifted.entries[0].weight = 99;
     assert!(
-        !zone0_pin_violations(&drifted).is_empty(),
+        !zone0_pin_violations(&[drifted]).is_empty(),
         "TEETH(f): a drifted zone-0 weight must be flagged"
+    );
+}
+
+#[test]
+fn rw3c_teeth_zone0_pin_bites_a_duplicate_or_missing_zone0_table() {
+    // TEETH(review finding F3): `.find()` is first-match-wins and therefore
+    // blind to a SECOND part file shipping its own `zone_id: 0` table — a
+    // shadow table that would never be inspected by RW3-07's own check
+    // before this fix. This tooth proves the fix: a count != 1 (whether
+    // duplicate or missing) is itself flagged, independent of whether any
+    // individual candidate matches the pin.
+    let pinned_table = EncounterTable {
+        zone_id: 0,
+        encounter_rate: 200,
+        entries: vec![
+            synth_entry(1, 10, 3, 7),
+            synth_entry(2, 7, 3, 7),
+            synth_entry(3, 5, 4, 8),
+        ],
+    };
+
+    // BAD: a duplicate zone_id=0 table, BOTH byte-identical to the pin — the
+    // exact shape `.find()` would have silently accepted (it only inspects
+    // the first match, sees it is clean, and stops).
+    let duplicated = vec![pinned_table.clone(), pinned_table.clone()];
+    let violations = zone0_pin_violations(&duplicated);
+    assert!(
+        !violations.is_empty(),
+        "TEETH(F3): a duplicate zone_id=0 table must be flagged even when BOTH candidates \
+         individually match the pin: {violations:?}"
+    );
+    assert!(
+        violations.iter().any(|v| v.contains("found 2")),
+        "TEETH(F3): the violation should name the count mismatch: {violations:?}"
+    );
+
+    // BAD, other direction: zero zone_id=0 tables (missing entirely) must
+    // also be flagged, never silently accepted as vacuously fine.
+    let missing = vec![EncounterTable {
+        zone_id: 1,
+        encounter_rate: 150,
+        entries: vec![synth_entry(2, 10, 4, 10)],
+    }];
+    assert!(
+        !zone0_pin_violations(&missing).is_empty(),
+        "TEETH(F3): zero zone_id=0 tables must be flagged, not silently accepted"
+    );
+
+    // GOOD: exactly one correct zone-0 table must not be flagged.
+    assert!(
+        zone0_pin_violations(&[pinned_table]).is_empty(),
+        "TEETH(F3/GOOD): exactly one correct zone-0 table must not be flagged"
     );
 }
 

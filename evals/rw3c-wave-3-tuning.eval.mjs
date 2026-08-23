@@ -221,6 +221,41 @@ export function parseZoneEncounterBlock(text, zoneId) {
   return null;
 }
 
+/**
+ * Every zone block matching `zoneId` in a (comment-stripped) encounters RON
+ * blob — ALL matches, never just the first (review finding F3). Deliberately
+ * NOT built on `parseZoneEncounterBlock` above, which `return`s on the FIRST
+ * match and is therefore blind to a SHADOW `zone_id: 0` table shipped by a
+ * second part file — the same class of bug the Rust gate's
+ * `zone0_pin_violations` had before this fix (it used `.find()`). Scanning
+ * the WHOLE `game-core/content/encounters/**` directory (not a single
+ * filename) and collecting every match is what makes a duplicate/shadow
+ * table visible to RW3-07's own check at all.
+ * @param {string} text
+ * @param {number} zoneId
+ * @returns {{ encounterRate: number, entries: { speciesId: number, weight: number,
+ *   minLevel: number, maxLevel: number }[] }[]}
+ */
+export function parseAllZoneBlocksById(text, zoneId) {
+  const matches = [];
+  for (const block of extractTopLevelParenBlocks(text)) {
+    const zoneMatch = /\bzone_id\s*:\s*(\d+)/.exec(block);
+    if (!zoneMatch || Number(zoneMatch[1]) !== zoneId) continue;
+    const rateMatch = /\bencounter_rate\s*:\s*(\d+)/.exec(block);
+    const entriesText = extractBalancedAfter(block, 'entries', '[', ']');
+    const entries = entriesText
+      ? extractTopLevelParenBlocks(entriesText).map((eb) => ({
+          speciesId: Number(/\bspecies_id\s*:\s*(\d+)/.exec(eb)?.[1]),
+          weight: Number(/\bweight\s*:\s*(\d+)/.exec(eb)?.[1]),
+          minLevel: Number(/\bmin_level\s*:\s*(\d+)/.exec(eb)?.[1]),
+          maxLevel: Number(/\bmax_level\s*:\s*(\d+)/.exec(eb)?.[1]),
+        }))
+      : [];
+    matches.push({ encounterRate: rateMatch ? Number(rateMatch[1]) : undefined, entries });
+  }
+  return matches;
+}
+
 function readDirTextSorted(dirPath) {
   return readdirSync(dirPath)
     .filter((n) => n.endsWith('.ron'))
@@ -257,34 +292,139 @@ export function commentStart(line) {
   return -1;
 }
 
+/**
+ * Every comment (line OR block) in `text` that carries an id-shaped needle.
+ *
+ * FIXED per review finding F2 — the previous implementation only ever called
+ * `commentStart` per line, i.e. it scanned trailing `//` comments and NOTHING
+ * ELSE. A `/* ... *\/` block comment carrying a phantom needle (e.g.
+ * `/* phantom decoy species_id: 41 hidden in a block comment *\/`) was never
+ * inspected, even though `stripBlockComments` already existed in this very
+ * file — so the eval's own success string ("RON comment hygiene is clean")
+ * was FALSE for that shape. This now mirrors the Rust `t6` scanner
+ * (`game-core/tests/pt_d3_tuning.rs::comment_needle_violations`)
+ * field-for-field: block comments are flagged UNCONDITIONALLY (never "safe"
+ * the way a whole-line `//` comment is, and NESTED `/* /* *\/ *\/` — which
+ * the `ron` crate treats as ONE comment — is depth-tracked so a
+ * depth-unaware scanner can't be fooled by the first `*\/`); trailing `//`
+ * comments are flagged; whole-line `//` comments are safe (stripped
+ * elsewhere); a `//` or `/*` inside a `"..."` string literal is never treated
+ * as a comment.
+ * @param {string} label
+ * @param {string} text RAW (un-stripped) RON text.
+ * @returns {string[]}
+ */
 export function findCommentNeedleViolations(label, text) {
+  const needles = [
+    'to_species:',
+    'from_species:',
+    'species_id:',
+    'edge_id:',
+    'id:',
+    'tier:',
+    'weight:',
+    'min_level:',
+    'max_level:',
+    'encounter_rate:',
+  ];
   const violations = [];
-  const lines = text.split('\n');
-  for (let i = 0; i < lines.length; i++) {
-    const line = lines[i];
-    const pos = commentStart(line);
-    if (pos === -1) continue;
-    if (line.slice(0, pos).trim() === '') continue; // whole-line comment: stripped elsewhere, safe
-    const comment = line.slice(pos);
-    const needles = [
-      'to_species:',
-      'from_species:',
-      'species_id:',
-      'edge_id:',
-      'id:',
-      'tier:',
-      'weight:',
-      'min_level:',
-      'max_level:',
-      'encounter_rate:',
-    ];
-    const hit = needles.find((n) => comment.includes(n));
-    if (hit) {
-      violations.push(
-        `${label}:${i + 1}: trailing comment contains \`${hit}\` — use the id=N form`,
-      );
+  const chars = [...text];
+  const len = chars.length;
+  let i = 0;
+  let lineNo = 1;
+  let codeSeenOnLine = false;
+  let inString = false;
+
+  while (i < len) {
+    const c = chars[i];
+
+    if (c === '\n') {
+      lineNo++;
+      codeSeenOnLine = false;
+      i++;
+      continue;
     }
+
+    if (inString) {
+      if (c === '\\') {
+        i += 2;
+      } else if (c === '"') {
+        inString = false;
+        i++;
+      } else {
+        i++;
+      }
+      codeSeenOnLine = true;
+      continue;
+    }
+
+    if (c === '"') {
+      inString = true;
+      codeSeenOnLine = true;
+      i++;
+      continue;
+    }
+
+    if (c === '/' && chars[i + 1] === '*') {
+      const startLine = lineNo;
+      let j = i + 2;
+      let comment = '';
+      let depth = 1;
+      while (j < len) {
+        if (chars[j] === '\n') lineNo++;
+        if (chars[j] === '/' && chars[j + 1] === '*') {
+          depth++;
+          comment += chars[j] + chars[j + 1];
+          j += 2;
+          continue;
+        }
+        if (chars[j] === '*' && chars[j + 1] === '/') {
+          depth--;
+          j += 2;
+          if (depth === 0) break;
+          comment += '*/';
+          continue;
+        }
+        comment += chars[j];
+        j++;
+      }
+      const hit = needles.find((n) => comment.includes(n));
+      if (hit) {
+        violations.push(
+          `${label}:${startLine}: block comment \`/* ... */\` contains \`${hit}\` — use the ` +
+            `id=N form (block comments are NEVER stripped by the line-comment-only scrub, so a ` +
+            `needle inside one is a phantom id injection invisible to a line-based check)`,
+        );
+      }
+      i = j;
+      continue;
+    }
+
+    if (c === '/' && chars[i + 1] === '/') {
+      let j = i + 2;
+      let commentRest = '';
+      while (j < len && chars[j] !== '\n') {
+        commentRest += chars[j];
+        j++;
+      }
+      if (codeSeenOnLine) {
+        const hit = needles.find((n) => commentRest.includes(n));
+        if (hit) {
+          violations.push(
+            `${label}:${lineNo}: trailing comment contains \`${hit}\` — use the id=N form`,
+          );
+        }
+      }
+      i = j;
+      continue;
+    }
+
+    if (!/\s/.test(c)) {
+      codeSeenOnLine = true;
+    }
+    i++;
   }
+
   return violations;
 }
 
@@ -448,10 +588,67 @@ export function findVacuousWave3Tier0Set(wave3Ids) {
   return [];
 }
 
-// --- T-ZONE0 (RW3-07): zone 0 pinned exactly ---------------------------------
+// --- T-DERIVE structural (review finding F1): every species in the 40..=49
+// band must be EITHER a wild-legal tier-0 base form OR an honest evolution-
+// edge target — never neither ------------------------------------------------
 
-export function findZone0Drift(parsedZone0) {
-  if (!parsedZone0) return ['encounters/000-core.ron: zone 0 table is missing entirely'];
+/**
+ * Mirrors `wave3_band_membership_violations` in
+ * `game-core/tests/rw3c_wave3_tuning.rs` exactly. `deriveWave3Tier0Ids`
+ * FILTERS by `tier === 0` first, so a species that silently mis-declares
+ * `tier: 1` (encounter row untouched, and NOT actually anyone's evolution
+ * target) drops out of the tier-0 set entirely and is invisible to
+ * `findMissingWave3Placement` / `findBandViolations` — RW3-06 is violated
+ * with every other check green. This predicate iterates the WHOLE 40..=49
+ * band regardless of declared tier, so that species has nowhere to hide.
+ * @param {{ id: number|undefined, tier: number }[]} speciesList
+ * @param {{ speciesId: number }[]} entries
+ * @param {{ toSpecies: number|undefined }[]} edges
+ * @returns {string[]}
+ */
+export function findWave3BandMembershipViolations(speciesList, entries, edges) {
+  const wildIds = new Set(entries.map((e) => e.speciesId));
+  const edgeTargets = new Set(edges.map((e) => e.toSpecies));
+  const violations = [];
+  for (const s of speciesList) {
+    if (s.id === undefined || s.id < 40 || s.id > 49) continue;
+    if (s.tier === 0) {
+      if (!wildIds.has(s.id)) {
+        violations.push(
+          `species ${s.id} declares tier 0 but is not present in any encounter entry`,
+        );
+      }
+    } else if (!edgeTargets.has(s.id)) {
+      violations.push(
+        `species ${s.id} declares tier ${s.tier} but is not the to_species of any evolution ` +
+          `edge — it is neither a wild-legal base form nor an honest evolution target`,
+      );
+    }
+  }
+  return violations;
+}
+
+// --- T-ZONE0 (RW3-07): zone 0 pinned exactly, and UNIQUE ---------------------
+
+/**
+ * `zone0Candidates` is EVERY `zone_id === 0` block found across the WHOLE
+ * `game-core/content/encounters/**` directory (review finding F3) — never a
+ * single pre-selected candidate. A count != 1 is itself a violation,
+ * independent of whether any individual candidate matches the pin: a
+ * duplicate/shadow zone-0 table shipped by a second part file must not be
+ * silently accepted just because the FIRST one found happens to be clean.
+ * @param {{ encounterRate: number, entries: object[] }[]} zone0Candidates
+ * @returns {string[]}
+ */
+export function findZone0Drift(zone0Candidates) {
+  if (zone0Candidates.length !== 1) {
+    return [
+      `expected exactly ONE zone_id=0 table across ${ENCOUNTERS_DIR}, found ` +
+        `${zone0Candidates.length} — a duplicate (or missing) zone-0 table means RW3-07's ` +
+        `freeze is not being checked against a single unambiguous source`,
+    ];
+  }
+  const parsedZone0 = zone0Candidates[0];
   const violations = [];
   if (parsedZone0.encounterRate !== PINNED_ZONE0.encounterRate) {
     violations.push(
@@ -567,8 +764,8 @@ export default async function () {
     const text = stripComments(
       '[(zone_id: 0, encounter_rate: 200, entries: [(species_id: 1, weight: 99, min_level: 3, max_level: 7), (species_id: 2, weight: 7, min_level: 3, max_level: 7), (species_id: 3, weight: 5, min_level: 4, max_level: 8)])]',
     );
-    const parsed = parseZoneEncounterBlock(text, 0);
-    if (findZone0Drift(parsed).length === 0) {
+    const candidates = parseAllZoneBlocksById(text, 0);
+    if (findZone0Drift(candidates).length === 0) {
       return {
         name,
         pass: false,
@@ -583,15 +780,15 @@ export default async function () {
     const doctored = stripComments(
       '[(zone_id: 0, encounter_rate: 200, entries: [(species_id: 1, /* weight: 10 */ weight: 99, min_level: 3, max_level: 7), (species_id: 2, weight: 7, min_level: 3, max_level: 7), (species_id: 3, weight: 5, min_level: 4, max_level: 8)])]',
     );
-    const parsed = parseZoneEncounterBlock(doctored, 0);
-    if (parsed === null || parsed.entries[0].weight !== 99) {
+    const candidates = parseAllZoneBlocksById(doctored, 0);
+    if (candidates.length !== 1 || candidates[0].entries[0].weight !== 99) {
       return {
         name,
         pass: false,
-        detail: `TEETH: T-ZONE0 — a block-comment decoy won over the live weight (parsed ${parsed && parsed.entries[0].weight})`,
+        detail: `TEETH: T-ZONE0 — a block-comment decoy won over the live weight (parsed ${JSON.stringify(candidates)})`,
       };
     }
-    if (findZone0Drift(parsed).length === 0) {
+    if (findZone0Drift(candidates).length === 0) {
       return {
         name,
         pass: false,
@@ -605,12 +802,52 @@ export default async function () {
     const text = stripComments(
       '[(zone_id: 0, encounter_rate: 200, entries: [(species_id: 1, weight: 10, min_level: 3, max_level: 7), (species_id: 2, weight: 7, min_level: 3, max_level: 7), (species_id: 3, weight: 5, min_level: 4, max_level: 8)])]',
     );
-    const parsed = parseZoneEncounterBlock(text, 0);
-    if (findZone0Drift(parsed).length > 0) {
+    const candidates = parseAllZoneBlocksById(text, 0);
+    if (findZone0Drift(candidates).length > 0) {
       return {
         name,
         pass: false,
-        detail: `TEETH: T-ZONE0 — the GOOD unchanged zone-0 shape was incorrectly flagged: ${findZone0Drift(parsed).join('; ')}`,
+        detail: `TEETH: T-ZONE0 — the GOOD unchanged zone-0 shape was incorrectly flagged: ${findZone0Drift(candidates).join('; ')}`,
+      };
+    }
+  }
+  // --- T-ZONE0 (review finding F3): a DUPLICATE zone_id=0 table — even one
+  // where BOTH candidates individually match the pin — must be caught. This
+  // is exactly the shape `parseZoneEncounterBlock`'s first-match-wins
+  // `.find()`-equivalent behavior would have silently accepted. -------------
+  {
+    const duplicated = stripComments(
+      '[(zone_id: 0, encounter_rate: 200, entries: [(species_id: 1, weight: 10, min_level: 3, max_level: 7), (species_id: 2, weight: 7, min_level: 3, max_level: 7), (species_id: 3, weight: 5, min_level: 4, max_level: 8)]), (zone_id: 0, encounter_rate: 200, entries: [(species_id: 1, weight: 10, min_level: 3, max_level: 7), (species_id: 2, weight: 7, min_level: 3, max_level: 7), (species_id: 3, weight: 5, min_level: 4, max_level: 8)])]',
+    );
+    const candidates = parseAllZoneBlocksById(duplicated, 0);
+    if (candidates.length !== 2) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: T-ZONE0/F3 — fixture setup failed, expected 2 parsed zone_id=0 candidates, got ${candidates.length}`,
+      };
+    }
+    const violations = findZone0Drift(candidates);
+    if (violations.length === 0 || !violations.some((v) => v.includes('found 2'))) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: T-ZONE0/F3 — a duplicate zone_id=0 table (two matching entries) was NOT flagged by count: ${JSON.stringify(violations)}`,
+      };
+    }
+  }
+  // --- T-ZONE0/F3: a MISSING zone_id=0 table (zero candidates) must also be
+  // flagged, not silently accepted -------------------------------------------
+  {
+    const noZone0 = stripComments(
+      '[(zone_id: 1, encounter_rate: 150, entries: [(species_id: 2, weight: 10, min_level: 4, max_level: 10)])]',
+    );
+    const candidates = parseAllZoneBlocksById(noZone0, 0);
+    if (findZone0Drift(candidates).length === 0) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH: T-ZONE0/F3 — zero zone_id=0 tables was NOT flagged',
       };
     }
   }
@@ -655,6 +892,49 @@ export default async function () {
         pass: false,
         detail:
           'TEETH: T-DERIVE — a GOOD non-empty derived set was incorrectly flagged by the vacuity guard',
+      };
+    }
+  }
+  // --- T-DERIVE structural (review finding F1): a tier-flipped species (still
+  // wild-placed, but NOT anyone's evolution target) must be caught even
+  // though it has silently dropped out of `deriveWave3Tier0Ids`'s tier-0
+  // filter — mirrors the exact F1 red-team bypass (Aurelet/42 mis-declared
+  // tier:1) --------------------------------------------------------------
+  {
+    const edges = [
+      { edgeId: 100, fromSpecies: 40, toSpecies: 41, minLevel: 20 },
+      { edgeId: 101, fromSpecies: 42, toSpecies: 43, minLevel: 22 },
+    ];
+    const entries = [
+      { speciesId: 40, weight: 6, minLevel: 10, maxLevel: 19 },
+      { speciesId: 42, weight: 4, minLevel: 11, maxLevel: 20 },
+    ];
+    const badSpecies = [
+      { id: 40, tier: 0 },
+      { id: 41, tier: 1 },
+      { id: 42, tier: 1 }, // BAD: flipped from 0 — still wild-placed above, not an edge target
+      { id: 43, tier: 1 },
+    ];
+    const bad = findWave3BandMembershipViolations(badSpecies, entries, edges);
+    if (!bad.some((v) => v.includes('42') && v.includes('not the to_species'))) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: T-DERIVE/F1 — a tier-flipped species (42) that is neither wild tier-0 nor an evolution-edge target was NOT flagged: ${JSON.stringify(bad)}`,
+      };
+    }
+    const goodSpecies = [
+      { id: 40, tier: 0 },
+      { id: 41, tier: 1 },
+      { id: 42, tier: 0 },
+      { id: 43, tier: 1 },
+    ];
+    const good = findWave3BandMembershipViolations(goodSpecies, entries, edges);
+    if (good.length > 0) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: T-DERIVE/F1 — the honest tier assignment was incorrectly flagged: ${JSON.stringify(good)}`,
       };
     }
   }
@@ -767,6 +1047,49 @@ export default async function () {
     };
   }
 
+  // --- T-HYGIENE (review finding F2): a needle inside a BLOCK comment must be
+  // caught — this is exactly the gap the review found: the old scanner only
+  // ever inspected trailing `//` comments and never looked inside `/* ... *\/`
+  // at all, so the eval's own "RON comment hygiene is clean" claim was FALSE
+  // for this shape ------------------------------------------------------------
+  {
+    const bad = '    (species_id: 1, weight: 10 /* phantom decoy species_id: 41 hidden */),\n';
+    const violations = findCommentNeedleViolations('f.ron', bad);
+    if (violations.length !== 1) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: T-HYGIENE/F2 — a needle inside a single-line block comment was NOT flagged: ${JSON.stringify(violations)}`,
+      };
+    }
+  }
+  // --- T-HYGIENE/F2: a needle on an INTERIOR line of a MULTI-LINE block
+  // comment must still be caught (proves the scanner does not stop at the
+  // first newline the way a naive line-based check would) --------------------
+  {
+    const bad =
+      '    (species_id: 1, weight: 10), /* a note here\n     species_id: 41 on an interior line\n     end of note */\n';
+    const violations = findCommentNeedleViolations('f.ron', bad);
+    if (violations.length !== 1) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: T-HYGIENE/F2 — a needle on an interior line of a multi-line block comment was NOT flagged: ${JSON.stringify(violations)}`,
+      };
+    }
+  }
+  // --- T-HYGIENE/F2 GOOD: a needle-free block comment must stay legal --------
+  if (
+    findCommentNeedleViolations('f.ron', '    (weight: 10), /* just a harmless note */\n').length >
+    0
+  ) {
+    return {
+      name,
+      pass: false,
+      detail: 'TEETH: T-HYGIENE/F2 — a needle-free block comment was incorrectly flagged',
+    };
+  }
+
   // --- T-VERSION: floor not met + baseline mismatch ---------------------------
   {
     const v1 = checkVersionFloorAndBaseline(20, 20);
@@ -809,16 +1132,19 @@ export default async function () {
 
   const failures = [];
 
-  // --- T-ZONE0 real check ------------------------------------------------------
-  let zone0 = null;
+  // --- T-ZONE0 real check (review finding F3): scan the WHOLE encounters
+  // directory for EVERY zone_id=0 table, never a single filename — a shadow
+  // duplicate shipped by a second part file must be visible to this check ---
+  let zone0Candidates = [];
+  let zone0DirReadOk = true;
   try {
-    const coreText = stripComments(readFileSync(`${ENCOUNTERS_DIR}/000-core.ron`, 'utf8'));
-    zone0 = parseZoneEncounterBlock(coreText, 0);
+    zone0Candidates = parseAllZoneBlocksById(readDirTextSorted(ENCOUNTERS_DIR), 0);
   } catch (e) {
-    failures.push(`cannot read ${ENCOUNTERS_DIR}/000-core.ron: ${e.message}`);
+    zone0DirReadOk = false;
+    failures.push(`cannot read ${ENCOUNTERS_DIR}: ${e.message}`);
   }
-  if (zone0 !== null || failures.length === 0) {
-    failures.push(...findZone0Drift(zone0));
+  if (zone0DirReadOk) {
+    failures.push(...findZone0Drift(zone0Candidates));
   }
 
   // --- shared: block-scoped entries over ALL encounter files + edges over ALL
@@ -848,6 +1174,13 @@ export default async function () {
   }
   const wave3TierZeroIds = deriveWave3Tier0Ids(speciesList);
   failures.push(...findVacuousWave3Tier0Set(wave3TierZeroIds));
+
+  // --- T-DERIVE structural real check (review finding F1): every species in
+  // the 40..=49 band must be EITHER wild tier-0 OR an honest evolution
+  // target — catches a PARTIALLY shrunk tier-0 set (a mis-declared tier) that
+  // `wave3TierZeroIds` above would otherwise silently exclude from every
+  // downstream check --------------------------------------------------------
+  failures.push(...findWave3BandMembershipViolations(speciesList, allEntries, allEdges));
 
   // --- T-PLACED real check ------------------------------------------------------
   failures.push(...findMissingWave3Placement(wave3TierZeroIds, allEntries));
