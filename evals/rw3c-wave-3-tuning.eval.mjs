@@ -30,12 +30,18 @@ import { readdirSync, readFileSync } from 'node:fs';
 // Shared constants
 // ---------------------------------------------------------------------------
 
-// The two wave-3 tier-0 base forms this slice places in the wild — Voltkit
-// (Electric) and Aurelet (Light). Deliberately NOT their evolution targets
-// (41, 43): those must NEVER appear in any encounter table (RW3-06).
+// TEETH-FIXTURE CONSTANT ONLY (review finding 2) — Voltkit (40, Electric) and
+// Aurelet (42, Light), the two wave-3 tier-0 base forms this slice places in
+// the wild. Used ONLY to parameterize synthetic proof-of-teeth fixtures below;
+// the REAL checks (T-PLACED, T-BANDS) derive their id set live from
+// `game-core/content/species/*.ron` via `deriveWave3Tier0Ids` so this eval is
+// an actual independent re-derivation of the Rust gate's `wave3_tier0_species`
+// predicate, not a re-assertion of a hardcoded constant that would agree with
+// itself even if the wrong species were placed.
 const WAVE3_TIER0_SPECIES = [40, 42];
 const MIN_CONTENT_VERSION = 21;
 
+const SPECIES_DIR = 'game-core/content/species';
 const ENCOUNTERS_DIR = 'game-core/content/encounters';
 const EVOLUTION_DIR = 'game-core/content/evolution_paths';
 const SERVER_LIB_FILE = 'server-module/src/lib.rs';
@@ -364,6 +370,84 @@ export function parseEdgeFile(text) {
     .filter((e) => e.edgeId !== undefined);
 }
 
+/**
+ * Parse a single top-level `(...)` species tuple. COPIED VERBATIM from
+ * `evals/rw3b-roster-wave-3.eval.mjs::parseSpeciesBlock` (review finding 2 —
+ * the wave-3 tier-0 id set must be an independent re-derivation from the RAW
+ * species RON, not a re-assertion of a hardcoded id list that would agree
+ * with itself even if the wrong species landed at tier 0).
+ * @param {string} blockText
+ * @returns {{ id: number|undefined, name: string|undefined, affinity: string|undefined,
+ *   tier: number, learnableSkillIds: number[] }}
+ */
+export function parseSpeciesBlock(blockText) {
+  const idMatch = /\bid\s*:\s*(\d+)/.exec(blockText);
+  const nameMatch = /\bname\s*:\s*"([^"]*)"/.exec(blockText);
+  const affinityMatch = /\baffinity\s*:\s*(\w+)/.exec(blockText);
+  const tierMatch = /\btier\s*:\s*(\d+)/.exec(blockText);
+  const learnText = extractBalancedAfter(blockText, 'learnable_skill_ids', '[', ']');
+  const learnableSkillIds = learnText
+    ? [...learnText.matchAll(/\d+/g)].map((m) => Number(m[0]))
+    : [];
+  return {
+    id: idMatch ? Number(idMatch[1]) : undefined,
+    name: nameMatch ? nameMatch[1] : undefined,
+    affinity: affinityMatch ? affinityMatch[1] : undefined,
+    tier: tierMatch ? Number(tierMatch[1]) : 0,
+    learnableSkillIds,
+  };
+}
+
+/**
+ * @param {string} text Comment-stripped species RON.
+ * @returns {{ id: number|undefined, name: string|undefined, affinity: string|undefined,
+ *   tier: number, learnableSkillIds: number[] }[]}
+ */
+export function parseSpeciesFile(text) {
+  return extractTopLevelParenBlocks(text)
+    .map(parseSpeciesBlock)
+    .filter((s) => s.id !== undefined);
+}
+
+/**
+ * The wave-3 tier-0 id set, derived LIVE from a parsed species list — mirrors
+ * `wave3_tier0_species` in `game-core/tests/rw3c_wave3_tuning.rs` exactly
+ * (`id in 40..=49 && tier === 0`). Never hardcode this list in a PRODUCTION
+ * check: `parseSpeciesFile`'s `tier` field defaults to `0` when the RON row
+ * omits `tier` entirely (mirroring `#[serde(default)]` on `Species.tier`), so
+ * an omitted tier is correctly treated as tier 0, not silently dropped.
+ * @param {{ id: number|undefined, tier: number }[]} speciesList
+ * @returns {number[]}
+ */
+export function deriveWave3Tier0Ids(speciesList) {
+  return speciesList
+    .filter((s) => s.id !== undefined && s.id >= 40 && s.id <= 49 && s.tier === 0)
+    .map((s) => s.id)
+    .sort((a, b) => a - b);
+}
+
+/**
+ * Vacuity guard (review finding 2): an EMPTY derived wave-3 tier-0 set must
+ * fail loudly, never pass vacuously. Without this, every downstream check
+ * that filters by this id set (`findMissingWave3Placement`,
+ * `findBandViolations`) degenerates to a no-op over an empty list and the
+ * eval would report PASS even though nothing was actually checked — e.g. a
+ * species-parsing regression, or every wave-3 row losing its `tier: 0` field,
+ * would silently go green.
+ * @param {number[]} wave3Ids
+ * @returns {string[]}
+ */
+export function findVacuousWave3Tier0Set(wave3Ids) {
+  if (wave3Ids.length === 0) {
+    return [
+      'the wave-3 tier-0 species set derived from game-core/content/species/*.ron is EMPTY — ' +
+        'refusing to pass vacuously (this would silently no-op every downstream placement/band ' +
+        'check)',
+    ];
+  }
+  return [];
+}
+
 // --- T-ZONE0 (RW3-07): zone 0 pinned exactly ---------------------------------
 
 export function findZone0Drift(parsedZone0) {
@@ -527,6 +611,50 @@ export default async function () {
         name,
         pass: false,
         detail: `TEETH: T-ZONE0 — the GOOD unchanged zone-0 shape was incorrectly flagged: ${findZone0Drift(parsed).join('; ')}`,
+      };
+    }
+  }
+
+  // --- T-DERIVE (review finding 2): a tier:1 wave-3-band species must be
+  // EXCLUDED from the derived tier-0 set, and a tier:0 sibling must be kept --
+  {
+    const synthetic =
+      '[(id: 40, name: "GoodBase", affinity: Electric, base_stats: (hp: 1, attack: 1, defense: 1, speed: 1, sp_attack: 1, sp_defense: 1), learnable_skill_ids: [40], tier: 0), (id: 41, name: "EvolvedDecoy", affinity: Electric, base_stats: (hp: 1, attack: 1, defense: 1, speed: 1, sp_attack: 1, sp_defense: 1), learnable_skill_ids: [40], tier: 1)]';
+    const parsed = parseSpeciesFile(synthetic);
+    const derived = deriveWave3Tier0Ids(parsed);
+    if (derived.includes(41)) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: T-DERIVE — a species declaring tier:1 (41) was incorrectly INCLUDED in the derived tier-0 set: ${JSON.stringify(derived)}`,
+      };
+    }
+    if (!derived.includes(40)) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH: T-DERIVE — a genuine tier:0 wave-3-band species (40) was NOT included in the derived set: ${JSON.stringify(derived)}`,
+      };
+    }
+  }
+  // --- T-DERIVE: an EMPTY derived set must fail loudly, never pass vacuously -
+  {
+    const emptyViolations = findVacuousWave3Tier0Set(deriveWave3Tier0Ids([]));
+    if (emptyViolations.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: T-DERIVE — an empty derived wave-3 tier-0 set was NOT flagged (vacuity guard)',
+      };
+    }
+    const nonEmptyViolations = findVacuousWave3Tier0Set([40, 42]);
+    if (nonEmptyViolations.length > 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH: T-DERIVE — a GOOD non-empty derived set was incorrectly flagged by the vacuity guard',
       };
     }
   }
@@ -708,8 +836,21 @@ export default async function () {
     failures.push(`cannot read ${EVOLUTION_DIR}: ${e.message}`);
   }
 
+  // --- T-DERIVE real check (review finding 2): derive the wave-3 tier-0 id
+  // set LIVE from the species registry — an independent re-derivation of the
+  // Rust gate's `wave3_tier0_species`, never the hardcoded `WAVE3_TIER0_SPECIES`
+  // teeth constant — and refuse to proceed silently if it comes back empty ---
+  let speciesList = [];
+  try {
+    speciesList = parseSpeciesFile(readDirTextSorted(SPECIES_DIR));
+  } catch (e) {
+    failures.push(`cannot read ${SPECIES_DIR}: ${e.message}`);
+  }
+  const wave3TierZeroIds = deriveWave3Tier0Ids(speciesList);
+  failures.push(...findVacuousWave3Tier0Set(wave3TierZeroIds));
+
   // --- T-PLACED real check ------------------------------------------------------
-  failures.push(...findMissingWave3Placement(WAVE3_TIER0_SPECIES, allEntries));
+  failures.push(...findMissingWave3Placement(wave3TierZeroIds, allEntries));
 
   // --- T-NOTARGET real check (deliberately the FLAT, over-approximating scan) --
   let flatEncounterSpeciesIds = [];
@@ -721,7 +862,7 @@ export default async function () {
   failures.push(...findEdgeTargetsInEncounters(allEdges, flatEncounterSpeciesIds));
 
   // --- T-BANDS real check --------------------------------------------------------
-  failures.push(...findBandViolations(WAVE3_TIER0_SPECIES, allEntries, allEdges));
+  failures.push(...findBandViolations(wave3TierZeroIds, allEntries, allEdges));
 
   // --- T-HYGIENE real check (RAW, un-stripped text of every encounters/*.ron) --
   try {

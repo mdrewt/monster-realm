@@ -24,8 +24,8 @@
 use std::collections::BTreeSet;
 
 use game_core::{
-    load_encounters, load_evolution_paths, load_species, Affinity, EncounterEntry,
-    EncounterTable, EvolutionPath, Level, Species,
+    load_encounters, load_evolution_paths, load_species, Affinity, EncounterEntry, EncounterTable,
+    EvolutionPath, Level, Species,
 };
 
 // ===========================================================================
@@ -52,7 +52,13 @@ fn stats(
     }
 }
 
-fn synth_species(id: u32, affinity: Affinity, learn: &[u32], base: game_core::StatBlock, tier: u8) -> Species {
+fn synth_species(
+    id: u32,
+    affinity: Affinity,
+    learn: &[u32],
+    base: game_core::StatBlock,
+    tier: u8,
+) -> Species {
     Species {
         id,
         name: format!("Synth{id}"),
@@ -143,6 +149,18 @@ fn zone_membership(species_id: u32, encounters: &[EncounterTable]) -> Vec<u32> {
         .map(|t| t.zone_id)
         .collect();
     zones.sort_unstable();
+    // DEDUP IS LOAD-BEARING: `load_encounters()` concatenates every part file
+    // in `game-core/content/encounters/**` without re-merging same-`zone_id`
+    // tables (see `parse_encounters_parts` in `game-core/src/content.rs`), and
+    // this repo's OWN convention (species/evolution_paths splitting one
+    // logical id-band across `000-core.ron` + `070-wave3.ron`) shows a future
+    // wave could split a zone's table the same way for encounters. Without
+    // `.dedup()`, a species placed once but reachable via two same-`zone_id`
+    // part-file tables would report `[1, 1]`, and the real test's
+    // `assert_eq!(zones, vec![1])` would false-RED a perfectly legal single
+    // placement — the exact regression `rw3c_teeth_zone_membership_helper_*`
+    // below now pins.
+    zones.dedup();
     zones
 }
 
@@ -433,6 +451,81 @@ fn rw3c_teeth_zone_membership_helper_bites_a_second_zone_placement() {
 }
 
 #[test]
+fn rw3c_teeth_zone_membership_dedups_a_same_zone_id_split_across_two_tables() {
+    // TEETH(review finding 1): `load_encounters()` concatenates every part
+    // file under `game-core/content/encounters/**` (`parse_encounters_parts`
+    // in `game-core/src/content.rs`) without re-merging tables that share a
+    // `zone_id` — and this repo's OWN species/evolution_paths registries
+    // already split one logical id-band across two part files
+    // (`000-core.ron` + `070-wave3.ron`), so a future wave following that
+    // convention for encounters (a SECOND part file also defining a
+    // `zone_id: 1` table) is a realistic shape, not a contrived one. Without
+    // `.dedup()` in `zone_membership`, a species placed exactly ONCE overall
+    // — but reachable via two same-`zone_id` tables from different part files
+    // — would report `[1, 1]`, and the real test's
+    // `assert_eq!(zones, vec![1])` in `rw3c_6_placement_is_zone_1_only` would
+    // false-RED a perfectly legal single placement.
+    // CRITICAL to this tooth actually biting: species 40 must be present in
+    // BOTH same-`zone_id: 1` tables (not just one) — `zone_membership` first
+    // FILTERS to tables containing the species, so if 40 appeared in only one
+    // of the two, exactly one table would survive the filter regardless of
+    // whether `.dedup()` ran, and the result would be `[1]` either way. Two
+    // tables that both carry a species_id=40 entry, both zone_id=1, is also
+    // the realistic split-part-file shape (one zone's roster spread across
+    // two files, the species present in each half's row set).
+    let split_same_zone = vec![
+        EncounterTable {
+            zone_id: 1,
+            encounter_rate: 150,
+            entries: vec![synth_entry(2, 10, 4, 10), synth_entry(40, 6, 10, 19)],
+        },
+        EncounterTable {
+            zone_id: 1,
+            encounter_rate: 150,
+            entries: vec![synth_entry(40, 6, 10, 19)],
+        },
+    ];
+    assert_eq!(
+        zone_membership(40, &split_same_zone),
+        vec![1],
+        "TEETH(review finding 1): a species present in BOTH of two same-zone_id tables (the \
+         split-part-file shape) must resolve to a single-element [1], not [1, 1] — without \
+         `.dedup()` the filter step keeps BOTH tables (species 40 is in each), so the pinned \
+         vec![1] can only hold if dedup actually runs"
+    );
+
+    // Non-vacuity, other direction: dedup must never collapse GENUINELY
+    // different zones together (would silently defeat TEETH(e) above). Species
+    // 40 is present in all three tables here — the split zone_id=1 pair AND
+    // the distinct zone_id=2 table — so this result is dedup-dependent too:
+    // without `.dedup()` it would be [1, 1, 2], not [1, 2].
+    let split_and_second_zone = vec![
+        EncounterTable {
+            zone_id: 1,
+            encounter_rate: 150,
+            entries: vec![synth_entry(2, 10, 4, 10), synth_entry(40, 6, 10, 19)],
+        },
+        EncounterTable {
+            zone_id: 1,
+            encounter_rate: 150,
+            entries: vec![synth_entry(40, 6, 10, 19)],
+        },
+        EncounterTable {
+            zone_id: 2,
+            encounter_rate: 150,
+            entries: vec![synth_entry(40, 6, 10, 19)],
+        },
+    ];
+    assert_eq!(
+        zone_membership(40, &split_and_second_zone),
+        vec![1, 2],
+        "TEETH(review finding 1/GOOD): dedup must collapse the split zone_id=1 pair down to one \
+         `1`, while still reporting the genuinely distinct zone_id=2 placement — [1, 2], not \
+         [1] or [1, 1, 2]"
+    );
+}
+
+#[test]
 fn rw3c_teeth_zone0_pin_bites_a_drifted_weight() {
     let good = EncounterTable {
         zone_id: 0,
@@ -466,10 +559,8 @@ fn rw3c_7_wave3_bands_are_sane_and_pre_evolution() {
     let encounters = load_encounters().expect("encounters registry must parse");
     let edges = load_evolution_paths().expect("evolution_paths registry must parse");
 
-    let wave3_tier0_ids: BTreeSet<u32> = wave3_tier0_species(&species)
-        .iter()
-        .map(|s| s.id)
-        .collect();
+    let wave3_tier0_ids: BTreeSet<u32> =
+        wave3_tier0_species(&species).iter().map(|s| s.id).collect();
     assert!(
         !wave3_tier0_ids.is_empty(),
         "rw3c-7: vacuity guard — the wave-3 tier-0 id set must be non-empty"
