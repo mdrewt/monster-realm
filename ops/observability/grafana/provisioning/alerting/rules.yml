@@ -146,3 +146,87 @@ groups:
                     type: lt
                     params:
                       - 1
+
+  # ---------------------------------------------------------------------------------------
+  # OBS-24b — scheduled-function lateness. A SEPARATE group from `meta-monitoring` above on
+  # purpose: that group is scoped to the telemetry pipeline's own self-health (is Alloy alive,
+  # is the tail moving, is the relay alive). This rule watches the GAME's scheduled functions,
+  # which is a different subject with a different on-call response; folding it into
+  # meta-monitoring would make "the meta-monitoring group is firing" stop meaning "the
+  # observability stack is broken".
+  # ---------------------------------------------------------------------------------------
+  - orgId: 1
+    name: scheduler-health
+    folder: Monster Realm
+    # Same 20s as meta-monitoring, and for the same reason: Grafana 13's scheduler runs on a
+    # fixed 10s base tick and provisioning ABORTS on any group interval that is not an exact
+    # multiple of it. 20s is derived from that tick, not picked.
+    interval: 20s
+    rules:
+      # THREE keys below are load-bearing and each has been "harmonised" away by a well-meaning
+      # editor before. Do not repeat that:
+      #
+      # `noDataState: OK` — this is the ONLY rule in this file that carries it, and the asymmetry
+      #   is deliberate. The three meta-monitoring rules query expressions that ALWAYS have a
+      #   value: `up{...}` is 0 or 1 for any target Prometheus knows about, and
+      #   mr:alloy_log_bytes_read:rate5m is `or vector(0)`-guarded. A lateness RATIO has no such
+      #   guarantee: over a window in which nothing was scheduled at all, the numerator and the
+      #   denominator are both empty and the series simply does not exist. Grafana's provisioned
+      #   default for an absent series is `NoData`, which raises a synthetic `DatasourceNoData`
+      #   alert instance that routes through notification-policies.yml's catch-all straight to
+      #   the real mr-observability-oncall webhook. A switch that cries wolf every quiet night
+      #   trains the operator to ignore it, and then it is worth less than no switch at all. Do
+      #   not "harmonise" this key away to match its neighbours.
+      #   ACCEPTED CONSEQUENCE, stated plainly rather than discovered later: a scheduled function
+      #   that stops running ENTIRELY is SILENT here — no starts means no series means no alert.
+      #   That is a liveness gap this rule deliberately does not close; it measures lateness, not
+      #   existence. Closing it needs a separate `absent()`-style rule with its own on-call story.
+      #
+      # `for: 10m` — derived twice over, not a round number. It is 30 x this group's 20s interval
+      #   (Grafana only transitions alert state on an evaluation boundary, so a non-multiple would
+      #   describe behaviour the scheduler never has), AND it is strictly greater than the 300s
+      #   `[5m]` rate window the recorded series are computed over. That second derivation is the
+      #   important one: trade_offer_reaper, pvp_deadline_reaper and battle_challenge_reaper are
+      #   ONE-SHOT `ScheduleAt::Time` inserts, not interval schedules, so a single late invocation
+      #   can spike the ratio hard. Because `for:` outlives the rate window, that spike decays out
+      #   of the window before it can ever satisfy the pending period. The `for:` IS the debounce
+      #   here — there is no separate smoothing in the expression, and shortening it below 5m
+      #   silently re-arms every one-shot reaper as a page.
+      #
+      # `severity: warning` — needs no routing change and must not acquire one by imitation.
+      #   notification-policies.yml routes `critical` on an explicit sub-route (10s group wait,
+      #   1h repeat); everything else takes the catch-all default policy, which reaches the SAME
+      #   real mr-observability-oncall receiver at a 4h repeat. Lateness is a degradation, not an
+      #   outage: it deserves the slower cadence, not the pager cadence its `critical` neighbours
+      #   above get.
+      - uid: mr-scheduled-function-delayed
+        title: ScheduledFunctionDelayed
+        condition: C
+        for: 10m
+        noDataState: OK
+        labels:
+          severity: warning
+        annotations:
+          summary: 'More than 1% of {{ $labels.function }} scheduled starts began over 50ms late for 10m — the tick or a deadline reaper is running behind.'
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900
+              to: 0
+            datasourceUid: mr-prometheus
+            model:
+              refId: A
+              editorMode: code
+              instant: true
+              expr: mr:scheduled_function_late:ratio5m
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              refId: C
+              type: threshold
+              expression: A
+              conditions:
+                - evaluator:
+                    type: gt
+                    params:
+                      - 0.01

@@ -132,6 +132,82 @@
 //                    moved verbatim into an unwired component keep a file-wide
 //                    check green while the live pipeline loses the bound.
 //
+//   G13a (always)  — 16r-e: the `mr-scheduler` recording-rule group (scheduled-
+//                    function LATENESS). Exactly one `- record:` rule selects
+//                    `spacetime_scheduled_function_delay_seconds_bucket` with
+//                    `le="+Inf"`, and exactly one with `le="0.05"`, parsed from
+//                    COMMENT-STRIPPED text so a commented-out decoy rule is not
+//                    counted. The per-invocation label is `function` — MEASURED
+//                    against a live SpacetimeDB 2.8.1 `/v1/metrics` scrape —
+//                    and `reducer` appears in NO selector of this metric
+//                    family: PromQL silently matches nothing on a non-existent
+//                    label key, so a `reducer=~` harmonisation "fix" would
+//                    record an empty series forever. The four scoped names are
+//                    compared as a SET, never a count, and the numerator and
+//                    denominator selectors must carry the IDENTICAL set. The
+//                    ratio rule DERIVES from the two recorded series names and
+//                    inlines no `function=~` matcher of its own, so the
+//                    allowlist appears exactly TWICE in the whole file for
+//                    this metric. Round 3 adds: a structural WHITELIST over
+//                    each of the three exprs (reconstructed from that rule's
+//                    OWN parsed selector, never a denylist of neutering
+//                    tokens — `clamp_max(..., 0)` and a trailing `* 0` both
+//                    survived every check above until this landed), and a
+//                    scoped uniqueness check (inside the shared recording-
+//                    rule parser, so `rateWindowSeconds` benefits too) that
+//                    each of the three scheduler series names is a
+//                    `record:` output exactly once across the whole file —
+//                    Prometheus does not statically forbid a duplicate name.
+//   G13b (always)  — the dashboard panel for
+//                    `mr:scheduled_function_late:ratio5m`: exactly one panel, a
+//                    unique `id`, a `gridPos` rectangle DISJOINT from every
+//                    other panel's (`checkDashboardPanelsReal` cannot see a
+//                    layout overlap, and a stacked panel renders broken with
+//                    green CI), `legendFormat` carrying `{{function}}`, `unit:
+//                    percentunit` (a ratio, not a duration), and a
+//                    `thresholds.steps` value READ FROM THE ALERT's own
+//                    evaluator param rather than a second, independently
+//                    maintained literal.
+//   G13c (always)  — the alert rule itself, via `parseAlertingRules`: exactly
+//                    one rule referencing the ratio series, `severity:
+//                    warning`, not paused, a uid distinct from every other
+//                    parsed uid, a `condition:` refId that resolves inside its
+//                    own `data:` list, a `threshold`/`gt` node with exactly one
+//                    param (a delay alert that fires when LATENESS IS LOW is
+//                    inverted), a query datasource DERIVED from
+//                    AlloyIngestStalled's own (never restated), `noDataState:
+//                    OK`, and a `for:` that is both a non-zero exact multiple
+//                    of its OWN group interval AND strictly greater than the
+//                    recorded series' `[5m]` rate window — DERIVED from that
+//                    literal, not restated — the debounce that keeps one late
+//                    one-shot reaper invocation from firing the alert. Round 3
+//                    adds: the threshold node's `expression:` refId must equal
+//                    the refId that actually carries the ratio query (mirrors
+//                    checkRelayDeadMansSwitch's own clause) — a stray refId
+//                    is structurally dead in Grafana while every other clause
+//                    stays green. `parseAlertingRules` itself now rejects a
+//                    duplicate `refId` inside one rule's `data:` list, which
+//                    benefits G9p too.
+//   G13d (always)  — number identity + lattice: the alert's evaluator param and
+//                    the panel's threshold step must be the SAME number, and
+//                    the on-time selector's `le=` value must be a MEMBER of
+//                    `SCHEDULED_DELAY_BUCKET_EDGES`, the measured 2.8.1 bucket
+//                    lattice (there is no 0.03 edge). Pinning the LATTICE
+//                    rather than the literal means a retune to another real
+//                    edge (0.1) needs no gate edit, while an off-lattice value
+//                    (0.03) reds.
+//   G13e (always)  — the numbered-provenance comment block above the
+//                    mr-scheduler rules names 30ms as SpacetimeDB's OWN
+//                    late-start `log::warn!` threshold, NOT a bucket edge. This
+//                    gate scans RAW text ON PURPOSE: `stripHashComments`
+//                    deletes precisely the `#` prose it is looking for, so
+//                    feeding it comment-stripped text would make it silently
+//                    and permanently vacuous — the exact trap it exists to
+//                    avoid falling into itself.
+//   T-q..T-u (always, FIRST) — PROOF-OF-TEETH for G13a-e, over inline
+//                    fixtures, in the T-o idiom (assert the compliant shape is
+//                    ACCEPTED before any mutation is asserted REJECTED).
+//
 // PARKED — 13r-a (verbatim; do NOT paraphrase into a TBD, anti-pattern 11):
 //   D1  grafana/tempo:2.10.7 has NO listen-ADDRESS flag at all, so the committed
 //       `-server.http-listen-address=127.0.0.1` is a flag tempo cannot parse and
@@ -240,7 +316,7 @@ import {
 
 const NAME =
   'observability-stack-config (G6 + G9 + mr-trace-relay integration + 13r-a/P5 park ' +
-  'tripwires, ADR-0180/0190/0191)';
+  'tripwires + 16r-e scheduled-function lateness G13a-e, ADR-0180/0190/0191)';
 
 const OPS = 'ops/observability';
 const RELAY_REL = `${OPS}/relay`;
@@ -346,6 +422,11 @@ const TRACE_PAIR_SET_REL = `${RELAY_REL}/trace-pair-set.json`;
  * arithmetic on the old figure. Do NOT guess this number: a floor set below the
  * real count is a suite that can silently stop running, and a floor set above
  * it reds a green tree.
+ *
+ * 16r-e adds NO node:test files (G13a-e are pure-function gates proven by
+ * inline teeth like every other gate in this eval), so this floor is
+ * DELIBERATELY UNCHANGED — re-deriving it here would be a false signal that a
+ * suite moved when none did.
  */
 const NODE_TEST_FILES = [
   ...RELAY_TEST_FILES.map((f) => `${RELAY_REL}/${f}`),
@@ -366,6 +447,10 @@ const NODE_TEST_TIMEOUT_MS = 60_000;
  * `rules.yml`, all three ALREADY among those 14, and READ_FILES is a Set — so
  * they raise the count by 0. C2's rule documents resolve to
  * `rules/recording.rules.yml`, also already counted.
+ *
+ * 16r-e adds NO new readReal call site: G13a-e read `recordingRules`,
+ * `dashboardJson` and `alertRules`, all three already counted above. This
+ * floor is DELIBERATELY UNCHANGED.
  */
 const FILE_FLOOR = 15;
 
@@ -1650,6 +1735,19 @@ function parseAlertingRules(alertRulesText) {
         const di = indentOf(entry[0]);
         const refId = scopedScalar(entry, 'refId', di, `a \`data:\` entry of rule \`${rule.uid}\``);
         if (!refId.ok) return refId;
+        // Round 3 (Gap 3, shared with G13c via this SAME parser): a SECOND
+        // `data:` entry carrying the SAME refId. Which one a threshold node's
+        // `expression:`/`condition:` actually resolves to is
+        // implementation-defined, so a duplicate is never valid — measured:
+        // adding a second `refId: A` alongside the real one survived every
+        // check above (each entry is independently well-formed).
+        if (rule.data.some((d) => d.refId === refId.value)) {
+          return fail(
+            `rule \`${rule.uid}\` declares 2+ \`data:\` entries with \`refId: ${refId.value}\` — ` +
+              "which one wins for a threshold node's `expression:` or `condition:` reference is " +
+              'implementation-defined, so a duplicate refId is never valid',
+          );
+        }
         const ds = scopedScalar(
           entry,
           'datasourceUid',
@@ -3171,6 +3269,853 @@ export function checkBuildShaBounded(alloyText) {
 }
 
 // ===========================================================================
+// G13a-e — scheduled-function LATENESS (16r-e; measured against a live
+// SpacetimeDB 2.8.1 /v1/metrics scrape)
+//
+// Structural model: like G9p, every compared number is DERIVED from a
+// document already parsed for another reason (the recording rule's own
+// selector, the alert's own evaluator, AlloyIngestStalled's own datasourceUid)
+// rather than restated as a second, independently-maintained literal.
+// ===========================================================================
+
+/** The scheduled-function delay histogram (MEASURED: labels {db, function, le}). */
+const SCHEDULED_FN_METRIC = 'spacetime_scheduled_function_delay_seconds_bucket';
+
+/** The four scheduled functions this lateness ratio watches. SET, never a count. */
+const SCHEDULED_FN_NAMES = [
+  'movement_tick',
+  'trade_offer_reaper',
+  'pvp_deadline_reaper',
+  'battle_challenge_reaper',
+];
+
+/** The over-edge selector's `le=` value: on-time means "at or under 50ms". */
+const SCHEDULED_DELAY_OVER_EDGE = '0.05';
+
+const SCHEDULED_STARTS_SERIES = 'mr:scheduled_function_starts:rate5m';
+const SCHEDULED_ON_TIME_SERIES = 'mr:scheduled_function_on_time:rate5m';
+const SCHEDULED_LATE_SERIES = 'mr:scheduled_function_late:ratio5m';
+
+/**
+ * G13d's lattice. MEASURED against a live SpacetimeDB 2.8.1 `/v1/metrics`
+ * scrape (2026-08-22): the COMPLETE bucket edge list for
+ * spacetime_scheduled_function_delay_seconds_bucket. There is NO 0.03 edge —
+ * PromQL's `le="0.03"` matches nothing and records an empty series forever,
+ * a defect the lattice check exists to catch instead of a restated literal
+ * that a retune would have to remember to move too.
+ */
+const SCHEDULED_DELAY_BUCKET_EDGES = [
+  '0.001',
+  '0.005',
+  '0.01',
+  '0.05',
+  '0.1',
+  '0.5',
+  '1',
+  '5',
+  '10',
+  '30',
+  '60',
+  '300',
+  '+Inf',
+];
+
+/**
+ * The dashboard panel targeting `mr:scheduled_function_late:ratio5m`. Fail-loud
+ * on JSON parse errors and on a missing `panels` array — a dashboard document
+ * that does not parse is never green.
+ */
+function schedulerPanel(dashboardJsonText) {
+  let dash;
+  try {
+    dash = JSON.parse(dashboardJsonText);
+  } catch (err) {
+    return fail(`monster-realm.json does not parse as JSON: ${err.message}`);
+  }
+  if (dash === null || typeof dash !== 'object' || !Array.isArray(dash.panels)) {
+    return fail('the dashboard document has no `panels` array');
+  }
+  if (dash.panels.length === 0) {
+    return fail('the dashboard declares ZERO panels — nothing was scanned');
+  }
+  const matches = dash.panels.filter(
+    (p) => Array.isArray(p?.targets) && p.targets.some((t) => t?.expr === SCHEDULED_LATE_SERIES),
+  );
+  if (matches.length !== 1) {
+    return fail(
+      `found ${matches.length} panels with a target querying \`${SCHEDULED_LATE_SERIES}\`; ` +
+        'exactly 1 is required',
+    );
+  }
+  return { ok: true, panel: matches[0], allPanels: dash.panels };
+}
+
+/** Axis-aligned `{x0,y0,x1,y1}` box from a Grafana `gridPos`. null if unreadable. */
+function gridBox(gridPos) {
+  if (gridPos === null || typeof gridPos !== 'object') return null;
+  const { h, w, x, y } = gridPos;
+  if (![h, w, x, y].every((n) => typeof n === 'number' && Number.isFinite(n))) return null;
+  return { x0: x, y0: y, x1: x + w, y1: y + h };
+}
+
+/** Standard axis-aligned rectangle overlap (strict — edge-touching is NOT an overlap). */
+function boxesOverlap(a, b) {
+  return a.x0 < b.x1 && b.x0 < a.x1 && a.y0 < b.y1 && b.y0 < a.y1;
+}
+
+/**
+ * Every `spacetime_scheduled_function_delay_seconds_bucket{...}` selector body
+ * in a PromQL-bearing text, in order of appearance. null on an unbalanced
+ * brace (fail loud rather than a partial parse).
+ */
+function scheduledFnSelectors(expr) {
+  const selectors = [];
+  let from = 0;
+  for (;;) {
+    const at = expr.indexOf(SCHEDULED_FN_METRIC, from);
+    if (at === -1) break;
+    const afterMetric = at + SCHEDULED_FN_METRIC.length;
+    const block = delimitedBlock(expr, afterMetric, '{', '}');
+    if (block === null || block.start !== afterMetric) return null;
+    selectors.push({ body: block.body });
+    from = block.end + 1;
+  }
+  return selectors;
+}
+
+/** The `function=~"a|b|c"` alternation, split to names. null if absent. */
+function parseFunctionMatcher(selectorBody) {
+  const needle = 'function=~"';
+  const at = selectorBody.indexOf(needle);
+  if (at === -1) return null;
+  const start = at + needle.length;
+  const end = selectorBody.indexOf('"', start);
+  if (end === -1) return null;
+  const names = selectorBody
+    .slice(start, end)
+    .split('|')
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+  return names.length === 0 ? null : names;
+}
+
+/**
+ * Every recording rule in recording.rules.yml, COMMENT-STRIPPED so a
+ * commented-out decoy is not counted, as `{ name, expr, groupName }`. The
+ * `expr:` block-scalar form (`expr: |` + an indented body) and the rare
+ * inline scalar form are both read; the block form's body lines are joined
+ * with a single space, never concatenated raw (a PromQL expression that
+ * happens to wrap is still ONE expression).
+ */
+function parseRecordingGroups(recordingRulesText) {
+  const lines = stripHashComments(recordingRulesText).split('\n');
+  const roots = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith('groups:')) roots.push(i);
+  }
+  if (roots.length !== 1) {
+    return fail(`expected exactly one column-0 \`groups:\` key, found ${roots.length}`);
+  }
+  const groups = listItems(subBlock(lines, roots[0]));
+  if (groups.length === 0) return fail('`groups:` declares zero groups — nothing was scanned');
+
+  const rules = [];
+  for (const group of groups) {
+    const gi = indentOf(group[0]);
+    const groupName = scopedScalar(group, 'name', gi, 'a recording-rule group');
+    if (!groupName.ok) return groupName;
+    const rulesBlock = scopedBlock(group, 'rules', gi, `recording group \`${groupName.value}\``);
+    if (!rulesBlock.ok) return rulesBlock;
+    for (const item of listItems(rulesBlock.lines)) {
+      const ri = indentOf(item[0]);
+      if (!item[0].trim().startsWith('record:')) continue;
+      const name = scalarOf(item[0], 'record');
+      const exprIdx = keyIndices(item, 'expr', ri);
+      if (exprIdx.length !== 1) {
+        return fail(
+          `recording rule \`${name}\` in group \`${groupName.value}\` declares ` +
+            `${exprIdx.length} \`expr:\` keys, need 1`,
+        );
+      }
+      const inline = scalarOf(item[exprIdx[0]], 'expr');
+      let expr;
+      if (inline.length > 0 && inline !== '|') {
+        expr = inline;
+      } else {
+        const body = subBlock(item, exprIdx[0])
+          .map((l) => l.trim())
+          .filter((l) => l.length > 0);
+        if (body.length === 0) {
+          return fail(`recording rule \`${name}\`'s \`expr: |\` block is empty`);
+        }
+        expr = body.join(' ');
+      }
+      rules.push({ name, expr, groupName: groupName.value });
+    }
+  }
+  if (rules.length === 0) return fail('zero recording rules were parsed — nothing was scanned');
+
+  // Round 3 (Gap 4). Prometheus does NOT statically forbid a duplicate
+  // `record:` output name (measured against a live dockerized `promtool
+  // check rules` — it passes), so which rule actually feeds Grafana is
+  // otherwise implementation-defined. Scoped to the three scheduler series
+  // names specifically (not every `record:` in the file) — this is the SSOT
+  // this slice owns; a name collision elsewhere in the file is a pre-existing
+  // convention this slice does not police. Runs HERE, inside the shared
+  // parser, rather than inside `checkSchedulerRecordingRules`, so every
+  // caller — including `rateWindowSeconds`/`schedulerOnTimeLeValue`, which
+  // call this parser FIRST — gets the correct attribution: a duplicate name
+  // placed BEFORE the real group must never be misread by a first-match
+  // lookup as "no rate window to derive from".
+  for (const name of [SCHEDULED_STARTS_SERIES, SCHEDULED_ON_TIME_SERIES, SCHEDULED_LATE_SERIES]) {
+    const count = rules.filter((r) => r.name === name).length;
+    if (count > 1) {
+      return fail(
+        `\`record: ${name}\` appears ${count} times across the recording rules document; ` +
+          'exactly 1 is required — Prometheus does not statically forbid a duplicate output ' +
+          'name, so which rule actually feeds this series is otherwise implementation-defined',
+      );
+    }
+  }
+  return { ok: true, rules, detail: `${rules.length} recording rule(s) parsed` };
+}
+
+/**
+ * Collapse any run of whitespace (spaces, tabs, newlines) to a single space
+ * and trim the ends — hand-rolled, no regex, so a wrapped or padded expr
+ * compares equal to its un-wrapped canonical form for the WHITELIST checks
+ * below (Round 3, Gap 1) without this file reaching for `String.split(/\s+/)`.
+ */
+function normalizeWhitespace(text) {
+  const out = [];
+  let inWs = false;
+  for (const ch of text) {
+    const isWs = ch === ' ' || ch === '\t' || ch === '\n' || ch === '\r';
+    if (isWs) {
+      inWs = true;
+      continue;
+    }
+    if (inWs && out.length > 0) out.push(' ');
+    inWs = false;
+    out.push(ch);
+  }
+  return out.join('');
+}
+
+/**
+ * G13a — the mr-scheduler recording-rule group. Every compared name set is
+ * derived from the selectors themselves; the only literal restated here is
+ * the expected 4-name allowlist, which is the SSOT this gate exists to guard.
+ */
+export function checkSchedulerRecordingRules(recordingRulesText) {
+  const parsed = parseRecordingGroups(recordingRulesText);
+  if (!parsed.ok) return fail(`G13a: ${parsed.detail}`);
+
+  const withMetric = parsed.rules.filter((r) => r.expr.includes(SCHEDULED_FN_METRIC));
+  if (withMetric.length === 0) {
+    return fail(
+      `G13a: no recording rule references \`${SCHEDULED_FN_METRIC}\` — the mr-scheduler ` +
+        'lateness recording group has not landed (or was commented out; stripHashComments runs ' +
+        'before this gate parses, so a `#`-prefixed rule is invisible, exactly as it must be)',
+    );
+  }
+
+  const expectedSet = [...SCHEDULED_FN_NAMES].sort().join('|');
+  const infRules = [];
+  const edgeRules = [];
+  for (const rule of withMetric) {
+    const selectors = scheduledFnSelectors(rule.expr);
+    if (selectors === null || selectors.length === 0) {
+      return fail(
+        `G13a: rule \`${rule.name}\`'s expr mentions \`${SCHEDULED_FN_METRIC}\` but its selector ` +
+          'braces are unbalanced or absent — fail loud rather than a partial parse',
+      );
+    }
+    for (const sel of selectors) {
+      if (sel.body.includes('reducer=')) {
+        return fail(
+          `G13a: rule \`${rule.name}\` selects \`${SCHEDULED_FN_METRIC}\` with a \`reducer=\` ` +
+            "matcher. This metric family's per-invocation label is `function`, MEASURED against a " +
+            'live SpacetimeDB 2.8.1 /v1/metrics scrape — `reducer` is not a label on it at all, ' +
+            'and PromQL silently matches NOTHING on a non-existent label key, recording an EMPTY ' +
+            'series forever rather than failing loud.',
+        );
+      }
+      if (sel.body.includes(`le="+Inf"`)) infRules.push({ rule, sel });
+      if (sel.body.includes(`le="${SCHEDULED_DELAY_OVER_EDGE}"`)) edgeRules.push({ rule, sel });
+    }
+  }
+
+  if (infRules.length !== 1) {
+    return fail(
+      `G13a: found ${infRules.length} recording-rule selectors on \`${SCHEDULED_FN_METRIC}\` ` +
+        'with `le="+Inf"`; exactly 1 (the starts/denominator series) is required',
+    );
+  }
+  if (edgeRules.length !== 1) {
+    return fail(
+      `G13a: found ${edgeRules.length} recording-rule selectors on \`${SCHEDULED_FN_METRIC}\` ` +
+        `with \`le="${SCHEDULED_DELAY_OVER_EDGE}"\`; exactly 1 (the on-time/numerator series) is ` +
+        'required',
+    );
+  }
+
+  const infNames = parseFunctionMatcher(infRules[0].sel.body);
+  const edgeNames = parseFunctionMatcher(edgeRules[0].sel.body);
+  if (infNames === null || edgeNames === null) {
+    return fail(
+      'G13a: a scheduled-function selector has no `function=~"..."` matcher to read names from',
+    );
+  }
+  if ([...infNames].sort().join('|') !== expectedSet) {
+    return fail(
+      `G13a: the \`le="+Inf"\` selector's function set is [${infNames.join(', ')}], expected ` +
+        `EXACTLY [${SCHEDULED_FN_NAMES.join(', ')}] — a SET comparison, never a count: a ` +
+        'substitution keeps the count identical',
+    );
+  }
+  if ([...edgeNames].sort().join('|') !== expectedSet) {
+    return fail(
+      `G13a: the \`le="${SCHEDULED_DELAY_OVER_EDGE}"\` selector's function set is ` +
+        `[${edgeNames.join(', ')}], expected EXACTLY [${SCHEDULED_FN_NAMES.join(', ')}]`,
+    );
+  }
+  if ([...infNames].sort().join('|') !== [...edgeNames].sort().join('|')) {
+    return fail(
+      `G13a: the numerator and denominator selectors carry DIFFERENT function sets ` +
+        `([${edgeNames.join(', ')}] vs [${infNames.join(', ')}]) — a drift here is silent and ` +
+        'fatal: each recorded series would rate() a different subset of scheduled functions',
+    );
+  }
+
+  const infGroups = promByClauses(infRules[0].rule.expr);
+  if (infGroups === null || !infGroups.some((g) => g.length === 1 && g[0] === 'function')) {
+    return fail(
+      `G13a: rule \`${infRules[0].rule.name}\` does not aggregate \`sum by (function)\` — found ` +
+        `groupings [${infGroups ? infGroups.map((g) => `(${g.join(',')})`).join(', ') : 'none'}]`,
+    );
+  }
+  const edgeGroups = promByClauses(edgeRules[0].rule.expr);
+  if (edgeGroups === null || !edgeGroups.some((g) => g.length === 1 && g[0] === 'function')) {
+    return fail(
+      `G13a: rule \`${edgeRules[0].rule.name}\` does not aggregate \`sum by (function)\``,
+    );
+  }
+
+  const ratioRules = parsed.rules.filter((r) => r.name === SCHEDULED_LATE_SERIES);
+  if (ratioRules.length !== 1) {
+    return fail(
+      `G13a: found ${ratioRules.length} recording rules named \`${SCHEDULED_LATE_SERIES}\`; ` +
+        'exactly 1 is required',
+    );
+  }
+  const ratio = ratioRules[0];
+  if (
+    !ratio.expr.includes(SCHEDULED_ON_TIME_SERIES) ||
+    !ratio.expr.includes(SCHEDULED_STARTS_SERIES)
+  ) {
+    return fail(
+      `G13a: rule \`${SCHEDULED_LATE_SERIES}\` does not reference BOTH ` +
+        `\`${SCHEDULED_ON_TIME_SERIES}\` and \`${SCHEDULED_STARTS_SERIES}\` — it must DERIVE the ` +
+        'ratio from the two recorded series, never compute something else',
+    );
+  }
+  if (ratio.expr.includes('function=~')) {
+    return fail(
+      `G13a: rule \`${SCHEDULED_LATE_SERIES}\` inlines its own \`function=~\` matcher — the ` +
+        'allowlist must appear EXACTLY TWICE in this file (the numerator and denominator ' +
+        'selectors), never a third, independently-maintained copy inside the ratio',
+    );
+  }
+
+  const matcherOccurrences = countOccurrences(stripHashComments(recordingRulesText), 'function=~"');
+  if (matcherOccurrences !== 2) {
+    return fail(
+      `G13a: \`function=~"\` appears ${matcherOccurrences} time(s) in recording.rules.yml; ` +
+        'exactly 2 (the starts and on-time selectors) is required — a third copy is a restated ' +
+        'allowlist the ratio rule was supposed to derive from, not repeat',
+    );
+  }
+
+  // Round 3 (Gap 1). A WHITELIST, not a denylist of neutering tokens — this
+  // repo has a recorded finding that abort-construct blacklists are
+  // unclosable (16 CI-clean bypasses beat one such list). Every clause above
+  // DERIVES the name set, the aggregation and the le= value and stays green
+  // even when the whole expr is wrapped: `clamp_max(1 - (on_time / starts),
+  // 0)` pins the ratio at <= 0 forever (the `gt 0.01` alert can never fire),
+  // and `sum by (function) (rate(...)[5m])) * 0` pins on-time at 0 forever
+  // (a permanent false page) — both MEASURED to survive every check above.
+  // Each expected string below is RECONSTRUCTED from that rule's own
+  // already-parsed pieces (the metric name, its OWN selector body sliced
+  // straight out of its own expr) rather than a second, independently
+  // maintained template, so this stays a DERIVED check, not a restated one.
+  const infExpected = `sum by (function) (rate(${SCHEDULED_FN_METRIC}{${infRules[0].sel.body}}[5m]))`;
+  if (normalizeWhitespace(infRules[0].rule.expr) !== normalizeWhitespace(infExpected)) {
+    return fail(
+      `G13a: rule \`${infRules[0].rule.name}\`'s expr is not EXACTLY \`${infExpected}\` — found ` +
+        `\`${infRules[0].rule.expr}\`. This is a WHITELIST, not a denylist of neutering tokens: a ` +
+        'wrapper like `clamp_max(..., 0)` or a trailing `* 0` keeps every derived check above ' +
+        'green (the name set, the aggregation, the le= value) while silently pinning the series ' +
+        'at a constant, so nothing outside this exact template is permitted.',
+    );
+  }
+  const edgeExpected = `sum by (function) (rate(${SCHEDULED_FN_METRIC}{${edgeRules[0].sel.body}}[5m]))`;
+  if (normalizeWhitespace(edgeRules[0].rule.expr) !== normalizeWhitespace(edgeExpected)) {
+    return fail(
+      `G13a: rule \`${edgeRules[0].rule.name}\`'s expr is not EXACTLY \`${edgeExpected}\` — found ` +
+        `\`${edgeRules[0].rule.expr}\`. Same WHITELIST as the starts selector: nothing outside ` +
+        'the template is permitted.',
+    );
+  }
+  const ratioExpected = `1 - (${SCHEDULED_ON_TIME_SERIES} / ${SCHEDULED_STARTS_SERIES})`;
+  if (normalizeWhitespace(ratio.expr) !== normalizeWhitespace(ratioExpected)) {
+    return fail(
+      `G13a: rule \`${SCHEDULED_LATE_SERIES}\`'s expr is not EXACTLY \`${ratioExpected}\` — found ` +
+        `\`${ratio.expr}\`. This is a WHITELIST: a wrapper like \`clamp_max(..., 0)\` pins the ` +
+        'ratio at <= 0 permanently, which disables the `gt 0.01` alert forever while every ' +
+        'derived reference check above (both series names present, no function=~ of its own) ' +
+        'stays green.',
+    );
+  }
+
+  return pass(
+    `G13a: exactly one +Inf and one le="${SCHEDULED_DELAY_OVER_EDGE}" selector on ` +
+      `\`${SCHEDULED_FN_METRIC}\`, both \`sum by (function)\` over the SAME 4-name set ` +
+      `[${SCHEDULED_FN_NAMES.join(', ')}], and \`${ratio.name}\` derives from both without a ` +
+      'third `function=~` matcher',
+  );
+}
+
+/**
+ * The scheduler's own alert rule (identified by its expr referencing the
+ * ratio series), parsed via the SAME `parseAlertingRules` G9p uses.
+ */
+function schedulerAlertRule(alertRulesText) {
+  const parsed = parseAlertingRules(alertRulesText);
+  if (!parsed.ok) return fail(parsed.detail);
+  const matches = parsed.rules.filter((r) =>
+    r.exprs.some((e) => e.includes(SCHEDULED_LATE_SERIES)),
+  );
+  if (matches.length !== 1) {
+    return fail(
+      `found ${matches.length} alert rules whose \`expr:\` references \`${SCHEDULED_LATE_SERIES}\`; ` +
+        'exactly 1 is required',
+    );
+  }
+  return { ok: true, rule: matches[0], allRules: parsed.rules };
+}
+
+/**
+ * The scheduler alert's own `gt` evaluator param, as a NUMBER — the value
+ * G13b/G13d compare the panel's threshold step against, DERIVED here rather
+ * than restated in either of them.
+ */
+function schedulerAlertEvaluatorParam(alertRulesText) {
+  const found = schedulerAlertRule(alertRulesText);
+  if (!found.ok) return found;
+  const rule = found.rule;
+  if (rule.condition === null) return fail(`rule \`${rule.uid}\` declares no \`condition:\``);
+  const node = rule.data.find((d) => d.refId === rule.condition);
+  if (node === undefined) {
+    return fail(
+      `rule \`${rule.uid}\` names \`condition: ${rule.condition}\` but no \`data:\` entry ` +
+        'declares that refId — a DANGLING condition refId',
+    );
+  }
+  const shape = thresholdShape(node, rule.uid);
+  if (!shape.ok) return fail(shape.detail);
+  if (shape.params.length !== 1) {
+    return fail(`rule \`${rule.uid}\`'s evaluator declares ${shape.params.length} params, need 1`);
+  }
+  const value = Number(shape.params[0]);
+  if (!Number.isFinite(value)) {
+    return fail(`rule \`${rule.uid}\`'s evaluator param \`${shape.params[0]}\` is not a number`);
+  }
+  return { ok: true, value, rawValue: shape.params[0], rule };
+}
+
+/**
+ * G13b — the dashboard panel. The threshold step's expected VALUE is read
+ * from the alert's own evaluator param (schedulerAlertEvaluatorParam), never
+ * restated as a second literal.
+ */
+export function checkSchedulerLatencyPanel(dashboardJsonText, alertRulesText) {
+  const panelRes = schedulerPanel(dashboardJsonText);
+  if (!panelRes.ok) return fail(`G13b: ${panelRes.detail}`);
+  const panel = panelRes.panel;
+
+  const ids = panelRes.allPanels.map((p) => p?.id);
+  const sameId = ids.filter((id) => id === panel.id);
+  if (typeof panel.id !== 'number' || sameId.length !== 1) {
+    return fail(
+      `G13b: the scheduler-lateness panel's \`id\` (${JSON.stringify(panel.id)}) is not unique ` +
+        `across ${panelRes.allPanels.length} panels (${sameId.length} panels share it)`,
+    );
+  }
+
+  const box = gridBox(panel.gridPos);
+  if (box === null) {
+    return fail('G13b: the scheduler-lateness panel has no readable `gridPos` rectangle');
+  }
+  for (const other of panelRes.allPanels) {
+    if (other === panel) continue;
+    const otherBox = gridBox(other?.gridPos);
+    if (otherBox === null) continue;
+    if (boxesOverlap(box, otherBox)) {
+      return fail(
+        `G13b: the scheduler-lateness panel's gridPos ${JSON.stringify(panel.gridPos)} OVERLAPS ` +
+          `panel id ${JSON.stringify(other?.id)}'s ${JSON.stringify(other?.gridPos)} — ` +
+          'checkDashboardPanelsReal cannot see a layout overlap, and a stacked panel renders ' +
+          'broken with green CI',
+      );
+    }
+  }
+
+  const target = panel.targets.find((t) => t?.expr === SCHEDULED_LATE_SERIES);
+  if (typeof target?.legendFormat !== 'string' || !target.legendFormat.includes('{{function}}')) {
+    return fail(
+      `G13b: the scheduler-lateness panel's target \`legendFormat\` is ` +
+        `${JSON.stringify(target?.legendFormat ?? null)}, expected it to contain \`{{function}}\` ` +
+        '— the series is grouped BY function, and an unlabelled legend collapses four lines into one',
+    );
+  }
+
+  const unit = panel?.fieldConfig?.defaults?.unit;
+  if (unit !== 'percentunit') {
+    return fail(
+      `G13b: the scheduler-lateness panel's \`fieldConfig.defaults.unit\` is ` +
+        `${JSON.stringify(unit ?? null)}, expected \`percentunit\` — the series is a RATIO ` +
+        '(late/total), not a duration',
+    );
+  }
+
+  const alertParam = schedulerAlertEvaluatorParam(alertRulesText);
+  if (!alertParam.ok) return fail(`G13b: ${alertParam.detail}`);
+
+  const steps = panel?.fieldConfig?.defaults?.thresholds?.steps;
+  if (!Array.isArray(steps) || steps.length === 0) {
+    return fail('G13b: the scheduler-lateness panel declares no `thresholds.steps`');
+  }
+  const matchingStep = steps.filter((s) => s?.value === alertParam.value);
+  if (matchingStep.length !== 1) {
+    return fail(
+      `G13b: the panel's \`thresholds.steps\` values are ` +
+        `[${steps.map((s) => s?.value).join(', ')}]; exactly 1 must equal the alert's own ` +
+        `evaluator param (${alertParam.value}), READ FROM rules.yml — a restated literal here is ` +
+        'exactly what silently drifts from the alert',
+    );
+  }
+
+  return pass(
+    `G13b: exactly one panel (id ${panel.id}) targets \`${SCHEDULED_LATE_SERIES}\`, gridPos ` +
+      'disjoint from every other panel, legendFormat carries {{function}}, unit percentunit, and ' +
+      `a threshold step equal to the alert's own evaluator param (${alertParam.value})`,
+  );
+}
+
+/**
+ * The `[<duration>]` PromQL rate window of a NAMED recording rule, DERIVED
+ * rather than restated — G13c's debounce floor comes from here.
+ */
+function rateWindowSeconds(recordingRulesText, seriesName) {
+  const parsed = parseRecordingGroups(recordingRulesText);
+  if (!parsed.ok) return fail(parsed.detail);
+  const rule = parsed.rules.find((r) => r.name === seriesName);
+  if (rule === undefined) return fail(`no recording rule named \`${seriesName}\` was parsed`);
+  const open = rule.expr.lastIndexOf('[');
+  const close = rule.expr.indexOf(']', open);
+  if (open === -1 || close === -1) {
+    return fail(`rule \`${seriesName}\`'s expr has no \`[<duration>]\` rate window to derive from`);
+  }
+  const raw = rule.expr.slice(open + 1, close);
+  const seconds = parseDurationSeconds(raw);
+  if (seconds === null || seconds === 0) {
+    return fail(
+      `rule \`${seriesName}\`'s rate window \`[${raw}]\` does not parse as a non-zero duration`,
+    );
+  }
+  return { ok: true, seconds, raw };
+}
+
+/**
+ * G13c — the alert rule itself. Every derived value is READ, never re-spelled:
+ * the query datasource comes from AlloyIngestStalled's own entry, and the
+ * debounce floor comes from the recorded series' own `[5m]` rate window.
+ */
+export function checkSchedulerAlertRule(alertRulesText, recordingRulesText) {
+  const parsed = parseAlertingRules(alertRulesText);
+  if (!parsed.ok) return fail(`G13c: ${parsed.detail}`);
+
+  const matches = parsed.rules.filter((r) =>
+    r.exprs.some((e) => e.includes(SCHEDULED_LATE_SERIES)),
+  );
+  if (matches.length !== 1) {
+    return fail(
+      `G13c: found ${matches.length} alert rules whose \`expr:\` references ` +
+        `\`${SCHEDULED_LATE_SERIES}\`; exactly 1 is required`,
+    );
+  }
+  const rule = matches[0];
+
+  const dupUid = parsed.rules.filter((r) => r.uid === rule.uid);
+  if (dupUid.length !== 1) {
+    return fail(
+      `G13c: uid \`${rule.uid}\` is shared by ${dupUid.length} rules — Grafana keys provisioned ` +
+        'rules by uid, so a duplicate silently REPLACES one',
+    );
+  }
+
+  if (rule.severity !== 'warning') {
+    return fail(
+      `G13c: rule \`${rule.uid}\` declares \`severity: ${rule.severity ?? '(none)'}\`, expected ` +
+        '`warning`',
+    );
+  }
+  if (rule.isPaused !== null && rule.isPaused !== 'false') {
+    return fail(
+      `G13c: rule \`${rule.uid}\` declares \`isPaused: ${rule.isPaused}\` — a paused rule is ` +
+        'provisioned but never evaluated',
+    );
+  }
+
+  if (rule.condition === null) return fail(`G13c: rule \`${rule.uid}\` declares no \`condition:\``);
+  const node = rule.data.find((d) => d.refId === rule.condition);
+  if (node === undefined) {
+    return fail(
+      `G13c: rule \`${rule.uid}\` names \`condition: ${rule.condition}\` but no \`data:\` entry ` +
+        'declares that refId — a DANGLING condition refId is the quietest failure in this file',
+    );
+  }
+
+  const shape = thresholdShape(node, rule.uid);
+  if (!shape.ok) return fail(`G13c: ${shape.detail}`);
+  if (shape.nodeType !== 'threshold') {
+    return fail(
+      `G13c: rule \`${rule.uid}\`'s condition node is \`type: ${shape.nodeType}\`, expected ` +
+        '`threshold`',
+    );
+  }
+  if (shape.evaluatorType !== 'gt') {
+    return fail(
+      `G13c: rule \`${rule.uid}\`'s evaluator is \`type: ${shape.evaluatorType}\`, expected ` +
+        '`gt` — a delay alert that fires when LATENESS IS LOW is inverted',
+    );
+  }
+  if (shape.params.length !== 1) {
+    return fail(
+      `G13c: rule \`${rule.uid}\`'s evaluator declares ${shape.params.length} params, need 1`,
+    );
+  }
+
+  const stalled = parsed.rules.find((r) => r.uid === 'mr-alloy-ingest-stalled');
+  if (stalled === undefined) {
+    return fail(
+      'G13c: no `mr-alloy-ingest-stalled` rule was parsed to DERIVE the expected datasourceUid from',
+    );
+  }
+  const stalledExprEntry = stalled.data.find((d) => d.expr !== null);
+  const ruleExprEntry = rule.data.find(
+    (d) => d.expr !== null && d.expr.includes(SCHEDULED_LATE_SERIES),
+  );
+  if (stalledExprEntry === undefined || ruleExprEntry === undefined) {
+    return fail("G13c: could not resolve the query entry carrying either rule's expr");
+  }
+  if (ruleExprEntry.datasourceUid !== stalledExprEntry.datasourceUid) {
+    return fail(
+      `G13c: rule \`${rule.uid}\` queries datasource \`${ruleExprEntry.datasourceUid}\`, expected ` +
+        `AlloyIngestStalled's \`${stalledExprEntry.datasourceUid}\` — read from that rule, not ` +
+        'restated here',
+    );
+  }
+
+  // Round 3 (Gap 2). Mirrors the sibling gate's own check
+  // (checkRelayDeadMansSwitch's `relayShape.expression !== relayExprEntry.refId`):
+  // the threshold node's `expression:` must resolve to the SAME refId that
+  // carries the scheduled-function lateness query, not merely to SOME node
+  // in `data:`. Measured: `expression: A` changed to `expression: ZZ` (a
+  // refId nowhere in `data:`) survived every clause above — in real Grafana
+  // that rule errors on every evaluation, structurally dead.
+  if (shape.expression !== ruleExprEntry.refId) {
+    return fail(
+      `G13c: rule \`${rule.uid}\`'s condition node thresholds refId \`${shape.expression}\`, but ` +
+        `the entry carrying \`${SCHEDULED_LATE_SERIES}\` is refId \`${ruleExprEntry.refId}\` — ` +
+        'the threshold is applied to a DIFFERENT query than the one that watches scheduled-' +
+        'function lateness (or, if that refId names no `data:` entry at all, Grafana errors on ' +
+        'every evaluation of this rule).',
+    );
+  }
+
+  const noDataIdx = keyIndices(rule.lines, 'noDataState', rule.indent);
+  if (noDataIdx.length !== 1) {
+    return fail(
+      `G13c: rule \`${rule.uid}\` declares ${noDataIdx.length} \`noDataState:\` keys; exactly 1 ` +
+        "is required. Omission defaults to Grafana's own routing for the rule's absent-data " +
+        'behaviour, which for a lateness ratio over a legitimately quiet window (every scheduled ' +
+        'function idle) is exactly the false-positive shape this key exists to name and pin.',
+    );
+  }
+  const noDataState = scalarOf(rule.lines[noDataIdx[0]], 'noDataState');
+  if (noDataState !== 'OK') {
+    return fail(
+      `G13c: rule \`${rule.uid}\` declares \`noDataState: ${noDataState}\`, expected \`OK\` — ` +
+        'anything else fires on a legitimately empty numerator/denominator rather than staying quiet',
+    );
+  }
+
+  if (rule.forSeconds === null) return fail(`G13c: rule \`${rule.uid}\` declares no \`for:\``);
+  if (rule.forSeconds === 0 || rule.forSeconds % rule.groupIntervalSeconds !== 0) {
+    return fail(
+      `G13c: rule \`${rule.uid}\` declares \`for: ${rule.rawFor}\` (${rule.forSeconds}s), which ` +
+        `is not a NON-ZERO exact multiple of its own group's interval (${rule.groupIntervalSeconds}s)`,
+    );
+  }
+
+  const window = rateWindowSeconds(recordingRulesText, SCHEDULED_STARTS_SERIES);
+  if (!window.ok) return fail(`G13c: ${window.detail}`);
+  if (rule.forSeconds <= window.seconds) {
+    return fail(
+      `G13c: rule \`${rule.uid}\` declares \`for: ${rule.rawFor}\` (${rule.forSeconds}s), which ` +
+        `is not STRICTLY GREATER than the ${window.seconds}s (\`[${window.raw}]\`) rate window the ` +
+        'recorded series are computed over — a single late one-shot reaper invocation must not be ' +
+        'able to fire this alert',
+    );
+  }
+
+  return pass(
+    `G13c: rule \`${rule.uid}\` (severity warning, not paused, uid distinct, noDataState OK) ` +
+      `thresholds a ${shape.evaluatorType} [${shape.params.join(', ')}] node on datasource ` +
+      `\`${ruleExprEntry.datasourceUid}\` (matching AlloyIngestStalled), with for: ${rule.rawFor} ` +
+      `(${rule.forSeconds}s), a multiple of its ${rule.groupIntervalSeconds}s group interval and ` +
+      `> ${window.seconds}s`,
+  );
+}
+
+/** The on-time selector's `le=` value, as parsed text (not a number: `+Inf` is not one). */
+function schedulerOnTimeLeValue(recordingRulesText) {
+  const parsed = parseRecordingGroups(recordingRulesText);
+  if (!parsed.ok) return fail(parsed.detail);
+  const rule = parsed.rules.find((r) => r.name === SCHEDULED_ON_TIME_SERIES);
+  if (rule === undefined) {
+    return fail(`no recording rule named \`${SCHEDULED_ON_TIME_SERIES}\` was parsed`);
+  }
+  const selectors = scheduledFnSelectors(rule.expr);
+  if (selectors === null || selectors.length !== 1) {
+    return fail(
+      `rule \`${SCHEDULED_ON_TIME_SERIES}\` does not carry exactly one ` +
+        `\`${SCHEDULED_FN_METRIC}{...}\` selector`,
+    );
+  }
+  const body = selectors[0].body;
+  const needle = 'le="';
+  const at = body.indexOf(needle);
+  if (at === -1) {
+    return fail(`rule \`${SCHEDULED_ON_TIME_SERIES}\`'s selector has no \`le="..."\` matcher`);
+  }
+  const start = at + needle.length;
+  const end = body.indexOf('"', start);
+  if (end === -1) {
+    return fail(`rule \`${SCHEDULED_ON_TIME_SERIES}\`'s \`le=\` matcher is unterminated`);
+  }
+  return { ok: true, value: body.slice(start, end) };
+}
+
+/**
+ * G13d — number identity (the alert's evaluator param IS the panel's
+ * threshold value, never two independently maintained literals) plus the
+ * bucket-edge LATTICE (the on-time selector's `le=` must be a REAL edge).
+ */
+export function checkSchedulerNumberIdentity(
+  alertRulesText,
+  dashboardJsonText,
+  recordingRulesText,
+) {
+  const alertParam = schedulerAlertEvaluatorParam(alertRulesText);
+  if (!alertParam.ok) return fail(`G13d: ${alertParam.detail}`);
+
+  const panelRes = schedulerPanel(dashboardJsonText);
+  if (!panelRes.ok) return fail(`G13d: ${panelRes.detail}`);
+  const steps = panelRes.panel?.fieldConfig?.defaults?.thresholds?.steps;
+  if (!Array.isArray(steps) || steps.length === 0) {
+    return fail('G13d: the scheduler-lateness panel declares no `thresholds.steps`');
+  }
+  const matchingStep = steps.filter((s) => s?.value === alertParam.value);
+  if (matchingStep.length !== 1) {
+    return fail(
+      `G13d: the alert's evaluator param (${alertParam.value}) and the panel's threshold step ` +
+        `values ([${steps.map((s) => s?.value).join(', ')}]) do not identify exactly one shared ` +
+        'number — these two must be the SAME number, never independently maintained',
+    );
+  }
+
+  const le = schedulerOnTimeLeValue(recordingRulesText);
+  if (!le.ok) return fail(`G13d: ${le.detail}`);
+  if (!SCHEDULED_DELAY_BUCKET_EDGES.includes(le.value)) {
+    return fail(
+      `G13d: the on-time selector's \`le="${le.value}"\` is OFF-LATTICE — it is not a real bucket ` +
+        `edge SpacetimeDB 2.8.1 emits ([${SCHEDULED_DELAY_BUCKET_EDGES.join(', ')}]). A value here ` +
+        'that Prometheus never actually buckets to (e.g. `0.03`, sitting between the real 0.01 and ' +
+        '0.05 edges) silently records ZERO on-time events forever — the ratio pins at 100% ' +
+        'lateness regardless of reality.',
+    );
+  }
+
+  return pass(
+    `G13d: the alert's evaluator param and the panel's threshold step agree at ` +
+      `${alertParam.value}, and the on-time selector's le="${le.value}" is a real measured bucket edge`,
+  );
+}
+
+/**
+ * G13e — the numbered-provenance comment block. RAW TEXT ONLY: `stripHashComments`
+ * deletes precisely the `#` prose this gate is looking for, so feeding it
+ * comment-stripped text would make this check silently and permanently
+ * vacuous. Every needle below must appear on a `#` comment LINE, not merely
+ * anywhere in the file (a coincidental substring in an expr would otherwise
+ * satisfy it).
+ */
+const SCHEDULER_PROVENANCE_NEEDLES = ['30 ms', 'log::warn!', 'not a bucket edge'];
+const SCHEDULER_PROVENANCE_NUMBERING = ['(1)', '(2)', '(3)'];
+
+export function checkSchedulerProvenanceBlock(rawRecordingRulesText) {
+  const lines = rawRecordingRulesText.split('\n');
+  for (const needle of SCHEDULER_PROVENANCE_NEEDLES) {
+    const onComment = lines.some((line) => {
+      const t = line.trim();
+      return t.startsWith('#') && t.includes(needle);
+    });
+    if (!onComment) {
+      return fail(
+        `G13e: no \`#\` comment line in recording.rules.yml's RAW text contains \`${needle}\` — ` +
+          'the numbered-provenance block above the mr-scheduler rules must name 30 ms as ' +
+          "SpacetimeDB's OWN late-start log::warn! threshold and state plainly that it is NOT a " +
+          'bucket edge, or the next reader conflates the two instruments. NOTE for anyone ' +
+          'debugging this check: it MUST run over RAW text — `stripHashComments` deletes exactly ' +
+          'the prose this gate is looking for, which would make this check pass on absence.',
+      );
+    }
+  }
+  let numbered = 0;
+  for (const marker of SCHEDULER_PROVENANCE_NUMBERING) {
+    const onComment = lines.some((line) => {
+      const t = line.trim();
+      return t.startsWith('#') && t.includes(marker);
+    });
+    if (onComment) numbered++;
+  }
+  if (numbered !== SCHEDULER_PROVENANCE_NUMBERING.length) {
+    return fail(
+      `G13e: only ${numbered}/${SCHEDULER_PROVENANCE_NUMBERING.length} numbered provenance ` +
+        `markers (${SCHEDULER_PROVENANCE_NUMBERING.join(', ')}) were found on \`#\` comment lines ` +
+        '— the block must be numbered so a reader can tell each measured fact apart',
+    );
+  }
+  return pass(
+    'G13e: the numbered-provenance comment block names 30 ms as the host log::warn! threshold ' +
+      'and explicitly NOT a bucket edge',
+  );
+}
+
+// ===========================================================================
 // PROOF-OF-TEETH — inline fixtures, always run, FIRST
 // ===========================================================================
 
@@ -3629,6 +4574,7 @@ function alertRuleLines(o = {}) {
   const lines = [`      - uid: ${o.uid}`];
   lines.push(`        title: ${o.title}`);
   lines.push(`        condition: ${o.condition ?? condRef}`);
+  if (o.noDataState !== undefined) lines.push(`        noDataState: ${o.noDataState}`);
   if (o.isPaused !== undefined) lines.push(`        isPaused: ${o.isPaused}`);
   // `for:` PRECEDES `expr:` here exactly as it does in the committed file — the
   // scan-direction trap is baked into the fixture rather than described.
@@ -3658,6 +4604,10 @@ function alertRuleLines(o = {}) {
   lines.push(`                    type: ${o.evaluatorType ?? 'lt'}`);
   lines.push('                    params:');
   for (const param of o.params ?? ['1']) lines.push(`                      - ${param}`);
+  // Round 3 (Gap 3 teeth): an extra, raw `data:` list item — additive, only
+  // present when a caller passes it, so every existing call site (which
+  // never does) is byte-for-byte unaffected.
+  if (o.extraDataLines !== undefined) lines.push(...o.extraDataLines);
   return lines;
 }
 
@@ -3826,6 +4776,188 @@ const DAEMON_WITH_SCHEME = `${DAEMON_GOOD}\nconst sink = 'otlp${':'}${'//'}colle
 const DAEMON_WITH_OPEN_WRITE = `${DAEMON_GOOD}\nconst fh = await open(options.checkpoint, 'a');\nawait fh.write(doc);`;
 const DAEMON_WITH_CP_SYNC = `${DAEMON_GOOD}\ncpSync(options.logsDir, options.spool, { recursive: true });`;
 const DAEMON_WITH_CREDENTIAL = `${DAEMON_GOOD}\nconst auth = process.env.MR_RELAY_TOKEN;`;
+
+// ---------------------------------------------------------------------------
+// 16r-e fixtures (T-q..T-u). Inline strings only — no fixture file is written.
+// Every builder produces the COMPLIANT shape by default so each tooth proves
+// its detector ACCEPTS the good shape before proving it rejects the bad one
+// (the T-o idiom).
+// ---------------------------------------------------------------------------
+
+/**
+ * One `- record:` rule in the exact `expr: |` block-scalar shape the real
+ * file uses. `o.expr`, when given, bypasses the templated construction
+ * entirely — Round 3's Gap 1 teeth use it to build the exact NEUTERED
+ * mutations measured to survive every derived check (`clamp_max(..., 0)`,
+ * a trailing `* 0`), which the templated form cannot express.
+ */
+function schedulerRuleLines(o) {
+  if (o.expr !== undefined) {
+    return [`      - record: ${o.name}`, '        expr: |', `          ${o.expr}`];
+  }
+  const matcher = o.names.join('|');
+  return [
+    `      - record: ${o.name}`,
+    '        expr: |',
+    `          sum by (${o.aggBy}) (rate(${SCHEDULED_FN_METRIC}{${o.labelKey}=~"${matcher}",le="${o.edge}"}[${o.window ?? '5m'}]))`,
+  ];
+}
+
+/**
+ * The `mr-scheduler` recording-rule group, compliant by default. `o.starts`/
+ * `o.onTime`/`o.ratio` are partial overrides merged onto the compliant shape,
+ * so each tooth mutates exactly one dimension per call.
+ */
+function schedulerRecordingDoc(o = {}) {
+  const s = {
+    labelKey: 'function',
+    names: SCHEDULED_FN_NAMES,
+    aggBy: 'function',
+    edge: '+Inf',
+    name: SCHEDULED_STARTS_SERIES,
+    omit: false,
+    comment: false,
+    window: '5m',
+    ...o.starts,
+  };
+  const t = {
+    labelKey: 'function',
+    names: SCHEDULED_FN_NAMES,
+    aggBy: 'function',
+    edge: SCHEDULED_DELAY_OVER_EDGE,
+    name: SCHEDULED_ON_TIME_SERIES,
+    omit: false,
+    window: '5m',
+    ...o.onTime,
+  };
+  const r = {
+    name: SCHEDULED_LATE_SERIES,
+    expr: null,
+    omit: false,
+    extraMatcher: false,
+    ...o.ratio,
+  };
+
+  const lines = ['groups:', '  - name: mr-scheduler', '    interval: 15s', '    rules:'];
+  if (s.omit !== true) {
+    const rl = schedulerRuleLines(s);
+    if (s.comment === true) lines.push(...rl.map((l) => `      # ${l.trim()}`));
+    else lines.push(...rl);
+  }
+  if (t.omit !== true) lines.push(...schedulerRuleLines(t));
+  if (r.omit !== true) {
+    lines.push(`      - record: ${r.name}`);
+    lines.push('        expr: |');
+    const ratioBody =
+      r.expr ??
+      (r.extraMatcher === true
+        ? `1 - (${t.name} / ${s.name}) + 0 * sum by (function) (rate(${SCHEDULED_FN_METRIC}{function=~"${SCHEDULED_FN_NAMES.join('|')}",le="+Inf"}[5m]))`
+        : `1 - (${t.name} / ${s.name})`);
+    lines.push(`          ${ratioBody}`);
+  }
+  return lines.join('\n');
+}
+
+/**
+ * The numbered-provenance comment block above the mr-scheduler group,
+ * naming every literal G13e's needles look for, on `#` comment lines.
+ */
+const SCHEDULER_PROVENANCE_BLOCK = [
+  '# PROVENANCE (measured against a live SpacetimeDB 2.8.1 /v1/metrics scrape):',
+  '#   (1) the complete spacetime_scheduled_function_delay_seconds_bucket edge list is 0.001,',
+  '#       0.005, 0.01, 0.05, 0.1, 0.5, 1, 5, 10, 30, 60, 300, +Inf -- there is no 0.03 edge.',
+  '#   (2) p95 on the measured data lands inside (0.001, 0.005]; 158/15186 invocations (1.04%)',
+  '#       exceeded 50 ms and 48 exceeded 60 SECONDS -- p95 is blind to the tail.',
+  "#   (3) 30 ms is SpacetimeDB's OWN late-start `log::warn!` threshold, a DIFFERENT instrument,",
+  '#       and is deliberately not a bucket edge.',
+].join('\n');
+
+/** The full recording.rules.yml fixture: the provenance block plus the group. */
+function schedulerRecordingDocFull(o = {}) {
+  const provenance = o.omitProvenance === true ? '' : `${SCHEDULER_PROVENANCE_BLOCK}\n`;
+  return `${provenance}${schedulerRecordingDoc(o)}`;
+}
+
+/** One provisioned alert group holding exactly the scheduler alert rule. */
+function schedulerAlertRulesDoc(o = {}) {
+  const lines = ['apiVersion: 1', '', 'groups:'];
+  lines.push('  - orgId: 1');
+  lines.push('    name: meta-monitoring');
+  lines.push('    folder: Monster Realm');
+  lines.push(`    interval: ${o.groupInterval ?? '20s'}`);
+  lines.push('    rules:');
+  lines.push(
+    ...alertRuleLines({
+      uid: 'mr-alloy-ingest-stalled',
+      title: 'AlloyIngestStalled',
+      forValue: '10m',
+      severity: 'warning',
+      expr: 'mr:alloy_log_bytes_read:rate5m',
+      datasourceUid: o.stalledDatasourceUid ?? 'mr-prometheus',
+    }),
+  );
+  if (o.omitRule !== true) {
+    lines.push(
+      ...alertRuleLines({
+        uid: o.uid ?? 'mr-scheduled-function-delayed',
+        title: 'ScheduledFunctionDelayed',
+        forValue: o.forValue ?? '10m',
+        expr: SCHEDULED_LATE_SERIES,
+        severity: o.severity ?? 'warning',
+        evaluatorType: o.evaluatorType ?? 'gt',
+        thresholdType: o.thresholdType ?? 'threshold',
+        params: o.params ?? [SCHEDULED_ALERT_PARAM_DEFAULT],
+        isPaused: o.isPaused,
+        datasourceUid: o.datasourceUid ?? 'mr-prometheus',
+        condition: o.condition,
+        expression: o.expression,
+        noDataState: o.omitNoDataState === true ? undefined : (o.noDataState ?? 'OK'),
+        extraDataLines: o.extraDataLines,
+      }),
+    );
+  }
+  return lines.join('\n');
+}
+
+/** The evaluator param this suite treats as the committed literal (0.01 = 1%). */
+const SCHEDULED_ALERT_PARAM_DEFAULT = '0.01';
+
+/** The dashboard fixture: N filler panels plus (optionally) the scheduler panel. */
+function schedulerDashboardFixture(o = {}) {
+  const filler = o.fillerPanels ?? [
+    { id: 1, gridPos: { h: 6, w: 24, x: 0, y: 25 }, targets: [{ expr: 'mr:chat_events:rate5m' }] },
+  ];
+  const panels = [...filler];
+  if (o.omitPanel !== true) {
+    panels.push({
+      id: o.id ?? 14,
+      type: 'timeseries',
+      title: 'Scheduled-function lateness',
+      gridPos: o.gridPos ?? { h: 6, w: 24, x: 0, y: 31 },
+      fieldConfig: {
+        defaults: {
+          unit: o.unit ?? 'percentunit',
+          thresholds: {
+            mode: 'absolute',
+            steps: o.steps ?? [
+              { color: 'green', value: null },
+              { color: 'red', value: Number(o.thresholdValue ?? SCHEDULED_ALERT_PARAM_DEFAULT) },
+            ],
+          },
+        },
+      },
+      targets: [
+        {
+          refId: 'A',
+          editorMode: 'code',
+          legendFormat: o.legendFormat ?? '{{function}}',
+          expr: o.expr ?? SCHEDULED_LATE_SERIES,
+        },
+      ],
+    });
+  }
+  return JSON.stringify({ panels });
+}
 
 const TEETH = [
   {
@@ -5017,6 +6149,492 @@ const TEETH = [
       return null;
     },
   },
+  {
+    id: 'T-q',
+    // G13a. Kills: `function=~` swapped for `reducer=~` (PromQL silently
+    // matches nothing on a non-existent label, recording an EMPTY series
+    // forever); a fifth name added or one of the four removed; the two
+    // selectors carrying DIFFERENT name sets; `sum by (le)` with no
+    // `function`; the whole rule commented out; and the ratio rule inlining
+    // its own `function=~` matcher.
+    run() {
+      const good = checkSchedulerRecordingRules(schedulerRecordingDoc());
+      if (!good.ok) return `the committed mr-scheduler shape was rejected: ${good.detail}`;
+
+      if (
+        checkSchedulerRecordingRules(schedulerRecordingDoc({ starts: { labelKey: 'reducer' } })).ok
+      ) {
+        return '`function=~` swapped for `reducer=~` on the starts selector was accepted — PromQL silently matches NOTHING on a non-existent label key';
+      }
+      if (
+        checkSchedulerRecordingRules(schedulerRecordingDoc({ onTime: { labelKey: 'reducer' } })).ok
+      ) {
+        return '`function=~` swapped for `reducer=~` on the on-time selector was accepted';
+      }
+
+      const fifthName = [...SCHEDULED_FN_NAMES, 'battle_matchmaker'];
+      if (
+        checkSchedulerRecordingRules(schedulerRecordingDoc({ starts: { names: fifthName } })).ok
+      ) {
+        return 'a FIFTH function name added to the starts selector was accepted — set equality, never a count';
+      }
+      const threeOfFour = SCHEDULED_FN_NAMES.slice(0, 3);
+      if (
+        checkSchedulerRecordingRules(schedulerRecordingDoc({ onTime: { names: threeOfFour } })).ok
+      ) {
+        return 'ONE of the four function names removed from the on-time selector was accepted';
+      }
+
+      // The two selectors carrying DIFFERENT (but same-LENGTH) sets: neither
+      // count-only nor "matches the expected set" alone proves this clause,
+      // since a mutation that also drifts from the canonical 4 is caught
+      // earlier — this fixture keeps 4 names on the on-time side, one of
+      // which is not in the canonical set, so it disagrees with BOTH the
+      // starts selector and the expected allowlist.
+      const swapped = [...SCHEDULED_FN_NAMES.slice(0, 3), 'battle_matchmaker'];
+      if (checkSchedulerRecordingRules(schedulerRecordingDoc({ onTime: { names: swapped } })).ok) {
+        return 'the numerator and denominator selectors carrying DIFFERENT function sets was accepted';
+      }
+
+      if (checkSchedulerRecordingRules(schedulerRecordingDoc({ starts: { aggBy: 'le' } })).ok) {
+        return '`sum by (le)` with no `function` grouping was accepted on the starts selector';
+      }
+      if (checkSchedulerRecordingRules(schedulerRecordingDoc({ onTime: { aggBy: 'le' } })).ok) {
+        return '`sum by (le)` with no `function` grouping was accepted on the on-time selector';
+      }
+
+      if (checkSchedulerRecordingRules(schedulerRecordingDoc({ starts: { comment: true } })).ok) {
+        return 'the whole starts rule commented out was accepted';
+      }
+
+      if (
+        checkSchedulerRecordingRules(schedulerRecordingDoc({ ratio: { extraMatcher: true } })).ok
+      ) {
+        return 'the ratio rule inlining its own `function=~` matcher was accepted — the allowlist must appear exactly twice in the file, never restated a third time';
+      }
+
+      if (checkSchedulerRecordingRules(schedulerRecordingDoc({ starts: { omit: true } })).ok) {
+        return 'a document with no starts (le="+Inf") selector at all was accepted';
+      }
+      if (checkSchedulerRecordingRules(schedulerRecordingDoc({ onTime: { omit: true } })).ok) {
+        return 'a document with no on-time (le="0.05") selector at all was accepted';
+      }
+      if (checkSchedulerRecordingRules(schedulerRecordingDoc({ ratio: { omit: true } })).ok) {
+        return 'a document with no ratio rule at all was accepted';
+      }
+      if (checkSchedulerRecordingRules('groups: []\n').ok) {
+        return 'a recording.rules.yml with zero groups was accepted';
+      }
+
+      // Round 3, Gap 1: a WHITELIST, not a denylist of neutering tokens
+      // (abort-construct blacklists are unclosable — 16 CI-clean bypasses
+      // beat one such list). Both mutations below were MEASURED to survive
+      // every derived check above (the name set, the aggregation, the le=
+      // value are all still there) while silently neutering the series.
+      const neuteredRatio = checkSchedulerRecordingRules(
+        schedulerRecordingDoc({
+          ratio: {
+            expr: `clamp_max(1 - (${SCHEDULED_ON_TIME_SERIES} / ${SCHEDULED_STARTS_SERIES}), 0)`,
+          },
+        }),
+      );
+      if (neuteredRatio.ok) {
+        return 'the ratio expr wrapped in `clamp_max(..., 0)` was accepted — that pins the ratio at <= 0 forever, so the `gt 0.01` alert can NEVER fire, while the name-set/aggregation/reference-to-both-series checks all stay green';
+      }
+      if (!neuteredRatio.detail.includes('EXACTLY')) {
+        return `the neutered-ratio failure does not name the whitelist mechanism: ${neuteredRatio.detail}`;
+      }
+
+      const neuteredOnTime = checkSchedulerRecordingRules(
+        schedulerRecordingDoc({
+          onTime: {
+            expr:
+              `sum by (function) (rate(${SCHEDULED_FN_METRIC}{function=~"` +
+              `${SCHEDULED_FN_NAMES.join('|')}",le="${SCHEDULED_DELAY_OVER_EDGE}"}[5m])) * 0`,
+          },
+        }),
+      );
+      if (neuteredOnTime.ok) {
+        return 'the on-time expr multiplied by `* 0` was accepted — that pins on-time at 0 forever (100% lateness, a permanent false page), while the le=/name-set/aggregation checks all stay green';
+      }
+      if (!neuteredOnTime.detail.includes('EXACTLY')) {
+        return `the neutered-on-time failure does not name the whitelist mechanism: ${neuteredOnTime.detail}`;
+      }
+
+      // Round 3, Gap 4: Prometheus does NOT statically forbid a duplicate
+      // `record:` output name (measured against a live dockerized `promtool
+      // check rules` — it passes), so a second group recording the SAME name
+      // survives promtool AND (without this check) this eval.
+      const decoyGroup = [
+        schedulerRecordingDoc(),
+        '  - name: mr-scheduler-decoy',
+        '    interval: 15s',
+        '    rules:',
+        `      - record: ${SCHEDULED_STARTS_SERIES}`,
+        '        expr: |',
+        '          vector(0)',
+      ].join('\n');
+      const duplicateName = checkSchedulerRecordingRules(decoyGroup);
+      if (duplicateName.ok) {
+        return 'a SECOND `- record: mr:scheduled_function_starts:rate5m` in a separate group was accepted — which rule actually feeds Grafana is then implementation-defined';
+      }
+      if (!duplicateName.detail.includes('duplicate')) {
+        return `the duplicate-name failure does not name the mechanism: ${duplicateName.detail}`;
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-r',
+    // G13b. Kills: an empty `expr`; a `gridPos` overlapping another panel; a
+    // duplicate `id`; `legendFormat` missing `{{function}}`; a non-percentunit
+    // `unit`; and a panel threshold that disagrees with the alert's own
+    // evaluator param.
+    run() {
+      const goodDash = schedulerDashboardFixture();
+      const goodAlert = schedulerAlertRulesDoc();
+      const good = checkSchedulerLatencyPanel(goodDash, goodAlert);
+      if (!good.ok) return `the committed panel shape was rejected: ${good.detail}`;
+
+      if (checkSchedulerLatencyPanel(schedulerDashboardFixture({ expr: '' }), goodAlert).ok) {
+        return 'a panel with an EMPTY `expr` was accepted as targeting the ratio series';
+      }
+      if (
+        checkSchedulerLatencyPanel(schedulerDashboardFixture({ omitPanel: true }), goodAlert).ok
+      ) {
+        return 'a dashboard with NO scheduler-lateness panel at all was accepted';
+      }
+
+      // Overlap: sits exactly on top of the filler panel (id 1, y=25/h=6)
+      // instead of below it at y=31.
+      const overlapping = checkSchedulerLatencyPanel(
+        schedulerDashboardFixture({ gridPos: { h: 6, w: 24, x: 0, y: 25 } }),
+        goodAlert,
+      );
+      if (overlapping.ok) {
+        return "a scheduler panel whose gridPos OVERLAPS another panel's was accepted";
+      }
+      if (!overlapping.detail.includes('OVERLAPS')) {
+        return `the overlap failure does not name the mechanism: ${overlapping.detail}`;
+      }
+
+      const duplicateId = checkSchedulerLatencyPanel(
+        schedulerDashboardFixture({ id: 1 }),
+        goodAlert,
+      );
+      if (duplicateId.ok) return 'a scheduler panel reusing an EXISTING panel `id` was accepted';
+
+      if (
+        checkSchedulerLatencyPanel(
+          schedulerDashboardFixture({ legendFormat: 'lateness' }),
+          goodAlert,
+        ).ok
+      ) {
+        return 'a `legendFormat` missing `{{function}}` was accepted';
+      }
+      if (checkSchedulerLatencyPanel(schedulerDashboardFixture({ unit: 's' }), goodAlert).ok) {
+        return 'a panel `unit: s` was accepted — the series is a RATIO, not a duration';
+      }
+
+      const disagreeing = checkSchedulerLatencyPanel(
+        schedulerDashboardFixture({ thresholdValue: '0.02' }),
+        goodAlert,
+      );
+      if (disagreeing.ok) {
+        return "a panel threshold DISAGREEING with the alert's own evaluator param (0.01) was accepted";
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-s',
+    // G13c. Kills: `noDataState` absent; explicit `noDataState: NoData`; a
+    // `lt` evaluator; `severity: critical`; `isPaused: true`; a duplicate uid;
+    // a dangling `condition:`; a query datasource that does not match
+    // AlloyIngestStalled's. The `for:`-multiple tooth uses a fixture group
+    // whose interval is NOT 20s (30s), so "derived" is distinguishable from
+    // "restated"; a `for:` at or under the 5m rate window must also REJECT.
+    run() {
+      const goodAlert = schedulerAlertRulesDoc();
+      const goodRecording = schedulerRecordingDoc();
+      const good = checkSchedulerAlertRule(goodAlert, goodRecording);
+      if (!good.ok) return `the committed scheduler alert shape was rejected: ${good.detail}`;
+
+      if (checkSchedulerAlertRule(schedulerAlertRulesDoc({ omitRule: true }), goodRecording).ok) {
+        return 'a rules.yml with no scheduler alert at all was accepted';
+      }
+      if (
+        checkSchedulerAlertRule(schedulerAlertRulesDoc({ omitNoDataState: true }), goodRecording).ok
+      ) {
+        return '`noDataState:` ABSENT was accepted';
+      }
+      if (
+        checkSchedulerAlertRule(schedulerAlertRulesDoc({ noDataState: 'NoData' }), goodRecording).ok
+      ) {
+        return 'an explicit `noDataState: NoData` was accepted — it fires on a legitimately quiet window';
+      }
+      if (
+        checkSchedulerAlertRule(schedulerAlertRulesDoc({ evaluatorType: 'lt' }), goodRecording).ok
+      ) {
+        return 'a `lt` evaluator was accepted — a delay alert firing when lateness is LOW is inverted';
+      }
+      if (
+        checkSchedulerAlertRule(schedulerAlertRulesDoc({ severity: 'critical' }), goodRecording).ok
+      ) {
+        return '`severity: critical` was accepted, expected `warning`';
+      }
+      if (checkSchedulerAlertRule(schedulerAlertRulesDoc({ isPaused: 'true' }), goodRecording).ok) {
+        return '`isPaused: true` was accepted';
+      }
+      const dup = checkSchedulerAlertRule(
+        schedulerAlertRulesDoc({ uid: 'mr-alloy-ingest-stalled' }),
+        goodRecording,
+      );
+      if (dup.ok) return 'a scheduler alert reusing an EXISTING uid was accepted';
+      const dangling = checkSchedulerAlertRule(
+        schedulerAlertRulesDoc({ condition: 'Z' }),
+        goodRecording,
+      );
+      if (dangling.ok)
+        return 'a `condition:` naming a refId no `data:` entry declares was accepted';
+      if (!dangling.detail.includes('DANGLING')) {
+        return `the dangling-refId failure does not name the mechanism: ${dangling.detail}`;
+      }
+      if (
+        checkSchedulerAlertRule(schedulerAlertRulesDoc({ datasourceUid: 'mr-loki' }), goodRecording)
+          .ok
+      ) {
+        return "a query datasource that does not match AlloyIngestStalled's was accepted";
+      }
+
+      // The `for:`-multiple tooth: a group interval that is NOT 20s, so
+      // "derived from the rule's own group interval" is distinguishable from
+      // "restated as 20s". BOTH legs here clear the 300s (`[5m]`) rate window
+      // (320s and 330s both exceed 300s) so the ONLY property varying between
+      // them is divisibility by 30s — 320/30 = 10.67 (not a multiple);
+      // 330/30 = 11 (a multiple). Without this the 320/330 pair would
+      // collapse onto the SAME 300s-window collision the bug report named:
+      // an accept-leg fixture that also happens to fail the window clause
+      // reds for the WRONG reason and looks like a passing reject-leg.
+      const badMultiple = checkSchedulerAlertRule(
+        schedulerAlertRulesDoc({ groupInterval: '30s', forValue: '320s' }),
+        goodRecording,
+      );
+      if (badMultiple.ok) {
+        return 'a `for:` that is NOT an exact multiple of its OWN 30s group interval was accepted';
+      }
+      if (!badMultiple.detail.includes('exact multiple')) {
+        return `the non-multiple \`for:\` was rejected for the WRONG reason (expected the multiple-of-group-interval clause): ${badMultiple.detail}`;
+      }
+      const goodMultiple = checkSchedulerAlertRule(
+        schedulerAlertRulesDoc({ groupInterval: '30s', forValue: '330s' }),
+        goodRecording,
+      );
+      if (!goodMultiple.ok) {
+        return `a \`for: 330s\` under a 30s group interval (11x30, and > the 300s rate window) was rejected: ${goodMultiple.detail}`;
+      }
+
+      // The rate-window debounce, isolated the OTHER way from the multiple
+      // check above: BOTH legs here are exact multiples of the SAME 30s
+      // group interval (300s = 10x30, 330s = 11x30), so the ONLY property
+      // varying is whether `for:` clears the 300s (`[5m]`) window. `for:
+      // 300s` is an exact multiple yet EQUAL to the window, which is what
+      // pins the comparison as STRICT (`<=` rejects, not just `<`).
+      const atWindow = checkSchedulerAlertRule(
+        schedulerAlertRulesDoc({ groupInterval: '30s', forValue: '300s' }),
+        goodRecording,
+      );
+      if (atWindow.ok) {
+        return 'a `for: 300s` — an exact multiple of its 30s group interval, but EQUAL to the recorded rate window — was accepted; a single late one-shot invocation could fire this alert';
+      }
+      if (!atWindow.detail.includes('STRICTLY GREATER')) {
+        return `the at-window \`for:\` was rejected for the WRONG reason (expected the strictly-greater-than-the-window clause): ${atWindow.detail}`;
+      }
+      const clearsWindow = checkSchedulerAlertRule(
+        schedulerAlertRulesDoc({ groupInterval: '30s', forValue: '330s' }),
+        goodRecording,
+      );
+      if (!clearsWindow.ok) {
+        return `a \`for: 330s\` (an exact multiple of its 30s group interval, and > the 300s window) was rejected: ${clearsWindow.detail}`;
+      }
+
+      // A recorded window WIDER than the committed `for:`, isolated in the
+      // OTHER direction again: the default group (20s) and the default `for:`
+      // (10m = 600s, still 30x20 — the multiple clause is untouched) stay
+      // fixed, and only the recorded rate window moves to equal the `for:`.
+      const widerWindow = checkSchedulerAlertRule(
+        goodAlert,
+        schedulerRecordingDoc({ starts: { window: '10m' } }),
+      );
+      if (widerWindow.ok) {
+        return 'a 10m recorded rate window paired with the committed 10m `for:` was accepted — `for:` must be STRICTLY greater';
+      }
+      if (!widerWindow.detail.includes('STRICTLY GREATER')) {
+        return `the wider-window leg was rejected for the WRONG reason: ${widerWindow.detail}`;
+      }
+
+      // Round 3, Gap 2: G13c never asserted the threshold node's
+      // `expression:` refId equals the refId carrying the ratio query — the
+      // sibling gate G9p already does this (checkRelayDeadMansSwitch). A
+      // `expression: ZZ` (a refId nowhere in `data:`) errors on every
+      // Grafana evaluation while every other clause above stays green.
+      const badExpression = checkSchedulerAlertRule(
+        schedulerAlertRulesDoc({ expression: 'ZZ' }),
+        goodRecording,
+      );
+      if (badExpression.ok) {
+        return 'a condition node thresholding refId `ZZ` (which names no `data:` entry) was accepted — Grafana errors on every evaluation of a rule like this';
+      }
+      if (!badExpression.detail.includes('DIFFERENT query')) {
+        return `the bad-expression failure does not name the mechanism: ${badExpression.detail}`;
+      }
+
+      // Round 3, Gap 3 (shared with G9p via parseAlertingRules): a SECOND
+      // `data:` entry also carrying `refId: A` — which one wins for
+      // `expression: A` is implementation-defined. MEASURED to survive
+      // every clause above (each entry is independently well-formed).
+      const dupRefId = checkSchedulerAlertRule(
+        schedulerAlertRulesDoc({
+          extraDataLines: [
+            '          - refId: A',
+            '            datasourceUid: mr-prometheus',
+            '            model:',
+            '              refId: A',
+            '              instant: true',
+            '              expr: vector(0)',
+          ],
+        }),
+        goodRecording,
+      );
+      if (dupRefId.ok) {
+        return 'a rule with TWO `data:` entries both carrying `refId: A` was accepted — which one wins for `expression: A` is implementation-defined';
+      }
+      if (!dupRefId.detail.includes('duplicate refId')) {
+        return `the duplicate-refId failure does not name the mechanism: ${dupRefId.detail}`;
+      }
+
+      // Round 3, Gap 4 attribution (shared with G13a's uniqueness clause via
+      // `rateWindowSeconds`/parseRecordingGroups): a duplicate scheduler
+      // series name placed BEFORE the real mr-scheduler group must still be
+      // attributed to "duplicate", never misread by rateWindowSeconds' own
+      // first-match lookup as "no rate window to derive from".
+      const schedulerBodyOnly = schedulerRecordingDoc().split('\n').slice(1).join('\n');
+      const decoyFirstDoc = [
+        'groups:',
+        '  - name: mr-scheduler-decoy',
+        '    interval: 15s',
+        '    rules:',
+        `      - record: ${SCHEDULED_STARTS_SERIES}`,
+        '        expr: |',
+        '          vector(0)',
+        schedulerBodyOnly,
+      ].join('\n');
+      const decoyFirst = checkSchedulerAlertRule(goodAlert, decoyFirstDoc);
+      if (decoyFirst.ok) {
+        return 'a duplicate scheduler-series record name placed BEFORE the real group was accepted by G13c';
+      }
+      if (!decoyFirst.detail.includes('duplicate')) {
+        return `a duplicate record name placed BEFORE the real group was misattributed (expected "duplicate", got): ${decoyFirst.detail}`;
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-t',
+    // G13d. Kills: alert 0.01 / panel 0.02 disagreement; both agreeing but the
+    // le off-lattice (0.03) — REJECTS naming the interpolation; both on a
+    // different REAL edge (0.1) ACCEPTS, proving the LATTICE is the gate, not
+    // the literal 0.05.
+    run() {
+      const goodAlert = schedulerAlertRulesDoc();
+      const goodDash = schedulerDashboardFixture();
+      const goodRecording = schedulerRecordingDoc();
+      const good = checkSchedulerNumberIdentity(goodAlert, goodDash, goodRecording);
+      if (!good.ok) return `the committed number-identity shape was rejected: ${good.detail}`;
+
+      const disagree = checkSchedulerNumberIdentity(
+        goodAlert,
+        schedulerDashboardFixture({ thresholdValue: '0.02' }),
+        goodRecording,
+      );
+      if (disagree.ok) return 'alert param 0.01 / panel threshold 0.02 was accepted';
+
+      const offLattice = checkSchedulerNumberIdentity(
+        schedulerAlertRulesDoc({ params: ['0.03'] }),
+        schedulerDashboardFixture({ thresholdValue: '0.03' }),
+        schedulerRecordingDoc({ onTime: { edge: '0.03' } }),
+      );
+      if (offLattice.ok) {
+        return 'agreeing alert/panel values with an OFF-LATTICE `le="0.03"` recording-rule edge were accepted';
+      }
+      if (!offLattice.detail.includes('OFF-LATTICE')) {
+        return `the off-lattice failure does not name the mechanism: ${offLattice.detail}`;
+      }
+
+      const realEdge = checkSchedulerNumberIdentity(
+        schedulerAlertRulesDoc({ params: ['0.01'] }),
+        schedulerDashboardFixture({ thresholdValue: '0.01' }),
+        schedulerRecordingDoc({ onTime: { edge: '0.1' } }),
+      );
+      if (!realEdge.ok) {
+        return `agreeing alert/panel values with a DIFFERENT REAL edge (le="0.1") were rejected, proving the lattice is not the actual gate: ${realEdge.detail}`;
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-u',
+    // Every G13 detector REJECTS empty/absent input — absence is never
+    // compliance. Also proves G13e's RAW-TEXT requirement, EXECUTED rather
+    // than merely asserted: feeding it comment-STRIPPED text (the trap its
+    // own docstring names) must fail.
+    run() {
+      if (checkSchedulerRecordingRules('').ok) return 'an EMPTY recording.rules.yml was accepted';
+      if (checkSchedulerRecordingRules('groups:\n  - name: mr-slo\n    rules: []\n').ok) {
+        return 'a recording.rules.yml with zero rules was accepted';
+      }
+      if (checkSchedulerLatencyPanel('', schedulerAlertRulesDoc()).ok) {
+        return 'an EMPTY dashboard document was accepted';
+      }
+      if (checkSchedulerLatencyPanel('not json', schedulerAlertRulesDoc()).ok) {
+        return 'a dashboard document that does not parse as JSON was accepted';
+      }
+      if (checkSchedulerLatencyPanel('{}', schedulerAlertRulesDoc()).ok) {
+        return 'a dashboard document with no `panels` array at all was accepted';
+      }
+      if (checkSchedulerAlertRule('', schedulerRecordingDoc()).ok) {
+        return 'an EMPTY alerting rules.yml was accepted';
+      }
+      if (checkSchedulerAlertRule(schedulerAlertRulesDoc(), '').ok) {
+        return 'an EMPTY recording.rules.yml handed to G13c (for the rate-window derivation) was accepted';
+      }
+      if (
+        checkSchedulerNumberIdentity('', schedulerDashboardFixture(), schedulerRecordingDoc()).ok
+      ) {
+        return 'an EMPTY alert document was accepted by G13d';
+      }
+      if (checkSchedulerProvenanceBlock('').ok) {
+        return 'an EMPTY recording.rules.yml was accepted by G13e';
+      }
+
+      // THE G13e trap, PROVEN rather than merely asserted: feeding the
+      // detector its OWN comment-stripped text must fail, because
+      // stripHashComments deletes exactly the `#` prose it looks for.
+      const full = schedulerRecordingDocFull();
+      const rawGood = checkSchedulerProvenanceBlock(full);
+      if (!rawGood.ok) {
+        return `the committed provenance block was rejected on RAW text: ${rawGood.detail}`;
+      }
+      const stripped = checkSchedulerProvenanceBlock(stripHashComments(full));
+      if (stripped.ok) {
+        return 'G13e accepted its OWN input after stripHashComments ran over it — the gate must be wired to the RAW text, never the comment-stripped text, or it is silently and permanently vacuous';
+      }
+      if (checkSchedulerProvenanceBlock(schedulerRecordingDoc()).ok) {
+        return 'a recording.rules.yml with NO provenance block at all was accepted';
+      }
+      return null;
+    },
+  },
 ];
 
 function runTeeth() {
@@ -5470,6 +7088,17 @@ export async function observabilityStackConfigEval() {
   record('G12d', checkAlloyRunsUnprivileged(compose));
   record('G12e', checkBuildShaBounded(alloy));
 
+  // --- G13a-e: scheduled-function lateness (16r-e) --------------------------
+  // Every input here is ALREADY read above (recordingRules, dashboardJson,
+  // alertRules) — no new readReal call site, so FILE_FLOOR is unchanged.
+  record('G13a', checkSchedulerRecordingRules(recordingRules));
+  record('G13b', checkSchedulerLatencyPanel(dashboardJson, alertRules));
+  record('G13c', checkSchedulerAlertRule(alertRules, recordingRules));
+  record('G13d', checkSchedulerNumberIdentity(alertRules, dashboardJson, recordingRules));
+  // G13e MUST see the RAW text `readReal` returned — never comment-stripped —
+  // or the gate is silently and permanently vacuous (see its own docstring).
+  record('G13e', checkSchedulerProvenanceBlock(recordingRules));
+
   // An override file is auto-loaded by `docker compose` and merges arbitrary
   // keys into any service, so it defeats EVERY single-file detector above at
   // once (proven: `cap_add: [DAC_OVERRIDE, SYS_ADMIN]` with G12d green). The
@@ -5721,7 +7350,16 @@ export async function observabilityStackConfigEval() {
       'net-bind capability as the last writer of that path, before its single USER; G12d the ' +
       `alloy block declares only the ${ALLOY_ALLOWED_KEYS.length} allowlisted keys and runs ` +
       "non-root, cap-dropped; G12e s4_keep's OWN statements list carries the key allowlist at " +
-      `[0] plus all three pinned value bounds, and no compose override file exists; ${liveNote}`,
+      `[0] plus all three pinned value bounds, and no compose override file exists; G13a the ` +
+      `mr-scheduler group's numerator/denominator selectors agree on the same 4-name ` +
+      `[${SCHEDULED_FN_NAMES.join(', ')}] allowlist with no reducer= harmonisation trap and the ` +
+      'ratio rule derives without a third matcher; G13b the dashboard panel is unique, ' +
+      "non-overlapping, unit percentunit and its threshold equals the alert's own param; G13c " +
+      'the ScheduledFunctionDelayed alert is warning/not-paused/noDataState OK with a `for:` ' +
+      'DERIVED as a multiple of its group interval and strictly greater than the recorded 5m ' +
+      'rate window; G13d the alert param and panel threshold are the SAME number and the ' +
+      `on-time \`le=\` sits on the measured bucket lattice; G13e the numbered-provenance block ` +
+      `names 30ms as SpacetimeDB's own log::warn! threshold, not a bucket edge; ${liveNote}`,
   };
 }
 

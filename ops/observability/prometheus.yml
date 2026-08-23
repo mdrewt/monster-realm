@@ -25,6 +25,13 @@ scrape_configs:
   # gap in the shipped 2.6.0 binary; it is safe here ONLY because the port is loopback-bound
   # (OQ1/OBS-17). If SpacetimeDB is ever started with a wider --listen-addr, this endpoint
   # discloses table names, row counts and connected-player counts to that network.
+  #
+  # `spacetime_scheduled_function_delay_seconds` (new in 2.8.0, labelled {db, function, le})
+  # arrives on THIS existing job — it is one more family in the same /v1/metrics exposition, so
+  # the mr-scheduler recording group in rules/recording.rules.yml needs NO config change here.
+  # A second scrape job for it would be a duplicate scrape of the same endpoint: double the load
+  # on the module host, two copies of every other family under different `job` labels, and any
+  # rule that does not pin `job=` would then double-count. Deliberately not added.
   - job_name: spacetimedb
     metrics_path: /v1/metrics
     static_configs:

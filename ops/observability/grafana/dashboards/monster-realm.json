@@ -221,6 +221,36 @@
       "datasource": { "type": "prometheus", "uid": "mr-prometheus" },
       "gridPos": { "h": 6, "w": 24, "x": 0, "y": 25 },
       "targets": [{ "refId": "A", "editorMode": "code", "expr": "mr:chat_events:rate5m" }]
+    },
+    {
+      "id": 14,
+      "type": "timeseries",
+      "title": "Scheduled-function lateness (share of starts over the 50 ms bucket edge)",
+      "description": "Share of scheduled-function starts that began MORE than 50 ms after their due time, per function, over 5m. This is an over-edge ratio at a REAL bucket edge of spacetime_scheduled_function_delay_seconds, not a quantile: on the measured 2.8.1 lattice p95 sits inside the (0.001, 0.005] bucket while the starts that matter are in the far tail (some over 60s), so p95 reads healthy straight through an excursion. The host's own late-start log::warn! fires at 30 ms — that is a Loki-side log threshold, not a bucket edge of this histogram, so it is not the number drawn here. The red line is the same 0.01 the ScheduledFunctionDelayed alert evaluates. See rules/recording.rules.yml (group mr-scheduler) for the full numbered provenance.",
+      "datasource": { "type": "prometheus", "uid": "mr-prometheus" },
+      "gridPos": { "h": 6, "w": 24, "x": 0, "y": 31 },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "min": 0,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              { "color": "green", "value": null },
+              { "color": "red", "value": 0.01 }
+            ]
+          },
+          "custom": { "thresholdsStyle": { "mode": "line" } }
+        }
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "editorMode": "code",
+          "legendFormat": "{{function}}",
+          "expr": "mr:scheduled_function_late:ratio5m"
+        }
+      ]
     }
   ]
 }
