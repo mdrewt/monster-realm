@@ -352,17 +352,19 @@ export function findOutOfBand(ids, min, max) {
 // skills cover both, >=2 each
 // ---------------------------------------------------------------------------
 
-export function checkAffinityCoverage(speciesList, skillsList, allowed = ALLOWED_AFFINITIES) {
+export function checkAffinityCoverage(speciesList, skillsList) {
   const violations = [];
   const spAffinities = new Set(speciesList.map((s) => s.affinity));
-  for (const want of allowed) {
+  for (const want of ALLOWED_AFFINITIES) {
     if (!spAffinities.has(want)) violations.push(`no wave-3 species has affinity ${want}`);
   }
   for (const got of spAffinities) {
-    if (!allowed.has(got))
-      violations.push(`wave-3 species affinity ${got} is not in {${[...allowed].join(', ')}}`);
+    if (!ALLOWED_AFFINITIES.has(got))
+      violations.push(
+        `wave-3 species affinity ${got} is not in {${[...ALLOWED_AFFINITIES].join(', ')}}`,
+      );
   }
-  for (const want of allowed) {
+  for (const want of ALLOWED_AFFINITIES) {
     const count = skillsList.filter((s) => s.affinity === want).length;
     if (count < 2) violations.push(`wave-3 skills of affinity ${want}: found ${count}, need >= 2`);
   }
