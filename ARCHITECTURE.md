@@ -268,9 +268,12 @@ canonical `touches:` vocabulary**: adding content is a new
   because `client/e2e/recruit.spec.ts` derives two remote-CI flake budgets from its exact
   weights and rate; any new zone-0 entry needs `min_level >= 15` (the e2e's provable
   player-level ceiling is 12, machine-derived by `pt_d3_tuning.rs`, not asserted in prose).
-  **Zone 1 "Tideglass Cove" carries all 7 wild-legal forms**; its weights and bands are
-  tuning data and deliberately unpinned. Derived forms (4, 5, 6, 9, 10, 22, 23, 30, 31) must never
-  appear in any encounter table — `validate_evolution_paths` rule R6 (derived-not-wild) rejects them.
+  **Zone 1 "Tideglass Cove" carries all 9 wild-legal forms**; its weights and bands are
+  tuning data and deliberately unpinned. A wave-3 tier-0 form's `max_level` there sits strictly
+  below its own outgoing evolution `min_level` (rw3c) — `level_gate_met` is inclusive and
+  auto-evolution fires immediately when exactly one path is eligible, so a band reaching the gate
+  would ship wild catches that evolve on capture. Derived forms (4, 5, 6, 9, 10, 22, 23, 30, 31,
+  41, 43) must never appear in any encounter table — `validate_evolution_paths` rule R6 (derived-not-wild) rejects them.
 - **Numeric prefixes zero-pad to a consistent width** (`000-`, `001-`, `010-`): the
   embed sorts files **lexicographically** in both `build.rs` and the `append-only-ids`
   eval, so `10-foo.ron` would sort before `9-foo.ron`. Cross-file row order never
