@@ -238,14 +238,14 @@ canonical `touches:` vocabulary**: adding content is a new
 
 | Registry | Path | Form |
 |----------|------|------|
-| species | `content/species/*.ron` | directory (`000-core.ron` wild/base species + `010-derived.ron` evolved derived forms + `020-playtest-wave1.ron` roster wave 1 — ADR-0143 + `050-wave2.ron`/`051-wave2-derived.ron` roster wave 2 — ADR-0144 + `060-item-evo-derived.ron` item-triggered derived forms — ADR-0149) |
+| species | `content/species/*.ron` | directory (`000-core.ron` wild/base species + `010-derived.ron` evolved derived forms + `020-playtest-wave1.ron` roster wave 1 — ADR-0143 + `050-wave2.ron`/`051-wave2-derived.ron` roster wave 2 — ADR-0144 + `060-item-evo-derived.ron` item-triggered derived forms — ADR-0149 + `070-wave3.ron`/`071-wave3-derived.ron` roster wave 3, Electric + Light — ADR-0204) |
 | skills | `content/skills/*.ron` | directory |
 | items | `content/items/*.ron` | directory |
 | encounters | `content/encounters/*.ron` | directory |
 | zones | `content/zones/*.ron` | directory |
 | zone_maps | `content/zone_maps/*.ron` | directory (string-art tile rows + warp list; keyed by zone_id) |
 | type_chart | `content/type_chart.ron` | **single file** (one coherent matrix, rarely appended in parallel) |
-| evolution_paths | `content/evolution_paths/*.ron` | directory (evolution-graph edges: `edge_id`-keyed, tier/essence/Trust/Quality-Time/Nutrition gates — ADR-0174; ten authored edges since EG3, ADR-0176; R1–R12 gated by `validate_evolution_paths` + `evals/evolution-content-integrity.eval.mjs`) |
+| evolution_paths | `content/evolution_paths/*.ron` | directory (evolution-graph edges: `edge_id`-keyed, tier/essence/Trust/Quality-Time/Nutrition gates — ADR-0174; twelve authored edges since EG3 — `000-core.ron` owns edge band 1..=99, `070-wave3.ron` owns 100..=199, ADR-0176/0204; R1–R12 gated by `validate_evolution_paths` + `evals/evolution-content-integrity.eval.mjs`) |
 | npcs | `content/npcs/*.ron` | directory |
 | dialogue_trees | `content/dialogue_trees/*.ron` | directory |
 | quests | `content/quests/*.ron` | directory |

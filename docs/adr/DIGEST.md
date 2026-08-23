@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 169 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 170 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -178,6 +178,7 @@ Generated from 169 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0201](./0201-tier2-observability-validator-wiring.md) | 0201 — Wire the Tier-2 observability validator, and make the gate strict by default | Accepted | ci-gates, tooling-docs | lp-05 (M-loop-infrastructure §lp-05) | The Tier-2 observability validator becomes a `ci:` dep run with `--require-docker`, so the gate fails instead of skipping when docker is absent; `summarize()` is fail-closed on unknown status. |
 | [0202](./0202-obsolete-residual-prose-corrected.md) | 0202 — Obsolete residual prose corrected: m20e-2 and nh5 closed per item, 14r-f-2 open and unowned, the 11r-e ids retired | Accepted | tooling-docs, ci-gates | lp-doc-a (`specs/monster-realm-v2/M-loop-infrastructure.spec.md` §lp-doc-a) | Mark the m20b-2/m20e-2 and nh5 parks closed PER ITEM with their closing commit and ADR, retire the 11r-e-* false-residual lead with a recorded reason, record 14r-f-2 as open-and-unowned, and retract ADR-0186's expected-RED claim. |
 | [0203](./0203-nightly-red-response-policy.md) | 0203 — Nightly red-response policy: one machine-checked file, key-set-equal to the wired workflow, cited back from every job | Accepted | ci-gates, tooling-docs | 16r-h (`specs/monster-realm-v2/M-postgate-sixteenth-review-residuals.spec.md` §16r-h) | Record the nightly red-response policy in one gated file, `docs/nightly-red-response-policy.md`, whose job matrix must be key-set-EQUAL to the workflow's declared jobs and which every job preamble must cite back. |
+| [0204](./0204-roster-wave-3-electric-and-light.md) | 0204 — Roster Wave 3: Electric and Light affinities with reserved bands, one evolution edge per base form, and content superlatives as load-bearing constraints | Accepted | content, evolution-fusion | rw3b (M-postgate-roster-wave-3 rw3b — Electric and Light lines) | Wave 3 adds an Electric glass-cannon line and a Light wall line under band 40..=49 (edges 100..=199), with exactly ONE outgoing evolution edge per base form so ADR-0176 D2's auto-evolution race is vacuous by construction. |
 
 ## Harness design corpus (H- namespace)
 
@@ -288,6 +289,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0177](./0177-essence-graph-evolution-replaces-fuse.md) — EG5 (M-evolution-essence-graph — EARS EG5-1..EG5-7; closes the milestone) — 0177 — Essence-graph evolution replaces fuse(): milestone consolidation, Migration B, gate migration (EG5) (Accepted)
 - [0178](./0178-validator-and-core-hardening-tail.md) — 12r-e (M-postgate-twelfth-review-residuals) — 0178 — Validator & core hardening tail: R4 gate semantics, single duplicate-pair enforcement, ids-only party seam, cap-exhausted write elision (Accepted)
 - [0188](./0188-small-hygiene-sweep-escape-ssot-and-trade-cap-mirror.md) — 14r-f (M-postgate-fourteenth-review-residuals — ADR-0170 residual 8, ADR-0166 R4 + R6) — 0188 — small-hygiene sweep: evolution log escaping, both-role grass guard, trade-cap mirror (Accepted)
+- [0204](./0204-roster-wave-3-electric-and-light.md) — rw3b (M-postgate-roster-wave-3 rw3b — Electric and Light lines) — 0204 — Roster Wave 3: Electric and Light affinities with reserved bands, one evolution edge per base form, and content superlatives as load-bearing constraints (Accepted)
 
 ### movement-netcode
 
@@ -345,6 +347,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0173](./0173-content-registry-gate-coverage-and-schema-migration-reality.md) — 11r-i (M-postgate-eleventh-review-residuals — gate-coverage extensions; EARS E1-1..E1-11, E2-1..E2-6, E3-1..E3-8, E4-1..E4-8, E5-1..E5-3) — 0173 — Content-registry gate coverage, unknown-quest diagnostics, and the real SpacetimeDB additive-schema rules (Accepted)
 - [0176](./0176-essence-graph-content-authoring.md) — EG3 (M-evolution-essence-graph — EARS EG3-1..EG3-9) — 0176 — Essence-graph content authoring (evolution_paths registry, essence items) (Accepted)
 - [0178](./0178-validator-and-core-hardening-tail.md) — 12r-e (M-postgate-twelfth-review-residuals) — 0178 — Validator & core hardening tail: R4 gate semantics, single duplicate-pair enforcement, ids-only party seam, cap-exhausted write elision (Accepted)
+- [0204](./0204-roster-wave-3-electric-and-light.md) — rw3b (M-postgate-roster-wave-3 rw3b — Electric and Light lines) — 0204 — Roster Wave 3: Electric and Light affinities with reserved bands, one evolution edge per base form, and content superlatives as load-bearing constraints (Accepted)
 
 ### schema-persistence
 
