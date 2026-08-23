@@ -1,0 +1,54 @@
+// Roster wave 3 — WILD-LEGAL BASE FORMS (Electric, Light). DATA, not code
+// (ADR-0006/0057/0144/0204). Stable ids are APPEND-ONLY; reserved band
+// 40..=49, pre-claimed in-tree by species/060-item-evo-derived.ron. This file
+// sorts after every existing part file, so the 000-core rows stay the registry
+// prefix that m8_9e_species_migration_parity pins.
+//
+// Wave 3 closes the last content gap in the Affinity enum: Electric and Light
+// were the only two variants with zero species and zero skills (the ADR-0145
+// residual accepted at pt-d3, which doubled Dark instead). Both lines ship
+// base + derived, so the two new affinities are as deep as the six that exist.
+//
+// ARCHETYPES (ADR-0204). Wave 1 took tanky + fast-sweeper, wave 2 took status +
+// support, so wave 3 takes the two GDD section-5 shapes still unrepresented as
+// a LINE identity: a special glass cannon and a special wall. The type chart
+// forces the split — Light and Dark are mutually super-effective with no resist
+// either way, so a Light line reads glassy against the doubled Dark roster
+// unless its bulk carries it; Electric resists nothing but its own mirror, so
+// it has to win before it is hit.
+//
+// These are base forms with NO encounter row: wild placement and level/weight
+// banding are slice rw3c. A species absent from every encounter table is valid
+// content, merely not yet wild-obtainable — no reachability validator exists.
+//
+// COMMENT HYGIENE (ADR-0143 D7): full-line comments only, never a bare id field
+// name in prose — write id=N.
+[
+    // Voltkit (Electric, SPECIAL GLASS CANNON) — speed 82 is the fastest base
+    // form shipped (Shadelet 74 was) and sp_attack 66 leads every base form,
+    // paid for with defense 40, the lowest of ANY form in the roster (the
+    // previous floor was 44). Kit is the Electric pair id=40 Spark and id=41
+    // Thunder Fang, so STAB holds in both slots. BST 322, inside the
+    // 318..=328 base band wave 1 established.
+    (
+        id: 40,
+        name: "Voltkit",
+        base_stats: (hp: 44, attack: 48, defense: 40, speed: 82, sp_attack: 66, sp_defense: 42),
+        affinity: Electric,
+        learnable_skill_ids: [40, 41],
+        tier: 0,
+    ),
+    // Aurelet (Light, SPECIAL WALL) — the mirror spread: sp_defense 66 leads
+    // every base form shipped and speed 46 sits near the floor, so it trades
+    // initiative for survival exactly where Voltkit does the reverse. Kit is
+    // the Light pair id=42 Glimmer and id=43 Radiant Lance. BST 326, the same
+    // band as Voltkit so neither line starts ahead of the other.
+    (
+        id: 42,
+        name: "Aurelet",
+        base_stats: (hp: 54, attack: 42, defense: 62, speed: 46, sp_attack: 56, sp_defense: 66),
+        affinity: Light,
+        learnable_skill_ids: [42, 43],
+        tier: 0,
+    ),
+]

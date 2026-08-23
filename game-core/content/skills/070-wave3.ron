@@ -1,0 +1,33 @@
+// Roster wave 3 — ELECTRIC + LIGHT SKILL KITS. DATA, not code (ADR-0006/0057).
+// Stable ids are APPEND-ONLY. This is the FIRST part file the skills registry
+// has ever had: 000-core.ron holds 1..=11 and carries no band claim, so wave 3
+// claims 40..=49 and deliberately leaves 12..=39 unclaimed for core growth.
+// 000-core.ron is NOT retro-annotated — the collision check reads actual ids,
+// not comments, so widening the diff into that file buys nothing (ADR-0204).
+//
+// WHY THIS FILE EXISTS AT ALL: the ADR-0143 STAB gate requires every species to
+// learn at least one skill of its own affinity, and Electric and Light had ZERO
+// skills. A species-only wave-3 slice would therefore be red on arrival — which
+// is why skills, species and evolution edges land in ONE commit.
+//
+// Two skills per affinity (RW3-01): a cheap high-PP chip move and a stronger,
+// less accurate finisher, mirroring the Fire (1/2) and Water (3/4) core pairs.
+// No sets_weather and no applies_status — a new field value is a mechanics
+// decision, and this wave is content only (spec non-goals).
+//
+// COMMENT HYGIENE (ADR-0143 D7): full-line comments only, and never a bare id
+// field name in prose — write id=N. The content scanners strip whole comment
+// lines and then regex whatever is left.
+[
+    // Electric kit. Spark is the 40-power/25-PP chip twin of Ember (id=1);
+    // Thunder Fang is the 65/95 finisher twin of Fire Fang (id=2). Reusing the
+    // proven Fire curve keeps wave 3 out of the balance conversation entirely.
+    (id: 40, name: "Spark",         affinity: Electric, power: 40, accuracy: 100, pp: 25),
+    (id: 41, name: "Thunder Fang",  affinity: Electric, power: 65, accuracy: 95,  pp: 15),
+    // Light kit. Glimmer mirrors Spark. Radiant Lance trades accuracy and PP for
+    // the wave's highest power: Light is mutually super-effective with Dark and
+    // resists nothing either way (content/type_chart.ron), so the Light line
+    // needs a real payoff move against the doubled Dark roster (ADR-0204).
+    (id: 42, name: "Glimmer",       affinity: Light,    power: 40, accuracy: 100, pp: 25),
+    (id: 43, name: "Radiant Lance", affinity: Light,    power: 70, accuracy: 90,  pp: 10),
+]

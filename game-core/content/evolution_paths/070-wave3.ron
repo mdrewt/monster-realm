@@ -1,0 +1,53 @@
+// Roster wave 3 — EVOLUTION EDGES. DATA, not code (ADR-0006/0057/0174/0176/0204).
+// This part file OWNS THE edge_id BAND 100..=199; 000-core.ron owns 1..=99.
+// edge_ids are author-assigned, unique and APPEND-ONLY (EG1-4/EG1-12,
+// ADR-0176 D1) — never reused, never renumbered, even if an edge is removed.
+//
+// min_level is the Level newtype, deserialized from a bare u8 in [1, 100]:
+// write it as a plain number, never as a wrapped tuple.
+//
+// AUTHORING RULE (ADR-0176 D2) — auto-evolution makes level a RACE. A monster
+// with exactly one currently-eligible path evolves automatically and
+// immediately, so an unconditional low-min_level edge silently kills every
+// higher-level sibling branch out of the same species. Wave 3 gives each base
+// form EXACTLY ONE outgoing edge, which makes that race vacuous by
+// construction — the safe default, and the reason neither edge below needs a
+// second gate to be honest. Both are non-vacuous under R4 purely on min_level,
+// which is above the Level floor of 1.
+//
+// COMMENT HYGIENE: full-line comments only, and never a bare id field name in
+// prose — use the edge=N / species=N form.
+[
+    // ---- species=40 Voltkit, tier 0 -> species=41 Voltarion --------------
+    //
+    // Plain level gate, no essence and no Trust component. Level 20 is the
+    // registry's common-branch convention (edge=1, edge=3, edge=4, edge=7 all
+    // sit there), and a glass cannon that arrives earlier would outclass the
+    // wave-1 and wave-2 lines during their own level window.
+    (
+        edge_id: 100,
+        from_species: 40,
+        to_species: 41,
+        min_level: 20,
+        essence: [],
+        min_trust_tier: None,
+        min_quality_time_tier: None,
+        min_nutrition_pct: None,
+    ),
+    // ---- species=42 Aurelet, tier 0 -> species=43 Aurelith ---------------
+    //
+    // Level 22, matching edge=9 (the other plain-level branch in the registry).
+    // Two levels above the Electric branch because the Light line's payoff is
+    // bulk, which compounds: arriving at the same level as the cannon would
+    // make the wall strictly the better early pick.
+    (
+        edge_id: 101,
+        from_species: 42,
+        to_species: 43,
+        min_level: 22,
+        essence: [],
+        min_trust_tier: None,
+        min_quality_time_tier: None,
+        min_nutrition_pct: None,
+    ),
+]
