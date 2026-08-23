@@ -235,3 +235,44 @@ symmetric note).
   via public accessors + the ungated `BUILD_INFO`.
 - **Add an `evals/*.eval.mjs` no-network gate.** Deferred: would touch `evals/**` (out of touch-set);
   the source-scan tooth in `main.wiring.test.ts` covers it in-scope.
+
+## Amendment — 16r-f (2026-08-22): sticky reseed latch + drop-time id capture
+
+The M-1 `battleReseedPending` flag (lines 211–212) was consumed on the FIRST post-reconnect batch even when
+`latestPlayerBattle()` returned `undefined`. Since ADR-0198 the battle map is rebuilt on every flush from the
+SDK view cache, so a flush firing before `my_battle` hydrates burned the latch, and the NEXT flush re-emitted
+a spurious `battleStart` for the surviving battle — the F9 bundle showed a battle "starting" that never did.
+That behavior leaned on ADR-0198 D7's "assumed" subscription-batch atomicity; 16r-f removes the dependency.
+
+**16r-f refines the flag to a truly sticky latch:** `latest === undefined` leaves it armed; any definite row
+resolves it.
+
+- New module-scope `reseedPrevBattleId` captures the drop-time `activeBattleId` as `onReconnect`'s first
+  statement (before `resetPredictionState` nulls it), guarded by `if (!battleReseedPending)` so a second drop
+  mid-reseed preserves the first capture.
+- The silent re-baseline applies **only** when the observed battle is Ongoing **and** its id equals the
+  captured one. Any other definite observation falls through to the normal emit logic — a battle that STARTED
+  during the gap now correctly emits `battleStart` (previously it was silently adopted as the "survivor",
+  later producing an unpaired `battleEnd`).
+- The listener nulls `reseedPrevBattleId` on resolution as defensive hygiene — measured inert today (the
+  guarded `onReconnect` capture overwrites it before any read).
+
+**Spec-deviation rationale:** the 16r-f spec prescribed only the sticky half ("do not clear on an undefined
+read"). Implemented alone, that leaves the latch armed indefinitely for a player with zero battle rows
+(common — the server GCs finished battles), silently swallowing their next NEW battle's `battleStart`. The
+id-capture refinement was adopted after plan review; the EARS contract is unchanged, only the mechanism is
+stronger.
+
+**Gating tests:** `client/src/main.battle-reseed.test.ts` — the repo's first runtime-import gate over
+`main.ts` (mocked wasm/connection/renderer, F9-bundle observation, per-test module reset + listener cleanup).
+T1/T8 proven RED at fork; six mutation bite-proofs measured, incl. T9 (double-reconnect keeps the first
+capture) and T10 (two fully-resolved reseed episodes re-capture per episode).
+
+**Residuals** (updating the Accepted-residuals list at lines 218–224):
+- (c) **unchanged** — a `battleEnd` resolving entirely during the gap is still unobserved.
+- (d) **NEW** — if the `my_battle` view hydrates partially across flushes with ≥2 rows, an older row observed
+  first resolves the latch and the newer surviving battle still emits spuriously. Closing it needs a
+  subscription-applied signal from `connection.ts` (outside 16r-f's touch-set).
+- (e) **NEW, pre-existing** — `main.ts`'s `identity` is captured once in `onReady` and never refreshed on
+  reconnect; a reconnect that mints a new SDK identity would leave every identity-scoped listener (this one
+  included) permanently quiet, with the reseed latch armed. Flagged for a follow-up slice.
