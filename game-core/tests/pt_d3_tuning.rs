@@ -15,7 +15,8 @@
 //! weights and rate. This asymmetry is a decision, not an oversight.
 //!
 //! Criteria:
-//!   pt-d3-1  wild-legal species set is exactly {1,2,3,7,8,20,21}
+//!   pt-d3-1  wild-legal species set is exactly {1,2,3,7,8,20,21,40,42} (rw3c
+//!            appends the wave-3 tier-0 placements, Voltkit=40/Aurelet=42)
 //!   pt-d3-2  zone 0 stays byte-identical AND below the derived e2e ceiling
 //!   pt-d3-3  no player level in [5,20] is ever encounter-less
 //!   pt-d3-4  H1 recruit-chance weakening invariant holds for every wild species
@@ -271,8 +272,8 @@ fn pt_d3_2_teeth_low_band_intruder_predicate_is_not_vacuous() {
 // ===========================================================================
 
 // Kills: an implementation that only adds SOME of the new wild species (e.g.
-// forgets species 8 or 21), or that smuggles an extra species into an
-// encounter table beyond the pinned {1,2,3,7,8,20,21} set.
+// forgets species 8, 21, 40, or 42), or that smuggles an extra species into
+// an encounter table beyond the pinned {1,2,3,7,8,20,21,40,42} set.
 #[test]
 fn pt_d3_1_wild_legal_set_is_exact() {
     let encounters = load_encounters().expect("encounters registry must parse");
@@ -282,12 +283,13 @@ fn pt_d3_1_wild_legal_set_is_exact() {
             wild.insert(entry.species_id);
         }
     }
-    let want: BTreeSet<u32> = [1u32, 2, 3, 7, 8, 20, 21].into_iter().collect();
+    let want: BTreeSet<u32> = [1u32, 2, 3, 7, 8, 20, 21, 40, 42].into_iter().collect();
     assert_eq!(
         wild, want,
         "pt-d3-1: the union of every encounter table's species_id must be EXACTLY \
-         {{1,2,3,7,8,20,21}} — set EQUALITY (not superset) so both a dropped base form \
-         and a smuggled derived form bite. Currently RED: only species {{1,2,3}} are wild."
+         {{1,2,3,7,8,20,21,40,42}} — set EQUALITY (not superset) so both a dropped base \
+         form and a smuggled derived form bite. rw3c appends the wave-3 tier-0 placements \
+         (Voltkit=40, Aurelet=42) to zone 1."
     );
 
     let derived: BTreeSet<u32> = [4u32, 5, 6, 9, 10, 22, 23].into_iter().collect();
@@ -368,11 +370,13 @@ fn pt_d3_4_recruit_h1_weakening_dominates() {
     }
 
     // Derive the species set FROM the encounter tables (not hardcoded): this is
-    // what makes the count assertion RED today (currently 3, not 7).
+    // what makes the count assertion RED today (currently 7, not 9 — rw3c
+    // appends Voltkit=40 and Aurelet=42 to zone 1).
     assert_eq!(
         levels_by_species.len(),
-        7,
-        "pt-d3-4: expected exactly 7 wild-encounterable species once zone 1 lands, found {}",
+        9,
+        "pt-d3-4: expected exactly 9 wild-encounterable species once rw3c's zone-1 wave-3 \
+         placement lands, found {}",
         levels_by_species.len()
     );
 
