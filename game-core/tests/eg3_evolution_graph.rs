@@ -82,6 +82,12 @@ fn expected_edges() -> Vec<(u32, u32, u32, u8, Vec<(Affinity, u32)>, Option<Trus
         (8, 8, 31, 17, vec![(Affinity::Fire, 100)], None),
         (9, 20, 22, 22, vec![], None),
         (10, 21, 23, 1, vec![], Some(TrustTier::Friendly)),
+        // Roster wave 3 (rw3b, ADR-0204) — band 100..=199, one unconditional
+        // level edge per new base form. Pinned here field-for-field like every
+        // other edge: this table is the registry's only exact pin, so a wave
+        // that appends edges without extending it would silently un-pin them.
+        (100, 40, 41, 20, vec![], None),
+        (101, 42, 43, 22, vec![], None),
     ]
 }
 
@@ -105,7 +111,7 @@ fn t1_live_registry_passes_validate_evolution_paths() {
 }
 
 // ===========================================================================
-// T2 — the registry pins EXACTLY the ten edges, field-for-field
+// T2 — the registry pins EXACTLY the twelve edges, field-for-field
 // ===========================================================================
 
 /// Kills a silent retune (any edge_id/from/to/level/essence/trust changed) or
@@ -113,12 +119,12 @@ fn t1_live_registry_passes_validate_evolution_paths() {
 /// `load_evolution_paths -> Ok(vec![])` directly: an empty `Vec` fails the
 /// length assertion immediately.
 #[test]
-fn t2_registry_pins_exactly_the_ten_edges() {
+fn t2_registry_pins_exactly_the_twelve_edges() {
     let (_species, paths, _encounters, _items) = live_world();
     assert_eq!(
         paths.len(),
-        10,
-        "T2: the evolution_paths registry must contain exactly ten edges, got {}",
+        12,
+        "T2: the evolution_paths registry must contain exactly twelve edges, got {}",
         paths.len()
     );
 
@@ -346,19 +352,23 @@ fn t6_r11_tier_cap() {
 // T7 — R12 edge_id uniqueness
 // ===========================================================================
 
-/// Positive half kills a duplicated or gapped edge_id set (any id outside
-/// exactly {1..=10}). Negative half kills a `validate_evolution_paths` that
+/// Positive half kills a duplicated or gapped edge_id set (any id outside the
+/// exact pinned set). Negative half kills a `validate_evolution_paths` that
 /// stopped enforcing R12.
+///
+/// The set is written out literally rather than as a range because edge_ids are
+/// BANDED per content wave (000-core.ron owns 1..=99, wave 3's 070-wave3.ron
+/// owns 100..=199), so the live set is deliberately non-contiguous.
 #[test]
 fn t7_r12_edge_id_uniqueness() {
     let (species, paths, encounters, items) = live_world();
 
     let mut ids: Vec<u32> = paths.iter().map(|p| p.edge_id).collect();
     ids.sort_unstable();
-    let expected: Vec<u32> = (1..=10).collect();
+    let expected: Vec<u32> = vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 100, 101];
     assert_eq!(
         ids, expected,
-        "T7: edge_ids must be exactly {{1..=10}}, got {ids:?}"
+        "T7: edge_ids must be exactly {expected:?}, got {ids:?}"
     );
 
     let mut broken = paths.clone();

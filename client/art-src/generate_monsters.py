@@ -120,6 +120,32 @@ PALETTES = {
         ramp("#d8cf9a", "#f4eec4", "#fffbe8"),
         ramp("#081c1e", "#123236", "#1e5250"),
     ),
+    # Roster wave 3 (rw3b, ADR-0204).  Electric is the roster's first high-value
+    # yellow ramp — separated from the Fire lines by HUE (yellow-green, not
+    # orange) and from each other by VALUE, so the pair stays readable under
+    # colour-vision deficiency.  Light is a warm bone/gold ramp kept lighter
+    # overall than every existing creature, which is the whole point of the
+    # affinity reading as Light on a dark terrain tile.
+    "voltkit": (
+        ramp("#3a2e0c", "#6e5a12", "#b09420", "#e8ce3c", "#fff08a"),
+        ramp("#2c3a5c", "#4a629a", "#8fa8de"),
+        ramp("#1c1606", "#3a2e0c", "#6e5a12"),
+    ),
+    "voltarion": (
+        ramp("#2c1a3c", "#4e2c66", "#7a48a0", "#c07ad8", "#f2c24a"),
+        ramp("#1e2c50", "#3c58a0", "#7e9ce8"),
+        ramp("#160c20", "#2c1a3c", "#4e2c66"),
+    ),
+    "aurelet": (
+        ramp("#4a3a1e", "#7e6634", "#bfa05e", "#e8d094", "#fff6d8"),
+        ramp("#8a5c3a", "#c08a5e", "#f0c99a"),
+        ramp("#261c0e", "#4a3a1e", "#7e6634"),
+    ),
+    "aurelith": (
+        ramp("#5c4a22", "#967c38", "#d4b45e", "#f2dc9e", "#fffbe8"),
+        ramp("#b06a3a", "#e0a066", "#ffdcae"),
+        ramp("#2e2410", "#5c4a22", "#967c38"),
+    ),
 }
 
 # --------------------------------------------------------------------------- #
@@ -142,6 +168,15 @@ PLAN_TABLE = [
     ("venumbra", "orb", "large", "skirt"),
     ("gustwyrm", "avian", "small", "folded"),
     ("tempestrix", "avian", "large", "openwings"),
+    # Roster wave 3 (rw3b).  Each LINE keeps one body plan across its evolution
+    # (the umbraquill->venumbra and gustwyrm->tempestrix precedent), and each
+    # row carries a NEW feature flag — `bolt` and `halo` below — rather than
+    # being a size-only variant of a shipped row, which would pass the unique
+    # (plan, size, features) check while still reading as a palette swap.
+    ("voltkit", "avian", "small", "bolt"),
+    ("voltarion", "avian", "large", "bolt|openwings"),
+    ("aurelet", "orb", "small", "halo"),
+    ("aurelith", "orb", "large", "halo|skirt"),
 ]
 # PLAN-TABLE-END
 
@@ -361,6 +396,18 @@ def draw_orb(facing, col, pal, sec, acc, size, feats):
         for i in range(4):  # thin dangling wisps, not touching the ground
             im.put(16 - 3 + sway, cy + r + i, acc[2])
             im.put(16 + 3 - sway, cy + r + i, acc[2])
+    if "halo" in feats:
+        # A DETACHED ring hovering above the body, with a visible gap of empty
+        # pixels between ring and sphere.  No other plan produces a disconnected
+        # component, so the bbox-cropped alpha mask is unmistakable even at 32px.
+        hy = cy - r - 4 + float_y
+        hw = r - 1
+        im.hline(16 - hw, hy, 2 * hw, sec[2])
+        im.hline(16 - hw + 1, hy + 1, 2 * hw - 2, sec[1])
+        im.put(16 - hw, hy, pal[4])
+        im.put(16 + hw - 1, hy, pal[4])
+        for dx in (-hw - 1, hw):  # ring tips, one pixel proud of the band
+            im.put(16 + dx + sway, hy - 1, sec[2])
     if facing == "S":
         eye(im, 16 - r + 2, cy - 1, pal)
         eye(im, 16 + r - 4, cy - 1, pal)
@@ -397,6 +444,17 @@ def draw_avian(facing, col, pal, sec, acc, size, feats):
     body(im, 16, 12 - b, r - 2, r - 3, pal)
     for i in range(3):  # tail feathers break the BOTTOM edge
         spike(im, 16 - 2 + i * 2, 27 - b, 3, 0, pal[1])
+    if "bolt" in feats:
+        # Zig-zag bolt tail: a 2px-wide stagger that walks OUT to the right edge
+        # while climbing, so the silhouette breaks a corner no other avian row
+        # touches.  Paired with a matching two-prong head crest.
+        for i in range(7):
+            x = 16 + r + i // 2 + (1 if i % 2 else -1) * 2
+            y = 22 - b - i + wing
+            im.hline(x, y, 2, sec[2] if i % 2 else sec[1])
+            im.put(x, y, pal[4])
+        for dx, lean in ((-3, -2), (3, 2)):
+            spike(im, 16 + dx, 6 - b, 5, lean, sec[2])
     if "openwings" in feats:
         spike(im, 16, 5 - b, 5, 0, sec[1])  # head crest
     if facing == "S":

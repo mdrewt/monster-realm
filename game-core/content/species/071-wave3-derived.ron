@@ -1,0 +1,48 @@
+// Roster wave 3 — DERIVED FORMS (evolution targets). DATA, not code
+// (ADR-0006/0057/0060/0144/0204). Stable ids are APPEND-ONLY; reserved band
+// 40..=49. Mirrors the 000-core/010-derived and 050/051 splits so rw3c's
+// encounter author has an unambiguous rule: wild-legal = 000-core + 070-wave3.
+//
+// Species 41 and 43 are evolution-only DERIVED forms and MUST NEVER appear in
+// an encounter table — rule R6 of validate_evolution_paths enforces it, and R6
+// keys on the evolution graph rather than the tier field, so a derived form
+// with no incoming edge would slip past it. Both forms here are the target of
+// exactly one wave-3 edge (evolution_paths/070-wave3.ron), which is what makes
+// R6 and R10 both bite for them.
+//
+// Tier is exactly one greater than the source form (R5, strict +1).
+//
+// COMMENT HYGIENE (ADR-0143 D7): full-line comments only, never a bare id field
+// name in prose — write id=N.
+[
+    // Voltarion (Electric, special glass cannon) — the payoff is sp_attack 102,
+    // deliberately BELOW Cindershade's 104, and speed 98, deliberately below
+    // Venumbra's 100, so every superlative wave 2 and the item-evolution wave
+    // wrote into their own comments survives this wave intact (ADR-0204).
+    // Defense 64 stays near the tier-1 floor. BST 470, inside the 450..=479
+    // span the shipped tier-1 forms already occupy (Steamveil 450, Pyroleo
+    // 479) — a description of the roster, not a gated rail.
+    (
+        id: 41,
+        name: "Voltarion",
+        base_stats: (hp: 66, attack: 74, defense: 64, speed: 98, sp_attack: 102, sp_defense: 66),
+        affinity: Electric,
+        learnable_skill_ids: [40, 41],
+        tier: 1,
+    ),
+    // Aurelith (Light, special wall) — hp 88, defense 92 and sp_defense 92 all
+    // sit under Stoneward's 90/105/100 and Tempestrix's 92/-/96 on purpose:
+    // wave 3 completes the roster, it does not top it. Ability 3 is NOT taken —
+    // Tempestrix owns the Regeneration pivot, and a second copy would make the
+    // two walls interchangeable. Skill id=5 Vine Whip is added so the wall has
+    // a non-Light attacking option that is not blanked by the Dark matchup.
+    // BST 476, high in the 450..=479 tier-1 span but still under Pyroleo's 479.
+    (
+        id: 43,
+        name: "Aurelith",
+        base_stats: (hp: 88, attack: 62, defense: 92, speed: 58, sp_attack: 84, sp_defense: 92),
+        affinity: Light,
+        learnable_skill_ids: [42, 43, 5],
+        tier: 1,
+    ),
+]
