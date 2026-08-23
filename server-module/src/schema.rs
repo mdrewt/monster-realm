@@ -865,9 +865,11 @@ pub struct BattleChallenge {
 ///
 /// MUST-NEVER-LEAK (ADR-0015, ADR-0109 D2): a leaked pending pick is a
 /// competitively decisive exploit (opponent adapts their choice). No `public`,
-/// no view, no RLS projection. The table is invisible to all clients; they
+/// no separate view, no RLS projection. The table is invisible to all clients; they
 /// discover that a turn resolved by watching `battle.state.turn_number`
-/// increment on their public `battle` subscription.
+/// increment via the `my_battle` view onto the now-private `battle` table
+/// (ADR-0198 — `battle` itself stopped being `public` after this comment was
+/// written).
 ///
 /// Two rows exist per turn (one per side); both are deleted atomically when
 /// `resolve_pvp_turn_if_ready` fires in the same transaction.
