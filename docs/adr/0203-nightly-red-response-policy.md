@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** ci-gates, tooling-docs
-**Decision:** Record the nightly red-response policy in one operational file, `docs/nightly-red-response-policy.md`, whose job-response matrix must be key-set-EQUAL (never merely containment-compatible) to the job keys derived from `.github/workflows/nightly.yml` and which every declared job's comment preamble must cite back, gated by `evals/nightly-smoke-wiring.eval.mjs`.
+**Decision:** Record the nightly red-response policy in one gated file, `docs/nightly-red-response-policy.md`, whose job matrix must be key-set-EQUAL to the workflow's declared jobs and which every job preamble must cite back.
 
 ---
 
@@ -26,7 +26,7 @@ with nobody reacting. ADR-0200 correctly diagnosed the missing *voice* and fixed
 voice that says *which* job failed is not a policy: it does not say what the required response
 is, who owes it, or what the escalation path looks like when the ordinary response does not
 apply. That knowledge existed only as prose scattered across six comment preambles in
-`nightly.yml` and three ADRs (0050, 0079, 0088, 0118, 0183, 0196, 0200) — discoverable if you
+`nightly.yml` and seven ADRs (0050, 0079, 0088, 0118, 0183, 0196, 0200) — discoverable if you
 already knew where to look, which is precisely the condition a 3 a.m. red night does not
 satisfy.
 

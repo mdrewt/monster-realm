@@ -2472,6 +2472,564 @@ export function changelogCheckRecipeIntact(justfileText) {
 }
 
 // ---------------------------------------------------------------------------
+// 16r-h NEW PREDICATES (ADR-0203 — the nightly red-response policy doc).
+//
+// These gate docs/nightly-red-response-policy.md against .github/workflows/
+// nightly.yml in BOTH directions: the doc's job-response matrix must be job-key
+// SET-EQUAL to the workflow's declared jobs, and every declared job must cite the
+// doc back from its own comment preamble.
+//
+// NOTHING here strips a markdown fence. That is a decision, not an omission
+// (ADR-0203 D7): 12r-b measured a decoy-inside-a-stray-fence shape scoring 22/22
+// GREEN against a fence-stripping parser, so counting RAW lines makes that shape
+// unreachable by construction rather than guarded against. CRLF/BOM normalisation
+// is orthogonal — neither can hide a decoy, both merely produced a confusing
+// false RED on legitimately-authored content.
+//
+// jobHasFailurePolicyComment above is left BYTE-IDENTICAL (ADR-0203 D3): its five
+// clauses are pinned by teeth M1-M10, and this repo has already measured that
+// "additive, and the signature is byte-equivalent" covers the signature, not the
+// semantics. jobPreambleCitesPolicyDoc duplicates the preamble walk on purpose.
+// ---------------------------------------------------------------------------
+
+// Module-PRIVATE, matching the POLICY_ROUTING_KEYWORDS precedent: nothing outside
+// this file has a reason to know the doc's internal heading text.
+const POLICY_MATRIX_ANCHOR = '## Job response matrix';
+const POLICY_MATRIX_HEADER_CELLS = ['Job', 'Response', 'Owner', 'Escalation'];
+const POLICY_SUBSTRATE_ANCHOR = '## Measurement substrate';
+
+// The three literals the Measurement substrate section must name (D2). Recipe
+// NAMES, never numbers: the mutate-server cap is already a three-way coupled
+// constant and a fourth coupled site would be actively harmful (ADR-0203 D4).
+const POLICY_SUBSTRATE_LITERALS = ['just mutate-core', 'just mutate-server', 'just coverage'];
+
+// Exported: the default export reads the file at this path, and both consts are
+// quoted verbatim in failure reasons a human has to act on.
+export const POLICY_DOC_PATH = 'docs/nightly-red-response-policy.md';
+export const POLICY_OWNERS = ['build-loop supervisor', 'operator (Drew)'];
+
+// Clause A0. Strip a leading BOM, fold CRLF to LF. Applied before ANY comparison,
+// and it is the ONLY rewriting the parser ever does to the document.
+function normalisePolicyDocText(docText) {
+  const text = docText.charCodeAt(0) === 0xfeff ? docText.slice(1) : docText;
+  return text.split('\r\n').join('\n');
+}
+
+// Split a markdown table line into its trimmed cells: split on `|`, then drop ONE
+// leading and ONE trailing empty field (the row's own outer pipes).
+function splitTableCells(line) {
+  const parts = line.split('|');
+  if (parts.length > 0 && parts[0].trim() === '') parts.shift();
+  if (parts.length > 0 && parts[parts.length - 1].trim() === '') parts.pop();
+  return parts.map((cell) => cell.trim());
+}
+
+// Clause A2's normalisation: cell-by-cell `===` against POLICY_MATRIX_HEADER_CELLS.
+// Right cell COUNT with wrong cell TEXT must not match (tooth X4b), and a re-cased
+// copy must not match either — that is what leaves A10 with work to do.
+function isPolicyHeaderRow(line) {
+  const cells = splitTableCells(line);
+  if (cells.length !== POLICY_MATRIX_HEADER_CELLS.length) return false;
+  for (let i = 0; i < cells.length; i++) {
+    if (cells[i] !== POLICY_MATRIX_HEADER_CELLS[i]) return false;
+  }
+  return true;
+}
+
+function stripBackticks(cell) {
+  if (cell.length >= 2 && cell.startsWith('`') && cell.endsWith('`')) return cell.slice(1, -1);
+  return cell;
+}
+
+// Every `ADR-` + EXACTLY four digits token in `text`, as 4-character id strings.
+// Literal scanning only — NO new RegExp (detect-non-literal-regexp, 3 prior bites).
+function citedAdrIds(text) {
+  const ids = [];
+  let from = 0;
+  for (;;) {
+    const idx = text.indexOf('ADR-', from);
+    if (idx === -1) return ids;
+    from = idx + 4;
+    const digits = text.slice(idx + 4, idx + 8);
+    if (digits.length !== 4) continue;
+    let allDigits = true;
+    for (const ch of digits) {
+      if (ch < '0' || ch > '9') allDigits = false;
+    }
+    if (!allDigits) continue;
+    const next = text[idx + 8];
+    if (next !== undefined && next >= '0' && next <= '9') continue;
+    if (ids.indexOf(digits) === -1) ids.push(digits);
+  }
+}
+
+// Pure parser (ADR-0203 D7): the job-response matrix under POLICY_MATRIX_ANCHOR.
+// Returns { ok, reason, rows }, rows being
+// [{ job, response, owner, escalation, line }] with `job` backtick-stripped and
+// `line` 1-based. NEVER returns ok:true with an empty rows array — a parser that
+// answers `[]` on an unrecognised shape is the 12r-b false-green shape #4.
+export function parseNightlyPolicyMatrix(docText) {
+  const lines = normalisePolicyDocText(docText).split('\n');
+  const fail = (reason) => ({ ok: false, reason, rows: [] });
+
+  // A1 — exactly one RAW line equal to the anchor. Counted with NO fence
+  // stripping, so an anchor duplicated inside a ``` block is a second match.
+  const anchorLines = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trimEnd() === POLICY_MATRIX_ANCHOR) anchorLines.push(i);
+  }
+  if (anchorLines.length !== 1) {
+    return fail(
+      `found ${anchorLines.length} RAW line(s) reading exactly "${POLICY_MATRIX_ANCHOR}" — ` +
+        'exactly one is required, or which section is "the" matrix is ambiguous (nothing is ' +
+        'fence-stripped before this count, deliberately)',
+    );
+  }
+  const anchorIdx = anchorLines[0];
+
+  // A2 — exactly one line in the WHOLE document normalising to the header cells.
+  const headerLines = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (isPolicyHeaderRow(lines[i])) headerLines.push(i);
+  }
+  if (headerLines.length !== 1) {
+    return fail(
+      `found ${headerLines.length} line(s) in the WHOLE document whose cells are exactly ` +
+        `"${POLICY_MATRIX_HEADER_CELLS.join(' | ')}" — exactly one is required`,
+    );
+  }
+  const headerIdx = headerLines[0];
+
+  // A3 — the header row must sit inside the anchor's own section.
+  let sectionEnd = lines.length;
+  for (let i = anchorIdx + 1; i < lines.length; i++) {
+    if (lines[i].startsWith('## ')) {
+      sectionEnd = i;
+      break;
+    }
+  }
+  if (headerIdx < anchorIdx || headerIdx >= sectionEnd) {
+    return fail(
+      `the matrix header row is at line ${headerIdx + 1}, outside the "${POLICY_MATRIX_ANCHOR}" ` +
+        `section (lines ${anchorIdx + 1}-${sectionEnd}) — the header must sit under the anchor`,
+    );
+  }
+
+  // A4 — the line immediately below the header is the separator.
+  const separatorIdx = headerIdx + 1;
+  if (separatorIdx >= lines.length) {
+    return fail(`the matrix header row at line ${headerIdx + 1} is the last line of the document`);
+  }
+  const separator = lines[separatorIdx].trim();
+  if (!separator.startsWith('|') || !separator.endsWith('|')) {
+    return fail(
+      `line ${separatorIdx + 1} must be the matrix separator row but does not start AND end ` +
+        `with \`|\`: "${lines[separatorIdx]}"`,
+    );
+  }
+  const separatorCells = splitTableCells(separator);
+  if (separatorCells.length !== POLICY_MATRIX_HEADER_CELLS.length) {
+    return fail(
+      `the matrix separator row at line ${separatorIdx + 1} has ${separatorCells.length} ` +
+        `cell(s), not ${POLICY_MATRIX_HEADER_CELLS.length}: "${lines[separatorIdx]}"`,
+    );
+  }
+  for (const cell of separatorCells) {
+    if (!/^:?-{3,}:?$/.test(cell)) {
+      return fail(
+        `the matrix separator row at line ${separatorIdx + 1} has the cell "${cell}", which is ` +
+          'not a markdown separator cell (`---`, with optional alignment colons)',
+      );
+    }
+  }
+
+  // A5 — data rows until the first blank line or heading. A line inside that run
+  // which is neither blank, a heading, nor a 4-cell pipe row fails the whole parse
+  // with its 1-based line number; it is never silently skipped.
+  const rawRows = [];
+  for (let i = separatorIdx + 1; i < lines.length; i++) {
+    const trimmed = lines[i].trim();
+    if (trimmed === '' || trimmed.startsWith('#')) break;
+    if (!trimmed.startsWith('|') || !trimmed.endsWith('|')) {
+      return fail(
+        `line ${i + 1} sits inside the matrix but is neither blank, a heading, nor a pipe row ` +
+          `(it must start AND end with \`|\`): "${lines[i]}"`,
+      );
+    }
+    const cells = splitTableCells(trimmed);
+    if (cells.length !== POLICY_MATRIX_HEADER_CELLS.length) {
+      return fail(
+        `the matrix data row at line ${i + 1} has ${cells.length} cell(s), not ` +
+          `${POLICY_MATRIX_HEADER_CELLS.length}: "${lines[i]}"`,
+      );
+    }
+    rawRows.push({ cells, index: i });
+  }
+
+  // A6 — a header and a separator with no rows beneath is a vacuous table.
+  if (rawRows.length === 0) {
+    return fail(
+      `the matrix under "${POLICY_MATRIX_ANCHOR}" has a header and a separator but ZERO data ` +
+        'rows — a vacuous table governs nothing',
+    );
+  }
+
+  // A7 — no empty cell, named by job AND column.
+  for (const raw of rawRows) {
+    const job = stripBackticks(raw.cells[0]);
+    for (let c = 0; c < raw.cells.length; c++) {
+      if (raw.cells[c] === '') {
+        return fail(
+          `the matrix row for \`${job === '' ? '(unnamed)' : job}\` at line ${raw.index + 1} has ` +
+            `an empty ${POLICY_MATRIX_HEADER_CELLS[c]} cell`,
+        );
+      }
+    }
+  }
+
+  // A8 — the Job cell is a backticked lower-kebab job key, never bare prose.
+  for (const raw of rawRows) {
+    if (!/^`[a-z0-9-]+`$/.test(raw.cells[0])) {
+      return fail(
+        `the matrix Job cell at line ${raw.index + 1} is "${raw.cells[0]}" — it must be a ` +
+          'backticked lower-kebab job key, e.g. `mutation-server`',
+      );
+    }
+  }
+
+  // A9 — no duplicate Job key.
+  const rows = [];
+  const seen = new Set();
+  for (const raw of rawRows) {
+    const job = stripBackticks(raw.cells[0]);
+    if (seen.has(job)) {
+      return fail(
+        `the matrix declares TWO rows for \`${job}\` (the second at line ${raw.index + 1}) — a ` +
+          'duplicate job key makes the required response ambiguous',
+      );
+    }
+    seen.add(job);
+    rows.push({
+      job,
+      response: raw.cells[1],
+      owner: raw.cells[2],
+      escalation: raw.cells[3],
+      line: raw.index + 1,
+    });
+  }
+
+  // A10 — NO pipe-table content anywhere outside the one recognised table. A
+  // red-team prototype MEASURED the bypass this closes: the compliant table, a
+  // blank line, "(update …, supersedes the table above)", then a second table
+  // whose header cells are merely RE-CASED — invisible to A1-A9 (A5 stops at the
+  // blank line, A2's match is case-sensitive) and MORE prominent to a human.
+  const recognised = new Set([headerIdx, separatorIdx]);
+  for (const raw of rawRows) recognised.add(raw.index);
+  for (let i = 0; i < lines.length; i++) {
+    if (recognised.has(i)) continue;
+    if (!lines[i].trim().startsWith('|')) continue;
+    return fail(
+      `line ${i + 1} starts a pipe row outside the one recognised job-response table: ` +
+        `"${lines[i]}" — a second table is invisible to the parser and more prominent to a ` +
+        'human reader, so no stray pipe-table content may exist anywhere in the document',
+    );
+  }
+
+  return {
+    ok: true,
+    reason: `parsed ${rows.length} job-response row(s) under "${POLICY_MATRIX_ANCHOR}"`,
+    rows,
+  };
+}
+
+// Pure predicate (ADR-0203, clause B): the matrix's job-key SET is EXACTLY equal to
+// the set nightly.yml declares. Both drift directions are named separately in the
+// reason, because "which way did it drift" is the whole diagnostic value — a
+// one-directional `.includes` containment check is 12r-b's headline false green.
+export function policyMatrixCoversNightlyJobs(docText, nightlyYml) {
+  const parsed = parseNightlyPolicyMatrix(docText);
+  if (!parsed.ok) {
+    return { ok: false, reason: `the job-response matrix does not parse: ${parsed.reason}` };
+  }
+  const declared = declaredJobKeys(nightlyYml);
+  if (declared.length === 0) {
+    return {
+      ok: false,
+      reason:
+        'the workflow declares ZERO job keys at 2-space indent under a top-level `jobs:` anchor ' +
+        '— failing CLOSED, because an unreadable workflow must never read as "the doc covers ' +
+        'everything it declares"',
+    };
+  }
+  const rowJobs = parsed.rows.map((row) => row.job);
+  const rowSet = new Set(rowJobs);
+  const declaredSet = new Set(declared);
+  const missing = declared.filter((job) => !rowSet.has(job));
+  const extra = rowJobs.filter((job) => !declaredSet.has(job));
+  if (missing.length > 0 || extra.length > 0) {
+    const missingClause =
+      missing.length === 0
+        ? 'no job is missing a row'
+        : `the doc has NO ROW for declared job(s): ${missing.join(', ')}`;
+    const extraClause =
+      extra.length === 0
+        ? 'no row is stale'
+        : `the doc has a STALE ROW for undeclared job(s): ${extra.join(', ')}`;
+    return { ok: false, reason: `${missingClause}; ${extraClause}` };
+  }
+  return {
+    ok: true,
+    reason: `the matrix's job-key set equals nightly.yml's ${declared.length} declared job(s)`,
+  };
+}
+
+// Pure predicate (ADR-0203, clauses C1-C5): every row routes somewhere, is owned by
+// a member of the closed POLICY_OWNERS enum, and escalates to an ADR that EXISTS.
+// `knownAdrIds` is REQUIRED and must be a non-empty Set of 4-digit id strings: an
+// optional/defaulted argument would reopen the measured `ADR-9999` bypass that a
+// syntactic /ADR-\d{4}/ shape check alone cannot catch.
+export function policyMatrixRowsAreSubstantive(docText, knownAdrIds) {
+  if (!(knownAdrIds instanceof Set) || knownAdrIds.size === 0) {
+    return {
+      ok: false,
+      reason:
+        'knownAdrIds must be a NON-EMPTY Set of 4-digit ADR ids — an absent or empty set makes ' +
+        'clause C4 vacuous, which is the `ADR-9999` bypass',
+    };
+  }
+  const parsed = parseNightlyPolicyMatrix(docText);
+  if (!parsed.ok) {
+    return { ok: false, reason: `the job-response matrix does not parse: ${parsed.reason}` };
+  }
+  for (const row of parsed.rows) {
+    // C1 — the Response cell says where the failure is ROUTED.
+    const response = row.response.toLowerCase();
+    let routed = false;
+    for (const keyword of POLICY_ROUTING_KEYWORDS) {
+      if (response.indexOf(keyword) !== -1) routed = true;
+    }
+    if (!routed) {
+      return {
+        ok: false,
+        reason:
+          `row \`${row.job}\` (line ${row.line}) has Response "${row.response}", which routes ` +
+          `nowhere — it must contain one of ${POLICY_ROUTING_KEYWORDS.join(' / ')}`,
+      };
+    }
+    // C2 — EXACT membership on the trimmed cell. Never a substring test (which
+    // "the build-loop supervisor and friends" passes) and never case-normalised.
+    if (!POLICY_OWNERS.includes(row.owner)) {
+      return {
+        ok: false,
+        reason:
+          `row \`${row.job}\` (line ${row.line}) has Owner "${row.owner}", which is not an exact ` +
+          `member of POLICY_OWNERS (${POLICY_OWNERS.join(' / ')})`,
+      };
+    }
+    // C3 — the Escalation cell cites an ADR id at all.
+    const cited = citedAdrIds(row.escalation);
+    if (cited.length === 0) {
+      return {
+        ok: false,
+        reason:
+          `row \`${row.job}\` (line ${row.line}) has Escalation "${row.escalation}", which cites ` +
+          'no ADR — it must name a literal ADR-<4 digits>',
+      };
+    }
+    // C4 — and that ADR actually exists.
+    for (const id of cited) {
+      if (!knownAdrIds.has(id)) {
+        return {
+          ok: false,
+          reason:
+            `row \`${row.job}\` (line ${row.line}) escalates to ADR-${id}, which is not a known ` +
+            'ADR id — a citation shape is not a citation',
+        };
+      }
+    }
+  }
+  // C5 — the Owner column must not degenerate to a constant: a column whose every
+  // cell holds the same value carries no information while passing C2 six times.
+  for (const owner of POLICY_OWNERS) {
+    if (!parsed.rows.some((row) => row.owner === owner)) {
+      return {
+        ok: false,
+        reason:
+          `no row in the matrix names the owner "${owner}" — every member of POLICY_OWNERS must ` +
+          'own at least one job, or the Owner column is a constant and owns nothing',
+      };
+    }
+  }
+  return {
+    ok: true,
+    reason: `all ${parsed.rows.length} matrix row(s) route, are owned, and escalate to a real ADR`,
+  };
+}
+
+// Pure predicate (ADR-0203 D4, clauses D1-D3): the policy doc POINTS AT the recipes
+// that measure, and every recipe it names really exists in the committed justfile.
+// D3 is what makes this more than ceremony — a renamed recipe reds the doc instead
+// of the doc silently pointing at nothing.
+export function policyDocDeclaresMeasurementSubstrate(docText, justfileText) {
+  const lines = normalisePolicyDocText(docText).split('\n');
+  // D1 — exactly one RAW substrate heading.
+  const anchorLines = [];
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].trimEnd() === POLICY_SUBSTRATE_ANCHOR) anchorLines.push(i);
+  }
+  if (anchorLines.length !== 1) {
+    return {
+      ok: false,
+      reason:
+        `found ${anchorLines.length} RAW line(s) reading exactly "${POLICY_SUBSTRATE_ANCHOR}" — ` +
+        'exactly one is required',
+    };
+  }
+  const start = anchorLines[0];
+  let end = lines.length;
+  for (let i = start + 1; i < lines.length; i++) {
+    if (lines[i].startsWith('## ')) {
+      end = i;
+      break;
+    }
+  }
+  const body = lines.slice(start + 1, end).join('\n');
+  // D2 — the section names all three measuring recipes.
+  const absent = POLICY_SUBSTRATE_LITERALS.filter((literal) => body.indexOf(literal) === -1);
+  if (absent.length > 0) {
+    return {
+      ok: false,
+      reason:
+        `the "${POLICY_SUBSTRATE_ANCHOR}" section never names ${absent.join(', ')} — the policy ` +
+        'must point at the recipes that measure (it must not restate their numbers)',
+    };
+  }
+  // D3 — every recipe the section NAMES exists as a recipe declaration.
+  for (const recipe of namedJustRecipes(body)) {
+    if (!justfileDeclaresRecipe(justfileText, recipe)) {
+      return {
+        ok: false,
+        reason:
+          `the "${POLICY_SUBSTRATE_ANCHOR}" section names \`just ${recipe}\`, but the committed ` +
+          'justfile declares no such recipe at column 0 — the doc points at nothing',
+      };
+    }
+  }
+  return {
+    ok: true,
+    reason: `the "${POLICY_SUBSTRATE_ANCHOR}" section names only real justfile recipes`,
+  };
+}
+
+// Every recipe name a `just <name>` mention in `sectionBody` refers to, deduplicated
+// and in order of first appearance. The name runs to the first character outside
+// [a-z0-9_-], so a backticked `just coverage` yields `coverage`.
+function namedJustRecipes(sectionBody) {
+  const names = [];
+  let from = 0;
+  for (;;) {
+    const idx = sectionBody.indexOf('just ', from);
+    if (idx === -1) return names;
+    from = idx + 5;
+    let name = '';
+    for (let i = from; i < sectionBody.length; i++) {
+      const ch = sectionBody[i];
+      const isNameChar =
+        (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch === '-' || ch === '_';
+      if (!isNameChar) break;
+      name += ch;
+    }
+    if (name !== '' && names.indexOf(name) === -1) names.push(name);
+  }
+}
+
+// A line at column 0 reading `<name>:` or `<name> <params…>:` — the shape `just`
+// itself recognises as a recipe declaration.
+function justfileDeclaresRecipe(justfileText, recipeName) {
+  for (const line of justfileText.split('\n')) {
+    if (!line.startsWith(recipeName)) continue;
+    const rest = line.slice(recipeName.length);
+    if (rest.startsWith(':')) return true;
+    if (rest.startsWith(' ') && rest.indexOf(':') !== -1) return true;
+  }
+  return false;
+}
+
+// True when `line` cites POLICY_DOC_PATH as a BOUNDED token. A bare indexOf accepts
+// the measured decoy `# notdocs/nightly-red-response-policy.md is unrelated`, so a
+// match whose immediately-preceding character is [A-Za-z0-9_/.-] is rejected.
+function lineCitesPolicyDocPath(line) {
+  let from = 0;
+  for (;;) {
+    const idx = line.indexOf(POLICY_DOC_PATH, from);
+    if (idx === -1) return false;
+    from = idx + 1;
+    if (idx === 0) return true;
+    const before = line[idx - 1];
+    const isTokenChar =
+      (before >= 'A' && before <= 'Z') ||
+      (before >= 'a' && before <= 'z') ||
+      (before >= '0' && before <= '9') ||
+      before === '_' ||
+      before === '/' ||
+      before === '.' ||
+      before === '-';
+    if (!isTokenChar) return true;
+  }
+}
+
+// Pure predicate (ADR-0203 D3, clause E): the workflow→doc BACK-EDGE. The existing
+// preamble gate proves a policy exists; this proves a reader standing at the failing
+// artefact can REACH the authoritative one. Anchored at `jobs:` with the same
+// startsWith discipline as jobHasFailurePolicyComment, which stays byte-identical.
+// An absent job key is a loud failure, never a silent skip.
+export function jobPreambleCitesPolicyDoc(yaml, jobName) {
+  const lines = yaml.split('\n');
+  const jobsIdx = findJobsAnchor(lines);
+  if (jobsIdx === -1) {
+    return {
+      ok: false,
+      reason: `${jobName}: no top-level \`jobs:\` line in this workflow, so no job key is anchored`,
+    };
+  }
+  const keyLine = `  ${jobName}:`;
+  let keyIdx = -1;
+  for (let i = jobsIdx; i < lines.length; i++) {
+    if (lines[i] === keyLine || lines[i].startsWith(`${keyLine} `)) {
+      keyIdx = i;
+      break;
+    }
+  }
+  if (keyIdx === -1) {
+    return {
+      ok: false,
+      reason:
+        `${jobName}: job key absent at 2-space indent under \`jobs:\` — a job that does not ` +
+        'exist is a loud failure here, never a vacuously satisfied citation',
+    };
+  }
+  // The contiguous 2-space comment walk. The first blank / non-comment / wrong-indent
+  // line stops it, so a citation buried in `steps:` or parked above a blank line
+  // (or above the NEIGHBOURING job) can never be credited to this job.
+  for (let i = keyIdx - 1; i >= 0; i--) {
+    const line = lines[i];
+    if (line.trim() === '') break;
+    if (indentOfLine(line) !== 2) break;
+    if (!line.trim().startsWith('#')) break;
+    if (lineCitesPolicyDocPath(line)) {
+      return { ok: true, reason: `${jobName}: its comment preamble cites ${POLICY_DOC_PATH}` };
+    }
+  }
+  return {
+    ok: false,
+    reason:
+      `${jobName}: no line of the contiguous 2-space comment preamble directly above the job ` +
+      `key cites ${POLICY_DOC_PATH} as a bounded token — a reader of a red night's workflow ` +
+      'must be able to reach the response policy from the artefact that failed',
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Default export: proof-of-teeth, then real file checks.
 // ---------------------------------------------------------------------------
 export default async function () {
