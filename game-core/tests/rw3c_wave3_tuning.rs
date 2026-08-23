@@ -664,7 +664,7 @@ fn rw3c_teeth_zone0_pin_bites_a_drifted_weight() {
         ],
     };
     assert!(
-        zone0_pin_violations(&[good.clone()]).is_empty(),
+        zone0_pin_violations(std::slice::from_ref(&good)).is_empty(),
         "TEETH(f/GOOD): the verbatim pinned zone-0 shape must NOT be flagged"
     );
 
