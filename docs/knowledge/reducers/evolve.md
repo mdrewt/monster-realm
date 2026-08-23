@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: evolve
 slug: reducers/evolve
-updated: 2026-08-17
+updated: 2026-08-23
 tags: [reducer, spacetimedb, evolution]
 abstract: "Evolve a monster along one authored evolution-graph edge (EG2-1 shape). Steps: 1. Look up the Monster row (loud reject …"
 resource: server-module/src/evolution.rs#L50
