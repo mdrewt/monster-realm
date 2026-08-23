@@ -208,6 +208,97 @@
 //   `git cliff -o CHANGELOG.md`.
 //   All of TEETH A-U and Checks 1-23 are untouched by this slice.
 //
+// ===========================================================================
+// 16r-h (ADR-0203 — nightly red-response policy for the mutation/coverage/etc.
+// jobs: WHO responds to a red night and WHAT happens next, not just THAT one
+// happened)
+// ===========================================================================
+// Single seeded EARS criterion (B1, `monster-realm-16r-h-plan.md`): a red
+// mutation or coverage nightly job must be met by a WRITTEN policy naming the
+// required response and its owner, and drift between that policy and the wired
+// workflow must fail this eval.
+//
+// WHAT IS NEW (the contract the specialist implements):
+//   - two EXPORTED consts: POLICY_DOC_PATH ('docs/nightly-red-response-policy.md')
+//     and POLICY_OWNERS, a CLOSED two-member enum (['build-loop supervisor',
+//     'operator (Drew)'] — ADR-0203 D2 grounds each member in an
+//     already-mechanised action, so "non-empty string" cannot pass `TBD`).
+//   - three module-private consts: POLICY_MATRIX_ANCHOR
+//     ('## Job response matrix'), POLICY_MATRIX_HEADER_CELLS (['Job',
+//     'Response', 'Owner', 'Escalation']), POLICY_SUBSTRATE_ANCHOR
+//     ('## Measurement substrate').
+//   - five new pure predicates, all `{ ok, reason }` (or `{ ok, reason, rows }`
+//     for the parser):
+//       parseNightlyPolicyMatrix(docText) — clauses A0-A10. A0 normalises a
+//         leading BOM and CRLF before any comparison; NO fence stripping
+//         anywhere. A10 is the red-team BLOCKER: after the recognised table's
+//         line indices are known, ANY other line in the whole document that,
+//         once trimmed, starts with `|` is a FAIL — closes the measured
+//         bypass where a blank line + prose ("supersedes the table above") +
+//         a re-cased decoy header/rows reads clean to a naive A1-A9 parser
+//         while being MORE prominent to a human reader than the real table.
+//       policyMatrixCoversNightlyJobs(docText, nightlyYml) — clause B, EXACT
+//         job-key SET equality (both `missing` and `extra` directions) against
+//         `declaredJobKeys`, fail-closed on zero declared keys.
+//       policyMatrixRowsAreSubstantive(docText, knownAdrIds) — clauses C1-C5.
+//         `knownAdrIds` is a REQUIRED `Set` (an optional/defaulted argument
+//         would reopen the "ADR-9999" bypass a literal `/ADR-\d{4}/` regex
+//         alone cannot catch). C5 is the reviewer's constant-column catch: every
+//         member of POLICY_OWNERS must appear in at least one row, not just
+//         each cell individually passing C2.
+//       policyDocDeclaresMeasurementSubstrate(docText, justfileText) — clauses
+//         D1-D3. D3 is the non-ceremony fix: every recipe NAMED in the section
+//         must exist as a real recipe declaration in the committed justfile, so
+//         a renamed recipe REDs the doc instead of the doc silently pointing at
+//         nothing.
+//       jobPreambleCitesPolicyDoc(yaml, jobName) — clause E, the workflow-side
+//         back-edge. Anchored at `jobs:` exactly like jobHasFailurePolicyComment
+//         (left BYTE-IDENTICAL — this is a NEW predicate, not a widened one).
+//         Boundary-aware: a match whose immediately-preceding character is
+//         `[A-Za-z0-9_/.-]` is REJECTED, closing the measured
+//         `notdocs/nightly-red-response-policy.md` bypass a bare `indexOf`
+//         admits.
+//   - a new TEETH X block (~44 fixtures, after TEETH W17c, before REAL FILE
+//     CHECKS) and Checks 31-35 plus a `policyDoc` prologue read.
+//
+// EXPECTED REAL-TREE STATE AT RED (16r-h): none of the two exported consts,
+// three module-private consts, or five predicates above exist in this file yet.
+// TEETH X's shared fixture constants (X_GOOD_HEADER_ROW, X_GOOD_DOC,
+// X_GOOD_YML, …) reference several of them WHILE BEING BUILT, before any
+// fixture assertion even runs — so the first not-yet-defined identifier this
+// file actually touches, in module-evaluation order, is
+// POLICY_MATRIX_HEADER_CELLS (read by X_GOOD_HEADER_ROW), not necessarily
+// parseNightlyPolicyMatrix itself. Do not treat the exact identifier named in
+// the thrown error as load-bearing — only the THROW is. Consequence:
+// `ReferenceError: POLICY_MATRIX_HEADER_CELLS is not defined`. evals/run.mjs
+// wraps each eval in its own try/catch and records a thrower as a synthetic
+// pass:false — that IS the RED, not a crashed harness, the identical shape
+// already documented for TEETH V0 at :196-201. TEETH A-W and Checks 1-30 are
+// neither touched nor renumbered by this slice.
+//   Once the five predicates and the two exported consts land, the real-file
+//   checks read the committed tree as follows. ALL FIVE new checks are RED
+//   until BOTH docs/nightly-red-response-policy.md is authored (ADR-0203 §1)
+//   AND each of the six nightly jobs' comment preamble carries a citation line
+//   back to it — today neither exists:
+//     Check 31 parseNightlyPolicyMatrix(policyDoc)                        →
+//       never reached: the prologue's `readFileSync(POLICY_DOC_PATH)` fails
+//       first, because the file does not exist yet.
+//     Check 32 policyMatrixCoversNightlyJobs(policyDoc, nightlyYml)       →
+//       not reached today (Check 31 gates it).
+//     Check 33 policyMatrixRowsAreSubstantive(policyDoc, knownAdrIds)     →
+//       not reached today.
+//     Check 34 policyDocDeclaresMeasurementSubstrate(policyDoc, justfile) →
+//       not reached today.
+//     Check 35 jobPreambleCitesPolicyDoc(nightlyYml, job) looped over every
+//       job declaredJobKeys(nightlyYml) returns → not reached today; would
+//       ALSO fail on its own the moment it is reached, since no job preamble
+//       in the committed nightly.yml cites docs/nightly-red-response-policy.md
+//       yet.
+//   GREEN edit: author docs/nightly-red-response-policy.md per ADR-0203 §1
+//   (one row per declared nightly job, a Measurement substrate section naming
+//   the three real recipes) and add one citation comment line to each of the
+//   six declared jobs' preambles in .github/workflows/nightly.yml.
+//
 // DEFERRED RESIDUALS (proved live by the red-team, deliberately NOT closed
 // here). Each is PRE-EXISTING and affects ALL FIVE guarded jobs equally, so
 // closing them for changelog-freshness alone would be theatre:
@@ -225,7 +316,7 @@
 //   guarded jobs, not one more denylist entry — its own slice. Until then,
 //   `notify`'s `skipped` term is the PARTIAL RUNTIME backstop for the
 //   matrix/needs pair: a job that concludes `skipped` still opens an issue.
-import { existsSync, readFileSync } from 'node:fs';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { extractJobBlock } from './e2e-desync-teeth.eval.mjs';
 
@@ -8031,6 +8122,1396 @@ ci: lint typecheck test eval
   }
 
   // =========================================================================
+  // 16r-h PROOF-OF-TEETH (ADR-0203 nightly red-response policy). Section letter
+  // continues as TEETH X, immediately after TEETH W17c, so TEETH A-W are
+  // neither touched nor renumbered. Every constant and predicate under test
+  // below is called FORWARD to code the specialist has not written yet — see
+  // the file header for exactly which not-yet-defined identifier throws first.
+  // =========================================================================
+
+  // -------------------------------------------------------------------------
+  // Shared fixture constants — built ONCE, mutated by TARGETED substitution per
+  // fixture (the MUTATE_SERVER_CAP_BASELINE / CHANGELOG_FRESHNESS_GATES
+  // discipline applied to a markdown doc): a hand-copied full document per
+  // fixture drifts silently the day the shape changes, and X1c (the
+  // whole-artefact positive control) is the round trip that catches it.
+  // -------------------------------------------------------------------------
+
+  // Fails LOUD (throws) rather than silently testing a vacuous fixture when a
+  // targeted substitution finds nothing to replace — the L-bigcap-backstop
+  // precedent. A throw here is still a correctly-reported pass:false via
+  // evals/run.mjs's per-eval try/catch, so it is never a masked green.
+  const xMustDiffer = (mutated, base, label) => {
+    if (mutated === base) {
+      throw new Error(
+        `TEETH X fixture integrity (${label}): the targeted substitution found nothing to ` +
+          'replace, so this fixture is identical to the canonical positive control and its ' +
+          'tooth is inert',
+      );
+    }
+    return mutated;
+  };
+
+  // 1-based line number of the line CONTAINING the start of `needle` inside
+  // `doc`. Used only to compute the EXPECTED line number a parser reason
+  // string must cite — never to second-guess the predicate's own line math.
+  const xLineOf = (doc, needle) => {
+    const idx = doc.indexOf(needle);
+    if (idx === -1) {
+      throw new Error(`TEETH X fixture integrity: needle "${needle}" not found in the document`);
+    }
+    return doc.slice(0, idx).split('\n').length;
+  };
+
+  // The six-row canonical matrix, one row per job the committed nightly.yml
+  // declares. Response cells all carry a POLICY_ROUTING_KEYWORDS term; the
+  // Owner column uses BOTH POLICY_OWNERS members (C5); Escalation cells cite
+  // only ids present in X_KNOWN_ADR_IDS below (C4).
+  const X_MATRIX_ROWS = [
+    {
+      job: 'mutation',
+      response: 'queued as the next slice in the milestone queue',
+      owner: 'build-loop supervisor',
+      escalation: 'ADR-0079 names the queue-insertion precedent',
+    },
+    {
+      job: 'mutation-server',
+      response: 'queued as the next slice, same tier as fix-red-master',
+      owner: 'build-loop supervisor',
+      escalation: 'ADR-0079 and ADR-0137 govern a cap re-baseline',
+    },
+    {
+      job: 'coverage',
+      response: 'queued as the next slice in the milestone queue',
+      owner: 'build-loop supervisor',
+      escalation: 'ADR-0079 names the queue-insertion precedent',
+    },
+    {
+      job: 'smoke-republish',
+      response: 'queued as the next slice, same priority tier as fix-red-master',
+      owner: 'build-loop supervisor',
+      escalation: 'ADR-0079 documents the smoke-test failure policy',
+    },
+    {
+      job: 'changelog-freshness',
+      response: 'queued as the next slice in the milestone queue',
+      owner: 'build-loop supervisor',
+      escalation: 'ADR-0196 documents the freshness gate',
+    },
+    {
+      job: 'notify',
+      response: 'operator investigates immediately, priority above the queue',
+      owner: 'operator (Drew)',
+      escalation: 'ADR-0200 documents the notifier design',
+    },
+  ];
+
+  const xRenderRow = (r) => `| \`${r.job}\` | ${r.response} | ${r.owner} | ${r.escalation} |`;
+  const X_ROW_BLOCK = X_MATRIX_ROWS.map(xRenderRow).join('\n');
+  // Round-trip on the specialist's own header-cells constant (the V1 discipline
+  // applied to this section): a pin that could not accept its own rendering
+  // would false-RED the real doc at Check 31 too.
+  const X_GOOD_HEADER_ROW = `| ${POLICY_MATRIX_HEADER_CELLS.join(' | ')} |`;
+  const X_GOOD_SEPARATOR = '| --- | --- | --- | --- |';
+
+  // Escalation ids this section's canonical rows cite. Deliberately DISJOINT
+  // from '9999' (X19b) and from whatever the real docs/adr directory contains —
+  // Check 33 builds its own set from readdirSync, this one is fixture-only.
+  const X_KNOWN_ADR_IDS = new Set(['0079', '0137', '0196', '0200']);
+
+  const X_GOOD_JUSTFILE = `mutate-core:
+    cargo mutants -p game-core
+
+mutate-server cap="324":
+    cargo mutants -p monster-realm-module --cap {{cap}}
+
+coverage:
+    cd client && npm ci && npx vitest run --coverage
+`;
+
+  // The canonical, fully-compliant policy doc. Every negative fixture below is
+  // a TARGETED mutation of this constant (never an independent hand-written
+  // document — the plan's anti-pattern #4 is a parser that never sees a full
+  // realistic shape).
+  const X_GOOD_DOC = `# Nightly red-response policy
+
+## Why this exists
+
+Prose: 14r-a's five silent red nights were not a missing notification
+(ADR-0200 fixed that) — they were a missing OWNER. This file names what
+happens next and who is accountable for it.
+
+${POLICY_MATRIX_ANCHOR}
+
+${X_GOOD_HEADER_ROW}
+${X_GOOD_SEPARATOR}
+${X_ROW_BLOCK}
+
+## Escalation ladder
+
+Prose: ADR-0118 §4 governs a cap re-baseline; ADR-0183 keeps the cap and
+ceiling in lockstep; ADR-0088 is the kill-first rule for a hung nightly run.
+
+${POLICY_SUBSTRATE_ANCHOR}
+
+This file defines RESPONSE, never MEASUREMENT. The recipes that measure are
+\`just mutate-core\`, \`just mutate-server\`, and \`just coverage\` — see the
+justfile for the numbers.
+
+## This file is gated
+
+Prose: evals/nightly-smoke-wiring.eval.mjs Checks 31-35 couple this file to
+.github/workflows/nightly.yml two ways: the job-key SET must match exactly,
+and every job's comment preamble must cite this file back.
+`;
+
+  // A six-job workflow replica carrying, in every declared job's preamble, BOTH
+  // the pre-existing "Failure policy for `<job>`:" phrase (smoke-republish
+  // keeps the real file's un-backticked form, per ADR-0203's parked-item note)
+  // AND a citation line back to POLICY_DOC_PATH — a round trip on that constant
+  // too, so a specialist typo in the literal path cannot false-RED this
+  // section's own positive controls.
+  const X_GOOD_YML = `name: Nightly
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  # Failure policy for \`mutation\`: triaged and inserted as the next slice in
+  # the milestone queue, same tier as fix-red-master, below it in ordering.
+  # See ${POLICY_DOC_PATH} for the full response matrix.
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+  # Failure policy for \`mutation-server\`: triaged and inserted as the next
+  # slice in the milestone queue, same tier as fix-red-master, below it in
+  # ordering. See ${POLICY_DOC_PATH} for the full response matrix.
+  mutation-server:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-server
+  # Failure policy for \`coverage\`: triaged and inserted as the next slice in
+  # the milestone queue, same tier as fix-red-master, below it in ordering.
+  # See ${POLICY_DOC_PATH} for the full response matrix.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+  # Failure policy: any failure is inserted as the NEXT slice in the milestone
+  # queue (priority: same tier as fix-red-master, below it in ordering).
+  # See ${POLICY_DOC_PATH} for the full response matrix.
+  smoke-republish:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just smoke-republish
+  # Failure policy for \`changelog-freshness\`: triaged and inserted as the
+  # next slice in the milestone queue, same tier as fix-red-master, below it
+  # in ordering. See ${POLICY_DOC_PATH} for the full response matrix.
+  changelog-freshness:
+    runs-on: ubuntu-latest
+    steps:
+      - run: node scripts/changelog-freshness.mjs --check
+  # Failure policy for \`notify\`: triaged and inserted as the next slice in
+  # the milestone queue, same tier as fix-red-master, below it in ordering.
+  # See ${POLICY_DOC_PATH} for the full response matrix.
+  notify:
+    needs: [mutation, mutation-server, coverage, smoke-republish, changelog-freshness]
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo notify
+`;
+
+  // Minimal single-job workflow builder for the back-edge (jobPreambleCitesPolicyDoc
+  // / jobHasFailurePolicyComment) fixtures, where the shape of the comment
+  // preamble immediately above `mutation:` is the entire point. `lines` is an
+  // ordered top-to-bottom array of preamble lines; an entry of `''` renders as a
+  // truly BLANK line (breaking the contiguous-comment walk), never a comment.
+  const xBackEdgeYml = (lines, jobName = 'mutation') => {
+    const body = lines.map((l) => (l === '' ? '' : `  # ${l}`)).join('\n');
+    const preamble = body === '' ? '' : `${body}\n`;
+    return `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+${preamble}  ${jobName}:
+    runs-on: ubuntu-latest
+    steps:
+      - run: echo hi
+`;
+  };
+
+  const X_BACKEDGE_PHRASE_LINES = [
+    'Failure policy for `mutation`: triaged and inserted as the next slice in',
+    'the milestone queue, same tier as fix-red-master, below it in ordering.',
+  ];
+  const X_BACKEDGE_CITE_LINE = `See ${POLICY_DOC_PATH} for the full response matrix.`;
+
+  // -------------------------------------------------------------------------
+  // TEETH X1-X12b: parseNightlyPolicyMatrix structural clauses (A0-A9).
+  // -------------------------------------------------------------------------
+
+  // X1 — no anchor heading anywhere. [NOT ok]
+  {
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(POLICY_MATRIX_ANCHOR, '## Job Response Table'),
+      X_GOOD_DOC,
+      'X1',
+    );
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X1: parseNightlyPolicyMatrix accepted a document with no ' +
+          `"${POLICY_MATRIX_ANCHOR}" heading anywhere (clause A1) — a parser that does not ` +
+          'require the anchor cannot anchor anything else that follows it',
+      };
+    }
+  }
+
+  // X1d — POSITIVE CONTROL: the whole doc with CRLF line endings must PASS
+  // (A0 normalises \\r\\n to \\n before any comparison). [ok]
+  {
+    const doc = X_GOOD_DOC.split('\n').join('\r\n');
+    const r = parseNightlyPolicyMatrix(doc);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH X1d: parseNightlyPolicyMatrix rejected a CRLF-throughout document (A0) — a ` +
+          `file saved with Windows line endings must not false-RED. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // X2 — the anchor heading appears twice, the second time as plain prose
+  // elsewhere in the document. [NOT ok]
+  {
+    const doc = `${X_GOOD_DOC}\n${POLICY_MATRIX_ANCHOR}\n`;
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X2: parseNightlyPolicyMatrix accepted a document with the anchor heading ' +
+          'appearing TWICE — A1 requires exactly one RAW line equal to the anchor, or which ' +
+          'section is "the" matrix is ambiguous',
+      };
+    }
+  }
+
+  // X2b — the 12r-b fence-decoy: the anchor heading duplicated INSIDE a fenced
+  // ``` block. A1 counts RAW text with NO fence stripping, so this must still
+  // be rejected. [NOT ok]
+  {
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(
+        '## This file is gated',
+        `\`\`\`\n${POLICY_MATRIX_ANCHOR}\n\`\`\`\n\n## This file is gated`,
+      ),
+      X_GOOD_DOC,
+      'X2b',
+    );
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X2b: parseNightlyPolicyMatrix accepted an anchor heading duplicated INSIDE a ' +
+          'fenced code block — the 12r-b lesson is that fence stripping before counting makes ' +
+          'this fixture score a false GREEN; A1 must count the fenced copy as a second RAW match',
+      };
+    }
+  }
+
+  // X3 — heading present, no header row anywhere. [NOT ok]
+  {
+    const doc = xMustDiffer(X_GOOD_DOC.replace(`${X_GOOD_HEADER_ROW}\n`, ''), X_GOOD_DOC, 'X3');
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X3: parseNightlyPolicyMatrix accepted a document with the anchor heading but ' +
+          'no header row anywhere (A2 must find zero matches, not fall back to "any table")',
+      };
+    }
+  }
+
+  // X4 — header row with 3 columns (missing Escalation). [NOT ok]
+  {
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(X_GOOD_HEADER_ROW, '| Job | Response | Owner |'),
+      X_GOOD_DOC,
+      'X4',
+    );
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X4: parseNightlyPolicyMatrix accepted a 3-column header row (A2 requires an ' +
+          'EXACT 4-cell match against POLICY_MATRIX_HEADER_CELLS)',
+      };
+    }
+  }
+
+  // X4b — header row with the right CELL COUNT but wrong names. [NOT ok]
+  {
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(X_GOOD_HEADER_ROW, '| Job | Action | Who | Next |'),
+      X_GOOD_DOC,
+      'X4b',
+    );
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X4b: parseNightlyPolicyMatrix accepted a 4-cell header row reading ' +
+          '"Job | Action | Who | Next" — right cell COUNT, wrong cell TEXT; A2 must compare ' +
+          'against POLICY_MATRIX_HEADER_CELLS by content, not merely count cells',
+      };
+    }
+  }
+
+  // X5 — a SECOND matrix-shaped header row later in the document (not inside
+  // any fence, plain prose placement). [NOT ok]
+  {
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace('## This file is gated', `${X_GOOD_HEADER_ROW}\n\n## This file is gated`),
+      X_GOOD_DOC,
+      'X5',
+    );
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X5: parseNightlyPolicyMatrix accepted a document with the header cells ' +
+          'repeated a second time outside the recognised table — A2 scans the WHOLE document, ' +
+          'not just the section under the anchor, so a second header-shaped line must trip it',
+      };
+    }
+  }
+
+  // X6 — header row with no separator beneath it. [NOT ok]
+  {
+    const doc = xMustDiffer(X_GOOD_DOC.replace(`${X_GOOD_SEPARATOR}\n`, ''), X_GOOD_DOC, 'X6');
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X6: parseNightlyPolicyMatrix accepted a header row with a DATA row immediately ' +
+          'beneath it (no separator line) — A4 must reject the first data row as an invalid ' +
+          'separator rather than silently treating it as one',
+      };
+    }
+  }
+
+  // X7 — separator with only 2 cells. [NOT ok]
+  {
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(X_GOOD_SEPARATOR, '| --- | --- |'),
+      X_GOOD_DOC,
+      'X7',
+    );
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH X7: parseNightlyPolicyMatrix accepted a 2-cell separator row (A4)',
+      };
+    }
+  }
+
+  // X7b — separator without pipes at all. [NOT ok]
+  {
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(X_GOOD_SEPARATOR, '--- --- --- ---'),
+      X_GOOD_DOC,
+      'X7b',
+    );
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X7b: parseNightlyPolicyMatrix accepted a separator line with no pipes at all ' +
+          '("--- --- --- ---") — A4 requires the line to START AND END with `|`',
+      };
+    }
+  }
+
+  // X8 — one data row with 3 cells (Escalation dropped). The reason must name
+  // the 1-based line number, so the fixture computes the EXPECTED number
+  // itself rather than assuming the implementation's math. [NOT ok]
+  {
+    const badRow = `| \`${X_MATRIX_ROWS[0].job}\` | ${X_MATRIX_ROWS[0].response} | ${X_MATRIX_ROWS[0].owner} |`;
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(xRenderRow(X_MATRIX_ROWS[0]), badRow),
+      X_GOOD_DOC,
+      'X8',
+    );
+    const lineNum = xLineOf(doc, badRow);
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH X8: parseNightlyPolicyMatrix accepted a 3-cell data row (A5)',
+      };
+    }
+    if (r.reason.indexOf(String(lineNum)) === -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH X8-line: parseNightlyPolicyMatrix rejected the 3-cell row but its reason ` +
+          `("${r.reason}") never names line ${lineNum} — A5 requires the 1-based line number so ` +
+          'a human can find the malformed row without re-deriving it',
+      };
+    }
+  }
+
+  // X9 — one data row with an empty Owner cell. [NOT ok]
+  {
+    const badRow = `| \`${X_MATRIX_ROWS[1].job}\` | ${X_MATRIX_ROWS[1].response} |  | ${X_MATRIX_ROWS[1].escalation} |`;
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(xRenderRow(X_MATRIX_ROWS[1]), badRow),
+      X_GOOD_DOC,
+      'X9',
+    );
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X9: parseNightlyPolicyMatrix accepted a data row with an empty Owner cell (A7)',
+      };
+    }
+    const lower = r.reason.toLowerCase();
+    if (lower.indexOf('mutation-server') === -1 || lower.indexOf('owner') === -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH X9-attribution: parseNightlyPolicyMatrix's reason ("${r.reason}") does not name ` +
+          'both the job (mutation-server) and the column (Owner) — A7 must name job+column so a ' +
+          'reader does not have to search every row',
+      };
+    }
+  }
+
+  // X10 — heading + header + separator, then a BLANK LINE — the vacuous table
+  // (zero data rows). [NOT ok]
+  {
+    const doc = xMustDiffer(X_GOOD_DOC.replace(X_ROW_BLOCK, ''), X_GOOD_DOC, 'X10');
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X10: parseNightlyPolicyMatrix accepted a table with a header and separator but ' +
+          'ZERO data rows (A6) — a vacuous table must never read as ok:true',
+      };
+    }
+  }
+
+  // X11 — two rows for `mutation` (duplicate job key). [NOT ok]
+  {
+    const rows = `${X_ROW_BLOCK}\n${xRenderRow(X_MATRIX_ROWS[0])}`;
+    const doc = xMustDiffer(X_GOOD_DOC.replace(X_ROW_BLOCK, rows), X_GOOD_DOC, 'X11');
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH X11: parseNightlyPolicyMatrix accepted TWO rows for `mutation` (A9)',
+      };
+    }
+  }
+
+  // X12 — a Job cell that is not backticked. [NOT ok]
+  {
+    const badRow = xRenderRow(X_MATRIX_ROWS[0]).replace('`mutation`', 'mutation');
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(xRenderRow(X_MATRIX_ROWS[0]), badRow),
+      X_GOOD_DOC,
+      'X12',
+    );
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X12: parseNightlyPolicyMatrix accepted an un-backticked Job cell ("mutation" ' +
+          'instead of "`mutation`") — A8 requires the exact `` /^`[a-z0-9-]+`$/ `` shape',
+      };
+    }
+  }
+
+  // X12b — a garbage line (neither blank, heading, nor a pipe row) between two
+  // data rows. The reason must name the offending line number. [NOT ok]
+  {
+    const garbage = '(this is a garbage line, not a table row)';
+    const rows = X_ROW_BLOCK.replace(
+      `${xRenderRow(X_MATRIX_ROWS[0])}\n${xRenderRow(X_MATRIX_ROWS[1])}`,
+      `${xRenderRow(X_MATRIX_ROWS[0])}\n${garbage}\n${xRenderRow(X_MATRIX_ROWS[1])}`,
+    );
+    const doc = xMustDiffer(X_GOOD_DOC.replace(X_ROW_BLOCK, rows), X_GOOD_DOC, 'X12b');
+    const lineNum = xLineOf(doc, garbage);
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X12b: parseNightlyPolicyMatrix accepted a garbage line sitting between two data ' +
+          'rows inside the matrix section (A5) — a line that is neither blank, a heading, nor a ' +
+          'pipe row must fail the whole parse, not be silently skipped',
+      };
+    }
+    if (r.reason.indexOf(String(lineNum)) === -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH X12b-line: parseNightlyPolicyMatrix's reason ("${r.reason}") never names line ` +
+          `${lineNum}, where the garbage line sits`,
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH X27: A10, the red-team BLOCKER (D-R1). No pipe-table content may
+  // exist anywhere in the document outside the one recognised table.
+  // -------------------------------------------------------------------------
+
+  // X27 — the measured bypass itself: the compliant table, a blank line, a
+  // prose line claiming to supersede it, then a SECOND table whose header
+  // cells are merely RE-CASED plus its own separator and two decoy rows
+  // covering exactly the two jobs this slice exists for. A prototype of
+  // clauses A1-A9 alone scored this fixture GREEN. [NOT ok]
+  {
+    const decoy = `
+
+(update 2026-08-20, supersedes the table above)
+
+| job | response | owner | escalation |
+| --- | --- | --- | --- |
+| \`notify\` | ignore, self-heals | nobody | see slack |
+| \`mutation-server\` | ignore, self-heals | nobody | see slack |`;
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(X_ROW_BLOCK, `${X_ROW_BLOCK}${decoy}`),
+      X_GOOD_DOC,
+      'X27',
+    );
+    const decoyHeader = '| job | response | owner | escalation |';
+    const lineNum = xLineOf(doc, decoyHeader);
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X27 (BLOCKER): parseNightlyPolicyMatrix accepted a document containing a SECOND, ' +
+          're-cased decoy table (job/response/owner/escalation, lowercase) claiming the real ' +
+          'table above it is superseded, covering exactly `notify` and `mutation-server` — the ' +
+          'decoy is invisible to a parser stopping at the first blank line (A5) and MORE ' +
+          'prominent to a human reader than the real table it contradicts. A10 must scan the ' +
+          'WHOLE document for any other line starting with `|`',
+      };
+    }
+    if (r.reason.indexOf(String(lineNum)) === -1) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH X27-line: parseNightlyPolicyMatrix rejected the decoy table but its reason ` +
+          `("${r.reason}") never names line ${lineNum} (the decoy header) — A10 must name the ` +
+          '1-based line number and quote the offending line',
+      };
+    }
+  }
+
+  // X27b — a decoy pipe table in a LATER `##` section of the document (not
+  // adjacent to the real table at all). [NOT ok]
+  {
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(
+        '## Escalation ladder',
+        '## Escalation ladder\n\n| decoy | table | here | now |\n| --- | --- | --- | --- |\n' +
+          '| `x` | `y` | `z` | `w` |',
+      ),
+      X_GOOD_DOC,
+      'X27b',
+    );
+    const r = parseNightlyPolicyMatrix(doc);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X27b: parseNightlyPolicyMatrix accepted a decoy pipe table sitting inside the ' +
+          '## Escalation ladder section, nowhere near the real matrix (A10 must scan the whole ' +
+          'document, not just the region around the anchor)',
+      };
+    }
+  }
+
+  // X27c — POSITIVE CONTROL: a doc containing a `|` character inside a normal
+  // prose sentence (not at line start) must still PASS — A10 is LINE-anchored,
+  // never a global ban on the `|` character. [ok]
+  {
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(
+        '## Escalation ladder',
+        '## Escalation ladder\n\nSee the cap|ceiling coupling note in ADR-0183 for details.',
+      ),
+      X_GOOD_DOC,
+      'X27c',
+    );
+    const r = parseNightlyPolicyMatrix(doc);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X27c: parseNightlyPolicyMatrix rejected a document whose only extra `|` sits ' +
+          `mid-sentence in prose, not at a line start — A10 must be line-anchored. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH X13-X15b, X7c: policyMatrixCoversNightlyJobs — exact SET equality,
+  // both directions, fail-closed.
+  // -------------------------------------------------------------------------
+
+  // X13 — the workflow declares 6 jobs, the doc has only 5 rows (`notify`
+  // dropped) — kills the doc-covers-workflow-only containment false green.
+  // [NOT ok]
+  {
+    const rows = X_MATRIX_ROWS.filter((row) => row.job !== 'notify')
+      .map(xRenderRow)
+      .join('\n');
+    const doc = xMustDiffer(X_GOOD_DOC.replace(X_ROW_BLOCK, rows), X_GOOD_DOC, 'X13');
+    const r = policyMatrixCoversNightlyJobs(doc, X_GOOD_YML);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X13: policyMatrixCoversNightlyJobs accepted a doc missing a row for `notify`, ' +
+          'a job the workflow DOES declare — a one-directional (doc ⊇ workflow-only) ' +
+          'containment check would miss this; the reason must name the missing job',
+      };
+    }
+    if (r.reason.indexOf('notify') === -1) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X13-attribution: the reason ("${r.reason}") never names the missing job \`notify\``,
+      };
+    }
+  }
+
+  // X14 — the doc has a row for a job the workflow no longer declares — the
+  // other direction (the 12r-b headline case). [NOT ok]
+  {
+    const ghost = xRenderRow({
+      job: 'ghost-job',
+      response: 'queued as the next slice',
+      owner: 'build-loop supervisor',
+      escalation: 'ADR-0079 names the queue-insertion precedent',
+    });
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(X_ROW_BLOCK, `${X_ROW_BLOCK}\n${ghost}`),
+      X_GOOD_DOC,
+      'X14',
+    );
+    const r = policyMatrixCoversNightlyJobs(doc, X_GOOD_YML);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X14: policyMatrixCoversNightlyJobs accepted a doc with a row for `ghost-job`, ' +
+          'which the workflow does not declare — the workflow-covers-doc-only direction must ' +
+          'also be checked',
+      };
+    }
+    if (r.reason.indexOf('ghost-job') === -1) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X14-attribution: the reason ("${r.reason}") never names the extra row \`ghost-job\``,
+      };
+    }
+  }
+
+  // X15 — workflow text with no `jobs:` anchor at all — must fail CLOSED, not
+  // vacuously pass on an empty declared-set. [NOT ok]
+  {
+    const yml = 'name: Nightly\non:\n  workflow_dispatch:\n';
+    const r = policyMatrixCoversNightlyJobs(X_GOOD_DOC, yml);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X15: policyMatrixCoversNightlyJobs accepted a workflow with no top-level ' +
+          '`jobs:` mapping — zero declared keys must FAIL CLOSED, never read as "the doc covers ' +
+          'everything the (empty) workflow declares"',
+      };
+    }
+  }
+
+  // X15b — the workflow's only job key sits at 4-space indent, so the derived
+  // declared set is empty even though `jobs:` exists — must also fail closed.
+  // [NOT ok]
+  {
+    const yml = `name: Nightly
+jobs:
+    mutation:
+      runs-on: ubuntu-latest
+      steps:
+        - run: just mutate-core
+`;
+    const r = policyMatrixCoversNightlyJobs(X_GOOD_DOC, yml);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X15b: policyMatrixCoversNightlyJobs accepted a workflow whose only job key is ' +
+          'indented 4 spaces (declaredJobKeys only recognises 2-space indent under jobs:, so the ' +
+          'derived set is EMPTY) — must fail closed exactly like X15, not pass vacuously',
+      };
+    }
+  }
+
+  // X7c — POSITIVE CONTROL: doc rows and workflow jobs in a DIFFERENT order
+  // must still PASS — this is a SET comparison, never a row-order comparison.
+  // [ok]
+  {
+    const rows = [...X_MATRIX_ROWS].reverse().map(xRenderRow).join('\n');
+    const doc = xMustDiffer(X_GOOD_DOC.replace(X_ROW_BLOCK, rows), X_GOOD_DOC, 'X7c');
+    const r = policyMatrixCoversNightlyJobs(doc, X_GOOD_YML);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X7c: policyMatrixCoversNightlyJobs rejected a doc whose rows are in REVERSED order relative to the workflow's job declarations — job-key SET equality must be order-insensitive. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH X16-X19c, X5c: policyMatrixRowsAreSubstantive — C1-C5.
+  // -------------------------------------------------------------------------
+
+  // X16 — a Response cell reading "under investigation" (routes nowhere).
+  // [NOT ok]
+  {
+    const badRow = xRenderRow({ ...X_MATRIX_ROWS[0], response: 'under investigation' });
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(xRenderRow(X_MATRIX_ROWS[0]), badRow),
+      X_GOOD_DOC,
+      'X16',
+    );
+    const r = policyMatrixRowsAreSubstantive(doc, X_KNOWN_ADR_IDS);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X16: policyMatrixRowsAreSubstantive accepted a Response cell reading "under ' +
+          'investigation" — C1 requires one of POLICY_ROUTING_KEYWORDS ("next slice"/"queue"/' +
+          '"priority")',
+      };
+    }
+  }
+
+  // X17 — Owner cell reading "TBD". [NOT ok]
+  {
+    const badRow = xRenderRow({ ...X_MATRIX_ROWS[1], owner: 'TBD' });
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(xRenderRow(X_MATRIX_ROWS[1]), badRow),
+      X_GOOD_DOC,
+      'X17',
+    );
+    const r = policyMatrixRowsAreSubstantive(doc, X_KNOWN_ADR_IDS);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH X17: policyMatrixRowsAreSubstantive accepted Owner="TBD" (C2)',
+      };
+    }
+  }
+
+  // X17b — ALL SIX rows carry the same Owner ("build-loop supervisor",
+  // including the `notify` row). C5 must reject a constant Owner column even
+  // though every individual cell passes C2. [NOT ok]
+  {
+    const rows = X_MATRIX_ROWS.map((row) =>
+      xRenderRow({ ...row, owner: 'build-loop supervisor' }),
+    ).join('\n');
+    const doc = xMustDiffer(X_GOOD_DOC.replace(X_ROW_BLOCK, rows), X_GOOD_DOC, 'X17b');
+    const r = policyMatrixRowsAreSubstantive(doc, X_KNOWN_ADR_IDS);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X17b: policyMatrixRowsAreSubstantive accepted a matrix where EVERY row says ' +
+          'Owner="build-loop supervisor" — each cell individually passes C2\'s exact-membership ' +
+          'check, but a constant Owner column recreates the unowned-job failure this slice ' +
+          'exists to close; C5 requires every POLICY_OWNERS member to appear in at least one row',
+      };
+    }
+    if (r.reason.indexOf('operator (Drew)') === -1) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X17b-attribution: the reason ("${r.reason}") never names the missing owner "operator (Drew)"`,
+      };
+    }
+  }
+
+  // X18 — Owner "the build-loop supervisor and friends" — proves EXACT
+  // membership, not substring containment. [NOT ok]
+  {
+    const badRow = xRenderRow({
+      ...X_MATRIX_ROWS[2],
+      owner: 'the build-loop supervisor and friends',
+    });
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(xRenderRow(X_MATRIX_ROWS[2]), badRow),
+      X_GOOD_DOC,
+      'X18',
+    );
+    const r = policyMatrixRowsAreSubstantive(doc, X_KNOWN_ADR_IDS);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X18: policyMatrixRowsAreSubstantive accepted Owner="the build-loop supervisor ' +
+          'and friends" — this CONTAINS "build-loop supervisor" as a substring but is not the ' +
+          'exact enum member; C2 must be POLICY_OWNERS.includes(owner), never a substring test',
+      };
+    }
+  }
+
+  // X18b — Owner "Build-Loop Supervisor" — case drift must NOT be silently
+  // normalised away. [NOT ok]
+  {
+    const badRow = xRenderRow({ ...X_MATRIX_ROWS[3], owner: 'Build-Loop Supervisor' });
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(xRenderRow(X_MATRIX_ROWS[3]), badRow),
+      X_GOOD_DOC,
+      'X18b',
+    );
+    const r = policyMatrixRowsAreSubstantive(doc, X_KNOWN_ADR_IDS);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X18b: policyMatrixRowsAreSubstantive accepted Owner="Build-Loop Supervisor" ' +
+          '(case-drifted from the exact enum member "build-loop supervisor") — C2 must compare ' +
+          'the trimmed cell verbatim, not case-insensitively',
+      };
+    }
+  }
+
+  // X19 — Escalation "see the ADR" (no id cited at all). [NOT ok]
+  {
+    const badRow = xRenderRow({ ...X_MATRIX_ROWS[4], escalation: 'see the ADR' });
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(xRenderRow(X_MATRIX_ROWS[4]), badRow),
+      X_GOOD_DOC,
+      'X19',
+    );
+    const r = policyMatrixRowsAreSubstantive(doc, X_KNOWN_ADR_IDS);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: 'TEETH X19: policyMatrixRowsAreSubstantive accepted Escalation="see the ADR" (C3)',
+      };
+    }
+  }
+
+  // X19b — Escalation cites ADR-9999, and the supplied knownAdrIds does NOT
+  // contain it — a literal /ADR-\\d{4}/ regex alone cannot catch this. [NOT ok]
+  {
+    const badRow = xRenderRow({ ...X_MATRIX_ROWS[5], escalation: 'see ADR-9999 for details' });
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(xRenderRow(X_MATRIX_ROWS[5]), badRow),
+      X_GOOD_DOC,
+      'X19b',
+    );
+    const r = policyMatrixRowsAreSubstantive(doc, X_KNOWN_ADR_IDS);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X19b: policyMatrixRowsAreSubstantive accepted Escalation="see ADR-9999 for ' +
+          'details" against a knownAdrIds set that does NOT contain "9999" (C4) — a shape check ' +
+          'alone is not existence, and an optional/defaulted knownAdrIds argument would reopen ' +
+          'this exact bypass',
+      };
+    }
+  }
+
+  // X19c — POSITIVE CONTROL: a real cited id present in knownAdrIds PASSES.
+  // [ok]
+  {
+    const r = policyMatrixRowsAreSubstantive(X_GOOD_DOC, X_KNOWN_ADR_IDS);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X19c: policyMatrixRowsAreSubstantive rejected the canonical matrix, whose every cited ADR id is a member of X_KNOWN_ADR_IDS. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // X5c — POSITIVE CONTROL: a matrix using BOTH POLICY_OWNERS members PASSES
+  // (proves C5 is satisfiable, and that both enum members are live). [ok]
+  {
+    const r = policyMatrixRowsAreSubstantive(X_GOOD_DOC, X_KNOWN_ADR_IDS);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X5c: policyMatrixRowsAreSubstantive rejected the canonical matrix, which uses both POLICY_OWNERS members ("build-loop supervisor" on five rows, "operator (Drew)" on the notify row). Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH X20-X21d: policyDocDeclaresMeasurementSubstrate — D1-D3.
+  // -------------------------------------------------------------------------
+
+  // X20 — no `## Measurement substrate` section at all. [NOT ok]
+  {
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(POLICY_SUBSTRATE_ANCHOR, '## Measurement Notes'),
+      X_GOOD_DOC,
+      'X20',
+    );
+    const r = policyDocDeclaresMeasurementSubstrate(doc, X_GOOD_JUSTFILE);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X20: policyDocDeclaresMeasurementSubstrate accepted a document with no "${POLICY_SUBSTRATE_ANCHOR}" heading (D1)`,
+      };
+    }
+  }
+
+  // X21 — the section is present but names no recipe at all. [NOT ok]
+  {
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(
+        `${POLICY_SUBSTRATE_ANCHOR}\n\nThis file defines RESPONSE, never MEASUREMENT. The recipes that measure are\n\`just mutate-core\`, \`just mutate-server\`, and \`just coverage\` — see the\njustfile for the numbers.`,
+        `${POLICY_SUBSTRATE_ANCHOR}\n\nThis file defines RESPONSE, never MEASUREMENT.`,
+      ),
+      X_GOOD_DOC,
+      'X21',
+    );
+    const r = policyDocDeclaresMeasurementSubstrate(doc, X_GOOD_JUSTFILE);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X21: policyDocDeclaresMeasurementSubstrate accepted a Measurement substrate ' +
+          'section naming NONE of `just mutate-core` / `just mutate-server` / `just coverage` (D2)',
+      };
+    }
+  }
+
+  // X21b — the substrate heading appears TWICE. [NOT ok]
+  {
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(
+        '## This file is gated',
+        `${POLICY_SUBSTRATE_ANCHOR}\n\n(duplicate heading, plain prose, no recipes named)\n\n## This file is gated`,
+      ),
+      X_GOOD_DOC,
+      'X21b',
+    );
+    const r = policyDocDeclaresMeasurementSubstrate(doc, X_GOOD_JUSTFILE);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X21b: policyDocDeclaresMeasurementSubstrate accepted a document with "${POLICY_SUBSTRATE_ANCHOR}" appearing TWICE (D1 requires exactly one RAW line)`,
+      };
+    }
+  }
+
+  // X21c — the section additionally names `just mutate-kore`, which is absent
+  // from the justfile text — D3 must reject it even though the three REAL
+  // recipe names are still present (so D2 alone would pass). [NOT ok]
+  {
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(
+        'This file defines RESPONSE, never MEASUREMENT. The recipes that measure are\n`just mutate-core`, `just mutate-server`, and `just coverage` — see the\njustfile for the numbers.',
+        'This file defines RESPONSE, never MEASUREMENT. The recipes that measure are\n`just mutate-core`, `just mutate-server`, `just coverage`, and `just mutate-kore`\n(a decoy recipe name that does not exist) — see the justfile for the numbers.',
+      ),
+      X_GOOD_DOC,
+      'X21c',
+    );
+    const r = policyDocDeclaresMeasurementSubstrate(doc, X_GOOD_JUSTFILE);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X21c: policyDocDeclaresMeasurementSubstrate accepted a substrate section naming ' +
+          '`just mutate-kore`, which the committed justfile does not declare as a recipe (D3) — ' +
+          "D2's three required literals being present is not the same as every NAMED recipe " +
+          'actually existing',
+      };
+    }
+  }
+
+  // X21d — POSITIVE CONTROL: the three real recipe names against a justfile
+  // fixture declaring exactly `mutate-core:`, `mutate-server cap="324":`, and
+  // `coverage:` PASSES. [ok]
+  {
+    const r = policyDocDeclaresMeasurementSubstrate(X_GOOD_DOC, X_GOOD_JUSTFILE);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X21d: policyDocDeclaresMeasurementSubstrate rejected the canonical doc against a justfile declaring all three real recipes. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH X22-X26, X6c: jobPreambleCitesPolicyDoc — clause E, boundary-aware.
+  // -------------------------------------------------------------------------
+
+  // X22 — the preamble carries the full "Failure policy for `mutation`:" line
+  // but no doc path anywhere. [NOT ok]
+  {
+    const yml = xBackEdgeYml(X_BACKEDGE_PHRASE_LINES);
+    const r = jobPreambleCitesPolicyDoc(yml, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X22: jobPreambleCitesPolicyDoc accepted a preamble that documents the failure ' +
+          `policy but never cites ${POLICY_DOC_PATH} — the routing phrase existing is not the ` +
+          'back-edge this predicate exists to prove',
+      };
+    }
+  }
+
+  // X22b — the measured substring decoy: "notdocs/nightly-red-response-policy.md
+  // is unrelated" CONTAINS POLICY_DOC_PATH as a raw substring (preceded by
+  // "not"), which a bare `indexOf` accepts. The bounded-token rule must reject
+  // it because the character immediately before the match is a letter. [NOT ok]
+  {
+    const yml = xBackEdgeYml([`not${POLICY_DOC_PATH} is unrelated, do not confuse it`]);
+    const r = jobPreambleCitesPolicyDoc(yml, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH X22b: jobPreambleCitesPolicyDoc accepted "not${POLICY_DOC_PATH} is unrelated" — ` +
+          `this contains ${POLICY_DOC_PATH} as a raw substring immediately preceded by the ` +
+          'letter "t", which the bounded-token rule must reject as not a real citation',
+      };
+    }
+  }
+
+  // X22c — POSITIVE CONTROL: the path at the very start of the comment body
+  // (`# docs/nightly-red-response-policy.md — …`) must still PASS. [ok]
+  {
+    const yml = xBackEdgeYml([
+      `${POLICY_DOC_PATH} — see the response matrix for what happens next.`,
+    ]);
+    const r = jobPreambleCitesPolicyDoc(yml, 'mutation');
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X22c: jobPreambleCitesPolicyDoc rejected a comment whose body starts with the bare path "${POLICY_DOC_PATH}" — the character before the match is the comment's own leading space, which must be accepted. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // X23 — the doc path is cited, but a BLANK LINE separates it from the job
+  // key, breaking the contiguous preamble walk. [NOT ok]
+  {
+    const yml = xBackEdgeYml([X_BACKEDGE_CITE_LINE, '']);
+    const r = jobPreambleCitesPolicyDoc(yml, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X23: jobPreambleCitesPolicyDoc accepted a citation line separated from the job ' +
+          'key by a blank line — the contiguous-comment walk (same discipline as ' +
+          'jobHasFailurePolicyComment) must stop at the blank line and never see it',
+      };
+    }
+  }
+
+  // X24 — the doc path appears only INSIDE the job's steps: block (buried at
+  // step indent), never in the qualifying 2-space preamble above the job key.
+  // [NOT ok]
+  {
+    const yml = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  # Failure policy for \`mutation\`: triaged and inserted as the next slice in
+  # the milestone queue, same tier as fix-red-master, below it in ordering.
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      # ${POLICY_DOC_PATH} — buried inside the job body, not the preamble
+      - run: just mutate-core
+`;
+    const r = jobPreambleCitesPolicyDoc(yml, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          "TEETH X24: jobPreambleCitesPolicyDoc accepted a citation that lives INSIDE the job's " +
+          'steps: block rather than the contiguous 2-space preamble directly above the job key — ' +
+          'a step-scoped comment must not satisfy the workflow-side back-edge',
+      };
+    }
+  }
+
+  // X25 — attribution laundering: the doc path is cited only in the
+  // NEIGHBOURING job's preamble (`coverage`), never `mutation`'s own. [NOT ok]
+  {
+    const yml = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  # Failure policy for \`mutation\`: triaged and inserted as the next slice in
+  # the milestone queue, same tier as fix-red-master, below it in ordering.
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just mutate-core
+  # See ${POLICY_DOC_PATH} for the full response matrix.
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+    const r = jobPreambleCitesPolicyDoc(yml, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X25: jobPreambleCitesPolicyDoc accepted `mutation` as citing the policy doc when ' +
+          'the citation line actually sits above the NEIGHBOURING `coverage` job — cross-' +
+          'attribution must not satisfy the check',
+      };
+    }
+  }
+
+  // X26 — the job key is absent from the workflow entirely. Must FAIL LOUDLY,
+  // never silently "skip" (return ok:true for a job that does not exist).
+  // [NOT ok]
+  {
+    const yml = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+    const r = jobPreambleCitesPolicyDoc(yml, 'mutation');
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'TEETH X26: jobPreambleCitesPolicyDoc returned ok:true for a job key ("mutation") that ' +
+          'is not declared in the workflow at all — an absent job must be a loud FAILURE, never ' +
+          'a vacuous pass',
+      };
+    }
+  }
+
+  // X6c — the "widening a gate matcher can loosen it" guard run in REVERSE: a
+  // preamble carrying BOTH the pre-existing "Failure policy for `mutation`:"
+  // phrase AND the new citation line must satisfy jobPreambleCitesPolicyDoc
+  // AND leave jobHasFailurePolicyComment (BYTE-IDENTICAL, unmodified by this
+  // slice) still satisfied on the exact same fixture. [ok / ok]
+  {
+    const yml = xBackEdgeYml([...X_BACKEDGE_PHRASE_LINES, X_BACKEDGE_CITE_LINE]);
+    const rCite = jobPreambleCitesPolicyDoc(yml, 'mutation');
+    if (!rCite.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X6c-cite: jobPreambleCitesPolicyDoc rejected a preamble carrying both the existing policy phrase and the new citation line. Reason: ${rCite.reason}`,
+      };
+    }
+    const rPolicy = jobHasFailurePolicyComment(yml, 'mutation');
+    if (!rPolicy.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          `TEETH X6c-policy: adding the new citation line to the preamble made ` +
+          `jobHasFailurePolicyComment (which must stay BYTE-IDENTICAL this slice) start ` +
+          `rejecting a fixture it previously accepted. Reason: ${rPolicy.reason}`,
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH X1c: whole-artefact positive control. Prevents the shipped doc +
+  // workflow from redding their own gate the moment all four doc-level
+  // predicates are composed together (never exercised individually above).
+  // -------------------------------------------------------------------------
+  {
+    const rParse = parseNightlyPolicyMatrix(X_GOOD_DOC);
+    if (!rParse.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X1c-parse: parseNightlyPolicyMatrix rejected the canonical replica of the intended real policy doc. Reason: ${rParse.reason}`,
+      };
+    }
+    const rCovers = policyMatrixCoversNightlyJobs(X_GOOD_DOC, X_GOOD_YML);
+    if (!rCovers.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X1c-covers: policyMatrixCoversNightlyJobs rejected the canonical doc against the canonical 6-job workflow. Reason: ${rCovers.reason}`,
+      };
+    }
+    const rSubstantive = policyMatrixRowsAreSubstantive(X_GOOD_DOC, X_KNOWN_ADR_IDS);
+    if (!rSubstantive.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X1c-substantive: policyMatrixRowsAreSubstantive rejected the canonical doc. Reason: ${rSubstantive.reason}`,
+      };
+    }
+    const rSubstrate = policyDocDeclaresMeasurementSubstrate(X_GOOD_DOC, X_GOOD_JUSTFILE);
+    if (!rSubstrate.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X1c-substrate: policyDocDeclaresMeasurementSubstrate rejected the canonical doc. Reason: ${rSubstrate.reason}`,
+      };
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // TEETH X2c, X3c, X4c: parser-tolerance positive controls (false-RED guards).
+  // -------------------------------------------------------------------------
+
+  // X2c — ragged inner whitespace in every cell, plus `:---:` alignment colons
+  // in the separator, must still PASS. [ok]
+  {
+    const raggedHeader = '| Job   |  Response  | Owner |Escalation|';
+    const raggedSeparator = '|:---|:---:|---:|:---:|';
+    const raggedRows = X_MATRIX_ROWS.map(
+      (row) => `|  \`${row.job}\`  |   ${row.response}   | ${row.owner}|${row.escalation} |`,
+    ).join('\n');
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace(X_GOOD_HEADER_ROW, raggedHeader)
+        .replace(X_GOOD_SEPARATOR, raggedSeparator)
+        .replace(X_ROW_BLOCK, raggedRows),
+      X_GOOD_DOC,
+      'X2c',
+    );
+    const r = parseNightlyPolicyMatrix(doc);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X2c: parseNightlyPolicyMatrix rejected a table with ragged inner cell whitespace and \`:---:\` alignment colons in the separator — both are legal, common markdown-table styling. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // X3c — an UNRELATED fenced block (a yaml snippet, no anchor, no header
+  // cells) present elsewhere in the doc must not cause a false RED. [ok]
+  {
+    const fence = '```yaml\njobs:\n  example:\n    runs-on: ubuntu-latest\n```';
+    const doc = xMustDiffer(
+      X_GOOD_DOC.replace('## This file is gated', `${fence}\n\n## This file is gated`),
+      X_GOOD_DOC,
+      'X3c',
+    );
+    const r = parseNightlyPolicyMatrix(doc);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X3c: parseNightlyPolicyMatrix rejected a document containing an unrelated fenced yaml snippet with no anchor and no header cells inside it. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // X4c — extra `##` sections AFTER the matrix must PASS (A3's "before the
+  // next ## line" constraint concerns the header/anchor pairing, not a ban on
+  // trailing sections). [ok]
+  {
+    const doc = xMustDiffer(
+      `${X_GOOD_DOC}\n## Appendix: historical incident log\n\nProse about 14r-a's five red nights.\n`,
+      X_GOOD_DOC,
+      'X4c',
+    );
+    const r = parseNightlyPolicyMatrix(doc);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `TEETH X4c: parseNightlyPolicyMatrix rejected a document with extra ## sections AFTER the matrix. Reason: ${r.reason}`,
+      };
+    }
+  }
+
+  // =========================================================================
   // REAL FILE CHECKS
   // =========================================================================
   const root = path.resolve('.');
@@ -8093,6 +9574,21 @@ ci: lint typecheck test eval
       pass: false,
       detail:
         'docs/adr/0079-nightly-republish-smoke.md does not exist — failure policy must be documented',
+    };
+  }
+
+  // 16r-h: the nightly red-response policy doc (ADR-0203). Read here, in the
+  // same try/catch shape as adrContent above, so an absent file is a loud
+  // named failure rather than a ReferenceError deeper in Checks 31-35.
+  let policyDoc;
+  const policyDocPath = path.join(root, POLICY_DOC_PATH);
+  try {
+    policyDoc = readFileSync(policyDocPath, 'utf8');
+  } catch {
+    return {
+      name,
+      pass: false,
+      detail: `${POLICY_DOC_PATH} does not exist — the nightly red-response policy must be committed (16r-h)`,
     };
   }
 
@@ -8556,10 +10052,126 @@ ci: lint typecheck test eval
     }
   }
 
+  // 16r-h (ADR-0203): Checks 31-35 append AFTER Check 24
+  // (nightlyJobStructureIsUnambiguous), which is a non-obvious ORDERING
+  // dependency, not an accident of where these checks happen to land. A
+  // duplicated job key makes declaredJobKeys() FIRST-WINS while GitHub's real
+  // YAML parser is LAST-WINS, so any check that TRUSTS declaredJobKeys (Checks
+  // 32 and 35 both do, via policyMatrixCoversNightlyJobs and the loop below)
+  // could otherwise validate a job definition that never actually runs.
+  // Appending after Check 30 — rather than inserting mid-sequence and
+  // renumbering — satisfies that ordering for free, since Check 24 already
+  // ran and returned first on any ambiguity.
+
+  // Check 31: the policy doc's job-response matrix parses cleanly (A0-A10).
+  {
+    const r = parseNightlyPolicyMatrix(policyDoc);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `${POLICY_DOC_PATH} does not parse as a valid job-response matrix (Check 31): ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 32: the matrix's job-key SET is exactly equal to nightly.yml's
+  // declared jobs (clause B) — no missing row, no stale row.
+  {
+    const r = policyMatrixCoversNightlyJobs(policyDoc, nightlyYml);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `${POLICY_DOC_PATH}'s job-response matrix has drifted from nightly.yml's declared jobs (Check 32): ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 33: every row is substantive (C1-C5) — a real routing phrase, an
+  // enum-member owner with both members represented, and an escalation citing
+  // an ADR that actually exists on disk. An EMPTY knownAdrIds set would make
+  // C4 vacuous (every citation would look "unverifiable" or, worse, an
+  // impl might treat "no known ids" as "skip the check"), so that shape is
+  // itself a named failure here, not merely an empty-directory edge case.
+  {
+    let adrFiles;
+    try {
+      adrFiles = readdirSync(path.join(root, 'docs/adr'));
+    } catch {
+      return {
+        name,
+        pass: false,
+        detail:
+          'cannot read docs/adr/ — Check 33 has no ADR ids to verify Escalation citations against',
+      };
+    }
+    const knownAdrIds = new Set(
+      adrFiles.filter((f) => /^\d{4}.*\.md$/.test(f)).map((f) => f.slice(0, 4)),
+    );
+    if (knownAdrIds.size === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'docs/adr/ contains no numbered ADR files — Check 33 refuses to run policyMatrixRowsAreSubstantive ' +
+          'against an EMPTY knownAdrIds set, which would make its C4 clause vacuous',
+      };
+    }
+    const r = policyMatrixRowsAreSubstantive(policyDoc, knownAdrIds);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `${POLICY_DOC_PATH} has a non-substantive row (Check 33): ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 34: the Measurement substrate section names real justfile recipes.
+  {
+    const r = policyDocDeclaresMeasurementSubstrate(policyDoc, justfile);
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `${POLICY_DOC_PATH}'s Measurement substrate section is missing or incomplete (Check 34): ${r.reason}`,
+      };
+    }
+  }
+
+  // Check 35: every declared nightly job cites the policy doc back from its
+  // own comment preamble — the workflow-side back-edge. Driven over
+  // declaredJobKeys(nightlyYml), never a hardcoded job list, so a seventh job
+  // added tomorrow REDs until it is cited. GUARDED against a zero-iteration
+  // loop falling through to pass:true — the classic vacuous-green shape.
+  {
+    const jobs = declaredJobKeys(nightlyYml);
+    if (jobs.length === 0) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'nightly.yml declares zero jobs (Check 35) — refusing to report success from a loop ' +
+          'that never ran',
+      };
+    }
+    for (const job of jobs) {
+      const r = jobPreambleCitesPolicyDoc(nightlyYml, job);
+      if (!r.ok) {
+        return {
+          name,
+          pass: false,
+          detail: `nightly.yml job '${job}' does not cite ${POLICY_DOC_PATH} from its comment preamble (Check 35): ${r.reason}`,
+        };
+      }
+    }
+  }
+
   return {
     name,
     pass: true,
     detail:
-      'nightly smoke-republish correctly wired: job exists in nightly.yml (not ci.yml), references smoke-republish.sh, justfile recipe present, script committed, ADR-0079 documents the failure policy; m13.5a additions: mutation/coverage/mutation-server jobs present and unneutered, schedule+dispatch triggers live, coverage threshold ≥96, mutate-server recipe intact; 14r-a additions: all three guarded jobs document an attributed failure policy in their comment preamble, and the justfile mutate-server cap= default equals MUTATE_SERVER_CAP_BASELINE; lp-03 additions (ADR-0200): both mutation jobs upload mutants.out/ with if: always(), under distinct artifact names, and the notify job fans in over every other job, admits failure/skipped/cancelled, holds an effective issues: write grant that no other job holds, and opens exactly one attributed issue per non-success job; 16r-c additions (ADR-0196): nightly.yml has exactly one jobs: mapping with no duplicate job keys and no workflow-scope neuter (no top-level defaults:, no PATH key in the top-level env:), and the changelog-freshness job is declared, documents an attributed failure policy, and runs its two gate steps — the TAP gating suite and `node scripts/changelog-freshness.mjs --check` — verbatim and in order per CHANGELOG_FRESHNESS_GATES, with the justfile GIT_CLIFF_VERSION, the workflow git-cliff@<version> install pin and the pinned `changelog:` recipe body all in agreement',
+      "nightly smoke-republish correctly wired: job exists in nightly.yml (not ci.yml), references smoke-republish.sh, justfile recipe present, script committed, ADR-0079 documents the failure policy; m13.5a additions: mutation/coverage/mutation-server jobs present and unneutered, schedule+dispatch triggers live, coverage threshold ≥96, mutate-server recipe intact; 14r-a additions: all three guarded jobs document an attributed failure policy in their comment preamble, and the justfile mutate-server cap= default equals MUTATE_SERVER_CAP_BASELINE; lp-03 additions (ADR-0200): both mutation jobs upload mutants.out/ with if: always(), under distinct artifact names, and the notify job fans in over every other job, admits failure/skipped/cancelled, holds an effective issues: write grant that no other job holds, and opens exactly one attributed issue per non-success job; 16r-c additions (ADR-0196): nightly.yml has exactly one jobs: mapping with no duplicate job keys and no workflow-scope neuter (no top-level defaults:, no PATH key in the top-level env:), and the changelog-freshness job is declared, documents an attributed failure policy, and runs its two gate steps — the TAP gating suite and `node scripts/changelog-freshness.mjs --check` — verbatim and in order per CHANGELOG_FRESHNESS_GATES, with the justfile GIT_CLIFF_VERSION, the workflow git-cliff@<version> install pin and the pinned `changelog:` recipe body all in agreement; 16r-h additions (ADR-0203): docs/nightly-red-response-policy.md declares a job-response matrix whose job-key set exactly equals nightly.yml's declared jobs, every row names a real routing response, an owner drawn from the closed POLICY_OWNERS enum with both members represented, and an escalation citing an ADR that exists on disk, the Measurement substrate section names the three real justfile recipes, and every declared nightly job cites the policy doc back from its own comment preamble",
   };
 }
