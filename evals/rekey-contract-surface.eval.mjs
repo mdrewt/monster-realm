@@ -16,7 +16,7 @@
 //
 // WHY EACH TOOTH BITES:
 //   T1 contract surface — reds when the manifest is module-private (the state
-//      this slice starts in: a namespace import yields `undefined`), when the
+//      this slice starts in: the import namespace yields `undefined`), when the
 //      container is thawed, and when ONLY the container is frozen while its
 //      record entries stay mutable — `Object.freeze` is shallow, so a shallow
 //      freeze still permits `REKEY_MANIFEST['profile.identity'].rekey = 'noop('`,
@@ -50,6 +50,27 @@
 //      argv[1] undefined the dirname-widening cheat is invisible and the tooth
 //      is blind to the only shape that matters.
 //
+// WHY THE IMPORT IS LAZY AND WHY T3 RUNS FIRST — do NOT "clean this up" back
+// into a static `import * as gci from './guest-claim-integrity.eval.mjs'`.
+// MEASURED on the real tree with the guard widened to `path.dirname` equality:
+// a static top-level import is resolved before any of this file's own code
+// runs, and when this eval is the entry point `process.argv[1]` is
+// `evals/rekey-contract-surface.eval.mjs` — the SAME DIRNAME as the target. The
+// widened guard therefore fired during OUR import, ran the 59-tooth suite and
+// called `process.exit(0)`, killing this process before `default()` was ever
+// called: `node evals/rekey-contract-surface.eval.mjs` exited 0 with the string
+// `rekey-contract-surface` appearing ZERO times in its own output, and under
+// evals/run.mjs the loop printed 34 PASS + 3 FAIL and still exited 0. A gate
+// that is silently executed to death by the module it audits is worse than one
+// that merely fails to bite.
+// So: T3 spawns its CHILD first, with NO in-process import of the target. If
+// that child shows any output or a non-zero exit, this eval returns the failure
+// IMMEDIATELY and never imports the target at all, so the parent survives to
+// report it. Only once import purity is PROVEN does `default()` perform the
+// lazy `await import(...)` that T1 and T2 consume. That early return is the ONE
+// deliberate exception to this file's aggregate-everything rule (T1 and T2 are
+// still reported together, never short-circuited against each other).
+//
 // This file re-implements NO Rust walk and reads NO server-module source: a
 // second copy of the tree-reader rule is exactly the drift the slice prevents.
 // No `new RegExp()` anywhere (Semgrep detect-non-literal-regexp is a CI gate) —
@@ -59,7 +80,6 @@ import { spawnSync } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import * as gci from './guest-claim-integrity.eval.mjs';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(HERE, '..');
@@ -129,10 +149,11 @@ const EXPECT_SIZE = EXPECT_COLUMNS.length;
 
 /**
  * T1 — the exported, deeply frozen contract surface.
+ * @param {Record<string, unknown>} mod The lazily-imported target namespace.
  * @returns {{failures: string[], note: string}} Tagged failures and a success note.
  */
-function checkContractSurface() {
-  const manifest = gci.REKEY_MANIFEST;
+function checkContractSurface(mod) {
+  const manifest = mod.REKEY_MANIFEST;
 
   if (manifest === null || manifest === undefined || typeof manifest !== 'object') {
     let got = typeof manifest;
@@ -206,10 +227,10 @@ function checkContractSurface() {
     );
   }
 
-  if (typeof gci.findIdentityColumns !== 'function') {
+  if (typeof mod.findIdentityColumns !== 'function') {
     failures.push(
       `[T1/walker-export] ${TARGET_REL} does not export \`findIdentityColumns\` as a function ` +
-        `(got ${typeof gci.findIdentityColumns}) — M22 would have to re-implement the Rust tree ` +
+        `(got ${typeof mod.findIdentityColumns}) — M22 would have to re-implement the Rust tree ` +
         'walk, which is the exact drift this seam freeze exists to prevent.',
     );
   }
@@ -224,14 +245,15 @@ function checkContractSurface() {
 
 /**
  * T2 — the walker's return shape, and that it reads STRIPPED source.
+ * @param {Record<string, unknown>} mod The lazily-imported target namespace.
  * @returns {{failures: string[], note: string}} Tagged failures and a success note.
  */
-function checkWalkerShape() {
-  if (typeof gci.findIdentityColumns !== 'function') {
+function checkWalkerShape(mod) {
+  if (typeof mod.findIdentityColumns !== 'function') {
     return {
       failures: [
         `[T2/import] \`findIdentityColumns\` is not exported from ${TARGET_REL} (got ` +
-          `${typeof gci.findIdentityColumns}) — the walker tooth cannot run.`,
+          `${typeof mod.findIdentityColumns}) — the walker tooth cannot run.`,
       ],
       note: '',
     };
@@ -239,7 +261,7 @@ function checkWalkerShape() {
 
   let cols;
   try {
-    cols = gci.findIdentityColumns(FIXTURE_TREE);
+    cols = mod.findIdentityColumns(FIXTURE_TREE);
   } catch (e) {
     return {
       failures: [`[T2/threw] findIdentityColumns threw on the fixture tree: ${e?.message ?? e}`],
@@ -316,6 +338,10 @@ function checkWalkerShape() {
 
 /**
  * T3 — importing the eval module must run nothing at all.
+ *
+ * Runs BEFORE this file imports the target, and touches it ONLY through a child
+ * process: an in-process import of a module whose guard fires at import time
+ * would `process.exit()` this eval before it could report that very fact.
  * @returns {{failures: string[], note: string}} Tagged failures and a success note.
  */
 function checkImportPurity() {
@@ -411,10 +437,41 @@ export default async function rekeyContractSurfaceEval() {
     'rekey-contract-surface (guest-claim-integrity exports a deeply frozen REKEY_MANIFEST and a ' +
     'stripped-source findIdentityColumns, and importing it runs nothing)';
 
+  // T3 FIRST, out of process, before this file has imported the target at all —
+  // see the header. This is the one DELIBERATE short-circuit in the file: if the
+  // module under audit runs anything at import time, loading it below would kill
+  // this process (measured: exit 0, zero mention of this eval in the output)
+  // instead of letting it report.
+  const t3 = runTooth('T3', checkImportPurity);
+  if (t3.failures.length > 0) {
+    return {
+      name,
+      pass: false,
+      detail:
+        `${t3.failures.join(' | ')} | [T1+T2 SKIPPED] deliberately not run: importing ` +
+        `${TARGET_REL} in-process while it has a live import-time side effect would ` +
+        'process.exit() this eval before it could report the failure above.',
+    };
+  }
+
+  // Import purity is now PROVEN, so loading the module under audit is safe.
+  // Lazy on purpose — a static top-level import would be resolved before any of
+  // the above ran. Do not hoist this.
+  let mod;
+  try {
+    mod = await import('./guest-claim-integrity.eval.mjs');
+  } catch (e) {
+    return {
+      name,
+      pass: false,
+      detail: `[T1/import-threw] importing ${TARGET_REL} threw: ${e?.message ?? String(e)}`,
+    };
+  }
+
   const results = [
-    runTooth('T1', checkContractSurface),
-    runTooth('T2', checkWalkerShape),
-    runTooth('T3', checkImportPurity),
+    runTooth('T1', () => checkContractSurface(mod)),
+    runTooth('T2', () => checkWalkerShape(mod)),
+    t3,
   ];
 
   const failures = results.flatMap((r) => r.failures);
