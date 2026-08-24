@@ -1355,11 +1355,55 @@ export function checkSingleUseConsumed(accountsSrc) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Freeze a manifest ENTRIES-FIRST, then the container.
+ *
+ * `Object.freeze` is shallow, and the half that matters here is the entries:
+ * `evals/run.mjs` imports every eval into ONE process, so this module — and
+ * therefore this object — is a single instance shared by every co-resident
+ * eval. A stray write to an entry's `rekey`/`exists` needle does not merely
+ * corrupt a lookup, it silently GREENS the [G6/consumed] clause, which this
+ * file's own header notes is the only part of G6 that nothing else in the repo
+ * covers. Frozen, that write is a loud TypeError instead (ESM is strict mode).
+ * Consumers spread-copy to build a variant; they never mutate.
+ * @param {Record<string, string|{rekey:string, exists:string}>} manifest
+ * @returns {Record<string, string|{rekey:string, exists:string}>} The same object, frozen.
+ */
+function freezeManifest(manifest) {
+  for (const key of Object.keys(manifest)) {
+    const entry = manifest[key];
+    if (typeof entry === 'object') Object.freeze(entry);
+  }
+  return Object.freeze(manifest);
+}
+
+/**
  * "table.field" -> 'EXEMPT: <reason>' | 'BLOCKED: <reason>' |
  * {rekey: '<helper>(', exists: '<predicate>('}.
+ *
+ * EXPORTED as the M22 slice-0 contract surface: a second gate file consumes
+ * this policy table and the `findIdentityColumns` walker below rather than
+ * transcribing a third copy of either, so there stays exactly one walk of the
+ * Rust sources with two gate files reading it.
+ *
+ * This module is NOT a re-export barrel — import the other two halves of the
+ * scan from their canonical owners, not from here: `stripRustSource` /
+ * `assertStripperSound` / `compactWs` / `containsIdent` from
+ * `evals/rust-scan.mjs` (ADR-0181 D1 consolidated them there), and
+ * `parseTableSchemas` from `evals/battle-schema-snapshot.eval.mjs`. Every eval
+ * in one `run.mjs` process resolves those to the same function objects, so a
+ * barrel would add a second spelling and buy nothing.
+ *
+ * THE INPUT-SET RULE a second gate file MUST reuse verbatim (it is applied
+ * inline in this file's default export and is deliberately not exported —
+ * widening the frozen contract past slice 0's scope is a follow-up, not a
+ * seam-freeze): glob `server-module/src/**` for `.rs`, SKIP every path ending
+ * `_tests.rs` (cfg(test), never published, and full of `.concat()`-assembled
+ * needles that self-red a scanner), fail LOUD if the resulting set is empty,
+ * then sort. A narrower glob makes a completeness gate pass vacuously over a
+ * smaller column set, which is the exact drift this shared surface prevents.
  * @type {Record<string, string|{rekey:string, exists:string}>}
  */
-const REKEY_MANIFEST = {
+export const REKEY_MANIFEST = freezeManifest({
   // --- REKEY: moved from the guest identity onto the caller by rekey_all, and
   // counted as "game data" by account_has_game_data. ---
   'monster.owner_identity': { rekey: 'rekey_monsters(', exists: 'has_monsters(' },
@@ -1422,7 +1466,7 @@ const REKEY_MANIFEST = {
   'account.claimed_from': 'EXEMPT: write target, not a rekey source (AUTH-21 records the guest)',
   'guest_claim.guest_identity': 'EXEMPT: consumed, not rekeyed (AUTH-34 / AUTH-27)',
   'guest_claim_reaper_schedule.guest_identity': 'EXEMPT: consumed, not rekeyed (AUTH-34 / AUTH-27)',
-};
+});
 
 // Hardcoded INDEPENDENTLY of the manifest: four columns that must resolve for
 // the scan to be believable at all. `playtest_event.identity` additionally
