@@ -26,11 +26,13 @@
 
 export const REDUCED_MOTION_QUERY = '(prefers-reduced-motion: reduce)';
 
-/** The structural subset of MediaQueryList this module touches. */
+/** The structural subset of MediaQueryList this module touches. No
+ *  removeEventListener: with no dispose() there is no teardown seam, and declaring
+ *  a capability nothing calls would re-add the surface the design review cut. A
+ *  real MediaQueryList satisfies this narrower shape structurally. */
 export interface MotionQuery {
   readonly matches: boolean;
   addEventListener(type: 'change', listener: (e: { readonly matches: boolean }) => void): void;
-  removeEventListener(type: 'change', listener: (e: { readonly matches: boolean }) => void): void;
 }
 
 /** The structural subset of `window` this module touches. */
