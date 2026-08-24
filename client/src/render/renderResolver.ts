@@ -19,6 +19,7 @@ import {
   interpDelayMs,
   interpolate,
   interpolateHistory,
+  interpolateReducedMotion,
   type RenderPos,
 } from './interpolation';
 import { SlideClock, type SlideTile } from './slideClock';
@@ -53,6 +54,13 @@ export interface ResolveInput {
   /** M11c (ADR-0067): only render characters in this zone. When undefined, all
    *  characters are rendered (pre-M11c behaviour, used in unit tests). */
   readonly currentZoneId?: number;
+  /** m23-s7 (A11Y-27, spec §2.5): the OS reduced-motion preference, injected the
+   *  same way `now` is — this module never reads a global (`motionPreference.ts` is
+   *  the sole owner of that read). OPTIONAL with default false, a declared deviation
+   *  from §2.5's required-field wording: S7 may not touch main.ts (spec §4 keeps S7
+   *  main.ts-free), so the existing resolve() call there must keep compiling unedited.
+   *  S5 wires the live value at that call site and may then tighten it to required. */
+  readonly reduceMotion?: boolean;
 }
 
 export class RenderResolver {
@@ -65,7 +73,15 @@ export class RenderResolver {
   }
 
   resolve(input: ResolveInput): RenderEntity[] {
-    const { characters, ownEntityId, predicted, snapped, now, currentZoneId } = input;
+    const {
+      characters,
+      ownEntityId,
+      predicted,
+      snapped,
+      now,
+      currentZoneId,
+      reduceMotion = false,
+    } = input;
     const out: RenderEntity[] = [];
 
     for (const c of characters) {
@@ -87,8 +103,16 @@ export class RenderResolver {
         // SlideClock no-op (anti-stutter); the seed frame above targets `tile` already
         // → distance 0 → no false snap, and a reset-covered warp re-seeds here → also
         // distance 0 → no double-handling.
+        // m23-s7 (A11Y-27): `reduceMotion` forces the snap arm EVERY frame. That is
+        // safe and deliberate: snapTo sets origin === target === tile, so positionAt
+        // returns exactly `tile` for any startedAt (the per-frame re-stamp is
+        // observationally inert) — and the clock KEEPS TRACKING the predicted tile,
+        // so a later reduceMotion:false frame resumes a normal slide from the current
+        // integer tile with no teleport (renderResolver.test.ts S7T-OWN-FREEZE pins
+        // the tracked-through-the-window consequence).
         const targetGapTiles = chebyshev(tile, this.#ownClock.target);
-        if (snapped || targetGapTiles > SNAP_DIVERGENCE_TILES) this.#ownClock.snapTo(tile, now);
+        if (reduceMotion || snapped || targetGapTiles > SNAP_DIVERGENCE_TILES)
+          this.#ownClock.snapTo(tile, now);
         else this.#ownClock.setTarget(tile, now);
         const pos = this.#ownClock.positionAt(now);
         out.push({
@@ -99,13 +123,19 @@ export class RenderResolver {
           facing: predicted.facing,
         });
       } else {
+        // m23-s7 (A11Y-27): the reduced-motion arm comes FIRST and bypasses BOTH
+        // interpolation paths — the remote is drawn at its authoritative row tile,
+        // and `now` is not even referenced, so clock-independence holds by
+        // construction. Otherwise:
         // ADR-0090: per-character adaptive render time derived from EWMA jitter.
         // WHY per-character: NPCs and remote players have different jitter profiles;
         // a single global renderTime would over-buffer smooth entities.
         // Backward compat: when snapshots is empty (pre-ADR-0090 fixtures / tests that
         // only supply prev+latest), fall back to the fixed delay + 2-snapshot interpolate.
         let pos: RenderPos;
-        if (c.snapshots.length > 0) {
+        if (reduceMotion) {
+          pos = interpolateReducedMotion(c.row);
+        } else if (c.snapshots.length > 0) {
           const delay = adaptiveInterpDelayMs(c.jitterEwma, this.#stepMs);
           // The stepMs argument arms the ADR-0171 idle-gap re-anchor — without it the
           // resume-from-idle fix is inert in production (renderResolver.test.ts pins it).

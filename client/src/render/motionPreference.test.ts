@@ -34,8 +34,8 @@ import {
   createMotionPreference,
   type MatchMediaHost,
   type MotionPreference,
-  motionPreferenceFromWindow,
   type MotionQuery,
+  motionPreferenceFromWindow,
   REDUCED_MOTION_QUERY,
 } from './motionPreference';
 

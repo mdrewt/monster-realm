@@ -898,7 +898,6 @@ describe('11r-f re-anchor (ADR-0171)', () => {
 
 import type { StoreCharacter } from '../net/store';
 
-
 // =============================================================================
 // m23-s7 — interpolateReducedMotion (A11Y-27)
 //

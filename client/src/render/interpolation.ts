@@ -59,6 +59,30 @@ export function interpolate(
   };
 }
 
+/** m23-s7 (A11Y-27, spec §2.5): the minimal structural slice of a store row the
+ *  reduced-motion arm reads. Deliberately NOT `InterpSample` (a store row carries no
+ *  `receivedAt`) and NOT an import from `../net/store` — this module stays pure with
+ *  `./config` as its only import. `StoreCharacter` satisfies it structurally. */
+interface AuthoritativeTile {
+  readonly tileX: number;
+  readonly tileY: number;
+}
+
+/**
+ * m23-s7 (A11Y-27): the reduced-motion remote position — the authoritative row tile,
+ * identically. Under the OS reduced-motion preference remotes are drawn AT their
+ * current server tile: no delay buffer, no lerp, no dependence on any clock.
+ *
+ * WHY a named one-liner: spec §2.5 pins the name; it keeps the resolver's remote arm
+ * at the same abstraction level as `interpolate`/`interpolateHistory`, and it gives
+ * "the authoritative tile, never a snapshot" a pure test target. No rounding and no
+ * clamping — row tiles are already integers, so any arithmetic here would be invented
+ * scope (and a cheat the tests kill).
+ */
+export function interpolateReducedMotion(row: AuthoritativeTile): RenderPos {
+  return { x: row.tileX, y: row.tileY };
+}
+
 // =============================================================================
 // ADR-0090 (M13.5e e-5): Adaptive interpolation — jitter estimator + functions
 // Every part is commented with WHAT and WHY (Drew's rider, D-13.5-1).
