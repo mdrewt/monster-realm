@@ -232,4 +232,41 @@ describe('a11yCopy — the flat copy catalog and the M24 key seam (m23-s0, ADR-0
       ).toThrow();
     }
   });
+
+  it('A11YCOPY-IS-FROZEN BITES: the catalog is Object.freeze()d, so a caller that casts away Readonly<> cannot rewrite it for every other importer', () => {
+    // `Readonly<Record<string, string>>` is ERASED at runtime — red-team confirmed
+    // `Object.isFrozen(a11yCopy)` was `false` before this landed, so a single careless
+    // `a11yCopy[k] = v` (or a hostile cast) silently rewrote the shared module singleton and
+    // `t()` then handed the corrupted value to every later caller in the process. S0 ships no
+    // consumers, so this is latent today and load-bearing the moment S1 lands them.
+    expect(
+      Object.isFrozen(a11yCopy),
+      'a11yCopy must be Object.freeze()d — the Readonly<> annotation is compile-time only',
+    ).toBe(true);
+
+    const victim = 'a11y.overlay.battleView.title';
+    const before = t(victim);
+    const escaped = a11yCopy as unknown as Record<string, string>;
+    try {
+      escaped[victim] = 'HIJACKED';
+    } catch {
+      // A frozen object throws here in strict mode (ESM is always strict) — that is the
+      // GOOD outcome; the assertions below hold either way.
+    }
+    expect(
+      t(victim),
+      'a write through a cast-away reference must NOT change what t() resolves',
+    ).toBe(before);
+
+    try {
+      escaped['a11y.injected.key'] = 'injected';
+    } catch {
+      // Same: frozen objects reject added keys.
+    }
+    expect(
+      Object.hasOwn(a11yCopy, 'a11y.injected.key'),
+      'a caller must not be able to inject a brand-new catalog key at runtime',
+    ).toBe(false);
+    expect(() => t('a11y.injected.key'), 'the injected key must still be a miss').toThrow();
+  });
 });

@@ -34,23 +34,29 @@
  * one reads as a dialog name: short, title-cased, no trailing punctuation. Each is the wording
  * the overlay already shows the player, so what an AT announces and what is on screen agree.
  *
+ * FROZEN, not merely `Readonly<>`. The type annotation is erased at runtime, so a caller that
+ * casts it away could rewrite this shared module singleton for every later importer — and `t`
+ * would then resolve the corrupted value. `Object.freeze` makes the declared invariant real.
+ *
  * The set of `a11y.overlay.*` keys here is gated for SET EQUALITY against the keys derived from
  * OVERLAY_IDS, in both directions — a missing entry and a stowaway are each a red. It is
  * deliberately NOT gated as "only this namespace" or "exactly N keys": S1 lands `a11y.world.*`
  * and `a11y.announce.*` the moment it starts, and each namespace is orphan-checked by the slice
  * that owns its consumer (ADR-0205 D5).
  */
-export const a11yCopy: Readonly<Record<string, string>> = {
+export const a11yCopy: Readonly<Record<string, string>> = Object.freeze({
   // Constructed overlays — the wording is the <h2> each view builds today.
   'a11y.overlay.battleView.title': 'Battle', // ui/battleView.ts:60
   'a11y.overlay.boxView.title': 'Party & Box', // ui/boxView.ts:41
   'a11y.overlay.raisingView.title': 'Raising & Inventory', // ui/raisingView.ts:56
   'a11y.overlay.evolutionView.title': 'Evolution', // ui/evolutionView.ts:47
-  // Static-shell overlays. Where the shell has no static heading text of its own, the wording is
-  // the player-facing label the main menu already uses for that destination (ui/menuModel.ts),
-  // so the announced name matches the leaf the player picked to get here.
+  // Static-shell overlays. Where the shell has a menu leaf, the wording is that leaf's own label
+  // (ui/menuModel.ts) so the announced name matches what the player picked to get here.
+  // `dialogueView` and `healView` have NO menu leaf and no static heading — both are reached by
+  // walking up to something in the world and pressing T — so their names are authored here, from
+  // the domain vocabulary (`player_conversation`) and the heal action respectively.
   'a11y.overlay.dialogueView.title': 'Conversation',
-  'a11y.overlay.questLogView.title': 'Quest Log',
+  'a11y.overlay.questLogView.title': 'Journal (Quests)',
   'a11y.overlay.healView.title': 'Heal',
   'a11y.overlay.shopView.title': 'Shop', // ui/shopView.ts:103
   'a11y.overlay.tradeView.title': 'Incoming Trade', // ui/menuModel.ts:83
@@ -61,7 +67,7 @@ export const a11yCopy: Readonly<Record<string, string>> = {
   'a11y.overlay.helpView.title': 'Controls & Goals', // index.html:86
   'a11y.overlay.menuView.title': 'Menu', // ui/menuModel.ts:325
   'a11y.overlay.claimView.title': 'Account & Sign-in', // ui/menuModel.ts:103
-};
+});
 
 /**
  * Resolve one catalog key. Pure and total on the catalog's own domain; THROWS on a miss, naming

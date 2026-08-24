@@ -1,4 +1,4 @@
-// ui/overlayRegistry.ts — the pure modality core for the 15 mutual-exclusion overlays
+// ui/overlayRegistry.ts — the pure modality core for the 16 mutual-exclusion overlays
 // (uxd3, ADR-0162).
 //
 // FUNCTIONAL CORE (ADR-0014). No DOM, no SDK, no import from `main.ts`, no view handles,
@@ -29,7 +29,7 @@
 // `hideAllExceptPlan` below is what `refreshBattle` consumes), `isVisible(id)` and
 // `anyVisibleExcept()`.
 
-/** The 15 mutual-exclusion overlays. `errorOverlayView` is NOT a member: it is
+/** The 16 mutual-exclusion overlays. `errorOverlayView` is NOT a member: it is
  *  non-blocking, F8-dismissed, and re-shows itself, so it never participates in
  *  mutual exclusion. Pinned by OR-MANIFEST-COMPLETE against `ui/*View.ts`. */
 export type OverlayId =
@@ -142,22 +142,16 @@ export interface A11yMeta {
  * `initialFocusSelector: () => '…'` would drag a live handle back into the functional core and
  * re-open the coupling `anyVisible`'s probes-as-argument shape exists to prevent.
  *
- * `role` IS `'dialog'` FOR ALL SIXTEEN (ADR-0205 D3), and that uniformity is sanctioned, not a
- * smell. `alertdialog` makes an AT announce the whole subtree immediately on open, so marking
- * `battleView` or `boxView` with it would read out an entire battle or party screen — actively
- * worse than `dialog`. The real error surface, `errorOverlayView`, is deliberately NOT an
- * `OverlayId` at all (`:32`-`:34`), and `claimView` is a claim nudge, not an alert.
+ * `role` IS `'dialog'` FOR ALL SIXTEEN — the reason is on `A11yMeta` above; ADR-0205 D3 carries
+ * the rejected alternatives.
  *
- * `dismissible` IS THE CONSTRAINT, NOT THE VARIATION (ADR-0205 D7). Escape closes every one of
- * these today (`main.ts` Escape ladder), so all sixteen are `true`. Spec §2.1 phrases the rule
- * over the TIER — `EXCLUSIVE_TOP`/`GUARD_ONLY` ⇒ `dismissible: true`, `HIDE_SWITCH` left
- * unconstrained — and the gate reads OVERLAY_TIERS to decide which branch an id falls under. A
- * gate written against a hardcoded "these 13 ids" list satisfies every naive bite-proof while
- * silently ignoring a RETIERING; reading the tier SSOT does not.
+ * `dismissible` IS THE CONSTRAINT, NOT THE VARIATION: spec §2.1 phrases it over the TIER
+ * (`EXCLUSIVE_TOP`/`GUARD_ONLY` ⇒ `true`, `HIDE_SWITCH` unconstrained), and the gate reads
+ * OVERLAY_TIERS rather than a hardcoded id list so a RETIERING cannot slip past it (ADR-0205 D7).
  *
  * `initialFocusSelector` IS A STABLE, CONSTRUCTOR-TIME ANCHOR (ADR-0205 D1/D2) — never a
  * render-time control. `battleView` calls `replaceChildren()` on its skills container and its
- * action row on every server tick (`ui/battleView.ts:240`, `:270`), so a focused skill button is
+ * action row on every server tick (`ui/battleView.ts:241`, `:270`), so a focused skill button is
  * destroyed mid-battle and focus falls to `<body>`: pointing at one would be INCORRECT, not
  * merely brittle. Where an overlay has nothing natively focusable, the anchor is its heading or
  * first content node and the shell-owning slice (S2 for the static shells, S4 for the four
@@ -371,7 +365,7 @@ export function anyVisible(probes: OverlayProbes, exempt?: OverlayId): boolean {
 
 /** Which overlays are visible right now, in OVERLAY_IDS declaration order — the argument
  *  `canOpen`/`hideAllExceptPlan` take. Re-probes on EVERY call, same contract as
- *  `anyVisible`: `main.ts` builds its probe table at module scope while all fifteen view
+ *  `anyVisible`: `main.ts` builds its probe table at module scope while all sixteen view
  *  bindings are still `undefined`, so a cached list would be permanently empty and mutual
  *  exclusion would never engage. NO try/catch, for `anyVisible`'s reason. The deterministic
  *  order is load-bearing — it is what makes `canOpen`'s `blockedBy` reproducible. */

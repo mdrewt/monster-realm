@@ -1147,7 +1147,11 @@ function compileA11yProbe(file: string): A11yProbeResult {
       '--skipLibCheck',
       file,
     ],
-    { encoding: 'utf8' },
+    // A hung child is NOT bounded by the `it()` timeout: spawnSync blocks the event loop where
+    // vitest's timer lives (MEASURED — a 4s sleep inside a 2s `it()` reports the timeout only
+    // after the call returns). Without this, a wedged tsc hangs the worker until an external CI
+    // timeout fires. Real invocations measure ~0.25-0.6s, so 15s is ~25x headroom.
+    { encoding: 'utf8', timeout: 15000 },
   );
   return { ok: result.status === 0, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
 }
@@ -1478,8 +1482,12 @@ describe('overlayRegistry — OVERLAY_A11Y stays inside the module purity rule (
     // table holds NO thunks and NO functions; per-id behaviour belongs in S1's overlayA11y.ts.
     const source = readFileSync(path.join(A11Y_UI_DIR, 'overlayRegistry.ts'), 'utf8');
 
+    // NOT line-anchored. A `/^\s*import\s/m` scan is evaded by appending a real import to the
+    // END of an existing code line (`...as OverlayId[]; import { x } from 'node:fs';`) — red-team
+    // MEASURED that bypass going green through tsc AND this whole suite. Anchoring on
+    // start-of-line OR a preceding `;`/`}` covers every position a statement can legally begin.
     expect(
-      /^\s*import\s/m.test(source),
+      /(?:^|[;}])\s*import\s/m.test(source),
       'overlayRegistry.ts must contain ZERO import statements — ADR-0205 D7 / the module header ' +
         '(:4-8): a CSS selector string and an ARIA role name are strings in a data table, never a ' +
         'reason to import DOM/SDK types',
@@ -1496,10 +1504,53 @@ describe('overlayRegistry — OVERLAY_A11Y stays inside the module purity rule (
     expect(overlayA11y, 'OVERLAY_A11Y must be exported from overlayRegistry.ts').toBeDefined();
     expect(OVERLAY_IDS.length, 'the manifest must hold 16 mutual-exclusion overlays').toBe(16);
 
+    // WRONG IMPL KILLED (3): an EMPTY or structurally meaningless `initialFocusSelector`.
+    // Red-team MEASURED that blanking all sixteen to '' left `tsc --noEmit` green and this whole
+    // suite 30/30 green: `role`, `labelKey` and `dismissible` each had a semantic gate and the
+    // fourth A11yMeta field had none. S0 has no DOM, so whether the selector RESOLVES is S2/S4's
+    // gate (ADR-0205 D1) — but its SHAPE is checkable here, and an unshaped selector cannot
+    // resolve to anything at all.
+    const SELECTOR_SHAPE_RE = /^(#[A-Za-z][\w-]*|\[data-testid="[A-Za-z][\w-]*"\])$/;
+    expect(
+      SELECTOR_SHAPE_RE.test(''),
+      "the selector shape regex must REJECT '' — otherwise blanking the field passes",
+    ).toBe(false);
+    expect(
+      SELECTOR_SHAPE_RE.test('button'),
+      "the selector shape regex must REJECT a bare tag selector like 'button': ADR-0205 D2 " +
+        'requires a STABLE constructor-time anchor, and a bare tag matches render-time controls ' +
+        'that `replaceChildren()` destroys every server tick',
+    ).toBe(false);
+    expect(
+      SELECTOR_SHAPE_RE.test('#rename-input'),
+      'the selector shape regex must ACCEPT a real static-shell id anchor',
+    ).toBe(true);
+    expect(
+      SELECTOR_SHAPE_RE.test('[data-testid="battle-title"]'),
+      'the selector shape regex must ACCEPT a real constructed-overlay testid anchor',
+    ).toBe(true);
+
     let fieldsChecked = 0;
+    let selectorsChecked = 0;
+    const seenSelectors = new Set<string>();
     for (const id of OVERLAY_IDS) {
       const meta = (overlayA11y ?? {})[id];
       expect(meta, `OVERLAY_A11Y.${id} must exist`).toBeDefined();
+
+      const selector = String((meta ?? {}).initialFocusSelector ?? '');
+      expect(
+        selector.trim().length > 0,
+        `OVERLAY_A11Y.${id}.initialFocusSelector must be non-empty after trim`,
+      ).toBe(true);
+      expect(
+        SELECTOR_SHAPE_RE.test(selector),
+        `OVERLAY_A11Y.${id}.initialFocusSelector ('${selector}') must be a stable #id or ` +
+          '[data-testid="…"] anchor (ADR-0205 D2) — never a bare tag, a structural selector, or ' +
+          'an :nth-child, all of which point at nodes a render rebuild destroys',
+      ).toBe(true);
+      seenSelectors.add(selector);
+      selectorsChecked += 1;
+
       for (const [field, value] of Object.entries(meta ?? {})) {
         expect(
           typeof value === 'string' || typeof value === 'boolean',
@@ -1516,5 +1567,17 @@ describe('overlayRegistry — OVERLAY_A11Y stays inside the module purity rule (
       fieldsChecked,
       'ANTI-VACUITY: 16 ids x 4 A11yMeta fields must all have been type-checked',
     ).toBe(64);
+    expect(
+      selectorsChecked,
+      'ANTI-VACUITY: all 16 initialFocusSelector values must have been shape-checked',
+    ).toBe(16);
+    // Each overlay focuses its OWN anchor. Sixteen identical selectors would pass every check
+    // above (they are all well-shaped) while meaning fifteen overlays focus the wrong element —
+    // and §5.1's GOOD fixture only sanctions reusing `role`, never the selector.
+    expect(
+      seenSelectors.size,
+      'ANTI-VACUITY: the 16 initialFocusSelector values must be DISTINCT — a single anchor ' +
+        'copy-pasted across all sixteen is well-shaped and would otherwise pass',
+    ).toBe(16);
   });
 });
