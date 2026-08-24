@@ -54,22 +54,31 @@
 //
 // ALL FIVE SITES CARRYING THE STALE CLAIM (enumerated so a later reader does
 // not conclude from one message that the repo still has no CSS):
-//   1. this file, :19-:20  — the WHY-THIS-READS-THE-REAL-FILE header
-//   2. this file, :349     — inside H4b's "no inline style at all" message
-//   3. this file, :509     — inside H5's "no inline style at all" message
-//   4. this file, :598-:600 — inside H7's headline-regression narration
-//   5. client/src/main.wiring.test.ts:4656 — `bodyDivs()`'s doc comment
+// CITED BY SYMBOL AND QUOTED TEXT, DELIBERATELY NOT BY LINE NUMBER. Inserting this block
+// above the imports moved every line below it by 41, and a first draft of this very list
+// cited the pre-insert numbering — the repo's own "citations drift on header insert" lesson,
+// self-inflicted inside the commit that quotes it. A name and a quoted fragment do not drift,
+// so `grep` for the quoted text to find each site:
+//   1. this file, the WHY-THIS-READS-THE-REAL-FILE header — grep
+//      "There is no CSS file anywhere in this repo; all".
+//   2. this file, inside `BITES: H4b` — "there is no CSS file in this repo, so" (twice: the
+//      "no inline style at all" message, and the static/in-flow WRONG-IMPL note).
+//   3. this file, inside `BITES: H5` — "there is no CSS file in this".
+//   4. this file, inside `BITES: H7` — "There is no CSS file anywhere in this repo".
+//   5. client/src/main.wiring.test.ts, `bodyDivs()`'s doc comment — OUTSIDE this slice's
+//      touches: set, so it is flagged, not edited. S5 also edits client/index.html and is
+//      the natural place to correct it.
 // NONE of them is edited. m23-s2 is APPEND-ONLY on this file (its `touches:`
 // rule and the slice plan's named anti-pattern), and :4656 is in a file outside
 // this slice's `touches:` set. NO ASSERTION BREAKS as a result: every one of
 // those five is prose or an operator-facing message, never a predicate.
 //
-// ONE NARRATION DRIFT, recorded rather than fixed: H2b's MEASURED note
-// (:216-:221) says "today the swallowed victim is <script type=module>". After
+// ONE NARRATION DRIFT, recorded rather than fixed: `BITES: H2b`'s MEASURED note says
+// "today the swallowed victim is <script type=module>". After
 // m23-s2, `#a11y-live` is the last <body> element before that script, so an
 // unclosed </div> on #help-hint now swallows `#a11y-live` instead. The tooth
 // still bites — it asserts the hint has ZERO element children, which is
-// victim-independent by construction (that is the whole point of :209-:214) —
+// victim-independent by construction, which is the whole point of that note —
 // only the measured example drifted.
 // ---------------------------------------------------------------------------
 
@@ -764,17 +773,23 @@ describe('ux1-1 (H7): the advertised #help-overlay is actually on-screen', () =>
  */
 const happyDomSettings = (
   window as unknown as {
-    happyDOM: {
-      settings: { disableCSSFileLoading: boolean; handleDisabledFileLoadingAsSuccess: boolean };
+    happyDOM?: {
+      settings?: { disableCSSFileLoading: boolean; handleDisabledFileLoadingAsSuccess: boolean };
     };
   }
-).happyDOM.settings;
-happyDomSettings.disableCSSFileLoading = true;
-// ...and treat the disabled load as a SUCCESS rather than a NotSupportedError. Without this,
-// happy-dom emits a DOMException stack trace on every single parse of index.html — over twenty
-// of them per `just ci` run, in a suite that is otherwise silent. Noise that is normal is noise
-// nobody reads, which is how a real error hides.
-happyDomSettings.handleDisabledFileLoadingAsSuccess = true;
+).happyDOM?.settings;
+// OPTIONAL, not asserted: these are happy-dom INTERNALS, and an upgrade that moves them must
+// produce a clear failure, not twenty tests reding at module scope with a message about
+// `undefined`. If the settings object ever disappears the only consequence is the stderr
+// noise below returning — which is visible, and which no assertion depends on.
+if (happyDomSettings !== undefined) {
+  happyDomSettings.disableCSSFileLoading = true;
+  // ...and treat the disabled load as a SUCCESS rather than a NotSupportedError. Without this,
+  // happy-dom emits a DOMException stack trace on every single parse of index.html — over twenty
+  // of them per `just ci` run, in a suite that is otherwise silent. Noise that is normal is noise
+  // nobody reads, which is how a real error hides.
+  happyDomSettings.handleDisabledFileLoadingAsSuccess = true;
+}
 
 // ===========================================================================
 // m23-s2 (M23 accessibility — slice S2). APPENDED BLOCK. Nothing above this
@@ -803,10 +818,12 @@ happyDomSettings.handleDisabledFileLoadingAsSuccess = true;
 // ---------------------------------------------------------------------------
 
 /** The repo's FIRST stylesheet (m23-s2, spec §2.7). Path resolved from import.meta.url
- *  exactly as INDEX_HTML_PATH is at :41, so it is cwd-independent. */
+ *  exactly as `INDEX_HTML_PATH` above is, so it is cwd-independent. Cited by SYMBOL, not by
+ *  line: this block was inserted above the imports, and every line citation written against
+ *  the pre-insert numbering was wrong by 41. */
 const STYLES_CSS_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), 'styles.css');
 
-/** Loud-throwing reader, mirroring readIndexHtml() at :43-:50. Deliberately NOT a
+/** Loud-throwing reader, mirroring `readIndexHtml()` above (cited by symbol, not line). Deliberately NOT a
  *  `?? ''` fallback: a missing stylesheet must be a RED, never a scanner that cheerfully
  *  reports "zero id selectors" and "no banned declaration" over an empty string. */
 function readStylesCss(): string {
@@ -843,8 +860,6 @@ interface CssRule {
   readonly prelude: string;
   /** Raw text between the braces. */
   readonly body: string;
-  /** Nesting depth of the rule itself: 0 at top level, 1 inside one at-rule, and so on. */
-  readonly depth: number;
 }
 
 /**
@@ -979,7 +994,6 @@ function parseCssRules(src: string): CssRule[] {
         rules.push({
           prelude: frame.prelude,
           body: clean.slice(frame.bodyStart, i),
-          depth: stack.length,
         });
       }
       pending = '';
@@ -1013,6 +1027,14 @@ function preludeHasUnquotedHash(prelude: string): boolean {
       if (ch === quote) quote = null;
       continue;
     }
+    if (ch === '\\') {
+      // An ESCAPED character is a literal in an IDENTIFIER, never a combinator or an id
+      // sigil: `.\\#notanid` is a CLASS whose name happens to contain a hash. Without this
+      // branch that selector is wrongly reported as an id selector — a false RED, and false
+      // REDs are what get a scanner "fixed" into uselessness.
+      i += 1;
+      continue;
+    }
     if (ch === '"' || ch === "'") {
       quote = ch;
       continue;
@@ -1037,6 +1059,83 @@ function findIdSelectors(src: string): string[] {
     .map((rule) => rule.prelude);
 }
 
+/**
+ * The ids whose INLINE styling is pinned BY TEXT elsewhere in this repo, and which a rule
+ * in `styles.css` must therefore never reach: `#help-overlay`/`#help-hint`/`#build-stamp`
+ * (this file's H4b/H5/H6/H7 and `main.wiring.test.ts`'s `W-ONE-CORNER-AFFORDANCE`),
+ * `#menu-overlay` (the same viewport-anchoring contract, ADR-0163), and `#a11y-live` (whose
+ * `.sr-only` hiding A11Y-11 gates).
+ */
+const CASCADE_PINNED_IDS: readonly string[] = [
+  'help-overlay',
+  'help-hint',
+  'build-stamp',
+  'menu-overlay',
+  'a11y-live',
+];
+
+/** Selector constructs that reach an arbitrary element WITHOUT naming it. */
+const POSITIONAL_SELECTOR_TOKENS: readonly string[] = [
+  'nth-child',
+  'nth-of-type',
+  'nth-last-child',
+  'nth-last-of-type',
+];
+
+/**
+ * [A11Y-07], the REACHABILITY half — preludes that reach a pinned id without spelling `#`.
+ *
+ * WHY THIS EXISTS AS A SECOND FUNCTION. `findIdSelectors` implements criterion A11Y-12
+ * LITERALLY: "zero `#id` selectors". Red-team measured that the literal reading is not the
+ * PROPERTY. This stylesheet contains no `#`, is biome-clean, leaves `findIdSelectors`
+ * returning `[]`, and made the whole 203-test suite pass:
+ *
+ *     [id="help-overlay"] { visibility: hidden; }
+ *     [id="help-hint"]    { opacity: 0; }
+ *     [id="a11y-live"]    { display: none; }
+ *
+ * In Chromium that hides the help overlay, blanks the persistent corner affordance ux1-1
+ * ships, and removes the live region from the accessibility tree — every consequence
+ * A11Y-12, ux1-1 and A11Y-11 exist to prevent, with every tooth green. Also measured green:
+ * `[id^="help-"]`, `div[id*=help]`, `:where([id='help-hint'])`,
+ * `body > div:nth-child(11) { position: static !important }` and `* { position: static
+ * !important }` — the last three reproducing ADR-0151 D1's exact below-the-fold regression
+ * (`rect.top` 0 → 720 at a 720px viewport) with H6 and H7 still passing.
+ *
+ * DECLARED RESIDUAL — this is a SHAPE oracle, not a CASCADE oracle. It bans naming a pinned
+ * id in any form, plus the two constructs that reach an element without naming it (`*` and
+ * the positional pseudos). A sufficiently indirect selector (`body > div:last-of-type ~ div`,
+ * say) still escapes it. The airtight oracle is a real browser cascade check — load
+ * `index.html`, apply the sheet, and read `getComputedStyle` — which needs Playwright (already
+ * a devDependency) and belongs with S10's `evals/a11y-static-shell.eval.mjs`, not in the
+ * hermetic vitest suite. Recorded as residual R-m23-s2-X3.
+ */
+function findCascadeReachingSelectors(src: string): string[] {
+  const offenders: string[] = [];
+  for (const rule of parseCssRules(src)) {
+    const prelude = rule.prelude.toLowerCase();
+    const namesPinnedId = CASCADE_PINNED_IDS.some((id) => prelude.includes(id));
+    const isUniversal = prelude.split('(').join(' ').split(' ').includes('*');
+    const isPositional = POSITIONAL_SELECTOR_TOKENS.some((t) => prelude.includes(t));
+    if (namesPinnedId || isUniversal || isPositional) offenders.push(rule.prelude);
+  }
+  return offenders;
+}
+
+/**
+ * [A11Y-07], the SURFACE half — `styles.css` is not the only place a rule can enter.
+ *
+ * Red-team measured that `@import url("/src/theme.css")` at the top of `styles.css` ships
+ * LITERAL `#help-overlay{position:static!important}` rules from a file no tooth reads:
+ * `parseCssRules` classifies the `@import` prelude as an at-rule and never inspects it, and
+ * A8's "exactly one stylesheet link" counts `<link>` elements, not CSS-level imports.
+ * Banning the construct is right on its own merits too — spec §2.7 decided on exactly ONE
+ * css file, and `@import` is a second one with an extra round-trip.
+ */
+function importsAnotherStylesheet(src: string): boolean {
+  return stripCssComments(src).toLowerCase().includes('@import');
+}
+
 // ---------------------------------------------------------------------------
 // m23-s2 SHARED: the `.sr-only` semantic oracle (A11Y-11 / [A11Y-06])
 // ---------------------------------------------------------------------------
@@ -1050,9 +1149,44 @@ const SR_ONLY_TOKEN_BOUNDARY = ',:.#[>+~ ';
 
 const SR_ONLY_REASON_MISSING = 'NO .sr-only RULE';
 const SR_ONLY_REASON_POSITION = 'position IS NOT absolute';
-const SR_ONLY_REASON_CLIP = 'NEITHER clip-path NOR clip';
+const SR_ONLY_REASON_CLIP = 'NEITHER clip-path NOR clip is a MEANINGFUL clip';
 const SR_ONLY_REASON_DISPLAY = 'display:none REMOVES THE NODE FROM THE ACCESSIBILITY TREE';
 const SR_ONLY_REASON_VISIBILITY = 'visibility:hidden REMOVES THE NODE FROM THE ACCESSIBILITY TREE';
+const SR_ONLY_REASON_CONTENT_VIS =
+  'content-visibility:hidden REMOVES THE SUBTREE FROM THE ACCESSIBILITY TREE';
+const SR_ONLY_REASON_DISPLAY_CONTENTS =
+  'display:contents ERASES THE BOX, so the clip applies to nothing';
+
+/**
+ * Every declaration that takes the node OUT of the accessibility tree, as
+ * `[property, bannedValue]`. A DENY-LIST, and deliberately a wide one: the criterion names
+ * `display:none` and `visibility:hidden`, but red-team measured `content-visibility:hidden`
+ * producing the identical outcome (Chromium: announcement absent from the AX tree) while
+ * passing a two-property check. `display:contents` erases the box entirely, which silently
+ * un-does the clip that is doing the hiding.
+ */
+const SR_ONLY_BANNED_DECLARATIONS: ReadonlyArray<readonly [string, string, string]> = [
+  ['display', 'none', SR_ONLY_REASON_DISPLAY],
+  ['visibility', 'hidden', SR_ONLY_REASON_VISIBILITY],
+  ['content-visibility', 'hidden', SR_ONLY_REASON_CONTENT_VIS],
+  ['display', 'contents', SR_ONLY_REASON_DISPLAY_CONTENTS],
+];
+
+/**
+ * True when the rule declares a clip that ACTUALLY CLIPS.
+ *
+ * MEASURED, red-team m23-s2: a `union.has('clip-path') || union.has('clip')` presence check
+ * passes `.sr-only{position:absolute;clip:auto;clip-path:none}`, whose properties are both
+ * present and both INERT — Chromium rendered 1651 px² of announcement text on screen, which
+ * is verbatim the "the live region renders as stray visible text" failure this criterion
+ * exists to prevent. Presence is not the property; a non-default VALUE is.
+ */
+function hasMeaningfulClip(union: Map<string, string>): boolean {
+  const clipPath = union.get('clip-path');
+  const clip = union.get('clip');
+  if (clipPath !== undefined && clipPath !== 'none') return true;
+  return clip !== undefined && clip !== 'auto';
+}
 
 /**
  * The minimum declaration count for a NON-VACUOUS `.sr-only` rule.
@@ -1145,13 +1279,34 @@ function parseDeclarations(body: string): Array<readonly [string, string]> {
     const colon = firstTopLevelColon(text);
     if (colon === -1) continue;
     const prop = text.slice(0, colon).trim().toLowerCase();
-    const value = text
-      .slice(colon + 1)
-      .trim()
-      .toLowerCase();
+    const value = stripImportant(
+      text
+        .slice(colon + 1)
+        .trim()
+        .toLowerCase(),
+    );
     out.push([prop, value]);
   }
   return out;
+}
+
+/**
+ * Drop a trailing `!important` (and the legal `! important` spacing) from a declaration
+ * VALUE, so every check below compares the value itself.
+ *
+ * MEASURED, red-team m23-s2: without this, `srOnlyIsAccessible`'s equality comparisons are
+ * wrong in BOTH directions at once, which is what makes it a defect rather than a taste
+ * call. `display:none!important` parses as the value `'none !important'`, so
+ * `value === 'none'` is FALSE and the banned declaration PASSES — Chromium confirmed the
+ * node is then absent from the accessibility tree. And `position:absolute!important` — a
+ * perfectly correct rule — parses as `'absolute !important'`, so `value === 'absolute'` is
+ * FALSE and a CORRECT stylesheet is REJECTED. A false green and a false red from one bug.
+ */
+function stripImportant(value: string): string {
+  const bang = value.lastIndexOf('!');
+  if (bang === -1) return value;
+  if (value.slice(bang + 1).trim() !== 'important') return value;
+  return value.slice(0, bang).trim();
 }
 
 /** True if any comma-separated compound selector in `prelude` targets the `.sr-only`
@@ -1206,9 +1361,19 @@ function srOnlyIsAccessible(src: string): SrOnlyVerdict {
 
   const reasons: string[] = [];
   if (union.get('position') !== 'absolute') reasons.push(SR_ONLY_REASON_POSITION);
-  if (!union.has('clip-path') && !union.has('clip')) reasons.push(SR_ONLY_REASON_CLIP);
-  if (union.get('display') === 'none') reasons.push(SR_ONLY_REASON_DISPLAY);
-  if (union.get('visibility') === 'hidden') reasons.push(SR_ONLY_REASON_VISIBILITY);
+  // KNOWN, DELIBERATE FALSE RED — do not "fix" it by narrowing the union.
+  // `@media print{.sr-only{display:none}}` appended to an otherwise correct sheet is
+  // standard, harmless CSS, and this oracle REJECTS it: the union is media-blind, so a
+  // print-only banned declaration reads exactly like a screen one. That is the price of the
+  // union, and the union is what catches the measured
+  // `@media (prefers-contrast: more){.sr-only{display:none}}` bypass — a first-rule-only or
+  // depth-0-only scan misses it. If a later slice genuinely needs print styles here, add
+  // at-rule ANCESTRY tracking to `parseCssRules` and skip print-only ancestors. Never delete
+  // the union: that trades a false red for a false green.
+  if (!hasMeaningfulClip(union)) reasons.push(SR_ONLY_REASON_CLIP);
+  for (const [prop, banned, reason] of SR_ONLY_BANNED_DECLARATIONS) {
+    if (union.get(prop) === banned) reasons.push(reason);
+  }
   if (union.size < MIN_SR_ONLY_DECLARATIONS) {
     reasons.push(`FEWER THAN ${MIN_SR_ONLY_DECLARATIONS} DECLARATIONS`);
   }
@@ -1267,7 +1432,11 @@ const CONSTRUCTED_SHELL_IDS: readonly string[] = [
   'claimView',
 ];
 
-const STATIC_SHELL_COUNT = 11;
+/** DERIVED, never hand-kept: every OverlayId is either a static shell or a constructed one.
+ *  Writing `11` beside a five-entry constructed list is two encodings of one fact, and the
+ *  two drift the moment a seventeenth overlay lands. A3's complement assertion pins the
+ *  MEMBERSHIP; this pins the arithmetic. */
+const STATIC_SHELL_COUNT = OVERLAY_IDS.length - CONSTRUCTED_SHELL_IDS.length;
 
 /** Tags the HTML spec makes focusable with no `tabindex` at all. Native-ness is derived
  *  from the TAG, never from a literal id list — see A5's narration. */
@@ -1327,7 +1496,30 @@ describe('m23-s2 (A11Y-10): the single a11y live region is body-anchored and out
     const doc = parseIndexHtml();
     const node = doc.querySelector('#a11y-live');
 
-    // ANTI-VACUITY, ASSERTED FIRST (this file's house rule, :334-:337): with the node
+    // B7 (red-team m23-s2) — A1 SELECTS BY `[aria-live]`, A2 SELECTS BY `#a11y-live`, and
+    // nothing used to assert they are the SAME NODE. A duplicate id splits the two oracles:
+    // a first `<div id="a11y-live" class="sr-only">` decoy plus a second, correctly-attributed
+    // `<div id="a11y-live" aria-live="polite" ... style="color:red">Loading…</div>` passed all
+    // 203 tests. A1 saw exactly one `[aria-live]` with the right values; every placement,
+    // class, `style === null` and empty-at-boot clause below read the DECOY. And
+    // `document.getElementById('a11y-live')` — exactly what S1's `ui/liveRegion.ts` calls —
+    // returns the decoy, so every announcement in the game would be written to a node with no
+    // `aria-live` and NEVER SPOKEN, while the real region shipped visible boot copy.
+    expect(
+      Array.from(doc.querySelectorAll('#a11y-live')).length,
+      'KILLS: a DUPLICATE id="a11y-live". getElementById returns the FIRST match, so a decoy ' +
+        'earlier in the document silently becomes the node liveRegion.ts writes to — and it ' +
+        'is not the one carrying aria-live. Every announcement is then lost.',
+    ).toBe(1);
+    expect(
+      node !== null && node === doc.querySelector('[aria-live]'),
+      "KILLS: A1's node and A2's node being DIFFERENT elements. A1 pins the aria-live values " +
+        'and A2 pins placement, class and emptiness; unless they are the same element, each ' +
+        'oracle certifies a different node and the pair proves nothing.',
+    ).toBe(true);
+
+    // ANTI-VACUITY, ASSERTED FIRST (this file's house rule — see H1/H5's own anti-vacuity
+    // clauses): with the node
     // absent, every attribute read below is a null guard that passes. Deleting the element
     // must never be a way to satisfy A2.
     expect(
@@ -1362,6 +1554,20 @@ describe('m23-s2 (A11Y-10): the single a11y live region is body-anchored and out
         ':2184, :2211, :2266, :2296), so a region in there sits inside a subtree other ' +
         'slices rebuild.',
     ).toBe(false);
+
+    // B5 (red-team m23-s2) — `aria-hidden="true"` or the bare `hidden` attribute on this node
+    // passed all 203 tests, and Chromium measured the announcement ABSENT from the
+    // accessibility tree in both cases. That is a strictly cheaper way to deliver the exact
+    // defect A11Y-11 is written against, living in a file where nothing was looking: A11Y-11
+    // guards the CSS, and these are attributes.
+    for (const attr of ['aria-hidden', 'hidden']) {
+      expect(
+        node === null ? true : node.hasAttribute(attr),
+        `KILLS: ${attr} on #a11y-live. It removes the node from the accessibility tree just ` +
+          'as surely as display:none in .sr-only does — measured — and it does it on the ' +
+          'markup side, where the A11Y-11 stylesheet oracle cannot see it.',
+      ).toBe(false);
+    }
 
     // WRONG IMPL KILLED: shipping the node with no class — i.e. VISIBLE stray text at the
     // bottom of the page every time an announcement lands.
@@ -1489,6 +1695,17 @@ describe('m23-s2 (S2 static shells): every static shell declares the ARIA that O
         `KILLS: ${label} with a STATIC aria-label — an accessible-name literal outside ` +
           'a11yCopy.ts (§2.8, the M24 seam) and a value S1/S3 must own at runtime.',
       ).toBe(false);
+      // B6 (red-team m23-s2) — `aria-hidden="true"` on a shell root passed all 203 tests, and
+      // Chromium measured the opened dialog's content ABSENT from the accessibility tree.
+      // `aria-hidden` OVERRIDES `role` and `aria-modal`, so the two attributes this tooth
+      // exists to pin become decoration while the tooth stays green.
+      expect(
+        shell.root === null ? true : shell.root.hasAttribute('aria-hidden'),
+        `KILLS: ${label} carrying aria-hidden — it overrides role AND aria-modal, so the ` +
+          'shell ships as a correctly-attributed dialog that assistive technology cannot ' +
+          'see at all. Measured absent from the Chromium AX tree.',
+      ).toBe(false);
+
       expect(
         shell.root === null ? true : shell.root.hasAttribute('aria-labelledby'),
         `KILLS: ${label} with aria-labelledby — it WINS over aria-label, so it silently ` +
@@ -1504,6 +1721,14 @@ describe('m23-s2 (S2 static shells): every static shell declares the ARIA that O
     const shells = deriveStaticShells(doc);
     const roots = shells.map((s) => s.root).filter((root): root is Element => root !== null);
     const bodyDivs = Array.from(doc.querySelectorAll('body > div'));
+    // B9 (red-team m23-s2) — BOTH ratchet directions used to enumerate `body > div`, and
+    // both were escaped by two shapes measured green: a shell WRAPPED one level deep
+    // (`<div id="wrap"><div id="ghost-overlay" role="dialog" aria-modal="true">…`), and a
+    // NON-DIV direct child (`<section id="ghost-overlay" role="dialog" aria-modal="true">`).
+    // The second one carried the `-overlay` suffix AND hand-written dialog ARIA and still
+    // escaped direction 2 — which the comment below used to call "the compensating control".
+    // It was not one. Both directions now scan every descendant of <body>, any tag, any depth.
+    const bodyElements = Array.from(doc.querySelectorAll('body *'));
 
     // ANTI-VACUITY: both directions below are "no offenders" assertions, which an empty
     // parse satisfies trivially. Pin the parse AND the derivation first. This markup has 15
@@ -1527,7 +1752,7 @@ describe('m23-s2 (S2 static shells): every static shell declares the ARIA that O
     // WRONG IMPL KILLED: a twelfth shell added to index.html with no ARIA and no
     // OVERLAY_A11Y entry; and an EXISTING shell whose anchor was renamed so it silently
     // dropped out of A3's loop (A3 would then check ten and pass; this direction reds).
-    const suffixEscapees = bodyDivs
+    const suffixEscapees = bodyElements
       .filter((el) => elementId(el).endsWith('-overlay'))
       .filter((el) => !roots.includes(el))
       .map((el) => elementId(el));
@@ -1541,11 +1766,10 @@ describe('m23-s2 (S2 static shells): every static shell declares the ARIA that O
     ).toEqual([]);
 
     // DIRECTION 2 — every body-level div carrying a `role` is one of the derived eleven.
-    // WRONG IMPL KILLED: hand-written dialog ARIA on a div the registry knows nothing
+    // WRONG IMPL KILLED: hand-written dialog ARIA on an element the registry knows nothing
     // about — the "per-view ad-hoc ARIA" anti-pattern spec §2.0 rejects for having no
-    // completeness oracle. This direction is also the compensating control for the residual
-    // recorded below.
-    const roleEscapees = bodyDivs
+    // completeness oracle — at ANY tag and ANY depth under <body> (B9).
+    const roleEscapees = bodyElements
       .filter((el) => el.hasAttribute('role'))
       .filter((el) => !roots.includes(el))
       .map((el) => `${elementId(el)}[role=${el.getAttribute('role')}]`);
@@ -1557,11 +1781,13 @@ describe('m23-s2 (S2 static shells): every static shell declares the ARIA that O
         JSON.stringify(roleEscapees),
     ).toEqual([]);
 
-    // DECLARED RESIDUAL (plan m3): a future static shell named WITHOUT the `-overlay`
-    // suffix AND carrying no `role` escapes direction 1 — `body > div[id$="-overlay"]` is
-    // the only mechanical enumeration the markup alone offers. Direction 2 catches it the
-    // moment it grows any ARIA, and S10's evals/a11y-static-shell.eval.mjs is the second
-    // compensating control. Recorded, not silently accepted.
+    // DECLARED RESIDUAL, restated honestly after B9. What still escapes is exactly one
+    // shape: an element named WITHOUT the `-overlay` suffix AND carrying no `role` at all.
+    // Naming is the only mechanical enumeration the markup alone offers, and a shell with
+    // neither the suffix nor any ARIA is indistinguishable from ordinary chrome by text.
+    // Direction 2 catches it the moment it grows any ARIA, and S10's
+    // evals/a11y-static-shell.eval.mjs is the second control. What is NO LONGER claimed:
+    // that direction 2 compensates for direction 1 in general — measured false before B9.
   });
 });
 
@@ -1792,6 +2018,12 @@ describe('m23-s2 (A11Y-12): styles.css declares ZERO #id selectors', () => {
         why: 'a hex COLOUR in a nested declaration is not a selector (§2.7 ships this shape)',
       },
       {
+        // FR3, red-team m23-s2: MEASURED as a false RED before `preludeHasUnquotedHash`
+        // handled backslash escapes. An escaped character is a literal in an IDENTIFIER.
+        css: '.\\#notanid{color:red}',
+        why: 'an ESCAPED hash inside a CLASS name — a class, not an id selector',
+      },
+      {
         css: '.x{content:"#not-a-selector"}',
         why: 'a hash inside a quoted VALUE',
       },
@@ -1854,6 +2086,53 @@ describe('m23-s2 (A11Y-12): styles.css declares ZERO #id selectors', () => {
         'Offenders: ' +
         JSON.stringify(offenders),
     ).toEqual([]);
+
+    // B1 (red-team m23-s2) — THE REACHABILITY HALF. Its own CONTROL PROBES first, for the
+    // same reason as above: this assertion is also "returns an empty array".
+    expect(
+      findCascadeReachingSelectors('[id="help-overlay"]{visibility:hidden}'),
+      'CONTROL: the reachability scanner must FLAG an attribute selector naming a pinned id. ' +
+        'If it does not, the real-file assertion below is satisfied by a `() => []` stub.',
+    ).toHaveLength(1);
+    expect(
+      findCascadeReachingSelectors('*{position:static}'),
+      'CONTROL: the reachability scanner must FLAG the universal selector.',
+    ).toHaveLength(1);
+    expect(
+      findCascadeReachingSelectors('body > div:nth-child(11){position:static}'),
+      'CONTROL: the reachability scanner must FLAG a positional selector.',
+    ).toHaveLength(1);
+    expect(
+      findCascadeReachingSelectors('.sr-only{position:absolute;clip-path:inset(50%)}'),
+      'CONTROL: the reachability scanner must NOT flag an ordinary class rule. If it does, ' +
+        'it is a constant-true and the real-file assertion is unreachable.',
+    ).toHaveLength(0);
+
+    const reaching = findCascadeReachingSelectors(css);
+    expect(
+      reaching,
+      'KILLS: a rule that reaches a text-pinned id WITHOUT spelling `#` — measured as a live ' +
+        'bypass of the clause above. `[id="help-overlay"]{visibility:hidden}` is `#`-free, ' +
+        'biome-clean, leaves findIdSelectors empty, and in Chromium hides the help overlay, ' +
+        'blanks #help-hint and drops #a11y-live out of the accessibility tree. Also killed: ' +
+        '`*` and the positional pseudos, which reach an element without naming it. ' +
+        'Offenders: ' +
+        JSON.stringify(reaching),
+    ).toEqual([]);
+
+    // B2 (red-team m23-s2) — THE SURFACE HALF, stylesheet side. A6b reads exactly one file;
+    // `@import` makes a second one, whose LITERAL id rules no tooth ever sees.
+    expect(
+      importsAnotherStylesheet('@import url("/src/theme.css");'),
+      'CONTROL: the @import detector must FIRE on an @import.',
+    ).toBe(true);
+    expect(
+      importsAnotherStylesheet(css),
+      'KILLS: an @import in styles.css. parseCssRules classifies the @import prelude as an ' +
+        'at-rule and never inspects it, and A8 counts <link> elements rather than CSS-level ' +
+        'imports — so a second sheet full of literal #id rules ships completely unscanned. ' +
+        'Spec §2.7 decided on exactly ONE css file.',
+    ).toBe(false);
   });
 });
 
@@ -1892,6 +2171,48 @@ describe('m23-s2 (A11Y-11): .sr-only hides visually WITHOUT leaving the accessib
         kills: 'the headline defect — display:none removes the node from the a11y tree entirely',
       },
       {
+        // B3, red-team m23-s2: MEASURED green before `stripImportant` existed, and Chromium
+        // confirmed the announcement absent from the AX tree. The value parses as
+        // `'none !important'`, so an equality check against `'none'` waves the banned
+        // declaration straight through. The GOOD half carries the mirror-image false RED.
+        css: '.sr-only{position:absolute;clip-path:inset(50%);width:1px;display:none!important}',
+        reason: SR_ONLY_REASON_DISPLAY,
+        kills:
+          'an equality check that forgets !important — the banned declaration parses as ' +
+          '"none !important" and slips past every value comparison',
+      },
+      {
+        css: '.sr-only{position:absolute;clip-path:inset(50%);visibility:hidden !important}',
+        reason: SR_ONLY_REASON_VISIBILITY,
+        kills: 'the same !important hole on the visibility clause, with the legal spacing',
+      },
+      {
+        // B4, red-team m23-s2: MEASURED green under a `union.has()` presence check, with
+        // Chromium painting 1651 px² of announcement text on screen — verbatim the "renders
+        // as stray visible text" failure this criterion exists to prevent.
+        css: '.sr-only{position:absolute;clip:auto;clip-path:none}',
+        reason: SR_ONLY_REASON_CLIP,
+        kills:
+          'a PRESENCE check on the clip: both properties are declared and both are INERT, ' +
+          'so the rule looks complete and hides nothing at all',
+      },
+      {
+        // B8, red-team m23-s2: MEASURED green, Chromium IN_A11Y_TREE = false. Same outcome
+        // as display:none, on a property a two-name deny-list never mentions.
+        css: '.sr-only{position:absolute;clip-path:inset(50%);content-visibility:hidden}',
+        reason: SR_ONLY_REASON_CONTENT_VIS,
+        kills:
+          'a deny-list that names only display and visibility — content-visibility:hidden ' +
+          'removes the subtree from the accessibility tree just as completely',
+      },
+      {
+        css: '.sr-only{position:absolute;clip-path:inset(50%);display:contents}',
+        reason: SR_ONLY_REASON_DISPLAY_CONTENTS,
+        kills:
+          'display:contents — it erases the BOX, so the clip that is doing the hiding ' +
+          'applies to nothing and the text lays out inline in the body',
+      },
+      {
         css: '.sr-only{visibility:hidden;clip-path:inset(50%);position:absolute}',
         reason: SR_ONLY_REASON_VISIBILITY,
         kills:
@@ -1902,8 +2223,12 @@ describe('m23-s2 (A11Y-11): .sr-only hides visually WITHOUT leaving the accessib
         css: '.sr-only{clip-path:inset(50%)}',
         reason: SR_ONLY_REASON_POSITION,
         kills:
-          'a clip-only check: clip and clip-path hide nothing unless the box is absolutely ' +
-          'positioned, so this rule leaves the live region FULLY VISIBLE while looking right',
+          'a clip-only check. The reason is narrower than it looks: the LEGACY `clip` ' +
+          'property applies only to absolutely-positioned boxes, so `clip` without ' +
+          '`position:absolute` hides nothing at all. `clip-path` does apply either way, but ' +
+          'an in-flow 1px box still occupies a line box and disturbs layout, and spec §5.2 ' +
+          'requires the pair. Requiring both is what makes the legacy form (the GOOD fixture ' +
+          'below, which the spec demands PASS) actually correct rather than accidentally so.',
       },
       {
         css: '.sr-only{position:absolute;overflow:hidden;width:1px;height:1px}',
@@ -2061,12 +2386,27 @@ describe('m23-s2 (load path): index.html actually LOADS the stylesheet', () => {
     // WRONG IMPL KILLED (2): a relative `href="src/styles.css"` or `href="./styles.css"` —
     //   vite's root is client/, so only the absolute /src/styles.css resolves under both
     //   `vite dev` and `vite build`. This mirrors the module <script>'s own /src/main.ts
-    //   form at index.html:127, already proven on both paths.
+    //   form at index.html:154, already proven on both paths.
     // WRONG IMPL KILLED (3): the <link> placed in <body>. Parsers hoist it in practice, but
     //   a stylesheet discovered after first paint is a flash of unstyled content — here, a
     //   visible flash of the live region's text.
     const doc = parseIndexHtml();
     const links = Array.from(doc.querySelectorAll('link[rel="stylesheet"]'));
+
+    // B2 (red-team m23-s2), the SURFACE half of A11Y-12. `styles.css` is the only file A6b
+    // scans, so an inline `<style>` block in <head> ships LITERAL `#help-overlay{position:
+    // static!important}` rules past every tooth: measured 18/18 green with Chromium
+    // reporting `#help-overlay` at `rect.top = 720` in a 720px viewport — ADR-0151 D1's
+    // below-the-fold regression, reproduced with H7 passing. The ban is also right on its
+    // own terms: spec §2.7 decided on exactly ONE stylesheet, and an inline block is a
+    // second, unscannable one.
+    expect(
+      Array.from(doc.querySelectorAll('style')).length,
+      'KILLS: an inline <style> block in index.html. A6b scans client/src/styles.css and ' +
+        'nothing else, so id rules parked here are invisible to A11Y-12 while still ' +
+        'reaching #help-overlay / #help-hint / #build-stamp in the browser. All styling in ' +
+        'this file is inline-on-the-element or in the one linked stylesheet.',
+    ).toBe(0);
 
     expect(
       links.map((el) => el.getAttribute('href') ?? '(no href)'),
@@ -2081,7 +2421,7 @@ describe('m23-s2 (load path): index.html actually LOADS the stylesheet', () => {
       link === null ? '(no stylesheet link)' : link.getAttribute('href'),
       'KILLS: a relative href. vite serves index.html with root=client/, so only the ' +
         'absolute /src/styles.css resolves under both `vite dev` and `vite build` — the same ' +
-        'form index.html:127 already uses for /src/main.ts.',
+        'form index.html:154 already uses for /src/main.ts.',
     ).toBe('/src/styles.css');
 
     expect(
