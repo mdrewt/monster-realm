@@ -222,21 +222,25 @@ fn none_is_never_due_at_zero_and_both_extremes() {
     );
 }
 
-/// PRV1 §4.5/§8.1: `DELETION_GRACE_MS_DEFAULT` must be strictly positive, so
-/// `None` cannot be silently aliased to "always due" by a disguised
-/// `None => DELETION_GRACE_MS_DEFAULT == 0` arm.
+/// PRV1 §4.5/§8.1: `DELETION_GRACE_MS_DEFAULT` must be strictly positive.
 ///
-/// This is not a tautology check on the constant's sign for its own sake —
-/// it kills a specific hazard the red-team measured: an implementation that
-/// special-cases `None => elapsed = DELETION_GRACE_MS_DEFAULT` (satisfying
-/// the `>=` boundary trivially, always true) passes every OTHER test in this
-/// file today, because none of them separately probe what `None` maps to
-/// internally versus what it returns externally. If an operator ever
-/// (mis)configures the grace constant to `0`, that disguised arm's output
-/// would flip from "coincidentally false" to "always cascade every
-/// cancelled account" with zero other observable change — this assertion
-/// is what pins the constant away from that trap independent of the
-/// operator's eventual §8.1 numeric choice.
+/// This is a PARTIAL tooth, not a kill switch, and this comment must not
+/// overclaim what it catches. The shape it actually leaves standing is an
+/// implementation that special-cases `None => DELETION_GRACE_MS_DEFAULT == 0`
+/// (i.e. `None` internally maps to "compare the grace constant itself to
+/// zero") rather than the correct `None => false`. At any non-zero grace
+/// value that arm evaluates to `false` — identical to the correct arm — so
+/// it is INVISIBLE to every behavioural test in this file, including the
+/// adjacent `none_is_never_due_at_zero_and_both_extremes` (measured: 19/19
+/// still pass with that arm live; it is not caught there or anywhere else
+/// in this file). This assertion does NOT kill that shape; it only keeps
+/// `DELETION_GRACE_MS_DEFAULT` out of the one state (zero) where the
+/// aliasing arm would detonate into "always cascade every cancelled
+/// account" the moment an operator retunes the constant. The shape itself
+/// is killed elsewhere: acceptance gate `[X3]` pins the literal
+/// `None => false` in the function body's comment-stripped source, so a
+/// `None => ... == 0` (or any other non-literal-`false`) arm fails CI
+/// regardless of what the constant is tuned to.
 #[test]
 fn grace_default_is_positive_so_none_cannot_alias_true() {
     let grace: i64 = DELETION_GRACE_MS_DEFAULT;
@@ -408,11 +412,12 @@ fn state_transition_owners_is_exactly_the_three_spec_reducers() {
 /// PRV1 §4.7 TEETH: the exemption list admits no empty string, no `"*"`
 /// wildcard, no duplicate entries, and no ordinary gameplay reducer.
 ///
-/// Under S6's `[DEL-06]` prefix-matching CI scan, an empty or `"*"` entry
-/// would exempt EVERY reducer that writes a manifest-classified table from
-/// the deletion gate — silently turning a targeted 3-reducer allowlist into
-/// a blanket bypass. `propose_trade`/`start_battle` are chosen as negative
-/// membership probes because both write manifest-classified tables
+/// Under S6's `[DEL-06]` CI scan (matching mechanism not yet decided — S6 is
+/// unbuilt), an empty or `"*"` entry would exempt EVERY reducer that writes
+/// a manifest-classified table from the deletion gate — silently turning a
+/// targeted 3-reducer allowlist into a blanket bypass.
+/// `propose_trade`/`start_battle` are chosen as negative membership probes
+/// because both write manifest-classified tables
 /// (`trade_offer` is ERASE-policy; battle-start writes classified tables via
 /// the PvP/battle path) and MUST go through the `should_reject_for_deletion`
 /// gate rather than being exempt.
