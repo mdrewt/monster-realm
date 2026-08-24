@@ -180,7 +180,10 @@ describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() e
     expect(anchor!.tagName).toBe('H2');
     expect(
       anchor!.getAttribute('tabindex'),
-      'must be "-1", never "0", and dataset.testid sets "testid" not "data-testid"',
+      'must be "-1", never "0": a heading with no tabindex is not programmatically focusable, ' +
+        'so the deferred querySelector(...)?.focus() silently no-ops; "0" would pass ' +
+        '[A11Y-T5] while adding a permanent extra tab stop. See battleView.test.ts for the ' +
+        'dataset.testId-vs-dataset.testid note',
     ).toBe('-1');
     expect(
       anchor!.textContent,

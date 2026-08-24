@@ -169,8 +169,14 @@ describe('BattleView — m23-s4 overlay a11y wiring on the show()/hide()/refresh
     expect(anchor!.tagName).toBe('H2');
     expect(
       anchor!.getAttribute('tabindex'),
-      'must be "-1", never "0" — and `title.dataset.testid = ...` sets the attribute ' +
-        '"testid", not "data-testid", which would silently no-op this whole lookup',
+      'must be "-1", never "0": a heading with no tabindex is not programmatically ' +
+        "focusable, so openOverlayA11y's querySelector(...)?.focus() silently no-ops and the " +
+        'overlay opens with focus still on <body>. (happy-dom focuses a bare <h2> regardless, ' +
+        'so this attribute-VALUE assertion is the only oracle for it here.) `tabindex="0"` ' +
+        'would pass [A11Y-T5] (which bans only >0) while adding a permanent extra tab stop ' +
+        "ahead of the overlay's real controls. The camelCase `dataset.testId` footgun maps to " +
+        'the attribute "data-test-id" and would no-op the lookup above; all-lowercase ' +
+        '`dataset.testid` does NOT (WHATWG dataset inserts a dash only before an uppercase letter).',
     ).toBe('-1');
     expect(
       anchor!.textContent,
@@ -286,7 +292,13 @@ describe('BattleView — m23-s4 overlay a11y wiring on the show()/hide()/refresh
     ).toHaveBeenCalledTimes(1);
 
     view.refresh(null);
-    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(2);
+    expect(
+      vi.mocked(closeOverlayA11y),
+      'vi.clearAllMocks() above reset the spy history, so this final refresh(null) is the ONLY ' +
+        'close in this window: exactly one call proves the close arm fires on the null ' +
+        'transition, and that neither of the two preceding non-null refreshes (the fresh open, ' +
+        'nor the guarded repeat) issued a close of their own',
+    ).toHaveBeenCalledTimes(1);
   });
 });
 
