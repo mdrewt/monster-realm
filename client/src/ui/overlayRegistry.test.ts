@@ -1098,7 +1098,7 @@ describe('overlayRegistry — OverlayHandles, the force-hide write table (uxd3-c
 // THE NEGATIVE COMPILE MECHANISM (ADR-0205 D6). `client/tsconfig.json` excludes `**/*.test.ts`,
 // so nothing written in a test file is typechecked by `just client-typecheck`, and
 // `@ts-expect-error` is unusable here — it occurs zero times in `client/src`, recorded as not
-// this repo's house style at `overlayRegistry.test.ts:1046`. Instead OR-A11Y-TOTALITY-COMPILE
+// this repo's house style at `overlayRegistry.test.ts:1050`. Instead OR-A11Y-TOTALITY-COMPILE
 // and OR-A11Y-ROLE-CLOSED-UNION-COMPILE write small probe `.ts` modules to a fresh temp dir and
 // SPAWN `tsc --noEmit` on each, asserting the POLARITY of the compiler's own verdict — never a
 // text scan, never `@ts-expect-error`. Red-team measured (ADR-0205 D6) that a text-pin

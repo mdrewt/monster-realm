@@ -229,7 +229,7 @@ invocation on this toolchain, so it is affordable inside `client-test`, which is
 `client/tsconfig.json:15` excludes `**/*.test.ts`, so nothing written in a test file is typechecked
 by `just client-typecheck` — which is also why `@ts-expect-error` is unusable here (and it occurs
 zero times in `client/src`, recorded as not this repo's house style at
-`client/src/ui/overlayRegistry.test.ts:1046`).
+`client/src/ui/overlayRegistry.test.ts:1050`).
 
 Note the division of labour this creates and the EARS wording it satisfies. A11Y-1/A11Y-2 say the
 violation "SHALL fail `just client-typecheck`". That is true *because* `OVERLAY_A11Y` is a total
