@@ -1,0 +1,67 @@
+/*
+ * styles.css — the repo's FIRST stylesheet (M23 slice S2, spec §2.7; ADR-0205 governs
+ * the a11y metadata this file serves).
+ *
+ * HARD CONSTRAINT: CLASS and `:root` SELECTORS ONLY — ZERO `#id` SELECTORS, EVER.
+ * `client/src/indexShell.test.ts` and `client/src/main.wiring.test.ts` pin the exact
+ * inline `position`, `inset` and `z-index` of `#help-overlay`, `#help-hint` and
+ * `#build-stamp` BY TEXT, on the premise that the inline `style` attribute is their
+ * complete styling contract. A rule in here reaching one of those ids could silently
+ * satisfy or defeat those assertions without changing a single character of the markup
+ * they read. Criterion A11Y-12 / `[A11Y-07]` is that ban, and tooth A6 in
+ * indexShell.test.ts enforces it mechanically over this exact file.
+ *
+ * LOAD PATH: a `<link rel="stylesheet" href="/src/styles.css">` in `client/index.html`'s
+ * `<head>`, NOT an `import` from a `.ts`. `client/src/main.ts` is slice S5's exclusive
+ * touch, so no module in this slice's touch-set could carry the import. Tooth A8 pins the
+ * link, because nothing else in the repo would catch "shipped a stylesheet nothing loads":
+ * `just ci` has no client build step, vitest never applies CSS, and there is no e2e
+ * console-error gate.
+ *
+ * DELIBERATELY ABSENT, and a later reader should NOT helpfully add them here:
+ *   - `:root` colour tokens and `@media (prefers-contrast: more)` — spec §4 already lists
+ *     this file in slice S9's own `touches:`, so S9 adds them beside the contrast
+ *     remediation that consumes them. A token nothing reads is a decoy.
+ *   - `@media (prefers-reduced-motion: reduce)` for the battle HP bar — it cannot work
+ *     yet. That transition is an INLINE declaration in `ui/battleView.ts`'s `cssText` and
+ *     the element carries no class, so no selector can reach it at any specificity.
+ *     Closing it needs a class on that element first, which belongs to the slice that
+ *     touches `battleView.ts`. Shipping an empty `.hp-fill` rule now would make a later
+ *     grep believe the guard had landed.
+ *   - `display:none` / `visibility:hidden` on `.sr-only` — banned by A11Y-11 (below).
+ */
+
+/*
+ * The screen-reader-only class. Visually hidden, but STILL IN THE ACCESSIBILITY TREE —
+ * that distinction is the whole criterion (A11Y-11 / `[A11Y-06]`). `display:none` and
+ * `visibility:hidden` would remove the node from the tree entirely, so a screen reader
+ * would never announce anything written into `#a11y-live` and the live region would be
+ * decorative.
+ *
+ * Declaration by declaration:
+ *   position: absolute  — takes the node out of flow AND is what makes `clip-path` apply
+ *                         to a box at all; without it the node is simply visible.
+ *   width/height: 1px   — a genuinely 0x0 box is dropped from the accessibility tree by
+ *                         some engines. 1px is the safe floor.
+ *   padding: 0          — an inherited padding would re-inflate the 1px box.
+ *   margin: -1px        — pulls the box off its own line so it cannot produce a visible
+ *                         artefact or a scroll nub.
+ *   overflow: hidden    — clips the overflowing text for engines that ignore `clip-path`.
+ *   clip-path: inset(50%) — the visual hide. The modern spelling of the legacy
+ *                         `clip: rect(0, 0, 0, 0)`; tooth A7 accepts either, because the
+ *                         criterion is on semantics, not on a copied literal.
+ *   white-space: nowrap — keeps announced text on one line, so the 1px box cannot wrap
+ *                         into a tall clipped column that some engines still expose.
+ *   border: 0           — an inherited border would draw visible pixels around the box.
+ */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}

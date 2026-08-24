@@ -745,6 +745,29 @@ describe('ux1-1 (H7): the advertised #help-overlay is actually on-screen', () =>
   });
 });
 
+/**
+ * HERMETICITY GUARD — module scope on purpose, so it runs at import time, before ANY
+ * test body in this file (including the pre-existing ux1 teeth above).
+ *
+ * m23-s2 adds `<link rel="stylesheet" href="/src/styles.css">` to the real
+ * `client/index.html`. happy-dom honours that link on parse: it resolves the href against
+ * the document URL and issues a REAL `fetch()` to `http://localhost:3000/src/styles.css`.
+ * With nothing listening that is only stderr noise, but it makes a suite the repo
+ * guarantees is "fast, hermetic and server-free" (spec §5.7) depend on what happens to be
+ * bound to a port — and if something IS listening, every `parseIndexHtml()` above silently
+ * loads a foreign stylesheet into the document under assertion.
+ *
+ * Disabling the fetch loses nothing: no assertion in this file, old or new, reads a
+ * COMPUTED style. They read the inline `style` ATTRIBUTE as text (the file's own documented
+ * premise) or read `styles.css` from disk via `readStylesCss()`. `A8` still sees the
+ * `<link>` element itself, which is a parsed DOM node either way.
+ */
+(
+  window as unknown as {
+    happyDOM: { settings: { disableCSSFileLoading: boolean } };
+  }
+).happyDOM.settings.disableCSSFileLoading = true;
+
 // ===========================================================================
 // m23-s2 (M23 accessibility — slice S2). APPENDED BLOCK. Nothing above this
 // line is edited: not an assertion, not a helper, not a comment. See the
