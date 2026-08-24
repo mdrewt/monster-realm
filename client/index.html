@@ -107,6 +107,13 @@
       style="display:none;position:fixed;inset:0;z-index:100;overflow:auto;background:rgba(0,0,0,0.88);padding:24px;font:14px/1.6 monospace;color:#e0e0e0"
     >
       <div id="menu-heading"></div>
+      <!-- tabindex="0", NEVER "-1" (ADR-0205 D2's named landmine). This is the overlay's
+           initialFocusSelector AND it carries a delegated click listener, so `-1` would fail
+           [A11Y-T3] (a negative tabindex on a listener-bearing element). biome's
+           noNoninteractiveTabindex is correct in general and premature here: slice S6 gives
+           this element role="listbox" + aria-activedescendant, which makes it interactive and
+           retires this suppression. S6 owns menuView.ts; S2 may not add the role itself.
+           biome-ignore lint/a11y/noNoninteractiveTabindex: interactive from S6; see above -->
       <ul id="menu-rows" tabindex="0"></ul>
       <div id="menu-back-hint"></div>
     </div>

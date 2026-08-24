@@ -1483,6 +1483,36 @@ The overlay subsystem was restructured around a pure `canOpen(targetId, visibleI
 
 **m22-s1** (M22 privacy/compliance **S1**, the game-core deletion contract surface — spec `M22-privacy-compliance.spec.md` §4.3/§4.5/§4.7/§5/§8.1, governed by harness ADR-0031; **no new project ADR**) complete; **pure `game-core` only — zero schema, zero reducers, zero client, zero evals.** A new top-level module `game-core/src/accounts/` (first entry in `lib.rs`'s module list and re-export run) holds `deletion.rs`: `DELETION_GRACE_MS_DEFAULT`, `is_deletion_due(Option<i64>, i64) -> bool`, `TOMBSTONE_IDENTITY_BYTES`, `TOMBSTONE_AUTH_ISSUER`, `EXPORT_CHUNK_ROWS` and `STATE_TRANSITION_OWNERS` — the six values S2–S8 consume, written once here rather than in each shell. Placement mirrors `CHALLENGE_TTL_MS`/`is_challenge_stale` (`game-core/src/combat/pvp.rs:100-110`, ADR-0126 D2); the `Option<i64>` parameter is the real column type, and `None => false` is load-bearing because PRV1-3 *clears* `deletion_requested_at_ms` on cancel, making `None` the cancelled state. **The grace number is not an engineering default:** spec §8.1 escalation #1 is UNRESOLVED, so 7 days ships as an explicitly arbitrary placeholder with an honest basis comment and no borrowed figure. **`TOMBSTONE_IDENTITY_BYTES` is `[u8; 32]`, not an `Identity`** — `game-core` carries no `spacetimedb` dependency and `client-wasm` depends on it *without* the feature, so raw bytes plus a derivation instruction is the only shape that keeps the constant single-sourced; S3 derives `Identity::from_byte_array(game_core::TOMBSTONE_IDENTITY_BYTES)` in `server-module/src/lib.rs` beside `WILD_IDENTITY` (`:84`), never in `accounts.rs`, whose `[R/identity-ctor]` clause bans that constructor.
 
-## M23 — Accessibility (S0, the substrate — ADR-0205)
+## M23 — Accessibility (S0 the substrate, S2 the static shells — ADR-0205)
 
 **m23-s0** complete, `M23-accessibility`; **pure client chrome — zero reducers, zero schema, zero predictor/renderer surface, and zero consumers (every reader is S1+).** `ui/overlayRegistry.ts` gains `A11yMeta` and a total `OVERLAY_A11Y: Readonly<Record<OverlayId, A11yMeta>>` beside `OVERLAY_TIERS` — the same anti-drift device, so a seventeenth overlay is a COMPILE error in the a11y table exactly as it already is in the tier table, the probe table and the handle table. Each entry carries `role` (a CLOSED `'dialog' | 'alertdialog'` union, which is what makes `role="presentation"` a compile error rather than something a presence scan waves through; all sixteen are `dialog` today), `labelKey` (a catalog KEY, never a literal — the M24/ADR-0033 seam), `initialFocusSelector` (a stable **constructor-time** `#id`/`[data-testid]` anchor, never a render-time control: `battleView` `replaceChildren()`s its skills and action rows every server tick, so focusing one would be incorrect, not merely brittle) and `dismissible`. New `ui/a11yCopy.ts` holds the flat `Object.freeze`d `Record<string,string>` catalog plus `t(key)`, which **throws** naming the key on a miss — returning the key would announce `a11y.overlay.boxView.title` to a screen-reader user and make an unwired catalog look wired, and returning `''` would ship an unlabelled dialog. The `a11y.overlay.*` orphan check is namespace-SCOPED and derived from `OVERLAY_IDS`, deliberately not global: S1 lands `a11y.world.*`/`a11y.announce.*` immediately, and a global check would force a later slice to weaken an S0 gate — proved executably by a must-stay-green bite-proof, not by prose. **A11Y-1/A11Y-2 are gated by a real NEGATIVE COMPILE, not the house textual declaration pin:** red-team measured that a `Partial<>` spelling plus a planted decoy string constant holding the byte-exact expected declaration left both `tsc --noEmit` and the pin green, a bypass structural to any pure-text pin, so the tests instead spawn `tsc --noEmit` on generated probe modules and assert the polarity of the compiler's verdict (two must compile, two must not). Gates: 31 co-located tests, 28 mutation bite-proofs red and 2 must-stay-green, full `just ci` exit 0. **Two spec amendments recorded in ADR-0205 and flagged for sign-off:** §2.1's "natively focusable" is relaxed to "focusable, natively or via `tabindex`" (seven of sixteen ids have nothing natively focusable and the alternative is S2 shipping four dead controls), and §5.1's `[A11Y-02]` regex is case-permitted and segment-non-empty (the spec's own `/^a11y\.[a-z0-9.]+$/` rejects the canonical key §2.8 itself gives and accepts `a11y..`). ADR next-free = 0206.
+
+**m23-s2** complete, `M23-accessibility` S2 — **the static shells, the live region, and the repo's
+first stylesheet.** `client/index.html`'s eleven static overlay shells gain `role="dialog"` +
+`aria-modal="true"` in the MARKUP (so the attribute is correct before S3's runtime path exists and no
+`replaceChildren()` can un-set it), and the nine non-natively-focusable `initialFocusSelector` anchors
+gain a `tabindex` — `0` on `#menu-rows`, `-1` on the other eight, and **none** on `#rename-input` /
+`#tradepropose-target`, where a `-1` would REMOVE a native control from the tab order. The obligation
+is DERIVED, never listed (ADR-0205 D1): the gate resolves each of the sixteen
+`OVERLAY_A11Y[id].initialFocusSelector` against the real `index.html`, and the eleven that resolve ARE
+the static shells — there is no hand-kept `OverlayId`→element-id map, which is why the irregular ids
+(`pvpView`→`#pvp-challenge-overlay`) cannot drift. The gate reads `OVERLAY_A11Y[id].role` back
+dynamically rather than asserting the literal `'dialog'`, which is the consumer read-back that
+de-theatres S0's table one slice earlier than the constructed-side read-back.
+`<div id="a11y-live" aria-live="polite" aria-atomic="true" class="sr-only">` is the LAST `<body>`
+element: outside `#app`, outside every view root, inside no `replaceChildren()` subtree, so the
+announcement binding cannot be destroyed by this codebase's authoritative-rebuild idiom. It carries no
+inline `style` on purpose — one there enters `W-ONE-CORNER-AFFORDANCE`'s corner filter.
+**`client/src/styles.css` is the repo's first and only stylesheet, and it is loaded by a
+`<link rel="stylesheet" href="/src/styles.css">` in `<head>`, never by an `import` from a `.ts`** —
+a durable constraint for every later slice that extends it (S9). It holds **class and `:root`
+selectors ONLY, zero `#id` selectors**: `indexShell.test.ts` and `main.wiring.test.ts` pin
+`#help-overlay`/`#help-hint`/`#build-stamp`'s inline positioning BY TEXT, so a rule reaching one of
+those ids could silently satisfy or defeat those assertions without touching the markup they read.
+Today it holds exactly one rule, `.sr-only`, hiding visually via `clip-path` while STAYING IN THE
+ACCESSIBILITY TREE — `display:none`/`visibility:hidden` would remove the node entirely and make the
+live region decorative. `:root` tokens and the `prefers-contrast` media query are deliberately absent:
+S9 already owns this file and lands them beside the contrast work that consumes them. Gates: 10
+co-located teeth appended to `indexShell.test.ts` (append-only, proven by a difflib opcode pass — zero
+original lines changed), 13 mutation bite-proofs red and 1 must-stay-green, plus a hostile-CSS fixture
+suite for the two scanners. ADR next-free = 0206 (no new ADR: ADR-0205 already carries this design).

@@ -762,11 +762,19 @@ describe('ux1-1 (H7): the advertised #help-overlay is actually on-screen', () =>
  * premise) or read `styles.css` from disk via `readStylesCss()`. `A8` still sees the
  * `<link>` element itself, which is a parsed DOM node either way.
  */
-(
+const happyDomSettings = (
   window as unknown as {
-    happyDOM: { settings: { disableCSSFileLoading: boolean } };
+    happyDOM: {
+      settings: { disableCSSFileLoading: boolean; handleDisabledFileLoadingAsSuccess: boolean };
+    };
   }
-).happyDOM.settings.disableCSSFileLoading = true;
+).happyDOM.settings;
+happyDomSettings.disableCSSFileLoading = true;
+// ...and treat the disabled load as a SUCCESS rather than a NotSupportedError. Without this,
+// happy-dom emits a DOMException stack trace on every single parse of index.html — over twenty
+// of them per `just ci` run, in a suite that is otherwise silent. Noise that is normal is noise
+// nobody reads, which is how a real error hides.
+happyDomSettings.handleDisabledFileLoadingAsSuccess = true;
 
 // ===========================================================================
 // m23-s2 (M23 accessibility — slice S2). APPENDED BLOCK. Nothing above this
@@ -1137,7 +1145,10 @@ function parseDeclarations(body: string): Array<readonly [string, string]> {
     const colon = firstTopLevelColon(text);
     if (colon === -1) continue;
     const prop = text.slice(0, colon).trim().toLowerCase();
-    const value = text.slice(colon + 1).trim().toLowerCase();
+    const value = text
+      .slice(colon + 1)
+      .trim()
+      .toLowerCase();
     out.push([prop, value]);
   }
   return out;
