@@ -239,8 +239,9 @@ fn none_is_never_due_at_zero_and_both_extremes() {
 /// operator's eventual §8.1 numeric choice.
 #[test]
 fn grace_default_is_positive_so_none_cannot_alias_true() {
+    let grace: i64 = DELETION_GRACE_MS_DEFAULT;
     assert!(
-        DELETION_GRACE_MS_DEFAULT > 0,
+        grace > 0,
         "DELETION_GRACE_MS_DEFAULT must be a strictly positive placeholder (spec §8.1: an \
          honest, operator-tunable default, never zero) so a None->GRACE aliasing bug cannot \
          hide behind a future zero retune"
@@ -274,8 +275,7 @@ fn grace_default_is_positive_so_none_cannot_alias_true() {
 #[test]
 fn tombstone_identity_bytes_is_not_the_wild_zero_sentinel() {
     assert_ne!(
-        TOMBSTONE_IDENTITY_BYTES,
-        [0u8; 32],
+        TOMBSTONE_IDENTITY_BYTES, [0u8; 32],
         "TOMBSTONE_IDENTITY_BYTES must not equal the all-zero WILD_IDENTITY sentinel \
          (server-module/src/lib.rs:84) — a zero-valued tombstone would reclassify every \
          anonymized PvP battle as a wild battle to guards.rs's opponent_identity != \
@@ -293,8 +293,7 @@ fn tombstone_identity_bytes_is_not_the_wild_zero_sentinel() {
 #[test]
 fn tombstone_identity_bytes_is_pinned_to_the_all_ff_vector() {
     assert_eq!(
-        TOMBSTONE_IDENTITY_BYTES,
-        [0xFFu8; 32],
+        TOMBSTONE_IDENTITY_BYTES, [0xFFu8; 32],
         "TOMBSTONE_IDENTITY_BYTES must be pinned to the all-0xFF 32-byte vector"
     );
 }
@@ -354,8 +353,9 @@ fn tombstone_auth_issuer_has_no_url_punctuation() {
 /// `request_data_export` for every account, not just large ones.
 #[test]
 fn export_chunk_rows_is_non_zero() {
+    let chunk_rows: u32 = EXPORT_CHUNK_ROWS;
     assert!(
-        EXPORT_CHUNK_ROWS > 0,
+        chunk_rows > 0,
         "EXPORT_CHUNK_ROWS must be non-zero: a zero chunk size panics S4's row-count \
          sub-chunking (slice::chunks(0) panics unconditionally)"
     );

@@ -37,8 +37,9 @@
 /// value (empty string, zero-length slice) still fails this test.
 #[test]
 fn root_reexport_exposes_every_s1_constant() {
+    let grace: i64 = game_core::DELETION_GRACE_MS_DEFAULT;
     assert!(
-        game_core::DELETION_GRACE_MS_DEFAULT > 0,
+        grace > 0,
         "game_core::DELETION_GRACE_MS_DEFAULT must be reachable at the crate root and positive"
     );
     assert_ne!(
@@ -50,8 +51,9 @@ fn root_reexport_exposes_every_s1_constant() {
         !game_core::TOMBSTONE_AUTH_ISSUER.trim().is_empty(),
         "game_core::TOMBSTONE_AUTH_ISSUER must be reachable at the crate root and non-blank"
     );
+    let chunk_rows: u32 = game_core::EXPORT_CHUNK_ROWS;
     assert!(
-        game_core::EXPORT_CHUNK_ROWS > 0,
+        chunk_rows > 0,
         "game_core::EXPORT_CHUNK_ROWS must be reachable at the crate root and non-zero"
     );
     assert_eq!(
