@@ -15,11 +15,11 @@
 // what makes the module 100% unit-coverable — it is NOT in vite.config.ts's coverage
 // exclude set and (plan §5 AP10) must never be added to it.
 //
-// NOT TESTED ON PURPOSE: `motionPreferenceFromWindow()` called with NO argument (its
-// `host = window` default). This suite runs in the node environment, where `window` is
-// undefined; the default parameter is the S5 wiring seam and is exercised by the
-// browser path, never here. Calling it bare would throw a ReferenceError that says
-// nothing about the contract.
+// THE ZERO-ARG DEFAULT IS TESTED TOO: `motionPreferenceFromWindow()` resolves its
+// `host = window` default at CALL time, so `vi.stubGlobal('window', fake)` can put a
+// plain fake host there for the duration of one test — still node-only, still no
+// happy-dom. That bare call IS the S5 wiring contract, and a default wired to anything
+// else leaves every other test in this file green, so it gets its own test.
 //
 // S10 HANDOFF (plan §8 R-MIN-4): when `evals/reduced-motion-purity.eval.mjs` lands in
 // S10, that eval and the source scan below deliberately enforce the SAME invariant. S10 may
@@ -29,7 +29,7 @@
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import {
   createMotionPreference,
   type MatchMediaHost,
@@ -238,6 +238,48 @@ describe('m23-s7 motionPreference (A11Y-27 / A11Y-28)', () => {
     expect(prefTrue.reduceMotion).toBe(true);
   });
 
+  it('S7T-MP-DEFAULT: called with ZERO arguments it reads the ambient window — the S5 wiring contract', () => {
+    // WRONG IMPL KILLED: a default parameter wired to anything but the real global —
+    //   `host: MatchMediaHost = {} as MatchMediaHost`   (a silent no-op preference)
+    //   `host: MatchMediaHost = fakeHostForTests`       (ships the test double)
+    // S5 calls `motionPreferenceFromWindow()` BARE, so the default IS the production
+    // seam; every other test in this file passes a host explicitly and would stay
+    // green under either mutation. `window` is resolved at CALL time, so stubbing the
+    // global is enough — no happy-dom, no DOM environment, still node-only.
+    const runWithStubbedWindow = (
+      matches: boolean,
+    ): { readonly queries: string[]; readonly reduceMotion: boolean } => {
+      const queries: string[] = [];
+      const fakeWindow: MatchMediaHost = {
+        matchMedia(q: string): MotionQuery {
+          queries.push(q);
+          return new FakeMotionQuery(matches);
+        },
+      };
+      vi.stubGlobal('window', fakeWindow);
+      const pref = motionPreferenceFromWindow(); // ZERO args -> the `host = window` default
+      return { queries, reduceMotion: pref.reduceMotion };
+    };
+
+    try {
+      // exactly ONE query, and it is the reduced-motion one — the same contract
+      // S7T-MP-QUERY pins for the injected path, now for the ambient one.
+      const on = runWithStubbedWindow(true);
+      expect(on.queries).toEqual([REDUCED_MOTION_QUERY]);
+      expect(on.reduceMotion).toBe(true);
+
+      // BOTH polarities: a default that returned a hardcoded preference would match
+      // one of these and fail the other.
+      const off = runWithStubbedWindow(false);
+      expect(off.queries).toEqual([REDUCED_MOTION_QUERY]);
+      expect(off.reduceMotion).toBe(false);
+    } finally {
+      // in a finally so a failed expectation cannot leak a fake `window` into the
+      // rest of the file (or, under a shared environment, the rest of the run).
+      vi.unstubAllGlobals();
+    }
+  });
+
   it('S7T-SCAN: matchMedia lives in motionPreference.ts alone and the render modules import only what they must (A11Y-28-partial)', () => {
     // ---- clause 0: the stripper works (anti-vacuity for clauses 2 and 3) ----------
     // A "must NOT contain" assertion over a stripper that silently strips everything
@@ -256,12 +298,14 @@ describe('m23-s7 motionPreference (A11Y-27 / A11Y-28)', () => {
     // RAW text on purpose: a mention in a COMMENT is still a second site an S5/S10
     // implementer could grow into a second call (plan §5 AP6 — scan the bare token,
     // not a spelling of the call).
-    const tsFiles = readdirSync(CLIENT_SRC_DIR, { recursive: true })
+    const allTsFiles = readdirSync(CLIENT_SRC_DIR, { recursive: true })
       .map((entry) => String(entry).split(sep).join('/'))
-      // `.test.ts` is exempt via endsWith, NEVER substring (plan §8 RT-10): a
-      // substring test would also exempt a production file named `foo.test.ts.bak`
-      // or anything living under a directory called `x.test.ts/`.
-      .filter((rel) => rel.endsWith('.ts') && !rel.endsWith('.test.ts'));
+      .filter((rel) => rel.endsWith('.ts'));
+    // `.test.ts` is exempt via endsWith, NEVER substring (plan §8 RT-10): a substring
+    // test would also exempt a production file named `foo.test.ts.bak` or anything
+    // living under a directory called `x.test.ts/`.
+    const exemptedFiles = allTsFiles.filter((rel) => rel.endsWith('.test.ts'));
+    const tsFiles = allTsFiles.filter((rel) => !rel.endsWith('.test.ts'));
 
     // anti-vacuity: prove the walk really enumerated the client source tree before
     // judging it. A mistyped root would otherwise report "zero offenders" forever.
@@ -271,6 +315,27 @@ describe('m23-s7 motionPreference (A11Y-27 / A11Y-28)', () => {
     expect(tsFiles).toContain('render/slideClock.ts');
     expect(tsFiles).toContain('net/store.ts');
     expect(tsFiles).not.toContain('render/renderResolver.test.ts'); // the exemption bites
+    expect(exemptedFiles.length).toBeGreaterThan(5);
+    expect(exemptedFiles).toContain('render/motionPreference.test.ts'); // this very file
+
+    // ---- clause 1b: the exemption is NAME-ONLY, so police what it lets through ----
+    // THE SURVIVOR THIS CLOSES: a production module DISGUISED as a test —
+    // `render/evilCaller.test.ts` holding a real exported matchMedia call and zero
+    // suites, imported by main.ts as ordinary code. Clause 1 skips it by name, and
+    // vitest silently "passes" a matched file that declares no suites, so the whole
+    // gate stays green while a second call site ships.
+    // TRIPWIRE: every exempted file must actually look like a vitest suite. Judged on
+    // the COMMENT-STRIPPED text, so a planted `// describe(` does not satisfy it.
+    // HONEST LIMIT (declared, not papered over): this is a tripwire, not a defense —
+    // a determined cheater plants a dummy `describe('x', () => {})` and walks through
+    // it. The deeper residual (that, plus a live-PoC'd Function-constructor global
+    // grab inside an ALLOWED file, plus token-splitting) is declared in the ledger and
+    // compensated by the mandatory desync-guard review and S10's repo-wide eval.
+    const disguisedAsTests = exemptedFiles.filter((rel) => {
+      const code = stripComments(readFileSync(join(CLIENT_SRC_DIR, rel), 'utf8'));
+      return !code.includes('describe(');
+    });
+    expect(disguisedAsTests).toEqual([]);
 
     const mentionsMatchMedia = tsFiles
       .filter((rel) => readFileSync(join(CLIENT_SRC_DIR, rel), 'utf8').includes('matchMedia'))
