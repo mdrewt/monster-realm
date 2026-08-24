@@ -95,6 +95,18 @@ wired without `cache-all-crates`, distinct per-job `prefix-key`, sccache +
 `CARGO_INCREMENTAL=0` co-located, no committed `.cargo` rustc-wrapper, nextest +
 doctest in `test` recipe, `ci-fast` recipe present, `install-action` for audit +
 nextest.
+**Rekey-contract-surface** (M22 s0): `REKEY_MANIFEST` — the ADR-0179 D6 policy
+table, and the mechanically enforced copy of it — is now an EXPORTED, recursively
+frozen const on `evals/guest-claim-integrity.eval.mjs`, so a second gate file
+consumes the one walk of the Rust sources instead of transcribing a third copy.
+`evals/rekey-contract-surface.eval.mjs` freezes that seam: the manifest is
+exported and deeply frozen (every eval shares ONE module instance under
+`run.mjs`, so a stray write to an entry's needle would silently green
+`[G6/consumed]`), `findIdentityColumns` returns `{path,type}` records derived from
+STRIPPED source (a table declared only inside a Rust string literal must not be
+walked), and importing the module runs nothing — checked with child processes
+whose `argv[1]` is a real sibling `evals/*.mjs`, because a main guard widened to
+match a directory or `run.mjs` exits the whole 90-eval suite mid-loop with code 0.
 Each gate has a
 known-bad fixture it must reject. The **client TS** is gated too (M3): `tsc` +
 vitest/fast-check over the convert + Predictor property suites (run in `just ci`
