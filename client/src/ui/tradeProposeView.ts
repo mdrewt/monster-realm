@@ -5,8 +5,10 @@
 //   1. Every focusable's OWN keydown listener calls e.stopPropagation() so field keystrokes
 //      never reach the bubble-phase window keydown (movement + letter hotkeys). The currency
 //      inputs additionally handle Enter=submit / Escape=hide locally (D6, red-team H-2).
-//   2. show() DEFERS focus via setTimeout(…, 0) so the opening key event fully completes
-//      before focus lands on the target <select>.
+//   2. The deferred initial focus is NO LONGER OWNED HERE (m23-s3). `ui/overlayA11y.ts` is the
+//      single owner of the setTimeout(…, 0) defer for all sixteen overlays, and it targets this
+//      overlay's `initialFocusSelector` (#tradepropose-target) from OVERLAY_A11Y. The defer is
+//      still load-bearing: it lets the opening key event fully complete before focus lands.
 //   3. hide() resets the select→placeholder + unchecks all monsters + blanks both currency
 //      inputs + feedback + releases the in-flight lock (#pending=false, submit re-enabled —
 //      dead-button guard, ADR-0085 C6) so a stale draft/lock never survives a re-open.
@@ -22,6 +24,7 @@
 // A single #submit() path is shared by the button click AND the currency-input Enter; a
 // #pending lock reset via .finally() on BOTH resolve and reject (no dead-button-forever),
 // with a trailing .catch() so a rejecting onSubmit never emits an unhandled rejection.
+import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import {
   buildProposeSubmission,
   type TradeProposeArgs,
@@ -119,9 +122,10 @@ export class TradeProposeView {
   }
 
   show(): void {
+    // m23-s3 D1: only the hidden->visible EDGE opens (see pvpView.ts's header for why).
+    const wasVisible = this.visible;
     this.#overlay.style.display = '';
-    // Deferred focus (D6 mechanism 2): let the opening key event fully complete first.
-    setTimeout(() => this.#target.focus(), 0);
+    if (!wasVisible) openOverlayA11y('tradeProposeView', this.#overlay);
   }
 
   hide(): void {
@@ -140,6 +144,8 @@ export class TradeProposeView {
     // so .finally() may never run. Without this reset, #pending stays true forever → dead button.
     this.#pending = false;
     this.#submitBtn.disabled = false;
+    // m23-s3 D2: DELIBERATELY UNGUARDED (see pvpView.ts's header) -- the self-healing path.
+    closeOverlayA11y('tradeProposeView', null);
   }
 
   toggle(): void {

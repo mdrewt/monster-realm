@@ -1,6 +1,7 @@
 // ui/tradeView.ts — thin DOM shell for the trade overlay (m15b, ADR-0107).
 // Pure rendering from TradeScreenViewModel. No logic — all logic is in tradeModel.ts.
 // Coverage-excluded per vite.config.ts (DOM shell; behavior validated by e2e).
+import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { TradeAction, TradeScreenViewModel, TradeSideViewModel } from './tradeModel';
 
 export interface TradeCallbacks {
@@ -61,7 +62,13 @@ export class TradeView {
   }
 
   show(): void {
+    // m23-s3 D1: read visibility BEFORE the display write. `show()` is called REPEATEDLY on an
+    // already-open overlay (pvpView.ts is the extreme case, main.ts:1699-1701), and a re-open
+    // re-schedules overlayA11y's deferred focus -- which would yank focus back to the initial
+    // anchor on every store batch. Only the hidden->visible EDGE opens.
+    const wasVisible = this.visible;
     this.#overlay.style.display = '';
+    if (!wasVisible) openOverlayA11y('tradeView', this.#overlay);
   }
 
   hide(): void {
@@ -69,6 +76,10 @@ export class TradeView {
     this.#feedbackEl.textContent = '';
     this.#pending = false;
     this.#lastRenderKey = null;
+    // m23-s3 D2: DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
+    // documented no-op with no open record, and leaving it unguarded is what lets a record
+    // that ever desynchronised from the DOM self-heal instead of leaking a live trap forever.
+    closeOverlayA11y('tradeView', null);
   }
 
   toggle(): void {

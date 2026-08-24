@@ -12,7 +12,9 @@
 // NEVER innerHTML — even though the content is a static const today, a future edit
 // sourcing content from anywhere untrusted must not be able to inject a node. Each
 // render() rebuilds authoritatively (replaceChildren) so no stale <li> survives.
+
 import type { HelpViewModel } from './helpModel';
+import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 
 export class HelpView {
   readonly #overlay: HTMLElement;
@@ -38,11 +40,21 @@ export class HelpView {
   }
 
   show(): void {
+    // m23-s3 D1: read visibility BEFORE the display write. `show()` is called REPEATEDLY on an
+    // already-open overlay (pvpView.ts is the extreme case, main.ts:1699-1701), and a re-open
+    // re-schedules overlayA11y's deferred focus -- which would yank focus back to the initial
+    // anchor on every store batch. Only the hidden->visible EDGE opens.
+    const wasVisible = this.visible;
     this.#overlay.style.display = '';
+    if (!wasVisible) openOverlayA11y('helpView', this.#overlay);
   }
 
   hide(): void {
     this.#overlay.style.display = 'none';
+    // m23-s3 D2: DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
+    // documented no-op with no open record, and leaving it unguarded is what lets a record
+    // that ever desynchronised from the DOM self-heal instead of leaking a live trap forever.
+    closeOverlayA11y('helpView', null);
   }
 
   toggle(): void {
