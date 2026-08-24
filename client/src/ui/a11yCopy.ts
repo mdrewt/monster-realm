@@ -67,6 +67,13 @@ export const a11yCopy: Readonly<Record<string, string>> = Object.freeze({
   'a11y.overlay.helpView.title': 'Controls & Goals', // index.html:86
   'a11y.overlay.menuView.title': 'Menu', // ui/menuModel.ts:325
   'a11y.overlay.claimView.title': 'Account & Sign-in', // ui/menuModel.ts:103
+  // The canvas world region (m23-s4, M23 §2.3). NOT an overlay: `render/world.ts` sets
+  // role="application" + tabindex="0" on `app.canvas` itself and labels it from here, so the
+  // hotkey-vs-quick-nav collision has a named landing place a screen reader can reach. The S0
+  // header predicted this `a11y.world.*` namespace; the set-equality gate is scoped to
+  // `a11y.overlay.*` on BOTH sides precisely so it could be added without weakening that gate,
+  // and its orphan check belongs to the slice owning the consumer (D5) — here, world.test.ts.
+  'a11y.world.region': 'World map',
 });
 
 /**
