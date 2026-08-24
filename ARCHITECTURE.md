@@ -1560,3 +1560,35 @@ with no record stored, so the later close no-ops and can never strip them, contr
 own "no half-open state" claim. Unreachable today (all 16 catalog keys are pinned present). **No ADR
 authored** — the supervisor assigned no number; the decisions ride in the module headers. ADR next-free
 = 0206.
+
+**m23-s7** complete, `M23-accessibility` S7 — **reduced motion: an injected flag through the render
+resolver, never a global read (§2.5, A11Y-27/28/36); `desync-guard` review mandatory and PASSED.**
+`ResolveInput` gains `reduceMotion?: boolean` (default `false` in the destructure). OPTIONAL is a
+declared deviation from §2.5's injected-like-`now` wording (`now` is required): S7 is `main.ts`-free
+(spec §4), so the sole production `resolve()` call at `main.ts:2719` must keep compiling unedited —
+S5 wires the live value there and may then tighten the field to required. Own path: `reduceMotion` is
+a third disjunct in the existing snap condition, and snapTo-EVERY-frame is the load-bearing choice —
+`snapTo` sets origin === target, so `positionAt` returns exactly the predicted tile for any `now`,
+while `#target` keeps TRACKING the predicted tile through the reduced-motion window, so toggling back
+resumes a normal slide with no teleport. The plausible cheat (bypass the clock, return the tile
+directly) passes every naive test and lands a tile behind on resume; it is killed only by a
+lag-of-exactly-ONE-tile fixture (`S7T-OWN-FREEZE`) — a two-tile lag is Chebyshev > 1 and snaps
+anyway, hiding the bug. Remote path: a `reduceMotion` arm FIRST, before the snapshots split, calling
+the new pure `interpolateReducedMotion(row)` (identity on the authoritative row tile;
+`interpolation.ts` stays `./config`-only via a non-exported structural `AuthoritativeTile`) — placed
+there so BOTH interpolation arms are bypassed and the remote arm never reads `now`
+(clock-independence by construction). New `render/motionPreference.ts` is the SOLE `matchMedia`
+caller (A11Y-28): TWO functions on purpose — `createMotionPreference(mm)` (fully injected, 100%
+unit-coverable, deliberately NOT coverage-excluded) and `motionPreferenceFromWindow()` (the one
+permitted global read; S5's wiring seam) — because a purely-injected module would satisfy A11Y-28
+VACUOUSLY (zero occurrences) and force S5 to write the read inline in `main.ts`. No `dispose()`:
+page-lifetime listener by design; no teardown seam exists (its `MotionQuery` interface accordingly
+declares only `matches` + `addEventListener`). Netcode-untouched, verified not asserted: the four
+parity/determinism evals green and BYTE-unmodified, the three interpolation call sites byte-identical
+to master, `slideClock.ts` absent from the diff. Gates: 16 co-located tagged tests (tester ≠
+implementer, red-team ran the cheats twice), 12/14 hand-run mutants killed (1 honest equivalent:
+live-read vs cached-listener, observationally identical per MediaQueryList semantics; 1 low DRY
+residual: `fromWindow` hardcoding the query literal is undetectable while byte-equal), acceptance
+ledger 10/11 met + 1 DEFER (repo-wide purity eval → S10, which owns the file), full `just ci` exit 0
+(90 evals, 2558 client tests). ADR next-free = 0206 (no new ADR: §2.5 pre-decides the design;
+deviations recorded here and in the PR).

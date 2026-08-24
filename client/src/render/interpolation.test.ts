@@ -895,3 +895,95 @@ describe('11r-f re-anchor (ADR-0171)', () => {
     expect((interpolationModule as unknown as Record<string, unknown>).REANCHOR_SPAN_STEPS).toBe(2);
   });
 });
+
+import type { StoreCharacter } from '../net/store';
+
+// =============================================================================
+// m23-s7 — interpolateReducedMotion (A11Y-27)
+//
+// SOURCE OF TRUTH: M23-accessibility.spec.md §2.5 — under the OS reduced-motion
+// preference a remote character is drawn AT its authoritative tile: no interpolation,
+// no delay buffer, no rounding, no clamping, no dependence on `now`. The function is
+// the pure half of that rule; renderResolver.test.ts §11 pins the call site.
+//
+// DELIBERATE DEVIATION from the tester brief (which asked for a named import):
+// `interpolateReducedMotion` does not exist yet, and in this repo a missing NAMED
+// binding is an ESM link error that takes the WHOLE FILE's collection down — the very
+// reason case (ix) above reaches for the module NAMESPACE instead (see the comment on
+// the `import * as interpolationModule` line). Going through that same namespace keeps
+// the ~40 pre-existing tests in this file GREEN during the red phase and reds each new
+// test below individually, on its own missing function, which is what a TDD red is
+// supposed to look like.
+// =============================================================================
+
+describe('m23-s7 interpolateReducedMotion (A11Y-27)', () => {
+  // Resolved off the namespace when this describe body runs: `undefined` before the
+  // implementation lands (each `it` below then reds with a clean "is not a function"),
+  // the real function after it.
+  const interpolateReducedMotion = interpolationModule.interpolateReducedMotion;
+
+  it('S7T-IRM-IDENT: returns the row tile IDENTICALLY — full row shape, negative tiles, no rounding, no clamping', () => {
+    // A FULL StoreCharacter row, not a two-field stub: the production caller passes
+    // `c.row`, so the parameter type must be satisfiable BY that shape. A signature
+    // typed `InterpSample` (which requires `receivedAt`) would not accept this object
+    // at the call site — the structural half of the proof, and the reason the plan
+    // forbids reusing InterpSample for the new parameter.
+    const row: StoreCharacter = {
+      entityId: 42n,
+      zoneId: 3,
+      tileX: -7,
+      tileY: -12,
+      facing: 'West',
+      action: 'Idle',
+      moveStartedAtMs: 1234n,
+      moveQueue: [],
+    };
+
+    // NEGATIVE tiles are the value half. WRONG IMPLS KILLED:
+    //   Math.max(0, tileX) or any clamp-to-map-bounds -> 0, not -7
+    //   Math.abs / a sign-dropping copy               -> 7, not -7
+    //   x/y transposed                                -> { x: -12, y: -7 }
+    const pos = interpolateReducedMotion(row);
+    expect(pos).toEqual({ x: -7, y: -12 });
+    expect(pos.x).toBe(-7);
+    expect(pos.y).toBe(-12);
+    // exactly the two RenderPos fields — no `tileX`/`receivedAt` leaking through a
+    // spread-based implementation into a type the renderer treats as a position.
+    expect(Object.keys(pos).sort()).toEqual(['x', 'y']);
+
+    // A FRACTIONAL probe. WHY it violates a production invariant on purpose:
+    // authoritative tiles are always integers, so an integer-only fixture cannot see
+    // a Math.round / Math.floor / Math.trunc hiding inside the "identity" function.
+    // This input is impossible in production and exists solely to kill that mutation.
+    const fractional = interpolateReducedMotion({ tileX: 2.5, tileY: -3.25 });
+    expect(fractional).toEqual({ x: 2.5, y: -3.25 });
+
+    // Zero stays +0: a -0 would render identically but signals a sign-mangling
+    // arithmetic "identity" (e.g. `0 - tileX * -1`). Object.is, because toEqual's
+    // treatment of -0 is not something this suite should depend on.
+    const zero = interpolateReducedMotion({ tileX: 0, tileY: 0 });
+    expect(Object.is(zero.x, 0)).toBe(true);
+    expect(Object.is(zero.y, 0)).toBe(true);
+  });
+
+  it('S7T-IRM-PURE: pure — a frozen input is never mutated and every call returns a FRESH object', () => {
+    const input = Object.freeze({ tileX: -1, tileY: 4 });
+
+    // FREEZE SAFETY: an implementation that writes back into its argument (e.g.
+    // "normalising" `row.tileX = Math.floor(row.tileX)` before returning) THROWS on a
+    // frozen object — ES modules are always strict — so this call is the assertion.
+    const first = interpolateReducedMotion(input);
+    const second = interpolateReducedMotion(input);
+
+    expect(first).toEqual({ x: -1, y: 4 });
+    expect(second).toEqual(first); // same input, same answer: no hidden per-call state
+    expect(input).toEqual({ tileX: -1, tileY: 4 }); // the argument is untouched
+    expect(Object.isFrozen(input)).toBe(true);
+
+    // A FRESH object per call. WRONG IMPL KILLED: a module-level memo
+    // (`let last: RenderPos | undefined`) — hidden state in a module whose header
+    // declares it PURE, invisible to every value assertion above and to the source
+    // scan, and a shared object that every caller would silently alias.
+    expect(first).not.toBe(second);
+  });
+});
