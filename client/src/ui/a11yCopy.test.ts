@@ -15,7 +15,7 @@
 
 import { describe, expect, it } from 'vitest';
 import { a11yCopy, t } from './a11yCopy';
-import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
+import { OVERLAY_A11Y, OVERLAY_IDS } from './overlayRegistry';
 
 const A11Y_KEY_SHAPE_RE = /^a11y\.[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*$/;
 
@@ -121,10 +121,9 @@ describe('a11yCopy — the flat copy catalog and the M24 key seam (m23-s0, ADR-0
       ).toBe(false);
       checked += 1;
     }
-    expect(
-      checked,
-      'ANTI-VACUITY: every catalog entry must have been examined',
-    ).toBe(entries.length);
+    expect(checked, 'ANTI-VACUITY: every catalog entry must have been examined').toBe(
+      entries.length,
+    );
   });
 
   it('A11YCOPY-KEYS-SHAPE BITES: every catalog key, regardless of namespace, matches the segment-shaped regex', () => {
@@ -133,9 +132,10 @@ describe('a11yCopy — the flat copy catalog and the M24 key seam (m23-s0, ADR-0
 
     let checked = 0;
     for (const key of keys) {
-      expect(A11Y_KEY_SHAPE_RE.test(key), `a11yCopy key '${key}' must match ${A11Y_KEY_SHAPE_RE}`).toBe(
-        true,
-      );
+      expect(
+        A11Y_KEY_SHAPE_RE.test(key),
+        `a11yCopy key '${key}' must match ${A11Y_KEY_SHAPE_RE}`,
+      ).toBe(true);
       checked += 1;
     }
     expect(checked, 'ANTI-VACUITY: every catalog key must have been examined').toBe(keys.length);
@@ -166,7 +166,7 @@ describe('a11yCopy — the flat copy catalog and the M24 key seam (m23-s0, ADR-0
     // dialog role at all.
     const missingKey = 'a11y.overlay.__does_not_exist__.title';
     expect(
-      Object.prototype.hasOwnProperty.call(a11yCopy, missingKey),
+      Object.hasOwn(a11yCopy, missingKey),
       'test fixture sanity: the probe key must NOT already be a real catalog entry',
     ).toBe(false);
 
@@ -213,7 +213,7 @@ describe('a11yCopy — the flat copy catalog and the M24 key seam (m23-s0, ADR-0
       't() must not add an entry to a11yCopy after a miss',
     ).toBe(before);
     expect(
-      Object.prototype.hasOwnProperty.call(a11yCopy, missingKey),
+      Object.hasOwn(a11yCopy, missingKey),
       'a11yCopy must not gain the missed key as an own property',
     ).toBe(false);
   });

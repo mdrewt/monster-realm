@@ -128,7 +128,7 @@ An id should become `alertdialog` only when its sole purpose is a blocking urgen
 
 1. **Reject-not-clamp**, and the repo's own precedent in this exact module family — `anyVisible`'s
    "NO try/catch on purpose: swallowing a throwing probe would return `false` silently, i.e. a
-   mutual-exclusion breach that looks like working code" (`client/src/ui/overlayRegistry.ts:198`).
+   mutual-exclusion breach that looks like working code" (`client/src/ui/overlayRegistry.ts:368`).
 2. Both alternatives are **silent** failures with user-visible cost. Returning the key announces
    `a11y.overlay.boxView.title` to a screen-reader user; returning `''` ships an **unlabelled
    dialog**, which is a worse WCAG failure than shipping no dialog role at all.

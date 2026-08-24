@@ -61,14 +61,7 @@
 // Do NOT edit these tests to match a buggy implementation — correct them from the spec/plan only.
 
 import { spawnSync } from 'node:child_process';
-import {
-  existsSync,
-  mkdtempSync,
-  readdirSync,
-  readFileSync,
-  rmSync,
-  writeFileSync,
-} from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -1373,10 +1366,9 @@ describe('overlayRegistry — OVERLAY_A11Y, the a11y metadata SSOT (m23-s0, ADR-
       const labelKey = String(raw ?? '');
       const trimmed = labelKey.trim();
 
-      expect(
-        trimmed.length > 0,
-        `OVERLAY_A11Y.${id}.labelKey must be non-empty after trim`,
-      ).toBe(true);
+      expect(trimmed.length > 0, `OVERLAY_A11Y.${id}.labelKey must be non-empty after trim`).toBe(
+        true,
+      );
       expect(
         labelKey.includes('{'),
         `OVERLAY_A11Y.${id}.labelKey ('${labelKey}') must not contain '{' — the ICU ban is ` +
@@ -1451,10 +1443,9 @@ describe('overlayRegistry — OVERLAY_A11Y, the a11y metadata SSOT (m23-s0, ADR-
         unconstrained += 1;
       }
     }
-    expect(
-      constrained + unconstrained,
-      'ANTI-VACUITY: all 16 ids must have been examined',
-    ).toBe(16);
+    expect(constrained + unconstrained, 'ANTI-VACUITY: all 16 ids must have been examined').toBe(
+      16,
+    );
     // Documents the partition this slice's design relies on: 13 EXCLUSIVE_TOP/GUARD_ONLY ids
     // (constrained to true) and 3 HIDE_SWITCH ids (box/raising/evolution, unconstrained).
     expect(
@@ -1497,10 +1488,7 @@ describe('overlayRegistry — OVERLAY_A11Y stays inside the module purity rule (
       source.includes('document'),
       'overlayRegistry.ts must not reference `document` — it stays node-testable with zero mocks',
     ).toBe(false);
-    expect(
-      source.includes('window'),
-      'overlayRegistry.ts must not reference `window`',
-    ).toBe(false);
+    expect(source.includes('window'), 'overlayRegistry.ts must not reference `window`').toBe(false);
 
     const mod: unknown = await import('./overlayRegistry');
     const overlayA11y = (mod as { OVERLAY_A11Y?: Record<string, Record<string, unknown>> })

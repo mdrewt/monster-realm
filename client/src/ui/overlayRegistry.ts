@@ -100,6 +100,173 @@ export const OVERLAY_TIERS: Readonly<Record<OverlayId, OverlayTier>> = {
 export const OVERLAY_IDS: readonly OverlayId[] = Object.keys(OVERLAY_TIERS) as OverlayId[];
 
 /**
+ * The a11y contract for ONE overlay, as data: what an assistive technology is told the thing
+ * is (`role`), what it is CALLED (`labelKey`, resolved through `ui/a11yCopy.ts`), where focus
+ * lands the moment it opens (`initialFocusSelector`), and whether Escape closes it
+ * (`dismissible`). M23 §2.1 / ADR-0205.
+ *
+ * `labelKey` is a CATALOG KEY, never a literal name. That is the M24 seam (ADR-0033): M24 swaps
+ * the resolver and these keys become catalog entries with ZERO renaming.
+ *
+ * `role` is a CLOSED two-member union rather than `string` on purpose (ADR-0205 D3). It is what
+ * makes `role="presentation"` — the single most common way to silently un-label a modal — a
+ * COMPILE error here rather than something a text scan might miss. `alertdialog` is unused
+ * today and stays in the union anyway: an id earns it only when its sole purpose is a blocking
+ * urgent message.
+ */
+export interface A11yMeta {
+  readonly role: 'dialog' | 'alertdialog';
+  readonly labelKey: string;
+  readonly initialFocusSelector: string;
+  readonly dismissible: boolean;
+}
+
+/**
+ * The a11y metadata SSOT (M23 §2.0, ADR-0205). Typed `Record<OverlayId, _>` for exactly the
+ * reason OVERLAY_TIERS is (`:76`): omitting an id is a COMPILE error, not a test failure, so a
+ * seventeenth overlay cannot ship half-registered. Declaration order mirrors OVERLAY_TIERS, so
+ * OVERLAY_IDS (`:100`) indexes this table too — one derived id list, never a second hand-kept
+ * one. Sixteen per-view ARIA retrofits have no completeness oracle; one total table does.
+ *
+ * WHY THIS BELONGS IN THIS MODULE (ADR-0205 D7, recorded as a verification — spec §2.0 made the
+ * placement call). The purity rule at `:4`-`:8` bans DOM, SDK, `main.ts` imports, view handles
+ * and thunks; every export here is a data table, a total pure function, or the TYPE of a
+ * caller-supplied table. A CSS selector string and an ARIA role name are STRINGS IN A DATA
+ * TABLE — none of those five things. This module still has zero imports, touches no browser
+ * globals, and stays node-testable with zero mocks. `A11yMeta` is the exact analogue of
+ * `OverlayProbes`/`OverlayHandles` (`:362`, `:393`): this module owns the SHAPE of the a11y
+ * contract, and S1's `ui/overlayA11y.ts` owns the writes it implies.
+ *
+ * HARD CONSTRAINT FOR EVERY LATER SLICE: this table holds NO thunks and NO functions. If a
+ * per-id BEHAVIOUR is ever needed it belongs in `overlayA11y.ts` — a lazy
+ * `initialFocusSelector: () => '…'` would drag a live handle back into the functional core and
+ * re-open the coupling `anyVisible`'s probes-as-argument shape exists to prevent.
+ *
+ * `role` IS `'dialog'` FOR ALL SIXTEEN (ADR-0205 D3), and that uniformity is sanctioned, not a
+ * smell. `alertdialog` makes an AT announce the whole subtree immediately on open, so marking
+ * `battleView` or `boxView` with it would read out an entire battle or party screen — actively
+ * worse than `dialog`. The real error surface, `errorOverlayView`, is deliberately NOT an
+ * `OverlayId` at all (`:32`-`:34`), and `claimView` is a claim nudge, not an alert.
+ *
+ * `dismissible` IS THE CONSTRAINT, NOT THE VARIATION (ADR-0205 D7). Escape closes every one of
+ * these today (`main.ts` Escape ladder), so all sixteen are `true`. Spec §2.1 phrases the rule
+ * over the TIER — `EXCLUSIVE_TOP`/`GUARD_ONLY` ⇒ `dismissible: true`, `HIDE_SWITCH` left
+ * unconstrained — and the gate reads OVERLAY_TIERS to decide which branch an id falls under. A
+ * gate written against a hardcoded "these 13 ids" list satisfies every naive bite-proof while
+ * silently ignoring a RETIERING; reading the tier SSOT does not.
+ *
+ * `initialFocusSelector` IS A STABLE, CONSTRUCTOR-TIME ANCHOR (ADR-0205 D1/D2) — never a
+ * render-time control. `battleView` calls `replaceChildren()` on its skills container and its
+ * action row on every server tick (`ui/battleView.ts:240`, `:270`), so a focused skill button is
+ * destroyed mid-battle and focus falls to `<body>`: pointing at one would be INCORRECT, not
+ * merely brittle. Where an overlay has nothing natively focusable, the anchor is its heading or
+ * first content node and the shell-owning slice (S2 for the static shells, S4 for the four
+ * `#app`-mounted overlays) makes it focusable with `tabindex` — the ARIA APG dialog fallback.
+ * That obligation is DERIVED from this table by S2/S4's own gates, never listed here as a second
+ * array (ADR-0205 D1; the A7/A15 zero-consumer rule at `:26`-`:30`). One landmine
+ * worth restating: `#menu-rows` takes `tabindex="0"`, never `-1` — it is the `aria-activedescendant`
+ * listbox AND it carries a delegated click listener.
+ */
+export const OVERLAY_A11Y: Readonly<Record<OverlayId, A11yMeta>> = {
+  battleView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.battleView.title',
+    initialFocusSelector: '[data-testid="battle-title"]',
+    dismissible: true,
+  },
+  boxView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.boxView.title',
+    initialFocusSelector: '[data-testid="box-title"]',
+    dismissible: true,
+  },
+  raisingView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.raisingView.title',
+    initialFocusSelector: '[data-testid="raising-title"]',
+    dismissible: true,
+  },
+  evolutionView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.evolutionView.title',
+    initialFocusSelector: '[data-testid="evolution-title"]',
+    dismissible: true,
+  },
+  dialogueView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.dialogueView.title',
+    initialFocusSelector: '#dialogue-npc-name',
+    dismissible: true,
+  },
+  questLogView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.questLogView.title',
+    initialFocusSelector: '#quest-log-list',
+    dismissible: true,
+  },
+  healView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.healView.title',
+    initialFocusSelector: '#heal-list',
+    dismissible: true,
+  },
+  shopView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.shopView.title',
+    initialFocusSelector: '#shop-title',
+    dismissible: true,
+  },
+  tradeView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.tradeView.title',
+    initialFocusSelector: '#trade-status',
+    dismissible: true,
+  },
+  pvpView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.pvpView.title',
+    initialFocusSelector: '#pvp-challenge-status',
+    dismissible: true,
+  },
+  leaderboardView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.leaderboardView.title',
+    initialFocusSelector: '#leaderboard-title',
+    dismissible: true,
+  },
+  renameView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.renameView.title',
+    initialFocusSelector: '#rename-input',
+    dismissible: true,
+  },
+  tradeProposeView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.tradeProposeView.title',
+    initialFocusSelector: '#tradepropose-target',
+    dismissible: true,
+  },
+  helpView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.helpView.title',
+    initialFocusSelector: '#help-title',
+    dismissible: true,
+  },
+  menuView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.menuView.title',
+    initialFocusSelector: '#menu-rows',
+    dismissible: true,
+  },
+  claimView: {
+    role: 'dialog',
+    labelKey: 'a11y.overlay.claimView.title',
+    initialFocusSelector: '#claim-signin-btn',
+    dismissible: true,
+  },
+};
+
+/**
  * Exactly what a battle auto-show force-hides — `refreshBattle`'s existing subset in its
  * own source order, plus `menuView` (the menu must never occlude a battle, AC-19).
  *
