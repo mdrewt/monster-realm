@@ -1411,25 +1411,16 @@ function freezeManifest(manifest, seen = new WeakSet()) {
  * in one `run.mjs` process resolves those to the same function objects, so a
  * barrel would add a second spelling and buy nothing.
  *
- * THE INPUT-SET RULE a second gate file MUST reuse verbatim (it is applied
- * inline in this file's default export and is deliberately not exported —
+ * THE INPUT-SET RULE — glob, normalise separators, skip `_tests.rs`, fail loud
+ * if empty, sort, read — is built inline in this file's default export, and it
+ * is CWD-RELATIVE to the repo root. It is NOT exported yet only because
  * widening the frozen contract past slice 0's scope is a follow-up, not a
- * seam-freeze). Reproduced here EXACTLY as the default export spells it:
- *   1. `glob(...)` over the recursive-any-depth `.rs` pattern rooted at
- *      `server-module/src/`. The literal in the code is the text
- *      `server-module/src/` + two asterisks + `/*.rs`; it cannot be written
- *      contiguously here because that sequence closes this block comment.
- *      Note it is CWD-RELATIVE, so the consumer must run from the repo root
- *      (this file's own default export depends on that too; a sibling gate that
- *      resolves paths from `import.meta.url` must adjust, not copy, this line).
- *   2. normalise separators with `f.replace(/\\/g, '/')` — omitted, the later
- *      `endsWith('/accounts.rs')`-style suffix matches fail off-Linux.
- *   3. SKIP every path ending `_tests.rs` (cfg(test), never published, and full
- *      of `.concat()`-assembled needles that self-red a scanner).
- *   4. fail LOUD if the resulting set is empty.
- *   5. sort, THEN read each file.
- * A narrower glob makes a completeness gate pass vacuously over a smaller
- * column set, which is the exact drift this shared surface prevents.
+ * seam-freeze. **Do not transcribe it.** A second consumer needs the same input
+ * set, and a prose copy of it here would be exactly the ungated second source of
+ * truth this whole surface exists to abolish — a narrower glob makes a
+ * completeness gate pass vacuously over a smaller column set, and a transcribed
+ * rule drifts silently the first time the real one moves. The slice that needs
+ * it EXPORTS it from here and imports it, the same way it does the manifest.
  *
  * KNOWN LIMITATION of the walker below, stated because this contract now
  * advertises it: `findIdentityColumns` matches the literal type TEXT of a
