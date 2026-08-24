@@ -60,7 +60,16 @@
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from the spec/plan only.
 
-import { readdirSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import {
+  existsSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import * as fc from 'fast-check';
@@ -1074,5 +1083,450 @@ describe('overlayRegistry — OverlayHandles, the force-hide write table (uxd3-c
       checked += 1;
     }
     expect(checked, 'ANTI-VACUITY: all 15 non-dialogue ids must have been checked').toBe(15);
+  });
+});
+
+// ===========================================================================
+// BLOCK 8 — m23-s0 (ADR-0205): OVERLAY_A11Y, the a11y metadata SSOT.
+//
+// SOURCE OF TRUTH:
+//   specs/monster-realm-v2/M23-accessibility.spec.md §2.0, §2.1, §2.8, §5.1, §6 (A11Y-1..A11Y-5).
+//   docs/adr/0205-overlay-a11y-metadata-ssot-and-copy-catalog.md D1-D7 (BINDING, resolves two
+//   spec conflicts the tests below deliberately do NOT reproduce — see D5's key-shape note).
+//
+// RED REASON: `OVERLAY_A11Y` and `A11yMeta` do not exist yet in overlayRegistry.ts. Every test
+// below reaches them through a DYNAMIC `await import('./overlayRegistry')` rather than the
+// static top-of-file import list — a static named import of a missing export is a real hazard
+// for module linking in some ESM transforms (main.wiring.test.ts:4193-4195) and would risk
+// taking every OTHER test in this 1078-line file down at collection. Confining the reach to a
+// dynamic import per-test keeps the RED CONFINED to these five new tests; the pre-existing 18
+// stay green throughout.
+//
+// THE NEGATIVE COMPILE MECHANISM (ADR-0205 D6). `client/tsconfig.json` excludes `**/*.test.ts`,
+// so nothing written in a test file is typechecked by `just client-typecheck`, and
+// `@ts-expect-error` is unusable here — it occurs zero times in `client/src`, recorded as not
+// this repo's house style at `overlayRegistry.test.ts:1046`. Instead OR-A11Y-TOTALITY-COMPILE
+// and OR-A11Y-ROLE-CLOSED-UNION-COMPILE write small probe `.ts` modules to a fresh temp dir and
+// SPAWN `tsc --noEmit` on each, asserting the POLARITY of the compiler's own verdict — never a
+// text scan, never `@ts-expect-error`. Red-team measured (ADR-0205 D6) that a text-pin
+// (`OVERLAY_HANDLES_DECL`-style) is bypassable by planting a *used* decoy string constant that
+// holds the byte-exact expected declaration; a real compile has no such bypass.
+//
+// Do NOT edit these tests to match a buggy implementation — correct them from the spec/ADR only.
+// ===========================================================================
+
+const A11Y_UI_DIR = path.dirname(fileURLToPath(import.meta.url));
+/** Absolute, extension-less specifier: tsc resolves `.ts` on an absolute/relative file
+ *  specifier regardless of `moduleResolution`, so the probe files (written elsewhere, in a
+ *  temp dir) can `import` the real registry without needing a tsconfig of their own. */
+const A11Y_REGISTRY_SPECIFIER = path.join(A11Y_UI_DIR, 'overlayRegistry');
+/** `client/node_modules/.bin/tsc`, resolved explicitly rather than relying on `npx`/PATH —
+ *  an anti-vacuity requirement in its own right (see the tsc-binary-exists assertion below):
+ *  a missing binary must RED the test, never silently skip it. */
+const A11Y_TSC_BIN = path.join(A11Y_UI_DIR, '..', '..', 'node_modules', '.bin', 'tsc');
+
+interface A11yProbeResult {
+  readonly ok: boolean;
+  readonly output: string;
+}
+
+function writeA11yProbe(dir: string, name: string, body: string): string {
+  const file = path.join(dir, `${name}.ts`);
+  writeFileSync(file, body, 'utf8');
+  return file;
+}
+
+/** Spawns `tsc --noEmit` on ONE probe file with explicit compiler flags (no tsconfig lookup,
+ *  so the probe's temp-dir location and this repo's `client/tsconfig.json` never interact).
+ *  Measured at ~0.6s per invocation (ADR-0205 D6). */
+function compileA11yProbe(file: string): A11yProbeResult {
+  const result = spawnSync(
+    A11Y_TSC_BIN,
+    [
+      '--noEmit',
+      '--strict',
+      '--target',
+      'ES2022',
+      '--module',
+      'ESNext',
+      '--moduleResolution',
+      'bundler',
+      '--skipLibCheck',
+      file,
+    ],
+    { encoding: 'utf8' },
+  );
+  return { ok: result.status === 0, output: `${result.stdout ?? ''}${result.stderr ?? ''}` };
+}
+
+describe('overlayRegistry — OVERLAY_A11Y, the a11y metadata SSOT (m23-s0, ADR-0205)', () => {
+  it('OR-A11Y-TOTALITY-COMPILE BITES: OVERLAY_A11Y is a TOTAL Record<OverlayId, A11yMeta> — a Partial<> spelling and a Record<string,_> widening are each a real tsc RED', async () => {
+    // WRONG IMPL KILLED (1): `OVERLAY_A11Y: Readonly<Partial<Record<OverlayId, A11yMeta>>>` (or
+    // any optional-key spelling) — the MUST-COMPILE probe below reds, because a Partial<> value
+    // is not assignable to the TOTAL mapped-type target.
+    // WRONG IMPL KILLED (2): `OVERLAY_A11Y: Readonly<Record<string, A11yMeta>>` (a string-keyed
+    // widening) — the MUST-NOT-COMPILE probe below silently compiles instead of reding, because
+    // `keyof typeof OVERLAY_A11Y` becomes `string` and swallows the non-member literal.
+    // Both are exactly the two D6 attack shapes red-teamed against a text-pin oracle.
+    expect(
+      existsSync(A11Y_TSC_BIN),
+      `tsc binary must exist at ${A11Y_TSC_BIN} — client/node_modules must be installed ` +
+        '(just client-setup). A missing binary is an ANTI-VACUITY failure: every MUST-NOT-COMPILE ' +
+        'assertion in this test would otherwise never actually invoke the compiler.',
+    ).toBe(true);
+
+    const dir = mkdtempSync(path.join(tmpdir(), 'm23-s0-a11y-tot-'));
+    try {
+      // ANTI-VACUITY, ASSERTED FIRST AND MOST IMPORTANT IN THIS FILE: a probe guaranteed to be
+      // uncompilable by ANY tsc, proving the spawn mechanism itself can produce a RED. Without
+      // this, a broken spawn (wrong binary path, wrong cwd, tsc silently missing, args mangled)
+      // would make `compileA11yProbe(...).ok` always `true`, and every "MUST NOT COMPILE"
+      // assertion below would pass for the wrong reason — the harness would be unfalsifiable.
+      const controlFile = writeA11yProbe(dir, 'control', "const _control: number = 'nope';\n");
+      const control = compileA11yProbe(controlFile);
+      expect(
+        control.ok,
+        'CONTROL PROBE (assigning a string literal to `number`) MUST NOT COMPILE under ANY tsc ' +
+          'invocation. If it compiles, the tsc spawn itself is broken (path/cwd/args) and every ' +
+          'other assertion in this test is meaningless. tsc output:\n' +
+          control.output,
+      ).toBe(false);
+
+      const importLine =
+        `import { OVERLAY_A11Y } from ${JSON.stringify(A11Y_REGISTRY_SPECIFIER)};\n` +
+        `import type { A11yMeta, OverlayId } from ${JSON.stringify(A11Y_REGISTRY_SPECIFIER)};\n`;
+
+      const mustCompileFile = writeA11yProbe(
+        dir,
+        'must-compile-total',
+        `${importLine}const _t: { [K in OverlayId]: A11yMeta } = OVERLAY_A11Y;\n`,
+      );
+      const mustCompile = compileA11yProbe(mustCompileFile);
+      expect(
+        mustCompile.ok,
+        'MUST COMPILE: `const _t: { [K in OverlayId]: A11yMeta } = OVERLAY_A11Y;` — a `Partial<>` ' +
+          'or optional-key spelling of OVERLAY_A11Y reds this assignment. tsc output:\n' +
+          mustCompile.output,
+      ).toBe(true);
+      expect(
+        mustCompile.output.trim(),
+        'the MUST-COMPILE probe must produce ZERO tsc output (a clean --noEmit run is silent); ' +
+          `any output here is an unexpected diagnostic:\n${mustCompile.output}`,
+      ).toBe('');
+
+      const mustNotCompileFile = writeA11yProbe(
+        dir,
+        'must-not-compile-widening',
+        `${importLine}const _bad: keyof typeof OVERLAY_A11Y = 'settingsView';\n`,
+      );
+      const mustNotCompile = compileA11yProbe(mustNotCompileFile);
+      expect(
+        mustNotCompile.ok,
+        "MUST NOT COMPILE: 'settingsView' is not a real OverlayId. A " +
+          '`Record<string, A11yMeta>` widening of OVERLAY_A11Y makes `keyof typeof OVERLAY_A11Y` ' +
+          `become \`string\`, which would let this compile. tsc exited status ${
+            mustNotCompile.ok ? '0 (compiled)' : 'nonzero'
+          }:\n${mustNotCompile.output}`,
+      ).toBe(false);
+      expect(
+        mustNotCompile.output,
+        "the widening probe's tsc error must actually NAME 'settingsView' — an unrelated " +
+          `error (e.g. a resolution failure) would falsely satisfy the boolean check above:\n${mustNotCompile.output}`,
+      ).toMatch(/settingsView/);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+
+    // Runtime both-directions check (D6's honest-limit companion to the type-level probes: this
+    // half independently catches a MISSING entry whatever the type says).
+    const mod: unknown = await import('./overlayRegistry');
+    const overlayA11y = (mod as { OVERLAY_A11Y?: Record<string, unknown> }).OVERLAY_A11Y;
+    expect(overlayA11y, 'OVERLAY_A11Y must be exported from overlayRegistry.ts').toBeDefined();
+
+    // ANTI-VACUITY: the manifest is the real 16, or both set-equality directions below pass
+    // vacuously over an empty/truncated comparison.
+    expect(OVERLAY_IDS.length, 'the manifest must hold 16 mutual-exclusion overlays').toBe(16);
+
+    const keys = Object.keys(overlayA11y ?? {});
+    expect(keys.length, 'OVERLAY_A11Y must have exactly 16 own keys').toBe(16);
+
+    const missingFromA11y = OVERLAY_IDS.filter((id) => !keys.includes(id));
+    const stowawayInA11y = keys.filter((k) => !(OVERLAY_IDS as readonly string[]).includes(k));
+    expect(
+      missingFromA11y,
+      'these OVERLAY_IDS have NO OVERLAY_A11Y entry — omitting an id must be a compile error, ' +
+        'and if it is not, it must at least be caught here at runtime',
+    ).toEqual([]);
+    expect(
+      stowawayInA11y,
+      'these OVERLAY_A11Y keys are not real OverlayId members (a stowaway/typo’d id)',
+    ).toEqual([]);
+  }, 30000);
+
+  it('OR-A11Y-ROLE-CLOSED-UNION-COMPILE BITES: A11yMeta.role admits EXACTLY dialog and alertdialog — presentation is a tsc RED and both members are assignable', async () => {
+    // WRONG IMPL KILLED (1): `role: string` (or a third union member such as `'presentation'`) —
+    // the MUST-NOT-COMPILE probe below silently compiles instead of reding.
+    // WRONG IMPL KILLED (2): `role` narrowed to a single literal (e.g. `role: 'dialog'` with no
+    // union at all) — the MUST-COMPILE probe assigning `'alertdialog'` reds. This is the
+    // anti-vacuity half: a check that only tries `'dialog'` cannot see a narrowed-away union.
+    expect(
+      existsSync(A11Y_TSC_BIN),
+      `tsc binary must exist at ${A11Y_TSC_BIN} — client/node_modules must be installed ` +
+        '(just client-setup). A missing binary is an ANTI-VACUITY failure.',
+    ).toBe(true);
+
+    const dir = mkdtempSync(path.join(tmpdir(), 'm23-s0-a11y-role-'));
+    try {
+      // Self-sufficient CONTROL, exactly as OR-A11Y-TOTALITY-COMPILE: each gated test must be
+      // trustworthy standing alone, since the ledger runs the whole file but a reader may only
+      // look at one test.
+      const controlFile = writeA11yProbe(dir, 'control', "const _control: number = 'nope';\n");
+      const control = compileA11yProbe(controlFile);
+      expect(
+        control.ok,
+        'CONTROL PROBE MUST NOT COMPILE under ANY tsc invocation — if it compiles, the tsc spawn ' +
+          `itself is broken and every MUST-NOT-COMPILE assertion below is meaningless. tsc output:\n${control.output}`,
+      ).toBe(false);
+
+      const roleImportLine = `import type { A11yMeta } from ${JSON.stringify(A11Y_REGISTRY_SPECIFIER)};\n`;
+
+      const mustNotCompileFile = writeA11yProbe(
+        dir,
+        'must-not-compile-presentation',
+        `${roleImportLine}const _bad: A11yMeta['role'] = 'presentation';\n`,
+      );
+      const mustNotCompile = compileA11yProbe(mustNotCompileFile);
+      expect(
+        mustNotCompile.ok,
+        "MUST NOT COMPILE: `const _bad: A11yMeta['role'] = 'presentation';` — a `role: string` " +
+          `widening, or a third union member, makes this compile. tsc output:\n${mustNotCompile.output}`,
+      ).toBe(false);
+      expect(
+        mustNotCompile.output,
+        "the presentation probe's tsc error must actually NAME 'presentation' — an unrelated " +
+          `error would falsely satisfy the boolean check above:\n${mustNotCompile.output}`,
+      ).toMatch(/presentation/);
+
+      const mustCompileFile = writeA11yProbe(
+        dir,
+        'must-compile-both-roles',
+        `${roleImportLine}const _a: A11yMeta['role'] = 'dialog';\nconst _b: A11yMeta['role'] = 'alertdialog';\n`,
+      );
+      const mustCompile = compileA11yProbe(mustCompileFile);
+      expect(
+        mustCompile.ok,
+        "MUST COMPILE (anti-vacuity half): both `'dialog'` AND `'alertdialog'` must be " +
+          `assignable to A11yMeta['role'] — a narrowing to a single member reds this. tsc output:\n${mustCompile.output}`,
+      ).toBe(true);
+      expect(
+        mustCompile.output.trim(),
+        `the MUST-COMPILE probe must produce ZERO tsc output:\n${mustCompile.output}`,
+      ).toBe('');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  }, 30000);
+
+  it('OR-A11Y-LABELKEY-SHAPE BITES: every labelKey is non-empty, uniquely owned, brace-free and segment-shaped — the ICU ban is mechanical', async () => {
+    // WRONG IMPL KILLED: an empty `labelKey: ''`; two ids sharing one `labelKey` (a copy-paste
+    // clone); `labelKey: 'a11y.count.{n}'` (an ICU placeholder smuggled into a key, §2.8's brace
+    // ban); a `labelKey` missing the `a11y.` prefix or with an empty segment (`a11y..title`).
+    //
+    // ADR-0205 D5: the spec's OWN regex (`/^a11y\.[a-z0-9.]+$/`, §5.1 `[A11Y-02]`) is wrong in
+    // BOTH directions — it REJECTS the canonical capital-V key §2.8 itself gives
+    // (`a11y.overlay.boxView.title`) and ACCEPTS garbage like `a11y..` / `a11y.....`. The regex
+    // below is the ADR-0205-resolved one: case-permitting, and every dot-segment non-empty.
+    const mod: unknown = await import('./overlayRegistry');
+    const overlayA11y = (mod as { OVERLAY_A11Y?: Record<string, { labelKey?: unknown }> })
+      .OVERLAY_A11Y;
+    expect(overlayA11y, 'OVERLAY_A11Y must be exported from overlayRegistry.ts').toBeDefined();
+
+    const SHAPE_RE = /^a11y\.[a-zA-Z0-9]+(\.[a-zA-Z0-9]+)*$/;
+
+    // Self-test of the regex itself (ADR-0205 D5), asserted before it is trusted on real data.
+    expect(
+      SHAPE_RE.test('a11y..'),
+      "the shape regex must REJECT 'a11y..' (a doubled dot / empty segment) — the spec's own " +
+        '§5.1 regex wrongly ACCEPTS this',
+    ).toBe(false);
+    expect(SHAPE_RE.test('a11y.....'), "the shape regex must REJECT 'a11y.....'").toBe(false);
+    expect(SHAPE_RE.test('a11y.'), "the shape regex must REJECT a trailing-dot-only 'a11y.'").toBe(
+      false,
+    );
+    expect(
+      SHAPE_RE.test('a11y.overlay.boxView.title'),
+      'the shape regex must ACCEPT the canonical capital-V key §2.8 gives — the spec’s own ' +
+        '§5.1 regex wrongly REJECTS this',
+    ).toBe(true);
+
+    // ANTI-VACUITY: the manifest is the real 16.
+    expect(OVERLAY_IDS.length, 'the manifest must hold 16 mutual-exclusion overlays').toBe(16);
+
+    const seenTrimmed = new Map<string, OverlayId>();
+    let checked = 0;
+    for (const id of OVERLAY_IDS) {
+      const meta = (overlayA11y ?? {})[id];
+      expect(meta, `OVERLAY_A11Y.${id} must exist`).toBeDefined();
+
+      const raw = meta?.labelKey;
+      expect(typeof raw, `OVERLAY_A11Y.${id}.labelKey must be a string`).toBe('string');
+      const labelKey = String(raw ?? '');
+      const trimmed = labelKey.trim();
+
+      expect(
+        trimmed.length > 0,
+        `OVERLAY_A11Y.${id}.labelKey must be non-empty after trim`,
+      ).toBe(true);
+      expect(
+        labelKey.includes('{'),
+        `OVERLAY_A11Y.${id}.labelKey ('${labelKey}') must not contain '{' — the ICU ban is ` +
+          'mechanical (§2.8)',
+      ).toBe(false);
+      expect(
+        labelKey.includes('}'),
+        `OVERLAY_A11Y.${id}.labelKey ('${labelKey}') must not contain '}' — the ICU ban is ` +
+          'mechanical (§2.8)',
+      ).toBe(false);
+      expect(
+        SHAPE_RE.test(labelKey),
+        `OVERLAY_A11Y.${id}.labelKey ('${labelKey}') must match ${SHAPE_RE}`,
+      ).toBe(true);
+
+      const owner = seenTrimmed.get(trimmed);
+      expect(
+        owner === undefined || owner === id,
+        `labelKey '${trimmed}' is claimed by BOTH '${owner}' and '${id}' — labelKey must be ` +
+          'uniquely owned across ids (comparison is on the TRIMMED value, so a duplicate ' +
+          'differing only by trailing whitespace is still caught)',
+      ).toBe(true);
+      seenTrimmed.set(trimmed, id);
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: all 16 ids must have been examined').toBe(16);
+    expect(
+      seenTrimmed.size,
+      'ANTI-VACUITY: all 16 (trimmed) labelKeys must be pairwise distinct',
+    ).toBe(16);
+  });
+
+  it('OR-A11Y-DISMISSIBLE-VS-TIER BITES: the constraint is READ FROM OVERLAY_TIERS, not from a second hand-kept id list', async () => {
+    // WRONG IMPL KILLED: a check built from a HARDCODED list of "the 13 ids that must be
+    // dismissible" — red-team measured (ADR-0205 D7) that such a list satisfies every naive
+    // bite-proof while silently ignoring a RETIERING. The loop below reads `OVERLAY_TIERS[id]`
+    // — the real SSOT — on every iteration, so retiering `shopView` from GUARD_ONLY to
+    // HIDE_SWITCH (while its `dismissible` stays whatever it was) changes which branch that id
+    // is checked under, exactly as a tier-driven implementation must.
+    const mod: unknown = await import('./overlayRegistry');
+    const overlayA11y = (mod as { OVERLAY_A11Y?: Record<string, { dismissible?: unknown }> })
+      .OVERLAY_A11Y;
+    expect(overlayA11y, 'OVERLAY_A11Y must be exported from overlayRegistry.ts').toBeDefined();
+
+    // ANTI-VACUITY: the manifest is the real 16.
+    expect(OVERLAY_IDS.length, 'the manifest must hold 16 mutual-exclusion overlays').toBe(16);
+
+    let constrained = 0;
+    let unconstrained = 0;
+    for (const id of OVERLAY_IDS) {
+      // Read the constraint from the REAL tier SSOT, never a second hand-kept list (ADR-0205 D7).
+      const tier = OVERLAY_TIERS[id];
+      const meta = (overlayA11y ?? {})[id];
+      expect(meta, `OVERLAY_A11Y.${id} must exist`).toBeDefined();
+      const dismissible = meta?.dismissible;
+
+      if (tier === 'EXCLUSIVE_TOP' || tier === 'GUARD_ONLY') {
+        expect(
+          dismissible,
+          `OVERLAY_A11Y.${id}.dismissible must be TRUE — its tier is ${tier}, and ` +
+            'EXCLUSIVE_TOP/GUARD_ONLY both require dismissible: true ([A11Y-03])',
+        ).toBe(true);
+        constrained += 1;
+      } else {
+        // HIDE_SWITCH: unconstrained by [A11Y-03], but must still be a real boolean field, not
+        // `undefined`/a stray string.
+        expect(
+          typeof dismissible,
+          `OVERLAY_A11Y.${id}.dismissible must be a boolean — tier ${tier} is UNCONSTRAINED on ` +
+            'its VALUE, not exempt from HAVING one',
+        ).toBe('boolean');
+        unconstrained += 1;
+      }
+    }
+    expect(
+      constrained + unconstrained,
+      'ANTI-VACUITY: all 16 ids must have been examined',
+    ).toBe(16);
+    // Documents the partition this slice's design relies on: 13 EXCLUSIVE_TOP/GUARD_ONLY ids
+    // (constrained to true) and 3 HIDE_SWITCH ids (box/raising/evolution, unconstrained).
+    expect(
+      constrained,
+      'today exactly 13 ids are tier-constrained (EXCLUSIVE_TOP + GUARD_ONLY) — a change here ' +
+        'without a corresponding OVERLAY_TIERS edit signals drift',
+    ).toBe(13);
+    expect(
+      unconstrained,
+      'today exactly 3 ids are HIDE_SWITCH and unconstrained (box/raising/evolution)',
+    ).toBe(3);
+  });
+});
+
+// ===========================================================================
+// BLOCK 9 — m23-s0 (ADR-0205 D7): OVERLAY_A11Y stays inside the module's purity rule.
+//
+// NOT one of the four ledger-gated tests (their exact names are pinned above) — this is core
+// DoD for the slice, kept in its OWN describe so the gated describe block above contains
+// EXACTLY its four required `it()`s.
+// ===========================================================================
+
+describe('overlayRegistry — OVERLAY_A11Y stays inside the module purity rule (m23-s0, ADR-0205 D7)', () => {
+  it('OR-A11Y-PURE-DATA-TABLE BITES: overlayRegistry.ts still has ZERO import statements, no document/window reference, and OVERLAY_A11Y holds no function values', async () => {
+    // WRONG IMPL KILLED (1): reaching for a helper import (even a type-only one from another
+    // `ui/*.ts` file) to build the table — the module header's own rule (`:4`-`:8`) bans it, and
+    // ADR-0205 D7 re-verifies the rule still holds once OVERLAY_A11Y lands.
+    // WRONG IMPL KILLED (2): a per-id thunk/callback smuggled into an A11yMeta field (e.g. a
+    // lazy `initialFocusSelector: () => '...'`) — ADR-0205 D7's hard constraint is that the
+    // table holds NO thunks and NO functions; per-id behaviour belongs in S1's overlayA11y.ts.
+    const source = readFileSync(path.join(A11Y_UI_DIR, 'overlayRegistry.ts'), 'utf8');
+
+    expect(
+      /^\s*import\s/m.test(source),
+      'overlayRegistry.ts must contain ZERO import statements — ADR-0205 D7 / the module header ' +
+        '(:4-8): a CSS selector string and an ARIA role name are strings in a data table, never a ' +
+        'reason to import DOM/SDK types',
+    ).toBe(false);
+    expect(
+      source.includes('document'),
+      'overlayRegistry.ts must not reference `document` — it stays node-testable with zero mocks',
+    ).toBe(false);
+    expect(
+      source.includes('window'),
+      'overlayRegistry.ts must not reference `window`',
+    ).toBe(false);
+
+    const mod: unknown = await import('./overlayRegistry');
+    const overlayA11y = (mod as { OVERLAY_A11Y?: Record<string, Record<string, unknown>> })
+      .OVERLAY_A11Y;
+    expect(overlayA11y, 'OVERLAY_A11Y must be exported from overlayRegistry.ts').toBeDefined();
+    expect(OVERLAY_IDS.length, 'the manifest must hold 16 mutual-exclusion overlays').toBe(16);
+
+    let fieldsChecked = 0;
+    for (const id of OVERLAY_IDS) {
+      const meta = (overlayA11y ?? {})[id];
+      expect(meta, `OVERLAY_A11Y.${id} must exist`).toBeDefined();
+      for (const [field, value] of Object.entries(meta ?? {})) {
+        expect(
+          typeof value === 'string' || typeof value === 'boolean',
+          `OVERLAY_A11Y.${id}.${field} must be a string or a boolean, never a function — the ` +
+            'table holds no thunks (ADR-0205 D7); per-id behaviour belongs in overlayA11y.ts',
+        ).toBe(true);
+        fieldsChecked += 1;
+      }
+    }
+    // ANTI-VACUITY: 16 ids x 4 A11yMeta fields (role, labelKey, initialFocusSelector,
+    // dismissible) = 64. A truncated OVERLAY_A11Y (missing entries, or entries missing fields)
+    // would under-count here even if the earlier per-id `.toBeDefined()` calls did not catch it.
+    expect(
+      fieldsChecked,
+      'ANTI-VACUITY: 16 ids x 4 A11yMeta fields must all have been type-checked',
+    ).toBe(64);
   });
 });
