@@ -22,6 +22,16 @@
 //   - cached focusable list (dead every battleView server tick) -> S1-TRAP-LIVE-QUERY
 //   - no hidden-ancestor filter                             -> S1-TRAP-HIDDEN-FILTER
 //   - no-op uninstall handle                                -> S1-TRAP-UNINSTALL
+//
+// RED-TEAM ROUND 2 (measured holes, closed below, all UNTAGGED additions):
+//   - FOCUSABLE_SELECTOR narrowed to 'button:not([disabled])' — every fixture above used only
+//     <button> elements, so this cheat kept all 42 tests green. See the new describe block
+//     "installTrap — full focusable-type coverage" for the real-shape ring (button/input/
+//     textarea/a/div[tabindex=0]) that a button-only selector cannot pass.
+//   - '[tabindex]:not([tabindex="-1"])' widened to plain '[tabindex]' — no existing fixture ever
+//     put a tabindex="-1" element inside a trapped root. See the new tabindex="-1"-exclusion test.
+//   - installTrap's `e.key !== 'Tab'` guard does not exempt Ctrl/Alt/Meta+Tab (browser/OS chrome
+//     shortcuts). See the new modified-Tab test — this one is a REAL fix and starts RED.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { installTrap, nextFocusTarget } from './focusTrap';
@@ -313,5 +323,148 @@ describe('installTrap — capture-phase registration, live re-query, hidden filt
       evt.defaultPrevented,
       'the native Tab default must not be prevented after uninstall',
     ).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// installTrap — full focusable-type coverage (RED-TEAM ROUND 2, all UNTAGGED)
+//
+// Every fixture above uses ONLY <button> elements. A red-team pass measured that narrowing
+// FOCUSABLE_SELECTOR to the single clause 'button:not([disabled])' keeps every test in this
+// file (and all 42 tests across the m23-s1 suite) green — a severe production regression,
+// because ui/renameView.ts:45's #rename-input and ui/tradeProposeView.ts:67,71,176's currency
+// <input>s and per-monster checkboxes are real focusables inside exactly the two overlays the
+// module header calls the highest-risk case for this trap. The tests below build a ring with
+// every element kind FOCUSABLE_SELECTOR's real clauses admit, plus the ones its OTHER real
+// clauses ('[type="hidden"]' exclusion, ':not([disabled])') and the tabindex="-1" carve-out
+// must skip.
+// ---------------------------------------------------------------------------
+
+describe('installTrap — full focusable-type coverage (FOCUSABLE_SELECTOR regression guards)', () => {
+  it('untagged: a ring of button/input[text]/textarea/a[href]/div[tabindex=0]/button is visited IN ORDER and wraps, skipping a hidden input and disabled controls', () => {
+    // WRONG IMPL KILLED: FOCUSABLE_SELECTOR narrowed to 'button:not([disabled])' — every
+    // element below except t1/t6 would be silently invisible to the tab ring, and Tab from t1
+    // would jump straight to t6 instead of walking t2..t5 first.
+    document.body.innerHTML = `
+      <div id="root">
+        <button id="t1">t1</button>
+        <input id="skip-hidden" type="hidden" />
+        <input id="t2" type="text" />
+        <button id="skip-disabled-btn" disabled>skip</button>
+        <textarea id="t3"></textarea>
+        <input id="skip-disabled-input" disabled />
+        <a id="t4" href="#">link</a>
+        <div id="t5" tabindex="0">div</div>
+        <button id="t6">t6</button>
+      </div>
+    `;
+    const root = document.getElementById('root') as HTMLElement;
+    const uninstall = installTrap(root);
+    const t1 = document.getElementById('t1') as HTMLButtonElement;
+    const t2 = document.getElementById('t2') as HTMLInputElement;
+    const t3 = document.getElementById('t3') as HTMLTextAreaElement;
+    const t4 = document.getElementById('t4') as HTMLAnchorElement;
+    const t5 = document.getElementById('t5') as HTMLDivElement;
+    const t6 = document.getElementById('t6') as HTMLButtonElement;
+
+    t1.focus();
+    t1.dispatchEvent(tabKeydown(false));
+    expect(document.activeElement, 'button -> input[text]').toBe(t2);
+
+    t2.dispatchEvent(tabKeydown(false));
+    expect(document.activeElement, 'input[text] -> textarea').toBe(t3);
+
+    t3.dispatchEvent(tabKeydown(false));
+    expect(document.activeElement, 'textarea -> a[href]').toBe(t4);
+
+    t4.dispatchEvent(tabKeydown(false));
+    expect(document.activeElement, 'a[href] -> div[tabindex=0]').toBe(t5);
+
+    t5.dispatchEvent(tabKeydown(false));
+    expect(document.activeElement, 'div[tabindex=0] -> button').toBe(t6);
+
+    t6.dispatchEvent(tabKeydown(false));
+    expect(document.activeElement, 'wraps from the last back to the first').toBe(t1);
+
+    uninstall();
+  });
+
+  it('untagged: an element with tabindex="-1" is never reached by Tab, even though .focus() on it directly still works', () => {
+    // WRONG IMPL KILLED: '[tabindex]:not([tabindex="-1"])' widened to plain '[tabindex]' — no
+    // fixture anywhere else in this suite puts a tabindex="-1" element inside a trapped root.
+    // This is the ARIA APG dialog pattern (module header, ':36-40') and ten of the sixteen
+    // overlays rely on it via openOverlayA11y's initialFocusSelector: the anchor must be
+    // programmatically focusable but excluded from the Tab ring.
+    document.body.innerHTML =
+      '<div id="root"><button id="a">a</button>' +
+      '<div id="mid" tabindex="-1">mid</div>' +
+      '<button id="b">b</button></div>';
+    const root = document.getElementById('root') as HTMLElement;
+    const uninstall = installTrap(root);
+    const a = document.getElementById('a') as HTMLButtonElement;
+    const mid = document.getElementById('mid') as HTMLDivElement;
+    const b = document.getElementById('b') as HTMLButtonElement;
+
+    a.focus();
+    a.dispatchEvent(tabKeydown(false));
+    expect(document.activeElement, 'Tab must skip the tabindex="-1" element entirely').toBe(b);
+
+    b.dispatchEvent(tabKeydown(false));
+    expect(document.activeElement, 'wraps back to a, still skipping mid').toBe(a);
+
+    // The APG pattern: programmatic .focus() must still work even though Tab never lands here.
+    mid.focus();
+    expect(
+      document.activeElement,
+      'a tabindex="-1" element must still be focusable by a direct .focus() call',
+    ).toBe(mid);
+
+    uninstall();
+  });
+
+  it('untagged: Ctrl+Tab and Meta+Tab are never trapped (browser/OS chrome shortcuts), but Shift+Tab still is', () => {
+    // REAL FIX, STARTS RED: installTrap's keydown handler currently checks only
+    // `e.key !== 'Tab'` and does not exempt a modified Tab press. Ctrl+Tab (switch browser tab)
+    // and Meta+Tab (OS app switcher) must reach the browser/OS untouched — preventDefault-ing
+    // or moving focus on them breaks a keyboard user's ability to leave the tab entirely while
+    // an overlay is open. This assertion is expected to FAIL against the current implementation.
+    document.body.innerHTML =
+      '<div id="root"><button id="a">a</button><button id="b">b</button></div>';
+    const root = document.getElementById('root') as HTMLElement;
+    const uninstall = installTrap(root);
+    const a = document.getElementById('a') as HTMLButtonElement;
+    const b = document.getElementById('b') as HTMLButtonElement;
+
+    a.focus();
+    const ctrlTab = new KeyboardEvent('keydown', {
+      code: 'Tab',
+      key: 'Tab',
+      ctrlKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    a.dispatchEvent(ctrlTab);
+    expect(ctrlTab.defaultPrevented, 'Ctrl+Tab must not be preventDefault-ed').toBe(false);
+    expect(document.activeElement, 'Ctrl+Tab must not move focus').toBe(a);
+
+    const metaTab = new KeyboardEvent('keydown', {
+      code: 'Tab',
+      key: 'Tab',
+      metaKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    a.dispatchEvent(metaTab);
+    expect(metaTab.defaultPrevented, 'Meta+Tab must not be preventDefault-ed').toBe(false);
+    expect(document.activeElement, 'Meta+Tab must not move focus').toBe(a);
+
+    // Shift+Tab (no modifier keys other than shift) must of course still be trapped — the fix
+    // above must not be over-applied to swallow the real dialog case too.
+    const shiftTab = tabKeydown(true);
+    a.dispatchEvent(shiftTab);
+    expect(shiftTab.defaultPrevented, 'plain Shift+Tab must still be trapped').toBe(true);
+    expect(document.activeElement, 'plain Shift+Tab must still wrap focus to b').toBe(b);
+
+    uninstall();
   });
 });

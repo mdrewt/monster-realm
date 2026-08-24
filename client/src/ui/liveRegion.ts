@@ -28,6 +28,15 @@
 // as the region's final announcement. Comparing against the value that will ACTUALLY be emitted
 // next — the pending slot when one is open, otherwise the painted one — is the correct invariant.
 //
+// THE PUMP MUST PASS A MONOTONIC CLOCK, AND THAT IS A CALLER CONTRACT, NOT A DEFENSIVE CHECK. The
+// window boundary is the plain comparison `nowMs - windowOpenedAtMs >= 500`, so a clock that steps
+// BACKWARDS stalls the pending message until it climbs back past the boundary. Measured:
+// `announce(m, 2_000_000); flush(100); flush(500_000)` stays silent until `flush(2_000_600)`. S5's
+// pump must therefore use `performance.now()` (monotonic since page load) and NEVER `Date.now()`,
+// which can step backwards across an NTP correction or a manual clock change. A clamp is
+// DELIBERATELY not added: clamping would silently paper over a caller passing the wrong clock, and
+// a stalled live region is a bug we want to be able to see and attribute.
+//
 // `announce` SELF-DRAINS before recording, so a burst never depends on the pump's cadence to make
 // room for itself, and `announce`/`flush` share one emit path (`#maybeEmit`) rather than two
 // near-identical copies.
@@ -43,7 +52,11 @@
 // HTML-parsing sink would be an injection surface), not `setAttribute`, not `appendChild`. The
 // `aria-live`/`aria-atomic`/`role` attributes belong to S2's markup, not to a runtime write.
 
-/** The id of the S2-owned live-region element. Resolved fresh on every write, never cached. */
+/** The id this module looks the live-region element up by, resolved fresh on every write and never
+ *  cached. NOT a contract S2 imports: S2 ships `<div id="a11y-live">` as a hardcoded literal in
+ *  `client/index.html`, which cannot import a TS constant. The export exists so this module and its
+ *  tests agree on one spelling of the id instead of two — nothing mechanically ties either to the
+ *  HTML, so an id typo in `index.html` is caught by S2's own markup gate, not by this constant. */
 export const LIVE_REGION_ID = 'a11y-live';
 
 /** The coalescing window (A11Y-9). Exported because it is the contract S5's pump reasons about. */
@@ -74,7 +87,9 @@ export class LiveRegion {
     this.#pending = message;
   }
 
-  /** The pump (S5, once per rAF frame): paint the pending message if its window has elapsed. */
+  /** The pump (S5, once per rAF frame): paint the pending message if its window has elapsed.
+   *  `nowMs` must come from a MONOTONIC clock — see the header; a backwards step stalls the
+   *  pending message rather than being clamped away. */
   flush(nowMs: number): void {
     this.#maybeEmit(nowMs);
   }

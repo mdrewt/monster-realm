@@ -39,6 +39,18 @@
 //   - trap never installed / never uninstalled                    -> S1-TRAP-WIRED-ON-OPEN
 //   - leaky/mis-keyed return-focus map                            -> S1-RETURNFOCUS-RESTORE / -DETACHED-FALLBACK / -DOUBLE-OPEN
 //   - close-without-open / double-close throwing or moving focus  -> S1-CLOSE-WITHOUT-OPEN-NOOP / S1-CLOSE-DOUBLE-NOOP
+//
+// RED-TEAM ROUND 2 (measured hole, PARTIALLY closed below by a TRIPWIRE, UNTAGGED addition):
+// `root.setAttribute('role', meta.role)` was replaced with the literal
+// `root.setAttribute('role', 'dialog')` and S1-ARIA-ALL-16's full 16-way parameterisation still
+// passed, because EVERY entry in OVERLAY_A11Y currently uses role: 'dialog' — the manifest has
+// zero variance on that field, so no amount of looping over it can distinguish a real per-id
+// table read from a hardcoded literal. `A11yMeta.role` is a two-member union
+// ('dialog' | 'alertdialog') and there is no public API to inject a synthetic 'alertdialog'
+// entry from a test, so this cannot be closed with a real assertion today. See the new
+// "TRIPWIRE" describe block below: it pins the CURRENT all-'dialog' fact so that the day an
+// overlay legitimately earns 'alertdialog', that test reds and forces a real per-id role
+// assertion to be added alongside it.
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { a11yCopy } from './a11yCopy';
@@ -140,6 +152,14 @@ describe('openOverlayA11y/closeOverlayA11y — ARIA attribute writes and focus-t
   it('S1-ARIA-ALL-16 BITES: opening each of the 16 overlays sets role/aria-modal/aria-label from OVERLAY_A11Y, id-DERIVED, never a literal', () => {
     // WRONG IMPL KILLED: a literal (e.g. always role="dialog" aria-label="Overlay") would pass
     // for one id and fail the other fifteen once parameterised over the full manifest.
+    //
+    // PARTIAL TOOTH NOTICE (red-team round 2, MEASURED, honestly recorded — title/assertions
+    // unchanged): the `role` assertion below is currently a PARTIAL tooth. Every OVERLAY_A11Y
+    // entry today has role: 'dialog', so this loop cannot distinguish
+    // `root.setAttribute('role', meta.role)` from the hardcoded `root.setAttribute('role',
+    // 'dialog')` — both produce byte-identical output for all sixteen ids. See the
+    // "TRIPWIRE" describe block below in this file for the deliberate trap that reds the day
+    // that stops being true, and forces a real per-id role assertion to be added then.
     expect(OVERLAY_IDS.length, 'ANTI-VACUITY').toBe(16);
     let checked = 0;
     for (const id of OVERLAY_IDS) {
@@ -308,5 +328,34 @@ describe('closeOverlayA11y — return-focus map, detached-target fallback, and n
       document.activeElement,
       'the second close must not move focus again — the record was already deleted by the first close',
     ).toBe(decoy);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// TRIPWIRE — OVERLAY_A11Y role variance (RED-TEAM ROUND 2, UNTAGGED)
+// ---------------------------------------------------------------------------
+
+describe('OVERLAY_A11Y — role tripwire (deliberate trap door, not a regression guard)', () => {
+  it('untagged: TRIPWIRE — every OVERLAY_A11Y role is currently "dialog"; this MUST red the day that stops being true', () => {
+    // This is a DELIBERATE TRIPWIRE, not a real regression guard: it pins the current fact that
+    // all sixteen OVERLAY_A11Y entries use role: 'dialog'. Because the manifest has zero variance
+    // on this field today, S1-ARIA-ALL-16's 16-way parameterised role assertion cannot distinguish
+    // `root.setAttribute('role', meta.role)` from a hardcoded `root.setAttribute('role',
+    // 'dialog')` (red-team round 2, MEASURED — both keep S1-ARIA-ALL-16 green). There is no public
+    // API to inject a synthetic role into OVERLAY_A11Y from a test, so this cannot be turned into
+    // a real per-id assertion today.
+    //
+    // The day some overlay legitimately earns role: 'alertdialog' (per the A11yMeta doc comment,
+    // "an id earns it only when its sole purpose is a blocking urgent message"), THIS test will
+    // red — ON PURPOSE. Whoever lands that change must, in the SAME change, add a real per-id
+    // assertion here (e.g. asserting the new alertdialog id's root gets role="alertdialog" while
+    // a sibling dialog id's root does not) before updating or removing this tripwire. Until that
+    // day, S1-ARIA-ALL-16's role check above stays a PARTIAL tooth for exactly this reason.
+    const roles = new Set(OVERLAY_IDS.map((id) => OVERLAY_A11Y[id].role));
+    expect(
+      Array.from(roles).sort(),
+      'TRIPWIRE: if this reds, an overlay now has a non-"dialog" role — add a real per-id role ' +
+        'assertion above before touching this test',
+    ).toEqual(['dialog']);
   });
 });

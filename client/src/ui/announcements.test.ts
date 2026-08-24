@@ -25,6 +25,14 @@
 //   - the reference-equality reducer `prev === next ? [] : ...`  -> A11Y-8-DISTINCT-BUT-EQUAL-OBJECTS
 //   - hardcoded/literal copy instead of the id-derived catalog value -> S1-ANN-OVERLAY-OPENED-DERIVED
 //   - DOM leakage inside the "pure" module -> caught mechanically by the node environment (S1-ANN-PURE-NO-DOM)
+//
+// RED-TEAM ROUND 2 (measured hole, closed below, UNTAGGED addition): `announcementsFor` was
+// reimplemented to reuse and mutate ONE module-scope array (`SHARED_OUT.length = 0; SHARED_OUT.push
+// (...)`, returning that same array reference every call) and all 7 tests in this file passed —
+// `toEqual` is value-based and nothing here compared IDENTITY across two separate calls, or
+// re-checked an earlier return value's CONTENTS after a later call mutated the shared backing
+// array out from under it. The module header explicitly claims "returns a fresh array (never a
+// shared constant a caller could mutate)"; the new test below is what actually proves that.
 
 import { describe, expect, it } from 'vitest';
 import { a11yCopy } from './a11yCopy';
@@ -125,5 +133,43 @@ describe('announcementsFor — module purity, mechanically proven by the NODE en
     const expectedTitle = (a11yCopy as Record<string, string>)['a11y.overlay.boxView.title'];
     // Rule order per the module header: overlay first, then message (spec §2.4).
     expect(announcementsFor(prev, next)).toEqual([expectedTitle, 'Party & Box ready']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Return-value identity: a FRESH array every call, never a shared/mutated one (RED-TEAM ROUND 2)
+// ---------------------------------------------------------------------------
+
+describe('announcementsFor — returns a fresh array every call, never a shared mutated one', () => {
+  it('untagged: an earlier return value is unaffected by a later call, and the two calls never share array identity', () => {
+    // WRONG IMPL KILLED: a module-scope `SHARED_OUT` array that gets `.length = 0`'d and
+    // re-pushed into on every call, then returned by reference. Every existing test in this file
+    // only ever inspects ONE call's result at a time with `toEqual` (value-based), so that cheat
+    // was invisible to all 7 of them — a proof-of-concept showed the first returned array
+    // retroactively mutates into the second call's contents. This test holds r1 across a SECOND,
+    // differently-shaped call and re-checks r1's contents afterwards.
+    const a: A11ySnapshot = { topOverlay: null, message: '' };
+    const b: A11ySnapshot = { topOverlay: 'boxView', message: '' };
+    const r1 = announcementsFor(a, b);
+    const r1ExpectedContents = [...r1];
+    expect(
+      r1.length,
+      'sanity: the first call must actually produce a non-empty result',
+    ).toBeGreaterThan(0);
+
+    const c: A11ySnapshot = { topOverlay: null, message: '' };
+    const d: A11ySnapshot = { topOverlay: 'shopView', message: '' };
+    const r2 = announcementsFor(c, d);
+    expect(
+      r2.length,
+      'sanity: the second call must also produce a non-empty, DIFFERENT result',
+    ).toBeGreaterThan(0);
+    expect(r2, 'the two fixtures were chosen to differ in content').not.toEqual(r1ExpectedContents);
+
+    expect(
+      r1,
+      'a shared-mutable-array impl retroactively rewrites r1 to look like r2 by this point',
+    ).toEqual(r1ExpectedContents);
+    expect(r1, 'the two calls must never return the SAME array instance').not.toBe(r2);
   });
 });

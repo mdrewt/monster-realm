@@ -5,8 +5,8 @@
 // hidden-ancestor filter stay module-PRIVATE — this module family bans an export with zero
 // consumers (the A7/A15 rule, ui/overlayRegistry.ts:24-30).
 //
-// WHY THE CAPTURE PHASE, AND IT IS LOAD-BEARING, NOT STYLE. `ui/renameView.ts:61` and
-// `ui/renameView.ts:80` call `e.stopPropagation()` on the keydown of `#rename-input` and
+// WHY THE CAPTURE PHASE, AND IT IS LOAD-BEARING, NOT STYLE. `ui/renameView.ts:62` and
+// `ui/renameView.ts:81` call `e.stopPropagation()` on the keydown of `#rename-input` and
 // `#rename-submit` (the D3 input-hygiene contract), and `ui/tradeProposeView.ts` does the same for
 // every one of its focusables. A listener registered on `root` with `capture:false` runs in the
 // BUBBLE phase, i.e. strictly after the target's own listeners — so in exactly the two overlays
@@ -26,9 +26,25 @@
 // `preventDefault()` on Tab / Shift+Tab and ONLY when focus actually moved; the event still reaches
 // `window`.
 //
+// WHAT THE KEY FILTER HANDLES, AND WHAT IT DELIBERATELY DOES NOT. Exactly two presses are trapped:
+// plain Tab and plain Shift+Tab. A Tab carrying Ctrl, Alt or Meta is browser/OS chrome — Ctrl+Tab
+// switches browser tab, Meta+Tab is the OS app switcher — and is passed through untouched, neither
+// `preventDefault`-ed nor focus-moved, so a keyboard user is never stranded inside the overlay with
+// no way to leave the page. Shift is the trap's OWN modifier and is therefore NOT exempt. Every
+// non-Tab key is ignored outright: not prevented, not stopped, not inspected further. Arrow-key
+// roving, Home/End and type-ahead are NOT implemented — no overlay here is a composite widget, and
+// a behaviour with no consumer is the A7/A15 rule's dead surface in event-handler form.
+//
+// TAB IS DETECTED VIA `e.key`, NOT `e.code`, AND THAT DIVERGES FROM THE HOUSE CONVENTION ON PURPOSE.
+// `client/src/main.ts`'s hotkey ladder reads `e.code` almost everywhere, correctly: a movement or
+// letter binding means a POSITIONAL key ("wherever QWERTY puts W"), which must survive a layout
+// change. Tab is the opposite case — it is not a printable character, so `e.key === 'Tab'` is
+// layout- and remap-stable, and it is the standard idiom for a focus trap. Do not "fix" this to
+// `e.code`.
+//
 // WHAT THE VISIBILITY FILTER DELIBERATELY DOES NOT DO. Only an inline `display:none` or a `[hidden]`
 // ancestor (walked up to and INCLUDING `root`) is filtered — this codebase hides overlays and their
-// sub-sections with inline `style.display = 'none'` (ui/renameView.ts:105), so that is the real
+// sub-sections with inline `style.display = 'none'` (ui/renameView.ts:106), so that is the real
 // shape. `visibility`, `opacity`, `offsetParent`, `getClientRects()` and `inert` are NOT consulted:
 // happy-dom has no layout engine, so every one of them would be unverifiable dead code sitting
 // inside a 96%-line-coverage denominator.
@@ -109,8 +125,9 @@ export function nextFocusTarget(
 
 /**
  * Confine Tab / Shift+Tab to the focusables inside `root` for as long as the returned uninstall
- * handle has not been called. Registered in the CAPTURE phase (header). Handles Tab and nothing
- * else: any other key is untouched — not prevented, not stopped, not inspected further.
+ * handle has not been called. Registered in the CAPTURE phase (header). Handles plain Tab and plain
+ * Shift+Tab and nothing else: any other key — and any Tab carrying Ctrl/Alt/Meta, which is browser
+ * or OS chrome — is untouched, not prevented, not stopped, not inspected further.
  *
  * The "current" element is read from `document.activeElement`, not from `e.target`: the focused
  * element is what a Tab actually moves FROM, and a synthetic event can be dispatched at a node that
@@ -119,6 +136,10 @@ export function nextFocusTarget(
 export function installTrap(root: HTMLElement): () => void {
   const onKeydown = (e: KeyboardEvent): void => {
     if (e.key !== 'Tab') return;
+    // A MODIFIED Tab belongs to the browser or the OS, never to the dialog: Ctrl+Tab switches
+    // browser tab and Meta+Tab is the app switcher. Trapping either would leave a keyboard user
+    // with no way out of the page. Shift is the trap's own modifier, so it is deliberately absent.
+    if (e.ctrlKey || e.altKey || e.metaKey) return;
     const target = nextFocusTarget(focusablesIn(root), document.activeElement, e.shiftKey);
     if (target === null) return;
     // Only once focus really moves — a preventDefault on an empty ring would swallow the native

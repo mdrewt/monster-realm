@@ -27,6 +27,10 @@
 // This is flagged explicitly in the test-writer's handoff report as something to double-check
 // against the implementer's actual module-header derivation, in case the intended design differs
 // from what the plan doc's prose describes.
+//
+// RED-TEAM ROUND 2: no measured hole was found against this file — the four holes closed in the
+// sibling test files (focusTrap.test.ts x3, announcements.test.ts x1, overlayA11y.test.ts x1) did
+// not implicate LiveRegion. Unchanged from the committed version other than this note.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { COALESCE_WINDOW_MS, LIVE_REGION_ID, LiveRegion } from './liveRegion';

@@ -6,9 +6,10 @@
 // labelKey, initialFocusSelector), `ui/a11yCopy.ts` resolves the name, `ui/focusTrap.ts` supplies
 // the trap. Nothing is decided here that a data table could decide.
 //
-// WHY THE INITIAL FOCUS IS DEFERRED ONE MACROTASK, AND IT IS LOAD-BEARING. `ui/renameView.ts:101`
-// already documents the bug: an overlay opened by a letter hotkey (`KeyN`) is opened DURING that
-// keydown, so focusing the text input synchronously lands the `n` in the field the player just
+// WHY THE INITIAL FOCUS IS DEFERRED ONE MACROTASK, AND IT IS LOAD-BEARING. `ui/renameView.ts:102`
+// (its rationale comment at `:101`) already fixes the bug: an overlay opened by a letter hotkey
+// (`KeyN`) is opened DURING that keydown, so focusing the input synchronously lands the `n` in the
+// field the player just
 // opened. `setTimeout(..., 0)` lets the opening key event fully complete first. This module is the
 // SOLE owner of that defer — S3 deletes the per-view copies at `ui/renameView.ts:102` and
 // `ui/tradeProposeView.ts:124` and the behaviour must be identical.
@@ -47,7 +48,7 @@
 // ui/overlayRegistry.ts:358-362: swallowing makes a breach look like working code. A focus that
 // throws is a bug we want loud.
 //
-// TWO CROSS-SLICE CONTRACTS S1 CANNOT ENFORCE:
+// THREE CROSS-SLICE CONTRACTS S1 CANNOT ENFORCE:
 //   (a) A12 — `battleView`, `boxView`, `raisingView` and `evolutionView` share ONE `#app`-mounted
 //       root. The map is keyed by `OverlayId`, not by root, so S4 must CLOSE-BEFORE-OPEN; opening
 //       the next id first stacks two capture traps on the same node and Tab moves twice per press.
@@ -56,6 +57,11 @@
 //       with a live listener, a pending timer and a return target that expires — a much later close
 //       then restores focus to a long-dead element. Recommend §4.1 add force-hide ↔ close to its
 //       cross-slice contract list.
+//   (c) The "no focus call at all" branch of `closeOverlayA11y` leaves focus wherever the browser's
+//       natural blur put it, i.e. `<body>`. M23 §2.3 PROPOSES a `worldHasFocus()` predicate to read
+//       that state as "the world has focus" — it is S5's to write and does NOT exist in this
+//       codebase today (grep-verified at S1). Named here so the forward reference is not mistaken
+//       for a claim about existing code.
 
 import { t } from './a11yCopy';
 import { installTrap } from './focusTrap';
@@ -84,7 +90,9 @@ const OPEN_OVERLAYS = new Map<OverlayId, OpenRecord>();
  */
 export function openOverlayA11y(id: OverlayId, root: HTMLElement): void {
   const previous = OPEN_OVERLAYS.get(id);
-  let returnFocus: HTMLElement | null = null;
+  // No initializer: both branches below assign unconditionally, and TS's control-flow analysis
+  // proves definite assignment — a `= null` here would be a value no read can ever observe.
+  let returnFocus: HTMLElement | null;
   if (previous === undefined) {
     const active = document.activeElement;
     returnFocus = active instanceof HTMLElement ? active : null;
@@ -113,9 +121,12 @@ export function openOverlayA11y(id: OverlayId, root: HTMLElement): void {
  * focus back.
  *
  * Restore order: the recorded pre-overlay element if it is still connected, else `fallbackFocus` if
- * it is non-null and connected, else NO focus call at all — the natural browser blur to `<body>` is
- * exactly what `worldHasFocus()` already treats as world-focused, and forcing a focus somewhere
- * arbitrary would be worse than leaving it. `fallbackFocus` is a REQUIRED parameter (adjudication
+ * it is non-null and connected, else NO focus call at all — forcing focus onto some arbitrary node
+ * is worse than letting the browser's natural blur to `<body>` stand. FORWARD REFERENCE, NOT
+ * EXISTING CODE: M23 §2.3 proposes a `worldHasFocus()` predicate that would read that `<body>`
+ * state as "the world has focus"; it is S5's to write and does NOT exist in this codebase today
+ * (verified by grep at S1). If S5 implements it differently, this branch is the caller it must
+ * agree with. `fallbackFocus` is a REQUIRED parameter (adjudication
  * A3): S3/S4 views have no canvas handle and pass `null`; only S5 has a real value, and a required
  * parameter makes that obligation visible at each call site instead of hiding it in a module global.
  *
