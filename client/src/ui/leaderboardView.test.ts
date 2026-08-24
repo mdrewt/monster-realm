@@ -64,6 +64,8 @@
 //   - close never strips ARIA / never restores focus      -> S3-leaderboardView-CLOSE-RESTORE
 //   - UNGUARDED show() / `this.visible` read AFTER the write -> S3-leaderboardView-REPEAT-NO-REOPEN
 //   - `fallbackFocus` passed as undefined/an element       -> S3-leaderboardView-HELPER-CALLED (literal null)
+//   - GUARDED close in hide() (plan anti-pattern #3 — kills S1's A13 self-heal)
+//                                                        -> S3-leaderboardView-CLOSE-UNGUARDED
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -631,5 +633,39 @@ describe('LeaderboardView — overlay a11y wiring on the show/hide edge (m23-s3)
     view.hide();
     expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S3_ID, null);
+  });
+
+  it('S3-leaderboardView-CLOSE-UNGUARDED BITES: hide() calls the close UNCONDITIONALLY — on a never-opened view, and again on every repeat', () => {
+    // Plan D2's deliberate asymmetry, and plan ANTI-PATTERN #3. Measured by red-team: wrapping
+    // hide()'s close in `if (wasVisible)` ships with every other gate green. A guarded hide() reads
+    // `visible === false` and SKIPS the close whenever a record ever desynchronised from the DOM
+    // (S1's named A13 leak, ui/overlayA11y.ts:55-59) — making a live capture listener, a pending
+    // timer and a stale return target PERMANENT. This view is in BATTLE_FORCE_HIDE
+    // (ui/overlayRegistry.ts:274-283), so main.ts's force-hide path drives its close: exactly the
+    // desync D2 cites. Unguarded, hide() HEALS it, and a close with no record is a documented pure
+    // no-op (ui/overlayA11y.ts:136-137), so nothing is risked.
+    mountLeaderboardOverlay();
+    const view = new LeaderboardView();
+    expect(view.visible, 'precondition: never opened').toBe(false);
+
+    expect(() => view.hide()).not.toThrow();
+    expect(
+      vi.mocked(closeOverlayA11y),
+      'hide() on a never-opened view MUST still call the close — a guarded hide calls it zero times',
+    ).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S3_ID, null);
+
+    view.hide();
+    expect(
+      vi.mocked(closeOverlayA11y),
+      'unguarded means unguarded: every hide() calls the close',
+    ).toHaveBeenCalledTimes(2);
+
+    // And the same holds after a real open/close cycle: the second hide() still calls it.
+    vi.clearAllMocks();
+    view.show();
+    view.hide();
+    view.hide();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(2);
   });
 });

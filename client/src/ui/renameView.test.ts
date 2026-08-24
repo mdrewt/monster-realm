@@ -75,6 +75,10 @@
 //   - close never strips ARIA / never restores focus      -> S3-renameView-CLOSE-RESTORE
 //   - UNGUARDED show() / `this.visible` read AFTER the write -> S3-renameView-REPEAT-NO-REOPEN
 //   - `fallbackFocus` passed as undefined/an element       -> S3-renameView-HELPER-CALLED (literal null)
+//   - GUARDED close in hide() (plan anti-pattern #3 — kills S1's A13 self-heal)
+//                                                        -> S3-renameView-CLOSE-UNGUARDED
+//   - a `.focus(` hidden behind a quote-bearing regex literal (measured stripper hole)
+//                                                        -> S3-NO-VIEW-LOCAL-FOCUS (divergence tooth)
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
@@ -315,6 +319,41 @@ describe('RenameView — overlay a11y wiring on the show/hide edge (m23-s3)', ()
     expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S3_ID, null);
   });
+
+  it('S3-renameView-CLOSE-UNGUARDED BITES: hide() calls the close UNCONDITIONALLY — on a never-opened view, and again on every repeat', () => {
+    // Plan D2's deliberate asymmetry, and plan ANTI-PATTERN #3. Measured by red-team: wrapping
+    // hide()'s close in `if (wasVisible)` ships with every other gate green. A guarded hide() reads
+    // `visible === false` and SKIPS the close whenever a record ever desynchronised from the DOM
+    // (S1's named A13 leak, ui/overlayA11y.ts:55-59) — making a live capture listener, a pending
+    // timer and a stale return target PERMANENT. This view is in BATTLE_FORCE_HIDE
+    // (ui/overlayRegistry.ts:274-283) AND is force-hidden on reconnect, so main.ts drives its close
+    // through exactly the desync D2 cites — and this view owns a TEXT INPUT, so a leaked capture
+    // trap here is the worst case in the set. Unguarded, hide() HEALS it, and a close with no
+    // record is a documented pure no-op (ui/overlayA11y.ts:136-137), so nothing is risked.
+    mountRenameOverlay();
+    const view = new RenameView({ onSubmit: async () => {} });
+    expect(view.visible, 'precondition: never opened').toBe(false);
+
+    expect(() => view.hide()).not.toThrow();
+    expect(
+      vi.mocked(closeOverlayA11y),
+      'hide() on a never-opened view MUST still call the close — a guarded hide calls it zero times',
+    ).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S3_ID, null);
+
+    view.hide();
+    expect(
+      vi.mocked(closeOverlayA11y),
+      'unguarded means unguarded: every hide() calls the close',
+    ).toHaveBeenCalledTimes(2);
+
+    // And the same holds after a real open/close cycle: the second hide() still calls it.
+    vi.clearAllMocks();
+    view.show();
+    view.hide();
+    view.hide();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(2);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -324,6 +363,13 @@ describe('RenameView — overlay a11y wiring on the show/hide edge (m23-s3)', ()
 // deleted deferred-focus calls (tradeProposeView.test.ts owns the other and asserts only about
 // itself), and its it() title says IN WORDS that evals/overlay-a11y-manifest.eval.mjs [A11Y-15]
 // supersedes it when slice S10 lands — so that cleanup is a grep, not archaeology.
+//
+// WHAT THIS SCAN CANNOT SEE, STATED SO S10'S EVAL DOES NOT INHERIT IT SILENTLY: the matcher is the
+// LITERAL STRING `.focus(`, so every indirect spelling is invisible to it — `el['focus']()`,
+// `const f = el.focus; f()`, `el[m]()` with `m = 'focus'`, `Reflect.apply(el.focus, el, [])`,
+// `HTMLElement.prototype.focus.call(el)`. Those are not realistic accidents in a DOM shell, but
+// they ARE realistic bypasses, so S10 should match the CALL rather than the text (an AST/`ts-morph`
+// pass over each view's method bodies), not just port this string test.
 // ---------------------------------------------------------------------------
 
 /** The ten `client/src/ui/*View.ts` files this slice touches, each paired with a declaration that
@@ -344,8 +390,9 @@ const S3_VIEW_FILES: ReadonlyArray<readonly [string, string]> = [
 ];
 
 /**
- * Remove line comments, block comments and string/template LITERAL TEXT from TS source, keeping
- * everything a `.focus(` could really execute from.
+ * Remove line comments and block comments from TS source, and — when `stripStringLiterals` is true
+ * — also the TEXT of string and template literals, keeping everything a `.focus(` could really
+ * execute from.
  *
  * A character scanner, not a regex: a regex stripper is defeated by a `//` inside a string and by a
  * quote inside a comment — both measured in this repo (memory: "server-module source-scan
@@ -353,13 +400,18 @@ const S3_VIEW_FILES: ReadonlyArray<readonly [string, string]> = [
  * `${ ... }` INTERPOLATION is KEPT, because `` `${el.focus()}` `` is real executable code and
  * dropping whole templates would leave an invisible hiding place for a view-local focus call.
  *
- * KNOWN, BOUNDED LIMITATION (stated, not hidden): regex literals are not modelled — a `/` in code
- * position is emitted verbatim. The only regex in the ten scanned files is `/^[0-9]+$/`
- * (ui/tradeProposeView.ts:212), which contains no quote and no comment-start character, so it
- * cannot knock the scanner into a wrong state. The class-declaration assertion above is what would
- * catch it if that ever stopped being true.
+ * WHY THE `stripStringLiterals: false` MODE EXISTS — it is the closure for a MEASURED hole, not a
+ * convenience. Regex literals are not modelled by this scanner (a `/` in code position is emitted
+ * verbatim), so a regex that CONTAINS A QUOTE — e.g. `raw.replace(/'/g, '’')` — drives the
+ * scanner into string state at that quote and silently EATS everything up to the next quote,
+ * including a real `setTimeout(() => el.focus(), 0)` on the following line. Red-team shipped
+ * exactly that duplicate deferred focus in seven views at full green against the literal-stripping
+ * pass alone. Comments are stripped in BOTH modes, so the two counts can only diverge when a
+ * `.focus(` was swallowed by (or genuinely hidden inside) a STRING/TEMPLATE literal — and both of
+ * those deserve a red. Comparing the two counts closes the whole "swallowed by a literal" class
+ * without needing a real parser; see S3-NO-VIEW-LOCAL-FOCUS's CONTROL C for the proof-of-teeth.
  */
-function s3StripCommentsAndStringLiterals(src: string): string {
+function s3Strip(src: string, stripStringLiterals: boolean): string {
   let out = '';
   let i = 0;
   const n = src.length;
@@ -376,6 +428,13 @@ function s3StripCommentsAndStringLiterals(src: string): string {
       i += 2;
       while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i += 1;
       i += 2;
+      continue;
+    }
+    if (!stripStringLiterals) {
+      // COMMENTS-ONLY MODE: quotes and backticks are ordinary characters. Nothing can be
+      // swallowed by a literal here, which is precisely what makes the count comparison a tooth.
+      out += c;
+      i += 1;
       continue;
     }
     if (c === "'" || c === '"') {
@@ -447,8 +506,10 @@ describe('m23-s3 / A11Y-15 — no view-local focus call survives in any of the t
     // plan T5/T6 DELETE.
     //
     // PROOF-OF-TEETH FIRST (a CONTROL fixture, so this can never be a stripper that just deletes
-    // everything): five `.focus(` occurrences are planted in hiding places a naive scan would
-    // false-positive on, and two in places that really execute. Exactly TWO must survive.
+    // everything): EIGHT `.focus(` occurrences are planted — SIX in hiding places a naive scan
+    // would false-positive on (a line comment, both lines of a block comment, a single-quoted
+    // string, a double-quoted string, and template TEXT) and TWO in places that really execute
+    // (a `${...}` interpolation and a plain call). Exactly TWO must survive.
     const control = [
       '// a line comment mentioning el.focus( here',
       '/* a block comment mentioning el.focus( here',
@@ -460,17 +521,48 @@ describe('m23-s3 / A11Y-15 — no view-local focus call survives in any of the t
       'realInput.focus();',
       'const digits = /^[0-9]+$/.test(x);',
     ].join('\n');
-    const strippedControl = s3StripCommentsAndStringLiterals(control);
     expect(
       s3CountFocusCalls(control),
-      'CONTROL sanity: the fixture really plants seven `.focus(` occurrences',
-    ).toBe(7);
+      'CONTROL A sanity: the fixture really plants EIGHT `.focus(` occurrences — one in the line ' +
+        'comment, one on EACH of the two block-comment lines, one in the single-quoted string, ' +
+        'one in the double-quoted string, one in the template TEXT, one in the `${...}` ' +
+        'interpolation and one in the plain call',
+    ).toBe(8);
     expect(
-      s3CountFocusCalls(strippedControl),
-      'CONTROL: exactly the two EXECUTABLE occurrences survive — the `${...}` interpolation and ' +
-        'the plain call. If this is 7 the stripper is a no-op; if it is 0 or 1 it is over-eager ' +
+      s3CountFocusCalls(s3Strip(control, true)),
+      'CONTROL A: exactly the two EXECUTABLE occurrences survive — the `${...}` interpolation and ' +
+        'the plain call. If this is 8 the stripper is a no-op; if it is 0 or 1 it is over-eager ' +
         '(and would make the real scan below vacuously green).',
     ).toBe(2);
+    expect(
+      s3CountFocusCalls(s3Strip(control, false)),
+      'CONTROL B: the comments-only mode removes ONLY the three comment occurrences and keeps all ' +
+        'five literal/code ones — proving it really strips comments (not a no-op) and really ' +
+        'leaves string/template literals alone (which is what makes CONTROL C below a tooth)',
+    ).toBe(5);
+
+    // CONTROL C — THE MEASURED REGEX HOLE (red-team, this slice). A regex literal containing a
+    // quote drives the literal-stripping scanner into string state and EATS the real `.focus(`
+    // that follows it; the class-declaration anchor does not catch it, because the declaration
+    // precedes the regex. Red-team shipped a duplicate deferred focus in seven views this way at
+    // full green. The comments-only count is immune, so a DIVERGENCE between the two counts is
+    // the detector — asserted for real over the ten files further down.
+    const regexHole = [
+      '// the swallow starts at the quote inside the regex literal on the next line',
+      "const curly = (raw) => raw.replace(/'/g, 'X');",
+      "setTimeout(() => this.el.querySelector('#anchor')?.focus(), 0);",
+    ].join('\n');
+    expect(s3CountFocusCalls(regexHole), 'CONTROL C sanity: one real `.focus(` is planted').toBe(1);
+    expect(
+      s3CountFocusCalls(s3Strip(regexHole, true)),
+      'CONTROL C: the literal-stripping pass is BLIND here — it swallows the real call. This ' +
+        'assertion documents the hole; do NOT "fix" it by weakening the divergence check below.',
+    ).toBe(0);
+    expect(
+      s3CountFocusCalls(s3Strip(regexHole, false)),
+      'CONTROL C: the comments-only pass still sees it — so stripped(0) !== commentsOnly(1) is a ' +
+        'reliable signal that a literal swallowed something',
+    ).toBe(1);
 
     // THE REAL SCAN.
     const dir = path.dirname(fileURLToPath(import.meta.url));
@@ -479,6 +571,7 @@ describe('m23-s3 / A11Y-15 — no view-local focus call survives in any of the t
     );
 
     const offenders: string[] = [];
+    const swallowed: string[] = [];
     for (const [file, declaration] of S3_VIEW_FILES) {
       const viewPath = path.join(dir, file);
       let src: string;
@@ -489,15 +582,35 @@ describe('m23-s3 / A11Y-15 — no view-local focus call survives in any of the t
         // vacuous-revival gate was written against.
         throw new Error(`${file} could not be read — the file must exist: ${String(err)}`);
       }
-      const stripped = s3StripCommentsAndStringLiterals(src);
+      const stripped = s3Strip(src, true);
+      const commentsOnly = s3Strip(src, false);
       expect(
         stripped.includes(declaration),
         `ANTI-VACUITY: "${declaration}" must survive stripping of ${file} — if it does not, the ` +
           'scanner fell into an unterminated string/comment state and ate the rest of the file',
       ).toBe(true);
       const count = s3CountFocusCalls(stripped);
+      const commentsOnlyCount = s3CountFocusCalls(commentsOnly);
       if (count > 0) offenders.push(`${file} (${count})`);
+      if (commentsOnlyCount !== count) {
+        swallowed.push(`${file} (comments-only=${commentsOnlyCount}, string-stripped=${count})`);
+      }
     }
+
+    // THE DIVERGENCE TOOTH (CONTROL C's real-file counterpart). Comments are removed in BOTH
+    // passes, so these two counts can only differ when a `.focus(` sits inside — or was EATEN by —
+    // a string/template literal. Both readings are a red: the first is the measured regex-literal
+    // swallow that hid a real duplicate deferred focus in seven views at full green; the second is
+    // a `.focus(` genuinely hidden in a string, which no DOM shell has a legitimate reason to
+    // carry and which is the forgeable-literal shape this repo has been bitten by before.
+    expect(
+      swallowed,
+      'A11Y-15 INTEGRITY: the comment-stripped and string-stripped `.focus(` counts must AGREE for ' +
+        'every view. A divergence means the string-literal pass is blind on that file (most ' +
+        "likely a regex literal containing a quote, e.g. /'/g) — so the zero above proves " +
+        "nothing. Do NOT relax this: rewrite the regex (a character class such as /[']/g is " +
+        'inert here) or move it out of the view.',
+    ).toEqual([]);
 
     expect(
       offenders,

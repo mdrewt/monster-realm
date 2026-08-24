@@ -73,6 +73,8 @@
 //   - UNGUARDED show() (THE CRUX)                         -> S3-pvpView-REPEAT-NO-REOPEN + S3-pvpView-REFRESH-NO-REOPEN
 //   - `this.#visible` read AFTER the writes (guard becomes a constant) -> the same two tests
 //   - `fallbackFocus` passed as undefined/an element       -> S3-pvpView-HELPER-CALLED (literal null, D8/A6)
+//   - GUARDED close in hide() (plan anti-pattern #3 — kills S1's A13 self-heal on the one view
+//     whose close is driven by main.ts's overlayHandles force-hide path) -> S3-pvpView-CLOSE-UNGUARDED
 //   - refresh() regressions (auto-show, stale rows, callbacks) -> the refresh-behaviour block
 
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
@@ -327,6 +329,48 @@ describe('PvpView — overlay a11y wiring on the show/hide edge (m23-s3)', () =>
     view.hide();
     expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
     expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(ID, null);
+  });
+
+  it('S3-pvpView-CLOSE-UNGUARDED BITES: hide() calls the close UNCONDITIONALLY — on a never-opened view, and again on every repeat', () => {
+    // Plan D2's deliberate asymmetry, and plan ANTI-PATTERN #3. Measured by red-team: wrapping
+    // hide()'s close in `if (wasVisible)` ships with every other gate green — and pvpView is the
+    // WORST place for it to ship. Two reasons, both specific to this view:
+    //
+    //   1. Its close is driven by main.ts's force-hide path (`overlayHandles[id]?.()`,
+    //      main.ts:357-368 / plan R2), which is EXACTLY the desync D2 cites: if the record ever
+    //      falls out of step with the DOM (S1's named A13 leak, ui/overlayA11y.ts:55-59), a guarded
+    //      hide() reads false, skips the close, and the live capture listener + pending timer +
+    //      stale return target become PERMANENT. Unguarded, hide() HEALS it.
+    //   2. The guard would read `this.#visible` — a SECOND source of truth (plan D4) that main.ts
+    //      also writes through `refresh()`. `refresh(vm, false)` ALREADY guards its own call
+    //      (`if (this.#visible) this.hide()`, ui/pvpView.ts:89), so an internal guard is pure
+    //      double-counting: it adds nothing on the normal path and removes the only self-heal.
+    //
+    // A close with no record is a documented pure no-op (ui/overlayA11y.ts:136-137), so the
+    // unconditional call risks nothing.
+    mountPvpOverlay();
+    const view = new PvpView(makeCallbacks());
+    expect(view.visible, 'precondition: never opened').toBe(false);
+
+    expect(() => view.hide()).not.toThrow();
+    expect(
+      vi.mocked(closeOverlayA11y),
+      'hide() on a never-opened view MUST still call the close — a guarded hide calls it zero times',
+    ).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(ID, null);
+
+    view.hide();
+    expect(
+      vi.mocked(closeOverlayA11y),
+      'unguarded means unguarded: every hide() calls the close',
+    ).toHaveBeenCalledTimes(2);
+
+    // And the same holds after a real open/close cycle: the second hide() still calls it.
+    vi.clearAllMocks();
+    view.show();
+    view.hide();
+    view.hide();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(2);
   });
 });
 
