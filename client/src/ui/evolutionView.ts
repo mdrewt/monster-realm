@@ -15,12 +15,40 @@
 //     offers the player an action that does not exist (EG4-2).
 //   * Nicknames and species names are PLAYER-CONTROLLED (`set_nickname`). Every string
 //     reaches the DOM through `textContent` / `createElement` — NEVER `innerHTML`.
+//
+// m23-s4 (M23 §2.2, ADR-0205 D1/D2/A3) — overlay a11y wiring. This view is a CONSTRUCTED shell:
+// its root is `document.createElement`'d here and appended into the shared `#app` MOUNT, so unlike
+// the ten static shells S3 wired it ships NO ARIA of its own from `client/index.html` — every
+// attribute below comes from `openOverlayA11y`, never from a literal in this file.
+//
+// THE EDGE, AND WHY IT IS READ FIRST. `wasVisible` is read as the FIRST statement of `show()`,
+// before any write. A re-open tears down and re-schedules `openOverlayA11y`'s deferred focus, which
+// drags focus off whatever control the player had Tabbed to — invisible to every attribute
+// assertion, since a re-open rewrites the same values.
+//
+// AND WHY THE CLOSE IS DELIBERATELY UNGUARDED. `hide()` calls `closeOverlayA11y` every time, even
+// when already hidden. A guarded close reads correct and passes every other assertion while
+// permanently leaking a live capture listener, a pending timer and an expiring return target
+// whenever a record desynchronises from the DOM; `closeOverlayA11y` with no record is a documented
+// pure no-op, so unguarded is the self-healing path. S3's red-team measured the guarded shape
+// shipping 62/62 green.
+//
+// THE OPEN IS THE LAST STATEMENT of the open path, after the display write: in a real browser
+// `.focus()` on a `display:none` node is a silent no-op, so an open-before-paint overlay announces
+// itself and then never receives focus.
+//
+// NO CLOSE-BEFORE-OPEN. `ui/overlayA11y.ts`'s cross-slice contract (a) says the four `#app`-mounted
+// views "share ONE root" and that S4 must therefore close-before-open. That is a misstatement of
+// this code: each view creates its OWN root and appends it into the shared MOUNT, so there are four
+// distinct roots, four distinct `OverlayId`s and four distinct records. Closing a sibling here would
+// close an overlay the player still has open. Pinned by `S4-CROSS-VIEW-DISTINCT-ROOTS`.
 import type {
   EvolutionGateViewModel,
   EvolutionMonsterViewModel,
   EvolutionPathViewModel,
   EvolutionViewModel,
 } from './evolutionModel';
+import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 
 export interface EvolutionViewCallbacks {
   /** Called when the player picks one of 2+ eligible paths. The CHOSEN target species is
@@ -45,6 +73,12 @@ export class EvolutionView {
 
     const title = document.createElement('h2');
     title.textContent = 'Evolution';
+    // m23-s4: the OVERLAY_A11Y initialFocusSelector anchor for this overlay. `tabindex="-1"`
+    // (never "0") makes the heading programmatically focusable WITHOUT adding a permanent tab
+    // stop ahead of the overlay's real controls. `setAttribute`, not `dataset` — the selector is
+    // frozen in ui/overlayRegistry.ts and the DOM moves to it, never the reverse.
+    title.setAttribute('data-testid', 'evolution-title');
+    title.setAttribute('tabindex', '-1');
     title.style.cssText = 'margin:0 0 8px;color:#fff;';
     this.#root.appendChild(title);
 
@@ -68,13 +102,18 @@ export class EvolutionView {
   }
 
   show(): void {
+    // The read is hoisted above BOTH writes: this view writes `display` before `#visible`,
+    // and "read the visibility source first" must hold uniformly across all five S4 files.
+    const wasVisible = this.#visible;
     this.#root.style.display = 'flex';
     this.#visible = true;
+    if (!wasVisible) openOverlayA11y('evolutionView', this.#root);
   }
 
   hide(): void {
     this.#root.style.display = 'none';
     this.#visible = false;
+    closeOverlayA11y('evolutionView', null);
   }
 
   toggle(): void {

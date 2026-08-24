@@ -11,6 +11,7 @@
 // (map / interpolation / slideClock / zorder / viewRegistry).
 import { Application, Container, Graphics } from 'pixi.js';
 import type { WasmAction, WasmDirection } from '../convert/convert';
+import { t } from '../ui/a11yCopy';
 import { FollowCamera } from './camera';
 import type { AssetProvider } from './characterView';
 import { CharacterView } from './characterView';
@@ -69,6 +70,17 @@ export class WorldRenderer {
     // DPR-correct backing store (resolution/autoDensity) is decided in viewport.ts.
     await app.init(appInitOptions(cssW, cssH, dpr, FLOOR_COLOR));
     mount.appendChild(app.canvas);
+    // m23-s4 (M23 §2.3, A11Y-17): the canvas IS the world region, and it is the ONLY node that may
+    // carry role="application". NOT `mount` (`#app`): main.ts passes that same element as the
+    // parent of battleView/boxView/raisingView/evolutionView, so an application role there would
+    // swallow four dialogs into an application region and destroy their dialog semantics.
+    // `tabindex="0"` makes the region a single, real tab stop — the thing a screen-reader user
+    // needs in order to reach the world at all — and the name comes from the copy catalog, never a
+    // literal (§2.8, the M24 seam). This file is coverage-excluded, so the gate is a source scan
+    // that is brace-scoped to THIS method body and fails loud if the append anchor above moves.
+    app.canvas.setAttribute('role', 'application');
+    app.canvas.setAttribute('tabindex', '0');
+    app.canvas.setAttribute('aria-label', t('a11y.world.region'));
     // init() applies the stage scale ITSELF rather than relying on the caller to
     // land a resize() first. main.ts happens to call installResizeHandler (which
     // resizes synchronously) right after init(), but nothing enforces that

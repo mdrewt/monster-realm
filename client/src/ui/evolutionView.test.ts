@@ -65,6 +65,207 @@ import type {
 import { EvolutionView, type EvolutionViewCallbacks } from './evolutionView';
 
 // ---------------------------------------------------------------------------
+// m23-s4 — overlay a11y wiring for EvolutionView (constructed-shell, #app-mounted).
+// ADDITIVE ONLY: nothing below this block (the EG4-1/2/5, A3, V6/V7 suite) was
+// weakened or deleted. Declared FIRST in the file, before any pre-existing describe.
+//
+// SOURCE OF TRUTH: specs/monster-realm-v2/M23-accessibility.spec.md §2.2/§2.3, §6
+// (A11Y-13/14/15/16/17); memory/projects/monster-realm-m23-s4-plan.md §0 F1, §1
+// D1/D2/D3/D6/D7; memory/projects/gates/m23-s4.gates.md X1/X2/X3/X6/X7/X8.
+//
+// RED REASON: evolutionView.ts's show()/hide()/toggle() do not call
+// openOverlayA11y/closeOverlayA11y today, and its <h2> title carries neither
+// data-testid="evolution-title" nor tabindex="-1" — every S4-evolutionView-* test
+// below fails now; every pre-existing test below still passes.
+//
+// COMPOSITION NOTE (plan §8 A7): DEFER-FOCUS and CLOSE-RESTORE are folded into
+// S4-evolutionView-ANCHOR-FOCUS and S4-evolutionView-CLOSE-RESTORE-UNGUARDED — see
+// battleView.test.ts's file header for the full rationale.
+//
+// D3 NOTE: evolutionView.ts:70-72 writes `display` BEFORE `#visible` (unlike its
+// three siblings) — the `wasVisible` read this slice adds must be hoisted above
+// BOTH writes so "read first" is uniform, but this file's tests observe only the
+// PUBLIC `.visible` getter and the ARIA/focus side effects, so they are agnostic
+// to that internal write-order detail.
+// ---------------------------------------------------------------------------
+
+import { beforeEach } from 'vitest';
+import { t } from './a11yCopy';
+import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
+import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
+
+vi.mock('./overlayA11y', { spy: true });
+
+/** ONE real macrotask boundary — never vi.useFakeTimers() (plan anti-pattern #10). */
+async function s4FlushMacrotask(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+beforeEach(async () => {
+  for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
+  await s4FlushMacrotask();
+  vi.clearAllMocks();
+});
+
+afterEach(async () => {
+  for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
+  await s4FlushMacrotask();
+});
+
+const S4_ID: OverlayId = 'evolutionView';
+const S4_META = OVERLAY_A11Y[S4_ID];
+
+function s4OutsideSentinel(): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.id = 's4-outside-sentinel';
+  document.body.appendChild(btn);
+  return btn;
+}
+
+function s4InsideSentinel(root: HTMLElement): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.id = 's4-inside-sentinel';
+  root.appendChild(btn);
+  return btn;
+}
+
+/** See battleView.test.ts's file header for the full OPEN-LAST mechanism rationale
+ *  (plan §8 A3): a post-hoc read of mock.calls[...][1].style.display is PROVABLY
+ *  VACUOUS. This spies on the FIRST attribute write (`role`) and delegates to the
+ *  real setAttribute. NEVER vi.importActual('./overlayA11y'). */
+function s4CaptureDisplayAtOpen(root: HTMLElement): { display: () => string | undefined } {
+  let captured: string | undefined;
+  const real = root.setAttribute.bind(root);
+  vi.spyOn(root, 'setAttribute').mockImplementation((name: string, value: string) => {
+    if (name === 'role' && captured === undefined) captured = root.style.display;
+    real(name, value);
+  });
+  return { display: () => captured };
+}
+
+describe('EvolutionView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() edge', () => {
+  it('S4-evolutionView-OPEN-ARIA BITES: the first show() from a hidden shell labels the root from OVERLAY_A11Y/t()', () => {
+    const { parent, view } = mount();
+    const root = parent.firstElementChild as HTMLElement;
+    expect(view.visible, 'the shell must start hidden, so show() IS an edge').toBe(false);
+
+    view.show();
+
+    expect(root.getAttribute('role'), 'role must come from OVERLAY_A11Y').toBe(S4_META.role);
+    expect(root.getAttribute('aria-modal')).toBe('true');
+    expect(root.getAttribute('aria-label')).toBe(t(S4_META.labelKey));
+  });
+
+  it('S4-evolutionView-ANCHOR-FOCUS BITES: the anchor resolves to an <h2 tabindex="-1"> with byte-unchanged "Evolution" text, and focus moves to it after ONE real macrotask (never synchronously)', async () => {
+    const { parent, view } = mount();
+    const root = parent.firstElementChild as HTMLElement;
+    view.show();
+
+    const anchor = root.querySelector<HTMLElement>(S4_META.initialFocusSelector);
+    expect(
+      anchor,
+      `the anchor selector ${S4_META.initialFocusSelector} must resolve`,
+    ).not.toBeNull();
+    expect(anchor!.tagName).toBe('H2');
+    expect(anchor!.getAttribute('tabindex')).toBe('-1');
+    expect(anchor!.textContent).toBe('Evolution');
+
+    expect(document.activeElement, 'not focused synchronously').not.toBe(anchor);
+    await s4FlushMacrotask();
+    expect(document.activeElement, 'focused by IDENTITY after one real macrotask').toBe(anchor);
+  });
+
+  it('S4-evolutionView-HELPER-CALLED BITES: the view DELEGATES to the S1 helpers with its OWN id, its OWN root, and a literal null fallbackFocus', () => {
+    const { parent, view } = mount();
+    const root = parent.firstElementChild as HTMLElement;
+
+    view.show();
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith(S4_ID, root);
+
+    view.hide();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S4_ID, null);
+  });
+
+  it('S4-evolutionView-CLOSE-RESTORE-UNGUARDED BITES: hide() strips all three attributes and restores focus to the pre-open element; hide() on a never-shown view still closes without throwing; show/hide/hide yields exactly two closes', async () => {
+    const outside = s4OutsideSentinel();
+    outside.focus();
+    const { parent, view } = mount();
+    const root = parent.firstElementChild as HTMLElement;
+
+    view.show();
+    await s4FlushMacrotask();
+    expect(document.activeElement, 'precondition: the open moved focus into the overlay').not.toBe(
+      outside,
+    );
+
+    view.hide();
+    expect(
+      root.getAttribute('role'),
+      'a display:none root must not keep claiming to be a dialog',
+    ).toBeNull();
+    expect(root.getAttribute('aria-modal')).toBeNull();
+    expect(root.getAttribute('aria-label')).toBeNull();
+    expect(document.activeElement, 'focus must return to the pre-open element').toBe(outside);
+
+    const fresh = mount();
+    expect(fresh.view.visible).toBe(false);
+    expect(() => fresh.view.hide()).not.toThrow();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S4_ID, null);
+
+    vi.clearAllMocks();
+    const cycle = mount();
+    cycle.view.show();
+    cycle.view.hide();
+    cycle.view.hide();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(2);
+  });
+
+  it('S4-evolutionView-REPEAT-NO-REOPEN BITES: show() on an already-visible overlay neither re-opens nor yanks focus off a sentinel parked inside the root', async () => {
+    const { parent, view } = mount();
+    const root = parent.firstElementChild as HTMLElement;
+    view.show();
+    await s4FlushMacrotask();
+
+    const inside = s4InsideSentinel(root);
+    inside.focus();
+    expect(document.activeElement).toBe(inside);
+
+    view.show();
+    await s4FlushMacrotask();
+
+    expect(document.activeElement, 'a repeat open must NOT re-run the deferred focus').toBe(inside);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+  });
+
+  it('S4-evolutionView-OPEN-LAST BITES: openOverlayA11y is invoked with root.style.display ALREADY painted (neither "none" nor "") — never open-before-paint', () => {
+    const { parent, view } = mount();
+    const root = parent.firstElementChild as HTMLElement;
+    const capture = s4CaptureDisplayAtOpen(root);
+
+    view.show();
+
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(capture.display()).not.toBe('none');
+    expect(capture.display()).not.toBe('');
+  });
+
+  it('S4-evolutionView-TOGGLE BITES: toggle() from hidden opens exactly once; toggle() again closes exactly once', () => {
+    const { view } = mount();
+    expect(view.visible).toBe(false);
+
+    view.toggle();
+    expect(view.visible).toBe(true);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+
+    view.toggle();
+    expect(view.visible).toBe(false);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Frozen anchors
 // ---------------------------------------------------------------------------
 

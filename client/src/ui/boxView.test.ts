@@ -79,6 +79,259 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { MonsterCardViewModel } from './boxModel';
 import { BoxView, type BoxViewCallbacks } from './boxView';
 
+// ---------------------------------------------------------------------------
+// m23-s4 — overlay a11y wiring for BoxView (constructed-shell, #app-mounted) PLUS
+// the cross-view four-distinct-roots pin (plan §8 A4/A9's X9). ADDITIVE ONLY:
+// nothing below this block (the entire pre-existing ux4/EG4-8 suite) was weakened
+// or deleted. Declared FIRST in the file, before any pre-existing describe.
+//
+// SOURCE OF TRUTH: specs/monster-realm-v2/M23-accessibility.spec.md §2.2/§2.3, §6
+// (A11Y-13/14/15/16/17); memory/projects/monster-realm-m23-s4-plan.md §0 F1, §1
+// D1/D2/D6/D7; memory/projects/gates/m23-s4.gates.md X1/X2/X3/X6/X7/X8/X9.
+//
+// RED REASON: boxView.ts's show()/hide()/toggle() do not call
+// openOverlayA11y/closeOverlayA11y today, and its <h2> title carries neither
+// data-testid="box-title" nor tabindex="-1" — every S4-boxView-* test and
+// S4-CROSS-VIEW-DISTINCT-ROOTS fail now; every pre-existing test still passes.
+//
+// COMPOSITION NOTE (plan §8 A7): DEFER-FOCUS and CLOSE-RESTORE are folded into
+// S4-boxView-ANCHOR-FOCUS and S4-boxView-CLOSE-RESTORE-UNGUARDED respectively — see
+// battleView.test.ts's file header for the full rationale (repeated per-file so the
+// absence of standalone tags reads as a decision here too).
+// ---------------------------------------------------------------------------
+
+import { beforeEach } from 'vitest';
+import { t } from './a11yCopy';
+import { BattleView, type BattleViewCallbacks } from './battleView';
+import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
+import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
+
+vi.mock('./overlayA11y', { spy: true });
+
+async function s4FlushMacrotask(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+beforeEach(async () => {
+  for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
+  await s4FlushMacrotask();
+  vi.clearAllMocks();
+});
+
+afterEach(async () => {
+  for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
+  await s4FlushMacrotask();
+});
+
+const S4_ID: OverlayId = 'boxView';
+const S4_META = OVERLAY_A11Y[S4_ID];
+
+function s4OutsideSentinel(): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.id = 's4-outside-sentinel';
+  document.body.appendChild(btn);
+  return btn;
+}
+
+function s4InsideSentinel(root: HTMLElement): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.id = 's4-inside-sentinel';
+  root.appendChild(btn);
+  return btn;
+}
+
+/** See battleView.test.ts's file header for the full OPEN-LAST mechanism rationale
+ *  (plan §8 A3): a post-hoc read of mock.calls[...][1].style.display is PROVABLY
+ *  VACUOUS. This spies on the FIRST attribute write (`role`) and delegates to the
+ *  real setAttribute. NEVER vi.importActual('./overlayA11y'). */
+function s4CaptureDisplayAtOpen(root: HTMLElement): { display: () => string | undefined } {
+  let captured: string | undefined;
+  const real = root.setAttribute.bind(root);
+  vi.spyOn(root, 'setAttribute').mockImplementation((name: string, value: string) => {
+    if (name === 'role' && captured === undefined) captured = root.style.display;
+    real(name, value);
+  });
+  return { display: () => captured };
+}
+
+describe('BoxView — m23-s4 overlay a11y wiring on the show()/hide()/toggle() edge', () => {
+  it('S4-boxView-OPEN-ARIA BITES: the first show() from a hidden shell labels the root from OVERLAY_A11Y/t()', () => {
+    const { parent, view } = mount();
+    const root = e2eBoxRootOf(parent);
+    expect(view.visible, 'the shell must start hidden, so show() IS an edge').toBe(false);
+
+    view.show();
+
+    expect(root.getAttribute('role'), 'role must come from OVERLAY_A11Y').toBe(S4_META.role);
+    expect(root.getAttribute('aria-modal')).toBe('true');
+    expect(root.getAttribute('aria-label')).toBe(t(S4_META.labelKey));
+  });
+
+  it('S4-boxView-ANCHOR-FOCUS BITES: the anchor resolves to an <h2 tabindex="-1"> with byte-unchanged "Party & Box" text, and focus moves to it after ONE real macrotask (never synchronously)', async () => {
+    const { parent, view } = mount();
+    const root = e2eBoxRootOf(parent);
+    view.show();
+
+    const anchor = root.querySelector<HTMLElement>(S4_META.initialFocusSelector);
+    expect(
+      anchor,
+      `the anchor selector ${S4_META.initialFocusSelector} must resolve`,
+    ).not.toBeNull();
+    expect(anchor!.tagName).toBe('H2');
+    expect(
+      anchor!.getAttribute('tabindex'),
+      'must be "-1", never "0": a heading with no tabindex is not programmatically focusable, ' +
+        'so the deferred querySelector(...)?.focus() silently no-ops; "0" would pass ' +
+        '[A11Y-T5] while adding a permanent extra tab stop. See battleView.test.ts for the ' +
+        'dataset.testId-vs-dataset.testid note',
+    ).toBe('-1');
+    expect(
+      anchor!.textContent,
+      'byte-unchanged — client/e2e/recruit.spec.ts resolves the box root off this exact text',
+    ).toBe('Party & Box');
+
+    expect(document.activeElement, 'not focused synchronously').not.toBe(anchor);
+    await s4FlushMacrotask();
+    expect(document.activeElement, 'focused by IDENTITY after one real macrotask').toBe(anchor);
+  });
+
+  it('S4-boxView-HELPER-CALLED BITES: the view DELEGATES to the S1 helpers with its OWN id, its OWN root, and a literal null fallbackFocus', () => {
+    const { parent, view } = mount();
+    const root = e2eBoxRootOf(parent);
+
+    view.show();
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith(S4_ID, root);
+
+    view.hide();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S4_ID, null);
+  });
+
+  it('S4-boxView-CLOSE-RESTORE-UNGUARDED BITES: hide() strips all three attributes and restores focus to the pre-open element; hide() on a never-shown view still closes without throwing; show/hide/hide yields exactly two closes', async () => {
+    const outside = s4OutsideSentinel();
+    outside.focus();
+    const { parent, view } = mount();
+    const root = e2eBoxRootOf(parent);
+
+    view.show();
+    await s4FlushMacrotask();
+    expect(document.activeElement, 'precondition: the open moved focus into the overlay').not.toBe(
+      outside,
+    );
+
+    view.hide();
+    expect(
+      root.getAttribute('role'),
+      'a display:none root must not keep claiming to be a dialog',
+    ).toBeNull();
+    expect(root.getAttribute('aria-modal')).toBeNull();
+    expect(root.getAttribute('aria-label')).toBeNull();
+    expect(document.activeElement, 'focus must return to the pre-open element').toBe(outside);
+
+    const fresh = mount();
+    expect(fresh.view.visible).toBe(false);
+    expect(() => fresh.view.hide()).not.toThrow();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S4_ID, null);
+
+    vi.clearAllMocks();
+    const cycle = mount();
+    cycle.view.show();
+    cycle.view.hide();
+    cycle.view.hide();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(2);
+  });
+
+  it('S4-boxView-REPEAT-NO-REOPEN BITES: show() on an already-visible overlay neither re-opens nor yanks focus off a sentinel parked inside the root', async () => {
+    const { parent, view } = mount();
+    const root = e2eBoxRootOf(parent);
+    view.show();
+    await s4FlushMacrotask();
+
+    const inside = s4InsideSentinel(root);
+    inside.focus();
+    expect(document.activeElement).toBe(inside);
+
+    view.show();
+    await s4FlushMacrotask();
+
+    expect(document.activeElement, 'a repeat open must NOT re-run the deferred focus').toBe(inside);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+  });
+
+  it('S4-boxView-OPEN-LAST BITES: openOverlayA11y is invoked with root.style.display ALREADY painted (neither "none" nor "") — never open-before-paint', () => {
+    const { parent, view } = mount();
+    const root = e2eBoxRootOf(parent);
+    const capture = s4CaptureDisplayAtOpen(root);
+
+    view.show();
+
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(capture.display()).not.toBe('none');
+    expect(capture.display()).not.toBe('');
+  });
+
+  it('S4-boxView-TOGGLE BITES: toggle() from hidden opens exactly once; toggle() again closes exactly once', () => {
+    const { view } = mount();
+    expect(view.visible).toBe(false);
+
+    view.toggle();
+    expect(view.visible).toBe(true);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+
+    view.toggle();
+    expect(view.visible).toBe(false);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
+  });
+
+  it('S4-CROSS-VIEW-DISTINCT-ROOTS BITES: opening BattleView on the SAME #app mount leaves BoxView\'s ARIA claim intact, both before AND after closing BattleView — S4 must NOT implement close-before-open (plan §0 F1: the overlayA11y.ts header\'s "share ONE root" claim is a misstatement of the code)', () => {
+    const app = document.createElement('div');
+    document.body.appendChild(app);
+
+    const boxCallbacks = makeBoxCallbacks();
+    const boxView = new BoxView(app, boxCallbacks);
+    boxView.show();
+    const boxRoot = e2eBoxRootOf(app);
+    expect(boxRoot.getAttribute('role'), 'precondition: boxView is open').toBe(
+      OVERLAY_A11Y.boxView.role,
+    );
+    expect(boxRoot.getAttribute('aria-modal')).toBe('true');
+    expect(boxRoot.getAttribute('aria-label')).toBe(t(OVERLAY_A11Y.boxView.labelKey));
+
+    const battleCallbacks: BattleViewCallbacks = {
+      onAttack: vi.fn(),
+      onFlee: vi.fn(),
+      onSwap: vi.fn(),
+      onRecruit: vi.fn(),
+      onUseItem: vi.fn(),
+      onPvpAttack: vi.fn(),
+      onPvpSwap: vi.fn(),
+    };
+    const battleView = new BattleView(app, battleCallbacks);
+    battleView.show();
+
+    expect(
+      boxRoot.getAttribute('role'),
+      'boxView must STILL carry role after battleView opens on the same #app mount — four ' +
+        'distinct roots, four distinct OverlayIds, four distinct OPEN_OVERLAYS records',
+    ).toBe(OVERLAY_A11Y.boxView.role);
+    expect(boxRoot.getAttribute('aria-modal')).toBe('true');
+    expect(boxRoot.getAttribute('aria-label')).toBe(t(OVERLAY_A11Y.boxView.labelKey));
+
+    battleView.hide();
+
+    expect(
+      boxRoot.getAttribute('role'),
+      'closing battleView must leave boxView entirely intact — a close-before-open ' +
+        'implementation would close an overlay the player still has open',
+    ).toBe(OVERLAY_A11Y.boxView.role);
+    expect(boxRoot.getAttribute('aria-modal')).toBe('true');
+    expect(boxRoot.getAttribute('aria-label')).toBe(t(OVERLAY_A11Y.boxView.labelKey));
+
+    document.body.removeChild(app);
+  });
+});
+
 const BOX_PARTY_HINT_SELECTOR = '[data-testid="box-party-hint"]';
 
 /** The box sentinel `#renderCard`'s "To Box" button emits. Pinned literally by X2. */

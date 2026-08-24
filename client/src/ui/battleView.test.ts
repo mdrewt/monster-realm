@@ -33,6 +33,276 @@ import type { BattleViewModel } from './battleModel';
 import { BattleView, type BattleViewCallbacks } from './battleView';
 
 // ---------------------------------------------------------------------------
+// m23-s4 — overlay a11y wiring for BattleView (constructed-shell, #app-mounted).
+// ADDITIVE ONLY: nothing below this block (the entire pre-existing e-1 / m14.5d /
+// m14.5d-1b / m16b / ux1-2 / ux4 suite) was weakened or deleted. Declared FIRST in
+// the file, before any pre-existing describe (renameView.test.ts precedent), so
+// these file-level sweep hooks run before any describe-level ones.
+//
+// SOURCE OF TRUTH: specs/monster-realm-v2/M23-accessibility.spec.md §2.2/§2.3, §6
+// (A11Y-13/14/15/16/17); memory/projects/monster-realm-m23-s4-plan.md §0 F1, §1
+// D1/D2/D4/D6/D7; memory/projects/gates/m23-s4.gates.md X1/X2/X3/X6/X7/X8.
+//
+// RED REASON: battleView.ts's show()/hide()/refresh() do not call
+// openOverlayA11y/closeOverlayA11y at all today, and its <h2> title carries neither
+// data-testid="battle-title" nor tabindex="-1" — every S4-battleView-* test below
+// fails now; every pre-existing test below (e-1 onward) still passes.
+//
+// COMPOSITION NOTE (plan §8 A7): DEFER-FOCUS and CLOSE-RESTORE are NOT separate
+// teeth here — DEFER-FOCUS ≡ HELPER-CALLED ∘ S1-DEFER-* (overlayA11y.test.ts already
+// proves the defer mechanism for all sixteen ids, folded here into
+// S4-battleView-ANCHOR-FOCUS's end-to-end focus-move oracle); CLOSE-RESTORE is
+// folded into S4-battleView-CLOSE-RESTORE-UNGUARDED. Their absence as standalone
+// tags is a decision, not an omission.
+// ---------------------------------------------------------------------------
+
+import { beforeEach } from 'vitest';
+import { t } from './a11yCopy';
+import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
+import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
+
+// The m23-s4 MECHANISM oracle. `{ spy: true }` records every call AND calls through
+// to the real implementation, so the VALUE oracle (real attribute writes, real focus
+// moves) still works.
+vi.mock('./overlayA11y', { spy: true });
+
+/** ONE real macrotask boundary — never vi.useFakeTimers() (plan anti-pattern #10). */
+async function s4FlushMacrotask(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+// File-level sweep (mandatory — see the file header). overlayA11y.ts holds ONE
+// module-private Map and exports no reset hook, so this calls the PRODUCTION
+// closeOverlayA11y(id, null) for every OverlayId and flushes one real macrotask —
+// legal because close-without-open is a documented no-op. This cancels any
+// deferred-focus timer / capture listener that a PRE-EXISTING `view.show()` /
+// `view.refresh(vm)` call above will schedule once the wiring lands (plan residual
+// A12). `vi.clearAllMocks()` runs LAST so the sweep's own calls never pollute a count.
+beforeEach(async () => {
+  for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
+  await s4FlushMacrotask();
+  vi.clearAllMocks();
+});
+
+afterEach(async () => {
+  for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
+  await s4FlushMacrotask();
+});
+
+const S4_ID: OverlayId = 'battleView';
+const S4_META = OVERLAY_A11Y[S4_ID];
+
+/** A focusable OUTSIDE the overlay: the "pre-open" element a close must restore focus to. */
+function s4OutsideSentinel(): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.id = 's4-outside-sentinel';
+  document.body.appendChild(btn);
+  return btn;
+}
+
+/** A focusable INSIDE the overlay, as a DIRECT child of the root — nothing on the
+ *  a11y-only path rebuilds it, so if it loses focus something RE-OPENED the overlay. */
+function s4InsideSentinel(root: HTMLElement): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.id = 's4-inside-sentinel';
+  root.appendChild(btn);
+  return btn;
+}
+
+/**
+ * OPEN-LAST capture (plan §8 A3, mechanism #1 — the ONLY admissible one here): spy on
+ * root.setAttribute and record root.style.display the instant `role` is written — the
+ * FIRST attribute openOverlayA11y sets (overlayA11y.ts:106) — then delegate to the real
+ * bound setAttribute. A post-hoc read of `mock.calls[...][1].style.display` is PROVABLY
+ * VACUOUS (red-team PoC, plan §8 A3): JS is synchronous, so by assertion time both the
+ * paint and the open call have already run, in EITHER order, and a post-hoc read passes
+ * the correct implementation and an open-before-paint implementation identically. NEVER
+ * `vi.importActual('./overlayA11y')` — a second module instance with its own
+ * OPEN_OVERLAYS map that silently breaks every close/restore assertion in this file.
+ */
+function s4CaptureDisplayAtOpen(root: HTMLElement): { display: () => string | undefined } {
+  let captured: string | undefined;
+  const real = root.setAttribute.bind(root);
+  vi.spyOn(root, 'setAttribute').mockImplementation((name: string, value: string) => {
+    if (name === 'role' && captured === undefined) captured = root.style.display;
+    real(name, value);
+  });
+  return { display: () => captured };
+}
+
+function s4Mount(): { parent: HTMLElement; view: BattleView; callbacks: BattleViewCallbacks } {
+  const parent = document.createElement('div');
+  document.body.appendChild(parent);
+  const callbacks = makeCallbacks();
+  const view = new BattleView(parent, callbacks);
+  return { parent, view, callbacks };
+}
+
+describe('BattleView — m23-s4 overlay a11y wiring on the show()/hide()/refresh() edge', () => {
+  it('S4-battleView-OPEN-ARIA BITES: the first show() from a hidden shell labels the root from OVERLAY_A11Y/t()', () => {
+    const { parent, view } = s4Mount();
+    const root = parent.firstElementChild as HTMLElement;
+    expect(view.visible, 'the shell must start hidden, so show() IS an edge').toBe(false);
+
+    view.show();
+
+    // Every expected value is DERIVED from the table/catalog at assert time — never a literal.
+    expect(root.getAttribute('role'), 'role must come from OVERLAY_A11Y').toBe(S4_META.role);
+    expect(root.getAttribute('aria-modal')).toBe('true');
+    expect(
+      root.getAttribute('aria-label'),
+      'the constructed root carries NO static ARIA, so aria-label is the value oracle here; ' +
+        'because all sixteen catalog labels are distinct this also kills a copy-pasted wrong id',
+    ).toBe(t(S4_META.labelKey));
+  });
+
+  it('S4-battleView-ANCHOR-FOCUS BITES: the anchor resolves to an <h2 tabindex="-1"> with byte-unchanged text, and focus moves to it after ONE real macrotask (never synchronously)', async () => {
+    const { parent, view } = s4Mount();
+    const root = parent.firstElementChild as HTMLElement;
+    view.show();
+
+    const anchor = root.querySelector<HTMLElement>(S4_META.initialFocusSelector);
+    expect(
+      anchor,
+      `the anchor selector ${S4_META.initialFocusSelector} must resolve`,
+    ).not.toBeNull();
+    expect(anchor!.tagName).toBe('H2');
+    expect(
+      anchor!.getAttribute('tabindex'),
+      'must be "-1", never "0": a heading with no tabindex is not programmatically ' +
+        "focusable, so openOverlayA11y's querySelector(...)?.focus() silently no-ops and the " +
+        'overlay opens with focus still on <body>. (happy-dom focuses a bare <h2> regardless, ' +
+        'so this attribute-VALUE assertion is the only oracle for it here.) `tabindex="0"` ' +
+        'would pass [A11Y-T5] (which bans only >0) while adding a permanent extra tab stop ' +
+        "ahead of the overlay's real controls. The camelCase `dataset.testId` footgun maps to " +
+        'the attribute "data-test-id" and would no-op the lookup above; all-lowercase ' +
+        '`dataset.testid` does NOT (WHATWG dataset inserts a dash only before an uppercase letter).',
+    ).toBe('-1');
+    expect(
+      anchor!.textContent,
+      'byte-unchanged — client/e2e/recruit.spec.ts keys on this literal overlay title',
+    ).toBe('Battle');
+
+    // BOTH polarities (DEFER-FOCUS ≡ HELPER-CALLED ∘ S1-DEFER-*, see file header).
+    expect(document.activeElement, 'not focused synchronously').not.toBe(anchor);
+    await s4FlushMacrotask();
+    expect(document.activeElement, 'focused by IDENTITY after one real macrotask').toBe(anchor);
+  });
+
+  it('S4-battleView-HELPER-CALLED BITES: the view DELEGATES to the S1 helpers with its OWN id, its OWN root, and a literal null fallbackFocus', () => {
+    const { parent, view } = s4Mount();
+    const root = parent.firstElementChild as HTMLElement;
+
+    view.show();
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith(S4_ID, root);
+
+    view.hide();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S4_ID, null);
+  });
+
+  it('S4-battleView-CLOSE-RESTORE-UNGUARDED BITES: hide() strips all three attributes and restores focus to the pre-open element; hide() on a never-shown view still closes without throwing; show/hide/hide yields exactly two closes', async () => {
+    const outside = s4OutsideSentinel();
+    outside.focus();
+    const { parent, view } = s4Mount();
+    const root = parent.firstElementChild as HTMLElement;
+
+    view.show();
+    await s4FlushMacrotask();
+    expect(document.activeElement, 'precondition: the open moved focus into the overlay').not.toBe(
+      outside,
+    );
+
+    view.hide();
+    expect(
+      root.getAttribute('role'),
+      'a display:none root must not keep claiming to be a dialog',
+    ).toBeNull();
+    expect(root.getAttribute('aria-modal')).toBeNull();
+    expect(root.getAttribute('aria-label')).toBeNull();
+    expect(document.activeElement, 'focus must return to the pre-open element').toBe(outside);
+
+    // hide() on a never-shown view: still closes, does not throw (D2's self-heal).
+    const fresh = s4Mount();
+    expect(fresh.view.visible).toBe(false);
+    expect(() => fresh.view.hide()).not.toThrow();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S4_ID, null);
+
+    // show/hide/hide => exactly TWO close calls. Plan D2 / measured by S3's red-team:
+    // guarding hide()'s close ships 62/62 green while permanently leaking a live capture
+    // listener, a pending timer and a stale return target.
+    vi.clearAllMocks();
+    const cycle = s4Mount();
+    cycle.view.show();
+    cycle.view.hide();
+    cycle.view.hide();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(2);
+  });
+
+  it('S4-battleView-REPEAT-NO-REOPEN BITES: show() on an already-visible overlay neither re-opens nor yanks focus off a sentinel parked inside the root', async () => {
+    const { parent, view } = s4Mount();
+    const root = parent.firstElementChild as HTMLElement;
+    view.show();
+    await s4FlushMacrotask();
+
+    const inside = s4InsideSentinel(root);
+    inside.focus();
+    expect(document.activeElement).toBe(inside);
+
+    view.show();
+    await s4FlushMacrotask();
+
+    expect(document.activeElement, 'a repeat open must NOT re-run the deferred focus').toBe(inside);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+  });
+
+  it('S4-battleView-OPEN-LAST BITES: openOverlayA11y is invoked with root.style.display ALREADY painted (neither "none" nor "") — never open-before-paint', () => {
+    const { parent, view } = s4Mount();
+    const root = parent.firstElementChild as HTMLElement;
+    const capture = s4CaptureDisplayAtOpen(root);
+
+    view.show();
+
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(
+      capture.display(),
+      'root.style.display AT THE INSTANT of the first setAttribute call inside openOverlayA11y',
+    ).not.toBe('none');
+    expect(capture.display()).not.toBe('');
+  });
+
+  it('S4-battleView-REFRESH-EDGES BITES: refresh(null) on a fresh view calls close (never open) without throwing; refresh(vm) opens exactly once; a repeat refresh(vm) does not re-open (D4: no second edge check bolted into refresh()); refresh(null) then closes', () => {
+    const { view } = s4Mount();
+
+    expect(() => view.refresh(null)).not.toThrow();
+    expect(vi.mocked(openOverlayA11y)).not.toHaveBeenCalled();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S4_ID, null);
+
+    vi.clearAllMocks();
+    view.refresh(makeRecruitVM());
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+
+    view.refresh(makeRecruitVM());
+    expect(
+      vi.mocked(openOverlayA11y),
+      "D4: refresh(vm)'s `if (!this.#visible) this.show()` must delegate to the now-guarded " +
+        'show() rather than adding a second, independent nullity check',
+    ).toHaveBeenCalledTimes(1);
+
+    view.refresh(null);
+    expect(
+      vi.mocked(closeOverlayA11y),
+      'vi.clearAllMocks() above reset the spy history, so this final refresh(null) is the ONLY ' +
+        'close in this window: exactly one call proves the close arm fires on the null ' +
+        'transition, and that neither of the two preceding non-null refreshes (the fresh open, ' +
+        'nor the guarded repeat) issued a close of their own',
+    ).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Minimal BattleViewModel factory for recruit / wild-battle scenario.
 // canRecruit=true + baitOptions populated simulates an ongoing wild battle.
 // ---------------------------------------------------------------------------

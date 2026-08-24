@@ -1266,3 +1266,85 @@ describe('RenameView review-hardening: live submit-enable, hide() lock reset, bu
     window.removeEventListener('keydown', spy);
   });
 });
+
+// ---------------------------------------------------------------------------
+// m23-s4 / A11Y-15 — the FIVE S4 constructed-shell view files, reusing THIS file's
+// already-hardened s3Strip/s3CountFocusCalls and its comments-only-vs-string-stripped
+// divergence tooth (plan §8 A8: strictly less scope than a second ~250-line stripper,
+// strictly more coverage — inherits the hardened stripper for free). A NEW, DISTINCT
+// it() and a NEW, DISTINCT const: S3's own S3_VIEW_FILES and its own it() above are
+// left BYTE-IDENTICAL — its ledger CHECK greps for S3-NO-VIEW-LOCAL-FOCUS and pins a
+// file count of 10; widening that array would silently change what that CHECK proves.
+//
+// SOURCE OF TRUTH: memory/projects/gates/m23-s4.gates.md X5; memory/projects/
+// monster-realm-m23-s4-plan.md §8 A8/A10.
+//
+// RED REASON: none of the five S4 files call openOverlayA11y/closeOverlayA11y today
+// (that wiring is what this whole slice adds), so none of them contain a view-local
+// `.focus(` call either — this it() is RED only insofar as it has never been proven
+// before; A11Y-15 itself is not violated by any of the five files at authoring time.
+// It gates the FUTURE: once S4 wiring lands, a view-local `setTimeout(() => el.focus(),
+// 0)` re-introduced alongside the delegated openOverlayA11y call would be exactly the
+// two-deferred-focuses-racing-on-one-tick defect S1's header describes — and this scan
+// is what would catch it.
+// ---------------------------------------------------------------------------
+
+const S4_VIEW_FILES: ReadonlyArray<readonly [string, string]> = [
+  ['battleView.ts', 'export class BattleView'],
+  ['boxView.ts', 'export class BoxView'],
+  ['raisingView.ts', 'export class RaisingView'],
+  ['evolutionView.ts', 'export class EvolutionView'],
+  ['claimView.ts', 'export class ClaimView'],
+];
+
+describe('m23-s4 / A11Y-15 — no view-local focus call survives in any of the FIVE S4 constructed-shell view files', () => {
+  it('S4-VIEW-LOCAL-FOCUS-5 BITES: zero `.focus(` in the five S4 view files after comment AND string stripping, with the S3 divergence tooth reused verbatim', () => {
+    const dir = path.dirname(fileURLToPath(import.meta.url));
+    expect(S4_VIEW_FILES.length, 'ANTI-VACUITY: all FIVE S4 view files must be scanned').toBe(5);
+
+    const offenders: string[] = [];
+    const swallowed: string[] = [];
+    for (const [file, declaration] of S4_VIEW_FILES) {
+      const viewPath = path.join(dir, file);
+      let src: string;
+      try {
+        src = readFileSync(viewPath, 'utf8');
+      } catch (err) {
+        // Fail loud — a `catch { continue; }` here is the vacuous-pass hole the m16.5a
+        // vacuous-revival gate was written against.
+        throw new Error(`${file} could not be read — the file must exist: ${String(err)}`);
+      }
+      expect(src.length, `ANTI-VACUITY: ${file} must not read as an empty string`).toBeGreaterThan(
+        0,
+      );
+      const stripped = s3Strip(src, true);
+      const commentsOnly = s3Strip(src, false);
+      expect(
+        stripped.includes(declaration),
+        `ANTI-VACUITY: "${declaration}" must survive stripping of ${file} — if it does not, the ` +
+          'scanner fell into an unterminated string/comment state and ate the rest of the file',
+      ).toBe(true);
+      const count = s3CountFocusCalls(stripped);
+      const commentsOnlyCount = s3CountFocusCalls(commentsOnly);
+      if (count > 0) offenders.push(`${file} (${count})`);
+      if (commentsOnlyCount !== count) {
+        swallowed.push(`${file} (comments-only=${commentsOnlyCount}, string-stripped=${count})`);
+      }
+    }
+
+    // THE DIVERGENCE TOOTH, reused verbatim from S3's own scan (see that it() above for
+    // the full rationale): a divergence between the two counts means the string-literal
+    // pass is blind on that file (most likely a regex literal containing a quote).
+    expect(
+      swallowed,
+      'A11Y-15 INTEGRITY (S4 files): the comment-stripped and string-stripped `.focus(` ' +
+        'counts must AGREE for every one of the five S4 view files',
+    ).toEqual([]);
+
+    expect(
+      offenders,
+      'A11Y-15 (S4 files): no *View.ts among the five S4 constructed-shell views may call ' +
+        '.focus() — the single deferred focus is owned by ui/overlayA11y.ts alone',
+    ).toEqual([]);
+  });
+});

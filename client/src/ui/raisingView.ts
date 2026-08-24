@@ -5,6 +5,35 @@
 // (those live in the model) — one-way flow only. The loop calls refresh() on
 // batch-applied; the user triggers reducer intents via callbacks passed at
 // construction (never called directly by this module). Coverage-excluded shell.
+//
+// m23-s4 (M23 §2.2, ADR-0205 D1/D2/A3) — overlay a11y wiring. This view is a CONSTRUCTED shell:
+// its root is `document.createElement`'d here and appended into the shared `#app` MOUNT, so unlike
+// the ten static shells S3 wired it ships NO ARIA of its own from `client/index.html` — every
+// attribute below comes from `openOverlayA11y`, never from a literal in this file.
+//
+// THE EDGE, AND WHY IT IS READ FIRST. `wasVisible` is read as the FIRST statement of `show()`,
+// before any write. A re-open tears down and re-schedules `openOverlayA11y`'s deferred focus, which
+// drags focus off whatever control the player had Tabbed to — invisible to every attribute
+// assertion, since a re-open rewrites the same values.
+//
+// AND WHY THE CLOSE IS DELIBERATELY UNGUARDED. `hide()` calls `closeOverlayA11y` every time, even
+// when already hidden. A guarded close reads correct and passes every other assertion while
+// permanently leaking a live capture listener, a pending timer and an expiring return target
+// whenever a record desynchronises from the DOM; `closeOverlayA11y` with no record is a documented
+// pure no-op, so unguarded is the self-healing path. S3's red-team measured the guarded shape
+// shipping 62/62 green.
+//
+// THE OPEN IS THE LAST STATEMENT of the open path, after the display write: in a real browser
+// `.focus()` on a `display:none` node is a silent no-op, so an open-before-paint overlay announces
+// itself and then never receives focus.
+//
+// NO CLOSE-BEFORE-OPEN. `ui/overlayA11y.ts`'s cross-slice contract (a) says the four `#app`-mounted
+// views "share ONE root" and that S4 must therefore close-before-open. That is a misstatement of
+// this code: each view creates its OWN root and appends it into the shared MOUNT, so there are four
+// distinct roots, four distinct `OverlayId`s and four distinct records. Closing a sibling here would
+// close an overlay the player still has open. Pinned by `S4-CROSS-VIEW-DISTINCT-ROOTS`.
+
+import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { InventoryItemViewModel, RaisingViewModel } from './raisingModel';
 
 export interface RaisingViewCallbacks {
@@ -54,6 +83,12 @@ export class RaisingView {
 
     const title = document.createElement('h2');
     title.textContent = 'Raising & Inventory';
+    // m23-s4: the OVERLAY_A11Y initialFocusSelector anchor for this overlay. `tabindex="-1"`
+    // (never "0") makes the heading programmatically focusable WITHOUT adding a permanent tab
+    // stop ahead of the overlay's real controls. `setAttribute`, not `dataset` — the selector is
+    // frozen in ui/overlayRegistry.ts and the DOM moves to it, never the reverse.
+    title.setAttribute('data-testid', 'raising-title');
+    title.setAttribute('tabindex', '-1');
     title.style.cssText = 'margin:0 0 16px;color:#fff;';
     this.#root.appendChild(title);
 
@@ -98,8 +133,10 @@ export class RaisingView {
   }
 
   show(): void {
+    const wasVisible = this.#visible;
     this.#visible = true;
     this.#root.style.display = 'flex';
+    if (!wasVisible) openOverlayA11y('raisingView', this.#root);
   }
 
   hide(): void {
@@ -110,6 +147,7 @@ export class RaisingView {
     // drop — .finally() may never run (shopView/renameView precedent).
     this.#feedbackEl.textContent = '';
     this.#pending.clear();
+    closeOverlayA11y('raisingView', null);
   }
 
   /** Display a care outcome. textContent ONLY — the message can carry a
