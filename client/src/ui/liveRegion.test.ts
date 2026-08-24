@@ -61,7 +61,9 @@ describe('LiveRegion — 500ms coalescing burst behaviour (A11Y-9)', () => {
     // Past COALESCE_WINDOW_MS since t=0.
     region.flush(600);
     expect(COALESCE_WINDOW_MS).toBe(500);
-    expect(node.textContent, 'only the LAST of the three burst messages is ever painted').toBe('Third');
+    expect(node.textContent, 'only the LAST of the three burst messages is ever painted').toBe(
+      'Third',
+    );
   });
 
   it('A11Y-9-WRITE-COUNT-ONE BITES: the DOM write happens exactly ONCE for the whole burst, and the superseded messages are never even passed to the setter', () => {
@@ -131,9 +133,10 @@ describe('LiveRegion — re-announce and consecutive-dedup edge cases (S1-LIVE)'
     region.announce('Party & Box', 600);
     region.flush(1200);
 
-    expect(setSpy, 'a consecutive identical announce must not trigger a second write').toHaveBeenCalledTimes(
-      1,
-    );
+    expect(
+      setSpy,
+      'a consecutive identical announce must not trigger a second write',
+    ).toHaveBeenCalledTimes(1);
     expect(node.textContent).toBe('Party & Box');
   });
 });
@@ -193,7 +196,9 @@ describe('LiveRegion — textContent-only DOM sink, and correct behaviour when t
     region.announce('Hello', 1200);
     region.flush(1200);
 
-    expect(node.textContent, 'the kept-pending message must land once the node exists').toBe('Hello');
+    expect(node.textContent, 'the kept-pending message must land once the node exists').toBe(
+      'Hello',
+    );
   });
 
   it('S1-LIVE-STALE-NODE BITES: a node that gets detached and replaced by a fresh one with the same id is re-resolved on every write, never cached', () => {
@@ -209,9 +214,10 @@ describe('LiveRegion — textContent-only DOM sink, and correct behaviour when t
       region.announce('Hello', 0);
       region.flush(600);
     }).not.toThrow();
-    expect(staleNode.textContent, 'a caching impl would write to the DETACHED node instead').not.toBe(
-      'Hello',
-    );
+    expect(
+      staleNode.textContent,
+      'a caching impl would write to the DETACHED node instead',
+    ).not.toBe('Hello');
 
     // A fresh node with the same id appears — the write must land on THIS node.
     document.body.innerHTML = `<div id="${LIVE_REGION_ID}"></div>`;

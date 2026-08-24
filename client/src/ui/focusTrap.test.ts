@@ -168,7 +168,8 @@ describe('installTrap — Tab-only handling, non-Tab keys pass through untouched
     // the window keydown handler for every Tab press. Both assertions are required together:
     // defaultPrevented alone would not catch a stopPropagation-only implementation, and the
     // spy alone would not catch a preventDefault-everything one (covered separately above).
-    document.body.innerHTML = '<div id="root"><button id="a">a</button><button id="b">b</button></div>';
+    document.body.innerHTML =
+      '<div id="root"><button id="a">a</button><button id="b">b</button></div>';
     const root = document.getElementById('root') as HTMLElement;
     const a = document.getElementById('a') as HTMLButtonElement;
     const uninstall = installTrap(root);
@@ -224,7 +225,8 @@ describe('installTrap — capture-phase registration, live re-query, hidden filt
     // containers on every server tick (battleView.ts:241,:270). A trap that computed its
     // focusable list once at installTrap() time would keep trying to focus DETACHED elements
     // forever after the first replaceChildren().
-    document.body.innerHTML = '<div id="root"><button id="a">a</button><button id="b">b</button></div>';
+    document.body.innerHTML =
+      '<div id="root"><button id="a">a</button><button id="b">b</button></div>';
     const root = document.getElementById('root') as HTMLElement;
     const uninstall = installTrap(root);
 
@@ -244,7 +246,10 @@ describe('installTrap — capture-phase registration, live re-query, hidden filt
     c.focus();
     expect(document.activeElement).toBe(c);
     c.dispatchEvent(tabKeydown(false));
-    expect(document.activeElement, 'the focusable set must be recomputed LIVE on this keydown').toBe(d);
+    expect(
+      document.activeElement,
+      'the focusable set must be recomputed LIVE on this keydown',
+    ).toBe(d);
     uninstall();
   });
 
@@ -273,7 +278,8 @@ describe('installTrap — capture-phase registration, live re-query, hidden filt
   });
 
   it('untagged: installTrap also handles Shift+Tab wrap-backward through the live keydown path', () => {
-    document.body.innerHTML = '<div id="root"><button id="a">a</button><button id="b">b</button></div>';
+    document.body.innerHTML =
+      '<div id="root"><button id="a">a</button><button id="b">b</button></div>';
     const root = document.getElementById('root') as HTMLElement;
     const uninstall = installTrap(root);
     const a = document.getElementById('a') as HTMLButtonElement;
@@ -281,14 +287,17 @@ describe('installTrap — capture-phase registration, live re-query, hidden filt
 
     a.focus();
     a.dispatchEvent(tabKeydown(true));
-    expect(document.activeElement, 'Shift+Tab from the first focusable must wrap to the last').toBe(b);
+    expect(document.activeElement, 'Shift+Tab from the first focusable must wrap to the last').toBe(
+      b,
+    );
     uninstall();
   });
 
   it('S1-TRAP-UNINSTALL BITES: after uninstall(), Tab neither moves focus nor is preventDefault-ed', () => {
     // WRONG IMPL KILLED: a no-op uninstall handle — each re-open would stack another capture
     // listener on the same root (A12 in the plan, the shared-#app-root duplicate-trap risk).
-    document.body.innerHTML = '<div id="root"><button id="a">a</button><button id="b">b</button></div>';
+    document.body.innerHTML =
+      '<div id="root"><button id="a">a</button><button id="b">b</button></div>';
     const root = document.getElementById('root') as HTMLElement;
     const uninstall = installTrap(root);
     uninstall();
@@ -300,8 +309,9 @@ describe('installTrap — capture-phase registration, live re-query, hidden filt
     const evt = tabKeydown(false);
     a.dispatchEvent(evt);
     expect(document.activeElement, 'focus must be unchanged after uninstall').toBe(a);
-    expect(evt.defaultPrevented, 'the native Tab default must not be prevented after uninstall').toBe(
-      false,
-    );
+    expect(
+      evt.defaultPrevented,
+      'the native Tab default must not be prevented after uninstall',
+    ).toBe(false);
   });
 });

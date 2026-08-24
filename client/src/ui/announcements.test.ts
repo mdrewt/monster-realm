@@ -27,9 +27,9 @@
 //   - DOM leakage inside the "pure" module -> caught mechanically by the node environment (S1-ANN-PURE-NO-DOM)
 
 import { describe, expect, it } from 'vitest';
+import { a11yCopy } from './a11yCopy';
 import type { A11ySnapshot } from './announcements';
 import { announcementsFor } from './announcements';
-import { a11yCopy } from './a11yCopy';
 import { OVERLAY_IDS } from './overlayRegistry';
 
 // ---------------------------------------------------------------------------
