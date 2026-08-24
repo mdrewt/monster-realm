@@ -1019,3 +1019,468 @@ describe('11r-f resolver wiring + evolving-D (ADR-0171)', () => {
     expect(at(1175)).toBe(0.5);
   });
 });
+
+// ---------------------------------------------------------------------------
+// 11. m23-s7 — reduced motion (A11Y-27)
+// ---------------------------------------------------------------------------
+// SOURCE OF TRUTH: M23-accessibility.spec.md §2.5 — under the OS reduced-motion
+// preference the renderer draws every character AT its logical tile: the own
+// character at the PREDICTED tile, remotes at their AUTHORITATIVE row tile. No
+// sub-tile slide, no interpolation buffer, no dependence on `now`. `reduceMotion` is
+// injected the way `now` is — a ResolveInput field — never a media query read from
+// inside the renderer (A11Y-28; the source scan for that lives in
+// motionPreference.test.ts).
+//
+// RED BEFORE THE IMPL: `ResolveInput` has no `reduceMotion` field yet, so every
+// fixture below is resolved by today's slide/interpolate code and each position
+// assertion reds on a concrete wrong number (each test names its own).
+//
+// FIXTURE NOTE (plan §5 AP1/AP4): makeChar builds row === latest, and the own-path
+// tests above additionally keep predicted === row — a MONOCULTURE that cannot tell
+// "renders the predicted tile" from "renders the authoritative row" or "renders the
+// interpolated snapshot". The decoupled fixtures below are describe-local and
+// deliberately violate the store's row/snapshot agreement for exactly that reason.
+// makeInput / makeChar / makePredicted are used but never modified.
+
+describe('m23-s7 reduced motion (A11Y-27)', () => {
+  /** Resolve ONE own-path frame and return the own entity's rendered position.
+   *  Fails loud when the own entity is missing — a filtered-out entity must never
+   *  read as a passing position assertion. */
+  function ownPos(
+    resolver: RenderResolver,
+    char: StoredCharacter,
+    predicted: WasmCharacterState,
+    now: number,
+    reduceMotion: boolean,
+  ): { readonly x: number; readonly y: number } {
+    const entities = resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID,
+        predicted,
+        snapped: false,
+        now,
+        reduceMotion,
+      }),
+    );
+    const own = entities.find((e) => e.entityId === OWN_ID);
+    expect(own, 'the own entity must be in the resolver output').toBeDefined();
+    return { x: own!.x, y: own!.y };
+  }
+
+  /** Resolve ONE remote-path frame and return the remote entity's rendered position. */
+  function remotePos(
+    resolver: RenderResolver,
+    char: StoredCharacter,
+    now: number,
+    reduceMotion: boolean,
+  ): { readonly x: number; readonly y: number } {
+    const entities = resolver.resolve(
+      makeInput({
+        characters: [char],
+        ownEntityId: OWN_ID, // != REMOTE_ID -> the remote path
+        predicted: makePredicted(0, 0),
+        snapped: false,
+        now,
+        reduceMotion,
+      }),
+    );
+    const remote = entities.find((e) => e.entityId === REMOTE_ID);
+    expect(remote, 'the remote entity must be in the resolver output').toBeDefined();
+    return { x: remote!.x, y: remote!.y };
+  }
+
+  /** An OWN character whose authoritative row sits wherever the caller says — used
+   *  to park the row far away from the predicted tile. */
+  function ownRowAt(tileX: number, tileY: number): StoredCharacter {
+    return {
+      row: {
+        entityId: OWN_ID,
+        zoneId: 1,
+        tileX,
+        tileY,
+        facing: 'East',
+        action: 'Walking',
+        moveStartedAtMs: 0n,
+        moveQueue: [],
+      },
+      receivedAt: 0,
+      latest: { tileX, tileY, receivedAt: 0 },
+      prev: undefined,
+      snapshots: [],
+      jitterEwma: 0,
+    };
+  }
+
+  const REMOTE_PREV = { tileX: 4, tileY: 5, receivedAt: 0 };
+  const REMOTE_LATEST = { tileX: 5, tileY: 5, receivedAt: 200 };
+
+  /** The DECOUPLED remote fixture (plan §8 RT-3). The authoritative row sits on
+   *  (9,9) while every snapshot sits on (4,5)/(5,5).
+   *
+   *  WHY it violates a production invariant on purpose: the store keeps `row` and
+   *  `latest` in agreement (makeChar copies one into the other), so with a faithful
+   *  fixture "renders c.row" and "renders the newest snapshot" are indistinguishable
+   *  — and the reduced-motion arm is specified to read c.row. Pulling them apart is
+   *  the only way this suite can see which field the new arm actually uses. Each
+   *  test asserts the decoupling itself before it asserts on the render. */
+  function remoteDecoupled(withHistory: boolean): StoredCharacter {
+    return {
+      row: {
+        entityId: REMOTE_ID,
+        zoneId: 1,
+        tileX: 9,
+        tileY: 9,
+        facing: 'East',
+        action: 'Walking',
+        moveStartedAtMs: 0n,
+        moveQueue: [],
+      },
+      receivedAt: 200,
+      latest: REMOTE_LATEST,
+      prev: REMOTE_PREV,
+      // withHistory=true -> the ADR-0090 interpolateHistory arm; false -> the legacy
+      // 2-snapshot interpolate arm. Both must be bypassed under reduced motion.
+      snapshots: withHistory ? [REMOTE_PREV, REMOTE_LATEST] : [],
+      jitterEwma: 0,
+    };
+  }
+
+  it('S7T-OWN-PRED: the own entity renders the PREDICTED tile, never the authoritative row', () => {
+    // THE desync-critical cheat this kills (plan §6 R1): an own path that reads
+    // `c.row.tileX/tileY` under reduceMotion. Every other own-path test in this file
+    // drives predicted and row to the same tile, so none of them can see it — this is
+    // the only own fixture where the two disagree.
+    const resolver = new RenderResolver(STEP_MS);
+    const char = ownRowAt(9, 9);
+    // fixture self-check: the row really does disagree with the predicted tile
+    expect(char.row.tileX).not.toBe(3);
+    expect(char.row.tileY).not.toBe(7);
+
+    // Frame 1 — the lazy clock seed and the reduced-motion frame in one: exactly the
+    // predicted tile. TODAY (RED): the own path renders the slide clock, which is
+    // seeded at the predicted tile too, so this first frame alone is NOT the tooth —
+    // frame 2 is.
+    expect(ownPos(resolver, char, makePredicted(3, 7), 0, true)).toEqual({ x: 3, y: 7 });
+
+    // Frame 2 — 100 s later, nothing else changed: STILL exactly the predicted tile.
+    // Under reduced motion the rendered position is a function of the predicted tile
+    // ALONE and never of `now`.
+    const later = ownPos(resolver, char, makePredicted(3, 7), 100000, true);
+    expect(later).toEqual({ x: 3, y: 7 });
+
+    // SECOND DATA POINT (plan §8 RT-6) — NEGATIVE tiles on a fresh resolver, so the
+    // clock is seeded from scratch. WRONG IMPLS KILLED that positive-only fixtures
+    // cannot see: a clamp-to-zero (`Math.max(0, x)`), an abs(), or a
+    // floor-toward-zero of the predicted tile.
+    const negResolver = new RenderResolver(STEP_MS);
+    const negChar = ownRowAt(9, 9);
+    const seeded = ownPos(negResolver, negChar, makePredicted(-2, -5), 0, true);
+    expect(seeded).toEqual({ x: -2, y: -5 });
+
+    // ... and a 1-tile step under reduced motion lands ON the new tile immediately.
+    // TODAY (RED): the slide clock renders -2 at the transition frame (an ordinary
+    // 1-tile step re-roots the origin) and -1.5 half a step later.
+    const stepped = ownPos(negResolver, negChar, makePredicted(-1, -5), 100, true);
+    expect(stepped).toEqual({ x: -1, y: -5 });
+    const settled = ownPos(negResolver, negChar, makePredicted(-1, -5), 200, true);
+    expect(settled).toEqual({ x: -1, y: -5 });
+  });
+
+  it('S7T-OWN-FREEZE: reduced motion KEEPS the slide clock tracking — a frozen clock lands a tile behind on resume', () => {
+    // THE SHARPEST TOOTH IN THIS SLICE (plan §8 RT-1). The cheat it kills:
+    //   if (reduceMotion) { pos = tile; }          // <-- never touches #ownClock
+    //   else { ...the normal snapTo/setTarget path... }
+    // That cheat passes every "renders the exact tile while reduced motion is on"
+    // assertion in this file and only shows itself on the frame AFTER the user turns
+    // reduced motion back off — as a phantom step the player never took.
+    //
+    // WHY THE LAG MUST BE EXACTLY ONE TILE: with a 2-tile lag the resume frame trips
+    // the ptc5g divergence snap (chebyshev > SNAP_DIVERGENCE_TILES = 1) and the cheat
+    // lands on the right tile anyway — such a fixture looks green and proves nothing.
+    // At exactly 1 tile, chebyshev === 1 is NOT > 1, so the stale clock takes the
+    // ordinary setTarget path and slides in from where it was frozen.
+    const resolver = new RenderResolver(STEP_MS);
+    const char = makeChar(OWN_ID, 0, 0, 0);
+
+    // f1 — reduced motion OFF: seed the clock at (0,0) at t=0.
+    expect(ownPos(resolver, char, makePredicted(0, 0), 0, false)).toEqual({ x: 0, y: 0 });
+
+    // f2 — reduced motion ON, one tile east at t=200: exactly the predicted tile.
+    //   correct impl: snapTo((1,0), 200) -> origin === target === (1,0)
+    //   frozen-clock cheat: also (1,0) here — it passes this line.
+    expect(ownPos(resolver, char, makePredicted(1, 0), 200, true)).toEqual({ x: 1, y: 0 });
+
+    // f3 — reduced motion OFF again at t=400, SAME predicted tile (1,0):
+    //   correct impl: chebyshev((1,0), target=(1,0)) === 0 -> setTarget is a no-op and
+    //     positionAt(400) is still exactly (1,0);
+    //   frozen-clock cheat: the target is the stale (0,0), chebyshev === 1 (NOT > 1),
+    //     so setTarget((1,0), 400) re-roots the origin at (0,0) and RESTARTS the slide
+    //     -> positionAt(400) === 0. THIS is the assertion that bites.
+    expect(ownPos(resolver, char, makePredicted(1, 0), 400, false)).toEqual({ x: 1, y: 0 });
+
+    // f4 — steady state half a step later: still exactly (1,0). The cheat's restarted
+    // slide reads 0.5 here (100/200 of one tile).
+    expect(ownPos(resolver, char, makePredicted(1, 0), 500, false)).toEqual({ x: 1, y: 0 });
+  });
+
+  it('S7T-OWN-MIDSLIDE: the same 0->1 step renders the integer target with reduced motion and 0.5 without', () => {
+    // The A/B pair. Kills BOTH halves of the flag bug space in one test:
+    //   flag IGNORED  -> the reduced-motion arm reads 0.5 (the slide), red below;
+    //   flag INVERTED -> the plain arm reads 1 (no slide), red below.
+    // The final `not.toBe` makes the pair load-bearing: an implementation that
+    // returned the same number for both flag values fails it even if one arm happens
+    // to match its expectation.
+    const seedThenStep = (reduceMotion: boolean): { readonly x: number; readonly y: number } => {
+      const resolver = new RenderResolver(STEP_MS);
+      const char = makeChar(OWN_ID, 0, 0, 0);
+      ownPos(resolver, char, makePredicted(0, 0), 0, reduceMotion); // seed at (0,0)
+      ownPos(resolver, char, makePredicted(1, 0), 0, reduceMotion); // step 0->1 at t=0
+      return ownPos(resolver, char, makePredicted(1, 0), 100, reduceMotion); // mid-slide
+    };
+
+    const reduced = seedThenStep(true);
+    const normal = seedThenStep(false);
+
+    // Reduced motion: exactly the target tile, no sub-tile fraction at all.
+    expect(reduced).toEqual({ x: 1, y: 0 });
+    expect(Number.isInteger(reduced.x)).toBe(true);
+
+    // Normal motion: the pre-S7 half-step. EXACT, not approximate — STEP_MS is 200
+    // and 100/200 is 0.5 exactly in IEEE-754, so there is no rounding slack to hide
+    // an off-by-a-frame implementation in.
+    expect(normal).toEqual({ x: 0.5, y: 0 });
+    expect(Number.isInteger(normal.x)).toBe(false);
+
+    expect(reduced.x).not.toBe(normal.x); // the flag actually discriminates
+  });
+
+  it('S7T-OWN-RESUME: turning reduced motion OFF mid-walk RESUMES the slide from the integer tile (no teleport)', () => {
+    // Corrected T-h1 (plan §8 R-MAJ-1). The original arithmetic was impossible:
+    // resolve() calls positionAt with the SAME `now` it just passed to setTarget, so
+    // the transition frame ALWAYS renders the slide's origin. The tooth is therefore
+    // "origin at f2, half a tile at f3", not "half a tile at f2".
+    //
+    // WHAT THIS PROVES: reduced motion leaves the clock's ORIGIN and TARGET on the
+    // integer tile, so the first normal frame after it is turned off starts a clean
+    // one-tile slide. WRONG IMPLS KILLED: an own path that bypasses the clock while
+    // reduced motion is on and then teleports (f2 reads 2 — its stale clock is two
+    // tiles behind, which trips the ptc5g divergence snap), and one that resumes by
+    // jumping to the new tile instead of sliding to it (f3 reads 2, not 1.5).
+    const resolver = new RenderResolver(STEP_MS);
+    const char = makeChar(OWN_ID, 1, 0, 0);
+
+    // f0 — reduced motion OFF: seed the clock at (0,0) at t=0.
+    expect(ownPos(resolver, char, makePredicted(0, 0), 0, false)).toEqual({ x: 0, y: 0 });
+
+    // f1 — reduced motion ON, one tile east at t=100: exactly the tile, mid-step.
+    // TODAY (RED): this is an ordinary 1-tile step, so the clock starts a slide here
+    // and renders its origin, 0.
+    expect(ownPos(resolver, char, makePredicted(1, 0), 100, true)).toEqual({ x: 1, y: 0 });
+
+    // f2 — reduced motion OFF at t=300, predicted steps to (2,0): the new slide STARTS
+    // here, so this frame renders its origin — exactly the integer tile 1. No
+    // back-step, no half-tile: reduced motion left the clock ON the tile it reported.
+    expect(ownPos(resolver, char, makePredicted(2, 0), 300, false)).toEqual({ x: 1, y: 0 });
+
+    // f3 — t=400, half a STEP_MS into that slide: exactly 1.5, i.e. it SLID. Exact,
+    // not close-to: 100/200 = 0.5 in IEEE-754 and 1 + 1*0.5 = 1.5 exactly.
+    expect(ownPos(resolver, char, makePredicted(2, 0), 400, false)).toEqual({ x: 1.5, y: 0 });
+  });
+
+  it('S7T-OWN-JUMP: turning reduced motion ON mid-slide jumps to the predicted tile immediately', () => {
+    // INTENDED BEHAVIOUR, pinned so nobody "fixes" it: a user who turns reduced
+    // motion on mid-step wants motion to stop NOW. Finishing the in-flight 0.5 tile
+    // would be animating after the preference said not to; jumping the remaining
+    // fraction is one instantaneous position change, which is what the preference
+    // asks for. (The complementary direction, off -> on -> off, is the clock-tracking
+    // test above.)
+    const resolver = new RenderResolver(STEP_MS);
+    const char = makeChar(OWN_ID, 0, 0, 0);
+
+    ownPos(resolver, char, makePredicted(0, 0), 0, false); // seed at (0,0)
+    ownPos(resolver, char, makePredicted(1, 0), 0, false); // step 0->1 at t=0
+
+    // mid-slide, reduced motion still OFF: exactly half a tile (the precondition that
+    // makes the next line meaningful — without it "jumped to 1" could just be a slide
+    // that had already finished).
+    expect(ownPos(resolver, char, makePredicted(1, 0), 100, false)).toEqual({ x: 0.5, y: 0 });
+
+    // the SAME `now`, reduced motion ON: no time has passed, yet the position is the
+    // whole tile. WRONG IMPL KILLED: a "let the current slide finish" arm that keeps
+    // returning 0.5 until t=200.
+    expect(ownPos(resolver, char, makePredicted(1, 0), 100, true)).toEqual({ x: 1, y: 0 });
+  });
+
+  it('S7T-REM-ROW-HIST: with snapshot history, a remote renders its AUTHORITATIVE row tile, regardless of now', () => {
+    // Kills: returning `latest` (5,5), returning `prev` (4,5), and returning anything
+    // interpolated between them; and it proves `now`-independence, which is what
+    // "no motion" means for a remote.
+    const resolver = new RenderResolver(STEP_MS);
+    const c = remoteDecoupled(true);
+
+    // FIXTURE SELF-CHECK (plan §8 RT-3) — the decoupling is the whole point of this
+    // fixture, so assert it before asserting on the render. If a future refactor of
+    // this helper re-coupled row and snapshots, these lines fail instead of quietly
+    // making the test vacuous.
+    expect(c.snapshots.length).toBe(2); // really the interpolateHistory arm
+    expect(c.row.tileX).not.toBe(c.latest.tileX);
+    expect(c.row.tileY).not.toBe(c.latest.tileY);
+    expect(c.row.tileX).not.toBe(c.prev!.tileX);
+    expect(c.row.tileY).not.toBe(c.prev!.tileY);
+
+    // TODAY (RED): now=0 -> renderTime = 0 - 200 = -200, before the oldest snapshot,
+    // so the buffer clamps to (4,5); now=500 and now=100000 are past the newest, so
+    // it HOLDs at (5,5). None of the three is (9,9).
+    expect(remotePos(resolver, c, 0, true)).toEqual({ x: 9, y: 9 });
+    expect(remotePos(resolver, c, 500, true)).toEqual({ x: 9, y: 9 });
+    expect(remotePos(resolver, c, 100000, true)).toEqual({ x: 9, y: 9 });
+  });
+
+  it('S7T-REM-ROW-LEGACY: with an empty snapshot ring, a remote still renders its AUTHORITATIVE row tile', () => {
+    // The legacy prev/latest arm (ADR-0090 backward compat) is a SECOND interpolation
+    // call site. WRONG IMPL KILLED: a reduced-motion arm placed inside the
+    // `snapshots.length > 0` branch only — every fixture in §§1-9 of this file uses
+    // `snapshots: []`, so a one-arm fix would leave the whole legacy path animating.
+    const resolver = new RenderResolver(STEP_MS);
+    const c = remoteDecoupled(false);
+
+    // FIXTURE SELF-CHECK — same decoupling, different arm.
+    expect(c.snapshots.length).toBe(0); // really the legacy interpolate arm
+    expect(c.row.tileX).not.toBe(c.latest.tileX);
+    expect(c.row.tileY).not.toBe(c.latest.tileY);
+    expect(c.row.tileX).not.toBe(c.prev!.tileX);
+
+    // TODAY (RED): now=0 clamps to prev (4,5); now=500 and now=100000 HOLD at (5,5).
+    expect(remotePos(resolver, c, 0, true)).toEqual({ x: 9, y: 9 });
+    expect(remotePos(resolver, c, 500, true)).toEqual({ x: 9, y: 9 });
+    expect(remotePos(resolver, c, 100000, true)).toEqual({ x: 9, y: 9 });
+  });
+
+  it('S7T-ZONE: reduced motion does not bypass the zone filter — off-zone characters stay out', () => {
+    // WRONG IMPL KILLED (plan §6 R3): a reduced-motion arm hoisted ABOVE the
+    // `currentZoneId` continue (or above the isOwn split). The global subscription
+    // delivers every zone (M11c, ADR-0067), so that lands every character in the
+    // world on screen — a visible cross-zone leak that only shows up in production.
+    const resolver = new RenderResolver(STEP_MS);
+    const own = ownRowAt(9, 9); // zoneId 1
+    const remote = remoteDecoupled(true); // zoneId 1
+
+    const offZone = resolver.resolve(
+      makeInput({
+        characters: [own, remote],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(3, 7),
+        snapped: false,
+        now: 500,
+        currentZoneId: 2, // neither character is in zone 2
+        reduceMotion: true,
+      }),
+    );
+    expect(offZone).toEqual([]);
+    expect(offZone.find((e) => e.entityId === OWN_ID)).toBeUndefined();
+    expect(offZone.find((e) => e.entityId === REMOTE_ID)).toBeUndefined();
+
+    // ANTI-VACUITY: the same call with the MATCHING zone renders both characters, so
+    // the emptiness above is the filter doing its job and not a broken fixture, a
+    // throw, or a resolver that dropped everything.
+    const onZone = resolver.resolve(
+      makeInput({
+        characters: [own, remote],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(3, 7),
+        snapped: false,
+        now: 500,
+        currentZoneId: 1,
+        reduceMotion: true,
+      }),
+    );
+    expect(onZone.length).toBe(2);
+    // ... and both are still rendered the reduced-motion way (own = predicted tile,
+    // remote = row tile), so this test also fails on a resolver that survives the
+    // filter but forgets the flag.
+    const ownOut = onZone.find((e) => e.entityId === OWN_ID);
+    const remoteOut = onZone.find((e) => e.entityId === REMOTE_ID);
+    expect(ownOut).toBeDefined();
+    expect(remoteOut).toBeDefined();
+    expect({ x: ownOut!.x, y: ownOut!.y }).toEqual({ x: 3, y: 7 });
+    expect({ x: remoteOut!.x, y: remoteOut!.y }).toEqual({ x: 9, y: 9 });
+  });
+
+  it('S7T-FACING: reduced motion keeps own action/facing from predicted and remote action/facing from the row', () => {
+    // The RM arm changes POSITION only. WRONG IMPL KILLED: an arm that returns early
+    // with a whole RenderEntity of its own and copies the wrong sprite state into it
+    // (own action/facing sourced from c.row, or remote sourced from `predicted`) —
+    // the own character would animate the server's stale walk cycle instead of the
+    // predicted one, which is the same desync class as reading c.row for position.
+    const resolver = new RenderResolver(STEP_MS);
+    const own = ownRowAt(9, 9); // row: action 'Walking', facing 'East'
+    const remote = remoteDecoupled(false); // row: action 'Walking', facing 'East'
+    const remoteIdle: StoredCharacter = {
+      ...remote,
+      row: { ...remote.row, action: 'Idle', facing: 'West' },
+    };
+
+    const entities = resolver.resolve(
+      makeInput({
+        characters: [own, remoteIdle],
+        ownEntityId: OWN_ID,
+        predicted: makePredicted(3, 7, 'Jumping', 'North'),
+        snapped: false,
+        now: 500,
+        reduceMotion: true,
+      }),
+    );
+
+    const ownOut = entities.find((e) => e.entityId === OWN_ID);
+    const remoteOut = entities.find((e) => e.entityId === REMOTE_ID);
+    expect(ownOut).toBeDefined();
+    expect(remoteOut).toBeDefined();
+
+    expect(ownOut!.action).toBe('Jumping'); // from predicted, never from c.row
+    expect(ownOut!.facing).toBe('North');
+    expect(remoteOut!.action).toBe('Idle'); // from c.row, never from predicted
+    expect(remoteOut!.facing).toBe('West');
+
+    // and the positions still follow the reduced-motion contract, so this test reds
+    // pre-impl for the right reason instead of passing on the untouched passthrough.
+    expect({ x: ownOut!.x, y: ownOut!.y }).toEqual({ x: 3, y: 7 });
+    expect({ x: remoteOut!.x, y: remoteOut!.y }).toEqual({ x: 9, y: 9 });
+  });
+
+  it('S7T-BACKCOMPAT: an input with NO reduceMotion field renders exactly the pre-S7 fractional position', () => {
+    // The optional-field ratchet (plan §5 AP12 / §6 R2). GREEN both before and after
+    // the implementation, on purpose: it is what proves the new field is genuinely
+    // optional with a `false` default, so the ~30 existing inline ResolveInput
+    // literals in this file and the single production call site in main.ts keep their
+    // byte-identical behaviour.
+    // WRONG IMPLS KILLED: `reduceMotion = true` as the default; a REQUIRED field
+    // (which would make `undefined` fall through as falsy today but is unfixable
+    // inside this slice's touch set); and any restructuring of the pinned line-91
+    // condition that changes what a plain step does.
+    const resolver = new RenderResolver(STEP_MS);
+    const char = makeChar(OWN_ID, 0, 0, 0);
+
+    // NOTE: these three calls deliberately do NOT go through the ownPos helper — the
+    // helper always passes the field, and the whole point here is its ABSENCE.
+    const frame = (now: number, x: number): { readonly x: number; readonly y: number } => {
+      const entities = resolver.resolve(
+        makeInput({
+          characters: [char],
+          ownEntityId: OWN_ID,
+          predicted: makePredicted(x, 0),
+          snapped: false,
+          now,
+        }),
+      );
+      const own = entities.find((e) => e.entityId === OWN_ID);
+      expect(own, 'the own entity must be in the resolver output').toBeDefined();
+      return { x: own!.x, y: own!.y };
+    };
+
+    frame(0, 0); // seed at (0,0)
+    frame(0, 1); // step 0->1 at t=0
+    // exactly 0.5 — the same value §1 of this file has pinned since M8.6b
+    expect(frame(100, 1)).toEqual({ x: 0.5, y: 0 });
+  });
+});
