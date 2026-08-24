@@ -4,58 +4,64 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>monster-realm</title>
+    <!-- m23-s2 (M23 §2.7): the repo's only stylesheet. A <link>, not an import from a
+         .ts, because client/src/main.ts is slice S5's exclusive touch. styles.css is
+         class/:root selectors ONLY — zero #id selectors (A11Y-12), which is what keeps
+         the inline `style` attribute the complete styling contract for #help-overlay,
+         #help-hint and #build-stamp, as indexShell.test.ts and main.wiring.test.ts assume. -->
+    <link rel="stylesheet" href="/src/styles.css" />
   </head>
   <body style="margin: 0; background: #0b0d12">
     <div id="app"></div>
     <!-- M12d overlay shells — hidden by default; managed by JS views (ADR-0071). -->
-    <div id="dialogue-overlay" style="display:none">
-      <div id="dialogue-npc-name"></div>
+    <div id="dialogue-overlay" role="dialog" aria-modal="true" style="display:none">
+      <div id="dialogue-npc-name" tabindex="-1"></div>
       <div id="dialogue-node-text"></div>
       <div id="dialogue-choices"></div>
     </div>
-    <div id="quest-log-overlay" style="display:none">
-      <ul id="quest-log-list"></ul>
+    <div id="quest-log-overlay" role="dialog" aria-modal="true" style="display:none">
+      <ul id="quest-log-list" tabindex="-1"></ul>
     </div>
-    <div id="heal-overlay" style="display:none">
-      <ul id="heal-list"></ul>
+    <div id="heal-overlay" role="dialog" aria-modal="true" style="display:none">
+      <ul id="heal-list" tabindex="-1"></ul>
     </div>
     <!-- M13d shop overlay shell — hidden by default; managed by ShopView (ADR-0084). -->
-    <div id="shop-overlay" style="display:none">
-      <div id="shop-title"></div>
+    <div id="shop-overlay" role="dialog" aria-modal="true" style="display:none">
+      <div id="shop-title" tabindex="-1"></div>
       <ul id="shop-for-sale"></ul>
       <ul id="shop-inventory"></ul>
       <div id="shop-feedback"></div>
     </div>
     <!-- m15b trade overlay shell — hidden by default; managed by TradeView (ADR-0107). -->
-    <div id="trade-overlay" style="display:none">
-      <div id="trade-status"></div>
+    <div id="trade-overlay" role="dialog" aria-modal="true" style="display:none">
+      <div id="trade-status" tabindex="-1"></div>
       <div id="trade-my-side"></div>
       <div id="trade-their-side"></div>
       <div id="trade-actions"></div>
       <div id="trade-feedback"></div>
     </div>
     <!-- m16b PvP challenge overlay shell — hidden by default; managed by PvpView (ADR-0110). -->
-    <div id="pvp-challenge-overlay" style="display:none">
-      <div id="pvp-challenge-status"></div>
+    <div id="pvp-challenge-overlay" role="dialog" aria-modal="true" style="display:none">
+      <div id="pvp-challenge-status" tabindex="-1"></div>
       <div id="pvp-challenge-incoming"></div>
       <div id="pvp-challenge-outgoing"></div>
       <ul id="pvp-player-list"></ul>
       <div id="pvp-challenge-feedback"></div>
     </div>
     <!-- m17b leaderboard overlay shell — hidden by default; managed by LeaderboardView (ADR-0120). -->
-    <div id="leaderboard-overlay" style="display:none">
-      <div id="leaderboard-title"></div>
+    <div id="leaderboard-overlay" role="dialog" aria-modal="true" style="display:none">
+      <div id="leaderboard-title" tabindex="-1"></div>
       <ul id="leaderboard-list"></ul>
     </div>
     <!-- pt-c1b rename overlay shell — hidden by default; managed by RenameView (ADR-0133). -->
-    <div id="rename-overlay" style="display:none">
+    <div id="rename-overlay" role="dialog" aria-modal="true" style="display:none">
       <div id="rename-current" data-testid="rename-current"></div>
       <input id="rename-input" data-testid="rename-input" type="text" maxlength="24" />
       <button id="rename-submit" data-testid="rename-submit" type="button">Rename</button>
       <div id="rename-feedback" data-testid="rename-feedback"></div>
     </div>
     <!-- pt-c2 trade-PROPOSE overlay shell — hidden by default; managed by TradeProposeView (ADR-0134). -->
-    <div id="tradepropose-overlay" style="display:none">
+    <div id="tradepropose-overlay" role="dialog" aria-modal="true" style="display:none">
       <select id="tradepropose-target" data-testid="tradepropose-target"></select>
       <div id="tradepropose-monsters" data-testid="tradepropose-monsters"></div>
       <input
@@ -81,9 +87,11 @@
          innerHeight=720). HelpView writes only `style.display`, so the rest survives a toggle. -->
     <div
       id="help-overlay"
+      role="dialog"
+      aria-modal="true"
       style="display:none;position:fixed;inset:0;z-index:100;overflow:auto;background:rgba(0,0,0,0.88);padding:24px;font:14px/1.6 monospace;color:#e0e0e0"
     >
-      <div id="help-title">Controls &amp; Goals</div>
+      <div id="help-title" tabindex="-1">Controls &amp; Goals</div>
       <ul id="help-controls"></ul>
       <ul id="help-goals"></ul>
     </div>
@@ -94,10 +102,19 @@
          inset:0 (not a corner offset) also keeps it out of W-ONE-CORNER-AFFORDANCE's set. -->
     <div
       id="menu-overlay"
+      role="dialog"
+      aria-modal="true"
       style="display:none;position:fixed;inset:0;z-index:100;overflow:auto;background:rgba(0,0,0,0.88);padding:24px;font:14px/1.6 monospace;color:#e0e0e0"
     >
       <div id="menu-heading"></div>
-      <ul id="menu-rows"></ul>
+      <!-- tabindex="0", NEVER "-1" (ADR-0205 D2's named landmine). This is the overlay's
+           initialFocusSelector AND it carries a delegated click listener, so `-1` would fail
+           [A11Y-T3] (a negative tabindex on a listener-bearing element). biome's
+           noNoninteractiveTabindex is correct in general and premature here: slice S6 gives
+           this element role="listbox" + aria-activedescendant, which makes it interactive and
+           retires this suppression. S6 owns menuView.ts; S2 may not add the role itself.
+           biome-ignore lint/a11y/noNoninteractiveTabindex: interactive from S6; see above -->
+      <ul id="menu-rows" tabindex="0"></ul>
       <div id="menu-back-hint"></div>
     </div>
     <!-- pt-a1 (ADR-0128): build-provenance stamp — populated by main.ts from BUILD_INFO
@@ -124,6 +141,16 @@
     >
       Press ? for help · click or M for menu
     </div>
+    <!-- m23-s2 (M23 §2.4): THE single polite live region. A direct <body> child on purpose —
+         it is outside #app and outside every view root, so no view's authoritative-rebuild
+         replaceChildren() can ever destroy the announcement binding (the idiom at
+         ui/menuView.ts, ui/helpView.ts, ui/pvpView.ts, ui/errorOverlayView.ts). Owned
+         exclusively by slice S1's ui/liveRegion.ts, whose only DOM write is
+         `node.textContent = msg`. `polite`, never `assertive`: assertive interrupts a battle
+         announcement mid-utterance. Deliberately carries NO inline `style` — .sr-only does the
+         hiding, and an inline position:fixed here would enter W-ONE-CORNER-AFFORDANCE's
+         corner-affordance filter (main.wiring.test.ts) and red a file this slice does not own. -->
+    <div id="a11y-live" aria-live="polite" aria-atomic="true" class="sr-only"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>
 </html>
