@@ -553,8 +553,10 @@ function importChildFailures(argv1) {
           'diagnostic.',
       ];
     }
-    return [`[T3/spawn] could not spawn the import-purity child (argv[1] = ${argv1}): ` +
-      `${res.error.message}`];
+    return [
+      `[T3/spawn] could not spawn the import-purity child (argv[1] = ${argv1}): ` +
+        `${res.error.message}`,
+    ];
   }
 
   const failures = [];
