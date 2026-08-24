@@ -11,6 +11,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod accounts;
 pub mod combat;
 pub mod content;
 pub mod currency;
@@ -29,6 +30,10 @@ pub mod world;
 #[cfg(test)]
 mod m8c_gating_tests;
 
+pub use accounts::{
+    is_deletion_due, DELETION_GRACE_MS_DEFAULT, EXPORT_CHUNK_ROWS, STATE_TRANSITION_OWNERS,
+    TOMBSTONE_AUTH_ISSUER, TOMBSTONE_IDENTITY_BYTES,
+};
 pub use combat::{
     accuracy_check, apply_ability_modifiers, apply_entry_ability, apply_post_turn_effects,
     apply_pre_turn_effects, apply_xp_gain, base_stat_total, battle_xp_reward, calc_damage,
