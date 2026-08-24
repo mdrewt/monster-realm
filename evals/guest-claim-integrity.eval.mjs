@@ -1355,11 +1355,82 @@ export function checkSingleUseConsumed(accountsSrc) {
 // ---------------------------------------------------------------------------
 
 /**
+ * Freeze a manifest RECURSIVELY — every reachable object/function value, then
+ * the container.
+ *
+ * `Object.freeze` is shallow, and the half that matters here is the entries:
+ * `evals/run.mjs` imports every eval into ONE process, so this module — and
+ * therefore this object — is a single instance shared by every co-resident
+ * eval. A stray write to an entry's `rekey`/`exists` needle silently GREENS
+ * the [G6/consumed] clause, which this file's own header notes is the only
+ * part of G6 that nothing else in the repo covers. Note the polarity: writing
+ * an ABSENT needle (`'noop('`) reds the clause, which is loud and harmless.
+ * The dangerous write is a needle present in EVERY body — `'ctx.'`, `'('` —
+ * which makes the substring test pass trivially for a helper that is no longer
+ * called at all. Frozen, both writes are a loud TypeError (ESM is strict).
+ *
+ * Recursion is not speculative generality: it is what makes the guarantee this
+ * file advertises TRUE for a nested value. A one-level freeze reports
+ * `Object.isFrozen(entry) === true` while an array or record held BY that entry
+ * stays writable, which is the shape a richer policy entry takes. Cycles are
+ * handled via `seen` so a self-referential entry cannot spin.
+ *
+ * Consumers spread-copy to build a variant; they never mutate.
+ * @param {Record<string, unknown>} manifest The policy table to freeze in place.
+ * @param {WeakSet<object>} [seen] Cycle guard; callers omit it.
+ * @returns {Record<string, unknown>} The same object, deeply frozen.
+ */
+function freezeManifest(manifest, seen = new WeakSet()) {
+  if (seen.has(manifest)) return manifest;
+  seen.add(manifest);
+  for (const key of Object.keys(manifest)) {
+    const entry = manifest[key];
+    // `typeof null === 'object'`, and Object.freeze(null) is a no-op returning
+    // null, so the null guard is for the recursive descent, not the freeze.
+    if (entry !== null && (typeof entry === 'object' || typeof entry === 'function')) {
+      freezeManifest(entry, seen);
+    }
+  }
+  return Object.freeze(manifest);
+}
+
+/**
  * "table.field" -> 'EXEMPT: <reason>' | 'BLOCKED: <reason>' |
  * {rekey: '<helper>(', exists: '<predicate>('}.
+ *
+ * EXPORTED as the M22 slice-0 contract surface: a second gate file consumes
+ * this policy table and the `findIdentityColumns` walker below rather than
+ * transcribing a third copy of either, so there stays exactly one walk of the
+ * Rust sources with two gate files reading it.
+ *
+ * This module is NOT a re-export barrel — import the other two halves of the
+ * scan from their canonical owners, not from here: `stripRustSource` /
+ * `assertStripperSound` / `compactWs` / `containsIdent` from
+ * `evals/rust-scan.mjs` (ADR-0181 D1 consolidated them there), and
+ * `parseTableSchemas` from `evals/battle-schema-snapshot.eval.mjs`. Every eval
+ * in one `run.mjs` process resolves those to the same function objects, so a
+ * barrel would add a second spelling and buy nothing.
+ *
+ * THE INPUT-SET RULE — glob, normalise separators, skip `_tests.rs`, fail loud
+ * if empty, sort, read — is built inline in this file's default export, and it
+ * is CWD-RELATIVE to the repo root. It is NOT exported yet only because
+ * widening the frozen contract past slice 0's scope is a follow-up, not a
+ * seam-freeze. **Do not transcribe it.** A second consumer needs the same input
+ * set, and a prose copy of it here would be exactly the ungated second source of
+ * truth this whole surface exists to abolish — a narrower glob makes a
+ * completeness gate pass vacuously over a smaller column set, and a transcribed
+ * rule drifts silently the first time the real one moves. The slice that needs
+ * it EXPORTS it from here and imports it, the same way it does the manifest.
+ *
+ * KNOWN LIMITATION of the walker below, stated because this contract now
+ * advertises it: `findIdentityColumns` matches the literal type TEXT of a
+ * column. A column declared through an alias (`pub type OwnerId = Identity;`
+ * then `pub owner: OwnerId,`) is NOT seen, by this walker or by any consumer of
+ * it. Nothing in the tree declares such an alias today; a consumer that must be
+ * exhaustive has to gate the alias out at the schema, not here.
  * @type {Record<string, string|{rekey:string, exists:string}>}
  */
-const REKEY_MANIFEST = {
+export const REKEY_MANIFEST = freezeManifest({
   // --- REKEY: moved from the guest identity onto the caller by rekey_all, and
   // counted as "game data" by account_has_game_data. ---
   'monster.owner_identity': { rekey: 'rekey_monsters(', exists: 'has_monsters(' },
@@ -1422,7 +1493,7 @@ const REKEY_MANIFEST = {
   'account.claimed_from': 'EXEMPT: write target, not a rekey source (AUTH-21 records the guest)',
   'guest_claim.guest_identity': 'EXEMPT: consumed, not rekeyed (AUTH-34 / AUTH-27)',
   'guest_claim_reaper_schedule.guest_identity': 'EXEMPT: consumed, not rekeyed (AUTH-34 / AUTH-27)',
-};
+});
 
 // Hardcoded INDEPENDENTLY of the manifest: four columns that must resolve for
 // the scan to be believable at all. `playtest_event.identity` additionally
