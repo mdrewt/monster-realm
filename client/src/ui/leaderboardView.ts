@@ -6,7 +6,9 @@
 // RL-15: ZERO-arg constructor — no callbacks, no write path (pure subscription view).
 // displayName is player-controlled (profile.name): textContent + dataset only,
 // NEVER innerHTML with data (XSS).
+
 import type { LeaderboardViewModel } from './leaderboardModel';
+import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 
 export class LeaderboardView {
   readonly #overlay: HTMLElement;
@@ -26,11 +28,21 @@ export class LeaderboardView {
   }
 
   show(): void {
+    // m23-s3 D1: read visibility BEFORE the display write. `show()` is called REPEATEDLY on an
+    // already-open overlay (pvpView.ts is the extreme case, main.ts:1699-1701), and a re-open
+    // re-schedules overlayA11y's deferred focus -- which would yank focus back to the initial
+    // anchor on every store batch. Only the hidden->visible EDGE opens.
+    const wasVisible = this.visible;
     this.#overlay.style.display = '';
+    if (!wasVisible) openOverlayA11y('leaderboardView', this.#overlay);
   }
 
   hide(): void {
     this.#overlay.style.display = 'none';
+    // m23-s3 D2: DELIBERATELY UNGUARDED (see pvpView.ts's header). closeOverlayA11y is a
+    // documented no-op with no open record, and leaving it unguarded is what lets a record
+    // that ever desynchronised from the DOM self-heal instead of leaking a live trap forever.
+    closeOverlayA11y('leaderboardView', null);
   }
 
   toggle(): void {

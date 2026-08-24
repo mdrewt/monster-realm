@@ -2,6 +2,7 @@
 //
 // Renders PvpChallengeViewModels produced by pvpModel.ts. No game logic, no SDK.
 // Auto-shows when incoming/outgoing challenges are present; also KeyP-toggleable.
+import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import type { PvpChallengeViewModel, PvpIncomingChallenge, PvpOutgoingChallenge } from './pvpModel';
 
 export interface PvpViewCallbacks {
@@ -62,14 +63,33 @@ export class PvpView {
   }
 
   show(): void {
+    // m23-s3 D1 -- THE EDGE GUARD, AND WHY IT IS LOAD-BEARING (this is the canonical statement;
+    // the other nine views point here). `refresh()` below calls `show()` UNCONDITIONALLY whenever
+    // `forceVisible` is true, and main.ts:1697-1709 recomputes `forceVisible` on EVERY store batch
+    // -- once this overlay is open, `pvpView.visible` keeps it true. Delegating to
+    // `openOverlayA11y` without the guard would therefore re-open on every batch, and a re-open
+    // CLEARS AND RE-SCHEDULES the deferred initial focus (ui/overlayA11y.ts:88-89, :100-113) --
+    // yanking focus back to `initialFocusSelector` several times a second and making the overlay
+    // impossible to Tab through. Reading visibility BEFORE the write is the whole fix; reading it
+    // after would make the guard a constant and nothing would ever open.
+    const wasVisible = this.#visible;
     this.#visible = true;
     this.#root.style.display = 'block';
+    if (!wasVisible) openOverlayA11y('pvpView', this.#root);
   }
 
   hide(): void {
     this.#visible = false;
     this.#root.style.display = 'none';
     this.#feedbackEl.textContent = '';
+    // m23-s3 D2 -- DELIBERATELY UNGUARDED, and the asymmetry with the guarded `render(null)` path
+    // in the three render-driven views is a decision, not an oversight. `closeOverlayA11y` is a
+    // documented no-op when there is no open record (ui/overlayA11y.ts:136-137), so an unguarded
+    // close costs one Map lookup. What it BUYS is self-healing: if a record ever desynchronises
+    // from the DOM (the force-hide leak overlayA11y.ts:55-59 names), a guarded close would read
+    // `visible === false`, skip, and leave a live capture listener plus a pending timer stranded
+    // FOREVER. Unguarded, the next hide() clears it.
+    closeOverlayA11y('pvpView', null);
   }
 
   showFeedback(msg: string): void {
