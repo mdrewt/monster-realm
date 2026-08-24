@@ -23,12 +23,71 @@
 //
 // Do NOT edit tests to match a buggy impl — correct from the spec only.
 // Corrections must be traced to the spec and must not weaken the bite.
+//
+// ---------------------------------------------------------------------------
+// m23-s3 ADDITION (2026-08-24) — overlay a11y wiring + the PROVISIONAL ten-file `.focus(` scan.
+// ADDITIVE ONLY: nothing above was weakened or deleted; the mount helper gained the
+// `role`/`aria-modal` attributes client/index.html:57 has always shipped, and a file-level a11y
+// sweep was added.
+//
+// SOURCE OF TRUTH: specs/monster-realm-v2/M23-accessibility.spec.md §2.2, §6 (A11Y-13/14/15/16);
+//   memory/projects/monster-realm-m23-s3-plan.md §0 F1/F2/F7/F8, §1 D1/D2/D7/D8, §2 T5, §4,
+//   §7 A1/A3/A5/A6/A7/A8/A13; memory/projects/gates/m23-s3.gates.md X1/X2/X3/X5/X6/X8;
+//   ADR-0205 D1-D4, A3.
+//
+// RED REASON (m23-s3), TWO DISTINCT ONES:
+//   (a) `client/src/ui/renameView.ts` DOES NOT CALL openOverlayA11y/closeOverlayA11y at all today
+//       (ui/renameView.ts:99-103). Every S3-* wiring test below therefore fails now.
+//   (b) `ui/renameView.ts:102` STILL OWNS a view-local `setTimeout(() => this.#input.focus(), 0)`,
+//       which S3 DELETES — so S3-NO-VIEW-LOCAL-FOCUS is red on renameView.ts AND on
+//       tradeProposeView.ts:124 today. NOTE this is exactly why S3-renameView-DEFER-FOCUS also
+//       asserts the open helper was CALLED: this view already defers its own focus, so the two
+//       focus polarities ALONE would pass on the unwired code and prove nothing (measured shape).
+// Every PTC1B / RT-RN test above still passes.
+//
+// TWO ORACLES, BOTH REQUIRED (plan A3, measured by red-team):
+//   * VALUE oracle  — `aria-label === t(OVERLAY_A11Y['renameView'].labelKey)`. `role`/`aria-modal`
+//     are ALREADY static literals on the shell in client/index.html:57 (m23-s2), so asserting them
+//     ALONE is VACUOUS: a view that calls nothing passes. They are asserted only alongside
+//     aria-label, and their ABSENCE after close is the anti-vacuity partner (attack V1).
+//   * MECHANISM oracle — `vi.mock('./overlayA11y', { spy: true })` records the calls AND calls
+//     through to the real implementation, so a cheat that hand-writes the three attributes with the
+//     correct copied literal (no trap, no return-focus record, no timer) still reds.
+//
+// WHY THE m23-s3 BLOCK IS DECLARED FIRST IN THIS FILE: several describes below call
+// `vi.restoreAllMocks()` in their afterEach. Declaration order is execution order in vitest, so the
+// S3 block runs before any of them and its module-level auto-spy cannot be torn down underneath it.
+//
+// TEST-ISOLATION DEVICE (plan A8 / V7, copied from ui/overlayA11y.test.ts:97-105): overlayA11y.ts
+// holds ONE module-private Map and exports no reset hook, so the file-level beforeEach/afterEach
+// call the PRODUCTION closeOverlayA11y(id, null) for every OverlayId and flush ONE REAL MACROTASK
+// — legal because close-without-open is a documented no-op (ui/overlayA11y.ts:41-45). It also
+// cancels the deferred-focus timer that every `view.show()` in this file schedules (today the
+// view's own; after S3, the helper's — plan residual A12), so no stray timer can fire inside a
+// later test. `vi.clearAllMocks()` runs LAST so the sweep never pollutes a count.
+//
+// m23-s3 WRONG-IMPL-KILLED index:
+//   - never opens / attribute-only cheat                 -> S3-renameView-OPEN-ARIA + -HELPER-CALLED
+//   - copy-pasted WRONG OverlayId                        -> S3-renameView-OPEN-ARIA (label) + -HELPER-CALLED (id arg)
+//   - view keeps its OWN setTimeout focus (the deletion not done) -> S3-NO-VIEW-LOCAL-FOCUS + -DEFER-FOCUS (call assertion)
+//   - synchronous focus (no defer)                       -> S3-renameView-DEFER-FOCUS (negative polarity)
+//   - focuses nothing / a wrapper, not the anchor         -> S3-renameView-DEFER-FOCUS (identity)
+//   - close never strips ARIA / never restores focus      -> S3-renameView-CLOSE-RESTORE
+//   - UNGUARDED show() / `this.visible` read AFTER the write -> S3-renameView-REPEAT-NO-REOPEN
+//   - `fallbackFocus` passed as undefined/an element       -> S3-renameView-HELPER-CALLED (literal null)
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { t } from './a11yCopy';
+import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
+import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 import { RenameView } from './renameView';
+
+// The m23-s3 MECHANISM oracle. `{ spy: true }` records every call AND calls through to the real
+// implementation, so the VALUE oracle (real attribute writes, real focus moves) still works.
+vi.mock('./overlayA11y', { spy: true });
 
 // ---------------------------------------------------------------------------
 // DOM mount helper — installs the index.html shell for renameView (ADR-0133 D2).
@@ -45,9 +104,15 @@ function mountRenameOverlay(): {
   const existing = document.getElementById('rename-overlay');
   if (existing) existing.remove();
 
-  // Matches the exact shell specified in docs/specs/pt-c1b-plan.md §index.html shell
+  // Matches the exact shell specified in docs/specs/pt-c1b-plan.md §index.html shell.
+  // m23-s3 FIXTURE FIDELITY (index.html:57): `role`/`aria-modal` have shipped as STATIC LITERALS
+  // on this shell since m23-s2. They are copied here NOT to be asserted on their own — that is
+  // vacuous, a view calling nothing passes — but so that "all three attributes ABSENT after close"
+  // is a real tooth: only closeOverlayA11y can remove them (ui/overlayA11y.ts:142-144). No
+  // `tabindex` is added: this overlay's OVERLAY_A11Y anchor is #rename-input, natively focusable,
+  // exactly as index.html:59 has it.
   document.body.innerHTML = `
-    <div id="rename-overlay" style="display:none">
+    <div id="rename-overlay" role="dialog" aria-modal="true" style="display:none">
       <div id="rename-current" data-testid="rename-current"></div>
       <input id="rename-input" data-testid="rename-input" type="text" maxlength="24" />
       <button id="rename-submit" data-testid="rename-submit">Rename</button>
@@ -84,6 +149,364 @@ async function flushPromises(): Promise<void> {
   await Promise.resolve();
   await Promise.resolve();
 }
+
+// ---------------------------------------------------------------------------
+// m23-s3 — overlay a11y wiring + the PROVISIONAL ten-file `.focus(` scan.
+// Declared FIRST on purpose (see the file header): later describes call vi.restoreAllMocks().
+// ---------------------------------------------------------------------------
+
+/** m23-s3: one REAL macrotask boundary — a microtask flush is NOT enough for setTimeout(...,0),
+ *  and fake timers are banned for this defer (plan anti-pattern #10). */
+async function s3FlushMacrotask(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+// m23-s3: NEW file-level isolation hooks. They run BEFORE the describe-level `mountRenameOverlay`
+// hooks below, so every test still gets the DOM it always got.
+beforeEach(async () => {
+  for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
+  await s3FlushMacrotask();
+  document.body.innerHTML = '';
+  vi.clearAllMocks();
+});
+
+afterEach(async () => {
+  for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
+  await s3FlushMacrotask();
+});
+
+const S3_ID: OverlayId = 'renameView';
+const S3_META = OVERLAY_A11Y[S3_ID];
+
+/** A focusable OUTSIDE the overlay: the "pre-overlay" element a close must restore focus to. */
+function s3OutsideSentinel(): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.id = 's3-outside-sentinel';
+  document.body.appendChild(btn);
+  return btn;
+}
+
+/** A focusable INSIDE the overlay, as a DIRECT child of the root — render() only touches
+ *  #rename-current / #rename-submit, so if this loses focus something RE-OPENED the overlay. */
+function s3InsideSentinel(root: HTMLElement): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.id = 's3-inside-sentinel';
+  root.appendChild(btn);
+  return btn;
+}
+
+describe('RenameView — overlay a11y wiring on the show/hide edge (m23-s3)', () => {
+  it('S3-renameView-OPEN-ARIA BITES: the first show() from a display:none shell labels the root from OVERLAY_A11Y/t()', () => {
+    const { overlay } = mountRenameOverlay();
+    const view = new RenameView({ onSubmit: async () => {} });
+
+    // VACUITY ATTACK V4, closed here: without `display:none` the FIRST show() is a NO-EDGE and
+    // every open assertion below is silently vacuous. This also pins WIK-3 — an impl that reads
+    // `this.visible` AFTER writing `style.display` sees a constant `true` and never opens.
+    expect(view.visible, 'V4: the shell must start hidden, so the first show() IS an edge').toBe(
+      false,
+    );
+
+    view.show();
+
+    // Every expectation is DERIVED from the table at assert time — never a literal (V5).
+    expect(overlay.getAttribute('role'), 'role must come from OVERLAY_A11Y').toBe(S3_META.role);
+    expect(overlay.getAttribute('aria-modal')).toBe('true');
+    expect(
+      overlay.getAttribute('aria-label'),
+      'THE tooth: role/aria-modal are static literals in index.html:57 and pass a view that calls ' +
+        'nothing; aria-label is absent from every shell, so only a real open can produce it — and ' +
+        'because all 16 catalog values are distinct, this also kills the wrong-OverlayId impl',
+    ).toBe(t(S3_META.labelKey));
+  });
+
+  it('S3-renameView-DEFER-FOCUS BITES: both polarities — NOT focused synchronously, focused after ONE real macrotask, and the defer is owned by openOverlayA11y (NOT by renameView.ts:102)', async () => {
+    const { overlay } = mountRenameOverlay();
+    const target = overlay.querySelector<HTMLElement>(S3_META.initialFocusSelector);
+    expect(target, `the fixture must contain ${S3_META.initialFocusSelector}`).not.toBeNull();
+    const view = new RenameView({ onSubmit: async () => {} });
+
+    view.show();
+
+    // NEGATIVE polarity — a synchronous focus reintroduces the exact bug ui/renameView.ts:101's
+    // rationale comment describes: the `n` of the KeyN hotkey that OPENED the overlay lands in the
+    // field it just opened.
+    expect(document.activeElement, 'the initial focus must NOT have landed synchronously').not.toBe(
+      target,
+    );
+
+    // LOAD-BEARING for THIS view specifically: renameView.ts:102 ALREADY defers its own focus, so
+    // the two polarities alone are GREEN on the unwired code and prove nothing. Only this call
+    // assertion shows the defer moved into overlayA11y.ts (A11Y-15 / plan T5's deletion).
+    expect(
+      vi.mocked(openOverlayA11y),
+      'the deferred focus must be scheduled by openOverlayA11y, not by renameView.ts:102',
+    ).toHaveBeenCalledTimes(1);
+
+    await s3FlushMacrotask();
+
+    // POSITIVE polarity, by IDENTITY — never `root.contains(activeElement)`.
+    expect(document.activeElement).toBe(target);
+  });
+
+  it('S3-renameView-CLOSE-RESTORE BITES: hide() strips role, aria-modal AND aria-label from the root and hands focus back to the pre-overlay element', async () => {
+    const { overlay } = mountRenameOverlay();
+    const outside = s3OutsideSentinel();
+    outside.focus();
+    expect(document.activeElement, 'precondition: focus starts OUTSIDE the overlay').toBe(outside);
+
+    const view = new RenameView({ onSubmit: async () => {} });
+    view.show();
+    await s3FlushMacrotask();
+    expect(
+      document.activeElement,
+      'precondition: the open moved focus INTO the overlay, so the restore below is a real move',
+    ).not.toBe(outside);
+
+    view.hide();
+
+    // VACUITY ATTACK V1: the two static literals can only be ABSENT if closeOverlayA11y really ran.
+    expect(
+      overlay.getAttribute('role'),
+      'a display:none node must not keep claiming to be a dialog',
+    ).toBeNull();
+    expect(overlay.getAttribute('aria-modal')).toBeNull();
+    expect(overlay.getAttribute('aria-label')).toBeNull();
+
+    expect(document.activeElement, 'focus must return to the pre-overlay element').toBe(outside);
+  });
+
+  it('S3-renameView-REPEAT-NO-REOPEN BITES: show() on an ALREADY-visible overlay neither re-opens nor yanks focus back', async () => {
+    // A re-open clears and re-schedules the deferred-focus timer (ui/overlayA11y.ts:100-113).
+    // On THIS view the focus half is red today for a second reason too: renameView.ts:102's own
+    // setTimeout fires on every show() and drags focus back to #rename-input.
+    const { overlay } = mountRenameOverlay();
+    const view = new RenameView({ onSubmit: async () => {} });
+
+    view.show();
+    await s3FlushMacrotask();
+
+    const inside = s3InsideSentinel(overlay);
+    inside.focus();
+    expect(document.activeElement, 'precondition: focus is parked INSIDE the overlay').toBe(inside);
+
+    view.show();
+    await s3FlushMacrotask();
+
+    expect(document.activeElement, 'a repeat show() must NOT re-run the deferred focus').toBe(
+      inside,
+    );
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+  });
+
+  it('S3-renameView-HELPER-CALLED BITES: the view DELEGATES to the S1 helpers with its OWN id, its OWN root, and a literal null fallbackFocus', () => {
+    // THE MECHANISM ORACLE (plan A3): a view that hand-writes the three attributes with the correct
+    // copied literal passes every VALUE assertion here while shipping NO trap, NO return-focus
+    // record and NO timer. The literal `null` pins ADR-0205 A3 / plan D8. This test also executes
+    // BOTH new branches, which matters because this file is in the coverage denominator (R5).
+    const { overlay } = mountRenameOverlay();
+    const view = new RenameView({ onSubmit: async () => {} });
+
+    view.show();
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith(S3_ID, overlay);
+
+    view.hide();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S3_ID, null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// m23-s3 / A11Y-15 — the ten-file `.focus(` source scan.
+//
+// PROVISIONAL BY DESIGN (plan A5). It lives here because renameView.ts owned one of the two
+// deleted deferred-focus calls (tradeProposeView.test.ts owns the other and asserts only about
+// itself), and its it() title says IN WORDS that evals/overlay-a11y-manifest.eval.mjs [A11Y-15]
+// supersedes it when slice S10 lands — so that cleanup is a grep, not archaeology.
+// ---------------------------------------------------------------------------
+
+/** The ten `client/src/ui/*View.ts` files this slice touches, each paired with a declaration that
+ *  MUST survive stripping. The pairing is the anti-vacuity guard: a stripper that fell into an
+ *  unterminated string/comment state and ate the rest of the file would report zero `.focus(`
+ *  matches and look green, so every file must still contain its own class declaration afterwards. */
+const S3_VIEW_FILES: ReadonlyArray<readonly [string, string]> = [
+  ['dialogueView.ts', 'export class DialogueView'],
+  ['questLogView.ts', 'export class QuestLogView'],
+  ['healView.ts', 'export class HealView'],
+  ['shopView.ts', 'export class ShopView'],
+  ['tradeView.ts', 'export class TradeView'],
+  ['pvpView.ts', 'export class PvpView'],
+  ['leaderboardView.ts', 'export class LeaderboardView'],
+  ['renameView.ts', 'export class RenameView'],
+  ['tradeProposeView.ts', 'export class TradeProposeView'],
+  ['helpView.ts', 'export class HelpView'],
+];
+
+/**
+ * Remove line comments, block comments and string/template LITERAL TEXT from TS source, keeping
+ * everything a `.focus(` could really execute from.
+ *
+ * A character scanner, not a regex: a regex stripper is defeated by a `//` inside a string and by a
+ * quote inside a comment — both measured in this repo (memory: "server-module source-scan
+ * gotchas"). Template literals are handled specially: the literal TEXT is dropped but every
+ * `${ ... }` INTERPOLATION is KEPT, because `` `${el.focus()}` `` is real executable code and
+ * dropping whole templates would leave an invisible hiding place for a view-local focus call.
+ *
+ * KNOWN, BOUNDED LIMITATION (stated, not hidden): regex literals are not modelled — a `/` in code
+ * position is emitted verbatim. The only regex in the ten scanned files is `/^[0-9]+$/`
+ * (ui/tradeProposeView.ts:212), which contains no quote and no comment-start character, so it
+ * cannot knock the scanner into a wrong state. The class-declaration assertion above is what would
+ * catch it if that ever stopped being true.
+ */
+function s3StripCommentsAndStringLiterals(src: string): string {
+  let out = '';
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    const next = i + 1 < n ? src[i + 1] : '';
+
+    if (c === '/' && next === '/') {
+      i += 2;
+      while (i < n && src[i] !== '\n') i += 1;
+      continue;
+    }
+    if (c === '/' && next === '*') {
+      i += 2;
+      while (i < n && !(src[i] === '*' && src[i + 1] === '/')) i += 1;
+      i += 2;
+      continue;
+    }
+    if (c === "'" || c === '"') {
+      const quote = c;
+      i += 1;
+      while (i < n) {
+        if (src[i] === '\\') {
+          i += 2;
+          continue;
+        }
+        if (src[i] === quote) {
+          i += 1;
+          break;
+        }
+        i += 1;
+      }
+      out += ' ';
+      continue;
+    }
+    if (c === '`') {
+      i += 1;
+      out += ' ';
+      while (i < n) {
+        if (src[i] === '\\') {
+          i += 2;
+          continue;
+        }
+        if (src[i] === '`') {
+          i += 1;
+          break;
+        }
+        if (src[i] === '$' && src[i + 1] === '{') {
+          i += 2;
+          let depth = 1;
+          while (i < n && depth > 0) {
+            if (src[i] === '{') {
+              depth += 1;
+            } else if (src[i] === '}') {
+              depth -= 1;
+              if (depth === 0) {
+                i += 1;
+                break;
+              }
+            }
+            out += src[i];
+            i += 1;
+          }
+          continue;
+        }
+        i += 1;
+      }
+      continue;
+    }
+    out += c;
+    i += 1;
+  }
+  return out;
+}
+
+function s3CountFocusCalls(text: string): number {
+  return text.split('.focus(').length - 1;
+}
+
+describe('m23-s3 / A11Y-15 — no view-local focus call survives in any of the ten touched *View.ts', () => {
+  it('S3-NO-VIEW-LOCAL-FOCUS (PROVISIONAL — delete when S10 ships evals/overlay-a11y-manifest.eval.mjs [A11Y-15]) BITES: zero `.focus(` in the ten view files after comment AND string stripping', () => {
+    // A11Y-15: the single deferred focus lives ONLY in ui/overlayA11y.ts. RED NOW on two files:
+    // ui/renameView.ts:102 (`setTimeout(() => this.#input.focus(), 0)`) and
+    // ui/tradeProposeView.ts:124 (`setTimeout(() => this.#target.focus(), 0)`), both of which
+    // plan T5/T6 DELETE.
+    //
+    // PROOF-OF-TEETH FIRST (a CONTROL fixture, so this can never be a stripper that just deletes
+    // everything): five `.focus(` occurrences are planted in hiding places a naive scan would
+    // false-positive on, and two in places that really execute. Exactly TWO must survive.
+    const control = [
+      '// a line comment mentioning el.focus( here',
+      '/* a block comment mentioning el.focus( here',
+      '   and mentioning el.focus( again on a second line */',
+      "const s = 'a single-quoted string containing el.focus( inside';",
+      'const d = "a double-quoted string containing el.focus( inside";',
+      'const tpl = `template TEXT containing el.focus( inside`;',
+      'const interp = `value: ${realTarget.focus()}`;',
+      'realInput.focus();',
+      'const digits = /^[0-9]+$/.test(x);',
+    ].join('\n');
+    const strippedControl = s3StripCommentsAndStringLiterals(control);
+    expect(
+      s3CountFocusCalls(control),
+      'CONTROL sanity: the fixture really plants seven `.focus(` occurrences',
+    ).toBe(7);
+    expect(
+      s3CountFocusCalls(strippedControl),
+      'CONTROL: exactly the two EXECUTABLE occurrences survive — the `${...}` interpolation and ' +
+        'the plain call. If this is 7 the stripper is a no-op; if it is 0 or 1 it is over-eager ' +
+        '(and would make the real scan below vacuously green).',
+    ).toBe(2);
+
+    // THE REAL SCAN.
+    const dir = path.dirname(fileURLToPath(import.meta.url));
+    expect(S3_VIEW_FILES.length, 'ANTI-VACUITY: all TEN touched view files must be scanned').toBe(
+      10,
+    );
+
+    const offenders: string[] = [];
+    for (const [file, declaration] of S3_VIEW_FILES) {
+      const viewPath = path.join(dir, file);
+      let src: string;
+      try {
+        src = readFileSync(viewPath, 'utf8');
+      } catch (err) {
+        // Fail loud — a `catch { continue; }` here is the vacuous-pass hole the m16.5a
+        // vacuous-revival gate was written against.
+        throw new Error(`${file} could not be read — the file must exist: ${String(err)}`);
+      }
+      const stripped = s3StripCommentsAndStringLiterals(src);
+      expect(
+        stripped.includes(declaration),
+        `ANTI-VACUITY: "${declaration}" must survive stripping of ${file} — if it does not, the ` +
+          'scanner fell into an unterminated string/comment state and ate the rest of the file',
+      ).toBe(true);
+      const count = s3CountFocusCalls(stripped);
+      if (count > 0) offenders.push(`${file} (${count})`);
+    }
+
+    expect(
+      offenders,
+      'A11Y-15: no *View.ts may call .focus() — the single deferred focus is owned by ' +
+        'ui/overlayA11y.ts:111-113 alone. Delete the view-local setTimeout focus instead of ' +
+        'weakening this test.',
+    ).toEqual([]);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Constructor: throw on missing required DOM nodes
