@@ -11,18 +11,81 @@
 //   PTC2-8: render paints options/checkboxes via textContent (XSS)    → XSS + render tests
 //   PTC2-9: stopPropagation on every focusable                        → stopProp spy tests
 //   PTC2-10: live submit-enable on change/input                       → live-enable tests
-//   PTC2-11: show()=deferred focus; hide()=reset draft/feedback/#pending  → hide-reset tests
+//   PTC2-11: hide()=reset draft/feedback/#pending                     → hide-reset tests
+//            (CORRECTED 2026-08-24, m23-s3: this line used to read "show()=deferred focus;
+//            hide()=…". show() NO LONGER defers focus itself — ui/tradeProposeView.ts:124's
+//            `setTimeout(() => this.#target.focus(), 0)` is DELETED by this slice and the defer is
+//            owned SOLELY by ui/overlayA11y.ts:111-113. This file never asserted the old behaviour
+//            (plan F8), so only the prose was wrong. The replacement contract is pinned by
+//            S3-tradeProposeView-DEFER-FOCUS below and, repo-wide, by S3-NO-VIEW-LOCAL-FOCUS in
+//            ui/renameView.test.ts.)
 //   PTC2-12: single #submit() #pending lock + finally-reset + catch   → lock + finally tests
 //
 // Do NOT edit tests to match a buggy impl — correct from the spec only.
 // Corrections must be traced to the spec and must not weaken the bite.
+//
+// ---------------------------------------------------------------------------
+// m23-s3 ADDITION (2026-08-24) — overlay a11y wiring. ADDITIVE ONLY: nothing above was weakened
+// or deleted; the mount helper gained the `role`/`aria-modal` attributes client/index.html:64 has
+// always shipped, a file-level a11y sweep was added, and the two stale PTC2-11 prose lines
+// (this list and the §PTC2-11 banner further down) were corrected.
+//
+// SOURCE OF TRUTH: specs/monster-realm-v2/M23-accessibility.spec.md §2.2, §6 (A11Y-13/14/15/16);
+//   memory/projects/monster-realm-m23-s3-plan.md §0 F1/F2/F7/F8, §1 D1/D2/D7/D8, §2 T6, §4,
+//   §7 A1/A3/A6/A7/A8/A13; memory/projects/gates/m23-s3.gates.md X1/X2/X3/X6/X8; ADR-0205 D1-D4, A3.
+//
+// RED REASON (m23-s3): `client/src/ui/tradeProposeView.ts` DOES NOT CALL
+// openOverlayA11y/closeOverlayA11y at all today (ui/tradeProposeView.ts:121-125), so every S3-*
+// test below fails now. As with renameView, this view ALREADY defers its own focus, so
+// S3-tradeProposeView-DEFER-FOCUS additionally asserts the open helper was CALLED — the two focus
+// polarities alone are GREEN on the unwired code and would prove nothing.
+//
+// TWO ORACLES, BOTH REQUIRED (plan A3, measured by red-team):
+//   * VALUE oracle  — `aria-label === t(OVERLAY_A11Y['tradeProposeView'].labelKey)`.
+//     `role`/`aria-modal` are ALREADY static literals on the shell in client/index.html:64
+//     (m23-s2), so asserting them ALONE is VACUOUS: a view that calls nothing passes. They are
+//     asserted only alongside aria-label, and their ABSENCE after close is the partner (attack V1).
+//   * MECHANISM oracle — `vi.mock('./overlayA11y', { spy: true })` records the calls AND calls
+//     through to the real implementation, so a cheat that hand-writes the three attributes with the
+//     correct copied literal (no trap, no return-focus record, no timer) still reds.
+//
+// WHY THE m23-s3 BLOCK IS DECLARED FIRST IN THIS FILE: several describes below call
+// `vi.restoreAllMocks()` in their afterEach. Declaration order is execution order in vitest, so the
+// S3 block runs before any of them and its module-level auto-spy cannot be torn down underneath it.
+//
+// TEST-ISOLATION DEVICE (plan A8 / V7, copied from ui/overlayA11y.test.ts:97-105): overlayA11y.ts
+// holds ONE module-private Map and exports no reset hook, so the file-level beforeEach/afterEach
+// call the PRODUCTION closeOverlayA11y(id, null) for every OverlayId and flush ONE REAL MACROTASK
+// — legal because close-without-open is a documented no-op (ui/overlayA11y.ts:41-45). It also
+// cancels the deferred-focus timer that every `view.show()` in this file schedules (plan residual
+// A12). `vi.clearAllMocks()` runs LAST so the sweep never pollutes a count.
+//
+// m23-s3 WRONG-IMPL-KILLED index:
+//   - never opens / attribute-only cheat                 -> S3-tradeProposeView-OPEN-ARIA + -HELPER-CALLED
+//   - copy-pasted WRONG OverlayId                        -> S3-tradeProposeView-OPEN-ARIA (label) + -HELPER-CALLED (id arg)
+//   - view keeps its OWN setTimeout focus (:124 not deleted) -> S3-tradeProposeView-DEFER-FOCUS (call assertion)
+//                                                             + S3-NO-VIEW-LOCAL-FOCUS (renameView.test.ts)
+//   - synchronous focus (no defer)                       -> S3-tradeProposeView-DEFER-FOCUS (negative polarity)
+//   - focuses nothing / a wrapper, not the anchor         -> S3-tradeProposeView-DEFER-FOCUS (identity)
+//   - close never strips ARIA / never restores focus      -> S3-tradeProposeView-CLOSE-RESTORE
+//   - UNGUARDED show() / `this.visible` read AFTER the write -> S3-tradeProposeView-REPEAT-NO-REOPEN
+//   - `fallbackFocus` passed as undefined/an element       -> S3-tradeProposeView-HELPER-CALLED (literal null)
+//   - GUARDED close in hide() (plan anti-pattern #3 — kills S1's A13 self-heal)
+//                                                        -> S3-tradeProposeView-CLOSE-UNGUARDED
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { t } from './a11yCopy';
+import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
+import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 import type { TradeProposeArgs, TradeProposeLists } from './tradeProposeModel';
 import { type TradeProposeCallbacks, TradeProposeView } from './tradeProposeView';
+
+// The m23-s3 MECHANISM oracle. `{ spy: true }` records every call AND calls through to the real
+// implementation, so the VALUE oracle (real attribute writes, real focus moves) still works.
+vi.mock('./overlayA11y', { spy: true });
 
 // ---------------------------------------------------------------------------
 // DOM mount helper — installs the index.html shell for tradeProposeView (ADR-0134 D1).
@@ -43,8 +106,14 @@ function mountTradeProposeOverlay(): {
   if (existing) existing.remove();
 
   // Exact shell from ADR-0134 D1 — stable ids + data-testids.
+  // m23-s3 FIXTURE FIDELITY (index.html:64): `role`/`aria-modal` have shipped as STATIC LITERALS
+  // on this shell since m23-s2. They are copied here NOT to be asserted on their own — that is
+  // vacuous, a view calling nothing passes — but so that "all three attributes ABSENT after close"
+  // is a real tooth: only closeOverlayA11y can remove them (ui/overlayA11y.ts:142-144). No
+  // `tabindex` is added: this overlay's OVERLAY_A11Y anchor is the #tradepropose-target <select>,
+  // natively focusable, exactly as index.html:65 has it.
   document.body.innerHTML = `
-    <div id="tradepropose-overlay" style="display:none">
+    <div id="tradepropose-overlay" role="dialog" aria-modal="true" style="display:none">
       <select id="tradepropose-target" data-testid="tradepropose-target"></select>
       <div id="tradepropose-monsters" data-testid="tradepropose-monsters"></div>
       <input id="tradepropose-offer-currency" data-testid="tradepropose-offer-currency" type="number" min="0" />
@@ -96,6 +165,208 @@ async function flushPromises(): Promise<void> {
 function noop(): TradeProposeCallbacks {
   return { onSubmit: async (_args: TradeProposeArgs) => {} };
 }
+
+// ---------------------------------------------------------------------------
+// m23-s3 — overlay a11y wiring on the show()/hide() edge.
+// Declared FIRST on purpose (see the file header): later describes call vi.restoreAllMocks().
+// ---------------------------------------------------------------------------
+
+/** m23-s3: one REAL macrotask boundary — a microtask flush is NOT enough for setTimeout(...,0),
+ *  and fake timers are banned for this defer (plan anti-pattern #10). */
+async function s3FlushMacrotask(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
+// m23-s3: NEW file-level isolation hooks. They run BEFORE the describe-level
+// `mountTradeProposeOverlay` hooks below, so every test still gets the DOM it always got.
+beforeEach(async () => {
+  for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
+  await s3FlushMacrotask();
+  document.body.innerHTML = '';
+  vi.clearAllMocks();
+});
+
+afterEach(async () => {
+  for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
+  await s3FlushMacrotask();
+});
+
+const S3_ID: OverlayId = 'tradeProposeView';
+const S3_META = OVERLAY_A11Y[S3_ID];
+
+/** A focusable OUTSIDE the overlay: the "pre-overlay" element a close must restore focus to. */
+function s3OutsideSentinel(): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.id = 's3-outside-sentinel';
+  document.body.appendChild(btn);
+  return btn;
+}
+
+/** A focusable INSIDE the overlay, as a DIRECT child of the root — render() only rebuilds
+ *  #tradepropose-target / #tradepropose-monsters, so if this loses focus something RE-OPENED
+ *  the overlay. */
+function s3InsideSentinel(root: HTMLElement): HTMLButtonElement {
+  const btn = document.createElement('button');
+  btn.id = 's3-inside-sentinel';
+  root.appendChild(btn);
+  return btn;
+}
+
+describe('TradeProposeView — overlay a11y wiring on the show/hide edge (m23-s3)', () => {
+  it('S3-tradeProposeView-OPEN-ARIA BITES: the first show() from a display:none shell labels the root from OVERLAY_A11Y/t()', () => {
+    const { overlay } = mountTradeProposeOverlay();
+    const view = new TradeProposeView(noop());
+
+    // VACUITY ATTACK V4, closed here: without `display:none` the FIRST show() is a NO-EDGE and
+    // every open assertion below is silently vacuous. This also pins WIK-3 — an impl that reads
+    // `this.visible` AFTER writing `style.display` sees a constant `true` and never opens.
+    expect(view.visible, 'V4: the shell must start hidden, so the first show() IS an edge').toBe(
+      false,
+    );
+
+    view.show();
+
+    // Every expectation is DERIVED from the table at assert time — never a literal (V5).
+    expect(overlay.getAttribute('role'), 'role must come from OVERLAY_A11Y').toBe(S3_META.role);
+    expect(overlay.getAttribute('aria-modal')).toBe('true');
+    expect(
+      overlay.getAttribute('aria-label'),
+      'THE tooth: role/aria-modal are static literals in index.html:64 and pass a view that calls ' +
+        'nothing; aria-label is absent from every shell, so only a real open can produce it — and ' +
+        'because all 16 catalog values are distinct, this also kills the wrong-OverlayId impl',
+    ).toBe(t(S3_META.labelKey));
+  });
+
+  it('S3-tradeProposeView-DEFER-FOCUS BITES: both polarities — NOT focused synchronously, focused after ONE real macrotask, and the defer is owned by openOverlayA11y (NOT by tradeProposeView.ts:124)', async () => {
+    const { overlay } = mountTradeProposeOverlay();
+    const target = overlay.querySelector<HTMLElement>(S3_META.initialFocusSelector);
+    expect(target, `the fixture must contain ${S3_META.initialFocusSelector}`).not.toBeNull();
+    const view = new TradeProposeView(noop());
+
+    view.show();
+
+    // NEGATIVE polarity — a synchronous focus reintroduces the bug the defer exists to avoid
+    // (ui/overlayA11y.ts:9-15): the key that OPENED the overlay lands in what it just opened.
+    expect(document.activeElement, 'the initial focus must NOT have landed synchronously').not.toBe(
+      target,
+    );
+
+    // LOAD-BEARING for THIS view specifically: tradeProposeView.ts:124 ALREADY defers its own
+    // focus, so the two polarities alone are GREEN on the unwired code and prove nothing. Only this
+    // call assertion shows the defer moved into overlayA11y.ts (A11Y-15 / plan T6's deletion).
+    expect(
+      vi.mocked(openOverlayA11y),
+      'the deferred focus must be scheduled by openOverlayA11y, not by tradeProposeView.ts:124',
+    ).toHaveBeenCalledTimes(1);
+
+    await s3FlushMacrotask();
+
+    // POSITIVE polarity, by IDENTITY — never `root.contains(activeElement)`.
+    expect(document.activeElement).toBe(target);
+  });
+
+  it('S3-tradeProposeView-CLOSE-RESTORE BITES: hide() strips role, aria-modal AND aria-label from the root and hands focus back to the pre-overlay element', async () => {
+    const { overlay } = mountTradeProposeOverlay();
+    const outside = s3OutsideSentinel();
+    outside.focus();
+    expect(document.activeElement, 'precondition: focus starts OUTSIDE the overlay').toBe(outside);
+
+    const view = new TradeProposeView(noop());
+    view.show();
+    await s3FlushMacrotask();
+    expect(
+      document.activeElement,
+      'precondition: the open moved focus INTO the overlay, so the restore below is a real move',
+    ).not.toBe(outside);
+
+    view.hide();
+
+    // VACUITY ATTACK V1: the two static literals can only be ABSENT if closeOverlayA11y really ran.
+    expect(
+      overlay.getAttribute('role'),
+      'a display:none node must not keep claiming to be a dialog',
+    ).toBeNull();
+    expect(overlay.getAttribute('aria-modal')).toBeNull();
+    expect(overlay.getAttribute('aria-label')).toBeNull();
+
+    expect(document.activeElement, 'focus must return to the pre-overlay element').toBe(outside);
+  });
+
+  it('S3-tradeProposeView-REPEAT-NO-REOPEN BITES: show() on an ALREADY-visible overlay neither re-opens nor yanks focus back', async () => {
+    // A re-open clears and re-schedules the deferred-focus timer (ui/overlayA11y.ts:100-113).
+    // On THIS view the focus half is red today for a second reason too: tradeProposeView.ts:124's
+    // own setTimeout fires on every show() and drags focus back to #tradepropose-target.
+    const { overlay } = mountTradeProposeOverlay();
+    const view = new TradeProposeView(noop());
+
+    view.show();
+    await s3FlushMacrotask();
+
+    const inside = s3InsideSentinel(overlay);
+    inside.focus();
+    expect(document.activeElement, 'precondition: focus is parked INSIDE the overlay').toBe(inside);
+
+    view.show();
+    await s3FlushMacrotask();
+
+    expect(document.activeElement, 'a repeat show() must NOT re-run the deferred focus').toBe(
+      inside,
+    );
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+  });
+
+  it('S3-tradeProposeView-HELPER-CALLED BITES: the view DELEGATES to the S1 helpers with its OWN id, its OWN root, and a literal null fallbackFocus', () => {
+    // THE MECHANISM ORACLE (plan A3): a view that hand-writes the three attributes with the correct
+    // copied literal passes every VALUE assertion here while shipping NO trap, NO return-focus
+    // record and NO timer. The literal `null` pins ADR-0205 A3 / plan D8. This test also executes
+    // BOTH new branches, which matters because this file is in the coverage denominator (R5).
+    const { overlay } = mountTradeProposeOverlay();
+    const view = new TradeProposeView(noop());
+
+    view.show();
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith(S3_ID, overlay);
+
+    view.hide();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S3_ID, null);
+  });
+
+  it('S3-tradeProposeView-CLOSE-UNGUARDED BITES: hide() calls the close UNCONDITIONALLY — on a never-opened view, and again on every repeat', () => {
+    // Plan D2's deliberate asymmetry, and plan ANTI-PATTERN #3. Measured by red-team: wrapping
+    // hide()'s close in `if (wasVisible)` ships with every other gate green. A guarded hide() reads
+    // `visible === false` and SKIPS the close whenever a record ever desynchronised from the DOM
+    // (S1's named A13 leak, ui/overlayA11y.ts:55-59) — making a live capture listener, a pending
+    // timer and a stale return target PERMANENT. This view is in BATTLE_FORCE_HIDE
+    // (ui/overlayRegistry.ts:274-283) AND is force-hidden on reconnect, so main.ts drives its close
+    // through exactly the desync D2 cites — and it owns four focusable form controls, so a leaked
+    // capture trap here is user-visible. Unguarded, hide() HEALS it, and a close with no record is
+    // a documented pure no-op (ui/overlayA11y.ts:136-137), so nothing is risked.
+    mountTradeProposeOverlay();
+    const view = new TradeProposeView(noop());
+    expect(view.visible, 'precondition: never opened').toBe(false);
+
+    expect(() => view.hide()).not.toThrow();
+    expect(
+      vi.mocked(closeOverlayA11y),
+      'hide() on a never-opened view MUST still call the close — a guarded hide calls it zero times',
+    ).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S3_ID, null);
+
+    view.hide();
+    expect(
+      vi.mocked(closeOverlayA11y),
+      'unguarded means unguarded: every hide() calls the close',
+    ).toHaveBeenCalledTimes(2);
+
+    // And the same holds after a real open/close cycle: the second hide() still calls it.
+    vi.clearAllMocks();
+    view.show();
+    view.hide();
+    view.hide();
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledTimes(2);
+  });
+});
 
 // ---------------------------------------------------------------------------
 // Constructor: throw when required DOM nodes are missing
@@ -510,7 +781,17 @@ describe('TradeProposeView PTC2-10: live submit-enable recomputes on input/chang
 });
 
 // ---------------------------------------------------------------------------
-// PTC2-11: show() deferred focus; hide() resets draft/feedback/#pending
+// PTC2-11: hide() resets draft/feedback/#pending
+//
+// CORRECTED 2026-08-24 (m23-s3): this banner used to say "show() deferred focus; hide() resets…".
+// show() no longer owns a deferred focus — ui/tradeProposeView.ts:124's
+// `setTimeout(() => this.#target.focus(), 0)` is DELETED by slice m23-s3 and the ONE defer now
+// lives in ui/overlayA11y.ts:111-113, scheduled by openOverlayA11y (M23 §2.2, A11Y-14/A11Y-15,
+// ADR-0205 D1/D2). No test in this describe ever asserted the old behaviour (plan F8), so nothing
+// below changed — only the prose was stale. The replacement contract is pinned by
+// S3-tradeProposeView-DEFER-FOCUS above and, repo-wide, by S3-NO-VIEW-LOCAL-FOCUS in
+// ui/renameView.test.ts. Net user-visible change (plan A13, verified): identical initial focus,
+// PLUS a Tab trap and return-focus restoration.
 // ---------------------------------------------------------------------------
 
 describe('TradeProposeView PTC2-11: hide() resets select, checkboxes, currencies, feedback, #pending', () => {

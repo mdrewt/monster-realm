@@ -5,8 +5,11 @@
 //   1. The input's OWN keydown listener calls e.stopPropagation() so field keystrokes
 //      never reach the bubble-phase window keydown (movement + letter hotkeys). It also
 //      handles Enter=submit / Escape=cancel locally.
-//   2. show() DEFERS focus via setTimeout(…, 0) so the opening key event fully completes
-//      before focus lands (belt-and-suspenders with e.preventDefault() in the KeyN branch).
+//   2. The deferred initial focus is NO LONGER OWNED HERE (m23-s3). `ui/overlayA11y.ts` is the
+//      single owner of the setTimeout(…, 0) defer for all sixteen overlays, and it targets this
+//      overlay's `initialFocusSelector` (#rename-input) from OVERLAY_A11Y. The defer itself is
+//      still load-bearing for the same reason it always was: it lets the opening key event (KeyN)
+//      fully complete so the `n` does not land in the field it just opened.
 //   3. hide() resets the input value + feedback so a stale draft never survives a re-open.
 //
 // Fully unit-covered via happy-dom (leaderboardView/errorOverlayView precedent) — this
@@ -17,6 +20,7 @@
 // A single #submit() path is shared by the button click AND the input's Enter; a
 // #pending lock reset via .finally() on BOTH resolve and reject (no dead-button-forever,
 // ADR-0085 C6 / shopView precedent).
+import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { buildRenameViewModel, type RenameViewModel } from './renameModel';
 
 export interface RenameCallbacks {
@@ -97,9 +101,11 @@ export class RenameView {
   }
 
   show(): void {
+    // m23-s3 D1: only the hidden->visible EDGE opens, so a repeat show() cannot re-schedule
+    // overlayA11y's deferred focus and steal focus back from wherever the player put it.
+    const wasVisible = this.visible;
     this.#overlay.style.display = '';
-    // Deferred focus (D3 mechanism 2): let the opening key event fully complete first.
-    setTimeout(() => this.#input.focus(), 0);
+    if (!wasVisible) openOverlayA11y('renameView', this.#overlay);
   }
 
   hide(): void {
@@ -113,6 +119,8 @@ export class RenameView {
     // Without this reset, #pending stays true forever → dead submit button (reviewer B-1).
     this.#pending = false;
     this.#submitBtn.disabled = false;
+    // m23-s3 D2: DELIBERATELY UNGUARDED (see pvpView.ts's header) -- the self-healing path.
+    closeOverlayA11y('renameView', null);
   }
 
   toggle(): void {

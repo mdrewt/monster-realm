@@ -1519,6 +1519,48 @@ co-located teeth appended to `indexShell.test.ts` (append-only, proven by a diff
 original lines changed), 13 mutation bite-proofs red and 1 must-stay-green, plus a hostile-CSS fixture
 suite for the two scanners. ADR next-free = 0206 (no new ADR: ADR-0205 already carries this design).
 
+**m23-s3** complete, `M23-accessibility` S3 — **the ten static-shell views wired to S1's helpers, in
+TWO mechanisms, and the deferred `.focus()` deleted from the view layer.** Seven views delegate from
+`show()`/`hide()`; the three with **no `show()`** (`dialogueView`, `questLogView`, `healView`) wire on
+the `render(vm | null)` **null↔non-null EDGE** instead (spec §2.2, A11Y-34) — `main.ts:1574` calls
+`dialogueView.render(vm)` unconditionally on every store batch, so there is literally nothing for a
+`show()`-based design to attach to. **Both mechanisms detect the edge by reading the EXISTING `visible`
+getter BEFORE the `display` write, never from a new nullity field**, and that is the load-bearing call:
+`questLogView`/`healView` are opened by `render(vm)` but closed by `hide()`, so a `#lastVmWasNull`
+field updated only inside `render()` never sees the hide and the SECOND open silently ships no role, no
+label, no focus and no trap — while passing every single-cycle test (measured; the `-REOPEN-AFTER-HIDE`
+tag is its falsifier). **The open guard is what makes delegation safe at all:** `pvpView.refresh()`
+calls `show()` unconditionally and `main.ts:1697-1709` recomputes `forceVisible` every batch, so an
+unguarded `openOverlayA11y` re-schedules the deferred focus several times a second and the overlay
+becomes impossible to Tab through — `pvpView.ts`'s `show()` carries the canonical statement of this and
+the other nine views point at it. **The close guards are deliberately ASYMMETRIC**: `render(null)` IS
+guarded (A11Y-34 forbids invoking on a repeat render at the same nullity, and dialogue's null branch
+fires every batch forever), while `hide()` is NOT — `closeOverlayA11y` is a documented no-op with no
+open record, and leaving it unguarded is the self-healing path for a record that ever desynchronises
+from the DOM, which a guard would strand permanently. `renameView.ts:102` and `tradeProposeView.ts:124`
+lose their `setTimeout(() => …focus(), 0)` (and their now-false header bullets); `ui/overlayA11y.ts` is
+the sole owner, which is what makes A11Y-15's ban on a literal `.focus(` in any `*View.ts` true rather
+than aspirational. The `OverlayId` is an **inline literal** at each call site — the closed union makes
+a typo a compile error, and a *drifted* id (open one overlay, close another) is caught by tests, not by
+a const. Gates: 86 new co-located tests across ten specs (four new files: `dialogueView`,
+`questLogView`, `healView`, `pvpView`), 9/9 acceptance gates met with recorded evidence, full `just ci`
+exit 0 (91 client files / 2628 tests). **Red-team wrote 14 wrong implementations against the suite
+before the real one existed and found three green-but-wrong holes, all now closed**: the `.focus(`
+scan's CONTROL fixture miscounted its own planted occurrences, so the gate failed even on a CORRECT
+implementation and never reached the real scan; `-CLOSE-UNGUARDED` covered only 4 of 10 views, so
+guarding `hide()` on the other six shipped 62/62 green while permanently leaking a focus trap; and the
+comment/string stripper was swallowed by a regex literal containing a quote, hiding a real duplicate
+deferred `.focus(` in seven views (closed by diffing a comments-only strip against the full strip).
+**Two residuals disclosed, not gated:** call ORDERING (open-last, D7) is provably ungated — an
+open-first implementation measures 62/62 green, so S4 must carry that obligation in its own plan rather
+than inherit it from this template; and `refresh()`/`toggle()` byte-identity is unenforced. **A latent
+S1 gap flagged upward, out of `touches:`**: `openOverlayA11y` writes `role`/`aria-modal` BEFORE calling
+`t(meta.labelKey)`, which throws by design on an unwired key — on a throw the DOM keeps both attributes
+with no record stored, so the later close no-ops and can never strip them, contradicting that module's
+own "no half-open state" claim. Unreachable today (all 16 catalog keys are pinned present). **No ADR
+authored** — the supervisor assigned no number; the decisions ride in the module headers. ADR next-free
+= 0206.
+
 **m23-s7** complete, `M23-accessibility` S7 — **reduced motion: an injected flag through the render
 resolver, never a global read (§2.5, A11Y-27/28/36); `desync-guard` review mandatory and PASSED.**
 `ResolveInput` gains `reduceMotion?: boolean` (default `false` in the destructure). OPTIONAL is a
