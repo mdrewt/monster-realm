@@ -25,4 +25,5 @@ export default __t.row({
   deletionRequestedAtMs: __t.option(__t.i64()).name("deletion_requested_at_ms"),
   claimedFrom: __t.option(__t.identity()).name("claimed_from"),
   claimedAtMs: __t.option(__t.i64()).name("claimed_at_ms"),
+  terminalAtMs: __t.option(__t.i64()).name("terminal_at_ms"),
 });

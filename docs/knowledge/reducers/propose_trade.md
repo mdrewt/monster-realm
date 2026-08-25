@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: propose_trade
 slug: reducers/propose_trade
-updated: 2026-08-23
+updated: 2026-08-25
 tags: [reducer, spacetimedb, trading]
 abstract: "Propose a trade: escrow the listed assets and await the counterparty's response. Guards (in order): 0. Both sides' mons…"
 resource: server-module/src/trading.rs#L221

@@ -21,6 +21,7 @@ export const Account = __t.object("Account", {
   deletionRequestedAtMs: __t.option(__t.i64()),
   claimedFrom: __t.option(__t.identity()),
   claimedAtMs: __t.option(__t.i64()),
+  terminalAtMs: __t.option(__t.i64()),
 });
 export type Account = __Infer<typeof Account>;
 
@@ -241,6 +242,18 @@ export const EvolutionPathRow = __t.object("EvolutionPathRow", {
   minNutritionPct: __t.option(__t.u8()),
 });
 export type EvolutionPathRow = __Infer<typeof EvolutionPathRow>;
+
+export const ExportBundle = __t.object("ExportBundle", {
+  chunkId: __t.u64(),
+  ownerIdentity: __t.identity(),
+  requestId: __t.u64(),
+  tableName: __t.string(),
+  chunkIndex: __t.u32(),
+  totalChunks: __t.u32(),
+  payloadJson: __t.string(),
+  createdAtMs: __t.i64(),
+});
+export type ExportBundle = __Infer<typeof ExportBundle>;
 
 export const GuestClaim = __t.object("GuestClaim", {
   guestIdentity: __t.identity(),

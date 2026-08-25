@@ -15,6 +15,7 @@
 | tables/config | SpacetimeDB Table | config | Singleton world config. |
 | tables/encounter | SpacetimeDB Table | encounter | PRIVATE encounter table (no `public`). Spawn weights/level bands are server-only |
 | tables/evolution_path | SpacetimeDB Table | evolution_path | PUBLIC evolution-graph edge table (EG1-4), seeded clear-and-reinsert from the ga |
+| tables/export_bundle | SpacetimeDB Table | export_bundle | PRIVATE per-owner data-export chunk (M22 §5, ADR-0207). One row per `(owner_iden |
 | tables/guest_claim | SpacetimeDB Table | guest_claim | PRIVATE in-flight guest→account claim (no `public`) — one row per guest identity |
 | tables/guest_claim_reaper_schedule | SpacetimeDB Table | guest_claim_reaper_schedule | PRIVATE scheduled table colocated with its reducer (ADR-0056 exception). `guest_ |
 | tables/heal_cooldown | SpacetimeDB Table | heal_cooldown | PRIVATE per-player heal cooldown anchor. Must-never-leak: timestamp reveals heal |

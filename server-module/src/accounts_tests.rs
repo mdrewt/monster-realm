@@ -714,6 +714,10 @@ fn ident(b: u8) -> Identity {
 
 /// A distinguishable baseline `Account` (created != last_login so the
 /// touch/transition seams can be proven field-precise).
+///
+/// `terminal_at_ms: None` is the M22-S2 addition: the fresh baseline is a live
+/// account, never a completed tombstone, so every pre-existing fixture that
+/// spreads `..base_account(n)` keeps exactly the state it was written for.
 fn base_account(b: u8) -> Account {
     Account {
         identity: ident(b),
@@ -724,6 +728,7 @@ fn base_account(b: u8) -> Account {
         deletion_requested_at_ms: None,
         claimed_from: None,
         claimed_at_ms: None,
+        terminal_at_ms: None,
     }
 }
 
@@ -2370,20 +2375,36 @@ fn auth_constructors_return_legal_states() {
 /// W3-4 (scan): the `Account` field list and the `AccountStatus` variant list are
 /// pinned by EXACT EQUALITY against the current shape.
 ///
-/// EXACT EQUALITY, never `.contains`: an APPENDED field (the shape M22 is most
-/// likely to add — a grace window) survives every containment check while
-/// silently widening the state space the invariant reasons about. A reorder must
-/// red too: BSATN layout is order-sensitive.
+/// EXACT EQUALITY, never `.contains`: an APPENDED field survives every
+/// containment check while silently widening the state space the invariant
+/// reasons about. A reorder must red too: BSATN layout is order-sensitive.
+///
+/// M22-S2 RE-DERIVATION (spec §4.1). The shape move this tripwire was written to
+/// intercept has happened: `Account` gains `terminal_at_ms: Option<i64>`,
+/// appended LAST and carrying `#[default(None)]` so the column is additive under
+/// ADR-0006. The pin below was re-derived FROM THE SPEC, not rubber-stamped to
+/// match the code, and the re-derivation the tripwire's contract demands was
+/// carried out rather than deferred: `account_state_is_legal` gained the clause
+/// `terminal_at_ms.is_some()` implies (`PendingDeletion` AND
+/// `deletion_requested_at_ms.is_some()`), driven by
+/// `account_legal_state_rejects_terminal_without_request`,
+/// `account_legal_state_rejects_terminal_while_active` and
+/// `account_legal_state_accepts_legal_terminal_shape` at the end of this file.
+/// The attribute is part of the pinned text on purpose — `#[default(None)]` is
+/// what makes the column an automigration-safe append rather than a republish.
 ///
 /// The extraction mirrors `auth6_no_email_or_subject_stored`'s (comments
 /// stripped, string content preserved, whitespace squashed, brace-walked from
 /// the struct marker), so a doc-comment edit on the struct — which ADR-0195 D5
-/// explicitly expects — does NOT trip this pin. Only the declaration text does.
+/// explicitly expects, and which M22-S2 makes to `auth_issuer` — does NOT trip
+/// this pin. Only the declaration text does.
 ///
-/// Kills: appending `pub grace_until_ms: Option<i64>` to `Account`, or adding a
-///        `Deleted,` variant to `AccountStatus`, without re-deriving the
-///        legality predicate and the five constructor postconditions; a
-///        containment-based pin (which is green on both).
+/// Kills: appending a further field to `Account`, or adding a `Deleted,` variant
+///        to `AccountStatus`, without re-deriving the legality predicate and the
+///        five constructor postconditions; a containment-based pin (green on
+///        both); appending `terminal_at_ms` WITHOUT `#[default(None)]`, or
+///        inserting it mid-struct (either is a non-additive migration);
+///        a containment pin that would also be green on both of those.
 #[test]
 fn schema_account_struct_shape_tripwire() {
     let schema = stripped_keep_strings(SCHEMA_RS);
@@ -2410,6 +2431,10 @@ fn schema_account_struct_shape_tripwire() {
         "pubclaimed_from:Opt",
         "ion<Identity>,",
         "pubclaimed_at_ms:Opt",
+        "ion<i64>,",
+        "#[def",
+        "ault(None)]",
+        "pubterminal_at_ms:Opt",
         "ion<i64>,",
     );
     assert_eq!(
@@ -3024,5 +3049,1280 @@ fn machinery_g2_attr_disambiguation_guard_teeth() {
          `reducer` (`spacetimedb::reducer_helper`) is NOT a client-callable \
          reducer and must not be classified as one — otherwise a phantom fn \
          poisons the name-set pin and the param scan. Enumerated: {names:?}"
+    );
+}
+
+// ===========================================================================
+// M22-S2 — DATA-LIFECYCLE MANIFEST / export_bundle SHAPE / TERMINAL COLUMN.
+//
+// Spec: M22-privacy-compliance.spec.md §3 (the exhaustive 38-table deletion
+// partition), §4.1 (`Account.terminal_at_ms`), §5 (export scope + the
+// `export_bundle` chunk contract). Ledger gates X1..X8.
+//
+// WHY THIS SECTION ADDS SIXTEEN MORE `include_str!` CONSTS: the five at :260-264
+// were sized for the M21a surface. Measured on the fork tree
+// (00de7055aba717a3d7fe20efaaeed9330e5df50c), {accounts, lib, schema,
+// monster_mgmt, ranking}.rs declare 31 of the 38 live tables — a totality census
+// built on that set is GREEN while seven tables (mr_heartbeat_schedule,
+// playtest_event, playtest_reaper_schedule, movement_tick_schedule,
+// trade_offer_reaper_schedule, pvp_deadline_schedule,
+// battle_challenge_reaper_schedule) carry no deletion policy at all. The census
+// below therefore scans the crate root plus EVERY `mod` the crate declares, and
+// pins that list against the live `mod` declarations in both directions.
+//
+// SCAN HYGIENE — this file's header rules apply verbatim to everything below:
+//   * the table-attribute macro is NEVER written contiguously (assembled with
+//     `concat!`), so an eval that concatenates `server-module/src` and
+//     comment-strips WITHOUT blanking string literals cannot mistake this test
+//     file for a table declaration;
+//   * the wallet table name is split the same way — the file header declares
+//     that this file carries no contiguous wallet token, and although
+//     currency-integrity's ACCESSOR_BYPASS bans only the wallet ACCESSOR call
+//     and the wallet struct literal, the declared convention is honoured;
+//   * no block-comment delimiter of any kind appears in this section.
+// ===========================================================================
+
+use crate::schema::{DataLifecycleEntry, DeletionPolicy, DATA_LIFECYCLE_MANIFEST};
+
+// --- Additional frozen sources under scan (crate root + every lib.rs `mod`) ---
+const M22_BATTLE_RS: &str = include_str!("battle.rs");
+const M22_CONTENT_RS: &str = include_str!("content.rs");
+const M22_CONTENT_CACHE_RS: &str = include_str!("content_cache.rs");
+const M22_ECONOMY_RS: &str = include_str!("economy.rs");
+const M22_EVOLUTION_RS: &str = include_str!("evolution.rs");
+const M22_GUARDS_RS: &str = include_str!("guards.rs");
+const M22_INVENTORY_RS: &str = include_str!("inventory.rs");
+const M22_MARSHAL_RS: &str = include_str!("marshal.rs");
+const M22_MOVEMENT_RS: &str = include_str!("movement.rs");
+const M22_NPC_RS: &str = include_str!("npc.rs");
+const M22_OBSERVABILITY_RS: &str = include_str!("observability.rs");
+const M22_PLAYTEST_RS: &str = include_str!("playtest.rs");
+const M22_PVP_RS: &str = include_str!("pvp.rs");
+const M22_RAISING_RS: &str = include_str!("raising.rs");
+const M22_TAMING_RS: &str = include_str!("taming.rs");
+const M22_TRADING_RS: &str = include_str!("trading.rs");
+
+/// The JS re-key manifest, read as TEXT (never imported): T9 proves the two
+/// manifests cannot drift apart on a table rename or split.
+const M22_REKEY_EVAL_MJS: &str = include_str!("../../evals/guest-claim-integrity.eval.mjs");
+
+// ---------------------------------------------------------------------------
+// M22 scan machinery. Every helper is `m22_`-prefixed so it can never collide
+// with a same-named helper elsewhere in this 3000-line file.
+// ---------------------------------------------------------------------------
+
+/// The squashed table-attribute prefix, split so this file never carries the
+/// contiguous scanner needle (file header rule).
+fn m22_nd_table_attr() -> String {
+    concat!("#[spacetimedb::", "table", "(").to_string()
+}
+
+/// The squashed first attribute argument every live table declaration must
+/// carry (`parseTableSchemas` and `[G6/parse]` both require it FIRST).
+fn m22_nd_accessor() -> String {
+    concat!("access", "or=").to_string()
+}
+
+/// Non-overlapping occurrences of `needle` in `hay`.
+fn m22_count_occurrences(hay: &str, needle: &str) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+    let mut n = 0usize;
+    let mut start = 0usize;
+    while let Some(rel) = hay[start..].find(needle) {
+        n += 1;
+        start += rel + needle.len();
+    }
+    n
+}
+
+/// Every non-test Rust source in the crate that CAN declare a table: the crate
+/// root plus each `mod` lib.rs declares. A table can only exist in a compiled
+/// module, and every compiled module is reachable from this list — which
+/// `data_lifecycle_manifest_totality_bidirectional` re-proves against the live
+/// `mod` declarations in both directions rather than asserting it in prose.
+fn m22_scanned_sources() -> Vec<(&'static str, &'static str)> {
+    vec![
+        ("lib.rs", LIB_RS),
+        ("accounts.rs", ACCOUNTS_RS),
+        ("battle.rs", M22_BATTLE_RS),
+        ("content.rs", M22_CONTENT_RS),
+        ("content_cache.rs", M22_CONTENT_CACHE_RS),
+        ("economy.rs", M22_ECONOMY_RS),
+        ("evolution.rs", M22_EVOLUTION_RS),
+        ("guards.rs", M22_GUARDS_RS),
+        ("inventory.rs", M22_INVENTORY_RS),
+        ("marshal.rs", M22_MARSHAL_RS),
+        ("monster_mgmt.rs", MONSTER_MGMT_RS),
+        ("movement.rs", M22_MOVEMENT_RS),
+        ("npc.rs", M22_NPC_RS),
+        ("observability.rs", M22_OBSERVABILITY_RS),
+        ("playtest.rs", M22_PLAYTEST_RS),
+        ("pvp.rs", M22_PVP_RS),
+        ("raising.rs", M22_RAISING_RS),
+        ("ranking.rs", RANKING_RS),
+        ("schema.rs", SCHEMA_RS),
+        ("taming.rs", M22_TAMING_RS),
+        ("trading.rs", M22_TRADING_RS),
+    ]
+}
+
+/// Every table-attribute accessor name declared in one source, read from the
+/// string-blanked, comment-blanked, whitespace-squashed view (so a table name
+/// quoted inside a doc comment or a string literal can never inject a phantom
+/// entry into the census).
+///
+/// FAIL LOUD, never skip: an attribute whose FIRST argument is not `accessor =`
+/// is exactly the spelling `parseTableSchemas` cannot read, which hides that
+/// table from `[G6/parse]`, from the schema baseline AND from this census at
+/// once. Refusing to classify is the safe direction.
+fn m22_table_accessors(path: &str, src: &str) -> Vec<String> {
+    let squashed = stripped_for_scan(src);
+    let attr = m22_nd_table_attr();
+    let accessor = m22_nd_accessor();
+    let mut out: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    while let Some(rel) = squashed[start..].find(attr.as_str()) {
+        let at = start + rel + attr.len();
+        let rest = &squashed[at..];
+        let tail = match rest.strip_prefix(accessor.as_str()) {
+            Some(tail) => tail,
+            None => {
+                let preview: String = rest.chars().take(60).collect();
+                panic!(
+                    "T1 fail-loud: a table attribute in {path} does not open with the \
+                     accessor argument. parseTableSchemas requires `accessor =` to be the \
+                     FIRST attribute argument; a declaration it cannot read hides that \
+                     table from the re-key manifest, from the schema baseline and from \
+                     this deletion-policy census simultaneously. Attribute text: {preview:?}"
+                )
+            }
+        };
+        let mut name = String::new();
+        for c in tail.chars() {
+            if !is_word_char(c) {
+                break;
+            }
+            name.push(c);
+        }
+        assert!(
+            !name.is_empty(),
+            "T1 fail-loud: a table attribute in {path} declares an EMPTY accessor name."
+        );
+        out.push(name);
+        start = at;
+    }
+    out
+}
+
+/// Every `mod <name>;` declared anywhere in the scanned sources, minus the
+/// `#[path]`-included sibling test modules (whose names all end in `tests`).
+///
+/// Line-oriented over the comment-blanked, string-blanked source: a commented
+/// out `mod` and a `mod` spelled inside a string literal are both invisible,
+/// while `pub mod` / `pub(crate) mod` are both seen. Inline `mod x { .. }`
+/// blocks declare no FILE and are correctly ignored (no trailing `;`).
+fn m22_declared_mod_names() -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    for (_, src) in m22_scanned_sources() {
+        let clean = strip_rust_comments(&strip_rust_strings(src));
+        for line in clean.lines() {
+            let mut text = line.trim();
+            if let Some(rest) = text.strip_prefix("pub(crate)") {
+                text = rest.trim_start();
+            } else if let Some(rest) = text.strip_prefix("pub ") {
+                text = rest.trim_start();
+            }
+            let rest = match text.strip_prefix("mod ") {
+                Some(rest) => rest.trim(),
+                None => continue,
+            };
+            let name = match rest.strip_suffix(';') {
+                Some(name) => name.trim(),
+                None => continue,
+            };
+            if name.is_empty() || !name.chars().all(is_word_char) {
+                continue;
+            }
+            if name.ends_with("tests") {
+                continue;
+            }
+            out.push(name.to_string());
+        }
+    }
+    out.sort();
+    out.dedup();
+    out
+}
+
+/// Delete every `/` and every whitespace character from RAW source. This is the
+/// only view in which a doc phrase that rustfmt wrapped across two `///` lines
+/// reads as ONE token, which is what makes a stale-comment ban unfoolable by a
+/// re-wrap.
+fn m22_squashed_no_slashes(src: &str) -> String {
+    let mut out = String::with_capacity(src.len());
+    for c in src.chars() {
+        if c.is_whitespace() || c == '/' {
+            continue;
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The contiguous run of `///` doc lines immediately preceding the line that
+/// declares `field_decl`, joined with single spaces.
+///
+/// LOCALIZED ON PURPOSE (red-team finding): a whole-file `contains` check for
+/// the tombstone sentinel is satisfied by that sentinel appearing ANYWHERE in
+/// schema.rs — in the new manifest's `basis` prose, say — while the field's own
+/// comment stays stale-but-reworded. The caller separately proves `field_decl`
+/// occurs exactly once, so "the block before it" is unambiguous.
+fn m22_doc_block_before(src: &str, field_decl: &str) -> String {
+    let at = src.find(field_decl).unwrap_or_else(|| {
+        panic!(
+            "T6 fail-loud: the declaration {field_decl:?} was not found in schema.rs, so \
+             the localized doc-comment scan has no scope and would pass vacuously."
+        )
+    });
+    let line_start = match src[..at].rfind('\n') {
+        Some(i) => i + 1,
+        None => 0,
+    };
+    let mut block: Vec<&str> = Vec::new();
+    for line in src[..line_start].lines().rev() {
+        let text = line.trim();
+        if !text.starts_with("///") {
+            break;
+        }
+        block.push(text);
+    }
+    block.reverse();
+    block.join(" ")
+}
+
+/// Blank every `//`-to-end-of-line comment in a JS source.
+///
+/// Deliberately naive about strings: it is applied ONLY so the brace walk and
+/// the key scan below cannot be derailed by comment prose. Verified against the
+/// live manifest block, whose value strings contain no line-comment delimiter —
+/// but whose COMMENT prose does contain apostrophes, and one apostrophe inside a
+/// comment silently swallowed the `battle_challenge.target` key when this scan
+/// was first drafted without the strip.
+fn m22_strip_js_line_comments(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let mut out: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut in_comment = false;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == b'\n' {
+            in_comment = false;
+            out.push(b'\n');
+            i += 1;
+            continue;
+        }
+        if !in_comment && bytes[i] == b'/' && i + 1 < bytes.len() && bytes[i + 1] == b'/' {
+            in_comment = true;
+            i += 2;
+            continue;
+        }
+        if !in_comment {
+            out.push(bytes[i]);
+        }
+        i += 1;
+    }
+    String::from_utf8(out).expect("comment-stripped JS source must be valid UTF-8")
+}
+
+/// Is `s` shaped like a `table.column` manifest key?
+fn m22_is_table_column_key(s: &str) -> bool {
+    let mut dots = 0usize;
+    for c in s.chars() {
+        if c == '.' {
+            dots += 1;
+            continue;
+        }
+        if !is_word_char(c) {
+            return false;
+        }
+    }
+    if dots != 1 {
+        return false;
+    }
+    match s.split_once('.') {
+        Some((table, column)) => !table.is_empty() && !column.is_empty(),
+        None => false,
+    }
+}
+
+/// Every `'table.column':` key inside the JS `REKEY_MANIFEST` object literal.
+///
+/// The block is delimited by a brace walk from the sole
+/// `REKEY_MANIFEST = freezeManifest({` anchor; a key is a single-quoted span
+/// immediately followed by `:` that is shaped like a column key, so the object
+/// VALUES — which are also single-quoted, and one of which is double-quoted and
+/// contains two apostrophes — cannot be mistaken for keys.
+fn m22_rekey_manifest_keys() -> Vec<String> {
+    let src = m22_strip_js_line_comments(M22_REKEY_EVAL_MJS);
+    let anchor = concat!("REKEY_MAN", "IFEST = freezeManifest({");
+    let at = src.find(anchor).unwrap_or_else(|| {
+        panic!(
+            "T9 fail-loud: the anchor {anchor:?} was not found in \
+             evals/guest-claim-integrity.eval.mjs. The JS manifest moved or was renamed; \
+             the cross-manifest consistency proof has no input and must NOT pass vacuously."
+        )
+    });
+    let open = at + anchor.len() - 1;
+    let bytes = src.as_bytes();
+    assert_eq!(
+        bytes[open], b'{',
+        "T9 fail-loud: the anchor did not land on the object literal's opening brace."
+    );
+    let mut depth = 0usize;
+    let mut end = open;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    end = i;
+                    break;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    assert!(
+        end > open,
+        "T9 fail-loud: the REKEY_MANIFEST object literal is not brace-balanced from its \
+         anchor, so the key scan would read an arbitrary suffix of the file."
+    );
+
+    let block = &src[open..end];
+    let block_bytes = block.as_bytes();
+    let mut keys: Vec<String> = Vec::new();
+    let mut k = 0usize;
+    while k < block_bytes.len() {
+        if block_bytes[k] != b'\'' {
+            k += 1;
+            continue;
+        }
+        let mut j = k + 1;
+        while j < block_bytes.len() && block_bytes[j] != b'\'' {
+            j += 1;
+        }
+        if j >= block_bytes.len() {
+            break;
+        }
+        let span = &block[k + 1..j];
+        let after = if j + 1 < block_bytes.len() {
+            block_bytes[j + 1]
+        } else {
+            b' '
+        };
+        if after == b':' && m22_is_table_column_key(span) {
+            keys.push(span.to_string());
+        }
+        k = j + 1;
+    }
+    keys
+}
+
+// ---------------------------------------------------------------------------
+// T1 / X3 — MANIFEST TOTALITY, BIDIRECTIONAL.
+// ---------------------------------------------------------------------------
+
+/// T1 / X3: the set of live table-attribute accessor names across EVERY
+/// non-test module of the crate equals the set of
+/// `DATA_LIFECYCLE_MANIFEST` table keys, each exactly once on BOTH sides — and
+/// the scanned file list is itself pinned to the crate's live `mod`
+/// declarations in both directions, so the new-file blind spot is closed rather
+/// than merely documented.
+///
+/// Spec §3 calls the classification an "exhaustive partition over all 38
+/// tables". Exhaustive is a set-equality claim, and a set-equality claim needs
+/// both directions: a forward-only check (every manifest key is a live table) is
+/// green on a manifest that classifies three tables, and a reverse-only check
+/// (every live table has an entry) is green on a manifest full of phantom rows
+/// for tables that no longer exist.
+///
+/// Kills: dropping one entry (a live table with no policy — spec §4.4 walks the
+///        manifest, not the schema, so an unlisted table is simply never
+///        cascaded);
+///        a phantom entry for a table that does not exist;
+///        the SAME table listed twice on either side (a second entry with a
+///        different policy is how a re-classification hides — the dup walk over
+///        both sorted lists runs BEFORE the set compare so it cannot be
+///        satisfied by coincidence);
+///        deleting a table AND its entry in one diff to dodge classification
+///        (the >= 39 floor);
+///        adding a `mod` to the crate and leaving it out of this scan;
+///        the pre-existing five-file `include_str!` set, which sees 31 of 38.
+#[test]
+fn data_lifecycle_manifest_totality_bidirectional() {
+    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
+    let sources = m22_scanned_sources();
+
+    let mut census: Vec<String> = Vec::new();
+    for (path, src) in &sources {
+        for name in m22_table_accessors(path, src) {
+            census.push(name);
+        }
+    }
+    assert!(
+        census.len() >= 38,
+        "T1 non-vacuity: only {} table declarations were found across the {} scanned \
+         modules; the fork tree carries 38 and this slice adds export_bundle. A census \
+         that shrank is a census that stopped looking, and every set comparison below \
+         would then be comparing two small sets.",
+        census.len(),
+        sources.len()
+    );
+    census.sort();
+
+    let mut declared: Vec<String> = Vec::new();
+    for entry in manifest {
+        declared.push(entry.table.to_string());
+    }
+    assert!(
+        declared.len() >= 39,
+        "T1 ratchet: DATA_LIFECYCLE_MANIFEST has {} entries; the fork tree's 38 live tables \
+         plus this slice's `export_bundle` is 39. Set equality alone is satisfied by \
+         deleting a table AND its entry in one diff, which is exactly how a table dodges \
+         classification; this floor is the ADR-0006 additive ratchet against that.",
+        declared.len()
+    );
+    declared.sort();
+
+    for pair in census.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "T1: the accessor `{}` is DECLARED by two live table attributes. The census \
+             cannot be compared as a SET until the declarations are unique.",
+            pair[0]
+        );
+    }
+    for pair in declared.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "T1: the table `{}` has TWO DATA_LIFECYCLE_MANIFEST entries. A duplicate entry \
+             is how a quiet re-classification hides: the stale row keeps every set-equality \
+             check green while the cascade reads whichever row it finds first.",
+            pair[0]
+        );
+    }
+
+    assert_eq!(
+        census, declared,
+        "T1 / spec §3: the live table census and DATA_LIFECYCLE_MANIFEST's table keys are \
+         not the same set. Every live table needs an explicit deletion policy (spec §3 is \
+         an EXHAUSTIVE partition, and §4.4's cascade walks the manifest rather than the \
+         schema), and every manifest entry must name a table that still exists. Add the \
+         missing entry — or delete the stale one — in the SAME commit as the schema change."
+    );
+
+    // --- mod census: the scanned list IS the crate's module list ------------
+    let mods = m22_declared_mod_names();
+    assert!(
+        mods.len() >= 20,
+        "T1 extraction rot: only {} `mod` declarations were parsed out of the crate; lib.rs \
+         alone declares 20. A mod census that cannot read the module list cannot close the \
+         new-file blind spot it exists to close.",
+        mods.len()
+    );
+    for name in &mods {
+        let file = format!("{name}.rs");
+        let scanned = sources.iter().any(|(path, _)| *path == file);
+        assert!(
+            scanned,
+            "T1 (mod census): the crate declares `mod {name};` but `{file}` is NOT scanned \
+             by `m22_scanned_sources`, so every table it declares is invisible to this \
+             totality proof and would carry no deletion policy. Add the module to the scan \
+             list AND give each of its tables a DATA_LIFECYCLE_MANIFEST entry."
+        );
+    }
+    for (path, _) in &sources {
+        if *path == "lib.rs" {
+            continue;
+        }
+        let stem = path.trim_end_matches(".rs");
+        let is_live_mod = mods.iter().any(|name| name == stem);
+        assert!(
+            is_live_mod,
+            "T1 (mod census, reverse): `{path}` is scanned but no `mod {stem};` declares it \
+             anywhere in the crate. Either the module was removed (drop it from the scan \
+             list) or the scan list has drifted away from the crate it claims to cover."
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T2 / X4 — THE SPEC §3 PARTITION, PINNED BY VALUE.
+// ---------------------------------------------------------------------------
+
+/// T2 / X4: the four spec §3 name-sets, transcribed from the spec text (NOT
+/// derived from the census) and pinned by SET EQUALITY per policy, plus all five
+/// `ViaJoin` PAYLOADS pinned by exact parent value.
+///
+/// The four sets are spec §3's own recount — "38 = 12 ERASE + 4 ANONYMIZE + 5
+/// JOIN-ONLY + 17 NOT-OWNED" — and the `Erase` list carries one table beyond the
+/// spec's twelve: `export_bundle`, this slice's own new table. A snapshot of
+/// personal data is itself personal data, so the export bundle is erased by the
+/// same cascade that produced it (spec §5's 7-day TTL reaper is a SECOND,
+/// independent expiry, not a substitute for the cascade).
+///
+/// The five parents are pinned BY VALUE, not merely proven live: each was
+/// verified against the real join column in source before being written here —
+/// `character.entity_id` -> `player.entity_id` (schema.rs), `battle_wild.
+/// battle_id` -> `battle.battle_id`, `pvp_deadline_schedule.battle_id` ->
+/// `battle` (pvp.rs:130-141), `battle_challenge_reaper_schedule.challenge_id` ->
+/// `battle_challenge` (pvp.rs:169-178), `trade_offer_reaper_schedule.trade_id`
+/// -> `trade_offer` (trading.rs:113-122).
+///
+/// Kills: a quiet re-classification (moving `battle` from ANONYMIZE to ERASE
+///        destroys settled ranked history that a surviving opponent's
+///        `my_battle` view still resolves — spec §3);
+///        moving `config` out of NOT-OWNED (a cascade that acts on it deletes
+///        global game config, because its owner_identity is a zeroed singleton
+///        default rather than a per-row key);
+///        a wrong `ViaJoin` parent, which a liveness-only check admits: pointing
+///        `battle_wild` at `battle_challenge` type-checks, names a live table
+///        that is not itself ViaJoin, and orphans every wild-battle seed row;
+///        counting instead of comparing (a `len() == 12` check is green on any
+///        twelve tables).
+#[test]
+fn data_lifecycle_partition_matches_spec_section3() {
+    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
+
+    let mut erase: Vec<&str> = Vec::new();
+    let mut anonymize: Vec<&str> = Vec::new();
+    let mut join_only: Vec<(&str, &str)> = Vec::new();
+    let mut not_owned: Vec<&str> = Vec::new();
+    for entry in manifest {
+        match entry.policy {
+            DeletionPolicy::Erase => erase.push(entry.table),
+            DeletionPolicy::Anonymize => anonymize.push(entry.table),
+            DeletionPolicy::ViaJoin(parent) => join_only.push((entry.table, parent)),
+            DeletionPolicy::NotOwned => not_owned.push(entry.table),
+        }
+    }
+    erase.sort_unstable();
+    anonymize.sort_unstable();
+    join_only.sort_unstable();
+    not_owned.sort_unstable();
+
+    // Spec §3 ERASE (12) + this slice's own `export_bundle` (spec §5 / plan D2).
+    let expected_erase = [
+        "battle_action",
+        "battle_challenge",
+        "export_bundle",
+        "heal_cooldown",
+        "inventory",
+        "monster",
+        "monster_pub",
+        "player_conversation",
+        "player_dialogue_state",
+        "player_quest",
+        concat!("player", "_wallet"),
+        "playtest_event",
+        "trade_offer",
+    ];
+    assert_eq!(
+        erase, expected_erase,
+        "T2 / spec §3 ERASE: the row-deleted set is wrong. Spec §3 names exactly twelve \
+         (monster, monster_pub, inventory, player_dialogue_state, player_quest, \
+         player_conversation, heal_cooldown, the wallet, playtest_event, trade_offer, \
+         battle_challenge, battle_action) and this slice adds `export_bundle` — a snapshot \
+         of personal data is itself personal data. A table moved OUT of this set survives \
+         the cascade; a table moved IN is deleted when the spec says it must survive."
+    );
+
+    let expected_anonymize = ["account", "battle", "player", "profile"];
+    assert_eq!(
+        anonymize, expected_anonymize,
+        "T2 / spec §3 ANONYMIZE: exactly four rows survive with their identity/PII fields \
+         overwritten — `player` (the anchor `character` and every still-live multi-user row \
+         point at), `profile` (ADR-0119's explicit never-delete invariant), `account` \
+         (auth_issuer becomes the tombstone SENTINEL, keeping the column non-nullable) and \
+         `battle` (terminal PvP rows demonstrably persist, so a surviving opponent's \
+         my_battle view must still resolve them months later)."
+    );
+
+    let expected_join_only = [
+        ("battle_challenge_reaper_schedule", "battle_challenge"),
+        ("battle_wild", "battle"),
+        ("character", "player"),
+        ("pvp_deadline_schedule", "battle"),
+        ("trade_offer_reaper_schedule", "trade_offer"),
+    ];
+    assert_eq!(
+        join_only, expected_join_only,
+        "T2 / spec §3 JOIN-ONLY: the five structurally-invisible tables and their OWNING \
+         PARENTS are pinned by value. These tables carry no Identity column, so \
+         findIdentityColumns cannot see them and nothing else in the repo can re-derive the \
+         parent. Each parent here was checked against the real join column: \
+         character.entity_id -> player.entity_id, battle_wild.battle_id -> battle, \
+         pvp_deadline_schedule.battle_id -> battle, \
+         battle_challenge_reaper_schedule.challenge_id -> battle_challenge, \
+         trade_offer_reaper_schedule.trade_id -> trade_offer."
+    );
+
+    let expected_not_owned = [
+        "config",
+        "encounter",
+        "evolution_path",
+        "guest_claim",
+        "guest_claim_reaper_schedule",
+        "heal_location_row",
+        "item_row",
+        "movement_tick_schedule",
+        "mr_heartbeat_schedule",
+        "npc",
+        "playtest_reaper_schedule",
+        "shop_item_row",
+        "shop_row",
+        "skill_row",
+        "species_row",
+        "type_relation_row",
+        "zone_def",
+    ];
+    assert_eq!(
+        not_owned, expected_not_owned,
+        "T2 / spec §3 NOT-OWNED: exactly seventeen tables hold no per-player data. Every one \
+         is an EXPLICIT registry entry with a mandatory reason — never a silent omission — \
+         because the two failure directions are symmetric: cascading over `config` deletes \
+         global game config, and quietly dropping a genuinely-owned table out of the \
+         cascade leaves an unerased copy of a deleted player's data."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T3 / X5 — BASIS PROSE, THE `config` SINGLETON PIN, AND SLASH HYGIENE.
+// ---------------------------------------------------------------------------
+
+/// T3 / X5: every `basis` is real prose (floor length), `config`'s basis
+/// contains the word `singleton`, and NO manifest string literal contains a `/`.
+///
+/// THE SLASH BAN IS NOT COSMETIC — IT IS MEASURED. `battle-schema-snapshot`
+/// parses RAW Rust with a string-UNAWARE comment stripper, in both its live
+/// drift check AND its `--write` regenerator. One block-comment opener inside
+/// one `basis` string literal therefore deletes every subsequent table from the
+/// committed baseline, self-consistently: the regenerated baseline and the live
+/// parse agree, both are missing the tail of the schema, and the drift gate
+/// reports PASS over a truncated world. Banning `/` outright in manifest strings
+/// is exact (no legal basis prose needs one) and closes the whole family —
+/// opener, closer and the line-comment form — in one clause.
+///
+/// The floor length is the anti-placeholder clause: spec §3 makes the reason
+/// MANDATORY, and a basis of `""` (or `"n a"`) turns the registry back into the
+/// silent omission it exists to abolish.
+///
+/// Kills: blanking one basis to the empty string, or to a two-word placeholder;
+///        rewording `config`'s basis so it no longer says `singleton` (spec §3
+///        requires that word to stay grep-checkable, so a future promotion of
+///        `config.owner_identity` to an indexed column re-triggers a human
+///        decision instead of silently passing);
+///        putting a comment delimiter in any manifest string (the measured
+///        baseline-blinding above).
+#[test]
+fn data_lifecycle_basis_nonempty_config_singleton() {
+    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
+    let mut config_seen = false;
+
+    for entry in manifest {
+        let table = entry.table;
+        let basis = entry.basis;
+        assert!(
+            basis.len() >= 20,
+            "T3: the `{table}` entry's basis is {} byte(s) long; at least 20 is required. \
+             Spec §3 makes the reason MANDATORY — an empty or placeholder basis is the \
+             silent omission the explicit registry exists to abolish, and it is what the \
+             next reader consults before deciding whether a cascade may touch the table.",
+            basis.len()
+        );
+        assert!(
+            !basis.contains('/'),
+            "T3: the `{table}` entry's basis contains a slash. NO manifest string may. \
+             battle-schema-snapshot parses RAW source with a string-UNAWARE comment \
+             stripper in BOTH its drift check and its regenerator, so a comment delimiter \
+             inside one basis literal silently deletes every LATER table from the committed \
+             baseline — self-consistently, so the drift gate stays green over a truncated \
+             schema. Reword without the slash."
+        );
+        assert!(
+            !table.contains('/'),
+            "T3: the table key `{table}` contains a slash — see the basis clause above; the \
+             same baseline-blinding applies to every string literal in this manifest."
+        );
+        if let DeletionPolicy::ViaJoin(parent) = entry.policy {
+            assert!(
+                !parent.contains('/'),
+                "T3: the `{table}` entry's ViaJoin parent `{parent}` contains a slash — see \
+                 the basis clause above."
+            );
+        }
+        if table == "config" {
+            config_seen = true;
+            assert!(
+                basis.contains("singleton"),
+                "T3 / spec §3: `config`'s basis must contain the word `singleton`. Its \
+                 owner_identity is a zeroed singleton DEFAULT, not a per-row key, so the \
+                 naive `has an Identity column implies per-player` heuristic wrongly \
+                 nominates it and a cascade that acts on it deletes global game config. \
+                 Spec §3 requires the word to stay grep-checkable so a future promotion of \
+                 that column to an indexed role re-triggers a human decision. Got: {basis:?}"
+            );
+        }
+    }
+
+    assert!(
+        config_seen,
+        "T3 non-vacuity: DATA_LIFECYCLE_MANIFEST has no `config` entry at all, so the \
+         singleton clause above never ran. Fail loud rather than pass on an absent row."
+    );
+}
+
+/// T3 / X5 (second half): every `ViaJoin` parent is a table the manifest itself
+/// classifies, and that parent's own policy is NOT `ViaJoin`.
+///
+/// A dangling parent is a cascade step that sweeps nothing. A CHAINED parent
+/// (`a` via `b`, `b` via `c`) is worse: spec §4.4 step 4 sweeps join-only rows
+/// transitively AT THE OWNING PARENT'S CASCADE STEP, and a parent that is itself
+/// join-only has no cascade step of its own — the chain's tail is never reached,
+/// so those rows survive the deletion silently.
+///
+/// Kills: a `ViaJoin("batle")` typo (a parent no entry names);
+///        `character` -> `battle_wild` (both join-only: a chain whose head never
+///        runs);
+///        a self-referential `ViaJoin` naming the entry's own table.
+#[test]
+fn data_lifecycle_via_join_parents_live_and_unchained() {
+    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
+
+    let mut pairs: Vec<(&str, &str)> = Vec::new();
+    for entry in manifest {
+        if let DeletionPolicy::ViaJoin(parent) = entry.policy {
+            pairs.push((entry.table, parent));
+        }
+    }
+    assert_eq!(
+        pairs.len(),
+        5,
+        "T3 non-vacuity: spec §3 names exactly five JOIN-ONLY tables, so this scan must have \
+         five parents to check. Zero ViaJoin entries would make every clause below \
+         vacuously true."
+    );
+
+    for (table, parent) in &pairs {
+        assert_ne!(
+            table, parent,
+            "T3: the `{table}` entry names ITSELF as its owning parent. A self-join has no \
+             cascade step that could ever sweep it."
+        );
+        let parent_entry = manifest.iter().find(|candidate| candidate.table == *parent);
+        let policy = match parent_entry {
+            Some(entry) => &entry.policy,
+            None => panic!(
+                "T3: the `{table}` entry is swept via `{parent}`, but no \
+                 DATA_LIFECYCLE_MANIFEST entry names that table. A dangling parent is a \
+                 cascade step that sweeps nothing — the rows survive account deletion."
+            ),
+        };
+        assert!(
+            !matches!(policy, DeletionPolicy::ViaJoin(_)),
+            "T3: the `{table}` entry is swept via `{parent}`, whose OWN policy is \
+             {policy:?}. Spec §4.4 step 4 sweeps join-only rows at the OWNING PARENT'S \
+             cascade step, and a parent that is itself join-only has no cascade step of its \
+             own — so the chain's tail is never reached and those rows survive the deletion \
+             silently. Point the entry at the real owner."
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T4 / X6 — EXPORT SCOPE, AS A POSITIVE BIJECTION.
+// ---------------------------------------------------------------------------
+
+/// T4 / X6: the `exportable == true` set equals EXACTLY the seventeen tables
+/// spec §5 admits — set equality, BOTH directions.
+///
+/// POSITIVE, NOT NEGATIVE, and all three plan lenses converged on why: a
+/// negative-only spot check ("battle_wild is false, guest_claim is false") is
+/// satisfied by an ALL-FALSE manifest, which ships a dead export feature — spec
+/// §5's walk filters on `exportable: true`, so an all-false manifest produces an
+/// empty bundle for every subject-access request while every gate stays green.
+/// Set equality in both directions is the only shape that rejects an over-broad
+/// AND an empty export scope.
+///
+/// The seventeen are the twelve spec-ERASE tables + the four ANONYMIZE tables +
+/// `character`. The `false` side includes the three the spec calls out by name:
+/// `battle_wild` (the raw RNG individuality seed, a must-never-leak),
+/// `guest_claim` (a live secret code) and `export_bundle` itself (the export's
+/// own output — including it makes the walk self-feeding).
+///
+/// Kills: the measured all-false cheat; flipping `battle_wild` to true (leaks
+///        the seed a literal "dump every matched row" export would carry);
+///        flipping `export_bundle` to true; adding a NOT-OWNED registry table to
+///        the export (global game content is not the requester's personal data).
+#[test]
+fn data_lifecycle_export_scope_structurally_narrower() {
+    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
+
+    let mut exportable: Vec<&str> = Vec::new();
+    for entry in manifest {
+        if entry.exportable {
+            exportable.push(entry.table);
+        }
+    }
+    exportable.sort_unstable();
+
+    let expected_exportable = [
+        "account",
+        "battle",
+        "battle_action",
+        "battle_challenge",
+        "character",
+        "heal_cooldown",
+        "inventory",
+        "monster",
+        "monster_pub",
+        "player",
+        "player_conversation",
+        "player_dialogue_state",
+        "player_quest",
+        concat!("player", "_wallet"),
+        "playtest_event",
+        "profile",
+        "trade_offer",
+    ];
+    assert_eq!(
+        exportable, expected_exportable,
+        "T4 / spec §5: the exportable set is wrong. It must be EXACTLY the twelve ERASE \
+         tables + the four ANONYMIZE tables + `character`. Both directions matter: an \
+         all-false manifest passes every negative spot check and ships an export feature \
+         that returns an empty bundle for every request (§5's walk filters on \
+         `exportable: true`), while a manifest that exports one table too many leaks either \
+         a must-never-leak seed or global content the requester does not own."
+    );
+
+    for banned in ["battle_wild", "guest_claim", "export_bundle"] {
+        assert!(
+            !exportable.contains(&banned),
+            "T4 / spec §5: `{banned}` must carry `exportable: false`. Export scope is a \
+             THIRD, orthogonal axis and must be structurally NARROWER than deletion scope: \
+             battle_wild carries the raw RNG individuality seed, guest_claim carries a live \
+             secret, and export_bundle is the export's own output."
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T9 / X3 — CROSS-MANIFEST CONSISTENCY.
+// ---------------------------------------------------------------------------
+
+/// T9 / X3: every key of the JS `REKEY_MANIFEST` names a table that
+/// `DATA_LIFECYCLE_MANIFEST` also classifies.
+///
+/// The slice deliberately ships TWO manifests (the Rust deletion/export
+/// classification in schema.rs, the JS re-key policy in the eval) because
+/// object-valued JS entries are measured red-on-arrival against
+/// `[G6/consumed]`, which infers REKEY from `typeof policy === 'string'`. That
+/// deviation is only safe if the two cannot drift apart, and this is the clause
+/// that makes it so: both are independently tied to the same live Rust sources,
+/// and a table renamed or split on one side must surface on the other.
+///
+/// The extraction FAILS LOUD below twenty keys. A scan that silently returns
+/// nothing is indistinguishable from a scan that found no violation, and this
+/// one reads a foreign-language file whose formatting nothing in the Rust
+/// toolchain gates.
+///
+/// Kills: renaming a table in schema.rs and leaving the JS key behind (or vice
+///        versa); splitting a table and updating only one manifest; an
+///        extraction that quietly degrades to zero keys and reports success.
+#[test]
+fn data_lifecycle_cross_manifest_consistency() {
+    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
+    let keys = m22_rekey_manifest_keys();
+
+    assert!(
+        keys.len() >= 20,
+        "T9 extraction rot: only {} `table.column` key(s) were read out of the JS \
+         REKEY_MANIFEST; the fork tree carries 23 and this slice adds \
+         export_bundle.owner_identity. An extractor that quietly stopped finding keys \
+         reports `consistent` about a manifest it never read. Keys seen: {keys:?}",
+        keys.len()
+    );
+    assert!(
+        keys.iter().any(|key| key == "account.identity"),
+        "T9 extraction anchor: the stable key `account.identity` is not among the extracted \
+         keys, so the scan is reading something other than the manifest."
+    );
+
+    for key in &keys {
+        let table = match key.split_once('.') {
+            Some((table, _)) => table,
+            None => panic!("T9: extracted key {key:?} is not `table.column` shaped."),
+        };
+        let classified = manifest.iter().any(|entry| entry.table == table);
+        assert!(
+            classified,
+            "T9: the JS REKEY_MANIFEST policies `{key}`, but DATA_LIFECYCLE_MANIFEST has no \
+             entry for the table `{table}`. The two manifests have drifted: the M22 cascade \
+             reads the Rust one and would skip this table entirely, while the claim re-key \
+             path still believes it exists. Update BOTH in the same commit."
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T7 / X2 — THE `export_bundle` TABLE: SHAPE AND PRIVACY.
+// ---------------------------------------------------------------------------
+
+/// T7 / X2: `export_bundle` is declared PRIVATE with exactly the eight columns
+/// of the S2/S4/S8 chunk contract, in order, with the exact types.
+///
+/// Pinned by EXACT EQUALITY over the comment-stripped, string-preserving,
+/// whitespace-squashed declaration — the same mechanics as
+/// `schema_account_struct_shape_tripwire`, for the same reason: BSATN layout is
+/// order-sensitive, and a containment check is green on an appended field, a
+/// reordered pair and a widened type alike.
+///
+/// The privacy half is pinned three ways, because `public` on a VIEW attribute
+/// is inert while `public` on a TABLE is the entire security boundary: the table
+/// attribute's ONLY argument must be `accessor = export_bundle`, that attribute
+/// must occur exactly once, and no `accessor = export_bundle,` spelling — which
+/// is what ANY additional attribute argument would produce — may appear anywhere
+/// in schema.rs.
+///
+/// The derive-before-attribute order is pinned too, and is not style:
+/// `parseTableSchemas` matches the table attribute immediately followed by
+/// `pub struct`, so a derive placed AFTER that attribute makes the whole
+/// declaration unreadable to `[G6/parse]`, to the schema baseline and to T1's
+/// census.
+///
+/// Kills: adding `public` to the attribute (the bundle is one player's entire
+///        personal-data dump — a public table hands it to every client);
+///        renaming or reordering any column (S4's TTL reaper and S8's client
+///        assembler both consume these names in this order);
+///        widening `chunk_index`/`total_chunks`, or dropping the `#[auto_inc]`
+///        on the synthetic primary key;
+///        dropping the btree index on `owner_identity` (the owner-scoped view
+///        and the cascade both filter on it);
+///        declaring the derive after the table attribute;
+///        declaring a second `export_bundle` table.
+#[test]
+fn export_bundle_struct_shape_and_privacy() {
+    let schema = stripped_keep_strings(SCHEMA_RS);
+
+    let expected_head = concat!(
+        "#[derive(Clone)]",
+        "#[spacetimedb::",
+        "table",
+        "(",
+        "access",
+        "or=export_bundle)]",
+        "pub",
+        "structExportBundle{",
+    );
+    assert_eq!(
+        m22_count_occurrences(&schema, expected_head),
+        1,
+        "T7 / X2: schema.rs must declare `export_bundle` exactly once, as `#[derive(Clone)]` \
+         followed by a table attribute whose ONLY argument is `accessor = export_bundle`, \
+         followed by `pub struct ExportBundle`. Anything else is one of: a `public` table \
+         (the bundle is one player's whole personal-data dump), an attribute-argument order \
+         parseTableSchemas cannot read, a derive placed after the attribute (same effect), \
+         or a second declaration."
+    );
+
+    let attr_prefix = concat!(
+        "#[spacetimedb::",
+        "table",
+        "(",
+        "access",
+        "or=export_bundle"
+    );
+    assert_eq!(
+        m22_count_occurrences(&schema, attr_prefix),
+        1,
+        "T7 / X2: exactly one table attribute in schema.rs may name the `export_bundle` \
+         accessor."
+    );
+    assert_eq!(
+        m22_count_occurrences(&schema, concat!("access", "or=export_bundle,")),
+        0,
+        "T7 / X2: the `export_bundle` table attribute carries an EXTRA argument. `public` is \
+         the dangerous one — unlike the `public` on a view attribute (inert, ADR-0194/0198), \
+         `public` on a TABLE is the whole security boundary. Spec §5's sanctioned idiom is \
+         the private table plus an owner-scoped view BODY."
+    );
+
+    let marker = concat!("struct", "ExportBundle{");
+    let fields = extract_squashed_fn_body(&schema, marker).unwrap_or_else(|| {
+        panic!(
+            "T7 / X2: the ExportBundle struct declaration was not found in schema.rs (marker \
+             {marker:?} over the comment-stripped, whitespace-squashed source). The shape \
+             pin cannot check a declaration it cannot read — hard failure, never a skip."
+        )
+    });
+    let expected_fields = concat!(
+        "#[primary",
+        "_key]",
+        "#[auto",
+        "_inc]",
+        "pubchunk_id:u64,",
+        "#[index(btree)]",
+        "pubowner_identity:Identity,",
+        "pubrequest_id:u64,",
+        "pubtable_name:String,",
+        "pubchunk_index:u32,",
+        "pubtotal_chunks:u32,",
+        "pubpayload_json:String,",
+        "pubcreated_at_ms:i64,",
+    );
+    assert_eq!(
+        fields, expected_fields,
+        "T7 / X2 / spec §5: `export_bundle`'s column list is not the S2/S4/S8 chunk \
+         contract. It must be exactly, in order: chunk_id (u64, primary key, auto_inc — \
+         views strip primary keys, and a primary-key column may carry no default), \
+         owner_identity (Identity, btree), request_id (u64), table_name (String), \
+         chunk_index (u32), total_chunks (u32), payload_json (String), created_at_ms (i64 — \
+         server-stamped at insert; the S4 TTL reaper re-derives staleness from it, so no \
+         caller can supply it). S4's reaper and S8's client assembler both read these names \
+         in this order; a rename or a reorder breaks them silently, and a reorder also \
+         changes the BSATN layout of a live table."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T6 / X7 — THE `auth_issuer` DOC COMMENT.
+// ---------------------------------------------------------------------------
+
+/// T6 / X7: `Account.auth_issuer` no longer claims it is never updated, and its
+/// OWN doc-comment block names the one sanctioned exception.
+///
+/// Spec §3 is explicit: the M22 cascade overwrites `auth_issuer` with the
+/// `TOMBSTONE_AUTH_ISSUER` sentinel (a String, not null — widening the column to
+/// `Option<String>` would be exactly the non-additive, semantics-changing edit
+/// §4.1 declines to make), and "S2 must update that comment, because leaving it
+/// stale would make the next reader believe the field is immutable".
+///
+/// TWO CLAUSES, AND THE SECOND IS LOCALIZED. The whole-file clause bans the
+/// stale phrase in a slash-free, whitespace-free view, so it cannot be dodged by
+/// a rustfmt re-wrap that moves the line break. The second clause reads ONLY the
+/// contiguous `///` block immediately above `pub auth_issuer: String,` — a
+/// wide-window `contains` is satisfied by the sentinel appearing anywhere else
+/// in schema.rs (the manifest's own `basis` prose will mention it) while the
+/// field's comment stays stale-but-reworded, which is a red-team finding, not a
+/// hypothetical.
+///
+/// Kills: leaving the comment untouched; rewording it without naming the
+///        exception; naming `TOMBSTONE_AUTH_ISSUER` somewhere else in the file
+///        and calling it done.
+#[test]
+fn auth_issuer_doc_comment_states_deletion_exception() {
+    let flat = m22_squashed_no_slashes(SCHEMA_RS);
+    let stale = concat!("Neverupdated", "afterinsert");
+    assert!(
+        !flat.contains(stale),
+        "T6 / X7 / spec §3: schema.rs still claims `auth_issuer` is never updated after \
+         insert. M22 makes the deletion cascade the ONE sanctioned exception — it writes \
+         game_core::TOMBSTONE_AUTH_ISSUER over that column — so the comment is now false. \
+         The needle is matched with all whitespace AND all slashes removed, so re-wrapping \
+         the doc comment across different lines does not dodge it."
+    );
+
+    let decl = "pub auth_issuer: String,";
+    assert_eq!(
+        m22_count_occurrences(SCHEMA_RS, decl),
+        1,
+        "T6 fail-loud: {decl:?} must occur exactly once in schema.rs for `the doc block \
+         immediately above it` to be an unambiguous localization."
+    );
+
+    let block = m22_doc_block_before(SCHEMA_RS, decl);
+    assert!(
+        !block.is_empty(),
+        "T6 fail-loud: `{decl}` carries NO doc-comment block at all. A field whose \
+         mutability rule just changed and whose comment was deleted is worse than a stale \
+         comment, not better."
+    );
+    assert!(
+        block.contains("TOMBSTONE_AUTH_ISSUER"),
+        "T6 / X7: the doc-comment block on `auth_issuer` does not name \
+         `TOMBSTONE_AUTH_ISSUER`. This clause is LOCALIZED to the field's own block on \
+         purpose: a whole-file check is satisfied by the sentinel appearing in the \
+         manifest's basis prose while this comment stays stale. Block read: {block:?}"
+    );
+    assert!(
+        block.to_lowercase().contains("deletion"),
+        "T6 / X7: the doc-comment block on `auth_issuer` names the sentinel but never says \
+         WHEN it is written. State the exception: the M22 account-deletion cascade is the \
+         only writer. Block read: {block:?}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T8 / X8 — THE LEGAL-STATE PREDICATE, EXTENDED FOR `terminal_at_ms`.
+// ---------------------------------------------------------------------------
+
+/// T8 / X8: `terminal_at_ms.is_some()` implies `PendingDeletion` AND a deletion
+/// request stamp — a terminal marker with no request behind it is illegal.
+///
+/// Spec §4.1 defines the terminal predicate as
+/// `status == PendingDeletion && terminal_at_ms.is_some()`, and §4.4 step 5 sets
+/// the marker ONLY after steps 1-4 complete, i.e. only inside a live deletion.
+/// The existing invariant (ADR-0195 D3) ties `status` to
+/// `deletion_requested_at_ms`; without a matching clause for the new column,
+/// `Active` + `terminal_at_ms: Some(..)` — an account that was erased and then
+/// resurrected — reads as a perfectly legal state.
+///
+/// The `Active` row below is the one that BITES: under the pre-M22 predicate
+/// (Active implies no request stamp) it is LEGAL, so only the new clause can
+/// reject it. The `PendingDeletion` row is already illegal under the old clause
+/// and is here to pin that the extension did not weaken what was enforced.
+///
+/// Kills: shipping `terminal_at_ms` with no legality rule at all — the
+///        illegal-states-representable smell the struct-shape tripwire's own
+///        contract exists to force a conscious re-derivation of;
+///        a clause that checks only the status half and ignores the stamp.
+#[test]
+fn account_legal_state_rejects_terminal_without_request() {
+    for status in [AccountStatus::Active, AccountStatus::PendingDeletion] {
+        let account = Account {
+            status,
+            deletion_requested_at_ms: None,
+            terminal_at_ms: Some(900),
+            ..base_account(11)
+        };
+        assert!(
+            !account_state_is_legal(&account),
+            "T8 / spec §4.1: an account carrying a terminal marker but NO deletion request \
+             stamp is an illegal state (status was {status:?}). The cascade sets \
+             terminal_at_ms only as its LAST step (§4.4 step 5), after a request was \
+             recorded and its grace window elapsed, so a terminal marker with nothing \
+             behind it means either the request stamp was cleared under a completed \
+             deletion or the marker was written by something that is not the reaper."
+        );
+    }
+}
+
+/// T8 / X8: `account_state_is_legal` classifies an `Active` account carrying a
+/// terminal marker as ILLEGAL.
+///
+/// SCOPE — THIS IS A PARTIAL TOOTH, AND THE MISSING HALF IS NAMED. What follows
+/// is pinned: the PURE PREDICATE rejects the shape. What is NOT pinned, by this
+/// test or by anything else in this file: that a reducer path refuses to PRODUCE
+/// the shape. On the tree S2 ships, one demonstrably can. `needs_cancel_write`
+/// (`accounts.rs`) is `matches!(status, PendingDeletion)` and a terminal account
+/// IS `PendingDeletion`, so a late `cancel_account_deletion` is not
+/// short-circuited; `cancelled_deletion` (`accounts.rs`) then sets `Active` +
+/// `None` and carries `terminal_at_ms` forward through `..existing`; and its only
+/// guard is a `debug_assert!` that the shipped wasm compiles out (the workspace
+/// `Cargo.toml`'s `[profile.release]` sets `overflow-checks` and nothing else —
+/// the profile fact this file's ACCOUNT LEGAL-STATE INVARIANT banner already
+/// records). In a release build that constructor structurally CAN mint the state
+/// asserted illegal below.
+///
+/// That gap is SLICE SCOPE, not an oversight, and it is owned elsewhere: the
+/// reducer-side rejection is spec §4.5 "Late cancel" / criterion PRV1-4 — WHEN
+/// `cancel_account_deletion` is called by an identity whose `terminal_at_ms` is
+/// `Some` THE SYSTEM SHALL reject with a distinct, non-generic error and SHALL
+/// NOT reactivate the account — which spec §7.2 assigns to S3. S2's declared
+/// touches exclude reducer bodies, and no S2 constructor ever writes `Some` to
+/// the column, so the illegal state is unreachable until S3 lands. S3 must ship
+/// that guard AND a constructor-level test for `cancelled_deletion`; a residual
+/// is filed to that effect. Do not read this test as covering it.
+///
+/// Spec §4.1's terminal predicate is `status == PendingDeletion &&
+/// terminal_at_ms.is_some()`, so Active + a marker is a resurrected tombstone:
+/// every gate that asks "is this account terminal?" answers no, while the row
+/// records that its data was already erased.
+///
+/// BOTH request shapes are exercised, and they bite different clauses. With
+/// `Some(request)` the row is already illegal under the pre-M22 status rule
+/// (Active implies no stamp) — that row proves the extension did not
+/// accidentally LOOSEN the existing invariant. With `None` the row is legal
+/// under the pre-M22 predicate and can only be rejected by the new terminal
+/// clause — that row is the tooth.
+///
+/// Kills: a terminal clause spelled `terminal.is_some() implies
+///        deletion_requested_at_ms.is_some()` that forgets the status half (the
+///        None row still reds, but such a clause admits Active + Some(stamp) +
+///        Some(terminal), which the first row here catches);
+///        a terminal clause deleted outright;
+///        a predicate that answers the same thing for every input.
+///
+/// Does NOT kill: `cancel_account_deletion` reactivating a terminal account. See
+///        the scope note above — that is S3's PRV1-4 guard, the `debug_assert!`
+///        is compiled out of release, and NO test in this file covers it today.
+#[test]
+fn account_legal_state_rejects_terminal_while_active() {
+    let cases: [(&str, Option<i64>); 2] = [
+        ("with a deletion request stamp", Some(500)),
+        ("with no deletion request stamp", None),
+    ];
+    for (label, requested) in cases {
+        let account = Account {
+            status: AccountStatus::Active,
+            deletion_requested_at_ms: requested,
+            terminal_at_ms: Some(900),
+            ..base_account(12)
+        };
+        assert!(
+            !account_state_is_legal(&account),
+            "T8 / spec §4.1: an Active account carrying a terminal marker ({label}) is an \
+             illegal state. The terminal predicate is `status == PendingDeletion && \
+             terminal_at_ms.is_some()`, so an Active row with a marker is a resurrected \
+             tombstone: every terminal check reads `not terminal` while the row records \
+             that the account's data was already erased."
+        );
+    }
+}
+
+/// T8 / X8: the ONE legal terminal shape — `PendingDeletion` + a request stamp +
+/// a terminal marker — is ACCEPTED, and the all-`None` fresh shape stays legal.
+///
+/// This is the anti-over-strictness half, and a reviewer found the cheat it
+/// kills: a clause spelled `account.terminal_at_ms.is_none()` (or any
+/// always-reject-`Some` variant) passes BOTH negative tests above and breaks
+/// S3's reaper on its very first write — the constructor `debug_assert!` that
+/// stamps the marker would fire in every debug build, and the predicate would
+/// declare the completed-deletion state itself illegal.
+///
+/// Kills: an always-reject-Some terminal clause; a predicate mutated to a
+///        constant `false`, which the two negative tests above cannot see.
+#[test]
+fn account_legal_state_accepts_legal_terminal_shape() {
+    let terminal = Account {
+        status: AccountStatus::PendingDeletion,
+        deletion_requested_at_ms: Some(500),
+        terminal_at_ms: Some(900),
+        ..base_account(13)
+    };
+    assert!(
+        account_state_is_legal(&terminal),
+        "T8 / spec §4.4 step 5: PendingDeletion + Some(requested) + Some(terminal) is the \
+         state a COMPLETED cascade leaves behind, and it must be LEGAL. A clause spelled \
+         `terminal_at_ms.is_none()` satisfies both negative terminal tests and makes the one \
+         state S3's reaper actually writes illegal — every constructor debug_assert would \
+         fire on the first real deletion."
+    );
+
+    let fresh = base_account(14);
+    assert!(
+        fresh.terminal_at_ms.is_none(),
+        "T8 fixture: the baseline account must carry no terminal marker for the next \
+         assertion to be about the all-None shape at all."
+    );
+    assert!(
+        account_state_is_legal(&fresh),
+        "T8: the fresh Active account (no request stamp, no terminal marker, no claim \
+         provenance) must remain LEGAL. A terminal clause that rejects the ABSENCE of a \
+         marker inverts the rule and makes every ordinary account illegal."
     );
 }

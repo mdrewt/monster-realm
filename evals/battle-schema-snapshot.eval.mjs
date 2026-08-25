@@ -2550,10 +2550,11 @@ pub struct Inventory {
   const realVisTableNames = Object.keys(realVisAll);
   const realPublicCount = realVisTableNames.filter((t) => realVisAll[t] === 'public').length;
   const realPrivateCount = realVisTableNames.filter((t) => realVisAll[t] === 'private').length;
-  if (realPublicCount !== 18 || realPrivateCount !== 20) {
+  if (realPublicCount !== 18 || realPrivateCount !== 21) {
     teeth.push(
       `T-VIS-ANCHORS FAILED: the real corpus derives ${realPublicCount} public / ` +
-        `${realPrivateCount} private table(s), expected 18/20 (measured a6ae43c) — if a table's ` +
+        `${realPrivateCount} private table(s), expected 18/21 (measured a6ae43c; +export_bundle ` +
+        `private, M22-S2/ADR-0207) — if a table's ` +
         `declared visibility legitimately changed, update this tooth's pinned counts DELIBERATELY ` +
         `from ADR-0199, not to silence a red`,
     );
@@ -2620,6 +2621,10 @@ pub struct Inventory {
     'pvp_deadline_schedule',
     'battle_challenge_reaper_schedule',
     'trade_offer_reaper_schedule',
+    // M22-S2 (ADR-0207): one player's whole personal-data export dump — the
+    // canonical must-never-leak shape (ADR-0015); read path is the S4
+    // owner-scoped view, never the table.
+    'export_bundle',
   ];
   for (const t of pinnedPrivateTables) {
     if (realVisAll[t] !== 'private') {

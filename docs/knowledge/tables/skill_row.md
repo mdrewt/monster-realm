@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: skill_row
 slug: tables/skill_row
-updated: 2026-08-23
+updated: 2026-08-25
 tags: [schema, spacetimedb, public]
 abstract: "Skill definitions seeded from the `game-core` RON registry."
 resource: server-module/src/schema.rs#L102
