@@ -1,13 +1,15 @@
 // ui/menuView.ts — thin DOM shell for the two-level main menu (uxd3, ADR-0162).
 //
 // `helpView.ts` precedent: the constructor resolves its elements once and throws loudly on
-// a missing one; `visible` reads the live DOM; `show()`/`hide()` write ONLY `style.display`
-// so the shell's `position:fixed;inset:0;z-index:100` survives a toggle; `render()` rebuilds
-// authoritatively via `replaceChildren`.
+// a missing one; `visible` reads the live DOM; the only STYLE `show()`/`hide()` write is
+// `style.display`, so the shell's `position:fixed;inset:0;z-index:100` survives a toggle —
+// every ARIA, initial-focus and focus-trap write on that edge is delegated to `overlayA11y`
+// rather than performed here; `render()` rebuilds authoritatively via `replaceChildren`.
 //
 // Deviation from helpView's zero-arg form: the menu is interactive, so it takes a callbacks
-// object (`renameView`/`shopView` precedent). It still decides NOTHING — every input is
-// forwarded verbatim to `menuModel.menuStep` (ADR-0014 functional core).
+// object (`renameView`/`shopView` precedent). It decides no NAVIGATION — every input is
+// forwarded verbatim to `menuModel.menuStep` (ADR-0014 functional core). The one decision it
+// makes is event ROUTING: which listener owns which key; see the keydown listener below.
 //
 // XSS firewall (ADR-0135): `textContent` / `createElement` / `replaceChildren`, plus the
 // attribute primitives `setAttribute` / `removeAttribute` that carry the ARIA semantics —
@@ -50,12 +52,18 @@ export class MenuView {
     if (!backHint) throw new Error('menu-back-hint missing');
     this.#backHintEl = backHint;
 
-    // m23-s6 (ADR-0205 D1/D2, A11Y-24): the listbox anchor is a CONSTRUCTOR-TIME contract, not
-    // a render-time one — replaceChildren rebuilds the CHILDREN, never the <ul> itself, so the
-    // role and the name must already be in place before the first render(). The name is an
-    // IDREF derived from the ALREADY-RESOLVED heading element (never a second lookup and never
-    // a literal): the heading IS the breadcrumb and its TEXT changes per level, so a frozen
-    // aria-label would announce "Menu" from inside the Party submenu.
+    // m23-s6 (ADR-0205 D1/D2, M23 §4 row S6): the listbox anchor is a CONSTRUCTOR-TIME
+    // contract, not a render-time one — replaceChildren rebuilds the CHILDREN, never the <ul>
+    // itself, so the role and the name must already be in place before the first render(). The
+    // name is an IDREF derived from the ALREADY-RESOLVED heading element (never a second lookup
+    // and never a literal): the heading IS the breadcrumb and its TEXT changes per level, so a
+    // frozen aria-label would announce "Menu" from inside the Party submenu.
+    //
+    // KNOWN WINDOW: between construction and the first render() the IDREF names an EMPTY
+    // #menu-heading, i.e. an unnamed listbox. Nothing in THIS file closes that window —
+    // production is safe only because the single open path renders BEFORE it shows
+    // (`openMenu()`, main.ts:585-588). Any future caller that shows without rendering first
+    // re-opens it.
     // `tabindex` on the <ul> belongs to index.html (it ships exactly "0") — never written here.
     this.#rowsEl.setAttribute('role', 'listbox');
     this.#rowsEl.setAttribute('aria-labelledby', this.#headingEl.id);
@@ -149,9 +157,15 @@ export class MenuView {
       li.dataset.menuIndex = String(row.index);
       li.dataset.selected = row.selected ? 'true' : 'false';
       li.dataset.disabled = row.disabled ? 'true' : 'false';
-      // m23-s6: the option id comes from `row.index` — the VM's own field, which is what the
-      // delegated listeners feed back into menuStep — NEVER the array position.
-      li.id = `menu-option-${row.index}`;
+      // m23-s6: the option id is LEVEL-QUALIFIED and its numeric part comes from `row.index` —
+      // the VM's own field, which is what the delegated listeners feed back into menuStep —
+      // NEVER the array position. The `vm.level` qualifier is not decoration: buildMenuViewModel
+      // emits index = array position at BOTH levels, so without it "categories, Party selected"
+      // and "Party's leaves, Monster Box selected" produce the SAME id, and descending a level
+      // leaves aria-activedescendant at an UNCHANGED string. ATs announce an option on a CHANGE
+      // of that value, so an unchanged string is silence — on KeyM-then-Enter, the default path
+      // into the menu.
+      li.id = `menu-option-${vm.level}-${row.index}`;
       li.setAttribute('role', 'option');
       // Every option in a single-select listbox carries an EXPLICIT aria-selected; an absent
       // 'false' would leave the selection ambiguous to an AT.
@@ -164,6 +178,7 @@ export class MenuView {
       // the row, the next replaceChildren destroys that node, the active element falls back to
       // <body>, and aria-activedescendant — which only speaks while the listbox itself is the
       // active element — goes permanently silent. Measured, not theoretical.
+      //
       // Grey-not-hide: an unavailable leaf is always rendered, just dimmed and non-routing.
       li.style.opacity = row.disabled ? '0.4' : '1';
       li.style.fontWeight = row.selected ? 'bold' : 'normal';
@@ -172,11 +187,15 @@ export class MenuView {
     });
     this.#rowsEl.replaceChildren(...items);
 
-    // AFTER the rebuild, never before: the IDREF must name a LIVE node, not one the
-    // replaceChildren just detached. `removeAttribute` is the clear — an empty string is a
-    // DANGLING IDREF, i.e. a listbox still claiming an active descendant that does not exist.
+    // A11Y-24 — the selection pointer, discharged HERE: this is the write that tracks a
+    // changing selection index. AFTER the rebuild, never before: the IDREF must name a LIVE
+    // node, not one the replaceChildren just detached. `removeAttribute` is the clear — an
+    // empty string is a DANGLING IDREF, i.e. a listbox still claiming an active descendant that
+    // does not exist. The value is built from the IDENTICAL expression the rows use, level
+    // qualifier included, so the pointer is a pure function of (vm.level, row.index).
     const active = vm.rows.find((r) => r.selected);
     if (active === undefined) this.#rowsEl.removeAttribute('aria-activedescendant');
-    else this.#rowsEl.setAttribute('aria-activedescendant', `menu-option-${active.index}`);
+    else
+      this.#rowsEl.setAttribute('aria-activedescendant', `menu-option-${vm.level}-${active.index}`);
   }
 }

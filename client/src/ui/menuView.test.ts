@@ -42,7 +42,7 @@
 // Do NOT edit these tests to match a buggy implementation — correct them from the plan only.
 //
 // ---------------------------------------------------------------------------
-// m23-s6 ADDITION (2026-08-25) — keyboard/AT semantics for the SIXTEENTH overlay.
+// m23-s6 ADDITION (2026-08-24) — keyboard/AT semantics for the SIXTEENTH overlay.
 // ADDITIVE ONLY: all 21 pre-existing `it(` blocks are byte-identical; nothing above was
 // weakened. What changed outside them, and why each change was MEASURED to be necessary:
 //   (1) `mountMenuOverlay` now mirrors client/index.html:103-117 — `role="dialog"` +
@@ -76,6 +76,36 @@
 // replaceChildren orphans focus to <body>, after which aria-activedescendant announces
 // nothing and this slice's whole deliverable is dead (red-team MEASURED on a candidate
 // build; that is why MV-A11Y-OPTION-01 asserts hasAttribute('tabindex') === false).
+//
+// ---------------------------------------------------------------------------
+// m23-s6 FIX CYCLE 1 (2026-08-25) — one CONTRACT CHANGE and six anti-cheat teeth.
+// Still ADDITIVE: the 21 pre-existing `it(` blocks remain byte-identical, and no test using a
+// legacy tag was added, removed or retitled (gate X14 asserts those counts EXACTLY).
+//
+// THE CONTRACT CHANGE (P1 — a real defect, measured by red-team on the first candidate).
+// `buildMenuViewModel` emits `index` = ARRAY POSITION at BOTH levels, so "categories, Party
+// selected (0)" and "Party's leaves, Monster Box selected (0)" produced the SAME option id.
+// Entering the first submenu — KeyM then Enter, the DEFAULT landing path — therefore left
+// `aria-activedescendant` at an UNCHANGED string, and NVDA/JAWS key their option announcement
+// on a value CHANGE: the slice's headline deliverable was SILENT on its single most common
+// transition. The option id is now LEVEL-QUALIFIED — `menu-option-<vm.level>-<row.index>` —
+// and aria-activedescendant is built from the identical expression. Encoded below by
+// MV-A11Y-OPTIONID-01 (both levels, out-of-order indices) and by the new
+// MV-A11Y-ACTIVEDESC-LEVEL-01, which is the tooth that would have caught it.
+//
+// THE SURVIVING CHEATS THIS CYCLE CLOSES (each of them passed the previous 37/37 suite):
+//   CHEAT-39  openOverlayA11y() parked at the END of render()  -> MV-A11Y-REOPEN-EDGE-01
+//   CHEAT-26  aria-activedescendant from the array position    -> MV-A11Y-ACTIVEDESC-01
+//   CHEAT-19  data-menu-index from the array position          -> MV-A11Y-OPTIONID-01
+//   CHEAT-21  `visible` reading a private boolean              -> MV-A11Y-VISIBLE-READS-DOM-01
+//   CHEAT-14  aria-labelledby hard-coded to the id literal     -> MV-SOURCE-SSOT-01
+//   CHEAT-30  an inline code->input map replacing menuKeyInput -> MV-SOURCE-SSOT-01
+// Plus: the PRESENCE source pins now scan COMMENT-STRIPPED text, because a raw-text `includes`
+// is forgeable by a decoy comment that outlives the code it claims to prove (three measured
+// bypasses of exactly that shape in this repo). The BAN pins — MV-NO-INNERHTML and
+// MV-NO-FOCUS-CALL — deliberately keep scanning RAW text: a banned API named in a comment is a
+// standing invitation and must still red.
+// ---------------------------------------------------------------------------
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from the plan only.
 
@@ -669,7 +699,10 @@ describe('MenuView — listbox and option semantics (m23-s6)', () => {
     // WRONG IMPL KILLED (2): a hard-coded `aria-labelledby="menu-heading"` string that does not
     //   come from the already-resolved heading element (plan anti-pattern 12 — a second
     //   getElementById). Asserting `=== headingEl.id` AND `getElementById(value) === headingEl`
-    //   kills both a typo'd literal and a dangling IDREF.
+    //   kills both a typo'd literal and a dangling IDREF. It does NOT kill a hard-coded literal
+    //   that happens to be CORRECT (CHEAT-14) — nothing behavioural can, since the fixture's
+    //   heading really is #menu-heading — so that one is pinned on the source in
+    //   MV-SOURCE-SSOT-01.
     // WRONG IMPL KILLED (3): `aria-label="Menu"` instead of `aria-labelledby` — the heading IS
     //   the breadcrumb and it CHANGES per level, so a frozen literal name would announce "Menu"
     //   while the player is inside the Party submenu.
@@ -748,22 +781,43 @@ describe('MenuView — listbox and option semantics (m23-s6)', () => {
     ).not.toHaveBeenCalled();
   });
 
-  it('MV-A11Y-OPTIONID-01 BITES: each option id is derived from row.index (never the array position), is document-unique, and cannot collide with an index.html id', () => {
+  it('MV-A11Y-OPTIONID-01 BITES: each option id is LEVEL-QUALIFIED and built from row.index — never the array position — is document-unique, and cannot collide with an index.html id', () => {
+    // THE ID CONTRACT: `menu-option-<vm.level>-<row.index>`.
     // WRONG IMPL KILLED (1): `menu-option-${arrayPosition}`. On every REAL view-model produced
     //   by buildMenuViewModel the two coincide, so no realistic fixture can tell them apart —
-    //   which is why this one hands render() indices 7 then 3, out of array order. A positional
-    //   impl paints menu-option-0 / menu-option-1 and reds here.
-    // WRONG IMPL KILLED (2): a constant id on every row (or ids that repeat across renders),
+    //   which is why this one hands render() indices 7 then 3, OUT of array order.
+    // WRONG IMPL KILLED (2) — THE P1 DEFECT (measured by red-team on the first candidate): an
+    //   id built from `row.index` ALONE, with no level qualifier. buildMenuViewModel emits
+    //   index = array position at BOTH levels, so "categories, Party selected (0)" and "Party's
+    //   leaves, Monster Box selected (0)" produce the SAME id — and the SAME
+    //   aria-activedescendant across the menu's most common transition. See
+    //   MV-A11Y-ACTIVEDESC-LEVEL-01 for the announcement half; this test pins the id half by
+    //   rendering the SAME two row.index values at BOTH levels and requiring different ids.
+    // WRONG IMPL KILLED (3): a constant id on every row (or ids that repeat within one render),
     //   which makes aria-activedescendant point at whichever duplicate the browser finds first.
-    // WRONG IMPL KILLED (3): an id namespace that collides with the static shell — a duplicate
+    // WRONG IMPL KILLED (4) — CHEAT-19: `data-menu-index` written from the array position while
+    //   the id is correct. This is the ONLY fixture in the file where position !== row.index, so
+    //   it is the only place that mismatch is observable — and it is not cosmetic: the delegated
+    //   click reads that dataset value back and feeds it to menuStep, so a positional write
+    //   opens the WRONG row on every re-indexed list. Pinned by a dataset census AND, end to
+    //   end, by a real click emission.
+    // WRONG IMPL KILLED (5): an id namespace that collides with the static shell — a duplicate
     //   id in the document silently breaks getElementById for the shell element too. Proved by
     //   reading client/index.html from disk: `menu-option` must not appear there at all.
-    const { view } = newView();
+    const { view, onInput } = newView();
     view.render(vmOf([row(7, 'Seven', 'A', true), row(3, 'Three', 'B')]));
 
     const items = liList();
     expect(items.length, 'ANTI-VACUITY: both rows must have been painted').toBe(2);
-    expect(items.map((li) => li.id)).toEqual(['menu-option-7', 'menu-option-3']);
+    expect(items.map((li) => li.id)).toEqual([
+      'menu-option-categories-7',
+      'menu-option-categories-3',
+    ]);
+    expect(
+      items.map((li) => li.dataset.menuIndex),
+      'CHEAT-19: data-menu-index is what the delegated click feeds back into menuStep — it must ' +
+        'be row.index, never the array position',
+    ).toEqual(['7', '3']);
     for (const li of items) {
       expect(
         document.querySelectorAll(`#${li.id}`).length,
@@ -771,6 +825,22 @@ describe('MenuView — listbox and option semantics (m23-s6)', () => {
       ).toBe(1);
       expect(document.getElementById(li.id)).toBe(li);
     }
+
+    // The SAME two row.index values at the OTHER level must produce DIFFERENT ids. That is the
+    // whole point of the level qualifier, and it is precisely what the P1 defect got wrong.
+    view.render(
+      vmOf([row(7, 'Seven', 'A', true), row(3, 'Three', 'B')], 'Party', 'Escape / ← — back', 'leaves'),
+    );
+    const leafItems = liList();
+    expect(leafItems.map((li) => li.id)).toEqual([
+      'menu-option-leaves-7',
+      'menu-option-leaves-3',
+    ]);
+
+    // CHEAT-19, end to end: a click on the FIRST row must emit index 7, not 0.
+    leafItems[0]!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
+    expect(onInput, 'the click must carry the ROW index').toHaveBeenCalledTimes(1);
+    expect(onInput).toHaveBeenCalledWith({ kind: 'click', index: 7 });
 
     // The collision half, read from the real shell. String.includes only — the repo bans a
     // dynamic RegExp (ReDoS / detect-non-literal-regexp).
@@ -798,24 +868,34 @@ describe('MenuView — listbox and option semantics (m23-s6)', () => {
     ).toBe(false);
   });
 
-  it('MV-A11Y-ACTIVEDESC-01 BITES: aria-activedescendant tracks the SELECTED row across renders and resolves to a live option inside #menu-rows', () => {
+  it('MV-A11Y-ACTIVEDESC-01 BITES: aria-activedescendant tracks the SELECTED ROW.INDEX across renders and resolves to a live option inside #menu-rows', () => {
     // WRONG IMPL KILLED (1): a set-once impl (written in the constructor, or only on the first
     //   render). Two DIFFERENT selections are rendered and the attribute value must CHANGE —
     //   this is the entire deliverable: every ArrowUp/ArrowDown re-renders, and if the pointer
     //   does not move, a screen reader announces the same row forever while the highlight moves.
-    // WRONG IMPL KILLED (2): pointing at the row's data-menu-index, its text, or an id that was
-    //   never written to the DOM — a dangling IDREF announces NOTHING. Resolving the value with
+    // WRONG IMPL KILLED (2) — CHEAT-26: the pointer computed from the selected row's ARRAY
+    //   POSITION while the id is built from `row.index`. The two coincide on every view-model
+    //   buildMenuViewModel actually emits, so ONLY an out-of-order fixture can separate them —
+    //   hence indices 5 / 2 / 9 below and an EXACT expected string, not merely "it changed".
+    //   Mismatched, the IDREF dangles and the listbox announces nothing at all.
+    // WRONG IMPL KILLED (3): pointing at the row's data-menu-index, its text, or an id that was
+    //   never written to the DOM — also a dangling IDREF. Resolving the value with
     //   getElementById and asserting the found node is an <li> INSIDE #menu-rows whose
     //   aria-selected is 'true' kills every one of those.
-    // WRONG IMPL KILLED (3): writing the attribute BEFORE replaceChildren (so it names a node
+    // WRONG IMPL KILLED (4): writing the attribute BEFORE replaceChildren (so it names a node
     //   from the PREVIOUS render, which is detached by the time an AT reads it) — the resolved
     //   node must be the live one, and `rows.contains(...)` is what proves it.
     const { view } = newView();
     const rows = rowsEl();
 
-    view.render(vmOf([row(0, 'Party', null, true), row(1, 'World'), row(2, 'Trade')]));
+    view.render(vmOf([row(5, 'Party', null, true), row(2, 'World'), row(9, 'Trade')]));
     const first = rows.getAttribute('aria-activedescendant');
-    expect(first, 'the selected row must be pointed at after the first render').not.toBeNull();
+    expect(
+      first,
+      'CHEAT-26: the pointer must be built from the SELECTED row.index (5), not from its array ' +
+        'position (0) — the two coincide on every real view-model, so only an out-of-order ' +
+        'fixture can tell them apart',
+    ).toBe('menu-option-categories-5');
     const firstEl = document.getElementById(first ?? '');
     expect(firstEl, 'the IDREF must resolve to a live element').not.toBeNull();
     expect(firstEl?.tagName).toBe('LI');
@@ -823,9 +903,13 @@ describe('MenuView — listbox and option semantics (m23-s6)', () => {
     expect(firstEl?.getAttribute('aria-selected')).toBe('true');
     expect(firstEl?.textContent).toBe('Party');
 
-    // A second, DIFFERENT selection — exactly what one ArrowDown produces.
-    view.render(vmOf([row(0, 'Party'), row(1, 'World'), row(2, 'Trade', null, true)]));
+    // A second, DIFFERENT selection — exactly what one ArrowDown produces. Its row.index (9) is
+    // again nothing like its array position (2).
+    view.render(vmOf([row(5, 'Party'), row(2, 'World'), row(9, 'Trade', null, true)]));
     const second = rows.getAttribute('aria-activedescendant');
+    expect(second, 'the pointer must follow the selection to row.index 9').toBe(
+      'menu-option-categories-9',
+    );
     expect(second, 'a set-once impl leaves the pointer on the old row').not.toBe(first);
     const secondEl = document.getElementById(second ?? '');
     expect(secondEl, 'the IDREF must resolve to a live element after the re-render').not.toBeNull();
@@ -875,6 +959,69 @@ describe('MenuView — listbox and option semantics (m23-s6)', () => {
       rows.getAttribute('aria-activedescendant'),
       'the pointer must come BACK once a row is selected again',
     ).not.toBeNull();
+  });
+
+  it('MV-A11Y-ACTIVEDESC-LEVEL-01 BITES: the pointer VALUE changes when the menu descends a level, even though BOTH levels select row.index 0', () => {
+    // THE P1 TOOTH — the one that was missing, and the reason the defect shipped past a green
+    // 37/37 suite. WRONG IMPL KILLED: `aria-activedescendant = menu-option-${row.index}`, with
+    //   no level qualifier. `buildMenuViewModel` (ui/menuModel.ts:320-349) emits `index` = the
+    //   ARRAY POSITION at BOTH levels, so the categories list with Party selected and Party's
+    //   leaf list with Monster Box selected BOTH produce index 0 — and therefore, pre-fix, the
+    //   IDENTICAL string. NVDA, JAWS and VoiceOver key their option announcement on a CHANGE of
+    //   the aria-activedescendant VALUE, so an unchanged string is SILENCE: the menu descends a
+    //   level, the whole list is replaced, the heading changes, and a screen-reader user is told
+    //   nothing at all. And this is not an edge case — KeyM then Enter, landing in the first
+    //   submenu, is the DEFAULT path into the menu.
+    // Every OTHER activedescendant test in this file re-renders WITHIN one level, which is
+    //   exactly why they all passed the broken impl.
+    const { view } = newView();
+    const rows = rowsEl();
+
+    view.render(vmOf([row(0, 'Party', null, true), row(1, 'World')]));
+    const atCategories = rows.getAttribute('aria-activedescendant');
+    expect(
+      atCategories,
+      'precondition: the categories level must point at its selected row (index 0)',
+    ).not.toBeNull();
+
+    // Descend: same row.index 0, different LEVEL. This is KeyM-then-Enter.
+    view.render(
+      vmOf(
+        [row(0, 'Monster Box', 'B', true), row(1, 'Backpack & Raising', 'I')],
+        'Party',
+        'Escape / ← — back',
+        'leaves',
+      ),
+    );
+    const atLeaves = rows.getAttribute('aria-activedescendant');
+    expect(atLeaves, 'the leaf level must point at its selected row too').not.toBeNull();
+
+    expect(
+      atLeaves,
+      'THE P1 BITE: descending a level MUST change the aria-activedescendant value — an ' +
+        'unchanged string is announced as nothing at all',
+    ).not.toBe(atCategories);
+
+    // ...and it must still be a real, live, selected option — a "change" produced by pointing
+    // at a node that does not exist would be worse than the silence it replaces.
+    const el = document.getElementById(atLeaves ?? '');
+    expect(el, 'the new IDREF must resolve to a live element').not.toBeNull();
+    expect(el?.tagName).toBe('LI');
+    expect(rows.contains(el), 'the active descendant must live INSIDE the listbox').toBe(true);
+    expect(el?.getAttribute('aria-selected')).toBe('true');
+    expect(el?.textContent).toBe('B — Monster Box');
+
+    // Back UP a level (Escape / ArrowLeft): the value must change again, and it must be
+    // DETERMINISTIC per level rather than a counter that merely differs from last time.
+    view.render(vmOf([row(0, 'Party', null, true), row(1, 'World')]));
+    const backAtCategories = rows.getAttribute('aria-activedescendant');
+    expect(backAtCategories, 'popping back must move the pointer off the leaf row').not.toBe(
+      atLeaves,
+    );
+    expect(
+      backAtCategories,
+      'the pointer is a pure function of (level, row.index) — the same state gives the same id',
+    ).toBe(atCategories);
   });
 });
 
@@ -1027,9 +1174,6 @@ describe('MenuView — overlay a11y wiring on the show/hide edge (m23-s6)', () =
     //   the third phase below catches; and a hide() that passes `undefined`, the overlay
     //   element, or the anchor as fallbackFocus — ADR-0205 A3 makes the literal `null` the
     //   obligation of every caller that is not S5.
-    // RED NOW for an assertion reason, not a missing import: hide() today is a bare
-    // `style.display = 'none'` (ui/menuView.ts:82-84) and calls nothing at all, so the very
-    // first count assertion fails at 0.
     const { view } = newView();
     expect(view.visible, 'precondition: this view was NEVER shown').toBe(false);
 
@@ -1074,7 +1218,38 @@ describe('MenuView — overlay a11y wiring on the show/hide edge (m23-s6)', () =
     expect(vi.mocked(closeOverlayA11y)).toHaveBeenLastCalledWith(S6_ID, null);
   });
 
-  it('MV-A11Y-REOPEN-EDGE-01 BITES: show() on an ALREADY-visible overlay does not re-open, and does not yank focus back', async () => {
+  it('MV-A11Y-VISIBLE-READS-DOM-01 BITES: `visible` reads the LIVE DOM, not a private boolean — a direct style write flips it in both directions', () => {
+    // WRONG IMPL KILLED — CHEAT-21: `get visible() { return this.#visible; }`, backed by a
+    //   private flag that show()/hide() assign. It passes every test that only ever drives the
+    //   view through its own API, which — before this test — was every test in this file.
+    //   main.ts has ~15 guard lists reading `menuView?.visible` (mutual exclusion via
+    //   overlayRegistry probes, the Escape ladder, the movement-input gate), so a getter that
+    //   can DISAGREE with the painted DOM desynchronises every one of them at once. This slice
+    //   makes it worse, not better: show()'s new edge guard is itself `const wasVisible =
+    //   this.visible`, so a stale flag degrades the guard into either "never open again" or
+    //   "re-open on every call" — and the second one re-schedules the deferred focus forever.
+    //   The desync is not hypothetical: ui/overlayA11y.ts:55-59 names the force-hide path that
+    //   writes style.display DIRECTLY, which is exactly what the two writes below simulate.
+    const overlay = document.getElementById(OVERLAY_ID) as HTMLElement;
+    const { view } = newView();
+
+    view.show();
+    expect(view.visible, 'ANTI-VACUITY: the open must have registered at all').toBe(true);
+
+    // The desync: something OTHER than hide() hides the node.
+    overlay.style.display = 'none';
+    expect(
+      view.visible,
+      'CHEAT-21: a private-boolean getter still reports TRUE here — the DOM says false, and the ' +
+        'DOM is what the player sees and what main.ts must agree with',
+    ).toBe(false);
+
+    // ...and back, so the getter is proved to TRACK the node rather than to have latched.
+    overlay.style.display = '';
+    expect(view.visible, 'the getter must follow the node in both directions').toBe(true);
+  });
+
+  it('MV-A11Y-REOPEN-EDGE-01 BITES: show() on an ALREADY-visible overlay does not re-open, and neither does render() — no re-opened record, no yanked focus', async () => {
     // WRONG IMPL KILLED: an UNGUARDED show() — one that calls openOverlayA11y every time
     //   instead of only on the hidden->visible EDGE (`const wasVisible = this.visible` read
     //   BEFORE the display write; the helpView.ts:42-50 shape). A re-open clears and
@@ -1083,6 +1258,13 @@ describe('MenuView — overlay a11y wiring on the show/hide edge (m23-s6)', () =
     //   which is why it is proved by the sentinel still holding focus AND by the call count.
     // ALSO KILLED: reading `this.visible` AFTER writing style.display — that reads a constant
     //   true and never opens at all, which the call-count assertion catches from the other side.
+    // ALSO KILLED — CHEAT-39, red-team's worst survivor: `openOverlayA11y('menuView',
+    //   this.#overlay)` parked at the END of render(). It passed every other test in this file,
+    //   because every other test either never re-renders after an open or never looks at where
+    //   focus went afterwards. In production renderMenu() runs on EVERY arrow key and EVERY
+    //   mouse hover, so the record would be torn down and rebuilt continuously — trap
+    //   uninstalled and reinstalled, and a fresh deferred-focus timer that drags the player back
+    //   to the listbox from wherever they just moved. render() must NEVER open.
     const outside = outsideSentinel();
     const { view } = newView();
 
@@ -1108,6 +1290,21 @@ describe('MenuView — overlay a11y wiring on the show/hide edge (m23-s6)', () =
       vi.mocked(openOverlayA11y),
       'a repeat show() is NOT an edge — openOverlayA11y must not be called a second time',
     ).toHaveBeenCalledTimes(1);
+
+    // CHEAT-39: two renders while visible — one arrow keypress and one mouse hover, in
+    // production terms — must change nothing about the open record or the focus.
+    view.render(CATEGORY_VM);
+    view.render(PARTY_VM);
+    await flushMacrotask();
+
+    expect(
+      vi.mocked(openOverlayA11y),
+      'CHEAT-39: render() must NEVER open — only the hidden->visible edge of show() may',
+    ).toHaveBeenCalledTimes(1);
+    expect(
+      document.activeElement,
+      'CHEAT-39: a re-render must not yank focus back into the listbox',
+    ).toBe(outside);
   });
 });
 
@@ -1201,10 +1398,12 @@ describe('MenuView — delegated keydown, split ownership (m23-s6)', () => {
     //   sessionGateBlocks()-first (main.ts:1102, W-M21B2-SESSION-GATE-FIRST / ADR-0182 D17 G20)
     //   and the Escape ladder. A menuView that swallows them routes a guarded action around the
     //   session gate. This cheat passes 21/21 of the pre-existing tests (measured).
-    // WRONG IMPL KILLED (2) — A STOP PLACED ABOVE THE `undefined` CHECK: KeyM is the worst case
-    //   and the reason it is in this list. It is the menu's own toggle key and the ONLY way to
-    //   close the menu once focus is inside the listbox; a blanket stop on #menu-rows makes the
-    //   menu UNCLOSEABLE by keyboard.
+    // WRONG IMPL KILLED (2) — A STOP PLACED ABOVE THE `undefined` CHECK: KeyM is the case that
+    //   catches it, and the reason it is in this list. It is the only code here that
+    //   `menuKeyInput` does not recognise AT ALL, so it is precisely what an impl that stops the
+    //   event before the `input === undefined` check would swallow — and it is the menu's own
+    //   toggle key, so swallowing it takes away one of the only two ways to dismiss the menu
+    //   while the listbox holds focus (Escape, asserted just above, is the other).
     // WRONG IMPL KILLED (3) — THE REPEAT LEAK: a missing `e.repeat` guard. It does not cause
     //   scrolling (main.ts:1103-1106 suppresses that first) — it causes SELECTION key-repeat,
     //   which main.ts:1129-1130 explicitly forbids. Asserted as "no emission", not as
@@ -1366,10 +1565,72 @@ describe('MenuView — delegated keydown, split ownership (m23-s6)', () => {
 });
 
 // ===========================================================================
-// m23-s6 BLOCK J — source pins (gates X12, X13).
+// m23-s6 BLOCK J — source pins (gates X12, X13, plus the fix-cycle-1 SSOT pins).
 // ===========================================================================
 
 describe('MenuView — m23-s6 source pins (A11Y-15, A11Y-25 shape)', () => {
+  // Comment delimiters, COMPOSED rather than written out (the client/src/render/world.test.ts
+  // :32-39 precedent), so this file contains no raw block-comment opener outside a real
+  // comment — a measured false-RED class in the repo's source-concatenating scanners.
+  const SLASH = '/';
+  const STAR = '*';
+  const LINE_OPEN = SLASH + SLASH;
+  const BLOCK_OPEN = SLASH + STAR;
+  const BLOCK_CLOSE = STAR + SLASH;
+
+  /** Strip line and block comments (the render/world.test.ts:41-60 stripper, COPIED rather than
+   *  imported — that file exports nothing). String-literal-BLIND on purpose: the needles under
+   *  test ARE string literals, so a string-aware pass would eat them. */
+  function stripComments(src: string): string {
+    let out = '';
+    let i = 0;
+    while (i < src.length) {
+      const two = src.slice(i, i + 2);
+      if (two === LINE_OPEN) {
+        while (i < src.length && src.charAt(i) !== '\n') i++;
+      } else if (two === BLOCK_OPEN) {
+        i += 2;
+        while (i < src.length && src.slice(i, i + 2) !== BLOCK_CLOSE) i++;
+        i += 2;
+      } else {
+        out += src.charAt(i);
+        i++;
+      }
+    }
+    return out;
+  }
+
+  /** CONTROL for the stripper itself, called by every test that depends on it. A stripper that
+   *  silently returned its input would restore the decoy-comment bypass these PRESENCE pins
+   *  exist to close, and nothing else in the file would notice. */
+  function assertStripperHasTeeth(): void {
+    const decoyLine =
+      'const a = 1;' + LINE_OPEN + " el.addEventListener('keydown', f)\nconst b = 2;\n";
+    const decoyBlock =
+      'const a = 1;' +
+      BLOCK_OPEN +
+      " el.addEventListener('keydown', f) " +
+      BLOCK_CLOSE +
+      ' const b = 2;\n';
+    const realCall = "el.addEventListener('keydown', (e) => {});\n";
+    expect(
+      stripComments(decoyLine).includes("addEventListener('keydown'"),
+      'CONTROL: a decoy hidden in a line comment must be STRIPPED',
+    ).toBe(false);
+    expect(
+      stripComments(decoyBlock).includes("addEventListener('keydown'"),
+      'CONTROL: a decoy hidden in a block comment must be STRIPPED',
+    ).toBe(false);
+    expect(
+      stripComments(realCall).includes("addEventListener('keydown'"),
+      'CONTROL: a REAL call outside any comment must SURVIVE stripping',
+    ).toBe(true);
+    expect(
+      stripComments(decoyLine).includes('const b = 2;'),
+      'CONTROL: the stripper must not eat the code AFTER a line comment',
+    ).toBe(true);
+  }
+
   // Read menuView.ts's raw text. Same pattern as MV-NO-INNERHTML above; String.includes only —
   // the repo bans a dynamic RegExp (ReDoS / detect-non-literal-regexp).
   function readMenuViewSource(): string {
@@ -1409,7 +1670,14 @@ describe('MenuView — m23-s6 source pins (A11Y-15, A11Y-25 shape)', () => {
     //   occur at least TWICE (once in the click body, once in the keydown body).
     // WRONG IMPL KILLED (3): a keydown bound to `window`/`document` rather than delegated on
     //   the <ul> — that reintroduces the double-step this slice's split ownership prevents.
-    const src = readMenuViewSource();
+    // WRONG IMPL KILLED (4) — THE DECOY COMMENT (fix cycle 1): deleting the real listener while
+    //   leaving a comment that MENTIONS it. A raw-text `includes` cannot tell the two apart, and
+    //   this repo has three measured bypasses of exactly that shape, so every PRESENCE pin below
+    //   runs against COMMENT-STRIPPED source. (The BAN pin in MV-NO-FOCUS-CALL deliberately does
+    //   the opposite — see its own comment.)
+    assertStripperHasTeeth();
+    const raw = readMenuViewSource();
+    const src = stripComments(raw);
     pinAntiVacuity(src);
     expect(
       src.includes('menu-rows'),
@@ -1418,19 +1686,68 @@ describe('MenuView — m23-s6 source pins (A11Y-15, A11Y-25 shape)', () => {
 
     expect(
       src.includes("addEventListener('click'"),
-      'menuView.ts must keep its delegated click listener',
+      'menuView.ts must keep its delegated click listener (in CODE, not in a comment)',
     ).toBe(true);
     expect(
       src.includes("addEventListener('keydown'"),
-      'menuView.ts must PAIR the click listener with a delegated keydown listener',
+      'menuView.ts must PAIR the click listener with a delegated keydown listener (in CODE)',
     ).toBe(true);
 
     const onInputRefs = src.split('callbacks.onInput').length - 1;
     expect(
       onInputRefs,
       'both the click body and the keydown body must reach the SAME callback identifier — at ' +
-        'least two references to callbacks.onInput',
+        'least two references to callbacks.onInput, outside any comment',
     ).toBeGreaterThanOrEqual(2);
+  });
+
+  it('MV-SOURCE-SSOT-01 BITES: the listbox name is READ OFF the resolved heading element and the key mapping is DELEGATED to menuKeyInput — neither is re-hard-coded in the DOM shell', () => {
+    // Two cheats that are BEHAVIOURALLY UNKILLABLE in happy-dom, which is exactly why they are
+    // pinned on comment-stripped source rather than on the DOM.
+    // WRONG IMPL KILLED (1) — CHEAT-14: `setAttribute('aria-labelledby', 'menu-heading')`, a
+    //   hard-coded IDREF literal in place of `this.#headingEl.id`. Every runtime assertion
+    //   agrees with it, because the fixture's heading really does carry that id — so
+    //   MV-A11Y-LISTBOX-01 cannot see it. It is plan anti-pattern 12 all the same: a SECOND
+    //   source of truth for the identity of an element the constructor already resolved and
+    //   already owns a handle to. The view must name the node it actually paints the breadcrumb
+    //   into, so the IDREF cannot drift from that node — e.g. when a later shell mounts the
+    //   heading itself (the four #app-mounted overlays of S4 already do exactly that for their
+    //   own anchors), the resolved-handle form follows and the literal dangles silently.
+    // WRONG IMPL KILLED (2) — CHEAT-30: an inline `Record<string, kind>` (or a switch) mapping
+    //   codes to inputs, instead of calling `menuKeyInput(e.code)`. It behaves identically
+    //   TODAY, and it is the precise ADR-0014 breach the split-ownership design was argued
+    //   around: the plan admits importing menuKeyInput into a DOM file ONLY because the
+    //   alternative is a second copy of the physical-key mapping living in the shell, where the
+    //   next keyboard-layout or alias change silently diverges from menuModel's SSOT.
+    assertStripperHasTeeth();
+    const raw = readMenuViewSource();
+    const src = stripComments(raw);
+    pinAntiVacuity(src);
+
+    // CHEAT-14, the positive pin.
+    expect(
+      src.includes('this.#headingEl.id'),
+      'the aria-labelledby IDREF must be READ OFF the heading element the constructor resolved',
+    ).toBe(true);
+    // CHEAT-14, the negative pin. Exactly ONE occurrence of the quoted id literal is legitimate:
+    // the constructor's own getElementById lookup. A hard-coded aria-labelledby adds a SECOND.
+    // (The throw message reads `menu-heading missing`, which this needle — which includes the
+    // CLOSING quote — deliberately does not match.) The count is also an anti-vacuity clause: a
+    // truncated read scores 0 and reds just as loudly as a forgery scores 2.
+    const headingIdLiterals = src.split("'menu-heading'").length - 1;
+    expect(
+      headingIdLiterals,
+      'the quoted heading id may appear EXACTLY once (the constructor lookup) — a second ' +
+        'occurrence is a hard-coded IDREF, i.e. a second source of truth for that identity',
+    ).toBe(1);
+
+    // CHEAT-30: menuKeyInput is the SSOT for code -> input, and it must be CALLED, not merely
+    // imported (the import statement carries no parenthesis, so this needle cannot match it).
+    expect(
+      src.includes('menuKeyInput('),
+      'the keydown body must CALL menuKeyInput — an inline code->kind map is a second copy of ' +
+        "the physical-key mapping inside a DOM file, which is menuModel's job alone",
+    ).toBe(true);
   });
 
   it('MV-NO-FOCUS-CALL BITES: menuView.ts contains no literal focus call — the single deferred focus lives ONLY in overlayA11y.ts (A11Y-15)', () => {
@@ -1442,6 +1759,10 @@ describe('MenuView — m23-s6 source pins (A11Y-15, A11Y-25 shape)', () => {
     //   of routing through openOverlayA11y's single owned timer. This slice is the one that
     //   makes menuView a focus-RECEIVING overlay, so the ban has to be pinned in this file.
     // This scan is the ONLY oracle for a focus call on a path no fixture reaches.
+    // DELIBERATELY NOT COMMENT-STRIPPED, unlike the PRESENCE pins above (fix cycle 1). The
+    // stripping exists because a comment can FORGE evidence that code exists; it must never be
+    // used to EXCUSE a banned API, because a comment naming one is a standing invitation to
+    // uncomment it, and the A11Y-15 ban is deliberately absolute.
     const src = readMenuViewSource();
     pinAntiVacuity(src);
     expect(
