@@ -5333,6 +5333,11 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
     // A bare `toBe(6)` would need recalibrating the day a 16th overlay gets a batch listener —
     // exactly the recalibration treadmill this tooth exists to end.
     //
+    // THE SECOND NAMED EXEMPTION (m23-s5 / ADR-0206 A1): the twelve `(<selfView>?.visible ||
+    // worldHasFocus())` open-guard disjuncts. Same rule as the first — one overlay per site,
+    // its OWN — and it is excised with a census pinned at EXACTLY 12, not a floor. See the
+    // assertion below for the full reasoning.
+    //
     // WRONG IMPL KILLED (1): a collapse that leaves ONE list behind (the pvp aggregate is the
     //   likeliest, being the only one that is not a boolean guard). 13 residual ⇒ RED.
     // WRONG IMPL KILLED (2): a "helpful" 15-term OR-list added to a NEW sixth surface later —
@@ -5352,25 +5357,59 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
     // sixth surface is impossible".
     const stripped = squashWhitespace(stripLineComments(readMainTs()));
 
-    // ANTI-VACUITY FLOOR, ASSERTED FIRST: the six exempted sites must actually be found. If a
-    // future edit reshapes that idiom, the excision below silently removes nothing (fine) — but
-    // if the SCAN is broken (bad path, over-eager stripper, squash changing the spacing) the
-    // exemption count collapses to 0 and the `toBe(0)` ceiling would pass on an empty string.
+    // ANTI-VACUITY FLOOR #1, ASSERTED FIRST: the six exempted refresh-listener sites must
+    // actually be found. If a future edit reshapes that idiom, the excision below silently
+    // removes nothing (fine) — but if the SCAN is broken (bad path, over-eager stripper, a
+    // squash that changes the spacing) the exemption count collapses to 0 and the `toBe(0)`
+    // ceiling would pass on an empty string.
     expect(
       countOccurrences(stripped, "?.visible || identity === ''"),
       "main.ts must still contain the refresh-listener idiom `?.visible || identity === ''` at " +
-        'least 6 times (box/raising/evolution/shop/trade/leaderboard batch listeners, ' +
-        'main.ts:1330, 1344, 1356, 1530, 1562, 1596 post-collapse). A count of 0 means the source scan itself ' +
-        'is broken and the ceiling below would pass vacuously — this is a scan failure, not a ' +
-        'fan-out regression.',
+        'least 6 times (box/raising/evolution/shop/trade/leaderboard batch listeners). A count ' +
+        'of 0 means the source scan itself is broken and the ceiling below would pass vacuously ' +
+        '— this is a scan failure, not a fan-out regression.',
     ).toBeGreaterThanOrEqual(6);
 
-    const exempted = stripped.split("?.visible || identity === ''").join('');
+    // ANTI-VACUITY FLOOR #2 (m23-s5, ADR-0206 Amendment A1) — THE SECOND NAMED EXEMPTION.
+    // A1 reshaped the twelve hotkey open-guards from `… && worldHasFocus()` to
+    // `… && (<selfView>?.visible || worldHasFocus())`, so that a same-key press on an
+    // ALREADY-OPEN overlay is a toggle-CLOSE and is never gated (the three e2e regressions
+    // PR #368 shipped: movement-input.spec.ts:493, trade.spec.ts:97, pvp.spec.ts:145). Every
+    // one of those twelve disjuncts matches this tooth's `View?.visible ||` needle — MEASURED
+    // 12, not 0 — because all twelve view bindings end in `View`. That is NOT a hand-rolled
+    // fan-out list: each site names exactly ONE overlay, its OWN, which is the same reason the
+    // refresh-listener idiom above is exempt.
+    //
+    // PINNED AT EXACTLY 12, NOT `>= 12`, and the tightness is the point: an implementation that
+    // grows a THIRTEENTH self-open disjunct (e.g. onto KeyT, or a second one spliced into an
+    // existing handler) reds HERE, on the exemption itself, rather than being silently absorbed
+    // by the excision. That makes this clause a second, independent census of the disjunct
+    // alongside W-M23S5-TWELVE-CONJUNCTS' worldHasFocus() counts (12 in-listener / 13
+    // whole-file), which count the OTHER half of the same expression.
+    //
+    // The needle carries the group's CLOSING PAREN — `worldHasFocus())` — so a widened
+    // disjunct (`<a>?.visible || worldHasFocus() || <b>?.visible`) is NOT exempted and still
+    // trips the ceiling below.
+    expect(
+      countOccurrences(stripped, 'View?.visible || worldHasFocus())'),
+      'main.ts must contain EXACTLY 12 self-open disjuncts `<selfView>?.visible || ' +
+        'worldHasFocus())` — one per canOpen-derived hotkey branch (KeyB/I/E/Q/U/P/L/N/O/?/M/C), ' +
+        'never on KeyT and never in the click launcher (ADR-0206 Amendment A1). Fewer means a ' +
+        'handler lost its toggle-CLOSE half again (the exact defect the three named e2e specs ' +
+        'encode); more means a thirteenth site was gated, which no ADR describes.',
+    ).toBe(12);
+
+    const exempted = stripped
+      .split("?.visible || identity === ''")
+      .join('')
+      .split('View?.visible || worldHasFocus())')
+      .join('');
     expect(
       countOccurrences(exempted, 'View?.visible ||'),
       'main.ts must contain ZERO hand-rolled `View?.visible ||` fan-out terms once the six ' +
-        "named refresh-listener early-outs (`?.visible || identity === ''`) are excised. Every " +
-        'mutual-exclusion read goes through the ONE probe table now (anyOverlayVisible() / ' +
+        "named refresh-listener early-outs (`?.visible || identity === ''`) and the twelve A1 " +
+        'self-open disjuncts (`View?.visible || worldHasFocus())`) are excised. Every ' +
+        'mutual-exclusion read goes through the ONE probe table (anyOverlayVisible() / ' +
         'anyVisible(overlayProbes, …)). RED at authoring time with 69 — the five OR-lists. If ' +
         'this reds AFTER the collapse, someone hand-wrote a new fan-out list; route it through ' +
         "the registry instead. NOTE the honest limit in this test's comment: a de-Morgan `&&` " +
@@ -5637,7 +5676,7 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyB') {
     const boxVerdict = overlayVerdict('boxView');
-    if (boxVerdict.kind === 'allow' && worldHasFocus()) {
+    if (boxVerdict.kind === 'allow' && (boxView?.visible || worldHasFocus())) {
       for (const id of boxVerdict.forceHide) overlayHandles[id]?.();
       boxView?.toggle();
       if (boxView?.visible) refreshBox();
@@ -5653,7 +5692,7 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyI') {
     const raisingVerdict = overlayVerdict('raisingView');
-    if (raisingVerdict.kind === 'allow' && worldHasFocus()) {
+    if (raisingVerdict.kind === 'allow' && (raisingView?.visible || worldHasFocus())) {
       for (const id of raisingVerdict.forceHide) overlayHandles[id]?.();
       raisingView?.toggle();
       if (raisingView?.visible) refreshRaising();
@@ -5669,7 +5708,7 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyE') {
     const evolutionVerdict = overlayVerdict('evolutionView');
-    if (evolutionVerdict.kind === 'allow' && worldHasFocus()) {
+    if (evolutionVerdict.kind === 'allow' && (evolutionView?.visible || worldHasFocus())) {
       for (const id of evolutionVerdict.forceHide) overlayHandles[id]?.();
       evolutionView?.toggle();
       if (evolutionView?.visible) refreshEvolution();
@@ -5684,7 +5723,10 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       selfAnchor: "'questLogView'",
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyQ') {
-    if (overlayVerdict('questLogView').kind === 'allow' && worldHasFocus()) {
+    if (
+      overlayVerdict('questLogView').kind === 'allow' &&
+      (questLogView?.visible || worldHasFocus())
+    ) {
       if (questLogView?.visible) {
         questLogView.hide();
       } else {
@@ -5701,7 +5743,7 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       selfAnchor: "'tradeView'",
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyU') {
-    if (overlayVerdict('tradeView').kind === 'allow' && worldHasFocus()) {
+    if (overlayVerdict('tradeView').kind === 'allow' && (tradeView?.visible || worldHasFocus())) {
       if (tradeView?.visible) {
         tradeView.hide();
       } else {
@@ -5718,7 +5760,7 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       selfAnchor: "'pvpView'",
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyP') {
-    if (overlayVerdict('pvpView').kind === 'allow' && worldHasFocus()) {
+    if (overlayVerdict('pvpView').kind === 'allow' && (pvpView?.visible || worldHasFocus())) {
       if (pvpView?.visible) {
         pvpView.hide();
       } else {
@@ -5735,7 +5777,10 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       selfAnchor: "'leaderboardView'",
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyL') {
-    if (overlayVerdict('leaderboardView').kind === 'allow' && worldHasFocus()) {
+    if (
+      overlayVerdict('leaderboardView').kind === 'allow' &&
+      (leaderboardView?.visible || worldHasFocus())
+    ) {
       if (leaderboardView?.visible) {
         leaderboardView.hide();
       } else {
@@ -5753,7 +5798,7 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyN') {
     e.preventDefault();
-    if (overlayVerdict('renameView').kind === 'allow' && worldHasFocus()) {
+    if (overlayVerdict('renameView').kind === 'allow' && (renameView?.visible || worldHasFocus())) {
       if (renameView?.visible) {
         renameView.hide();
       } else {
@@ -5771,7 +5816,11 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       carriesIdentity: true,
       expectedRaw: `e.code === 'KeyO') {
     e.preventDefault();
-    if (overlayVerdict('tradeProposeView').kind === 'allow' && identity !== '' && worldHasFocus()) {
+    if (
+      overlayVerdict('tradeProposeView').kind === 'allow' &&
+      identity !== '' &&
+      (tradeProposeView?.visible || worldHasFocus())
+    ) {
       if (tradeProposeView?.visible) {
         tradeProposeView.hide();
       } else {
@@ -5802,7 +5851,7 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       carriesIdentity: false,
       expectedRaw: `e.key === '?') {
     e.preventDefault();
-    if (overlayVerdict('helpView').kind === 'allow' && worldHasFocus()) {
+    if (overlayVerdict('helpView').kind === 'allow' && (helpView?.visible || worldHasFocus())) {
       if (helpView?.visible) {
         helpView.hide();
       } else {
@@ -5820,7 +5869,11 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       carriesIdentity: true,
       expectedRaw: `e.code === 'KeyM') {
     e.preventDefault();
-    if (overlayVerdict('menuView').kind === 'allow' && identity !== '' && worldHasFocus()) {
+    if (
+      overlayVerdict('menuView').kind === 'allow' &&
+      identity !== '' &&
+      (menuView?.visible || worldHasFocus())
+    ) {
       if (menuView?.visible) {
         menuView.hide();
       } else {
@@ -5863,13 +5916,14 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
     // entry carries — the slicer's blockEnd lands on the Escape sentinel.
     //
     // m23-s5 (ADR-0206): worldHasFocus() appended LAST, same shape as every other sibling.
+    // A1 (fix cycle 1): the conjunct became the self-open disjunct, same shape as every sibling.
     {
       anchor: "e.code === 'KeyC'",
       selfAnchor: "'claimView'",
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyC') {
     e.preventDefault();
-    if (overlayVerdict('claimView').kind === 'allow' && worldHasFocus()) {
+    if (overlayVerdict('claimView').kind === 'allow' && (claimView?.visible || worldHasFocus())) {
       if (claimView?.visible) {
         claimView.hide();
       } else {

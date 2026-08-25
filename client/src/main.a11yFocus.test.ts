@@ -67,6 +67,12 @@
  * never pass by the canvas silently being unfocusable instead of by the gate genuinely
  * recognising it).
  *
+ * FIX CYCLE 1 (ADR-0206 Amendment A1). RED at this fix's fork: 6× `S5T-GATE-SAMEKEY-CLOSE`
+ * and `S5T-GATE-REOPEN-AFTER-SAMEKEY-CLOSE` — the pre-amendment conjunct also gated the
+ * toggle-CLOSE half, which killed same-key close for every user (the deferred focus makes
+ * "focus is inside the overlay" the universal post-open state). GREEN AT FORK BY DESIGN:
+ * `S5T-GATE-PRECEDENCE-DENY-WINS`, a mutation pin for the dropped-parens precedence bug.
+ *
  * WRONG IMPL KILLED: recorded per test, immediately above each `it`/`it.each`.
  *
  * NO `new RegExp(...)`, no `eval`, no `new Function` (Semgrep bans them — none used here).
@@ -515,6 +521,247 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     expect(document.activeElement, 'the canvas must actually hold focus').toBe(canvas);
     pressKey({ code: 'KeyQ' }); // questLogView — deliberately outside the DRIVABLE_OVERLAYS trio
     expect(overlayIsOpen('questLogView')).toBe(true);
+  });
+
+  // ---------------------------------------------------------------------------------------
+  // A11Y-19, as amended by ADR-0206 Amendment A1: the SELF-OPEN DISJUNCT. The gate applies to
+  // the twelve overlay-OPEN transitions only; a same-key press on an already-open overlay is a
+  // toggle-CLOSE and must never be gated. This is the unit-tier encoding of the three e2e
+  // regressions PR #368 shipped — e2e/movement-input.spec.ts:493 (14r-e C GREEN GUARD, KeyB
+  // closes the box under a held key), e2e/trade.spec.ts:97 (M15c, KeyU toggle-close) and the
+  // e2e/pvp.spec.ts:145 cascade (the previous serial test's KeyB cleanup close was blocked, so
+  // the box was still open and the next `p` was denied by the REGISTRY verdict, not by this
+  // gate). Those three run only in the remote e2e job; these run in `just test`.
+  // ---------------------------------------------------------------------------------------
+
+  /** Every registry overlay currently on screen, in OVERLAY_A11Y declaration order.
+   *
+   *  Built from the SAME `overlayIsOpen` predicate the sanity test at the top of this file
+   *  pins (and whose own doc comment records why `style.display`, not `role`, is the only
+   *  open/closed signal common to the static-shell and constructed-shell families), so a
+   *  regression in that helper reds the sanity test FIRST rather than silently emptying this
+   *  list. Used only for WHOLE-SET assertions — "exactly these are open" — never as a
+   *  single-overlay "is closed" check, so a helper that degenerated to always-false would be
+   *  caught by the `toEqual([id])` half rather than passing the `toEqual([])` half for free. */
+  const openOverlayIds = (): OverlayId[] =>
+    (Object.keys(OVERLAY_A11Y) as OverlayId[]).filter((oid) => overlayIsOpen(oid));
+
+  /** The same-key CLOSE fixture, DELIBERATELY WIDER than DRIVABLE_OVERLAYS.
+   *
+   *  DRIVABLE_OVERLAYS is narrow for a reason that does NOT apply here: S5T-GATE-BLOCKED needs
+   *  a same-tier HIDE_SWITCH sibling whose `canOpen` verdict is `allow` regardless of focus, so
+   *  that the new conjunct is the SOLE reason the second press is refused. The self-close case
+   *  has no such constraint — `canOpen` exempts SELF, so every one of the twelve is `allow` for
+   *  its own key while it is the only thing open. Restricting this fixture to the trio would
+   *  leave the minimum edit that turns the three named e2e specs green — adding the disjunct to
+   *  the three HIDE_SWITCH sites ONLY — passing every behavioural test in this file.
+   *
+   *  The six rows span all three shapes the twelve sites take:
+   *   • the HIDE_SWITCH trio  — CONSTRUCTED `#app`-mounted shells, closed via `toggle()`;
+   *   • questLogView / tradeView — STATIC index.html shells, closed via the explicit
+   *     `if (X?.visible) X.hide(); else openX();` arm, and tradeView is literally
+   *     e2e/trade.spec.ts:97's subject;
+   *   • helpView — the SOLE `e.key` branch (every other hotkey is `e.code`).
+   *  All six views route `show()`/`render(vm)` through `openOverlayA11y` and `hide()` through
+   *  `closeOverlayA11y` (verified in ui/boxView.ts:131-142, ui/questLogView.ts:34-62,
+   *  ui/tradeView.ts:64-83, ui/helpView.ts:42-58), which is what makes the deferred-focus wait
+   *  below deterministic rather than hopeful. menuView is deliberately NOT here: it does not
+   *  call openOverlayA11y at all today (see overlayIsOpen's doc comment), so no focus would
+   *  ever land inside it and the test would prove nothing. */
+  const SAMEKEY_OVERLAYS: ReadonlyArray<{
+    readonly id: OverlayId;
+    readonly openKey: KeySpec;
+  }> = [
+    { id: 'boxView', openKey: { code: 'KeyB' } },
+    { id: 'raisingView', openKey: { code: 'KeyI' } },
+    { id: 'evolutionView', openKey: { code: 'KeyE' } },
+    { id: 'questLogView', openKey: { code: 'KeyQ' } },
+    { id: 'tradeView', openKey: { code: 'KeyU' } },
+    { id: 'helpView', openKey: { key: '?' } },
+  ];
+
+  it.each(
+    SAMEKEY_OVERLAYS,
+  )('S5T-GATE-SAMEKEY-CLOSE ($id toggle-CLOSES on a second press of its OWN hotkey, with focus already inside it)', async ({
+    id,
+    openKey,
+  }) => {
+    // RED AT AUTHORING TIME, for the right reason: the pre-amendment guard
+    // `<verdict>.kind === 'allow' && worldHasFocus()` is FALSE on the second press, because
+    // S3/S4's `openOverlayA11y` deferred focus (ui/overlayA11y.ts:111-113) has moved focus
+    // INSIDE the overlay by then — so the branch body never runs, the overlay stays open, and
+    // the `toBe(false)` below fails. That is exactly what the three named e2e specs observed.
+    //
+    // WRONG IMPL KILLED (1) ★ THE DEFECT: the un-amended conjunct at any of the six sites.
+    //   Same-key close is dead for every user and every overlay — spec §2.3's compatibility
+    //   claim ("a sighted player who never Tabs has activeElement === <body>") is false once
+    //   EVERY hotkey open moves focus into the overlay it just opened.
+    // WRONG IMPL KILLED (2): a reshape applied to the HIDE_SWITCH trio ONLY — the minimum edit
+    //   that turns the three e2e specs green. The three non-trio rows above are what see it;
+    //   the twelve `expectedRaw` pins in main.wiring.test.ts see it from the source side.
+    // WRONG IMPL KILLED (3): a reshape that closes the overlay but ALSO opens something else
+    //   (e.g. a self-open disjunct copy-pasted with a sibling's identifier, so KeyB closes the
+    //   box and the sibling's branch then fires) — the whole-set `toEqual([])` catches it,
+    //   where a bare `expect(overlayIsOpen(id)).toBe(false)` would not.
+    // NOT KILLED HERE, stated rather than implied: deleting the `forceHide` loop from the trio
+    //   handlers. `canOpen` exempts SELF, so `forceHide` is empty on this path by construction.
+    //   S5T-ANNOUNCE-TOP below ("boxView must have been force-hidden by the switch") is the
+    //   behavioural killer for that, and the wiring `expectedRaw` pins are the source-side one.
+    expect(document.activeElement, 'precondition: body is focused at boot').toBe(document.body);
+
+    pressKey(openKey);
+    expect(
+      overlayIsOpen(id),
+      `${id} must be open after its own hotkey. If THIS is the assertion that failed, the ` +
+        'defect is in the OPEN half (or the open path has a store dependency this harness does ' +
+        'not satisfy) — not in the toggle-close this test is about',
+    ).toBe(true);
+    expect(openOverlayIds(), `${id} must be the ONLY overlay open at this point`).toEqual([id]);
+
+    // Let the REAL setTimeout(0) deferred-focus macrotask (ui/overlayA11y.ts:111) fire, so
+    // focus is genuinely INSIDE the overlay — the A11Y-19 post-open state, and the precise
+    // state in which the pre-amendment gate refuses the close. Without this wait the test
+    // would pass against the UNFIXED implementation (activeElement would still be <body>, so
+    // worldHasFocus() would still be true) — i.e. this await is what makes the test bite.
+    const anchor = overlayFocusAnchor(id);
+    expect(anchor, `${id}'s initialFocusSelector anchor must resolve`).not.toBeNull();
+    await vi.waitFor(
+      () => {
+        expect(document.activeElement).toBe(anchor);
+      },
+      { timeout: 2_000, interval: 5 },
+    );
+
+    pressKey(openKey); // the SAME key again — a toggle-CLOSE, never an open
+    expect(
+      overlayIsOpen(id),
+      `${id} must be CLOSED by the second press of its own hotkey (ADR-0206 A1: the gate ` +
+        'applies to the OPEN transitions only — canOpen exempts self, so the verdict is still ' +
+        '`allow`, and the self-open disjunct is what lets the close through while focus sits ' +
+        'inside the overlay being closed)',
+    ).toBe(false);
+    expect(
+      openOverlayIds(),
+      'no overlay at all may be open after the toggle-close — the second press must CLOSE, ' +
+        'never switch to something else',
+    ).toEqual([]);
+  });
+
+  it('S5T-GATE-REOPEN-AFTER-SAMEKEY-CLOSE: after a same-key close, focus leaves the overlay and a DIFFERENT hotkey opens again (the pvp.spec.ts:145 cascade)', async () => {
+    // The e2e/pvp.spec.ts:145 shape, at the unit tier: a serial spec's cleanup close (KeyB) is
+    // silently blocked, so the box is STILL OPEN when the next test presses its own hotkey —
+    // and that next open is then denied by the REGISTRY verdict (boxView is HIDE_SWITCH, but
+    // questLogView is GUARD_ONLY, so `canOpen('questLogView', ['boxView'])` denies over it).
+    // The failure surfaces one test later, against a completely unrelated feature, which is why
+    // it must be pinned as a CASCADE and not just as "the close works".
+    //
+    // RED AT AUTHORING TIME: the second KeyB is blocked, so the first assertion below fails.
+    // The assertion ORDER is deliberate — the close is asserted BEFORE the focus precondition,
+    // so today's RED names the blocked close rather than a focus-timing symptom of it.
+    //
+    // WRONG IMPL KILLED (1): the un-amended conjunct (as above), now shown to break a LATER,
+    //   unrelated overlay rather than just the one whose key was pressed.
+    // WRONG IMPL KILLED (2) ★ the one no other test in this file sees: an amendment that closes
+    //   the overlay but leaves focus TRAPPED inside the (now display:none) former overlay root
+    //   — e.g. a hide path that skips closeOverlayA11y, or a "close by writing style.display"
+    //   shortcut. worldHasFocus() would then be permanently false, and the very next hotkey
+    //   would be dead: same user-visible bug, one press later. The <body> assertion below is
+    //   the precondition that makes the final KeyQ assertion mean "the gate allowed it",
+    //   never "it happened to work".
+    // WHY THE <body> ASSERTION IS AN ASSERTION AND NOT A COMMENT: it is a real, verified
+    //   property of the production close path, not an assumption — `boxView.hide()` calls
+    //   `closeOverlayA11y('boxView', null)` (ui/boxView.ts:138-142), whose restore order
+    //   (ui/overlayA11y.ts:146-149) prefers `record.returnFocus` whenever it is still
+    //   connected. That was captured at open time as `document.activeElement` === <body> (the
+    //   overlay was opened by hotkey from the world), an HTMLElement that is always connected,
+    //   so `fallbackFocus` is unreachable here and focus lands back on <body>. The same fact is
+    //   already relied on by S5T-FOCUS-RETURN's "closeOverlayA11y restores to <body> here".
+    expect(document.activeElement, 'precondition: body is focused at boot').toBe(document.body);
+
+    pressKey({ code: 'KeyB' });
+    expect(overlayIsOpen('boxView'), 'boxView must be open after KeyB').toBe(true);
+    const anchor = overlayFocusAnchor('boxView');
+    expect(anchor, "boxView's initialFocusSelector anchor must resolve").not.toBeNull();
+    await vi.waitFor(
+      () => {
+        expect(document.activeElement).toBe(anchor);
+      },
+      { timeout: 2_000, interval: 5 },
+    );
+
+    pressKey({ code: 'KeyB' }); // the cleanup close every serial e2e spec performs
+    expect(
+      overlayIsOpen('boxView'),
+      'boxView must be CLOSED by the second KeyB — a blocked cleanup close is what left the ' +
+        'box open across e2e/pvp.spec.ts serial tests',
+    ).toBe(false);
+    expect(
+      document.activeElement,
+      'after the close, focus must be back on <body> — closeOverlayA11y restores the captured ' +
+        'returnFocus (see this test`s own comment). If focus is still inside the closed ' +
+        'overlay, worldHasFocus() is false forever and the next hotkey is dead',
+    ).toBe(document.body);
+
+    pressKey({ code: 'KeyQ' }); // a DIFFERENT overlay, GUARD_ONLY — the cascade's victim
+    expect(
+      overlayIsOpen('questLogView'),
+      'KeyQ must open the quest log after the box was closed — this is the pvp.spec.ts:145 ' +
+        'cascade: with the box still open, `canOpen` denies over a GUARD_ONLY-blocked world ' +
+        'and the failure is reported against the NEXT feature, not against the gate',
+    ).toBe(true);
+    expect(openOverlayIds(), 'the quest log must be the only overlay open').toEqual([
+      'questLogView',
+    ]);
+  });
+
+  it('S5T-GATE-PRECEDENCE-DENY-WINS: a DENIED verdict still refuses the open even when the world has focus', () => {
+    // GREEN AT FORK BY DESIGN — a mutation pin, not a red gate, and worth stating exactly why
+    // it exists: it is the ONLY behavioural killer in this suite of the dropped-parens reshape
+    //     <verdict>.kind === 'allow' && <selfView>?.visible || worldHasFocus()
+    // which `&&`-binds tighter than `||` and therefore parses as
+    //     ((<verdict> === 'allow') && <selfView>?.visible) || worldHasFocus()
+    // — i.e. the WHOLE VERDICT is bypassed whenever the world has focus. Every other test in
+    // this file passes that mutant: S5T-GATE-BLOCKED presses its key with focus INSIDE an
+    // overlay (worldHasFocus() false, and the pressed sibling is closed, so both operands are
+    // false either way), S5T-GATE-ALLOWED-* press with an `allow` verdict, and
+    // S5T-GATE-SAMEKEY-CLOSE presses with `allow && visible` already true. Only a press whose
+    // verdict is DENY *while the world has focus* separates the two spellings — and that is
+    // A11Y-19's whole substance for the eleven GUARD_ONLY overlays.
+    //
+    // WRONG IMPL KILLED (1) ★ NAMED: the dropped-parens precedence bug above. Its blast radius
+    //   is the entire mutual-exclusion contract, not just this pair: with the world focused,
+    //   ANY hotkey opens its overlay over a live battle (EXCLUSIVE_TOP) or a live NPC dialogue
+    //   (GUARD_ONLY, where a client-side stack strands the server player_conversation row —
+    //   ptc5c/ADR-0139).
+    // WRONG IMPL KILLED (2): a disjunct written with the wrong view identifier at some site
+    //   (`(boxView?.visible || worldHasFocus())` pasted into the `?` handler): with the box
+    //   closed the reshape is a no-op, but this test's mutant coverage and the twelve
+    //   `expectedRaw` pins together pin identifier-per-site.
+    // NO deferred-focus await here, and it is load-bearing: the second press must happen while
+    // `document.activeElement` is STILL <body>, so `worldHasFocus()` is TRUE at that moment —
+    // that is the precondition that lets the mutant fire, and it is ASSERTED, never assumed.
+    // (The same "no intervening await" property S5T-ANNOUNCE-TOP relies on; see this file's
+    // header, DETERMINISM NOTE ON FOCUS TIMING.)
+    pressKey({ code: 'KeyQ' }); // questLogView — GUARD_ONLY, opened from <body>
+    expect(overlayIsOpen('questLogView'), 'questLogView must be open after KeyQ').toBe(true);
+    expect(
+      document.activeElement,
+      'precondition: the deferred focus has NOT fired yet, so the world still has focus and ' +
+        'worldHasFocus() is TRUE for the press below — without this the mutant cannot fire and ' +
+        'this test would prove nothing',
+    ).toBe(document.body);
+
+    pressKey({ key: '?' }); // helpView — its verdict is DENY over a visible GUARD_ONLY overlay
+    expect(
+      overlayIsOpen('helpView'),
+      'helpView must NOT open over the quest log: `canOpen` denies over a GUARD_ONLY overlay, ' +
+        'and the self-open disjunct must be a PARENTHESISED operand of the verdict conjunct — ' +
+        '`allow && visible || worldHasFocus()` bypasses the verdict entirely whenever the ' +
+        'world has focus',
+    ).toBe(false);
+    expect(openOverlayIds(), 'the quest log must remain the only overlay open, unchanged').toEqual([
+      'questLogView',
+    ]);
   });
 
   // ---------------------------------------------------------------------------------------
