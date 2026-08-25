@@ -338,7 +338,7 @@ a11y-e2e floor="169": wasm
     # main guard, by design: a main guard truncates run.mjs mid-loop at exit 0),
     # so the default export must be imported and called.
     a11y_eval_check() {
-        node -e "import(process.argv[1]).then(m => m.default()).then(r => { if (!r.pass) { console.error('a11y eval FAIL: ' + r.name + ' — ' + r.detail); process.exit(1) } })" -- "$1"
+        node -e "import(process.argv[1]).then(m => m.default()).then(r => { if (!r.pass) { console.error('a11y eval FAIL: ' + r.name + ' — ' + r.detail); process.exit(1) } const m = /teeth=(\\d+)\\/(\\d+)/.exec(String(r.detail)); if (m === null) { console.error('a11y eval reports NO teeth tally: ' + r.name + ' — an eval that runs no inline fixtures proves nothing, and a body gutted to a bare pass:true looks identical to a real one'); process.exit(1) } if (m[1] !== m[2] || Number(m[1]) < 1) { console.error('a11y eval teeth uneven or empty: ' + r.name + ' — ' + m[0]); process.exit(1) } console.log('  teeth ' + m[0]) })" -- "$1"
         echo "a11y eval OK: $1"
     }
     a11y_eval_check ./evals/overlay-a11y-manifest.eval.mjs

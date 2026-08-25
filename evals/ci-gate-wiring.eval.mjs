@@ -581,6 +581,72 @@ export function a11yRecipeBodyIntact(justfileText) {
   };
 }
 
+// ---------------------------------------------------------------------------
+// m23-s11 ROUND 2 (red-team, EXECUTED bypass). `a11yRecipeBodyIntact` above is a
+// pure substring scan, and red-team PROVED the consequence end to end: insert
+// `exit 0` immediately after `set -euo pipefail` and leave the rest of the body
+// byte-identical below it, and the predicate still returns ok (every required
+// token is present), while `just a11y-e2e` runs NOTHING and exits 0. Dead
+// branches (`if false; then ... fi`) and heredoc payloads bypass it the same way.
+//
+// A blacklist of abort constructs does NOT close this — measured elsewhere in
+// this repo: sixteen CI-clean bypasses beat one such blacklist. The house remedy
+// is to PIN THE BLOCK VERBATIM (the CHANGELOG_RECIPE_BODY / mutate-server
+// idiom), which is closable by construction: ANY edit to the region reds the
+// gate, and the fix is to update this constant in the SAME commit, deliberately.
+//
+// This pins the RAW region (header line through the last indented line),
+// deliberately NOT the comment-stripped body: the stripper drops `#` lines, so a
+// body pin would let the `#!/usr/bin/env bash` shebang be deleted silently, and
+// would let a decoy comment be planted inside the recipe unnoticed.
+//
+// LOCKSTEP: the justfile `a11y-e2e` recipe and this constant move together, or
+// the gate is red. That is the point, not an inconvenience.
+// ---------------------------------------------------------------------------
+export const A11Y_E2E_RECIPE_REGION =
+  "a11y-e2e floor=\"169\": wasm\n    #!/usr/bin/env bash\n    set -euo pipefail\n    # Fail loud on a non-integer floor BEFORE the run: a malformed value would\n    # otherwise make `[ -gt ]` error inside the if-condition below and silently\n    # skip the ratchet (vacuous green). `[ \"\" -gt N ]` in an if-condition is\n    # set -e-EXEMPT \u2014 the measured false-green shape in this justfile (ADR-0183\n    # D7, and the same guard mutate-server carries).\n    case \"{{floor}}\" in\n        ''|*[!0-9]*) echo \"a11y-e2e: floor '{{floor}}' is not a non-negative integer\" >&2; exit 64;;\n    esac\n    # --- Half 1: the a11y eval roster, pinned BY NAME. A deleted or renamed\n    # eval makes import() throw, which set -e turns into a non-zero exit.\n    # `node evals/<x>.eval.mjs` alone exits 0 VACUOUSLY (these three carry no\n    # main guard, by design: a main guard truncates run.mjs mid-loop at exit 0),\n    # so the default export must be imported and called.\n    a11y_eval_check() {\n        node -e \"import(process.argv[1]).then(m => m.default()).then(r => { if (!r.pass) { console.error('a11y eval FAIL: ' + r.name + ' \u2014 ' + r.detail); process.exit(1) } const m = /teeth=(\\\\d+)\\\\/(\\\\d+)/.exec(String(r.detail)); if (m === null) { console.error('a11y eval reports NO teeth tally: ' + r.name + ' \u2014 an eval that runs no inline fixtures proves nothing, and a body gutted to a bare pass:true looks identical to a real one'); process.exit(1) } if (m[1] !== m[2] || Number(m[1]) < 1) { console.error('a11y eval teeth uneven or empty: ' + r.name + ' \u2014 ' + m[0]); process.exit(1) } console.log('  teeth ' + m[0]) })\" -- \"$1\"\n        echo \"a11y eval OK: $1\"\n    }\n    a11y_eval_check ./evals/overlay-a11y-manifest.eval.mjs\n    a11y_eval_check ./evals/a11y-static-shell.eval.mjs\n    a11y_eval_check ./evals/reduced-motion-purity.eval.mjs\n    # --- Half 2: floor the a11y unit tier. Delete the stale report first: a\n    # leftover report from a previous run would be read as this run's result if\n    # vitest died before writing (measured shape).\n    rm -f /tmp/a11y-e2e-vitest.json\n    cd client && npx vitest run --reporter=json --outputFile=/tmp/a11y-e2e-vitest.json \\\n        src/ui/overlayA11yWiring.test.ts \\\n        src/ui/overlayA11y.test.ts \\\n        src/ui/focusTrap.test.ts \\\n        src/ui/liveRegion.test.ts \\\n        src/ui/announcements.test.ts \\\n        src/ui/a11yCopy.test.ts \\\n        src/main.a11yFocus.test.ts \\\n        src/render/motionPreference.test.ts\n    cd ..\n    node -e \"const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-vitest.json', 'utf8')) } catch (e) { console.error('a11y-e2e: vitest wrote no readable JSON report \u2014 ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const files = j.testResults.length; const total = j.numTotalTests; if (files !== 8) { console.error('a11y-e2e: ' + files + ' spec file(s) reported, expected 8 \u2014 an a11y spec file was deleted or renamed'); process.exit(1) } if (j.numFailedTests !== 0 || j.numPendingTests !== 0 || j.numTodoTests !== 0) { console.error('a11y-e2e: failed=' + j.numFailedTests + ' pending=' + j.numPendingTests + ' todo=' + j.numTodoTests + ' \u2014 a skipped a11y test is a silently ungated one'); process.exit(1) } if (total < floor) { console.error('a11y-e2e: a11y unit tier reported ' + total + ' test(s) across ' + files + ' file(s) \u2014 floor is ' + floor); process.exit(1) } console.log('A11Y-NIGHTLY OK evals=3/3 files=' + files + ' tests=' + total + ' floor=' + floor + ' f=0 pend=0 todo=0')\" -- \"{{floor}}\"\n    echo \"DEFERRED: axe-core + real-browser tier is NOT run here (m23-s11 ledger X10/X11).\"\n    echo \"DEFERRED: A11Y-32 / A11Y-33 are MANUAL and are NEVER CI-green \u2014 docs/a11y-manual-protocol.md\"\n";
+
+// The raw region for `recipeName`: its header line plus every following line that
+// is blank or indented, with trailing blank lines dropped. Comments are KEPT.
+function extractRawRecipeRegion(text, recipeName) {
+  const lines = text.split('\n');
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith(`${recipeName}:`) || lines[i].startsWith(`${recipeName} `)) {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return '';
+  let end = start + 1;
+  while (end < lines.length) {
+    const l = lines[end];
+    if (l.length > 0 && l[0] !== ' ' && l[0] !== '\t') break;
+    end++;
+  }
+  while (end > start + 1 && lines[end - 1].trim() === '') end--;
+  return `${lines.slice(start, end).join('\n')}\n`;
+}
+
+export function a11yRecipeBodyIsPinned(justfileText) {
+  const region = extractRawRecipeRegion(justfileText, 'a11y-e2e');
+  if (region === '') {
+    return { ok: false, reason: 'justfile declares no a11y-e2e recipe at all' };
+  }
+  if (region !== A11Y_E2E_RECIPE_REGION) {
+    return {
+      ok: false,
+      reason:
+        'the justfile a11y-e2e recipe region does not match A11Y_E2E_RECIPE_REGION byte for byte. ' +
+        'A substring check cannot see an `exit 0` planted above a byte-identical body (red-team ' +
+        'proved that exact bypass), so this gate pins the region verbatim. If you changed the ' +
+        'recipe deliberately, update A11Y_E2E_RECIPE_REGION in evals/ci-gate-wiring.eval.mjs in ' +
+        'the SAME commit and say why in the message.',
+    };
+  }
+  return { ok: true, reason: 'the a11y-e2e recipe region matches its verbatim pin' };
+}
+
 export function a11yNightlyJobIsWired(nightlyYaml) {
   // Last-key-wins guards FIRST: extractJobBlock only ever returns the FIRST
   // match, so a clean-first / neutered-second duplicate is invisible below.
@@ -642,10 +708,19 @@ export function a11yNightlyJobIsWired(nightlyYaml) {
     }
     if (tr.startsWith('continue-on-error:')) {
       const value = tr.slice('continue-on-error:'.length).trim();
-      if (isTruthyCoe(value)) {
+      // WHITELIST, not isTruthyCoe's blacklist. Red-team EXECUTED two bypasses of
+      // the blacklist: `${{ !cancelled() }}` and `${{ success() || true }}` are both
+      // unconditionally true in every real run and both slipped through, because
+      // isTruthyCoe only knows the literals true/yes/on/True and the exact
+      // `${{ true }}`. An expression whitelist is unclosable; a VALUE whitelist is
+      // closable — this job has exactly one legitimate spelling, and `absent` is
+      // the other. (isTruthyCoe is left byte-identical: it is shared with
+      // ciStepsUnneutered, whose fixtures pin its current semantics. The same hole
+      // exists there and is FLAGGED UPWARD rather than fixed from this slice.)
+      if (value !== 'false') {
         return {
           ok: false,
-          reason: `nightly a11y-e2e job has a truthy job-level continue-on-error: ${value}`,
+          reason: `nightly a11y-e2e job has job-level continue-on-error: ${value} — only the literal \`false\` (or no key at all) is admitted; an expression like \`\${{ !cancelled() }}\` is truthy in every real run`,
         };
       }
     }
@@ -674,19 +749,63 @@ export function a11yNightlyJobIsWired(nightlyYaml) {
     }
     if (tr.startsWith('continue-on-error:')) {
       const value = tr.slice('continue-on-error:'.length).trim();
-      if (isTruthyCoe(value)) {
+      // Same value whitelist as the job-level check above, same red-team reason.
+      if (value !== 'false') {
         return {
           ok: false,
-          reason: `nightly a11y-e2e gate step carries a truthy continue-on-error: ${value} — spec §5.7 requires a NON-truthy value; a soft-failing a11y gate is a toothless one`,
+          reason: `nightly a11y-e2e gate step carries continue-on-error: ${value} — spec §5.7 requires a non-truthy value, and only the literal \`false\` is admitted; a soft-failing a11y gate is a toothless one`,
         };
       }
     }
   }
 
+  // Red-team EXECUTED two "declared but never scheduled" bypasses that every check
+  // above accepts, because none of them asks whether GitHub will ever RUN the job:
+  //   (a) `strategy: { matrix: { shard: [] } }` — an empty matrix expands to ZERO
+  //       job instances, so the step exists and never executes;
+  //   (b) `runs-on: [self-hosted, a-label-that-does-not-exist]` — the job queues
+  //       forever for a runner that never appears, and any eventual timeout reads
+  //       as a generic cancellation rather than an a11y signal.
+  // Both are closed by narrowing rather than by enumerating bad shapes: this job
+  // has no legitimate use for a matrix, and exactly one legitimate runner.
+  const A11Y_RUNS_ON = 'runs-on: ubuntu-latest';
+  let runsOnSeen = false;
+  let sawSteps = false;
+  for (const line of blockLines) {
+    const tr = line.trim();
+    if (tr.startsWith('#')) continue;
+    if (tr === 'steps:' || tr.startsWith('steps:')) {
+      sawSteps = true;
+      continue;
+    }
+    if (sawSteps) break;
+    if (tr.startsWith('strategy:') || tr.startsWith('matrix:')) {
+      return {
+        ok: false,
+        reason: `nightly a11y-e2e job declares \`${tr}\` — a matrix strategy may expand to ZERO job instances, which declares the gate without ever running it`,
+      };
+    }
+    if (tr.startsWith('runs-on:')) {
+      runsOnSeen = true;
+      if (tr !== A11Y_RUNS_ON) {
+        return {
+          ok: false,
+          reason: `nightly a11y-e2e job declares \`${tr}\` — exactly \`${A11Y_RUNS_ON}\` is admitted; a job pointed at a label no runner carries is declared but never scheduled`,
+        };
+      }
+    }
+  }
+  if (!runsOnSeen) {
+    return {
+      ok: false,
+      reason: `nightly a11y-e2e job declares no \`runs-on:\` — it cannot be scheduled at all`,
+    };
+  }
+
   return {
     ok: true,
     reason:
-      'nightly.yml declares an a11y-e2e job that invokes `just a11y-e2e` exactly once, unneutered at both the job and the step level',
+      'nightly.yml declares an a11y-e2e job that invokes `just a11y-e2e` exactly once, is schedulable (ubuntu-latest, no matrix), and is unneutered at both the job and the step level',
   };
 }
 
@@ -2211,6 +2330,130 @@ jobs:
     }
   }
 
+  // ===========================================================================================
+  // m23-s11 ROUND 2 PROOF-OF-TEETH — the four bypasses red-team EXECUTED against round 1.
+  // Every fixture below is a shape that round 1 ACCEPTED and round 2 must reject, plus the
+  // matching hostile-good control proving the new clause did not simply reject everything.
+  // ===========================================================================================
+
+  // --- T-a11y-pin-exit0: `exit 0` planted directly under `set -euo pipefail`, with the ENTIRE
+  //   original body left byte-identical below it. Every required token is still present, so the
+  //   substring scan accepts it; the recipe runs nothing and exits 0. The verbatim pin rejects.
+  {
+    const gutted = A11Y_E2E_RECIPE_REGION.replace(
+      '    set -euo pipefail\n',
+      '    set -euo pipefail\n    exit 0\n',
+    );
+    const r = a11yRecipeBodyIsPinned(`lint:\n    echo lint\n\n${gutted}\nwasm:\n    echo w\n`);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-pin-exit0: a11yRecipeBodyIsPinned accepted a recipe with `exit 0` planted above a byte-identical body — the exact bypass red-team executed against the substring scan',
+      };
+    }
+    // CONTROL: the same region unmutated must be ACCEPTED, or the pin is rejecting everything.
+    const good = a11yRecipeBodyIsPinned(
+      `lint:\n    echo lint\n\n${A11Y_E2E_RECIPE_REGION}\nwasm:\n    echo w\n`,
+    );
+    if (!good.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-pin-exit0-control: a11yRecipeBodyIsPinned rejected its own verbatim region: ${good.reason}`,
+      };
+    }
+  }
+
+  // --- T-a11y-pin-deadbranch / T-a11y-pin-shebang: a dead `if false` wrapper, and a deleted
+  //   shebang (invisible to any comment-STRIPPED body pin, since `#!` is a comment line).
+  {
+    const dead = A11Y_E2E_RECIPE_REGION.replace(
+      '    set -euo pipefail\n',
+      '    set -euo pipefail\n    if false; then\n',
+    );
+    if (a11yRecipeBodyIsPinned(dead).ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-pin-deadbranch: a11yRecipeBodyIsPinned accepted a body wrapped in `if false; then`',
+      };
+    }
+    const noShebang = A11Y_E2E_RECIPE_REGION.replace('    #!/usr/bin/env bash\n', '');
+    if (a11yRecipeBodyIsPinned(noShebang).ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-pin-shebang: a11yRecipeBodyIsPinned accepted a recipe with the `#!/usr/bin/env bash` shebang deleted — this is why the pin is over the RAW region, not the comment-stripped body',
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-empty-matrix: an empty matrix expands to ZERO job instances.
+  {
+    const yml = `name: Nightly\non:\n  workflow_dispatch:\njobs:\n  a11y-e2e:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n        shard: []\n    steps:\n      - run: just a11y-e2e\n`;
+    if (a11yNightlyJobIsWired(yml).ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-nightly-empty-matrix: a11yNightlyJobIsWired accepted a job whose empty `matrix` expands to zero instances — declared, never scheduled, never run',
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-phantom-runner / T-a11y-nightly-no-runs-on: a job pointed at a label no
+  //   runner carries queues forever; a job with no `runs-on:` cannot be scheduled at all.
+  {
+    const phantom = `name: Nightly\non:\n  workflow_dispatch:\njobs:\n  a11y-e2e:\n    runs-on: [self-hosted, no-such-label]\n    steps:\n      - run: just a11y-e2e\n`;
+    if (a11yNightlyJobIsWired(phantom).ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-nightly-phantom-runner: a11yNightlyJobIsWired accepted `runs-on: [self-hosted, no-such-label]` — the job never gets scheduled',
+      };
+    }
+    const noRunsOn = `name: Nightly\non:\n  workflow_dispatch:\njobs:\n  a11y-e2e:\n    steps:\n      - run: just a11y-e2e\n`;
+    if (a11yNightlyJobIsWired(noRunsOn).ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-nightly-no-runs-on: a11yNightlyJobIsWired accepted a job with no `runs-on:` key',
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-coe-expression: `${{ !cancelled() }}` and `${{ success() || true }}` are
+  //   unconditionally true in every real run, and BOTH slipped past isTruthyCoe's literal
+  //   blacklist (red-team executed both). The value whitelist closes them.
+  {
+    const mk = (coe) =>
+      `name: Nightly\non:\n  workflow_dispatch:\njobs:\n  a11y-e2e:\n    runs-on: ubuntu-latest\n    steps:\n      - run: just a11y-e2e\n        continue-on-error: ${coe}\n`;
+    for (const coe of ['$' + '{{ !cancelled() }}', '$' + '{{ success() || true }}', '1', 'TRUE']) {
+      if (a11yNightlyJobIsWired(mk(coe)).ok) {
+        return {
+          name,
+          pass: false,
+          detail: `T-a11y-nightly-coe-expression: a11yNightlyJobIsWired accepted an always-true continue-on-error: ${coe}`,
+        };
+      }
+    }
+    // CONTROL: the literal `false` — the ONE admitted spelling — must still pass.
+    if (!a11yNightlyJobIsWired(mk('false')).ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-nightly-coe-expression-control: a11yNightlyJobIsWired rejected the literal `continue-on-error: false`, which is the one admitted spelling',
+      };
+    }
+  }
+
   // =========================================================================
   // REAL FILE CHECKS
   // =========================================================================
@@ -2369,11 +2612,24 @@ jobs:
     }
   }
 
+  // Check 8: a11yRecipeBodyIsPinned (m23-s11 round 2 — the red-team-proven bypass of Check 6).
+  {
+    let r;
+    try {
+      r = a11yRecipeBodyIsPinned(justfile);
+    } catch (e) {
+      return { name, pass: false, detail: `a11yRecipeBodyIsPinned threw — ${e.message}` };
+    }
+    if (!r.ok) {
+      return { name, pass: false, detail: `a11yRecipeBodyIsPinned FAIL: ${r.reason}` };
+    }
+  }
+
   return {
     name,
     pass: true,
     detail:
-      'all 5 ci-gate-wiring checks pass: ci steps unneutered (all 7 exact verbs, no if:/coe), justfile/ci.yml dep parity, recipe bodies intact, run.mjs structural invariants, anchor wired in lefthook + e2e job, a11y-e2e recipe body intact, a11y-e2e nightly job wired',
+      'all 8 ci-gate-wiring checks pass: ci steps unneutered (all 7 exact verbs, no if:/coe), justfile/ci.yml dep parity, recipe bodies intact, run.mjs structural invariants, anchor wired in lefthook + e2e job, a11y-e2e recipe body intact, a11y-e2e nightly job wired, a11y-e2e recipe region matches its verbatim pin',
   };
 }
 
