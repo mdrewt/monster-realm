@@ -40,13 +40,67 @@
 // coverage, exactly like helpView / renameView / leaderboardView.
 //
 // Do NOT edit these tests to match a buggy implementation — correct them from the plan only.
+//
+// ---------------------------------------------------------------------------
+// m23-s6 ADDITION (2026-08-25) — keyboard/AT semantics for the SIXTEENTH overlay.
+// ADDITIVE ONLY: all 21 pre-existing `it(` blocks are byte-identical; nothing above was
+// weakened. What changed outside them, and why each change was MEASURED to be necessary:
+//   (1) `mountMenuOverlay` now mirrors client/index.html:103-117 — `role="dialog"` +
+//       `aria-modal="true"` on the overlay and `tabindex="0"` on the `<ul>`. Without the
+//       tabindex the focus-trap ring installed by openOverlayA11y has ZERO focusables
+//       (ui/focusTrap.ts:88-94 + FOCUSABLE_SELECTOR), so every ARIA/focus tooth below is
+//       silently vacuous. Without role/aria-modal, "the ARIA claim is ABSENT after hide()"
+//       is not a tooth at all.
+//   (2) File-level beforeEach/afterEach isolation, copied from
+//       ui/leaderboardView.test.ts:88-101: the production `closeOverlayA11y(id, null)` is
+//       called for EVERY OverlayId, then ONE REAL macrotask is flushed. overlayA11y.ts holds
+//       one module-private Map and exports no reset hook, and close-without-open is a
+//       documented no-op (ui/overlayA11y.ts:41-45), so this is the sanctioned isolation
+//       device. Without it a `show()` in one test leaks a capture listener on a detached
+//       node, a pending deferred-focus timer, and a stale `returnFocus` into the next test.
+//   (3) `vi.mock('./overlayA11y', { spy: true })` — the MECHANISM oracle (the m23-s3
+//       precedent, ui/leaderboardView.test.ts:80-82). It records the calls AND calls through
+//       to the real implementation, so every VALUE assertion still exercises real attribute
+//       writes, a real trap and a real deferred focus.
+//
+// SOURCE OF TRUTH (m23-s6): memory/projects/monster-realm-m23-s6-plan.md (its PLAN REVISION
+// section overrides the first half), memory/projects/gates/m23-s6.gates.md X1-X14,
+// ui/overlayRegistry.ts OVERLAY_A11Y, ADR-0205 D1/D2/D3.
+//
+// THE DESIGN DECISION THESE TESTS ENCODE (plan revision, "split ownership"): menuView's own
+// delegated keydown owns ONLY the provably inert selection-movement inputs (up | down |
+// left) and consumes them with preventDefault + stopPropagation. `enter` and `escape` are
+// deliberately left to bubble to main.ts's window listener, so activation and dismissal keep
+// main.ts's session-gate-first and key-repeat guards. NO tabindex is ever written on a row:
+// a `tabindex="-1"` <li> is MOUSE-focusable, and a click on it followed by render()'s
+// replaceChildren orphans focus to <body>, after which aria-activedescendant announces
+// nothing and this slice's whole deliverable is dead (red-team MEASURED on a candidate
+// build; that is why MV-A11Y-OPTION-01 asserts hasAttribute('tabindex') === false).
+//
+// Do NOT edit these tests to match a buggy implementation — correct them from the plan only.
 
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { MenuRowVm, MenuViewModel } from './menuModel';
+import { t } from './a11yCopy';
+import {
+  MENU_INITIAL,
+  MENU_TREE,
+  type MenuAvailability,
+  type MenuNavState,
+  type MenuRowVm,
+  type MenuViewModel,
+  menuStep,
+} from './menuModel';
 import { MenuView } from './menuView';
+import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
+import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
+
+// m23-s6 MECHANISM oracle. `{ spy: true }` records every call AND calls through to the real
+// implementation, so a cheat that hand-writes role/aria-modal/aria-label with the correct
+// copied literals — no trap, no return-focus record, no timer — still reds.
+vi.mock('./overlayA11y', { spy: true });
 
 // ---------------------------------------------------------------------------
 // DOM fixture — mirrors the client/index.html block the implementer must deliver
@@ -56,8 +110,18 @@ import { MenuView } from './menuView';
 
 const OVERLAY_ID = 'menu-overlay';
 
+// m23-s6: the id of the focusable sentinel the close/re-open teeth park focus on.
+const OUTSIDE_SENTINEL_ID = 's6-outside-sentinel';
+
+/** m23-s6: ONE REAL macrotask boundary. A microtask flush is NOT enough for the
+ *  `setTimeout(..., 0)` deferred focus in ui/overlayA11y.ts:111-113, and fake timers are
+ *  banned for this defer (the m23-s1/s3 precedent). */
+async function flushMacrotask(): Promise<void> {
+  await new Promise((resolve) => setTimeout(resolve, 0));
+}
+
 function teardown(): void {
-  for (const id of [OVERLAY_ID, 'menu-launcher', 'help-hint']) {
+  for (const id of [OVERLAY_ID, 'menu-launcher', 'help-hint', OUTSIDE_SENTINEL_ID]) {
     document.getElementById(id)?.remove();
   }
 }
@@ -75,6 +139,13 @@ function mountMenuOverlay(omit?: 'menu-heading' | 'menu-rows' | 'menu-back-hint'
   // A sentinel inline style: show()/hide() must write ONLY style.display, so this must
   // survive every toggle (the shell must not clobber the whole style attribute).
   overlay.style.zIndex = '100';
+  // m23-s6 FIXTURE FIDELITY (client/index.html:105-106): the shell has shipped these two as
+  // STATIC LITERALS since m23-s2. They are copied here NOT to be asserted on their own —
+  // that is VACUOUS, a view that calls nothing passes (plan revision anti-pattern 9) — but
+  // so that "the ARIA claim is ABSENT after hide()" is a real tooth: only closeOverlayA11y
+  // removes them (ui/overlayA11y.ts:142-144).
+  overlay.setAttribute('role', 'dialog');
+  overlay.setAttribute('aria-modal', 'true');
 
   if (omit !== 'menu-heading') {
     const heading = document.createElement('div');
@@ -84,6 +155,12 @@ function mountMenuOverlay(omit?: 'menu-heading' | 'menu-rows' | 'menu-back-hint'
   if (omit !== 'menu-rows') {
     const rows = document.createElement('ul');
     rows.id = 'menu-rows';
+    // m23-s6 FIXTURE FIDELITY (client/index.html:117): `tabindex="0"`, NEVER "-1"
+    // (ADR-0205 D2's named landmine). This is LOAD-BEARING for the tests, not decoration:
+    // it is the OVERLAY_A11Y.menuView initialFocusSelector anchor, and ui/focusTrap.ts's
+    // ring is built by querySelector over FOCUSABLE_SELECTOR — with no tabindex here the
+    // overlay has ZERO focusables and every ARIA/focus tooth below passes vacuously.
+    rows.setAttribute('tabindex', '0');
     overlay.appendChild(rows);
   }
   if (omit !== 'menu-back-hint') {
@@ -95,6 +172,23 @@ function mountMenuOverlay(omit?: 'menu-heading' | 'menu-rows' | 'menu-back-hint'
   document.body.appendChild(overlay);
   return overlay;
 }
+
+// m23-s6 TEST-ISOLATION HOOKS (ui/leaderboardView.test.ts:90-102). File-level, so they cover
+// the pre-existing blocks too — several of those call show(), which schedules a deferred
+// focus and installs a capture listener the moment the wiring lands. These run BEFORE each
+// describe's own `mountMenuOverlay` hook, so every pre-existing test still gets the DOM it
+// always got.
+beforeEach(async () => {
+  for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
+  await flushMacrotask();
+  document.body.replaceChildren();
+  vi.clearAllMocks();
+});
+
+afterEach(async () => {
+  for (const id of OVERLAY_IDS) closeOverlayA11y(id, null);
+  await flushMacrotask();
+});
 
 const rowsEl = (): HTMLUListElement => document.getElementById('menu-rows') as HTMLUListElement;
 const liList = (): HTMLElement[] => Array.from(rowsEl().querySelectorAll('li'));
@@ -544,5 +638,817 @@ describe('MenuView — source-level XSS firewall (ADR-0135)', () => {
           'replaceChildren only (ADR-0135 XSS firewall)',
       ).toBe(false);
     }
+  });
+});
+
+// ===========================================================================
+// m23-s6 BLOCK G — the ARIA listbox, its options, and aria-activedescendant.
+// (gates X1-X5; M23 §4 row S6, A11Y-24)
+// ===========================================================================
+
+// Every expectation below is DERIVED from the registry at assert time, never a literal —
+// the m23-s3 V5 rule (ui/leaderboardView.test.ts:538).
+const S6_ID: OverlayId = 'menuView';
+const S6_META = OVERLAY_A11Y[S6_ID];
+
+describe('MenuView — listbox and option semantics (m23-s6)', () => {
+  beforeEach(() => {
+    mountMenuOverlay();
+  });
+
+  afterEach(() => {
+    teardown();
+  });
+
+  it('MV-A11Y-LISTBOX-01 BITES: the CONSTRUCTOR alone gives #menu-rows role="listbox" and an aria-labelledby that RESOLVES to the #menu-heading element', () => {
+    // WRONG IMPL KILLED (1): setting the role inside render(). replaceChildren rebuilds the
+    //   CHILDREN, not the <ul>, so that would look fine — until the very first frame between
+    //   construction and the first render(), and until any future edit moves the rebuild up a
+    //   level. The registry anchor is a CONSTRUCTOR-TIME contract (ADR-0205 D1/D2), and this
+    //   test asserts BEFORE any render() has ever run, so a render-time role reds.
+    // WRONG IMPL KILLED (2): a hard-coded `aria-labelledby="menu-heading"` string that does not
+    //   come from the already-resolved heading element (plan anti-pattern 12 — a second
+    //   getElementById). Asserting `=== headingEl.id` AND `getElementById(value) === headingEl`
+    //   kills both a typo'd literal and a dangling IDREF.
+    // WRONG IMPL KILLED (3): `aria-label="Menu"` instead of `aria-labelledby` — the heading IS
+    //   the breadcrumb and it CHANGES per level, so a frozen literal name would announce "Menu"
+    //   while the player is inside the Party submenu.
+    const heading = document.getElementById('menu-heading') as HTMLElement;
+    const rows = rowsEl();
+    expect(
+      rows.getAttribute('role'),
+      'precondition: the fixture ships NO role on the <ul> — only a real constructor can add it',
+    ).toBeNull();
+
+    newView(); // construct ONLY — no show(), no render()
+
+    expect(rows.getAttribute('role')).toBe('listbox');
+    const labelledBy = rows.getAttribute('aria-labelledby');
+    expect(labelledBy, 'the listbox must be NAMED, and named by IDREF').not.toBeNull();
+    expect(labelledBy).toBe(heading.id);
+    expect(
+      document.getElementById(labelledBy ?? ''),
+      'the IDREF must resolve to the live #menu-heading element, not to nothing',
+    ).toBe(heading);
+  });
+
+  it('MV-A11Y-OPTION-01 BITES: every <li> is role="option" with an explicit aria-selected, aria-disabled ONLY when disabled, and NEVER a tabindex', () => {
+    // WRONG IMPL KILLED (1): rows left as bare <li> inside a role="listbox" — a listbox whose
+    //   children are not options exposes NO options at all to an AT, which is strictly worse
+    //   than the pre-slice bare list.
+    // WRONG IMPL KILLED (2): omitting aria-selected on unselected rows (the dataset.own
+    //   precedent). ARIA requires EVERY option in a single-select listbox to carry an explicit
+    //   aria-selected, so an absent 'false' makes the selection ambiguous.
+    // WRONG IMPL KILLED (3): `aria-disabled="false"` on enabled rows — identical in meaning to
+    //   absent, so it is noise, and it is the shape a blind `String(row.disabled)` produces.
+    // WRONG IMPL KILLED (4) — THE BLOCKER TOOTH: `tabindex="-1"` on a row. Spec §5.4:488-491
+    //   asks for it and it is WRONG (plan revision, MEASURED by red-team): a negative tabindex
+    //   makes an <li> MOUSE-focusable, so one click focuses that row, the click emits
+    //   {kind:'click'} -> menuStep 'none' -> renderMenu() -> replaceChildren DESTROYS the
+    //   focused node -> focus falls to <body>. From then on aria-activedescendant announces
+    //   nothing (it only speaks while the listbox itself holds focus) and menuView's own
+    //   keydown never fires again. The APG activedescendant pattern puts tabindex on the
+    //   CONTAINER only, which index.html:117 already ships.
+    // WRONG IMPL KILLED (5): a PER-ROW keydown listener instead of one delegated listener on
+    //   the <ul> ([A11Y-T3]; it also leaks N closures per render). The non-bubbling dispatch at
+    //   the end can ONLY be observed by a listener on the <li> itself.
+    const { view, onInput } = newView();
+    // Shown FIRST, so the per-row-listener probe cannot be excused by a `!this.visible` guard.
+    view.show();
+    view.render(
+      vmOf([row(0, 'Interact', 'T', true, true), row(1, 'Journal (Quests)', 'Q', false, false)]),
+    );
+
+    const items = liList();
+    expect(items.length, 'ANTI-VACUITY: the render must have produced 2 <li> rows').toBe(2);
+    for (const li of items) {
+      expect(li.getAttribute('role'), 'every row must be an option').toBe('option');
+      expect(
+        li.hasAttribute('tabindex'),
+        'NO tabindex on a row, ever — a mouse-focusable <li> is destroyed by the next ' +
+          'replaceChildren and orphans focus to <body>',
+      ).toBe(false);
+    }
+    expect(items[0]!.getAttribute('aria-selected')).toBe('true');
+    expect(items[1]!.getAttribute('aria-selected')).toBe('false');
+    expect(items[0]!.getAttribute('aria-disabled')).toBe('true');
+    expect(
+      items[1]!.hasAttribute('aria-disabled'),
+      'aria-disabled="false" is identical to absent — an enabled row must carry NEITHER',
+    ).toBe(false);
+
+    // A NON-bubbling keydown reaches listeners on the <li> and nothing else.
+    items[0]!.dispatchEvent(
+      new KeyboardEvent('keydown', { code: 'ArrowDown', bubbles: false, cancelable: true }),
+    );
+    expect(
+      onInput,
+      'a non-bubbling keydown on a ROW must reach NOTHING — the keydown listener belongs on the ' +
+        '<ul>, in the default BUBBLE phase, exactly like the click and mouseover ones',
+    ).not.toHaveBeenCalled();
+  });
+
+  it('MV-A11Y-OPTIONID-01 BITES: each option id is derived from row.index (never the array position), is document-unique, and cannot collide with an index.html id', () => {
+    // WRONG IMPL KILLED (1): `menu-option-${arrayPosition}`. On every REAL view-model produced
+    //   by buildMenuViewModel the two coincide, so no realistic fixture can tell them apart —
+    //   which is why this one hands render() indices 7 then 3, out of array order. A positional
+    //   impl paints menu-option-0 / menu-option-1 and reds here.
+    // WRONG IMPL KILLED (2): a constant id on every row (or ids that repeat across renders),
+    //   which makes aria-activedescendant point at whichever duplicate the browser finds first.
+    // WRONG IMPL KILLED (3): an id namespace that collides with the static shell — a duplicate
+    //   id in the document silently breaks getElementById for the shell element too. Proved by
+    //   reading client/index.html from disk: `menu-option` must not appear there at all.
+    const { view } = newView();
+    view.render(vmOf([row(7, 'Seven', 'A', true), row(3, 'Three', 'B')]));
+
+    const items = liList();
+    expect(items.length, 'ANTI-VACUITY: both rows must have been painted').toBe(2);
+    expect(items.map((li) => li.id)).toEqual(['menu-option-7', 'menu-option-3']);
+    for (const li of items) {
+      expect(
+        document.querySelectorAll(`#${li.id}`).length,
+        `the id ${li.id} must be document-UNIQUE`,
+      ).toBe(1);
+      expect(document.getElementById(li.id)).toBe(li);
+    }
+
+    // The collision half, read from the real shell. String.includes only — the repo bans a
+    // dynamic RegExp (ReDoS / detect-non-literal-regexp).
+    const htmlPath = path.join(
+      path.dirname(fileURLToPath(import.meta.url)),
+      '..',
+      '..',
+      'index.html',
+    );
+    let html: string;
+    try {
+      html = readFileSync(htmlPath, 'utf8');
+    } catch (err) {
+      // Never a silent return — that is the vacuous-pass hole the m16.5a precedent names.
+      throw new Error('client/index.html could not be read — it must exist: ' + String(err));
+    }
+    expect(html.length, 'ANTI-VACUITY: index.html must be the real shell').toBeGreaterThan(2000);
+    expect(
+      html.includes('menu-rows'),
+      'ANTI-VACUITY: index.html must be the shell that owns #menu-rows',
+    ).toBe(true);
+    expect(
+      html.includes('menu-option'),
+      'the runtime option-id namespace must not collide with any id shipped in index.html',
+    ).toBe(false);
+  });
+
+  it('MV-A11Y-ACTIVEDESC-01 BITES: aria-activedescendant tracks the SELECTED row across renders and resolves to a live option inside #menu-rows', () => {
+    // WRONG IMPL KILLED (1): a set-once impl (written in the constructor, or only on the first
+    //   render). Two DIFFERENT selections are rendered and the attribute value must CHANGE —
+    //   this is the entire deliverable: every ArrowUp/ArrowDown re-renders, and if the pointer
+    //   does not move, a screen reader announces the same row forever while the highlight moves.
+    // WRONG IMPL KILLED (2): pointing at the row's data-menu-index, its text, or an id that was
+    //   never written to the DOM — a dangling IDREF announces NOTHING. Resolving the value with
+    //   getElementById and asserting the found node is an <li> INSIDE #menu-rows whose
+    //   aria-selected is 'true' kills every one of those.
+    // WRONG IMPL KILLED (3): writing the attribute BEFORE replaceChildren (so it names a node
+    //   from the PREVIOUS render, which is detached by the time an AT reads it) — the resolved
+    //   node must be the live one, and `rows.contains(...)` is what proves it.
+    const { view } = newView();
+    const rows = rowsEl();
+
+    view.render(vmOf([row(0, 'Party', null, true), row(1, 'World'), row(2, 'Trade')]));
+    const first = rows.getAttribute('aria-activedescendant');
+    expect(first, 'the selected row must be pointed at after the first render').not.toBeNull();
+    const firstEl = document.getElementById(first ?? '');
+    expect(firstEl, 'the IDREF must resolve to a live element').not.toBeNull();
+    expect(firstEl?.tagName).toBe('LI');
+    expect(rows.contains(firstEl), 'the active descendant must live INSIDE the listbox').toBe(true);
+    expect(firstEl?.getAttribute('aria-selected')).toBe('true');
+    expect(firstEl?.textContent).toBe('Party');
+
+    // A second, DIFFERENT selection — exactly what one ArrowDown produces.
+    view.render(vmOf([row(0, 'Party'), row(1, 'World'), row(2, 'Trade', null, true)]));
+    const second = rows.getAttribute('aria-activedescendant');
+    expect(second, 'a set-once impl leaves the pointer on the old row').not.toBe(first);
+    const secondEl = document.getElementById(second ?? '');
+    expect(secondEl, 'the IDREF must resolve to a live element after the re-render').not.toBeNull();
+    expect(secondEl?.tagName).toBe('LI');
+    expect(rows.contains(secondEl), 'the active descendant must live INSIDE the listbox').toBe(
+      true,
+    );
+    expect(secondEl?.getAttribute('aria-selected')).toBe('true');
+    expect(secondEl?.textContent).toBe('Trade');
+  });
+
+  it('MV-A11Y-ACTIVEDESC-02 BITES: aria-activedescendant is REMOVED (not set to "") when the list is empty or nothing is selected, and is set again afterwards', () => {
+    // WRONG IMPL KILLED (1): `setAttribute('aria-activedescendant', '')` as the "clear" — the
+    //   empty string is a DANGLING IDREF, not an absence: the listbox keeps claiming it has an
+    //   active descendant that does not exist. hasAttribute(...) === false is the only
+    //   assertion that separates the two; getAttribute(...) === '' would pass on both.
+    // WRONG IMPL KILLED (2): a set-once-never-clear impl that leaves the previous render's id
+    //   in place after an empty render — which is a pointer at a node replaceChildren deleted.
+    // WRONG IMPL KILLED (3): a clear that never re-arms (an early `return` in the empty branch
+    //   that skips the later write), caught by the final re-render assertion.
+    const { view } = newView();
+    const rows = rowsEl();
+
+    view.render(CATEGORY_VM);
+    expect(
+      rows.hasAttribute('aria-activedescendant'),
+      'ANTI-VACUITY: a selected render must SET it, or the removals below prove nothing',
+    ).toBe(true);
+
+    view.render(vmOf([]));
+    expect(
+      rows.hasAttribute('aria-activedescendant'),
+      'an empty list has no active descendant — REMOVE the attribute, never set it to ""',
+    ).toBe(false);
+    expect(rows.getAttribute('aria-activedescendant')).toBeNull();
+
+    // A hand-built view-model where EVERY row is selected:false. buildMenuViewModel never
+    // produces one today, but render() is total and must not invent a pointer.
+    view.render(vmOf([row(0, 'Party'), row(1, 'World')]));
+    expect(
+      rows.hasAttribute('aria-activedescendant'),
+      'no row selected means no active descendant',
+    ).toBe(false);
+
+    view.render(CATEGORY_VM);
+    expect(
+      rows.getAttribute('aria-activedescendant'),
+      'the pointer must come BACK once a row is selected again',
+    ).not.toBeNull();
+  });
+});
+
+// ===========================================================================
+// m23-s6 BLOCK H — overlayA11y wiring on the show()/hide() edge.
+// (gates X6-X8; A11Y-13 / A11Y-14 / A11Y-16)
+// ===========================================================================
+
+describe('MenuView — overlay a11y wiring on the show/hide edge (m23-s6)', () => {
+  beforeEach(() => {
+    mountMenuOverlay();
+  });
+
+  afterEach(() => {
+    teardown();
+  });
+
+  /** A focusable OUTSIDE the overlay: the "pre-overlay" element a close must restore to. */
+  function outsideSentinel(): HTMLButtonElement {
+    const btn = document.createElement('button');
+    btn.id = OUTSIDE_SENTINEL_ID;
+    btn.textContent = 'outside';
+    document.body.appendChild(btn);
+    return btn;
+  }
+
+  it('MV-A11Y-OPEN-ARIA-01 BITES: the first show() from a display:none shell labels the root from OVERLAY_A11Y / t(), and DELEGATES to openOverlayA11y', () => {
+    // WRONG IMPL KILLED (1): a show() that stays a bare `style.display = ''` — menuView is the
+    //   SIXTEENTH overlay and the only one of OVERLAY_IDS whose view never called the S1
+    //   helpers. Without this the listbox never receives focus and aria-activedescendant is
+    //   inert, i.e. the rest of this slice announces nothing.
+    // WRONG IMPL KILLED (2): a copy-pasted WRONG OverlayId — all 16 catalog values are
+    //   distinct, so the aria-label assertion catches it, and so does the id argument.
+    // WRONG IMPL KILLED (3): an attribute-only cheat that hand-writes the three attributes with
+    //   the right copied literals but ships NO trap, NO return-focus record and NO timer — the
+    //   spy call assertion is the mechanism oracle that kills it.
+    // NOT ASSERTED AS A LITERAL 'dialog' (plan revision anti-pattern 9): index.html:105 ships
+    // role="dialog" STATICALLY and the fixture mirrors it, so a literal role assertion passes a
+    // view that calls nothing. aria-label is on NO shell, so its ABSENCE-then-PRESENCE is the
+    // non-vacuous half.
+    const overlay = document.getElementById(OVERLAY_ID) as HTMLElement;
+    expect(
+      overlay.hasAttribute('aria-label'),
+      'precondition: no shell ships an aria-label, so only a real open can produce one',
+    ).toBe(false);
+
+    const { view } = newView();
+    expect(
+      overlay.hasAttribute('aria-label'),
+      'the CONSTRUCTOR must not open anything — the label appears on the show() edge only',
+    ).toBe(false);
+    expect(view.visible, 'the shell must start hidden, so the first show() IS an edge').toBe(false);
+
+    view.show();
+
+    expect(overlay.getAttribute('role'), 'role must come from OVERLAY_A11Y, not a literal').toBe(
+      S6_META.role,
+    );
+    expect(overlay.getAttribute('aria-modal')).toBe('true');
+    const label = overlay.getAttribute('aria-label');
+    expect(label, 'the accessible NAME must come from the a11yCopy catalog').toBe(
+      t(S6_META.labelKey),
+    );
+    expect((label ?? '').length, 'an empty name is an UNLABELLED dialog').toBeGreaterThan(0);
+
+    // MECHANISM oracle: its OWN id and its OWN root.
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(openOverlayA11y)).toHaveBeenCalledWith(S6_ID, overlay);
+  });
+
+  it('MV-A11Y-OPEN-FOCUS-01 BITES: both polarities — focus is NOT moved synchronously by show(), and IS on the registry anchor one real macrotask later', async () => {
+    // WRONG IMPL KILLED (1): a synchronous focus. The menu opens DURING the KeyM keydown, so a
+    //   synchronous focus move lands the very key that opened it inside the newly focused
+    //   element (the ui/renameView.ts:101 bug the S1 defer exists to fix). The NEGATIVE polarity
+    //   is the only assertion that can see the difference.
+    // WRONG IMPL KILLED (2): focusing the overlay, the heading, or the first <li> instead of the
+    //   registry anchor. The target is RESOLVED from OVERLAY_A11Y.menuView.initialFocusSelector
+    //   at assert time, and identity (`toBe`) is asserted — never `root.contains(active)`, which
+    //   passes on any decorative wrapper.
+    // WRONG IMPL KILLED (3): a view that focuses anything itself (A11Y-15) — pairs with
+    //   MV-NO-FOCUS-CALL, which bans the literal call from this file's source entirely.
+    const target = document.querySelector<HTMLElement>(S6_META.initialFocusSelector);
+    expect(
+      target,
+      `ANTI-VACUITY: the fixture must contain the registry anchor ${S6_META.initialFocusSelector}`,
+    ).not.toBeNull();
+
+    const { view } = newView();
+    view.show();
+
+    expect(document.activeElement, 'the initial focus must NOT land synchronously').not.toBe(
+      target,
+    );
+
+    await flushMacrotask();
+
+    expect(document.activeElement, 'one real macrotask later it MUST be the anchor').toBe(target);
+  });
+
+  it('MV-A11Y-CLOSE-FOCUS-01 BITES: hide() strips the ARIA modal claim and hands focus back to the pre-overlay element', async () => {
+    // WRONG IMPL KILLED (1): a hide() that stays a bare `style.display = 'none'` — the overlay
+    //   keeps announcing itself as a dialog while invisible, the trap keeps eating Tab, and the
+    //   player's focus is stranded on a display:none <ul> (i.e. on <body> in practice), which is
+    //   exactly the "all twelve hotkeys are dead" state.
+    // WRONG IMPL KILLED (2): closing with a re-supplied root, or with the wrong id — both leave
+    //   the real record live. The spy assertion pins the literal `null` fallbackFocus that
+    //   ADR-0205 A3 requires of every non-S5 caller.
+    // The static role/aria-modal from index.html:105-106 can only be ABSENT if closeOverlayA11y
+    // really ran — that is the vacuity-proof half (the m23-s3 V1 attack).
+    const overlay = document.getElementById(OVERLAY_ID) as HTMLElement;
+    const outside = outsideSentinel();
+    outside.focus();
+    expect(document.activeElement, 'precondition: focus starts OUTSIDE the overlay').toBe(outside);
+
+    const { view } = newView();
+    view.show();
+    await flushMacrotask();
+    expect(
+      document.activeElement,
+      'precondition: the open moved focus INTO the overlay, so the restore below is a real move',
+    ).toBe(rowsEl());
+
+    view.hide();
+
+    expect(document.activeElement, 'focus must return to the pre-overlay element').toBe(outside);
+    expect(
+      overlay.hasAttribute('aria-modal'),
+      'a display:none node must not keep claiming to be a modal dialog',
+    ).toBe(false);
+    expect(overlay.hasAttribute('role')).toBe(false);
+    expect(overlay.hasAttribute('aria-label')).toBe(false);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenCalledWith(S6_ID, null);
+  });
+
+  it('MV-A11Y-CLOSE-UNGUARDED-01 BITES: hide() calls the close UNCONDITIONALLY — on a never-shown view, on a repeat hide, and after a real open/close cycle', () => {
+    // WRONG IMPL KILLED: `if (wasVisible) closeOverlayA11y('menuView', null)` inside hide()
+    //   (plan anti-pattern 8) — i.e. copying show()'s edge guard onto hide(). The asymmetry is
+    //   deliberate and it is what helpView.ts:52-58 encodes: show() is EDGE-guarded because a
+    //   re-open clears and RE-SCHEDULES the deferred-focus timer, but hide() must close every
+    //   single time. A guarded hide() reads `visible === false` and SKIPS the close for exactly
+    //   the case that needs it most — a record that has desynchronised from the DOM (S1's named
+    //   A13 leak, ui/overlayA11y.ts:55-59). menuView IS a member of BATTLE_FORCE_HIDE
+    //   (ui/overlayRegistry.ts:274-283), so main.ts's battle force-hide path really does drive
+    //   this close, and if any writer ever sets style.display directly the record survives with
+    //   a LIVE capture trap eating every Tab, a pending deferred-focus timer that will steal
+    //   focus later, and a return target that expires — permanently, for the rest of the
+    //   session. Unguarded, the next hide() HEALS all three, and a close with no record is a
+    //   documented pure no-op (ui/overlayA11y.ts:41-45, :136-137), so nothing is risked.
+    // ALSO KILLED: a hide() that closes only ONCE per open (a private `#closed` latch), which
+    //   the third phase below catches; and a hide() that passes `undefined`, the overlay
+    //   element, or the anchor as fallbackFocus — ADR-0205 A3 makes the literal `null` the
+    //   obligation of every caller that is not S5.
+    // RED NOW for an assertion reason, not a missing import: hide() today is a bare
+    // `style.display = 'none'` (ui/menuView.ts:82-84) and calls nothing at all, so the very
+    // first count assertion fails at 0.
+    const { view } = newView();
+    expect(view.visible, 'precondition: this view was NEVER shown').toBe(false);
+
+    // ANTI-VACUITY (1): if `vi.mock('./overlayA11y', { spy: true })` were ever dropped from the
+    // top of this file, `closeOverlayA11y` would be the plain production function and every
+    // count oracle below would be measuring nothing. Pin that the spy is really installed.
+    expect(
+      vi.isMockFunction(closeOverlayA11y),
+      'ANTI-VACUITY: the overlayA11y module must be spied for the counts below to mean anything',
+    ).toBe(true);
+    // ANTI-VACUITY (2): the file-level beforeEach sweeps all 16 ids and THEN clears the mocks,
+    // so the counts asserted below are attributable to THIS test's hide() calls alone.
+    expect(
+      vi.mocked(closeOverlayA11y),
+      'precondition: the per-test sweep must have left a clean call count',
+    ).toHaveBeenCalledTimes(0);
+
+    // PHASE 1 — never shown. A guarded hide() calls the close ZERO times here.
+    view.hide();
+    expect(
+      vi.mocked(closeOverlayA11y),
+      'hide() on a NEVER-shown view MUST still close — a guarded hide calls it zero times',
+    ).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenLastCalledWith(S6_ID, null);
+
+    // PHASE 2 — repeat hide of an already-hidden overlay. This is the self-heal call.
+    view.hide();
+    expect(
+      vi.mocked(closeOverlayA11y),
+      'EVERY hide() closes — the repeat is precisely the call that heals a desynced record',
+    ).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenLastCalledWith(S6_ID, null);
+
+    // PHASE 3 — a real open/close cycle, then one more hide. Kills a close-once latch.
+    view.show();
+    view.hide();
+    view.hide();
+    expect(
+      vi.mocked(closeOverlayA11y),
+      'four hide() calls, four closes — nothing may latch the close off after the first one',
+    ).toHaveBeenCalledTimes(4);
+    expect(vi.mocked(closeOverlayA11y)).toHaveBeenLastCalledWith(S6_ID, null);
+  });
+
+  it('MV-A11Y-REOPEN-EDGE-01 BITES: show() on an ALREADY-visible overlay does not re-open, and does not yank focus back', async () => {
+    // WRONG IMPL KILLED: an UNGUARDED show() — one that calls openOverlayA11y every time
+    //   instead of only on the hidden->visible EDGE (`const wasVisible = this.visible` read
+    //   BEFORE the display write; the helpView.ts:42-50 shape). A re-open clears and
+    //   RE-SCHEDULES the deferred-focus timer (ui/overlayA11y.ts:100-113), so focus is yanked
+    //   back into the listbox out of nowhere. It is invisible to every attribute assertion,
+    //   which is why it is proved by the sentinel still holding focus AND by the call count.
+    // ALSO KILLED: reading `this.visible` AFTER writing style.display — that reads a constant
+    //   true and never opens at all, which the call-count assertion catches from the other side.
+    const outside = outsideSentinel();
+    const { view } = newView();
+
+    view.show();
+    await flushMacrotask();
+    expect(document.activeElement, 'precondition: the first open focused the listbox').toBe(
+      rowsEl(),
+    );
+    expect(
+      vi.mocked(openOverlayA11y),
+      'precondition: exactly one real open',
+    ).toHaveBeenCalledTimes(1);
+
+    outside.focus();
+    expect(document.activeElement, 'precondition: focus parked outside the overlay').toBe(outside);
+
+    view.show();
+    await flushMacrotask();
+
+    expect(document.activeElement, 'a repeat show() must NOT re-run the deferred focus').toBe(
+      outside,
+    );
+    expect(
+      vi.mocked(openOverlayA11y),
+      'a repeat show() is NOT an edge — openOverlayA11y must not be called a second time',
+    ).toHaveBeenCalledTimes(1);
+  });
+});
+
+// ===========================================================================
+// m23-s6 BLOCK I — the delegated keydown and its split ownership.
+// (gates X9-X11; A11Y-25 behaviour, A11Y-21 preservation)
+// ===========================================================================
+
+describe('MenuView — delegated keydown, split ownership (m23-s6)', () => {
+  beforeEach(() => {
+    mountMenuOverlay();
+  });
+
+  afterEach(() => {
+    teardown();
+  });
+
+  // The physical codes menuView's own listener OWNS, and the input each must produce.
+  // Sourced from menuKeyInput (ui/menuModel.ts:276-296): the WASD aliases are NOT optional.
+  const MOVEMENT_CASES: readonly (readonly [string, 'up' | 'down' | 'left'])[] = [
+    ['ArrowUp', 'up'],
+    ['ArrowDown', 'down'],
+    ['ArrowLeft', 'left'],
+    ['KeyW', 'up'],
+    ['KeyS', 'down'],
+    ['KeyA', 'left'],
+  ];
+
+  function keydownAt(target: HTMLElement, code: string, repeat = false): KeyboardEvent {
+    const e = new KeyboardEvent('keydown', { code, repeat, bubbles: true, cancelable: true });
+    target.dispatchEvent(e);
+    return e;
+  }
+
+  it('MV-KEYNAV-OWNS-01 BITES: each selection-movement key at #menu-rows emits exactly once, is preventDefault-ed, never reaches window — and a SIBLING listener on #menu-rows still runs', () => {
+    // WRONG IMPL KILLED (1): no stopPropagation — the same keydown then also reaches main.ts's
+    //   window listener (main.ts:1097, menu intercept at :1131) and handleMenuInput runs TWICE
+    //   per press, so one ArrowDown moves the selection two rows. An onInput CALL COUNT cannot
+    //   see this (the second step happens in main.ts, not here); only the window spy can.
+    // WRONG IMPL KILLED (2): stopImmediatePropagation instead of stopPropagation. The two are
+    //   behaviourally IDENTICAL for every window-level assertion (red-team: 13/13 attacks
+    //   indistinguishable). The ONLY thing that separates them is a second listener registered
+    //   on #menu-rows ITSELF after construction — stopImmediatePropagation silences it. That
+    //   matters because ui/focusTrap.ts:150 installs on #menu-overlay in the CAPTURE phase and
+    //   a future sibling listener on the <ul> is exactly the kind of thing this file must not
+    //   silently break.
+    // WRONG IMPL KILLED (3): no preventDefault — ArrowUp/ArrowDown scroll the overlay under the
+    //   selection, and Space/arrow default actions fight the listbox.
+    // WRONG IMPL KILLED (4): handling only the Arrow codes and forgetting the WASD aliases (or
+    //   re-implementing the code->input mapping inline instead of forwarding menuKeyInput).
+    const { view, onInput } = newView();
+    const rows = rowsEl();
+    const sibling = vi.fn();
+    const winSpy = vi.fn();
+    rows.addEventListener('keydown', sibling);
+    window.addEventListener('keydown', winSpy);
+    try {
+      view.render(CATEGORY_VM);
+      view.show();
+
+      for (const [code, kind] of MOVEMENT_CASES) {
+        onInput.mockClear();
+        sibling.mockClear();
+        winSpy.mockClear();
+
+        const e = keydownAt(rows, code);
+
+        expect(onInput, `${code} must emit exactly one input`).toHaveBeenCalledTimes(1);
+        expect(onInput, `${code} must map through menuKeyInput`).toHaveBeenCalledWith({ kind });
+        expect(e.defaultPrevented, `${code} must be preventDefault-ed`).toBe(true);
+        expect(
+          winSpy,
+          `${code} must NOT reach a window listener — main.ts would step the menu a second time`,
+        ).not.toHaveBeenCalled();
+        expect(
+          sibling,
+          `${code}: a SIBLING listener on #menu-rows must still run — stopPropagation, ` +
+            'NEVER stopImmediatePropagation',
+        ).toHaveBeenCalledTimes(1);
+      }
+    } finally {
+      rows.removeEventListener('keydown', sibling);
+      window.removeEventListener('keydown', winSpy);
+    }
+  });
+
+  it('MV-KEYNAV-BUBBLES-01 BITES: Enter, ArrowRight, Escape, an unrecognised code and an OS key-repeat are NOT consumed — no emission, not prevented, and they still reach window', () => {
+    // WRONG IMPL KILLED (1) — THE OVER-BROAD STOP: consuming all five menuKeyInput kinds.
+    //   `enter` and `escape` are the ONLY two inputs that can close the menu or activate a leaf,
+    //   and they are deliberately left to bubble so main.ts keeps ownership of them behind
+    //   sessionGateBlocks()-first (main.ts:1102, W-M21B2-SESSION-GATE-FIRST / ADR-0182 D17 G20)
+    //   and the Escape ladder. A menuView that swallows them routes a guarded action around the
+    //   session gate. This cheat passes 21/21 of the pre-existing tests (measured).
+    // WRONG IMPL KILLED (2) — A STOP PLACED ABOVE THE `undefined` CHECK: KeyM is the worst case
+    //   and the reason it is in this list. It is the menu's own toggle key and the ONLY way to
+    //   close the menu once focus is inside the listbox; a blanket stop on #menu-rows makes the
+    //   menu UNCLOSEABLE by keyboard.
+    // WRONG IMPL KILLED (3) — THE REPEAT LEAK: a missing `e.repeat` guard. It does not cause
+    //   scrolling (main.ts:1103-1106 suppresses that first) — it causes SELECTION key-repeat,
+    //   which main.ts:1129-1130 explicitly forbids. Asserted as "no emission", not as
+    //   defaultPrevented.
+    // ArrowRight is here because menuKeyInput maps it to `enter` (ui/menuModel.ts:284-287), so
+    // an impl that filters on the CODE instead of on the resolved input kind reds.
+    const { view, onInput } = newView();
+    const rows = rowsEl();
+    const winSpy = vi.fn();
+    window.addEventListener('keydown', winSpy);
+    try {
+      view.render(CATEGORY_VM);
+      view.show();
+
+      const cases: readonly (readonly [string, boolean])[] = [
+        ['Enter', false],
+        ['ArrowRight', false],
+        ['Escape', false],
+        ['KeyM', false],
+        ['ArrowDown', true],
+      ];
+
+      for (const [code, repeat] of cases) {
+        onInput.mockClear();
+        winSpy.mockClear();
+
+        const e = keydownAt(rows, code, repeat);
+        const label = repeat ? `${code} (repeat)` : code;
+
+        expect(onInput, `${label} must NOT be consumed by the view`).not.toHaveBeenCalled();
+        expect(e.defaultPrevented, `${label} must NOT be preventDefault-ed`).toBe(false);
+        expect(
+          winSpy,
+          `${label} must still reach the window listener that owns it`,
+        ).toHaveBeenCalledTimes(1);
+      }
+
+      // ANTI-VACUITY CONTROL. Every assertion above also passes on a view with NO keydown
+      // listener at all. This last dispatch proves the listener EXISTS and is selective, so the
+      // five negatives above are a real filter rather than a missing feature.
+      onInput.mockClear();
+      winSpy.mockClear();
+      const control = keydownAt(rows, 'ArrowDown');
+      expect(
+        onInput,
+        'ANTI-VACUITY: a non-repeat ArrowDown IS owned by the view',
+      ).toHaveBeenCalledTimes(1);
+      expect(onInput).toHaveBeenCalledWith({ kind: 'down' });
+      expect(control.defaultPrevented).toBe(true);
+      expect(winSpy).not.toHaveBeenCalled();
+    } finally {
+      window.removeEventListener('keydown', winSpy);
+    }
+  });
+
+  it('MV-KEYNAV-HIDDEN-01 BITES: with the overlay hidden a selection key is not consumed — no emission, not prevented, and it still reaches window', () => {
+    // WRONG IMPL KILLED: a keydown handler with no `!this.visible` guard. #menu-rows is a real
+    //   element in the document whether or not the overlay is displayed, and it stays FOCUSABLE
+    //   (index.html:117 ships tabindex="0"), so a key pressed while it holds focus after a close
+    //   would step a menu the player cannot see AND swallow that key from every other handler —
+    //   the movement keys are also the world-movement keys (WASD).
+    // The positive control at the end is what stops this test passing vacuously on an impl that
+    // has no keydown listener at all.
+    const { view, onInput } = newView();
+    const rows = rowsEl();
+    const winSpy = vi.fn();
+    window.addEventListener('keydown', winSpy);
+    try {
+      view.render(CATEGORY_VM);
+      view.hide();
+      expect(view.visible, 'precondition: the overlay is hidden').toBe(false);
+
+      const e = keydownAt(rows, 'ArrowDown');
+
+      expect(onInput, 'a hidden menu must emit nothing').not.toHaveBeenCalled();
+      expect(e.defaultPrevented, 'a hidden menu must leave the event completely untouched').toBe(
+        false,
+      );
+      expect(winSpy, 'the key must reach the world/window handlers').toHaveBeenCalledTimes(1);
+
+      // ANTI-VACUITY CONTROL: the very same key, with the overlay SHOWN, IS consumed.
+      onInput.mockClear();
+      winSpy.mockClear();
+      view.show();
+      const shown = keydownAt(rows, 'ArrowDown');
+      expect(
+        onInput,
+        'ANTI-VACUITY: the listener must exist and fire when visible',
+      ).toHaveBeenCalledTimes(1);
+      expect(shown.defaultPrevented).toBe(true);
+    } finally {
+      window.removeEventListener('keydown', winSpy);
+    }
+  });
+
+  it('MV-KEYNAV-EFFECT-INERT-01 BITES: every input menuView consumes is provably INERT — menuStep(up|down|left) can only ever produce effect {kind:"none"}', () => {
+    // THE SPLIT-OWNERSHIP SAFETY PROOF, MECHANISED. menuView consuming a key is only safe
+    // because the three inputs it owns can never close the menu, activate a leaf, or reach a
+    // reducer: handleMenuInput (main.ts:650-661) maps 'none' to renderMenu() alone. That is a
+    // property of menuModel, not of menuView.
+    // WRONG IMPL KILLED: a FUTURE menuModel edit — ui/menuModel.ts:245-248 explicitly
+    //   contemplates the one that would break it ("closing here would let a stray ArrowLeft
+    //   dismiss the menu"). The day `left` at the categories level starts returning
+    //   {kind:'close'}, menuView's stopPropagation would route a dismissal around main.ts's
+    //   session gate and its key-repeat guard, silently. This test reds THIS slice's suite then,
+    //   which is the only place the coupling is visible.
+    const availabilities: readonly MenuAvailability[] = [
+      { hasInteractTarget: false, hasTradeTargets: false, hasPvpTargets: false },
+      { hasInteractTarget: true, hasTradeTargets: true, hasPvpTargets: true },
+      { hasInteractTarget: true, hasTradeTargets: false, hasPvpTargets: true },
+    ];
+    const inputs = [{ kind: 'up' }, { kind: 'down' }, { kind: 'left' }] as const;
+
+    // Every representable nav state: both levels, every category, every leaf.
+    const states: MenuNavState[] = [];
+    for (let c = 0; c < MENU_TREE.length; c++) {
+      states.push({ level: 'categories', categoryIndex: c });
+      const leaves = MENU_TREE[c]!.leaves;
+      for (let l = 0; l < leaves.length; l++) {
+        states.push({ level: 'leaves', categoryIndex: c, leafIndex: l });
+      }
+    }
+
+    let cases = 0;
+    for (const state of states) {
+      for (const availability of availabilities) {
+        for (const input of inputs) {
+          const step = menuStep(state, input, availability);
+          expect(
+            step.effect.kind,
+            `${input.kind} at ${state.level}/${JSON.stringify(state)} must be INERT`,
+          ).toBe('none');
+          cases++;
+        }
+      }
+    }
+
+    // ANTI-VACUITY: an empty (or trivially small) cross-product would pass the loop above
+    // without proving anything. 5 categories + 12 leaves = 17 states x 3 availabilities x 3
+    // inputs = 153.
+    expect(
+      states.length,
+      'ANTI-VACUITY: both levels of the whole tree must be enumerated',
+    ).toBeGreaterThanOrEqual(15);
+    expect(cases, 'ANTI-VACUITY: the cross-product must be non-trivial').toBeGreaterThanOrEqual(
+      100,
+    );
+
+    // POSITIVE CONTROL: 'none' is NOT what menuStep returns for everything, so the assertion
+    // above is a real property of the three consumed inputs and not a tautology.
+    const control = menuStep(MENU_INITIAL, { kind: 'escape' }, availabilities[0]!);
+    expect(
+      control.effect.kind,
+      'CONTROL: escape at the top level DOES produce a non-inert effect — which is exactly why ' +
+        'menuView must leave it to bubble',
+    ).not.toBe('none');
+    expect(control.effect.kind).toBe('close');
+  });
+});
+
+// ===========================================================================
+// m23-s6 BLOCK J — source pins (gates X12, X13).
+// ===========================================================================
+
+describe('MenuView — m23-s6 source pins (A11Y-15, A11Y-25 shape)', () => {
+  // Read menuView.ts's raw text. Same pattern as MV-NO-INNERHTML above; String.includes only —
+  // the repo bans a dynamic RegExp (ReDoS / detect-non-literal-regexp).
+  function readMenuViewSource(): string {
+    const viewPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'menuView.ts');
+    try {
+      return readFileSync(viewPath, 'utf8');
+    } catch (err) {
+      // Never a silent return — that is the m16.5a vacuous-pass hole.
+      throw new Error(
+        'client/src/ui/menuView.ts could not be read — post-impl the file must exist: ' +
+          String(err),
+      );
+    }
+  }
+
+  function pinAntiVacuity(src: string): void {
+    expect(src.length, 'ANTI-VACUITY: menuView.ts must be non-trivial').toBeGreaterThan(200);
+    expect(
+      src.includes('replaceChildren'),
+      'ANTI-VACUITY: menuView.ts must rebuild the row list with replaceChildren',
+    ).toBe(true);
+    expect(
+      src.includes('textContent'),
+      'ANTI-VACUITY: menuView.ts must paint text with textContent',
+    ).toBe(true);
+  }
+
+  it('MV-KEYDOWN-PAIRED-SOURCE BITES: #menu-rows carries BOTH a delegated click and a delegated keydown, and both bodies reference the SAME callback identifier', () => {
+    // WRONG IMPL KILLED (1): a click-only row list. This is the SHAPE spec §5.4's GOOD fixture
+    //   describes and the shape evals/keyboard-operable-rows.eval.mjs (S10's file, deferred)
+    //   will scan for: a click listener with no paired keydown and no native button/anchor
+    //   child is a mouse-only control. S6 ships the subject that eval will read, so the shape is
+    //   pinned HERE, in the slice that owns the file.
+    // WRONG IMPL KILLED (2): a keydown that calls something OTHER than the click's callback —
+    //   e.g. a private method that decides navigation locally, which is the ADR-0014 breach the
+    //   whole shell exists to avoid. Both bodies must reach `callbacks.onInput`, so it must
+    //   occur at least TWICE (once in the click body, once in the keydown body).
+    // WRONG IMPL KILLED (3): a keydown bound to `window`/`document` rather than delegated on
+    //   the <ul> — that reintroduces the double-step this slice's split ownership prevents.
+    const src = readMenuViewSource();
+    pinAntiVacuity(src);
+    expect(
+      src.includes('menu-rows'),
+      'ANTI-VACUITY: menuView.ts must be the shell that owns #menu-rows',
+    ).toBe(true);
+
+    expect(
+      src.includes("addEventListener('click'"),
+      'menuView.ts must keep its delegated click listener',
+    ).toBe(true);
+    expect(
+      src.includes("addEventListener('keydown'"),
+      'menuView.ts must PAIR the click listener with a delegated keydown listener',
+    ).toBe(true);
+
+    const onInputRefs = src.split('callbacks.onInput').length - 1;
+    expect(
+      onInputRefs,
+      'both the click body and the keydown body must reach the SAME callback identifier — at ' +
+        'least two references to callbacks.onInput',
+    ).toBeGreaterThanOrEqual(2);
+  });
+
+  it('MV-NO-FOCUS-CALL BITES: menuView.ts contains no literal focus call — the single deferred focus lives ONLY in overlayA11y.ts (A11Y-15)', () => {
+    // WRONG IMPL KILLED: a view that focuses the listbox itself, in show() or in render().
+    //   Two distinct harms, both real: (a) a SYNCHRONOUS focus in show() lands the KeyM that
+    //   opened the menu inside the newly focused element (ui/overlayA11y.ts:9-20 — the
+    //   renameView.ts:101 bug S1 centralised away); (b) a focus in render() re-focuses the
+    //   listbox on EVERY arrow keypress, which cancels nothing but does defeat the whole point
+    //   of routing through openOverlayA11y's single owned timer. This slice is the one that
+    //   makes menuView a focus-RECEIVING overlay, so the ban has to be pinned in this file.
+    // This scan is the ONLY oracle for a focus call on a path no fixture reaches.
+    const src = readMenuViewSource();
+    pinAntiVacuity(src);
+    expect(
+      src.includes('.focus('),
+      'menuView.ts must not contain a literal focus call — openOverlayA11y is the sole owner ' +
+        'of the deferred focus (A11Y-15, ui/overlayA11y.ts:111-113)',
+    ).toBe(false);
   });
 });
