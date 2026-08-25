@@ -1105,6 +1105,9 @@ window.addEventListener('keydown', (e) => {
     suppressNativeMovementDefault(e);
     return;
   }
+  // m23-s5 fix cycle 2 (ADR-0206 A1b): a press can arrive INSIDE the stale-focus window,
+  // before the frame edge has run — heal first, so the twelve gates read the healed state.
+  if (focusInsideHiddenSubtree()) worldCanvasEl?.focus();
   // pt-b1 (ADR-0130): F9 downloads the local bug bundle; F8 dismisses the error overlay.
   // Handled EARLY (before letter-key branches) so they work under any overlay.
   if (e.code === 'F9') {

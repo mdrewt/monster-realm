@@ -11071,6 +11071,28 @@ describe('★ main.ts wiring (m23-s5/ADR-0206): worldHasFocus() gates exactly th
       'KeyT must contain ZERO occurrences of worldHasFocus() — it is NOT a canOpen()-derived ' +
         'guard (ADR-0164) and spec §2.3 does not scope the world-focus gate to it',
     ).toBe(0);
+
+    // --- (5) fix cycle 2: the focus-return call sites and the stale discriminator ----------
+    // Two `worldCanvasEl?.focus()` sites exist BY DESIGN and neither is redundant: the frame
+    // close edge (proactive, ADR-0206 D4 — restores focus with no keypress) and the keydown
+    // heal (reactive — a press can land inside the <=1-frame stale window before the edge
+    // runs; measured as a 1-in-3 flake at e2e/pvp.spec.ts:117). A THIRD site is a focus move
+    // on a path no test in this slice models; raise these numbers ONLY together with a new
+    // region-bounded assertion naming where it lives and why. Counts MEASURED against the
+    // shipped source before pinning (the arrow declaration spells `= (): boolean =>`, so the
+    // call-needle matches only the two call sites).
+    expect(
+      countOccurrences(stripped, 'worldCanvasEl?.focus();'),
+      'main.ts must contain EXACTLY 2 `worldCanvasEl?.focus();` call sites — the frame-loop ' +
+        'close edge (M23S5-A11YSNAPSHOT) and the keydown stale-focus heal. A third is an ' +
+        'unpinned focus move; zero/one means one of the two repairs was dropped.',
+    ).toBe(2);
+    expect(
+      countOccurrences(stripped, 'focusInsideHiddenSubtree()'),
+      'main.ts must contain EXACTLY 2 `focusInsideHiddenSubtree()` CALL sites — the frame ' +
+        'close edge and the keydown heal. More means the discriminator was wired to a path ' +
+        'this slice does not model; fewer means a repair lost its stale-focus half.',
+    ).toBe(2);
   });
 });
 

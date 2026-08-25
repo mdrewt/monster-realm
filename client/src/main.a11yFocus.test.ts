@@ -1033,6 +1033,142 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     ).toBe(canvas);
   });
 
+  it('S5T-GATE-HEALS-STALE-FOCUS: a hotkey pressed INSIDE the stale-focus window heals first and opens — and a press while a VISIBLE control has focus heals nothing', async () => {
+    // TWO PHASES, in this order on purpose. Phase 1 is the NEGATIVE (the heal must not fire
+    // when a visible control holds focus) and runs first, while `canOpen('boxView')` is still
+    // `allow` — so the gate is the ONLY thing that can refuse the press, which is what makes
+    // the mutant in WRONG IMPL KILLED (c) die here rather than for a second reason. Phase 2 is
+    // the POSITIVE (the heal fires when focus is stranded inside a hidden subtree).
+    //
+    // WRONG IMPL KILLED (a) ★ THE DEFECT (Phase 2, RED today): no heal at the consumer. The
+    //   frame-edge repair (S5T-FOCUS-RETURN-STALE) restores focus at the NEXT rAF; a press that
+    //   arrives inside that <=1-frame window is still evaluated against the stale anchor, so
+    //   `worldHasFocus()` is false, the twelve gates' conjunct short-circuits, and the keypress
+    //   is silently swallowed. That is e2e/pvp.spec.ts:117's flake, and no frame-side fix can
+    //   close it: the press beat the frame.
+    // WRONG IMPL KILLED (b): the heal placed BELOW the twelve open-handler branches (or below
+    //   any branch that returns). Every one of those branches ends in `return;`, so the heal
+    //   would be dead code for the very press it exists to repair — Phase 2 reds exactly as it
+    //   does for (a), which is why the heal must sit above every returning branch. (The
+    //   source-side statement of the same requirement is in pump-repin.md §6.)
+    // WRONG IMPL KILLED (c): an UNCONDITIONAL `worldCanvasEl?.focus();` with no
+    //   `focusInsideHiddenSubtree()` guard. It would yank focus to the canvas on EVERY keypress,
+    //   including one pressed while the player is on the always-on corner affordance — which is
+    //   both a focus theft and a quick-nav collision (the badge is a real, visible, focusable
+    //   control). Phase 1 kills it directly: with the mutant, the heal fires, `worldHasFocus()`
+    //   becomes true, boxView OPENS and focus is on the canvas — both Phase 1 assertions fail.
+    //   (S5T-FOCUS-NO-STEAL, as strengthened in fix cycle 2, also kills it — its Escape press
+    //   would move focus off the badge before the close edge runs — but that kill is indirect
+    //   and three steps removed from the heal line; this one is direct and named.)
+    // WRONG IMPL KILLED (d): a heal that focuses <body> instead of the world region. Phase 2's
+    //   canvas assertion is what distinguishes them; behaviourally both would let the open
+    //   through, but only the canvas satisfies ADR-0206 D4's "focus returns to the world
+    //   region", which is the thing an AT actually announces.
+
+    // ---- PHASE 1 — NEGATIVE: a VISIBLE control holds focus, so nothing is healed ----------
+    // GREEN AT FORK BY DESIGN (a mutation pin, not a red gate — this file's convention). The
+    // press is refused today by `worldHasFocus()` alone and, post-A1, by
+    // `(boxView?.visible || worldHasFocus())` with both operands false. It only goes RED
+    // against the unconditional-heal mutant.
+    expect(document.activeElement, 'precondition: body is focused at boot').toBe(document.body);
+    const helpHint = document.getElementById('help-hint') as HTMLElement | null;
+    expect(helpHint, '#help-hint must exist (client/index.html)').not.toBeNull();
+    helpHint!.focus();
+    expect(document.activeElement, 'anti-vacuity: the badge really is focusable').toBe(helpHint);
+
+    pressKey({ code: 'KeyB' }); // boxView's verdict is `allow` here — the GATE is the only refusal
+    expect(
+      overlayIsOpen('boxView'),
+      'boxView must NOT open while a VISIBLE control has focus (A11Y-19: this is the quick-nav ' +
+        'collision the gate exists to close, in the one state no other test in this file ' +
+        'covers — focus on a focusable element that is OUTSIDE every overlay)',
+    ).toBe(false);
+    expect(
+      document.activeElement,
+      'the heal must NOT fire while a visible control has focus — the badge is displayed, so ' +
+        'the ancestor walk finds no display:none and the guard is false. An UNCONDITIONAL ' +
+        'focus() here steals the player`s place on every single keypress',
+    ).toBe(helpHint);
+
+    // ---- PHASE 2 — POSITIVE: focus stranded inside a hidden subtree, and NO frame runs -----
+    document.body.focus();
+    expect(document.activeElement, 'reset: back to the world before the real scenario').toBe(
+      document.body,
+    );
+
+    pressKey({ key: '?' }); // helpView opens from <body>
+    expect(overlayIsOpen('helpView'), 'helpView must be open after `?`').toBe(true);
+
+    // Let the REAL setTimeout(0) deferred focus land INSIDE the overlay — the A11Y-19 post-open
+    // state, and the precondition for the close producing a stale window at all.
+    const anchor = overlayFocusAnchor('helpView');
+    expect(anchor, "helpView's initialFocusSelector anchor must resolve").not.toBeNull();
+    await vi.waitFor(
+      () => {
+        expect(document.activeElement).toBe(anchor);
+      },
+      { timeout: 2_000, interval: 5 },
+    );
+
+    pressKey({ key: '?' }); // the A1 same-key toggle-CLOSE
+    expect(overlayIsOpen('helpView'), 'helpView must be CLOSED by the second `?` (A1)').toBe(false);
+
+    // RE-CREATE THE CHROMIUM STALE STATE (identical to S5T-FOCUS-RETURN-STALE's, and asserted
+    // in both halves for the same reason): happy-dom's `closeOverlayA11y` restore to <body>
+    // SUCCEEDS, where Chromium's is a no-op because <body> has no tabindex — so the state must
+    // be re-created explicitly here. happy-dom permits focusing inside a display:none subtree
+    // (it runs no layout), which is what makes it an exact simulator for the window.
+    const overlayRoot = document.getElementById('help-overlay');
+    expect(overlayRoot, '#help-overlay must exist (client/index.html)').not.toBeNull();
+    expect(
+      overlayRoot!.style.display,
+      'precondition: the overlay root really is display:none — the ancestor the walk must find',
+    ).toBe('none');
+    anchor!.focus();
+    expect(
+      document.activeElement,
+      'precondition: focus is STRANDED on the anchor inside the hidden subtree — the exact ' +
+        'observable Chromium presents for up to ~200 ms after a close',
+    ).toBe(anchor);
+
+    const canvas = document.getElementById('app')?.querySelector('canvas') ?? null;
+    expect(
+      canvas,
+      'the mocked WorldRenderer.init must have appended a <canvas> to #app',
+    ).not.toBeNull();
+
+    // ⚠ NO runFrame() ANYWHERE IN THIS TEST. The residual defect is a press that lands BEFORE
+    // the first rAF after the close, so running a frame here would repair the state through the
+    // OTHER mechanism (S5T-FOCUS-RETURN-STALE's) and this test would pass without the heal.
+    pressKey({ code: 'KeyQ' }); // a DIFFERENT overlay's hotkey — proves the repair is general
+
+    // THE CRITERION: the press must not be swallowed. Asserted FIRST, because it is the
+    // behaviour the e2e flake reports and because it fails for exactly one reason — the gate
+    // read a stale anchor. (`canOpen('questLogView')` is `allow` here: nothing is visible.)
+    expect(
+      overlayIsOpen('questLogView'),
+      'KeyQ must OPEN the quest log even though it was pressed inside the stale-focus window, ' +
+        'before any frame ran. Without the heal, worldHasFocus() reads the stranded anchor, the ' +
+        'verdict conjunct short-circuits, and the press is silently swallowed — measured as a ' +
+        '1-in-3 flake at e2e/pvp.spec.ts:117',
+    ).toBe(true);
+
+    // AND the heal moved focus to the WORLD REGION specifically, not merely somewhere neutral.
+    // THIS ASSERTION IS ONLY VALID BECAUSE NO `await` SEPARATES IT FROM THE PRESS: openQuestLog
+    // -> openOverlayA11y schedules its initial focus on a setTimeout(0) macrotask, so
+    // synchronously after the dispatch the canvas is still the active element. An intervening
+    // await would let that timer fire and move focus to `#quest-log-list`, and this assertion
+    // would then be measuring the overlay's own deferred focus rather than the heal. (Chosen
+    // over dropping this half: the open alone proves the heal RAN, but only this proves it ran
+    // to the world region — ADR-0206 D4 — which is what kills the focus-<body> variant.)
+    expect(
+      document.activeElement,
+      'the heal must move focus to the world canvas (ADR-0206 D4), synchronously, before the ' +
+        'gate is evaluated. If this reads `#quest-log-list`, an await crept in above and the ' +
+        "overlay's own deferred focus fired; if it reads <body>, the heal targeted the wrong node",
+    ).toBe(canvas);
+  });
+
   it('S5T-FOCUS-NO-STEAL: closing an overlay opened by CLICK does not steal focus from the badge', () => {
     // GREEN AT FORK BY DESIGN — a regression pin, and worth stating exactly why: today
     // NOTHING in the frame loop touches focus at all (no snapshot pump exists yet), so focus
