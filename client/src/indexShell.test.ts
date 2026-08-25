@@ -2520,10 +2520,9 @@ describe('ux1-1 (m23-s5/ADR-0206 D5): #help-hint is a native <button>', () => {
     expect(hint, '#help-hint must exist').not.toBeNull();
     expect(hint!.tagName, '#help-hint must be a <button>').toBe('BUTTON');
     expect(hint!.getAttribute('type'), '#help-hint must declare type="button"').toBe('button');
-    expect(
-      hint!.parentElement?.tagName,
-      '#help-hint must still be a direct child of <body>',
-    ).toBe('BODY');
+    expect(hint!.parentElement?.tagName, '#help-hint must still be a direct child of <body>').toBe(
+      'BODY',
+    );
     expect(
       hint!.hasAttribute('data-menu-launcher'),
       '#help-hint must still carry data-menu-launcher — the delegated binding contract ' +

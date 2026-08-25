@@ -10805,9 +10805,9 @@ describe('★ main.ts wiring (m23-s5/ADR-0206): worldHasFocus() and the canvas-r
       'ANTI-VACUITY: the M23S5-WORLDFOCUS region is empty after comment-stripping',
     ).toBeGreaterThan(0);
     const expectedWorldFocus =
-      "let worldCanvasEl: HTMLElement | null = null; const worldHasFocus = (): boolean => { " +
-      "const a = document.activeElement; return a === null || a === document.body || a === " +
-      "worldCanvasEl; }; const liveRegion = new LiveRegion(); let lastA11ySnapshot: " +
+      'let worldCanvasEl: HTMLElement | null = null; const worldHasFocus = (): boolean => { ' +
+      'const a = document.activeElement; return a === null || a === document.body || a === ' +
+      'worldCanvasEl; }; const liveRegion = new LiveRegion(); let lastA11ySnapshot: ' +
       "A11ySnapshot = { topOverlay: null, message: '' };";
     expect(
       worldFocusRegion,
@@ -10968,7 +10968,7 @@ describe('★ main.ts wiring (m23-s5/ADR-0206): the live-region pump rides the r
       'ANTI-VACUITY: the M23S5-A11YSNAPSHOT region is empty after comment-stripping',
     ).toBeGreaterThan(0);
     const expected =
-      "const top = visibleIds(overlayProbes)[0] ?? null; const nextSnapshot: A11ySnapshot = { " +
+      'const top = visibleIds(overlayProbes)[0] ?? null; const nextSnapshot: A11ySnapshot = { ' +
       "topOverlay: top, message: '' }; for (const m of announcementsFor(lastA11ySnapshot, " +
       'nextSnapshot)) liveRegion.announce(m, now); if (lastA11ySnapshot.topOverlay !== null && ' +
       "top === null) { liveRegion.announce(t('a11y.world.region'), now); if (worldHasFocus()) " +
@@ -11000,7 +11000,10 @@ describe('★ main.ts wiring (m23-s5/ADR-0206): the live-region pump rides the r
     ).toBe(true);
     const sessionGateIdx = mwCodeOccurrences(frameRegion, 'sessionGateBlocks(')[0];
     const flushIdx = mwCodeOccurrences(frameRegion, 'liveRegion.flush(')[0];
-    expect(sessionGateIdx, 'sessionGateBlocks( must be called inside the frame').not.toBeUndefined();
+    expect(
+      sessionGateIdx,
+      'sessionGateBlocks( must be called inside the frame',
+    ).not.toBeUndefined();
     expect(flushIdx, 'liveRegion.flush( must be called inside the frame').not.toBeUndefined();
     expect(
       sessionGateIdx as number,

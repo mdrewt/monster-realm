@@ -64,7 +64,7 @@ import { fileURLToPath } from 'node:url';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Connection, ConnectionOptions } from './net/connection';
 import { t } from './ui/a11yCopy';
-import { announcementsFor, type A11ySnapshot } from './ui/announcements';
+import { type A11ySnapshot, announcementsFor } from './ui/announcements';
 import type { BugBundle, BugBundleInput } from './ui/bugBundle';
 import { OVERLAY_A11Y, type OverlayId } from './ui/overlayRegistry';
 
@@ -372,52 +372,73 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     readonly blockedById: OverlayId;
     readonly blockedByKey: KeySpec;
   }> = [
-    { id: 'boxView', openKey: { code: 'KeyB' }, blockedById: 'raisingView', blockedByKey: { code: 'KeyI' } },
-    { id: 'raisingView', openKey: { code: 'KeyI' }, blockedById: 'evolutionView', blockedByKey: { code: 'KeyE' } },
-    { id: 'evolutionView', openKey: { code: 'KeyE' }, blockedById: 'boxView', blockedByKey: { code: 'KeyB' } },
+    {
+      id: 'boxView',
+      openKey: { code: 'KeyB' },
+      blockedById: 'raisingView',
+      blockedByKey: { code: 'KeyI' },
+    },
+    {
+      id: 'raisingView',
+      openKey: { code: 'KeyI' },
+      blockedById: 'evolutionView',
+      blockedByKey: { code: 'KeyE' },
+    },
+    {
+      id: 'evolutionView',
+      openKey: { code: 'KeyE' },
+      blockedById: 'boxView',
+      blockedByKey: { code: 'KeyB' },
+    },
   ];
 
-  it.each(DRIVABLE_OVERLAYS)(
-    'S5T-GATE-BLOCKED ($id open with focus inside it; $blockedById hotkey opens nothing and $id stays unchanged)',
-    async ({ id, openKey, blockedById, blockedByKey }) => {
-      // WRONG IMPL KILLED: the `&& worldHasFocus()` conjunct missing at the $blockedById
-      // open-handler site. Without it, $blockedById's canOpen() verdict is ALREADY 'allow'
-      // here (same-tier HIDE_SWITCH sibling — see the fixture comment above), so this second
-      // hotkey WOULD open $blockedById out from under the player mid-read of $id: exactly the
-      // quick-nav collision spec §2.3 exists to close (pressing a letter to jump to the next
-      // control also toggles an overlay). The conjunct is the ONLY thing standing in the way.
-      pressKey(openKey);
-      expect(overlayIsOpen(id), `${id} must be open after its own hotkey`).toBe(true);
-      const anchor = overlayFocusAnchor(id);
-      expect(anchor, `${id}'s initialFocusSelector anchor must resolve`).not.toBeNull();
-      // Let the REAL setTimeout(0) deferred-focus macrotask (ui/overlayA11y.ts:111) fire, so
-      // focus is genuinely INSIDE the overlay — the A11Y-19 precondition, not merely open.
-      await vi.waitFor(
-        () => {
-          expect(document.activeElement).toBe(anchor);
-        },
-        { timeout: 2_000, interval: 5 },
-      );
-      pressKey(blockedByKey);
-      expect(overlayIsOpen(blockedById), `${blockedById} must NOT have opened`).toBe(false);
-      expect(overlayIsOpen(id), `${id} must remain open, unchanged`).toBe(true);
-      expect(document.activeElement, 'focus must not have moved').toBe(anchor);
-    },
-  );
+  it.each(
+    DRIVABLE_OVERLAYS,
+  )('S5T-GATE-BLOCKED ($id open with focus inside it; $blockedById hotkey opens nothing and $id stays unchanged)', async ({
+    id,
+    openKey,
+    blockedById,
+    blockedByKey,
+  }) => {
+    // WRONG IMPL KILLED: the `&& worldHasFocus()` conjunct missing at the $blockedById
+    // open-handler site. Without it, $blockedById's canOpen() verdict is ALREADY 'allow'
+    // here (same-tier HIDE_SWITCH sibling — see the fixture comment above), so this second
+    // hotkey WOULD open $blockedById out from under the player mid-read of $id: exactly the
+    // quick-nav collision spec §2.3 exists to close (pressing a letter to jump to the next
+    // control also toggles an overlay). The conjunct is the ONLY thing standing in the way.
+    pressKey(openKey);
+    expect(overlayIsOpen(id), `${id} must be open after its own hotkey`).toBe(true);
+    const anchor = overlayFocusAnchor(id);
+    expect(anchor, `${id}'s initialFocusSelector anchor must resolve`).not.toBeNull();
+    // Let the REAL setTimeout(0) deferred-focus macrotask (ui/overlayA11y.ts:111) fire, so
+    // focus is genuinely INSIDE the overlay — the A11Y-19 precondition, not merely open.
+    await vi.waitFor(
+      () => {
+        expect(document.activeElement).toBe(anchor);
+      },
+      { timeout: 2_000, interval: 5 },
+    );
+    pressKey(blockedByKey);
+    expect(overlayIsOpen(blockedById), `${blockedById} must NOT have opened`).toBe(false);
+    expect(overlayIsOpen(id), `${id} must remain open, unchanged`).toBe(true);
+    expect(document.activeElement, 'focus must not have moved').toBe(anchor);
+  });
 
-  it.each(DRIVABLE_OVERLAYS)(
-    'S5T-GATE-ALLOWED-BODY ($id opens from <body> focus, the pre-milestone behaviour)',
-    ({ id, openKey }) => {
-      // WRONG IMPL KILLED: `worldHasFocus` written as `a === worldCanvasEl` only (dropping
-      // BOTH the `null` and `document.body` disjuncts) — every hotkey would be dead from a
-      // fresh page load, before the player has ever Tabbed anywhere. ALSO KILLED: an
-      // inverted conjunct (`!worldHasFocus()`) — every hotkey would open ONLY while focus is
-      // inside some other overlay, exactly backwards.
-      expect(document.activeElement, 'precondition: body is focused at boot').toBe(document.body);
-      pressKey(openKey);
-      expect(overlayIsOpen(id)).toBe(true);
-    },
-  );
+  it.each(
+    DRIVABLE_OVERLAYS,
+  )('S5T-GATE-ALLOWED-BODY ($id opens from <body> focus, the pre-milestone behaviour)', ({
+    id,
+    openKey,
+  }) => {
+    // WRONG IMPL KILLED: `worldHasFocus` written as `a === worldCanvasEl` only (dropping
+    // BOTH the `null` and `document.body` disjuncts) — every hotkey would be dead from a
+    // fresh page load, before the player has ever Tabbed anywhere. ALSO KILLED: an
+    // inverted conjunct (`!worldHasFocus()`) — every hotkey would open ONLY while focus is
+    // inside some other overlay, exactly backwards.
+    expect(document.activeElement, 'precondition: body is focused at boot').toBe(document.body);
+    pressKey(openKey);
+    expect(overlayIsOpen(id)).toBe(true);
+  });
 
   it('S5T-GATE-ALLOWED-CANVAS: a hotkey still opens its overlay when the world CANVAS has focus', () => {
     // WRONG IMPL KILLED: `worldCanvasEl` never assigned (deleted, or shadowed by a second
@@ -430,7 +451,10 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     const mount = document.getElementById('app');
     expect(mount, '#app must exist').not.toBeNull();
     const canvas = mount!.querySelector('canvas') as HTMLElement | null;
-    expect(canvas, 'the mocked WorldRenderer.init must have appended a <canvas> to #app').not.toBeNull();
+    expect(
+      canvas,
+      'the mocked WorldRenderer.init must have appended a <canvas> to #app',
+    ).not.toBeNull();
     canvas!.focus();
     // AIRTIGHT precondition: document.activeElement REALLY IS the canvas before we press
     // anything — a stray failure to focus (e.g. no tabindex) must not silently pass this test.
@@ -510,7 +534,9 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     // boxView has not fired) — this is the one legitimate way to drive a same-tier switch
     // without violating the very gate this slice adds.
     pressKey({ code: 'KeyI' });
-    expect(overlayIsOpen('boxView'), 'boxView must have been force-hidden by the switch').toBe(false);
+    expect(overlayIsOpen('boxView'), 'boxView must have been force-hidden by the switch').toBe(
+      false,
+    );
     expect(overlayIsOpen('raisingView')).toBe(true);
     runFrame(600); // flushes the queued 'boxView' name; queues 'raisingView's
     runFrame(1100); // flushes 'raisingView's name

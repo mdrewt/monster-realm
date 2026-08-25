@@ -60,6 +60,8 @@ import { TileMap } from './render/map';
 import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { WorldRenderer } from './render/world';
+import { t } from './ui/a11yCopy';
+import { type A11ySnapshot, announcementsFor } from './ui/announcements';
 import {
   type BaitItem,
   type BattleViewModel,
@@ -118,6 +120,7 @@ import type { HelpView } from './ui/helpView';
 import { interactPrompt, nearestInteractable } from './ui/interactModel';
 import { buildLeaderboardViewModel } from './ui/leaderboardModel';
 import type { LeaderboardView } from './ui/leaderboardView';
+import { LiveRegion } from './ui/liveRegion';
 import {
   buildMenuViewModel,
   MENU_INITIAL,
@@ -1049,6 +1052,23 @@ const suppressNativeMovementDefault = (e: KeyboardEvent): void => {
     e.preventDefault();
 };
 
+// M23S5-WORLDFOCUS-BEGIN
+// m23-s5 (ADR-0206 D1, M23 §2.3): the scoped world-focus gate for the twelve overlay-open
+// hotkeys. The `=== document.body` disjunct is LOAD-BEARING and must never be "cleaned up"
+// (A11Y-35): a store-driven render(null) blurs a focused control back to <body>, and without
+// it every hotkey would be dead forever afterwards. Before main() runs, worldCanvasEl is null
+// and activeElement is <body>, so this is true and behaviour is identical to pre-M23.
+let worldCanvasEl: HTMLElement | null = null;
+const worldHasFocus = (): boolean => {
+  const a = document.activeElement;
+  return a === null || a === document.body || a === worldCanvasEl;
+};
+// The ONE announcer (S1 ships the machine; S5 owns the singleton and pumps it — a live region
+// nothing flushes is permanently silent and nothing else reds).
+const liveRegion = new LiveRegion();
+let lastA11ySnapshot: A11ySnapshot = { topOverlay: null, message: '' };
+// M23S5-WORLDFOCUS-END
+
 window.addEventListener('keydown', (e) => {
   // M21b-2 (ADR-0182 D17, G20): the session terminal outranks every input path — checked FIRST,
   // before the menu intercept, the battle-Escape branch and the movement-suppression surface.
@@ -1100,7 +1120,7 @@ window.addEventListener('keydown', (e) => {
     // dialogue it is a server desync (ptc5c/ADR-0139). The tier table (ui/overlayRegistry.ts)
     // is now the SSOT for that distinction, exhaustively proved by the OR-CANOPEN-* teeth.
     const boxVerdict = overlayVerdict('boxView');
-    if (boxVerdict.kind === 'allow') {
+    if (boxVerdict.kind === 'allow' && worldHasFocus()) {
       for (const id of boxVerdict.forceHide) overlayHandles[id]?.();
       boxView?.toggle();
       if (boxView?.visible) refreshBox();
@@ -1113,7 +1133,7 @@ window.addEventListener('keydown', (e) => {
     // comment records why modals are guarded rather than dismissed (ptc5c/ADR-0139) and why
     // `forceHide` can only ever name the two hide-switch siblings.
     const raisingVerdict = overlayVerdict('raisingView');
-    if (raisingVerdict.kind === 'allow') {
+    if (raisingVerdict.kind === 'allow' && worldHasFocus()) {
       for (const id of raisingVerdict.forceHide) overlayHandles[id]?.();
       raisingView?.toggle();
       if (raisingView?.visible) refreshRaising();
@@ -1125,7 +1145,7 @@ window.addEventListener('keydown', (e) => {
     // Evolution overlay — third member of the hide-switch trio, same verdict-driven
     // gate as box/raising above (see the KeyB comment for the guard-never-dismiss rule).
     const evolutionVerdict = overlayVerdict('evolutionView');
-    if (evolutionVerdict.kind === 'allow') {
+    if (evolutionVerdict.kind === 'allow' && worldHasFocus()) {
       for (const id of evolutionVerdict.forceHide) overlayHandles[id]?.();
       evolutionView?.toggle();
       if (evolutionView?.visible) refreshEvolution();
@@ -1137,7 +1157,7 @@ window.addEventListener('keydown', (e) => {
     // Quest log overlay — mutual exclusivity with all other overlays (M12d, ADR-0071),
     // through the ONE registry verdict since uxd3-c. Self is exempt, so the toggle-close
     // below still works while the quest log itself is open.
-    if (overlayVerdict('questLogView').kind === 'allow') {
+    if (overlayVerdict('questLogView').kind === 'allow' && worldHasFocus()) {
       if (questLogView?.visible) {
         questLogView.hide();
       } else {
@@ -1150,7 +1170,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyU') {
     // Trade overlay — mutual exclusivity with all other overlays (m15b, ADR-0107).
     // Shows the active offer involving this player; "No active trade" when none.
-    if (overlayVerdict('tradeView').kind === 'allow') {
+    if (overlayVerdict('tradeView').kind === 'allow' && worldHasFocus()) {
       if (tradeView?.visible) {
         tradeView.hide();
       } else {
@@ -1164,7 +1184,7 @@ window.addEventListener('keydown', (e) => {
     // PvP challenge overlay — mutual exclusivity with all other overlays (m16b, ADR-0110).
     // Not available during an active battle (ADR-0014 exit ordering) — the registry's
     // EXCLUSIVE_TOP tier is what carries that half now.
-    if (overlayVerdict('pvpView').kind === 'allow') {
+    if (overlayVerdict('pvpView').kind === 'allow' && worldHasFocus()) {
       if (pvpView?.visible) {
         pvpView.hide();
       } else {
@@ -1178,7 +1198,7 @@ window.addEventListener('keydown', (e) => {
     // Leaderboard overlay — mutual exclusivity with all other overlays (m17b, ADR-0120).
     // Renders once on open from store.allProfiles(); the batch listener below keeps
     // it live while visible. Pure subscription view — no write path (RL-15).
-    if (overlayVerdict('leaderboardView').kind === 'allow') {
+    if (overlayVerdict('leaderboardView').kind === 'allow' && worldHasFocus()) {
       if (leaderboardView?.visible) {
         leaderboardView.hide();
       } else {
@@ -1195,7 +1215,7 @@ window.addEventListener('keydown', (e) => {
   // e.preventDefault() (RT-RN-05) stops the opening 'n' from reaching the field.
   if (e.code === 'KeyN') {
     e.preventDefault(); // RT-RN-05: suppress the opening 'n' char reaching the field.
-    if (overlayVerdict('renameView').kind === 'allow') {
+    if (overlayVerdict('renameView').kind === 'allow' && worldHasFocus()) {
       if (renameView?.visible) {
         renameView.hide();
       } else {
@@ -1212,7 +1232,7 @@ window.addEventListener('keydown', (e) => {
   // e.preventDefault() suppresses any default action for the 'o' key.
   if (e.code === 'KeyO') {
     e.preventDefault();
-    if (overlayVerdict('tradeProposeView').kind === 'allow' && identity !== '') {
+    if (overlayVerdict('tradeProposeView').kind === 'allow' && identity !== '' && worldHasFocus()) {
       if (tradeProposeView?.visible) {
         tradeProposeView.hide();
       } else {
@@ -1249,7 +1269,7 @@ window.addEventListener('keydown', (e) => {
   // (help does not capture focus).
   if (e.key === '?') {
     e.preventDefault();
-    if (overlayVerdict('helpView').kind === 'allow') {
+    if (overlayVerdict('helpView').kind === 'allow' && worldHasFocus()) {
       if (helpView?.visible) {
         helpView.hide();
       } else {
@@ -1268,7 +1288,7 @@ window.addEventListener('keydown', (e) => {
   // try/catch. The AC-12 click front door carries the SAME predicate (ADR-0163 D6 closed).
   if (e.code === 'KeyM') {
     e.preventDefault();
-    if (overlayVerdict('menuView').kind === 'allow' && identity !== '') {
+    if (overlayVerdict('menuView').kind === 'allow' && identity !== '' && worldHasFocus()) {
       if (menuView?.visible) {
         menuView.hide();
       } else {
@@ -1283,7 +1303,7 @@ window.addEventListener('keydown', (e) => {
   // reads store.ownAccount(identity) whose own-identity filter returns undefined for '' (no throw).
   if (e.code === 'KeyC') {
     e.preventDefault();
-    if (overlayVerdict('claimView').kind === 'allow') {
+    if (overlayVerdict('claimView').kind === 'allow' && worldHasFocus()) {
       if (claimView?.visible) {
         claimView.hide();
       } else {
@@ -1419,8 +1439,13 @@ window.addEventListener('keydown', (e) => {
     return;
   }
   if (e.code === 'Space') {
-    jump(); // Jump does not hold-repeat
-    e.preventDefault();
+    // m23-s5 (ADR-0206 D5): a focused <button>/<a> OWNS Space (targetOwnsKey, ADR-0146) —
+    // jumping here would also cancel its NATIVE activation, leaving the delegated menu badge's
+    // front door Enter-only. Same exemption suppressNativeMovementDefault already applies.
+    if (!targetOwnsKey(e)) {
+      jump(); // Jump does not hold-repeat
+      e.preventDefault();
+    }
   }
 });
 
@@ -2180,6 +2205,12 @@ async function main(): Promise<void> {
   const mount = document.getElementById('app');
   if (mount !== null) {
     await renderer.init(mount, rawMap);
+    // M23S5-CANVASREF-BEGIN
+    // m23-s5 (ADR-0206 D1): render/world.ts appends app.canvas to this same mount and puts
+    // role="application"/tabindex="0" on it (m23-s4). It is out of this slice's touches:, so a
+    // querySelector on the mount main.ts already holds is the only in-touches route.
+    worldCanvasEl = mount.querySelector('canvas');
+    // M23S5-CANVASREF-END
     installResizeHandler(renderer, window); // fit the stage to the window + on resize
     boxView = new BoxViewClass(mount, {
       onSetNickname: (monsterId, nickname) => {
@@ -2695,6 +2726,21 @@ async function main(): Promise<void> {
       // The rAF re-arm lives in this loop's finally, so an early return skips work, not the loop.
       if (sessionGateBlocks()) return;
       const now = performance.now();
+      // M23S5-A11YSNAPSHOT-BEGIN
+      // m23-s5 (ADR-0206 D3): the ONE announcement edge and the ONE focus return, at the TOP
+      // of the frame so a recurring throw further down cannot silence the region. The world
+      // branch and announcementsFor are disjoint by construction (the reducer emits only when
+      // next.topOverlay is non-null), so neither transition is ever uttered twice.
+      const top = visibleIds(overlayProbes)[0] ?? null;
+      const nextSnapshot: A11ySnapshot = { topOverlay: top, message: '' };
+      for (const m of announcementsFor(lastA11ySnapshot, nextSnapshot)) liveRegion.announce(m, now);
+      if (lastA11ySnapshot.topOverlay !== null && top === null) {
+        liveRegion.announce(t('a11y.world.region'), now);
+        if (worldHasFocus()) worldCanvasEl?.focus();
+      }
+      lastA11ySnapshot = nextSnapshot;
+      liveRegion.flush(now);
+      // M23S5-A11YSNAPSHOT-END
       // nh2 (ADR-0148 R1): drain BEFORE the continuation re-issue, so a step emitted below is
       // never drained by the frame that issued it. This is a RESIDUAL fix, not the primary one:
       // measured, the outstanding-work gate takes press-phase render teleports from 88% to ~2%
