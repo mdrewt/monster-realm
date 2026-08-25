@@ -226,6 +226,77 @@ jobs:
           fi
       - run: node scripts/changelog-freshness.mjs --check
 
+  # The M23 accessibility decay ratchet (spec §5.7 "CI vs nightly — DECIDED").
+  # Nightly and NOT per-PR by deliberate design: `just ci` is fast, hermetic and
+  # server-free (ADR-0043), which is exactly why `e2e` is not in it either.
+  #
+  # WHAT IT ADDS OVER `just ci`, which already runs every a11y eval and every
+  # a11y unit spec: decay. `evals/run.mjs` fails only at ZERO eval files, and a
+  # MISSING vitest spec reports numTotalTests:0 and exits 0 — both measured — so
+  # today an a11y eval or spec can be deleted with the whole per-PR gate staying
+  # green. `just a11y-e2e` pins the three a11y evals by name and floors the a11y
+  # unit tier's test count. It does NOT run axe-core or any real browser: no
+  # axe-core exists in the repo and no M23 slice owns authoring it (a spec gap,
+  # deferred — the recipe prints a DEFERRED banner every run so the gap cannot
+  # read as covered). The two MANUAL criteria A11Y-32/A11Y-33 are never asserted
+  # here and are NEVER CI-green — see docs/a11y-manual-protocol.md.
+  #
+  # Rust + wasm-pack are present because the recipe depends on `just wasm`:
+  # client/src/main.a11yFocus.test.ts imports main.ts, which imports the
+  # client-wasm pkg, so without it those 26 tests fail to RESOLVE and the whole
+  # M23-S5 focus-return tier drops silently out of the ratchet.
+  #
+  # Failure policy for `a11y-e2e`: triaged and inserted as the next slice in the
+  # milestone queue, same tier as fix-red-master, below it in ordering. Restore
+  # the deleted eval or spec; raise the floor only in the commit that
+  # deliberately removes a11y tests, never to make a red go away.
+  # Response policy + owner: docs/nightly-red-response-policy.md.
+  a11y-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6 # v6
+      - uses: dtolnay/rust-toolchain@stable # stable
+        with: { targets: wasm32-unknown-unknown }
+      # Distinct prefix-key (v1-a11y) so this cache never collides with the
+      # mutation (v1-nightly) / mutation-server (v1-nightly-server) / smoke
+      # (v1-smoke) job caches, or ci.yml's v1-ci / v1-e2e.
+      - uses: Swatinem/rust-cache@v2 # v2
+        with: { prefix-key: v1-a11y }
+      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+        with: { version: 'v0.15.0' }
+      - uses: actions/setup-node@v7 # v7
+        with:
+          node-version: '24.13.1'
+          cache: npm
+          cache-dependency-path: client/package-lock.json
+      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2
+      # `npm ci` lives here rather than inside the recipe so a local
+      # `just a11y-e2e` never clobbers a developer's node_modules.
+      - name: Install client deps
+        run: cd client && npm ci
+      # Deliberately NO continue-on-error and NO if: — a soft-failing decay
+      # ratchet is a toothless one. Both are gated by
+      # evals/ci-gate-wiring.eval.mjs (a11yNightlyJobIsWired), which also pins
+      # this step to exactly one unsuffixed occurrence file-wide.
+      - run: just a11y-e2e
+      # ADR-0200 D7, same reasoning as the mutation jobs: `if: always()` is
+      # load-bearing, not hygiene. The GitHub default is `success()`, which
+      # uploads the vitest report only on the nights it is worthless and skips
+      # it on exactly the nights someone needs it to see WHICH spec vanished.
+      # `if-no-files-found: warn` is pinned explicitly as a ratchet against a
+      # later raise to `error`: at `error`, a job that died in `just wasm` before
+      # vitest ever ran would report a failing upload step instead of its REAL
+      # failure. The artifact name is distinct per job (upload-artifact v4
+      # hard-errors on a duplicate name within one run).
+      - name: Upload a11y vitest report (failure evidence)
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: a11y-e2e-vitest-report
+          path: /tmp/a11y-e2e-vitest.json
+          if-no-files-found: warn
+          retention-days: 14
+
   # Failure NOTIFICATION fan-in (ADR-0200). The five gates above had teeth and no
   # voice: `mutation-server` was RED for five consecutive nights with nobody
   # reacting, because failure handling existed only as the prose triage comments
@@ -267,7 +338,7 @@ jobs:
   # exist in the repo (D4), which would convert the notification back into a
   # silent-failure surface.
   notify:
-    needs: [mutation, mutation-server, coverage, smoke-republish, changelog-freshness]
+    needs: [mutation, mutation-server, coverage, smoke-republish, changelog-freshness, a11y-e2e]
     if: ${{ !cancelled() && (contains(needs.*.result, 'failure') || contains(needs.*.result, 'skipped') || contains(needs.*.result, 'cancelled')) }}
     runs-on: ubuntu-latest
     permissions:

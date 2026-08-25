@@ -278,9 +278,89 @@ gen:
 
 # Multi-client e2e (real browser vs a running instance + published module).
 # Needs the wasm pkg (client imports it) + a running spacetime; global-setup
-# republishes --delete-data. CI-as-required-gate is M5b (containerized spacetime).
+# republishes --delete-data. Shipped as a required CI gate: the `e2e:` job in
+# .github/workflows/ci.yml runs this against a containerized spacetime (M5b, ADR-0009).
 e2e: wasm
     cd client && npm run e2e
+
+# Nightly a11y DECAY RATCHET (M23 S11, spec §5.7 "CI vs nightly — DECIDED").
+# NOT part of `just ci` and deliberately NOT in the eval's REQUIRED_JUST_STEPS:
+# adding a browser and a live server to the hermetic gate is the exact thing
+# that keeps `e2e` out of it (ADR-0043). Runs in nightly.yml only; the recipe
+# body and the nightly wiring are both guarded by evals/ci-gate-wiring.eval.mjs.
+#
+# WHAT IT MEASURES, AND WHY IT IS NOT CEREMONY. Every mechanical a11y oracle
+# that exists today already runs per PR, so re-running them as-is would be a
+# gate that can only fail when `just ci` already failed. This recipe instead
+# applies the one lens `just ci` structurally CANNOT — decay — and both decay
+# shapes below were MEASURED on this tree, not imagined:
+#   1. evals/run.mjs fails only at ZERO eval files, so deleting an a11y eval
+#      leaves `just eval` green with one fewer check and nobody the wiser.
+#   2. a MISSING vitest spec reports numTotalTests:0 and exits 0, so deleting
+#      overlayA11yWiring.test.ts leaves `just client-test` green 84 tests
+#      lighter.
+# Half 1 pins the three a11y evals BY NAME (a deleted or renamed one makes the
+# import THROW — fail-closed by construction, no floor needed). Half 2 floors
+# the a11y unit tier's size. Nothing else in the repo asserts either property.
+#
+# NOT covered, deliberately: axe-core and any real-browser or real-AT check.
+# Spec §5.7 names "axe-core + Playwright" as this recipe's payload, but no
+# axe-core exists in the repo and NO slice in the spec's own §4 table owns
+# authoring client/e2e/a11y.spec.ts — a genuine spec gap, deferred (m23-s11
+# ledger X10/X11). This recipe is the seam that follow-up fills; it prints a
+# DEFERRED banner every run so the gap can never read as covered.
+# The two MANUAL criteria A11Y-32/A11Y-33 are NEVER covered here and SHALL
+# NEVER be reported as CI-green — see docs/a11y-manual-protocol.md.
+#
+# `: wasm` is load-bearing: src/main.a11yFocus.test.ts imports main.ts, which
+# imports ../../client-wasm/pkg/client_wasm.js. Without a prebuilt pkg its 26
+# tests fail to RESOLVE (not to assert), which would silently drop the whole
+# M23-S5 focus-return tier out of the ratchet. `just wasm` measures ~11s warm.
+#
+# floor=169 measured at 2770ec9 (8 files / 169 tests / 0 failed / 0 pending /
+# 0 todo). Raise it in the same commit that adds a11y tests; LOWER it only in a
+# commit that deliberately removes some, and say which in the message.
+# Response policy + owner: docs/nightly-red-response-policy.md.
+a11y-e2e floor="169": wasm
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # Fail loud on a non-integer floor BEFORE the run: a malformed value would
+    # otherwise make `[ -gt ]` error inside the if-condition below and silently
+    # skip the ratchet (vacuous green). `[ "" -gt N ]` in an if-condition is
+    # set -e-EXEMPT — the measured false-green shape in this justfile (ADR-0183
+    # D7, and the same guard mutate-server carries).
+    case "{{floor}}" in
+        ''|*[!0-9]*) echo "a11y-e2e: floor '{{floor}}' is not a non-negative integer" >&2; exit 64;;
+    esac
+    # --- Half 1: the a11y eval roster, pinned BY NAME. A deleted or renamed
+    # eval makes import() throw, which set -e turns into a non-zero exit.
+    # `node evals/<x>.eval.mjs` alone exits 0 VACUOUSLY (these three carry no
+    # main guard, by design: a main guard truncates run.mjs mid-loop at exit 0),
+    # so the default export must be imported and called.
+    a11y_eval_check() {
+        node -e "import(process.argv[1]).then(m => m.default()).then(r => { if (!r.pass) { console.error('a11y eval FAIL: ' + r.name + ' — ' + r.detail); process.exit(1) } })" -- "$1"
+        echo "a11y eval OK: $1"
+    }
+    a11y_eval_check ./evals/overlay-a11y-manifest.eval.mjs
+    a11y_eval_check ./evals/a11y-static-shell.eval.mjs
+    a11y_eval_check ./evals/reduced-motion-purity.eval.mjs
+    # --- Half 2: floor the a11y unit tier. Delete the stale report first: a
+    # leftover report from a previous run would be read as this run's result if
+    # vitest died before writing (measured shape).
+    rm -f /tmp/a11y-e2e-vitest.json
+    cd client && npx vitest run --reporter=json --outputFile=/tmp/a11y-e2e-vitest.json \
+        src/ui/overlayA11yWiring.test.ts \
+        src/ui/overlayA11y.test.ts \
+        src/ui/focusTrap.test.ts \
+        src/ui/liveRegion.test.ts \
+        src/ui/announcements.test.ts \
+        src/ui/a11yCopy.test.ts \
+        src/main.a11yFocus.test.ts \
+        src/render/motionPreference.test.ts
+    cd ..
+    node -e "const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-vitest.json', 'utf8')) } catch (e) { console.error('a11y-e2e: vitest wrote no readable JSON report — ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const files = j.testResults.length; const total = j.numTotalTests; if (files !== 8) { console.error('a11y-e2e: ' + files + ' spec file(s) reported, expected 8 — an a11y spec file was deleted or renamed'); process.exit(1) } if (j.numFailedTests !== 0 || j.numPendingTests !== 0 || j.numTodoTests !== 0) { console.error('a11y-e2e: failed=' + j.numFailedTests + ' pending=' + j.numPendingTests + ' todo=' + j.numTodoTests + ' — a skipped a11y test is a silently ungated one'); process.exit(1) } if (total < floor) { console.error('a11y-e2e: a11y unit tier reported ' + total + ' test(s) across ' + files + ' file(s) — floor is ' + floor); process.exit(1) } console.log('A11Y-NIGHTLY OK evals=3/3 files=' + files + ' tests=' + total + ' floor=' + floor + ' f=0 pend=0 todo=0')" -- "{{floor}}"
+    echo "DEFERRED: axe-core + real-browser tier is NOT run here (m23-s11 ledger X10/X11)."
+    echo "DEFERRED: A11Y-32 / A11Y-33 are MANUAL and are NEVER CI-green — docs/a11y-manual-protocol.md"
 
 # Fast inner loop: clippy + nextest + doctests scoped to a single crate.
 # Use during red-green iteration instead of the full `just ci`.
