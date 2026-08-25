@@ -918,6 +918,122 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     expect(document.activeElement).toBe(canvas);
   });
 
+  it('S5T-FOCUS-RETURN-STALE: the close-edge focus return fires even when focus is STRANDED inside the just-hidden overlay (the Chromium async-blur window)', async () => {
+    // RED AT AUTHORING TIME. The frame's close edge guards the return with `worldHasFocus()`
+    // alone; with focus stranded on `#help-title` — a node inside a `display:none` subtree —
+    // that predicate is false (the anchor is neither null, nor <body>, nor the canvas), so
+    // `worldCanvasEl?.focus()` never runs and the final assertion below fails with
+    // activeElement still on the hidden anchor. GREEN once the close edge reads
+    // `if (worldHasFocus() || focusInsideHiddenSubtree())`.
+    //
+    // WHY THIS IS A REAL BUG AND NOT A HARNESS ARTEFACT — the engine divergence, stated once:
+    // in real Chromium the automatic blur-to-<body> fixup after an ancestor becomes
+    // `display:none` is ASYNC (measured with a live-browser focus probe: the stale
+    // `document.activeElement` persists for up to ~200 ms), AND `closeOverlayA11y`'s explicit
+    // restore is `document.body.focus()`, which is a NO-OP in Chromium because <body> carries
+    // no tabindex. happy-dom diverges on BOTH halves — its `body.focus()` succeeds (which is
+    // why the assertion two lines below passes here) and it never auto-blurs at all. That is
+    // exactly why the unit tier could not see this defect while e2e/trade.spec.ts:115 and
+    // e2e/pvp.spec.ts:106 could: each is an OPEN pressed immediately after the previous test's
+    // close, landing inside the stale window where every gated hotkey is dead.
+    //
+    // happy-dom's refusal to auto-blur is what makes it the PERFECT simulator for that window:
+    // the stale state can be re-created exactly, deterministically, with no timers — see the
+    // explicit `anchor.focus()` below and the two assertions that pin the state it produces.
+    //
+    // WRONG IMPL KILLED (1) ★ THE DEFECT: the close edge left as a bare `if (worldHasFocus())`.
+    //   Focus never returns to the world region on ANY close where focus was inside the
+    //   overlay (same-key toggle, Escape, or a store-driven `render(null)`), so the very next
+    //   hotkey is dead until the engine's own fixup lands. Nothing else in this suite sees it —
+    //   S5T-FOCUS-RETURN closes from a state where focus was ALREADY back on <body> (happy-dom
+    //   restored it), which is precisely the state Chromium does not reach.
+    // WRONG IMPL KILLED (2) — ⚠ NOT BY THIS TEST, AND NOT BY THE SUITE AS IT STANDS: an
+    //   `offsetParent === null` discriminator instead of the inline-`display` ancestor walk.
+    //   `offsetParent` is null for EVERY `position:fixed` element (CSSOM), and null for
+    //   essentially everything under a layout-less DOM — so it reports "hidden" for the VISIBLE
+    //   always-on corner affordance, whose inline style is `position:fixed` (client/index.html),
+    //   and the close edge would yank focus to the canvas the moment a click-opened overlay
+    //   closes. THIS test cannot see it (focus here really IS inside a hidden subtree, so both
+    //   spellings return true). S5T-FOCUS-NO-STEAL is the right tooth for it, but TODAY it does
+    //   not bite either: it runs its single `runFrame(0)` AFTER the menu has both opened and
+    //   closed, so `lastA11ySnapshot.topOverlay` is still `null` and the outer edge predicate
+    //   (`lastA11ySnapshot.topOverlay !== null && top === null`) is FALSE — the guarded branch
+    //   is never entered. One added `runFrame(0)` between that test's click-open and its
+    //   Escape-close fixes it and makes its code match its own comment; see notes.md §(a) for
+    //   the exact edit. Recorded here rather than glossed, because a WRONG IMPL KILLED list
+    //   that names a tooth which does not actually kill is worse than one that says nothing.
+    // WRONG IMPL KILLED (3): a discriminator that checks only the ACTIVE ELEMENT's own style
+    //   (`document.activeElement.style.display === 'none'`) and not its ancestors. The anchor
+    //   carries `tabindex="-1"` and NO inline display at all (client/index.html) — only the
+    //   overlay ROOT is display:none — so it reads false and the stale window stands. This test
+    //   reds on it exactly as it reds on (1); the ancestor walk is the whole mechanism.
+    pressKey({ key: '?' }); // helpView opens from <body>, the pre-milestone path
+    expect(overlayIsOpen('helpView'), 'helpView must be open after `?`').toBe(true);
+    runFrame(0); // registers 'helpView' as lastA11ySnapshot.topOverlay — arms the close edge
+
+    // Let the REAL setTimeout(0) deferred focus (ui/overlayA11y.ts:111) land INSIDE the overlay.
+    // This is the A11Y-19 post-open state, and it is what makes the close below produce the
+    // stale window rather than a close from <body>.
+    const anchor = overlayFocusAnchor('helpView');
+    expect(anchor, "helpView's initialFocusSelector anchor must resolve").not.toBeNull();
+    await vi.waitFor(
+      () => {
+        expect(document.activeElement).toBe(anchor);
+      },
+      { timeout: 2_000, interval: 5 },
+    );
+
+    pressKey({ key: '?' }); // the A1 same-key toggle-CLOSE — one of the three measured e2e paths
+    expect(
+      overlayIsOpen('helpView'),
+      'helpView must be CLOSED by the second `?` (ADR-0206 Amendment A1). If THIS is the ' +
+        'assertion that failed, A1 has not landed and the rest of this test is not yet meaningful',
+    ).toBe(false);
+    expect(
+      document.activeElement,
+      "happy-dom's closeOverlayA11y restore to <body> SUCCEEDS here — pinned so the divergence " +
+        'is explicit rather than assumed: in Chromium this same `document.body.focus()` is a ' +
+        'NO-OP (no tabindex on <body>), which is the first half of why the stale window exists ' +
+        'at all',
+    ).toBe(document.body);
+
+    // --- RE-CREATE THE CHROMIUM STALE STATE, EXPLICITLY -----------------------------------
+    // Simulating Chromium's ASYNC blur fixup: for up to ~200 ms after the close, the browser
+    // leaves activeElement on the anchor INSIDE the now-hidden overlay. happy-dom permits
+    // focusing a node inside a display:none subtree (it runs no layout), so the state is
+    // reproducible exactly — and both halves of it are ASSERTED, so this test can never pass
+    // (or fail) for a state other than the one it claims to model.
+    const overlayRoot = document.getElementById('help-overlay');
+    expect(overlayRoot, '#help-overlay must exist (client/index.html)').not.toBeNull();
+    expect(
+      overlayRoot!.style.display,
+      'precondition: the overlay root really is display:none — the ancestor the walk must find',
+    ).toBe('none');
+    anchor!.focus();
+    expect(
+      document.activeElement,
+      'precondition: focus is STRANDED on the anchor inside the hidden subtree. This is the ' +
+        'exact observable Chromium presents on the close frame; if happy-dom ever refuses this ' +
+        'focus, the simulation is broken and the assertion below would pass for the wrong reason',
+    ).toBe(anchor);
+
+    runFrame(600); // the topOverlay -> null edge, evaluated against the stale activeElement
+
+    const canvas = document.getElementById('app')?.querySelector('canvas');
+    expect(
+      canvas,
+      'the mocked WorldRenderer.init must have appended a <canvas> to #app',
+    ).not.toBeNull();
+    expect(
+      document.activeElement,
+      'the close edge must return focus to the world canvas even though worldHasFocus() reads ' +
+        'a STALE anchor inside the hidden overlay — otherwise every gated hotkey is dead for ' +
+        "the whole of Chromium's async-blur window (~200 ms), which is what killed " +
+        'e2e/trade.spec.ts:115 and e2e/pvp.spec.ts:106. The frame heals it in ONE rAF tick, ' +
+        'deterministically, instead of waiting on an engine fixup that may never come',
+    ).toBe(canvas);
+  });
+
   it('S5T-FOCUS-NO-STEAL: closing an overlay opened by CLICK does not steal focus from the badge', () => {
     // GREEN AT FORK BY DESIGN — a regression pin, and worth stating exactly why: today
     // NOTHING in the frame loop touches focus at all (no snapshot pump exists yet), so focus

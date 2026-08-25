@@ -253,7 +253,7 @@ the twelve sites uniform.
 **Ripples.** The twelve `expectedRaw` handler-body pins in `main.wiring.test.ts` are re-pinned to
 the new shape (exact equality retained; KeyT byte-identical); the census — 12 in-listener, 13
 whole-file, 1 in the snapshot region, 0 on KeyT, 0 in the click launcher — is unchanged. New gating
-tests `S5T-GATE-SAMEKEY-CLOSE` (×3, the HIDE_SWITCH trio) and
+tests `S5T-GATE-SAMEKEY-CLOSE` (×6 — the HIDE_SWITCH trio plus questLog/trade/help, deliberately wider than the trio so the minimum trio-only edit that greens the three e2e specs still reds) and
 `S5T-GATE-REOPEN-AFTER-SAMEKEY-CLOSE` encode the e2e regression at the unit tier, captured RED
 against the pre-amendment implementation. Ledger gate X1 is amended accordingly. The M23 spec's
 §2.3 accepted-change sentence, §8.4, and A11Y-19's "or toggle" wording need a supervisor-side

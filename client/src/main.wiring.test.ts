@@ -11082,6 +11082,15 @@ describe('★ main.ts wiring (m23-s5/ADR-0206): the live-region pump rides the r
     //   the (unguarded) frame body would then silence the region AND freeze
     //   lastA11ySnapshot indefinitely.
     // WRONG IMPL KILLED (3): a second `new LiveRegion(` instantiated somewhere else.
+    // WRONG IMPL KILLED (4, fix cycle 2): the close-edge guard left as a bare
+    //   `if (worldHasFocus())`. In real Chromium the blur-to-<body> fixup after a
+    //   display:none close is ASYNC (~200 ms measured), and closeOverlayA11y's explicit
+    //   `document.body.focus()` restore is a NO-OP there (body has no tabindex) — so on the
+    //   close frame `document.activeElement` is still the anchor INSIDE the hidden overlay,
+    //   worldHasFocus() is false, and focus never returns to the world at all. happy-dom
+    //   diverges (its body.focus() succeeds), which is exactly why the unit tier could not
+    //   see this and e2e/trade.spec.ts:115 + e2e/pvp.spec.ts:106 could. The runtime half is
+    //   S5T-FOCUS-RETURN-STALE (main.a11yFocus.test.ts).
     const src = readMainTs();
 
     const beginNeedle = '// M23S5-A11YSNAPSHOT-BEGIN';
@@ -11099,8 +11108,9 @@ describe('★ main.ts wiring (m23-s5/ADR-0206): the live-region pump rides the r
       'const top = visibleIds(overlayProbes)[0] ?? null; const nextSnapshot: A11ySnapshot = { ' +
       "topOverlay: top, message: '' }; for (const m of announcementsFor(lastA11ySnapshot, " +
       'nextSnapshot)) liveRegion.announce(m, now); if (lastA11ySnapshot.topOverlay !== null && ' +
-      "top === null) { liveRegion.announce(t('a11y.world.region'), now); if (worldHasFocus()) " +
-      'worldCanvasEl?.focus(); } lastA11ySnapshot = nextSnapshot; liveRegion.flush(now);';
+      "top === null) { liveRegion.announce(t('a11y.world.region'), now); if (worldHasFocus() || " +
+      'focusInsideHiddenSubtree()) worldCanvasEl?.focus(); } lastA11ySnapshot = nextSnapshot; ' +
+      'liveRegion.flush(now);';
     expect(
       region,
       'the M23S5-A11YSNAPSHOT region must be EXACTLY (comment-stripped, whitespace-squashed) ' +
