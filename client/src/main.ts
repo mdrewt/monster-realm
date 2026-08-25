@@ -1072,6 +1072,28 @@ const liveRegion = new LiveRegion();
 let lastA11ySnapshot: A11ySnapshot = { topOverlay: null, message: '' };
 // M23S5-WORLDFOCUS-END
 
+// m23-s5 fix cycle 2 (ADR-0206 A1 follow-up): the stale-focus discriminator.
+// After a close, real Chromium leaves document.activeElement on a node INSIDE the hidden
+// overlay for up to ~200 ms (its blur fixup is async, and closeOverlayA11y's explicit
+// restore to <body> is a no-op there because <body> carries no tabindex) — so the close
+// edge's worldHasFocus() reads a stale anchor and focus never returns to the world.
+// Inline `style.display = 'none'` is this repo's ONE hiding idiom — every overlay in both
+// shell families hides that way — so the ancestor walk is the exact discriminator, and it
+// is engine-independent. `checkVisibility()` was rejected: this happy-dom version does not
+// implement it, which would make the unit-tier proof vacuous. The walk cannot match the
+// always-on corner affordance (it and every ancestor are display-visible), so the D4
+// no-steal guarantee survives — pinned by S5T-FOCUS-NO-STEAL.
+const focusInsideHiddenSubtree = (): boolean => {
+  for (
+    let el: Element | null = document.activeElement;
+    el instanceof HTMLElement;
+    el = el.parentElement
+  ) {
+    if (el.style.display === 'none') return true;
+  }
+  return false;
+};
+
 window.addEventListener('keydown', (e) => {
   // M21b-2 (ADR-0182 D17, G20): the session terminal outranks every input path — checked FIRST,
   // before the menu intercept, the battle-Escape branch and the movement-suppression surface.
@@ -2753,7 +2775,7 @@ async function main(): Promise<void> {
       for (const m of announcementsFor(lastA11ySnapshot, nextSnapshot)) liveRegion.announce(m, now);
       if (lastA11ySnapshot.topOverlay !== null && top === null) {
         liveRegion.announce(t('a11y.world.region'), now);
-        if (worldHasFocus()) worldCanvasEl?.focus();
+        if (worldHasFocus() || focusInsideHiddenSubtree()) worldCanvasEl?.focus();
       }
       lastA11ySnapshot = nextSnapshot;
       liveRegion.flush(now);
