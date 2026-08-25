@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 172 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 173 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -181,6 +181,7 @@ Generated from 172 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0204](./0204-roster-wave-3-electric-and-light.md) | 0204 — Roster Wave 3: Electric and Light affinities with reserved bands, one evolution edge per base form, and content superlatives as load-bearing constraints | Accepted | content, evolution-fusion | rw3b (M-postgate-roster-wave-3 rw3b — Electric and Light lines) | Wave 3 adds an Electric glass-cannon line and a Light wall line under band 40..=49 (edges 100..=199), with exactly ONE outgoing evolution edge per base form so ADR-0176 D2's auto-evolution race is vacuous by construction. |
 | [0205](./0205-overlay-a11y-metadata-ssot-and-copy-catalog.md) | 0205 — The overlay accessibility metadata SSOT and the flat copy catalog: a total `OVERLAY_A11Y` beside `OVERLAY_TIERS`, keys never literals, and a compile-time contract that text pins cannot fake | Accepted | client-ui, ci-gates | m23-s0 (M23 accessibility S0 — the substrate; first slice, no deps) | A11y metadata is one total `Record<OverlayId, A11yMeta>` in `overlayRegistry.ts`, accessible names are catalog keys resolved by a throw-on-miss `t()`, and totality plus the closed role union are gated by a negative compile, not a text pin. |
 | [0206](./0206-world-focus-hotkey-gate-and-the-frame-loop-announcer.md) | 0206 — The world-focus hotkey gate, the frame-loop announcer, and the native `#help-hint` button: three main.ts seams M23 needs and the one thing none of them may "simplify" | Accepted | client-ui, ci-gates | m23-s5 (M23 accessibility S5 — the sole `client/src/main.ts` touch; after S3, S4) | A `worldHasFocus()` conjunct gates the twelve `canOpen`-derived hotkey branches only, spelled out twelve times rather than behind one helper; announcements and focus return ride ONE rAF-loop edge; `#help-hint` becomes a native button. |
+| [0207](./0207-data-lifecycle-manifest-and-terminal-schema.md) | 0207 — Data-lifecycle manifest and terminal schema: M22 privacy S2 additive structure | Accepted | schema-persistence, security-authz, ci-gates | m22-s2 (M22 privacy compliance S2 — schema + manifest extension) | Data-lifecycle manifest as a Rust const in schema.rs (39 tables: policy+basis+exportable); Account.terminal_at_ms appended with #[default(None)]; private export_bundle table; reaper deferred to S3 (scheduled-ness is migration-frozen). |
 
 ## Harness design corpus (H- namespace)
 
@@ -387,6 +388,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0195](./0195-rust-test-mirror-parity.md) — 13r-h — 0195 — Rust test-mirror parity: derived scan sets, source-derived reducer enumeration, and the Account legal-state invariant (Accepted)
 - [0197](./0197-spacetimedb-2.8.1-upgrade.md) — stdb-281 (toolchain upgrade; operator-initiated) — 0197 — SpacetimeDB 2.8.1: upgrade the CLI/host AND the module SDK (1.12.0 → 2.8.1), and correct four load-bearing false facts (Accepted)
 - [0199](./0199-declared-table-visibility-gate.md) — 15r-sec-vis (M-postgate fifteenth-review residuals §15r-sec-vis) — 0199 — Declared table visibility as snapshot data: a class regression gate for `public` tables (Accepted)
+- [0207](./0207-data-lifecycle-manifest-and-terminal-schema.md) — m22-s2 (M22 privacy compliance S2 — schema + manifest extension) — 0207 — Data-lifecycle manifest and terminal schema: M22 privacy S2 additive structure (Accepted)
 
 ### client-ui
 
@@ -510,6 +512,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0203](./0203-nightly-red-response-policy.md) — 16r-h (`specs/monster-realm-v2/M-postgate-sixteenth-review-residuals.spec.md` §16r-h) — 0203 — Nightly red-response policy: one machine-checked file, key-set-equal to the wired workflow, cited back from every job (Accepted)
 - [0205](./0205-overlay-a11y-metadata-ssot-and-copy-catalog.md) — m23-s0 (M23 accessibility S0 — the substrate; first slice, no deps) — 0205 — The overlay accessibility metadata SSOT and the flat copy catalog: a total `OVERLAY_A11Y` beside `OVERLAY_TIERS`, keys never literals, and a compile-time contract that text pins cannot fake (Accepted)
 - [0206](./0206-world-focus-hotkey-gate-and-the-frame-loop-announcer.md) — m23-s5 (M23 accessibility S5 — the sole `client/src/main.ts` touch; after S3, S4) — 0206 — The world-focus hotkey gate, the frame-loop announcer, and the native `#help-hint` button: three main.ts seams M23 needs and the one thing none of them may "simplify" (Accepted)
+- [0207](./0207-data-lifecycle-manifest-and-terminal-schema.md) — m22-s2 (M22 privacy compliance S2 — schema + manifest extension) — 0207 — Data-lifecycle manifest and terminal schema: M22 privacy S2 additive structure (Accepted)
 
 ### tooling-docs
 
@@ -589,6 +592,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0195](./0195-rust-test-mirror-parity.md) — 13r-h — 0195 — Rust test-mirror parity: derived scan sets, source-derived reducer enumeration, and the Account legal-state invariant (Accepted)
 - [0198](./0198-participant-scoped-battle-view.md) — 15r-sec-a — Participant-scoped `battle` via a two-identity view (Accepted)
 - [0199](./0199-declared-table-visibility-gate.md) — 15r-sec-vis (M-postgate fifteenth-review residuals §15r-sec-vis) — 0199 — Declared table visibility as snapshot data: a class regression gate for `public` tables (Accepted)
+- [0207](./0207-data-lifecycle-manifest-and-terminal-schema.md) — m22-s2 (M22 privacy compliance S2 — schema + manifest extension) — 0207 — Data-lifecycle manifest and terminal schema: M22 privacy S2 additive structure (Accepted)
 
 ### economy-quests
 

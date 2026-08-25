@@ -917,7 +917,12 @@ pub struct BattleAction {
 /// TTL reaper re-derives staleness from it plus the injected clock, so no
 /// caller can supply it. Synthetic `chunk_id` PK: views strip primary keys, and
 /// a `#[primary_key]`+`#[auto_inc]` column may carry no default, so the row
-/// needs its own key. `Clone` derived BEFORE the table attr (the `Account`
+/// needs its own key. `request_id` is MINTED BY S4 (generation strategy is
+/// S4's decision); chunk-tuple uniqueness (owner, request, table, chunk_index)
+/// is REDUCER-enforced in S4 — a multi-column unique constraint is not
+/// expressible here, and adding `#[unique]` to a live table later is an
+/// automigration-FORBIDDEN change, so the synthetic PK stays the only key.
+/// `Clone` derived BEFORE the table attr (the `Account`
 /// precedent — the schema-snapshot regex must still match
 /// `#[spacetimedb::table(...)] pub struct`).
 #[derive(Clone)]
@@ -943,7 +948,7 @@ pub struct ExportBundle {
 /// cascade step. Encoding the parent inside the variant makes "is join-only"
 /// and "has a parent" the same fact by construction — a separate optional
 /// parent field would reintroduce representable-but-illegal states.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 pub enum DeletionPolicy {
     /// Row deleted outright at cascade time.
     Erase,
@@ -1249,11 +1254,13 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     },
 ];
 
-/// Compile-time well-formedness of the manifest: every entry names a table and
-/// carries non-empty basis prose. Evaluated in the anonymous const below, so an
-/// empty basis is a COMPILE ERROR — and that evaluation is also what keeps the
-/// manifest live in the lib target (S3's cascade is its first runtime
-/// consumer; until then the const-eval read is the non-test use).
+/// Compile-time well-formedness of the manifest: every entry names a table,
+/// carries non-empty basis prose, and every `ViaJoin` names a non-empty parent.
+/// Evaluated in the anonymous const below, so a violation is a COMPILE ERROR —
+/// and that evaluation is also what keeps the manifest (every field, including
+/// the `ViaJoin` payload) live in the lib target under `-D warnings` (S3's
+/// cascade is its first runtime consumer; until then the const-eval read is
+/// the non-test use).
 const fn manifest_is_wellformed(entries: &[DataLifecycleEntry]) -> bool {
     let mut i = 0;
     while i < entries.len() {
@@ -1261,10 +1268,16 @@ const fn manifest_is_wellformed(entries: &[DataLifecycleEntry]) -> bool {
         if entry.table.is_empty() || entry.basis.is_empty() {
             return false;
         }
-        // Const-eval reads of the remaining fields, so every field of the
-        // entry struct is consumed by the lib target itself.
+        let parent_ok = match &entry.policy {
+            DeletionPolicy::ViaJoin(parent) => !parent.is_empty(),
+            DeletionPolicy::Erase | DeletionPolicy::Anonymize | DeletionPolicy::NotOwned => true,
+        };
+        if !parent_ok {
+            return false;
+        }
+        // Const-eval read of the remaining field, so every field of the entry
+        // struct is consumed by the lib target itself.
         let _ = entry.exportable;
-        let _ = &entry.policy;
         i += 1;
     }
     !entries.is_empty()

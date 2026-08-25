@@ -4211,7 +4211,32 @@ fn account_legal_state_rejects_terminal_without_request() {
     }
 }
 
-/// T8 / X8: an `Active` account may never carry a terminal marker.
+/// T8 / X8: `account_state_is_legal` classifies an `Active` account carrying a
+/// terminal marker as ILLEGAL.
+///
+/// SCOPE — THIS IS A PARTIAL TOOTH, AND THE MISSING HALF IS NAMED. What follows
+/// is pinned: the PURE PREDICATE rejects the shape. What is NOT pinned, by this
+/// test or by anything else in this file: that a reducer path refuses to PRODUCE
+/// the shape. On the tree S2 ships, one demonstrably can. `needs_cancel_write`
+/// (`accounts.rs`) is `matches!(status, PendingDeletion)` and a terminal account
+/// IS `PendingDeletion`, so a late `cancel_account_deletion` is not
+/// short-circuited; `cancelled_deletion` (`accounts.rs`) then sets `Active` +
+/// `None` and carries `terminal_at_ms` forward through `..existing`; and its only
+/// guard is a `debug_assert!` that the shipped wasm compiles out (the workspace
+/// `Cargo.toml`'s `[profile.release]` sets `overflow-checks` and nothing else —
+/// the profile fact this file's ACCOUNT LEGAL-STATE INVARIANT banner already
+/// records). In a release build that constructor structurally CAN mint the state
+/// asserted illegal below.
+///
+/// That gap is SLICE SCOPE, not an oversight, and it is owned elsewhere: the
+/// reducer-side rejection is spec §4.5 "Late cancel" / criterion PRV1-4 — WHEN
+/// `cancel_account_deletion` is called by an identity whose `terminal_at_ms` is
+/// `Some` THE SYSTEM SHALL reject with a distinct, non-generic error and SHALL
+/// NOT reactivate the account — which spec §7.2 assigns to S3. S2's declared
+/// touches exclude reducer bodies, and no S2 constructor ever writes `Some` to
+/// the column, so the illegal state is unreachable until S3 lands. S3 must ship
+/// that guard AND a constructor-level test for `cancelled_deletion`; a residual
+/// is filed to that effect. Do not read this test as covering it.
 ///
 /// Spec §4.1's terminal predicate is `status == PendingDeletion &&
 /// terminal_at_ms.is_some()`, so Active + a marker is a resurrected tombstone:
@@ -4229,8 +4254,12 @@ fn account_legal_state_rejects_terminal_without_request() {
 ///        deletion_requested_at_ms.is_some()` that forgets the status half (the
 ///        None row still reds, but such a clause admits Active + Some(stamp) +
 ///        Some(terminal), which the first row here catches);
-///        `cancel_account_deletion` returning an account to Active while leaving
-///        a terminal marker behind.
+///        a terminal clause deleted outright;
+///        a predicate that answers the same thing for every input.
+///
+/// Does NOT kill: `cancel_account_deletion` reactivating a terminal account. See
+///        the scope note above — that is S3's PRV1-4 guard, the `debug_assert!`
+///        is compiled out of release, and NO test in this file covers it today.
 #[test]
 fn account_legal_state_rejects_terminal_while_active() {
     let cases: [(&str, Option<i64>); 2] = [

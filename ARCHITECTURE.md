@@ -203,6 +203,21 @@ Additive-only schema; content is **data** (RON registries in `game-core/content`
 parsed by pure loaders) seeded by an idempotent `sync_content` reducer (upsert by
 stable id), separate from `init`. Stable ids are append-only.
 
+**Data-lifecycle manifest (M22 — ADR-0207):** `schema.rs` carries
+`DATA_LIFECYCLE_MANIFEST`, a const array with exactly one entry per live table
+(gate-enforced bidirectionally) recording its deletion policy (Erase / Anonymize /
+ViaJoin(parent) / NotOwned), a mandatory prose `basis`, and an `exportable` flag
+(the §5 export walk's third, structurally-narrower axis — 17 true, 22 false).
+`Account` gained `terminal_at_ms: Option<i64>` appended LAST with `#[default(None)]`
+(the completed-deletion marker; S3 writes it, and `account_state_is_legal` already
+rejects a marker outside `PendingDeletion`+requested), and the PRIVATE `export_bundle`
+table holds per-owner data-export chunks per the frozen S2↔S4↔S8 chunk contract.
+Manifest string literals must never contain `/` (the snapshot baseline's raw parse is
+string-unaware — measured), and a compile-time `manifest_is_wellformed` assertion
+makes an empty basis a build error. `AccountDeletionReaperSchedule` deliberately
+ships in S3 atomically with its reducer: changing a table's scheduled-ness is an
+automigration-forbidden operation.
+
 ## Server-module domain modules (M8.9 — ADR-0056)
 
 The `server-module` crate is split by domain into cohesive submodules of the **same**

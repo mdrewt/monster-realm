@@ -1493,9 +1493,19 @@ export const REKEY_MANIFEST = freezeManifest({
   'account.claimed_from': 'EXEMPT: write target, not a rekey source (AUTH-21 records the guest)',
   'guest_claim.guest_identity': 'EXEMPT: consumed, not rekeyed (AUTH-34 / AUTH-27)',
   'guest_claim_reaper_schedule.guest_identity': 'EXEMPT: consumed, not rekeyed (AUTH-34 / AUTH-27)',
+  // CORRECTED during the m22-s2 security audit — the first draft said "the M22 cascade
+  // sweeps this column", which is FALSE in exactly the case EXEMPT creates: the cascade
+  // keys on the deleting account identity, and a pre-claim chunk sits under the retired
+  // guest identity where that key cannot reach it. The reason must be truthful (the
+  // battle.player_identity precedent above): this is the one EXEMPT entry that leaves
+  // live personal data under a dead identity, and S3 owns closing it.
   'export_bundle.owner_identity':
-    'EXEMPT: TTL-bound M22 export snapshot, deliberately not re-keyed across a claim ' +
-    '(stale bundles expire via the S4 export_bundle reaper); the M22 cascade sweeps this column',
+    'EXEMPT: TTL-bound M22 export snapshot, not re-keyed across a claim. HONEST LIMIT: ' +
+    'pre-claim chunks orphan under the guest identity (the cascade keys on the deleting ' +
+    'identity and cannot reach them) — S3 MUST close this: delete chunks at claim time, or ' +
+    'sweep owner_identity == account.claimed_from in the cascade; the S4 TTL reaper does ' +
+    'not exist yet and a TTL is not a substitute for cascade erasure anyway (the ' +
+    'playtest_event doctrine)',
 });
 
 // Hardcoded INDEPENDENTLY of the manifest: four columns that must resolve for
