@@ -4714,9 +4714,12 @@ describe('★ index.html (uxd3, widened m23-s5/ADR-0206 A5): exactly ONE persist
     expect(
       elements.length,
       `parsed ${elements.length} inline-styled elements from index.html — expected at least ` +
-        '10. A near-empty parse makes every assertion below vacuous (parser/path failure, ' +
-        'not a markup regression).',
-    ).toBeGreaterThanOrEqual(10);
+        '12. A near-empty parse makes every assertion below vacuous (parser/path failure, ' +
+        'not a markup regression). 12, not 10: index.html carries 14 inline-styled elements ' +
+        'today, so this keeps the floor exactly as tight relative to the real population as ' +
+        'the retired `body > div` floor was (12 of 14) — the selector widened, the slack did ' +
+        'not.',
+    ).toBeGreaterThanOrEqual(12);
 
     const corner = elements
       .filter((d) => d.style.includes('position:fixed') && !d.style.includes('inset:0'))
