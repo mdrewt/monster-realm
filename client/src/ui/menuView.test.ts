@@ -1091,10 +1091,9 @@ describe('MenuView — overlay a11y wiring on the show/hide edge (m23-s6)', () =
     expect(document.activeElement, 'precondition: the first open focused the listbox').toBe(
       rowsEl(),
     );
-    expect(
-      vi.mocked(openOverlayA11y),
-      'precondition: exactly one real open',
-    ).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(openOverlayA11y), 'precondition: exactly one real open').toHaveBeenCalledTimes(
+      1,
+    );
 
     outside.focus();
     expect(document.activeElement, 'precondition: focus parked outside the overlay').toBe(outside);
