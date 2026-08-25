@@ -210,3 +210,51 @@ the M23 owner: the required parameter it advertises is unreachable on the common
 proofs of A11Y-19/20/22/23 — real AT key delivery under `role="application"`, native `<button>`
 Space→click synthesis, and the actual Tab order from the canvas to the badge — belong to S11's
 nightly `just a11y-e2e`; happy-dom does no sequential focus navigation and cannot prove them.
+
+## Amendment A1 (2026-08-24, e2e-red fix cycle 1): the gate exempts the toggle-CLOSE half
+
+**Status: accepted.** Supersedes the declared behaviour change above ("`B` no longer toggles the Box
+closed while focus is inside it") and narrows D1's conjunct placement. Appended, never inserted —
+inbound `ADR-0206:<line>` citations stay valid.
+
+**Evidence.** PR #368's remote e2e job (run 32797276800) failed exactly three pre-existing merged
+feature tests: `e2e/movement-input.spec.ts:493` (14r-e C GREEN GUARD — KeyB must close the box under
+a held key), `e2e/trade.spec.ts:97` (M15c — KeyU toggle-close), and `e2e/pvp.spec.ts:145` (m16b — a
+cascade: the previous serial test's KeyB cleanup close was silently blocked, so the box was still
+open and the next `p` open was denied by the registry verdict, not by this gate).
+
+**Root cause.** Spec §2.3's compatibility claim — "for a sighted player who never Tabs,
+`activeElement` is `<body>` and behaviour is byte-identical" — is false once S3/S4's
+`openOverlayA11y` deferred focus runs: EVERY hotkey open moves focus INSIDE the overlay it opened.
+§8.4's accepted edge case ("focus inside boxView", read at authoring time as: the user moved it
+there) thereby became the universal post-open state, and same-key toggle-close died for every user
+and every overlay, not just `B` for a user who had clicked a button. §8.4's own overturn condition
+("players relying on same-key-to-close") is met mechanically: three merged feature tests encode that
+contract.
+
+**Decision.** The conjunct becomes a self-open disjunct, uniform at all twelve sites:
+`verdict.kind === 'allow' && (<selfView>?.visible || worldHasFocus())`. When the pressed overlay is
+already open the press is a toggle-CLOSE and is never gated; `worldHasFocus()` gates exactly the
+open transitions — which is what §2.3's own sentence ("applied **only to the twelve overlay-OPEN
+branches**") specified all along. A11Y-19's protection is unchanged for every cross-overlay press:
+with an overlay open, every OTHER overlay's open is denied by the registry verdict (GUARD_ONLY
+tiers), and for the HIDE_SWITCH trio the pressed sibling is closed, so its `?.visible` disjunct is
+false and `worldHasFocus()` is false while focus sits inside the open sibling — S5T-GATE-BLOCKED
+still bites. The ONLY behavioural delta vs the pre-amendment slice is that same-key close works
+again (pre-S5 parity), and the frame-loop focus return then moves focus back to the world.
+
+**Alternative rejected.** Candidate (b) — treating "focus inside the overlay being toggled" as
+satisfying `worldHasFocus()` for that overlay's own hotkey — reaches the same observable behaviour
+for the reachable states (the S1 focus trap keeps focus inside the open overlay), but it changes
+`worldHasFocus()`'s signature and body, which X8 pins by exact equality to §2.3's literal, and it
+needs per-view root-element plumbing at twelve call sites. (a) keeps the function byte-identical and
+the twelve sites uniform.
+
+**Ripples.** The twelve `expectedRaw` handler-body pins in `main.wiring.test.ts` are re-pinned to
+the new shape (exact equality retained; KeyT byte-identical); the census — 12 in-listener, 13
+whole-file, 1 in the snapshot region, 0 on KeyT, 0 in the click launcher — is unchanged. New gating
+tests `S5T-GATE-SAMEKEY-CLOSE` (×3, the HIDE_SWITCH trio) and
+`S5T-GATE-REOPEN-AFTER-SAMEKEY-CLOSE` encode the e2e regression at the unit tier, captured RED
+against the pre-amendment implementation. Ledger gate X1 is amended accordingly. The M23 spec's
+§2.3 accepted-change sentence, §8.4, and A11Y-19's "or toggle" wording need a supervisor-side
+amendment — the spec lives in the harness repo, outside this slice's `touches:`.
