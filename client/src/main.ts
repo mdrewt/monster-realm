@@ -1053,11 +1053,14 @@ const suppressNativeMovementDefault = (e: KeyboardEvent): void => {
 };
 
 // M23S5-WORLDFOCUS-BEGIN
-// m23-s5 (ADR-0206 D1, M23 §2.3): the scoped world-focus gate for the twelve overlay-open
+// m23-s5 (ADR-0206 D1, M23 §2.3; A1): the scoped world-focus gate for the twelve overlay-open
 // hotkeys. The `=== document.body` disjunct is LOAD-BEARING and must never be "cleaned up"
 // (A11Y-35): a store-driven render(null) blurs a focused control back to <body>, and without
 // it every hotkey would be dead forever afterwards. Before main() runs, worldCanvasEl is null
 // and activeElement is <body>, so this is true and behaviour is identical to pre-M23.
+// A1 (fix cycle 1): each guard is `allow && (<self>?.visible || worldHasFocus())` — a same-key
+// press on an ALREADY-OPEN overlay is a toggle-CLOSE and is never gated; the gate covers only
+// the OPEN transitions (three merged e2e feature tests encode same-key-to-close).
 let worldCanvasEl: HTMLElement | null = null;
 const worldHasFocus = (): boolean => {
   const a = document.activeElement;
@@ -1120,7 +1123,7 @@ window.addEventListener('keydown', (e) => {
     // dialogue it is a server desync (ptc5c/ADR-0139). The tier table (ui/overlayRegistry.ts)
     // is now the SSOT for that distinction, exhaustively proved by the OR-CANOPEN-* teeth.
     const boxVerdict = overlayVerdict('boxView');
-    if (boxVerdict.kind === 'allow' && worldHasFocus()) {
+    if (boxVerdict.kind === 'allow' && (boxView?.visible || worldHasFocus())) {
       for (const id of boxVerdict.forceHide) overlayHandles[id]?.();
       boxView?.toggle();
       if (boxView?.visible) refreshBox();
@@ -1133,7 +1136,7 @@ window.addEventListener('keydown', (e) => {
     // comment records why modals are guarded rather than dismissed (ptc5c/ADR-0139) and why
     // `forceHide` can only ever name the two hide-switch siblings.
     const raisingVerdict = overlayVerdict('raisingView');
-    if (raisingVerdict.kind === 'allow' && worldHasFocus()) {
+    if (raisingVerdict.kind === 'allow' && (raisingView?.visible || worldHasFocus())) {
       for (const id of raisingVerdict.forceHide) overlayHandles[id]?.();
       raisingView?.toggle();
       if (raisingView?.visible) refreshRaising();
@@ -1145,7 +1148,7 @@ window.addEventListener('keydown', (e) => {
     // Evolution overlay — third member of the hide-switch trio, same verdict-driven
     // gate as box/raising above (see the KeyB comment for the guard-never-dismiss rule).
     const evolutionVerdict = overlayVerdict('evolutionView');
-    if (evolutionVerdict.kind === 'allow' && worldHasFocus()) {
+    if (evolutionVerdict.kind === 'allow' && (evolutionView?.visible || worldHasFocus())) {
       for (const id of evolutionVerdict.forceHide) overlayHandles[id]?.();
       evolutionView?.toggle();
       if (evolutionView?.visible) refreshEvolution();
@@ -1157,7 +1160,10 @@ window.addEventListener('keydown', (e) => {
     // Quest log overlay — mutual exclusivity with all other overlays (M12d, ADR-0071),
     // through the ONE registry verdict since uxd3-c. Self is exempt, so the toggle-close
     // below still works while the quest log itself is open.
-    if (overlayVerdict('questLogView').kind === 'allow' && worldHasFocus()) {
+    if (
+      overlayVerdict('questLogView').kind === 'allow' &&
+      (questLogView?.visible || worldHasFocus())
+    ) {
       if (questLogView?.visible) {
         questLogView.hide();
       } else {
@@ -1170,7 +1176,7 @@ window.addEventListener('keydown', (e) => {
   if (e.code === 'KeyU') {
     // Trade overlay — mutual exclusivity with all other overlays (m15b, ADR-0107).
     // Shows the active offer involving this player; "No active trade" when none.
-    if (overlayVerdict('tradeView').kind === 'allow' && worldHasFocus()) {
+    if (overlayVerdict('tradeView').kind === 'allow' && (tradeView?.visible || worldHasFocus())) {
       if (tradeView?.visible) {
         tradeView.hide();
       } else {
@@ -1184,7 +1190,7 @@ window.addEventListener('keydown', (e) => {
     // PvP challenge overlay — mutual exclusivity with all other overlays (m16b, ADR-0110).
     // Not available during an active battle (ADR-0014 exit ordering) — the registry's
     // EXCLUSIVE_TOP tier is what carries that half now.
-    if (overlayVerdict('pvpView').kind === 'allow' && worldHasFocus()) {
+    if (overlayVerdict('pvpView').kind === 'allow' && (pvpView?.visible || worldHasFocus())) {
       if (pvpView?.visible) {
         pvpView.hide();
       } else {
@@ -1198,7 +1204,10 @@ window.addEventListener('keydown', (e) => {
     // Leaderboard overlay — mutual exclusivity with all other overlays (m17b, ADR-0120).
     // Renders once on open from store.allProfiles(); the batch listener below keeps
     // it live while visible. Pure subscription view — no write path (RL-15).
-    if (overlayVerdict('leaderboardView').kind === 'allow' && worldHasFocus()) {
+    if (
+      overlayVerdict('leaderboardView').kind === 'allow' &&
+      (leaderboardView?.visible || worldHasFocus())
+    ) {
       if (leaderboardView?.visible) {
         leaderboardView.hide();
       } else {
@@ -1215,7 +1224,7 @@ window.addEventListener('keydown', (e) => {
   // e.preventDefault() (RT-RN-05) stops the opening 'n' from reaching the field.
   if (e.code === 'KeyN') {
     e.preventDefault(); // RT-RN-05: suppress the opening 'n' char reaching the field.
-    if (overlayVerdict('renameView').kind === 'allow' && worldHasFocus()) {
+    if (overlayVerdict('renameView').kind === 'allow' && (renameView?.visible || worldHasFocus())) {
       if (renameView?.visible) {
         renameView.hide();
       } else {
@@ -1232,7 +1241,11 @@ window.addEventListener('keydown', (e) => {
   // e.preventDefault() suppresses any default action for the 'o' key.
   if (e.code === 'KeyO') {
     e.preventDefault();
-    if (overlayVerdict('tradeProposeView').kind === 'allow' && identity !== '' && worldHasFocus()) {
+    if (
+      overlayVerdict('tradeProposeView').kind === 'allow' &&
+      identity !== '' &&
+      (tradeProposeView?.visible || worldHasFocus())
+    ) {
       if (tradeProposeView?.visible) {
         tradeProposeView.hide();
       } else {
@@ -1269,7 +1282,7 @@ window.addEventListener('keydown', (e) => {
   // (help does not capture focus).
   if (e.key === '?') {
     e.preventDefault();
-    if (overlayVerdict('helpView').kind === 'allow' && worldHasFocus()) {
+    if (overlayVerdict('helpView').kind === 'allow' && (helpView?.visible || worldHasFocus())) {
       if (helpView?.visible) {
         helpView.hide();
       } else {
@@ -1288,7 +1301,11 @@ window.addEventListener('keydown', (e) => {
   // try/catch. The AC-12 click front door carries the SAME predicate (ADR-0163 D6 closed).
   if (e.code === 'KeyM') {
     e.preventDefault();
-    if (overlayVerdict('menuView').kind === 'allow' && identity !== '' && worldHasFocus()) {
+    if (
+      overlayVerdict('menuView').kind === 'allow' &&
+      identity !== '' &&
+      (menuView?.visible || worldHasFocus())
+    ) {
       if (menuView?.visible) {
         menuView.hide();
       } else {
@@ -1303,7 +1320,7 @@ window.addEventListener('keydown', (e) => {
   // reads store.ownAccount(identity) whose own-identity filter returns undefined for '' (no throw).
   if (e.code === 'KeyC') {
     e.preventDefault();
-    if (overlayVerdict('claimView').kind === 'allow' && worldHasFocus()) {
+    if (overlayVerdict('claimView').kind === 'allow' && (claimView?.visible || worldHasFocus())) {
       if (claimView?.visible) {
         claimView.hide();
       } else {
