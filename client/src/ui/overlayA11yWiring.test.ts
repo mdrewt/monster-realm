@@ -114,7 +114,9 @@ const NATIVE_FOCUSABLE_TAGS: ReadonlySet<string> = new Set([
  * (`focusTrap.ts:52-56`), because tab-ring membership and programmatic focusability are different
  * questions. Using it here would fail thirteen of sixteen ids for the wrong reason.
  */
-export function isFocusableByContract(el: Element): boolean {
+// Module-local, NOT exported: biome's `noExportsInTest` treats an export from a spec file as a
+// production-module smell, and nothing outside this file consumes it.
+function isFocusableByContract(el: Element): boolean {
   const explicit = el.getAttribute('tabindex');
   if (explicit !== null) return Number.isInteger(Number(explicit));
   return NATIVE_FOCUSABLE_TAGS.has(el.tagName) && !el.hasAttribute('disabled');

@@ -379,8 +379,12 @@ export default async function () {
   // COMMENT. A tag scanner that does not strip comments reads that as a second opened <body> and
   // reports the ancestor chain as `html > body > body`, false-REDing correct markup. The GOOD half
   // is that the shipped file passes once comments are stripped; the BAD half is here.
-  const commentedBody = '<body><!-- a direct <body> child on purpose --><p aria-live="polite"></p></body>';
-  const commentedChain = ancestorChain(stripHtmlComments(commentedBody), stripHtmlComments(commentedBody).indexOf('<p'));
+  const commentedBody =
+    '<body><!-- a direct <body> child on purpose --><p aria-live="polite"></p></body>';
+  const commentedChain = ancestorChain(
+    stripHtmlComments(commentedBody),
+    stripHtmlComments(commentedBody).indexOf('<p'),
+  );
   if (commentedChain.length !== 1 || commentedChain[0].tag !== 'body') {
     return bad(
       'TEETH T13: a `<body>` mentioned inside an HTML COMMENT was counted as an opened element ' +
