@@ -28,7 +28,7 @@ import { extractJobBlock } from './e2e-desync-teeth.eval.mjs';
 // in the `ci:` job. Hardcoded so that simultaneously removing a dep from the
 // justfile AND its ci.yml step still trips this gate.
 // ---------------------------------------------------------------------------
-const REQUIRED_JUST_STEPS = [
+export const REQUIRED_JUST_STEPS = [
   'lint',
   'typecheck',
   'test',
@@ -496,6 +496,308 @@ function selfContainsMainGuard(src) {
     src.indexOf('ciGateWiringEval') !== -1 &&
     src.indexOf('process.exit(result.pass ? 0 : 1)') !== -1
   );
+}
+
+// ---------------------------------------------------------------------------
+// m23-s11 (spec §5.7 "CI vs nightly — DECIDED"): the two ADDITIVE checks that
+// gate the nightly a11y tier. Both are deliberately narrow — §5.7 asks for "a
+// cheap additive wiring check … that the recipe exists and is invoked by the
+// nightly workflow with a non-truthy continue-on-error", NOT a mutation of
+// REQUIRED_JUST_STEPS (which stays byte-identical: `a11y-e2e` must never become
+// a `ci:` dep, or the ADR-0043 fast hermetic loop grows a browser and a server).
+//
+// NO `new RegExp(...)`: String methods plus the pre-existing literal-regex
+// helper isTruthyCoe only (detect-non-literal-regexp, 3 prior bites).
+// ---------------------------------------------------------------------------
+
+// The three shipped a11y evals the recipe's first half imports BY NAME. Pinned
+// here as well as in the recipe on purpose: `evals/run.mjs` fails only at ZERO
+// eval files, so deleting one of these leaves `just eval` green with one fewer
+// check. This list is what makes that deletion visible.
+const A11Y_EVAL_FILES = [
+  'overlay-a11y-manifest.eval.mjs',
+  'a11y-static-shell.eval.mjs',
+  'reduced-motion-purity.eval.mjs',
+];
+
+// The one vitest spec the recipe's second half must name explicitly. It is the
+// cross-view wiring totality spec (m23-s10) — the single largest a11y suite and
+// the one whose silent deletion `just client-test` cannot see (a MISSING spec
+// reports numTotalTests:0 and exits 0).
+const A11Y_PINNED_SPEC = 'overlayA11yWiring.test.ts';
+
+// The exact, UNSUFFIXED step line the nightly job must carry.
+const A11Y_NIGHTLY_STEP = '- run: just a11y-e2e';
+
+// NOT redundant with a11yRecipeBodyIsPinned below, though on an unchanged tree it can only agree
+// with it: the two answer different questions across a DELIBERATE recipe edit. The verbatim pin
+// says "nothing moved"; the moment someone legitimately changes the recipe they update the pin in
+// the same commit and the pin goes quiet — and these token clauses are what still has to hold
+// afterwards. Deleting either one leaves a real hole: without the pin, tokens can sit above an
+// `exit 0` (red-team executed it); without the tokens, a pin update can silently drop a whole half
+// of the recipe.
+export function a11yRecipeBodyIntact(justfileText) {
+  // extractRecipeBodyLocal already strips `#` lines and already handles the
+  // `name param=: dep` header form, so a token that appears ONLY in a comment
+  // never reaches us — that is the fixture corpus's "tokens-in-comment" tooth.
+  const body = extractRecipeBodyLocal(justfileText, 'a11y-e2e');
+  if (!body) {
+    return {
+      ok: false,
+      reason:
+        'justfile a11y-e2e: recipe body is empty or absent (a comment-only body extracts to nothing)',
+    };
+  }
+  if (body.indexOf('set -euo pipefail') === -1) {
+    return {
+      ok: false,
+      reason:
+        'justfile a11y-e2e: body missing `set -euo pipefail` — without it a failing half is swallowed and the gate exits 0 vacuously',
+    };
+  }
+  if (body.indexOf('vitest run') === -1) {
+    return {
+      ok: false,
+      reason: 'justfile a11y-e2e: body missing `vitest run` — no real test runner',
+    };
+  }
+  if (body.indexOf('--reporter=json') === -1) {
+    return {
+      ok: false,
+      reason:
+        'justfile a11y-e2e: body missing `--reporter=json` — the floor can only be asserted from the machine-readable report, never from the last line of console output',
+    };
+  }
+  if (body.indexOf(A11Y_PINNED_SPEC) === -1) {
+    return {
+      ok: false,
+      reason: `justfile a11y-e2e: body never names \`${A11Y_PINNED_SPEC}\` — running vitest over some other spec proves nothing about the a11y tier`,
+    };
+  }
+  for (const evalFile of A11Y_EVAL_FILES) {
+    if (body.indexOf(evalFile) === -1) {
+      return {
+        ok: false,
+        reason: `justfile a11y-e2e: body never names \`${evalFile}\` — that a11y eval could be deleted with the whole suite staying green`,
+      };
+    }
+  }
+  return {
+    ok: true,
+    reason: `justfile a11y-e2e: body is fail-closed and pins ${A11Y_EVAL_FILES.length} a11y eval(s) plus ${A11Y_PINNED_SPEC}`,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// m23-s11 ROUND 2 (red-team, EXECUTED bypass). `a11yRecipeBodyIntact` above is a
+// pure substring scan, and red-team PROVED the consequence end to end: insert
+// `exit 0` immediately after `set -euo pipefail` and leave the rest of the body
+// byte-identical below it, and the predicate still returns ok (every required
+// token is present), while `just a11y-e2e` runs NOTHING and exits 0. Dead
+// branches (`if false; then ... fi`) and heredoc payloads bypass it the same way.
+//
+// A blacklist of abort constructs does NOT close this — measured elsewhere in
+// this repo: sixteen CI-clean bypasses beat one such blacklist. The house remedy
+// is to PIN THE BLOCK VERBATIM (the CHANGELOG_RECIPE_BODY / mutate-server
+// idiom), which is closable by construction: ANY edit to the region reds the
+// gate, and the fix is to update this constant in the SAME commit, deliberately.
+//
+// This pins the RAW region (header line through the last indented line),
+// deliberately NOT the comment-stripped body: the stripper drops `#` lines, so a
+// body pin would let the `#!/usr/bin/env bash` shebang be deleted silently, and
+// would let a decoy comment be planted inside the recipe unnoticed.
+//
+// LOCKSTEP: the justfile `a11y-e2e` recipe and this constant move together, or
+// the gate is red. That is the point, not an inconvenience.
+// ---------------------------------------------------------------------------
+export const A11Y_E2E_RECIPE_REGION =
+  "a11y-e2e floor=\"169\": wasm\n    #!/usr/bin/env bash\n    set -euo pipefail\n    # Fail loud on a non-integer floor BEFORE the run: a malformed value would\n    # otherwise make `[ -gt ]` error inside the if-condition below and silently\n    # skip the ratchet (vacuous green). `[ \"\" -gt N ]` in an if-condition is\n    # set -e-EXEMPT \u2014 the measured false-green shape in this justfile (ADR-0183\n    # D7, and the same guard mutate-server carries).\n    case \"{{floor}}\" in\n        ''|*[!0-9]*) echo \"a11y-e2e: floor '{{floor}}' is not a non-negative integer\" >&2; exit 64;;\n    esac\n    # --- Half 1: the a11y eval roster, pinned BY NAME. A deleted or renamed\n    # eval makes import() throw, which set -e turns into a non-zero exit.\n    # `node evals/<x>.eval.mjs` alone exits 0 VACUOUSLY (these three carry no\n    # main guard, by design: a main guard truncates run.mjs mid-loop at exit 0),\n    # so the default export must be imported and called.\n    a11y_eval_check() {\n        node -e \"import(process.argv[1]).then(m => m.default()).then(r => { if (!r.pass) { console.error('a11y eval FAIL: ' + r.name + ' \u2014 ' + r.detail); process.exit(1) } const m = /teeth=(\\\\d+)\\\\/(\\\\d+)/.exec(String(r.detail)); if (m === null) { console.error('a11y eval reports NO teeth tally: ' + r.name + ' \u2014 an eval that runs no inline fixtures proves nothing, and a body gutted to a bare pass:true looks identical to a real one'); process.exit(1) } if (m[1] !== m[2] || Number(m[1]) < 1) { console.error('a11y eval teeth uneven or empty: ' + r.name + ' \u2014 ' + m[0]); process.exit(1) } console.log('  teeth ' + m[0]) })\" -- \"$1\"\n        echo \"a11y eval OK: $1\"\n    }\n    a11y_eval_check ./evals/overlay-a11y-manifest.eval.mjs\n    a11y_eval_check ./evals/a11y-static-shell.eval.mjs\n    a11y_eval_check ./evals/reduced-motion-purity.eval.mjs\n    # --- Half 2: floor the a11y unit tier. Delete the stale report first: a\n    # leftover report from a previous run would be read as this run's result if\n    # vitest died before writing (measured shape).\n    rm -f /tmp/a11y-e2e-vitest.json\n    cd client && npx vitest run --reporter=json --outputFile=/tmp/a11y-e2e-vitest.json \\\n        src/ui/overlayA11yWiring.test.ts \\\n        src/ui/overlayA11y.test.ts \\\n        src/ui/focusTrap.test.ts \\\n        src/ui/liveRegion.test.ts \\\n        src/ui/announcements.test.ts \\\n        src/ui/a11yCopy.test.ts \\\n        src/main.a11yFocus.test.ts \\\n        src/render/motionPreference.test.ts\n    cd ..\n    node -e \"const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-vitest.json', 'utf8')) } catch (e) { console.error('a11y-e2e: vitest wrote no readable JSON report \u2014 ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const files = j.testResults.length; const total = j.numTotalTests; if (files !== 8) { console.error('a11y-e2e: ' + files + ' spec file(s) reported, expected 8 \u2014 an a11y spec file was deleted or renamed'); process.exit(1) } if (j.numFailedTests !== 0 || j.numPendingTests !== 0 || j.numTodoTests !== 0) { console.error('a11y-e2e: failed=' + j.numFailedTests + ' pending=' + j.numPendingTests + ' todo=' + j.numTodoTests + ' \u2014 a skipped a11y test is a silently ungated one'); process.exit(1) } if (total < floor) { console.error('a11y-e2e: a11y unit tier reported ' + total + ' test(s) across ' + files + ' file(s) \u2014 floor is ' + floor); process.exit(1) } console.log('A11Y-NIGHTLY OK evals=3/3 files=' + files + ' tests=' + total + ' floor=' + floor + ' f=0 pend=0 todo=0')\" -- \"{{floor}}\"\n    echo \"DEFERRED: axe-core + real-browser tier is NOT run here (m23-s11 ledger X10/X11).\"\n    echo \"DEFERRED: A11Y-32 / A11Y-33 are MANUAL and are NEVER CI-green \u2014 docs/a11y-manual-protocol.md\"\n";
+
+// The raw region for `recipeName`: its header line plus every following line that
+// is blank or indented, with trailing blank lines dropped. Comments are KEPT.
+function extractRawRecipeRegion(text, recipeName) {
+  const lines = text.split('\n');
+  let start = -1;
+  for (let i = 0; i < lines.length; i++) {
+    if (lines[i].startsWith(`${recipeName}:`) || lines[i].startsWith(`${recipeName} `)) {
+      start = i;
+      break;
+    }
+  }
+  if (start === -1) return '';
+  let end = start + 1;
+  while (end < lines.length) {
+    const l = lines[end];
+    if (l.length > 0 && l[0] !== ' ' && l[0] !== '\t') break;
+    end++;
+  }
+  while (end > start + 1 && lines[end - 1].trim() === '') end--;
+  return `${lines.slice(start, end).join('\n')}\n`;
+}
+
+export function a11yRecipeBodyIsPinned(justfileText) {
+  const region = extractRawRecipeRegion(justfileText, 'a11y-e2e');
+  if (region === '') {
+    return { ok: false, reason: 'justfile declares no a11y-e2e recipe at all' };
+  }
+  if (region !== A11Y_E2E_RECIPE_REGION) {
+    return {
+      ok: false,
+      reason:
+        'the justfile a11y-e2e recipe region does not match A11Y_E2E_RECIPE_REGION byte for byte. ' +
+        'A substring check cannot see an `exit 0` planted above a byte-identical body (red-team ' +
+        'proved that exact bypass), so this gate pins the region verbatim. If you changed the ' +
+        'recipe deliberately, update A11Y_E2E_RECIPE_REGION in evals/ci-gate-wiring.eval.mjs in ' +
+        'the SAME commit and say why in the message.',
+    };
+  }
+  return { ok: true, reason: 'the a11y-e2e recipe region matches its verbatim pin' };
+}
+
+export function a11yNightlyJobIsWired(nightlyYaml) {
+  // Last-key-wins guards FIRST: extractJobBlock only ever returns the FIRST
+  // match, so a clean-first / neutered-second duplicate is invisible below.
+  const dupJobs = checkNoDuplicateJobsKey(nightlyYaml);
+  if (!dupJobs.ok) return dupJobs;
+  const dupKey = checkNoDuplicateJobKey(nightlyYaml, 'a11y-e2e');
+  if (!dupKey.ok) return dupKey;
+
+  const block = extractJobBlock(nightlyYaml, 'a11y-e2e');
+  if (!block.trim()) {
+    return {
+      ok: false,
+      reason:
+        'nightly.yml declares no `a11y-e2e:` job at 2-space indent — spec §5.7 requires the recipe be INVOKED by the nightly workflow, not merely to exist',
+    };
+  }
+
+  // EXACTLY ONE non-comment line in the WHOLE FILE trims to the exact step. One
+  // is the wiring; zero means it is absent, commented, or suffixed (`|| true`,
+  // `; exit 0`) so it can no longer fail; two means a decoy copy is parked
+  // somewhere and "which one is the gate" is ambiguous.
+  let occurrences = 0;
+  for (const line of nightlyYaml.split('\n')) {
+    const tr = line.trim();
+    if (tr.startsWith('#')) continue;
+    if (tr === A11Y_NIGHTLY_STEP) occurrences++;
+  }
+  if (occurrences === 0) {
+    return {
+      ok: false,
+      reason: `nightly.yml has no non-comment line whose trimmed form is exactly \`${A11Y_NIGHTLY_STEP}\` — a commented-out step, or one suffixed so it cannot fail (\`|| true\`, \`; exit 0\`), is not wiring`,
+    };
+  }
+  if (occurrences > 1) {
+    return {
+      ok: false,
+      reason: `nightly.yml has ${occurrences} non-comment lines reading exactly \`${A11Y_NIGHTLY_STEP}\` — exactly one is required, or which step is the gate is ambiguous`,
+    };
+  }
+
+  // ONE walk over the job block's pre-`steps:` keys. Job-level keys (runs-on,
+  // needs, strategy, if, continue-on-error, env, ...) always precede `steps:`;
+  // anything after it is step-level and is caught by the per-step range below.
+  // Four things are checked here, and the last two exist because red-team
+  // EXECUTED two "declared but never SCHEDULED" bypasses that every other check
+  // in this predicate accepts, since none of them asks whether GitHub will ever
+  // RUN the job: an empty `strategy.matrix` expands to ZERO job instances, and
+  // `runs-on: [self-hosted, a-label-nothing-carries]` queues forever (any
+  // eventual timeout reads as a generic cancellation, not an a11y signal). Both
+  // are closed by NARROWING rather than by enumerating bad shapes: this job has
+  // no legitimate use for a matrix, and exactly one legitimate runner.
+  const A11Y_RUNS_ON = 'runs-on: ubuntu-latest';
+  const blockLines = block.split('\n');
+  let runsOnSeen = false;
+  for (const line of blockLines) {
+    const tr = line.trim();
+    if (tr === 'steps:' || tr.startsWith('steps:')) break;
+    if (tr.startsWith('#')) continue;
+    if (tr.startsWith('if:')) {
+      return {
+        ok: false,
+        reason:
+          'nightly a11y-e2e job has a job-level if: condition — it can disable the entire job',
+      };
+    }
+    if (tr.startsWith('continue-on-error:')) {
+      const value = tr.slice('continue-on-error:'.length).trim();
+      // WHITELIST, not isTruthyCoe's blacklist. Red-team EXECUTED two bypasses of
+      // the blacklist: `${{ !cancelled() }}` and `${{ success() || true }}` are
+      // both unconditionally true in every real run and both slipped through,
+      // because isTruthyCoe only knows the literals true/yes/on/True and the exact
+      // `${{ true }}`. An EXPRESSION whitelist is unclosable; a VALUE whitelist is
+      // closable — this job has exactly one legitimate spelling, and "no key at
+      // all" is the other. (isTruthyCoe is left byte-identical: it is shared with
+      // ciStepsUnneutered, whose fixtures pin its current semantics. The same hole
+      // exists there and is FLAGGED UPWARD rather than widened from this slice.)
+      if (value !== 'false') {
+        return {
+          ok: false,
+          reason: `nightly a11y-e2e job has job-level continue-on-error: ${value} — only the literal \`false\` (or no key at all) is admitted; an always-true expression is not a non-truthy value`,
+        };
+      }
+    }
+    if (tr.startsWith('strategy:') || tr.startsWith('matrix:')) {
+      return {
+        ok: false,
+        reason: `nightly a11y-e2e job declares \`${tr}\` — a matrix strategy may expand to ZERO job instances, which declares the gate without ever running it`,
+      };
+    }
+    if (tr.startsWith('runs-on:')) {
+      runsOnSeen = true;
+      if (tr !== A11Y_RUNS_ON) {
+        return {
+          ok: false,
+          reason: `nightly a11y-e2e job declares \`${tr}\` — exactly \`${A11Y_RUNS_ON}\` is admitted; a job pointed at a label no runner carries is declared but never scheduled`,
+        };
+      }
+    }
+  }
+  if (!runsOnSeen) {
+    return {
+      ok: false,
+      reason: 'nightly a11y-e2e job declares no `runs-on:` — it cannot be scheduled at all',
+    };
+  }
+
+  // Step-level neutering, scoped to the gate step's own range. Scoping matters:
+  // a legitimate `if: always()` on a LATER upload-artifact step must not be
+  // mistaken for a condition on the gate, and a shell `if curl …` inside a
+  // `run: |` block is not a YAML `if:` key (its trimmed form is `if curl…`).
+  const allLines = nightlyYaml.split('\n');
+  const range = findStepRange(allLines, A11Y_NIGHTLY_STEP);
+  if (range === null) {
+    return {
+      ok: false,
+      reason: `nightly a11y-e2e job: could not resolve the step range for \`${A11Y_NIGHTLY_STEP}\``,
+    };
+  }
+  for (let i = range[0]; i < range[1]; i++) {
+    const tr = allLines[i].trim();
+    if (tr.startsWith('#')) continue;
+    if (tr.startsWith('if:')) {
+      return {
+        ok: false,
+        reason: `nightly a11y-e2e gate step carries a step-level if: — \`${tr}\``,
+      };
+    }
+    if (tr.startsWith('continue-on-error:')) {
+      const value = tr.slice('continue-on-error:'.length).trim();
+      // Same value whitelist as the job-level check above, same red-team reason.
+      if (value !== 'false') {
+        return {
+          ok: false,
+          reason: `nightly a11y-e2e gate step carries continue-on-error: ${value} — spec §5.7 requires a non-truthy value, and only the literal \`false\` is admitted; a soft-failing a11y gate is a toothless one`,
+        };
+      }
+    }
+  }
+
+  return {
+    ok: true,
+    reason:
+      'nightly.yml declares an a11y-e2e job that invokes `just a11y-e2e` exactly once, is schedulable (ubuntu-latest, no matrix), and is unneutered at both the job and the step level',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -1222,6 +1524,927 @@ jobs:
     }
   }
 
+  // ===========================================================================================
+  // m23-s11 PROOF-OF-TEETH: a11yRecipeBodyIntact(justfileText) -> { ok, reason }
+  //
+  // Extracts the `a11y-e2e` recipe body with the EXISTING extractRecipeBodyLocal(text,
+  // 'a11y-e2e') (already comment-stripping, already handling the `name param=` header form —
+  // see the comment block above extractRecipeBodyLocal), then requires the body to be
+  // non-empty AND contain: 'set -euo pipefail'; 'vitest run'; '--reporter=json';
+  // 'overlayA11yWiring.test.ts'; and all three a11y eval filenames.
+  // ===========================================================================================
+
+  // --- T-a11y-recipe-absent: no `a11y-e2e:` recipe in the justfile at all → REJECT.
+  //   Kills: an impl that treats an absent/empty extraction as vacuously OK.
+  const T_a11y_recipe_absent_justfile = `lint:\n    echo lint\n\ntest:\n    echo test\n`;
+  {
+    let r;
+    try {
+      r = a11yRecipeBodyIntact(T_a11y_recipe_absent_justfile);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-recipe-absent: a11yRecipeBodyIntact threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-recipe-absent: a11yRecipeBodyIntact accepted a justfile with no a11y-e2e recipe at all',
+      };
+    }
+  }
+
+  // --- T-a11y-recipe-comment-only: recipe exists but its body is ONLY `#` comment lines
+  //   (extractRecipeBodyLocal drops every `#`-prefixed line, so the extracted body is '') → REJECT.
+  //   Kills: an impl that skips the non-empty-body guard.
+  const T_a11y_recipe_comment_only_justfile = `lint:\n    echo lint\n\na11y-e2e:\n    # nothing but comments\n    # here too\n`;
+  {
+    let r;
+    try {
+      r = a11yRecipeBodyIntact(T_a11y_recipe_comment_only_justfile);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-recipe-comment-only: a11yRecipeBodyIntact threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-recipe-comment-only: a11yRecipeBodyIntact accepted a recipe whose body is only comment lines',
+      };
+    }
+  }
+
+  // --- T-a11y-recipe-echo-only: body = `echo "a11y ok"` (no real gating content) → REJECT.
+  //   Kills: an impl that only checks non-empty, never the required tokens.
+  const T_a11y_recipe_echo_only_justfile = `lint:\n    echo lint\n\na11y-e2e:\n    echo "a11y ok"\n`;
+  {
+    let r;
+    try {
+      r = a11yRecipeBodyIntact(T_a11y_recipe_echo_only_justfile);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-recipe-echo-only: a11yRecipeBodyIntact threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: 'T-a11y-recipe-echo-only: a11yRecipeBodyIntact accepted a body of echo "a11y ok"',
+      };
+    }
+  }
+
+  // --- Shared "full" body (all required tokens present, legitimately, uncommented) used as the
+  //   base for three "drop one token" negative variants below via .replace(). Kept separate from
+  //   the GOOD hostile fixture (which adds decoys/preamble/param-form on top).
+  const A11Y_RECIPE_FULL_JUSTFILE = `lint:
+    echo lint
+
+a11y-e2e floor="169": wasm
+    #!/usr/bin/env bash
+    set -euo pipefail
+    node -e "import('./evals/overlay-a11y-manifest.eval.mjs').then(m=>m.default()).then(r=>{if(!r.pass){throw new Error(r.detail)}})"
+    node -e "import('./evals/a11y-static-shell.eval.mjs').then(m=>m.default()).then(r=>{if(!r.pass){throw new Error(r.detail)}})"
+    node -e "import('./evals/reduced-motion-purity.eval.mjs').then(m=>m.default()).then(r=>{if(!r.pass){throw new Error(r.detail)}})"
+    cd client && npx vitest run --reporter=json src/ui/overlayA11yWiring.test.ts
+
+wasm:
+    wasm-pack build client-wasm --target bundler
+`;
+
+  // --- T-a11y-recipe-no-set-euo: all vitest/eval tokens present, `set -euo pipefail` dropped →
+  //   REJECT.
+  //   Kills: an impl that never checks the fail-closed shell preamble.
+  const T_a11y_recipe_no_setEuo = A11Y_RECIPE_FULL_JUSTFILE.replace('    set -euo pipefail\n', '');
+  {
+    let r;
+    try {
+      r = a11yRecipeBodyIntact(T_a11y_recipe_no_setEuo);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-recipe-no-set-euo: a11yRecipeBodyIntact threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          "T-a11y-recipe-no-set-euo: a11yRecipeBodyIntact accepted a body missing 'set -euo pipefail'",
+      };
+    }
+  }
+
+  // --- T-a11y-recipe-tokens-in-comment: every required token appears, verbatim, but ONLY inside
+  //   a single `#` comment line inside the body (so extractRecipeBodyLocal's comment-stripping
+  //   removes them from the returned body) → REJECT.
+  //   Kills: an impl that bypasses extractRecipeBodyLocal and does a raw indexOf over the whole
+  //   justfileText (or over the raw un-stripped recipe text), which would find these tokens.
+  const T_a11y_recipe_tokens_in_comment_justfile = `lint:
+    echo lint
+
+a11y-e2e:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # would run: vitest run --reporter=json src/ui/overlayA11yWiring.test.ts after evals/overlay-a11y-manifest.eval.mjs evals/a11y-static-shell.eval.mjs evals/reduced-motion-purity.eval.mjs (comment only, not real)
+    echo "see above comment"
+`;
+  {
+    let r;
+    try {
+      r = a11yRecipeBodyIntact(T_a11y_recipe_tokens_in_comment_justfile);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-recipe-tokens-in-comment: a11yRecipeBodyIntact threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-recipe-tokens-in-comment: a11yRecipeBodyIntact accepted a body whose required tokens appear only inside a # comment line',
+      };
+    }
+  }
+
+  // --- T-a11y-recipe-unrelated-spec: vitest call present, all a11y eval names present, but the
+  //   spec file targeted is unrelated (overlayA11yWiring.test.ts substituted away) → REJECT.
+  //   Kills: an impl that checks 'vitest run' + '--reporter=json' but never the target spec name.
+  const T_a11y_recipe_unrelated_spec = A11Y_RECIPE_FULL_JUSTFILE.replace(
+    'src/ui/overlayA11yWiring.test.ts',
+    'src/ui/someOtherFile.test.ts',
+  );
+  {
+    let r;
+    try {
+      r = a11yRecipeBodyIntact(T_a11y_recipe_unrelated_spec);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-recipe-unrelated-spec: a11yRecipeBodyIntact threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-recipe-unrelated-spec: a11yRecipeBodyIntact accepted a vitest call that never targets overlayA11yWiring.test.ts',
+      };
+    }
+  }
+
+  // --- T-a11y-recipe-drop-manifest / drop-static-shell / drop-reduced-motion: pin the vitest half
+  //   intact, drop exactly ONE of the three a11y eval names independently → each must REJECT.
+  //   Kills: an impl that checks only "at least one eval name" instead of all three independently.
+  const T_a11y_recipe_drop_manifest = A11Y_RECIPE_FULL_JUSTFILE.replace(
+    `    node -e "import('./evals/overlay-a11y-manifest.eval.mjs').then(m=>m.default()).then(r=>{if(!r.pass){throw new Error(r.detail)}})"\n`,
+    '',
+  );
+  {
+    let r;
+    try {
+      r = a11yRecipeBodyIntact(T_a11y_recipe_drop_manifest);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-recipe-drop-manifest: a11yRecipeBodyIntact threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-recipe-drop-manifest: a11yRecipeBodyIntact accepted a body missing overlay-a11y-manifest.eval.mjs',
+      };
+    }
+  }
+  const T_a11y_recipe_drop_static_shell = A11Y_RECIPE_FULL_JUSTFILE.replace(
+    `    node -e "import('./evals/a11y-static-shell.eval.mjs').then(m=>m.default()).then(r=>{if(!r.pass){throw new Error(r.detail)}})"\n`,
+    '',
+  );
+  {
+    let r;
+    try {
+      r = a11yRecipeBodyIntact(T_a11y_recipe_drop_static_shell);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-recipe-drop-static-shell: a11yRecipeBodyIntact threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-recipe-drop-static-shell: a11yRecipeBodyIntact accepted a body missing a11y-static-shell.eval.mjs',
+      };
+    }
+  }
+  const T_a11y_recipe_drop_reduced_motion = A11Y_RECIPE_FULL_JUSTFILE.replace(
+    `    node -e "import('./evals/reduced-motion-purity.eval.mjs').then(m=>m.default()).then(r=>{if(!r.pass){throw new Error(r.detail)}})"\n`,
+    '',
+  );
+  {
+    let r;
+    try {
+      r = a11yRecipeBodyIntact(T_a11y_recipe_drop_reduced_motion);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-recipe-drop-reduced-motion: a11yRecipeBodyIntact threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-recipe-drop-reduced-motion: a11yRecipeBodyIntact accepted a body missing reduced-motion-purity.eval.mjs',
+      };
+    }
+  }
+
+  // --- T-a11y-recipe-good: HOSTILE-BUT-CORRECT → must ACCEPT.
+  //   - declared WITH a parameter and a dependency (`a11y-e2e floor="169": wasm`, mirrors
+  //     `mutate-server cap="324":` at justfile:142).
+  //   - preceded by a long `#` comment preamble block.
+  //   - a DECOY `# a11y-e2e:` comment line sits BEFORE the real header (does not match
+  //     extractRecipeBodyLocal's `\na11y-e2e:` / `\na11y-e2e ` markers, since it is preceded by
+  //     "# " not a bare newline — traced against extractRecipeBodyLocal:348-357).
+  //   - a `#` comment INSIDE the body mentions a banned/irrelevant token (`echo "a11y ok"`) —
+  //     stripped by extractRecipeBodyLocal, must not affect anything.
+  //   Kills: an impl whose header search is a naive regex/indexOf over raw text instead of
+  //   reusing extractRecipeBodyLocal (would latch onto the decoy comment and extract nothing, or
+  //   the wrong region) AND an impl that string-searches the RAW justfileText instead of the
+  //   extracted body (would be fooled by the banned in-body comment token into thinking the real
+  //   tokens are somehow tainted, or would false-reject on decoy noise).
+  const T_a11y_recipe_good_justfile = `# Long preamble comment block describing conventions used across this justfile.
+# Second line of preamble — unrelated to any recipe.
+# Third line of preamble — mentions "a11y" in passing but is not a header.
+# Fourth line of preamble.
+# Fifth line of preamble.
+
+# a11y-e2e:
+# (decoy header-shaped comment line above — must NOT be treated as the real
+# recipe header; the real header appears later, unindented, without a #.)
+
+lint:
+    echo lint
+
+a11y-e2e floor="169": wasm
+    #!/usr/bin/env bash
+    set -euo pipefail
+    # TODO: someday also try echo "a11y ok" here for a quick smoke (banned/
+    # irrelevant token inside a body comment; must not satisfy any clause on
+    # its own, and must not break extraction of the real tokens below).
+    node -e "import('./evals/overlay-a11y-manifest.eval.mjs').then(m=>m.default()).then(r=>{if(!r.pass){throw new Error(r.detail)}})"
+    node -e "import('./evals/a11y-static-shell.eval.mjs').then(m=>m.default()).then(r=>{if(!r.pass){throw new Error(r.detail)}})"
+    node -e "import('./evals/reduced-motion-purity.eval.mjs').then(m=>m.default()).then(r=>{if(!r.pass){throw new Error(r.detail)}})"
+    cd client && npx vitest run --reporter=json src/ui/overlayA11yWiring.test.ts src/ui/menuView.test.ts
+
+wasm:
+    wasm-pack build client-wasm --target bundler
+`;
+  {
+    let r;
+    try {
+      r = a11yRecipeBodyIntact(T_a11y_recipe_good_justfile);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-recipe-good: a11yRecipeBodyIntact threw — ${e.message}`,
+      };
+    }
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-recipe-good: a11yRecipeBodyIntact should accept a hostile-but-correct recipe but rejected: ${r.reason}`,
+      };
+    }
+  }
+
+  // ===========================================================================================
+  // m23-s11 PROOF-OF-TEETH: a11yNightlyJobIsWired(nightlyYaml) -> { ok, reason }
+  //
+  // The yaml declares an `a11y-e2e:` job (via extractJobBlock), is free of duplicate `jobs:` /
+  // duplicate `a11y-e2e:` keys (checkNoDuplicateJobsKey / checkNoDuplicateJobKey), contains
+  // EXACTLY ONE non-comment line trimming to `- run: just a11y-e2e` in the WHOLE FILE, and that
+  // step plus its job carry no `if:` and no truthy `continue-on-error:` (isTruthyCoe,
+  // findStepRange).
+  // ===========================================================================================
+
+  // Shared minimal "plain wired" base fixture — used both as its own simple positive check and as
+  // the base for several `.replace()`-derived negatives below.
+  const A11Y_NIGHTLY_MINIMAL_GOOD = `name: Nightly
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+jobs:
+  a11y-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@abc1234abc1234abc1234abc1234abc1234abc12 # v6
+      - run: just a11y-e2e
+`;
+
+  // --- T-a11y-nightly-good-basic: the plain minimal wiring → must ACCEPT.
+  {
+    let r;
+    try {
+      r = a11yNightlyJobIsWired(A11Y_NIGHTLY_MINIMAL_GOOD);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-nightly-good-basic: a11yNightlyJobIsWired threw — ${e.message}`,
+      };
+    }
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-nightly-good-basic: a11yNightlyJobIsWired should accept minimal correct wiring but rejected: ${r.reason}`,
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-absent: no `a11y-e2e:` job anywhere → REJECT.
+  //   Kills: an impl that treats an absent/empty job block as vacuously OK.
+  const T_a11y_nightly_absent = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+  {
+    let r;
+    try {
+      r = a11yNightlyJobIsWired(T_a11y_nightly_absent);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-nightly-absent: a11yNightlyJobIsWired threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-nightly-absent: a11yNightlyJobIsWired accepted a workflow with no a11y-e2e job',
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-step-commented: the step exists only as `# - run: just a11y-e2e` → REJECT
+  //   (zero non-comment matches, so "exactly one" fails as zero).
+  //   Kills: an impl that raw-indexOf's the run line instead of line-scanning non-comment lines.
+  const T_a11y_nightly_step_commented = A11Y_NIGHTLY_MINIMAL_GOOD.replace(
+    '      - run: just a11y-e2e\n',
+    '      # - run: just a11y-e2e\n',
+  );
+  {
+    let r;
+    try {
+      r = a11yNightlyJobIsWired(T_a11y_nightly_step_commented);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-nightly-step-commented: a11yNightlyJobIsWired threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-nightly-step-commented: a11yNightlyJobIsWired accepted a job whose run step is only a # comment',
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-or-true: `- run: just a11y-e2e || true` → REJECT (cannot fail).
+  //   Kills: an impl that accepts suffixed run lines.
+  const T_a11y_nightly_or_true = A11Y_NIGHTLY_MINIMAL_GOOD.replace(
+    '      - run: just a11y-e2e\n',
+    '      - run: just a11y-e2e || true\n',
+  );
+  {
+    let r;
+    try {
+      r = a11yNightlyJobIsWired(T_a11y_nightly_or_true);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-nightly-or-true: a11yNightlyJobIsWired threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          "T-a11y-nightly-or-true: a11yNightlyJobIsWired accepted '- run: just a11y-e2e || true'",
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-semicolon-exit0: `- run: just a11y-e2e; exit 0` → REJECT (cannot fail).
+  //   Kills: an impl that accepts semicolon-suffixed run lines.
+  const T_a11y_nightly_semicolon_exit0 = A11Y_NIGHTLY_MINIMAL_GOOD.replace(
+    '      - run: just a11y-e2e\n',
+    '      - run: just a11y-e2e; exit 0\n',
+  );
+  {
+    let r;
+    try {
+      r = a11yNightlyJobIsWired(T_a11y_nightly_semicolon_exit0);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-nightly-semicolon-exit0: a11yNightlyJobIsWired threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          "T-a11y-nightly-semicolon-exit0: a11yNightlyJobIsWired accepted '- run: just a11y-e2e; exit 0'",
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-job-if: job-level `if:` (before `steps:`) → REJECT.
+  //   Kills: an impl that only checks step-level conditions.
+  const T_a11y_nightly_job_if = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  a11y-e2e:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'workflow_dispatch'
+    steps:
+      - run: just a11y-e2e
+`;
+  {
+    let r;
+    try {
+      r = a11yNightlyJobIsWired(T_a11y_nightly_job_if);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-nightly-job-if: a11yNightlyJobIsWired threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: 'T-a11y-nightly-job-if: a11yNightlyJobIsWired accepted a job-level if: condition',
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-job-coe-{true,yes,on,True,${{ true }}}: job-level truthy
+  //   continue-on-error, all 5 forms isTruthyCoe recognises → each must REJECT.
+  //   Kills: an impl that only checks step-level continue-on-error, or that mis-implements the
+  //   truthy-value matching (case, alias, or expression form).
+  const A11Y_JOB_COE_VALUES = ['true', 'yes', 'on', 'True', '${{ true }}'];
+  for (const coeVal of A11Y_JOB_COE_VALUES) {
+    const T_a11y_nightly_job_coe = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  a11y-e2e:
+    runs-on: ubuntu-latest
+    continue-on-error: ${coeVal}
+    steps:
+      - run: just a11y-e2e
+`;
+    let r;
+    try {
+      r = a11yNightlyJobIsWired(T_a11y_nightly_job_coe);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-nightly-job-coe-${coeVal}: a11yNightlyJobIsWired threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-nightly-job-coe-${coeVal}: a11yNightlyJobIsWired accepted a job-level continue-on-error: ${coeVal}`,
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-step-coe: the gate step itself carries a truthy continue-on-error as a
+  //   continuation key (8-space indent, same list item — the exact run line is UNCHANGED so the
+  //   "exactly one" clause still holds; only the step-level scan should catch this) → REJECT.
+  //   Kills: an impl that checks job-level coe/if but never scans the step's own range
+  //   (findStepRange).
+  const T_a11y_nightly_step_coe = A11Y_NIGHTLY_MINIMAL_GOOD.replace(
+    '      - run: just a11y-e2e\n',
+    '      - run: just a11y-e2e\n        continue-on-error: true\n',
+  );
+  {
+    let r;
+    try {
+      r = a11yNightlyJobIsWired(T_a11y_nightly_step_coe);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-nightly-step-coe: a11yNightlyJobIsWired threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-nightly-step-coe: a11yNightlyJobIsWired accepted a step-level truthy continue-on-error on the gate step',
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-step-if (bonus, beyond the minimum list): same idea with `if:` instead of
+  //   continue-on-error → REJECT.
+  const T_a11y_nightly_step_if = A11Y_NIGHTLY_MINIMAL_GOOD.replace(
+    '      - run: just a11y-e2e\n',
+    '      - run: just a11y-e2e\n        if: always()\n',
+  );
+  {
+    let r;
+    try {
+      r = a11yNightlyJobIsWired(T_a11y_nightly_step_if);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-nightly-step-if: a11yNightlyJobIsWired threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-nightly-step-if: a11yNightlyJobIsWired accepted a step-level if: on the gate step',
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-dup-job (last-key-wins F1 analogue): first `a11y-e2e:` job is clean; a
+  //   SECOND `a11y-e2e:` job key follows, neutered with `if: false`. Note the second block's run
+  //   line does NOT match the exact literal, so the "exactly one" clause alone stays satisfied
+  //   (count=1) — only the duplicate-key check can catch this → REJECT.
+  //   Kills: an impl that only inspects the FIRST block extractJobBlock returns.
+  const T_a11y_nightly_dup_job = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  a11y-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just a11y-e2e
+  a11y-e2e:
+    runs-on: ubuntu-latest
+    if: false
+    steps:
+      - run: echo "neutered second a11y-e2e block"
+`;
+  {
+    let r;
+    try {
+      r = a11yNightlyJobIsWired(T_a11y_nightly_dup_job);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-nightly-dup-job: a11yNightlyJobIsWired threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-nightly-dup-job: a11yNightlyJobIsWired accepted duplicate a11y-e2e: job keys (first clean, second neutered) — GitHub Actions last-key-wins executes the neutered block',
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-dup-jobs (F9 analogue): duplicate top-level `jobs:` key → REJECT.
+  //   Kills: same class as dup-job but at the top-level key.
+  const T_a11y_nightly_dup_jobs = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  a11y-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just a11y-e2e
+jobs:
+  a11y-e2e:
+    runs-on: ubuntu-latest
+    if: false
+    steps:
+      - run: echo "neutered"
+`;
+  {
+    let r;
+    try {
+      r = a11yNightlyJobIsWired(T_a11y_nightly_dup_jobs);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-nightly-dup-jobs: a11yNightlyJobIsWired threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-nightly-dup-jobs: a11yNightlyJobIsWired accepted a yaml with duplicate top-level jobs: keys',
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-decoy-other-job: the EXACT literal `- run: just a11y-e2e` appears TWICE —
+  //   once (correctly) in the a11y-e2e job, once (wrongly) parked in an unrelated job → the
+  //   "exactly one in the whole file" clause is load-bearing here → REJECT.
+  //   Kills: an impl using `.some(...)` / "at least one" instead of counting occurrences
+  //   file-wide.
+  const T_a11y_nightly_decoy_other_job = `name: Nightly
+on:
+  workflow_dispatch:
+jobs:
+  a11y-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just a11y-e2e
+  smoke-republish:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just a11y-e2e
+`;
+  {
+    let r;
+    try {
+      r = a11yNightlyJobIsWired(T_a11y_nightly_decoy_other_job);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-nightly-decoy-other-job: a11yNightlyJobIsWired threw — ${e.message}`,
+      };
+    }
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-nightly-decoy-other-job: a11yNightlyJobIsWired accepted two occurrences of the exact run line (one parked in an unrelated job) — "exactly one" clause is load-bearing',
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-good-hostile: HOSTILE-BUT-CORRECT → must ACCEPT.
+  //   - explicit `continue-on-error: false` on the gate step (falsy, must not trip the truthy
+  //     check).
+  //   - a legitimate `if: always()` on a LATER `actions/upload-artifact` step (a different step —
+  //     must not be mistaken for a condition on the gate step).
+  //   - a `run: |` block containing a shell `if curl ...` line BEFORE the gate step (mirrors the
+  //     T_good tooth at ci-gate-wiring.eval.mjs:530-535 — a naive block-wide line scan would
+  //     false-flag `if curl...` as a YAML `if:` key; it must not, since its trimmed form is
+  //     "if curl..." not "if:...").
+  //   - a comment line in a DIFFERENT job that mentions the run command as prose inside a `#`
+  //     comment ("this job used to also `- run: just a11y-e2e` here") — must NOT be counted
+  //     toward the "exactly one" total (it neither starts with `#` trimmed-equal to the exact
+  //     line, nor IS the exact line after trimming — kills a naive indexOf/includes-based
+  //     occurrence counter that would see 2 hits and wrongly reject this correct fixture).
+  //   - three total jobs (mutation, a11y-e2e, coverage) sandwiching the target job, varying
+  //     ordering/job-count from the other fixtures above (anti fixture-monoculture).
+  const T_a11y_nightly_good_hostile = `name: Nightly
+on:
+  schedule:
+    - cron: '0 7 * * *'
+  workflow_dispatch:
+jobs:
+  mutation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@abc1234abc1234abc1234abc1234abc1234abc12 # v6
+      # historical note: this job used to also \`- run: just a11y-e2e\` here; moved to its own job.
+      - run: just mutate-core
+  a11y-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@abc1234abc1234abc1234abc1234abc1234abc12 # v6
+      - name: Wait for something
+        run: |
+          for i in $(seq 1 10); do
+            if curl -s http://example.com; then echo ok; exit 0; fi
+            sleep 1
+          done
+      - run: just a11y-e2e
+        continue-on-error: false
+      - name: Upload evidence
+        if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: a11y-e2e-evidence
+          path: /tmp/a11y-vitest.json
+  coverage:
+    runs-on: ubuntu-latest
+    steps:
+      - run: just coverage
+`;
+  {
+    let r;
+    try {
+      r = a11yNightlyJobIsWired(T_a11y_nightly_good_hostile);
+    } catch (e) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-nightly-good-hostile: a11yNightlyJobIsWired threw — ${e.message}`,
+      };
+    }
+    if (!r.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-nightly-good-hostile: a11yNightlyJobIsWired should accept a hostile-but-correct job but rejected: ${r.reason}`,
+      };
+    }
+  }
+
+  // ===========================================================================================
+  // m23-s11 ROUND 2 PROOF-OF-TEETH — the four bypasses red-team EXECUTED against round 1.
+  // Every fixture below is a shape that round 1 ACCEPTED and round 2 must reject, plus the
+  // matching hostile-good control proving the new clause did not simply reject everything.
+  // ===========================================================================================
+
+  // --- T-a11y-pin-exit0: `exit 0` planted directly under `set -euo pipefail`, with the ENTIRE
+  //   original body left byte-identical below it. Every required token is still present, so the
+  //   substring scan accepts it; the recipe runs nothing and exits 0. The verbatim pin rejects.
+  {
+    const gutted = A11Y_E2E_RECIPE_REGION.replace(
+      '    set -euo pipefail\n',
+      '    set -euo pipefail\n    exit 0\n',
+    );
+    const r = a11yRecipeBodyIsPinned(`lint:\n    echo lint\n\n${gutted}\nwasm:\n    echo w\n`);
+    if (r.ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-pin-exit0: a11yRecipeBodyIsPinned accepted a recipe with `exit 0` planted above a byte-identical body — the exact bypass red-team executed against the substring scan',
+      };
+    }
+    // CONTROL: the same region unmutated must be ACCEPTED, or the pin is rejecting everything.
+    const good = a11yRecipeBodyIsPinned(
+      `lint:\n    echo lint\n\n${A11Y_E2E_RECIPE_REGION}\nwasm:\n    echo w\n`,
+    );
+    if (!good.ok) {
+      return {
+        name,
+        pass: false,
+        detail: `T-a11y-pin-exit0-control: a11yRecipeBodyIsPinned rejected its own verbatim region: ${good.reason}`,
+      };
+    }
+  }
+
+  // --- T-a11y-pin-deadbranch / T-a11y-pin-shebang: a dead `if false` wrapper, and a deleted
+  //   shebang (invisible to any comment-STRIPPED body pin, since `#!` is a comment line).
+  {
+    const dead = A11Y_E2E_RECIPE_REGION.replace(
+      '    set -euo pipefail\n',
+      '    set -euo pipefail\n    if false; then\n',
+    );
+    if (a11yRecipeBodyIsPinned(dead).ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-pin-deadbranch: a11yRecipeBodyIsPinned accepted a body wrapped in `if false; then`',
+      };
+    }
+    const noShebang = A11Y_E2E_RECIPE_REGION.replace('    #!/usr/bin/env bash\n', '');
+    if (a11yRecipeBodyIsPinned(noShebang).ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-pin-shebang: a11yRecipeBodyIsPinned accepted a recipe with the `#!/usr/bin/env bash` shebang deleted — this is why the pin is over the RAW region, not the comment-stripped body',
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-empty-matrix: an empty matrix expands to ZERO job instances.
+  {
+    const yml = `name: Nightly\non:\n  workflow_dispatch:\njobs:\n  a11y-e2e:\n    runs-on: ubuntu-latest\n    strategy:\n      matrix:\n        shard: []\n    steps:\n      - run: just a11y-e2e\n`;
+    if (a11yNightlyJobIsWired(yml).ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-nightly-empty-matrix: a11yNightlyJobIsWired accepted a job whose empty `matrix` expands to zero instances — declared, never scheduled, never run',
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-phantom-runner / T-a11y-nightly-no-runs-on: a job pointed at a label no
+  //   runner carries queues forever; a job with no `runs-on:` cannot be scheduled at all.
+  {
+    const phantom = `name: Nightly\non:\n  workflow_dispatch:\njobs:\n  a11y-e2e:\n    runs-on: [self-hosted, no-such-label]\n    steps:\n      - run: just a11y-e2e\n`;
+    if (a11yNightlyJobIsWired(phantom).ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-nightly-phantom-runner: a11yNightlyJobIsWired accepted `runs-on: [self-hosted, no-such-label]` — the job never gets scheduled',
+      };
+    }
+    const noRunsOn = `name: Nightly\non:\n  workflow_dispatch:\njobs:\n  a11y-e2e:\n    steps:\n      - run: just a11y-e2e\n`;
+    if (a11yNightlyJobIsWired(noRunsOn).ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-nightly-no-runs-on: a11yNightlyJobIsWired accepted a job with no `runs-on:` key',
+      };
+    }
+  }
+
+  // --- T-a11y-nightly-coe-expression: `${{ !cancelled() }}` and `${{ success() || true }}` are
+  //   unconditionally true in every real run, and BOTH slipped past isTruthyCoe's literal
+  //   blacklist (red-team executed both). The value whitelist closes them.
+  {
+    const mk = (coe) =>
+      `name: Nightly\non:\n  workflow_dispatch:\njobs:\n  a11y-e2e:\n    runs-on: ubuntu-latest\n    steps:\n      - run: just a11y-e2e\n        continue-on-error: ${coe}\n`;
+    for (const coe of ['$' + '{{ !cancelled() }}', '$' + '{{ success() || true }}', '1', 'TRUE']) {
+      if (a11yNightlyJobIsWired(mk(coe)).ok) {
+        return {
+          name,
+          pass: false,
+          detail: `T-a11y-nightly-coe-expression: a11yNightlyJobIsWired accepted an always-true continue-on-error: ${coe}`,
+        };
+      }
+    }
+    // CONTROL: the literal `false` — the ONE admitted spelling — must still pass.
+    if (!a11yNightlyJobIsWired(mk('false')).ok) {
+      return {
+        name,
+        pass: false,
+        detail:
+          'T-a11y-nightly-coe-expression-control: a11yNightlyJobIsWired rejected the literal `continue-on-error: false`, which is the one admitted spelling',
+      };
+    }
+  }
+
   // =========================================================================
   // REAL FILE CHECKS
   // =========================================================================
@@ -1230,8 +2453,9 @@ jobs:
   const justfilePath = path.join(root, 'justfile');
   const lefthookPath = path.join(root, 'lefthook.yml');
   const runMjsPath = path.join(root, 'evals/run.mjs');
+  const nightlyPath = path.join(root, '.github/workflows/nightly.yml');
 
-  let ciYaml, justfile, lefthook, runMjs;
+  let ciYaml, justfile, lefthook, runMjs, nightlyYaml;
 
   try {
     ciYaml = readFileSync(ciPath, 'utf8');
@@ -1255,6 +2479,12 @@ jobs:
     runMjs = readFileSync(runMjsPath, 'utf8');
   } catch {
     return { name, pass: false, detail: 'cannot read evals/run.mjs' };
+  }
+
+  try {
+    nightlyYaml = readFileSync(nightlyPath, 'utf8');
+  } catch {
+    return { name, pass: false, detail: 'cannot read .github/workflows/nightly.yml' };
   }
 
   // Self-structural check: this file must contain the main-guard.
@@ -1347,11 +2577,50 @@ jobs:
     }
   }
 
+  // Check 6: a11yRecipeBodyIntact
+  {
+    let r;
+    try {
+      r = a11yRecipeBodyIntact(justfile);
+    } catch (e) {
+      return { name, pass: false, detail: `a11yRecipeBodyIntact threw — ${e.message}` };
+    }
+    if (!r.ok) {
+      return { name, pass: false, detail: `a11yRecipeBodyIntact FAIL: ${r.reason}` };
+    }
+  }
+
+  // Check 7: a11yNightlyJobIsWired
+  {
+    let r;
+    try {
+      r = a11yNightlyJobIsWired(nightlyYaml);
+    } catch (e) {
+      return { name, pass: false, detail: `a11yNightlyJobIsWired threw — ${e.message}` };
+    }
+    if (!r.ok) {
+      return { name, pass: false, detail: `a11yNightlyJobIsWired FAIL: ${r.reason}` };
+    }
+  }
+
+  // Check 8: a11yRecipeBodyIsPinned (m23-s11 round 2 — the red-team-proven bypass of Check 6).
+  {
+    let r;
+    try {
+      r = a11yRecipeBodyIsPinned(justfile);
+    } catch (e) {
+      return { name, pass: false, detail: `a11yRecipeBodyIsPinned threw — ${e.message}` };
+    }
+    if (!r.ok) {
+      return { name, pass: false, detail: `a11yRecipeBodyIsPinned FAIL: ${r.reason}` };
+    }
+  }
+
   return {
     name,
     pass: true,
     detail:
-      'all 5 ci-gate-wiring checks pass: ci steps unneutered (all 7 exact verbs, no if:/coe), justfile/ci.yml dep parity, recipe bodies intact, run.mjs structural invariants, anchor wired in lefthook + e2e job',
+      'all 8 ci-gate-wiring checks pass: ci steps unneutered (all 7 exact verbs, no if:/coe), justfile/ci.yml dep parity, recipe bodies intact, run.mjs structural invariants, anchor wired in lefthook + e2e job, a11y-e2e recipe body intact, a11y-e2e nightly job wired, a11y-e2e recipe region matches its verbatim pin',
   };
 }
 
