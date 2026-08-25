@@ -829,13 +829,15 @@ describe('MenuView — listbox and option semantics (m23-s6)', () => {
     // The SAME two row.index values at the OTHER level must produce DIFFERENT ids. That is the
     // whole point of the level qualifier, and it is precisely what the P1 defect got wrong.
     view.render(
-      vmOf([row(7, 'Seven', 'A', true), row(3, 'Three', 'B')], 'Party', 'Escape / ← — back', 'leaves'),
+      vmOf(
+        [row(7, 'Seven', 'A', true), row(3, 'Three', 'B')],
+        'Party',
+        'Escape / ← — back',
+        'leaves',
+      ),
     );
     const leafItems = liList();
-    expect(leafItems.map((li) => li.id)).toEqual([
-      'menu-option-leaves-7',
-      'menu-option-leaves-3',
-    ]);
+    expect(leafItems.map((li) => li.id)).toEqual(['menu-option-leaves-7', 'menu-option-leaves-3']);
 
     // CHEAT-19, end to end: a click on the FIRST row must emit index 7, not 0.
     leafItems[0]!.dispatchEvent(new MouseEvent('click', { bubbles: true }));
