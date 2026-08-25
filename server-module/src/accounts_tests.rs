@@ -4039,7 +4039,13 @@ fn export_bundle_struct_shape_and_privacy() {
          or a second declaration."
     );
 
-    let attr_prefix = concat!("#[spacetimedb::", "table", "(", "access", "or=export_bundle");
+    let attr_prefix = concat!(
+        "#[spacetimedb::",
+        "table",
+        "(",
+        "access",
+        "or=export_bundle"
+    );
     assert_eq!(
         m22_count_occurrences(&schema, attr_prefix),
         1,

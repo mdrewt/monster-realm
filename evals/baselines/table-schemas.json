@@ -712,7 +712,8 @@
       "status": "AccountStatus",
       "deletion_requested_at_ms": "Option<i64>",
       "claimed_from": "Option<Identity>",
-      "claimed_at_ms": "Option<i64>"
+      "claimed_at_ms": "Option<i64>",
+      "terminal_at_ms": "Option<i64>"
     },
     "order": [
       "identity",
@@ -722,7 +723,8 @@
       "status",
       "deletion_requested_at_ms",
       "claimed_from",
-      "claimed_at_ms"
+      "claimed_at_ms",
+      "terminal_at_ms"
     ]
   },
   "guest_claim": {
@@ -813,6 +815,30 @@
       "scheduled_id",
       "scheduled_at",
       "trade_id"
+    ]
+  },
+  "export_bundle": {
+    "pk": "chunk_id",
+    "visibility": "private",
+    "columns": {
+      "chunk_id": "u64",
+      "owner_identity": "Identity",
+      "request_id": "u64",
+      "table_name": "String",
+      "chunk_index": "u32",
+      "total_chunks": "u32",
+      "payload_json": "String",
+      "created_at_ms": "i64"
+    },
+    "order": [
+      "chunk_id",
+      "owner_identity",
+      "request_id",
+      "table_name",
+      "chunk_index",
+      "total_chunks",
+      "payload_json",
+      "created_at_ms"
     ]
   }
 }

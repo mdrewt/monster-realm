@@ -114,6 +114,11 @@ pub(crate) fn claim_is_expired(expires_at_ms: i64, now_ms: i64) -> bool {
 /// below. True iff ALL of:
 ///   - `Active` implies `deletion_requested_at_ms.is_none()`;
 ///   - `PendingDeletion` implies `deletion_requested_at_ms.is_some()`;
+///   - `terminal_at_ms.is_some()` implies `PendingDeletion` AND
+///     `deletion_requested_at_ms.is_some()` (M22-S2, spec §4.1: the terminal
+///     marker is stamped only by a completed deletion cascade, so a marker on
+///     an `Active` row — or with no request behind it — is a resurrected
+///     tombstone and must be unrepresentable);
 ///   - `claimed_from.is_some() == claimed_at_ms.is_some()` (claim provenance
 ///     is a PAIR — set together or not at all).
 ///
@@ -122,13 +127,24 @@ pub(crate) fn claim_is_expired(expires_at_ms: i64, now_ms: i64) -> bool {
 /// compile until the new state's timestamp rules are derived here. The
 /// struct-shape tripwire in `accounts_tests.rs` pins `Account`'s field list
 /// for the same reason — a shape change forces a conscious re-derivation of
-/// this predicate rather than a silent widening of the state space.
+/// this predicate rather than a silent widening of the state space; the
+/// M22-S2 shape move (`terminal_at_ms`) discharged that contract by adding
+/// the terminal clause here in the same change.
 pub(crate) fn account_state_is_legal(account: &Account) -> bool {
     let status_stamp_paired = match account.status {
         AccountStatus::Active => account.deletion_requested_at_ms.is_none(),
         AccountStatus::PendingDeletion => account.deletion_requested_at_ms.is_some(),
     };
-    status_stamp_paired && (account.claimed_from.is_some() == account.claimed_at_ms.is_some())
+    let terminal_implies_completed_deletion = match account.terminal_at_ms {
+        None => true,
+        Some(_) => {
+            account.status == AccountStatus::PendingDeletion
+                && account.deletion_requested_at_ms.is_some()
+        }
+    };
+    status_stamp_paired
+        && terminal_implies_completed_deletion
+        && (account.claimed_from.is_some() == account.claimed_at_ms.is_some())
 }
 
 /// A fresh `Active` account row (AUTH-4). `created_at_ms == last_login_at_ms`.
@@ -142,6 +158,7 @@ pub(crate) fn new_account_row(identity: Identity, auth_issuer: String, now_ms: i
         deletion_requested_at_ms: None,
         claimed_from: None,
         claimed_at_ms: None,
+        terminal_at_ms: None,
     };
     debug_assert!(
         account_state_is_legal(&out),
@@ -271,6 +288,14 @@ pub(crate) fn account_has_game_data(ctx: &ReducerContext, identity: Identity) ->
 /// Re-key every REKEY-policy table from `from` onto `to`, one delegated helper
 /// per table in D6-manifest order. `?` on the fallible monster re-key rolls the
 /// whole claim transaction back (fail-loud on a broken dual-write invariant).
+///
+/// MANIFEST CROSS-REFERENCE (M22-S2, ADR-0207): the claim-flow re-key policy
+/// (this manifest, transcribed as `REKEY_MANIFEST` in
+/// `evals/guest-claim-integrity.eval.mjs`) is one axis; the DELETION policy
+/// dimension (`deletion_policy` + `basis` + `exportable` per table, spec §3)
+/// lives as `schema::DATA_LIFECYCLE_MANIFEST` beside the table declarations.
+/// A gate test proves every REKEY key's table is also lifecycle-classified,
+/// so the two manifests cannot drift apart on a rename.
 pub(crate) fn rekey_all(ctx: &ReducerContext, from: Identity, to: Identity) -> Result<(), String> {
     crate::monster_mgmt::rekey_monsters(ctx, from, to)?;
     crate::inventory::rekey_inventory(ctx, from, to);

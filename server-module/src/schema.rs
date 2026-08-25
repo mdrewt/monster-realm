@@ -752,9 +752,13 @@ pub enum AccountStatus {
 pub struct Account {
     #[primary_key]
     pub identity: Identity,
-    /// The `iss` claim this account was provisioned under (audit only). Never
-    /// updated after insert — `Identity = f(iss, sub)`, so a different issuer is
-    /// a different identity, hence a different row (ADR-0179 D1).
+    /// The `iss` claim this account was provisioned under (audit only).
+    /// `Identity = f(iss, sub)`, so a different issuer is a different identity,
+    /// hence a different row (ADR-0179 D1). ONE sanctioned update exists
+    /// (M22 §3, ADR-0207): the account-deletion cascade overwrites this column
+    /// with the `game_core::TOMBSTONE_AUTH_ISSUER` sentinel String — a sentinel,
+    /// not a widening to `Option<String>`, which would be a non-additive column
+    /// edit. No other code path may write it after insert.
     pub auth_issuer: String,
     pub created_at_ms: i64,
     pub last_login_at_ms: i64,
@@ -764,6 +768,15 @@ pub struct Account {
     /// must survive by design — set once, never re-keyed, AUTH-21).
     pub claimed_from: Option<Identity>,
     pub claimed_at_ms: Option<i64>,
+    /// M22 terminal marker (spec §4.1, ADR-0207): stamped by the deletion
+    /// reaper ONLY after the whole cascade completed without error. Terminal
+    /// predicate: `status == PendingDeletion && terminal_at_ms.is_some()` —
+    /// deliberately an additive column, not a third `AccountStatus` variant
+    /// (variant append risks a destructive republish, ADR-0174 D-freeze +
+    /// ADR-0197). Appended LAST with a default so the column is an additive
+    /// automigration under ADR-0006. Nothing writes `Some` until S3.
+    #[default(None)]
+    pub terminal_at_ms: Option<i64>,
 }
 
 /// Owner-scoped read path for `account` (ADR-0179 D2, mirroring `my_wallet`
@@ -891,3 +904,370 @@ pub struct BattleAction {
     /// Server clock at submission (ms).  Informational; not used for resolution.
     pub submitted_at_ms: i64,
 }
+
+// --- M22 data lifecycle (privacy, deletion, export — spec §3/§5, ADR-0207) ----
+
+/// PRIVATE per-owner data-export chunk (M22 §5, ADR-0207). One row per
+/// `(owner_identity, request_id, table_name)`, sub-chunked at
+/// `game_core::EXPORT_CHUNK_ROWS` via `chunk_index`/`total_chunks` — the frozen
+/// S2↔S4↔S8 chunk contract. S4's `request_data_export` writes rows; the
+/// owner-scoped `my_export_bundle` view (S4) is the ONLY client read path —
+/// like `account`, `public` here would hand one player's whole personal-data
+/// dump to every client. `created_at_ms` is server-stamped at insert; the S4
+/// TTL reaper re-derives staleness from it plus the injected clock, so no
+/// caller can supply it. Synthetic `chunk_id` PK: views strip primary keys, and
+/// a `#[primary_key]`+`#[auto_inc]` column may carry no default, so the row
+/// needs its own key. `Clone` derived BEFORE the table attr (the `Account`
+/// precedent — the schema-snapshot regex must still match
+/// `#[spacetimedb::table(...)] pub struct`).
+#[derive(Clone)]
+#[spacetimedb::table(accessor = export_bundle)]
+pub struct ExportBundle {
+    #[primary_key]
+    #[auto_inc]
+    pub chunk_id: u64,
+    #[index(btree)]
+    pub owner_identity: Identity,
+    pub request_id: u64,
+    pub table_name: String,
+    pub chunk_index: u32,
+    pub total_chunks: u32,
+    pub payload_json: String,
+    pub created_at_ms: i64,
+}
+
+/// Deletion policy for one table's rows at account-cascade time (M22 §3).
+///
+/// `ViaJoin` carries the OWNING PARENT table's accessor name: the row has no
+/// `Identity` column of its own and is swept transitively at the parent's
+/// cascade step. Encoding the parent inside the variant makes "is join-only"
+/// and "has a parent" the same fact by construction — a separate optional
+/// parent field would reintroduce representable-but-illegal states.
+#[derive(Debug, PartialEq, Eq)]
+pub enum DeletionPolicy {
+    /// Row deleted outright at cascade time.
+    Erase,
+    /// Row survives; its identity or PII fields are overwritten with the S1
+    /// tombstone constants via a PK-keyed update.
+    Anonymize,
+    /// No `Identity` column; swept transitively via the named parent table.
+    ViaJoin(&'static str),
+    /// Holds no per-player data; the mandatory `basis` says why.
+    NotOwned,
+}
+
+/// One table's data-lifecycle classification (M22 §3 + §5).
+pub struct DataLifecycleEntry {
+    /// The table's accessor name, exactly as declared in its table attribute.
+    pub table: &'static str,
+    /// What the deletion cascade does with this table's rows.
+    pub policy: DeletionPolicy,
+    /// Mandatory prose reason. NEVER put a slash in this string: the schema
+    /// snapshot gate parses RAW source with a string-unaware comment stripper,
+    /// so one comment delimiter inside a string literal silently truncates the
+    /// parsed table set (measured; gate-tested in `accounts_tests.rs`).
+    pub basis: &'static str,
+    /// Third, orthogonal axis (M22 §5): does `request_data_export` include this
+    /// table? Export scope is structurally NARROWER than deletion scope.
+    pub exportable: bool,
+}
+
+/// THE data-lifecycle manifest (M22 §3, ADR-0207): exactly one entry per live
+/// table, gate-enforced bidirectionally by
+/// `data_lifecycle_manifest_totality_bidirectional` in `accounts_tests.rs`, so
+/// a new table cannot silently retain personal data — adding a table without
+/// classifying it here is a hard test failure, and a stale entry for a removed
+/// table is too.
+///
+/// The classification is spec §3's exhaustive partition (12 ERASE + 4
+/// ANONYMIZE + 5 JOIN-ONLY + 17 NOT-OWNED over the 38 pre-M22 tables) plus
+/// this slice's own `export_bundle`. Do not re-partition: add new tables with
+/// their own entry. The claim-flow re-key axis lives separately as
+/// `REKEY_MANIFEST` in `evals/guest-claim-integrity.eval.mjs` (per-column,
+/// consumed by G6); a cross-manifest gate test ties the two together.
+pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
+    // --- ERASE: rows deleted outright at cascade time (spec §3 twelve, plus
+    // --- this slice's own export_bundle). ---
+    DataLifecycleEntry {
+        table: "monster",
+        policy: DeletionPolicy::Erase,
+        basis: "owned monster rows are purely personal state, deleted outright at cascade time",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "monster_pub",
+        policy: DeletionPolicy::Erase,
+        basis: "public projection of an owned monster, deleted with its private twin",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "inventory",
+        policy: DeletionPolicy::Erase,
+        basis: "owned item stacks are purely personal state, deleted outright at cascade time",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "player_dialogue_state",
+        policy: DeletionPolicy::Erase,
+        basis: "owned single-player NPC dialogue progress, deleted outright at cascade time",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "player_quest",
+        policy: DeletionPolicy::Erase,
+        basis: "owned quest progress rows, deleted outright at cascade time",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "player_conversation",
+        policy: DeletionPolicy::Erase,
+        basis: "single-player NPC dialogue progress, not chat (no messaging system exists), \
+                deleted outright at cascade time",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "heal_cooldown",
+        policy: DeletionPolicy::Erase,
+        basis: "owned heal-cooldown marker, deleted outright at cascade time",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "player_wallet",
+        policy: DeletionPolicy::Erase,
+        basis: "owned currency balance, deleted outright at cascade time",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "playtest_event",
+        policy: DeletionPolicy::Erase,
+        basis: "identity-scoped dev telemetry: the cascade erases it immediately, independent \
+                of the ADR-0131 TTL reaper (a row younger than its TTL must not survive \
+                account deletion)",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "trade_offer",
+        policy: DeletionPolicy::Erase,
+        basis: "only pending offers exist (terminal rows are deleted immediately, per the \
+                table doc); both identity columns are swept",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "battle_challenge",
+        policy: DeletionPolicy::Erase,
+        basis: "only pending challenges exist; challenger AND target columns are swept, \
+                closing the G6-flagged incoming-challenge orphan",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "battle_action",
+        policy: DeletionPolicy::Erase,
+        basis: "transient per-turn action state keyed to a battle, deleted outright",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "export_bundle",
+        policy: DeletionPolicy::Erase,
+        basis: "an export snapshot is itself personal data: swept at cascade time in \
+                addition to its own S4 TTL reaper",
+        exportable: false,
+    },
+    // --- ANONYMIZE: rows survive; identity or PII fields are tombstoned. ---
+    DataLifecycleEntry {
+        table: "player",
+        policy: DeletionPolicy::Anonymize,
+        basis: "the presence row survives as the anchor that character and live multi-user \
+                rows point at; name is overwritten with the tombstone",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "profile",
+        policy: DeletionPolicy::Anonymize,
+        basis: "ADR-0119 never-delete invariant: the ladder row survives and name is \
+                overwritten with the tombstone (anonymize is a field update, never a delete, \
+                so the invariant holds by construction)",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "account",
+        policy: DeletionPolicy::Anonymize,
+        basis: "auth_issuer is overwritten with TOMBSTONE_AUTH_ISSUER (a sentinel String, \
+                never a nullable widening); identity and claim provenance are retained per \
+                AUTH-29 so a cancel chain never reads as un-claimed",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "battle",
+        policy: DeletionPolicy::Anonymize,
+        basis: "terminal rows persist and a surviving opponent still resolves them via \
+                my_battle, so the deleting side's identity column is swapped to \
+                TOMBSTONE_IDENTITY (never zero, which would reclassify the row as wild); \
+                the row itself survives",
+        exportable: true,
+    },
+    // --- JOIN-ONLY: no Identity column; swept via the owning parent's step. ---
+    DataLifecycleEntry {
+        table: "character",
+        policy: DeletionPolicy::ViaJoin("player"),
+        basis: "no Identity column; erased via the owning player row's entity_id join, \
+                sequenced BEFORE the player tombstone write",
+        exportable: true,
+    },
+    DataLifecycleEntry {
+        table: "battle_wild",
+        policy: DeletionPolicy::ViaJoin("battle"),
+        basis: "no Identity column; carries the raw RNG individuality seed (must never \
+                leak) and is swept via its owning battle row",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "pvp_deadline_schedule",
+        policy: DeletionPolicy::ViaJoin("battle"),
+        basis: "no Identity column; per-battle deadline schedule swept via its owning \
+                battle row",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "battle_challenge_reaper_schedule",
+        policy: DeletionPolicy::ViaJoin("battle_challenge"),
+        basis: "no Identity column; per-challenge TTL schedule swept via its owning \
+                challenge row",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "trade_offer_reaper_schedule",
+        policy: DeletionPolicy::ViaJoin("trade_offer"),
+        basis: "no Identity column; per-offer TTL schedule swept via its owning trade \
+                offer row",
+        exportable: false,
+    },
+    // --- NOT-OWNED: no per-player data; the basis is the mandatory reason. ---
+    DataLifecycleEntry {
+        table: "config",
+        policy: DeletionPolicy::NotOwned,
+        basis: "module-owner singleton: owner_identity is a zeroed default, not a per-row \
+                key, so a cascade acting on it would delete global game config",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "guest_claim",
+        policy: DeletionPolicy::NotOwned,
+        basis: "consumed at claim time or reaped on a short TTL; a claimed account row \
+                never coexists with its pre-claim guest row (and the code is a secret)",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "guest_claim_reaper_schedule",
+        policy: DeletionPolicy::NotOwned,
+        basis: "one-shot TTL schedule consumed with its claim; never coexists with a \
+                claimed account",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "zone_def",
+        policy: DeletionPolicy::NotOwned,
+        basis: "seeded world content, not player data",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "species_row",
+        policy: DeletionPolicy::NotOwned,
+        basis: "seeded species registry content, not player data",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "skill_row",
+        policy: DeletionPolicy::NotOwned,
+        basis: "seeded skill registry content, not player data",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "type_relation_row",
+        policy: DeletionPolicy::NotOwned,
+        basis: "seeded type-chart content, not player data",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "item_row",
+        policy: DeletionPolicy::NotOwned,
+        basis: "seeded item registry content, not player data",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "shop_row",
+        policy: DeletionPolicy::NotOwned,
+        basis: "seeded shop registry content, not player data",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "shop_item_row",
+        policy: DeletionPolicy::NotOwned,
+        basis: "seeded shop stock content, not player data",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "encounter",
+        policy: DeletionPolicy::NotOwned,
+        basis: "seeded encounter table content, not player data",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "evolution_path",
+        policy: DeletionPolicy::NotOwned,
+        basis: "seeded evolution graph content, not player data",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "npc",
+        policy: DeletionPolicy::NotOwned,
+        basis: "seeded NPC registry content, not player data",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "heal_location_row",
+        policy: DeletionPolicy::NotOwned,
+        basis: "seeded heal location content, not player data",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "movement_tick_schedule",
+        policy: DeletionPolicy::NotOwned,
+        basis: "global movement tick schedule, not keyed to any player",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "mr_heartbeat_schedule",
+        policy: DeletionPolicy::NotOwned,
+        basis: "global observability heartbeat schedule, not keyed to any player",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "playtest_reaper_schedule",
+        policy: DeletionPolicy::NotOwned,
+        basis: "global TTL reaper schedule for playtest_event, not keyed to any player",
+        exportable: false,
+    },
+];
+
+/// Compile-time well-formedness of the manifest: every entry names a table and
+/// carries non-empty basis prose. Evaluated in the anonymous const below, so an
+/// empty basis is a COMPILE ERROR — and that evaluation is also what keeps the
+/// manifest live in the lib target (S3's cascade is its first runtime
+/// consumer; until then the const-eval read is the non-test use).
+const fn manifest_is_wellformed(entries: &[DataLifecycleEntry]) -> bool {
+    let mut i = 0;
+    while i < entries.len() {
+        let entry = &entries[i];
+        if entry.table.is_empty() || entry.basis.is_empty() {
+            return false;
+        }
+        // Const-eval reads of the remaining fields, so every field of the
+        // entry struct is consumed by the lib target itself.
+        let _ = entry.exportable;
+        let _ = &entry.policy;
+        i += 1;
+    }
+    !entries.is_empty()
+}
+
+const _: () = assert!(manifest_is_wellformed(DATA_LIFECYCLE_MANIFEST));

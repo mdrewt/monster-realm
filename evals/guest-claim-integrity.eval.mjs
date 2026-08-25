@@ -1493,6 +1493,9 @@ export const REKEY_MANIFEST = freezeManifest({
   'account.claimed_from': 'EXEMPT: write target, not a rekey source (AUTH-21 records the guest)',
   'guest_claim.guest_identity': 'EXEMPT: consumed, not rekeyed (AUTH-34 / AUTH-27)',
   'guest_claim_reaper_schedule.guest_identity': 'EXEMPT: consumed, not rekeyed (AUTH-34 / AUTH-27)',
+  'export_bundle.owner_identity':
+    'EXEMPT: TTL-bound M22 export snapshot, deliberately not re-keyed across a claim ' +
+    '(stale bundles expire via the S4 export_bundle reaper); the M22 cascade sweeps this column',
 });
 
 // Hardcoded INDEPENDENTLY of the manifest: four columns that must resolve for
