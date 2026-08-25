@@ -5353,6 +5353,11 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
     //   • a `||=` accumulator
     //   • an alias — `const h = helpView; … h?.visible || …`
     //   • a ternary chain
+    //   • a STRING-LITERAL decoy (m23-s5 review finding): stripLineComments deliberately keeps
+    //     string-literal CONTENTS as code (the m20c design decision), so a planted literal
+    //     containing the needle could inflate the exactly-12 exemption census and the excision.
+    //     Compensating teeth: the twelve exact-equality body pins and the six behavioural
+    //     S5T-GATE-SAMEKEY-CLOSE tests, which a decoy string cannot satisfy.
     // The claim this tooth supports is "no hand-rolled `||` fan-out list survives", not "a new
     // sixth surface is impossible".
     const stripped = squashWhitespace(stripLineComments(readMainTs()));

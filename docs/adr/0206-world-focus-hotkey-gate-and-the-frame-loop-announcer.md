@@ -258,3 +258,41 @@ tests `S5T-GATE-SAMEKEY-CLOSE` (×6 — the HIDE_SWITCH trio plus questLog/trade
 against the pre-amendment implementation. Ledger gate X1 is amended accordingly. The M23 spec's
 §2.3 accepted-change sentence, §8.4, and A11Y-19's "or toggle" wording need a supervisor-side
 amendment — the spec lives in the harness repo, outside this slice's `touches:`.
+
+## Amendment A1b (2026-08-24, same fix cycle): the stale-focus discriminator on the close edge
+
+**Status: accepted.** A second, deeper defect surfaced when A1 was verified against the REAL e2e
+suite: `e2e/trade.spec.ts:115` and `e2e/pvp.spec.ts:106` red in isolation, each an OPEN pressed
+immediately after the previous test's close. Measured with a live-browser focus probe: after any
+overlay close with focus inside it, real Chromium leaves `document.activeElement` stranded on the
+anchor INSIDE the now-`display:none` overlay for up to ~200 ms — the automatic blur-to-`<body>`
+fixup is asynchronous, and `closeOverlayA11y`'s explicit restore is `document.body.focus()`, a
+NO-OP in Chromium (`<body>` carries no tabindex). During that window `worldHasFocus()` is false, so
+every gated hotkey is dead AND D4's close-edge focus return never fires (its guard reads the stale
+anchor). happy-dom diverges on both halves — its `body.focus()` succeeds and it never auto-blurs —
+which is why the unit tier could not see this. The window is not A1's creation: attempt 1 had it on
+every Escape and store-driven close too (masked remotely by serial-mode skips); pre-S5 there was no
+gate, so no window.
+
+**Decision.** A module-scope helper `focusInsideHiddenSubtree()` — an ancestor walk for an inline
+`style.display === 'none'` — and the close edge becomes
+`if (worldHasFocus() || focusInsideHiddenSubtree()) worldCanvasEl?.focus();`. Inline
+`style.display = 'none'` is this repo's ONE hiding idiom (verified: every one of the sixteen view
+families hides that way; the only `classList` user in `ui/` is a test file), so the walk is the
+exact discriminator, engine-independent and layout-free. `checkVisibility()` was rejected because
+this happy-dom version does not implement it, which would have made the unit-tier proof vacuous;
+`offsetParent === null` was rejected because it also matches VISIBLE `position:fixed` elements —
+the corner affordance — and would steal focus on click-opened closes (measured as mutation
+bite-proofs: the `offsetParent` and own-style-only spellings are killed by `S5T-FOCUS-RETURN-STALE`,
+the always-true spelling by the STRENGTHENED `S5T-FOCUS-NO-STEAL`). The strengthening (tester
+finding): `S5T-FOCUS-NO-STEAL` previously ran its single frame AFTER the menu had already closed,
+so the close-edge branch was never entered and it killed no mutant of the guard; it now arms the
+edge with a frame between the click-open and the Escape-close.
+
+**Accepted residuals.** (i) Presses landing in the SAME frame as the close (<16 ms) can still be
+swallowed — the rAF edge is the earliest deterministic hook `main.ts` owns; Chromium's own fixup is
+async. (ii) A store-driven close UNDER a still-open overlay (no top→null transition) does not
+trigger the edge; that stale window self-heals via the engine fixup. (iii) The general fix — a
+restore in `closeOverlayA11y` that actually works in Chromium (e.g. blur() or a tabindex'd body) —
+lives in `ui/overlayA11y.ts`, OUTSIDE this slice's `touches:`; recorded for the M23 owner (S6+) as
+the follow-up that would retire the discriminator.
