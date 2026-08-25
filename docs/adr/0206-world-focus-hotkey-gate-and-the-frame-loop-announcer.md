@@ -4,9 +4,9 @@
 **Date:** 2026-08-24
 **Slice:** m23-s5 (M23 accessibility S5 — the sole `client/src/main.ts` touch; after S3, S4)
 **Supersedes:** —
-**Amends:** ADR-0146 (the `targetOwnsKey` exemption is extended to the terminal `Space` branch), ADR-0151/ADR-0163 (`#help-hint` becomes a native `<button>`)
-**Subsystems:** client-ui, client-input, a11y
-**Decision:** The screen-reader quick-nav collision is closed by a `worldHasFocus()` conjunct on the twelve `canOpen`-derived hotkey branches only — written out twelve times, never behind a shared helper — while all announcement and focus-return work happens on ONE edge in the existing rAF frame loop, and `#help-hint` becomes a native `<button>` whose Space activation is protected by the `targetOwnsKey` exemption the codebase already owns.
+**Amends:** —
+**Subsystems:** client-ui, ci-gates
+**Decision:** A `worldHasFocus()` conjunct gates the twelve `canOpen`-derived hotkey branches only, spelled out twelve times rather than behind one helper; announcements and focus return ride ONE rAF-loop edge; `#help-hint` becomes a native button.
 
 ---
 
