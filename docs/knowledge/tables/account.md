@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: account
 slug: tables/account
-updated: 2026-08-23
+updated: 2026-08-25
 tags: [schema, spacetimedb, private]
 abstract: "PRIVATE account record (no `public`) — one row per authenticated identity (ADR-0179 D2). No email, no email hash, no ra…"
 resource: server-module/src/schema.rs#L751
@@ -22,3 +22,4 @@ visibility: private
 | `deletion_requested_at_ms` | `Option<i64>` | — |
 | `claimed_from` | `Option<Identity>` | — |
 | `claimed_at_ms` | `Option<i64>` | — |
+| `terminal_at_ms` | `Option<i64>` | — |
