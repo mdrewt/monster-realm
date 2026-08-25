@@ -47,10 +47,25 @@
  *
  * RED REASON: none of `worldHasFocus`, `worldCanvasEl`, the twelve `&& worldHasFocus()`
  * conjuncts, the frame-loop announcement/focus-return pump, or the `targetOwnsKey` guard
- * on the terminal Space branch exist in main.ts yet. Every DOM-driven test below either
- * throws (missing `document.activeElement` narrowing round nothing changing) or asserts
- * against behaviour the current source does not produce. S5T-DISJOINT is the one
- * exception — see its own comment.
+ * on the terminal Space branch exist in main.ts yet.
+ *
+ * RED at the fork (want them red now, green after impl): 3× `S5T-GATE-BLOCKED`,
+ * `S5T-ANNOUNCE-WORLD`, `S5T-ANNOUNCE-TOP`, `S5T-SPACE-BUTTON`, `S5T-FOCUS-RETURN`.
+ *
+ * GREEN at the fork BY DESIGN (regression pins — labelled individually at each site, not
+ * just here): 3× `S5T-GATE-ALLOWED-BODY`, `S5T-GATE-ALLOWED-CANVAS`, `S5T-SPACE-WORLD`,
+ * `S5T-BODY-BLUR`, `S5T-FOCUS-NO-STEAL`, `S5T-DISJOINT`. Every one of these asserts
+ * behaviour that is ALREADY true today for the trivial reason that no gate/pump/guard
+ * exists yet to defeat — e.g. `S5T-BODY-BLUR`'s closing hotkey opens today because NOTHING
+ * blocks any hotkey today, not because the `document.body` disjunct is already correct.
+ * `S5T-GATE-ALLOWED-CANVAS` is the one worth stating explicitly, since it is also this
+ * suite's ONLY behavioural killer of the red-team's #1 attack (`worldCanvasEl` never
+ * assigned, or shadowed): it is green at the fork (opening from canvas focus is
+ * unconditional today), and only becomes a REAL kill once the twelve conjuncts exist for it
+ * to have something to blow through — which is exactly why it asserts
+ * `document.activeElement` genuinely IS the canvas element BEFORE dispatching (so it can
+ * never pass by the canvas silently being unfocusable instead of by the gate genuinely
+ * recognising it).
  *
  * WRONG IMPL KILLED: recorded per test, immediately above each `it`/`it.each`.
  *
@@ -275,15 +290,27 @@ function runFrame(atMs: number): void {
 }
 
 // --- overlay-state helpers ---------------------------------------------------------------
-/** True iff `id`'s `initialFocusSelector` anchor resolves AND sits inside a node currently
- *  carrying `role="dialog"` — `openOverlayA11y`/`closeOverlayA11y` add/remove that attribute
- *  on the overlay's root on every open/close (`ui/overlayA11y.ts:106`/`:143`), so this is a
- *  single, uniform "is this overlay visible AND a11y-wired" check that works identically for
- *  the ten static index.html shells and the six `#app`-mounted constructed views — main.ts
- *  hands no other handle to this test file. */
+/** True iff `id`'s `initialFocusSelector` anchor resolves, its nearest `[role="dialog"]`
+ *  ancestor exists, AND that root is actually on-screen (`style.display !== 'none'`).
+ *
+ *  THE ROLE CHECK ALONE IS NOT ENOUGH — measured, not theoretical. m23-s2 ships
+ *  `role="dialog" aria-modal="true"` as STATIC LITERALS in `client/index.html` for the
+ *  eleven static shells (verified at `client/index.html:89-92` for `#help-overlay`,
+ *  `:104-107` for `#menu-overlay`, and identically for the other nine).
+ *  `openOverlayA11y`/`closeOverlayA11y` (`ui/overlayA11y.ts:106`/`:143`) toggle those
+ *  attributes only for the FIVE `#app`-mounted CONSTRUCTED views (box/raising/evolution/
+ *  battle/claim), which ship no markup ARIA of their own. For a static shell,
+ *  `closest('[role="dialog"]')` is therefore non-null WHETHER THE OVERLAY IS OPEN OR
+ *  CLOSED — role presence alone silently degenerates to "always true" for eleven of the
+ *  sixteen overlays (this is exactly what made an earlier version of this helper produce a
+ *  false positive on every static shell). `style.display` is the one signal EVERY view's
+ *  `show()`/`hide()` writes in BOTH families — even `MenuView.show()`/`hide()`
+ *  (`ui/menuView.ts:78-84`), which does not call `openOverlayA11y` at all today — so it is
+ *  the only reliable open/closed signal common to both families. */
 function overlayIsOpen(id: OverlayId): boolean {
   const anchor = document.querySelector(OVERLAY_A11Y[id].initialFocusSelector);
-  return anchor !== null && anchor.closest('[role="dialog"]') !== null;
+  const root = anchor === null ? null : anchor.closest('[role="dialog"]');
+  return root !== null && (root as HTMLElement).style.display !== 'none';
 }
 
 function overlayFocusAnchor(id: OverlayId): HTMLElement | null {
@@ -392,6 +419,23 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     },
   ];
 
+  it('overlayIsOpen() sanity: reads false for a never-opened STATIC shell (helpView) AND a never-opened CONSTRUCTED shell (boxView)', () => {
+    // ANTI-VACUITY FOR EVERY GATE/ANNOUNCE/FOCUS TEST IN THIS FILE. A helper that has
+    // degenerated back to "role presence alone" (see overlayIsOpen's own doc comment — this
+    // is the EXACT shape of a bug this suite shipped once) would read TRUE here for
+    // helpView even though nothing has ever opened it, which would make every
+    // `expect(overlayIsOpen(blockedById)).toBe(false)` in S5T-GATE-BLOCKED pass vacuously
+    // regardless of whether worldHasFocus() blocks anything at all.
+    expect(
+      overlayIsOpen('helpView'),
+      'a static shell must read false before it is ever shown',
+    ).toBe(false);
+    expect(
+      overlayIsOpen('boxView'),
+      'a constructed shell must read false before it is ever shown',
+    ).toBe(false);
+  });
+
   it.each(
     DRIVABLE_OVERLAYS,
   )('S5T-GATE-BLOCKED ($id open with focus inside it; $blockedById hotkey opens nothing and $id stays unchanged)', async ({
@@ -430,6 +474,10 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
     id,
     openKey,
   }) => {
+    // GREEN AT FORK BY DESIGN — a regression pin, not a red test. Opening from <body>
+    // focus is the UNCONDITIONAL, pre-milestone behaviour: it is already true today with
+    // no gate in place at all, and stays true once worldHasFocus() lands correctly. It
+    // only goes RED against a WRONG implementation.
     // WRONG IMPL KILLED: `worldHasFocus` written as `a === worldCanvasEl` only (dropping
     // BOTH the `null` and `document.body` disjuncts) — every hotkey would be dead from a
     // fresh page load, before the player has ever Tabbed anywhere. ALSO KILLED: an
@@ -441,13 +489,19 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   it('S5T-GATE-ALLOWED-CANVAS: a hotkey still opens its overlay when the world CANVAS has focus', () => {
-    // WRONG IMPL KILLED: `worldCanvasEl` never assigned (deleted, or shadowed by a second
-    // `let worldCanvasEl` inside main()) — the red-team's #1 attack against this slice. With
-    // worldCanvasEl permanently null, worldHasFocus() degrades to "body-or-nothing" and every
-    // hotkey silently dies the FIRST time a keyboard/AT user Tabs to the canvas — the exact
-    // user A11Y-20/M23 exists to serve, on the path this same slice adds. This test is the
-    // ONLY behavioural killer of that bug in this suite, so the precondition is asserted
-    // before dispatching, not inferred from the outcome.
+    // GREEN AT FORK BY DESIGN, for a reason worth stating precisely (not just "it's a
+    // regression pin"): today NOTHING gates any hotkey on focus at all, so opening from
+    // canvas focus is unconditionally true before this slice lands — this test is green for
+    // the TRIVIAL reason, not because worldCanvasEl already works. It becomes this suite's
+    // ONLY REAL BEHAVIOURAL KILLER of the red-team's #1 attack (`worldCanvasEl` never
+    // assigned, or shadowed by a second `let worldCanvasEl` inside main()) ONLY once the
+    // twelve conjuncts exist for that attack to have something to defeat: with
+    // worldCanvasEl permanently null, worldHasFocus() degrades to "body-or-nothing" and
+    // every hotkey would silently die the FIRST time a keyboard/AT user Tabs to the
+    // canvas — the exact user A11Y-20/M23 exists to serve, on the path this same slice
+    // adds. That is why the canvas-has-focus precondition is asserted BEFORE dispatching,
+    // never inferred from the outcome — so this test can never pass by the canvas silently
+    // being unfocusable instead of by the gate genuinely recognising it.
     const mount = document.getElementById('app');
     expect(mount, '#app must exist').not.toBeNull();
     const canvas = mount!.querySelector('canvas') as HTMLElement | null;
@@ -468,18 +522,33 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   // and hotkeys must not die forever afterward.
   // ---------------------------------------------------------------------------------------
 
-  it('S5T-BODY-BLUR: an overlay hidden out from under a focused control blurs to <body>, and a DIFFERENT hotkey still opens afterward', () => {
+  it('S5T-BODY-BLUR: an overlay hidden out from under a focused control blurs to <body>, and a DIFFERENT hotkey still opens afterward', async () => {
+    // GREEN AT FORK BY DESIGN — a regression pin, not a red test. Today NOTHING gates any
+    // hotkey on focus at all, so the closing `?` press below opens helpView unconditionally
+    // whether or not the document.body disjunct is ever implemented correctly; it only goes
+    // RED against a WRONG implementation once the twelve conjuncts exist.
     // WRONG IMPL KILLED: dropping the `=== document.body` disjunct from worldHasFocus() —
     // every hotkey stays dead from this point forward for the rest of the session, exactly
     // the "dead hotkeys forever after a dialogue ends" bug spec §2.3 names (the real trigger
     // is client/src/main.ts:1574's `dialogueView?.render(null)`, which display:nones a
     // focused choice <button> the same way this test simulates on renameView).
     pressKey({ code: 'KeyN' }); // renameView — GUARD_ONLY, no identity requirement
+    // Flush the REAL setTimeout(0) deferred-focus macrotask (ui/overlayA11y.ts:111) before
+    // touching focus ourselves. renameView is a STATIC shell: opening it schedules a focus
+    // move to `#rename-input` the instant KeyN's handler returns. Letting that settle first
+    // — rather than racing a synchronous `.focus()` call against a pending macrotask — is
+    // what makes the SUBMIT-button focus below deterministic instead of timing-dependent.
+    await new Promise((resolve) => setTimeout(resolve, 0));
     expect(overlayIsOpen('renameView')).toBe(true);
-    const submit = document.getElementById('rename-submit') as HTMLButtonElement | null;
-    expect(submit, '#rename-submit must exist (client/index.html)').not.toBeNull();
-    submit!.focus();
-    expect(document.activeElement).toBe(submit);
+    // `#rename-input`, NOT `#rename-submit`: the submit button ships `disabled` until a name is
+    // typed (client/index.html), and `.focus()` on a disabled control is a silent no-op — the
+    // precondition below would then fail for a fixture reason rather than a behavioural one.
+    // The input is also exactly where openOverlayA11y's deferred focus already landed, so this
+    // is the real "a focusable inside the overlay holds focus" state, not a synthetic one.
+    const focused = document.getElementById('rename-input') as HTMLInputElement | null;
+    expect(focused, '#rename-input must exist (client/index.html)').not.toBeNull();
+    focused!.focus();
+    expect(document.activeElement).toBe(focused);
     // The raw force-hide write (NOT renameView.hide()/closeOverlayA11y() — this simulates a
     // store-driven `render(null)`-style close, which does not route through the view's own
     // close path and therefore never restores focus itself).
@@ -565,6 +634,9 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   it('S5T-SPACE-WORLD: Space still jumps (preventDefault) when the world has focus', () => {
+    // GREEN AT FORK BY DESIGN — a regression pin. `jump(); e.preventDefault();` already
+    // fires unconditionally on Space today; this only goes RED if a future targetOwnsKey
+    // exemption becomes over-broad enough to swallow it.
     // WRONG IMPL KILLED: an over-broad targetOwnsKey exemption (e.g. exempting Space
     // unconditionally, or keying off document.activeElement rather than e.target) that kills
     // jump() entirely — the movement feature this branch exists for.
@@ -600,6 +672,13 @@ describe('main.ts world-focus hotkey gate, frame-loop announcer, focus return, S
   });
 
   it('S5T-FOCUS-NO-STEAL: closing an overlay opened by CLICK does not steal focus from the badge', () => {
+    // GREEN AT FORK BY DESIGN — a regression pin, and worth stating exactly why: today
+    // NOTHING in the frame loop touches focus at all (no snapshot pump exists yet), so focus
+    // simply never moves off the badge in the first place — this passes trivially, not
+    // because a guard already exists. It becomes a real kill once S5T-FOCUS-RETURN's
+    // mechanism (an UNGUARDED `worldCanvasEl?.focus()` on the frame's close edge) exists for
+    // it to catch — see the M23S5-A11YSNAPSHOT region's own `worldHasFocus()` guard census
+    // (W-M23S5-TWELVE-CONJUNCTS clause 3, main.wiring.test.ts) for the source-scan half.
     // WRONG IMPL KILLED: an UNGUARDED `worldCanvasEl?.focus()` on the frame's close edge —
     // it would yank focus away from #help-hint the instant the menu closes, even though the
     // player never left the world via a hotkey at all (they clicked the badge). ADR-0206 D4's
@@ -633,8 +712,9 @@ describe('S5T-DISJOINT tripwire: the two announcement paths stay disjoint', () =
     // S1's copy gap inside announcements.ts (making Rule 2 emit the world-region text too)
     // while main.ts's disjoint branch from THIS slice still exists, the resulting DOUBLE
     // utterance of "World map" is caught by this slice's own test suite rather than silently
-    // shipping. It is GREEN today (announcements.ts already ships the documented gap) and
-    // stays green through this slice's own implementation — it exists for what comes after.
+    // shipping. GREEN AT FORK BY DESIGN and stays green through this slice's own
+    // implementation (announcements.ts already ships the documented gap) — it exists for
+    // what comes after, not for this slice's own RED state.
     const prev: A11ySnapshot = { topOverlay: 'boxView', message: '' };
     const next: A11ySnapshot = { topOverlay: null, message: '' };
     expect(announcementsFor(prev, next)).toEqual([]);

@@ -10889,29 +10889,100 @@ describe('★ main.ts wiring (m23-s5/ADR-0206): the session gate precedes worldH
 });
 
 describe('★ main.ts wiring (m23-s5/ADR-0206): worldHasFocus() gates exactly the twelve canOpen-derived hotkey branches', () => {
-  it('★ W-M23S5-TWELVE-CONJUNCTS BITES: worldHasFocus() occurs EXACTLY 12 times inside main.ts, ZERO times in the click launcher, and ZERO times on KeyT', () => {
+  it('★ W-M23S5-TWELVE-CONJUNCTS BITES: worldHasFocus() occurs EXACTLY 12 times inside the keydown listener (13 whole-file, the 13th being the frame-loop focus-return guard), ZERO times in the click launcher, and ZERO times on KeyT', () => {
     // ADR-0206 D2: the conjunct is appended to exactly the twelve `overlayVerdict(...)`
     // hotkey branches (KeyB/I/E/Q/U/P/L/N/O/'?'/M/C) — NOT KeyT (not a canOpen()-derived
-    // guard), and NOT the `[data-menu-launcher]` CLICK branch (on a click,
-    // document.activeElement IS the badge, so a gated front door would refuse the very
-    // interaction A11Y-23 exists to enable).
-    // WRONG IMPL KILLED (1): an eleven-of-twelve implementation — the exact count of 12
-    //   catches it where a `>= 1` floor would not.
-    // WRONG IMPL KILLED (2): a THIRTEENTH site (KeyT or the click launcher) — degrading
-    //   either into a dead key/dead button the moment focus is anywhere but body/canvas.
-    // WRONG IMPL KILLED (3): the WHOLE-FILE count stays at 12 by moving the conjunct off one
-    //   of the twelve real sites and ONTO KeyT or the launcher instead (a "wrong twelve") —
-    //   the count alone cannot see this; the region-specific zero-checks below can.
+    // guard), and NOT the `[data-menu-launcher]` CLICK branch. ADR-0206 D4 ALSO reads
+    // worldHasFocus() a THIRTEENTH time — the frame-loop focus-return guard inside the
+    // M23S5-A11YSNAPSHOT block (`if (worldHasFocus()) worldCanvasEl?.focus();`) — which is
+    // NOT one of the twelve hotkey conjuncts and lives in a DIFFERENT region entirely
+    // (measured: a correct, shipped implementation reads 13 whole-file, not 12 — a
+    // whole-file census pinned at 12 is UNSATISFIABLE by any correct implementation, since
+    // deleting the frame-loop guard to reach 12 reds W-M23S5-LIVEREGION-PUMP's own exact-
+    // equality pin AND S5T-FOCUS-NO-STEAL, main.a11yFocus.test.ts, whose unguarded
+    // `worldCanvasEl?.focus()` steals focus from a deliberately-focused element outside the
+    // world). The region census below is scoped to the keydown listener specifically (plan
+    // §4 T-10: "worldHasFocus() occurs exactly 12 times inside the keydown region"), and the
+    // whole-file census is restated as its OWN, separately-pinned 13 — the twelve conjuncts
+    // are counted TWICE, once each way, so a defect in either scoping shows up on its own
+    // clause rather than being averaged away.
+    //
+    // WRONG IMPL KILLED (1): an eleven-of-twelve implementation inside the listener — the
+    //   exact region count of 12 catches it where a `>= 1` floor would not.
+    // WRONG IMPL KILLED (2): a THIRTEENTH occurrence INSIDE the keydown listener (e.g. the
+    //   conjunct also added to KeyT, or duplicated on an existing handler) — the listener-
+    //   region count stays exactly 12 only for the correct twelve-and-only-twelve shape.
+    // WRONG IMPL KILLED (3): the whole-file count staying at 12 by moving the conjunct OFF
+    //   one of the twelve real hotkey sites and ONTO the frame-loop focus-return guard
+    //   instead (a "wrong twelve" plus a missing 13th) — invisible to a region-scoped
+    //   listener count alone (still reads 12 either way, since a swap keeps the LISTENER
+    //   total unchanged); the M23S5-A11YSNAPSHOT region's own exactly-1 census below is
+    //   what pins WHERE the 13th call must live, so this exact swap reds it directly (0,
+    //   not 1) even though the whole-file 13 stays accidentally correct.
+    // WRONG IMPL KILLED (4): the frame-loop guard duplicated (e.g. called twice, or a
+    //   second copy added elsewhere) — the whole-file 13 and the region's own 1 both catch
+    //   a 14th/2nd occurrence.
+    //
+    // A RAISE OF EITHER NUMBER IS A DELIBERATE ACT (mirrors the `overlayProbes` ceiling's
+    // own rule, uxd3-b/uxd3-c section above): bump 12 or 13 only together with a new
+    // region-bounded assertion that pins WHERE the new call site is and why — do not just
+    // raise the numbers.
     const src = readMainTs();
     const stripped = stripLineComments(src);
 
+    // --- (1) REGION CENSUS: exactly 12 inside the keydown listener (plan §4 T-10) --------
+    const code = m20cScan(src).code;
+    const keydownIdx = mwCodeOccurrences(code, "window.addEventListener('keydown'")[0] ?? -1;
+    const keyupIdx = mwCodeOccurrences(code, "window.addEventListener('keyup'")[0] ?? -1;
+    expect(keydownIdx, 'main.ts must register the keydown listener').toBeGreaterThanOrEqual(0);
+    expect(keyupIdx, 'main.ts must register the keyup listener').toBeGreaterThan(keydownIdx);
+    const listenerRegion = code.slice(keydownIdx, keyupIdx);
     expect(
-      countOccurrences(stripped, 'worldHasFocus()'),
-      'worldHasFocus() must occur EXACTLY 12 times in main.ts (comment-stripped, whole file) ' +
-        '— once per canOpen-derived hotkey branch. An 11th or 13th occurrence reds this exact-' +
-        'count census.',
+      countOccurrences(listenerRegion, 'worldHasFocus()'),
+      'worldHasFocus() must occur EXACTLY 12 times INSIDE the keydown listener (plan §4 T-10) ' +
+        '— once per canOpen-derived hotkey branch (KeyB/I/E/Q/U/P/L/N/O/?/M/C), never on KeyT. ' +
+        'An 11th or 13th occurrence INSIDE THE LISTENER reds this exact-count census. (The ' +
+        'frame-loop focus-return guard lives in a DIFFERENT region and is asserted separately ' +
+        'below — it must NOT be counted here.)',
     ).toBe(12);
 
+    // --- (2) WHOLE-FILE CENSUS: exactly 13 — the twelve conjuncts PLUS the ONE frame-loop
+    //         focus-return guard (ADR-0206 D4, inside M23S5-A11YSNAPSHOT). Raising this
+    //         number again requires naming the new call site in a new region-bounded
+    //         assertion, mirroring the `overlayProbes` ceiling's own rule.
+    expect(
+      countOccurrences(stripped, 'worldHasFocus()'),
+      'worldHasFocus() must occur EXACTLY 13 times in main.ts (comment-stripped, whole file) ' +
+        '— the twelve hotkey conjuncts inside the keydown listener PLUS the one frame-loop ' +
+        'focus-return guard inside M23S5-A11YSNAPSHOT (`if (worldHasFocus()) ' +
+        'worldCanvasEl?.focus();`, ADR-0206 D4). A 12-only or 14th occurrence reds this ' +
+        'census; raising it again requires a new region-bounded assertion naming the site.',
+    ).toBe(13);
+
+    // --- (3) the M23S5-A11YSNAPSHOT region contains EXACTLY 1 — pins WHERE the 13th lives,
+    //         so "move a conjunct off a real hotkey and onto the frame loop" cannot keep
+    //         either total looking right: it would satisfy (2) but not this clause, and (1)
+    //         would separately read 11, not 12.
+    expectUniqueAnchor(src, '// M23S5-A11YSNAPSHOT-BEGIN');
+    expectUniqueAnchor(src, '// M23S5-A11YSNAPSHOT-END');
+    const snapshotRegion = stripLineComments(
+      regionOrThrow(src, '// M23S5-A11YSNAPSHOT-BEGIN', '// M23S5-A11YSNAPSHOT-END'),
+    );
+    expect(
+      snapshotRegion.includes('liveRegion.announce('),
+      'ANTI-VACUITY: the M23S5-A11YSNAPSHOT region must still contain liveRegion.announce( ' +
+        '— proves this is the real snapshot block, not a degenerate slice',
+    ).toBe(true);
+    expect(
+      countOccurrences(snapshotRegion, 'worldHasFocus()'),
+      'the M23S5-A11YSNAPSHOT region must contain EXACTLY ONE worldHasFocus() call — the ' +
+        'frame-loop focus-return guard (ADR-0206 D4). Zero means the guard was dropped ' +
+        '(S5T-FOCUS-NO-STEAL reds in main.a11yFocus.test.ts: an unguarded ' +
+        'worldCanvasEl?.focus() steals focus from a deliberately-focused element outside the ' +
+        'world); two or more means it was duplicated.',
+    ).toBe(1);
+
+    // --- (4) the click launcher and KeyT must both stay at ZERO -------------------------
     expectUniqueAnchor(src, '// UXD3B-LAUNCHER-BEGIN');
     expectUniqueAnchor(src, '// UXD3B-LAUNCHER-END');
     const launcherRegion = stripLineComments(
