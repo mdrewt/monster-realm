@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 171 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 172 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -180,6 +180,7 @@ Generated from 171 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0203](./0203-nightly-red-response-policy.md) | 0203 — Nightly red-response policy: one machine-checked file, key-set-equal to the wired workflow, cited back from every job | Accepted | ci-gates, tooling-docs | 16r-h (`specs/monster-realm-v2/M-postgate-sixteenth-review-residuals.spec.md` §16r-h) | Record the nightly red-response policy in one gated file, `docs/nightly-red-response-policy.md`, whose job matrix must be key-set-EQUAL to the workflow's declared jobs and which every job preamble must cite back. |
 | [0204](./0204-roster-wave-3-electric-and-light.md) | 0204 — Roster Wave 3: Electric and Light affinities with reserved bands, one evolution edge per base form, and content superlatives as load-bearing constraints | Accepted | content, evolution-fusion | rw3b (M-postgate-roster-wave-3 rw3b — Electric and Light lines) | Wave 3 adds an Electric glass-cannon line and a Light wall line under band 40..=49 (edges 100..=199), with exactly ONE outgoing evolution edge per base form so ADR-0176 D2's auto-evolution race is vacuous by construction. |
 | [0205](./0205-overlay-a11y-metadata-ssot-and-copy-catalog.md) | 0205 — The overlay accessibility metadata SSOT and the flat copy catalog: a total `OVERLAY_A11Y` beside `OVERLAY_TIERS`, keys never literals, and a compile-time contract that text pins cannot fake | Accepted | client-ui, ci-gates | m23-s0 (M23 accessibility S0 — the substrate; first slice, no deps) | A11y metadata is one total `Record<OverlayId, A11yMeta>` in `overlayRegistry.ts`, accessible names are catalog keys resolved by a throw-on-miss `t()`, and totality plus the closed role union are gated by a negative compile, not a text pin. |
+| [0206](./0206-world-focus-hotkey-gate-and-the-frame-loop-announcer.md) | 0206 — The world-focus hotkey gate, the frame-loop announcer, and the native `#help-hint` button: three main.ts seams M23 needs and the one thing none of them may "simplify" | Accepted | client-ui, ci-gates | m23-s5 (M23 accessibility S5 — the sole `client/src/main.ts` touch; after S3, S4) | A `worldHasFocus()` conjunct gates the twelve `canOpen`-derived hotkey branches only, spelled out twelve times rather than behind one helper; announcements and focus return ride ONE rAF-loop edge; `#help-hint` becomes a native button. |
 
 ## Harness design corpus (H- namespace)
 
@@ -443,6 +444,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0194](./0194-monster-pub-need-to-know-privacy.md) — 13r-e — 0194 — monster_pub need-to-know privacy: private table + owner-scoped multi-row view (Accepted)
 - [0198](./0198-participant-scoped-battle-view.md) — 15r-sec-a — Participant-scoped `battle` via a two-identity view (Accepted)
 - [0205](./0205-overlay-a11y-metadata-ssot-and-copy-catalog.md) — m23-s0 (M23 accessibility S0 — the substrate; first slice, no deps) — 0205 — The overlay accessibility metadata SSOT and the flat copy catalog: a total `OVERLAY_A11Y` beside `OVERLAY_TIERS`, keys never literals, and a compile-time contract that text pins cannot fake (Accepted)
+- [0206](./0206-world-focus-hotkey-gate-and-the-frame-loop-announcer.md) — m23-s5 (M23 accessibility S5 — the sole `client/src/main.ts` touch; after S3, S4) — 0206 — The world-focus hotkey gate, the frame-loop announcer, and the native `#help-hint` button: three main.ts seams M23 needs and the one thing none of them may "simplify" (Accepted)
 
 ### ci-gates
 
@@ -507,6 +509,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0202](./0202-obsolete-residual-prose-corrected.md) — lp-doc-a (`specs/monster-realm-v2/M-loop-infrastructure.spec.md` §lp-doc-a) — 0202 — Obsolete residual prose corrected: m20e-2 and nh5 closed per item, 14r-f-2 open and unowned, the 11r-e ids retired (Accepted)
 - [0203](./0203-nightly-red-response-policy.md) — 16r-h (`specs/monster-realm-v2/M-postgate-sixteenth-review-residuals.spec.md` §16r-h) — 0203 — Nightly red-response policy: one machine-checked file, key-set-equal to the wired workflow, cited back from every job (Accepted)
 - [0205](./0205-overlay-a11y-metadata-ssot-and-copy-catalog.md) — m23-s0 (M23 accessibility S0 — the substrate; first slice, no deps) — 0205 — The overlay accessibility metadata SSOT and the flat copy catalog: a total `OVERLAY_A11Y` beside `OVERLAY_TIERS`, keys never literals, and a compile-time contract that text pins cannot fake (Accepted)
+- [0206](./0206-world-focus-hotkey-gate-and-the-frame-loop-announcer.md) — m23-s5 (M23 accessibility S5 — the sole `client/src/main.ts` touch; after S3, S4) — 0206 — The world-focus hotkey gate, the frame-loop announcer, and the native `#help-hint` button: three main.ts seams M23 needs and the one thing none of them may "simplify" (Accepted)
 
 ### tooling-docs
 

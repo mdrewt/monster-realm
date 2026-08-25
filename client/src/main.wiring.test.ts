@@ -4648,26 +4648,30 @@ describe('★ main.ts wiring (uxd3): the menu open path and its availability sou
   });
 });
 
-describe('★ index.html (uxd3): exactly ONE persistent corner affordance (AC-12)', () => {
-  /** Direct-`<body>`-child `<div id=…>` elements of the REAL client/index.html, with their
-   *  whitespace-normalised inline style. Real attribute parsing (happy-dom's DOMParser), NOT a
-   *  line scan: BOTH target divs spread `id` and `style` across several lines (index.html:93-96
-   *  and :101-106), so any line-oriented match would silently miss them — plan A10 / reviewer L5.
-   *  There is no CSS file anywhere in this repo; the inline `style` attribute IS the complete
-   *  styling contract (indexShell.test.ts's documented premise). */
-  async function bodyDivs(): Promise<Array<{ id: string; style: string }>> {
+describe('★ index.html (uxd3, widened m23-s5/ADR-0206 A5): exactly ONE persistent corner affordance (AC-12)', () => {
+  /** EVERY element in the document carrying an inline `style` attribute, whitespace-
+   *  normalised. Tag-agnostic AND depth-agnostic (m23-s5 widening, plan-lens adjudication
+   *  A5 / red-team #6): `position:fixed` anchors to the VIEWPORT regardless of which tag
+   *  carries it or how deep it is nested, so scoping to `body > div` was never semantically
+   *  justified — a second corner affordance shipped as `<a>`, `<span>`, or a `<button>` one
+   *  level down (inside a wrapper `<div>`) previously evaded it entirely. There IS now a
+   *  stylesheet in this repo (`client/src/styles.css`, m23-s2), but A11Y-12 bans `#id`
+   *  selectors in it, so the inline `style` attribute remains the complete styling contract
+   *  for every element this tooth inspects — the correction `indexShell.test.ts:68-70` hands
+   *  to this slice by name (see that file's own m23-s2 CORRECTION header: "there is no CSS
+   *  file anywhere in this repo" is FALSE in letter, preserved in substance). */
+  async function fixedPositionElements(): Promise<Array<{ id: string; style: string }>> {
     const htmlPath = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'index.html');
     let html: string;
     try {
       html = readFileSync(htmlPath, 'utf8');
     } catch (err) {
-      // Fail loud — every assertion is vacuous if the file cannot be read.
       throw new Error(`index.html could not be read at expected path: ${htmlPath} — ${err}`);
     }
     const win = new Window();
     try {
       const doc = new win.DOMParser().parseFromString(html, 'text/html');
-      return [...doc.querySelectorAll('body > div')].map((el) => ({
+      return [...doc.querySelectorAll('[style]')].map((el) => ({
         id: el.getAttribute('id') ?? '',
         style: (el.getAttribute('style') ?? '')
           .split(' ')
@@ -4682,54 +4686,49 @@ describe('★ index.html (uxd3): exactly ONE persistent corner affordance (AC-12
     }
   }
 
-  it('★ W-ONE-CORNER-AFFORDANCE BITES: the fixed, non-full-screen body divs are EXACTLY {build-stamp, help-hint}', async () => {
-    // AC-12 (spec :149): "at most ONE persistent corner affordance SHALL exist AND a test SHALL
-    // fail if a second competing always-on menu/help corner element is added." uxd3-a lands the
-    // NEGATIVE half of AC-12 (the click-launcher half belongs to uxd3-b, which owns
-    // indexShell.test.ts and will RELABEL #help-hint rather than add a sibling).
+  it('★ W-ONE-CORNER-AFFORDANCE BITES: every position:fixed, non-full-screen, inline-styled element is EXACTLY {build-stamp, help-hint} — tag- and depth-agnostic', async () => {
+    // AC-12 (spec :149) — widened m23-s5 (plan-lens adjudication A5, red-team #6). The
+    // ORIGINAL `body > div` selector is a FIXTURE MONOCULTURE: every corner affordance
+    // shipped so far happens to be a direct-child <div>, so the selector never had to prove
+    // it generalises. `position:fixed` anchors to the viewport REGARDLESS of tag name or
+    // nesting depth, so depth-scoping was never semantically justified; this tooth now scans
+    // every inline-styled element in the document.
     //
-    // Today's expected set is `{build-stamp, help-hint}` — two elements, which is already the
-    // documented status quo (a build-provenance stamp is not a competing affordance; ux1/ADR-0151
-    // deliberately stacked the hint above it). What this tooth pins is that the set does not
-    // GROW.
+    // VERIFIED the expected set is UNCHANGED: index.html's only other inline `position:fixed`
+    // nodes are `#help-overlay` and `#menu-overlay`, both `inset:0` (full-screen modal shells,
+    // filtered out below); `#status` and `#interact-prompt` are created at RUNTIME by
+    // main.ts, which this tooth — a static markup scan of index.html — never parses.
     //
-    // FILTER (plan A10, correcting plan §6): `position:fixed` AND NOT `inset:0`. The §6 text said
-    // `position:fixed` AND `bottom:` — that filter is BLIND to a launcher at `top:8px;right:8px`,
-    // which is exactly the element uxd3-b will add and exactly the element this tooth exists to
-    // catch (red-team F10). `inset:0` identifies the full-screen modal shells (#help-overlay
-    // today, #menu-overlay after plan edit T2.2) — those are not corner affordances and both are
-    // `display:none` by default.
-    //
-    // WRONG IMPL KILLED (1): shipping `#menu-launcher` as a SECOND always-on corner element
-    //   instead of relabelling the existing hint. Two competing badges in the corners of a
-    //   viewport-filling canvas is precisely the "always-on rail" the spec rejects (:126), and
-    //   it is the natural thing to do because #help-hint is `pointer-events:none` and cannot
-    //   host a click without failing indexShell H4.
-    // WRONG IMPL KILLED (2): a launcher positioned at the TOP corners — passes the plan's
-    //   original `bottom:`-based filter, fails this one.
-    // WRONG IMPL KILLED (3): deleting/renaming #help-hint while adding a launcher (the set would
-    //   still have size 2 but different membership) — the exact-set comparison catches it, and
-    //   ux1-1's hint is a shipped acceptance criterion that uxd3 may not silently retire.
-    const divs = await bodyDivs();
+    // WRONG IMPL KILLED (1): a second corner affordance shipped as
+    //   `<a style="position:fixed;top:8px;right:8px">Menu</a>` — invisible to the old
+    //   `body > div` selector (wrong tag), caught here.
+    // WRONG IMPL KILLED (2): a second corner affordance nested one level down, e.g.
+    //   `<div><button style="position:fixed;top:8px;right:8px">Menu</button></div>` —
+    //   invisible to `body > div` (depth 2, not a direct child), caught here.
+    // WRONG IMPL KILLED (3) (carried over from the original tooth): a launcher positioned at
+    //   the TOP corners, or #help-hint deleted/renamed while a launcher is added elsewhere.
+    const elements = await fixedPositionElements();
 
-    // ANTI-VACUITY #1 (the parser works): index.html has carried 13 direct-body divs since ux1
-    // (app + 10 overlay shells + build-stamp + help-hint); uxd3 adds #menu-overlay → 14. A
-    // broken parse yields [] and every set assertion below would pass vacuously — the documented
-    // vacuity trap of this file.
+    // ANTI-VACUITY #1 (the parser works): a near-empty parse yields [] and every assertion
+    // below passes vacuously.
     expect(
-      divs.length,
-      `parsed ${divs.length} direct <body> > div children from index.html — expected at least ` +
-        '12. A near-empty parse makes every assertion below vacuous (parser/path failure, not a ' +
-        'markup regression).',
+      elements.length,
+      `parsed ${elements.length} inline-styled elements from index.html — expected at least ` +
+        '12. A near-empty parse makes every assertion below vacuous (parser/path failure, ' +
+        'not a markup regression). 12, not 10: index.html carries 14 inline-styled elements ' +
+        'today, so this keeps the floor exactly as tight relative to the real population as ' +
+        'the retired `body > div` floor was (12 of 14) — the selector widened, the slack did ' +
+        'not.',
     ).toBeGreaterThanOrEqual(12);
 
-    const corner = divs
+    const corner = elements
       .filter((d) => d.style.includes('position:fixed') && !d.style.includes('inset:0'))
       .map((d) => d.id)
       .sort();
 
-    // ANTI-VACUITY #2 (the FILTER works, not just the parser): the two known corner elements are
-    // fixed-and-not-inset today, so an empty/singleton result means the style filter broke.
+    // ANTI-VACUITY #2 (the FILTER works, not just the parser): the two known corner elements
+    // are fixed-and-not-inset today, so an empty/singleton result means the style filter or
+    // normalisation broke.
     expect(
       corner.length,
       `the position:fixed / NOT inset:0 filter matched ${corner.length} element(s) ` +
@@ -4740,12 +4739,8 @@ describe('★ index.html (uxd3): exactly ONE persistent corner affordance (AC-12
     expect(
       corner,
       'exactly ONE persistent corner affordance may exist alongside the build stamp (AC-12). ' +
-        `Found: ${JSON.stringify(corner)}. If this failed because #menu-launcher was added: ` +
-        'do not add a second badge — uxd3-a ships KeyM as the self-owned, zero-DOM front door ' +
-        '(spec :148), and uxd3-b OWNS indexShell.test.ts and will RELABEL #help-hint into the ' +
-        'launcher (flipping pointer-events there is what makes it clickable, and that edit fails ' +
-        'indexShell H4 today). Plan A9 already updated the hint TEXT to advertise M — a ' +
-        'text-node-only change that keeps every indexShell tooth green.',
+        `Found: ${JSON.stringify(corner)}. If this failed because a SECOND element was added: ` +
+        'do not add a second badge — relabel or extend the existing #help-hint.',
     ).toEqual(['build-stamp', 'help-hint']);
   });
 });
@@ -5127,6 +5122,23 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
     ).toBe(
       "for (const id of hideAllExceptPlan('battleView', visibleIds(overlayProbes))) { overlayHandles[id]?.(); }",
     );
+    // ---- SURFACE 8 (m23-s5, ADR-0206 D3): the frame-loop a11y snapshot ---------------
+    // Required by the SAME "new surface per ceiling raise" rule: the M23S5-A11YSNAPSHOT
+    // block is the THIRD new `visibleIds(overlayProbes)` call site (via `visibleIds(...)[0]`).
+    // Exact-equality re-pin of the FULL block (not just the overlayProbes read) lives in
+    // W-M23S5-LIVEREGION-PUMP (appended at end-of-file) — this clause exists ONLY to satisfy
+    // this test's own "raise the ceiling only together with a new Part A surface" rule; the
+    // teeth are otherwise independent and both must pass.
+    expectUniqueAnchor(src, '// M23S5-A11YSNAPSHOT-BEGIN');
+    expectUniqueAnchor(src, '// M23S5-A11YSNAPSHOT-END');
+    const s8 = stripLineComments(
+      regionOrThrow(src, '// M23S5-A11YSNAPSHOT-BEGIN', '// M23S5-A11YSNAPSHOT-END'),
+    );
+    expect(
+      s8.includes('visibleIds(overlayProbes)'),
+      'ANTI-VACUITY (surface 8): the M23S5-A11YSNAPSHOT region must contain ' +
+        '`visibleIds(overlayProbes)` — the read this ceiling raise accounts for',
+    ).toBe(true);
   });
 
   it('★ W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY-PROBE-TABLE BITES: one byte-identical probe per OVERLAY_IDS member, and nothing else', () => {
@@ -5292,13 +5304,13 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
     // for any raise — surfaces 6 and 7 above supply exactly that.
     expect(
       countOccurrences(stripped, 'overlayProbes'),
-      'the identifier `overlayProbes` must occur EXACTLY 5 times in main.ts (the declaration, ' +
-        'surfaces 1 and 4 from uxd3-b, and surfaces 6 and 7 from uxd3-c). A 6th occurrence means ' +
-        'something else touches the table: a runtime mutation such as ' +
-        '`Reflect.set(overlayProbes, ...)` (Readonly is erased at runtime), or a 7th hand-wired ' +
-        'consumer that this file has not pinned. Raise this number ONLY together with a new ' +
-        'surface assertion in Part A.',
-    ).toBe(5);
+      'the identifier `overlayProbes` must occur EXACTLY 6 times in main.ts (the declaration, ' +
+        'surfaces 1 and 4 from uxd3-b, surfaces 6 and 7 from uxd3-c, and surface 8 from m23-s5 ' +
+        '— the frame-loop a11y snapshot). A 7th occurrence means something else touches the ' +
+        'table: a runtime mutation such as `Reflect.set(overlayProbes, ...)` (Readonly is ' +
+        'erased at runtime), or an 8th hand-wired consumer this file has not pinned. Raise ' +
+        'this number ONLY together with a new surface assertion in Part A.',
+    ).toBe(6);
   });
 
   it('★ W-FANOUT-SURFACES-ROUTE-THROUGH-REGISTRY-NO-HAND-ROLLED-OR-LIST BITES: zero hand-rolled `View?.visible ||` fan-out terms survive anywhere in main.ts', () => {
@@ -5321,6 +5333,11 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
     // A bare `toBe(6)` would need recalibrating the day a 16th overlay gets a batch listener —
     // exactly the recalibration treadmill this tooth exists to end.
     //
+    // THE SECOND NAMED EXEMPTION (m23-s5 / ADR-0206 A1): the twelve `(<selfView>?.visible ||
+    // worldHasFocus())` open-guard disjuncts. Same rule as the first — one overlay per site,
+    // its OWN — and it is excised with a census pinned at EXACTLY 12, not a floor. See the
+    // assertion below for the full reasoning.
+    //
     // WRONG IMPL KILLED (1): a collapse that leaves ONE list behind (the pvp aggregate is the
     //   likeliest, being the only one that is not a boolean guard). 13 residual ⇒ RED.
     // WRONG IMPL KILLED (2): a "helpful" 15-term OR-list added to a NEW sixth surface later —
@@ -5336,29 +5353,68 @@ describe('★ main.ts wiring (uxd3-b/ADR-0163): all five fan-out surfaces route 
     //   • a `||=` accumulator
     //   • an alias — `const h = helpView; … h?.visible || …`
     //   • a ternary chain
+    //   • a STRING-LITERAL decoy (m23-s5 review finding): stripLineComments deliberately keeps
+    //     string-literal CONTENTS as code (the m20c design decision), so a planted literal
+    //     containing the needle could inflate the exactly-12 exemption census and the excision.
+    //     Compensating teeth: the twelve exact-equality body pins and the six behavioural
+    //     S5T-GATE-SAMEKEY-CLOSE tests, which a decoy string cannot satisfy.
     // The claim this tooth supports is "no hand-rolled `||` fan-out list survives", not "a new
     // sixth surface is impossible".
     const stripped = squashWhitespace(stripLineComments(readMainTs()));
 
-    // ANTI-VACUITY FLOOR, ASSERTED FIRST: the six exempted sites must actually be found. If a
-    // future edit reshapes that idiom, the excision below silently removes nothing (fine) — but
-    // if the SCAN is broken (bad path, over-eager stripper, squash changing the spacing) the
-    // exemption count collapses to 0 and the `toBe(0)` ceiling would pass on an empty string.
+    // ANTI-VACUITY FLOOR #1, ASSERTED FIRST: the six exempted refresh-listener sites must
+    // actually be found. If a future edit reshapes that idiom, the excision below silently
+    // removes nothing (fine) — but if the SCAN is broken (bad path, over-eager stripper, a
+    // squash that changes the spacing) the exemption count collapses to 0 and the `toBe(0)`
+    // ceiling would pass on an empty string.
     expect(
       countOccurrences(stripped, "?.visible || identity === ''"),
       "main.ts must still contain the refresh-listener idiom `?.visible || identity === ''` at " +
-        'least 6 times (box/raising/evolution/shop/trade/leaderboard batch listeners, ' +
-        'main.ts:1330, 1344, 1356, 1530, 1562, 1596 post-collapse). A count of 0 means the source scan itself ' +
-        'is broken and the ceiling below would pass vacuously — this is a scan failure, not a ' +
-        'fan-out regression.',
+        'least 6 times (box/raising/evolution/shop/trade/leaderboard batch listeners). A count ' +
+        'of 0 means the source scan itself is broken and the ceiling below would pass vacuously ' +
+        '— this is a scan failure, not a fan-out regression.',
     ).toBeGreaterThanOrEqual(6);
 
-    const exempted = stripped.split("?.visible || identity === ''").join('');
+    // ANTI-VACUITY FLOOR #2 (m23-s5, ADR-0206 Amendment A1) — THE SECOND NAMED EXEMPTION.
+    // A1 reshaped the twelve hotkey open-guards from `… && worldHasFocus()` to
+    // `… && (<selfView>?.visible || worldHasFocus())`, so that a same-key press on an
+    // ALREADY-OPEN overlay is a toggle-CLOSE and is never gated (the three e2e regressions
+    // PR #368 shipped: movement-input.spec.ts:493, trade.spec.ts:97, pvp.spec.ts:145). Every
+    // one of those twelve disjuncts matches this tooth's `View?.visible ||` needle — MEASURED
+    // 12, not 0 — because all twelve view bindings end in `View`. That is NOT a hand-rolled
+    // fan-out list: each site names exactly ONE overlay, its OWN, which is the same reason the
+    // refresh-listener idiom above is exempt.
+    //
+    // PINNED AT EXACTLY 12, NOT `>= 12`, and the tightness is the point: an implementation that
+    // grows a THIRTEENTH self-open disjunct (e.g. onto KeyT, or a second one spliced into an
+    // existing handler) reds HERE, on the exemption itself, rather than being silently absorbed
+    // by the excision. That makes this clause a second, independent census of the disjunct
+    // alongside W-M23S5-TWELVE-CONJUNCTS' worldHasFocus() counts (12 in-listener / 13
+    // whole-file), which count the OTHER half of the same expression.
+    //
+    // The needle carries the group's CLOSING PAREN — `worldHasFocus())` — so a widened
+    // disjunct (`<a>?.visible || worldHasFocus() || <b>?.visible`) is NOT exempted and still
+    // trips the ceiling below.
+    expect(
+      countOccurrences(stripped, 'View?.visible || worldHasFocus())'),
+      'main.ts must contain EXACTLY 12 self-open disjuncts `<selfView>?.visible || ' +
+        'worldHasFocus())` — one per canOpen-derived hotkey branch (KeyB/I/E/Q/U/P/L/N/O/?/M/C), ' +
+        'never on KeyT and never in the click launcher (ADR-0206 Amendment A1). Fewer means a ' +
+        'handler lost its toggle-CLOSE half again (the exact defect the three named e2e specs ' +
+        'encode); more means a thirteenth site was gated, which no ADR describes.',
+    ).toBe(12);
+
+    const exempted = stripped
+      .split("?.visible || identity === ''")
+      .join('')
+      .split('View?.visible || worldHasFocus())')
+      .join('');
     expect(
       countOccurrences(exempted, 'View?.visible ||'),
       'main.ts must contain ZERO hand-rolled `View?.visible ||` fan-out terms once the six ' +
-        "named refresh-listener early-outs (`?.visible || identity === ''`) are excised. Every " +
-        'mutual-exclusion read goes through the ONE probe table now (anyOverlayVisible() / ' +
+        "named refresh-listener early-outs (`?.visible || identity === ''`) and the twelve A1 " +
+        'self-open disjuncts (`View?.visible || worldHasFocus())`) are excised. Every ' +
+        'mutual-exclusion read goes through the ONE probe table (anyOverlayVisible() / ' +
         'anyVisible(overlayProbes, …)). RED at authoring time with 69 — the five OR-lists. If ' +
         'this reds AFTER the collapse, someone hand-wrote a new fan-out list; route it through ' +
         "the registry instead. NOTE the honest limit in this test's comment: a de-Morgan `&&` " +
@@ -5625,7 +5681,7 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyB') {
     const boxVerdict = overlayVerdict('boxView');
-    if (boxVerdict.kind === 'allow') {
+    if (boxVerdict.kind === 'allow' && (boxView?.visible || worldHasFocus())) {
       for (const id of boxVerdict.forceHide) overlayHandles[id]?.();
       boxView?.toggle();
       if (boxView?.visible) refreshBox();
@@ -5641,7 +5697,7 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyI') {
     const raisingVerdict = overlayVerdict('raisingView');
-    if (raisingVerdict.kind === 'allow') {
+    if (raisingVerdict.kind === 'allow' && (raisingView?.visible || worldHasFocus())) {
       for (const id of raisingVerdict.forceHide) overlayHandles[id]?.();
       raisingView?.toggle();
       if (raisingView?.visible) refreshRaising();
@@ -5657,7 +5713,7 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyE') {
     const evolutionVerdict = overlayVerdict('evolutionView');
-    if (evolutionVerdict.kind === 'allow') {
+    if (evolutionVerdict.kind === 'allow' && (evolutionView?.visible || worldHasFocus())) {
       for (const id of evolutionVerdict.forceHide) overlayHandles[id]?.();
       evolutionView?.toggle();
       if (evolutionView?.visible) refreshEvolution();
@@ -5672,7 +5728,10 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       selfAnchor: "'questLogView'",
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyQ') {
-    if (overlayVerdict('questLogView').kind === 'allow') {
+    if (
+      overlayVerdict('questLogView').kind === 'allow' &&
+      (questLogView?.visible || worldHasFocus())
+    ) {
       if (questLogView?.visible) {
         questLogView.hide();
       } else {
@@ -5689,7 +5748,7 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       selfAnchor: "'tradeView'",
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyU') {
-    if (overlayVerdict('tradeView').kind === 'allow') {
+    if (overlayVerdict('tradeView').kind === 'allow' && (tradeView?.visible || worldHasFocus())) {
       if (tradeView?.visible) {
         tradeView.hide();
       } else {
@@ -5706,7 +5765,7 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       selfAnchor: "'pvpView'",
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyP') {
-    if (overlayVerdict('pvpView').kind === 'allow') {
+    if (overlayVerdict('pvpView').kind === 'allow' && (pvpView?.visible || worldHasFocus())) {
       if (pvpView?.visible) {
         pvpView.hide();
       } else {
@@ -5723,7 +5782,10 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       selfAnchor: "'leaderboardView'",
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyL') {
-    if (overlayVerdict('leaderboardView').kind === 'allow') {
+    if (
+      overlayVerdict('leaderboardView').kind === 'allow' &&
+      (leaderboardView?.visible || worldHasFocus())
+    ) {
       if (leaderboardView?.visible) {
         leaderboardView.hide();
       } else {
@@ -5741,7 +5803,7 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyN') {
     e.preventDefault();
-    if (overlayVerdict('renameView').kind === 'allow') {
+    if (overlayVerdict('renameView').kind === 'allow' && (renameView?.visible || worldHasFocus())) {
       if (renameView?.visible) {
         renameView.hide();
       } else {
@@ -5759,7 +5821,11 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       carriesIdentity: true,
       expectedRaw: `e.code === 'KeyO') {
     e.preventDefault();
-    if (overlayVerdict('tradeProposeView').kind === 'allow' && identity !== '') {
+    if (
+      overlayVerdict('tradeProposeView').kind === 'allow' &&
+      identity !== '' &&
+      (tradeProposeView?.visible || worldHasFocus())
+    ) {
       if (tradeProposeView?.visible) {
         tradeProposeView.hide();
       } else {
@@ -5790,7 +5856,7 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       carriesIdentity: false,
       expectedRaw: `e.key === '?') {
     e.preventDefault();
-    if (overlayVerdict('helpView').kind === 'allow') {
+    if (overlayVerdict('helpView').kind === 'allow' && (helpView?.visible || worldHasFocus())) {
       if (helpView?.visible) {
         helpView.hide();
       } else {
@@ -5808,7 +5874,11 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
       carriesIdentity: true,
       expectedRaw: `e.code === 'KeyM') {
     e.preventDefault();
-    if (overlayVerdict('menuView').kind === 'allow' && identity !== '') {
+    if (
+      overlayVerdict('menuView').kind === 'allow' &&
+      identity !== '' &&
+      (menuView?.visible || worldHasFocus())
+    ) {
       if (menuView?.visible) {
         menuView.hide();
       } else {
@@ -5849,13 +5919,16 @@ describe('★ main.ts wiring (uxd3-c/ADR-0164): every hotkey open-guard routes t
     // what keeps KeyM's `expectedRaw` above byte-identical (its block still ends at the next
     // `  if (`), and it makes this entry's own boundary residue the same `  if (` every other
     // entry carries — the slicer's blockEnd lands on the Escape sentinel.
+    //
+    // m23-s5 (ADR-0206): worldHasFocus() appended LAST, same shape as every other sibling.
+    // A1 (fix cycle 1): the conjunct became the self-open disjunct, same shape as every sibling.
     {
       anchor: "e.code === 'KeyC'",
       selfAnchor: "'claimView'",
       carriesIdentity: false,
       expectedRaw: `e.code === 'KeyC') {
     e.preventDefault();
-    if (overlayVerdict('claimView').kind === 'allow') {
+    if (overlayVerdict('claimView').kind === 'allow' && (claimView?.visible || worldHasFocus())) {
       if (claimView?.visible) {
         claimView.hide();
       } else {
@@ -10746,5 +10819,361 @@ describe('★ main.ts wiring (14r-e/ADR-0187): the DEV send/reject observability
           'a local binding above the return is not exposed to the e2e at all',
       ).toBeLessThan(idx);
     }
+  });
+});
+
+// ===========================================================================
+// m23-s5 (ADR-0206) — the world-focus hotkey gate, the frame-loop announcer, and the
+// canvas-ref assignment. Appended at end-of-file: additive only, touches no anchor above.
+//
+// SOURCE OF TRUTH: the m23-s5 plan of record (§1, as amended by §8) and ADR-0206.
+// EARS: A11Y-19, A11Y-20, A11Y-21, A11Y-35, A11Y-22 (structural halves not provable by a
+// source scan are covered by the runtime-import suite, main.a11yFocus.test.ts).
+// ===========================================================================
+
+const M23S5_WORLDFOCUS_BEGIN = '// M23S5-WORLDFOCUS-BEGIN';
+const M23S5_WORLDFOCUS_END = '// M23S5-WORLDFOCUS-END';
+const M23S5_CANVASREF_BEGIN = '// M23S5-CANVASREF-BEGIN';
+const M23S5_CANVASREF_END = '// M23S5-CANVASREF-END';
+
+describe('★ main.ts wiring (m23-s5/ADR-0206): worldHasFocus() and the canvas-ref assignment', () => {
+  it('★ W-M23S5-WORLDHASFOCUS BITES: worldHasFocus() and worldCanvasEl are pinned by EXACT EQUALITY, and worldCanvasEl is declared exactly once', () => {
+    // ADR-0206 D1/D3a (plan-lens adjudication A1, A6). Two independent things are pinned
+    // here, both load-bearing:
+    //  (a) worldHasFocus()'s body, EXACT EQUALITY on comment-stripped, whitespace-squashed
+    //      source — so the `document.body` disjunct cannot be "cleaned up" (A11Y-35's own
+    //      bug: every hotkey dies forever after a dialogue ends), the return cannot be
+    //      inverted, and the body cannot be stubbed to a constant.
+    //  (b) `worldCanvasEl` is DECLARED exactly once in the WHOLE FILE — the census the
+    //      red-team's #1 attack needs: an implementation keeping worldHasFocus()'s body
+    //      byte-exact (passing (a)) but SHADOWING it with a second `let worldCanvasEl`
+    //      inside main() degrades the gate to "body-or-nothing" while (a)'s literal text
+    //      stays untouched — only which binding the assignment actually writes to changes.
+    // WRONG IMPL KILLED (1): the `a === document.body` disjunct deleted.
+    // WRONG IMPL KILLED (2): `return true;` / `return false;` (a stubbed-inert body).
+    // WRONG IMPL KILLED (3): a second `let worldCanvasEl` declared inside `main()`.
+    // WRONG IMPL KILLED (4): the M23S5-CANVASREF assignment written as anything other than
+    //   the exact literal (e.g. `document.querySelector('[role="application"]')`, rejected
+    //   in the plan as more fragile; or a silently-defaulting `?? document.body`).
+    const src = readMainTs();
+
+    expectUniqueAnchor(src, M23S5_WORLDFOCUS_BEGIN);
+    expectUniqueAnchor(src, M23S5_WORLDFOCUS_END);
+    const worldFocusRegion = squashWhitespace(
+      stripLineComments(regionOrThrow(src, M23S5_WORLDFOCUS_BEGIN, M23S5_WORLDFOCUS_END)),
+    ).trim();
+    expect(
+      worldFocusRegion.length,
+      'ANTI-VACUITY: the M23S5-WORLDFOCUS region is empty after comment-stripping',
+    ).toBeGreaterThan(0);
+    const expectedWorldFocus =
+      'let worldCanvasEl: HTMLElement | null = null; const worldHasFocus = (): boolean => { ' +
+      'const a = document.activeElement; return a === null || a === document.body || a === ' +
+      'worldCanvasEl; }; const liveRegion = new LiveRegion(); let lastA11ySnapshot: ' +
+      "A11ySnapshot = { topOverlay: null, message: '' };";
+    expect(
+      worldFocusRegion,
+      'the M23S5-WORLDFOCUS region must be EXACTLY (comment-stripped, whitespace-squashed) the ' +
+        'ADR-0206 D1 literal (spec §2.3 verbatim). Got: ' +
+        JSON.stringify(worldFocusRegion),
+    ).toBe(expectedWorldFocus);
+
+    // (b) the declaration census — kills the shadow attack.
+    expect(
+      countOccurrences(stripLineComments(src), 'let worldCanvasEl'),
+      '`let worldCanvasEl` must be DECLARED exactly once in the whole file. A second ' +
+        'declaration (e.g. shadowed inside main()) leaves the module-scope worldHasFocus() ' +
+        'reading a binding the assignment below never writes to.',
+    ).toBe(1);
+
+    expectUniqueAnchor(src, M23S5_CANVASREF_BEGIN);
+    expectUniqueAnchor(src, M23S5_CANVASREF_END);
+    const canvasRefRegion = squashWhitespace(
+      stripLineComments(regionOrThrow(src, M23S5_CANVASREF_BEGIN, M23S5_CANVASREF_END)),
+    ).trim();
+    expect(
+      canvasRefRegion,
+      'the M23S5-CANVASREF region must be EXACTLY ' +
+        "`worldCanvasEl = mount.querySelector('canvas');` — render/world.ts is out of this " +
+        "slice's touches:, so querySelector on the mount main.ts already holds is the only " +
+        'in-touches route. Got: ' +
+        JSON.stringify(canvasRefRegion),
+    ).toBe("worldCanvasEl = mount.querySelector('canvas');");
+  });
+});
+
+describe('★ main.ts wiring (m23-s5/ADR-0206): the session gate precedes worldHasFocus() in the keydown listener (A11Y-21)', () => {
+  it('★ W-M23S5-SESSION-GATE-PRECEDES BITES: sessionGateBlocks() is called BEFORE the first worldHasFocus() call, code-aware', () => {
+    // A11Y-21: the session terminal outranks every input path, including the new world-focus
+    // gate. Run on `m20cScan(...).code` (comment- AND string-literal-aware) so a decoy
+    // string literal cannot satisfy the anchor while the real listener never gates — the
+    // same discipline W-M21B2-SESSION-GATE-FIRST already applies to the pre-existing gate.
+    // Stronger tier (a runtime assertion) fails because the session-gate early return is
+    // behaviourally indistinguishable from a denied gate, and main.ts is coverage-excluded
+    // (client/vite.config.ts:97) — this is the plan's own stated reason for the SCAN tier.
+    // WRONG IMPL KILLED: worldHasFocus() called (or a conjunct written) ABOVE the
+    //   `sessionGateBlocks()` early return in the keydown listener.
+    const code = m20cScan(readMainTs()).code;
+
+    const sessionGateHits = mwCodeOccurrences(code, 'sessionGateBlocks()');
+    const worldHasFocusHits = mwCodeOccurrences(code, 'worldHasFocus()');
+    expect(
+      sessionGateHits.length,
+      'ANTI-VACUITY: sessionGateBlocks() must resolve AS CODE at least once',
+    ).toBeGreaterThan(0);
+    expect(
+      worldHasFocusHits.length,
+      'ANTI-VACUITY: worldHasFocus() must be CALLED at least once AS CODE — a missing ' +
+        'conjunct makes the ordering below vacuously true',
+    ).toBeGreaterThan(0);
+
+    const keydownIdx = mwCodeOccurrences(code, "window.addEventListener('keydown'")[0] ?? -1;
+    const keyupIdx = mwCodeOccurrences(code, "window.addEventListener('keyup'")[0] ?? -1;
+    expect(keydownIdx, 'main.ts must register the keydown listener').toBeGreaterThanOrEqual(0);
+    expect(keyupIdx, 'main.ts must register the keyup listener').toBeGreaterThan(keydownIdx);
+
+    const gateInListener = sessionGateHits.find((i) => i > keydownIdx && i < keyupIdx);
+    const focusInListener = worldHasFocusHits.find((i) => i > keydownIdx && i < keyupIdx);
+    expect(
+      gateInListener,
+      'sessionGateBlocks() must be called INSIDE the keydown listener',
+    ).not.toBeUndefined();
+    expect(
+      focusInListener,
+      'worldHasFocus() must be called INSIDE the keydown listener',
+    ).not.toBeUndefined();
+    expect(
+      gateInListener as number,
+      'the session gate must precede the FIRST worldHasFocus() call inside the keydown ' +
+        'listener (A11Y-21)',
+    ).toBeLessThan(focusInListener as number);
+  });
+});
+
+describe('★ main.ts wiring (m23-s5/ADR-0206): worldHasFocus() gates exactly the twelve canOpen-derived hotkey branches', () => {
+  it('★ W-M23S5-TWELVE-CONJUNCTS BITES: worldHasFocus() occurs EXACTLY 12 times inside the keydown listener (13 whole-file, the 13th being the frame-loop focus-return guard), ZERO times in the click launcher, and ZERO times on KeyT', () => {
+    // ADR-0206 D2: the conjunct is appended to exactly the twelve `overlayVerdict(...)`
+    // hotkey branches (KeyB/I/E/Q/U/P/L/N/O/'?'/M/C) — NOT KeyT (not a canOpen()-derived
+    // guard), and NOT the `[data-menu-launcher]` CLICK branch. ADR-0206 D4 ALSO reads
+    // worldHasFocus() a THIRTEENTH time — the frame-loop focus-return guard inside the
+    // M23S5-A11YSNAPSHOT block (`if (worldHasFocus()) worldCanvasEl?.focus();`) — which is
+    // NOT one of the twelve hotkey conjuncts and lives in a DIFFERENT region entirely
+    // (measured: a correct, shipped implementation reads 13 whole-file, not 12 — a
+    // whole-file census pinned at 12 is UNSATISFIABLE by any correct implementation, since
+    // deleting the frame-loop guard to reach 12 reds W-M23S5-LIVEREGION-PUMP's own exact-
+    // equality pin AND S5T-FOCUS-NO-STEAL, main.a11yFocus.test.ts, whose unguarded
+    // `worldCanvasEl?.focus()` steals focus from a deliberately-focused element outside the
+    // world). The region census below is scoped to the keydown listener specifically (plan
+    // §4 T-10: "worldHasFocus() occurs exactly 12 times inside the keydown region"), and the
+    // whole-file census is restated as its OWN, separately-pinned 13 — the twelve conjuncts
+    // are counted TWICE, once each way, so a defect in either scoping shows up on its own
+    // clause rather than being averaged away.
+    //
+    // WRONG IMPL KILLED (1): an eleven-of-twelve implementation inside the listener — the
+    //   exact region count of 12 catches it where a `>= 1` floor would not.
+    // WRONG IMPL KILLED (2): a THIRTEENTH occurrence INSIDE the keydown listener (e.g. the
+    //   conjunct also added to KeyT, or duplicated on an existing handler) — the listener-
+    //   region count stays exactly 12 only for the correct twelve-and-only-twelve shape.
+    // WRONG IMPL KILLED (3): the whole-file count staying at 12 by moving the conjunct OFF
+    //   one of the twelve real hotkey sites and ONTO the frame-loop focus-return guard
+    //   instead (a "wrong twelve" plus a missing 13th) — invisible to a region-scoped
+    //   listener count alone (still reads 12 either way, since a swap keeps the LISTENER
+    //   total unchanged); the M23S5-A11YSNAPSHOT region's own exactly-1 census below is
+    //   what pins WHERE the 13th call must live, so this exact swap reds it directly (0,
+    //   not 1) even though the whole-file 13 stays accidentally correct.
+    // WRONG IMPL KILLED (4): the frame-loop guard duplicated (e.g. called twice, or a
+    //   second copy added elsewhere) — the whole-file 13 and the region's own 1 both catch
+    //   a 14th/2nd occurrence.
+    //
+    // A RAISE OF EITHER NUMBER IS A DELIBERATE ACT (mirrors the `overlayProbes` ceiling's
+    // own rule, uxd3-b/uxd3-c section above): bump 12 or 13 only together with a new
+    // region-bounded assertion that pins WHERE the new call site is and why — do not just
+    // raise the numbers.
+    const src = readMainTs();
+    const stripped = stripLineComments(src);
+
+    // --- (1) REGION CENSUS: exactly 12 inside the keydown listener (plan §4 T-10) --------
+    const code = m20cScan(src).code;
+    const keydownIdx = mwCodeOccurrences(code, "window.addEventListener('keydown'")[0] ?? -1;
+    const keyupIdx = mwCodeOccurrences(code, "window.addEventListener('keyup'")[0] ?? -1;
+    expect(keydownIdx, 'main.ts must register the keydown listener').toBeGreaterThanOrEqual(0);
+    expect(keyupIdx, 'main.ts must register the keyup listener').toBeGreaterThan(keydownIdx);
+    const listenerRegion = code.slice(keydownIdx, keyupIdx);
+    expect(
+      countOccurrences(listenerRegion, 'worldHasFocus()'),
+      'worldHasFocus() must occur EXACTLY 12 times INSIDE the keydown listener (plan §4 T-10) ' +
+        '— once per canOpen-derived hotkey branch (KeyB/I/E/Q/U/P/L/N/O/?/M/C), never on KeyT. ' +
+        'An 11th or 13th occurrence INSIDE THE LISTENER reds this exact-count census. (The ' +
+        'frame-loop focus-return guard lives in a DIFFERENT region and is asserted separately ' +
+        'below — it must NOT be counted here.)',
+    ).toBe(12);
+
+    // --- (2) WHOLE-FILE CENSUS: exactly 13 — the twelve conjuncts PLUS the ONE frame-loop
+    //         focus-return guard (ADR-0206 D4, inside M23S5-A11YSNAPSHOT). Raising this
+    //         number again requires naming the new call site in a new region-bounded
+    //         assertion, mirroring the `overlayProbes` ceiling's own rule.
+    expect(
+      countOccurrences(stripped, 'worldHasFocus()'),
+      'worldHasFocus() must occur EXACTLY 13 times in main.ts (comment-stripped, whole file) ' +
+        '— the twelve hotkey conjuncts inside the keydown listener PLUS the one frame-loop ' +
+        'focus-return guard inside M23S5-A11YSNAPSHOT (`if (worldHasFocus()) ' +
+        'worldCanvasEl?.focus();`, ADR-0206 D4). A 12-only or 14th occurrence reds this ' +
+        'census; raising it again requires a new region-bounded assertion naming the site.',
+    ).toBe(13);
+
+    // --- (3) the M23S5-A11YSNAPSHOT region contains EXACTLY 1 — pins WHERE the 13th lives,
+    //         so "move a conjunct off a real hotkey and onto the frame loop" cannot keep
+    //         either total looking right: it would satisfy (2) but not this clause, and (1)
+    //         would separately read 11, not 12.
+    expectUniqueAnchor(src, '// M23S5-A11YSNAPSHOT-BEGIN');
+    expectUniqueAnchor(src, '// M23S5-A11YSNAPSHOT-END');
+    const snapshotRegion = stripLineComments(
+      regionOrThrow(src, '// M23S5-A11YSNAPSHOT-BEGIN', '// M23S5-A11YSNAPSHOT-END'),
+    );
+    expect(
+      snapshotRegion.includes('liveRegion.announce('),
+      'ANTI-VACUITY: the M23S5-A11YSNAPSHOT region must still contain liveRegion.announce( ' +
+        '— proves this is the real snapshot block, not a degenerate slice',
+    ).toBe(true);
+    expect(
+      countOccurrences(snapshotRegion, 'worldHasFocus()'),
+      'the M23S5-A11YSNAPSHOT region must contain EXACTLY ONE worldHasFocus() call — the ' +
+        'frame-loop focus-return guard (ADR-0206 D4). Zero means the guard was dropped ' +
+        '(S5T-FOCUS-NO-STEAL reds in main.a11yFocus.test.ts: an unguarded ' +
+        'worldCanvasEl?.focus() steals focus from a deliberately-focused element outside the ' +
+        'world); two or more means it was duplicated.',
+    ).toBe(1);
+
+    // --- (4) the click launcher and KeyT must both stay at ZERO -------------------------
+    expectUniqueAnchor(src, '// UXD3B-LAUNCHER-BEGIN');
+    expectUniqueAnchor(src, '// UXD3B-LAUNCHER-END');
+    const launcherRegion = stripLineComments(
+      regionOrThrow(src, '// UXD3B-LAUNCHER-BEGIN', '// UXD3B-LAUNCHER-END'),
+    );
+    expect(
+      launcherRegion.includes('menuView'),
+      'ANTI-VACUITY: the launcher region must still reference menuView',
+    ).toBe(true);
+    expect(
+      countOccurrences(launcherRegion, 'worldHasFocus()'),
+      'the `[data-menu-launcher]` CLICK branch must contain ZERO occurrences of ' +
+        'worldHasFocus() — on a click, document.activeElement IS the badge, so gating the ' +
+        'click front door would refuse the very interaction A11Y-23 exists to enable',
+    ).toBe(0);
+
+    const keyTBlock = stripLineComments(regionOrThrow(src, "e.code === 'KeyT'", "e.key === '?'"));
+    expect(
+      keyTBlock.includes('anyOverlayVisible()'),
+      'ANTI-VACUITY: the KeyT region must still reference anyOverlayVisible()',
+    ).toBe(true);
+    expect(
+      countOccurrences(keyTBlock, 'worldHasFocus()'),
+      'KeyT must contain ZERO occurrences of worldHasFocus() — it is NOT a canOpen()-derived ' +
+        'guard (ADR-0164) and spec §2.3 does not scope the world-focus gate to it',
+    ).toBe(0);
+
+    // --- (5) fix cycle 2: the focus-return call sites and the stale discriminator ----------
+    // Two `worldCanvasEl?.focus()` sites exist BY DESIGN and neither is redundant: the frame
+    // close edge (proactive, ADR-0206 D4 — restores focus with no keypress) and the keydown
+    // heal (reactive — a press can land inside the <=1-frame stale window before the edge
+    // runs; measured as a 1-in-3 flake at e2e/pvp.spec.ts:117). A THIRD site is a focus move
+    // on a path no test in this slice models; raise these numbers ONLY together with a new
+    // region-bounded assertion naming where it lives and why. Counts MEASURED against the
+    // shipped source before pinning (the arrow declaration spells `= (): boolean =>`, so the
+    // call-needle matches only the two call sites).
+    expect(
+      countOccurrences(stripped, 'worldCanvasEl?.focus();'),
+      'main.ts must contain EXACTLY 2 `worldCanvasEl?.focus();` call sites — the frame-loop ' +
+        'close edge (M23S5-A11YSNAPSHOT) and the keydown stale-focus heal. A third is an ' +
+        'unpinned focus move; zero/one means one of the two repairs was dropped.',
+    ).toBe(2);
+    expect(
+      countOccurrences(stripped, 'focusInsideHiddenSubtree()'),
+      'main.ts must contain EXACTLY 2 `focusInsideHiddenSubtree()` CALL sites — the frame ' +
+        'close edge and the keydown heal. More means the discriminator was wired to a path ' +
+        'this slice does not model; fewer means a repair lost its stale-focus half.',
+    ).toBe(2);
+  });
+});
+
+describe('★ main.ts wiring (m23-s5/ADR-0206): the live-region pump rides the rAF frame loop, after the session gate (A11Y-22)', () => {
+  it('★ W-M23S5-LIVEREGION-PUMP BITES: the M23S5-A11YSNAPSHOT region equals the exact expected literal, new LiveRegion( is a singleton, and sessionGateBlocks( precedes liveRegion.flush( in the frame', () => {
+    // ADR-0206 D3/D3a(ii) (plan-lens adjudication A2, A3). EXACT EQUALITY, not containment:
+    // `liveRegion.flush(0)` (or any OTHER constant argument) makes `now - windowOpenedAt`
+    // identically zero forever, so the region never paints again — behaviourally identical to
+    // the pump never being wired (S1's named cliff), and a containment scan for
+    // `liveRegion.flush(` alone is MEASURED to pass it.
+    // WRONG IMPL KILLED (1): `liveRegion.flush(0)` / `liveRegion.flush(Date.now())`.
+    // WRONG IMPL KILLED (2): the pump placed BELOW `predictor.drain(now)` rather than
+    //   immediately after `const now = performance.now();` — a recurring throw further down
+    //   the (unguarded) frame body would then silence the region AND freeze
+    //   lastA11ySnapshot indefinitely.
+    // WRONG IMPL KILLED (3): a second `new LiveRegion(` instantiated somewhere else.
+    // WRONG IMPL KILLED (4, fix cycle 2): the close-edge guard left as a bare
+    //   `if (worldHasFocus())`. In real Chromium the blur-to-<body> fixup after a
+    //   display:none close is ASYNC (~200 ms measured), and closeOverlayA11y's explicit
+    //   `document.body.focus()` restore is a NO-OP there (body has no tabindex) — so on the
+    //   close frame `document.activeElement` is still the anchor INSIDE the hidden overlay,
+    //   worldHasFocus() is false, and focus never returns to the world at all. happy-dom
+    //   diverges (its body.focus() succeeds), which is exactly why the unit tier could not
+    //   see this and e2e/trade.spec.ts:115 + e2e/pvp.spec.ts:106 could. The runtime half is
+    //   S5T-FOCUS-RETURN-STALE (main.a11yFocus.test.ts).
+    const src = readMainTs();
+
+    const beginNeedle = '// M23S5-A11YSNAPSHOT-BEGIN';
+    const endNeedle = '// M23S5-A11YSNAPSHOT-END';
+    expectUniqueAnchor(src, beginNeedle);
+    expectUniqueAnchor(src, endNeedle);
+    const region = squashWhitespace(
+      stripLineComments(regionOrThrow(src, beginNeedle, endNeedle)),
+    ).trim();
+    expect(
+      region.length,
+      'ANTI-VACUITY: the M23S5-A11YSNAPSHOT region is empty after comment-stripping',
+    ).toBeGreaterThan(0);
+    const expected =
+      'const top = visibleIds(overlayProbes)[0] ?? null; const nextSnapshot: A11ySnapshot = { ' +
+      "topOverlay: top, message: '' }; for (const m of announcementsFor(lastA11ySnapshot, " +
+      'nextSnapshot)) liveRegion.announce(m, now); if (lastA11ySnapshot.topOverlay !== null && ' +
+      "top === null) { liveRegion.announce(t('a11y.world.region'), now); if (worldHasFocus() || " +
+      'focusInsideHiddenSubtree()) worldCanvasEl?.focus(); } lastA11ySnapshot = nextSnapshot; ' +
+      'liveRegion.flush(now);';
+    expect(
+      region,
+      'the M23S5-A11YSNAPSHOT region must be EXACTLY (comment-stripped, whitespace-squashed) ' +
+        'the ADR-0206 D3 literal. Got: ' +
+        JSON.stringify(region),
+    ).toBe(expected);
+
+    expect(
+      countOccurrences(stripLineComments(src), 'new LiveRegion('),
+      '`new LiveRegion(` must occur EXACTLY once in main.ts — a second instance is a second, ' +
+        'independent coalescing state machine the DOM #a11y-live node is not wired to',
+    ).toBe(1);
+
+    const code = m20cScan(src).code;
+    const FRAME_START = 'const frame = (): void => {';
+    const FRAME_END = 'void main();';
+    const frameStartHits = mwCodeOccurrences(code, FRAME_START);
+    const frameEndHits = mwCodeOccurrences(code, FRAME_END);
+    expect(frameStartHits.length, 'the frame loop fence must be unique AS CODE').toBe(1);
+    expect(frameEndHits.length, 'the frame region right fence must be unique AS CODE').toBe(1);
+    const frameRegion = code.slice(frameStartHits[0]!, frameEndHits[0]!);
+    expect(
+      frameRegion.includes('predictor.drain('),
+      'ANTI-VACUITY: the frame region must still contain predictor.drain(',
+    ).toBe(true);
+    const sessionGateIdx = mwCodeOccurrences(frameRegion, 'sessionGateBlocks(')[0];
+    const flushIdx = mwCodeOccurrences(frameRegion, 'liveRegion.flush(')[0];
+    expect(
+      sessionGateIdx,
+      'sessionGateBlocks( must be called inside the frame',
+    ).not.toBeUndefined();
+    expect(flushIdx, 'liveRegion.flush( must be called inside the frame').not.toBeUndefined();
+    expect(
+      sessionGateIdx as number,
+      'sessionGateBlocks( must precede liveRegion.flush( inside the frame — a session-blocked ' +
+        'frame must never reach the announcer',
+    ).toBeLessThan(flushIdx as number);
   });
 });

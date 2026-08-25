@@ -471,6 +471,16 @@ describe('ux1-1 (H4/H5): the hint is persistent and not obviously invisible', ()
     // Widening it is a deliberate act that must re-argue the bounded-surface claim, which is the
     // whole justification for retiring H4's blanket pointer-events:none ban (ADR-0151 D2, amended
     // by ADR-0163 D4).
+    // m23-s5 (ADR-0206 D5, amending ADR-0151 D2 / ADR-0163 D4): #help-hint becomes a native
+    // <button>, which needs THREE more declarations to neutralise UA button chrome
+    // (`background:none;border:0;padding:0`) — without them the badge ships as a grey OS
+    // button with #9aa0b4 text on ButtonFace (~2:1 contrast), a regression in an
+    // ACCESSIBILITY slice. `background` is allowed OUTRIGHT (it cannot change the hit box,
+    // only its paint). `border` and `padding` are this test's OWN named growth knobs two
+    // paragraphs up (`border:50vw solid transparent`, `padding:0 50vw`), so each gets a
+    // VALUE CLAUSE below rather than a blanket allow — `border:50vw solid transparent` and
+    // `padding:0 50vw` still fail after this re-pin. Strictly narrower than adding the bare
+    // names would be.
     const BOUNDED_SURFACE_ALLOWED_PROPS = [
       'position',
       'bottom',
@@ -481,13 +491,16 @@ describe('ux1-1 (H4/H5): the hint is persistent and not obviously invisible', ()
       'pointer-events',
       'cursor',
       'z-index',
+      'background',
+      'border',
+      'padding',
     ];
     const declaredProps = style
       .split(';')
       .map((d) => d.slice(0, d.indexOf(':')).trim())
       .filter((name) => name.length > 0);
     // ANTI-VACUITY: a mangled style attribute that parses to zero properties would satisfy a
-    // subset check trivially. The shipped badge declares nine.
+    // subset check trivially. The shipped badge declares twelve after the button conversion.
     expect(
       declaredProps.length,
       'ANTI-VACUITY: #help-hint must declare a real inline style — parsing yielded no ' +
@@ -511,6 +524,50 @@ describe('ux1-1 (H4/H5): the hint is persistent and not obviously invisible', ()
           JSON.stringify(style),
       ).toBe('<not reached — property is not on the allow-list>');
     }
+
+    // (5b) VALUE-CONSTRAINED allow-list entries (m23-s5, plan-lens adjudication A4). `border`
+    // and `padding` are allow-listed by NAME above but bounded by VALUE here — a name-only
+    // allow would let `border:50vw solid transparent` / `padding:0 50vw` back in unchanged.
+    const borderValue = declarationValue(decls, 'border');
+    if (borderValue !== null) {
+      expect(
+        borderValue === '0' || borderValue === 'none',
+        "KILLS: 'border' declared with a value OTHER than '0' or 'none' — " +
+          '`border:50vw solid transparent` keeps every allow-listed property NAME while ' +
+          'growing the hit box to viewport scale. Got: ' +
+          JSON.stringify(borderValue),
+      ).toBe(true);
+    }
+    const paddingValue = declarationValue(decls, 'padding');
+    if (paddingValue !== null) {
+      expect(
+        paddingValue === '0',
+        "KILLS: 'padding' declared with a value other than '0' — `padding:0 50vw` keeps " +
+          'every allow-listed property NAME while growing the hit box to viewport scale. ' +
+          'Got: ' +
+          JSON.stringify(paddingValue),
+      ).toBe(true);
+    }
+
+    // (5c) A4 (red-team #2, HIGH): 'font' was ALREADY allow-listed with NO value constraint —
+    // a PRE-EXISTING HOLE this slice's <button> conversion makes exploitable. Closed here,
+    // not narrated as new: `font:900px/1 monospace` keeps `width:max-content`, one
+    // horizontal edge, and every allow-listed property NAME, yet renders the badge as a
+    // giant click-eating strip — exactly the regression H4/H4b exist to prevent. The value
+    // pin is the space-STRIPPED form (see this patch file's header note).
+    const fontValue = declarationValue(decls, 'font');
+    expect(
+      fontValue,
+      "KILLS: #help-hint with no 'font' declaration at all — falls back to the UA default " +
+        'font (unpredictable size/metrics, defeating the width:max-content bound)',
+    ).not.toBeNull();
+    expect(
+      fontValue,
+      "KILLS: 'font' declared with ANY value other than the shipped literal — " +
+        '`font:900px/1 monospace` keeps every allow-listed property NAME while rendering the ' +
+        'badge as a giant click-eating strip. Got: ' +
+        JSON.stringify(fontValue),
+    ).toBe('11px/1.3monospace');
 
     // (6) The markup half of the AC-12 front door.
     expect(
@@ -2440,5 +2497,42 @@ describe('m23-s2 (load path): index.html actually LOADS the stylesheet', () => {
         'the browser and an unstyled live region. Resolved path: ' +
         STYLES_CSS_PATH,
     ).toBeGreaterThan(0);
+  });
+});
+
+describe('ux1-1 (m23-s5/ADR-0206 D5): #help-hint is a native <button>', () => {
+  it('BITES: S5T-HINT-BUTTON — #help-hint is a <button type="button">, still a direct <body> child, still carries data-menu-launcher, still names the ? key, and still has zero element children', () => {
+    // A11Y-23's markup half: the sole always-on menu affordance must be reachable by Tab and
+    // activatable by Enter AND Space. A <div> (even with tabindex + a click handler) gets
+    // neither for free — a native <button> does.
+    // WRONG IMPL KILLED (1): #help-hint left as a <div> — Enter/Space activation is
+    //   unreachable without hand-rolled key handling main.ts must never own
+    //   (W-UX1-HINT-NO-JS-OWNER).
+    // WRONG IMPL KILLED (2): the conversion drops data-menu-launcher, re-parents the badge
+    //   out of <body>, or grows an element child (e.g. wrapping the text in a <span>) — H1/
+    //   H2b's own invariants, restated here so this ONE test proves the whole markup
+    //   contract for the button shape at once.
+    // WRONG IMPL KILLED (3): shipping the button WITHOUT type="button" — the default
+    //   <button> type is "submit", which would try to submit an enclosing <form> the moment
+    //   one exists, and is never the intended semantics for a menu launcher regardless.
+    const doc = parseIndexHtml();
+    const hint = doc.querySelector('#help-hint');
+    expect(hint, '#help-hint must exist').not.toBeNull();
+    expect(hint!.tagName, '#help-hint must be a <button>').toBe('BUTTON');
+    expect(hint!.getAttribute('type'), '#help-hint must declare type="button"').toBe('button');
+    expect(hint!.parentElement?.tagName, '#help-hint must still be a direct child of <body>').toBe(
+      'BODY',
+    );
+    expect(
+      hint!.hasAttribute('data-menu-launcher'),
+      '#help-hint must still carry data-menu-launcher — the delegated binding contract ' +
+        '(W-UX1-HINT-NO-JS-OWNER, ADR-0151 D2) is unaffected by the tag change',
+    ).toBe(true);
+    const text = hint!.textContent ?? '';
+    expect(text.includes('?'), 'the button must still name the ? key').toBe(true);
+    expect(
+      Array.from(hint!.children).map((c) => c.tagName),
+      '#help-hint must still have ZERO element children (a leaf text button)',
+    ).toEqual([]);
   });
 });
