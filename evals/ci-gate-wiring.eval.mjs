@@ -549,7 +549,10 @@ export function a11yRecipeBodyIntact(justfileText) {
     };
   }
   if (body.indexOf('vitest run') === -1) {
-    return { ok: false, reason: 'justfile a11y-e2e: body missing `vitest run` — no real test runner' };
+    return {
+      ok: false,
+      reason: 'justfile a11y-e2e: body missing `vitest run` — no real test runner',
+    };
   }
   if (body.indexOf('--reporter=json') === -1) {
     return {
@@ -633,7 +636,8 @@ export function a11yNightlyJobIsWired(nightlyYaml) {
     if (tr.startsWith('if:')) {
       return {
         ok: false,
-        reason: 'nightly a11y-e2e job has a job-level if: condition — it can disable the entire job',
+        reason:
+          'nightly a11y-e2e job has a job-level if: condition — it can disable the entire job',
       };
     }
     if (tr.startsWith('continue-on-error:')) {
@@ -1593,7 +1597,7 @@ a11y-e2e:
         name,
         pass: false,
         detail:
-          "T-a11y-recipe-unrelated-spec: a11yRecipeBodyIntact accepted a vitest call that never targets overlayA11yWiring.test.ts",
+          'T-a11y-recipe-unrelated-spec: a11yRecipeBodyIntact accepted a vitest call that never targets overlayA11yWiring.test.ts',
       };
     }
   }
@@ -1807,7 +1811,8 @@ jobs:
       return {
         name,
         pass: false,
-        detail: 'T-a11y-nightly-absent: a11yNightlyJobIsWired accepted a workflow with no a11y-e2e job',
+        detail:
+          'T-a11y-nightly-absent: a11yNightlyJobIsWired accepted a workflow with no a11y-e2e job',
       };
     }
   }
@@ -1861,7 +1866,8 @@ jobs:
       return {
         name,
         pass: false,
-        detail: "T-a11y-nightly-or-true: a11yNightlyJobIsWired accepted '- run: just a11y-e2e || true'",
+        detail:
+          "T-a11y-nightly-or-true: a11yNightlyJobIsWired accepted '- run: just a11y-e2e || true'",
       };
     }
   }

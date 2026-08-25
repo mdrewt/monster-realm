@@ -118,6 +118,27 @@ aliased binding; `reduced-motion-purity` extends the `matchMedia` ownership rule
 structurally cannot see. `ui/overlayA11yWiring.test.ts` is the only TOTALITY oracle over all
 sixteen `OverlayId`s, and the only one whose DOM fixture is the shipped `client/index.html` rather
 than a hand-copied shell, so a `tabindex` deleted from the real markup reds.
+**The nightly a11y decay ratchet (m23-s11)** — `just a11y-e2e floor="169": wasm`, run by its own
+`a11y-e2e` job in `nightly.yml` and NOT in `just ci` (a browser and a live server in the hermetic
+gate is the exact thing that keeps `e2e` out of it, ADR-0043). It adds the one lens the per-PR
+gate structurally cannot: DECAY. `evals/run.mjs` fails only at ZERO eval files, and a MISSING
+vitest spec reports `numTotalTests:0` and exits 0 — both measured — so today an a11y eval or spec
+can be DELETED with `just ci` staying green. Half 1 imports the three a11y evals BY NAME (a
+deleted one makes `import()` throw: fail-closed by construction, no floor needed); half 2 floors
+the eight-file a11y unit tier at 169 tests with `--reporter=json`, rejecting a pending/todo test
+as a silently ungated one. `: wasm` is load-bearing — `main.a11yFocus.test.ts` imports `main.ts`,
+which imports the client-wasm pkg, so without it those 26 tests fail to RESOLVE and the whole
+M23-S5 focus-return tier drops silently out of the ratchet. `evals/ci-gate-wiring.eval.mjs` gains
+two ADDITIVE checks (`a11yRecipeBodyIntact`, `a11yNightlyJobIsWired`) with 27 proof-of-teeth
+fixtures; `REQUIRED_JUST_STEPS` is deliberately UNCHANGED. **It runs no axe-core and no real
+browser:** spec §5.7 names that as the payload, but no axe-core exists in the repo and no slice in
+the spec's own §4 table owns authoring it — a genuine spec gap (ledger X10/X11), and the recipe
+prints a `DEFERRED:` banner every run so it can never read as covered. **A11Y-32 and A11Y-33 are
+MANUAL and SHALL NEVER be reported as CI-green** — `docs/a11y-manual-protocol.md` is the
+human-executed protocol (NVDA 2024.x + Chrome, mouse unplugged and screen covered; VoiceOver +
+Safari as a non-gating cross-check) and its append-only run log. Its Protocol B carries a CONTROL
+step: a reachability check after closing the overlay, because a "nothing outside the dialog was
+read" result on a document that reads nothing anywhere passes for the wrong reason.
 **DELEGATION PINS, a new gate pattern** (m23-s10): where a criterion already ships an
 equal-or-stronger unit-tier oracle — and `just ci` runs `eval` and `client-test` together, so the
 eval tier adds no CI surface — the eval PINS the delegate instead of re-implementing it weaker.
