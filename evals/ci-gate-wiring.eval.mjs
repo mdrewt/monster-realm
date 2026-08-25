@@ -529,6 +529,13 @@ const A11Y_PINNED_SPEC = 'overlayA11yWiring.test.ts';
 // The exact, UNSUFFIXED step line the nightly job must carry.
 const A11Y_NIGHTLY_STEP = '- run: just a11y-e2e';
 
+// NOT redundant with a11yRecipeBodyIsPinned below, though on an unchanged tree it can only agree
+// with it: the two answer different questions across a DELIBERATE recipe edit. The verbatim pin
+// says "nothing moved"; the moment someone legitimately changes the recipe they update the pin in
+// the same commit and the pin goes quiet — and these token clauses are what still has to hold
+// afterwards. Deleting either one leaves a real hole: without the pin, tokens can sit above an
+// `exit 0` (red-team executed it); without the tokens, a pin update can silently drop a whole half
+// of the recipe.
 export function a11yRecipeBodyIntact(justfileText) {
   // extractRecipeBodyLocal already strips `#` lines and already handles the
   // `name param=: dep` header form, so a token that appears ONLY in a comment
@@ -687,18 +694,24 @@ export function a11yNightlyJobIsWired(nightlyYaml) {
     };
   }
 
-  // Job-level neutering. Job-level keys (runs-on, needs, if, continue-on-error,
-  // env, …) always precede `steps:`; anything after it is step-level and is
-  // caught by the per-step range below. Same walk as ciStepsUnneutered.
+  // ONE walk over the job block's pre-`steps:` keys. Job-level keys (runs-on,
+  // needs, strategy, if, continue-on-error, env, ...) always precede `steps:`;
+  // anything after it is step-level and is caught by the per-step range below.
+  // Four things are checked here, and the last two exist because red-team
+  // EXECUTED two "declared but never SCHEDULED" bypasses that every other check
+  // in this predicate accepts, since none of them asks whether GitHub will ever
+  // RUN the job: an empty `strategy.matrix` expands to ZERO job instances, and
+  // `runs-on: [self-hosted, a-label-nothing-carries]` queues forever (any
+  // eventual timeout reads as a generic cancellation, not an a11y signal). Both
+  // are closed by NARROWING rather than by enumerating bad shapes: this job has
+  // no legitimate use for a matrix, and exactly one legitimate runner.
+  const A11Y_RUNS_ON = 'runs-on: ubuntu-latest';
   const blockLines = block.split('\n');
-  let pastSteps = false;
+  let runsOnSeen = false;
   for (const line of blockLines) {
     const tr = line.trim();
-    if (tr === 'steps:' || tr.startsWith('steps:')) {
-      pastSteps = true;
-      continue;
-    }
-    if (pastSteps) break;
+    if (tr === 'steps:' || tr.startsWith('steps:')) break;
+    if (tr.startsWith('#')) continue;
     if (tr.startsWith('if:')) {
       return {
         ok: false,
@@ -709,21 +722,42 @@ export function a11yNightlyJobIsWired(nightlyYaml) {
     if (tr.startsWith('continue-on-error:')) {
       const value = tr.slice('continue-on-error:'.length).trim();
       // WHITELIST, not isTruthyCoe's blacklist. Red-team EXECUTED two bypasses of
-      // the blacklist: `${{ !cancelled() }}` and `${{ success() || true }}` are both
-      // unconditionally true in every real run and both slipped through, because
-      // isTruthyCoe only knows the literals true/yes/on/True and the exact
-      // `${{ true }}`. An expression whitelist is unclosable; a VALUE whitelist is
-      // closable — this job has exactly one legitimate spelling, and `absent` is
-      // the other. (isTruthyCoe is left byte-identical: it is shared with
+      // the blacklist: `${{ !cancelled() }}` and `${{ success() || true }}` are
+      // both unconditionally true in every real run and both slipped through,
+      // because isTruthyCoe only knows the literals true/yes/on/True and the exact
+      // `${{ true }}`. An EXPRESSION whitelist is unclosable; a VALUE whitelist is
+      // closable — this job has exactly one legitimate spelling, and "no key at
+      // all" is the other. (isTruthyCoe is left byte-identical: it is shared with
       // ciStepsUnneutered, whose fixtures pin its current semantics. The same hole
-      // exists there and is FLAGGED UPWARD rather than fixed from this slice.)
+      // exists there and is FLAGGED UPWARD rather than widened from this slice.)
       if (value !== 'false') {
         return {
           ok: false,
-          reason: `nightly a11y-e2e job has job-level continue-on-error: ${value} — only the literal \`false\` (or no key at all) is admitted; an expression like \`\${{ !cancelled() }}\` is truthy in every real run`,
+          reason: `nightly a11y-e2e job has job-level continue-on-error: ${value} — only the literal \`false\` (or no key at all) is admitted; an always-true expression is not a non-truthy value`,
         };
       }
     }
+    if (tr.startsWith('strategy:') || tr.startsWith('matrix:')) {
+      return {
+        ok: false,
+        reason: `nightly a11y-e2e job declares \`${tr}\` — a matrix strategy may expand to ZERO job instances, which declares the gate without ever running it`,
+      };
+    }
+    if (tr.startsWith('runs-on:')) {
+      runsOnSeen = true;
+      if (tr !== A11Y_RUNS_ON) {
+        return {
+          ok: false,
+          reason: `nightly a11y-e2e job declares \`${tr}\` — exactly \`${A11Y_RUNS_ON}\` is admitted; a job pointed at a label no runner carries is declared but never scheduled`,
+        };
+      }
+    }
+  }
+  if (!runsOnSeen) {
+    return {
+      ok: false,
+      reason: 'nightly a11y-e2e job declares no `runs-on:` — it cannot be scheduled at all',
+    };
   }
 
   // Step-level neutering, scoped to the gate step's own range. Scoping matters:
@@ -757,49 +791,6 @@ export function a11yNightlyJobIsWired(nightlyYaml) {
         };
       }
     }
-  }
-
-  // Red-team EXECUTED two "declared but never scheduled" bypasses that every check
-  // above accepts, because none of them asks whether GitHub will ever RUN the job:
-  //   (a) `strategy: { matrix: { shard: [] } }` — an empty matrix expands to ZERO
-  //       job instances, so the step exists and never executes;
-  //   (b) `runs-on: [self-hosted, a-label-that-does-not-exist]` — the job queues
-  //       forever for a runner that never appears, and any eventual timeout reads
-  //       as a generic cancellation rather than an a11y signal.
-  // Both are closed by narrowing rather than by enumerating bad shapes: this job
-  // has no legitimate use for a matrix, and exactly one legitimate runner.
-  const A11Y_RUNS_ON = 'runs-on: ubuntu-latest';
-  let runsOnSeen = false;
-  let sawSteps = false;
-  for (const line of blockLines) {
-    const tr = line.trim();
-    if (tr.startsWith('#')) continue;
-    if (tr === 'steps:' || tr.startsWith('steps:')) {
-      sawSteps = true;
-      continue;
-    }
-    if (sawSteps) break;
-    if (tr.startsWith('strategy:') || tr.startsWith('matrix:')) {
-      return {
-        ok: false,
-        reason: `nightly a11y-e2e job declares \`${tr}\` — a matrix strategy may expand to ZERO job instances, which declares the gate without ever running it`,
-      };
-    }
-    if (tr.startsWith('runs-on:')) {
-      runsOnSeen = true;
-      if (tr !== A11Y_RUNS_ON) {
-        return {
-          ok: false,
-          reason: `nightly a11y-e2e job declares \`${tr}\` — exactly \`${A11Y_RUNS_ON}\` is admitted; a job pointed at a label no runner carries is declared but never scheduled`,
-        };
-      }
-    }
-  }
-  if (!runsOnSeen) {
-    return {
-      ok: false,
-      reason: `nightly a11y-e2e job declares no \`runs-on:\` — it cannot be scheduled at all`,
-    };
   }
 
   return {

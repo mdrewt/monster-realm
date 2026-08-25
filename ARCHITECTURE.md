@@ -129,8 +129,16 @@ the eight-file a11y unit tier at 169 tests with `--reporter=json`, rejecting a p
 as a silently ungated one. `: wasm` is load-bearing — `main.a11yFocus.test.ts` imports `main.ts`,
 which imports the client-wasm pkg, so without it those 26 tests fail to RESOLVE and the whole
 M23-S5 focus-return tier drops silently out of the ratchet. `evals/ci-gate-wiring.eval.mjs` gains
-two ADDITIVE checks (`a11yRecipeBodyIntact`, `a11yNightlyJobIsWired`) with 27 proof-of-teeth
-fixtures; `REQUIRED_JUST_STEPS` is deliberately UNCHANGED. **It runs no axe-core and no real
+three ADDITIVE checks with 35 proof-of-teeth fixtures; `REQUIRED_JUST_STEPS` is deliberately
+UNCHANGED. `a11yRecipeBodyIntact` pins the recipe's required tokens and `a11yNightlyJobIsWired`
+pins the job to exactly one unsuffixed, unneutered, SCHEDULABLE invocation (no empty `matrix`, no
+phantom `runs-on`, and `continue-on-error` by VALUE whitelist — red-team executed both
+`${{ !cancelled() }}` and `${{ success() || true }}` past `isTruthyCoe`'s literal blacklist).
+`a11yRecipeBodyIsPinned` exists because red-team then proved token presence is not reachability:
+`exit 0` planted under `set -euo pipefail`, above a byte-identical body, kept every required token
+and made the recipe a no-op. A blacklist of abort constructs is unclosable, so the recipe REGION
+is pinned VERBATIM — raw, not comment-stripped, so a deleted shebang reds too — and the justfile
+and the pin move in lockstep or CI is red. **It runs no axe-core and no real
 browser:** spec §5.7 names that as the payload, but no axe-core exists in the repo and no slice in
 the spec's own §4 table owns authoring it — a genuine spec gap (ledger X10/X11), and the recipe
 prints a `DEFERRED:` banner every run so it can never read as covered. **A11Y-32 and A11Y-33 are
