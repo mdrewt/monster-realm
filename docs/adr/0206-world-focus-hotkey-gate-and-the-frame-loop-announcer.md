@@ -99,10 +99,16 @@ badge itself, so a gated front door would refuse the very interaction A11Y-23 ex
 inside the Box. `Escape` still does, and the frame-loop focus return (D4) puts focus back on the
 world region, so the loop closes.
 
-**D3 — One announcement edge, in the rAF frame loop, using S1's pure reducer.** After the
-interact-prompt block, inside the frame's existing `try` and after the `sessionGateBlocks()` early
-return (so it reuses the frame's single `performance.now()` read — `liveRegion.ts` demands a
-monotonic clock and bans `Date.now()`):
+**D3 — One announcement edge, at the TOP of the rAF frame body, using S1's pure reducer.** It sits
+immediately after the `sessionGateBlocks()` early return and the frame's existing
+`const now = performance.now()` — reusing that single read, because `liveRegion.ts` demands a
+monotonic clock and bans `Date.now()` — and **before** `predictor.drain`. The position is deliberate
+and was moved there by the plan's red-team pass: the frame body's `predictor.drain` /
+`resolver.resolve` / `renderer.render` / `nearestInteractable` calls are unguarded, so a fault that
+recurs every frame would, with the block at the tail, silence the live region indefinitely *and*
+freeze `lastA11ySnapshot`, collapsing several transitions on the recovering frame. Reading the
+visible-id set at the top of the frame is equivalent — nothing inside a frame changes overlay
+visibility — and strictly more robust.
 
 ```ts
 const top = <the frontmost visible overlay, or null>;
@@ -122,6 +128,18 @@ Placing the pump *after* the session gate is deliberate: session-blocked frames 
 transitions, so the only consequence is that a message still pending when the session died is
 dropped rather than spoken over a session-terminal screen — the better behaviour. The named residual
 is that a pre-expiry announcement inside its 500 ms window is lost.
+
+**D3a — Both new blocks are pinned by EXACT EQUALITY, not containment, and the canvas assignment is
+pinned at all.** Two attacks measured against the plan justify this. (i) An implementation that keeps
+`worldHasFocus`'s body and all twelve conjuncts byte-exact but never assigns `worldCanvasEl` — the
+line deleted, or shadowed by a second `let worldCanvasEl` inside `main()` — degrades the gate to
+"body-or-nothing", so every hotkey dies the first time a keyboard user Tabs to the canvas: the exact
+user this milestone serves, on the path A11Y-23 adds. The assignment therefore lives in its own
+marked region pinned by exact equality, and the census asserts `worldCanvasEl` is *declared* exactly
+once in the file. (ii) `liveRegion.flush(0)` — any constant argument — makes
+`now - windowOpenedAt` identically zero, so the region never paints again: behaviourally identical to
+never wiring the pump, which is precisely the cliff S1 escalated. A containment scan for
+`liveRegion.flush(` passes it; exact equality on the whole block does not.
 
 **D4 — The focus return lives on that same edge, and it is NOT redundant with `closeOverlayA11y`.**
 This must be written down because it looks redundant and is not. `closeOverlayA11y`'s restore order
@@ -170,7 +188,23 @@ re-parents it, `worldCanvasEl` becomes `null` and the gate degenerates to
 being recognised. Announcements are one frame late (≤16 ms) against a `polite`, 500 ms-coalesced
 region — immaterial.
 
-**Follow-ups (not this slice).** The `message` channel needs a producer for §2.4 (3) and (4). The
+**Accepted residual — `visibleIds(probes)[0]` is DECLARATION order, not z-order.**
+`client/src/ui/overlayRegistry.ts:372-374` filters `OVERLAY_IDS` in `OVERLAY_TIERS` insertion order,
+which is a sound proxy for "frontmost" only while at most one overlay is visible. `dialogueView`
+breaks that: `client/src/main.ts:1574` renders it unconditionally on every store batch and force-hides
+only `menuView` (`:1565`), so a server-pushed conversation can become visible underneath an
+already-open overlay. Two consequences, both real: `topOverlay` does not transition when a dialogue
+opens over a *lower*-index overlay, so that announcement is silently missed; and `visibleIds()[0]`
+reports `dialogueView` as "on top" while a full-screen `z-index:100` `helpView` is what actually
+covers the screen, so the announced name is wrong. **Not fixed here, deliberately:** constraining the
+render-driven overlays' visibility is a view/registry change outside this slice's `touches:`, and
+selecting by real DOM z-order requires changing `A11ySnapshot` — the API S1 froze and S10's tests
+will assert against. A set-diff heuristic inside `main.ts` would work around a registry-ordering
+defect while diverging from `announcements.ts:39-40`'s own documented contract. Recorded as a
+residual targeting S6/S10, not left in prose.
+
+**Follow-ups (not this slice).** The `message` channel needs a producer for §2.4 (3) and (4); it is
+tied to the same residual row rather than an implicit "later slice". The
 `returnFocus`-shadows-`fallbackFocus` finding in `overlayA11y.ts` is a real §4.1 integration note for
 the M23 owner: the required parameter it advertises is unreachable on the common path. The [E2E]-tier
 proofs of A11Y-19/20/22/23 — real AT key delivery under `role="application"`, native `<button>`
