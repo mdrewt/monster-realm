@@ -34,11 +34,28 @@
 // its OWNERSHIP claim must be checked against the COMMENT-STRIPPED source or a module that merely
 // documents the rule would satisfy it.
 //
+// TWO DECLARED RESIDUALS (measured by red-team, m23-s10; deferred with the ledger's X17 batch
+// because closing either needs files outside this slice's `touches:`):
+//   * R-m23-s10-RMCSS — a `@media (prefers-reduced-motion: reduce){:root{--mr-reduce:1}}` block in
+//     `client/src/styles.css`, read back by any module via `getComputedStyle(...).getPropertyValue`.
+//     `listClientSourceFiles` collects `.ts` only, so the stylesheet is scanned by nothing here, and
+//     the reading module names neither motion token. NOT closed in this slice on purpose: spec §4
+//     row S9 lands a legitimate `prefers-reduced-motion` block in that exact file, so a ban written
+//     now would have to be unwritten, and `styles.css` is S9's `touches:`, not this slice's.
+//   * R-m23-s10-RMEXT — a `.js`/`.mjs`/`.cjs`/`.tsx` module under `client/src`. Vite bundles it; the
+//     walker below now collects those extensions, but `motionPreference.test.ts`'s shipped census
+//     still collects `.ts` only, so the two tiers disagree on scope until S10b reconciles them.
+//
 // NO `main` GUARD (see the manifest eval). `run.mjs` imports the default export.
 import { readFileSync } from 'node:fs';
-import { listClientSourceFiles, stripCssComments } from './a11y-static-shell.eval.mjs';
+import {
+  listClientSourceFiles,
+  stripCssComments,
+  stripHtmlComments,
+} from './a11y-static-shell.eval.mjs';
 import {
   findInertDelegations,
+  findInertPins,
   includeSelectsTests,
   stripTsComments,
 } from './overlay-a11y-manifest.eval.mjs';
@@ -127,30 +144,10 @@ export function findOutOfTreeMotionReads(sources) {
   for (const [path, raw] of Object.entries(sources)) {
     let stripped = raw;
     if (path.endsWith('.ts')) stripped = stripTsComments(raw);
-    else stripped = stripCssComments(stripHtml(raw));
+    else stripped = stripCssComments(stripHtmlComments(raw));
     if (MOTION_TOKENS.some((t) => stripped.indexOf(t) !== -1)) hits.push(path);
   }
   return hits.sort();
-}
-
-/** Remove HTML comments (see the sibling eval's `stripHtmlComments` for the measured reason this
- *  is not optional on `client/index.html`). Kept local so this eval's out-of-tree scan does not
- *  depend on the shell eval's evaluation order. */
-function stripHtml(html) {
-  let out = '';
-  let i = 0;
-  while (i < html.length) {
-    if (html.startsWith('<!--', i)) {
-      const end = html.indexOf('-->', i + 4);
-      const stop = end === -1 ? html.length : end + 3;
-      for (let k = i; k < stop; k++) if (html[k] === '\n') out += '\n';
-      i = stop;
-      continue;
-    }
-    out += html[i];
-    i++;
-  }
-  return out;
 }
 
 /** The stronger S7 oracle this eval complements rather than replaces. Pinned so that deleting it
@@ -161,7 +158,8 @@ export const MOTION_DELEGATIONS = Object.freeze([
     criterion:
       'A11Y-28 — the in-tree census, with import allow-lists and the disguised-test tripwire',
     file: 'client/src/render/motionPreference.test.ts',
-    needles: ['S7T-SCAN'],
+    titleNeedles: ['S7T-SCAN'],
+    codeNeedles: ['mentionsMatchMedia'],
   },
 ]);
 
@@ -362,6 +360,10 @@ export default async function () {
     );
   }
 
+  const inertPins = findInertPins((f) => readFileSync(f, 'utf8'), MOTION_DELEGATIONS);
+  if (inertPins.length > 0) {
+    return bad(`[A11Y-RM2d] DELEGATION PIN INERT: ${inertPins.join(' | ')}`);
+  }
   const inert = findInertDelegations((f) => readFileSync(f, 'utf8'), MOTION_DELEGATIONS);
   if (inert.length > 0) {
     return bad(`[A11Y-RM2d] delegation pin failures: ${inert.join(' | ')}`);

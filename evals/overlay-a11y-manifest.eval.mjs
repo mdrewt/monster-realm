@@ -115,6 +115,12 @@ export const FOCUS_SPELLINGS = Object.freeze([
   // the scan fails LOUD on the concatenation shape rather than passing it, per §5.4's declared
   // "fail loud on an un-parseable shape" default.
   { tag: 'computed-string', re: /'foc'\s*\+|"foc"\s*\+/ },
+  // MEASURED BYPASS (red-team, m23-s10): `const FOCUS_KEY = 'focus'; el[FOCUS_KEY]();` — one hop
+  // of ordinary dynamic dispatch. It carries no `.focus` token, the literal is not inside `[ ]`,
+  // and it is not the concatenation shape, so every clause above misses it. Banning the bare
+  // string LITERAL closes it; it runs on the comment-stripped (strings-intact) source, and a view
+  // has no legitimate reason to name the method by string at all — `overlayA11y.ts` owns the call.
+  { tag: 'string-literal', re: /['"`]focus['"`]/ },
 ]);
 
 /**
@@ -237,9 +243,21 @@ export function findFocusCallSites(src) {
  * admits `foo.test.ts.bak` and a `x.test.ts/`-named directory.
  */
 export function discoverViewFiles(dir) {
-  return readdirSync(dir)
-    .filter((f) => f.endsWith('View.ts') && !f.endsWith('.test.ts'))
-    .sort();
+  const out = [];
+  for (const entry of readdirSync(dir, { withFileTypes: true })) {
+    if (entry.isDirectory()) {
+      // RECURSIVE (red-team, m23-s10): a flat readdir leaves `ui/overlays/ghostView.ts` neither
+      // scanned nor reported unsanctioned, and the vacuity floor does not fire because nothing was
+      // removed. Nested paths are reported with their subdirectory prefix so the roster ratchet
+      // still names them.
+      for (const nested of discoverViewFiles(`${dir}/${entry.name}`)) {
+        out.push(`${entry.name}/${nested}`);
+      }
+      continue;
+    }
+    if (entry.name.endsWith('View.ts') && !entry.name.endsWith('.test.ts')) out.push(entry.name);
+  }
+  return out.sort();
 }
 
 /** Roster entries absent from disk — a renamed or deleted view. */
@@ -266,45 +284,68 @@ export const MANIFEST_DELEGATIONS = Object.freeze([
     tag: '[A11Y-01]',
     criterion: 'A11Y-1 — OverlayId <-> OVERLAY_A11Y totality, both directions',
     file: 'client/src/ui/overlayRegistry.test.ts',
-    needles: ['OR-A11Y-TOTALITY-COMPILE', 'stowawayInA11y', 'missingFromA11y'],
+    titleNeedles: ['OR-A11Y-TOTALITY-COMPILE'],
+    codeNeedles: ['stowawayInA11y', 'missingFromA11y'],
   },
   {
     tag: '[A11Y-02]',
     criterion: 'A11Y-3 — labelKey non-empty, unique, brace-free, segment-shaped (ICU ban)',
     file: 'client/src/ui/overlayRegistry.test.ts',
-    needles: ['OR-A11Y-LABELKEY-SHAPE'],
+    titleNeedles: ['OR-A11Y-LABELKEY-SHAPE'],
+    codeNeedles: ['SHAPE_RE'],
   },
   {
     tag: '[A11Y-03]',
     criterion: 'A11Y-5 — dismissible read from OVERLAY_TIERS, never a hand-kept id list',
     file: 'client/src/ui/overlayRegistry.test.ts',
-    needles: ['OR-A11Y-DISMISSIBLE-VS-TIER', 'OVERLAY_TIERS[id]'],
+    titleNeedles: ['OR-A11Y-DISMISSIBLE-VS-TIER'],
+    codeNeedles: ['OVERLAY_TIERS[id]'],
   },
   {
     tag: '[A11Y-04]',
     criterion: 'A11Y-4 — labelKey <-> a11yCopy both directions, prefix-scoped to a11y.overlay.*',
     file: 'client/src/ui/a11yCopy.test.ts',
-    needles: ['A11YCOPY-OVERLAY-NAMESPACE-EXACT'],
+    titleNeedles: ['A11YCOPY-OVERLAY-NAMESPACE-EXACT'],
+    codeNeedles: ['missingFromCatalog', 'stowawayInCatalog'],
   },
+]);
+
+/** Suspension spellings that keep `vitest run` GREEN while the delegate stops asserting anything.
+ *  `.only` is already gated by `vite.config.ts`'s `allowOnly: false`; these are not. This is the
+ *  REALISTIC accident the pins exist to catch — a skipped delegate is invisible to `just ci`. */
+const SUSPENSION_SPELLINGS = Object.freeze([
+  'it.skip(',
+  'test.skip(',
+  'describe.skip(',
+  'it.todo(',
+  'test.todo(',
+  'describe.todo(',
+  'xit(',
+  'xdescribe(',
 ]);
 
 /**
  * Evaluate a delegation table. A pin FAILS, with a distinguishable reason, when any of:
  *
- *  1. ABSENT — a needle is missing from the COMMENT-STRIPPED delegate. Stripping is the point: a
- *     decoy comment naming the test would satisfy a raw scan, and "declaration pins are forgeable
- *     by a planted string" is a measured finding in this repo.
- *  2. INERT — deleting the needle from an in-memory copy of the REAL delegate does not make this
- *     same predicate fail. A pin that cannot fail is a gate that prints PASS while proving
- *     nothing, which is the exact shape behind "every gate PASSes yet the ledger reports 0/N met".
- *     This is a proof-of-teeth executed against the live artefact on every CI run, not a fixture
- *     that can rot out of date.
- *  3. UNREADABLE — the delegate file is gone. Never swallowed: a `catch { continue }` here would
+ *  1. UNREADABLE — the delegate file is gone. Never swallowed: a `catch { continue }` here would
  *     make deleting the delegate the easiest way to go green.
- *  4. EMPTY — the delegate has no `describe(` after stripping, i.e. it was gutted to a shell.
+ *  2. EMPTY — no `describe(` survives comment-stripping, i.e. the file was gutted to a shell.
+ *  3. SUSPENDED — the delegate contains a `.skip`/`.todo`/`x`-prefixed suite or case. Measured:
+ *     `describe.skip(` keeps `vitest run` green AND keeps a naive presence pin green, so the
+ *     delegated oracle silently stops running while every gate reports PASS.
+ *  4. TITLE-ABSENT — a `titleNeedle` (a test NAME, which necessarily lives inside a string
+ *     literal) is missing from the COMMENT-STRIPPED delegate. Stripping matters: a decoy comment
+ *     naming the test would otherwise satisfy a raw scan.
+ *  5. CODE-ABSENT — a `codeNeedle` (an identifier or call expression) is missing from the
+ *     COMMENT-**AND-STRING**-stripped delegate. This is what closes the repo's measured
+ *     "declaration pins are forgeable by a planted string literal" hole: `const decoy =
+ *     'OR-A11Y-TOTALITY-COMPILE';` satisfies a title needle but cannot satisfy a code needle,
+ *     because string BODIES are gone from the source this clause reads.
  *
- * REACHABILITY is checked once, separately, by `includeSelectsTests` — none of the four conditions
- * above notices that `vite.config.ts` stopped selecting the delegate for execution.
+ * What it deliberately does NOT prove is recorded as residual R-m23-s10-CSSDRIFT in the header:
+ * that the delegate's assertions are semantically correct. REACHABILITY (that CI still selects the
+ * file at all) is a separate clause — `includeSelectsTests` — because none of the five above
+ * notices a `test.include`/`test.exclude` change.
  */
 export function findInertDelegations(readFile, delegations) {
   const failures = [];
@@ -325,14 +366,20 @@ export function findInertDelegations(readFile, delegations) {
       failures.push(`${d.tag} EMPTY ${d.file}: no describe() survives comment-stripping`);
       continue;
     }
-    for (const needle of d.needles) {
-      if (stripped.indexOf(needle) === -1) {
-        failures.push(`${d.tag} ABSENT ${d.file}: '${needle}' is not in the stripped source`);
-        continue;
+    for (const spelling of SUSPENSION_SPELLINGS) {
+      if (stripped.indexOf(spelling) !== -1) {
+        failures.push(`${d.tag} SUSPENDED ${d.file}: contains '${spelling}'`);
       }
-      const mutated = stripTsComments(raw.split(needle).join(''));
-      if (mutated.indexOf(needle) !== -1) {
-        failures.push(`${d.tag} INERT ${d.file}: deleting '${needle}' did not remove it`);
+    }
+    for (const needle of d.titleNeedles) {
+      if (stripped.indexOf(needle) === -1) {
+        failures.push(`${d.tag} TITLE-ABSENT ${d.file}: '${needle}'`);
+      }
+    }
+    const codeOnly = stripTsCommentsAndStrings(raw);
+    for (const needle of d.codeNeedles) {
+      if (codeOnly.indexOf(needle) === -1) {
+        failures.push(`${d.tag} CODE-ABSENT ${d.file}: '${needle}' is not in executable source`);
       }
     }
   }
@@ -340,28 +387,84 @@ export function findInertDelegations(readFile, delegations) {
 }
 
 /**
+ * Prove every pin BITES, by routing a mutated delegate through the SHIPPED predicate and requiring
+ * it to report a failure.
+ *
+ * This replaces a probe that looked like a control mutation and was in fact a tautology: deleting a
+ * needle from a string and then asking whether the string still contains it can only ever answer
+ * "no". Here the mutated source goes through `findInertDelegations` itself — the same function the
+ * gate runs — and a pin that does not fail is reported as INERT. Run against the REAL delegate
+ * files on every CI run, so it cannot rot the way an inline fixture can.
+ *
+ * Returns the pins that did NOT bite; empty means every needle is load-bearing.
+ */
+export function findInertPins(readFile, delegations) {
+  const inert = [];
+  for (const d of delegations) {
+    let raw;
+    try {
+      raw = readFile(d.file);
+    } catch {
+      continue; // an unreadable delegate is already a findInertDelegations failure
+    }
+    for (const needle of [...d.titleNeedles, ...d.codeNeedles]) {
+      const mutated = raw.split(needle).join('');
+      if (findInertDelegations(() => mutated, [d]).length === 0) {
+        inert.push(`${d.tag} INERT ${d.file}: deleting '${needle}' does not fail the pin`);
+      }
+    }
+  }
+  return inert;
+}
+
+/**
  * Does `vite.config.ts` still select the delegate specs for execution?
  *
- * Scoped to the `test.include` ARRAY, never a whole-file search: `coverage.include` also exists in
- * that file (`vite.config.ts:68`), so a whole-file `indexOf` would report the pattern present even
- * after `test.include` was narrowed — a fail-open the sibling eval records at
- * `dom-shell-coverage-exclusion.eval.mjs:266`. A narrowed include silently un-runs every delegate
- * while all four pins stay green, which is the one hole the pins structurally cannot see.
+ * Anchored to the `test: {` block, then scoped to that block's `include: [` array. BOTH scopings
+ * are load-bearing: `coverage.include` also exists in that file (`vite.config.ts:68`), so a
+ * whole-file search fails open once `test.include` is narrowed, and a first-`include:` search
+ * silently redirects to the coverage array if the two blocks are ever reordered.
+ *
+ * `test.exclude` is checked too. Narrowing the include is not the only way to un-run a delegate —
+ * measured: adding the delegate's path to `exclude` leaves the include array byte-identical while
+ * every pin stays green. Any non-empty `exclude` naming a `.test.ts` path is rejected outright
+ * rather than pattern-matched, because a glob matcher here would be a second, weaker implementation
+ * of vitest's own resolution.
  */
 export function includeSelectsTests(configSrc) {
   const stripped = stripTsComments(configSrc);
-  const open = stripped.indexOf('include: [');
+  const testBlock = stripped.indexOf('test: {');
+  if (testBlock === -1) return false;
+  const open = stripped.indexOf('include: [', testBlock);
   if (open === -1) return false;
   const start = open + 'include: ['.length;
   const end = stripped.indexOf(']', start);
   const slice = end === -1 ? stripped.slice(start) : stripped.slice(start, end);
-  return slice.indexOf('src/**/*.test.ts') !== -1;
+  if (slice.indexOf('src/**/*.test.ts') === -1) return false;
+
+  const excludeOpen = stripped.indexOf('exclude: [', testBlock);
+  if (excludeOpen !== -1) {
+    const exStart = excludeOpen + 'exclude: ['.length;
+    const exEnd = stripped.indexOf(']', exStart);
+    const exSlice = exEnd === -1 ? stripped.slice(exStart) : stripped.slice(exStart, exEnd);
+    // Only a `test.exclude` matters; the `coverage.exclude` array sits after `coverage: {`.
+    const coverageBlock = stripped.indexOf('coverage: {', testBlock);
+    const excludeIsTestScoped = coverageBlock === -1 || excludeOpen < coverageBlock;
+    if (excludeIsTestScoped && exSlice.indexOf('.test.ts') !== -1) return false;
+  }
+  return true;
 }
 
 export default async function () {
   const name = 'overlay-a11y-manifest ([A11Y-15] view-local focus ban + [A11Y-01..04] delegation)';
   let teeth = 0;
-  const teethTotal = 15;
+  const teethTotal = 19;
+  // Every needle across the table — the denominator of the pin-bite proof, so `nonInert=N/N`
+  // reports how many deletions were actually shown to red rather than a constant.
+  const needleCount = MANIFEST_DELEGATIONS.reduce(
+    (n, d) => n + d.titleNeedles.length + d.codeNeedles.length,
+    0,
+  );
   const bad = (detail) => ({ name, pass: false, detail });
 
   // ==================================================================
@@ -470,6 +573,58 @@ export default async function () {
   }
   teeth++;
 
+  // T14b BAD (the MEASURED forgery): a delegate that keeps a real `describe(` and PLANTS every
+  // needle as a string literal. Title needles are satisfied — they ARE strings — so a
+  // presence-only pin ships green. The code needles are read from string-stripped source, so they
+  // are not.
+  const forged =
+    "describe('x', () => { it('y', () => {}); });\n" +
+    `const decoy = [${MANIFEST_DELEGATIONS.flatMap((d) => [...d.titleNeedles, ...d.codeNeedles])
+      .map((n) => `'${n}'`)
+      .join(', ')}];\n`;
+  const forgeryFailures = findInertDelegations(() => forged, MANIFEST_DELEGATIONS);
+  if (!forgeryFailures.some((f) => f.indexOf('CODE-ABSENT') !== -1)) {
+    return bad(
+      'TEETH T14b: a delegate that plants every needle as a STRING LITERAL satisfied the pins — ' +
+        "code needles must be checked against string-stripped source, which is the repo's " +
+        'measured "declaration pins are forgeable by a planted string" finding',
+    );
+  }
+  teeth++;
+
+  // T14c BAD: a SUSPENDED delegate. `describe.skip(` keeps `vitest run` green and keeps a naive
+  // presence pin green — the realistic accident, not an adversarial one.
+  const suspended =
+    "describe('x', () => {});\ndescribe.skip('OR-A11Y-TOTALITY-COMPILE', () => {});\n";
+  if (
+    !findInertDelegations(() => suspended, [MANIFEST_DELEGATIONS[0]]).some(
+      (f) => f.indexOf('SUSPENDED') !== -1,
+    )
+  ) {
+    return bad('TEETH T14c: a `describe.skip(` in a delegate was not reported as SUSPENDED');
+  }
+  teeth++;
+
+  // T14d GOOD: a delegate satisfying every clause must produce ZERO failures — otherwise the four
+  // BAD fixtures above are satisfied by a predicate that simply always fails.
+  const honest =
+    "describe('OR-A11Y-TOTALITY-COMPILE', () => { it('z', () => {}); });\n" +
+    'const missingFromA11y = []; const stowawayInA11y = [];\n';
+  if (findInertDelegations(() => honest, [MANIFEST_DELEGATIONS[0]]).length !== 0) {
+    return bad('TEETH T14d: a delegate satisfying every clause was still reported as failing');
+  }
+  teeth++;
+
+  // T14e BAD: the PIN-BITE proof itself must discriminate. A delegation entry with NO needles has
+  // nothing to delete, so deleting "nothing" cannot fail — `findInertPins` must say so.
+  const emptyPin = [{ ...MANIFEST_DELEGATIONS[0], titleNeedles: ['describe'], codeNeedles: [] }];
+  if (findInertPins(() => honest, emptyPin).length !== 0) {
+    return bad(
+      'TEETH T14e: findInertPins wrongly flagged a needle whose deletion DOES fail the pin',
+    );
+  }
+  teeth++;
+
   // T15 GOOD: a config whose `test.include` still selects the specs. And T16 BAD: one narrowed.
   if (!includeSelectsTests("test: { include: ['src/**/*.test.ts'] }")) {
     return bad('TEETH T15: includeSelectsTests rejected a correct test.include (false negative)');
@@ -523,7 +678,6 @@ export default async function () {
   }
 
   const declarations = new Map(KNOWN_VIEW_FILES);
-  let divergences = 0;
   for (const file of discovered) {
     const path = `${UI_DIR}/${file}`;
     let raw;
@@ -556,7 +710,6 @@ export default async function () {
 
     // The divergence tooth, on the REAL file: both stripper modes must agree.
     if (findFocusCallSites(strippedBoth).length !== hits.length) {
-      divergences++;
       return bad(
         `[A11Y-15] DIVERGENCE in ${path}: the comment-stripped and comment+string-stripped focus ` +
           'counts disagree, so the stripper is mis-tracking state — a real call after a regex ' +
@@ -565,7 +718,15 @@ export default async function () {
     }
   }
 
-  // Delegations.
+  // Delegations. The PIN-BITE proof runs first: a pin that cannot fail is worse than no pin,
+  // because it reports PASS while proving nothing.
+  const inertPins = findInertPins((f) => readFileSync(f, 'utf8'), MANIFEST_DELEGATIONS);
+  if (inertPins.length > 0) {
+    return bad(
+      `[A11Y-01..04] DELEGATION PIN INERT: ${inertPins.join(' | ')} — deleting these needles from ` +
+        'the real delegate does not make the pin fail, so the pin is theatre',
+    );
+  }
   const inert = findInertDelegations((f) => readFileSync(f, 'utf8'), MANIFEST_DELEGATIONS);
   if (inert.length > 0) {
     return bad(
@@ -592,10 +753,12 @@ export default async function () {
     name,
     pass: true,
     detail:
-      `[A11Y-15] views=${discovered.length} hits=0 diverge=${divergences} ` +
+      // `diverge=0` is a CONSTANT on the success path by construction: any disagreement
+      // returns `bad(...)` above. It is reported so the ledger's EXPECT pins that the tooth ran.
+      `[A11Y-15] views=${discovered.length} hits=0 diverge=0 ` +
       `spellings=${FOCUS_SPELLINGS.length}; ` +
       `[A11Y-01..04] pins=${MANIFEST_DELEGATIONS.length}/${MANIFEST_DELEGATIONS.length} ` +
-      `nonInert=${MANIFEST_DELEGATIONS.length}/${MANIFEST_DELEGATIONS.length} reachable=Y; ` +
+      `nonInert=${needleCount}/${needleCount} reachable=Y; ` +
       `teeth=${teeth}/${teethTotal}`,
   };
 }

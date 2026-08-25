@@ -18,11 +18,16 @@
 //     `replaceChildren` call sites in `client/src` target private fields — AND receiver-text
 //     matching was measured to miss every realistic spelling of the thing it bans:
 //     `const b = document.body; b.replaceChildren()`, `document.getElementById('a11y-live').remove()`,
-//     `document.body.innerHTML = ''`, and two more. MODULE OWNERSHIP is the property those
-//     bypasses cannot dodge: `ui/liveRegion.ts` is the sole owner of the node (its own header says
-//     so at `:56`), so no other non-test `client/src` module may name it at all. That is
-//     non-vacuous on the shipped tree and it fails on all five spellings at once, because none of
-//     them can reach the node without naming it.
+//     an `innerHTML` write targeting the document body, and two more. TWO clauses replace it, because
+//     neither alone is enough — a correction recorded here because the first draft claimed
+//     ownership subsumed the receiver clause and it does not:
+//       * MODULE OWNERSHIP — `ui/liveRegion.ts` is the sole owner of the node (its own header says
+//         so at `:56`), so no other non-test `client/src` module may NAME it. This catches every
+//         spelling that reaches the node by id.
+//       * ROOT RECEIVERS — `const b = document.body; b.replaceChildren()` never mentions the node
+//         at all, and the live region is a direct `<body>` child, so a body-level rebuild destroys
+//         it. `findLiveRegionDestroyers` bans the two document roots as receivers, and bans
+//         reaching the node by ARIA selector from anywhere but the owner.
 //
 // `[A11Y-06]`, `[A11Y-07]` and `[A11Y-08]` are DELEGATED to the shipped oracles, which are
 // strictly stronger, and the delegation is proven live by `findInertDelegations` (see the manifest
@@ -54,6 +59,7 @@
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import {
   findInertDelegations,
+  findInertPins,
   includeSelectsTests,
   stripTsComments,
 } from './overlay-a11y-manifest.eval.mjs';
@@ -129,16 +135,25 @@ export function findLiveRegions(html) {
   const tagRe = /<([a-zA-Z][a-zA-Z0-9-]*)((?:[^<>"']|"[^"]*"|'[^']*')*)>/g;
   let m = tagRe.exec(html);
   while (m !== null) {
+    const tag = m[1].toLowerCase();
     const attrs = m[2];
-    const hasAriaLive = /\baria-live\s*=/.test(attrs);
-    const implicitRole = /\brole\s*=\s*["'](status|alert|log|timer|marquee)["']/.exec(attrs);
-    if (hasAriaLive || implicitRole !== null) {
-      regions.push({
-        tag: m[1],
-        attrs,
-        index: m.index,
-        via: hasAriaLive ? 'aria-live' : `role=${implicitRole[1]}`,
-      });
+    // `/i` on BOTH patterns: HTML attribute names are case-insensitive, so `<div ARIA-LIVE=…>` and
+    // `<div ROLE="status">` are valid and a case-sensitive census is blind to them (measured).
+    // The value quote is OPTIONAL for the same reason — `<div role=status>` is legal HTML.
+    const hasAriaLive = /\baria-live\s*=/i.test(attrs);
+    const implicitRole = /\brole\s*=\s*(["']?)(status|alert|log|timer|marquee)\1[\s>]?/i.exec(
+      attrs,
+    );
+    // `<output>` carries the implicit ARIA role `status` with NO attribute at all, so it is
+    // invisible to any attribute-keyed census. It is the most plausible accidental second channel.
+    const implicitTag = tag === 'output';
+    if (hasAriaLive || implicitRole !== null || implicitTag) {
+      const via = hasAriaLive
+        ? 'aria-live'
+        : implicitRole !== null
+          ? `role=${implicitRole[2].toLowerCase()}`
+          : 'tag=output';
+      regions.push({ tag, index: m.index, via });
     }
     m = tagRe.exec(html);
   }
@@ -185,7 +200,14 @@ export function listClientSourceFiles(root, prefix = '') {
     if (statSync(full).isDirectory()) {
       if (entry === 'module_bindings') continue; // generated
       out.push(...listClientSourceFiles(full, rel));
-    } else if (entry.endsWith('.ts') && !entry.endsWith('.test.ts') && !entry.endsWith('.d.ts')) {
+    } else if (
+      // `.js`/`.mjs`/`.cjs`/`.tsx` as well as `.ts`: Vite bundles every one of them, so a rule
+      // scoped to `.ts` alone is escaped by renaming a file (measured, red-team m23-s10).
+      ['.ts', '.tsx', '.js', '.mjs', '.cjs'].some((ext) => entry.endsWith(ext)) &&
+      !entry.endsWith('.test.ts') &&
+      !entry.endsWith('.test.tsx') &&
+      !entry.endsWith('.d.ts')
+    ) {
       out.push(rel);
     }
   }
@@ -211,6 +233,65 @@ export function findLiveRegionIntruders(sources) {
 }
 
 /**
+ * Modules that destroy the live region WITHOUT naming it — the half `findLiveRegionIntruders`
+ * structurally cannot see, and the half §5.2's original `replaceChildren` clause was aimed at.
+ *
+ * CORRECTION, recorded because the first draft of this eval got it wrong: module ownership does NOT
+ * subsume the receiver clause. `const b = document.body; b.replaceChildren();` and
+ * `document.body.innerHTML` never mention `a11y-live`, so ownership is blind to them — and the live
+ * region is a direct `<body>` child, so a body-level rebuild destroys it. This clause bans the two
+ * roots as receivers, and bans reaching the node by ARIA SELECTOR (`[aria-live]`, `[role="status"]`)
+ * from anywhere but the owner, which is the last spelling that needs no id.
+ *
+ * `.remove()` is deliberately absent from the receiver list: `document.body.remove()` is not a
+ * realistic shape and adding it would only widen the false-positive surface.
+ */
+export function findLiveRegionDestroyers(sources) {
+  // Destructive DOM rebuilds. `appendChild` is deliberately ABSENT: appending to `document.body` is
+  // how `sessionView.ts:21`, `claimView.ts:57` and `main.ts:2191` legitimately mount, and banning
+  // it would make this clause unusable and therefore deleted.
+  const DESTRUCTIVE = ['replaceChildren', 'innerHTML', 'removeChild', 'remove()'];
+  const ARIA_SELECTORS = ['[aria-live', "[role='status'", '[role="status"'];
+  // A binding initialised from a document root, in any of `const x = document.body`,
+  // `let x = …`, a bare re-assignment, or a DEFAULT PARAMETER. Measured: the aliased form
+  // `const b = document.body; b.replaceChildren();` is invisible to a direct-receiver scan, and a
+  // fixture that mixed it with the direct form passed for the wrong reason.
+  const ALIAS_RE = /([A-Za-z_$][\w$]*)\s*(?::[^=;()]*)?=\s*document\.(?:body|documentElement)\b/g;
+  const found = [];
+  for (const [path, raw] of Object.entries(sources)) {
+    const stripped = stripTsComments(raw);
+
+    // 1. the direct receiver.
+    for (const op of DESTRUCTIVE) {
+      for (const root of ['document.body.', 'document.documentElement.']) {
+        if (stripped.indexOf(root + op) !== -1) found.push(`${path} (${root}${op})`);
+      }
+    }
+
+    // 2. the SAME operation through an alias. The default-parameter form (`mount: HTMLElement =
+    //    document.body`, errorOverlayView.ts:22) is captured too, and correctly stays clean —
+    //    that module only ever calls `mount.appendChild`, which is not a destructive op.
+    ALIAS_RE.lastIndex = 0;
+    let m = ALIAS_RE.exec(stripped);
+    while (m !== null) {
+      const alias = m[1];
+      for (const op of DESTRUCTIVE) {
+        if (stripped.indexOf(`${alias}.${op}`) !== -1) {
+          found.push(`${path} (${alias} = document root, then ${alias}.${op})`);
+        }
+      }
+      m = ALIAS_RE.exec(stripped);
+    }
+
+    // 3. reaching the node by ARIA SELECTOR — the last spelling that needs no id and no root.
+    if (path === LIVE_REGION_OWNER) continue;
+    const viaAria = ARIA_SELECTORS.find((r) => stripped.indexOf(r) !== -1);
+    if (viaAria !== undefined) found.push(`${path} (${viaAria})`);
+  }
+  return found.sort();
+}
+
+/**
  * The delegation table for `[A11Y-06]`/`[A11Y-07]`/`[A11Y-08]`. Each needle set names BOTH the
  * oracle's definition AND the call that runs it against the real artefact — a definition alone
  * would let the delegate keep a dead function nobody invokes.
@@ -221,28 +302,45 @@ export const SHELL_DELEGATIONS = Object.freeze([
     criterion:
       'A11Y-11 — .sr-only stays in the accessibility tree (no display:none/visibility:hidden)',
     file: 'client/src/indexShell.test.ts',
-    needles: ['function srOnlyIsAccessible(', 'srOnlyIsAccessible(readStylesCss())'],
+    titleNeedles: [],
+    // The DEFINITION, the call ON THE REAL ARTEFACT, and an `expect` that consumes its result.
+    // The third is what stops a delegate keeping the call as a bare statement whose verdict nothing
+    // reads — a measured way to satisfy a presence-only pin while gating nothing.
+    codeNeedles: [
+      'function srOnlyIsAccessible(',
+      'srOnlyIsAccessible(readStylesCss())',
+      'expect(verdict.ok',
+    ],
   },
   {
     tag: '[A11Y-07]',
     criterion:
       'A11Y-12 — styles.css contains zero #id selectors (the inline-style pins stay total)',
     file: 'client/src/indexShell.test.ts',
-    needles: ['function findIdSelectors(', 'findIdSelectors(css)'],
+    titleNeedles: [],
+    codeNeedles: ['function findIdSelectors(', 'findIdSelectors(css)', 'expect(\n      offenders,'],
   },
   {
     tag: '[A11Y-08]',
     criterion: 'A11Y-17 — the canvas is the world region; #app carries no role',
     file: 'client/src/render/world.test.ts',
-    needles: ['S4-WORLD-CANVAS-REGION', "app.canvas.setAttribute('role'"],
+    titleNeedles: ['S4-WORLD-CANVAS-REGION'],
+    // `app.canvas.setAttribute('role'` is NOT usable as a needle here: it appears in this
+    // delegate's own BAD/GOOD FIXTURE strings, so it would be satisfied by the fixtures alone.
+    // These three are executable identifiers on the real-artefact path instead.
+    codeNeedles: ['readWorldSource()', 'anchorNeedle', 'tCalls'],
   },
 ]);
 
 export default async function () {
   const name = 'a11y-static-shell ([A11Y-05a/05b] live region + [A11Y-06/07/08] delegation)';
   let teeth = 0;
-  const teethTotal = 13;
+  const teethTotal = 21;
   const bad = (detail) => ({ name, pass: false, detail });
+  const shellNeedles = SHELL_DELEGATIONS.reduce(
+    (n, d) => n + d.titleNeedles.length + d.codeNeedles.length,
+    0,
+  );
 
   // ==================================================================
   // PROOF-OF-TEETH — fixtures first, real files after.
@@ -374,6 +472,99 @@ export default async function () {
   }
   teeth++;
 
+  // T14 BAD: an implicit live region declared by TAG alone. `<output>` has role="status" with no
+  // attribute whatsoever, so an attribute-keyed census is structurally blind to it.
+  if (findLiveRegions('<body><output id="x"></output></body>').length !== 1) {
+    return bad('TEETH T14: <output> was not counted — it carries the implicit ARIA role "status"');
+  }
+  teeth++;
+
+  // T15 BAD: an UNQUOTED attribute value, which HTML permits.
+  if (findLiveRegions('<body><div role=status></div></body>').length !== 1) {
+    return bad('TEETH T15: `role=status` without quotes was not counted — HTML permits it');
+  }
+  teeth++;
+
+  // T16 BAD: UPPERCASE attribute names, which HTML also permits.
+  if (
+    findLiveRegions('<body><div ARIA-LIVE="polite"></div><div ROLE="ALERT"></div></body>')
+      .length !== 2
+  ) {
+    return bad(
+      'TEETH T16: uppercase aria-live/role attributes were not counted — HTML attribute names ' +
+        'are case-insensitive',
+    );
+  }
+  teeth++;
+
+  // T17 BAD (the clause module ownership does NOT subsume): a DIRECT body-level rebuild that never
+  // names the live region. This is §5.2's original receiver target, restored.
+  if (
+    !findLiveRegionDestroyers({ 'main.ts': 'document.body.innerHTML = "";' }).some(
+      (d) => d.indexOf('main.ts') === 0,
+    )
+  ) {
+    return bad('TEETH T17: a direct `document.body.innerHTML` write was not flagged');
+  }
+  teeth++;
+
+  // T17b BAD (a MEASURED survivor of the first draft): the SAME destruction through an ALIAS. The
+  // original fixture mixed this with the direct form above, so it passed on the direct half while
+  // the aliased half shipped green — fixture monoculture, caught by a mutation bite-proof.
+  if (
+    !findLiveRegionDestroyers({
+      'ui/rogue.ts': 'const b = document.body;\nb.replaceChildren();',
+    }).some((d) => d.indexOf('ui/rogue.ts') === 0)
+  ) {
+    return bad(
+      'TEETH T17b: `const b = document.body; b.replaceChildren();` was not flagged — a ' +
+        'direct-receiver scan is blind to the aliased form, and it never NAMES the live region ' +
+        'so module ownership is blind to it too',
+    );
+  }
+  teeth++;
+
+  // T17c GOOD (hostile-but-correct): appending to the body is how three shipped modules mount, and
+  // a DEFAULT PARAMETER aliasing the body then only appending is `errorOverlayView.ts:22`'s real
+  // shape. Both must stay clean, or this clause is unusable and gets deleted rather than fixed.
+  if (
+    findLiveRegionDestroyers({
+      'ui/sessionView.ts': 'document.body.appendChild(el);',
+      'ui/errorOverlayView.ts':
+        'constructor(mount: HTMLElement = document.body) {}\nmount.appendChild(root);',
+    }).length !== 0
+  ) {
+    return bad(
+      'TEETH T17c: a legitimate document.body.appendChild mount, or a default-parameter alias ' +
+        'that only appends, was flagged as a destroyer',
+    );
+  }
+  teeth++;
+
+  // T18 BAD: reaching the node by ARIA SELECTOR from a non-owner — the last spelling needing no id.
+  if (
+    findLiveRegionDestroyers({
+      'ui/rogue.ts': "document.querySelector('[aria-live]').textContent = 'x';",
+    }).length !== 1
+  ) {
+    return bad('TEETH T18: a non-owner reaching the region via [aria-live] was not flagged');
+  }
+  teeth++;
+
+  // T19 GOOD (hostile-but-correct): the OWNER may of course use an ARIA selector, and an ordinary
+  // view calling replaceChildren on its own private field is not a destroyer.
+  if (
+    findLiveRegionDestroyers({
+      'ui/liveRegion.ts': "document.querySelector('[aria-live]');",
+      'ui/pvpView.ts': 'this.#incomingEl.replaceChildren();',
+    }).length !== 0
+  ) {
+    return bad(
+      'TEETH T19: the owner, or a view rebuilding its own child list, was flagged as a destroyer',
+    );
+  }
+  teeth++;
+
   // T13 BAD (a LIVE trap, found by this eval reding the shipped markup): `client/index.html`
   // documents the live region with the prose "A direct <body> child on purpose" INSIDE AN HTML
   // COMMENT. A tag scanner that does not strip comments reads that as a second opened <body> and
@@ -484,6 +675,14 @@ export default async function () {
         'vacuous if the owner does not own anything',
     );
   }
+  const destroyers = findLiveRegionDestroyers(sources);
+  if (destroyers.length > 0) {
+    return bad(
+      `[A11Y-05b] module(s) destroy or rewrite the live region without naming it: ${destroyers.join(', ')} ` +
+        '— a body-level rebuild reaches a direct <body> child, and an ARIA selector reaches the ' +
+        'node with no id at all; module ownership alone is blind to both',
+    );
+  }
   const found = findLiveRegionIntruders(sources);
   if (found.length > 0) {
     return bad(
@@ -493,6 +692,13 @@ export default async function () {
     );
   }
 
+  const inertPins = findInertPins((f) => readFileSync(f, 'utf8'), SHELL_DELEGATIONS);
+  if (inertPins.length > 0) {
+    return bad(
+      `[A11Y-06/07/08] DELEGATION PIN INERT: ${inertPins.join(' | ')} — deleting these needles ` +
+        'from the real delegate does not make the pin fail, so the pin is theatre',
+    );
+  }
   const inert = findInertDelegations((f) => readFileSync(f, 'utf8'), SHELL_DELEGATIONS);
   if (inert.length > 0) {
     return bad(
@@ -522,6 +728,6 @@ export default async function () {
       `teeth=${teeth}/${teethTotal}; ` +
       `[A11Y-05b] owners=1 intruders=0 scanned=${sourceFiles.length}; ` +
       `[A11Y-06/07/08] pins=${SHELL_DELEGATIONS.length}/${SHELL_DELEGATIONS.length} ` +
-      `nonInert=${SHELL_DELEGATIONS.length}/${SHELL_DELEGATIONS.length} reachable=Y`,
+      `nonInert=${shellNeedles}/${shellNeedles} reachable=Y`,
   };
 }

@@ -107,6 +107,27 @@ STRIPPED source (a table declared only inside a Rust string literal must not be
 walked), and importing the module runs nothing — checked with child processes
 whose `argv[1]` is a real sibling `evals/*.mjs`, because a main guard widened to
 match a directory or `run.mjs` exits the whole 90-eval suite mid-loop with code 0.
+**M23 accessibility gates (m23-s10)** — three source-scan evals plus one cross-view happy-dom
+spec. `overlay-a11y-manifest` bans a view-local focus call in every `client/src/ui/**/*View.ts`
+(readdir-DERIVED and two-way ratcheted, so a new view is scanned the day it lands — the three
+hand-kept lists it supersedes covered 16 of the 18 files on disk); `a11y-static-shell` gates the
+single live region, counting the IMPLICIT roles and `<output>` an `aria-live` census is blind to,
+and holds the node under single-module ownership plus a document-root receiver ban that tracks an
+aliased binding; `reduced-motion-purity` extends the `matchMedia` ownership rule to
+`client/index.html` and `client/vite.config.ts` — the scope escape the in-tree S7 census
+structurally cannot see. `ui/overlayA11yWiring.test.ts` is the only TOTALITY oracle over all
+sixteen `OverlayId`s, and the only one whose DOM fixture is the shipped `client/index.html` rather
+than a hand-copied shell, so a `tabindex` deleted from the real markup reds.
+**DELEGATION PINS, a new gate pattern** (m23-s10): where a criterion already ships an
+equal-or-stronger unit-tier oracle — and `just ci` runs `eval` and `client-test` together, so the
+eval tier adds no CI surface — the eval PINS the delegate instead of re-implementing it weaker.
+A pin carries a TITLE needle (comment-stripped) and a CODE needle (comment-AND-string-stripped, so
+a planted string literal cannot forge it), rejects a `.skip`/`.todo` suspension that would keep
+both `vitest run` and a presence check green, is proven non-inert by routing a needle-deleted copy
+of the real delegate back through the shipped predicate, and is proven reachable against both
+`test.include` and `test.exclude`. Declared residual **R-m23-s10-CSSDRIFT**: a pin proves the
+delegate exists, runs on the real artefact and is selected by CI — never its semantics.
+
 Each gate has a
 known-bad fixture it must reject. The **client TS** is gated too (M3): `tsc` +
 vitest/fast-check over the convert + Predictor property suites (run in `just ci`

@@ -56,7 +56,7 @@
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { t } from './a11yCopy';
 import { BattleView } from './battleView';
 import { BoxView } from './boxView';
@@ -118,7 +118,12 @@ const NATIVE_FOCUSABLE_TAGS: ReadonlySet<string> = new Set([
 // production-module smell, and nothing outside this file consumes it.
 function isFocusableByContract(el: Element): boolean {
   const explicit = el.getAttribute('tabindex');
-  if (explicit !== null) return Number.isInteger(Number(explicit));
+  // `/^-?\d+$/`, NOT `Number.isInteger(Number(x))` — matching `indexShell.test.ts:1988`.
+  // `Number('')` is 0, so the loose form accepts a bare `tabindex` attribute whose VALUE was
+  // deleted, which is exactly the shipped-markup regression this file exists to catch (and
+  // happy-dom focuses such a node happily, so the identity assertion would not catch it either).
+  // `0x10`, `1e3` and `+1` are likewise accepted by `Number()` and invalid per HTML integer parsing.
+  if (explicit !== null) return /^-?\d+$/.test(explicit.trim());
   return NATIVE_FOCUSABLE_TAGS.has(el.tagName) && !el.hasAttribute('disabled');
 }
 
@@ -383,6 +388,13 @@ describe('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wiring spec', 
     expect(OVERLAY_IDS.length, 'the manifest must hold sixteen mutual-exclusion overlays').toBe(16);
     expect(Object.keys(OPENERS).sort()).toEqual([...OVERLAY_IDS].sort());
     expect(Object.keys(OVERLAY_A11Y).sort()).toEqual([...OVERLAY_IDS].sort());
+
+    // The unstated PREMISE of S10-WIRE-OPEN-ARIA's copy-paste kill: a wrong OverlayId is only
+    // detectable through `aria-label` if the sixteen resolved NAMES are distinct. The delegated
+    // `A11YCOPY-OVERLAY-NAMESPACE-EXACT` pins KEY set-equality, not VALUE distinctness, so nothing
+    // asserted this before.
+    const names = OVERLAY_IDS.map((id) => t(OVERLAY_A11Y[id].labelKey));
+    expect(new Set(names).size, 'the sixteen accessible names must be pairwise distinct').toBe(16);
   });
 
   it('S10-WIRE-REAL-INDEX-HTML BITES: the fixture is the SHIPPED client/index.html, tabindex attributes included — never a hand-copied shell', () => {
@@ -493,7 +505,11 @@ describe('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wiring spec', 
           // on #app would swallow four dialogs — the defect world.ts:73 records).
           const app = appMount();
           expect(root).not.toBe(app);
-          expect(app.contains(root)).toBe(true);
+          // `parentElement`, not `contains`: `contains` is satisfied by handing the helper an
+          // INNER wrapper, which would put role/aria-modal/aria-label on the wrong node and install
+          // the focus trap on a strictly smaller subtree than the overlay — green under a
+          // containment check. All four constructed views append their root directly to `#app`.
+          expect(root.parentElement).toBe(app);
         } else {
           expect(root).toBe(document.getElementById(rootId));
         }
@@ -519,6 +535,17 @@ describe('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wiring spec', 
 
         // The defer is real: synchronously, focus has NOT moved yet.
         expect(document.activeElement).toBe(sentinel);
+
+        // ...and it is a MACROtask, not a microtask. Draining the microtask queue must not move
+        // focus either: `queueMicrotask` would satisfy the synchronous check above while
+        // microtasks drain BEFORE the keydown's default action, restoring the letter-hotkey
+        // swallow `overlayA11y.ts:9-15` calls load-bearing.
+        await Promise.resolve();
+        await Promise.resolve();
+        expect(
+          document.activeElement,
+          `${id}: focus moved on a MICROtask — the defer must outlast the opening key event`,
+        ).toBe(sentinel);
 
         await flushMacrotask();
 
@@ -548,7 +575,18 @@ describe('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wiring spec', 
         await flushMacrotask();
         expect(document.activeElement).not.toBe(sentinel);
 
+        const closesBefore = vi
+          .mocked(closeOverlayA11y)
+          .mock.calls.filter((c) => c[0] === id).length;
         close();
+
+        // The MECHANISM mirror of the open side. Without it this test asserts EFFECTS only, and a
+        // guarded close that skips the helper was measured (m23-s3 red-team) to ship 62/62 green
+        // while permanently leaking a capture listener, a pending timer and a stale return target.
+        expect(
+          vi.mocked(closeOverlayA11y).mock.calls.filter((c) => c[0] === id).length - closesBefore,
+          `${id}: the close path must invoke closeOverlayA11y exactly once for this id`,
+        ).toBe(1);
 
         // REMOVAL is the anti-vacuity partner of the open-side value oracle: role and aria-modal
         // are free from the static markup, but only closeOverlayA11y (overlayA11y.ts:142-144) can
@@ -564,9 +602,19 @@ describe('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wiring spec', 
     });
   }
 
-  it('S10-WIRE-COVERAGE-FLOOR BITES: the parameterised focus assertion ran for all sixteen ids — an empty or truncated loop cannot report success', () => {
-    // Declared last so every per-id block above has executed. A `for` over an empty array is the
-    // classic silent pass; this counter is the floor that makes it loud.
-    expect(checked, 'S10-WIRE-FOCUS-IDENTITY must have executed once per OverlayId').toBe(16);
+  // THE COVERAGE FLOOR, in `afterAll` rather than a trailing `it`. A `for` loop over an empty
+  // array is the classic silent pass, and `checked` is the belt that makes it loud — but as a
+  // trailing test it was ORDER-DEPENDENT: measured, `--sequence.shuffle` moved it ahead of the
+  // per-id blocks and produced a FALSE RED in 2 of 3 runs. `vite.config.ts` does not enable
+  // shuffling, so `just ci` never saw it; `afterAll` runs after every test in the file whatever
+  // the order, so the belt survives a future config change instead of becoming a flake.
+  // (The primary devices remain S10-WIRE-TOTALITY's compile-time `Record<OverlayId, …>` and its
+  // runtime key-set equality; this only catches a loop that never ran.)
+  afterAll(() => {
+    expect(
+      checked,
+      'S10-WIRE-FOCUS-IDENTITY must have executed once per OverlayId — a loop that never ran ' +
+        'reports success in exactly the same way as one that passed',
+    ).toBe(16);
   });
 });
