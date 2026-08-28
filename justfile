@@ -191,8 +191,21 @@ mutate-server cap="324":
 # nightly.yml only — NOT part of `just ci` (preserves the ADR-0043 fast loop).
 # Threshold 96: re-measured post-exclusion at 99.35% lines and ratcheted from the
 # stale 25 (set from a 29.65% pre-exclusion denominator) — ADR-0050 amendment A1.
-# Under vitest 4 (AST-aware v8) re-measured at 97.56% lines — still >96 (amendment 2026-07-22).
-coverage:
+# Under vitest 4 (AST-aware v8) re-measured at 97.56% lines; re-measured again at
+# 98.22% once `: wasm` below let the main.ts-importing specs actually run
+# (2026-08-27) — still >96 either way.
+#
+# `: wasm` is load-bearing, for the SAME reason spelled out at the `a11y-e2e`
+# recipe below: client/src/main.a11yFocus.test.ts and main.battle-reseed.test.ts
+# import main.ts, which imports ../../client-wasm/pkg/client_wasm.js. Without a
+# prebuilt pkg those 36 tests fail to RESOLVE (not to assert) — and vitest emits
+# NO coverage report at all when any test fails, so the threshold is never
+# evaluated. That is how this gate ran red-but-UNENFORCED for four nights
+# (#362/#372/#374/#375). The nightly `coverage:` job provisions Rust + wasm-pack
+# precisely to satisfy this dependency; evals/nightly-coverage-wasm-wiring.eval.mjs
+# gates both halves, and that it is a PRIOR dependency (`coverage: && wasm` would
+# run vitest first and is indistinguishable in `just --dump` except by `priors`).
+coverage: wasm
     cd client && npm ci && npm i --no-save -D @vitest/coverage-v8@$(node -p 'require("vitest/package.json").version') && npx vitest run --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.thresholds.lines=96
 
 build:

@@ -108,10 +108,30 @@ jobs:
   # Failure policy for `coverage`: triaged and inserted as the next slice in
   # the milestone queue, same tier as fix-red-master, below it in ordering.
   # Response policy + owner: docs/nightly-red-response-policy.md.
+  #
+  # Rust + wasm-pack are present because `just coverage` depends on `just wasm`
+  # (justfile), exactly as the a11y-e2e job below does: client/src/main.ts imports
+  # the gitignored client-wasm pkg, so without it the main.ts-importing specs fail
+  # to RESOLVE and vitest emits no coverage report at all — the threshold silently
+  # stops being evaluated. Adding the just-dependency WITHOUT these steps would
+  # only trade that red for `wasm-pack: command not found`.
+  # NOTE: deliberately no `- name: Install client deps` run step (the a11y-e2e job
+  # has one): the `coverage:` recipe already runs `npm ci` itself, and a shell step
+  # before the gate trips jobIsNotNeutered's "gate must be the FIRST run: step"
+  # rule in evals/nightly-smoke-wiring.eval.mjs. `uses:` steps before it are fine.
   coverage:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6 # v6
+      - uses: dtolnay/rust-toolchain@stable # stable
+        with: { targets: wasm32-unknown-unknown }
+      # Distinct prefix-key (v1-coverage) so this cache never collides with the
+      # mutation (v1-nightly) / mutation-server (v1-nightly-server) / smoke
+      # (v1-smoke) / a11y (v1-a11y) job caches, or ci.yml's v1-ci / v1-e2e.
+      - uses: Swatinem/rust-cache@v2 # v2
+        with: { prefix-key: v1-coverage }
+      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0
+        with: { version: 'v0.15.0' }
       - uses: actions/setup-node@v7 # v7
         with:
           node-version: '24.13.1'
