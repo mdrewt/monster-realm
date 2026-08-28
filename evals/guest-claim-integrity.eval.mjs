@@ -3412,17 +3412,24 @@ pub struct GuildMember {
     if (err) return `FG61: a well-formed BLOCKED entry was incorrectly flagged: ${err}`;
   }
 
-  // FG62 — REKEY entries whose needles are missing, degenerate or EMPTY.
+  // FG62 — REKEY entries whose needles are missing, degenerate, EMPTY or blank.
   // Kills: (a) silently skipping a needle-less REKEY entry, and the
   // `indexOf(undefined)` coercion that reds it under the WRONG tag; (b) a needle
   // that is present in every fn body ever written (`ctx`), which makes the
   // substring test pass for a helper nobody calls; (c) the MEASURED guard-11
-  // fail-open — `body.indexOf('') === 0`, so an EMPTY needle reads as consumed.
+  // fail-open — `body.indexOf('') === 0`, so an EMPTY needle reads as consumed;
+  // (d) MEASURED: a classifier that applies the needle rule to `exists` ONLY —
+  // (b) and (c) BOTH degrade `exists`, so a one-sided rule passed them both.
+  // (d) degrades `rekey` alone and leaves a perfectly good `exists` behind;
+  // (e) a WHITESPACE-only needle, which clears a `!== ''` emptiness test and
+  // then cannot match anything, because both bodies are whitespace-COMPACTED.
   {
     const cases = [
       { label: 'FG62a', entry: { policy: 'REKEY' } },
       { label: 'FG62b', entry: { policy: 'REKEY', rekey: 'ctx', exists: 'ctx' } },
       { label: 'FG62c', entry: { policy: 'REKEY', rekey: 'rekey_profile(', exists: '' } },
+      { label: 'FG62d', entry: { policy: 'REKEY', rekey: 'ctx', exists: 'profile_exists(' } },
+      { label: 'FG62e', entry: { policy: 'REKEY', rekey: 'rekey_profile(', exists: '   ' } },
     ];
     for (const probe of cases) {
       const manifest = { ...REKEY_MANIFEST, 'profile.identity': probe.entry };
@@ -3453,9 +3460,12 @@ pub struct GuildMember {
 
   // FG64 — `policy` values that are NOT exactly one of the three kinds.
   // Kills: a case-insensitive compare (a), a `startsWith('REKEY')` prefix test
-  // (b), a `switch` with a silent default, and any lookup that can reach
-  // Object.prototype — 'constructor' (c) and '__proto__' (d) must be UNKNOWN
-  // values, never a hit on an inherited property of a policy map.
+  // (b), and a `switch` with a silent default.
+  // PINS (deliberately weaker than "kills"): 'constructor' (c) and '__proto__'
+  // (d) must be UNKNOWN policy values. Under a `.find` over a shape array — or a
+  // Map — they already land in [G6/policy] for free, so these two are a
+  // REGRESSION PIN against a future rewrite to a plain-object policy lookup,
+  // not evidence that today's classifier had to do anything to be prototype-safe.
   {
     const cases = [
       { label: 'FG64a', entry: { policy: 'Blocked', reason: 'wrong case' } },
@@ -3498,13 +3508,16 @@ pub struct GuildMember {
     }
   }
 
-  // FG66 — the REVERSE lie: each of the EIGHT REKEY columns in turn demoted to a
-  // WELL-FORMED BLOCKED entry. The shape is legal, so [G6/policy] cannot see it,
-  // and a demotion dodges [G6/consumed] entirely (that clause walks REKEY
-  // entries only), so the rows silently orphan on every successful claim.
+  // FG66 — the REVERSE lie: every REKEY column in turn demoted to a WELL-FORMED
+  // BLOCKED entry. The shape is legal, so [G6/policy] cannot see it, and a
+  // demotion dodges [G6/consumed] entirely (that clause walks REKEY entries
+  // only), so the rows silently orphan on every successful claim.
   // Kills: presence-only anchors, and a G6_REKEY_ANCHORS list that covers fewer
-  // than all eight REKEY columns. The list is transcribed here INDEPENDENTLY of
-  // the checker's own — a shared const could be emptied on both sides at once.
+  // REKEY columns than the manifest ships. The list below is transcribed here
+  // INDEPENDENTLY of the checker's own — a shared const could be emptied on both
+  // sides at once — and the guard after it asserts that this hand-written list
+  // COVERS the shipped REKEY set, so "eight" is a fact re-derived from the DATA
+  // on every run rather than a number in a comment that ages badly.
   {
     const rekeyAnchors = [
       'monster.owner_identity',
@@ -3516,6 +3529,20 @@ pub struct GuildMember {
       'player_wallet.owner_identity',
       'profile.identity',
     ];
+    // NON-CIRCULAR superset guard. It reads the shipped DATA (`.policy` on each
+    // manifest entry), never the checker's G6_REKEY_ANCHORS — that const is what
+    // this tooth exists to gate, so comparing against it would prove nothing. A
+    // ninth REKEY column added without a matching name here would otherwise
+    // leave the demotion loop silently short.
+    for (const key of Object.keys(REKEY_MANIFEST)) {
+      if (REKEY_MANIFEST[key].policy !== 'REKEY') continue;
+      if (rekeyAnchors.indexOf(key) !== -1) continue;
+      return (
+        `FG66: the manifest classifies \`${key}\` as REKEY but this fixture's own demotion ` +
+        'list does not name it, so the reverse-lie loop would never try to demote that column. ' +
+        'Add it here AND to G6_REKEY_ANCHORS in the same PR'
+      );
+    }
     for (const key of rekeyAnchors) {
       const manifest = {
         ...REKEY_MANIFEST,
@@ -3592,25 +3619,33 @@ pub struct GuildMember {
     }
   }
 
-  // FG69 — TOTALITY, over every key and five defect shapes. Kills the two
-  // MEASURED cheats that no single-key fixture can see:
-  //   (1) a classifier that blesses entries by IDENTITY (`entry === shipped`)
-  //       rather than by shape — part 1 re-runs the whole check over a fresh
-  //       deep clone of the shipped manifest, which must still PASS, so
-  //       identity-blessing can never be a substitute for validation;
+  // FG69 — TOTALITY, over every key and SEVEN defect shapes. Kills the cheats
+  // that no single-key fixture can see:
+  //   (1) a classifier that accepts ONLY the shipped entry objects — part 1
+  //       re-runs the whole check over a fresh per-entry copy, so accepting an
+  //       object by IDENTITY is not a substitute for validating its shape.
+  //       HONEST LIMIT, stated because this tooth is easy to over-read:
+  //       `{ ...entry }` is a ONE-LEVEL copy. It is total here only because the
+  //       closed shape is FLAT (three string fields) — it is not a deep clone,
+  //       and a classifier memoised on a DEEP-EQUAL comparison against the
+  //       shipped data survives this tooth completely. That cheat is killed by
+  //       the ledger's X3 DATA mutants (M6 / M7 / M9), which corrupt the shipped
+  //       manifest itself, and by nothing in this file.
   //   (2) a classifier that only validates the handful of keys the fixtures
   //       above happen to name — part 2 defects EVERY key of the manifest.
-  // Note the tag: a well-formed DEMOTION is [G6/anchors] (FG66's job); these
-  // five shapes are all MALFORMED, so [G6/policy] must fire first, for all 24
-  // keys, including the anchors themselves.
+  // Note the tag: a well-formed DEMOTION is [G6/anchors] (FG66's job); all seven
+  // shapes here are MALFORMED, so [G6/policy] must fire first, for all 24 keys,
+  // including the anchors themselves.
+  // The ~7x24 checker calls are DELIBERATE: totality over the whole key set is
+  // the point, and each call re-runs only the two small GOOD_TREE fixtures.
   {
-    const clone = {};
+    const copy = {};
     for (const key of Object.keys(REKEY_MANIFEST)) {
-      clone[key] = { ...REKEY_MANIFEST[key] };
+      copy[key] = { ...REKEY_MANIFEST[key] };
     }
-    const cloneErr = checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, clone);
-    if (cloneErr) {
-      return `FG69/clone: a deep clone of the shipped manifest was flagged: ${cloneErr}`;
+    const copyErr = checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, copy);
+    if (copyErr) {
+      return `FG69/copy: a per-entry copy of the shipped manifest was flagged: ${copyErr}`;
     }
 
     const shapes = [
@@ -3638,6 +3673,18 @@ pub struct GuildMember {
         },
       },
       { name: 'string-form', entry: 'BLOCKED: legacy string form' },
+      // MEASURED: a classifier that checks "the required fields are present and
+      // no BANNED cross-field is" passed all 120 cases above while M22 S3's
+      // deletion_policy / basis / exportable drifted in green. The field set is
+      // CLOSED, not a blocklist.
+      {
+        name: 'blocked-with-extra-field',
+        entry: { policy: 'BLOCKED', reason: 'x', deletion_policy: 'ERASE' },
+      },
+      // MEASURED green: `reason !== ''` accepts three spaces, and a blank
+      // justification is exactly the row no later reviewer re-derives. Only the
+      // X8 fork byte-compare objected, and X8 does not run on injected manifests.
+      { name: 'blocked-whitespace-reason', entry: { policy: 'BLOCKED', reason: '   ' } },
     ];
     for (const key of Object.keys(REKEY_MANIFEST)) {
       for (const shape of shapes) {
@@ -3667,10 +3714,14 @@ pub struct GuildMember {
     const anchors = countOccurrences(raw, T9_ANCHOR);
     if (anchors !== 1) {
       return (
-        `FG70: the T9 anchor occurs ${anchors} time(s) in this file, not exactly once. ` +
-        'accounts_tests.rs:3369 takes the FIRST hit and does not strip block comments, so a ' +
-        'second occurrence — even inside prose or a doc comment — silently points the M22 ' +
-        'cross-manifest proof at the wrong object. Spell it freezeManifest(...) in prose'
+        `FG70: the byte string \`${T9_ANCHOR}\` occurs ${anchors} time(s) in the RAW text of ` +
+        'this file; exactly one is required. This count is over RAW text and is deliberately ' +
+        'STRICTER than the Rust twin, which strips slash-slash comments before it searches but ' +
+        'does NOT strip block comments: a duplicate inside a LINE comment is invisible to Rust ' +
+        'and harmless, while a duplicate inside a BLOCK comment (or in code) silently points ' +
+        'accounts_tests.rs:3369 at the wrong object, because it takes the FIRST hit. One rule ' +
+        'covers both without anyone having to reason about which kind of comment it landed in: ' +
+        'spell it freezeManifest(...) in prose'
       );
     }
     const keys = t9TwinKeys(raw);
@@ -3683,10 +3734,17 @@ pub struct GuildMember {
     }
     const expected = Object.keys(REKEY_MANIFEST);
     if (keys.join(' ') !== expected.join(' ')) {
+      // Counts are reported ONLY when they differ: on an ORDER or CONTENT
+      // mismatch the old wording read "read 24 ... declares 24", which invites
+      // the reader to conclude the tooth is broken rather than the manifest.
+      const sizes =
+        keys.length === expected.length
+          ? 'both lists are the same LENGTH, so they differ in content or in ORDER'
+          : `the twin read ${keys.length} key(s); this file declares ${expected.length}`;
       return (
-        `FG70: the T9 text twin read ${keys.length} key(s) out of the manifest block but the ` +
-        `object declares ${expected.length}. Rust sees: [${keys.join(', ')}]. This file ` +
-        `declares: [${expected.join(', ')}]. A key the text scan cannot see is a table the M22 ` +
+        'FG70: the T9 text twin and the manifest object DISAGREE about this file. ' +
+        `${sizes}.\n  Rust (text scan) sees: [${keys.join(', ')}]\n  this file declares: ` +
+        `[${expected.join(', ')}]\nA key the text scan cannot see is a table the M22 ` +
         'cross-manifest proof never checks, and it fails SILENTLY above its 20-key floor'
       );
     }
@@ -3714,6 +3772,34 @@ pub struct GuildMember {
         'the biome hazard FG70 exists to detect'
       );
     }
+  }
+
+  // FG71 — the NINTH-REKEY hole. MEASURED: a [G6/consumed] clause that walks
+  // `G6_REKEY_ANCHORS` instead of the CLASSIFIED REKEY set passed every other
+  // tooth in this file, because today the eight REKEY columns ARE the eight
+  // anchors — the two sets are accidentally equal, so nothing else here can tell
+  // them apart. The day a ninth REKEY column is added, that clause stops
+  // checking it and the column orphans on every successful claim.
+  // Kills: iterating the anchor list (or any other hardcoded list) in the
+  // consumption clause. This entry is a NON-anchor column promoted to a
+  // well-formed REKEY entry whose helpers exist nowhere in accounts.rs: the
+  // shape is legal so [G6/policy] cannot see it, and the key is not an anchor so
+  // [G6/anchors] cannot see it either.
+  {
+    const manifest = {
+      ...REKEY_MANIFEST,
+      'player.identity': {
+        policy: 'REKEY',
+        rekey: 'rekey_player_rows(',
+        exists: 'has_player_rows(',
+      },
+    };
+    const bad = expectTag(
+      checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+      '[G6/consumed]',
+      'FG71',
+    );
+    if (bad) return bad;
   }
 
   return null;
