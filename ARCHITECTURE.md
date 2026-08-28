@@ -110,7 +110,8 @@ match a directory or `run.mjs` exits the whole 90-eval suite mid-loop with code 
 **rb-2** closed the manifest's measured `typeof` trap (residual R-m22-s0-X1): every
 `REKEY_MANIFEST` entry is now an object with an explicit `policy` discriminator
 (`REKEY` | `BLOCKED` | `EXEMPT`, exact equality, a closed field set per kind, D6
-reasons verbatim minus the retired prefix), read by ONE parser (`classifyPolicy`)
+reasons verbatim minus the retired prefix — except the two `battle` reasons corrected in the
+M21c audit, recorded in-file), read by ONE parser (`classifyPolicy`)
 under a new first clause `[G6/policy]`; the D6 REKEY columns are pinned REKEY by
 value, and FG70 re-implements the Rust T9 text scan in-file so a key list the
 `accounts_tests.rs` `include_str!` reader would silently truncate (a biome-emitted
@@ -135,10 +136,11 @@ before the Identity test; an Identity-bearing expansion wins (fail-closed on amb
 and the `[G6/declared]` message renders every binding with its file. The record gains
 `resolved` (the expansion; a consumer reads Option-ness from it) and `via` (the
 bindings consulted, as data); `[G6/alias]` fails loud on a `macro_rules!`-generated
-`type` item. FG73a-o pin it (direct, transitive, Option both ways, the three rename
+`type` item, on a binding whose right-hand side carries a macro metavariable or invocation,
+and on a binding of the name `Identity` itself (the token the resolver keeps terminal). FG73a-o pin it (direct, transitive, Option both ways, the three rename
 spellings, cross-file, ambiguity, termination, the join direction, the closed record,
 a quoted declaration, non-enumerable prototype pollution, `r#`/non-ASCII names, the
-macro detector, and a self-source absence of every fixture name above the teeth), and
+macro detector, and a self-source absence of every fixture ALIAS name above the teeth), and
 the seam eval's `[T2/alias]` pins `resolved === type` for every literally-typed fixture
 column. Still unseen, routed to the residual backlog: a SpacetimeType product column
 carrying an Identity (live-reachable via `encounter.entries`), a field declared without

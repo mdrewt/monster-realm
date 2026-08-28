@@ -38,16 +38,14 @@
 //      Deliberately NOT pinned — the key SET and the entry COUNT. Adding new
 //      KEYS is measured-safe (this eval and guest-claim-integrity both stay
 //      green), so either pin would be red-on-arrival for the next slice.
-//      NOT pinned either — the entry VALUE shape. READ THIS BEFORE RELYING ON
-//      IT: object-ifying an existing STRING entry is NOT a safe additive
-//      change. `checkRekeyCompleteness` classifies `typeof policy === 'string'`
-//      as "not REKEY", so ANY object entry is REKEY BY DEFINITION. Measured: a
-//      BLOCKED string entry rewritten as a record keeps THIS eval green and reds
-//      guest-claim-integrity with `FG47 ... [G6/consumed] the manifest marks
-//      \`battle.player_identity\` as REKEY via \`undefined\``. A slice that wants
-//      richer BLOCKED/EXEMPT entries must FIRST add an explicit policy/kind
-//      discriminator and teach checkRekeyCompleteness to read it, instead of
-//      leaning on `typeof === 'string'`.
+//      NOT pinned either — the entry VALUE shape beyond what T1 freezes. Since
+//      rb-2 (ADR-0208 D1) every entry is an object carrying an explicit
+//      `policy` discriminator read by ONE parser (`classifyPolicy`, under the
+//      `[G6/policy]` clause that runs first); there are no string entries left,
+//      and a new field on an entry is the producer's `[G6/policy]` closed-set
+//      concern, not this seam's. (An earlier revision of this paragraph
+//      described the pre-rb-2 `typeof === 'string'` inference as live — it is
+//      not, and rb-4 retired the same stale rationale from the Rust T9 twin.)
 //      DELIBERATELY pinned, as a considered choice — [T1/key-shape] requires
 //      exactly two non-empty dot-halves. That key space IS the join key with
 //      findIdentityColumns, so a three-segment key would silently fall out of
@@ -439,7 +437,8 @@ function checkWalkerShape(mod) {
   if (!(cols instanceof Map)) {
     return {
       failures: [
-        '[T2/shape] findIdentityColumns must return a Map of "table.field" -> {path, type}; got ' +
+        '[T2/shape] findIdentityColumns must return a Map of "table.field" -> ' +
+          '{path, type, resolved, via}; got ' +
           `${cols === null ? 'null' : typeof cols}.`,
       ],
       note: '',
@@ -459,7 +458,9 @@ function checkWalkerShape(mod) {
       continue;
     }
     if (!isStructural(rec)) {
-      failures.push(`[T2/columns] \`${want.column}\` is valued ${String(rec)}, not a {path,type}.`);
+      failures.push(
+        `[T2/columns] \`${want.column}\` is valued ${String(rec)}, not a {path,type,resolved,via}.`,
+      );
       continue;
     }
     if (rec.path !== want.path) {

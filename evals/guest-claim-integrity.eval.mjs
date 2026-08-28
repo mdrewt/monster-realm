@@ -185,8 +185,10 @@
 //                          columns from [G6/declared] (and from the schema
 //                          baseline, which compares a union of both sides).
 //       [G6/alias]         no source declares a `type` item from inside a
-//                          `macro_rules!` body — a generated binding the alias
-//                          resolver cannot read (rb-4; FG73n).
+//                          `macro_rules!` body, binds a name to a macro
+//                          metavariable or invocation, or binds the name
+//                          `Identity` itself — bindings the alias resolver
+//                          cannot read (rb-4; FG73n, FG73p).
 //       [G6/declared]      every `Identity`/`Option<Identity>` COLUMN in the tree
 //                          has an OWN manifest entry — membership is asked of
 //                          the Map classifyManifest derives from Object.keys,
@@ -1825,16 +1827,25 @@ const HAS_GAME_DATA_FN = 'account_has_game_data';
 // quoted inside a string literal becomes a binding); a plain-object binding
 // table (an ambient non-enumerable prototype value answers for an unbound
 // name); resolving only the WHOLE type text; a first-binding tie-break. A
-// declaration the resolver cannot read at all — a macro that GENERATES a
-// `type` item — is DETECTED by G6/alias and reported by file, never skipped.
+// declaration the resolver cannot read — a macro that GENERATES a `type` item
+// (`type $`), a binding whose right-hand side carries a metavariable or a
+// macro invocation, or a binding of the name `Identity` itself (which the
+// resolver keeps terminal) — is DETECTED by G6/alias and reported by file,
+// never skipped. Every binding is rendered in the one shape `type NAME = RHS`
+// with its file, a rename included. Expansion is memoised per column, so a
+// name bound k ways over a d-deep chain costs k·d rather than k^d.
 // Accepted limits, each routed to the residual backlog (rb-4 ledger X10-X12):
 // a SpacetimeType product column carrying an Identity (a named-field struct,
 // an enum payload, a generic wrapper, a Vec of any of these — live-reachable
 // through encounter.entries); a field declared without `pub`, two fields on
 // one line, or a rustfmt::skip-wrapped type (G6/parse counts tables, not
 // fields); a binding declared OUTSIDE the scanned input set (game-core carries
-// an optional spacetimedb dependency); and a proc-macro-generated item from an
-// external crate, which leaves no text at all.
+// an optional spacetimedb dependency); a proc-macro-generated item from an
+// external crate, or a paste-style generated NAME, which leave no readable
+// text at all; and two collector truncations that are fail-open only for
+// types that are not legal columns — a right-hand side containing `;` (an
+// array) is cut there, and a right-hand side of unbounded width is expanded
+// without a size cap.
 // ---------------------------------------------------------------------------
 
 /**
@@ -1845,15 +1856,29 @@ const HAS_GAME_DATA_FN = 'account_has_game_data';
  */
 function useItems(stripped) {
   const items = [];
+  const text = rustWs(stripped);
   // Built per call on purpose: a module-scope global regex keeps `lastIndex`
   // across calls and would silently skip items in the next file.
   const USE_ITEM = /\buse\s/g;
-  for (const m of stripped.matchAll(USE_ITEM)) {
-    const end = stripped.indexOf(';', m.index);
+  for (const m of text.matchAll(USE_ITEM)) {
+    const end = text.indexOf(';', m.index);
     if (end === -1) break;
-    items.push(stripped.slice(m.index, end));
+    items.push(text.slice(m.index, end));
   }
   return items;
+}
+
+/**
+ * Map the three Rust Pattern_White_Space code points that JavaScript's `\s`
+ * does NOT match — U+0085 NEL, U+200E LRM, U+200F RLM — to a plain space,
+ * length-preserving. rustc treats them as whitespace between `type` and a name
+ * (or after `use`), so a `#[rustfmt::skip]` item spelled with one of them
+ * compiles clean and would otherwise bind nothing (measured, red-team).
+ * @param {string} s Stripped Rust source.
+ * @returns {string} The same text with those code points spaced.
+ */
+function rustWs(s) {
+  return s.replace(/[\u0085\u200e\u200f]/g, ' ');
 }
 
 /**
@@ -1868,9 +1893,12 @@ function useItems(stripped) {
  */
 function collectAliasBindings(stripped, path) {
   const out = [];
+  const text = rustWs(stripped);
   const ALIAS_ITEM = /\btype\s+(?:r#)?([\p{XID_Start}_][\p{XID_Continue}]*)[^=;]*=\s*([^;]*);/gu;
-  for (const m of stripped.matchAll(ALIAS_ITEM)) {
-    out.push({ name: m[1], rhs: compactWs(m[2]), path });
+  for (const m of text.matchAll(ALIAS_ITEM)) {
+    // Whitespace COLLAPSED, never removed: `&'a Identity` compacted would read
+    // `&'aIdentity`, one token, and the Identity inside it would be lost.
+    out.push({ name: m[1], rhs: m[2].trim().replace(/\s+/g, ' '), path });
   }
   const RENAME =
     /((?:r#)?[\p{XID_Start}_][\p{XID_Continue}]*)\s+as\s+(?:r#)?([\p{XID_Start}_][\p{XID_Continue}]*)/gu;
@@ -1911,9 +1939,12 @@ function indexAliasBindings(treeStripped) {
  * @param {Map<string, Array<{name:string, rhs:string, path:string}>>} aliases The table.
  * @param {string[]} onPath Names being expanded on the current path.
  * @param {Array<{name:string, rhs:string, path:string}>} via Accumulator.
+ * @param {Map<string, string>} memo Per-column cache of each name's chosen
+ *   expansion — without it a name bound k ways over a d-deep chain costs k^d
+ *   (measured: three `mod` blocks re-declaring a 16-hop chain took 40 s).
  * @returns {string} The expanded text.
  */
-function expandTokens(text, aliases, onPath, via) {
+function expandTokens(text, aliases, onPath, via, memo) {
   const tokens = text.match(/(?:r#)?[\p{XID_Start}_][\p{XID_Continue}]*/gu) ?? [];
   let out = '';
   let cursor = 0;
@@ -1925,18 +1956,27 @@ function expandTokens(text, aliases, onPath, via) {
     cursor = at + raw.length;
     const name = raw.startsWith('r#') ? raw.slice(2) : raw;
     const bindings = aliases.get(name);
-    if (bindings === undefined || onPath.indexOf(name) !== -1) {
+    // `Identity` itself is TERMINAL: it is the token this gate classifies on,
+    // and a tree-wide binding of that name is reported by G6/alias, never
+    // expanded away underneath every literally-typed column.
+    if (bindings === undefined || name === 'Identity' || onPath.indexOf(name) !== -1) {
       out += raw;
+      continue;
+    }
+    const hit = memo.get(name);
+    if (hit !== undefined) {
+      out += hit;
       continue;
     }
     const expansions = [];
     for (const b of bindings) {
       if (via.indexOf(b) === -1) via.push(b);
-      const inner = expandTokens(b.rhs, aliases, onPath.concat(name), via);
-      expansions.push({ resolved: inner, binding: b });
+      const inner = expandTokens(b.rhs, aliases, onPath.concat(name), via, memo);
+      expansions.push(inner);
     }
-    const chosen = expansions.find((e) => containsIdent(e.resolved, 'Identity')) ?? expansions[0];
-    out += chosen.resolved;
+    const chosen = expansions.find((e) => containsIdent(e, 'Identity')) ?? expansions[0];
+    memo.set(name, chosen);
+    out += chosen;
   }
   return out + text.slice(cursor);
 }
@@ -1950,14 +1990,17 @@ function expandTokens(text, aliases, onPath, via) {
  */
 function resolveType(text, aliases) {
   const via = [];
-  const resolved = expandTokens(text, aliases, [], via);
+  const resolved = expandTokens(text, aliases, [], via, new Map());
   return { resolved, via };
 }
 
 /**
  * Render a column record's alias chain for the G6/declared message: nothing for
  * a directly-typed column; otherwise the expansion, every binding consulted
- * with its file, and a fail-closed note per name that is bound more than once.
+ * with its file, and a fail-closed note per name bound to more than one DISTINCT
+ * right-hand side (two agreeing declarations are not an ambiguity). Every
+ * binding — a `type` item or a `use … as` rename alike — is rendered in the
+ * one shape `type NAME = RHS`, with the declaring file beside it.
  * @param {{type:string, resolved:string, via:Array<{name:string, rhs:string, path:string}>}} decl
  *   The column record.
  * @returns {string} A clause fragment beginning with `, `, or `''`.
@@ -1966,11 +2009,14 @@ function aliasNote(decl) {
   if (decl.via.length === 0) return '';
   const rendered = decl.via.map((b) => `\`type ${b.name} = ${b.rhs}\` in ${b.path}`).join(' and ');
   const perName = new Map();
-  for (const b of decl.via) perName.set(b.name, (perName.get(b.name) ?? 0) + 1);
+  for (const b of decl.via) {
+    if (!perName.has(b.name)) perName.set(b.name, new Set());
+    perName.get(b.name).add(b.rhs);
+  }
   let ambiguous = '';
-  for (const [name, n] of perName) {
-    if (n < 2) continue;
-    ambiguous += ` — \`${name}\` is bound ${n} ways in the tree; reported fail-closed, rename one`;
+  for (const [name, rhss] of perName) {
+    if (rhss.size < 2) continue;
+    ambiguous += ` — \`${name}\` is bound ${rhss.size} ways in the tree; reported fail-closed, rename one`;
   }
   return `, which resolves to \`${decl.resolved}\` via ${rendered}${ambiguous}`;
 }
@@ -2068,10 +2114,17 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
         'parseTableSchemas the new form in the same PR'
       );
     }
-    // [G6/alias] — a macro that GENERATES a `type` item leaves only a
-    // metavariable where the resolver expects a name, so the binding it
-    // declares can never be collected: fail loud by file rather than walk
-    // past a column whose type nobody can see. Zero hits on the live tree.
+    // [G6/alias] — three binding shapes the resolver cannot read, each fail
+    // loud by file rather than walked past (zero hits on the live tree):
+    //   a macro that GENERATES a `type` item leaves only a metavariable where
+    //   the resolver expects a name (the byte string `type $`), so the binding
+    //   is never collected;
+    //   a binding whose right-hand side carries a metavariable or a macro
+    //   INVOCATION (`type X = $t;` inside a macro body, `type X = mk!();`) is
+    //   collected but expands to nothing Identity-bearing (measured, red-team);
+    //   a binding of the name `Identity` itself shadows the token this gate
+    //   classifies on — the resolver keeps that token terminal, and this clause
+    //   is what turns a silent 0-column walk into a named diagnosis.
     if (stripped.indexOf('macro_rules!') !== -1 && stripped.indexOf('type $') !== -1) {
       return (
         `[G6/alias] ${f.path} declares a \`type\` item from inside a \`macro_rules!\` body ` +
@@ -2080,6 +2133,26 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
         'be an Identity column this gate never sees. Declare the item directly, or teach the ' +
         'resolver the macro in the same PR'
       );
+    }
+    for (const b of collectAliasBindings(stripped, f.path)) {
+      if (b.name === 'Identity') {
+        return (
+          `[G6/alias] ${f.path} binds the name \`Identity\` itself (\`type Identity = ${b.rhs}\` ` +
+          'or a `use … as Identity` rename). That is the token every column is classified on, ' +
+          'so a tree-wide binding of it would rewrite the resolved type of EVERY literally-typed ' +
+          'column at once; the resolver refuses to expand it and this clause names the file. ' +
+          'Rename the binding'
+        );
+      }
+      if (b.rhs.indexOf('$') !== -1 || b.rhs.indexOf('!') !== -1) {
+        return (
+          `[G6/alias] ${f.path} binds \`${b.name}\` to \`${b.rhs}\`, a right-hand side carrying a ` +
+          'macro metavariable or a macro invocation. The alias resolver expands identifier ' +
+          'tokens and a macro leaves it nothing to expand, so a column typed through this name ' +
+          'would be an Identity column this gate never sees. Spell the type out, or teach the ' +
+          'resolver the macro in the same PR'
+        );
+      }
     }
   }
 
@@ -2092,8 +2165,8 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     if (kinds.has(key)) continue;
     const decl = columns.get(key);
     return (
-      `[G6/declared] the column \`${key}\` (type \`${decl.type}\`${aliasNote(decl)}, declared in ` +
-      `${decl.path}) has no ` +
+      `[G6/declared] the column \`${key}\` (type \`${decl.type}\`, declared in ${decl.path}` +
+      `${aliasNote(decl)}) has no ` +
       'entry in the ADR-0179 D6 re-key manifest. EVERY Identity column in the module needs an ' +
       'explicit policy — REKEY (carried from the guest onto the claiming account), BLOCKED (a ' +
       'guard rejects the claim while such a row exists) or EXEMPT (never a foreign reference). An ' +

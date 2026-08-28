@@ -98,7 +98,9 @@ the gate cannot see while every count it prints stays unchanged:
 
 `REKEY_MANIFEST` entries are objects `{ policy: 'REKEY', rekey, exists }`,
 `{ policy: 'BLOCKED', reason }` or `{ policy: 'EXEMPT', reason }`, objects-only, `reason` verbatim
-from ADR-0179 D6 minus the retired prefix. `classifyPolicy` is the ONE reader (exact equality against
+from ADR-0179 D6 minus the retired prefix — except `battle.player_identity` and
+`battle.opponent_identity`, whose reasons were corrected in the M21c audit (the guard blocks only
+Ongoing rows; recorded beside the entries in the eval). `classifyPolicy` is the ONE reader (exact equality against
 a closed shape table, closed field set per kind, non-blank fields, helper-call needle shape, no policy
 word inside a reason, never throws) and runs first as `[G6/policy]`, before the manifest is compared
 to the tree; `[G6/declared]`, `[G6/anchors]` and `[G6/consumed]` read its parsed Map. The eight D6
@@ -139,11 +141,20 @@ Object.prototype"), which was written for a tooth that HAD an injection alternat
    (unchanged meaning; provenance), `resolved` the expansion (`=== type` when direct — the M22
    consumer reads `Option<…>`-ness from it, never resolving aliases itself), `via` the ARRAY of
    binding records consulted (`[]` when direct) — structured data for the `[G6/declared]` message,
-   never a prose discriminator. The field set is closed and pinned; every read is `Object.hasOwn`.
-4. **`[G6/alias]`.** A stripped source that contains both `macro_rules!` and the byte string `type $`
-   declares an alias the resolver cannot read; the clause fails loud naming the file (the alias
-   analogue of `[G6/parse]`'s table-level non-vacuity).
-5. **The seam.** `rekey-contract-surface` T2 gains an alias-declared fixture column; `[T2/type]`
+   never a prose discriminator. The field set is closed and pinned by the record-shape tooth, and the
+   seam reads `resolved` as an own property.
+4. **`[G6/alias]`.** Three binding shapes the resolver cannot read fail loud naming the file (the
+   alias analogue of `[G6/parse]`'s table-level non-vacuity): a stripped source containing both
+   `macro_rules!` and the byte string `type $` (a macro that generates the item's NAME); a
+   collected binding whose right-hand side carries a metavariable or a macro invocation
+   (`type X = $t;` inside a macro body, `type X = mk!();` — both measured CI-clean hides by the
+   red-team); and a binding of the name `Identity` itself, which the resolver keeps terminal so a
+   tree-wide `type Identity = u64;` cannot rewrite every literally-typed column into silence.
+5. **Cost.** Expansion is memoised per column (name → chosen expansion), so a name bound k ways over
+   a d-deep chain costs k·d rather than k^d (measured before the memo: three `mod` blocks
+   re-declaring a 16-hop chain took 40 s). Output width is not capped: a doubling generic chain
+   is not a legal column type.
+6. **The seam.** `rekey-contract-surface` T2 gains an alias-declared fixture column; `[T2/type]`
    asserts `resolved` mentions Identity (own property) and `[T2/alias]` pins `resolved === type` for
    every unaliased fixture column — the equality is what proves the move is not a loosening.
 
@@ -152,18 +163,25 @@ Object.prototype"), which was written for a tooth that HAD an injection alternat
 - **Product-type columns carrying an Identity** — a named-field SpacetimeType struct, an enum payload,
   a generic wrapper, or a `Vec<T>` of any of these (compile-verified under 2.8.1; the tuple form
   `struct Owner(pub Identity)` does not compile) — are invisible: `parseTableSchemas` deliberately
-  reads only table blocks. LIVE-REACHABLE today through `encounter.entries: Vec<EncounterEntryRow>`.
-  rb-4 ledger X10 → backlog.
+  reads only table blocks. The MECHANISM is live today (`encounter.entries: Vec<EncounterEntryRow>`
+  is a product column); no product type in the module carries an Identity yet. The only human
+  control is the `evals/baselines/table-schemas.json` diff gaining a column whose type is not a
+  known scalar. rb-4 ledger X10 → backlog.
 - **Field-level parse non-vacuity** — `owner_backup: Identity,` without `pub` compiles (the 2.8.1
   macro maps `Visibility::Inherited` to `pub(super)`), two fields on one line, and a
-  `#[rustfmt::skip]`-wrapped type are all invisible; `[G6/parse]` counts tables, not fields.
-  rb-4 ledger X11 → backlog.
+  `#[rustfmt::skip]`-wrapped type are all invisible to G6, whose `[G6/parse]` counts tables, not
+  fields. Today every one of them is backstopped by `evals/battle-schema-snapshot.eval.mjs`'s
+  `[parse-shape]` clause in the same CI run (measured), so the residual is the COUPLING — G6's
+  completeness silently depends on a sibling eval's strictness — not an open hole. rb-4 ledger
+  X11 → backlog.
 - **Aliases declared outside the scanned input set** — `game-core` carries an optional `spacetimedb`
   dependency, so `pub type Owner = spacetimedb::Identity;` there + `use game_core::Owner;` is
   invisible; the INPUT-SET RULE is `server-module/src/**/*.rs` and S0 forbids widening it inside the
   frozen seam. rb-4 ledger X12 → backlog.
-- **Proc-macro-generated aliases** from an external crate leave no `type` text at all; only the
-  `macro_rules!` form is detected.
+- **Proc-macro-generated aliases** from an external crate, and a `paste!`-style generated NAME,
+  leave no readable `type` text at all; `[G6/alias]` detects the three `macro_rules!` shapes above
+  and nothing else. A right-hand side containing `;` (an array type) is cut at the `;` — arrays
+  are not legal columns.
 - A `__proto__`-named FIELD vanishes from `parseTableSchemas`' plain-object column map with no
   fail-close (rb-3 ledger X10 → backlog, `evals/battle-schema-snapshot.eval.mjs`).
 
@@ -177,7 +195,18 @@ Object.prototype"), which was written for a tooth that HAD an injection alternat
   under-report IS the residual. The walker performs a second pass over `treeSrcs` (alias collection
   before table parsing); measured cost is negligible against the eval's existing per-file stripping.
 - Follow-ups: the three backlog residuals above; promoting the resolver to `evals/rust-scan.mjs` if a
-  second eval ever needs alias resolution.
+  second eval ever needs alias resolution; when the M22 cascade consumer lands, it should import a
+  one-line reader (`resolvedTypeOf(rec)` / an Option-ness predicate) exported and seam-frozen beside
+  the walker rather than touch `rec.type` — a consumer reading `type` gets the right key set but the
+  wrong nullability for an aliased column, and nothing mechanical prevents that today.
+
+## Confirmation
+
+`evals/guest-claim-integrity.eval.mjs` — clauses `[G6/policy]` (D1), `[G6/declared]` / `[G6/live]` /
+`[G6/anchors]` over own-property Maps (D2), `[G6/alias]` and the resolver behind `[G6/declared]` (D3);
+proof-of-teeth FG60-FG71 (D1), FG72a-f (D2), FG73a-p (D3). `evals/rekey-contract-surface.eval.mjs`
+— `[T2/type]` / `[T2/alias]` (D3). Mutation bite-proofs and fork-vs-HEAD ratchets live beside the
+slice ledgers (`memory/projects/gates/rb-{2,3,4}.*.mjs`).
 
 ## References
 
