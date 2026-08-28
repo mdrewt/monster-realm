@@ -173,6 +173,12 @@
 //       [S/success-region] it lies between `rekey_all(` and the trailing `Ok(())`,
 //                          and precedes `account().identity().update(`.
 //   G6  checkRekeyCompleteness(treeSrcs, accountsSrc[, manifest])
+//       [G6/policy]        every manifest entry is an object whose explicit
+//                          `policy` field is exactly REKEY / BLOCKED / EXEMPT
+//                          with that kind's closed field set (rb-2 — the
+//                          discriminator is read by ONE function, never
+//                          inferred from typeof or needle presence). Runs
+//                          before the manifest is compared to the tree.
 //       [G6/parse]         every `#[spacetimedb::table(` in each source yields
 //                          exactly one PARSED table — a declaration
 //                          parseTableSchemas cannot read hides its Identity
@@ -185,7 +191,8 @@
 //                          stale policy behind).
 //       [G6/anchors]       {account.identity, playtest_event.identity,
 //                          profile.identity, player_wallet.owner_identity} all
-//                          resolve, and playtest_event.identity is EXEMPT.
+//                          resolve, playtest_event.identity is EXEMPT, and the
+//                          D6 REKEY columns are REKEY by value.
 //       [G6/consumed]      each REKEY entry's `rekey` needle appears in
 //                          rekey_all's body (accounts.rs:221-229) AND its
 //                          `exists` needle in account_has_game_data's body
@@ -203,7 +210,7 @@
 //   * Strip PER FILE, never a concatenated blob: a quote left open in file A
 //     silently blanks the whole of file B.
 //
-// Proof-of-teeth fixtures (FG1-FG59) run BEFORE the live-tree checks so a broken
+// Proof-of-teeth fixtures (FG1-FG71) run BEFORE the live-tree checks so a broken
 // checker is caught first. Every clause has a BAD fixture asserting its [tag] by
 // expectTag, and every checker has a GOOD fixture that must PASS — an always-red
 // checker is indistinguishable from a working one (this repo's ux3 postmortem
@@ -1395,8 +1402,28 @@ function freezeManifest(manifest, seen = new WeakSet()) {
 }
 
 /**
- * "table.field" -> 'EXEMPT: <reason>' | 'BLOCKED: <reason>' |
- * {rekey: '<helper>(', exists: '<predicate>('}.
+ * "table.field" -> { policy: 'REKEY', rekey: '<helper>(', exists: '<predicate>(' }
+ *               |  { policy: 'BLOCKED', reason: '<the guard that rejects the claim>' }
+ *               |  { policy: 'EXEMPT', reason: '<why it is never a foreign reference>' }.
+ *
+ * EVERY entry is an object carrying an explicit `policy` discriminator (rb-2,
+ * residual R-m22-s0-X1). Until rb-2 the BLOCKED/EXEMPT entries were bare
+ * strings and `checkRekeyCompleteness` inferred REKEY from
+ * `typeof policy === 'string'`, so ANY object-valued entry was REKEY by
+ * definition — MEASURED: rewriting one BLOCKED string as a record kept the S0
+ * contract eval green and redded this file with `[G6/consumed] … as REKEY via
+ * undefined`, and the only green workaround was to borrow another table's
+ * needles, i.e. to advertise a BLOCKED column as re-keyed. The discriminator is
+ * now a FIELD, read by exactly one function (`classifyPolicy` below, which owns
+ * the rules and their failure text). Objects-only on purpose: a dual form (strings still
+ * legal via their prefix) would keep the prefix parse as a second, implicit
+ * discriminator, and a one-letter `BLOKED:` slip would silently un-police a
+ * column. Literal objects rather than constructor helpers on purpose:
+ * accounts_tests.rs reads this file as TEXT (the T9 cross-manifest proof), and a
+ * helper would hide the policy word from that reader while adding a second place
+ * to lie. The `reason` text is the ADR-0179 D6 justification VERBATIM, minus the
+ * retired `BLOCKED: ` / `EXEMPT: ` prefix — M22 consumes it as the
+ * deletion-cascade SSOT, so it must stay truthful (see the corrections below).
  *
  * EXPORTED as the M22 slice-0 contract surface: a second gate file consumes
  * this policy table and the `findIdentityColumns` walker below rather than
@@ -1428,30 +1455,50 @@ function freezeManifest(manifest, seen = new WeakSet()) {
  * then `pub owner: OwnerId,`) is NOT seen, by this walker or by any consumer of
  * it. Nothing in the tree declares such an alias today; a consumer that must be
  * exhaustive has to gate the alias out at the schema, not here.
- * @type {Record<string, string|{rekey:string, exists:string}>}
+ * @type {Record<string, RekeyPolicyEntry>}
  */
 export const REKEY_MANIFEST = freezeManifest({
   // --- REKEY: moved from the guest identity onto the caller by rekey_all, and
   // counted as "game data" by account_has_game_data. ---
-  'monster.owner_identity': { rekey: 'rekey_monsters(', exists: 'has_monsters(' },
-  'monster_pub.owner_identity': { rekey: 'rekey_monsters(', exists: 'has_monsters(' },
-  'inventory.owner_identity': { rekey: 'rekey_inventory(', exists: 'has_items(' },
+  'monster.owner_identity': { policy: 'REKEY', rekey: 'rekey_monsters(', exists: 'has_monsters(' },
+  'monster_pub.owner_identity': {
+    policy: 'REKEY',
+    rekey: 'rekey_monsters(',
+    exists: 'has_monsters(',
+  },
+  'inventory.owner_identity': { policy: 'REKEY', rekey: 'rekey_inventory(', exists: 'has_items(' },
   'player_quest.owner_identity': {
+    policy: 'REKEY',
     rekey: 'rekey_npc_state(',
     exists: 'has_quest_or_dialogue_state(',
   },
   'player_dialogue_state.owner_identity': {
+    policy: 'REKEY',
     rekey: 'rekey_npc_state(',
     exists: 'has_quest_or_dialogue_state(',
   },
-  'heal_cooldown.owner_identity': { rekey: 'rekey_heal_cooldown(', exists: 'has_heal_cooldown(' },
-  'player_wallet.owner_identity': { rekey: 'rekey_wallet(', exists: 'wallet_exists(' },
-  'profile.identity': { rekey: 'rekey_profile(', exists: 'profile_exists(' },
+  'heal_cooldown.owner_identity': {
+    policy: 'REKEY',
+    rekey: 'rekey_heal_cooldown(',
+    exists: 'has_heal_cooldown(',
+  },
+  'player_wallet.owner_identity': {
+    policy: 'REKEY',
+    rekey: 'rekey_wallet(',
+    exists: 'wallet_exists(',
+  },
+  'profile.identity': { policy: 'REKEY', rekey: 'rekey_profile(', exists: 'profile_exists(' },
 
   // --- BLOCKED: a guard rejects the claim while such a row exists, so there is
   // nothing to carry forward. ---
-  'player.identity': 'BLOCKED: guard 1 (AUTH-18) rejects while the guest presence row exists',
-  'player_conversation.owner_identity': 'BLOCKED: transitively covered by guards 1/3',
+  'player.identity': {
+    policy: 'BLOCKED',
+    reason: 'guard 1 (AUTH-18) rejects while the guest presence row exists',
+  },
+  'player_conversation.owner_identity': {
+    policy: 'BLOCKED',
+    reason: 'transitively covered by guards 1/3',
+  },
   // CORRECTED during the M21c security audit — ADR-0179 D6 records these as
   // "BLOCKED — guard 2", but `guards::is_in_ongoing_battle` (guards.rs:302-307)
   // filters `outcome == Ongoing`, so it blocks only LIVE battles. Terminal PvP
@@ -1464,16 +1511,28 @@ export const REKEY_MANIFEST = freezeManifest({
   // (it is a real dangling reference), so the policy value stands — but the
   // REASON must be truthful, because M22 consumes this manifest as its
   // deletion-cascade SSOT and "BLOCKED" otherwise reads as "no cascade needed".
-  'battle.player_identity':
-    'BLOCKED: guard 2 (AUTH-19) blocks ONLY Ongoing rows — terminal rows survive and orphan; ' +
-    'M22 cascade MUST sweep this column',
-  'battle.opponent_identity':
-    'BLOCKED: guard 2 (AUTH-19) blocks ONLY Ongoing rows — terminal rows survive and orphan; ' +
-    'M22 cascade MUST sweep this column',
-  'battle_action.player_identity': 'BLOCKED: transitively covered (requires an ongoing battle)',
-  'trade_offer.initiator': 'BLOCKED: transitively covered by guards 1/3',
-  'trade_offer.counterparty': 'BLOCKED: transitively covered by guards 1/3',
-  'battle_challenge.challenger': 'BLOCKED: transitively covered by guards 1/3',
+  'battle.player_identity': {
+    policy: 'BLOCKED',
+    reason:
+      'guard 2 (AUTH-19) blocks ONLY Ongoing rows — terminal rows survive and orphan; ' +
+      'M22 cascade MUST sweep this column',
+  },
+  'battle.opponent_identity': {
+    policy: 'BLOCKED',
+    reason:
+      'guard 2 (AUTH-19) blocks ONLY Ongoing rows — terminal rows survive and orphan; ' +
+      'M22 cascade MUST sweep this column',
+  },
+  'battle_action.player_identity': {
+    policy: 'BLOCKED',
+    reason: 'transitively covered (requires an ongoing battle)',
+  },
+  'trade_offer.initiator': { policy: 'BLOCKED', reason: 'transitively covered by guards 1/3' },
+  'trade_offer.counterparty': { policy: 'BLOCKED', reason: 'transitively covered by guards 1/3' },
+  'battle_challenge.challenger': {
+    policy: 'BLOCKED',
+    reason: 'transitively covered by guards 1/3',
+  },
   // CORRECTED during the M21c security audit — `cancel_challenges_on_disconnect`
   // (pvp.rs:638-651) filters `challenge_id().challenger().filter(player)` only,
   // so an INCOMING pending challenge (guest is the `target`) survives the
@@ -1482,31 +1541,176 @@ export const REKEY_MANIFEST = freezeManifest({
   // `battle_challenge`. Low impact in M21 (a stale challenge that TTL-expires),
   // but the row is a real dangling reference and M22 inherits this table.
   // Contrast `battle_challenge.challenger` above, which IS genuinely blocked.
-  'battle_challenge.target':
-    'BLOCKED: only the CHALLENGER half is swept on disconnect (pvp.rs:638-651) — an incoming ' +
-    'challenge survives until the TTL reaper; M22 cascade MUST sweep this column',
+  'battle_challenge.target': {
+    policy: 'BLOCKED',
+    reason:
+      'only the CHALLENGER half is swept on disconnect (pvp.rs:638-651) — an incoming ' +
+      'challenge survives until the TTL reaper; M22 cascade MUST sweep this column',
+  },
 
   // --- EXEMPT: never a foreign reference to re-key. ---
-  'playtest_event.identity': 'EXEMPT: dev telemetry, deliberately stays under the guest identity',
-  'config.owner_identity': 'EXEMPT: module-owner sentinel, defaults to the zero identity',
-  'account.identity': "EXEMPT: this milestone's own primary key, always the caller's own identity",
-  'account.claimed_from': 'EXEMPT: write target, not a rekey source (AUTH-21 records the guest)',
-  'guest_claim.guest_identity': 'EXEMPT: consumed, not rekeyed (AUTH-34 / AUTH-27)',
-  'guest_claim_reaper_schedule.guest_identity': 'EXEMPT: consumed, not rekeyed (AUTH-34 / AUTH-27)',
+  'playtest_event.identity': {
+    policy: 'EXEMPT',
+    reason: 'dev telemetry, deliberately stays under the guest identity',
+  },
+  'config.owner_identity': {
+    policy: 'EXEMPT',
+    reason: 'module-owner sentinel, defaults to the zero identity',
+  },
+  'account.identity': {
+    policy: 'EXEMPT',
+    reason: "this milestone's own primary key, always the caller's own identity",
+  },
+  'account.claimed_from': {
+    policy: 'EXEMPT',
+    reason: 'write target, not a rekey source (AUTH-21 records the guest)',
+  },
+  'guest_claim.guest_identity': {
+    policy: 'EXEMPT',
+    reason: 'consumed, not rekeyed (AUTH-34 / AUTH-27)',
+  },
+  'guest_claim_reaper_schedule.guest_identity': {
+    policy: 'EXEMPT',
+    reason: 'consumed, not rekeyed (AUTH-34 / AUTH-27)',
+  },
   // CORRECTED during the m22-s2 security audit — the first draft said "the M22 cascade
   // sweeps this column", which is FALSE in exactly the case EXEMPT creates: the cascade
   // keys on the deleting account identity, and a pre-claim chunk sits under the retired
   // guest identity where that key cannot reach it. The reason must be truthful (the
   // battle.player_identity precedent above): this is the one EXEMPT entry that leaves
   // live personal data under a dead identity, and S3 owns closing it.
-  'export_bundle.owner_identity':
-    'EXEMPT: TTL-bound M22 export snapshot, not re-keyed across a claim. HONEST LIMIT: ' +
-    'pre-claim chunks orphan under the guest identity (the cascade keys on the deleting ' +
-    'identity and cannot reach them) — S3 MUST close this: delete chunks at claim time, or ' +
-    'sweep owner_identity == account.claimed_from in the cascade; the S4 TTL reaper does ' +
-    'not exist yet and a TTL is not a substitute for cascade erasure anyway (the ' +
-    'playtest_event doctrine)',
+  'export_bundle.owner_identity': {
+    policy: 'EXEMPT',
+    reason:
+      'TTL-bound M22 export snapshot, not re-keyed across a claim. HONEST LIMIT: ' +
+      'pre-claim chunks orphan under the guest identity (the cascade keys on the deleting ' +
+      'identity and cannot reach them) — S3 MUST close this: delete chunks at claim time, or ' +
+      'sweep owner_identity == account.claimed_from in the cascade; the S4 TTL reaper does ' +
+      'not exist yet and a TTL is not a substitute for cascade erasure anyway (the ' +
+      'playtest_event doctrine)',
+  },
 });
+
+// ---------------------------------------------------------------------------
+// THE POLICY DISCRIMINATOR (rb-2). One reader, one closed set, one closed field
+// set per kind. Anti-patterns this replaces — MEASURED green-and-wrong on the
+// fork tree: `typeof entry === 'string'` (the residual's own repro) and needle
+// presence (`'rekey' in entry`); pinned by the ledger's X3 mutants and the
+// FG60-FG71 teeth: `entry.policy || 'BLOCKED'`, a `switch` with a silent
+// default, `startsWith('REKEY')` (blesses a REKEY_TODO placeholder), a
+// case-insensitive compare, an empty anchor list; and, structurally,
+// classifying in two places.
+// Forward path: when a second file must interpret entry shape, EXPORT
+// `classifyPolicy` and freeze it in rekey-contract-surface — never re-implement.
+// ---------------------------------------------------------------------------
+
+/**
+ * @typedef {{policy:'REKEY', rekey:string, exists:string}
+ *   | {policy:'BLOCKED'|'EXEMPT', reason:string}} RekeyPolicyEntry
+ */
+
+/**
+ * The three legal entry shapes. `fields` is the sorted, comma-joined OWN key
+ * set an entry of that kind must carry EXACTLY — a closed set, so a new field
+ * (M22 S3's `deletion_policy` / `basis` / `exportable`) is a [G6/policy]
+ * failure until it is added HERE, in the same PR, on purpose. An array searched
+ * with `.find`, never an object keyed by the policy word: `policy: 'constructor'`
+ * must be an UNKNOWN kind, not a hit on Object.prototype.
+ */
+const POLICY_SHAPES = [
+  { kind: 'REKEY', fields: 'exists,policy,rekey' },
+  { kind: 'BLOCKED', fields: 'policy,reason' },
+  { kind: 'EXEMPT', fields: 'policy,reason' },
+];
+
+// A needle is a helper-CALL prefix (`rekey_wallet(`, `crate::economy::rekey_wallet(`).
+// A token present in every fn body — `ctx`, a bare paren — would make the
+// [G6/consumed] substring test vacuous for a helper nobody calls.
+const NEEDLE_SHAPE = /^[a-z][a-z0-9_:]{3,}\($/;
+// The retired string spelling must not creep back INSIDE a reason: `policy` is
+// the only discriminator, and two spellings of one fact is the defect rb-2 closed.
+const REASON_PREFIX_LIES = ['blocked:', 'exempt:', 'rekey:'];
+
+/**
+ * @typedef {{kind:'REKEY'|'BLOCKED'|'EXEMPT', rekey:string|undefined, exists:string|undefined}} ClassifiedPolicy
+ */
+
+/**
+ * Parse ONE manifest entry into its policy kind (parse-don't-validate: the
+ * needles are copied out HERE, and [G6/consumed] reads the parsed record, never
+ * the raw entry again). Returns a tagged error string for every malformed shape
+ * and NEVER throws — `typeof null === 'object'` and arrays are objects, so a
+ * classifier that trusts `typeof` dereferences null and the whole eval dies as
+ * `TEETH threw`, naming no key.
+ * @param {string} key "table.field".
+ * @param {unknown} entry The manifest value.
+ * @returns {ClassifiedPolicy|{error:string}} Parsed policy, or a [G6/policy] error.
+ */
+function classifyPolicy(key, entry) {
+  const bad = (why) => ({
+    error:
+      `[G6/policy] the manifest entry \`${key}\` ${why}. Every entry is an object carrying an ` +
+      "explicit `policy` of exactly 'REKEY', 'BLOCKED' or 'EXEMPT' — that field is the ONLY " +
+      'discriminator (never typeof, never needle presence). A REKEY entry carries exactly ' +
+      '{policy, rekey, exists}; a BLOCKED or EXEMPT entry exactly {policy, reason}, and every ' +
+      'field value is a non-blank string. A new field (the M22 S3 deletion_policy / basis / ' +
+      'exportable extension) is added to POLICY_SHAPES in this file, in the same PR, ' +
+      'deliberately — and a non-string field needs the non-blank-string rule relaxed here too',
+  });
+  if (entry === null) return bad('is null');
+  if (Array.isArray(entry)) return bad('is an array');
+  if (typeof entry !== 'object') return bad(`is of type ${typeof entry}, not an object`);
+  const shape = POLICY_SHAPES.find((s) => s.kind === entry.policy);
+  if (shape === undefined) {
+    return bad(
+      `declares policy ${JSON.stringify(entry.policy)}, which is not exactly REKEY, BLOCKED or EXEMPT`,
+    );
+  }
+  const fields = Object.keys(entry).sort().join(',');
+  if (fields !== shape.fields) {
+    return bad(
+      `is ${shape.kind} but declares the fields [${fields}] where exactly [${shape.fields}] are legal`,
+    );
+  }
+  for (const f of Object.keys(entry)) {
+    if (typeof entry[f] !== 'string' || entry[f].trim() === '') {
+      return bad(`has a \`${f}\` that is not a non-blank string`);
+    }
+  }
+  if (shape.kind === 'REKEY') {
+    for (const f of ['rekey', 'exists']) {
+      if (!NEEDLE_SHAPE.test(entry[f])) {
+        return bad(
+          `has a \`${f}\` needle ${JSON.stringify(entry[f])} that is not a helper-call prefix ` +
+            'such as rekey_wallet( — a token found in every fn body would make the consumption ' +
+            'scan pass for a helper nobody calls. A legal helper spelling this rejects means ' +
+            'NEEDLE_SHAPE in this file is widened in the same PR',
+        );
+      }
+    }
+    return { kind: shape.kind, rekey: entry.rekey, exists: entry.exists };
+  }
+  const lowered = entry.reason.trimStart().toLowerCase();
+  if (REASON_PREFIX_LIES.some((p) => lowered.startsWith(p))) {
+    return bad('restates a policy word inside its reason — `policy` is the only discriminator');
+  }
+  return { kind: shape.kind, rekey: undefined, exists: undefined };
+}
+
+/**
+ * Classify EVERY entry of a manifest exactly once. First failure wins.
+ * @param {Record<string, unknown>} manifest The policy table.
+ * @returns {{kinds: Map<string, ClassifiedPolicy>}|{error:string}} Parsed table, or the error.
+ */
+function classifyManifest(manifest) {
+  const kinds = new Map();
+  for (const key of Object.keys(manifest)) {
+    const parsed = classifyPolicy(key, manifest[key]);
+    if (parsed.error !== undefined) return { error: parsed.error };
+    kinds.set(key, parsed);
+  }
+  return { kinds };
+}
 
 // Hardcoded INDEPENDENTLY of the manifest: four columns that must resolve for
 // the scan to be believable at all. `playtest_event.identity` additionally
@@ -1520,6 +1724,23 @@ const G6_ANCHORS = [
   'player_wallet.owner_identity',
 ];
 const G6_EXEMPT_ANCHOR = 'playtest_event.identity';
+// The REKEY columns of ADR-0179 D6, pinned as REKEY BY VALUE. A SUBSET pin,
+// not an equality: a ninth REKEY column needs no edit here, but demoting one of
+// these to BLOCKED — the reverse of the lie rb-2 closed, and a shape [G6/policy]
+// cannot see because it is well-formed — reds [G6/anchors] instead of silently
+// dropping the column out of [G6/consumed]. Accepted limit, by design: a NEW
+// REKEY column added later is consumption-checked but not demotion-pinned until
+// it is appended here.
+const G6_REKEY_ANCHORS = [
+  'monster.owner_identity',
+  'monster_pub.owner_identity',
+  'inventory.owner_identity',
+  'player_quest.owner_identity',
+  'player_dialogue_state.owner_identity',
+  'heal_cooldown.owner_identity',
+  'player_wallet.owner_identity',
+  'profile.identity',
+];
 
 const REKEY_ALL_FN = 'rekey_all';
 const HAS_GAME_DATA_FN = 'account_has_game_data';
@@ -1555,7 +1776,7 @@ export function findIdentityColumns(treeSrcs) {
  * G6 REKEY_COMPLETENESS — the D6 manifest is complete, live, and consumed.
  * @param {Array<{path:string, src:string}>} treeSrcs Every non-test server source.
  * @param {string} accountsSrc Raw server-module/src/accounts.rs source.
- * @param {Record<string, string|{rekey:string, exists:string}>} [manifest]
+ * @param {Record<string, RekeyPolicyEntry>} [manifest]
  *   Injected policy table (defaults to REKEY_MANIFEST; the teeth inject
  *   deliberately wrong manifests so [G6/anchors] is provably not always-green).
  * @returns {string|null} Error string, or null on pass.
@@ -1565,6 +1786,13 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     const desync = assertStripperSound(f.src, f.path);
     if (desync) return desync;
   }
+
+  // [G6/policy] — every entry parses to exactly one policy kind. Runs before
+  // the manifest is compared to the tree, so a manifest defect is never
+  // reported as a tree defect.
+  const classified = classifyManifest(manifest);
+  if (classified.error !== undefined) return classified.error;
+  const kinds = classified.kinds;
 
   // [G6/parse] — PARSER non-vacuity, the [STRIP/anchors] idea applied to
   // parseTableSchemas. [G6/declared] can only classify columns the parser
@@ -1603,7 +1831,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
 
   // [G6/declared] — forward direction: a NEW Identity column with no policy.
   for (const key of [...columns.keys()].sort()) {
-    if (key in manifest) continue;
+    if (kinds.has(key)) continue;
     const decl = columns.get(key);
     return (
       `[G6/declared] the column \`${key}\` (type \`${decl.type}\`, declared in ${decl.path}) has no ` +
@@ -1616,7 +1844,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
   }
 
   // [G6/live] — reverse direction: a stale policy for a column that is gone.
-  for (const key of Object.keys(manifest)) {
+  for (const key of kinds.keys()) {
     if (columns.has(key)) continue;
     return (
       `[G6/live] the manifest entry \`${key}\` does not resolve to any live table column. The check ` +
@@ -1639,8 +1867,8 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
       );
     }
   }
-  const exemptPolicy = manifest[G6_EXEMPT_ANCHOR];
-  if (typeof exemptPolicy !== 'string' || !exemptPolicy.startsWith('EXEMPT')) {
+  const exemptPolicy = kinds.get(G6_EXEMPT_ANCHOR)?.kind;
+  if (exemptPolicy !== 'EXEMPT') {
     return (
       `[G6/anchors] the manifest policy for \`${G6_EXEMPT_ANCHOR}\` is not EXEMPT (got ` +
       `${JSON.stringify(exemptPolicy)}). ADR-0179 D6 pins it as dev telemetry that deliberately ` +
@@ -1648,6 +1876,18 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
       'that no brainstormer enumerated by memory, which is the whole reason this manifest is ' +
       'gated mechanically rather than maintained by hand, so its policy is asserted by value here'
     );
+  }
+  for (const key of G6_REKEY_ANCHORS) {
+    const kind = kinds.get(key)?.kind;
+    if (kind !== 'REKEY') {
+      return (
+        `[G6/anchors] the manifest policy for \`${key}\` is ${JSON.stringify(kind)}, not REKEY. ` +
+        'ADR-0179 D6 re-keys this column through rekey_all, so demoting it to BLOCKED or EXEMPT ' +
+        'is the reverse of the lie rb-2 closed: a well-formed entry that G6/policy cannot see, ' +
+        'which silently drops the column out of the consumption scan while its rows orphan on ' +
+        'every successful claim'
+      );
+    }
   }
 
   // [G6/consumed] — every REKEY entry is actually wired into BOTH call sites.
@@ -1677,9 +1917,8 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     bodies[site.kind] = body;
   }
 
-  for (const key of Object.keys(manifest)) {
-    const policy = manifest[key];
-    if (typeof policy === 'string') continue;
+  for (const [key, policy] of kinds) {
+    if (policy.kind !== 'REKEY') continue;
     if (bodies.rekey.indexOf(policy.rekey) === -1) {
       return (
         `[G6/consumed] the manifest marks \`${key}\` as REKEY via \`${policy.rekey}\` but that ` +
@@ -1706,7 +1945,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
 }
 
 // ---------------------------------------------------------------------------
-// PROOF-OF-TEETH FIXTURES (FG1-FG59) — inline sources, run BEFORE the live-tree
+// PROOF-OF-TEETH FIXTURES (FG1-FG71) — inline sources, run BEFORE the live-tree
 // checks. Returns the first tooth failure (string) or null.
 //
 // The Rust fixtures below are STRING LITERALS in a .mjs file; the live scan
@@ -1714,6 +1953,114 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
 // source. Fixtures that contain backslashes use String.raw so the Rust text
 // reaches the checker byte-for-byte.
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// The T9 CO-SCAN TWIN (fixture FG70).
+//
+// accounts_tests.rs:3313-3433 reads THIS file as TEXT — it is the only thing
+// tying the JS re-key manifest to the Rust data-lifecycle manifest — and it does
+// so with a scanner that is deliberately naive in four ways: it blanks
+// slash-slash-to-end-of-line comments (inside string literals too), it takes the
+// FIRST `REKEY_MANIFEST = freezeManifest(...)` anchor, it brace-walks counting
+// EVERY brace byte (inside strings too), and its single-quote span walk has NO
+// escape handling, so one backslash-quote swallows every key up to the next
+// quote. Its only guard is a 20-key floor, so all four failure modes degrade
+// SILENTLY while the Rust test stays green.
+//
+// Re-implemented here byte-for-byte so that a manifest edit which blinds the
+// Rust scan reds in JS, loudly, in the same run that introduces it. It is
+// deliberately NOT hardened: it must stay exactly as blind as the Rust one,
+// which is what FG70b proves.
+//
+// The anchor is spelled in two halves so this twin's own source cannot add a
+// SECOND occurrence of it to the file (accounts_tests.rs:3368 uses concat! for
+// the same reason).
+// ---------------------------------------------------------------------------
+const T9_ANCHOR = 'REKEY_MAN' + 'IFEST = freezeManifest({';
+const T9_QUOTE = String.fromCharCode(0x27);
+
+/**
+ * Is `s` shaped like a `table.column` manifest key? Twin of
+ * accounts_tests.rs:3339 `m22_is_table_column_key`.
+ * @param {string} s Candidate span.
+ * @returns {boolean} True for exactly one dot with a non-empty side on each end.
+ */
+function t9IsColumnKey(s) {
+  let dots = 0;
+  for (const ch of s) {
+    if (ch === '.') {
+      dots++;
+      continue;
+    }
+    if (!isWordChar(ch)) return false;
+  }
+  if (dots !== 1) return false;
+  const dot = s.indexOf('.');
+  return dot > 0 && dot < s.length - 1;
+}
+
+/**
+ * Every `'table.column':` key the Rust T9 scan reads out of `src`, in source
+ * order and WITHOUT de-duplication (a duplicated key must be visible as a
+ * length mismatch against `Object.keys`, not silently collapsed).
+ * @param {string} src Raw JS source.
+ * @returns {string[]|null} The raw key list, or null when the block is unreadable.
+ */
+function t9TwinKeys(src) {
+  const kept = [];
+  let inComment = false;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '\n') {
+      inComment = false;
+      kept.push('\n');
+      continue;
+    }
+    if (!inComment && ch === '/' && src[i + 1] === '/') {
+      inComment = true;
+      i++;
+      continue;
+    }
+    if (!inComment) kept.push(ch);
+  }
+  const stripped = kept.join('');
+
+  const at = stripped.indexOf(T9_ANCHOR);
+  if (at === -1) return null;
+  const open = at + T9_ANCHOR.length - 1;
+  if (stripped[open] !== '{') return null;
+  let depth = 0;
+  let end = -1;
+  for (let i = open; i < stripped.length; i++) {
+    if (stripped[i] === '{') depth++;
+    else if (stripped[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  if (end <= open) return null;
+
+  const block = stripped.slice(open, end);
+  const keys = [];
+  let k = 0;
+  while (k < block.length) {
+    if (block[k] !== T9_QUOTE) {
+      k++;
+      continue;
+    }
+    let j = k + 1;
+    while (j < block.length && block[j] !== T9_QUOTE) j++;
+    if (j >= block.length) break;
+    const span = block.slice(k + 1, j);
+    const after = j + 1 < block.length ? block[j + 1] : ' ';
+    if (after === ':' && t9IsColumnKey(span)) keys.push(span);
+    k = j + 1;
+  }
+  return keys;
+}
 
 /**
  * Assert that a checker fired the EXPECTED clause (by tag), not merely that it
@@ -2854,7 +3201,11 @@ pub struct GuildMember {
   {
     const manifest = {
       ...REKEY_MANIFEST,
-      'playtest_event.identity': { rekey: 'rekey_monsters(', exists: 'has_monsters(' },
+      'playtest_event.identity': {
+        policy: 'REKEY',
+        rekey: 'rekey_monsters(',
+        exists: 'has_monsters(',
+      },
     };
     const bad = expectTag(
       checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
@@ -3012,6 +3363,436 @@ pub struct GuildMember {
     if (bad) return bad;
   }
 
+  // FG60 — a BLOCKED entry that ALSO carries a pair of REKEY needles.
+  // Kills: a classifier that infers the policy from needle PRESENCE
+  // (`'rekey' in entry`, `Boolean(entry.rekey)`), and any OPEN entry shape that
+  // lets an explicit `policy` and a contradicting pair of needles coexist — the
+  // manifest would then say two different things and the reader would believe
+  // the wrong one.
+  {
+    const manifest = {
+      ...REKEY_MANIFEST,
+      'player.identity': {
+        policy: 'BLOCKED',
+        reason: 'a guard rejects the claim while such a row exists',
+        rekey: 'rekey_monsters(',
+        exists: 'has_monsters(',
+      },
+    };
+    const bad = expectTag(
+      checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+      '[G6/policy]',
+      'FG60',
+    );
+    if (bad) return bad;
+  }
+
+  // FG61 — GOOD: the residual's own repro, as the control this slice exists for.
+  // A well-formed BLOCKED entry (a reason, no needles) must PASS.
+  // Kills: a checker that reads `.rekey`/`.exists` off EVERY object entry — the
+  // undefined needles are then coerced to the literal 'undefined', miss both
+  // bodies, and red [G6/consumed] on a perfectly legal BLOCKED row. Deliberately
+  // manifest-TEXT-independent: it survives any future re-wording of the shipped
+  // reasons, so it can never be quietly "fixed" by editing the manifest.
+  {
+    const manifest = {
+      ...REKEY_MANIFEST,
+      'battle.player_identity': { policy: 'BLOCKED', reason: 'terminal rows survive' },
+    };
+    const err = checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest);
+    if (err) return `FG61: a well-formed BLOCKED entry was incorrectly flagged: ${err}`;
+  }
+
+  // FG62 — REKEY entries whose needles are missing, degenerate, EMPTY or blank.
+  // Kills: (a) silently skipping a needle-less REKEY entry, and the
+  // `indexOf(undefined)` coercion that reds it under the WRONG tag; (b) a needle
+  // that is present in every fn body ever written (`ctx`), which makes the
+  // substring test pass for a helper nobody calls; (c) the MEASURED guard-11
+  // fail-open — `body.indexOf('') === 0`, so an EMPTY needle reads as consumed;
+  // (d) MEASURED: a classifier that applies the needle rule to `exists` ONLY —
+  // (b) and (c) BOTH degrade `exists`, so a one-sided rule passed them both.
+  // (d) degrades `rekey` alone and leaves a perfectly good `exists` behind;
+  // (e) a WHITESPACE-only needle, which clears a `!== ''` emptiness test and
+  // then cannot match anything, because both bodies are whitespace-COMPACTED.
+  {
+    const cases = [
+      { label: 'FG62a', entry: { policy: 'REKEY' } },
+      { label: 'FG62b', entry: { policy: 'REKEY', rekey: 'ctx', exists: 'ctx' } },
+      { label: 'FG62c', entry: { policy: 'REKEY', rekey: 'rekey_profile(', exists: '' } },
+      { label: 'FG62d', entry: { policy: 'REKEY', rekey: 'ctx', exists: 'profile_exists(' } },
+      { label: 'FG62e', entry: { policy: 'REKEY', rekey: 'rekey_profile(', exists: '   ' } },
+    ];
+    for (const probe of cases) {
+      const manifest = { ...REKEY_MANIFEST, 'profile.identity': probe.entry };
+      const bad = expectTag(
+        checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+        '[G6/policy]',
+        probe.label,
+      );
+      if (bad) return bad;
+    }
+  }
+
+  // FG63 — the legacy STRING form, which the objects-only shape retires.
+  // Kills: a dual-form classifier (parsing the `BLOCKED: ` prefix IS the same
+  // implicit inference this slice removes), an else-branch that treats any
+  // non-object as BLOCKED, and with them the whole `'BLOKED: '` typo class — a
+  // one-letter slip that would silently un-police a column while every other
+  // clause stayed green.
+  {
+    const manifest = { ...REKEY_MANIFEST, 'player.identity': 'BLOCKED: legacy string form' };
+    const bad = expectTag(
+      checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+      '[G6/policy]',
+      'FG63',
+    );
+    if (bad) return bad;
+  }
+
+  // FG64 — `policy` values that are NOT exactly one of the three kinds.
+  // Kills: a case-insensitive compare (a), a `startsWith('REKEY')` prefix test
+  // (b), and a `switch` with a silent default.
+  // PINS (deliberately weaker than "kills"): 'constructor' (c) and '__proto__'
+  // (d) must be UNKNOWN policy values. Under a `.find` over a shape array — or a
+  // Map — they already land in [G6/policy] for free, so these two are a
+  // REGRESSION PIN against a future rewrite to a plain-object policy lookup,
+  // not evidence that today's classifier had to do anything to be prototype-safe.
+  {
+    const cases = [
+      { label: 'FG64a', entry: { policy: 'Blocked', reason: 'wrong case' } },
+      {
+        label: 'FG64b',
+        entry: { policy: 'REKEYED', rekey: 'rekey_monsters(', exists: 'has_monsters(' },
+      },
+      { label: 'FG64c', entry: { policy: 'constructor', reason: 'prototype reach' } },
+      { label: 'FG64d', entry: { policy: '__proto__', reason: 'prototype reach' } },
+    ];
+    for (const probe of cases) {
+      const manifest = { ...REKEY_MANIFEST, 'player.identity': probe.entry };
+      const bad = expectTag(
+        checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+        '[G6/policy]',
+        probe.label,
+      );
+      if (bad) return bad;
+    }
+  }
+
+  // FG65 — a MISSING `policy` field (a) and a present-but-undefined one (b).
+  // Kills: `entry.policy ?? infer(entry)`, the `entry.policy` fallback to
+  // 'BLOCKED', and any else-branch that defaults an unclassified entry to
+  // BLOCKED. The safest-LOOKING default is the dangerous one: it reports "a
+  // guard covers this" about a column nobody ever classified.
+  {
+    const cases = [
+      { label: 'FG65a', entry: { reason: 'no policy field' } },
+      { label: 'FG65b', entry: { policy: undefined, reason: 'undefined policy' } },
+    ];
+    for (const probe of cases) {
+      const manifest = { ...REKEY_MANIFEST, 'player.identity': probe.entry };
+      const bad = expectTag(
+        checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+        '[G6/policy]',
+        probe.label,
+      );
+      if (bad) return bad;
+    }
+  }
+
+  // FG66 — the REVERSE lie: every REKEY column in turn demoted to a WELL-FORMED
+  // BLOCKED entry. The shape is legal, so [G6/policy] cannot see it, and a
+  // demotion dodges [G6/consumed] entirely (that clause walks REKEY entries
+  // only), so the rows silently orphan on every successful claim.
+  // Kills: presence-only anchors, and a G6_REKEY_ANCHORS list that covers fewer
+  // REKEY columns than the manifest ships. The list below is transcribed here
+  // INDEPENDENTLY of the checker's own — a shared const could be emptied on both
+  // sides at once — and the guard after it asserts that this hand-written list
+  // COVERS the shipped REKEY set, so "eight" is a fact re-derived from the DATA
+  // on every run rather than a number in a comment that ages badly.
+  {
+    const rekeyAnchors = [
+      'monster.owner_identity',
+      'monster_pub.owner_identity',
+      'inventory.owner_identity',
+      'player_quest.owner_identity',
+      'player_dialogue_state.owner_identity',
+      'heal_cooldown.owner_identity',
+      'player_wallet.owner_identity',
+      'profile.identity',
+    ];
+    // NON-CIRCULAR superset guard. It reads the shipped DATA (`.policy` on each
+    // manifest entry), never the checker's G6_REKEY_ANCHORS — that const is what
+    // this tooth exists to gate, so comparing against it would prove nothing. A
+    // ninth REKEY column added without a matching name here would otherwise
+    // leave the demotion loop silently short.
+    for (const key of Object.keys(REKEY_MANIFEST)) {
+      if (REKEY_MANIFEST[key].policy !== 'REKEY') continue;
+      if (rekeyAnchors.indexOf(key) !== -1) continue;
+      return (
+        `FG66: the manifest classifies \`${key}\` as REKEY but this fixture's own demotion ` +
+        'list does not name it, so the reverse-lie loop would never try to demote that column. ' +
+        'Add it here AND to G6_REKEY_ANCHORS in the same PR'
+      );
+    }
+    for (const key of rekeyAnchors) {
+      const manifest = {
+        ...REKEY_MANIFEST,
+        [key]: { policy: 'BLOCKED', reason: 'nothing to carry' },
+      };
+      const bad = expectTag(
+        checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+        '[G6/anchors]',
+        `FG66/${key}`,
+      );
+      if (bad) return bad;
+    }
+  }
+
+  // FG67 — non-object entries must produce a TAGGED RETURN, never a throw.
+  // `typeof entry === 'object'` is TRUE for null and for an array, so a
+  // classifier that trusts it dereferences null and the whole suite dies as
+  // `TEETH threw: ...`, naming no key and no clause — a manifest typo would then
+  // look like a broken eval rather than a broken manifest.
+  // Kills: an object-ness test written as bare `typeof`, and any classifier that
+  // signals a malformed entry by throwing instead of returning its tag.
+  {
+    const cases = [
+      { label: 'FG67a', entry: null },
+      { label: 'FG67b', entry: [] },
+      { label: 'FG67c', entry: () => 'not an entry' },
+      { label: 'FG67d', entry: 7 },
+    ];
+    for (const probe of cases) {
+      const manifest = { ...REKEY_MANIFEST, 'player.identity': probe.entry };
+      let err;
+      try {
+        err = checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest);
+      } catch (e) {
+        return (
+          `${probe.label}: the checker THREW on a malformed entry instead of returning a ` +
+          `tagged [G6/policy] failure: ${e?.message ?? String(e)}`
+        );
+      }
+      const bad = expectTag(err, '[G6/policy]', probe.label);
+      if (bad) return bad;
+    }
+  }
+
+  // FG68 — an unjustified or self-contradicting reason, and an extra field.
+  // Kills: (a) accepting an EMPTY reason — a BLOCKED row with no justification
+  // is precisely the row no later reviewer re-derives; (b) the old prefix
+  // smuggled back INSIDE the reason text, which is the second spelling of the
+  // discriminator this slice abolished; (c) a REKEY entry carrying a `reason`,
+  // i.e. the open shape that would let M22 S3's deletion_policy/basis/exportable
+  // fields drift in ungated instead of through POLICY_SHAPES.
+  {
+    const cases = [
+      { label: 'FG68a', entry: { policy: 'BLOCKED', reason: '' } },
+      { label: 'FG68b', entry: { policy: 'BLOCKED', reason: 'EXEMPT: second spelling' } },
+      {
+        label: 'FG68c',
+        entry: {
+          policy: 'REKEY',
+          rekey: 'rekey_monsters(',
+          exists: 'has_monsters(',
+          reason: 'extra field',
+        },
+      },
+    ];
+    for (const probe of cases) {
+      const manifest = { ...REKEY_MANIFEST, 'player.identity': probe.entry };
+      const bad = expectTag(
+        checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+        '[G6/policy]',
+        probe.label,
+      );
+      if (bad) return bad;
+    }
+  }
+
+  // FG69 — TOTALITY, over every key and SEVEN defect shapes. Kills the cheats
+  // that no single-key fixture can see:
+  //   (1) a classifier that accepts ONLY the shipped entry objects — part 1
+  //       re-runs the whole check over a fresh per-entry copy, so accepting an
+  //       object by IDENTITY is not a substitute for validating its shape.
+  //       HONEST LIMIT, stated because this tooth is easy to over-read:
+  //       `{ ...entry }` is a ONE-LEVEL copy. It is total here only because the
+  //       closed shape is FLAT (three string fields) — it is not a deep clone,
+  //       and a classifier memoised on a DEEP-EQUAL comparison against the
+  //       shipped data survives this tooth completely. That cheat is killed by
+  //       the ledger's X3 DATA mutants (M6 / M7 / M9), which corrupt the shipped
+  //       manifest itself, and by nothing in this file.
+  //   (2) a classifier that only validates the handful of keys the fixtures
+  //       above happen to name — part 2 defects EVERY key of the manifest.
+  // Note the tag: a well-formed DEMOTION is [G6/anchors] (FG66's job); all seven
+  // shapes here are MALFORMED, so [G6/policy] must fire first, for all 24 keys,
+  // including the anchors themselves.
+  // The ~7x24 checker calls are DELIBERATE: totality over the whole key set is
+  // the point, and each call re-runs only the two small GOOD_TREE fixtures.
+  {
+    const copy = {};
+    for (const key of Object.keys(REKEY_MANIFEST)) {
+      copy[key] = { ...REKEY_MANIFEST[key] };
+    }
+    const copyErr = checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, copy);
+    if (copyErr) {
+      return `FG69/copy: a per-entry copy of the shipped manifest was flagged: ${copyErr}`;
+    }
+
+    const shapes = [
+      {
+        name: 'blocked-with-needles',
+        entry: {
+          policy: 'BLOCKED',
+          reason: 'x',
+          rekey: 'rekey_monsters(',
+          exists: 'has_monsters(',
+        },
+      },
+      { name: 'rekey-without-needles', entry: { policy: 'REKEY' } },
+      {
+        name: 'rekey-empty-exists',
+        entry: { policy: 'REKEY', rekey: 'rekey_monsters(', exists: '' },
+      },
+      {
+        name: 'rekey-with-reason',
+        entry: {
+          policy: 'REKEY',
+          rekey: 'rekey_monsters(',
+          exists: 'has_monsters(',
+          reason: 'x',
+        },
+      },
+      { name: 'string-form', entry: 'BLOCKED: legacy string form' },
+      // MEASURED: a classifier that checks "the required fields are present and
+      // no BANNED cross-field is" passed all 120 cases above while M22 S3's
+      // deletion_policy / basis / exportable drifted in green. The field set is
+      // CLOSED, not a blocklist.
+      {
+        name: 'blocked-with-extra-field',
+        entry: { policy: 'BLOCKED', reason: 'x', deletion_policy: 'ERASE' },
+      },
+      // MEASURED green: `reason !== ''` accepts three spaces, and a blank
+      // justification is exactly the row no later reviewer re-derives. Only the
+      // X8 fork byte-compare objected, and X8 does not run on injected manifests.
+      { name: 'blocked-whitespace-reason', entry: { policy: 'BLOCKED', reason: '   ' } },
+    ];
+    for (const key of Object.keys(REKEY_MANIFEST)) {
+      for (const shape of shapes) {
+        const manifest = { ...REKEY_MANIFEST, [key]: shape.entry };
+        const bad = expectTag(
+          checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+          '[G6/policy]',
+          `FG69/${key}/${shape.name}`,
+        );
+        if (bad) return bad;
+      }
+    }
+  }
+
+  // FG70 — the T9 CO-SCAN. accounts_tests.rs:3366 `m22_rekey_manifest_keys`
+  // reads THIS FILE as TEXT with a naive, escape-blind scanner, and its only
+  // guard is a `>= 20` key floor — so every way of blinding it degrades
+  // SILENTLY, above the floor, with the Rust test still green.
+  // Kills: a SECOND `freezeManifest(...)` anchor anywhere in the file (the Rust
+  // scan takes the FIRST hit and never strips block comments); a `//`, `{` or
+  // `}` inside any manifest string (the comment strip and the brace walk both
+  // run inside string literals); a duplicated manifest key; and above all a
+  // biome-emitted `\'` in a reason — MEASURED to truncate the Rust key list to
+  // 22 of 24, which still clears the floor.
+  {
+    const raw = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+    const anchors = countOccurrences(raw, T9_ANCHOR);
+    if (anchors !== 1) {
+      return (
+        `FG70: the byte string \`${T9_ANCHOR}\` occurs ${anchors} time(s) in the RAW text of ` +
+        'this file; exactly one is required. This count is over RAW text and is deliberately ' +
+        'STRICTER than the Rust twin, which strips slash-slash comments before it searches but ' +
+        'does NOT strip block comments: a duplicate inside a LINE comment is invisible to Rust ' +
+        'and harmless, while a duplicate inside a BLOCK comment (or in code) silently points ' +
+        'accounts_tests.rs:3369 at the wrong object, because it takes the FIRST hit. One rule ' +
+        'covers both without anyone having to reason about which kind of comment it landed in: ' +
+        'spell it freezeManifest(...) in prose'
+      );
+    }
+    const keys = t9TwinKeys(raw);
+    if (keys === null) {
+      return (
+        'FG70: the T9 twin could not extract the manifest block (anchor missing, not landing on ' +
+        'the opening brace, or not brace-balanced from it). The Rust twin would panic, or read ' +
+        'an arbitrary suffix of this file instead of the manifest'
+      );
+    }
+    const expected = Object.keys(REKEY_MANIFEST);
+    if (keys.join(' ') !== expected.join(' ')) {
+      // Counts are reported ONLY when they differ: on an ORDER or CONTENT
+      // mismatch the old wording read "read 24 ... declares 24", which invites
+      // the reader to conclude the tooth is broken rather than the manifest.
+      const sizes =
+        keys.length === expected.length
+          ? 'both lists are the same LENGTH, so they differ in content or in ORDER'
+          : `the twin read ${keys.length} key(s); this file declares ${expected.length}`;
+      return (
+        'FG70: the T9 text twin and the manifest object DISAGREE about this file. ' +
+        `${sizes}.\n  Rust (text scan) sees: [${keys.join(', ')}]\n  this file declares: ` +
+        `[${expected.join(', ')}]\nA key the text scan cannot see is a table the M22 ` +
+        'cross-manifest proof never checks, and it fails SILENTLY above its 20-key floor'
+      );
+    }
+  }
+
+  // FG70b — POSITIVE CONTROL for FG70: the twin must stay exactly as ESCAPE-BLIND
+  // as the Rust one. A twin quietly hardened to understand `\'` would report all
+  // 24 keys for a manifest the Rust scan reads as 22 — FG70 would go green on
+  // precisely the hazard it exists to catch, and the co-scan would be theatre.
+  {
+    const synth = [
+      'const M = ',
+      T9_ANCHOR,
+      "\n  'alpha.one': 'a\\'b',\n  'beta.two': 'plain',\n  'gamma.three': 'plain',\n});\n",
+    ].join('');
+    const keys = t9TwinKeys(synth);
+    if (keys === null) {
+      return 'FG70b: the twin failed to read a well-formed synthetic manifest block at all';
+    }
+    if (keys.join(' ') !== 'alpha.one') {
+      return (
+        `FG70b: the T9 twin read [${keys.join(', ')}] from a THREE-key synthetic block whose ` +
+        'first value carries a backslash-escaped apostrophe. It must lose every key after that ' +
+        'escape, exactly as accounts_tests.rs:3409-3431 does; an escape-AWARE twin is blind to ' +
+        'the biome hazard FG70 exists to detect'
+      );
+    }
+  }
+
+  // FG71 — the NINTH-REKEY hole. MEASURED: a [G6/consumed] clause that walks
+  // `G6_REKEY_ANCHORS` instead of the CLASSIFIED REKEY set passed every other
+  // tooth in this file, because today the eight REKEY columns ARE the eight
+  // anchors — the two sets are accidentally equal, so nothing else here can tell
+  // them apart. The day a ninth REKEY column is added, that clause stops
+  // checking it and the column orphans on every successful claim.
+  // Kills: iterating the anchor list (or any other hardcoded list) in the
+  // consumption clause. This entry is a NON-anchor column promoted to a
+  // well-formed REKEY entry whose helpers exist nowhere in accounts.rs: the
+  // shape is legal so [G6/policy] cannot see it, and the key is not an anchor so
+  // [G6/anchors] cannot see it either.
+  {
+    const manifest = {
+      ...REKEY_MANIFEST,
+      'player.identity': {
+        policy: 'REKEY',
+        rekey: 'rekey_player_rows(',
+        exists: 'has_player_rows(',
+      },
+    };
+    const bad = expectTag(
+      checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+      '[G6/consumed]',
+      'FG71',
+    );
+    if (bad) return bad;
+  }
+
   return null;
 }
 
@@ -3116,9 +3897,15 @@ export default async function guestClaimIntegrityEval() {
     return { name, pass: false, detail: failures.join(' | ') };
   }
 
-  const rekeyEntries = Object.keys(REKEY_MANIFEST).filter(
-    (k) => typeof REKEY_MANIFEST[k] !== 'string',
-  ).length;
+  // G6 passed above, so the shipped manifest classifies cleanly; count REKEY
+  // from the classifier's verdicts, never from a second reading of the data
+  // (the error branch is unreachable here and exists so a future reordering
+  // can never turn this line into a TypeError on the success path).
+  const shipped = classifyManifest(REKEY_MANIFEST);
+  const rekeyEntries =
+    shipped.error === undefined
+      ? [...shipped.kinds.values()].filter((p) => p.kind === 'REKEY').length
+      : 0;
   return {
     name,
     pass: true,
@@ -3131,7 +3918,7 @@ export default async function guestClaimIntegrityEval() {
       'the claim code is consumed exactly once for the guest at brace-depth 0 of the success ' +
       `region, and all ${Object.keys(REKEY_MANIFEST).length} Identity columns carry a D6 policy ` +
       `(${rekeyEntries} REKEY entries consumed by both rekey_all and account_has_game_data) ` +
-      '(59 teeth verified)',
+      '(71 teeth verified)',
   };
 }
 
