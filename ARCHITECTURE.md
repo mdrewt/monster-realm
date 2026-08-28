@@ -111,8 +111,8 @@ match a directory or `run.mjs` exits the whole 90-eval suite mid-loop with code 
 `REKEY_MANIFEST` entry is now an object with an explicit `policy` discriminator
 (`REKEY` | `BLOCKED` | `EXEMPT`, exact equality, a closed field set per kind, D6
 reasons verbatim minus the retired prefix), read by ONE parser (`classifyPolicy`)
-under a new first clause `[G6/policy]`; the eight D6 REKEY columns are pinned REKEY
-by value, and FG70 re-implements the Rust T9 text scan in-file so a key list the
+under a new first clause `[G6/policy]`; the D6 REKEY columns are pinned REKEY by
+value, and FG70 re-implements the Rust T9 text scan in-file so a key list the
 `accounts_tests.rs` `include_str!` reader would silently truncate (a biome-emitted
 `\'` above its ≥20 floor) reds here.
 **M23 accessibility gates (m23-s10)** — three source-scan evals plus one cross-view happy-dom

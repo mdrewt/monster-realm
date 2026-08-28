@@ -177,7 +177,8 @@
 //                          `policy` field is exactly REKEY / BLOCKED / EXEMPT
 //                          with that kind's closed field set (rb-2 — the
 //                          discriminator is read by ONE function, never
-//                          inferred from typeof or needle presence). Runs first.
+//                          inferred from typeof or needle presence). Runs
+//                          before the manifest is compared to the tree.
 //       [G6/parse]         every `#[spacetimedb::table(` in each source yields
 //                          exactly one PARSED table — a declaration
 //                          parseTableSchemas cannot read hides its Identity
@@ -190,9 +191,8 @@
 //                          stale policy behind).
 //       [G6/anchors]       {account.identity, playtest_event.identity,
 //                          profile.identity, player_wallet.owner_identity} all
-//                          resolve, playtest_event.identity is EXEMPT, the
-//                          eight D6 REKEY columns are REKEY by value, and every
-//                          classified kind equals its entry's declared policy.
+//                          resolve, playtest_event.identity is EXEMPT, and the
+//                          D6 REKEY columns are REKEY by value.
 //       [G6/consumed]      each REKEY entry's `rekey` needle appears in
 //                          rekey_all's body (accounts.rs:221-229) AND its
 //                          `exists` needle in account_has_game_data's body
@@ -1414,11 +1414,8 @@ function freezeManifest(manifest, seen = new WeakSet()) {
  * contract eval green and redded this file with `[G6/consumed] … as REKEY via
  * undefined`, and the only green workaround was to borrow another table's
  * needles, i.e. to advertise a BLOCKED column as re-keyed. The discriminator is
- * now a FIELD, read by exactly one function (`classifyPolicy`), by exact
- * equality against a closed set, with a closed field set per kind — so a
- * BLOCKED entry carrying needles, a REKEY entry missing them, a string entry,
- * or an unknown/misspelled policy word is a loud `[G6/policy]` failure, never a
- * silent reclassification. Objects-only on purpose: a dual form (strings still
+ * now a FIELD, read by exactly one function (`classifyPolicy` below, which owns
+ * the rules and their failure text). Objects-only on purpose: a dual form (strings still
  * legal via their prefix) would keep the prefix parse as a second, implicit
  * discriminator, and a one-letter `BLOKED:` slip would silently un-police a
  * column. Literal objects rather than constructor helpers on purpose:
@@ -1596,12 +1593,13 @@ export const REKEY_MANIFEST = freezeManifest({
 
 // ---------------------------------------------------------------------------
 // THE POLICY DISCRIMINATOR (rb-2). One reader, one closed set, one closed field
-// set per kind. Anti-patterns this replaces, all measured green-and-wrong
-// against the fork tree: `typeof entry === 'string'`; `'rekey' in entry`;
-// `entry.policy || 'BLOCKED'`; a `switch` with a silent default;
-// `startsWith('REKEY')` (blesses a REKEY_TODO placeholder); presence-only
-// anchors; classifying in two places. [G6/policy] runs FIRST, before any tree
-// work, so a manifest defect is never reported as a tree defect.
+// set per kind. Anti-patterns this replaces — MEASURED green-and-wrong on the
+// fork tree: `typeof entry === 'string'` (the residual's own repro) and needle
+// presence (`'rekey' in entry`); pinned by the ledger's X3 mutants and the
+// FG60-FG71 teeth: `entry.policy || 'BLOCKED'`, a `switch` with a silent
+// default, `startsWith('REKEY')` (blesses a REKEY_TODO placeholder), a
+// case-insensitive compare, an empty anchor list; and, structurally,
+// classifying in two places.
 // Forward path: when a second file must interpret entry shape, EXPORT
 // `classifyPolicy` and freeze it in rekey-contract-surface — never re-implement.
 // ---------------------------------------------------------------------------
@@ -1634,7 +1632,7 @@ const NEEDLE_SHAPE = /^[a-z][a-z0-9_:]{3,}\($/;
 const REASON_PREFIX_LIES = ['blocked:', 'exempt:', 'rekey:'];
 
 /**
- * @typedef {{kind:string, rekey:string|undefined, exists:string|undefined}} ClassifiedPolicy
+ * @typedef {{kind:'REKEY'|'BLOCKED'|'EXEMPT', rekey:string|undefined, exists:string|undefined}} ClassifiedPolicy
  */
 
 /**
@@ -1654,13 +1652,14 @@ function classifyPolicy(key, entry) {
       `[G6/policy] the manifest entry \`${key}\` ${why}. Every entry is an object carrying an ` +
       "explicit `policy` of exactly 'REKEY', 'BLOCKED' or 'EXEMPT' — that field is the ONLY " +
       'discriminator (never typeof, never needle presence). A REKEY entry carries exactly ' +
-      '{policy, rekey, exists}; a BLOCKED or EXEMPT entry exactly {policy, reason}. A new ' +
-      'field (the M22 S3 deletion_policy / basis / exportable extension) is added to ' +
-      'POLICY_SHAPES in this file, in the same PR, deliberately',
+      '{policy, rekey, exists}; a BLOCKED or EXEMPT entry exactly {policy, reason}, and every ' +
+      'field value is a non-blank string. A new field (the M22 S3 deletion_policy / basis / ' +
+      'exportable extension) is added to POLICY_SHAPES in this file, in the same PR, ' +
+      'deliberately — and a non-string field needs the non-blank-string rule relaxed here too',
   });
   if (entry === null) return bad('is null');
   if (Array.isArray(entry)) return bad('is an array');
-  if (typeof entry !== 'object') return bad(`is a ${typeof entry}, not an object`);
+  if (typeof entry !== 'object') return bad(`is of type ${typeof entry}, not an object`);
   const shape = POLICY_SHAPES.find((s) => s.kind === entry.policy);
   if (shape === undefined) {
     return bad(
@@ -1684,7 +1683,8 @@ function classifyPolicy(key, entry) {
         return bad(
           `has a \`${f}\` needle ${JSON.stringify(entry[f])} that is not a helper-call prefix ` +
             'such as rekey_wallet( — a token found in every fn body would make the consumption ' +
-            'scan pass for a helper nobody calls',
+            'scan pass for a helper nobody calls. A legal helper spelling this rejects means ' +
+            'NEEDLE_SHAPE in this file is widened in the same PR',
         );
       }
     }
@@ -1724,7 +1724,7 @@ const G6_ANCHORS = [
   'player_wallet.owner_identity',
 ];
 const G6_EXEMPT_ANCHOR = 'playtest_event.identity';
-// The eight REKEY columns of ADR-0179 D6, pinned as REKEY BY VALUE. A SUBSET pin,
+// The REKEY columns of ADR-0179 D6, pinned as REKEY BY VALUE. A SUBSET pin,
 // not an equality: a ninth REKEY column needs no edit here, but demoting one of
 // these to BLOCKED — the reverse of the lie rb-2 closed, and a shape [G6/policy]
 // cannot see because it is well-formed — reds [G6/anchors] instead of silently
@@ -1787,8 +1787,9 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     if (desync) return desync;
   }
 
-  // [G6/policy] — every entry parses to exactly one policy kind. Runs BEFORE
-  // any tree work so a manifest defect is never reported as a tree defect.
+  // [G6/policy] — every entry parses to exactly one policy kind. Runs before
+  // the manifest is compared to the tree, so a manifest defect is never
+  // reported as a tree defect.
   const classified = classifyManifest(manifest);
   if (classified.error !== undefined) return classified.error;
   const kinds = classified.kinds;
@@ -1843,7 +1844,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
   }
 
   // [G6/live] — reverse direction: a stale policy for a column that is gone.
-  for (const key of Object.keys(manifest)) {
+  for (const key of kinds.keys()) {
     if (columns.has(key)) continue;
     return (
       `[G6/live] the manifest entry \`${key}\` does not resolve to any live table column. The check ` +
@@ -1885,16 +1886,6 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
         'is the reverse of the lie rb-2 closed: a well-formed entry that G6/policy cannot see, ' +
         'which silently drops the column out of the consumption scan while its rows orphan on ' +
         'every successful claim'
-      );
-    }
-  }
-  // The classifier must report what the entry DECLARES. Trivially true of an
-  // honest reader; a tripwire for one that reclassifies behind the field.
-  for (const [key, parsed] of kinds) {
-    if (parsed.kind !== manifest[key].policy) {
-      return (
-        `[G6/anchors] the manifest entry \`${key}\` declares policy ` +
-        `${JSON.stringify(manifest[key].policy)} but the classifier reports ${parsed.kind}`
       );
     }
   }
@@ -3907,10 +3898,14 @@ export default async function guestClaimIntegrityEval() {
   }
 
   // G6 passed above, so the shipped manifest classifies cleanly; count REKEY
-  // from the classifier's verdicts, never from a second reading of the data.
-  const rekeyEntries = [...classifyManifest(REKEY_MANIFEST).kinds.values()].filter(
-    (p) => p.kind === 'REKEY',
-  ).length;
+  // from the classifier's verdicts, never from a second reading of the data
+  // (the error branch is unreachable here and exists so a future reordering
+  // can never turn this line into a TypeError on the success path).
+  const shipped = classifyManifest(REKEY_MANIFEST);
+  const rekeyEntries =
+    shipped.error === undefined
+      ? [...shipped.kinds.values()].filter((p) => p.kind === 'REKEY').length
+      : 0;
   return {
     name,
     pass: true,
