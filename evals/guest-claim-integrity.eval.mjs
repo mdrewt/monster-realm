@@ -184,12 +184,19 @@
 //                          parseTableSchemas cannot read hides its Identity
 //                          columns from [G6/declared] (and from the schema
 //                          baseline, which compares a union of both sides).
+//       [G6/alias]         no source declares a `type` item from inside a
+//                          `macro_rules!` body — a generated binding the alias
+//                          resolver cannot read (rb-4; FG73n).
 //       [G6/declared]      every `Identity`/`Option<Identity>` COLUMN in the tree
 //                          has an OWN manifest entry — membership is asked of
 //                          the Map classifyManifest derives from Object.keys,
 //                          never of the manifest object, so a key reachable
 //                          only through the prototype chain does not count
-//                          (rb-3, residual R-m22-s0-X2; FG72a-f).
+//                          (rb-3, residual R-m22-s0-X2; FG72a-f). A column's
+//                          declared type is RESOLVED through every `type` item
+//                          and `use … as` rename in the scanned tree before the
+//                          Identity test, fail-closed on ambiguity (rb-4,
+//                          residual R-m22-s0-X3; FG73a-o).
 //       [G6/live]          every manifest key still resolves to a live column
 //                          (bidirectional — a deleted column must not leave a
 //                          stale policy behind).
@@ -214,7 +221,7 @@
 //   * Strip PER FILE, never a concatenated blob: a quote left open in file A
 //     silently blanks the whole of file B.
 //
-// Proof-of-teeth fixtures (FG1-FG72) run BEFORE the live-tree checks so a broken
+// Proof-of-teeth fixtures (FG1-FG73) run BEFORE the live-tree checks so a broken
 // checker is caught first. Every clause has a BAD fixture asserting its [tag] by
 // expectTag, and every checker has a GOOD fixture that must PASS — an always-red
 // checker is indistinguishable from a working one (this repo's ux3 postmortem
@@ -1453,12 +1460,18 @@ function freezeManifest(manifest, seen = new WeakSet()) {
  * rule drifts silently the first time the real one moves. The slice that needs
  * it EXPORTS it from here and imports it, the same way it does the manifest.
  *
- * KNOWN LIMITATION of the walker below, stated because this contract now
- * advertises it: `findIdentityColumns` matches the literal type TEXT of a
- * column. A column declared through an alias (`pub type OwnerId = Identity;`
- * then `pub owner: OwnerId,`) is NOT seen, by this walker or by any consumer of
- * it. Nothing in the tree declares such an alias today; a consumer that must be
- * exhaustive has to gate the alias out at the schema, not here.
+ * ALIAS RESOLUTION, stated because this contract advertises it (rb-4, residual
+ * R-m22-s0-X3; THE ALIAS RESOLUTION RULE above `findIdentityColumns`): the
+ * walker classifies a column by its RESOLVED type, expanding every `type` item
+ * and `use … as` rename declared anywhere in the scanned tree, so an aliased
+ * Identity column is seen by this walker and by every consumer of it, and the
+ * record carries both the declared text (`type`) and the expansion
+ * (`resolved`) — a consumer reads Option-ness from the latter and never
+ * resolves anything itself. What is STILL not seen, routed to the residual
+ * backlog: a SpacetimeType product column carrying an Identity, a field
+ * declared without `pub`, and a binding declared outside the scanned input set
+ * — a consumer that must be exhaustive over those has to gate them out at the
+ * schema, not here.
  * @type {Record<string, RekeyPolicyEntry>}
  */
 export const REKEY_MANIFEST = freezeManifest({
@@ -1783,27 +1796,219 @@ const G6_REKEY_ANCHORS = [
 const REKEY_ALL_FN = 'rekey_all';
 const HAS_GAME_DATA_FN = 'account_has_game_data';
 
+// ---------------------------------------------------------------------------
+// THE ALIAS RESOLUTION RULE (rb-4, residual R-m22-s0-X3). Until rb-4 the walker
+// classified a column by the LITERAL text of its declared type, so a column
+// typed through a Rust `type` item, or through a `use … as` rename, that
+// resolves to Identity was invisible to G6/declared, G6/live AND G6/anchors —
+// MEASURED on the fork for every spelling (direct, transitive, Option-wrapped
+// in either direction, renamed, cross-file, any visibility, qualified RHS,
+// rustfmt-wrapped, `r#`-prefixed, non-ASCII). The rule now: every `type`
+// item and every rename in the WHOLE scanned tree is collected ONCE, from
+// STRIPPED source, into one name -> bindings Map — a UNION with duplicates
+// KEPT and no per-file precedence, because the collector is namespace-blind
+// and a same-file associated item (`impl … { type X = u64; }`) would
+// otherwise overwrite a module-level binding (a measured, CI-clean hide). A
+// column's declared type is split into identifier TOKENS and every bound token
+// is expanded recursively, a name already on the current expansion path being
+// terminal (a self-referential re-export resolves to a fixed point; a cycle
+// merely stops). An Identity-bearing expansion WINS (fail-closed on
+// ambiguity), and the G6/declared message renders every binding consulted with
+// its file, or the over-report is unactionable. The record keeps the DECLARED
+// text unchanged and adds the expansion plus the bindings consulted; a
+// consumer reads Option-ness from `resolved`, never resolving anything itself.
+// Banned, each measured green-and-wrong: classifying on the declared text;
+// per-file precedence; a single-level expansion; matching by SUBSTRING instead
+// of by token (a name that merely begins with a bound name is fabricated into
+// an Identity column, and a bound name that is a prefix of a longer one
+// corrupts every real column); collecting over RAW source (a declaration
+// quoted inside a string literal becomes a binding); a plain-object binding
+// table (an ambient non-enumerable prototype value answers for an unbound
+// name); resolving only the WHOLE type text; a first-binding tie-break. A
+// declaration the resolver cannot read at all — a macro that GENERATES a
+// `type` item — is DETECTED by G6/alias and reported by file, never skipped.
+// Accepted limits, each routed to the residual backlog (rb-4 ledger X10-X12):
+// a SpacetimeType product column carrying an Identity (a named-field struct,
+// an enum payload, a generic wrapper, a Vec of any of these — live-reachable
+// through encounter.entries); a field declared without `pub`, two fields on
+// one line, or a rustfmt::skip-wrapped type (G6/parse counts tables, not
+// fields); a binding declared OUTSIDE the scanned input set (game-core carries
+// an optional spacetimedb dependency); and a proc-macro-generated item from an
+// external crate, which leaves no text at all.
+// ---------------------------------------------------------------------------
+
 /**
- * Every `Identity` / `Option<Identity>` COLUMN across a set of sources, keyed
+ * Every `use … ;` span in ONE stripped source, whole (a multi-line brace
+ * group is one span), so a rename can be found wherever rustfmt put it.
+ * @param {string} stripped Stripped Rust source.
+ * @returns {string[]} Each span from its `use` keyword up to (not including) `;`.
+ */
+function useItems(stripped) {
+  const items = [];
+  // Built per call on purpose: a module-scope global regex keeps `lastIndex`
+  // across calls and would silently skip items in the next file.
+  const USE_ITEM = /\buse\s/g;
+  for (const m of stripped.matchAll(USE_ITEM)) {
+    const end = stripped.indexOf(';', m.index);
+    if (end === -1) break;
+    items.push(stripped.slice(m.index, end));
+  }
+  return items;
+}
+
+/**
+ * Every `type NAME … = RHS;` item (any visibility, generics and where-clauses
+ * swallowed, RHS spanning newlines) and every `TOKEN as NAME` rename inside a
+ * `use` span, as binding records. A rename binds NAME to the LAST path segment
+ * it renames, so a renamed name that is itself bound resolves through both.
+ * @param {string} stripped Stripped (never compacted — compaction destroys the
+ *   keyword boundary) Rust source of one file.
+ * @param {string} path The file, for the failure message.
+ * @returns {Array<{name:string, rhs:string, path:string}>} Bindings, in order.
+ */
+function collectAliasBindings(stripped, path) {
+  const out = [];
+  const ALIAS_ITEM = /\btype\s+(?:r#)?([\p{XID_Start}_][\p{XID_Continue}]*)[^=;]*=\s*([^;]*);/gu;
+  for (const m of stripped.matchAll(ALIAS_ITEM)) {
+    out.push({ name: m[1], rhs: compactWs(m[2]), path });
+  }
+  const RENAME =
+    /((?:r#)?[\p{XID_Start}_][\p{XID_Continue}]*)\s+as\s+(?:r#)?([\p{XID_Start}_][\p{XID_Continue}]*)/gu;
+  for (const item of useItems(stripped)) {
+    for (const m of item.matchAll(RENAME)) {
+      if (m[2] === '_') continue;
+      out.push({ name: m[2], rhs: m[1].startsWith('r#') ? m[1].slice(2) : m[1], path });
+    }
+  }
+  return out;
+}
+
+/**
+ * The tree-wide binding table: name -> EVERY binding of that name, in tree
+ * order, duplicates kept (see the rule above). A Map, never a plain object —
+ * `constructor` and `__proto__` are legal Rust identifiers, and the
+ * own-property boundary applies to derived structures too.
+ * @param {Array<{path:string, stripped:string}>} treeStripped Every source, stripped once.
+ * @returns {Map<string, Array<{name:string, rhs:string, path:string}>>} The table.
+ */
+function indexAliasBindings(treeStripped) {
+  const aliases = new Map();
+  for (const t of treeStripped) {
+    for (const b of collectAliasBindings(t.stripped, t.path)) {
+      if (!aliases.has(b.name)) aliases.set(b.name, []);
+      aliases.get(b.name).push(b);
+    }
+  }
+  return aliases;
+}
+
+/**
+ * Expand every bound identifier TOKEN of `text` recursively. Termination is
+ * structural: a name already on `onPath` is left as it is. Every binding
+ * consulted is appended to `via` once; where a name has several bindings the
+ * Identity-bearing expansion is the one substituted (fail-closed).
+ * @param {string} text A (compacted) type text, or a binding's RHS.
+ * @param {Map<string, Array<{name:string, rhs:string, path:string}>>} aliases The table.
+ * @param {string[]} onPath Names being expanded on the current path.
+ * @param {Array<{name:string, rhs:string, path:string}>} via Accumulator.
+ * @returns {string} The expanded text.
+ */
+function expandTokens(text, aliases, onPath, via) {
+  const tokens = text.match(/(?:r#)?[\p{XID_Start}_][\p{XID_Continue}]*/gu) ?? [];
+  let out = '';
+  let cursor = 0;
+  for (const raw of tokens) {
+    // Tokens come back in order and only separators lie between them, so the
+    // first occurrence at or after the cursor is this token itself.
+    const at = text.indexOf(raw, cursor);
+    out += text.slice(cursor, at);
+    cursor = at + raw.length;
+    const name = raw.startsWith('r#') ? raw.slice(2) : raw;
+    const bindings = aliases.get(name);
+    if (bindings === undefined || onPath.indexOf(name) !== -1) {
+      out += raw;
+      continue;
+    }
+    const expansions = [];
+    for (const b of bindings) {
+      if (via.indexOf(b) === -1) via.push(b);
+      const inner = expandTokens(b.rhs, aliases, onPath.concat(name), via);
+      expansions.push({ resolved: inner, binding: b });
+    }
+    const chosen = expansions.find((e) => containsIdent(e.resolved, 'Identity')) ?? expansions[0];
+    out += chosen.resolved;
+  }
+  return out + text.slice(cursor);
+}
+
+/**
+ * Resolve one column's declared type text through the binding table.
+ * @param {string} text The compacted declared type text.
+ * @param {Map<string, Array<{name:string, rhs:string, path:string}>>} aliases The table.
+ * @returns {{resolved:string, via:Array<{name:string, rhs:string, path:string}>}}
+ *   The expansion (equal to `text` when no binding applied) and the bindings consulted.
+ */
+function resolveType(text, aliases) {
+  const via = [];
+  const resolved = expandTokens(text, aliases, [], via);
+  return { resolved, via };
+}
+
+/**
+ * Render a column record's alias chain for the G6/declared message: nothing for
+ * a directly-typed column; otherwise the expansion, every binding consulted
+ * with its file, and a fail-closed note per name that is bound more than once.
+ * @param {{type:string, resolved:string, via:Array<{name:string, rhs:string, path:string}>}} decl
+ *   The column record.
+ * @returns {string} A clause fragment beginning with `, `, or `''`.
+ */
+function aliasNote(decl) {
+  if (decl.via.length === 0) return '';
+  const rendered = decl.via.map((b) => `\`type ${b.name} = ${b.rhs}\` in ${b.path}`).join(' and ');
+  const perName = new Map();
+  for (const b of decl.via) perName.set(b.name, (perName.get(b.name) ?? 0) + 1);
+  let ambiguous = '';
+  for (const [name, n] of perName) {
+    if (n < 2) continue;
+    ambiguous += ` — \`${name}\` is bound ${n} ways in the tree; reported fail-closed, rename one`;
+  }
+  return `, which resolves to \`${decl.resolved}\` via ${rendered}${ambiguous}`;
+}
+
+/**
+ * Every COLUMN across a set of sources whose declared type RESOLVES to
+ * `Identity` / `Option<Identity>` (see THE ALIAS RESOLUTION RULE above), keyed
  * "table.field". Uses battle-schema-snapshot's `parseTableSchemas`, which reads
  * ONLY `#[spacetimedb::table(...)] pub struct` field lists — a whole-file
  * `: Identity,` line match false-positives on the ~17 pre-existing FUNCTION
- * PARAMETER sites (ADR-0179 D6, finalization-pass note).
+ * PARAMETER sites (ADR-0179 D6, finalization-pass note). Two passes over the
+ * tree: every source is stripped ONCE, the binding table is built over all of
+ * them, then the tables are walked.
  * @param {Array<{path:string, src:string}>} treeSrcs Non-test server sources.
- * @returns {Map<string, {path:string, type:string}>} column key -> declaration.
+ * @returns {Map<string, {path:string, type:string, resolved:string,
+ *   via:Array<{name:string, rhs:string, path:string}>}>} column key -> declaration:
+ *   `type` is the DECLARED text, `resolved` its expansion (equal when direct),
+ *   `via` the bindings consulted (empty when direct). The field set is CLOSED.
  */
 export function findIdentityColumns(treeSrcs) {
   const cols = new Map();
+  // Stripped, not raw: a `#[spacetimedb::table(` quoted inside a string
+  // literal must not be able to inject a phantom table into the manifest scan,
+  // and a `type` item quoted inside one must not become a binding.
+  const treeStripped = [];
   for (const f of treeSrcs) {
-    // Stripped, not raw: a `#[spacetimedb::table(` quoted inside a string
-    // literal must not be able to inject a phantom table into the manifest scan.
-    const tables = parseTableSchemas(stripRustSource(f.src));
+    treeStripped.push({ path: f.path, stripped: stripRustSource(f.src) });
+  }
+  const aliases = indexAliasBindings(treeStripped);
+  for (const f of treeStripped) {
+    const tables = parseTableSchemas(f.stripped);
     for (const table of Object.keys(tables)) {
       const columns = tables[table].columns ?? {};
       for (const field of Object.keys(columns)) {
         const type = compactWs(columns[field]);
-        if (!containsIdent(type, 'Identity')) continue;
-        cols.set(`${table}.${field}`, { path: f.path, type });
+        const { resolved, via } = resolveType(type, aliases);
+        if (!containsIdent(resolved, 'Identity')) continue;
+        cols.set(`${table}.${field}`, { path: f.path, type, resolved, via });
       }
     }
   }
@@ -1863,6 +2068,19 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
         'parseTableSchemas the new form in the same PR'
       );
     }
+    // [G6/alias] — a macro that GENERATES a `type` item leaves only a
+    // metavariable where the resolver expects a name, so the binding it
+    // declares can never be collected: fail loud by file rather than walk
+    // past a column whose type nobody can see. Zero hits on the live tree.
+    if (stripped.indexOf('macro_rules!') !== -1 && stripped.indexOf('type $') !== -1) {
+      return (
+        `[G6/alias] ${f.path} declares a \`type\` item from inside a \`macro_rules!\` body ` +
+        '(the byte string `type $`). The alias resolver reads declarations by SHAPE and a ' +
+        'macro metavariable has none, so any column typed through that generated name would ' +
+        'be an Identity column this gate never sees. Declare the item directly, or teach the ' +
+        'resolver the macro in the same PR'
+      );
+    }
   }
 
   const columns = findIdentityColumns(treeSrcs);
@@ -1874,7 +2092,8 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     if (kinds.has(key)) continue;
     const decl = columns.get(key);
     return (
-      `[G6/declared] the column \`${key}\` (type \`${decl.type}\`, declared in ${decl.path}) has no ` +
+      `[G6/declared] the column \`${key}\` (type \`${decl.type}\`${aliasNote(decl)}, declared in ` +
+      `${decl.path}) has no ` +
       'entry in the ADR-0179 D6 re-key manifest. EVERY Identity column in the module needs an ' +
       'explicit policy — REKEY (carried from the guest onto the claiming account), BLOCKED (a ' +
       'guard rejects the claim while such a row exists) or EXEMPT (never a foreign reference). An ' +
@@ -1985,7 +2204,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
 }
 
 // ---------------------------------------------------------------------------
-// PROOF-OF-TEETH FIXTURES (FG1-FG72) — inline sources, run BEFORE the live-tree
+// PROOF-OF-TEETH FIXTURES (FG1-FG73) — inline sources, run BEFORE the live-tree
 // checks. Returns the first tooth failure (string) or null.
 //
 // The Rust fixtures below are STRING LITERALS in a .mjs file; the live scan
