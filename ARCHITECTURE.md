@@ -1732,3 +1732,48 @@ their sole oracle is `evals/keyboard-operable-rows.eval.mjs`, which S6 may not c
 the supervisor assigned no number and `docs/adr/**` is "reserved number only" under fan-out (the m23-s1
 precedent); the split-ownership decision rides in the module header and is escalated for a number.
 ADR next-free = 0207.
+
+**fix-nightly-coverage-wasm** (nightly `coverage` gate restored — no ADR) complete,
+`M-loop-infrastructure`; **`justfile` + the nightly `coverage` job + one new eval — zero reducers, zero
+schema, zero client change, zero game code**. The nightly `coverage` job had been red four consecutive
+nights (#362/#372/#374/#375) with `Failed to resolve import "../../client-wasm/pkg/client_wasm.js" from
+"src/main.ts"` → `36 failed | 2782 passed`: `coverage:` declared no `wasm` dependency, unlike its `e2e:`
+and `a11y-e2e:` siblings. **The failure was worse than "red": it was UNENFORCED.** vitest's
+`coverage.reportOnFailure` defaults to `false`, so with any failing test it emits no coverage report at
+all and the threshold is never evaluated — measured (36 failures → 0 coverage tables; 4 → 0; 0 → 1). The
+gate had therefore been silently off since the `main.ts`-importing specs landed. Post-fix measurement:
+**98.22% lines** (exit 0) against the unchanged 96 threshold; `client/vite.config.ts:97` excludes
+`src/main.ts` from the denominator, so resolving the import can only raise the number (98.12 → 98.22).
+The threshold was **not** touched, per `docs/nightly-red-response-policy.md`. The fix is necessarily
+two-file and atomic: the nightly `coverage` job provisioned only node+just, so the justfile dependency
+alone would have traded the resolution red for `wasm-pack: command not found` — it gains the three
+`uses:` steps the `a11y-e2e` job already carries, and deliberately **not** that job's `npm ci` run step
+(the recipe runs its own, and a shell step before the gate trips `jobIsNotNeutered`'s "gate must be the
+FIRST run: step" rule). **The slice's real content is the anti-cheat hardening, not the two-line fix.**
+`evals/nightly-coverage-wasm-wiring.eval.mjs` gates three criteria off `just --dump --dump-format json`
+(the parsed recipe graph, never a text grep): C1 the prior dependency, C2 a job-scoped **ordered**
+totality rule, C3 the job's provisioning. C2 is stated over workflow ENTRY POINTS with in-job step
+ordering rather than over the dependency closure, because `ci.yml` does not run `just ci` — it runs each
+verb as its own step, so `client-typecheck`/`client-test` carry no `wasm` dep and are correct anyway via
+the earlier `- run: just wasm`; a closure-only rule would RED a correct configuration. A red-team pass
+that **wrote the cheating implementations** (rather than reading the gate) found **9 CI-clean bypasses**
+that left all 15 justfile/workflow-reading evals green while the real property was false: `coverage: (wasm
+"prebuilt")` against a parameterized recipe (dependency `arguments` discarded → dump byte-identical); a
+just-conditional body (the dump carries BOTH branches, so the marker is present while the executed branch
+is the other one); a one-character `-` ignore-failure prefix restoring the exact original incident shape;
+a `#!/bin/true` shebang; `--out-dir pkg-dist` writing where `main.ts` does not import from; a step-level
+`env:` on the gate step paired with an env-guarded build; a version downgrade laundered through a
+trailing comment past a whole-line-comment-only scan; a job-level `needs:`; and `if: false` on the gate
+step itself (caught only by a sibling eval, so the criterion depended on that eval staying wired). All
+nine are closed and each carries its own tooth. The decisive one is **structural, not textual**: the
+`wasm` recipe is pinned by EQUALITY over pure literal fragments with no parameters, shebang or
+attributes — because no text oracle over the dump can be sound against a conditional body — plus a
+**runtime backstop** in the `coverage` recipe (`test -f client-wasm/pkg/client_wasm.js`) that checks the
+artifact itself, so any forged recipe graph dies loudly on the runner instead of running vitest against a
+missing pkg. Gates: 49 teeth, 9 real-file mutation bite-proofs, full `just ci` exit 0, acceptance ledger
+**6/6 met, 0 deferred**. `touches:` was `justfile`; `.github/workflows/nightly.yml` is a **disclosed
+hidden dependency** (required — the fix is incorrect without it). Known limits, written into the eval
+header rather than papered over: the roster is body-text-derived, so a recipe reaching vitest via a
+wrapper script is invisible (the floors catch REMOVAL of the known four, not ADDITION of a fifth), and
+`justfile:60-62`'s `eval:` shelling out to `just perf-budget` is a live in-tree instance of the dep
+graph's blind spot. ADR next-free = 0207.
