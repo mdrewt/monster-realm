@@ -206,6 +206,17 @@ mutate-server cap="324":
 # gates both halves, and that it is a PRIOR dependency (`coverage: && wasm` would
 # run vitest first and is indistinguishable in `just --dump` except by `priors`).
 coverage: wasm
+    # Runtime backstop for the `: wasm` dependency above. Every gate that asserts that
+    # dependency does so by reading the recipe GRAPH, and a graph is forgeable: a
+    # parameterized `wasm`, a just-conditional body (whose dump carries BOTH branches),
+    # a leading `-` ignore-failure prefix, a `#!/bin/true` shebang and a step-level env
+    # guard were each MEASURED green against a text oracle while building nothing. This
+    # line checks the artifact client/src/main.ts actually imports, so any such cheat
+    # dies here, loudly, instead of silently running vitest against a missing pkg and
+    # reporting 36 unresolved-import failures as if they were real test regressions.
+    # NB: no double-brace sequence in this comment — just parses interpolations inside
+    # recipe-body comment lines too, and one here is a hard parse error for the whole file.
+    test -f client-wasm/pkg/client_wasm.js
     cd client && npm ci && npm i --no-save -D @vitest/coverage-v8@$(node -p 'require("vitest/package.json").version') && npx vitest run --coverage --coverage.provider=v8 --coverage.reporter=text --coverage.thresholds.lines=96
 
 build:

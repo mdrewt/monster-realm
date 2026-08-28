@@ -94,6 +94,39 @@ export const WASM_TARGET_LITERAL = 'targets: wasm32-unknown-unknown';
 export const COVERAGE_GATE_STEP = '- run: just coverage';
 export const WASM_PROVISION_STEP = '- run: just wasm';
 export const WASM_BUILD_MARKER = 'wasm-pack build client-wasm';
+// The FULL command, pinned by EQUALITY rather than containment. A containment pin is
+// satisfied by `echo "wasm-pack build client-wasm"`, by a `-` ignore-failure prefix,
+// and by `--out-dir pkg-dist` writing the pkg somewhere main.ts does not import from —
+// all three measured green against an indexOf pin.
+export const WASM_BUILD_COMMAND = 'wasm-pack build client-wasm --target bundler';
+// The runtime self-assertion in the `coverage` recipe. This is the one clause no text
+// oracle over `just --dump` can be fooled about: whatever the recipe graph claims, the
+// runner checks the actual artifact main.ts imports and dies loudly if it is absent.
+export const COVERAGE_ARTIFACT_ASSERT = 'test -f client-wasm/pkg/client_wasm.js';
+
+// Structural soundness of the `wasm` recipe. Returns a reason string, or null if clean.
+export function c1WasmStructureFault(w) {
+  if (w.paramCount !== 0) {
+    return `the \`wasm\` recipe takes ${w.paramCount} parameter(s). A parameterized build can be steered to a no-op by a single call site while every other one still builds; only an unparameterized \`wasm\` is admitted.`;
+  }
+  if (w.hasShebang) {
+    return 'the `wasm` recipe carries a shebang. `#!/bin/true` (or a shebang script with an early `exit 0` guard) neuters the whole recipe while every body line survives verbatim in the dump — measured green against a text pin.';
+  }
+  if (w.attrCount !== 0) {
+    return `the \`wasm\` recipe carries ${w.attrCount} attribute(s); attributes can make it conditional or non-executing, so only an unattributed \`wasm\` is admitted.`;
+  }
+  if (!w.bodyIsPureLiterals) {
+    return 'the `wasm` recipe body contains a non-literal fragment (an interpolation or a `{{ if ... }}` conditional). `just` dumps BOTH branches of a conditional as sibling literals, so the build command can be PRESENT in the text while the branch that actually executes is the other one — measured green against a text pin. Only a plain literal command line is admitted.';
+  }
+  if (w.literalLines.length !== 1) {
+    return `the \`wasm\` recipe body has ${w.literalLines.length} line(s); exactly one is admitted so the build command can be pinned by equality.`;
+  }
+  const only = w.literalLines[0].trim();
+  if (only !== WASM_BUILD_COMMAND) {
+    return `the \`wasm\` recipe body is ${JSON.stringify(only)}, not exactly ${JSON.stringify(WASM_BUILD_COMMAND)}. Containment is not enough: \`echo "${WASM_BUILD_MARKER}"\`, a leading \`-\` ignore-failure prefix, and a redirected \`--out-dir\` all contain the marker while building nothing main.ts can import.`;
+  }
+  return null;
+}
 
 // A recipe is on the "client-loading roster" when its body actually runs the client
 // test/typecheck toolchain — those are the ones whose entry module chain reaches
@@ -213,13 +246,20 @@ export function normalizeRecipes(dump, versionHint) {
       throw new Error(`just --dump recipe '${name}' has a non-array \`dependencies\`${suffix}`);
     }
     const deps = [];
+    const depArgCounts = [];
     for (const dep of rawDeps) {
       if (typeof dep === 'string') {
         deps.push(dep);
+        depArgCounts.push(0);
         continue;
       }
       if (dep !== null && typeof dep === 'object' && typeof dep.recipe === 'string') {
         deps.push(dep.recipe);
+        // F1: `coverage: (wasm "prebuilt")` dumps a dependency BYTE-IDENTICAL to the
+        // honest `coverage: wasm` once arguments are discarded — and a parameterized
+        // `wasm mode="build":` can then branch to a no-op for exactly that one caller
+        // while every other call site still builds. Retain the arity.
+        depArgCounts.push(Array.isArray(dep.arguments) ? dep.arguments.length : 0);
         continue;
       }
       throw new Error(
@@ -240,11 +280,39 @@ export function normalizeRecipes(dump, versionHint) {
     if (rec.body !== undefined && !Array.isArray(rec.body)) {
       throw new Error(`just --dump recipe '${name}' has a non-array \`body\`${suffix}`);
     }
+    // F2/F4/F5: a text view of the body is not a sound oracle for "this recipe
+    // really runs the build". `just` dumps BOTH branches of a
+    // `{{ if ... { A } else { B } }}` conditional as sibling literals, so the marker
+    // can be present while the executed branch is the other one; a leading `-`
+    // ignore-failure prefix stays glued to the text; and a `#!/bin/true` shebang
+    // neuters the recipe while every body line survives verbatim. Keep the raw
+    // structure so C1 can demand a pure, single, literal command line.
+    const bodyLines = Array.isArray(rec.body) ? rec.body : [];
+    let bodyIsPureLiterals = true;
+    const literalLines = [];
+    for (const line of bodyLines) {
+      if (!Array.isArray(line)) {
+        bodyIsPureLiterals = false;
+        continue;
+      }
+      let joined = '';
+      for (const frag of line) {
+        if (typeof frag === 'string') joined += frag;
+        else bodyIsPureLiterals = false;
+      }
+      literalLines.push(joined);
+    }
     out[name] = {
       name,
       deps,
+      depArgCounts,
       priors,
       body: stripJustComments(bodyToText(rec.body)),
+      literalLines,
+      bodyIsPureLiterals,
+      paramCount: Array.isArray(rec.parameters) ? rec.parameters.length : 0,
+      hasShebang: rec.shebang === true,
+      attrCount: Array.isArray(rec.attributes) ? rec.attributes.length : 0,
     };
   }
   return out;
@@ -546,16 +614,33 @@ export function checkC1(recipes) {
       reason: `C1: \`coverage\` prior dependencies are [${priorDeps.join(', ')}] — \`wasm\` is not among them (full dependency list: [${cov.deps.join(', ')}], priors=${cov.priors})`,
     };
   }
-  const wasmBody = recipes.wasm.body;
-  if (wasmBody.indexOf(WASM_BUILD_MARKER) === -1) {
+  // F1: an ARGUMENT on the prior edge re-targets a parameterized `wasm` recipe at a
+  // no-op branch for this caller alone, leaving every other call site building.
+  const wasmEdge = priorDeps.indexOf('wasm');
+  if (cov.depArgCounts[wasmEdge] !== 0) {
     return {
       ok: false,
-      reason: `C1: the \`wasm\` recipe body no longer contains \`${WASM_BUILD_MARKER}\` — a \`wasm:\` gutted to \`echo skip\` satisfies the dependency edge while building no pkg at all, leaving every dependent green and every import still unresolved. Body was: ${JSON.stringify(wasmBody.trim().slice(0, 160))}`,
+      reason: `C1: \`coverage\` passes ${cov.depArgCounts[wasmEdge]} argument(s) to its \`wasm\` prior dependency. A parameterized \`wasm\` can branch to a no-op for exactly this caller (\`coverage: (wasm "prebuilt")\`) while \`just wasm\`, \`e2e\` and \`a11y-e2e\` all keep building — the dump is otherwise byte-identical to the honest wiring. Only the unparameterized edge is admitted.`,
+    };
+  }
+  const w = recipes.wasm;
+  const wasmStructuralFault = c1WasmStructureFault(w);
+  if (wasmStructuralFault !== null) {
+    return { ok: false, reason: `C1: ${wasmStructuralFault}` };
+  }
+  // F3: a step-level `env:` on the gate step plus an env-guarded build skips the build
+  // with every text criterion still green. The runtime assertion below is the backstop:
+  // it checks the artifact itself, so any graph-level or env-level cheat fails LOUDLY on
+  // the runner instead of silently running vitest against a missing pkg.
+  if (cov.body.indexOf(COVERAGE_ARTIFACT_ASSERT) === -1) {
+    return {
+      ok: false,
+      reason: `C1: the \`coverage\` recipe body no longer self-asserts the artifact with \`${COVERAGE_ARTIFACT_ASSERT}\`. That runtime check is the only clause no text oracle over the recipe graph can be fooled about — without it, an env-guarded or conditionally-branching \`wasm\` leaves this gate green while vitest runs against a missing pkg.`,
     };
   }
   return {
     ok: true,
-    reason: `C1: \`coverage\` declares wasm as a PRIOR dependency (priors=${cov.priors}, deps=[${cov.deps.join(', ')}]) and \`wasm\` still runs \`${WASM_BUILD_MARKER}\``,
+    reason: `C1: \`coverage\` declares wasm as an unparameterized PRIOR dependency (priors=${cov.priors}, deps=[${cov.deps.join(', ')}]), \`wasm\` is exactly \`${WASM_BUILD_COMMAND}\`, and \`coverage\` self-asserts the artifact exists`,
   };
 }
 
@@ -835,6 +920,64 @@ export function checkC3(workflows) {
     };
   }
 
+  // F9/F3: C3 previously asserted "provisioning happens before the gate" while never
+  // checking that the gate itself is armed. A step-level `if:`/`continue-on-error:` is
+  // caught by the sibling jobIsNotNeutered, but relying on that makes this criterion
+  // depend on another eval staying wired; and a step-level `env:` (which no eval checked)
+  // can pair with an env-guarded build to skip it entirely with everything green.
+  let gateStep = null;
+  for (const step of steps) {
+    if (gateIdx >= step.start && gateIdx < step.end) {
+      gateStep = step;
+      break;
+    }
+  }
+  if (gateStep !== null) {
+    for (let i = gateStep.start; i < gateStep.end; i++) {
+      if (isCommentLine(blockLines[i])) continue;
+      const tr = stripInlineComment(blockLines[i]).trim();
+      if (tr.indexOf('if:') === 0) {
+        return {
+          ok: false,
+          reason: `C3: the nightly \`coverage:\` gate step carries \`${tr}\` — a conditional gate step is a gate that can decline to run.`,
+        };
+      }
+      if (tr.indexOf('continue-on-error:') === 0 && tr !== 'continue-on-error: false') {
+        return {
+          ok: false,
+          reason: `C3: the nightly \`coverage:\` gate step carries \`${tr}\` — only the literal \`false\` is admitted; a soft-failing coverage gate is a toothless one.`,
+        };
+      }
+      if (tr.indexOf('env:') === 0) {
+        return {
+          ok: false,
+          reason: 'C3: the nightly `coverage:` gate step carries a step-level `env:` mapping. Measured bypass: `WASM_PKG_PREBUILT: 1` on this step plus an env-guarded `wasm` recipe skips the build with every other criterion still green. If a variable is genuinely needed here, gate it explicitly rather than removing this clause.',
+        };
+      }
+    }
+  }
+
+  // F8: job-level keys that make the job never run. jobIsNotNeutered bans `if:`,
+  // `continue-on-error:` and `defaults:` but not these — a `needs:` on a flaky sibling
+  // silently SKIPS the coverage job on exactly the nights that sibling reds.
+  for (const line of blockLines) {
+    if (isCommentLine(line)) continue;
+    if (indentOf(line) !== stepIndent - 2) continue;
+    const tr = stripInlineComment(line).trim();
+    if (tr.indexOf('needs:') === 0) {
+      return {
+        ok: false,
+        reason: `C3: the nightly \`coverage:\` job declares \`${tr}\` — a job-level \`needs:\` makes the coverage gate SKIP entirely whenever the named job fails, which is silently indistinguishable from passing.`,
+      };
+    }
+    if (tr.indexOf('strategy:') === 0) {
+      return {
+        ok: false,
+        reason: `C3: the nightly \`coverage:\` job declares \`${tr}\` — a matrix strategy may expand to ZERO job instances, declaring the gate without ever running it.`,
+      };
+    }
+  }
+
   const required = [
     {
       label: 'wasm-pack',
@@ -846,7 +989,7 @@ export function checkC3(workflows) {
       label: 'rust-toolchain',
       ref: RUST_TOOLCHAIN_ACTION_REF,
       withLiteral: WASM_TARGET_LITERAL,
-      why: 'without the wasm32-unknown-unknown target installed, wasm-pack cannot compile client-wasm',
+      why: 'this matches every sibling job that builds wasm and is a belt against rust-toolchain.toml losing its `targets` list (that file, not this input, is what normally supplies the target)',
     },
   ];
 
@@ -871,7 +1014,10 @@ export function checkC3(workflows) {
     let hasLiteral = false;
     for (let i = match.start; i < match.end; i++) {
       if (isCommentLine(blockLines[i])) continue;
-      if (blockLines[i].indexOf(req.withLiteral) !== -1) {
+      // F7: only WHOLE-line comments were skipped here, so
+      // `with: { version: 'v0.2.0' } # version: 'v0.15.0'` laundered a downgrade past
+      // the pin. Strip the trailing comment before looking for the literal.
+      if (stripInlineComment(blockLines[i]).indexOf(req.withLiteral) !== -1) {
         hasLiteral = true;
         break;
       }
