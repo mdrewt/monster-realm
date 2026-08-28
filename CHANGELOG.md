@@ -36,6 +36,8 @@
 - Correct the accounts.rs scanner-hazard comment to the measured blocker set (#327)
 - Close the obsolete residual prose — m20e-2/nh5 dispositioned per item, 14r-f-2 escalated, ADR-0186's expected-RED claim retracted (ADR-0202) (#344)
 - Update M8.5d plan to reflect SHA-pinning requirement removal
+- Post-2.8.1 doc-truth sweep — drop stale 1.x syntax instructions, correct view-PK adoption status (#349)
+- Fix stale battle_action comment claiming battle is public
 
 ### Features
 
@@ -204,6 +206,26 @@
 - Scanner-audit cap as an advisory upper bound, not exact-equality (#338)
 - Nightly failure notification — one issue per failing job, with the neuter-gate carve-out it costs (#341)
 - Wire the Tier-2 observability validator into the gate, and stop it silently skipping (#343)
+- Scoped Bash for tester - syntax checks only (#345)
+- Guard the nightly changelog-freshness job + pin git-cliff (ADR-0196 #2/#3) (#351)
+- Filter noisy Bash output before it reaches agents
+- Scheduled-function lateness — recording rule, dashboard panel + warning alert (#354)
+- Nightly red-response policy, key-set-equal to the wired workflow and cited back from every job (#355)
+- Roster wave 3 — Electric + Light lines, skills, evolution edges and inert sprites (#357)
+- Roster wave 3 — zone-1 wild placement and level/weight banding for Voltkit and Aurelet (#358)
+- Export REKEY_MANIFEST as a frozen slice-0 contract surface with a gating eval (#359)
+- Game-core deletion rules, tombstone sentinels and export chunk size as a frozen contract surface (#360)
+- A11yMeta + total OVERLAY_A11Y and the flat a11yCopy catalog with a throw-on-miss t() (#361)
+- Static-shell ARIA literals, the single a11y live region, and the repo's first stylesheet (#363)
+- Pure focus trap, textContent-only live region, announcement reducer and the sole deferred-focus owner (#364)
+- Two-mechanism a11y wiring for the ten static-shell views, and the last view-local deferred focus deleted (#365)
+- Reduced motion — injected ResolveInput.reduceMotion, snap/authoritative-tile branches, and the sole matchMedia caller (#366)
+- Constructed-shell a11y wiring for the five view classes, and the canvas world region (#367)
+- The world-focus hotkey gate, the frame-loop announcer, focus return, and a native #help-hint button (#368)
+- MenuView ARIA listbox semantics, split keydown ownership, and the sixteenth overlay's a11y wiring (#369)
+- The M23 accessibility eval tier — a readdir-derived focus ban, a live-region census with ownership, a reduced-motion scope-escape ratchet, and the cross-view wiring totality spec (#370)
+- The nightly a11y decay ratchet, its wiring gate, and the manual protocol for the two never-CI-green criteria (#371)
+- The 39-table data-lifecycle manifest, Account.terminal_at_ms, and the private export_bundle chunk contract (#373)
 
 ### Fixes
 
@@ -252,6 +274,15 @@
 - Held-key warp continuation — preserve held stack across the warp-arm rebuild (ADR-0192) (#323)
 - Anchor the rm rules at command position and close the two indirection gaps
 - Tolerate wrapper prefixes at command position; block mr-supervisor-disable
+- Sync noise-filter fixes from the harness
+- Sync noise-filter security and correctness fixes from the harness
+- Close a CRITICAL guard-bash bypass — every rule was skippable by absolute path
+- Let tester write into slice worktrees, keep the worktree's own .claude/ protected
+- Sticky battleReseedPending latch — no spurious battleStart after a fast reconnect race (#353)
+- Restore the coverage gate — coverage: wasm, runner provisioning, and a forgery-resistant wiring eval (#377)
+- Explicit policy discriminator on every REKEY_MANIFEST entry — [G6/policy] parses it once, the D6 REKEY columns are value-pinned, and FG70 co-scans the Rust T9 text reader (#378)
+- Pin the [G6/declared] own-property boundary — FG72a-f proof-of-teeth against Object.prototype pollution, Object.hasOwn on the classifier-result reads (residual R-m22-s0-X2) (#379)
+- Resolve Rust type aliases in findIdentityColumns — union binding table, token expansion, fail-closed [G6/alias]; FG73a-p proof-of-teeth (residual R-m22-s0-X3) (#380)
 
 ### M8.5d
 
@@ -355,10 +386,15 @@
 - Revert fc71741 — accidental commit of worktree gitlink + .codegraph/.gitignore to master (11r-f session cwd slip, no source files affected)
 - Regenerate docs/knowledge bundle post-merge (#280)
 - Reconcile next-free index 183->184 (14r-a consumed ADR-0183) (#315)
+- Regenerate — freshness gate was 16 entries / 6.2d stale (#347)
+- Exclude github-actions-mutable-action-tag from Semgrep gate (#348)
+- Regenerate OKF bundle drifted by battle_action comment fix (#356)
 
 ### Refactor
 
 - Trim AGENTS.md graph bullet to SSOT pointer; desync-guard union rule
+- Retire Bond/apply_care/CareError/CARE_BOND_AMOUNT from game-core (#350)
+- Decode `spacetime sql --format json` instead of the CLI's pipe table (#352)
 
 ### Testing
 
