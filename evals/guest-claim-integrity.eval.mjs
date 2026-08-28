@@ -1600,7 +1600,7 @@ export const REKEY_MANIFEST = freezeManifest({
 // set per kind. Anti-patterns this replaces — MEASURED green-and-wrong on the
 // fork tree: `typeof entry === 'string'` (the residual's own repro) and needle
 // presence (`'rekey' in entry`); pinned by the ledger's X3 mutants and the
-// FG60-FG72 teeth: `entry.policy || 'BLOCKED'`, a `switch` with a silent
+// FG60-FG71 teeth: `entry.policy || 'BLOCKED'`, a `switch` with a silent
 // default, `startsWith('REKEY')` (blesses a REKEY_TODO placeholder), a
 // case-insensitive compare, an empty anchor list; and, structurally,
 // classifying in two places.
@@ -1631,7 +1631,11 @@ export const REKEY_MANIFEST = freezeManifest({
 // (rekey-contract-surface.eval.mjs, Object.hasOwn over the manifest). Quirk,
 // noted rather than fixed here: a table NAMED `__proto__` vanishes from
 // parseTableSchemas' plain-object map; [G6/parse] fail-closes on it (declared
-// 1, parsed 0) — battle-schema-snapshot's own use of that parser does not.
+// 1, parsed 0) — but that count is over TABLES, so a FIELD named `__proto__`
+// (a legal Rust identifier) vanishes from the column map with no fail-close:
+// an Identity column this gate never sees. Accepted, unpinned, and routed with
+// battle-schema-snapshot's own `in`-based table reads to the ledger (rb-3 X10)
+// — that parser is outside this slice's touches.
 // ---------------------------------------------------------------------------
 
 /**
@@ -1850,7 +1854,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
       return (
         `[G6/parse] ${f.path} contains ${declared} \`${TABLE_ATTR}\` attribute(s) but ` +
         `parseTableSchemas returned ${parsed} table(s). A table the parser cannot read is a table ` +
-        'whose Identity columns [G6/declared] never sees, so the re-key manifest would silently ' +
+        'whose Identity columns G6/declared never sees, so the re-key manifest would silently ' +
         'stop covering it — and the battle-schema-snapshot baseline would not notice either, ' +
         'because a table missing from BOTH parsed and baseline appears in neither side of that ' +
         'union. The two known unreadable spellings are a multi-column index inside the attribute ' +
@@ -1886,7 +1890,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
       `[G6/live] the manifest entry \`${key}\` does not resolve to any live table column. The check ` +
       'is BIDIRECTIONAL on purpose: a deleted or renamed column must not leave a stale policy ' +
       'behind, because a stale entry is indistinguishable from a live one when the next reviewer ' +
-      'reads the manifest, and (for a REKEY entry) it keeps [G6/consumed] green for a helper that ' +
+      'reads the manifest, and (for a REKEY entry) it keeps G6/consumed green for a helper that ' +
       'no longer re-keys anything'
     );
   }
@@ -1897,7 +1901,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
       return (
         `[G6/anchors] the anchor column \`${key}\` was not found in the scanned tree. These four ` +
         'columns are hardcoded INDEPENDENTLY of the manifest precisely so that an empty scan set, ' +
-        'a wrong glob or a parser regression cannot leave [G6/declared] and [G6/live] both ' +
+        'a wrong glob or a parser regression cannot leave G6/declared and G6/live both ' +
         `passing vacuously (they are trivially satisfied when the column set is empty). Anchors: ` +
         `${G6_ANCHORS.join(', ')}`
       );
@@ -3832,15 +3836,21 @@ pub struct GuildMember {
   // FG72 — THE OWN-PROPERTY BOUNDARY (rb-3, residual R-m22-s0-X2). Inside
   // checkRekeyCompleteness the manifest KEY SPACE is read exactly ONCE — by
   // classifyManifest, over Object.keys(manifest), into a Map — and every later
-  // clause reads that derived Map. Until rb-2, [G6/declared] was literally
-  // `key in manifest`, which answers YES for a key that exists only on the
-  // PROTOTYPE CHAIN: an inherited (or ambient) policy silently satisfied the
-  // completeness check for a column nobody ever classified, which is precisely
-  // the silent-orphan defect G6 exists to prevent. rb-2 closed it INCIDENTALLY,
-  // as a side effect of introducing the Map, and nothing pinned it. These six
-  // fixtures are that pin, from both sides: an inherited key must be INVISIBLE
-  // to the key-space reads (a, c, f), and merely being inherited must not by
-  // itself be an error (b; d is the entry-side twin).
+  // clause reads that derived Map. The COLUMN key space is read exactly once
+  // too, by findIdentityColumns, into a second Map. BOTH sides of that join are
+  // membership questions, and both must be asked with own-property semantics.
+  // Until rb-2, [G6/declared] was literally `key in manifest`, which answers YES
+  // for a key that exists only on the PROTOTYPE CHAIN: an inherited (or ambient)
+  // policy silently satisfied the completeness check for a column nobody ever
+  // classified, which is precisely the silent-orphan defect G6 exists to
+  // prevent. rb-2 closed it INCIDENTALLY, as a side effect of introducing the
+  // Map, and nothing pinned it. These six fixtures are that pin, from both
+  // sides: an inherited key must be INVISIBLE to the key-space reads (a, c, f),
+  // and merely being inherited must not by itself be an error (b; d is the
+  // entry-side twin). FG72c additionally pins the COLUMNS side (round 2,
+  // red-team F1): a membership test rebuilt over Object.fromEntries of the
+  // column Map keeps every other gate in this file GREEN, and with one ambient
+  // key per manifest column it passes G6 on an EMPTY tree.
   // FG72a/b/d/e/f are REGRESSION PINS — green before the rb-3 code change, red
   // under the ledger's X2 mutants. FG72c is RED before it.
   const GUILD_COL = 'guild_member.owner_identity';
@@ -3862,8 +3872,8 @@ pub struct GuildMember {
   ];
 
   // FG72a — an INHERITED manifest entry must NOT satisfy the completeness
-  // clause. The injected manifest OWNS exactly the shipped key set; the guild
-  // column exists only on its prototype, and the tree really declares that
+  // clause. Object.assign copies the shipped key set onto a fresh object whose
+  // PROTOTYPE carries the guild column, and the tree really declares that
   // column, so the only question is which key space the checker reads.
   // Kills: `key in manifest`, `manifest[key] !== undefined`,
   // `kinds.has(key) || key in manifest`, and a classifyManifest that walks
@@ -3887,14 +3897,6 @@ pub struct GuildMember {
         `FG72a: the fixture is broken — \`${GUILD_COL}\` is an OWN key of the injected ` +
         'manifest, so the completeness clause would be satisfied for the ordinary reason and ' +
         'the inherited-entry case would go untested'
-      );
-    }
-    if (Object.keys(manifest).length !== Object.keys(REKEY_MANIFEST).length) {
-      return (
-        `FG72a: the injected manifest owns ${Object.keys(manifest).length} key(s) but the ` +
-        `shipped manifest declares ${Object.keys(REKEY_MANIFEST).length} — both counts are ` +
-        'derived from the DATA on every run, never written down here, so this fixture cannot ' +
-        'age out the day a column is added'
       );
     }
     const err = checkRekeyCompleteness(guildTree, GOOD_ACCOUNTS, manifest);
@@ -3926,12 +3928,6 @@ pub struct GuildMember {
         'manifest and NOT owned by it, or this control proves nothing about inherited keys'
       );
     }
-    if (Object.keys(manifest).length !== Object.keys(REKEY_MANIFEST).length) {
-      return (
-        `FG72b: the injected manifest owns ${Object.keys(manifest).length} key(s) but the ` +
-        `shipped manifest declares ${Object.keys(REKEY_MANIFEST).length}`
-      );
-    }
     const err = checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest);
     if (err) {
       return `FG72b: an inherited-only phantom entry was incorrectly flagged: ${err}`;
@@ -3940,19 +3936,34 @@ pub struct GuildMember {
 
   // FG72c — AMBIENT prototype pollution: the residual's LITERAL repro, and the
   // only fixture here that exercises the DEFAULT `manifest = REKEY_MANIFEST`
-  // parameter. Every other FG72 fixture INJECTS a manifest, so the one shape
-  // they cannot see is a key-space read on a DERIVED object — `kinds` rebuilt as
-  // a plain object with `key in kinds` — which is the residual's own class
-  // applied one step downstream. MEASURED: FG72a/b/d/e/f all pass that cheat.
-  // It also pins the two reads that resolve an ABSENT OWN key through the chain
-  // (`parsed.error` and `classified.error`): with an ambient `error` in place
-  // they turn a CORRECT tree/manifest pair into a failure that no clause ever
-  // produced, which is why this fixture is RED before the rb-3 change and green
-  // only once both reads are `Object.hasOwn`.
-  // EXACTLY TWO keys are polluted — the column key (declared direction) and
-  // `error` (verdict direction). Never `then`: a thenable Object.prototype makes
-  // evals/run.mjs await every eval result forever. Never `path`: node's own
-  // module resolver reads it. Never `constructor`.
+  // parameter. Every other FG72 fixture INJECTS a manifest, so the shapes they
+  // cannot see are the key-space reads on a DERIVED object — `kinds` rebuilt as
+  // a plain object asked `key in kinds`, or the column Map rebuilt with
+  // Object.fromEntries and asked the same way — which is the residual's own
+  // class applied one step downstream. MEASURED: FG72a/b/d/e/f pass both cheats.
+  // FOUR directions run inside ONE pollution window (the defect is ambient
+  // rather than injected, so every direction needs the same window):
+  //   declared  an unclassified column must still be reported;
+  //   verdict   a CORRECT pair must still PASS — `parsed.error` and
+  //             `classified.error` resolve an ABSENT own key through the chain,
+  //             which is why this fixture was RED before the rb-3 change and is
+  //             green only now that both reads are `Object.hasOwn`;
+  //   live      a manifest entry whose column is GONE must still be reported;
+  //   anchors   a missing ANCHOR column must still be reported.
+  // The last two are the COLUMNS side of the join (round 2, red-team F1).
+  // ANCHOR_COL is `account.identity` on purpose: it is the only G6 anchor that
+  // is neither the EXEMPT anchor nor one of the REKEY anchors, so the PRESENCE
+  // check is the only clause that can fire for it — for profile.identity the
+  // by-value REKEY pin would red first and the columns-side cheat would survive.
+  // FOUR keys are polluted: the unclassified column, `error`, and the two live
+  // columns. Never `then` — a thenable Object.prototype makes evals/run.mjs
+  // await every eval result forever; never `path` — node's own module resolver
+  // reads it; never `constructor`. And nothing inside the window may write to
+  // stdout or call fs: node's error path reads `error` through the chain
+  // (`handleErrorFromBinding` tests `ctx.error !== undefined`), so a write made
+  // during the window can be silently truncated when stdout is a file. That is
+  // also why the cleanup deletes `error` FIRST — the LEAKED diagnostic below
+  // must stay printable even if one of the column keys leaks.
   // WHY THE REAL WRITE, against append-only-ids.eval.mjs:1653 ("this tooth must
   // never assign to Object.prototype"): that rule was written for a tooth that
   // HAS an Object.create alternative — it hands one function an object whose
@@ -3964,18 +3975,52 @@ pub struct GuildMember {
   // clobber (or to delete) a co-resident eval's state; the assignment INSIDE the
   // try, so a frozen-intrinsics runtime lands in a named failure instead of
   // `TEETH threw`; Reflect.deleteProperty in `finally`, before any return; and a
-  // post-assert that PROVES in-process that both keys are gone (the X2 ledger
-  // deletes that cleanup line and requires this fixture to red). runTeeth() is
-  // synchronous and evals/run.mjs:30 awaits the evals one at a time, so no other
-  // eval can observe the window.
+  // post-assert that PROVES in-process that all four keys are gone (the X2
+  // ledger deletes one cleanup line and requires this fixture to red).
+  // runTeeth() is synchronous and evals/run.mjs:30 awaits the evals one at a
+  // time, so no other eval can observe the window.
   {
     const COL = GUILD_COL;
     const FIELD = 'error';
+    const LIVE_COL = 'player_wallet.owner_identity';
+    const ANCHOR_COL = 'account.identity';
+    const POLLUTED = [COL, FIELD, LIVE_COL, ANCHOR_COL];
     const AMBIENT = 'an ambient value that no clause in this file ever returns';
-    if (COL in {} || FIELD in {} || Object.keys(Object.prototype).length !== 0) {
+    // The COLUMNS-side trees, built OUTSIDE the window (they parse Rust; nothing
+    // inside the window may do work that reads `error` through the chain).
+    // FG49's shape: one manifest column deleted from the synthesized schema.
+    const liveTree = [
+      {
+        path: 'fixture/schema.rs',
+        src: synthSchemaSrc(SYNTH_KEYS.filter((k) => k !== LIVE_COL)),
+      },
+      GOOD_TREE[1],
+    ];
+    const anchorTree = [
+      {
+        path: 'fixture/schema.rs',
+        src: synthSchemaSrc(SYNTH_KEYS.filter((k) => k !== ANCHOR_COL)),
+      },
+      GOOD_TREE[1],
+    ];
+    // The anchor column's ENTRY goes too: leaving it would red [G6/live] first
+    // (a stale policy), and the presence clause under test would never run.
+    const anchorManifest = Object.fromEntries(
+      Object.entries(REKEY_MANIFEST).filter(([k]) => k !== ANCHOR_COL),
+    );
+    if (findIdentityColumns(liveTree).has(LIVE_COL)) {
+      return `FG72c: the fixture is broken — the live tree still declares ${LIVE_COL}`;
+    }
+    if (findIdentityColumns(anchorTree).has(ANCHOR_COL)) {
+      return `FG72c: the fixture is broken — the anchor tree still declares ${ANCHOR_COL}`;
+    }
+    if (Object.hasOwn(anchorManifest, ANCHOR_COL)) {
+      return `FG72c: the fixture is broken — the anchor manifest still owns ${ANCHOR_COL}`;
+    }
+    if (POLLUTED.some((k) => k in {}) || Object.keys(Object.prototype).length !== 0) {
       return (
-        `FG72c: \`${COL}\`, \`${FIELD}\` or some other enumerable property is already on ` +
-        'Object.prototype BEFORE this fixture ran (keys: ' +
+        `FG72c: one of [${POLLUTED.join(', ')}] — or some other enumerable property — is already ` +
+        'on Object.prototype BEFORE this fixture ran (keys: ' +
         `[${Object.keys(Object.prototype).join(', ')}]) — refusing to overwrite the state of a ` +
         'co-resident eval, and refusing to delete it either. Something else in this process ' +
         'pollutes the base prototype; that is the bug, and not one for this fixture to fix'
@@ -3986,16 +4031,29 @@ pub struct GuildMember {
       try {
         Object.prototype[COL] = { policy: 'EXEMPT', reason: 'ambient, never owned' };
         Object.prototype[FIELD] = AMBIENT;
+        Object.prototype[LIVE_COL] = { policy: 'EXEMPT', reason: 'ambient live-column shadow' };
+        Object.prototype[ANCHOR_COL] = { policy: 'EXEMPT', reason: 'ambient anchor shadow' };
       } catch (e) {
         bad = `FG72c: could not write Object.prototype: ${e?.message ?? String(e)}`;
       }
-      if (bad === null && !(COL in {} && FIELD in {})) {
+      if (bad === null && !POLLUTED.every((k) => k in {})) {
         bad =
-          'FG72c: the pollution did not take — neither direction below would then be testing ' +
-          'anything, and a silently-failed injection is the one way this fixture goes vacuous ' +
-          'while still printing green';
+          'FG72c: the pollution did not take — none of the four directions below would then be ' +
+          'testing anything, and a silently-failed injection is the one way this fixture goes ' +
+          'vacuous while still printing green';
       }
       if (bad === null) {
+        // WINDOW GUARD, opening half (round 2, red-team F2). The four directions
+        // are teeth only while the pollution is LIVE: hoisted above the `try`
+        // they all pass on a clean prototype, X2 and X3 stay green, and the
+        // derived-object cheats are re-admitted. These two asserts are glued to
+        // the directions precisely so that moving that hunk moves them out of
+        // the window too, and the fixture reds.
+        let windowBad = null;
+        if (!(COL in {} && FIELD in {} && LIVE_COL in {} && ANCHOR_COL in {})) {
+          windowBad = 'FG72c: the pollution window closed early — a direction ran outside it';
+        }
+
         // Declared direction: an AMBIENT policy for a real, unclassified column
         // must not satisfy the completeness clause.
         const declaredErr = checkRekeyCompleteness(guildTree, GOOD_ACCOUNTS);
@@ -4003,6 +4061,7 @@ pub struct GuildMember {
         if (declaredBad === null && declaredErr.indexOf(COL) === -1) {
           declaredBad = `FG72c: the failure must NAME the unclassified column ${COL}: ${declaredErr}`;
         }
+
         // Verdict direction: the same pollution must not change the verdict on a
         // pair that is CORRECT.
         const goodErr = checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS);
@@ -4012,16 +4071,46 @@ pub struct GuildMember {
             'FG72c: ambient Object.prototype.error pollution changed the GOOD verdict — an ' +
             `absent own key resolved through the chain: ${String(goodErr)}`;
         }
-        // Both directions can break at once. The verdict one is reported FIRST:
-        // a changed verdict on a CORRECT input is the deeper fact, and the same
-        // chain read is what swallows the declared clause above before it runs.
-        bad = goodBad ?? declaredBad;
+
+        // Live direction, COLUMNS side: the entry is shipped, the column is
+        // DELETED, and an ambient key of the same name must not make it look
+        // present. Kills a membership test rebuilt over Object.fromEntries.
+        const liveErr = checkRekeyCompleteness(liveTree, GOOD_ACCOUNTS);
+        let liveBad = expectTag(liveErr, '[G6/live]', 'FG72c');
+        if (liveBad === null && liveErr.indexOf(LIVE_COL) === -1) {
+          liveBad = `FG72c: the stale-policy failure must NAME the deleted column ${LIVE_COL}: ${liveErr}`;
+        }
+
+        // Anchors direction, COLUMNS side: the non-vacuity check that exists so
+        // an EMPTY column set cannot satisfy the two directions above must not
+        // be satisfiable by an ambient key either.
+        // The name check is on the BACKTICKED form: that clause ends by listing
+        // every anchor, so a plain indexOf would be satisfied by the list even
+        // when a different anchor was the one that fired.
+        const anchorErr = checkRekeyCompleteness(anchorTree, GOOD_ACCOUNTS, anchorManifest);
+        let anchorBad = expectTag(anchorErr, '[G6/anchors]', 'FG72c');
+        if (anchorBad === null && anchorErr.indexOf(`\`${ANCHOR_COL}\``) === -1) {
+          anchorBad = `FG72c: the anchor failure must NAME the missing column ${ANCHOR_COL}: ${anchorErr}`;
+        }
+
+        // WINDOW GUARD, closing half. Same assertion, after the last direction.
+        if (!(COL in {} && FIELD in {} && LIVE_COL in {} && ANCHOR_COL in {})) {
+          windowBad = 'FG72c: the pollution window closed early — a direction ran outside it';
+        }
+
+        // Report order. A broken window invalidates every direction under it, so
+        // it comes first; then the verdict, because a changed verdict on a
+        // CORRECT input is the deepest fact and EXPLAINS the other three (the
+        // same chain read swallows their clauses before they can run).
+        bad = windowBad ?? goodBad ?? declaredBad ?? liveBad ?? anchorBad;
       }
     } finally {
-      Reflect.deleteProperty(Object.prototype, COL);
       Reflect.deleteProperty(Object.prototype, FIELD);
+      Reflect.deleteProperty(Object.prototype, COL);
+      Reflect.deleteProperty(Object.prototype, LIVE_COL);
+      Reflect.deleteProperty(Object.prototype, ANCHOR_COL);
     }
-    if (COL in {} || FIELD in {} || Object.keys(Object.prototype).length !== 0) {
+    if (POLLUTED.some((k) => k in {}) || Object.keys(Object.prototype).length !== 0) {
       return (
         'FG72c: LEAKED — this fixture left an enumerable own property on Object.prototype after ' +
         `its finally block ran (keys: [${Object.keys(Object.prototype).join(', ')}]). Every ` +
@@ -4032,12 +4121,14 @@ pub struct GuildMember {
   }
 
   // FG72d — the ENTRY side of the boundary, and an ORDER-dependent invariant.
-  // classifyPolicy reads `entry.policy` through the prototype chain — the one
-  // prototype-walking read left in the classifier — and what makes that read
-  // SAFE is the LATER field-set equality over `Object.keys(entry)`: an entry
-  // that owns nothing has the field set [], which is not the closed set of any
-  // policy kind, so [G6/policy] fires. Reorder or drop that equality and an
-  // entry with an INHERITED policy word classifies as a real BLOCKED entry.
+  // `entry.policy` is the FIRST prototype-walking read in classifyPolicy, and
+  // what makes it SAFE is the field-set equality over `Object.keys(entry)` that
+  // runs next: an entry that owns nothing has the field set [], which is not the
+  // closed set of any policy kind, so [G6/policy] fires. The later reads
+  // (`entry[f]` in the non-blank-string loop, `entry.rekey` / `entry.exists`,
+  // `entry.reason`) walk the chain too and are safe only because that same
+  // equality has already run. Reorder or drop it and an entry with an INHERITED
+  // policy word classifies as a real BLOCKED entry.
   // Kills: a short-circuit that returns as soon as `typeof entry.policy` is a
   // string, and `'policy' in entry && 'reason' in entry` as the shape test.
   // Green before the fix.

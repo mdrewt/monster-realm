@@ -120,8 +120,9 @@ value, and FG70 re-implements the Rust T9 text scan in-file so a key list the
 (`classifyManifest`, `Object.keys` → a `Map`) and every clause reads the Map, so a
 co-resident eval's `Object.prototype['table.col']` (every eval shares one realm
 under `evals/run.mjs`) can neither classify an unpoliced column nor surface as a
-phantom entry; the two classifier-result `.error` reads became `Object.hasOwn`
-(an ambient `Object.prototype.error` had flipped the GOOD verdict). FG72a-f pin
+phantom entry; the three classifier-result `.error` reads (two on the G6 path,
+one in the success detail) became `Object.hasOwn` — an ambient
+`Object.prototype.error` had flipped the GOOD verdict. FG72a-f pin
 it from both sides; FG72c performs the eval suite's one real `Object.prototype`
 write — pre-existence refusal, cleanup in `finally`, an in-process leak
 post-assert — because ambient pollution has no `Object.create` stand-in.
