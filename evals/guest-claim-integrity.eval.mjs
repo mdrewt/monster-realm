@@ -185,7 +185,11 @@
 //                          columns from [G6/declared] (and from the schema
 //                          baseline, which compares a union of both sides).
 //       [G6/declared]      every `Identity`/`Option<Identity>` COLUMN in the tree
-//                          has a manifest entry.
+//                          has an OWN manifest entry — membership is asked of
+//                          the Map classifyManifest derives from Object.keys,
+//                          never of the manifest object, so a key reachable
+//                          only through the prototype chain does not count
+//                          (rb-3, residual R-m22-s0-X2; FG72a-f).
 //       [G6/live]          every manifest key still resolves to a live column
 //                          (bidirectional — a deleted column must not leave a
 //                          stale policy behind).
@@ -210,7 +214,7 @@
 //   * Strip PER FILE, never a concatenated blob: a quote left open in file A
 //     silently blanks the whole of file B.
 //
-// Proof-of-teeth fixtures (FG1-FG71) run BEFORE the live-tree checks so a broken
+// Proof-of-teeth fixtures (FG1-FG72) run BEFORE the live-tree checks so a broken
 // checker is caught first. Every clause has a BAD fixture asserting its [tag] by
 // expectTag, and every checker has a GOOD fixture that must PASS — an always-red
 // checker is indistinguishable from a working one (this repo's ux3 postmortem
@@ -1596,12 +1600,38 @@ export const REKEY_MANIFEST = freezeManifest({
 // set per kind. Anti-patterns this replaces — MEASURED green-and-wrong on the
 // fork tree: `typeof entry === 'string'` (the residual's own repro) and needle
 // presence (`'rekey' in entry`); pinned by the ledger's X3 mutants and the
-// FG60-FG71 teeth: `entry.policy || 'BLOCKED'`, a `switch` with a silent
+// FG60-FG72 teeth: `entry.policy || 'BLOCKED'`, a `switch` with a silent
 // default, `startsWith('REKEY')` (blesses a REKEY_TODO placeholder), a
 // case-insensitive compare, an empty anchor list; and, structurally,
 // classifying in two places.
 // Forward path: when a second file must interpret entry shape, EXPORT
 // `classifyPolicy` and freeze it in rekey-contract-surface — never re-implement.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// THE OWN-PROPERTY BOUNDARY (rb-3, residual R-m22-s0-X2). Inside
+// checkRekeyCompleteness the manifest's KEY SPACE is read exactly once — by
+// classifyManifest, over Object.keys, into a Map — and every later clause reads
+// that Map. Object.freeze does not seal the prototype chain, and every eval
+// shares ONE realm under evals/run.mjs, so a co-resident eval's
+// `Object.prototype['table.col']` would otherwise classify a genuinely
+// unpoliced column while Object.keys and the detail counts stay at 24. Until
+// rb-2 the declared clause was literally a `key in manifest` test — MEASURED on
+// the fork: a poisoned prototype key greened an unclassified column. rb-2
+// replaced it INCIDENTALLY (the Map) and nothing pinned it until FG72a-f.
+// Banned, each measured green-and-wrong and pinned by the ledger's X2 mutants:
+// the `in` operator or a bare property read as a membership test, an own-key
+// test widened with a chain fallback, `for…in` over the manifest in ANY clause,
+// reading the frozen export instead of the injected parameter, and preferring
+// an inherited entry over an own one. The same rule holds for the classifier's
+// RESULT records: an absent own key is read with Object.hasOwn, never
+// `!== undefined` — an ambient `Object.prototype.error` otherwise turns a
+// correct tree/manifest pair into a failure no clause produced (FG72c is RED on
+// exactly that). The second consumer applies the same rule on its side
+// (rekey-contract-surface.eval.mjs, Object.hasOwn over the manifest). Quirk,
+// noted rather than fixed here: a table NAMED `__proto__` vanishes from
+// parseTableSchemas' plain-object map; [G6/parse] fail-closes on it (declared
+// 1, parsed 0) — battle-schema-snapshot's own use of that parser does not.
 // ---------------------------------------------------------------------------
 
 /**
@@ -1699,6 +1729,10 @@ function classifyPolicy(key, entry) {
 
 /**
  * Classify EVERY entry of a manifest exactly once. First failure wins.
+ * This is the ONLY read of the manifest's key space on the G6 path — own
+ * enumerable keys via Object.keys (THE OWN-PROPERTY BOUNDARY above); the Map
+ * it returns is what every clause consults, so no clause ever asks the
+ * manifest object a membership question.
  * @param {Record<string, unknown>} manifest The policy table.
  * @returns {{kinds: Map<string, ClassifiedPolicy>}|{error:string}} Parsed table, or the error.
  */
@@ -1706,7 +1740,7 @@ function classifyManifest(manifest) {
   const kinds = new Map();
   for (const key of Object.keys(manifest)) {
     const parsed = classifyPolicy(key, manifest[key]);
-    if (parsed.error !== undefined) return { error: parsed.error };
+    if (Object.hasOwn(parsed, 'error')) return { error: parsed.error };
     kinds.set(key, parsed);
   }
   return { kinds };
@@ -1791,7 +1825,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
   // the manifest is compared to the tree, so a manifest defect is never
   // reported as a tree defect.
   const classified = classifyManifest(manifest);
-  if (classified.error !== undefined) return classified.error;
+  if (Object.hasOwn(classified, 'error')) return classified.error;
   const kinds = classified.kinds;
 
   // [G6/parse] — PARSER non-vacuity, the [STRIP/anchors] idea applied to
@@ -1830,6 +1864,8 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
   const columns = findIdentityColumns(treeSrcs);
 
   // [G6/declared] — forward direction: a NEW Identity column with no policy.
+  // Membership is asked of the derived Map, never of the manifest object (THE
+  // OWN-PROPERTY BOUNDARY; FG72a/c/e pin it, X2's M1-M4/M11 are the cheats).
   for (const key of [...columns.keys()].sort()) {
     if (kinds.has(key)) continue;
     const decl = columns.get(key);
@@ -1945,7 +1981,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
 }
 
 // ---------------------------------------------------------------------------
-// PROOF-OF-TEETH FIXTURES (FG1-FG71) — inline sources, run BEFORE the live-tree
+// PROOF-OF-TEETH FIXTURES (FG1-FG72) — inline sources, run BEFORE the live-tree
 // checks. Returns the first tooth failure (string) or null.
 //
 // The Rust fixtures below are STRING LITERALS in a .mjs file; the live scan
@@ -3965,8 +4001,7 @@ pub struct GuildMember {
         const declaredErr = checkRekeyCompleteness(guildTree, GOOD_ACCOUNTS);
         let declaredBad = expectTag(declaredErr, '[G6/declared]', 'FG72c');
         if (declaredBad === null && declaredErr.indexOf(COL) === -1) {
-          declaredBad =
-            `FG72c: the failure must NAME the unclassified column ${COL}: ${declaredErr}`;
+          declaredBad = `FG72c: the failure must NAME the unclassified column ${COL}: ${declaredErr}`;
         }
         // Verdict direction: the same pollution must not change the verdict on a
         // pair that is CORRECT.
@@ -4214,10 +4249,9 @@ export default async function guestClaimIntegrityEval() {
   // (the error branch is unreachable here and exists so a future reordering
   // can never turn this line into a TypeError on the success path).
   const shipped = classifyManifest(REKEY_MANIFEST);
-  const rekeyEntries =
-    shipped.error === undefined
-      ? [...shipped.kinds.values()].filter((p) => p.kind === 'REKEY').length
-      : 0;
+  const rekeyEntries = Object.hasOwn(shipped, 'error')
+    ? 0
+    : [...shipped.kinds.values()].filter((p) => p.kind === 'REKEY').length;
   return {
     name,
     pass: true,
@@ -4230,7 +4264,7 @@ export default async function guestClaimIntegrityEval() {
       'the claim code is consumed exactly once for the guest at brace-depth 0 of the success ' +
       `region, and all ${Object.keys(REKEY_MANIFEST).length} Identity columns carry a D6 policy ` +
       `(${rekeyEntries} REKEY entries consumed by both rekey_all and account_has_game_data) ` +
-      '(71 teeth verified)',
+      '(72 teeth verified)',
   };
 }
 

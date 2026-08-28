@@ -115,6 +115,16 @@ under a new first clause `[G6/policy]`; the D6 REKEY columns are pinned REKEY by
 value, and FG70 re-implements the Rust T9 text scan in-file so a key list the
 `accounts_tests.rs` `include_str!` reader would silently truncate (a biome-emitted
 `\'` above its ≥20 floor) reds here.
+**rb-3** pinned that gate's OWN-PROPERTY BOUNDARY (residual R-m22-s0-X2): inside
+`checkRekeyCompleteness` the manifest's key space is read exactly once
+(`classifyManifest`, `Object.keys` → a `Map`) and every clause reads the Map, so a
+co-resident eval's `Object.prototype['table.col']` (every eval shares one realm
+under `evals/run.mjs`) can neither classify an unpoliced column nor surface as a
+phantom entry; the two classifier-result `.error` reads became `Object.hasOwn`
+(an ambient `Object.prototype.error` had flipped the GOOD verdict). FG72a-f pin
+it from both sides; FG72c performs the eval suite's one real `Object.prototype`
+write — pre-existence refusal, cleanup in `finally`, an in-process leak
+post-assert — because ambient pollution has no `Object.create` stand-in.
 **M23 accessibility gates (m23-s10)** — three source-scan evals plus one cross-view happy-dom
 spec. `overlay-a11y-manifest` bans a view-local focus call in every `client/src/ui/**/*View.ts`
 (readdir-DERIVED and two-way ratcheted, so a new view is scanned the day it lands — the three
