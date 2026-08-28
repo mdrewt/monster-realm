@@ -1715,6 +1715,114 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
 // reaches the checker byte-for-byte.
 // ---------------------------------------------------------------------------
 
+// ---------------------------------------------------------------------------
+// The T9 CO-SCAN TWIN (fixture FG70).
+//
+// accounts_tests.rs:3313-3433 reads THIS file as TEXT — it is the only thing
+// tying the JS re-key manifest to the Rust data-lifecycle manifest — and it does
+// so with a scanner that is deliberately naive in four ways: it blanks
+// slash-slash-to-end-of-line comments (inside string literals too), it takes the
+// FIRST `REKEY_MANIFEST = freezeManifest(...)` anchor, it brace-walks counting
+// EVERY brace byte (inside strings too), and its single-quote span walk has NO
+// escape handling, so one backslash-quote swallows every key up to the next
+// quote. Its only guard is a 20-key floor, so all four failure modes degrade
+// SILENTLY while the Rust test stays green.
+//
+// Re-implemented here byte-for-byte so that a manifest edit which blinds the
+// Rust scan reds in JS, loudly, in the same run that introduces it. It is
+// deliberately NOT hardened: it must stay exactly as blind as the Rust one,
+// which is what FG70b proves.
+//
+// The anchor is spelled in two halves so this twin's own source cannot add a
+// SECOND occurrence of it to the file (accounts_tests.rs:3368 uses concat! for
+// the same reason).
+// ---------------------------------------------------------------------------
+const T9_ANCHOR = 'REKEY_MAN' + 'IFEST = freezeManifest({';
+const T9_QUOTE = String.fromCharCode(0x27);
+
+/**
+ * Is `s` shaped like a `table.column` manifest key? Twin of
+ * accounts_tests.rs:3339 `m22_is_table_column_key`.
+ * @param {string} s Candidate span.
+ * @returns {boolean} True for exactly one dot with a non-empty side on each end.
+ */
+function t9IsColumnKey(s) {
+  let dots = 0;
+  for (const ch of s) {
+    if (ch === '.') {
+      dots++;
+      continue;
+    }
+    if (!isWordChar(ch)) return false;
+  }
+  if (dots !== 1) return false;
+  const dot = s.indexOf('.');
+  return dot > 0 && dot < s.length - 1;
+}
+
+/**
+ * Every `'table.column':` key the Rust T9 scan reads out of `src`, in source
+ * order and WITHOUT de-duplication (a duplicated key must be visible as a
+ * length mismatch against `Object.keys`, not silently collapsed).
+ * @param {string} src Raw JS source.
+ * @returns {string[]|null} The raw key list, or null when the block is unreadable.
+ */
+function t9TwinKeys(src) {
+  const kept = [];
+  let inComment = false;
+  for (let i = 0; i < src.length; i++) {
+    const ch = src[i];
+    if (ch === '\n') {
+      inComment = false;
+      kept.push('\n');
+      continue;
+    }
+    if (!inComment && ch === '/' && src[i + 1] === '/') {
+      inComment = true;
+      i++;
+      continue;
+    }
+    if (!inComment) kept.push(ch);
+  }
+  const stripped = kept.join('');
+
+  const at = stripped.indexOf(T9_ANCHOR);
+  if (at === -1) return null;
+  const open = at + T9_ANCHOR.length - 1;
+  if (stripped[open] !== '{') return null;
+  let depth = 0;
+  let end = -1;
+  for (let i = open; i < stripped.length; i++) {
+    if (stripped[i] === '{') depth++;
+    else if (stripped[i] === '}') {
+      depth--;
+      if (depth === 0) {
+        end = i;
+        break;
+      }
+    }
+  }
+  if (end <= open) return null;
+
+  const block = stripped.slice(open, end);
+  const keys = [];
+  let k = 0;
+  while (k < block.length) {
+    if (block[k] !== T9_QUOTE) {
+      k++;
+      continue;
+    }
+    let j = k + 1;
+    while (j < block.length && block[j] !== T9_QUOTE) j++;
+    if (j >= block.length) break;
+    const span = block.slice(k + 1, j);
+    const after = j + 1 < block.length ? block[j + 1] : ' ';
+    if (after === ':' && t9IsColumnKey(span)) keys.push(span);
+    k = j + 1;
+  }
+  return keys;
+}
+
 /**
  * Assert that a checker fired the EXPECTED clause (by tag), not merely that it
  * failed — a fixture that only asserts "some error" cannot tell a live clause
@@ -2854,7 +2962,11 @@ pub struct GuildMember {
   {
     const manifest = {
       ...REKEY_MANIFEST,
-      'playtest_event.identity': { rekey: 'rekey_monsters(', exists: 'has_monsters(' },
+      'playtest_event.identity': {
+        policy: 'REKEY',
+        rekey: 'rekey_monsters(',
+        exists: 'has_monsters(',
+      },
     };
     const bad = expectTag(
       checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
@@ -3010,6 +3122,350 @@ pub struct GuildMember {
     ];
     const bad = expectTag(checkRekeyCompleteness(tree, GOOD_ACCOUNTS), '[G6/parse]', 'FG59');
     if (bad) return bad;
+  }
+
+  // FG60 — a BLOCKED entry that ALSO carries a pair of REKEY needles.
+  // Kills: a classifier that infers the policy from needle PRESENCE
+  // (`'rekey' in entry`, `Boolean(entry.rekey)`), and any OPEN entry shape that
+  // lets an explicit `policy` and a contradicting pair of needles coexist — the
+  // manifest would then say two different things and the reader would believe
+  // the wrong one.
+  {
+    const manifest = {
+      ...REKEY_MANIFEST,
+      'player.identity': {
+        policy: 'BLOCKED',
+        reason: 'a guard rejects the claim while such a row exists',
+        rekey: 'rekey_monsters(',
+        exists: 'has_monsters(',
+      },
+    };
+    const bad = expectTag(
+      checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+      '[G6/policy]',
+      'FG60',
+    );
+    if (bad) return bad;
+  }
+
+  // FG61 — GOOD: the residual's own repro, as the control this slice exists for.
+  // A well-formed BLOCKED entry (a reason, no needles) must PASS.
+  // Kills: a checker that reads `.rekey`/`.exists` off EVERY object entry — the
+  // undefined needles are then coerced to the literal 'undefined', miss both
+  // bodies, and red [G6/consumed] on a perfectly legal BLOCKED row. Deliberately
+  // manifest-TEXT-independent: it survives any future re-wording of the shipped
+  // reasons, so it can never be quietly "fixed" by editing the manifest.
+  {
+    const manifest = {
+      ...REKEY_MANIFEST,
+      'battle.player_identity': { policy: 'BLOCKED', reason: 'terminal rows survive' },
+    };
+    const err = checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest);
+    if (err) return `FG61: a well-formed BLOCKED entry was incorrectly flagged: ${err}`;
+  }
+
+  // FG62 — REKEY entries whose needles are missing, degenerate or EMPTY.
+  // Kills: (a) silently skipping a needle-less REKEY entry, and the
+  // `indexOf(undefined)` coercion that reds it under the WRONG tag; (b) a needle
+  // that is present in every fn body ever written (`ctx`), which makes the
+  // substring test pass for a helper nobody calls; (c) the MEASURED guard-11
+  // fail-open — `body.indexOf('') === 0`, so an EMPTY needle reads as consumed.
+  {
+    const cases = [
+      { label: 'FG62a', entry: { policy: 'REKEY' } },
+      { label: 'FG62b', entry: { policy: 'REKEY', rekey: 'ctx', exists: 'ctx' } },
+      { label: 'FG62c', entry: { policy: 'REKEY', rekey: 'rekey_profile(', exists: '' } },
+    ];
+    for (const probe of cases) {
+      const manifest = { ...REKEY_MANIFEST, 'profile.identity': probe.entry };
+      const bad = expectTag(
+        checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+        '[G6/policy]',
+        probe.label,
+      );
+      if (bad) return bad;
+    }
+  }
+
+  // FG63 — the legacy STRING form, which the objects-only shape retires.
+  // Kills: a dual-form classifier (parsing the `BLOCKED: ` prefix IS the same
+  // implicit inference this slice removes), an else-branch that treats any
+  // non-object as BLOCKED, and with them the whole `'BLOKED: '` typo class — a
+  // one-letter slip that would silently un-police a column while every other
+  // clause stayed green.
+  {
+    const manifest = { ...REKEY_MANIFEST, 'player.identity': 'BLOCKED: legacy string form' };
+    const bad = expectTag(
+      checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+      '[G6/policy]',
+      'FG63',
+    );
+    if (bad) return bad;
+  }
+
+  // FG64 — `policy` values that are NOT exactly one of the three kinds.
+  // Kills: a case-insensitive compare (a), a `startsWith('REKEY')` prefix test
+  // (b), a `switch` with a silent default, and any lookup that can reach
+  // Object.prototype — 'constructor' (c) and '__proto__' (d) must be UNKNOWN
+  // values, never a hit on an inherited property of a policy map.
+  {
+    const cases = [
+      { label: 'FG64a', entry: { policy: 'Blocked', reason: 'wrong case' } },
+      {
+        label: 'FG64b',
+        entry: { policy: 'REKEYED', rekey: 'rekey_monsters(', exists: 'has_monsters(' },
+      },
+      { label: 'FG64c', entry: { policy: 'constructor', reason: 'prototype reach' } },
+      { label: 'FG64d', entry: { policy: '__proto__', reason: 'prototype reach' } },
+    ];
+    for (const probe of cases) {
+      const manifest = { ...REKEY_MANIFEST, 'player.identity': probe.entry };
+      const bad = expectTag(
+        checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+        '[G6/policy]',
+        probe.label,
+      );
+      if (bad) return bad;
+    }
+  }
+
+  // FG65 — a MISSING `policy` field (a) and a present-but-undefined one (b).
+  // Kills: `entry.policy ?? infer(entry)`, the `entry.policy` fallback to
+  // 'BLOCKED', and any else-branch that defaults an unclassified entry to
+  // BLOCKED. The safest-LOOKING default is the dangerous one: it reports "a
+  // guard covers this" about a column nobody ever classified.
+  {
+    const cases = [
+      { label: 'FG65a', entry: { reason: 'no policy field' } },
+      { label: 'FG65b', entry: { policy: undefined, reason: 'undefined policy' } },
+    ];
+    for (const probe of cases) {
+      const manifest = { ...REKEY_MANIFEST, 'player.identity': probe.entry };
+      const bad = expectTag(
+        checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+        '[G6/policy]',
+        probe.label,
+      );
+      if (bad) return bad;
+    }
+  }
+
+  // FG66 — the REVERSE lie: each of the EIGHT REKEY columns in turn demoted to a
+  // WELL-FORMED BLOCKED entry. The shape is legal, so [G6/policy] cannot see it,
+  // and a demotion dodges [G6/consumed] entirely (that clause walks REKEY
+  // entries only), so the rows silently orphan on every successful claim.
+  // Kills: presence-only anchors, and a G6_REKEY_ANCHORS list that covers fewer
+  // than all eight REKEY columns. The list is transcribed here INDEPENDENTLY of
+  // the checker's own — a shared const could be emptied on both sides at once.
+  {
+    const rekeyAnchors = [
+      'monster.owner_identity',
+      'monster_pub.owner_identity',
+      'inventory.owner_identity',
+      'player_quest.owner_identity',
+      'player_dialogue_state.owner_identity',
+      'heal_cooldown.owner_identity',
+      'player_wallet.owner_identity',
+      'profile.identity',
+    ];
+    for (const key of rekeyAnchors) {
+      const manifest = {
+        ...REKEY_MANIFEST,
+        [key]: { policy: 'BLOCKED', reason: 'nothing to carry' },
+      };
+      const bad = expectTag(
+        checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+        '[G6/anchors]',
+        `FG66/${key}`,
+      );
+      if (bad) return bad;
+    }
+  }
+
+  // FG67 — non-object entries must produce a TAGGED RETURN, never a throw.
+  // `typeof entry === 'object'` is TRUE for null and for an array, so a
+  // classifier that trusts it dereferences null and the whole suite dies as
+  // `TEETH threw: ...`, naming no key and no clause — a manifest typo would then
+  // look like a broken eval rather than a broken manifest.
+  // Kills: an object-ness test written as bare `typeof`, and any classifier that
+  // signals a malformed entry by throwing instead of returning its tag.
+  {
+    const cases = [
+      { label: 'FG67a', entry: null },
+      { label: 'FG67b', entry: [] },
+      { label: 'FG67c', entry: () => 'not an entry' },
+      { label: 'FG67d', entry: 7 },
+    ];
+    for (const probe of cases) {
+      const manifest = { ...REKEY_MANIFEST, 'player.identity': probe.entry };
+      let err;
+      try {
+        err = checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest);
+      } catch (e) {
+        return (
+          `${probe.label}: the checker THREW on a malformed entry instead of returning a ` +
+          `tagged [G6/policy] failure: ${e?.message ?? String(e)}`
+        );
+      }
+      const bad = expectTag(err, '[G6/policy]', probe.label);
+      if (bad) return bad;
+    }
+  }
+
+  // FG68 — an unjustified or self-contradicting reason, and an extra field.
+  // Kills: (a) accepting an EMPTY reason — a BLOCKED row with no justification
+  // is precisely the row no later reviewer re-derives; (b) the old prefix
+  // smuggled back INSIDE the reason text, which is the second spelling of the
+  // discriminator this slice abolished; (c) a REKEY entry carrying a `reason`,
+  // i.e. the open shape that would let M22 S3's deletion_policy/basis/exportable
+  // fields drift in ungated instead of through POLICY_SHAPES.
+  {
+    const cases = [
+      { label: 'FG68a', entry: { policy: 'BLOCKED', reason: '' } },
+      { label: 'FG68b', entry: { policy: 'BLOCKED', reason: 'EXEMPT: second spelling' } },
+      {
+        label: 'FG68c',
+        entry: {
+          policy: 'REKEY',
+          rekey: 'rekey_monsters(',
+          exists: 'has_monsters(',
+          reason: 'extra field',
+        },
+      },
+    ];
+    for (const probe of cases) {
+      const manifest = { ...REKEY_MANIFEST, 'player.identity': probe.entry };
+      const bad = expectTag(
+        checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+        '[G6/policy]',
+        probe.label,
+      );
+      if (bad) return bad;
+    }
+  }
+
+  // FG69 — TOTALITY, over every key and five defect shapes. Kills the two
+  // MEASURED cheats that no single-key fixture can see:
+  //   (1) a classifier that blesses entries by IDENTITY (`entry === shipped`)
+  //       rather than by shape — part 1 re-runs the whole check over a fresh
+  //       deep clone of the shipped manifest, which must still PASS, so
+  //       identity-blessing can never be a substitute for validation;
+  //   (2) a classifier that only validates the handful of keys the fixtures
+  //       above happen to name — part 2 defects EVERY key of the manifest.
+  // Note the tag: a well-formed DEMOTION is [G6/anchors] (FG66's job); these
+  // five shapes are all MALFORMED, so [G6/policy] must fire first, for all 24
+  // keys, including the anchors themselves.
+  {
+    const clone = {};
+    for (const key of Object.keys(REKEY_MANIFEST)) {
+      clone[key] = { ...REKEY_MANIFEST[key] };
+    }
+    const cloneErr = checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, clone);
+    if (cloneErr) {
+      return `FG69/clone: a deep clone of the shipped manifest was flagged: ${cloneErr}`;
+    }
+
+    const shapes = [
+      {
+        name: 'blocked-with-needles',
+        entry: {
+          policy: 'BLOCKED',
+          reason: 'x',
+          rekey: 'rekey_monsters(',
+          exists: 'has_monsters(',
+        },
+      },
+      { name: 'rekey-without-needles', entry: { policy: 'REKEY' } },
+      {
+        name: 'rekey-empty-exists',
+        entry: { policy: 'REKEY', rekey: 'rekey_monsters(', exists: '' },
+      },
+      {
+        name: 'rekey-with-reason',
+        entry: {
+          policy: 'REKEY',
+          rekey: 'rekey_monsters(',
+          exists: 'has_monsters(',
+          reason: 'x',
+        },
+      },
+      { name: 'string-form', entry: 'BLOCKED: legacy string form' },
+    ];
+    for (const key of Object.keys(REKEY_MANIFEST)) {
+      for (const shape of shapes) {
+        const manifest = { ...REKEY_MANIFEST, [key]: shape.entry };
+        const bad = expectTag(
+          checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS, manifest),
+          '[G6/policy]',
+          `FG69/${key}/${shape.name}`,
+        );
+        if (bad) return bad;
+      }
+    }
+  }
+
+  // FG70 — the T9 CO-SCAN. accounts_tests.rs:3366 `m22_rekey_manifest_keys`
+  // reads THIS FILE as TEXT with a naive, escape-blind scanner, and its only
+  // guard is a `>= 20` key floor — so every way of blinding it degrades
+  // SILENTLY, above the floor, with the Rust test still green.
+  // Kills: a SECOND `freezeManifest(...)` anchor anywhere in the file (the Rust
+  // scan takes the FIRST hit and never strips block comments); a `//`, `{` or
+  // `}` inside any manifest string (the comment strip and the brace walk both
+  // run inside string literals); a duplicated manifest key; and above all a
+  // biome-emitted `\'` in a reason — MEASURED to truncate the Rust key list to
+  // 22 of 24, which still clears the floor.
+  {
+    const raw = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+    const anchors = countOccurrences(raw, T9_ANCHOR);
+    if (anchors !== 1) {
+      return (
+        `FG70: the T9 anchor occurs ${anchors} time(s) in this file, not exactly once. ` +
+        'accounts_tests.rs:3369 takes the FIRST hit and does not strip block comments, so a ' +
+        'second occurrence — even inside prose or a doc comment — silently points the M22 ' +
+        'cross-manifest proof at the wrong object. Spell it freezeManifest(...) in prose'
+      );
+    }
+    const keys = t9TwinKeys(raw);
+    if (keys === null) {
+      return (
+        'FG70: the T9 twin could not extract the manifest block (anchor missing, not landing on ' +
+        'the opening brace, or not brace-balanced from it). The Rust twin would panic, or read ' +
+        'an arbitrary suffix of this file instead of the manifest'
+      );
+    }
+    const expected = Object.keys(REKEY_MANIFEST);
+    if (keys.join(' ') !== expected.join(' ')) {
+      return (
+        `FG70: the T9 text twin read ${keys.length} key(s) out of the manifest block but the ` +
+        `object declares ${expected.length}. Rust sees: [${keys.join(', ')}]. This file ` +
+        `declares: [${expected.join(', ')}]. A key the text scan cannot see is a table the M22 ` +
+        'cross-manifest proof never checks, and it fails SILENTLY above its 20-key floor'
+      );
+    }
+  }
+
+  // FG70b — POSITIVE CONTROL for FG70: the twin must stay exactly as ESCAPE-BLIND
+  // as the Rust one. A twin quietly hardened to understand `\'` would report all
+  // 24 keys for a manifest the Rust scan reads as 22 — FG70 would go green on
+  // precisely the hazard it exists to catch, and the co-scan would be theatre.
+  {
+    const synth = [
+      'const M = ',
+      T9_ANCHOR,
+      "\n  'alpha.one': 'a\\'b',\n  'beta.two': 'plain',\n  'gamma.three': 'plain',\n});\n",
+    ].join('');
+    const keys = t9TwinKeys(synth);
+    if (keys === null) {
+      return 'FG70b: the twin failed to read a well-formed synthetic manifest block at all';
+    }
+    if (keys.join(' ') !== 'alpha.one') {
+      return (
+        `FG70b: the T9 twin read [${keys.join(', ')}] from a THREE-key synthetic block whose ` +
+        'first value carries a backslash-escaped apostrophe. It must lose every key after that ' +
+        'escape, exactly as accounts_tests.rs:3409-3431 does; an escape-AWARE twin is blind to ' +
+        'the biome hazard FG70 exists to detect'
+      );
+    }
   }
 
   return null;
