@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 173 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 174 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -182,6 +182,7 @@ Generated from 173 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0205](./0205-overlay-a11y-metadata-ssot-and-copy-catalog.md) | 0205 — The overlay accessibility metadata SSOT and the flat copy catalog: a total `OVERLAY_A11Y` beside `OVERLAY_TIERS`, keys never literals, and a compile-time contract that text pins cannot fake | Accepted | client-ui, ci-gates | m23-s0 (M23 accessibility S0 — the substrate; first slice, no deps) | A11y metadata is one total `Record<OverlayId, A11yMeta>` in `overlayRegistry.ts`, accessible names are catalog keys resolved by a throw-on-miss `t()`, and totality plus the closed role union are gated by a negative compile, not a text pin. |
 | [0206](./0206-world-focus-hotkey-gate-and-the-frame-loop-announcer.md) | 0206 — The world-focus hotkey gate, the frame-loop announcer, and the native `#help-hint` button: three main.ts seams M23 needs and the one thing none of them may "simplify" | Accepted | client-ui, ci-gates | m23-s5 (M23 accessibility S5 — the sole `client/src/main.ts` touch; after S3, S4) | A `worldHasFocus()` conjunct gates the twelve `canOpen`-derived hotkey branches only, spelled out twelve times rather than behind one helper; announcements and focus return ride ONE rAF-loop edge; `#help-hint` becomes a native button. |
 | [0207](./0207-data-lifecycle-manifest-and-terminal-schema.md) | 0207 — Data-lifecycle manifest and terminal schema: M22 privacy S2 additive structure | Accepted | schema-persistence, security-authz, ci-gates | m22-s2 (M22 privacy compliance S2 — schema + manifest extension) | Data-lifecycle manifest as a Rust const in schema.rs (39 tables: policy+basis+exportable); Account.terminal_at_ms appended with #[default(None)]; private export_bundle table; reaper deferred to S3 (scheduled-ness is migration-frozen). |
+| [0208](./0208-g6-rekey-manifest-gate-hardening.md) | 0208 — The G6 re-key manifest gate hardening: an explicit policy discriminator, an own-property boundary, and alias resolution in the column walker | Accepted | ci-gates, security-authz, schema-persistence | rb-4 (residual R-m22-s0-X3; also records the rb-2 / rb-3 decisions both sibling ledgers deferred to this ADR) | G6 reads an explicit `policy` field via one parser, asks membership of own-property Maps only, and resolves Rust type aliases (union of every `type`/`use … as` binding in the tree, fail-closed on ambiguity) before matching Identity. |
 
 ## Harness design corpus (H- namespace)
 
@@ -389,6 +390,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0197](./0197-spacetimedb-2.8.1-upgrade.md) — stdb-281 (toolchain upgrade; operator-initiated) — 0197 — SpacetimeDB 2.8.1: upgrade the CLI/host AND the module SDK (1.12.0 → 2.8.1), and correct four load-bearing false facts (Accepted)
 - [0199](./0199-declared-table-visibility-gate.md) — 15r-sec-vis (M-postgate fifteenth-review residuals §15r-sec-vis) — 0199 — Declared table visibility as snapshot data: a class regression gate for `public` tables (Accepted)
 - [0207](./0207-data-lifecycle-manifest-and-terminal-schema.md) — m22-s2 (M22 privacy compliance S2 — schema + manifest extension) — 0207 — Data-lifecycle manifest and terminal schema: M22 privacy S2 additive structure (Accepted)
+- [0208](./0208-g6-rekey-manifest-gate-hardening.md) — rb-4 (residual R-m22-s0-X3; also records the rb-2 / rb-3 decisions both sibling ledgers deferred to this ADR) — 0208 — The G6 re-key manifest gate hardening: an explicit policy discriminator, an own-property boundary, and alias resolution in the column walker (Accepted)
 
 ### client-ui
 
@@ -513,6 +515,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0205](./0205-overlay-a11y-metadata-ssot-and-copy-catalog.md) — m23-s0 (M23 accessibility S0 — the substrate; first slice, no deps) — 0205 — The overlay accessibility metadata SSOT and the flat copy catalog: a total `OVERLAY_A11Y` beside `OVERLAY_TIERS`, keys never literals, and a compile-time contract that text pins cannot fake (Accepted)
 - [0206](./0206-world-focus-hotkey-gate-and-the-frame-loop-announcer.md) — m23-s5 (M23 accessibility S5 — the sole `client/src/main.ts` touch; after S3, S4) — 0206 — The world-focus hotkey gate, the frame-loop announcer, and the native `#help-hint` button: three main.ts seams M23 needs and the one thing none of them may "simplify" (Accepted)
 - [0207](./0207-data-lifecycle-manifest-and-terminal-schema.md) — m22-s2 (M22 privacy compliance S2 — schema + manifest extension) — 0207 — Data-lifecycle manifest and terminal schema: M22 privacy S2 additive structure (Accepted)
+- [0208](./0208-g6-rekey-manifest-gate-hardening.md) — rb-4 (residual R-m22-s0-X3; also records the rb-2 / rb-3 decisions both sibling ledgers deferred to this ADR) — 0208 — The G6 re-key manifest gate hardening: an explicit policy discriminator, an own-property boundary, and alias resolution in the column walker (Accepted)
 
 ### tooling-docs
 
@@ -593,6 +596,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0198](./0198-participant-scoped-battle-view.md) — 15r-sec-a — Participant-scoped `battle` via a two-identity view (Accepted)
 - [0199](./0199-declared-table-visibility-gate.md) — 15r-sec-vis (M-postgate fifteenth-review residuals §15r-sec-vis) — 0199 — Declared table visibility as snapshot data: a class regression gate for `public` tables (Accepted)
 - [0207](./0207-data-lifecycle-manifest-and-terminal-schema.md) — m22-s2 (M22 privacy compliance S2 — schema + manifest extension) — 0207 — Data-lifecycle manifest and terminal schema: M22 privacy S2 additive structure (Accepted)
+- [0208](./0208-g6-rekey-manifest-gate-hardening.md) — rb-4 (residual R-m22-s0-X3; also records the rb-2 / rb-3 decisions both sibling ledgers deferred to this ADR) — 0208 — The G6 re-key manifest gate hardening: an explicit policy discriminator, an own-property boundary, and alias resolution in the column walker (Accepted)
 
 ### economy-quests
 

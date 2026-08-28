@@ -1,12 +1,12 @@
 # 0208 — The G6 re-key manifest gate hardening: an explicit policy discriminator, an own-property boundary, and alias resolution in the column walker
 
-**Status:** Proposed
+**Status:** Accepted
 **Date:** 2026-08-28
 **Slice:** rb-4 (residual R-m22-s0-X3; also records the rb-2 / rb-3 decisions both sibling ledgers deferred to this ADR)
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** ci-gates, security-authz, schema-persistence
-**Decision:** G6 classifies every Identity column by an explicit `policy` field read by one parser, asks membership of own-property Maps only, and resolves Rust type aliases (union of every `type`/`use … as` binding in the scanned tree, fail-closed on ambiguity) before matching `Identity`.
+**Decision:** G6 reads an explicit `policy` field via one parser, asks membership of own-property Maps only, and resolves Rust type aliases (union of every `type`/`use … as` binding in the tree, fail-closed on ambiguity) before matching Identity.
 
 ---
 
