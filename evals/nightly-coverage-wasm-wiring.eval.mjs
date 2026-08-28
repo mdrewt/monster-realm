@@ -339,7 +339,9 @@ export function loadRecipes() {
   }
   const stdout = String(res.stdout || '');
   if (stdout.trim() === '') {
-    throw new Error(`\`just --dump\` produced EMPTY stdout for ${justfile} (just --version: ${ver})`);
+    throw new Error(
+      `\`just --dump\` produced EMPTY stdout for ${justfile} (just --version: ${ver})`,
+    );
   }
   let parsed;
   try {
@@ -480,7 +482,7 @@ export function findJustEntryPoints(yamlText, recipes) {
       while (cand.length > 0 && TRAILING_PUNCT.indexOf(cand[cand.length - 1]) !== -1) {
         cand = cand.slice(0, -1);
       }
-      if (cand !== '' && Object.prototype.hasOwnProperty.call(recipes, cand)) {
+      if (cand !== '' && Object.hasOwn(recipes, cand)) {
         found.push({ job: owner[i], recipe: cand, lineIndex: i });
       }
     }
@@ -499,7 +501,7 @@ function wasmProvisionLinesByJob(yamlText) {
     if (isCommentLine(lines[i])) continue;
     if (lines[i].trim() !== WASM_PROVISION_STEP) continue;
     const job = owner[i] === null ? '<none>' : owner[i];
-    if (!Object.prototype.hasOwnProperty.call(byJob, job)) byJob[job] = [];
+    if (!Object.hasOwn(byJob, job)) byJob[job] = [];
     byJob[job].push(i);
   }
   return byJob;
@@ -515,12 +517,10 @@ function closureOver(recipes, start, priorsOnly) {
   const stack = [start];
   while (stack.length > 0) {
     const nameRaw = stack.pop();
-    if (Object.prototype.hasOwnProperty.call(seen, nameRaw)) continue;
+    if (Object.hasOwn(seen, nameRaw)) continue;
     // hasOwnProperty, not a bare lookup: a recipe legitimately named `constructor`
     // or `toString` would otherwise resolve to Object.prototype and be "found".
-    const rec = Object.prototype.hasOwnProperty.call(recipes, nameRaw)
-      ? recipes[nameRaw]
-      : undefined;
+    const rec = Object.hasOwn(recipes, nameRaw) ? recipes[nameRaw] : undefined;
     if (rec === undefined) {
       // An unknown recipe name is a FAIL, not a skip: a graph we cannot resolve is a
       // graph whose intersection with the roster we do not know.
@@ -579,14 +579,14 @@ export function checkC1(recipes) {
   if (recipes === null || typeof recipes !== 'object') {
     return { ok: false, reason: 'C1: no recipe map was supplied (fail closed)' };
   }
-  if (!Object.prototype.hasOwnProperty.call(recipes, 'coverage')) {
+  if (!Object.hasOwn(recipes, 'coverage')) {
     return {
       ok: false,
       reason:
         'C1: the just recipe map has no `coverage` recipe at all — a missing key is a FAILURE, never a silent pass (the nightly `coverage` job runs `just coverage`)',
     };
   }
-  if (!Object.prototype.hasOwnProperty.call(recipes, 'wasm')) {
+  if (!Object.hasOwn(recipes, 'wasm')) {
     return {
       ok: false,
       reason:
@@ -702,9 +702,7 @@ export function evaluateObligations(recipes, workflows) {
           continue;
         }
         const jobKey = ep.job === null ? '<none>' : ep.job;
-        const lines = Object.prototype.hasOwnProperty.call(provisions, jobKey)
-          ? provisions[jobKey]
-          : [];
+        const lines = Object.hasOwn(provisions, jobKey) ? provisions[jobKey] : [];
         let earlier = -1;
         for (const idx of lines) {
           if (idx < ep.lineIndex) {
@@ -737,7 +735,11 @@ export function checkC2(recipes, workflows) {
   try {
     roster = deriveRoster(recipes);
   } catch (err) {
-    return { ok: false, reason: `C2 failed closed deriving the roster: ${err.message}`, checked: 0 };
+    return {
+      ok: false,
+      reason: `C2 failed closed deriving the roster: ${err.message}`,
+      checked: 0,
+    };
   }
   for (const required of ROSTER_FLOOR) {
     if (roster.indexOf(required) === -1) {
@@ -765,7 +767,11 @@ export function checkC2(recipes, workflows) {
     try {
       eps = findJustEntryPoints(wf.text, recipes);
     } catch (err) {
-      return { ok: false, reason: `C2 failed closed scanning ${floor.key}: ${err.message}`, checked: 0 };
+      return {
+        ok: false,
+        reason: `C2 failed closed scanning ${floor.key}: ${err.message}`,
+        checked: 0,
+      };
     }
     const seen = {};
     for (const ep of eps) seen[ep.recipe] = true;
@@ -885,7 +891,10 @@ export function checkC3(workflows) {
     }
   }
   if (stepIndent === -1) {
-    return { ok: false, reason: 'C3: the nightly `coverage:` job declares `steps:` but has no steps' };
+    return {
+      ok: false,
+      reason: 'C3: the nightly `coverage:` job declares `steps:` but has no steps',
+    };
   }
 
   const stepStarts = [];
@@ -951,7 +960,8 @@ export function checkC3(workflows) {
       if (tr.indexOf('env:') === 0) {
         return {
           ok: false,
-          reason: 'C3: the nightly `coverage:` gate step carries a step-level `env:` mapping. Measured bypass: `WASM_PKG_PREBUILT: 1` on this step plus an env-guarded `wasm` recipe skips the build with every other criterion still green. If a variable is genuinely needed here, gate it explicitly rather than removing this clause.',
+          reason:
+            'C3: the nightly `coverage:` gate step carries a step-level `env:` mapping. Measured bypass: `WASM_PKG_PREBUILT: 1` on this step plus an env-guarded `wasm` recipe skips the build with every other criterion still green. If a variable is genuinely needed here, gate it explicitly rather than removing this clause.',
         };
       }
     }
@@ -1090,7 +1100,9 @@ function mut(base, from, to, label) {
   }
   const out = base.slice(0, at) + to + base.slice(at + from.length);
   if (out === base) {
-    throw new Error(`fixture mutation '${label}' was a no-op (replacement equals the original text)`);
+    throw new Error(
+      `fixture mutation '${label}' was a no-op (replacement equals the original text)`,
+    );
   }
   return out;
 }
@@ -1229,12 +1241,20 @@ jobs:
       - run: just a11y-e2e
 `;
 
-const SYN_WF = { ci: { file: 'ci.yml', text: SYN_CI }, nightly: { file: 'nightly.yml', text: SYN_NIGHTLY } };
+const SYN_WF = {
+  ci: { file: 'ci.yml', text: SYN_CI },
+  nightly: { file: 'nightly.yml', text: SYN_NIGHTLY },
+};
 
 // Minimal, floor-free fixtures for the ORDERING half of the C2 rule.
 const MINI_RECIPES = {
   wasm: { name: 'wasm', deps: [], priors: 0, body: 'wasm-pack build client-wasm --target bundler' },
-  coverage: { name: 'coverage', deps: [], priors: 0, body: 'cd client && npx vitest run --coverage' },
+  coverage: {
+    name: 'coverage',
+    deps: [],
+    priors: 0,
+    body: 'cd client && npx vitest run --coverage',
+  },
   'client-test': { name: 'client-test', deps: [], priors: 0, body: 'cd client && npm test' },
 };
 
@@ -1368,8 +1388,12 @@ export function runTeeth() {
 
   // ======================= C1 =======================
 
-  record('C1-1', 'C1', true, 'a predicate that never accepts anything (an always-red gate proves nothing)', () =>
-    checkC1(normalizeRecipes(clone(RAW_DUMP_GOOD), 'fixture')),
+  record(
+    'C1-1',
+    'C1',
+    true,
+    'a predicate that never accepts anything (an always-red gate proves nothing)',
+    () => checkC1(normalizeRecipes(clone(RAW_DUMP_GOOD), 'fixture')),
   );
 
   record('C1-2', 'C1', false, "today's master: `coverage:` with no dependency at all", () => {
@@ -1507,11 +1531,17 @@ export function runTeeth() {
     },
   );
 
-  record('C1-6', 'C1', false, 'a missing `coverage` key read as "nothing to check" (silent pass)', () => {
-    const d = clone(RAW_DUMP_GOOD);
-    delete d.recipes.coverage;
-    return checkC1(normalizeRecipes(d, 'fixture'));
-  });
+  record(
+    'C1-6',
+    'C1',
+    false,
+    'a missing `coverage` key read as "nothing to check" (silent pass)',
+    () => {
+      const d = clone(RAW_DUMP_GOOD);
+      delete d.recipes.coverage;
+      return checkC1(normalizeRecipes(d, 'fixture'));
+    },
+  );
 
   record('C1-7', 'C1', false, 'a missing `wasm` key read as "nothing to check"', () => {
     const d = clone(RAW_DUMP_GOOD);
@@ -1772,7 +1802,7 @@ export function runTeeth() {
     'C3-2b',
     'C3',
     false,
-    'RED-TEAM F7: a version DOWNGRADE laundered through a trailing comment. Only whole-line comments were skipped, so `with: { version: \'v0.2.0\' } # version: \'v0.15.0\'` satisfied the pin while the runner installed a different wasm-pack. Measured 15/15 evals green.',
+    "RED-TEAM F7: a version DOWNGRADE laundered through a trailing comment. Only whole-line comments were skipped, so `with: { version: 'v0.2.0' } # version: 'v0.15.0'` satisfied the pin while the runner installed a different wasm-pack. Measured 15/15 evals green.",
     () =>
       checkC3({
         nightly: {
@@ -1790,7 +1820,7 @@ export function runTeeth() {
     'C3-2c',
     'C3',
     false,
-    'RED-TEAM F3: a step-level `env:` on the gate step. Paired with an env-guarded `wasm` recipe it skips the build entirely; no eval in the repo looked at the gate step\'s env. Measured 15/15 evals green.',
+    "RED-TEAM F3: a step-level `env:` on the gate step. Paired with an env-guarded `wasm` recipe it skips the build entirely; no eval in the repo looked at the gate step's env. Measured 15/15 evals green.",
     () =>
       checkC3({
         nightly: {
@@ -2014,12 +2044,17 @@ export function runTeeth() {
       }),
   );
 
-  record('C3-12', 'C3', false, 'an absent `coverage:` job read as "nothing to check" (vacuous pass)', () =>
-    checkC3({
-      nightly: {
-        text: `name: Nightly\njobs:\n  a11y-e2e:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: ${WASM_PACK_ACTION_REF} # v0.4.0\n        with: { version: 'v0.15.0' }\n      - run: just a11y-e2e\n`,
-      },
-    }),
+  record(
+    'C3-12',
+    'C3',
+    false,
+    'an absent `coverage:` job read as "nothing to check" (vacuous pass)',
+    () =>
+      checkC3({
+        nightly: {
+          text: `name: Nightly\njobs:\n  a11y-e2e:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: ${WASM_PACK_ACTION_REF} # v0.4.0\n        with: { version: 'v0.15.0' }\n      - run: just a11y-e2e\n`,
+        },
+      }),
   );
 
   record(
@@ -2084,12 +2119,20 @@ export default async function nightlyCoverageWasmWiringEval() {
   try {
     recipes = loadRecipes();
   } catch (err) {
-    return { name, pass: false, detail: `${tally}; FAILED CLOSED loading the just recipe graph — ${err && err.message}` };
+    return {
+      name,
+      pass: false,
+      detail: `${tally}; FAILED CLOSED loading the just recipe graph — ${err && err.message}`,
+    };
   }
   try {
     workflows = loadWorkflows();
   } catch (err) {
-    return { name, pass: false, detail: `${tally}; FAILED CLOSED loading the workflows — ${err && err.message}` };
+    return {
+      name,
+      pass: false,
+      detail: `${tally}; FAILED CLOSED loading the workflows — ${err && err.message}`,
+    };
   }
 
   const c1 = checkC1(recipes);
