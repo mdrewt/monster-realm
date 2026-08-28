@@ -38,16 +38,14 @@
 //      Deliberately NOT pinned — the key SET and the entry COUNT. Adding new
 //      KEYS is measured-safe (this eval and guest-claim-integrity both stay
 //      green), so either pin would be red-on-arrival for the next slice.
-//      NOT pinned either — the entry VALUE shape. READ THIS BEFORE RELYING ON
-//      IT: object-ifying an existing STRING entry is NOT a safe additive
-//      change. `checkRekeyCompleteness` classifies `typeof policy === 'string'`
-//      as "not REKEY", so ANY object entry is REKEY BY DEFINITION. Measured: a
-//      BLOCKED string entry rewritten as a record keeps THIS eval green and reds
-//      guest-claim-integrity with `FG47 ... [G6/consumed] the manifest marks
-//      \`battle.player_identity\` as REKEY via \`undefined\``. A slice that wants
-//      richer BLOCKED/EXEMPT entries must FIRST add an explicit policy/kind
-//      discriminator and teach checkRekeyCompleteness to read it, instead of
-//      leaning on `typeof === 'string'`.
+//      NOT pinned either — the entry VALUE shape beyond what T1 freezes. Since
+//      rb-2 (ADR-0208 D1) every entry is an object carrying an explicit
+//      `policy` discriminator read by ONE parser (`classifyPolicy`, under the
+//      `[G6/policy]` clause that runs first); there are no string entries left,
+//      and a new field on an entry is the producer's `[G6/policy]` closed-set
+//      concern, not this seam's. (An earlier revision of this paragraph
+//      described the pre-rb-2 `typeof === 'string'` inference as live — it is
+//      not, and rb-4 retired the same stale rationale from the Rust T9 twin.)
 //      DELIBERATELY pinned, as a considered choice — [T1/key-shape] requires
 //      exactly two non-empty dot-halves. That key space IS the join key with
 //      findIdentityColumns, so a three-segment key would silently fall out of
@@ -61,6 +59,20 @@
 //      `parseTableSchemas(f.src)`, which lets a table declaration quoted inside a
 //      Rust STRING LITERAL inject a phantom column into the manifest key space
 //      (and, through [G6/declared], into what the policy table must cover).
+//      Since rb-4 it also reds when the walker stops RESOLVING type aliases.
+//      Fixture C declares one column through the `LedgerRef` alias, so a walker
+//      that classifies on literal type text loses it and [T2/columns] fires;
+//      [T2/alias] then pins the two halves of the record that make resolution
+//      OBSERVABLE across this seam — `type` stays the DECLARED text (the alias
+//      name, which mentions no Identity) while `resolved` carries the expansion.
+//      Both directions are pinned because either one alone is beatable: a
+//      `resolved` hard-set to the constant 'Identity' satisfies every
+//      "mentions Identity" test, and it is caught only by the three UNALIASED
+//      columns, whose `resolved` must equal their declared text exactly —
+//      `account.claimed_from` is declared `Option<Identity>`, not `Identity`.
+//      `via` is deliberately NOT pinned here: its shape is the producing
+//      module's own closed-field-set tooth (FG73j), and duplicating it would
+//      make this seam red for a change that tooth already gates.
 //      Three measured cheats shaped these fixtures:
 //        * PATH-CONDITIONAL stripping (`f.path.indexOf('fixture/') === 0 ? strip
 //          : raw` — fixtures stripped, LIVE sources raw) passed an earlier
@@ -211,9 +223,17 @@ pub struct RowPhantomPvp {
 const FIXTURE_C_SRC = String.raw`
 // A DIFFERENT path prefix from A and B on purpose: no single path predicate
 // can separate this fixture set from the live tree.
+// The delegate column below is declared through the LedgerRef alias rather than
+// with the literal type: it is the one column in this fixture set whose
+// classification depends on the walker RESOLVING an alias (rb-4), and the alias
+// is declared outside the struct body because the table parser ends a body at
+// the first newline-brace.
+pub type LedgerRef = Identity;
+
 #[spacetimedb::table(accessor = ledger)]
 pub struct RowLedger {
     pub owner_identity: Identity,
+    pub delegate: LedgerRef,
     pub label: String,
 }
 
@@ -231,12 +251,17 @@ const FIXTURE_TREE = [
   { path: FIXTURE_C_PATH, src: FIXTURE_C_SRC },
 ];
 
-// Every fixture contributes EXACTLY ONE required column, so dropping any file
-// (or blob-parsing them together) loses one.
+// Every fixture contributes at least one required column, so dropping any file
+// (or blob-parsing them together) loses one. Fixture C contributes TWO: a
+// literally-typed column and an ALIAS-TYPED one. That pair is what lets
+// [T2/alias] pin BOTH directions of the rb-4 resolution rule — a walker that
+// never resolves loses the aliased column, and a walker whose `resolved` is a
+// constant lies about the literal ones.
 const EXPECT_COLUMNS = [
-  { column: 'account.owner_identity', path: FIXTURE_A_PATH },
-  { column: 'account.claimed_from', path: FIXTURE_B_PATH },
-  { column: 'ledger.owner_identity', path: FIXTURE_C_PATH },
+  { column: 'account.owner_identity', path: FIXTURE_A_PATH, aliased: false },
+  { column: 'account.claimed_from', path: FIXTURE_B_PATH, aliased: false },
+  { column: 'ledger.owner_identity', path: FIXTURE_C_PATH, aliased: false },
+  { column: 'ledger.delegate', path: FIXTURE_C_PATH, aliased: true },
 ];
 const PHANTOM_COLUMNS = [
   { column: 'phantom_account.owner_identity', path: FIXTURE_A_PATH },
@@ -412,7 +437,8 @@ function checkWalkerShape(mod) {
   if (!(cols instanceof Map)) {
     return {
       failures: [
-        '[T2/shape] findIdentityColumns must return a Map of "table.field" -> {path, type}; got ' +
+        '[T2/shape] findIdentityColumns must return a Map of "table.field" -> ' +
+          '{path, type, resolved, via}; got ' +
           `${cols === null ? 'null' : typeof cols}.`,
       ],
       note: '',
@@ -432,7 +458,9 @@ function checkWalkerShape(mod) {
       continue;
     }
     if (!isStructural(rec)) {
-      failures.push(`[T2/columns] \`${want.column}\` is valued ${String(rec)}, not a {path,type}.`);
+      failures.push(
+        `[T2/columns] \`${want.column}\` is valued ${String(rec)}, not a {path,type,resolved,via}.`,
+      );
       continue;
     }
     if (rec.path !== want.path) {
@@ -443,10 +471,34 @@ function checkWalkerShape(mod) {
       );
     }
     const type = typeof rec.type === 'string' ? rec.type : '';
-    if (type.trim().length === 0 || type.indexOf('Identity') === -1) {
+    const hasResolved = Object.hasOwn(rec, 'resolved') && typeof rec.resolved === 'string';
+    const resolved = hasResolved ? rec.resolved : '';
+    if (type.trim().length === 0 || resolved.indexOf('Identity') === -1) {
       failures.push(
-        `[T2/type] \`${want.column}\` carries type ${JSON.stringify(rec.type)}; expected the ` +
-          'declared Rust type text (which must mention Identity).',
+        `[T2/type] \`${want.column}\` carries type ${JSON.stringify(rec.type)} and resolved ` +
+          `${JSON.stringify(hasResolved ? rec.resolved : undefined)}; expected a non-blank ` +
+          'declared Rust type text plus an OWN `resolved` expansion that mentions Identity. The ' +
+          'Identity test sits on `resolved` since rb-4: `type` is the DECLARED text, which for an ' +
+          'aliased column never mentions Identity at all.',
+      );
+      continue;
+    }
+    if (want.aliased && (resolved === type || type.indexOf('Identity') !== -1)) {
+      failures.push(
+        `[T2/alias] \`${want.column}\` is declared through an alias, so \`type\` must be the ` +
+          'alias name (mentioning no Identity) and `resolved` must be the DIFFERENT, expanded ' +
+          `text (got type=${JSON.stringify(rec.type)}, resolved=${JSON.stringify(rec.resolved)}). ` +
+          'A walker that never resolves aliases cannot see this column at all, and one that ' +
+          'writes the expansion INTO `type` rewrites what every consumer reads as the schema.',
+      );
+    }
+    if (!want.aliased && resolved !== type) {
+      failures.push(
+        `[T2/alias] \`${want.column}\` is declared with a LITERAL type, so \`resolved\` must ` +
+          `EQUAL \`type\` (got type=${JSON.stringify(rec.type)}, ` +
+          `resolved=${JSON.stringify(rec.resolved)}). A \`resolved\` hard-set to the constant ` +
+          "'Identity' passes every Identity-mentions test above while silently lying about " +
+          '`account.claimed_from`, whose declared text is Option<Identity>.',
       );
     }
   }
@@ -478,7 +530,8 @@ function checkWalkerShape(mod) {
     note:
       `walker shape proven (${EXPECT_SIZE} declared Identity column(s) across ` +
       `${FIXTURE_TREE.length} live-shaped paths, Identity and Option<Identity> spellings, each ` +
-      'attributed to its declaring file); string-literal phantom rejected',
+      'attributed to its declaring file, one of them alias-resolved rather than literally ' +
+      'typed); string-literal phantom rejected',
   };
 }
 

@@ -3927,13 +3927,16 @@ fn data_lifecycle_export_scope_structurally_narrower() {
 /// T9 / X3: every key of the JS `REKEY_MANIFEST` names a table that
 /// `DATA_LIFECYCLE_MANIFEST` also classifies.
 ///
-/// The slice deliberately ships TWO manifests (the Rust deletion/export
-/// classification in schema.rs, the JS re-key policy in the eval) because
-/// object-valued JS entries are measured red-on-arrival against
-/// `[G6/consumed]`, which infers REKEY from `typeof policy === 'string'`. That
-/// deviation is only safe if the two cannot drift apart, and this is the clause
-/// that makes it so: both are independently tied to the same live Rust sources,
-/// and a table renamed or split on one side must surface on the other.
+/// The slice deliberately shipped TWO manifests (the Rust deletion/export
+/// classification in schema.rs, the JS re-key policy in the eval) because, at
+/// the time, object-valued JS entries were measured red-on-arrival against
+/// `[G6/consumed]`, which inferred REKEY from `typeof policy === 'string'`.
+/// rb-2 replaced that inference with an explicit `policy` discriminator
+/// (ADR-0208 D1); the split survives because the two classify different things
+/// in different languages, and that deviation is only safe if the two cannot
+/// drift apart. This is the clause that makes it so: both are independently
+/// tied to the same live Rust sources, and a table renamed or split on one side
+/// must surface on the other.
 ///
 /// The extraction FAILS LOUD below twenty keys. A scan that silently returns
 /// nothing is indistinguishable from a scan that found no violation, and this

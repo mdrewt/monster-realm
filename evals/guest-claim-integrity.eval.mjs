@@ -184,12 +184,21 @@
 //                          parseTableSchemas cannot read hides its Identity
 //                          columns from [G6/declared] (and from the schema
 //                          baseline, which compares a union of both sides).
+//       [G6/alias]         no source declares a `type` item from inside a
+//                          `macro_rules!` body, binds a name to a macro
+//                          metavariable or invocation, or binds the name
+//                          `Identity` itself — bindings the alias resolver
+//                          cannot read (rb-4; FG73n, FG73p).
 //       [G6/declared]      every `Identity`/`Option<Identity>` COLUMN in the tree
 //                          has an OWN manifest entry — membership is asked of
 //                          the Map classifyManifest derives from Object.keys,
 //                          never of the manifest object, so a key reachable
 //                          only through the prototype chain does not count
-//                          (rb-3, residual R-m22-s0-X2; FG72a-f).
+//                          (rb-3, residual R-m22-s0-X2; FG72a-f). A column's
+//                          declared type is RESOLVED through every `type` item
+//                          and `use … as` rename in the scanned tree before the
+//                          Identity test, fail-closed on ambiguity (rb-4,
+//                          residual R-m22-s0-X3; FG73a-p).
 //       [G6/live]          every manifest key still resolves to a live column
 //                          (bidirectional — a deleted column must not leave a
 //                          stale policy behind).
@@ -214,7 +223,7 @@
 //   * Strip PER FILE, never a concatenated blob: a quote left open in file A
 //     silently blanks the whole of file B.
 //
-// Proof-of-teeth fixtures (FG1-FG72) run BEFORE the live-tree checks so a broken
+// Proof-of-teeth fixtures (FG1-FG73) run BEFORE the live-tree checks so a broken
 // checker is caught first. Every clause has a BAD fixture asserting its [tag] by
 // expectTag, and every checker has a GOOD fixture that must PASS — an always-red
 // checker is indistinguishable from a working one (this repo's ux3 postmortem
@@ -1453,12 +1462,18 @@ function freezeManifest(manifest, seen = new WeakSet()) {
  * rule drifts silently the first time the real one moves. The slice that needs
  * it EXPORTS it from here and imports it, the same way it does the manifest.
  *
- * KNOWN LIMITATION of the walker below, stated because this contract now
- * advertises it: `findIdentityColumns` matches the literal type TEXT of a
- * column. A column declared through an alias (`pub type OwnerId = Identity;`
- * then `pub owner: OwnerId,`) is NOT seen, by this walker or by any consumer of
- * it. Nothing in the tree declares such an alias today; a consumer that must be
- * exhaustive has to gate the alias out at the schema, not here.
+ * ALIAS RESOLUTION, stated because this contract advertises it (rb-4, residual
+ * R-m22-s0-X3; THE ALIAS RESOLUTION RULE above `findIdentityColumns`): the
+ * walker classifies a column by its RESOLVED type, expanding every `type` item
+ * and `use … as` rename declared anywhere in the scanned tree, so an aliased
+ * Identity column is seen by this walker and by every consumer of it, and the
+ * record carries both the declared text (`type`) and the expansion
+ * (`resolved`) — a consumer reads Option-ness from the latter and never
+ * resolves anything itself. What is STILL not seen, routed to the residual
+ * backlog: a SpacetimeType product column carrying an Identity, a field
+ * declared without `pub`, and a binding declared outside the scanned input set
+ * — a consumer that must be exhaustive over those has to gate them out at the
+ * schema, not here.
  * @type {Record<string, RekeyPolicyEntry>}
  */
 export const REKEY_MANIFEST = freezeManifest({
@@ -1783,27 +1798,263 @@ const G6_REKEY_ANCHORS = [
 const REKEY_ALL_FN = 'rekey_all';
 const HAS_GAME_DATA_FN = 'account_has_game_data';
 
+// ---------------------------------------------------------------------------
+// THE ALIAS RESOLUTION RULE (rb-4, residual R-m22-s0-X3). Until rb-4 the walker
+// classified a column by the LITERAL text of its declared type, so a column
+// typed through a Rust `type` item, or through a `use … as` rename, that
+// resolves to Identity was invisible to G6/declared, G6/live AND G6/anchors —
+// MEASURED on the fork for every spelling (direct, transitive, Option-wrapped
+// in either direction, renamed, cross-file, any visibility, qualified RHS,
+// rustfmt-wrapped, `r#`-prefixed, non-ASCII). The rule now: every `type`
+// item and every rename in the WHOLE scanned tree is collected ONCE, from
+// STRIPPED source, into one name -> bindings Map — a UNION with duplicates
+// KEPT and no per-file precedence, because the collector is namespace-blind
+// and a same-file associated item (`impl … { type X = u64; }`) would
+// otherwise overwrite a module-level binding (a measured, CI-clean hide). A
+// column's declared type is split into identifier TOKENS and every bound token
+// is expanded recursively, a name already on the current expansion path being
+// terminal (a self-referential re-export resolves to a fixed point; a cycle
+// merely stops). An Identity-bearing expansion WINS (fail-closed on
+// ambiguity), and the G6/declared message renders every binding consulted with
+// its file, or the over-report is unactionable. The record keeps the DECLARED
+// text unchanged and adds the expansion plus the bindings consulted; a
+// consumer reads Option-ness from `resolved`, never resolving anything itself.
+// Banned, each measured green-and-wrong: classifying on the declared text;
+// per-file precedence; a single-level expansion; matching by SUBSTRING instead
+// of by token (a name that merely begins with a bound name is fabricated into
+// an Identity column, and a bound name that is a prefix of a longer one
+// corrupts every real column); collecting over RAW source (a declaration
+// quoted inside a string literal becomes a binding); a plain-object binding
+// table (an ambient non-enumerable prototype value answers for an unbound
+// name); resolving only the WHOLE type text; a first-binding tie-break. A
+// declaration the resolver cannot read — a macro that GENERATES a `type` item
+// (`type $`), a binding whose right-hand side carries a metavariable or a
+// macro invocation, or a binding of the name `Identity` itself (which the
+// resolver keeps terminal) — is DETECTED by G6/alias and reported by file,
+// never skipped. Every binding is rendered in the one shape `type NAME = RHS`
+// with its file, a rename included. Expansion is memoised per column, so a
+// name bound k ways over a d-deep chain costs k·d rather than k^d.
+// Accepted limits, each routed to the residual backlog (rb-4 ledger X10-X12):
+// a SpacetimeType product column carrying an Identity (a named-field struct,
+// an enum payload, a generic wrapper, a Vec of any of these — live-reachable
+// through encounter.entries); a field declared without `pub`, two fields on
+// one line, or a rustfmt::skip-wrapped type (G6/parse counts tables, not
+// fields); a binding declared OUTSIDE the scanned input set (game-core carries
+// an optional spacetimedb dependency); a proc-macro-generated item from an
+// external crate, or a paste-style generated NAME, which leave no readable
+// text at all; and two collector truncations that are fail-open only for
+// types that are not legal columns — a right-hand side containing `;` (an
+// array) is cut there, and a right-hand side of unbounded width is expanded
+// without a size cap.
+// ---------------------------------------------------------------------------
+
 /**
- * Every `Identity` / `Option<Identity>` COLUMN across a set of sources, keyed
+ * Every `use … ;` span in ONE stripped source, whole (a multi-line brace
+ * group is one span), so a rename can be found wherever rustfmt put it.
+ * @param {string} stripped Stripped Rust source.
+ * @returns {string[]} Each span from its `use` keyword up to (not including) `;`.
+ */
+function useItems(stripped) {
+  const items = [];
+  const text = rustWs(stripped);
+  // Built per call on purpose: a module-scope global regex keeps `lastIndex`
+  // across calls and would silently skip items in the next file.
+  const USE_ITEM = /\buse\s/g;
+  for (const m of text.matchAll(USE_ITEM)) {
+    const end = text.indexOf(';', m.index);
+    if (end === -1) break;
+    items.push(text.slice(m.index, end));
+  }
+  return items;
+}
+
+/**
+ * Map the three Rust Pattern_White_Space code points that JavaScript's `\s`
+ * does NOT match — U+0085 NEL, U+200E LRM, U+200F RLM — to a plain space,
+ * length-preserving. rustc treats them as whitespace between `type` and a name
+ * (or after `use`), so a `#[rustfmt::skip]` item spelled with one of them
+ * compiles clean and would otherwise bind nothing (measured, red-team).
+ * @param {string} s Stripped Rust source.
+ * @returns {string} The same text with those code points spaced.
+ */
+function rustWs(s) {
+  return s.replace(/[\u0085\u200e\u200f]/g, ' ');
+}
+
+/**
+ * Every `type NAME … = RHS;` item (any visibility, generics and where-clauses
+ * swallowed, RHS spanning newlines) and every `TOKEN as NAME` rename inside a
+ * `use` span, as binding records. A rename binds NAME to the LAST path segment
+ * it renames, so a renamed name that is itself bound resolves through both.
+ * @param {string} stripped Stripped (never compacted — compaction destroys the
+ *   keyword boundary) Rust source of one file.
+ * @param {string} path The file, for the failure message.
+ * @returns {Array<{name:string, rhs:string, path:string}>} Bindings, in order.
+ */
+function collectAliasBindings(stripped, path) {
+  const out = [];
+  const text = rustWs(stripped);
+  const ALIAS_ITEM = /\btype\s+(?:r#)?([\p{XID_Start}_][\p{XID_Continue}]*)[^=;]*=\s*([^;]*);/gu;
+  for (const m of text.matchAll(ALIAS_ITEM)) {
+    // Whitespace COLLAPSED, never removed: `&'a Identity` compacted would read
+    // `&'aIdentity`, one token, and the Identity inside it would be lost.
+    out.push({ name: m[1], rhs: m[2].trim().replace(/\s+/g, ' '), path });
+  }
+  const RENAME =
+    /((?:r#)?[\p{XID_Start}_][\p{XID_Continue}]*)\s+as\s+(?:r#)?([\p{XID_Start}_][\p{XID_Continue}]*)/gu;
+  for (const item of useItems(stripped)) {
+    for (const m of item.matchAll(RENAME)) {
+      if (m[2] === '_') continue;
+      out.push({ name: m[2], rhs: m[1].startsWith('r#') ? m[1].slice(2) : m[1], path });
+    }
+  }
+  return out;
+}
+
+/**
+ * The tree-wide binding table: name -> EVERY binding of that name, in tree
+ * order, duplicates kept (see the rule above). A Map, never a plain object —
+ * `constructor` and `__proto__` are legal Rust identifiers, and the
+ * own-property boundary applies to derived structures too.
+ * @param {Array<{path:string, stripped:string}>} treeStripped Every source, stripped once.
+ * @returns {Map<string, Array<{name:string, rhs:string, path:string}>>} The table.
+ */
+function indexAliasBindings(treeStripped) {
+  const aliases = new Map();
+  for (const t of treeStripped) {
+    for (const b of collectAliasBindings(t.stripped, t.path)) {
+      if (!aliases.has(b.name)) aliases.set(b.name, []);
+      aliases.get(b.name).push(b);
+    }
+  }
+  return aliases;
+}
+
+/**
+ * Expand every bound identifier TOKEN of `text` recursively. Termination is
+ * structural: a name already on `onPath` is left as it is. Every binding
+ * consulted is appended to `via` once; where a name has several bindings the
+ * Identity-bearing expansion is the one substituted (fail-closed).
+ * @param {string} text A (compacted) type text, or a binding's RHS.
+ * @param {Map<string, Array<{name:string, rhs:string, path:string}>>} aliases The table.
+ * @param {string[]} onPath Names being expanded on the current path.
+ * @param {Array<{name:string, rhs:string, path:string}>} via Accumulator.
+ * @param {Map<string, string>} memo Per-column cache of each name's chosen
+ *   expansion — without it a name bound k ways over a d-deep chain costs k^d
+ *   (measured: three `mod` blocks re-declaring a 16-hop chain took 40 s).
+ * @returns {string} The expanded text.
+ */
+function expandTokens(text, aliases, onPath, via, memo) {
+  const tokens = text.match(/(?:r#)?[\p{XID_Start}_][\p{XID_Continue}]*/gu) ?? [];
+  let out = '';
+  let cursor = 0;
+  for (const raw of tokens) {
+    // Tokens come back in order and only separators lie between them, so the
+    // first occurrence at or after the cursor is this token itself.
+    const at = text.indexOf(raw, cursor);
+    out += text.slice(cursor, at);
+    cursor = at + raw.length;
+    const name = raw.startsWith('r#') ? raw.slice(2) : raw;
+    const bindings = aliases.get(name);
+    // `Identity` itself is TERMINAL: it is the token this gate classifies on,
+    // and a tree-wide binding of that name is reported by G6/alias, never
+    // expanded away underneath every literally-typed column.
+    if (bindings === undefined || name === 'Identity' || onPath.indexOf(name) !== -1) {
+      out += raw;
+      continue;
+    }
+    const hit = memo.get(name);
+    if (hit !== undefined) {
+      out += hit;
+      continue;
+    }
+    const expansions = [];
+    for (const b of bindings) {
+      if (via.indexOf(b) === -1) via.push(b);
+      const inner = expandTokens(b.rhs, aliases, onPath.concat(name), via, memo);
+      expansions.push(inner);
+    }
+    const chosen = expansions.find((e) => containsIdent(e, 'Identity')) ?? expansions[0];
+    memo.set(name, chosen);
+    out += chosen;
+  }
+  return out + text.slice(cursor);
+}
+
+/**
+ * Resolve one column's declared type text through the binding table.
+ * @param {string} text The compacted declared type text.
+ * @param {Map<string, Array<{name:string, rhs:string, path:string}>>} aliases The table.
+ * @returns {{resolved:string, via:Array<{name:string, rhs:string, path:string}>}}
+ *   The expansion (equal to `text` when no binding applied) and the bindings consulted.
+ */
+function resolveType(text, aliases) {
+  const via = [];
+  const resolved = expandTokens(text, aliases, [], via, new Map());
+  return { resolved, via };
+}
+
+/**
+ * Render a column record's alias chain for the G6/declared message: nothing for
+ * a directly-typed column; otherwise the expansion, every binding consulted
+ * with its file, and a fail-closed note per name bound to more than one DISTINCT
+ * right-hand side (two agreeing declarations are not an ambiguity). Every
+ * binding — a `type` item or a `use … as` rename alike — is rendered in the
+ * one shape `type NAME = RHS`, with the declaring file beside it.
+ * @param {{type:string, resolved:string, via:Array<{name:string, rhs:string, path:string}>}} decl
+ *   The column record.
+ * @returns {string} A clause fragment beginning with `, `, or `''`.
+ */
+function aliasNote(decl) {
+  if (decl.via.length === 0) return '';
+  const rendered = decl.via.map((b) => `\`type ${b.name} = ${b.rhs}\` in ${b.path}`).join(' and ');
+  const perName = new Map();
+  for (const b of decl.via) {
+    if (!perName.has(b.name)) perName.set(b.name, new Set());
+    perName.get(b.name).add(b.rhs);
+  }
+  let ambiguous = '';
+  for (const [name, rhss] of perName) {
+    if (rhss.size < 2) continue;
+    ambiguous += ` — \`${name}\` is bound ${rhss.size} ways in the tree; reported fail-closed, rename one`;
+  }
+  return `, which resolves to \`${decl.resolved}\` via ${rendered}${ambiguous}`;
+}
+
+/**
+ * Every COLUMN across a set of sources whose declared type RESOLVES to
+ * `Identity` / `Option<Identity>` (see THE ALIAS RESOLUTION RULE above), keyed
  * "table.field". Uses battle-schema-snapshot's `parseTableSchemas`, which reads
  * ONLY `#[spacetimedb::table(...)] pub struct` field lists — a whole-file
  * `: Identity,` line match false-positives on the ~17 pre-existing FUNCTION
- * PARAMETER sites (ADR-0179 D6, finalization-pass note).
+ * PARAMETER sites (ADR-0179 D6, finalization-pass note). Two passes over the
+ * tree: every source is stripped ONCE, the binding table is built over all of
+ * them, then the tables are walked.
  * @param {Array<{path:string, src:string}>} treeSrcs Non-test server sources.
- * @returns {Map<string, {path:string, type:string}>} column key -> declaration.
+ * @returns {Map<string, {path:string, type:string, resolved:string,
+ *   via:Array<{name:string, rhs:string, path:string}>}>} column key -> declaration:
+ *   `type` is the DECLARED text, `resolved` its expansion (equal when direct),
+ *   `via` the bindings consulted (empty when direct). The field set is CLOSED.
  */
 export function findIdentityColumns(treeSrcs) {
   const cols = new Map();
+  // Stripped, not raw: a `#[spacetimedb::table(` quoted inside a string
+  // literal must not be able to inject a phantom table into the manifest scan,
+  // and a `type` item quoted inside one must not become a binding.
+  const treeStripped = [];
   for (const f of treeSrcs) {
-    // Stripped, not raw: a `#[spacetimedb::table(` quoted inside a string
-    // literal must not be able to inject a phantom table into the manifest scan.
-    const tables = parseTableSchemas(stripRustSource(f.src));
+    treeStripped.push({ path: f.path, stripped: stripRustSource(f.src) });
+  }
+  const aliases = indexAliasBindings(treeStripped);
+  for (const f of treeStripped) {
+    const tables = parseTableSchemas(f.stripped);
     for (const table of Object.keys(tables)) {
       const columns = tables[table].columns ?? {};
       for (const field of Object.keys(columns)) {
         const type = compactWs(columns[field]);
-        if (!containsIdent(type, 'Identity')) continue;
-        cols.set(`${table}.${field}`, { path: f.path, type });
+        const { resolved, via } = resolveType(type, aliases);
+        if (!containsIdent(resolved, 'Identity')) continue;
+        cols.set(`${table}.${field}`, { path: f.path, type, resolved, via });
       }
     }
   }
@@ -1863,6 +2114,46 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
         'parseTableSchemas the new form in the same PR'
       );
     }
+    // [G6/alias] — three binding shapes the resolver cannot read, each fail
+    // loud by file rather than walked past (zero hits on the live tree):
+    //   a macro that GENERATES a `type` item leaves only a metavariable where
+    //   the resolver expects a name (the byte string `type $`), so the binding
+    //   is never collected;
+    //   a binding whose right-hand side carries a metavariable or a macro
+    //   INVOCATION (`type X = $t;` inside a macro body, `type X = mk!();`) is
+    //   collected but expands to nothing Identity-bearing (measured, red-team);
+    //   a binding of the name `Identity` itself shadows the token this gate
+    //   classifies on — the resolver keeps that token terminal, and this clause
+    //   is what turns a silent 0-column walk into a named diagnosis.
+    if (stripped.indexOf('macro_rules!') !== -1 && stripped.indexOf('type $') !== -1) {
+      return (
+        `[G6/alias] ${f.path} declares a \`type\` item from inside a \`macro_rules!\` body ` +
+        '(the byte string `type $`). The alias resolver reads declarations by SHAPE and a ' +
+        'macro metavariable has none, so any column typed through that generated name would ' +
+        'be an Identity column this gate never sees. Declare the item directly, or teach the ' +
+        'resolver the macro in the same PR'
+      );
+    }
+    for (const b of collectAliasBindings(stripped, f.path)) {
+      if (b.name === 'Identity') {
+        return (
+          `[G6/alias] ${f.path} binds the name \`Identity\` itself (\`type Identity = ${b.rhs}\` ` +
+          'or a `use … as Identity` rename). That is the token every column is classified on, ' +
+          'so a tree-wide binding of it would rewrite the resolved type of EVERY literally-typed ' +
+          'column at once; the resolver refuses to expand it and this clause names the file. ' +
+          'Rename the binding'
+        );
+      }
+      if (b.rhs.indexOf('$') !== -1 || b.rhs.indexOf('!') !== -1) {
+        return (
+          `[G6/alias] ${f.path} binds \`${b.name}\` to \`${b.rhs}\`, a right-hand side carrying a ` +
+          'macro metavariable or a macro invocation. The alias resolver expands identifier ' +
+          'tokens and a macro leaves it nothing to expand, so a column typed through this name ' +
+          'would be an Identity column this gate never sees. Spell the type out, or teach the ' +
+          'resolver the macro in the same PR'
+        );
+      }
+    }
   }
 
   const columns = findIdentityColumns(treeSrcs);
@@ -1874,7 +2165,8 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     if (kinds.has(key)) continue;
     const decl = columns.get(key);
     return (
-      `[G6/declared] the column \`${key}\` (type \`${decl.type}\`, declared in ${decl.path}) has no ` +
+      `[G6/declared] the column \`${key}\` (type \`${decl.type}\`, declared in ${decl.path}` +
+      `${aliasNote(decl)}) has no ` +
       'entry in the ADR-0179 D6 re-key manifest. EVERY Identity column in the module needs an ' +
       'explicit policy — REKEY (carried from the guest onto the claiming account), BLOCKED (a ' +
       'guard rejects the claim while such a row exists) or EXEMPT (never a foreign reference). An ' +
@@ -1985,7 +2277,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
 }
 
 // ---------------------------------------------------------------------------
-// PROOF-OF-TEETH FIXTURES (FG1-FG72) — inline sources, run BEFORE the live-tree
+// PROOF-OF-TEETH FIXTURES (FG1-FG73) — inline sources, run BEFORE the live-tree
 // checks. Returns the first tooth failure (string) or null.
 //
 // The Rust fixtures below are STRING LITERALS in a .mjs file; the live scan
@@ -4231,6 +4523,1257 @@ pub struct GuildMember {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // FG73 — THE ALIAS RESOLUTION RULE (rb-4, residual R-m22-s0-X3).
+  //
+  // Until this slice the column walker classified a column by the LITERAL text
+  // of its declared type, so a column whose type is a one-line Rust `type` item
+  // resolving to Identity was invisible to the completeness clause, to the
+  // reverse live clause AND to the anchor clause — MEASURED on the fork for
+  // every spelling (direct, transitive, Option-wrapped, renamed by a `use ...
+  // as` item, cross-file, any visibility, qualified right-hand side). An
+  // invisible Identity column is a column with no D6 policy and no reviewer to
+  // notice it, which is exactly the silent-orphan defect G6 exists to prevent.
+  //
+  // THE RULE THESE FIXTURES PIN. Every `type` item and every `use ... as`
+  // rename in the WHOLE scanned tree is collected ONCE, from STRIPPED source,
+  // into one name -> bindings table: a UNION, duplicates KEPT, no per-file
+  // precedence (a same-file associated item must not overwrite a module-level
+  // binding). A column's declared type is split into identifier tokens and
+  // every bound token is expanded RECURSIVELY, a name already on the current
+  // expansion path being terminal — so a fixed point resolves and a cycle merely
+  // stops. An Identity-bearing expansion WINS (fail-closed), and the failure
+  // then names every binding consulted and the file each one came from, or the
+  // over-report is unactionable. The record keeps the DECLARED text unchanged
+  // and adds the expansion plus the bindings consulted. A spelling the resolver
+  // cannot read at all — a macro that GENERATES a type item — is DETECTED and
+  // reported by name rather than silently skipped.
+  //
+  // Fixture letters: a direct (plus a wrapped declaration) · b transitive ·
+  // c Option in both directions · d the three rename spellings · e cross-file ·
+  // f the GOOD control, exact key set, in two legs · g ambiguity in both
+  // directions · h termination (GOOD) · i the join direction · j the record
+  // shape · k a declaration that exists only inside a string literal (GOOD) ·
+  // l ambient prototype pollution, both directions · m raw and non-ASCII names ·
+  // n the macro detector · o this file's own text above the teeth.
+  //
+  // EVERY fixture SELF-ASSERTS its shape before the call: the declaration is
+  // present in the STRIPPED fixture source (so a stripper change cannot quietly
+  // turn a BAD fixture into a vacuous one), and the aliased column is NOT
+  // declared with a literal Identity type — the needle for that second check is
+  // spelled in two halves so this file's own text cannot satisfy it. Every
+  // failing fixture additionally asserts that the failure NAMES the column.
+  // ---------------------------------------------------------------------------
+  const RB4_SCHEMA_PATH = 'fixture/schema.rs';
+  const RB4_IDS_PATH = 'fixture/ids.rs';
+  const RB4_OTHER_PATH = 'fixture/other.rs';
+  const RB4_ALIAS_PATH = 'fixture/aliases.rs';
+  const RB4_COL = 'guild_member.delegate';
+  // TWO HALVES on purpose: written contiguously, this file's own source would
+  // contain the very needle the honesty check below searches its fixtures for.
+  const RB4_LITERAL = 'delegate:' + 'Identity';
+
+  const rb4Table = (fieldType) => `#[spacetimedb::table(accessor = guild_member)]
+pub struct GuildMember {
+    pub delegate: ${fieldType},
+    pub guild_id: u64,
+}
+`;
+
+  // The synthesized GOOD schema (FG47's tree) is the BASE of every fixture
+  // below, exactly as FG48 does it: the default manifest stays satisfiable, so
+  // the completeness clause is the FIRST clause that can fire for the new
+  // column. Declarations sit OUTSIDE every struct body — the table parser ends a
+  // body at the first newline-brace, so a declaration inside one would truncate
+  // the column list and red the parse clause instead of the clause under test.
+  const rb4Schema = (decls, fieldType) => GOOD_TREE[0].src + decls + rb4Table(fieldType);
+
+  const rb4SelfCheck = (label, declSrc, decls, colSrc) => {
+    const strippedDecls = stripRustSource(declSrc);
+    for (const decl of decls) {
+      if (strippedDecls.indexOf(decl) !== -1) continue;
+      return (
+        `${label}: the fixture is broken — the declaration \`${decl}\` is not present in the ` +
+        'STRIPPED fixture source, so this fixture exercises no alias resolution at all and would ' +
+        'be green for a reason that has nothing to do with the walker'
+      );
+    }
+    if (compactWs(stripRustSource(colSrc)).indexOf(RB4_LITERAL) !== -1) {
+      return (
+        `${label}: the fixture is broken — the column is declared with a LITERAL Identity type ` +
+        `(compacted needle \`${RB4_LITERAL}\`), so the FORK walker would classify it without ` +
+        'resolving anything and this fixture would prove nothing about aliases'
+      );
+    }
+    return null;
+  };
+
+  // FG73a — the residual's LITERAL repro: a declaration binding a name to
+  // Identity, and a column declared with that name. RED before the fix (the
+  // checker returns PASS, because the column is invisible to it), and the
+  // failure must RENDER the chain: a reader told that a column has no policy,
+  // while the type text in front of them is a name that says nothing about
+  // Identity, cannot act on the report without the binding and its file.
+  // Kills: classifying on the DECLARED text, and a message that drops the alias
+  // rendering. The second leg is the rustfmt-WRAPPED declaration — a collector
+  // whose pattern cannot span a newline is blind to a line rustfmt itself wrote.
+  {
+    const DECL = 'pub type OwnerId = Identity;';
+    const src = rb4Schema(`${DECL}\n`, 'OwnerId');
+    const tree = [{ path: RB4_SCHEMA_PATH, src }, GOOD_TREE[1]];
+    const broken = rb4SelfCheck('FG73a', src, [DECL], src);
+    if (broken) return broken;
+
+    const err = checkRekeyCompleteness(tree, GOOD_ACCOUNTS);
+    const bad = expectTag(err, '[G6/declared]', 'FG73a');
+    if (bad) return bad;
+    if (err.indexOf(RB4_COL) === -1) {
+      return `FG73a: the failure must NAME the unclassified column ${RB4_COL}: ${err}`;
+    }
+    // NOT the bare word Identity: the G6/declared boilerplate already contains
+    // it, so an assertion on it is vacuous (measured by the red-team pass). The
+    // rendered CHAIN is the assertion — the binding, its right-hand side, and
+    // the file that declares it.
+    const rendersVia = err.indexOf('via ') !== -1;
+    const rendersBinding = err.indexOf('type OwnerId = Identity') !== -1;
+    if (!rendersVia || !rendersBinding) {
+      return (
+        'FG73a: the failure must RENDER the alias chain — the substring `via ` and the binding ' +
+        '`type OwnerId = Identity`. A fail-closed over-report is actionable only when it names ' +
+        `the binding that made this column an Identity column: ${err}`
+      );
+    }
+    if (err.indexOf(RB4_SCHEMA_PATH) === -1) {
+      return `FG73a: the failure must name the file that DECLARES the binding: ${err}`;
+    }
+
+    const WRAP = 'pub type OwnerId =\n    Identity;';
+    const wrapSrc = rb4Schema(`${WRAP}\n`, 'OwnerId');
+    const wrapTree = [{ path: RB4_SCHEMA_PATH, src: wrapSrc }, GOOD_TREE[1]];
+    const wrapBroken = rb4SelfCheck('FG73a/wrapped', wrapSrc, [WRAP], wrapSrc);
+    if (wrapBroken) return wrapBroken;
+    const wrapErr = checkRekeyCompleteness(wrapTree, GOOD_ACCOUNTS);
+    const wrapBad = expectTag(wrapErr, '[G6/declared]', 'FG73a/wrapped');
+    if (wrapBad) return wrapBad;
+    const wrapNames = wrapErr.indexOf(RB4_COL) !== -1;
+    const wrapBinding = wrapErr.indexOf('type OwnerId = Identity') !== -1;
+    if (!wrapNames || !wrapBinding) {
+      return (
+        'FG73a/wrapped: rustfmt wraps a long declaration onto the next line, so the collector ' +
+        'must span newlines and the rendered right-hand side must be the same one the unwrapped ' +
+        `leg produces: ${wrapErr}`
+      );
+    }
+  }
+
+  // FG73b — TRANSITIVITY. Two hops, so a resolver that expands exactly one
+  // level reports nothing at all. The rendering assertion additionally pins that
+  // EVERY binding consulted reaches the message, not only the last one: a reader
+  // shown one hop of a two-hop chain still cannot see why the column is an
+  // Identity column.
+  {
+    const BASE = 'pub type Owner = Identity;';
+    const MID = 'pub type OwnerId = Owner;';
+    const src = rb4Schema(`${BASE}\n${MID}\n`, 'OwnerId');
+    const tree = [{ path: RB4_SCHEMA_PATH, src }, GOOD_TREE[1]];
+    const broken = rb4SelfCheck('FG73b', src, [BASE, MID], src);
+    if (broken) return broken;
+
+    const err = checkRekeyCompleteness(tree, GOOD_ACCOUNTS);
+    const bad = expectTag(err, '[G6/declared]', 'FG73b');
+    if (bad) return bad;
+    if (err.indexOf(RB4_COL) === -1) {
+      return `FG73b: the failure must NAME the unclassified column ${RB4_COL}: ${err}`;
+    }
+    const hopOne = err.indexOf('type OwnerId = Owner') !== -1;
+    const hopTwo = err.indexOf('type Owner = Identity') !== -1;
+    if (!hopOne || !hopTwo) {
+      return (
+        'FG73b: the failure must render BOTH hops of the chain — `type OwnerId = Owner` and ' +
+        '`type Owner = Identity`. A one-level expansion reports nothing here at all, and a ' +
+        `message that shows one hop of two is a report the reader cannot follow: ${err}`
+      );
+    }
+  }
+
+  // FG73c — the Option spellings, in BOTH directions: the wrapper written at the
+  // COLUMN, and the wrapper written in the BINDING. Kills a resolver that looks
+  // the WHOLE declared type text up in the binding table (which resolves the
+  // second leg and is blind to the first), and any resolver that only
+  // understands a bare, unwrapped type name.
+  {
+    const DECL = 'pub type OwnerId = Identity;';
+    const src = rb4Schema(`${DECL}\n`, 'Option<OwnerId>');
+    const tree = [{ path: RB4_SCHEMA_PATH, src }, GOOD_TREE[1]];
+    const broken = rb4SelfCheck('FG73c/wrapped-column', src, [DECL], src);
+    if (broken) return broken;
+    const err = checkRekeyCompleteness(tree, GOOD_ACCOUNTS);
+    const bad = expectTag(err, '[G6/declared]', 'FG73c/wrapped-column');
+    if (bad) return bad;
+    if (err.indexOf(RB4_COL) === -1) {
+      return `FG73c/wrapped-column: the failure must NAME the column ${RB4_COL}: ${err}`;
+    }
+
+    const MAYBE = 'pub type MaybeOwner = Option<Identity>;';
+    const maybeSrc = rb4Schema(`${MAYBE}\n`, 'MaybeOwner');
+    const maybeTree = [{ path: RB4_SCHEMA_PATH, src: maybeSrc }, GOOD_TREE[1]];
+    const maybeBroken = rb4SelfCheck('FG73c/wrapped-binding', maybeSrc, [MAYBE], maybeSrc);
+    if (maybeBroken) return maybeBroken;
+    const maybeErr = checkRekeyCompleteness(maybeTree, GOOD_ACCOUNTS);
+    const maybeBad = expectTag(maybeErr, '[G6/declared]', 'FG73c/wrapped-binding');
+    if (maybeBad) return maybeBad;
+    if (maybeErr.indexOf(RB4_COL) === -1) {
+      return `FG73c/wrapped-binding: the failure must NAME the column ${RB4_COL}: ${maybeErr}`;
+    }
+  }
+
+  // FG73d — the THREE rename spellings a `use` item can carry: a multi-line
+  // brace group (the rustfmt shape), the plain single-item form, and a `pub use`
+  // re-export that renames a name which is ITSELF a bound name — a chain that
+  // resolves only when renames and type items live in ONE table.
+  {
+    const USE_GROUP = 'use spacetimedb::{\n    Identity as WhoRef,\n    Table,\n};';
+    const groupSrc = rb4Schema(`${USE_GROUP}\n`, 'WhoRef');
+    const groupTree = [{ path: RB4_SCHEMA_PATH, src: groupSrc }, GOOD_TREE[1]];
+    const groupBroken = rb4SelfCheck('FG73d/group', groupSrc, [USE_GROUP], groupSrc);
+    if (groupBroken) return groupBroken;
+    const groupErr = checkRekeyCompleteness(groupTree, GOOD_ACCOUNTS);
+    const groupBad = expectTag(groupErr, '[G6/declared]', 'FG73d/group');
+    if (groupBad) return groupBad;
+    const groupNames = groupErr.indexOf(RB4_COL) !== -1;
+    const groupBinding = groupErr.indexOf('type WhoRef = Identity') !== -1;
+    if (!groupNames || !groupBinding) {
+      return (
+        'FG73d/group: a rename inside a brace group IS a binding, so the failure must name the ' +
+        `column and render it as one (\`type WhoRef = Identity\`): ${groupErr}`
+      );
+    }
+
+    const USE_PLAIN = 'use spacetimedb::Identity as Owner;';
+    const plainSrc = rb4Schema(`${USE_PLAIN}\n`, 'Owner');
+    const plainTree = [{ path: RB4_SCHEMA_PATH, src: plainSrc }, GOOD_TREE[1]];
+    const plainBroken = rb4SelfCheck('FG73d/plain', plainSrc, [USE_PLAIN], plainSrc);
+    if (plainBroken) return plainBroken;
+    const plainErr = checkRekeyCompleteness(plainTree, GOOD_ACCOUNTS);
+    const plainBad = expectTag(plainErr, '[G6/declared]', 'FG73d/plain');
+    if (plainBad) return plainBad;
+    if (plainErr.indexOf(RB4_COL) === -1) {
+      return `FG73d/plain: the failure must NAME the column ${RB4_COL}: ${plainErr}`;
+    }
+
+    const EXPORT = 'pub use crate::ids::OwnerId as Handoff;';
+    const DECL = 'pub type OwnerId = Identity;';
+    const chainSrc = rb4Schema(`${DECL}\n${EXPORT}\n`, 'Handoff');
+    const chainTree = [{ path: RB4_SCHEMA_PATH, src: chainSrc }, GOOD_TREE[1]];
+    const chainDecls = [DECL, EXPORT];
+    const chainBroken = rb4SelfCheck('FG73d/re-export', chainSrc, chainDecls, chainSrc);
+    if (chainBroken) return chainBroken;
+    const chainErr = checkRekeyCompleteness(chainTree, GOOD_ACCOUNTS);
+    const chainBad = expectTag(chainErr, '[G6/declared]', 'FG73d/re-export');
+    if (chainBad) return chainBad;
+    const chainNames = chainErr.indexOf(RB4_COL) !== -1;
+    const chainVia = chainErr.indexOf('via ') !== -1;
+    if (!chainNames || !chainVia) {
+      return (
+        'FG73d/re-export: a rename of a name that is ITSELF bound must resolve through BOTH ' +
+        `bindings, and the failure must name the column and render the chain: ${chainErr}`
+      );
+    }
+  }
+
+  // FG73e — CROSS-FILE: the binding is declared in a file that declares NO table
+  // at all, and the column lives in another file. This is the shape that keeps
+  // every single-file fixture above green while a real module split hides the
+  // column. The declaring file is deliberately NOT the first element of the
+  // tree, so a collector that reads only the first source fails here too, and
+  // the failure must name the DECLARING file, which is not the column's own.
+  {
+    const DECL = 'pub type GuildRef = Identity;';
+    const idsSrc = `// an alias-only module: no table is declared here\n${DECL}\n`;
+    const src = rb4Schema('', 'GuildRef');
+    const idsFile = { path: RB4_IDS_PATH, src: idsSrc };
+    const tree = [{ path: RB4_SCHEMA_PATH, src }, GOOD_TREE[1], idsFile];
+    const broken = rb4SelfCheck('FG73e', idsSrc, [DECL], src);
+    if (broken) return broken;
+    if (idsSrc.indexOf('#[spacetimedb::table(') !== -1) {
+      return (
+        'FG73e: the fixture is broken — the declaring file must declare NO table, or a per-file ' +
+        'collector could find the binding while it walks the column’s own file and this fixture ' +
+        'would prove nothing about a tree-wide table'
+      );
+    }
+    if (tree.findIndex((f) => f.path === RB4_IDS_PATH) < 1) {
+      return (
+        'FG73e: the fixture is broken — the declaring file must NOT be the FIRST element of the ' +
+        'tree, or a collector that reads only the first source would pass by accident'
+      );
+    }
+
+    const err = checkRekeyCompleteness(tree, GOOD_ACCOUNTS);
+    const bad = expectTag(err, '[G6/declared]', 'FG73e');
+    if (bad) return bad;
+    if (err.indexOf(RB4_COL) === -1) {
+      return `FG73e: the failure must NAME the unclassified column ${RB4_COL}: ${err}`;
+    }
+    if (err.indexOf(RB4_IDS_PATH) === -1) {
+      return (
+        `FG73e: the failure must name ${RB4_IDS_PATH} — the file that DECLARES the binding, which ` +
+        'is not the file that declares the column. Without it the reader has to grep the whole ' +
+        `tree for a name they have never seen: ${err}`
+      );
+    }
+  }
+
+  // FG73f — the GOOD CONTROL, and the only fixture that pins the walk's EXACT
+  // key set. Two legs, because two wrong resolvers need two different trees:
+  //   controls  four columns typed by bindings that resolve to NON-Identity
+  //             (u64, u32, a Vec-shaped binding, u8), plus a binding that DOES
+  //             resolve to Identity and that no column references. This kills
+  //             "any column whose type is a bound name is an Identity column";
+  //             it kills a classifier that tests for the SUBSTRING Identity (one
+  //             control is NAMED IdentityTag and resolves to u32); and — because
+  //             one binding's right-hand side is literally Identity — it kills
+  //             an identifier-BLIND substitution resolver, which rewrites every
+  //             real Identity column in the tree into text the whole-identifier
+  //             test no longer matches, losing 24 columns at once.
+  //   decoy     a column typed by a name NOTHING binds, whose spelling merely
+  //             BEGINS with a bound name. A substring substitution rewrites it
+  //             into Identity-bearing text and fabricates a column the schema
+  //             does not declare; token-driven expansion leaves it alone. The
+  //             decoy is a real declared struct, so the fixture reads like
+  //             source rather than like a typo.
+  // Both legs must walk to the SAME key set as the GOOD tree — an EXACT set
+  // equality, so a fabricated column shows up as a surplus and a mangled one as
+  // a loss — and both must PASS the whole checker, before AND after the fix.
+  {
+    const CONTROL_SRC = `pub type Coins = u64;
+pub type IdentityTag = u32;
+pub type NpcSyncPlan = Vec<NpcSyncAction>;
+pub type Id = Identity;
+pub type IdKind = u8;
+
+#[spacetimedb::table(accessor = guild_ledger)]
+pub struct GuildLedger {
+    pub balance: Coins,
+    pub tag: IdentityTag,
+    pub plan: NpcSyncPlan,
+    pub kind: IdKind,
+    pub note: String,
+}
+`;
+    const CONTROLS = [
+      { field: 'balance', name: 'Coins', rhs: 'u64' },
+      { field: 'tag', name: 'IdentityTag', rhs: 'u32' },
+      { field: 'plan', name: 'NpcSyncPlan', rhs: 'Vec<NpcSyncAction>' },
+      { field: 'kind', name: 'IdKind', rhs: 'u8' },
+    ];
+    const controlStripped = stripRustSource(CONTROL_SRC);
+    for (const c of CONTROLS) {
+      const decl = `pub type ${c.name} = ${c.rhs};`;
+      if (controlStripped.indexOf(decl) === -1) {
+        return `FG73f/controls: the fixture is broken — \`${decl}\` is not in the stripped source`;
+      }
+      if (containsIdent(c.rhs, 'Identity')) {
+        return (
+          `FG73f/controls: the fixture is broken — the control binding \`${c.name}\` resolves to ` +
+          `\`${c.rhs}\`, which IS Identity-bearing, so its column belongs in the reported set and ` +
+          'this control would be asserting the wrong thing'
+        );
+      }
+      if (CONTROL_SRC.indexOf(`pub ${c.field}: ${c.name},`) === -1) {
+        return (
+          `FG73f/controls: the fixture is broken — no column is declared \`pub ${c.field}: ` +
+          `${c.name},\`, so this control name is never looked up at all`
+        );
+      }
+    }
+    if (CONTROL_SRC.indexOf('pub type Id = Identity;') === -1) {
+      return (
+        'FG73f/controls: the fixture is broken — the tree must ALSO bind a name to Identity that ' +
+        'no column references, or an identifier-blind substitution has nothing to corrupt and ' +
+        'this leg loses half its teeth'
+      );
+    }
+
+    const DECOY_SRC = `pub type MaybeOwner = Option<Identity>;
+
+pub struct MaybeOwnerRef {
+    pub inner: u8,
+}
+
+#[spacetimedb::table(accessor = guild_scope)]
+pub struct GuildScope {
+    pub scope: MaybeOwnerRef,
+    pub note: String,
+}
+`;
+    if (DECOY_SRC.indexOf('pub type MaybeOwner = Option<Identity>;') === -1) {
+      return 'FG73f/decoy: the fixture is broken — the bound PREFIX name is not declared';
+    }
+    if (DECOY_SRC.indexOf('pub type MaybeOwnerRef') !== -1) {
+      return (
+        'FG73f/decoy: the fixture is broken — the decoy name must be UNBOUND (a struct, never an ' +
+        'alias), or the column is legitimately resolvable and nothing is being decoyed'
+      );
+    }
+    const decoyStruct = DECOY_SRC.indexOf('pub struct MaybeOwnerRef {') !== -1;
+    const decoyColumn = DECOY_SRC.indexOf('pub scope: MaybeOwnerRef,') !== -1;
+    if (!decoyStruct || !decoyColumn) {
+      return (
+        'FG73f/decoy: the fixture is broken — the decoy must be a real declared type AND the ' +
+        'column must be declared with it'
+      );
+    }
+
+    const want = [...findIdentityColumns(GOOD_TREE).keys()].sort();
+    if (want.length !== Object.keys(REKEY_MANIFEST).length) {
+      return (
+        `FG73f: the fixture is broken — the GOOD tree walks to ${want.length} column(s) but the ` +
+        `manifest owns ${Object.keys(REKEY_MANIFEST).length}; an exact key-set comparison against ` +
+        'a wrong (or empty) baseline proves nothing at all'
+      );
+    }
+
+    const controlFile = { path: RB4_ALIAS_PATH, src: CONTROL_SRC };
+    const controlTree = [GOOD_TREE[0], GOOD_TREE[1], controlFile];
+    const gotControls = [...findIdentityColumns(controlTree).keys()].sort();
+    if (gotControls.join(',') !== want.join(',')) {
+      return (
+        'FG73f/controls: a file of NON-Identity bindings changed the walk. Those columns resolve ' +
+        'to u64 / u32 / a Vec / u8 and must contribute NOTHING, and no column the GOOD tree ' +
+        `already declares may be lost. want=[${want.join(', ')}] got=[${gotControls.join(', ')}]`
+      );
+    }
+    const controlErr = checkRekeyCompleteness(controlTree, GOOD_ACCOUNTS);
+    if (controlErr) {
+      return `FG73f/controls: the GOOD control tree was incorrectly flagged: ${controlErr}`;
+    }
+
+    const decoyFile = { path: RB4_ALIAS_PATH, src: DECOY_SRC };
+    const decoyTree = [GOOD_TREE[0], GOOD_TREE[1], decoyFile];
+    const gotDecoy = [...findIdentityColumns(decoyTree).keys()].sort();
+    if (gotDecoy.join(',') !== want.join(',')) {
+      return (
+        'FG73f/decoy: an UNBOUND type name whose spelling merely BEGINS with a bound name was ' +
+        'resolved as if it were that name. A substring substitution turns it into ' +
+        'Identity-bearing text and fabricates a column the schema does not declare; expansion is ' +
+        `token-driven precisely so it cannot. want=[${want.join(', ')}] ` +
+        `got=[${gotDecoy.join(', ')}]`
+      );
+    }
+    const decoyErr = checkRekeyCompleteness(decoyTree, GOOD_ACCOUNTS);
+    if (decoyErr) {
+      return `FG73f/decoy: the GOOD decoy tree was incorrectly flagged: ${decoyErr}`;
+    }
+  }
+
+  // FG73g — AMBIGUITY, fail-closed, in both directions.
+  //   cross-file  one name bound to Identity in one file and to u64 in another.
+  //               The NON-Identity binding is collected FIRST on purpose, so
+  //               "the first binding of a name wins" is not accidentally right;
+  //               the column must still be reported, and the message must name
+  //               BOTH declaring files and say how many ways the name is bound —
+  //               an over-report the reader cannot resolve is noise.
+  //   same-file   an associated item inside an `impl` block binds the same name
+  //               to u64 beside a module-level binding to Identity. A collector
+  //               with per-file precedence (or a table that OVERWRITES on a
+  //               duplicate key) loses the module-level binding and the column
+  //               goes unreported — the measured hide that made the binding
+  //               table a union with duplicates KEPT.
+  {
+    const ID_DECL = 'pub type OwnerId = Identity;';
+    const U64_DECL = 'pub type OwnerId = u64;';
+    const src = rb4Schema('', 'OwnerId');
+    const otherFile = { path: RB4_OTHER_PATH, src: `${U64_DECL}\n` };
+    const idsFile = { path: RB4_IDS_PATH, src: `${ID_DECL}\n` };
+    const tree = [{ path: RB4_SCHEMA_PATH, src }, otherFile, idsFile, GOOD_TREE[1]];
+    const broken =
+      rb4SelfCheck('FG73g/cross-file', otherFile.src, [U64_DECL], src) ??
+      rb4SelfCheck('FG73g/cross-file', idsFile.src, [ID_DECL], src);
+    if (broken) return broken;
+    const u64At = tree.findIndex((f) => f.path === RB4_OTHER_PATH);
+    const idAt = tree.findIndex((f) => f.path === RB4_IDS_PATH);
+    if (u64At > idAt) {
+      return (
+        'FG73g/cross-file: the fixture is broken — the NON-Identity binding must be collected ' +
+        'FIRST, or a resolver that simply takes the first binding of a name would pass here'
+      );
+    }
+
+    const err = checkRekeyCompleteness(tree, GOOD_ACCOUNTS);
+    const bad = expectTag(err, '[G6/declared]', 'FG73g/cross-file');
+    if (bad) return bad;
+    if (err.indexOf(RB4_COL) === -1) {
+      return `FG73g/cross-file: the failure must NAME the column ${RB4_COL}: ${err}`;
+    }
+    const namesIds = err.indexOf(RB4_IDS_PATH) !== -1;
+    const namesOther = err.indexOf(RB4_OTHER_PATH) !== -1;
+    const namesCount = err.indexOf('bound 2 ways') !== -1;
+    if (!namesIds || !namesOther || !namesCount) {
+      return (
+        'FG73g/cross-file: an ambiguous name is reported FAIL-CLOSED, so the message must name ' +
+        `every file that binds it (${RB4_IDS_PATH} and ${RB4_OTHER_PATH}) and say how many ways ` +
+        `it is bound; without that the reader cannot tell an over-report from a hole: ${err}`
+      );
+    }
+
+    const IMPL_DECL = 'impl Tagged for Decoy {\n    type OwnerId = u64;\n}';
+    const sameSrc = rb4Schema(`${ID_DECL}\n${IMPL_DECL}\n`, 'OwnerId');
+    const sameTree = [{ path: RB4_SCHEMA_PATH, src: sameSrc }, GOOD_TREE[1]];
+    const sameDecls = [ID_DECL, IMPL_DECL];
+    const sameBroken = rb4SelfCheck('FG73g/same-file', sameSrc, sameDecls, sameSrc);
+    if (sameBroken) return sameBroken;
+    if (sameSrc.indexOf(ID_DECL) > sameSrc.indexOf(IMPL_DECL)) {
+      return (
+        'FG73g/same-file: the fixture is broken — the module-level binding must come FIRST, so ' +
+        'that only a LAST-WINS collector (never the reading order) can lose it'
+      );
+    }
+    const sameErr = checkRekeyCompleteness(sameTree, GOOD_ACCOUNTS);
+    const sameBad = expectTag(sameErr, '[G6/declared]', 'FG73g/same-file');
+    if (sameBad) return sameBad;
+    if (sameErr.indexOf(RB4_COL) === -1) {
+      return (
+        'FG73g/same-file: an associated item must not shadow a module-level binding of the same ' +
+        `name; the column must still be reported, by name: ${sameErr}`
+      );
+    }
+  }
+
+  // FG73h — TERMINATION, as a GOOD control on the two shapes a substitution
+  // fixpoint cannot survive:
+  //   fixed point  a binding whose right-hand side mentions the very name being
+  //                bound is REAL, ordinary Rust (a re-export of a vendor type
+  //                under its own name). Structural termination — a name already
+  //                on the current expansion path is terminal — resolves it and
+  //                the column is correctly NOT reported; substituting until
+  //                nothing changes never ends.
+  //   cycle        a mutually recursive pair does not compile, so no verdict is
+  //                pinned; the walker must simply RETURN rather than exhaust the
+  //                stack, because a gate that throws is a gate whose every
+  //                clause is skipped.
+  {
+    const TS_DECL = 'pub(crate) type Stampish = spacetimedb::Stampish;';
+    const tsSrc = `${GOOD_TREE[0].src}${TS_DECL}
+#[spacetimedb::table(accessor = audit_log)]
+pub struct AuditLog {
+    pub at: Stampish,
+    pub note: String,
+}
+`;
+    const tsTree = [{ path: RB4_SCHEMA_PATH, src: tsSrc }, GOOD_TREE[1]];
+    const tsBroken = rb4SelfCheck('FG73h/fixed-point', tsSrc, [TS_DECL], tsSrc);
+    if (tsBroken) return tsBroken;
+    if (tsSrc.indexOf('pub at: Stampish,') === -1) {
+      return 'FG73h/fixed-point: the fixture is broken — no column is declared with the binding';
+    }
+    // The load-bearing property, asserted rather than assumed: the right-hand
+    // side MENTIONS the name being bound. Rename only the LEFT side and this leg
+    // silently becomes an ordinary one-hop alias — still green, and no longer a
+    // termination test at all.
+    if (!containsIdent(TS_DECL.slice(TS_DECL.indexOf('=')), 'Stampish')) {
+      return (
+        'FG73h/fixed-point: the fixture is broken — the right-hand side must MENTION the bound ' +
+        'name, or this is a one-hop alias and the fixed point it exists to exercise is untested'
+      );
+    }
+    let tsErr = null;
+    try {
+      tsErr = checkRekeyCompleteness(tsTree, GOOD_ACCOUNTS);
+    } catch (e) {
+      return (
+        'FG73h/fixed-point: a binding whose right-hand side mentions its own name made the ' +
+        `walker throw (${e?.message ?? String(e)}). Expansion terminates STRUCTURALLY, on the ` +
+        'name already being on the current path, never on a change count'
+      );
+    }
+    if (tsErr) {
+      return `FG73h/fixed-point: a NON-Identity fixed point was incorrectly flagged: ${tsErr}`;
+    }
+
+    const CYCLE = 'pub type A = B;\npub type B = A;';
+    const cycleSrc = `${GOOD_TREE[0].src}${CYCLE}
+#[spacetimedb::table(accessor = cycle_row)]
+pub struct CycleRow {
+    pub x: A,
+    pub note: String,
+}
+`;
+    const cycleTree = [{ path: RB4_SCHEMA_PATH, src: cycleSrc }, GOOD_TREE[1]];
+    const cycleBroken = rb4SelfCheck('FG73h/cycle', cycleSrc, [CYCLE], cycleSrc);
+    if (cycleBroken) return cycleBroken;
+    try {
+      checkRekeyCompleteness(cycleTree, GOOD_ACCOUNTS);
+    } catch (e) {
+      return (
+        'FG73h/cycle: a mutually recursive pair of bindings made the walker throw ' +
+        `(${e?.message ?? String(e)}). That input does not compile and no verdict is pinned here, ` +
+        'but the walk must RETURN: a throw skips every clause in this file'
+      );
+    }
+  }
+
+  // FG73i — the JOIN direction, which a forward-only fixture cannot see. The
+  // wallet column the shipped manifest already polices is declared THROUGH a
+  // binding, so before the fix the walker loses it and the reverse clause
+  // reports the shipped entry as stale — a gate telling the reader to DELETE the
+  // policy for a column that is right there in the schema. After the fix the
+  // pair is correct and the whole checker returns PASS.
+  {
+    const WALLET = 'player_wallet.owner_identity';
+    const DECL = 'pub type WalletOwner = Identity;';
+    const base = synthSchemaSrc(SYNTH_KEYS.filter((k) => k !== WALLET));
+    const src = `${base}${DECL}
+#[spacetimedb::table(accessor = player_wallet)]
+pub struct Row_player_wallet {
+    pub owner_identity: WalletOwner,
+    pub note: String,
+}
+`;
+    const tree = [{ path: RB4_SCHEMA_PATH, src }, GOOD_TREE[1]];
+    const broken = rb4SelfCheck('FG73i', src, [DECL], src);
+    if (broken) return broken;
+    if (countOccurrences(src, '#[spacetimedb::table(accessor = player_wallet)]') !== 1) {
+      return (
+        'FG73i: the fixture is broken — the wallet table must be declared EXACTLY once, by hand ' +
+        'and through the binding; the synthesized half must not also declare it'
+      );
+    }
+    if (compactWs(stripRustSource(src)).indexOf('pubowner_identity:WalletOwner') === -1) {
+      return (
+        'FG73i: the fixture is broken — the policed column must be declared with the binding, ' +
+        'never with a literal type'
+      );
+    }
+
+    const err = checkRekeyCompleteness(tree, GOOD_ACCOUNTS);
+    if (err) {
+      return (
+        'FG73i: a manifest entry whose column is declared THROUGH a binding was reported as ' +
+        `unresolved (or the tree was flagged for some other reason): ${err}`
+      );
+    }
+  }
+
+  // FG73j — the RECORD SHAPE, asserted by calling the walker DIRECTLY. That
+  // record is the seam M22 consumes, so its field set is CLOSED: the declared
+  // text keeps its meaning, the expansion is ALWAYS present (equal to the
+  // declared text when nothing was resolved), and the bindings consulted are
+  // structured data — an array of records — never prose. Every read here is
+  // Object.hasOwn and the own key SET is compared exactly, so a fifth field
+  // added without a deliberate edit here reds.
+  {
+    const DECL = 'pub type OwnerId = Identity;';
+    const src = rb4Schema(`${DECL}\n`, 'OwnerId');
+    const tree = [{ path: RB4_SCHEMA_PATH, src }, GOOD_TREE[1]];
+    const broken = rb4SelfCheck('FG73j', src, [DECL], src);
+    if (broken) return broken;
+
+    const cols = findIdentityColumns(tree);
+    const direct = cols.get('account.identity');
+    const optional = cols.get('account.claimed_from');
+    const aliased = cols.get(RB4_COL);
+    if (direct === undefined || optional === undefined) {
+      return (
+        'FG73j: the fixture is broken — the walk lost a column the synthesized GOOD schema ' +
+        'declares literally (account.identity / account.claimed_from)'
+      );
+    }
+    if (aliased === undefined) {
+      return (
+        `FG73j: the walker returned no record for the aliased column ${RB4_COL}, which this ` +
+        'fixture declares through a binding that resolves to Identity'
+      );
+    }
+    const literals = [
+      ['account.identity', direct],
+      ['account.claimed_from', optional],
+    ];
+    const shapes = literals.concat([[RB4_COL, aliased]]);
+    for (const [label, rec] of shapes) {
+      const keys = Object.keys(rec).sort().join(',');
+      if (keys !== 'path,resolved,type,via') {
+        return (
+          `FG73j: the record for \`${label}\` owns the fields [${keys}]; the CLOSED set is ` +
+          '[path,resolved,type,via]. M22 consumes this record across the seam freeze, so a new ' +
+          'field is added here, in the same PR, on purpose'
+        );
+      }
+      if (!Object.hasOwn(rec, 'resolved') || typeof rec.resolved !== 'string') {
+        return `FG73j: the record for \`${label}\` has no own \`resolved\` string`;
+      }
+      if (!Object.hasOwn(rec, 'via') || !Array.isArray(rec.via)) {
+        return `FG73j: the record for \`${label}\` has no own \`via\` ARRAY — never prose`;
+      }
+    }
+    for (const [label, rec] of literals) {
+      if (rec.resolved !== rec.type || rec.via.length !== 0) {
+        return (
+          `FG73j: \`${label}\` is declared with a literal type, so its expansion must EQUAL the ` +
+          `declared text and no binding may be listed (type=${JSON.stringify(rec.type)}, ` +
+          `resolved=${JSON.stringify(rec.resolved)}, via=${rec.via.length})`
+        );
+      }
+    }
+    if (optional.type !== 'Option<Identity>') {
+      return (
+        'FG73j: the fixture is broken — account.claimed_from must carry the Option spelling, or ' +
+        `the "expansion equals declaration" pin only ever sees one shape: ${optional.type}`
+      );
+    }
+    if (aliased.type !== 'OwnerId') {
+      return (
+        `FG73j: \`type\` must stay the DECLARED text (got ${JSON.stringify(aliased.type)}). A ` +
+        'walker that overwrites it with the expansion silently rewrites what every consumer — ' +
+        'and every G6 failure message — reports as the schema’s own text'
+      );
+    }
+    const expanded = aliased.resolved !== aliased.type;
+    const bearing = containsIdent(aliased.resolved, 'Identity');
+    if (!expanded || !bearing) {
+      return (
+        'FG73j: the aliased column’s expansion must DIFFER from its declared text and must be ' +
+        `Identity-bearing (type=${JSON.stringify(aliased.type)}, ` +
+        `resolved=${JSON.stringify(aliased.resolved)})`
+      );
+    }
+    if (aliased.via.length === 0) {
+      return 'FG73j: the aliased column must list the binding(s) consulted; `via` is empty';
+    }
+    const viaKeys = Object.keys(aliased.via[0]).sort().join(',');
+    if (viaKeys !== 'name,path,rhs') {
+      return (
+        `FG73j: a consulted binding owns the fields [${viaKeys}]; the CLOSED set is ` +
+        '[name,path,rhs] — the name, what it resolves to, and the file that declares it are ' +
+        'exactly what makes a fail-closed over-report actionable'
+      );
+    }
+  }
+
+  // FG73k — a `type` item that exists ONLY inside a raw string literal, under a
+  // name no real declaration binds. The stripper blanks the payload, so the
+  // column stays unresolved and the tree PASSES, before and after the fix. This
+  // is the binding-side twin of the phantom-table defect the seam eval's walker
+  // tooth exists for: a quoted declaration would inject a binding — and through
+  // it a policed column — that the compiler never sees. The literal payload
+  // carries NO stripper anchor, so the desync self-check stays honest instead of
+  // reporting blanked real code.
+  {
+    const src = `${GOOD_TREE[0].src}pub const DOC: &str = r#"
+pub type GhostOwner = Identity;
+"#;
+
+#[spacetimedb::table(accessor = ghost_ledger)]
+pub struct GhostLedger {
+    pub delegate: GhostOwner,
+    pub note: String,
+}
+`;
+    const tree = [{ path: RB4_SCHEMA_PATH, src }, GOOD_TREE[1]];
+    const desync = assertStripperSound(src, RB4_SCHEMA_PATH);
+    if (desync) {
+      return `FG73k: the fixture desynced the stripper, which invalidates it: ${desync}`;
+    }
+    const stripped = stripRustSource(src);
+    if (src.indexOf('pub type GhostOwner = Identity;') === -1) {
+      return 'FG73k: the fixture is broken — the quoted declaration is not in the raw source';
+    }
+    if (stripped.indexOf('GhostOwner = Identity') !== -1) {
+      return (
+        'FG73k: the fixture is broken — the stripper did not blank the string payload, so this ' +
+        'fixture is testing an ordinary declaration rather than a quoted one'
+      );
+    }
+    if (stripped.indexOf('pub delegate: GhostOwner,') === -1) {
+      return (
+        'FG73k: the fixture is broken — the COLUMN must survive stripping, or the walk has ' +
+        'nothing to classify and the pass below is vacuous'
+      );
+    }
+
+    const err = checkRekeyCompleteness(tree, GOOD_ACCOUNTS);
+    if (err) {
+      return (
+        'FG73k: a declaration that exists only inside a Rust string literal was collected as a ' +
+        `real binding, so a column whose type the compiler cannot resolve was policed: ${err}`
+      );
+    }
+  }
+
+  // FG73l — AMBIENT, NON-ENUMERABLE Object.prototype pollution around the
+  // resolver's own lookups; the columns-side twin of FG72c, and the regression
+  // pin for the decision that the binding table is a Map. Object.defineProperty
+  // with `enumerable: false` on purpose: an assignment is visible to
+  // Object.keys(Object.prototype) — which the guard below already refuses to
+  // clobber — while the shape that actually bites, a PLAIN OBJECT read as
+  // table[name], is visible only through a property read. Two directions inside
+  // ONE window, because the defect is ambient rather than injected:
+  //   phantom  a column typed by a name NOTHING binds, whose prototype value is
+  //            the text Identity, must NOT be reported. That is the false
+  //            positive a plain-object table produces for every unknown type
+  //            name in the tree, and it would put a column into the manifest key
+  //            space that no schema declares.
+  //   shadow   a name the tree really binds, shadowed on the prototype with a
+  //            NON-Identity value, must still be reported — cross-file, so the
+  //            binding and the column live in different files.
+  // Neither key is `then` (a thenable prototype makes the runner await forever),
+  // `path` (node's own resolver reads it), `error` or `constructor`. Cleanup is
+  // in `finally`, BEFORE any return, and the post-assert proves in-process that
+  // both keys are gone: every eval in this run shares one realm.
+  {
+    const BOUND = 'GuildRef';
+    const UNBOUND = 'PhantomRef';
+    const POLLUTED = [BOUND, UNBOUND];
+    // Both trees are built OUTSIDE the window: they parse Rust, and nothing
+    // inside the window may do work that reads a polluted name by accident.
+    const shadowIds = `pub type ${BOUND} = Identity;\n`;
+    const shadowSrc = rb4Schema('', BOUND);
+    const idsFile = { path: RB4_IDS_PATH, src: shadowIds };
+    const shadowTree = [{ path: RB4_SCHEMA_PATH, src: shadowSrc }, GOOD_TREE[1], idsFile];
+    const phantomSrc = rb4Schema('', UNBOUND);
+    const phantomTree = [{ path: RB4_SCHEMA_PATH, src: phantomSrc }, GOOD_TREE[1]];
+    const bindingDecl = `pub type ${BOUND} = Identity;`;
+    const broken =
+      rb4SelfCheck('FG73l', shadowIds, [bindingDecl], shadowSrc) ??
+      rb4SelfCheck('FG73l', phantomSrc, [], phantomSrc);
+    if (broken) return broken;
+    if (phantomSrc.indexOf(`type ${UNBOUND}`) !== -1) {
+      return (
+        `FG73l: the fixture is broken — \`${UNBOUND}\` must be bound NOWHERE in the tree, or the ` +
+        'phantom direction is testing an ordinary resolvable column'
+      );
+    }
+    if (POLLUTED.some((k) => k in {}) || Object.keys(Object.prototype).length !== 0) {
+      return (
+        `FG73l: one of [${POLLUTED.join(', ')}] — or some other enumerable property — is already ` +
+        'on Object.prototype BEFORE this fixture ran (keys: ' +
+        `[${Object.keys(Object.prototype).join(', ')}]) — refusing to overwrite the state of a ` +
+        'co-resident eval, and refusing to delete it either'
+      );
+    }
+
+    let bad = null;
+    try {
+      try {
+        for (const [name, value] of [
+          [BOUND, 'u64'],
+          [UNBOUND, 'Identity'],
+        ]) {
+          Object.defineProperty(Object.prototype, name, {
+            value,
+            configurable: true,
+            writable: true,
+            enumerable: false,
+          });
+        }
+      } catch (e) {
+        bad = `FG73l: could not define the ambient properties: ${e?.message ?? String(e)}`;
+      }
+      if (bad === null && !POLLUTED.every((k) => k in {})) {
+        bad =
+          'FG73l: the pollution did not take — both directions below would then be testing ' +
+          'nothing, and a silently-failed injection is the one way this fixture goes vacuous ' +
+          'while still printing green';
+      }
+      if (bad === null) {
+        let windowBad = null;
+        if (!(BOUND in {} && UNBOUND in {})) {
+          windowBad = 'FG73l: the pollution window closed early — a direction ran outside it';
+        }
+
+        const phantomErr = checkRekeyCompleteness(phantomTree, GOOD_ACCOUNTS);
+        let phantomBad = null;
+        if (phantomErr !== null) {
+          phantomBad =
+            'FG73l: a column typed by a name NOTHING in the tree binds was reported, so an ' +
+            'ambient prototype value was read as if it were a binding — a plain object is not a ' +
+            `binding table: ${String(phantomErr)}`;
+        }
+
+        const shadowErr = checkRekeyCompleteness(shadowTree, GOOD_ACCOUNTS);
+        let shadowBad = expectTag(shadowErr, '[G6/declared]', 'FG73l');
+        if (shadowBad === null && shadowErr.indexOf(RB4_COL) === -1) {
+          shadowBad = `FG73l: the failure must NAME the column ${RB4_COL}: ${shadowErr}`;
+        }
+
+        if (!(BOUND in {} && UNBOUND in {})) {
+          windowBad = 'FG73l: the pollution window closed early — a direction ran outside it';
+        }
+        bad = windowBad ?? phantomBad ?? shadowBad;
+      }
+    } finally {
+      Reflect.deleteProperty(Object.prototype, UNBOUND);
+      Reflect.deleteProperty(Object.prototype, BOUND);
+    }
+    if (POLLUTED.some((k) => k in {}) || Object.keys(Object.prototype).length !== 0) {
+      return (
+        'FG73l: LEAKED — this fixture left a property on Object.prototype after its finally block ' +
+        `ran (keys: [${Object.keys(Object.prototype).join(', ')}]). Every later eval in this run ` +
+        'would see it, so a leak is a HARD failure here, not a note'
+      );
+    }
+    if (bad) return bad;
+  }
+
+  // FG73m — the two identifier spellings a `\w`-shaped name class cannot read: a
+  // RAW identifier (the escape that lets a keyword be a type name) and a
+  // non-ASCII identifier (stable Rust). Both compile, and a name class that
+  // stops at the first non-ASCII byte binds a TRUNCATED name that no column ever
+  // mentions — a CI-clean hide.
+  {
+    const RAW_DECL = 'pub type r#Owner = Identity;';
+    const rawSrc = rb4Schema(`${RAW_DECL}\n`, 'r#Owner');
+    const rawTree = [{ path: RB4_SCHEMA_PATH, src: rawSrc }, GOOD_TREE[1]];
+    const rawBroken = rb4SelfCheck('FG73m/raw', rawSrc, [RAW_DECL], rawSrc);
+    if (rawBroken) return rawBroken;
+    const rawErr = checkRekeyCompleteness(rawTree, GOOD_ACCOUNTS);
+    const rawBad = expectTag(rawErr, '[G6/declared]', 'FG73m/raw');
+    if (rawBad) return rawBad;
+    if (rawErr.indexOf(RB4_COL) === -1) {
+      return `FG73m/raw: the failure must NAME the column ${RB4_COL}: ${rawErr}`;
+    }
+
+    const WIDE_DECL = 'pub type Ownér = Identity;';
+    const wideSrc = rb4Schema(`${WIDE_DECL}\n`, 'Ownér');
+    const wideTree = [{ path: RB4_SCHEMA_PATH, src: wideSrc }, GOOD_TREE[1]];
+    const wideBroken = rb4SelfCheck('FG73m/non-ascii', wideSrc, [WIDE_DECL], wideSrc);
+    if (wideBroken) return wideBroken;
+    const wideErr = checkRekeyCompleteness(wideTree, GOOD_ACCOUNTS);
+    const wideBad = expectTag(wideErr, '[G6/declared]', 'FG73m/non-ascii');
+    if (wideBad) return wideBad;
+    if (wideErr.indexOf(RB4_COL) === -1) {
+      return (
+        'FG73m/non-ascii: a name class that stops at the first non-ASCII byte binds a truncated ' +
+        `name, so the column resolves to nothing and is never reported: ${wideErr}`
+      );
+    }
+  }
+
+  // FG73m (continued) — the two Rust Pattern_White_Space code points that
+  // JavaScript's `\s` does NOT match: U+0085 NEL and U+200E LRM. rustc accepts
+  // either as the whitespace between `type` and the name it binds, or after the
+  // `use` keyword, so an item spelled with one COMPILES CLEAN (a
+  // `#[rustfmt::skip]` keeps rustfmt from normalising it away) and binds nothing
+  // at all in a scanner whose separator class is `\s`-shaped — a CI-clean hide,
+  // measured by the red-team. Each leg asserts the code point is really in the
+  // fixture AND that `\s` really does not match it: without that second
+  // assertion the leg silently becomes an ordinary-space fixture the day someone
+  // "cleans up" the constant, and the tooth is gone with no diff to notice.
+  {
+    const NEL = String.fromCharCode(0x85);
+    const LRM = String.fromCharCode(0x200e);
+    if (/\s/.test(NEL) || /\s/.test(LRM)) {
+      return (
+        'FG73m/whitespace: the fixture is broken — this runtime DOES match these code points ' +
+        'with `\\s`, so both legs below would pass on a scanner that never learned about them ' +
+        'and this whole family would be decorative'
+      );
+    }
+
+    const NEL_DECL = `#[rustfmt::skip]\npub type${NEL}OwnerId = Identity;`;
+    const nelSrc = rb4Schema(`${NEL_DECL}\n`, 'OwnerId');
+    const nelTree = [{ path: RB4_SCHEMA_PATH, src: nelSrc }, GOOD_TREE[1]];
+    const nelBroken = rb4SelfCheck('FG73m/nel', nelSrc, [NEL_DECL], nelSrc);
+    if (nelBroken) return nelBroken;
+    if (nelSrc.indexOf(NEL) === -1) {
+      return 'FG73m/nel: the fixture is broken — the U+0085 code point is not in the source';
+    }
+    const nelErr = checkRekeyCompleteness(nelTree, GOOD_ACCOUNTS);
+    const nelBad = expectTag(nelErr, '[G6/declared]', 'FG73m/nel');
+    if (nelBad) return nelBad;
+    if (nelErr.indexOf(RB4_COL) === -1) {
+      return (
+        'FG73m/nel: rustc reads U+0085 as the whitespace between `type` and the name, so the item ' +
+        'BINDS; a scanner whose separator class is `\\s` matches neither the space nor the name ' +
+        `and collects nothing, leaving the column unresolved and unpoliced: ${nelErr}`
+      );
+    }
+
+    const LRM_DECL = `use${LRM}spacetimedb::Identity as Owner;`;
+    const lrmSrc = rb4Schema(`${LRM_DECL}\n`, 'Owner');
+    const lrmTree = [{ path: RB4_SCHEMA_PATH, src: lrmSrc }, GOOD_TREE[1]];
+    const lrmBroken = rb4SelfCheck('FG73m/lrm', lrmSrc, [LRM_DECL], lrmSrc);
+    if (lrmBroken) return lrmBroken;
+    if (lrmSrc.indexOf(LRM) === -1) {
+      return 'FG73m/lrm: the fixture is broken — the U+200E code point is not in the source';
+    }
+    const lrmErr = checkRekeyCompleteness(lrmTree, GOOD_ACCOUNTS);
+    const lrmBad = expectTag(lrmErr, '[G6/declared]', 'FG73m/lrm');
+    if (lrmBad) return lrmBad;
+    if (lrmErr.indexOf(RB4_COL) === -1) {
+      return (
+        'FG73m/lrm: the same code-point class after the `use` keyword hides a RENAME rather than a ' +
+        '`type` item, so the rename collector has to normalise the separator too — one of the two ' +
+        `scans being taught about it is exactly half a fix: ${lrmErr}`
+      );
+    }
+  }
+
+  // FG73n — a macro that GENERATES a type item. The resolver cannot read it (the
+  // generated name is a macro metavariable, not an identifier), so the honest
+  // answer is to FAIL LOUD and name the file rather than walk past a column
+  // whose type is a binding nobody can see. The live tree has zero of these,
+  // which is what makes a loud detector affordable.
+  {
+    const MACRO = `macro_rules! decl_alias {
+    ($n:ident) => {
+        pub type $n = Identity;
+    };
+}
+decl_alias!(OwnerId);`;
+    const src = rb4Schema(`${MACRO}\n`, 'OwnerId');
+    const tree = [{ path: RB4_SCHEMA_PATH, src }, GOOD_TREE[1]];
+    const stripped = stripRustSource(src);
+    const hasMacro = stripped.indexOf('macro_rules!') !== -1;
+    const hasGenerated = stripped.indexOf('type $') !== -1;
+    if (!hasMacro || !hasGenerated) {
+      return (
+        'FG73n: the fixture is broken — the stripped source must carry BOTH halves of the ' +
+        'macro-generated-declaration signature, or the detector has nothing to detect'
+      );
+    }
+    const broken = rb4SelfCheck('FG73n', src, [], src);
+    if (broken) return broken;
+
+    const err = checkRekeyCompleteness(tree, GOOD_ACCOUNTS);
+    const bad = expectTag(err, '[G6/alias]', 'FG73n');
+    if (bad) return bad;
+    if (err.indexOf(RB4_SCHEMA_PATH) === -1) {
+      return (
+        `FG73n: the failure must NAME the file that declares the macro (${RB4_SCHEMA_PATH}); a ` +
+        `fail-closed report the reader cannot locate is a skip with extra steps: ${err}`
+      );
+    }
+  }
+
+  // FG73n (continued) — the two macro shapes the generated-item needle does NOT
+  // catch, and that the resolver cannot read either:
+  //   rhs-metavar  a macro body binds a REAL name to a metavariable, so the
+  //                binding IS collected and its right-hand side expands to
+  //                nothing Identity-bearing. The file carries no generated-item
+  //                needle at all, so the first detector is blind to it;
+  //   rhs-macro    the binding is declared at module level but its right-hand
+  //                side is a macro INVOCATION, which leaves the resolver nothing
+  //                to expand.
+  // Both must be reported by FILE and by BINDING NAME: told only "this file has
+  // a macro", a reader cannot find the column that is silently unpoliced, and a
+  // fail-closed report nobody can act on is a skip with extra steps.
+  {
+    const META_MACRO = `macro_rules! mk_alias {
+    ($t:ty) => {
+        pub type OwnerId = $t;
+    };
+}
+mk_alias!(Identity);`;
+    const metaSrc = rb4Schema(`${META_MACRO}\n`, 'OwnerId');
+    const metaTree = [{ path: RB4_SCHEMA_PATH, src: metaSrc }, GOOD_TREE[1]];
+    const metaStripped = stripRustSource(metaSrc);
+    // Two halves on purpose: written contiguously, the needle would appear in
+    // this file's own source and this check could not tell it from a decoy.
+    const GENERATED = 'type' + ' $';
+    if (metaStripped.indexOf('macro_rules!') === -1) {
+      return 'FG73n/rhs-metavar: the fixture is broken — the macro is not in the stripped source';
+    }
+    if (metaStripped.indexOf(GENERATED) !== -1) {
+      return (
+        'FG73n/rhs-metavar: the fixture is broken — the source carries the GENERATED-ITEM needle, ' +
+        'so the first detector would fire and this leg would prove nothing about the second'
+      );
+    }
+    const metaBroken = rb4SelfCheck('FG73n/rhs-metavar', metaSrc, [], metaSrc);
+    if (metaBroken) return metaBroken;
+    const metaErr = checkRekeyCompleteness(metaTree, GOOD_ACCOUNTS);
+    const metaBad = expectTag(metaErr, '[G6/alias]', 'FG73n/rhs-metavar');
+    if (metaBad) return metaBad;
+    const metaNamesFile = metaErr.indexOf(RB4_SCHEMA_PATH) !== -1;
+    const metaNamesBinding = metaErr.indexOf('OwnerId') !== -1;
+    if (!metaNamesFile || !metaNamesBinding) {
+      return (
+        'FG73n/rhs-metavar: the failure must name the FILE and the BINDING whose right-hand side ' +
+        `is a metavariable — a file-only report leaves the reader hunting the column: ${metaErr}`
+      );
+    }
+
+    const CALL_MACRO = `macro_rules! id_ty {
+    () => {
+        spacetimedb::Identity
+    };
+}
+pub type OwnerId = id_ty!();`;
+    const callSrc = rb4Schema(`${CALL_MACRO}\n`, 'OwnerId');
+    const callTree = [{ path: RB4_SCHEMA_PATH, src: callSrc }, GOOD_TREE[1]];
+    if (callSrc.indexOf('= id_ty!()') === -1) {
+      return 'FG73n/rhs-macro: the fixture is broken — the right-hand side is not a macro call';
+    }
+    const callBroken = rb4SelfCheck('FG73n/rhs-macro', callSrc, [], callSrc);
+    if (callBroken) return callBroken;
+    const callErr = checkRekeyCompleteness(callTree, GOOD_ACCOUNTS);
+    const callBad = expectTag(callErr, '[G6/alias]', 'FG73n/rhs-macro');
+    if (callBad) return callBad;
+    const callNamesFile = callErr.indexOf(RB4_SCHEMA_PATH) !== -1;
+    const callNamesBinding = callErr.indexOf('OwnerId') !== -1;
+    if (!callNamesFile || !callNamesBinding) {
+      return (
+        'FG73n/rhs-macro: the failure must name the FILE and the BINDING whose right-hand side is ' +
+        `a macro invocation, for the same reason: ${callErr}`
+      );
+    }
+  }
+
+  // FG73o — SELF-SOURCE ABSENCE. The resolver must be driven by the SHAPE of a
+  // declaration, never by the ALIAS NAMES these fixtures happen to bind: a
+  // lookup table keyed on those names passes every fixture above and resolves
+  // nothing in the real tree. VERIFIED by the red-team pass — without this tooth
+  // a name-keyed implementation survives the whole family. So no fixture ALIAS
+  // name may appear as an identifier anywhere ABOVE the teeth: not in the
+  // checker, not in the contract prose, not in a comment. The tail-side half is
+  // the non-vacuity guard: a name that has fallen out of the fixtures falls out
+  // of this list in the same edit, and the marker is spelled in two halves so
+  // that searching for it does not find this line.
+  // ALIAS names only, and deliberately not every identifier a fixture mentions:
+  // `A`/`B` (FG73h's cycle) and the vendor names a GOOD control re-exports
+  // cannot be listed — they occur in ordinary prose, or in this file's own
+  // imports — and a name-keyed resolver could not exploit them anyway, because
+  // special-casing a GOOD control's name makes that control PASS, not fail.
+  // Some listed names are deliberately SHORT (`Id`, `Coins`, `Owner`): `Id` is
+  // load-bearing as the prefix half of FG73f's substitution pair. If one ever
+  // collides with new prose above the teeth, the fix is to reword the prose —
+  // never to drop the name from this list, and never to rename the fixture.
+  {
+    const selfSrc = readFileSync(fileURLToPath(import.meta.url), 'utf8');
+    const MARK = 'function run' + 'Teeth() {';
+    const marks = countOccurrences(selfSrc, MARK);
+    if (marks !== 1) {
+      return (
+        `FG73o: this file contains ${marks} occurrence(s) of the teeth function declaration; ` +
+        'EXACTLY one is required, or the head/tail split this tooth is built on is undefined'
+      );
+    }
+    const head = selfSrc.slice(0, selfSrc.indexOf(MARK));
+    const tail = selfSrc.slice(selfSrc.indexOf(MARK));
+    const FIXTURE_NAMES = [
+      'OwnerId',
+      'Owner',
+      'MaybeOwner',
+      'MaybeOwnerRef',
+      'WhoRef',
+      'Handoff',
+      'GuildRef',
+      'PhantomRef',
+      'Coins',
+      'IdentityTag',
+      'Id',
+      'IdKind',
+      'NpcSyncPlan',
+      'WalletOwner',
+      'GhostOwner',
+      'Ownér',
+      'Stampish',
+    ];
+    for (const name of FIXTURE_NAMES) {
+      if (containsIdent(head, name)) {
+        return (
+          `FG73o: the fixture ALIAS name \`${name}\` occurs as an identifier in this file ABOVE ` +
+          'the ' +
+          'teeth. Every name in that list is one a resolver could special-case into a lookup ' +
+          'table, pass the whole FG73 family with, and still resolve nothing in the live tree — ' +
+          'so the checker, its contract prose and its comments must never mention one. Rename ' +
+          'the thing above the teeth (or reword the prose); never the fixture'
+        );
+      }
+      if (!containsIdent(tail, name)) {
+        return (
+          `FG73o: the fixture ALIAS name \`${name}\` is listed here but is used by NO fixture ` +
+          'below, so ' +
+          'this tooth is guarding a name that does not exist. A name leaves the fixtures and this ' +
+          'list in the same edit'
+        );
+      }
+    }
+  }
+
+  // FG73p — the `Identity` SHADOW: a tree-wide binding of the very token this
+  // gate classifies on. Two spellings, both ordinary Rust and both ONE line:
+  //   type-shadow    a `type` item binding the name Identity to something else;
+  //   rename-shadow  a `use … as Identity` rename of another vendor type.
+  // Either makes the walker forget every literally-typed Identity column AT ONCE
+  // — expand that token and all 24 columns resolve to something that is not
+  // Identity, so G6/declared and G6/live both pass VACUOUSLY over an empty
+  // column set and the manifest polices nothing. (G6/anchors is the backstop
+  // that would eventually notice, which is exactly why the walk is pinned here
+  // as an EXACT SET: a shadow that drops one column is the same defect as one
+  // that drops all of them, and only the anchors' four names are hardcoded.)
+  // The resolver therefore keeps `Identity` TERMINAL. Terminality alone would be
+  // a SILENT recovery, so G6/alias additionally names the file: the tree still
+  // contains a declaration that means something the gate refuses to honour, and
+  // the next reader must be told rather than left with a quietly ignored line.
+  // The BACKTICKED token is asserted, not the bare word: all three G6/alias
+  // detectors share one tag, and only this one renders `Identity` as the bound
+  // NAME — a bare-word check would be satisfied by either of the other two.
+  {
+    const SHADOW_PATH = 'fixture/shadow.rs';
+    const TYPE_SHADOW = 'pub(crate) type Identity = u64;\n';
+    const RENAME_SHADOW = 'use spacetimedb::ConnectionId as Identity;\n';
+    const want = [...findIdentityColumns(GOOD_TREE).keys()].sort().join(',');
+    if (want.split(',').length !== Object.keys(REKEY_MANIFEST).length) {
+      return (
+        `FG73p: the fixture is broken — the GOOD tree walks to ${want.split(',').length} ` +
+        `column(s) but the manifest owns ${Object.keys(REKEY_MANIFEST).length}; an exact key-set ` +
+        'comparison against a wrong (or empty) baseline proves nothing at all'
+      );
+    }
+    if (TYPE_SHADOW.indexOf('#[spacetimedb::table(') !== -1) {
+      return 'FG73p: the fixture is broken — the type-shadow file must declare no table';
+    }
+    if (RENAME_SHADOW.indexOf('#[spacetimedb::table(') !== -1) {
+      return 'FG73p: the fixture is broken — the rename-shadow file must declare no table';
+    }
+
+    const typeTree = [GOOD_TREE[0], GOOD_TREE[1], { path: SHADOW_PATH, src: TYPE_SHADOW }];
+    const typeGot = [...findIdentityColumns(typeTree).keys()].sort().join(',');
+    if (typeGot !== want) {
+      return (
+        'FG73p/walk (type-shadow): a tree-wide `type` item binding the name Identity changed the ' +
+        'walk. That token is what every column is classified on, so expanding it rewrites the ' +
+        'resolved type of EVERY literally-typed column at once and the completeness clauses go ' +
+        `vacuous over an empty set. It stays TERMINAL. want=[${want}] got=[${typeGot}]`
+      );
+    }
+    const typeErr = checkRekeyCompleteness(typeTree, GOOD_ACCOUNTS);
+    const typeBad = expectTag(typeErr, '[G6/alias]', 'FG73p/type-shadow');
+    if (typeBad) return typeBad;
+    const typeNamesFile = typeErr.indexOf(SHADOW_PATH) !== -1;
+    const typeNamesToken = typeErr.indexOf('`Identity`') !== -1;
+    if (!typeNamesFile || !typeNamesToken) {
+      return (
+        'FG73p/type-shadow: keeping the token terminal is a SILENT recovery on its own, so the ' +
+        'failure must name the file AND the shadowed name (backticked, which is what separates ' +
+        `this detector from the other two that share its tag): ${typeErr}`
+      );
+    }
+
+    const renameTree = [GOOD_TREE[0], GOOD_TREE[1], { path: SHADOW_PATH, src: RENAME_SHADOW }];
+    const renameGot = [...findIdentityColumns(renameTree).keys()].sort().join(',');
+    if (renameGot !== want) {
+      return (
+        'FG73p/walk (rename-shadow): a `use … as Identity` rename changed the walk. A rename is a ' +
+        'binding like any other, so the terminality rule has to be applied where names are ' +
+        `EXPANDED, never where one kind of binding is collected. want=[${want}] got=[${renameGot}]`
+      );
+    }
+    const renameErr = checkRekeyCompleteness(renameTree, GOOD_ACCOUNTS);
+    const renameBad = expectTag(renameErr, '[G6/alias]', 'FG73p/rename-shadow');
+    if (renameBad) return renameBad;
+    const renameNamesFile = renameErr.indexOf(SHADOW_PATH) !== -1;
+    const renameNamesToken = renameErr.indexOf('`Identity`') !== -1;
+    if (!renameNamesFile || !renameNamesToken) {
+      return (
+        'FG73p/rename-shadow: the rename spelling must be reported by the same clause and with ' +
+        `the same two facts — the file, and the shadowed name: ${renameErr}`
+      );
+    }
+  }
+
   return null;
 }
 
@@ -4355,7 +5898,7 @@ export default async function guestClaimIntegrityEval() {
       'the claim code is consumed exactly once for the guest at brace-depth 0 of the success ' +
       `region, and all ${Object.keys(REKEY_MANIFEST).length} Identity columns carry a D6 policy ` +
       `(${rekeyEntries} REKEY entries consumed by both rekey_all and account_has_game_data) ` +
-      '(72 teeth verified)',
+      '(88 teeth verified)',
   };
 }
 

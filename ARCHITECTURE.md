@@ -102,7 +102,7 @@ consumes the one walk of the Rust sources instead of transcribing a third copy.
 `evals/rekey-contract-surface.eval.mjs` freezes that seam: the manifest is
 exported and deeply frozen (every eval shares ONE module instance under
 `run.mjs`, so a stray write to an entry's needle would silently green
-`[G6/consumed]`), `findIdentityColumns` returns `{path,type}` records derived from
+`[G6/consumed]`), `findIdentityColumns` returns `{path,type,resolved,via}` records derived from
 STRIPPED source (a table declared only inside a Rust string literal must not be
 walked), and importing the module runs nothing — checked with child processes
 whose `argv[1]` is a real sibling `evals/*.mjs`, because a main guard widened to
@@ -110,7 +110,8 @@ match a directory or `run.mjs` exits the whole 90-eval suite mid-loop with code 
 **rb-2** closed the manifest's measured `typeof` trap (residual R-m22-s0-X1): every
 `REKEY_MANIFEST` entry is now an object with an explicit `policy` discriminator
 (`REKEY` | `BLOCKED` | `EXEMPT`, exact equality, a closed field set per kind, D6
-reasons verbatim minus the retired prefix), read by ONE parser (`classifyPolicy`)
+reasons verbatim minus the retired prefix — except the two `battle` reasons corrected in the
+M21c audit, recorded in-file), read by ONE parser (`classifyPolicy`)
 under a new first clause `[G6/policy]`; the D6 REKEY columns are pinned REKEY by
 value, and FG70 re-implements the Rust T9 text scan in-file so a key list the
 `accounts_tests.rs` `include_str!` reader would silently truncate (a biome-emitted
@@ -126,6 +127,24 @@ one in the success detail) became `Object.hasOwn` — an ambient
 it from both sides; FG72c performs the eval suite's one real `Object.prototype`
 write — pre-existence refusal, cleanup in `finally`, an in-process leak
 post-assert — because ambient pollution has no `Object.create` stand-in.
+**rb-4** made the walker RESOLVE type aliases (residual R-m22-s0-X3; ADR-0208 D3):
+`findIdentityColumns` collects every `type` item and every `use … as` rename in the
+scanned tree — from stripped source, into one name → bindings `Map`, a union with
+duplicates kept and no per-file precedence — and expands a column's declared type
+token by token, recursively, a name already on the expansion path being terminal,
+before the Identity test; an Identity-bearing expansion wins (fail-closed on ambiguity)
+and the `[G6/declared]` message renders every binding with its file. The record gains
+`resolved` (the expansion; a consumer reads Option-ness from it) and `via` (the
+bindings consulted, as data); `[G6/alias]` fails loud on a `macro_rules!`-generated
+`type` item, on a binding whose right-hand side carries a macro metavariable or invocation,
+and on a binding of the name `Identity` itself (the token the resolver keeps terminal). FG73a-p pin it (direct, transitive, Option both ways, the three rename
+spellings, cross-file, ambiguity, termination, the join direction, the closed record,
+a quoted declaration, non-enumerable prototype pollution, `r#`/non-ASCII names, the
+macro detector, and a self-source absence of every fixture ALIAS name above the teeth), and
+the seam eval's `[T2/alias]` pins `resolved === type` for every literally-typed fixture
+column. Still unseen, routed to the residual backlog: a SpacetimeType product column
+carrying an Identity (live-reachable via `encounter.entries`), a field declared without
+`pub`, and a binding declared outside the scanned input set.
 **M23 accessibility gates (m23-s10)** — three source-scan evals plus one cross-view happy-dom
 spec. `overlay-a11y-manifest` bans a view-local focus call in every `client/src/ui/**/*View.ts`
 (readdir-DERIVED and two-way ratcheted, so a new view is scanned the day it lands — the three
