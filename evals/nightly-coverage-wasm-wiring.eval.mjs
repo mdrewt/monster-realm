@@ -1107,7 +1107,10 @@ const RAW_DUMP_GOOD = {
       name: 'coverage',
       priors: 1,
       dependencies: [{ recipe: 'wasm', arguments: [] }],
-      body: [['cd client && npm ci && npx vitest run --coverage --coverage.thresholds.lines=96']],
+      body: [
+        ['test -f client-wasm/pkg/client_wasm.js'],
+        ['cd client && npm ci && npx vitest run --coverage --coverage.thresholds.lines=96'],
+      ],
     },
     wasm: {
       name: 'wasm',
@@ -1412,6 +1415,98 @@ export function runTeeth() {
     },
   );
 
+  // --- Teeth for the bypasses the red-team MEASURED green against the first
+  // --- (containment-based) version of C1. Each was an executed, CI-clean cheat.
+
+  record(
+    'C1-5b',
+    'C1',
+    false,
+    'RED-TEAM F1: `coverage: (wasm "prebuilt")` against a parameterized `wasm mode="build":`. Once dependency ARGUMENTS are discarded the dump is byte-identical to the honest wiring, and the recipe branches to a no-op for this caller alone while `just wasm`, `e2e` and `a11y-e2e` all still build. Measured 15/15 evals green.',
+    () => {
+      const d = clone(RAW_DUMP_GOOD);
+      d.recipes.coverage.dependencies = [{ recipe: 'wasm', arguments: ['prebuilt'] }];
+      return checkC1(normalizeRecipes(d, 'fixture'));
+    },
+  );
+
+  record(
+    'C1-5c',
+    'C1',
+    false,
+    'RED-TEAM F2: a just-conditional `wasm` body. `just --dump` emits BOTH branches as sibling literals, so the build command is PRESENT in the body text while the branch that executes is the other one. No text oracle over the dump can be sound against this; only rejecting non-literal fragments is.',
+    () => {
+      const d = clone(RAW_DUMP_GOOD);
+      d.recipes.wasm.body = [
+        [{ if: true }, 'echo cached', 'wasm-pack build client-wasm --target bundler'],
+      ];
+      return checkC1(normalizeRecipes(d, 'fixture'));
+    },
+  );
+
+  record(
+    'C1-5d',
+    'C1',
+    false,
+    'RED-TEAM F4: a one-character `-` ignore-failure prefix. `just` swallows the build failure, vitest runs against no pkg, and the dump text still contains the marker — the EXACT original incident shape, restored, as a diff that survives review.',
+    () => {
+      const d = clone(RAW_DUMP_GOOD);
+      d.recipes.wasm.body = [['-wasm-pack build client-wasm --target bundler']];
+      return checkC1(normalizeRecipes(d, 'fixture'));
+    },
+  );
+
+  record(
+    'C1-5e',
+    'C1',
+    false,
+    'RED-TEAM F5: a `#!/bin/true` shebang neuters the recipe while every body line survives verbatim in the dump (comment stripping deliberately preserves shebangs, which is what made this work).',
+    () => {
+      const d = clone(RAW_DUMP_GOOD);
+      d.recipes.wasm.shebang = true;
+      d.recipes.wasm.body = [['#!/bin/true'], ['wasm-pack build client-wasm --target bundler']];
+      return checkC1(normalizeRecipes(d, 'fixture'));
+    },
+  );
+
+  record(
+    'C1-5f',
+    'C1',
+    false,
+    'RED-TEAM F6: `--out-dir pkg-dist` builds successfully but writes where main.ts does not import from. The marker is a command PREFIX, so containment accepts it; `--out-name` is the same hole.',
+    () => {
+      const d = clone(RAW_DUMP_GOOD);
+      d.recipes.wasm.body = [['wasm-pack build client-wasm --target bundler --out-dir pkg-dist']];
+      return checkC1(normalizeRecipes(d, 'fixture'));
+    },
+  );
+
+  record(
+    'C1-5g',
+    'C1',
+    false,
+    'RED-TEAM F1 (second half): a parameterized `wasm` is rejected even with an unparameterized edge — the parameter is the mechanism, so it is banned at the source.',
+    () => {
+      const d = clone(RAW_DUMP_GOOD);
+      d.recipes.wasm.parameters = [{ name: 'mode' }];
+      return checkC1(normalizeRecipes(d, 'fixture'));
+    },
+  );
+
+  record(
+    'C1-5h',
+    'C1',
+    false,
+    'RED-TEAM F3 backstop: dropping the `test -f client-wasm/pkg/client_wasm.js` self-assertion from the `coverage` recipe. That runtime check is the only clause immune to a forged recipe graph; removing it must RED.',
+    () => {
+      const d = clone(RAW_DUMP_GOOD);
+      d.recipes.coverage.body = [
+        ['cd client && npm ci && npx vitest run --coverage --coverage.thresholds.lines=96'],
+      ];
+      return checkC1(normalizeRecipes(d, 'fixture'));
+    },
+  );
+
   record('C1-6', 'C1', false, 'a missing `coverage` key read as "nothing to check" (silent pass)', () => {
     const d = clone(RAW_DUMP_GOOD);
     delete d.recipes.coverage;
@@ -1671,6 +1766,96 @@ export function runTeeth() {
 
   record('C3-1', 'C3', true, 'a C3 that can only reject (an always-red gate proves nothing)', () =>
     checkC3({ nightly: { text: C3_GOOD } }),
+  );
+
+  record(
+    'C3-2b',
+    'C3',
+    false,
+    'RED-TEAM F7: a version DOWNGRADE laundered through a trailing comment. Only whole-line comments were skipped, so `with: { version: \'v0.2.0\' } # version: \'v0.15.0\'` satisfied the pin while the runner installed a different wasm-pack. Measured 15/15 evals green.',
+    () =>
+      checkC3({
+        nightly: {
+          text: mut(
+            C3_GOOD,
+            "      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0\n        with: { version: 'v0.15.0' }\n      - uses: actions/setup-node@v7",
+            "      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0\n        with: { version: 'v0.2.0' } # version: 'v0.15.0'\n      - uses: actions/setup-node@v7",
+            'C3-2b trailing-comment version downgrade',
+          ),
+        },
+      }),
+  );
+
+  record(
+    'C3-2c',
+    'C3',
+    false,
+    'RED-TEAM F3: a step-level `env:` on the gate step. Paired with an env-guarded `wasm` recipe it skips the build entirely; no eval in the repo looked at the gate step\'s env. Measured 15/15 evals green.',
+    () =>
+      checkC3({
+        nightly: {
+          text: mut(
+            C3_GOOD,
+            '      - run: just coverage\n',
+            "      - run: just coverage\n        env:\n          WASM_PKG_PREBUILT: '1'\n",
+            'C3-2c gate-step env',
+          ),
+        },
+      }),
+  );
+
+  record(
+    'C3-2d',
+    'C3',
+    false,
+    'RED-TEAM F9: `if: false` on the GATE step itself. C3 asserted that provisioning precedes the gate while never checking the gate was armed; it was caught only by a SIBLING eval, so this criterion depended on that eval staying wired.',
+    () =>
+      checkC3({
+        nightly: {
+          text: mut(
+            C3_GOOD,
+            '      - run: just coverage\n',
+            '      - run: just coverage\n        if: false\n',
+            'C3-2d gate-step if:false',
+          ),
+        },
+      }),
+  );
+
+  record(
+    'C3-2e',
+    'C3',
+    false,
+    'RED-TEAM F8: a job-level `needs:` on the coverage job. It SKIPS the gate on every night the named sibling reds — indistinguishable from passing. jobIsNotNeutered bans `if:`/`continue-on-error:`/`defaults:` but not `needs:`.',
+    () =>
+      checkC3({
+        nightly: {
+          text: mut(
+            C3_GOOD,
+            '  coverage:\n    runs-on: ubuntu-latest',
+            '  coverage:\n    needs: [smoke-republish]\n    runs-on: ubuntu-latest',
+            'C3-2e job-level needs',
+          ),
+        },
+      }),
+  );
+
+  record(
+    'C3-2f',
+    'C3',
+    false,
+    'RED-TEAM F8 (matrix variant): a job-level `strategy:` may expand to ZERO job instances, declaring the gate without ever running it.',
+    () =>
+      checkC3({
+        nightly: {
+          text: mut(
+            C3_GOOD,
+            '  coverage:\n    runs-on: ubuntu-latest',
+            '  coverage:\n    strategy: { matrix: { node: [] } }\n    runs-on: ubuntu-latest',
+            'C3-2f job-level strategy',
+          ),
+        },
+      }),
   );
 
   record(
