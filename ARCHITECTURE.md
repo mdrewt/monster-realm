@@ -137,7 +137,7 @@ and the `[G6/declared]` message renders every binding with its file. The record 
 `resolved` (the expansion; a consumer reads Option-ness from it) and `via` (the
 bindings consulted, as data); `[G6/alias]` fails loud on a `macro_rules!`-generated
 `type` item, on a binding whose right-hand side carries a macro metavariable or invocation,
-and on a binding of the name `Identity` itself (the token the resolver keeps terminal). FG73a-o pin it (direct, transitive, Option both ways, the three rename
+and on a binding of the name `Identity` itself (the token the resolver keeps terminal). FG73a-p pin it (direct, transitive, Option both ways, the three rename
 spellings, cross-file, ambiguity, termination, the join direction, the closed record,
 a quoted declaration, non-enumerable prototype pollution, `r#`/non-ASCII names, the
 macro detector, and a self-source absence of every fixture ALIAS name above the teeth), and

@@ -198,7 +198,7 @@
 //                          declared type is RESOLVED through every `type` item
 //                          and `use … as` rename in the scanned tree before the
 //                          Identity test, fail-closed on ambiguity (rb-4,
-//                          residual R-m22-s0-X3; FG73a-o).
+//                          residual R-m22-s0-X3; FG73a-p).
 //       [G6/live]          every manifest key still resolves to a live column
 //                          (bidirectional — a deleted column must not leave a
 //                          stale policy behind).
@@ -4732,8 +4732,8 @@ pub struct GuildMember {
   // re-export that renames a name which is ITSELF a bound name — a chain that
   // resolves only when renames and type items live in ONE table.
   {
-    const USE_GROUP = 'use spacetimedb::{\n    Identity as Who,\n    Table,\n};';
-    const groupSrc = rb4Schema(`${USE_GROUP}\n`, 'Who');
+    const USE_GROUP = 'use spacetimedb::{\n    Identity as WhoRef,\n    Table,\n};';
+    const groupSrc = rb4Schema(`${USE_GROUP}\n`, 'WhoRef');
     const groupTree = [{ path: RB4_SCHEMA_PATH, src: groupSrc }, GOOD_TREE[1]];
     const groupBroken = rb4SelfCheck('FG73d/group', groupSrc, [USE_GROUP], groupSrc);
     if (groupBroken) return groupBroken;
@@ -4741,11 +4741,11 @@ pub struct GuildMember {
     const groupBad = expectTag(groupErr, '[G6/declared]', 'FG73d/group');
     if (groupBad) return groupBad;
     const groupNames = groupErr.indexOf(RB4_COL) !== -1;
-    const groupBinding = groupErr.indexOf('type Who = Identity') !== -1;
+    const groupBinding = groupErr.indexOf('type WhoRef = Identity') !== -1;
     if (!groupNames || !groupBinding) {
       return (
         'FG73d/group: a rename inside a brace group IS a binding, so the failure must name the ' +
-        `column and render it as one (\`type Who = Identity\`): ${groupErr}`
+        `column and render it as one (\`type WhoRef = Identity\`): ${groupErr}`
       );
     }
 
@@ -5053,19 +5053,29 @@ pub struct GuildScope {
   //                stack, because a gate that throws is a gate whose every
   //                clause is skipped.
   {
-    const TS_DECL = 'pub(crate) type Timestamp = spacetimedb::Timestamp;';
+    const TS_DECL = 'pub(crate) type Stampish = spacetimedb::Stampish;';
     const tsSrc = `${GOOD_TREE[0].src}${TS_DECL}
 #[spacetimedb::table(accessor = audit_log)]
 pub struct AuditLog {
-    pub at: Timestamp,
+    pub at: Stampish,
     pub note: String,
 }
 `;
     const tsTree = [{ path: RB4_SCHEMA_PATH, src: tsSrc }, GOOD_TREE[1]];
     const tsBroken = rb4SelfCheck('FG73h/fixed-point', tsSrc, [TS_DECL], tsSrc);
     if (tsBroken) return tsBroken;
-    if (tsSrc.indexOf('pub at: Timestamp,') === -1) {
+    if (tsSrc.indexOf('pub at: Stampish,') === -1) {
       return 'FG73h/fixed-point: the fixture is broken — no column is declared with the binding';
+    }
+    // The load-bearing property, asserted rather than assumed: the right-hand
+    // side MENTIONS the name being bound. Rename only the LEFT side and this leg
+    // silently becomes an ordinary one-hop alias — still green, and no longer a
+    // termination test at all.
+    if (!containsIdent(TS_DECL.slice(TS_DECL.indexOf('=')), 'Stampish')) {
+      return (
+        'FG73h/fixed-point: the fixture is broken — the right-hand side must MENTION the bound ' +
+        'name, or this is a one-hop alias and the fixed point it exists to exercise is untested'
+      );
     }
     let tsErr = null;
     try {
@@ -5439,6 +5449,66 @@ pub struct GhostLedger {
     }
   }
 
+  // FG73m (continued) — the two Rust Pattern_White_Space code points that
+  // JavaScript's `\s` does NOT match: U+0085 NEL and U+200E LRM. rustc accepts
+  // either as the whitespace between `type` and the name it binds, or after the
+  // `use` keyword, so an item spelled with one COMPILES CLEAN (a
+  // `#[rustfmt::skip]` keeps rustfmt from normalising it away) and binds nothing
+  // at all in a scanner whose separator class is `\s`-shaped — a CI-clean hide,
+  // measured by the red-team. Each leg asserts the code point is really in the
+  // fixture AND that `\s` really does not match it: without that second
+  // assertion the leg silently becomes an ordinary-space fixture the day someone
+  // "cleans up" the constant, and the tooth is gone with no diff to notice.
+  {
+    const NEL = String.fromCharCode(0x85);
+    const LRM = String.fromCharCode(0x200e);
+    if (/\s/.test(NEL) || /\s/.test(LRM)) {
+      return (
+        'FG73m/whitespace: the fixture is broken — this runtime DOES match these code points ' +
+        'with `\\s`, so both legs below would pass on a scanner that never learned about them ' +
+        'and this whole family would be decorative'
+      );
+    }
+
+    const NEL_DECL = `#[rustfmt::skip]\npub type${NEL}OwnerId = Identity;`;
+    const nelSrc = rb4Schema(`${NEL_DECL}\n`, 'OwnerId');
+    const nelTree = [{ path: RB4_SCHEMA_PATH, src: nelSrc }, GOOD_TREE[1]];
+    const nelBroken = rb4SelfCheck('FG73m/nel', nelSrc, [NEL_DECL], nelSrc);
+    if (nelBroken) return nelBroken;
+    if (nelSrc.indexOf(NEL) === -1) {
+      return 'FG73m/nel: the fixture is broken — the U+0085 code point is not in the source';
+    }
+    const nelErr = checkRekeyCompleteness(nelTree, GOOD_ACCOUNTS);
+    const nelBad = expectTag(nelErr, '[G6/declared]', 'FG73m/nel');
+    if (nelBad) return nelBad;
+    if (nelErr.indexOf(RB4_COL) === -1) {
+      return (
+        'FG73m/nel: rustc reads U+0085 as the whitespace between `type` and the name, so the item ' +
+        'BINDS; a scanner whose separator class is `\\s` matches neither the space nor the name ' +
+        `and collects nothing, leaving the column unresolved and unpoliced: ${nelErr}`
+      );
+    }
+
+    const LRM_DECL = `use${LRM}spacetimedb::Identity as Owner;`;
+    const lrmSrc = rb4Schema(`${LRM_DECL}\n`, 'Owner');
+    const lrmTree = [{ path: RB4_SCHEMA_PATH, src: lrmSrc }, GOOD_TREE[1]];
+    const lrmBroken = rb4SelfCheck('FG73m/lrm', lrmSrc, [LRM_DECL], lrmSrc);
+    if (lrmBroken) return lrmBroken;
+    if (lrmSrc.indexOf(LRM) === -1) {
+      return 'FG73m/lrm: the fixture is broken — the U+200E code point is not in the source';
+    }
+    const lrmErr = checkRekeyCompleteness(lrmTree, GOOD_ACCOUNTS);
+    const lrmBad = expectTag(lrmErr, '[G6/declared]', 'FG73m/lrm');
+    if (lrmBad) return lrmBad;
+    if (lrmErr.indexOf(RB4_COL) === -1) {
+      return (
+        'FG73m/lrm: the same code-point class after the `use` keyword hides a RENAME rather than a ' +
+        '`type` item, so the rename collector has to normalise the separator too — one of the two ' +
+        `scans being taught about it is exactly half a fix: ${lrmErr}`
+      );
+    }
+  }
+
   // FG73n — a macro that GENERATES a type item. The resolver cannot read it (the
   // generated name is a macro metavariable, not an identifier), so the honest
   // answer is to FAIL LOUD and name the file rather than walk past a column
@@ -5476,16 +5546,99 @@ decl_alias!(OwnerId);`;
     }
   }
 
+  // FG73n (continued) — the two macro shapes the generated-item needle does NOT
+  // catch, and that the resolver cannot read either:
+  //   rhs-metavar  a macro body binds a REAL name to a metavariable, so the
+  //                binding IS collected and its right-hand side expands to
+  //                nothing Identity-bearing. The file carries no generated-item
+  //                needle at all, so the first detector is blind to it;
+  //   rhs-macro    the binding is declared at module level but its right-hand
+  //                side is a macro INVOCATION, which leaves the resolver nothing
+  //                to expand.
+  // Both must be reported by FILE and by BINDING NAME: told only "this file has
+  // a macro", a reader cannot find the column that is silently unpoliced, and a
+  // fail-closed report nobody can act on is a skip with extra steps.
+  {
+    const META_MACRO = `macro_rules! mk_alias {
+    ($t:ty) => {
+        pub type OwnerId = $t;
+    };
+}
+mk_alias!(Identity);`;
+    const metaSrc = rb4Schema(`${META_MACRO}\n`, 'OwnerId');
+    const metaTree = [{ path: RB4_SCHEMA_PATH, src: metaSrc }, GOOD_TREE[1]];
+    const metaStripped = stripRustSource(metaSrc);
+    // Two halves on purpose: written contiguously, the needle would appear in
+    // this file's own source and this check could not tell it from a decoy.
+    const GENERATED = 'type' + ' $';
+    if (metaStripped.indexOf('macro_rules!') === -1) {
+      return 'FG73n/rhs-metavar: the fixture is broken — the macro is not in the stripped source';
+    }
+    if (metaStripped.indexOf(GENERATED) !== -1) {
+      return (
+        'FG73n/rhs-metavar: the fixture is broken — the source carries the GENERATED-ITEM needle, ' +
+        'so the first detector would fire and this leg would prove nothing about the second'
+      );
+    }
+    const metaBroken = rb4SelfCheck('FG73n/rhs-metavar', metaSrc, [], metaSrc);
+    if (metaBroken) return metaBroken;
+    const metaErr = checkRekeyCompleteness(metaTree, GOOD_ACCOUNTS);
+    const metaBad = expectTag(metaErr, '[G6/alias]', 'FG73n/rhs-metavar');
+    if (metaBad) return metaBad;
+    const metaNamesFile = metaErr.indexOf(RB4_SCHEMA_PATH) !== -1;
+    const metaNamesBinding = metaErr.indexOf('OwnerId') !== -1;
+    if (!metaNamesFile || !metaNamesBinding) {
+      return (
+        'FG73n/rhs-metavar: the failure must name the FILE and the BINDING whose right-hand side ' +
+        `is a metavariable — a file-only report leaves the reader hunting the column: ${metaErr}`
+      );
+    }
+
+    const CALL_MACRO = `macro_rules! id_ty {
+    () => {
+        spacetimedb::Identity
+    };
+}
+pub type OwnerId = id_ty!();`;
+    const callSrc = rb4Schema(`${CALL_MACRO}\n`, 'OwnerId');
+    const callTree = [{ path: RB4_SCHEMA_PATH, src: callSrc }, GOOD_TREE[1]];
+    if (callSrc.indexOf('= id_ty!()') === -1) {
+      return 'FG73n/rhs-macro: the fixture is broken — the right-hand side is not a macro call';
+    }
+    const callBroken = rb4SelfCheck('FG73n/rhs-macro', callSrc, [], callSrc);
+    if (callBroken) return callBroken;
+    const callErr = checkRekeyCompleteness(callTree, GOOD_ACCOUNTS);
+    const callBad = expectTag(callErr, '[G6/alias]', 'FG73n/rhs-macro');
+    if (callBad) return callBad;
+    const callNamesFile = callErr.indexOf(RB4_SCHEMA_PATH) !== -1;
+    const callNamesBinding = callErr.indexOf('OwnerId') !== -1;
+    if (!callNamesFile || !callNamesBinding) {
+      return (
+        'FG73n/rhs-macro: the failure must name the FILE and the BINDING whose right-hand side is ' +
+        `a macro invocation, for the same reason: ${callErr}`
+      );
+    }
+  }
+
   // FG73o — SELF-SOURCE ABSENCE. The resolver must be driven by the SHAPE of a
-  // declaration, never by the names these fixtures happen to use: a lookup table
-  // keyed on those names passes every fixture above and resolves nothing in the
-  // real tree. VERIFIED by the red-team pass — without this tooth a name-keyed
-  // implementation survives the whole family. So no fixture name may appear as
-  // an identifier anywhere ABOVE the teeth: not in the checker, not in the
-  // contract prose, not in a comment. The tail-side half is the non-vacuity
-  // guard: a name that has fallen out of the fixtures falls out of this list in
-  // the same edit, and the marker is spelled in two halves so that searching for
-  // it does not find this line.
+  // declaration, never by the ALIAS NAMES these fixtures happen to bind: a
+  // lookup table keyed on those names passes every fixture above and resolves
+  // nothing in the real tree. VERIFIED by the red-team pass — without this tooth
+  // a name-keyed implementation survives the whole family. So no fixture ALIAS
+  // name may appear as an identifier anywhere ABOVE the teeth: not in the
+  // checker, not in the contract prose, not in a comment. The tail-side half is
+  // the non-vacuity guard: a name that has fallen out of the fixtures falls out
+  // of this list in the same edit, and the marker is spelled in two halves so
+  // that searching for it does not find this line.
+  // ALIAS names only, and deliberately not every identifier a fixture mentions:
+  // `A`/`B` (FG73h's cycle) and the vendor names a GOOD control re-exports
+  // cannot be listed — they occur in ordinary prose, or in this file's own
+  // imports — and a name-keyed resolver could not exploit them anyway, because
+  // special-casing a GOOD control's name makes that control PASS, not fail.
+  // Some listed names are deliberately SHORT (`Id`, `Coins`, `Owner`): `Id` is
+  // load-bearing as the prefix half of FG73f's substitution pair. If one ever
+  // collides with new prose above the teeth, the fix is to reword the prose —
+  // never to drop the name from this list, and never to rename the fixture.
   {
     const selfSrc = readFileSync(fileURLToPath(import.meta.url), 'utf8');
     const MARK = 'function run' + 'Teeth() {';
@@ -5503,7 +5656,7 @@ decl_alias!(OwnerId);`;
       'Owner',
       'MaybeOwner',
       'MaybeOwnerRef',
-      'Who',
+      'WhoRef',
       'Handoff',
       'GuildRef',
       'PhantomRef',
@@ -5515,11 +5668,13 @@ decl_alias!(OwnerId);`;
       'WalletOwner',
       'GhostOwner',
       'Ownér',
+      'Stampish',
     ];
     for (const name of FIXTURE_NAMES) {
       if (containsIdent(head, name)) {
         return (
-          `FG73o: the fixture name \`${name}\` occurs as an identifier in this file ABOVE the ` +
+          `FG73o: the fixture ALIAS name \`${name}\` occurs as an identifier in this file ABOVE ` +
+          'the ' +
           'teeth. Every name in that list is one a resolver could special-case into a lookup ' +
           'table, pass the whole FG73 family with, and still resolve nothing in the live tree — ' +
           'so the checker, its contract prose and its comments must never mention one. Rename ' +
@@ -5528,11 +5683,94 @@ decl_alias!(OwnerId);`;
       }
       if (!containsIdent(tail, name)) {
         return (
-          `FG73o: the fixture name \`${name}\` is listed here but is used by NO fixture below, so ` +
+          `FG73o: the fixture ALIAS name \`${name}\` is listed here but is used by NO fixture ` +
+          'below, so ' +
           'this tooth is guarding a name that does not exist. A name leaves the fixtures and this ' +
           'list in the same edit'
         );
       }
+    }
+  }
+
+  // FG73p — the `Identity` SHADOW: a tree-wide binding of the very token this
+  // gate classifies on. Two spellings, both ordinary Rust and both ONE line:
+  //   type-shadow    a `type` item binding the name Identity to something else;
+  //   rename-shadow  a `use … as Identity` rename of another vendor type.
+  // Either makes the walker forget every literally-typed Identity column AT ONCE
+  // — expand that token and all 24 columns resolve to something that is not
+  // Identity, so G6/declared and G6/live both pass VACUOUSLY over an empty
+  // column set and the manifest polices nothing. (G6/anchors is the backstop
+  // that would eventually notice, which is exactly why the walk is pinned here
+  // as an EXACT SET: a shadow that drops one column is the same defect as one
+  // that drops all of them, and only the anchors' four names are hardcoded.)
+  // The resolver therefore keeps `Identity` TERMINAL. Terminality alone would be
+  // a SILENT recovery, so G6/alias additionally names the file: the tree still
+  // contains a declaration that means something the gate refuses to honour, and
+  // the next reader must be told rather than left with a quietly ignored line.
+  // The BACKTICKED token is asserted, not the bare word: all three G6/alias
+  // detectors share one tag, and only this one renders `Identity` as the bound
+  // NAME — a bare-word check would be satisfied by either of the other two.
+  {
+    const SHADOW_PATH = 'fixture/shadow.rs';
+    const TYPE_SHADOW = 'pub(crate) type Identity = u64;\n';
+    const RENAME_SHADOW = 'use spacetimedb::ConnectionId as Identity;\n';
+    const want = [...findIdentityColumns(GOOD_TREE).keys()].sort().join(',');
+    if (want.split(',').length !== Object.keys(REKEY_MANIFEST).length) {
+      return (
+        `FG73p: the fixture is broken — the GOOD tree walks to ${want.split(',').length} ` +
+        `column(s) but the manifest owns ${Object.keys(REKEY_MANIFEST).length}; an exact key-set ` +
+        'comparison against a wrong (or empty) baseline proves nothing at all'
+      );
+    }
+    if (TYPE_SHADOW.indexOf('#[spacetimedb::table(') !== -1) {
+      return 'FG73p: the fixture is broken — the type-shadow file must declare no table';
+    }
+    if (RENAME_SHADOW.indexOf('#[spacetimedb::table(') !== -1) {
+      return 'FG73p: the fixture is broken — the rename-shadow file must declare no table';
+    }
+
+    const typeTree = [GOOD_TREE[0], GOOD_TREE[1], { path: SHADOW_PATH, src: TYPE_SHADOW }];
+    const typeGot = [...findIdentityColumns(typeTree).keys()].sort().join(',');
+    if (typeGot !== want) {
+      return (
+        'FG73p/walk (type-shadow): a tree-wide `type` item binding the name Identity changed the ' +
+        'walk. That token is what every column is classified on, so expanding it rewrites the ' +
+        'resolved type of EVERY literally-typed column at once and the completeness clauses go ' +
+        `vacuous over an empty set. It stays TERMINAL. want=[${want}] got=[${typeGot}]`
+      );
+    }
+    const typeErr = checkRekeyCompleteness(typeTree, GOOD_ACCOUNTS);
+    const typeBad = expectTag(typeErr, '[G6/alias]', 'FG73p/type-shadow');
+    if (typeBad) return typeBad;
+    const typeNamesFile = typeErr.indexOf(SHADOW_PATH) !== -1;
+    const typeNamesToken = typeErr.indexOf('`Identity`') !== -1;
+    if (!typeNamesFile || !typeNamesToken) {
+      return (
+        'FG73p/type-shadow: keeping the token terminal is a SILENT recovery on its own, so the ' +
+        'failure must name the file AND the shadowed name (backticked, which is what separates ' +
+        `this detector from the other two that share its tag): ${typeErr}`
+      );
+    }
+
+    const renameTree = [GOOD_TREE[0], GOOD_TREE[1], { path: SHADOW_PATH, src: RENAME_SHADOW }];
+    const renameGot = [...findIdentityColumns(renameTree).keys()].sort().join(',');
+    if (renameGot !== want) {
+      return (
+        'FG73p/walk (rename-shadow): a `use … as Identity` rename changed the walk. A rename is a ' +
+        'binding like any other, so the terminality rule has to be applied where names are ' +
+        `EXPANDED, never where one kind of binding is collected. want=[${want}] got=[${renameGot}]`
+      );
+    }
+    const renameErr = checkRekeyCompleteness(renameTree, GOOD_ACCOUNTS);
+    const renameBad = expectTag(renameErr, '[G6/alias]', 'FG73p/rename-shadow');
+    if (renameBad) return renameBad;
+    const renameNamesFile = renameErr.indexOf(SHADOW_PATH) !== -1;
+    const renameNamesToken = renameErr.indexOf('`Identity`') !== -1;
+    if (!renameNamesFile || !renameNamesToken) {
+      return (
+        'FG73p/rename-shadow: the rename spelling must be reported by the same clause and with ' +
+        `the same two facts — the file, and the shadowed name: ${renameErr}`
+      );
     }
   }
 
@@ -5660,7 +5898,7 @@ export default async function guestClaimIntegrityEval() {
       'the claim code is consumed exactly once for the guest at brace-depth 0 of the success ' +
       `region, and all ${Object.keys(REKEY_MANIFEST).length} Identity columns carry a D6 policy ` +
       `(${rekeyEntries} REKEY entries consumed by both rekey_all and account_has_game_data) ` +
-      '(87 teeth verified)',
+      '(88 teeth verified)',
   };
 }
 
