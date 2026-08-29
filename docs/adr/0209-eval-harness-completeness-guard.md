@@ -165,7 +165,7 @@ exits 0. Both classes are the same defect stated once: *the verdict rode entirel
     discards the internal write; (iv) a genuine hang from an un-`unref`'d handle, which `run.mjs`
     cannot time out because it has no per-eval budget — CI availability rests on the job timeout.
     Recorded here so each limit is a decision rather than an oversight.
-  - **Explicitly NOT closed — the DELETED-eval gap.** `ARCHITECTURE.md:162` records that
+  - **Explicitly NOT closed — the DELETED-eval gap.** `ARCHITECTURE.md:187` (the `just a11y-e2e` decay-ratchet paragraph) records that
     `evals/run.mjs` fails only at zero eval files, so deleting an eval leaves `just ci` green
     one check lighter. That statement stays LITERALLY TRUE after this ADR: a deleted file
     shrinks `files.length` itself, before the loop starts, so `completed === files.length`
@@ -173,7 +173,7 @@ exits 0. Both classes are the same defect stated once: *the verdict rode entirel
     nightly `a11y-e2e` ratchet's job (m23-s11), and generalising it is a different slice.
     The two must not be conflated — a reader who believes this guard floors the eval count
     would stop looking for the decay gate.
-  - Also NOT fixed, and now merely better diagnosed: `evals/run.mjs:35`
+  - Also NOT fixed, and now merely better diagnosed: `evals/run.mjs:81`
     (`const ok = res.pass ? …`) sits OUTSIDE the per-eval `try`/`catch`, so an eval whose
     `default()` returns nothing crashes the loop with a raw `TypeError` instead of a clean
     `eval THREW:` line. That path is already fail-CLOSED (exit 1) and this slice adds an
@@ -199,6 +199,41 @@ useless as one that reds nothing, so a clean corpus must still exit 0 and a genu
 corpus must still exit 1. The suite additionally runs the PRE-FIX harness text against the
 same fixtures and asserts it lets them through — the gate's own RED, executed every run, so
 it can never decay into a check that passes because the fixtures stopped biting.
+
+### Residuals the post-implementation red-team measured against the SHIPPED pair
+
+None is an active defect and none blocks: each is an UNTESTED invariant or a gate-coverage gap in
+`evals/run-completeness.eval.mjs`, and closing any of them means editing this slice's own gating
+test — which the implementer may not do. Recorded so the successor starts from evidence.
+
+- **The `RUN_MJS_PATH` pin is untested.** The eval resolves the harness under test as
+  `fileURLToPath(new URL('./run.mjs', import.meta.url))` — correct, self-relative, and the reason
+  the gate validates the file it actually ships beside. Nothing asserts it STAYS self-relative:
+  hardcoding it at the real worktree path while shipping a hollowed `run.mjs` was measured to
+  report `pass: true (20 teeth verified)` while the shipped harness swallowed two FAILs and exited
+  0. Note that the obvious fix — a needle grepping the eval's own source for the expression — is
+  the shape this repo has already measured four bypasses of; a real fix runs the eval against a
+  deliberately-relocated copy.
+- **RC13 is blind to a crash on the zero-eval path.** Relocating the whole sentinel block above the
+  `files.length === 0` guard while leaving the `let completed/failed/inFlight` declarations behind
+  makes the handler read a variable in its temporal dead zone: measured
+  `ReferenceError: Cannot access 'completed' before initialization`. RC13 still passes, because
+  `process.exit(1)` had already committed exit 1 and node's uncaught-exception default is also 1 —
+  so status and substrings both match. Fail-CLOSED, and it takes a deliberate hand edit rather than
+  a plausible slip, but RC13 pins the code and the message and never "the run did not also crash".
+- **`expectStatus` is load-bearing for ~9 of the 20 teeth**, which have no second assertion; gutting
+  that one helper to `return null` was measured to report a full green. Inherent to a shared helper.
+- **Nothing inside the eval asserts its own tooth COUNT**, so a silently dropped `teeth.push(...)`
+  reports `pass: true` with a quietly smaller `(N teeth verified)`. Closed at the ledger level
+  instead — this slice's gate X1 pins the literal `(20 teeth verified)`.
+
+Seventeen further wrong implementations of the guard were written and executed beyond the nine in
+the mutation probe (OR-vs-AND on the clobber guard, an off-by-one completeness test, `failed >= 0`,
+`process.exitCode !== 1`, an operator-precedence slip, a double-count in the `catch` branch,
+`inFlight` moved below the import, an early `return`, a duplicate handler, a boolean/string exit
+code). All were caught by named teeth except the relocation above, and three were confirmed to be
+behaviourally EQUIVALENT rather than wrong — the string exit code (node coerces it), an atomic
+reorder of the block with its declarations, and a redundant second handler.
 
 ## Confirmation
 
