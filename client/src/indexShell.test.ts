@@ -2494,16 +2494,14 @@ describe('ux1-1 (m23-s5/ADR-0206 D5): #help-hint is a native <button>', () => {
 // unchanged, so it is judged by the SAME gates as everything else in this block.
 //
 // TWO import forms from the one owner module, each load-bearing. The NAMESPACE binding
-// (`rb12CssStripperOracle`) carries the corpus symbols; it was also what let the gates in THIS
-// block go red pre-fix without a duplicate-declaration SyntaxError taking the whole file down
-// while the local definition still existed. The separate single-line NAMED import of
+// (`rb12CssStripperOracle`) carries the corpus symbols; The separate single-line NAMED import of
 // `stripCssComments` is what `parseCssRules` resolves to, and RB12-G1 requires it to stay on ONE
 // line: a combined named import of all five symbols exceeds the line width, Biome wraps it, and
 // the wrapped continuation line no longer starts with `import` — which would red G1's import half.
 // ===========================================================================
 
 /**
- * RB12-G1 support only: a local, PRIVATE comment stripper — line-comment and block-comment aware
+ * RB12-G1 and RB12-G7 support: a local, PRIVATE comment stripper — line-comment and block-comment aware
  * (the delimiter pairs are never typed as literal text in this comment, on purpose — see the
  * HAZARD note above the shared corpus in evals/a11y-static-shell.eval.mjs), with
  * string/template-literal awareness so a comment-lookalike inside a string literal is not
@@ -2702,15 +2700,20 @@ describe('RB12 (ADR-0215): stripCssComments single ownership + corpus totality',
     expect(() => parseCssRules('.a{color:red}' + SLASH_STAR + ' unterminated')).toThrow();
   });
 
-  it('RB12-G5: the naive stripper (fixtureNaiveStripCssComments) is pinned WRONG, exact output, on every NAIVE_KILLS cell', () => {
+  it('RB12-G5: the naive stripper (fixtureUnhardenedCssStripper) is pinned WRONG, exact output, on every NAIVE_KILLS cell', () => {
     const corpus = rb12CssStripperOracle.CSS_STRIPPER_CORPUS as ReadonlyArray<{
       name: string;
       css: string;
       expect: { kind: 'value'; out: string } | { kind: 'throw'; needle: string };
     }>;
-    const naive = rb12CssStripperOracle.fixtureNaiveStripCssComments as (src: string) => string;
+    const naive = rb12CssStripperOracle.fixtureUnhardenedCssStripper as (src: string) => string;
     const kills = rb12CssStripperOracle.NAIVE_KILLS as readonly string[];
-    expect(kills.length, 'ANTI-VACUITY: NAIVE_KILLS must not be empty').toBeGreaterThan(0);
+    // MEMBERSHIP, not merely non-emptiness — a one-entry NAIVE_KILLS previously passed here while
+    // silently dropping three cells from the discrimination teeth in BOTH tiers.
+    expect(
+      [...kills].sort(),
+      'KILLS: NAIVE_KILLS shrunk or drifted from its pinned roster',
+    ).toEqual(['EOF/in-comment', 'EOF/in-string', 'dq/backslash-escape', 'dq/comment-open-inert']);
 
     const byName = (cellName: string) => {
       const cell = corpus.find((c) => c.name === cellName);
@@ -2773,7 +2776,7 @@ describe('RB12 (ADR-0215): stripCssComments single ownership + corpus totality',
     // not at all. A name-set pin is orthogonal to a payload pin. So this table covers ALL ELEVEN
     // cells: every cell's css AND expected outcome is re-declared here, literally, independent of
     // CSS_STRIPPER_CORPUS, so no edit to the shared table can go unobserved.
-    const RB12_KILL_CELL_TRUTH: ReadonlyArray<{
+    const RB12_CORPUS_TRUTH: ReadonlyArray<{
       name: string;
       css: string;
       expect: { kind: 'value'; out: string } | { kind: 'throw'; needle: string };
@@ -2847,17 +2850,17 @@ describe('RB12 (ADR-0215): stripCssComments single ownership + corpus totality',
     // TOTALITY both ways: the independent table must cover every shared cell and vice versa,
     // or a cell dropped from THIS table silently loses its second pin.
     expect(
-      RB12_KILL_CELL_TRUTH.length,
+      RB12_CORPUS_TRUTH.length,
       'the independent truth table must pin EVERY corpus cell — shrinking it re-opens the ' +
         'payload-swap bypass it exists to close',
     ).toBe(corpus.length);
-    const truthNames = RB12_KILL_CELL_TRUTH.map((t) => t.name).sort();
+    const truthNames = RB12_CORPUS_TRUTH.map((t) => t.name).sort();
     const corpusNames = corpus.map((c) => c.name).sort();
     expect(truthNames, 'independent truth-table names must equal the shared corpus names').toEqual(
       corpusNames,
     );
 
-    for (const truth of RB12_KILL_CELL_TRUTH) {
+    for (const truth of RB12_CORPUS_TRUTH) {
       const cell = corpus.find((c) => c.name === truth.name);
       expect(cell, `kill-cell "${truth.name}" must exist in the shared corpus`).toBeDefined();
       expect(cell!.css, `kill-cell "${truth.name}"'s css must match the independent pin`).toBe(

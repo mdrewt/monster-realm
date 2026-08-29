@@ -182,10 +182,15 @@ const STAR_SLASH = ['*', '/'].join('');
  * independent of whatever `stripCssComments` becomes after that hardening — so the attack this
  * slice fixes stays provable after the fix lands, rather than disappearing along with the bug.
  *
+ * NAMED FOR ITS ROLE, deliberately NOT `fixtureNaiveStripCssComments` — `evals/reduced-motion-hp-bar.eval.mjs:201`
+ * already ships a function by THAT name with DIFFERENT semantics (it does not preserve newlines
+ * inside comments). Re-using the name here would have recreated, one function over, exactly the
+ * same-name/different-behaviour trap this slice exists to remove.
+ *
  * Exists ONLY to prove NAIVE_KILLS bites (see T10e / RB12-G5 / RB12-G6). Never call it from
  * production code.
  */
-export function fixtureNaiveStripCssComments(src) {
+export function fixtureUnhardenedCssStripper(src) {
   let out = '';
   let i = 0;
   while (i < src.length) {
@@ -240,7 +245,7 @@ const CELL_SQ_COMMENT_CLOSE_INERT_CSS = [".a{content:'", STAR_SLASH, "'}.b{displ
 // `content:"/*"` fixture: a stripper that is escape-BLIND — even if otherwise quote- and
 // comment-aware — misreads the escaped quote as closing the string early, then misreads the
 // following slash-star as a REAL comment opener, corrupting legitimate CSS. The fully naive
-// stripper (no quote-tracking at all, see fixtureNaiveStripCssComments above) is tripped by the
+// stripper (no quote-tracking at all, see fixtureUnhardenedCssStripper above) is tripped by the
 // embedded slash-star for the same underlying reason `dq/comment-open-inert` trips it, but THIS
 // cell also catches the narrower "quote-aware but escape-blind" mutant that a bare
 // `content:"/*"` fixture does not exercise (that mutant tracks quotes correctly right up until
@@ -321,7 +326,7 @@ export const CSS_STRIPPER_CORPUS = Object.freeze([
   },
 ]);
 
-/** Cells the naive `fixtureNaiveStripCssComments` gets WRONG — see T10e / RB12-G5 / RB12-G6. */
+/** Cells the naive `fixtureUnhardenedCssStripper` gets WRONG — see T10e / RB12-G5 / RB12-G6. */
 export const NAIVE_KILLS = Object.freeze([
   'dq/comment-open-inert',
   'dq/backslash-escape',
@@ -771,12 +776,22 @@ export default async function () {
   // T10e DISCRIMINATION (ADR-0215, RB12): the naive stripper must get every NAIVE_KILLS cell
   // WRONG, and the headline cell's wrong output is pinned EXACTLY — "differs" alone would pass a
   // naive fixture hand-edited to differ trivially (e.g. a stray trailing space) while still
-  // missing the real bug this slice exists to fix. Runs against `fixtureNaiveStripCssComments`,
+  // missing the real bug this slice exists to fix. Runs against `fixtureUnhardenedCssStripper`,
   // the FROZEN naive reference, so this tooth's verdict never depends on whether the LIVE
   // `stripCssComments` export has been hardened yet.
   {
-    if (NAIVE_KILLS.length === 0) {
-      return bad('TEETH T10e: NAIVE_KILLS must not be empty — an empty list vacuously passes');
+    // MEMBERSHIP, not merely non-emptiness: a NAIVE_KILLS shrunk to a single entry passed the old
+    // non-empty check while silently dropping three cells from this tooth — and T10e is the tooth
+    // that runs ALONE in `just a11y-e2e`, where the vitest tier is not scheduled.
+    const KILL_ROSTER = [
+      'dq/comment-open-inert',
+      'dq/backslash-escape',
+      'EOF/in-comment',
+      'EOF/in-string',
+    ];
+    const kills = [...NAIVE_KILLS].sort().join(',');
+    if (kills !== [...KILL_ROSTER].sort().join(',')) {
+      return bad(`TEETH T10e: NAIVE_KILLS drifted from its pinned roster — got "${kills}"`);
     }
     for (const name of NAIVE_KILLS) {
       const cell = CSS_STRIPPER_CORPUS.find((c) => c.name === name);
@@ -784,7 +799,7 @@ export default async function () {
         return bad(`TEETH T10e: NAIVE_KILLS cell "${name}" is not in the corpus`);
       }
       if (cell.expect.kind === 'value') {
-        const naiveOut = fixtureNaiveStripCssComments(cell.css);
+        const naiveOut = fixtureUnhardenedCssStripper(cell.css);
         if (naiveOut === cell.expect.out) {
           return bad(
             `TEETH T10e: the naive stripper agreed with the hardened oracle on kill-cell ` +
@@ -794,7 +809,7 @@ export default async function () {
       } else {
         let naiveThrew = false;
         try {
-          fixtureNaiveStripCssComments(cell.css);
+          fixtureUnhardenedCssStripper(cell.css);
         } catch (e) {
           naiveThrew = true;
         }
@@ -811,7 +826,7 @@ export default async function () {
     if (headline === undefined) {
       return bad(`TEETH T10e: headline cell "${HEADLINE_CELL}" is missing from the corpus`);
     }
-    const headlineNaiveOut = fixtureNaiveStripCssComments(headline.css);
+    const headlineNaiveOut = fixtureUnhardenedCssStripper(headline.css);
     const headlinePinned = ['.a{content:', '"'].join('');
     if (headlineNaiveOut !== headlinePinned) {
       return bad(
