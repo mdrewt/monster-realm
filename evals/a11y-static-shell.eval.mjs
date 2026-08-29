@@ -74,13 +74,123 @@ const LIVE_REGION_OWNER = 'ui/liveRegion.ts';
 const LIVE_REGION_NAMES = Object.freeze(['a11y-live', 'LIVE_REGION_ID']);
 
 /**
- * Strip CSS block comments. CSS HAS NO `//` LINE COMMENT, and that is not a pedantic distinction:
- * feeding CSS to the JS/TS scanner in the sibling eval silently truncates every line containing a
- * protocol-relative or `https://` URL, so `background:url(https://cdn/x.png);display:none` loses
- * its `display:none` and the ban it is meant to trip evaporates. Measured. The name collision with
- * the JS stripper is exactly the trap, so this one is named for its language.
+ * Strip CSS block comments — the SOLE OWNER of this primitive for BOTH CI tiers (ADR-0215).
+ *
+ * `client/src/indexShell.test.ts` no longer defines its own copy; it imports this one, so
+ * `parseCssRules` / `findIdSelectors` / `srOnlyIsAccessible` over the real `client/styles.css`
+ * and the `.mjs` teeth below are judged by ONE implementation. There is nothing left to drift.
+ *
+ * CSS HAS NO `//` LINE COMMENT, and that is not a pedantic distinction: feeding CSS to the JS/TS
+ * scanner in the sibling eval silently truncates every line containing a protocol-relative or
+ * `https://` URL, so `background:url(https://cdn/x.png);display:none` loses its `display:none`
+ * and the ban it is meant to trip evaporates. Measured. The name collision with the JS stripper is
+ * exactly the trap, so this one is named for its language.
+ *
+ * FOUR-STATE LEXER — normal / dq / sq / comment. A backslash inside a string escapes the next
+ * character; the comment opener opens a comment ONLY in `normal`; newlines inside a comment are
+ * preserved so line numbers survive.
+ *
+ * WHY STRING-AWARENESS IS LOAD-BEARING: a declaration whose VALUE contains the comment-opener
+ * characters (a `content:` string, say) would otherwise open a comment that never closes, and the
+ * stripper would swallow the entire rest of the file. Measured on the pre-ADR-0215 naive body:
+ * `.a{content:"` + opener + `"}.b{display:none}` came back as `.a{content:"` — the `display:none`
+ * it exists to find, gone. A scanner in that state reports ZERO findings on a stylesheet full of
+ * them: a false GREEN, the only kind of failure that matters.
+ *
+ * WHY IT IS FAIL-LOUD: an unterminated string or comment at EOF THROWS rather than returning a
+ * best-effort string. A file we could not parse must never be reported as a CLEAN file — silence
+ * from a scanner that gave up is indistinguishable from silence from a scanner that found nothing,
+ * and only one of those is the truth. A throw is a loud RED; a truncated return is a quiet lie.
+ * (See ADR-0215 RK-2: `evals/reduced-motion-purity.eval.mjs` calls this without a try/catch, so a
+ * future unparseable input reds THAT eval loudly — deliberately, never falsely green.)
  */
 export function stripCssComments(src) {
+  let out = '';
+  /** @type {'normal' | 'dq' | 'sq' | 'comment'} */
+  let state = 'normal';
+  let i = 0;
+  while (i < src.length) {
+    const ch = src.charAt(i);
+    const next = src.charAt(i + 1);
+    if (state === 'comment') {
+      if (ch === '*' && next === '/') {
+        state = 'normal';
+        i += 2;
+        continue;
+      }
+      if (ch === '\n') out += '\n';
+      i += 1;
+      continue;
+    }
+    if (state === 'dq' || state === 'sq') {
+      out += ch;
+      if (ch === '\\') {
+        out += next;
+        i += 2;
+        continue;
+      }
+      if ((state === 'dq' && ch === '"') || (state === 'sq' && ch === "'")) state = 'normal';
+      i += 1;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      state = 'comment';
+      i += 2;
+      continue;
+    }
+    if (ch === '"') state = 'dq';
+    if (ch === "'") state = 'sq';
+    out += ch;
+    i += 1;
+  }
+  if (state === 'dq' || state === 'sq') {
+    throw new Error('CSS parse failed: unterminated string literal at end of input');
+  }
+  if (state === 'comment') {
+    throw new Error('CSS parse failed: unterminated comment at end of input');
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------------------
+// RB12 (ADR-0215) — the SHARED stripCssComments corpus + naive reference fixture.
+//
+// A TRANSITION MATRIX, not a bag of examples: each cell below names one (state, event) pair of
+// the four-state lexer {normal, dq, sq, comment}. The lexer's transition space is CLOSED (four
+// states, a handful of triggering characters), so this corpus can be TRANSITION-TOTAL rather than
+// merely sampled — the honest distinction from the `srOnlyIsAccessible` corpus ADR-0215 (and
+// m23-s10 before it) rejected: that oracle ranges over an OPEN selector grammar, where a corpus
+// can only ever sample.
+//
+// Both CI tiers run this corpus IN FULL: T10c/T10d/T10e below, and
+// `client/src/indexShell.test.ts`'s RB12-G2/RB12-G3/RB12-G5/RB12-G6. Cell NAMES are load-bearing —
+// both tiers' completeness gates pin them by exact string, in BOTH directions, so a deleted cell
+// cannot silently shrink the corpus while a length floor alone stays green.
+//
+// HAZARD, repo-measured: never write a literal "/*" or "*/" in an evals/*.mjs source file (see
+// MEMORY: server-module-source-scan-gotchas / recruit-eval-concatenates-test-files — an unpaired
+// glob-slash blanks a LATER file under a naive regex stripper elsewhere in this repo's own eval
+// tooling). Every comment delimiter in a fixture below is assembled from SLASH_STAR / STAR_SLASH,
+// each built by joining two single-character literals — never typed as a two-character substring.
+const SLASH_STAR = ['/', '*'].join('');
+const STAR_SLASH = ['*', '/'].join('');
+
+/**
+ * The naive stripper's CURRENT body, VERBATIM — see `stripCssComments` above, which ADR-0215
+ * hardens IN PLACE (same export name, new body) so it becomes the sole owner `parseCssRules` in
+ * `client/src/indexShell.test.ts` imports. This copy is kept under a NEW name, forever,
+ * independent of whatever `stripCssComments` becomes after that hardening — so the attack this
+ * slice fixes stays provable after the fix lands, rather than disappearing along with the bug.
+ *
+ * NAMED FOR ITS ROLE, deliberately NOT `fixtureNaiveStripCssComments` — `evals/reduced-motion-hp-bar.eval.mjs:201`
+ * already ships a function by THAT name with DIFFERENT semantics (it does not preserve newlines
+ * inside comments). Re-using the name here would have recreated, one function over, exactly the
+ * same-name/different-behaviour trap this slice exists to remove.
+ *
+ * Exists ONLY to prove NAIVE_KILLS bites (see T10e / RB12-G5 / RB12-G6). Never call it from
+ * production code.
+ */
+export function fixtureUnhardenedCssStripper(src) {
   let out = '';
   let i = 0;
   while (i < src.length) {
@@ -98,6 +208,131 @@ export function stripCssComments(src) {
   }
   return out;
 }
+
+/** The eleven (state, event) cells this corpus is transition-total over. Names are load-bearing:
+ *  both completeness teeth (T10d here, RB12-G3 in indexShell.test.ts) pin this exact list, and
+ *  RB12-G3's copy is deliberately RE-DECLARED rather than imported — see that tooth's comment. */
+export const CSS_STRIPPER_CELLS = Object.freeze([
+  'normal/comment-open-close',
+  'normal/no-line-comment',
+  'normal/bare-slash-inert',
+  'dq/comment-open-inert',
+  'dq/close-then-real-comment',
+  'sq/comment-close-inert',
+  'dq/backslash-escape',
+  'comment/newline-preserved',
+  'EOF/in-comment',
+  'EOF/in-string',
+  'normal/empty',
+]);
+
+// Fixture CSS, assembled by concatenation — see the HAZARD note above. Each constant is used as
+// BOTH the corpus cell's `css` input and (where the expected outcome is "unchanged") its expected
+// `out`, so the two can never accidentally diverge by a transcription slip.
+const CELL_COMMENT_OPEN_CLOSE_CSS = [SLASH_STAR, ' x ', STAR_SLASH, ' .a{color:red}'].join('');
+const CELL_DQ_COMMENT_OPEN_INERT_CSS = ['.a{content:"', SLASH_STAR, '"}.b{display:none}'].join('');
+const CELL_DQ_CLOSE_THEN_REAL_COMMENT_CSS = [
+  '.a{content:"x"}',
+  SLASH_STAR,
+  ' gone ',
+  STAR_SLASH,
+  '.b{display:none}',
+].join('');
+const CELL_SQ_COMMENT_CLOSE_INERT_CSS = [".a{content:'", STAR_SLASH, "'}.b{display:none}"].join('');
+// ADR-0215's own measured adversarial fixture ("Considered alternatives", Option A red-team
+// finding): an ESCAPED quote inside a string, immediately followed by a comment-lookalike that is
+// still INSIDE the (still-open) string. This is deliberately stronger than a bare
+// `content:"/*"` fixture: a stripper that is escape-BLIND — even if otherwise quote- and
+// comment-aware — misreads the escaped quote as closing the string early, then misreads the
+// following slash-star as a REAL comment opener, corrupting legitimate CSS. The fully naive
+// stripper (no quote-tracking at all, see fixtureUnhardenedCssStripper above) is tripped by the
+// embedded slash-star for the same underlying reason `dq/comment-open-inert` trips it, but THIS
+// cell also catches the narrower "quote-aware but escape-blind" mutant that a bare
+// `content:"/*"` fixture does not exercise (that mutant tracks quotes correctly right up until
+// the escaped-quote boundary, which is exactly what this cell targets).
+const CELL_DQ_BACKSLASH_ESCAPE_CSS = ['.a{content:"x\\"', SLASH_STAR, '"}.b{display:none}'].join(
+  '',
+);
+const CELL_COMMENT_NEWLINE_PRESERVED_CSS = [
+  '.a{}',
+  SLASH_STAR,
+  ' l1\nl2 ',
+  STAR_SLASH,
+  '\n.b{display:none}',
+].join('');
+const CELL_EOF_IN_COMMENT_CSS = ['.a{color:red}', SLASH_STAR, ' unterminated'].join('');
+const CELL_EOF_IN_STRING_CSS = '.a{content:"oops}';
+
+/**
+ * The shared, frozen fixture corpus, run in full by BOTH CI tiers.
+ * `expect.kind === 'value'` means byte-equal to `out`; `expect.kind === 'throw'` means the
+ * hardened `stripCssComments` must throw, with `needle` a substring of the thrown message.
+ */
+export const CSS_STRIPPER_CORPUS = Object.freeze([
+  {
+    name: 'normal/comment-open-close',
+    css: CELL_COMMENT_OPEN_CLOSE_CSS,
+    expect: { kind: 'value', out: ' .a{color:red}' },
+  },
+  {
+    name: 'normal/no-line-comment',
+    css: 'a{background:url(https://cdn/x.png);display:none}',
+    expect: { kind: 'value', out: 'a{background:url(https://cdn/x.png);display:none}' },
+  },
+  {
+    name: 'normal/bare-slash-inert',
+    css: '@media (min-width:1px){.a{font:14px/1.6 monospace}}',
+    expect: { kind: 'value', out: '@media (min-width:1px){.a{font:14px/1.6 monospace}}' },
+  },
+  {
+    name: 'dq/comment-open-inert',
+    css: CELL_DQ_COMMENT_OPEN_INERT_CSS,
+    expect: { kind: 'value', out: CELL_DQ_COMMENT_OPEN_INERT_CSS },
+  },
+  {
+    name: 'dq/close-then-real-comment',
+    css: CELL_DQ_CLOSE_THEN_REAL_COMMENT_CSS,
+    expect: { kind: 'value', out: '.a{content:"x"}.b{display:none}' },
+  },
+  {
+    name: 'sq/comment-close-inert',
+    css: CELL_SQ_COMMENT_CLOSE_INERT_CSS,
+    expect: { kind: 'value', out: CELL_SQ_COMMENT_CLOSE_INERT_CSS },
+  },
+  {
+    name: 'dq/backslash-escape',
+    css: CELL_DQ_BACKSLASH_ESCAPE_CSS,
+    expect: { kind: 'value', out: CELL_DQ_BACKSLASH_ESCAPE_CSS },
+  },
+  {
+    name: 'comment/newline-preserved',
+    css: CELL_COMMENT_NEWLINE_PRESERVED_CSS,
+    expect: { kind: 'value', out: '.a{}\n\n.b{display:none}' },
+  },
+  {
+    name: 'EOF/in-comment',
+    css: CELL_EOF_IN_COMMENT_CSS,
+    expect: { kind: 'throw', needle: 'unterminated comment' },
+  },
+  {
+    name: 'EOF/in-string',
+    css: CELL_EOF_IN_STRING_CSS,
+    expect: { kind: 'throw', needle: 'unterminated string literal' },
+  },
+  {
+    name: 'normal/empty',
+    css: '',
+    expect: { kind: 'value', out: '' },
+  },
+]);
+
+/** Cells the naive `fixtureUnhardenedCssStripper` gets WRONG — see T10e / RB12-G5 / RB12-G6. */
+export const NAIVE_KILLS = Object.freeze([
+  'dq/comment-open-inert',
+  'dq/backslash-escape',
+  'EOF/in-comment',
+  'EOF/in-string',
+]);
 
 /**
  * Strip HTML comments. LOAD-BEARING, not hygiene: `client/index.html:145` documents the live
@@ -335,7 +570,7 @@ export const SHELL_DELEGATIONS = Object.freeze([
 export default async function () {
   const name = 'a11y-static-shell ([A11Y-05a/05b] live region + [A11Y-06/07/08] delegation)';
   let teeth = 0;
-  const teethTotal = 21;
+  const teethTotal = 24;
   const bad = (detail) => ({ name, pass: false, detail });
   const shellNeedles = SHELL_DELEGATIONS.reduce(
     (n, d) => n + d.titleNeedles.length + d.codeNeedles.length,
@@ -455,6 +690,151 @@ export default async function () {
   }
   if (stripCssComments('/* display:none */ .a{color:red}').indexOf('display:none') !== -1) {
     return bad('TEETH T10b: stripCssComments left a CSS block comment in place');
+  }
+  teeth++;
+
+  // T10c TOTALITY (ADR-0215, RB12): every CSS_STRIPPER_CORPUS cell, no filter, no early exit —
+  // either byte-equal on its pinned VALUE, or throws with its pinned NEEDLE. This is the
+  // transition-total claim: the corpus names every (state, event) pair of the four-state lexer,
+  // so passing here means covering the closed transition space, not sampling it. Runs against the
+  // LIVE `stripCssComments` export, so this tooth is RED while that export is still the naive body
+  // and GREEN once it is hardened in place.
+  for (const cell of CSS_STRIPPER_CORPUS) {
+    if (cell.expect.kind === 'value') {
+      // A 'value' cell that THROWS must be reported as this tooth's clean failure, naming the
+      // cell — never allowed to escape and reject the whole eval. Measured (rb-12 mutation loop,
+      // M1/M2): a quote-blind stripper does not merely return the wrong bytes on
+      // `dq/comment-open-inert`, it runs off the end of the input and throws `unterminated
+      // comment`. An escaping throw still REDs CI, but it REDs it as an eval crash with no cell
+      // name, which is indistinguishable from a harness bug and hides WHICH cell regressed.
+      let out;
+      try {
+        out = stripCssComments(cell.css);
+      } catch (e) {
+        return bad(
+          `TEETH T10c: cell "${cell.name}" THREW "${String(e && e.message ? e.message : e)}" but ` +
+            `a value was expected — the stripper lost track of a string or comment boundary`,
+        );
+      }
+      if (out !== cell.expect.out) {
+        return bad(
+          `TEETH T10c: cell "${cell.name}" produced ${JSON.stringify(out)}, expected ` +
+            `${JSON.stringify(cell.expect.out)}`,
+        );
+      }
+    } else {
+      let threw = false;
+      let message = '';
+      try {
+        stripCssComments(cell.css);
+      } catch (e) {
+        threw = true;
+        message = String(e && e.message ? e.message : e);
+      }
+      if (!threw) {
+        return bad(`TEETH T10c: cell "${cell.name}" was expected to throw and did not`);
+      }
+      if (message.indexOf(cell.expect.needle) === -1) {
+        return bad(
+          `TEETH T10c: cell "${cell.name}" threw "${message}", expected it to contain ` +
+            `"${cell.expect.needle}"`,
+        );
+      }
+    }
+  }
+  teeth++;
+
+  // T10d COMPLETENESS (ADR-0215, RB12): the corpus's cell NAMES equal CSS_STRIPPER_CELLS in BOTH
+  // directions, and the two collections are the SAME SIZE — a length floor alone would admit
+  // duplicate padding (two cells sharing a name while a THIRD real transition is silently
+  // missing). This tooth is independent of whether `stripCssComments` itself is fixed yet; it
+  // guards the corpus data, not the implementation under test.
+  {
+    const corpusNames = CSS_STRIPPER_CORPUS.map((c) => c.name);
+    const missingFromCorpus = CSS_STRIPPER_CELLS.filter((n) => corpusNames.indexOf(n) === -1);
+    const extraInCorpus = corpusNames.filter((n) => CSS_STRIPPER_CELLS.indexOf(n) === -1);
+    if (missingFromCorpus.length > 0) {
+      return bad(
+        `TEETH T10d: CSS_STRIPPER_CELLS names not present in the corpus: ${missingFromCorpus.join(', ')}`,
+      );
+    }
+    if (extraInCorpus.length > 0) {
+      return bad(
+        `TEETH T10d: corpus names not present in CSS_STRIPPER_CELLS: ${extraInCorpus.join(', ')}`,
+      );
+    }
+    if (CSS_STRIPPER_CORPUS.length !== CSS_STRIPPER_CELLS.length) {
+      return bad(
+        `TEETH T10d: corpus.length=${CSS_STRIPPER_CORPUS.length} !== ` +
+          `CELLS.length=${CSS_STRIPPER_CELLS.length} — duplicate names can pass set equality ` +
+          'while the corpus is short a real cell',
+      );
+    }
+  }
+  teeth++;
+
+  // T10e DISCRIMINATION (ADR-0215, RB12): the naive stripper must get every NAIVE_KILLS cell
+  // WRONG, and the headline cell's wrong output is pinned EXACTLY — "differs" alone would pass a
+  // naive fixture hand-edited to differ trivially (e.g. a stray trailing space) while still
+  // missing the real bug this slice exists to fix. Runs against `fixtureUnhardenedCssStripper`,
+  // the FROZEN naive reference, so this tooth's verdict never depends on whether the LIVE
+  // `stripCssComments` export has been hardened yet.
+  {
+    // MEMBERSHIP, not merely non-emptiness: a NAIVE_KILLS shrunk to a single entry passed the old
+    // non-empty check while silently dropping three cells from this tooth — and T10e is the tooth
+    // that runs ALONE in `just a11y-e2e`, where the vitest tier is not scheduled.
+    const KILL_ROSTER = [
+      'dq/comment-open-inert',
+      'dq/backslash-escape',
+      'EOF/in-comment',
+      'EOF/in-string',
+    ];
+    const kills = [...NAIVE_KILLS].sort().join(',');
+    if (kills !== [...KILL_ROSTER].sort().join(',')) {
+      return bad(`TEETH T10e: NAIVE_KILLS drifted from its pinned roster — got "${kills}"`);
+    }
+    for (const name of NAIVE_KILLS) {
+      const cell = CSS_STRIPPER_CORPUS.find((c) => c.name === name);
+      if (cell === undefined) {
+        return bad(`TEETH T10e: NAIVE_KILLS cell "${name}" is not in the corpus`);
+      }
+      if (cell.expect.kind === 'value') {
+        const naiveOut = fixtureUnhardenedCssStripper(cell.css);
+        if (naiveOut === cell.expect.out) {
+          return bad(
+            `TEETH T10e: the naive stripper agreed with the hardened oracle on kill-cell ` +
+              `"${name}" — it no longer discriminates`,
+          );
+        }
+      } else {
+        let naiveThrew = false;
+        try {
+          fixtureUnhardenedCssStripper(cell.css);
+        } catch (e) {
+          naiveThrew = true;
+        }
+        if (naiveThrew) {
+          return bad(
+            `TEETH T10e: the naive stripper THREW on kill-cell "${name}" — the naive body has ` +
+              'no error handling at all, so this cell no longer discriminates a throw/no-throw split',
+          );
+        }
+      }
+    }
+    const HEADLINE_CELL = 'dq/comment-open-inert';
+    const headline = CSS_STRIPPER_CORPUS.find((c) => c.name === HEADLINE_CELL);
+    if (headline === undefined) {
+      return bad(`TEETH T10e: headline cell "${HEADLINE_CELL}" is missing from the corpus`);
+    }
+    const headlineNaiveOut = fixtureUnhardenedCssStripper(headline.css);
+    const headlinePinned = ['.a{content:', '"'].join('');
+    if (headlineNaiveOut !== headlinePinned) {
+      return bad(
+        `TEETH T10e: the naive stripper's output on "${HEADLINE_CELL}" was ` +
+          `${JSON.stringify(headlineNaiveOut)}, expected the EXACT pinned wrong output ` +
+          `${JSON.stringify(headlinePinned)}`,
+      );
+    }
   }
   teeth++;
 
