@@ -254,9 +254,18 @@ export class BattleView {
     hpBar.style.cssText =
       'margin-top:4px;background:#333;border-radius:2px;height:12px;overflow:hidden;';
     const hpFill = document.createElement('div');
+    // rb-10 (residual R-m23-s2-X4, M23 §2.5, ADR-0213): this class is the ONLY handle a
+    // stylesheet has on an element built by `createElement`, and the width animation lives
+    // on `.hp-fill` in `client/src/styles.css` precisely so the reduced-motion media query
+    // there can neutralise it. An inline animation declaration wins over every stylesheet
+    // rule at every specificity, so re-adding one here — in any spelling, including
+    // `el.animate(...)` or `cssText +=` — silently defeats that guard.
+    // Gated by `evals/reduced-motion-hp-bar.eval.mjs` and the `RM3-HP-FILL` tooth below.
+    // `width` and `background` stay inline: both are computed per render.
+    hpFill.className = 'hp-fill';
     const pct = card.hpPercent;
     const color = pct > 50 ? '#4a4' : pct > 20 ? '#aa4' : '#a44';
-    hpFill.style.cssText = `width:${pct}%;height:100%;background:${color};transition:width 0.3s;`;
+    hpFill.style.cssText = `width:${pct}%;height:100%;background:${color};`;
     hpBar.appendChild(hpFill);
     el.appendChild(hpBar);
 
