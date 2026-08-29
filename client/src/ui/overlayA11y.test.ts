@@ -98,6 +98,12 @@ function mountRootFor(id: OverlayId): { root: HTMLElement; target: HTMLElement }
 /** Builds the shipped-shape live-region fixture: `#a11y-live`, `aria-live="polite"`,
  *  `aria-atomic="true"`, a direct `<body>` child — the exact shape `client/index.html:154` ships. */
 function mountLiveNode(): HTMLElement {
+  // Idempotent by construction. The LRC-ADOPT loop calls this once per OverlayId, and a close
+  // restores the previous node to `<body>` rather than removing it — so an append-only helper would
+  // leave TWO `#a11y-live` nodes in the document from the second iteration on and red the
+  // exactly-one-region assertion for a fixture reason. Removing any prior node first keeps that
+  // assertion measuring the IMPLEMENTATION (a clone or a mirror) and nothing else.
+  document.getElementById(LIVE_REGION_ID)?.remove();
   const node = document.createElement('div');
   node.id = LIVE_REGION_ID;
   node.setAttribute('aria-live', 'polite');

@@ -65,6 +65,7 @@
 
 import { t } from './a11yCopy';
 import { installTrap } from './focusTrap';
+import { adoptLiveRegion } from './liveRegion';
 import { OVERLAY_A11Y, type OverlayId } from './overlayRegistry';
 
 /** Everything a close needs, captured at open time. One per open overlay; see the module header. */
@@ -77,6 +78,10 @@ interface OpenRecord {
   readonly timer: ReturnType<typeof setTimeout>;
   /** The focus trap's uninstall handle (ui/focusTrap.ts). */
   readonly uninstall: () => void;
+  /** The live region's custody handle (ui/liveRegion.ts, ADR-0214) — same shape and lifecycle as
+   *  `uninstall`. Never `null`: with no live region in the document `adoptLiveRegion` returns a
+   *  no-op, so there is no branch here. */
+  readonly releaseLive: () => void;
 }
 
 const OPEN_OVERLAYS = new Map<OverlayId, OpenRecord>();
@@ -107,12 +112,25 @@ export function openOverlayA11y(id: OverlayId, root: HTMLElement): void {
   root.setAttribute('aria-modal', 'true');
   root.setAttribute('aria-label', t(meta.labelKey));
 
+  // ADR-0214: `aria-modal="true"` above tells assistive technology to ignore everything outside
+  // `root` — including the live region, which A11Y-10 places as a direct `<body>` child. Move it
+  // inside. Three things about this call site are load-bearing:
+  //   * it is on the COMMON path, below the fresh/re-open merge, so a re-open with a DIFFERENT root
+  //     re-homes the node (a re-open on the same root is a no-op inside `adoptLiveRegion`);
+  //   * it is SYNCHRONOUS, never inside the deferred-focus timer below — a same-tick close clears
+  //     that timer, so a deferred move would silently never happen while the record claimed custody;
+  //   * it runs before `OPEN_OVERLAYS.set`, because its release closure is a field of that record.
+  // The previous record's release closure is deliberately NOT called on a re-open: the adopt above
+  // has already re-homed the node, so calling it would bounce the region through `<body>` for one
+  // statement — and its own `root.contains` guard makes it inert anyway.
+  const releaseLive = adoptLiveRegion(root);
+
   const uninstall = installTrap(root);
   const timer = setTimeout(() => {
     root.querySelector<HTMLElement>(meta.initialFocusSelector)?.focus();
   }, 0);
 
-  OPEN_OVERLAYS.set(id, { root, returnFocus, timer, uninstall });
+  OPEN_OVERLAYS.set(id, { root, returnFocus, timer, uninstall, releaseLive });
 }
 
 /**
@@ -142,6 +160,8 @@ export function closeOverlayA11y(id: OverlayId, fallbackFocus: HTMLElement | nul
   record.root.removeAttribute('role');
   record.root.removeAttribute('aria-modal');
   record.root.removeAttribute('aria-label');
+  // ADR-0214: hand the live region back to `<body>`. Inert if a later overlay has since adopted it.
+  record.releaseLive();
 
   let restore: HTMLElement | null = null;
   if (record.returnFocus?.isConnected) restore = record.returnFocus;
