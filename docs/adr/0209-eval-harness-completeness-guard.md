@@ -1,0 +1,259 @@
+# 0209 — The eval harness carries its own completeness guard: a premature exit can no longer end the run at zero
+
+**Status:** Accepted
+**Date:** 2026-08-28
+**Slice:** rb-5 (residual R-m22-s0-X4)
+**Supersedes:** —
+**Amends:** —
+**Subsystems:** ci-gates, tooling-docs
+**Decision:** `evals/run.mjs` asserts at `'exit'` that every discovered eval reported a result, raising a zero exit code to 1 when the count is short or any eval failed, so a module-scope `process.exit()` can no longer end the run at green.
+
+---
+
+## Context and problem statement
+
+`evals/run.mjs` is the whole JavaScript gate tier: `just ci` runs `just eval`, which runs
+`node evals/run.mjs`, which globs `evals/*.eval.mjs`, `await import()`s each module into ONE
+shared process, calls its default export, prints `eval PASS:` / `eval FAIL:`, counts the
+failures, and ends with `process.exit(failed ? 1 : 0)`. 94 eval files ride on that one line.
+
+Every eval's module BODY therefore executes inside the harness process. An eval that calls
+`process.exit()` at module scope ends the run where it stands: the remaining evals never
+execute, and — the part that makes it dangerous rather than merely noisy — the final
+`process.exit(failed ? 1 : 0)` never runs, so the FAIL lines *already printed above it* are
+never converted into an exit code. The run exits 0 and CI is green.
+
+This is not hypothetical. Thirteen evals ship a standalone-runner block guarded by
+`path.resolve(process.argv[1] ?? '') === fileURLToPath(import.meta.url)` whose body ends in
+`process.exit(result.pass ? 0 : 1)`. Under the harness `process.argv[1]` is
+`<repo>/evals/run.mjs` — a real sibling file in the same directory — so a guard widened to
+compare `path.dirname(...)`, or to `endsWith('run.mjs')`, fires at import time. Slice m22-s0
+measured exactly that: **37 of 90 evals ran, 3 already-printed `eval FAIL:` lines were
+swallowed, `node evals/run.mjs` exited 0, and `just ci` was green** (residual R-m22-s0-X4).
+`ARCHITECTURE.md` has recorded the hazard since M22 s0; nothing enforced it.
+
+The harness's only vacuity floor was `files.length === 0`. Nothing asserted that every
+*discovered* eval actually produced a result. A gate whose failure mode is "runs less of
+itself and reports success" is worse than no gate, because it is indistinguishable from a
+green one in the log.
+
+Triage for this slice measured a **second, distinct class** of the same root cause: an eval
+whose module body does `process.exit = () => {}` neuters run.mjs's own final call, node then
+exits naturally with `process.exitCode === undefined`, and a run with a genuine `eval FAIL:`
+exits 0. Both classes are the same defect stated once: *the verdict rode entirely on one
+`process.exit` call that any co-resident module could pre-empt or remove.*
+
+## Considered alternatives
+
+- **A — Run each eval in a child process.** Structurally immune: a child that exits early
+  cannot take the parent with it. REJECTED. It is a behaviour change, not a fix: several
+  gates deliberately depend on the shared realm (`evals/rekey-contract-surface.eval.mjs`
+  freezes `REKEY_MANIFEST` precisely *because* "every eval shares ONE module instance under
+  `run.mjs`", and rb-3's FG72c performs the suite's one real `Object.prototype` write to
+  prove a co-resident eval cannot pollute the G6 manifest — see ADR-0208). Forking per eval
+  would silently retire those properties, turn a 39-line harness into a process pool, and
+  multiply a ~49 s suite by 94 module-load costs. Wrong slice, and not obviously desirable.
+
+- **B — Monkey-patch `process.exit` in run.mjs before importing anything.** Deterministic
+  and not subject to handler ordering. REJECTED: it changes what `process.exit` MEANS for
+  every eval in the tree (an eval that legitimately exits would be silently redirected), it
+  is itself trivially re-patched by a later import, and it buys nothing against the accidental
+  case — which is the whole threat model, since evals are first-party code.
+
+- **C — Assert completeness after the loop.** REJECTED as a non-fix: the code after the loop
+  is exactly the code a premature exit skips.
+
+- **D — Count the printed `eval PASS:`/`eval FAIL:` lines from the justfile.** REJECTED:
+  moves the invariant out of the file that owns it into a shell pipeline, and `just eval`'s
+  body is only required to CONTAIN `node evals/run.mjs` — a wrapper is not enforced anywhere.
+
+- **E — Chosen: an exit-time completeness assertion inside run.mjs.**
+
+## Decision outcome
+
+- **Chosen: E.** `run.mjs` keeps a `completed` counter incremented after each eval's result
+  line is printed, and registers — immediately after the zero-eval guard, so `files` is
+  populated — a `process.on('exit')` handler that fires on EVERY termination path:
+
+  ```js
+  // rb-5:exit-verdict BEGIN
+  process.on('exit', () => {
+    const incomplete = completed !== files.length;
+    if ((incomplete || failed > 0) && !process.exitCode) process.exitCode = 1;   // verdict FIRST
+    if (incomplete) {
+      try { console.error('eval: INCOMPLETE RUN — <completed> of <files.length>, in <inFlight> …'); }
+      catch { /* a broken stderr must never undo the verdict above */ }
+    }
+  });
+  // rb-5:exit-verdict END
+  ```
+
+  **A handler that prints an unguarded diagnostic before committing the code is a fail-OPEN.**
+  That was the first draft; the red-team lens broke it. With a `console.error` that throws — a
+  poisoned console, EPIPE from a truncating `| head`, EIO on a full disk — the handler aborts
+  mid-way, and node honours the exit code `process.exit(0)` had ALREADY committed: **observed
+  exit 0**, with a genuine `eval FAIL:` on screen.
+
+  Two independent protections close it, and the mutation probe measured each in isolation against
+  that exact corpus (poisoned `console.error` + `process.exit(0)` + a real FAIL):
+
+  | handler shape | observed exit |
+  |---|---|
+  | verdict after an unguarded print (the first draft) | **0** — fail-open |
+  | verdict after the print, print in `try`/`catch` | 1 |
+  | verdict first, print unguarded | 1 |
+  | verdict first, print in `try`/`catch` (**shipped**) | 1 |
+
+  So EITHER measure alone suffices, and the shipped handler carries both. That is worth stating
+  because it changes what a future edit may safely do: removing one is an equivalent
+  implementation, removing both is the defect. A genuine `process.exit(5)` is still observed as 5
+  in every row. The probe's M9 mutant therefore removes BOTH — an earlier revision removed only
+  the ordering, which is an equivalent implementation, and it correctly showed up as a SURVIVOR
+  rather than being laundered by re-pointing the tooth at whatever else happened to fire.
+
+  `console.error` was kept rather than `writeSync(2, …)`. The flush concern is real in principle —
+  stdio to a pipe is async on POSIX, and this run's own measurements show a child losing buffered
+  **stdout** in 4 of 20 runs when it `process.exit()`s with a loaded pipe. But the guard's stderr
+  write was measured lost 0/25 with both streams loaded, `writeSync` can throw on EPIPE just the
+  same, and the ordering fix above already makes the verdict independent of the print succeeding.
+  The truncation risk is instead handled where it actually bites: the proof-of-teeth redirects the
+  child's stdout and stderr to FILES (synchronous on POSIX) rather than pipes.
+
+  The sentinel comments are not decoration — the proof-of-teeth splices that exact region out of
+  the live file to construct the pre-fix harness, so the RED control is derived from the shipped
+  source rather than from a transcribed copy that could silently go stale.
+
+  The loop records the file it is about to import in `inFlight`, so the diagnostic can NAME
+  the eval that was running when the run ended instead of asking a reader to infer it from
+  the gap in 94 log lines. The terminal `process.exit(failed ? 1 : 0)` is DELIBERATELY kept:
+  dropping it would make normal completion depend on the event loop draining, and
+  `evals/account-e2e.eval.mjs` spawns a `spacetime` host and a driver it tears down with
+  fire-and-forget kills — today's explicit exit masks any straggler handle, and trading a
+  fast wrong exit code for an intermittent hang would be a worse gate, not a better one.
+  The handler fires on that terminal call too, and can still correct the code before the
+  process dies, so keeping both costs nothing.
+
+  This works because of a documented ordering in node's `process.exit(code)`: it assigns
+  `process.exitCode`, EMITS `'exit'`, and only THEN reads `process.exitCode` back to really
+  exit. A handler can therefore still raise a zero code. Measured on both node versions in
+  play here — 24.13.1 (the pinned toolchain) and 18.19.1 (the `mr-gates` CHECK environment):
+  a handler setting `exitCode = 7` after `process.exit(0)` yields observed exit 7.
+
+- **Both clauses are measured, not speculative.** `incomplete` is R-m22-s0-X4. `failed > 0`
+  is the neutered-`process.exit` class found in triage, and it is what makes the harness's
+  verdict independent of its own final call surviving. It costs one term in an existing
+  boolean and no new structure.
+
+- **Neither clause clobbers a non-zero code.** A module-scope `process.exit(3)` still exits 3;
+  the guard only ever raises 0 (or `undefined`) to 1. A gate that rewrote a real exit code
+  would be destroying evidence.
+
+- **Consequences.**
+  - Positive: the two measured false-green classes are now loud, and the diagnostic names the
+    cause (a module-scope exit / a widened main guard) so the next person does not re-derive it.
+  - Positive: the fix is 12 lines in the file that owns the invariant, with no new dependency,
+    no new module, and no change to how evals are written or discovered.
+  - Negative / accepted: this is defence against ACCIDENTAL truncation, not against a hostile
+    eval. Evals are first-party code in this repo. Four shapes were MEASURED to defeat the guard
+    and are deliberately left open, because closing any of them needs alternative A or an
+    out-of-band wrapper:
+    (i) `process.reallyExit(0)` at module scope — that is the primitive `process.exit()` calls
+    AFTER emitting `'exit'`, so the event never fires: exit 0 with no diagnostic at all, the
+    worst of the four; (ii) an eval registering its own LATER `'exit'` handler that resets
+    `process.exitCode = 0` — listeners fire in registration order and the last writer wins;
+    (iii) `Object.defineProperty(process, 'exitCode', { get: () => 0, set() {} })`, which also
+    discards the internal write; (iv) a genuine hang from an un-`unref`'d handle, which `run.mjs`
+    cannot time out because it has no per-eval budget — CI availability rests on the job timeout.
+    Recorded here so each limit is a decision rather than an oversight.
+  - **Explicitly NOT closed — the DELETED-eval gap.** `ARCHITECTURE.md:187` (the `just a11y-e2e` decay-ratchet paragraph) records that
+    `evals/run.mjs` fails only at zero eval files, so deleting an eval leaves `just ci` green
+    one check lighter. That statement stays LITERALLY TRUE after this ADR: a deleted file
+    shrinks `files.length` itself, before the loop starts, so `completed === files.length`
+    holds trivially. This guard closes mid-loop TRUNCATION, not roster DECAY; decay is the
+    nightly `a11y-e2e` ratchet's job (m23-s11), and generalising it is a different slice.
+    The two must not be conflated — a reader who believes this guard floors the eval count
+    would stop looking for the decay gate.
+  - Also NOT fixed, and now merely better diagnosed: `evals/run.mjs:81`
+    (`const ok = res.pass ? …`) sits OUTSIDE the per-eval `try`/`catch`, so an eval whose
+    `default()` returns nothing crashes the loop with a raw `TypeError` instead of a clean
+    `eval THREW:` line. That path is already fail-CLOSED (exit 1) and this slice adds an
+    `INCOMPLETE RUN` line to it, which is the right split: normalising the result shape is a
+    behaviour change on a different failure class and wants its own fixtures.
+  - Follow-up: `evals/ci-gate-wiring.eval.mjs:426 runMjsIsIntact()` and
+    `evals/gate-hardening-config.eval.mjs:54 runMjsHasEvalIsolation()` both source-scan
+    `run.mjs`; neither is in this slice's touches, so neither pins the new guard. The
+    behavioural proof lives in `evals/run-completeness.eval.mjs` (below), which is stronger
+    than a text pin — but adding the guard to `runMjsIsIntact`'s substring list is a cheap
+    belt for a later slice that owns that file.
+
+## Proof of teeth (ADR-0010)
+
+`evals/run-completeness.eval.mjs` proves the behaviour, not the source text. Each tooth
+copies the REAL `evals/run.mjs` into a `mkdtemp` `<tmp>/evals/`, writes fixture
+`*.eval.mjs` files beside it, and spawns `node evals/run.mjs` with `cwd = <tmp>` — run.mjs
+resolves `path.resolve('evals')` from the cwd, so the child is the shipped harness running a
+controlled corpus. Nothing is ever written inside the worktree.
+
+The teeth are stated in both polarities on purpose: a guard that reds everything is as
+useless as one that reds nothing, so a clean corpus must still exit 0 and a genuinely failing
+corpus must still exit 1. The suite additionally runs the PRE-FIX harness text against the
+same fixtures and asserts it lets them through — the gate's own RED, executed every run, so
+it can never decay into a check that passes because the fixtures stopped biting.
+
+### Residuals the post-implementation red-team measured against the SHIPPED pair
+
+None is an active defect and none blocks: each is an UNTESTED invariant or a gate-coverage gap in
+`evals/run-completeness.eval.mjs`, and closing any of them means editing this slice's own gating
+test — which the implementer may not do. Recorded so the successor starts from evidence.
+
+- **The `RUN_MJS_PATH` pin is untested.** The eval resolves the harness under test as
+  `fileURLToPath(new URL('./run.mjs', import.meta.url))` — correct, self-relative, and the reason
+  the gate validates the file it actually ships beside. Nothing asserts it STAYS self-relative:
+  hardcoding it at the real worktree path while shipping a hollowed `run.mjs` was measured to
+  report `pass: true (20 teeth verified)` while the shipped harness swallowed two FAILs and exited
+  0. Note that the obvious fix — a needle grepping the eval's own source for the expression — is
+  the shape this repo has already measured four bypasses of; a real fix runs the eval against a
+  deliberately-relocated copy.
+- **RC13 is blind to a crash on the zero-eval path.** Relocating the whole sentinel block above the
+  `files.length === 0` guard while leaving the `let completed/failed/inFlight` declarations behind
+  makes the handler read a variable in its temporal dead zone: measured
+  `ReferenceError: Cannot access 'completed' before initialization`. RC13 still passes, because
+  `process.exit(1)` had already committed exit 1 and node's uncaught-exception default is also 1 —
+  so status and substrings both match. Fail-CLOSED, and it takes a deliberate hand edit rather than
+  a plausible slip, but RC13 pins the code and the message and never "the run did not also crash".
+- **`expectStatus` is load-bearing for ~9 of the 20 teeth**, which have no second assertion; gutting
+  that one helper to `return null` was measured to report a full green. Inherent to a shared helper.
+- **Nothing inside the eval asserts its own tooth COUNT**, so a silently dropped `teeth.push(...)`
+  reports `pass: true` with a quietly smaller `(N teeth verified)`. Closed at the ledger level
+  instead — this slice's gate X1 pins the literal `(20 teeth verified)`.
+
+Seventeen further wrong implementations of the guard were written and executed beyond the nine in
+the mutation probe (OR-vs-AND on the clobber guard, an off-by-one completeness test, `failed >= 0`,
+`process.exitCode !== 1`, an operator-precedence slip, a double-count in the `catch` branch,
+`inFlight` moved below the import, an early `return`, a duplicate handler, a boolean/string exit
+code). All were caught by named teeth except the relocation above, and three were confirmed to be
+behaviourally EQUIVALENT rather than wrong — the string exit code (node coerces it), an atomic
+reorder of the block with its declarations, and a redundant second handler.
+
+## Confirmation
+
+`evals/run-completeness.eval.mjs` — auto-discovered by `evals/run.mjs`, so it runs in
+`just eval` → `just ci` on every PR. It is a BEHAVIOURAL gate, not a source-text pin: each
+tooth spawns the shipped `evals/run.mjs` over a controlled fixture corpus in a `mkdtemp`
+directory and asserts the child's exit code, so deleting or hollowing the guard block in
+`evals/run.mjs` reds it, and no rewording of the diagnostic can green it.
+
+The two existing source scans over `run.mjs` — `evals/ci-gate-wiring.eval.mjs:426`
+(`runMjsIsIntact`) and `evals/gate-hardening-config.eval.mjs:54`
+(`runMjsHasEvalIsolation`) — are OUTSIDE this slice's `touches:` and are deliberately left
+unchanged. Note for whoever next owns `ci-gate-wiring`: its `process.exit(1)` needle is
+satisfied by the ZERO-EVAL guard at `evals/run.mjs:19`, not by the loop's terminal
+`process.exit(failed ? 1 : 0)`, which does not contain that substring — a pre-existing
+weakness this ADR does not introduce and does not fix.
+
+## References
+
+- Residual `R-m22-s0-X4` — `specs/monster-realm-v2/M-residual-backlog.spec.md` §rb-5
+- ADR-0010 (proof-of-teeth), ADR-0043 (what stays out of the hermetic gate)
+- ADR-0208 §rb-3 — the shared-realm properties alternative A would have retired
+- `ARCHITECTURE.md` — the eval-harness blind-spot record this ADR half-closes
