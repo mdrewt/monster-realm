@@ -201,7 +201,8 @@ pub fn party_slot_none() -> u32 {
 }
 
 /// The account-deletion grace window in ms — the window between a deletion
-/// request and irreversible erasure (M22 spec §4.3/§4.5/§7.2, ADR-0031),
+/// request and irreversible erasure (M22 spec §4.3/§4.5, ADR-0031; consumed
+/// by S8's countdown, spec §7.2),
 /// single-sourced from `game-core` so TS never hard-codes it.
 ///
 /// Returns `i64`, which crosses the boundary as a JS `BigInt`. That is
@@ -336,9 +337,12 @@ mod tests {
             super::deletion_grace_ms_default(),
             game_core::DELETION_GRACE_MS_DEFAULT
         );
-        // Non-vacuity: a grace window of zero (or negative) would make every
-        // pending deletion instantly due, so the parity assert above must not
-        // be satisfiable by two zeroed sides.
+        // Non-vacuity backstop: a zero or negative window would make every
+        // pending deletion instantly due. `game-core` already asserts this with
+        // a better message (`grace_default_is_positive_so_none_cannot_alias_true`,
+        // game-core/src/accounts/deletion_tests.rs), so this line is deliberate
+        // redundancy for the day that test moves or is deleted -- not the
+        // primary guard, and not load-bearing for the parity assert above.
         assert!(super::deletion_grace_ms_default() > 0);
     }
 

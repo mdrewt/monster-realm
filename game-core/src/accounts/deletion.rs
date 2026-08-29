@@ -29,6 +29,14 @@
 // operator picks the real number. `_DEFAULT` here means "the literal an
 // operator replaces", NOT that a runtime override column exists; S2 must not
 // invent one.
+//
+// WHEN YOU RETUNE IT, keep the right-hand side a BARE INTEGER LITERAL (digits
+// and `_` separators only). `evals/deletion-grace-wasm-ssot.eval.mjs` reads
+// this declaration as the oracle for the value the `client-wasm` accessor
+// `deletion_grace_ms_default()` must return, and it refuses to evaluate an
+// expression such as `7 * 24 * 60 * 60 * 1000` rather than guess -- so an
+// expression form fails that gate loudly. Retuning the VALUE is otherwise
+// free: that eval pins the delegation, never the number. (rb-8, ADR-0212)
 pub const DELETION_GRACE_MS_DEFAULT: i64 = 604_800_000;
 
 /// Is a pending deletion request past its grace window at `now_ms`?

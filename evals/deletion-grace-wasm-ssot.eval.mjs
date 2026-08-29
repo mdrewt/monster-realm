@@ -31,14 +31,28 @@
 //     single target value. It CANNOT close `Number('60480' + '0000')`,
 //     base-36 encodings, split-string concatenation, or a value buried in a
 //     JSON/YAML fixture. Treat a clean G5 as "no naive duplicate today", not
-//     "provably impossible to duplicate".
+//     "provably impossible to duplicate". In particular it is NUMERIC-ONLY:
+//     the likeliest real S8 drift is PROSE — a hard-coded "7 days" in the
+//     countdown's UX copy — and no numeric scan can see that. The closing
+//     tooth for both is the positive one S8 owns: its countdown label must be
+//     FORMATTED FROM this accessor, never authored as a literal duration.
+//   - The clauses short-circuit in order G1 -> G2 -> G3 -> G4 -> G5, so a run
+//     that breaks the accessor AND ships a TS duplicate reports only the
+//     first. That is a diagnosis limit, not a bypass: the second failure
+//     surfaces on the next run, and CI stays red until both are fixed.
+//   - G5 is coupled to the constant's VALUE, not just its shape. It is exact
+//     at the current value (0 hits over 211 files), but a retune to a rounder
+//     number (e.g. one day) would collide with unrelated cooldown fixtures and
+//     red this gate on the very edit it exists to make safe. That failure is
+//     loud and self-explaining (see the FAIL message), never silent.
 //   - `accessorBody`'s brace-balanced reader does not understand Rust string
 //     or char literals — a body containing a `{`/`}` inside a string would
 //     desync its depth counter. The accessors this gate inspects are single
 //     expressions with no string literals, so this is out of scope here, but
 //     it is not a general-purpose Rust body extractor.
-import { readFileSync, existsSync, readdirSync } from 'node:fs';
+
 import { execSync } from 'node:child_process';
+import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import path from 'node:path';
 
@@ -54,6 +68,40 @@ const DELEGATE_EXPR = 'game_core::DELETION_GRACE_MS_DEFAULT';
 // never fools a text-shape check — only real code is inspected.
 export function stripRustComments(src) {
   return src.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/[^\n]*/g, '');
+}
+
+// Locate the ONE AND ONLY occurrence of a `pub fn <name>(` marker, or throw.
+//
+// Bites two MEASURED red-team bypasses of a plain `indexOf`, which silently
+// binds the FIRST textual hit:
+//   (a) a raw-string decoy - `const _X: &str = r#"#[wasm_bindgen] ... pub fn
+//       deletion_grace_ms_default() -> i64 { game_core::DELETION_GRACE_MS_DEFAULT }"#;`
+//       planted ABOVE the real accessor. `stripRustComments` removes comments but
+//       NOT string literals, so both the shape pin and the attribute walk read the
+//       decoy while the real exported fn returns `1_209_600_000i64 / 2`.
+//   (b) a `#[cfg(target_arch = "wasm32")]` / `#[cfg(not(...))]` split - two real
+//       definitions, the honest one first, the shipped one second. That exact
+//       pattern already exists in this file (`zone_map_ok`/`zone_map_err`, :72-92),
+//       so it reads as idiomatic rather than suspicious.
+// Uniqueness closes BOTH without needing a Rust string-literal parser: either
+// attack requires a second occurrence of the marker. This mirrors the hardening
+// `parseGraceConst` already had (`matchAll` + exactly-one) - the red-team could
+// not break that primitive precisely because it counts instead of taking the first.
+export function requireSoleDefinition(strippedSrc, marker) {
+  let count = 0;
+  let firstIdx = -1;
+  for (let i = strippedSrc.indexOf(marker); i !== -1; i = strippedSrc.indexOf(marker, i + 1)) {
+    if (count === 0) firstIdx = i;
+    count++;
+  }
+  if (count === 0) return -1;
+  if (count > 1) {
+    throw new Error(
+      `requireSoleDefinition: ${count} occurrences of \`${marker}\` in the scanned source, expected exactly one ` +
+        '(a decoy string literal or a cfg-split twin would let a first-hit search bind the wrong definition)',
+    );
+  }
+  return firstIdx;
 }
 
 // Extract the body of `pub fn <fnName>(...) -> ... { <body> }` with a REAL
@@ -78,7 +126,7 @@ export function accessorBody(strippedSrc, fnName) {
     throw new Error(`accessorBody: refusing a non-identifier fnName ${JSON.stringify(fnName)}`);
   }
   const marker = `pub fn ${fnName}(`;
-  const fnIdx = strippedSrc.indexOf(marker);
+  const fnIdx = requireSoleDefinition(strippedSrc, marker);
   if (fnIdx === -1) return null;
   const braceIdx = strippedSrc.indexOf('{', fnIdx);
   if (braceIdx === -1) {
@@ -96,7 +144,9 @@ export function accessorBody(strippedSrc, fnName) {
       }
     }
   }
-  throw new Error(`accessorBody: unbalanced braces walking the body of ${fnName} (never returned to depth 0)`);
+  throw new Error(
+    `accessorBody: unbalanced braces walking the body of ${fnName} (never returned to depth 0)`,
+  );
 }
 
 // Collapse whitespace runs to one space and trim, so formatting differences
@@ -115,6 +165,7 @@ export function normalizeWhitespace(s) {
 // `checkG1` cannot see them — this is the second half of G1's teeth.
 export function hasAliasOrRebinding(strippedSrc) {
   if (/\buse\b[^;]*\bas\s+game_core\b/.test(strippedSrc)) return true;
+  if (/\bextern\s+crate\b[^;]*\bas\s+game_core\b/.test(strippedSrc)) return true;
   if (/\b(?:const|static|let)\s+DELETION_GRACE_MS_DEFAULT\b/.test(strippedSrc)) return true;
   if (/\buse\b[^;]*\bas\s+DELETION_GRACE_MS_DEFAULT\b/.test(strippedSrc)) return true;
   return false;
@@ -145,7 +196,7 @@ export function hasBindgenAttr(strippedSrc, fnName) {
     throw new Error(`hasBindgenAttr: refusing a non-identifier fnName ${JSON.stringify(fnName)}`);
   }
   const marker = `pub fn ${fnName}(`;
-  const fnIdx = strippedSrc.indexOf(marker);
+  const fnIdx = requireSoleDefinition(strippedSrc, marker);
   if (fnIdx === -1) return false;
   let i = fnIdx;
   while (i > 0 && /\s/.test(strippedSrc[i - 1])) i--;
@@ -178,14 +229,18 @@ export function parseGraceConst(rustSrc) {
   const declRe = /pub const DELETION_GRACE_MS_DEFAULT\s*:\s*i64\s*=\s*([^;]+);/g;
   const matches = [...stripped.matchAll(declRe)];
   if (matches.length === 0) {
-    throw new Error('parseGraceConst: no `pub const DELETION_GRACE_MS_DEFAULT: i64 = ...;` declaration found');
+    throw new Error(
+      'parseGraceConst: no `pub const DELETION_GRACE_MS_DEFAULT: i64 = ...;` declaration found',
+    );
   }
   if (matches.length > 1) {
     throw new Error(`parseGraceConst: ${matches.length} declarations found, expected exactly one`);
   }
   const rhs = matches[0][1].trim();
   if (!/^[0-9_]+$/.test(rhs)) {
-    throw new Error(`parseGraceConst: initializer is not a bare integer literal (got \`${rhs}\`) — refusing to evaluate an expression`);
+    throw new Error(
+      `parseGraceConst: initializer is not a bare integer literal (got \`${rhs}\`) — refusing to evaluate an expression`,
+    );
   }
   const digits = rhs.replace(/_/g, '');
   if (digits.length === 0) {
@@ -234,7 +289,7 @@ function matchNumberTokenAt(text, pos) {
 }
 
 function tokenValue(raw) {
-  let s = raw.endsWith('n') ? raw.slice(0, -1) : raw;
+  const s = raw.endsWith('n') ? raw.slice(0, -1) : raw;
   if (s[0] === '0' && (s[1] === 'x' || s[1] === 'X')) {
     const hex = s.slice(2).replace(/_/g, '');
     if (hex.length === 0) return null;
@@ -256,42 +311,118 @@ function skipInlineWhitespace(text, pos) {
   return i;
 }
 
-// Report every maximal numeric literal or pure-numeric `*`/`+` chain in
+// Read the operator at `pos`, if it is one this folder understands.
+// `*` `/` `<<` bind tighter than `+` `-`, matching real JS/TS precedence.
+function matchOperatorAt(text, pos) {
+  if (text[pos] === '<' && text[pos + 1] === '<') return { op: '<<', end: pos + 2, tight: true };
+  const ch = text[pos];
+  if (ch === '*' || ch === '/') return { op: ch, end: pos + 1, tight: true };
+  if (ch === '+' || ch === '-') return { op: ch, end: pos + 1, tight: false };
+  return null;
+}
+
+// Fold a token/operator run with correct precedence: collapse the tight
+// operators (`*` `/` `<<`) first, then the loose ones (`+` `-`) left to right.
+// Integer division that would truncate yields `null` (the run is not a clean
+// integer expression, so it is not a duplicate we can claim).
+function foldWithPrecedence(values, ops) {
+  const vs = [values[0]];
+  const looseOps = [];
+  for (let i = 0; i < ops.length; i++) {
+    const { op, tight } = ops[i];
+    const rhs = values[i + 1];
+    if (!tight) {
+      looseOps.push(op);
+      vs.push(rhs);
+      continue;
+    }
+    const lhs = vs[vs.length - 1];
+    if (op === '*') vs[vs.length - 1] = lhs * rhs;
+    else if (op === '<<') {
+      if (rhs < 0n || rhs > 64n) return null;
+      vs[vs.length - 1] = lhs << rhs;
+    } else {
+      if (rhs === 0n || lhs % rhs !== 0n) return null;
+      vs[vs.length - 1] = lhs / rhs;
+    }
+  }
+  let acc = vs[0];
+  for (let i = 0; i < looseOps.length; i++) {
+    acc = looseOps[i] === '+' ? acc + vs[i + 1] : acc - vs[i + 1];
+  }
+  return acc;
+}
+
+// Report every maximal numeric literal or pure-numeric arithmetic run in
 // `text` that evaluates to exactly `targetBigInt`. Returns an array of the
 // matched raw text (empty means "no duplicate found"). See file header for
 // what this detector cannot close.
+//
+// `*` `/` `+` `-` `<<` are all folded, because the red-team MEASURED that a
+// `*`/`+`-only folder misses the plausible factorisations `1209600000 / 2`,
+// `590625 << 10` and `604800001 - 1`. Precedence is honoured, because the same
+// pass MEASURED that a naive left-to-right fold reports `100 + 6047900 * 100`
+// as a duplicate when it is not one (it is 604790100, not the target) - a
+// false positive that would red an innocent, unrelated PR.
 export function findNumericDuplicates(text, targetBigInt) {
   const hits = [];
   for (let i = 0; i < text.length; i++) {
     const first = matchNumberTokenAt(text, i);
     if (!first) continue;
-    let value = tokenValue(first.raw);
-    if (value === null) continue;
+    const firstValue = tokenValue(first.raw);
+    if (firstValue === null) continue;
+    const values = [firstValue];
+    const ops = [];
     let end = first.end;
     let chainText = first.raw;
     for (;;) {
       const afterWs = skipInlineWhitespace(text, end);
-      const op = text[afterWs];
-      if (op !== '*' && op !== '+') break;
-      const nextStart = skipInlineWhitespace(text, afterWs + 1);
+      const operator = matchOperatorAt(text, afterWs);
+      if (!operator) break;
+      const nextStart = skipInlineWhitespace(text, operator.end);
       const next = matchNumberTokenAt(text, nextStart);
       if (!next) break;
       const nextValue = tokenValue(next.raw);
       if (nextValue === null) break;
-      value = op === '*' ? value * nextValue : value + nextValue;
-      chainText = `${chainText} ${op} ${next.raw}`;
+      values.push(nextValue);
+      ops.push(operator);
+      chainText = `${chainText} ${operator.op} ${next.raw}`;
       end = next.end;
     }
-    if (value === targetBigInt) hits.push(chainText);
+    const folded = foldWithPrecedence(values, ops);
+    if (folded === targetBigInt) hits.push(chainText);
   }
   return hits;
 }
 
-// Recursively list every `.ts` file under `rootDir`, excluding any subtree
-// rooted at a directory literally named `module_bindings` (the ONLY
-// generated exclusion the spec allows — `*.test.ts` is deliberately NOT
-// exempt: a red-team agent proved a `.test.ts` file exporting a duplicate
-// literal and imported by ordinary `.ts` typechecks clean and bundles).
+// Directories never scanned: dependency/build output, and `module_bindings`
+// (generated by `spacetime generate` — a duplicate there is a codegen bug, not
+// a hand-typed one, and the folder is regenerated wholesale).
+const SKIP_DIRS = new Set([
+  'node_modules',
+  'module_bindings',
+  'dist',
+  'pkg',
+  'coverage',
+  '.vite',
+  'test-results',
+  'playwright-report',
+]);
+
+// Recursively list every `.ts`/`.tsx` file under `rootDir`.
+//
+// The root is all of `client/`, NOT `client/src`: the red-team MEASURED that
+// 20 real `.ts` files live outside `src` (`client/e2e/*.ts`,
+// `client/playwright.config.ts`, `client/vite.config.ts`) and a duplicate
+// planted in any of them would have been permanently invisible — no floor
+// padding required, because those files never counted toward the floor either.
+// `.tsx` is included pre-emptively: none exist today, but a filename-extension
+// blind spot is exactly the kind that goes unnoticed the day JSX arrives.
+//
+// `*.test.ts` is deliberately NOT exempt: the red-team reproduced the house
+// `test-suffix-exemption-admits-disguised-production` failure on this tree — a
+// `.test.ts` exporting a duplicate literal and imported by an ordinary `.ts`
+// typechecks clean and gets bundled.
 function listTsFiles(rootDir) {
   const out = [];
   const stack = [rootDir];
@@ -300,9 +431,9 @@ function listTsFiles(rootDir) {
     const entries = readdirSync(dir, { withFileTypes: true });
     for (const entry of entries) {
       if (entry.isDirectory()) {
-        if (entry.name === 'module_bindings') continue;
+        if (SKIP_DIRS.has(entry.name)) continue;
         stack.push(path.join(dir, entry.name));
-      } else if (entry.isFile() && entry.name.endsWith('.ts')) {
+      } else if (entry.isFile() && (entry.name.endsWith('.ts') || entry.name.endsWith('.tsx'))) {
         out.push(path.join(dir, entry.name));
       }
     }
@@ -423,6 +554,62 @@ pub fn deletion_grace_ms_default() -> i64 {
     expect: 'THROW',
   },
 
+  {
+    id: 'BAD_RAW_STRING_DECOY',
+    kind: 'BAD',
+    clause: 'G1-throw',
+    // MEASURED red-team CRITICAL: `stripRustComments` removes comments but not
+    // string literals, so a raw string carrying an honest-looking definition
+    // steers a first-hit `indexOf` away from the real, obfuscated accessor.
+    input: `
+const _DIAG_TEXT: &str = r#"#[wasm_bindgen]
+#[must_use]
+pub fn deletion_grace_ms_default() -> i64 { game_core::DELETION_GRACE_MS_DEFAULT }"#;
+
+#[wasm_bindgen]
+#[must_use]
+pub fn deletion_grace_ms_default() -> i64 {
+    246912000i64 / 2
+}`,
+    expect: 'THROW',
+  },
+  {
+    id: 'BAD_CFG_SPLIT_TWIN',
+    kind: 'BAD',
+    clause: 'G1-throw',
+    // MEASURED red-team HIGH: two cfg-gated definitions, honest one first.
+    // The same shape already exists in lib.rs (zone_map_ok/zone_map_err), so it
+    // reads as idiomatic. Uniqueness is what makes the first-hit search safe.
+    input: `
+#[cfg(not(target_arch = "wasm32"))]
+pub fn deletion_grace_ms_default() -> i64 {
+    game_core::DELETION_GRACE_MS_DEFAULT
+}
+
+#[wasm_bindgen]
+#[cfg(target_arch = "wasm32")]
+pub fn deletion_grace_ms_default() -> i64 {
+    246912000i64 / 2
+}`,
+    expect: 'THROW',
+  },
+  {
+    id: 'BAD_EXTERN_CRATE_ALIAS',
+    kind: 'BAD',
+    clause: 'G1',
+    // Body text is byte-identical to the honest shape; only the
+    // `extern crate ... as game_core;` redirect makes it BAD.
+    input: `
+extern crate some_other_crate as game_core;
+
+#[wasm_bindgen]
+#[must_use]
+pub fn deletion_grace_ms_default() -> i64 {
+    game_core::DELETION_GRACE_MS_DEFAULT
+}`,
+    expect: false,
+  },
+
   // --- G2: #[wasm_bindgen] must precede the fn --------------------------
   { id: 'GOOD_G2_REAL_SHAPE', kind: 'GOOD', clause: 'G2', input: REAL_SHAPE_SRC, expect: true },
   {
@@ -513,6 +700,52 @@ pub const DELETION_GRACE_MS_DEFAULT: i64 = 222_000;`,
     target: 123456000n,
     expect: true,
   },
+  {
+    id: 'BAD_G5_DIVISION',
+    kind: 'BAD',
+    clause: 'G5',
+    input: `export const GRACE_MS = 246912000 / 2;\n`,
+    target: 123456000n,
+    expect: true,
+  },
+  {
+    id: 'BAD_G5_SHIFT',
+    kind: 'BAD',
+    clause: 'G5',
+    input: `export const GRACE_MS = 241125 << 9;\n`,
+    target: 123456000n,
+    expect: true,
+  },
+  {
+    id: 'BAD_G5_SUBTRACT',
+    kind: 'BAD',
+    clause: 'G5',
+    input: `export const GRACE_MS = 123456001 - 1;\n`,
+    target: 123456000n,
+    expect: true,
+  },
+  {
+    id: 'GOOD_G5_PRECEDENCE',
+    kind: 'GOOD',
+    clause: 'G5',
+    // `100 + 1234460 * 100` is 123_446_100, NOT the target. A left-to-right
+    // fold without precedence computes (100 + 1234460) * 100 == the target and
+    // would red this innocent expression. This fixture is the false-positive
+    // guard for `foldWithPrecedence`.
+    input: `export const UNRELATED = 100 + 1234460 * 100;\n`,
+    target: 123456000n,
+    expect: false,
+  },
+  {
+    id: 'GOOD_G5_TRUNCATING_DIVISION',
+    kind: 'GOOD',
+    clause: 'G5',
+    // 246912001 / 2 truncates in real integer arithmetic; refusing to claim a
+    // hit keeps the detector from inventing duplicates out of rounding.
+    input: `export const UNRELATED = 246912001 / 2;\n`,
+    target: 123456000n,
+    expect: false,
+  },
 ];
 
 function runFixture(fx) {
@@ -546,7 +779,8 @@ function describeActual(threw, actual) {
 }
 
 export default async function () {
-  const name = 'deletion-grace-wasm-ssot (client-wasm deletion_grace_ms_default delegates to game_core::DELETION_GRACE_MS_DEFAULT)';
+  const name =
+    'deletion-grace-wasm-ssot (client-wasm deletion_grace_ms_default delegates to game_core::DELETION_GRACE_MS_DEFAULT)';
 
   // -------------------------------------------------------------------
   // Teeth: every fixture must produce its declared verdict before the
@@ -587,7 +821,11 @@ export default async function () {
   try {
     rawLib = readFileSync(libPath, 'utf8');
   } catch (e) {
-    return { name, pass: false, detail: `FAIL [G1/delegates]: cannot read ${libPath}: ${e.message}` };
+    return {
+      name,
+      pass: false,
+      detail: `FAIL [G1/delegates]: cannot read ${libPath}: ${e.message}`,
+    };
   }
   const strippedLib = stripRustComments(rawLib);
 
@@ -616,7 +854,8 @@ export default async function () {
     return {
       name,
       pass: false,
-      detail: 'FAIL [G1/delegates]: an alias/rebinding of `game_core` or `DELETION_GRACE_MS_DEFAULT` was found in lib.rs',
+      detail:
+        'FAIL [G1/delegates]: an alias/rebinding of `game_core` or `DELETION_GRACE_MS_DEFAULT` was found in lib.rs',
     };
   }
 
@@ -641,14 +880,22 @@ export default async function () {
   }
   const pkgPath = path.resolve('client-wasm/pkg/client_wasm.js');
   if (!existsSync(pkgPath)) {
-    return { name, pass: false, detail: `FAIL [G3/js-reachable]: wasm pkg not found at ${pkgPath}` };
+    return {
+      name,
+      pass: false,
+      detail: `FAIL [G3/js-reachable]: wasm pkg not found at ${pkgPath}`,
+    };
   }
   const nodeRequire = createRequire(import.meta.url);
   let wasm;
   try {
     wasm = nodeRequire(pkgPath);
   } catch (e) {
-    return { name, pass: false, detail: `FAIL [G3/js-reachable]: require(${pkgPath}) threw: ${e.message}` };
+    return {
+      name,
+      pass: false,
+      detail: `FAIL [G3/js-reachable]: require(${pkgPath}) threw: ${e.message}`,
+    };
   }
   if (typeof wasm[FN_NAME] !== 'function') {
     return {
@@ -661,7 +908,11 @@ export default async function () {
   try {
     callResult = wasm[FN_NAME]();
   } catch (e) {
-    return { name, pass: false, detail: `FAIL [G3/js-reachable]: calling wasm.${FN_NAME}() threw: ${e.message}` };
+    return {
+      name,
+      pass: false,
+      detail: `FAIL [G3/js-reachable]: calling wasm.${FN_NAME}() threw: ${e.message}`,
+    };
   }
 
   // -------------------------------------------------------------------
@@ -673,7 +924,11 @@ export default async function () {
   try {
     deletionSrc = readFileSync(deletionPath, 'utf8');
   } catch (e) {
-    return { name, pass: false, detail: `FAIL [G4/value-parity]: cannot read ${deletionPath}: ${e.message}` };
+    return {
+      name,
+      pass: false,
+      detail: `FAIL [G4/value-parity]: cannot read ${deletionPath}: ${e.message}`,
+    };
   }
   let expectedBig;
   try {
@@ -699,12 +954,16 @@ export default async function () {
   // -------------------------------------------------------------------
   // G5: no hand-typed TS (or lib.rs) duplicate of the live value.
   // -------------------------------------------------------------------
-  const clientSrcRoot = path.resolve('client/src');
+  const clientSrcRoot = path.resolve('client');
   let scanFiles;
   try {
     scanFiles = listTsFiles(clientSrcRoot);
   } catch (e) {
-    return { name, pass: false, detail: `FAIL [G5/no-ts-dup]: cannot walk ${clientSrcRoot}: ${e.message}` };
+    return {
+      name,
+      pass: false,
+      detail: `FAIL [G5/no-ts-dup]: cannot walk ${clientSrcRoot}: ${e.message}`,
+    };
   }
 
   const dupHits = [];
@@ -713,7 +972,11 @@ export default async function () {
     try {
       content = readFileSync(file, 'utf8');
     } catch (e) {
-      return { name, pass: false, detail: `FAIL [G5/no-ts-dup]: cannot read ${file}: ${e.message}` };
+      return {
+        name,
+        pass: false,
+        detail: `FAIL [G5/no-ts-dup]: cannot read ${file}: ${e.message}`,
+      };
     }
     const hits = findNumericDuplicates(content, expectedBig);
     if (hits.length > 0) {
@@ -728,18 +991,21 @@ export default async function () {
   }
   const filesScanned = scanFiles.length + 1;
 
-  if (filesScanned < 150) {
+  if (filesScanned < 180) {
     return {
       name,
       pass: false,
-      detail: `FAIL [G5/no-ts-dup]: only scanned ${filesScanned} files (<150) — scan root misconfigured or client/src moved`,
+      detail: `FAIL [G5/no-ts-dup]: only scanned ${filesScanned} files (<180) — scan root misconfigured or client/ moved`,
     };
   }
   if (dupHits.length > 0) {
     return {
       name,
       pass: false,
-      detail: `FAIL [G5/no-ts-dup]: numeric duplicate of the live grace-window value (${expectedBig}ms) found in: ${dupHits.join('; ')}`,
+      detail:
+        `FAIL [G5/no-ts-dup]: numeric duplicate of the live grace-window value (${expectedBig}ms) found in: ${dupHits.join('; ')}` +
+        ' — if DELETION_GRACE_MS_DEFAULT was just retuned, these may be COINCIDENTAL collisions with unrelated' +
+        ' constants rather than real duplicates; check each site before assuming drift.',
     };
   }
 
