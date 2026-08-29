@@ -87,6 +87,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './ui/overlayRegistry';
+import * as rb12CssStripperOracle from '../../evals/a11y-static-shell.eval.mjs';
 
 const INDEX_HTML_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'index.html');
 
@@ -2534,5 +2535,347 @@ describe('ux1-1 (m23-s5/ADR-0206 D5): #help-hint is a native <button>', () => {
       Array.from(hint!.children).map((c) => c.tagName),
       '#help-hint must still have ZERO element children (a leaf text button)',
     ).toEqual([]);
+  });
+});
+
+
+// ===========================================================================
+// RB12 (ADR-0215): stripCssComments becomes single-owned by
+// evals/a11y-static-shell.eval.mjs — client/src/indexShell.test.ts's private copy is deleted and
+// this file imports the owner instead. `parseCssRules` (above) keeps calling `stripCssComments`
+// unchanged, so it is judged by the SAME gates as everything else in this block.
+//
+// `rb12CssStripperOracle` is a NAMESPACE import (not `import { stripCssComments } from ...`) on
+// purpose: while the local `function stripCssComments(...)` above still exists (pre-fix), a bare
+// named import of the same identifier would be a duplicate-declaration SyntaxError and break the
+// WHOLE FILE, including every unrelated describe block above this one. The namespace form adds a
+// single new top-level binding (`rb12CssStripperOracle`) that cannot collide with anything already
+// declared in this module, so the tree stays parseable both before and after the fix — only the
+// gates in THIS block are meant to go red pre-fix, never the rest of the suite.
+// ===========================================================================
+
+/**
+ * RB12-G1 support only: a local, PRIVATE comment stripper — line-comment and block-comment aware
+ * (the delimiter pairs are never typed as literal text in this comment, on purpose — see the
+ * HAZARD note above the shared corpus in evals/a11y-static-shell.eval.mjs), with
+ * string/template-literal awareness so a comment-lookalike inside a string literal is not
+ * mistaken for a real comment. Deliberately NOT an import of a shared stripper: this one
+ * self-referential gate must never depend on another module's correctness to report the truth
+ * about THIS file's own source.
+ */
+function rb12StripJsComments(src: string): string {
+  let out = '';
+  let i = 0;
+  const len = src.length;
+  let state: 'normal' | 'line' | 'block' | 'sq' | 'dq' | 'tl' = 'normal';
+  while (i < len) {
+    const ch = src.charAt(i);
+    const next = i + 1 < len ? src.charAt(i + 1) : '';
+    if (state === 'normal') {
+      if (ch === '/' && next === '/') {
+        state = 'line';
+        i += 2;
+        continue;
+      }
+      if (ch === '/' && next === '*') {
+        state = 'block';
+        i += 2;
+        continue;
+      }
+      if (ch === "'" || ch === '"' || ch === '`') {
+        state = ch === "'" ? 'sq' : ch === '"' ? 'dq' : 'tl';
+        out += ch;
+        i += 1;
+        continue;
+      }
+      out += ch;
+      i += 1;
+      continue;
+    }
+    if (state === 'line') {
+      if (ch === '\n') {
+        out += '\n';
+        state = 'normal';
+      }
+      i += 1;
+      continue;
+    }
+    if (state === 'block') {
+      if (ch === '*' && next === '/') {
+        state = 'normal';
+        i += 2;
+        continue;
+      }
+      if (ch === '\n') out += '\n';
+      i += 1;
+      continue;
+    }
+    const closer = state === 'sq' ? "'" : state === 'dq' ? '"' : '`';
+    if (ch === '\\' && i + 1 < len) {
+      out += ch + src.charAt(i + 1);
+      i += 2;
+      continue;
+    }
+    if (ch === closer) {
+      out += ch;
+      state = 'normal';
+      i += 1;
+      continue;
+    }
+    out += ch;
+    i += 1;
+  }
+  return out;
+}
+
+describe('RB12 (ADR-0215): stripCssComments single ownership + corpus totality', () => {
+  it('RB12-G1: indexShell.test.ts defines ZERO local stripCssComments and imports it EXACTLY ONCE', () => {
+    const selfPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'indexShell.test.ts');
+    let selfSrc: string;
+    try {
+      selfSrc = readFileSync(selfPath, 'utf8');
+    } catch (err) {
+      throw new Error(`indexShell.test.ts could not read its own source at ${selfPath} — ${err}`);
+    }
+    const stripped = rb12StripJsComments(selfSrc);
+
+    // Assembled from fragments so the assertion literal itself cannot satisfy the needle it hunts.
+    const DEF_NEEDLE = ['function ', 'stripCss', 'Comments('].join('');
+    const BARE_NAME = ['stripCss', 'Comments'].join('');
+
+    const defCount = stripped.split(DEF_NEEDLE).length - 1;
+    expect(
+      defCount,
+      'KILLS: a second local `function stripCssComments(` definition surviving in this file — ' +
+        'ADR-0215 makes evals/a11y-static-shell.eval.mjs the SOLE owner. Local definitions found: ' +
+        String(defCount),
+    ).toBe(0);
+
+    // Assumes a single-line import statement, matching this file's own import style above (every
+    // existing import is one line) and the ADR's decision (only ONE symbol, `stripCssComments`,
+    // moves — nothing here forces a multi-line, Biome-wrapped import).
+    const importLines = stripped
+      .split('\n')
+      .filter((line) => line.trim().indexOf('import') === 0 && line.indexOf(BARE_NAME) !== -1);
+    expect(
+      importLines.length,
+      'KILLS: zero imports (the owner symbol is unreachable from this file) or MORE than one ' +
+        `import naming stripCssComments (a second, competing import path). Found: ${JSON.stringify(importLines)}`,
+    ).toBe(1);
+  });
+
+  it('RB12-G2: stripCssComments (the imported oracle) matches every pinned outcome across the full shared corpus', () => {
+    const corpus = rb12CssStripperOracle.CSS_STRIPPER_CORPUS as ReadonlyArray<{
+      name: string;
+      css: string;
+      expect: { kind: 'value'; out: string } | { kind: 'throw'; needle: string };
+    }>;
+    expect(
+      corpus.length,
+      'ANTI-VACUITY: the shared corpus must not be empty or shrunk below its known 11 cells.',
+    ).toBeGreaterThanOrEqual(11);
+
+    for (const cell of corpus) {
+      if (cell.expect.kind === 'value') {
+        expect(
+          rb12CssStripperOracle.stripCssComments(cell.css),
+          `cell "${cell.name}" must byte-match its pinned VALUE outcome`,
+        ).toBe(cell.expect.out);
+      } else {
+        let threw = false;
+        let message = '';
+        try {
+          rb12CssStripperOracle.stripCssComments(cell.css);
+        } catch (err) {
+          threw = true;
+          message = String(err);
+        }
+        expect(threw, `cell "${cell.name}" must throw`).toBe(true);
+        expect(
+          message.indexOf(cell.expect.needle) !== -1,
+          `cell "${cell.name}" threw "${message}", expected it to contain "${cell.expect.needle}"`,
+        ).toBe(true);
+      }
+    }
+  });
+
+  it('RB12-G3: the shared cell-name list and a LOCALLY re-declared copy agree, both directions, exact count', () => {
+    // RE-DECLARED INDEPENDENTLY — deliberately NOT imported from the corpus module, so deleting a
+    // cell from CSS_STRIPPER_CELLS cannot silently satisfy this gate at the same time as the
+    // shared-module completeness gate (T10d): two independent sources must agree, or this gate
+    // stays red even when the shared list alone looks fine.
+    const RB12_LOCAL_CELL_NAMES: readonly string[] = Object.freeze([
+      'normal/comment-open-close',
+      'normal/no-line-comment',
+      'normal/bare-slash-inert',
+      'dq/comment-open-inert',
+      'dq/close-then-real-comment',
+      'sq/comment-close-inert',
+      'dq/backslash-escape',
+      'comment/newline-preserved',
+      'EOF/in-comment',
+      'EOF/in-string',
+      'normal/empty',
+    ]);
+
+    expect(
+      RB12_LOCAL_CELL_NAMES.length,
+      'ANTI-VACUITY: the locally re-declared cell-name list must not be empty.',
+    ).toBeGreaterThan(0);
+
+    const sharedCells = rb12CssStripperOracle.CSS_STRIPPER_CELLS as readonly string[];
+    const sharedCorpusNames = (
+      rb12CssStripperOracle.CSS_STRIPPER_CORPUS as ReadonlyArray<{ name: string }>
+    ).map((c) => c.name);
+
+    const missingFromShared = RB12_LOCAL_CELL_NAMES.filter((n) => sharedCells.indexOf(n) === -1);
+    const extraInShared = sharedCells.filter((n) => RB12_LOCAL_CELL_NAMES.indexOf(n) === -1);
+    expect(
+      missingFromShared,
+      'KILLS: a cell deleted from CSS_STRIPPER_CELLS while this independently-typed list still ' +
+        'names it — the shared module and this file must never silently drift apart.',
+    ).toEqual([]);
+    expect(
+      extraInShared,
+      'KILLS: a cell added to CSS_STRIPPER_CELLS with no counterpart here — this list is the ' +
+        'SECOND SOURCE that editing the shared corpus alone cannot satisfy.',
+    ).toEqual([]);
+
+    expect(sharedCells.length, 'CSS_STRIPPER_CELLS must have exactly 11 entries').toBe(11);
+    expect(
+      sharedCorpusNames.length,
+      'CSS_STRIPPER_CORPUS must carry exactly as many entries as CSS_STRIPPER_CELLS — a length ' +
+        'floor alone would admit duplicate-name padding.',
+    ).toBe(sharedCells.length);
+  });
+
+  it('RB12-G4: the real consumer parseCssRules fails LOUD on an unterminated comment (never silently drops content)', () => {
+    expect(() => parseCssRules('.a{color:red}' + SLASH_STAR + ' unterminated')).toThrow();
+  });
+
+  it('RB12-G5: the naive stripper (fixtureNaiveStripCssComments) is pinned WRONG, exact output, on every NAIVE_KILLS cell', () => {
+    const corpus = rb12CssStripperOracle.CSS_STRIPPER_CORPUS as ReadonlyArray<{
+      name: string;
+      css: string;
+      expect: { kind: 'value'; out: string } | { kind: 'throw'; needle: string };
+    }>;
+    const naive = rb12CssStripperOracle.fixtureNaiveStripCssComments as (src: string) => string;
+    const kills = rb12CssStripperOracle.NAIVE_KILLS as readonly string[];
+    expect(kills.length, 'ANTI-VACUITY: NAIVE_KILLS must not be empty').toBeGreaterThan(0);
+
+    const byName = (cellName: string) => {
+      const cell = corpus.find((c) => c.name === cellName);
+      expect(cell, `NAIVE_KILLS cell "${cellName}" must exist in the corpus`).toBeDefined();
+      return cell!;
+    };
+
+    // The headline discriminator: EXACT wrong output, not merely "differs".
+    const headline = byName('dq/comment-open-inert');
+    const headlinePinned = ['.a{content:', '"'].join('');
+    expect(
+      naive(headline.css),
+      'KILLS: a naive fixture hand-edited to no longer swallow the trailing display:none — the ' +
+        'naive stripper is not quote-aware, so a comment-lookalike hiding inside a CSS string ' +
+        'value opens a "comment" that consumes everything after it.',
+    ).toBe(headlinePinned);
+
+    const escapeCell = byName('dq/backslash-escape');
+    const escapePinned = '.a{content:"x\\"';
+    expect(
+      naive(escapeCell.css),
+      'KILLS: same underlying bug, reached through an escaped quote inside the string — the ' +
+        'naive stripper truncates at the first slash-star lookalike regardless of the escape.',
+    ).toBe(escapePinned);
+
+    const eofCommentCell = byName('EOF/in-comment');
+    const eofCommentPinned = '.a{color:red}';
+    expect(
+      naive(eofCommentCell.css),
+      'KILLS: the naive stripper has NO error handling at all — on an unterminated comment it ' +
+        'silently returns the prefix before the comment opener, hiding a parse failure as a ' +
+        'clean result.',
+    ).toBe(eofCommentPinned);
+    expect(
+      () => naive(eofCommentCell.css),
+      'KILLS: the naive stripper must NOT throw here — if it does, this cell no longer proves ' +
+        'the fail-open bug (the discrimination IS the throw/no-throw split).',
+    ).not.toThrow();
+
+    const eofStringCell = byName('EOF/in-string');
+    const eofStringPinned = '.a{content:"oops}';
+    expect(
+      naive(eofStringCell.css),
+      'KILLS: an unterminated string has no comment-opener to trip the naive scanner at all, so ' +
+        'it echoes the whole input unchanged instead of throwing.',
+    ).toBe(eofStringPinned);
+    expect(() => naive(eofStringCell.css)).not.toThrow();
+  });
+
+  it('RB12-G6: CORPUS-CORRUPTION GUARD — independently hardcoded kill-cell expectations agree with the shared corpus', () => {
+    // A SECOND, INDEPENDENT record of each NAIVE_KILLS cell's HARDENED outcome, typed here by
+    // hand and NEVER derived from CSS_STRIPPER_CORPUS. If the shared table's expectation for one
+    // of these cells is quietly weakened — so a wrong implementation slips through T10c/RB12-G2
+    // AND the naive-discrimination teeth simultaneously, because all of them read from the SAME
+    // corrupted table — this independent copy still disagrees and reds.
+    const RB12_KILL_CELL_TRUTH: ReadonlyArray<{
+      name: string;
+      css: string;
+      expect: { kind: 'value'; out: string } | { kind: 'throw'; needle: string };
+    }> = Object.freeze([
+      {
+        name: 'dq/comment-open-inert',
+        css: ['.a{content:"', SLASH_STAR, '"}.b{display:none}'].join(''),
+        expect: { kind: 'value', out: ['.a{content:"', SLASH_STAR, '"}.b{display:none}'].join('') },
+      },
+      {
+        name: 'dq/backslash-escape',
+        css: ['.a{content:"x\\"', SLASH_STAR, '"}.b{display:none}'].join(''),
+        expect: {
+          kind: 'value',
+          out: ['.a{content:"x\\"', SLASH_STAR, '"}.b{display:none}'].join(''),
+        },
+      },
+      {
+        name: 'EOF/in-comment',
+        css: ['.a{color:red}', SLASH_STAR, ' unterminated'].join(''),
+        expect: { kind: 'throw', needle: 'unterminated comment' },
+      },
+      {
+        name: 'EOF/in-string',
+        css: '.a{content:"oops}',
+        expect: { kind: 'throw', needle: 'unterminated string literal' },
+      },
+    ]);
+
+    const corpus = rb12CssStripperOracle.CSS_STRIPPER_CORPUS as ReadonlyArray<{
+      name: string;
+      css: string;
+      expect: { kind: 'value'; out: string } | { kind: 'throw'; needle: string };
+    }>;
+
+    for (const truth of RB12_KILL_CELL_TRUTH) {
+      const cell = corpus.find((c) => c.name === truth.name);
+      expect(cell, `kill-cell "${truth.name}" must exist in the shared corpus`).toBeDefined();
+      expect(cell!.css, `kill-cell "${truth.name}"'s css must match the independent pin`).toBe(
+        truth.css,
+      );
+      expect(
+        cell!.expect.kind,
+        `kill-cell "${truth.name}"'s expectation KIND must match the independent pin`,
+      ).toBe(truth.expect.kind);
+      if (truth.expect.kind === 'value' && cell!.expect.kind === 'value') {
+        expect(
+          cell!.expect.out,
+          `kill-cell "${truth.name}"'s expected VALUE was corrupted relative to the ` +
+            'independent pin',
+        ).toBe(truth.expect.out);
+      } else if (truth.expect.kind === 'throw' && cell!.expect.kind === 'throw') {
+        expect(
+          cell!.expect.needle,
+          `kill-cell "${truth.name}"'s expected THROW NEEDLE was corrupted relative to the ` +
+            'independent pin',
+        ).toBe(truth.expect.needle);
+      }
+    }
   });
 });
