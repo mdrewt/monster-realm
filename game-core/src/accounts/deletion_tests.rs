@@ -452,7 +452,6 @@ fn state_transition_owners_admits_no_empty_wildcard_or_gameplay_entry() {
     );
 }
 
-
 // ===========================================================================
 // TOMBSTONE_DISPLAY_NAME — the M22 §3 player.name / profile.name deletion
 // sentinel (slice rb-7, M22-privacy-compliance.spec.md §3).
@@ -542,8 +541,7 @@ fn tombstone_display_name_is_non_blank_and_printable() {
 #[test]
 fn tombstone_display_name_is_distinct_from_the_auth_issuer_sentinel() {
     assert_ne!(
-        TOMBSTONE_DISPLAY_NAME,
-        TOMBSTONE_AUTH_ISSUER,
+        TOMBSTONE_DISPLAY_NAME, TOMBSTONE_AUTH_ISSUER,
         "TOMBSTONE_DISPLAY_NAME must not equal TOMBSTONE_AUTH_ISSUER — these are two \
          distinct sentinels for two distinct fields (profile/player display name vs. \
          account.auth_issuer) and must not collide"

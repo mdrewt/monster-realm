@@ -158,7 +158,18 @@ pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String
 /// 15 chars ≤ `MAX_NAME_LEN` (24). Deliberately UN-TYPABLE: the parentheses are
 /// not alphanumeric, so `guards::validate_name` rejects it — no player can mint a
 /// name impersonating a tombstone.
-pub(crate) const PROFILE_TOMBSTONE_NAME: &str = "(claimed guest)";
+///
+/// SCOPED TO THE M21 GUEST-CLAIM FLOW, and MODULE-PRIVATE to keep it that way
+/// (rb-7, ADR-0211). This sentinel means "an unclaimed guest whose ranked stats
+/// were carried forward", not "a deleted account" — `tombstoned_profile` also
+/// zeroes rating/wins/losses, which is meaningless for a deletion. M22's
+/// deletion cascade writes `game_core::TOMBSTONE_DISPLAY_NAME` instead. The
+/// visibility is load-bearing, not cosmetic: `mod ranking;` is private, so a
+/// `pub(crate)` here made this reachable from `accounts.rs` and left the wrong
+/// constant one autocomplete away from S3. Widening it, re-exporting it with a
+/// `use`, returning it from a `pub` accessor, or spelling its value a second
+/// time each fail `rb7_guest_claim_tombstone_*` in `ranking_tests.rs`.
+const PROFILE_TOMBSTONE_NAME: &str = "(claimed guest)";
 
 /// Copy `rating`/`wins`/`losses` onto `dest`, preserving its identity and name.
 /// Pure seam (unit-testable without a `ReducerContext`).

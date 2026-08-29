@@ -32,7 +32,7 @@ mod m8c_gating_tests;
 
 pub use accounts::{
     is_deletion_due, DELETION_GRACE_MS_DEFAULT, EXPORT_CHUNK_ROWS, STATE_TRANSITION_OWNERS,
-    TOMBSTONE_AUTH_ISSUER, TOMBSTONE_IDENTITY_BYTES,
+    TOMBSTONE_AUTH_ISSUER, TOMBSTONE_DISPLAY_NAME, TOMBSTONE_IDENTITY_BYTES,
 };
 pub use combat::{
     accuracy_check, apply_ability_modifiers, apply_entry_ability, apply_post_turn_effects,

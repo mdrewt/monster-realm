@@ -1558,7 +1558,6 @@ fn auth25_tombstone_name_is_bounded_and_untypable() {
     );
 }
 
-
 // ===========================================================================
 // RB7 — slice rb-7 (M22 §3 vs. M21 AUTH-25 / ADR-0179 D6): single-sourcing
 // the deletion-tombstone display name in game-core, and pinning the M21

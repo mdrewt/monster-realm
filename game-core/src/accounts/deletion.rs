@@ -85,6 +85,34 @@ pub const TOMBSTONE_IDENTITY_BYTES: [u8; 32] = [0xFF; 32];
 // unset one.
 pub const TOMBSTONE_AUTH_ISSUER: &str = "account-deleted-tombstone";
 
+/// Sentinel written to `player.name` and `profile.name` on anonymization
+/// (spec §3).
+//
+// SSOT: this is the ONE deletion display-name tombstone. The imperative
+// shell (S3, `server-module/src/accounts.rs`) must write this constant, never
+// a hand-typed literal and never `ranking.rs`'s `PROFILE_TOMBSTONE_NAME` —
+// that one is the M21 GUEST-CLAIM sentinel for a claimed guest's retained
+// profile row, so reusing it would make a genuinely deleted account read as
+// an unclaimed guest. It is module-private as of this slice, so the compiler
+// refuses the mistake rather than a convention asking nicely.
+//
+// THE VALUE IS NOT PINNED BY THE SPEC. §3 requires "the tombstone constant"
+// without naming one, and §8.2 decided the tombstone SHAPE (one shared
+// sentinel, not per-account) while explicitly not escalating the string to
+// the operator. What IS load-bearing, and is what the tests assert, are its
+// properties: non-blank, trim-stable, printable ASCII only (a zero-width or
+// bidi-override value would render blank or reversed on a leaderboard),
+// within server-module's `MAX_NAME_LEN`, rejected by `guards::validate_name`
+// so no player can mint a name impersonating a deleted account, and distinct
+// from both `PROFILE_TOMBSTONE_NAME` and `TOMBSTONE_AUTH_ISSUER` even after
+// case-folding and whitespace-squashing. Retuning the string is therefore a
+// one-literal edit with no test churn.
+//
+// OWNERSHIP BOUNDARY: game-core owns the sentinel VALUE. The charset and
+// length RULES stay in server-module (`guards::validate_name`,
+// `MAX_NAME_LEN`) and are never restated here.
+pub const TOMBSTONE_DISPLAY_NAME: &str = "(deleted account)";
+
 // ===========================================================================
 // Data export (spec §5)
 // ===========================================================================
