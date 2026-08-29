@@ -1594,9 +1594,9 @@ fn auth25_tombstone_name_is_bounded_and_untypable() {
 /// together (non-blank AND within the length cap AND rejected) pins it.
 ///
 /// kills: TOMBSTONE_DISPLAY_NAME defined as `""` (passes is_err() alone,
-/// fails the non-blank assertion here); TOMBSTONE_DISPLAY_NAME defined as a
-/// > MAX_NAME_LEN-char string (passes is_err() alone, fails the length-cap
-/// assertion here).
+/// fails the non-blank assertion here); TOMBSTONE_DISPLAY_NAME defined as an
+/// over-cap string longer than `MAX_NAME_LEN` (passes is_err() alone, fails
+/// the length-cap assertion here).
 #[test]
 fn rb7_deletion_tombstone_is_bounded_and_untypable() {
     assert!(
@@ -2089,8 +2089,11 @@ fn rb7_scan_machinery_teeth() {
     // constant, never as a literal double-quote inside single quotes in
     // THIS file's own source (house rule: `evals/zone-warp-server-runtime
     // .eval.mjs`'s W-pre check REDs CI on that shape in production source,
-    // and several evals concatenate every server-module/src/*.rs including
-    // *_tests.rs through naive strippers).
+    // and several evals concatenate every Rust source under server-module,
+    // test files included, through naive strippers. For the same reason this
+    // comment does not spell a slash-star glob: that two-character sequence
+    // opens a block comment for those strippers and blanks everything after
+    // it -- a full-CI-only false RED, measured on this very slice).
     // -------------------------------------------------------------------------
     let quote = char::from(0x22u8);
     let finding8_fixture = format!(
@@ -2121,5 +2124,17 @@ fn rb7_scan_machinery_teeth() {
     }
 
     let total = pass + bite + loud;
-    println!("RB7-TEETH-OK {total} fixtures (pass={pass} bite={bite} loud={loud})");
+    assert_eq!(
+        (pass, bite, loud),
+        (2, 8, 3),
+        "RB7-B5 FAIL: the fixture battery has changed size — it must run 2 MUST-PASS, \
+         8 MUST-BITE and 3 MUST-FAIL-LOUD fixtures. A shrunken battery is how a teeth \
+         suite decays into decoration."
+    );
+    // The marker the rb-7 acceptance gate greps for, written through `Write`
+    // rather than a print macro: `spacetime generate` rejects any print macro
+    // anywhere in the module source, `#[cfg(test)]` included.
+    let line = format!("RB7-TEETH-OK {total} fixtures (pass={pass} bite={bite} loud={loud})\n");
+    std::io::Write::write_all(&mut std::io::stdout(), line.as_bytes())
+        .expect("RB7-B5: writing the teeth marker to stdout must succeed");
 }
