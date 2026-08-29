@@ -1695,10 +1695,18 @@ a durable constraint for every later slice that extends it (S9). It holds **clas
 selectors ONLY, zero `#id` selectors**: `indexShell.test.ts` and `main.wiring.test.ts` pin
 `#help-overlay`/`#help-hint`/`#build-stamp`'s inline positioning BY TEXT, so a rule reaching one of
 those ids could silently satisfy or defeat those assertions without touching the markup they read.
-Today it holds exactly one rule, `.sr-only`, hiding visually via `clip-path` while STAYING IN THE
+Today it holds two rules. `.sr-only` hides visually via `clip-path` while STAYING IN THE
 ACCESSIBILITY TREE — `display:none`/`visibility:hidden` would remove the node entirely and make the
-live region decorative. `:root` tokens and the `prefers-contrast` media query are deliberately absent:
-S9 already owns this file and lands them beside the contrast work that consumes them. Gates: 10
+live region decorative. `.hp-fill` (slice rb-10, residual R-m23-s2-X4, ADR-0213) carries the battle
+HP bar's width transition plus a `@media (prefers-reduced-motion: reduce)` guard that sets
+`transition: none`: the guard is CSS-only with **no JS dependency**, and the class it hooks is
+assigned in `ui/battleView.ts` `#renderMonsterCard` (which keeps the per-render `width`/`background`
+inline and declares no animation at all). The guard's position **AFTER** the base rule is
+load-bearing — both selectors are specificity (0,1,0) and a media query adds none, so a guard
+written first is completely inert — and that ordering is gated by `[A11Y-RM3/order]` in
+`evals/reduced-motion-hp-bar.eval.mjs`. `:root` tokens and the `prefers-contrast` media query are
+deliberately absent: S9 already owns this file and lands them beside the contrast work that
+consumes them. Gates: 10
 co-located teeth appended to `indexShell.test.ts` (append-only, proven by a difflib opcode pass — zero
 original lines changed), 13 mutation bite-proofs red and 1 must-stay-green, plus a hostile-CSS fixture
 suite for the two scanners. ADR next-free = 0206 (no new ADR: ADR-0205 already carries this design).
