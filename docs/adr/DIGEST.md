@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 174 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 175 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -183,6 +183,7 @@ Generated from 174 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0206](./0206-world-focus-hotkey-gate-and-the-frame-loop-announcer.md) | 0206 — The world-focus hotkey gate, the frame-loop announcer, and the native `#help-hint` button: three main.ts seams M23 needs and the one thing none of them may "simplify" | Accepted | client-ui, ci-gates | m23-s5 (M23 accessibility S5 — the sole `client/src/main.ts` touch; after S3, S4) | A `worldHasFocus()` conjunct gates the twelve `canOpen`-derived hotkey branches only, spelled out twelve times rather than behind one helper; announcements and focus return ride ONE rAF-loop edge; `#help-hint` becomes a native button. |
 | [0207](./0207-data-lifecycle-manifest-and-terminal-schema.md) | 0207 — Data-lifecycle manifest and terminal schema: M22 privacy S2 additive structure | Accepted | schema-persistence, security-authz, ci-gates | m22-s2 (M22 privacy compliance S2 — schema + manifest extension) | Data-lifecycle manifest as a Rust const in schema.rs (39 tables: policy+basis+exportable); Account.terminal_at_ms appended with #[default(None)]; private export_bundle table; reaper deferred to S3 (scheduled-ness is migration-frozen). |
 | [0208](./0208-g6-rekey-manifest-gate-hardening.md) | 0208 — The G6 re-key manifest gate hardening: an explicit policy discriminator, an own-property boundary, and alias resolution in the column walker | Accepted | ci-gates, security-authz, schema-persistence | rb-4 (residual R-m22-s0-X3; also records the rb-2 / rb-3 decisions both sibling ledgers deferred to this ADR) | G6 reads an explicit `policy` field via one parser, asks membership of own-property Maps only, and resolves Rust type aliases (union of every `type`/`use … as` binding in the tree, fail-closed on ambiguity) before matching Identity. |
+| [0209](./0209-eval-harness-completeness-guard.md) | 0209 — The eval harness carries its own completeness guard: a premature exit can no longer end the run at zero | Accepted | ci-gates, tooling-docs | rb-5 (residual R-m22-s0-X4) | `evals/run.mjs` asserts at `'exit'` that every discovered eval reported a result, raising a zero exit code to 1 when the count is short or any eval failed, so a module-scope `process.exit()` can no longer end the run at green. |
 
 ## Harness design corpus (H- namespace)
 
@@ -516,6 +517,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0206](./0206-world-focus-hotkey-gate-and-the-frame-loop-announcer.md) — m23-s5 (M23 accessibility S5 — the sole `client/src/main.ts` touch; after S3, S4) — 0206 — The world-focus hotkey gate, the frame-loop announcer, and the native `#help-hint` button: three main.ts seams M23 needs and the one thing none of them may "simplify" (Accepted)
 - [0207](./0207-data-lifecycle-manifest-and-terminal-schema.md) — m22-s2 (M22 privacy compliance S2 — schema + manifest extension) — 0207 — Data-lifecycle manifest and terminal schema: M22 privacy S2 additive structure (Accepted)
 - [0208](./0208-g6-rekey-manifest-gate-hardening.md) — rb-4 (residual R-m22-s0-X3; also records the rb-2 / rb-3 decisions both sibling ledgers deferred to this ADR) — 0208 — The G6 re-key manifest gate hardening: an explicit policy discriminator, an own-property boundary, and alias resolution in the column walker (Accepted)
+- [0209](./0209-eval-harness-completeness-guard.md) — rb-5 (residual R-m22-s0-X4) — 0209 — The eval harness carries its own completeness guard: a premature exit can no longer end the run at zero (Accepted)
 
 ### tooling-docs
 
@@ -552,6 +554,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0201](./0201-tier2-observability-validator-wiring.md) — lp-05 (M-loop-infrastructure §lp-05) — 0201 — Wire the Tier-2 observability validator, and make the gate strict by default (Accepted)
 - [0202](./0202-obsolete-residual-prose-corrected.md) — lp-doc-a (`specs/monster-realm-v2/M-loop-infrastructure.spec.md` §lp-doc-a) — 0202 — Obsolete residual prose corrected: m20e-2 and nh5 closed per item, 14r-f-2 open and unowned, the 11r-e ids retired (Accepted)
 - [0203](./0203-nightly-red-response-policy.md) — 16r-h (`specs/monster-realm-v2/M-postgate-sixteenth-review-residuals.spec.md` §16r-h) — 0203 — Nightly red-response policy: one machine-checked file, key-set-equal to the wired workflow, cited back from every job (Accepted)
+- [0209](./0209-eval-harness-completeness-guard.md) — rb-5 (residual R-m22-s0-X4) — 0209 — The eval harness carries its own completeness guard: a premature exit can no longer end the run at zero (Accepted)
 
 ### security-authz
 

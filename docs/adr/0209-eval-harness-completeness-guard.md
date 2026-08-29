@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** ci-gates, tooling-docs
-**Decision:** `evals/run.mjs` counts the evals that reported a result and asserts that count against the discovered file count from a `process.on('exit')` handler, raising a zero exit to 1; the same handler raises a zero exit when any eval failed, so the run's verdict no longer rides on the final `process.exit` call alone.
+**Decision:** `evals/run.mjs` asserts at `'exit'` that every discovered eval reported a result, raising a zero exit code to 1 when the count is short or any eval failed, so a module-scope `process.exit()` can no longer end the run at green.
 
 ---
 
