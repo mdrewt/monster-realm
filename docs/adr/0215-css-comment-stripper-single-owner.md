@@ -6,10 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** ci-gates, tooling-docs
-**Decision:** Delete the duplicate `stripCssComments` from `client/src/indexShell.test.ts` and import
-the single owner from `evals/a11y-static-shell.eval.mjs`, hardened to string-aware fail-loud
-semantics; keep a shared, transition-total fixture corpus run by BOTH tiers as the correctness gate
-on the surviving oracle and as the guard that a second definition can never reappear.
+**Decision:** Delete the duplicate `stripCssComments` from `client/src/indexShell.test.ts`, make the hardened `evals/a11y-static-shell.eval.mjs` copy its sole owner, and gate the survivor with a shared transition-total corpus run by both CI tiers.
 
 ---
 
@@ -138,6 +135,15 @@ import.
     - The imported symbol is untyped at its `.ts` call sites: `client/tsconfig.json` excludes
       `**/*.test.ts`, so `just client-typecheck` never inspects this file. Signature drift would be
       caught by vitest, not by tsc.
+    - **RK-4 (residual, declared):** the shipped `client/src/styles.css` contains **no quoted CSS
+      string values** at all, so the real-artefact scan exercises only the comment open/close
+      transitions — the `dq`/`sq`/escape half of the lexer is pinned by synthetic fixtures ONLY.
+      Measured by the post-landing red-team pass. This is why RB12-G7's behavioural half routes its
+      probes through `parseCssRules` rather than trusting the shipped file to discriminate.
+    - **RK-5 (residual, declared):** inside a comment the stripper preserves `\n` but drops a lone
+      `\r`, so CR-only line endings inside a CSS comment lose their line markers. Nothing downstream
+      depends on line-count fidelity from this function and no realistic CSS uses CR-only endings;
+      recorded rather than fixed.
   - *Not closed by this slice:* residual `R-m23-s10-CSSDRIFT`. Agreement on a leaf primitive says
     nothing about `parseCssRules`/`findIdSelectors`/`srOnlyIsAccessible` semantics on the real
     `styles.css`; those remain gated solely by `indexShell.test.ts`'s own inline BAD/GOOD proofs.

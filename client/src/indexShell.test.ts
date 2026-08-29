@@ -2766,6 +2766,13 @@ describe('RB12 (ADR-0215): stripCssComments single ownership + corpus totality',
     // of these cells is quietly weakened — so a wrong implementation slips through T10c/RB12-G2
     // AND the naive-discrimination teeth simultaneously, because all of them read from the SAME
     // corrupted table — this independent copy still disagrees and reds.
+    // MEASURED BYPASS (rb-12 red-team, Finding 2): pinning only the four NAIVE_KILLS cells left the
+    // other seven with no independent payload pin anywhere. SWAPPING two non-kill cells' css+expect
+    // pairs while leaving their `name` fields in place kept T10c/T10d/T10e and RB12-G2/G3/G5/G6 all
+    // green — the corpus then tested one transition TWICE under two names and `normal/bare-slash-inert`
+    // not at all. A name-set pin is orthogonal to a payload pin. So this table covers ALL ELEVEN
+    // cells: every cell's css AND expected outcome is re-declared here, literally, independent of
+    // CSS_STRIPPER_CORPUS, so no edit to the shared table can go unobserved.
     const RB12_KILL_CELL_TRUTH: ReadonlyArray<{
       name: string;
       css: string;
@@ -2794,6 +2801,41 @@ describe('RB12 (ADR-0215): stripCssComments single ownership + corpus totality',
         css: '.a{content:"oops}',
         expect: { kind: 'throw', needle: 'unterminated string literal' },
       },
+      {
+        name: 'normal/comment-open-close',
+        css: [SLASH_STAR, ' x ', STAR_SLASH, ' .a{color:red}'].join(''),
+        expect: { kind: 'value', out: ' .a{color:red}' },
+      },
+      {
+        name: 'normal/no-line-comment',
+        css: 'a{background:url(https://cdn/x.png);display:none}',
+        expect: { kind: 'value', out: 'a{background:url(https://cdn/x.png);display:none}' },
+      },
+      {
+        name: 'normal/bare-slash-inert',
+        css: '@media (min-width:1px){.a{font:14px/1.6 monospace}}',
+        expect: { kind: 'value', out: '@media (min-width:1px){.a{font:14px/1.6 monospace}}' },
+      },
+      {
+        name: 'dq/close-then-real-comment',
+        css: ['.a{content:"x"}', SLASH_STAR, ' gone ', STAR_SLASH, '.b{display:none}'].join(''),
+        expect: { kind: 'value', out: '.a{content:"x"}.b{display:none}' },
+      },
+      {
+        name: 'sq/comment-close-inert',
+        css: [".a{content:'", STAR_SLASH, "'}.b{display:none}"].join(''),
+        expect: { kind: 'value', out: [".a{content:'", STAR_SLASH, "'}.b{display:none}"].join('') },
+      },
+      {
+        name: 'comment/newline-preserved',
+        css: ['.a{}', SLASH_STAR, ' l1\nl2 ', STAR_SLASH, '\n.b{display:none}'].join(''),
+        expect: { kind: 'value', out: '.a{}\n\n.b{display:none}' },
+      },
+      {
+        name: 'normal/empty',
+        css: '',
+        expect: { kind: 'value', out: '' },
+      },
     ]);
 
     const corpus = rb12CssStripperOracle.CSS_STRIPPER_CORPUS as ReadonlyArray<{
@@ -2801,6 +2843,19 @@ describe('RB12 (ADR-0215): stripCssComments single ownership + corpus totality',
       css: string;
       expect: { kind: 'value'; out: string } | { kind: 'throw'; needle: string };
     }>;
+
+    // TOTALITY both ways: the independent table must cover every shared cell and vice versa,
+    // or a cell dropped from THIS table silently loses its second pin.
+    expect(
+      RB12_KILL_CELL_TRUTH.length,
+      'the independent truth table must pin EVERY corpus cell — shrinking it re-opens the ' +
+        'payload-swap bypass it exists to close',
+    ).toBe(corpus.length);
+    const truthNames = RB12_KILL_CELL_TRUTH.map((t) => t.name).sort();
+    const corpusNames = corpus.map((c) => c.name).sort();
+    expect(truthNames, 'independent truth-table names must equal the shared corpus names').toEqual(
+      corpusNames,
+    );
 
     for (const truth of RB12_KILL_CELL_TRUTH) {
       const cell = corpus.find((c) => c.name === truth.name);
@@ -2825,6 +2880,61 @@ describe('RB12 (ADR-0215): stripCssComments single ownership + corpus totality',
             'independent pin',
         ).toBe(truth.expect.needle);
       }
+    }
+  });
+
+  // MEASURED BYPASS (rb-12 red-team, Finding 1): RB12-G1 text-scans for a local DEFINITION and
+  // counts import lines, and RB12-G2/G3/G5/G6 exercise the oracle EXPORT directly. None of them
+  // pinned that `parseCssRules` — the file's only real consumer, and the path the shipped
+  // `styles.css` scan actually travels — still CALLS the imported symbol. A differently-named
+  // local stripper plus a one-word repoint of `parseCssRules`'s call site kept ALL 25 tests green
+  // while `findIdSelectors` silently swallowed a whole `#id` rule. Declaration, import and
+  // invocation are three different facts; this gate pins the third.
+  //
+  // TWO independent halves on purpose. The source pin catches a repoint even when no fixture
+  // happens to discriminate; the behavioural probe catches a stripper that is still NAMED
+  // correctly but is wrong, and proves the path is live rather than merely spelled.
+  it('RB12-G7: parseCssRules resolves to the imported owner — call site pinned, and proven live', () => {
+    const selfPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'indexShell.test.ts');
+    const stripped = rb12StripJsComments(readFileSync(selfPath, 'utf8'));
+
+    // --- half 1: the call site, region-scoped to parseCssRules' own body ---
+    const FN_HEAD = ['function ', 'parseCss', 'Rules('].join('');
+    const headIdx = stripped.indexOf(FN_HEAD);
+    expect(headIdx, `${FN_HEAD} must exist exactly once`).toBeGreaterThan(-1);
+    expect(
+      stripped.indexOf(FN_HEAD, headIdx + 1),
+      'parseCssRules must be defined exactly once — a second definition makes the region pin ambiguous',
+    ).toBe(-1);
+    // The body region ends at the next top-level `\n}` after the head.
+    const bodyEnd = stripped.indexOf('\n}', headIdx);
+    expect(bodyEnd, 'could not delimit parseCssRules body').toBeGreaterThan(headIdx);
+    const region = stripped.slice(headIdx, bodyEnd);
+    const CALL_NEEDLE = ['stripCss', 'Comments(src)'].join('');
+    const callCount = region.split(CALL_NEEDLE).length - 1;
+    expect(
+      callCount,
+      'KILLS: parseCssRules repointed away from the imported owner to some other stripper. Its ' +
+        `body must call ${CALL_NEEDLE} exactly once; found ${callCount}`,
+    ).toBe(1);
+
+    // --- half 2: the same path, proven live and correct end-to-end ---
+    // Each probe embeds a discriminating cell BEFORE a pinned #id rule. Under the correct oracle
+    // the string/comment is inert and the id stays visible; under a naive or escape-blind stripper
+    // the embedded comment-opener swallows the rest of the stylesheet and the id VANISHES —
+    // findIdSelectors would report a clean file, the only failure direction that matters.
+    const PROBE_ID = '#rb12-callsite-probe';
+    for (const cellName of ['dq/comment-open-inert', 'dq/backslash-escape']) {
+      const cell = (
+        rb12CssStripperOracle.CSS_STRIPPER_CORPUS as ReadonlyArray<{ name: string; css: string }>
+      ).find((c) => c.name === cellName);
+      expect(cell, `probe cell "${cellName}" must exist in the shared corpus`).toBeDefined();
+      const offenders = findIdSelectors(`${cell!.css}${PROBE_ID}{color:red}`);
+      expect(
+        offenders,
+        `KILLS: a stripper that loses the string boundary on "${cellName}" — the ${PROBE_ID} rule ` +
+          'after it is swallowed and findIdSelectors reports a clean stylesheet',
+      ).toEqual([PROBE_ID]);
     }
   });
 });
