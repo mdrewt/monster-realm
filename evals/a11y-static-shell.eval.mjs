@@ -74,27 +74,80 @@ const LIVE_REGION_OWNER = 'ui/liveRegion.ts';
 const LIVE_REGION_NAMES = Object.freeze(['a11y-live', 'LIVE_REGION_ID']);
 
 /**
- * Strip CSS block comments. CSS HAS NO `//` LINE COMMENT, and that is not a pedantic distinction:
- * feeding CSS to the JS/TS scanner in the sibling eval silently truncates every line containing a
- * protocol-relative or `https://` URL, so `background:url(https://cdn/x.png);display:none` loses
- * its `display:none` and the ban it is meant to trip evaporates. Measured. The name collision with
- * the JS stripper is exactly the trap, so this one is named for its language.
+ * Strip CSS block comments — the SOLE OWNER of this primitive for BOTH CI tiers (ADR-0215).
+ *
+ * `client/src/indexShell.test.ts` no longer defines its own copy; it imports this one, so
+ * `parseCssRules` / `findIdSelectors` / `srOnlyIsAccessible` over the real `client/styles.css`
+ * and the `.mjs` teeth below are judged by ONE implementation. There is nothing left to drift.
+ *
+ * CSS HAS NO `//` LINE COMMENT, and that is not a pedantic distinction: feeding CSS to the JS/TS
+ * scanner in the sibling eval silently truncates every line containing a protocol-relative or
+ * `https://` URL, so `background:url(https://cdn/x.png);display:none` loses its `display:none`
+ * and the ban it is meant to trip evaporates. Measured. The name collision with the JS stripper is
+ * exactly the trap, so this one is named for its language.
+ *
+ * FOUR-STATE LEXER — normal / dq / sq / comment. A backslash inside a string escapes the next
+ * character; the comment opener opens a comment ONLY in `normal`; newlines inside a comment are
+ * preserved so line numbers survive.
+ *
+ * WHY STRING-AWARENESS IS LOAD-BEARING: a declaration whose VALUE contains the comment-opener
+ * characters (a `content:` string, say) would otherwise open a comment that never closes, and the
+ * stripper would swallow the entire rest of the file. Measured on the pre-ADR-0215 naive body:
+ * `.a{content:"` + opener + `"}.b{display:none}` came back as `.a{content:"` — the `display:none`
+ * it exists to find, gone. A scanner in that state reports ZERO findings on a stylesheet full of
+ * them: a false GREEN, the only kind of failure that matters.
+ *
+ * WHY IT IS FAIL-LOUD: an unterminated string or comment at EOF THROWS rather than returning a
+ * best-effort string. A file we could not parse must never be reported as a CLEAN file — silence
+ * from a scanner that gave up is indistinguishable from silence from a scanner that found nothing,
+ * and only one of those is the truth. A throw is a loud RED; a truncated return is a quiet lie.
+ * (See ADR-0215 RK-2: `evals/reduced-motion-purity.eval.mjs` calls this without a try/catch, so a
+ * future unparseable input reds THAT eval loudly — deliberately, never falsely green.)
  */
 export function stripCssComments(src) {
   let out = '';
+  /** @type {'normal' | 'dq' | 'sq' | 'comment'} */
+  let state = 'normal';
   let i = 0;
   while (i < src.length) {
-    if (src[i] === '/' && src[i + 1] === '*') {
-      i += 2;
-      while (i < src.length && !(src[i] === '*' && src[i + 1] === '/')) {
-        if (src[i] === '\n') out += '\n';
-        i++;
+    const ch = src.charAt(i);
+    const next = src.charAt(i + 1);
+    if (state === 'comment') {
+      if (ch === '*' && next === '/') {
+        state = 'normal';
+        i += 2;
+        continue;
       }
+      if (ch === '\n') out += '\n';
+      i += 1;
+      continue;
+    }
+    if (state === 'dq' || state === 'sq') {
+      out += ch;
+      if (ch === '\\') {
+        out += next;
+        i += 2;
+        continue;
+      }
+      if ((state === 'dq' && ch === '"') || (state === 'sq' && ch === "'")) state = 'normal';
+      i += 1;
+      continue;
+    }
+    if (ch === '/' && next === '*') {
+      state = 'comment';
       i += 2;
       continue;
     }
-    out += src[i];
-    i++;
+    if (ch === '"') state = 'dq';
+    if (ch === "'") state = 'sq';
+    out += ch;
+    i += 1;
+  }
+  if (state === 'dq' || state === 'sq') {
+    throw new Error('CSS parse failed: unterminated string literal at end of input');
+  }
+  if (state === 'comment') {
+    throw new Error('CSS parse failed: unterminated comment at end of input');
   }
   return out;
 }

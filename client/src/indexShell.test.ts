@@ -86,8 +86,13 @@ import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it } from 'vitest';
-import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './ui/overlayRegistry';
 import * as rb12CssStripperOracle from '../../evals/a11y-static-shell.eval.mjs';
+// ADR-0215: the SOLE owner of the CSS comment stripper. Deliberately a SECOND, dedicated,
+// SINGLE-LINE named import rather than being folded into the namespace import above — RB12-G1
+// requires exactly one line that starts with `import` and names the symbol, and a combined named
+// import of all five corpus symbols would exceed the line width and be wrapped by Biome.
+import { stripCssComments } from '../../evals/a11y-static-shell.eval.mjs';
+import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './ui/overlayRegistry';
 
 const INDEX_HTML_PATH = path.join(path.dirname(fileURLToPath(import.meta.url)), '..', 'index.html');
 
@@ -920,69 +925,13 @@ interface CssRule {
   readonly body: string;
 }
 
-/**
- * PHASE 1 — comment strip, STRING-AWARE.
- *
- * States: normal, double-quoted, single-quoted, comment. A backslash escapes the next
- * character inside a string. The comment opener opens a comment ONLY in `normal`.
- * Newlines inside a comment are preserved.
- *
- * WHY STRING-AWARENESS IS THE LOAD-BEARING PART: a declaration whose VALUE contains the
- * comment-opener characters (a `content:` string, say) would otherwise open a comment
- * that never closes, and the stripper would swallow the entire rest of the file. A
- * scanner in that state reports ZERO id selectors on a stylesheet full of them — a
- * false GREEN, the only kind that matters. A6a's BAD fixture 8 is exactly that shape,
- * which is what makes this paragraph a test rather than a claim.
- *
- * An unterminated string or comment at EOF THROWS: a file we could not parse must never
- * be reported as a clean file.
- */
-function stripCssComments(src: string): string {
-  let out = '';
-  let state: 'normal' | 'dq' | 'sq' | 'comment' = 'normal';
-  let i = 0;
-  while (i < src.length) {
-    const ch = src.charAt(i);
-    const next = src.charAt(i + 1);
-    if (state === 'comment') {
-      if (ch === STAR_SLASH.charAt(0) && next === STAR_SLASH.charAt(1)) {
-        state = 'normal';
-        i += 2;
-        continue;
-      }
-      if (ch === '\n') out += '\n';
-      i += 1;
-      continue;
-    }
-    if (state === 'dq' || state === 'sq') {
-      out += ch;
-      if (ch === '\\') {
-        out += next;
-        i += 2;
-        continue;
-      }
-      if ((state === 'dq' && ch === '"') || (state === 'sq' && ch === "'")) state = 'normal';
-      i += 1;
-      continue;
-    }
-    if (ch === SLASH_STAR.charAt(0) && next === SLASH_STAR.charAt(1)) {
-      state = 'comment';
-      i += 2;
-      continue;
-    }
-    if (ch === '"') state = 'dq';
-    if (ch === "'") state = 'sq';
-    out += ch;
-    i += 1;
-  }
-  if (state === 'dq' || state === 'sq') {
-    throw new Error('CSS parse failed: unterminated string literal at end of input');
-  }
-  if (state === 'comment') {
-    throw new Error('CSS parse failed: unterminated comment at end of input');
-  }
-  return out;
-}
+// PHASE 1 — comment strip, STRING-AWARE — is no longer defined here. ADR-0215 makes
+// `evals/a11y-static-shell.eval.mjs` the SOLE OWNER of that primitive; this file imports it (see
+// the import at the top) so there is no second copy left to drift. Its semantics are unchanged
+// from the copy deleted here: a four-state lexer (normal/dq/sq/comment), backslash escapes inside
+// strings, newlines preserved inside comments, and a THROW on an unterminated string or comment at
+// EOF — a file we could not parse must never be reported as a clean file. A6a's BAD fixture 8 and
+// the shared CSS_STRIPPER_CORPUS (RB12-G2) are what make that paragraph a test rather than a claim.
 
 /**
  * PHASE 2 — one character pass emitting STYLE rules at EVERY brace depth.
@@ -2538,20 +2487,19 @@ describe('ux1-1 (m23-s5/ADR-0206 D5): #help-hint is a native <button>', () => {
   });
 });
 
-
 // ===========================================================================
 // RB12 (ADR-0215): stripCssComments becomes single-owned by
 // evals/a11y-static-shell.eval.mjs — client/src/indexShell.test.ts's private copy is deleted and
 // this file imports the owner instead. `parseCssRules` (above) keeps calling `stripCssComments`
 // unchanged, so it is judged by the SAME gates as everything else in this block.
 //
-// `rb12CssStripperOracle` is a NAMESPACE import (not `import { stripCssComments } from ...`) on
-// purpose: while the local `function stripCssComments(...)` above still exists (pre-fix), a bare
-// named import of the same identifier would be a duplicate-declaration SyntaxError and break the
-// WHOLE FILE, including every unrelated describe block above this one. The namespace form adds a
-// single new top-level binding (`rb12CssStripperOracle`) that cannot collide with anything already
-// declared in this module, so the tree stays parseable both before and after the fix — only the
-// gates in THIS block are meant to go red pre-fix, never the rest of the suite.
+// TWO import forms from the one owner module, each load-bearing. The NAMESPACE binding
+// (`rb12CssStripperOracle`) carries the corpus symbols; it was also what let the gates in THIS
+// block go red pre-fix without a duplicate-declaration SyntaxError taking the whole file down
+// while the local definition still existed. The separate single-line NAMED import of
+// `stripCssComments` is what `parseCssRules` resolves to, and RB12-G1 requires it to stay on ONE
+// line: a combined named import of all five symbols exceeds the line width, Biome wraps it, and
+// the wrapped continuation line no longer starts with `import` — which would red G1's import half.
 // ===========================================================================
 
 /**
@@ -2646,7 +2594,8 @@ describe('RB12 (ADR-0215): stripCssComments single ownership + corpus totality',
     const defCount = stripped.split(DEF_NEEDLE).length - 1;
     expect(
       defCount,
-      'KILLS: a second local `function stripCssComments(` definition surviving in this file — ' +
+      'KILLS: a second local `function stripCss' +
+        'Comments(` definition surviving in this file — ' +
         'ADR-0215 makes evals/a11y-static-shell.eval.mjs the SOLE owner. Local definitions found: ' +
         String(defCount),
     ).toBe(0);
