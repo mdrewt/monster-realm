@@ -158,7 +158,18 @@ pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String
 /// 15 chars ≤ `MAX_NAME_LEN` (24). Deliberately UN-TYPABLE: the parentheses are
 /// not alphanumeric, so `guards::validate_name` rejects it — no player can mint a
 /// name impersonating a tombstone.
-pub(crate) const PROFILE_TOMBSTONE_NAME: &str = "(claimed guest)";
+///
+/// SCOPED TO THE M21 GUEST-CLAIM FLOW, and MODULE-PRIVATE to keep it that way
+/// (rb-7, ADR-0211). This sentinel means "an unclaimed guest whose ranked stats
+/// were carried forward", not "a deleted account" — `tombstoned_profile` also
+/// zeroes rating/wins/losses, which is meaningless for a deletion. M22's
+/// deletion cascade writes `game_core::TOMBSTONE_DISPLAY_NAME` instead. The
+/// visibility is load-bearing, not cosmetic: `mod ranking;` is private, so a
+/// `pub(crate)` here made this reachable from `accounts.rs` and left the wrong
+/// constant one autocomplete away from S3. Widening it, re-exporting it with a
+/// `use`, returning it from a `pub` accessor, or spelling its value a second
+/// time each fail `rb7_guest_claim_tombstone_*` in `ranking_tests.rs`.
+const PROFILE_TOMBSTONE_NAME: &str = "(claimed guest)";
 
 /// Copy `rating`/`wins`/`losses` onto `dest`, preserving its identity and name.
 /// Pure seam (unit-testable without a `ReducerContext`).
@@ -180,7 +191,15 @@ pub(crate) fn profile_with_carried_stats(
 /// preserving its identity. Pure seam. The zero is load-bearing, not cosmetic
 /// (AUTH-25): it is what stops the same guest identity donating the same stats
 /// to an unbounded number of later fresh accounts.
-pub(crate) fn tombstoned_profile(guest: Profile) -> Profile {
+///
+/// MODULE-PRIVATE for the same reason `PROFILE_TOMBSTONE_NAME` is (rb-7): this
+/// is the only other symbol that WRITES the guest-claim sentinel, so leaving it
+/// crate-visible would have left the wrong tombstone one plausible helper call
+/// away from M22's deletion cascade — and reached this way it also zeroes the
+/// ladder stats, which ADR-0179 D6 scopes to the guest-claim flow alone. Its
+/// sibling `profile_with_carried_stats` stays `pub(crate)`: it writes no
+/// sentinel and carries no such hazard.
+fn tombstoned_profile(guest: Profile) -> Profile {
     Profile {
         name: PROFILE_TOMBSTONE_NAME.to_string(),
         rating: 0,

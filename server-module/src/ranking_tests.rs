@@ -1557,3 +1557,698 @@ fn auth25_tombstone_name_is_bounded_and_untypable() {
          player can impersonate a claimed-guest tombstone on the leaderboard."
     );
 }
+
+// ===========================================================================
+// RB7 — slice rb-7 (M22 §3 vs. M21 AUTH-25 / ADR-0179 D6): single-sourcing
+// the deletion-tombstone display name in game-core, and pinning the M21
+// guest-claim sentinel (`PROFILE_TOMBSTONE_NAME`, declared above) as
+// module-private so S3 cannot reach for it by mistake.
+//
+// B1/B2 are EXECUTED pins over the live `game_core::TOMBSTONE_DISPLAY_NAME`
+// constant (mirroring the AUTH-25 `auth25_tombstone_name_is_bounded_and_
+// untypable` pin above, for the DISTINCT M22 deletion sentinel).
+//
+// B3a/B3b/B3c are source-scan pins over `PROFILE_TOMBSTONE_NAME`'s
+// declaration, identifier-occurrence count, and value-occurrence count in
+// ranking.rs, reusing this file's existing `stripped_for_scan` / `squash_ws`
+// / `RANKING_RS` machinery (per-module convention, ADR-0125 anti-pattern
+// #5 — no cross-file import of scan helpers).
+//
+// B5 is the proof-of-teeth battery for the three small scan-logic fns B3a/
+// B3b/B3c share with it (`rb7_decl_occurrence`, `rb7_identifier_occurrence_
+// count`, `rb7_value_occurrence_count`), mirroring the shape of
+// `ptc1_scan_machinery_teeth` above.
+// ===========================================================================
+
+/// RB7-B1 (M22 §3): the game-core deletion tombstone `TOMBSTONE_DISPLAY_NAME`
+/// is non-blank, fits the display-name cap, and is deliberately UN-TYPABLE —
+/// `guards::validate_name` rejects it — mirroring the AUTH-25
+/// `auth25_tombstone_name_is_bounded_and_untypable` pin above for the
+/// distinct M21 guest-claim sentinel.
+///
+/// All three assertions are load-bearing TOGETHER, never individually:
+/// `validate_name(..).is_err()` alone is satisfied by `""` (an empty name is
+/// rejected) AND by an ordinary 30-char alphanumeric name (an over-length
+/// name is also rejected) — neither of those is the bounded, deliberately
+/// un-typable sentinel this criterion actually requires. Only the trio
+/// together (non-blank AND within the length cap AND rejected) pins it.
+///
+/// kills: TOMBSTONE_DISPLAY_NAME defined as `""` (passes is_err() alone,
+/// fails the non-blank assertion here); TOMBSTONE_DISPLAY_NAME defined as an
+/// over-cap string longer than `MAX_NAME_LEN` (passes is_err() alone, fails
+/// the length-cap assertion here).
+#[test]
+fn rb7_deletion_tombstone_is_bounded_and_untypable() {
+    assert!(
+        !game_core::TOMBSTONE_DISPLAY_NAME.trim().is_empty(),
+        "RB7-B1 FAIL: game_core::TOMBSTONE_DISPLAY_NAME must not be blank / \
+         whitespace-only"
+    );
+    assert!(
+        game_core::TOMBSTONE_DISPLAY_NAME.chars().count() <= crate::MAX_NAME_LEN,
+        "RB7-B1 FAIL: game_core::TOMBSTONE_DISPLAY_NAME must be <= MAX_NAME_LEN ({}) \
+         characters",
+        crate::MAX_NAME_LEN
+    );
+    assert!(
+        crate::guards::validate_name(game_core::TOMBSTONE_DISPLAY_NAME).is_err(),
+        "RB7-B1 FAIL: game_core::TOMBSTONE_DISPLAY_NAME must be UN-TYPABLE \
+         (validate_name rejects it), so no player can mint a display name that \
+         impersonates a deleted-account tombstone"
+    );
+}
+
+/// RB7-B2 (M22 §3 vs. M21 AUTH-25): the M22 deletion tombstone
+/// (`game_core::TOMBSTONE_DISPLAY_NAME`, read via the FLAT crate-root path —
+/// this assertion doubles as the cross-crate flat-reachability pin, which is
+/// why it must not be the deep `game_core::accounts::deletion::...` path)
+/// must be distinct from the M21 guest-claim tombstone
+/// (`super::PROFILE_TOMBSTONE_NAME`), on LIVE symbols on both sides.
+///
+/// A bare `assert_ne!` alone is not enough: `"(Claimed guest)"`
+/// (case-folded) and `"(claimed  guest)"` (internal-whitespace-squashed)
+/// are both `!=` the original value yet reproduce exactly the "a deleted
+/// account reads as an unclaimed guest" confusion this criterion exists to
+/// prevent (measured red-team finding #12). So this test ALSO asserts
+/// distinctness survives case-folding AND whitespace-squashing together.
+///
+/// kills: TOMBSTONE_DISPLAY_NAME accidentally set to the live
+/// PROFILE_TOMBSTONE_NAME value (direct collision, caught by the bare
+/// assert_ne!); a near-miss value that only differs by case or by internal
+/// whitespace from PROFILE_TOMBSTONE_NAME (finding #12 — a deleted account
+/// would still read as an unclaimed guest to any case-insensitive or
+/// whitespace-normalizing leaderboard consumer, caught only by the
+/// fold-then-compare assertion).
+#[test]
+fn rb7_deletion_tombstone_is_distinct_from_guest_claim() {
+    assert_ne!(
+        game_core::TOMBSTONE_DISPLAY_NAME,
+        super::PROFILE_TOMBSTONE_NAME,
+        "RB7-B2 FAIL: the M22 deletion tombstone must not equal the M21 guest-claim \
+         tombstone (super::PROFILE_TOMBSTONE_NAME) — a deleted account must never be \
+         indistinguishable from an unclaimed guest"
+    );
+
+    let fold = |s: &str| -> String {
+        s.chars()
+            .filter(|c| !c.is_whitespace())
+            .flat_map(char::to_lowercase)
+            .collect()
+    };
+    assert_ne!(
+        fold(game_core::TOMBSTONE_DISPLAY_NAME),
+        fold(super::PROFILE_TOMBSTONE_NAME),
+        "RB7-B2 FAIL: the M22 deletion tombstone and the M21 guest-claim tombstone \
+         must remain distinct even after case-folding and whitespace-squashing — \
+         \"(Claimed guest)\" and \"(claimed  guest)\" both pass a bare assert_ne! yet \
+         reproduce exactly the \"deleted account reads as an unclaimed guest\" \
+         confusion this criterion exists to prevent (measured red-team finding #12)"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// RB7 scan-logic helpers — shared verbatim between the B3a/B3b/B3c pins
+// below and the B5 proof-of-teeth battery, so the battery proves the exact
+// logic the pins run, not a re-description of it.
+// ---------------------------------------------------------------------------
+
+/// RB7 scan helper for B3a: count of the squashed `const<IDENT>` declaration
+/// needle for `PROFILE_TOMBSTONE_NAME` in `stripped` (the output of
+/// `stripped_for_scan`), and the character immediately preceding its
+/// (single) occurrence when the count is exactly 1.
+///
+/// Every visibility form squashes to a preceding `b` (`pubconst...`, from
+/// `pub const`) or `)` (`pub(crate)const...`, `pub(super)const...`,
+/// `pub(self)const...`, `pub(in crate::ranking)const...`), while a
+/// legitimate `#[allow(dead_code)]` attribute squashes to a preceding `]`
+/// and an ordinary item boundary squashes to `}` or `;` — but ALSO to a
+/// module-open `{`, an attribute-close `]`, or (at the very start of a
+/// scanned fragment) nothing at all. Callers must not therefore write this
+/// as a positive allowlist of `}`/`;` — that would FALSE-RED a compliant
+/// attribute-annotated const (measured red-team finding #7). Instead callers
+/// check the NEGATIVE: the preceding char is neither `b` nor `)`.
+fn rb7_decl_occurrence(stripped: &str) -> (usize, Option<char>) {
+    rb7_item_occurrence(stripped, concat!("const", "PROFILE_TOMBSTONE_NAME"))
+}
+
+/// RB7 scan helper, generic over the item needle: occurrence count of `needle`
+/// in `stripped`, plus the character immediately preceding its single
+/// occurrence when the count is exactly 1. Shared by the const-declaration pin
+/// (`rb7_decl_occurrence`) and the writer-fn pin
+/// (`rb7_guest_claim_tombstone_writer_is_module_private`) so both run the same
+/// preceding-char logic rather than two copies that can drift apart.
+fn rb7_item_occurrence(stripped: &str, needle: &str) -> (usize, Option<char>) {
+    let count = stripped.matches(needle).count();
+    let preceding = if count == 1 {
+        stripped
+            .find(needle)
+            .and_then(|idx| stripped[..idx].chars().next_back())
+    } else {
+        None
+    };
+    (count, preceding)
+}
+
+/// RB7 scan helper for B3b: count of the bare identifier
+/// `PROFILE_TOMBSTONE_NAME` in `stripped` (the output of
+/// `stripped_for_scan`). The declaration itself is one occurrence; every
+/// legitimate use is another. A correct ranking.rs has exactly 2 (the
+/// declaration and the single use in `tombstoned_profile`).
+fn rb7_identifier_occurrence_count(stripped: &str) -> usize {
+    let needle = concat!("PROFILE_TOMBSTONE", "_NAME");
+    stripped.matches(needle).count()
+}
+
+/// RB7 scan helper for B3c: count of the guest-claim VALUE (never spelled
+/// whole — assembled via `concat!`) in `raw` (the UNSTRIPPED source).
+/// Deliberately raw: `stripped_for_scan` blanks string CONTENT, so a
+/// stripped scan for a string VALUE is structurally vacuous.
+fn rb7_value_occurrence_count(raw: &str) -> usize {
+    let value = concat!("(claimed ", "guest)");
+    raw.matches(value).count()
+}
+
+/// RB7-B3a (M22 §3 SSOT hardening): the `PROFILE_TOMBSTONE_NAME` const
+/// declaration in ranking.rs must be MODULE-PRIVATE (a bare `const`, no
+/// visibility modifier) — this slice moves it from `pub(crate)` so S3
+/// cannot reach for it as the M22 deletion tombstone by mistake.
+///
+/// Fails LOUD and distinctly on 0 occurrences (the declaration was removed
+/// or renamed — the scan itself found nothing to check) and on >1
+/// occurrences (an ambiguous scan target), and only then checks the
+/// preceding-char property on the single occurrence.
+///
+/// kills: `pub const`, `pub(crate) const`, `pub(super) const`,
+/// `pub(self) const`, `pub(in crate::ranking) const` — every visibility
+/// form that keeps the constant reachable from outside `ranking.rs`.
+#[test]
+fn rb7_guest_claim_tombstone_declaration_is_module_private() {
+    let squashed = stripped_for_scan(RANKING_RS);
+    let (count, preceding) = rb7_decl_occurrence(&squashed);
+    match count {
+        0 => panic!(
+            "RB7-B3a FAIL (zero occurrences): the squashed const-declaration needle \
+             for PROFILE_TOMBSTONE_NAME was not found in ranking.rs at all — the \
+             declaration was removed or renamed."
+        ),
+        1 => {
+            let Some(preceding) = preceding else {
+                panic!("RB7-B3a FAIL: count == 1 but no preceding char was captured");
+            };
+            assert!(
+                preceding != 'b' && preceding != ')',
+                "RB7-B3a FAIL: the character immediately preceding the const \
+                 declaration is {preceding:?} — every visibility form (`pub const` \
+                 squashes to a preceding 'b'; `pub(crate) const` / `pub(super) const` \
+                 / `pub(self) const` / `pub(in crate::ranking) const` all squash to a \
+                 preceding ')') leaves PROFILE_TOMBSTONE_NAME reachable outside \
+                 ranking.rs. It must be a bare, module-private `const`."
+            );
+        }
+        n => panic!(
+            "RB7-B3a FAIL ({n} occurrences): expected exactly one const declaration \
+             for PROFILE_TOMBSTONE_NAME in ranking.rs, found {n}."
+        ),
+    }
+}
+
+/// RB7-B3b (M22 §3 SSOT hardening): the bare identifier
+/// `PROFILE_TOMBSTONE_NAME` must occur EXACTLY TWICE in ranking.rs — the
+/// declaration and its single legitimate use in `tombstoned_profile`.
+/// This is the clause B3a is blind to: B3a only pins the
+/// DECLARATION's own visibility keyword; it cannot see a re-export or an
+/// accessor fn that hands the value back out under a different name.
+///
+/// kills: `pub(crate) use self::PROFILE_TOMBSTONE_NAME;` added elsewhere in
+/// ranking.rs (re-exports the module-private const — count becomes 3); a
+/// `pub(crate) fn guest_claim_tombstone() -> &'static str {
+/// PROFILE_TOMBSTONE_NAME }` accessor (hands the value back out through a
+/// public fn — count becomes 3). Either shape defeats the module-privacy
+/// RB7-B3a enforces while leaving B3a itself green.
+#[test]
+fn rb7_guest_claim_tombstone_identifier_is_not_re_exported() {
+    let squashed = stripped_for_scan(RANKING_RS);
+    let count = rb7_identifier_occurrence_count(&squashed);
+    assert_eq!(
+        count, 2,
+        "RB7-B3b FAIL: PROFILE_TOMBSTONE_NAME must occur exactly 2 times in ranking.rs \
+         (its sole declaration + the single use in tombstoned_profile), \
+         found {count}. A 3rd occurrence means either a `pub(crate) use \
+         self::PROFILE_TOMBSTONE_NAME;` re-export was added elsewhere in the file, or \
+         a `pub(crate) fn guest_claim_tombstone() -> &'static str {{ \
+         PROFILE_TOMBSTONE_NAME }}` accessor was added — either shape hands the \
+         module-private value back out and defeats RB7-B3a."
+    );
+}
+
+/// RB7-B3c (M22 §3 SSOT hardening): the guest-claim sentinel VALUE (never
+/// spelled whole in this test file — assembled via `concat!`) must occur
+/// EXACTLY ONCE in the RAW, UNSTRIPPED ranking.rs source. Deliberately raw:
+/// `stripped_for_scan` blanks string CONTENT, so a stripped scan for a
+/// string VALUE would be structurally vacuous (it would always read as 0,
+/// declaration included).
+///
+/// A comment mentioning the value verbatim will also RED this test, and
+/// that is intended: the value must appear exactly once, in its
+/// declaration, nowhere else — not even in a comment.
+///
+/// kills: a SECOND `pub(crate) const GUEST_TOMBSTONE_NAME: &str = "(claimed
+/// guest)";` under a different identifier (B3b's identifier scan cannot see
+/// this — it is a different identifier); a `#[macro_export] macro_rules!`
+/// yielding the same literal (also invisible to B3a/B3b, which scan for the
+/// identifier and the declaration keyword, not the value).
+#[test]
+fn rb7_guest_claim_tombstone_value_is_not_duplicated() {
+    let count = rb7_value_occurrence_count(RANKING_RS);
+    assert_eq!(
+        count, 1,
+        "RB7-B3c FAIL: the guest-claim value must occur exactly once in ranking.rs \
+         (its sole declaration), found {count}. A 2nd occurrence means a \
+         duplicate const under a different identifier, or a macro_rules! (or a \
+         comment) carrying the same literal — none of which RB7-B3a/B3b's \
+         identifier/declaration scans can see."
+    );
+}
+
+/// RB7-B3d (M22 §3 SSOT hardening): `tombstoned_profile` — the only OTHER
+/// symbol in this module that WRITES `PROFILE_TOMBSTONE_NAME` — must also be
+/// module-private.
+///
+/// B3a/B3b/B3c between them stop the guest-claim VALUE escaping `ranking.rs`
+/// as data. This clause stops it escaping as BEHAVIOUR. A `pub(crate) fn
+/// tombstoned_profile` is reachable from `accounts.rs` by exactly the
+/// `crate::ranking::…` path that file already uses elsewhere, and calling it
+/// is a doubly-wrong deletion step: the row renders as an unclaimed guest AND
+/// its ladder history is wiped by a stats-zeroing that ADR-0179 D6 scopes to
+/// the guest-claim flow alone. B3b cannot see it — an `accounts.rs` CALL SITE
+/// leaves this file's identifier count at 2.
+///
+/// kills: re-widening `tombstoned_profile` to `pub`, `pub(crate)`,
+/// `pub(super)`, `pub(self)` or `pub(in …)`.
+#[test]
+fn rb7_guest_claim_tombstone_writer_is_module_private() {
+    let squashed = stripped_for_scan(RANKING_RS);
+    let needle = concat!("fn", "tombstoned_profile(");
+    let (count, preceding) = rb7_item_occurrence(&squashed, needle);
+    assert_eq!(
+        count, 1,
+        "RB7-B3d FAIL: expected exactly one `fn tombstoned_profile(` declaration in \
+         ranking.rs, found {count} — the writer-privacy scan has no unambiguous target."
+    );
+    let Some(preceding) = preceding else {
+        panic!("RB7-B3d FAIL: count == 1 but no preceding char was captured");
+    };
+    assert!(
+        preceding != 'b' && preceding != ')',
+        "RB7-B3d FAIL: the character immediately preceding `fn tombstoned_profile(` is \
+         {preceding:?} — every visibility form squashes to a preceding 'b' (`pub fn`) or \
+         ')' (`pub(crate) fn` and friends). Crate-visible, this fn hands the M21 \
+         guest-claim tombstone AND an AUTH-25 stats-wipe to any caller, including M22's \
+         deletion cascade. It must be a bare, module-private `fn`."
+    );
+}
+
+/// RB7-B5 — proof-of-teeth battery for `rb7_decl_occurrence` /
+/// `rb7_identifier_occurrence_count` / `rb7_value_occurrence_count`, the
+/// exact three fns RB7-B3a/B3b/B3c run against `RANKING_RS`. Mirrors the
+/// shape of `ptc1_scan_machinery_teeth` above: run the SAME logic against
+/// small synthetic fixtures instead of the real file, and prove it produces
+/// the expected verdict on each.
+///
+/// If this test fails, the RB7-B3a/B3b/B3c pins above cannot be trusted.
+#[test]
+fn rb7_scan_machinery_teeth() {
+    let mut pass = 0u32;
+    let mut bite = 0u32;
+    let mut loud = 0u32;
+
+    // -------------------------------------------------------------------------
+    // MUST PASS 1/2 — bare private const with one legitimate use.
+    // -------------------------------------------------------------------------
+    let pass_bare = "
+        mod fixture {
+            const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
+            fn use_it() -> String {
+                PROFILE_TOMBSTONE_NAME.to_string()
+            }
+        }
+    ";
+    {
+        let squashed = stripped_for_scan(pass_bare);
+        let (count, preceding) = rb7_decl_occurrence(&squashed);
+        assert_eq!(
+            count, 1,
+            "RB7-B5 FAIL (PASS/bare): decl count must be 1, was {count}"
+        );
+        let preceding = preceding.unwrap_or_else(|| {
+            panic!("RB7-B5 FAIL (PASS/bare): count == 1 must carry a preceding char")
+        });
+        assert!(
+            preceding != 'b' && preceding != ')',
+            "RB7-B5 FAIL (PASS/bare): bare private const wrongly flagged (preceding \
+             char {preceding:?})"
+        );
+        assert_eq!(
+            rb7_identifier_occurrence_count(&squashed),
+            2,
+            "RB7-B5 FAIL (PASS/bare): identifier count must be 2 (decl + one use)"
+        );
+        assert_eq!(
+            rb7_value_occurrence_count(pass_bare),
+            1,
+            "RB7-B5 FAIL (PASS/bare): value count must be 1 (the sole declaration)"
+        );
+        pass += 1;
+    }
+
+    // -------------------------------------------------------------------------
+    // MUST PASS 2/2 — regression pin for finding #7: an `#[allow(dead_code)]`
+    // attribute-annotated private const must NOT be flagged by B3a.
+    // -------------------------------------------------------------------------
+    let pass_attr = "
+        mod fixture {
+            #[allow(dead_code)]
+            const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
+            fn use_it() -> String {
+                PROFILE_TOMBSTONE_NAME.to_string()
+            }
+        }
+    ";
+    {
+        let squashed = stripped_for_scan(pass_attr);
+        let (count, preceding) = rb7_decl_occurrence(&squashed);
+        assert_eq!(
+            count, 1,
+            "RB7-B5 FAIL (PASS/attr): decl count must be 1, was {count}"
+        );
+        let preceding = preceding.unwrap_or_else(|| {
+            panic!("RB7-B5 FAIL (PASS/attr): count == 1 must carry a preceding char")
+        });
+        assert!(
+            preceding != 'b' && preceding != ')',
+            "RB7-B5 FAIL (PASS/attr, finding #7 regression): an #[allow(dead_code)] \
+             attribute-annotated private const was wrongly flagged (preceding char \
+             {preceding:?}) — the scan must not use a positive item-boundary allowlist."
+        );
+        pass += 1;
+    }
+
+    // -------------------------------------------------------------------------
+    // MUST BITE B3a (4 visibility-leak shapes).
+    // -------------------------------------------------------------------------
+    let bite_a_fixtures: [(&str, &str); 5] = [
+        (
+            "pub const",
+            "mod fixture {
+                pub const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
+                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
+            }",
+        ),
+        (
+            "pub(crate) const",
+            "mod fixture {
+                pub(crate) const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
+                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
+            }",
+        ),
+        (
+            "pub(super) const",
+            "mod fixture {
+                pub(super) const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
+                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
+            }",
+        ),
+        (
+            "pub(self) const",
+            "mod fixture {
+                pub(self) const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
+                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
+            }",
+        ),
+        (
+            "pub(in crate::ranking) const",
+            "mod fixture {
+                pub(in crate::ranking) const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
+                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
+            }",
+        ),
+    ];
+    for (label, fixture) in bite_a_fixtures {
+        let squashed = stripped_for_scan(fixture);
+        let (count, preceding) = rb7_decl_occurrence(&squashed);
+        assert_eq!(
+            count, 1,
+            "RB7-B5 FAIL (BITE-A/{label}): decl count must be 1, was {count}"
+        );
+        let preceding = preceding.unwrap_or_else(|| {
+            panic!("RB7-B5 FAIL (BITE-A/{label}): count == 1 must carry a preceding char")
+        });
+        assert!(
+            preceding == 'b' || preceding == ')',
+            "RB7-B5 FAIL (BITE-A/{label}): visibility leak did NOT trip B3a (preceding \
+             char {preceding:?}) — the declaration-privacy scan is broken."
+        );
+        bite += 1;
+    }
+
+    // -------------------------------------------------------------------------
+    // MUST BITE B3b (2 re-export shapes: `use self::…` and an accessor fn).
+    // -------------------------------------------------------------------------
+    let bite_b_fixtures: [(&str, &str); 2] = [
+        (
+            "use self:: re-export",
+            "mod fixture {
+                const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
+                pub(crate) use self::PROFILE_TOMBSTONE_NAME;
+                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
+            }",
+        ),
+        (
+            "accessor fn",
+            "mod fixture {
+                const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
+                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
+                pub(crate) fn guest_claim_tombstone() -> &'static str {
+                    PROFILE_TOMBSTONE_NAME
+                }
+            }",
+        ),
+    ];
+    for (label, fixture) in bite_b_fixtures {
+        let squashed = stripped_for_scan(fixture);
+        let count = rb7_identifier_occurrence_count(&squashed);
+        assert_ne!(
+            count, 2,
+            "RB7-B5 FAIL (BITE-B/{label}): re-export/accessor shape did NOT trip B3b \
+             (identifier count stayed at 2) — the not-re-exported scan is broken."
+        );
+        bite += 1;
+    }
+
+    // -------------------------------------------------------------------------
+    // MUST BITE B3c (2 value-duplication shapes: alias const, macro_rules!).
+    // -------------------------------------------------------------------------
+    let bite_c_fixtures: [(&str, &str); 2] = [
+        (
+            "alias const",
+            "mod fixture {
+                const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
+                const GUEST_TOMBSTONE_NAME: &str = \"(claimed guest)\";
+                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
+            }",
+        ),
+        (
+            "macro_rules!",
+            "mod fixture {
+                const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
+                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
+                macro_rules! guest_tombstone_literal {
+                    () => { \"(claimed guest)\" };
+                }
+            }",
+        ),
+    ];
+    for (label, fixture) in bite_c_fixtures {
+        let count = rb7_value_occurrence_count(fixture);
+        assert_ne!(
+            count, 1,
+            "RB7-B5 FAIL (BITE-C/{label}): value-duplication shape did NOT trip B3c \
+             (value count stayed at 1) — the not-duplicated scan is broken."
+        );
+        bite += 1;
+    }
+
+    // -------------------------------------------------------------------------
+    // MUST PASS / MUST BITE B3d — the writer fn's own visibility.
+    // -------------------------------------------------------------------------
+    let writer_private = "
+        mod fixture {
+            fn tombstoned_profile(guest: Profile) -> Profile { guest }
+        }
+    ";
+    {
+        let squashed = stripped_for_scan(writer_private);
+        let needle = concat!("fn", "tombstoned_profile(");
+        let (count, preceding) = rb7_item_occurrence(&squashed, needle);
+        assert_eq!(
+            count, 1,
+            "RB7-B5 FAIL (PASS/writer-private): writer decl count must be 1, was {count}"
+        );
+        let preceding = preceding.unwrap_or_else(|| {
+            panic!("RB7-B5 FAIL (PASS/writer-private): count == 1 must carry a preceding char")
+        });
+        assert!(
+            preceding != 'b' && preceding != ')',
+            "RB7-B5 FAIL (PASS/writer-private): a bare private fn was wrongly flagged \
+             (preceding char {preceding:?})"
+        );
+        pass += 1;
+    }
+
+    let writer_bite_fixtures: [(&str, &str); 2] = [
+        (
+            "pub fn",
+            "mod fixture {
+                pub fn tombstoned_profile(guest: Profile) -> Profile { guest }
+            }",
+        ),
+        (
+            "pub(crate) fn",
+            "mod fixture {
+                pub(crate) fn tombstoned_profile(guest: Profile) -> Profile { guest }
+            }",
+        ),
+    ];
+    for (label, fixture) in writer_bite_fixtures {
+        let squashed = stripped_for_scan(fixture);
+        let needle = concat!("fn", "tombstoned_profile(");
+        let (count, preceding) = rb7_item_occurrence(&squashed, needle);
+        assert_eq!(
+            count, 1,
+            "RB7-B5 FAIL (BITE-D/{label}): writer decl count must be 1, was {count}"
+        );
+        let preceding = preceding.unwrap_or_else(|| {
+            panic!("RB7-B5 FAIL (BITE-D/{label}): count == 1 must carry a preceding char")
+        });
+        assert!(
+            preceding == 'b' || preceding == ')',
+            "RB7-B5 FAIL (BITE-D/{label}): a crate-visible writer fn did NOT trip B3d \
+             (preceding char {preceding:?}) — the writer-privacy scan is broken."
+        );
+        bite += 1;
+    }
+
+    // -------------------------------------------------------------------------
+    // MUST FAIL LOUD (0 occurrences, never a silent pass): the identifier
+    // appearing ONLY inside a comment, and ONLY inside a string literal.
+    // -------------------------------------------------------------------------
+    let loud_comment_only = "
+        mod fixture {
+            // PROFILE_TOMBSTONE_NAME lives elsewhere now.
+            fn use_it() -> String {
+                String::new()
+            }
+        }
+    ";
+    {
+        let squashed = stripped_for_scan(loud_comment_only);
+        let (decl_count, _) = rb7_decl_occurrence(&squashed);
+        let ident_count = rb7_identifier_occurrence_count(&squashed);
+        assert_eq!(
+            decl_count, 0,
+            "RB7-B5 FAIL (LOUD/comment-only): a comment-only mention must not be read \
+             as a declaration (decl count must be 0, was {decl_count})"
+        );
+        assert_eq!(
+            ident_count, 0,
+            "RB7-B5 FAIL (LOUD/comment-only): a comment-only mention must not be \
+             counted as an identifier occurrence (count must be 0, was {ident_count})"
+        );
+        loud += 1;
+    }
+
+    let loud_string_only = "
+        mod fixture {
+            fn use_it() -> &'static str {
+                \"PROFILE_TOMBSTONE_NAME\"
+            }
+        }
+    ";
+    {
+        let squashed = stripped_for_scan(loud_string_only);
+        let (decl_count, _) = rb7_decl_occurrence(&squashed);
+        let ident_count = rb7_identifier_occurrence_count(&squashed);
+        assert_eq!(
+            decl_count, 0,
+            "RB7-B5 FAIL (LOUD/string-only): a string-literal-only mention must not be \
+             read as a declaration (decl count must be 0, was {decl_count})"
+        );
+        assert_eq!(
+            ident_count, 0,
+            "RB7-B5 FAIL (LOUD/string-only): a string-literal-only mention must not be \
+             counted as an identifier occurrence (count must be 0, was {ident_count})"
+        );
+        loud += 1;
+    }
+
+    // -------------------------------------------------------------------------
+    // Red-team finding #8: an ordinary char literal (e.g. a quote-char
+    // constant) desyncs `strip_rust_strings` — it has no char-literal lexer,
+    // so a `"` inside `'...'` is misread as opening a real string literal.
+    // For THIS fixture the true declaration is bare-private (would PASS if
+    // read correctly), but the desync collapses BOTH B3a's declaration
+    // needle and B3b's identifier count to 0 — it fails CLOSED, never open,
+    // so the next maintainer reads "the scan desynced", not "the symbol was
+    // removed". The char literal is built at runtime from a 0x22 byte
+    // constant, never as a literal double-quote inside single quotes in
+    // THIS file's own source (house rule: `evals/zone-warp-server-runtime
+    // .eval.mjs`'s W-pre check REDs CI on that shape in production source,
+    // and several evals concatenate every Rust source under server-module,
+    // test files included, through naive strippers. For the same reason this
+    // comment does not spell a slash-star glob: that two-character sequence
+    // opens a block comment for those strippers and blanks everything after
+    // it -- a full-CI-only false RED, measured on this very slice).
+    // -------------------------------------------------------------------------
+    let quote = char::from(0x22u8);
+    let finding8_fixture = format!(
+        "mod fixture {{ const Q: char = '{}'; \
+         const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\"; \
+         fn use_it() -> String {{ PROFILE_TOMBSTONE_NAME.to_string() }} }}",
+        quote
+    );
+    {
+        let squashed = stripped_for_scan(&finding8_fixture);
+        let (decl_count, _) = rb7_decl_occurrence(&squashed);
+        let ident_count = rb7_identifier_occurrence_count(&squashed);
+        assert_eq!(
+            decl_count, 0,
+            "RB7-B5 FAIL (finding #8, char-literal desync): expected the desync to \
+             collapse the declaration scan to 0 occurrences (fail CLOSED), found \
+             {decl_count} — if this is 1, the scan machinery no longer desyncs on a \
+             char literal the way the measured red-team finding described; re-verify \
+             the finding is still live before trusting B3a/B3b on real ranking.rs."
+        );
+        assert_eq!(
+            ident_count, 0,
+            "RB7-B5 FAIL (finding #8, char-literal desync): expected the desync to \
+             collapse the identifier-occurrence scan to 0 (fail CLOSED), found \
+             {ident_count}."
+        );
+        loud += 1;
+    }
+
+    let total = pass + bite + loud;
+    assert_eq!(
+        (pass, bite, loud),
+        (3, 11, 3),
+        "RB7-B5 FAIL: the fixture battery has changed size — it must run 3 MUST-PASS, \
+         11 MUST-BITE and 3 MUST-FAIL-LOUD fixtures. A shrunken battery is how a teeth \
+         suite decays into decoration."
+    );
+    // The marker the rb-7 acceptance gate greps for, written through `Write`
+    // rather than a print macro: `spacetime generate` rejects any print macro
+    // anywhere in the module source, `#[cfg(test)]` included.
+    let line = format!("RB7-TEETH-OK {total} fixtures (pass={pass} bite={bite} loud={loud})\n");
+    std::io::Write::write_all(&mut std::io::stdout(), line.as_bytes())
+        .expect("RB7-B5: writing the teeth marker to stdout must succeed");
+}

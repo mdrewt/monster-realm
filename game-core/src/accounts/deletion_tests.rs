@@ -451,3 +451,104 @@ fn state_transition_owners_admits_no_empty_wildcard_or_gameplay_entry() {
          tables and must go through the deletion gate, not around it"
     );
 }
+
+// ===========================================================================
+// TOMBSTONE_DISPLAY_NAME — the M22 §3 player.name / profile.name deletion
+// sentinel (slice rb-7, M22-privacy-compliance.spec.md §3).
+//
+// This slice single-sources the deletion-tombstone display name in
+// game-core so S3 (the imperative deletion shell in
+// server-module/src/accounts.rs) has exactly one correct place to reach for
+// it, instead of the M21 GUEST-CLAIM sentinel
+// (server-module/src/ranking.rs's `PROFILE_TOMBSTONE_NAME`, a DIFFERENT
+// sentinel for a DIFFERENT lifecycle event). The cross-crate half of this
+// distinctness — that the two constants stay apart even under case-folding
+// and whitespace-squashing, and that ranking.rs's sentinel is no longer
+// reachable outside its own module — is proven from the server-module side
+// (ranking_tests.rs RB7-B1..B5).
+// ===========================================================================
+
+// Imported by the FLAT crate-root path, deliberately unlike the deep
+// `crate::accounts::deletion::{..}` import at the top of this file: this line
+// is what pins `game-core/src/lib.rs`'s re-export of the new sentinel, so
+// dropping the symbol from that list breaks the build here rather than
+// silently leaving S3 without the path every other S1 sentinel offers.
+use crate::TOMBSTONE_DISPLAY_NAME;
+
+/// RB7-A1 (M22 §3): `TOMBSTONE_DISPLAY_NAME` must be non-blank, trim-stable,
+/// and composed only of printable ASCII characters.
+///
+/// Four independent properties, each load-bearing on its own:
+///   - not empty
+///   - `.trim()` is not empty (not whitespace-only)
+///   - `.trim()` equals the value itself (trim-stable) — `validate_name`
+///     trims (then NFC-normalizes) a name before analysing it, so a value
+///     that changes under `.trim()` would be stored differently than it is
+///     analysed
+///   - every char is printable ASCII (`is_ascii_graphic() || c == ' '`) —
+///     this is the clause that kills a zero-width-space or RTL-override
+///     value: an "un-typable" value (one `validate_name` would reject) can
+///     still satisfy the first three properties while rendering blank or
+///     visually reversed on a leaderboard (measured red-team finding #13)
+///
+/// This test deliberately does NOT assert `<= 24` and does NOT assert the
+/// alphanumeric-charset predicate — `MAX_NAME_LEN` and `validate_name` are
+/// `pub(crate)` in server-module, and hand-copying either rule into
+/// game-core would itself be the SSOT hazard this slice exists to remove.
+/// Those two properties are proven server-module-side (RB7-B1).
+///
+/// kills: a blank-string default; a leading/trailing-whitespace-padded
+/// value; a value containing a zero-width space (U+200B) or an RTL-override
+/// control character (e.g. U+202E) that would satisfy "rejected by
+/// validate_name" while rendering blank or visually reversed downstream.
+#[test]
+fn tombstone_display_name_is_non_blank_and_printable() {
+    assert!(
+        !TOMBSTONE_DISPLAY_NAME.is_empty(),
+        "TOMBSTONE_DISPLAY_NAME must not be the empty string"
+    );
+    assert!(
+        !TOMBSTONE_DISPLAY_NAME.trim().is_empty(),
+        "TOMBSTONE_DISPLAY_NAME must not be whitespace-only"
+    );
+    assert_eq!(
+        TOMBSTONE_DISPLAY_NAME.trim(),
+        TOMBSTONE_DISPLAY_NAME,
+        "TOMBSTONE_DISPLAY_NAME must be trim-stable: validate_name trims (then \
+         NFC-normalizes) a name before analysing it, so a value that changes under \
+         .trim() would be stored differently than it is analysed"
+    );
+    for c in TOMBSTONE_DISPLAY_NAME.chars() {
+        assert!(
+            c.is_ascii_graphic() || c == ' ',
+            "TOMBSTONE_DISPLAY_NAME contains a non-printable-ASCII char {c:?} — a \
+             zero-width space or RTL-override control char would satisfy \
+             \"rejected by validate_name\" while rendering blank or visually \
+             reversed on a leaderboard (measured red-team finding #13)"
+        );
+    }
+}
+
+/// RB7-A2 (M22 §3): `TOMBSTONE_DISPLAY_NAME` must be distinct from its LIVE
+/// game-core sibling `TOMBSTONE_AUTH_ISSUER`.
+///
+/// Compares against the live sibling constant, never a hand-typed literal.
+/// game-core must not carry its own copy of server-module's `(claimed
+/// guest)` M21 guest-claim sentinel — that string is `pub(crate)` (going to
+/// module-private under this slice) in server-module, so an un-synced
+/// hand-copy here would itself be the SSOT hazard this slice removes. The
+/// cross-crate distinctness against that LIVE server-module constant is
+/// RB7-B2's job, not this test's.
+///
+/// kills: a deletion tombstone accidentally defined as (or copy-pasted
+/// from) the auth-issuer sentinel value, collapsing two distinct
+/// anonymization sentinels for two distinct fields into one.
+#[test]
+fn tombstone_display_name_is_distinct_from_the_auth_issuer_sentinel() {
+    assert_ne!(
+        TOMBSTONE_DISPLAY_NAME, TOMBSTONE_AUTH_ISSUER,
+        "TOMBSTONE_DISPLAY_NAME must not equal TOMBSTONE_AUTH_ISSUER — these are two \
+         distinct sentinels for two distinct fields (profile/player display name vs. \
+         account.auth_issuer) and must not collide"
+    );
+}

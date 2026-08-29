@@ -209,6 +209,21 @@ sanctioned name. **Still open and assigned, not hidden:** `accounts_tests.rs:205
 hard-RED when S3 ships, so rb-6 removes one of two S3 blockers; the twin is S3's (its `touches:`
 already include `accounts.rs`, ADR-0195 puts the co-located twin in scope) and must mirror the
 REQUIRED/PLANNED semantics rather than bump the count to six.
+**rb-7** single-sources the deletion display-name tombstone (residual R-m22-s1-X2; ADR-0211).
+M22 §3 requires `player.name` and `profile.name` tombstoned on deletion, but §7.2's S1 row listed
+six symbols and omitted a name, so the only constant in the tree was `ranking.rs`'s
+`PROFILE_TOMBSTONE_NAME` — the M21 guest-claim sentinel, whose writer also zeroes rating/wins/losses.
+Reused by S3 it would render a deleted account as an unclaimed guest and wipe its ladder history.
+`game_core::TOMBSTONE_DISPLAY_NAME` now sits beside `TOMBSTONE_IDENTITY_BYTES`/`TOMBSTONE_AUTH_ISSUER`
+and is re-exported flat like them: making the name the one deep-path outlier is itself how an S3
+author ends up reaching for the flat, familiar wrong one. **The enforcement is the compiler, not a
+convention** — `PROFILE_TOMBSTONE_NAME` and `tombstoned_profile`, the only symbol that writes it,
+are both module-private, and `mod ranking;` being private is what made the old `pub(crate)` a real
+reach from `accounts.rs`. Four regression pins guard re-widening, because red-team measured that a
+declaration-shape pin alone is blind to a `use` re-export, a `pub` accessor, and a same-valued
+alias. The VALUE is deliberately unpinned by spec, so every test asserts properties, never the
+literal. Stated limit: the scans are substring searches over `ranking.rs`, so a split or
+escape-spelled literal, and anything hand-typed in `accounts.rs`, are S3/S6's to close.
 **M23 accessibility gates (m23-s10)** — three source-scan evals plus one cross-view happy-dom
 spec. `overlay-a11y-manifest` bans a view-local focus call in every `client/src/ui/**/*View.ts`
 (readdir-DERIVED and two-way ratcheted, so a new view is scanned the day it lands — the three
