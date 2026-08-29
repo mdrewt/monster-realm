@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 180 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 181 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -189,6 +189,7 @@ Generated from 180 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0212](./0212-deletion-grace-wasm-accessor.md) | 0212 — Deletion grace window: a wasm accessor so TypeScript never hand-types it | Accepted | client-ui, ci-gates | rb-8 (residual R-m22-s1-X3) | Export `game_core::DELETION_GRACE_MS_DEFAULT` from `client-wasm` as a `#[wasm_bindgen]` accessor returning `i64` (JS `BigInt`), so S8's countdown reads the grace window instead of hand-typing it. |
 | [0213](./0213-reduced-motion-hp-bar-guard.md) | 0213 — The battle HP bar's reduced-motion guard: `transition: none` in the stylesheet, after the base rule, gated by two oracles | Accepted | client-ui, ci-gates | rb-10 (residual R-m23-s2-X4) | Move only the HP-bar `transition` into `.hp-fill` in `client/src/styles.css`, neutralise it with `transition: none` in a `prefers-reduced-motion: reduce` block placed AFTER the base rule, gated by a source-text eval plus a Chromium probe. |
 | [0214](./0214-live-region-custody-under-aria-modal.md) | 0214 — The live region follows the open modal: custody is a closure owned by `ui/liveRegion.ts` | Accepted | client-ui, ci-gates | rb-11 (residual R-m23-s2-X5) | While an overlay is open, re-parent the single `#a11y-live` node into that overlay root and restore it to `<body>` on close, via an `adoptLiveRegion(root): () => void` closure owned by `ui/liveRegion.ts` and called from `ui/overlayA11y.ts`. |
+| [0215](./0215-css-comment-stripper-single-owner.md) | 0215 — One `stripCssComments`, owned by the `.mjs` tier: consolidation beats corpus agreement | Accepted | ci-gates, tooling-docs | rb-12 (residual R-m23-s2-X6) | Delete the duplicate `stripCssComments` from `client/src/indexShell.test.ts` and import |
 
 ## Harness design corpus (H- namespace)
 
@@ -531,6 +532,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0212](./0212-deletion-grace-wasm-accessor.md) — rb-8 (residual R-m22-s1-X3) — 0212 — Deletion grace window: a wasm accessor so TypeScript never hand-types it (Accepted)
 - [0213](./0213-reduced-motion-hp-bar-guard.md) — rb-10 (residual R-m23-s2-X4) — 0213 — The battle HP bar's reduced-motion guard: `transition: none` in the stylesheet, after the base rule, gated by two oracles (Accepted)
 - [0214](./0214-live-region-custody-under-aria-modal.md) — rb-11 (residual R-m23-s2-X5) — 0214 — The live region follows the open modal: custody is a closure owned by `ui/liveRegion.ts` (Accepted)
+- [0215](./0215-css-comment-stripper-single-owner.md) — rb-12 (residual R-m23-s2-X6) — 0215 — One `stripCssComments`, owned by the `.mjs` tier: consolidation beats corpus agreement (Accepted)
 
 ### tooling-docs
 
@@ -568,6 +570,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0202](./0202-obsolete-residual-prose-corrected.md) — lp-doc-a (`specs/monster-realm-v2/M-loop-infrastructure.spec.md` §lp-doc-a) — 0202 — Obsolete residual prose corrected: m20e-2 and nh5 closed per item, 14r-f-2 open and unowned, the 11r-e ids retired (Accepted)
 - [0203](./0203-nightly-red-response-policy.md) — 16r-h (`specs/monster-realm-v2/M-postgate-sixteenth-review-residuals.spec.md` §16r-h) — 0203 — Nightly red-response policy: one machine-checked file, key-set-equal to the wired workflow, cited back from every job (Accepted)
 - [0209](./0209-eval-harness-completeness-guard.md) — rb-5 (residual R-m22-s0-X4) — 0209 — The eval harness carries its own completeness guard: a premature exit can no longer end the run at zero (Accepted)
+- [0215](./0215-css-comment-stripper-single-owner.md) — rb-12 (residual R-m23-s2-X6) — 0215 — One `stripCssComments`, owned by the `.mjs` tier: consolidation beats corpus agreement (Accepted)
 
 ### security-authz
 

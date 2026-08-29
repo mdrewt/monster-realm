@@ -5,7 +5,7 @@
 **Slice:** rb-12 (residual R-m23-s2-X6)
 **Supersedes:** —
 **Amends:** —
-**Subsystems:** ci-gates, client-tests
+**Subsystems:** ci-gates, tooling-docs
 **Decision:** Delete the duplicate `stripCssComments` from `client/src/indexShell.test.ts` and import
 the single owner from `evals/a11y-static-shell.eval.mjs`, hardened to string-aware fail-loud
 semantics; keep a shared, transition-total fixture corpus run by BOTH tiers as the correctness gate
