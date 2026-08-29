@@ -14,8 +14,15 @@
 // VERIFIED SEMANTICS (re-checked against the live tree at authoring time):
 //   * accounts.rs declares EXACTLY five reducers — start_guest_claim,
 //     complete_guest_claim, delete_account, cancel_account_deletion,
-//     guest_claim_reaper. [R/name-set] pins that SET by exact equality rather
-//     than counting, because a red-team proved two ADDITIVE reducers that are
+//     guest_claim_reaper. They are the REQUIRED entries of REDUCER_SANCTIONS,
+//     the sanction ledger [R/name-set] reads (ADR-0210). The ledger replaced a
+//     flat array compared by exact set equality: correct, but a six-name array
+//     false-REDs the CURRENT tree, and ADR-0207 D5 commits M22 S3 to declaring
+//     account_deletion_reaper atomically with its scheduled table while S3
+//     cannot edit this file. [R/name-set] is now MEMBERSHIP (an own key of the
+//     ledger) plus REQUIRED-PRESENCE, and the permissive PLANNED category is
+//     itself pinned by exact set equality in [R/planned-set]. Neither half may
+//     be dropped, because a red-team proved two ADDITIVE reducers that are
 //     unauthenticated, code-less transfers of any identity's monsters,
 //     inventory, wallet, NPC state and profile — both compile and both pass
 //     `clippy --all-targets -D warnings`:
@@ -137,8 +144,33 @@
 //                          whose body carries the scheduler guard.
 //       [R/identity-ctor]  flat ban on Identity::from_hex( / from_byte_array( /
 //                          from_be_byte_array( / from_str(.
-//       [R/name-set]       the enumerated reducer NAME SET equals EXACTLY the
-//                          five sanctioned names (also the non-vacuity guard).
+//       [R/sanction-shape] every REDUCER_SANCTIONS entry is an own-property
+//                          object of exactly {status, why} whose status is one
+//                          of the CLOSED set {REQUIRED, PLANNED}. Runs FIRST.
+//                          Left open, a THIRD status string is a free, silent
+//                          whitelist slot — admitted by membership, never
+//                          demanded by required-presence, invisible to the
+//                          PLANNED pin. MEASURED as a working bypass (ADR-0210).
+//       [R/planned-set]    the PLANNED key set equals EXACTLY PLANNED_PIN, in
+//                          BOTH directions — a subset test is green on an empty
+//                          set and blind to a REQUIRED→PLANNED demotion.
+//       [R/planned-shape]  a PLANNED name that is PRESENT must carry the shape
+//                          that was pre-reviewed (same-file scheduled target,
+//                          argument type IS the scheduled struct, scheduler
+//                          guard in the body). MEASURED: without it, a reducer
+//                          merely REUSING the planned name with a wire-safe
+//                          argument is silent to every other clause here.
+//       [R/name-set]       every enumerated reducer is an OWN key of the ledger
+//                          (Object.hasOwn, never `in` — a reducer named
+//                          `constructor` resolves through Object.prototype),
+//                          AND every REQUIRED key is enumerated (also the
+//                          non-vacuity guard).
+// The G2 success DETAIL additionally prints three plain progress markers —
+// `[R/shape-closed]`, `[R/planned-pinned]`, `[R/s3-ready]`. They are NOT clause
+// tags (no clause emits them and no fixture asserts them); they are the strings
+// this slice's acceptance ledger joins on to prove WHICH version of the gate
+// produced a green, and they are listed here so a reader grepping for a clause
+// by that name is not left hunting for one that does not exist.
 //   G3  checkAnonPassthrough(libSrc)
 //       [I/anon-first]     in on_connect's body, has_jwt( precedes EACH of
 //                          {accounts::, ctx.db., Err(}.
@@ -403,15 +435,165 @@ export function parseScheduledTargets(stripped) {
 
 const ACCOUNTS_PATH = 'server-module/src/accounts.rs';
 
-// Pinned by EXACT SET EQUALITY, never `>= 5`: a count check cannot see E1/E2,
-// whose whole shape is an ADDED reducer.
-const SANCTIONED_REDUCERS = [
-  'cancel_account_deletion',
-  'complete_guest_claim',
-  'delete_account',
-  'guest_claim_reaper',
-  'start_guest_claim',
+// The sanctioned reducer surface, keyed by name, with an explicit CLOSED status
+// discriminator (ADR-0210). It replaces a flat five-name array compared by exact
+// set equality, which was correct but unschedulable: `game_core::STATE_TRANSITION_OWNERS`
+// and ADR-0207 D5 already commit M22 S3 to declaring `account_deletion_reaper`
+// ATOMICALLY with its scheduled table (SpacetimeDB forbids adding the
+// `scheduled(...)` attribute to an existing table), and S3 cannot edit this file.
+// A six-name array would false-RED the CURRENT five-reducer tree, so a
+// permitted-when-present notion is structurally required.
+//
+//   REQUIRED  shipped today; MUST be found. A missing one is a client entry
+//             point that silently disappeared.
+//   PLANNED   declared in advance and pre-reviewed HERE; permitted when present,
+//             never required. Bounded to exactly PLANNED_PIN below.
+//
+// The status is NOT advisory. Left open, a third status string is admitted by
+// the membership rule, never demanded by the required-presence rule, and
+// invisible to the PLANNED pin — a free, silent, optional whitelist slot,
+// MEASURED by red-team as a working bypass (ADR-0210). Hence SANCTION_SHAPES.
+const SANCTION_SHAPES = [
+  { status: 'REQUIRED', fields: 'status,why' },
+  { status: 'PLANNED', fields: 'status,why' },
 ];
+
+// The permissive category, pinned by EXACT SET EQUALITY in BOTH directions — the
+// same device the flat array used, moved onto the only part of the surface that
+// is now permissive. Widening it therefore still costs a conscious,
+// separately-spelled diff in THIS file, reviewed HERE, which is the property
+// ADR-0179 G2 actually cared about.
+const PLANNED_PIN = ['account_deletion_reaper'];
+
+/**
+ * @typedef {{status:'REQUIRED'|'PLANNED', why:string}} ReducerSanction
+ */
+
+/** @type {Record<string, ReducerSanction>} */
+export const REDUCER_SANCTIONS = freezeManifest({
+  account_deletion_reaper: {
+    status: 'PLANNED',
+    why: 'M22 S3, ADR-0207 D5: the scheduled deletion reaper. Its table carries the scheduled(...) attribute, which SpacetimeDB cannot add to an existing table, so table and reducer must land in one publish. Named by game_core::STATE_TRANSITION_OWNERS since M22 S1.',
+  },
+  cancel_account_deletion: {
+    status: 'REQUIRED',
+    why: 'AUTH-3x: clears deletion_requested_at_ms for ctx.sender().',
+  },
+  complete_guest_claim: {
+    status: 'REQUIRED',
+    why: 'AUTH-34/35: redeems a 64-hex claim code and re-keys the guest onto the caller.',
+  },
+  delete_account: {
+    status: 'REQUIRED',
+    why: 'AUTH-3x: arms deletion for ctx.sender().',
+  },
+  guest_claim_reaper: {
+    status: 'REQUIRED',
+    why: 'The scheduled TTL sweep; scheduler-only via the ctx.sender() != ctx.database_identity() guard.',
+  },
+  start_guest_claim: {
+    status: 'REQUIRED',
+    why: 'AUTH-33: mints a client-supplied claim code for the calling guest.',
+  },
+});
+
+/**
+ * The REQUIRED half of the ledger, derived rather than transcribed, so the
+ * required-presence clause and the success detail can never drift apart (the
+ * old flat array was named in the detail string by hand).
+ * @param {Record<string, ReducerSanction>} ledger The sanction ledger.
+ * @returns {string[]} Sorted REQUIRED reducer names.
+ */
+function requiredReducerNames(ledger) {
+  return Object.keys(ledger)
+    .filter((name) => ledger[name].status === 'REQUIRED')
+    .sort();
+}
+
+/**
+ * [R/sanction-shape] — the discriminator is CLOSED. Every ledger value must be
+ * an own-property object whose OWN field set is exactly one shape's, and whose
+ * OWN `status` is that shape's status.
+ *
+ * An ARRAY searched with `.find`, never an object keyed by the status word:
+ * `status: 'constructor'` must be an UNKNOWN status, not a hit on
+ * `Object.prototype` (the rb-2 / `[G6/policy]` rule). Fields are compared as a
+ * sorted, comma-joined OWN key set, so a new field is a failure until it is
+ * added HERE, on purpose — and an entry that merely INHERITS a well-formed
+ * `status` owns no fields at all and is rejected.
+ * @param {Record<string, unknown>} ledger The sanction ledger.
+ * @returns {string|null} Error string, or null on pass.
+ */
+export function assertSanctionShape(ledger) {
+  const bad = (why) =>
+    `[R/sanction-shape] ${why}. Every entry in the sanctioned-reducer ledger must be an ` +
+    "own-property object of exactly {status, why} whose status is one of {'REQUIRED','PLANNED'}. " +
+    'Left open, a THIRD status string is a free, silent whitelist slot: membership admits it (it ' +
+    'IS an own key), required-presence never demands it (it is not REQUIRED) and the PLANNED pin ' +
+    'cannot see it (it is not PLANNED). A red-team MEASURED that exact bypass carrying a ' +
+    'wire-safe, constructor-free takeover reducer past every other clause in this file (ADR-0210)';
+
+  if (ledger === null || typeof ledger !== 'object' || Array.isArray(ledger)) {
+    return bad(
+      `the ledger is ${Array.isArray(ledger) ? 'an array' : String(ledger)}, not an object`,
+    );
+  }
+  const names = Object.keys(ledger);
+  if (names.length === 0) {
+    return bad('the ledger is EMPTY, so every membership test below would pass vacuously');
+  }
+  for (const name of names) {
+    const entry = ledger[name];
+    if (entry === null || typeof entry !== 'object' || Array.isArray(entry)) {
+      return bad(`entry \`${name}\` is ${Array.isArray(entry) ? 'an array' : typeof entry}`);
+    }
+    const fields = Object.keys(entry).sort().join(',');
+    const status = Object.hasOwn(entry, 'status') ? entry.status : undefined;
+    const shape = SANCTION_SHAPES.find((k) => k.status === status && k.fields === fields);
+    if (shape === undefined) {
+      return bad(
+        `entry \`${name}\` has own field set {${fields}} and own status ` +
+          `${JSON.stringify(status)}, which matches no legal shape`,
+      );
+    }
+    if (typeof entry.why !== 'string' || entry.why.trim() === '') {
+      return bad(`entry \`${name}\` carries no \`why\`; an unjustified entry is an unreviewed one`);
+    }
+  }
+  return null;
+}
+
+/**
+ * [R/planned-set] — the permissive category is pinned by EXACT SET EQUALITY in
+ * BOTH directions against PLANNED_PIN. A one-sided subset test is satisfied by
+ * an EMPTY planned set, and a one-sided superset test never notices a
+ * REQUIRED-to-PLANNED DEMOTION — which silently un-requires a shipped client
+ * entry point, a shape the flat array could not even express.
+ * @param {Record<string, unknown>} ledger The sanction ledger.
+ * @returns {string|null} Error string, or null on pass.
+ */
+export function assertPlannedSet(ledger) {
+  const planned = Object.keys(ledger)
+    .filter((name) => {
+      const entry = ledger[name];
+      if (entry === null || typeof entry !== 'object') return false;
+      return Object.hasOwn(entry, 'status') && entry.status === 'PLANNED';
+    })
+    .sort();
+  const same =
+    planned.length === PLANNED_PIN.length && planned.every((n, k) => n === PLANNED_PIN[k]);
+  if (!same) {
+    return (
+      `[R/planned-set] the PLANNED reducer set is [${planned.join(', ')}] but is pinned to EXACTLY ` +
+      `[${PLANNED_PIN.join(', ')}]. Equality in BOTH directions, never a subset: a subset-only ` +
+      'test is green on an EMPTY planned set, and it never sees a REQUIRED entry DEMOTED to ' +
+      'PLANNED — which un-requires a shipped client entry point while every other clause stays ' +
+      'quiet. Admitting one more pre-declared reducer is a security-relevant event that must be ' +
+      're-reviewed right here, so it costs a deliberate edit to this pin (ADR-0210)'
+    );
+  }
+  return null;
+}
 
 // Wire-safe scalar argument types. Anything else in a reducer signature is a
 // client-supplied composite whose fields the server cannot vouch for.
@@ -478,6 +660,13 @@ export function isWireSafeType(type) {
  * @returns {string|null} Error string, or null on pass.
  */
 export function checkNoClientIdentity(accountsSrc) {
+  // The ledger is validated BEFORE the source is read: every clause below
+  // reasons about it, so a malformed ledger makes them all unfounded.
+  const shapeErr = assertSanctionShape(REDUCER_SANCTIONS);
+  if (shapeErr) return shapeErr;
+  const plannedErr = assertPlannedSet(REDUCER_SANCTIONS);
+  if (plannedErr) return plannedErr;
+
   const desync = assertStripperSound(accountsSrc, ACCOUNTS_PATH);
   if (desync) return desync;
 
@@ -491,7 +680,7 @@ export function checkNoClientIdentity(accountsSrc) {
   if (reducers.length === 0) {
     return (
       `[R/name-set] no \`#[spacetimedb::reducer]\` declaration was parsed out of ${ACCOUNTS_PATH} ` +
-      `— the sanctioned set is exactly {${SANCTIONED_REDUCERS.join(', ')}}. The scan reached the ` +
+      `— the sanctioned ledger names {${Object.keys(REDUCER_SANCTIONS).sort().join(', ')}}. The scan reached the ` +
       'wrong file, the attribute spelling changed, or the stripper blanked the declarations; ' +
       'every clause below would pass VACUOUSLY, so this is a hard failure rather than a skip'
     );
@@ -581,20 +770,94 @@ export function checkNoClientIdentity(accountsSrc) {
     );
   }
 
-  // [R/name-set] — EXACT set equality. An ADDED reducer is ITSELF the failure.
+  // [R/name-set] — MEMBERSHIP plus REQUIRED-PRESENCE, the two halves the flat
+  // exact-set pin used to collapse into one comparison. Both are load-bearing:
+  // membership catches an ADDED reducer (E1/E2 and FG15 are all additive, so a
+  // `>= 5` count or an "each expected name is present" check is green on every
+  // one of them), and required-presence catches a sanctioned name LEAVING the
+  // surface. `Object.hasOwn`, never `name in` and never a truthiness test: a
+  // reducer named `constructor` resolves through `Object.prototype` on any plain
+  // object and would otherwise be admitted with no ledger entry at all.
   const found = reducers.map((r) => r.name).sort();
-  const sameSet =
-    found.length === SANCTIONED_REDUCERS.length &&
-    found.every((n, k) => n === SANCTIONED_REDUCERS[k]);
-  if (!sameSet) {
+  for (const name of found) {
+    if (Object.hasOwn(REDUCER_SANCTIONS, name)) continue;
     return (
-      `[R/name-set] the reducer surface of ${ACCOUNTS_PATH} is [${found.join(', ')}] but the ` +
-      `sanctioned set is EXACTLY [${SANCTIONED_REDUCERS.join(', ')}]. Set equality, not a count ` +
-      'and not containment: the two proven takeover bypasses (E1 `complete_guest_claim_for`, E2 ' +
-      '`adopt_guest`) are ADDITIVE, so a `>= 5` check or an "each expected name is present" check ' +
-      'is green on both. Every reducer in this module is a client-reachable entry point into the ' +
-      're-key machinery, so adding one is a security-relevant event that must be re-reviewed right ' +
-      'here; a MISSING name means a client entry point silently disappeared'
+      `[R/name-set] reducer \`${name}\` in ${ACCOUNTS_PATH} is not in the sanctioned ledger, ` +
+      `whose entries are [${Object.keys(REDUCER_SANCTIONS).sort().join(', ')}]. Membership, not a ` +
+      'count and not containment: the two proven takeover bypasses (E1 `complete_guest_claim_for`, ' +
+      'E2 `adopt_guest`) are ADDITIVE, and FG15’s `adopt_guest_by_code` declares no Identity ' +
+      'parameter and constructs no Identity, so THIS is the only clause that sees it. Every reducer ' +
+      'in this module is a client-reachable entry point into the re-key machinery, so adding one is ' +
+      'a security-relevant event that must be re-reviewed right here — declare it in the ledger, ' +
+      'with a `why`, in the same PR (ADR-0210)'
+    );
+  }
+  // [R/planned-shape] — a PLANNED name is admitted because a SPECIFIC shape was
+  // pre-reviewed, so the SHAPE is pinned here, not merely the name.
+  // MEASURED (red-team, this slice): without this clause a reducer that merely
+  // REUSES the planned name passes every other clause in this function while
+  // the pre-fix exact-set pin red it —
+  //   #[spacetimedb::reducer]
+  //   pub fn account_deletion_reaper(ctx: &ReducerContext, code: String) -> Result<(),String> {
+  //       let claim = ctx.db.guest_claim().code().find(&code).ok_or("no")?;
+  //       rekey_all(ctx, claim.guest_identity, ctx.sender()) }
+  // — no scheduled table anywhere, a wire-safe `String` parameter, and the
+  // victim identity read out of an existing ROW rather than constructed, so
+  // [R/identity-param], [R/identity-ctor] and [R/name-set] are all silent.
+  // [R/param-types]'s scheduled carve-out CANNOT cover it: that carve-out is
+  // reached only after `isWireSafeType(t)` fails, so a wire-safe impostor never
+  // arrives there. Admitting a name without its shape is exactly the weakening
+  // this slice exists NOT to introduce.
+  // The one PLANNED entry is a scheduled reaper (ADR-0207 D5). A future PLANNED
+  // entry of a DIFFERENT shape must extend this clause CONSCIOUSLY — that is
+  // the category's whole purpose, and a silent widening here would undo it.
+  for (const r of reducers) {
+    if (!Object.hasOwn(REDUCER_SANCTIONS, r.name)) continue;
+    if (REDUCER_SANCTIONS[r.name].status !== 'PLANNED') continue;
+    const schedStruct = scheduled.get(r.name);
+    const argTypes = [];
+    for (let k = 0; k < r.params.length; k++) {
+      const t = compactWs(r.params[k].type);
+      if (k === 0 && t.endsWith('ReducerContext')) continue;
+      argTypes.push(t);
+    }
+    const span = findFnBody(stripped, r.name);
+    const body = span === null ? '' : compactWs(stripped.slice(span.start, span.end));
+    const wellShaped =
+      schedStruct !== undefined &&
+      argTypes.length === 1 &&
+      argTypes[0] === schedStruct &&
+      body.indexOf(SCHEDULER_GUARD) !== -1;
+    if (wellShaped) continue;
+    // Plain bindings, never a NESTED template literal in the message below: a
+    // brace matcher that skips string spans (this repo's mutation probes, and
+    // `matchBrace` in several evals) resyncs on the INNER backtick and then
+    // counts a `}` that is really inside a string, ending the function span
+    // early. Measured on this very clause.
+    const schedNote = schedStruct === undefined ? 'NONE' : schedStruct;
+    const guardNote = body.indexOf(SCHEDULER_GUARD) === -1 ? 'ABSENT' : 'present';
+    return (
+      `[R/planned-shape] reducer \`${r.name}\` is a PLANNED ledger entry, so it is admitted ONLY ` +
+      'in the shape that was pre-reviewed: a same-file `scheduled(...)` target whose sole ' +
+      'argument type IS the scheduled struct and whose body carries the scheduler guard ' +
+      `\`${SCHEDULER_GUARD}...\`. Found scheduled struct ${schedNote}, argument types ` +
+      `[${argTypes.join(', ')}], guard ${guardNote}. ` +
+      'A red-team MEASURED that a reducer merely REUSING this name — wire-safe `String` argument, ' +
+      'victim identity read from an existing row, no scheduled table at all — is silent to every ' +
+      'other clause here while the pre-fix exact-set pin red it. The ledger admits a name because ' +
+      'a shape was reviewed; the shape is what is admitted (ADR-0210)'
+    );
+  }
+
+  const requiredNames = requiredReducerNames(REDUCER_SANCTIONS);
+  for (const name of requiredNames) {
+    if (found.indexOf(name) !== -1) continue;
+    return (
+      `[R/name-set] the REQUIRED reducer \`${name}\` is absent from ${ACCOUNTS_PATH}, whose ` +
+      `surface is [${found.join(', ')}]. A MISSING name means a client entry point silently ` +
+      'disappeared — renamed, moved to another module, or deleted — and every downstream ' +
+      'clause that reasons about it goes quiet at the same moment. Relaxing the ledger to bare ' +
+      'membership loses exactly this half'
     );
   }
 
@@ -3004,6 +3267,329 @@ pub fn adopt_guest_by_code(ctx: &ReducerContext, code: String) -> Result<(), Str
       'FG17',
     );
     if (bad) return bad;
+  }
+
+  // FG74a (ADR-0010 proof-of-teeth, THE RESIDUAL'S OWN CRITERION, R-m22-s1-X1)
+  // — the M22-S3-shaped source: GOOD_ACCOUNTS plus the `account_deletion_reaper`
+  // scheduled table/reducer pair, carrying the SAME scheduler-guard shape as
+  // the shipped `guest_claim_reaper`. Must PASS post-fix. The pre-fix
+  // exact-set-equality classifier is recomputed INLINE below, on every run
+  // (never asserted once at authoring time), against this SAME source, and
+  // must RED — so the fixture can never decay into a shape that passes either
+  // way. Self-checks first, because this fixture is built by CONCATENATION so
+  // `mut()`'s throw-on-missing protection does not apply.
+  // Kills: reverting [R/name-set] to exact-set equality over REQUIRED names
+  // (the residual this whole slice exists to fix — mutant M1/"prefix"), and a
+  // bare zero-parameter `account_deletion_reaper` stub that would satisfy a
+  // weaker self-check but prove nothing about the scheduler guard.
+  {
+    const s3Src =
+      GOOD_ACCOUNTS +
+      `
+#[spacetimedb::table(accessor = account_deletion_reaper_schedule, scheduled(account_deletion_reaper))]
+pub struct AccountDeletionReaperSchedule {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: ScheduleAt,
+    #[index(btree)]
+    pub target_identity: Identity,
+}
+
+#[spacetimedb::reducer]
+pub fn account_deletion_reaper(
+    ctx: &ReducerContext,
+    args: AccountDeletionReaperSchedule,
+) -> Result<(), String> {
+    if ctx.sender() != ctx.database_identity() {
+        return Err("account_deletion_reaper is scheduler-only".to_string());
+    }
+    ctx.db.account().identity().delete(args.target_identity);
+    Ok(())
+}
+`;
+
+    const parsedCount = parseReducers(stripRustSource(s3Src)).length;
+    if (parsedCount !== 6) {
+      return (
+        'FG74a self-check: expected exactly 6 reducers parsed out of the S3-shaped fixture (the ' +
+        `5 shipped plus account_deletion_reaper), got ${parsedCount} — the concatenation did not ` +
+        'land as intended, so this fixture would prove nothing about the residual'
+      );
+    }
+    if (compactWs(stripRustSource(s3Src)).indexOf(SCHEDULER_GUARD) === -1) {
+      return (
+        'FG74a self-check: the scheduler-guard needle is missing from the built S3-shaped fixture ' +
+        'text — a bare zero-parameter account_deletion_reaper stub was measured to yield the ' +
+        'identical PASS verdict, so without this check the fixture proves less than its prose claims'
+      );
+    }
+
+    const err = checkNoClientIdentity(s3Src);
+    if (err) {
+      return (
+        'FG74a: the legitimately-declared, pre-reviewed account_deletion_reaper (table + reducer + ' +
+        `scheduler guard) was incorrectly flagged on a tree that still carries its five REQUIRED ` +
+        `reducers: ${err}`
+      );
+    }
+
+    const requiredNames = Object.keys(REDUCER_SANCTIONS)
+      .filter((n) => REDUCER_SANCTIONS[n].status === 'REQUIRED')
+      .sort();
+    const parsedNames = parseReducers(stripRustSource(s3Src))
+      .map((r) => r.name)
+      .sort();
+    const preFixSameSet =
+      parsedNames.length === requiredNames.length &&
+      parsedNames.every((n, k) => n === requiredNames[k]);
+    if (preFixSameSet) {
+      return (
+        'FG74a RED-control decayed: the pre-fix exact-set-equality classifier (sorted parsed names ' +
+        '=== sorted REQUIRED names) ALSO passes the S3-shaped fixture, so this fixture no longer ' +
+        "proves the residual's own criterion — the gate must RED before the fix and PASS after, and " +
+        'a fixture that passes either way proves nothing'
+      );
+    }
+  }
+
+  // FG74b — an UNDECLARED name smuggled into the PLANNED category (here:
+  // `adopt_guest`, FG15's attack reducer name) with status PLANNED. The
+  // permissive category is supposed to be bounded to exactly one
+  // conscious-in-this-file entry.
+  // Kills: [R/planned-set] accepting ANY superset of the sanctioned PLANNED
+  // set (mutant "delete the [R/planned-set] call", which neuters the check
+  // into always-PASS and is caught here because this fixture drives the
+  // function directly).
+  {
+    const ledger = {
+      ...REDUCER_SANCTIONS,
+      adopt_guest: { status: 'PLANNED', why: 'forged for FG74b' },
+    };
+    const bad = expectTag(assertPlannedSet(ledger), '[R/planned-set]', 'FG74b');
+    if (bad) return bad;
+  }
+
+  // FG74c — the REQUIRED-to-PLANNED demotion attack: `delete_account` is
+  // silently un-required. The old flat array had no way to express "optional"
+  // at all, so it had no way to catch a shipped entry point being quietly
+  // downgraded either.
+  // Kills: [R/planned-set] treating the PLANNED set as append-only / growing
+  // it by any means other than a conscious, separately-reviewed edit here.
+  {
+    const ledger = {
+      ...REDUCER_SANCTIONS,
+      delete_account: { status: 'PLANNED', why: 'forged demotion for FG74c' },
+    };
+    const bad = expectTag(assertPlannedSet(ledger), '[R/planned-set]', 'FG74c');
+    if (bad) return bad;
+  }
+
+  // FG74d — GOOD: the shipped ledger's PLANNED set is EXACTLY
+  // ['account_deletion_reaper'] today, before S3 ships. Non-vacuity control:
+  // kills an always-red [R/planned-set], which would otherwise be
+  // indistinguishable from a working one.
+  {
+    const err = assertPlannedSet(REDUCER_SANCTIONS);
+    if (err) return `FG74d: the shipped ledger's PLANNED set was incorrectly flagged: ${err}`;
+  }
+
+  // FG74e — a ONE-SIDED subset check (found PLANNED keys subset-of expected,
+  // with no reverse direction) is trivially satisfied by an EMPTY PLANNED set
+  // and by a ledger with no PLANNED entries at all. Both sub-cases must RED.
+  // Kills: mutant "[R/planned-set] relaxed to a one-sided subset".
+  {
+    const bad1 = expectTag(assertPlannedSet({}), '[R/planned-set]', 'FG74e-empty');
+    if (bad1) return bad1;
+
+    const noPlanned = {
+      account_deletion_reaper: { status: 'REQUIRED', why: 'forged for FG74e' },
+    };
+    const bad2 = expectTag(assertPlannedSet(noPlanned), '[R/planned-set]', 'FG74e-norequired');
+    if (bad2) return bad2;
+  }
+
+  // FG74f — `guest_claim_reaper` (REQUIRED) is renamed to `account_deletion_reaper`
+  // (the one PLANNED name), moving the `scheduled(...)` target along with it so
+  // [R/param-types]'s carve-out still applies and [R/name-set] is the first
+  // clause that can fire. The NEW name IS a ledger key (own property), so a
+  // membership-only checker is silent here — REQUIRED's own entry (and its
+  // client entry point) disappeared all the same.
+  // Kills: mutant "drop the REQUIRED-present half of [R/name-set]" — the
+  // ownership half alone would wrongly call this source sanctioned.
+  {
+    let src = mut(
+      GOOD_ACCOUNTS,
+      'scheduled(guest_claim_reaper)',
+      'scheduled(account_deletion_reaper)',
+    );
+    src = mut(src, 'pub fn guest_claim_reaper(', 'pub fn account_deletion_reaper(');
+    const bad = expectTag(checkNoClientIdentity(src), '[R/name-set]', 'FG74f');
+    if (bad) return bad;
+  }
+
+  // FG74g — THE MEASURED BYPASS (ADR-0210). A ledger entry with a THIRD status
+  // string is admitted by membership (it is an own key), never demanded
+  // (it is not REQUIRED) and invisible to [R/planned-set] (it is not
+  // PLANNED) — a free, silent, optional whitelist slot for a wire-safe,
+  // constructor-free takeover reducer of the same name
+  // (`migrate_legacy_account`, ADR-0210's worked example). Deliberately a
+  // THIRD status, not REQUIRED or PLANNED, so this fixture is not redundant
+  // with FG74b/c/e.
+  // Kills: deleting [R/sanction-shape] outright, and "status compared with
+  // `!==` against only 'REQUIRED'" (a third status silently treated as fine).
+  {
+    const ledger = {
+      ...REDUCER_SANCTIONS,
+      migrate_legacy_account: {
+        status: 'LEGACY',
+        why: 'kept for back-compat, not client-facing',
+      },
+    };
+    const bad = expectTag(assertSanctionShape(ledger), '[R/sanction-shape]', 'FG74g');
+    if (bad) return bad;
+  }
+
+  // FG74h — [R/sanction-shape] must RED on every OTHER malformed entry shape,
+  // not only an open third status: a non-object entry, a missing `status`, a
+  // non-string `status`, an unknown extra field, and a `status` reachable
+  // ONLY through the prototype chain (the injected entry owns NOTHING — same
+  // device as FG72d's inherited-policy fixture).
+  // Kills: a classifier that trusts `typeof` on the entry, or that reads
+  // `.status` without first confirming the entry OWNS it.
+  {
+    const notObject = { ...REDUCER_SANCTIONS, not_an_object: 'REQUIRED' };
+    const bad1 = expectTag(assertSanctionShape(notObject), '[R/sanction-shape]', 'FG74h-notobject');
+    if (bad1) return bad1;
+
+    const missingStatus = {
+      ...REDUCER_SANCTIONS,
+      no_status: { why: 'no status field at all' },
+    };
+    const bad2 = expectTag(
+      assertSanctionShape(missingStatus),
+      '[R/sanction-shape]',
+      'FG74h-missing',
+    );
+    if (bad2) return bad2;
+
+    const numericStatus = {
+      ...REDUCER_SANCTIONS,
+      numeric_status: { status: 1, why: 'status is a number, not a string' },
+    };
+    const bad3 = expectTag(
+      assertSanctionShape(numericStatus),
+      '[R/sanction-shape]',
+      'FG74h-numeric',
+    );
+    if (bad3) return bad3;
+
+    const extraField = {
+      ...REDUCER_SANCTIONS,
+      extra_field: { status: 'REQUIRED', why: 'ok', deletion_policy: 'soft' },
+    };
+    const bad4 = expectTag(
+      assertSanctionShape(extraField),
+      '[R/sanction-shape]',
+      'FG74h-extrafield',
+    );
+    if (bad4) return bad4;
+
+    const viaProto = Object.create({ status: 'REQUIRED', why: 'inherited, never owned' });
+    if (Object.keys(viaProto).length !== 0 || viaProto.status !== 'REQUIRED') {
+      return (
+        'FG74h-proto: the fixture is broken — the injected entry must own NOTHING and inherit a ' +
+        `well-formed status (own fields: [${Object.keys(viaProto).join(', ')}], status resolved ` +
+        `through the chain: ${JSON.stringify(viaProto.status)})`
+      );
+    }
+    const protoLedger = { ...REDUCER_SANCTIONS, proto_only: viaProto };
+    const bad5 = expectTag(assertSanctionShape(protoLedger), '[R/sanction-shape]', 'FG74h-proto');
+    if (bad5) return bad5;
+  }
+
+  // FG74j — a reducer literally named `constructor`, wire-safe, no Identity
+  // parameter and no Identity constructor call — the only thing wrong with it
+  // is that it is not in the ledger.
+  // Kills: `[R/name-set]` implemented as `if (LEDGER[name])` or any other
+  // prototype-chain-reachable lookup. `LEDGER.constructor` resolves to
+  // `Object`'s constructor function (truthy) for EVERY plain object, so a
+  // naive membership test admits the name with zero ledger entry for it.
+  {
+    const src =
+      GOOD_ACCOUNTS +
+      `
+#[spacetimedb::reducer]
+pub fn constructor(ctx: &ReducerContext) -> Result<(), String> {
+    Ok(())
+}
+`;
+    const bad = expectTag(checkNoClientIdentity(src), '[R/name-set]', 'FG74j');
+    if (bad) return bad;
+  }
+
+  // FG74k — THE MEASURED WEAKENING (red-team, this slice; ADR-0210). A reducer
+  // that merely REUSES the PLANNED ledger name while having NONE of the shape
+  // that name was admitted for: no scheduled table, a wire-safe `String`
+  // argument, and the victim identity read out of an EXISTING ROW rather than
+  // constructed. It is FG15's `adopt_guest_by_code` body under a sanctioned
+  // name. MEASURED: before [R/planned-shape] it returned PASS here while the
+  // pre-fix exact-set pin RED it — a real regression, not a hypothetical.
+  // Kills: admitting a PLANNED name on the NAME alone; and the belief that
+  // [R/param-types]'s scheduled carve-out already covers this (it is reached
+  // only after `isWireSafeType` FAILS, so a wire-safe impostor never arrives).
+  {
+    const src =
+      GOOD_ACCOUNTS +
+      `
+#[spacetimedb::reducer]
+pub fn account_deletion_reaper(ctx: &ReducerContext, code: String) -> Result<(), String> {
+    let claim = ctx.db.guest_claim().code().find(&code).ok_or("no")?;
+    rekey_all(ctx, claim.guest_identity, ctx.sender())
+}
+`;
+    if (parseReducers(stripRustSource(src)).length !== 6) {
+      return 'FG74k self-check: the impostor reducer did not parse, so this fixture proves nothing';
+    }
+    const bad = expectTag(checkNoClientIdentity(src), '[R/planned-shape]', 'FG74k');
+    if (bad) return bad;
+  }
+
+  // FG74l — the BARE STUB: the PLANNED name declared with NO arguments at all
+  // and no scheduled table. [R/param-types] iterates the parameter list, so a
+  // reducer with no parameters is silent to it entirely; the red-team measured
+  // that this stub yields the IDENTICAL verdict to the real S3 shape under a
+  // name-only admission rule. Only the arity/struct half of [R/planned-shape]
+  // sees it.
+  // Kills: an [R/planned-shape] that checks only the scheduler guard, or that
+  // treats "no parameters" as trivially well-shaped.
+  // (The scheduled-struct-WITHOUT-guard spelling is deliberately NOT re-tested
+  // here: [R/param-types] owns it and fires first, as FG12 already pins. The
+  // guard half of [R/planned-shape] is defence in depth behind that clause.)
+  {
+    const src =
+      GOOD_ACCOUNTS +
+      `
+#[spacetimedb::reducer]
+pub fn account_deletion_reaper(ctx: &ReducerContext) -> Result<(), String> {
+    Ok(())
+}
+`;
+    const bad = expectTag(checkNoClientIdentity(src), '[R/planned-shape]', 'FG74l');
+    if (bad) return bad;
+  }
+
+  // FG74m — an entry whose `why` is blank or is not a string. A ledger entry
+  // with no justification is an unreviewed one, and the closed field set alone
+  // cannot see it: {status, why} is satisfied by `why: ''` and by `why: 42`.
+  {
+    const blank = { ...REDUCER_SANCTIONS, blank_why: { status: 'REQUIRED', why: '   ' } };
+    const bad1 = expectTag(assertSanctionShape(blank), '[R/sanction-shape]', 'FG74m-blank');
+    if (bad1) return bad1;
+
+    const numeric = { ...REDUCER_SANCTIONS, numeric_why: { status: 'PLANNED', why: 42 } };
+    const bad2 = expectTag(assertSanctionShape(numeric), '[R/sanction-shape]', 'FG74m-numeric');
+    if (bad2) return bad2;
   }
 
   // --- G3: ANON_PASSTHROUGH ------------------------------------------------
@@ -5891,14 +6477,17 @@ export default async function guestClaimIntegrityEval() {
     pass: true,
     detail:
       `${treeSrcs.length} non-test server source file(s) scanned (stripper soundness proven on ` +
-      `each); accounts.rs declares EXACTLY [${SANCTIONED_REDUCERS.join(', ')}] with wire-safe ` +
+      `each); [R/shape-closed] [R/planned-pinned] [R/s3-ready] accounts.rs declares EXACTLY the ` +
+      `REQUIRED ledger set [${requiredReducerNames(REDUCER_SANCTIONS).join(', ')}] (plus, when ` +
+      `M22 S3 lands it, the ` +
+      `PLANNED [${PLANNED_PIN.join(', ')}]) with wire-safe ` +
       'arguments and no Identity constructor, on_connect takes the anonymous path first and never ' +
       'returns Err, the issuer and audience allowlists are both checked (with the right consts) ' +
       `before any account insert, no server RNG, writes confined to {${OWNED_TABLES.join(', ')}}, ` +
       'the claim code is consumed exactly once for the guest at brace-depth 0 of the success ' +
       `region, and all ${Object.keys(REKEY_MANIFEST).length} Identity columns carry a D6 policy ` +
       `(${rekeyEntries} REKEY entries consumed by both rekey_all and account_has_game_data) ` +
-      '(88 teeth verified)',
+      '(100 teeth verified)',
   };
 }
 

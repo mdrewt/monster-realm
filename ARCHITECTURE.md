@@ -170,6 +170,45 @@ way. Left open and disclosed, not chased: `process.reallyExit(0)` skips the `'ex
 entirely, a later-registered `'exit'` handler or an `exitCode` accessor wins by ordering, and a
 hang has no per-eval budget — all four need per-eval child processes, which would retire the
 shared-realm invariants ADR-0208 is built on.
+**rb-6** turned the sanctioned-reducer pin into a status ledger (residual R-m22-s1-X1;
+ADR-0210). `[R/name-set]` pinned `accounts.rs`'s reducer surface by exact set equality over five
+names — correct, but unschedulable: ADR-0207 D5 commits M22 S3 to declaring
+`account_deletion_reaper` ATOMICALLY with its scheduled table (SpacetimeDB forbids adding
+`scheduled(...)` to an existing table), `game_core::STATE_TRANSITION_OWNERS` has named that
+reducer since S1, and S3 cannot edit this eval. A six-name array would false-RED the current tree,
+so `SANCTIONED_REDUCERS` became `REDUCER_SANCTIONS`, keyed by name with a `REQUIRED` / `PLANNED`
+status. `[R/name-set]` is now MEMBERSHIP (`Object.hasOwn`, never `in` — a reducer named
+`constructor` resolves through `Object.prototype`) plus REQUIRED-PRESENCE, and both halves are
+load-bearing: membership is the only clause that sees FG15's `adopt_guest_by_code`, which declares
+no Identity parameter and constructs no Identity. **The status discriminator is the whole
+security argument, and leaving it open was measured, not theorised.** A faithful
+membership-plus-required-presence implementation WITHOUT a closed discriminator passes every
+fixture and still admits an entry carrying a third status string — admitted by membership,
+never demanded by required-presence, invisible to the PLANNED pin — a free, silent whitelist slot
+that a red-team drove a wire-safe, constructor-free takeover reducer through while the pre-fix
+gate red it. So `[R/sanction-shape]` runs FIRST and closes the status to `{REQUIRED, PLANNED}`
+with a closed field set, `.find`-searched over an array (the rb-2 `[G6/policy]` rule), and
+`[R/planned-set]` pins the permissive category by exact equality in BOTH directions — a subset
+test is green on an empty set and blind to a REQUIRED→PLANNED demotion, which un-requires a
+shipped client entry point and is a shape the flat array could not even express. **A ledger that admits by NAME is not the same gate as a pin that admits by exact SET, and the
+first implementation learned that the expensive way:** it was green under the full `just ci`
+(95/95 evals) and still let a reducer that merely REUSED the planned name — wire-safe `String`
+argument, victim identity read out of an existing row, no scheduled table anywhere — pass, while
+the pre-fix pin red it. `[R/param-types]`'s scheduled carve-out is reached only after
+`isWireSafeType` FAILS, so a wire-safe impostor never arrives there. `[R/planned-shape]` closes
+it: a PLANNED name that is present must be a same-file `scheduled(...)` target whose sole
+argument type IS the scheduled struct and whose body carries the scheduler guard. Every
+relaxation of an exact pin needs re-checking against the PRE-FIX gate on adversarial input, not
+only against its own fixtures — which all passed. Considered and
+CUT, not deferred: deriving the permitted extensions by parsing `STATE_TRANSITION_OWNERS` out of
+`game-core`. It is owned by another crate and slice, so a future M22 edit would widen this gate
+with zero diff here; and red-teaming the parse spec found two letter-compliant readings, the
+plausible-wrong one resurrecting a commented-out entry inside the array span as a fourth
+sanctioned name. **Still open and assigned, not hidden:** `accounts_tests.rs:2057`
+`g2_reducer_name_set_is_pinned()` carries the identical exact-five pin in Rust and will also
+hard-RED when S3 ships, so rb-6 removes one of two S3 blockers; the twin is S3's (its `touches:`
+already include `accounts.rs`, ADR-0195 puts the co-located twin in scope) and must mirror the
+REQUIRED/PLANNED semantics rather than bump the count to six.
 **M23 accessibility gates (m23-s10)** — three source-scan evals plus one cross-view happy-dom
 spec. `overlay-a11y-manifest` bans a view-local focus call in every `client/src/ui/**/*View.ts`
 (readdir-DERIVED and two-way ratcheted, so a new view is scanned the day it lands — the three
