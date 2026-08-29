@@ -1,12 +1,13 @@
-// ui/liveRegion.ts — the 500 ms-coalescing, textContent-only sink for the ARIA live region
-// (m23-s1, M23 §2.4, A11Y-9).
+// ui/liveRegion.ts — the 500 ms-coalescing, textContent-only sink for the ARIA live region, and
+// (since rb-11 / ADR-0214) the node's DOM CUSTODY owner (m23-s1, M23 §2.4, A11Y-9).
 //
 // WHY TIME IS AN ARGUMENT AND NEVER A CLOCK. There is not one fake timer in `client/src`; the house
 // pattern is an INJECTED clock (`new ErrorRing(() => Date.now())`, `new EventRing(...)`,
 // `createFrameWindow(performance.now())` in main.ts). This module goes one step further and takes
 // `nowMs` per CALL, so it holds no clock at all: no `Date.now`, no `performance.now`, no
 // `setTimeout`. Every test drives the whole state machine with plain numbers, and the coalescing
-// logic is a pure reducer with a one-line DOM sink bolted on.
+// logic is a pure reducer with a one-line DOM sink bolted on. `adoptLiveRegion` is a separate,
+// stateless custody function at the bottom of the file and holds no state either.
 //
 // THE OBLIGATION THAT CREATES, AND IT IS A CLIFF S1-S4 CANNOT CATCH. Because there is no internal
 // timer, a message pending at the trailing edge only lands when somebody CALLS `flush(now)`. That
@@ -47,10 +48,16 @@
 // lands the moment the node appears. A non-null cache is just as wrong — the element can be
 // detached and replaced, and a stale reference would write to a node nobody can read.
 //
-// `node.textContent = msg` IS THE ONLY DOM WRITE THIS MODULE EVER MAKES. Not `innerHTML` (an
-// announced string is player-influenced data — a monster nickname, a trade partner's name — and an
-// HTML-parsing sink would be an injection surface), not `setAttribute`, not `appendChild`. The
+// `node.textContent = msg` IS THE ONLY WRITE TO THE NODE'S CONTENT THIS MODULE EVER MAKES. Not
+// `innerHTML` (an announced string is player-influenced data — a monster nickname, a trade
+// partner's name — and an HTML-parsing sink would be an injection surface), not `setAttribute`. The
 // `aria-live`/`aria-atomic`/`role` attributes belong to S2's markup, not to a runtime write.
+//
+// AMENDED BY rb-11 (ADR-0214), by NAMING THE EXCEPTION RATHER THAN SOFTENING THE CLAIM: this
+// header used to say `textContent` was the only DOM write of any kind, and explicitly excluded
+// `appendChild`. `adoptLiveRegion` below now calls `appendChild` — it moves the node's PARENT, and
+// never its content, never its attributes. The injection argument above is about CONTENT and is
+// untouched: a custody move cannot introduce a sink.
 
 /** The id this module looks the live-region element up by, resolved fresh on every write and never
  *  cached. NOT a contract S2 imports: S2 ships `<div id="a11y-live">` as a hardcoded literal in
@@ -105,4 +112,53 @@ export class LiveRegion {
     this.#lastWritten = pending;
     this.#pending = null;
   }
+}
+
+/**
+ * Hand DOM custody of the live region to `root` for as long as it is an open modal, and return the
+ * closure that hands it back. rb-11 / ADR-0214; the residual is R-m23-s2-X5.
+ *
+ * WHY THIS EXISTS. `A11Y-13` puts `aria-modal="true"` on every visible overlay root, and per ARIA
+ * that instructs assistive technology to treat everything OUTSIDE the dialog as inert — including
+ * the one node this module announces through, which `A11Y-10` deliberately places as a direct
+ * `<body>` child (`client/index.html:145-154`). NVDA and JAWS usually still speak it; VoiceOver
+ * and Safari frequently do not, so the failure is SILENT and AT-dependent. Moving the node inside
+ * the open dialog is the fix that needs no cooperation from the AT.
+ *
+ * WHY IT LIVES HERE AND NOT IN `ui/overlayA11y.ts`, WHICH OWNS THE MODAL CHOREOGRAPHY.
+ * `evals/a11y-static-shell.eval.mjs` `[A11Y-05b]` makes this module the SOLE owner of the node's
+ * id: any other non-test `client/src` module whose source names `a11y-live` or `LIVE_REGION_ID` is
+ * a gate failure. Putting the move in `overlayA11y.ts` would have required widening that ownership
+ * rule to two members — weakening the exact gate that protects the node this change makes mobile.
+ * Instead the custody policy lives with the id, and `overlayA11y.ts` holds only the opaque closure.
+ *
+ * WHY A CLOSURE AND NOT AN `adopt`/`release(node, root)` PAIR. `ui/focusTrap.ts`'s
+ * `installTrap(root): () => void` already solves this exact "open captures state, close needs it
+ * back" shape in the one file that calls both, and `OpenRecord` already carries its handle. A
+ * `release(node, from)` free function would make the caller hand `record.root` back at close, i.e.
+ * store the same fact twice and keep the copies in sync by convention.
+ *
+ * NO NODE IN THE DOCUMENT IS A NO-OP, NOT A `null`. Returning a no-op closure means the caller has
+ * no null branch at all — and it is the common case in the sixteen view test fixtures, none of
+ * which mount a live region.
+ */
+export function adoptLiveRegion(root: HTMLElement): () => void {
+  const node = document.getElementById(LIVE_REGION_ID);
+  if (node === null) return () => {};
+  // A re-open on the SAME root must not re-insert: `appendChild` of an attached node is a
+  // spec-defined remove-then-insert, which assistive technology sees as a BRAND NEW live region
+  // rather than a move, and a region re-registered moments before a write can be missed entirely.
+  if (node.parentElement !== root) root.appendChild(node);
+  return () => {
+    // Restore ONLY if this root still holds it. If a later overlay has since adopted the node,
+    // this closure is inert — an unconditional `document.body.appendChild` here would yank the
+    // region out of the overlay that currently owns it and silently restore the original defect.
+    //
+    // `!node.isConnected` is a FORWARD REFERENCE, NOT EXISTING CODE: no view rebuilds its own root
+    // today (every `replaceChildren`/`innerHTML` in `ui/*View.ts` targets an inner container, and
+    // the four `#app`-mounted roots are built once in their constructors). If one ever did, the
+    // node would be detached rather than contained, and holding the reference here is what makes
+    // that cost ONE announcement instead of permanent silence.
+    if (root.contains(node) || !node.isConnected) document.body.appendChild(node);
+  };
 }

@@ -54,6 +54,7 @@
 
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { a11yCopy } from './a11yCopy';
+import { LIVE_REGION_ID } from './liveRegion';
 import { closeOverlayA11y, openOverlayA11y } from './overlayA11y';
 import { OVERLAY_A11Y, OVERLAY_IDS, type OverlayId } from './overlayRegistry';
 
@@ -92,6 +93,24 @@ function mountRootFor(id: OverlayId): { root: HTMLElement; target: HTMLElement }
   root.appendChild(target);
   document.body.appendChild(root);
   return { root, target };
+}
+
+/** Builds the shipped-shape live-region fixture: `#a11y-live`, `aria-live="polite"`,
+ *  `aria-atomic="true"`, a direct `<body>` child — the exact shape `client/index.html:154` ships. */
+function mountLiveNode(): HTMLElement {
+  // Idempotent by construction. The LRC-ADOPT loop calls this once per OverlayId, and a close
+  // restores the previous node to `<body>` rather than removing it — so an append-only helper would
+  // leave TWO `#a11y-live` nodes in the document from the second iteration on and red the
+  // exactly-one-region assertion for a fixture reason. Removing any prior node first keeps that
+  // assertion measuring the IMPLEMENTATION (a clone or a mirror) and nothing else.
+  document.getElementById(LIVE_REGION_ID)?.remove();
+  const node = document.createElement('div');
+  node.id = LIVE_REGION_ID;
+  node.setAttribute('aria-live', 'polite');
+  node.setAttribute('aria-atomic', 'true');
+  node.className = 'sr-only';
+  document.body.appendChild(node);
+  return node;
 }
 
 beforeEach(() => {
@@ -357,5 +376,226 @@ describe('OVERLAY_A11Y — role tripwire (deliberate trap door, not a regression
       'TRIPWIRE: if this reds, an overlay now has a non-"dialog" role — add a real per-id role ' +
         'assertion above before touching this test',
     ).toEqual(['dialog']);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live-region custody — adoption at open time (LRC-ADOPT, X1; rb-11, residual R-m23-s2-X5)
+// ---------------------------------------------------------------------------
+//
+// SOURCE OF TRUTH FOR THIS BLOCK AND THE TWO BELOW: memory/projects/monster-realm-rb-11-plan.md
+// (reviewer-lens amendments — the seam is `adoptLiveRegion(root): () => void`, a release CLOSURE
+// mirroring `focusTrap.ts:136`'s `installTrap(root): () => void`, NOT an adopt/release pair);
+// memory/projects/gates/rb-11.gates.md X1/X2/X3.
+//
+// RED REASON: `ui/overlayA11y.ts` does not yet call `adoptLiveRegion`/hold a `releaseLive` handle,
+// and `ui/liveRegion.ts` does not yet export `adoptLiveRegion` at all. Every test below fails
+// against the CURRENT tree — either the live region never moves at all (the `parentElement`/
+// `lastElementChild` assertions fail outright), or, once a first cut of `adoptLiveRegion` lands,
+// by whatever that cut gets wrong; see the "KILLS" note on each assertion for the specific wrong
+// implementation (W1..W11, per the plan/ledger) it is aimed at.
+//
+// Do NOT edit these tests to match a buggy implementation — correct them from the plan only.
+
+describe('openOverlayA11y — live-region custody: adoption into the open root (LRC-ADOPT, X1)', () => {
+  it('LRC-ADOPT BITES: opening each of the 16 overlays makes the SAME live-region node a direct LAST child of root, before the call returns — never a clone, never a second region', () => {
+    expect(OVERLAY_IDS.length, 'ANTI-VACUITY').toBe(16);
+    let checked = 0;
+    for (const id of OVERLAY_IDS) {
+      const node = mountLiveNode();
+      expect(
+        node,
+        'sanity: the live-region fixture must exist before we assert on it',
+      ).not.toBeNull();
+      const { root } = mountRootFor(id);
+
+      openOverlayA11y(id, root);
+
+      expect(
+        document.querySelectorAll(`#${LIVE_REGION_ID}`).length,
+        `exactly one live-region node in the document for ${id} — KILLS W7 (a CLONE) and W8 (a ` +
+          'MIRROR region)',
+      ).toBe(1);
+      expect(
+        node.parentElement,
+        `the node's parent must be THIS root for ${id} — KILLS W1 (no move) and W9 (aria-owns ` +
+          'instead of a move)',
+      ).toBe(root);
+      expect(
+        root.lastElementChild,
+        `the node must be the LAST child of root for ${id} — KILLS W6 (prepend instead of ` +
+          'appendChild; mountRootFor already appended a target child before open)',
+      ).toBe(node);
+      expect(
+        document.getElementById(LIVE_REGION_ID),
+        `getElementById must still resolve to the SAME node object for ${id} — KILLS W7 (a clone ` +
+          'would be a distinct object even if it shared the id)',
+      ).toBe(node);
+
+      closeOverlayA11y(id, null);
+      checked += 1;
+    }
+    expect(checked, 'ANTI-VACUITY: all 16 ids must have been exercised').toBe(16);
+  });
+
+  it('LRC-ADOPT-REOPEN-REHOMES BITES: re-opening the SAME id on a DIFFERENT root re-homes the live region into the new root — a re-open is not exempt from custody', () => {
+    const node = mountLiveNode();
+    const { root: rootA } = mountRootFor('boxView');
+    const { root: rootB } = mountRootFor('boxView');
+
+    openOverlayA11y('boxView', rootA);
+    expect(node.parentElement, 'sanity: adopted into the first root').toBe(rootA);
+
+    openOverlayA11y('boxView', rootB);
+
+    expect(
+      node.parentElement,
+      'KILLS W5 (the adopt call placed inside the `previous === undefined` branch only): a ' +
+        're-open on a DIFFERENT root must still re-home the live region — it must not stay ' +
+        'stranded in the OLD root',
+    ).toBe(rootB);
+
+    closeOverlayA11y('boxView', null);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live-region custody — ownership-scoped release at close time (LRC-RELEASE, X2)
+// ---------------------------------------------------------------------------
+
+describe('closeOverlayA11y — live-region custody: ownership-scoped release (LRC-RELEASE, X2)', () => {
+  it('LRC-RELEASE-BODY BITES: closing an overlay whose root still holds the adopted live region restores it to document.body', () => {
+    const node = mountLiveNode();
+    const { root } = mountRootFor('boxView');
+    openOverlayA11y('boxView', root);
+    expect(node.parentElement, 'sanity: adopted into root at open').toBe(root);
+
+    closeOverlayA11y('boxView', null);
+
+    expect(
+      node.parentElement,
+      'KILLS W2 (move-never-restore): the node must be back under document.body once the ' +
+        'overlay that holds it closes',
+    ).toBe(document.body);
+  });
+
+  it("LRC-RELEASE-SCOPED BITES: closing overlay A after overlay B has since adopted the SAME live region leaves the node in B's root — an unconditional restore at close would yank it away", () => {
+    const node = mountLiveNode();
+    const { root: rootA } = mountRootFor('boxView');
+    const { root: rootB } = mountRootFor('raisingView');
+
+    openOverlayA11y('boxView', rootA);
+    expect(node.parentElement, 'sanity: A has custody').toBe(rootA);
+
+    openOverlayA11y('raisingView', rootB);
+    expect(node.parentElement, 'sanity: B has since taken custody').toBe(rootB);
+
+    closeOverlayA11y('boxView', null);
+
+    expect(
+      node.parentElement,
+      "KILLS W3 (UNCONDITIONAL restore at close): A's close must NOT yank the node away from B, " +
+        'which has since adopted it',
+    ).toBe(rootB);
+
+    closeOverlayA11y('raisingView', null);
+    expect(node.parentElement, "B's own close restores it normally").toBe(document.body);
+  });
+
+  it('LRC-RELEASE-DETACHED-REATTACH BITES: if the live-region node is fully detached from the document before close, release reattaches the CAPTURED node reference to document.body — proving custody is held by closure, not re-resolved by id', () => {
+    const node = mountLiveNode();
+    const { root } = mountRootFor('healView');
+    openOverlayA11y('healView', root);
+    expect(node.parentElement, 'sanity: adopted into root').toBe(root);
+
+    node.remove();
+    expect(node.isConnected, 'sanity: fully detached from the document').toBe(false);
+
+    closeOverlayA11y('healView', null);
+
+    expect(
+      document.body.contains(node),
+      'KILLS W4 (restore re-resolved BY ID instead of the captured closure): once the node is ' +
+        'detached, document.getElementById(LIVE_REGION_ID) returns null, so a by-id re-resolution ' +
+        'at close would find nothing and silently no-op, leaving the node lost forever',
+    ).toBe(true);
+    expect(node.parentElement).toBe(document.body);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live-region custody — no-op edges and no needless churn (LRC-EDGE, X3)
+// ---------------------------------------------------------------------------
+
+describe('openOverlayA11y/closeOverlayA11y — live-region custody: no-op edges and no churn (LRC-EDGE, X3)', () => {
+  it('LRC-EDGE-CLOSE-WITHOUT-OPEN-NOOP BITES: closing an id that was never opened makes no DOM mutation to the live region at all', () => {
+    const node = mountLiveNode();
+    expect(node.parentElement, 'sanity: the region starts under document.body').toBe(document.body);
+
+    closeOverlayA11y('shopView', null);
+
+    expect(
+      node.parentElement,
+      'a close-without-open must not touch the live region — there is no record to release',
+    ).toBe(document.body);
+    expect(document.querySelectorAll(`#${LIVE_REGION_ID}`).length).toBe(1);
+  });
+
+  it('LRC-EDGE-DOUBLE-CLOSE-NOOP BITES: closing the same id a second time does not run releaseLive again — the record was already deleted by the first close', () => {
+    const node = mountLiveNode();
+    const { root } = mountRootFor('tradeView');
+    openOverlayA11y('tradeView', root);
+    closeOverlayA11y('tradeView', null);
+    expect(node.parentElement, 'sanity: first close restored it').toBe(document.body);
+
+    const decoyHost = document.createElement('div');
+    document.body.appendChild(decoyHost);
+    decoyHost.appendChild(node);
+
+    closeOverlayA11y('tradeView', null);
+
+    expect(
+      node.parentElement,
+      'the SECOND close must be a pure no-op for the live region too — a still-live releaseLive ' +
+        'closure firing again would yank the node back to document.body a second time',
+    ).toBe(decoyHost);
+  });
+
+  it('LRC-EDGE-NO-REGION-IN-DOCUMENT BITES: opening an overlay completes normally when no live-region node exists in the document at all', () => {
+    const { root } = mountRootFor('menuView');
+
+    expect(() => openOverlayA11y('menuView', root)).not.toThrow();
+    expect(root.getAttribute('aria-modal'), 'the rest of openOverlayA11y must still run').toBe(
+      'true',
+    );
+    expect(
+      document.querySelectorAll(`#${LIVE_REGION_ID}`).length,
+      'no region was conjured up',
+    ).toBe(0);
+    expect(() => closeOverlayA11y('menuView', null)).not.toThrow();
+  });
+
+  it('LRC-EDGE-NO-CHURN-SAME-ROOT BITES: re-opening the SAME id on the SAME root does not remove+re-insert the live region (sentinel-order proxy, R8)', () => {
+    const node = mountLiveNode();
+    const { root } = mountRootFor('claimView');
+
+    openOverlayA11y('claimView', root);
+    expect(root.lastElementChild, 'sanity: adopted as the last child').toBe(node);
+
+    const sentinel = document.createElement('div');
+    sentinel.id = 'churn-sentinel';
+    root.appendChild(sentinel);
+
+    openOverlayA11y('claimView', root);
+
+    expect(
+      root.lastElementChild,
+      'KILLS W10 (the `parentElement !== root` churn guard dropped): a needless remove+re-append ' +
+        'would move the live region past the sentinel — the region must stay exactly where it ' +
+        'already was',
+    ).toBe(sentinel);
+    expect(node.parentElement, 'the region is still inside root, just no longer last').toBe(root);
+
+    closeOverlayA11y('claimView', null);
   });
 });
