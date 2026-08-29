@@ -38,12 +38,16 @@
 //
 // NO `main` GUARD. `evals/run.mjs` imports the default export; a module-scope `process.exit()`
 // ends the whole run where it stands (measured: 37 of 90 evals ran, 3 FAILs swallowed, CI green).
-import { readFileSync } from 'node:fs';
+import { readdirSync, readFileSync, statSync } from 'node:fs';
 
 const CLIENT_SRC = 'client/src';
 const STYLES_CSS = `${CLIENT_SRC}/styles.css`;
 const BATTLE_VIEW = `${CLIENT_SRC}/ui/battleView.ts`;
 const BATTLE_VIEW_TEST = `${CLIENT_SRC}/ui/battleView.test.ts`;
+// Measured population at authoring time: 92 non-test modules under client/src. The floor is
+// set well below that so ordinary growth or pruning cannot red it, but far above zero so a
+// broken walk cannot satisfy the repo-wide ban vacuously.
+const CLIENT_MODULE_FLOOR = 60;
 const VITE_CONFIG = 'client/vite.config.ts';
 
 /** The class that is the ONLY handle a stylesheet has on the fill element. */
@@ -138,6 +142,39 @@ export function stripCssComments(src) {
       state = 'comment';
       i += 2;
       continue;
+    }
+    // R4 (red-team, MEASURED post-ship): `url(` consumes a <url-token> RAW to its `)`, so a `/*`
+    // inside an UNQUOTED url() is not a comment opener in CSS. A stripper without url state opens
+    // a comment at `url(/*` and closes it at the next ordinary `*/`, deleting every rule in
+    // between while leaving braces AND parens balanced, so nothing downstream throws. Measured to
+    // hide a whole `div.hp-fill { transition: width 0.3s }` rule from this gate while staying
+    // biome-clean and indexShell-clean. Policy is the same as for string literals: refuse the
+    // carrier rather than try to out-parse it.
+    if (
+      ch === 'u' &&
+      src.slice(i, i + 4).toLowerCase() === 'url(' &&
+      !isIdentChar(i === 0 ? '' : src.charAt(i - 1))
+    ) {
+      let j = i + 4;
+      while (j < src.length && (src.charAt(j) === ' ' || src.charAt(j) === '\t')) j += 1;
+      const quoted = src.charAt(j) === '"' || src.charAt(j) === "'";
+      if (!quoted) {
+        const close = src.indexOf(')', i + 4);
+        if (close === -1) {
+          throw new Error(`CSS parse failed: unterminated url() at offset ${i}`);
+        }
+        const body = src.slice(i + 4, close);
+        if (body.indexOf(SLASH_STAR) !== -1 || body.indexOf(STAR_SLASH) !== -1) {
+          throw new Error(
+            `CSS parse REFUSED at offset ${i}: an unquoted url() carries CSS comment delimiters. ` +
+              'That is the measured carrier for deleting a whole rule from a stripper that has no ' +
+              'url state, and it keeps braces and parens balanced so nothing else notices.',
+          );
+        }
+        out += src.slice(i, close + 1);
+        i = close + 1;
+        continue;
+      }
     }
     if (ch === '"') state = 'dq';
     if (ch === "'") state = 'sq';
@@ -781,6 +818,16 @@ const SUSPENSION_SPELLINGS = Object.freeze([
   'describe.todo(',
   'xit(',
   'xdescribe(',
+  // R5 (red-team, MEASURED post-ship): the conditional forms suspend just as completely, and
+  // `it.skipIf(TRUE_CONST)(...)` reads as an ordinary environment guard. Measured: the delegate
+  // reported `50 passed | 1 skipped` with the PRE-FIX defect restored, and this clause stayed
+  // green because it did not know the spelling.
+  'it.skipIf(',
+  'test.skipIf(',
+  'describe.skipIf(',
+  'it.runIf(',
+  'test.runIf(',
+  'describe.runIf(',
 ]);
 
 /**
@@ -924,8 +971,86 @@ function verdict(tag, code, message) {
  *
  * THROWS (never returns) on a stylesheet it could not parse — a parse ambiguity is a FAIL.
  */
+/**
+ * Is a motion rule's selector ADMISSIBLE in this stylesheet?
+ *
+ * R3 (red-team, MEASURED post-ship) killed the previous fail-OPEN shape. `selectorMatchesClass`
+ * asks "does this selector name the class token?", and a predicate that must return `false` for
+ * every selector that could reach an element is not implementable. Five carriers were measured
+ * CI-green, biome-clean, indexShell-clean, and animating in Chromium under `reduce`:
+ *   `[class^="hp-"]`  ·  `[class*="hp-fil"]`  ·  `[class~="HP-FILL" i]`  ·  `.hp\-fill` (a CSS
+ *   escape of the hyphen)  ·  `[style*="height:100%"]` (the fill's INLINE style is a stable handle
+ *   — `height:100%` is a literal in battleView.ts).
+ * Reviewer M1 added a sixth from the other direction: `div.hp-fill` as the BASE rule is
+ * specificity (0,1,1) against the guard's (0,1,0), so it wins regardless of source order.
+ *
+ * So the policy is inverted to fail-CLOSED: a rule that declares motion is admissible only if it
+ * is EXACTLY `.hp-fill`, or if it is a plain selector that provably cannot be an alias for one —
+ * no attribute selector, no universal selector, no escape, and not naming the class token. An
+ * unrelated future rule (`.tooltip { transition: opacity 0.2s }`) is still accepted, so this is
+ * not a blanket ban on motion in this stylesheet.
+ */
+export function motionPreludeIsAdmissible(prelude) {
+  const p = prelude.toLowerCase().replace(/\s+/g, ' ').trim();
+  if (p === `.${HP_CLASS}`) return true;
+  if (p.indexOf('[') !== -1) return false;
+  if (p.indexOf('*') !== -1) return false;
+  if (p.indexOf('\\') !== -1) return false;
+  if (selectorMatchesClass(prelude, HP_CLASS)) return false;
+  return true;
+}
+
+/**
+ * Every non-test module Vite bundles out of `client/src`.
+ *
+ * `.js`/`.mjs`/`.cjs`/`.tsx` as well as `.ts`: a rule scoped to `.ts` alone is escaped by renaming
+ * the file. `module_bindings` is generated. `*.test.ts` is excluded because a test file naming a
+ * spelling in a fixture is not a production animation.
+ */
+export function listClientModules(root, prefix = '') {
+  const out = [];
+  for (const entry of readdirSync(root)) {
+    const full = `${root}/${entry}`;
+    const rel = prefix === '' ? entry : `${prefix}/${entry}`;
+    if (statSync(full).isDirectory()) {
+      if (entry === 'module_bindings') continue;
+      out.push(...listClientModules(full, rel));
+      continue;
+    }
+    if (
+      ['.ts', '.tsx', '.js', '.mjs', '.cjs'].some((ext) => entry.endsWith(ext)) &&
+      !entry.endsWith('.test.ts') &&
+      !entry.endsWith('.test.tsx') &&
+      !entry.endsWith('.d.ts')
+    ) {
+      out.push(rel);
+    }
+  }
+  return out;
+}
+
 export function evaluateStylesheet(css) {
   const rules = parseCssStyleRules(css);
+
+  // ---- C2a: FAIL-CLOSED selector policy (R3 + reviewer M1) --------------------------------
+  // Checked FIRST, over EVERY motion rule in the file rather than only the class-token matches,
+  // because every carrier below is invisible to a token matcher by construction.
+  const anyMotion = rules.filter((r) => declarations(r.body).some((d) => isMotionProp(d.prop)));
+  const inadmissible = anyMotion.filter((r) => !motionPreludeIsAdmissible(r.prelude));
+  if (inadmissible.length > 0) {
+    return verdict(
+      T_SET,
+      'SELECTOR',
+      `${inadmissible.length} rule(s) declare a transition/animation behind a selector that can ` +
+        `reach the .${HP_CLASS} element without being spelled \`.${HP_CLASS}\` ` +
+        `(${inadmissible.map((r) => r.prelude).join(' | ')}). MEASURED carriers, each CI-green ` +
+        'and each animating live in Chromium under `reduce`: an attribute prefix/substring match ' +
+        'on `class`, the ASCII-case-insensitive `i` flag, a CSS escape of the hyphen, a match on ' +
+        "the fill's INLINE `style` attribute, and `div.hp-fill` as the base rule — which at " +
+        "specificity (0,1,1) beats the guard's (0,1,0) no matter what order they are written in",
+    );
+  }
+
   const motion = rules.filter(
     (r) =>
       selectorMatchesClass(r.prelude, HP_CLASS) &&
@@ -996,7 +1121,11 @@ export function evaluateStylesheet(css) {
     return verdict(
       T_GUARD,
       'MISSING',
-      `no .${HP_CLASS} motion rule sits inside an at-rule. The base animation is therefore ` +
+      `no .${HP_CLASS} motion rule sits inside an at-rule. NOTE (R7, red-team): this parser does ` +
+        'not model CSS NESTING, so a guard written as a nested `@media` INSIDE the base rule ' +
+        'reads as absent here even though Chromium honours it. That spelling is correct CSS and ' +
+        'the right repair is to un-nest it (or to teach parseCssStyleRules nesting), NEVER to ' +
+        'loosen this clause. Otherwise the base animation is ' +
         'unconditional: a player who asked their operating system for reduced motion still gets ' +
         'the HP bar sliding on every hit',
     );
@@ -1178,7 +1307,7 @@ function guardWith(prelude, body) {
 export default async function () {
   const name = 'reduced-motion-hp-bar ([A11Y-RM3] the HP-bar animation is CSS-owned and guarded)';
   let teeth = 0;
-  const teethTotal = 38;
+  const teethTotal = 48;
 
   /**
    * A FAILURE detail. The success line's substrings are SCRUBBED from it: the ledger's CHECKs pipe
@@ -1263,11 +1392,24 @@ export default async function () {
   // F06-F09 BAD (S3, MEASURED): four carriers for a THIRD matching rule, each appended AFTER the
   // guard, none spelled `.hp-fill`. KILLS: a `prelude === '.hp-fill'` comparison, which sees none
   // of them and reports a clean two-rule stylesheet.
+  // POST-R3 NOTE: the expected CODES moved from DUPLICATE/COUNT to SELECTOR for every carrier that
+  // is not spelled `.hp-fill`, because the fail-CLOSED clause C2a now runs FIRST and owns them.
+  // The tooth that catches these carriers changed by DESIGN — this is not a pin re-pointed to
+  // whatever happened to fire. `@media screen{.hp-fill{...}}` keeps COUNT: its prelude IS exactly
+  // `.hp-fill`, so C2a admits it and the whole-set count is what refuses it.
   const s3Carriers = [
-    { css: `div.${HP_CLASS} { transition: width 0.3s; }`, code: 'DUPLICATE' },
-    { css: `[class~="${HP_CLASS}"] { transition: width 0.3s; }`, code: 'DUPLICATE' },
-    { css: `.hp-bar > .${HP_CLASS} { transition: width 0.3s; }`, code: 'DUPLICATE' },
+    { css: `div.${HP_CLASS} { transition: width 0.3s; }`, code: 'SELECTOR' },
+    { css: `[class~="${HP_CLASS}"] { transition: width 0.3s; }`, code: 'SELECTOR' },
+    { css: `.hp-bar > .${HP_CLASS} { transition: width 0.3s; }`, code: 'SELECTOR' },
     { css: `@media screen { .${HP_CLASS} { transition: width 0.3s; } }`, code: 'COUNT' },
+    // R3 (red-team, MEASURED post-ship): five more carriers, each CI-green and each animating
+    // live in Chromium under `reduce`. None names the class token, so none was visible to the
+    // previous fail-OPEN shape.
+    { css: `[class^="hp-"] { transition: width 0.3s; }`, code: 'SELECTOR' },
+    { css: `[class*="hp-fil"] { transition: width 0.3s; }`, code: 'SELECTOR' },
+    { css: `[class~="HP-FILL" i] { transition: width 0.3s; }`, code: 'SELECTOR' },
+    { css: `[style*="height:100%"] { transition: width 0.3s; }`, code: 'SELECTOR' },
+    { css: `.hp\\-fill { transition: width 0.3s; }`, code: 'SELECTOR' },
   ];
   for (const carrier of s3Carriers) {
     const got = evalCss(`${FX_OK}${carrier.css}\n`);
@@ -1276,6 +1418,59 @@ export default async function () {
         `TEETH F06-F09: the third-rule carrier '${carrier.css}' was not rejected as ` +
           `${carrier.code} (got ${got.ok ? 'ACCEPTED' : got.code})`,
       );
+    }
+    teeth += 1;
+  }
+
+  // F09b GOOD (the false-RED direction of C2a): an UNRELATED plain-class motion rule is still
+  // accepted. Without this, the fail-closed policy reads as "no motion may ever be declared in
+  // this stylesheet", which is false, and slice S9 (which grows this file) would repair it by
+  // deleting the clause.
+  {
+    const got = evalCss(`${FX_OK}.tooltip { transition: opacity 0.2s; }\n`);
+    if (!got.ok) {
+      return bad(
+        'TEETH F09b: an unrelated `.tooltip { transition: opacity 0.2s }` rule was REJECTED ' +
+          `(${got.code}). C2a must refuse only selectors that can alias the fill`,
+      );
+    }
+    teeth += 1;
+  }
+
+  // F09c BAD (R4, red-team, MEASURED post-ship): the unquoted-url() comment carrier. `url(` takes
+  // a <url-token> RAW to its `)`, so `/*` inside it is not a comment opener in CSS. A stripper
+  // without url state opened a comment there and closed it at the next ordinary `*/`, deleting a
+  // whole `div.hp-fill{transition:...}` rule from this gate's view with braces AND parens still
+  // balanced. Measured biome-clean and indexShell-clean. Built from char codes so this source can
+  // never contain a literal delimiter pair.
+  {
+    const open = String.fromCharCode(47, 42);
+    const close = String.fromCharCode(42, 47);
+    const carrier =
+      `.hp-bar-sprite { background-image: url(${open}); }\n` +
+      `div.${HP_CLASS} { transition: width 0.3s; }\n` +
+      `.hp-bar-note { width: calc(${open} inset ${close} 100% - 4px); }\n`;
+    const got = evalCss(`${FX_OK}${carrier}`);
+    const threw =
+      got.ok !== true && got.threw === true && String(got.message).indexOf('url()') !== -1;
+    if (!threw) {
+      return bad(
+        'TEETH F09c: the unquoted-url() comment carrier did not make the stripper REFUSE. It is ' +
+          'the measured way to delete an entire motion rule from this gate while every brace and ' +
+          'paren stays balanced',
+      );
+    }
+    teeth += 1;
+  }
+
+  // F09d BAD (R5, red-team, MEASURED post-ship): the CONDITIONAL suspension spellings. Measured:
+  // `it.skipIf(TRUE_CONST)(...)` left the delegate reporting `50 passed | 1 skipped` WITH THE
+  // PRE-FIX DEFECT RESTORED, while the delegation clause stayed green because it did not know
+  // the spelling. Reads as an ordinary environment guard, which is what makes it dangerous.
+  for (const spelling of ['it.skipIf(', 'test.runIf(', 'describe.skipIf(']) {
+    const found = findSuspensions(`${spelling}COND)('BITES: RM3-HP-FILL', () => {});`);
+    if (found.length === 0) {
+      return bad(`TEETH F09d: the conditional suspension '${spelling}' was not detected`);
     }
     teeth += 1;
   }
@@ -1651,6 +1846,62 @@ export default async function () {
   // ==========================================================================================
   const viewVerdict = evaluateView(viewRaw);
   if (!viewVerdict.ok) return bad(viewVerdict.message);
+
+  // ---- C1b: the ban is REPO-WIDE, not file-local (R1, red-team, MEASURED post-ship) --------
+  // Scoping the inline ban to battleView.ts left the cheapest possible escape open: put the
+  // animation in a sibling module and call it from the view. MEASURED — a `client/src/ui/
+  // hpFillMotion.ts` exporting a feature-detected `target.animate([...], 300)`, called once from
+  // #renderMonsterCard, was GREEN on this eval, 51/51 on battleView.test.ts (happy-dom implements
+  // no Element.animate, so the feature detect returns early and the DOM tooth sees a byte-clean
+  // element), clean on tsc and the pinned biome, PASSING on the ledger's Chromium probe (which
+  // renders a static page and runs none of the app's JS) — and visibly animating in a real
+  // browser under `reduce`, 204px into a 90->10% drop that should have snapped.
+  // That escape is not adversarial, it is the LIKELY next commit: see the R2 note in ADR-0213 —
+  // the guarded transition cannot currently fire at all, so the first person who wants a smooth
+  // HP bar reaches for exactly this.
+  let clientModules;
+  try {
+    clientModules = listClientModules(CLIENT_SRC);
+  } catch (e) {
+    return bad(`${T_VACUITY} UNWALKABLE: could not walk ${CLIENT_SRC}: ${e.message}`);
+  }
+  if (clientModules.length < CLIENT_MODULE_FLOOR) {
+    return bad(
+      `${T_VACUITY} THIN-TREE: the walk found ${clientModules.length} non-test modules under ` +
+        `${CLIENT_SRC}, floor ${CLIENT_MODULE_FLOOR} (measured population at authoring time: 92). ` +
+        'A walk that silently collects almost nothing satisfies a repo-wide ban vacuously',
+    );
+  }
+  if (clientModules.indexOf('ui/battleView.ts') === -1) {
+    return bad(
+      `${T_VACUITY} WALK-MISSES-VIEW: ${CLIENT_SRC}/ui/battleView.ts is not among the walked ` +
+        'modules, so the repo-wide scan is not even covering the file this criterion is about',
+    );
+  }
+  const foreignMotion = [];
+  for (const rel of clientModules) {
+    let src;
+    try {
+      src = readFileSync(`${CLIENT_SRC}/${rel}`, 'utf8');
+    } catch (e) {
+      return bad(`${T_VACUITY} UNREADABLE: could not read ${CLIENT_SRC}/${rel}: ${e.message}`);
+    }
+    const hits = findInlineAnimationDecls(src);
+    if (hits.length > 0) {
+      foreignMotion.push(`${rel} (${hits.map((h) => h.kind).join(', ')})`);
+    }
+  }
+  if (foreignMotion.length > 0) {
+    return bad(
+      `${T_INLINE} FOREIGN-MODULE: ${foreignMotion.length} non-test client module(s) declare or ` +
+        `start an animation: ${foreignMotion.join(' | ')}. The HP bar's motion is owned by ` +
+        `\`.${HP_CLASS}\` in ${STYLES_CSS}, where the reduced-motion media query can neutralise ` +
+        'it. A JS-started animation (notably the WAAPI family) ignores that preference outright ' +
+        'and is invisible to happy-dom, so neither the DOM tooth nor a static browser probe can ' +
+        'see it. If a module here has a legitimate, non-HP-bar reason to animate, this clause is ' +
+        'the place to record that exemption explicitly — do not delete it',
+    );
+  }
 
   // ==========================================================================================
   // C0 (second half) — the stylesheet's own floors.

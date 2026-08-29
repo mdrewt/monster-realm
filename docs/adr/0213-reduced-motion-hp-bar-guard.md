@@ -131,6 +131,34 @@ belongs to M23 S9, which already owns `styles.css` in its `touches:`.
 allocated (`PLAN.md:800`). The spec is outside this slice's `touches:`, so minting a number there is
 not available. `[A11Y-RM3]` was verified free (only `[A11Y-RM2]` exists).
 
+### D7 — the guarded transition cannot currently fire, and that is disclosed rather than fixed here
+
+**This is the most important fact in the slice, and it was found by a post-ship red-team pass.**
+`#renderMonsterCard` opens with `el.replaceChildren()` and `document.createElement`s a **new** fill
+element on every `refresh()`. A CSS transition needs a previous computed value on the *same* node,
+so the base rule `.hp-fill { transition: width 0.3s }` is computed but unreachable.
+
+MEASURED in real Chromium against the shipped code, driving the real render loop: 120 ms after a
+90% → 10% HP drop the fill is already at its final width under **both** motion preferences,
+`getAnimations().length === 0`. Under `no-preference` the bar **snaps**.
+
+This is **not a regression introduced here**: the pre-slice inline `transition:width 0.3s` was
+equally unreachable, for the same reason and on the same freshly-created node. What this slice
+changes is that the declaration is now in a stylesheet where a media query *can* reach it, which is
+exactly what residual R-m23-s2-X4 asked for. What it does **not** do is make the HP bar animate —
+that is a product change, outside this slice.
+
+The honest consequence, recorded because it is load-bearing for the next author: the guard is
+**correct and currently latent**. The first person who notices the bar snapping and sets out to
+"make the smooth HP bar work" will either reuse the fill node (at which point the guard becomes
+live, and correct) or reach for `element.animate(...)` — which ignores `prefers-reduced-motion`
+outright. That second path is the measured R1 escape below, and it is why `[A11Y-RM3/inline]` is
+enforced over the whole of `client/src`, not just this file.
+
+Rejected: making `#renderMonsterCard` reuse the fill node inside this slice. It is a behavioural
+change to the battle view with its own netcode-adjacent review surface, it is not what the residual
+asked for, and shipping it here would mean the slice's own gate had never seen the code it gates.
+
 ## Constraints discovered
 
 - **`client/src/ui/battleView.ts` must never contain the literal strings `prefers-reduced-motion` or
@@ -159,6 +187,51 @@ not available. `[A11Y-RM3]` was verified free (only `[A11Y-RM2]` exists).
   `test.include`. Without it, the eval's inline ratchet is the only thing standing between a gutted
   DOM tooth and a green ledger.
 
+### Post-ship red-team hardening (all MEASURED against the shipped gate)
+
+The first shipped gate was attacked again after it was green. Seven findings; five changed the gate.
+
+- **R1 — the inline ban was file-local.** A sibling `client/src/ui/hpFillMotion.ts` exporting a
+  feature-detected `target.animate([...], 300)`, called once from `#renderMonsterCard`, was GREEN on
+  the eval, 51/51 on `battleView.test.ts`, clean on `tsc` and the pinned biome, PASSING on the
+  Chromium probe — and visibly animating under `reduce`. happy-dom implements no `Element.animate`,
+  so the feature detect returns early and the DOM tooth sees a byte-clean element; the probe renders
+  a static page and runs none of the app's JS. **Fix:** `[A11Y-RM3/inline]` now scans every non-test
+  module under `client/src` (measured population 92, floor 60, zero hits), not just this one file.
+- **R3 — the selector policy was fail-OPEN.** Five carriers reached the fill without naming the
+  class token and were each Chromium-measured animating under `reduce`: `[class^="hp-"]`,
+  `[class*="hp-fil"]`, `[class~="HP-FILL" i]`, `[style*="height:100%"]` (the fill's inline style is
+  a stable handle) and `.hp\-fill` (a CSS escape of the hyphen). A sixth came from the reviewer:
+  `div.hp-fill` as the BASE rule is specificity (0,1,1) against the guard's (0,1,0) and wins
+  regardless of source order. **Fix:** the policy is inverted to fail-CLOSED — a motion rule is
+  admissible only if it is exactly `.hp-fill`, or is a plain selector with no attribute selector, no
+  universal selector, no escape, and no mention of the class token. An unrelated future
+  `.tooltip { transition: opacity }` is still accepted, and a tooth pins that non-regression.
+- **R4 — the new stripper had no `url()` state.** `url(/*)` is not a comment opener in CSS, but the
+  stripper treated it as one and swallowed everything to the next real `*/`, deleting a whole
+  `div.hp-fill` rule from the gate's view with braces *and* parens balanced. Measured biome-clean
+  and `indexShell.test.ts`-clean. **Fix:** unquoted `url()` is consumed raw and refuses embedded
+  comment delimiters, matching the existing string-literal policy.
+- **R5 — the suspension list missed the conditional spellings.** `it.skipIf(TRUE)(...)` left the
+  delegate at `50 passed | 1 skipped` **with the pre-fix defect restored** while the gate stayed
+  green. **Fix:** `skipIf`/`runIf` added for `it`/`test`/`describe`.
+- **R6 — no mutant could produce `[A11Y-RM3/delegate]`.** All twelve wrote `styles.css` or
+  `battleView.ts`, so the delegation clause was proven only by its own synthetic fixtures; a
+  one-line hollowing of its needle list kept `teeth=` green with the runtime oracle physically
+  deleted. **Fix:** mutants M17 (needle gutted) and M18 (conditionally suspended) now pin that tag.
+- **R7 — a false RED, accepted as a known limit.** The CSS-nesting spelling (`@media` nested inside
+  the base rule) is correct CSS, is Chromium-correct, and this parser does not model nesting, so it
+  reads as "guard missing". Not fixed: teaching `parseCssStyleRules` nesting is a real change with
+  its own risk, landed late. Instead the failure message now says so explicitly and names un-nesting
+  as the repair, because the documented failure mode is a false RED being "fixed" by loosening the
+  clause it fired on.
+
+Not closed, and stated plainly: the delegation pin is a PRESENCE pin. A tautological rewrite of the
+`RM3-HP-FILL` body — one that keeps the needles but asserts them about a locally constructed probe
+element — is green on every clause and was measured to survive the original defect being restored.
+No text pin can close that; the ledger's X2 pass-count floor and the vitest-adjudicated mutant M2
+catch it at ship time only.
+
 ## Residuals
 
 - **R-rb-10-CASCADE — the real-cascade oracle is ledger-time, not CI-time.** `rb-10.cascade-probe.mjs`
@@ -166,6 +239,13 @@ not available. `[A11Y-RM3]` was verified free (only `[A11Y-RM2]` exists).
   resolves the CSS cascade. A future slice should promote it into `client/e2e/` and the `a11y-e2e`
   recipe. This is a NARROWER residual than the draft's, because the CI-resident eval closes the
   source-text half of every measured bypass.
+- **R-rb-10-INERT — the guarded transition cannot fire (D7).** The fill element is recreated on every
+  render, so the base rule is latent. Closing it means reusing the fill node in `#renderMonsterCard`,
+  which is a product change outside this residual's scope. Until then the HP bar snaps for everyone
+  and the guard is correct-but-dormant.
+- **R-rb-10-DELEGATE-STRENGTH — the delegation pin is presence-only.** A tautological rewrite of the
+  `RM3-HP-FILL` body passes every clause; no text pin can close it. The X2 pass-count floor and the
+  vitest-adjudicated mutant M2 catch it at ship time only.
 - **R-m23-s10-RMCSS stays open repo-wide.** D5 closes the custom-property escape only for the two
   `.hp-fill` rules. Widening `evals/reduced-motion-purity.eval.mjs` to walk `.css` is M23 S9's work,
   and was a declared STOP condition for this slice.
