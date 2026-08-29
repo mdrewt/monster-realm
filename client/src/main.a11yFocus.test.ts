@@ -97,12 +97,14 @@ const H = vi.hoisted(() => ({
 }));
 
 // The wasm pkg — identical shape to main.battle-reseed.test.ts's mock (every name main.ts
-// imports, plus the three other exports of the real module).
+// imports, plus the four other exports of the real module).
 vi.mock('../../client-wasm/pkg/client_wasm.js', () => {
   const SIDE = 3;
   const grid = (v: boolean): boolean[] => Array.from({ length: SIDE * SIDE }, () => v);
   return {
     apply_move: () => ({}),
+    // rb-8 / ADR-0212: `-> i64` crosses as a BigInt, so the stub is `1n`, not `1`.
+    deletion_grace_ms_default: () => 1n,
     move_queue_cap: () => 4,
     party_size: () => 3,
     party_slot_none: () => 255,
