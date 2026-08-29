@@ -34,6 +34,7 @@
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { COALESCE_WINDOW_MS, LIVE_REGION_ID, LiveRegion } from './liveRegion';
+import { adoptLiveRegion } from './liveRegion';
 
 afterEach(() => {
   document.body.innerHTML = '';
@@ -234,5 +235,102 @@ describe('LiveRegion — textContent-only DOM sink, and correct behaviour when t
       'a stale cached node reference would silently write to the detached element and this ' +
         'fresh node would stay empty',
     ).toBe('Hello');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Live-region custody — adoptLiveRegion unit edges + the channel still works
+// (LRC-EDGE / LRC-CHANNEL, rb-11, residual R-m23-s2-X5)
+// ---------------------------------------------------------------------------
+//
+// SOURCE OF TRUTH: memory/projects/monster-realm-rb-11-plan.md (reviewer-lens amendments — the
+// seam is `adoptLiveRegion(root): () => void`, a release CLOSURE mirroring `focusTrap.ts:136`'s
+// `installTrap(root): () => void`, NEVER an adopt/release PAIR); memory/projects/gates/
+// rb-11.gates.md X3/X4.
+//
+// RED REASON: `adoptLiveRegion` does not exist in `./liveRegion` yet. Every test below fails to
+// import it (or fails on a runtime assertion once a first cut lands something wrong) until the
+// implementer lands the seam described in the plan.
+//
+// Do NOT edit these tests to match a buggy implementation — correct them from the spec/plan only.
+
+/** The shipped-shape live-region fixture — `aria-live`/`aria-atomic` present, exactly as
+ *  `client/index.html:154` ships it — needed by LRC-CHANNEL, which asserts those survive a move. */
+function mountLiveNodeWithAria(): HTMLElement {
+  const node = document.createElement('div');
+  node.id = LIVE_REGION_ID;
+  node.setAttribute('aria-live', 'polite');
+  node.setAttribute('aria-atomic', 'true');
+  document.body.appendChild(node);
+  return node;
+}
+
+describe('adoptLiveRegion — no-op / no-churn edges (LRC-EDGE, X3)', () => {
+  it('LRC-EDGE-NO-NODE-NOOP-CLOSURE BITES: with no live-region node in the document at all, adoptLiveRegion returns a callable NO-OP closure — the caller has no null branch to handle', () => {
+    document.body.innerHTML = ''; // guaranteed: zero #a11y-live nodes anywhere
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+
+    const release = adoptLiveRegion(root);
+
+    expect(typeof release, 'a callable closure, never null/undefined').toBe('function');
+    expect(() => release()).not.toThrow();
+    expect(
+      document.querySelectorAll(`#${LIVE_REGION_ID}`).length,
+      'no node may be conjured up out of thin air',
+    ).toBe(0);
+  });
+
+  it('LRC-EDGE-CHURN-GUARD BITES: adopting the same root twice in a row does not remove+re-insert the node (W10, sentinel-order proxy)', () => {
+    const node = mountLiveNodeWithAria();
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+
+    adoptLiveRegion(root);
+    expect(root.lastElementChild, 'sanity: adopted as the last child').toBe(node);
+
+    const sentinel = document.createElement('span');
+    root.appendChild(sentinel);
+
+    adoptLiveRegion(root); // the SAME root again — must be a churn no-op
+
+    expect(
+      root.lastElementChild,
+      'KILLS W10 (the churn guard dropped): a needless remove+re-append would displace the ' +
+        'sentinel that was appended after the first adopt',
+    ).toBe(sentinel);
+  });
+});
+
+describe('LiveRegion + adoptLiveRegion — the announcement channel still works while custody has moved (LRC-CHANNEL, X4)', () => {
+  it('LRC-CHANNEL BITES: an announcement written through LiveRegion after custody has moved the node into an overlay root still lands on that SAME node, with aria-live/aria-atomic intact and exactly ONE [aria-live] node in the document', () => {
+    const node = mountLiveNodeWithAria();
+    expect(node, 'sanity: the live-region fixture must exist').not.toBeNull();
+    const root = document.createElement('div');
+    document.body.appendChild(root);
+
+    adoptLiveRegion(root); // simulate an overlay having taken custody of the region
+
+    const region = new LiveRegion();
+    region.announce('Party & Box', 0);
+    region.flush(600);
+
+    expect(node.parentElement, 'sanity: custody moved the node into root').toBe(root);
+    expect(
+      node.textContent,
+      'the announcement must land on the SAME node LiveRegion has always resolved fresh by id, ' +
+        'wherever custody has since moved it',
+    ).toBe('Party & Box');
+    expect(node.getAttribute('aria-live'), 'aria-live must survive the re-parent untouched').toBe(
+      'polite',
+    );
+    expect(
+      node.getAttribute('aria-atomic'),
+      'aria-atomic must survive the re-parent untouched',
+    ).toBe('true');
+    expect(
+      document.querySelectorAll('[aria-live]').length,
+      'EXACTLY one aria-live node must exist in the document — KILLS W7 (clone) and W8 (mirror)',
+    ).toBe(1);
   });
 });
