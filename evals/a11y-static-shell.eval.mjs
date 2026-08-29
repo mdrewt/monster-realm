@@ -696,7 +696,21 @@ export default async function () {
   // and GREEN once it is hardened in place.
   for (const cell of CSS_STRIPPER_CORPUS) {
     if (cell.expect.kind === 'value') {
-      const out = stripCssComments(cell.css);
+      // A 'value' cell that THROWS must be reported as this tooth's clean failure, naming the
+      // cell — never allowed to escape and reject the whole eval. Measured (rb-12 mutation loop,
+      // M1/M2): a quote-blind stripper does not merely return the wrong bytes on
+      // `dq/comment-open-inert`, it runs off the end of the input and throws `unterminated
+      // comment`. An escaping throw still REDs CI, but it REDs it as an eval crash with no cell
+      // name, which is indistinguishable from a harness bug and hides WHICH cell regressed.
+      let out;
+      try {
+        out = stripCssComments(cell.css);
+      } catch (e) {
+        return bad(
+          `TEETH T10c: cell "${cell.name}" THREW "${String(e && e.message ? e.message : e)}" but ` +
+            `a value was expected — the stripper lost track of a string or comment boundary`,
+        );
+      }
       if (out !== cell.expect.out) {
         return bad(
           `TEETH T10c: cell "${cell.name}" produced ${JSON.stringify(out)}, expected ` +
