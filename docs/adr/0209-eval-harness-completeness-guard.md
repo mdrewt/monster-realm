@@ -88,14 +88,28 @@ exits 0. Both classes are the same defect stated once: *the verdict rode entirel
   // rb-5:exit-verdict END
   ```
 
-  **The statement order is load-bearing, and the obvious order is a fail-OPEN.** Printing before
-  committing the code was the first draft; the red-team lens broke it and the result was measured
-  both ways on the pinned toolchain. With a `console.error` that throws — a poisoned console, EPIPE
-  from a truncating `| head`, EIO on a full disk — the handler aborts mid-way, and node honours the
-  exit code `process.exit(0)` had ALREADY committed: **observed exit 0**. Setting `process.exitCode`
-  first and wrapping the print: **observed exit 1**, with a genuine `process.exit(5)` still
-  observed as 5. The `try`/`catch` around the print is not defensive noise; it is what stops a
-  broken stream from downgrading a verdict.
+  **A handler that prints an unguarded diagnostic before committing the code is a fail-OPEN.**
+  That was the first draft; the red-team lens broke it. With a `console.error` that throws — a
+  poisoned console, EPIPE from a truncating `| head`, EIO on a full disk — the handler aborts
+  mid-way, and node honours the exit code `process.exit(0)` had ALREADY committed: **observed
+  exit 0**, with a genuine `eval FAIL:` on screen.
+
+  Two independent protections close it, and the mutation probe measured each in isolation against
+  that exact corpus (poisoned `console.error` + `process.exit(0)` + a real FAIL):
+
+  | handler shape | observed exit |
+  |---|---|
+  | verdict after an unguarded print (the first draft) | **0** — fail-open |
+  | verdict after the print, print in `try`/`catch` | 1 |
+  | verdict first, print unguarded | 1 |
+  | verdict first, print in `try`/`catch` (**shipped**) | 1 |
+
+  So EITHER measure alone suffices, and the shipped handler carries both. That is worth stating
+  because it changes what a future edit may safely do: removing one is an equivalent
+  implementation, removing both is the defect. A genuine `process.exit(5)` is still observed as 5
+  in every row. The probe's M9 mutant therefore removes BOTH — an earlier revision removed only
+  the ordering, which is an equivalent implementation, and it correctly showed up as a SURVIVOR
+  rather than being laundered by re-pointing the tooth at whatever else happened to fire.
 
   `console.error` was kept rather than `writeSync(2, …)`. The flush concern is real in principle —
   stdio to a pipe is async on POSIX, and this run's own measurements show a child losing buffered
