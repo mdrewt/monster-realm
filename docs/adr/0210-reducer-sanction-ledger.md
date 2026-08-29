@@ -118,6 +118,41 @@ reviewer skimming five `REQUIRED` rows reads a sixth categorically-different row
 not more. Fixture FG74g is that exact bypass, and it uses a third status string deliberately — not
 one of the two the other fixtures exercise.
 
+### `[R/planned-shape]`: a name is admitted because a SHAPE was reviewed
+
+The first implementation of this decision was green under the full `just ci` (95/95 evals,
+exit 0) and **still a measured weakening**. Red-teaming the shipped code found that
+`[R/name-set]`'s membership test asks only whether a name is an own key of the ledger, and
+nothing downstream re-checks that a reducer *called* `account_deletion_reaper` actually has the
+scheduled shape that name was admitted for. `[R/param-types]`'s scheduled carve-out cannot cover
+it, because that carve-out is reached only after `isWireSafeType(t)` **fails** — a wire-safe
+impostor never arrives there. So:
+
+```rust
+#[spacetimedb::reducer]
+pub fn account_deletion_reaper(ctx: &ReducerContext, code: String) -> Result<(), String> {
+    let claim = ctx.db.guest_claim().code().find(&code).ok_or("no")?;
+    rekey_all(ctx, claim.guest_identity, ctx.sender())
+}
+```
+
+— FG15's own `adopt_guest_by_code` body under a sanctioned name, with no scheduled table
+anywhere — **passed the new gate and red the pre-fix one.** Measured, not hypothesised.
+
+`[R/planned-shape]` closes it: a PLANNED name that is PRESENT must be a same-file
+`scheduled(...)` target whose sole argument type IS the scheduled struct and whose body carries
+the scheduler guard. The clause is deliberately narrow — the one PLANNED entry is a scheduled
+reaper (ADR-0207 D5), and a future PLANNED entry of a different shape must extend this clause
+consciously, which is the category's whole purpose. Fixtures FG74k (the measured impostor) and
+FG74l (the zero-argument bare stub, which `[R/param-types]` is blind to because it iterates a
+parameter list that is empty) pin both halves.
+
+**The lesson is about the phrase "without weakening", not about this one clause.** A ledger that
+admits by NAME is not the same gate as a pin that admits by exact SET, because the set pin had no
+place to put a name whose shape was not simultaneously reviewed. Every relaxation of an exact pin
+must be re-checked against the pre-fix gate on adversarial input, not only against its own
+fixtures — which all passed.
+
 ### Proof of teeth (ADR-0010)
 
 The residual's own criterion carries an **in-run RED control** rather than a one-time authoring
@@ -132,11 +167,22 @@ that the scheduler-guard needle is present in the text it built. This is not the
 zero-parameter stub named `account_deletion_reaper` was measured to yield the identical PASS
 verdict, so without the self-check the fixture would prove less than its prose claims.
 
-A mutation probe (`memory/projects/gates/rb-6.mutation-probe.mjs`) runs each wrong implementation
-against a mkdtemp copy of `evals/` and pins the FG label per mutant — reverting to exact-set
-equality, deleting `[R/sanction-shape]`, deleting `[R/planned-set]`, relaxing membership to
-`n in LEDGER` (the `Object.prototype` admission of a reducer named `constructor`), dropping the
-required-presence half, and relaxing `[R/planned-set]` to a one-sided subset.
+A mutation probe (`memory/projects/gates/rb-6.mutation-probe.mjs`) runs each of NINE wrong
+implementations against a mkdtemp copy of `evals/` and pins the FG label per mutant — reverting
+to exact-set equality (FG74a), deleting `[R/sanction-shape]` (FG74g), opening the status to a
+third string (FG74g), deleting `[R/planned-set]` (FG74b), relaxing it to a one-sided subset
+(FG74e), relaxing membership to `n in LEDGER` — the `Object.prototype` admission of a reducer
+named `constructor` (FG74j), dropping the required-presence half (FG74f), deleting
+`[R/planned-shape]` (FG74k), and waving through a zero-argument PLANNED reducer (FG74l). One
+mutant was NARROWED rather than re-pointed when it was first caught by a neighbouring tooth: a
+mutant that changes two things at once proves nothing about either.
+
+An incidental but load-bearing constraint surfaced here and is recorded so the next author does
+not rediscover it: **no NESTED template literal in a clause's message.** A brace matcher that
+skips string spans — this repo's mutation probes, and `matchBrace` in several evals — resyncs on
+the *inner* backtick and then counts a `}` that is really inside a string, ending the function
+span early and producing a mutant that fails to parse rather than one that fails to bite. The
+`[R/planned-shape]` message therefore binds `schedNote`/`guardNote` first.
 
 ### Consequences
 

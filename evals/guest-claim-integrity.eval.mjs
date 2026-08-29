@@ -154,11 +154,23 @@
 //       [R/planned-set]    the PLANNED key set equals EXACTLY PLANNED_PIN, in
 //                          BOTH directions — a subset test is green on an empty
 //                          set and blind to a REQUIRED→PLANNED demotion.
+//       [R/planned-shape]  a PLANNED name that is PRESENT must carry the shape
+//                          that was pre-reviewed (same-file scheduled target,
+//                          argument type IS the scheduled struct, scheduler
+//                          guard in the body). MEASURED: without it, a reducer
+//                          merely REUSING the planned name with a wire-safe
+//                          argument is silent to every other clause here.
 //       [R/name-set]       every enumerated reducer is an OWN key of the ledger
 //                          (Object.hasOwn, never `in` — a reducer named
 //                          `constructor` resolves through Object.prototype),
 //                          AND every REQUIRED key is enumerated (also the
 //                          non-vacuity guard).
+// The G2 success DETAIL additionally prints three plain progress markers —
+// `[R/shape-closed]`, `[R/planned-pinned]`, `[R/s3-ready]`. They are NOT clause
+// tags (no clause emits them and no fixture asserts them); they are the strings
+// this slice's acceptance ledger joins on to prove WHICH version of the gate
+// produced a green, and they are listed here so a reader grepping for a clause
+// by that name is not left hunting for one that does not exist.
 //   G3  checkAnonPassthrough(libSrc)
 //       [I/anon-first]     in on_connect's body, has_jwt( precedes EACH of
 //                          {accounts::, ctx.db., Err(}.
@@ -780,6 +792,63 @@ export function checkNoClientIdentity(accountsSrc) {
       'with a `why`, in the same PR (ADR-0210)'
     );
   }
+  // [R/planned-shape] — a PLANNED name is admitted because a SPECIFIC shape was
+  // pre-reviewed, so the SHAPE is pinned here, not merely the name.
+  // MEASURED (red-team, this slice): without this clause a reducer that merely
+  // REUSES the planned name passes every other clause in this function while
+  // the pre-fix exact-set pin red it —
+  //   #[spacetimedb::reducer]
+  //   pub fn account_deletion_reaper(ctx: &ReducerContext, code: String) -> Result<(),String> {
+  //       let claim = ctx.db.guest_claim().code().find(&code).ok_or("no")?;
+  //       rekey_all(ctx, claim.guest_identity, ctx.sender()) }
+  // — no scheduled table anywhere, a wire-safe `String` parameter, and the
+  // victim identity read out of an existing ROW rather than constructed, so
+  // [R/identity-param], [R/identity-ctor] and [R/name-set] are all silent.
+  // [R/param-types]'s scheduled carve-out CANNOT cover it: that carve-out is
+  // reached only after `isWireSafeType(t)` fails, so a wire-safe impostor never
+  // arrives there. Admitting a name without its shape is exactly the weakening
+  // this slice exists NOT to introduce.
+  // The one PLANNED entry is a scheduled reaper (ADR-0207 D5). A future PLANNED
+  // entry of a DIFFERENT shape must extend this clause CONSCIOUSLY — that is
+  // the category's whole purpose, and a silent widening here would undo it.
+  for (const r of reducers) {
+    if (!Object.hasOwn(REDUCER_SANCTIONS, r.name)) continue;
+    if (REDUCER_SANCTIONS[r.name].status !== 'PLANNED') continue;
+    const schedStruct = scheduled.get(r.name);
+    const argTypes = [];
+    for (let k = 0; k < r.params.length; k++) {
+      const t = compactWs(r.params[k].type);
+      if (k === 0 && t.endsWith('ReducerContext')) continue;
+      argTypes.push(t);
+    }
+    const span = findFnBody(stripped, r.name);
+    const body = span === null ? '' : compactWs(stripped.slice(span.start, span.end));
+    const wellShaped =
+      schedStruct !== undefined &&
+      argTypes.length === 1 &&
+      argTypes[0] === schedStruct &&
+      body.indexOf(SCHEDULER_GUARD) !== -1;
+    if (wellShaped) continue;
+    // Plain bindings, never a NESTED template literal in the message below: a
+    // brace matcher that skips string spans (this repo's mutation probes, and
+    // `matchBrace` in several evals) resyncs on the INNER backtick and then
+    // counts a `}` that is really inside a string, ending the function span
+    // early. Measured on this very clause.
+    const schedNote = schedStruct === undefined ? 'NONE' : schedStruct;
+    const guardNote = body.indexOf(SCHEDULER_GUARD) === -1 ? 'ABSENT' : 'present';
+    return (
+      `[R/planned-shape] reducer \`${r.name}\` is a PLANNED ledger entry, so it is admitted ONLY ` +
+      'in the shape that was pre-reviewed: a same-file `scheduled(...)` target whose sole ' +
+      'argument type IS the scheduled struct and whose body carries the scheduler guard ' +
+      `\`${SCHEDULER_GUARD}...\`. Found scheduled struct ${schedNote}, argument types ` +
+      `[${argTypes.join(', ')}], guard ${guardNote}. ` +
+      'A red-team MEASURED that a reducer merely REUSING this name — wire-safe `String` argument, ' +
+      'victim identity read from an existing row, no scheduled table at all — is silent to every ' +
+      'other clause here while the pre-fix exact-set pin red it. The ledger admits a name because ' +
+      'a shape was reviewed; the shape is what is admitted (ADR-0210)'
+    );
+  }
+
   const requiredNames = requiredReducerNames(REDUCER_SANCTIONS);
   for (const name of requiredNames) {
     if (found.indexOf(name) !== -1) continue;
@@ -3457,6 +3526,70 @@ pub fn constructor(ctx: &ReducerContext) -> Result<(), String> {
 `;
     const bad = expectTag(checkNoClientIdentity(src), '[R/name-set]', 'FG74j');
     if (bad) return bad;
+  }
+
+  // FG74k — THE MEASURED WEAKENING (red-team, this slice; ADR-0210). A reducer
+  // that merely REUSES the PLANNED ledger name while having NONE of the shape
+  // that name was admitted for: no scheduled table, a wire-safe `String`
+  // argument, and the victim identity read out of an EXISTING ROW rather than
+  // constructed. It is FG15's `adopt_guest_by_code` body under a sanctioned
+  // name. MEASURED: before [R/planned-shape] it returned PASS here while the
+  // pre-fix exact-set pin RED it — a real regression, not a hypothetical.
+  // Kills: admitting a PLANNED name on the NAME alone; and the belief that
+  // [R/param-types]'s scheduled carve-out already covers this (it is reached
+  // only after `isWireSafeType` FAILS, so a wire-safe impostor never arrives).
+  {
+    const src =
+      GOOD_ACCOUNTS +
+      `
+#[spacetimedb::reducer]
+pub fn account_deletion_reaper(ctx: &ReducerContext, code: String) -> Result<(), String> {
+    let claim = ctx.db.guest_claim().code().find(&code).ok_or("no")?;
+    rekey_all(ctx, claim.guest_identity, ctx.sender())
+}
+`;
+    if (parseReducers(stripRustSource(src)).length !== 6) {
+      return 'FG74k self-check: the impostor reducer did not parse, so this fixture proves nothing';
+    }
+    const bad = expectTag(checkNoClientIdentity(src), '[R/planned-shape]', 'FG74k');
+    if (bad) return bad;
+  }
+
+  // FG74l — the BARE STUB: the PLANNED name declared with NO arguments at all
+  // and no scheduled table. [R/param-types] iterates the parameter list, so a
+  // reducer with no parameters is silent to it entirely; the red-team measured
+  // that this stub yields the IDENTICAL verdict to the real S3 shape under a
+  // name-only admission rule. Only the arity/struct half of [R/planned-shape]
+  // sees it.
+  // Kills: an [R/planned-shape] that checks only the scheduler guard, or that
+  // treats "no parameters" as trivially well-shaped.
+  // (The scheduled-struct-WITHOUT-guard spelling is deliberately NOT re-tested
+  // here: [R/param-types] owns it and fires first, as FG12 already pins. The
+  // guard half of [R/planned-shape] is defence in depth behind that clause.)
+  {
+    const src =
+      GOOD_ACCOUNTS +
+      `
+#[spacetimedb::reducer]
+pub fn account_deletion_reaper(ctx: &ReducerContext) -> Result<(), String> {
+    Ok(())
+}
+`;
+    const bad = expectTag(checkNoClientIdentity(src), '[R/planned-shape]', 'FG74l');
+    if (bad) return bad;
+  }
+
+  // FG74m — an entry whose `why` is blank or is not a string. A ledger entry
+  // with no justification is an unreviewed one, and the closed field set alone
+  // cannot see it: {status, why} is satisfied by `why: ''` and by `why: 42`.
+  {
+    const blank = { ...REDUCER_SANCTIONS, blank_why: { status: 'REQUIRED', why: '   ' } };
+    const bad1 = expectTag(assertSanctionShape(blank), '[R/sanction-shape]', 'FG74m-blank');
+    if (bad1) return bad1;
+
+    const numeric = { ...REDUCER_SANCTIONS, numeric_why: { status: 'PLANNED', why: 42 } };
+    const bad2 = expectTag(assertSanctionShape(numeric), '[R/sanction-shape]', 'FG74m-numeric');
+    if (bad2) return bad2;
   }
 
   // --- G3: ANON_PASSTHROUGH ------------------------------------------------
@@ -6354,7 +6487,7 @@ export default async function guestClaimIntegrityEval() {
       'the claim code is consumed exactly once for the guest at brace-depth 0 of the success ' +
       `region, and all ${Object.keys(REKEY_MANIFEST).length} Identity columns carry a D6 policy ` +
       `(${rekeyEntries} REKEY entries consumed by both rekey_all and account_has_game_data) ` +
-      '(97 teeth verified)',
+      '(100 teeth verified)',
   };
 }
 
