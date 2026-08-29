@@ -51,6 +51,10 @@ const EXPECTED_ARIA_MODAL_SHELLS = 11;
  *  overlay shells and `overlayA11y.ts:107`'s runtime write both use this literal. */
 const ARIA_MODAL_TRUE = 'aria-modal="true"';
 
+/** The adopt CALL SITE in `overlayA11y.ts`, pinned verbatim. Counted, never `indexOf`-anchored:
+ *  a first-hit anchor is steerable by a planted decoy earlier in the file. */
+const ADOPT_CALL = 'releaseLive = adoptLiveRegion(root)';
+
 // Byte floors. A mistyped path, a truncated read, or an emptied file must fail LOUD, never clean.
 const OVERLAY_A11Y_MIN_BYTES = 3000;
 const LIVE_REGION_MIN_BYTES = 1500;
@@ -122,7 +126,7 @@ export default async function () {
   const name = 'overlay-live-region-custody ([A11Y-LRC] rb-11 source-level custody pins)';
   const bad = (tag, detail) => ({ name, pass: false, detail: `${tag} ${detail}` });
   let teeth = 0;
-  const teethTotal = 15;
+  const teethTotal = 17;
 
   // ==================================================================
   // PROOF-OF-TEETH — the counting utilities, against synthetic fixtures, BEFORE the real files.
@@ -255,6 +259,25 @@ export default async function () {
   }
   teeth++;
 
+  // T7c/T7d: the adopt-call-site pin. T7d is the red-team's measured bypass verbatim — a fully
+  // handle-shaped module whose open binds a no-op instead of adopting.
+  teeth++;
+  if (countOccurrences(wiredFixture, ADOPT_CALL) !== 1) {
+    return bad(T_VACUITY, 'TEETH T7c: the adopt-call-site pin missed a correctly-wired fixture');
+  }
+  teeth++;
+  const hollowedFixture =
+    'interface OpenRecord { readonly releaseLive: () => void; }\n' +
+    'const releaseLive = () => {};\n' +
+    'OPEN_OVERLAYS.set(id, { root, releaseLive });\n' +
+    'record.releaseLive();\n';
+  if (countOccurrences(hollowedFixture, ADOPT_CALL) !== 0) {
+    return bad(
+      T_VACUITY,
+      'TEETH T7d: the adopt-call-site pin matched a HOLLOWED open that binds a no-op closure',
+    );
+  }
+
   // T8: the custodian-write ban rejects a fixture that writes textContent a SECOND time (the W11
   // shape — a custodian that starts writing content), and accepts the ONE legitimate write.
   const oneWrite = 'node.textContent = pending;';
@@ -349,6 +372,18 @@ export default async function () {
       T_HANDLE,
       "overlayA11y.ts's closeOverlayA11y does not call 'record.releaseLive()' — a declared-but-" +
         "unwired handle leaves the live region stranded in every closed overlay's root forever",
+    );
+  }
+  // RED-TEAM MEASURED BYPASS, and this clause is the fix. The three checks above are all about the
+  // HANDLE, and a hollowed `openOverlayA11y` that drops the import and writes
+  // `const releaseLive = () => {};` keeps every one of them green: the field is still declared, the
+  // capture still reads as a capture, and the close still invokes it — while the live region is
+  // never adopted at all. Only the ADOPT CALL SITE distinguishes the two, so pin it directly.
+  if (countOccurrences(overlayA11yStripped, ADOPT_CALL) !== 1) {
+    return bad(
+      T_HANDLE,
+      `overlayA11y.ts does not contain exactly one '${ADOPT_CALL}' — a hollowed open that binds a ` +
+        'no-op closure satisfies every other handle pin while the region is never moved',
     );
   }
   teeth++;
