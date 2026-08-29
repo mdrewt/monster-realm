@@ -76,12 +76,38 @@ exits 0. Both classes are the same defect stated once: *the verdict rode entirel
   populated — a `process.on('exit')` handler that fires on EVERY termination path:
 
   ```js
+  // rb-5:exit-verdict BEGIN
   process.on('exit', () => {
     const incomplete = completed !== files.length;
-    if (incomplete) console.error('eval: INCOMPLETE RUN — <completed> of <files.length>, in <inFlight> …');
-    if ((incomplete || failed > 0) && !process.exitCode) process.exitCode = 1;
+    if ((incomplete || failed > 0) && !process.exitCode) process.exitCode = 1;   // verdict FIRST
+    if (incomplete) {
+      try { console.error('eval: INCOMPLETE RUN — <completed> of <files.length>, in <inFlight> …'); }
+      catch { /* a broken stderr must never undo the verdict above */ }
+    }
   });
+  // rb-5:exit-verdict END
   ```
+
+  **The statement order is load-bearing, and the obvious order is a fail-OPEN.** Printing before
+  committing the code was the first draft; the red-team lens broke it and the result was measured
+  both ways on the pinned toolchain. With a `console.error` that throws — a poisoned console, EPIPE
+  from a truncating `| head`, EIO on a full disk — the handler aborts mid-way, and node honours the
+  exit code `process.exit(0)` had ALREADY committed: **observed exit 0**. Setting `process.exitCode`
+  first and wrapping the print: **observed exit 1**, with a genuine `process.exit(5)` still
+  observed as 5. The `try`/`catch` around the print is not defensive noise; it is what stops a
+  broken stream from downgrading a verdict.
+
+  `console.error` was kept rather than `writeSync(2, …)`. The flush concern is real in principle —
+  stdio to a pipe is async on POSIX, and this run's own measurements show a child losing buffered
+  **stdout** in 4 of 20 runs when it `process.exit()`s with a loaded pipe. But the guard's stderr
+  write was measured lost 0/25 with both streams loaded, `writeSync` can throw on EPIPE just the
+  same, and the ordering fix above already makes the verdict independent of the print succeeding.
+  The truncation risk is instead handled where it actually bites: the proof-of-teeth redirects the
+  child's stdout and stderr to FILES (synchronous on POSIX) rather than pipes.
+
+  The sentinel comments are not decoration — the proof-of-teeth splices that exact region out of
+  the live file to construct the pre-fix harness, so the RED control is derived from the shipped
+  source rather than from a transcribed copy that could silently go stale.
 
   The loop records the file it is about to import in `inFlight`, so the diagnostic can NAME
   the eval that was running when the run ended instead of asking a reader to infer it from
@@ -114,10 +140,17 @@ exits 0. Both classes are the same defect stated once: *the verdict rode entirel
   - Positive: the fix is 12 lines in the file that owns the invariant, with no new dependency,
     no new module, and no change to how evals are written or discovered.
   - Negative / accepted: this is defence against ACCIDENTAL truncation, not against a hostile
-    eval. Evals are first-party code in this repo. A module that calls `process.reallyExit()`,
-    signals itself, or registers its own later `'exit'` handler resetting `process.exitCode`
-    still wins; only alternative A closes those, at the cost above. Recorded here so the limit
-    is a decision rather than an oversight.
+    eval. Evals are first-party code in this repo. Four shapes were MEASURED to defeat the guard
+    and are deliberately left open, because closing any of them needs alternative A or an
+    out-of-band wrapper:
+    (i) `process.reallyExit(0)` at module scope — that is the primitive `process.exit()` calls
+    AFTER emitting `'exit'`, so the event never fires: exit 0 with no diagnostic at all, the
+    worst of the four; (ii) an eval registering its own LATER `'exit'` handler that resets
+    `process.exitCode = 0` — listeners fire in registration order and the last writer wins;
+    (iii) `Object.defineProperty(process, 'exitCode', { get: () => 0, set() {} })`, which also
+    discards the internal write; (iv) a genuine hang from an un-`unref`'d handle, which `run.mjs`
+    cannot time out because it has no per-eval budget — CI availability rests on the job timeout.
+    Recorded here so each limit is a decision rather than an oversight.
   - **Explicitly NOT closed — the DELETED-eval gap.** `ARCHITECTURE.md:162` records that
     `evals/run.mjs` fails only at zero eval files, so deleting an eval leaves `just ci` green
     one check lighter. That statement stays LITERALLY TRUE after this ADR: a deleted file
@@ -126,6 +159,12 @@ exits 0. Both classes are the same defect stated once: *the verdict rode entirel
     nightly `a11y-e2e` ratchet's job (m23-s11), and generalising it is a different slice.
     The two must not be conflated — a reader who believes this guard floors the eval count
     would stop looking for the decay gate.
+  - Also NOT fixed, and now merely better diagnosed: `evals/run.mjs:35`
+    (`const ok = res.pass ? …`) sits OUTSIDE the per-eval `try`/`catch`, so an eval whose
+    `default()` returns nothing crashes the loop with a raw `TypeError` instead of a clean
+    `eval THREW:` line. That path is already fail-CLOSED (exit 1) and this slice adds an
+    `INCOMPLETE RUN` line to it, which is the right split: normalising the result shape is a
+    behaviour change on a different failure class and wants its own fixtures.
   - Follow-up: `evals/ci-gate-wiring.eval.mjs:426 runMjsIsIntact()` and
     `evals/gate-hardening-config.eval.mjs:54 runMjsHasEvalIsolation()` both source-scan
     `run.mjs`; neither is in this slice's touches, so neither pins the new guard. The
