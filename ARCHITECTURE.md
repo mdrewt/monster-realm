@@ -106,7 +106,9 @@ exported and deeply frozen (every eval shares ONE module instance under
 STRIPPED source (a table declared only inside a Rust string literal must not be
 walked), and importing the module runs nothing — checked with child processes
 whose `argv[1]` is a real sibling `evals/*.mjs`, because a main guard widened to
-match a directory or `run.mjs` exits the whole 90-eval suite mid-loop with code 0.
+match a directory or `run.mjs` exits the whole 90-eval suite mid-loop with code 0. (Since
+**rb-5** that truncation exits 1 and names the eval that was in flight; the later evals are
+still skipped, so these import-purity children remain the primary defence.)
 **rb-2** closed the manifest's measured `typeof` trap (residual R-m22-s0-X1): every
 `REKEY_MANIFEST` entry is now an object with an explicit `policy` discriminator
 (`REKEY` | `BLOCKED` | `EXEMPT`, exact equality, a closed field set per kind, D6
@@ -145,6 +147,29 @@ the seam eval's `[T2/alias]` pins `resolved === type` for every literally-typed 
 column. Still unseen, routed to the residual backlog: a SpacetimeType product column
 carrying an Identity (live-reachable via `encounter.entries`), a field declared without
 `pub`, and a binding declared outside the scanned input set.
+**rb-5** gave the eval harness itself a verdict that survives its own termination (residual
+R-m22-s0-X4; ADR-0209). `evals/run.mjs` imports all 95 evals into ONE process, so a module-scope
+`process.exit()` — the shape a standalone-runner main guard takes once it is widened to compare
+`dirname` or `endsWith('run.mjs')`, since `process.argv[1]` under the harness is a real SIBLING
+path — ended the run where it stood and skipped the final `process.exit(failed ? 1 : 0)`, so the
+FAIL lines already printed above it never became an exit code: 37 of 90 evals run, 3 FAILs
+swallowed, exit 0, `just ci` green. A second measured class did the same thing from the other end
+— `process.exit = () => {}` at module scope neutered that final call and node exited naturally at
+0. Both are now closed by an exit-time assertion in a `// rb-5:exit-verdict` region: the run
+counts the evals that reported in, and on `'exit'` it raises a zero code to 1 when that count is
+short OR any eval failed, naming the in-flight eval — never clobbering a genuine non-zero code.
+The statement order inside that handler is load-bearing and the obvious order is a fail-OPEN: the
+verdict is committed BEFORE anything is printed, because a `console.error` that throws (a poisoned
+console, EPIPE from a truncating `| head`) aborts the handler and node then honours the code
+`process.exit(0)` already committed — measured exit 0 printing first, exit 1 setting first.
+`evals/run-completeness.eval.mjs` proves it BEHAVIOURALLY rather than by grepping the source: each
+tooth copies the shipped `run.mjs` into a mkdtemp `evals/`, writes fixture evals beside it and
+spawns the harness there, and the ADR-0010 RED control is derived every run by splicing the
+sentinel region out of the LIVE file, so the fixtures can never decay into shapes that pass either
+way. Left open and disclosed, not chased: `process.reallyExit(0)` skips the `'exit'` event
+entirely, a later-registered `'exit'` handler or an `exitCode` accessor wins by ordering, and a
+hang has no per-eval budget — all four need per-eval child processes, which would retire the
+shared-realm invariants ADR-0208 is built on.
 **M23 accessibility gates (m23-s10)** — three source-scan evals plus one cross-view happy-dom
 spec. `overlay-a11y-manifest` bans a view-local focus call in every `client/src/ui/**/*View.ts`
 (readdir-DERIVED and two-way ratcheted, so a new view is scanned the day it lands — the three
@@ -159,7 +184,9 @@ than a hand-copied shell, so a `tabindex` deleted from the real markup reds.
 **The nightly a11y decay ratchet (m23-s11)** — `just a11y-e2e floor="169": wasm`, run by its own
 `a11y-e2e` job in `nightly.yml` and NOT in `just ci` (a browser and a live server in the hermetic
 gate is the exact thing that keeps `e2e` out of it, ADR-0043). It adds the one lens the per-PR
-gate structurally cannot: DECAY. `evals/run.mjs` fails only at ZERO eval files, and a MISSING
+gate structurally cannot: DECAY. `evals/run.mjs` fails at ZERO eval files and (since **rb-5**)
+at an INCOMPLETE or verdict-swallowed run — but a DELETED eval shrinks the expected count
+itself, so deletion stays invisible to it — and a MISSING
 vitest spec reports `numTotalTests:0` and exits 0 — both measured — so today an a11y eval or spec
 can be DELETED with `just ci` staying green. Half 1 imports the three a11y evals BY NAME (a
 deleted one makes `import()` throw: fail-closed by construction, no floor needed); half 2 floors
