@@ -2656,3 +2656,262 @@ describe('BattleView ux4-2: empty-swap explainer hint (battle-swap-hint)', () =>
     document.body.removeChild(parent);
   });
 });
+
+// =============================================================================
+// rb-10 (residual R-m23-s2-X4, M23 §2.5, ADR-0213) — RM3-HP-FILL.
+//
+// THE CRITERION: the battle HP bar's width animation must be reachable by a stylesheet, and
+// therefore neutralisable by the reduced-motion media query in `client/src/styles.css`. That
+// requires exactly two things of the DOM this view renders, and this describe owns both:
+//   (1) the fill element carries the class `hp-fill` — the ONLY handle a stylesheet has on an
+//       element built by `document.createElement` inside `#renderMonsterCard`;
+//   (2) the fill element carries NO inline animation declaration. An inline `style` declaration
+//       wins over every stylesheet rule at every specificity, so the reduced-motion media query
+//       in `client/src/styles.css` cannot reach it — which is exactly what that file's own header
+//       said when it declared the guard DELIBERATELY ABSENT.
+//
+// NOTE ON WORDING (deliberate, do not "fix"): neither the media-feature name nor `matchMedia` is
+// spelled out anywhere in this file. `evals/reduced-motion-purity.eval.mjs` allows exactly one
+// owner for those tokens under `client/src`, and while its walker skips `*.test.ts`, the census
+// it delegates to (`render/motionPreference.test.ts`'s S7T-SCAN) is a second scanner with its own
+// scope. Naming the query as "the reduced-motion media query in client/src/styles.css" costs
+// nothing and cannot red an unrelated criterion.
+//
+// RED REASON AT AUTHORING TIME (measured against the unmodified tree): `#renderMonsterCard`
+// writes `hpFill.style.cssText = \`width:${pct}%;height:100%;background:${color};transition:width
+// 0.3s;\`` and never assigns a class. So `fill.className` is `''` (RM3-B fails on its first
+// assertion) and the style attribute contains `transition`. Both oracles are genuinely RED.
+//
+// OWNERSHIP SPLIT (ADR-0213 D3): this describe owns RUNTIME REACHABILITY — that the class and the
+// absence of inline animation are properties of the RENDERED element, not of the source text.
+// `evals/reduced-motion-hp-bar.eval.mjs` owns the source-text half (the stylesheet's shape, the
+// media prelude, source order, and the inline ratchet over battleView.ts), and its
+// `[A11Y-RM3/delegate]` clause pins this describe's tag and its two load-bearing needles
+// (`fill.className`, `fill.getAttribute('style')`) so that gutting this file reds there.
+//
+// WHY THE WALK IS STRUCTURAL AND NOT `querySelector('.hp-fill')`: querying BY the class and then
+// asserting the class is a tautology — it can only ever pass. The walk therefore names the
+// element by POSITION (`#renderMonsterCard`'s documented child order) and the class is an
+// assertion about what it found. Every index is guarded by a fail-loud precondition, because an
+// index-based walk that silently drifts onto the wrong node asserts nothing.
+//
+// WHY IT RENDERS TWICE (the measured second-render class): red-team measured
+// `hpFill.style.cssText += HP_EASE`, with `HP_EASE` imported from a sibling module and appended
+// only on a re-render. The FIRST render is byte-clean, so a single-render tooth passes it — and a
+// transition can only ever FIRE on a later render, so the first render is the one that does not
+// matter. RM3-B re-resolves the fill after a second `refresh()` with a CHANGED `hpPercent` and
+// re-asserts on the new element (`#renderMonsterCard` opens with `el.replaceChildren()`, so the
+// second render's fill is a different node; re-resolving is mandatory, not defensive).
+//
+// DISCLOSED SCOPE LIMIT (residual R-rb-10-CASCADE): happy-dom does no cascade and no layout, so
+// these cases prove "no inline animation declaration is present on the element", never "the
+// element does not animate when the player has asked for reduced motion". The airtight oracle is
+// a real Chromium (`rb-10.cascade-probe.mjs` beside the ledger). happy-dom also does not implement
+// `Element.animate`, so the WAAPI class of defect is structurally invisible here — that is why
+// the eval bans those spellings by TEXT rather than leaving them to this file.
+// =============================================================================
+
+/** Root child indices, from the BattleView constructor's append order. */
+const RM3_ROOT_CHILDREN = 10;
+const RM3_OPPONENT_INDEX = 2;
+const RM3_PLAYER_INDEX = 3;
+/** `#renderMonsterCard` child order: [0] header, [1] hpBar, [2] hpText, [3] status (conditional). */
+const RM3_HP_BAR_INDEX = 1;
+
+/** A VM whose two cards carry DISTINCT hp percentages, so a width assertion cannot pass by
+ *  reading the wrong card and a second render is observably different from the first. */
+function makeRm3VM(opponentPercent: number, playerPercent: number): BattleViewModel {
+  const base = makeRecruitVM();
+  return {
+    ...base,
+    opponentCard: { ...base.opponentCard, hpPercent: opponentPercent },
+    playerCard: { ...base.playerCard, hpPercent: playerPercent },
+  };
+}
+
+/**
+ * The structural walk, with every step fail-loud. Returns the fill element for one card.
+ *
+ * `label` is the text `#renderMonsterCard` writes into the card header (`Opponent: …` / `You: …`),
+ * so the index is CHECKED against content rather than trusted — an index-based walk that drifts
+ * onto the weather banner or the skills grid would otherwise assert about the wrong element and
+ * still pass, which is the failure mode this whole helper exists to prevent.
+ */
+function rm3ResolveFill(parent: HTMLElement, childIndex: number, label: string): HTMLElement {
+  const root = parent.firstElementChild as HTMLElement | null;
+  expect(
+    root,
+    'RM3 precondition: BattleView must wrap its children in its own #root, appended to the ' +
+      'caller-supplied parent — the whole walk below is relative to that root',
+  ).not.toBeNull();
+  expect(
+    root!.children.length,
+    `RM3 precondition: #root must hold exactly ${RM3_ROOT_CHILDREN} children in the constructor's ` +
+      'documented order (title, weather, opponent card, player card, skills, actions, swap hint, ' +
+      'pvp status, outcome, continue hint). A different count means the positional walk below is ' +
+      'reading some other element, and every assertion made on it would be about the wrong node',
+  ).toBe(RM3_ROOT_CHILDREN);
+
+  const card = root!.children[childIndex] as HTMLElement;
+  expect(
+    card.textContent,
+    `RM3 precondition: #root.children[${childIndex}] must be the "${label}" monster card — the ` +
+      'index is checked against the header text #renderMonsterCard writes, so a reordered ' +
+      'constructor reds HERE rather than silently retargeting the assertions',
+  ).toContain(label);
+  expect(
+    card.children.length,
+    `RM3 precondition: the "${label}" card must hold 3 children (header, hp bar, hp text) — the ` +
+      'status badge is conditional and this VM sets status:null, so a 4th child means the card ' +
+      'structure changed under the walk',
+  ).toBe(3);
+
+  const hpBar = card.children[RM3_HP_BAR_INDEX] as HTMLElement;
+  expect(
+    hpBar.children.length,
+    `RM3 precondition: the "${label}" hp bar must contain EXACTLY ONE child, the fill. Two ` +
+      'children would mean the fill has a sibling, and `firstElementChild` would no longer ' +
+      'identify the animated element unambiguously',
+  ).toBe(1);
+
+  const fill = hpBar.firstElementChild as HTMLElement | null;
+  expect(fill, `RM3 precondition: the "${label}" hp bar must have a fill element`).not.toBeNull();
+  return fill!;
+}
+
+/**
+ * Every per-render assertion for one fill element.
+ *
+ * `where` names the card AND the render number, so a failure says which of the four (card ×
+ * render) combinations broke — the second-render combinations are the ones no single-render
+ * tooth can see.
+ */
+function rm3AssertFill(fill: HTMLElement, where: string, expectedPercent: number): void {
+  expect(
+    fill.className,
+    `RM3-HP-FILL (${where}) CLASS: the fill element's class must be EXACTLY 'hp-fill'. This is ` +
+      'the only handle a stylesheet has on an element built by document.createElement, so ' +
+      'without it the reduced-motion guard in client/src/styles.css cannot reach it at any ' +
+      'specificity — the reason styles.css shipped with that guard declared DELIBERATELY ABSENT. ' +
+      'Exact equality, not `toContain`: a second class token would mean some other rule can ' +
+      'reach the element too, and the eval counts .hp-fill-matching rules to exactly two',
+  ).toBe('hp-fill');
+
+  // PRIMARY ORACLE. `getAttribute('style')` is the raw inline declaration text — it is what a
+  // browser's cascade actually sees, and it is measured to bite in happy-dom (pre-fix it reads
+  // `...;transition: width 0.3s;`). The parsed `style.transition` assertion below is a second,
+  // weaker view of the same fact and is deliberately NOT the primary one: happy-dom's parsed
+  // CSSOM need not agree with a browser's on every longhand.
+  const styleAttr = fill.getAttribute('style') ?? '';
+  expect(
+    styleAttr.indexOf('transition'),
+    `RM3-HP-FILL (${where}) NO INLINE TRANSITION: the fill's style attribute is ` +
+      `${JSON.stringify(styleAttr)}. An inline transition declaration beats every stylesheet ` +
+      'rule at every specificity, so the reduced-motion media query cannot neutralise it and a ' +
+      'player who asked their OS for reduced motion still gets the bar sliding on every hit. The ' +
+      'animation belongs on `.hp-fill` in client/src/styles.css, not here',
+  ).toBe(-1);
+  expect(
+    styleAttr.indexOf('animation'),
+    `RM3-HP-FILL (${where}) NO INLINE ANIMATION: the fill's style attribute is ` +
+      `${JSON.stringify(styleAttr)}. A keyframe animation is the other half of the same defect ` +
+      'and is not stopped by `transition: none` in the guard',
+  ).toBe(-1);
+
+  expect(
+    fill.style.transition,
+    `RM3-HP-FILL (${where}) PARSED CSSOM: the fill's parsed inline transition must be empty. ` +
+      'This is a SECOND view of the attribute assertion above, kept because a future edit that ' +
+      'sets the property through the CSSOM (`fill.style.transition = …`) rather than through ' +
+      'cssText writes the same declaration by a different route',
+  ).toBe('');
+
+  // NON-VACUITY. Without these, an implementation that rendered NO inline style at all — or that
+  // stopped re-rendering on the second refresh — would satisfy every assertion above trivially.
+  expect(
+    fill.style.width,
+    `RM3-HP-FILL (${where}) NON-VACUITY: the fill must still be sized from the VM's hpPercent. ` +
+      'An empty style attribute passes every ban above while rendering an HP bar that never ' +
+      'moves; a stale width means the second render did not happen and the second-render ' +
+      'assertions are testing the first render again',
+  ).toBe(`${expectedPercent}%`);
+  expect(
+    fill.style.height,
+    `RM3-HP-FILL (${where}) NON-VACUITY: the fill must still be full-height inside its bar — ` +
+      'only the ANIMATION moves to the stylesheet, not the per-render geometry',
+  ).toBe('100%');
+}
+
+describe('BattleView rb-10 RM3-HP-FILL: the HP fill is stylesheet-reachable and animation-free', () => {
+  // The per-case removeChild is skipped when an assertion throws, which would leak the overlay
+  // into the next case. Scoped to this describe, like the ux4 blocks above.
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('BITES: RM3-HP-FILL-STRUCTURE — the positional walk to the fill is anchored (root child count, card labels, one bar child)', () => {
+    // This case is what makes RM3-HP-FILL-CLASS non-vacuous. Every assertion there is made about
+    // whatever `hpBar.firstElementChild` returns; if the walk drifted — a constructor reorder, a
+    // new #root child, a second element inside the bar — those assertions would be about the
+    // wrong node and could pass while the fill itself was untouched. Here the walk itself is the
+    // subject, so a drift reds with a message naming the step that moved.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+    view.refresh(makeRm3VM(64, 41));
+
+    const opponentFill = rm3ResolveFill(parent, RM3_OPPONENT_INDEX, 'Opponent:');
+    const playerFill = rm3ResolveFill(parent, RM3_PLAYER_INDEX, 'You:');
+    expect(
+      opponentFill,
+      'RM3-HP-FILL-STRUCTURE: the two cards must resolve to DIFFERENT fill elements — one shared ' +
+        'node would mean the walk collapsed onto a single card and every per-card assertion in ' +
+        'the next case would be made twice about the same element',
+    ).not.toBe(playerFill);
+
+    document.body.removeChild(parent);
+  });
+
+  it('BITES: RM3-HP-FILL-CLASS — both fills carry class="hp-fill" with no inline transition/animation, on the FIRST render AND on a SECOND render with a changed hpPercent', () => {
+    // WRONG IMPLEMENTATIONS KILLED, in the order the assertions catch them:
+    //  (1) the SHIPPED pre-fix code — `cssText` carrying `transition:width 0.3s;` and no class.
+    //      Unreachable by any stylesheet at any specificity, which is why the reduced-motion
+    //      guard could not be written before this slice.
+    //  (2) `classList.add('hp-fill')` layered onto a pre-existing class, or a second token added
+    //      later — exact equality refuses it; the eval's rule-set clause counts .hp-fill-matching
+    //      rules to exactly two, and a second token opens a third path to the same element.
+    //  (3) the SECOND-RENDER-ONLY append, measured by red-team:
+    //      `hpFill.style.cssText += HP_EASE` with the easing in a sibling module. The first
+    //      render is byte-clean, so a single-render tooth passes it — and a transition can only
+    //      ever fire on a LATER render, so the first render is the one that does not matter.
+    //  (4) moving the animation to the hp BAR instead of the fill: the walk asserts on the bar's
+    //      only child, and the bar's own style attribute is not what this case reads — but the
+    //      structure case above pins that the bar has exactly one child, so a fill relocated to
+    //      a wrapper reds there.
+    //  (5) a class assigned but the element rebuilt without it on re-render — the second-render
+    //      block re-resolves the fill through the same walk rather than reusing the first
+    //      element, because `#renderMonsterCard` opens with `el.replaceChildren()`.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+
+    const view = new BattleView(parent, makeCallbacks());
+
+    // ---- render 1 -----------------------------------------------------------
+    view.refresh(makeRm3VM(64, 41));
+    rm3AssertFill(rm3ResolveFill(parent, RM3_OPPONENT_INDEX, 'Opponent:'), 'opponent/render1', 64);
+    rm3AssertFill(rm3ResolveFill(parent, RM3_PLAYER_INDEX, 'You:'), 'player/render1', 41);
+
+    // ---- render 2, with CHANGED percentages ---------------------------------
+    // No hide(), no refresh(null): this is an ordinary server batch, the sequence in which a
+    // transition would actually run. The fills are re-resolved because replaceChildren() has
+    // replaced them; asserting on the first render's elements again would test nothing.
+    view.refresh(makeRm3VM(23, 88));
+    const opponentAfter = rm3ResolveFill(parent, RM3_OPPONENT_INDEX, 'Opponent:');
+    const playerAfter = rm3ResolveFill(parent, RM3_PLAYER_INDEX, 'You:');
+    rm3AssertFill(opponentAfter, 'opponent/render2', 23);
+    rm3AssertFill(playerAfter, 'player/render2', 88);
+
+    document.body.removeChild(parent);
+  });
+});
