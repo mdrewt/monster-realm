@@ -3006,6 +3006,253 @@ pub fn adopt_guest_by_code(ctx: &ReducerContext, code: String) -> Result<(), Str
     if (bad) return bad;
   }
 
+  // FG74a (ADR-0010 proof-of-teeth, THE RESIDUAL'S OWN CRITERION, R-m22-s1-X1)
+  // — the M22-S3-shaped source: GOOD_ACCOUNTS plus the `account_deletion_reaper`
+  // scheduled table/reducer pair, carrying the SAME scheduler-guard shape as
+  // the shipped `guest_claim_reaper`. Must PASS post-fix. The pre-fix
+  // exact-set-equality classifier is recomputed INLINE below, on every run
+  // (never asserted once at authoring time), against this SAME source, and
+  // must RED — so the fixture can never decay into a shape that passes either
+  // way. Self-checks first, because this fixture is built by CONCATENATION so
+  // `mut()`'s throw-on-missing protection does not apply.
+  // Kills: reverting [R/name-set] to exact-set equality over REQUIRED names
+  // (the residual this whole slice exists to fix — mutant M1/"prefix"), and a
+  // bare zero-parameter `account_deletion_reaper` stub that would satisfy a
+  // weaker self-check but prove nothing about the scheduler guard.
+  {
+    const s3Src =
+      GOOD_ACCOUNTS +
+      `
+#[spacetimedb::table(accessor = account_deletion_reaper_schedule, scheduled(account_deletion_reaper))]
+pub struct AccountDeletionReaperSchedule {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: ScheduleAt,
+    #[index(btree)]
+    pub target_identity: Identity,
+}
+
+#[spacetimedb::reducer]
+pub fn account_deletion_reaper(
+    ctx: &ReducerContext,
+    args: AccountDeletionReaperSchedule,
+) -> Result<(), String> {
+    if ctx.sender() != ctx.database_identity() {
+        return Err("account_deletion_reaper is scheduler-only".to_string());
+    }
+    ctx.db.account().identity().delete(args.target_identity);
+    Ok(())
+}
+`;
+
+    const parsedCount = parseReducers(stripRustSource(s3Src)).length;
+    if (parsedCount !== 6) {
+      return (
+        'FG74a self-check: expected exactly 6 reducers parsed out of the S3-shaped fixture (the ' +
+        `5 shipped plus account_deletion_reaper), got ${parsedCount} — the concatenation did not ` +
+        'land as intended, so this fixture would prove nothing about the residual'
+      );
+    }
+    if (compactWs(stripRustSource(s3Src)).indexOf(SCHEDULER_GUARD) === -1) {
+      return (
+        'FG74a self-check: the scheduler-guard needle is missing from the built S3-shaped fixture ' +
+        'text — a bare zero-parameter account_deletion_reaper stub was measured to yield the ' +
+        'identical PASS verdict, so without this check the fixture proves less than its prose claims'
+      );
+    }
+
+    const err = checkNoClientIdentity(s3Src);
+    if (err) {
+      return (
+        'FG74a: the legitimately-declared, pre-reviewed account_deletion_reaper (table + reducer + ' +
+        `scheduler guard) was incorrectly flagged on a tree that still carries its five REQUIRED ` +
+        `reducers: ${err}`
+      );
+    }
+
+    const requiredNames = Object.keys(REDUCER_SANCTIONS)
+      .filter((n) => REDUCER_SANCTIONS[n].status === 'REQUIRED')
+      .sort();
+    const parsedNames = parseReducers(stripRustSource(s3Src))
+      .map((r) => r.name)
+      .sort();
+    const preFixSameSet =
+      parsedNames.length === requiredNames.length &&
+      parsedNames.every((n, k) => n === requiredNames[k]);
+    if (preFixSameSet) {
+      return (
+        'FG74a RED-control decayed: the pre-fix exact-set-equality classifier (sorted parsed names ' +
+        '=== sorted REQUIRED names) ALSO passes the S3-shaped fixture, so this fixture no longer ' +
+        "proves the residual's own criterion — the gate must RED before the fix and PASS after, and " +
+        "a fixture that passes either way proves nothing"
+      );
+    }
+  }
+
+  // FG74b — an UNDECLARED name smuggled into the PLANNED category (here:
+  // `adopt_guest`, FG15's attack reducer name) with status PLANNED. The
+  // permissive category is supposed to be bounded to exactly one
+  // conscious-in-this-file entry.
+  // Kills: [R/planned-set] accepting ANY superset of the sanctioned PLANNED
+  // set (mutant "delete the [R/planned-set] call", which neuters the check
+  // into always-PASS and is caught here because this fixture drives the
+  // function directly).
+  {
+    const ledger = {
+      ...REDUCER_SANCTIONS,
+      adopt_guest: { status: 'PLANNED', why: 'forged for FG74b' },
+    };
+    const bad = expectTag(assertPlannedSet(ledger), '[R/planned-set]', 'FG74b');
+    if (bad) return bad;
+  }
+
+  // FG74c — the REQUIRED-to-PLANNED demotion attack: `delete_account` is
+  // silently un-required. The old flat array had no way to express "optional"
+  // at all, so it had no way to catch a shipped entry point being quietly
+  // downgraded either.
+  // Kills: [R/planned-set] treating the PLANNED set as append-only / growing
+  // it by any means other than a conscious, separately-reviewed edit here.
+  {
+    const ledger = {
+      ...REDUCER_SANCTIONS,
+      delete_account: { status: 'PLANNED', why: 'forged demotion for FG74c' },
+    };
+    const bad = expectTag(assertPlannedSet(ledger), '[R/planned-set]', 'FG74c');
+    if (bad) return bad;
+  }
+
+  // FG74d — GOOD: the shipped ledger's PLANNED set is EXACTLY
+  // ['account_deletion_reaper'] today, before S3 ships. Non-vacuity control:
+  // kills an always-red [R/planned-set], which would otherwise be
+  // indistinguishable from a working one.
+  {
+    const err = assertPlannedSet(REDUCER_SANCTIONS);
+    if (err) return `FG74d: the shipped ledger's PLANNED set was incorrectly flagged: ${err}`;
+  }
+
+  // FG74e — a ONE-SIDED subset check (found PLANNED keys subset-of expected,
+  // with no reverse direction) is trivially satisfied by an EMPTY PLANNED set
+  // and by a ledger with no PLANNED entries at all. Both sub-cases must RED.
+  // Kills: mutant "[R/planned-set] relaxed to a one-sided subset".
+  {
+    const bad1 = expectTag(assertPlannedSet({}), '[R/planned-set]', 'FG74e-empty');
+    if (bad1) return bad1;
+
+    const noPlanned = {
+      account_deletion_reaper: { status: 'REQUIRED', why: 'forged for FG74e' },
+    };
+    const bad2 = expectTag(assertPlannedSet(noPlanned), '[R/planned-set]', 'FG74e-norequired');
+    if (bad2) return bad2;
+  }
+
+  // FG74f — `guest_claim_reaper` (REQUIRED) is renamed to `account_deletion_reaper`
+  // (the one PLANNED name), moving the `scheduled(...)` target along with it so
+  // [R/param-types]'s carve-out still applies and [R/name-set] is the first
+  // clause that can fire. The NEW name IS a ledger key (own property), so a
+  // membership-only checker is silent here — REQUIRED's own entry (and its
+  // client entry point) disappeared all the same.
+  // Kills: mutant "drop the REQUIRED-present half of [R/name-set]" — the
+  // ownership half alone would wrongly call this source sanctioned.
+  {
+    let src = mut(
+      GOOD_ACCOUNTS,
+      'scheduled(guest_claim_reaper)',
+      'scheduled(account_deletion_reaper)',
+    );
+    src = mut(src, 'pub fn guest_claim_reaper(', 'pub fn account_deletion_reaper(');
+    const bad = expectTag(checkNoClientIdentity(src), '[R/name-set]', 'FG74f');
+    if (bad) return bad;
+  }
+
+  // FG74g — THE MEASURED BYPASS (ADR-0210). A ledger entry with a THIRD status
+  // string is admitted by membership (it is an own key), never demanded
+  // (it is not REQUIRED) and invisible to [R/planned-set] (it is not
+  // PLANNED) — a free, silent, optional whitelist slot for a wire-safe,
+  // constructor-free takeover reducer of the same name
+  // (`migrate_legacy_account`, ADR-0210's worked example). Deliberately a
+  // THIRD status, not REQUIRED or PLANNED, so this fixture is not redundant
+  // with FG74b/c/e.
+  // Kills: deleting [R/sanction-shape] outright, and "status compared with
+  // `!==` against only 'REQUIRED'" (a third status silently treated as fine).
+  {
+    const ledger = {
+      ...REDUCER_SANCTIONS,
+      migrate_legacy_account: {
+        status: 'LEGACY',
+        why: 'kept for back-compat, not client-facing',
+      },
+    };
+    const bad = expectTag(assertSanctionShape(ledger), '[R/sanction-shape]', 'FG74g');
+    if (bad) return bad;
+  }
+
+  // FG74h — [R/sanction-shape] must RED on every OTHER malformed entry shape,
+  // not only an open third status: a non-object entry, a missing `status`, a
+  // non-string `status`, an unknown extra field, and a `status` reachable
+  // ONLY through the prototype chain (the injected entry owns NOTHING — same
+  // device as FG72d's inherited-policy fixture).
+  // Kills: a classifier that trusts `typeof` on the entry, or that reads
+  // `.status` without first confirming the entry OWNS it.
+  {
+    const notObject = { ...REDUCER_SANCTIONS, not_an_object: 'REQUIRED' };
+    const bad1 = expectTag(assertSanctionShape(notObject), '[R/sanction-shape]', 'FG74h-notobject');
+    if (bad1) return bad1;
+
+    const missingStatus = {
+      ...REDUCER_SANCTIONS,
+      no_status: { why: 'no status field at all' },
+    };
+    const bad2 = expectTag(assertSanctionShape(missingStatus), '[R/sanction-shape]', 'FG74h-missing');
+    if (bad2) return bad2;
+
+    const numericStatus = {
+      ...REDUCER_SANCTIONS,
+      numeric_status: { status: 1, why: 'status is a number, not a string' },
+    };
+    const bad3 = expectTag(assertSanctionShape(numericStatus), '[R/sanction-shape]', 'FG74h-numeric');
+    if (bad3) return bad3;
+
+    const extraField = {
+      ...REDUCER_SANCTIONS,
+      extra_field: { status: 'REQUIRED', why: 'ok', deletion_policy: 'soft' },
+    };
+    const bad4 = expectTag(assertSanctionShape(extraField), '[R/sanction-shape]', 'FG74h-extrafield');
+    if (bad4) return bad4;
+
+    const viaProto = Object.create({ status: 'REQUIRED', why: 'inherited, never owned' });
+    if (Object.keys(viaProto).length !== 0 || viaProto.status !== 'REQUIRED') {
+      return (
+        'FG74h-proto: the fixture is broken — the injected entry must own NOTHING and inherit a ' +
+        `well-formed status (own fields: [${Object.keys(viaProto).join(', ')}], status resolved ` +
+        `through the chain: ${JSON.stringify(viaProto.status)})`
+      );
+    }
+    const protoLedger = { ...REDUCER_SANCTIONS, proto_only: viaProto };
+    const bad5 = expectTag(assertSanctionShape(protoLedger), '[R/sanction-shape]', 'FG74h-proto');
+    if (bad5) return bad5;
+  }
+
+  // FG74j — a reducer literally named `constructor`, wire-safe, no Identity
+  // parameter and no Identity constructor call — the only thing wrong with it
+  // is that it is not in the ledger.
+  // Kills: `[R/name-set]` implemented as `if (LEDGER[name])` or any other
+  // prototype-chain-reachable lookup. `LEDGER.constructor` resolves to
+  // `Object`'s constructor function (truthy) for EVERY plain object, so a
+  // naive membership test admits the name with zero ledger entry for it.
+  {
+    const src =
+      GOOD_ACCOUNTS +
+      `
+#[spacetimedb::reducer]
+pub fn constructor(ctx: &ReducerContext) -> Result<(), String> {
+    Ok(())
+}
+`;
+    const bad = expectTag(checkNoClientIdentity(src), '[R/name-set]', 'FG74j');
+    if (bad) return bad;
+  }
+
   // --- G3: ANON_PASSTHROUGH ------------------------------------------------
 
   // FG18 — GOOD: the shipped connect hook must PASS. Note `ctx.sender_auth()`
