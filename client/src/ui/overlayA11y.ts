@@ -56,7 +56,12 @@
 //       instead of routing through the view's `hide()` (and thus this close), the record survives
 //       with a live listener, a pending timer and a return target that expires — a much later close
 //       then restores focus to a long-dead element. Recommend §4.1 add force-hide ↔ close to its
-//       cross-slice contract list.
+//       cross-slice contract list. AMENDED BY rb-11 (ADR-0214, residual R-rb-11-A13): that bypass
+//       now ALSO strands `#a11y-live` inside the `display:none` subtree, because custody is handed
+//       back by `releaseLive` and nothing else — so the consequence is no longer a stale listener
+//       but TOTAL SILENCE for every announcement until that overlay is opened and closed properly.
+//       Not reachable today (`main.ts`'s `overlayHandles` table routes every force-hide through
+//       `hide()`), and this comment is the record of why it must stay that way.
 //   (c) The "no focus call at all" branch of `closeOverlayA11y` leaves focus wherever the browser's
 //       natural blur put it, i.e. `<body>`. M23 §2.3 PROPOSES a `worldHasFocus()` predicate to read
 //       that state as "the world has focus" — it is S5's to write and does NOT exist in this

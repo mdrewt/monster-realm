@@ -62,6 +62,36 @@ const T_WRITE = '[A11Y-LRC/custodian-write]';
 const T_HANDLE = '[A11Y-LRC/record-handle]';
 const T_MODAL = '[A11Y-LRC/aria-modal]';
 
+/**
+ * Strip HTML comments before counting anything in `client/index.html`.
+ *
+ * MEASURED, and it is why this exists: the first shipped draft of this eval counted the RAW file,
+ * and rb-11's own explanatory comment on the live region mentions `aria-modal="true"` in prose —
+ * so the shell count read 12, not 11, and the eval reported "A11Y-13's static markup was weakened"
+ * about a comment. That is the benign direction. The malicious direction is worse and is the real
+ * reason to strip: with comments counted, a shell could be DELETED from the markup and the count
+ * held at eleven by a decoy mention in a comment. `stripTsComments` is NOT usable here — HTML has
+ * no `//` line comment and its block delimiters are different.
+ */
+function stripHtmlComments(src) {
+  let out = '';
+  let i = 0;
+  while (i < src.length) {
+    const open = src.indexOf('<!--', i);
+    if (open === -1) {
+      out += src.slice(i);
+      break;
+    }
+    out += src.slice(i, open);
+    const close = src.indexOf('-->', open + 4);
+    // An UNCLOSED comment swallows the rest of the file. Fail loud rather than silently counting
+    // zero shells in the tail (the vacuous-green shape).
+    if (close === -1) throw new Error('unterminated HTML comment in index.html');
+    i = close + 3;
+  }
+  return out;
+}
+
 /** Every index of `needle` in `src`, non-overlapping. Never `indexOf` once — a first-hit anchor is
  *  forgeable (the house rule this repo has been bitten by; see a11y-static-shell.eval.mjs). */
 function countOccurrences(src, needle) {
@@ -92,7 +122,7 @@ export default async function () {
   const name = 'overlay-live-region-custody ([A11Y-LRC] rb-11 source-level custody pins)';
   const bad = (tag, detail) => ({ name, pass: false, detail: `${tag} ${detail}` });
   let teeth = 0;
-  const teethTotal = 12;
+  const teethTotal = 15;
 
   // ==================================================================
   // PROOF-OF-TEETH — the counting utilities, against synthetic fixtures, BEFORE the real files.
@@ -145,6 +175,45 @@ export default async function () {
       T_VACUITY,
       'TEETH T5: the aria-modal="true" counter did not count exactly the two double-quoted, ' +
         'true-valued shells in the fixture',
+    );
+  }
+
+  // T5b/T5c: the HTML-comment stripper. T5b is the shape that actually bit this eval in CI (a
+  // prose mention inflating the count); T5c is the dangerous inverse — a DELETED shell whose
+  // count is propped up by a decoy comment, which a raw count would pass.
+  teeth += 1;
+  const commentedShells =
+    '<div aria-modal="true"></div>\n' +
+    '<!-- prose: A11Y-13 sets aria-modal="true" on every shell root -->\n' +
+    '<div aria-modal="true"></div>';
+  if (countOccurrences(stripHtmlComments(commentedShells), ARIA_MODAL_TRUE) !== 2) {
+    return fail(
+      T_MODAL,
+      'TEETH T5b: a prose mention of aria-modal="true" inside an HTML comment was counted as a shell',
+      teeth,
+    );
+  }
+  teeth += 1;
+  const decoyProp = '<div aria-modal="true"></div>\n' + '<!-- <div aria-modal="true"></div> -->';
+  if (countOccurrences(stripHtmlComments(decoyProp), ARIA_MODAL_TRUE) !== 1) {
+    return fail(
+      T_MODAL,
+      'TEETH T5c: a commented-out shell propped up the count — a deleted shell could hide behind it',
+      teeth,
+    );
+  }
+  teeth += 1;
+  let unterminatedCaught = false;
+  try {
+    stripHtmlComments('<div aria-modal="true"></div><!-- never closed');
+  } catch {
+    unterminatedCaught = true;
+  }
+  if (!unterminatedCaught) {
+    return fail(
+      T_MODAL,
+      'TEETH T5d: an unterminated HTML comment did not throw — it would swallow the file tail',
+      teeth,
     );
   }
   teeth++;
@@ -286,7 +355,7 @@ export default async function () {
 
   // (d) X6 — A11Y-13 not weakened: the eleven static shells keep aria-modal="true" in markup, and
   // overlayA11y.ts still SETS it at open and REMOVES it at close.
-  const ariaModalShellCount = countOccurrences(indexHtmlSrc, ARIA_MODAL_TRUE);
+  const ariaModalShellCount = countOccurrences(stripHtmlComments(indexHtmlSrc), ARIA_MODAL_TRUE);
   if (ariaModalShellCount !== EXPECTED_ARIA_MODAL_SHELLS) {
     return bad(
       T_MODAL,
