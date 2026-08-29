@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 177 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 178 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -186,6 +186,7 @@ Generated from 177 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0209](./0209-eval-harness-completeness-guard.md) | 0209 — The eval harness carries its own completeness guard: a premature exit can no longer end the run at zero | Accepted | ci-gates, tooling-docs | rb-5 (residual R-m22-s0-X4) | `evals/run.mjs` asserts at `'exit'` that every discovered eval reported a result, raising a zero exit code to 1 when the count is short or any eval failed, so a module-scope `process.exit()` can no longer end the run at green. |
 | [0210](./0210-reducer-sanction-ledger.md) | 0210 — The sanctioned-reducer pin becomes a status ledger: a pre-declared reducer is admitted, an undeclared one is not | Accepted | ci-gates, security-authz | rb-6 (residual R-m22-s1-X1) | `[R/name-set]`'s flat five-name array becomes a frozen ledger with a closed `REQUIRED`/`PLANNED` status, so a pre-declared reducer is admitted while `[R/sanction-shape]` and `[R/planned-set]` keep every unsanctioned one red. |
 | [0211](./0211-deletion-display-name-tombstone.md) | 0211 — Deletion display-name tombstone: a constant single-sourced to game-core, narrowing server-module reach | Accepted | security-authz, ci-gates | rb-7 (residual R-m22-s1-X2) | `game_core::TOMBSTONE_DISPLAY_NAME` is the one deletion display-name tombstone; `PROFILE_TOMBSTONE_NAME` and the only other symbol that writes it both go module-private, so the compiler refuses the two reuse paths S3 must not take. |
+| [0212](./0212-deletion-grace-wasm-accessor.md) | 0212 — Deletion grace window: a wasm accessor so TypeScript never hand-types it | Accepted | client-ui, ci-gates | rb-8 (residual R-m22-s1-X3) | Export `game_core::DELETION_GRACE_MS_DEFAULT` from `client-wasm` as a `#[wasm_bindgen]` accessor returning `i64` (JS `BigInt`), so S8's countdown reads the grace window instead of hand-typing it. |
 
 ## Harness design corpus (H- namespace)
 
@@ -452,6 +453,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0198](./0198-participant-scoped-battle-view.md) — 15r-sec-a — Participant-scoped `battle` via a two-identity view (Accepted)
 - [0205](./0205-overlay-a11y-metadata-ssot-and-copy-catalog.md) — m23-s0 (M23 accessibility S0 — the substrate; first slice, no deps) — 0205 — The overlay accessibility metadata SSOT and the flat copy catalog: a total `OVERLAY_A11Y` beside `OVERLAY_TIERS`, keys never literals, and a compile-time contract that text pins cannot fake (Accepted)
 - [0206](./0206-world-focus-hotkey-gate-and-the-frame-loop-announcer.md) — m23-s5 (M23 accessibility S5 — the sole `client/src/main.ts` touch; after S3, S4) — 0206 — The world-focus hotkey gate, the frame-loop announcer, and the native `#help-hint` button: three main.ts seams M23 needs and the one thing none of them may "simplify" (Accepted)
+- [0212](./0212-deletion-grace-wasm-accessor.md) — rb-8 (residual R-m22-s1-X3) — 0212 — Deletion grace window: a wasm accessor so TypeScript never hand-types it (Accepted)
 
 ### ci-gates
 
@@ -522,6 +524,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0209](./0209-eval-harness-completeness-guard.md) — rb-5 (residual R-m22-s0-X4) — 0209 — The eval harness carries its own completeness guard: a premature exit can no longer end the run at zero (Accepted)
 - [0210](./0210-reducer-sanction-ledger.md) — rb-6 (residual R-m22-s1-X1) — 0210 — The sanctioned-reducer pin becomes a status ledger: a pre-declared reducer is admitted, an undeclared one is not (Accepted)
 - [0211](./0211-deletion-display-name-tombstone.md) — rb-7 (residual R-m22-s1-X2) — 0211 — Deletion display-name tombstone: a constant single-sourced to game-core, narrowing server-module reach (Accepted)
+- [0212](./0212-deletion-grace-wasm-accessor.md) — rb-8 (residual R-m22-s1-X3) — 0212 — Deletion grace window: a wasm accessor so TypeScript never hand-types it (Accepted)
 
 ### tooling-docs
 

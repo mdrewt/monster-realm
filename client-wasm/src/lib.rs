@@ -200,6 +200,29 @@ pub fn party_slot_none() -> u32 {
     game_core::PARTY_SLOT_NONE as u32
 }
 
+/// The account-deletion grace window in ms — the window between a deletion
+/// request and irreversible erasure (M22 spec §4.3/§4.5, ADR-0031; consumed
+/// by S8's countdown, spec §7.2),
+/// single-sourced from `game-core` so TS never hard-codes it.
+///
+/// Returns `i64`, which crosses the boundary as a JS `BigInt`. That is
+/// deliberate: `deletion_requested_at_ms` is an `Option<i64>` column and
+/// therefore `bigint | undefined` in TS, so a countdown computing
+/// `requestedAt + grace - now` must stay in `BigInt` arithmetic — a `number`
+/// accessor would throw `Cannot mix BigInt and other types` at runtime, and a
+/// `u32` one would additionally cap the window at ~49.7 days.
+///
+/// `_default` is load-bearing and must not be dropped: it means "the literal
+/// an operator replaces" (M22 spec §8.1 escalation #1 is UNRESOLVED), NOT that
+/// a runtime override column exists. See the HONESTY NOTE beside the constant
+/// in `game-core/src/accounts/deletion.rs`; the number itself is deliberately
+/// not restated here, so this doc comment can never drift from it. (ADR-0212)
+#[wasm_bindgen]
+#[must_use]
+pub fn deletion_grace_ms_default() -> i64 {
+    game_core::DELETION_GRACE_MS_DEFAULT
+}
+
 /// The renderer's map source: the SAME `TileMap` the rule evaluates.
 /// Dispatches on `zone_id` via the content registry (`load_zone_maps`).
 ///
@@ -295,6 +318,32 @@ mod tests {
     fn party_slot_none_matches_game_core_const() {
         // Fails to compile until `party_slot_none()` export and `game_core::PARTY_SLOT_NONE` exist.
         assert_eq!(super::party_slot_none(), game_core::PARTY_SLOT_NONE as u32);
+    }
+
+    // rb-8 / ADR-0212 — DELETION GRACE SSOT parity, on the COMPILED path.
+    //
+    // The eval `evals/deletion-grace-wasm-ssot.eval.mjs` pins the accessor's
+    // SHAPE by text and its value through a real wasm-pack build; this is the
+    // in-process cross-check that neither of those text oracles can drift from.
+    //
+    // Wrong impls killed: delegating to a different game-core constant, and any
+    // future drift between the two. NOT killed here: an identically-valued
+    // re-typed literal (`604_800_000i64` verbatim) — that is [G1/delegates]'s
+    // exact-shape pin, which is why that clause is load-bearing and must never
+    // be relaxed to a substring check.
+    #[test]
+    fn deletion_grace_matches_game_core_const() {
+        assert_eq!(
+            super::deletion_grace_ms_default(),
+            game_core::DELETION_GRACE_MS_DEFAULT
+        );
+        // Non-vacuity backstop: a zero or negative window would make every
+        // pending deletion instantly due. `game-core` already asserts this with
+        // a better message (`grace_default_is_positive_so_none_cannot_alias_true`,
+        // game-core/src/accounts/deletion_tests.rs), so this line is deliberate
+        // redundancy for the day that test moves or is deleted -- not the
+        // primary guard, and not load-bearing for the parity assert above.
+        assert!(super::deletion_grace_ms_default() > 0);
     }
 
     // -------------------------------------------------------------------------
