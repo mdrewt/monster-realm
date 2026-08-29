@@ -191,7 +191,15 @@ pub(crate) fn profile_with_carried_stats(
 /// preserving its identity. Pure seam. The zero is load-bearing, not cosmetic
 /// (AUTH-25): it is what stops the same guest identity donating the same stats
 /// to an unbounded number of later fresh accounts.
-pub(crate) fn tombstoned_profile(guest: Profile) -> Profile {
+///
+/// MODULE-PRIVATE for the same reason `PROFILE_TOMBSTONE_NAME` is (rb-7): this
+/// is the only other symbol that WRITES the guest-claim sentinel, so leaving it
+/// crate-visible would have left the wrong tombstone one plausible helper call
+/// away from M22's deletion cascade — and reached this way it also zeroes the
+/// ladder stats, which ADR-0179 D6 scopes to the guest-claim flow alone. Its
+/// sibling `profile_with_carried_stats` stays `pub(crate)`: it writes no
+/// sentinel and carries no such hazard.
+fn tombstoned_profile(guest: Profile) -> Profile {
     Profile {
         name: PROFILE_TOMBSTONE_NAME.to_string(),
         rating: 0,

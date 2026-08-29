@@ -93,8 +93,18 @@ pub const TOMBSTONE_AUTH_ISSUER: &str = "account-deleted-tombstone";
 // a hand-typed literal and never `ranking.rs`'s `PROFILE_TOMBSTONE_NAME` —
 // that one is the M21 GUEST-CLAIM sentinel for a claimed guest's retained
 // profile row, so reusing it would make a genuinely deleted account read as
-// an unclaimed guest. It is module-private as of this slice, so the compiler
-// refuses the mistake rather than a convention asking nicely.
+// an unclaimed guest. Both that constant and `tombstoned_profile`, the only
+// other symbol that writes it, are module-private as of this slice, so the
+// compiler refuses the two reuse paths rather than a convention asking nicely.
+//
+// WHAT IS NOT COMPILER-ENFORCED, stated plainly rather than implied away: S3
+// can still hand-type the guest-claim string as a bare literal in
+// `accounts.rs`, or smuggle it out of `ranking.rs` under a second identifier
+// spelled `concat!("(claimed ", "guest)")` or `"\u{28}claimed guest)"` — both
+// measured green against this slice's scans, which are substring searches and
+// cannot evaluate a macro or an escape. Closing that needs a check over
+// `accounts.rs` itself, which is S3's file and outside this slice; it is
+// handed off as a named residual in ADR-0211 rather than left implicit.
 //
 // THE VALUE IS NOT PINNED BY THE SPEC. §3 requires "the tombstone constant"
 // without naming one, and §8.2 decided the tombstone SHAPE (one shared

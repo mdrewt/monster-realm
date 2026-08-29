@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 176 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 177 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -185,6 +185,7 @@ Generated from 176 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0208](./0208-g6-rekey-manifest-gate-hardening.md) | 0208 — The G6 re-key manifest gate hardening: an explicit policy discriminator, an own-property boundary, and alias resolution in the column walker | Accepted | ci-gates, security-authz, schema-persistence | rb-4 (residual R-m22-s0-X3; also records the rb-2 / rb-3 decisions both sibling ledgers deferred to this ADR) | G6 reads an explicit `policy` field via one parser, asks membership of own-property Maps only, and resolves Rust type aliases (union of every `type`/`use … as` binding in the tree, fail-closed on ambiguity) before matching Identity. |
 | [0209](./0209-eval-harness-completeness-guard.md) | 0209 — The eval harness carries its own completeness guard: a premature exit can no longer end the run at zero | Accepted | ci-gates, tooling-docs | rb-5 (residual R-m22-s0-X4) | `evals/run.mjs` asserts at `'exit'` that every discovered eval reported a result, raising a zero exit code to 1 when the count is short or any eval failed, so a module-scope `process.exit()` can no longer end the run at green. |
 | [0210](./0210-reducer-sanction-ledger.md) | 0210 — The sanctioned-reducer pin becomes a status ledger: a pre-declared reducer is admitted, an undeclared one is not | Accepted | ci-gates, security-authz | rb-6 (residual R-m22-s1-X1) | `[R/name-set]`'s flat five-name array becomes a frozen ledger with a closed `REQUIRED`/`PLANNED` status, so a pre-declared reducer is admitted while `[R/sanction-shape]` and `[R/planned-set]` keep every unsanctioned one red. |
+| [0211](./0211-deletion-display-name-tombstone.md) | 0211 — Deletion display-name tombstone: a constant single-sourced to game-core, narrowing server-module reach | Accepted | security-authz, ci-gates | rb-7 (residual R-m22-s1-X2) | `game_core::TOMBSTONE_DISPLAY_NAME` is the one deletion display-name tombstone; `PROFILE_TOMBSTONE_NAME` and the only other symbol that writes it both go module-private, so the compiler refuses the two reuse paths S3 must not take. |
 
 ## Harness design corpus (H- namespace)
 
@@ -520,6 +521,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0208](./0208-g6-rekey-manifest-gate-hardening.md) — rb-4 (residual R-m22-s0-X3; also records the rb-2 / rb-3 decisions both sibling ledgers deferred to this ADR) — 0208 — The G6 re-key manifest gate hardening: an explicit policy discriminator, an own-property boundary, and alias resolution in the column walker (Accepted)
 - [0209](./0209-eval-harness-completeness-guard.md) — rb-5 (residual R-m22-s0-X4) — 0209 — The eval harness carries its own completeness guard: a premature exit can no longer end the run at zero (Accepted)
 - [0210](./0210-reducer-sanction-ledger.md) — rb-6 (residual R-m22-s1-X1) — 0210 — The sanctioned-reducer pin becomes a status ledger: a pre-declared reducer is admitted, an undeclared one is not (Accepted)
+- [0211](./0211-deletion-display-name-tombstone.md) — rb-7 (residual R-m22-s1-X2) — 0211 — Deletion display-name tombstone: a constant single-sourced to game-core, narrowing server-module reach (Accepted)
 
 ### tooling-docs
 
@@ -603,6 +605,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0207](./0207-data-lifecycle-manifest-and-terminal-schema.md) — m22-s2 (M22 privacy compliance S2 — schema + manifest extension) — 0207 — Data-lifecycle manifest and terminal schema: M22 privacy S2 additive structure (Accepted)
 - [0208](./0208-g6-rekey-manifest-gate-hardening.md) — rb-4 (residual R-m22-s0-X3; also records the rb-2 / rb-3 decisions both sibling ledgers deferred to this ADR) — 0208 — The G6 re-key manifest gate hardening: an explicit policy discriminator, an own-property boundary, and alias resolution in the column walker (Accepted)
 - [0210](./0210-reducer-sanction-ledger.md) — rb-6 (residual R-m22-s1-X1) — 0210 — The sanctioned-reducer pin becomes a status ledger: a pre-declared reducer is admitted, an undeclared one is not (Accepted)
+- [0211](./0211-deletion-display-name-tombstone.md) — rb-7 (residual R-m22-s1-X2) — 0211 — Deletion display-name tombstone: a constant single-sourced to game-core, narrowing server-module reach (Accepted)
 
 ### economy-quests
 

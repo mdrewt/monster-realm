@@ -1561,7 +1561,7 @@ fn auth25_tombstone_name_is_bounded_and_untypable() {
 // ===========================================================================
 // RB7 — slice rb-7 (M22 §3 vs. M21 AUTH-25 / ADR-0179 D6): single-sourcing
 // the deletion-tombstone display name in game-core, and pinning the M21
-// guest-claim sentinel (`PROFILE_TOMBSTONE_NAME`, declared above at :161) as
+// guest-claim sentinel (`PROFILE_TOMBSTONE_NAME`, declared above) as
 // module-private so S3 cannot reach for it by mistake.
 //
 // B1/B2 are EXECUTED pins over the live `game_core::TOMBSTONE_DISPLAY_NAME`
@@ -1688,7 +1688,16 @@ fn rb7_deletion_tombstone_is_distinct_from_guest_claim() {
 /// attribute-annotated const (measured red-team finding #7). Instead callers
 /// check the NEGATIVE: the preceding char is neither `b` nor `)`.
 fn rb7_decl_occurrence(stripped: &str) -> (usize, Option<char>) {
-    let needle = concat!("const", "PROFILE_TOMBSTONE_NAME");
+    rb7_item_occurrence(stripped, concat!("const", "PROFILE_TOMBSTONE_NAME"))
+}
+
+/// RB7 scan helper, generic over the item needle: occurrence count of `needle`
+/// in `stripped`, plus the character immediately preceding its single
+/// occurrence when the count is exactly 1. Shared by the const-declaration pin
+/// (`rb7_decl_occurrence`) and the writer-fn pin
+/// (`rb7_guest_claim_tombstone_writer_is_module_private`) so both run the same
+/// preceding-char logic rather than two copies that can drift apart.
+fn rb7_item_occurrence(stripped: &str, needle: &str) -> (usize, Option<char>) {
     let count = stripped.matches(needle).count();
     let preceding = if count == 1 {
         stripped
@@ -1704,7 +1713,7 @@ fn rb7_decl_occurrence(stripped: &str) -> (usize, Option<char>) {
 /// `PROFILE_TOMBSTONE_NAME` in `stripped` (the output of
 /// `stripped_for_scan`). The declaration itself is one occurrence; every
 /// legitimate use is another. A correct ranking.rs has exactly 2 (the
-/// declaration at :161 and the single use in `tombstoned_profile` at :185).
+/// declaration and the single use in `tombstoned_profile`).
 fn rb7_identifier_occurrence_count(stripped: &str) -> usize {
     let needle = concat!("PROFILE_TOMBSTONE", "_NAME");
     stripped.matches(needle).count()
@@ -1765,8 +1774,8 @@ fn rb7_guest_claim_tombstone_declaration_is_module_private() {
 
 /// RB7-B3b (M22 §3 SSOT hardening): the bare identifier
 /// `PROFILE_TOMBSTONE_NAME` must occur EXACTLY TWICE in ranking.rs — the
-/// declaration (:161) and its single legitimate use in `tombstoned_profile`
-/// (:185). This is the clause B3a is blind to: B3a only pins the
+/// declaration and its single legitimate use in `tombstoned_profile`.
+/// This is the clause B3a is blind to: B3a only pins the
 /// DECLARATION's own visibility keyword; it cannot see a re-export or an
 /// accessor fn that hands the value back out under a different name.
 ///
@@ -1783,7 +1792,7 @@ fn rb7_guest_claim_tombstone_identifier_is_not_re_exported() {
     assert_eq!(
         count, 2,
         "RB7-B3b FAIL: PROFILE_TOMBSTONE_NAME must occur exactly 2 times in ranking.rs \
-         (the declaration at :161 + the single use in tombstoned_profile at :185), \
+         (its sole declaration + the single use in tombstoned_profile), \
          found {count}. A 3rd occurrence means either a `pub(crate) use \
          self::PROFILE_TOMBSTONE_NAME;` re-export was added elsewhere in the file, or \
          a `pub(crate) fn guest_claim_tombstone() -> &'static str {{ \
@@ -1814,10 +1823,48 @@ fn rb7_guest_claim_tombstone_value_is_not_duplicated() {
     assert_eq!(
         count, 1,
         "RB7-B3c FAIL: the guest-claim value must occur exactly once in ranking.rs \
-         (its sole declaration at :161), found {count}. A 2nd occurrence means a \
+         (its sole declaration), found {count}. A 2nd occurrence means a \
          duplicate const under a different identifier, or a macro_rules! (or a \
          comment) carrying the same literal — none of which RB7-B3a/B3b's \
          identifier/declaration scans can see."
+    );
+}
+
+/// RB7-B3d (M22 §3 SSOT hardening): `tombstoned_profile` — the only OTHER
+/// symbol in this module that WRITES `PROFILE_TOMBSTONE_NAME` — must also be
+/// module-private.
+///
+/// B3a/B3b/B3c between them stop the guest-claim VALUE escaping `ranking.rs`
+/// as data. This clause stops it escaping as BEHAVIOUR. A `pub(crate) fn
+/// tombstoned_profile` is reachable from `accounts.rs` by exactly the
+/// `crate::ranking::…` path that file already uses elsewhere, and calling it
+/// is a doubly-wrong deletion step: the row renders as an unclaimed guest AND
+/// its ladder history is wiped by a stats-zeroing that ADR-0179 D6 scopes to
+/// the guest-claim flow alone. B3b cannot see it — an `accounts.rs` CALL SITE
+/// leaves this file's identifier count at 2.
+///
+/// kills: re-widening `tombstoned_profile` to `pub`, `pub(crate)`,
+/// `pub(super)`, `pub(self)` or `pub(in …)`.
+#[test]
+fn rb7_guest_claim_tombstone_writer_is_module_private() {
+    let squashed = stripped_for_scan(RANKING_RS);
+    let needle = concat!("fn", "tombstoned_profile(");
+    let (count, preceding) = rb7_item_occurrence(&squashed, needle);
+    assert_eq!(
+        count, 1,
+        "RB7-B3d FAIL: expected exactly one `fn tombstoned_profile(` declaration in \
+         ranking.rs, found {count} — the writer-privacy scan has no unambiguous target."
+    );
+    let Some(preceding) = preceding else {
+        panic!("RB7-B3d FAIL: count == 1 but no preceding char was captured");
+    };
+    assert!(
+        preceding != 'b' && preceding != ')',
+        "RB7-B3d FAIL: the character immediately preceding `fn tombstoned_profile(` is \
+         {preceding:?} — every visibility form squashes to a preceding 'b' (`pub fn`) or \
+         ')' (`pub(crate) fn` and friends). Crate-visible, this fn hands the M21 \
+         guest-claim tombstone AND an AUTH-25 stats-wipe to any caller, including M22's \
+         deletion cascade. It must be a bare, module-private `fn`."
     );
 }
 
@@ -1909,7 +1956,7 @@ fn rb7_scan_machinery_teeth() {
     // -------------------------------------------------------------------------
     // MUST BITE B3a (4 visibility-leak shapes).
     // -------------------------------------------------------------------------
-    let bite_a_fixtures: [(&str, &str); 4] = [
+    let bite_a_fixtures: [(&str, &str); 5] = [
         (
             "pub const",
             "mod fixture {
@@ -1928,6 +1975,13 @@ fn rb7_scan_machinery_teeth() {
             "pub(super) const",
             "mod fixture {
                 pub(super) const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
+                fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
+            }",
+        ),
+        (
+            "pub(self) const",
+            "mod fixture {
+                pub(self) const PROFILE_TOMBSTONE_NAME: &str = \"(claimed guest)\";
                 fn use_it() -> String { PROFILE_TOMBSTONE_NAME.to_string() }
             }",
         ),
@@ -2020,6 +2074,66 @@ fn rb7_scan_machinery_teeth() {
             count, 1,
             "RB7-B5 FAIL (BITE-C/{label}): value-duplication shape did NOT trip B3c \
              (value count stayed at 1) — the not-duplicated scan is broken."
+        );
+        bite += 1;
+    }
+
+    // -------------------------------------------------------------------------
+    // MUST PASS / MUST BITE B3d — the writer fn's own visibility.
+    // -------------------------------------------------------------------------
+    let writer_private = "
+        mod fixture {
+            fn tombstoned_profile(guest: Profile) -> Profile { guest }
+        }
+    ";
+    {
+        let squashed = stripped_for_scan(writer_private);
+        let needle = concat!("fn", "tombstoned_profile(");
+        let (count, preceding) = rb7_item_occurrence(&squashed, needle);
+        assert_eq!(
+            count, 1,
+            "RB7-B5 FAIL (PASS/writer-private): writer decl count must be 1, was {count}"
+        );
+        let preceding = preceding.unwrap_or_else(|| {
+            panic!("RB7-B5 FAIL (PASS/writer-private): count == 1 must carry a preceding char")
+        });
+        assert!(
+            preceding != 'b' && preceding != ')',
+            "RB7-B5 FAIL (PASS/writer-private): a bare private fn was wrongly flagged \
+             (preceding char {preceding:?})"
+        );
+        pass += 1;
+    }
+
+    let writer_bite_fixtures: [(&str, &str); 2] = [
+        (
+            "pub fn",
+            "mod fixture {
+                pub fn tombstoned_profile(guest: Profile) -> Profile { guest }
+            }",
+        ),
+        (
+            "pub(crate) fn",
+            "mod fixture {
+                pub(crate) fn tombstoned_profile(guest: Profile) -> Profile { guest }
+            }",
+        ),
+    ];
+    for (label, fixture) in writer_bite_fixtures {
+        let squashed = stripped_for_scan(fixture);
+        let needle = concat!("fn", "tombstoned_profile(");
+        let (count, preceding) = rb7_item_occurrence(&squashed, needle);
+        assert_eq!(
+            count, 1,
+            "RB7-B5 FAIL (BITE-D/{label}): writer decl count must be 1, was {count}"
+        );
+        let preceding = preceding.unwrap_or_else(|| {
+            panic!("RB7-B5 FAIL (BITE-D/{label}): count == 1 must carry a preceding char")
+        });
+        assert!(
+            preceding == 'b' || preceding == ')',
+            "RB7-B5 FAIL (BITE-D/{label}): a crate-visible writer fn did NOT trip B3d \
+             (preceding char {preceding:?}) — the writer-privacy scan is broken."
         );
         bite += 1;
     }
@@ -2126,9 +2240,9 @@ fn rb7_scan_machinery_teeth() {
     let total = pass + bite + loud;
     assert_eq!(
         (pass, bite, loud),
-        (2, 8, 3),
-        "RB7-B5 FAIL: the fixture battery has changed size — it must run 2 MUST-PASS, \
-         8 MUST-BITE and 3 MUST-FAIL-LOUD fixtures. A shrunken battery is how a teeth \
+        (3, 11, 3),
+        "RB7-B5 FAIL: the fixture battery has changed size — it must run 3 MUST-PASS, \
+         11 MUST-BITE and 3 MUST-FAIL-LOUD fixtures. A shrunken battery is how a teeth \
          suite decays into decoration."
     );
     // The marker the rb-7 acceptance gate greps for, written through `Write`

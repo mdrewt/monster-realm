@@ -468,6 +468,11 @@ fn state_transition_owners_admits_no_empty_wildcard_or_gameplay_entry() {
 // (ranking_tests.rs RB7-B1..B5).
 // ===========================================================================
 
+// Imported by the FLAT crate-root path, deliberately unlike the deep
+// `crate::accounts::deletion::{..}` import at the top of this file: this line
+// is what pins `game-core/src/lib.rs`'s re-export of the new sentinel, so
+// dropping the symbol from that list breaks the build here rather than
+// silently leaving S3 without the path every other S1 sentinel offers.
 use crate::TOMBSTONE_DISPLAY_NAME;
 
 /// RB7-A1 (M22 §3): `TOMBSTONE_DISPLAY_NAME` must be non-blank, trim-stable,
