@@ -146,11 +146,18 @@
          it is outside #app and outside every view root, so no view's authoritative-rebuild
          replaceChildren() can ever destroy the announcement binding (the idiom at
          ui/menuView.ts, ui/helpView.ts, ui/pvpView.ts, ui/errorOverlayView.ts). Owned
-         exclusively by slice S1's ui/liveRegion.ts, whose only DOM write is
+         exclusively by slice S1's ui/liveRegion.ts, whose only write to this node's CONTENT is
          `node.textContent = msg`. `polite`, never `assertive`: assertive interrupts a battle
          announcement mid-utterance. Deliberately carries NO inline `style` — .sr-only does the
          hiding, and an inline position:fixed here would enter W-ONE-CORNER-AFFORDANCE's
-         corner-affordance filter (main.wiring.test.ts) and red a file this slice does not own. -->
+         corner-affordance filter (main.wiring.test.ts) and red a file this slice does not own.
+         THIS IS THE HOME POSITION, NOT THE ONLY POSITION (rb-11, ADR-0214). A11Y-13 puts
+         aria-modal="true" on every visible overlay root, and per ARIA that tells assistive
+         technology to ignore everything outside the open dialog — this node included, even though
+         it is a sibling and not a descendant. So while an overlay is open, liveRegion.ts's
+         adoptLiveRegion() re-parents this node into that overlay's root, and its release closure
+         puts it back here on close. The markup below is unchanged and must stay that way: the
+         placement rule is what makes the node survive a view rebuild between overlays. -->
     <div id="a11y-live" aria-live="polite" aria-atomic="true" class="sr-only"></div>
     <script type="module" src="/src/main.ts"></script>
   </body>

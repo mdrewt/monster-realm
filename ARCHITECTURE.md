@@ -1686,9 +1686,17 @@ the static shells — there is no hand-kept `OverlayId`→element-id map, which 
 dynamically rather than asserting the literal `'dialog'`, which is the consumer read-back that
 de-theatres S0's table one slice earlier than the constructed-side read-back.
 `<div id="a11y-live" aria-live="polite" aria-atomic="true" class="sr-only">` is the LAST `<body>`
-element: outside `#app`, outside every view root, inside no `replaceChildren()` subtree, so the
-announcement binding cannot be destroyed by this codebase's authoritative-rebuild idiom. It carries no
-inline `style` on purpose — one there enters `W-ONE-CORNER-AFFORDANCE`'s corner filter.
+element **in the shipped markup**: outside `#app`, outside every view root, inside no
+`replaceChildren()` subtree, so the announcement binding cannot be destroyed by this codebase's
+authoritative-rebuild idiom. It carries no inline `style` on purpose — one there enters
+`W-ONE-CORNER-AFFORDANCE`'s corner filter. **At RUNTIME it moves** (rb-11, ADR-0214): `A11Y-13` puts
+`aria-modal="true"` on every visible overlay root, which instructs assistive technology to treat
+everything outside that dialog as inert — the live region included — so `ui/liveRegion.ts`'s
+`adoptLiveRegion(root)` re-parents the node into the open overlay's root and its release closure
+hands it back to `<body>` on close. The custody functions live in `liveRegion.ts` and not in
+`ui/overlayA11y.ts` (which owns the modal choreography) because `[A11Y-05b]` makes `liveRegion.ts`
+the SOLE module allowed to name the node; `overlayA11y.ts` holds only the opaque release closure,
+beside its focus-trap `uninstall`.
 **`client/src/styles.css` is the repo's first and only stylesheet, and it is loaded by a
 `<link rel="stylesheet" href="/src/styles.css">` in `<head>`, never by an `import` from a `.ts`** —
 a durable constraint for every later slice that extends it (S9). It holds **class and `:root`

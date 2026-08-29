@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** client-ui, ci-gates
-**Decision:** While an overlay is open, re-parent the single `#a11y-live` node into that overlay's root and restore it to `<body>` on close, via an `adoptLiveRegion(root): () => void` closure that lives in `ui/liveRegion.ts` — the module that already sole-owns the node's id — and is called from `ui/overlayA11y.ts`.
+**Decision:** While an overlay is open, re-parent the single `#a11y-live` node into that overlay root and restore it to `<body>` on close, via an `adoptLiveRegion(root): () => void` closure owned by `ui/liveRegion.ts` and called from `ui/overlayA11y.ts`.
 
 ---
 

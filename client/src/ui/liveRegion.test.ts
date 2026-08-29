@@ -33,8 +33,7 @@
 // not implicate LiveRegion. Unchanged from the committed version other than this note.
 
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { COALESCE_WINDOW_MS, LIVE_REGION_ID, LiveRegion } from './liveRegion';
-import { adoptLiveRegion } from './liveRegion';
+import { adoptLiveRegion, COALESCE_WINDOW_MS, LIVE_REGION_ID, LiveRegion } from './liveRegion';
 
 afterEach(() => {
   document.body.innerHTML = '';

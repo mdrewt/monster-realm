@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 179 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 180 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -188,6 +188,7 @@ Generated from 179 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0211](./0211-deletion-display-name-tombstone.md) | 0211 — Deletion display-name tombstone: a constant single-sourced to game-core, narrowing server-module reach | Accepted | security-authz, ci-gates | rb-7 (residual R-m22-s1-X2) | `game_core::TOMBSTONE_DISPLAY_NAME` is the one deletion display-name tombstone; `PROFILE_TOMBSTONE_NAME` and the only other symbol that writes it both go module-private, so the compiler refuses the two reuse paths S3 must not take. |
 | [0212](./0212-deletion-grace-wasm-accessor.md) | 0212 — Deletion grace window: a wasm accessor so TypeScript never hand-types it | Accepted | client-ui, ci-gates | rb-8 (residual R-m22-s1-X3) | Export `game_core::DELETION_GRACE_MS_DEFAULT` from `client-wasm` as a `#[wasm_bindgen]` accessor returning `i64` (JS `BigInt`), so S8's countdown reads the grace window instead of hand-typing it. |
 | [0213](./0213-reduced-motion-hp-bar-guard.md) | 0213 — The battle HP bar's reduced-motion guard: `transition: none` in the stylesheet, after the base rule, gated by two oracles | Accepted | client-ui, ci-gates | rb-10 (residual R-m23-s2-X4) | Move only the HP-bar `transition` into `.hp-fill` in `client/src/styles.css`, neutralise it with `transition: none` in a `prefers-reduced-motion: reduce` block placed AFTER the base rule, gated by a source-text eval plus a Chromium probe. |
+| [0214](./0214-live-region-custody-under-aria-modal.md) | 0214 — The live region follows the open modal: custody is a closure owned by `ui/liveRegion.ts` | Accepted | client-ui, ci-gates | rb-11 (residual R-m23-s2-X5) | While an overlay is open, re-parent the single `#a11y-live` node into that overlay root and restore it to `<body>` on close, via an `adoptLiveRegion(root): () => void` closure owned by `ui/liveRegion.ts` and called from `ui/overlayA11y.ts`. |
 
 ## Harness design corpus (H- namespace)
 
@@ -456,6 +457,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0206](./0206-world-focus-hotkey-gate-and-the-frame-loop-announcer.md) — m23-s5 (M23 accessibility S5 — the sole `client/src/main.ts` touch; after S3, S4) — 0206 — The world-focus hotkey gate, the frame-loop announcer, and the native `#help-hint` button: three main.ts seams M23 needs and the one thing none of them may "simplify" (Accepted)
 - [0212](./0212-deletion-grace-wasm-accessor.md) — rb-8 (residual R-m22-s1-X3) — 0212 — Deletion grace window: a wasm accessor so TypeScript never hand-types it (Accepted)
 - [0213](./0213-reduced-motion-hp-bar-guard.md) — rb-10 (residual R-m23-s2-X4) — 0213 — The battle HP bar's reduced-motion guard: `transition: none` in the stylesheet, after the base rule, gated by two oracles (Accepted)
+- [0214](./0214-live-region-custody-under-aria-modal.md) — rb-11 (residual R-m23-s2-X5) — 0214 — The live region follows the open modal: custody is a closure owned by `ui/liveRegion.ts` (Accepted)
 
 ### ci-gates
 
@@ -528,6 +530,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0211](./0211-deletion-display-name-tombstone.md) — rb-7 (residual R-m22-s1-X2) — 0211 — Deletion display-name tombstone: a constant single-sourced to game-core, narrowing server-module reach (Accepted)
 - [0212](./0212-deletion-grace-wasm-accessor.md) — rb-8 (residual R-m22-s1-X3) — 0212 — Deletion grace window: a wasm accessor so TypeScript never hand-types it (Accepted)
 - [0213](./0213-reduced-motion-hp-bar-guard.md) — rb-10 (residual R-m23-s2-X4) — 0213 — The battle HP bar's reduced-motion guard: `transition: none` in the stylesheet, after the base rule, gated by two oracles (Accepted)
+- [0214](./0214-live-region-custody-under-aria-modal.md) — rb-11 (residual R-m23-s2-X5) — 0214 — The live region follows the open modal: custody is a closure owned by `ui/liveRegion.ts` (Accepted)
 
 ### tooling-docs
 
