@@ -3365,8 +3365,13 @@ const VITE_CONFIG = 'client/vite.config.ts';
  * `codeNeedles` pin the load-bearing ASSERTION EXPRESSION, not identifiers: red-team MEASURED,
  * against the REAL shipped `findInertDelegations`/`findInertPins`, that replacing the entire guard
  * with `const badTabindex = []; if (badTabindex.length < 0) doc.querySelectorAll("[tabindex]");`
- * left vitest green and BOTH pins reporting clean. The inverted-assertion probe below is the
- * countermeasure a needle can never be.
+ * left vitest green and BOTH pins reporting clean. The `codeNeedles` below therefore pin the
+ * LOAD-BEARING PREDICATE at exactly one occurrence, not a bystander identifier. HONEST LIMIT,
+ * tracked as R-rb13-T5EXEC: a text scan can prove the predicate is PRESENT, never that the
+ * assertion still ASSERTS. An inverted-assertion probe was written to close that and DELETED as a
+ * tautology — `findInertDelegations` decides by needle absence and the predicate IS the needle, so
+ * it only re-ran `findInertPins`. Closing it for real needs the spec RUN against a mutated
+ * index.html.
  */
 const TABINDEX_DELEGATIONS = Object.freeze([
   Object.freeze({
