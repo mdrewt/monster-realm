@@ -414,7 +414,8 @@ function hasTopLevelImport(clean) {
     else if (ch === ')' && paren > 0) paren -= 1;
     else if (paren === 0 && ch === '{') depth += 1;
     else if (paren === 0 && ch === '}' && depth > 0) depth -= 1;
-    else if (paren === 0 && depth === 0 && ch === '@' && clean.startsWith('@import', i)) return true;
+    else if (paren === 0 && depth === 0 && ch === '@' && clean.startsWith('@import', i))
+      return true;
   }
   return false;
 }
@@ -624,27 +625,78 @@ export default async function () {
   // strawman: a clause that only survives strawmen gets deleted the first time it false-REDs.
   const cssTeeth = [
     // BAD — the control.
-    { id: 'e1', css: '@media (prefers-reduced-motion: reduce){:root{--mr-reduce:1}}', scoped: 1, props: ['--mr-reduce'] },
+    {
+      id: 'e1',
+      css: '@media (prefers-reduced-motion: reduce){:root{--mr-reduce:1}}',
+      scoped: 1,
+      props: ['--mr-reduce'],
+    },
     // BAD — the `no-preference` INVERSION. `guardPreludeIsEquivalent` returns false here, so an
     // impl reusing that allow-list ships this channel.
-    { id: 'e2', css: '@media (prefers-reduced-motion: no-preference){:root{--mr-inv:0}}', scoped: 1, props: ['--mr-inv'] },
+    {
+      id: 'e2',
+      css: '@media (prefers-reduced-motion: no-preference){:root{--mr-inv:0}}',
+      scoped: 1,
+      props: ['--mr-inv'],
+    },
     // BAD — motion is atStack[1], not atStack[0]. Kills any fixed-stack-position check.
-    { id: 'e3', css: '@supports (display: grid){@media (prefers-reduced-motion: reduce){:root{--mr-deep:1}}}', scoped: 1, props: ['--mr-deep'], stack: 2 },
+    {
+      id: 'e3',
+      css: '@supports (display: grid){@media (prefers-reduced-motion: reduce){:root{--mr-deep:1}}}',
+      scoped: 1,
+      props: ['--mr-deep'],
+      stack: 2,
+    },
     // BAD — a comma media-query list. Kills exact-prelude equality against GUARD_PRELUDES.
-    { id: 'e4', css: '@media screen, (prefers-reduced-motion: reduce){:root{--mr-comma:1}}', scoped: 1, props: ['--mr-comma'] },
+    {
+      id: 'e4',
+      css: '@media screen, (prefers-reduced-motion: reduce){:root{--mr-comma:1}}',
+      scoped: 1,
+      props: ['--mr-comma'],
+    },
     // BAD — uppercase. Formatter-stable and Chromium-correct; kills a case-sensitive indexOf.
-    { id: 'e6', css: '@MEDIA (PREFERS-REDUCED-MOTION: REDUCE){:root{--MR-UP:1}}', scoped: 1, props: ['--MR-UP'] },
+    {
+      id: 'e6',
+      css: '@MEDIA (PREFERS-REDUCED-MOTION: REDUCE){:root{--MR-UP:1}}',
+      scoped: 1,
+      props: ['--MR-UP'],
+    },
     // GOOD — S9's own declared future edit. Kills a blanket ban on custom properties in the sheet,
     // which would false-RED the shipped `:root` colour tokens.
-    { id: 'e8', css: ':root{--mr-fg:#fff}@media (prefers-contrast: more){:root{--mr-fg:#000}}', scoped: 0, props: [] },
+    {
+      id: 'e8',
+      css: ':root{--mr-fg:#fff}@media (prefers-contrast: more){:root{--mr-fg:#000}}',
+      scoped: 0,
+      props: [],
+    },
     // GOOD — the LIVE guard shape. Honouring the preference declaratively is the point, not the crime.
-    { id: 'e10', css: '@media (prefers-reduced-motion: reduce){.hp-fill{transition:none}}', scoped: 1, props: [] },
+    {
+      id: 'e10',
+      css: '@media (prefers-reduced-motion: reduce){.hp-fill{transition:none}}',
+      scoped: 1,
+      props: [],
+    },
     // GOOD — two ordinary `@` carriers. A quote-blind or paren-blind nesting refusal false-REDs both.
-    { id: 'e11', css: '.icon{content:"@media";background:url(logo@2x.png);}', scoped: 0, props: [] },
+    {
+      id: 'e11',
+      css: '.icon{content:"@media";background:url(logo@2x.png);}',
+      scoped: 0,
+      props: [],
+    },
     // BAD — the boolean-context guard form, no colon at all. Kills an `indexOf` anchored on the colon.
-    { id: 'e13', css: '@media (prefers-reduced-motion){:root{--mr-bool:1}}', scoped: 1, props: ['--mr-bool'] },
+    {
+      id: 'e13',
+      css: '@media (prefers-reduced-motion){:root{--mr-bool:1}}',
+      scoped: 1,
+      props: ['--mr-bool'],
+    },
     // BAD — a CORRECT guard spelling still carrying a channel. The ban is orthogonal to guard quality.
-    { id: 'e14', css: '@media not (prefers-reduced-motion: no-preference){:root{--mr-not:1}}', scoped: 1, props: ['--mr-not'] },
+    {
+      id: 'e14',
+      css: '@media not (prefers-reduced-motion: no-preference){:root{--mr-not:1}}',
+      scoped: 1,
+      props: ['--mr-not'],
+    },
     // GOOD — a custom property inside a real at-rule that is NOT reduced-motion.
     { id: 'e16', css: '@supports (display: grid){:root{--not-motion:1}}', scoped: 0, props: [] },
   ];
@@ -653,7 +705,9 @@ export default async function () {
     try {
       got = findMotionCustomProps(row.css);
     } catch (e) {
-      return bad(`TEETH ${row.id}: findMotionCustomProps threw on a scannable fixture: ${e.message}`);
+      return bad(
+        `TEETH ${row.id}: findMotionCustomProps threw on a scannable fixture: ${e.message}`,
+      );
     }
     if (got.motionScopedRules !== row.scoped) {
       return bad(
@@ -696,7 +750,11 @@ export default async function () {
   // The three shapes that must be REFUSED rather than answered. A green verdict over an
   // un-parseable input is the worst outcome available, so each is pinned to its own message.
   const cssThrowTeeth = [
-    { id: 'e5', css: ':root{@media (prefers-reduced-motion:reduce){--mr-reduce:1}}', needle: 'nests an at-rule' },
+    {
+      id: 'e5',
+      css: ':root{@media (prefers-reduced-motion:reduce){--mr-reduce:1}}',
+      needle: 'nests an at-rule',
+    },
     { id: 'e12', css: '@import url("x.css");.a{color:red}', needle: 'at-import' },
     { id: 'e15', css: '.icon{background:url(' + CSS_OPEN + ')}', needle: 'url()' },
   ];
@@ -724,8 +782,16 @@ export default async function () {
 
   // ---- rb-17 [A11Y-RM2f] read-back teeth ------------------------------------------------
   const readBackTeeth = [
-    { id: 'f1', src: "const v = getComputedStyle(el).getPropertyValue('--mr-reduce');", want: ['getComputedStyle', 'getPropertyValue'] },
-    { id: 'f2', src: 'const r = document.styleSheets[0].cssRules;', want: ['styleSheets', 'cssRules'] },
+    {
+      id: 'f1',
+      src: "const v = getComputedStyle(el).getPropertyValue('--mr-reduce');",
+      want: ['getComputedStyle', 'getPropertyValue'],
+    },
+    {
+      id: 'f2',
+      src: 'const r = document.styleSheets[0].cssRules;',
+      want: ['styleSheets', 'cssRules'],
+    },
     { id: 'f3', src: 'const m = el.computedStyleMap();', want: ['computedStyleMap'] },
     { id: 'f4', src: "el.style.transition = 'none';", want: [] },
     { id: 'f5', src: 'const getComputedStyleCache = new Map();', want: [] },
@@ -757,12 +823,17 @@ export default async function () {
   teeth++;
 
   // ---- rb-17 census-predicate teeth ------------------------------------------------------
-  if (!Object.isFrozen(MOTION_CENSUS_EXTS) || MOTION_CENSUS_EXTS.join('|') !== '.ts|.tsx|.js|.mjs|.cjs') {
+  if (
+    !Object.isFrozen(MOTION_CENSUS_EXTS) ||
+    MOTION_CENSUS_EXTS.join('|') !== '.ts|.tsx|.js|.mjs|.cjs'
+  ) {
     return bad('TEETH g0: MOTION_CENSUS_EXTS is not the frozen five-extension roster');
   }
   teeth++;
   if (!isCensusSource('ui/x.js')) {
-    return bad('TEETH g1: a .js module was not census source — the extension roster is not consulted');
+    return bad(
+      'TEETH g1: a .js module was not census source — the extension roster is not consulted',
+    );
   }
   teeth++;
   if (!isCensusSource('module_bindings/index.ts')) {
@@ -794,7 +865,10 @@ export default async function () {
     );
   }
   teeth++;
-  const g5fwd = censusDifference(['z.ts', 'module_bindings/m.ts', 'module_bindings/a.ts'], ['z.ts']);
+  const g5fwd = censusDifference(
+    ['z.ts', 'module_bindings/m.ts', 'module_bindings/a.ts'],
+    ['z.ts'],
+  );
   const g5rev = censusDifference(['a.ts'], ['a.ts', 'module_bindings/x.ts']);
   if (g5fwd.join('|') !== 'module_bindings/a.ts|module_bindings/m.ts' || g5rev.length !== 0) {
     return bad(
