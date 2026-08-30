@@ -7,9 +7,15 @@
 //
 //   1. TOTALITY. Nothing asserts that EVERY `OverlayId` is wired. A seventeenth overlay, or a view
 //      whose `show()` quietly stopped calling the helper, is caught by no existing test. Here the
-//      opener table is `Readonly<Record<OverlayId, …>>`, so a missing id is a COMPILE error
-//      (`overlayRegistry.ts:76`/`:164`'s device), belt-and-braced with a runtime key-set equality
-//      and a `checked === 16` counter.
+//      opener table is `Readonly<Record<OverlayId, …>>` (`overlayRegistry.ts:76`/`:164`'s device),
+//      belt-and-braced with a runtime key-set equality, a runtime SHAPE equality over what each
+//      opener hands back, and a `checked === 16` counter.
+//      CORRECTION (rb-18): the `Record` is an EDITOR-time device only. `client/tsconfig.json`
+//      excludes `**/*.test.ts`, so `just client-typecheck` — and therefore `just ci` — never
+//      typechecks this file, and vitest transpiles without checking. The header previously called
+//      a missing id "a COMPILE error"; in CI it is not one. Every totality claim below is
+//      therefore carried by a RUNTIME assertion, which is why `S10-WIRE-TOTALITY` pins the opener
+//      RETURN SHAPE and not merely the key set.
 //   2. FIXTURE FIDELITY. The per-view specs copy their shell markup into the test file, so they
 //      keep passing if `client/index.html` loses a `tabindex` — the very attribute ADR-0205 D1
 //      makes ten of the sixteen anchors depend on. This file adopts the REAL `client/index.html`,
@@ -473,6 +479,23 @@ describe('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wiring spec', 
     // asserted this before.
     const names = OVERLAY_IDS.map((id) => t(OVERLAY_A11Y[id].labelKey));
     expect(new Set(names).size, 'the sixteen accessible names must be pairwise distinct').toBe(16);
+
+    // rb-18: SHAPE totality, not just KEY totality. `Opened.reopen` is what makes the repeat and
+    // reopen-after-close teeth possible, and since this file is not typechecked in CI (see the
+    // header correction) a `reopen`-less opener is a RUNTIME question. Asserted here, over every
+    // id, so a seventeenth overlay cannot ship an opener that satisfies the key set while handing
+    // back nothing to re-open — which is exactly how the guarantee would drift back to resting on
+    // sixteen separately-maintained per-view specs.
+    for (const id of OVERLAY_IDS) {
+      const opened = OPENERS[id]();
+      expect(
+        Object.keys(opened).sort(),
+        `${id}: every opener must hand back root + close + reopen`,
+      ).toEqual(['close', 'reopen', 'root']);
+      expect(typeof opened.reopen, `${id}: reopen must be callable`).toBe('function');
+      expect(typeof opened.close, `${id}: close must be callable`).toBe('function');
+      opened.close();
+    }
   });
 
   it('S10-WIRE-REAL-INDEX-HTML BITES: the fixture is the SHIPPED client/index.html, tabindex attributes included — never a hand-copied shell', () => {
