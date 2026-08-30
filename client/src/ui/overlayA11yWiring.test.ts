@@ -70,7 +70,7 @@
 //       (`claimView.ts:107`, `vm.visible && !wasVisible`) which `show()` does not reach; that one
 //       is owned by `claimView.test.ts` (`S4-claimView-THREE-DOORS`) and is NOT covered here.
 //
-// NO FAKE TIMERS: the one-macrotask defer is load-bearing (`overlayA11y.ts:17-20` — an overlay
+// NO FAKE TIMERS: the one-macrotask defer is load-bearing (`overlayA11y.ts:9-15` — an overlay
 // opened by a letter hotkey would otherwise swallow that letter into the field it just focused),
 // and both polarities are pinned by the per-view specs already.
 import { readFileSync } from 'node:fs';
