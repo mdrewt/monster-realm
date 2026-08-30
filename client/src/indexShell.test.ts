@@ -917,154 +917,22 @@ const SLASH_STAR = ['/', '*'].join('');
 /** The two characters that CLOSE a CSS comment, assembled (see the block header). */
 const STAR_SLASH = ['*', '/'].join('');
 
-/** One STYLE rule (never an at-rule), at any brace depth. */
-interface CssRule {
-  /** Everything before the `{`, trimmed — for a style rule, the selector list. */
-  readonly prelude: string;
-  /** Raw text between the braces. */
-  readonly body: string;
-}
-
-// PHASE 1 — comment strip, STRING-AWARE — is no longer defined here. ADR-0215 makes
-// `evals/a11y-static-shell.eval.mjs` the SOLE OWNER of that primitive; this file imports it (see
-// the import at the top) so there is no second copy left to drift. Its semantics are unchanged
+// THE WHOLE CSS ORACLE — the comment strip, `parseCssRules`, `findIdSelectors` and
+// `srOnlyIsAccessible` — is no longer defined here. ADR-0215 made
+// `evals/a11y-static-shell.eval.mjs` the SOLE OWNER of the comment stripper; rb-15
+// (R-m23-s10-X18) applied the same ruling to the rest, so THAT module is now the oracle's only
+// home and this file reaches every symbol through the `rb12CssStripperOracle` namespace import.
+// A `.mjs` eval cannot import a `.ts` vitest file, so this is the one direction that yields a
+// single owner — and it is what finally lets the nightly `just a11y-e2e` tier RUN these checks
+// instead of grepping this file for `const` + `function` + the symbol name. RB15-G1/RB15-G4
+// below make a second copy, by any shape or any route, a hard RED.
+//
+// (Historically, on the stripper alone: this file imports it (see the import at the top) so there is no second copy left to drift. Its semantics are unchanged
 // from the copy deleted here: a four-state lexer (normal/dq/sq/comment), backslash escapes inside
 // strings, newlines preserved inside comments, and a THROW on an unterminated string or comment at
-// EOF — a file we could not parse must never be reported as a clean file. A6a's BAD fixture 8 and
-// the shared CSS_STRIPPER_CORPUS (RB12-G2) are what make that paragraph a test rather than a claim.
-
-/**
- * PHASE 2 — one character pass emitting STYLE rules at EVERY brace depth.
- *
- * `pending` accumulates the current prelude; a stack of frames tracks nesting; `paren`
- * shields `url(...)` and media features (while `paren > 0`, `{`, `}` and `;` are INERT);
- * string state is honoured so a quoted brace cannot open or close a block.
- *
- * Emitting at every depth is what makes `@media (...){#build-stamp{...}}` visible to
- * findIdSelectors and a `@media`-nested `.sr-only{display:none}` visible to
- * srOnlyIsAccessible. A depth-0-only walk is the naive implementation both A6a and A7a
- * kill by fixture.
- *
- * A `}` with an EMPTY stack throws, and so does EOF with a non-empty stack or an open
- * string: the same fail-loud rule as phase 1.
- */
-function parseCssRules(src: string): CssRule[] {
-  const clean = stripCssComments(src);
-  const rules: CssRule[] = [];
-  const stack: Array<{ kind: 'at' | 'style'; prelude: string; bodyStart: number }> = [];
-  let pending = '';
-  let paren = 0;
-  let quote: string | null = null;
-  for (let i = 0; i < clean.length; i += 1) {
-    const ch = clean.charAt(i);
-    if (quote !== null) {
-      pending += ch;
-      if (ch === '\\') {
-        pending += clean.charAt(i + 1);
-        i += 1;
-        continue;
-      }
-      if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      pending += ch;
-      continue;
-    }
-    if (ch === '(') {
-      paren += 1;
-      pending += ch;
-      continue;
-    }
-    if (ch === ')') {
-      if (paren > 0) paren -= 1;
-      pending += ch;
-      continue;
-    }
-    if (paren > 0) {
-      pending += ch;
-      continue;
-    }
-    if (ch === '{') {
-      const prelude = pending.trim();
-      stack.push({ kind: prelude.startsWith('@') ? 'at' : 'style', prelude, bodyStart: i + 1 });
-      pending = '';
-      continue;
-    }
-    if (ch === '}') {
-      const frame = stack.pop();
-      if (frame === undefined) {
-        throw new Error(`CSS parse failed: unbalanced closing brace at offset ${i}`);
-      }
-      if (frame.kind === 'style') {
-        rules.push({
-          prelude: frame.prelude,
-          body: clean.slice(frame.bodyStart, i),
-        });
-      }
-      pending = '';
-      continue;
-    }
-    if (ch === ';') {
-      pending = '';
-      continue;
-    }
-    pending += ch;
-  }
-  if (quote !== null) {
-    throw new Error('CSS parse failed: unterminated string literal at end of input');
-  }
-  if (stack.length > 0) {
-    throw new Error(`CSS parse failed: ${stack.length} unclosed block(s) at end of input`);
-  }
-  return rules;
-}
-
-/** True if a `#` occurs in `prelude` OUTSIDE any quoted string. */
-function preludeHasUnquotedHash(prelude: string): boolean {
-  let quote: string | null = null;
-  for (let i = 0; i < prelude.length; i += 1) {
-    const ch = prelude.charAt(i);
-    if (quote !== null) {
-      if (ch === '\\') {
-        i += 1;
-        continue;
-      }
-      if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '\\') {
-      // An ESCAPED character is a literal in an IDENTIFIER, never a combinator or an id
-      // sigil: `.\\#notanid` is a CLASS whose name happens to contain a hash. Without this
-      // branch that selector is wrongly reported as an id selector — a false RED, and false
-      // REDs are what get a scanner "fixed" into uselessness.
-      i += 1;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      continue;
-    }
-    if (ch === '#') return true;
-  }
-  return false;
-}
-
-/**
- * [A11Y-07] / criterion A11Y-12 — the offending PRELUDES of every `#id` selector.
- *
- * STYLE rules only. At-rule preludes are NEVER inspected, which is exactly what lets
- * `@supports (color:#fff)` pass; declaration bodies are never inspected, which is what
- * lets `color:#fff` and `url(#grad)` pass; the prelude scan is string-aware, which is
- * what lets `[href="#top"]` pass. Those three GOOD shapes are the ones most likely to be
- * "fixed" by weakening this function, so A6a pins all three.
- */
-function findIdSelectors(src: string): string[] {
-  return parseCssRules(src)
-    .filter((rule) => preludeHasUnquotedHash(rule.prelude))
-    .map((rule) => rule.prelude);
-}
+// EOF — a file we could not parse must never be reported as a clean file. The shared
+// CSS_STRIPPER_CORPUS (RB12-G2) and ID_SELECTOR_FIXTURES / SR_ONLY_FIXTURES (RB15-G2) are what
+// make that paragraph a test rather than a claim.)
 
 /**
  * The ids whose INLINE styling is pinned BY TEXT elsewhere in this repo, and which a rule
@@ -1119,7 +987,7 @@ const POSITIONAL_SELECTOR_TOKENS: readonly string[] = [
  */
 function findCascadeReachingSelectors(src: string): string[] {
   const offenders: string[] = [];
-  for (const rule of parseCssRules(src)) {
+  for (const rule of rb12CssStripperOracle.parseCssRules(src)) {
     const prelude = rule.prelude.toLowerCase();
     const namesPinnedId = CASCADE_PINNED_IDS.some((id) => prelude.includes(id));
     const isUniversal = prelude.split('(').join(' ').split(' ').includes('*');
@@ -1146,246 +1014,6 @@ function importsAnotherStylesheet(src: string): boolean {
 // ---------------------------------------------------------------------------
 // m23-s2 SHARED: the `.sr-only` semantic oracle (A11Y-11 / [A11Y-06])
 // ---------------------------------------------------------------------------
-
-const SR_ONLY_CLASS = '.sr-only';
-
-/** A class token ENDS at one of these characters, or at end-of-selector.
- *  `.sr-only-focusable` continues with `-`, which is NOT here — that is the whole
- *  boundary rule, and the reason a `selector.includes('.sr-only')` oracle is wrong. */
-const SR_ONLY_TOKEN_BOUNDARY = ',:.#[>+~ ';
-
-const SR_ONLY_REASON_MISSING = 'NO .sr-only RULE';
-const SR_ONLY_REASON_POSITION = 'position IS NOT absolute';
-const SR_ONLY_REASON_CLIP = 'NEITHER clip-path NOR clip is a MEANINGFUL clip';
-const SR_ONLY_REASON_DISPLAY = 'display:none REMOVES THE NODE FROM THE ACCESSIBILITY TREE';
-const SR_ONLY_REASON_VISIBILITY = 'visibility:hidden REMOVES THE NODE FROM THE ACCESSIBILITY TREE';
-const SR_ONLY_REASON_CONTENT_VIS =
-  'content-visibility:hidden REMOVES THE SUBTREE FROM THE ACCESSIBILITY TREE';
-const SR_ONLY_REASON_DISPLAY_CONTENTS =
-  'display:contents ERASES THE BOX, so the clip applies to nothing';
-
-/**
- * Every declaration that takes the node OUT of the accessibility tree, as
- * `[property, bannedValue]`. A DENY-LIST, and deliberately a wide one: the criterion names
- * `display:none` and `visibility:hidden`, but red-team measured `content-visibility:hidden`
- * producing the identical outcome (Chromium: announcement absent from the AX tree) while
- * passing a two-property check. `display:contents` erases the box entirely, which silently
- * un-does the clip that is doing the hiding.
- */
-const SR_ONLY_BANNED_DECLARATIONS: ReadonlyArray<readonly [string, string, string]> = [
-  ['display', 'none', SR_ONLY_REASON_DISPLAY],
-  ['visibility', 'hidden', SR_ONLY_REASON_VISIBILITY],
-  ['content-visibility', 'hidden', SR_ONLY_REASON_CONTENT_VIS],
-  ['display', 'contents', SR_ONLY_REASON_DISPLAY_CONTENTS],
-];
-
-/**
- * True when the rule declares a clip that ACTUALLY CLIPS.
- *
- * MEASURED, red-team m23-s2: a `union.has('clip-path') || union.has('clip')` presence check
- * passes `.sr-only{position:absolute;clip:auto;clip-path:none}`, whose properties are both
- * present and both INERT — Chromium rendered 1651 px² of announcement text on screen, which
- * is verbatim the "the live region renders as stray visible text" failure this criterion
- * exists to prevent. Presence is not the property; a non-default VALUE is.
- */
-function hasMeaningfulClip(union: Map<string, string>): boolean {
-  const clipPath = union.get('clip-path');
-  const clip = union.get('clip');
-  if (clipPath !== undefined && clipPath !== 'none') return true;
-  return clip !== undefined && clip !== 'auto';
-}
-
-/**
- * The minimum declaration count for a NON-VACUOUS `.sr-only` rule.
- *
- * DELIBERATELY 2, NOT 4. Spec §5.2's GOOD hostile-but-correct fixture is the LEGACY form
- * `.sr-only{position:absolute;clip:rect(0,0,0,0)}` and it MUST PASS — "proving the check
- * is on semantics and not on a copied literal". That rule carries exactly two
- * declarations, so any floor above 2 would red a form the spec requires to be green.
- * Two is also the floor the positive requirements already imply (a position plus a clip):
- * `.sr-only{}` is killed by those, and this clause is the belt-and-braces that keeps the
- * empty rule failing if a FUTURE edit ever loosens one of them.
- */
-const MIN_SR_ONLY_DECLARATIONS = 2;
-
-interface SrOnlyVerdict {
-  readonly ok: boolean;
-  readonly reasons: readonly string[];
-  /** Size of the UNIONed declaration set across every matching rule. */
-  readonly declCount: number;
-}
-
-/** Index of the first `:` at paren depth 0 and outside any string, or -1. */
-function firstTopLevelColon(text: string): number {
-  let paren = 0;
-  let quote: string | null = null;
-  for (let i = 0; i < text.length; i += 1) {
-    const ch = text.charAt(i);
-    if (quote !== null) {
-      if (ch === '\\') {
-        i += 1;
-        continue;
-      }
-      if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      continue;
-    }
-    if (ch === '(') paren += 1;
-    if (ch === ')' && paren > 0) paren -= 1;
-    if (ch === ':' && paren === 0) return i;
-  }
-  return -1;
-}
-
-/**
- * `[prop, value]` pairs, both lowercased and trimmed, split on `;` and then on the FIRST
- * `:` — both at `paren === 0` and outside strings. Lowercasing is what kills the
- * `DISPLAY:NONE` fixture; trimming is what kills `display : none`; the paren and string
- * guards are what keep `clip:rect(0,0,0,0)` and `content:"display:none"` honest.
- */
-function parseDeclarations(body: string): Array<readonly [string, string]> {
-  const chunks: string[] = [];
-  let pending = '';
-  let paren = 0;
-  let quote: string | null = null;
-  for (let i = 0; i < body.length; i += 1) {
-    const ch = body.charAt(i);
-    if (quote !== null) {
-      pending += ch;
-      if (ch === '\\') {
-        pending += body.charAt(i + 1);
-        i += 1;
-        continue;
-      }
-      if (ch === quote) quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      pending += ch;
-      continue;
-    }
-    if (ch === '(') paren += 1;
-    if (ch === ')' && paren > 0) paren -= 1;
-    if (ch === ';' && paren === 0) {
-      chunks.push(pending);
-      pending = '';
-      continue;
-    }
-    pending += ch;
-  }
-  chunks.push(pending);
-
-  const out: Array<readonly [string, string]> = [];
-  for (const chunk of chunks) {
-    const text = chunk.trim();
-    if (text.length === 0) continue;
-    const colon = firstTopLevelColon(text);
-    if (colon === -1) continue;
-    const prop = text.slice(0, colon).trim().toLowerCase();
-    const value = stripImportant(
-      text
-        .slice(colon + 1)
-        .trim()
-        .toLowerCase(),
-    );
-    out.push([prop, value]);
-  }
-  return out;
-}
-
-/**
- * Drop a trailing `!important` (and the legal `! important` spacing) from a declaration
- * VALUE, so every check below compares the value itself.
- *
- * MEASURED, red-team m23-s2: without this, `srOnlyIsAccessible`'s equality comparisons are
- * wrong in BOTH directions at once, which is what makes it a defect rather than a taste
- * call. `display:none!important` parses as the value `'none !important'`, so
- * `value === 'none'` is FALSE and the banned declaration PASSES — Chromium confirmed the
- * node is then absent from the accessibility tree. And `position:absolute!important` — a
- * perfectly correct rule — parses as `'absolute !important'`, so `value === 'absolute'` is
- * FALSE and a CORRECT stylesheet is REJECTED. A false green and a false red from one bug.
- */
-function stripImportant(value: string): string {
-  const bang = value.lastIndexOf('!');
-  if (bang === -1) return value;
-  if (value.slice(bang + 1).trim() !== 'important') return value;
-  return value.slice(0, bang).trim();
-}
-
-/** True if any comma-separated compound selector in `prelude` targets the `.sr-only`
- *  CLASS TOKEN — not merely contains the substring. */
-function selectorTargetsSrOnly(prelude: string): boolean {
-  for (const part of prelude.split(',')) {
-    const sel = part.trim();
-    let from = 0;
-    for (;;) {
-      const at = sel.indexOf(SR_ONLY_CLASS, from);
-      if (at === -1) break;
-      const after = sel.slice(at + SR_ONLY_CLASS.length);
-      if (after.length === 0) return true;
-      if (SR_ONLY_TOKEN_BOUNDARY.indexOf(after.charAt(0)) !== -1) return true;
-      from = at + 1;
-    }
-  }
-  return false;
-}
-
-/**
- * [A11Y-06] / criterion A11Y-11 — does `.sr-only` hide VISUALLY while staying IN the
- * accessibility tree?
- *
- * A MISSING `.sr-only` rule is a FAILURE with its own distinguishable reason, never a
- * vacuous pass: a stylesheet that simply forgot the rule satisfies "declares neither
- * display:none nor visibility:hidden" trivially, and that is precisely the shape this
- * oracle exists to refuse.
- *
- * Declarations are UNIONed across EVERY matching rule at EVERY depth (later rules win
- * per property, as the cascade does), so a correct top-level rule followed by a
- * `@media`-nested `.sr-only{display:none}` is still caught. The first-rule-only scan is a
- * real and attractive wrong implementation — it becomes likely the moment §2.7's
- * prefers-contrast block lands — and A7a's BAD fixture 8 is its killer.
- *
- * KNOWN RESIDUAL, stated rather than hidden: the selector list is split on `,` without
- * paren/string awareness, so `:is(.a, .b)` would be split mid-functional-selector. No
- * shipped or fixture selector in this slice uses that form; closing it needs the same
- * character walker firstTopLevelColon uses, and belongs with S10's reconciliation of this
- * scanner against evals/a11y-static-shell.eval.mjs (plan residual m4).
- */
-function srOnlyIsAccessible(src: string): SrOnlyVerdict {
-  const matching = parseCssRules(src).filter((rule) => selectorTargetsSrOnly(rule.prelude));
-  if (matching.length === 0) {
-    return { ok: false, reasons: [SR_ONLY_REASON_MISSING], declCount: 0 };
-  }
-
-  const union = new Map<string, string>();
-  for (const rule of matching) {
-    for (const [prop, value] of parseDeclarations(rule.body)) union.set(prop, value);
-  }
-
-  const reasons: string[] = [];
-  if (union.get('position') !== 'absolute') reasons.push(SR_ONLY_REASON_POSITION);
-  // KNOWN, DELIBERATE FALSE RED — do not "fix" it by narrowing the union.
-  // `@media print{.sr-only{display:none}}` appended to an otherwise correct sheet is
-  // standard, harmless CSS, and this oracle REJECTS it: the union is media-blind, so a
-  // print-only banned declaration reads exactly like a screen one. That is the price of the
-  // union, and the union is what catches the measured
-  // `@media (prefers-contrast: more){.sr-only{display:none}}` bypass — a first-rule-only or
-  // depth-0-only scan misses it. If a later slice genuinely needs print styles here, add
-  // at-rule ANCESTRY tracking to `parseCssRules` and skip print-only ancestors. Never delete
-  // the union: that trades a false red for a false green.
-  if (!hasMeaningfulClip(union)) reasons.push(SR_ONLY_REASON_CLIP);
-  for (const [prop, banned, reason] of SR_ONLY_BANNED_DECLARATIONS) {
-    if (union.get(prop) === banned) reasons.push(reason);
-  }
-  if (union.size < MIN_SR_ONLY_DECLARATIONS) {
-    reasons.push(`FEWER THAN ${MIN_SR_ONLY_DECLARATIONS} DECLARATIONS`);
-  }
-  return { ok: reasons.length === 0, reasons, declCount: union.size };
-}
 
 // ---------------------------------------------------------------------------
 // m23-s2 SHARED: deriving the static overlay shells from OVERLAY_A11Y
@@ -1951,111 +1579,11 @@ describe('m23-s2 (ADR-0205 D1/D2): every initialFocusSelector anchor in index.ht
 // ===========================================================================
 
 describe('m23-s2 (A11Y-12): styles.css declares ZERO #id selectors', () => {
-  it('BITES: A6a — findIdSelectors flags every id-selector shape and accepts hostile-but-correct CSS', () => {
-    // THIS TOOTH STARTS **GREEN**, BY CONSTRUCTION, AND THAT IS NOT VACUITY.
-    // A6a exercises the SCANNER over inline fixtures and reads no repo file, so it is
-    // implementation-independent and passes the moment this file lands. Its job is not to
-    // be red at T1 — it is to make A6b's verdict TRUSTWORTHY. Every fixture below names the
-    // specific naive implementation it kills, and each of those naive implementations
-    // passes a fixture-free "does the real file contain a hash?" test. A6b is the tooth
-    // that starts RED.
-    const bad: ReadonlyArray<{ css: string; expected: readonly string[]; kills: string }> = [
-      {
-        css: '#help-overlay{z-index:1}',
-        expected: ['#help-overlay'],
-        kills: 'the baseline case — a rule reaching an id whose inline style THIS FILE pins (H7)',
-      },
-      {
-        css: '.sr-only,#help-hint{position:absolute}',
-        expected: ['.sr-only,#help-hint'],
-        kills: 'a /^#/m line-anchored matcher, and any first-token-only selector check',
-      },
-      {
-        css: 'body #help-overlay{color:#fff}',
-        expected: ['body #help-overlay'],
-        kills: "prelude.startsWith('#') — the id is a DESCENDANT part of the selector",
-      },
-      {
-        css: '@media (prefers-contrast: more){#build-stamp{opacity:1}}',
-        expected: ['#build-stamp'],
-        kills: 'a depth-0-only walk — spec §2.7 puts prefers-contrast rules in this very file',
-      },
-      {
-        css: 'div#menu-overlay{display:block}',
-        expected: ['div#menu-overlay'],
-        kills: 'a whitespace-then-hash matcher — the id is glued to a type selector',
-      },
-      {
-        css: '.a{color:#fff}\n#x{color:red}',
-        expected: ['#x'],
-        kills: 'bail-at-first-hash: the first hash in the file is a COLOUR, the id rule follows',
-      },
-      {
-        css: `${SLASH_STAR} #help-overlay{z-index:9} ${STAR_SLASH}\n#help-overlay{z-index:1}`,
-        expected: ['#help-overlay'],
-        kills:
-          'naive comment handling in BOTH directions — a scanner that ignores comments ' +
-          'reports 2 (the commented-out decoy inflates the count and would let a reviewer ' +
-          '"fix" the real rule by deleting the comment), and one that strips greedily ' +
-          'reports 0',
-      },
-      {
-        css: `.x{content:"${SLASH_STAR}"}\n#help-overlay{z-index:1}`,
-        expected: ['#help-overlay'],
-        kills:
-          'a comment stripper that is NOT string-aware: it opens a comment inside the ' +
-          'content value, never finds a closer, swallows the rest of the file and reports ' +
-          'ZERO id selectors — the false GREEN, the only kind that matters',
-      },
-    ];
-
-    for (const fixture of bad) {
-      expect(
-        findIdSelectors(fixture.css),
-        `BAD fixture must be FLAGGED. Kills: ${fixture.kills}. css=${JSON.stringify(fixture.css)}`,
-      ).toEqual(fixture.expected);
-    }
-
-    // The GOOD half. A naive `css.includes('#')` wrongly REDS all five of these — the
-    // plan's named anti-pattern. A false red matters because it is how a correct stylesheet
-    // gets "fixed" by weakening the scanner until it also stops catching the BAD half.
-    const good: ReadonlyArray<{ css: string; why: string }> = [
-      {
-        css: '@media (prefers-reduced-motion: reduce){.x{color:#fff}}',
-        why: 'a hex COLOUR in a nested declaration is not a selector (§2.7 ships this shape)',
-      },
-      {
-        // FR3, red-team m23-s2: MEASURED as a false RED before `preludeHasUnquotedHash`
-        // handled backslash escapes. An escaped character is a literal in an IDENTIFIER.
-        css: '.\\#notanid{color:red}',
-        why: 'an ESCAPED hash inside a CLASS name — a class, not an id selector',
-      },
-      {
-        css: '.x{content:"#not-a-selector"}',
-        why: 'a hash inside a quoted VALUE',
-      },
-      {
-        css: '.x{background:url(#grad)}',
-        why: 'a fragment reference inside url() — real CSS for SVG paint servers',
-      },
-      {
-        css: '@supports (color:#fff){.x{color:#fff}}',
-        why: 'a hash inside an AT-RULE PRELUDE, which is never a selector and never inspected',
-      },
-      {
-        css: '[href="#top"]{color:red}',
-        why: 'a hash inside a QUOTED STRING that really is inside a selector prelude',
-      },
-    ];
-
-    for (const fixture of good) {
-      expect(
-        findIdSelectors(fixture.css),
-        `GOOD fixture must be ACCEPTED (${fixture.why}). A false RED here is how the scanner ` +
-          `gets weakened until the BAD half stops biting. css=${JSON.stringify(fixture.css)}`,
-      ).toEqual([]);
-    }
-  });
+  // A6a (the inline BAD/GOOD fixture table) MOVED with rb-15. Its 14 rows are now
+  // `ID_SELECTOR_FIXTURES`, exported from evals/a11y-static-shell.eval.mjs and executed IN FULL
+  // by BOTH tiers — RB15-G2 below runs them here, and the eval runs the same table as 14 teeth
+  // in the nightly a11y-e2e tier, which never ran them before. This describe is not gutted —
+  // see RB15-G2/RB15-G3.
 
   it('BITES: A6b — CONTROL probe, then: the REAL client/src/styles.css declares zero #id selectors', () => {
     // CONTROL PROBE FIRST. The real-file assertion below is "returns an empty array", which
@@ -2063,12 +1591,12 @@ describe('m23-s2 (A11Y-12): styles.css declares ZERO #id selectors', () => {
     // lesson. These two probes make a stubbed or accidentally-disabled scanner a RED before
     // the real file is ever read.
     expect(
-      findIdSelectors('#a{}'),
+      rb12CssStripperOracle.findIdSelectors('#a{}'),
       'CONTROL: the scanner must FLAG a trivial id selector. If this is empty, the ' +
         'real-file assertion below proves nothing — a `() => []` stub would green it.',
     ).toHaveLength(1);
     expect(
-      findIdSelectors('.a{}'),
+      rb12CssStripperOracle.findIdSelectors('.a{}'),
       'CONTROL: the scanner must NOT flag a trivial class selector. If this is non-empty the ' +
         'scanner is a constant-true and the real-file assertion is unreachable.',
     ).toHaveLength(0);
@@ -2082,7 +1610,7 @@ describe('m23-s2 (A11Y-12): styles.css declares ZERO #id selectors', () => {
         'id selectors AND has no .sr-only rule — A7b is the other half of this pair.',
     ).toBeGreaterThan(0);
 
-    const offenders = findIdSelectors(css);
+    const offenders = rb12CssStripperOracle.findIdSelectors(css);
     expect(
       offenders,
       'KILLS: any #id selector in client/src/styles.css (criterion A11Y-12, [A11Y-07]). ' +
@@ -2147,213 +1675,37 @@ describe('m23-s2 (A11Y-12): styles.css declares ZERO #id selectors', () => {
 // D5 — `.sr-only` stays in the accessibility tree (criterion A11Y-11 / [A11Y-06])
 // ===========================================================================
 
-/** The rule m23-s2 ships. Used as a FIXTURE (A7a) and as A7b's positive control probe —
- *  NEVER as an equality target against the real file: spec §5.2 demands the check be on
- *  SEMANTICS and not on a copied literal, so the real file is judged only by
- *  srOnlyIsAccessible. */
-const SHIPPED_SR_ONLY_RULE = [
-  '.sr-only {',
-  '  position: absolute;',
-  '  width: 1px;',
-  '  height: 1px;',
-  '  padding: 0;',
-  '  margin: -1px;',
-  '  overflow: hidden;',
-  '  clip-path: inset(50%);',
-  '  white-space: nowrap;',
-  '  border: 0;',
-  '}',
-].join('\n');
+// SHIPPED_SR_ONLY_RULE MOVED to evals/a11y-static-shell.eval.mjs with rb-15 (exported): three
+// SR_ONLY_FIXTURES rows consume it, and a second copy here would be a duplicated CSS blob that
+// nothing compares — the same defect this slice removes one level up. Reached below as
+// rb12CssStripperOracle.SHIPPED_SR_ONLY_RULE.
 
 describe('m23-s2 (A11Y-11): .sr-only hides visually WITHOUT leaving the accessibility tree', () => {
-  it('BITES: A7a — srOnlyIsAccessible rejects every hiding-mistake and accepts the hostile-but-correct forms', () => {
-    // STARTS **GREEN**, BY CONSTRUCTION — same standing as A6a, same reason. A7a is a
-    // pure-fixture tooth over the oracle; A7b is the one that starts RED. A7a's value is
-    // that it makes A7b's "the real file passes" verdict mean something, and every fixture
-    // below names the wrong implementation it kills.
-    const bad: ReadonlyArray<{ css: string; reason: string; kills: string }> = [
-      {
-        css: '.sr-only{display:none}',
-        reason: SR_ONLY_REASON_DISPLAY,
-        kills: 'the headline defect — display:none removes the node from the a11y tree entirely',
-      },
-      {
-        // B3, red-team m23-s2: MEASURED green before `stripImportant` existed, and Chromium
-        // confirmed the announcement absent from the AX tree. The value parses as
-        // `'none !important'`, so an equality check against `'none'` waves the banned
-        // declaration straight through. The GOOD half carries the mirror-image false RED.
-        css: '.sr-only{position:absolute;clip-path:inset(50%);width:1px;display:none!important}',
-        reason: SR_ONLY_REASON_DISPLAY,
-        kills:
-          'an equality check that forgets !important — the banned declaration parses as ' +
-          '"none !important" and slips past every value comparison',
-      },
-      {
-        css: '.sr-only{position:absolute;clip-path:inset(50%);visibility:hidden !important}',
-        reason: SR_ONLY_REASON_VISIBILITY,
-        kills: 'the same !important hole on the visibility clause, with the legal spacing',
-      },
-      {
-        // B4, red-team m23-s2: MEASURED green under a `union.has()` presence check, with
-        // Chromium painting 1651 px² of announcement text on screen — verbatim the "renders
-        // as stray visible text" failure this criterion exists to prevent.
-        css: '.sr-only{position:absolute;clip:auto;clip-path:none}',
-        reason: SR_ONLY_REASON_CLIP,
-        kills:
-          'a PRESENCE check on the clip: both properties are declared and both are INERT, ' +
-          'so the rule looks complete and hides nothing at all',
-      },
-      {
-        // B8, red-team m23-s2: MEASURED green, Chromium IN_A11Y_TREE = false. Same outcome
-        // as display:none, on a property a two-name deny-list never mentions.
-        css: '.sr-only{position:absolute;clip-path:inset(50%);content-visibility:hidden}',
-        reason: SR_ONLY_REASON_CONTENT_VIS,
-        kills:
-          'a deny-list that names only display and visibility — content-visibility:hidden ' +
-          'removes the subtree from the accessibility tree just as completely',
-      },
-      {
-        css: '.sr-only{position:absolute;clip-path:inset(50%);display:contents}',
-        reason: SR_ONLY_REASON_DISPLAY_CONTENTS,
-        kills:
-          'display:contents — it erases the BOX, so the clip that is doing the hiding ' +
-          'applies to nothing and the text lays out inline in the body',
-      },
-      {
-        css: '.sr-only{visibility:hidden;clip-path:inset(50%);position:absolute}',
-        reason: SR_ONLY_REASON_VISIBILITY,
-        kills:
-          'a PRESENCE-ONLY check: this rule HAS the required position + clip pair and is ' +
-          'still silent to every AT, because visibility:hidden also leaves the tree',
-      },
-      {
-        css: '.sr-only{clip-path:inset(50%)}',
-        reason: SR_ONLY_REASON_POSITION,
-        kills:
-          'a clip-only check. The reason is narrower than it looks: the LEGACY `clip` ' +
-          'property applies only to absolutely-positioned boxes, so `clip` without ' +
-          '`position:absolute` hides nothing at all. `clip-path` does apply either way, but ' +
-          'an in-flow 1px box still occupies a line box and disturbs layout, and spec §5.2 ' +
-          'requires the pair. Requiring both is what makes the legacy form (the GOOD fixture ' +
-          'below, which the spec demands PASS) actually correct rather than accidentally so.',
-      },
-      {
-        css: '.sr-only{position:absolute;overflow:hidden;width:1px;height:1px}',
-        reason: SR_ONLY_REASON_CLIP,
-        kills: 'a position-only check — with no clip at all the 1px box still paints',
-      },
-      {
-        css: '.sr-only{display : none}',
-        reason: SR_ONLY_REASON_DISPLAY,
-        kills: "includes('display:none') — CSS permits whitespace around the colon",
-      },
-      {
-        css: '.sr-only{DISPLAY:NONE}',
-        reason: SR_ONLY_REASON_DISPLAY,
-        kills: 'a case-sensitive needle — CSS property names and keywords are case-insensitive',
-      },
-      {
-        css: '@media (prefers-contrast: more){.sr-only{display:none}}',
-        reason: SR_ONLY_REASON_DISPLAY,
-        kills: 'a depth-0-only walk — the banned declaration must be caught at ANY depth',
-      },
-      {
-        css: `${SHIPPED_SR_ONLY_RULE}\n@media (prefers-contrast: more){.sr-only{display:none}}`,
-        reason: SR_ONLY_REASON_DISPLAY,
-        kills:
-          'a FIRST-RULE-ONLY scan: the correct rule comes first and passes, and the @media ' +
-          'override that actually ships display:none is never looked at. This is what the ' +
-          'UNION across all matching rules exists for, and it becomes the likely shape the ' +
-          'moment §2.7 adds its prefers-contrast block',
-      },
-      {
-        css: '.other{color:red}',
-        reason: SR_ONLY_REASON_MISSING,
-        kills:
-          'a VACUOUS PASS on a missing rule — "declares neither display:none nor ' +
-          'visibility:hidden" is trivially true of a stylesheet with no .sr-only at all, ' +
-          'and #a11y-live would then render as visible stray text',
-      },
-      {
-        css: '.sr-only{}',
-        reason: SR_ONLY_REASON_POSITION,
-        kills:
-          'an empty rule satisfying the two NEGATIVES vacuously — the positives (and the ' +
-          'minimum declaration count) are what refuse it',
-      },
-    ];
-
-    for (const fixture of bad) {
-      const verdict = srOnlyIsAccessible(fixture.css);
-      expect(
-        verdict.ok,
-        `BAD fixture must be REJECTED. Kills: ${fixture.kills}. css=${JSON.stringify(fixture.css)}`,
-      ).toBe(false);
-      expect(
-        verdict.reasons.includes(fixture.reason),
-        'BAD fixture must be rejected FOR THE RIGHT REASON — a reason-blind rejection lets ' +
-          'the missing-rule case masquerade as a hiding mistake and vice versa. Expected ' +
-          JSON.stringify(fixture.reason) +
-          ', got ' +
-          JSON.stringify(verdict.reasons),
-      ).toBe(true);
-    }
-
-    const good: ReadonlyArray<{ css: string; why: string }> = [
-      {
-        css: SHIPPED_SR_ONLY_RULE,
-        why: 'the rule this slice ships — clip-path form, spec §5.2 GOOD fixture',
-      },
-      {
-        css: '.sr-only{position:absolute;clip:rect(0,0,0,0)}',
-        why:
-          'the LEGACY clip:rect form. Spec §5.2 REQUIRES this to PASS, "proving the check ' +
-          'is on semantics and not on a copied literal" — an oracle that compares against ' +
-          'the shipped blob, or that demands clip-path specifically, reds here',
-      },
-      {
-        css: `.sr-only-focusable{display:none}\n${SHIPPED_SR_ONLY_RULE}`,
-        why:
-          "the CLASS-TOKEN BOUNDARY: selector.includes('.sr-only') also matches " +
-          '.sr-only-focusable and imports its display:none into the union, reddening a ' +
-          'perfectly correct stylesheet',
-      },
-      {
-        css: '.sr-only{content:"display:none";position:absolute;clip-path:inset(50%)}',
-        why: 'STRING-AWARENESS: the banned text appears only inside a quoted value',
-      },
-    ];
-
-    for (const fixture of good) {
-      const verdict = srOnlyIsAccessible(fixture.css);
-      expect(
-        verdict.reasons,
-        `GOOD fixture must be ACCEPTED (${fixture.why}). css=${JSON.stringify(fixture.css)}`,
-      ).toEqual([]);
-      expect(
-        verdict.ok,
-        `GOOD fixture must be ACCEPTED (${fixture.why}). css=${JSON.stringify(fixture.css)}`,
-      ).toBe(true);
-    }
-  });
+  // A7a (the inline BAD/GOOD fixture table) MOVED with rb-15. Its 21 rows are now
+  // `SR_ONLY_FIXTURES`, exported from evals/a11y-static-shell.eval.mjs and executed IN FULL by
+  // BOTH tiers — RB15-G2 below runs them here, and the eval runs the same table as 21 teeth in
+  // the nightly a11y-e2e tier, which never ran them before. The replacement is STRICTLY
+  // STRONGER: A7a's BAD rows asserted `reasons.includes(fixture.reason)`, which red-team
+  // MEASURED that a constant-fail oracle returning EVERY reason survives; RB15-G2 asserts the
+  // EXACT reasons SET. This describe is not gutted — see RB15-G2/RB15-G3.
 
   it('BITES: A7b — CONTROL probe, then: the REAL .sr-only rule is position:absolute plus clip/clip-path with neither display:none nor visibility:hidden', () => {
     // CONTROL PROBE FIRST, BOTH POLARITIES — a `() => ({ ok: true, reasons: [] })` stub
     // would otherwise green the real-file assertion below.
     expect(
-      srOnlyIsAccessible('.sr-only{display:none}').ok,
+      rb12CssStripperOracle.srOnlyIsAccessible('.sr-only{display:none}').ok,
       'CONTROL: the oracle must REJECT display:none. If this is true the oracle is a ' +
         'constant-pass and the real-file assertion below proves nothing.',
     ).toBe(false);
     expect(
-      srOnlyIsAccessible(SHIPPED_SR_ONLY_RULE).ok,
+      rb12CssStripperOracle.srOnlyIsAccessible(rb12CssStripperOracle.SHIPPED_SR_ONLY_RULE).ok,
       'CONTROL: the oracle must ACCEPT a correct sr-only rule. If this is false the oracle ' +
         'is a constant-fail and the real-file assertion is unreachable.',
     ).toBe(true);
 
     // The real artefact. RED until client/src/styles.css exists AND holds a semantically
     // correct .sr-only rule — readStylesCss() throws loudly rather than substituting ''.
-    const verdict = srOnlyIsAccessible(readStylesCss());
+    const verdict = rb12CssStripperOracle.srOnlyIsAccessible(readStylesCss());
     expect(
       verdict.reasons,
       'KILLS: a shipped .sr-only that removes #a11y-live from the accessibility tree ' +
@@ -2366,9 +1718,9 @@ describe('m23-s2 (A11Y-11): .sr-only hides visually WITHOUT leaving the accessib
     expect(
       verdict.declCount,
       'ANTI-VACUITY: the real rule must carry at least ' +
-        String(MIN_SR_ONLY_DECLARATIONS) +
+        String(rb12CssStripperOracle.MIN_SR_ONLY_DECLARATIONS) +
         ' declarations — an empty .sr-only block satisfies both NEGATIVE clauses trivially.',
-    ).toBeGreaterThanOrEqual(MIN_SR_ONLY_DECLARATIONS);
+    ).toBeGreaterThanOrEqual(rb12CssStripperOracle.MIN_SR_ONLY_DECLARATIONS);
   });
 });
 
@@ -2697,7 +2049,9 @@ describe('RB12 (ADR-0215): stripCssComments single ownership + corpus totality',
   });
 
   it('RB12-G4: the real consumer parseCssRules fails LOUD on an unterminated comment (never silently drops content)', () => {
-    expect(() => parseCssRules('.a{color:red}' + SLASH_STAR + ' unterminated')).toThrow();
+    expect(() =>
+      rb12CssStripperOracle.parseCssRules('.a{color:red}' + SLASH_STAR + ' unterminated'),
+    ).toThrow();
   });
 
   it('RB12-G5: the naive stripper (fixtureUnhardenedCssStripper) is pinned WRONG, exact output, on every NAIVE_KILLS cell', () => {
@@ -2897,30 +2251,12 @@ describe('RB12 (ADR-0215): stripCssComments single ownership + corpus totality',
   // TWO independent halves on purpose. The source pin catches a repoint even when no fixture
   // happens to discriminate; the behavioural probe catches a stripper that is still NAMED
   // correctly but is wrong, and proves the path is live rather than merely spelled.
-  it('RB12-G7: parseCssRules resolves to the imported owner — call site pinned, and proven live', () => {
-    const selfPath = path.join(path.dirname(fileURLToPath(import.meta.url)), 'indexShell.test.ts');
-    const stripped = rb12StripJsComments(readFileSync(selfPath, 'utf8'));
-
-    // --- half 1: the call site, region-scoped to parseCssRules' own body ---
-    const FN_HEAD = ['function ', 'parseCss', 'Rules('].join('');
-    const headIdx = stripped.indexOf(FN_HEAD);
-    expect(headIdx, `${FN_HEAD} must exist exactly once`).toBeGreaterThan(-1);
-    expect(
-      stripped.indexOf(FN_HEAD, headIdx + 1),
-      'parseCssRules must be defined exactly once — a second definition makes the region pin ambiguous',
-    ).toBe(-1);
-    // The body region ends at the next top-level `\n}` after the head.
-    const bodyEnd = stripped.indexOf('\n}', headIdx);
-    expect(bodyEnd, 'could not delimit parseCssRules body').toBeGreaterThan(headIdx);
-    const region = stripped.slice(headIdx, bodyEnd);
-    const CALL_NEEDLE = ['stripCss', 'Comments(src)'].join('');
-    const callCount = region.split(CALL_NEEDLE).length - 1;
-    expect(
-      callCount,
-      'KILLS: parseCssRules repointed away from the imported owner to some other stripper. Its ' +
-        `body must call ${CALL_NEEDLE} exactly once; found ${callCount}`,
-    ).toBe(1);
-
+  it('RB12-G7: parseCssRules resolves to the imported owner — proven live', () => {
+    // HALF 1 (the region pin on `parseCssRules`' own call site) MOVED to
+    // evals/a11y-static-shell.eval.mjs (T-REGION1/2/3) with rb-15, because the function it pins
+    // now lives there. It was NOT deleted: the bypass it closes — a differently-named local
+    // stripper plus a one-word repoint — survives the move verbatim, one file over. Half 2 below
+    // is unchanged and still works through the import.
     // --- half 2: the same path, proven live and correct end-to-end ---
     // Each probe embeds a discriminating cell BEFORE a pinned #id rule. Under the correct oracle
     // the string/comment is inert and the id stays visible; under a naive or escape-blind stripper
@@ -2932,7 +2268,7 @@ describe('RB12 (ADR-0215): stripCssComments single ownership + corpus totality',
         rb12CssStripperOracle.CSS_STRIPPER_CORPUS as ReadonlyArray<{ name: string; css: string }>
       ).find((c) => c.name === cellName);
       expect(cell, `probe cell "${cellName}" must exist in the shared corpus`).toBeDefined();
-      const offenders = findIdSelectors(`${cell!.css}${PROBE_ID}{color:red}`);
+      const offenders = rb12CssStripperOracle.findIdSelectors(`${cell!.css}${PROBE_ID}{color:red}`);
       expect(
         offenders,
         `KILLS: a stripper that loses the string boundary on "${cellName}" — the ${PROBE_ID} rule ` +
@@ -3343,10 +2679,7 @@ describe('RB15 (R-m23-s10-X18): CSS oracle single ownership', () => {
         'evals/a11y-static-shell.eval.mjs the single source of both fixture tables, run in ' +
         'full by BOTH tiers.',
     ).toBe(true);
-    expect(
-      Array.isArray(srRows),
-      'the owner module must EXPORT SR_ONLY_FIXTURES.',
-    ).toBe(true);
+    expect(Array.isArray(srRows), 'the owner module must EXPORT SR_ONLY_FIXTURES.').toBe(true);
     expect(
       idRows.length,
       'ANTI-VACUITY: the shared id-selector table is empty or was not exported — every ' +
