@@ -1720,7 +1720,11 @@ describe('m23-s2 (A11Y-11): .sr-only hides visually WITHOUT leaving the accessib
       'ANTI-VACUITY: the real rule must carry at least ' +
         String(rb12CssStripperOracle.MIN_SR_ONLY_DECLARATIONS) +
         ' declarations — an empty .sr-only block satisfies both NEGATIVE clauses trivially.',
-    ).toBeGreaterThanOrEqual(rb12CssStripperOracle.MIN_SR_ONLY_DECLARATIONS);
+      // The LITERAL 2, never `rb12CssStripperOracle.MIN_SR_ONLY_DECLARATIONS`: once both sides
+      // come from the owner module, lowering the constant moves them together and the
+      // comparison is a tautology. (The eval's T-REAL4 pins the real file's declCount at the
+      // literal 9 for the same reason.)
+    ).toBeGreaterThanOrEqual(2);
   });
 });
 
@@ -2279,27 +2283,20 @@ describe('RB12 (ADR-0215): stripCssComments single ownership + corpus totality',
 });
 
 // =============================================================================
-// DELIVERABLE A — rb-15 (R-m23-s10-X18 / [A11Y-CSSOWN2])
-//
-// APPEND THIS BLOCK VERBATIM to the END of `client/src/indexShell.test.ts`
-// (after the closing `});` of the RB12 describe at `:2943`). Delete these
-// twenty-odd lines of instructions when you paste it; everything from the
-// `// ====` banner below is the shipped block.
+// RB15 (R-m23-s10-X18 / [A11Y-CSSOWN2]) — CSS ORACLE SINGLE OWNERSHIP
 //
 // HARD CONSTRAINTS THIS BLOCK OBEYS — check them before editing anything here:
 //   * NO new `import` line. The rb-15 symbols are reached through the EXISTING
 //     namespace binding at `:89`. Pinned biome 2.5.1 MERGES same-specifier
-//     imports; a third import from `../../evals/a11y-static-shell.eval.mjs`
-//     takes RB12-G1's import-line count to 0 and REDs it (MEASURED).
-//   * NO `new RegExp(...)`. This file's repo-wide rule (`:33-34`, restated at
-//     `:867`) permits only String.indexOf/.includes/.split/.startsWith, hand
-//     written character walkers, and the two literal regexes already present.
-//     Every scan below is a character walker or an indexOf loop.
-//   * NO literal `function findIdSelectors(` / `function srOnlyIsAccessible(`
-//     anywhere in this file — not in code, not in a string, not in a comment.
-//     Gate X8 greps the RAW file for exactly those two byte sequences. Every
-//     needle below is ASSEMBLED from fragments, which is also what stops an
-//     assertion literal from satisfying the needle it hunts.
+//     imports, which takes RB12-G1's import-line count to 0 and REDs it
+//     (MEASURED; recorded in ADR-0215's `Update (rb-15)` note).
+//   * NO `new RegExp(...)`. This file's repo-wide rule permits only
+//     String.indexOf/.includes/.split/.startsWith and hand-written character
+//     walkers. Every scan below is one of those.
+//   * NO literal `function findId` + `Selectors(` / `function srOnly` +
+//     `IsAccessible(` anywhere in this file — not in code, not in a string, not
+//     in a comment. Every needle below is ASSEMBLED from fragments, which is
+//     also what stops an assertion literal from satisfying the needle it hunts.
 //   * NO `.skipIf(`, `.runIf(`, `.each([])`, `.for([])` anywhere in this file —
 //     the eval's extended-suspension clause bans them over this exact file.
 //   * NO second `Number.parseInt(e.raw, 10) > 0` and no second
@@ -2352,6 +2349,25 @@ const RB15_MOVED_SYMBOLS: readonly string[] = Object.freeze([
 
 /** The namespace binding declared at `:89` — the ONLY legal route to the symbols above. */
 const RB15_OWNER_NS = ['rb12Css', 'StripperOracle'].join('');
+
+/**
+ * Symbols that DELIBERATELY STAY in this file (the parked `[A11Y-07]` cascade/surface halves,
+ * `R-rb15-CASCADE`) plus the artefact reader they and A6b/A7b share.
+ *
+ * They cannot be on `RB15_MOVED_SYMBOLS` — that roster demands ZERO definitions — but they need
+ * the mirror-image pin: EXACTLY ONE definition each. MEASURED (red-team, rb-15 artifact pass) that
+ * without it, two lines shadow the whole `[A11Y-07]` surface with every gate green:
+ * `const readStylesCss = (): string => '.sr-only{position:absolute;clip-path:inset(50%)}'`
+ * declared inside the describe makes the real-file scan read a two-declaration stub, and a renamed
+ * `cssSelectorScan` twin plus `void findCascadeReachingSelectors(css)` keeps every needle green
+ * while the assertion reads the twin. The eval has NO counterpart for these two functions, so this
+ * file is the only place that pin can live.
+ */
+const RB15_PARKED_SYMBOLS: readonly string[] = Object.freeze([
+  ['findCascade', 'ReachingSelectors'].join(''),
+  ['importsAnother', 'Stylesheet'].join(''),
+  ['readStyles', 'Css'].join(''),
+]);
 
 /** The three symbols this file must still CALL, or "single ownership" is satisfied by
  *  deleting the call sites rather than by delegating them. */
@@ -2541,12 +2557,132 @@ function rb15MemberAccessCount(src: string, name: string, ns: string): number {
  * FAIL-LOUD AT EOF, the same rule as every other scanner in this file: an
  * unbalanced quote means the walk desynchronised, and a desynchronised walk that
  * returns a best-effort string reports "no violations" for entirely the wrong
- * reason. NOTE FOR A FUTURE EDITOR: this scanner is NOT regex-literal aware. This
- * file today contains exactly two regex literals, `/^\d+$/` and `/^-?\d+$/`
- * (`:667`, `:675`, `:795`, `:866`, `:1938`), neither carrying a quote character.
- * Adding one that does REDs this gate LOUDLY with the message below, which is the
- * intended failure mode and not a bug to work around.
+ * reason. THIS SCANNER IS NOT REGEX-LITERAL AWARE, and the EOF throw alone is NOT
+ * enough: MEASURED (red-team, rb-15 artifact pass) that the throw fires only on an
+ * ODD quote count, so TWO regexes each carrying one quote RESYNCHRONISE and the
+ * whole span between them is blanked with no error — restoring the object-method
+ * shorthand twin this census exists to catch. `rb15AssertNoHazardousRegex` above is
+ * what actually closes it, and RB15-G1/RB15-G4 call it BEFORE they scan. Do not
+ * weaken either half: the EOF throw catches the odd case, the tripwire the even one.
  */
+/** Characters that make a REGEX LITERAL hazardous to every comment/string scanner in this file. */
+const RB15_REGEX_HAZARDS: readonly string[] = Object.freeze(['*', '/', "'", '"', '`']);
+
+/**
+ * Characters after which a `/` is DIVISION or markup, never the start of a regex literal.
+ *
+ * `<` and `>` are here for the ONE reason worth writing down: this file quotes HTML in failure
+ * messages (`the unclosed-</div> tooth`), and the tripwire runs on strings-intact source, so
+ * without them every closing tag reads as an unterminated regex and this gate REDs on its own
+ * prose. A regex literal in a comparison position (`a > /re/.test(b)`) is not a shape any code
+ * here writes, so the exclusion costs nothing.
+ */
+const RB15_NOT_REGEX_START = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$)]<>';
+
+/**
+ * FAIL LOUD on a regex literal that would desynchronise the comment/string scanners.
+ *
+ * MEASURED (red-team, rb-15 artifact pass): `rb12StripJsComments` treats the `/` + `*` inside a
+ * `/[/*]/` character class as a real block-comment opener and blanks everything to the next
+ * `*` + `/` WITH NO THROW; `rb15StripJsStrings` treats a quote inside a `/['"]/` class as a string
+ * opener and only throws at EOF, so TWO such regexes RESYNCHRONISE and the whole span between them
+ * is blanked silently. Either one hides an arbitrary region from RB15-G1 and RB15-G4 at once — a
+ * full FALSE GREEN, measured end-to-end with a poisoned stylesheet and a re-pasted oracle, and
+ * biome-clean. The EOF throw catches the odd-quote case; this catches the even one and the
+ * comment-opener one.
+ *
+ * LINE-LOCAL BY CONSTRUCTION, which is what keeps it from needing the very lexer it is guarding.
+ * Each line is scanned independently: quoted spans are blanked using quote matching WITHIN THE
+ * LINE (so this file's own `['/', '*'].join('')` hygiene constants are text, not regexes), then
+ * any surviving `/` in a regex-start position must terminate on that same line and carry none of
+ * the hazardous characters. A desynchronised scanner cannot propagate past one line here.
+ *
+ * It DELIBERATELY OVER-APPROXIMATES — a multi-line template literal is judged line by line, so an
+ * unusual line inside one could red. Over-approximation is the safe direction: a scanner that gave
+ * up must never be indistinguishable from a scanner that found nothing. If this throws on a
+ * legitimate new regex, rewrite the regex (or use `indexOf`); do not delete the tripwire.
+ */
+function rb15AssertNoHazardousRegex(src: string, label: string): void {
+  const lines = src.split('\n');
+  for (let ln = 0; ln < lines.length; ln += 1) {
+    // --- 1. blank quoted spans, LINE-LOCALLY.
+    const raw = lines[ln] ?? '';
+    let code = '';
+    let quote = '';
+    for (let k = 0; k < raw.length; k += 1) {
+      const c = raw.charAt(k);
+      if (quote !== '') {
+        if (c === '\\') {
+          k += 1;
+          continue;
+        }
+        if (c === quote) quote = '';
+        continue;
+      }
+      if (c === "'" || c === '"' || c === '`') {
+        quote = c;
+        continue;
+      }
+      code += c;
+    }
+    // --- 2. any surviving `/` in a regex-start position must close on this line, hazard-free.
+    let prev = '';
+    let i = 0;
+    while (i < code.length) {
+      const ch = code.charAt(i);
+      if (ch !== '/' || RB15_NOT_REGEX_START.indexOf(prev) !== -1) {
+        if (ch !== ' ' && ch !== '\t') prev = ch;
+        i += 1;
+        continue;
+      }
+      const after = code.charAt(i + 1);
+      if (after === '' || after === ' ' || after === '\t' || after === '=') {
+        prev = '/';
+        i += 1;
+        continue;
+      }
+      let j = i + 1;
+      let inClass = false;
+      let body = '';
+      let closed = false;
+      while (j < code.length) {
+        const c = code.charAt(j);
+        if (c === '\\') {
+          body += c + code.charAt(j + 1);
+          j += 2;
+          continue;
+        }
+        if (c === '[') inClass = true;
+        else if (c === ']') inClass = false;
+        else if (c === '/' && !inClass) {
+          closed = true;
+          break;
+        }
+        body += c;
+        j += 1;
+      }
+      if (!closed) {
+        throw new Error(
+          `RB15 REGEX TRIPWIRE (${label}) line ${ln + 1}: an apparent regex literal does not ` +
+            'terminate on its own line. The comment/string scanners would desynchronise and ' +
+            `report zero violations for entirely the wrong reason. Line: ${JSON.stringify(raw)}`,
+        );
+      }
+      const hazards = RB15_REGEX_HAZARDS.filter((h) => body.indexOf(h) !== -1);
+      if (hazards.length > 0) {
+        throw new Error(
+          `RB15 REGEX TRIPWIRE (${label}) line ${ln + 1}: the regex literal carries ` +
+            `${JSON.stringify(hazards)}, which desynchronises the comment/string scanners and ` +
+            'blanks an arbitrary span from the ownership census. Rewrite it (or use indexOf). ' +
+            `Line: ${JSON.stringify(raw)}`,
+        );
+      }
+      i = j + 1;
+      prev = '/';
+    }
+  }
+}
+
 function rb15StripJsStrings(src: string): string {
   let out = '';
   let i = 0;
@@ -2652,6 +2788,10 @@ describe('RB15 (R-m23-s10-X18): CSS oracle single ownership', () => {
 
     // --- THE REAL FILE. Comment-stripped, strings INTACT.
     const stripped = rb12StripJsComments(rb15ReadSelfSource());
+    // TRIPWIRE FIRST. A `/[/*]/`-shaped regex literal makes rb12StripJsComments blank an
+    // arbitrary span WITH NO THROW, hiding a re-pasted oracle from the scan below. MEASURED
+    // end-to-end (red-team, rb-15 artifact pass): biome-clean, 28/28 green, poisoned stylesheet.
+    rb15AssertNoHazardousRegex(stripped, 'RB15-G1');
     const violations = rb15ShapeBanViolations(stripped, RB15_MOVED_SYMBOLS);
     expect(
       violations,
@@ -2663,6 +2803,25 @@ describe('RB15 (R-m23-s10-X18): CSS oracle single ownership', () => {
         'so a poisoned stylesheet ships green in both. Found: ' +
         JSON.stringify(violations),
     ).toEqual([]);
+
+    // --- THE MIRROR-IMAGE PIN for the PARKED [A11Y-07] halves (R-rb15-CASCADE).
+    // `RB15_MOVED_SYMBOLS` demands ZERO definitions; these demand EXACTLY ONE. MEASURED
+    // (red-team, rb-15 artifact pass) that without it two lines shadow the whole [A11Y-07]
+    // surface with every gate green: a `const readStylesCss = () => '<stub css>'` inside the
+    // describe makes the real-file scan read a two-declaration stub, and a renamed twin plus a
+    // `void`-discarded honest call keeps every delegation needle green. The eval has NO
+    // counterpart for these two functions, so this file is the only place the pin can live.
+    const parked = RB15_PARKED_SYMBOLS.map(
+      (name) => `${name} x${rb15ShapeBanViolations(stripped, [name]).length}`,
+    );
+    expect(
+      parked,
+      'KILLS: a SHADOW or a SECOND definition of the parked [A11Y-07] halves, or of the ' +
+        'artefact reader they share with A6b/A7b. Exactly one definition each: zero means the ' +
+        'oracle left this file without a replacement, two means an inner scope is answering ' +
+        'the assertions while the module-level original is never called. Found: ' +
+        JSON.stringify(parked),
+    ).toEqual(RB15_PARKED_SYMBOLS.map((name) => `${name} x1`));
   });
 
   it('RB15-G2: every shared CSS-oracle fixture row runs IN FULL in the vitest tier, exact outcomes', () => {
@@ -2957,7 +3116,33 @@ describe('RB15 (R-m23-s10-X18): CSS oracle single ownership', () => {
 
     // --- THE REAL FILE.
     const selfSrc = rb15ReadSelfSource();
+    // TRIPWIRE FIRST — see RB15-G1. The EOF throw in rb15StripJsStrings fires only on an ODD
+    // quote count, so TWO regexes each carrying one quote RESYNCHRONISE and blank the span
+    // between them silently, restoring the object-method-shorthand twin. MEASURED.
+    rb15AssertNoHazardousRegex(rb12StripJsComments(selfSrc), 'RB15-G4');
     const stripped = rb15StripJsStrings(rb12StripJsComments(selfSrc));
+
+    // MODULE SPECIFIER. MEASURED (red-team, rb-15 artifact pass): NOTHING pinned the path, so
+    // repointing the namespace import at a shim that re-exports the owner with ONE poisoned
+    // function passed every gate in both tiers on a poisoned stylesheet. `vi.mock` of the owner
+    // does the same WITHOUT TOUCHING THE IMPORT LINE AT ALL, which a diff reviewer cannot see.
+    const OWNER_SPECIFIER = ['../../evals/a11y-static-', 'shell.eval.mjs'].join('');
+    // Comment-stripped, strings INTACT: a specifier NAMED IN PROSE is not a route to the
+    // module, but one in a string literal is exactly the route being pinned.
+    const specifierCount = rb12StripJsComments(selfSrc).split(OWNER_SPECIFIER).length - 1;
+    expect(
+      specifierCount,
+      'KILLS: the owner module resolved through any path but its own. This file must name ' +
+        `${OWNER_SPECIFIER} exactly twice (the namespace import and the stripCssComments ` +
+        `import) and nothing else. Found ${specifierCount}.`,
+    ).toBe(2);
+    const MOCK_NEEDLES = [['vi.', 'mock('].join(''), ['vi.', 'doMock('].join('')];
+    const mocked = MOCK_NEEDLES.filter((n) => stripped.indexOf(n) !== -1);
+    expect(
+      mocked,
+      'KILLS: a module mock of the owner. It substitutes the whole oracle with zero change to ' +
+        `the import line, so every source pin in this file stays green. Found: ${JSON.stringify(mocked)}`,
+    ).toEqual([]);
 
     // STRIPPER SANITY, BEFORE anything is concluded from the stripped text. A walk that
     // desynchronised truncates the file and then reports zero violations for the wrong reason.

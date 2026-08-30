@@ -1097,15 +1097,10 @@ export function findLiveRegionDestroyers(sources) {
 }
 
 // =============================================================================
-// DELIVERABLE C — rb-15 (R-m23-s10-X18)
+// rb-15 (R-m23-s10-X18) — THE TWO SHARED, FROZEN FIXTURE TABLES.
 //
-// The two SHARED, FROZEN fixture tables, exactly as they must be exported from
-// `evals/a11y-static-shell.eval.mjs`.
-//
-// PLACEMENT: paste this block into `evals/a11y-static-shell.eval.mjs` AFTER the
-// `NAIVE_KILLS` export (currently `:335`) and after the moved oracle functions.
-// It reads `SLASH_STAR` / `STAR_SLASH`, which are already declared at `:175-176`,
-// so it must come after those two `const`s (TDZ), which it does.
+// One source, executed IN FULL by BOTH tiers: this eval's teeth and the vitest tier's RB15-G2.
+// They read `SLASH_STAR` / `STAR_SLASH`, so they must stay below those two consts (TDZ).
 //
 // PROVENANCE — every row below is LIFTED, not re-typed from scratch:
 //   * ID_SELECTOR_FIXTURES rows 1-8  <- client/src/indexShell.test.ts:1962-2010 (A6a `bad`)
