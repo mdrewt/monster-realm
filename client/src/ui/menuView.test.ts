@@ -1761,7 +1761,11 @@ describe('MenuView — m23-s6 source pins (A11Y-15, A11Y-25 shape)', () => {
     //   listbox on EVERY arrow keypress, which cancels nothing but does defeat the whole point
     //   of routing through openOverlayA11y's single owned timer. This slice is the one that
     //   makes menuView a focus-RECEIVING overlay, so the ban has to be pinned in this file.
-    // This scan is the ONLY oracle for a focus call on a path no fixture reaches.
+    // `evals/overlay-a11y-manifest.eval.mjs` [A11Y-15] is now the PRIMARY oracle for a focus CALL
+    // in every `client/src/ui/*View.ts` (18 files, 8 spellings). This test is deliberately RETAINED
+    // for the ONE axis that eval cannot cover: it scans RAW source, so a `.focus(` appearing only
+    // inside a COMMENT reds here and is invisible to the eval, which MUST comment-strip because
+    // five shipped views name `.focus()` in their header comments by design (ADR-0217).
     // DELIBERATELY NOT COMMENT-STRIPPED, unlike the PRESENCE pins above (fix cycle 1). The
     // stripping exists because a comment can FORGE evidence that code exists; it must never be
     // used to EXCUSE a banned API, because a comment naming one is a standing invitation to

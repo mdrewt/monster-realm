@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** ci-gates, client-ui
-**Decision:** Retire the two hand-kept `.focus(` file lists that `evals/overlay-a11y-manifest.eval.mjs` provably subsumes, and KEEP the third — `MV-NO-FOCUS-CALL` — because a measured axis of it is not subsumed; queue its retirement as its own decision rather than folding it into a cleanup.
+**Decision:** Retire the two hand-kept `.focus(` lists that `evals/overlay-a11y-manifest.eval.mjs` subsumes; KEEP the third, `MV-NO-FOCUS-CALL`, whose raw-source comment axis is measurably not subsumed, and queue its retirement as its own decision.
 
 ---
 
