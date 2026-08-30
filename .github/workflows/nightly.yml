@@ -255,16 +255,26 @@ jobs:
   # MISSING vitest spec reports numTotalTests:0 and exits 0 — both measured — so
   # today an a11y eval or spec can be deleted with the whole per-PR gate staying
   # green. `just a11y-e2e` pins the three a11y evals by name and floors the a11y
-  # unit tier's test count. It does NOT run axe-core or any real browser: no
-  # axe-core exists in the repo and no M23 slice owns authoring it (a spec gap,
-  # deferred — the recipe prints a DEFERRED banner every run so the gap cannot
-  # read as covered). The two MANUAL criteria A11Y-32/A11Y-33 are never asserted
-  # here and are NEVER CI-green — see docs/a11y-manual-protocol.md.
+  # unit tier's test count. Since rb-19 (ADR-0218) it ALSO runs the axe-core +
+  # real-browser tier spec §5.7 named as its payload — `client/e2e/a11y.spec.ts`,
+  # three page states scanned against WCAG 2.x A/AA. That is the one lens `just ci`
+  # is structurally blind to: source and JSDOM oracles prove an attribute was
+  # written, never what the accessibility tree looks like once Chromium has applied
+  # CSS and resolved ARIA. The two MANUAL criteria A11Y-32/A11Y-33 are still never
+  # asserted here — axe is not a screen reader — and are NEVER CI-green; see
+  # docs/a11y-manual-protocol.md.
   #
   # Rust + wasm-pack are present because the recipe depends on `just wasm`:
   # client/src/main.a11yFocus.test.ts imports main.ts, which imports the
   # client-wasm pkg, so without it those 26 tests fail to RESOLVE and the whole
   # M23-S5 focus-return tier drops silently out of the ratchet.
+  #
+  # SpacetimeDB and a Playwright browser are provisioned because half 3 runs under
+  # the default client/playwright.config.ts, whose globalSetup republishes the
+  # module: without a live server the axe tier cannot start at all. That server
+  # dependency is precisely why this gate is nightly and not in `just ci`
+  # (ADR-0043), and why `a11y-e2e` is deliberately absent from the eval's
+  # REQUIRED_JUST_STEPS.
   #
   # Failure policy for `a11y-e2e`: triaged and inserted as the next slice in the
   # milestone queue, same tier as fix-red-master, below it in ordering. Restore
@@ -294,11 +304,51 @@ jobs:
       # `just a11y-e2e` never clobbers a developer's node_modules.
       - name: Install client deps
         run: cd client && npm ci
+      - name: Install Playwright chromium
+        run: cd client && npx playwright install --with-deps chromium
+      # rb-19: half 3 drives a real browser against a real client, and the client's
+      # playwright.config.ts globalSetup republishes the module — so this job needs
+      # the same SpacetimeDB provisioning ci.yml's `e2e` job and the
+      # `smoke-republish` job above carry. Same download-then-execute installer
+      # (not `curl | sh`: semgrep gha-curl-pipe-shell), same 2.8.1 pin.
+      - name: Install SpacetimeDB CLI
+        # `--yes`: the installer prompts to confirm and aborts on a non-tty runner
+        # without it. The install also generates the identity keypair used to publish.
+        run: |
+          curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com
+          sh /tmp/spacetime-install.sh --yes
+          echo "$HOME/.local/bin" >> "$GITHUB_PATH"
+      - name: Pin spacetime 2.8.1
+        run: |
+          spacetime version install 2.8.1
+          spacetime version use 2.8.1
+          spacetime --version
+      # Ephemeral in-memory instance on the client's default host/port.
+      - name: Start SpacetimeDB
+        run: nohup spacetime start --in-memory --listen-addr 127.0.0.1:3000 > /tmp/stdb-a11y.log 2>&1 &
+      - name: Wait for SpacetimeDB
+        run: |
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null http://127.0.0.1:3000/; then echo "ready after ${i}s"; exit 0; fi
+            sleep 1
+          done
+          echo "spacetime did not become ready on :3000" >&2
+          cat /tmp/stdb-a11y.log >&2 || true
+          exit 1
       # Deliberately NO continue-on-error and NO if: — a soft-failing decay
       # ratchet is a toothless one. Both are gated by
       # evals/ci-gate-wiring.eval.mjs (a11yNightlyJobIsWired), which also pins
-      # this step to exactly one unsuffixed occurrence file-wide.
+      # this step to exactly one unsuffixed occurrence file-wide. `env:` comes
+      # AFTER `run:` on purpose: that check matches the step's trimmed line
+      # exactly, and a step whose first key is `env:` reads as zero occurrences.
+      # The db name is per-run isolated so it never collides with a concurrent
+      # nightly run or with the regular monster-realm dev/e2e database.
       - run: just a11y-e2e
+        env:
+          STDB_SERVER: http://127.0.0.1:3000
+          VITE_STDB_URI: ws://127.0.0.1:3000
+          VITE_STDB_DB: monster-realm-a11y-${{ github.run_id }}
+          MR_E2E_PORT: '5292'
       # ADR-0200 D7, same reasoning as the mutation jobs: `if: always()` is
       # load-bearing, not hygiene. The GitHub default is `success()`, which
       # uploads the vitest report only on the nights it is worthless and skips
