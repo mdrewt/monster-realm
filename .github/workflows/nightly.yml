@@ -272,9 +272,18 @@ jobs:
   # SpacetimeDB and a Playwright browser are provisioned because half 3 runs under
   # the default client/playwright.config.ts, whose globalSetup republishes the
   # module: without a live server the axe tier cannot start at all. That server
-  # dependency is precisely why this gate is nightly and not in `just ci`
-  # (ADR-0043), and why `a11y-e2e` is deliberately absent from the eval's
-  # REQUIRED_JUST_STEPS.
+  # dependency is why this gate is nightly and not in `just ci` (ADR-0043), and why
+  # `a11y-e2e` is deliberately absent from the eval's REQUIRED_JUST_STEPS.
+  #
+  # It is NOT, however, the only place the axe spec runs: playwright.config.ts has
+  # `testDir: './e2e'`, so ci.yml's per-PR `e2e:` job collects a11y.spec.ts too
+  # (deliberate — ADR-0218). What this job adds over that is the decay ratchet: the
+  # `axefloor` assertion notices the spec being DELETED, which a per-PR run cannot.
+  # Note the two jobs publish DIFFERENT modules: ci.yml pre-builds a
+  # `--features dev_reducers` wasm and publishes it via MR_DEV_MODULE_WASM, while
+  # this job leaves that unset so globalSetup takes the plain --module-path path.
+  # The axe tier needs no dev reducers, and `smoke-republish` above already proves
+  # that publish path nightly with this exact provisioning.
   #
   # Failure policy for `a11y-e2e`: triaged and inserted as the next slice in the
   # milestone queue, same tier as fix-red-master, below it in ordering. Restore
@@ -358,12 +367,23 @@ jobs:
       # vitest ever ran would report a failing upload step instead of its REAL
       # failure. The artifact name is distinct per job (upload-artifact v4
       # hard-errors on a duplicate name within one run).
+      # A publish failure inside globalSetup, or a client that connects but never
+      # reaches ready(), reds this job with nothing to look at otherwise — the same
+      # reasoning smoke-republish's log dump carries.
+      - name: Dump SpacetimeDB logs on failure
+        if: failure()
+        run: cat /tmp/stdb-a11y.log || true
       - name: Upload a11y vitest report (failure evidence)
         if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: a11y-e2e-vitest-report
-          path: /tmp/a11y-e2e-vitest.json
+          # BOTH halves' reports. Half 3 writes the axe one, and a nightly red IN
+          # the axe tier shipped no evidence at all until it was listed here — the
+          # exact gap `if: always()` exists to close for half 2.
+          path: |
+            /tmp/a11y-e2e-vitest.json
+            /tmp/a11y-e2e-axe.json
           if-no-files-found: warn
           retention-days: 14
 

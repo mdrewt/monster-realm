@@ -10,8 +10,26 @@ import {
 
 // rb-19 (residual R-m23-s11-X10) — the axe-core + real-browser a11y tier that
 // M23-accessibility.spec.md §5.7 DECIDED should exist and that no M23 slice owned.
-// Half 3 of `just a11y-e2e` runs this file; the nightly `a11y-e2e` job provisions
-// the browser and the SpacetimeDB instance it needs. ADR-0218.
+// ADR-0218.
+//
+// WHERE THIS RUNS, both of them. Half 3 of `just a11y-e2e` runs it nightly, and the
+// nightly job provisions the browser and the SpacetimeDB instance it needs. But
+// playwright.config.ts has `testDir: './e2e'`, so `just e2e` collects this file too
+// and the PER-PR `e2e:` job in ci.yml runs it as well. That is deliberate, not an
+// oversight: it costs ~3s in a job that already has a browser and a server, and
+// excluding it would need a `--grep-invert` neuter-shaped construct in the `e2e`
+// recipe. If your PR reds here, it red on a real WCAG A/AA violation in the
+// rendered page — read the failure message, it names the rule and the nodes.
+//
+// SORT ORDER, considered. Playwright orders spec FILES by path, so `a11y` runs
+// first, ahead of `golden.spec.ts` — the opposite of the `trade-interlock.spec.ts`
+// precedent, which was NAMED to sort after golden to avoid its `presenceCount === 2`
+// assertion. It is safe here for a reason that does not apply to that file: this
+// suite joins exactly ONE player and closes its browser in afterAll, the server
+// deletes the `player` row on `client_disconnected`, and golden's presence check is
+// a convergence WAIT rather than an instant assertion, so a lagging disconnect
+// self-heals. Adding a second context here would break that and must not be done
+// without renaming the file.
 //
 // WHY A BROWSER TIER AT ALL, given `just ci` already runs every a11y eval and every
 // a11y unit spec. Those are SOURCE and JSDOM oracles: they prove an attribute is
@@ -72,9 +90,13 @@ const PASSES_FLOOR_MENU = 20;
 // violation. On this client there is exactly one such rule, stable across runs:
 // `color-contrast`, on text whose background is the game canvas and therefore not
 // computable from the DOM. In the world state those are exactly #build-stamp and
-// #help-hint — the SAME two elements residual rb-14 tracks
-// (evals/contrast-ratio.eval.mjs + baselines/contrast-unresolved.json), so this
-// ceiling is a live link to that work rather than a magic number.
+// #help-hint (client/index.html:124, :138) — and there is NO shipped contrast
+// oracle covering them: `evals/contrast-ratio.eval.mjs` and its
+// `baselines/contrast-unresolved.json` were specified but never landed, and remain
+// the open residual rb-14 (see ADR-0216, which records that they did not ship).
+// So these numbers have no upstream to agree with, which makes the ceiling MORE
+// load-bearing rather than less: until rb-14 lands, this is the only thing in the
+// repo that notices the undecidable set growing.
 //
 // Two clauses, because they fail differently. The ID SET is closed: a NEW
 // undecidable rule id appearing is a real signal, not noise, and must red. The NODE
@@ -96,7 +118,11 @@ async function ready(p: Page): Promise<void> {
       return g.identity !== '' && g.ownAuthTile !== null;
     },
     undefined,
-    { timeout: 60_000 },
+    // 30s, not more: playwright.config.ts sets `timeout: 45_000` and a beforeAll
+    // hook is bounded by the TEST timeout, which also has to cover browser launch
+    // and the initial goto. A larger number here is unreachable and would only
+    // mislead. Matches golden.spec.ts's precedent for the identical wait.
+    { timeout: 30_000 },
   );
 }
 
@@ -160,7 +186,7 @@ async function scanState(
   const incompleteNodes = results.incomplete.reduce((n, v) => n + v.nodes.length, 0);
   expect(
     incompleteNodes,
-    `${state}: ${incompleteNodes} undecidable node(s), ceiling ${incompleteCeiling} — this ceiling shrinks (residual rb-14), it never grows:\n${formatFindings(results.incomplete)}`,
+    `${state}: ${incompleteNodes} undecidable node(s), ceiling ${incompleteCeiling} — this ceiling shrinks (see the open residual rb-14), it never grows:\n${formatFindings(results.incomplete)}`,
   ).toBeLessThanOrEqual(incompleteCeiling);
 }
 

@@ -351,19 +351,31 @@ e2e: wasm
 #
 # Half 3 needs a BROWSER and a LIVE SpacetimeDB: client/e2e/a11y.spec.ts runs under
 # the default client/playwright.config.ts, whose globalSetup republishes the module.
-# The nightly a11y-e2e job provisions both. That server dependency is exactly why
-# this recipe is not, and must never become, a `ci:` step (ADR-0043).
+# The nightly a11y-e2e job provisions both, and so does ci.yml's `e2e` job — because
+# that config's testDir is ./e2e, `just e2e` COLLECTS a11y.spec.ts too, so the axe
+# scan is ALSO a per-PR merge gate. That was deliberate: it costs ~3s in a job that
+# already runs a browser and a server, and excluding it would mean putting a
+# `--grep-invert` — a neuter-shaped construct — into the one recipe that has none.
+# What stays true, and is what spec 5.7 actually constrains, is that the HERMETIC
+# gate is untouched: `a11y-e2e` is not a `ci:` dependency and is not in the eval's
+# REQUIRED_JUST_STEPS (ADR-0043, ADR-0218).
 # Response policy + owner: docs/nightly-red-response-policy.md.
 a11y-e2e floor="169" axefloor="3": wasm
     #!/usr/bin/env bash
     set -euo pipefail
-    # Fail loud on a non-integer floor BEFORE the run: a malformed value would
-    # otherwise make `[ -gt ]` error inside the if-condition below and silently
-    # skip the ratchet (vacuous green). `[ "" -gt N ]` in an if-condition is
-    # set -e-EXEMPT — the measured false-green shape in this justfile (ADR-0183
-    # D7, and the same guard mutate-server carries).
+    # Fail loud on a malformed floor BEFORE the run. BOTH floors are guarded, and
+    # the axe one is not decoration: it reaches `Number(process.argv[1])`, and
+    # `Number('')` is 0 while `Number('abc')` is NaN — `s.expected < NaN` is FALSE,
+    # so an empty or non-numeric axefloor makes half 3 print A11Y-AXE OK on a
+    # ZERO-test report. That is the same vacuous-green class ADR-0183 D7 records
+    # for `[ "" -gt N ]` in a set -e-exempt if-condition, arriving by a different
+    # route; the two `node -e` blocks below compare numerically rather than with
+    # `[ -gt ]`, so this `case` is the whole guard.
     case "{{floor}}" in
         ''|*[!0-9]*) echo "a11y-e2e: floor '{{floor}}' is not a non-negative integer" >&2; exit 64;;
+    esac
+    case "{{axefloor}}" in
+        ''|*[!0-9]*) echo "a11y-e2e: axefloor '{{axefloor}}' is not a non-negative integer" >&2; exit 64;;
     esac
     # --- Half 1: the a11y eval roster, pinned BY NAME. A deleted or renamed
     # eval makes import() throw, which set -e turns into a non-zero exit.

@@ -526,12 +526,16 @@ const A11Y_EVAL_FILES = [
 // reports numTotalTests:0 and exits 0).
 const A11Y_PINNED_SPEC = 'overlayA11yWiring.test.ts';
 
+// The recipe name, in one place: it is asserted PRESENT in the nightly workflow and
+// ABSENT from every hermetic-gate surface, and those two must never disagree.
+const A11Y_RECIPE_NAME = 'a11y-e2e';
+
 // The exact, UNSUFFIXED step line the nightly job must carry.
 const A11Y_NIGHTLY_STEP = '- run: just a11y-e2e';
 
 // ---------------------------------------------------------------------------
 // rb-19: the axe-core + real-browser tier — the half m23-s11 explicitly deferred
-// (ledger X10/X11) and that the recipe still prints a DEFERRED banner about. Half 3
+// (ledger X10/X11), and whose DEFERRED banner the recipe printed until rb-19. Half 3
 // of `just a11y-e2e` runs a Playwright spec that drives the real client and scans
 // three page states with axe-core. These are the tokens that half must put in the
 // recipe body, plus the now-FALSE banner it must stop printing.
@@ -552,7 +556,6 @@ const A11Y_AXE_RECIPE_TOKENS = [
   'A11Y-AXE OK',
 ];
 const A11Y_AXE_STALE_BANNER = 'DEFERRED: axe-core';
-
 
 // NOT redundant with a11yRecipeBodyIsPinned below, though on an unchanged tree it can only agree
 // with it: the two answer different questions across a DELIBERATE recipe edit. The verbatim pin
@@ -655,7 +658,7 @@ export function a11yRecipeBodyIntact(justfileText) {
 // the gate is red. That is the point, not an inconvenience.
 // ---------------------------------------------------------------------------
 export const A11Y_E2E_RECIPE_REGION =
-  "a11y-e2e floor=\"169\" axefloor=\"3\": wasm\n    #!/usr/bin/env bash\n    set -euo pipefail\n    # Fail loud on a non-integer floor BEFORE the run: a malformed value would\n    # otherwise make `[ -gt ]` error inside the if-condition below and silently\n    # skip the ratchet (vacuous green). `[ \"\" -gt N ]` in an if-condition is\n    # set -e-EXEMPT — the measured false-green shape in this justfile (ADR-0183\n    # D7, and the same guard mutate-server carries).\n    case \"{{floor}}\" in\n        ''|*[!0-9]*) echo \"a11y-e2e: floor '{{floor}}' is not a non-negative integer\" >&2; exit 64;;\n    esac\n    # --- Half 1: the a11y eval roster, pinned BY NAME. A deleted or renamed\n    # eval makes import() throw, which set -e turns into a non-zero exit.\n    # `node evals/<x>.eval.mjs` alone exits 0 VACUOUSLY (these three carry no\n    # main guard, by design: a main guard truncates run.mjs mid-loop at exit 0),\n    # so the default export must be imported and called.\n    a11y_eval_check() {\n        node -e \"import(process.argv[1]).then(m => m.default()).then(r => { if (!r.pass) { console.error('a11y eval FAIL: ' + r.name + ' — ' + r.detail); process.exit(1) } const m = /teeth=(\\\\d+)\\\\/(\\\\d+)/.exec(String(r.detail)); if (m === null) { console.error('a11y eval reports NO teeth tally: ' + r.name + ' — an eval that runs no inline fixtures proves nothing, and a body gutted to a bare pass:true looks identical to a real one'); process.exit(1) } if (m[1] !== m[2] || Number(m[1]) < 1) { console.error('a11y eval teeth uneven or empty: ' + r.name + ' — ' + m[0]); process.exit(1) } console.log('  teeth ' + m[0]) })\" -- \"$1\"\n        echo \"a11y eval OK: $1\"\n    }\n    a11y_eval_check ./evals/overlay-a11y-manifest.eval.mjs\n    a11y_eval_check ./evals/a11y-static-shell.eval.mjs\n    a11y_eval_check ./evals/reduced-motion-purity.eval.mjs\n    # --- Half 2: floor the a11y unit tier. Delete the stale report first: a\n    # leftover report from a previous run would be read as this run's result if\n    # vitest died before writing (measured shape).\n    rm -f /tmp/a11y-e2e-vitest.json\n    cd client && npx vitest run --reporter=json --outputFile=/tmp/a11y-e2e-vitest.json \\\n        src/ui/overlayA11yWiring.test.ts \\\n        src/ui/overlayA11y.test.ts \\\n        src/ui/focusTrap.test.ts \\\n        src/ui/liveRegion.test.ts \\\n        src/ui/announcements.test.ts \\\n        src/ui/a11yCopy.test.ts \\\n        src/main.a11yFocus.test.ts \\\n        src/render/motionPreference.test.ts\n    cd ..\n    node -e \"const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-vitest.json', 'utf8')) } catch (e) { console.error('a11y-e2e: vitest wrote no readable JSON report — ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const files = j.testResults.length; const total = j.numTotalTests; if (files !== 8) { console.error('a11y-e2e: ' + files + ' spec file(s) reported, expected 8 — an a11y spec file was deleted or renamed'); process.exit(1) } if (j.numFailedTests !== 0 || j.numPendingTests !== 0 || j.numTodoTests !== 0) { console.error('a11y-e2e: failed=' + j.numFailedTests + ' pending=' + j.numPendingTests + ' todo=' + j.numTodoTests + ' — a skipped a11y test is a silently ungated one'); process.exit(1) } if (total < floor) { console.error('a11y-e2e: a11y unit tier reported ' + total + ' test(s) across ' + files + ' file(s) — floor is ' + floor); process.exit(1) } console.log('A11Y-NIGHTLY OK evals=3/3 files=' + files + ' tests=' + total + ' floor=' + floor + ' f=0 pend=0 todo=0')\" -- \"{{floor}}\"\n    # --- Half 3: the axe-core + real-browser tier. Same stale-report discipline as\n    # half 2 — a leftover report from a previous run would be read as this run's\n    # result if playwright died before writing. The floor is asserted from the\n    # machine-readable report and never from console text: a MISSING spec file makes\n    # playwright report zero tests and exit 0, the same silent-zero shape vitest has.\n    rm -f /tmp/a11y-e2e-axe.json\n    cd client && PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/a11y-e2e-axe.json \\\n        npx playwright test e2e/a11y.spec.ts --reporter=json\n    cd ..\n    node -e \"const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-axe.json', 'utf8')) } catch (e) { console.error('a11y-e2e: playwright wrote no readable JSON report — ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const s = j.stats; if (s === undefined) { console.error('a11y-e2e: playwright report carries no stats block'); process.exit(1) } if (s.unexpected !== 0 || s.flaky !== 0 || s.skipped !== 0) { console.error('a11y-e2e: axe tier unexpected=' + s.unexpected + ' flaky=' + s.flaky + ' skipped=' + s.skipped + ' — a skipped or flaky a11y test is a silently ungated one'); process.exit(1) } if (s.expected < floor) { console.error('a11y-e2e: axe tier reported ' + s.expected + ' passing test(s) — floor is ' + floor + '; a MISSING spec file reports zero and exits 0'); process.exit(1) } console.log('A11Y-AXE OK tests=' + s.expected + ' floor=' + floor + ' unexpected=0 flaky=0 skipped=0')\" -- \"{{axefloor}}\"\n    echo \"DEFERRED: A11Y-32 / A11Y-33 are MANUAL and are NEVER CI-green — docs/a11y-manual-protocol.md\"\n";
+  "a11y-e2e floor=\"169\" axefloor=\"3\": wasm\n    #!/usr/bin/env bash\n    set -euo pipefail\n    # Fail loud on a malformed floor BEFORE the run. BOTH floors are guarded, and\n    # the axe one is not decoration: it reaches `Number(process.argv[1])`, and\n    # `Number('')` is 0 while `Number('abc')` is NaN — `s.expected < NaN` is FALSE,\n    # so an empty or non-numeric axefloor makes half 3 print A11Y-AXE OK on a\n    # ZERO-test report. That is the same vacuous-green class ADR-0183 D7 records\n    # for `[ \"\" -gt N ]` in a set -e-exempt if-condition, arriving by a different\n    # route; the two `node -e` blocks below compare numerically rather than with\n    # `[ -gt ]`, so this `case` is the whole guard.\n    case \"{{floor}}\" in\n        ''|*[!0-9]*) echo \"a11y-e2e: floor '{{floor}}' is not a non-negative integer\" >&2; exit 64;;\n    esac\n    case \"{{axefloor}}\" in\n        ''|*[!0-9]*) echo \"a11y-e2e: axefloor '{{axefloor}}' is not a non-negative integer\" >&2; exit 64;;\n    esac\n    # --- Half 1: the a11y eval roster, pinned BY NAME. A deleted or renamed\n    # eval makes import() throw, which set -e turns into a non-zero exit.\n    # `node evals/<x>.eval.mjs` alone exits 0 VACUOUSLY (these three carry no\n    # main guard, by design: a main guard truncates run.mjs mid-loop at exit 0),\n    # so the default export must be imported and called.\n    a11y_eval_check() {\n        node -e \"import(process.argv[1]).then(m => m.default()).then(r => { if (!r.pass) { console.error('a11y eval FAIL: ' + r.name + ' — ' + r.detail); process.exit(1) } const m = /teeth=(\\\\d+)\\\\/(\\\\d+)/.exec(String(r.detail)); if (m === null) { console.error('a11y eval reports NO teeth tally: ' + r.name + ' — an eval that runs no inline fixtures proves nothing, and a body gutted to a bare pass:true looks identical to a real one'); process.exit(1) } if (m[1] !== m[2] || Number(m[1]) < 1) { console.error('a11y eval teeth uneven or empty: ' + r.name + ' — ' + m[0]); process.exit(1) } console.log('  teeth ' + m[0]) })\" -- \"$1\"\n        echo \"a11y eval OK: $1\"\n    }\n    a11y_eval_check ./evals/overlay-a11y-manifest.eval.mjs\n    a11y_eval_check ./evals/a11y-static-shell.eval.mjs\n    a11y_eval_check ./evals/reduced-motion-purity.eval.mjs\n    # --- Half 2: floor the a11y unit tier. Delete the stale report first: a\n    # leftover report from a previous run would be read as this run's result if\n    # vitest died before writing (measured shape).\n    rm -f /tmp/a11y-e2e-vitest.json\n    cd client && npx vitest run --reporter=json --outputFile=/tmp/a11y-e2e-vitest.json \\\n        src/ui/overlayA11yWiring.test.ts \\\n        src/ui/overlayA11y.test.ts \\\n        src/ui/focusTrap.test.ts \\\n        src/ui/liveRegion.test.ts \\\n        src/ui/announcements.test.ts \\\n        src/ui/a11yCopy.test.ts \\\n        src/main.a11yFocus.test.ts \\\n        src/render/motionPreference.test.ts\n    cd ..\n    node -e \"const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-vitest.json', 'utf8')) } catch (e) { console.error('a11y-e2e: vitest wrote no readable JSON report — ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const files = j.testResults.length; const total = j.numTotalTests; if (files !== 8) { console.error('a11y-e2e: ' + files + ' spec file(s) reported, expected 8 — an a11y spec file was deleted or renamed'); process.exit(1) } if (j.numFailedTests !== 0 || j.numPendingTests !== 0 || j.numTodoTests !== 0) { console.error('a11y-e2e: failed=' + j.numFailedTests + ' pending=' + j.numPendingTests + ' todo=' + j.numTodoTests + ' — a skipped a11y test is a silently ungated one'); process.exit(1) } if (total < floor) { console.error('a11y-e2e: a11y unit tier reported ' + total + ' test(s) across ' + files + ' file(s) — floor is ' + floor); process.exit(1) } console.log('A11Y-NIGHTLY OK evals=3/3 files=' + files + ' tests=' + total + ' floor=' + floor + ' f=0 pend=0 todo=0')\" -- \"{{floor}}\"\n    # --- Half 3: the axe-core + real-browser tier. Same stale-report discipline as\n    # half 2 — a leftover report from a previous run would be read as this run's\n    # result if playwright died before writing. The floor is asserted from the\n    # machine-readable report and never from console text: a MISSING spec file makes\n    # playwright report zero tests and exit 0, the same silent-zero shape vitest has.\n    rm -f /tmp/a11y-e2e-axe.json\n    cd client && PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/a11y-e2e-axe.json \\\n        npx playwright test e2e/a11y.spec.ts --reporter=json\n    cd ..\n    node -e \"const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-axe.json', 'utf8')) } catch (e) { console.error('a11y-e2e: playwright wrote no readable JSON report — ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const s = j.stats; if (s === undefined) { console.error('a11y-e2e: playwright report carries no stats block'); process.exit(1) } if (s.unexpected !== 0 || s.flaky !== 0 || s.skipped !== 0) { console.error('a11y-e2e: axe tier unexpected=' + s.unexpected + ' flaky=' + s.flaky + ' skipped=' + s.skipped + ' — a skipped or flaky a11y test is a silently ungated one'); process.exit(1) } if (s.expected < floor) { console.error('a11y-e2e: axe tier reported ' + s.expected + ' passing test(s) — floor is ' + floor + '; a MISSING spec file reports zero and exits 0'); process.exit(1) } console.log('A11Y-AXE OK tests=' + s.expected + ' floor=' + floor + ' unexpected=0 flaky=0 skipped=0')\" -- \"{{axefloor}}\"\n    echo \"DEFERRED: A11Y-32 / A11Y-33 are MANUAL and are NEVER CI-green — docs/a11y-manual-protocol.md\"\n";
 
 // The raw region for `recipeName`: its header line plus every following line that
 // is blank or indented, with trailing blank lines dropped. Comments are KEPT.
@@ -696,6 +699,84 @@ export function a11yRecipeBodyIsPinned(justfileText) {
     };
   }
   return { ok: true, reason: 'the a11y-e2e recipe region matches its verbatim pin' };
+}
+
+// ---------------------------------------------------------------------------
+// rb-19, spec §5.7 deliverable (3), stated as a NEGATIVE and therefore easy to
+// leave unenforced — which is exactly what happened: red-team EXECUTED the
+// promotion (append `a11y-e2e` to the justfile's `ci:` dependency line and add a
+// `- run: just a11y-e2e` step to ci.yml's ci job) and the ENTIRE eval suite stayed
+// green, because every other check here asks whether the gate is wired, never
+// whether it is wired in the WRONG place.
+//
+// Three clauses, because there are three doors into the hermetic gate:
+//   1. REQUIRED_JUST_STEPS naming it — this file's own roster.
+//   2. the justfile `ci:` recipe depending on it, directly or transitively.
+//   3. ci.yml carrying a `- run: just a11y-e2e` step, which needs no justfile edit
+//      at all.
+// Closing one or two of these would be theatre; a browser and a live server in the
+// fast hermetic loop is the thing ADR-0043 forbids, however it gets there.
+//
+// The `ci:` dependency walk is TRANSITIVE on purpose: `ci: … coverage` where
+// `coverage: a11y-e2e` puts it in the gate without `ci:` naming it.
+export function a11yStaysNightlyOnly(justfileText, ciYaml) {
+  if (REQUIRED_JUST_STEPS.indexOf(A11Y_RECIPE_NAME) !== -1) {
+    return {
+      ok: false,
+      reason: `REQUIRED_JUST_STEPS names '${A11Y_RECIPE_NAME}' — spec §5.7 requires the axe tier stay OUT of the hermetic gate, and this roster is what ci.yml's ci job is checked against. Adding it here puts a browser and a live SpacetimeDB in the fast loop (ADR-0043).`,
+    };
+  }
+
+  // The `ci:` recipe's dependency closure, read from the justfile's recipe headers.
+  // Comment lines are dropped first: a `#` line mentioning the recipe is not a dep.
+  const deps = new Map();
+  for (const raw of justfileText.split('\n')) {
+    if (raw.length === 0 || raw[0] === ' ' || raw[0] === '\t' || raw[0] === '#') continue;
+    const colon = raw.indexOf(':');
+    if (colon === -1 || raw.indexOf(':=') === colon) continue;
+    const head = raw.slice(0, colon).trim();
+    const nameOnly = head.indexOf(' ') === -1 ? head : head.slice(0, head.indexOf(' '));
+    if (nameOnly.length === 0) continue;
+    deps.set(
+      nameOnly,
+      raw
+        .slice(colon + 1)
+        .split('&&')[0]
+        .split(' ')
+        .map((t) => t.trim())
+        .filter((t) => t.length > 0),
+    );
+  }
+  const seen = new Set();
+  const walk = (n) => {
+    if (seen.has(n)) return;
+    seen.add(n);
+    for (const d of deps.get(n) ?? []) walk(d);
+  };
+  walk('ci');
+  if (seen.has(A11Y_RECIPE_NAME)) {
+    return {
+      ok: false,
+      reason: `the justfile 'ci:' recipe depends on '${A11Y_RECIPE_NAME}' (directly or transitively: ${[...seen].join(' -> ')}) — 'just ci' is the fast, hermetic, server-free gate, and the axe tier needs a browser and a published module`,
+    };
+  }
+
+  // ci.yml needs no justfile edit at all: a bare step is enough.
+  const stray = ciYaml
+    .split('\n')
+    .filter((l) => !l.trim().startsWith('#'))
+    .filter((l) => l.trim() === A11Y_NIGHTLY_STEP).length;
+  if (stray !== 0) {
+    return {
+      ok: false,
+      reason: `.github/workflows/ci.yml carries ${stray} '${A11Y_NIGHTLY_STEP}' step(s) — the per-PR workflow runs the axe SPEC through its own 'e2e' job by design (ADR-0218), but running the nightly RECIPE there drags the decay ratchet and its wasm dependency into the PR path`,
+    };
+  }
+
+  return {
+    ok: true,
+    reason: `'${A11Y_RECIPE_NAME}' is absent from REQUIRED_JUST_STEPS, from the 'ci:' dependency closure, and from ci.yml — the axe tier stays nightly-only`,
+  };
 }
 
 export function a11yNightlyJobIsWired(nightlyYaml) {
@@ -871,7 +952,12 @@ export const AXE_DEP_NAME = '@axe-core/playwright';
 // Quoted forms on purpose. 'wcag2a' is a strict SUBSTRING of 'wcag2aa', so an
 // unquoted membership test for the former is satisfied by the latter and the
 // "tags present but wcag2aa missing" tooth could never bite.
-const A11Y_AXE_REQUIRED_TAGS = ["'wcag2a'", "'wcag2aa'"];
+// All five, not a representative pair: the reason string below says dropping a tag
+// "shrinks the rule set without shrinking the claim", and that is only enforced if
+// every tag the conformance claim rests on is named. Quoted forms on purpose —
+// 'wcag2a' is a strict SUBSTRING of 'wcag2aa', and 'wcag21a' of 'wcag21aa', so
+// unquoted membership tests for the shorter ones are satisfied by the longer.
+const A11Y_AXE_REQUIRED_TAGS = ["'wcag2a'", "'wcag2aa'", "'wcag21a'", "'wcag21aa'", "'wcag22aa'"];
 
 // The three page states the spec must drive, identified by their settled key
 // drivers (rb-19 handoff): connected world chrome, help overlay via Shift+Slash,
@@ -983,25 +1069,228 @@ function stripJsComments(src) {
   return out;
 }
 
-// True iff `token` occurs somewhere an `expect(` sits within `window` characters
-// on either side. Presence alone is NOT enough: a `console.log(results.violations)`
-// mentions the word without ever failing a test (co-occurrence is not a call site —
-// measured in this repo: counting declaration + capture + invocation pins none of
-// them). The window looks both ways so `expect(results.violations)` and the aliased
-// `const v = results.violations; expect(v)` both read as asserted.
-function tokenAppearsInAssertion(text, token, radius) {
-  let from = 0;
-  while (from <= text.length) {
-    const idx = text.indexOf(token, from);
-    if (idx === -1) return false;
-    const before = text.lastIndexOf('expect(', idx);
-    if (before !== -1 && idx - before <= radius) return true;
-    const after = text.indexOf('expect(', idx);
-    if (after !== -1 && after - idx <= radius) return true;
-    from = idx + token.length;
+// Index just past the string / template literal that STARTS at src[i].
+//
+// Templates recurse through `${ ... }` rather than scanning to the next backtick.
+// A non-recursive matcher desyncs the moment a template nests inside an
+// interpolation (measured in this repo), and a desynced blanker leaves message prose
+// visible as if it were code — which is precisely the hole this file closes.
+function skipStringLike(src, i) {
+  const n = src.length;
+  const quote = src[i];
+  let j = i + 1;
+  if (quote !== '`') {
+    while (j < n) {
+      if (src[j] === '\\') {
+        j += 2;
+        continue;
+      }
+      if (src[j] === quote) return j + 1;
+      j++;
+    }
+    return n;
   }
-  return false;
+  while (j < n) {
+    if (src[j] === '\\') {
+      j += 2;
+      continue;
+    }
+    if (src[j] === '`') return j + 1;
+    if (src[j] === '$' && src[j + 1] === '{') {
+      j += 2;
+      let braces = 1;
+      while (j < n && braces > 0) {
+        const ch = src[j];
+        if (ch === "'" || ch === '"' || ch === '`') {
+          j = skipStringLike(src, j);
+          continue;
+        }
+        if (ch === '{') braces++;
+        else if (ch === '}') braces--;
+        j++;
+      }
+      continue;
+    }
+    j++;
+  }
+  return n;
 }
+
+// `src` (already comment-stripped) with the CONTENT of every string and template
+// literal removed — delimiters and newlines kept so nothing downstream is warped.
+//
+// This is the categorical half of the M3 fix. A failure message can say whatever it
+// likes about violations; after this pass there is no text in it for a clause to
+// find. Regex literals are copied through verbatim: their bodies are code, not prose,
+// and blanking one could glue neighbouring tokens together.
+//
+// FAILURE DIRECTION, on purpose: if the scanner ever mis-tokenises, it blanks MORE
+// than it should, which can only remove tokens and therefore only cause a false RED —
+// loud and fixable. It cannot manufacture a false GREEN.
+function blankStringLiterals(src) {
+  let out = '';
+  let i = 0;
+  const n = src.length;
+  while (i < n) {
+    const c = src[i];
+    if (c === "'" || c === '"' || c === '`') {
+      const end = skipStringLike(src, i);
+      out += c;
+      for (let k = i; k < end; k++) {
+        if (src[k] === '\n') out += '\n';
+      }
+      out += c;
+      i = end;
+      continue;
+    }
+    if (c === '/' && regexCanStartAt(src, i)) {
+      out += c;
+      i++;
+      let inClass = false;
+      while (i < n) {
+        const ch = src[i];
+        if (ch === '\\') {
+          out += ch + (i + 1 < n ? src[i + 1] : '');
+          i += 2;
+          continue;
+        }
+        out += ch;
+        i++;
+        if (ch === '[') inClass = true;
+        else if (ch === ']') inClass = false;
+        else if (ch === '\n') break;
+        else if (ch === '/' && !inClass) break;
+      }
+      continue;
+    }
+    out += c;
+    i++;
+  }
+  return out;
+}
+
+// Index of the `)` that closes a call whose `(` sits just before `start`, or -1.
+function callCloseIndex(text, start) {
+  let depth = 1;
+  let i = start;
+  const n = text.length;
+  while (i < n) {
+    const c = text[i];
+    if (c === "'" || c === '"' || c === '`') {
+      i = skipStringLike(text, i);
+      continue;
+    }
+    if (c === '(' || c === '[' || c === '{') depth++;
+    else if (c === ')' || c === ']' || c === '}') {
+      depth--;
+      if (depth === 0) return i;
+    }
+    i++;
+  }
+  return -1;
+}
+
+// Source of the FIRST argument of a call whose `(` sits just before `start`.
+// Depth-tracked, so the commas in `reduce((n, v) => n + v.nodes.length, 0)` and the
+// arrow parameters in `map((v) => v.id)` are not mistaken for the argument separator.
+function firstArgumentSource(text, start) {
+  let depth = 1;
+  let out = '';
+  let i = start;
+  const n = text.length;
+  while (i < n) {
+    const c = text[i];
+    if (c === "'" || c === '"' || c === '`') {
+      const end = skipStringLike(text, i);
+      out += text.slice(i, end);
+      i = end;
+      continue;
+    }
+    if (c === '(' || c === '[' || c === '{') {
+      depth++;
+      out += c;
+      i++;
+      continue;
+    }
+    if (c === ')' || c === ']' || c === '}') {
+      depth--;
+      if (depth === 0) return out;
+      out += c;
+      i++;
+      continue;
+    }
+    if (c === ',' && depth === 1) return out;
+    out += c;
+    i++;
+  }
+  return null;
+}
+
+const IDENTIFIER_ONLY = /^[A-Za-z_$][A-Za-z0-9_$]*$/;
+
+// Every `expect(...)` / `expect.soft(...)` in `code` as { subject, tail }:
+//   subject — the source of the FIRST argument. In `expect(value, message)` the
+//             asserted thing is argument ONE; argument two is prose. Pinning the
+//             subject is what makes "the message mentions it" stop counting.
+//   tail    — the matcher chain that follows the call, up to the statement end.
+// Calls whose result is never used are DROPPED: a bare `expect(x);` invokes no
+// matcher and asserts nothing, which is the same declaration-vs-invocation
+// distinction the `.analyze()` clause already draws.
+function expectSubjects(code) {
+  const found = [];
+  for (const opener of ['expect(', 'expect.soft(']) {
+    let from = 0;
+    while (from <= code.length) {
+      const idx = code.indexOf(opener, from);
+      if (idx === -1) break;
+      from = idx + opener.length;
+      // `expect` must be a whole word — never the tail of `myexpect(`.
+      if (idx > 0 && /[A-Za-z0-9_$]/.test(code[idx - 1])) continue;
+      const argStart = idx + opener.length;
+      const subject = firstArgumentSource(code, argStart);
+      if (subject === null) continue;
+      const close = callCloseIndex(code, argStart);
+      if (close === -1) continue;
+      let k = close + 1;
+      while (k < code.length && /\s/.test(code[k])) k++;
+      if (code[k] !== '.') continue;
+      const stop = code.indexOf(';', close);
+      found.push({
+        subject,
+        tail: code.slice(close + 1, stop === -1 ? Math.min(close + 200, code.length) : stop),
+      });
+    }
+  }
+  return found;
+}
+
+// The first { subject, tail } whose ASSERTED VALUE mentions `token`, or null.
+//
+// ONE-HOP ALIAS EXPANSION is what keeps this from gating a naming convention:
+// `const ids = results.incomplete.map(...); expect(ids).toEqual([])` asserts on
+// `incomplete` just as surely as `expect(results.incomplete...)` does, and a gate
+// that only accepted the second spelling would red the first time someone renamed a
+// local. `code` is already string-blanked, so an alias initialiser cannot be
+// satisfied by message prose either.
+function assertionOn(code, subjects, token) {
+  for (const entry of subjects) {
+    if (entry.subject.indexOf(token) !== -1) return entry;
+    const name = entry.subject.trim();
+    if (!IDENTIFIER_ONLY.test(name)) continue;
+    for (const kw of ['const ', 'let ', 'var ']) {
+      const decl = `${kw}${name} =`;
+      const at = code.indexOf(decl);
+      if (at === -1) continue;
+      const rhsStart = at + decl.length;
+      const stop = code.indexOf(';', rhsStart);
+      const rhs = code.slice(rhsStart, stop === -1 ? Math.min(rhsStart + 400, code.length) : stop);
+      if (rhs.indexOf(token) !== -1) return entry;
+    }
+  }
+  return null;
+}
+
+//
 
 export function a11ySpecUsesAxe(specText) {
   if (typeof specText !== 'string' || specText.trim() === '') {
@@ -1023,7 +1312,15 @@ export function a11ySpecUsesAxe(specText) {
   // Quote-normalised copy. This repo's biome config prints single quotes, but a
   // pure token search must not turn on quote style; collapsing " into ' cannot
   // change any membership answer below.
+  //
+  // TWO VIEWS, and which clause may use which is load-bearing. `scan` keeps string
+  // CONTENT, because the import specifier, the wcag tags and the state keys
+  // legitimately live inside string literals and nowhere else. `code` removes it,
+  // and only the three ASSERTION clauses may read `code` — that is what stops a
+  // failure message from standing in for the thing it describes.
   const scan = stripped.split('"').join("'");
+  const code = blankStringLiterals(stripped);
+  const subjects = expectSubjects(code);
 
   if (scan.indexOf(AXE_DEP_NAME) === -1) {
     return {
@@ -1050,18 +1347,41 @@ export function a11ySpecUsesAxe(specText) {
         "a11y spec constructs AxeBuilder but never calls '.analyze()' — nothing is scanned until it runs. Declaration, capture and invocation are three different things and only the third one executes.",
     };
   }
-  if (!tokenAppearsInAssertion(scan, 'violations', 200)) {
+  // M3. The predecessor clause asked whether the word `violations` sat within 200
+  // characters of an `expect(` — and in the shipped spec it does TWICE, once as the
+  // asserted value and once inside that same expect's failure message. Gutting the
+  // value left the message, and the gate read clean. Proximity is not assertion.
+  if (assertionOn(code, subjects, 'violations') === null) {
     return {
       ok: false,
       reason:
-        "a11y spec scans, but never asserts on 'violations' inside an expect(...) — a scan whose result is discarded is an expensive no-op",
+        "a11y spec never makes 'violations' the SUBJECT of an expect(...) — every surviving mention is in a comment, in a failure message, or in code nothing ever checks. A message that TALKS about violations is not an assertion about them: the scan runs, the message is composed, and nothing is verified.",
     };
   }
-  if (scan.indexOf('passes') === -1 || scan.indexOf('toBeGreaterThan') === -1) {
+  // Same hole as M3, one clause over: two independent existence checks, arbitrarily
+  // far apart, either satisfiable from a message string ("...only ${results.passes
+  // .length} passing rule(s)..." is exactly such a message in the shipped spec).
+  const passesAssertion = assertionOn(code, subjects, 'passes');
+  if (passesAssertion === null) {
     return {
       ok: false,
       reason:
-        "a11y spec has no NON-VACUITY FLOOR: it never asserts results.passes with toBeGreaterThan / toBeGreaterThanOrEqual. A blank or erroring page yields ~0 passes and nothing at all to report, which the emptiness assertion alone cannot distinguish from a perfectly clean page — the measured false-green signature of every axe tier.",
+        'a11y spec has no NON-VACUITY FLOOR: nothing named passes is ever the SUBJECT of an expect(...). A page that failed to boot reports zero findings, which the emptiness check alone cannot tell apart from a perfectly clean one — the measured false-green signature of this kind of tier. A count quoted inside a failure message is not an assertion about it.',
+    };
+  }
+  // The matcher IS pinned here and nowhere else in this function, because "a floor"
+  // is a CLOSED semantic — a lower bound — where an open matcher vocabulary is not.
+  // Two spellings are admitted: a toBeGreaterThan{,OrEqual} matcher on THIS
+  // assertion, or a comparison inside the subject itself
+  // (`expect(results.passes.length >= FLOOR).toBe(true)`).
+  if (
+    passesAssertion.tail.indexOf('toBeGreaterThan') === -1 &&
+    passesAssertion.subject.indexOf('>') === -1
+  ) {
+    return {
+      ok: false,
+      reason:
+        'a11y spec makes passes the subject of an expect(...) but never bounds it from BELOW — no toBeGreaterThan / toBeGreaterThanOrEqual on that assertion and no comparison in the subject. An unbounded assertion on passes does not distinguish a rendered page from a blank one, which is the only thing this floor exists to do.',
     };
   }
   if (scan.indexOf('withTags') === -1) {
@@ -1079,11 +1399,13 @@ export function a11ySpecUsesAxe(specText) {
       };
     }
   }
-  if (scan.indexOf('incomplete') === -1) {
+  // Bare presence was the weakest of the three: the shipped spec names this token
+  // inside TWO failure-message templates, so the clause was satisfied by prose alone.
+  if (assertionOn(code, subjects, 'incomplete') === null) {
     return {
       ok: false,
       reason:
-        "a11y spec never inspects 'incomplete' — axe reports items it could not decide separately from violations, so a rule that degrades from pass to needs-review disappears entirely unless the incomplete ceiling is asserted (rb-14 residual: #build-stamp and #help-hint, 2 nodes, shrink-only)",
+        "a11y spec never makes 'incomplete' the SUBJECT of an expect(...) — axe reports checks it could not decide as a category of its own, so a rule that degrades from a clean result to needs-review vanishes from the report entirely unless the ceiling is asserted (the open residual rb-14 — no contrast oracle has shipped, so this ceiling has no upstream to agree with; shrink-only). Naming it in a message string is not asserting on it.",
     };
   }
   for (const key of A11Y_AXE_STATE_KEYS) {
@@ -1126,7 +1448,7 @@ const EXACT_SEMVER = /^[0-9]+\.[0-9]+\.[0-9]+(?:-[0-9A-Za-z.-]+)?$/;
 // this repo pinned one side and shipped the other unguarded).
 function readOwnObject(obj, key) {
   if (obj === null || typeof obj !== 'object') return {};
-  if (!Object.prototype.hasOwnProperty.call(obj, key)) return {};
+  if (!Object.hasOwn(obj, key)) return {};
   const value = obj[key];
   return value !== null && typeof value === 'object' ? value : {};
 }
@@ -1147,8 +1469,8 @@ export function clientDeclaresAxeDep(pkgJsonText, lockText) {
 
   const dev = readOwnObject(pkg, 'devDependencies');
   const prod = readOwnObject(pkg, 'dependencies');
-  const inDev = Object.prototype.hasOwnProperty.call(dev, AXE_DEP_NAME);
-  const inProd = Object.prototype.hasOwnProperty.call(prod, AXE_DEP_NAME);
+  const inDev = Object.hasOwn(dev, AXE_DEP_NAME);
+  const inProd = Object.hasOwn(prod, AXE_DEP_NAME);
 
   // Checked BEFORE the devDependencies presence test so a both-places declaration
   // still rejects rather than passing on the dev half.
@@ -1186,16 +1508,16 @@ export function clientDeclaresAxeDep(pkgJsonText, lockText) {
   } catch {
     lock = null;
   }
-  if (lock !== null && Object.prototype.hasOwnProperty.call(lock, 'packages')) {
+  if (lock !== null && Object.hasOwn(lock, 'packages')) {
     const packages = readOwnObject(lock, 'packages');
-    if (!Object.prototype.hasOwnProperty.call(packages, AXE_LOCK_KEY)) {
+    if (!Object.hasOwn(packages, AXE_LOCK_KEY)) {
       return {
         ok: false,
         reason: `client/package-lock.json has no '${AXE_LOCK_KEY}' entry — npm ci hard-errors when the lockfile disagrees with the manifest, so the nightly a11y job would die at "Install client deps" and the axe tier would never run`,
       };
     }
     const entry = readOwnObject(packages, AXE_LOCK_KEY);
-    const locked = Object.prototype.hasOwnProperty.call(entry, 'version') ? entry.version : undefined;
+    const locked = Object.hasOwn(entry, 'version') ? entry.version : undefined;
     if (locked !== spec) {
       return {
         ok: false,
@@ -1230,14 +1552,15 @@ export function clientDeclaresAxeDep(pkgJsonText, lockText) {
 // the gate, and the fix is to regenerate the constant in the SAME commit,
 // deliberately.
 //
-// IMPLEMENTER: the value below is a PLACEHOLDER and the gate refuses it by design.
-// Regenerate it mechanically from the finished workflow, in this same commit:
+// REGENERATE, NEVER HAND-TYPE. Any deliberate edit to the a11y-e2e job must be
+// followed, in the SAME commit, by re-deriving this constant from the finished
+// workflow. A one-character drift is indistinguishable from a typo by exit code:
 //   node -e "import('./evals/e2e-desync-teeth.eval.mjs').then(m=>{const fs=require('node:fs');console.log(JSON.stringify(m.extractJobBlock(fs.readFileSync('.github/workflows/nightly.yml','utf8'),'a11y-e2e')))})"
 // and paste the printed JSON string literal as the constant's value. Do NOT hand-type it.
 // ---------------------------------------------------------------------------
 
 export const A11Y_E2E_NIGHTLY_JOB_BLOCK =
-  "  a11y-e2e:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v6 # v6\n      - uses: dtolnay/rust-toolchain@stable # stable\n        with: { targets: wasm32-unknown-unknown }\n      # Distinct prefix-key (v1-a11y) so this cache never collides with the\n      # mutation (v1-nightly) / mutation-server (v1-nightly-server) / smoke\n      # (v1-smoke) job caches, or ci.yml's v1-ci / v1-e2e.\n      - uses: Swatinem/rust-cache@v2 # v2\n        with: { prefix-key: v1-a11y }\n      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0\n        with: { version: 'v0.15.0' }\n      - uses: actions/setup-node@v7 # v7\n        with:\n          node-version: '24.13.1'\n          cache: npm\n          cache-dependency-path: client/package-lock.json\n      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2\n      # `npm ci` lives here rather than inside the recipe so a local\n      # `just a11y-e2e` never clobbers a developer's node_modules.\n      - name: Install client deps\n        run: cd client && npm ci\n      - name: Install Playwright chromium\n        run: cd client && npx playwright install --with-deps chromium\n      # rb-19: half 3 drives a real browser against a real client, and the client's\n      # playwright.config.ts globalSetup republishes the module — so this job needs\n      # the same SpacetimeDB provisioning ci.yml's `e2e` job and the\n      # `smoke-republish` job above carry. Same download-then-execute installer\n      # (not `curl | sh`: semgrep gha-curl-pipe-shell), same 2.8.1 pin.\n      - name: Install SpacetimeDB CLI\n        # `--yes`: the installer prompts to confirm and aborts on a non-tty runner\n        # without it. The install also generates the identity keypair used to publish.\n        run: |\n          curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com\n          sh /tmp/spacetime-install.sh --yes\n          echo \"$HOME/.local/bin\" >> \"$GITHUB_PATH\"\n      - name: Pin spacetime 2.8.1\n        run: |\n          spacetime version install 2.8.1\n          spacetime version use 2.8.1\n          spacetime --version\n      # Ephemeral in-memory instance on the client's default host/port.\n      - name: Start SpacetimeDB\n        run: nohup spacetime start --in-memory --listen-addr 127.0.0.1:3000 > /tmp/stdb-a11y.log 2>&1 &\n      - name: Wait for SpacetimeDB\n        run: |\n          for i in $(seq 1 60); do\n            if curl -s -o /dev/null http://127.0.0.1:3000/; then echo \"ready after ${i}s\"; exit 0; fi\n            sleep 1\n          done\n          echo \"spacetime did not become ready on :3000\" >&2\n          cat /tmp/stdb-a11y.log >&2 || true\n          exit 1\n      # Deliberately NO continue-on-error and NO if: — a soft-failing decay\n      # ratchet is a toothless one. Both are gated by\n      # evals/ci-gate-wiring.eval.mjs (a11yNightlyJobIsWired), which also pins\n      # this step to exactly one unsuffixed occurrence file-wide. `env:` comes\n      # AFTER `run:` on purpose: that check matches the step's trimmed line\n      # exactly, and a step whose first key is `env:` reads as zero occurrences.\n      # The db name is per-run isolated so it never collides with a concurrent\n      # nightly run or with the regular monster-realm dev/e2e database.\n      - run: just a11y-e2e\n        env:\n          STDB_SERVER: http://127.0.0.1:3000\n          VITE_STDB_URI: ws://127.0.0.1:3000\n          VITE_STDB_DB: monster-realm-a11y-${{ github.run_id }}\n          MR_E2E_PORT: '5292'\n      # ADR-0200 D7, same reasoning as the mutation jobs: `if: always()` is\n      # load-bearing, not hygiene. The GitHub default is `success()`, which\n      # uploads the vitest report only on the nights it is worthless and skips\n      # it on exactly the nights someone needs it to see WHICH spec vanished.\n      # `if-no-files-found: warn` is pinned explicitly as a ratchet against a\n      # later raise to `error`: at `error`, a job that died in `just wasm` before\n      # vitest ever ran would report a failing upload step instead of its REAL\n      # failure. The artifact name is distinct per job (upload-artifact v4\n      # hard-errors on a duplicate name within one run).\n      - name: Upload a11y vitest report (failure evidence)\n        if: always()\n        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4\n        with:\n          name: a11y-e2e-vitest-report\n          path: /tmp/a11y-e2e-vitest.json\n          if-no-files-found: warn\n          retention-days: 14\n\n";
+  "  a11y-e2e:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v6 # v6\n      - uses: dtolnay/rust-toolchain@stable # stable\n        with: { targets: wasm32-unknown-unknown }\n      # Distinct prefix-key (v1-a11y) so this cache never collides with the\n      # mutation (v1-nightly) / mutation-server (v1-nightly-server) / smoke\n      # (v1-smoke) job caches, or ci.yml's v1-ci / v1-e2e.\n      - uses: Swatinem/rust-cache@v2 # v2\n        with: { prefix-key: v1-a11y }\n      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0\n        with: { version: 'v0.15.0' }\n      - uses: actions/setup-node@v7 # v7\n        with:\n          node-version: '24.13.1'\n          cache: npm\n          cache-dependency-path: client/package-lock.json\n      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2\n      # `npm ci` lives here rather than inside the recipe so a local\n      # `just a11y-e2e` never clobbers a developer's node_modules.\n      - name: Install client deps\n        run: cd client && npm ci\n      - name: Install Playwright chromium\n        run: cd client && npx playwright install --with-deps chromium\n      # rb-19: half 3 drives a real browser against a real client, and the client's\n      # playwright.config.ts globalSetup republishes the module — so this job needs\n      # the same SpacetimeDB provisioning ci.yml's `e2e` job and the\n      # `smoke-republish` job above carry. Same download-then-execute installer\n      # (not `curl | sh`: semgrep gha-curl-pipe-shell), same 2.8.1 pin.\n      - name: Install SpacetimeDB CLI\n        # `--yes`: the installer prompts to confirm and aborts on a non-tty runner\n        # without it. The install also generates the identity keypair used to publish.\n        run: |\n          curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com\n          sh /tmp/spacetime-install.sh --yes\n          echo \"$HOME/.local/bin\" >> \"$GITHUB_PATH\"\n      - name: Pin spacetime 2.8.1\n        run: |\n          spacetime version install 2.8.1\n          spacetime version use 2.8.1\n          spacetime --version\n      # Ephemeral in-memory instance on the client's default host/port.\n      - name: Start SpacetimeDB\n        run: nohup spacetime start --in-memory --listen-addr 127.0.0.1:3000 > /tmp/stdb-a11y.log 2>&1 &\n      - name: Wait for SpacetimeDB\n        run: |\n          for i in $(seq 1 60); do\n            if curl -s -o /dev/null http://127.0.0.1:3000/; then echo \"ready after ${i}s\"; exit 0; fi\n            sleep 1\n          done\n          echo \"spacetime did not become ready on :3000\" >&2\n          cat /tmp/stdb-a11y.log >&2 || true\n          exit 1\n      # Deliberately NO continue-on-error and NO if: — a soft-failing decay\n      # ratchet is a toothless one. Both are gated by\n      # evals/ci-gate-wiring.eval.mjs (a11yNightlyJobIsWired), which also pins\n      # this step to exactly one unsuffixed occurrence file-wide. `env:` comes\n      # AFTER `run:` on purpose: that check matches the step's trimmed line\n      # exactly, and a step whose first key is `env:` reads as zero occurrences.\n      # The db name is per-run isolated so it never collides with a concurrent\n      # nightly run or with the regular monster-realm dev/e2e database.\n      - run: just a11y-e2e\n        env:\n          STDB_SERVER: http://127.0.0.1:3000\n          VITE_STDB_URI: ws://127.0.0.1:3000\n          VITE_STDB_DB: monster-realm-a11y-${{ github.run_id }}\n          MR_E2E_PORT: '5292'\n      # ADR-0200 D7, same reasoning as the mutation jobs: `if: always()` is\n      # load-bearing, not hygiene. The GitHub default is `success()`, which\n      # uploads the vitest report only on the nights it is worthless and skips\n      # it on exactly the nights someone needs it to see WHICH spec vanished.\n      # `if-no-files-found: warn` is pinned explicitly as a ratchet against a\n      # later raise to `error`: at `error`, a job that died in `just wasm` before\n      # vitest ever ran would report a failing upload step instead of its REAL\n      # failure. The artifact name is distinct per job (upload-artifact v4\n      # hard-errors on a duplicate name within one run).\n      # A publish failure inside globalSetup, or a client that connects but never\n      # reaches ready(), reds this job with nothing to look at otherwise — the same\n      # reasoning smoke-republish's log dump carries.\n      - name: Dump SpacetimeDB logs on failure\n        if: failure()\n        run: cat /tmp/stdb-a11y.log || true\n      - name: Upload a11y vitest report (failure evidence)\n        if: always()\n        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4\n        with:\n          name: a11y-e2e-vitest-report\n          # BOTH halves' reports. Half 3 writes the axe one, and a nightly red IN\n          # the axe tier shipped no evidence at all until it was listed here — the\n          # exact gap `if: always()` exists to close for half 2.\n          path: |\n            /tmp/a11y-e2e-vitest.json\n            /tmp/a11y-e2e-axe.json\n          if-no-files-found: warn\n          retention-days: 14\n\n";
 
 const RB19_PENDING_PIN = '<<<RB19-PENDING>>>';
 
@@ -3037,9 +3360,9 @@ jobs:
     '    # DEFERRED: axe-core used to be skipped here — this COMMENT mentions the',
     '    # stale banner verbatim and must NOT trip the negative clause, because a',
     '    # comment prints nothing. Only the echo would have lied.',
-    "    node -e \"import('./evals/overlay-a11y-manifest.eval.mjs')\"",
-    "    node -e \"import('./evals/a11y-static-shell.eval.mjs')\"",
-    "    node -e \"import('./evals/reduced-motion-purity.eval.mjs')\"",
+    '    node -e "import(\'./evals/overlay-a11y-manifest.eval.mjs\')"',
+    '    node -e "import(\'./evals/a11y-static-shell.eval.mjs\')"',
+    '    node -e "import(\'./evals/reduced-motion-purity.eval.mjs\')"',
     '    cd client && npx vitest run --reporter=json src/ui/overlayA11yWiring.test.ts',
     '    rm -f /tmp/a11y-e2e-axe.json',
     '    PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/a11y-e2e-axe.json npx playwright test e2e/a11y.spec.ts --reporter=json',
@@ -3053,7 +3376,12 @@ jobs:
 
   // Fixture integrity FIRST. A base fixture that lost a token would make every
   // negative below "bite" for a reason that has nothing to do with the mutation.
-  for (const token of ['playwright test', 'e2e/a11y.spec.ts', 'PLAYWRIGHT_JSON_OUTPUT_NAME', 'A11Y-AXE OK']) {
+  for (const token of [
+    'playwright test',
+    'e2e/a11y.spec.ts',
+    'PLAYWRIGHT_JSON_OUTPUT_NAME',
+    'A11Y-AXE OK',
+  ]) {
     if (RB19_RECIPE_GOOD.split(token).length !== 2) {
       return {
         name,
@@ -3120,14 +3448,18 @@ jobs:
       '    set -euo pipefail',
       '    # would run: PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/x npx playwright test e2e/a11y.spec.ts',
       '    # and would print A11Y-AXE OK tests=3 (comment only, nothing executes)',
-      "    node -e \"import('./evals/overlay-a11y-manifest.eval.mjs')\"",
-      "    node -e \"import('./evals/a11y-static-shell.eval.mjs')\"",
-      "    node -e \"import('./evals/reduced-motion-purity.eval.mjs')\"",
+      '    node -e "import(\'./evals/overlay-a11y-manifest.eval.mjs\')"',
+      '    node -e "import(\'./evals/a11y-static-shell.eval.mjs\')"',
+      '    node -e "import(\'./evals/reduced-motion-purity.eval.mjs\')"',
       '    cd client && npx vitest run --reporter=json src/ui/overlayA11yWiring.test.ts',
       '',
     ].join('\n');
     if (commented.indexOf('A11Y-AXE OK') === -1) {
-      return { name, pass: false, detail: 'RB19-A6 fixture integrity: the comment-only fixture lost its tokens' };
+      return {
+        name,
+        pass: false,
+        detail: 'RB19-A6 fixture integrity: the comment-only fixture lost its tokens',
+      };
     }
     const bad = rb19Reject('RB19-A6', a11yRecipeBodyIntact(commented), 'playwright test');
     if (bad) return { name, pass: false, detail: bad };
@@ -3271,6 +3603,10 @@ jobs:
       'passes',
     ],
     ['RB19-B6', "'wcag2aa', ", '', 'wcag2aa'],
+    // B6 mutates the tag LIST; without B12 the `.withTags(` clause itself could be
+    // DELETED whole and nothing fired. Measured: red-team hollowed every clause in
+    // turn and this was the only one with no tooth.
+    ['RB19-B12', '.withTags(TAGS)', '.withRules([])', 'withTags'],
     ['RB19-B7', `${RB19_INCOMPLETE_LINES.join('\n')}\n`, '', 'incomplete'],
     ['RB19-B10', "'KeyM'", "'KeyN'", 'KeyM'],
   ];
@@ -3350,6 +3686,114 @@ jobs:
   }
 
   // -------------------------------------------------------------------------
+  // RB19-B12..B17 — the M3 class: a gate needle satisfied by the AUDITED FILE's
+  // own failure-message strings. B12/B13/B14 are the surviving mutant's shape
+  // applied to each of the three assertion clauses; B15 is the anti-over-fit
+  // control that keeps the fix spelling-blind; B16/B17 pin the two halves of
+  // "asserted" that presence-scanning cannot see.
+  // -------------------------------------------------------------------------
+  const RB19_VIOLATIONS_LINE = '  expect(results.violations).toEqual([]);';
+  const RB19_PASSES_LINE = '  expect(results.passes.length).toBeGreaterThanOrEqual(PASS_FLOOR);';
+
+  // B12: the EXACT surviving mutant, generalised. The subject is gutted; the token
+  // survives only inside the failure-message template of that same expect — including
+  // a ${...} interpolation, so the template scanner is exercised, not just a plain
+  // string. Kills: any proximity/radius check, and any string-blanker that stops at
+  // the first backtick instead of recursing through the interpolation.
+  {
+    const mutated = rb19ReplaceOnce(
+      RB19_SPEC_GOOD,
+      RB19_VIOLATIONS_LINE,
+      '  expect(SUBJECT_GUTTED, `axe reported violations: ${fmt(results.violations)}`).toEqual([]);',
+    );
+    if (mutated === null) {
+      return { name, pass: false, detail: 'RB19-B12: mutation did not apply (violations line)' };
+    }
+    const bad = rb19Reject('RB19-B12', a11ySpecUsesAxe(mutated), "'violations'");
+    if (bad) return { name, pass: false, detail: bad };
+  }
+
+  // B13: the same shape on the non-vacuity floor. `toBeGreaterThanOrEqual` is still
+  // present and still applied — to a constant. Kills: the file-wide
+  // `indexOf('toBeGreaterThan')` existence check, which cannot tell WHAT was bounded.
+  {
+    const mutated = rb19ReplaceOnce(
+      RB19_SPEC_GOOD,
+      RB19_PASSES_LINE,
+      '  expect(FLOOR_GUTTED, `only ${results.passes.length} passes seen`).toBeGreaterThanOrEqual(PASS_FLOOR);',
+    );
+    if (mutated === null) {
+      return { name, pass: false, detail: 'RB19-B13: mutation did not apply (passes line)' };
+    }
+    const bad = rb19Reject('RB19-B13', a11ySpecUsesAxe(mutated), 'passes');
+    if (bad) return { name, pass: false, detail: bad };
+  }
+
+  // B14: the same shape on the undecidable ceiling.
+  {
+    const mutated = rb19ReplaceOnce(
+      RB19_SPEC_GOOD,
+      `${RB19_INCOMPLETE_LINES.join('\n')}\n`,
+      '  expect(CEILING_GUTTED, `${results.incomplete.length} undecidable node(s)`).toBeLessThanOrEqual(2);\n',
+    );
+    if (mutated === null) {
+      return { name, pass: false, detail: 'RB19-B14: mutation did not apply (incomplete block)' };
+    }
+    const bad = rb19Reject('RB19-B14', a11ySpecUsesAxe(mutated), 'incomplete');
+    if (bad) return { name, pass: false, detail: bad };
+  }
+
+  // B15: ANTI-OVER-FIT CONTROL — the fixture whose whole job is to fail if a future
+  // maintainer (or I) tightens these clauses into "one blessed spelling". A different
+  // matcher (toHaveLength) on a differently-named alias must still ACCEPT. Without
+  // this, the honest way to make B12 bite is to pin the shipped byte sequence, and
+  // the gate gets deleted the first time somebody reformats the spec.
+  {
+    const respelled = rb19ReplaceOnce(
+      RB19_SPEC_GOOD,
+      RB19_VIOLATIONS_LINE,
+      '  const foundViolations = results.violations;\n  expect(foundViolations).toHaveLength(0);',
+    );
+    if (respelled === null) {
+      return { name, pass: false, detail: 'RB19-B15: mutation did not apply (violations line)' };
+    }
+    const bad = rb19Accept('RB19-B15', a11ySpecUsesAxe(respelled));
+    if (bad) return { name, pass: false, detail: bad };
+  }
+
+  // B16: the token is present in LIVE CODE — not a comment, not a message — and is
+  // simply never asserted. Kills: "blank the strings and keep using indexOf", which
+  // would close M3 while leaving `const ignored = results.violations;` green.
+  {
+    const mutated = rb19ReplaceOnce(
+      RB19_SPEC_GOOD,
+      RB19_VIOLATIONS_LINE,
+      '  const ignoredFindings = results.violations;',
+    );
+    if (mutated === null) {
+      return { name, pass: false, detail: 'RB19-B16: mutation did not apply (violations line)' };
+    }
+    const bad = rb19Reject('RB19-B16', a11ySpecUsesAxe(mutated), "'violations'");
+    if (bad) return { name, pass: false, detail: bad };
+  }
+
+  // B17: the right subject, in a real expect(...), with NO matcher invoked. Same
+  // declaration-vs-invocation distinction the .analyze() clause draws one level up:
+  // `expect(x);` builds an assertion object and checks nothing.
+  {
+    const mutated = rb19ReplaceOnce(
+      RB19_SPEC_GOOD,
+      RB19_VIOLATIONS_LINE,
+      '  expect(results.violations);',
+    );
+    if (mutated === null) {
+      return { name, pass: false, detail: 'RB19-B17: mutation did not apply (violations line)' };
+    }
+    const bad = rb19Reject('RB19-B17', a11ySpecUsesAxe(mutated), "'violations'");
+    if (bad) return { name, pass: false, detail: bad };
+  }
+
+  // -------------------------------------------------------------------------
   // RB19-C — clientDeclaresAxeDep.
   // -------------------------------------------------------------------------
   const RB19_LOCK_GOOD = JSON.stringify({
@@ -3377,7 +3821,10 @@ jobs:
   };
 
   {
-    const bad = rb19Accept('RB19-C-good', clientDeclaresAxeDep(rb19Pkg('4.13.0', null), RB19_LOCK_GOOD));
+    const bad = rb19Accept(
+      'RB19-C-good',
+      clientDeclaresAxeDep(rb19Pkg('4.13.0', null), RB19_LOCK_GOOD),
+    );
     if (bad) return { name, pass: false, detail: bad };
   }
 
@@ -3548,7 +3995,10 @@ jobs:
   }
 
   {
-    const bad = rb19Accept('RB19-D-good', jobBlockMatchesPin(RB19_SYN_NIGHTLY, RB19_SYN_PIN, 'RB19_SYN_PIN'));
+    const bad = rb19Accept(
+      'RB19-D-good',
+      jobBlockMatchesPin(RB19_SYN_NIGHTLY, RB19_SYN_PIN, 'RB19_SYN_PIN'),
+    );
     if (bad) return { name, pass: false, detail: bad };
   }
 
@@ -3576,7 +4026,11 @@ jobs:
     if (shimmed === null) {
       return { name, pass: false, detail: 'RB19-D2: mutation did not apply (gate step anchor)' };
     }
-    const bad = rb19Reject('RB19-D2', jobBlockMatchesPin(shimmed, RB19_SYN_PIN, 'RB19_SYN_PIN'), 'byte for byte');
+    const bad = rb19Reject(
+      'RB19-D2',
+      jobBlockMatchesPin(shimmed, RB19_SYN_PIN, 'RB19_SYN_PIN'),
+      'byte for byte',
+    );
     if (bad) return { name, pass: false, detail: bad };
     // The shim is INVISIBLE to the token twin — stated, not assumed. This is the
     // whole argument for carrying a verbatim pin alongside the token clauses.
@@ -3604,14 +4058,23 @@ jobs:
     if (respaced === null) {
       return { name, pass: false, detail: 'RB19-D3: mutation did not apply (checkout anchor)' };
     }
-    const bad = rb19Reject('RB19-D3', jobBlockMatchesPin(respaced, RB19_SYN_PIN, 'RB19_SYN_PIN'), 'byte for byte');
+    const bad = rb19Reject(
+      'RB19-D3',
+      jobBlockMatchesPin(respaced, RB19_SYN_PIN, 'RB19_SYN_PIN'),
+      'byte for byte',
+    );
     if (bad) return { name, pass: false, detail: bad };
   }
 
   // D4: the job deleted entirely — an absent job is not a vacuous pass.
   {
-    const noJob = 'name: Nightly\non:\n  workflow_dispatch:\njobs:\n  coverage:\n    runs-on: ubuntu-latest\n    steps:\n      - run: just coverage\n';
-    const bad = rb19Reject('RB19-D4', jobBlockMatchesPin(noJob, RB19_SYN_PIN, 'RB19_SYN_PIN'), 'declares no');
+    const noJob =
+      'name: Nightly\non:\n  workflow_dispatch:\njobs:\n  coverage:\n    runs-on: ubuntu-latest\n    steps:\n      - run: just coverage\n';
+    const bad = rb19Reject(
+      'RB19-D4',
+      jobBlockMatchesPin(noJob, RB19_SYN_PIN, 'RB19_SYN_PIN'),
+      'declares no',
+    );
     if (bad) return { name, pass: false, detail: bad };
   }
 
@@ -3620,7 +4083,11 @@ jobs:
   // runs BEFORE the comparison.
   {
     const dup = `${RB19_SYN_NIGHTLY}  a11y-e2e:\n    runs-on: ubuntu-latest\n    if: false\n    steps:\n      - run: echo neutered\n`;
-    const bad = rb19Reject('RB19-D5', jobBlockMatchesPin(dup, RB19_SYN_PIN, 'RB19_SYN_PIN'), 'duplicate');
+    const bad = rb19Reject(
+      'RB19-D5',
+      jobBlockMatchesPin(dup, RB19_SYN_PIN, 'RB19_SYN_PIN'),
+      'duplicate',
+    );
     if (bad) return { name, pass: false, detail: bad };
   }
 
@@ -3707,10 +4174,112 @@ jobs:
     if (suffixed === null) {
       return { name, pass: false, detail: 'RB19-E10: mutation did not apply (gate step anchor)' };
     }
-    const bad = rb19Reject('RB19-E10', a11yNightlyJobHasAxePrereqs(suffixed), 'exactly one is required');
+    const bad = rb19Reject(
+      'RB19-E10',
+      a11yNightlyJobHasAxePrereqs(suffixed),
+      'exactly one is required',
+    );
     if (bad) return { name, pass: false, detail: bad };
   }
 
+  // =========================================================================
+  // rb-19 ROUND 2 — teeth for a11yStaysNightlyOnly. Every one of these three
+  // promotions was EXECUTED by red-team against the shipped tree and took the whole
+  // eval suite green, so they are reproduced here as fixtures rather than described.
+  // =========================================================================
+  {
+    const NO_JF = [
+      '# a stub justfile with the real ci: dependency line',
+      'ci: lint typecheck test eval security wasm client-typecheck client-test observability-validate',
+      '    @echo ci',
+      '',
+      'coverage: wasm',
+      '    @echo coverage',
+      '',
+      'a11y-e2e floor="169" axefloor="3": wasm',
+      '    @echo a11y',
+      '',
+    ].join('\n');
+    const NO_CI = [
+      'jobs:',
+      '  ci:',
+      '    runs-on: ubuntu-latest',
+      '    steps:',
+      '      - run: just lint',
+      '      - run: just test',
+      '',
+    ].join('\n');
+
+    // T-nightly-only-good: the shipped shape is ACCEPTED.
+    {
+      const r = a11yStaysNightlyOnly(NO_JF, NO_CI);
+      if (!r.ok) {
+        return {
+          name,
+          pass: false,
+          detail: `T-nightly-only-good: a11yStaysNightlyOnly should accept a clean tree but rejected: ${r.reason}`,
+        };
+      }
+    }
+
+    // T-nightly-only-ci-dep: `ci:` gains a direct dependency.
+    {
+      const r = a11yStaysNightlyOnly(
+        NO_JF.split('observability-validate\n').join('observability-validate a11y-e2e\n'),
+        NO_CI,
+      );
+      if (r.ok || String(r.reason).indexOf("'ci:' recipe depends on") === -1) {
+        return {
+          name,
+          pass: false,
+          detail: `T-nightly-only-ci-dep: promoting a11y-e2e to a direct ci: dependency must be rejected by the dependency-closure clause, got ${JSON.stringify(r)}`,
+        };
+      }
+    }
+
+    // T-nightly-only-transitive: `ci:` never names a11y-e2e; it names `coverage`,
+    // which does. This is the one a direct-name check would miss.
+    {
+      const r = a11yStaysNightlyOnly(
+        NO_JF.split('observability-validate\n')
+          .join('observability-validate coverage\n')
+          .split('coverage: wasm')
+          .join('coverage: wasm a11y-e2e'),
+        NO_CI,
+      );
+      if (r.ok || String(r.reason).indexOf('transitively') === -1) {
+        return {
+          name,
+          pass: false,
+          detail: `T-nightly-only-transitive: a TRANSITIVE ci: dependency (ci -> coverage -> a11y-e2e) must be rejected, got ${JSON.stringify(r)}`,
+        };
+      }
+    }
+
+    // T-nightly-only-ci-yml: no justfile edit at all — just a step in ci.yml.
+    {
+      const r = a11yStaysNightlyOnly(NO_JF, `${NO_CI}      - run: just a11y-e2e\n`);
+      if (r.ok || String(r.reason).indexOf('ci.yml carries') === -1) {
+        return {
+          name,
+          pass: false,
+          detail: `T-nightly-only-ci-yml: a bare '- run: just a11y-e2e' step in ci.yml must be rejected, got ${JSON.stringify(r)}`,
+        };
+      }
+    }
+
+    // T-nightly-only-comment: a COMMENTED step is not a promotion.
+    {
+      const r = a11yStaysNightlyOnly(NO_JF, `${NO_CI}      # - run: just a11y-e2e\n`);
+      if (!r.ok) {
+        return {
+          name,
+          pass: false,
+          detail: `T-nightly-only-comment: a commented-out ci.yml step must NOT be read as a promotion, but was rejected: ${r.reason}`,
+        };
+      }
+    }
+  }
 
   // =========================================================================
   // REAL FILE CHECKS
@@ -3883,10 +4452,10 @@ jobs:
     }
   }
   // Check 9: a11ySpecUsesAxe (rb-19) — the PAYLOAD gate.
-  // EXPECTED RED before the implementer ships: client/e2e/a11y.spec.ts does not
-  // exist. A missing spec must FAIL here; it must never read as a skip, because
+  // A missing client/e2e/a11y.spec.ts must FAIL here and must never read as a skip:
   // "the file we were told to gate is absent" is the single most important thing
-  // this eval can say about the axe tier.
+  // this eval can say about the axe tier. (Before rb-19 shipped the spec, this was
+  // the check that produced the ADR-0010 RED-before state.)
   {
     let specText;
     try {
@@ -3937,9 +4506,10 @@ jobs:
     }
   }
 
-  // Check 11: a11yNightlyJobIsPinned (rb-19). EXPECTED RED until the implementer
-  // regenerates A11Y_E2E_NIGHTLY_JOB_BLOCK from the finished nightly.yml in the
-  // same commit — the constant ships as a placeholder the predicate refuses.
+  // Check 11: a11yNightlyJobIsPinned (rb-19). A red here means the a11y-e2e job
+  // block moved without A11Y_E2E_NIGHTLY_JOB_BLOCK being re-derived in the same
+  // commit. That is the intended behaviour, not a bug to route around: the pin is
+  // the only thing that sees a step inserted AHEAD of the gate.
   {
     let r;
     try {
@@ -3951,13 +4521,14 @@ jobs:
       return {
         name,
         pass: false,
-        detail: `a11yNightlyJobIsPinned FAIL (EXPECTED RED until the pin is regenerated): ${r.reason}`,
+        detail: `a11yNightlyJobIsPinned FAIL: ${r.reason}`,
       };
     }
   }
 
-  // Check 12: a11yNightlyJobHasAxePrereqs (rb-19). EXPECTED RED: the job installs
-  // no browser, starts no SpacetimeDB and supplies none of the e2e env vars today.
+  // Check 12: a11yNightlyJobHasAxePrereqs (rb-19). The token twin of Check 11: it is
+  // what still holds AFTER the verbatim pin is legitimately regenerated, when the
+  // pin necessarily agrees with whatever it was regenerated from.
   {
     let r;
     try {
@@ -3970,12 +4541,25 @@ jobs:
     }
   }
 
+  // Check 13: a11yStaysNightlyOnly (rb-19) — spec §5.7 deliverable (3). The only
+  // check here that fails when the axe tier is wired TOO WELL.
+  {
+    let r;
+    try {
+      r = a11yStaysNightlyOnly(justfile, ciYaml);
+    } catch (e) {
+      return { name, pass: false, detail: `a11yStaysNightlyOnly threw — ${e.message}` };
+    }
+    if (!r.ok) {
+      return { name, pass: false, detail: `a11yStaysNightlyOnly FAIL: ${r.reason}` };
+    }
+  }
 
   return {
     name,
     pass: true,
     detail:
-      'all 12 ci-gate-wiring checks pass: ci steps unneutered (all 7 exact verbs, no if:/coe), justfile/ci.yml dep parity, recipe bodies intact, run.mjs structural invariants, anchor wired in lefthook + e2e job, a11y-e2e recipe body intact, a11y-e2e nightly job wired, a11y-e2e recipe region matches its verbatim pin, plus a11y axe tier wired (spec + dep + recipe half 3 + nightly job pin)',
+      'all 13 ci-gate-wiring checks pass: ci steps unneutered (all 7 exact verbs, no if:/coe), justfile/ci.yml dep parity, recipe bodies intact, run.mjs structural invariants, anchor wired in lefthook + e2e job, a11y-e2e recipe body intact, a11y-e2e nightly job wired, a11y-e2e recipe region matches its verbatim pin, plus a11y axe tier wired (spec + dep + recipe half 3 + nightly job pin) and staying nightly-only',
   };
 }
 
