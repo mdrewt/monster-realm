@@ -988,6 +988,42 @@ export function classify(stripped, site) {
   return { arm: 'native', reason: 'binding RHS creates a <' + native + '>' };
 }
 
+/**
+ * The `index.html` id a `this.#field` is resolved from, or null. Used ONLY by the real-tree
+ * corroboration below — never by `classify`, which must stay a pure function of one source
+ * string so the inline teeth can drive it over self-contained fixtures.
+ */
+export function fieldLookupId(stripped, field) {
+  const assign = 'this.' + field + ' =';
+  const at = stripped.indexOf(assign);
+  if (at === -1) return null;
+  // The shipped shape is INDIRECT: `const submitBtn = document.getElementById('rename-submit');`
+  // then `this.#submitBtn = submitBtn as HTMLButtonElement;`. Follow one hop through the local.
+  let rhs = bindingRhs(stripped, at);
+  if (rhs.indexOf('getElementById(') === -1 && rhs.indexOf('querySelector(') === -1) {
+    let root = '';
+    for (const ch of rhs.trim()) {
+      if (!isIdentChar(ch)) break;
+      root += ch;
+    }
+    if (root === '') return null;
+    const b = bindingOffset(stripped, root, at);
+    if (b < 0) return null;
+    rhs = bindingRhs(stripped, b);
+  }
+  for (const fn of ['getElementById(', 'querySelector(']) {
+    const ci = rhs.indexOf(fn);
+    if (ci === -1) continue;
+    const open = ci + fn.length - 1;
+    const close = matchDelim(rhs, open);
+    if (close === -1) continue;
+    const lit = stringLiteralValue(rhs.slice(open + 1, close).trim());
+    if (lit === null) return null;
+    return lit.indexOf('#') === 0 ? lit.slice(1) : lit;
+  }
+  return null;
+}
+
 function indexOfSite(stripped, site) {
   let n = 1;
   for (let i = 0; i < stripped.length; i++) {
@@ -3232,6 +3268,84 @@ export default async function () {
     return bad('UNCLASSIFIED click site(s): ' + unclassified.join(' | '));
   }
 
+  // ARM-B CORROBORATION. A `readonly #x: HTMLButtonElement` declaration is one `as` cast away
+  // from a lie, and BOTH shipped sites (ui/renameView.ts:55, ui/tradeProposeView.ts:80) reach the
+  // field through exactly such a cast. The declared type alone is therefore not native evidence
+  // on the real tree: the id it resolves from must ALSO ship as a <button>/<a> in index.html.
+  // This lives HERE, not in `classify`, because `classify` must stay a pure function of one
+  // source string so the inline teeth can drive it over self-contained fixtures.
+  let htmlForFields;
+  try {
+    htmlForFields = stripHtmlComments(readFileSync(INDEX_HTML, 'utf8'));
+  } catch (e) {
+    return bad('could not read ' + INDEX_HTML + ': ' + (e && e.message ? e.message : String(e)));
+  }
+  let corroborated = 0;
+  for (const rec of clickSites) {
+    const t = rec.site.receiverText;
+    if (t.indexOf('this.') !== 0) continue;
+    if (classify(rec.src, rec.site).arm !== 'native') continue;
+    const id = fieldLookupId(rec.src, t.slice(5));
+    if (id === null) {
+      return bad(
+        '[A11Y-12] ARM-B UNCORROBORATED: ' +
+          rec.file +
+          ':' +
+          rec.site.line +
+          ' claims ' +
+          t +
+          ' is a native button by DECLARATION, but the id it is resolved from cannot be read — ' +
+          'a declared type is one `as` cast away from a lie',
+      );
+    }
+    const marker = 'id="' + id + '"';
+    const at = htmlForFields.indexOf(marker);
+    if (at === -1) {
+      return bad(
+        '[A11Y-12] ARM-B UNCORROBORATED: ' +
+          rec.file +
+          ':' +
+          rec.site.line +
+          ' resolves ' +
+          t +
+          ' from id="' +
+          id +
+          '", which is not in ' +
+          INDEX_HTML,
+      );
+    }
+    const open = htmlForFields.lastIndexOf('<', at);
+    const tag = htmlForFields.slice(open, at);
+    if (tag.indexOf('<button') !== 0 && tag.indexOf('<a ') !== 0) {
+      return bad(
+        '[A11Y-12] ARM-B CAST IS A LIE: ' +
+          rec.file +
+          ':' +
+          rec.site.line +
+          ' declares ' +
+          t +
+          ' HTMLButtonElement, but id="' +
+          id +
+          '" ships as ' +
+          tag.trim() +
+          ' in ' +
+          INDEX_HTML +
+          ' — the element is not keyboard-operable and the declaration is a cast, not a fact',
+      );
+    }
+    corroborated++;
+  }
+  if (corroborated < 2) {
+    return bad(
+      'SCOPE COLLAPSE: ' +
+        corroborated +
+        ' declared-HTMLButtonElement click site(s) corroborated ' +
+        'against ' +
+        INDEX_HTML +
+        ' (expected 2+) — with none, the corroboration is vacuous',
+    );
+  }
+
   // ---- 5. The ratchet: MULTISET equality against the frozen table ---------------------
   const ratchet = checkRatchet(nonNative, sources);
   if (ratchet !== null) return bad(ratchet);
@@ -3429,6 +3543,8 @@ export default async function () {
       clickSites.length +
       ' native=' +
       native +
+      ' armBCorroborated=' +
+      corroborated +
       ' nonNative=' +
       nonNative.length +
       ' unclassified=0 sanctioned=' +
