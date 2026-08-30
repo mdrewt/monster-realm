@@ -29,31 +29,50 @@
 //         it. `findLiveRegionDestroyers` bans the two document roots as receivers, and bans
 //         reaching the node by ARIA selector from anywhere but the owner.
 //
-// `[A11Y-06]`, `[A11Y-07]` and `[A11Y-08]` are DELEGATED to the shipped oracles, which are
-// strictly stronger, and the delegation is proven live by `findInertDelegations` (see the manifest
-// eval's doc comment for its four failure conditions). Two measurements drove that call:
+// `[A11Y-06]` and `[A11Y-07]` ARE EXECUTED HERE, FIRST-PARTY — rb-15 (`R-m23-s10-X18`).
 //
-//   * `client/src/indexShell.test.ts` already implements the CSS oracle — `parseCssRules:1001`,
-//     `findIdSelectors:1113`, `srOnlyIsAccessible:1408` — hardened over at-rule nesting,
-//     `!important`, media-query unions and a `.sr-only-focusable` boundary, PLUS two halves §5.2
-//     never asked for (`findCascadeReachingSelectors`, `importsAnotherStylesheet`). It is S2's file
-//     and outside this slice's `touches:`, so a `.mjs` twin could not be kept in agreement by any
-//     in-slice mechanism.
-//   * The mechanism the S10 brief proposed for that — a shared fixture corpus both sides run — was
-//     MEASURED not to work. A deliberately weak `.mjs` `srOnlyIsAccessible` agreed with the TS
-//     oracle on 18 of 18 fixtures in that file's own corpus while shipping FOUR real regressions
-//     green: grouped (`.a, .sr-only{display:none}`), compound (`div.sr-only{…}`), descendant
-//     (`body .sr-only{…}`) and CSS-nested selectors. A corpus certifies agreement ON THE CORPUS and
-//     nothing else. Pinning a source hash is defeated by a `biome` reformat plus a regenerate;
-//     comparing normalised source text is defeated by a one-character string-literal edit.
-//     Deleting the second implementation is the only mechanism with no bypass — there is nothing
-//     left to drift.
+// THIS FILE IS THE CSS ORACLE'S HOME. `stripCssComments`, `parseCssRules`, `findIdSelectors` and
+// `srOnlyIsAccessible` (plus their private helpers) live here and nowhere else in the repo;
+// `client/src/indexShell.test.ts` deleted its copies and reaches them through its existing
+// `rb12CssStripperOracle` namespace import. ADR-0215 made that ruling for the comment stripper and
+// its `Update (rb-15)` note extends it to the rest. Every symbol below is cited BY NAME, never by
+// line: this header previously carried three line citations that a single earlier deletion had
+// already made wrong, and nothing caught it.
 //
-// DECLARED RESIDUAL R-m23-s10-CSSDRIFT: the pins prove the oracle EXISTS, is INVOKED ON THE REAL
-// ARTEFACT and is REACHABLE BY CI. They do not prove its semantics; those are gated by
-// `indexShell.test.ts`'s own inline BAD/GOOD proofs at `:2003` (A6a) and `:2219` (A7a). The end
-// state is one `evals/lib/a11yCssOracle.mjs` imported by BOTH tiers — deferred as X18 because it
-// needs `indexShell.test.ts`.
+// WHY THE OWNERSHIP RUNS THIS WAY. A `.mjs` eval cannot import a `.ts` vitest file (extensionless
+// relative imports Node's ESM resolver rejects outside a bundler), while the `.ts` CAN import this
+// module — so this is the ONE direction that yields a single owner. m23-s10's header recorded a
+// different end state, a separate `evals/lib/a11yCssOracle.mjs` imported by both tiers; rb-15
+// OVERRULES it. Splitting the oracle from `stripCssComments` — its own dependency, and ADR-0215's
+// sole-owned primitive — would put one criterion back across two modules for no gain.
+//
+// WHAT THIS REPLACED, and why it mattered. `[A11Y-06]`/`[A11Y-07]` used to be DELEGATED: two
+// `SHELL_DELEGATIONS` codeNeedles grepped `client/src/indexShell.test.ts` for
+// `function findIdSelectors(` and `function srOnlyIsAccessible(`. A text pin proves a declaration
+// EXISTS, never that its semantics are right — and `just a11y-e2e` (`justfile:348`) runs three
+// evals plus eight named spec files, of which `indexShell.test.ts` is NOT one, so in the nightly
+// a11y tier those two criteria were gated by that grep and nothing else. This file now RUNS the
+// oracle: over two shared frozen tables (`ID_SELECTOR_FIXTURES`, `SR_ONLY_FIXTURES`, executed IN
+// FULL by BOTH tiers), over the real `client/src/styles.css`, and against liveness probes that
+// mutate that text in memory and require the mutation to be flagged.
+//
+// THE TWO NEEDLES THAT REMAIN are CONSUMER LIVENESS, not delegation: they pin that the vitest tier
+// still CALLS the oracle on the real artefact and still READS the verdict. Semantics are gated
+// here, by execution.
+//
+// SOLE OWNERSHIP IS MECHANICAL, in three clauses, because a shape ban alone is not enough:
+// red-team MEASURED seven shipping-plausible second oracles (object-method shorthand, an
+// object-literal arrow property, a class static method, `Object.assign` over the namespace, a
+// poisoned namespace spread, a sibling `*.test.ts` twin, a getter) that beat a
+// `function NAME(`/`NAME =` ban AND all four needles AND the file walk at once, on a deliberately
+// poisoned stylesheet. `T-OWN-*` here and `RB15-G1`/`RB15-G4` there therefore carry the shape ban,
+// an occurrence census, and a namespace-integrity clause; no two of the three suffice.
+//
+// DECLARED RESIDUAL `R-rb15-CASCADE`: the `[A11Y-07]` CASCADE and SURFACE halves
+// (`findCascadeReachingSelectors`, `importsAnotherStylesheet`, `CASCADE_PINNED_IDS`) deliberately
+// STAYED in `client/src/indexShell.test.ts`, which is why `parseCssRules` is exported. The eval
+// has no counterpart for them, so their `SHELL_DELEGATIONS` needles — and the exactly-once pin in
+// `RB15-G1` — are what keep that tier honest until a later slice moves them.
 //
 // NO `main` GUARD (see the manifest eval). `run.mjs` imports the default export.
 import { readdirSync, readFileSync, statSync } from 'node:fs';
@@ -917,6 +936,108 @@ const RB15_OWNED_SYMBOLS = Object.freeze([
 /** The only legal route from `client/src` to those symbols. */
 const RB15_OWNER_NS = ['rb12Css', 'StripperOracle'].join('');
 
+/** Characters that make a REGEX LITERAL hazardous to any comment/string scanner. */
+const RB15_REGEX_HAZARDS = Object.freeze(['*', '/', "'", '"', '`']);
+
+/** Characters after which a `/` is DIVISION or markup, never the start of a regex literal.
+ *  `<`/`>` are included because `client/src` test files quote HTML in failure messages. */
+const RB15_NOT_REGEX_START = 'abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789_$)]<>';
+
+/**
+ * FAIL LOUD on a regex literal that would desynchronise the scanners T-OWN reads every
+ * `client/src` file through.
+ *
+ * MEASURED (red-team, rb-15 artifact pass): `stripTsComments` treats the `/` + `*` inside a
+ * `/[/*]/` character class as a real block-comment opener and blanks to the next `*` + `/` WITH
+ * NO THROW, and `stripTsCommentsAndStrings` desynchronises on a quote inside a class and returns
+ * a best-effort string. Either hides an arbitrary span of a scanned file, and a file whose
+ * scanner gave up then reports "no violations" for entirely the wrong reason. Those two
+ * strippers live in a sibling eval that is outside this slice's `touches:`, so the guard lives
+ * here, at the call site, where it can still refuse the input.
+ *
+ * LINE-LOCAL BY CONSTRUCTION so it needs none of the lexing it guards, and deliberately
+ * OVER-APPROXIMATING: a false RED is loud and fixable, a false GREEN is not. Its twin in
+ * `client/src/indexShell.test.ts` is deliberately a SEPARATE copy — a gate that reads its own
+ * bytes must not ask another module (one the delegate could `vi.mock`) to tell it the truth
+ * about them.
+ */
+function rb15AssertNoHazardousRegex(src, label) {
+  const lines = src.split('\n');
+  for (let ln = 0; ln < lines.length; ln += 1) {
+    const raw = lines[ln] ?? '';
+    let code = '';
+    let quote = '';
+    for (let k = 0; k < raw.length; k += 1) {
+      const c = raw.charAt(k);
+      if (quote !== '') {
+        if (c === '\\') {
+          k += 1;
+          continue;
+        }
+        if (c === quote) quote = '';
+        continue;
+      }
+      if (c === "'" || c === '"' || c === '`') {
+        quote = c;
+        continue;
+      }
+      code += c;
+    }
+    let prev = '';
+    let i = 0;
+    while (i < code.length) {
+      const ch = code.charAt(i);
+      if (ch !== '/' || RB15_NOT_REGEX_START.indexOf(prev) !== -1) {
+        if (ch !== ' ' && ch !== '\t') prev = ch;
+        i += 1;
+        continue;
+      }
+      const after = code.charAt(i + 1);
+      if (after === '' || after === ' ' || after === '\t' || after === '=') {
+        prev = '/';
+        i += 1;
+        continue;
+      }
+      let j = i + 1;
+      let inClass = false;
+      let body = '';
+      let closed = false;
+      while (j < code.length) {
+        const c = code.charAt(j);
+        if (c === '\\') {
+          body += c + code.charAt(j + 1);
+          j += 2;
+          continue;
+        }
+        if (c === '[') inClass = true;
+        else if (c === ']') inClass = false;
+        else if (c === '/' && !inClass) {
+          closed = true;
+          break;
+        }
+        body += c;
+        j += 1;
+      }
+      if (!closed) {
+        return (
+          `${label} line ${ln + 1}: an apparent regex literal does not terminate on its own ` +
+          `line, so the comment/string scan of this file desynchronises. Line: ${JSON.stringify(raw)}`
+        );
+      }
+      const hazards = RB15_REGEX_HAZARDS.filter((h) => body.indexOf(h) !== -1);
+      if (hazards.length > 0) {
+        return (
+          `${label} line ${ln + 1}: the regex literal carries ${JSON.stringify(hazards)}, which ` +
+          `blanks an arbitrary span from the ownership scan. Line: ${JSON.stringify(raw)}`
+        );
+      }
+      i = j + 1;
+      prev = '/';
+    }
+  }
+  return '';
+}
+
 /**
  * DELIBERATE TWIN of `rb15IsWordChar` / `rb15WordOccurrences` / `rb15ShapeBanViolations`
  * / `rb15CensusViolations` in `client/src/indexShell.test.ts`.
@@ -1583,7 +1704,7 @@ export const SHELL_DELEGATIONS = Object.freeze([
 export default async function () {
   const name = 'a11y-static-shell ([A11Y-05a/05b] live region + [A11Y-06/07/08] delegation)';
   let teeth = 0;
-  const teethTotal = 80;
+  const teethTotal = 81;
   const bad = (detail) => ({ name, pass: false, detail });
   const shellNeedles = SHELL_DELEGATIONS.reduce(
     (n, d) => n + d.titleNeedles.length + d.codeNeedles.length,
@@ -2358,11 +2479,19 @@ export default async function () {
   // depth-0-only walk it exists to catch (MEASURED), so it would prove the read is live while
   // proving nothing about the walk. §2.7 puts prefers-contrast rules in this very file, so
   // the nested form is also the realistic one.
-  const ID_PROBE = '#rb15-probe';
+  //
+  // THE PROBE ID IS DERIVED AT RUNTIME, and the probe is PREPENDED rather than appended.
+  // MEASURED (red-team, rb-15 artifact pass): every shared fixture is two orders of magnitude
+  // shorter than the real stylesheet (id<=56, sr<=230 chars vs 5467), so a `src.length > 400`
+  // short-circuit survives all 35 rows; it was then killed only because the probes were fixed
+  // LITERALS an implementation could answer by `indexOf('rb15-probe')` and `endsWith(...)`.
+  // A runtime-derived id is not present in this file's source, and prepending defeats the
+  // suffix test — so a size-keyed oracle now has to answer a long string honestly.
+  const ID_PROBE = `#rb15-p${cssRules.length}x${cssText.length}`;
   let probedOffenders;
   try {
     probedOffenders = findIdSelectors(
-      `${cssText}\n@media (prefers-contrast: more){${ID_PROBE}{color:red}}`,
+      `@media (prefers-contrast: more){${ID_PROBE}{color:red}}\n${cssText}`,
     );
   } catch (e) {
     return bad(`[A11Y-07] LIVENESS: the id probe failed to parse: ${e.message}`);
@@ -2383,7 +2512,9 @@ export default async function () {
   // literal here is a SECOND, INDEPENDENT copy of the constant, so mutating the constant reds.
   let probedVerdict;
   try {
-    probedVerdict = srOnlyIsAccessible(`${cssText}\n.sr-only{display:none}`);
+    // PREPENDED, for the same reason as T-LIVE1: an `endsWith('.sr-only{display:none}')`
+    // short-circuit on a size-keyed oracle answered the appended form by constant. MEASURED.
+    probedVerdict = srOnlyIsAccessible(`.sr-only{display:none}\n${cssText}`);
   } catch (e) {
     return bad(`[A11Y-06] LIVENESS: the sr-only probe failed to parse: ${e.message}`);
   }
@@ -2394,7 +2525,7 @@ export default async function () {
     probedReasons[0] !== 'display:none REMOVES THE NODE FROM THE ACCESSIBILITY TREE'
   ) {
     return bad(
-      '[A11Y-06] LIVENESS: appending `.sr-only{display:none}` to the real stylesheet did NOT ' +
+      '[A11Y-06] LIVENESS: prepending `.sr-only{display:none}` to the real stylesheet did NOT ' +
         `produce exactly the display reason (ok=${probedVerdict.ok}, reasons=` +
         `${JSON.stringify(probedReasons)}). Either the union across matching rules is not ` +
         'happening, or the deny-list no longer names display:none, or the verdict above was ' +
@@ -2508,10 +2639,47 @@ export default async function () {
     );
   }
 
+  // T-OWN-TRIPWIRE: decide, PER FILE, whether the stripped text can be trusted at all.
+  //
+  // MEASURED (red-team, rb-15 artifact pass): a regex literal carrying a comment opener or a
+  // quote — `/[/*]/`, `/from '([^']*)'/g` — makes `stripTsComments` blank to the next `*` + `/`
+  // and `stripTsCommentsAndStrings` run to EOF in a string state, both WITH NO THROW. The two
+  // scans below would then certify that file as clean for entirely the wrong reason.
+  //
+  // Reddening on any such literal is NOT an option: `client/src` already ships them in files
+  // this slice does not own (and must not edit). So the tripwire selects the SCAN INPUT rather
+  // than the verdict: a trustworthy file is scanned stripped, an untrustworthy one is scanned
+  // RAW. Raw scanning can only ever report MORE violations (prose and string mentions count),
+  // which is the safe direction — an untrusted file whose raw text never names a moved symbol
+  // is genuinely clean, and one that does is reported for manual disambiguation rather than
+  // waved through. `hazardous` is surfaced in the detail so the count cannot drift unnoticed.
+  const hazardous = [];
+  const scanText = {};
+  for (const [rel, raw] of Object.entries(specSources)) {
+    const stripped = stripTsComments(raw);
+    if (rb15AssertNoHazardousRegex(stripped, rel) === '') {
+      scanText[rel] = { shape: stripped, census: stripTsCommentsAndStrings(raw) };
+    } else {
+      hazardous.push(rel);
+      scanText[rel] = { shape: raw, census: raw };
+    }
+  }
+  // ANTI-VACUITY: if EVERY file were declared hazardous the scans would still run, but on raw
+  // text, and the comment-decoy control below would no longer describe what happens in practice.
+  if (hazardous.length > specFiles.length / 2) {
+    return bad(
+      `[A11Y-CSSOWN2] SCANNER DESYNC: ${hazardous.length} of ${specFiles.length} client/src ` +
+        'files carry a regex literal that desynchronises the comment/string scanners. Past half ' +
+        'the tree this gate is scanning raw text almost everywhere and its comment-stripping ' +
+        `controls no longer describe it. Files: ${hazardous.slice(0, 5).join(', ')}`,
+    );
+  }
+  teeth++;
+
   // T-OWN-SHAPE: no file in client/src DEFINES a moved symbol.
   const shapeTwins = [];
   for (const [rel, raw] of Object.entries(specSources)) {
-    for (const v of rb15ShapeBanViolations(stripTsComments(raw), RB15_OWNED_SYMBOLS)) {
+    for (const v of rb15ShapeBanViolations(scanText[rel].shape, RB15_OWNED_SYMBOLS)) {
       shapeTwins.push(`${rel}: ${v}`);
     }
   }
@@ -2531,11 +2699,7 @@ export default async function () {
   // COPY made by Object.assign or a spread and then poisoned.
   const censusTwins = [];
   for (const [rel, raw] of Object.entries(specSources)) {
-    for (const v of rb15CensusViolations(
-      stripTsCommentsAndStrings(raw),
-      RB15_OWNED_SYMBOLS,
-      RB15_OWNER_NS,
-    )) {
+    for (const v of rb15CensusViolations(scanText[rel].census, RB15_OWNED_SYMBOLS, RB15_OWNER_NS)) {
       censusTwins.push(`${rel}: ${v}`);
     }
   }
@@ -2564,11 +2728,41 @@ export default async function () {
     ['.for', '([])'].join(''),
   ];
   // Whitespace is collapsed so `.each([\n])` cannot escape by formatting alone.
-  const delegateCompact = stripTsComments(specSources[delegateRel]).replace(/\s+/g, '');
-  const suspended = SUSPENSION_NEEDLES.filter((n) => delegateCompact.indexOf(n) !== -1);
+  // EVERY delegate file, not just the CSS one: the [A11Y-08] entry (client/src/render/world.test.ts)
+  // keeps all three of its needles green under `it.skipIf(true)` too.
+  const suspended = [];
+  for (const d of SHELL_DELEGATIONS) {
+    let dsrc;
+    try {
+      dsrc = readFileSync(d.file, 'utf8');
+    } catch (e) {
+      return bad(`[A11Y-06/07/08] SUSPENSION SCAN: could not read ${d.file}: ${e.message}`);
+    }
+    const compact = stripTsComments(dsrc).replace(/\s+/g, '');
+    for (const n of SUSPENSION_NEEDLES) {
+      if (compact.indexOf(n) !== -1) suspended.push(`${d.file}: ${n}`);
+    }
+    // SHAPE-BASED, not the literal `.each([])`: MEASURED that one token of indirection
+    // (`const M = []; it.each(M)(...)`) registers ZERO tests, exits 0, and keeps every retained
+    // needle green. A `.each(`/`.for(` argument must be a NON-EMPTY array literal, spelled out.
+    for (const table of ['.each(', '.for(']) {
+      let at = compact.indexOf(table);
+      while (at !== -1) {
+        const arg = compact.charAt(at + table.length);
+        if (arg !== '[' || compact.charAt(at + table.length + 1) === ']') {
+          suspended.push(`${d.file}: ${table}<non-literal-or-empty>`);
+        }
+        at = compact.indexOf(table, at + 1);
+      }
+    }
+    // A module mock substitutes the whole oracle with ZERO change to the import line.
+    for (const n of ['vi.mock(', 'vi.doMock(']) {
+      if (compact.indexOf(n) !== -1) suspended.push(`${d.file}: ${n}`);
+    }
+  }
   if (suspended.length > 0) {
     return bad(
-      `[A11Y-06/07] SUSPENDED DELEGATE: ${CSS_ORACLE_DELEGATE} uses ${suspended.join(', ')} — ` +
+      `[A11Y-06/07/08] SUSPENDED DELEGATE: ${suspended.join(' | ')} — ` +
         'a conditionally-skipped or empty-table test satisfies every code needle in ' +
         'SHELL_DELEGATIONS while executing nothing. Measured: exit 0, tests PENDING, and ' +
         '`each([])` registers no test at all',
@@ -2625,7 +2819,10 @@ export default async function () {
   // stripping is load-bearing here in the other direction: a decoy `// stripCssComments(src)`
   // left in the body would satisfy a raw-text count while the real call was repointed.
   const region = selfStripped.slice(headIdx, bodyEnd);
-  const CALL_NEEDLE = ['stripCss', 'Comments('].join('');
+  // `(src)` INCLUDED, matching the RB12-G7 half 1 this re-creates: without the argument,
+  // `stripCssComments(preNormalise(src))` keeps the count at 1 while the walker no longer sees
+  // the raw text. Dropping it was a real weakening of the pin being replaced.
+  const CALL_NEEDLE = ['stripCss', 'Comments(src)'].join('');
   const callCount = region.split(CALL_NEEDLE).length - 1;
   if (callCount !== 1) {
     return bad(
@@ -2659,7 +2856,7 @@ export default async function () {
       `[A11Y-06/07/08] pins=${SHELL_DELEGATIONS.length}/${SHELL_DELEGATIONS.length} ` +
       `nonInert=${shellNeedles}/${shellNeedles} reachable=Y; ` +
       `[A11Y-CSSOWN2] firstParty=Y rules=${cssRules.length} declCount=${realVerdict.declCount} ` +
-      `liveness=2/2 soleOwner=1 twins=0 suspension=clean ` +
+      `liveness=2/2 soleOwner=1 twins=0 hazardousRegex=${hazardous.length} suspension=clean ` +
       `fixtures=${ID_SELECTOR_FIXTURES.length}+${SR_ONLY_FIXTURES.length} ` +
       `specFiles=${specFiles.length}`,
   };

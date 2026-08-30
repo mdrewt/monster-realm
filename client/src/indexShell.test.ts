@@ -3050,6 +3050,73 @@ describe('RB15 (R-m23-s10-X18): CSS oracle single ownership', () => {
     // by shrinking BOTH lists in one edit; a literal is a third fact that edit does not carry.
     expect(pairs[0].shared.length, 'ID_SELECTOR_FIXTURES must have exactly 14 rows').toBe(14);
     expect(pairs[1].shared.length, 'SR_ONLY_FIXTURES must have exactly 21 rows').toBe(21);
+
+    // --- PAYLOAD FINGERPRINTS, the half a NAME roster cannot see.
+    // MEASURED (red-team, rb-15 artifact pass): pinning names alone let a row be SWAPPED for a
+    // weaker one under the SAME name. Hollowing `sr/bad/content-visibility-hidden` to a
+    // `display:none` payload, narrowing the deny-list to the two properties the criterion
+    // literally names, and shipping `content-visibility:hidden` in the real `.sr-only` rule
+    // (adjusted to keep declCount at 9) passed BOTH tiers with 80/80 teeth and 28/28 tests —
+    // while the live region was absent from the Chromium accessibility tree. Each entry below is
+    // `name:cssChars:expectationCount:expectationChars`, re-declared HERE and compared against
+    // values COMPUTED from the shared table, so a payload edit must be made in two places or
+    // this reds.
+    const RB15_LOCAL_ID_FINGERPRINTS: readonly string[] = Object.freeze([
+      'id/bad/baseline-pinned-id:24:1:13',
+      'id/bad/selector-list-second-position:38:1:19',
+      'id/bad/descendant-part:30:1:18',
+      'id/bad/media-nested:56:1:12',
+      'id/bad/glued-to-type-selector:31:1:16',
+      'id/bad/hash-colour-before-id-rule:28:1:2',
+      'id/bad/commented-decoy-plus-real:55:1:13',
+      'id/bad/string-decoy-then-real:41:1:13',
+      'id/good/hex-colour-in-nested-decl:55:0:0',
+      'id/good/escaped-hash-in-class-name:21:0:0',
+      'id/good/hash-in-quoted-value:29:0:0',
+      'id/good/url-fragment-reference:25:0:0',
+      'id/good/at-rule-prelude-hash:38:0:0',
+      'id/good/quoted-hash-in-prelude:24:0:0',
+    ]);
+    const RB15_LOCAL_SR_FINGERPRINTS: readonly string[] = Object.freeze([
+      'sr/bad/display-none:22:4:153',
+      'sr/bad/display-none-important:81:1:57',
+      'sr/bad/visibility-hidden-important-spaced:77:1:62',
+      'sr/bad/inert-clip-pair:52:1:47',
+      'sr/bad/content-visibility-hidden:74:1:73',
+      'sr/bad/display-contents:65:1:63',
+      'sr/bad/visibility-hidden-with-correct-pair:66:1:62',
+      'sr/bad/clip-only-no-position:30:2:49',
+      'sr/bad/position-only-no-clip:64:1:47',
+      'sr/bad/space-around-colon:24:4:153',
+      'sr/bad/uppercase-property-and-value:22:4:153',
+      'sr/bad/media-nested-display-none:55:4:153',
+      'sr/bad/correct-then-media-override:230:1:57',
+      'sr/bad/rule-missing-entirely:17:1:16',
+      'sr/bad/empty-rule:10:3:96',
+      'sr/bad/min-declaration-floor:27:2:72',
+      'sr/good/shipped-clip-path-form:174:0:0',
+      'sr/good/legacy-clip-rect-form:46:0:0',
+      'sr/good/focusable-token-boundary:207:0:0',
+      'sr/good/banned-text-inside-string:71:0:0',
+      'sr/good/position-absolute-important:58:0:0',
+    ]);
+    const idFingerprints = idRows.map(
+      (r) => `${r.name}:${r.css.length}:${r.offenders.length}:${r.offenders.join('').length}`,
+    );
+    const srFingerprints = srRows.map(
+      (r) => `${r.name}:${r.css.length}:${r.reasons.length}:${r.reasons.join('').length}`,
+    );
+    expect(
+      idFingerprints,
+      'KILLS: an ID_SELECTOR_FIXTURES row whose PAYLOAD was swapped under an unchanged name — ' +
+        'the exact shape the name roster above is blind to.',
+    ).toEqual([...RB15_LOCAL_ID_FINGERPRINTS]);
+    expect(
+      srFingerprints,
+      'KILLS: an SR_ONLY_FIXTURES row whose PAYLOAD was swapped under an unchanged name. ' +
+        'Measured: hollowing one row plus narrowing the deny-list ships a stylesheet whose ' +
+        '.sr-only rule is absent from the accessibility tree, with every other gate green.',
+    ).toEqual([...RB15_LOCAL_SR_FINGERPRINTS]);
   });
 
   it('RB15-G4: every moved-symbol occurrence is a member access on the owner namespace, and the namespace never escapes', () => {
