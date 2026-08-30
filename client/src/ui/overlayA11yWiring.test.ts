@@ -218,7 +218,25 @@ const asyncNoop = async (): Promise<void> => {};
  *   * `dialogueView` / `questLogView` / `healView`, which have NO `show()` and open on the
  *     `render(vm | null)` null -> non-null EDGE (criterion A11Y-34);
  *   * `claimView`, which has both and is body-appended by its own `ensureElement` — `show()` is
- *     used, matching production (`main.ts`).
+ *     used, which is the door `main.ts` calls.
+ *
+ * WHICH DOOR, AND WHERE THAT IS NOT THE PRODUCTION ONE (disclosed by rb-18 rather than left to be
+ * discovered). Two entries drive a door the shipped caller does not, and neither is a false pass —
+ * both views derive `visible` LIVE from the DOM rather than from a latch field, so the alternative
+ * door is a behaviourally equivalent input to the `wasVisible` guard these teeth exercise:
+ *   * `claimView`: `main.ts`'s `openClaim()` (`:454-462`) runs `applyClaim` -> `renderClaim()`
+ *     BEFORE `show()`, and `applyClaim` moves the phase off `'hidden'`, so `render()` has already
+ *     flipped `wasVisible` by the time `show()` runs. `show()`'s guard (`claimView.ts:118`) is
+ *     therefore a structural no-op in every current call path; the door that really opens this
+ *     overlay is `claimView.ts:107`, and it is owned by `claimView.test.ts`
+ *     (`S4-claimView-THREE-DOORS`). Read the `claimView` rows below as pinning a real class
+ *     invariant, NOT as covering the live production edge.
+ *   * `questLogView` / `healView`: opened by `render(vm)` as production does, but CLOSED here by
+ *     `render(null)`, whereas `main.ts:366-367` closes both with `hide()`. The mixed-door sequence
+ *     (render-open -> hide-close -> render-reopen) is covered by each view's own
+ *     `S3-<view>-REOPEN-AFTER-HIDE`.
+ * Changing either opener would re-point five PRE-EXISTING per-id tests as well, which is a
+ * decision of its own rather than a line rb-18 should quietly move.
  */
 const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
   battleView: () => {
@@ -269,9 +287,13 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
   // to open and again to `reopen`. A thunk rather than a hoisted `const vm` because the object
   // literals below are contextually typed by `render()`'s parameter, which a hoisted `const` would
   // widen (`shopAction: null`, `costCurrency: 0n`). It is also the shape `main.ts:1574` really
-  // drives — a fresh view model on every store batch — but that half is DEFENSIVE, not currently
-  // load-bearing: none of the three `render()` bodies compares `vm` by identity today, so a reused
-  // object would behave identically. Stated rather than left as an implied guarantee.
+  // drives (`main.ts:1627-1641`) — a fresh view model on every store batch — but that half is
+  // DEFENSIVE, not currently
+  // load-bearing: none of the three `render()` bodies compares `vm` by identity today, so a
+  // reused object would behave identically. Stated rather than left as an implied guarantee.
+  // (`main.ts:1574` is the citation `dialogueView.ts:16` and `dialogueView.test.ts:243` both carry
+  // for this fact; it has drifted — the real site is the `onBatchApplied` block at `:1627-1641`.
+  // Corrected here; the other two are flagged, not touched.)
   dialogueView: () => {
     const view = new DialogueView();
     const renderIt = (): void => {
@@ -678,7 +700,7 @@ describe('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wiring spec', 
         // rb-18 / residual R-m23-s10-X21. The per-view idiom (`leaderboardView.test.ts:598`,
         // `dialogueView.test.ts:242`, `menuView.test.ts:1254`) lifted into the SHARED layer, where
         // the `Record<OverlayId, …>` opener table makes it total by construction. A re-open clears
-        // and re-schedules the deferred-focus timer (`overlayA11y.ts:100-113`), dragging focus off
+        // (`overlayA11y.ts:110`) and re-schedules (`:134`) the deferred-focus timer, dragging focus off
         // whatever the player Tabbed to — INVISIBLE to every attribute assertion in this file,
         // because a re-open rewrites byte-identical values.
         const sentinel = installSentinel();
@@ -700,8 +722,9 @@ describe('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wiring spec', 
 
         // Parked as a DIRECT CHILD of the root, never deeper. The three render-edge views empty a
         // SUB-container on every repeat render (`questLogView.ts:42` and `healView.ts:43` clear
-        // their <ul>'s contents, `dialogueView.ts:57` replaceChildren()s its choices container);
-        // those are SIBLINGS of the root, so a direct child survives — measured. Parking it inside
+        // their <ul>'s contents, `dialogueView.ts:57` replaceChildren()s its choices container).
+        // Those containers are CHILDREN of the root, hence SIBLINGS of the parked node, and each
+        // clears its OWN contents — so a direct child of the root survives. Parking it inside
         // one of them would FALSE-RED on three ids, and the tempting "fix" for that false red is to
         // weaken the identity assertion below to containment, which is the exact vacuity this
         // file's header rejects at the (c) conjunct.
