@@ -23,7 +23,10 @@
 //   name, a wrong-event-type guard, and a contradictory `typeof` guard. Worse, the intersection
 //   was satisfiable with NO callback at all, on the shared JS keyword `if`: the shipped menuView
 //   pair itself intersects to `["callbacks.onInput","if"]`. So `invokedCallees` walks control
-//   flow, and KEYWORD_DENY/GLOBAL_DENY are load-bearing, not belt-and-braces.
+//   flow; keywords are consumed STRUCTURALLY before identifier parsing; a shared callee must be
+//   a DOTTED or private member expression; and `GLOBAL_DENY` covers the dotted non-callbacks
+//   (`Math.max`, `JSON.parse`). A keyword deny-list was written first and MEASURED INERT against
+//   the first two, so it is not shipped.
 //
 // D2 — THE RATCHET IS A MULTISET, NOT A SET AND NOT A CAP. A `<= 2` cap reports GREEN when an
 //   accessible control is DELETED. A SET keyed on (file, receiver) was measured green on a
@@ -35,8 +38,15 @@
 //   attribute scanner here would be a weaker oracle plus a drift surface — ADR-0215:22-24 records
 //   m23-s10 making the same delegation choice, and ADR-0215:108-111 is the principle. But a
 //   needle-only pin was MEASURED worthless against the real helpers (the entire guard replaced by
-//   a self-satisfying stub, vitest green, both pins clean), so the delegation carries an
-//   INVERTED-ASSERTION negative probe: neutering `toEqual([])` must make the pin RED.
+//   a self-satisfying stub, vitest green, both pins clean), the delegation's `codeNeedles` pin the
+//   LOAD-BEARING PREDICATE at exactly one occurrence (a first-hit anchor is steerable by a decoy).
+//   HONEST LIMIT, and it is R-rb13-T5EXEC: a text-scan delegation checker can prove the predicate
+//   is PRESENT, never that the assertion still ASSERTS. Red-team MEASURED the residue — rewriting
+//   the guard's `.map()` to yield a constant `'0'` keeps every needle and silences it. Closing it
+//   needs the shipped spec RUN against a mutated `index.html`, which puts vitest inside a
+//   millisecond scan; that is a design change, not a patch. An "inverted-assertion probe" was
+//   written and DELETED as a tautology: `findInertDelegations` decides by needle absence and the
+//   predicate IS the needle, so it only re-ran `findInertPins`.
 //
 // D4 — "RECEIVER", NOT "CHILD" — A DELIBERATE STRENGTHENING. §5.4's wording is "no native
 //   <button>/<a> CHILD"; every arm here tests the RECEIVER. A click handler on an <li> that
@@ -67,6 +77,37 @@
 // R-rb13-TESTSUFFIX (`listClientSourceFiles` excludes `*.test.ts`, so a production module
 // disguised with that suffix is bundled by Vite but never scanned).
 //
+// SECOND-ROUND RESIDUALS — measured by a red-team lens against THIS file, then triaged. Each is a
+// real hole; each needs more than a patch, so each is declared rather than half-closed:
+// * R-rb13-T5EXEC — the `[A11Y-T5]` HTML delegate is a TEXT scan. It proves the load-bearing
+//   predicate is present, never that the assertion still asserts. MEASURED: rewriting the guard's
+//   `.map()` to yield a constant `'0'` keeps every needle, keeps vitest green, and lets a
+//   `tabindex="7"` ship in index.html. Closing it needs the spec RUN against a mutated
+//   index.html — vitest inside a millisecond scan, i.e. a design change.
+// * R-rb13-INERTGUARD — "a guard that can never be true for a keydown" is an UNBOUNDED class.
+//   The eight shapes red-team measured are closed (dead literals, mouse-only props incl.
+//   `.movementX`, contradictory `typeof`, wrong event type, unreachable `catch`, any top-level
+//   `return`, nested definitions, local shadows, and `while`/`switch` heads), but
+//   `if (e.key === 'ZZUnbindable')` is not, and cannot be without a key-name model. The correct
+//   long-term shape is to INVERT the rule — count a callee as invoked only on a path with zero
+//   UNRECOGNISED conditionals — which would make menuView's own shape an explicit whitelist.
+// * R-rb13-WALKROOT — the scan walks `client/src` only. A listener in `client/lib/`, in
+//   `module_bindings/`, or in an inline `<script>` in `client/index.html` is bundled by Vite and
+//   never seen. Widening the root risks false REDs across generated bindings, so it is its own
+//   slice.
+// * R-rb13-COMPTEETH — the 48 teeth drive the eight exported MATCHERS. The decision layer
+//   (`checkRatchet`, `checkNarrowedDelegation`, `producerIsNative`, the ARM-B loop, the frozen
+//   tables, every SCOPE-COLLAPSE floor) is exercised only by the real tree, which passes by
+//   construction, so eleven separate gutting mutations still report `teeth=48/48`. Composition
+//   teeth over a synthetic `sources` map are the fix, and they are the tester's to write.
+// * R-rb13-CALLFORMS — `a?.b?.()` is handled, but `const {onInput} = callbacks; onInput(x)`,
+//   `callbacks.onInput.call(…)` and an arrow handed to `queueMicrotask`/`setTimeout` all read as
+//   "not invoked" and would false-RED correct code. This is the adoption risk: the natural
+//   reaction to such a RED is to widen the gate.
+// * R-rb13-DISABLED — a PERMANENT `btn.disabled = true` right after creation is a real defect and
+//   is not caught; the transient in-flight form (four shipped sites) is correct and must not be.
+//   Telling them apart needs flow analysis this scan does not have.
+//
 // NO `main` GUARD (see the sibling evals). `run.mjs` imports the default export.
 import { readFileSync } from 'node:fs';
 import { listClientSourceFiles, stripHtmlComments } from './a11y-static-shell.eval.mjs';
@@ -91,39 +132,17 @@ const NATIVE_TAGS = Object.freeze(['button', 'a']);
 const NATIVE_IFACES = Object.freeze(['HTMLButtonElement', 'HTMLAnchorElement']);
 
 /**
- * Never a callback. `if`/`for` are here because a brace-naive callee extractor reads `if (` as a
- * call: red-team MEASURED `(e) => { if (e.repeat) return; }` — a functionally EMPTY handler —
- * passing `[A11Y-13]` on the shared token `if`, and the shipped menuView pair intersecting to
- * `["callbacks.onInput","if"]`. The builtins are here because red-team MEASURED `Boolean` and
- * `Math.max` doing the same job.
+ * Dotted roots that are never a callback. This is the SECOND line of defence, and saying so
+ * matters: red-team MEASURED `(e) => { if (e.repeat) return; }` — a functionally EMPTY handler —
+ * passing `[A11Y-13]` on the shared token `if`, with the shipped menuView pair intersecting to
+ * `["callbacks.onInput","if"]`. What actually kills that is (a) `if`/`for`/`while`/`switch`/`try`
+ * /`function` being consumed STRUCTURALLY in `walk()` before identifier parsing runs, and (b) the
+ * requirement that a shared callee be a DOTTED or private member expression. A keyword deny-list
+ * was written first and measured INERT against both, so it is not shipped. This list covers what
+ * those two do not: `Math.max`, `JSON.parse`, `console.warn` are dotted, structurally ordinary,
+ * and still not callbacks.
  */
-const KEYWORD_DENY = Object.freeze([
-  'if',
-  'for',
-  'while',
-  'switch',
-  'catch',
-  'return',
-  'typeof',
-  'function',
-  'await',
-  'super',
-  'new',
-  'delete',
-  'void',
-  'in',
-  'of',
-  'do',
-  'else',
-  'try',
-  'throw',
-  'yield',
-  'instanceof',
-]);
 const GLOBAL_DENY = Object.freeze([
-  'Boolean',
-  'Number',
-  'String',
   'Array',
   'Object',
   'Symbol',
@@ -136,39 +155,77 @@ const GLOBAL_DENY = Object.freeze([
   'JSON',
   'Math',
   'console',
-  'parseInt',
-  'parseFloat',
-  'isNaN',
-  'isFinite',
-  'setTimeout',
-  'setInterval',
-  'clearTimeout',
-  'queueMicrotask',
-  'requestAnimationFrame',
-  'structuredClone',
+  'Number',
+  'String',
+  'Boolean',
   'Error',
   'globalThis',
+  'Reflect',
+  'Intl',
 ]);
 
 /**
  * Properties only a MouseEvent carries. A keydown guard that reads one is dead for keyboard
  * users, so nothing inside it counts as invoked — red-team's `if (e.button === 0)` cheat.
+ * `detail` and `relatedTarget` are deliberately ABSENT: `UIEvent.detail` exists on a
+ * KeyboardEvent and `relatedTarget` is a FocusEvent property, so neither is mouse-only.
  */
 const MOUSE_ONLY_PROPS = Object.freeze([
-  '.button',
-  '.buttons',
-  '.clientX',
-  '.clientY',
-  '.pageX',
-  '.pageY',
-  '.screenX',
-  '.screenY',
-  '.offsetX',
-  '.offsetY',
-  '.detail',
-  '.relatedTarget',
-  '.pointerId',
+  'button',
+  'buttons',
+  'clientX',
+  'clientY',
+  'pageX',
+  'pageY',
+  'screenX',
+  'screenY',
+  'offsetX',
+  'offsetY',
+  'pointerId',
+  'movementX',
+  'movementY',
+  'layerX',
+  'layerY',
+  'pointerType',
+  'pressure',
+  'which',
 ]);
+
+/**
+ * Attributes that REVOKE native keyboard operability whatever the tag is, plus the rule that an
+ * `<a>` without `href` is not in the tab order at all. Red-team MEASURED three shapes passing as
+ * "native": `createElement('a')` in place of `('button')`, `btn.setAttribute('inert','')`, and an
+ * `<a id="rename-submit">` with no href in index.html.
+ *
+ * `disabled` is DELIBERATELY ABSENT (R-rb13-DISABLED). It was tried and false-REDs four correct
+ * shipped sites — `raisingView.ts:209,219`, `evolutionView.ts`, `boxView.ts` all set it as a
+ * TRANSIENT in-flight guard, which is right and not an a11y defect. A permanent
+ * `btn.disabled = true` immediately after creation IS a real defect, and telling the two apart
+ * statically needs flow analysis this scan does not have.
+ */
+const NATIVE_REVOKERS = Object.freeze(['inert']);
+
+/** Is an index.html open-tag text a keyboard-operable native control? */
+function htmlTagIsOperable(tag) {
+  const t = tag.trim();
+  const isButton = t.indexOf('<button') === 0;
+  const isAnchor = t.indexOf('<a ') === 0 || t.indexOf('<a\n') === 0;
+  if (!isButton && !isAnchor)
+    return { ok: false, why: 'is ' + t.split(/\s/)[0] + ', not a native <button>/<a>' };
+  if (isAnchor && t.indexOf('href') === -1) {
+    return { ok: false, why: 'is an <a> with NO href, which is not in the tab order at all' };
+  }
+  for (const r of NATIVE_REVOKERS) {
+    const at = t.indexOf(r);
+    if (at !== -1 && !isIdentChar(t[at - 1]) && !isIdentChar(t[at + r.length])) {
+      return { ok: false, why: 'carries `' + r + '`, which removes it from the tab order' };
+    }
+  }
+  if (t.indexOf('tabindex="-') !== -1) {
+    return { ok: false, why: 'carries a negative tabindex, which removes it from the tab ring' };
+  }
+  return { ok: true, why: '' };
+}
 
 const IDENT_START = /[A-Za-z_$]/;
 const IDENT_CHAR = /[A-Za-z0-9_$]/;
@@ -475,10 +532,19 @@ function handlerBody(text) {
 function deadGuard(cond, param, blockText) {
   const c = cond.trim();
   if (c === 'false' || c === '0' || c === 'null' || c === 'undefined') return true;
-  for (const p of MOUSE_ONLY_PROPS) if (c.indexOf(p) !== -1) return true;
-  // `e.type === 'click'` / `e.type !== 'keydown'` — a keydown handler cannot satisfy either.
+  // BOUNDARY-ANCHORED: an unanchored `.button` also matches `.buttonBar`.
+  for (const p of MOUSE_ONLY_PROPS) {
+    const mp = c.indexOf('.' + p);
+    if (mp !== -1 && !isIdentChar(c[mp + p.length + 1])) return true;
+  }
+  // A keydown cannot satisfy `e.type === '<not keydown>'`, nor `e.type !== 'keydown'`. It CAN
+  // satisfy `e.type !== 'click'`, which is an ordinary defensive guard — calling that dead drops
+  // the only shared callee and false-REDs correct code.
   if (param !== '' && c.indexOf(param + '.type') !== -1) {
-    if (c.indexOf("'keydown'") === -1 && c.indexOf('"keydown"') === -1) return true;
+    const namesKeydown = c.indexOf("'keydown'") !== -1 || c.indexOf('"keydown"') !== -1;
+    const isEquality = c.indexOf('==') !== -1 && c.indexOf('!=') === -1;
+    if (isEquality && !namesKeydown) return true;
+    if (!isEquality && namesKeydown) return true;
   }
   // A CONTRADICTORY typeof guard. `if (typeof callbacks.onInput === 'string')` cannot hold
   // for a value the block then CALLS — anything callable is typeof 'function'. Reading the
@@ -559,10 +625,16 @@ function invokedCallees(body, param) {
         continue;
       }
       // `return;` with no value, at this level, kills everything after it.
-      if (text.startsWith('return', i) && !isIdentChar(text[i - 1]) && !isIdentChar(text[i + 6])) {
-        let j = i + 6;
-        while (j < text.length && (text[j] === ' ' || text[j] === '\t')) j++;
-        if (text[j] === ';' || text[j] === '\n' || text[j] === '}') dead = true;
+      if (
+        text.startsWith('return', i) &&
+        !isIdentChar(text[i - 1]) &&
+        text[i - 1] !== '.' &&
+        text[i - 1] !== '#' &&
+        !isIdentChar(text[i + 6])
+      ) {
+        // ANY top-level `return`, with or without a value: red-team MEASURED
+        // `return void 0; cb.onInput(x);` surviving a bare-`return`-only detector.
+        dead = true;
         i += 6;
         continue;
       }
@@ -609,7 +681,9 @@ function invokedCallees(body, param) {
           blockEnd = semi === -1 ? text.length : semi;
           blockText = text.slice(blockStart, blockEnd);
         }
-        const blockDead = dead || (word === 'if' && deadGuard(cond, param, blockText));
+        // Applied to `while`/`for`/`switch` heads too, not just `if`: red-team MEASURED
+        // `while (false) { cb.onInput(x); }` passing because only `if` was judged.
+        const blockDead = dead || deadGuard(cond, param, blockText);
         if (!blockDead) walk(cond, dead);
         if (blockStart !== -1 && blockEnd !== -1) {
           walk(blockText, blockDead);
@@ -661,10 +735,16 @@ function invokedCallees(body, param) {
       // Full dotted / private path.
       let path = word;
       let k = j;
-      while (k < text.length && (text[k] === '.' || text[k] === '#')) {
+      // `?.` is house style here and must read as `.`. Dropping it silently would make
+      // `callbacks?.onInput()` contribute nothing — a false RED whose message claims the handler
+      // invokes nothing, in a file whose contract is to fail LOUD on what it cannot decide.
+      while (k < text.length && (text[k] === '.' || text[k] === '#' || text[k] === '?')) {
         let m = k;
         let seg = '';
-        while (m < text.length && (text[m] === '.' || text[m] === '#')) seg += text[m++];
+        while (m < text.length && (text[m] === '.' || text[m] === '#' || text[m] === '?')) {
+          if (text[m] !== '?') seg += text[m];
+          m++;
+        }
         let w2 = '';
         while (m < text.length && isIdentChar(text[m])) w2 += text[m++];
         if (w2 === '') break;
@@ -687,12 +767,14 @@ function invokedCallees(body, param) {
         }
         continue;
       }
+      // `a?.b?.(x)` is a call. Without this the optional-call form contributes nothing and
+      // correct code false-REDs with a message claiming the handler invokes nothing.
+      if (text[n] === '?' && text[n + 1] === '.' && text[n + 2] === '(') n += 2;
       if (text[n] === '(' && !dead) {
         const root = path.split('.')[0];
         const isDotted = path.indexOf('.') !== -1;
         if (
           isDotted &&
-          KEYWORD_DENY.indexOf(word) === -1 &&
           GLOBAL_DENY.indexOf(root) === -1 &&
           shadowed.indexOf(root) === -1 &&
           !isEventNoise(path, param) &&
@@ -781,7 +863,6 @@ function arrowRhs(src, bindIdx) {
   let i = eq + 1;
   while (i < src.length && (src[i] === ' ' || src[i] === '\n')) i++;
   const start = i;
-  const depth = 0;
   let str = '';
   let sawArrow = false;
   while (i < src.length) {
@@ -816,8 +897,7 @@ function arrowRhs(src, bindIdx) {
       continue;
     }
     if (ch === ';' || ch === '\n') {
-      if (sawArrow) return src.slice(start, i).trim();
-      if (depth === 0 && ch === ';') return src.slice(start, i).trim();
+      if (sawArrow || ch === ';') return src.slice(start, i).trim();
     }
     i++;
   }
@@ -910,7 +990,9 @@ function findSites(stripped, types, propNames) {
       if (stripped[j] !== '=' || stripped[j + 1] === '=' || stripped[j + 1] === '>') continue;
       const receiver = receiverTextBefore(stripped, at);
       if (receiver === null) continue;
-      const raw = bindingRhsFull(stripped, at);
+      // `arrowRhs`, NOT `bindingRhsFull`: the latter stops at the first balanced close-paren,
+      // truncating `el.onclick = () => { pick(3); }` to the literal string '()'.
+      const raw = arrowRhs(stripped, at);
       let handlerText = raw;
       if (raw !== '' && raw.indexOf('=>') === -1 && raw.indexOf('function') !== 0) {
         const resolved = resolveNamedHandler(stripped, raw.trim());
@@ -985,7 +1067,36 @@ export function classify(stripped, site) {
       return { arm: 'delegated', reason: 'forged native evidence, complex argument: ' + a };
     }
   }
+  if (native === 'a' && !hasHrefWrite(stripped, text)) {
+    return {
+      arm: 'delegated',
+      reason: 'creates an <a> with no href write — an anchor without href is not focusable',
+    };
+  }
+  const revoked = revokerFor(stripped, text);
+  if (revoked !== null) {
+    return { arm: 'delegated', reason: 'native tag revoked by `' + revoked + '` on ' + text };
+  }
   return { arm: 'native', reason: 'binding RHS creates a <' + native + '>' };
+}
+
+/** Does anything in the file give this receiver an `href`? */
+function hasHrefWrite(stripped, receiverText) {
+  return (
+    stripped.indexOf(receiverText + '.href') !== -1 ||
+    stripped.indexOf(receiverText + ".setAttribute('href'") !== -1 ||
+    stripped.indexOf(receiverText + '.setAttribute("href"') !== -1
+  );
+}
+
+/** `disabled`/`inert` written on this receiver revoke its native operability. */
+function revokerFor(stripped, receiverText) {
+  for (const r of NATIVE_REVOKERS) {
+    if (stripped.indexOf(receiverText + '.' + r + ' = true') !== -1) return r;
+    if (stripped.indexOf(receiverText + ".setAttribute('" + r + "'") !== -1) return r;
+    if (stripped.indexOf(receiverText + '.setAttribute("' + r + '"') !== -1) return r;
+  }
+  return null;
 }
 
 /**
@@ -1024,11 +1135,18 @@ export function fieldLookupId(stripped, field) {
   return null;
 }
 
+/**
+ * Offset of the site's line END. Deliberately not the line START: `bindingOffset` requires
+ * `bindingIdx < useIdx`, so a start anchor hides a binding written on the SAME line as the
+ * registration and false-REDs it into the ratchet.
+ */
 function indexOfSite(stripped, site) {
   let n = 1;
   for (let i = 0; i < stripped.length; i++) {
-    if (n === site.line) return i;
-    if (stripped[i] === '\n') n++;
+    if (stripped[i] === '\n') {
+      if (n === site.line) return i;
+      n++;
+    }
   }
   return stripped.length;
 }
@@ -1198,8 +1316,9 @@ function indexOfTabKey(text) {
 function receiverIsInteractive(stripped, write) {
   const all = findClickSites(stripped).concat(findKeydownSites(stripped));
   for (const s of all) {
+    // KEY only, never text: matching text fires [A11Y-T3] for a `-1` on class A's `this.#el`
+    // because class B binds a listener on its own, different, `this.#el`.
     if (s.receiver === write.receiver) return true;
-    if (write.receiverText !== '?' && s.receiverText === write.receiverText) return true;
   }
   return false;
 }
@@ -1388,6 +1507,80 @@ export function scanFailLoud(stripped) {
     );
   }
 
+  // HANDLER-ATTRIBUTE SPELLINGS. Red-team MEASURED four ways to register a real click listener
+  // that never writes `.addEventListener` and so cannot inflate the divergence count, each
+  // landing a keyboard-inaccessible <li> at a byte-identical census, three of them biome- and
+  // tsc-clean. The census cannot see them; failing loud is the honest answer.
+  let oa = 0;
+  while (true) {
+    const at = stripped.indexOf('Object.assign(', oa);
+    if (at === -1) break;
+    oa = at + 14;
+    const close = matchDelim(stripped, at + 13);
+    if (close === -1) continue;
+    for (const key of onEventKeys(stripped.slice(at + 14, close))) {
+      add(
+        'handler attribute `' + key + '` set via Object.assign — a listener the census cannot see',
+      );
+    }
+  }
+  for (const sink of ['.innerHTML', '.outerHTML', '.insertAdjacentHTML']) {
+    let m = 0;
+    while (true) {
+      const at = stripped.indexOf(sink, m);
+      if (at === -1) break;
+      m = at + sink.length;
+      const seg = bindingRhsFull(stripped, at);
+      for (const key of onEventKeys(seg)) {
+        add(
+          'handler attribute `' + key + '` inside a ' + sink + ' literal — inline markup handler',
+        );
+      }
+    }
+  }
+  let sa = 0;
+  while (true) {
+    const at = stripped.indexOf('.setAttribute(', sa);
+    if (at === -1) break;
+    sa = at + 14;
+    const close = matchDelim(stripped, at + 13);
+    if (close === -1) continue;
+    const nameLit = stringLiteralValue(splitArgs(stripped.slice(at + 14, close))[0] || '');
+    if (nameLit !== null && isOnEventName(nameLit)) {
+      add(
+        'handler attribute `' +
+          nameLit +
+          '` set via setAttribute — a listener the census cannot see',
+      );
+    }
+  }
+  // A computed call `el[NAME](...)` where NAME's binding is a listener-registering string.
+  let cm = 0;
+  while (true) {
+    const at = stripped.indexOf('[', cm);
+    if (at === -1) break;
+    cm = at + 1;
+    const close = matchDelim(stripped, at);
+    if (close === -1 || stripped[close + 1] !== '(') continue;
+    const inner = stripped.slice(at + 1, close).trim();
+    if (!isIdentifierText(inner)) continue;
+    const b = bindingOffset(stripped, inner, at);
+    if (b < 0) continue;
+    const lit = stringLiteralValue(bindingRhs(stripped, b));
+    if (lit === null) continue;
+    if (lit === 'addEventListener' || isOnEventName(lit)) {
+      add(
+        'computed registration el[' +
+          inner +
+          '](…) where ' +
+          inner +
+          ' = ' +
+          JSON.stringify(lit) +
+          ' — a listener the census cannot see',
+      );
+    }
+  }
+
   // A tabindex written through a computed name or a non-literal value cannot be judged.
   for (const fn of ['setAttribute', 'setAttributeNS']) {
     let m = 0;
@@ -1457,6 +1650,33 @@ export function scanFailLoud(stripped) {
     }
   }
   return reasons;
+}
+
+/** `onclick`, `onKeyDown`, … — an inline handler attribute/property name. */
+function isOnEventName(nameLit) {
+  const n = String(nameLit).toLowerCase();
+  if (n.indexOf('on') !== 0 || n.length < 4) return false;
+  for (const ch of n.slice(2)) if (ch < 'a' || ch > 'z') return false;
+  return true;
+}
+
+/** Object-literal keys that are inline handler attributes. */
+function onEventKeys(text) {
+  const out = [];
+  let i = 0;
+  while (i < text.length) {
+    if (!isIdentStart(text[i]) || isIdentChar(text[i - 1])) {
+      i++;
+      continue;
+    }
+    let w = '';
+    while (i < text.length && isIdentChar(text[i])) w += text[i++];
+    let j = i;
+    while (j < text.length && text[j] === ' ') j++;
+    const assigns = text[j] === ':' || (text[j] === '=' && text[j + 1] !== '=');
+    if (assigns && isOnEventName(w) && out.indexOf(w) === -1) out.push(w);
+  }
+  return out;
 }
 
 function isIdentifierText(t) {
@@ -3087,6 +3307,39 @@ const NARROWING_IDIOMS = Object.freeze([
   '.hasAttribute(',
 ]);
 
+/**
+ * Every shipped tabindex write, frozen by VALUE. `[A11Y-T3]` alone cannot cover a DELEGATION
+ * TARGET — such an element never carries its own listener, so `receiverIsInteractive` is false by
+ * construction and the verdict is `null`. Red-team MEASURED the consequence: flipping
+ * `render/world.ts:82`'s `'0'` to `'-1'` — deleting the world canvas's only tab stop, the single
+ * thing a screen-reader user needs to reach the game at all — is byte-identical green, while
+ * DELETING the line is caught by the count floor. A value pin closes the gap the tag cannot.
+ */
+const FROZEN_TABINDEX_WRITES = Object.freeze([
+  Object.freeze({ file: 'ui/boxView.ts', value: '-1' }),
+  Object.freeze({ file: 'ui/evolutionView.ts', value: '-1' }),
+  Object.freeze({ file: 'ui/raisingView.ts', value: '-1' }),
+  Object.freeze({ file: 'ui/battleView.ts', value: '-1' }),
+  Object.freeze({ file: 'render/world.ts', value: '0' }),
+]);
+
+/**
+ * The `index.html` ids that carry `tabindex="-1"`, frozen as a SET. A count floor alone is masked
+ * by one decoy: red-team MEASURED deleting `#help-title`'s tabindex (its own
+ * `initialFocusSelector`, so opening Help strands focus) while adding a throwaway
+ * `<hr tabindex="-1">`, at a byte-identical census.
+ */
+const FROZEN_HTML_NEG_IDS = Object.freeze([
+  'dialogue-npc-name',
+  'quest-log-list',
+  'heal-list',
+  'shop-title',
+  'trade-status',
+  'pvp-challenge-status',
+  'leaderboard-title',
+  'help-title',
+]);
+
 /** Load-bearing files whose absence means the walker collapsed, not that the tree is clean. */
 const REQUIRED_FILES = Object.freeze([
   'ui/menuView.ts',
@@ -3118,6 +3371,7 @@ const VITE_CONFIG = 'client/vite.config.ts';
 const TABINDEX_DELEGATIONS = Object.freeze([
   Object.freeze({
     file: DELEGATE_SPEC,
+    tag: '[A11Y-T5]',
     titleNeedles: ['A11Y-26'],
     codeNeedles: ['Number.parseInt(e.raw, 10) > 0', 'const badTabindex = tabindexEls'],
     why: 'the document-wide A11Y-26 / [A11Y-T5] forward-guard over client/index.html',
@@ -3314,9 +3568,11 @@ export default async function () {
           INDEX_HTML,
       );
     }
+    const close = htmlForFields.indexOf('>', at);
     const open = htmlForFields.lastIndexOf('<', at);
-    const tag = htmlForFields.slice(open, at);
-    if (tag.indexOf('<button') !== 0 && tag.indexOf('<a ') !== 0) {
+    const tag = htmlForFields.slice(open, close === -1 ? at : close);
+    const op = htmlTagIsOperable(tag);
+    if (!op.ok) {
       return bad(
         '[A11Y-12] ARM-B CAST IS A LIE: ' +
           rec.file +
@@ -3326,11 +3582,11 @@ export default async function () {
           t +
           ' HTMLButtonElement, but id="' +
           id +
-          '" ships as ' +
-          tag.trim() +
+          '" ' +
+          op.why +
           ' in ' +
           INDEX_HTML +
-          ' — the element is not keyboard-operable and the declaration is a cast, not a fact',
+          ' — the declaration is a cast, not a fact',
       );
     }
     corroborated++;
@@ -3347,7 +3603,7 @@ export default async function () {
   }
 
   // ---- 5. The ratchet: MULTISET equality against the frozen table ---------------------
-  const ratchet = checkRatchet(nonNative, sources);
+  const ratchet = checkRatchet(nonNative);
   if (ratchet !== null) return bad(ratchet);
 
   // ---- 6. [A11Y-13] identity on the sanctioned paired delegation ----------------------
@@ -3413,6 +3669,7 @@ export default async function () {
   // ---- 8. [A11Y-T3] / [A11Y-T5] over every write spelling ----------------------------
   let tabWrites = 0;
   let listenerCandidates = 0;
+  const observedWrites = [];
   const t3 = [];
   const t5 = [];
   for (const [f, src] of sources) {
@@ -3424,6 +3681,7 @@ export default async function () {
       const v = tabindexVerdict(src, w);
       if (v.tag === '[A11Y-T3]') t3.push(f + ':' + w.line + ' ' + v.reason);
       if (v.tag === '[A11Y-T5]') t5.push(f + ':' + w.line + ' ' + v.reason);
+      observedWrites.push({ file: f, line: w.line, value: String(w.value).trim() });
     }
   }
   if (tabWrites < 5) {
@@ -3440,6 +3698,50 @@ export default async function () {
   if (t3.length > 0) return bad('[A11Y-T3] ' + t3.join(' | '));
   if (t5.length > 0) return bad('[A11Y-T5] ' + t5.join(' | '));
 
+  // VALUE PIN. `[A11Y-T3]` structurally cannot judge a DELEGATION TARGET (it carries no listener
+  // of its own), so flipping a shipped `'0'` to `'-1'` is invisible to the tag. Freeze the values.
+  for (const want of FROZEN_TABINDEX_WRITES) {
+    const got = observedWrites.filter((w) => w.file === want.file);
+    if (got.length !== 1) {
+      return bad(
+        '[A11Y-T3] FROZEN WRITE: ' +
+          want.file +
+          ' has ' +
+          got.length +
+          ' tabindex write(s), the ' +
+          'frozen table declares 1 — a shipped focus anchor was added or removed',
+      );
+    }
+    if (got[0].value !== want.value) {
+      return bad(
+        '[A11Y-T3] FROZEN WRITE CHANGED: ' +
+          want.file +
+          ':' +
+          got[0].line +
+          ' now writes ' +
+          JSON.stringify(got[0].value) +
+          ', the frozen table declares ' +
+          JSON.stringify(want.value) +
+          ' — flipping a 0 to a -1 deletes a tab stop, and no tag can see it because a ' +
+          'delegation target never carries its own listener',
+      );
+    }
+  }
+  const frozenFiles = FROZEN_TABINDEX_WRITES.map((w) => w.file);
+  for (const w of observedWrites) {
+    if (frozenFiles.indexOf(w.file) === -1) {
+      return bad(
+        '[A11Y-T3] UNDECLARED tabindex write at ' +
+          w.file +
+          ':' +
+          w.line +
+          ' = ' +
+          JSON.stringify(w.value) +
+          ' — add it to FROZEN_TABINDEX_WRITES with its intended value',
+      );
+    }
+  }
+
   // ---- 9. index.html half ------------------------------------------------------------
   let html;
   try {
@@ -3449,6 +3751,30 @@ export default async function () {
   }
   if (html.indexOf('id="menu-rows"') === -1) {
     return bad('SCOPE COLLAPSE: ' + INDEX_HTML + ' no longer carries id="menu-rows"');
+  }
+  // SET, not count: red-team MEASURED deleting `#help-title`'s tabindex (its own
+  // initialFocusSelector, so opening Help strands focus) while adding a throwaway
+  // `<hr tabindex="-1">` — byte-identical census under a bare count floor.
+  for (const id of FROZEN_HTML_NEG_IDS) {
+    const marker = 'id="' + id + '"';
+    const at = html.indexOf(marker);
+    if (at === -1) {
+      return bad('[A11Y-T3] FROZEN ANCHOR: id="' + id + '" is gone from ' + INDEX_HTML);
+    }
+    const close = html.indexOf('>', at);
+    const open = html.lastIndexOf('<', at);
+    if (html.slice(open, close === -1 ? at : close).indexOf('tabindex="-1"') === -1) {
+      return bad(
+        '[A11Y-T3] FROZEN ANCHOR LOST ITS tabindex: id="' +
+          id +
+          '" no longer carries ' +
+          'tabindex="-1" in ' +
+          INDEX_HTML +
+          ' — .focus() on it is a silent no-op, so the overlay ' +
+          'that names it as its initialFocusSelector strands focus on <body>. A bare COUNT floor ' +
+          'is masked by one decoy tabindex="-1" elsewhere in the file.',
+      );
+    }
   }
   const htmlNegIds = countOccurrences(html, 'tabindex="-1"');
   if (htmlNegIds < 8) {
@@ -3488,35 +3814,6 @@ export default async function () {
           'occurrence is the load-bearing assertion',
       );
     }
-  }
-  // THE INVERTED-ASSERTION NEGATIVE PROBE. A needle proves text is present; it cannot prove the
-  // assertion still asserts. Rewriting `.toEqual([])` to a self-comparison must make the pin RED.
-  // Target the LOAD-BEARING predicate, not a bare `toEqual([])` — that string occurs twelve
-  // times in this spec and a blind replace neuters an unrelated assertion, which would make the
-  // probe pass for the wrong reason. A function replacer is used deliberately: a `$'`/`$&`
-  // sequence in a replacement STRING duplicates the tail (measured in a prior slice).
-  const PROBE_ANCHOR = 'Number.parseInt(e.raw, 10) > 0';
-  if (countOccurrences(delegateSrc, PROBE_ANCHOR) !== 1) {
-    return bad(
-      '[A11Y-T5] NEGATIVE PROBE INAPPLICABLE: ' +
-        JSON.stringify(PROBE_ANCHOR) +
-        ' is not uniquely present in ' +
-        DELEGATE_SPEC,
-    );
-  }
-  const inverted = delegateSrc.replace(PROBE_ANCHOR, () => 'false');
-  if (inverted === delegateSrc) {
-    return bad('[A11Y-T5] NEGATIVE PROBE INAPPLICABLE: the anchor did not rewrite');
-  }
-  const probeRed = findInertDelegations(
-    (f) => (f === DELEGATE_SPEC ? inverted : readFileSync(f, 'utf8')),
-    TABINDEX_DELEGATIONS,
-  );
-  if (probeRed.length === 0) {
-    return bad(
-      '[A11Y-T5] NEGATIVE PROBE PASSED: neutering the delegate predicate to ' +
-        'a constant `false` left the pin GREEN, so this pin proves nothing about A11Y-26',
-    );
   }
   let viteSrc;
   try {
@@ -3684,7 +3981,11 @@ function checkNarrowedDelegation(sources) {
   }
   const declared = NARROWED_SELECTORS.map((s) => s.selector);
   for (const lit of seen) {
-    if (lit.indexOf('[') !== 0) continue;
+    // EVERY literal narrowing target, not just attribute selectors. Red-team MEASURED
+    // `.closest('.quest-row')`, `.closest('li')` and `.closest('#quest-log-list')` — a click
+    // delegated to every <li> in the document, with no producer proof — all passing at a
+    // byte-identical census because the old filter skipped anything not starting with '['.
+    if (lit === '.dataset.') continue;
     if (declared.indexOf(lit) === -1) {
       return (
         '[A11Y-12] UNDECLARED narrowing selector ' +
@@ -3720,22 +4021,32 @@ function producerIsNative(sources, s) {
         '[A11Y-12] could not read ' + INDEX_HTML + ': ' + (e && e.message ? e.message : String(e))
       );
     }
-    const at = html.indexOf(s.html);
-    if (at === -1) {
-      return '[A11Y-12] producer for ' + s.selector + ' is gone from ' + INDEX_HTML;
+    const hits = countOccurrences(html, s.html);
+    if (hits === 0) return '[A11Y-12] producer for ' + s.selector + ' is gone from ' + INDEX_HTML;
+    if (hits !== 1) {
+      return (
+        '[A11Y-12] AMBIGUOUS PRODUCER: ' +
+        s.html +
+        ' occurs ' +
+        hits +
+        ' times in ' +
+        INDEX_HTML +
+        ' — a first-hit anchor is steerable by a decoy, so the producing element cannot be named'
+      );
     }
+    const at = html.indexOf(s.html);
+    const close = html.indexOf('>', at);
     const open = html.lastIndexOf('<', at);
-    const tag = html.slice(open, at);
-    if (tag.indexOf('<button') !== 0 && tag.indexOf('<a ') !== 0) {
+    const op = htmlTagIsOperable(html.slice(open, close === -1 ? at : close));
+    if (!op.ok) {
       return (
         '[A11Y-12] PRODUCER DOWNGRADED: ' +
         s.selector +
-        ' is produced by ' +
-        tag.trim() +
-        ' in ' +
+        "'s producer in " +
         INDEX_HTML +
-        ', not a native <button>/<a> — the delegated click is no longer ' +
-        'keyboard-reachable'
+        ' ' +
+        op.why +
+        ' — the delegated click is no longer keyboard-reachable'
       );
     }
     return null;

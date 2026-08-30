@@ -169,3 +169,26 @@ is §5.4's GOOD hostile-but-correct fixture and it passes.
   listener bound on it in TS.
 - **R-rb13-TESTSUFFIX** — `listClientSourceFiles` excludes `*.test.ts`, so a production module
   disguised with that suffix is bundled by Vite and never scanned.
+
+**Second-round residuals.** A red-team lens attacked the *shipped* eval and measured a further set
+of green-and-wrong mutations. Eight were closed in-slice and each is now proven RED by mutation:
+four handler-registration spellings the census could not see (`Object.assign({onclick})`,
+`setAttribute('onclick')`, an `innerHTML` handler literal, and a `const`-held
+`el[NAME]('click',…)`) now fail loud; `createElement('a')` without an `href` and an `inert`
+receiver no longer count as native; the `main.ts` delegation now ratchets *every* literal narrowing
+target rather than only attribute selectors (`.closest('li')` was green); the five shipped tabindex
+writes are frozen by VALUE (flipping `render/world.ts`'s `'0'` to `'-1'` — deleting the world
+canvas's only tab stop — was green); the eight `index.html` focus anchors are frozen as a SET
+rather than a count (deleting `#help-title`'s tabindex while adding a decoy `<hr tabindex="-1">`
+was green); and the Arm-B corroboration now tests focusability rather than tag name (an
+`<a id="rename-submit">` with no href was green). What remains open is recorded in the eval's
+header and is honest about why each needs its own slice rather than a patch: **R-rb13-T5EXEC** (a
+text scan cannot prove an assertion still asserts — closing it puts vitest inside a millisecond
+scan), **R-rb13-INERTGUARD** (the class of never-satisfiable guards is unbounded; the durable fix
+is to invert the rule so an *unrecognised* conditional reads as dead), **R-rb13-WALKROOT**
+(`client/lib`, `module_bindings` and `index.html`'s inline script are outside the walk),
+**R-rb13-COMPTEETH** (the 48 teeth drive the matchers, not the decision layer — eleven gutting
+mutations still report 48/48), **R-rb13-CALLFORMS** (destructured, `.call`-ed and
+scheduler-deferred callbacks read as not-invoked and would false-RED correct code), and
+**R-rb13-DISABLED** (a permanent post-creation `disabled` is a real defect, but the transient
+in-flight form ships correctly on four sites and must not RED).
