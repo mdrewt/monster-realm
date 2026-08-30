@@ -147,3 +147,41 @@ import.
   - *Not closed by this slice:* residual `R-m23-s10-CSSDRIFT`. Agreement on a leaf primitive says
     nothing about `parseCssRules`/`findIdSelectors`/`srOnlyIsAccessible` semantics on the real
     `styles.css`; those remain gated solely by `indexShell.test.ts`'s own inline BAD/GOOD proofs.
+  - **Update (rb-15, `R-m23-s10-X18`), 2026-08-30 — the clause immediately above is now false. It is
+    left standing as the record; this note supersedes it.** Slice rb-15 applies **this ADR's own
+    ruling** to the rest of the oracle: `parseCssRules`, `findIdSelectors`, `srOnlyIsAccessible` and
+    their private helpers move to `evals/a11y-static-shell.eval.mjs`, and
+    `client/src/indexShell.test.ts` reaches them through its **existing** `rb12CssStripperOracle`
+    namespace import (`:89`), defining **zero** copies. `R-m23-s10-CSSDRIFT` is **closed**;
+    `[A11Y-06]`/`[A11Y-07]` are now executed first-party by the eval rather than delegated by grep.
+    Four things the move measured, recorded here because the next reader will otherwise re-derive
+    them:
+    - **No new import line was added, deliberately.** Pinned biome 2.5.1 **merges** same-specifier
+      imports, and RB12-G1 (decision outcome §5 above) counts *lines* beginning with `import` that
+      name the symbol, requiring exactly one. Measured: after the merge and the resulting wrap that
+      count is **0**, and RB12-G1 REDs with a message that reads "the owner symbol is unreachable
+      from this file". A third `import` of `../../evals/a11y-static-shell.eval.mjs` is therefore
+      forbidden — reach new symbols through the namespace binding.
+    - **The namespace form needed a new gate clause, in three parts.** A red-team pass that *wrote*
+      the cheating implementations found **7** shipping-plausible second oracles — object-method
+      shorthand, object-literal arrow property, class static method, `Object.assign` over the
+      namespace, poisoned namespace spread, a sibling `*.test.ts` twin, and a getter property — that
+      beat a `function NAME(` / `NAME =` shape ban **and** all four retained delegation needles
+      **and** the `client/src` file walk simultaneously, producing an end-to-end FALSE GREEN on a
+      deliberately poisoned stylesheet. `RB15-G1`/`RB15-G4` therefore carry **three** clauses: the
+      shape ban; an **occurrence census** (every whole-word occurrence of a moved symbol must be
+      immediately preceded by `rb12CssStripperOracle.`); and **namespace integrity** (that
+      identifier must always be followed by `.`, so `{...ns}` and `Object.assign(_, ns)` are
+      rejected). Measured: **no two of the three suffice.**
+    - **The reasons assertion is an exact SET, never `.includes`.** Measured: a constant-fail oracle
+      returning *every* reason survives all 15 BAD rows under `.includes`, and
+      `MIN_SR_ONLY_DECLARATIONS = 0` is invisible to `.includes` in every direction.
+    - **Still not closed.** `evals/reduced-motion-hp-bar.eval.mjs:103` remains a third
+      `stripCssComments` and still cannot converge — RK-1 above records why. The `[A11Y-07]`
+      CASCADE/SURFACE halves (`findCascadeReachingSelectors`, `importsAnotherStylesheet`,
+      `CASCADE_PINNED_IDS`) deliberately **stayed** in the `.ts`, which is why `parseCssRules` is
+      exported; parked as **`R-rb15-CASCADE`**. `SUSPENSION_SPELLINGS` in
+      `evals/overlay-a11y-manifest.eval.mjs` still misses `.skipIf(`, `.runIf(`, `.each([])` and
+      `.for([])` — rb-15 added a LOCAL extended-suspension clause in the eval it owns and flags the
+      shared list as a follow-up rather than editing a sibling eval. And a future **eval**
+      re-implementing the oracle is outside the `client/src` sole-owner walk.
