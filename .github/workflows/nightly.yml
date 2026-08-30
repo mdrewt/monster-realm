@@ -319,7 +319,8 @@ jobs:
       # playwright.config.ts globalSetup republishes the module — so this job needs
       # the same SpacetimeDB provisioning ci.yml's `e2e` job and the
       # `smoke-republish` job above carry. Same download-then-execute installer
-      # (not `curl | sh`: semgrep gha-curl-pipe-shell), same 2.8.1 pin.
+      # (fetch to a file, then run the file — never pipe the fetch into a shell,
+      # which semgrep's gha-curl-pipe-shell rule rejects), same 2.8.1 pin.
       - name: Install SpacetimeDB CLI
         # `--yes`: the installer prompts to confirm and aborts on a non-tty runner
         # without it. The install also generates the identity keypair used to publish.
