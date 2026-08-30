@@ -327,14 +327,17 @@ e2e: wasm
 # import THROW — fail-closed by construction, no floor needed). Half 2 floors
 # the a11y unit tier's size. Nothing else in the repo asserts either property.
 #
-# NOT covered, deliberately: axe-core and any real-browser or real-AT check.
-# Spec §5.7 names "axe-core + Playwright" as this recipe's payload, but no
-# axe-core exists in the repo and NO slice in the spec's own §4 table owns
-# authoring client/e2e/a11y.spec.ts — a genuine spec gap, deferred (m23-s11
-# ledger X10/X11). This recipe is the seam that follow-up fills; it prints a
-# DEFERRED banner every run so the gap can never read as covered.
-# The two MANUAL criteria A11Y-32/A11Y-33 are NEVER covered here and SHALL
-# NEVER be reported as CI-green — see docs/a11y-manual-protocol.md.
+# Half 3 (rb-19, ADR-0218) is the axe-core + real-browser tier spec §5.7 names as
+# this recipe's payload. m23-s11 could not author it — no axe-core existed and no
+# slice in the spec's own §4 table owned client/e2e/a11y.spec.ts — so this recipe
+# shipped as the seam, printing a DEFERRED banner, and residual R-m23-s11-X10 filled
+# it. It applies the one lens the other two halves and the whole of `just ci` are
+# structurally blind to: what the accessibility tree ACTUALLY looks like once
+# Chromium has applied CSS, computed visibility and resolved ARIA. Source and JSDOM
+# oracles can only prove an attribute was written.
+# The two MANUAL criteria A11Y-32/A11Y-33 are NEVER covered here — not by axe
+# either, which is not a screen reader — and SHALL NEVER be reported as CI-green;
+# see docs/a11y-manual-protocol.md.
 #
 # `: wasm` is load-bearing: src/main.a11yFocus.test.ts imports main.ts, which
 # imports ../../client-wasm/pkg/client_wasm.js. Without a prebuilt pkg its 26
@@ -342,19 +345,37 @@ e2e: wasm
 # M23-S5 focus-return tier out of the ratchet. `just wasm` measures ~11s warm.
 #
 # floor=169 measured at 2770ec9 (8 files / 169 tests / 0 failed / 0 pending /
-# 0 todo). Raise it in the same commit that adds a11y tests; LOWER it only in a
-# commit that deliberately removes some, and say which in the message.
+# 0 todo). axefloor=3 measured at eca6752 (3 axe tests / 0 unexpected / 0 flaky /
+# 0 skipped). Raise either in the same commit that adds a11y tests; LOWER one only
+# in a commit that deliberately removes some, and say which in the message.
+#
+# Half 3 needs a BROWSER and a LIVE SpacetimeDB: client/e2e/a11y.spec.ts runs under
+# the default client/playwright.config.ts, whose globalSetup republishes the module.
+# The nightly a11y-e2e job provisions both, and so does ci.yml's `e2e` job — because
+# that config's testDir is ./e2e, `just e2e` COLLECTS a11y.spec.ts too, so the axe
+# scan is ALSO a per-PR merge gate. That was deliberate: it costs ~3s in a job that
+# already runs a browser and a server, and excluding it would mean putting a
+# `--grep-invert` — a neuter-shaped construct — into the one recipe that has none.
+# What stays true, and is what spec 5.7 actually constrains, is that the HERMETIC
+# gate is untouched: `a11y-e2e` is not a `ci:` dependency and is not in the eval's
+# REQUIRED_JUST_STEPS (ADR-0043, ADR-0218).
 # Response policy + owner: docs/nightly-red-response-policy.md.
-a11y-e2e floor="169": wasm
+a11y-e2e floor="169" axefloor="3": wasm
     #!/usr/bin/env bash
     set -euo pipefail
-    # Fail loud on a non-integer floor BEFORE the run: a malformed value would
-    # otherwise make `[ -gt ]` error inside the if-condition below and silently
-    # skip the ratchet (vacuous green). `[ "" -gt N ]` in an if-condition is
-    # set -e-EXEMPT — the measured false-green shape in this justfile (ADR-0183
-    # D7, and the same guard mutate-server carries).
+    # Fail loud on a malformed floor BEFORE the run. BOTH floors are guarded, and
+    # the axe one is not decoration: it reaches `Number(process.argv[1])`, and
+    # `Number('')` is 0 while `Number('abc')` is NaN — `s.expected < NaN` is FALSE,
+    # so an empty or non-numeric axefloor makes half 3 print A11Y-AXE OK on a
+    # ZERO-test report. That is the same vacuous-green class ADR-0183 D7 records
+    # for `[ "" -gt N ]` in a set -e-exempt if-condition, arriving by a different
+    # route; the two `node -e` blocks below compare numerically rather than with
+    # `[ -gt ]`, so this `case` is the whole guard.
     case "{{floor}}" in
         ''|*[!0-9]*) echo "a11y-e2e: floor '{{floor}}' is not a non-negative integer" >&2; exit 64;;
+    esac
+    case "{{axefloor}}" in
+        ''|*[!0-9]*) echo "a11y-e2e: axefloor '{{axefloor}}' is not a non-negative integer" >&2; exit 64;;
     esac
     # --- Half 1: the a11y eval roster, pinned BY NAME. A deleted or renamed
     # eval makes import() throw, which set -e turns into a non-zero exit.
@@ -383,7 +404,16 @@ a11y-e2e floor="169": wasm
         src/render/motionPreference.test.ts
     cd ..
     node -e "const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-vitest.json', 'utf8')) } catch (e) { console.error('a11y-e2e: vitest wrote no readable JSON report — ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const files = j.testResults.length; const total = j.numTotalTests; if (files !== 8) { console.error('a11y-e2e: ' + files + ' spec file(s) reported, expected 8 — an a11y spec file was deleted or renamed'); process.exit(1) } if (j.numFailedTests !== 0 || j.numPendingTests !== 0 || j.numTodoTests !== 0) { console.error('a11y-e2e: failed=' + j.numFailedTests + ' pending=' + j.numPendingTests + ' todo=' + j.numTodoTests + ' — a skipped a11y test is a silently ungated one'); process.exit(1) } if (total < floor) { console.error('a11y-e2e: a11y unit tier reported ' + total + ' test(s) across ' + files + ' file(s) — floor is ' + floor); process.exit(1) } console.log('A11Y-NIGHTLY OK evals=3/3 files=' + files + ' tests=' + total + ' floor=' + floor + ' f=0 pend=0 todo=0')" -- "{{floor}}"
-    echo "DEFERRED: axe-core + real-browser tier is NOT run here (m23-s11 ledger X10/X11)."
+    # --- Half 3: the axe-core + real-browser tier. Same stale-report discipline as
+    # half 2 — a leftover report from a previous run would be read as this run's
+    # result if playwright died before writing. The floor is asserted from the
+    # machine-readable report and never from console text: a MISSING spec file makes
+    # playwright report zero tests and exit 0, the same silent-zero shape vitest has.
+    rm -f /tmp/a11y-e2e-axe.json
+    cd client && PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/a11y-e2e-axe.json \
+        npx playwright test e2e/a11y.spec.ts --reporter=json
+    cd ..
+    node -e "const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-axe.json', 'utf8')) } catch (e) { console.error('a11y-e2e: playwright wrote no readable JSON report — ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const s = j.stats; if (s === undefined) { console.error('a11y-e2e: playwright report carries no stats block'); process.exit(1) } if (s.unexpected !== 0 || s.flaky !== 0 || s.skipped !== 0) { console.error('a11y-e2e: axe tier unexpected=' + s.unexpected + ' flaky=' + s.flaky + ' skipped=' + s.skipped + ' — a skipped or flaky a11y test is a silently ungated one'); process.exit(1) } if (s.expected < floor) { console.error('a11y-e2e: axe tier reported ' + s.expected + ' passing test(s) — floor is ' + floor + '; a MISSING spec file reports zero and exits 0'); process.exit(1) } console.log('A11Y-AXE OK tests=' + s.expected + ' floor=' + floor + ' unexpected=0 flaky=0 skipped=0')" -- "{{axefloor}}"
     echo "DEFERRED: A11Y-32 / A11Y-33 are MANUAL and are NEVER CI-green — docs/a11y-manual-protocol.md"
 
 # Fast inner loop: clippy + nextest + doctests scoped to a single crate.

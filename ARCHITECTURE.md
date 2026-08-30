@@ -245,7 +245,7 @@ covers BOTH polarities of the RE-OPEN edge for all sixteen —
 `S10-WIRE-REPEAT-NO-REOPEN:<id>` (a second open on an already-visible overlay fires no helper and
 never yanks focus back) and `S10-WIRE-REOPEN-AFTER-CLOSE:<id>` (after a close, opening again IS a
 real edge: the helper fires, the ARIA is re-applied and the deferred focus is re-armed).
-**The nightly a11y decay ratchet (m23-s11)** — `just a11y-e2e floor="169": wasm`, run by its own
+**The nightly a11y tier (m23-s11 + rb-19)** — `just a11y-e2e floor="169" axefloor="3": wasm`, run by its own
 `a11y-e2e` job in `nightly.yml` and NOT in `just ci` (a browser and a live server in the hermetic
 gate is the exact thing that keeps `e2e` out of it, ADR-0043). It adds the one lens the per-PR
 gate structurally cannot: DECAY. `evals/run.mjs` fails at ZERO eval files and (since **rb-5**)
@@ -258,8 +258,12 @@ the eight-file a11y unit tier at 169 tests with `--reporter=json`, rejecting a p
 as a silently ungated one. `: wasm` is load-bearing — `main.a11yFocus.test.ts` imports `main.ts`,
 which imports the client-wasm pkg, so without it those 26 tests fail to RESOLVE and the whole
 M23-S5 focus-return tier drops silently out of the ratchet. `evals/ci-gate-wiring.eval.mjs` gains
-three ADDITIVE checks with 35 proof-of-teeth fixtures; `REQUIRED_JUST_STEPS` is deliberately
-UNCHANGED. `a11yRecipeBodyIntact` pins the recipe's required tokens and `a11yNightlyJobIsWired`
+eight ADDITIVE checks (three from m23-s11, five from rb-19); `REQUIRED_JUST_STEPS` is deliberately
+UNCHANGED — and since rb-19 that is an ASSERTION rather than a convention, because red-team
+executed the promotion (append `a11y-e2e` to the `ci:` dependency line, or add a bare
+`- run: just a11y-e2e` step to `ci.yml`) and the whole eval suite stayed green.
+`a11yStaysNightlyOnly` closes all three doors: the roster, the `ci:` dependency CLOSURE
+(transitive — `ci: … coverage` where `coverage: a11y-e2e` needs no `ci:` edit), and `ci.yml`. `a11yRecipeBodyIntact` pins the recipe's required tokens and `a11yNightlyJobIsWired`
 pins the job to exactly one unsuffixed, unneutered, SCHEDULABLE invocation (no empty `matrix`, no
 phantom `runs-on`, and `continue-on-error` by VALUE whitelist — red-team executed both
 `${{ !cancelled() }}` and `${{ success() || true }}` past `isTruthyCoe`'s literal blacklist).
@@ -267,10 +271,19 @@ phantom `runs-on`, and `continue-on-error` by VALUE whitelist — red-team execu
 `exit 0` planted under `set -euo pipefail`, above a byte-identical body, kept every required token
 and made the recipe a no-op. A blacklist of abort constructs is unclosable, so the recipe REGION
 is pinned VERBATIM — raw, not comment-stripped, so a deleted shebang reds too — and the justfile
-and the pin move in lockstep or CI is red. **It runs no axe-core and no real
-browser:** spec §5.7 names that as the payload, but no axe-core exists in the repo and no slice in
-the spec's own §4 table owns authoring it — a genuine spec gap (ledger X10/X11), and the recipe
-prints a `DEFERRED:` banner every run so it can never read as covered. **A11Y-32 and A11Y-33 are
+and the pin move in lockstep or CI is red. **Half 3 is the axe-core + real-browser tier (rb-19, ADR-0218)**, which spec §5.7 named as the
+payload and no §4 slice owned — a genuine spec gap (ledger X10/X11) that the recipe advertised
+with a `DEFERRED:` banner until rb-19 deleted it. `client/e2e/a11y.spec.ts` scans three page
+states (connected world chrome; help overlay via `?`; menu overlay via `M`) at WCAG 2.x A/AA with
+`canvas` excluded per the §5.6 conformance scope, asserting empty `violations`, a MEASURED
+`passes` floor (a blank or unbooted page also reports zero violations — that floor is the
+non-vacuity device), a closed `incomplete` id set and a shrink-only per-state undecidable-node
+ceiling. Because `playwright.config.ts` has `testDir: './e2e'`, `just e2e` collects the spec too,
+so it is ALSO a per-PR merge gate; what the nightly adds is the decay half, since only `axefloor`
+notices the spec being deleted. Running it needs a live SpacetimeDB (globalSetup republishes the
+module), so the nightly job now provisions spacetime 2.8.1 and chromium — and the job block is
+pinned VERBATIM for the same reason the recipe region is: it went from one pre-gate shell step to
+six, widening the `$GITHUB_PATH` shim surface. **A11Y-32 and A11Y-33 are
 MANUAL and SHALL NEVER be reported as CI-green** — `docs/a11y-manual-protocol.md` is the
 human-executed protocol (NVDA 2024.x + Chrome, mouse unplugged and screen covered; VoiceOver +
 Safari as a non-gating cross-check) and its append-only run log. Its Protocol B carries a CONTROL
