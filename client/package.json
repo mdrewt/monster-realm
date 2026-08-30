@@ -23,6 +23,7 @@
     "node": ">=24.13.1 <25"
   },
   "devDependencies": {
+    "@axe-core/playwright": "4.13.0",
     "@biomejs/biome": "2.5.1",
     "@playwright/test": "^1.61.0",
     "@types/node": "^24.0.0",
