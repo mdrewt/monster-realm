@@ -1662,8 +1662,9 @@ describe('MenuView — m23-s6 source pins (A11Y-15, A11Y-25 shape)', () => {
 
   it('MV-KEYDOWN-PAIRED-SOURCE BITES: #menu-rows carries BOTH a delegated click and a delegated keydown, and both bodies reference the SAME callback identifier', () => {
     // WRONG IMPL KILLED (1): a click-only row list. This is the SHAPE spec §5.4's GOOD fixture
-    //   describes and the shape evals/keyboard-operable-rows.eval.mjs (S10's file, deferred)
-    //   will scan for: a click listener with no paired keydown and no native button/anchor
+    //   describes and the shape evals/keyboard-operable-rows.eval.mjs (built by rb-13, ADR-0216,
+    //   after S10 shipped only three of its five declared evals) scans for: a click listener with
+    //   no paired keydown and no native button/anchor
     //   child is a mouse-only control. S6 ships the subject that eval will read, so the shape is
     //   pinned HERE, in the slice that owns the file.
     // WRONG IMPL KILLED (2): a keydown that calls something OTHER than the click's callback —
