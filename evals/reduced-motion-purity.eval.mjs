@@ -71,7 +71,16 @@
 //     behaviourally identical to `listClientSourceFiles`. Out of `touches:`, so unreconciled.
 //
 // NO `main` GUARD (see the manifest eval). `run.mjs` imports the default export.
-import { readdirSync, readFileSync, statSync } from 'node:fs';
+import {
+  lstatSync,
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
 import {
   listClientSourceFiles,
   stripCssComments,
@@ -238,13 +247,43 @@ export function isCensusSpec(rel) {
  * the two against each other, so having two is a checked property rather than a silent divergence.
  */
 export function listMotionCensusFiles(root, prefix = '') {
+  return walkClientTree(root, prefix, isCensusSource);
+}
+
+/** Every path under `root` a census tier may READ — sources AND specs. `[A11Y-RM2f]` is handed
+ *  this wider roster on purpose and narrows it itself, so that "the read-back scan is driven by
+ *  the census filter" is a property a synthetic fixture can pin rather than a wiring detail no
+ *  test can reach. */
+export function listCensusCandidates(root, prefix = '') {
+  return walkClientTree(root, prefix, (rel) => isCensusSource(rel) || isCensusSpec(rel));
+}
+
+/**
+ * The one recursive walk both rosters and the stylesheet walk share.
+ *
+ * REFUSES a symbolic link rather than following it. `statSync` follows links, so before this
+ * refusal a single symlink under `client/src` — accidental or planted — made the census, and
+ * therefore every `readFileSync` driven by it, walk and read arbitrary paths OUTSIDE the walked
+ * root while reporting a perfectly ordinary file count. MEASURED at rb-17 by red-team: one link
+ * yielded 158 files, one of them resolved from outside the repository entirely. There are no
+ * symlinks under `client/src` today, so the refusal costs nothing, and the day one appears is a
+ * day that deserves a decision rather than a silently wider scan.
+ */
+function walkClientTree(root, prefix, accept) {
   const out = [];
   for (const entry of readdirSync(root)) {
     const full = `${root}/${entry}`;
     const rel = prefix === '' ? entry : `${prefix}/${entry}`;
-    if (statSync(full).isDirectory()) {
-      out.push(...listMotionCensusFiles(full, rel));
-    } else if (isCensusSource(rel)) {
+    const stat = lstatSync(full);
+    if (stat.isSymbolicLink()) {
+      throw new Error(
+        `WALK REFUSED: ${full} is a symbolic link. Following it would let this scan read and ` +
+          'judge files outside the walked root while reporting an ordinary file count.',
+      );
+    }
+    if (stat.isDirectory()) {
+      out.push(...walkClientTree(full, rel, accept));
+    } else if (accept(rel)) {
       out.push(rel);
     }
   }
@@ -255,14 +294,7 @@ export function listMotionCensusFiles(root, prefix = '') {
  *  and today there is exactly one — which is precisely why the walk needs a positive-find floor
  *  rather than a count floor: "no stylesheets found" and "no violations found" look identical. */
 export function listCssFiles(root, prefix = '') {
-  const out = [];
-  for (const entry of readdirSync(root)) {
-    const full = `${root}/${entry}`;
-    const rel = prefix === '' ? entry : `${prefix}/${entry}`;
-    if (statSync(full).isDirectory()) out.push(...listCssFiles(full, rel));
-    else if (rel.endsWith('.css')) out.push(rel);
-  }
-  return out.sort();
+  return walkClientTree(root, prefix, (rel) => rel.endsWith('.css'));
 }
 
 /** Members of `a` absent from `b`, sorted. A SET difference, never a symmetric one: the two
@@ -309,8 +341,21 @@ export function preludeIsMotionScoped(prelude) {
  * `url(logo@2x.png)`. A false RED here is not a safe default — it is how a clause gets deleted.
  */
 export function hasUnscopedAt(text) {
+  return scanCssTopLevel(text, (ch, _i, paren) => ch === '@' && paren === 0);
+}
+
+/**
+ * The quote/escape/paren/brace bookkeeping `hasUnscopedAt` and `hasTopLevelImport` share.
+ *
+ * ONE scanner, two triggers: the state machine is mechanical and identical for both, and the only
+ * thing that distinguishes them — WHICH top-level character matters — stays in the caller, where a
+ * reader looking for the rule finds the rule and not a paren counter. Returns as soon as `visit`
+ * says yes.
+ */
+function scanCssTopLevel(text, visit) {
   let quote = null;
   let paren = 0;
+  let depth = 0;
   for (let i = 0; i < text.length; i += 1) {
     const ch = text.charAt(i);
     if (quote !== null) {
@@ -329,9 +374,23 @@ export function hasUnscopedAt(text) {
       i += 1;
       continue;
     }
-    if (ch === '(') paren += 1;
-    else if (ch === ')' && paren > 0) paren -= 1;
-    else if (ch === '@' && paren === 0) return true;
+    if (ch === '(') {
+      paren += 1;
+      continue;
+    }
+    if (ch === ')' && paren > 0) {
+      paren -= 1;
+      continue;
+    }
+    if (ch === '{' && paren === 0) {
+      depth += 1;
+      continue;
+    }
+    if (ch === '}' && paren === 0 && depth > 0) {
+      depth -= 1;
+      continue;
+    }
+    if (visit(ch, i, paren, depth)) return true;
   }
   return false;
 }
@@ -387,37 +446,23 @@ export function findMotionCustomProps(css) {
   return { motionScopedRules, offenders };
 }
 
-/** A top-level `@import` in already-comment-stripped CSS: outside any block, string or paren. */
+/**
+ * A top-level `@import` in already-comment-stripped CSS: outside any block, string or paren.
+ *
+ * CASE-INSENSITIVE, and that is not defensive tidying — CSS at-keywords are ASCII
+ * case-insensitive, so `@IMPORT url(...)` is honoured by every browser exactly as `@import` is.
+ * MEASURED at rb-17 by red-team: the case-SENSITIVE first draft returned a CLEAN VERDICT for
+ * `@IMPORT url("x.css")`, which is a total bypass of this refusal and therefore of the whole ban
+ * — the offending declaration simply moves into the imported sheet, and a formatter that
+ * upper-cases at-keywords would open the hole by accident. Compared on a SLICE rather than a
+ * whole-string lowercase, so the index stays byte-aligned for any input.
+ */
 function hasTopLevelImport(clean) {
-  let quote = null;
-  let paren = 0;
-  let depth = 0;
-  for (let i = 0; i < clean.length; i += 1) {
-    const ch = clean.charAt(i);
-    if (quote !== null) {
-      if (ch === '\\') {
-        i += 1;
-      } else if (ch === quote) {
-        quote = null;
-      }
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      continue;
-    }
-    if (ch === '\\') {
-      i += 1;
-      continue;
-    }
-    if (ch === '(') paren += 1;
-    else if (ch === ')' && paren > 0) paren -= 1;
-    else if (paren === 0 && ch === '{') depth += 1;
-    else if (paren === 0 && ch === '}' && depth > 0) depth -= 1;
-    else if (paren === 0 && depth === 0 && ch === '@' && clean.startsWith('@import', i))
-      return true;
-  }
-  return false;
+  return scanCssTopLevel(
+    clean,
+    (ch, i, paren, depth) =>
+      paren === 0 && depth === 0 && ch === '@' && clean.slice(i, i + 7).toLowerCase() === '@import',
+  );
 }
 
 /**
@@ -466,6 +511,28 @@ export const READ_BACK_TOKENS = Object.freeze([
  * `getComputedStyleCache` identifier must not fire, or the clause becomes unusable and the natural
  * "fix" is to shorten the list.
  */
+/**
+ * Read-back offenders over a roster of candidate paths, NARROWED HERE by `isCensusSource`.
+ *
+ * The narrowing lives inside this function, and the real-tree clause hands it the WIDE roster
+ * (sources AND specs), for one measured reason: the wrong implementation that scans the
+ * undifferentiated roster was invisible to every synthetic fixture — it was caught only by the
+ * incidental live text at `client/src/indexShell.test.ts:984`, which names `getComputedStyle` in a
+ * comment. Rename that one word in that one off-slice file and the wrong implementation went fully
+ * green on 42 in-file teeth AND on the independent 65-fixture probe. With the filter HERE, `f10`
+ * pins the wiring on a two-element synthetic roster, and the invariant stops riding on someone
+ * else's comment.
+ */
+export function findCensusReadBacks(paths, readSource) {
+  const hits = [];
+  for (const rel of paths) {
+    if (!isCensusSource(rel)) continue;
+    const found = findReadBackApis(readSource(rel));
+    if (found.length > 0) hits.push(`${rel} (${found.join(', ')})`);
+  }
+  return hits;
+}
+
 export function findReadBackApis(src) {
   const wordish = /[A-Za-z0-9_$]/;
   return READ_BACK_TOKENS.filter((token) => {
@@ -496,7 +563,7 @@ export const MOTION_DELEGATIONS = Object.freeze([
 export default async function () {
   const name = 'reduced-motion-purity ([A11Y-RM2] matchMedia ownership + the out-of-tree escape)';
   let teeth = 0;
-  const teethTotal = 42;
+  const teethTotal = 47;
   const bad = (detail) => ({ name, pass: false, detail });
 
   // ==================================================================
@@ -757,6 +824,11 @@ export default async function () {
     },
     { id: 'e12', css: '@import url("x.css");.a{color:red}', needle: 'at-import' },
     { id: 'e15', css: '.icon{background:url(' + CSS_OPEN + ')}', needle: 'url()' },
+    // e17/e18 BAD — CSS at-keywords are ASCII case-INSENSITIVE, so these are the same rule to a
+    // browser as e12. The case-sensitive first draft returned a clean verdict for both, which
+    // moves the whole ban into a file this walker never opens.
+    { id: 'e17', css: '@IMPORT url("x.css");.a{color:red}', needle: 'at-import' },
+    { id: 'e18', css: '@ImPort url("x.css");.a{color:red}', needle: 'at-import' },
   ];
   for (const row of cssThrowTeeth) {
     let threw = '';
@@ -813,12 +885,58 @@ export default async function () {
 
   // f9: the token roster is frozen and complete. A future edit that quietly drops one EVENT token
   // leaves f1-f5 green, so the roster gets its own tooth.
-  if (!Object.isFrozen(READ_BACK_TOKENS) || READ_BACK_TOKENS.length !== 15) {
+  // EXACT SET, not a length. A length check is satisfied by swapping any token for a harmless
+  // one, and MEASURED at rb-17: `transitioncancel` -> a decoy string left the CI-gating eval fully
+  // green at 42/42, because only six of the fifteen tokens carry an individual fixture.
+  const ROSTER = [
+    'animationcancel',
+    'animationend',
+    'animationiteration',
+    'animationstart',
+    'computedStyleMap',
+    'cssRules',
+    'currentStyle',
+    'getAnimations',
+    'getComputedStyle',
+    'getPropertyValue',
+    'styleSheets',
+    'transitioncancel',
+    'transitionend',
+    'transitionrun',
+    'transitionstart',
+  ].join('|');
+  if (!Object.isFrozen(READ_BACK_TOKENS) || READ_BACK_TOKENS.slice().sort().join('|') !== ROSTER) {
     return bad(
-      `TEETH f9: the read-back roster is ${READ_BACK_TOKENS.length} token(s) and frozen=` +
-        `${Object.isFrozen(READ_BACK_TOKENS)} — it must be fifteen and frozen; shortening it is ` +
-        'the cheapest way to make this clause pass',
+      `TEETH f9: the read-back roster is [${READ_BACK_TOKENS.slice().sort().join(', ')}] and ` +
+        `frozen=${Object.isFrozen(READ_BACK_TOKENS)} — it must be the frozen fifteen, pinned by ` +
+        'VALUE: dropping or swapping a token is the cheapest way to make this clause pass',
     );
+  }
+  teeth++;
+
+  // f10: the WIRING. `findCensusReadBacks` must narrow its own roster with `isCensusSource`.
+  // Without this tooth the only thing catching a scan of the undifferentiated roster is an
+  // incidental comment in client/src/indexShell.test.ts, a file this slice does not own.
+  const f10 = findCensusReadBacks(['ui/a.ts', 'ui/a.test.ts'], () => 'getComputedStyle(el)');
+  if (f10.length !== 1 || f10[0].indexOf('ui/a.ts') !== 0) {
+    return bad(
+      `TEETH f10: the census-filtered read-back scan returned [${f10.join(', ')}] — it must report ` +
+        'the source file and skip the spec file; a scan that ignores the census filter reds on a ' +
+        'shipped test comment instead of on a real second reader',
+    );
+  }
+  teeth++;
+
+  // f11: EVERY token is individually detectable. f1-f8 only exercise six of the fifteen, so a
+  // corrupted or duplicated entry in the other nine changes nothing they can see.
+  for (const token of READ_BACK_TOKENS) {
+    const hit = findReadBackApis(`const probe = ${token};`);
+    if (hit.length !== 1 || hit[0] !== token) {
+      return bad(
+        `TEETH f11: token '${token}' was not individually detected (got [${hit.join(', ')}]) — ` +
+          'an entry that no fixture reaches is an entry that can be corrupted silently',
+      );
+    }
   }
   teeth++;
 
@@ -865,6 +983,29 @@ export default async function () {
     );
   }
   teeth++;
+  // g8: the walk REFUSES a symlink rather than following it. Proven on a real temporary tree,
+  // because a claimed refusal and a working refusal are different things: `statSync` follows
+  // links, and one link under a walk root silently widens every scan driven by it.
+  const g8dir = mkdtempSync(`${tmpdir()}/rb17-walk-`);
+  let g8refused = false;
+  try {
+    writeFileSync(`${g8dir}/real.css`, '.a{color:red}');
+    symlinkSync(tmpdir(), `${g8dir}/escape`);
+    listCssFiles(g8dir);
+  } catch (e) {
+    g8refused = e.message.indexOf('symbolic link') !== -1;
+  } finally {
+    rmSync(g8dir, { recursive: true, force: true });
+  }
+  if (!g8refused) {
+    return bad(
+      'TEETH g8: the walker followed (or ignored) a symbolic link instead of refusing it — one ' +
+        'link under the walk root lets every scan driven by this roster read files outside it ' +
+        'while reporting an ordinary file count',
+    );
+  }
+  teeth++;
+
   const g5fwd = censusDifference(
     ['z.ts', 'module_bindings/m.ts', 'module_bindings/a.ts'],
     ['z.ts'],
@@ -1016,18 +1157,35 @@ export default async function () {
     return bad(
       `[A11Y-RM2g] only ${censusOnly.length} generated module(s) separate the two walkers — the ` +
         'difference is the whole reason this census exists, so an empty or near-empty one means ' +
-        'either the bindings are gone or this walker stopped descending into them',
+        'either the bindings are gone or this walker stopped descending into them. If a schema ' +
+        'change legitimately shrank `spacetime generate` output below this floor, lower the floor ' +
+        'deliberately — do not delete the clause',
     );
   }
 
   // ==================================================================
   // [A11Y-RM2f] — the READ end of the CSS channel, over the SOURCE census only.
   // ==================================================================
-  const readBacks = [];
-  for (const rel of files) {
-    const found = findReadBackApis(sources[rel]);
-    if (found.length > 0) readBacks.push(`${rel} (${found.join(', ')})`);
+  // The WIDE roster on purpose: `findCensusReadBacks` narrows it with `isCensusSource` itself,
+  // which is what makes the narrowing a property tooth f10 can pin. Specs are walked and skipped,
+  // never scanned — `client/src/indexShell.test.ts` legitimately names `getComputedStyle` in a
+  // comment, and a scan of the undifferentiated roster reds on it.
+  let candidates;
+  try {
+    candidates = listCensusCandidates(CLIENT_SRC);
+  } catch (e) {
+    return bad(`[A11Y-RM2f] could not walk ${CLIENT_SRC}: ${e.message}`);
   }
+  if (candidates.length <= files.length) {
+    return bad(
+      `[A11Y-RM2f] the candidate roster (${candidates.length}) is not wider than the source ` +
+        `census (${files.length}) — the spec files are missing from it, so the census filter this ` +
+        'clause depends on is being handed nothing to filter',
+    );
+  }
+  const readBacks = findCensusReadBacks(candidates, (rel) =>
+    readFileSync(`${CLIENT_SRC}/${rel}`, 'utf8'),
+  );
   if (readBacks.length > 0) {
     return bad(
       `[A11Y-RM2f] client/src module(s) name a CSS read-back or motion-event API: ` +

@@ -330,6 +330,11 @@ describe('m23-s7 motionPreference (A11Y-27 / A11Y-28)', () => {
     expect(isCensusSource('ui/x.js')).toBe(true);
     expect(isCensusSpec('ui/x.test.tsx')).toBe(true);
     expect(isCensusSource('module_bindings/x.ts')).toBe(true);
+    // The disguised-production-code boundary, asserted HERE and not only in the eval's own g3b:
+    // red-team measured that an `.includes('.test.ts')` suffix exemption leaves this whole suite
+    // 4/4 green, so the single-owner claim in this file's header needs its own check of it.
+    expect(isCensusSource('ui/foo.test.ts.bak.ts')).toBe(true);
+    expect(isCensusSource('foo.test.ts.bak')).toBe(false);
     expect(tsFiles.filter((rel) => rel.startsWith('module_bindings/')).length).toBeGreaterThan(20);
 
     // anti-vacuity: prove the walk really enumerated the client source tree before
