@@ -1863,7 +1863,10 @@ boolean instead of the live DOM). The two source PRESENCE pins scan comment-STRI
 teeth-asserting stripper, while the two BAN pins (`MV-NO-INNERHTML`, `MV-NO-FOCUS-CALL`) keep scanning
 RAW — stripping exists because a comment can FORGE evidence that code exists, and must never EXCUSE a
 banned API. Acceptance ledger 16 gates; A11Y-25/A11Y-26 DEFERred to `backlog` (intended owner S10) because
-their sole oracle is `evals/keyboard-operable-rows.eval.mjs`, which S6 may not create. **No ADR authored** —
+their sole oracle is `evals/keyboard-operable-rows.eval.mjs`, which S6 may not create. **CLOSED by
+rb-13** (ADR-0216): S10 shipped three of its five declared evals, so that oracle never landed and the
+two criteria went unenforced for four days; rb-13 built it. `menuView.ts` needed zero edits — it is
+§5.4's GOOD hostile-but-correct fixture and it passes. **No ADR authored** —
 the supervisor assigned no number and `docs/adr/**` is "reserved number only" under fan-out (the m23-s1
 precedent); the split-ownership decision rides in the module header and is escalated for a number.
 ADR next-free = 0207.
