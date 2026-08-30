@@ -7,9 +7,15 @@
 //
 //   1. TOTALITY. Nothing asserts that EVERY `OverlayId` is wired. A seventeenth overlay, or a view
 //      whose `show()` quietly stopped calling the helper, is caught by no existing test. Here the
-//      opener table is `Readonly<Record<OverlayId, …>>`, so a missing id is a COMPILE error
-//      (`overlayRegistry.ts:76`/`:164`'s device), belt-and-braced with a runtime key-set equality
-//      and a `checked === 16` counter.
+//      opener table is `Readonly<Record<OverlayId, …>>` (`overlayRegistry.ts:76`/`:164`'s device),
+//      belt-and-braced with a runtime key-set equality, a runtime SHAPE equality over what each
+//      opener hands back, and a `checked === 16` counter.
+//      CORRECTION (rb-18): the `Record` is an EDITOR-time device only. `client/tsconfig.json`
+//      excludes `**/*.test.ts`, so `just client-typecheck` — and therefore `just ci` — never
+//      typechecks this file, and vitest transpiles without checking. The header previously called
+//      a missing id "a COMPILE error"; in CI it is not one. Every totality claim below is
+//      therefore carried by a RUNTIME assertion, which is why `S10-WIRE-TOTALITY` pins the opener
+//      RETURN SHAPE and not merely the key set.
 //   2. FIXTURE FIDELITY. The per-view specs copy their shell markup into the test file, so they
 //      keep passing if `client/index.html` loses a `tabindex` — the very attribute ADR-0205 D1
 //      makes ten of the sixteen anchors depend on. This file adopts the REAL `client/index.html`,
@@ -49,8 +55,22 @@
 //   (d) REMOVAL — after close, `role`, `aria-modal` and `aria-label` are all ABSENT and focus is
 //       back on the sentinel. Presence is free from the static markup; ABSENCE is impossible
 //       without the wiring having run, which is what makes this the anti-vacuity partner of (a).
+//   (e) NO RE-OPEN — a SECOND open on an already-visible overlay is a NO-EDGE: the helper is not
+//       called again, the manifest anchor node is not rebuilt, and focus stays on whatever the
+//       player moved it to inside the overlay. Added by rb-18 (residual R-m23-s10-X21). Until it
+//       existed, this file opened each id exactly once, so deleting a view's `if (!wasVisible)`
+//       guard shipped GREEN here — MEASURED, all sixteen mutants survived. Sixteen per-view specs
+//       each caught their own (also measured), but nothing in the SHARED layer did, so the
+//       guarantee rested entirely on sixteen separately-maintained files staying in sync and on
+//       a seventeenth overlay's author remembering to copy the idiom. Here the `reopen` handle is
+//       a REQUIRED field of `Opened`, so a new `OverlayId` cannot ship without one.
+//       SCOPE, stated so it is not over-read: this proves the guard on the open path each view's
+//       PRODUCTION caller drives — `show()` for thirteen ids, the `render()` null->non-null edge
+//       for `dialogueView`/`questLogView`/`healView`. `claimView` has a SECOND guarded open site
+//       (`claimView.ts:107`, `vm.visible && !wasVisible`) which `show()` does not reach; that one
+//       is owned by `claimView.test.ts` (`S4-claimView-THREE-DOORS`) and is NOT covered here.
 //
-// NO FAKE TIMERS: the one-macrotask defer is load-bearing (`overlayA11y.ts:17-20` — an overlay
+// NO FAKE TIMERS: the one-macrotask defer is load-bearing (`overlayA11y.ts:9-15` — an overlay
 // opened by a letter hotkey would otherwise swallow that letter into the field it just focused),
 // and both polarities are pinned by the per-view specs already.
 import { readFileSync } from 'node:fs';
@@ -153,10 +173,24 @@ function adoptRealIndexHtml(): void {
   document.body.replaceChildren(...adopted);
 }
 
-/** What an opener hands back: the root the helper was given, and how to close it again. */
+/** What an opener hands back: the root the helper was given, and how to re-open and close it. */
 interface Opened {
   readonly root: HTMLElement;
   readonly close: () => void;
+  /**
+   * Drive the SAME production open path a SECOND time, on the SAME instance.
+   *
+   * REQUIRED, never optional: the totality device is `Readonly<Record<OverlayId, () => Opened>>`,
+   * and an optional field would make sixteen silent omissions legal — reopening exactly the hole
+   * rb-18 closes.
+   *
+   * It must close over the instance the opener already built. Calling `OPENERS[id]()` a second
+   * time instead constructs a NEW view, and the five field-backed ids (`battleView`, `boxView`,
+   * `raisingView`, `evolutionView`, `pvpView`) read `this.#visible`, which is `false` on a fresh
+   * instance — so those five would legitimately re-open and the tooth would FALSE-RED on correct
+   * code. Production never builds a second instance; it calls `show()`/`render()` again.
+   */
+  readonly reopen: () => void;
 }
 
 function requireElement(id: string): HTMLElement {
@@ -184,7 +218,25 @@ const asyncNoop = async (): Promise<void> => {};
  *   * `dialogueView` / `questLogView` / `healView`, which have NO `show()` and open on the
  *     `render(vm | null)` null -> non-null EDGE (criterion A11Y-34);
  *   * `claimView`, which has both and is body-appended by its own `ensureElement` — `show()` is
- *     used, matching production (`main.ts`).
+ *     used, which is the door `main.ts` calls.
+ *
+ * WHICH DOOR, AND WHERE THAT IS NOT THE PRODUCTION ONE (disclosed by rb-18 rather than left to be
+ * discovered). Two entries drive a door the shipped caller does not, and neither is a false pass —
+ * both views derive `visible` LIVE from the DOM rather than from a latch field, so the alternative
+ * door is a behaviourally equivalent input to the `wasVisible` guard these teeth exercise:
+ *   * `claimView`: `main.ts`'s `openClaim()` (`:454-462`) runs `applyClaim` -> `renderClaim()`
+ *     BEFORE `show()`, and `applyClaim` moves the phase off `'hidden'`, so `render()` has already
+ *     flipped `wasVisible` by the time `show()` runs. `show()`'s guard (`claimView.ts:118`) is
+ *     therefore a structural no-op in every current call path; the door that really opens this
+ *     overlay is `claimView.ts:107`, and it is owned by `claimView.test.ts`
+ *     (`S4-claimView-THREE-DOORS`). Read the `claimView` rows below as pinning a real class
+ *     invariant, NOT as covering the live production edge.
+ *   * `questLogView` / `healView`: opened by `render(vm)` as production does, but CLOSED here by
+ *     `render(null)`, whereas `main.ts:366-367` closes both with `hide()`. The mixed-door sequence
+ *     (render-open -> hide-close -> render-reopen) is covered by each view's own
+ *     `S3-<view>-REOPEN-AFTER-HIDE`.
+ * Changing either opener would re-point five PRE-EXISTING per-id tests as well, which is a
+ * decision of its own rather than a line rb-18 should quietly move.
  */
 const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
   battleView: () => {
@@ -198,7 +250,11 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
       onPvpSwap: noop,
     });
     view.show();
-    return { root: capturedRoot('battleView'), close: () => view.hide() };
+    return {
+      root: capturedRoot('battleView'),
+      close: () => view.hide(),
+      reopen: () => view.show(),
+    };
   },
   boxView: () => {
     const view = new BoxView(appMount(), {
@@ -207,57 +263,97 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
       onHealParty: noop,
     });
     view.show();
-    return { root: capturedRoot('boxView'), close: () => view.hide() };
+    return { root: capturedRoot('boxView'), close: () => view.hide(), reopen: () => view.show() };
   },
   raisingView: () => {
     const view = new RaisingView(appMount(), { onTrain: noop, onCare: noop });
     view.show();
-    return { root: capturedRoot('raisingView'), close: () => view.hide() };
+    return {
+      root: capturedRoot('raisingView'),
+      close: () => view.hide(),
+      reopen: () => view.show(),
+    };
   },
   evolutionView: () => {
     const view = new EvolutionView(appMount(), { onEvolve: noop });
     view.show();
-    return { root: capturedRoot('evolutionView'), close: () => view.hide() };
+    return {
+      root: capturedRoot('evolutionView'),
+      close: () => view.hide(),
+      reopen: () => view.show(),
+    };
   },
+  // The three render-edge ids share one shape: a thunk that re-creates the view model, called once
+  // to open and again to `reopen`. A thunk rather than a hoisted `const vm` because the object
+  // literals below are contextually typed by `render()`'s parameter, which a hoisted `const` would
+  // widen (`shopAction: null`, `costCurrency: 0n`). It is also the shape `main.ts:1574` really
+  // drives (`main.ts:1627-1641`) — a fresh view model on every store batch — but that half is
+  // DEFENSIVE, not currently
+  // load-bearing: none of the three `render()` bodies compares `vm` by identity today, so a
+  // reused object would behave identically. Stated rather than left as an implied guarantee.
+  // (`main.ts:1574` is the citation `dialogueView.ts:16` and `dialogueView.test.ts:243` both carry
+  // for this fact; it has drifted — the real site is the `onBatchApplied` block at `:1627-1641`.
+  // Corrected here; the other two are flagged, not touched.)
   dialogueView: () => {
     const view = new DialogueView();
-    view.render({
-      npcName: 'Elder Rowan',
-      nodeText: 'Welcome, traveller.',
-      choices: [{ text: 'Goodbye', idx: 0 }],
-      canDismiss: true,
-      shopAction: null,
-    });
-    return { root: capturedRoot('dialogueView'), close: () => view.render(null) };
+    const renderIt = (): void => {
+      view.render({
+        npcName: 'Elder Rowan',
+        nodeText: 'Welcome, traveller.',
+        choices: [{ text: 'Goodbye', idx: 0 }],
+        canDismiss: true,
+        shopAction: null,
+      });
+    };
+    renderIt();
+    return {
+      root: capturedRoot('dialogueView'),
+      close: () => view.render(null),
+      reopen: renderIt,
+    };
   },
   questLogView: () => {
     const view = new QuestLogView();
-    view.render({ active: [{ questId: 'q1', stepIndex: 0, displayName: 'Q1' }] });
-    return { root: capturedRoot('questLogView'), close: () => view.render(null) };
+    const renderIt = (): void => {
+      view.render({ active: [{ questId: 'q1', stepIndex: 0, displayName: 'Q1' }] });
+    };
+    renderIt();
+    return {
+      root: capturedRoot('questLogView'),
+      close: () => view.render(null),
+      reopen: renderIt,
+    };
   },
   healView: () => {
     const view = new HealView();
-    view.render({
-      locations: [
-        {
-          locationId: 1,
-          zoneId: 1,
-          tileX: 0,
-          tileY: 0,
-          costItemName: null,
-          costQty: 0,
-          costCurrency: 0n,
-          cooldownMs: 0,
-          isFree: true,
-        },
-      ],
-    });
-    return { root: capturedRoot('healView'), close: () => view.render(null) };
+    const renderIt = (): void => {
+      view.render({
+        locations: [
+          {
+            locationId: 1,
+            zoneId: 1,
+            tileX: 0,
+            tileY: 0,
+            costItemName: null,
+            costQty: 0,
+            costCurrency: 0n,
+            cooldownMs: 0,
+            isFree: true,
+          },
+        ],
+      });
+    };
+    renderIt();
+    return {
+      root: capturedRoot('healView'),
+      close: () => view.render(null),
+      reopen: renderIt,
+    };
   },
   shopView: () => {
     const view = new ShopView({ onBuy: noop, onSell: noop });
     view.show();
-    return { root: capturedRoot('shopView'), close: () => view.hide() };
+    return { root: capturedRoot('shopView'), close: () => view.hide(), reopen: () => view.show() };
   },
   tradeView: () => {
     const view = new TradeView({
@@ -267,7 +363,7 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
       onCancel: asyncNoop,
     });
     view.show();
-    return { root: capturedRoot('tradeView'), close: () => view.hide() };
+    return { root: capturedRoot('tradeView'), close: () => view.hide(), reopen: () => view.show() };
   },
   pvpView: () => {
     const view = new PvpView({
@@ -277,32 +373,44 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
       onChallenge: noop,
     });
     view.show();
-    return { root: capturedRoot('pvpView'), close: () => view.hide() };
+    return { root: capturedRoot('pvpView'), close: () => view.hide(), reopen: () => view.show() };
   },
   leaderboardView: () => {
     const view = new LeaderboardView();
     view.show();
-    return { root: capturedRoot('leaderboardView'), close: () => view.hide() };
+    return {
+      root: capturedRoot('leaderboardView'),
+      close: () => view.hide(),
+      reopen: () => view.show(),
+    };
   },
   renameView: () => {
     const view = new RenameView({ onSubmit: noop });
     view.show();
-    return { root: capturedRoot('renameView'), close: () => view.hide() };
+    return {
+      root: capturedRoot('renameView'),
+      close: () => view.hide(),
+      reopen: () => view.show(),
+    };
   },
   tradeProposeView: () => {
     const view = new TradeProposeView({ onSubmit: noop });
     view.show();
-    return { root: capturedRoot('tradeProposeView'), close: () => view.hide() };
+    return {
+      root: capturedRoot('tradeProposeView'),
+      close: () => view.hide(),
+      reopen: () => view.show(),
+    };
   },
   helpView: () => {
     const view = new HelpView();
     view.show();
-    return { root: capturedRoot('helpView'), close: () => view.hide() };
+    return { root: capturedRoot('helpView'), close: () => view.hide(), reopen: () => view.show() };
   },
   menuView: () => {
     const view = new MenuView({ onInput: noop });
     view.show();
-    return { root: capturedRoot('menuView'), close: () => view.hide() };
+    return { root: capturedRoot('menuView'), close: () => view.hide(), reopen: () => view.show() };
   },
   claimView: () => {
     const view = new ClaimView({
@@ -313,7 +421,7 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
       onDeclineCancelled: noop,
     });
     view.show();
-    return { root: capturedRoot('claimView'), close: () => view.hide() };
+    return { root: capturedRoot('claimView'), close: () => view.hide(), reopen: () => view.show() };
   },
 };
 
@@ -395,6 +503,23 @@ describe('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wiring spec', 
     // asserted this before.
     const names = OVERLAY_IDS.map((id) => t(OVERLAY_A11Y[id].labelKey));
     expect(new Set(names).size, 'the sixteen accessible names must be pairwise distinct').toBe(16);
+
+    // rb-18: SHAPE totality, not just KEY totality. `Opened.reopen` is what makes the repeat and
+    // reopen-after-close teeth possible, and since this file is not typechecked in CI (see the
+    // header correction) a `reopen`-less opener is a RUNTIME question. Asserted here, over every
+    // id, so a seventeenth overlay cannot ship an opener that satisfies the key set while handing
+    // back nothing to re-open — which is exactly how the guarantee would drift back to resting on
+    // sixteen separately-maintained per-view specs.
+    for (const id of OVERLAY_IDS) {
+      const opened = OPENERS[id]();
+      expect(
+        Object.keys(opened).sort(),
+        `${id}: every opener must hand back root + close + reopen`,
+      ).toEqual(['close', 'reopen', 'root']);
+      expect(typeof opened.reopen, `${id}: reopen must be callable`).toBe('function');
+      expect(typeof opened.close, `${id}: close must be callable`).toBe('function');
+      opened.close();
+    }
   });
 
   it('S10-WIRE-REAL-INDEX-HTML BITES: the fixture is the SHIPPED client/index.html, tabindex attributes included — never a hand-copied shell', () => {
@@ -461,6 +586,8 @@ describe('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wiring spec', 
   });
 
   let checked = 0;
+  let repeatChecked = 0;
+  let reopenChecked = 0;
 
   for (const id of OVERLAY_IDS) {
     const meta = OVERLAY_A11Y[id];
@@ -569,6 +696,148 @@ describe('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wiring spec', 
         checked++;
       });
 
+      it(`S10-WIRE-REPEAT-NO-REOPEN:${id} BITES: a SECOND open on an ALREADY-visible overlay is a NO-EDGE — the helper is not called again, the manifest anchor is not rebuilt, and focus stays where the player put it`, async () => {
+        // rb-18 / residual R-m23-s10-X21. The per-view idiom (`leaderboardView.test.ts:598`,
+        // `dialogueView.test.ts:242`, `menuView.test.ts:1254`) lifted into the SHARED layer, where
+        // the `Record<OverlayId, …>` opener table makes it total by construction. A re-open clears
+        // (`overlayA11y.ts:110`) and re-schedules (`:134`) the deferred-focus timer, dragging focus off
+        // whatever the player Tabbed to — INVISIBLE to every attribute assertion in this file,
+        // because a re-open rewrites byte-identical values.
+        const sentinel = installSentinel();
+        const { root, reopen } = OPENERS[id]();
+        await flushMacrotask();
+
+        const anchor = root.querySelector(meta.initialFocusSelector);
+        expect(
+          anchor,
+          `${id}: '${meta.initialFocusSelector}' must resolve inside the root`,
+        ).not.toBeNull();
+        // PRECONDITION, not decoration: without it, a view whose open path does NOTHING satisfies
+        // "focus did not move" below for free.
+        expect(
+          document.activeElement,
+          `${id}: the FIRST open must have landed focus on the anchor before a repeat can be judged`,
+        ).toBe(anchor);
+        expect(document.activeElement, `${id}: focus never left the sentinel`).not.toBe(sentinel);
+
+        // Parked as a DIRECT CHILD of the root, never deeper. The three render-edge views empty a
+        // SUB-container on every repeat render (`questLogView.ts:42` and `healView.ts:43` clear
+        // their <ul>'s contents, `dialogueView.ts:57` replaceChildren()s its choices container).
+        // Those containers are CHILDREN of the root, hence SIBLINGS of the parked node, and each
+        // clears its OWN contents — so a direct child of the root survives. Parking it inside
+        // one of them would FALSE-RED on three ids, and the tempting "fix" for that false red is to
+        // weaken the identity assertion below to containment, which is the exact vacuity this
+        // file's header rejects at the (c) conjunct.
+        const parked = document.createElement('button');
+        parked.type = 'button';
+        parked.textContent = 'parked-inside';
+        root.appendChild(parked);
+        parked.focus();
+        expect(
+          parked,
+          `${id}: the parked node must not BE the anchor, or "focus stayed put" and "focus was ` +
+            'yanked back" become the same assertion',
+        ).not.toBe(anchor);
+        expect(document.activeElement, `${id}: precondition — the parked node holds focus`).toBe(
+          parked,
+        );
+
+        reopen();
+        await flushMacrotask();
+
+        // MECHANISM, in both polarities. The filtered count is the direct statement of the guard;
+        // the UNFILTERED one additionally kills a repeat branch that opens a DIFFERENT id, which
+        // the filtered count alone reads as 1 (red-team MEASURED both).
+        expect(
+          vi.mocked(openOverlayA11y).mock.calls.filter((c) => c[0] === id).length,
+          `${id}: a repeat open on an already-visible overlay must NOT re-invoke the helper — ` +
+            'this is the `if (!wasVisible)` guard, and deleting it reds exactly here',
+        ).toBe(1);
+        expect(
+          vi.mocked(openOverlayA11y).mock.calls.length,
+          `${id}: the repeat must not open some OTHER overlay either`,
+        ).toBe(1);
+
+        // Asserted BEFORE the focus identity purely for the failure message: if a future repeat
+        // path ever rebuilds the root's children, `activeElement` becomes <body> and the identity
+        // assertion below reds for a reason that reads like a focus regression. This one says what
+        // actually happened.
+        expect(
+          parked.isConnected,
+          `${id}: the repeat destroyed a direct child of the root — this is a rebuild, not a ` +
+            'focus bug; do NOT weaken the assertion below to containment',
+        ).toBe(true);
+        expect(
+          document.activeElement,
+          `${id}: a repeat open must NOT re-run the deferred initial focus (A11Y-14)`,
+        ).toBe(parked);
+
+        // The cross-view-only conjunct: no per-view spec asserts anchor-node IDENTITY across a
+        // repeat. A repeat that rebuilds the anchor detaches the node the manifest names, so the
+        // guard stops mattering and production drops focus to <body> — while the assertion above
+        // still passes. Pins `overlayRegistry.ts:152`'s "STABLE, CONSTRUCTOR-TIME ANCHOR" contract
+        // for all sixteen ids at once.
+        expect(
+          root.querySelector(meta.initialFocusSelector),
+          `${id}: the repeat rebuilt the manifest anchor node`,
+        ).toBe(anchor);
+
+        // LAST STATEMENT, always: an increment above a surviving assertion would let the afterAll
+        // floor read 16 while the oracles it stands for never ran.
+        repeatChecked++;
+      });
+
+      it(`S10-WIRE-REOPEN-AFTER-CLOSE:${id} BITES: after closing, opening AGAIN is a REAL edge — the helper fires a second time and the deferred focus is re-armed`, async () => {
+        // THE MIRROR POLARITY, and it is not symmetry-for-its-own-sake: red-team MEASURED that a
+        // sticky "have I ever opened" latch —
+        //     `#everOpened = false; … const wasVisible = this.#everOpened; this.#everOpened = true;`
+        // — is INDISTINGUISHABLE from the correct live-state read to every assertion in the test
+        // above, passes that view's own full spec, and leaves the overlay permanently unannounced,
+        // untrapped and unfocused for the rest of the instance's life after the first close.
+        // TWELVE of the sixteen per-view specs have no reopen-after-close coverage at all, so this
+        // is the one place the class is closed for every id. Only a scenario that CLOSES first can
+        // force `wasVisible` to be read from live state rather than from a one-shot latch.
+        const sentinel = installSentinel();
+        const first = OPENERS[id]();
+        await flushMacrotask();
+        expect(document.activeElement, `${id}: precondition — the first open landed`).not.toBe(
+          sentinel,
+        );
+
+        first.close();
+        expect(
+          document.activeElement,
+          `${id}: precondition — closing returned focus to the sentinel (A11Y-16)`,
+        ).toBe(sentinel);
+
+        first.reopen();
+
+        expect(
+          vi.mocked(openOverlayA11y).mock.calls.filter((c) => c[0] === id).length,
+          `${id}: re-opening after a close MUST call the helper again — a guard that reads a ` +
+            'latch instead of live visibility passes every same-session assertion while leaving ' +
+            'the overlay permanently unlabelled, untrapped and unfocused',
+        ).toBe(2);
+        expect(
+          vi.mocked(openOverlayA11y).mock.calls[1][1],
+          `${id}: the second open must be handed the same live root`,
+        ).toBe(first.root);
+
+        // Effects, not just the call: the ARIA the close stripped is back, and the deferred focus
+        // is genuinely RE-ARMED rather than a call whose scheduled work was cancelled.
+        expect(
+          first.root.getAttribute('aria-label'),
+          `${id}: the re-open must re-apply the accessible name the close stripped`,
+        ).toBe(t(meta.labelKey));
+        await flushMacrotask();
+        expect(
+          document.activeElement,
+          `${id}: the re-open must re-arm the deferred initial focus onto the manifest anchor`,
+        ).toBe(first.root.querySelector(meta.initialFocusSelector));
+
+        reopenChecked++;
+      });
+
       it(`S10-WIRE-CLOSE-RESTORE:${id} BITES: closing strips ALL THREE ARIA attributes and hands focus back to where it was — absence is impossible without the wiring`, async () => {
         const sentinel = installSentinel();
         const { root, close } = OPENERS[id]();
@@ -616,5 +885,17 @@ describe('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wiring spec', 
       'S10-WIRE-FOCUS-IDENTITY must have executed once per OverlayId — a loop that never ran ' +
         'reports success in exactly the same way as one that passed',
     ).toBe(16);
+    // Siblings, in the SAME hook rather than a second one, so the rationale above stays
+    // co-located and a future reader cannot delete one half. Not redundant with the compile-time
+    // `Record<OverlayId, …>` (which forces the openers to EXIST) nor with `checked` (which only
+    // proves the FOCUS-IDENTITY loop ran): neither notices an `it.skip` on one id's repeat tooth,
+    // and `just ci` does not run the nightly `a11y-e2e` recipe whose `numPendingTests` clause
+    // would otherwise catch it.
+    expect(repeatChecked, 'S10-WIRE-REPEAT-NO-REOPEN must have executed once per OverlayId').toBe(
+      16,
+    );
+    expect(reopenChecked, 'S10-WIRE-REOPEN-AFTER-CLOSE must have executed once per OverlayId').toBe(
+      16,
+    );
   });
 });
