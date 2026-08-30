@@ -25,7 +25,9 @@
 // Corrections must be traced to the spec and must not weaken the bite.
 //
 // ---------------------------------------------------------------------------
-// m23-s3 ADDITION (2026-08-24) — overlay a11y wiring + the PROVISIONAL ten-file `.focus(` scan.
+// m23-s3 ADDITION (2026-08-24) — overlay a11y wiring. (The PROVISIONAL ten-file `.focus(` scan
+// that shipped alongside it was retired in rb-16 / ADR-0217; `evals/overlay-a11y-manifest.eval.mjs`
+// [A11Y-15] owns that ban now, over all eighteen views.)
 // ADDITIVE ONLY: nothing above was weakened or deleted; the mount helper gained the
 // `role`/`aria-modal` attributes client/index.html:57 has always shipped, and a file-level a11y
 // sweep was added.
@@ -162,7 +164,7 @@ async function flushPromises(): Promise<void> {
 }
 
 // ---------------------------------------------------------------------------
-// m23-s3 — overlay a11y wiring + the PROVISIONAL ten-file `.focus(` scan.
+// m23-s3 — overlay a11y wiring. (Its ten-file `.focus(` scan was retired in rb-16 / ADR-0217.)
 // Declared FIRST on purpose (see the file header): later describes call vi.restoreAllMocks().
 // ---------------------------------------------------------------------------
 
