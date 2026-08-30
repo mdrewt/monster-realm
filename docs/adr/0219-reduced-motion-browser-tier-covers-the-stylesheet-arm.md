@@ -214,3 +214,24 @@ It is not the only thing running these assertions.
 - A11Y-27's renderer arm remains ungated in a browser and, more importantly,
   **unimplemented**. That is now a ledger `DEFER` with a resolvable target
   rather than an assumption.
+- Two verbatim pins in `evals/ci-gate-wiring.eval.mjs` move in lockstep with this
+  slice and were REGENERATED mechanically, never hand-typed:
+  `A11Y_E2E_RECIPE_REGION` (the justfile recipe grew half 4 and an `rmfloor`
+  parameter) and `A11Y_E2E_NIGHTLY_JOB_BLOCK` (the artifact `path:` list grew a
+  line, and that list is inside the pinned job block). The second was not
+  anticipated when D4 was written: adding a path to the artifact list is a job
+  edit, so the nightly pin reds until it is re-derived.
+- The nightly artifact clause added to `a11yNightlyJobIsWired` is
+  UNCONDITIONAL — a job with no `actions/upload-artifact` step is rejected — so
+  three pre-existing POSITIVE fixtures had to gain one. They deliberately use
+  different YAML spellings (a `path: |` block list and an inline `path:` scalar),
+  because a gate that understands only one spelling is defeated by rewriting into
+  the other.
+- MEASURED while bite-proofing, and worth stating because the transcribed design
+  had it twice: a text gate over this recipe must check that a field is COMPARED,
+  not that it is MENTIONED. Deleting `if (s.expected < floor)` leaves
+  `console.log('... tests=' + s.expected)` behind, and deleting `|| s.skipped !== 0`
+  leaves `console.error('... skipped=' + s.skipped)` behind — so substring tests
+  for `.expected` and `skipped` both accept a hollowed half 4. The `skipped` one
+  SURVIVED a first bite-proof pass against the real justfile while every inline
+  fixture was green, because the fixtures were smaller than the real recipe.

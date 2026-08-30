@@ -346,8 +346,18 @@ e2e: wasm
 #
 # floor=169 measured at 2770ec9 (8 files / 169 tests / 0 failed / 0 pending /
 # 0 todo). axefloor=3 measured at eca6752 (3 axe tests / 0 unexpected / 0 flaky /
-# 0 skipped). Raise either in the same commit that adds a11y tests; LOWER one only
-# in a commit that deliberately removes some, and say which in the message.
+# 0 skipped). rmfloor=2 measured at rb-20 (2 reduced-motion tests / 1 file, via
+# `npx playwright test --project=reduced-motion --list`). Raise any of them in the
+# same commit that adds a11y tests; LOWER one only in a commit that deliberately
+# removes some, and say which in the message.
+#
+# Half 4 is the reduced-motion BROWSER tier (rb-20, ADR-0219). It covers the
+# STYLESHEET arm of A11Y-27 only -- styles.css's `.hp-fill` transition under
+# `@media (prefers-reduced-motion: reduce)`, proven to be EVALUATED by Chromium
+# rather than merely present in the file. A11Y-27's RENDERER arm is NOT covered
+# and is not implemented at all (main.ts passes no `reduceMotion` to
+# resolver.resolve); it is ledger gate rb-20 RM-7, DEFERred to backlog. Do not
+# relabel half 4 "A11Y-27, gated".
 #
 # Half 3 needs a BROWSER and a LIVE SpacetimeDB: client/e2e/a11y.spec.ts runs under
 # the default client/playwright.config.ts, whose globalSetup republishes the module.
@@ -360,7 +370,7 @@ e2e: wasm
 # gate is untouched: `a11y-e2e` is not a `ci:` dependency and is not in the eval's
 # REQUIRED_JUST_STEPS (ADR-0043, ADR-0218).
 # Response policy + owner: docs/nightly-red-response-policy.md.
-a11y-e2e floor="169" axefloor="3": wasm
+a11y-e2e floor="169" axefloor="3" rmfloor="2": wasm
     #!/usr/bin/env bash
     set -euo pipefail
     # Fail loud on a malformed floor BEFORE the run. BOTH floors are guarded, and
@@ -376,6 +386,9 @@ a11y-e2e floor="169" axefloor="3": wasm
     esac
     case "{{axefloor}}" in
         ''|*[!0-9]*) echo "a11y-e2e: axefloor '{{axefloor}}' is not a non-negative integer" >&2; exit 64;;
+    esac
+    case "{{rmfloor}}" in
+        ''|*[!0-9]*) echo "a11y-e2e: rmfloor '{{rmfloor}}' is not a non-negative integer" >&2; exit 64;;
     esac
     # --- Half 1: the a11y eval roster, pinned BY NAME. A deleted or renamed
     # eval makes import() throw, which set -e turns into a non-zero exit.
@@ -414,6 +427,30 @@ a11y-e2e floor="169" axefloor="3": wasm
         npx playwright test e2e/a11y.spec.ts --reporter=json
     cd ..
     node -e "const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-axe.json', 'utf8')) } catch (e) { console.error('a11y-e2e: playwright wrote no readable JSON report — ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const s = j.stats; if (s === undefined) { console.error('a11y-e2e: playwright report carries no stats block'); process.exit(1) } if (s.unexpected !== 0 || s.flaky !== 0 || s.skipped !== 0) { console.error('a11y-e2e: axe tier unexpected=' + s.unexpected + ' flaky=' + s.flaky + ' skipped=' + s.skipped + ' — a skipped or flaky a11y test is a silently ungated one'); process.exit(1) } if (s.expected < floor) { console.error('a11y-e2e: axe tier reported ' + s.expected + ' passing test(s) — floor is ' + floor + '; a MISSING spec file reports zero and exits 0'); process.exit(1) } console.log('A11Y-AXE OK tests=' + s.expected + ' floor=' + floor + ' unexpected=0 flaky=0 skipped=0')" -- "{{axefloor}}"
+    # --- Half 4: the reduced-motion browser tier (rb-20, ADR-0219). Same stale-
+    # report discipline as halves 2 and 3, and its OWN report path: reusing half
+    # 3's would clobber the axe evidence and a red in whichever tier ran second
+    # would be read as belonging to whichever ran first. Both paths are listed in
+    # nightly.yml's failure-evidence artifact.
+    #
+    # `--project=reduced-motion` is LOAD-BEARING. client/playwright.config.ts now
+    # declares two projects, and an invocation naming none runs BOTH -- i.e. all
+    # 21 spec files, with a browser and a full world, instead of this project's
+    # two tests.
+    #
+    # ACCURACY NOTE -- this deliberately does NOT inherit half 3's rationale
+    # above, which is stale. MEASURED on the pinned @playwright/test 1.61.1: a
+    # MISSING spec file, an EMPTY spec file and a --project naming no project ALL
+    # exit 1 with "No tests found", so `set -euo pipefail` kills this recipe
+    # before any floor check could run. The shape that really does report
+    # expected=0 and exit 0 is a wholly `test.describe.skip`-ed spec file -- and
+    # the `s.skipped !== 0` clause below is what catches it. The floor is still
+    # read from the machine-readable report and never from console text.
+    rm -f /tmp/a11y-e2e-rm.json
+    cd client && PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/a11y-e2e-rm.json \
+        npx playwright test --project=reduced-motion --reporter=json
+    cd ..
+    node -e "const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-rm.json', 'utf8')) } catch (e) { console.error('a11y-e2e: playwright wrote no readable JSON report for the reduced-motion tier — ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const s = j.stats; if (s === undefined) { console.error('a11y-e2e: reduced-motion report carries no stats block'); process.exit(1) } if (s.unexpected !== 0 || s.flaky !== 0 || s.skipped !== 0) { console.error('a11y-e2e: reduced-motion tier unexpected=' + s.unexpected + ' flaky=' + s.flaky + ' skipped=' + s.skipped + ' — a wholly describe.skip-ed spec file reports expected=0 and exits 0, and a skipped or flaky a11y test is a silently ungated one'); process.exit(1) } if (s.expected < floor) { console.error('a11y-e2e: reduced-motion tier reported ' + s.expected + ' passing test(s) — floor is ' + floor); process.exit(1) } console.log('A11Y-RM OK tests=' + s.expected + ' floor=' + floor + ' unexpected=0 flaky=0 skipped=0')" -- "{{rmfloor}}"
     echo "DEFERRED: A11Y-32 / A11Y-33 are MANUAL and are NEVER CI-green — docs/a11y-manual-protocol.md"
 
 # Fast inner loop: clippy + nextest + doctests scoped to a single crate.

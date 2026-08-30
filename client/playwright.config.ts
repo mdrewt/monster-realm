@@ -36,4 +36,45 @@ export default defineConfig({
     reuseExistingServer: false,
     timeout: 60_000,
   },
+  // rb-20 (residual R-m23-s11-X11), ADR-0219. Two projects, and the pair is
+  // TWO-SIDED ON PURPOSE — each side is mandatory for a different reason:
+  //
+  //   * `default`'s `testIgnore` is NOT optional. Collection here is by
+  //     `testDir: './e2e'`, so without it the reduced-motion spec is ALSO
+  //     collected by `default`, runs with NO emulation, and its very first
+  //     assertion (`matchMedia('(prefers-reduced-motion: reduce)').matches`)
+  //     fails on every PR — `client/package.json`'s `e2e` script is a bare
+  //     `playwright test`, which runs every declared project (ADR-0219 D6).
+  //
+  //   * `reduced-motion`'s `testMatch` is NOT optional either. Without it that
+  //     project inherits `testDir` and collects the WHOLE e2e suite under
+  //     forced reduced motion — including `client/e2e/a11y.spec.ts`, whose own
+  //     header forbids a second context on that file (`golden.spec.ts` asserts
+  //     an exact `presenceCount === 2`), and which would double half 3's
+  //     `stats.expected` floor in `just a11y-e2e`. `testMatch` is deliberately
+  //     narrower than a `testIgnore` on this side: it cannot silently widen
+  //     when a future spec file is added (ADR-0219 D2).
+  //
+  // THE SPELLING IS LOAD-BEARING AND COUNTERINTUITIVE (ADR-0219 D5, MEASURED).
+  // The shorthand every Playwright doc page shows — `use: { reducedMotion:
+  // 'reduce' }` — DOES NOT EXIST on this repo's pinned @playwright/test 1.61.1:
+  // `node_modules/playwright/types/test.d.ts` contains that string exactly
+  // once, inside `contextOptions`' doc comment, and there is no such member on
+  // the test-options type. It fails `just ci`'s client-typecheck with TS2769,
+  // and forced past the type system it is a silent runtime no-op. The nested
+  // `contextOptions` form below is the one that reaches `browser.newContext()`.
+  //
+  // Scoped to this project ALONE, never hoisted into the config-level `use:`
+  // above — hoisting merges it into EVERY project and would run all 20 e2e spec
+  // files under forced reduced motion, invisibly to the collection counts.
+  // Project `use` merges OVER config `use`, so both projects still inherit
+  // `baseURL` and `headless`.
+  projects: [
+    { name: 'default', testIgnore: 'reduced-motion.spec.ts' },
+    {
+      name: 'reduced-motion',
+      testMatch: 'reduced-motion.spec.ts',
+      use: { contextOptions: { reducedMotion: 'reduce' } },
+    },
+  ],
 });

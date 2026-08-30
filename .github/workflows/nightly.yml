@@ -379,12 +379,17 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: a11y-e2e-vitest-report
-          # BOTH halves' reports. Half 3 writes the axe one, and a nightly red IN
-          # the axe tier shipped no evidence at all until it was listed here — the
-          # exact gap `if: always()` exists to close for half 2.
+          # ALL THREE halves' reports. Half 3 writes the axe one and half 4 (rb-20,
+          # ADR-0219) the reduced-motion one, and a nightly red IN either tier
+          # shipped no evidence at all until it was listed here — the exact gap
+          # `if: always()` exists to close for half 2. This list is hardcoded, so
+          # a new half is invisible to it unless someone edits this block;
+          # evals/ci-gate-wiring.eval.mjs (a11yNightlyJobIsWired) now asserts half
+          # 4's path is present, so "added a tier, forgot the evidence" reds.
           path: |
             /tmp/a11y-e2e-vitest.json
             /tmp/a11y-e2e-axe.json
+            /tmp/a11y-e2e-rm.json
           if-no-files-found: warn
           retention-days: 14
 

@@ -21,6 +21,16 @@ import {
 // recipe. If your PR reds here, it red on a real WCAG A/AA violation in the
 // rendered page — read the failure message, it names the rule and the nodes.
 //
+// AND WHERE IT DELIBERATELY DOES NOT RUN (rb-20, ADR-0219 D2). The `reduced-motion`
+// project added to `client/playwright.config.ts` carries a `testMatch` naming ONLY
+// `reduced-motion.spec.ts`, so this file is NOT collected under forced reduced
+// motion. That is a decision, not an omission: a second project collecting this file
+// is a second context on it under another name, which the SORT ORDER note below
+// forbids; no rule in this suite's `wcag2a/2aa/21a/21aa/22aa` tag set has a
+// `prefers-reduced-motion`-dependent outcome (SC 2.3.3 is Level AAA, outside the
+// §5.6 claim); and it would double half 3's `stats.expected` floor. Do not drop that
+// `testMatch` without re-reading ADR-0219 D2.
+//
 // SORT ORDER, considered. Playwright orders spec FILES by path, so `a11y` runs
 // first, ahead of `golden.spec.ts` — the opposite of the `trade-interlock.spec.ts`
 // precedent, which was NAMED to sort after golden to avoid its `presenceCount === 2`

@@ -82,6 +82,298 @@ function findStepRange(lines, runLine) {
 }
 
 // ---------------------------------------------------------------------------
+// rb-20 (residual R-m23-s11-X11), RM-1 / RM-2. `client/playwright.config.ts`
+// gains a `projects:` array (ADR-0219). This predicate closes two doors:
+//   * the `reduced-motion` project must exist, be scoped to a project-level
+//     `use.contextOptions.reducedMotion`, and use the SPELLING that actually
+//     exists on this repo's pinned @playwright/test 1.61.1 (ADR-0219 D5) —
+//     the shorthand `use: { reducedMotion: 'reduce' }` compiles nowhere near
+//     this version and is a silent runtime no-op even forced past the type
+//     system;
+//   * the collection boundary is closed on BOTH sides (ADR-0219 D2): the
+//     `default` project must NOT collect the new spec (or it runs unemulated
+//     and reds every PR), and the `reduced-motion` project must NOT ALSO
+//     collect `a11y.spec.ts` (a second context on that file breaks its own
+//     documented single-context contract).
+// Pure text-in/verdict-out, like every predicate in this file — comment-
+// stripped but NOT a real JS/TS parser, so it is driven by STRING SHAPE, not
+// AST semantics. That is deliberate and matches this file's existing style
+// (e.g. `extractRecipeBodyLocal`) rather than importing a TS compiler into a
+// CI gate.
+//
+// NO BARE FIRST-HIT ANCHORS. Every structural anchor below (`projects:`, each
+// project NAME, the recipe header, the `case` guard header) is COUNTED and
+// rejected on a duplicate rather than resolved with `indexOf`. This repo has a
+// measured history of first-hit anchors being steered by a planted decoy
+// string literal, and the failure mode is a silent false-green, not an error.
+// ---------------------------------------------------------------------------
+const RM_SPEC_NAME = 'reduced-motion.spec.ts';
+const A11Y_SPEC_NAME = 'a11y.spec.ts';
+
+function countOccurrences(haystack, needle) {
+  if (needle === '') return 0;
+  return haystack.split(needle).length - 1;
+}
+
+// The index that closes the bracket opened at `openIdx` (whose characters are
+// `openCh`/`closeCh`), quote-aware so a bracket character inside a string
+// literal cannot desync the walk. Returns -1 on unbalanced input.
+function matchBalancedBracket(text, openIdx, openCh, closeCh) {
+  let depth = 0;
+  let quote = null;
+  for (let i = openIdx; i < text.length; i += 1) {
+    const ch = text[i];
+    if (quote !== null) {
+      if (ch === '\\') {
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === openCh) depth += 1;
+    else if (ch === closeCh) {
+      depth -= 1;
+      if (depth === 0) return i;
+    }
+  }
+  return -1;
+}
+
+// Every top-level `{...}` object literal directly inside an array's body text
+// (i.e. each ELEMENT of the array, regardless of how deeply its OWN contents
+// nest) — quote-aware for the same reason as matchBalancedBracket.
+function topLevelObjectLiterals(arrayBody) {
+  const out = [];
+  let quote = null;
+  for (let i = 0; i < arrayBody.length; i += 1) {
+    const ch = arrayBody[i];
+    if (quote !== null) {
+      if (ch === '\\') {
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'" || ch === '`') {
+      quote = ch;
+      continue;
+    }
+    if (ch === '{') {
+      const close = matchBalancedBracket(arrayBody, i, '{', '}');
+      if (close === -1) break;
+      out.push(arrayBody.slice(i, close + 1));
+      i = close;
+    }
+  }
+  return out;
+}
+
+// `{ projectsFound, ambiguous, blocks, stripped, projectsKeyIndex }` — `blocks`
+// is every top-level project object literal inside `projects: [ ... ]`.
+// `ambiguous` is set when the comment-stripped source carries MORE THAN ONE
+// `projects:` token: the honest answer there is "I cannot tell which array is
+// the config's", never "here is the first one" (see the no-bare-anchors note
+// above).
+function extractPlaywrightProjects(configText) {
+  const stripped = stripJsComments(configText);
+  const key = 'projects:';
+  const hits = countOccurrences(stripped, key);
+  const empty = {
+    projectsFound: false,
+    ambiguous: false,
+    blocks: [],
+    stripped,
+    projectsKeyIndex: -1,
+  };
+  if (hits === 0) return empty;
+  if (hits > 1) return { ...empty, ambiguous: true };
+  const at = stripped.indexOf(key);
+  const open = stripped.indexOf('[', at);
+  if (open === -1) return { ...empty, projectsKeyIndex: at };
+  const close = matchBalancedBracket(stripped, open, '[', ']');
+  if (close === -1) return { ...empty, projectsKeyIndex: at };
+  const body = stripped.slice(open + 1, close);
+  return {
+    projectsFound: true,
+    ambiguous: false,
+    blocks: topLevelObjectLiterals(body),
+    stripped,
+    projectsKeyIndex: at,
+  };
+}
+
+// Every project block naming `projectName` — plural on purpose, so a duplicate
+// declaration is REPORTED rather than silently resolved to the first.
+function projectBlocksNamed(blocks, projectName) {
+  return blocks.filter(
+    (b) => b.indexOf(`name: '${projectName}'`) !== -1 || b.indexOf(`name: "${projectName}"`) !== -1,
+  );
+}
+
+export function reducedMotionProjectIsWired(configText) {
+  const { projectsFound, ambiguous, blocks, stripped, projectsKeyIndex } =
+    extractPlaywrightProjects(configText);
+  if (ambiguous) {
+    return {
+      ok: false,
+      reason:
+        'client/playwright.config.ts carries MORE THAN ONE `projects:` token outside comments — ' +
+        "this gate refuses to guess which array is the config's, because a first-hit anchor is " +
+        'steerable by a planted decoy (measured elsewhere in this repo) and the resulting ' +
+        'false-green is silent',
+    };
+  }
+  if (!projectsFound || blocks.length === 0) {
+    return {
+      ok: false,
+      reason:
+        'client/playwright.config.ts declares no `projects:` array — RM-1 requires a DEDICATED ' +
+        'reduced-motion PROJECT, not a config-wide setting',
+    };
+  }
+
+  const rmBlocks = projectBlocksNamed(blocks, 'reduced-motion');
+  if (rmBlocks.length === 0) {
+    return {
+      ok: false,
+      reason: "no project named 'reduced-motion' is declared inside `projects:` — RM-1",
+    };
+  }
+  if (rmBlocks.length > 1) {
+    return {
+      ok: false,
+      reason: `${rmBlocks.length} projects are named 'reduced-motion' — exactly one is required, or which project this gate describes is ambiguous`,
+    };
+  }
+  const rm = rmBlocks[0];
+
+  const defBlocks = projectBlocksNamed(blocks, 'default');
+  if (defBlocks.length === 0) {
+    return {
+      ok: false,
+      reason:
+        "no project named 'default' is declared inside `projects:` — RM-2 requires the default " +
+        'project to explicitly exclude the new spec, and without a default project every OTHER ' +
+        'e2e spec has no home to collect from',
+    };
+  }
+  if (defBlocks.length > 1) {
+    return {
+      ok: false,
+      reason: `${defBlocks.length} projects are named 'default' — exactly one is required, or which project this gate describes is ambiguous`,
+    };
+  }
+  const def = defBlocks[0];
+
+  // ADR-0219 D5, MEASURED: the shorthand `use: { reducedMotion: 'reduce' }`
+  // does not exist on this repo's pinned @playwright/test 1.61.1 UseOptions
+  // type (TS2769) and is a silent runtime no-op even forced past the type
+  // system. Checked BEFORE looking for the correct spelling, so the failure
+  // message names the trap rather than reporting a generic "no contextOptions".
+  if (rm.indexOf('reducedMotion') !== -1 && rm.indexOf('contextOptions') === -1) {
+    return {
+      ok: false,
+      reason:
+        "the 'reduced-motion' project sets `reducedMotion` OUTSIDE `contextOptions` — ADR-0219 " +
+        "D5: that shorthand (`use: { reducedMotion: 'reduce' }`) does not exist on this repo's " +
+        'pinned @playwright/test 1.61.1 (fails client-typecheck with TS2769) and is a silent ' +
+        'runtime no-op even if forced past the type system. Use ' +
+        "`use: { contextOptions: { reducedMotion: 'reduce' } }`.",
+    };
+  }
+
+  const ctxIdx = rm.indexOf('contextOptions');
+  if (ctxIdx === -1) {
+    return {
+      ok: false,
+      reason:
+        "the 'reduced-motion' project carries no `contextOptions` block — RM-1 requires " +
+        "`use: { contextOptions: { reducedMotion: 'reduce' } }`",
+    };
+  }
+  const ctxOpen = rm.indexOf('{', ctxIdx);
+  const ctxClose = ctxOpen === -1 ? -1 : matchBalancedBracket(rm, ctxOpen, '{', '}');
+  const ctxBody = ctxOpen === -1 || ctxClose === -1 ? '' : rm.slice(ctxOpen + 1, ctxClose);
+  if (ctxBody.indexOf('reducedMotion') === -1) {
+    return {
+      ok: false,
+      reason:
+        "the 'reduced-motion' project's `contextOptions` block carries no `reducedMotion` key",
+    };
+  }
+  if (ctxBody.indexOf("'reduce'") === -1 && ctxBody.indexOf('"reduce"') === -1) {
+    return {
+      ok: false,
+      reason:
+        "the 'reduced-motion' project's `contextOptions.reducedMotion` is not exactly 'reduce' " +
+        '— RM-1 requires exactly `reduce`, not `no-preference` or any other value',
+    };
+  }
+
+  // RM-1: the option must not ALSO be hoisted to the config's top-level `use:`
+  // block (the one outside every project, which Playwright merges into ALL of
+  // them) — that would force the entire 20-file e2e suite into reduced
+  // motion, invisibly to RM-2's collection counts. Scoped to the text BEFORE
+  // `projects:` starts, matching this config's own convention (config-level
+  // keys precede the `projects:` array).
+  const topLevel = stripped.slice(0, projectsKeyIndex);
+  if (topLevel.indexOf('reducedMotion') !== -1) {
+    return {
+      ok: false,
+      reason:
+        'a config-level (pre-`projects:`) block mentions `reducedMotion` — RM-1 requires the ' +
+        'option scoped to the reduced-motion PROJECT alone; hoisting it earlier silently forces ' +
+        'the entire e2e suite into reduced motion',
+    };
+  }
+
+  // ADR-0219 D2 (RM-2), both sides of the collection boundary.
+  if (def.indexOf('testIgnore') === -1 || def.indexOf(RM_SPEC_NAME) === -1) {
+    return {
+      ok: false,
+      reason:
+        `the 'default' project does not \`testIgnore\` '${RM_SPEC_NAME}' — RM-2: without it the ` +
+        'new spec is ALSO collected by `default` with no emulation, and its first assertion ' +
+        '(matches === true) fails on every PR',
+    };
+  }
+  if (rm.indexOf('testMatch') === -1 || rm.indexOf(RM_SPEC_NAME) === -1) {
+    return {
+      ok: false,
+      reason:
+        `the 'reduced-motion' project carries no \`testMatch\` naming '${RM_SPEC_NAME}' — ` +
+        'without it, testDir-based collection picks up every e2e spec, including a11y.spec.ts ' +
+        '(ADR-0219 D2)',
+    };
+  }
+  if (rm.indexOf(A11Y_SPEC_NAME) !== -1) {
+    return {
+      ok: false,
+      reason:
+        `the 'reduced-motion' project's testMatch also names '${A11Y_SPEC_NAME}' — ADR-0219 D2 ` +
+        'requires a11y.spec.ts NOT run under reduced motion (its own header forbids a second ' +
+        "context; golden.spec.ts's exact presenceCount===2 assertion would break under a leaked " +
+        'second context)',
+    };
+  }
+
+  return {
+    ok: true,
+    reason:
+      "client/playwright.config.ts declares a 'reduced-motion' project scoped to " +
+      "`contextOptions.reducedMotion: 'reduce'`, a 'default' project that testIgnores the new " +
+      'spec, the option is not hoisted to a config-level `use:`, and neither project collects ' +
+      "the other's spec",
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Duplicate-key guard helpers (F1 / F9).
 //
 // GitHub Actions last-key-wins: if `ci:` appears twice under `jobs:`, the
@@ -658,7 +950,7 @@ export function a11yRecipeBodyIntact(justfileText) {
 // the gate is red. That is the point, not an inconvenience.
 // ---------------------------------------------------------------------------
 export const A11Y_E2E_RECIPE_REGION =
-  "a11y-e2e floor=\"169\" axefloor=\"3\": wasm\n    #!/usr/bin/env bash\n    set -euo pipefail\n    # Fail loud on a malformed floor BEFORE the run. BOTH floors are guarded, and\n    # the axe one is not decoration: it reaches `Number(process.argv[1])`, and\n    # `Number('')` is 0 while `Number('abc')` is NaN — `s.expected < NaN` is FALSE,\n    # so an empty or non-numeric axefloor makes half 3 print A11Y-AXE OK on a\n    # ZERO-test report. That is the same vacuous-green class ADR-0183 D7 records\n    # for `[ \"\" -gt N ]` in a set -e-exempt if-condition, arriving by a different\n    # route; the two `node -e` blocks below compare numerically rather than with\n    # `[ -gt ]`, so this `case` is the whole guard.\n    case \"{{floor}}\" in\n        ''|*[!0-9]*) echo \"a11y-e2e: floor '{{floor}}' is not a non-negative integer\" >&2; exit 64;;\n    esac\n    case \"{{axefloor}}\" in\n        ''|*[!0-9]*) echo \"a11y-e2e: axefloor '{{axefloor}}' is not a non-negative integer\" >&2; exit 64;;\n    esac\n    # --- Half 1: the a11y eval roster, pinned BY NAME. A deleted or renamed\n    # eval makes import() throw, which set -e turns into a non-zero exit.\n    # `node evals/<x>.eval.mjs` alone exits 0 VACUOUSLY (these three carry no\n    # main guard, by design: a main guard truncates run.mjs mid-loop at exit 0),\n    # so the default export must be imported and called.\n    a11y_eval_check() {\n        node -e \"import(process.argv[1]).then(m => m.default()).then(r => { if (!r.pass) { console.error('a11y eval FAIL: ' + r.name + ' — ' + r.detail); process.exit(1) } const m = /teeth=(\\\\d+)\\\\/(\\\\d+)/.exec(String(r.detail)); if (m === null) { console.error('a11y eval reports NO teeth tally: ' + r.name + ' — an eval that runs no inline fixtures proves nothing, and a body gutted to a bare pass:true looks identical to a real one'); process.exit(1) } if (m[1] !== m[2] || Number(m[1]) < 1) { console.error('a11y eval teeth uneven or empty: ' + r.name + ' — ' + m[0]); process.exit(1) } console.log('  teeth ' + m[0]) })\" -- \"$1\"\n        echo \"a11y eval OK: $1\"\n    }\n    a11y_eval_check ./evals/overlay-a11y-manifest.eval.mjs\n    a11y_eval_check ./evals/a11y-static-shell.eval.mjs\n    a11y_eval_check ./evals/reduced-motion-purity.eval.mjs\n    # --- Half 2: floor the a11y unit tier. Delete the stale report first: a\n    # leftover report from a previous run would be read as this run's result if\n    # vitest died before writing (measured shape).\n    rm -f /tmp/a11y-e2e-vitest.json\n    cd client && npx vitest run --reporter=json --outputFile=/tmp/a11y-e2e-vitest.json \\\n        src/ui/overlayA11yWiring.test.ts \\\n        src/ui/overlayA11y.test.ts \\\n        src/ui/focusTrap.test.ts \\\n        src/ui/liveRegion.test.ts \\\n        src/ui/announcements.test.ts \\\n        src/ui/a11yCopy.test.ts \\\n        src/main.a11yFocus.test.ts \\\n        src/render/motionPreference.test.ts\n    cd ..\n    node -e \"const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-vitest.json', 'utf8')) } catch (e) { console.error('a11y-e2e: vitest wrote no readable JSON report — ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const files = j.testResults.length; const total = j.numTotalTests; if (files !== 8) { console.error('a11y-e2e: ' + files + ' spec file(s) reported, expected 8 — an a11y spec file was deleted or renamed'); process.exit(1) } if (j.numFailedTests !== 0 || j.numPendingTests !== 0 || j.numTodoTests !== 0) { console.error('a11y-e2e: failed=' + j.numFailedTests + ' pending=' + j.numPendingTests + ' todo=' + j.numTodoTests + ' — a skipped a11y test is a silently ungated one'); process.exit(1) } if (total < floor) { console.error('a11y-e2e: a11y unit tier reported ' + total + ' test(s) across ' + files + ' file(s) — floor is ' + floor); process.exit(1) } console.log('A11Y-NIGHTLY OK evals=3/3 files=' + files + ' tests=' + total + ' floor=' + floor + ' f=0 pend=0 todo=0')\" -- \"{{floor}}\"\n    # --- Half 3: the axe-core + real-browser tier. Same stale-report discipline as\n    # half 2 — a leftover report from a previous run would be read as this run's\n    # result if playwright died before writing. The floor is asserted from the\n    # machine-readable report and never from console text: a MISSING spec file makes\n    # playwright report zero tests and exit 0, the same silent-zero shape vitest has.\n    rm -f /tmp/a11y-e2e-axe.json\n    cd client && PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/a11y-e2e-axe.json \\\n        npx playwright test e2e/a11y.spec.ts --reporter=json\n    cd ..\n    node -e \"const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-axe.json', 'utf8')) } catch (e) { console.error('a11y-e2e: playwright wrote no readable JSON report — ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const s = j.stats; if (s === undefined) { console.error('a11y-e2e: playwright report carries no stats block'); process.exit(1) } if (s.unexpected !== 0 || s.flaky !== 0 || s.skipped !== 0) { console.error('a11y-e2e: axe tier unexpected=' + s.unexpected + ' flaky=' + s.flaky + ' skipped=' + s.skipped + ' — a skipped or flaky a11y test is a silently ungated one'); process.exit(1) } if (s.expected < floor) { console.error('a11y-e2e: axe tier reported ' + s.expected + ' passing test(s) — floor is ' + floor + '; a MISSING spec file reports zero and exits 0'); process.exit(1) } console.log('A11Y-AXE OK tests=' + s.expected + ' floor=' + floor + ' unexpected=0 flaky=0 skipped=0')\" -- \"{{axefloor}}\"\n    echo \"DEFERRED: A11Y-32 / A11Y-33 are MANUAL and are NEVER CI-green — docs/a11y-manual-protocol.md\"\n";
+  "a11y-e2e floor=\"169\" axefloor=\"3\" rmfloor=\"2\": wasm\n    #!/usr/bin/env bash\n    set -euo pipefail\n    # Fail loud on a malformed floor BEFORE the run. BOTH floors are guarded, and\n    # the axe one is not decoration: it reaches `Number(process.argv[1])`, and\n    # `Number('')` is 0 while `Number('abc')` is NaN — `s.expected < NaN` is FALSE,\n    # so an empty or non-numeric axefloor makes half 3 print A11Y-AXE OK on a\n    # ZERO-test report. That is the same vacuous-green class ADR-0183 D7 records\n    # for `[ \"\" -gt N ]` in a set -e-exempt if-condition, arriving by a different\n    # route; the two `node -e` blocks below compare numerically rather than with\n    # `[ -gt ]`, so this `case` is the whole guard.\n    case \"{{floor}}\" in\n        ''|*[!0-9]*) echo \"a11y-e2e: floor '{{floor}}' is not a non-negative integer\" >&2; exit 64;;\n    esac\n    case \"{{axefloor}}\" in\n        ''|*[!0-9]*) echo \"a11y-e2e: axefloor '{{axefloor}}' is not a non-negative integer\" >&2; exit 64;;\n    esac\n    case \"{{rmfloor}}\" in\n        ''|*[!0-9]*) echo \"a11y-e2e: rmfloor '{{rmfloor}}' is not a non-negative integer\" >&2; exit 64;;\n    esac\n    # --- Half 1: the a11y eval roster, pinned BY NAME. A deleted or renamed\n    # eval makes import() throw, which set -e turns into a non-zero exit.\n    # `node evals/<x>.eval.mjs` alone exits 0 VACUOUSLY (these three carry no\n    # main guard, by design: a main guard truncates run.mjs mid-loop at exit 0),\n    # so the default export must be imported and called.\n    a11y_eval_check() {\n        node -e \"import(process.argv[1]).then(m => m.default()).then(r => { if (!r.pass) { console.error('a11y eval FAIL: ' + r.name + ' — ' + r.detail); process.exit(1) } const m = /teeth=(\\\\d+)\\\\/(\\\\d+)/.exec(String(r.detail)); if (m === null) { console.error('a11y eval reports NO teeth tally: ' + r.name + ' — an eval that runs no inline fixtures proves nothing, and a body gutted to a bare pass:true looks identical to a real one'); process.exit(1) } if (m[1] !== m[2] || Number(m[1]) < 1) { console.error('a11y eval teeth uneven or empty: ' + r.name + ' — ' + m[0]); process.exit(1) } console.log('  teeth ' + m[0]) })\" -- \"$1\"\n        echo \"a11y eval OK: $1\"\n    }\n    a11y_eval_check ./evals/overlay-a11y-manifest.eval.mjs\n    a11y_eval_check ./evals/a11y-static-shell.eval.mjs\n    a11y_eval_check ./evals/reduced-motion-purity.eval.mjs\n    # --- Half 2: floor the a11y unit tier. Delete the stale report first: a\n    # leftover report from a previous run would be read as this run's result if\n    # vitest died before writing (measured shape).\n    rm -f /tmp/a11y-e2e-vitest.json\n    cd client && npx vitest run --reporter=json --outputFile=/tmp/a11y-e2e-vitest.json \\\n        src/ui/overlayA11yWiring.test.ts \\\n        src/ui/overlayA11y.test.ts \\\n        src/ui/focusTrap.test.ts \\\n        src/ui/liveRegion.test.ts \\\n        src/ui/announcements.test.ts \\\n        src/ui/a11yCopy.test.ts \\\n        src/main.a11yFocus.test.ts \\\n        src/render/motionPreference.test.ts\n    cd ..\n    node -e \"const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-vitest.json', 'utf8')) } catch (e) { console.error('a11y-e2e: vitest wrote no readable JSON report — ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const files = j.testResults.length; const total = j.numTotalTests; if (files !== 8) { console.error('a11y-e2e: ' + files + ' spec file(s) reported, expected 8 — an a11y spec file was deleted or renamed'); process.exit(1) } if (j.numFailedTests !== 0 || j.numPendingTests !== 0 || j.numTodoTests !== 0) { console.error('a11y-e2e: failed=' + j.numFailedTests + ' pending=' + j.numPendingTests + ' todo=' + j.numTodoTests + ' — a skipped a11y test is a silently ungated one'); process.exit(1) } if (total < floor) { console.error('a11y-e2e: a11y unit tier reported ' + total + ' test(s) across ' + files + ' file(s) — floor is ' + floor); process.exit(1) } console.log('A11Y-NIGHTLY OK evals=3/3 files=' + files + ' tests=' + total + ' floor=' + floor + ' f=0 pend=0 todo=0')\" -- \"{{floor}}\"\n    # --- Half 3: the axe-core + real-browser tier. Same stale-report discipline as\n    # half 2 — a leftover report from a previous run would be read as this run's\n    # result if playwright died before writing. The floor is asserted from the\n    # machine-readable report and never from console text: a MISSING spec file makes\n    # playwright report zero tests and exit 0, the same silent-zero shape vitest has.\n    rm -f /tmp/a11y-e2e-axe.json\n    cd client && PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/a11y-e2e-axe.json \\\n        npx playwright test e2e/a11y.spec.ts --reporter=json\n    cd ..\n    node -e \"const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-axe.json', 'utf8')) } catch (e) { console.error('a11y-e2e: playwright wrote no readable JSON report — ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const s = j.stats; if (s === undefined) { console.error('a11y-e2e: playwright report carries no stats block'); process.exit(1) } if (s.unexpected !== 0 || s.flaky !== 0 || s.skipped !== 0) { console.error('a11y-e2e: axe tier unexpected=' + s.unexpected + ' flaky=' + s.flaky + ' skipped=' + s.skipped + ' — a skipped or flaky a11y test is a silently ungated one'); process.exit(1) } if (s.expected < floor) { console.error('a11y-e2e: axe tier reported ' + s.expected + ' passing test(s) — floor is ' + floor + '; a MISSING spec file reports zero and exits 0'); process.exit(1) } console.log('A11Y-AXE OK tests=' + s.expected + ' floor=' + floor + ' unexpected=0 flaky=0 skipped=0')\" -- \"{{axefloor}}\"\n    # --- Half 4: the reduced-motion browser tier (rb-20, ADR-0219). Same stale-\n    # report discipline as halves 2 and 3, and its OWN report path: reusing half\n    # 3's would clobber the axe evidence and a red in whichever tier ran second\n    # would be read as belonging to whichever ran first. Both paths are listed in\n    # nightly.yml's failure-evidence artifact.\n    #\n    # `--project=reduced-motion` is LOAD-BEARING. client/playwright.config.ts now\n    # declares two projects, and an invocation naming none runs BOTH -- i.e. all\n    # 21 spec files, with a browser and a full world, instead of this project's\n    # two tests.\n    #\n    # ACCURACY NOTE -- this deliberately does NOT inherit half 3's rationale\n    # above, which is stale. MEASURED on the pinned @playwright/test 1.61.1: a\n    # MISSING spec file, an EMPTY spec file and a --project naming no project ALL\n    # exit 1 with \"No tests found\", so `set -euo pipefail` kills this recipe\n    # before any floor check could run. The shape that really does report\n    # expected=0 and exit 0 is a wholly `test.describe.skip`-ed spec file -- and\n    # the `s.skipped !== 0` clause below is what catches it. The floor is still\n    # read from the machine-readable report and never from console text.\n    rm -f /tmp/a11y-e2e-rm.json\n    cd client && PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/a11y-e2e-rm.json \\\n        npx playwright test --project=reduced-motion --reporter=json\n    cd ..\n    node -e \"const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-rm.json', 'utf8')) } catch (e) { console.error('a11y-e2e: playwright wrote no readable JSON report for the reduced-motion tier — ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const s = j.stats; if (s === undefined) { console.error('a11y-e2e: reduced-motion report carries no stats block'); process.exit(1) } if (s.unexpected !== 0 || s.flaky !== 0 || s.skipped !== 0) { console.error('a11y-e2e: reduced-motion tier unexpected=' + s.unexpected + ' flaky=' + s.flaky + ' skipped=' + s.skipped + ' — a wholly describe.skip-ed spec file reports expected=0 and exits 0, and a skipped or flaky a11y test is a silently ungated one'); process.exit(1) } if (s.expected < floor) { console.error('a11y-e2e: reduced-motion tier reported ' + s.expected + ' passing test(s) — floor is ' + floor); process.exit(1) } console.log('A11Y-RM OK tests=' + s.expected + ' floor=' + floor + ' unexpected=0 flaky=0 skipped=0')\" -- \"{{rmfloor}}\"\n    echo \"DEFERRED: A11Y-32 / A11Y-33 are MANUAL and are NEVER CI-green — docs/a11y-manual-protocol.md\"\n";
 
 // The raw region for `recipeName`: its header line plus every following line that
 // is blank or indented, with trailing blank lines dropped. Comments are KEPT.
@@ -699,6 +991,235 @@ export function a11yRecipeBodyIsPinned(justfileText) {
     };
   }
   return { ok: true, reason: 'the a11y-e2e recipe region matches its verbatim pin' };
+}
+
+// ---------------------------------------------------------------------------
+// rb-20 (residual R-m23-s11-X11), RM-4. Half 4 of `just a11y-e2e`: the new
+// reduced-motion browser tier, fail-closed the same way halves 2 and 3 already
+// are. A SEPARATE function from `a11yRecipeBodyIntact` / `a11yRecipeBodyIsPinned`
+// so the EXISTING teeth (and the byte-exact `A11Y_E2E_RECIPE_REGION` pin) stay
+// untouched — RM-5's own circularity note requires this: a bite-proof that
+// regenerates the region pin for every recipe mutant must show the REJECTION
+// came from a substring/structural tooth like this one, never from the pin
+// alone (the pin necessarily agrees with whatever it was legitimately
+// regenerated from).
+// ---------------------------------------------------------------------------
+const RM_HALF4_PROJECT_FLAG = '--project=reduced-motion';
+// ADR-0219: "nightly.yml's failure-evidence artifact gains half 4's report
+// path". Reusing half 3's path would clobber its evidence. If the real
+// implementation legitimately picks a different literal, update this constant
+// in the SAME commit — the house idiom this file already uses for every other
+// moving pin. Read by a11yNightlyJobIsWired too, which asserts the nightly
+// artifact `path:` list carries it.
+const A11Y_HALF4_REPORT = '/tmp/a11y-e2e-rm.json';
+
+// The justfile line index of the `a11y-e2e` recipe HEADER — a line at column 0
+// beginning `a11y-e2e:` or `a11y-e2e ` — or -1 if there is not EXACTLY one.
+// Deliberately NOT `justfileText.indexOf('a11y-e2e ')`: that first hit lands in
+// a PROSE COMMENT ~10 lines above the real header ("The nightly a11y-e2e job
+// provisions both..."), so every forward search anchored on it silently starts
+// in the wrong place, and a second planted mention would move it again.
+function a11yRecipeHeaderLines(justfileText) {
+  const lines = justfileText.split('\n');
+  const out = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const l = lines[i];
+    if (l.startsWith('a11y-e2e:') || l.startsWith('a11y-e2e ')) out.push(i);
+  }
+  return out;
+}
+
+// True when `text` reads `token` and IMMEDIATELY COMPARES it with one of `ops`.
+// Presence of the bare token is NOT enough, and the difference is not academic —
+// MEASURED against the real recipe, both times:
+//   * deleting `if (s.expected < floor)` leaves
+//     `console.log('... tests=' + s.expected)` behind, so a substring test for
+//     `.expected` accepts a half 4 that reports its test count and floors
+//     nothing;
+//   * deleting `|| s.skipped !== 0` from the guard leaves
+//     `console.error('... skipped=' + s.skipped + ...)` behind, so a substring
+//     test for `skipped` accepts a half 4 that PRINTS the skip count in its
+//     failure message while never branching on it.
+// Only fail-closed operators are admitted: `s.skipped === 0` is the inverted
+// guard, not a weaker one. Character scan, no regex literal (this repo has a
+// measured case of a regex literal silently blinding a comment stripper).
+function readsAndComparesToken(text, token, ops) {
+  let from = 0;
+  for (;;) {
+    const at = text.indexOf(token, from);
+    if (at === -1) return false;
+    const rest = text.slice(at + token.length).trimStart();
+    if (ops.some((op) => rest.startsWith(op))) return true;
+    from = at + 1;
+  }
+}
+
+function hasFloorComparison(text) {
+  return readsAndComparesToken(text, '.expected', ['<']);
+}
+
+function hasSkippedGuard(text) {
+  return readsAndComparesToken(text, '.skipped', ['!==', '!=', '>']);
+}
+
+export function a11yHalf4IsFailClosed(justfileText) {
+  const body = extractRecipeBodyLocal(justfileText, 'a11y-e2e');
+  if (!body) {
+    return { ok: false, reason: 'justfile a11y-e2e: recipe body is empty or absent' };
+  }
+
+  if (body.indexOf(RM_HALF4_PROJECT_FLAG) === -1) {
+    return {
+      ok: false,
+      reason:
+        `justfile a11y-e2e: body never names '${RM_HALF4_PROJECT_FLAG}' — half 4 (rb-20, RM-4) is ` +
+        'either absent, or would run every e2e spec rather than the reduced-motion project alone',
+    };
+  }
+
+  if (body.indexOf(A11Y_HALF4_REPORT) === -1) {
+    return {
+      ok: false,
+      reason:
+        `justfile a11y-e2e: body never writes to '${A11Y_HALF4_REPORT}' — half 4 must write its ` +
+        "own JSON report and must never reuse half 3's report path, or one run clobbers the " +
+        "other's evidence and a red in whichever ran second is read as belonging to whichever " +
+        'ran first',
+    };
+  }
+  // Non-vacuity: the path must be BOTH written (PLAYWRIGHT_JSON_OUTPUT_NAME=)
+  // and READ BACK by a later floor assertion — one occurrence alone is a
+  // report nobody looks at.
+  const occurrences = countOccurrences(body, A11Y_HALF4_REPORT);
+  if (occurrences < 2) {
+    return {
+      ok: false,
+      reason:
+        `justfile a11y-e2e: '${A11Y_HALF4_REPORT}' appears only ${occurrences} time(s) — it must ` +
+        'be both the playwright JSON output target AND the path a later `node -e` reads back to ' +
+        'assert the floor; one occurrence is a report nobody reads',
+    };
+  }
+
+  // Everything from half 4's report path onward — scopes the remaining checks
+  // to half 4 rather than accidentally matching half 2/3's unrelated text.
+  const half4Tail = body.slice(body.indexOf(A11Y_HALF4_REPORT));
+
+  if (half4Tail.indexOf('--reporter=json') === -1) {
+    return {
+      ok: false,
+      reason:
+        'justfile a11y-e2e: half 4 does not run playwright with `--reporter=json` — RM-5: with ' +
+        'the JSON reporter swapped for console output, PLAYWRIGHT_JSON_OUTPUT_NAME names a file ' +
+        'nothing writes, and the floor is then asserted from a report that does not exist',
+    };
+  }
+  if (!hasFloorComparison(half4Tail)) {
+    return {
+      ok: false,
+      reason:
+        'justfile a11y-e2e: half 4 never COMPARES `.expected` against a floor — the floor must ' +
+        'be asserted from the MACHINE-READABLE report, never from console text (a wholly ' +
+        'describe.skip-ed spec reports zero tests and exits 0 — ADR-0219 D4). Note this is a ' +
+        'comparison check, not a presence check: deleting the `if (s.expected < floor)` line ' +
+        "leaves `console.log('... tests=' + s.expected)` behind, and a bare `.expected` " +
+        'substring test would accept that.',
+    };
+  }
+  // The DECLARED floor must actually reach the checker process. Without this a
+  // half 4 could compare `.expected` against a hard-coded 0 while `rmfloor` sits
+  // unused in the header, case-guarded and meaningless.
+  if (half4Tail.indexOf('{{rmfloor}}') === -1) {
+    return {
+      ok: false,
+      reason:
+        'justfile a11y-e2e: half 4 never passes `{{rmfloor}}` to its floor checker — the ' +
+        'declared parameter must be the value compared against, not decoration',
+    };
+  }
+  if (!hasSkippedGuard(half4Tail)) {
+    return {
+      ok: false,
+      reason:
+        "justfile a11y-e2e: half 4's floor check never BRANCHES on `.skipped` — a wholly " +
+        "`test.describe.skip`'d reduced-motion spec reports `expected: 0` and exits 0 (ADR-0219 " +
+        "D4's measured vacuity — distinct from half 3's stale rationale about missing files, " +
+        'which actually exits 1 on 1.61.1), and only a `skipped !== 0` guard catches it. Note ' +
+        'this is a COMPARISON check: merely PRINTING the skip count in a failure message ' +
+        'satisfies a substring test for `skipped` while branching on nothing.',
+    };
+  }
+
+  // ADR-0183 D7 / halves 2 and 3's precedent: the new floor PARAMETER must be
+  // case-guarded as a non-negative integer BEFORE the run, or `Number('')` is
+  // `0` and `Number('abc')` is `NaN` — `expected < NaN` is `false` — and a
+  // malformed floor silently passes.
+  const headerLines = a11yRecipeHeaderLines(justfileText);
+  if (headerLines.length !== 1) {
+    return {
+      ok: false,
+      reason: `justfile declares ${headerLines.length} \`a11y-e2e\` recipe header line(s) at column 0 — exactly one is required, or which header carries the floor parameters is ambiguous`,
+    };
+  }
+  const headerLine = justfileText.split('\n')[headerLines[0]];
+  if (headerLine.indexOf('rmfloor=') === -1) {
+    return {
+      ok: false,
+      reason:
+        'justfile a11y-e2e: recipe header declares no `rmfloor=` parameter — RM-4 requires the ' +
+        'floor be a named, defaulted recipe parameter like `floor`/`axefloor`, not a literal ' +
+        'baked into the body',
+    };
+  }
+  if (body.indexOf('{{rmfloor}}') === -1) {
+    return {
+      ok: false,
+      reason:
+        'justfile a11y-e2e: body never references `{{rmfloor}}` — the declared parameter is unused',
+    };
+  }
+  // ANCHORED ON THE CASE HEADER, not on the first `{{rmfloor}}` occurrence —
+  // that occurrence IS the case header itself (`case "{{rmfloor}}" in`), and
+  // the guard shape (`''|*[!0-9]*)`) necessarily comes AFTER it, never before.
+  // COUNTED, not first-hit: two `case "{{rmfloor}}" in` headers would let a
+  // decoy guard satisfy the window scan while the real one is gutted.
+  const rmfloorCaseHeader = 'case "{{rmfloor}}" in';
+  const caseHeaders = countOccurrences(body, rmfloorCaseHeader);
+  if (caseHeaders === 0) {
+    return {
+      ok: false,
+      reason:
+        'justfile a11y-e2e: no `case "{{rmfloor}}" in` guard header exists — ADR-0183 D7: ' +
+        "`Number('')` is 0 and `Number('abc')` is NaN, and `expected < NaN` is `false`, so an " +
+        'empty or non-numeric rmfloor silently prints OK on a zero-test report',
+    };
+  }
+  if (caseHeaders > 1) {
+    return {
+      ok: false,
+      reason: `justfile a11y-e2e: ${caseHeaders} \`case "{{rmfloor}}" in\` guard headers exist — exactly one is required, or a decoy guard can satisfy this check while the real one is gutted`,
+    };
+  }
+  const caseHeaderIdx = body.indexOf(rmfloorCaseHeader);
+  const caseGuardShape = "''|*[!0-9]*)";
+  const caseGuardWindow = body.slice(caseHeaderIdx, caseHeaderIdx + 300);
+  if (caseGuardWindow.indexOf(caseGuardShape) === -1 || caseGuardWindow.indexOf('esac') === -1) {
+    return {
+      ok: false,
+      reason:
+        'justfile a11y-e2e: `case "{{rmfloor}}" in` is declared but does not carry the ' +
+        "`''|*[!0-9]*)` non-negative-integer guard shape (closed by `esac`) within 300 " +
+        'characters of the header — ADR-0183 D7',
+    };
+  }
+
+  return {
+    ok: true,
+    reason:
+      `justfile a11y-e2e: half 4 runs '${RM_HALF4_PROJECT_FLAG}', writes and reads back its own ` +
+      `report at '${A11Y_HALF4_REPORT}', asserts its floor from that report with a skipped ` +
+      'guard, and case-guards `rmfloor` as a non-negative integer before the run',
+  };
 }
 
 // ---------------------------------------------------------------------------
@@ -777,6 +1298,48 @@ export function a11yStaysNightlyOnly(justfileText, ciYaml) {
     ok: true,
     reason: `'${A11Y_RECIPE_NAME}' is absent from REQUIRED_JUST_STEPS, from the 'ci:' dependency closure, and from ci.yml — the axe tier stays nightly-only`,
   };
+}
+
+// The `path:` entries of every `actions/upload-artifact` step inside a job block.
+// Handles BOTH YAML spellings — an inline scalar (`path: /tmp/x.json`) and a
+// block literal (`path: |` followed by deeper-indented lines) — because a gate
+// that only understands one of them is satisfied by rewriting into the other.
+// `#` lines are dropped: a path that exists only as prose uploads nothing.
+function artifactPathEntries(blockLines) {
+  const entries = [];
+  let uploads = 0;
+  for (let i = 0; i < blockLines.length; i += 1) {
+    const tr = blockLines[i].trim();
+    if (tr.startsWith('#')) continue;
+    if (tr.indexOf('uses: actions/upload-artifact') === -1) continue;
+    uploads += 1;
+    const stepIndent = blockLines[i].length - blockLines[i].trimStart().length;
+    for (let j = i + 1; j < blockLines.length; j += 1) {
+      const line = blockLines[j];
+      const t = line.trim();
+      if (t === '') continue;
+      const indent = line.length - line.trimStart().length;
+      // A sibling step, or any key at or above this step's indent, ends it.
+      if (indent < stepIndent || (indent === stepIndent && t.startsWith('- '))) break;
+      if (t.startsWith('#')) continue;
+      if (!t.startsWith('path:')) continue;
+      const inline = t.slice('path:'.length).trim();
+      if (inline !== '' && inline !== '|' && inline !== '|-' && inline !== '>' && inline !== '>-') {
+        entries.push(inline);
+        break;
+      }
+      for (let k = j + 1; k < blockLines.length; k += 1) {
+        const pl = blockLines[k];
+        const pt = pl.trim();
+        if (pt === '') continue;
+        if (pl.length - pl.trimStart().length <= indent) break;
+        if (pt.startsWith('#')) continue;
+        entries.push(pt);
+      }
+      break;
+    }
+  }
+  return { uploads, entries };
 }
 
 export function a11yNightlyJobIsWired(nightlyYaml) {
@@ -918,10 +1481,41 @@ export function a11yNightlyJobIsWired(nightlyYaml) {
     }
   }
 
+  // rb-20 / RM-4. The failure-evidence artifact's `path:` list is HARDCODED, so a
+  // newly added half of `just a11y-e2e` is invisible to it until someone edits
+  // the block — and a red in the new tier then ships with NOTHING to look at,
+  // which is the exact gap that step's own comment says `if: always()` exists to
+  // close. NOTHING gated this list before rb-20: the three nightly predicates
+  // here gate the job's STEPS, and the verbatim job pin
+  // (A11Y_E2E_NIGHTLY_JOB_BLOCK) goes quiet the moment it is legitimately
+  // regenerated — which is precisely the moment a forgotten path slips through.
+  // Scoped to the a11y-e2e job block.
+  const artifact = artifactPathEntries(blockLines);
+  if (artifact.uploads === 0) {
+    return {
+      ok: false,
+      reason:
+        'nightly a11y-e2e job declares no `actions/upload-artifact` step — every half of `just a11y-e2e` writes a JSON report, and a red that uploads none of them is a red nobody can triage',
+    };
+  }
+  if (artifact.entries.length === 0) {
+    return {
+      ok: false,
+      reason:
+        "nightly a11y-e2e job's upload-artifact step declares an empty `path:` — an artifact that names no file is not evidence",
+    };
+  }
+  if (artifact.entries.indexOf(A11Y_HALF4_REPORT) === -1) {
+    return {
+      ok: false,
+      reason: `nightly a11y-e2e job's failure-evidence artifact does not list '${A11Y_HALF4_REPORT}' (it lists: ${artifact.entries.join(', ')}) — half 4 (rb-20, RM-4) writes that report, and without it a red in the reduced-motion tier uploads nothing`,
+    };
+  }
+
   return {
     ok: true,
     reason:
-      'nightly.yml declares an a11y-e2e job that invokes `just a11y-e2e` exactly once, is schedulable (ubuntu-latest, no matrix), and is unneutered at both the job and the step level',
+      "nightly.yml declares an a11y-e2e job that invokes `just a11y-e2e` exactly once, is schedulable (ubuntu-latest, no matrix), is unneutered at both the job and the step level, and uploads half 4's report as failure evidence",
   };
 }
 
@@ -1560,7 +2154,7 @@ export function clientDeclaresAxeDep(pkgJsonText, lockText) {
 // ---------------------------------------------------------------------------
 
 export const A11Y_E2E_NIGHTLY_JOB_BLOCK =
-  "  a11y-e2e:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v6 # v6\n      - uses: dtolnay/rust-toolchain@stable # stable\n        with: { targets: wasm32-unknown-unknown }\n      # Distinct prefix-key (v1-a11y) so this cache never collides with the\n      # mutation (v1-nightly) / mutation-server (v1-nightly-server) / smoke\n      # (v1-smoke) job caches, or ci.yml's v1-ci / v1-e2e.\n      - uses: Swatinem/rust-cache@v2 # v2\n        with: { prefix-key: v1-a11y }\n      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0\n        with: { version: 'v0.15.0' }\n      - uses: actions/setup-node@v7 # v7\n        with:\n          node-version: '24.13.1'\n          cache: npm\n          cache-dependency-path: client/package-lock.json\n      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2\n      # `npm ci` lives here rather than inside the recipe so a local\n      # `just a11y-e2e` never clobbers a developer's node_modules.\n      - name: Install client deps\n        run: cd client && npm ci\n      - name: Install Playwright chromium\n        run: cd client && npx playwright install --with-deps chromium\n      # rb-19: half 3 drives a real browser against a real client, and the client's\n      # playwright.config.ts globalSetup republishes the module — so this job needs\n      # the same SpacetimeDB provisioning ci.yml's `e2e` job and the\n      # `smoke-republish` job above carry. Same download-then-execute installer\n      # (fetch to a file, then run the file — never pipe the fetch into a shell,\n      # which semgrep's gha-curl-pipe-shell rule rejects), same 2.8.1 pin.\n      - name: Install SpacetimeDB CLI\n        # `--yes`: the installer prompts to confirm and aborts on a non-tty runner\n        # without it. The install also generates the identity keypair used to publish.\n        run: |\n          curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com\n          sh /tmp/spacetime-install.sh --yes\n          echo \"$HOME/.local/bin\" >> \"$GITHUB_PATH\"\n      - name: Pin spacetime 2.8.1\n        run: |\n          spacetime version install 2.8.1\n          spacetime version use 2.8.1\n          spacetime --version\n      # Ephemeral in-memory instance on the client's default host/port.\n      - name: Start SpacetimeDB\n        run: nohup spacetime start --in-memory --listen-addr 127.0.0.1:3000 > /tmp/stdb-a11y.log 2>&1 &\n      - name: Wait for SpacetimeDB\n        run: |\n          for i in $(seq 1 60); do\n            if curl -s -o /dev/null http://127.0.0.1:3000/; then echo \"ready after ${i}s\"; exit 0; fi\n            sleep 1\n          done\n          echo \"spacetime did not become ready on :3000\" >&2\n          cat /tmp/stdb-a11y.log >&2 || true\n          exit 1\n      # Deliberately NO continue-on-error and NO if: — a soft-failing decay\n      # ratchet is a toothless one. Both are gated by\n      # evals/ci-gate-wiring.eval.mjs (a11yNightlyJobIsWired), which also pins\n      # this step to exactly one unsuffixed occurrence file-wide. `env:` comes\n      # AFTER `run:` on purpose: that check matches the step's trimmed line\n      # exactly, and a step whose first key is `env:` reads as zero occurrences.\n      # The db name is per-run isolated so it never collides with a concurrent\n      # nightly run or with the regular monster-realm dev/e2e database.\n      - run: just a11y-e2e\n        env:\n          STDB_SERVER: http://127.0.0.1:3000\n          VITE_STDB_URI: ws://127.0.0.1:3000\n          VITE_STDB_DB: monster-realm-a11y-${{ github.run_id }}\n          MR_E2E_PORT: '5292'\n      # ADR-0200 D7, same reasoning as the mutation jobs: `if: always()` is\n      # load-bearing, not hygiene. The GitHub default is `success()`, which\n      # uploads the vitest report only on the nights it is worthless and skips\n      # it on exactly the nights someone needs it to see WHICH spec vanished.\n      # `if-no-files-found: warn` is pinned explicitly as a ratchet against a\n      # later raise to `error`: at `error`, a job that died in `just wasm` before\n      # vitest ever ran would report a failing upload step instead of its REAL\n      # failure. The artifact name is distinct per job (upload-artifact v4\n      # hard-errors on a duplicate name within one run).\n      # A publish failure inside globalSetup, or a client that connects but never\n      # reaches ready(), reds this job with nothing to look at otherwise — the same\n      # reasoning smoke-republish's log dump carries.\n      - name: Dump SpacetimeDB logs on failure\n        if: failure()\n        run: cat /tmp/stdb-a11y.log || true\n      - name: Upload a11y vitest report (failure evidence)\n        if: always()\n        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4\n        with:\n          name: a11y-e2e-vitest-report\n          # BOTH halves' reports. Half 3 writes the axe one, and a nightly red IN\n          # the axe tier shipped no evidence at all until it was listed here — the\n          # exact gap `if: always()` exists to close for half 2.\n          path: |\n            /tmp/a11y-e2e-vitest.json\n            /tmp/a11y-e2e-axe.json\n          if-no-files-found: warn\n          retention-days: 14\n\n";
+  "  a11y-e2e:\n    runs-on: ubuntu-latest\n    steps:\n      - uses: actions/checkout@v6 # v6\n      - uses: dtolnay/rust-toolchain@stable # stable\n        with: { targets: wasm32-unknown-unknown }\n      # Distinct prefix-key (v1-a11y) so this cache never collides with the\n      # mutation (v1-nightly) / mutation-server (v1-nightly-server) / smoke\n      # (v1-smoke) job caches, or ci.yml's v1-ci / v1-e2e.\n      - uses: Swatinem/rust-cache@v2 # v2\n        with: { prefix-key: v1-a11y }\n      - uses: jetli/wasm-pack-action@0d096b08b4e5a7de8c28de67e11e945404e9eefa # v0.4.0\n        with: { version: 'v0.15.0' }\n      - uses: actions/setup-node@v7 # v7\n        with:\n          node-version: '24.13.1'\n          cache: npm\n          cache-dependency-path: client/package-lock.json\n      - uses: extractions/setup-just@dd310ad5a97d8e7b41793f8ef055398d51ad4de6 # v2\n      # `npm ci` lives here rather than inside the recipe so a local\n      # `just a11y-e2e` never clobbers a developer's node_modules.\n      - name: Install client deps\n        run: cd client && npm ci\n      - name: Install Playwright chromium\n        run: cd client && npx playwright install --with-deps chromium\n      # rb-19: half 3 drives a real browser against a real client, and the client's\n      # playwright.config.ts globalSetup republishes the module — so this job needs\n      # the same SpacetimeDB provisioning ci.yml's `e2e` job and the\n      # `smoke-republish` job above carry. Same download-then-execute installer\n      # (fetch to a file, then run the file — never pipe the fetch into a shell,\n      # which semgrep's gha-curl-pipe-shell rule rejects), same 2.8.1 pin.\n      - name: Install SpacetimeDB CLI\n        # `--yes`: the installer prompts to confirm and aborts on a non-tty runner\n        # without it. The install also generates the identity keypair used to publish.\n        run: |\n          curl -sSf -o /tmp/spacetime-install.sh https://install.spacetimedb.com\n          sh /tmp/spacetime-install.sh --yes\n          echo \"$HOME/.local/bin\" >> \"$GITHUB_PATH\"\n      - name: Pin spacetime 2.8.1\n        run: |\n          spacetime version install 2.8.1\n          spacetime version use 2.8.1\n          spacetime --version\n      # Ephemeral in-memory instance on the client's default host/port.\n      - name: Start SpacetimeDB\n        run: nohup spacetime start --in-memory --listen-addr 127.0.0.1:3000 > /tmp/stdb-a11y.log 2>&1 &\n      - name: Wait for SpacetimeDB\n        run: |\n          for i in $(seq 1 60); do\n            if curl -s -o /dev/null http://127.0.0.1:3000/; then echo \"ready after ${i}s\"; exit 0; fi\n            sleep 1\n          done\n          echo \"spacetime did not become ready on :3000\" >&2\n          cat /tmp/stdb-a11y.log >&2 || true\n          exit 1\n      # Deliberately NO continue-on-error and NO if: — a soft-failing decay\n      # ratchet is a toothless one. Both are gated by\n      # evals/ci-gate-wiring.eval.mjs (a11yNightlyJobIsWired), which also pins\n      # this step to exactly one unsuffixed occurrence file-wide. `env:` comes\n      # AFTER `run:` on purpose: that check matches the step's trimmed line\n      # exactly, and a step whose first key is `env:` reads as zero occurrences.\n      # The db name is per-run isolated so it never collides with a concurrent\n      # nightly run or with the regular monster-realm dev/e2e database.\n      - run: just a11y-e2e\n        env:\n          STDB_SERVER: http://127.0.0.1:3000\n          VITE_STDB_URI: ws://127.0.0.1:3000\n          VITE_STDB_DB: monster-realm-a11y-${{ github.run_id }}\n          MR_E2E_PORT: '5292'\n      # ADR-0200 D7, same reasoning as the mutation jobs: `if: always()` is\n      # load-bearing, not hygiene. The GitHub default is `success()`, which\n      # uploads the vitest report only on the nights it is worthless and skips\n      # it on exactly the nights someone needs it to see WHICH spec vanished.\n      # `if-no-files-found: warn` is pinned explicitly as a ratchet against a\n      # later raise to `error`: at `error`, a job that died in `just wasm` before\n      # vitest ever ran would report a failing upload step instead of its REAL\n      # failure. The artifact name is distinct per job (upload-artifact v4\n      # hard-errors on a duplicate name within one run).\n      # A publish failure inside globalSetup, or a client that connects but never\n      # reaches ready(), reds this job with nothing to look at otherwise — the same\n      # reasoning smoke-republish's log dump carries.\n      - name: Dump SpacetimeDB logs on failure\n        if: failure()\n        run: cat /tmp/stdb-a11y.log || true\n      - name: Upload a11y vitest report (failure evidence)\n        if: always()\n        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4\n        with:\n          name: a11y-e2e-vitest-report\n          # ALL THREE halves' reports. Half 3 writes the axe one and half 4 (rb-20,\n          # ADR-0219) the reduced-motion one, and a nightly red IN either tier\n          # shipped no evidence at all until it was listed here — the exact gap\n          # `if: always()` exists to close for half 2. This list is hardcoded, so\n          # a new half is invisible to it unless someone edits this block;\n          # evals/ci-gate-wiring.eval.mjs (a11yNightlyJobIsWired) now asserts half\n          # 4's path is present, so \"added a tier, forgot the evidence\" reds.\n          path: |\n            /tmp/a11y-e2e-vitest.json\n            /tmp/a11y-e2e-axe.json\n            /tmp/a11y-e2e-rm.json\n          if-no-files-found: warn\n          retention-days: 14\n\n";
 
 const RB19_PENDING_PIN = '<<<RB19-PENDING>>>';
 
@@ -2743,6 +3337,14 @@ jobs:
     steps:
       - uses: actions/checkout@abc1234abc1234abc1234abc1234abc1234abc12 # v6
       - run: just a11y-e2e
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        if: always()
+        with:
+          name: a11y-e2e-reports
+          path: |
+            /tmp/a11y-e2e-vitest.json
+            /tmp/a11y-e2e-axe.json
+            /tmp/a11y-e2e-rm.json
 `;
 
   // --- T-a11y-nightly-good-basic: the plain minimal wiring → must ACCEPT.
@@ -3166,7 +3768,7 @@ jobs:
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: a11y-e2e-evidence
-          path: /tmp/a11y-vitest.json
+          path: /tmp/a11y-e2e-rm.json
   coverage:
     runs-on: ubuntu-latest
     steps:
@@ -3295,7 +3897,7 @@ jobs:
   //   blacklist (red-team executed both). The value whitelist closes them.
   {
     const mk = (coe) =>
-      `name: Nightly\non:\n  workflow_dispatch:\njobs:\n  a11y-e2e:\n    runs-on: ubuntu-latest\n    steps:\n      - run: just a11y-e2e\n        continue-on-error: ${coe}\n`;
+      `name: Nightly\non:\n  workflow_dispatch:\njobs:\n  a11y-e2e:\n    runs-on: ubuntu-latest\n    steps:\n      - run: just a11y-e2e\n        continue-on-error: ${coe}\n      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4\n        with:\n          path: /tmp/a11y-e2e-rm.json\n`;
     for (const coe of ['$' + '{{ !cancelled() }}', '$' + '{{ success() || true }}', '1', 'TRUE']) {
       if (a11yNightlyJobIsWired(mk(coe)).ok) {
         return {
@@ -4282,6 +4884,654 @@ jobs:
   }
 
   // =========================================================================
+  // rb-20 (residual R-m23-s11-X11) PROOF-OF-TEETH — reducedMotionProjectIsWired
+  // =========================================================================
+  {
+    const RM_PROJECTS_BLOCK = `  projects: [
+    { name: 'default', testIgnore: 'reduced-motion.spec.ts' },
+    {
+      name: 'reduced-motion',
+      testMatch: 'reduced-motion.spec.ts',
+      use: { contextOptions: { reducedMotion: 'reduce' } },
+    },
+  ],
+`;
+    const RM_GOOD = `import { defineConfig } from '@playwright/test';
+
+const e2eBaseUrl = 'http://localhost:5290';
+
+export default defineConfig({
+  testDir: './e2e',
+  forbidOnly: !!process.env.CI,
+  globalSetup: './e2e/global-setup.ts',
+  timeout: 45_000,
+  fullyParallel: false,
+  workers: 1,
+  use: { baseURL: e2eBaseUrl, headless: true },
+  webServer: {
+    command: 'npm run dev',
+    url: e2eBaseUrl,
+    reuseExistingServer: false,
+    timeout: 60_000,
+  },
+${RM_PROJECTS_BLOCK}});
+`;
+
+    // --- RM-good: the healthy shape → accept.
+    {
+      const r = reducedMotionProjectIsWired(RM_GOOD);
+      if (!r.ok) {
+        return {
+          name,
+          pass: false,
+          detail: `RM-good: reducedMotionProjectIsWired should accept the healthy shape but rejected: ${r.reason}`,
+        };
+      }
+    }
+
+    // --- RM-no-projects: no `projects:` array at all → reject.
+    //   Kills: an impl that only inspects the top-level `use:` block and never
+    //   checks for a dedicated project.
+    {
+      const noProjects = RM_GOOD.split(RM_PROJECTS_BLOCK).join('');
+      const r = reducedMotionProjectIsWired(noProjects);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RM-no-projects: reducedMotionProjectIsWired should reject a config with no `projects:` array',
+        };
+      }
+    }
+
+    // --- RM-name-renamed: the project exists but is not named 'reduced-motion'
+    //   → reject. Kills: an impl that finds ANY project carrying
+    //   contextOptions.reducedMotion regardless of its name (so a project named
+    //   e.g. 'chromium-rm' would satisfy RM-1 without satisfying the ledger's
+    //   literal project-name expectation, and `--project=reduced-motion` in the
+    //   justfile would then name nothing).
+    {
+      const renamed = RM_GOOD.split("name: 'reduced-motion'").join("name: 'chromium-rm'");
+      const r = reducedMotionProjectIsWired(renamed);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RM-name-renamed: reducedMotionProjectIsWired should reject a renamed reduced-motion project',
+        };
+      }
+    }
+
+    // --- RM-no-contextOptions: reducedMotion dropped entirely → reject.
+    //   Kills: an impl satisfied by the project's mere EXISTENCE.
+    {
+      const noCtx = RM_GOOD.split("use: { contextOptions: { reducedMotion: 'reduce' } },").join(
+        'use: {},',
+      );
+      const r = reducedMotionProjectIsWired(noCtx);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RM-no-contextOptions: reducedMotionProjectIsWired should reject a project with no contextOptions.reducedMotion',
+        };
+      }
+    }
+
+    // --- RM-wrong-value: reducedMotion set to 'no-preference' → reject.
+    //   Kills: an impl checking only for the KEY's presence, not its value.
+    {
+      const wrongValue = RM_GOOD.split("reducedMotion: 'reduce' } },").join(
+        "reducedMotion: 'no-preference' } },",
+      );
+      const r = reducedMotionProjectIsWired(wrongValue);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            "RM-wrong-value: reducedMotionProjectIsWired should reject contextOptions.reducedMotion !== 'reduce'",
+        };
+      }
+    }
+
+    // --- RM-shorthand: the ADR-0219 D5 trap — `use: { reducedMotion: 'reduce' }`
+    //   with NO contextOptions wrapper → reject, and the message must name the
+    //   trap (ADR-0219 D5), not just "missing contextOptions", so an implementer
+    //   who hits this from the ledger's own wording is steered to the fix rather
+    //   than left to rediscover TS2769 independently.
+    {
+      const shorthand = RM_GOOD.split("use: { contextOptions: { reducedMotion: 'reduce' } },").join(
+        "use: { reducedMotion: 'reduce' },",
+      );
+      const r = reducedMotionProjectIsWired(shorthand);
+      if (r.ok || String(r.reason).indexOf('ADR-0219') === -1) {
+        return {
+          name,
+          pass: false,
+          detail: `RM-shorthand: reducedMotionProjectIsWired should reject the reducedMotion shorthand and name ADR-0219 D5, got ${JSON.stringify(r)}`,
+        };
+      }
+    }
+
+    // --- RM-hoisted-top: reducedMotion hoisted to the config-level `use:` block
+    //   (merges into EVERY project, silently widening the whole e2e suite) →
+    //   reject. Kills: an impl that only inspects project-scoped blocks and
+    //   never checks the config-level `use:`.
+    {
+      const hoisted = RM_GOOD.split('use: { baseURL: e2eBaseUrl, headless: true },').join(
+        "use: { baseURL: e2eBaseUrl, headless: true, reducedMotion: 'reduce' },",
+      );
+      const r = reducedMotionProjectIsWired(hoisted);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RM-hoisted-top: reducedMotionProjectIsWired should reject reducedMotion hoisted to the config-level use: block',
+        };
+      }
+    }
+
+    // --- RM-testIgnore-missing: the `default` project no longer excludes the new
+    //   spec → reject. Kills: an impl that only checks the reduced-motion
+    //   project's OWN testMatch and never checks the exclusion's other side.
+    {
+      const noIgnore = RM_GOOD.split(
+        "{ name: 'default', testIgnore: 'reduced-motion.spec.ts' },",
+      ).join("{ name: 'default' },");
+      const r = reducedMotionProjectIsWired(noIgnore);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            "RM-testIgnore-missing: reducedMotionProjectIsWired should reject a 'default' project with no testIgnore",
+        };
+      }
+    }
+
+    // --- RM-testMatch-widened: the reduced-motion project's testMatch is widened
+    //   to also collect a11y.spec.ts → reject (ADR-0219 D2). Kills: an impl that
+    //   only checks testMatch NAMES the new spec and never checks that it names
+    //   NOTHING ELSE.
+    {
+      const widened = RM_GOOD.split("testMatch: 'reduced-motion.spec.ts',").join(
+        "testMatch: ['reduced-motion.spec.ts', 'a11y.spec.ts'],",
+      );
+      const r = reducedMotionProjectIsWired(widened);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RM-testMatch-widened: reducedMotionProjectIsWired should reject a testMatch that also names a11y.spec.ts',
+        };
+      }
+    }
+
+    // --- RM-decoy-projects-key: a SECOND `projects:` token planted in a string
+    //   literal ahead of the real array → reject as AMBIGUOUS, never resolved to
+    //   whichever came first. This repo has a measured history of first-hit
+    //   anchors being steered by exactly this shape, and the decoy below is
+    //   placed so that a bare `indexOf('projects:')` would walk to the DECOY's
+    //   `[` and parse a hollow array that satisfies nothing — or, worse, one
+    //   that satisfies everything.
+    {
+      const decoy = RM_GOOD.split("  testDir: './e2e',").join(
+        "  testDir: './e2e',\n  metadata: { note: \"projects: [ { name: 'reduced-motion' } ]\" },",
+      );
+      const r = reducedMotionProjectIsWired(decoy);
+      if (r.ok || String(r.reason).indexOf('MORE THAN ONE') === -1) {
+        return {
+          name,
+          pass: false,
+          detail: `RM-decoy-projects-key: a second \`projects:\` token outside comments must be rejected as ambiguous, got ${JSON.stringify(r)}`,
+        };
+      }
+    }
+
+    // --- RM-duplicate-project-name: two projects both named 'reduced-motion',
+    //   the second hollow → reject. Kills: `blocks.find(...)`, which silently
+    //   answers about the FIRST while Playwright runs both.
+    {
+      const dup = RM_GOOD.split('  ],\n});').join(
+        "    { name: 'reduced-motion', testMatch: 'reduced-motion.spec.ts' },\n  ],\n});",
+      );
+      const r = reducedMotionProjectIsWired(dup);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            "RM-duplicate-project-name: two projects named 'reduced-motion' must be rejected as ambiguous",
+        };
+      }
+    }
+
+    // --- RM-comment-only: the whole projects array demoted to a `//` comment →
+    //   reject. Kills: an impl that scans the RAW source, where a comment
+    //   DESCRIBING the config is indistinguishable from the config.
+    {
+      const commented = RM_GOOD.split('\n')
+        .map((l) => (l.trim() === '' || l.indexOf('projects:') === -1 ? l : `// ${l}`))
+        .join('\n');
+      const r = reducedMotionProjectIsWired(commented);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RM-comment-only: reducedMotionProjectIsWired should reject a `projects:` array that exists only inside a // comment',
+        };
+      }
+    }
+  }
+
+  // =========================================================================
+  // rb-20 (residual R-m23-s11-X11) PROOF-OF-TEETH — a11yHalf4IsFailClosed
+  // =========================================================================
+  {
+    const RM4_GOOD_JUSTFILE = `a11y-e2e floor="169" axefloor="3" rmfloor="2": wasm
+    set -euo pipefail
+    case "{{floor}}" in
+        ''|*[!0-9]*) echo "bad floor" >&2; exit 64;;
+    esac
+    case "{{axefloor}}" in
+        ''|*[!0-9]*) echo "bad axefloor" >&2; exit 64;;
+    esac
+    case "{{rmfloor}}" in
+        ''|*[!0-9]*) echo "a11y-e2e: rmfloor '{{rmfloor}}' is not a non-negative integer" >&2; exit 64;;
+    esac
+    rm -f /tmp/a11y-e2e-axe.json
+    cd client && PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/a11y-e2e-axe.json npx playwright test e2e/a11y.spec.ts --reporter=json
+    cd ..
+    rm -f /tmp/a11y-e2e-rm.json
+    cd client && PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/a11y-e2e-rm.json npx playwright test --project=reduced-motion --reporter=json
+    cd ..
+    node -e "const fs = require('node:fs'); const j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-rm.json', 'utf8')); const floor = Number(process.argv[1]); const s = j.stats; if (s.unexpected !== 0 || s.flaky !== 0 || s.skipped !== 0) { console.error('rm tier unexpected=' + s.unexpected + ' flaky=' + s.flaky + ' skipped=' + s.skipped); process.exit(1) } if (s.expected < floor) { console.error('rm tier reported ' + s.expected + ' test(s), floor ' + floor); process.exit(1) } console.log('A11Y-RM OK tests=' + s.expected)" -- "{{rmfloor}}"
+`;
+
+    // --- RM4-good: the healthy shape → accept.
+    {
+      const r = a11yHalf4IsFailClosed(RM4_GOOD_JUSTFILE);
+      if (!r.ok) {
+        return {
+          name,
+          pass: false,
+          detail: `RM4-good: a11yHalf4IsFailClosed should accept the healthy shape but rejected: ${r.reason}`,
+        };
+      }
+    }
+
+    // --- RM4-absent: half 4 (--project=reduced-motion) entirely absent → reject.
+    //   Kills: an impl that is satisfied by the rmfloor parameter alone, without
+    //   checking that a run actually uses it.
+    {
+      const absent = RM4_GOOD_JUSTFILE.split(
+        'rm -f /tmp/a11y-e2e-rm.json\n    cd client && PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/a11y-e2e-rm.json npx playwright test --project=reduced-motion --reporter=json\n    cd ..\n    ',
+      ).join('');
+      const r = a11yHalf4IsFailClosed(absent);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RM4-absent: a11yHalf4IsFailClosed should reject a recipe with no --project=reduced-motion invocation',
+        };
+      }
+    }
+
+    // --- RM4-no-project-flag: half 4 is present and its floor is asserted, but
+    //   `--project=reduced-motion` is dropped from the invocation, so the run
+    //   collects every e2e spec instead of the two-test project → reject.
+    {
+      const noFlag = RM4_GOOD_JUSTFILE.split(' --project=reduced-motion').join('');
+      const r = a11yHalf4IsFailClosed(noFlag);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RM4-no-project-flag: a11yHalf4IsFailClosed should reject half 4 running without --project=reduced-motion',
+        };
+      }
+    }
+
+    // --- RM4-reused-path: half 4 writes to half 3's report path instead of its
+    //   own → reject. Kills: an impl that only checks --project is present and
+    //   never checks the report path is DISTINCT.
+    {
+      const reused =
+        RM4_GOOD_JUSTFILE.split('/tmp/a11y-e2e-rm.json').join('/tmp/a11y-e2e-axe.json');
+      const r = a11yHalf4IsFailClosed(reused);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            "RM4-reused-path: a11yHalf4IsFailClosed should reject half 4 reusing half 3's report path",
+        };
+      }
+    }
+
+    // --- RM4-write-only: the report is written but never read back (the `node -e`
+    //   floor block deleted, and with it the second occurrence of the path) →
+    //   reject with the OCCURRENCE reason specifically. Kills: an impl satisfied
+    //   by one mention of the path — a report nobody reads.
+    {
+      const cut = RM4_GOOD_JUSTFILE.indexOf('\n    node -e');
+      if (cut === -1) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RM4-write-only: fixture construction failed — RM4_GOOD_JUSTFILE no longer contains a `node -e` floor block, so this tooth would be vacuous',
+        };
+      }
+      const writeOnly = `${RM4_GOOD_JUSTFILE.slice(0, cut)}\n`
+        .split('    rm -f /tmp/a11y-e2e-rm.json\n')
+        .join('');
+      const r = a11yHalf4IsFailClosed(writeOnly);
+      if (r.ok || String(r.reason).indexOf('appears only 1 time(s)') === -1) {
+        return {
+          name,
+          pass: false,
+          detail: `RM4-write-only: a half 4 whose report is written but never read back must be rejected for that reason, got ${JSON.stringify(r)}`,
+        };
+      }
+    }
+
+    // --- RM4-no-floor-assert: the floor comparison (`s.expected < floor`) is
+    //   deleted; only the unexpected/flaky/skipped guard remains → reject.
+    //   Kills: an impl satisfied by the presence of a skipped guard alone.
+    {
+      const noFloor = RM4_GOOD_JUSTFILE.split(
+        "if (s.expected < floor) { console.error('rm tier reported ' + s.expected + ' test(s), floor ' + floor); process.exit(1) } ",
+      ).join('');
+      // NOT vacuous, and this is the subtle part: `noFloor` STILL contains the
+      // substring `.expected`, inside the surviving
+      // `console.log('A11Y-RM OK tests=' + s.expected)`. A presence test for
+      // `.expected` accepts this mutant; only the COMPARISON test rejects it.
+      // The reason is pinned so the tooth cannot silently start passing because
+      // some earlier clause fired instead.
+      if (noFloor.indexOf('.expected') === -1) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RM4-no-floor-assert: fixture construction failed — the mutant no longer contains `.expected` at all, which would make this tooth prove nothing about comparison-vs-presence',
+        };
+      }
+      const r = a11yHalf4IsFailClosed(noFloor);
+      if (r.ok || String(r.reason).indexOf('never COMPARES') === -1) {
+        return {
+          name,
+          pass: false,
+          detail: `RM4-no-floor-assert: a recipe that reports .expected but never compares it against a floor must be rejected for that reason, got ${JSON.stringify(r)}`,
+        };
+      }
+    }
+
+    // --- RM4-no-skipped-guard: the `s.skipped !== 0` clause is dropped → reject.
+    //   Kills: an impl that accepts unexpected/flaky alone. A wholly
+    //   describe.skip-ed spec file is the REAL silent zero here (ADR-0219 D4);
+    //   the missing-file shape half 3's comment names exits 1 on 1.61.1.
+    {
+      const noSkipped = RM4_GOOD_JUSTFILE.split(' || s.skipped !== 0').join('');
+      // NOT vacuous, and this is the subtle part (MEASURED against the real
+      // recipe, where a token-presence version of this clause SURVIVED this exact
+      // mutation): `noSkipped` still contains the word `skipped` twice, inside
+      // the surviving `console.error('... skipped=' + s.skipped)`. Only a
+      // COMPARISON test rejects it.
+      if (noSkipped.indexOf('skipped') === -1) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RM4-no-skipped-guard: fixture construction failed — the mutant no longer mentions `skipped` at all, which would make this tooth prove nothing about comparison-vs-presence',
+        };
+      }
+      const r = a11yHalf4IsFailClosed(noSkipped);
+      if (r.ok || String(r.reason).indexOf('never BRANCHES') === -1) {
+        return {
+          name,
+          pass: false,
+          detail: `RM4-no-skipped-guard: a recipe that PRINTS the skip count but never branches on it must be rejected for that reason, got ${JSON.stringify(r)}`,
+        };
+      }
+    }
+
+    // --- RM4-no-case-guard: the `case "{{rmfloor}}" in ...` block is deleted from
+    //   the body, but `{{rmfloor}}` is still passed to the run (a malformed
+    //   rmfloor would then reach `Number('')` unguarded) → reject. Kills: an impl
+    //   satisfied by the mere PRESENCE of an `rmfloor=` parameter, without
+    //   checking it is validated before use (ADR-0183 D7).
+    {
+      const noCaseGuard = RM4_GOOD_JUSTFILE.split(
+        'case "{{rmfloor}}" in\n        \'\'|*[!0-9]*) echo "a11y-e2e: rmfloor \'{{rmfloor}}\' is not a non-negative integer" >&2; exit 64;;\n    esac\n    ',
+      ).join('');
+      const r = a11yHalf4IsFailClosed(noCaseGuard);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RM4-no-case-guard: a11yHalf4IsFailClosed should reject a recipe whose rmfloor parameter is never case-guarded',
+        };
+      }
+    }
+
+    // --- RM4-hollow-case-guard: the `case` header survives but its
+    //   `''|*[!0-9]*)` arm is replaced by a catch-all that validates nothing →
+    //   reject. Kills: an impl that checks only for the case HEADER.
+    {
+      const hollow = RM4_GOOD_JUSTFILE.split(
+        "''|*[!0-9]*) echo \"a11y-e2e: rmfloor '{{rmfloor}}' is not a non-negative integer\" >&2; exit 64;;",
+      ).join('*) : ;;');
+      const r = a11yHalf4IsFailClosed(hollow);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RM4-hollow-case-guard: a11yHalf4IsFailClosed should reject a `case "{{rmfloor}}" in` whose only arm validates nothing',
+        };
+      }
+    }
+
+    // --- RM4-decoy-case-guard: a SECOND, healthy-looking `case "{{rmfloor}}" in`
+    //   guard planted late in the body while the real one is hollowed → reject
+    //   as ambiguous. Kills the first-hit anchor: a predicate that resolves the
+    //   case header with `indexOf` and then scans forward can be steered onto
+    //   whichever copy looks good.
+    {
+      const decoy = `${RM4_GOOD_JUSTFILE}    case "{{rmfloor}}" in\n        ''|*[!0-9]*) echo "decoy" >&2; exit 64;;\n    esac\n`;
+      const r = a11yHalf4IsFailClosed(decoy);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RM4-decoy-case-guard: a11yHalf4IsFailClosed should reject two `case "{{rmfloor}}" in` guard headers as ambiguous',
+        };
+      }
+    }
+
+    // --- RM4-no-rmfloor-param: the body is perfect but the recipe HEADER never
+    //   declares `rmfloor=`, so `{{rmfloor}}` is not a parameter at all → reject.
+    //   Also pins the header anchor: the first `a11y-e2e ` substring in this
+    //   fixture is deliberately a PROSE COMMENT above the header, mirroring the
+    //   real justfile, so a predicate anchored on `indexOf('a11y-e2e ')` starts
+    //   in the wrong place.
+    {
+      const proseAbove = `# The nightly a11y-e2e job provisions a browser and a server.\n${RM4_GOOD_JUSTFILE.split('a11y-e2e floor="169" axefloor="3" rmfloor="2": wasm').join('a11y-e2e floor="169" axefloor="3": wasm')}`;
+      const r = a11yHalf4IsFailClosed(proseAbove);
+      if (r.ok || String(r.reason).indexOf('rmfloor=') === -1) {
+        return {
+          name,
+          pass: false,
+          detail: `RM4-no-rmfloor-param: a11yHalf4IsFailClosed should reject a header with no rmfloor= parameter (and must anchor on the real header line, not the first prose mention), got ${JSON.stringify(r)}`,
+        };
+      }
+    }
+
+    // --- RM4-console-reporter: `--reporter=json` swapped for a console reporter,
+    //   so the report the floor is read from is never written → reject (RM-5).
+    {
+      const consoleReporter = RM4_GOOD_JUSTFILE.split(
+        'npx playwright test --project=reduced-motion --reporter=json',
+      ).join('npx playwright test --project=reduced-motion --reporter=list');
+      const r = a11yHalf4IsFailClosed(consoleReporter);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RM4-console-reporter: a11yHalf4IsFailClosed should reject half 4 running without --reporter=json',
+        };
+      }
+    }
+
+    // --- RM4-floor-not-passed: the recipe declares `rmfloor`, case-guards it, and
+    //   compares `.expected` against a floor — but the parameter is never passed
+    //   to the checker, so the comparison is against a value the header cannot
+    //   influence → reject. Kills: an impl that treats "the parameter exists and
+    //   is guarded" as "the parameter is used".
+    {
+      const notPassed = RM4_GOOD_JUSTFILE.split(' -- "{{rmfloor}}"').join('');
+      const r = a11yHalf4IsFailClosed(notPassed);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RM4-floor-not-passed: a11yHalf4IsFailClosed should reject a half 4 that never passes `{{rmfloor}}` to its floor checker',
+        };
+      }
+    }
+
+    // --- RM4-header-anchor-control: the SAME prose comment above an otherwise
+    //   HEALTHY recipe must still be ACCEPTED. Without this control the tooth
+    //   above passes for the wrong reason (a predicate that rejects everything
+    //   with prose above it would satisfy it).
+    {
+      const proseAboveGood = `# The nightly a11y-e2e job provisions a browser and a server.\n${RM4_GOOD_JUSTFILE}`;
+      const r = a11yHalf4IsFailClosed(proseAboveGood);
+      if (!r.ok) {
+        return {
+          name,
+          pass: false,
+          detail: `RM4-header-anchor-control: a11yHalf4IsFailClosed rejected a healthy recipe carrying a prose 'a11y-e2e ' mention above its header: ${r.reason}`,
+        };
+      }
+    }
+  }
+
+  // =========================================================================
+  // rb-20 (RM-4) PROOF-OF-TEETH — the nightly failure-evidence artifact clause
+  // added to a11yNightlyJobIsWired. Nothing gated this `path:` list before
+  // rb-20, and the verbatim job pin cannot cover it: the pin agrees with
+  // whatever it was legitimately regenerated from, which is exactly the moment
+  // a forgotten report path slips through.
+  // =========================================================================
+  {
+    const RMN_LIST = `          path: |
+            /tmp/a11y-e2e-vitest.json
+            /tmp/a11y-e2e-axe.json
+            /tmp/a11y-e2e-rm.json
+`;
+
+    // --- RMN-artifact-missing-half4: the list exists and is non-empty, but half
+    //   4's report is not on it → reject, naming the path. Kills: an impl that
+    //   is satisfied by the mere PRESENCE of an upload-artifact step.
+    {
+      const missing = A11Y_NIGHTLY_MINIMAL_GOOD.split(RMN_LIST).join(
+        `          path: |
+            /tmp/a11y-e2e-vitest.json
+            /tmp/a11y-e2e-axe.json
+`,
+      );
+      if (missing === A11Y_NIGHTLY_MINIMAL_GOOD) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RMN-artifact-missing-half4: fixture construction failed — A11Y_NIGHTLY_MINIMAL_GOOD no longer carries the expected `path: |` list, so this tooth would be vacuous',
+        };
+      }
+      const r = a11yNightlyJobIsWired(missing);
+      if (r.ok || String(r.reason).indexOf('/tmp/a11y-e2e-rm.json') === -1) {
+        return {
+          name,
+          pass: false,
+          detail: `RMN-artifact-missing-half4: a failure-evidence artifact that omits half 4's report must be rejected for that reason, got ${JSON.stringify(r)}`,
+        };
+      }
+    }
+
+    // --- RMN-artifact-comment-only: half 4's report appears in the list ONLY as
+    //   a `#` comment line → reject. Kills: a raw substring scan of the job
+    //   block, which cannot tell an uploaded path from a described one.
+    {
+      const commented = A11Y_NIGHTLY_MINIMAL_GOOD.split('            /tmp/a11y-e2e-rm.json\n').join(
+        '            # /tmp/a11y-e2e-rm.json\n',
+      );
+      const r = a11yNightlyJobIsWired(commented);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RMN-artifact-comment-only: a11yNightlyJobIsWired accepted a job whose half-4 report path exists only as a # comment inside the path list',
+        };
+      }
+    }
+
+    // --- RMN-artifact-absent: the upload-artifact step is deleted outright →
+    //   reject. Kills: an impl that only inspects a list it happens to find.
+    {
+      const noUpload = A11Y_NIGHTLY_MINIMAL_GOOD.slice(
+        0,
+        A11Y_NIGHTLY_MINIMAL_GOOD.indexOf(
+          '      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4\n',
+        ),
+      );
+      const r = a11yNightlyJobIsWired(noUpload);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RMN-artifact-absent: a11yNightlyJobIsWired accepted an a11y-e2e job with no upload-artifact step at all',
+        };
+      }
+    }
+
+    // --- RMN-artifact-inline-scalar CONTROL: the OTHER legal YAML spelling —
+    //   `path: /tmp/a11y-e2e-rm.json` as an inline scalar rather than a `|`
+    //   block — must be ACCEPTED. Without this control the clause could be
+    //   satisfied by a parser that only understands block lists, and rewriting
+    //   the real workflow into the scalar form would red it for no reason.
+    {
+      const scalar = A11Y_NIGHTLY_MINIMAL_GOOD.split(RMN_LIST).join(
+        '          path: /tmp/a11y-e2e-rm.json\n',
+      );
+      const r = a11yNightlyJobIsWired(scalar);
+      if (!r.ok) {
+        return {
+          name,
+          pass: false,
+          detail: `RMN-artifact-inline-scalar: a11yNightlyJobIsWired rejected the inline-scalar spelling of the same path list: ${r.reason}`,
+        };
+      }
+    }
+  }
+
+  // =========================================================================
   // REAL FILE CHECKS
   // =========================================================================
   const root = path.resolve('.');
@@ -4290,8 +5540,10 @@ jobs:
   const lefthookPath = path.join(root, 'lefthook.yml');
   const runMjsPath = path.join(root, 'evals/run.mjs');
   const nightlyPath = path.join(root, '.github/workflows/nightly.yml');
+  // rb-20 (RM-1 / RM-2): the reduced-motion Playwright PROJECT lives here.
+  const playwrightConfigPath = path.join(root, 'client/playwright.config.ts');
 
-  let ciYaml, justfile, lefthook, runMjs, nightlyYaml;
+  let ciYaml, justfile, lefthook, runMjs, nightlyYaml, playwrightConfig;
 
   try {
     ciYaml = readFileSync(ciPath, 'utf8');
@@ -4321,6 +5573,12 @@ jobs:
     nightlyYaml = readFileSync(nightlyPath, 'utf8');
   } catch {
     return { name, pass: false, detail: 'cannot read .github/workflows/nightly.yml' };
+  }
+
+  try {
+    playwrightConfig = readFileSync(playwrightConfigPath, 'utf8');
+  } catch {
+    return { name, pass: false, detail: 'cannot read client/playwright.config.ts' };
   }
 
   // Self-structural check: this file must contain the main-guard.
@@ -4555,11 +5813,43 @@ jobs:
     }
   }
 
+  // Check 14: reducedMotionProjectIsWired (rb-20, RM-1/RM-2). The config side of
+  // the reduced-motion browser tier: a dedicated `reduced-motion` project spelled
+  // `use: { contextOptions: { reducedMotion: 'reduce' } }` (ADR-0219 D5), with the
+  // collection boundary closed on BOTH sides (ADR-0219 D2).
+  {
+    let r;
+    try {
+      r = reducedMotionProjectIsWired(playwrightConfig);
+    } catch (e) {
+      return { name, pass: false, detail: `reducedMotionProjectIsWired threw — ${e.message}` };
+    }
+    if (!r.ok) {
+      return { name, pass: false, detail: `reducedMotionProjectIsWired FAIL: ${r.reason}` };
+    }
+  }
+
+  // Check 15: a11yHalf4IsFailClosed (rb-20, RM-4). The recipe side: half 4 of
+  // `just a11y-e2e` runs the reduced-motion project alone, writes its OWN JSON
+  // report, and floors it from that report with a skipped guard and a
+  // case-guarded `rmfloor`.
+  {
+    let r;
+    try {
+      r = a11yHalf4IsFailClosed(justfile);
+    } catch (e) {
+      return { name, pass: false, detail: `a11yHalf4IsFailClosed threw — ${e.message}` };
+    }
+    if (!r.ok) {
+      return { name, pass: false, detail: `a11yHalf4IsFailClosed FAIL: ${r.reason}` };
+    }
+  }
+
   return {
     name,
     pass: true,
     detail:
-      'all 13 ci-gate-wiring checks pass: ci steps unneutered (all 7 exact verbs, no if:/coe), justfile/ci.yml dep parity, recipe bodies intact, run.mjs structural invariants, anchor wired in lefthook + e2e job, a11y-e2e recipe body intact, a11y-e2e nightly job wired, a11y-e2e recipe region matches its verbatim pin, plus a11y axe tier wired (spec + dep + recipe half 3 + nightly job pin) and staying nightly-only',
+      'all 15 ci-gate-wiring checks pass: ci steps unneutered (all 7 exact verbs, no if:/coe), justfile/ci.yml dep parity, recipe bodies intact, run.mjs structural invariants, anchor wired in lefthook + e2e job, a11y-e2e recipe body intact, a11y-e2e nightly job wired, a11y-e2e recipe region matches its verbatim pin, plus a11y axe tier wired (spec + dep + recipe half 3 + nightly job pin) and staying nightly-only, plus the rb-20 reduced-motion Playwright project (config side) and half 4 of a11y-e2e (recipe side)',
   };
 }
 

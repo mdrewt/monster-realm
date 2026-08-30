@@ -94,7 +94,7 @@ test('the reduced-motion project config reaches Chromium, and the @media guard i
   await expect(
     srOnlyProbe,
     'the .sr-only stylesheet rule (styles.css:57-67) did not apply `position: absolute` to an ' +
-      "injected probe. This is the anti-vacuity clause: without it, the transitionDuration " +
+      'injected probe. This is the anti-vacuity clause: without it, the transitionDuration ' +
       'check below cannot distinguish "the reduced-motion guard fired" from "the stylesheet ' +
       'never loaded at all".',
   ).toHaveCSS('position', 'absolute');
