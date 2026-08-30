@@ -266,10 +266,12 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
     };
   },
   // The three render-edge ids share one shape: a thunk that re-creates the view model, called once
-  // to open and again to `reopen`. A thunk rather than a hoisted `const vm`, for two reasons —
-  // `main.ts:1574` really does build a fresh view model on every store batch, so a thunk is the
-  // faithful repeat; and the object literals below are contextually typed by `render()`'s
-  // parameter, which a hoisted `const` would widen (`shopAction: null`, `costCurrency: 0n`).
+  // to open and again to `reopen`. A thunk rather than a hoisted `const vm` because the object
+  // literals below are contextually typed by `render()`'s parameter, which a hoisted `const` would
+  // widen (`shopAction: null`, `costCurrency: 0n`). It is also the shape `main.ts:1574` really
+  // drives — a fresh view model on every store batch — but that half is DEFENSIVE, not currently
+  // load-bearing: none of the three `render()` bodies compares `vm` by identity today, so a reused
+  // object would behave identically. Stated rather than left as an implied guarantee.
   dialogueView: () => {
     const view = new DialogueView();
     const renderIt = (): void => {
