@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** ci-gates, client-ui
-**Decision:** Add a `reducedMotion: 'reduce'` Playwright **project** whose `testMatch` collects exactly one new spec, gate it as half 4 of `just a11y-e2e`, and scope its claim to the stylesheet arm of A11Y-27 — because the renderer arm's `main.ts` wiring does not exist and cannot be added from this slice's `touches:`.
+**Decision:** Add a reduced-motion Playwright **project** (spelled `use: { contextOptions: { reducedMotion: 'reduce' } }` — the shorthand does not exist in this repo's Playwright) whose `testMatch` collects exactly one new spec, gate it as half 4 of `just a11y-e2e`, and scope its claim to the stylesheet arm of A11Y-27 — because the renderer arm's `main.ts` wiring does not exist and cannot be added from this slice's `touches:`.
 
 ---
 
@@ -78,6 +78,15 @@ project carries a `testMatch` naming the single new spec file, which is strictly
 narrower than the `testIgnore` alternative and cannot silently widen when a
 future spec file is added.
 
+The structurally stronger shape — giving the new project its own `testDir`, so a
+file lives in exactly one directory and double-collection is impossible rather
+than merely excluded — was considered and **rejected on scope, not on merit**. It
+requires a new directory outside this slice's declared `touches:` (which names
+`client/e2e/reduced-motion.spec.ts` literally), and the loop's rule is to surface
+a path outside the declared set rather than widen the slice. A later slice that
+grows a second reduced-motion spec should make that `git mv` rather than add a
+second entry to two coupled constants.
+
 `a11y.spec.ts` therefore does **not** run under reduced motion. Three reasons,
 in order of weight:
 
@@ -109,8 +118,14 @@ unconditionally, and a probe element that never entered the document. So the
 spec asserts the mirror image on the same page via `emulateMedia({ reducedMotion:
 'no-preference' })` — `matches === false` and the same probe reporting `0.3s`.
 
-And the positive test runs **before any `emulateMedia` call in the file**. That
-ordering is the whole gate: `page.emulateMedia({ reducedMotion: 'reduce' })`
+The two polarities are two `test()` bodies over the built-in `page` fixture, so
+each gets a fresh context and the flip cannot leak forward. (Measured on the
+rejected shared-context shape: `emulateMedia` set in one test persists into every
+later test in the file — a live trap for the RM-7 follow-up slice, which the
+DEFER note points at this same file.)
+
+And the positive test performs **no `emulateMedia` call at all**. That is the
+whole gate: `page.emulateMedia({ reducedMotion: 'reduce' })`
 inside the test would keep it green with `use: { reducedMotion: 'reduce' }`
 deleted from the config, which is to say it would gate nothing.
 
@@ -123,12 +138,65 @@ unconditionally (ADR-0218 D1). No new nightly job key is added — half 4 rides 
 existing `- run: just a11y-e2e` step.
 
 `--project=reduced-motion` on the invocation is load-bearing: without it the
-recipe runs every e2e spec. The floor is read from the JSON report and never
-from console text (a missing spec file reports zero tests and exits 0), and the
-new `rmfloor` parameter is `case`-guarded as a non-negative integer for the
-reason ADR-0183 D7 records: `Number('')` is `0` and `Number('abc')` is `NaN`,
+recipe runs every e2e spec. The floor is read from the JSON report and never from console text — though the
+precise vacuity it defends against is **not** the one half 3's comment names.
+Measured on 1.61.1: a missing spec file, a `--project` naming no project, and an
+empty spec file all exit **1** with `No tests found`, so `set -euo pipefail`
+kills the recipe before the floor check runs. The shape that really does report
+`expected: 0` and exit **0** is a wholly `test.describe.skip`'d file — which the
+`s.skipped !== 0` clause catches. Half 4 states that accurately rather than
+inheriting half 3's stale rationale. The new `rmfloor` parameter is
+`case`-guarded as a non-negative integer for the reason ADR-0183 D7 records: `Number('')` is `0` and `Number('abc')` is `NaN`,
 and `expected < NaN` is `false`, so an empty or non-numeric floor prints OK on a
 zero-test report.
+
+## Decision 5 — the spelling is `contextOptions.reducedMotion`, measured, not assumed
+
+The residual (and every Playwright doc page written against a newer release)
+says `use: { reducedMotion: 'reduce' }`. **That option does not exist in this
+repo's pinned `@playwright/test` 1.61.1.** `node_modules/playwright/types/test.d.ts`
+contains exactly one occurrence of the string `reducedMotion`, and it is inside
+the *doc comment* for `contextOptions` — there is no `reducedMotion` member on
+the test-options type. Writing the shorthand fails `just ci`'s `client-typecheck`
+step with `TS2769: … 'reducedMotion' does not exist in type 'UseOptions<…>'`, and
+even force-written past the type system it is a runtime no-op: the fixture that
+promotes `use.*` keys into the real `browser.newContext()` call enumerates a
+fixed allow-list that does not include it.
+
+This is recorded because the failure mode is nastier than a compile error. An
+implementer who hits TS2769 on the exact snippet the residual specified is
+steered straight into this slice's named anti-pattern — a `page.emulateMedia({
+reducedMotion: 'reduce' })` in a `beforeEach`, which compiles, makes the positive
+test pass, and gates **nothing**, because it survives deleting the project
+config entirely.
+
+The spec therefore uses Playwright's built-in `page` fixture rather than a manual
+`chromium.launch()` + `browser.newContext()` (rb-19's shape, forced on it by
+`@axe-core/playwright` refusing a directly-created page). The fixture path is the
+one that actually applies the active project's `use` options, and it gives each
+test a fresh context — which is also what makes Decision 3's polarity flip safe
+(see below).
+
+## Decision 6 — the tier also runs per PR, and that is accepted, not overlooked
+
+`client/package.json`'s `e2e` script is a bare `playwright test` with no
+`--project`, and `.github/workflows/ci.yml`'s per-PR `e2e:` job runs `just e2e`.
+Playwright runs **every** declared project when the CLI names none, so the moment
+this config grows a `projects:` array the new spec runs on every PR as well as
+nightly.
+
+Accepted, for the same reasons ADR-0218 accepted it for `a11y.spec.ts` (whose
+header records the identical double life): the spec needs no SpacetimeDB
+connection, joins no player, has no RNG and costs ~2 s in a job that already has
+a browser and a dev server. Suppressing it would mean a `--project=default`
+neuter-shaped construct in the `e2e` recipe, which is more surface than the thing
+it saves.
+
+The consequence worth stating plainly, because "nightly-only" would otherwise be
+read off the recipe: half 4's marginal contribution over the per-PR run is the
+**floor** (a spec file that vanishes or is wholly `describe.skip`'d reports zero
+tests and exits 0 — the shape measured below) and the nightly failure artifact.
+It is not the only thing running these assertions.
 
 ## Consequences
 
@@ -137,7 +205,12 @@ zero-test report.
 - `client/playwright.config.ts` gains a `projects:` array. Every future spec file
   is collected by the `default` project unless it is explicitly ignored — the
   two-sided `testMatch`/`testIgnore` pair is what keeps that safe, and
-  `evals/ci-gate-wiring.eval.mjs` gates both sides.
+  `evals/ci-gate-wiring.eval.mjs` gates both sides. Measured: `--list` reports
+  73 tests / 20 files before, and 73/20 for `--project=default` plus 2 for the
+  new project after, with `globalSetup` still running exactly once per invocation.
+- `.github/workflows/nightly.yml`'s failure-evidence artifact gains half 4's
+  report path. Without it a red in the new tier ships with nothing to look at —
+  the exact gap that step's own comment says it exists to close.
 - A11Y-27's renderer arm remains ungated in a browser and, more importantly,
   **unimplemented**. That is now a ledger `DEFER` with a resolvable target
   rather than an assumption.
