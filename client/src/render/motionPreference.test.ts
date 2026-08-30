@@ -25,11 +25,27 @@
 // S10, that eval and the source scan below deliberately enforce the SAME invariant. S10 may
 // keep or thin this test; a DIVERGENCE between the two is a defect in one of them, not
 // a conflict.
+//
+// rb-17 (R-m23-s10-RMEXT) CLOSED THAT DIVERGENCE, and not the way the residual predicted.
+// The residual recorded this census as the NARROWER tier (`.ts` only, against the eval's five
+// bundled extensions). MEASURED on the live tree, it is the WIDER one: `client/src` holds zero
+// `.tsx`/`.js`/`.mjs`/`.cjs`, so the extra extensions bought nothing, while the eval's walker
+// SKIPS `client/src/module_bindings` (65 generated-but-shipped, vite-bundled, main.ts-imported
+// modules) and this `readdirSync` does not. Reconciling this file DOWN onto the eval's walker
+// would therefore have LOOSENED the stronger tier by 65 files.
+//
+// So the scope predicate now has exactly ONE definition and it lives in the eval, which this
+// test IMPORTS. The direction matters: a `.ts` test can import a `.mjs` eval, never the reverse
+// (`indexShell.test.ts:89` is the shipped precedent, ADR-0215). The eval carries the matching
+// `[A11Y-RM2g]` two-way ratchet so a drift in the OTHER, un-owned walker is a loud red there.
 
 import { readdirSync, readFileSync } from 'node:fs';
 import { join, sep } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { describe, expect, it, vi } from 'vitest';
+// rb-17: the SINGLE OWNER of "which client/src files does the motion census cover". Imported,
+// never re-derived — two independent spellings of one scope rule is what R-m23-s10-RMEXT was.
+import { isCensusSource, isCensusSpec } from '../../../evals/reduced-motion-purity.eval.mjs';
 import {
   createMotionPreference,
   type MatchMediaHost,
@@ -298,18 +314,33 @@ describe('m23-s7 motionPreference (A11Y-27 / A11Y-28)', () => {
     // RAW text on purpose: a mention in a COMMENT is still a second site an S5/S10
     // implementer could grow into a second call (plan §5 AP6 — scan the bare token,
     // not a spelling of the call).
-    const allTsFiles = readdirSync(CLIENT_SRC_DIR, { recursive: true })
-      .map((entry) => String(entry).split(sep).join('/'))
-      .filter((rel) => rel.endsWith('.ts'));
-    // `.test.ts` is exempt via endsWith, NEVER substring (plan §8 RT-10): a substring
-    // test would also exempt a production file named `foo.test.ts.bak` or anything
-    // living under a directory called `x.test.ts/`.
-    const exemptedFiles = allTsFiles.filter((rel) => rel.endsWith('.test.ts'));
-    const tsFiles = allTsFiles.filter((rel) => !rel.endsWith('.test.ts'));
+    const allEntries = readdirSync(CLIENT_SRC_DIR, { recursive: true }).map((entry) =>
+      String(entry).split(sep).join('/'),
+    );
+    // The `.test.ts` exemption is `endsWith`, NEVER substring (plan §8 RT-10) — and since rb-17
+    // that rule is enforced in ONE place, `isCensusSource`/`isCensusSpec`, whose own teeth pin
+    // both halves of it (`foo.test.ts.bak` is not source; `ui/foo.test.ts.bak.ts` IS).
+    // Directories come back from a recursive readdir too; the extension gate drops them.
+    const exemptedFiles = allEntries.filter(isCensusSpec);
+    const tsFiles = allEntries.filter(isCensusSource);
+
+    // rb-17: the imported predicate must be the WIDE one. These four assertions are what stop a
+    // future edit from silently swapping in a `.ts`-only or bindings-skipping predicate and
+    // leaving every assertion below green over a 65-file-smaller tree.
+    expect(isCensusSource('ui/x.js')).toBe(true);
+    expect(isCensusSpec('ui/x.test.tsx')).toBe(true);
+    expect(isCensusSource('module_bindings/x.ts')).toBe(true);
+    // The disguised-production-code boundary, asserted HERE and not only in the eval's own g3b:
+    // red-team measured that an `.includes('.test.ts')` suffix exemption leaves this whole suite
+    // 4/4 green, so the single-owner claim in this file's header needs its own check of it.
+    expect(isCensusSource('ui/foo.test.ts.bak.ts')).toBe(true);
+    expect(isCensusSource('foo.test.ts.bak')).toBe(false);
+    expect(tsFiles.filter((rel) => rel.startsWith('module_bindings/')).length).toBeGreaterThan(20);
 
     // anti-vacuity: prove the walk really enumerated the client source tree before
     // judging it. A mistyped root would otherwise report "zero offenders" forever.
-    expect(tsFiles.length).toBeGreaterThan(20);
+    // Raised 20 -> 120 with the rb-17 widening (157 live), so the floor still bites.
+    expect(tsFiles.length).toBeGreaterThan(120);
     expect(tsFiles).toContain('render/renderResolver.ts');
     expect(tsFiles).toContain('render/interpolation.ts');
     expect(tsFiles).toContain('render/slideClock.ts');
