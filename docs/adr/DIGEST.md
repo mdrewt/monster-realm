@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 187 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 188 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -196,6 +196,7 @@ Generated from 187 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0219](./0219-reduced-motion-browser-tier-covers-the-stylesheet-arm.md) | 0219 — The reduced-motion browser tier covers A11Y-27's stylesheet arm only, because the renderer arm was never wired into main.ts | Accepted | ci-gates, client-ui | rb-20 (residual R-m23-s11-X11) | Gate A11Y-27's STYLESHEET arm in a real browser with a `reduced-motion` Playwright project (spelled `contextOptions.reducedMotion`) collecting one new spec, as half 4 of `just a11y-e2e`; the renderer arm is unwired and DEFERred. |
 | [0220](./0220-guest-export-orphan-purged-at-claim.md) | 0220 — A guest's pre-claim export chunks are DELETED at claim time in a delegated privacy.rs helper, keeping the REKEY_MANIFEST EXEMPT policy truthful | Accepted | security-authz, schema-persistence, ci-gates | rb-22 (residual R-m22-s2-S3-GUEST-EXPORT-ORPHAN) | Pre-claim `export_bundle` chunks are DELETED at claim time by a delegated helper in the new owning module `privacy.rs`, keeping the REKEY_MANIFEST EXEMPT policy truthful; not re-keyed, not TTL-only. |
 | [0221](./0221-account-deletion-reaper-schedule-declared.md) | 0221 — AccountDeletionReaperSchedule ships atomically with a guarded no-op reaper, classified NotOwned, armed/disarmed only by delete/cancel | Accepted | schema-persistence, security-authz, ci-gates | rb-24 (residual R-m22-s2-X15; the schema-declaration slice the M22 spec table named m22-s3) | `account_deletion_reaper_schedule` lands additively WITH a scheduler-guarded no-op `account_deletion_reaper` (scheduled-ness is migration-frozen), classified NotOwned, armed only by delete_account, disarmed only by cancel_account_deletion. |
+| [0222](./0222-g6-needle-key-correspondence.md) | 0222 — A REKEY needle must correspond to its own key's table: `[G6/correspondence]` proves the named helper reaches `db.<table>(` and writes through it | Accepted | ci-gates, security-authz | rb-25 (residual R-rb-2-X10, promoted from rb-2's acceptance ledger) | A REKEY needle must correspond to its own key's table: `[G6/correspondence]` resolves it to exactly one `fn` and requires that body to reach `db.<table>(`, writing through it on the rekey half; `[G6/mirror]` pins the one exception. |
 
 ## Harness design corpus (H- namespace)
 
@@ -551,6 +552,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0219](./0219-reduced-motion-browser-tier-covers-the-stylesheet-arm.md) — rb-20 (residual R-m23-s11-X11) — 0219 — The reduced-motion browser tier covers A11Y-27's stylesheet arm only, because the renderer arm was never wired into main.ts (Accepted)
 - [0220](./0220-guest-export-orphan-purged-at-claim.md) — rb-22 (residual R-m22-s2-S3-GUEST-EXPORT-ORPHAN) — 0220 — A guest's pre-claim export chunks are DELETED at claim time in a delegated privacy.rs helper, keeping the REKEY_MANIFEST EXEMPT policy truthful (Accepted)
 - [0221](./0221-account-deletion-reaper-schedule-declared.md) — rb-24 (residual R-m22-s2-X15; the schema-declaration slice the M22 spec table named m22-s3) — 0221 — AccountDeletionReaperSchedule ships atomically with a guarded no-op reaper, classified NotOwned, armed/disarmed only by delete/cancel (Accepted)
+- [0222](./0222-g6-needle-key-correspondence.md) — rb-25 (residual R-rb-2-X10, promoted from rb-2's acceptance ledger) — 0222 — A REKEY needle must correspond to its own key's table: `[G6/correspondence]` proves the named helper reaches `db.<table>(` and writes through it (Accepted)
 
 ### tooling-docs
 
@@ -638,6 +640,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0211](./0211-deletion-display-name-tombstone.md) — rb-7 (residual R-m22-s1-X2) — 0211 — Deletion display-name tombstone: a constant single-sourced to game-core, narrowing server-module reach (Accepted)
 - [0220](./0220-guest-export-orphan-purged-at-claim.md) — rb-22 (residual R-m22-s2-S3-GUEST-EXPORT-ORPHAN) — 0220 — A guest's pre-claim export chunks are DELETED at claim time in a delegated privacy.rs helper, keeping the REKEY_MANIFEST EXEMPT policy truthful (Accepted)
 - [0221](./0221-account-deletion-reaper-schedule-declared.md) — rb-24 (residual R-m22-s2-X15; the schema-declaration slice the M22 spec table named m22-s3) — 0221 — AccountDeletionReaperSchedule ships atomically with a guarded no-op reaper, classified NotOwned, armed/disarmed only by delete/cancel (Accepted)
+- [0222](./0222-g6-needle-key-correspondence.md) — rb-25 (residual R-rb-2-X10, promoted from rb-2's acceptance ledger) — 0222 — A REKEY needle must correspond to its own key's table: `[G6/correspondence]` proves the named helper reaches `db.<table>(` and writes through it (Accepted)
 
 ### economy-quests
 
