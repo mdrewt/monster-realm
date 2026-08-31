@@ -3097,6 +3097,7 @@ const M22_MOVEMENT_RS: &str = include_str!("movement.rs");
 const M22_NPC_RS: &str = include_str!("npc.rs");
 const M22_OBSERVABILITY_RS: &str = include_str!("observability.rs");
 const M22_PLAYTEST_RS: &str = include_str!("playtest.rs");
+const M22_PRIVACY_RS: &str = include_str!("privacy.rs");
 const M22_PVP_RS: &str = include_str!("pvp.rs");
 const M22_RAISING_RS: &str = include_str!("raising.rs");
 const M22_TAMING_RS: &str = include_str!("taming.rs");
@@ -3159,6 +3160,7 @@ fn m22_scanned_sources() -> Vec<(&'static str, &'static str)> {
         ("npc.rs", M22_NPC_RS),
         ("observability.rs", M22_OBSERVABILITY_RS),
         ("playtest.rs", M22_PLAYTEST_RS),
+        ("privacy.rs", M22_PRIVACY_RS),
         ("pvp.rs", M22_PVP_RS),
         ("raising.rs", M22_RAISING_RS),
         ("ranking.rs", RANKING_RS),

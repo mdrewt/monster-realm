@@ -902,7 +902,10 @@ fn rb22p_stub_probe_regression() {
             concat!("export", "_bundle"),
             "the table whose writes this module owns (spec M22 section 7.2)",
         ),
-        ("rb-22", "the slice that created the module, and its ADR trail"),
+        (
+            "rb-22",
+            "the slice that created the module, and its ADR trail",
+        ),
     ] {
         assert!(
             doc.contains(needle),
