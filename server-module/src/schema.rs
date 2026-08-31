@@ -986,10 +986,12 @@ pub struct DataLifecycleEntry {
 ///
 /// The classification is spec §3's exhaustive partition (12 ERASE + 4
 /// ANONYMIZE + 5 JOIN-ONLY + 17 NOT-OWNED over the 38 pre-M22 tables) plus
-/// this slice's own `export_bundle`. Do not re-partition: add new tables with
-/// their own entry. The claim-flow re-key axis lives separately as
-/// `REKEY_MANIFEST` in `evals/guest-claim-integrity.eval.mjs` (per-column,
-/// consumed by G6); a cross-manifest gate test ties the two together.
+/// m22-s2's own `export_bundle` (ERASE) and rb-24's
+/// `account_deletion_reaper_schedule` (NOT-OWNED, ADR-0221) — 40 entries. Do
+/// not re-partition: add new tables with their own entry. The claim-flow
+/// re-key axis lives separately as `REKEY_MANIFEST` in
+/// `evals/guest-claim-integrity.eval.mjs` (per-column, consumed by G6); a
+/// cross-manifest gate test ties the two together.
 pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
     // --- ERASE: rows deleted outright at cascade time (spec §3 twelve, plus
     // --- this slice's own export_bundle). ---
@@ -1166,6 +1168,16 @@ pub const DATA_LIFECYCLE_MANIFEST: &[DataLifecycleEntry] = &[
         policy: DeletionPolicy::NotOwned,
         basis: "one-shot TTL schedule consumed with its claim; never coexists with a \
                 claimed account",
+        exportable: false,
+    },
+    DataLifecycleEntry {
+        table: "account_deletion_reaper_schedule",
+        policy: DeletionPolicy::NotOwned,
+        basis: "one-shot deletion-grace schedule (rb-24, ADR-0221): armed only by the \
+                account holder's own delete_account, disarmed by cancel, and the fired \
+                row is deleted by the runtime itself — so no row survives the cascade \
+                its own reducer runs, and an Erase entry would demand the D6 \
+                self-disarm anti-pattern",
         exportable: false,
     },
     DataLifecycleEntry {

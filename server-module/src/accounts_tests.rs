@@ -3595,10 +3595,10 @@ fn data_lifecycle_manifest_totality_bidirectional() {
 /// derived from the census) and pinned by SET EQUALITY per policy, plus all five
 /// `ViaJoin` PAYLOADS pinned by exact parent value.
 ///
-/// The four sets START from spec §3's own recount — "38 = 12 ERASE + 4 ANONYMIZE
-/// + 5 JOIN-ONLY + 17 NOT-OWNED" — and the live tree is now 40 = 13 ERASE + 4
-/// ANONYMIZE + 5 JOIN-ONLY + 18 NOT-OWNED, because M22 adds two tables the §3
-/// recount predates.
+/// The four sets START from spec §3's own recount — "38 = 12 ERASE +
+/// 4 ANONYMIZE, 5 JOIN-ONLY, 17 NOT-OWNED" — and the live tree is now 40
+/// entries (13 ERASE, 4 ANONYMIZE, 5 JOIN-ONLY, 18 NOT-OWNED), because M22
+/// adds two tables the §3 recount predates.
 ///
 /// The `Erase` list carries one table beyond the spec's twelve: `export_bundle`.
 /// A snapshot of personal data is itself personal data, so the export bundle is
@@ -5153,6 +5153,7 @@ fn rb24_nd_cancel_decl() -> String {
 ///     left-boundary rule silently drops the declaration — and a same-named twin
 ///     declared in another module with it. This is the same `squash_ws` fusion
 ///     hazard the rb-22 census documents in the opposite direction.
+///
 /// Subtraction is exact: two matches of the arm needle can never overlap, and
 /// every disarm occurrence carries exactly one arm substring.
 fn rb24_net_arm_mentions(squashed: &str) -> usize {
@@ -5280,7 +5281,10 @@ fn rb24_frozen_arm_body() -> String {
         "AccountDeletionReaperSchedule{",
         "scheduled_id:0,",
         "scheduled_at:ScheduleAt::Time(Timestamp::from_micros_since_unix_epoch(",
-        concat!("deletion_fire_at", "_ms(requested_at_ms).saturating_mul(1_000),"),
+        concat!(
+            "deletion_fire_at",
+            "_ms(requested_at_ms).saturating_mul(1_000),"
+        ),
         ")),",
         "account_identity:account,",
         "});",
@@ -6221,7 +6225,7 @@ fn rb24_owned_write_set_covers_the_deletion_schedule() {
     let accessor = rb24_nd_sched_accessor();
     let allowed = allowed_write_tables();
     assert!(
-        allowed.iter().any(|a| *a == accessor),
+        allowed.contains(&accessor),
         "[rb24/owned-set] the owned-write allowlist does not contain `{accessor}` \
          ({allowed:?}). The deletion reaper schedule is colocated in this module under the \
          ADR-0056 exception exactly as the guest-claim schedule is, so accounts.rs writes it \
@@ -6230,7 +6234,7 @@ fn rb24_owned_write_set_covers_the_deletion_schedule() {
 
     let targets = write_target_accessors(&stripped_for_scan(ACCOUNTS_RS));
     assert!(
-        targets.iter().any(|t| *t == accessor),
+        targets.contains(&accessor),
         "[rb24/owned-set-nonvacuous] the allowlist names `{accessor}` but accounts.rs performs \
          NO write against that accessor (extracted write targets: {targets:?}). Widening an \
          allowlist can only loosen a gate, so the widening must be paid for by a real write: \
