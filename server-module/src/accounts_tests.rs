@@ -279,11 +279,24 @@ fn nd_reaper() -> String {
 }
 
 /// The exact set of tables `accounts.rs` may WRITE (D0 write-isolation).
-fn allowed_write_tables() -> [String; 3] {
+///
+/// FOUR as of rb-24 (M22 S3, spec para 4.4): the deletion reaper OWN schedule
+/// table is colocated in this module under the ADR-0056 exception, exactly as
+/// `guest_claim_reaper_schedule` is, so `arm_deletion_reaper` and
+/// `disarm_deletion_reaper` write it directly rather than through an owning
+/// module. Widening an allowlist can only ever LOOSEN a gate, so the widening is
+/// paid for twice: `rb24_owned_write_set_covers_the_deletion_schedule` proves
+/// the new entry is EXERCISED by a real write in accounts.rs, and
+/// `rb24_schedule_table_sole_writers` proves every such write lives inside one
+/// of the two reviewed helper bodies. The JS twin of this list —
+/// `OWNED_TABLES` in `evals/guest-claim-integrity.eval.mjs` — must be widened in
+/// the SAME commit or its [W/write-target] clause reds on the sanctioned arm.
+fn allowed_write_tables() -> [String; 4] {
     [
         "account".to_string(),
         concat!("guest", "_claim").to_string(),
         concat!("guest_claim_reaper", "_schedule").to_string(),
+        concat!("account_deletion_reaper", "_schedule").to_string(),
     ]
 }
 
@@ -1929,6 +1942,22 @@ fn auth27_reaper_scheduler_only_keyed_delete_no_self_disarm() {
         "AUTH-27: the reaper must guard scheduler-only \
          (ctx.sender() != ctx.database_identity())."
     );
+    // rb-24 hardening (kept ALONGSIDE the bare-comparison clause above so a
+    // failure still distinguishes no-comparison-at-all from present-but-inert):
+    // the guard must OPEN the body in its rejecting form. The bare needle stops
+    // at the fused return token and is a forgeable PREFIX — a helper call whose
+    // name merely starts with those six letters contains it, compiles, and
+    // rejects nobody (measured, rb-24 red-team F1).
+    {
+        let guard = scheduler_guard_needle();
+        let rejecting = format!("{guard}Err(");
+        assert!(
+            body.starts_with(rejecting.as_str()),
+            "AUTH-27: guest_claim_reaper must OPEN with the rejecting scheduler guard — the \
+             comparison being merely PRESENT somewhere in the body admits an inert form that \
+             rejects nobody."
+        );
+    }
     assert!(
         body.contains(concat!("claim_is", "_expired(")),
         "AUTH-27: the reaper must re-check staleness (never reap a fresh replacement claim)."
@@ -2039,9 +2068,19 @@ fn g2_no_reducer_takes_identity_parameter() {
     }
 }
 
-/// G2 ([R/name-set]): the reducer surface of accounts.rs is EXACTLY the five
+/// G2 ([R/name-set]): the reducer surface of accounts.rs is EXACTLY the six
 /// sanctioned names — pinned by sorted SET EQUALITY, never by a count and never
 /// by containment.
+///
+/// SIX as of rb-24 (M22 S3): `account_deletion_reaper` is added, and it is the
+/// conscious re-review this pin exists to force. It takes only the ctx handle
+/// and the SAME-FILE scheduled struct, it derives no identity from client text,
+/// and its body opens with the rejecting scheduler guard — the three questions
+/// ADR-0179 G2 asks of a new entry point, each pinned by its own rb24_ test. The
+/// JS ledger needs NO edit for this name: `REDUCER_SANCTIONS` in
+/// `evals/guest-claim-integrity.eval.mjs` already lists it with
+/// `status: 'PLANNED'` and `PLANNED_PIN` already contains it, which is exactly
+/// the permitted-when-present notion that file was restructured to provide.
 ///
 /// Every reducer in this module is a client-reachable entry point into the
 /// re-key machinery, so ADDING one is a security-relevant event that must be
@@ -2049,7 +2088,7 @@ fn g2_no_reducer_takes_identity_parameter() {
 /// disappeared. The maintenance tax (one conscious line per new reducer) is the
 /// intended cost.
 ///
-/// Kills: both proven takeover bypasses, which are ADDITIVE reducers — a `>= 5`
+/// Kills: both proven takeover bypasses, which are ADDITIVE reducers — a `>= 6`
 ///        count check and an "each expected name is present" check are green on
 ///        both; a rotted enumerator that parses zero reducers (the empty set is
 ///        itself a set mismatch).
@@ -2062,6 +2101,7 @@ fn g2_reducer_name_set_is_pinned() {
         .collect();
     found.sort();
     let expected: Vec<String> = vec![
+        concat!("account_deletion", "_reaper").to_string(),
         concat!("cancel_account", "_deletion").to_string(),
         concat!("complete_guest", "_claim").to_string(),
         concat!("delete", "_account").to_string(),
@@ -3476,11 +3516,11 @@ fn data_lifecycle_manifest_totality_bidirectional() {
         }
     }
     assert!(
-        census.len() >= 38,
+        census.len() >= 39,
         "T1 non-vacuity: only {} table declarations were found across the {} scanned \
-         modules; the fork tree carries 38 and this slice adds export_bundle. A census \
-         that shrank is a census that stopped looking, and every set comparison below \
-         would then be comparing two small sets.",
+         modules; the tree carries 39 and rb-24 adds account_deletion_reaper_schedule. \
+         A census that shrank is a census that stopped looking, and every set \
+         comparison below would then be comparing two small sets.",
         census.len(),
         sources.len()
     );
@@ -3491,11 +3531,12 @@ fn data_lifecycle_manifest_totality_bidirectional() {
         declared.push(entry.table.to_string());
     }
     assert!(
-        declared.len() >= 39,
-        "T1 ratchet: DATA_LIFECYCLE_MANIFEST has {} entries; the fork tree's 38 live tables \
-         plus this slice's `export_bundle` is 39. Set equality alone is satisfied by \
-         deleting a table AND its entry in one diff, which is exactly how a table dodges \
-         classification; this floor is the ADR-0006 additive ratchet against that.",
+        declared.len() >= 40,
+        "T1 ratchet: DATA_LIFECYCLE_MANIFEST has {} entries; the tree's 39 live tables \
+         plus rb-24's `account_deletion_reaper_schedule` is 40. Set equality alone is \
+         satisfied by deleting a table AND its entry in one diff, which is exactly how a \
+         table dodges classification; this floor is the ADR-0006 additive ratchet \
+         against that.",
         declared.len()
     );
     declared.sort();
@@ -3570,12 +3611,26 @@ fn data_lifecycle_manifest_totality_bidirectional() {
 /// derived from the census) and pinned by SET EQUALITY per policy, plus all five
 /// `ViaJoin` PAYLOADS pinned by exact parent value.
 ///
-/// The four sets are spec §3's own recount — "38 = 12 ERASE + 4 ANONYMIZE + 5
-/// JOIN-ONLY + 17 NOT-OWNED" — and the `Erase` list carries one table beyond the
-/// spec's twelve: `export_bundle`, this slice's own new table. A snapshot of
-/// personal data is itself personal data, so the export bundle is erased by the
-/// same cascade that produced it (spec §5's 7-day TTL reaper is a SECOND,
-/// independent expiry, not a substitute for the cascade).
+/// The four sets START from spec §3's own recount — "38 = 12 ERASE +
+/// 4 ANONYMIZE, 5 JOIN-ONLY, 17 NOT-OWNED" — and the live tree is now 40
+/// entries (13 ERASE, 4 ANONYMIZE, 5 JOIN-ONLY, 18 NOT-OWNED), because M22
+/// adds two tables the §3 recount predates.
+///
+/// The `Erase` list carries one table beyond the spec's twelve: `export_bundle`.
+/// A snapshot of personal data is itself personal data, so the export bundle is
+/// erased by the same cascade that produced it (spec §5's 7-day TTL reaper is a
+/// SECOND, independent expiry, not a substitute for the cascade).
+///
+/// The `NotOwned` list carries one beyond the spec's seventeen:
+/// `account_deletion_reaper_schedule` (rb-24). It is scheduler bookkeeping, not
+/// player data: the row holds only an auto-inc id, the fire instant the RUNTIME
+/// reads, and the account identity — and it is the row whose own reducer runs
+/// the cascade, so cascading over it would be a table deleting the schedule that
+/// is mid-flight. Its two real lifecycles are both explicit and both elsewhere:
+/// the runtime deletes the fired one-shot row (ADR-0126 D6), and
+/// `cancel_account_deletion` disarms a pending one (PRV1-3, ADR-0126 D4, pinned
+/// by `rb24_cancel_disarms_the_reaper`). `guest_claim_reaper_schedule` carries
+/// the same policy for the same class of reason.
 ///
 /// The five parents are pinned BY VALUE, not merely proven live: each was
 /// verified against the real join column in source before being written here —
@@ -3674,6 +3729,7 @@ fn data_lifecycle_partition_matches_spec_section3() {
     );
 
     let expected_not_owned = [
+        concat!("account_deletion_reaper", "_schedule"),
         "config",
         "encounter",
         "evolution_path",
@@ -3694,11 +3750,14 @@ fn data_lifecycle_partition_matches_spec_section3() {
     ];
     assert_eq!(
         not_owned, expected_not_owned,
-        "T2 / spec §3 NOT-OWNED: exactly seventeen tables hold no per-player data. Every one \
-         is an EXPLICIT registry entry with a mandatory reason — never a silent omission — \
-         because the two failure directions are symmetric: cascading over `config` deletes \
-         global game config, and quietly dropping a genuinely-owned table out of the \
-         cascade leaves an unerased copy of a deleted player's data."
+        "T2 / spec §3 NOT-OWNED: exactly eighteen tables hold no per-player data — spec §3's \
+         seventeen plus rb-24's `account_deletion_reaper_schedule`, which is scheduler \
+         bookkeeping whose two lifecycles (the runtime deleting a fired one-shot, and the \
+         PRV1-3 cancel disarm) are both explicit and neither of them a cascade step. Every \
+         one is an EXPLICIT registry entry with a mandatory reason — never a silent \
+         omission — because the two failure directions are symmetric: cascading over \
+         `config` deletes global game config, and quietly dropping a genuinely-owned table \
+         out of the cascade leaves an unerased copy of a deleted player's data."
     );
 }
 
@@ -3956,8 +4015,10 @@ fn data_lifecycle_cross_manifest_consistency() {
     assert!(
         keys.len() >= 20,
         "T9 extraction rot: only {} `table.column` key(s) were read out of the JS \
-         REKEY_MANIFEST; the fork tree carries 23 and this slice adds \
-         export_bundle.owner_identity. An extractor that quietly stopped finding keys \
+         REKEY_MANIFEST; the live tree carries 24 and rb-24 adds \
+         account_deletion_reaper_schedule.account_identity for 25 (a new Identity COLUMN \
+         mechanically forces a manifest entry — [G6/declared] re-derives the column set \
+         from live source every run). An extractor that quietly stopped finding keys \
          reports `consistent` about a manifest it never read. Keys seen: {keys:?}",
         keys.len()
     );
@@ -4971,4 +5032,1402 @@ fn rb22_purge_named_nowhere_else_in_crate() {
              alias, which is the exact bypass it exists to catch."
         );
     }
+}
+
+// ===========================================================================
+// rb-24 (M22 S3, first arm) — THE DELETION REAPER SCHEDULE: ARMED ON REQUEST,
+// DISARMED ON CANCEL.
+//
+// EARS criteria (`specs/monster-realm-v2/M22-privacy-compliance.spec.md` §7.4):
+//   PRV1-1  WHEN `delete_account` is called by an authenticated identity with
+//           `account.status == Active` THE SYSTEM SHALL transition `status` to
+//           `PendingDeletion`, set `deletion_requested_at_ms`, and insert
+//           EXACTLY ONE `AccountDeletionReaperSchedule` row for that identity.
+//   PRV1-3  WHEN `cancel_account_deletion` is called by an identity in
+//           `PendingDeletion` whose `terminal_at_ms` is `None` THE SYSTEM SHALL
+//           ... delete that identity pending `AccountDeletionReaperSchedule`
+//           row.
+//   E1      the new scheduled reducer rejects every non-scheduler caller (spec
+//           §4.4: `Scheduler-only guard, identical in shape to accounts.rs`).
+//   S3-boundary  this slice ships the ARM/DISARM wiring plus a DELIBERATELY
+//           EMPTY reaper body. The cascade itself (PRV1-6a..PRV1-6e), the
+//           reaper-side recheck (PRV1-5) and the late-cancel terminal error
+//           (PRV1-4) are LATER arms of S3 and are NOT gated here.
+//
+// SCAN HYGIENE — the file header rule, restated because this section adds a
+// second scheduled table and a second reaper to a file a dozen evals
+// concatenate wholesale (every `.rs` under `server-module/src`, `_tests.rs`
+// siblings included). Every needle below is assembled from `concat!` fragments,
+// so this file never carries a contiguous table attribute, reducer attribute,
+// accessor call, write-verb chain or reaper call site that such a scanner could
+// count as a real one. This section contains no block comment, no raw string,
+// no backslash-escaped quote character, no char literal holding a quote, and no
+// bare double-quote character inside any comment.
+//
+// WHY THE FROZEN-BODY PINS ARE EXACT EQUALITY and not containment: the rb-22
+// red-team measured four clippy-clean shapes that satisfy every containment
+// clause over a correct-looking body — an `if false` wrapper, a shadowed
+// binding, a shadowed loop variable, and an appended aliased foreign write.
+// Equality kills that whole family in one assertion, and the same four shapes
+// apply verbatim to a collect-then-delete disarm helper.
+// ===========================================================================
+
+use game_core::{is_deletion_due, DELETION_GRACE_MS_DEFAULT};
+
+// ---------------------------------------------------------------------------
+// rb-24 needles. Split mid-token, per the file header rule.
+// ---------------------------------------------------------------------------
+
+/// The squashed table attribute the new schedule table must carry, verbatim.
+fn rb24_nd_table_attr() -> String {
+    [
+        concat!("#[spacetimedb::", "table", "("),
+        concat!("access", "or=account_deletion_reaper", "_schedule,"),
+        concat!("sched", "uled(account_deletion", "_reaper))]"),
+    ]
+    .concat()
+}
+
+/// The accessor-naming PREFIX of that attribute. ANY second declaration of the
+/// same accessor — with or without extra arguments such as `public` — contains
+/// it, which is what makes the uniqueness clause total rather than a pin on one
+/// spelling.
+fn rb24_nd_table_attr_prefix() -> String {
+    [
+        concat!("#[spacetimedb::", "table", "("),
+        concat!("access", "or=account_deletion_reaper", "_schedule"),
+    ]
+    .concat()
+}
+
+/// The squashed struct marker (`extract_squashed_fn_body` brace-walks from it).
+fn rb24_nd_struct_marker() -> String {
+    concat!("struct", "AccountDeletionReaperSchedule{").to_string()
+}
+
+/// The PREFIX-AGNOSTIC accessor method token: a leading `.` then the accessor
+/// name and its opening paren, with NO `ctx.db.` prefix. rb-24 red-team
+/// (artifact pass) MEASURED that `let d = &ctx.db;` then `d.<accessor>()`
+/// squashes without the `ctx.db.` prefix, so a prefixed needle misses an
+/// aliased write entirely (the shared `write_target_accessors` alias hole). A
+/// leading-dot method token matches the accessor call through ANY receiver
+/// (`ctx.db.`, an aliased handle, a further-chained handle) while still not
+/// matching the `accessor = <name>,` attribute (comma, no leading dot) or the
+/// CamelCase struct type.
+fn rb24_nd_accessor_method() -> String {
+    concat!(".account_deletion_reaper", "_schedule(").to_string()
+}
+
+/// The accessor NAME, as `allowed_write_tables` and `write_target_accessors`
+/// spell it.
+fn rb24_nd_sched_accessor() -> String {
+    concat!("account_deletion_reaper", "_schedule").to_string()
+}
+
+fn rb24_nd_arm_decl() -> String {
+    concat!("fnarm_deletion", "_reaper(").to_string()
+}
+
+fn rb24_nd_disarm_decl() -> String {
+    concat!("fndisarm_deletion", "_reaper(").to_string()
+}
+
+fn rb24_nd_arm_call() -> String {
+    concat!("arm_deletion", "_reaper(").to_string()
+}
+
+fn rb24_nd_disarm_call() -> String {
+    concat!("disarm_deletion", "_reaper(").to_string()
+}
+
+fn rb24_nd_reaper_decl() -> String {
+    concat!("fnaccount_deletion", "_reaper(").to_string()
+}
+
+fn rb24_nd_delete_account_decl() -> String {
+    concat!("fndelete", "_account(").to_string()
+}
+
+fn rb24_nd_cancel_decl() -> String {
+    concat!("fncancel_account", "_deletion(").to_string()
+}
+
+// ---------------------------------------------------------------------------
+// rb-24 scan machinery.
+// ---------------------------------------------------------------------------
+
+/// Occurrences of the ARM call token in an already-squashed source, EXCLUDING
+/// the ones that are merely the tail of a DISARM mention.
+///
+/// Written as arithmetic rather than as a word-boundary test, and the reason is
+/// measured against this file own `squash_ws`:
+///   - the DISARM call token CONTAINS the ARM call token outright (the former is
+///     the latter with a three-letter prefix), so a plain count over-reports by
+///     one per disarm mention. A test that asserts `the arm token does not
+///     appear in the cancel reducer` is therefore UNSATISFIABLE as literally
+///     stated, because the sanctioned disarm call carries the arm token as a
+///     substring;
+///   - a LEFT word-boundary test does not fix it either: the squashed
+///     DECLARATION fuses the `fn` keyword onto the front of the name, so the
+///     byte to the left of the arm token there is a word byte and a
+///     left-boundary rule silently drops the declaration — and a same-named twin
+///     declared in another module with it. This is the same `squash_ws` fusion
+///     hazard the rb-22 census documents in the opposite direction.
+///
+/// Subtraction is exact: two matches of the arm needle can never overlap, and
+/// every disarm occurrence carries exactly one arm substring.
+fn rb24_net_arm_mentions(squashed: &str) -> usize {
+    let arm = m22_count_occurrences(squashed, &rb24_nd_arm_call());
+    let disarm = m22_count_occurrences(squashed, &rb24_nd_disarm_call());
+    assert!(
+        arm >= disarm,
+        "[rb24/net-count] the arm-mention arithmetic is broken: {arm} occurrence(s) of the arm \
+         token against {disarm} of the disarm token, yet every disarm occurrence must contain \
+         exactly one arm substring. The needle spelling changed and this counter can no longer \
+         be trusted, so it must not report a number."
+    );
+    arm - disarm
+}
+
+/// The `(start, end)` byte offsets of a fn body inside an ALREADY-SQUASHED
+/// source — the same brace walk `extract_squashed_fn_body` performs, returning
+/// the offsets it discards.
+///
+/// The sole-writer census has to ask WHERE each accessor call sits, and it must
+/// not inherit `write_target_accessors` nearest-preceding-`ctx.db.`
+/// attribution: that walk has measured alias holes (an anchorless write is
+/// dropped, an aliased one is misattributed to the previous accessor), which
+/// would make a census built on it silently under-report.
+fn rb24_fn_body_span(squashed: &str, fn_needle: &str) -> (usize, usize) {
+    let fn_start = squashed.find(fn_needle).unwrap_or_else(|| {
+        panic!(
+            "[rb24/span] the fn needle {fn_needle:?} was not found in the squashed source, so \
+             every span-scoped clause that depends on it has NO scope and would pass \
+             vacuously. Fail loud rather than skip."
+        )
+    });
+    let brace_rel = squashed[fn_start..]
+        .find('{')
+        .unwrap_or_else(|| panic!("[rb24/span] {fn_needle:?} is followed by no opening brace."));
+    let body_start = fn_start + brace_rel + 1;
+    let bytes = squashed.as_bytes();
+    let mut depth: usize = 1;
+    let mut i = body_start;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return (body_start, i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    panic!("[rb24/span] the body of {fn_needle:?} is not brace-balanced.")
+}
+
+/// The balanced `(..)` span (delimiters excluded) opening at or after `from`.
+fn rb24_paren_span(squashed: &str, from: usize) -> (usize, usize) {
+    let rel = squashed[from..]
+        .find('(')
+        .unwrap_or_else(|| panic!("[rb24/paren] no opening paren at or after offset {from}."));
+    let open = from + rel;
+    let bytes = squashed.as_bytes();
+    let mut depth: usize = 0;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return (open + 1, i);
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    panic!("[rb24/paren] the argument list opened at offset {open} is unbalanced.")
+}
+
+/// Brace depth of an already-squashed fn-body PREFIX.
+fn rb24_brace_depth(prefix: &str) -> i32 {
+    let mut depth: i32 = 0;
+    for c in prefix.chars() {
+        if c == '{' {
+            depth += 1;
+        } else if c == '}' {
+            depth -= 1;
+        }
+    }
+    depth
+}
+
+/// Does an already-squashed region contain a bare `return` TOKEN?
+///
+/// Word boundary on the LEFT ONLY, exactly as the rb-22 reachability clause
+/// documents: `squash_ws` fuses `return Err(..)` into `returnErr(` and
+/// `return Ok(())` into `returnOk(())`, so ALSO requiring a non-word byte on the
+/// right would blind this to precisely the early-exit shapes it exists to
+/// catch. The left-only rule still rejects an identifier such as `early_return`.
+fn rb24_has_return_token(region: &str) -> bool {
+    let bytes = region.as_bytes();
+    let mut scan = 0usize;
+    while let Some(rel) = region[scan..].find("return") {
+        let at = scan + rel;
+        if at == 0 || !is_word_byte(bytes[at - 1]) {
+            return true;
+        }
+        scan = at + "return".len();
+    }
+    false
+}
+
+/// THE FROZEN ARM BODY. Derived by hand through the live three-stage pipeline
+/// (`strip_rust_strings` -> `strip_rust_comments` -> `squash_ws`) over the
+/// sanctioned source, so a comment inside the helper is invisible here and a
+/// rustfmt re-wrap cannot move a byte of it. The trailing comma after the
+/// `saturating_mul` argument is rustfmt-forced (the call wraps at 100 columns)
+/// and is present in the shipped `arm_claim_reaper` twin.
+fn rb24_frozen_arm_body() -> String {
+    [
+        concat!("ctx", ".db."),
+        concat!("account_deletion_reaper", "_schedule()"),
+        concat!(".ins", "ert("),
+        "AccountDeletionReaperSchedule{",
+        "scheduled_id:0,",
+        "scheduled_at:ScheduleAt::Time(Timestamp::from_micros_since_unix_epoch(",
+        concat!(
+            "deletion_fire_at",
+            "_ms(requested_at_ms).saturating_mul(1_000),"
+        ),
+        ")),",
+        "account_identity:account,",
+        "});",
+    ]
+    .concat()
+}
+
+/// The frozen arm SIGNATURE slice `extract_squashed_fn_sig` returns (it starts
+/// at the fn needle, so the visibility keyword is deliberately outside it).
+fn rb24_frozen_arm_sig() -> String {
+    concat!(
+        "fnarm_deletion",
+        "_reaper(ctx:&ReducerContext,account:Identity,requested_at_ms:i64)"
+    )
+    .to_string()
+}
+
+/// THE FROZEN DISARM BODY — the two-phase collect-then-delete shape ADR-0126
+/// mandates and `disarm_claim_reaper` already implements. Deleting inside the
+/// filter iteration mutates the table being iterated; a filter on the wrong
+/// column, or a delete keyed on the wrong column, disarms either nothing or
+/// somebody else schedule row, and every containment clause stays green on all
+/// three.
+fn rb24_frozen_disarm_body() -> String {
+    [
+        "letids:Vec<u64>=",
+        concat!("ctx", ".db."),
+        concat!("account_deletion_reaper", "_schedule()"),
+        concat!(
+            ".account",
+            "_identity().filter(account).map(|s|s.scheduled_id).collect();"
+        ),
+        "foridinids{",
+        concat!("ctx", ".db."),
+        concat!("account_deletion_reaper", "_schedule()"),
+        concat!(".scheduled_id().del", "ete(id);"),
+        "}",
+    ]
+    .concat()
+}
+
+/// The frozen disarm SIGNATURE slice.
+fn rb24_frozen_disarm_sig() -> String {
+    concat!(
+        "fndisarm_deletion",
+        "_reaper(ctx:&ReducerContext,account:Identity)"
+    )
+    .to_string()
+}
+
+/// THE FROZEN REAPER BODY for THIS slice: the rejecting scheduler guard and
+/// nothing else. Note that `stripped_for_scan` blanks string literals, so the
+/// reject reason reads as an empty argument here.
+///
+/// This pin is DESIGNED TO RED when the cascade lands. That is deliberate and
+/// is the S3-boundary tooth: the arm that ships the cascade must come back to
+/// this literal, re-derive it from the spec §4.4 step list, and re-review the
+/// scheduler guard position at the same time — rather than growing the body one
+/// unreviewed statement at a time under a containment pin that never notices.
+fn rb24_frozen_reaper_body() -> String {
+    let guard = scheduler_guard_needle();
+    let tail = concat!("Err(.to", "_string());}Ok(())").to_string();
+    [guard, tail].concat()
+}
+
+// ---------------------------------------------------------------------------
+// rb-24 / PRV1-1 — THE SCHEDULE TABLE.
+// ---------------------------------------------------------------------------
+
+/// PRV1-1 (spec §4.4): `account_deletion_reaper_schedule` is declared in
+/// `accounts.rs` exactly once, PRIVATE, with exactly the three ADR-0126 D6
+/// columns in order — and no fourth.
+///
+/// Pinned by EXACT EQUALITY over the string-blanked, comment-blanked,
+/// whitespace-squashed declaration, the same mechanics as
+/// `export_bundle_struct_shape_and_privacy` and for the same reasons: BSATN
+/// layout is order-sensitive, and a containment check is green on an appended
+/// field, a reordered pair and a widened type alike.
+///
+/// The MISSING FOURTH COLUMN is the security property, not tidiness. Spec §4.4
+/// makes the minimal field set explicit: `deliberately no timestamp field, so
+/// staleness can only derive from the live account row own
+/// `deletion_requested_at_ms` plus the injected clock, never from anything a
+/// caller could supply`. A `requested_at_ms: i64` column here would be a
+/// caller-supplied staleness input on a row a client can hand-build if the
+/// scheduler guard is ever weakened.
+///
+/// Kills: adding `public` to the attribute (a scheduled row naming an identity
+///        whose account is about to be erased is not client data);
+///        a SECOND attribute naming the same accessor with extra arguments,
+///        which an exact-text pin alone is blind to;
+///        adding, renaming, reordering or re-typing any column;
+///        dropping the `#[auto_inc]` on the synthetic primary key (every arm
+///        would then insert `scheduled_id: 0` and collide);
+///        dropping the btree index on `account_identity` (the disarm path
+///        filters on it — without the index the filter does not compile as a
+///        column accessor at all, and the sanctioned shape is what PRV1-3
+///        depends on).
+#[test]
+fn rb24_deletion_schedule_table_shape_and_privacy() {
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+
+    let attr = rb24_nd_table_attr();
+    assert_eq!(
+        m22_count_occurrences(&squashed, &attr),
+        1,
+        "[rb24/table-attr] accounts.rs must carry the table attribute `{attr}` EXACTLY once. \
+         ZERO means the scheduled table this slice exists to add is missing, mis-spelled, or \
+         declared in schema.rs instead of colocated with its reducer — and the \
+         `scheduled(..)` attribute resolves as a bare ident only in the file that declares the \
+         reducer (the ADR-0056 exception). MORE THAN ONE is a second declaration of the same \
+         schedule."
+    );
+
+    let prefix = rb24_nd_table_attr_prefix();
+    assert_eq!(
+        m22_count_occurrences(&squashed, &prefix),
+        1,
+        "[rb24/table-attr-unique] exactly one table attribute in accounts.rs may name the \
+         `{prefix}` accessor. This clause is separate from the exact-text one above on \
+         purpose: an exact pin proves the sanctioned declaration EXISTS and says nothing about \
+         a SECOND attribute naming the same accessor with a different argument list."
+    );
+
+    let at = idx(&squashed, &prefix);
+    let (arg_start, arg_end) = rb24_paren_span(&squashed, at);
+    let args = &squashed[arg_start..arg_end];
+    assert!(
+        !args.contains("public"),
+        "[rb24/table-private] the schedule table attribute carries a `public` argument \
+         (arguments read: {args:?}). Unlike the inert `public` on a VIEW attribute, `public` \
+         on a TABLE is the entire security boundary: this row names the identity of an account \
+         that has requested deletion, together with the wall-clock instant its data will be \
+         erased. Publishing that is a directory of pending deletions."
+    );
+
+    let marker = rb24_nd_struct_marker();
+    assert_eq!(
+        m22_count_occurrences(&squashed, &marker),
+        1,
+        "[rb24/table-struct-unique] the schedule struct must be declared exactly once in \
+         accounts.rs, so the brace walk below has an unambiguous target."
+    );
+    let fields = extract_squashed_fn_body(&squashed, &marker).unwrap_or_else(|| {
+        panic!(
+            "[rb24/table-struct-read] the schedule struct declaration was not found in \
+             accounts.rs (marker {marker:?} over the string-blanked, comment-blanked, \
+             whitespace-squashed source). The shape pin cannot check a declaration it cannot \
+             read — hard failure, never a skip."
+        )
+    });
+
+    let expected_fields = [
+        concat!("#[primary", "_key]"),
+        concat!("#[auto", "_inc]"),
+        "pubscheduled_id:u64,",
+        "pubscheduled_at:ScheduleAt,",
+        concat!("#[index(", "btree)]"),
+        "pubaccount_identity:Identity,",
+    ]
+    .concat();
+    assert_eq!(
+        fields, expected_fields,
+        "[rb24/table-columns] the schedule table column list is not the ADR-0126 D6 shape. It \
+         must be exactly, in order: scheduled_id (u64, primary key, auto_inc), scheduled_at \
+         (ScheduleAt — the column the runtime itself reads to fire the one-shot), \
+         account_identity (Identity, btree — the column the PRV1-3 disarm filters on). A \
+         reorder also changes the BSATN layout of a live table, and the `scheduled(..)` \
+         attribute is automigration-frozen, so a shape change here is a destructive republish \
+         rather than an additive migration."
+    );
+
+    let lower = fields.to_lowercase();
+    assert!(
+        !lower.contains("timestamp"),
+        "[rb24/table-no-timestamp] the schedule table declares a timestamp column. Spec §4.4 \
+         is explicit that the field set is minimal and deliberately carries NO timestamp, so \
+         staleness derives only from the live account row own deletion_requested_at_ms plus \
+         the injected clock. A stamp on the SCHEDULE row is an input a caller could supply if \
+         the scheduler guard is ever weakened, and it is a second source of truth for due-ness \
+         the moment it disagrees with the account row."
+    );
+    assert!(
+        !lower.contains("_at_ms"),
+        "[rb24/table-no-stamp-column] the schedule table declares an `_at_ms` column — see the \
+         timestamp clause above. The one legitimate time-carrying column here is \
+         `scheduled_at`, which the RUNTIME owns."
+    );
+    assert_eq!(
+        m22_count_occurrences(fields, "pub"),
+        3,
+        "[rb24/table-field-count] the schedule table must declare exactly three columns. This \
+         clause is a coarse restatement of the exact-equality pin above, and it exists so a \
+         failure message says WHICH kind of drift happened when both fire."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// rb-24 / PRV1-1 — THE FIRE INSTANT, AS A PURE SEAM.
+// ---------------------------------------------------------------------------
+
+/// PRV1-1 (spec §4.3 boundary): `deletion_fire_at_ms(t)` is the exact instant at
+/// which `game_core::is_deletion_due` flips true for a request stamped at `t`.
+///
+/// The two halves are what make this a boundary and not a smoke test: DUE at
+/// `fire`, NOT DUE at `fire - 1`. Together they pin the offset to
+/// `DELETION_GRACE_MS_DEFAULT` exactly — a fire instant computed with a larger
+/// constant is still due at `fire - 1`, and one computed with a smaller
+/// constant is not yet due at `fire`.
+///
+/// The explicit value clause is separate so a failure attributes: a fire time
+/// derived from `CLAIM_TTL_MS` (the other TTL constant in scope in this module,
+/// also an `i64` in milliseconds) type-checks, compiles, is clippy-clean, and
+/// schedules the irreversible cascade fifteen minutes after the request instead
+/// of a week.
+///
+/// Kills: an off-by-one fire instant in either direction; a fire time derived
+///        from the wrong constant; a `saturating_sub` in place of the add.
+#[test]
+fn rb24_deletion_fire_at_ms_boundary() {
+    for t in [0i64, 1i64, 1_700_000_000_000i64] {
+        let fire = deletion_fire_at_ms(t);
+        assert_eq!(
+            fire,
+            t + DELETION_GRACE_MS_DEFAULT,
+            "[rb24/fire-value] deletion_fire_at_ms({t}) must be the request instant plus \
+             game_core::DELETION_GRACE_MS_DEFAULT. The grace window is a game-core constant \
+             with one SSOT; a fire time derived from any other duration in scope schedules the \
+             irreversible cascade at a moment nobody chose."
+        );
+        assert!(
+            is_deletion_due(Some(t), fire),
+            "[rb24/fire-due-at] a request stamped at {t} must read as DUE at its own fire \
+             instant. `is_deletion_due` is boundary-INCLUSIVE; a fire time one millisecond \
+             early schedules a reaper invocation that finds the account not yet due and — \
+             under this slice one-shot schedule, which nothing re-arms — never fires again."
+        );
+        assert!(
+            !is_deletion_due(Some(t), fire - 1),
+            "[rb24/fire-not-due-before] a request stamped at {t} must NOT read as due one \
+             millisecond before its fire instant. Without this half the fire time is pinned \
+             only from below: any instant at or after the true boundary satisfies the clause \
+             above, including one a year late."
+        );
+    }
+}
+
+/// PRV1-1 (saturation bound): `deletion_fire_at_ms` clamps at `i64::MAX` rather
+/// than overflowing, and the KNOWN divergence that clamping produces is
+/// documented BY ASSERTION rather than in prose.
+///
+/// The saturating add is not defensive decoration: the workspace `Cargo.toml`
+/// release profile sets `overflow-checks = true`, so a wrapping add would be a
+/// panic that aborts the whole `delete_account` transaction in production.
+///
+/// THE THIRD ASSERTION DOCUMENTS A BOUND, IT DOES NOT ASSERT DESIRED SEMANTICS.
+/// At a saturating request stamp the fire instant clamps to `i64::MAX`, and the
+/// elapsed window from the request to that clamped instant is then SHORTER than
+/// the grace window — so the account reads as NOT due at its own fire time and
+/// the one-shot reaper no-ops forever. That is a real edge of the design, it is
+/// unreachable with any wall clock (the stamp is milliseconds since the Unix
+/// epoch), and it is recorded here so the next reader finds it as a measured
+/// fact rather than rediscovering it. It must not be read as a requirement that
+/// a saturating request never completes.
+///
+/// Kills: a plain `+` (release-profile overflow panic inside a reducer);
+///        a `checked_add(..).unwrap_or(0)` fallback, which would make a
+///        saturating request due IMMEDIATELY — the opposite failure, and the
+///        dangerous direction.
+#[test]
+fn rb24_deletion_fire_at_ms_saturates() {
+    assert_eq!(
+        deletion_fire_at_ms(i64::MAX - 1),
+        i64::MAX,
+        "[rb24/fire-saturate-near-max] the fire instant must CLAMP at i64::MAX. The release \
+         profile enables overflow-checks, so a wrapping add here is a panic that aborts the \
+         whole delete_account transaction rather than a wrong number."
+    );
+    assert_eq!(
+        deletion_fire_at_ms(i64::MAX),
+        i64::MAX,
+        "[rb24/fire-saturate-max] the fire instant must clamp at i64::MAX for the extreme \
+         request stamp too."
+    );
+    assert!(
+        !is_deletion_due(Some(i64::MAX - 1), deletion_fire_at_ms(i64::MAX - 1)),
+        "[rb24/fire-saturation-divergence] this clause DOCUMENTS A BOUND, it does not assert \
+         desired semantics. At a saturating request stamp the fire instant clamps, so the \
+         elapsed window to that instant is shorter than the grace window and the account never \
+         reads as due. If this assertion ever fails, the clamping behaviour changed — most \
+         likely to a fallback that makes a saturating request due IMMEDIATELY, which is the \
+         dangerous direction. Re-derive the bound from the spec before editing this line."
+    );
+}
+
+/// PRV1-1 (parity property): across a spread of non-saturating request stamps,
+/// `deletion_fire_at_ms` and `game_core::is_deletion_due` agree exactly — due at
+/// the fire instant, not due one millisecond earlier.
+///
+/// This is the same rule as the boundary test, driven over a wider input set so
+/// a fire instant computed with any input-DEPENDENT error (a proportional
+/// window, a stamp-truncating rounding step, a sign flip on a negative
+/// clock-skewed stamp) is caught rather than only a constant offset. The
+/// negative stamp is in the spread on purpose: `is_deletion_due` documents that
+/// the subtraction saturates in both directions, so a future-dated or
+/// negative-clock request must not silently invert.
+///
+/// Kills: a window scaled by the request stamp; a truncating conversion through
+///        seconds; an implementation that special-cases zero.
+#[test]
+fn rb24_deletion_fire_at_ms_parity_with_is_deletion_due() {
+    let spread: [i64; 7] = [
+        -1,
+        0,
+        1,
+        1_000,
+        1_700_000_000_000,
+        1_767_225_600_000,
+        i64::MAX - DELETION_GRACE_MS_DEFAULT,
+    ];
+    for t in spread {
+        assert!(
+            t <= i64::MAX - DELETION_GRACE_MS_DEFAULT,
+            "[rb24/parity-fixture-nonsaturating] the fixture stamp {t} saturates, so the two \
+             clauses below would be asserting the documented saturation divergence rather than \
+             the parity property. Saturation is covered by its own test."
+        );
+        let fire = deletion_fire_at_ms(t);
+        assert!(
+            is_deletion_due(Some(t), fire),
+            "[rb24/parity-due] a request stamped at {t} must read as DUE at its computed fire \
+             instant {fire}. The reaper is armed at that instant and this slice arms it exactly \
+             once, so a fire time the due-predicate disagrees with is a deletion request that \
+             is never carried out and never reported as failed."
+        );
+        assert!(
+            !is_deletion_due(Some(t), fire - 1),
+            "[rb24/parity-not-due] a request stamped at {t} must NOT read as due one \
+             millisecond before its computed fire instant {fire}. Failing only here means the \
+             fire time is LATE relative to the grace window the player was promised."
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// rb-24 / PRV1-1 — THE ARM, WIRED INTO `delete_account`.
+// ---------------------------------------------------------------------------
+
+/// PRV1-1 (spec §4.2): `delete_account` arms the deletion reaper as its LAST
+/// step, after the status write, from the SAME `now` the status write used.
+///
+/// Spec §4.2 places the schedule-insert last on purpose: a crash mid-reducer
+/// then leaves `PendingDeletion` with no schedule row, which is always safely
+/// re-driveable by a repeat `delete_account` (idempotent per AUTH-28) or by
+/// `cancel_account_deletion`. The reverse order leaves an armed reaper for an
+/// account that was never transitioned.
+///
+/// SEVEN CLAUSES, each separately tagged. Coarse mutants only ever prove the
+/// first assertion in a test — every later clause needs a surgical mutant that
+/// can be attributed by FAILURE MESSAGE:
+///   statement-form / net count / update shape / ordering / reachability /
+///   brace depth / the two binding-uniqueness rules.
+///
+/// THE `(account,now)` PIN IS THE LOAD-BEARING ONE. Passing the pure
+/// `requested_deletion` constructor a FRESH clock reading instead of the shared
+/// `now` binding compiles, is clippy-clean and reads correctly — but it is a
+/// SECOND clock read, so the instant stamped on the row and the instant the
+/// fire time is derived from are two different numbers. The grace window a
+/// player is actually granted then depends on how long the reducer spent
+/// between the two reads, and nothing anywhere else in the tree would notice.
+/// Pinning the argument list as `(account,now)` forces one binding, read once,
+/// shared by the row stamp and the schedule alike.
+///
+/// Kills: dropping the arm call; a second unreviewed arm; the arm sequenced
+///        BEFORE the status write; the arm re-argued from a fresh clock read or
+///        from a different identity; an early `return` inserted between the
+///        write and the arm; the arm wrapped in a conditional or a never-invoked
+///        closure (both keep every containment and ordering clause green); a
+///        `let now = ...` shadow that re-points the fire time; a `let me = ...`
+///        rebind that arms the reaper for somebody else.
+#[test]
+fn rb24_delete_account_arms_the_reaper_last() {
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    let body = extract_squashed_fn_body(&squashed, &rb24_nd_delete_account_decl())
+        .expect("[rb24/arm-scope] fn delete_account was not found in accounts.rs");
+
+    let statement = format!(";{}ctx,me,now);", rb24_nd_arm_call());
+    assert_eq!(
+        m22_count_occurrences(body, &statement),
+        1,
+        "[rb24/arm-statement] delete_account must contain the bare statement `{statement}` \
+         exactly once. The leading and trailing semicolons pin STATEMENT POSITION, not merely \
+         presence: a call that is an OPERAND of something else — a closure binding, an \
+         iterator adaptor — sits at brace depth 0, satisfies every containment and ordering \
+         clause in this test, and never runs. The argument list pins that the reaper is armed \
+         for the CALLER identity from the SHARED `now` binding."
+    );
+    assert_eq!(
+        rb24_net_arm_mentions(body),
+        1,
+        "[rb24/arm-count] delete_account must name the arm helper exactly once. More than one \
+         is a second schedule row for the same request: PRV1-1 says EXACTLY ONE \
+         AccountDeletionReaperSchedule row, and a second row fires a second cascade that the \
+         PRV1-3 disarm — which deletes every matching row — would mask in testing but which \
+         doubles every side effect in production."
+    );
+
+    let update = concat!(".upd", "ate(requested_deletion(account,now))");
+    assert_eq!(
+        m22_count_occurrences(body, update),
+        1,
+        "[rb24/arm-update-shape] delete_account must stamp the account row exactly once, and \
+         with the SHARED `now` binding rather than a second clock reading. A per-call \
+         `now_ms(ctx)` inside the update compiles, is clippy-clean, and silently decouples the \
+         instant recorded on the row from the instant the reaper fire time is derived from, so \
+         the grace window a player actually receives depends on reducer timing."
+    );
+
+    let at_update = idx(body, update);
+    let at_stmt = idx(body, &statement);
+    assert!(
+        at_update < at_stmt,
+        "[rb24/arm-after-update] the arm call (offset {at_stmt}) must run AFTER the status \
+         write (offset {at_update}). Spec §4.2 places the schedule-insert last so a crash \
+         mid-reducer leaves PendingDeletion with no schedule row — always re-driveable. Armed \
+         first, the same crash leaves a live reaper aimed at an account that was never \
+         transitioned, and this slice ships no reaper-side status recheck to catch it."
+    );
+
+    let region = &body[at_update..at_stmt];
+    assert!(
+        !rb24_has_return_token(region),
+        "[rb24/arm-reachable] a `return` token sits between the status write and the arm call. \
+         Every other clause in this test reasons about POSITION and none about REACHABILITY, \
+         so an early exit here leaves the account PendingDeletion with no reaper armed — a \
+         deletion request that is accepted, displayed to the player, and never carried out. \
+         Region text: {region:?}"
+    );
+
+    assert_eq!(
+        rb24_brace_depth(&body[..at_stmt]),
+        0,
+        "[rb24/arm-depth0] the arm call sits inside a nested block of delete_account rather \
+         than at the top level of the fn body. A conditional arm is a conditional deletion: a \
+         guard that is always false at this point keeps every count-, argument-, ordering- and \
+         region-based clause above green while no schedule row is ever inserted."
+    );
+
+    assert_eq!(
+        m22_count_occurrences(body, "letnow="),
+        1,
+        "[rb24/wire-no-shadow] delete_account must bind `now` exactly once. A second binding \
+         re-points the fire time at a different instant while the textually perfect arm \
+         statement above stays green — the measured shadow shape from the rb-22 red-team, \
+         applied to a clock instead of an identity."
+    );
+    assert_eq!(
+        m22_count_occurrences(body, concat!("letnow=now", "_ms(ctx);")),
+        1,
+        "[rb24/wire-now-source] the single `now` binding in delete_account must come from the \
+         module injected-clock seam. A literal, a cached static or a value derived from a row \
+         would make the grace window something other than wall-clock time since the request."
+    );
+    assert_eq!(
+        m22_count_occurrences(body, "letme="),
+        1,
+        "[rb24/wire-no-rebind] delete_account must bind `me` exactly once. A rebind re-points \
+         the armed schedule at an identity other than the caller, which is a scheduled \
+         irreversible erasure of somebody else account, and every textual clause above stays \
+         green."
+    );
+    assert_eq!(
+        m22_count_occurrences(body, "letme=ctx.sender();"),
+        1,
+        "[rb24/wire-me-source] the single `me` binding must be `ctx.sender()`. The subject \
+         identity of every reducer in this module is the sender and nothing else (ADR-0179 \
+         G2); an identity read from a row or a parameter is the client-supplied-Identity hole."
+    );
+}
+
+/// PRV1-1 (helper body): `arm_deletion_reaper` inserts exactly one schedule row,
+/// with the fire instant derived through `deletion_fire_at_ms`, and does nothing
+/// else.
+///
+/// EXACT EQUALITY over the squashed body, because containment was MEASURED
+/// insufficient for this exact shape family (rb-22 red-team): an `if false`
+/// wrapper around a correct body, a shadowed binding, and an appended foreign
+/// write all satisfy every needle-based clause and are clippy-clean.
+///
+/// The signature pin is separate and carries its own tag: it is what makes the
+/// body pin readable — `requested_at_ms` and `account` in the body mean nothing
+/// unless the parameters they name are the ones the call site passes.
+///
+/// Kills: an inline add of a hand-typed grace literal that bypasses the pure
+///        seam (a second copy of the window, free to drift from game-core, and
+///        an operator retune of the constant would then move only one of them);
+///        a fire time in milliseconds where the API wants microseconds (the
+///        `saturating_mul(1_000)` is part of the pin);
+///        a non-saturating multiply (release-profile overflow panic);
+///        `scheduled_at` built from a duration rather than an absolute instant;
+///        an extra statement, a dead branch, or a shadowed binding.
+#[test]
+fn rb24_arm_deletion_reaper_body_frozen() {
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    let sig = extract_squashed_fn_sig(&squashed, &rb24_nd_arm_decl()).unwrap_or_else(|| {
+        panic!(
+            "[rb24/arm-sig-read] fn arm_deletion_reaper was not found in accounts.rs, or its \
+             signature reaches no opening brace. The frozen-body pin below would then have \
+             nothing to compare and must not report a pass."
+        )
+    });
+    assert_eq!(
+        sig,
+        rb24_frozen_arm_sig(),
+        "[rb24/arm-sig] the arm helper signature is not the frozen one. It must take the \
+         reducer context as `ctx`, the subject as `account: Identity`, and the request instant \
+         as `requested_at_ms: i64` — an OWNER-GENERIC identity parameter, never a \
+         claim-specific or caller-specific name, and an explicit instant rather than a clock \
+         it reads for itself, so the row stamp and the fire time cannot diverge."
+    );
+
+    let body = extract_squashed_fn_body(&squashed, &rb24_nd_arm_decl())
+        .expect("[rb24/arm-body-read] the arm helper body is not brace-balanced");
+    assert_eq!(
+        body,
+        rb24_frozen_arm_body(),
+        "[rb24/arm-body] arm_deletion_reaper must be exactly the single sanctioned insert: one \
+         schedule row, `scheduled_id: 0` for auto_inc, an ABSOLUTE fire instant built from \
+         deletion_fire_at_ms times 1000 with a SATURATING multiply, and the subject identity. \
+         Containment pins were measured insufficient against dead-branch, shadowed-binding and \
+         appended-foreign-write shapes, all clippy-clean; equality kills the family in one \
+         assertion. If the sanctioned body legitimately changes, re-derive this literal from \
+         the spec and update it consciously."
+    );
+}
+
+/// PRV1-1 (call-site uniqueness, crate-wide): the arm helper is DECLARED once
+/// and CALLED once anywhere in the compiled crate, and that one call site is
+/// inside `delete_account`.
+///
+/// The body-scoped test above pins the call that lives in `delete_account`; this
+/// one pins that there is no OTHER. Together they are total: a call moved out of
+/// the reducer fails the scoped test while keeping this count at two, and a
+/// decoy second call site fails this one while keeping the scoped test green.
+///
+/// SCOPE, STATED HONESTLY: the helper is module-private, so the compiler already
+/// refuses a call from another module. What this census adds on top is (a) a
+/// second, unreviewed call site INSIDE accounts.rs, and (b) a same-named twin
+/// declared in another module, which would make a future reader of a grep
+/// believe there is one arm helper when there are two.
+///
+/// SURFACE: `m22_scanned_sources()` — the crate root plus every `mod` lib.rs
+/// declares, with `_tests.rs` siblings excluded by construction (test code is
+/// not compiled into the published wasm, so it cannot arm a live reaper).
+/// `data_lifecycle_manifest_totality_bidirectional` pins that list against the
+/// crate live `mod` declarations in BOTH directions; the coverage clause here is
+/// the local backstop against a census that merely shrank.
+#[test]
+fn rb24_arm_called_exactly_once_in_crate() {
+    let sources = m22_scanned_sources();
+    let paths: Vec<&str> = sources.iter().map(|(p, _)| *p).collect();
+    let n_paths = paths.len();
+    assert!(
+        n_paths >= 20,
+        "[rb24/arm-census-coverage] the crate-wide census lists only {n_paths} source(s) \
+         ({paths:?}); the live tree lists 22. A shrunken census is a census that stopped \
+         looking, and the module a bypass lands in is exactly the one it would be dropped \
+         from."
+    );
+    assert!(
+        paths.contains(&"accounts.rs"),
+        "[rb24/arm-census-owner] the census does not include accounts.rs ({paths:?}), which is \
+         the ONE file with a non-zero budget. Without it the loop below proves only that a set \
+         of modules that were never allowed to name the helper do not name it, and the \
+         sanctioned call site is unmeasured."
+    );
+
+    let mut total = 0usize;
+    let mut decls = 0usize;
+    for (path, src) in &sources {
+        let squashed = stripped_for_scan(src);
+        let n = rb24_net_arm_mentions(&squashed);
+        decls += m22_count_occurrences(&squashed, &rb24_nd_arm_decl());
+        let expected = if *path == "accounts.rs" { 2 } else { 0 };
+        assert_eq!(
+            n, expected,
+            "[rb24/arm-census-site] {path} names the arm helper {n} time(s); exactly {expected} \
+             is allowed. For accounts.rs that budget is the declaration plus the ONE sanctioned \
+             call site inside delete_account. For every other module it is zero: an arm outside \
+             the deletion request ceremony schedules an irreversible cascade for whatever \
+             identity IT derives, outside everything this slice reviewed."
+        );
+        total += n;
+    }
+    assert_eq!(
+        total, 2,
+        "[rb24/arm-census-total] the crate must name the arm helper exactly twice in total \
+         (one declaration, one call site); found {total}."
+    );
+    assert_eq!(
+        decls, 1,
+        "[rb24/arm-decl-unique] the crate must DECLARE the arm helper exactly once; found \
+         {decls}. A same-named twin in a second module makes a grep for the arm site answer \
+         with a helper nothing in this slice constrains."
+    );
+
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    let (start, end) = rb24_fn_body_span(&squashed, &rb24_nd_delete_account_decl());
+    assert_eq!(
+        rb24_net_arm_mentions(&squashed[start..end]),
+        1,
+        "[rb24/arm-call-in-delete] the single arm call site must sit inside delete_account body \
+         span. A call relocated into a shared helper — rekey_all, or the reject path — keeps \
+         the crate-wide count at two while moving the schedule insert out of the reducer whose \
+         reviewers own it."
+    );
+}
+
+/// PRV1-3 (call-site uniqueness, crate-wide): the disarm helper is DECLARED
+/// once and CALLED once anywhere in the compiled crate, and that one call site
+/// is inside `cancel_account_deletion`.
+///
+/// The MIRROR of `rb24_arm_called_exactly_once_in_crate`, and it is not
+/// redundant with the arm census: rb-24 artifact red-team (Finding 2) MEASURED
+/// that `rb24_net_arm_mentions` (arm-minus-disarm arithmetic) nets to ZERO for
+/// an extra disarm call, because the disarm token CONTAINS the arm token — so a
+/// second, unreviewed `disarm_deletion_reaper(ctx, foreign)` in any other
+/// function (the PoC used complete_guest_claim, where the argument is a guest
+/// identity) leaves the arm census reading net == 2 and is invisible. The
+/// disarm deletes EVERY schedule row for the identity it is passed, so an
+/// unreviewed call is an unauthorized deletion-cancel primitive for a foreign
+/// account. This census counts the disarm CALL token DIRECTLY (nothing longer
+/// contains it but its own `fn` declaration, which is the decl budget), never
+/// via subtraction.
+#[test]
+fn rb24_disarm_called_exactly_once_in_crate() {
+    let sources = m22_scanned_sources();
+    let paths: Vec<&str> = sources.iter().map(|(p, _)| *p).collect();
+    let n_paths = paths.len();
+    assert!(
+        n_paths >= 20,
+        "[rb24/disarm-census-coverage] the crate-wide census lists only {n_paths} source(s) \
+         ({paths:?}); the live tree lists 22. A shrunken census is a census that stopped \
+         looking, and the module a bypass lands in is exactly the one it would be dropped from."
+    );
+    assert!(
+        paths.contains(&"accounts.rs"),
+        "[rb24/disarm-census-owner] the census does not include accounts.rs ({paths:?}), which \
+         is the ONE file with a non-zero budget."
+    );
+
+    let disarm_call = rb24_nd_disarm_call();
+    let mut total = 0usize;
+    let mut decls = 0usize;
+    for (path, src) in &sources {
+        let squashed = stripped_for_scan(src);
+        // The decl `fndisarm_deletion_reaper(` also contains the call token, so
+        // a direct count of the call token over the whole file = decl + calls.
+        let n = m22_count_occurrences(&squashed, &disarm_call);
+        decls += m22_count_occurrences(&squashed, &rb24_nd_disarm_decl());
+        let expected = if *path == "accounts.rs" { 2 } else { 0 };
+        assert_eq!(
+            n, expected,
+            "[rb24/disarm-census-site] {path} names the disarm helper {n} time(s); exactly \
+             {expected} is allowed. For accounts.rs that budget is the declaration plus the ONE \
+             sanctioned call site inside cancel_account_deletion. For every other module it is \
+             zero: a disarm outside the cancel ceremony deletes every pending-deletion schedule \
+             row for whatever identity IT derives — an unauthorized cancel for a foreign account, \
+             outside everything this slice reviewed."
+        );
+        total += n;
+    }
+    assert_eq!(
+        total, 2,
+        "[rb24/disarm-census-total] the crate must name the disarm helper exactly twice in \
+         total (one declaration, one call site); found {total}."
+    );
+    assert_eq!(
+        decls, 1,
+        "[rb24/disarm-decl-unique] the crate must DECLARE the disarm helper exactly once; found \
+         {decls}."
+    );
+
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    let (start, end) = rb24_fn_body_span(&squashed, &rb24_nd_cancel_decl());
+    assert_eq!(
+        m22_count_occurrences(&squashed[start..end], &disarm_call),
+        1,
+        "[rb24/disarm-call-in-cancel] the single disarm call site must sit inside \
+         cancel_account_deletion's body span. A call relocated elsewhere keeps the crate-wide \
+         count at two while moving the disarm out of the reducer whose reviewers own it."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// rb-24 / PRV1-3 — THE DISARM, WIRED INTO `cancel_account_deletion`.
+// ---------------------------------------------------------------------------
+
+/// PRV1-3 (spec §4.5): `cancel_account_deletion` disarms the pending deletion
+/// reaper, after the idempotency gate and after the status write.
+///
+/// Spec §4.5 names this the ADR-0126 D4 clause and warns that it is routinely
+/// conflated with D6 (the no-self-disarm rule for a FIRED one-shot). They are
+/// different: D6 says a reaper must not delete its own fired row; D4 says every
+/// OTHER mutation site must actively delete a schedule row that would otherwise
+/// fire stale. Without the disarm, a cancelled account is `Active` with an armed
+/// reaper still pointing at it, and this slice ships no reaper-side status
+/// recheck — so the cascade would run on a live, cancelled account.
+///
+/// THE ORDERING IS BEHAVIOURAL, NOT COSMETIC. Placed after the
+/// `needs_cancel_write` gate, the disarm is skipped on the idempotent no-op path
+/// (an already-Active account has nothing armed), so a second cancel does not
+/// sweep a row that a racing third-party request just armed. Placed after the
+/// status write, a rollback of the write also rolls back the disarm.
+///
+/// ONE OF THE TWO NEGATIVE CLAUSES IS ARITHMETIC, NOT A SUBSTRING TEST, and the
+/// reason is measured: the disarm call token CONTAINS the arm call token (it is
+/// the same name under a three-letter prefix), so a literal `the arm token does
+/// not appear in this body` assertion is unsatisfiable against the CORRECT
+/// implementation. See `rb24_net_arm_mentions`. The mirror-image clause — no
+/// disarm inside the request path — needs no such care, because the containment
+/// runs only one way.
+///
+/// Kills: dropping the disarm; a second unreviewed disarm; the disarm sequenced
+///        before the gate (sweeping a freshly armed row on an idempotent
+///        re-cancel) or before the status write; an early `return` between them;
+///        a conditional or closure-wrapped disarm; a `me` rebind that disarms
+///        somebody else schedule; the two polarities crossing — an arm inside
+///        cancel, or a disarm inside delete_account.
+#[test]
+fn rb24_cancel_disarms_the_reaper() {
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    let body = extract_squashed_fn_body(&squashed, &rb24_nd_cancel_decl())
+        .expect("[rb24/disarm-scope] fn cancel_account_deletion was not found in accounts.rs");
+
+    let statement = format!(";{}ctx,me);", rb24_nd_disarm_call());
+    assert_eq!(
+        m22_count_occurrences(body, &statement),
+        1,
+        "[rb24/disarm-statement] cancel_account_deletion must contain the bare statement \
+         `{statement}` exactly once. The semicolons pin STATEMENT POSITION: a call that is an \
+         operand of a closure binding or an iterator adaptor sits at brace depth 0, satisfies \
+         every containment and ordering clause here, and never runs — so the cancelled account \
+         keeps its armed reaper."
+    );
+    assert_eq!(
+        m22_count_occurrences(body, &rb24_nd_disarm_call()),
+        1,
+        "[rb24/disarm-count] cancel_account_deletion must name the disarm helper exactly once."
+    );
+
+    let gate = concat!("needs_cancel", "_write(");
+    let update = concat!(".upd", "ate(cancelled_deletion(account))");
+    assert_eq!(
+        m22_count_occurrences(body, update),
+        1,
+        "[rb24/disarm-update-shape] cancel_account_deletion must reverse the status exactly \
+         once, through the pure `cancelled_deletion` constructor (which is where the AUTH-29 \
+         claim-provenance preservation lives), never through a hand-built row literal."
+    );
+
+    let at_gate = idx(body, gate);
+    let at_update = idx(body, update);
+    let at_stmt = idx(body, &statement);
+    assert!(
+        at_gate < at_stmt,
+        "[rb24/disarm-after-gate] the disarm (offset {at_stmt}) must run AFTER the \
+         needs_cancel_write idempotency gate (offset {at_gate}). Ahead of the gate it also runs \
+         on the already-Active no-op path, where there is nothing legitimately armed — so a \
+         repeat cancel becomes an unconditional schedule sweep for that identity."
+    );
+    assert!(
+        at_update < at_stmt,
+        "[rb24/disarm-after-update] the disarm (offset {at_stmt}) must run AFTER the status \
+         write (offset {at_update}), mirroring the arm-last rule on the request side: the write \
+         is the step that can fail, and the disarm must not outlive a rolled-back reversal."
+    );
+
+    let region = &body[at_update..at_stmt];
+    assert!(
+        !rb24_has_return_token(region),
+        "[rb24/disarm-reachable] a `return` token sits between the status write and the disarm. \
+         Every other clause here reasons about POSITION and none about REACHABILITY, so an \
+         early exit leaves an Active account with a live reaper still aimed at it — and this \
+         slice ships no reaper-side status recheck to stop the cascade. Region text: {region:?}"
+    );
+    assert_eq!(
+        rb24_brace_depth(&body[..at_stmt]),
+        0,
+        "[rb24/disarm-depth0] the disarm sits inside a nested block rather than at the top \
+         level of cancel_account_deletion. A conditional disarm is a conditional cancel: a \
+         guard that is always false here keeps every other clause green while the reaper stays \
+         armed."
+    );
+
+    assert_eq!(
+        m22_count_occurrences(body, "letme="),
+        1,
+        "[rb24/disarm-no-rebind] cancel_account_deletion must bind `me` exactly once. A rebind \
+         disarms a different identity schedule row: the caller stays armed and somebody else \
+         pending deletion is silently cancelled, while every textual clause above stays green."
+    );
+    assert_eq!(
+        m22_count_occurrences(body, "letme=ctx.sender();"),
+        1,
+        "[rb24/disarm-me-source] the single `me` binding must be `ctx.sender()`."
+    );
+
+    assert_eq!(
+        rb24_net_arm_mentions(body),
+        0,
+        "[rb24/cancel-never-arms] cancel_account_deletion names the ARM helper. The two \
+         polarities must never cross: arming inside the cancel path re-schedules the cascade \
+         the player just cancelled. Counted as arm-minus-disarm arithmetic on purpose — the \
+         disarm token literally contains the arm token, so a substring ban would be \
+         unsatisfiable against the correct implementation."
+    );
+
+    let delete_body = extract_squashed_fn_body(&squashed, &rb24_nd_delete_account_decl())
+        .expect("[rb24/disarm-scope-delete] fn delete_account was not found in accounts.rs");
+    assert_eq!(
+        m22_count_occurrences(delete_body, &rb24_nd_disarm_call()),
+        0,
+        "[rb24/delete-never-disarms] delete_account names the DISARM helper. A disarm on the \
+         request path deletes the row the same reducer just armed — a deletion request that \
+         reports success and schedules nothing."
+    );
+}
+
+/// PRV1-3 (helper body): `disarm_deletion_reaper` collects the matching schedule
+/// ids through the `account_identity` btree index and then deletes each by
+/// primary key, and does nothing else.
+///
+/// EXACT EQUALITY, and the two-phase COLLECT-THEN-DELETE shape is the point:
+/// deleting inside the filter iteration mutates the table being iterated. The
+/// shipped `disarm_claim_reaper` is the precedent this mirrors byte for byte.
+///
+/// Kills: filtering on the wrong column (a filter on `scheduled_id` type-checks
+///        against a u64 and disarms nothing);
+///        deleting by the wrong key (a delete keyed on the filtered column
+///        rather than the primary key);
+///        a single-row `.find(..)` in place of the filter, which leaves every
+///        second armed row behind if two ever coexist;
+///        an unfiltered full-table sweep, which disarms every OTHER pending
+///        account deletion in the database — the catastrophic direction, and one
+///        that no containment pin distinguishes from the correct body;
+///        a dead branch, an extra binding, a shadowed `ids`, a shadowed loop
+///        `id`, or an appended foreign write.
+#[test]
+fn rb24_disarm_deletion_reaper_body_frozen() {
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    let sig = extract_squashed_fn_sig(&squashed, &rb24_nd_disarm_decl()).unwrap_or_else(|| {
+        panic!(
+            "[rb24/disarm-sig-read] fn disarm_deletion_reaper was not found in accounts.rs, or \
+             its signature reaches no opening brace. The frozen-body pin below would then have \
+             nothing to compare and must not report a pass."
+        )
+    });
+    assert_eq!(
+        sig,
+        rb24_frozen_disarm_sig(),
+        "[rb24/disarm-sig] the disarm helper signature is not the frozen one. It must take the \
+         reducer context as `ctx` and an OWNER-GENERIC `account: Identity`, so a later arm of \
+         S3 — or the cascade itself — can reuse it verbatim rather than growing a second, \
+         subtly different sweep."
+    );
+
+    let body = extract_squashed_fn_body(&squashed, &rb24_nd_disarm_decl())
+        .expect("[rb24/disarm-body-read] the disarm helper body is not brace-balanced");
+    assert_eq!(
+        body,
+        rb24_frozen_disarm_body(),
+        "[rb24/disarm-body] disarm_deletion_reaper must be exactly the two-phase \
+         collect-then-delete sequence: filter the account_identity btree index, collect the \
+         primary keys, then delete each by primary key. Deleting inside the filter iteration \
+         mutates the table being iterated; an unfiltered sweep disarms every other pending \
+         deletion in the database; and a filter on the wrong column disarms nothing at all — \
+         all three read identically to every containment pin."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// rb-24 / E1 + S3-boundary — THE SCHEDULED REDUCER.
+// ---------------------------------------------------------------------------
+
+/// E1 (spec §4.4): the deletion reaper rejecting scheduler-only guard is its
+/// FIRST statement.
+///
+/// The needle is pinned as the shared guard IMMEDIATELY FOLLOWED BY `Err(`, not
+/// as the bare guard, and that is a red-team finding rather than
+/// belt-and-braces. `scheduler_guard_needle()` deliberately stops at the
+/// `return` token so a future refactor to the equally valid silent-ignore
+/// `return Ok(());` form does not false-RED elsewhere — which makes the bare
+/// needle a FORGEABLE PREFIX here. Because `squash_ws` fuses the token with
+/// whatever follows it, a body whose guard branch opens with a call to a helper
+/// whose NAME merely starts with the six letters of that token (`returned_...`,
+/// say) contains the whole needle, compiles, is clippy-clean, and rejects
+/// nobody. Requiring the body to START WITH guard-then-`Err(` closes it.
+///
+/// Why first: this reducer takes the scheduled struct as an argument, and the
+/// ONLY thing that makes a struct-typed reducer argument safe (the ADR-0195 D6
+/// carve-out that `g2_no_reducer_takes_identity_parameter` depends on) is that
+/// the body rejects every non-scheduler caller before reading a field of it.
+/// Without the guard, any client can invoke this reducer directly with a
+/// hand-built row naming any victim identity.
+///
+/// Kills: the neutered `let scheduler_only = ...; let _ = scheduler_only;` form,
+///        which keeps the comparison and rejects nobody;
+///        a guard that compares `ctx.sender()` against anything other than
+///        `ctx.database_identity()`;
+///        a guard demoted to a non-rejecting statement;
+///        a guard moved below any other statement.
+#[test]
+fn rb24_deletion_reaper_scheduler_guard_is_first_statement() {
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    let body = extract_squashed_fn_body(&squashed, &rb24_nd_reaper_decl())
+        .expect("[rb24/reaper-scope] fn account_deletion_reaper was not found in accounts.rs");
+    assert!(
+        !body.is_empty(),
+        "[rb24/reaper-nonempty] the deletion reaper body is empty, so the guard clause below \
+         would be asserting a prefix of nothing."
+    );
+
+    let sig = extract_squashed_fn_sig(&squashed, &rb24_nd_reaper_decl())
+        .expect("[rb24/reaper-sig-read] the deletion reaper signature reaches no opening brace");
+    assert!(
+        sig.contains(concat!("AccountDeletion", "ReaperSchedule")),
+        "[rb24/reaper-arg-type] the deletion reaper must take the SAME-FILE scheduled struct as \
+         its argument type. That equality is the entire precondition of the ADR-0195 D6 \
+         carve-out that lets a reducer take a composite argument at all; any other composite \
+         type is a client-supplied payload. Signature read: {sig:?}"
+    );
+
+    let guard = scheduler_guard_needle();
+    let rejecting = format!("{guard}Err(");
+    assert!(
+        body.starts_with(rejecting.as_str()),
+        "[rb24/reaper-guard-first] the deletion reaper body must START with the rejecting \
+         scheduler guard, and the rejection must be the guard IMMEDIATELY following token. The \
+         shared guard needle deliberately stops at `return` so a silent-ignore refactor does \
+         not false-RED elsewhere, which makes it a forgeable PREFIX here: a body opening with \
+         the same condition and a helper call that returns nothing contains it, compiles, and \
+         rejects nobody — leaving any client free to invoke this reducer with a hand-built row \
+         naming any victim. Body read: {body:?}"
+    );
+    assert_eq!(
+        m22_count_occurrences(body, &guard),
+        1,
+        "[rb24/reaper-guard-unique] the deletion reaper must carry exactly one scheduler guard. \
+         A second one is either dead code or a decoy that steers a first-hit anchored scan."
+    );
+}
+
+/// S3-boundary: the deletion reaper body is EXACTLY the scheduler guard and a
+/// trailing `Ok(())` — this slice ships no cascade.
+///
+/// THIS TEST IS DESIGNED TO GO RED WHEN THE CASCADE LANDS, AND THAT IS THE
+/// POINT. Spec §4.4 defines a five-step cascade whose ordering is load-bearing
+/// (force-resolve live interactions BEFORE any erase, `character` before the
+/// `player` tombstone, the terminal marker only after steps 1 to 4 succeed) and
+/// §4.5 adds a reaper-side recheck on status, terminal marker and due-ness.
+/// NONE of that is in this slice. An empty body plus a containment pin would let
+/// the cascade grow one unreviewed statement at a time; equality forces the arm
+/// that ships it to come back to this literal, re-derive it from the spec step
+/// list, and re-review the guard position at the same time.
+///
+/// The scan blanks string literals, so the reject reason reads as an empty
+/// argument — the reason TEXT is covered by `reject_message_contracts_present`,
+/// not here, and that split is deliberate: a message contract and a control-flow
+/// contract should not fail as one another.
+///
+/// Kills: a cascade smuggled in ahead of the review that owns it; a `todo!()` or
+///        `unimplemented!()` body (a panic inside a scheduled reducer aborts the
+///        transaction on every fire); a body that silently returns Ok for the
+///        scheduler and does nothing else forever without anyone noticing the
+///        slice boundary was never closed.
+#[test]
+fn rb24_deletion_reaper_body_is_frozen_noop() {
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    let body = extract_squashed_fn_body(&squashed, &rb24_nd_reaper_decl())
+        .expect("[rb24/reaper-body-scope] fn account_deletion_reaper was not found");
+    assert_eq!(
+        body,
+        rb24_frozen_reaper_body(),
+        "[rb24/reaper-body] the deletion reaper body is not this slice frozen no-op (rejecting \
+         scheduler guard, then Ok(())). If the M22 §4.4 cascade is being added, this pin is \
+         SUPPOSED to fire: re-derive the expected body from the spec five-step order, re-review \
+         the guard position, and update this literal consciously in the same change. Do not \
+         relax it to a containment check — that is exactly how an unreviewed step lands."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// rb-24 / D0 — WRITE ISOLATION FOR THE NEW TABLE.
+// ---------------------------------------------------------------------------
+
+/// PRV1-1 / PRV1-3 (D0 write isolation): the owned-write allowlist covers the
+/// new schedule table, and the widening is EXERCISED rather than decorative.
+///
+/// Widening an allowlist is the one edit that can only ever LOOSEN a gate, so it
+/// needs its own proof that the new entry corresponds to a real write. Without
+/// the second clause, adding the accessor name to `allowed_write_tables` and
+/// never writing the table at all is green — and so is deleting the arm and the
+/// disarm entirely.
+///
+/// The third clause is the direction `g5_writes_only_owned_tables` already
+/// covers, restated here so a failure of THIS test says which side moved.
+///
+/// Kills: a widened allowlist with no corresponding write (the decorative
+///        widening); a write chained off an accessor that is not in the
+///        allowlist at all.
+#[test]
+fn rb24_owned_write_set_covers_the_deletion_schedule() {
+    let accessor = rb24_nd_sched_accessor();
+    let allowed = allowed_write_tables();
+    assert!(
+        allowed.contains(&accessor),
+        "[rb24/owned-set] the owned-write allowlist does not contain `{accessor}` \
+         ({allowed:?}). The deletion reaper schedule is colocated in this module under the \
+         ADR-0056 exception exactly as the guest-claim schedule is, so accounts.rs writes it \
+         directly; without the entry, g5_writes_only_owned_tables reds on the sanctioned arm."
+    );
+
+    let targets = write_target_accessors(&stripped_for_scan(ACCOUNTS_RS));
+    assert!(
+        targets.contains(&accessor),
+        "[rb24/owned-set-nonvacuous] the allowlist names `{accessor}` but accounts.rs performs \
+         NO write against that accessor (extracted write targets: {targets:?}). Widening an \
+         allowlist can only loosen a gate, so the widening must be paid for by a real write: \
+         zero writes here means the arm and the disarm are both gone and the allowlist entry is \
+         a permanently open slot."
+    );
+
+    for t in &targets {
+        assert!(
+            allowed.iter().any(|a| a == t),
+            "[rb24/owned-set-closed] accounts.rs writes the table `{t}`, which is not in the \
+             owned set {allowed:?}. Every write to a pre-existing table must be delegated to \
+             that table owning module."
+        );
+    }
+}
+
+/// PRV1-1 / PRV1-3 (sole writers): every reach for the new schedule table in
+/// `accounts.rs` lies inside the arm helper or the disarm helper — nowhere else.
+///
+/// This is the census that makes the two frozen-body pins TOTAL. Those pins
+/// prove what the two helpers do; without this one they say nothing about a
+/// third site. A schedule insert added directly to a reducer body — or a delete
+/// added to the reaper, which would be the ADR-0126 D6 self-disarm violation
+/// that races the runtime own delete of the fired row — is invisible to both.
+///
+/// The span check is computed from a local brace walk rather than reusing
+/// `write_target_accessors`, whose nearest-preceding-`ctx.db.` attribution has
+/// measured alias holes: an anchorless write is dropped entirely and an aliased
+/// one is credited to the previous accessor. A census built on it would
+/// under-report exactly the sites it exists to find.
+///
+/// Kills: a schedule write inlined into delete_account, cancel_account_deletion,
+///        complete_guest_claim or the reaper itself; a third helper that writes
+///        the table; the reaper self-disarm (a fourth occurrence, and one
+///        outside both spans).
+#[test]
+fn rb24_schedule_table_sole_writers() {
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    // Prefix-AGNOSTIC method token (rb-24 artifact red-team, Finding 1): a
+    // `let d = &ctx.db; d.account_deletion_reaper_schedule()...` write reaches
+    // this table WITHOUT the `ctx.db.` prefix and is invisible to a prefixed
+    // needle, so the census counts the leading-dot accessor method through ANY
+    // receiver. That aliased write armed a FOREIGN identity and passed every
+    // other gate — this is the tooth that makes the frozen-body pins TOTAL.
+    let accessor_call = rb24_nd_accessor_method();
+
+    let total = m22_count_occurrences(&squashed, &accessor_call);
+    assert_eq!(
+        total, 3,
+        "[rb24/sole-writer-census] accounts.rs must reach the deletion schedule accessor \
+         EXACTLY three times: once for the arm insert, and twice for the disarm (the \
+         account_identity filter and the primary-key delete). Found {total}. FEWER means a \
+         helper lost its write; MORE means a site exists that neither frozen-body pin \
+         constrains — including one reached through an aliased db handle."
+    );
+
+    let (arm_start, arm_end) = rb24_fn_body_span(&squashed, &rb24_nd_arm_decl());
+    let (dis_start, dis_end) = rb24_fn_body_span(&squashed, &rb24_nd_disarm_decl());
+    assert_eq!(
+        m22_count_occurrences(&squashed[arm_start..arm_end], &accessor_call),
+        1,
+        "[rb24/sole-writer-arm] the arm helper must reach the schedule accessor exactly once. \
+         The total-of-three clause alone does not pin the SPLIT: three occurrences all inside \
+         the disarm satisfies it."
+    );
+    assert_eq!(
+        m22_count_occurrences(&squashed[dis_start..dis_end], &accessor_call),
+        2,
+        "[rb24/sole-writer-disarm] the disarm helper must reach the schedule accessor exactly \
+         twice — once to filter the index, once to delete by primary key. One occurrence means \
+         the two-phase shape collapsed into a delete inside the iteration."
+    );
+
+    let mut scan = 0usize;
+    let mut seen = 0usize;
+    while let Some(rel) = squashed[scan..].find(accessor_call.as_str()) {
+        let at = scan + rel;
+        let inside_arm = at >= arm_start && at < arm_end;
+        let inside_disarm = at >= dis_start && at < dis_end;
+        assert!(
+            inside_arm || inside_disarm,
+            "[rb24/sole-writer-scope] accounts.rs reaches the deletion schedule accessor at \
+             squashed offset {at}, which lies OUTSIDE both the arm helper body \
+             ({arm_start}..{arm_end}) and the disarm helper body ({dis_start}..{dis_end}). \
+             Every touch of this table must go through one of the two reviewed helpers: an \
+             inline insert in a reducer bypasses the frozen fire-instant derivation, and an \
+             inline delete in the reaper is the ADR-0126 D6 self-disarm that races the runtime \
+             own delete of the fired one-shot row."
+        );
+        seen += 1;
+        scan = at + accessor_call.len();
+    }
+    assert_eq!(
+        seen, 3,
+        "[rb24/sole-writer-walk] the position walk visited {seen} occurrence(s) where the \
+         census counted 3. The two counts must agree or the scope clause above ran over a \
+         different set of sites than the census measured."
+    );
 }

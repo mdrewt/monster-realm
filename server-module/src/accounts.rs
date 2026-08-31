@@ -2,7 +2,9 @@
 //!
 //! WRITE-ISOLATION (D0, WRITE-scoped not table-scoped): this module inserts /
 //! updates / deletes rows ONLY in `account`, `guest_claim`,
-//! `guest_claim_reaper_schedule`. Every write to any pre-existing table goes
+//! `guest_claim_reaper_schedule`, `account_deletion_reaper_schedule` (rb-24,
+//! ADR-0221: the deletion-grace schedule, armed on request and disarmed on
+//! cancel). Every write to any pre-existing table goes
 //! through a `pub(crate)` helper in that table's OWNING module — the
 //! `rekey_*` family (monster_mgmt / inventory / npc / raising / economy /
 //! ranking) plus `privacy::purge_export_bundles` (rb-22, ADR-0220: the
@@ -12,9 +14,10 @@
 //! `economy::wallet_exists` delegates); battle liveness reuses
 //! `guards::is_in_ongoing_battle` rather than touching `ctx.db.battle()`.
 //!
-//! The scheduled reaper table + reducer are colocated HERE (not schema.rs /
-//! lib.rs) so the `scheduled(guest_claim_reaper)` attribute resolves as a bare
-//! ident — the ADR-0056 exception, mirroring movement.rs / pvp.rs / playtest.rs.
+//! BOTH scheduled reaper table + reducer pairs (`guest_claim_reaper`,
+//! `account_deletion_reaper`) are colocated HERE (not schema.rs / lib.rs) so
+//! each `scheduled(..)` attribute resolves as a bare ident — the ADR-0056
+//! exception, mirroring movement.rs / pvp.rs / playtest.rs.
 //! (A `scheduled(crate::accounts::guest_claim_reaper)` path form compiles but the
 //! `scheduled(`-name scanners would extract the literal `crate`.)
 //!
@@ -109,6 +112,18 @@ pub(crate) fn claim_expires_at(created_at_ms: i64) -> i64 {
 /// cooldown-ready convention.
 pub(crate) fn claim_is_expired(expires_at_ms: i64, now_ms: i64) -> bool {
     now_ms >= expires_at_ms
+}
+
+/// The instant the deletion reaper fires for a request stamped at
+/// `requested_at_ms` — the exact boundary at which `game_core::is_deletion_due`
+/// flips true (rb-24, ADR-0221; the grace constant has ONE SSOT in game-core,
+/// spec para 4.3). Saturating, mirroring `claim_expires_at`. KNOWN BOUND: at a
+/// stamp above `i64::MAX - GRACE` the clamped fire instant is NOT yet due by
+/// `is_deletion_due` (the sub-then-compare and add-then-compare formulations
+/// diverge only there); unreachable for wall-clock stamps, pinned by its own
+/// test, recorded in ADR-0221 Known limits.
+pub(crate) fn deletion_fire_at_ms(requested_at_ms: i64) -> i64 {
+    requested_at_ms.saturating_add(game_core::DELETION_GRACE_MS_DEFAULT)
 }
 
 /// The `Account` legal-state invariant (ADR-0195 D3) — ONE pure predicate,
@@ -523,10 +538,49 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
     Ok(())
 }
 
-// --- Deletion (M21 half — AUTH-28/29/37/38, D7) -------------------------------
+// --- Deletion (M21 half — AUTH-28/29/37/38, D7; rb-24 arm/disarm, ADR-0221) ---
 
-/// Request account deletion (M21 half only — sets `PendingDeletion`; M22 extends
-/// this same body with the grace window + cascade). Idempotent (AUTH-28).
+/// Arm the one-shot deletion-grace reaper for `account` (rb-24, PRV1-1). Fire
+/// instant derives from the SAME `requested_at_ms` the caller stamped on the
+/// row (never a second clock read), through the pure `deletion_fire_at_ms`
+/// seam. Saturating ms to us, mirroring `arm_claim_reaper`.
+fn arm_deletion_reaper(ctx: &ReducerContext, account: Identity, requested_at_ms: i64) {
+    ctx.db
+        .account_deletion_reaper_schedule()
+        .insert(AccountDeletionReaperSchedule {
+            scheduled_id: 0, // auto_inc
+            scheduled_at: ScheduleAt::Time(Timestamp::from_micros_since_unix_epoch(
+                deletion_fire_at_ms(requested_at_ms).saturating_mul(1_000),
+            )),
+            account_identity: account,
+        });
+}
+
+/// Disarm the pending deletion-reaper schedule row(s) for `account` (rb-24,
+/// PRV1-3; ADR-0126 D4 — collect-then-delete via the `account_identity` btree
+/// index, then delete by PK; mirrors `disarm_claim_reaper`). Owner-GENERIC so
+/// S3's cascade-era callers can reuse it verbatim.
+fn disarm_deletion_reaper(ctx: &ReducerContext, account: Identity) {
+    let ids: Vec<u64> = ctx
+        .db
+        .account_deletion_reaper_schedule()
+        .account_identity()
+        .filter(account)
+        .map(|s| s.scheduled_id)
+        .collect();
+    for id in ids {
+        ctx.db
+            .account_deletion_reaper_schedule()
+            .scheduled_id()
+            .delete(id);
+    }
+}
+
+/// Request account deletion — sets `PendingDeletion` and arms the deletion-grace
+/// reaper LAST (rb-24/ADR-0221: spec para 4.2 places the schedule-insert after
+/// the status write; the reducer is one transaction, so the two cannot
+/// separate, and the arm-last order is what keeps the M21 pins byte-stable).
+/// Idempotent (AUTH-28): the second call writes nothing and arms nothing.
 #[spacetimedb::reducer]
 pub fn delete_account(ctx: &ReducerContext) -> Result<(), String> {
     let me = ctx.sender();
@@ -541,10 +595,14 @@ pub fn delete_account(ctx: &ReducerContext) -> Result<(), String> {
     if !needs_deletion_write(account.status) {
         return Ok(());
     }
+    // ONE clock read shared by the row stamp and the reaper fire time — a
+    // second `now_ms(ctx)` here would silently decouple the two instants.
+    let now = now_ms(ctx);
     ctx.db
         .account()
         .identity()
-        .update(requested_deletion(account, now_ms(ctx)));
+        .update(requested_deletion(account, now));
+    arm_deletion_reaper(ctx, me, now);
     Ok(())
 }
 
@@ -567,6 +625,11 @@ pub fn cancel_account_deletion(ctx: &ReducerContext) -> Result<(), String> {
         .account()
         .identity()
         .update(cancelled_deletion(account));
+    // rb-24 (PRV1-3, ADR-0126 D4): actively disarm the pending reaper row —
+    // inside the gate (an Active account owns no armed row by construction)
+    // and after the status write, mirroring the arm-last rule on the request
+    // side. rb-21 owes the PRV1-4 terminal check, inserted BEFORE this disarm.
+    disarm_deletion_reaper(ctx, me);
     Ok(())
 }
 
@@ -608,6 +671,45 @@ pub fn guest_claim_reaper(
     };
     if claim_is_expired(claim.expires_at_ms, now_ms(ctx)) {
         delete_claim(ctx, args.guest_identity);
+    }
+    Ok(())
+}
+
+// --- Scheduled deletion-grace reaper (rb-24, ADR-0221; cascade is S3's) -------
+
+/// PRIVATE scheduled table colocated with its reducer (ADR-0056 exception),
+/// mirroring `guest_claim_reaper_schedule` exactly. Minimal field set per
+/// ADR-0126 D6 — deliberately NO timestamp column, so staleness can only ever
+/// derive from the live `account` row's own `deletion_requested_at_ms` plus the
+/// injected clock, never from anything a caller could supply.
+/// `account_identity` carries a btree index so the PRV1-3 disarm path filters
+/// instead of scanning.
+#[spacetimedb::table(accessor = account_deletion_reaper_schedule, scheduled(account_deletion_reaper))]
+pub struct AccountDeletionReaperSchedule {
+    #[primary_key]
+    #[auto_inc]
+    pub scheduled_id: u64,
+    pub scheduled_at: ScheduleAt,
+    #[index(btree)]
+    pub account_identity: Identity,
+}
+
+/// Deletion-grace reaper — THIS SLICE SHIPS A DELIBERATE NO-OP (rb-24,
+/// ADR-0221). The table and the reducer must land atomically because
+/// scheduled-ness is automigration-frozen (ADR-0207 D5); the PRV1-5 recheck
+/// (status, terminal marker, due-ness) and the PRV1-6 cascade are S3's, and the
+/// frozen-body gate is DESIGNED to red when S3 replaces this body. Until then a
+/// fired reaper no-ops and the runtime deletes the fired one-shot row (C3), so
+/// an account can sit `PendingDeletion` unarmed — the expected S2-era shape,
+/// recorded in ADR-0221 Residuals R2. Scheduler-only: the guard is the entire
+/// precondition of the ADR-0195 D6 struct-argument carve-out.
+#[spacetimedb::reducer]
+pub fn account_deletion_reaper(
+    ctx: &ReducerContext,
+    _args: AccountDeletionReaperSchedule,
+) -> Result<(), String> {
+    if ctx.sender() != ctx.database_identity() {
+        return Err("account_deletion_reaper is scheduler-only".to_string());
     }
     Ok(())
 }

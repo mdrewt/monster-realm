@@ -6,6 +6,7 @@
 | slug | type | title | abstract |
 |------|------|-------|---------|
 | tables/account | SpacetimeDB Table | account | PRIVATE account record (no `public`) — one row per authenticated identity (ADR-0 |
+| tables/account_deletion_reaper_schedule | SpacetimeDB Table | account_deletion_reaper_schedule | PRIVATE scheduled table colocated with its reducer (ADR-0056 exception), mirrori |
 | tables/battle | SpacetimeDB Table | battle | A single PvE or PvP battle. The `state` column holds the full `BattleState` (pur |
 | tables/battle_action | SpacetimeDB Table | battle_action | PRIVATE per-turn secret action submitted by one PvP player (M16a, ADR-0109). MUS |
 | tables/battle_challenge | SpacetimeDB Table | battle_challenge | A pending PvP challenge from one player to another (M16a, ADR-0109). PUBLIC so b |
