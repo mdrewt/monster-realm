@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 184 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 185 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -193,6 +193,7 @@ Generated from 184 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0216](./0216-keyboard-operable-rows-invocation-not-presence.md) | 0216 — Keyboard-operability is proven by INVOCATION, not by token presence; the ratchet is a multiset | Accepted | ci-gates, client-ui | rb-13 (residual R-m23-s6-A11Y-25) | Ship the missing M23 §5.4 oracle `evals/keyboard-operable-rows.eval.mjs`, ruling that keyboard-pair identity means INVOCATION on a reachable path, that the ratchet is a re-checked multiset, and that arms test the RECEIVER. |
 | [0217](./0217-a11y15-focus-oracle-single-owner.md) | 0217 — A11Y-15's focus oracle is the readdir-derived eval; the hand-kept per-slice lists are retired, except the one that is not subsumed | Accepted | ci-gates, client-ui | rb-16 (residual R-m23-s10-X19) | Retire the two hand-kept `.focus(` lists that `evals/overlay-a11y-manifest.eval.mjs` subsumes; KEEP the third, `MV-NO-FOCUS-CALL`, whose raw-source comment axis is measurably not subsumed, and queue its retirement as its own decision. |
 | [0218](./0218-axe-browser-tier-under-default-playwright-config.md) | 0218 — The axe-core browser tier runs under the default Playwright config, so the nightly a11y gate takes a server dependency | Accepted | ci-gates, client-ui | rb-19 (residual R-m23-s11-X10) | Run the axe tier as half 3 of `just a11y-e2e` under the EXISTING Playwright config, accepting the live-SpacetimeDB dependency it forces on the nightly job; gate it with a measured `passes` floor and a shrink-only `incomplete` ceiling. |
+| [0219](./0219-reduced-motion-browser-tier-covers-the-stylesheet-arm.md) | 0219 — The reduced-motion browser tier covers A11Y-27's stylesheet arm only, because the renderer arm was never wired into main.ts | Accepted | ci-gates, client-ui | rb-20 (residual R-m23-s11-X11) | Gate A11Y-27's STYLESHEET arm in a real browser with a `reduced-motion` Playwright project (spelled `contextOptions.reducedMotion`) collecting one new spec, as half 4 of `just a11y-e2e`; the renderer arm is unwired and DEFERred. |
 
 ## Harness design corpus (H- namespace)
 
@@ -465,6 +466,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0216](./0216-keyboard-operable-rows-invocation-not-presence.md) — rb-13 (residual R-m23-s6-A11Y-25) — 0216 — Keyboard-operability is proven by INVOCATION, not by token presence; the ratchet is a multiset (Accepted)
 - [0217](./0217-a11y15-focus-oracle-single-owner.md) — rb-16 (residual R-m23-s10-X19) — 0217 — A11Y-15's focus oracle is the readdir-derived eval; the hand-kept per-slice lists are retired, except the one that is not subsumed (Accepted)
 - [0218](./0218-axe-browser-tier-under-default-playwright-config.md) — rb-19 (residual R-m23-s11-X10) — 0218 — The axe-core browser tier runs under the default Playwright config, so the nightly a11y gate takes a server dependency (Accepted)
+- [0219](./0219-reduced-motion-browser-tier-covers-the-stylesheet-arm.md) — rb-20 (residual R-m23-s11-X11) — 0219 — The reduced-motion browser tier covers A11Y-27's stylesheet arm only, because the renderer arm was never wired into main.ts (Accepted)
 
 ### ci-gates
 
@@ -542,6 +544,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0216](./0216-keyboard-operable-rows-invocation-not-presence.md) — rb-13 (residual R-m23-s6-A11Y-25) — 0216 — Keyboard-operability is proven by INVOCATION, not by token presence; the ratchet is a multiset (Accepted)
 - [0217](./0217-a11y15-focus-oracle-single-owner.md) — rb-16 (residual R-m23-s10-X19) — 0217 — A11Y-15's focus oracle is the readdir-derived eval; the hand-kept per-slice lists are retired, except the one that is not subsumed (Accepted)
 - [0218](./0218-axe-browser-tier-under-default-playwright-config.md) — rb-19 (residual R-m23-s11-X10) — 0218 — The axe-core browser tier runs under the default Playwright config, so the nightly a11y gate takes a server dependency (Accepted)
+- [0219](./0219-reduced-motion-browser-tier-covers-the-stylesheet-arm.md) — rb-20 (residual R-m23-s11-X11) — 0219 — The reduced-motion browser tier covers A11Y-27's stylesheet arm only, because the renderer arm was never wired into main.ts (Accepted)
 
 ### tooling-docs
 

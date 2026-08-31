@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** ci-gates, client-ui
-**Decision:** Add a reduced-motion Playwright **project** (spelled `use: { contextOptions: { reducedMotion: 'reduce' } }` — the shorthand does not exist in this repo's Playwright) whose `testMatch` collects exactly one new spec, gate it as half 4 of `just a11y-e2e`, and scope its claim to the stylesheet arm of A11Y-27 — because the renderer arm's `main.ts` wiring does not exist and cannot be added from this slice's `touches:`.
+**Decision:** Gate A11Y-27's STYLESHEET arm in a real browser with a `reduced-motion` Playwright project (spelled `contextOptions.reducedMotion`) collecting one new spec, as half 4 of `just a11y-e2e`; the renderer arm is unwired and DEFERred.
 
 ---
 
