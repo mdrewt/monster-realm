@@ -4807,3 +4807,161 @@ fn rb22_accounts_header_names_the_privacy_delegate() {
         );
     }
 }
+
+/// DIAGNOSTIC ONLY, never a gate: how many occurrences of `needle` in an
+/// ALREADY-SQUASHED source are bare identifier tokens — a non-word byte on BOTH
+/// sides. The census below asserts on the RAW occurrence count and reports this
+/// split only so a failure says WHY it fired (see the boundary note there).
+fn rb22_bare_token_occurrences(squashed: &str, needle: &str) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+    let bytes = squashed.as_bytes();
+    let mut n = 0usize;
+    let mut start = 0usize;
+    while let Some(rel) = squashed[start..].find(needle) {
+        let at = start + rel;
+        let end = at + needle.len();
+        let left_free = at == 0 || !is_word_byte(bytes[at - 1]);
+        let right_free = end >= bytes.len() || !is_word_byte(bytes[end]);
+        if left_free && right_free {
+            n += 1;
+        }
+        start = end;
+    }
+    n
+}
+
+/// The sanctioned naming budget for one census file: how many times that file
+/// may NAME the delegated purge helper, and why that number and no other.
+fn rb22_purge_naming_budget(path: &str) -> (usize, &'static str) {
+    match path {
+        "accounts.rs" => (
+            1,
+            "the ONE sanctioned call site, the qualified call inside \
+             complete_guest_claim that the call-site test pins statement by statement. \
+             The module-header mention is a COMMENT and is blanked from this view, so 1 \
+             means exactly one CODE naming. TWO means a second call — and a second one \
+             written UNQUALIFIED under a local import is INVISIBLE to the \
+             crate-path-prefixed needle the whole-file test uses. ZERO means the \
+             delegation was deleted or moved",
+        ),
+        "privacy.rs" => (
+            1,
+            "the helper's own declaration and nothing else. TWO means the owning module \
+             names it a second time — a wrapper or a re-export that hands a different \
+             owner to a body the frozen-body pin still reports as correct. ZERO means \
+             the declaration was renamed or deleted",
+        ),
+        _ => (
+            0,
+            "no module other than accounts.rs may name it at all. The helper is \
+             `pub(crate)`, so EVERY module in the crate is already a legal caller, and a \
+             caller here deletes export_bundle rows for whatever owner IT derives — \
+             outside the claim ceremony this slice reviewed, and invisible to every \
+             accounts.rs-scoped gate in it. An aliasing import counts as a naming: even \
+             `use ... as p;` must spell the original name once",
+        ),
+    }
+}
+
+/// EO-1 (crate-wide naming census) — reducer-security-auditor Nit 2: NO module
+/// other than `accounts.rs` may NAME the delegated purge helper.
+///
+/// `rb22_purge_called_exactly_once_in_accounts_rs` scans accounts.rs ONLY, and
+/// the helper is `pub(crate)` — which makes every module in the crate a legal
+/// caller. A THIRD module (economy.rs, say) that adds an aliasing import and
+/// calls the helper with a badly-derived owner keeps every shipped rb-22 gate
+/// GREEN while erasing export chunks no reviewer of the claim ceremony ever saw.
+/// This test is what turns "there is exactly one call site" from a convention
+/// into an enforced fact.
+///
+/// SURFACE: `m22_scanned_sources()` (:3146) — the crate root plus every `mod`
+/// lib.rs declares, `_tests.rs` siblings excluded by construction (test code is
+/// not compiled into the published wasm, so it cannot erase a live row).
+/// `data_lifecycle_manifest_totality_bidirectional` pins that list against the
+/// crate's live `mod` declarations in BOTH directions, which is what closes the
+/// "add a module and leave it out of the census" hole; the [census/coverage]
+/// clause here is the local backstop against a census that merely shrank.
+///
+/// NEEDLE: the BARE token — no paren, no `crate::privacy::` prefix. One needle
+/// therefore catches all three spellings at once: the qualified call, an
+/// unqualified call under a plain import, and an ALIASED import, because even
+/// `use ... as p;` must spell the original name once before renaming it.
+///
+/// WORD BOUNDARIES — DELIBERATELY NOT REQUIRED ON EITHER SIDE. Measured against
+/// this file's own `stripped_for_scan`, whose `squash_ws` deletes ALL
+/// whitespace:
+///   * RIGHT: an aliasing import squashes to `..._bundlesasp;` — the byte after
+///     the needle is `a`, a WORD byte. A right-hand `is_word_byte` test would
+///     score the alias as part of a longer identifier and DROP it: a silent
+///     GREEN on precisely the bypass this test exists to kill.
+///   * LEFT: the declaration squashes to `pub(crate)fnpurge...` — the byte
+///     before the needle is `n`, a WORD byte. A left-hand test would drop the
+///     declaration, and a third module's same-named twin declaration with it.
+///
+/// This is the same fusion hazard the [call/reachable] clause documents in the
+/// opposite direction (there `squash_ws` fuses `return Err(..)` into
+/// `returnErr(`, so a RIGHT boundary had to be dropped). The accepted cost is a
+/// FALSE RED on a longer identifier sharing the prefix (a `_v2` twin): that is
+/// the safe direction, and it is loud — the message names the file, the count
+/// and the bare-versus-fused split. Under-counting would be a silent green on an
+/// unreviewed second erasure path.
+///
+/// Kills: the W24 aliased third-module call (`use ... as p;` plus `p(ctx, x);`
+///        in economy.rs); a fully-qualified third-module call; an unqualified
+///        third-module call under a plain import; a same-named twin declared in
+///        another module; a SECOND naming inside privacy.rs itself; a second
+///        UNQUALIFIED call inside accounts.rs, which the crate-path-prefixed
+///        needle of the whole-file test cannot see; and deletion of the
+///        sanctioned call, which takes accounts.rs to 0.
+///
+/// Does NOT kill: a caller in a `_tests.rs` sibling (outside the published wasm
+///        by construction, and outside this census by construction); a
+///        consistently-renamed helper — the signature and frozen-body pins in
+///        `rb22_privacy_module_exists_with_purge_body` own that.
+#[test]
+fn rb22_purge_named_nowhere_else_in_crate() {
+    let needle = concat!("purge_export", "_bundles");
+    let sources = m22_scanned_sources();
+    let paths: Vec<&str> = sources.iter().map(|(p, _)| *p).collect();
+
+    // --- anti-vacuity: the scanned surface itself ----------------------------
+    let n_paths = paths.len();
+    assert!(
+        n_paths >= 20,
+        "rb-22 [census/coverage]: the crate-wide census lists only {n_paths} source(s) \
+         ({paths:?}); the live tree lists 22. A shrunken census is a census that stopped \
+         looking — every per-file count below would then be GREEN about files nobody scanned, \
+         and the module a bypass lands in is exactly the one an attacker would drop from this \
+         list."
+    );
+    for required in ["accounts.rs", "privacy.rs"] {
+        assert!(
+            paths.contains(&required),
+            "rb-22 [census/coverage]: the census does not include {required} ({paths:?}). Those \
+             two files are the only ones with a NON-ZERO naming budget: without them the loop \
+             below proves only that a set of modules that were never allowed to name the helper \
+             do not name it, and the sanctioned call site is unmeasured."
+        );
+    }
+
+    // --- one budget per compiled module --------------------------------------
+    for (path, src) in &sources {
+        let squashed = stripped_for_scan(src);
+        let n = m22_count_occurrences(&squashed, needle);
+        let bare = rb22_bare_token_occurrences(&squashed, needle);
+        let fused = n.saturating_sub(bare);
+        let (expected, why) = rb22_purge_naming_budget(path);
+        assert_eq!(
+            n, expected,
+            "rb-22 [census/site]: {path} names the bare purge token {n} time(s); exactly \
+             {expected} is allowed — {why}. Boundary diagnostic: {bare} of the {n} are bare \
+             identifier tokens and {fused} are fused into a longer run of identifier bytes. In \
+             the whitespace-squashed view that fused shape is EITHER an aliasing import (the \
+             `as p;` tail fuses onto the name) OR a longer identifier sharing the prefix, and \
+             this census counts BOTH on purpose: dropping the fused ones would blind it to the \
+             alias, which is the exact bypass it exists to catch."
+        );
+    }
+}
