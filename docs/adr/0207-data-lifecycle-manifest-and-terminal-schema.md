@@ -5,6 +5,7 @@
 **Slice:** m22-s2 (M22 privacy compliance S2 — schema + manifest extension)
 **Supersedes:** —
 **Amends:** —
+**Amended-by:** 0221
 **Subsystems:** schema-persistence, security-authz, ci-gates
 **Decision:** Data-lifecycle manifest as a Rust const in schema.rs (39 tables: policy+basis+exportable); Account.terminal_at_ms appended with #[default(None)]; private export_bundle table; reaper deferred to S3 (scheduled-ness is migration-frozen).
 

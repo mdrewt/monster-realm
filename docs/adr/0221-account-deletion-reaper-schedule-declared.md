@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** ADR-0207
 **Subsystems:** schema-persistence, security-authz, ci-gates
-**Decision:** The `account_deletion_reaper_schedule` table lands additively WITH a scheduler-guarded deliberate no-op `account_deletion_reaper` (the `scheduled` attr is automigration-frozen), classified `NotOwned`, armed only by `delete_account` and disarmed only by `cancel_account_deletion`.
+**Decision:** `account_deletion_reaper_schedule` lands additively WITH a scheduler-guarded no-op `account_deletion_reaper` (scheduled-ness is migration-frozen), classified NotOwned, armed only by delete_account, disarmed only by cancel_account_deletion.
 
 ---
 
