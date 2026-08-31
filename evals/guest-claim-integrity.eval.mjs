@@ -241,8 +241,38 @@
 //       [G6/consumed]      each REKEY entry's `rekey` needle appears in
 //                          rekey_all's body (accounts.rs:221-229) AND its
 //                          `exists` needle in account_has_game_data's body
-//                          (:209-216). The `exists` half is the ONLY part of G6
-//                          not already covered by accounts_tests.rs:1320.
+//                          (:209-216), each matched as an identifier-bounded
+//                          CALL (containsCallOf), never as a bare substring —
+//                          `et_exists(` is a plain-indexOf hit inside the live
+//                          `wallet_exists(` call. The `exists` half is the ONLY
+//                          part of G6 not already covered by
+//                          accounts_tests.rs:1320.
+//       [G6/correspondence] each needle's fn name resolves to EXACTLY ONE
+//                          definition in the scanned tree; that definition has a
+//                          locatable, non-empty body, carries no cfg on the ITEM
+//                          and none in the body (`#[cfg` / `cfg!(`, both
+//                          spellings, both positions); and it reaches THIS key's
+//                          own `db.<table>(` at a site that is neither inside a
+//                          MACRO invocation nor rooted at anything but a real
+//                          database handle (`<ident>.db.` or a `db` this body
+//                          bound to `&ctx.db`). The REKEY half additionally
+//                          requires a WRITE_VERBS verb in the METHOD-CHAIN
+//                          SEGMENT rooted at that accessor — bounded by
+//                          isChainChar, exactly as [W/write-target] bounds its
+//                          own — because presence is not effect (rb-25).
+//       [G6/mirror]        the ONE existence-cover exception
+//                          (monster_pub's exists half is covered by monster's,
+//                          the two being a 1:1 projection) is pinned as an exact
+//                          SET, must SHARE its cover's exists needle, and must
+//                          still be NEEDED — an amnesty that outlives its
+//                          justification becomes a general one.
+//   The G6 success path additionally re-runs the correspondence criterion as
+//   LIVE-TREE BORROW PROOFS L1-L5 against the SHIPPED sources and the SHIPPED
+//   manifest (the FG75 teeth measure an in-file fixture, which lives in the same
+//   file an attacker edits). Each probe must RED, under its own tag AND with its
+//   own message fragments; the number that bit is printed, never asserted as
+//   prose. The enclosing `else` is their control: they only run when the shipped
+//   pair already PASSED.
 //
 // HARD CONSTRAINTS honoured here:
 //   * The live tree is rustfmt-WRAPPED (accounts.rs:430-433 is
@@ -255,7 +285,7 @@
 //   * Strip PER FILE, never a concatenated blob: a quote left open in file A
 //     silently blanks the whole of file B.
 //
-// Proof-of-teeth fixtures (FG1-FG73) run BEFORE the live-tree checks so a broken
+// Proof-of-teeth fixtures (FG1-FG75) run BEFORE the live-tree checks so a broken
 // checker is caught first. Every clause has a BAD fixture asserting its [tag] by
 // expectTag, and every checker has a GOOD fixture that must PASS — an always-red
 // checker is indistinguishable from a working one (this repo's ux3 postmortem
@@ -2420,10 +2450,13 @@ function containsCallOf(hay, needle) {
 // reads only `db.monster(`: the projection carries no row the private table
 // does not, so asking it a second time proves nothing.
 //
-// A Map LITERAL on purpose. A plain object is read through a prototype chain a
+// A Map LITERAL on purpose: a plain object is read through a prototype chain a
 // co-resident eval in the same `just ci` realm can write to (the own-property
-// boundary FG72a-f pin), and the Object.keys ceremony that closes that hole
-// would spell one fact twice. A Map has no such chain and one spelling.
+// boundary FG72a-f pin), and a Map has no such chain. Its TEXT is then spelled
+// twice MORE on purpose — once in the [G6/mirror] P1 set pin below, once in
+// FG75r's own local WANT — because a pin that reads its literal out of the very
+// thing it pins is not a pin at all. Widening the exception therefore costs
+// three deliberate edits, reviewed as a set.
 //
 // THE SAFETY INVARIANT — the entire argument for letting this excuse ANY
 // failure kind rather than only "reaches the wrong table": the COVER key is
@@ -2434,9 +2467,6 @@ function containsCallOf(hay, needle) {
 // excused key does. What the exception drops is exactly one question ("does
 // this predicate ALSO reach the projection"), and nothing else.
 const EXISTS_COVER = new Map([['monster_pub.owner_identity', 'monster.owner_identity']]);
-// The same fact as a set, for the pin below. Widening the exception costs a
-// deliberate edit to BOTH lines, reviewed as a set.
-const EXISTS_COVER_PIN = 'monster_pub.owner_identity => monster.owner_identity';
 
 /**
  * Every scanned file that DECLARES `fn <name>`, one entry per declaration (so
@@ -2459,7 +2489,10 @@ function findFnDeclarations(strippedTree, name) {
       while (k < s.length && /\s/.test(s[k])) k++;
       if (k === at + 2) continue;
       if (!s.startsWith(name, k)) continue;
-      if (isWordChar(s[k - 1]) || isWordChar(s[k + name.length])) continue;
+      // RIGHT boundary only: `k` advanced over WHITESPACE and nothing else, so
+      // `s[k - 1]` is a whitespace character by construction and a left-boundary
+      // test here would never fire.
+      if (isWordChar(s[k + name.length])) continue;
       found.push(file);
     }
   }
@@ -2484,6 +2517,205 @@ function accessorSites(body, token) {
 }
 
 /**
+ * Balanced close index for the bracket at `open` (`(`, `[` or `{`), counting
+ * all three kinds. Returns -1 when the text runs out, or when the depth-0
+ * closer is the WRONG kind — both are "unreadable" to every caller here, and
+ * every caller fails closed on -1 rather than guessing where the construct
+ * ended.
+ * @param {string} s Text.
+ * @param {number} open Index of the opening bracket.
+ * @returns {number} Index of the matching closer, or -1.
+ */
+function matchBracket(s, open) {
+  const OPENERS = '([{';
+  const CLOSERS = ')]}';
+  const want = CLOSERS[OPENERS.indexOf(s[open])];
+  if (want === undefined) return -1;
+  let depth = 0;
+  for (let k = open; k < s.length; k++) {
+    if (OPENERS.indexOf(s[k]) !== -1) depth++;
+    else if (CLOSERS.indexOf(s[k]) !== -1) {
+      depth--;
+      if (depth === 0) return s[k] === want ? k : -1;
+    }
+  }
+  return -1;
+}
+
+/**
+ * Spans of MACRO INVOCATIONS in a compacted body: an identifier immediately
+ * followed by `!` and then `(`, `[` or `{`, bracket-walked to its match.
+ *
+ * Derived from that SHAPE, never from a list of macro NAMES. A blacklist of
+ * constructs is unclosable (this repo has the postmortem, and the abort-
+ * construct family is the recorded case), while the property that matters here
+ * is structural: a macro argument is a TOKEN TREE, name-resolved only if and
+ * where the expansion puts it. `stringify!(ctx.db.player_wallet())` therefore
+ * compiles in a module where neither `ctx` nor `db` exists, is clippy
+ * `-D warnings` clean, and touches no table at all — MEASURED as a working
+ * bypass of the presence-only accessor scan (rb-25 red-team B1).
+ *
+ * `!=` is not a hit (the character after `!` is `=`), and a prefix `!f(x)` is
+ * not one either (the character before `!` is not an identifier character). An
+ * unbalanced invocation runs to the end of the body, fail-closed.
+ * @param {string} body Compacted fn body.
+ * @returns {Array<{name:string, start:number, end:number}>} Spans, in order.
+ */
+function macroSpans(body) {
+  const spans = [];
+  for (let at = body.indexOf('!'); at !== -1; at = body.indexOf('!', at + 1)) {
+    if (!isWordChar(body[at - 1])) continue;
+    const open = at + 1;
+    const ch = body[open];
+    if (ch !== '(' && ch !== '[' && ch !== '{') continue;
+    let nameStart = at;
+    while (nameStart > 0 && isWordChar(body[nameStart - 1])) nameStart--;
+    const close = matchBracket(body, open);
+    spans.push({
+      name: body.slice(nameStart, at),
+      start: nameStart,
+      end: close === -1 ? body.length : close,
+    });
+  }
+  return spans;
+}
+
+/**
+ * Names bound in THIS body to a real database handle — `let <name> = &ctx.db;`
+ * or `let <name> = ctx.db;`. The body is compactWs'd, so those read
+ * `let<name>=&ctx.db;` / `let<name>=ctx.db;`, and the right-hand side must be
+ * textually `&?<ident>.db` TERMINATED BY `;`.
+ *
+ * That terminator is the point. `let db = WalletIndex;` — a local struct that
+ * merely declares a same-named `fn player_wallet(&self)` — binds the very name
+ * this file's accessor token is spelled with, touches no table whatsoever, and
+ * compiles clippy `-D warnings` clean (MEASURED, rb-25 red-team B2; the B4
+ * variant hangs a fake `.update(` off it so `rekey_wallet` no-ops and every
+ * guest balance orphans).
+ * @param {string} body Compacted fn body.
+ * @returns {Set<string>} Names bound to a database handle in this body.
+ */
+function dbHandleBindings(body) {
+  const names = new Set();
+  for (let at = body.indexOf('let'); at !== -1; at = body.indexOf('let', at + 1)) {
+    if (isWordChar(body[at - 1])) continue;
+    let k = at + 3;
+    const nameStart = k;
+    while (k < body.length && isWordChar(body[k])) k++;
+    if (k === nameStart) continue;
+    if (body[k] !== '=') continue;
+    let v = k + 1;
+    if (body[v] === '&') v++;
+    let r = v;
+    while (r < body.length && isWordChar(body[r])) r++;
+    if (r === v) continue;
+    if (body.slice(r, r + 4) !== '.db;') continue;
+    names.add(body.slice(nameStart, k));
+  }
+  return names;
+}
+
+/**
+ * Split the accessor sites of `token` into the ones that can prove a table
+ * touch and the ones that structurally cannot.
+ *
+ * A site counts only when it is (a) NOT inside a macro invocation, and (b)
+ * rooted at a real database handle — either `<ident>.db.<table>(` with an
+ * identifier immediately left of the `.`, or the bare `db.<table>(` form when
+ * THIS body binds `db` to `&ctx.db`. Keeping (b) is why the token is rooted at
+ * `db.` rather than `ctx.db.` in the first place; without it, the token is a
+ * string any local value can be made to spell.
+ * @param {string} body Compacted fn body.
+ * @param {string} token `db.<table>(`.
+ * @returns {{valid:number[], rejected:Array<{why:string, detail:string}>}} Split.
+ */
+function partitionAccessorSites(body, token) {
+  const spans = macroSpans(body);
+  const handles = dbHandleBindings(body);
+  const receiver = token.slice(0, token.indexOf('.'));
+  const valid = [];
+  const rejected = [];
+  for (const at of accessorSites(body, token)) {
+    const span = spans.find((sp) => at >= sp.start && at < sp.end);
+    if (span !== undefined) {
+      rejected.push({ why: 'macro', detail: `${span.name}!` });
+      continue;
+    }
+    if (body[at - 1] === '.') {
+      let r = at - 1;
+      while (r > 0 && isWordChar(body[r - 1])) r--;
+      if (r < at - 1) {
+        valid.push(at);
+        continue;
+      }
+      rejected.push({ why: 'receiver', detail: 'a `.` with no identifier to its left' });
+      continue;
+    }
+    if (handles.has(receiver)) {
+      valid.push(at);
+      continue;
+    }
+    rejected.push({
+      why: 'receiver',
+      detail: `a bare \`${receiver}\` that this body never binds to \`&ctx.db\``,
+    });
+  }
+  return { valid, rejected };
+}
+
+/**
+ * Index of the `fn <name>` marker findFnBody anchors on, with identifier
+ * boundaries on both sides. [G6/correspondence] resolves the name to exactly
+ * one declaration before calling this, so the first hit is the only hit.
+ * @param {string} stripped Stripped source.
+ * @param {string} name Exact fn identifier.
+ * @returns {number} Offset of the `f` of `fn`, or -1.
+ */
+function fnMarkerIndex(stripped, name) {
+  const marker = `fn ${name}`;
+  for (let at = stripped.indexOf(marker); at !== -1; at = stripped.indexOf(marker, at + 1)) {
+    if (isWordChar(stripped[at - 1])) continue;
+    if (isWordChar(stripped[at + marker.length])) continue;
+    return at;
+  }
+  return -1;
+}
+
+/**
+ * The text between the previous item and a `fn` marker — everything an ITEM
+ * attribute would sit in, compacted. Walks back to the nearest `}` or `;` (or
+ * the start of file), which is where the preceding item ended.
+ * @param {string} stripped Stripped source.
+ * @param {number} markerAt Offset returned by fnMarkerIndex.
+ * @returns {string} Compacted attribute/qualifier prefix of the item.
+ */
+function itemAttrPrefix(stripped, markerAt) {
+  let s = markerAt;
+  while (s > 0 && stripped[s - 1] !== '}' && stripped[s - 1] !== ';') s--;
+  return compactWs(stripped.slice(s, markerAt));
+}
+
+// The two spellings of a compile-time conditional able to delete a re-key
+// helper (or its accessor) out of the built target. `#[cfg` is a PREFIX on
+// purpose — it covers `#[cfg(` and `#[cfg_attr(`, and
+// `#[cfg_attr(all(), cfg(any()))]` deletes an item exactly as thoroughly as the
+// direct form. `cfg!(` is the EXPRESSION macro, a different token from the
+// attribute and MEASURED as a bypass of an attribute-only leg (rb-25 red-team
+// B3): `if cfg!(any()) { return ctx.db.player_wallet()....is_some(); } false`
+// is unconditionally false and its accessor sits OUTSIDE the macro's own span,
+// so the macro-span leg cannot see it.
+const CFG_SPELLINGS = ['#[cfg', 'cfg!('];
+
+// DERIVED counters for the success detail. checkRekeyCompleteness resets both
+// on entry and the default export reads them straight after its FIRST live
+// call, so the numbers the detail prints are produced by the run that produced
+// the green. A hand-written "each REKEY helper proven to touch its own table"
+// keeps printing verbatim after the clause it describes has been deleted; a
+// number cannot. Only meaningful when that call returned null.
+let g6HalvesVerified = 0;
+let g6CallsMatched = 0;
+
+/**
  * G6 REKEY_COMPLETENESS — the D6 manifest is complete, live, and consumed.
  * @param {Array<{path:string, src:string}>} treeSrcs Every non-test server source.
  * @param {string} accountsSrc Raw server-module/src/accounts.rs source.
@@ -2493,6 +2725,8 @@ function accessorSites(body, token) {
  * @returns {string|null} Error string, or null on pass.
  */
 export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_MANIFEST) {
+  g6HalvesVerified = 0;
+  g6CallsMatched = 0;
   for (const f of treeSrcs) {
     const desync = assertStripperSound(f.src, f.path);
     if (desync) return desync;
@@ -2685,6 +2919,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
         'stay under an identity the player can no longer authenticate as'
       );
     }
+    g6CallsMatched++;
     if (!containsCallOf(bodies.exists, policy.exists)) {
       return (
         `[G6/consumed] the manifest marks \`${key}\` as REKEY, but its existence predicate ` +
@@ -2697,6 +2932,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
         "caller's own data"
       );
     }
+    g6CallsMatched++;
   }
 
   // [G6/mirror] P1 — THE EXACT SET PIN. The exception is pinned as a SET, never
@@ -2705,12 +2941,16 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
   // red-team MEASURED the cheat — hollow that shared predicate, add a second row
   // here, stay green. One row is reviewable; an extensible list is an amnesty.
   const coverPin = [...EXISTS_COVER.entries()].map((e) => `${e[0]} => ${e[1]}`).join(' | ');
-  if (EXISTS_COVER.size !== 1 || coverPin !== EXISTS_COVER_PIN) {
+  // The literal is spelled HERE rather than read from a shared const: a pin
+  // whose expectation is imported from the same declaration it polices moves
+  // with it, and polices nothing.
+  const WANT_COVER = 'monster_pub.owner_identity => monster.owner_identity';
+  if (EXISTS_COVER.size !== 1 || coverPin !== WANT_COVER) {
     return (
-      `[G6/mirror] the existence-cover exception is pinned to EXACTLY [${EXISTS_COVER_PIN}] but ` +
-      `reads [${coverPin}] (size ${EXISTS_COVER.size}). Widening it is a deliberate edit to both ` +
-      'the map and this pin, reviewed as a SET — a second row excuses a second predicate from ' +
-      'ever being proven, and nothing downstream would say so'
+      `[G6/mirror] the existence-cover exception is pinned to EXACTLY [${WANT_COVER}] but ` +
+      `reads [${coverPin}] (size ${EXISTS_COVER.size}). Widening it is a deliberate edit to the ` +
+      'map, to this pin and to FG75r, reviewed as a SET — a second row excuses a second ' +
+      'predicate from ever being proven, and nothing downstream would say so'
     );
   }
 
@@ -2752,10 +2992,15 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     if (defs.length > 1) {
       return (
         `[G6/correspondence] the ${half} needle \`${needle}\` of \`${key}\` resolves to ` +
-        `\`fn ${fnName}\`, which is declared ${defs.length} time(s) in the scanned tree. Taking ` +
-        'the FIRST hit lets a decoy declared earlier in the tree launder a borrow — the real ' +
-        `definition, and its ${token}, are never consulted. The count is the assertion: give the ` +
-        'helper a unique name rather than teaching this clause to choose'
+        `\`fn ${fnName}\`, which is declared ${defs.length} time(s) in the scanned tree ` +
+        `(${defs.map((d) => d.path).join(', ')}). Taking the FIRST hit lets a decoy declared ` +
+        `earlier in the tree launder a borrow — the real definition, and its ${token}, are never ` +
+        'consulted, so the COUNT is the assertion. If the twins are a decoy and the real helper, ' +
+        'give the helper a unique name. If they are LEGAL mutually exclusive `#[cfg]` twins (a ' +
+        'MEASURED false-RED of this clause — two cfg-gated definitions of one name are perfectly ' +
+        'ordinary Rust), renaming is the WRONG fix and would split the manifest needle in two: ' +
+        'collapse them behind a single un-cfg-gated wrapper fn, name THAT in the manifest, and ' +
+        'let the cfg live on the two callees'
       );
     }
     const def = defs[0];
@@ -2764,8 +3009,9 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
       return (
         `[G6/correspondence] \`fn ${fnName}\` (the ${half} needle of \`${key}\`) is declared in ` +
         `${def.path} but its body could not be located, so ${token} cannot be proven either way. ` +
-        `The body finder anchors on the two words together: \`fn ${fnName}\` must be spelled on ` +
-        'ONE line'
+        'The DECLARATION scan is whitespace-tolerant but the body finder anchors on the two ' +
+        `words with a SINGLE space between them: \`fn ${fnName}\` must be spelled \`fn\`, one ` +
+        'space, the name — on one line'
       );
     }
     const body = compactWs(def.stripped.slice(span.start, span.end));
@@ -2776,17 +3022,65 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
         'both implemented and empty'
       );
     }
-    if (body.indexOf('#[cfg(') !== -1) {
+    // ITEM-level cfg. The body-interior scan below cannot see a `#[cfg(any())]`
+    // sitting on the DECLARATION: that attribute deletes the whole function —
+    // accessor, body and all — from the built target, and the body text it left
+    // behind reads exactly like a live helper (MEASURED, rb-25 red-team FIX C).
+    const markerAt = fnMarkerIndex(def.stripped, fnName);
+    const itemPrefix = markerAt === -1 ? '' : itemAttrPrefix(def.stripped, markerAt);
+    const itemCfg = CFG_SPELLINGS.find((c) => itemPrefix.indexOf(c) !== -1);
+    if (itemCfg !== undefined) {
       return (
-        `[G6/correspondence] the body of \`fn ${fnName}\` (the ${half} needle of \`${key}\`, ` +
-        `${def.path}) carries a cfg( attribute. Text behind a configuration predicate compiles ` +
-        'into no target at all when the predicate is false — `#[cfg(any())]` is unconditionally ' +
-        `false — so an accessor inside one must not be able to satisfy ${token}. Lift the ` +
-        'accessor out of the conditional item'
+        `[G6/correspondence] \`fn ${fnName}\` (the ${half} needle of \`${key}\`, ${def.path}) ` +
+        `carries a configuration attribute (\`${itemCfg}\`) on the ITEM ITSELF — between the end ` +
+        'of the previous item and the `fn` keyword. A body-interior scan is blind to that, and ' +
+        'it is the stronger hiding place of the two: when the predicate is false — and ' +
+        '`#[cfg(any())]` is unconditionally false — the ENTIRE function compiles into no target, ' +
+        `so its ${token} proves nothing. Move the conditional onto a callee this clause can ` +
+        'resolve and check on its own'
       );
     }
-    const sites = accessorSites(body, token);
-    if (sites.length === 0) {
+    const bodyCfg = CFG_SPELLINGS.find((c) => body.indexOf(c) !== -1);
+    if (bodyCfg !== undefined) {
+      return (
+        `[G6/correspondence] the body of \`fn ${fnName}\` (the ${half} needle of \`${key}\`, ` +
+        `${def.path}) contains a configuration predicate (\`${bodyCfg}\`). This clause reads ` +
+        'TEXT, so it cannot tell an accessor that compiles from one hidden behind a false ' +
+        'predicate — `#[cfg(any())]` and `cfg!(any())` are both unconditionally false — and it ' +
+        'therefore REFUSES a cfg in a re-key helper body outright rather than guess. This is a ' +
+        `refusal, not a finding about where ${token} actually sits: the accessor may well be ` +
+        'outside the conditional. The remedy either way is to move the conditional into a ' +
+        'callee, which this clause resolves and checks on its own'
+      );
+    }
+    // Presence is not a touch. A token inside a MACRO invocation is a token
+    // tree that may never be name-resolved, and a token whose receiver is some
+    // local value is a same-named method, not a table accessor — both measured,
+    // both clippy-clean (rb-25 red-team B1/B2/B4).
+    const { valid, rejected } = partitionAccessorSites(body, token);
+    if (valid.length === 0 && rejected.length > 0) {
+      const macroHit = rejected.find((r) => r.why === 'macro');
+      if (macroHit !== undefined) {
+        return (
+          `[G6/correspondence] every \`${token}\` in \`fn ${fnName}\` (the ${half} needle of ` +
+          `\`${key}\`, ${def.path}) sits INSIDE a macro invocation (\`${macroHit.detail}\`). A ` +
+          'macro argument is a TOKEN TREE: it is name-resolved only if and where the expansion ' +
+          'puts it, and `stringify!` puts it nowhere at all — so `ctx` and `db` need not even ' +
+          'exist in that module and no row is ever read. A token tree cannot prove a table ' +
+          'touch. Spell the accessor outside the macro'
+        );
+      }
+      const first = rejected[0];
+      return (
+        `[G6/correspondence] every \`${token}\` in \`fn ${fnName}\` (the ${half} needle of ` +
+        `\`${key}\`, ${def.path}) has a receiver that is NOT a database handle ` +
+        `(${first.detail}). The accessor counts only when it is rooted at one: ` +
+        '`<ident>.db.<table>(`, or the aliased bare form when this very body binds `db` with ' +
+        '`let db = &ctx.db;`. A local `let db = SomeStruct;` whose type merely declares a ' +
+        `same-named method compiles clean and touches nothing, so it cannot prove ${token}`
+      );
+    }
+    if (valid.length === 0) {
       return (
         `[G6/correspondence] the manifest marks \`${key}\` as REKEY via the ${half} needle ` +
         `\`${needle}\`, but \`fn ${fnName}\` (${def.path}) never reaches \`${token}\` — the ` +
@@ -2797,22 +3091,37 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
         'the legitimate `let db = &ctx.db;` handle'
       );
     }
+    g6HalvesVerified++;
     if (half !== 'rekey') return null;
     // WRITE_VERBS is G5's list, reused rather than re-spelled: "the verbs that
     // change rows" is ONE fact, and a second copy is a second thing to keep
-    // true. The write must be in the chain segment rooted at THIS accessor — from the
-    // token to the next `db.` (or the end of the body). A body-wide search is
-    // satisfied by a NEIGHBOURING table's update, which is exactly the hollowing
-    // measured against the presence-only draft of this clause.
-    for (const at of sites) {
-      const next = body.indexOf('db.', at + token.length);
-      const segment = body.slice(at, next === -1 ? body.length : next);
+    // true (FG75x pins the list itself, naming both consumers).
+    //
+    // The write must sit in the METHOD-CHAIN SEGMENT rooted at THIS accessor,
+    // and the segment is bounded exactly as G5's [W/write-target] bounds its
+    // own: forward from the token while isChainChar holds. Every non-chain
+    // character — `;`, `{`, `}`, `|`, `=`, `?` — ends it, so the segment can
+    // never cross a statement boundary. MEASURED against the two shapes an
+    // "up to the next `db.` or the end of the body" span let through: a
+    // `seen.insert(0, r.inv_id)` in the loop that follows a bare filter, and a
+    // FOREIGN table's real `.update(` reached through a separately-bound handle
+    // (rb-25 red-team FIX A). Verified not to cost any live pair: all eight
+    // shipped rekey halves keep a write inside the bound, including the
+    // `.insert(StructLiteral {` forms in npc.rs / raising.rs, where the struct
+    // literal's `{` ends the span only AFTER `.insert(` is already inside it.
+    for (const at of valid) {
+      let f = at;
+      while (f < body.length && isChainChar(body[f])) f++;
+      const segment = body.slice(at, f);
       if (WRITE_VERBS.some((verb) => segment.indexOf(verb) !== -1)) return null;
     }
     return (
       `[G6/correspondence] \`fn ${fnName}\` (the rekey needle of \`${key}\`, ${def.path}) reaches ` +
       `\`${token}\` but never writes through it: none of ${WRITE_VERBS.join(' / ')} appears in ` +
-      'the chain segment rooted at any occurrence of that accessor. Presence is not effect — a ' +
+      'the method-chain segment rooted at any occurrence of that accessor. That segment ends at ' +
+      'the first character which cannot continue a method chain, so a `Vec::insert` in the ' +
+      "statement that FOLLOWS a bare filter — and a neighbouring table's real update reached " +
+      'through another handle — are both outside it, by construction. Presence is not effect: a ' +
       're-key helper that only READS its own table leaves every guest row under the abandoned ' +
       'identity, which is the orphaning this manifest exists to prevent'
     );
@@ -2873,7 +3182,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
 }
 
 // ---------------------------------------------------------------------------
-// PROOF-OF-TEETH FIXTURES (FG1-FG73) — inline sources, run BEFORE the live-tree
+// PROOF-OF-TEETH FIXTURES (FG1-FG75) — inline sources, run BEFORE the live-tree
 // checks. Returns the first tooth failure (string) or null.
 //
 // The Rust fixtures below are STRING LITERALS in a .mjs file; the live scan
@@ -2990,16 +3299,41 @@ function t9TwinKeys(src) {
   return keys;
 }
 
+// How many tooth assertions this run ACTUALLY executed. Incremented by
+// expectTag — the funnel almost every fixture routes its assertion through —
+// and by teethTick() directly in the fixtures that assert without it.
+//
+// The success detail used to print the literal string "(118 teeth verified)".
+// MEASURED: `if (process.env.MR_FAST !== '0') return null;` as the first line
+// of runTeeth() skipped all 118 teeth, and the eval still printed that sentence
+// and exited 0 — unconditional prose survives the deletion of the code it
+// describes. The detail now prints THIS counter and the default export asserts
+// it against TEETH_PINNED, so any skip is a loud red.
+let teethRun = 0;
+
+/** Record that one tooth assertion executed. @returns {void} */
+function teethTick() {
+  teethRun++;
+}
+
+// The pinned total. Derived by running the suite, asserted by the default
+// export, and printed there instead of a hand-written sentence. Bump it in the
+// same commit that adds or removes a tooth — a bump is a one-line, reviewable
+// diff; a silent drift is the whole bug this closes.
+const TEETH_PINNED = 351;
+
 /**
  * Assert that a checker fired the EXPECTED clause (by tag), not merely that it
  * failed — a fixture that only asserts "some error" cannot tell a live clause
- * from a deleted one whose neighbour happens to catch the fixture.
+ * from a deleted one whose neighbour happens to catch the fixture. Also the
+ * teeth COUNTER's main increment point (see teethRun).
  * @param {string|null} err Checker output.
  * @param {string} tag Expected clause tag.
  * @param {string} label Fixture label for the failure message.
  * @returns {string|null} Tooth failure, or null when the tag matches.
  */
 function expectTag(err, tag, label) {
+  teethTick();
   if (!err) return `${label}: expected clause ${tag} to fire, but the checker returned PASS`;
   if (err.indexOf(tag) === -1) {
     return `${label}: expected clause ${tag} to fire, but a different clause did: ${err}`;
@@ -3464,6 +3798,8 @@ const GOOD_TREE = [
 ];
 
 function runTeeth() {
+  teethRun = 0;
+
   // --- stripper machinery -------------------------------------------------
 
   // FG1 — direct behavioural pin on the stripper.
@@ -3471,6 +3807,7 @@ function runTeeth() {
   // literal truncates the line and unbalances every quote after it), and a
   // stripper that lets a code needle quoted inside a literal reach the clauses.
   {
+    teethTick();
     const src = String.raw`
 pub const URL: &str = "https://auth.example.invalid/x";
 pub const OPENER: &str = "SLASH_STAR_PLACEHOLDER";
@@ -3556,6 +3893,7 @@ pub struct GuestClaimReaperSchedule {
   // Kills: an always-red self-check (indistinguishable from a working one) —
   // a stripper that reports every source unsound is not a gate, it is an outage.
   {
+    teethTick();
     const goodSources = [
       ['GOOD_ACCOUNTS', GOOD_ACCOUNTS],
       ['GOOD_LIB', GOOD_LIB],
@@ -3575,6 +3913,7 @@ pub struct GuestClaimReaperSchedule {
   // Kills: an always-red G2 checker, and a blanket "no struct arguments" rule
   // that would false-RED the legitimate scheduled reducer on arrival.
   {
+    teethTick();
     const err = checkNoClientIdentity(GOOD_ACCOUNTS);
     if (err) return `FG6: the GOOD (hostile) accounts source was incorrectly flagged: ${err}`;
   }
@@ -3745,6 +4084,7 @@ pub fn adopt_guest_by_code(ctx: &ReducerContext, code: String) -> Result<(), Str
   // bare zero-parameter `account_deletion_reaper` stub that would satisfy a
   // weaker self-check but prove nothing about the scheduler guard.
   {
+    teethTick();
     const s3Src =
       GOOD_ACCOUNTS +
       `
@@ -3852,6 +4192,7 @@ pub fn account_deletion_reaper(
   // kills an always-red [R/planned-set], which would otherwise be
   // indistinguishable from a working one.
   {
+    teethTick();
     const err = assertPlannedSet(REDUCER_SANCTIONS);
     if (err) return `FG74d: the shipped ledger's PLANNED set was incorrectly flagged: ${err}`;
   }
@@ -4060,6 +4401,7 @@ pub fn account_deletion_reaper(ctx: &ReducerContext) -> Result<(), String> {
   // legitimately precedes `has_jwt(`, which is why [I/anon-first] names an
   // explicit token set instead of "first statement".
   {
+    teethTick();
     const err = checkAnonPassthrough(GOOD_LIB);
     if (err) return `FG18: the GOOD connect hook was incorrectly flagged: ${err}`;
   }
@@ -4115,6 +4457,7 @@ pub fn account_deletion_reaper(ctx: &ReducerContext) -> Result<(), String> {
   // FG22 — GOOD: the shipped provisioning path must PASS (rustfmt-wrapped
   // `ctx.db` / `.account()` / `.insert(` chains included).
   {
+    teethTick();
     const err = checkIssuerAndAudience(GOOD_ACCOUNTS);
     if (err) return `FG22: the GOOD provisioning path was incorrectly flagged: ${err}`;
   }
@@ -4199,6 +4542,7 @@ pub fn account_deletion_reaper(ctx: &ReducerContext) -> Result<(), String> {
   // FG28 — GOOD: `rng` appears in a doc comment AND inside a string literal in
   // GOOD_ACCOUNTS and must NOT be flagged. Kills: a raw-text grep.
   {
+    teethTick();
     const err = checkNoServerRng(GOOD_ACCOUNTS);
     if (err) return `FG28: a hostile-but-clean source was incorrectly flagged: ${err}`;
   }
@@ -4235,6 +4579,7 @@ pub fn account_deletion_reaper(ctx: &ReducerContext) -> Result<(), String> {
   // FG31 — GOOD: the shipped module (owned writes in rustfmt-wrapped chains,
   // two bare `player` READS, `ctx.db.battle(` and `rng` only in prose) must PASS.
   {
+    teethTick();
     const err = checkModuleWriteIsolation(GOOD_ACCOUNTS);
     if (err) return `FG31: the GOOD accounts source was incorrectly flagged: ${err}`;
   }
@@ -4243,6 +4588,7 @@ pub fn account_deletion_reaper(ctx: &ReducerContext) -> Result<(), String> {
   // owned writes. Kills: a table-scoped (rather than WRITE-scoped) rule, which
   // would false-RED accounts.rs:349 and :410 on arrival.
   {
+    teethTick();
     const src = `
 fn probe(ctx: &ReducerContext, g: Identity) {
     let present = ctx.db.player().identity().find(g).is_some();
@@ -4258,6 +4604,7 @@ fn probe(ctx: &ReducerContext, g: Identity) {
   // accessor -> verb span must stop at the `;`, or an unrelated `.insert(` is
   // misattributed to `player`. Kills: an unbounded rfind/indexOf span.
   {
+    teethTick();
     const src = `
 fn probe(ctx: &ReducerContext, g: Identity, x: u64) {
     let mut ids: Vec<u64> = Vec::new();
@@ -4366,6 +4713,7 @@ fn probe(ctx: &ReducerContext, from: Identity) {
   // Without this an always-red [W/ctx-binding] is indistinguishable from a
   // working one, and the clause would red the live tree on arrival.
   {
+    teethTick();
     const src = `
 fn probe(ctx: &ReducerContext, from: Identity) {
     ctx.db.guest_claim().guest_identity().delete(from);
@@ -4425,6 +4773,7 @@ fn probe(ctx: &ReducerContext, g: Identity) -> bool {
 
   // FG41 — GOOD: the shipped success path must PASS.
   {
+    teethTick();
     const err = checkSingleUseConsumed(GOOD_ACCOUNTS);
     if (err) return `FG41: the GOOD success path was incorrectly flagged: ${err}`;
   }
@@ -4497,6 +4846,7 @@ fn probe(ctx: &ReducerContext, g: Identity) -> bool {
   // FG47 — GOOD: a tree declaring exactly the manifest's columns, with both
   // consumption sites fully wired, must PASS.
   {
+    teethTick();
     const err = checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS);
     if (err) return `FG47: the GOOD manifest/tree pair was incorrectly flagged: ${err}`;
   }
@@ -4669,6 +5019,7 @@ fn probe(ctx: &ReducerContext, from: Identity) {
   // hardened [W/split-binding] false-REDs the first legitimate `player` scan.
   // Kills: a read-terminal list narrowed to `.find(` alone.
   {
+    teethTick();
     const src = `
 fn probe(ctx: &ReducerContext, row: GuestClaim, g: Identity) -> usize {
     ctx.db.guest_claim().insert(row);
@@ -4775,6 +5126,7 @@ pub struct GuildMember {
   // manifest-TEXT-independent: it survives any future re-wording of the shipped
   // reasons, so it can never be quietly "fixed" by editing the manifest.
   {
+    teethTick();
     const manifest = {
       ...REKEY_MANIFEST,
       'battle.player_identity': { policy: 'BLOCKED', reason: 'terminal rows survive' },
@@ -5081,6 +5433,7 @@ pub struct GuildMember {
   // biome-emitted `\'` in a reason — MEASURED to truncate the Rust key list to
   // 22 of 24, which still clears the floor.
   {
+    teethTick();
     const raw = readFileSync(fileURLToPath(import.meta.url), 'utf8');
     const anchors = countOccurrences(raw, T9_ANCHOR);
     if (anchors !== 1) {
@@ -5126,6 +5479,7 @@ pub struct GuildMember {
   // 24 keys for a manifest the Rust scan reads as 22 — FG70 would go green on
   // precisely the hazard it exists to catch, and the co-scan would be theatre.
   {
+    teethTick();
     const synth = [
       'const M = ',
       T9_ANCHOR,
@@ -5255,6 +5609,7 @@ pub struct GuildMember {
   // rewritten as `for (const key in manifest)`, which would report this phantom
   // as a manifest entry that no longer resolves. Green before the fix.
   {
+    teethTick();
     const PHANTOM = 'phantom_table.owner_identity';
     const manifest = Object.assign(
       Object.create({
@@ -5894,6 +6249,7 @@ pub struct GuildMember {
   // equality, so a fabricated column shows up as a surplus and a mangled one as
   // a loss — and both must PASS the whole checker, before AND after the fix.
   {
+    teethTick();
     const CONTROL_SRC = `pub type Coins = u64;
 pub type IdentityTag = u32;
 pub type NpcSyncPlan = Vec<NpcSyncAction>;
@@ -6101,6 +6457,7 @@ pub struct GuildScope {
   //                stack, because a gate that throws is a gate whose every
   //                clause is skipped.
   {
+    teethTick();
     const TS_DECL = 'pub(crate) type Stampish = spacetimedb::Stampish;';
     const tsSrc = `${GOOD_TREE[0].src}${TS_DECL}
 #[spacetimedb::table(accessor = audit_log)]
@@ -6168,6 +6525,7 @@ pub struct CycleRow {
   // policy for a column that is right there in the schema. After the fix the
   // pair is correct and the whole checker returns PASS.
   {
+    teethTick();
     const WALLET = 'player_wallet.owner_identity';
     const DECL = 'pub type WalletOwner = Identity;';
     const base = synthSchemaSrc(SYNTH_KEYS.filter((k) => k !== WALLET));
@@ -6211,6 +6569,7 @@ pub struct Row_player_wallet {
   // Object.hasOwn and the own key SET is compared exactly, so a fifth field
   // added without a deliberate edit here reds.
   {
+    teethTick();
     const DECL = 'pub type OwnerId = Identity;';
     const src = rb4Schema(`${DECL}\n`, 'OwnerId');
     const tree = [{ path: RB4_SCHEMA_PATH, src }, GOOD_TREE[1]];
@@ -6307,6 +6666,7 @@ pub struct Row_player_wallet {
   // carries NO stripper anchor, so the desync self-check stays honest instead of
   // reporting blanked real code.
   {
+    teethTick();
     const src = `${GOOD_TREE[0].src}pub const DOC: &str = r#"
 pub type GhostOwner = Identity;
 "#;
@@ -6688,6 +7048,7 @@ pub type OwnerId = id_ty!();`;
   // collides with new prose above the teeth, the fix is to reword the prose —
   // never to drop the name from this list, and never to rename the fixture.
   {
+    teethTick();
     const selfSrc = readFileSync(fileURLToPath(import.meta.url), 'utf8');
     const MARK = 'function run' + 'Teeth() {';
     const marks = countOccurrences(selfSrc, MARK);
@@ -6865,9 +7226,11 @@ pub type OwnerId = id_ty!();`;
   // ---------------------------------------------------------------------------
   const FIX_SCHEMA_PATH = 'fixture/schema.rs';
   const fixTree = (src) => [{ path: FIX_SCHEMA_PATH, src }, GOOD_TREE[1]];
-  // Every helper substitution goes through here: `mut` replaces the FIRST hit
-  // only, so a target that occurs 0 or 2 times silently mutates nothing (or the
-  // wrong helper) and the tooth then reads as "the clause accepted the cheat".
+  // Every helper substitution goes through here. `mut` THROWS on a 0-hit target
+  // (so that case is already loud), but it replaces the FIRST hit only — and on
+  // a 2-hit target it therefore rewrites the wrong helper SILENTLY, after which
+  // the tooth reads as "the clause accepted the cheat" while nothing under test
+  // changed. The hit count is the guard.
   const swapHelper = (label, from, to) => {
     const hits = countOccurrences(GOOD_TREE[0].src, from);
     if (hits !== 1) {
@@ -6879,6 +7242,22 @@ pub type OwnerId = id_ty!();`;
       };
     }
     return { tree: fixTree(mut(GOOD_TREE[0].src, from, to)) };
+  };
+
+  // The same one-hit discipline for the ACCOUNTS half of the fixture. Bare
+  // `mut(GOOD_ACCOUNTS, ...)` carries the identical 2-hit hazard: a future
+  // second occurrence of a delegation line would silently rewrite the first.
+  const swapAccounts = (label, from, to) => {
+    const hits = countOccurrences(GOOD_ACCOUNTS, from);
+    if (hits !== 1) {
+      return {
+        error:
+          `${label}: the accounts substitution target occurs ${hits} time(s) in GOOD_ACCOUNTS; ` +
+          'EXACTLY one is required, or String.replace edits the wrong call site and this tooth ' +
+          'goes silently vacuous',
+      };
+    }
+    return { src: mut(GOOD_ACCOUNTS, from, to) };
   };
 
   const H_HAS_MONSTERS = `pub(crate) fn has_monsters(ctx: &ReducerContext, owner: Identity) -> bool {
@@ -6906,6 +7285,12 @@ pub type OwnerId = id_ty!();`;
         }
     }
 }`;
+  const H_REKEY_HEAL = `pub(crate) fn rekey_heal_cooldown(ctx: &ReducerContext, from: Identity, to: Identity) {
+    if let Some(row) = ctx.db.heal_cooldown().owner_identity().find(from) {
+        ctx.db.heal_cooldown().owner_identity().delete(from);
+        ctx.db.heal_cooldown().insert(carried_cooldown(row, to));
+    }
+}`;
   const H_PUB_UPDATE = '        ctx.db.monster_pub().monster_id().update(pub_row);\n';
 
   // FG75/fixture — the helper library must be REAL, SINGLY-DEFINED and
@@ -6914,6 +7299,7 @@ pub type OwnerId = id_ty!();`;
   // whose `has_monsters` also read `monster_pub` would make FG75n and FG75p
   // vacuous — there would be nothing left for the mirror exception to excuse.
   {
+    teethTick();
     const stripped = stripRustSource(GOOD_TREE[0].src);
     const helperBody = (name) => {
       const span = findFnBody(stripped, name);
@@ -6990,6 +7376,7 @@ pub type OwnerId = id_ty!();`;
   // helper library, and the GOOD accounts stand-in must PASS. An always-red
   // correspondence clause is indistinguishable from a working one.
   {
+    teethTick();
     const err = checkRekeyCompleteness(GOOD_TREE, GOOD_ACCOUNTS);
     if (err) {
       return `FG75a: the GOOD tree carrying the shared helper library was flagged: ${err}`;
@@ -7002,11 +7389,12 @@ pub type OwnerId = id_ty!();`;
   // [G6/consumed] structurally cannot see this — which is why the tag is asserted
   // NEGATIVELY as well as positively.
   {
-    const accounts = mut(
-      GOOD_ACCOUNTS,
+    const accounts = swapAccounts(
+      'FG75b',
       '        || crate::raising::has_heal_cooldown(ctx, identity)\n',
       '',
     );
+    if (Object.hasOwn(accounts, 'error')) return accounts.error;
     const manifest = {
       ...REKEY_MANIFEST,
       'heal_cooldown.owner_identity': {
@@ -7015,7 +7403,7 @@ pub type OwnerId = id_ty!();`;
         exists: 'has_monsters(',
       },
     };
-    const err = checkRekeyCompleteness(GOOD_TREE, accounts, manifest);
+    const err = checkRekeyCompleteness(GOOD_TREE, accounts.src, manifest);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75b');
     if (bad) return bad;
     if (err.indexOf('[G6/consumed]') !== -1) {
@@ -7041,8 +7429,10 @@ pub type OwnerId = id_ty!();`;
   }
 
   // FG75c — ATTACK-2, the substring half of the criterion. `et_exists(` is a
-  // plain-indexOf hit inside the live `wallet_exists(` call site, so a manifest
-  // may name a helper that exists nowhere and still read as consumed.
+  // plain-indexOf hit inside the `wallet_exists(` call site of the GOOD_ACCOUNTS
+  // FIXTURE (this tooth runs against the fixture, never the shipped tree — the
+  // shipped tree is where the L3 borrow proof re-runs the same criterion), so a
+  // manifest may name a helper that exists nowhere and still read as consumed.
   // THE TAG IS LOAD-BEARING: a hollowed containsCallOf would still be caught by
   // [G6/correspondence] ("no `fn et_exists` is declared anywhere"), which is a
   // DIFFERENT clause; pinning only "some error" would mask the regression.
@@ -7071,8 +7461,9 @@ pub type OwnerId = id_ty!();`;
 
   // FG75d — the same substring cheat on the REKEY half (anti-monoculture: two
   // call sites, two indexOf tests, and a fix applied to only one of them is a
-  // half-closed hole). `ekey_wallet(` sits inside the live `rekey_wallet(`
-  // delegation with the word character `r` on its left.
+  // half-closed hole). `ekey_wallet(` sits inside the `rekey_wallet(` delegation
+  // of the GOOD_ACCOUNTS FIXTURE — again the fixture, not the shipped tree —
+  // with the word character `r` on its left.
   {
     const manifest = {
       ...REKEY_MANIFEST,
@@ -7099,12 +7490,13 @@ pub type OwnerId = id_ty!();`;
   // Kills: a left-boundary test written with isWordChar alone — `.` is not a word
   // character, so the method call satisfies it.
   {
-    const accounts = mut(
-      GOOD_ACCOUNTS,
+    const accounts = swapAccounts(
+      'FG75e',
       '        || crate::economy::wallet_exists(ctx, identity)\n',
       '        || wallet_probe(ctx).wallet_exists(identity)\n',
     );
-    const err = checkRekeyCompleteness(GOOD_TREE, accounts);
+    if (Object.hasOwn(accounts, 'error')) return accounts.error;
+    const err = checkRekeyCompleteness(GOOD_TREE, accounts.src);
     const bad = expectTag(err, '[G6/consumed]', 'FG75e');
     if (bad) return bad;
     if (err.indexOf('`wallet_exists(`') === -1 || err.indexOf(HAS_GAME_DATA_FN) === -1) {
@@ -7120,11 +7512,12 @@ pub type OwnerId = id_ty!();`;
   // satisfied and only the definition-resolving clause can fire. Fail LOUD:
   // "helper not found, skip this entry" is a silent hole the size of the manifest.
   {
-    const accounts = mut(
-      GOOD_ACCOUNTS,
+    const accounts = swapAccounts(
+      'FG75f',
       '        || crate::raising::has_heal_cooldown(ctx, identity)\n',
       '        || crate::raising::never_wired_helper(ctx, identity)\n',
     );
+    if (Object.hasOwn(accounts, 'error')) return accounts.error;
     const manifest = {
       ...REKEY_MANIFEST,
       'heal_cooldown.owner_identity': {
@@ -7133,7 +7526,7 @@ pub type OwnerId = id_ty!();`;
         exists: 'never_wired_helper(',
       },
     };
-    const err = checkRekeyCompleteness(GOOD_TREE, accounts, manifest);
+    const err = checkRekeyCompleteness(GOOD_TREE, accounts.src, manifest);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75f');
     if (bad) return bad;
     if (err.indexOf('declared anywhere') === -1 || err.indexOf('never_wired_helper') === -1) {
@@ -7176,7 +7569,7 @@ pub type OwnerId = id_ty!();`;
       H_PROFILE_EXISTS,
       'pub(crate) fn profile_exists(ctx: &ReducerContext, identity: Identity) -> bool { }',
     );
-    if (swapped.error) return swapped.error;
+    if (Object.hasOwn(swapped, 'error')) return swapped.error;
     const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75h');
     if (bad) return bad;
@@ -7204,15 +7597,18 @@ pub type OwnerId = id_ty!();`;
     false
 }`,
     );
-    if (swapped.error) return swapped.error;
+    if (Object.hasOwn(swapped, 'error')) return swapped.error;
     const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75i');
     if (bad) return bad;
-    if (err.indexOf('cfg(') === -1 || err.indexOf('has_items') === -1) {
+    // The SPELLING is pinned, not just the word: FG75y is the same leg on the
+    // `cfg!(` expression macro, and a message that named the wrong one would
+    // let either tooth stand in for the other.
+    if (err.indexOf('predicate (`#[cfg`)') === -1 || err.indexOf('has_items') === -1) {
       return (
-        'FG75i: a helper body carrying a `cfg(` attribute must be reported as such, and by NAME ' +
-        '(has_items). A token inside a cfg(any()) item is text that never compiles, so it can ' +
-        `never satisfy the correspondence rule: ${err}`
+        'FG75i: a helper body carrying a `#[cfg(` ATTRIBUTE must be reported as that spelling, ' +
+        'and by NAME (has_items). A token inside a cfg(any()) item is text that never compiles, ' +
+        `so it can never satisfy the correspondence rule: ${err}`
       );
     }
   }
@@ -7231,7 +7627,7 @@ pub type OwnerId = id_ty!();`;
     probe.player_wallet().owner_identity().find(owner).is_some()
 }`,
     );
-    if (swapped.error) return swapped.error;
+    if (Object.hasOwn(swapped, 'error')) return swapped.error;
     const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75j');
     if (bad) return bad;
@@ -7259,7 +7655,7 @@ pub type OwnerId = id_ty!();`;
     ctx.db.player_quest().owner_identity().filter(owner).next().is_some()
 }`,
     );
-    if (swapped.error) return swapped.error;
+    if (Object.hasOwn(swapped, 'error')) return swapped.error;
     const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75k');
     if (bad) return bad;
@@ -7294,7 +7690,7 @@ pub type OwnerId = id_ty!();`;
     let _seen = ctx.db.inventory().owner_identity().filter(from).next().is_some();
 }`,
     );
-    if (swapped.error) return swapped.error;
+    if (Object.hasOwn(swapped, 'error')) return swapped.error;
     const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75l');
     if (bad) return bad;
@@ -7321,7 +7717,7 @@ pub type OwnerId = id_ty!();`;
   // neighbouring `db.monster()....update(` would otherwise be misattributed.
   {
     const swapped = swapHelper('FG75m', H_PUB_UPDATE, '');
-    if (swapped.error) return swapped.error;
+    if (Object.hasOwn(swapped, 'error')) return swapped.error;
     const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75m');
     if (bad) return bad;
@@ -7353,7 +7749,7 @@ pub type OwnerId = id_ty!();`;
         || ctx.db.monster_pub().owner_identity().filter(owner).next().is_some()
 }`,
     );
-    if (swapped.error) return swapped.error;
+    if (Object.hasOwn(swapped, 'error')) return swapped.error;
     const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
     const bad = expectTag(err, '[G6/mirror]', 'FG75n');
     if (bad) return bad;
@@ -7420,7 +7816,7 @@ pub type OwnerId = id_ty!();`;
     false
 }`,
     );
-    if (swapped.error) return swapped.error;
+    if (Object.hasOwn(swapped, 'error')) return swapped.error;
     const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75p');
     if (bad) return bad;
@@ -7466,7 +7862,7 @@ pub type OwnerId = id_ty!();`;
     false
 }`,
     );
-    if (swapped.error) return swapped.error;
+    if (Object.hasOwn(swapped, 'error')) return swapped.error;
     if (KEY in {} || Object.keys(Object.prototype).length !== 0) {
       return (
         `FG75q: \`${KEY}\` — or some other enumerable property — is already on Object.prototype ` +
@@ -7518,6 +7914,7 @@ pub type OwnerId = id_ty!();`;
   // and passes every policing clause while the detail still says one exception.
   // A one-row amnesty is reviewable; an extensible one is not.
   {
+    teethTick();
     if (!(EXISTS_COVER instanceof Map)) {
       return (
         'FG75r: EXISTS_COVER must be a Map. A plain object carries a prototype chain, and this ' +
@@ -7533,6 +7930,235 @@ pub type OwnerId = id_ty!();`;
         `(size ${EXISTS_COVER.size}). This is a SET pin, never a membership or a shape test: the ` +
         'manifest has a second REKEY pair sharing one exists needle, so a second row here is a ' +
         'silent, general amnesty. Widening it costs a deliberate edit HERE, reviewed as a set'
+      );
+    }
+  }
+
+  // FG75s — THE CHAIN SEGMENT IS A CHAIN SEGMENT. `rekey_inventory` reads its
+  // own table and then calls `Vec::insert` on a LOCAL vector in the statement
+  // that follows. MEASURED green against a write-verb span bounded "from the
+  // accessor to the next `db.` or the end of the body": there is no later
+  // `db.`, so that span swallowed the whole loop and `.insert(` answered for a
+  // helper that moves no row at all. The span is now bounded by isChainChar —
+  // the `{` of the `for` body ends it — which is the same bound G5's
+  // [W/write-target] has always used.
+  {
+    const swapped = swapHelper(
+      'FG75s',
+      H_REKEY_INVENTORY,
+      `pub(crate) fn rekey_inventory(ctx: &ReducerContext, from: Identity, to: Identity) {
+    let _ = to;
+    let mut seen: Vec<u64> = Vec::new();
+    for r in ctx.db.inventory().owner_identity().filter(from) {
+        seen.insert(0, r.inv_id);
+    }
+}`,
+    );
+    if (Object.hasOwn(swapped, 'error')) return swapped.error;
+    const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
+    const bad = expectTag(err, '[G6/correspondence]', 'FG75s');
+    if (bad) return bad;
+    if (err.indexOf('method-chain segment') === -1) {
+      return (
+        'FG75s: the failure must say the write is looked for in the METHOD-CHAIN SEGMENT rooted ' +
+        'at the accessor. A span that runs to the next `db.` (or to the end of the body) crosses ' +
+        `\`;\`, \`{\` and whole statements, and a local Vec::insert then reads as a table write: ${err}`
+      );
+    }
+    if (err.indexOf('db.inventory(') === -1 || err.indexOf('rekey_inventory') === -1) {
+      return (
+        'FG75s: the failure must name the token `db.inventory(` and the helper (rekey_inventory) ' +
+        `whose only insert verb is applied to a local Vec: ${err}`
+      );
+    }
+  }
+
+  // FG75t — THE SAME BOUND, from the other side: a FOREIGN table's REAL write
+  // swallowed into the span. `rekey_heal_cooldown` binds two table handles, then
+  // updates `profile` inside the `if let` that reads heal_cooldown. MEASURED
+  // green under the "to the next `db.`" span (there is no later `db.`, so the
+  // profile update fell inside heal_cooldown's segment) while every guest's
+  // heal_cooldown row stays under the abandoned identity. Anti-monoculture with
+  // FG75s: one fixture proves the span does not run past a statement, this one
+  // proves what it would have MISATTRIBUTED if it did.
+  {
+    const swapped = swapHelper(
+      'FG75t',
+      H_REKEY_HEAL,
+      `pub(crate) fn rekey_heal_cooldown(ctx: &ReducerContext, from: Identity, to: Identity) {
+    let profiles = ctx.db.profile();
+    let cooldowns = ctx.db.heal_cooldown();
+    if let Some(row) = cooldowns.owner_identity().find(from) {
+        let mut dest = profiles.identity().find(to).unwrap();
+        dest.rating = row.last_heal_at_ms;
+        profiles.identity().update(dest);
+    }
+}`,
+    );
+    if (Object.hasOwn(swapped, 'error')) return swapped.error;
+    const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
+    const bad = expectTag(err, '[G6/correspondence]', 'FG75t');
+    if (bad) return bad;
+    if (
+      err.indexOf('method-chain segment') === -1 ||
+      err.indexOf('db.heal_cooldown(') === -1 ||
+      err.indexOf('rekey_heal_cooldown') === -1
+    ) {
+      return (
+        'FG75t: the failure must name `db.heal_cooldown(`, the helper (rekey_heal_cooldown) and ' +
+        `the METHOD-CHAIN SEGMENT the write is required to sit in: ${err}`
+      );
+    }
+    if (err.indexOf('db.profile(') !== -1) {
+      return (
+        'FG75t: `profile.identity` is genuinely re-keyed by its own helper here; the reported ' +
+        `token must be heal_cooldown's, not the foreign write that was swallowed: ${err}`
+      );
+    }
+  }
+
+  // FG75u — A TOKEN TREE IS NOT A TABLE TOUCH. `stringify!(ctx.db.player_wallet()
+  // .owner_identity())` puts the accessor inside a macro argument, which is
+  // never name-resolved: `ctx` and `db` need not exist, no row is read, and
+  // `cargo clippy --all-targets -D warnings` is clean. MEASURED as a working
+  // restoration of the X10 borrow cheat (rb-25 red-team B1). The rejection is
+  // computed from the `ident!` + bracket SHAPE, never from a list of macro
+  // names — a blacklist of constructs is unclosable.
+  {
+    const swapped = swapHelper(
+      'FG75u',
+      H_WALLET_EXISTS,
+      `pub(crate) fn wallet_exists(ctx: &ReducerContext, owner: Identity) -> bool {
+    let _ = owner;
+    let _probe = stringify!(ctx.db.player_wallet().owner_identity());
+    false
+}`,
+    );
+    if (Object.hasOwn(swapped, 'error')) return swapped.error;
+    const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
+    const bad = expectTag(err, '[G6/correspondence]', 'FG75u');
+    if (bad) return bad;
+    if (err.indexOf('INSIDE a macro invocation') === -1 || err.indexOf('stringify!') === -1) {
+      return (
+        'FG75u: the failure must say the accessor sits INSIDE a macro invocation and NAME the ' +
+        `macro (stringify!) — a token tree proves nothing about a table: ${err}`
+      );
+    }
+    if (err.indexOf('db.player_wallet(') === -1 || err.indexOf('wallet_exists') === -1) {
+      return (
+        'FG75u: the failure must name the token `db.player_wallet(` and the helper ' +
+        `(wallet_exists) whose only occurrence of it is a macro argument: ${err}`
+      );
+    }
+  }
+
+  // FG75v — A `db` THAT IS NOT THE DATABASE. `let db = WalletIndex;`, where
+  // `WalletIndex` is a local struct declaring `fn player_wallet(&self)`, spells
+  // the accessor token exactly and touches no table. MEASURED clippy-clean
+  // (rb-25 red-team B2; the B4 variant hangs a fake `.update(` off the same
+  // handle so `rekey_wallet` no-ops and every guest balance orphans). The site
+  // now counts only when rooted at `<ident>.db.` or at a `db` THIS body bound to
+  // `&ctx.db` — which is exactly the legitimate alias the token is spelled
+  // `db.<table>(` in order to keep.
+  {
+    const swapped = swapHelper(
+      'FG75v',
+      H_WALLET_EXISTS,
+      `pub(crate) fn wallet_exists(ctx: &ReducerContext, owner: Identity) -> bool {
+    let _ = ctx;
+    let db = WalletIndex;
+    db.player_wallet().owner_identity().find(owner).is_some()
+}`,
+    );
+    if (Object.hasOwn(swapped, 'error')) return swapped.error;
+    const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
+    const bad = expectTag(err, '[G6/correspondence]', 'FG75v');
+    if (bad) return bad;
+    if (err.indexOf('NOT a database handle') === -1) {
+      return (
+        'FG75v: the failure must say the receiver is NOT a database handle — distinctly from ' +
+        `"never reaches the token", which is a different defect with a different fix: ${err}`
+      );
+    }
+    if (err.indexOf('db.player_wallet(') === -1 || err.indexOf('wallet_exists') === -1) {
+      return (
+        'FG75v: the failure must name the token `db.player_wallet(` and the helper ' +
+        `(wallet_exists) whose db receiver is a local value: ${err}`
+      );
+    }
+  }
+
+  // FG75w — A cfg ON THE ITEM, not in the body. `#[cfg(any())]` on the
+  // DECLARATION deletes the whole function from the built target; the body text
+  // it leaves behind reads exactly like a live helper, and a body-INTERIOR cfg
+  // scan (FG75i's leg) is structurally blind to it. MEASURED (rb-25 red-team
+  // FIX C): the attribute-in-body leg closed only half the cfg-hiding case.
+  {
+    const swapped = swapHelper(
+      'FG75w',
+      H_PROFILE_EXISTS,
+      `#[cfg(any())]
+pub(crate) fn profile_exists(ctx: &ReducerContext, identity: Identity) -> bool {
+    ctx.db.profile().identity().find(identity).is_some()
+}`,
+    );
+    if (Object.hasOwn(swapped, 'error')) return swapped.error;
+    const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
+    const bad = expectTag(err, '[G6/correspondence]', 'FG75w');
+    if (bad) return bad;
+    if (err.indexOf('on the ITEM ITSELF') === -1 || err.indexOf('profile_exists') === -1) {
+      return (
+        'FG75w: a cfg on the DECLARATION must be reported as being on the ITEM ITSELF and by ' +
+        `NAME (profile_exists), distinctly from the body-interior cfg leg FG75i pins: ${err}`
+      );
+    }
+  }
+
+  // FG75y — THE OTHER cfg SPELLING. `cfg!(any())` is the EXPRESSION macro, a
+  // different token from the `#[cfg(` attribute FG75i pins, and it is
+  // unconditionally false. Its accessor sits OUTSIDE the macro's own span, so
+  // the macro-span leg (FG75u) cannot see it either — this is the leg that
+  // covers it, and MEASURED it was a clippy-clean green before the cfg leg
+  // learned the second spelling (rb-25 red-team B3).
+  {
+    const swapped = swapHelper(
+      'FG75y',
+      H_HAS_ITEMS,
+      `pub(crate) fn has_items(ctx: &ReducerContext, owner: Identity) -> bool {
+    if cfg!(any()) {
+        return ctx.db.inventory().owner_identity().filter(owner).next().is_some();
+    }
+    false
+}`,
+    );
+    if (Object.hasOwn(swapped, 'error')) return swapped.error;
+    const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
+    const bad = expectTag(err, '[G6/correspondence]', 'FG75y');
+    if (bad) return bad;
+    if (err.indexOf('predicate (`cfg!(`)') === -1 || err.indexOf('has_items') === -1) {
+      return (
+        'FG75y: the `cfg!(` EXPRESSION macro must be reported as that spelling, and by NAME ' +
+        '(has_items). An attribute-only leg is green on this fixture, and the accessor is not ' +
+        `inside the macro's argument, so the macro-span leg is green on it too: ${err}`
+      );
+    }
+  }
+
+  // FG75x — WRITE_VERBS is the ONE list of "verbs that change rows", and it has
+  // TWO consumers. Nothing else pins it: narrowing it for G5's benefit would
+  // silently weaken the rekey half of [G6/correspondence] (a helper whose only
+  // write is a dropped verb would read as a write-free read and stay green),
+  // and widening it for G6's would loosen G5's foreign-write ban. One line.
+  {
+    teethTick();
+    const rendered = WRITE_VERBS.join(' ');
+    if (rendered !== '.insert( .update( .delete(') {
+      return (
+        `FG75x: WRITE_VERBS must be EXACTLY [.insert( .update( .delete(] but reads [${rendered}]. ` +
+        'It has TWO consumers — G5 [W/write-target], which bans a FOREIGN-table write from ' +
+        'accounts.rs, and the rekey half of [G6/correspondence], which REQUIRES a write in the ' +
+        'method-chain segment rooted at a re-key helper’s own accessor. A change made for ' +
+        'either one silently re-tunes the other'
       );
     }
   }
@@ -7559,6 +8185,23 @@ export default async function guestClaimIntegrityEval() {
   }
   if (toothErr) {
     return { name, pass: false, detail: `TEETH: ${toothErr}` };
+  }
+  // The fixture suite RAN. runTeeth() returning null means "no tooth failed",
+  // which an early `return null;` at the top of it also means — MEASURED: one
+  // such line skipped every fixture in this file and the eval still printed the
+  // then-hard-coded "(118 teeth verified)" and exited 0. The count is derived
+  // from the run (teethTick / expectTag) and pinned here, so a skip is red.
+  if (teethRun !== TEETH_PINNED) {
+    return {
+      name,
+      pass: false,
+      detail:
+        `TEETH: the fixture suite did NOT run to completion — ${teethRun} tooth assertion(s) ` +
+        `executed, ${TEETH_PINNED} pinned. runTeeth() reported no failure, so this is a SKIP, ` +
+        'not a red: every clause the FG1-FG75 fixtures protect is unproven in this run. If teeth ' +
+        'were deliberately added or removed, bump TEETH_PINNED in the same commit that changes ' +
+        'them',
+    };
   }
 
   // ---- live tree: non-test server sources (a *_tests.rs file is cfg(test) and
@@ -7600,6 +8243,13 @@ export default async function guestClaimIntegrityEval() {
   // bit" keeps printing after the clause it describes has been deleted, which is
   // exactly the forgeable prose this block exists to replace.
   const borrowProofsBit = [];
+  // DERIVED counts read out of the G6 checker's own run (see g6HalvesVerified /
+  // g6CallsMatched). The success detail used to make these two claims in prose —
+  // "each REKEY helper proven to touch its own table" and "matched as an
+  // identifier-bounded call" — and a literal keeps printing verbatim after the
+  // clause it describes has been deleted.
+  let liveHalvesVerified = 0;
+  let liveCallsMatched = 0;
 
   // The desync self-check runs on EVERY live source: a desync anywhere in the
   // tree silently greens the ban clauses of any checker that reads that file.
@@ -7629,6 +8279,10 @@ export default async function guestClaimIntegrityEval() {
     }
 
     const errG6 = checkRekeyCompleteness(treeSrcs, accountsFile.src);
+    // Read IMMEDIATELY: the borrow probes below re-enter the checker (and reset
+    // these), and it is THIS call whose verdict the success detail reports.
+    liveHalvesVerified = g6HalvesVerified;
+    liveCallsMatched = g6CallsMatched;
     if (errG6) {
       failures.push(`[G6 rekey-completeness] ${errG6}`);
     } else {
@@ -7693,21 +8347,29 @@ export default async function guestClaimIntegrityEval() {
           '    let _twin = ctx.db.monster_pub().owner_identity().filter(owner).next();\n',
       );
       for (const built of [L4, L5]) {
-        if (built.error) failures.push(`[G6 borrow-proof] ${built.error}`);
+        if (Object.hasOwn(built, 'error')) failures.push(`[G6 borrow-proof] ${built.error}`);
       }
 
+      // Each probe pins FRAGMENTS as well as its tag. checkRekeyCompleteness
+      // returns the FIRST failure across 8 keys x 2 halves, and L1/L2/L4 all
+      // expect [G6/correspondence] — so a tag-only assertion is satisfied by ANY
+      // correspondence failure on ANY key, including one caused by a defect the
+      // probe did not introduce. The FG75 teeth already assert this way; these
+      // are the same criterion re-run against the SHIPPED tree.
       const probes = [];
       probes.push({
         label:
           'L1 heal_cooldown.owner_identity.exists re-pointed at another table’s live helper ' +
           'has_monsters( (the X10 criterion, verbatim)',
         tag: '[G6/correspondence]',
+        wants: ['heal_cooldown.owner_identity', 'has_monsters', 'db.heal_cooldown('],
         srcs: treeSrcs,
         manifest: borrowed('heal_cooldown.owner_identity', 'exists', 'has_monsters('),
       });
       probes.push({
         label: 'L2 inventory.owner_identity.rekey re-pointed at rekey_monsters(',
         tag: '[G6/correspondence]',
+        wants: ['inventory.owner_identity', 'rekey_monsters', 'db.inventory('],
         srcs: treeSrcs,
         manifest: borrowed('inventory.owner_identity', 'rekey', 'rekey_monsters('),
       });
@@ -7716,23 +8378,26 @@ export default async function guestClaimIntegrityEval() {
           'L3 player_wallet.owner_identity.exists set to et_exists(, a bare SUBSTRING of the live ' +
           'wallet_exists( call',
         tag: '[G6/consumed]',
+        wants: ['`et_exists(`', 'player_wallet.owner_identity'],
         srcs: treeSrcs,
         manifest: borrowed('player_wallet.owner_identity', 'exists', 'et_exists('),
       });
-      if (L4.srcs) {
+      if (Object.hasOwn(L4, 'srcs')) {
         probes.push({
           label: 'L4 the LIVE rekey_inventory reduced to a read (its .update( deleted in memory)',
           tag: '[G6/correspondence]',
+          wants: ['rekey_inventory', 'db.inventory(', 'write'],
           srcs: L4.srcs,
           manifest: REKEY_MANIFEST,
         });
       }
-      if (L5.srcs) {
+      if (Object.hasOwn(L5, 'srcs')) {
         probes.push({
           label:
             'L5 the LIVE has_monsters extended to read monster_pub, which makes the mirror ' +
             'exception stale',
           tag: '[G6/mirror]',
+          wants: ['monster_pub.owner_identity', 'no longer need'],
           srcs: L5.srcs,
           manifest: REKEY_MANIFEST,
         });
@@ -7764,20 +8429,24 @@ export default async function guestClaimIntegrityEval() {
           );
           continue;
         }
+        const missing = probe.wants.filter((w) => got.indexOf(w) === -1);
+        if (missing.length > 0) {
+          failures.push(
+            `[G6 borrow-proof] ${probe.label}: bit under ${probe.tag} but the message is missing ` +
+              `the fragment(s) [${missing.join(', ')}] that identify THIS probe. The tag alone ` +
+              'cannot: the checker returns the FIRST failure across 8 keys x 2 halves, so three ' +
+              `of these probes share one tag and would satisfy each other: ${got}`,
+          );
+          continue;
+        }
         borrowProofsBit.push(probe.label);
       }
-
-      // L6 CONTROL. Re-asserted here rather than inherited from errG6 above, so
-      // that "every probe red" can never be satisfied by a gate that reds on
-      // EVERYTHING (which would make L1-L5 unanimous and meaningless).
-      const control = checkRekeyCompleteness(treeSrcs, accountsFile.src, { ...REKEY_MANIFEST });
-      if (control !== null) {
-        failures.push(
-          '[G6 borrow-proof] L6 CONTROL: the SHIPPED manifest over the SHIPPED tree must PASS. ' +
-            'Without it, an always-red gate satisfies every probe above: ' +
-            control,
-        );
-      }
+      // NO L6 CONTROL here. It was `checkRekeyCompleteness(treeSrcs, accountsSrc,
+      // { ...REKEY_MANIFEST })` — a spread copy that classifyManifest, which
+      // reads OWN ENUMERABLE keys only, cannot tell from the default argument.
+      // It was therefore provably identical to errG6, and this whole block only
+      // runs when errG6 === null: the enclosing `else` IS the control, and a
+      // gate that reds on everything cannot reach these probes at all.
     }
   }
 
@@ -7817,12 +8486,13 @@ export default async function guestClaimIntegrityEval() {
       `before any account insert, no server RNG, writes confined to {${OWNED_TABLES.join(', ')}}, ` +
       'the claim code is consumed exactly once for the guest at brace-depth 0 of the success ' +
       `region, and all ${Object.keys(REKEY_MANIFEST).length} Identity columns carry a D6 policy ` +
-      `(${rekeyEntries} REKEY entries consumed by both rekey_all and account_has_game_data, ` +
-      `each REKEY helper proven to touch its own table across ${treeSrcs.length} scanned ` +
-      `source(s) and matched as an identifier-bounded call, ` +
+      `(${rekeyEntries} REKEY entries, ${liveCallsMatched} needle(s) matched as ` +
+      `identifier-bounded calls in rekey_all / account_has_game_data, ` +
+      `${liveHalvesVerified} REKEY manifest half/halves proven by [G6/correspondence] to reach ` +
+      `their own table across ${treeSrcs.length} scanned source(s), ` +
       `${borrowProofsBit.length} live-tree borrow proof(s) bit, ` +
       `${EXISTS_COVER.size} mirror-covered exception(s) pinned) ` +
-      '(118 teeth verified)',
+      `(${teethRun} tooth assertion(s) executed)`,
   };
 }
 
