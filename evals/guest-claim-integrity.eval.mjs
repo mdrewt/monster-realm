@@ -2365,6 +2365,124 @@ export function findIdentityColumns(treeSrcs) {
   return cols;
 }
 
+// ---------------------------------------------------------------------------
+// NEEDLE <-> KEY CORRESPONDENCE (rb-25, residual R-rb-2-X10).
+//
+// [G6/consumed] proves a needle is PRESENT at a call site. It cannot prove that
+// the helper the needle NAMES has anything to do with the column the manifest
+// entry is about, and a plain substring test cannot even prove the needle is a
+// call. Two measured consequences, both green before this block existed:
+//   BORROW     re-point `heal_cooldown.owner_identity`'s existence needle at
+//              another table's live helper and delete its own delegation: the
+//              borrowed needle is still present, so the consumption scan is
+//              satisfied while guard 11 stops fail-closing for that table;
+//   SUBSTRING  the needle `et_exists(` is a plain hit inside the live
+//              `wallet_exists(` call, so a manifest can name a helper that
+//              exists nowhere and still read as consumed.
+// The pieces below close both: `containsCallOf` for the second, and the
+// [G6/correspondence] / [G6/mirror] clauses at the end of the checker for the
+// first. All three are FILE-LOCAL — nothing here is exported.
+// ---------------------------------------------------------------------------
+
+/**
+ * Does `hay` contain a CALL of the free function `needle` names?
+ *
+ * `needle` always ends with `(` — NEEDLE_SHAPE, enforced by [G6/policy], which
+ * runs before any tree comparison — so that paren IS the right identifier
+ * boundary and only the LEFT side is tested here. `containsIdent` CANNOT be
+ * used for this: it also tests the character AFTER the needle, which for
+ * `f(ctx` is the `c` of `ctx`, a word character, so it returns false for every
+ * real call site and the clause would be permanently red.
+ *
+ * An immediately-left `.` is rejected as well: `probe(ctx).wallet_exists(` is a
+ * method call on some receiver, not a call of the crate-level function the
+ * manifest names, and the crate-level one may be gone entirely. Every shipped
+ * call site is spelled `crate::module::helper(` — a `:` on the left — so the
+ * rejection costs nothing real.
+ * @param {string} hay Text to search (a compacted fn body).
+ * @param {string} needle Helper-call prefix, trailing `(` included.
+ * @returns {boolean} True when the needle appears as an identifier-bounded call.
+ */
+function containsCallOf(hay, needle) {
+  for (let at = hay.indexOf(needle); at !== -1; at = hay.indexOf(needle, at + 1)) {
+    const before = hay[at - 1];
+    // `isWordChar(undefined)` is false BY DESIGN, so a match at index 0 counts.
+    if (isWordChar(before)) continue;
+    if (before === '.') continue;
+    return true;
+  }
+  return false;
+}
+
+// The ONE pinned exception to the EXISTS half of the correspondence rule (never
+// to the rekey half). `has_monsters(` is the existence predicate of BOTH
+// `monster` and its 1:1 public projection `monster_pub`, and it legitimately
+// reads only `db.monster(`: the projection carries no row the private table
+// does not, so asking it a second time proves nothing.
+//
+// A Map LITERAL on purpose. A plain object is read through a prototype chain a
+// co-resident eval in the same `just ci` realm can write to (the own-property
+// boundary FG72a-f pin), and the Object.keys ceremony that closes that hole
+// would spell one fact twice. A Map has no such chain and one spelling.
+//
+// THE SAFETY INVARIANT — the entire argument for letting this excuse ANY
+// failure kind rather than only "reaches the wrong table": the COVER key is
+// itself a REKEY entry, so the same loop strict-checks it on its own iteration,
+// regardless of map or manifest iteration order. A hard defect in the shared
+// helper — not declared, declared twice, no locatable body, an empty body, a
+// cfg-hidden body — is therefore reported against the cover no matter what the
+// excused key does. What the exception drops is exactly one question ("does
+// this predicate ALSO reach the projection"), and nothing else.
+const EXISTS_COVER = new Map([['monster_pub.owner_identity', 'monster.owner_identity']]);
+// The same fact as a set, for the pin below. Widening the exception costs a
+// deliberate edit to BOTH lines, reviewed as a set.
+const EXISTS_COVER_PIN = 'monster_pub.owner_identity => monster.owner_identity';
+
+/**
+ * Every scanned file that DECLARES `fn <name>`, one entry per declaration (so
+ * the length is the declaration COUNT, and two files sharing a `path` are still
+ * two entries — the file OBJECT is kept, never its path string).
+ * Whitespace-tolerant: `fn` as a whole word, any whitespace, then the name with
+ * identifier boundaries. `pub(crate) fn\nhas_items(` is a declaration, and it
+ * is reported as one whose BODY cannot be located rather than as a missing one.
+ * @param {Array<{path:string, stripped:string}>} strippedTree Stripped sources.
+ * @param {string} name Exact fn identifier.
+ * @returns {Array<{path:string, stripped:string}>} One entry per declaration.
+ */
+function findFnDeclarations(strippedTree, name) {
+  const found = [];
+  for (const file of strippedTree) {
+    const s = file.stripped;
+    for (let at = s.indexOf('fn'); at !== -1; at = s.indexOf('fn', at + 1)) {
+      if (isWordChar(s[at - 1]) || isWordChar(s[at + 2])) continue;
+      let k = at + 2;
+      while (k < s.length && /\s/.test(s[k])) k++;
+      if (k === at + 2) continue;
+      if (!s.startsWith(name, k)) continue;
+      if (isWordChar(s[k - 1]) || isWordChar(s[k + name.length])) continue;
+      found.push(file);
+    }
+  }
+  return found;
+}
+
+/**
+ * Offsets in `body` at which the table-accessor token appears with an
+ * identifier boundary on the `d` of `db` (so `mydb.monster(` is not a hit,
+ * while both `ctx.db.monster(` and the aliased `let db = &ctx.db;` form are).
+ * @param {string} body Compacted fn body.
+ * @param {string} token `db.<table>(`.
+ * @returns {number[]} Offsets, in order.
+ */
+function accessorSites(body, token) {
+  const sites = [];
+  for (let at = body.indexOf(token); at !== -1; at = body.indexOf(token, at + 1)) {
+    if (isWordChar(body[at - 1])) continue;
+    sites.push(at);
+  }
+  return sites;
+}
+
 /**
  * G6 REKEY_COMPLETENESS — the D6 manifest is complete, live, and consumed.
  * @param {Array<{path:string, src:string}>} treeSrcs Every non-test server source.
@@ -2400,9 +2518,13 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
   // So: every `#[spacetimedb::table(` in each stripped source must yield exactly
   // one parsed table. Verified equal across the live tree (37 attributes in the
   // 6 non-test files that declare tables, 37 parsed, 37 baseline entries).
+  // Stripped ONCE for the whole function: [G6/parse]/[G6/alias] below and
+  // [G6/correspondence] at the end read the same text, and stripping a tree
+  // twice is two chances for the two readings to drift apart.
+  const strippedTree = treeSrcs.map((f) => ({ path: f.path, stripped: stripRustSource(f.src) }));
   const TABLE_ATTR = '#[spacetimedb::table(';
-  for (const f of treeSrcs) {
-    const stripped = stripRustSource(f.src);
+  for (const f of strippedTree) {
+    const stripped = f.stripped;
     const declared = countOccurrences(stripped, TABLE_ATTR);
     const parsed = Object.keys(parseTableSchemas(stripped)).length;
     if (declared !== parsed) {
@@ -2555,7 +2677,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
 
   for (const [key, policy] of kinds) {
     if (policy.kind !== 'REKEY') continue;
-    if (bodies.rekey.indexOf(policy.rekey) === -1) {
+    if (!containsCallOf(bodies.rekey, policy.rekey)) {
       return (
         `[G6/consumed] the manifest marks \`${key}\` as REKEY via \`${policy.rekey}\` but that ` +
         `helper is never called from \`${REKEY_ALL_FN}\` (${ACCOUNTS_PATH}:221-229). A table with ` +
@@ -2563,7 +2685,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
         'stay under an identity the player can no longer authenticate as'
       );
     }
-    if (bodies.exists.indexOf(policy.exists) === -1) {
+    if (!containsCallOf(bodies.exists, policy.exists)) {
       return (
         `[G6/consumed] the manifest marks \`${key}\` as REKEY, but its existence predicate ` +
         `\`${policy.exists}\` is never called from \`${HAS_GAME_DATA_FN}\` ` +
@@ -2574,6 +2696,176 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
         'is no longer detected, so the claim proceeds and either clobbers or PK-collides the ' +
         "caller's own data"
       );
+    }
+  }
+
+  // [G6/mirror] P1 — THE EXACT SET PIN. The exception is pinned as a SET, never
+  // as a membership or a shape test: the manifest carries a SECOND REKEY pair
+  // sharing one existence needle (player_quest / player_dialogue_state), and a
+  // red-team MEASURED the cheat — hollow that shared predicate, add a second row
+  // here, stay green. One row is reviewable; an extensible list is an amnesty.
+  const coverPin = [...EXISTS_COVER.entries()].map((e) => `${e[0]} => ${e[1]}`).join(' | ');
+  if (EXISTS_COVER.size !== 1 || coverPin !== EXISTS_COVER_PIN) {
+    return (
+      `[G6/mirror] the existence-cover exception is pinned to EXACTLY [${EXISTS_COVER_PIN}] but ` +
+      `reads [${coverPin}] (size ${EXISTS_COVER.size}). Widening it is a deliberate edit to both ` +
+      'the map and this pin, reviewed as a SET — a second row excuses a second predicate from ' +
+      'ever being proven, and nothing downstream would say so'
+    );
+  }
+
+  // [G6/correspondence] — the needle must correspond to the KEY. Resolve the
+  // helper the needle names to EXACTLY ONE definition in the scanned tree, then
+  // require that definition to reach THIS key's own table accessor; the rekey
+  // half additionally requires a WRITE through it, because presence is not
+  // effect. This is a NAMING-INTEGRITY check, not a reachability proof: a
+  // `db.<table>(` in dead code satisfies it (which is why the cfg( leg exists —
+  // text behind `#[cfg(any())]` compiles into no target at all).
+  /**
+   * The strict check for one half of one entry.
+   * @param {string} key Manifest key, `<table>.<column>`.
+   * @param {string} token The `db.<table>(` accessor token.
+   * @param {'rekey'|'exists'} half Which needle is being resolved.
+   * @param {string} needle The needle itself, trailing `(` included.
+   * @returns {string|null} A tagged failure, or null when the half holds.
+   */
+  const strictCorrespondence = (key, token, half, needle) => {
+    // The module path is discarded on purpose: `crate::economy::rekey_wallet(`
+    // and `rekey_wallet(` name the same function, and the tree is scanned whole.
+    const fnName = needle.slice(0, -1).split('::').pop();
+    if (fnName === '') {
+      return (
+        `[G6/correspondence] the ${half} needle \`${needle}\` of \`${key}\` names no function ` +
+        `once its module path is removed, so ${token} can never be proven. Fail closed`
+      );
+    }
+    const defs = findFnDeclarations(strippedTree, fnName);
+    if (defs.length === 0) {
+      return (
+        `[G6/correspondence] the manifest marks \`${key}\` as REKEY via the ${half} needle ` +
+        `\`${needle}\`, but no \`fn ${fnName}\` is declared anywhere in the ${strippedTree.length} ` +
+        `scanned source(s), so nothing proves it reaches ${token}. An unresolvable needle is ` +
+        'FAIL-CLOSED here: "helper not found, skip this entry" is a silent hole the size of the ' +
+        'manifest'
+      );
+    }
+    if (defs.length > 1) {
+      return (
+        `[G6/correspondence] the ${half} needle \`${needle}\` of \`${key}\` resolves to ` +
+        `\`fn ${fnName}\`, which is declared ${defs.length} time(s) in the scanned tree. Taking ` +
+        'the FIRST hit lets a decoy declared earlier in the tree launder a borrow — the real ' +
+        `definition, and its ${token}, are never consulted. The count is the assertion: give the ` +
+        'helper a unique name rather than teaching this clause to choose'
+      );
+    }
+    const def = defs[0];
+    const span = findFnBody(def.stripped, fnName);
+    if (span === null) {
+      return (
+        `[G6/correspondence] \`fn ${fnName}\` (the ${half} needle of \`${key}\`) is declared in ` +
+        `${def.path} but its body could not be located, so ${token} cannot be proven either way. ` +
+        `The body finder anchors on the two words together: \`fn ${fnName}\` must be spelled on ` +
+        'ONE line'
+      );
+    }
+    const body = compactWs(def.stripped.slice(span.start, span.end));
+    if (body === '') {
+      return (
+        `[G6/correspondence] \`fn ${fnName}\` (the ${half} needle of \`${key}\`) has an EMPTY ` +
+        `body in ${def.path}. It reaches no table at all, ${token} least of all — it cannot be ` +
+        'both implemented and empty'
+      );
+    }
+    if (body.indexOf('#[cfg(') !== -1) {
+      return (
+        `[G6/correspondence] the body of \`fn ${fnName}\` (the ${half} needle of \`${key}\`, ` +
+        `${def.path}) carries a cfg( attribute. Text behind a configuration predicate compiles ` +
+        'into no target at all when the predicate is false — `#[cfg(any())]` is unconditionally ' +
+        `false — so an accessor inside one must not be able to satisfy ${token}. Lift the ` +
+        'accessor out of the conditional item'
+      );
+    }
+    const sites = accessorSites(body, token);
+    if (sites.length === 0) {
+      return (
+        `[G6/correspondence] the manifest marks \`${key}\` as REKEY via the ${half} needle ` +
+        `\`${needle}\`, but \`fn ${fnName}\` (${def.path}) never reaches \`${token}\` — the ` +
+        'accessor of the very table this entry is about. The needle names SOME live helper, so ' +
+        'the consumption scan is satisfied by it; a helper that touches another table carries ' +
+        "this column's rows nowhere. The token is rooted at `db.` deliberately: a same-named " +
+        'method on some other receiver is not a table accessor, and `ctx.db.` alone would miss ' +
+        'the legitimate `let db = &ctx.db;` handle'
+      );
+    }
+    if (half !== 'rekey') return null;
+    // WRITE_VERBS is G5's list, reused rather than re-spelled: "the verbs that
+    // change rows" is ONE fact, and a second copy is a second thing to keep
+    // true. The write must be in the chain segment rooted at THIS accessor — from the
+    // token to the next `db.` (or the end of the body). A body-wide search is
+    // satisfied by a NEIGHBOURING table's update, which is exactly the hollowing
+    // measured against the presence-only draft of this clause.
+    for (const at of sites) {
+      const next = body.indexOf('db.', at + token.length);
+      const segment = body.slice(at, next === -1 ? body.length : next);
+      if (WRITE_VERBS.some((verb) => segment.indexOf(verb) !== -1)) return null;
+    }
+    return (
+      `[G6/correspondence] \`fn ${fnName}\` (the rekey needle of \`${key}\`, ${def.path}) reaches ` +
+      `\`${token}\` but never writes through it: none of ${WRITE_VERBS.join(' / ')} appears in ` +
+      'the chain segment rooted at any occurrence of that accessor. Presence is not effect — a ' +
+      're-key helper that only READS its own table leaves every guest row under the abandoned ' +
+      'identity, which is the orphaning this manifest exists to prevent'
+    );
+  };
+
+  for (const [key, policy] of kinds) {
+    if (policy.kind !== 'REKEY') continue;
+    const dot = key.indexOf('.');
+    if (dot === -1 || key.slice(0, dot) === '' || key.slice(dot + 1) === '') {
+      return (
+        `[G6/correspondence] the manifest key \`${key}\` is not a \`table.column\` pair, so the ` +
+        'table this entry re-keys cannot be derived from it. Fail closed: a key whose table half ' +
+        'cannot be read is a key whose helpers are unchecked'
+      );
+    }
+    const table = key.slice(0, dot);
+    // The accessor name IS the key's table half — parseTableSchemas keys tables
+    // on the `accessor =` argument, and [G6/live] forces every manifest key to
+    // resolve to one of those tables, so the join is structural, not observed.
+    const token = `db.${table}(`;
+    for (const half of ['rekey', 'exists']) {
+      const needle = half === 'rekey' ? policy.rekey : policy.exists;
+      const strict = strictCorrespondence(key, token, half, needle);
+      if (!(half === 'exists' && EXISTS_COVER.has(key))) {
+        if (strict !== null) return strict;
+        continue;
+      }
+      // [G6/mirror] — the excused key, policed on every run.
+      const cover = EXISTS_COVER.get(key);
+      const coverPolicy = kinds.get(cover);
+      const coverNeedle = coverPolicy?.kind === 'REKEY' ? coverPolicy.exists : undefined;
+      if (coverNeedle !== policy.exists) {
+        // P2. The shared predicate IS the safety argument: it is what makes the
+        // excused key transitively strict-checked by the cover's own iteration.
+        return (
+          `[G6/mirror] the existence half of \`${key}\` is excused on the strength of ` +
+          `\`${cover}\`, but the two no longer share an existence predicate: \`${key}\` names ` +
+          `\`${policy.exists}\` and \`${cover}\` names ` +
+          `\`${coverNeedle ?? '(no REKEY entry at all)'}\`. That shared predicate is the ENTIRE ` +
+          'safety argument for the exception — without it the excused key is waved past a check ' +
+          'nobody performs on its behalf. Re-point one of them, or delete the exception'
+        );
+      }
+      if (strict === null) {
+        // P3. Staleness. An amnesty that outlives its justification is how a
+        // one-row exception quietly becomes a general one.
+        return (
+          `[G6/mirror] the existence half of \`${key}\` is excused on the strength of ` +
+          `\`${cover}\`, but \`${key}\` now passes the strict check on its own, so the tree no ` +
+          'longer needs the exception. Delete the row from the existence-cover map (and its set ' +
+          'pin) in this file'
+        );
+      }
     }
   }
 
