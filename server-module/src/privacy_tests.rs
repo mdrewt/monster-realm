@@ -750,6 +750,68 @@ fn rb22p_scan_hygiene() {
     );
 }
 
+/// EO-4 (whole-tree gate safety, PRODUCTION-ONLY): privacy.rs carries EXACTLY
+/// ONE double-quoted string literal — the `privacy_tests.rs` path attribute —
+/// and no other double quote anywhere, not even inside a line comment.
+///
+/// MEASURED (rb-22 artifact red-team, Finding 1). `stripped_for_scan` runs
+/// `strip_rust_strings` BEFORE `strip_rust_comments`, so a BARE quote sitting
+/// inside a `//` line comment opens a fake string span the comment stripper
+/// never gets to see. TWO such quotes on two comment lines make the string
+/// stripper blank EVERYTHING between them to spaces, which `squash_ws` then
+/// deletes — so real, compiling, NON-commented Rust between those two lines
+/// (measured: an arbitrary-Identity `account`-table delete) contributes ZERO
+/// characters to `stripped_for_scan(PRIVACY_RS)`. It is then invisible to the
+/// frozen-body equality pin, to the write census, and to the eight-needle
+/// hygiene ban alike — none of which lists a bare quote. Counting raw quotes is
+/// the only view that catches it, because it is the one view taken BEFORE the
+/// strings-first pipeline can hide the evidence.
+///
+/// PRODUCTION-ONLY, and it must be: privacy_tests.rs legitimately owns hundreds
+/// of balanced quotes (its own string stripper, every assertion message), so the
+/// invariant is TRUE only of privacy.rs, which holds one delete-only helper.
+///
+/// Anti-vacuity: the sole sanctioned quoted literal is asserted PRESENT and
+/// removed once before the residual count, so a renamed or dropped path
+/// attribute reds LOUD rather than passing over a file that simply has no quote.
+///
+/// Kills: W25 — two bare quotes on two `//` comment lines wrapped around an
+///        arbitrary-Identity account delete inside `purge_export_bundles`, which
+///        the strings-first pipeline hides so every squashed-text pin reports the
+///        exact sanctioned body.
+#[test]
+fn rb22p_no_bare_quote_in_privacy() {
+    let dq = rb22p_dq();
+    let dq_str = dq.to_string();
+    let sanctioned = format!("{dq}privacy_tests.rs{dq}");
+
+    let sanctioned_count = rb22p_count(PRIVACY_RS, sanctioned.as_str());
+    assert_eq!(
+        sanctioned_count, 1,
+        "rb22p [hygiene/bare-quote]: privacy.rs does not carry EXACTLY ONE \
+         `[path=<dq>privacy_tests.rs<dq>]` quoted literal (found {sanctioned_count}). This test \
+         removes that sole sanctioned quote pair before counting the rest, so a renamed or \
+         dropped path attribute must red here consciously rather than let the residual count \
+         pass vacuously over a file that simply has no quote at all."
+    );
+
+    let residual = PRIVACY_RS.replacen(sanctioned.as_str(), "", 1);
+    let remaining = rb22p_count(residual.as_str(), dq_str.as_str());
+    assert_eq!(
+        remaining, 0,
+        "rb22p [hygiene/bare-quote]: privacy.rs carries {remaining} double quote(s) beyond the \
+         sole sanctioned `privacy_tests.rs` path literal. stripped_for_scan runs the STRING \
+         stripper BEFORE the COMMENT stripper, so a bare quote inside a `//` line comment opens \
+         a fake string span the comment stripper never sees; TWO such quotes on two comment \
+         lines blank EVERYTHING between them — including real, compiling, non-commented Rust — \
+         to spaces that squash_ws deletes. That hidden span (measured: an arbitrary-Identity \
+         account-table delete) then contributes ZERO characters to the squashed view and is \
+         invisible to the frozen-body pin, the write census and the eight-needle hygiene ban. \
+         privacy.rs holds one delete-only helper and needs no quoted literal beyond the path \
+         attribute."
+    );
+}
+
 /// CONTROL (non-vacuity of the machinery itself). Three fixtures, no production
 /// source: a gate whose stripper silently returned an empty string, or whose
 /// scoped extractor silently read the wrong function, would pass every clause in

@@ -4544,7 +4544,14 @@ fn rb22_claim_purges_guest_export_bundles_call_site() {
     // `returnOk(())`, so ALSO requiring a non-word byte on the right would blind
     // this clause to precisely the early-exit shapes it exists to catch. The
     // left-only rule still rejects an identifier such as `early_return`.
-    let region = &body[at_rekey..at_purge];
+    //
+    // WIDENED to `at_consume` (rb-22 artifact red-team, Finding 2): ending the
+    // scan at `at_purge` left the purge -> consume GAP unguarded on the Rust
+    // arm. An early `return` there (`if is_account_holder(ctx, me) { return
+    // Ok(()); }`) skips consume_claim_and_disarm (AUTH-34 single-use) and the
+    // AUTH-21 provenance stamp while the reducer returns Ok. This region now
+    // matches the eval's own [S/reachable] span (rekey_all -> consume).
+    let region = &body[at_rekey..at_consume];
     let mut scan = 0usize;
     while let Some(rel) = region[scan..].find("return") {
         let at = scan + rel;
