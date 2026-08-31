@@ -283,7 +283,21 @@ so it is ALSO a per-PR merge gate; what the nightly adds is the decay half, sinc
 notices the spec being deleted. Running it needs a live SpacetimeDB (globalSetup republishes the
 module), so the nightly job now provisions spacetime 2.8.1 and chromium — and the job block is
 pinned VERBATIM for the same reason the recipe region is: it went from one pre-gate shell step to
-six, widening the `$GITHUB_PATH` shim surface. **A11Y-32 and A11Y-33 are
+six, widening the `$GITHUB_PATH` shim surface. **Half 4 is the reduced-motion browser tier
+(rb-20, ADR-0219)** — a `reduced-motion` Playwright PROJECT whose `testMatch` collects only
+`client/e2e/reduced-motion.spec.ts`, run as `--project=reduced-motion` with its own
+`/tmp/a11y-e2e-rm.json` report and its own `case`-guarded `rmfloor`. Two tests over the built-in
+`page` fixture prove, in a real Chromium and in BOTH polarities, that
+`@media (prefers-reduced-motion: reduce)` in `styles.css` is actually EVALUATED — the one thing
+happy-dom structurally cannot decide. Three things a later reader must not undo. (1) The option is
+spelled `use: { contextOptions: { reducedMotion: 'reduce' } }`: the shorthand every Playwright doc
+shows does not exist on the pinned 1.61.1 and is a TS2769 error plus a runtime no-op. (2) The
+collection boundary is closed on BOTH sides — the `default` project `testIgnore`s the new spec (or
+it runs unemulated and reds every PR) and the new project does NOT collect `a11y.spec.ts`
+(ADR-0219 D2: a second context breaks that file's documented single-context contract). (3) The
+tier's claim is scoped to A11Y-27's STYLESHEET arm only; its RENDERER arm is unwired in production
+(`main.ts:2807` passes no `reduceMotion`, so `renderResolver.ts:83`'s `false` default applies every
+frame) and is deferred as ledger gate RM-7. **A11Y-32 and A11Y-33 are
 MANUAL and SHALL NEVER be reported as CI-green** — `docs/a11y-manual-protocol.md` is the
 human-executed protocol (NVDA 2024.x + Chrome, mouse unplugged and screen covered; VoiceOver +
 Safari as a non-gating cross-check) and its append-only run log. Its Protocol B carries a CONTROL
