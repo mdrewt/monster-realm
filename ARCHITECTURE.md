@@ -118,6 +118,21 @@ under a new first clause `[G6/policy]`; the D6 REKEY columns are pinned REKEY by
 value, and FG70 re-implements the Rust T9 text scan in-file so a key list the
 `accounts_tests.rs` `include_str!` reader would silently truncate (a biome-emitted
 `\'` above its ≥20 floor) reds here.
+**rb-25** closed rb-2's own residual (R-rb-2-X10, ADR-0222): `[G6/consumed]` proved a needle was
+PRESENT, never which table the named helper was about, so a REKEY entry could borrow another table's
+helper and stay green while guard 11 stopped fail-closing for its table. Needles are now matched as
+identifier-bounded CALLS (`et_exists(` no longer hits inside `wallet_exists(`), and a new
+`[G6/correspondence]` clause resolves each needle to exactly one `fn` in the stripped tree
+(fail-closed on none, on a decoy second declaration, on an unlocatable or empty body, and on a
+`#[cfg`/`cfg!(` on either the item or the body) and requires that body to reach its OWN
+`db.<table>(` accessor — rooted at a real database handle, outside any macro invocation, and on the
+rekey half carrying a write verb WITHIN the method chain (`isChainChar`-bounded, the primitive
+`[W/write-target]` already uses). `[G6/mirror]` pins the single legitimate exception
+(`monster_pub`, whose shared predicate `has_monsters` reads only `db.monster(`) by SET equality,
+because a second REKEY pair shares an existence needle and a membership test was measured to admit
+the amnesty. Because the FG75 teeth read an in-file fixture, five LIVE-TREE borrow proofs also run
+against the shipped sources, and every count in the pass summary — including the teeth count — is
+derived from the run rather than written as prose.
 **rb-3** pinned that gate's OWN-PROPERTY BOUNDARY (residual R-m22-s0-X2): inside
 `checkRekeyCompleteness` the manifest's key space is read exactly once
 (`classifyManifest`, `Object.keys` → a `Map`) and every clause reads the Map, so a
