@@ -5105,13 +5105,17 @@ fn rb24_nd_struct_marker() -> String {
     concat!("struct", "AccountDeletionReaperSchedule{").to_string()
 }
 
-/// The squashed accessor call every write to the new table must chain off.
-fn rb24_nd_accessor_call() -> String {
-    [
-        concat!("ctx", ".db."),
-        concat!("account_deletion_reaper", "_schedule()"),
-    ]
-    .concat()
+/// The PREFIX-AGNOSTIC accessor method token: a leading `.` then the accessor
+/// name and its opening paren, with NO `ctx.db.` prefix. rb-24 red-team
+/// (artifact pass) MEASURED that `let d = &ctx.db;` then `d.<accessor>()`
+/// squashes without the `ctx.db.` prefix, so a prefixed needle misses an
+/// aliased write entirely (the shared `write_target_accessors` alias hole). A
+/// leading-dot method token matches the accessor call through ANY receiver
+/// (`ctx.db.`, an aliased handle, a further-chained handle) while still not
+/// matching the `accessor = <name>,` attribute (comma, no leading dot) or the
+/// CamelCase struct type.
+fn rb24_nd_accessor_method() -> String {
+    concat!(".account_deletion_reaper", "_schedule(").to_string()
 }
 
 /// The accessor NAME, as `allowed_write_tables` and `write_target_accessors`
@@ -5919,6 +5923,82 @@ fn rb24_arm_called_exactly_once_in_crate() {
     );
 }
 
+/// PRV1-3 (call-site uniqueness, crate-wide): the disarm helper is DECLARED
+/// once and CALLED once anywhere in the compiled crate, and that one call site
+/// is inside `cancel_account_deletion`.
+///
+/// The MIRROR of `rb24_arm_called_exactly_once_in_crate`, and it is not
+/// redundant with the arm census: rb-24 artifact red-team (Finding 2) MEASURED
+/// that `rb24_net_arm_mentions` (arm-minus-disarm arithmetic) nets to ZERO for
+/// an extra disarm call, because the disarm token CONTAINS the arm token — so a
+/// second, unreviewed `disarm_deletion_reaper(ctx, foreign)` in any other
+/// function (the PoC used complete_guest_claim, where the argument is a guest
+/// identity) leaves the arm census reading net == 2 and is invisible. The
+/// disarm deletes EVERY schedule row for the identity it is passed, so an
+/// unreviewed call is an unauthorized deletion-cancel primitive for a foreign
+/// account. This census counts the disarm CALL token DIRECTLY (nothing longer
+/// contains it but its own `fn` declaration, which is the decl budget), never
+/// via subtraction.
+#[test]
+fn rb24_disarm_called_exactly_once_in_crate() {
+    let sources = m22_scanned_sources();
+    let paths: Vec<&str> = sources.iter().map(|(p, _)| *p).collect();
+    let n_paths = paths.len();
+    assert!(
+        n_paths >= 20,
+        "[rb24/disarm-census-coverage] the crate-wide census lists only {n_paths} source(s) \
+         ({paths:?}); the live tree lists 22. A shrunken census is a census that stopped \
+         looking, and the module a bypass lands in is exactly the one it would be dropped from."
+    );
+    assert!(
+        paths.contains(&"accounts.rs"),
+        "[rb24/disarm-census-owner] the census does not include accounts.rs ({paths:?}), which \
+         is the ONE file with a non-zero budget."
+    );
+
+    let disarm_call = rb24_nd_disarm_call();
+    let mut total = 0usize;
+    let mut decls = 0usize;
+    for (path, src) in &sources {
+        let squashed = stripped_for_scan(src);
+        // The decl `fndisarm_deletion_reaper(` also contains the call token, so
+        // a direct count of the call token over the whole file = decl + calls.
+        let n = m22_count_occurrences(&squashed, &disarm_call);
+        decls += m22_count_occurrences(&squashed, &rb24_nd_disarm_decl());
+        let expected = if *path == "accounts.rs" { 2 } else { 0 };
+        assert_eq!(
+            n, expected,
+            "[rb24/disarm-census-site] {path} names the disarm helper {n} time(s); exactly \
+             {expected} is allowed. For accounts.rs that budget is the declaration plus the ONE \
+             sanctioned call site inside cancel_account_deletion. For every other module it is \
+             zero: a disarm outside the cancel ceremony deletes every pending-deletion schedule \
+             row for whatever identity IT derives — an unauthorized cancel for a foreign account, \
+             outside everything this slice reviewed."
+        );
+        total += n;
+    }
+    assert_eq!(
+        total, 2,
+        "[rb24/disarm-census-total] the crate must name the disarm helper exactly twice in \
+         total (one declaration, one call site); found {total}."
+    );
+    assert_eq!(
+        decls, 1,
+        "[rb24/disarm-decl-unique] the crate must DECLARE the disarm helper exactly once; found \
+         {decls}."
+    );
+
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    let (start, end) = rb24_fn_body_span(&squashed, &rb24_nd_cancel_decl());
+    assert_eq!(
+        m22_count_occurrences(&squashed[start..end], &disarm_call),
+        1,
+        "[rb24/disarm-call-in-cancel] the single disarm call site must sit inside \
+         cancel_account_deletion's body span. A call relocated elsewhere keeps the crate-wide \
+         count at two while moving the disarm out of the reducer whose reviewers own it."
+    );
+}
+
 // ---------------------------------------------------------------------------
 // rb-24 / PRV1-3 — THE DISARM, WIRED INTO `cancel_account_deletion`.
 // ---------------------------------------------------------------------------
@@ -6290,7 +6370,13 @@ fn rb24_owned_write_set_covers_the_deletion_schedule() {
 #[test]
 fn rb24_schedule_table_sole_writers() {
     let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let accessor_call = rb24_nd_accessor_call();
+    // Prefix-AGNOSTIC method token (rb-24 artifact red-team, Finding 1): a
+    // `let d = &ctx.db; d.account_deletion_reaper_schedule()...` write reaches
+    // this table WITHOUT the `ctx.db.` prefix and is invisible to a prefixed
+    // needle, so the census counts the leading-dot accessor method through ANY
+    // receiver. That aliased write armed a FOREIGN identity and passed every
+    // other gate — this is the tooth that makes the frozen-body pins TOTAL.
+    let accessor_call = rb24_nd_accessor_method();
 
     let total = m22_count_occurrences(&squashed, &accessor_call);
     assert_eq!(
@@ -6299,7 +6385,7 @@ fn rb24_schedule_table_sole_writers() {
          EXACTLY three times: once for the arm insert, and twice for the disarm (the \
          account_identity filter and the primary-key delete). Found {total}. FEWER means a \
          helper lost its write; MORE means a site exists that neither frozen-body pin \
-         constrains."
+         constrains — including one reached through an aliased db handle."
     );
 
     let (arm_start, arm_end) = rb24_fn_body_span(&squashed, &rb24_nd_arm_decl());
