@@ -6,6 +6,7 @@
 | slug | type | title | abstract |
 |------|------|-------|---------|
 | reducers/accept_challenge | SpacetimeDB Reducer | accept_challenge | Accept a pending PvP challenge. Creates the `battle` row and schedules the turn  |
+| reducers/account_deletion_reaper | SpacetimeDB Reducer | account_deletion_reaper | Deletion-grace reaper — THIS SLICE SHIPS A DELIBERATE NO-OP (rb-24, ADR-0221). T |
 | reducers/advance_dialogue | SpacetimeDB Reducer | advance_dialogue | Advance dialogue by selecting a choice. Security gate: `apply_choice` re-checks  |
 | reducers/attempt_recruit | SpacetimeDB Reducer | attempt_recruit | Attempt to recruit the wild monster in a wild battle (M8d, ADR-0047). The roll i |
 | reducers/battle_challenge_reaper | SpacetimeDB Reducer | battle_challenge_reaper | Scheduled reaper: delete a Pending battle challenge that has outlived `CHALLENGE |
@@ -20,7 +21,7 @@
 | reducers/confirm_trade | SpacetimeDB Reducer | confirm_trade | Initiator confirms a ConfirmedByCounterparty offer → atomic swap. Role + status  |
 | reducers/consume_crystalized_essence | SpacetimeDB Reducer | consume_crystalized_essence | Consume a crystalized-essence item: grant the ITEM's essence to the matching poo |
 | reducers/decline_challenge | SpacetimeDB Reducer | decline_challenge | Decline a pending PvP challenge. Deletes the challenge row. |
-| reducers/delete_account | SpacetimeDB Reducer | delete_account | Request account deletion (M21 half only — sets `PendingDeletion`; M22 extends th |
+| reducers/delete_account | SpacetimeDB Reducer | delete_account | Request account deletion — sets `PendingDeletion` and arms the deletion-grace re |
 | reducers/dismiss_dialogue | SpacetimeDB Reducer | dismiss_dialogue | Dismiss the current dialogue (no-op if no active conversation). |
 | reducers/enqueue_move | SpacetimeDB Reducer | enqueue_move | Append one intent to the bounded queue (anti-flood: reject when full). Buffers i |
 | reducers/essence_train | SpacetimeDB Reducer | essence_train | Essence-train a monster: +ESSENCE_TRAIN_AMOUNT to ONE pool, gated by the shared  |

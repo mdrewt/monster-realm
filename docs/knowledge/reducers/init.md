@@ -2,7 +2,7 @@
 type: SpacetimeDB Reducer
 title: init
 slug: reducers/init
-updated: 2026-08-25
+updated: 2026-08-31
 tags: [reducer, spacetimedb, lib]
 abstract: "SpacetimeDB reducer init."
 resource: server-module/src/lib.rs#L150

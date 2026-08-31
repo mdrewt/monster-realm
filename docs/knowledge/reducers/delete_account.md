@@ -2,10 +2,10 @@
 type: SpacetimeDB Reducer
 title: delete_account
 slug: reducers/delete_account
-updated: 2026-08-25
+updated: 2026-08-31
 tags: [reducer, spacetimedb, accounts]
-abstract: "Request account deletion (M21 half only — sets `PendingDeletion`; M22 extends this same body with the grace window + ca…"
-resource: server-module/src/accounts.rs#L531
+abstract: "Request account deletion — sets `PendingDeletion` and arms the deletion-grace reaper LAST (rb-24/ADR-0221: spec para 4.…"
+resource: server-module/src/accounts.rs#L585
 source: scripts/okf-export.mjs@server-module/src/accounts.rs
 ---
 

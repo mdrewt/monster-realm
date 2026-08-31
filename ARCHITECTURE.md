@@ -363,16 +363,26 @@ stable id), separate from `init`. Stable ids are append-only.
 `DATA_LIFECYCLE_MANIFEST`, a const array with exactly one entry per live table
 (gate-enforced bidirectionally) recording its deletion policy (Erase / Anonymize /
 ViaJoin(parent) / NotOwned), a mandatory prose `basis`, and an `exportable` flag
-(the §5 export walk's third, structurally-narrower axis — 17 true, 22 false).
+(the §5 export walk's third, structurally-narrower axis — 17 true, 23 false as of rb-24).
 `Account` gained `terminal_at_ms: Option<i64>` appended LAST with `#[default(None)]`
 (the completed-deletion marker; S3 writes it, and `account_state_is_legal` already
 rejects a marker outside `PendingDeletion`+requested), and the PRIVATE `export_bundle`
 table holds per-owner data-export chunks per the frozen S2↔S4↔S8 chunk contract.
 Manifest string literals must never contain `/` (the snapshot baseline's raw parse is
 string-unaware — measured), and a compile-time `manifest_is_wellformed` assertion
-makes an empty basis a build error. `AccountDeletionReaperSchedule` deliberately
-ships in S3 atomically with its reducer: changing a table's scheduled-ness is an
-automigration-forbidden operation.
+makes an empty basis a build error. `AccountDeletionReaperSchedule` shipped in
+**rb-24** (ADR-0221, the schema-declaration slice the spec table named m22-s3)
+atomically with a scheduler-guarded deliberate NO-OP `account_deletion_reaper`
+(changing a table's scheduled-ness is an automigration-forbidden operation, so
+table-now/reducer-later was impossible): `delete_account` arms exactly one row
+LAST (fire = `deletion_requested_at_ms + game_core::DELETION_GRACE_MS_DEFAULT`
+via the pure `deletion_fire_at_ms` seam, one shared clock read — PRV1-1) and
+`cancel_account_deletion` disarms via the `account_identity` btree inside the
+AUTH-38 gate (PRV1-3, ADR-0126 D4). Classified `NotOwned` (an `Erase` entry
+would demand the D6 self-disarm anti-pattern in S3's cascade). The reaper's
+frozen-no-op body gate is DESIGNED to red when S3 lands the PRV1-5 recheck +
+PRV1-6 cascade; until then a fired reaper no-ops and the account sits
+`PendingDeletion` unarmed (ADR-0221 Residuals R2 — S3 owns the re-arm path).
 
 ## Server-module domain modules (M8.9 — ADR-0056)
 
@@ -388,8 +398,8 @@ invalidates downstream `touches:` declarations — **keep the file names stable.
 | Module | Owns | Inline-test sibling |
 |--------|------|--------------------|
 | `lib.rs` | module wiring + crate constants + lifecycle reducers (`init`/`sync_content`/`on_disconnect`/`on_connect` — the M21 `client_connected` hook delegates to `accounts::provision_or_touch_account`) | — |
-| `accounts.rs` | M21 accounts/auth (ADR-0179): reducers `start_guest_claim`/`complete_guest_claim`/`delete_account`/`cancel_account_deletion` + the `guest_claim_reaper` scheduled reducer & `guest_claim_reaper_schedule` table; OIDC issuer+audience provisioning (`provision_or_touch_account`); the guest→account re-key orchestrator (`rekey_all`, which delegates every game-data write to a `rekey_*` helper in that table's owning module — D0 write-isolation) | `accounts_tests.rs` |
-| `schema.rs` | the data `#[table]` structs + row types (the table count is generated — see `docs/knowledge/`; scheduled tables live beside their reducers: `movement_tick_schedule` in `movement.rs`, `trade_offer_reaper_schedule` in `trading.rs`, `pvp_deadline_schedule` in `pvp.rs`, `playtest_reaper_schedule` in `playtest.rs`, `guest_claim_reaper_schedule` in `accounts.rs`; the M21 `account`/`guest_claim` tables + owner-scoped `my_account` view live here) | — |
+| `accounts.rs` | M21 accounts/auth (ADR-0179): reducers `start_guest_claim`/`complete_guest_claim`/`delete_account`/`cancel_account_deletion` + the `guest_claim_reaper` scheduled reducer & `guest_claim_reaper_schedule` table, and (rb-24, ADR-0221) the `account_deletion_reaper` scheduled no-op reducer & `account_deletion_reaper_schedule` table with its `arm_deletion_reaper`/`disarm_deletion_reaper`/`deletion_fire_at_ms` helpers; OIDC issuer+audience provisioning (`provision_or_touch_account`); the guest→account re-key orchestrator (`rekey_all`, which delegates every game-data write to a `rekey_*` helper in that table's owning module — D0 write-isolation) | `accounts_tests.rs` |
+| `schema.rs` | the data `#[table]` structs + row types (the table count is generated — see `docs/knowledge/`; scheduled tables live beside their reducers: `movement_tick_schedule` in `movement.rs`, `trade_offer_reaper_schedule` in `trading.rs`, `pvp_deadline_schedule` in `pvp.rs`, `playtest_reaper_schedule` in `playtest.rs`, `guest_claim_reaper_schedule` + `account_deletion_reaper_schedule` in `accounts.rs`; the M21 `account`/`guest_claim` tables + owner-scoped `my_account` view live here) | — |
 | `guards.rs` | `log_reject`, `validate_name`, `authorize_move`, `check_party_size`, `check_monster_in_party`, `check_team_coupling`, `require_owner` (the consolidated owner-check preamble), `reject_if_in_battle` (battle-escrowed check for `evolve` — ADR-0061, essence-graph shape per ADR-0177), `reject_if_monster_in_trade` / `escrowed_item_qty` / `escrowed_currency_amount` (trade escrow — M15a, ADR-0106), `require_pvp_participant` (M16 — ADR-0109), `is_ranked_pvp` (ranked-battle classification — M17a, ADR-0119), `is_in_ongoing_battle` / `is_in_ongoing_battle_either_role` (both-role ongoing-battle guard, hoisted from `pvp.rs` — M17.5a, ADR-0122), and the `saturating_sub_u64` / `saturating_sub_u32` helpers | `guards_tests.rs` |
 | `observability.rs` | `mr_log` / `mr_log_breadcrumb` + `mr_heartbeat` scheduled reducer & `MrHeartbeatSchedule` table; Layer-1 structured logging, heartbeat dead-man beat — ADR-0180 D6 | `observability_tests.rs` |
 | `marshal.rs` | row ↔ game-core marshaling helpers | `marshal_tests.rs` |

@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: monster
 slug: tables/monster
-updated: 2026-08-25
+updated: 2026-08-31
 tags: [schema, spacetimedb, private]
 abstract: "The authoritative monster record — PRIVATE (no `public`). Contains hidden genes (IVs, EVs, nature) that must NEVER reac…"
 resource: server-module/src/schema.rs#L207

@@ -1942,6 +1942,22 @@ fn auth27_reaper_scheduler_only_keyed_delete_no_self_disarm() {
         "AUTH-27: the reaper must guard scheduler-only \
          (ctx.sender() != ctx.database_identity())."
     );
+    // rb-24 hardening (kept ALONGSIDE the bare-comparison clause above so a
+    // failure still distinguishes no-comparison-at-all from present-but-inert):
+    // the guard must OPEN the body in its rejecting form. The bare needle stops
+    // at the fused return token and is a forgeable PREFIX — a helper call whose
+    // name merely starts with those six letters contains it, compiles, and
+    // rejects nobody (measured, rb-24 red-team F1).
+    {
+        let guard = scheduler_guard_needle();
+        let rejecting = format!("{guard}Err(");
+        assert!(
+            body.starts_with(rejecting.as_str()),
+            "AUTH-27: guest_claim_reaper must OPEN with the rejecting scheduler guard — the \
+             comparison being merely PRESENT somewhere in the body admits an inert form that \
+             rejects nobody."
+        );
+    }
     assert!(
         body.contains(concat!("claim_is", "_expired(")),
         "AUTH-27: the reaper must re-check staleness (never reap a fresh replacement claim)."
