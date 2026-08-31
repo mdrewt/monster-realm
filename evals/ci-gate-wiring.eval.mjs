@@ -288,18 +288,44 @@ export function reducedMotionProjectIsWired(configText) {
     };
   }
 
-  const ctxIdx = rm.indexOf('contextOptions');
+  // NESTING DEPTH IS PART OF THE CRITERION, not a formality (rb-20 artifact red-team,
+  // finding 1). Playwright promotes `use.contextOptions` into the real
+  // `browser.newContext()` call; a `contextOptions` that is a SIBLING of `use` rather
+  // than a member of it is ignored entirely at runtime. TypeScript rejects the plain
+  // sibling form as an excess property — but a one-line spread
+  // (`...({ contextOptions: { reducedMotion: 'reduce' } })`) defeats the excess-property
+  // check, typechecks clean, and was MEASURED to satisfy an earlier version of this
+  // predicate over a project whose real `use` was `{}`. So resolve the project's OWN
+  // `use: { ... }` body first and look for `contextOptions` only inside it.
+  const useIdx = rm.indexOf('use:');
+  if (useIdx === -1) {
+    return {
+      ok: false,
+      reason:
+        "the 'reduced-motion' project declares no `use:` block — RM-1 requires " +
+        "`use: { contextOptions: { reducedMotion: 'reduce' } }`",
+    };
+  }
+  const useOpen = rm.indexOf('{', useIdx);
+  const useClose = useOpen === -1 ? -1 : matchBalancedBracket(rm, useOpen, '{', '}');
+  if (useOpen === -1 || useClose === -1) {
+    return { ok: false, reason: "the 'reduced-motion' project's `use:` block is unbalanced" };
+  }
+  const useBody = rm.slice(useOpen + 1, useClose);
+  const ctxIdx = useBody.indexOf('contextOptions');
   if (ctxIdx === -1) {
     return {
       ok: false,
       reason:
-        "the 'reduced-motion' project carries no `contextOptions` block — RM-1 requires " +
-        "`use: { contextOptions: { reducedMotion: 'reduce' } }`",
+        "the 'reduced-motion' project's `use:` block carries no `contextOptions` — RM-1 requires " +
+        "`use: { contextOptions: { reducedMotion: 'reduce' } }`. A `contextOptions` declared " +
+        'OUTSIDE `use` (including one injected by a spread, which typechecks clean) is ignored ' +
+        'by Playwright at runtime and gates nothing.',
     };
   }
-  const ctxOpen = rm.indexOf('{', ctxIdx);
-  const ctxClose = ctxOpen === -1 ? -1 : matchBalancedBracket(rm, ctxOpen, '{', '}');
-  const ctxBody = ctxOpen === -1 || ctxClose === -1 ? '' : rm.slice(ctxOpen + 1, ctxClose);
+  const ctxOpen = useBody.indexOf('{', ctxIdx);
+  const ctxClose = ctxOpen === -1 ? -1 : matchBalancedBracket(useBody, ctxOpen, '{', '}');
+  const ctxBody = ctxOpen === -1 || ctxClose === -1 ? '' : useBody.slice(ctxOpen + 1, ctxClose);
   if (ctxBody.indexOf('reducedMotion') === -1) {
     return {
       ok: false,
@@ -352,7 +378,13 @@ export function reducedMotionProjectIsWired(configText) {
         '(ADR-0219 D2)',
     };
   }
-  if (rm.indexOf(A11Y_SPEC_NAME) !== -1) {
+  // ESCAPE-STRIPPED, because `testMatch` accepts RegExp literals as well as strings and
+  // `/a11y\\.spec\\.ts$/` contains no literal `a11y.spec.ts` substring while collecting
+  // exactly that file (MEASURED against the real Playwright collector: 2 files / 5 tests).
+  // The bite-proof's `CFG-widen-testMatch` mutant only tried the string-array form, so the
+  // 19-mutant set was blind to this until the artifact red-team pass found it.
+  const rmUnescaped = rm.split('\\').join('');
+  if (rm.indexOf(A11Y_SPEC_NAME) !== -1 || rmUnescaped.indexOf(A11Y_SPEC_NAME) !== -1) {
     return {
       ok: false,
       reason:
@@ -5069,6 +5101,48 @@ ${RM_PROJECTS_BLOCK}});
           pass: false,
           detail:
             'RM-testMatch-widened: reducedMotionProjectIsWired should reject a testMatch that also names a11y.spec.ts',
+        };
+      }
+    }
+
+    // --- RM-testMatch-regex-widened: the SAME widening, spelled with RegExp literals
+    //   and escaped dots → reject. `/a11y\\.spec\\.ts$/` contains no literal
+    //   `a11y.spec.ts` substring yet collects exactly that file — MEASURED against the
+    //   real Playwright collector at 2 files / 5 tests. The string-array fixture above
+    //   does NOT cover this: it was green while this shape passed. Found by the artifact
+    //   red-team pass, after the plan-phase pass and a 19-mutant bite-proof both missed it.
+    {
+      const rxWidened = RM_GOOD.split("testMatch: 'reduced-motion.spec.ts',").join(
+        'testMatch: [/reduced-motion.spec.ts$/, /a11y\\.spec\\.ts$/],',
+      );
+      const r = reducedMotionProjectIsWired(rxWidened);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            'RM-testMatch-regex-widened: reducedMotionProjectIsWired should reject a RegExp testMatch whose escaped-dot spelling still collects a11y.spec.ts',
+        };
+      }
+    }
+
+    // --- RM-contextOptions-outside-use: `contextOptions` declared as a SIBLING of
+    //   `use` rather than a member of it, injected by a spread so TypeScript's
+    //   excess-property check does not fire → reject. Playwright only promotes
+    //   `use.contextOptions` into `browser.newContext()`, so this config is a runtime
+    //   NO-OP while `client-typecheck` stays clean. MEASURED green against the
+    //   pre-fix predicate: nesting depth, not co-occurrence, is the criterion.
+    {
+      const sibling = RM_GOOD.split("use: { contextOptions: { reducedMotion: 'reduce' } },").join(
+        "...({ contextOptions: { reducedMotion: 'reduce' } }),\n      use: {},",
+      );
+      const r = reducedMotionProjectIsWired(sibling);
+      if (r.ok) {
+        return {
+          name,
+          pass: false,
+          detail:
+            "RM-contextOptions-outside-use: reducedMotionProjectIsWired should reject a `contextOptions` that is not inside the project's own `use:` block (Playwright ignores it at runtime)",
         };
       }
     }

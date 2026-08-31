@@ -46,7 +46,7 @@ renderer honours reduced motion would red permanently; writing one that asserts
 the current behaviour would cement the bug.
 
 What *is* end-to-end reachable is the stylesheet arm, shipped by rb-10 and
-hardened by rb-17 at `client/src/styles.css:94-99`:
+hardened by rb-17 at `client/src/styles.css:91-99`:
 
 ```css
 .hp-fill { transition: width 0.3s; }

@@ -4,7 +4,7 @@ import { expect, test } from '@playwright/test';
 // ADR-0219.
 //
 // SCOPE, STATED PLAINLY SO A LATER READER DOES NOT WIDEN IT (ADR-0219 D1). This
-// tier covers the STYLESHEET arm of A11Y-27 — `client/src/styles.css:94-99`'s
+// tier covers the STYLESHEET arm of A11Y-27 — `client/src/styles.css:91-99`'s
 // `.hp-fill` transition, neutralised by `@media (prefers-reduced-motion: reduce)`
 // — and NOT the RENDERER arm.
 //
@@ -106,8 +106,12 @@ test('the reduced-motion project config reaches Chromium, and the @media guard i
   // element; this spec joins no player and never opens the battle view — and
   // read its computed transition-duration. `'0s'` is the value Chromium reports
   // when the `@media (prefers-reduced-motion: reduce)` guard at
-  // styles.css:95-99 is BOTH present AND matching (verified against a real
-  // Chromium at authoring time; see RED-EVIDENCE.md).
+  // styles.css:95-99 is BOTH present AND matching. MEASURED, not assumed, against
+  // this repo's pinned Chromium (playwright 1.61.1) over the real styles.css:
+  //   reducedMotion 'reduce'        -> transitionDuration '0s',   transitionProperty 'none'
+  //   reducedMotion 'no-preference' -> transitionDuration '0.3s', transitionProperty 'width'
+  // and `.sr-only` computed `position: absolute` in BOTH, which is why clause 2
+  // above is a valid stylesheet-loaded probe independent of the guard.
   const reducedDuration = await page.evaluate(() => {
     const el = document.createElement('div');
     el.className = 'hp-fill';
