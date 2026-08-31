@@ -3097,6 +3097,7 @@ const M22_MOVEMENT_RS: &str = include_str!("movement.rs");
 const M22_NPC_RS: &str = include_str!("npc.rs");
 const M22_OBSERVABILITY_RS: &str = include_str!("observability.rs");
 const M22_PLAYTEST_RS: &str = include_str!("playtest.rs");
+const M22_PRIVACY_RS: &str = include_str!("privacy.rs");
 const M22_PVP_RS: &str = include_str!("pvp.rs");
 const M22_RAISING_RS: &str = include_str!("raising.rs");
 const M22_TAMING_RS: &str = include_str!("taming.rs");
@@ -3159,6 +3160,7 @@ fn m22_scanned_sources() -> Vec<(&'static str, &'static str)> {
         ("npc.rs", M22_NPC_RS),
         ("observability.rs", M22_OBSERVABILITY_RS),
         ("playtest.rs", M22_PLAYTEST_RS),
+        ("privacy.rs", M22_PRIVACY_RS),
         ("pvp.rs", M22_PVP_RS),
         ("raising.rs", M22_RAISING_RS),
         ("ranking.rs", RANKING_RS),
@@ -4328,4 +4330,645 @@ fn account_legal_state_accepts_legal_terminal_shape() {
          provenance) must remain LEGAL. A terminal clause that rejects the ABSENCE of a \
          marker inverts the rule and makes every ordinary account illegal."
     );
+}
+
+// ===========================================================================
+// rb-22 (ADR-0220) — PRE-CLAIM `export_bundle` ORPHAN, PURGED AT CLAIM TIME.
+//
+// EO-1 / EO-2 / EO-3 / EO-6. This is the arm that COMPILES ON THE PRE-FIX TREE:
+// it reads only `ACCOUNTS_RS` / `LIB_RS` (already `include_str!`-ed above) plus a
+// RUNTIME `std::fs` read of `src/privacy.rs` (the pvp_tests.rs:734 / ranking.rs
+// precedent — an `include_str!` of a file that does not exist yet is a COMPILE
+// error, which would make the proof-of-teeth RED indistinguishable from a broken
+// build). Nothing here references `M22_PRIVACY_RS`: that census constant is the
+// implementer's own mechanically-forced edit (F2), and a gating test that
+// depended on it could not be run before the fix.
+//
+// SCAN HYGIENE (this file's header rule, and the rb-22 plan's F4/F5): every
+// needle below is assembled from `concat!` fragments, so this file never carries
+// a contiguous write-verb chain, table or reducer attribute, outer cfg-test
+// attribute, or `mod privacy_tests;`-shaped declaration that a whole-tree scanner
+// (a dozen evals concatenate EVERY `.rs` file under `server-module/src`,
+// `_tests.rs` files included) could count as a real one. This section also
+// contains no block comment, no raw string, no backslash-escaped quote
+// character, and no char literal holding a quote character.
+// ===========================================================================
+
+/// A literal double quote, built from its byte (0x22) so this section carries
+/// neither a backslash-escaped quote — which unbalances a naive quote-pairing
+/// stripper in an eval that concatenates this file — nor a quote inside a char
+/// literal, which blinds a naive char-literal-unaware scanner. Memory card:
+/// server-module source-scan gotchas — use 0x22 constants.
+fn rb22_dq() -> char {
+    char::from(34u8)
+}
+
+/// The squashed call needle for the delegated purge, split mid-token so this
+/// file never carries the contiguous call site a future call-site census would
+/// count.
+fn rb22_nd_purge_call() -> String {
+    concat!("crate::privacy::", "purge_export", "_bundles(").to_string()
+}
+
+/// The squashed `fn` needle for the helper itself.
+fn rb22_nd_purge_fn() -> String {
+    concat!("fnpurge_export", "_bundles(").to_string()
+}
+
+/// THE FROZEN BODY PIN (red-team counter-tooth: the exact-equality backstop).
+///
+/// Derived by running the real three-stage pipeline over the sanctioned source
+/// by hand: `strip_rust_strings` (no strings here) -> `strip_rust_comments` ->
+/// `squash_ws`, which removes ALL whitespace including newlines. `privacy_tests`
+/// carries a POSITIVE CONTROL that re-derives this exact string from source text
+/// through the live pipeline, so this literal can never become unsatisfiable.
+///
+/// Containment pins alone were MEASURED insufficient (red-team `/tmp/rb22-attack`):
+/// `if false ...` around a correct body, a shadowed `let ids = Vec::new();`, a
+/// shadowed in-loop `let id: u64 = 0;` and an appended aliased foreign write all
+/// satisfy every needle-based clause and are clippy-clean. Equality kills the
+/// whole family in one assertion.
+fn rb22_frozen_purge_body() -> String {
+    [
+        "letids:Vec<u64>=",
+        concat!("ctx", ".db."),
+        concat!("export", "_bundle()"),
+        ".owner_identity().filter(owner).map(|c|c.chunk_id).collect();",
+        "foridinids{",
+        concat!("ctx", ".db."),
+        concat!("export", "_bundle()"),
+        concat!(".chunk_id().del", "ete(id);"),
+        "}",
+    ]
+    .concat()
+}
+
+/// The squashed signature slice `extract_squashed_fn_sig` returns.
+///
+/// NOTE (measured against the real helper, accounts_tests.rs:245-250): the slice
+/// starts at the `fn_needle`, so it does NOT include the visibility keyword.
+/// `pub(crate)` is therefore pinned SEPARATELY, as a prefix containment check.
+fn rb22_frozen_purge_sig() -> String {
+    concat!(
+        "fnpurge_export",
+        "_bundles(ctx:&ReducerContext,owner:Identity)"
+    )
+    .to_string()
+}
+
+/// The sanctioned sibling-test declaration in `privacy.rs`, in the
+/// comment-stripped / strings-kept / whitespace-squashed view.
+///
+/// It is load-bearing beyond tidiness: an INNER `#![cfg(test)]` does NOT contain
+/// the OUTER attribute substring that `monster-privacy.eval.mjs`'s `[SCOPE]`
+/// clause (:2759-2815) searches for, so that clause justifies excluding
+/// `privacy_tests.rs` from its scan surface ONLY through this PARENT
+/// declaration. Without it, `privacy_tests.rs` is an unjustified exclusion (eval
+/// RED) and — worse for this slice — the whole GREEN-arm test module is never
+/// compiled, silently emptying the gate.
+fn rb22_nd_test_mod_decl() -> String {
+    let dq = rb22_dq();
+    format!(
+        "{}{dq}privacy_tests.rs{dq}{}",
+        concat!("#[cfg", "(test)]", "#[pa", "th="),
+        concat!("]", "modprivacy_tests;")
+    )
+}
+
+/// RAW-text view for the module-header doc-truth scan: whitespace, `/` and `!`
+/// deleted, so a doc phrase rustfmt wrapped across two `//!` lines still reads as
+/// ONE token. Mirrors `m22_squashed_no_slashes` (:3263), which exists for exactly
+/// this reason — a comment cannot be scanned in any COMMENT-STRIPPED view.
+fn rb22_header_squash(src: &str) -> String {
+    src.chars()
+        .filter(|c| !c.is_whitespace() && *c != '/' && *c != '!')
+        .collect()
+}
+
+/// EO-1 (call site): `complete_guest_claim` delegates the guest's `export_bundle`
+/// purge EXACTLY ONCE, as a bare top-level statement, on the straight-line
+/// success path between `rekey_all` and `consume_claim_and_disarm`, with the
+/// RETIRED GUEST identity as the argument.
+///
+/// Nine clauses, each with its own pinned message (coarse mutants only ever prove
+/// the first assertion — every later clause needs a surgical mutant pinned by
+/// FAILURE MESSAGE):
+///   count / statement-form / four ordering anchors / reachability / guest-shadow
+///   / brace depth.
+///
+/// Kills: dropping the call; a second unreviewed call; the call re-argued to `me`
+///        (which purges the CLAIMER's chunks and leaves the guest's behind);
+///        wrapping it in `if ... ` or in a never-invoked closure (both keep every
+///        containment clause green); an early `return` inserted above it; and the
+///        MEASURED `let guest = me;` shadow, which re-points a textually perfect
+///        call at the wrong identity.
+#[test]
+fn rb22_claim_purges_guest_export_bundles_call_site() {
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    let body = extract_squashed_fn_body(&squashed, &nd_complete())
+        .expect("rb-22 [call/scope]: fn complete_guest_claim not found in accounts.rs");
+    let call = rb22_nd_purge_call();
+
+    // --- (1) exactly once, in this reducer -----------------------------------
+    let n = m22_count_occurrences(body, &call);
+    assert_eq!(
+        n, 1,
+        "rb-22 [call/count]: complete_guest_claim must call `{call}` EXACTLY once; found {n}. \
+         ZERO means a guest's pre-claim export_bundle chunks stay owned by the RETIRED guest \
+         identity forever: the S3 deletion cascade keys on a live account's own identity and \
+         structurally cannot reach them, and S4's 7-day TTL reaper is a second, independent \
+         expiry rather than a reachability guarantee. MORE THAN ONE is a second, unreviewed \
+         purge site."
+    );
+
+    // --- (2) a bare STATEMENT with the GUEST argument ------------------------
+    // `;<call>ctx,guest);` in squashed text pins three things at once: the
+    // argument (not `me`), statement position (not an operand of a closure or an
+    // iterator adaptor), and the preceding statement terminator. The eval's
+    // [S/depth0] clause documents the two MEASURED depth-0 shapes this kills:
+    // `let _p = || purge(...)` and `std::iter::empty().for_each(|_| purge(...))`.
+    let statement = format!(";{call}ctx,guest);");
+    assert!(
+        body.contains(statement.as_str()),
+        "rb-22 [call/statement]: the purge call in complete_guest_claim is not the bare \
+         statement `{statement}`. Either its argument is not the retired GUEST identity \
+         (purging the claimer's own chunks instead — a no-op that leaves the orphan), or the \
+         call is an OPERAND of something else: a closure binding or an iterator adaptor is \
+         brace-depth 0, satisfies every containment and ordering clause here, and never runs."
+    );
+
+    // --- (3) ordering on the success path ------------------------------------
+    let rekey = concat!("rekey", "_all(ctx,guest,me)?;");
+    let consume = concat!("consume_claim_and", "_disarm(ctx,guest);");
+    let update = concat!("account()", ".identity().update(claimed_account(");
+    let at_rekey = idx(body, rekey);
+    let at_purge = idx(body, &call);
+    let at_consume = idx(body, consume);
+    let at_update = idx(body, update);
+    let at_ok = body
+        .rfind(concat!("Ok", "(())"))
+        .expect("rb-22 [call/order-ok]: complete_guest_claim must end in Ok(())");
+    assert!(
+        at_rekey < at_purge,
+        "rb-22 [call/order-rekey]: the purge (offset {at_purge}) must run AFTER \
+         `rekey_all(ctx, guest, me)?;` (offset {at_rekey}). rekey_all is fallible and its `?` \
+         rolls the whole transaction back, so a purge sequenced before it can be undone by a \
+         later re-key failure while the caller is told the claim failed."
+    );
+    assert!(
+        at_purge < at_consume,
+        "rb-22 [call/order-consume]: the purge (offset {at_purge}) must run BEFORE \
+         consume_claim_and_disarm (offset {at_consume}). The consume+disarm is the last \
+         reference to the guest's claim row; sequencing the erase after it buys nothing and \
+         puts the slice's only new write outside the reviewed re-key/consume block."
+    );
+    assert!(
+        at_consume < at_update,
+        "rb-22 [call/order-update]: the AUTH-34 consume must still precede the account \
+         provenance update (consume at {at_consume}, update at {at_update}). rb-22 inserts one \
+         statement into this sequence and must not perturb the shipped ordering."
+    );
+    assert!(
+        at_update < at_ok,
+        "rb-22 [call/order-ok]: the provenance update (offset {at_update}) must precede the \
+         trailing Ok(()) (offset {at_ok})."
+    );
+
+    // --- (4) REACHABILITY, not just position ---------------------------------
+    // The eval's [S/reachable] (guest-claim-integrity.eval.mjs:1542-1555) bans the
+    // token `return` in this region because the success path is straight-line by
+    // design — every reject guard is guards 1..11, all of which precede rekey_all.
+    //
+    // TOKEN SEMANTICS, MEASURED: a word boundary is required on the LEFT ONLY.
+    // `squash_ws` fuses `return Err(..)` into `returnErr(` and `return Ok(())` into
+    // `returnOk(())`, so ALSO requiring a non-word byte on the right would blind
+    // this clause to precisely the early-exit shapes it exists to catch. The
+    // left-only rule still rejects an identifier such as `early_return`.
+    //
+    // WIDENED to `at_consume` (rb-22 artifact red-team, Finding 2): ending the
+    // scan at `at_purge` left the purge -> consume GAP unguarded on the Rust
+    // arm. An early `return` there (`if is_account_holder(ctx, me) { return
+    // Ok(()); }`) skips consume_claim_and_disarm (AUTH-34 single-use) and the
+    // AUTH-21 provenance stamp while the reducer returns Ok. This region now
+    // matches the eval's own [S/reachable] span (rekey_all -> consume).
+    let region = &body[at_rekey..at_consume];
+    let mut scan = 0usize;
+    while let Some(rel) = region[scan..].find("return") {
+        let at = scan + rel;
+        let is_token = at == 0 || !is_word_byte(region.as_bytes()[at - 1]);
+        assert!(
+            !is_token,
+            "rb-22 [call/reachable]: a `return` token sits between `rekey_all(ctx, guest, me)?;` \
+             and the purge call. After the re-key the success path is straight-line by design, \
+             so a return here either makes the purge dead code or adds an exit that skips it — \
+             while the count, statement, ordering and depth clauses above all stay GREEN, \
+             because every one of them reasons about POSITION and none about REACHABILITY. \
+             Region text: {region:?}"
+        );
+        scan = at + "return".len();
+    }
+
+    // --- (5) no `guest` shadow / rebind (MEASURED red-team finding) -----------
+    // `let guest = me;` inserted anywhere above the purge re-points a textually
+    // PERFECT call at the caller's own identity: the count, statement, argument,
+    // ordering, reachability and depth clauses are all satisfied, the code is
+    // clippy-clean, and the guest's chunks are never touched. The reducer binds
+    // `guest` exactly once, from `claim.guest_identity`.
+    let shadow = concat!("let", "guest");
+    let binds = m22_count_occurrences(body, shadow);
+    assert_eq!(
+        binds, 1,
+        "rb-22 [call/no-shadow]: complete_guest_claim binds `guest` {binds} time(s); exactly ONE \
+         binding is allowed (`let guest = claim.guest_identity;`). A shadow or rebind of `guest` \
+         is BANNED in this reducer: a second binding re-points the purge — and the AUTH-21 \
+         re-key and the AUTH-34 consume with it — at a different identity while every textual \
+         clause in this test stays green. Red-team MEASURED this exact shape as clippy-clean."
+    );
+
+    // --- (6) brace depth 0 (no conditional / no nested block) ----------------
+    let mut depth: i32 = 0;
+    for c in body[..at_purge].chars() {
+        if c == '{' {
+            depth += 1;
+        } else if c == '}' {
+            depth -= 1;
+        }
+    }
+    assert_eq!(
+        depth, 0,
+        "rb-22 [call/depth0]: the purge call sits at brace depth {depth} inside \
+         complete_guest_claim, not at the top level of the fn body. A conditional purge is a \
+         conditional erasure: a guard that is always FALSE at this point in the reducer keeps \
+         every count-, argument-, ordering- and region-based clause green while the chunks are \
+         never deleted."
+    );
+}
+
+/// EO-1 (uniqueness, whole file): `accounts.rs` names the delegated purge in
+/// EXACTLY ONE place.
+///
+/// The body-scoped test above pins the call that lives in `complete_guest_claim`;
+/// this one pins that there is no OTHER. Together they are total: a call moved
+/// out of the reducer (into `rekey_all`, say, where it is invisible to the claim
+/// ceremony's own review) fails the scoped test while keeping this count at one,
+/// and a decoy second call site fails this one while keeping the scoped test
+/// green.
+#[test]
+fn rb22_purge_called_exactly_once_in_accounts_rs() {
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    let call = rb22_nd_purge_call();
+    let n = m22_count_occurrences(&squashed, &call);
+    assert_eq!(
+        n, 1,
+        "rb-22 [call/whole-file]: accounts.rs must name `{call}` EXACTLY once; found {n}. Zero \
+         means the delegation was deleted or moved into another module's helper (where the \
+         claim ceremony's own reviewers never see it); more than one means a second purge site \
+         exists that no scoped test in this file constrains."
+    );
+}
+
+/// EO-1 (wiring): `lib.rs` compiles the new module UNCONDITIONALLY.
+///
+/// `mod privacy;` must be declared exactly once and must carry NO cfg attribute
+/// and no path attribute. A cfg-test-gated declaration compiles the helper into
+/// the TEST binary only — every source scan in this slice stays green while the
+/// published wasm module contains no purge at all. A path attribute on the
+/// declaration re-points the module at a different file, so the file this slice's
+/// tests read is not the file the crate compiles.
+///
+/// The attribute look-back is bounded to the declaration's own ITEM SPAN (from
+/// the end of the previous item — the previous `;` or `}` — up to the
+/// declaration), so an unrelated cfg attribute elsewhere in lib.rs can neither
+/// vouch for nor incriminate this one.
+#[test]
+fn rb22_lib_wires_mod_privacy() {
+    let squashed = stripped_for_scan(LIB_RS);
+    let squashed_decl = concat!("mod", "privacy;");
+    let n = m22_count_occurrences(&squashed, squashed_decl);
+    assert_eq!(
+        n, 1,
+        "rb-22 [lib/decl-count]: lib.rs must declare `mod privacy;` exactly once; found {n} \
+         occurrence(s) of the squashed form `{squashed_decl}`. Without the declaration the new \
+         owning module is not part of the crate at all: privacy.rs is dead text on disk, the \
+         call in accounts.rs does not resolve, and the sibling privacy_tests module is never \
+         compiled."
+    );
+
+    let clean = strip_rust_comments(&strip_rust_strings(LIB_RS));
+    let decl = concat!("mod ", "privacy;");
+    let at = clean.find(decl).unwrap_or_else(|| {
+        panic!(
+            "rb-22 [lib/decl-missing]: the declaration `{decl}` was not found in the \
+             comment-stripped lib.rs, so the attribute look-back below has no scope and would \
+             pass VACUOUSLY."
+        )
+    });
+    let prev_end = clean[..at].rfind([';', '}']).map_or(0, |i| i + 1);
+    let span = &clean[prev_end..at];
+    assert!(
+        !span.contains(concat!("#[cfg", "(")),
+        "rb-22 [lib/cfg]: `mod privacy;` carries a cfg attribute in its item span ({span:?}). A \
+         cfg-test gate here compiles the purge helper into the TEST binary only: every source \
+         scan in this slice stays GREEN while the PUBLISHED module never deletes a single \
+         export_bundle row. The module must be unconditional."
+    );
+    assert!(
+        !span.contains(concat!("#[pa", "th")),
+        "rb-22 [lib/path]: `mod privacy;` carries a path attribute in its item span ({span:?}). \
+         A re-pointed module means the file this slice's scans read is NOT the file the crate \
+         compiles — the gate would then be measuring dead text on disk."
+    );
+}
+
+/// EO-2 (helper shape) + EO-6 (proof-of-teeth ordering): `src/privacy.rs` exists
+/// and defines `purge_export_bundles` with EXACTLY the sanctioned body.
+///
+/// RUNTIME READ, not `include_str!`, on purpose: an `include_str!` of a file that
+/// does not exist yet is a COMPILE error, and a build that does not compile
+/// cannot produce a named-test RED. This is the pvp_tests.rs:734 /
+/// observability_tests.rs:438 idiom (`env!("CARGO_MANIFEST_DIR")` + `std::fs`),
+/// and it is what makes the pre-fix RED capturable by name.
+///
+/// This test DUPLICATES the privacy-side equality pin deliberately: the two arms
+/// have different failure messages, so a mutation can be attributed to either,
+/// and this arm survives even if the sibling module is ever restructured.
+///
+/// Kills: the helper missing / declared twice; a renamed or re-typed signature;
+///        a `pub fn` (crate-external surface) or a private fn (unreachable from
+///        accounts.rs); ANY deviation of the body — dead branch, extra binding,
+///        shadowed `ids`, shadowed loop `id`, appended foreign write, a
+///        one-row-only delete, a full-table sweep; and a missing sibling-test
+///        declaration, which would silently delete the entire GREEN arm.
+#[test]
+fn rb22_privacy_module_exists_with_purge_body() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("src")
+        .join("privacy.rs");
+    let src = std::fs::read_to_string(&path).unwrap_or_else(|e| {
+        panic!(
+            "rb-22: server-module/src/privacy.rs must exist and define purge_export_bundles \
+             [privacy/missing-file] (read of {} failed: {e})",
+            path.display()
+        )
+    });
+
+    let squashed = stripped_for_scan(&src);
+    let fn_needle = rb22_nd_purge_fn();
+
+    let n = m22_count_occurrences(&squashed, &fn_needle);
+    assert_eq!(
+        n, 1,
+        "rb-22 [privacy/decl]: privacy.rs must define `{fn_needle}` exactly once; found {n}. \
+         Zero means the module is still a stub (or the helper was renamed) and the guest's \
+         pre-claim export chunks are never erased."
+    );
+
+    let sig = extract_squashed_fn_sig(&squashed, &fn_needle)
+        .expect("rb-22 [privacy/sig]: the helper signature has no opening brace");
+    assert_eq!(
+        sig,
+        rb22_frozen_purge_sig(),
+        "rb-22 [privacy/sig]: the helper signature is not the frozen one. It must take the \
+         reducer context under the name `ctx` and an OWNER-GENERIC `owner: Identity` (never a \
+         claim-specific `guest`), so the S3 account-deletion cascade can reuse the same helper \
+         verbatim when it lands."
+    );
+    assert!(
+        squashed.contains(concat!("pub(crate)fnpurge_export", "_bundles(")),
+        "rb-22 [privacy/vis]: the helper must be `pub(crate)`. A private fn is unreachable from \
+         accounts.rs (the call would not compile), and a bare `pub` widens the crate's external \
+         surface for no reason."
+    );
+
+    let body = extract_squashed_fn_body(&squashed, &fn_needle)
+        .expect("rb-22 [privacy/body-extract]: the helper body is not brace-balanced");
+    assert_eq!(
+        body,
+        rb22_frozen_purge_body(),
+        "rb-22 [privacy/body]: purge_export_bundles body must be exactly the flat \
+         filter-collect-delete sequence — no conditionals, no extra bindings, no extra \
+         statements (kills dead-branch, shadowed-ids, shadowed-id, aliased-write bypasses; \
+         red-team /tmp/rb22-attack)."
+    );
+
+    let kept = squash_ws(&strip_comments_keep_strings(&src));
+    let decl = rb22_nd_test_mod_decl();
+    assert!(
+        kept.contains(decl.as_str()),
+        "rb-22 [privacy/testmod]: privacy.rs must end with `{decl}` (the accounts.rs:608-610 \
+         form). It is load-bearing twice over: without it the sibling GREEN-arm test module is \
+         never compiled, so every rb22p_ test silently ceases to exist; and monster-privacy's \
+         SCOPE clause justifies excluding a `_tests.rs` file from its scan surface only via \
+         this PARENT declaration, because an inner `#![cfg(test)]` does not contain the \
+         substring the eval looks for."
+    );
+}
+
+/// EO-3 (doc truth, D0): the `accounts.rs` WRITE-ISOLATION header names the
+/// privacy delegate.
+///
+/// The shipped header states that EVERY write to a pre-existing table goes
+/// through a `rekey_*` helper in one of six named modules. rb-22 adds a seventh
+/// delegate that is not a re-key, so leaving that paragraph unedited makes the D0
+/// doc — the first thing the next reader of this module consults before adding a
+/// write — actively FALSE.
+///
+/// Scanned over RAW text with whitespace, `/` and `!` deleted, because the claim
+/// lives in a COMMENT and every comment-stripping view blanks it. Mirrors
+/// `m22_squashed_no_slashes` (:3263) so a rustfmt re-wrap across two `//!` lines
+/// cannot fool the scan. This is a doc-truth tooth and nothing more: it does not
+/// claim to be behavioural evidence.
+#[test]
+fn rb22_accounts_header_names_the_privacy_delegate() {
+    let marker = "\nuse ";
+    let end = ACCOUNTS_RS.find(marker).unwrap_or_else(|| {
+        panic!(
+            "rb-22 [header/scope]: no top-level `use` item was found in accounts.rs, so the \
+             module-header region is undefined and this scan would run over the whole file \
+             (where the delegate is legitimately named in code) and pass VACUOUSLY."
+        )
+    });
+    let header = rb22_header_squash(&ACCOUNTS_RS[..end]);
+    assert!(
+        !header.is_empty(),
+        "rb-22 [header/scope]: the module-header region of accounts.rs is empty."
+    );
+
+    for (needle, what) in [
+        (
+            "privacy",
+            "the owning module the export_bundle write is delegated to",
+        ),
+        (
+            concat!("purge_export", "_bundles"),
+            "the delegated helper complete_guest_claim now calls",
+        ),
+    ] {
+        assert!(
+            header.contains(needle),
+            "rb-22 [header/doc-truth]: the accounts.rs WRITE-ISOLATION header does not mention \
+             `{needle}` ({what}). The shipped paragraph claims every delegated write goes \
+             through a `rekey_` helper in one of six named modules; rb-22 adds a delegate that \
+             is neither a re-key nor in that list, so an unedited header states something that \
+             is no longer true about this module's write surface."
+        );
+    }
+}
+
+/// DIAGNOSTIC ONLY, never a gate: how many occurrences of `needle` in an
+/// ALREADY-SQUASHED source are bare identifier tokens — a non-word byte on BOTH
+/// sides. The census below asserts on the RAW occurrence count and reports this
+/// split only so a failure says WHY it fired (see the boundary note there).
+fn rb22_bare_token_occurrences(squashed: &str, needle: &str) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+    let bytes = squashed.as_bytes();
+    let mut n = 0usize;
+    let mut start = 0usize;
+    while let Some(rel) = squashed[start..].find(needle) {
+        let at = start + rel;
+        let end = at + needle.len();
+        let left_free = at == 0 || !is_word_byte(bytes[at - 1]);
+        let right_free = end >= bytes.len() || !is_word_byte(bytes[end]);
+        if left_free && right_free {
+            n += 1;
+        }
+        start = end;
+    }
+    n
+}
+
+/// The sanctioned naming budget for one census file: how many times that file
+/// may NAME the delegated purge helper, and why that number and no other.
+fn rb22_purge_naming_budget(path: &str) -> (usize, &'static str) {
+    match path {
+        "accounts.rs" => (
+            1,
+            "the ONE sanctioned call site, the qualified call inside \
+             complete_guest_claim that the call-site test pins statement by statement. \
+             The module-header mention is a COMMENT and is blanked from this view, so 1 \
+             means exactly one CODE naming. TWO means a second call — and a second one \
+             written UNQUALIFIED under a local import is INVISIBLE to the \
+             crate-path-prefixed needle the whole-file test uses. ZERO means the \
+             delegation was deleted or moved",
+        ),
+        "privacy.rs" => (
+            1,
+            "the helper's own declaration and nothing else. TWO means the owning module \
+             names it a second time — a wrapper or a re-export that hands a different \
+             owner to a body the frozen-body pin still reports as correct. ZERO means \
+             the declaration was renamed or deleted",
+        ),
+        _ => (
+            0,
+            "no module other than accounts.rs may name it at all. The helper is \
+             `pub(crate)`, so EVERY module in the crate is already a legal caller, and a \
+             caller here deletes export_bundle rows for whatever owner IT derives — \
+             outside the claim ceremony this slice reviewed, and invisible to every \
+             accounts.rs-scoped gate in it. An aliasing import counts as a naming: even \
+             `use ... as p;` must spell the original name once",
+        ),
+    }
+}
+
+/// EO-1 (crate-wide naming census) — reducer-security-auditor Nit 2: NO module
+/// other than `accounts.rs` may NAME the delegated purge helper.
+///
+/// `rb22_purge_called_exactly_once_in_accounts_rs` scans accounts.rs ONLY, and
+/// the helper is `pub(crate)` — which makes every module in the crate a legal
+/// caller. A THIRD module (economy.rs, say) that adds an aliasing import and
+/// calls the helper with a badly-derived owner keeps every shipped rb-22 gate
+/// GREEN while erasing export chunks no reviewer of the claim ceremony ever saw.
+/// This test is what turns "there is exactly one call site" from a convention
+/// into an enforced fact.
+///
+/// SURFACE: `m22_scanned_sources()` (:3146) — the crate root plus every `mod`
+/// lib.rs declares, `_tests.rs` siblings excluded by construction (test code is
+/// not compiled into the published wasm, so it cannot erase a live row).
+/// `data_lifecycle_manifest_totality_bidirectional` pins that list against the
+/// crate's live `mod` declarations in BOTH directions, which is what closes the
+/// "add a module and leave it out of the census" hole; the [census/coverage]
+/// clause here is the local backstop against a census that merely shrank.
+///
+/// NEEDLE: the BARE token — no paren, no `crate::privacy::` prefix. One needle
+/// therefore catches all three spellings at once: the qualified call, an
+/// unqualified call under a plain import, and an ALIASED import, because even
+/// `use ... as p;` must spell the original name once before renaming it.
+///
+/// WORD BOUNDARIES — DELIBERATELY NOT REQUIRED ON EITHER SIDE. Measured against
+/// this file's own `stripped_for_scan`, whose `squash_ws` deletes ALL
+/// whitespace:
+///   * RIGHT: an aliasing import squashes to `..._bundlesasp;` — the byte after
+///     the needle is `a`, a WORD byte. A right-hand `is_word_byte` test would
+///     score the alias as part of a longer identifier and DROP it: a silent
+///     GREEN on precisely the bypass this test exists to kill.
+///   * LEFT: the declaration squashes to `pub(crate)fnpurge...` — the byte
+///     before the needle is `n`, a WORD byte. A left-hand test would drop the
+///     declaration, and a third module's same-named twin declaration with it.
+///
+/// This is the same fusion hazard the [call/reachable] clause documents in the
+/// opposite direction (there `squash_ws` fuses `return Err(..)` into
+/// `returnErr(`, so a RIGHT boundary had to be dropped). The accepted cost is a
+/// FALSE RED on a longer identifier sharing the prefix (a `_v2` twin): that is
+/// the safe direction, and it is loud — the message names the file, the count
+/// and the bare-versus-fused split. Under-counting would be a silent green on an
+/// unreviewed second erasure path.
+///
+/// Kills: the W24 aliased third-module call (`use ... as p;` plus `p(ctx, x);`
+///        in economy.rs); a fully-qualified third-module call; an unqualified
+///        third-module call under a plain import; a same-named twin declared in
+///        another module; a SECOND naming inside privacy.rs itself; a second
+///        UNQUALIFIED call inside accounts.rs, which the crate-path-prefixed
+///        needle of the whole-file test cannot see; and deletion of the
+///        sanctioned call, which takes accounts.rs to 0.
+///
+/// Does NOT kill: a caller in a `_tests.rs` sibling (outside the published wasm
+///        by construction, and outside this census by construction); a
+///        consistently-renamed helper — the signature and frozen-body pins in
+///        `rb22_privacy_module_exists_with_purge_body` own that.
+#[test]
+fn rb22_purge_named_nowhere_else_in_crate() {
+    let needle = concat!("purge_export", "_bundles");
+    let sources = m22_scanned_sources();
+    let paths: Vec<&str> = sources.iter().map(|(p, _)| *p).collect();
+
+    // --- anti-vacuity: the scanned surface itself ----------------------------
+    let n_paths = paths.len();
+    assert!(
+        n_paths >= 20,
+        "rb-22 [census/coverage]: the crate-wide census lists only {n_paths} source(s) \
+         ({paths:?}); the live tree lists 22. A shrunken census is a census that stopped \
+         looking — every per-file count below would then be GREEN about files nobody scanned, \
+         and the module a bypass lands in is exactly the one an attacker would drop from this \
+         list."
+    );
+    for required in ["accounts.rs", "privacy.rs"] {
+        assert!(
+            paths.contains(&required),
+            "rb-22 [census/coverage]: the census does not include {required} ({paths:?}). Those \
+             two files are the only ones with a NON-ZERO naming budget: without them the loop \
+             below proves only that a set of modules that were never allowed to name the helper \
+             do not name it, and the sanctioned call site is unmeasured."
+        );
+    }
+
+    // --- one budget per compiled module --------------------------------------
+    for (path, src) in &sources {
+        let squashed = stripped_for_scan(src);
+        let n = m22_count_occurrences(&squashed, needle);
+        let bare = rb22_bare_token_occurrences(&squashed, needle);
+        let fused = n.saturating_sub(bare);
+        let (expected, why) = rb22_purge_naming_budget(path);
+        assert_eq!(
+            n, expected,
+            "rb-22 [census/site]: {path} names the bare purge token {n} time(s); exactly \
+             {expected} is allowed — {why}. Boundary diagnostic: {bare} of the {n} are bare \
+             identifier tokens and {fused} are fused into a longer run of identifier bytes. In \
+             the whitespace-squashed view that fused shape is EITHER an aliasing import (the \
+             `as p;` tail fuses onto the name) OR a longer identifier sharing the prefix, and \
+             this census counts BOTH on purpose: dropping the fused ones would blind it to the \
+             alias, which is the exact bypass it exists to catch."
+        );
+    }
 }

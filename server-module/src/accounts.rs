@@ -3,8 +3,10 @@
 //! WRITE-ISOLATION (D0, WRITE-scoped not table-scoped): this module inserts /
 //! updates / deletes rows ONLY in `account`, `guest_claim`,
 //! `guest_claim_reaper_schedule`. Every write to any pre-existing table goes
-//! through a `pub(crate) fn rekey_*` helper in that table's OWNING module
-//! (monster_mgmt / inventory / npc / raising / economy / ranking). Bare reads of
+//! through a `pub(crate)` helper in that table's OWNING module — the
+//! `rekey_*` family (monster_mgmt / inventory / npc / raising / economy /
+//! ranking) plus `privacy::purge_export_bundles` (rb-22, ADR-0220: the
+//! claim-time purge of the retired guest's export chunks). Bare reads of
 //! `player` are permitted (no single owning module); the wallet is not read here
 //! at all (currency-integrity ACCESSOR_BYPASS gates reads too, so
 //! `economy::wallet_exists` delegates); battle liveness reuses
@@ -508,6 +510,11 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
     // Re-key → consume (single-use, AUTH-34) → stamp provenance (AUTH-21). No
     // TOCTOU: reducers are fully serialized (ADR-0106 D8), atomicity is free.
     rekey_all(ctx, guest, me)?;
+    // rb-22 (ADR-0220): the guest identity retires at this claim, so its
+    // pre-claim export_bundle chunks would orphan — the S3 cascade keys on a
+    // live account's own identity and cannot reach them. Purge them here, in
+    // the same transaction, via the owning module (G5/D0).
+    crate::privacy::purge_export_bundles(ctx, guest);
     consume_claim_and_disarm(ctx, guest);
     ctx.db
         .account()

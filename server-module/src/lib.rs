@@ -34,6 +34,7 @@ mod movement;
 mod npc;
 mod observability;
 mod playtest;
+mod privacy;
 mod pvp;
 mod raising;
 mod ranking;
