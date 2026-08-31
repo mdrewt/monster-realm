@@ -840,5 +840,19 @@
       "payload_json",
       "created_at_ms"
     ]
+  },
+  "account_deletion_reaper_schedule": {
+    "pk": "scheduled_id",
+    "visibility": "private",
+    "columns": {
+      "scheduled_id": "u64",
+      "scheduled_at": "ScheduleAt",
+      "account_identity": "Identity"
+    },
+    "order": [
+      "scheduled_id",
+      "scheduled_at",
+      "account_identity"
+    ]
   }
 }

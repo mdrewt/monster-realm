@@ -637,6 +637,26 @@ const IDENTITY_CTORS = [
 const SCHEDULER_GUARD = 'ifctx.sender()!=ctx.database_identity(){return';
 
 /**
+ * Is a live, complete scheduler guard present in this squashed reducer body?
+ *
+ * rb-24 hardening (red-team, MEASURED on the shipped guest reaper arm too):
+ * the bare needle stops at `{return`, and squashing fuses the token with
+ * whatever follows it, so the needle is a forgeable PREFIX — a guard branch
+ * opening with a helper call whose NAME merely starts with those six letters
+ * (`returned_scheduler_reject(ctx);`) contains the whole needle, compiles, is
+ * clippy-clean, and rejects nobody. A guard therefore counts only in one of
+ * its two COMPLETE forms: the rejecting `return Err(..)` or the silent-ignore
+ * `return Ok(())`.
+ * @param {string} body Squashed reducer body text.
+ * @returns {boolean} True when a complete guard form is present.
+ */
+function schedulerGuardIsLive(body) {
+  return (
+    body.indexOf(`${SCHEDULER_GUARD}Err(`) !== -1 || body.indexOf(`${SCHEDULER_GUARD}Ok(())`) !== -1
+  );
+}
+
+/**
  * Is this reducer parameter type a wire-safe scalar (recursively through
  * `Option<...>` / `Vec<...>`)?
  * @param {string} type Parameter type text.
@@ -726,7 +746,7 @@ export function checkNoClientIdentity(accountsSrc) {
       if (schedStruct !== undefined && schedStruct === t) {
         const span = findFnBody(stripped, r.name);
         const body = span === null ? '' : compactWs(stripped.slice(span.start, span.end));
-        if (body.indexOf(SCHEDULER_GUARD) !== -1) continue;
+        if (schedulerGuardIsLive(body)) continue;
         return (
           `[R/param-types] reducer \`${r.name}\` takes the scheduled struct \`${t}\` but its body ` +
           `does not contain the scheduler guard \`${SCHEDULER_GUARD}...\` — without it ANY client ` +
@@ -827,7 +847,7 @@ export function checkNoClientIdentity(accountsSrc) {
       schedStruct !== undefined &&
       argTypes.length === 1 &&
       argTypes[0] === schedStruct &&
-      body.indexOf(SCHEDULER_GUARD) !== -1;
+      schedulerGuardIsLive(body);
     if (wellShaped) continue;
     // Plain bindings, never a NESTED template literal in the message below: a
     // brace matcher that skips string spans (this repo's mutation probes, and
@@ -835,7 +855,7 @@ export function checkNoClientIdentity(accountsSrc) {
     // counts a `}` that is really inside a string, ending the function span
     // early. Measured on this very clause.
     const schedNote = schedStruct === undefined ? 'NONE' : schedStruct;
-    const guardNote = body.indexOf(SCHEDULER_GUARD) === -1 ? 'ABSENT' : 'present';
+    const guardNote = schedulerGuardIsLive(body) ? 'present' : 'ABSENT-OR-INERT';
     return (
       `[R/planned-shape] reducer \`${r.name}\` is a PLANNED ledger entry, so it is admitted ONLY ` +
       'in the shape that was pre-reviewed: a same-file `scheduled(...)` target whose sole ' +
@@ -1220,10 +1240,19 @@ export function hasEscapedDbHandle(flat) {
   return false;
 }
 
-// accounts.rs may WRITE only these three tables (D0 is WRITE-scoped, not
+// accounts.rs may WRITE only these four tables (D0 is WRITE-scoped, not
 // table-scoped). Bare READS of `player` are explicitly permitted — there is no
-// single owning module for it.
-const OWNED_TABLES = ['account', 'guest_claim', 'guest_claim_reaper_schedule'];
+// single owning module for it. FOUR as of rb-24 (ADR-0221): the deletion
+// reaper's own schedule table is colocated under the ADR-0056 exception, and
+// the widening is paid for by the Rust twin's rb24_owned_write_set_covers /
+// rb24_schedule_table_sole_writers teeth (a widened allowlist alone is a
+// permanently open slot).
+const OWNED_TABLES = [
+  'account',
+  'guest_claim',
+  'guest_claim_reaper_schedule',
+  'account_deletion_reaper_schedule',
+];
 const DB_ACCESSOR = 'ctx.db.';
 const WRITE_VERBS = ['.insert(', '.update(', '.delete('];
 const UFCS_WRITE_VERBS = ['::insert(', '::update(', '::delete('];
@@ -1854,6 +1883,18 @@ export const REKEY_MANIFEST = freezeManifest({
   'guest_claim_reaper_schedule.guest_identity': {
     policy: 'EXEMPT',
     reason: 'consumed, not rekeyed (AUTH-34 / AUTH-27)',
+  },
+  // rb-24 (ADR-0221). VERIFIED not an export_bundle-style honest-limit case:
+  // the column can never name a retired guest identity, because the arm is
+  // reachable only from delete_account (which requires an existing account
+  // row for the caller) and start_guest_claim rejects account holders
+  // (AUTH-7) — so a claim never retires an identity this column references.
+  'account_deletion_reaper_schedule.account_identity': {
+    policy: 'EXEMPT',
+    reason:
+      'never a foreign or retiring reference: armed only by delete_account for the ' +
+      'calling account holder, disarmed by cancel_account_deletion, and the fired ' +
+      'one-shot row is deleted by the runtime itself',
   },
   // CORRECTED during the m22-s2 security audit — the first draft said "the M22 cascade
   // sweeps this column", which is FALSE in exactly the case EXEMPT creates: the cascade

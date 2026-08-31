@@ -25,6 +25,13 @@ export const Account = __t.object("Account", {
 });
 export type Account = __Infer<typeof Account>;
 
+export const AccountDeletionReaperSchedule = __t.object("AccountDeletionReaperSchedule", {
+  scheduledId: __t.u64(),
+  scheduledAt: __t.scheduleAt(),
+  accountIdentity: __t.identity(),
+});
+export type AccountDeletionReaperSchedule = __Infer<typeof AccountDeletionReaperSchedule>;
+
 // The tagged union or sum type for the algebraic type `AccountStatus`.
 export const AccountStatus = __t.enum("AccountStatus", {
   Active: __t.unit(),

@@ -2550,11 +2550,12 @@ pub struct Inventory {
   const realVisTableNames = Object.keys(realVisAll);
   const realPublicCount = realVisTableNames.filter((t) => realVisAll[t] === 'public').length;
   const realPrivateCount = realVisTableNames.filter((t) => realVisAll[t] === 'private').length;
-  if (realPublicCount !== 18 || realPrivateCount !== 21) {
+  if (realPublicCount !== 18 || realPrivateCount !== 22) {
     teeth.push(
       `T-VIS-ANCHORS FAILED: the real corpus derives ${realPublicCount} public / ` +
-        `${realPrivateCount} private table(s), expected 18/21 (measured a6ae43c; +export_bundle ` +
-        `private, M22-S2/ADR-0207) — if a table's ` +
+        `${realPrivateCount} private table(s), expected 18/22 (measured a6ae43c; +export_bundle ` +
+        `private, M22-S2/ADR-0207; +account_deletion_reaper_schedule private, rb-24/ADR-0221) — ` +
+        `if a table's ` +
         `declared visibility legitimately changed, update this tooth's pinned counts DELIBERATELY ` +
         `from ADR-0199, not to silence a red`,
     );
@@ -2625,6 +2626,11 @@ pub struct Inventory {
     // canonical must-never-leak shape (ADR-0015); read path is the S4
     // owner-scoped view, never the table.
     'export_bundle',
+    // rb-24 (ADR-0221): a row names an identity with a pending deletion plus
+    // the wall-clock instant its data will be erased — publishing that is a
+    // directory of pending deletions. Scheduled tables are private like every
+    // other *_schedule row here.
+    'account_deletion_reaper_schedule',
   ];
   for (const t of pinnedPrivateTables) {
     if (realVisAll[t] !== 'private') {
