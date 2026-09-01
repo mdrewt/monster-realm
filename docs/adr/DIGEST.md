@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 188 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 189 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -197,6 +197,7 @@ Generated from 188 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0220](./0220-guest-export-orphan-purged-at-claim.md) | 0220 — A guest's pre-claim export chunks are DELETED at claim time in a delegated privacy.rs helper, keeping the REKEY_MANIFEST EXEMPT policy truthful | Accepted | security-authz, schema-persistence, ci-gates | rb-22 (residual R-m22-s2-S3-GUEST-EXPORT-ORPHAN) | Pre-claim `export_bundle` chunks are DELETED at claim time by a delegated helper in the new owning module `privacy.rs`, keeping the REKEY_MANIFEST EXEMPT policy truthful; not re-keyed, not TTL-only. |
 | [0221](./0221-account-deletion-reaper-schedule-declared.md) | 0221 — AccountDeletionReaperSchedule ships atomically with a guarded no-op reaper, classified NotOwned, armed/disarmed only by delete/cancel | Accepted | schema-persistence, security-authz, ci-gates | rb-24 (residual R-m22-s2-X15; the schema-declaration slice the M22 spec table named m22-s3) | `account_deletion_reaper_schedule` lands additively WITH a scheduler-guarded no-op `account_deletion_reaper` (scheduled-ness is migration-frozen), classified NotOwned, armed only by delete_account, disarmed only by cancel_account_deletion. |
 | [0222](./0222-g6-needle-key-correspondence.md) | 0222 — A REKEY needle must correspond to its own key's table: `[G6/correspondence]` proves the named helper reaches `db.<table>(` and writes through it | Accepted | ci-gates, security-authz | rb-25 (residual R-rb-2-X10, promoted from rb-2's acceptance ledger) | A REKEY needle must correspond to its own key's table: `[G6/correspondence]` resolves it to exactly one `fn` and requires that body to reach `db.<table>(`, writing through it on the rekey half; `[G6/mirror]` pins the one exception. |
+| [0223](./0223-g6-policy-decisions-recorded-once-in-0208.md) | 0223 — The rb-2 / rb-3 G6 decisions are recorded once, in ADR-0208 D1/D2; ADR-0207's consumer prose is corrected rather than duplicated | Accepted | ci-gates, tooling-docs | rb-26 (residual R-rb-2-X9; also dispositions R-rb-3-X9 for the queued rb-27) | The policy-discriminator and own-property-boundary designs stay recorded only in ADR-0208 D1/D2; ADR-0207's four consumer regions are corrected in place; rb-27 extends ADR-0208 instead of minting a competing number. |
 
 ## Harness design corpus (H- namespace)
 
@@ -553,6 +554,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0220](./0220-guest-export-orphan-purged-at-claim.md) — rb-22 (residual R-m22-s2-S3-GUEST-EXPORT-ORPHAN) — 0220 — A guest's pre-claim export chunks are DELETED at claim time in a delegated privacy.rs helper, keeping the REKEY_MANIFEST EXEMPT policy truthful (Accepted)
 - [0221](./0221-account-deletion-reaper-schedule-declared.md) — rb-24 (residual R-m22-s2-X15; the schema-declaration slice the M22 spec table named m22-s3) — 0221 — AccountDeletionReaperSchedule ships atomically with a guarded no-op reaper, classified NotOwned, armed/disarmed only by delete/cancel (Accepted)
 - [0222](./0222-g6-needle-key-correspondence.md) — rb-25 (residual R-rb-2-X10, promoted from rb-2's acceptance ledger) — 0222 — A REKEY needle must correspond to its own key's table: `[G6/correspondence]` proves the named helper reaches `db.<table>(` and writes through it (Accepted)
+- [0223](./0223-g6-policy-decisions-recorded-once-in-0208.md) — rb-26 (residual R-rb-2-X9; also dispositions R-rb-3-X9 for the queued rb-27) — 0223 — The rb-2 / rb-3 G6 decisions are recorded once, in ADR-0208 D1/D2; ADR-0207's consumer prose is corrected rather than duplicated (Accepted)
 
 ### tooling-docs
 
@@ -591,6 +593,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0203](./0203-nightly-red-response-policy.md) — 16r-h (`specs/monster-realm-v2/M-postgate-sixteenth-review-residuals.spec.md` §16r-h) — 0203 — Nightly red-response policy: one machine-checked file, key-set-equal to the wired workflow, cited back from every job (Accepted)
 - [0209](./0209-eval-harness-completeness-guard.md) — rb-5 (residual R-m22-s0-X4) — 0209 — The eval harness carries its own completeness guard: a premature exit can no longer end the run at zero (Accepted)
 - [0215](./0215-css-comment-stripper-single-owner.md) — rb-12 (residual R-m23-s2-X6) — 0215 — One `stripCssComments`, owned by the `.mjs` tier: consolidation beats corpus agreement (Accepted)
+- [0223](./0223-g6-policy-decisions-recorded-once-in-0208.md) — rb-26 (residual R-rb-2-X9; also dispositions R-rb-3-X9 for the queued rb-27) — 0223 — The rb-2 / rb-3 G6 decisions are recorded once, in ADR-0208 D1/D2; ADR-0207's consumer prose is corrected rather than duplicated (Accepted)
 
 ### security-authz
 
