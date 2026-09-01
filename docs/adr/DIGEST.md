@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 190 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 191 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -199,6 +199,7 @@ Generated from 190 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0222](./0222-g6-needle-key-correspondence.md) | 0222 — A REKEY needle must correspond to its own key's table: `[G6/correspondence]` proves the named helper reaches `db.<table>(` and writes through it | Accepted | ci-gates, security-authz | rb-25 (residual R-rb-2-X10, promoted from rb-2's acceptance ledger) | A REKEY needle must correspond to its own key's table: `[G6/correspondence]` resolves it to exactly one `fn` and requires that body to reach `db.<table>(`, writing through it on the rekey half; `[G6/mirror]` pins the one exception. |
 | [0223](./0223-g6-policy-decisions-recorded-once-in-0208.md) | 0223 — The rb-2 / rb-3 G6 decisions are recorded once, in ADR-0208 D1/D2; ADR-0207's consumer prose is corrected rather than duplicated | Accepted | ci-gates, tooling-docs | rb-26 (residual R-rb-2-X9; also dispositions R-rb-3-X9 for the queued rb-27) | The policy-discriminator and own-property-boundary designs stay recorded only in ADR-0208 D1/D2; ADR-0207's four consumer regions are corrected in place; rb-27 extends ADR-0208 instead of minting a competing number. |
 | [0224](./0224-retire-scanner-script-gates.md) | Retire scanner-script gates: mechanical checks become ordinary tests; the rest becomes review | Accepted | tooling-docs, ci-gates | n/a (loop-process decision, operator-directed; no game-design surface) | Bespoke `evals/*.eval.mjs` scanner-script gates are retired as the default enforcement |
+| [0225](./0225-s3-rightsized-cascade-deferred-g5-write-isolation.md) | 0225 — S3 right-sized: guards + recheck + gate predicate ship in accounts.rs; the PRV1-6 cascade defers to S3b behind G5 write isolation | Accepted | security-authz, schema-persistence, ci-gates | m22-s3 | S3 ships the terminal-cancel guard, the reaper recheck skeleton and `should_reject_for_deletion` in accounts.rs; the PRV1-6 cascade defers to S3b — G5 write isolation demands per-module erase helpers outside S3's touches. |
 
 ## Harness design corpus (H- namespace)
 
@@ -409,6 +410,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0208](./0208-g6-rekey-manifest-gate-hardening.md) — rb-4 (residual R-m22-s0-X3; also records the rb-2 / rb-3 decisions both sibling ledgers deferred to this ADR) — 0208 — The G6 re-key manifest gate hardening: an explicit policy discriminator, an own-property boundary, and alias resolution in the column walker (Accepted)
 - [0220](./0220-guest-export-orphan-purged-at-claim.md) — rb-22 (residual R-m22-s2-S3-GUEST-EXPORT-ORPHAN) — 0220 — A guest's pre-claim export chunks are DELETED at claim time in a delegated privacy.rs helper, keeping the REKEY_MANIFEST EXEMPT policy truthful (Accepted)
 - [0221](./0221-account-deletion-reaper-schedule-declared.md) — rb-24 (residual R-m22-s2-X15; the schema-declaration slice the M22 spec table named m22-s3) — 0221 — AccountDeletionReaperSchedule ships atomically with a guarded no-op reaper, classified NotOwned, armed/disarmed only by delete/cancel (Accepted)
+- [0225](./0225-s3-rightsized-cascade-deferred-g5-write-isolation.md) — m22-s3 — 0225 — S3 right-sized: guards + recheck + gate predicate ship in accounts.rs; the PRV1-6 cascade defers to S3b behind G5 write isolation (Accepted)
 
 ### client-ui
 
@@ -557,6 +559,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0222](./0222-g6-needle-key-correspondence.md) — rb-25 (residual R-rb-2-X10, promoted from rb-2's acceptance ledger) — 0222 — A REKEY needle must correspond to its own key's table: `[G6/correspondence]` proves the named helper reaches `db.<table>(` and writes through it (Accepted)
 - [0223](./0223-g6-policy-decisions-recorded-once-in-0208.md) — rb-26 (residual R-rb-2-X9; also dispositions R-rb-3-X9 for the queued rb-27) — 0223 — The rb-2 / rb-3 G6 decisions are recorded once, in ADR-0208 D1/D2; ADR-0207's consumer prose is corrected rather than duplicated (Accepted)
 - [0224](./0224-retire-scanner-script-gates.md) — n/a (loop-process decision, operator-directed; no game-design surface) — Retire scanner-script gates: mechanical checks become ordinary tests; the rest becomes review (Accepted)
+- [0225](./0225-s3-rightsized-cascade-deferred-g5-write-isolation.md) — m22-s3 — 0225 — S3 right-sized: guards + recheck + gate predicate ship in accounts.rs; the PRV1-6 cascade defers to S3b behind G5 write isolation (Accepted)
 
 ### tooling-docs
 
@@ -647,6 +650,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0220](./0220-guest-export-orphan-purged-at-claim.md) — rb-22 (residual R-m22-s2-S3-GUEST-EXPORT-ORPHAN) — 0220 — A guest's pre-claim export chunks are DELETED at claim time in a delegated privacy.rs helper, keeping the REKEY_MANIFEST EXEMPT policy truthful (Accepted)
 - [0221](./0221-account-deletion-reaper-schedule-declared.md) — rb-24 (residual R-m22-s2-X15; the schema-declaration slice the M22 spec table named m22-s3) — 0221 — AccountDeletionReaperSchedule ships atomically with a guarded no-op reaper, classified NotOwned, armed/disarmed only by delete/cancel (Accepted)
 - [0222](./0222-g6-needle-key-correspondence.md) — rb-25 (residual R-rb-2-X10, promoted from rb-2's acceptance ledger) — 0222 — A REKEY needle must correspond to its own key's table: `[G6/correspondence]` proves the named helper reaches `db.<table>(` and writes through it (Accepted)
+- [0225](./0225-s3-rightsized-cascade-deferred-g5-write-isolation.md) — m22-s3 — 0225 — S3 right-sized: guards + recheck + gate predicate ship in accounts.rs; the PRV1-6 cascade defers to S3b behind G5 write isolation (Accepted)
 
 ### economy-quests
 
