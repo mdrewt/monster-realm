@@ -57,6 +57,7 @@ import FleeReducer from "./flee_reducer";
 import HealPartyReducer from "./heal_party_reducer";
 import JoinGameReducer from "./join_game_reducer";
 import ProposeTradeReducer from "./propose_trade_reducer";
+import RequestDataExportReducer from "./request_data_export_reducer";
 import RespondTradeReducer from "./respond_trade_reducer";
 import SellReducer from "./sell_reducer";
 import SetMoveReducer from "./set_move_reducer";
@@ -86,6 +87,7 @@ import ItemRowRow from "./item_row_table";
 import MyAccountRow from "./my_account_table";
 import MyBattleRow from "./my_battle_table";
 import MyConversationRow from "./my_conversation_table";
+import MyExportBundleRow from "./my_export_bundle_table";
 import MyMonsterPubRow from "./my_monster_pub_table";
 import MyWalletRow from "./my_wallet_table";
 import NpcRow from "./npc_table";
@@ -363,6 +365,13 @@ const tablesSchema = __schema({
     constraints: [
     ],
   }, MyConversationRow),
+  myExportBundle: __table({
+    name: 'my_export_bundle',
+    indexes: [
+    ],
+    constraints: [
+    ],
+  }, MyExportBundleRow),
   myMonsterPub: __table({
     name: 'my_monster_pub',
     indexes: [
@@ -404,6 +413,7 @@ const reducersSchema = __reducers(
   __reducerSchema("heal_party", HealPartyReducer),
   __reducerSchema("join_game", JoinGameReducer),
   __reducerSchema("propose_trade", ProposeTradeReducer),
+  __reducerSchema("request_data_export", RequestDataExportReducer),
   __reducerSchema("respond_trade", RespondTradeReducer),
   __reducerSchema("sell", SellReducer),
   __reducerSchema("set_move", SetMoveReducer),
@@ -457,6 +467,8 @@ type __SchemaWithTableAccessorAliases = Omit<typeof tablesSchema.schemaType, "ta
     readonly "my_battle": Omit<typeof tablesSchema.schemaType.tables["myBattle"], "accessorName"> & { readonly accessorName: "my_battle" };
     /** @deprecated Use `myConversation` instead. This alias will be removed in the next major version. */
     readonly "my_conversation": Omit<typeof tablesSchema.schemaType.tables["myConversation"], "accessorName"> & { readonly accessorName: "my_conversation" };
+    /** @deprecated Use `myExportBundle` instead. This alias will be removed in the next major version. */
+    readonly "my_export_bundle": Omit<typeof tablesSchema.schemaType.tables["myExportBundle"], "accessorName"> & { readonly accessorName: "my_export_bundle" };
     /** @deprecated Use `myMonsterPub` instead. This alias will be removed in the next major version. */
     readonly "my_monster_pub": Omit<typeof tablesSchema.schemaType.tables["myMonsterPub"], "accessorName"> & { readonly accessorName: "my_monster_pub" };
     /** @deprecated Use `myWallet` instead. This alias will be removed in the next major version. */
@@ -494,6 +506,7 @@ const tableAccessorAliases = {
   "my_account": "myAccount",
   "my_battle": "myBattle",
   "my_conversation": "myConversation",
+  "my_export_bundle": "myExportBundle",
   "my_monster_pub": "myMonsterPub",
   "my_wallet": "myWallet",
 } as const;
@@ -546,6 +559,8 @@ export type DbView = __DbViewBase & {
   readonly "my_battle": __DbViewBase["myBattle"];
   /** @deprecated Use `myConversation` instead. This alias will be removed in the next major version. */
   readonly "my_conversation": __DbViewBase["myConversation"];
+  /** @deprecated Use `myExportBundle` instead. This alias will be removed in the next major version. */
+  readonly "my_export_bundle": __DbViewBase["myExportBundle"];
   /** @deprecated Use `myMonsterPub` instead. This alias will be removed in the next major version. */
   readonly "my_monster_pub": __DbViewBase["myMonsterPub"];
   /** @deprecated Use `myWallet` instead. This alias will be removed in the next major version. */
@@ -584,6 +599,8 @@ export type Tables = __TablesBase & {
   readonly "my_battle": __TablesBase["myBattle"];
   /** @deprecated Use `myConversation` instead. This alias will be removed in the next major version. */
   readonly "my_conversation": __TablesBase["myConversation"];
+  /** @deprecated Use `myExportBundle` instead. This alias will be removed in the next major version. */
+  readonly "my_export_bundle": __TablesBase["myExportBundle"];
   /** @deprecated Use `myMonsterPub` instead. This alias will be removed in the next major version. */
   readonly "my_monster_pub": __TablesBase["myMonsterPub"];
   /** @deprecated Use `myWallet` instead. This alias will be removed in the next major version. */

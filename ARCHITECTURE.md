@@ -427,6 +427,18 @@ ungated so live trades/battles/challenges are never force-terminated at request 
 force-termination, ADR-0227 D5). PvE `battle::start_battle` and shop `economy::buy`/`sell`
 remain ungated §4.7 targets, deferred with the PRV1-7 crate-wide slice.
 
+**m22-s4** (ADR-0226) landed the §5 export: `request_data_export` walks the
+manifest's 17 `exportable: true` tables in manifest order (compile-locked
+registry totality), serializes the caller's own rows to hand-rolled per-field
+JSON (privacy.rs may carry no string literal, so every token is `stringify!`;
+u64/i64 emit as quoted decimal strings — the frozen S4↔S8 contract), sub-chunks
+at `game_core::EXPORT_CHUNK_ROWS` with request-wide `chunk_index`/`total_chunks`,
+and guards subject-existence → deletion-gate → cooldown → purge-before-write.
+`battle` is the one redacted table (counterparty identity + monster list nulled,
+`state` omitted); the owner-scoped `my_export_bundle` view is the sole read
+path. The PRV1-14 TTL reaper is DEFERred to S4b (scheduled tables are
+automigration-frozen) — S4b must land before ANY public exposure.
+
 ## Server-module domain modules (M8.9 — ADR-0056)
 
 The `server-module` crate is split by domain into cohesive submodules of the **same**
@@ -461,7 +473,7 @@ invalidates downstream `touches:` declarations — **keep the file names stable.
 | `content_cache.rs` | `LazyLock` hot-path content caches (zone maps, evolutions, dialogue trees, quests, skills, items, abilities, heal locations) + the `content_version`-keyed rebuildable type-chart cache — no reducers; ADR-0089/ADR-0170 | `content_cache_tests.rs` |
 | `ranking.rs` | `get_or_init_profile` + `apply_pvp_rating` (module-write-only `profile` rating/W/L — applied only from the `settle_pvp_battle` funnel in `pvp.rs`; M17a — ADR-0119) + the module's one reducer `set_profile_name` (writes `player.name` only, profile-untouching; the ADR-0125 mirror surfaces the rename on the leaderboard — pt-c1, ADR-0132) | `ranking_tests.rs` |
 | `playtest.rs` | the PRIVATE append-only `playtest_event` capture table + its interval-singleton TTL+cap reaper (`playtest_reaper` scheduler-only reducer + `playtest_reaper_schedule` table, armed by `ensure_playtest_reaper` from init/sync_content); `record_recruit_event` fires from `attempt_recruit` at the H1 decision point; pure seams `hp_permille`/`plan_reap`/`plan_reaper_arm` (server-only observability, NOT a game rule; pt-b2 — ADR-0131; report via `just playtest-report`, which since 16r-d decodes `spacetime sql --format json` envelopes with fail-loud validation instead of parsing the CLI's *display* rendering — that text format carries no stability contract and 2.8.1 silently changed it; envelope shape + decoder contract in ADR-0197 D19-D23) | `playtest_tests.rs` |
-| `privacy.rs` | M22 privacy/data-lifecycle module — S4's assigned home for `export_bundle` machinery; today the claim-time purge of a retired guest's export chunks (`purge_export_bundles`, owner-generic for S3 cascade reuse; rb-22 — ADR-0220) | `privacy_tests.rs` |
+| `privacy.rs` | M22 privacy/data-lifecycle module: the claim-time purge of a retired guest's export chunks (`purge_export_bundles`, owner-generic for S3 cascade reuse; rb-22 — ADR-0220) + the §5 data export (m22-s4 — ADR-0226): `request_data_export` reducer, `my_export_bundle` owner-scoped view, the manifest-total `EXPORTERS` registry with 17 per-table JSON serializers, request-wide chunk planner and zero-new-state cooldown | `privacy_tests.rs` |
 
 Behavior is provably unchanged because table/reducer **names are explicit**, so
 regenerated TypeScript bindings and the schema snapshot are byte-identical — the

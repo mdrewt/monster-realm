@@ -435,240 +435,178 @@ fn json_monster_cards_into(out: &mut String, items: &[MonsterCard]) {
 // the -D warnings build (so no destructured column can be silently dropped).
 // ===========================================================================
 
+// Field-access spelling, not the destructure the sibling serializers use:
+// the no-idle-accrual eval reads ANY Monster brace literal in production
+// code as a row CONSTRUCTION (its CHECK C cannot tell a destructuring
+// pattern from a builder, and it tracks alias renames). Column totality is
+// enforced by the test fixtures instead — they construct every row with a
+// no-spread struct literal, so a new column reds the test build.
 fn json_monster(row: &Monster) -> String {
-    let Monster {
-        monster_id,
-        owner_identity,
-        species_id,
-        nickname,
-        level,
-        xp,
-        iv_hp,
-        iv_attack,
-        iv_defense,
-        iv_speed,
-        iv_sp_attack,
-        iv_sp_defense,
-        nature_kind,
-        ev_hp,
-        ev_attack,
-        ev_defense,
-        ev_speed,
-        ev_sp_attack,
-        ev_sp_defense,
-        stat_hp,
-        stat_attack,
-        stat_defense,
-        stat_speed,
-        stat_sp_attack,
-        stat_sp_defense,
-        current_hp,
-        party_slot,
-        last_care_at_ms,
-        essence_fire,
-        essence_water,
-        essence_plant,
-        essence_electric,
-        essence_earth,
-        essence_wind,
-        essence_light,
-        essence_dark,
-        trust_favorable_count,
-        trust_unfavorable_count,
-        trust_favorable_battle_day_epoch,
-        quality_time_ticks_total,
-        quality_time_accum_ms,
-        quality_time_window_ms,
-        quality_time_window_start_ms,
-        last_essence_train_at_ms,
-    } = row;
     let mut out = String::new();
     let mut first = true;
     out.push('{');
     json_field_into(&mut out, &mut first, stringify!(monster_id));
-    json_u64_into(&mut out, *monster_id);
+    json_u64_into(&mut out, row.monster_id);
     json_field_into(&mut out, &mut first, stringify!(owner_identity));
-    json_identity_into(&mut out, *owner_identity);
+    json_identity_into(&mut out, row.owner_identity);
     json_field_into(&mut out, &mut first, stringify!(species_id));
-    json_u32_into(&mut out, *species_id);
+    json_u32_into(&mut out, row.species_id);
     json_field_into(&mut out, &mut first, stringify!(nickname));
-    json_str_into(&mut out, nickname);
+    json_str_into(&mut out, &row.nickname);
     json_field_into(&mut out, &mut first, stringify!(level));
-    json_u8_into(&mut out, *level);
+    json_u8_into(&mut out, row.level);
     json_field_into(&mut out, &mut first, stringify!(xp));
-    json_u32_into(&mut out, *xp);
+    json_u32_into(&mut out, row.xp);
     json_field_into(&mut out, &mut first, stringify!(iv_hp));
-    json_u8_into(&mut out, *iv_hp);
+    json_u8_into(&mut out, row.iv_hp);
     json_field_into(&mut out, &mut first, stringify!(iv_attack));
-    json_u8_into(&mut out, *iv_attack);
+    json_u8_into(&mut out, row.iv_attack);
     json_field_into(&mut out, &mut first, stringify!(iv_defense));
-    json_u8_into(&mut out, *iv_defense);
+    json_u8_into(&mut out, row.iv_defense);
     json_field_into(&mut out, &mut first, stringify!(iv_speed));
-    json_u8_into(&mut out, *iv_speed);
+    json_u8_into(&mut out, row.iv_speed);
     json_field_into(&mut out, &mut first, stringify!(iv_sp_attack));
-    json_u8_into(&mut out, *iv_sp_attack);
+    json_u8_into(&mut out, row.iv_sp_attack);
     json_field_into(&mut out, &mut first, stringify!(iv_sp_defense));
-    json_u8_into(&mut out, *iv_sp_defense);
+    json_u8_into(&mut out, row.iv_sp_defense);
     json_field_into(&mut out, &mut first, stringify!(nature_kind));
-    json_nature_into(&mut out, nature_kind);
+    json_nature_into(&mut out, &row.nature_kind);
     json_field_into(&mut out, &mut first, stringify!(ev_hp));
-    json_u16_into(&mut out, *ev_hp);
+    json_u16_into(&mut out, row.ev_hp);
     json_field_into(&mut out, &mut first, stringify!(ev_attack));
-    json_u16_into(&mut out, *ev_attack);
+    json_u16_into(&mut out, row.ev_attack);
     json_field_into(&mut out, &mut first, stringify!(ev_defense));
-    json_u16_into(&mut out, *ev_defense);
+    json_u16_into(&mut out, row.ev_defense);
     json_field_into(&mut out, &mut first, stringify!(ev_speed));
-    json_u16_into(&mut out, *ev_speed);
+    json_u16_into(&mut out, row.ev_speed);
     json_field_into(&mut out, &mut first, stringify!(ev_sp_attack));
-    json_u16_into(&mut out, *ev_sp_attack);
+    json_u16_into(&mut out, row.ev_sp_attack);
     json_field_into(&mut out, &mut first, stringify!(ev_sp_defense));
-    json_u16_into(&mut out, *ev_sp_defense);
+    json_u16_into(&mut out, row.ev_sp_defense);
     json_field_into(&mut out, &mut first, stringify!(stat_hp));
-    json_u16_into(&mut out, *stat_hp);
+    json_u16_into(&mut out, row.stat_hp);
     json_field_into(&mut out, &mut first, stringify!(stat_attack));
-    json_u16_into(&mut out, *stat_attack);
+    json_u16_into(&mut out, row.stat_attack);
     json_field_into(&mut out, &mut first, stringify!(stat_defense));
-    json_u16_into(&mut out, *stat_defense);
+    json_u16_into(&mut out, row.stat_defense);
     json_field_into(&mut out, &mut first, stringify!(stat_speed));
-    json_u16_into(&mut out, *stat_speed);
+    json_u16_into(&mut out, row.stat_speed);
     json_field_into(&mut out, &mut first, stringify!(stat_sp_attack));
-    json_u16_into(&mut out, *stat_sp_attack);
+    json_u16_into(&mut out, row.stat_sp_attack);
     json_field_into(&mut out, &mut first, stringify!(stat_sp_defense));
-    json_u16_into(&mut out, *stat_sp_defense);
+    json_u16_into(&mut out, row.stat_sp_defense);
     json_field_into(&mut out, &mut first, stringify!(current_hp));
-    json_u16_into(&mut out, *current_hp);
+    json_u16_into(&mut out, row.current_hp);
     json_field_into(&mut out, &mut first, stringify!(party_slot));
-    json_u8_into(&mut out, *party_slot);
+    json_u8_into(&mut out, row.party_slot);
     json_field_into(&mut out, &mut first, stringify!(last_care_at_ms));
-    json_i64_into(&mut out, *last_care_at_ms);
+    json_i64_into(&mut out, row.last_care_at_ms);
     json_field_into(&mut out, &mut first, stringify!(essence_fire));
-    json_u32_into(&mut out, *essence_fire);
+    json_u32_into(&mut out, row.essence_fire);
     json_field_into(&mut out, &mut first, stringify!(essence_water));
-    json_u32_into(&mut out, *essence_water);
+    json_u32_into(&mut out, row.essence_water);
     json_field_into(&mut out, &mut first, stringify!(essence_plant));
-    json_u32_into(&mut out, *essence_plant);
+    json_u32_into(&mut out, row.essence_plant);
     json_field_into(&mut out, &mut first, stringify!(essence_electric));
-    json_u32_into(&mut out, *essence_electric);
+    json_u32_into(&mut out, row.essence_electric);
     json_field_into(&mut out, &mut first, stringify!(essence_earth));
-    json_u32_into(&mut out, *essence_earth);
+    json_u32_into(&mut out, row.essence_earth);
     json_field_into(&mut out, &mut first, stringify!(essence_wind));
-    json_u32_into(&mut out, *essence_wind);
+    json_u32_into(&mut out, row.essence_wind);
     json_field_into(&mut out, &mut first, stringify!(essence_light));
-    json_u32_into(&mut out, *essence_light);
+    json_u32_into(&mut out, row.essence_light);
     json_field_into(&mut out, &mut first, stringify!(essence_dark));
-    json_u32_into(&mut out, *essence_dark);
+    json_u32_into(&mut out, row.essence_dark);
     json_field_into(&mut out, &mut first, stringify!(trust_favorable_count));
-    json_u32_into(&mut out, *trust_favorable_count);
+    json_u32_into(&mut out, row.trust_favorable_count);
     json_field_into(&mut out, &mut first, stringify!(trust_unfavorable_count));
-    json_u32_into(&mut out, *trust_unfavorable_count);
+    json_u32_into(&mut out, row.trust_unfavorable_count);
     json_field_into(
         &mut out,
         &mut first,
         stringify!(trust_favorable_battle_day_epoch),
     );
-    json_u32_into(&mut out, *trust_favorable_battle_day_epoch);
+    json_u32_into(&mut out, row.trust_favorable_battle_day_epoch);
     json_field_into(&mut out, &mut first, stringify!(quality_time_ticks_total));
-    json_u32_into(&mut out, *quality_time_ticks_total);
+    json_u32_into(&mut out, row.quality_time_ticks_total);
     json_field_into(&mut out, &mut first, stringify!(quality_time_accum_ms));
-    json_u32_into(&mut out, *quality_time_accum_ms);
+    json_u32_into(&mut out, row.quality_time_accum_ms);
     json_field_into(&mut out, &mut first, stringify!(quality_time_window_ms));
-    json_u32_into(&mut out, *quality_time_window_ms);
+    json_u32_into(&mut out, row.quality_time_window_ms);
     json_field_into(
         &mut out,
         &mut first,
         stringify!(quality_time_window_start_ms),
     );
-    json_i64_into(&mut out, *quality_time_window_start_ms);
+    json_i64_into(&mut out, row.quality_time_window_start_ms);
     json_field_into(&mut out, &mut first, stringify!(last_essence_train_at_ms));
-    json_i64_into(&mut out, *last_essence_train_at_ms);
+    json_i64_into(&mut out, row.last_essence_train_at_ms);
     out.push('}');
     out
 }
 
+// Field-access spelling, not the destructure the sibling serializers use:
+// the no-idle-accrual eval reads ANY MonsterPub brace literal in production
+// code as a row CONSTRUCTION (its CHECK C cannot tell a destructuring
+// pattern from a builder, and it tracks alias renames). Column totality is
+// enforced by the test fixtures instead — they construct every row with a
+// no-spread struct literal, so a new column reds the test build.
 fn json_monster_pub(row: &MonsterPub) -> String {
-    let MonsterPub {
-        monster_id,
-        owner_identity,
-        species_id,
-        nickname,
-        level,
-        xp,
-        current_hp,
-        stat_hp,
-        stat_attack,
-        stat_defense,
-        stat_speed,
-        stat_sp_attack,
-        stat_sp_defense,
-        party_slot,
-        tier,
-        essence_fire,
-        essence_water,
-        essence_plant,
-        essence_electric,
-        essence_earth,
-        essence_wind,
-        essence_light,
-        essence_dark,
-        trust_tier,
-        quality_time_tier,
-        nutrition_pct,
-    } = row;
     let mut out = String::new();
     let mut first = true;
     out.push('{');
     json_field_into(&mut out, &mut first, stringify!(monster_id));
-    json_u64_into(&mut out, *monster_id);
+    json_u64_into(&mut out, row.monster_id);
     json_field_into(&mut out, &mut first, stringify!(owner_identity));
-    json_identity_into(&mut out, *owner_identity);
+    json_identity_into(&mut out, row.owner_identity);
     json_field_into(&mut out, &mut first, stringify!(species_id));
-    json_u32_into(&mut out, *species_id);
+    json_u32_into(&mut out, row.species_id);
     json_field_into(&mut out, &mut first, stringify!(nickname));
-    json_str_into(&mut out, nickname);
+    json_str_into(&mut out, &row.nickname);
     json_field_into(&mut out, &mut first, stringify!(level));
-    json_u8_into(&mut out, *level);
+    json_u8_into(&mut out, row.level);
     json_field_into(&mut out, &mut first, stringify!(xp));
-    json_u32_into(&mut out, *xp);
+    json_u32_into(&mut out, row.xp);
     json_field_into(&mut out, &mut first, stringify!(current_hp));
-    json_u16_into(&mut out, *current_hp);
+    json_u16_into(&mut out, row.current_hp);
     json_field_into(&mut out, &mut first, stringify!(stat_hp));
-    json_u16_into(&mut out, *stat_hp);
+    json_u16_into(&mut out, row.stat_hp);
     json_field_into(&mut out, &mut first, stringify!(stat_attack));
-    json_u16_into(&mut out, *stat_attack);
+    json_u16_into(&mut out, row.stat_attack);
     json_field_into(&mut out, &mut first, stringify!(stat_defense));
-    json_u16_into(&mut out, *stat_defense);
+    json_u16_into(&mut out, row.stat_defense);
     json_field_into(&mut out, &mut first, stringify!(stat_speed));
-    json_u16_into(&mut out, *stat_speed);
+    json_u16_into(&mut out, row.stat_speed);
     json_field_into(&mut out, &mut first, stringify!(stat_sp_attack));
-    json_u16_into(&mut out, *stat_sp_attack);
+    json_u16_into(&mut out, row.stat_sp_attack);
     json_field_into(&mut out, &mut first, stringify!(stat_sp_defense));
-    json_u16_into(&mut out, *stat_sp_defense);
+    json_u16_into(&mut out, row.stat_sp_defense);
     json_field_into(&mut out, &mut first, stringify!(party_slot));
-    json_u8_into(&mut out, *party_slot);
+    json_u8_into(&mut out, row.party_slot);
     json_field_into(&mut out, &mut first, stringify!(tier));
-    json_u8_into(&mut out, *tier);
+    json_u8_into(&mut out, row.tier);
     json_field_into(&mut out, &mut first, stringify!(essence_fire));
-    json_u32_into(&mut out, *essence_fire);
+    json_u32_into(&mut out, row.essence_fire);
     json_field_into(&mut out, &mut first, stringify!(essence_water));
-    json_u32_into(&mut out, *essence_water);
+    json_u32_into(&mut out, row.essence_water);
     json_field_into(&mut out, &mut first, stringify!(essence_plant));
-    json_u32_into(&mut out, *essence_plant);
+    json_u32_into(&mut out, row.essence_plant);
     json_field_into(&mut out, &mut first, stringify!(essence_electric));
-    json_u32_into(&mut out, *essence_electric);
+    json_u32_into(&mut out, row.essence_electric);
     json_field_into(&mut out, &mut first, stringify!(essence_earth));
-    json_u32_into(&mut out, *essence_earth);
+    json_u32_into(&mut out, row.essence_earth);
     json_field_into(&mut out, &mut first, stringify!(essence_wind));
-    json_u32_into(&mut out, *essence_wind);
+    json_u32_into(&mut out, row.essence_wind);
     json_field_into(&mut out, &mut first, stringify!(essence_light));
-    json_u32_into(&mut out, *essence_light);
+    json_u32_into(&mut out, row.essence_light);
     json_field_into(&mut out, &mut first, stringify!(essence_dark));
-    json_u32_into(&mut out, *essence_dark);
+    json_u32_into(&mut out, row.essence_dark);
     json_field_into(&mut out, &mut first, stringify!(trust_tier));
-    json_trust_tier_into(&mut out, trust_tier);
+    json_trust_tier_into(&mut out, &row.trust_tier);
     json_field_into(&mut out, &mut first, stringify!(quality_time_tier));
-    json_u8_into(&mut out, *quality_time_tier);
+    json_u8_into(&mut out, row.quality_time_tier);
     json_field_into(&mut out, &mut first, stringify!(nutrition_pct));
-    json_u8_into(&mut out, *nutrition_pct);
+    json_u8_into(&mut out, row.nutrition_pct);
     out.push('}');
     out
 }
