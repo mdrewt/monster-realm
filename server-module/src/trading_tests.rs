@@ -3020,6 +3020,15 @@ fn m22s5_propose_trade_carries_the_deletion_gate() {
     );
 
     let insert = concat!("()", ".insert(");
+    let n_insert = squashed.matches(insert).count();
+    assert_eq!(
+        n_insert, 1,
+        "m22-s5 PRV1-9 FAIL (anchor ambiguity): `{propose}` performs {n_insert} table \
+         insert(s); the ordering pin below needs EXACTLY ONE so the offset is unambiguous. \
+         With zero the escrow write disappeared and this pin is vacuous; with two a \
+         first-occurrence anchor could silently point at the wrong insert while a new, \
+         earlier one lands above the gate — fail loud and re-derive the pin instead."
+    );
     let insert_pos = squashed.find(insert).unwrap_or_else(|| {
         panic!(
             "m22-s5 PRV1-9 FAIL (anti-vacuity): `{propose}` contains no table insert, so \

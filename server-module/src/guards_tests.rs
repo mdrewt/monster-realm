@@ -2042,6 +2042,27 @@ fn m22s5_gate_delegates_fused_and_unconditional() {
          trailing-comma form): {fused_trailing:?}. Body began: {body:?}"
     );
 
+    // EXACT-EQUALITY body pin (artifact red-team, m22-s5): the prefix assertion
+    // above never looks PAST the prefix, and a measured CI-green bypass appended
+    // a trailing recovery combinator after the reject-mapping closure — every
+    // reject the gate produced was converted back into success while all prior
+    // clauses stayed green. The wrapper's body is a single fused expression and
+    // nothing else; whole-body equality is the only shape that rejects trailing
+    // text of ANY spelling. Two accepted bodies: single-line and the
+    // trailing-comma form rustfmt produces on a split.
+    let closure_tail = ["|e|{log_re", "ject(reducer,ctx.sender(),e);e.to_string()})"].concat();
+    let body_plain = [fused_plain.as_str(), closure_tail.as_str()].concat();
+    let body_trailing = [fused_trailing.as_str(), closure_tail.as_str()].concat();
+    assert!(
+        body == body_plain || body == body_trailing,
+        "m22-s5 PRV1-10 FAIL (whole-body equality): the wrapper's body must BE the fused \
+         delegation chained into the reject-mapping closure, byte-for-byte in the squashed \
+         view, with NOTHING after it. Trailing text of any kind — a recovery combinator, a \
+         second statement, an appended expression — can silently convert the reject back \
+         into success while the prefix, count, and log clauses above all stay green (a \
+         measured bypass). Expected (squashed): {body_plain:?}. Got: {body:?}"
+    );
+
     let n_fused =
         body.matches(fused_plain.as_str()).count() + body.matches(fused_trailing.as_str()).count();
     assert_eq!(
@@ -2236,6 +2257,32 @@ fn m22s5_is_pending_deletion_delegates_to_should_reject() {
          count above is satisfiable by a body that decides on a fabricated or defaulted \
          row, and the predicate answers the same thing for every caller."
     );
+
+    // EXACT-EQUALITY body pin (artifact red-team, m22-s5): the two containment
+    // clauses above are blind to LEADING code, and a measured CI-green bypass
+    // prepended a short-circuit return on a condition rustc cannot constant-fold
+    // (a timestamp comparison that is true for every real invocation) — the row
+    // read and the SSOT call both survived textually while the predicate went
+    // dead for every caller in production, gutting the S5 gate AND the
+    // guest-claim guard that shares this predicate. Whole-body equality rejects
+    // leading and trailing code of any spelling; this fn is a frozen SSOT seam
+    // and a refactor of it must co-edit this pin deliberately.
+    let expected_body = [
+        row_read.as_str(),
+        "identity).is_some_and(|a|",
+        ssot.as_str(),
+        "&a))",
+    ]
+    .concat();
+    assert!(
+        body == expected_body,
+        "m22-s5 PRV1-10 FAIL (far hop, whole-body equality): the context-bound deletion \
+         predicate's body must BE the account-row lookup fed straight into the pure SSOT \
+         decision, byte-for-byte in the squashed view — no leading code (a short-circuit \
+         return before the lookup deadens the gate for every caller while both containment \
+         clauses above stay green: a measured bypass), no trailing code, no rebinds. \
+         Expected (squashed): {expected_body:?}. Got: {body:?}"
+    );
 }
 
 /// **PRV1-9 (a)** — EXACTLY three gated reducers, named.
@@ -2312,7 +2359,13 @@ fn m22s5_gated_reducer_census_is_exactly_three() {
     );
 
     let file_bans: [(&str, &str); 2] = [("trading.rs", M22S5_TRADING_RS), ("pvp.rs", M22S5_PVP_RS)];
-    let bypass: [(String, &str); 3] = [
+    // The last two bans close the census extractor's camouflage class (artifact
+    // red-team, m22-s5): a conditional-compilation attribute wrapper or a
+    // renamed attribute import would make a reducer INVISIBLE to the extractor
+    // above (silently absent from both the gated and already-open sets) rather
+    // than a loud parse ambiguity. Neither spelling exists in either file today;
+    // a future legitimate use must extend the extractor first, deliberately.
+    let bypass: [(String, &str); 5] = [
         (
             ["crate::accounts::is_pending_", "deletion("].concat(),
             "the accounts-side context predicate",
@@ -2324,6 +2377,14 @@ fn m22s5_gated_reducer_census_is_exactly_three() {
         (
             ["ctx.db.acc", "ount("].concat(),
             "a direct account-table read",
+        ),
+        (
+            ["cfg_", "attr("].concat(),
+            "a conditional-compilation attribute wrapper (census camouflage)",
+        ),
+        (
+            ["::reducer", "as"].concat(),
+            "a renamed reducer-attribute import (census camouflage)",
         ),
     ];
     for (label, src) in file_bans {
@@ -2419,7 +2480,13 @@ fn m22s5_gate_precedes_first_write_in_every_gated_reducer() {
     let call = m22s5_gate_call_needle();
     let bodies = m22s5_all_reducer_bodies();
 
-    let write_verbs: [String; 9] = [
+    // The last four entries are the write-performing pub(crate) helpers a
+    // gated reducer could reach TODAY without any local write verb appearing in
+    // its own body (artifact red-team, m22-s5): a helper's insert/update text
+    // lives in the helper's file, invisible to this body-scoped scan. A named
+    // list is a stopgap, not a closure — a NEW write helper must be added here
+    // deliberately, and the anti-vacuity clause below is what forces that.
+    let write_verbs: [String; 13] = [
         ["()", ".insert("].concat(),
         ["()", ".update("].concat(),
         ["()", ".delete("].concat(),
@@ -2429,6 +2496,10 @@ fn m22s5_gate_precedes_first_write_in_every_gated_reducer() {
         ["schedule_", "deadline("].concat(),
         ["disarm_challenge_", "reaper("].concat(),
         ["disarm_trade_", "reaper("].concat(),
+        ["grant_", "item("].concat(),
+        ["consume_", "one("].concat(),
+        ["grant_", "currency("].concat(),
+        ["spend_", "currency("].concat(),
     ];
 
     let gated: [String; 3] = [
