@@ -5,7 +5,7 @@ slug: reducers/request_data_export
 updated: 2026-08-31
 tags: [reducer, spacetimedb, privacy]
 abstract: "Build the caller a fresh export: one chunk per exportable table (split at the game-core sub-chunk boundary), all sharin…"
-resource: server-module/src/privacy.rs#L1536
+resource: server-module/src/privacy.rs#L1474
 source: scripts/okf-export.mjs@server-module/src/privacy.rs
 ---
 
