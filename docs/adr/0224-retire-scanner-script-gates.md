@@ -108,3 +108,46 @@ outranking feature work in the scheduler. Drew's follow-up call: that treats the
 - Follow-up: none scheduled as a dedicated milestone. The 105 files under `evals/` migrate opportunistically
   over time as their adjacent code is touched by ordinary feature and remediation work; no slice exists (or
   should be created) whose sole purpose is "migrate evals."
+
+## Amendment (2026-09-01, same day — Drew)
+
+Drew reviewed the initial decision above and pushed further on two points before any migration work
+started, closing a gap the original text left open.
+
+**1. Migration must delete on touch, not merely permit deletion.** The original wording ("port the
+invariant, then delete the eval") was read as optional-in-practice — a slice could migrate an invariant to
+a real test and leave the superseded eval running "for safety." That is dead weight, not margin: a slice
+that migrates an eval's invariant to an ordinary test **must delete the corresponding eval (or the
+now-redundant portion of it) in the same slice**. Leaving both in place is itself a defect from this ADR
+forward, not a conservative choice.
+
+**2. Proof-of-teeth needs a moderation clause, or the same failure recurs in the replacement.** The
+original decision retired the *vehicle* (scanner scripts) but did not constrain the *practice* — nothing
+stopped "write a test, then audit whether the test has a blind spot, then write a test for that" from
+reproducing the exact rb-* spiral one layer down, in Rust/TS instead of `.mjs`. Measured evidence the
+policy needed to name explicitly: the "nightly a11y decay ratchet" (`justfile:348`, mirrored at
+`evals/ci-gate-wiring.eval.mjs:614`) — a bare numeric floor whose only function was proving that *other*
+tests had not been deleted. That is a check whose entire purpose is checking another check; it recurs with
+or without an eval file underneath it, so it is retired as a **pattern**, not patched.
+
+**Decision (amended):** proof-of-teeth is applied once per invariant and does not recurse. Write the test,
+watch it fail on the concrete defect it targets, watch it pass after the fix — that is the complete cycle.
+No follow-up task audits an existing test for its own blind spots; no meta-check exists solely to prove
+another check has not decayed (numeric floors/ratchets included). A check is added because it protects
+something that materially matters to shipping a fun, playable, reliable, well-designed game — core
+gameplay correctness, player-data security and privacy, data integrity, netcode determinism — not to
+close a theoretical gap or defend against a hypothetical future refactor. Genuine uncertainty about
+whether a check is worth adding resolves toward **not adding one**, deferring to ordinary human/agent
+review (multi-lens reviews, red-team, security audits) rather than manufacturing a new gate.
+
+**Definition of done, restated:** the migration is complete when `evals/` is empty and can be deleted
+along with `evals/run.mjs` and its CI/justfile wiring, followed by a sweep of lingering references in
+*live* docs only — historical ADRs, including ADR-0010 and this one, keep their text as written. This is
+an emergent end state from ordinary opportunistic migration, not a milestone to schedule, and an
+incomplete migration is never itself a residual.
+
+**Immediate consequence, applied the same day:** every open residual whose entire subject was an eval
+script's own scanning/coverage/comment correctness (16 across both cleanup passes, spanning source slices
+rb-2 through rb-26) was dispositioned `wontfix` rather than carried forward — see
+`memory/projects/mr-supervisor-prompt-native.md` "Work-selection scope" for the durable rule this
+amendment codifies going forward.
