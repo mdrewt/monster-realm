@@ -4280,29 +4280,25 @@ fn account_legal_state_rejects_terminal_without_request() {
 /// T8 / X8: `account_state_is_legal` classifies an `Active` account carrying a
 /// terminal marker as ILLEGAL.
 ///
-/// SCOPE — THIS IS A PARTIAL TOOTH, AND THE MISSING HALF IS NAMED. What follows
-/// is pinned: the PURE PREDICATE rejects the shape. What is NOT pinned, by this
-/// test or by anything else in this file: that a reducer path refuses to PRODUCE
-/// the shape. On the tree S2 ships, one demonstrably can. `needs_cancel_write`
-/// (`accounts.rs`) is `matches!(status, PendingDeletion)` and a terminal account
-/// IS `PendingDeletion`, so a late `cancel_account_deletion` is not
-/// short-circuited; `cancelled_deletion` (`accounts.rs`) then sets `Active` +
-/// `None` and carries `terminal_at_ms` forward through `..existing`; and its only
-/// guard is a `debug_assert!` that the shipped wasm compiles out (the workspace
-/// `Cargo.toml`'s `[profile.release]` sets `overflow-checks` and nothing else —
-/// the profile fact this file's ACCOUNT LEGAL-STATE INVARIANT banner already
-/// records). In a release build that constructor structurally CAN mint the state
-/// asserted illegal below.
+/// SCOPE — THIS IS A PARTIAL TOOTH, AND WHAT COMPLETES IT IS NAMED. What follows
+/// is pinned here: the PURE PREDICATE rejects the shape. That a reducer path
+/// refuses to PRODUCE the shape is pinned ELSEWHERE, and as of m22-s3 it IS
+/// pinned: `m22s3_terminal_guards_precede_state_writes` proves
+/// `cancel_account_deletion` carries the PRV1-4 terminal guard ahead of both the
+/// AUTH-38 gate and the `cancelled_deletion` write (and `delete_account` the
+/// matching Ok-shaped guard ahead of AUTH-28), and
+/// `m22s3_cancelled_deletion_rejects_terminal_input` proves the constructor
+/// itself refuses a terminal input. ADR-0225 records the decision.
 ///
-/// That gap is SLICE SCOPE, not an oversight, and it is owned elsewhere: the
-/// reducer-side rejection is spec §4.5 "Late cancel" / criterion PRV1-4 — WHEN
-/// `cancel_account_deletion` is called by an identity whose `terminal_at_ms` is
-/// `Some` THE SYSTEM SHALL reject with a distinct, non-generic error and SHALL
-/// NOT reactivate the account — which spec §7.2 assigns to S3. S2's declared
-/// touches exclude reducer bodies, and no S2 constructor ever writes `Some` to
-/// the column, so the illegal state is unreachable until S3 lands. S3 must ship
-/// that guard AND a constructor-level test for `cancelled_deletion`; a residual
-/// is filed to that effect. Do not read this test as covering it.
+/// THE ONE HALF STILL OPEN, stated plainly: the constructor-level refusal is a
+/// `debug_assert!`, which the shipped wasm compiles out (the workspace
+/// `Cargo.toml` `[profile.release]` section sets `overflow-checks` and nothing
+/// else — the profile fact the ACCOUNT LEGAL-STATE INVARIANT banner in this file
+/// already records). In a release build the reducer guard is therefore the ONLY
+/// thing standing between a late cancel and this illegal state. Whether that
+/// refusal should be promoted to an `Err` in every profile is re-pointed to S3b
+/// in ADR-0225; it is not urgent, because nothing in the tree writes `Some` to
+/// `terminal_at_ms` until the S3b cascade lands.
 ///
 /// Spec §4.1's terminal predicate is `status == PendingDeletion &&
 /// terminal_at_ms.is_some()`, so Active + a marker is a resurrected tombstone:
@@ -4323,9 +4319,14 @@ fn account_legal_state_rejects_terminal_without_request() {
 ///        a terminal clause deleted outright;
 ///        a predicate that answers the same thing for every input.
 ///
-/// Does NOT kill: `cancel_account_deletion` reactivating a terminal account. See
-///        the scope note above — that is S3's PRV1-4 guard, the `debug_assert!`
-///        is compiled out of release, and NO test in this file covers it today.
+/// Does NOT kill: `cancel_account_deletion` reactivating a terminal account —
+///        but that is now covered, by `m22s3_terminal_guards_precede_state_writes`
+///        (the guard is present, first, at depth zero, and ahead of both the
+///        AUTH-38 gate and the write) and by
+///        `m22s3_cancelled_deletion_rejects_terminal_input` (the constructor
+///        refuses the input). What remains uncovered anywhere is the RELEASE
+///        profile, where the constructor `debug_assert!` is compiled out and the
+///        reducer guard stands alone — re-pointed to S3b in ADR-0225.
 #[test]
 fn account_legal_state_rejects_terminal_while_active() {
     let cases: [(&str, Option<i64>); 2] = [
@@ -5360,11 +5361,14 @@ fn rb24_frozen_disarm_sig() -> String {
 /// recheck, and `Ok(())`. Note that `stripped_for_scan` blanks string literals,
 /// so the reject reason reads as an empty argument here.
 ///
-/// The recheck statement is spelled through `m22s3_nd_reaper_recheck_guard()`
-/// rather than re-transcribed, so the plan-authored POLARITY needle the consumer
-/// test asserts FIRST and this equality literal can never become two different
-/// sentences (red-team B1). The lookup fragment contains the text of
-/// `m22s3_nd_reaper_row_lookup()` as a substring, for the same reason.
+/// EVERY FRAGMENT IS TRANSCRIBED INDEPENDENTLY, at different split points from
+/// `m22s3_nd_reaper_recheck_guard()`, and that is a correction of a MEASURED
+/// hole rather than style. Building this literal FROM the needle helper made the
+/// two artefacts one artefact: deleting the negation inside the helper moved the
+/// needle and the expected literal together, so the consumer test stayed green
+/// on an inverted recheck — a two-token cheat. Two independent spellings of the
+/// same plan statement cannot be edited in one place, and the consumer test
+/// asserts they still agree.
 ///
 /// This pin is DESIGNED TO RED when the S3b cascade lands. That is deliberate
 /// and is the S3b-boundary tooth: the arm that ships the five-step cascade must
@@ -5382,7 +5386,13 @@ fn rb24_frozen_reaper_body() -> String {
             "_identity)else{returnOk(());};"
         )
         .to_string(),
-        m22s3_nd_reaper_recheck_guard(),
+        concat!(
+            "if!re",
+            "aper_should_run_cascade(&acc",
+            "ount,now_ms(ctx))",
+            "{returnOk(());}"
+        )
+        .to_string(),
         "Ok(())".to_string(),
     ]
     .concat()
@@ -5749,7 +5759,8 @@ fn rb24_delete_account_arms_the_reaper_last() {
          write (offset {at_update}). Spec §4.2 places the schedule-insert last so a crash \
          mid-reducer leaves PendingDeletion with no schedule row — always re-driveable. Armed \
          first, the same crash leaves a live reaper aimed at an account that was never \
-         transitioned, and this slice ships no reaper-side status recheck to catch it."
+         transitioned: the m22-s3 PRV1-5 recheck no-ops that fire rather than erasing a live \
+         account, but the one-shot row is consumed for nothing and the request is lost."
     );
 
     let region = &body[at_update..at_stmt];
@@ -6029,8 +6040,10 @@ fn rb24_disarm_called_exactly_once_in_crate() {
 /// different: D6 says a reaper must not delete its own fired row; D4 says every
 /// OTHER mutation site must actively delete a schedule row that would otherwise
 /// fire stale. Without the disarm, a cancelled account is `Active` with an armed
-/// reaper still pointing at it, and this slice ships no reaper-side status
-/// recheck — so the cascade would run on a live, cancelled account.
+/// reaper still pointing at it. Since m22-s3 the reaper rechecks status, so that
+/// fire no-ops rather than cascading — which makes the disarm defense in depth
+/// and scheduler-slot hygiene rather than the only line, and PRV1-3 still names
+/// the delete as required. Two independent refusals is the design, not one.
 ///
 /// THE ORDERING IS BEHAVIOURAL, NOT COSMETIC. Placed after the
 /// `needs_cancel_write` gate, the disarm is skipped on the idempotent no-op path
@@ -6106,8 +6119,9 @@ fn rb24_cancel_disarms_the_reaper() {
         !rb24_has_return_token(region),
         "[rb24/disarm-reachable] a `return` token sits between the status write and the disarm. \
          Every other clause here reasons about POSITION and none about REACHABILITY, so an \
-         early exit leaves an Active account with a live reaper still aimed at it — and this \
-         slice ships no reaper-side status recheck to stop the cascade. Region text: {region:?}"
+         early exit leaves an Active account with a live reaper still aimed at it. The m22-s3 \
+         PRV1-5 recheck no-ops that fire, so this is the second of two independent refusals \
+         rather than the last one — PRV1-3 still requires the delete. Region text: {region:?}"
     );
     assert_eq!(
         rb24_brace_depth(&body[..at_stmt]),
@@ -6327,6 +6341,15 @@ fn rb24_deletion_reaper_body_is_frozen_noop() {
 
     // PLAN-AUTHORED CLAUSES, FIRST AND BEFORE THE EQUALITY (red-team B1).
     let polarity = m22s3_nd_reaper_recheck_guard();
+    assert!(
+        rb24_frozen_reaper_body().contains(polarity.as_str()),
+        "[rb24/reaper-needle-independence] the needle {polarity:?} and the frozen-body \
+         literal are two INDEPENDENT transcriptions of the same plan statement, and they \
+         disagree — so one of them was edited alone. They were once built from a single \
+         helper, and a two-token edit inside that helper then moved the needle and the \
+         expected literal together, leaving an inverted recheck green. This clause is what \
+         makes independence checkable instead of merely asserted in a comment."
+    );
     assert_eq!(
         m22_count_occurrences(body, &polarity),
         1,
@@ -6597,6 +6620,77 @@ fn m22s3_nd_reaper_row_lookup() -> String {
     concat!(".find(args.account", "_identity)").to_string()
 }
 
+/// The ASCII double quote, built from its code point so this section never
+/// spells a backslash-escaped quote or a quote-bearing char literal (file
+/// header rule). Only the strings-KEPT needle below needs it.
+fn m22s3_dq() -> char {
+    char::from(0x22u8)
+}
+
+/// PRV1-4, strings-KEPT twin of `m22s3_nd_cancel_terminal_guard()`: the same
+/// statement with the reducer-name argument of `reject(..)` still readable.
+///
+/// `stripped_for_scan` BLANKS string literals, so the squashed-and-blanked
+/// needle matches whatever reducer tag the guard passes — a guard tagged
+/// `start_guest_claim` was MEASURED green against it, which merges two
+/// audit-log classes and misattributes every PRV1-4 reject in the reject log.
+/// Matching this needle in `stripped_keep_strings` output pins the tag AND its
+/// adjacency to the guard in one contiguous substring, with no brace walk over
+/// a string-bearing view.
+fn m22s3_nd_cancel_terminal_guard_tagged() -> String {
+    let q = m22s3_dq();
+    [
+        "if".to_string(),
+        m22s3_nd_marker_call(),
+        concat!("{returnrej", "ect(").to_string(),
+        format!("{q}{}{q}", concat!("cancel_account", "_deletion")),
+        concat!(",me,REJECT_ALREADY", "_DELETED);}").to_string(),
+    ]
+    .concat()
+}
+
+/// The squashed declaration needle for the deletion-gate SSOT wrapper.
+fn m22s3_nd_pending_decl() -> String {
+    concat!("fnis_pending", "_deletion(").to_string()
+}
+
+/// The squashed declaration needle for the reaper recheck predicate.
+fn m22s3_nd_cascade_decl() -> String {
+    concat!("fnreaper_should_run", "_cascade(").to_string()
+}
+
+/// The squashed delegation needle: `is_pending_deletion` must ASK the shared
+/// gate predicate, with no negation of its answer.
+fn m22s3_nd_pending_delegation() -> String {
+    concat!(".is_some_and(|a|should_reject", "_for_deletion(&a))").to_string()
+}
+
+/// The same account, plus a LEGAL claim-provenance pair and off-baseline
+/// `auth_issuer` / `last_login_at_ms`.
+///
+/// FIXTURE MONOCULTURE IS A MEASURED HOLE: every m22s3 truth-table row spreads
+/// `base_account(n)`, so all four of `claimed_from`, `claimed_at_ms`,
+/// `auth_issuer` and `last_login_at_ms` carry the same value on every row — and
+/// a predicate that ALSO reads one of them answers identically everywhere and is
+/// invisible. Three such wrong implementations were measured green. Each table
+/// below therefore carries one TWIN of an expected-false row and one TWIN of an
+/// expected-true row built through this helper: the false twin kills a disjunct
+/// that ORs claim provenance IN, the true twin kills a conjunct that ANDs it
+/// OUT. One twin alone closes only one of the two polarities.
+///
+/// Legality is preserved by construction — the claim pair is set on BOTH halves
+/// (AUTH-21) and no lifecycle field moves — so a twin is exactly its base row
+/// plus fields the predicate under test must not be reading.
+fn m22s3_claim_variant(account: Account) -> Account {
+    Account {
+        auth_issuer: "issuer-variant-under-test".to_string(),
+        last_login_at_ms: 4_242,
+        claimed_from: Some(ident(77)),
+        claimed_at_ms: Some(1_234),
+        ..account
+    }
+}
+
 // ---------------------------------------------------------------------------
 // m22-s3 / PRV1-4 — THE TERMINAL-MARKER PREDICATE.
 // ---------------------------------------------------------------------------
@@ -6623,10 +6717,15 @@ fn m22s3_nd_reaper_row_lookup() -> String {
 ///        two rows); a predicate that ANDs in the status check (row 4 flips to
 ///        false — the laundering shape below would then reach the state write);
 ///        a predicate that reads `deletion_requested_at_ms` instead (row 2
-///        flips to true and row 3 is unchanged, so a one-row test would miss it).
+///        flips to true and row 3 is unchanged, so a one-row test would miss it);
+///        a predicate that also reads claim provenance, `auth_issuer` or
+///        `last_login_at_ms` — rows 5 and 6 are the claim-variant twins of rows
+///        1 and 3 and must answer exactly what their twins answer (measured
+///        hole: every other row spreads the same `base_account`, so such a
+///        predicate is invisible without them).
 #[test]
 fn m22s3_account_has_terminal_marker_truth_table() {
-    let cases: [(&str, Account, bool, bool); 4] = [
+    let cases: [(&str, Account, bool, bool); 6] = [
         (
             "LEGAL live account: Active, no terminal marker",
             base_account(1),
@@ -6662,6 +6761,23 @@ fn m22s3_account_has_terminal_marker_truth_table() {
             },
             true,
             false,
+        ),
+        (
+            "LEGAL claimed live account: claim provenance must not read as a marker",
+            m22s3_claim_variant(base_account(1)),
+            false,
+            true,
+        ),
+        (
+            "LEGAL claimed tombstone: claim provenance must not hide the marker",
+            m22s3_claim_variant(Account {
+                status: AccountStatus::PendingDeletion,
+                deletion_requested_at_ms: Some(50),
+                terminal_at_ms: Some(900),
+                ..base_account(1)
+            }),
+            true,
+            true,
         ),
     ];
 
@@ -6701,8 +6817,12 @@ fn m22s3_account_has_terminal_marker_truth_table() {
 /// either a lie in the log or the first step toward interpolating account data
 /// into it.
 ///
-/// Kills: an empty string (the caller sees a blank reject); a copy-paste of an
-///        existing reason; a `format!`-shaped template smuggled in as a const.
+/// Kills: an empty string (the caller sees a blank reject); a BLANK-ISH string —
+///        a single space, or padding around a one-character reason — which was
+///        measured green against non-empty plus distinct plus no-braces alone;
+///        a zero-width or bidi-override character that renders blank or
+///        reversed; a copy-paste of an existing reason; a `format!`-shaped
+///        template smuggled in as a const.
 #[test]
 fn m22s3_reject_already_deleted_is_distinct_and_static() {
     assert!(
@@ -6710,6 +6830,33 @@ fn m22s3_reject_already_deleted_is_distinct_and_static() {
         "[m22s3/reject-nonempty] REJECT_ALREADY_DELETED is empty. A reject whose reason is \
          the empty string is indistinguishable from no reason at all, in the client error \
          and in the reject log alike."
+    );
+
+    let trimmed = REJECT_ALREADY_DELETED.trim();
+    assert_eq!(
+        trimmed, REJECT_ALREADY_DELETED,
+        "[m22s3/reject-trim-stable] REJECT_ALREADY_DELETED carries leading or trailing \
+         whitespace. Non-emptiness alone was MEASURED insufficient: a single space passes it, \
+         renders as a blank error in the client and as a blank reason in the reject log, and \
+         is still distinct from every other reason so the distinctness clauses below stay \
+         green too."
+    );
+    assert!(
+        trimmed.len() >= 10,
+        "[m22s3/reject-substantive] REJECT_ALREADY_DELETED trims to {} byte(s), which is too \
+         short to be a sentence a player can act on. PRV1-4 requires a DISTINCT, non-generic \
+         error; a one- or two-character reason is technically distinct and practically a \
+         blank.",
+        trimmed.len()
+    );
+    assert!(
+        REJECT_ALREADY_DELETED
+            .chars()
+            .all(|c| c.is_ascii_graphic() || c == ' '),
+        "[m22s3/reject-printable] REJECT_ALREADY_DELETED contains a character that is not \
+         printable ASCII. A zero-width or bidi-override character renders blank or reversed \
+         wherever this reason is shown and logged, while passing every length and \
+         distinctness clause — the same property game-core pins on its tombstone sentinels."
     );
 
     for brace in ["{", "}"] {
@@ -6807,12 +6954,33 @@ fn m22s3_reject_already_deleted_is_distinct_and_static() {
 /// PRV1-2 keeps its letter (a delete on an account already heading for deletion
 /// is a silent no-op), and behaviour on every legal state is unchanged.
 ///
+/// POSITION IS NOT ENOUGH ON ITS OWN, and that is a measured finding rather than
+/// a hunch. A guard can be textually perfect, first, and at depth zero and still
+/// be DEAD: `let account = Account { terminal_at_ms: None, ..account };` slipped
+/// in above it rebinds the subject, so the guard reads a row whose marker was
+/// just stripped and can never fire. The subject-binding census below is what
+/// closes it — each body binds `account` exactly once, through the `let ... else`
+/// lookup, and never rebinds it.
+///
+/// THE DELEGATION CLAUSE IS HERE AND NOT IN A PURE TEST because the thing that
+/// can go wrong is a NEGATION, not a value: `is_pending_deletion` inverted to
+/// `.is_some_and(|a| !should_reject_for_deletion(&a))` was measured green across
+/// the whole suite, and it turns the AUTH-13 guard of `complete_guest_claim`
+/// inside out — every account mid-deletion may claim, and every ordinary account
+/// may not. No ctx-bound test can execute it, so the polarity is pinned as text.
+///
 /// Kills: a guard moved below the idempotency gate or below the state write
 ///        (both orderings); a second decoy copy of either guard that steers a
 ///        first-hit anchored read; a guard nested inside a conditional block,
 ///        which sits at brace depth greater than zero and never runs on the path
 ///        that matters; a guard placed in the WRONG reducer (the whole-file
-///        count stays at one while the body-scoped lookup fails).
+///        count stays at one while the body-scoped lookup fails);
+///        a shadowed subject binding that makes either guard permanently dead;
+///        a PRV1-4 reject tagged with another reducer name (the blanked-string
+///        needle cannot see the tag; the strings-kept twin can);
+///        an inverted `is_pending_deletion` delegation;
+///        a `reaper_should_run_cascade` re-composed over the gameplay gate, or
+///        one that stops delegating the grace window to game-core.
 #[test]
 fn m22s3_terminal_guards_precede_state_writes() {
     let squashed = stripped_for_scan(ACCOUNTS_RS);
@@ -6873,6 +7041,18 @@ fn m22s3_terminal_guards_precede_state_writes() {
          irreversibly erased, and no later statement can restore it."
     );
 
+    let tagged = m22s3_nd_cancel_terminal_guard_tagged();
+    assert_eq!(
+        m22_count_occurrences(&stripped_keep_strings(ACCOUNTS_RS), &tagged),
+        1,
+        "[m22s3/cancel-guard-audit-tag] the PRV1-4 guard must reject under its OWN reducer \
+         tag, {tagged:?}. Every clause above reads the string-BLANKED view, in which the \
+         reducer-name argument of reject is empty — so a guard tagged with another reducer \
+         name satisfies all of them, and was measured green. The tag is what `log_reject` \
+         writes, so the wrong one silently files every late-cancel reject under a different \
+         audit-log class."
+    );
+
     // --- delete_account (W1b, PRV1-2 letter) --------------------------------
     let delete_guard = m22s3_nd_delete_terminal_guard();
     assert_eq!(
@@ -6916,6 +7096,73 @@ fn m22s3_terminal_guards_precede_state_writes() {
          schedules a second cascade over an account whose data is already gone. Behind the \
          gate the guard cannot stop that; ahead of it, it never starts."
     );
+
+    // --- the subject both guards read must be the row that was looked up ----
+    let lookup_bind = concat!("letSome(acc", "ount)=");
+    for (what, body) in [
+        ("cancel_account_deletion", cancel_body),
+        ("delete_account", delete_body),
+    ] {
+        for shadow in [concat!("letacc", "ount"), concat!("letmutacc", "ount")] {
+            assert_eq!(
+                m22_count_occurrences(body, shadow),
+                0,
+                "[m22s3/subject-no-shadow] {what} rebinds `account` ({shadow:?}). A rebind \
+                 above the terminal guard makes the guard PERMANENTLY DEAD while every \
+                 count, depth and ordering clause above stays green — the measured shape is \
+                 one line that spreads the row with the marker cleared, after which the \
+                 guard inspects a subject that no longer carries what it exists to detect."
+            );
+        }
+        assert_eq!(
+            m22_count_occurrences(body, lookup_bind),
+            1,
+            "[m22s3/subject-single-lookup] {what} must bind `account` EXACTLY once, through \
+             the row lookup. Zero means the guard reads something that is not the caller \
+             live row; more than one means a second binding shadows the first, which is the \
+             same dead-guard shape from the other direction."
+        );
+    }
+
+    // --- the deletion gate SSOT delegates, and does not invert the answer ---
+    let (pending_start, pending_end) = rb24_fn_body_span(&squashed, &m22s3_nd_pending_decl());
+    let delegation = m22s3_nd_pending_delegation();
+    assert_eq!(
+        m22_count_occurrences(&squashed[pending_start..pending_end], &delegation),
+        1,
+        "[m22s3/pending-delegation] is_pending_deletion must ask the shared gate predicate \
+         exactly as {delegation:?} — note the absence of a negation, which is the whole \
+         clause. Inverting it to the `!should_reject_for_deletion` form was MEASURED green \
+         across the entire suite while turning AUTH-13 inside out: `complete_guest_claim` \
+         would then admit every account mid-deletion and refuse every ordinary one. There is \
+         no ReducerContext in this crate, so this polarity has no runtime harness."
+    );
+
+    // --- the reaper recheck is defined directly, over the game-core SSOT ----
+    let (cascade_start, cascade_end) = rb24_fn_body_span(&squashed, &m22s3_nd_cascade_decl());
+    let cascade_body = &squashed[cascade_start..cascade_end];
+    for (needle, why) in [
+        (
+            concat!("==AccountStatus::", "PendingDeletion"),
+            "the status conjunct must be spelled DIRECTLY here, not borrowed from \
+             should_reject_for_deletion — a composition over the gameplay gate was measured \
+             green, and it hands a future S5 widening of that gate the power to widen what \
+             the reaper irreversibly erases",
+        ),
+        (
+            concat!("game_core::is_deletion", "_due("),
+            "the grace window has ONE SSOT in game-core (spec para 4.3) — a locally re-derived \
+             comparison against a hand-typed constant is a second copy of the window, free to \
+             drift, and an operator retune would then move only one of them",
+        ),
+    ] {
+        assert_eq!(
+            m22_count_occurrences(cascade_body, needle),
+            1,
+            "[m22s3/cascade-shape] reaper_should_run_cascade must contain {needle:?} exactly \
+             once: {why}."
+        );
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -6947,8 +7194,13 @@ fn m22s3_terminal_guards_precede_state_writes() {
 ///        terminal conjunct (row 12 flips, which is a SECOND cascade over an
 ///        already-erased account); dropping the due-ness conjunct (rows 7 and 8
 ///        flip, erasing inside the grace window a player is still entitled to);
-///        an `is_deletion_due(None, _) == true` regression (row 7 flips, which
-///        would cascade over every cancelled and every ordinary account);
+///        an `is_deletion_due(None, _) == true` regression (row 7 flips — for
+///        THIS predicate the blast radius is every stamp-less PendingDeletion
+///        row, since the status conjunct already excludes ordinary accounts; the
+///        every-account reading belongs to `is_deletion_due` itself, not here);
+///        a predicate that also reads claim provenance, `auth_issuer` or
+///        `last_login_at_ms` (rows 13 and 14 are the claim-variant twins of rows
+///        8 and 9 and must answer exactly what their twins answer);
 ///        either constant mutant.
 #[test]
 fn m22s3_reaper_should_run_cascade_truth_table() {
@@ -6966,7 +7218,7 @@ fn m22s3_reaper_should_run_cascade_truth_table() {
         ..base_account(3)
     };
 
-    let cases: [(&str, Account, bool); 12] = [
+    let cases: [(&str, Account, bool); 14] = [
         (
             "Active / no marker / no request",
             row(AccountStatus::Active, None, None),
@@ -6998,7 +7250,8 @@ fn m22s3_reaper_should_run_cascade_truth_table() {
             false,
         ),
         (
-            "PendingDeletion / no marker / no request (the cancelled shape)",
+            "PendingDeletion / no marker / no request (ILLEGAL intermediate; a \
+             CANCELLED account is Active with no stamp, not this)",
             row(AccountStatus::PendingDeletion, None, None),
             false,
         ),
@@ -7027,15 +7280,26 @@ fn m22s3_reaper_should_run_cascade_truth_table() {
             row(AccountStatus::PendingDeletion, Some(due), Some(900)),
             false,
         ),
+        (
+            "CLAIM TWIN of row 8: claim provenance must not shorten the grace window",
+            m22s3_claim_variant(row(AccountStatus::PendingDeletion, Some(not_due), None)),
+            false,
+        ),
+        (
+            "CLAIM TWIN of row 9: claim provenance must not exempt a row from the cascade",
+            m22s3_claim_variant(row(AccountStatus::PendingDeletion, Some(due), None)),
+            true,
+        ),
     ];
 
     let positives = cases.iter().filter(|c| c.2).count();
     assert_eq!(
-        positives, 1,
-        "[m22s3/cascade-table-shape] this table must declare EXACTLY ONE cascading \
-         combination; it declares {positives}. The table is the specification here, so a \
-         table that lost its positive row would pass against a predicate mutated to a \
-         constant false and report that PRV1-5 is proven."
+        positives, 2,
+        "[m22s3/cascade-table-shape] this table must declare EXACTLY TWO cascading rows — \
+         the one combination that cascades, and its claim-provenance twin, which must agree \
+         with it; it declares {positives}. The table is the specification here, so a table \
+         that lost a positive row would pass against a predicate mutated to a constant false \
+         and report that PRV1-5 is proven."
     );
 
     for (label, account, expected) in cases {
@@ -7153,14 +7417,18 @@ fn m22s3_reaper_should_run_cascade_grace_boundary() {
 ///
 /// Kills: collapsing the disjunction to either conjunct alone (one row each);
 ///        either constant mutant; a third disjunct added without re-deriving the
-///        `is_pending_deletion` delegation.
+///        `is_pending_deletion` delegation; a disjunct that reads claim
+///        provenance, `auth_issuer` or `last_login_at_ms` (rows 5 and 6 are the
+///        claim-variant twins of rows 1 and 3); a fixture that silently stops
+///        being the legal or illegal state its label claims.
 #[test]
 fn m22s3_should_reject_for_deletion_truth_table() {
-    let cases: [(&str, Account, bool); 4] = [
+    let cases: [(&str, Account, bool, bool); 6] = [
         (
             "LEGAL live account: Active, no terminal marker — gameplay allowed",
             base_account(5),
             false,
+            true,
         ),
         (
             "LEGAL grace window: PendingDeletion, no marker — gated",
@@ -7169,6 +7437,7 @@ fn m22s3_should_reject_for_deletion_truth_table() {
                 deletion_requested_at_ms: Some(10),
                 ..base_account(5)
             },
+            true,
             true,
         ),
         (
@@ -7180,6 +7449,7 @@ fn m22s3_should_reject_for_deletion_truth_table() {
                 ..base_account(5)
             },
             true,
+            true,
         ),
         (
             "ILLEGAL resurrected tombstone: Active + marker — gated, fail-closed",
@@ -7188,10 +7458,36 @@ fn m22s3_should_reject_for_deletion_truth_table() {
                 ..base_account(5)
             },
             true,
+            false,
+        ),
+        (
+            "LEGAL claimed live account: claim provenance must not gate gameplay",
+            m22s3_claim_variant(base_account(5)),
+            false,
+            true,
+        ),
+        (
+            "LEGAL claimed tombstone: claim provenance must not un-gate an erased account",
+            m22s3_claim_variant(Account {
+                status: AccountStatus::PendingDeletion,
+                deletion_requested_at_ms: Some(10),
+                terminal_at_ms: Some(20),
+                ..base_account(5)
+            }),
+            true,
+            true,
         ),
     ];
 
-    for (label, account, expected) in cases {
+    for (label, account, expected, expected_legal) in cases {
+        assert_eq!(
+            account_state_is_legal(&account),
+            expected_legal,
+            "[m22s3/gate-fixture] the fixture {label:?} is not the state it claims to be. The \
+             fail-closed argument for the marker half is ABOUT the illegal shape, so the row \
+             that is supposed to be illegal must actually be one — and the claim twins must \
+             actually be legal, or they would prove nothing about a state the system can hold."
+        );
         assert_eq!(
             should_reject_for_deletion(&account),
             expected,
@@ -7200,7 +7496,8 @@ fn m22s3_should_reject_for_deletion_truth_table() {
              (spec §4.7). The status half is what every M21 pending-deletion pin depends on; \
              the marker half is what refuses an account whose data is already erased even if \
              its status column says otherwise. Dropping either half is caught by exactly one \
-             row of this table, which is why both are here."
+             row of this table; rows 5 and 6 catch a third disjunct that reads claim \
+             provenance, `auth_issuer` or `last_login_at_ms` instead."
         );
     }
 }
