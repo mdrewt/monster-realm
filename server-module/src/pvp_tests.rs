@@ -217,18 +217,53 @@ fn ea_pvp_04_new_types_in_spacetime_types_json() {
 // leaving liveness broken on client drop.
 // ---------------------------------------------------------------------------
 
+// TIGHTENED BY m22-s3b (ADR-0228 D7(d)). This criterion used to scan the WHOLE
+// of lib.rs for the two helper names — which was adequate while `on_disconnect`
+// was the only thing in lib.rs that could name them. The spec §4.4 step-1
+// extraction moves the four force-resolve calls into
+// `resolve_all_live_interactions`, and a whole-file scan cannot tell a call
+// inside that resolver from one left stranded in a comment-free dead helper, or
+// from one moved somewhere the disconnect hook never reaches. Scoping the scan
+// to the resolver's own brace-bounded body RESTORES the gate strength the
+// extraction would otherwise silently dilute, and the companion test
+// `m22s3b_on_disconnect_reaches_the_resolver` pins the other half of the hop.
 #[test]
 fn ea_pvp_05_on_disconnect_calls_pvp_helpers() {
     let stripped = strip_rust_comments(LIB_RS);
+    let resolver = concat!("resolve_all_live", "_interactions");
+
+    let decl = ["fn ", resolver, "("].concat();
+    let n_decl = stripped.matches(decl.as_str()).count();
+    assert_eq!(
+        n_decl, 1,
+        "EA-PVP-05 FAIL (declaration): lib.rs must declare `{decl}` EXACTLY once; found \
+         {n_decl}. ZERO means the spec §4.4 step-1 extraction is missing, so there is no \
+         shared force-resolve bundle for the deletion cascade to call and the disconnect \
+         hook is the only caller of these helpers again. MORE THAN ONE steers the first-hit \
+         body extractor below at a declaration nobody reviewed."
+    );
+
+    let body = extract_pvp_fn_body(&stripped, resolver).unwrap_or_else(|| {
+        panic!(
+            "EA-PVP-05 FAIL (extraction): the brace-bounded body of `{resolver}` could not be \
+             sliced out of lib.rs, so this scan has no scope and would pass vacuously. Fail \
+             LOUD."
+        )
+    });
+
     for needle in &[
         concat!("pvp::", "forfeit_on_disconnect"),
         concat!("pvp::", "cancel_challenges_on_disconnect"),
     ] {
         assert!(
-            stripped.contains(needle),
-            "EA-PVP-05 FAIL: `{}` not found in lib.rs `on_disconnect`. \
-             PvP forfeit-on-disconnect and challenge cancellation must be wired \
-             into the disconnect lifecycle reducer (ADR-0109 D8/D9).",
+            body.contains(needle),
+            "EA-PVP-05 FAIL: `{}` not found in the body of `resolve_all_live_interactions` in \
+             lib.rs. PvP forfeit-on-disconnect and challenge cancellation must be wired into \
+             the SHARED force-resolve bundle (ADR-0109 D8/D9 + spec §4.4 step 1): that bundle \
+             is called by BOTH the disconnect lifecycle reducer and the M22 deletion cascade, \
+             so a helper dropped from it stops running on disconnect AND stops running before \
+             the cascade erases the rows it was supposed to resolve against — one edit, two \
+             regressions, one of them irreversible.",
             needle
         );
     }
@@ -253,20 +288,50 @@ fn ea_pvp_05_on_disconnect_calls_pvp_helpers() {
 // ---------------------------------------------------------------------------
 
 // EARS ptc5b-1
-// PROOF-OF-TEETH: kills an impl that adds the fn but omits the on_disconnect call.
+// PROOF-OF-TEETH: kills an impl that adds the fn but omits the resolver call.
+//
+// TIGHTENED BY m22-s3b (ADR-0228 D7(d)), for the same reason as EA-PVP-05 above:
+// after the spec §4.4 step-1 extraction the call lives inside
+// `resolve_all_live_interactions`, and a whole-file `lib.rs` scan can no longer
+// distinguish a wired call from a stranded one. This is the highest-value of the
+// four calls to keep pinned — the spec calls the wild-battle resolve the single
+// correction its adversarial pass produced, because NO scheduled reaper covers
+// the wild `battle`/`battle_wild` row class, so a dropped call soft-locks the
+// abandoned battle forever with nothing anywhere to clean it up.
 #[test]
 fn ptc5b_4_wiring_scan_on_disconnect_calls_resolve_wild_battle() {
     let stripped = strip_rust_comments(LIB_RS);
-    // Assembled from parts — `resolve_wild_battle_on_disconnect` must not appear
-    // verbatim as a single token here, since LIB_RS is lib.rs (not this file),
-    // but we follow the concat! convention for consistency and documentation clarity.
+    let resolver = concat!("resolve_all_live", "_interactions");
+
+    let decl = ["fn ", resolver, "("].concat();
+    let n_decl = stripped.matches(decl.as_str()).count();
+    assert_eq!(
+        n_decl, 1,
+        "ptc5b-T4 FAIL (declaration): lib.rs must declare `{decl}` EXACTLY once; found \
+         {n_decl}. The body extractor below anchors on the first hit, so a decoy second \
+         declaration would re-point this pin at a body nobody reviewed."
+    );
+
+    let body = extract_pvp_fn_body(&stripped, resolver).unwrap_or_else(|| {
+        panic!(
+            "ptc5b-T4 FAIL (extraction): the brace-bounded body of `{resolver}` could not be \
+             sliced out of lib.rs, so this scan has no scope and would pass vacuously."
+        )
+    });
+
+    // Assembled from parts per this file's concat! convention.
     let needle = concat!("battle::", "resolve_wild_battle_on_disconnect");
     assert!(
-        stripped.contains(needle),
-        "ptc5b-T4 FAIL: `{}` not found in lib.rs. \
-         The `on_disconnect` reducer must call `battle::resolve_wild_battle_on_disconnect(ctx, me)` \
-         so a player's Ongoing WILD battle is cleaned up on disconnect (soft-lock prevention). \
-         Add it immediately after `pvp::forfeit_on_disconnect(ctx, me)` (ptc5b-1 wiring).",
+        body.contains(needle),
+        "ptc5b-T4 FAIL: `{}` not found in the body of `resolve_all_live_interactions` in \
+         lib.rs. The shared force-resolve bundle must call \
+         `battle::resolve_wild_battle_on_disconnect(ctx, identity)` so a player's Ongoing \
+         WILD battle is cleaned up — on disconnect (ptc5b-1) AND before the M22 deletion \
+         cascade erases the monsters that battle references (spec §4.4 step 1). This is the \
+         call a hazard list rebuilt from the TABLE CENSUS rather than from the on_disconnect \
+         dispatch silently drops, and battle.rs's own doc comment records why that is fatal: \
+         no scheduled reaper covers the wild battle row class, so the abandoned battle \
+         soft-locks the returning player forever.",
         needle
     );
 }
@@ -5018,5 +5083,235 @@ fn m22s5_accept_challenge_carries_the_deletion_gate() {
         concat!("accept_", "challenge"),
         concat!("challenge.target", "!=me"),
         concat!("start_pvp_", "battle("),
+    );
+}
+
+// ===========================================================================
+// m22-s3b (ADR-0228) — THE OTHER HALF OF THE RESOLVER HOP, AND THE TWO
+// DELEGATED PvP SWEEPS.
+//
+// EARS criteria:
+//   PRV1-6a  the disconnect hook and the deletion cascade BOTH reach the four
+//            force-resolve helpers through one shared bundle.
+//   PRV1-6b  `battle_challenge` and `battle_action` (both ERASE) are deleted
+//            for the deleting identity, on BOTH of the challenge table's
+//            identity columns.
+//   PRV1-6d  `battle_challenge_reaper_schedule` and `pvp_deadline_schedule`
+//            (both JOIN-ONLY) are swept at their parent's step.
+//
+// WHY THE FIRST TEST IS TWINNED HERE (ADR-0228 D7(e), RT-9). The on_disconnect
+// link is also pinned in `trading_tests.rs`, because the TR-18 criterion ported
+// out of `evals/trade-reducer-security.eval.mjs` needs a home in the module it
+// protects. Duplicating the link into THIS file is deliberate: a pvp-side
+// regression should red in the pvp file, not only in trading's, and the two
+// copies are cheap.
+//
+// SCAN HYGIENE: every needle is assembled with `concat!`, and this section
+// contains no bare double-quote inside a comment and no block-comment delimiter.
+// ===========================================================================
+
+/// **PRV1-6a (link 1, pvp twin)** — `on_disconnect` calls the extracted resolver
+/// exactly once.
+///
+/// `ea_pvp_05` and `ptc5b_4` above now scan the RESOLVER's body; without this
+/// test both of them would be green against a resolver that is perfectly written
+/// and never called — dead code that reads as a complete fix, with every PvP
+/// forfeit and challenge cancel silently switched off on disconnect.
+///
+/// Kills: an extraction that leaves the resolver uncalled; a second call added
+///        to the same hook (which force-resolves twice, the second pass acting
+///        on rows the first already settled).
+#[test]
+fn m22s3b_on_disconnect_reaches_the_resolver() {
+    let stripped = strip_rust_comments(LIB_RS);
+    let resolver = concat!("resolve_all_live", "_interactions");
+    let body = extract_pvp_fn_body(&stripped, concat!("on", "_disconnect")).unwrap_or_else(|| {
+        panic!(
+            "m22-s3b PRV1-6a FAIL (extraction): the brace-bounded body of lib.rs's \
+             `on_disconnect` could not be sliced out, so this link has no scope and would \
+             pass vacuously. Fail LOUD."
+        )
+    });
+    let call = [resolver, "("].concat();
+    let n = body.matches(call.as_str()).count();
+    assert_eq!(
+        n, 1,
+        "m22-s3b PRV1-6a FAIL (link 1): `on_disconnect` must call `{call}` EXACTLY once; \
+         found {n}. `ea_pvp_05` and `ptc5b_4` were TIGHTENED to scan the resolver's own body, \
+         so without this clause both are green against a resolver that is written correctly \
+         and never invoked — dead code that reads as a complete extraction while PvP \
+         forfeit, wild-battle GC, challenge cancel and trade cancel all silently stop \
+         happening on disconnect. MORE THAN ONE force-resolves twice: the second pass runs \
+         against rows the first already settled or deleted."
+    );
+}
+
+/// **PRV1-6b / PRV1-6d** — `erase_pvp_rows` sweeps `battle_challenge` on BOTH
+/// identity columns, sweeps `battle_action`, and disarms each challenge's TTL
+/// schedule row.
+///
+/// BOTH CHALLENGE COLUMNS, and the `target` one is the load-bearing half. The G6
+/// re-key manifest flags `battle_challenge.target` in its own basis prose —
+/// `an incoming challenge survives until the TTL reaper; M22 cascade MUST sweep
+/// this column` — and spec §3 repeats it. Sweeping only `challenger` leaves
+/// every challenge SENT TO the deleted player standing in a PUBLIC table, naming
+/// them, and keeps the challenger locked out of issuing another (one active
+/// outgoing challenge per player).
+///
+/// `battle_action` IS SWEPT UNINDEXED, on purpose: the table is indexed by
+/// `battle_id`, not by player, and ADR-0228 explicitly declines to add an index
+/// in this slice — the linear scan is correct and the volume concern is the
+/// §8.3 residual. What must not happen is the sweep being skipped because it is
+/// awkward: a surviving `battle_action` row is a per-turn secret pick keyed to a
+/// deleted player, in a MUST-NEVER-LEAK table.
+///
+/// THE CHALLENGE SCHEDULE GOES WITH THE CHALLENGE (ADR-0228 D2 deviation (a)):
+/// `battle_challenge_reaper_schedule` is JOIN-ONLY via `battle_challenge`, and
+/// every other challenge-deletion site in this module already disarms it
+/// (EA-CHR-02 pins those four). An orphaned one-shot fires later against a
+/// challenge_id that no longer exists.
+///
+/// Kills: a challenger-only sweep (the measured G6-flagged orphan); a
+///        target-only sweep; a helper that forgets `battle_action`; a helper
+///        that deletes challenges without disarming their schedules; a sweep
+///        keyed on anything other than the `owner` parameter; a helper that
+///        collects ids and never deletes.
+#[test]
+fn m22s3b_erase_pvp_rows_shape() {
+    let stripped = stripped_pvp_for_scan();
+    let name = concat!("erase_pvp", "_rows");
+    let body = extract_pvp_fn_body(&stripped, name).unwrap_or_else(|| {
+        panic!(
+            "m22-s3b PRV1-6b FAIL (extraction): pvp.rs declares no `fn {name}(`. The cascade \
+             delegates the `battle_challenge` and `battle_action` ERASE to this module \
+             because G5 MODULE_WRITE_ISOLATION closes accounts.rs at its four owned tables, \
+             so without this helper neither table is ever swept. Fail LOUD rather than pass \
+             vacuously."
+        )
+    });
+    let squashed = squash_ws(body);
+    assert!(
+        !squashed.is_empty(),
+        "m22-s3b PRV1-6b FAIL (non-vacuity): the `{name}` body is empty, so every clause \
+         below would be asserting properties of nothing."
+    );
+
+    for (needle, side, why) in [
+        (
+            concat!("challen", "ger().filter(owner)"),
+            "challenger",
+            "the challenges the deleted player SENT",
+        ),
+        (
+            concat!("tar", "get().filter(owner)"),
+            "target",
+            "the challenges SENT TO the deleted player. This is the column the G6 re-key \
+             manifest flags in its own basis prose (`an incoming challenge survives until \
+             the TTL reaper; M22 cascade MUST sweep this column`) and spec §3 repeats: \
+             omitted, every incoming challenge stands in a PUBLIC table naming a deleted \
+             identity, and the challenger stays locked out of issuing another",
+        ),
+    ] {
+        assert!(
+            squashed.contains(needle),
+            "m22-s3b PRV1-6b FAIL ({side} sweep): `{name}` must filter the {side} btree index \
+             with the `owner` PARAMETER (`{needle}`) — {why}. `battle_challenge` carries TWO \
+             indexed identity columns and the manifest classifies the TABLE erase, not one \
+             column of it. Body was: {squashed:?}"
+        );
+    }
+
+    assert!(
+        squashed.contains(concat!(".battle_", "action()")),
+        "m22-s3b PRV1-6b FAIL (battle_action): `{name}` must sweep `battle_action` too — it \
+         is a separate ERASE-policy table and its rows are per-turn SECRET picks \
+         (must-never-leak, ADR-0015/ADR-0109 D2) keyed to the deleting player. The table is \
+         indexed by `battle_id`, not by player, so this sweep is an unindexed scan by \
+         design: ADR-0228 declines to add an index in this slice and books the cost against \
+         the §8.3 volume residual. Awkward is not a reason to skip it. Body was: {squashed:?}"
+    );
+
+    let disarm = concat!("disarm_challenge_", "reaper(");
+    assert!(
+        squashed.contains(disarm),
+        "m22-s3b PRV1-6b/6d FAIL (orphan schedule): `{name}` must call `{disarm}` for each \
+         erased challenge. `battle_challenge_reaper_schedule` is JOIN-ONLY via \
+         `battle_challenge` (the manifest pins that parent by value), so the cascade sweeps \
+         it at its parent's step — the same orphan-prevention idiom every other \
+         challenge-deletion site in this module already follows (EA-CHR-02 pins those four). \
+         Body was: {squashed:?}"
+    );
+    let deletes = squashed.matches(concat!(".del", "ete(")).count();
+    assert!(
+        deletes >= 2,
+        "m22-s3b PRV1-6b FAIL (no delete): `{name}` performs {deletes} row delete(s); the two \
+         ERASE tables need at least 2. A helper that collects the matching ids and then only \
+         disarms their schedules satisfies every clause above while leaving the challenges \
+         and the secret picks themselves in place. Body was: {squashed:?}"
+    );
+}
+
+/// **PRV1-6d** — `disarm_pvp_deadlines` sweeps every `pvp_deadline_schedule` row
+/// for one battle, keyed on `battle_id`.
+///
+/// WHY IT LIVES IN pvp.rs (ADR-0228 D1 / M4): `pvp.rs` is the SOLE writer of
+/// `pvp_deadline_schedule` — the table is colocated with its own reducer under
+/// the ADR-0056 exception — so `battle::anonymize_battles` delegates the sweep
+/// here rather than reaching across the module boundary. The delegation doctrine
+/// is not broken for that one table.
+///
+/// THE SWEEP IS UNINDEXED AND THAT IS DELIBERATE: `pvp_deadline_schedule.battle_id`
+/// carries no btree index and ADR-0228 declines to add one in this slice, so the
+/// helper filters a full iteration. What it must NOT do is `.find(..)`: more than
+/// one deadline row can exist for a battle across turns, and a single-row lookup
+/// leaves every other one armed against a battle whose participant is gone.
+///
+/// Kills: a `.find(` in place of the filter (leaves later-turn deadline rows
+///        armed); a sweep keyed on something other than the `battle_id`
+///        parameter; an UNFILTERED sweep, which disarms every live PvP deadline
+///        in the database and hangs every ongoing battle in the game; a helper
+///        that collects and never deletes.
+#[test]
+fn m22s3b_disarm_pvp_deadlines_shape() {
+    let stripped = stripped_pvp_for_scan();
+    let name = concat!("disarm_pvp_", "deadlines");
+    let body = extract_pvp_fn_body(&stripped, name).unwrap_or_else(|| {
+        panic!(
+            "m22-s3b PRV1-6d FAIL (extraction): pvp.rs declares no `fn {name}(`. \
+             `pvp_deadline_schedule` is JOIN-ONLY via `battle`, and pvp.rs is its SOLE \
+             writer, so `battle::anonymize_battles` must delegate the sweep here (ADR-0228 \
+             D1). Without it the deadline rows of a deleted player's battles stay armed. \
+             Fail LOUD rather than pass vacuously."
+        )
+    });
+    let squashed = squash_ws(body);
+
+    assert!(
+        squashed.contains(concat!(".pvp_deadline_", "schedule()")),
+        "m22-s3b PRV1-6d FAIL (accessor): `{name}` must reach the deadline schedule table. \
+         Body was: {squashed:?}"
+    );
+    assert!(
+        squashed.contains("battle_id"),
+        "m22-s3b PRV1-6d FAIL (key): `{name}` must key its sweep on the `battle_id` \
+         PARAMETER. An UNFILTERED sweep disarms every live PvP deadline in the database, \
+         which hangs every ongoing PvP battle in the game on the next cascade — the \
+         catastrophic direction, and one no containment pin distinguishes from the correct \
+         body. Body was: {squashed:?}"
+    );
+    assert!(
+        !squashed.contains(concat!(".fi", "nd(")),
+        "m22-s3b PRV1-6d FAIL (single-row lookup): `{name}` uses `.find(`. More than one \
+         deadline row can exist for a battle (one is scheduled per TURN, and a stale one is \
+         a no-op rather than an error), so a single-row lookup disarms the first and leaves \
+         every other one armed against a battle whose participant has been erased. The \
+         column carries no btree index — ADR-0228 declines to add one in this slice — so the \
+         sanctioned shape is a filtered full iteration. Body was: {squashed:?}"
+    );
+    assert!(
+        squashed.contains(concat!(".del", "ete(")),
+        "m22-s3b PRV1-6d FAIL (no delete): `{name}` never deletes a schedule row — a helper \
+         that collects the matching ids and stops there satisfies every clause above. Body \
+         was: {squashed:?}"
     );
 }

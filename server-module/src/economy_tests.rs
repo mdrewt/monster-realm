@@ -1771,8 +1771,33 @@ fn player_wallet_rows_are_never_deleted() {
     let delete_pat = [".delete", "("].concat();
     let try_delete_pat = [".try", "_delete("].concat();
 
+    // --- m22-s3b: THE ONE SANCTIONED WALLET DELETER, EXEMPTED BY NAME -------
+    //
+    // `player_wallet` carries the ERASE policy in `DATA_LIFECYCLE_MANIFEST`
+    // (spec §3), so the M22 deletion cascade is the one code path that MUST
+    // delete a wallet row. ADR-0228 D7(c) takes a single-fn exemption rather
+    // than zeroing the balance: a surviving zeroed row is exactly the orphaned
+    // data the operator's issue-#403 Option B ruling excludes, and the manifest
+    // policy would then be a lie.
+    //
+    // A NAMED EXEMPTION CAN ONLY EVER LOOSEN THIS GATE, so it is paid for four
+    // ways, all of them here and all of them driven by the SAME
+    // `rust_fn_bodies` walk the ban itself runs over (never a second parse that
+    // could disagree with the first):
+    //   * exactly ONE walk entry may carry the exempted name — so a same-named
+    //     twin, or the name attached to a different function, reds;
+    //   * that entry's body is pinned by EXACT EQUALITY to the sanctioned
+    //     owner-keyed delete, so the exemption cannot cover a dead branch, a
+    //     shadowed binding, an appended foreign write, or (the catastrophic
+    //     direction) an UNFILTERED sweep that deletes every player's wallet;
+    //   * the exempted body must actually CONTAIN the delete verb, so the
+    //     exemption can never decay into a permanently open slot;
+    //   * the every-other-function ban below is unchanged.
+    let erase_wallet = ["erase", "_wallet"].concat();
     let mut wallet_fns_in_economy = 0usize;
     let mut wallet_fns_in_schema = 0usize;
+    let mut erase_wallet_entries = 0usize;
+    let mut erase_wallet_body = String::new();
 
     for (file, src) in [("economy.rs", ECONOMY_SOURCE), ("schema.rs", SCHEMA_SOURCE)] {
         let stripped = strip_rust_strings_economy(&strip_rust_comments_economy(src));
@@ -1792,10 +1817,19 @@ fn player_wallet_rows_are_never_deleted() {
                 wallet_fns_in_schema += 1;
             }
 
+            // THE ONE EXEMPTION. Recorded rather than skipped, so the clauses
+            // after the loop can hold it to its exact sanctioned shape.
+            if name == erase_wallet {
+                erase_wallet_entries += 1;
+                erase_wallet_body = body.clone();
+                continue;
+            }
+
             assert!(
                 !body.contains(delete_pat.as_str()),
                 "TEETH(ux2 ADR-0154 R2): `{}` in {} touches `{}` AND contains `{}` — \
-                 player_wallet rows must NEVER be deleted. The client's wallet slot is \
+                 player_wallet rows must NEVER be deleted, except by the ONE cascade helper \
+                 exempted by name below. The client's wallet slot is \
                  insert-wins with NO remove path precisely because of this invariant: \
                  through a view subscription an UPDATE is delivered as onInsert(new) + \
                  onDelete(old), so a genuine delete is indistinguishable from the old \
@@ -1820,6 +1854,73 @@ fn player_wallet_rows_are_never_deleted() {
         }
     }
 
+    assert_eq!(
+        erase_wallet_entries, 1,
+        "TEETH(m22-s3b / ADR-0228 D7(c) EXEMPTION-UNIQUE): the `rust_fn_bodies` walk found \
+         {erase_wallet_entries} function(s) named `{erase_wallet}` across economy.rs and \
+         schema.rs; EXACTLY ONE is allowed. ZERO means the cascade has no delegated wallet \
+         eraser at all — `player_wallet` is an ERASE-policy table, G5 closes accounts.rs at \
+         its four owned tables, and currency-integrity's ACCESSOR_BYPASS bans even a READ of \
+         the wallet from any other module, so the deleting player's balance simply survives \
+         the deletion. MORE THAN ONE means the by-NAME exemption covers more than one body, \
+         and the exact-body pin below can then only speak for whichever the walk saw last."
+    );
+    let sanctioned = m22s3b_sanctioned_erase_wallet_bodies();
+    assert!(
+        sanctioned.iter().any(|s| *s == erase_wallet_body),
+        "TEETH(m22-s3b / ADR-0228 D7(c) EXEMPTION-SHAPE): the exempted `{erase_wallet}` body \
+         is not the sanctioned owner-keyed delete.\n  expected (whitespace-compacted, either \
+         accepted framing): {sanctioned:?}\n  found:    {erase_wallet_body:?}\n\
+         EXACT EQUALITY, because a by-name exemption is a hole in a never-delete invariant \
+         and containment was MEASURED insufficient for this exact family (the rb-22 red-team: \
+         an `if false` wrapper around a correct body, a shadowed binding, a shadowed loop \
+         variable and an appended aliased foreign write all satisfy every needle-based clause \
+         and are clippy-clean). The catastrophic member of that family is an UNFILTERED sweep \
+         — `for row in ctx.db.player_wallet().iter()` — which deletes EVERY player's wallet \
+         and reads identically to every containment pin. If the sanctioned body legitimately \
+         changes, re-derive this literal from ADR-0228 D7(c) and re-review the exemption in \
+         the same change."
+    );
+    assert!(
+        erase_wallet_body.contains(delete_pat.as_str()),
+        "TEETH(m22-s3b / ADR-0228 D7(c) EXEMPTION-EXERCISED): the exempted `{erase_wallet}` \
+         body contains no `{delete_pat}` at all. An exemption for a function that deletes \
+         nothing is a permanently open slot in the never-delete gate: the name is skipped by \
+         the ban above forever, and whatever is written there later is unmeasured. Widening \
+         a gate must be paid for by the write it was widened for."
+    );
+
+    // Positional: the exempted helper must sit BEFORE `rekey_wallet` in the
+    // file. `evals/currency-integrity.eval.mjs`'s wallet zero-arg pin scans
+    // FORWARD from `rekey_wallet` without a bound, so a helper introduced after
+    // it lands inside that unbounded window and is measured by a criterion that
+    // was never written about it.
+    let economy_clean = strip_rust_strings_economy(&strip_rust_comments_economy(ECONOMY_SOURCE));
+    let erase_decl = ["fn ", erase_wallet.as_str(), "("].concat();
+    let rekey_decl = ["fn ", "rekey", "_wallet("].concat();
+    let at_erase = economy_clean.find(erase_decl.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH(m22-s3b EXEMPTION-PLACEMENT): economy.rs declares no `{erase_decl}`, so \
+             the placement clause has no anchor and would pass vacuously."
+        )
+    });
+    let at_rekey = economy_clean.find(rekey_decl.as_str()).unwrap_or_else(|| {
+        panic!(
+            "TEETH(m22-s3b EXEMPTION-PLACEMENT): economy.rs declares no `{rekey_decl}`, so \
+             the placement clause has no anchor and would pass vacuously."
+        )
+    });
+    assert!(
+        at_erase < at_rekey,
+        "TEETH(m22-s3b EXEMPTION-PLACEMENT): `{erase_wallet}` is declared at byte {at_erase}, \
+         AFTER `rekey_wallet` at {at_rekey}. It must come first: \
+         evals/currency-integrity.eval.mjs pins the wallet zero-argument shape by scanning \
+         FORWARD from `rekey_wallet` with no upper bound, so a helper placed after it falls \
+         inside a window belonging to a criterion that was never written about this function \
+         — a full-CI-only red that looks like a defect in the cascade rather than a placement \
+         accident."
+    );
+
     assert!(
         wallet_fns_in_economy >= 1,
         "TEETH(ux2 ADR-0154 R2 NON-VACUITY): no function in economy.rs touches `{}` — \
@@ -1837,6 +1938,94 @@ fn player_wallet_rows_are_never_deleted() {
          economy_tests.rs), and the never-deleted scan must cover the file that owns \
          the new client read path.",
         wallet_desc
+    );
+}
+
+/// The two accepted whitespace-COMPACTED framings of the sanctioned
+/// `erase_wallet` body: the ONE owner-keyed primary-key delete, and nothing
+/// else.
+///
+/// Two framings rather than one because `rust_fn_bodies` is the walk that
+/// decides where a body starts and ends, and pinning a single framing would
+/// couple this literal to that walk's brace convention rather than to the
+/// sanctioned code. Both spellings describe the same single statement.
+///
+/// `player_wallet` is keyed by `owner_identity` as its PRIMARY KEY (schema.rs),
+/// so the delete is a point delete of exactly one row — not a filter, not a
+/// scan.
+fn m22s3b_sanctioned_erase_wallet_bodies() -> [String; 2] {
+    let stmt = [
+        "ctx.db.",
+        "player",
+        "_wallet().",
+        "owner",
+        "_identity().delete(owner);",
+    ]
+    .concat();
+    [stmt.clone(), ["{", stmt.as_str(), "}"].concat()]
+}
+
+/// **PRV1-6b (m22-s3b)** — the delegated wallet eraser is exactly one
+/// owner-keyed point delete, named as the gates ledger names it.
+///
+/// This is the same exact-body property the amended
+/// `player_wallet_rows_are_never_deleted` above asserts as part of paying for
+/// its by-name exemption; it is ALSO stated here as a standalone test so the
+/// cascade's own requirement has a test named after it, and so a failure
+/// attributes to the cascade rather than to the ux2 never-delete gate. The two
+/// arms fail with different messages, so a mutation can be attributed to either.
+///
+/// Kills: a helper that filters instead of point-deleting (the column is the
+///        PRIMARY key, so a filter is a scan that says the same thing more
+///        slowly and stops being a proof that exactly one row is touched);
+///        an UNFILTERED sweep, which deletes every player's wallet; a helper
+///        that zeroes the balance instead of deleting (which leaves the orphaned
+///        row Option B rules out and makes the ERASE manifest policy false); an
+///        appended second write; a dead-branch wrapper.
+#[test]
+fn m22s3b_erase_wallet_sanctioned_shape() {
+    let erase_wallet = ["erase", "_wallet"].concat();
+    let stripped = strip_rust_strings_economy(&strip_rust_comments_economy(ECONOMY_SOURCE));
+
+    let mut seen = 0usize;
+    let mut body = String::new();
+    let mut sig = String::new();
+    for (name, raw_sig, raw_body) in rust_fn_bodies(&stripped) {
+        if name == erase_wallet {
+            seen += 1;
+            sig = compact_ws(&raw_sig);
+            body = compact_ws(&raw_body);
+        }
+    }
+    assert_eq!(
+        seen, 1,
+        "m22-s3b PRV1-6b FAIL: economy.rs must declare `fn {erase_wallet}(` EXACTLY once; \
+         the fn-body walk found {seen}. ZERO means the cascade has no delegated wallet \
+         eraser: `player_wallet` is ERASE-policy, G5 MODULE_WRITE_ISOLATION closes \
+         accounts.rs at its four owned tables, and currency-integrity's ACCESSOR_BYPASS bans \
+         even a READ of the wallet from any module but this one — so the deleting player's \
+         balance survives the deletion with nothing anywhere to remove it."
+    );
+    assert!(
+        sig.contains("owner:Identity"),
+        "m22-s3b PRV1-6b FAIL (signature): `{erase_wallet}` must take an OWNER-GENERIC \
+         `owner: Identity`, mirroring `purge_export_bundles` and `disarm_deletion_reaper`. A \
+         claim-specific or caller-specific parameter name signals a helper scoped to one \
+         flow, and the cascade needs one that is scoped to whatever identity it is erasing. \
+         Signature read: {sig:?}"
+    );
+    let sanctioned = m22s3b_sanctioned_erase_wallet_bodies();
+    assert!(
+        sanctioned.iter().any(|s| *s == body),
+        "m22-s3b PRV1-6b FAIL (body): `{erase_wallet}` must be EXACTLY the one owner-keyed \
+         point delete.\n  expected (whitespace-compacted, either accepted framing): \
+         {sanctioned:?}\n  found: {body:?}\n\
+         `owner_identity` is the PRIMARY KEY of `player_wallet`, so the sanctioned shape is a \
+         point delete of exactly one row. A filtered sweep says the same thing more slowly \
+         and stops proving that only one row is touched; an UNFILTERED sweep deletes every \
+         player's wallet in the database and reads identically to every containment pin; and \
+         a zeroing update leaves the orphaned row the operator's Option B ruling excludes, \
+         which would make this table's ERASE manifest policy false."
     );
 }
 

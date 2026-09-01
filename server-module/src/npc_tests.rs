@@ -1709,3 +1709,139 @@ fn apply_quest_trigger_defs_load_error_uses_an_escaped_binding() {
          Same cheat, same reasoning, as T4-d at npc_tests.rs:1205-1222."
     );
 }
+
+// ===========================================================================
+// m22-s3b (ADR-0228) — THE DELEGATED NPC-STATE ERASE.
+//
+// EARS criterion PRV1-6b: the cascade deletes every ERASE-policy row owned by
+// the deleting identity. THREE of those tables live in this module —
+// `player_dialogue_state`, `player_quest` and `player_conversation` — and the
+// manifest classifies all three ERASE independently, so one helper must sweep
+// all three or the ones it misses simply survive the deletion.
+//
+// `player_conversation` is single-player NPC DIALOGUE PROGRESS, not chat: spec
+// §3 records that correction explicitly, because a design that reasons about it
+// as messaging is reasoning about a feature this codebase does not have. It is
+// erased for the same reason as the other two, not for a chat-privacy reason.
+//
+// SCAN HYGIENE: every needle is assembled from fragments (house rule — a dozen
+// evals concatenate every `.rs` under server-module/src, `_tests.rs` files
+// included), no bare double-quote appears inside any comment here, and this
+// section spells no block-comment delimiter.
+// ===========================================================================
+
+/// Blank the CONTENT of every double-quoted string literal, preserving byte
+/// offsets, so a dead `let _decoy = "<needle>";` cannot satisfy a positive
+/// clause below.
+///
+/// Local and slice-prefixed: every `*_tests.rs` file in this crate is a
+/// `#[cfg(test)]` child of its own production file and none can reach another's
+/// bare `fn` items (the precedent `content_cache_tests.rs` records for its own
+/// stripper copies). It reuses this file's existing `D12R_DQUOTE` byte constant
+/// and `d12r_quote_delimits` escape-awareness rather than re-deriving them, so
+/// there is one notion of what a string delimiter is in this file.
+fn m22s3b_blank_strings(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let mut out = bytes.to_vec();
+    let mut in_string = false;
+    let mut i = 0usize;
+    while i < bytes.len() {
+        if bytes[i] == D12R_DQUOTE && d12r_quote_delimits(bytes, i) {
+            out[i] = b' ';
+            in_string = !in_string;
+        } else if in_string {
+            out[i] = b' ';
+        }
+        i += 1;
+    }
+    String::from_utf8(out).expect("string-blanked source must be valid UTF-8")
+}
+
+/// **PRV1-6b (scan)** — `erase_npc_state` sweeps ALL THREE owner-keyed NPC
+/// tables, through their owner columns, and actually deletes.
+///
+/// ONE HELPER, THREE TABLES, and the count is the point: the manifest classifies
+/// `player_dialogue_state`, `player_quest` and `player_conversation`
+/// independently, so a helper that sweeps two of them leaves the third's rows —
+/// a deleted player's dialogue flags, quest progress or conversation position —
+/// owned by an identity that no longer has an account, with nothing anywhere
+/// else that will ever remove them. `rekey_npc_state` is the direct precedent
+/// for the three-table shape.
+///
+/// Kills: any one of the three tables omitted; a sweep keyed on something other
+///        than the `owner` parameter (which either deletes nothing or, if
+///        unfiltered, deletes every player's NPC progress — the catastrophic
+///        direction); a helper that collects ids and never deletes.
+#[test]
+fn m22s3b_erase_npc_state_shape() {
+    let stripped = m22s3b_blank_strings(&strip_npc_comments(NPC_SOURCE));
+    let name = ["erase_npc", "_state"].concat();
+    let body = extract_npc_fn_body(&stripped, name.as_str()).unwrap_or_else(|| {
+        panic!(
+            "m22-s3b PRV1-6b FAIL (extraction): npc.rs declares no `fn {name}(`. The cascade \
+             delegates the `player_dialogue_state`, `player_quest` and \
+             `player_conversation` ERASE to this module because G5 MODULE_WRITE_ISOLATION \
+             closes accounts.rs at its four owned tables. Without this helper all three \
+             tables survive the deletion. Fail LOUD rather than pass vacuously."
+        )
+    });
+    let squashed = squash_ws(&body);
+    assert!(
+        !squashed.is_empty(),
+        "m22-s3b PRV1-6b FAIL (non-vacuity): the `{name}` body is empty, so every clause \
+         below would be asserting properties of nothing."
+    );
+
+    for (needle, what) in [
+        (
+            ["player_dialogue", "_state()"].concat(),
+            "the dialogue flags and completed-quest set",
+        ),
+        (
+            ["player", "_quest()"].concat(),
+            "per-quest progress rows — note there are MANY per owner, so this one is a \
+             filtered sweep rather than a point delete",
+        ),
+        (
+            ["player_conver", "sation()"].concat(),
+            "the transient conversation position. Spec §3 records what this table is NOT: \
+             it is single-player NPC dialogue progress, never chat — no messaging system \
+             exists anywhere in this codebase",
+        ),
+    ] {
+        assert!(
+            squashed.contains(needle.as_str()),
+            "m22-s3b PRV1-6b FAIL (missing table): `{name}` must sweep `{needle}` ({what}). \
+             The manifest classifies all three NPC tables ERASE INDEPENDENTLY, so a helper \
+             that handles two of them leaves the third's rows owned by an identity with no \
+             account and nothing anywhere else that will ever remove them. Body was: \
+             {squashed:?}"
+        );
+    }
+
+    let owner_col = ["owner", "_identity()"].concat();
+    let n_owner = squashed.matches(owner_col.as_str()).count();
+    assert!(
+        n_owner >= 3,
+        "m22-s3b PRV1-6b FAIL (owner-scoped): `{name}` reaches `{owner_col}` {n_owner} \
+         time(s); all three tables must be swept through their owner column (at least 3). A \
+         sweep that does not go through the owner column is either keyed on the wrong thing \
+         or UNFILTERED — and an unfiltered sweep here deletes every player's dialogue flags, \
+         quest progress and conversation state in the database, which is the catastrophic \
+         direction and reads identically to the correct body under a presence-only check. \
+         Body was: {squashed:?}"
+    );
+    assert!(
+        squashed.contains("owner"),
+        "m22-s3b PRV1-6b FAIL (parameter used): `{name}` never names its `owner` parameter, \
+         so whatever it sweeps is not scoped to the deleting identity. Body was: {squashed:?}"
+    );
+
+    let deletes = squashed.matches(&["del", "ete("].concat()).count();
+    assert!(
+        deletes >= 3,
+        "m22-s3b PRV1-6b FAIL (no delete): `{name}` performs {deletes} row delete(s); three \
+         ERASE tables need at least 3. A helper that reads all three and deletes from one or \
+         two satisfies every presence clause above. Body was: {squashed:?}"
+    );
+}
