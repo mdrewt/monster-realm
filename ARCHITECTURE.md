@@ -241,9 +241,11 @@ literal. Stated limit: the scans are substring searches over `ranking.rs`, so a 
 escape-spelled literal, and anything hand-typed in `accounts.rs`, are S3/S6's to close.
 **rb-34** narrows that limit on the REACH axis: red-team measured that no literal is needed at
 all — a lazy S3b cascade calling the crate-visible delegate `ranking::rekey_profile` from the
-reaper's cascade slot renames a deleted account to the guest-claim sentinel with CI fully green —
-so `accounts_tests.rs` now pins the delegate to exactly one call site inside `rekey_all` (four
-clauses: naming census, qualified-call census, fan-out-decl census, call-site-in-body; alias
+reaper's cascade slot renames a deleted account to the guest-claim sentinel with CI green once
+S3b re-derives the frozen reaper-body pin (as that pin's own message instructs) — so
+`accounts_tests.rs` now pins the delegate to exactly one call site inside `rekey_all` AND pins
+`rekey_all` itself to its one claim-reducer caller (censuses over naming, qualified call,
+declarations, call-site bodies, and the one-hop-up route the reviewer lens measured; alias
 imports and fn-pointer bindings trip it by design; bite measured per clause). Still S3b's to
 close (ledger rb-34 X5): the literal-forgery battery, the `ranking.rs` second-writer pin, and a
 crate-wide naming census for third-module re-exports.
