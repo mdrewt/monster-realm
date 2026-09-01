@@ -7549,3 +7549,271 @@ fn m22s3_cancelled_deletion_rejects_terminal_input() {
     );
     let _ = cancelled_deletion(terminal);
 }
+
+// ===========================================================================
+// rb-34 (residual R-rb-7-X8-residual; ledger gate X2) — THE GUEST-CLAIM RE-KEY
+// DELEGATE IS REACHABLE FROM EXACTLY ONE accounts.rs CALL SITE.
+//
+// EARS criterion: WHILE the spec para 4.4 cascade (S3b) has not landed, the
+// ranking-side re-key delegate `rekey` + `_profile` SHALL be reachable from
+// EXACTLY ONE accounts.rs call site, that site SHALL lie inside the claim-flow
+// fan-out helper `rekey` + `_all`, AND the fan-out helper itself SHALL have
+// exactly one call site, inside the claim-completion reducer — so the deletion
+// cascade slot of the reaper, or any other site in this file, cannot reach the
+// guest-claim tombstone writer directly, by alias, OR by the one-hop-up route
+// through the fan-out helper, without a RED. (The reviewer lens measured the
+// one-hop-up route: ADR-0225 itself names the fan-out helper as the cascade's
+// delegation precedent, so a lazy cascade calling IT is the invited shape.)
+//
+// WHY THE DELEGATE AND NOT THE WRITER: the tombstone writer in ranking.rs and
+// the sentinel const it writes are BOTH module-private (rb-7, ADR-0211), so
+// this delegate is the ONLY crate-visible path from accounts.rs to a rename
+// that ALSO zeroes rating, wins and losses. Reached from the cascade slot it
+// renames a DELETED account to the sentinel that means an unclaimed guest whose
+// ranked stats were carried forward, and zeroes ladder columns the cascade was
+// supposed to erase outright: the wrong tombstone, on the wrong subject, in the
+// one flow that cannot be undone. M22 has its own deletion sentinel in
+// game-core, and the cascade must write that one.
+//
+// ORTHOGONAL TO THE FROZEN REAPER-BODY PIN, ON PURPOSE.
+// `rb24_deletion_reaper_body_is_frozen_noop` reds on ANY statement added to the
+// cascade slot today, and its own message instructs S3b to re-derive that
+// literal when the five-step cascade lands — so it stops constraining that slot
+// at exactly the moment the cascade arrives. This tooth is about the DELEGATE
+// rather than the body text, so it survives that re-derivation and is still
+// standing when the cascade is written.
+//
+// RATCHET CLASS, BORN GREEN BY DESIGN — the same class as
+// `g5_no_wallet_accessor_in_accounts` (:2211),
+// `auth19_g5_no_direct_battle_access` (:1729), `g5_writes_only_owned_tables`
+// (:2159) and the AUTH-23 never-deletes delegate scan (:1911). HEAD satisfies
+// it already; the bite is proven by MUTATION, not by a pre-fix RED.
+//
+// SCAN HYGIENE — the file header rule, restated because this section adds
+// needles for a token a crate-wide census may later count. Every needle is
+// assembled from `concat!` fragments and every prose mention is split the same
+// way, so this section carries no contiguous delegate token, no contiguous
+// qualified call site and no contiguous fn declaration for the dozen evals that
+// concatenate every .rs file under server-module/src, _tests.rs siblings
+// included. It contains no block comment, no raw string, no apostrophe, no bare
+// double-quote character inside a comment, and it never spells the guest-claim
+// sentinel VALUE — spelling that value a second time anywhere is what
+// `rb7_guest_claim_tombstone_*` in ranking_tests.rs exists to refuse.
+// ===========================================================================
+
+/// X2 (scan, whole file + body): accounts.rs NAMES the guest-claim re-key
+/// delegate exactly once, that one naming IS the crate-qualified direct call,
+/// and it sits inside the claim-flow fan-out helper.
+///
+/// FIVE CLAUSES, each with its own pinned message — a coarse mutant only ever
+/// proves the FIRST assertion, so every later clause needs a surgical mutant
+/// pinned by FAILURE MESSAGE:
+///   1. the BARE delegate token occurs exactly once in the string-blanked,
+///      comment-blanked, whitespace-squashed view of accounts.rs;
+///   2. the crate-qualified CALL occurs exactly once, which together with (1)
+///      makes that single naming the call and nothing else;
+///   3. the fan-out helper is DECLARED exactly once — the anti-decoy clause for
+///      the first-hit body extractor;
+///   4. the qualified call occurs exactly once INSIDE that declared body;
+///   5. the fan-out helper ITSELF is reached from exactly one call site, and
+///      that site lies inside the claim-completion reducer — the one-hop-up
+///      pin, without which a cascade could skip naming the delegate entirely
+///      and call the fan-out helper instead, re-keying the deleted account's
+///      rows onto a second identity and MATERIALISING a fresh profile row
+///      (stats copied forward) under the guest-claim sentinel.
+///
+/// ACCEPTED FALSE-RED COST (shared with the rb-22 census at the lines cited
+/// below): clause 1's bare token and clause 5's call token carry no right-hand
+/// word boundary, so a longer sibling identifier sharing the prefix — a batch
+/// variant of the delegate, say — counts too and REDs. That cost is the price
+/// of catching the aliasing import, and the remedy on a legitimate hit is the
+/// same conscious re-derivation every message below asks for.
+///
+/// CLAUSE 1 IS THE ALIAS CLAUSE AND IS DELIBERATELY BROADER THAN CLAUSE 2. Its
+/// needle is the bare token: no paren, no path prefix, and no word boundary on
+/// either side. One needle therefore catches every spelling at once — the
+/// qualified call, a call under a plain import, a call through a MODULE alias
+/// (`use crate::ranking as r;` and then a call qualified by `r`), an ALIASING
+/// import (which must spell the original name once before renaming it), and an
+/// fn-pointer or const binding of the path (which names it with no paren at
+/// all). Requiring a word boundary on the right would DROP the aliasing import,
+/// because `squash_ws` fuses the renaming tail onto the name — the measured
+/// hazard the rb-22 census records at :4961.
+///
+/// Kills: a second call site anywhere in accounts.rs, the MEASURED one being a
+///        lazy S3b cascade in the reaper cascade slot that hands the delegate
+///        the deleted account identity twice (clause 1, then clause 2);
+///        an aliasing import plus a call through the alias (clause 1 alone —
+///        clause 2 never sees it);
+///        a module-alias import plus a call qualified through that alias
+///        (clause 1 alone);
+///        an fn-pointer or const binding of the path (clause 1 alone);
+///        deletion of the sanctioned call, which takes clause 1 to zero;
+///        a decoy second declaration of the fan-out helper, which would steer
+///        the first-hit body extractor (clause 3);
+///        the call moved OUT of the fan-out helper while both whole-file counts
+///        stay at one (clause 4) — that is the deletion-cascade shape exactly;
+///        the call moved into a private wrapper the fan-out helper then calls
+///        (clause 4, deliberately — see below);
+///        the ONE-HOP-UP route — a cascade that never names the delegate and
+///        instead calls the fan-out helper with the deleted identity and a
+///        tombstone destination (clause 5) — the reviewer-measured shape that
+///        passed the first four clauses green.
+///
+/// Does NOT kill: a NEW wrapper in ranking.rs that reaches the private writer
+///        under a different name, nor a re-export of the delegate OR of the
+///        fan-out helper from a third module reached through that other path.
+///        Neither changes a byte of accounts.rs, so no clause here can see
+///        them; both need a crate-wide naming census in the shape of
+///        `rb22_purge_named_nowhere_else_in_crate`
+///        (:4993), and both are deferred to ledger rb-34 X5 / S3b rather than
+///        claimed here.
+///        A reentrant call to the claim-completion reducer itself would count
+///        under clause 5's reducer-name census below only if spelled; reached
+///        some other way it is runtime-guarded — guard 3 rejects a
+///        PendingDeletion caller — and is not claimed here.
+///        A call textually inside the fan-out helper but INERT (bound to a
+///        closure, say) is also outside this gate: NO textual gate owns
+///        inertness — the AUTH-21 manifest scan (:1835) is a containment scan
+///        that a closure-bound spelling still satisfies; that shape breaks the
+///        claim flow itself and is behavioural-test territory.
+///
+/// THE HELPER-HOP FALSE-RED IS INTENDED RATCHET BEHAVIOUR. Moving the call one
+/// level down, into a private helper that the fan-out helper calls, reds clause
+/// 4 (and the AUTH-21 manifest scan with it). That indirection is the hazard in
+/// miniature: it decouples the one call site from the claim ceremony that
+/// reviews it, and leaves the new wrapper one line away from the cascade slot,
+/// reachable from there without ever naming the delegate again.
+#[test]
+fn rb34_guest_claim_rekey_delegate_reachable_only_from_rekey_all() {
+    let squashed = stripped_for_scan(ACCOUNTS_RS);
+    let bare = concat!("rekey", "_profile");
+    let qualified = concat!("crate::ranking::", "rekey", "_profile(");
+    let fan_out = concat!("fnrekey", "_all(");
+
+    // --- (1) exactly ONE naming of the delegate, in any spelling -------------
+    let named = m22_count_occurrences(&squashed, bare);
+    assert_eq!(
+        named, 1,
+        "[rb34/delegate-naming] accounts.rs must name the guest-claim re-key delegate \
+         EXACTLY once; found {named}. That delegate is the only crate-visible path from \
+         this module to the module-private writer that renames a profile row to the \
+         guest-claim sentinel AND zeroes its ladder stats, so every naming of it is a \
+         reachability edge to the WRONG tombstone. The measured hazard is a lazy S3b \
+         cascade calling it in the deletion cascade slot of the reaper, which renders a \
+         DELETED account as a claimed guest with zeroed rating, wins and losses while the \
+         whole CI stays green. AN ALIASING IMPORT AND AN fn-POINTER BINDING TRIP THIS \
+         CLAUSE BY DESIGN: both must spell the name once, and neither carries the \
+         qualified call shape the next clause counts. ZERO means the claim flow lost its \
+         ranked re-key. A genuinely new legitimate call site is SUPPOSED to fire this pin: \
+         re-derive it consciously, re-review where the two identity arguments at the new \
+         site come from, and update the counts in the SAME change under ledger rb-34 X5 \
+         and the S3b cascade requirements."
+    );
+
+    // --- (2) that one naming IS the crate-qualified direct call --------------
+    let calls = m22_count_occurrences(&squashed, qualified);
+    assert_eq!(
+        calls, 1,
+        "[rb34/delegate-qualified-call] accounts.rs must carry the crate-qualified delegate \
+         call EXACTLY once; found {calls}. With the naming census above at one, this clause \
+         is what makes the single naming a CALL at the sanctioned path rather than an \
+         import, a re-export or a binding — and a second qualified call is a second, \
+         unreviewed reach for the guest-claim tombstone writer, from a flow no reviewer of \
+         the claim ceremony ever saw: a deleted account rendered as a claimed guest, with \
+         its ladder stats zeroed instead of erased. ZERO means the sanctioned call is no \
+         longer spelled at the crate-qualified path — an unqualified call under a plain \
+         import is the measured shape, and the naming census above is what still sees it. \
+         If a new call site is genuinely warranted, re-derive this pin and its counts \
+         consciously in the same change, under ledger rb-34 X5 and the S3b cascade \
+         requirements."
+    );
+
+    // --- (3) the fan-out helper is declared exactly once (anti-decoy) --------
+    let decls = m22_count_occurrences(&squashed, fan_out);
+    assert_eq!(
+        decls, 1,
+        "[rb34/fanout-decl-unique] accounts.rs must declare the claim-flow fan-out helper \
+         EXACTLY once; found {decls}. The body extractor below anchors on the FIRST hit, so \
+         a second declaration — an inner-module twin, say — silently re-points the call-site \
+         clause at a body nobody reviewed, while both counts above stay at one. Count, \
+         never index: a first-hit anchor is forgeable by a decoy. ZERO means the helper was \
+         renamed or deleted; re-derive this needle, the call-site clause below, and the \
+         AUTH-21 manifest scan's twin needle in the same conscious change."
+    );
+
+    // --- (4) and the one call lives INSIDE that declared body ----------------
+    let body = extract_squashed_fn_body(&squashed, fan_out)
+        .expect("[rb34/fanout-scope] the claim fan-out helper was not found in accounts.rs");
+    let inside = m22_count_occurrences(body, qualified);
+    assert_eq!(
+        inside, 1,
+        "[rb34/call-site-inside-fanout] the qualified delegate call must sit inside the \
+         claim-flow fan-out helper EXACTLY once; found {inside}. ZERO is the shape that \
+         matters: the one qualified call counted above then lives SOMEWHERE ELSE in \
+         accounts.rs — the deletion cascade slot of the grace reaper being the measured one \
+         — where it renames a DELETED account to the guest-claim sentinel and zeroes the \
+         ladder stats the cascade was supposed to erase outright. A hop through a private \
+         wrapper that the fan-out helper then calls reds here too, deliberately: the \
+         indirection decouples the one call site from the claim ceremony that reviews it, \
+         and leaves that wrapper one line away from the cascade slot. If S3b is landing a \
+         legitimately new site, re-derive this pin and its counts consciously in the same \
+         change, with a fresh review of where the identity arguments come from (ledger \
+         rb-34 X5)."
+    );
+
+    // --- (5) the fan-out helper itself: one call site, in the claim reducer --
+    // Reviewer-measured one-hop-up route: with only clauses 1-4, a cascade
+    // calling the fan-out helper (never naming the delegate) re-keys the
+    // deleted account's rows onto a second identity and MATERIALISES a fresh
+    // profile row under the guest-claim sentinel — stats copied forward by the
+    // delegate's own get-or-init — while every count above stays at one.
+    let fan_out_call = concat!("rekey", "_all(");
+    let claim_reducer_decl = concat!("fncomplete", "_guest", "_claim(");
+    let claim_reducer_name = concat!("complete", "_guest", "_claim(");
+    let fan_out_sites = m22_count_occurrences(&squashed, fan_out_call);
+    assert_eq!(
+        fan_out_sites, 2,
+        "[rb34/fanout-single-caller] the claim fan-out helper must appear at EXACTLY two \
+         sites in accounts.rs — its declaration and its one sanctioned call in the \
+         claim-completion reducer; found {fan_out_sites}. A THIRD site is the one-hop-up \
+         route to the guest-claim tombstone writer that never names the delegate: the \
+         measured shape is the deletion cascade calling the fan-out helper with the deleted \
+         identity and a tombstone destination, which re-keys every table onto the tombstone \
+         identity and inserts a fresh profile row carrying the deleted account's ladder \
+         stats under the guest-claim sentinel. ONE means the sanctioned claim-flow call was \
+         deleted; the claim ceremony lost its re-key. A genuinely new legitimate caller must \
+         re-derive this pin consciously (ledger rb-34 X5 / the S3b cascade requirements)."
+    );
+    let reducer_decls = m22_count_occurrences(&squashed, claim_reducer_decl);
+    assert_eq!(
+        reducer_decls, 1,
+        "[rb34/claim-reducer-decl-unique] accounts.rs must declare the claim-completion \
+         reducer EXACTLY once; found {reducer_decls}. The body extractor below anchors on \
+         the FIRST hit — a decoy twin re-points the caller-site clause at an unreviewed \
+         body. ZERO means the reducer was renamed; re-derive this needle in the same change."
+    );
+    let reducer_namings = m22_count_occurrences(&squashed, claim_reducer_name);
+    assert_eq!(
+        reducer_namings, 1,
+        "[rb34/claim-reducer-never-called-here] the claim-completion reducer's name must \
+         occur EXACTLY once in accounts.rs — its own declaration; found {reducer_namings}. \
+         A second spelling is an internal reentrant call, which would reach the delegate \
+         through the whole claim ceremony from a flow that was never reviewed for it. \
+         (Runtime guard 3 also rejects a PendingDeletion caller, but this pin fires at \
+         test time, not after a deploy.)"
+    );
+    let claim_body = extract_squashed_fn_body(&squashed, claim_reducer_decl).expect(
+        "[rb34/claim-reducer-scope] the claim-completion reducer was not found in accounts.rs",
+    );
+    let fan_out_in_claim = m22_count_occurrences(claim_body, fan_out_call);
+    assert_eq!(
+        fan_out_in_claim, 1,
+        "[rb34/fanout-call-inside-claim-reducer] the fan-out helper's one sanctioned call \
+         must sit inside the claim-completion reducer EXACTLY once; found \
+         {fan_out_in_claim}. ZERO with the site census above still at two means the call \
+         moved to another flow — the deletion cascade being the measured hazard — where it \
+         re-keys a deleted account's rows instead of a claimed guest's. Re-derive \
+         consciously (ledger rb-34 X5)."
+    );
+}
