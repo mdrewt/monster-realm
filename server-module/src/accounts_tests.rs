@@ -4916,11 +4916,15 @@ fn rb22_purge_naming_budget(path: &str) -> (usize, &'static str) {
              delegation was deleted or moved",
         ),
         "privacy.rs" => (
-            1,
-            "the helper's own declaration and nothing else. TWO means the owning module \
-             names it a second time — a wrapper or a re-export that hands a different \
-             owner to a body the frozen-body pin still reports as correct. ZERO means \
-             the declaration was renamed or deleted",
+            2,
+            "the helper's own declaration plus the ONE sanctioned m22-s4 call site inside \
+             request_data_export (purge-before-write, ADR-0226). The compensating pin \
+             m22s4_purge_named_twice_declaration_and_call in privacy_tests.rs pins BOTH \
+             occurrences to exactly those two shapes, so this widening from 1 is \
+             net-neutral. THREE means a wrapper or re-export that hands a different \
+             owner to a body the frozen-body pin still reports as correct. ONE means \
+             the export reducer's purge-before-write was deleted; ZERO means the \
+             declaration was renamed or deleted",
         ),
         _ => (
             0,

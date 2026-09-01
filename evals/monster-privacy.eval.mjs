@@ -161,6 +161,10 @@ const EXPECTED_VIEWS = [
   'my_account',
   'my_battle',
   'my_conversation',
+  // m22-s4 (ADR-0226): owner-scoped read path for the private export_bundle
+  // table (sorted insert — index 3). Body pinned by equality in
+  // privacy_tests.rs m22s4_view_declared_once_attr_sig_body_exact.
+  'my_export_bundle',
   'my_monster_pub',
   'my_wallet',
 ];
@@ -1588,6 +1592,11 @@ fn my_wallet(ctx: &spacetimedb::ViewContext) -> Option<PlayerWallet> {
 #[spacetimedb::view(accessor = my_account, public)]
 fn my_account(ctx: &spacetimedb::ViewContext) -> Option<Account> {
     ctx.db.account().identity().find(ctx.sender())
+}
+
+#[spacetimedb::view(accessor = my_export_bundle, public)]
+fn my_export_bundle(ctx: &spacetimedb::ViewContext) -> Vec<ExportBundle> {
+    ctx.db.export_bundle().owner_identity().filter(ctx.sender()).collect()
 }
 `;
 

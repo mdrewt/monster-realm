@@ -1635,7 +1635,7 @@ fn m22s4_reference_plan(
     let mut out: Vec<(&'static str, u32, String)> = Vec::new();
     let mut idx: u32 = 0;
     for (table_ref, rows) in per_table {
-        let table: &'static str = *table_ref;
+        let table: &'static str = table_ref;
         if rows.is_empty() {
             out.push((table, idx, m22s4_expected_payload(table, &[])));
             idx += 1;
@@ -1957,6 +1957,21 @@ fn m22s4_reducer_body(squashed: &str) -> String {
 
 /// The squashed, scoped body of one `rows_<table>` shell reader, with its
 /// signature pinned first so a renamed or re-shaped reader reds LOUD.
+///
+/// SIGNATURE NORMALIZATION (the rustfmt vertical-wrap twin). The one-line
+/// spelling of the longest reader name is 101 characters, one past rustfmt's
+/// max_width, so rustfmt MUST break its parameter list across lines — and its
+/// vertical argument form appends a trailing comma, which squashes to
+/// `owner:Identity,)`. The escape hatch is not available either: a
+/// rustfmt-skip attribute is banned crate-wide, because skipping the formatter
+/// defeats fmt-as-normalizer, which every squashed scan in this crate relies
+/// on. So the comma is NOT a stylistic choice the implementer can make either
+/// way — for that one reader it is mandatory. This helper therefore drops ONE
+/// comma sitting immediately before the parameter list's closing paren before
+/// comparing. The two spellings are the same Rust: parameter NAMES, TYPES,
+/// ARITY and the RETURN TYPE all stay pinned exactly, so nothing this pin
+/// exists to protect is loosened — a second parameter still reds, because it
+/// changes the text between the parens, not the comma before them.
 fn m22s4_rows_body(squashed: &str, table: &str) -> String {
     let needle = format!("fnrows_{table}(");
     let n = rb22p_count(squashed, &needle);
@@ -1966,17 +1981,67 @@ fn m22s4_rows_body(squashed: &str, table: &str) -> String {
          the intended RED before the implementer lands the shell reader; two makes every clause \
          below read whichever one the extractor reaches first."
     );
+
     let sig = extract_squashed_fn_sig(squashed, &needle)
         .unwrap_or_else(|| panic!("m22s4 [rows/sig]: `{needle}` has no opening brace."));
+
+    // Walk from the parameter list's opening paren to its matching close. The
+    // walk is depth-counted rather than a search for the last paren, so a
+    // parenthesised TYPE in some future parameter cannot move the target.
+    let bytes = sig.as_bytes();
+    let open = sig
+        .find('(')
+        .unwrap_or_else(|| panic!("m22s4 [rows/sig]: `{needle}` has no parameter list."));
+    let mut depth = 0usize;
+    let mut found: Option<usize> = None;
+    let mut i = open;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    found = Some(i);
+                    break;
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+    let close = found.unwrap_or_else(|| {
+        panic!(
+            "m22s4 [rows/sig]: the parameter list of `{needle}` is not paren-balanced, so the \
+             normalization below would read an arbitrary span. Refusing to classify is the safe \
+             direction."
+        )
+    });
+    let normalized: String = if close > 0 && bytes[close - 1] == b',' {
+        let mut out = String::with_capacity(sig.len() - 1);
+        out.push_str(&sig[..close - 1]);
+        out.push_str(&sig[close..]);
+        out
+    } else {
+        sig.to_string()
+    };
+
     let expected =
         format!("fnrows_{table}(ctx:&ReducerContext,owner:Identity)->Result<Vec<String>,String>");
     assert_eq!(
-        sig, expected,
+        normalized, expected,
         "m22s4 [rows/sig]: the `{table}` shell reader must carry the frozen signature. The \
          context is named `ctx` (every alias ban in this module keys on that name) and the \
          subject arrives as `owner: Identity` — a reader that takes any OTHER identity-typed \
-         parameter, or none, is a caller-chosen-owner read of a private table."
+         parameter, or none, is a caller-chosen-owner read of a private table. The comparison \
+         is made after dropping ONE comma sitting immediately before the parameter list's \
+         closing paren: that trailing-comma twin is ACCEPTED because rustfmt wraps any \
+         signature past its max_width and its vertical argument form emits the comma, while a \
+         rustfmt-skip attribute is banned crate-wide (skipping the formatter defeats \
+         fmt-as-normalizer, which every squashed scan here depends on) — so for the longest \
+         reader name no fmt-canonical spelling can avoid it. Only the comma is normalized; \
+         parameter names, types, arity and the return type are still pinned exactly."
     );
+
     let body = extract_squashed_fn_body(squashed, &needle)
         .unwrap_or_else(|| panic!("m22s4 [rows/scope]: `{needle}` body is not brace-balanced."));
     assert!(
@@ -3986,7 +4051,7 @@ fn m22s4_filter_columns_are_rekey_manifest_columns() {
                 for col in fact.columns {
                     let key = format!("{}.{col}", fact.table);
                     assert!(
-                        keys.iter().any(|k| *k == key),
+                        keys.contains(&key),
                         "m22s4 [X5/rekey-subset]: the export keys `{}` on `{col}`, but `{key}` is \
                          NOT a classified identity column in the re-key manifest. Every identity \
                          column in the schema carries an explicit claim-flow policy there; an \
@@ -5579,4 +5644,54 @@ fn m22s4_purge_named_twice_declaration_and_call() {
          conditional purge is a conditional purge-before-write, and the condition can be \
          always-false at that point while every count clause stays green."
     );
+}
+
+// ===========================================================================
+// NATIVE-LINK STUBS (test infrastructure, NOT assertions — implementer-added
+// and disclosed in the PR). The m22s4 registry tests read super::EXPORTERS at
+// runtime, and materializing its fn pointers makes every rows_ reader live in
+// the NATIVE test binary — so the linker now demands the SpacetimeDB host
+// syscalls, which exist only inside the wasm host. These no_mangle stubs
+// satisfy the linker; none is ever CALLED (ReducerContext is not constructible
+// off-instance, ADR-0225 D5), and each aborts the process if that ever stops
+// being true. Signatures mirror spacetimedb-bindings-sys 2.8.1 raw externs.
+// ===========================================================================
+
+#[no_mangle]
+extern "C" fn table_id_from_name(_name: *const u8, _name_len: usize, _out: *mut u32) -> u16 {
+    std::process::abort()
+}
+
+#[no_mangle]
+extern "C" fn index_id_from_name(_name_ptr: *const u8, _name_len: usize, _out: *mut u32) -> u16 {
+    std::process::abort()
+}
+
+#[no_mangle]
+extern "C" fn datastore_table_scan_bsatn(_table_id: u32, _out: *mut u32) -> u16 {
+    std::process::abort()
+}
+
+#[no_mangle]
+extern "C" fn datastore_index_scan_point_bsatn(
+    _index_id: u32,
+    _point_ptr: *const u8,
+    _point_len: usize,
+    _out: *mut u32,
+) -> u16 {
+    std::process::abort()
+}
+
+#[no_mangle]
+extern "C" fn row_iter_bsatn_advance(
+    _iter: u32,
+    _buffer_ptr: *mut u8,
+    _buffer_len_ptr: *mut usize,
+) -> i16 {
+    std::process::abort()
+}
+
+#[no_mangle]
+extern "C" fn row_iter_bsatn_close(_iter: u32) -> u16 {
+    std::process::abort()
 }

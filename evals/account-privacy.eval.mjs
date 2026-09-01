@@ -214,6 +214,10 @@ const EXPECTED_VIEWS = [
   'my_account',
   'my_battle',
   'my_conversation',
+  // m22-s4 (ADR-0226): owner-scoped read path for the private export_bundle
+  // table (sorted insert — index 3). Body pinned by equality in
+  // privacy_tests.rs m22s4_view_declared_once_attr_sig_body_exact.
+  'my_export_bundle',
   'my_monster_pub',
   'my_wallet',
 ];
@@ -769,6 +773,11 @@ fn my_monster_pub(ctx: &spacetimedb::ViewContext) -> Vec<MonsterPub> {
 #[spacetimedb::view(accessor = my_battle, public)]
 fn my_battle(ctx: &spacetimedb::ViewContext) -> Vec<Battle> {
     ctx.db.battle().player_identity().filter(ctx.sender()).chain(ctx.db.battle().opponent_identity().filter(ctx.sender()).filter(|b| b.player_identity != ctx.sender())).collect()
+}
+
+#[spacetimedb::view(accessor = my_export_bundle, public)]
+fn my_export_bundle(ctx: &spacetimedb::ViewContext) -> Vec<ExportBundle> {
+    ctx.db.export_bundle().owner_identity().filter(ctx.sender()).collect()
 }
 
 #[derive(Clone)]
