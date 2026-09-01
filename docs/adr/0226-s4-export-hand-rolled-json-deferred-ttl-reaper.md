@@ -156,6 +156,25 @@ concurrent sibling owns these files (S5 touches trading/pvp/guards only, mr-disj
   test files too and its struct-literal ban would otherwise fire on a serializer fixture. The
   reviewer may instead prefer allowlisting privacy_tests.rs (the economy_tests.rs precedent);
   flagged as an open review question in the PR.
+- **A second JSON string escaper exists in the crate, deliberately.** `guards::json_escape`
+  (guards.rs) already escapes `"`/`\`/C0 for reject-log text, but it (i) emits the short forms
+  `\n`/`\r`/`\t` where this slice's escaper emits a UNIFORM `\u00XX` — a contract the gating test
+  `m22s4_escape_edge_cases` pins exactly (one branch, one test family) so reusing it would red the
+  suite — (ii) returns a fresh `String` per call where the export builder writes into one shared
+  `&mut String` across 17 serializers, and (iii) lives in `guards.rs`, outside this slice's
+  touches (and just modified by m22-s5). Same-crate duplication of an escaping rule is a
+  `principles.md` red flag; it is accepted here on those three grounds. Follow-up: a future slice
+  owning both files could give `guards.rs` a `&mut String` variant and unify the two under one
+  escaping contract.
+- **The write-isolation compensating pin was hardened against UFCS writes (red-team Finding 1).**
+  `rb22p_writes_only_export_bundle`'s write census scans only DOTTED verbs (`.insert(`/`.update(`/
+  `.delete(`) and both eval allowlist widenings delegate the write direction to it — but a UFCS
+  write (`UniqueColumn::update(&ctx.db.profile().identity(), row)`) spells the verb as `::update(`,
+  which that census never matched, so a UFCS write to any table from a `rows_` reader passed the
+  whole suite and both widened evals green. The shipped code uses no UFCS writes; the gap was in
+  the pin. Closed by the new in-touches test `m22s4_no_ufcs_write_verb_in_privacy` (privacy.rs may
+  spell zero `::insert(`/`::update(`/`::delete(` tokens — every honest write here is dotted off
+  `ctx.db.export_bundle()`), the privacy.rs-scoped twin of ranking-security's `C1A_UFCS_NEEDLES`.
 
 ## Known limits (measured / accepted)
 

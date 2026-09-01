@@ -1016,8 +1016,9 @@ fn rb22p_stub_probe_regression() {
 //     accessor spelling is never followed by an empty argument list, because
 //     evals/currency-integrity.eval.mjs scans EVERY .rs under server-module/src
 //     (test files included) and its allowlist is an exact-path match that does
-//     not cover this file. See NOTES.md for the alternative (allowlisting this
-//     path) if a reviewer prefers it;
+//     not cover this file. The alternative (adding privacy_tests.rs to that
+//     allowlist, the economy_tests.rs precedent) is recorded as an open review
+//     question in ADR-0226 implementation-time discoveries;
 //   * attribute needles are assembled from concat! fragments (the
 //     accounts_tests.rs house convention) so a scanner that concatenates this
 //     file cannot mistake a pinned literal for a live declaration.
@@ -5644,6 +5645,76 @@ fn m22s4_purge_named_twice_declaration_and_call() {
          conditional purge is a conditional purge-before-write, and the condition can be \
          always-false at that point while every count clause stays green."
     );
+}
+
+// The three UFCS write-verb tokens, assembled from concat! fragments so this
+// file never spells one contiguously (matching the rb22p needle discipline).
+fn m22s4_ufcs_write_needles() -> [String; 3] {
+    [
+        concat!("::ins", "ert(").to_string(),
+        concat!("::upd", "ate(").to_string(),
+        concat!("::del", "ete(").to_string(),
+    ]
+}
+
+/// X11 (compensating-pin completeness): privacy.rs contains ZERO UFCS-form write
+/// verbs.
+///
+/// MEASURED (m22-s4 artifact red-team, Finding 1). rb22p_writes_only_export_bundle
+/// attributes writes by scanning for the DOTTED verbs `.insert(` / `.update(` /
+/// `.delete(` and walking back to the nearest `ctx.db.`. UFCS call syntax puts
+/// the verb FIRST — `UniqueColumn::update(&ctx.db.profile().identity(), row)` —
+/// so the verb token is `::update(`, which the dotted needle never matches and
+/// the accessor sits in an ARGUMENT rather than a same-statement chain. A red-team
+/// PoC landed exactly this in a `rows_` reader and observed it compile, pass
+/// clippy `-D warnings`, and leave the whole crate suite AND both widened evals
+/// (currency-integrity, ranking-security) green while mass-corrupting the ranked
+/// ladder from inside request_data_export. Those two eval allowlist widenings
+/// explicitly delegate the write direction to the Rust write census, so without
+/// this clause the widenings are a net loosening.
+///
+/// The ban is TOTAL rather than target-attributed: every legitimate write in this
+/// delete-and-insert module is dotted off `ctx.db.export_bundle()`, so a UFCS
+/// write verb has no honest use here, and a UFCS call CANNOT avoid spelling
+/// `::<verb>(` — so banning the three tokens outright closes the inline form, the
+/// bound-table-handle form and the fully-path-qualified form in one assertion.
+/// This is the privacy.rs-scoped Rust twin of `C1A_UFCS_NEEDLES`
+/// (evals/ranking-security.eval.mjs), which hardened ranking.rs against the same
+/// shape. Mirrors that eval's needle direction rather than re-deriving it.
+#[test]
+fn m22s4_no_ufcs_write_verb_in_privacy() {
+    let squashed = stripped_for_scan(PRIVACY_RS);
+
+    // Non-vacuity control: the detector must actually FIND a UFCS verb when one is
+    // present, so a broken needle cannot let the zero-count assertions below pass
+    // over a scanner that sees nothing.
+    let probe = m22s4_ufcs_write_needles();
+    let mut fixture = String::new();
+    fixture.push_str("spacetimedb::table::UniqueColumn");
+    fixture.push_str(&probe[1]);
+    fixture.push_str("&ctx.db.profile().identity(),row);");
+    let fixture_squashed = stripped_for_scan(&fixture);
+    assert!(
+        rb22p_count(&fixture_squashed, &probe[1]) >= 1,
+        "m22s4 [X11/ufcs-vacuity]: the UFCS control fixture does not contain the `::update(` \
+         token after stripping, so the zero-count assertions below would prove nothing. Stripped \
+         fixture: {fixture_squashed:?}"
+    );
+
+    for needle in m22s4_ufcs_write_needles() {
+        let n = rb22p_count(&squashed, &needle);
+        assert_eq!(
+            n, 0,
+            "m22s4 [X11/ufcs-write]: privacy.rs spells the UFCS write verb `{needle}` {n} time(s); \
+             exactly zero is allowed. UFCS call syntax (verb before accessor) is invisible to the \
+             dotted-verb write census that rb22p_writes_only_export_bundle uses AND that the two \
+             widened security evals delegate the write direction to, so a UFCS write to any table \
+             from inside a `rows_` reader would corrupt foreign rows on every export call while \
+             every gate stayed green (measured red-team Finding 1). Every legitimate write in \
+             this module is dotted off `ctx.db.export_bundle()`; a UFCS write verb has no honest \
+             use here."
+        );
+    }
 }
 
 // ===========================================================================
