@@ -5,7 +5,7 @@
 **Slice:** m22-s5
 **Supersedes:** —
 **Amends:** —
-**Subsystems:** security-authz, privacy
+**Subsystems:** security-authz
 **Extends:** ADR-0225 (no reciprocal back-link edit — `docs/adr/0225-*` is outside this slice's declared touches)
 **Decision:** S5 gates the three commitment-OPENING reducers with `guards::require_not_deleting`, a caller-only ctx wrapper delegating via `is_pending_deletion` to `should_reject_for_deletion`; already-open reducers stay ungated (PRV1-10).
 
@@ -149,11 +149,37 @@ ordinary behavioral tests. No new eval scripts.
 - A pending-deletion player retains full use of already-open interactions: they can respond to /
   confirm / cancel trades, decline or cancel challenges, and act in live battles. Only NEW
   commitments are refused.
-- Proof-of-teeth: a 12-mutant register (drop a call site; reorder past a write — both pvp
+- Proof-of-teeth: a 15-mutant register (drop a call site; reorder past a write — both pvp
   shapes; re-derive in guards; invert polarity at the fused argument AND inside `deletion_gate`;
   gate an already-open reducer; misattribute the log tag; break the far hop in accounts;
   dead-branch a call site; decoy-comment the needle; hollow the wrapper; discard the Result at a
-  call site) is executed one mutant at a time with the designated failing test recorded per row;
+  call site; append a recovery combinator; short-circuit the predicate) is executed one mutant at
+  a time with the designated failing test recorded per row;
   the register and its run evidence live in the slice acceptance ledger
   (`memory/projects/gates/m22-s5.gates.md`, gate X6) rather than this ADR body, so the digest
   gate never staleness-flags evidence lines.
+- **Artifact red-team hardening (post-impl pass, folded in before merge).** Two bypasses were
+  measured CI-green against the as-implemented pins and killed by whole-body EXACT-EQUALITY
+  assertions: (M13) a trailing `.or(Ok(()))` recovery combinator appended after the wrapper's
+  reject-mapping closure — the prefix pin, fused count, tag pins and census all stayed green while
+  every reject was converted back into success; (M14) a leading short-circuit `return false` in
+  `accounts::is_pending_deletion` on a condition rustc cannot constant-fold — both containment
+  clauses of the far-hop pin survived textually while the predicate went dead for every caller.
+  The wrapper body and the predicate body are now pinned byte-for-byte in the squashed view
+  (guards_tests.rs); the census extractor additionally bans `cfg_attr(` and renamed
+  reducer-attribute imports (camouflage that would make a reducer invisible to the census rather
+  than a loud parse error), and the order pin's write-verb set includes the four write-performing
+  cross-module helpers (`grant_item`/`consume_one`/`grant_currency`/`spend_currency`) a gated
+  body could reach without a local write verb.
+- **Confederate role-swap residual (reducer-security-auditor finding, DEFERred as ledger X13 →
+  backlog).** A deleting identity D can still consummate a NEW trade commitment mid-grace:
+  confederate C proposes a trade TO D after D's deletion request (the caller-only gate passes for
+  C by design — D4), D calls the ungated `respond_trade(accepted = true)`, C confirms. Closing it
+  needs an offers-created-after-request timestamp comparison (PRV1-10 requires offers predating
+  the request to stay completable), which requires account-state access that the S5 bypass bans
+  deliberately keep out of `trading.rs` — i.e. a new accounts/guards seam plus census/tests
+  rework, out of this slice by its own "reducers acting on already-open interactions stay
+  untouched" rule. Auditor rider: D4's compensating control (the §4.4 step-1 cascade
+  force-resolve) is S3b, unshipped — until S3b lands nothing cleans up commitments dangling
+  against a deleting account, so this residual's priority rises with issuer activation (exposure
+  today is nil: `ALLOWED_ISSUERS` is the fail-closed `.invalid` placeholder).

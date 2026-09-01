@@ -5,7 +5,7 @@ slug: reducers/respond_trade
 updated: 2026-08-31
 tags: [reducer, spacetimedb, trading]
 abstract: "Counterparty responds to a Pending offer. Role + status authorization is delegated to the pure `authorize_respond` (rol…"
-resource: server-module/src/trading.rs#L427
+resource: server-module/src/trading.rs#L436
 source: scripts/okf-export.mjs@server-module/src/trading.rs
 ---
 

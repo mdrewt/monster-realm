@@ -417,6 +417,15 @@ needs a helper in the owning module, the `rekey_*` precedent). Until S3b a
 fired-when-due reaper still no-ops and the account sits `PendingDeletion`
 unarmed (ADR-0221 Residuals R2 — S3b owns the re-arm path AND the not-yet-due
 re-arm; the re-pinned frozen-body gate reds when the cascade body lands).
+**m22-s5** (ADR-0227) wired that predicate into gameplay: `guards::require_not_deleting`
+(caller-only ctx wrapper — no identity param by design; delegates transitively via
+`accounts::is_pending_deletion`, never re-deriving the disjunction) now gates exactly the
+three commitment-OPENING reducers — `propose_trade`, `challenge_pvp`, `accept_challenge` —
+before any write (PRV1-9), while every reducer acting on an already-open interaction stays
+ungated so live trades/battles/challenges are never force-terminated at request time
+(PRV1-10; `submit_pvp_action` deliberately NOT gated — deadline-forfeit would be de-facto
+force-termination, ADR-0227 D5). PvE `battle::start_battle` and shop `economy::buy`/`sell`
+remain ungated §4.7 targets, deferred with the PRV1-7 crate-wide slice.
 
 ## Server-module domain modules (M8.9 — ADR-0056)
 
@@ -434,7 +443,7 @@ invalidates downstream `touches:` declarations — **keep the file names stable.
 | `lib.rs` | module wiring + crate constants + lifecycle reducers (`init`/`sync_content`/`on_disconnect`/`on_connect` — the M21 `client_connected` hook delegates to `accounts::provision_or_touch_account`) | — |
 | `accounts.rs` | M21 accounts/auth (ADR-0179): reducers `start_guest_claim`/`complete_guest_claim`/`delete_account`/`cancel_account_deletion` + the `guest_claim_reaper` scheduled reducer & `guest_claim_reaper_schedule` table, and (rb-24 ADR-0221 + m22-s3 ADR-0225) the `account_deletion_reaper` scheduled reducer (recheck skeleton, cascade pending S3b) & `account_deletion_reaper_schedule` table with its `arm_deletion_reaper`/`disarm_deletion_reaper`/`deletion_fire_at_ms`/`reaper_should_run_cascade` helpers + the deletion-gate predicates (`should_reject_for_deletion`, `account_has_terminal_marker`); OIDC issuer+audience provisioning (`provision_or_touch_account`); the guest→account re-key orchestrator (`rekey_all`, which delegates every game-data write to a `rekey_*` helper in that table's owning module — D0 write-isolation) | `accounts_tests.rs` |
 | `schema.rs` | the data `#[table]` structs + row types (the table count is generated — see `docs/knowledge/`; scheduled tables live beside their reducers: `movement_tick_schedule` in `movement.rs`, `trade_offer_reaper_schedule` in `trading.rs`, `pvp_deadline_schedule` in `pvp.rs`, `playtest_reaper_schedule` in `playtest.rs`, `guest_claim_reaper_schedule` + `account_deletion_reaper_schedule` in `accounts.rs`; the M21 `account`/`guest_claim` tables + owner-scoped `my_account` view live here) | — |
-| `guards.rs` | `log_reject`, `validate_name`, `authorize_move`, `check_party_size`, `check_monster_in_party`, `check_team_coupling`, `require_owner` (the consolidated owner-check preamble), `reject_if_in_battle` (battle-escrowed check for `evolve` — ADR-0061, essence-graph shape per ADR-0177), `reject_if_monster_in_trade` / `escrowed_item_qty` / `escrowed_currency_amount` (trade escrow — M15a, ADR-0106), `require_pvp_participant` (M16 — ADR-0109), `is_ranked_pvp` (ranked-battle classification — M17a, ADR-0119), `is_in_ongoing_battle` / `is_in_ongoing_battle_either_role` (both-role ongoing-battle guard, hoisted from `pvp.rs` — M17.5a, ADR-0122), and the `saturating_sub_u64` / `saturating_sub_u32` helpers | `guards_tests.rs` |
+| `guards.rs` | `log_reject`, `validate_name`, `authorize_move`, `check_party_size`, `check_monster_in_party`, `check_team_coupling`, `require_owner` (the consolidated owner-check preamble), `reject_if_in_battle` (battle-escrowed check for `evolve` — ADR-0061, essence-graph shape per ADR-0177), `reject_if_monster_in_trade` / `escrowed_item_qty` / `escrowed_currency_amount` (trade escrow — M15a, ADR-0106), `require_pvp_participant` (M16 — ADR-0109), `is_ranked_pvp` (ranked-battle classification — M17a, ADR-0119), `is_in_ongoing_battle` / `is_in_ongoing_battle_either_role` (both-role ongoing-battle guard, hoisted from `pvp.rs` — M17.5a, ADR-0122), `require_not_deleting` + pure `deletion_gate` + `REJECT_DELETION_GATED` (caller-only deletion gate for commitment-opening reducers — m22-s5, ADR-0227), and the `saturating_sub_u64` / `saturating_sub_u32` helpers | `guards_tests.rs` |
 | `observability.rs` | `mr_log` / `mr_log_breadcrumb` + `mr_heartbeat` scheduled reducer & `MrHeartbeatSchedule` table; Layer-1 structured logging, heartbeat dead-man beat — ADR-0180 D6 | `observability_tests.rs` |
 | `marshal.rs` | row ↔ game-core marshaling helpers | `marshal_tests.rs` |
 | `content.rs` | `sync_content_inner` + seeding helpers | inline |
