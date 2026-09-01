@@ -613,7 +613,7 @@ fn arm_deletion_reaper(ctx: &ReducerContext, account: Identity, requested_at_ms:
 /// Disarm the pending deletion-reaper schedule row(s) for `account` (rb-24,
 /// PRV1-3; ADR-0126 D4 — collect-then-delete via the `account_identity` btree
 /// index, then delete by PK; mirrors `disarm_claim_reaper`). Owner-GENERIC so
-/// S3's cascade-era callers can reuse it verbatim.
+/// the S3b cascade-era callers can reuse it verbatim (ADR-0225).
 fn disarm_deletion_reaper(ctx: &ReducerContext, account: Identity) {
     let ids: Vec<u64> = ctx
         .db
@@ -745,7 +745,8 @@ pub fn guest_claim_reaper(
     Ok(())
 }
 
-// --- Scheduled deletion-grace reaper (rb-24, ADR-0221; cascade is S3's) -------
+// --- Scheduled deletion-grace reaper (rb-24 ADR-0221; m22-s3 recheck ADR-0225;
+// --- cascade is S3b) -----------------------------------------------------------
 
 /// PRIVATE scheduled table colocated with its reducer (ADR-0056 exception),
 /// mirroring `guest_claim_reaper_schedule` exactly. Minimal field set per

@@ -78,9 +78,10 @@ remainder as a properly-scoped slice (called **S3b** below).
 3. **Naming divergence, recorded:** spec §4.1 defines "terminal" as the conjunction
    `status == PendingDeletion && terminal_at_ms.is_some()`, while PRV1-4's own wording keys on the
    marker alone. The shipped helper is therefore named `account_has_terminal_marker` — deliberately
-   the marker half, answering `true` on the illegal `Active`+`Some` shape (fail-closed at all three
-   call sites) — and deliberately NOT `account_is_terminal`, which would collide with §4.1's
-   defined term.
+   the marker half, answering `true` on the illegal `Active`+`Some` shape (fail-closed at all four
+   call sites: `should_reject_for_deletion`, `reaper_should_run_cascade` — negated, still the
+   refusing direction — and the `delete_account`/`cancel_account_deletion` guards) — and
+   deliberately NOT `account_is_terminal`, which would collide with §4.1's defined term.
 4. **Deliberate deviation from ADR-0221 R1:** that residual instructed S3 to *retire*
    `rb24_deletion_reaper_body_is_frozen_noop`. It is instead RE-PINNED to the new recheck skeleton
    (with plan-authored polarity and subject needles asserted before the exact-equality pin, so the
@@ -91,6 +92,20 @@ remainder as a properly-scoped slice (called **S3b** below).
    prove — guard order in cancel/delete, and the reaper skeleton's shape — are pinned by targeted
    source-structure assertions in `accounts_tests.rs`. Everything else ships as ordinary pure-fn
    behavioral tests. No new eval scripts, no meta-checks, no ratchets.
+
+## Considered alternatives
+
+- **Ship the full cascade and widen the declared touches** (per-module `erase_*`/`anonymize_*`
+  helpers in ~10 owning modules, attributed under `touches-delta:`). Rejected: the supervised
+  loop's scope rule is explicit that an out-of-touches file the task requires is a
+  hidden-dependency stop, the diff would grow the milestone's highest-risk slice by ten files in
+  one PR, and the alternative (defer + re-serialize) loses nothing but latency.
+- **Widen G5's `OWNED_TABLES` so the cascade writes live in `accounts.rs`.** Rejected: widening
+  the write-isolation allowlist to ~20 tables guts ADR-0179 D0 (the gate would constrain nothing),
+  against the codebase's own delegation precedent (`rekey_all`).
+- **Ship the `lib.rs` extraction alone, eat the TR-18 red or edit the eval.** Rejected: the eval is
+  out of touches, and with the cascade deferred the seam would ship with a single caller (YAGNI);
+  it belongs with its consumer in S3b.
 
 ## Consequences and S3b handoff (the supervisor re-serializes these)
 
@@ -120,7 +135,22 @@ remainder as a properly-scoped slice (called **S3b** below).
 - **PRV1-8 remains BLOCKED** on the operator ruling (issue #403, spec §8.2).
   `provision_or_touch_account`'s `Some` branch is untouched by this slice; the reactivation hole
   (§4.6) remains open by explicit instruction, and the shipped predicates make either alternate a
-  small, well-seamed follow-up.
+  small, well-seamed follow-up. **Sequencing constraint (security audit):** the hole ARMS the
+  moment anything first writes `terminal_at_ms: Some` — `touch_login` would then stamp fresh
+  activity timestamps onto an account the module promised to erase. PRV1-8 must therefore land in
+  (or before) the S3b slice that first stamps the marker, not after it.
+- **AUTH-13 message split (S3b/S5 obligation):** `complete_guest_claim`'s Guard 3 now refuses a
+  terminal destination via the delegation, but still reports the generic "account pending
+  deletion" reason. Once S3b writes markers, that message is truthful in letter (a legal terminal
+  row IS status-`PendingDeletion`) but conflates two states PRV1-4 deliberately distinguishes;
+  the slice that makes terminal rows reachable should give Guard 3 the distinct reason too.
+- **Known limit — the illegal `Active`+marker row is now a permanent trap by design:** cancel
+  always rejects, delete always no-ops, the reaper refuses. That is the intended fail-closed
+  posture for a corrupted row (unreachable today); if S3b ever needs an operator escape path it
+  must be a deliberate, audited addition, not a loosening of these guards.
+- **Stale prose flagged, not fixed (out of touches):** `schema.rs`'s `terminal_at_ms` doc still
+  reads "Nothing writes `Some` until S3" — true in effect (nothing writes it) but the slice name
+  now means S3b; S3b's diff should reword it in passing.
 - Positive: every shipped symbol has a production caller (no `dead_code` allowances); the S5
   fan-out is unblocked (only S3 could ship the predicate — S5's touches exclude `accounts.rs`);
   the illegal-state laundering and silent-cancel-success paths are closed ahead of the cascade.
