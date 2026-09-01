@@ -140,7 +140,12 @@ should leave no orphaned data... treat all unrecognized OAuth identities like fr
    re-arm + `ensure_deletion_reapers_armed`), compensated by per-site scoped pins with pinned
    argument lists — never a bare bumped number. (g) `ranking.rs`'s whole-file
    `profile().identity().update(` backstop widens 4→5, compensated by a per-fn pin
-   (`anonymize_display_names` exactly 1). (h) `set_profile_name` gains the §4.7 deletion gate
+   (`anonymize_display_names` exactly 1). (g2) The schedule-table sole-writer accessor census
+   widens 3→4 — the fourth reach is the sweep's READ-ONLY `.iter()`, compensated by a per-site
+   spelling pin plus zero-write-verb clauses on the sweep span. (g3) The cancel-guard census widens
+   1→2 (the D6 Guard-3a statement squashes byte-identical to the PRV1-4 cancel guard on the
+   string-blanked view), compensated by per-span exactly-one pins in each of the two reducers.
+   (h) `set_profile_name` gains the §4.7 deletion gate
    (`guards::require_not_deleting`, the ADR-0227 call-site shape): it writes an
    ANONYMIZE-classified table, and without the gate a connected terminal session un-tombstones its
    own display name one call after the cascade — hollowing PRV1-6c. The rest of the §4.7 surface

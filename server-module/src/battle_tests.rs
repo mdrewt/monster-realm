@@ -6428,16 +6428,106 @@ fn m22s3b_anonymize_battles_sweeps_joins_before_swap() {
         );
     }
 
-    let ongoing = ["Ong", "oing"].concat();
+    // --- THE Ongoing SKIP, PINNED BY POLARITY (r3) --------------------------
+    //
+    // THE MEASURED SURVIVOR. cargo-mutants ran 60 mutants over this slice's
+    // diff and 59 were handled; the ONE that lived is battle.rs:1567,
+    // `replace == with != in anonymize_battles` — a single character, and the
+    // whole suite still reported 762 passing. The clause this replaces asked
+    // only that the token `Ongoing` APPEAR somewhere in the body, so an inverted
+    // comparison contains it just as happily as the correct one. Presence is not
+    // polarity, and for a guard whose entire content IS its comparison, a
+    // presence check is not a gate at all.
+    //
+    // ONE INVERSION, BOTH HARM DIRECTIONS AT ONCE — which is what makes this the
+    // worst mutant in the set rather than merely an uncaught one:
+    //   * it SKIPS every SETTLED battle, so PRV1-6c never runs on the entire
+    //     population it exists for. Every terminal row keeps naming the deleted
+    //     player forever, and spec §3 records exactly why that matters: terminal
+    //     `battle` rows demonstrably PERSIST (settle updates, never deletes; the
+    //     GC is lazy), so a surviving opponent's `my_battle` view still resolves
+    //     them months later. The cascade would report success having anonymized
+    //     nothing;
+    //   * and it PROCESSES the Ongoing ones — the precise rows ADR-0228 D2 /
+    //     RT-11 skips on purpose. Sweeping a live row's `pvp_deadline_schedule`
+    //     entry removes the only mechanism that can ever settle that battle, so
+    //     the SURVIVING opponent is soft-locked in a battle with no deadline and
+    //     no participant.
+    //
+    // THE PIN IS THE WHOLE STATEMENT, in the `m22s3_nd_reaper_recheck_guard`
+    // shape (accounts_tests): the comparison, its polarity, and the branch it
+    // guards, as one contiguous squashed needle. A condition that is present but
+    // whose branch does something other than skip is the same present-but-inert
+    // family that needle was written to close.
+    //
+    // TWO INDEPENDENT TRANSCRIPTIONS, split at different points, so the pin is
+    // not ONE artifact: a later edit that "fixes" the needle by copying it from a
+    // mutated implementation has to edit both, and the agreement clause below is
+    // what makes that checkable rather than merely hoped for. Neither spelling
+    // carries a contiguous `BattleOutcome` or `Ongoing` token, per this file's
+    // needle-assembly convention.
+    let ongoing_guard = concat!(
+        "ifb.state.out",
+        "come==BattleOutco",
+        "me::Ongo",
+        "ing{cont",
+        "inue;}"
+    );
+    let ongoing_guard_twin = [
+        "if",
+        "b.state.outcome==",
+        "BattleOut",
+        "come::Ong",
+        "oing{",
+        "continue;}",
+    ]
+    .concat();
+    assert_eq!(
+        ongoing_guard, ongoing_guard_twin,
+        "m22-s3b PRV1-6c FAIL (needle independence): the two transcriptions of the Ongoing \
+         skip disagree — `{ongoing_guard}` versus `{ongoing_guard_twin}`. They are split at \
+         different points on purpose so neither can be edited into agreement with a mutated \
+         implementation by accident; a mismatch means one was changed alone, and the clause \
+         below is then asserting something nobody chose. Re-derive BOTH from ADR-0228 D2 / \
+         RT-11 in the same change."
+    );
+
+    let n_ongoing = squashed.matches(ongoing_guard).count();
+    assert_eq!(
+        n_ongoing, 1,
+        "m22-s3b PRV1-6c FAIL (Ongoing skip): `{name}` must carry the outcome guard EXACTLY \
+         once, as the whole squashed statement `{ongoing_guard}`; found {n_ongoing}. \
+         THIS CLAUSE EXISTS BECAUSE OF A MEASURED SURVIVOR: cargo-mutants' \
+         `replace == with != in anonymize_battles` (battle.rs:1567) lived through the entire \
+         suite — 762 tests passing — against a presence-only check for the token `Ongoing`, \
+         which an inverted comparison satisfies exactly as well as a correct one. \
+         THE INVERSION DOES BOTH HARMS WITH ONE CHARACTER. It SKIPS every SETTLED battle, so \
+         PRV1-6c never runs on the whole population it exists for: terminal rows persist by \
+         design (spec §3 — settle updates, never deletes; the GC is lazy), so every one of \
+         them keeps naming the deleted player in the surviving opponent's `my_battle` view, \
+         and the cascade reports success having anonymized nothing. AND it PROCESSES the \
+         Ongoing rows, which is the failure path ADR-0228 D2 / RT-11 skips deliberately: an \
+         Ongoing row here means step 6a's resolver failed on it (an already-logged anomaly), \
+         and sweeping its LIVE `pvp_deadline_schedule` entry removes the only mechanism that \
+         can ever settle it — soft-locking the SURVIVING opponent in a battle with no \
+         deadline and no participant. \
+         ZERO means the guard is missing, mis-spelled, or was written as a condition whose \
+         branch does something other than `continue` — the present-but-inert family. A \
+         collect-side `filter(..)` in place of the loop-body skip is a DIFFERENT shape and is \
+         deliberately not accepted here: if that refactor is wanted, re-derive this pin from \
+         ADR-0228 D2 in the same change rather than relaxing it. Body was: {squashed:?}"
+    );
+    let at_ongoing = squashed
+        .find(ongoing_guard)
+        .expect("m22-s3b: the Ongoing skip counted 1 but could not be located");
     assert!(
-        squashed.contains(ongoing.as_str()),
-        "m22-s3b PRV1-6c FAIL (Ongoing skip): `{name}` must test the row's outcome and SKIP \
-         `{ongoing}` rows (ADR-0228 D2 / RT-11). An Ongoing row reaching step 6c means step \
-         6a's resolver failed on it — an already-logged anomaly — and sweeping its LIVE \
-         `pvp_deadline_schedule` row would remove the only mechanism that can ever settle it, \
-         soft-locking the SURVIVING opponent in a battle with no deadline and no participant. \
-         Such a row is left un-tombstoned on purpose: a named failure-path residual, not a \
-         silent one. Body was: {squashed:?}"
+        at_ongoing < at_update,
+        "m22-s3b PRV1-6c FAIL (skip before effect): the Ongoing skip sits at squashed offset \
+         {at_ongoing}, AFTER the identity swap at {at_update}. It must be the FIRST thing the \
+         per-row body does. A skip placed below the join sweeps has already deleted the live \
+         row's `battle_wild` entry and disarmed its `pvp_deadline_schedule` before deciding \
+         not to touch it — which is the exact soft-lock the skip exists to prevent, reached \
+         by an ordering rather than by a polarity."
     );
 
     let seam = ["battle_with_tombstoned", "_party("].concat();
