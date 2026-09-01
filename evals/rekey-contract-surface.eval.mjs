@@ -201,13 +201,6 @@ const CHILD_TIMEOUT_MS = 20000;
 // milestone primary key and the one profile column rekey_profile moves.
 const ANCHOR_COLUMNS = ['account.identity', 'profile.identity'];
 
-// Insert this whole block AFTER the existing line:
-//   const ANCHOR_COLUMNS = ['account.identity', 'profile.identity'];
-// and BEFORE the existing comment:
-//   // ---------------------------------------------------------------------------
-//   // T2 fixtures — tiny, IN-MEMORY, and the only inputs the walker is given here.
-// ============================================================================
-
 // ---------------------------------------------------------------------------
 // T4 constants — the ADR-0207 / ARCHITECTURE.md doc-tie this tooth freezes.
 // See the header comment for why each locator was chosen, and which measured
@@ -258,10 +251,21 @@ const RB2_MARKER = '**rb-2**';
 const RB3_MARKER = '**rb-3**';
 const NEXT_RB_MARKER = '**rb-';
 
+// Each paragraph must cite its OWN decision, not merely the ADR. A generic
+// ADR-0208 pin is defeated by de-bolding the NEXT rb-N bold marker: the slice
+// then runs past it and swallows the following paragraph, whose body
+// legitimately cites ADR-0208 (rb-4 cites D3) — measured, and the same
+// whole-file bypass this clause exists to close, one level down. Pinning the
+// D-number means a swallowed neighbour cannot satisfy the check, because no
+// two of these paragraphs cite the same decision.
 const ARCH_PARAGRAPHS = [
-  { label: 'rb-2', marker: RB2_MARKER },
-  { label: 'rb-3', marker: RB3_MARKER },
+  { label: 'rb-2', marker: RB2_MARKER, cite: ADR_0208_CITE + ' D1' },
+  { label: 'rb-3', marker: RB3_MARKER, cite: ADR_0208_CITE + ' D2' },
 ];
+
+// A genuine paragraph here is 691 and 835 chars (measured). A slice materially
+// longer means the end boundary was missed and a neighbour was swallowed.
+const MAX_ARCH_PARA_CHARS = 1500;
 
 // ============================================================================
 
@@ -777,11 +781,6 @@ function checkImportPurity() {
   };
 }
 
-// Insert this whole block AFTER the closing `}` of `checkImportPurity`
-// (the line that reads only `}` right before the blank line that precedes
-// the `runTooth` JSDoc comment `/** Run one tooth, converting a throw...`).
-// ============================================================================
-
 /**
  * Strip HTML comments before ANY count — a commented-out line must not prop
  * up an occurrence count. No `new RegExp` (Semgrep detect-non-literal-regexp
@@ -967,7 +966,7 @@ function checkD5Instruction(d5Idx, doc207) {
  * @param {string} archDoc Comment-stripped ARCHITECTURE.md text.
  * @returns {string[]} Tagged failures.
  */
-function checkArchParagraph(label, marker, archDoc) {
+function checkArchParagraph(label, marker, cite, archDoc) {
   const failures = [];
   const count = countOccurrences(archDoc, marker);
   if (count !== 1) {
@@ -993,7 +992,18 @@ function checkArchParagraph(label, marker, archDoc) {
     return failures;
   }
 
-  if (slice.indexOf(ADR_0208_CITE) === -1) {
+  if (slice.length > MAX_ARCH_PARA_CHARS) {
+    failures.push(
+      `[T4/arch] ${ARCHITECTURE_REL} ${label} paragraph slice is ${slice.length} chars, over the ` +
+        `${MAX_ARCH_PARA_CHARS} cap — the end boundary was missed and at least one neighbouring ` +
+        'paragraph was swallowed (de-bolding the next rb-N bold marker does exactly this). A ' +
+        'swallowed neighbour can satisfy the citation check for a paragraph that carries no ' +
+        'citation of its own, so this fails loud instead of searching a wider region.',
+    );
+    return failures;
+  }
+
+  if (slice.indexOf(cite) === -1) {
     failures.push(
       `[T4/arch] ${ARCHITECTURE_REL} ${label} paragraph does not cite ${ADR_0208_CITE} within its ` +
         `own slice. ${ADR_0208_CITE} is ALREADY present elsewhere in this file (the rb-4 and rb-5 ` +
@@ -1050,7 +1060,7 @@ function checkDocTie() {
   failures.push(...checkD5Instruction(d5.idx, doc207));
 
   for (const para of ARCH_PARAGRAPHS) {
-    failures.push(...checkArchParagraph(para.label, para.marker, archDoc));
+    failures.push(...checkArchParagraph(para.label, para.marker, para.cite, archDoc));
   }
 
   if (failures.length > 0) {

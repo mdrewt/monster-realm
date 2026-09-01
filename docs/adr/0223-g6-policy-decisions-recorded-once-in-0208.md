@@ -81,17 +81,16 @@ the instruction forbids.
 
 ### D3 — The annotation form
 
-Reuses ADR-0202 D2's mark verbatim — `**[RETIRED — <note>; recorded by ADR-0223]**`, `RETIRED` being one
-of that convention's four `<STATE>` values, so ADR-0202's corpus grep still returns every disposition.
-No new form is invented. Every mark is an **end-of-line append** and `:109` is an in-line rewrite, so no
-line is inserted above any other and no inbound `ADR-0207:<line>` citation can drift.
+Reuses ADR-0202 D2's mark verbatim (`RETIRED` is one of its four `<STATE>` values, so that ADR's corpus
+grep still returns every disposition), written as an **end-of-line append** — with `:109` an in-line
+rewrite — so ADR-0207's line count is unchanged and no inbound `ADR-0207:<line>` citation can drift.
 
 ### D4 — rb-27's disposition (R-rb-3-X9)
 
-**rb-27 must not mint a competing ADR number.** The substance R-rb-3-X9 asks for — the rationale for
-FG72c performing the eval suite's one real `Object.prototype` write (pre-existence refusal, assignment
-inside `try`, `Reflect.deleteProperty` in `finally`, an in-process leak post-assert, and the rebuttal of
-`evals/append-only-ids.eval.mjs`'s older blanket rule) — is **already written**, in ADR-0208 D2. rb-27's
+**rb-27 must not mint a competing ADR number.** The substance R-rb-3-X9 asks for — why FG72c performs
+the eval suite's one real `Object.prototype` write rather than an `Object.create` injection — is
+**already written**, in ADR-0208 D2, which is the authoritative text; it is deliberately not reproduced
+here, since reproducing it is the defect this ADR exists to avoid. rb-27's
 honest exit is to close the residual as already-recorded, optionally amending ADR-0208 D2 in place if it
 finds the wording insufficient. This ADR is the durable pointer that says so, placed where rb-27 will
 actually look: in the ADR corpus, at the number it was told to use.
@@ -112,7 +111,13 @@ manifest.
 
 - **Positive.** One home for the design; ADR-0207's only genuinely dangerous sentence is gone; rb-27
   arrives at a number that redirects it instead of inviting a duplicate; and the corrections are pinned
-  by a tooth that reds when they are reverted, rather than by convention alone.
+  by a tooth that reds when they are reverted verbatim, rather than by convention alone.
+- **Known limit, measured.** `[T4/instruction]` is a **diff** guard, not a content guard. It pins the
+  exact pre-fix fragment's absence plus the presence of `ADR-0208 D1` and an object-shape marker, so a
+  *reworded* instruction that keeps those markers while still telling S3 to write a string entry passes
+  green — demonstrated during this slice's red-team pass. An open-ended semantic ban was rejected as
+  unclosable, and because the correct fixed text itself contains "string" next to "entry" it would
+  self-red forever. The durable closure is the general retired-prose detector deferred to backlog.
 - **Negative.** ADR-0207 now carries three inline marks, which is prose weight in a decision record;
   ADR-0202 accepted the same cost for the same reason. `docs/adr/README.md`'s next-free-ADR number goes
   one staler — that file is supervisor-owned and outside this slice's touches.
