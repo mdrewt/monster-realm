@@ -439,6 +439,34 @@ and guards subject-existence → deletion-gate → cooldown → purge-before-wri
 path. The PRV1-14 TTL reaper is DEFERred to S4b (scheduled tables are
 automigration-frozen) — S4b must land before ANY public exposure.
 
+**m22-s3b** (ADR-0228) landed the §4.4 five-step cascade in
+`account_deletion_reaper`'s fall-through: 6a force-resolve via
+`resolve_all_live_interactions` (extracted into lib.rs, shared verbatim-order
+with `on_disconnect`; TR-18 migrated from the trade eval into the Rust chain
+test per ADR-0224) → 6b nine delegated `erase_*` calls in manifest order
+(G5 write isolation — one helper per owning module, the `rekey_*` precedent;
+`export_bundle` reuses `privacy::purge_export_bundles`; the wallet delete is
+the ONE by-name exemption to the ux2 never-delete gate) → 6d
+`erase_character_rows` strictly before 6c `ranking::anonymize_display_names`
+(both surviving rows get `game_core::TOMBSTONE_DISPLAY_NAME`) →
+`battle::anonymize_battles` (per-row: `battle_wild` + `pvp::disarm_pvp_deadlines`
+join sweeps BEFORE the identity swap to `TOMBSTONE_IDENTITY`; practice battles
+swapped both-sides-in-one-visit, PRV1-19; `Ongoing` rows skipped — a resolver
+failure must keep its deadline machinery) → 6e one final `account` update
+stamping `TOMBSTONE_AUTH_ISSUER` + `terminal_at_ms` (`terminal_account ∘
+anonymized_account`, both legality-asserted). The one-shot re-arms on the
+not-yet-due recheck from the row's OWN request stamp (`reaper_rearm_at_ms`;
+`None` request ⇒ no re-arm, fail-closed), and `ensure_deletion_reapers_armed`
+(init + sync_content, pure `plan_deletion_rearms` seam) sweeps the ADR-0221 R2
+population idempotently. PRV1-8(b) per the operator's issue-#403 Option B:
+`provision_or_touch_account`'s terminal-marker match-guard arm resets the row
+to `new_account_row` defaults (nothing pre-deletion carried). Guard 3 of
+`complete_guest_claim` now distinguishes terminal (`REJECT_ALREADY_DELETED`)
+from mid-grace; `set_profile_name` gained the §4.7 gate (a connected terminal
+session could otherwise un-tombstone itself). `join_game`'s equivalent
+exposure (movement.rs, out of touches) rides the S6 [DEL-06] enforcement
+residual.
+
 ## Server-module domain modules (M8.9 — ADR-0056)
 
 The `server-module` crate is split by domain into cohesive submodules of the **same**

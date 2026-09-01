@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: battle_wild
 slug: tables/battle_wild
-updated: 2026-08-31
+updated: 2026-09-01
 tags: [schema, spacetimedb, private]
 abstract: "PRIVATE wild-individuality side-table (M8c, ADR-0045). Keyed 1:1 by `battle_id`. Stores the splitmix32 `individuality_s…"
 resource: server-module/src/schema.rs#L450

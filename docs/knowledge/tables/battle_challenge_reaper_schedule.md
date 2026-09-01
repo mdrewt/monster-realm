@@ -2,7 +2,7 @@
 type: SpacetimeDB Table
 title: battle_challenge_reaper_schedule
 slug: tables/battle_challenge_reaper_schedule
-updated: 2026-08-31
+updated: 2026-09-01
 tags: [schema, spacetimedb, private]
 abstract: "SpacetimeDB private table battle_challenge_reaper_schedule."
 resource: server-module/src/pvp.rs#L169
