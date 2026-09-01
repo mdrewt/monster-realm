@@ -2812,3 +2812,230 @@ fn e4_propose_trade_bounds_both_sides_before_validate_proposal() {
          is a fence on the incoming fix, not a live defect."
     );
 }
+
+// ===========================================================================
+// m22-s5 (PRV1-9, spec para 4.7, ADR-0225) — `propose_trade` carries the
+// deletion gate, at the right place, reachably.
+//
+// EARS criterion: WHILE the caller's account is inside the para-4.7 deletion
+// gate, WHEN the caller invokes `propose_trade`, the reducer SHALL reject the
+// call BEFORE any escrow row is created.
+//
+// WHY A SECOND TEST, GIVEN `guards_tests.rs` ALREADY RUNS A CENSUS: the census
+// there is body-keyed and count-based — it can see that `propose_trade`
+// mentions the gate and that the file mentions it once. It cannot see
+// REACHABILITY (a gate nested in a never-taken block still lives in the body)
+// and it cannot see this reducer's OWN guard ordering, which is the thing
+// ADR-0166 D3 argued about at length for the size caps in the same preamble.
+// This test pins both, in `trading_tests.rs`'s own idiom (the `squashed_fn_slice`
+// / E4-B pipeline at :1536 and :2671), so it runs in the same `cargo test` as
+// the reducer it protects.
+//
+// PIPELINE: comments stripped, then string-literal PAYLOADS stripped (quotes
+// survive, so the reducer-name tag reads as an empty literal here — the tag
+// itself is pinned from `guards_tests.rs`, on the strings-INTACT view, which is
+// the only pipeline that can see it), then all whitespace squashed. Needles are
+// concat!-split per this file's anti-self-match convention.
+//
+// RED AT HEAD: `propose_trade` carries no gate, so the count assertion fires
+// with its named FAIL message.
+// ===========================================================================
+
+/// A blank string literal as it survives [`strip_rust_strings_trading`] — the
+/// opening and closing quotes are emitted, the payload is swallowed. Built from
+/// a numeric byte so this file never spells a bare double-quote CHARACTER: a
+/// lone quote inside a char literal is read as a STRING OPENER by every
+/// text-level stripper in this repo and inverts string/code polarity for
+/// everything after it (the measured `lib.rs` blast radius is recorded in
+/// `guards_tests.rs`'s own `DQUOTE` doc comment).
+fn m22s5_blank_string_literal() -> String {
+    let q = char::from(0x22u8).to_string();
+    [q.as_str(), q.as_str()].concat()
+}
+
+/// The brace-bounded body of `fn <name>` in an already-stripped `src`.
+///
+/// Brace matching, not a next-function text anchor: the E4-B slice ends at the
+/// literal text `fn respond_trade`, which is fine for an ordering pin but
+/// cannot support the brace-DEPTH assertion below (the slice would carry the
+/// signature's own opening brace and every depth would read one high). Returns
+/// the INNER body, so a top-level statement sits at depth 0 — the same
+/// convention `pvp_tests.rs`'s `extract_pvp_fn_body` uses.
+fn m22s5_trading_fn_body(stripped: &str, name: &str) -> Option<String> {
+    let needle = ["fn ", name].concat();
+    let start = stripped.find(needle.as_str())?;
+    let after = &stripped[start..];
+    let open = after.find('{')?;
+    let bytes = after.as_bytes();
+    let mut depth = 1usize;
+    let mut k = open + 1;
+    while k < bytes.len() {
+        match bytes[k] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(after[open + 1..k].to_string());
+                }
+            }
+            _ => {}
+        }
+        k += 1;
+    }
+    None
+}
+
+/// Net brace depth of `squashed` at byte `offset` (0 == a top-level statement
+/// of the extracted body).
+fn m22s5_depth_at(squashed: &str, offset: usize) -> i64 {
+    let opens = squashed[..offset].matches('{').count() as i64;
+    let closes = squashed[..offset].matches('}').count() as i64;
+    opens - closes
+}
+
+/// **PRV1-9** — `propose_trade` carries the deletion gate exactly once, as a
+/// reachable top-level statement, after the caller-state preamble and before
+/// the escrow row exists.
+///
+/// WHAT EACH ASSERTION KILLS:
+///
+///   * COUNT == 1, with the trailing `)?;` IN THE NEEDLE. The `?` is
+///     load-bearing and is the same finding this file already records twice
+///     (E4's EV-4 at :2686-2692, and the `let _ = ..` discard analysis at
+///     :1959-2039): binding the gate call to the wildcard pattern compiles,
+///     stays clippy-clean under `-D warnings` because `let_underscore_must_use`
+///     is off by default, calls the gate, throws the answer away, and proposes
+///     the trade anyway. Comments are stripped before this count, so commenting
+///     the statement out drops it to 0 as well.
+///   * DEPTH == 0. Every other assertion here is POSITION-based and therefore
+///     blind to reachability: wrapping the same statement in an always-false
+///     block satisfies the count, sits after both anchors and before the
+///     insert, and gates nothing. Same class as E2's EV-9 and E4's NEW-5.
+///   * AFTER the LAST size-cap call. ADR-0166 D3 decided the caps are the
+///     reducer's first statements, before ANY DB read; the gate reads the
+///     account row, so hoisting it above them would re-open exactly the
+///     bound-before-any-DB-read hole D3 closed — an unbounded client vector
+///     would reach a DB round trip before anything bounded it.
+///   * AFTER the caller-joined lookup. The gate is a CALLER-state check and
+///     belongs with the caller-state preamble; running it before the joined
+///     check would answer for identities that are not players at all.
+///   * BEFORE the first insert. This is the whole claim: a gate that runs after
+///     the `trade_offer` row exists has escrowed the deleting player's assets
+///     and merely reported it. Both anchors and the insert are `expect`ed
+///     LOUDLY — an ordering pin whose landmark vanished passes on anything.
+///
+/// HONEST LIMIT: source scan, not execution. This crate has no
+/// reducer-executing harness (ADR-0156 P7); the behavioural half of PRV1-9 is
+/// the pure truth-table test in `guards_tests.rs`.
+#[test]
+fn m22s5_propose_trade_carries_the_deletion_gate() {
+    let stripped = strip_rust_strings_trading(&strip_rust_comments_trading(TRADING_RS));
+    let propose = concat!("propose_", "trade");
+    let body = m22s5_trading_fn_body(&stripped, propose).unwrap_or_else(|| {
+        panic!(
+            "m22-s5 PRV1-9 FAIL (extraction): the brace-bounded body of `{propose}` could \
+             not be sliced out of `trading.rs`. Fail LOUD rather than pass vacuously — if \
+             the reducer was renamed or removed, re-derive this pin DELIBERATELY from the \
+             spec, never by relaxing it."
+        )
+    });
+    let squashed: String = body.split_whitespace().collect();
+
+    let blank = m22s5_blank_string_literal();
+    let call = concat!("crate::guards::require_not_", "deleting(");
+    let plain = [call, "ctx,", blank.as_str(), ")?;"].concat();
+    let trailing = [call, "ctx,", blank.as_str(), ",)?;"].concat();
+
+    let n = squashed.matches(plain.as_str()).count() + squashed.matches(trailing.as_str()).count();
+    assert_eq!(
+        n, 1,
+        "m22-s5 PRV1-9 FAIL: `{propose}` must carry the deletion-gate call EXACTLY ONCE, \
+         with the `?` propagation operator. Found {n}. \
+         RED AT HEAD: the reducer carries no gate at all, so an account inside the \
+         para-4.7 grace window can open a fresh trade offer — escrowing monsters, items \
+         and currency into a commitment its counterparty cannot rely on and the deletion \
+         cascade will have to unwind. \
+         The trailing propagation is PART OF THE PIN, for the reason this file already \
+         records twice (E4 EV-4 at :2686-2692 and the discard analysis at :1959-2039): a \
+         discarded result compiles, calls the gate, ignores the answer, and stays \
+         clippy-clean under -D warnings. Comments are stripped before this count, so a \
+         commented-out statement reads as absent too. Expected (squashed, trailing-comma \
+         form): {trailing:?}"
+    );
+
+    let gate_pos = squashed
+        .find(plain.as_str())
+        .or_else(|| squashed.find(trailing.as_str()))
+        .unwrap_or_else(|| panic!("m22-s5: the gate statement counted 1 but could not be located"));
+
+    let depth = m22s5_depth_at(&squashed, gate_pos);
+    assert_eq!(
+        depth, 0,
+        "m22-s5 PRV1-9 FAIL (reachability): the deletion gate in `{propose}` sits at brace \
+         depth {depth} of the reducer body, not 0. Every other assertion in this test is \
+         POSITION-based and therefore blind to reachability: wrapping the statement in an \
+         always-false block, or in any other conditional, leaves the exact text in the \
+         file, keeps the count at 1, keeps it after both anchors and before the insert — \
+         and never executes it. The gate must be an unconditional top-level statement."
+    );
+
+    let cap = concat!("check_trade_", "side_size(");
+    let cap_pos = squashed.rfind(cap).unwrap_or_else(|| {
+        panic!(
+            "m22-s5 PRV1-9 FAIL (anchor missing): no per-side size bound was found in \
+             `{propose}`, so the gate cannot be ordered against it. Fail LOUD: without the \
+             anchor a hoisted gate would be invisible to this test. The bounds are pinned \
+             independently by `e4_propose_trade_bounds_both_sides_before_validate_proposal`."
+        )
+    });
+    assert!(
+        cap_pos < gate_pos,
+        "m22-s5 PRV1-9 FAIL (ordering): the deletion gate in `{propose}` is at squashed \
+         offset {gate_pos}, BEFORE the last per-side size bound at {cap_pos}. ADR-0166 D3 \
+         decided the caps are this reducer's first statements, ahead of ANY DB read \
+         (the battle.rs:62-75 ordering). The gate READS the account row, so hoisting it \
+         above the caps re-opens exactly the hole D3 closed: an unbounded client vector \
+         would reach a database round trip before anything bounded it."
+    );
+
+    let joined = concat!("player().identity().", "find(me)");
+    let n_joined = squashed.matches(joined).count();
+    assert_eq!(
+        n_joined, 1,
+        "m22-s5 PRV1-9 FAIL (anchor ambiguity): `{propose}` performs the caller-joined \
+         lookup {n_joined} time(s); the ordering pin below needs EXACTLY ONE so the offset \
+         is unambiguous. With zero the caller-state preamble was restructured and this pin \
+         must be re-derived; with two the pin would silently anchor on the first."
+    );
+    let joined_pos = squashed
+        .find(joined)
+        .expect("m22-s5: caller-joined anchor counted 1 but could not be located");
+    assert!(
+        joined_pos < gate_pos,
+        "m22-s5 PRV1-9 FAIL (ordering): the deletion gate in `{propose}` is at squashed \
+         offset {gate_pos}, BEFORE the caller-joined lookup at {joined_pos}. The gate is a \
+         CALLER-state check and belongs with the caller-state preamble: run above the \
+         joined check it answers for identities that are not players at all, and the \
+         reducer's guard order stops reading as `who are you, then may you`."
+    );
+
+    let insert = concat!("()", ".insert(");
+    let insert_pos = squashed.find(insert).unwrap_or_else(|| {
+        panic!(
+            "m22-s5 PRV1-9 FAIL (anti-vacuity): `{propose}` contains no table insert, so \
+             `gate before the escrow row` is trivially true and this test proves nothing. \
+             Either the reducer stopped writing (ask whether it still needs gating) or it \
+             writes through a call this needle does not know — widen the needle rather \
+             than accepting the vacuous pass."
+        )
+    });
+    assert!(
+        gate_pos < insert_pos,
+        "m22-s5 PRV1-9 FAIL (decision before irreversible effect): the deletion gate in \
+         `{propose}` is at squashed offset {gate_pos}, AFTER the first table insert at \
+         {insert_pos}. This is the whole claim of PRV1-9 for this reducer: a gate that \
+         runs once the offer row exists has already escrowed a deleting player's monsters, \
+         items and currency into a commitment the deletion cascade must later unwind, and \
+         the reject merely reports it."
+    );
+}
