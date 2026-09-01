@@ -109,7 +109,7 @@ whose `argv[1]` is a real sibling `evals/*.mjs`, because a main guard widened to
 match a directory or `run.mjs` exits the whole 90-eval suite mid-loop with code 0. (Since
 **rb-5** that truncation exits 1 and names the eval that was in flight; the later evals are
 still skipped, so these import-purity children remain the primary defence.)
-**rb-2** closed the manifest's measured `typeof` trap (residual R-m22-s0-X1): every
+**rb-2** closed the manifest's measured `typeof` trap (residual R-m22-s0-X1; ADR-0208 D1): every
 `REKEY_MANIFEST` entry is now an object with an explicit `policy` discriminator
 (`REKEY` | `BLOCKED` | `EXEMPT`, exact equality, a closed field set per kind, D6
 reasons verbatim minus the retired prefix — except the two `battle` reasons corrected in the
@@ -133,7 +133,7 @@ because a second REKEY pair shares an existence needle and a membership test was
 the amnesty. Because the FG75 teeth read an in-file fixture, five LIVE-TREE borrow proofs also run
 against the shipped sources, and every count in the pass summary — including the teeth count — is
 derived from the run rather than written as prose.
-**rb-3** pinned that gate's OWN-PROPERTY BOUNDARY (residual R-m22-s0-X2): inside
+**rb-3** pinned that gate's OWN-PROPERTY BOUNDARY (residual R-m22-s0-X2; ADR-0208 D2): inside
 `checkRekeyCompleteness` the manifest's key space is read exactly once
 (`classifyManifest`, `Object.keys` → a `Map`) and every clause reads the Map, so a
 co-resident eval's `Object.prototype['table.col']` (every eval shares one realm

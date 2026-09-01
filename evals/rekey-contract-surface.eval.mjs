@@ -265,7 +265,6 @@ const ARCH_PARAGRAPHS = [
 
 // ============================================================================
 
-
 // ---------------------------------------------------------------------------
 // T2 fixtures — tiny, IN-MEMORY, and the only inputs the walker is given here.
 // The paths are strings chosen to be indistinguishable from live ones (see the
