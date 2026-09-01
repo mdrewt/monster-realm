@@ -239,6 +239,14 @@ declaration-shape pin alone is blind to a `use` re-export, a `pub` accessor, and
 alias. The VALUE is deliberately unpinned by spec, so every test asserts properties, never the
 literal. Stated limit: the scans are substring searches over `ranking.rs`, so a split or
 escape-spelled literal, and anything hand-typed in `accounts.rs`, are S3/S6's to close.
+**rb-34** narrows that limit on the REACH axis: red-team measured that no literal is needed at
+all — a lazy S3b cascade calling the crate-visible delegate `ranking::rekey_profile` from the
+reaper's cascade slot renames a deleted account to the guest-claim sentinel with CI fully green —
+so `accounts_tests.rs` now pins the delegate to exactly one call site inside `rekey_all` (four
+clauses: naming census, qualified-call census, fan-out-decl census, call-site-in-body; alias
+imports and fn-pointer bindings trip it by design; bite measured per clause). Still S3b's to
+close (ledger rb-34 X5): the literal-forgery battery, the `ranking.rs` second-writer pin, and a
+crate-wide naming census for third-module re-exports.
 **M23 accessibility gates (m23-s10)** — three source-scan evals plus one cross-view happy-dom
 spec. `overlay-a11y-manifest` bans a view-local focus call in every `client/src/ui/**/*View.ts`
 (readdir-DERIVED and two-way ratcheted, so a new view is scanned the day it lands — the three
