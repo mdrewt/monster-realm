@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** security-authz, schema-persistence, ci-gates
-**Decision:** S3b lands the §4.4 five-step cascade through per-module `erase_*`/`anonymize_*` delegation, re-arms the one-shot reaper (not-due branch + init/sync sweep), ships PRV1-8(b) fresh re-registration, and re-pins the reaper body pin.
+**Decision:** S3b lands the §4.4 cascade via per-module `erase_*`/`anonymize_*` delegation, re-arms the one-shot reaper (not-due branch + init/sync sweep), ships PRV1-8(b) fresh re-registration, and re-pins the reaper body pin.
 
 ---
 
@@ -31,6 +31,11 @@ should leave no orphaned data... treat all unrecognized OAuth identities like fr
    or sentinel-confusing). Every helper's row mutation goes through a pure seam (the
    `zeroed_wallet`/`profile_with_carried_stats` precedent) so its property is a behavioral test.
    `export_bundle`'s erase REUSES `privacy::purge_export_bundles` (rb-22) — no new helper.
+   Two ownership notes: `player` has no single owning module (accounts.rs's own doc says so) — its
+   display-name anonymize lives in `ranking.rs`, the module that already owns the display-name
+   write path (`set_profile_name`); and `pvp_deadline_schedule`'s sweep is a
+   `pvp::disarm_pvp_deadlines(ctx, battle_id)` helper (pvp.rs is its sole writer), called from
+   `battle::anonymize_battles` — the delegation doctrine is not broken for that one table.
 
 2. **D2 — cascade order, and two deliberate deviations from a literal 6b→6c→6d split.**
    The reaper body: scheduler guard → row lookup → one clock read → recheck (with re-arm, D3) →
@@ -46,16 +51,27 @@ should leave no orphaned data... treat all unrecognized OAuth identities like fr
    order is unimplementable. PRV1-19: battle rows are collected dedup-by-construction
    (`player_identity` filter, then `opponent_identity` filter excluding rows already matched), and
    the pure `battle_with_tombstoned_party` swaps **each** matching side — a practice battle gets
-   both sides swapped in one visit, one update.
+   both sides swapped in one visit, one update. `anonymize_battles` processes **only battles with a
+   settled/terminal outcome** and collects both filter passes before any mutation: an `Ongoing` row
+   at step 6c means step 6a's resolver failed on it (an already-logged anomaly), and sweeping its
+   live `pvp_deadline_schedule` row would remove the only mechanism that can ever settle it,
+   soft-locking the surviving opponent. Such a row is skipped (identity un-tombstoned) — a named
+   failure-path residual, not silent.
 
 3. **D3 — re-arm design.** The runtime deletes a fired one-shot schedule row regardless of reducer
    outcome, so: (a) the not-yet-due recheck branch re-arms via `arm_deletion_reaper` from the row's
    **own** `deletion_requested_at_ms` (never `now + GRACE`, which would extend the window on every
-   fire). Loop-freedom is a theorem — not-due ⟺ `now - requested < GRACE` ⟺
-   `deletion_fire_at_ms(requested) > now` — pinned by a test. `reaper_rearm_at_ms` is defined
-   directly (`PendingDeletion && !marker && !is_deletion_due`), never as
-   `!reaper_should_run_cascade`, which is also true for Active and terminal rows and would re-arm
-   an erased account forever. (b) The ADR-0221 R2 population (rows already `PendingDeletion` with
+   fire). `reaper_rearm_at_ms` resolves the request stamp FIRST (`let requested =
+   account.deletion_requested_at_ms?;`) — on the illegal `PendingDeletion` + `None` shape it
+   returns `None` (no re-arm, fail-closed; `.unwrap_or(..)` spellings are each a disguised
+   `now`-relative re-arm or an epoch-past hot loop), and it is defined directly
+   (`PendingDeletion && !marker && !is_deletion_due`), never as `!reaper_should_run_cascade`,
+   which is also true for Active and terminal rows and would re-arm an erased account forever.
+   Loop-freedom holds for every wall-clock-representable stamp: not-due ⟺ `now - requested <
+   GRACE` ⟺ `deletion_fire_at_ms(requested) > now`, saturating on both sides. The one divergence
+   band (`requested > i64::MAX - GRACE`, ADR-0221 Known limits) clamps the fire instant to
+   `i64::MAX` — the row simply never fires again (a permanent no-op, not a hot loop), unreachable
+   for real stamps since only `delete_account` writes the column from `now_ms(ctx)`. (b) The ADR-0221 R2 population (rows already `PendingDeletion` with
    their one-shot long fired) is swept by `accounts::ensure_deletion_reapers_armed`, called from
    `init` and `sync_content` beside `ensure_playtest_reaper`/`ensure_mr_heartbeat`; the body lives
    in `accounts.rs` because the sole-writer teeth close the schedule table to every other module.
@@ -72,6 +88,15 @@ should leave no orphaned data... treat all unrecognized OAuth identities like fr
    illegal `Active`+marker shape a fresh reset is the fail-closed direction (the erased account
    stays erased; nothing pre-deletion survives). This lands in the SAME slice that first stamps
    `terminal_at_ms: Some` (this one, PRV1-6e), per ADR-0225's arming constraint.
+   Two named deviations this reset creates, each bounded: (i) AUTH-14's "one claim per account,
+   ever" becomes per-incarnation — the reset clears `claimed_from`, so a delete→reap→re-register
+   cycle restores a spent claim slot; the yield is at most one starter monster per grace window per
+   OAuth identity, no better than minting a new OAuth account, which is exactly the equivalence
+   Option B accepts (and any identity with a surviving `profile` row is blocked from claiming by
+   Guard 11 anyway). (ii) The surviving `profile` row (ANONYMIZE, never deleted per ADR-0119) makes
+   `account_has_game_data` true forever, so a re-registered identity can never complete a guest
+   claim — correct fail-closed behavior given the surviving ladder row, recorded as an Option-B
+   limitation rather than papered over.
 
 5. **D5 — `account_state_is_legal` stays `debug_assert!`; no release `debug-assertions`, no `Err`
    promotion** (resolves R-m22-s2-S3-CANCEL-TERMINAL's re-pointed half). The terminal write's
@@ -103,7 +128,20 @@ should leave no orphaned data... treat all unrecognized OAuth identities like fr
    deleter. (d) `ea_pvp_05`/`ptc5b_4` are TIGHTENED from whole-file `lib.rs` scans to the extracted
    resolver's body, restoring the gate strength the extraction would otherwise silently dilute.
    (e) TR-18 is deleted from `trade-reducer-security.eval.mjs` (17→16 criteria) and ported as the
-   Rust chain test `m22s3b_resolver_extraction_chain` per ADR-0224 — the scanner is not patched.
+   two-link Rust chain test `m22s3b_resolver_extraction_chain` (on_disconnect→resolver AND
+   resolver→cancel_trades_on_disconnect) per ADR-0224 — the scanner is not patched; this is a
+   declared spec-§7.2 shared-eval-edit WARN for the supervisor to reconcile, and the
+   on_disconnect→resolver link is twinned into `pvp_tests.rs` so a pvp-side regression fails in the
+   pvp file. (f) The rb-24 arm-call census widens 2→4 (`delete_account` + the reaper's not-due
+   re-arm + `ensure_deletion_reapers_armed`), compensated by per-site scoped pins with pinned
+   argument lists — never a bare bumped number. (g) `ranking.rs`'s whole-file
+   `profile().identity().update(` backstop widens 4→5, compensated by a per-fn pin
+   (`anonymize_display_names` exactly 1). (h) `set_profile_name` gains the §4.7 deletion gate
+   (`guards::require_not_deleting`, the ADR-0227 call-site shape): it writes an
+   ANONYMIZE-classified table, and without the gate a connected terminal session un-tombstones its
+   own display name one call after the cascade — hollowing PRV1-6c. `join_game` (movement.rs, out
+   of this slice's touches) has the same §4.7 exposure and is recorded as a residual for the S6
+   [DEL-06] enforcement, not silently absorbed.
 
 ## Considered alternatives
 
@@ -131,6 +169,41 @@ should leave no orphaned data... treat all unrecognized OAuth identities like fr
 - Two full-table linear sweeps (`playtest_event`, `battle_action`/`pvp_deadline_schedule`) ride the
   cascade transaction — accepted under the §8.3 escalated volume risk.
 - The `ensure_deletion_reapers_armed` sweep runs on every `sync_content` publish — idempotent, and
-  exposure is nil until `ALLOWED_ISSUERS` leaves its fail-closed placeholder.
+  exposure is nil until `ALLOWED_ISSUERS` leaves its fail-closed placeholder. A publish that
+  re-arms N overdue accounts fires N cascades back-to-back, each with two unindexed full-table
+  sweeps — inside §8.3's escalated volume residual, multiplied by publish frequency.
 - PRV1-7's crate-wide [DEL-06] enforcement mechanism remains deferred to S6 pending the
   supervisor's ADR-0224 ruling (gate X18 DEFER in this slice's ledger).
+- **Deletion-completeness limitations, named (the §9.1 pseudonymization class):**
+  (i) `profile.rating`/`wins`/`losses` survive (spec §3 anonymizes `name` only) and, after a
+  PRV1-8(b) re-registration, the ADR-0125 passive mirror (`refresh_profile_name`) overwrites the
+  tombstone with the new live name on the next rated game — the ladder history re-attaches to the
+  new incarnation of the same Identity. (ii) `account.last_login_at_ms` (plus the deletion
+  ceremony's own `deletion_requested_at_ms`/`terminal_at_ms` stamps) is retained — spec §3's
+  retained-column list is silent on it; scrubbing it would deviate from the shipped manifest basis,
+  so it is recorded instead. (iii) A third party's `export_bundle` snapshot can contain the deleted
+  player's identity and monster nicknames (`trade_offer` chunks); the owner-scoped purge cannot
+  reach it, so the S4b PRV1-14 TTL reaper is a deletion-completeness dependency, not mere hygiene.
+  (iv) Third parties can still open TTL-bounded commitments (`battle_challenge`/`trade_offer`)
+  NAMING a deleted identity — the §4.7 gate is caller-only by design. (v) A settled battle between
+  two deleted accounts carries the tombstone on both sides, which `is_ranked_pvp`'s
+  `player != opponent` test reclassifies as practice — data-only today, no live consumer.
+- **The ux2 wallet-delete exemption knowingly breaks the ADR-0154 client wallet contract on this
+  one path**: a view UPDATE is delivered as onInsert+onDelete, so the client wallet slot has no
+  remove path and a connected-at-fire session renders a stale balance. Accepted because the only
+  subscriber of the deleted row is the terminal account's own doomed session; S8 (client
+  deletion/export UX) owns any client-side handling.
+- **Online-at-fire is a real state, not a no-op**: against a connected session the cascade
+  force-resolves live battles/trades, erases monsters/inventory/wallet, deletes `character` while
+  `player` survives (a pairing no other code path produces — verified panic-free: every
+  `character` read in the tree is `let Some(..) else`), and renames the live player to the
+  tombstone. The client experience of that session is S8's concern; the server-side state is
+  correct and terminal.
+- **Double-fire is a clean no-op**: a second schedule row for the same identity finds the terminal
+  marker — `reaper_should_run_cascade` false, `reaper_rearm_at_ms` None — so it neither cascades,
+  re-arms, nor needs a self-disarm (the D6 anti-pattern stays intact).
+- S6's `[DEL-04]` contract changes shape under delegation: the reaper body names helpers, not
+  table identifiers, so the eval's per-table presence check must consume the totality-driven
+  table→helper map that `m22s3b_cascade_covers_manifest` pins (exhaustive `DeletionPolicy` match,
+  fail-loud on an unmapped entry) — the map is a named drift surface of the same class as
+  `JOIN_ONLY_TABLES` (spec §9 residual 3).
