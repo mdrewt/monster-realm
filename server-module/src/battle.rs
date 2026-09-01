@@ -1509,6 +1509,78 @@ pub(crate) fn resolve_wild_battle_on_disconnect(ctx: &ReducerContext, disconnect
     }
 }
 
+// --- M22 deletion cascade — battle anonymize (ADR-0228 D1/D2) -----------------
+
+/// M22 §4.4 step 6c (PRV1-6c/PRV1-19, pure): the battle row with EACH side
+/// that names the deleting identity swapped to the tombstone — a practice
+/// battle (`player_identity == opponent_identity`) gets BOTH sides swapped in
+/// this one call, which is what makes "visited and tombstoned exactly once"
+/// (PRV1-19) hold at the caller. A side naming anyone else (the surviving
+/// opponent, or the all-zero wild sentinel) survives byte-identical, as does
+/// every mechanical field.
+pub(crate) fn battle_with_tombstoned_party(
+    b: Battle,
+    deleting: Identity,
+    tombstone: Identity,
+) -> Battle {
+    let player_identity = if b.player_identity == deleting {
+        tombstone
+    } else {
+        b.player_identity
+    };
+    let opponent_identity = if b.opponent_identity == deleting {
+        tombstone
+    } else {
+        b.opponent_identity
+    };
+    Battle {
+        player_identity,
+        opponent_identity,
+        ..b
+    }
+}
+
+/// M22 §4.4 steps 6c+6d for `battle` and its JOIN-ONLY children (PRV1-6c/6d,
+/// ADR-0228 D2 deviation b): for every SETTLED battle naming `owner` on
+/// either side, sweep the row's `battle_wild` sidecar and its
+/// `pvp_deadline_schedule` rows FIRST (after the identity swap the join key
+/// no longer names the owner, so a later pass has no route back), then swap
+/// the owner's side(s) to `crate::TOMBSTONE_IDENTITY` via the pure seam. Both
+/// index passes are collected BEFORE any mutation, and the second pass
+/// excludes rows the first already matched — the `my_battle` dedup idiom, so
+/// a practice battle is visited once (PRV1-19). An `Ongoing` row here means
+/// the cascade's 6a resolver failed on it (an already-logged anomaly): it is
+/// SKIPPED, keeping its live deadline machinery so the surviving opponent can
+/// still win by timeout — the named failure-path residual, never a silent
+/// sweep of a live battle's only settlement mechanism. Called only from
+/// `accounts::account_deletion_reaper` (D0 write-isolation).
+pub(crate) fn anonymize_battles(ctx: &ReducerContext, owner: Identity) {
+    let mut rows: Vec<Battle> = ctx.db.battle().player_identity().filter(owner).collect();
+    rows.extend(
+        ctx.db
+            .battle()
+            .opponent_identity()
+            .filter(owner)
+            .filter(|b| b.player_identity != owner),
+    );
+    for b in rows {
+        if b.state.outcome == BattleOutcome::Ongoing {
+            continue;
+        }
+        let id = b.battle_id;
+        ctx.db.battle_wild().battle_id().delete(id);
+        crate::pvp::disarm_pvp_deadlines(ctx, id);
+        ctx.db
+            .battle()
+            .battle_id()
+            .update(battle_with_tombstoned_party(
+                b,
+                owner,
+                crate::TOMBSTONE_IDENTITY,
+            ));
+    }
+}
+
 // `battle.rs` is a file-module (declared `mod battle;` in `lib.rs`), so a plain
 // `mod battle_tests;` would resolve under `src/battle/`; `#[path]` keeps the test
 // file a sibling in `src/` (the game-core `*_tests.rs` convention, ADR-0056 map).

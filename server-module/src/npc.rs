@@ -455,6 +455,30 @@ pub(crate) fn rekey_npc_state(ctx: &ReducerContext, from: Identity, to: Identity
     }
 }
 
+/// M22 §4.4 step 6b (PRV1-6b, ADR-0228 D1/D2): delete every NPC-progress row
+/// owned by `owner` — `player_dialogue_state` (PK point delete),
+/// `player_quest` (owner index → collect ids → PK deletes, ADR-0126), and the
+/// transient `player_conversation` row (PK point delete). Called only from
+/// `accounts::account_deletion_reaper` (D0 write-isolation); never an
+/// unbounded table iteration.
+pub(crate) fn erase_npc_state(ctx: &ReducerContext, owner: Identity) {
+    ctx.db
+        .player_dialogue_state()
+        .owner_identity()
+        .delete(owner);
+    let pq_ids: Vec<u64> = ctx
+        .db
+        .player_quest()
+        .owner_identity()
+        .filter(owner)
+        .map(|q| q.pq_id)
+        .collect();
+    for id in pq_ids {
+        ctx.db.player_quest().pq_id().delete(id);
+    }
+    ctx.db.player_conversation().owner_identity().delete(owner);
+}
+
 /// True if `owner` has any `player_quest` progress or a `player_dialogue_state`
 /// row (for `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
 pub(crate) fn has_quest_or_dialogue_state(ctx: &ReducerContext, owner: Identity) -> bool {

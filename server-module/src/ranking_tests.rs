@@ -2543,7 +2543,10 @@ fn m22s3b_anonymize_display_names_shape() {
         );
     }
 
-    for banned in [concat!("=ctx.db.", "profile()"), concat!("=ctx.db.", "player()")] {
+    for banned in [
+        concat!("=ctx.db.", "profile()"),
+        concat!("=ctx.db.", "player()"),
+    ] {
         assert_eq!(
             m22s3b_count(body, banned),
             0,

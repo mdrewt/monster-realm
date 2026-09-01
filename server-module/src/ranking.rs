@@ -19,7 +19,7 @@
 //! ADR-0056 (M8.9) — keep it stable.
 
 use crate::guards::{log_reject, validate_name};
-use crate::schema::{player, profile, Battle, Profile};
+use crate::schema::{player, profile, Battle, Player, Profile};
 use game_core::BattleOutcome;
 use spacetimedb::{Identity, ReducerContext, Table};
 
@@ -146,6 +146,10 @@ pub fn set_profile_name(ctx: &ReducerContext, name: String) -> Result<(), String
             return Err(e);
         }
     };
+    // Deletion gate (m22-s3b, ADR-0228 D7h / spec §4.7): `player` is an
+    // ANONYMIZE-classified table, and without this gate a connected terminal
+    // session un-tombstones its own display name one call after the cascade.
+    crate::guards::require_not_deleting(ctx, "set_profile_name")?;
     let validated = validate_name(&name).inspect_err(|e| log_reject("set_profile_name", me, e))?;
     player.name = validated;
     ctx.db.player().identity().update(player);
@@ -244,6 +248,54 @@ pub(crate) fn rekey_profile(ctx: &ReducerContext, from: Identity, to: Identity) 
 /// `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
 pub(crate) fn profile_exists(ctx: &ReducerContext, identity: Identity) -> bool {
     ctx.db.profile().identity().find(identity).is_some()
+}
+
+// --- M22 deletion cascade — display-name anonymize (ADR-0228 D1/D2) -----------
+
+/// M22 §4.4 step 6c (PRV1-6c, pure): the `player` row with its display name
+/// replaced by the DELETION tombstone — `game_core::TOMBSTONE_DISPLAY_NAME`,
+/// never the module-private guest-claim sentinel above (that one means
+/// "unclaimed guest, stats carried forward" and zeroing semantics ride it).
+/// Every other field, including the `entity_id` join key, survives untouched.
+pub(crate) fn player_with_deleted_name(p: Player) -> Player {
+    Player {
+        name: game_core::TOMBSTONE_DISPLAY_NAME.to_string(),
+        ..p
+    }
+}
+
+/// M22 §4.4 step 6c (PRV1-6c, pure): the `profile` row with its display name
+/// replaced by the DELETION tombstone. Rating, wins and losses survive by
+/// design (spec §3 anonymizes `name` only; the ladder columns are the
+/// §9.1-class retained history ADR-0228 records).
+pub(crate) fn profile_with_deleted_name(p: Profile) -> Profile {
+    Profile {
+        name: game_core::TOMBSTONE_DISPLAY_NAME.to_string(),
+        ..p
+    }
+}
+
+/// M22 §4.4 step 6c (PRV1-6c, ADR-0228 D1/D2): tombstone `owner`'s display
+/// name on BOTH surviving rows — `player` (the anchor row, after the
+/// cascade's `character` join sweep) and `profile` (ADR-0119 never-delete).
+/// Field updates only, never a delete, each through its pure seam. Called
+/// only from `accounts::account_deletion_reaper` (D0 write-isolation). The
+/// `for`-over-`into_iter` shape is load-bearing: any `let`/`if let` binding
+/// of these reads would reintroduce the RL-2 split-binding needle this file
+/// bans file-wide.
+pub(crate) fn anonymize_display_names(ctx: &ReducerContext, owner: Identity) {
+    for p in ctx.db.player().identity().find(owner).into_iter() {
+        ctx.db
+            .player()
+            .identity()
+            .update(player_with_deleted_name(p));
+    }
+    for p in ctx.db.profile().identity().find(owner).into_iter() {
+        ctx.db
+            .profile()
+            .identity()
+            .update(profile_with_deleted_name(p));
+    }
 }
 
 #[cfg(test)]

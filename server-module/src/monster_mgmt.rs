@@ -137,6 +137,28 @@ pub(crate) fn rekey_monsters(
     Ok(())
 }
 
+/// M22 §4.4 step 6b (PRV1-6b, ADR-0228 D1/D2): delete every `monster` row
+/// owned by `owner`, PUBLIC TWIN INCLUDED, in ONE function body — the
+/// dual-write invariant (`monster-dual-write.eval.mjs`) rides the same fn as
+/// the `monster` delete, exactly like `rekey_monsters` above. Called only
+/// from `accounts::account_deletion_reaper` (D0 write-isolation). Collect ids
+/// via the owner index before mutating (ADR-0126 convention); never an
+/// unbounded table iteration. Infallible: a missing `monster_pub` twin is a
+/// PK no-op delete, and an erase has no tier to fabricate.
+pub(crate) fn erase_monsters(ctx: &ReducerContext, owner: Identity) {
+    let ids: Vec<u64> = ctx
+        .db
+        .monster()
+        .owner_identity()
+        .filter(owner)
+        .map(|m| m.monster_id)
+        .collect();
+    for id in ids {
+        ctx.db.monster().monster_id().delete(id);
+        ctx.db.monster_pub().monster_id().delete(id);
+    }
+}
+
 /// True if `owner` owns at least one `monster` row (existence check for
 /// `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
 pub(crate) fn has_monsters(ctx: &ReducerContext, owner: Identity) -> bool {

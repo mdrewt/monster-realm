@@ -3112,7 +3112,9 @@ fn m22s3b_resolver_extraction_chain() {
     let lib = strip_rust_strings_trading(&strip_rust_comments_trading(M22S3B_LIB_RS));
     let resolver_decl = concat!("resolve_all_live", "_interactions");
 
-    let n_decl = lib.matches(["fn ", resolver_decl, "("].concat().as_str()).count();
+    let n_decl = lib
+        .matches(["fn ", resolver_decl, "("].concat().as_str())
+        .count();
     assert_eq!(
         n_decl, 1,
         "m22-s3b TR-18 FAIL (declaration): lib.rs must declare `fn {resolver_decl}(` EXACTLY \
@@ -3125,14 +3127,15 @@ fn m22s3b_resolver_extraction_chain() {
     );
 
     // --- LINK 1: on_disconnect -> the resolver -------------------------------
-    let disconnect = m22s5_trading_fn_body(&lib, concat!("on", "_disconnect")).unwrap_or_else(|| {
-        panic!(
-            "m22-s3b TR-18 FAIL (extraction): the brace-bounded body of lib.rs's \
+    let disconnect =
+        m22s5_trading_fn_body(&lib, concat!("on", "_disconnect")).unwrap_or_else(|| {
+            panic!(
+                "m22-s3b TR-18 FAIL (extraction): the brace-bounded body of lib.rs's \
              `on_disconnect` could not be sliced out. Fail LOUD rather than pass vacuously — \
              if the lifecycle hook was renamed, re-derive this pin DELIBERATELY from the \
              spec, never by relaxing it."
-        )
-    });
+            )
+        });
     let disconnect_sq: String = disconnect.split_whitespace().collect();
     let call = [resolver_decl, "("].concat();
     let n_link1 = disconnect_sq.matches(call.as_str()).count();

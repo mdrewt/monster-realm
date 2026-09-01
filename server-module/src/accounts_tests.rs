@@ -6597,15 +6597,27 @@ fn m22s3b_nd_rearm_seam() -> String {
 /// Label first so a failure names the step rather than a needle.
 fn m22s3b_delegated_calls() -> Vec<(&'static str, String)> {
     vec![
-        ("6a resolve_all_live_interactions", m22s3b_nd_resolver_call()),
+        (
+            "6a resolve_all_live_interactions",
+            m22s3b_nd_resolver_call(),
+        ),
         ("6b monster + monster_pub", m22s3b_nd_erase_monsters()),
         ("6b inventory", m22s3b_nd_erase_inventory()),
-        ("6b npc dialogue/quest/conversation", m22s3b_nd_erase_npc_state()),
+        (
+            "6b npc dialogue/quest/conversation",
+            m22s3b_nd_erase_npc_state(),
+        ),
         ("6b heal_cooldown", m22s3b_nd_erase_heal_cooldown()),
         ("6b wallet", m22s3b_nd_erase_wallet()),
         ("6b playtest_event", m22s3b_nd_erase_playtest_events()),
-        ("6b trade_offer + its schedule", m22s3b_nd_erase_trade_offers()),
-        ("6b battle_challenge + battle_action", m22s3b_nd_erase_pvp_rows()),
+        (
+            "6b trade_offer + its schedule",
+            m22s3b_nd_erase_trade_offers(),
+        ),
+        (
+            "6b battle_challenge + battle_action",
+            m22s3b_nd_erase_pvp_rows(),
+        ),
         ("6b export_bundle", m22s3b_nd_purge_bundles()),
         ("6d character", m22s3b_nd_erase_character_rows()),
         ("6c player + profile names", m22s3b_nd_anonymize_names()),
@@ -9129,8 +9141,8 @@ fn m22s3b_plan_deletion_rearms_idempotent() {
 #[test]
 fn m22s3b_resolver_body_order() {
     let squashed = stripped_for_scan(LIB_RS);
-    let body = extract_squashed_fn_body(&squashed, &m22s3b_nd_resolver_decl()).unwrap_or_else(
-        || {
+    let body =
+        extract_squashed_fn_body(&squashed, &m22s3b_nd_resolver_decl()).unwrap_or_else(|| {
             panic!(
                 "[m22s3b/resolver-scope] fn resolve_all_live_interactions was not found in \
                  lib.rs. Spec §4.4 step 1 factors the four on_disconnect force-resolve calls \
@@ -9138,8 +9150,7 @@ fn m22s3b_resolver_body_order() {
                  resolver is picked up by the disconnect hook AND by the deletion cascade \
                  automatically. Fail LOUD rather than pass vacuously."
             )
-        },
-    );
+        });
 
     let ordered = [
         (
