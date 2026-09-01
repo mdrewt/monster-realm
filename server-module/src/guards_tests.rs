@@ -1709,7 +1709,8 @@ fn m22s5_stripped_squashed(label: &str, src: &str) -> String {
     let brace_open_char = ["'", "{", "'"].concat();
     let brace_close_char = ["'", "}", "'"].concat();
     assert!(
-        !squashed.contains(brace_open_char.as_str()) && !squashed.contains(brace_close_char.as_str()),
+        !squashed.contains(brace_open_char.as_str())
+            && !squashed.contains(brace_close_char.as_str()),
         "SCAN PRECONDITION (m22-s5): `{label}` contains a brace CHAR literal. The stripper \
          consumes char literals atomically and KEEPS them, so that brace survives into the \
          squashed text and shifts every brace-matched reducer body by one — enough to make \
@@ -1920,10 +1921,7 @@ fn m22s5_reducer_bodies(label: &str, squashed: &str) -> Vec<(String, String)> {
         });
         let name = &sig[..paren];
         assert!(
-            !name.is_empty()
-                && name
-                    .bytes()
-                    .all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+            !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
             "m22-s5 CENSUS PARSE AMBIGUITY in `{label}`: the reducer declared at squashed \
              offset {sig_abs} does not have a plain identifier name (generics or a path \
              form would land here). The census keys on names, so an unparseable one must \
@@ -1971,10 +1969,8 @@ fn m22s5_reducer_bodies(label: &str, squashed: &str) -> Vec<(String, String)> {
 
 /// `(name, body)` pairs for BOTH scanned reducer files, in file order.
 fn m22s5_all_reducer_bodies() -> Vec<(&'static str, String, String)> {
-    let files: [(&'static str, &'static str); 2] = [
-        ("trading.rs", M22S5_TRADING_RS),
-        ("pvp.rs", M22S5_PVP_RS),
-    ];
+    let files: [(&'static str, &'static str); 2] =
+        [("trading.rs", M22S5_TRADING_RS), ("pvp.rs", M22S5_PVP_RS)];
     let mut out = Vec::new();
     for (label, src) in files {
         let squashed = m22s5_stripped_squashed(label, src);
@@ -2046,8 +2042,8 @@ fn m22s5_gate_delegates_fused_and_unconditional() {
          trailing-comma form): {fused_trailing:?}. Body began: {body:?}"
     );
 
-    let n_fused = body.matches(fused_plain.as_str()).count()
-        + body.matches(fused_trailing.as_str()).count();
+    let n_fused =
+        body.matches(fused_plain.as_str()).count() + body.matches(fused_trailing.as_str()).count();
     assert_eq!(
         n_fused, 1,
         "m22-s5 PRV1-10 FAIL (fused-delegation count): the wrapper's body contains \
@@ -2143,10 +2139,7 @@ fn m22s5_guards_never_rederives_deletion_disjunction() {
             ["terminal_", "at_ms"].concat(),
             "the terminal-marker column",
         ),
-        (
-            ["Account", "Status"].concat(),
-            "the account status enum",
-        ),
+        (["Account", "Status"].concat(), "the account status enum"),
         (
             ["account_has_terminal_", "marker"].concat(),
             "the marker-half predicate",
@@ -2561,7 +2554,8 @@ fn m22s5_gate_call_sites_are_fully_tagged() {
         let squashed = m22s5_comments_only_squashed(label, src);
         let plain = site(tag, false);
         let trailing = site(tag, true);
-        let n = squashed.matches(plain.as_str()).count() + squashed.matches(trailing.as_str()).count();
+        let n =
+            squashed.matches(plain.as_str()).count() + squashed.matches(trailing.as_str()).count();
         assert_eq!(
             n, 1,
             "m22-s5 PRV1-9 FAIL (call-site tag): `{label}` contains {n} deletion-gate call \
@@ -2583,6 +2577,155 @@ fn m22s5_gate_call_sites_are_fully_tagged() {
              exact-statement pin above counts only correctly-tagged sites; this total is \
              what rejects a SECOND, differently-tagged or untagged call sitting beside it \
              — including a copy in a reducer that must stay open."
+        );
+    }
+}
+
+// ===========================================================================
+// m22-s5 (PRV1-9 / PRV1-10, spec para 4.7, ADR-0225) — the gameplay deletion
+// gate: BEHAVIOURAL half.
+//
+// These two tests EXECUTE the pure decision seam rather than reading the
+// source, so they close the residue every scan in the sibling block records:
+// the scans prove the wrapper delegates and is called in the right places,
+// these prove the thing being delegated to actually decides the right way and
+// says something a client can act on.
+//
+// COMPILE-RED at HEAD: neither the reason constant nor the pure gate exists in
+// `guards.rs`, so `use super::*;` cannot resolve them and the crate does not
+// build. That is the established house precedent for a new pure seam
+// (`content_cache_tests.rs:14-25`, and the 11r-g `json_escape` block above).
+// Apply this block ONLY after the scan block, and expect the whole crate's
+// test build to fail until the implementation lands.
+// ===========================================================================
+
+/// **PRV1-9 (truth table)** — the pure gate is a total, two-row decision.
+///
+/// `deletion_gate` mirrors `pvp.rs`'s `ranked_account_gate` (pvp.rs:104): a
+/// ctx-free, I/O-free predicate-to-`Result` adapter, which is what makes it
+/// exhaustively testable in-crate when reducer bodies are not (ADR-0156 P7).
+///
+/// WHAT EACH ROW KILLS:
+///   * `false` -> `Ok` — kills the inverted branch (`if !rejected`), which
+///     would refuse EVERY caller of all three gated reducers: a total outage
+///     of trading and PvP challenges, shipped green by every source scan in
+///     the sibling block because the delegation text is unchanged.
+///   * `true` -> `Err` — kills the always-`Ok` stub, the shape a hollowed
+///     implementation naturally lands on. Matched against the CONSTANT rather
+///     than a re-typed literal: a test that re-types the reason cannot see a
+///     reason that was reworded on one side only, and would silently start
+///     asserting against text no client ever receives.
+#[test]
+fn m22s5_deletion_gate_truth_table() {
+    assert_eq!(
+        deletion_gate(false),
+        Ok(()),
+        "m22-s5 PRV1-9 FAIL (truth table, not-deleting row): an account that is NOT inside \
+         the deletion gate must be admitted. An inverted branch here is not a subtle bug: \
+         it refuses every caller of all three gated reducers — a total trading and \
+         PvP-challenge outage — while every source scan in the sibling block stays green, \
+         because the delegation text is byte-identical either way."
+    );
+    assert_eq!(
+        deletion_gate(true),
+        Err(REJECT_DELETION_GATED),
+        "m22-s5 PRV1-9 FAIL (truth table, deleting row): an account inside the deletion \
+         gate must be refused, with the module's single static reason. The `Err` half \
+         kills the always-Ok stub a hollowed implementation lands on; comparing against \
+         the CONSTANT (not a re-typed literal) is what keeps this test honest if the \
+         reason is ever reworded — a re-typed copy would drift silently and start \
+         asserting text no client ever receives."
+    );
+}
+
+/// **PRV1-9 (reason contract)** — the reject reason is static, PII-free, and
+/// DISTINCT from every neighbouring account-lifecycle reject.
+///
+/// WHY EACH CLAUSE:
+///   * NON-EMPTY — an empty reason reaches the client as a blank error toast.
+///   * NO FORMAT HOLE — the reason must be a fixed literal, never a template.
+///     A hole is how caller-controlled or row-derived text (an identity, an
+///     email, a name) reaches a log line and a client error string: the whole
+///     point of a static reason on a privacy path is that it can carry no
+///     subject data at all.
+///   * DISTINCT from `complete_guest_claim`'s Guard 3 reason
+///     (`accounts.rs:536`) — that guard consults the SAME predicate this gate
+///     delegates to. Sharing one string would make the two indistinguishable
+///     to a client that has to phrase them differently (one says `your claim
+///     cannot proceed`, the other says `you cannot open new commitments`), and
+///     would make the two rejects indistinguishable in the log as well.
+///   * DISTINCT from the PRV1-4 late-cancel reason (`accounts.rs:81`,
+///     `REJECT_ALREADY_DELETED`, a private const — referenced here by its
+///     literal, with the line cited, because module privacy puts the binding
+///     out of reach). That one means `this is over and cannot be reversed`;
+///     this one means `this is in progress and new commitments are paused`.
+///     Collapsing them tells a player mid-grace that their account is already
+///     permanently deleted, which is both false and unrecoverable advice — the
+///     cancel affordance is still live.
+///
+/// Distinctness is asserted in BOTH directions (neither string contains the
+/// other), not merely as inequality: a reason built by appending to a
+/// neighbour's text is still indistinguishable by prefix matching, which is
+/// how clients key affordances off reject strings.
+#[test]
+fn m22s5_reject_reason_is_static_pii_free_and_distinct() {
+    let reason = REJECT_DELETION_GATED;
+
+    assert!(
+        !reason.is_empty(),
+        "m22-s5 PRV1-9 FAIL (reason contract): the deletion-gate reject reason is empty. \
+         It reaches the client verbatim as the error for a refused trade or challenge; an \
+         empty string is a blank toast the player cannot act on."
+    );
+
+    let hole = "\u{007B}";
+    let n_hole = reason.matches(hole).count();
+    assert_eq!(
+        n_hole, 0,
+        "m22-s5 PRV1-9 FAIL (reason contract): the deletion-gate reject reason contains \
+         {n_hole} format hole(s) and must contain ZERO. The reason must be a fixed \
+         literal, never a template: a hole is exactly how row-derived or caller-derived \
+         text (an identity, a name, an issuer) reaches both the client error string and \
+         the reject log line. On a privacy path the whole value of a static reason is \
+         that it can carry no subject data at all."
+    );
+
+    // `complete_guest_claim` Guard 3 (accounts.rs:536) — the OTHER consumer of
+    // the same SSOT predicate this gate delegates to.
+    let claim_guard_reason = "account pending deletion";
+    // PRV1-4 late-cancel reason (accounts.rs:81, `REJECT_ALREADY_DELETED`).
+    // Spelled as a literal because the binding is a private `const` in
+    // `accounts` and module privacy puts it out of reach from here.
+    let terminal_cancel_reason = "this account has already been permanently deleted";
+
+    let neighbours: [(&str, &str); 2] = [
+        (claim_guard_reason, "the guest-claim pending-deletion guard"),
+        (terminal_cancel_reason, "the late-cancel terminal reject"),
+    ];
+
+    for (other, what) in neighbours {
+        assert_ne!(
+            reason, other,
+            "m22-s5 PRV1-9 FAIL (reason distinctness): the deletion-gate reject reason is \
+             IDENTICAL to {what}'s reason. The two mean different things and the client \
+             must phrase them differently; sharing one string also makes the two rejects \
+             indistinguishable in the operator's log."
+        );
+        assert!(
+            !reason.contains(other),
+            "m22-s5 PRV1-9 FAIL (reason distinctness): the deletion-gate reject reason \
+             CONTAINS {what}'s reason. Inequality alone is not enough — clients key \
+             affordances off substring and prefix matches on reject strings, so a reason \
+             built by appending to a neighbour's text still fires the neighbour's \
+             affordance."
+        );
+        assert!(
+            !other.contains(reason),
+            "m22-s5 PRV1-9 FAIL (reason distinctness): {what}'s reason CONTAINS the \
+             deletion-gate reject reason. Same defect as the clause above with the \
+             containment the other way round: the shorter string still matches inside the \
+             longer one, so the two paths remain indistinguishable to any client or log \
+             filter that matches on substrings."
         );
     }
 }
