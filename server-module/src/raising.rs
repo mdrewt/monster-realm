@@ -759,6 +759,13 @@ pub(crate) fn rekey_heal_cooldown(ctx: &ReducerContext, from: Identity, to: Iden
     }
 }
 
+/// M22 §4.4 step 6b (PRV1-6b, ADR-0228 D1/D2): delete the `heal_cooldown`
+/// row owned by `owner` — a PK point delete, nothing else. Called only from
+/// `accounts::account_deletion_reaper` (D0 write-isolation).
+pub(crate) fn erase_heal_cooldown(ctx: &ReducerContext, owner: Identity) {
+    ctx.db.heal_cooldown().owner_identity().delete(owner);
+}
+
 /// True if `owner` has a `heal_cooldown` row (for
 /// `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
 pub(crate) fn has_heal_cooldown(ctx: &ReducerContext, owner: Identity) -> bool {

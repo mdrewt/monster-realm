@@ -118,6 +118,23 @@ pub(crate) fn rekey_inventory(ctx: &ReducerContext, from: Identity, to: Identity
     }
 }
 
+/// M22 §4.4 step 6b (PRV1-6b, ADR-0228 D1/D2): delete every `inventory` row
+/// owned by `owner`. Called only from `accounts::account_deletion_reaper`
+/// (D0 write-isolation). Collect ids via the owner index before mutating
+/// (ADR-0126); never an unbounded table iteration.
+pub(crate) fn erase_inventory(ctx: &ReducerContext, owner: Identity) {
+    let ids: Vec<u64> = ctx
+        .db
+        .inventory()
+        .owner_identity()
+        .filter(owner)
+        .map(|r| r.inv_id)
+        .collect();
+    for id in ids {
+        ctx.db.inventory().inv_id().delete(id);
+    }
+}
+
 /// True if `owner` holds at least one `inventory` row (for
 /// `accounts::account_has_game_data`; ADR-0179 D5 guard 3). Read-only.
 pub(crate) fn has_items(ctx: &ReducerContext, owner: Identity) -> bool {

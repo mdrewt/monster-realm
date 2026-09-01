@@ -201,6 +201,27 @@ pub(crate) fn ensure_playtest_reaper(ctx: &ReducerContext) {
     }
 }
 
+/// M22 §4.4 step 6b (PRV1-6b, ADR-0228 D1/D2): delete every `playtest_event`
+/// row belonging to `owner` — identity-scoped and IMMEDIATE, deliberately
+/// independent of the ADR-0131 TTL reaper above (a row younger than its TTL
+/// must not survive account deletion, and this sweep is uncapped: the cascade
+/// deletes ALL of the identity's rows, never a per-tick batch). The column is
+/// unindexed, so this is one of the cascade's two accepted linear scans
+/// (spec §8.3 volume residual, ADR-0228). Called only from
+/// `accounts::account_deletion_reaper` (D0 write-isolation).
+pub(crate) fn erase_playtest_events(ctx: &ReducerContext, owner: Identity) {
+    let ids: Vec<u64> = ctx
+        .db
+        .playtest_event()
+        .iter()
+        .filter(|e| e.identity == owner)
+        .map(|e| e.event_id)
+        .collect();
+    for id in ids {
+        ctx.db.playtest_event().event_id().delete(id);
+    }
+}
+
 #[cfg(test)]
 #[path = "playtest_tests.rs"]
 mod playtest_tests;

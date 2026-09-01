@@ -645,16 +645,45 @@ fn d1_scan_no_eager_write_in_get_or_init() {
         rekey_updates
     );
 
-    // Whole-file backstop: exactly 4 (apply_pvp_rating 2 + rekey_profile 2). Catches
-    // a FIFTH writer added anywhere (e.g. an eager write reachable through a helper
-    // the per-fn body scans would not textually contain).
+    // anonymize_display_names (m22-s3b, PRV1-6c) writes exactly 1: the profile
+    // row's name is overwritten with game_core::TOMBSTONE_DISPLAY_NAME, in place.
+    // Pinned per-fn for the same reason the three pins above are: the whole-file
+    // backstop below widens 4 -> 5 to admit it, and a bare bumped number would
+    // let ANY of the five writers move into get_or_init_profile's Some arm while
+    // the total stayed correct.
+    let anon_body = extract_squashed_fn_body(&squashed, concat!("fnanonymize_display", "_names("))
+        .expect(
+            "d1_scan (update-count): fn anonymize_display_names not found in ranking.rs. \
+             m22-s3b delegates the `player`/`profile` ANONYMIZE step to this module (the one \
+             that already owns the display-name write path), so without it PRV1-6c never \
+             runs and the deleted player's name stays on the public leaderboard.",
+        );
+    let anon_updates = anon_body.matches(update_needle).count();
+    assert_eq!(
+        anon_updates, 1,
+        "PRV1-6c FAIL (d1_scan_no_eager_write_in_get_or_init / anonymize_display_names pin): \
+         anonymize_display_names must contain exactly 1 profile().identity().update( call — \
+         the in-place name tombstone. Found {}. ZERO means the profile row keeps the deleted \
+         player's display name on a PUBLIC, world-readable leaderboard forever; 2+ is a \
+         second, unreviewed profile write in the one flow that cannot be undone.",
+        anon_updates
+    );
+
+    // Whole-file backstop: exactly 5 (apply_pvp_rating 2 + rekey_profile 2 +
+    // anonymize_display_names 1). Catches a SIXTH writer added anywhere (e.g. an
+    // eager write reachable through a helper the per-fn body scans would not
+    // textually contain). RE-DERIVED 4 -> 5 by m22-s3b (ADR-0228 D7(g)) and paid
+    // for by the per-fn pin immediately above: the four pins together account for
+    // every one of the five, so the total is a closed sum rather than a ceiling.
     let total_updates = squashed.matches(update_needle).count();
     assert_eq!(
-        total_updates, 4,
-        "17.5d-1/AUTH-25 FAIL (d1_scan_no_eager_write_in_get_or_init / whole-file backstop): \
-         ranking.rs must contain exactly 4 profile().identity().update( calls total \
-         (apply_pvp_rating's 2 + rekey_profile's 2). Found {}. A 5th is an unaccounted \
-         profile writer.",
+        total_updates, 5,
+        "17.5d-1/AUTH-25/PRV1-6c FAIL (d1_scan_no_eager_write_in_get_or_init / whole-file \
+         backstop): ranking.rs must contain exactly 5 profile().identity().update( calls \
+         total (apply_pvp_rating's 2 + rekey_profile's 2 + anonymize_display_names' 1). \
+         Found {}. A 6th is an unaccounted profile writer. Note the four per-fn pins above \
+         account for all five, so this clause is a CLOSED SUM: a writer that moved between \
+         those functions reds there, and one that appeared outside them reds here.",
         total_updates
     );
 
@@ -2251,4 +2280,445 @@ fn rb7_scan_machinery_teeth() {
     let line = format!("RB7-TEETH-OK {total} fixtures (pass={pass} bite={bite} loud={loud})\n");
     std::io::Write::write_all(&mut std::io::stdout(), line.as_bytes())
         .expect("RB7-B5: writing the teeth marker to stdout must succeed");
+}
+
+// ===========================================================================
+// m22-s3b (ADR-0228) — THE DISPLAY-NAME ANONYMIZE STEP, AND THE §4.7 GATE ON
+// THE ONE REDUCER THAT COULD UNDO IT.
+//
+// EARS criteria:
+//   PRV1-6c  `player.name` and `profile.name` are overwritten with the deletion
+//            tombstone; the primary key and every other field survive (spec §3
+//            classifies both tables ANONYMIZE, and ADR-0119 carries an explicit
+//            never-delete invariant for `profile`).
+//   PRV1-9   a caller inside the §4.7 deletion gate cannot rename themselves —
+//            without which a still-connected terminal session un-tombstones its
+//            own display name one call after the cascade, hollowing PRV1-6c.
+//
+// WHY THIS MODULE OWNS THE STEP (ADR-0228 D1): `player` has no single owning
+// module — accounts.rs's own header says so — and `ranking.rs` already owns the
+// display-name write path (`set_profile_name` writes `player.name`; the ADR-0125
+// passive mirror carries it onto `profile.name`). Putting the anonymize anywhere
+// else would create a second display-name writer.
+//
+// WHY THE SENTINEL IS THE GAME-CORE ONE AND NOT THIS MODULE'S:
+// `PROFILE_TOMBSTONE_NAME` means `an unclaimed guest whose ranked stats were
+// carried forward`, and `tombstoned_profile` also ZEROES rating/wins/losses,
+// which is meaningless for a deletion. Both are module-private precisely so S3
+// could not reach for them by mistake (rb-7, ADR-0211); this section asserts the
+// two values stay distinct rather than trusting the visibility alone.
+//
+// SCAN HYGIENE: needles are assembled with `concat!` per this file's
+// convention; no bare double-quote appears inside any comment here, and this
+// section spells no block-comment delimiter and never writes the guest-claim
+// sentinel VALUE.
+// ===========================================================================
+
+/// **PRV1-6c (pure)** — `player_with_deleted_name` and `profile_with_deleted_name`
+/// overwrite ONLY `name`, with the game-core deletion tombstone.
+///
+/// TWO SEAMS RATHER THAN ONE, because the two rows are different types with
+/// different survivors: `player` carries the presence/reconciliation state that
+/// must keep working for a still-connected session, and `profile` carries the
+/// ranked ladder columns that spec §3 deliberately does NOT scrub (ADR-0228
+/// records that survival as a named pseudonymization limitation, so a helper
+/// that zeroed them here would silently exceed the spec rather than fall short
+/// of it).
+///
+/// THE VALUE COMES FROM game-core AND IS ASSERTED DISTINCT FROM THE GUEST-CLAIM
+/// SENTINEL. `PROFILE_TOMBSTONE_NAME` in this module means `an unclaimed guest
+/// whose stats were carried forward`; writing it on a DELETED account would
+/// render a deleted player as a claimed guest — the wrong tombstone, on the
+/// wrong subject, in the one flow that cannot be undone. Both this module's
+/// sentinel and `tombstoned_profile` are module-private for exactly that reason;
+/// the inequality clause is what makes the distinction a fact rather than a
+/// naming convention.
+///
+/// Kills: a helper that writes this module's guest-claim sentinel instead of the
+///        deletion one; one that also zeroes `rating`/`wins`/`losses` (which
+///        `tombstoned_profile` does, and which is what makes reaching for THAT
+///        helper look plausible); one that rewrites the primary key; one that
+///        touches `player.entity_id` (the join key `character` is reached
+///        through) or `player.online`; an identity function.
+#[test]
+fn m22s3b_deleted_name_rows() {
+    let tombstone = game_core::TOMBSTONE_DISPLAY_NAME;
+
+    assert!(
+        !tombstone.trim().is_empty(),
+        "[m22s3b/name-nonblank] game_core::TOMBSTONE_DISPLAY_NAME must be non-blank. A blank \
+         display name renders as nothing at all on the leaderboard and in every player list, \
+         which is indistinguishable from a rendering bug — the row is supposed to say `this \
+         account was deleted`, not to disappear."
+    );
+    assert_eq!(
+        tombstone,
+        tombstone.trim(),
+        "[m22s3b/name-trim-stable] the tombstone must be trim-stable: padding renders as a \
+         blank name while every non-empty and distinctness clause stays green."
+    );
+    assert_ne!(
+        tombstone,
+        super::PROFILE_TOMBSTONE_NAME,
+        "[m22s3b/name-not-guest-sentinel] the DELETION tombstone must differ from this \
+         module's GUEST-CLAIM sentinel. They mean different things: the guest-claim one says \
+         `an unclaimed guest whose ranked stats were carried forward` and is written by \
+         `tombstoned_profile`, which ALSO zeroes rating, wins and losses. Writing it on a \
+         deleted account renders that account as a claimed guest AND destroys ladder columns \
+         spec §3 says survive. Both are module-private (rb-7, ADR-0211) so the compiler \
+         refuses the reuse, but this clause is what keeps the two VALUES from converging."
+    );
+
+    // --- player -------------------------------------------------------------
+    let before_player = crate::schema::Player {
+        identity: spacetimedb::Identity::from_byte_array([71u8; 32]),
+        entity_id: 4_242,
+        name: "Ash".to_string(),
+        online: true,
+        last_input_seq: 909,
+    };
+    let identity = before_player.identity;
+    let entity_id = before_player.entity_id;
+    let online = before_player.online;
+    let last_input_seq = before_player.last_input_seq;
+    let after_player = super::player_with_deleted_name(before_player);
+
+    assert_eq!(
+        after_player.name, tombstone,
+        "[m22s3b/player-name] PRV1-6c: `player.name` must become \
+         game_core::TOMBSTONE_DISPLAY_NAME. It is the display name every other client sees \
+         for this identity, and it is the value the ADR-0125 passive mirror carries onto the \
+         public `profile` row on the next rated game."
+    );
+    assert_eq!(
+        after_player.identity, identity,
+        "[m22s3b/player-pk] the primary key must survive: spec §3 requires the `player` row \
+         itself to survive as the ANCHOR that `character` and every still-live multi-user row \
+         point at. Anonymize is a field update, never a delete."
+    );
+    assert_eq!(
+        after_player.entity_id, entity_id,
+        "[m22s3b/player-entity-id] `entity_id` must survive. It is the JOIN KEY the \
+         `character` sweep resolves through (the manifest pins `character` as ViaJoin \
+         `player`), so clobbering it here would make the §4.4 step-4 sweep unable to find the \
+         row it is supposed to delete."
+    );
+    assert_eq!(
+        after_player.online, online,
+        "[m22s3b/player-online] `online` is presence state, not PII, and must survive: the \
+         cascade can fire against a CONNECTED session, and rewriting its presence flag would \
+         desynchronise that session's own client from the server."
+    );
+    assert_eq!(
+        after_player.last_input_seq, last_input_seq,
+        "[m22s3b/player-seq] `last_input_seq` is the movement reconciliation ack and must \
+         survive — rewinding it would replay or drop the connected session's inputs."
+    );
+
+    // --- profile ------------------------------------------------------------
+    let before_profile = make_profile(72, "Ash", 1_800, 40, 3);
+    let profile_identity = before_profile.identity;
+    let after_profile = super::profile_with_deleted_name(before_profile);
+
+    assert_eq!(
+        after_profile.name, tombstone,
+        "[m22s3b/profile-name] PRV1-6c: `profile.name` must become the same game-core \
+         tombstone. `profile` is PUBLIC and world-readable — it IS the leaderboard — so this \
+         is the field that actually removes the deleted player's name from every other \
+         client's view."
+    );
+    assert_eq!(
+        after_profile.identity, profile_identity,
+        "[m22s3b/profile-pk] the primary key survives. ADR-0119 carries an explicit \
+         NEVER-DELETE invariant for `profile`, restated in the table's own doc comment; \
+         anonymize is a field update, so the invariant holds by construction rather than by \
+         exception."
+    );
+    assert_eq!(
+        after_profile.rating, 1_800,
+        "[m22s3b/profile-rating] `rating` must SURVIVE. Spec §3 anonymizes `name` only, and \
+         ADR-0228 records the survival of the ladder columns as a NAMED pseudonymization \
+         limitation. Zeroing them here is what `tombstoned_profile` does for the GUEST-CLAIM \
+         flow, and reaching for that helper is the exact mistake rb-7 made module-private to \
+         prevent — it would silently exceed the spec and destroy the opponents' own rated \
+         history in the process."
+    );
+    assert_eq!(
+        after_profile.wins, 40,
+        "[m22s3b/profile-wins] `wins` survives — see the rating clause."
+    );
+    assert_eq!(
+        after_profile.losses, 3,
+        "[m22s3b/profile-losses] `losses` survives — see the rating clause."
+    );
+}
+
+/// **PRV1-6c (scan)** — `anonymize_display_names` writes both name rows through
+/// their pure seams, deletes nothing, and never reaches the guest-claim path.
+///
+/// THE DELETE BAN IS AN INVARIANT, NOT TIDINESS: ADR-0119 forbids deleting a
+/// `profile` row outright, and spec §3 requires the `player` row to survive as
+/// the anchor `character` and every live multi-user row point at. This body is
+/// the one new place in the module that could break either.
+///
+/// THE GUEST-CLAIM BAN IS THE rb-34 HAZARD, ONE MODULE OVER: `rekey_profile` and
+/// `tombstoned_profile` write this module's guest-claim sentinel AND zero the
+/// ladder columns. Reached from the deletion cascade they render a deleted
+/// account as a claimed guest and destroy stats spec §3 says survive. The
+/// visibility rules already make the wrong helper unreachable from accounts.rs;
+/// this clause makes it unreachable from the RIGHT module too.
+///
+/// THE MATCH-READ RULE IS LOAD-BEARING AND EASY TO GET WRONG: this file's
+/// `d1_scan_no_eager_write_in_get_or_init` clauses (b) and (c) ban the substrings
+/// `=ctx.db.profile()` and `=ctx.db.player()` file-wide, because assigning a
+/// table accessor to a binding is the documented evasion of the never-deleted
+/// structural scan. A `let Some(p) = ctx.db.player().identity().find(owner)` in
+/// this body contains that substring and reds those clauses from the other
+/// direction. Read through `match`, exactly as `get_or_init_profile` and
+/// `rekey_profile` already do — this body-scoped restatement is here so the
+/// failure names the reason rather than pointing at a whole-file ban.
+///
+/// Kills: a helper that deletes either row; one that routes through
+///        `rekey_profile`/`tombstoned_profile`; one that inlines the name write
+///        instead of using the pure seams (which puts the field-survival rules
+///        out of reach of the executed test above); a split-binding read.
+#[test]
+fn m22s3b_anonymize_display_names_shape() {
+    let squashed = stripped_for_scan(RANKING_RS);
+    let body = extract_squashed_fn_body(&squashed, concat!("fnanonymize_display", "_names("))
+        .unwrap_or_else(|| {
+            panic!(
+                "PRV1-6c FAIL (extraction): ranking.rs declares no \
+                 `fn anonymize_display_names(`. The cascade delegates the `player` and \
+                 `profile` ANONYMIZE to this module because it already owns the display-name \
+                 write path (ADR-0228 D1); without it PRV1-6c never runs. Fail LOUD rather \
+                 than pass vacuously."
+            )
+        });
+
+    for (needle, what) in [
+        (
+            concat!("player_with_deleted", "_name("),
+            "the player-row name seam",
+        ),
+        (
+            concat!("profile_with_deleted", "_name("),
+            "the profile-row name seam",
+        ),
+    ] {
+        let n = m22s3b_count(body, needle);
+        assert_eq!(
+            n, 1,
+            "PRV1-6c FAIL (pure seam): anonymize_display_names must compose the row through \
+             `{needle}` ({what}) EXACTLY once; found {n}. This crate has no \
+             reducer-executing harness, so an inline `p.name = ..;` here puts every \
+             field-survival rule — the surviving primary key, the surviving `entity_id` join \
+             key, the surviving ladder columns — permanently out of reach of \
+             `m22s3b_deleted_name_rows`, which is the only test that can execute them. The \
+             `zeroed_wallet` / `profile_with_carried_stats` precedent is the same rule."
+        );
+    }
+
+    // --- THE TWO WRITES, COUNTED (added in r2) ------------------------------
+    //
+    // `d1_scan_no_eager_write_in_get_or_init` pins the PROFILE write of this
+    // function at exactly 1 (that is what its 4 -> 5 whole-file re-derivation
+    // paid for). NOTHING pinned the PLAYER write — and a red-team measured the
+    // gap: a body that composes `player_with_deleted_name(..)` and then drops the
+    // result on the floor satisfies the seam clause above, deletes nothing, and
+    // leaves `player.name` untouched. That is the field every other client
+    // actually renders for this identity, AND the field the ADR-0125 passive
+    // mirror copies onto the PUBLIC profile row at the next rated game — so the
+    // profile tombstone this function did write is overwritten with the live name
+    // the moment anything rates. PRV1-6c ends up worse than not done.
+    for (needle, table, why) in [
+        (
+            concat!("player().identity().upd", "ate("),
+            "player",
+            "the presence row's `name` is the display name every other client sees for this \
+             identity, and the ADR-0125 passive mirror copies it onto the PUBLIC `profile` \
+             row on the next rated game — so leaving it live silently un-does the profile \
+             tombstone this same function wrote",
+        ),
+        (
+            concat!("profile().identity().upd", "ate("),
+            "profile",
+            "the `profile` row IS the public leaderboard; this is the write that removes the \
+             deleted player's name from every other client's view",
+        ),
+    ] {
+        let n = m22s3b_count(body, needle);
+        assert_eq!(
+            n, 1,
+            "PRV1-6c FAIL ({table} write): anonymize_display_names must write the `{table}` \
+             row EXACTLY once, as `{needle}`; found {n}. ZERO means {why}. MORE THAN ONE is a \
+             second, unreviewed write in the one flow that cannot be undone. Composing the \
+             row through its pure seam (pinned above) and never writing the result is the \
+             measured cheat this clause closes — the compiler is silent about it, because a \
+             pure function's return value is not `#[must_use]`."
+        );
+    }
+
+    assert_eq!(
+        m22s3b_count(body, concat!(".del", "ete(")),
+        0,
+        "PRV1-6c FAIL (never delete): anonymize_display_names contains a row delete. \
+         ADR-0119 carries an explicit NEVER-DELETE invariant for `profile`, restated in the \
+         table's own doc comment, and spec §3 requires the `player` row to survive as the \
+         anchor `character` and every still-live multi-user row point at. Anonymize is a \
+         field update and must stay one — that is what makes the invariant hold by \
+         construction rather than by exception."
+    );
+
+    for banned in [concat!("rek", "ey"), concat!("tombstoned", "_profile")] {
+        assert_eq!(
+            m22s3b_count(body, banned),
+            0,
+            "PRV1-6c FAIL (wrong tombstone): anonymize_display_names names `{banned}`. That \
+             path writes the M21 GUEST-CLAIM sentinel and ALSO zeroes rating, wins and \
+             losses — so reached from the deletion cascade it renders a DELETED account as \
+             an unclaimed guest whose stats were carried forward, and destroys ladder \
+             columns spec §3 says survive. ADR-0228 D1 bans those substrings in every new \
+             identifier of this slice for exactly that reason."
+        );
+    }
+
+    for banned in [
+        concat!("=ctx.db.", "profile()"),
+        concat!("=ctx.db.", "player()"),
+    ] {
+        assert_eq!(
+            m22s3b_count(body, banned),
+            0,
+            "PRV1-6c FAIL (split binding): anonymize_display_names contains `{banned}`. This \
+             file bans that substring FILE-WIDE in \
+             `d1_scan_no_eager_write_in_get_or_init` clauses (b) and (c), because assigning a \
+             table accessor to a binding is the documented evasion of the never-deleted \
+             structural scan (ADR-0119 D3 / RL-2). A `let Some(p) = ctx.db.player()...` read \
+             produces it. Use the `match ctx.db.player().identity().find(owner)` form that \
+             `get_or_init_profile` and `rekey_profile` already use — this body-scoped \
+             restatement exists so the failure names the reason instead of pointing at a \
+             whole-file ban."
+        );
+    }
+}
+
+/// **PRV1-9 (scan)** — `set_profile_name` carries the §4.7 deletion gate, before
+/// it writes.
+///
+/// THE HOLE THIS CLOSES (ADR-0228 D7(h), RT-2). `set_profile_name` writes
+/// `player.name`, which is an ANONYMIZE-classified column that the cascade has
+/// just overwritten with the tombstone. Without the gate, a still-connected
+/// terminal session calls this reducer one moment after the cascade completes
+/// and puts its own display name back — on a `player` row the cascade
+/// deliberately left alive, and from there onto the PUBLIC `profile` row via the
+/// ADR-0125 passive mirror at the next rated game. PRV1-6c is hollowed by a
+/// single reducer call, and nothing anywhere logs it.
+///
+/// The `?` IS PART OF THE PIN, for the reason `trading_tests.rs` and
+/// `pvp_tests.rs` both already record: `let _ = crate::guards::require_not_deleting(..);`
+/// compiles, calls the gate, throws the answer away, renames anyway, and stays
+/// clippy-clean under `-D warnings` because `let_underscore_must_use` is off by
+/// default.
+///
+/// DEPTH 0 IS THE REACHABILITY CLAUSE: every other assertion here is
+/// POSITION-based and therefore blind to a gate nested in a never-taken block,
+/// which leaves the exact text in the file and gates nothing.
+///
+/// Kills: no gate at all; a gate whose result is discarded; a gate nested in a
+///        conditional; a gate placed after the `player` write, which renames
+///        first and reports afterwards.
+#[test]
+fn m22s3b_set_profile_name_gated() {
+    let squashed = stripped_for_scan(RANKING_RS);
+    let body = extract_squashed_fn_body(&squashed, concat!("fnset_profile", "_name("))
+        .expect("PRV1-9: fn set_profile_name not found in ranking.rs");
+
+    let gate = concat!("crate::guards::require_not_", "deleting(ctx,");
+    let n_gate = m22s3b_count(body, gate);
+    assert_eq!(
+        n_gate, 1,
+        "PRV1-9 FAIL: set_profile_name must call `{gate}..)?;` EXACTLY once; found {n_gate}. \
+         ZERO is the RT-2 hole ADR-0228 D7(h) closes: this reducer writes `player.name`, an \
+         ANONYMIZE-classified column the cascade has just tombstoned, so a still-connected \
+         terminal session can put its own display name back one call after the erasure \
+         completes — and the ADR-0125 passive mirror then carries it onto the PUBLIC \
+         `profile` row at the next rated game. PRV1-6c is hollowed by one reducer call. The \
+         `ctx` subject is part of the needle: the gate answers about the CALLER, and it can \
+         only do that from the reducer context. MORE THAN ONE is a duplicated guard."
+    );
+
+    let at_gate = body
+        .find(gate)
+        .expect("PRV1-9: the gate counted 1 but could not be located");
+
+    // The `?` must be in the gate's OWN statement — a discarded result compiles,
+    // calls the gate, ignores the answer, and renames anyway.
+    let stmt_end = body[at_gate..]
+        .find(';')
+        .map(|r| at_gate + r)
+        .unwrap_or(body.len());
+    let stmt = &body[at_gate..stmt_end];
+    assert!(
+        stmt.contains('?'),
+        "PRV1-9 FAIL (discarded result): the deletion-gate statement in set_profile_name \
+         carries no `?` propagation operator. `let _ = crate::guards::require_not_deleting(..);` \
+         compiles, CALLS the gate, throws the answer away, and renames anyway — and it stays \
+         clippy-clean under -D warnings because `let_underscore_must_use` is off by default. \
+         Both `trading_tests.rs` and `pvp_tests.rs` record this exact cheat against their own \
+         §4.7 gates. Statement read: {stmt:?}"
+    );
+
+    // Reachability: the gate must be an unconditional top-level statement.
+    let opens = body[..at_gate].matches('{').count() as i64;
+    let closes = body[..at_gate].matches('}').count() as i64;
+    assert_eq!(
+        opens - closes,
+        0,
+        "PRV1-9 FAIL (reachability): the deletion gate in set_profile_name sits at brace \
+         depth {} of the reducer body, not 0. Every other assertion here is POSITION-based \
+         and blind to this: wrapping the statement in an always-false block, or in any other \
+         conditional, leaves the exact text in the file, keeps the count at 1, keeps it \
+         before the write — and never runs it.",
+        opens - closes
+    );
+
+    let write = concat!("player().identity().upd", "ate(");
+    let n_write = m22s3b_count(body, write);
+    assert_eq!(
+        n_write, 1,
+        "PRV1-9 FAIL (anchor): set_profile_name must write the player row EXACTLY once; \
+         found {n_write}. The ordering clause below anchors on it, so a second write would \
+         steer a first-hit index — and with ZERO the ordering clause is vacuously true and \
+         proves nothing."
+    );
+    let at_write = body
+        .find(write)
+        .expect("PRV1-9: the player write counted 1 but could not be located");
+    assert!(
+        at_gate < at_write,
+        "PRV1-9 FAIL (decision before effect): the deletion gate (offset {at_gate}) must \
+         precede the `player` name write (offset {at_write}). A gate that runs after the \
+         rename has already un-tombstoned the row and merely reports it — and the rename is \
+         the whole effect this reducer has."
+    );
+}
+
+/// Non-overlapping occurrences of `needle` in `hay`.
+///
+/// A local, slice-prefixed counter rather than a reuse of any sibling module's:
+/// every `*_tests.rs` file in this crate is a `#[cfg(test)]` child of its own
+/// production file and none can reach another's bare `fn` items (the precedent
+/// `content_cache_tests.rs` records for its own stripper copies).
+fn m22s3b_count(hay: &str, needle: &str) -> usize {
+    if needle.is_empty() {
+        return 0;
+    }
+    let mut n = 0usize;
+    let mut start = 0usize;
+    while let Some(rel) = hay[start..].find(needle) {
+        n += 1;
+        start += rel + needle.len();
+    }
+    n
 }

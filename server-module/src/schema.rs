@@ -774,7 +774,9 @@ pub struct Account {
     /// deliberately an additive column, not a third `AccountStatus` variant
     /// (variant append risks a destructive republish, ADR-0174 D-freeze +
     /// ADR-0197). Appended LAST with a default so the column is an additive
-    /// automigration under ADR-0006. Nothing writes `Some` until S3.
+    /// automigration under ADR-0006. `Some` is written ONLY by
+    /// `account_deletion_reaper`'s cascade (m22-s3b, ADR-0228 —
+    /// `terminal_account`, the body's last statement).
     #[default(None)]
     pub terminal_at_ms: Option<i64>,
 }

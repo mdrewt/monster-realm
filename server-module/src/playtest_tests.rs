@@ -986,3 +986,155 @@ fn scan_machinery_self_teeth() {
          The string-stripping stage is broken (red-team F1)."
     );
 }
+
+// ===========================================================================
+// m22-s3b (ADR-0228) — THE IDENTITY-SCOPED IMMEDIATE playtest_event ERASE.
+//
+// EARS criterion PRV1-6b: the cascade deletes every ERASE-policy row owned by
+// the deleting identity. `playtest_event` is one of them, and spec §3 is
+// unusually explicit about what this step is and is NOT:
+//
+//   * it is an identity-scoped IMMEDIATE erase at cascade time. A row younger
+//     than its own TTL must NOT survive account deletion merely because the
+//     independent TTL has not hit yet.
+//   * it is DISTINCT FROM, and must not duplicate, the already-shipped
+//     `playtest_event` TTL/cap reaper (ADR-0131). Spec §3 says in as many words:
+//     building a second retention reaper for this table would RACE the real one
+//     — do not.
+//
+// So this helper must NOT reuse the reaper's per-tick delete cap, its TTL
+// constant, its `plan_reap` selection seam, or any `.take(` bound: every one of
+// those turns a complete erase into a partial one that silently leaves the
+// deleted player's telemetry behind, and there is no second pass to finish it.
+//
+// The table carries no index on `identity` and ADR-0228 declines to add one in
+// this slice, so the sweep is a filtered full iteration — accepted under the
+// spec §8.3 escalated volume residual.
+//
+// SCAN HYGIENE: needles are assembled with `concat!` per this file's convention;
+// this section spells no block-comment delimiter and carries no bare
+// double-quote inside a comment.
+// ===========================================================================
+
+/// **PRV1-6b (scan)** — `erase_playtest_events` sweeps the deleting identity's
+/// rows immediately and completely, and borrows NOTHING from the TTL reaper.
+///
+/// FOUR NEGATIVE CLAUSES, EACH A DIFFERENT PARTIAL ERASE. The obvious way to
+/// write this helper is to copy the reaper that already sweeps the same table,
+/// and every part of that reaper is wrong here:
+///   * `PLAYTEST_REAP_MAX_DELETE_PER_TICK` bounds a per-tick batch. Borrowed
+///     here it caps the cascade at 8192 rows and silently leaves the rest — and
+///     the cascade runs ONCE, so there is no next tick to finish the job.
+///   * `.take(..)` is the same defect spelled without the constant.
+///   * `PLAYTEST_EVENT_TTL_MS` filters by AGE. Borrowed here it retains every
+///     row younger than the TTL — which is precisely the survival spec §3 calls
+///     out by name as forbidden.
+///   * `plan_reap(..)` is the reaper's own selection seam: it takes a TTL, a cap
+///     and a batch size, so routing through it re-imports all three defects at
+///     once and makes this the second retention reaper the spec forbids.
+///
+/// Kills: any of those four borrowings; a sweep that is not scoped to the
+///        `owner` parameter (unfiltered, it deletes every player's telemetry);
+///        a helper that collects rows and never deletes them.
+#[test]
+fn m22s3b_erase_playtest_events_shape() {
+    let src = read_playtest_rs().unwrap_or_else(|e| panic!("m22-s3b PRV1-6b FAIL: {e}"));
+    let stripped = strip_rust_comments(&strip_rust_strings(&src));
+    let name = concat!("erase_playtest", "_events");
+    let body = extract_fn_body(&stripped, name).unwrap_or_else(|| {
+        panic!(
+            "m22-s3b PRV1-6b FAIL (extraction): playtest.rs declares no `fn {name}(`. The \
+             cascade delegates the `playtest_event` ERASE to this module because G5 \
+             MODULE_WRITE_ISOLATION closes accounts.rs at its four owned tables. Without it \
+             the deleting player's telemetry survives until the independent ADR-0131 TTL \
+             reaper happens to reach it — which spec §3 forbids in as many words. Fail LOUD \
+             rather than pass vacuously."
+        )
+    });
+    let squashed = squash_ws(body);
+    assert!(
+        !squashed.is_empty(),
+        "m22-s3b PRV1-6b FAIL (non-vacuity): the `{name}` body is empty, so every clause \
+         below would be asserting properties of nothing."
+    );
+
+    // --- POSITIVE: an owner-scoped, unbounded sweep that deletes -------------
+    assert!(
+        squashed.contains(concat!("playtest", "_event()")),
+        "m22-s3b PRV1-6b FAIL (accessor): `{name}` must reach the `playtest_event` table. \
+         Body was: {squashed:?}"
+    );
+    // TIGHTENED IN r2. The bare token `owner` is present in ANY body that merely
+    // TAKES the parameter — including one that ignores it and iterates the whole
+    // table — because the parameter's own name is that token. `playtest_event`
+    // carries NO index on `identity` (ADR-0228 declines to add one in this
+    // slice), so the sweep is a full iteration and its PREDICATE is the entire
+    // scoping: without a comparison against `owner` the helper either deletes
+    // nothing or deletes everything.
+    let owner_test = concat!("==", "owner");
+    assert!(
+        squashed.contains(owner_test),
+        "m22-s3b PRV1-6b FAIL (owner-scoped): `{name}` contains no `{owner_test}` comparison, \
+         so its full-table iteration is not scoped to the deleting identity by anything. The \
+         bare parameter NAME is not enough — a body that takes `owner` and then sweeps \
+         unfiltered contains it while scoping nothing, and this table has no index to fall \
+         back on. UNFILTERED, this helper deletes every player's telemetry in the database on \
+         the first cascade — the catastrophic direction, and one no presence-only clause \
+         distinguishes from the correct body. Body was: {squashed:?}"
+    );
+    assert!(
+        squashed.contains(concat!(".it", "er()")),
+        "m22-s3b PRV1-6b FAIL (scan shape): `{name}` must iterate and filter. \
+         `playtest_event` carries NO btree index on `identity` and ADR-0228 declines to add \
+         one in this slice, so the sanctioned sweep is a filtered full iteration, accepted \
+         under the spec §8.3 escalated volume residual. If an index is ever added, re-derive \
+         this pin WITH that decision rather than around it. Body was: {squashed:?}"
+    );
+    assert!(
+        squashed.contains(concat!(".del", "ete(")),
+        "m22-s3b PRV1-6b FAIL (no delete): `{name}` never deletes a row — a helper that \
+         collects the matching event ids and stops there satisfies every clause above. Body \
+         was: {squashed:?}"
+    );
+
+    // --- NEGATIVE: nothing borrowed from the ADR-0131 TTL reaper -------------
+    for (banned, what, why) in [
+        (
+            concat!("PLAYTEST_REAP_MAX_DELETE", "_PER_TICK"),
+            "the reaper's per-tick delete cap",
+            "it bounds a RECURRING batch. Borrowed here it caps the cascade at one batch and \
+             silently leaves every row beyond it — and the cascade runs ONCE, so there is no \
+             next tick to finish the job. A partial erase that reports success is worse than \
+             no erase, because nothing anywhere records that rows were left behind",
+        ),
+        (
+            concat!(".ta", "ke("),
+            "an iterator bound",
+            "the same defect spelled without the constant — any bound at all turns a \
+             complete erase into a partial one",
+        ),
+        (
+            concat!("PLAYTEST_EVENT", "_TTL_MS"),
+            "the reaper's TTL constant",
+            "it filters by AGE. Spec §3 states the rule directly: a row younger than its own \
+             TTL must NOT survive account deletion merely because the independent TTL has \
+             not hit yet. Filtering by age here retains exactly those rows",
+        ),
+        (
+            concat!("plan", "_reap("),
+            "the reaper's selection seam",
+            "it takes a TTL, a cap and a batch size, so routing through it re-imports all \
+             three defects at once — and makes this helper the SECOND retention reaper for \
+             one table, which spec §3 forbids by name because the two would race",
+        ),
+    ] {
+        let n = squashed.matches(banned).count();
+        assert_eq!(
+            n, 0,
+            "m22-s3b PRV1-6b FAIL (TTL-reaper borrowing): `{name}` names `{banned}` ({what}) \
+             {n} time(s) and must name it ZERO times — {why}. The cascade erase is an \
+             IMMEDIATE, identity-scoped, UNBOUNDED sweep and is deliberately distinct from \
+             the ADR-0131 reaper that shares this table. Body was: {squashed:?}"
+        );
+    }
+}

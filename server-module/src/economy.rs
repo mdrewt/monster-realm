@@ -270,6 +270,20 @@ pub(crate) fn zeroed_wallet(row: PlayerWallet) -> PlayerWallet {
     PlayerWallet { balance: 0, ..row }
 }
 
+/// M22 §4.4 step 6b (PRV1-6b, ADR-0228 D1/D7c): delete `owner`'s wallet row
+/// outright — the ONE sanctioned `player_wallet` delete in the crate.
+/// `player_wallet` is ERASE-classified (spec §3 / `DATA_LIFECYCLE_MANIFEST`):
+/// a surviving zeroed row is exactly the orphaned data the operator's
+/// issue-#403 Option B ruling excludes. The ux2/ADR-0154 never-delete gate in
+/// `economy_tests.rs` exempts exactly this fn BY NAME and pins this body to
+/// the single PK point delete — anything more here is a gate red. Called only
+/// from `accounts::account_deletion_reaper` (ACCESSOR_BYPASS keeps every
+/// wallet touch inside this module). Declared BEFORE `rekey_wallet`: the
+/// currency-integrity zero-arg pin scans forward from that fn unbounded.
+pub(crate) fn erase_wallet(ctx: &ReducerContext, owner: Identity) {
+    ctx.db.player_wallet().owner_identity().delete(owner);
+}
+
 /// Re-key the guest's wallet balance onto `to` by CREDIT-FORWARD, then zero the
 /// guest's row in place — NEVER delete it (AUTH-23/24, ADR-0081 single-surface).
 /// Must live in `economy.rs`: `currency-integrity.eval.mjs` ACCESSOR_BYPASS bans

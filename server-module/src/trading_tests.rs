@@ -528,6 +528,16 @@ fn strip_rust_strings_trading(src: &str) -> String {
 
 const TRADING_RS: &str = include_str!("trading.rs");
 
+/// `lib.rs`, read at compile time for the m22-s3b resolver-extraction chain
+/// (ADR-0228 D7(e)). TR-18 used to live in
+/// `evals/trade-reducer-security.eval.mjs` as a one-hop `on_disconnect` scan;
+/// the S3b extraction makes the trade cancel reachable through
+/// `resolve_all_live_interactions`, which that one-hop scan cannot follow, so
+/// the criterion is PORTED here as a two-link chain in the same `cargo test` as
+/// the reducer it protects. Named with the slice prefix so it can never collide
+/// with a future unprefixed source constant in this file.
+const M22S3B_LIB_RS: &str = include_str!("lib.rs");
+
 // ---------------------------------------------------------------------------
 // EA-TRADE-BATTLE-01: propose_trade calls reject_if_in_battle
 //
@@ -3046,5 +3056,271 @@ fn m22s5_propose_trade_carries_the_deletion_gate() {
          runs once the offer row exists has already escrowed a deleting player's monsters, \
          items and currency into a commitment the deletion cascade must later unwind, and \
          the reject merely reports it."
+    );
+}
+
+// ===========================================================================
+// m22-s3b (ADR-0228) — THE RESOLVER EXTRACTION CHAIN (TR-18, ported) AND THE
+// DELEGATED `trade_offer` ERASE.
+//
+// EARS criteria:
+//   PRV1-6a  the cascade force-resolves every live trade BEFORE any row is
+//            erased, through the SHARED `resolve_all_live_interactions` bundle.
+//   PRV1-6b  every ERASE-policy row owned by the deleting identity is deleted —
+//            for `trade_offer` that is BOTH identity columns, and the offer's
+//            TTL schedule row with it.
+//
+// WHY TR-18 MOVED HOUSE (ADR-0224 / ADR-0228 D7(e)). `TR-18 DISCONNECT_HOOK` in
+// `evals/trade-reducer-security.eval.mjs` asserted that `on_disconnect`'s body
+// names `cancel_trades_on_disconnect`. Spec §4.4 step 1 factors that call and
+// its three siblings into `resolve_all_live_interactions`, so the one-hop scan
+// stops matching — and a one-hop scan cannot be repaired into a two-hop one
+// without teaching the eval to follow a call, which is exactly the scanner
+// patching ADR-0224 rules out. The criterion is therefore DELETED there and
+// ported here, strictly stronger: it pins BOTH links, so the extraction cannot
+// silently drop the trade half of the bundle.
+//
+// SCAN HYGIENE: every needle is assembled with `concat!` per this file's
+// anti-self-match convention, and this section contains no bare double-quote
+// inside a comment and no block-comment delimiter.
+// ===========================================================================
+
+/// **TR-18 (ported) / PRV1-6a** — `on_disconnect` reaches the trade cancel
+/// through the extracted resolver, in two links, each pinned.
+///
+/// LINK 1: `on_disconnect` calls `resolve_all_live_interactions` exactly once.
+/// LINK 2: that resolver's own body calls `trading::cancel_trades_on_disconnect`.
+///
+/// NEITHER LINK IS WORTH ANYTHING ALONE, which is the whole point of pinning
+/// both. Link 1 alone is satisfied by a resolver that force-resolves battles and
+/// challenges and quietly drops trades — every active offer then survives the
+/// disconnect AND the deletion cascade, holding the counterparty's assets in an
+/// escrow guard that no longer has a live counterparty. Link 2 alone is
+/// satisfied by a resolver nobody calls, which is dead code that reads as a fix.
+///
+/// The resolver DECLARATION is counted before its body is extracted: the
+/// extractor anchors on the first hit, so a decoy second declaration would
+/// silently re-point link 2 at a body nobody reviewed.
+///
+/// HONEST LIMIT: a source scan sees the call, never the execution. What makes
+/// this the right shape anyway is that both links are unconditional statements
+/// in bodies whose own reachability is pinned elsewhere — `on_disconnect` is a
+/// lifecycle reducer with no guards at all, and the resolver's four calls are
+/// pinned as a flat sequence by `m22s3b_resolver_body_order` in accounts_tests.
+#[test]
+fn m22s3b_resolver_extraction_chain() {
+    let lib = strip_rust_strings_trading(&strip_rust_comments_trading(M22S3B_LIB_RS));
+    let resolver_decl = concat!("resolve_all_live", "_interactions");
+
+    let n_decl = lib
+        .matches(["fn ", resolver_decl, "("].concat().as_str())
+        .count();
+    assert_eq!(
+        n_decl, 1,
+        "m22-s3b TR-18 FAIL (declaration): lib.rs must declare `fn {resolver_decl}(` EXACTLY \
+         once; found {n_decl}. ZERO means the spec §4.4 step-1 extraction never landed, so \
+         the deletion cascade has no shared force-resolve bundle to call and must either \
+         hand-roll a parallel wrapper set (which the spec forbids by name, because a \
+         hand-rolled list drops the wild-battle resolve) or skip step 1 entirely. MORE THAN \
+         ONE is a decoy: the body extractor below anchors on the first hit and would read a \
+         declaration nobody reviewed."
+    );
+
+    // --- LINK 1: on_disconnect -> the resolver -------------------------------
+    let disconnect =
+        m22s5_trading_fn_body(&lib, concat!("on", "_disconnect")).unwrap_or_else(|| {
+            panic!(
+                "m22-s3b TR-18 FAIL (extraction): the brace-bounded body of lib.rs's \
+             `on_disconnect` could not be sliced out. Fail LOUD rather than pass vacuously — \
+             if the lifecycle hook was renamed, re-derive this pin DELIBERATELY from the \
+             spec, never by relaxing it."
+            )
+        });
+    let disconnect_sq: String = disconnect.split_whitespace().collect();
+    let call = [resolver_decl, "("].concat();
+    let n_link1 = disconnect_sq.matches(call.as_str()).count();
+    assert_eq!(
+        n_link1, 1,
+        "m22-s3b TR-18 FAIL (link 1): `on_disconnect` must call `{call}` EXACTLY once; found \
+         {n_link1}. This is the ported TR-18 criterion: a disconnecting player's active trade \
+         offers must be cancelled, and after the S3b extraction the ONLY path to that cancel \
+         is the shared bundle. ZERO leaves every offer standing after the client drops — the \
+         escrow guards stay armed against monsters, items and currency whose owner is gone, \
+         and the counterparty is locked out of proposing (one active offer per player, \
+         ADR-0106 D4) until the TTL reaper fires."
+    );
+
+    // --- LINK 2: the resolver -> trading::cancel_trades_on_disconnect --------
+    let resolver = m22s5_trading_fn_body(&lib, resolver_decl).unwrap_or_else(|| {
+        panic!(
+            "m22-s3b TR-18 FAIL (extraction): the brace-bounded body of \
+             `resolve_all_live_interactions` could not be sliced out of lib.rs, so link 2 has \
+             no scope and would pass vacuously."
+        )
+    });
+    let resolver_sq: String = resolver.split_whitespace().collect();
+    let trade_cancel = concat!("trading::cancel_trades_on", "_disconnect(");
+    let n_link2 = resolver_sq.matches(trade_cancel).count();
+    assert_eq!(
+        n_link2, 1,
+        "m22-s3b TR-18 FAIL (link 2): `resolve_all_live_interactions` must call \
+         `{trade_cancel}` EXACTLY once; found {n_link2}. Link 1 alone is satisfied by a \
+         resolver that handles battles and challenges and drops the TRADE half — and because \
+         the resolver is shared, that single omission removes trade cancellation from the \
+         disconnect hook AND from the deletion cascade in one edit, which is precisely the \
+         leverage the extraction buys and precisely why both links are pinned."
+    );
+}
+
+/// **PRV1-6b** — `erase_trade_offers` deletes the deleting identity's offers on
+/// BOTH sides of the table, unconditionally, and disarms each offer's TTL
+/// schedule row.
+///
+/// BOTH IDENTITY COLUMNS. `trade_offer` carries `initiator` AND `counterparty`,
+/// each with its own btree index, and the manifest classifies the TABLE ERASE —
+/// not one column of it. Sweeping only `initiator` leaves every offer the
+/// deleted player was ASKED to accept standing, naming them, publicly (the table
+/// is `public`), until its TTL expires.
+///
+/// NO `is_active` FILTER, and this is the clause most likely to be written wrong,
+/// because the neighbouring `cancel_trades_on_disconnect` DOES filter on it. That
+/// filter is right for a disconnect (a terminal offer is already gone) and wrong
+/// for a cascade: the manifest policy is ERASE, so any row that exists at cascade
+/// time must go, and a filtered sweep silently retains exactly the rows whose
+/// status the filter did not anticipate.
+///
+/// THE SCHEDULE ROW GOES WITH IT (ADR-0228 D2 deviation (a)): every other
+/// offer-deletion site in this module disarms the reaper, and an orphaned
+/// one-shot fires later against a `trade_id` that no longer exists — or, worse,
+/// against a recycled one. `ea_reaper_02_disarm_called_at_all_offer_deletion_sites`
+/// pins the four pre-existing sites; this is the fifth.
+///
+/// Kills: an initiator-only sweep; a counterparty-only sweep; an `is_active`
+///        filter copied from the disconnect helper; a sweep that deletes offers
+///        and leaves their schedule rows behind; a helper that collects ids and
+///        never deletes; a sweep keyed on anything other than the `owner`
+///        parameter.
+#[test]
+fn m22s3b_erase_trade_offers_shape() {
+    let stripped = strip_rust_strings_trading(&strip_rust_comments_trading(TRADING_RS));
+    let name = concat!("erase_trade", "_offers");
+    let body = m22s5_trading_fn_body(&stripped, name).unwrap_or_else(|| {
+        panic!(
+            "m22-s3b PRV1-6b FAIL (extraction): trading.rs declares no `fn {name}(`. The \
+             cascade delegates the `trade_offer` ERASE to this module because G5 \
+             MODULE_WRITE_ISOLATION closes accounts.rs at its four owned tables, so without \
+             this helper the deleting player's offers are never erased at all. Fail LOUD \
+             rather than pass vacuously."
+        )
+    });
+    let squashed: String = body.split_whitespace().collect();
+    assert!(
+        !squashed.is_empty(),
+        "m22-s3b PRV1-6b FAIL (non-vacuity): the `{name}` body is empty, so every clause \
+         below would be asserting properties of nothing."
+    );
+
+    // --- BOTH SIDES, AND THE SECOND ONE MUST FEED THE FIRST (r2) ------------
+    //
+    // The first draft asked only that each side's `filter(owner)` APPEAR. A
+    // red-team satisfied that with a live initiator sweep beside a DEAD
+    // counterparty read — `let _ = ctx.db.trade_offer().counterparty().filter(owner);`
+    // — which is present, compiles, stays clippy-clean under -D warnings
+    // (`let_underscore_must_use` is off by default), and erases nothing: every
+    // offer the deleted player was ASKED to accept survives in a PUBLIC table
+    // naming them, and the surviving proposer stays locked out of proposing
+    // anything else (one active offer per player, ADR-0106 D4) until the TTL
+    // reaper fires.
+    //
+    // Two clauses close it. Each pass must be immediately followed by `.map(`,
+    // which a bare dangling read is not; and the COUNTERPARTY pass must appear
+    // as the ARGUMENT of a `.chain(` — one contiguous needle — which is what
+    // makes it feed the same id list the initiator pass does. That is the shape
+    // `cancel_trades_on_disconnect` already ships one function away in this
+    // file, so it is an in-file precedent rather than a new convention.
+    //
+    // The closure binder is deliberately NOT part of any needle: pinning `|t|`
+    // would false-RED an equivalent body over a differently-named binding, and
+    // the property under test is the wiring, not the spelling.
+    let initiator_pass = concat!("initi", "ator().filter(owner).map(");
+    let counterparty_pass = concat!("counterp", "arty().filter(owner).map(");
+    for (needle, side, why) in [
+        (
+            initiator_pass,
+            "initiator",
+            "the offers the deleted player PROPOSED",
+        ),
+        (
+            counterparty_pass,
+            "counterparty",
+            "the offers the deleted player was ASKED to accept — omitted, these survive in a \
+             PUBLIC table naming a deleted identity until their TTL expires, and they keep \
+             the surviving proposer locked out of proposing anything else",
+        ),
+    ] {
+        let n = squashed.matches(needle).count();
+        assert_eq!(
+            n, 1,
+            "m22-s3b PRV1-6b FAIL ({side} sweep): `{name}` must filter the {side} btree index \
+             with the `owner` PARAMETER and feed the result straight into a `.map(`, as \
+             `{needle}`, EXACTLY once; found {n}. `trade_offer` carries TWO identity columns \
+             and the manifest classifies the TABLE erase, not one column of it: {why}. The \
+             `.map(` is part of the needle because a bare `filter(owner)` is satisfied by a \
+             DEAD read that collects nothing and deletes nothing. Body was: {squashed:?}"
+        );
+    }
+
+    let chained_counterparty = concat!(
+        ".chain(ctx.db.trade_offer().counterp",
+        "arty().filter(owner).map("
+    );
+    let n_chained = squashed.matches(chained_counterparty).count();
+    assert_eq!(
+        n_chained, 1,
+        "m22-s3b PRV1-6b FAIL (counterparty pass is not chained in): `{name}` must chain the \
+         counterparty pass into the SAME id collection as the initiator pass, as the \
+         contiguous `{chained_counterparty}`; found {n_chained}. The clause above proves the \
+         counterparty index is filtered and mapped; it cannot prove the RESULT goes anywhere. \
+         This one does: as the argument of `.chain(`, the mapped ids join the initiator's and \
+         are deleted by the same loop. A counterparty pass standing on its own — even a fully \
+         written one whose value is dropped — leaves every incoming offer in place, in a \
+         PUBLIC table, naming a deleted identity. \
+         SHAPE NOTE, stated so a legitimate refactor is a conscious decision rather than a \
+         surprise: two separately-collected passes joined at the delete loop are also \
+         behaviourally correct and are deliberately NOT the sanctioned form. The chained \
+         single-collection shape is the one `cancel_trades_on_disconnect` ships one function \
+         away in this same file, and pinning the in-file precedent is what lets this clause be \
+         one contiguous needle instead of a family of them. Body was: {squashed:?}"
+    );
+
+    let is_active = concat!("is_ac", "tive");
+    assert!(
+        !squashed.contains(is_active),
+        "m22-s3b PRV1-6b FAIL (unconditional erase): `{name}` filters on `{is_active}`. That \
+         filter belongs to `cancel_trades_on_disconnect`, where a terminal offer is already \
+         deleted and skipping it is free — and copying it here is the likeliest wrong \
+         implementation precisely because the two helpers sit side by side. The manifest \
+         policy for `trade_offer` is ERASE: whatever row exists at cascade time must go, and \
+         a status-filtered sweep silently retains exactly the rows whose status the filter \
+         did not anticipate. Body was: {squashed:?}"
+    );
+
+    let disarm = concat!("disarm_trade_", "reaper(");
+    assert!(
+        squashed.contains(disarm),
+        "m22-s3b PRV1-6b FAIL (orphan schedule): `{name}` must call `{disarm}` for each \
+         erased offer. `trade_offer_reaper_schedule` is JOIN-ONLY via `trade_offer` (the \
+         manifest pins that parent by value), so the cascade sweeps it at its parent's step — \
+         the same orphan-prevention idiom every other offer-deletion site in this module \
+         already follows (ea_reaper_02 pins those four). An orphaned one-shot fires later \
+         against a trade_id that no longer exists, or against a recycled one. Body was: \
+         {squashed:?}"
+    );
+    assert!(
+        squashed.contains(concat!(".del", "ete(")),
+        "m22-s3b PRV1-6b FAIL (no delete): `{name}` never deletes a row. A helper that \
+         collects the matching trade ids and then only disarms their schedules satisfies \
+         every clause above while leaving the offers themselves in place. Body was: \
+         {squashed:?}"
     );
 }

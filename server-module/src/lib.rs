@@ -1,11 +1,11 @@
-//! monster-realm server module (`spacetimedb` crate 1.12.0 against a 2.8.1 host — see ADR-0197).
+//! monster-realm server module (`spacetimedb` crate 2.8.1, lockstep with the 2.8.1 host — ADR-0197).
 //!
 //! The authoritative imperative shell: tables hold the world's truth; reducers are
 //! the ONLY writers. Reducers are THIN — validate `ctx.sender()` + legality, delegate
 //! the rule to `game-core` (the SSOT `apply_move`), write tables; reject with `Err`,
 //! never clamp. Movement is **server-paced and per-zone** (ADR-0011/0007): clients
 //! buffer intent; a per-zone scheduled `movement_tick` drains one move/character/tick.
-//! Time columns are `i64` ms (round-trip `game_core::Millis`). Syntax: crate 1.12.
+//! Time columns are `i64` ms (round-trip `game_core::Millis`). Syntax: crate 2.x.
 //!
 //! M8.9 (ADR-0056): the former monolith is split into cohesive domain submodules.
 //! This `lib.rs` is reduced to module wiring + crate-wide constants + the three
@@ -83,6 +83,14 @@ pub(crate) const PARTY_SLOT_NONE: u8 = game_core::PARTY_SLOT_NONE; // SSOT (ADR-
 /// (ADR-0045). No real connection holds this identity, so a wild battle's
 /// `opponent_identity` can never collide with a player's.
 pub(crate) const WILD_IDENTITY: Identity = Identity::from_byte_array([0u8; 32]);
+/// M22 anonymization sentinel (spec §3, ADR-0228 D1): the identity stamped onto
+/// a deleted party's side of a surviving `battle` row. The VALUE is game-core's
+/// `TOMBSTONE_IDENTITY_BYTES` SSOT (all 0xFF) — distinct by construction from
+/// the all-zero `WILD_IDENTITY` above, so an anonymized PvP battle can never be
+/// reclassified as wild by the `guards.rs` wild checks. Declared HERE, not in
+/// accounts.rs, whose guest-claim gate bans the byte-array constructor.
+pub(crate) const TOMBSTONE_IDENTITY: Identity =
+    Identity::from_byte_array(game_core::TOMBSTONE_IDENTITY_BYTES);
 
 // --- Private helpers --------------------------------------------------------
 
@@ -159,6 +167,7 @@ pub fn init(ctx: &ReducerContext) {
     ensure_zone_schedules(ctx);
     crate::playtest::ensure_playtest_reaper(ctx);
     crate::observability::ensure_mr_heartbeat(ctx);
+    crate::accounts::ensure_deletion_reapers_armed(ctx);
     log::info!(
         "{{\"evt\":\"init\",\"zones\":{}}}",
         ctx.db.zone_def().iter().count()
@@ -193,6 +202,7 @@ pub fn sync_content(ctx: &ReducerContext) -> Result<(), String> {
     ensure_zone_schedules(ctx);
     crate::playtest::ensure_playtest_reaper(ctx);
     crate::observability::ensure_mr_heartbeat(ctx);
+    crate::accounts::ensure_deletion_reapers_armed(ctx);
     Ok(())
 }
 
@@ -211,25 +221,48 @@ pub fn on_connect(ctx: &ReducerContext) -> Result<(), String> {
     accounts::provision_or_touch_account(ctx)
 }
 
+/// Force-resolve every live interaction for `identity` — the four resolver
+/// calls verbatim, in the original `on_disconnect` order (M22 §4.4 step 1,
+/// ADR-0228 D2). Shared by BOTH `on_disconnect` and the deletion cascade
+/// (`accounts::account_deletion_reaper`), so a future fifth resolver added to
+/// this bundle is picked up by both callers automatically. The bundle is the
+/// DISPATCH list, never a table-census-derived wrapper set — a census-derived
+/// list silently drops the wild-battle resolve (no reaper covers wild rows)
+/// and soft-locks the abandoned battle forever. Performs no row write itself;
+/// each callee owns its own tables' writes. Call order notes, unchanged from
+/// the original body: trades cancel before any player-row deletion so the
+/// offer lookup still resolves identity (TR-18, ADR-0106; no assets move —
+/// never physically escrowed, D3); the PvP forfeit (M16, ADR-0109 D8) and the
+/// wild resolve (ptc5b, ADR-0138 — auto-flee + GC, since forfeit excludes
+/// WILD) both need identity lookups in write_back to resolve; the
+/// challenge-cancel (ADR-0109 D9) is order-immaterial vs the other three
+/// (disjoint row classes).
+pub(crate) fn resolve_all_live_interactions(ctx: &ReducerContext, identity: Identity) {
+    trading::cancel_trades_on_disconnect(ctx, identity);
+    pvp::forfeit_on_disconnect(ctx, identity);
+    battle::resolve_wild_battle_on_disconnect(ctx, identity);
+    pvp::cancel_challenges_on_disconnect(ctx, identity);
+}
+
+/// M22 §4.4 step 6d (PRV1-6d, ADR-0228 D2): erase the `character` row
+/// reachable via the live `player` anchor's `entity_id` join — strictly
+/// BEFORE the player display-name tombstone write (the spec's
+/// character-before-player order pin). Usually a no-op: presence rows are
+/// deleted on disconnect, so only a connected-at-fire session has one. Never
+/// touches the `player` row itself (it survives as the anchor).
+pub(crate) fn erase_character_rows(ctx: &ReducerContext, owner: Identity) {
+    if let Some(p) = ctx.db.player().identity().find(owner) {
+        ctx.db.character().entity_id().delete(p.entity_id);
+    }
+}
+
 #[spacetimedb::reducer(client_disconnected)]
 pub fn on_disconnect(ctx: &ReducerContext) {
     let me = ctx.sender();
-    // Cancel any active trade offers (TR-18, ADR-0106). Must run before player row
-    // deletion so the offer lookup still resolves player identity. No assets move —
-    // assets are never physically escrowed (ADR-0106 D3). Uses indexed filters.
-    trading::cancel_trades_on_disconnect(ctx, me);
-    // Forfeit any ongoing PvP battle (M16, ADR-0109 D8). Must run before player row
-    // deletion so identity lookups in write_back still resolve.
-    pvp::forfeit_on_disconnect(ctx, me);
-    // Resolve any ongoing WILD battle (ptc5b, ADR-0138): forfeit_on_disconnect
-    // deliberately excludes WILD and no reaper covers wild rows, so auto-flee + GC
-    // the battle/battle_wild rows here to unblock the returning player's re-entry.
-    // Must run before player-row deletion (write-back identity lookups resolve);
-    // order vs. the forfeit above and the challenge-cancel below is otherwise
-    // immaterial — the three touch disjoint row classes (wild vs PvP vs challenge).
-    battle::resolve_wild_battle_on_disconnect(ctx, me);
-    // Cancel pending outgoing PvP challenges (M16, ADR-0109 D9).
-    pvp::cancel_challenges_on_disconnect(ctx, me);
+    // Resolve live trades / PvP / wild battles / challenges (extracted m22-s3b;
+    // ordering rationale lives on the shared fn above). Must run before the
+    // player-row deletion below so identity lookups still resolve.
+    resolve_all_live_interactions(ctx, me);
     // Clean up transient conversation row so a reconnecting player cannot
     // advance a stale dialogue from a different zone/position (RT-ADV-01).
     ctx.db.player_conversation().owner_identity().delete(me);

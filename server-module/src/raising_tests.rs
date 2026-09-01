@@ -2916,6 +2916,107 @@ fn e3_block_after(src: &str, from: usize) -> Option<(usize, usize)> {
     None
 }
 
+// ===========================================================================
+// m22-s3b (ADR-0228) — THE DELEGATED heal_cooldown ERASE.
+//
+// EARS criterion PRV1-6b: the cascade deletes every ERASE-policy row owned by
+// the deleting identity. `heal_cooldown` is one of them and this module owns it
+// (the `rekey_heal_cooldown` delegation precedent), because G5
+// MODULE_WRITE_ISOLATION closes accounts.rs at its four owned tables.
+//
+// The table is PRIVATE and must-never-leak (ADR-0015/ADR-0069): the row is a
+// single timestamp anchor that reveals when the player last healed. Its primary
+// key IS `owner_identity`, so the sanctioned sweep is a point delete of exactly
+// one row — no filter, and above all no iteration.
+//
+// HONEST LIMIT, as for every scan in this file: source text, not execution —
+// this crate has no reducer-executing harness (ADR-0156 P7).
+//
+// SCAN HYGIENE: the needles are assembled from fragments per this file's house
+// rule, so this test file never carries a contiguous accessor chain that an eval
+// concatenating every source under server-module/src could count as a real one.
+// No bare double-quote appears inside any comment here and no block-comment
+// delimiter is spelled.
+// ===========================================================================
+
+/// The `raising.rs` declaration needle for the delegated cascade eraser,
+/// assembled from fragments like its `care` / `train` siblings above.
+fn m22s3b_erase_heal_decl() -> String {
+    ["fn erase_heal", "_cooldown("].concat()
+}
+
+/// **PRV1-6b (scan)** — `erase_heal_cooldown` is exactly one owner-keyed point
+/// delete of the caller's cooldown anchor.
+///
+/// `heal_cooldown`'s PRIMARY KEY is `owner_identity` (schema.rs), so there is at
+/// most one row per player and the sanctioned shape is a point delete. An
+/// iteration here would be a full-table scan that says the same thing more
+/// slowly and — if its filter is ever wrong or absent — deletes every player's
+/// heal cooldown, handing the whole server a free heal.
+///
+/// Kills: the helper missing entirely (the cooldown anchor, a must-never-leak
+///        timestamp, survives the deletion); a sweep that iterates instead of
+///        point-deleting; a sweep keyed on anything other than the `owner`
+///        parameter; a helper that reads the row and never deletes it.
+#[test]
+fn m22s3b_erase_heal_cooldown_shape() {
+    let body = eg2_scan_body(&m22s3b_erase_heal_decl());
+    let label = "the `erase_heal_cooldown` helper body";
+
+    assert_body_has_exactly_one(
+        &body,
+        label,
+        &["heal_cooldown()", ".owner_identity().del", "ete(owner)"].concat(),
+        "PRV1-6b: `heal_cooldown` is an ERASE-policy table whose PRIMARY KEY is \
+         `owner_identity`, so the sanctioned sweep is ONE point delete keyed on the `owner` \
+         PARAMETER. Zero means the deleting player's heal-cooldown anchor — a private, \
+         must-never-leak timestamp that reveals when they last healed (ADR-0015 / ADR-0069) \
+         — survives the deletion with nothing anywhere else that will remove it. Two would \
+         be a second, unreviewed delete.",
+    );
+
+    let iter = [".it", "er()"].concat();
+    let n_iter = body.matches(iter.as_str()).count();
+    assert_eq!(
+        n_iter, 0,
+        "TEETH (m22-s3b PRV1-6b): `erase_heal_cooldown` contains {n_iter} `{iter}` call(s) \
+         and must contain ZERO. The table's primary key IS the owner identity, so there is at \
+         most ONE row per player and a point delete is exact. An iteration is a full-table \
+         scan that says the same thing more slowly — and if its filter is ever wrong, absent, \
+         or refactored away, it deletes every player's heal cooldown in the database and \
+         hands the whole server a free heal. That failure reads identically to the correct \
+         body under any presence-only check."
+    );
+
+    // --- ONE TABLE, AND ONLY ONE (added in r2) ------------------------------
+    //
+    // The exactly-one clause above pins what this helper MUST do; nothing pinned
+    // what it must NOT do. `raising.rs` imports a dozen table accessors —
+    // `monster`, `monster_pub`, `inventory`, `item_row`, `character`, `player`
+    // among them — so an appended foreign write here would be one line, would
+    // compile, and would be invisible: this file's other scans are all scoped to
+    // the four raising reducers, and the cascade's own reaper-body pin sees only
+    // the CALL to this helper, never its contents. Counting the table reaches
+    // makes the helper's whole surface exactly one table.
+    let db_reach = ["ctx", ".db."].concat();
+    let n_reach = body.matches(db_reach.as_str()).count();
+    assert_eq!(
+        n_reach, 1,
+        "TEETH (m22-s3b PRV1-6b, foreign-write ban): `erase_heal_cooldown` reaches the \
+         database {n_reach} time(s) through `{db_reach}`; EXACTLY ONE is sanctioned — the \
+         `heal_cooldown` point delete pinned above. MORE THAN ONE is a second table touched \
+         by a helper whose entire remit is one row: `raising.rs` has `monster`, \
+         `monster_pub`, `inventory`, `item_row`, `character` and `player` accessors in scope, \
+         so an appended write reaches any of them in one line, inside the deletion cascade, \
+         where nothing else looks — this file's other scans are scoped to the four raising \
+         reducers and the cascade's reaper-body pin sees only the CALL to this helper. \
+         ZERO means the body reaches the database through an ALIASED handle \
+         (`let d = &ctx.db;`), which the exactly-one delete clause above would still match \
+         while this census cannot vouch for what else that handle touches — failing closed \
+         here is the correct direction."
+    );
+}
+
 /// **12r-e E3 (the structural bridge)** — `accrue_quality_time` must RETURN on a
 /// `false` from the pure seam, BEFORE it reaches the `monster` row write.
 ///

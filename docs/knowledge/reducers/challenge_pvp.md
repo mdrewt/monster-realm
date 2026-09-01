@@ -2,10 +2,10 @@
 type: SpacetimeDB Reducer
 title: challenge_pvp
 slug: reducers/challenge_pvp
-updated: 2026-08-31
+updated: 2026-09-01
 tags: [reducer, spacetimedb, pvp]
 abstract: "Send a PvP battle challenge to another online player. Guard order (reject-not-clamp, decision-before-irreversible): 1. …"
-resource: server-module/src/pvp.rs#L741
+resource: server-module/src/pvp.rs#L800
 source: scripts/okf-export.mjs@server-module/src/pvp.rs
 ---
 

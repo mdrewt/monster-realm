@@ -718,6 +718,65 @@ pub(crate) fn cancel_challenges_on_disconnect(ctx: &ReducerContext, player: Iden
     }
 }
 
+/// M22 §4.4 steps 6b+6d (PRV1-6b/6d, ADR-0228 D1/D2): delete every
+/// `battle_challenge` naming `owner` on EITHER side — challenger AND target,
+/// any status (contrast `cancel_challenges_on_disconnect` above, outgoing
+/// pending only) — disarming each challenge's TTL schedule row (the JOIN_ONLY
+/// sweep riding its parent), then every `battle_action` the owner submitted
+/// (per-turn secret picks; the identity column is unindexed, so this is one
+/// of the cascade's two accepted linear scans — spec §8.3 residual). Called
+/// only from `accounts::account_deletion_reaper` (D0 write-isolation).
+pub(crate) fn erase_pvp_rows(ctx: &ReducerContext, owner: Identity) {
+    let mut challenge_ids: Vec<u64> = ctx
+        .db
+        .battle_challenge()
+        .challenger()
+        .filter(owner)
+        .map(|c| c.challenge_id)
+        .collect();
+    challenge_ids.extend(
+        ctx.db
+            .battle_challenge()
+            .target()
+            .filter(owner)
+            .map(|c| c.challenge_id),
+    );
+    for id in challenge_ids {
+        disarm_challenge_reaper(ctx, id);
+        ctx.db.battle_challenge().challenge_id().delete(id);
+    }
+    let action_ids: Vec<u64> = ctx
+        .db
+        .battle_action()
+        .iter()
+        .filter(|a| a.player_identity == owner)
+        .map(|a| a.action_id)
+        .collect();
+    for id in action_ids {
+        ctx.db.battle_action().action_id().delete(id);
+    }
+}
+
+/// M22 §4.4 step 6d (PRV1-6d, ADR-0228 D1): delete every
+/// `pvp_deadline_schedule` row guarding `battle_id`. Lives HERE because
+/// pvp.rs is that table's sole writer (the delegation doctrine's ownership
+/// rule); called per battle row from `battle::anonymize_battles`, BEFORE that
+/// row's identity swap (after the swap the join can no longer find it). The
+/// column is unindexed — a linear scan over a table that holds at most one
+/// row per live PvP battle.
+pub(crate) fn disarm_pvp_deadlines(ctx: &ReducerContext, battle_id: u64) {
+    let ids: Vec<u64> = ctx
+        .db
+        .pvp_deadline_schedule()
+        .iter()
+        .filter(|s| s.battle_id == battle_id)
+        .map(|s| s.scheduled_id)
+        .collect();
+    for id in ids {
+        ctx.db.pvp_deadline_schedule().scheduled_id().delete(id);
+    }
+}
+
 // ===========================================================================
 // Reducers
 // ===========================================================================

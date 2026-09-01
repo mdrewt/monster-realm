@@ -7,8 +7,11 @@
 //! cancel). Every write to any pre-existing table goes
 //! through a `pub(crate)` helper in that table's OWNING module — the
 //! `rekey_*` family (monster_mgmt / inventory / npc / raising / economy /
-//! ranking) plus `privacy::purge_export_bundles` (rb-22, ADR-0220: the
-//! claim-time purge of the retired guest's export chunks). Bare reads of
+//! ranking), `privacy::purge_export_bundles` (rb-22, ADR-0220: the
+//! claim-time purge of the retired guest's export chunks), and since m22-s3b
+//! the `erase_*` / `anonymize_*` cascade family the deletion reaper delegates
+//! to (ADR-0228 D1 — same delegation precedent, one helper per owning
+//! module). Bare reads of
 //! `player` are permitted (no single owning module); the wallet is not read here
 //! at all (currency-integrity ACCESSOR_BYPASS gates reads too, so
 //! `economy::wallet_exists` delegates); battle liveness reuses
@@ -319,6 +322,89 @@ pub(crate) fn reaper_should_run_cascade(account: &Account, now_ms: i64) -> bool 
         && game_core::is_deletion_due(account.deletion_requested_at_ms, now_ms)
 }
 
+/// The not-yet-due re-arm decision (m22-s3b, ADR-0228 D3a): `Some(requested)`
+/// iff the row is still `PendingDeletion`, carries no terminal marker, and its
+/// request is not yet due. The runtime deletes a fired one-shot schedule row
+/// regardless of what the reducer does, so this is what keeps a not-yet-due
+/// account armed. The stamp resolves FIRST: on the illegal `PendingDeletion` +
+/// `None` shape there is nothing to re-arm from, and every `unwrap_or`
+/// spelling is a disguised clock-relative or epoch-past re-arm — `None` (no
+/// re-arm) is the fail-closed direction. Defined DIRECTLY, never as
+/// `!reaper_should_run_cascade`: that negation is also true for `Active` and
+/// terminal rows, which must never re-arm (a terminal re-arm loops forever).
+pub(crate) fn reaper_rearm_at_ms(account: &Account, now_ms: i64) -> Option<i64> {
+    let requested = account.deletion_requested_at_ms?;
+    if account.status == AccountStatus::PendingDeletion
+        && !account_has_terminal_marker(account)
+        && !game_core::is_deletion_due(Some(requested), now_ms)
+    {
+        Some(requested)
+    } else {
+        None
+    }
+}
+
+/// M22 §4.4 step 6c for the `account` row itself (PRV1-6c, ADR-0228 D2):
+/// tombstone the one PII field, `auth_issuer`. Identity, timestamps and the
+/// claim pair are retained (AUTH-29 / spec §3), so on every row the cascade
+/// recheck admits, legality holds by field-disjointness.
+pub(crate) fn anonymized_account(existing: Account) -> Account {
+    let out = Account {
+        auth_issuer: game_core::TOMBSTONE_AUTH_ISSUER.to_string(),
+        ..existing
+    };
+    debug_assert!(
+        account_state_is_legal(&out),
+        "anonymized_account: illegal Account state (ADR-0195 D3)"
+    );
+    out
+}
+
+/// M22 §4.4 step 6e (PRV1-6e, ADR-0228 D2): stamp the terminal marker — only
+/// after steps 6a-6d completed without error, which the single reducer
+/// transaction guarantees structurally (an `Err` aborts every prior write).
+/// Touches nothing but `terminal_at_ms`; the cascade recheck already proved
+/// `PendingDeletion` with a `Some` request stamp, so legality is a theorem
+/// here (ADR-0228 D5 — the reason this stays a `debug_assert`).
+pub(crate) fn terminal_account(existing: Account, now_ms: i64) -> Account {
+    let out = Account {
+        terminal_at_ms: Some(now_ms),
+        ..existing
+    };
+    debug_assert!(
+        account_state_is_legal(&out),
+        "terminal_account: illegal Account state (ADR-0195 D3)"
+    );
+    out
+}
+
+/// ADR-0221 R2 sweep planner (m22-s3b, ADR-0228 D3b — pure): which accounts
+/// need a deletion-grace schedule row armed, and at what REQUEST stamp (the
+/// fire instant derives from it inside `arm_deletion_reaper`, the one place
+/// that computes it). Emits, in INPUT ORDER, `(identity, requested_at_ms)`
+/// for every `PendingDeletion` row with no terminal marker, a present request
+/// stamp, and no already-armed schedule row. Mirrors `plan_schedule_reconcile`'s
+/// pure-planner shape (lib.rs). A past-due stamp is still emitted —
+/// `ScheduleAt::Time` in the past fires immediately, which is exactly what an
+/// overdue account needs.
+pub(crate) fn plan_deletion_rearms(
+    accounts: &[Account],
+    already_armed: &[Identity],
+) -> Vec<(Identity, i64)> {
+    accounts
+        .iter()
+        .filter(|a| {
+            a.status == AccountStatus::PendingDeletion
+                && !account_has_terminal_marker(a)
+                && !already_armed.contains(&a.identity)
+        })
+        .filter_map(|a| {
+            a.deletion_requested_at_ms
+                .map(|requested| (a.identity, requested))
+        })
+        .collect()
+}
+
 // --- Context-bound predicates (SSOT) ------------------------------------------
 
 /// The load-bearing "is this an account holder?" gate (D4′). Only a verified
@@ -465,6 +551,21 @@ pub(crate) fn provision_or_touch_account(ctx: &ReducerContext) -> Result<(), Str
     }
     let now = now_ms(ctx);
     match ctx.db.account().identity().find(ctx.sender()) {
+        // PRV1-8(b) — the operator's issue-#403 Option B ruling (ADR-0228 D4):
+        // a terminal account re-registers FRESH. Every field at
+        // `new_account_row` defaults, identity/auth_issuer from the LIVE
+        // connection, no pre-deletion value carried forward — the arm body
+        // deliberately never reads the matched row (the guard binding is the
+        // only mention). `update`, not insert: the row exists. Keyed on the
+        // marker HALF (fail-closed on the illegal Active+marker shape, like
+        // every other marker call site).
+        Some(existing) if account_has_terminal_marker(&existing) => {
+            ctx.db.account().identity().update(new_account_row(
+                ctx.sender(),
+                issuer.to_string(),
+                now,
+            ));
+        }
         Some(existing) => {
             ctx.db
                 .account()
@@ -531,7 +632,14 @@ pub fn complete_guest_claim(ctx: &ReducerContext, code: String) -> Result<(), St
     let Some(account) = ctx.db.account().identity().find(me) else {
         return reject("complete_guest_claim", me, "no account");
     };
-    // Guard 3 (AUTH-13) — not pending deletion (reuses the D7 SSOT predicate).
+    // Guard 3 (AUTH-13) — deletion gate, terminal first (m22-s3b, ADR-0228
+    // D6): a completed erasure gets the DISTINCT static reason; the mid-grace
+    // state keeps the generic one (reuses the D7 SSOT predicate). Ordering
+    // matters — the disjunction inside `is_pending_deletion` would otherwise
+    // swallow the terminal case into the generic message.
+    if account_has_terminal_marker(&account) {
+        return reject("complete_guest_claim", me, REJECT_ALREADY_DELETED);
+    }
     if is_pending_deletion(ctx, me) {
         return reject("complete_guest_claim", me, "account pending deletion");
     }
@@ -627,6 +735,28 @@ fn disarm_deletion_reaper(ctx: &ReducerContext, account: Identity) {
             .account_deletion_reaper_schedule()
             .scheduled_id()
             .delete(id);
+    }
+}
+
+/// ADR-0221 R2 sweep (m22-s3b, ADR-0228 D3b): (re-)arm the deletion-grace
+/// reaper for every account sitting `PendingDeletion` with no terminal marker
+/// and no schedule row — the population whose one-shot fired before the
+/// cascade existed, plus any row a crash left unarmed. Called from `init` and
+/// `sync_content` beside `ensure_playtest_reaper` / `ensure_mr_heartbeat`;
+/// the body lives HERE because the sole-writer teeth close the schedule table
+/// to every other module. Idempotent via the pure `plan_deletion_rearms`
+/// seam: an already-armed identity is never re-armed, so repeated publishes
+/// add nothing.
+pub(crate) fn ensure_deletion_reapers_armed(ctx: &ReducerContext) {
+    let accounts: Vec<Account> = ctx.db.account().iter().collect();
+    let already_armed: Vec<Identity> = ctx
+        .db
+        .account_deletion_reaper_schedule()
+        .iter()
+        .map(|s| s.account_identity)
+        .collect();
+    for (identity, requested_at_ms) in plan_deletion_rearms(&accounts, &already_armed) {
+        arm_deletion_reaper(ctx, identity, requested_at_ms);
     }
 }
 
@@ -765,23 +895,28 @@ pub struct AccountDeletionReaperSchedule {
     pub account_identity: Identity,
 }
 
-/// Deletion-grace reaper — m22-s3 ships the PRV1-5 RECHECK SKELETON, still no
-/// cascade (ADR-0225). Scheduler-only first statement, then a re-read of the
-/// live `account` row keyed on the SCHEDULER-supplied identity, then the pure
-/// `reaper_should_run_cascade` recheck (status is `PendingDeletion`, no
-/// terminal marker yet, request past its grace window). The spec para-4.4
-/// five-step cascade is S3b — blocked on G5 write isolation: accounts.rs may
-/// write only its four owned tables, so every erase or anonymize step needs a
-/// new helper in the owning module (the `rekey_all` delegation precedent).
+/// Deletion-grace reaper — the M22 §4.4 five-step cascade (m22-s3b,
+/// ADR-0228). Scheduler-only first statement, then a re-read of the live
+/// `account` row keyed on the SCHEDULER-supplied identity, then the pure
+/// `reaper_should_run_cascade` recheck. On a not-yet-due row the recheck
+/// branch RE-ARMS from the row's own request stamp (`reaper_rearm_at_ms` —
+/// the runtime has already deleted the fired one-shot row, ADR-0228 D3a)
+/// before the no-op return; an `Active`, terminal or missing row re-arms
+/// nothing and no-ops.
 ///
-/// TWO OBLIGATIONS S3B MUST DISCHARGE, recorded in ADR-0225: (1) the runtime
-/// deletes the fired one-shot row regardless, so the not-yet-due early `Ok`
-/// below drops the schedule with NO re-arm — S3b re-arms there; (2) ADR-0221
-/// R2 population (accounts sitting `PendingDeletion` whose one-shot already
-/// fired) needs a sweep. Exposure is nil while `ALLOWED_ISSUERS` is the
-/// fail-closed `.invalid` placeholder. The reaper stamps NOTHING (PRV1-6e
-/// forbids `terminal_at_ms` before the full cascade) and resolves NOTHING (a
-/// half-cascade would forfeit live battles for zero deletion benefit).
+/// The cascade proper, one transaction: 6a force-resolve every live
+/// interaction via the shared `on_disconnect` bundle — FIRST, so nothing
+/// below yanks rows out from under a live battle/trade resolution; 6b the
+/// delegated ERASE sweeps in manifest order (G5 write isolation: every
+/// foreign-table write lives in its owning module, the `rekey_all`
+/// precedent), including the export-bundle purge; 6d `character` strictly
+/// before 6c's player display-name tombstone (the spec's order pin — the join
+/// key is the live `player` row); the battle anonymize sweeps its own
+/// join-only children per row before each identity swap; then 6e — LAST, and
+/// only reachable when everything above returned — one `account` update
+/// stamping the auth-issuer tombstone and the terminal marker. An `Err`
+/// anywhere aborts the whole transaction, so a partially-erased account
+/// cannot persist and the marker can never precede the erasure (PRV1-6e).
 /// Scheduler-only: the guard is the entire precondition of the ADR-0195 D6
 /// struct-argument carve-out.
 #[spacetimedb::reducer]
@@ -795,13 +930,30 @@ pub fn account_deletion_reaper(
     let Some(account) = ctx.db.account().identity().find(args.account_identity) else {
         return Ok(());
     };
-    if !reaper_should_run_cascade(&account, now_ms(ctx)) {
+    let now = now_ms(ctx);
+    if !reaper_should_run_cascade(&account, now) {
+        if let Some(requested) = reaper_rearm_at_ms(&account, now) {
+            arm_deletion_reaper(ctx, args.account_identity, requested);
+        }
         return Ok(());
     }
-    // S3b: the spec para-4.4 five-step cascade lands here (force-resolve live
-    // interactions, erase, anonymize, join-sweep, then — only on full success
-    // — stamp `terminal_at_ms`). S3b must ALSO re-arm on the not-yet-due
-    // branch above.
+    crate::resolve_all_live_interactions(ctx, args.account_identity);
+    crate::monster_mgmt::erase_monsters(ctx, args.account_identity);
+    crate::inventory::erase_inventory(ctx, args.account_identity);
+    crate::npc::erase_npc_state(ctx, args.account_identity);
+    crate::raising::erase_heal_cooldown(ctx, args.account_identity);
+    crate::economy::erase_wallet(ctx, args.account_identity);
+    crate::playtest::erase_playtest_events(ctx, args.account_identity);
+    crate::trading::erase_trade_offers(ctx, args.account_identity);
+    crate::pvp::erase_pvp_rows(ctx, args.account_identity);
+    crate::privacy::purge_export_bundles(ctx, args.account_identity);
+    crate::erase_character_rows(ctx, args.account_identity);
+    crate::ranking::anonymize_display_names(ctx, args.account_identity);
+    crate::battle::anonymize_battles(ctx, args.account_identity);
+    ctx.db
+        .account()
+        .identity()
+        .update(terminal_account(anonymized_account(account), now));
     Ok(())
 }
 

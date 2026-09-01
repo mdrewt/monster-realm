@@ -5,7 +5,6 @@
 //
 // Criteria:
 //   TR-19 MONSTER_CARD_NO_GENES  — MonsterCard struct has no iv_/ev_/nature_ fields
-//   TR-18 DISCONNECT_HOOK        — on_disconnect calls cancel_trades_on_disconnect
 //   PROPOSE_VALIDATE             — propose_trade delegates to validate_proposal
 //   PROPOSE_COUNTERPARTY_JOIN    — propose_trade gates on counterparty being joined
 //   RESPOND_AUTHORIZE            — respond_trade delegates to authorize_respond with ? propagation
@@ -24,6 +23,19 @@
 //   REAPER_STALE_CHECK           — trade_offer_reaper calls is_offer_stale
 //   REAPER_DELETES               — trade_offer_reaper deletes the offer row
 //   REAPER_DISARM                — disarm_trade_reaper called at all four deletion sites
+//
+// REMOVED in m22-s3b (ADR-0224 / ADR-0228 D7(e)): TR-18 DISCONNECT_HOOK, which
+// asserted that on_disconnect's body names cancel_trades_on_disconnect. The M22
+// spec section 4.4 step-1 extraction factors that call and its three siblings
+// into resolve_all_live_interactions, so the one-hop body scan stops matching —
+// and teaching this eval to follow a call would be exactly the scanner patching
+// ADR-0224 rules out. The criterion is PORTED, strictly stronger, to the Rust
+// two-link chain test m22s3b_resolver_extraction_chain in
+// server-module/src/trading_tests.rs, which pins BOTH hops (on_disconnect to the
+// resolver, and the resolver to trading::cancel_trades_on_disconnect); the first
+// hop is twinned into server-module/src/pvp_tests.rs so a pvp-side regression
+// reds in the pvp file too. This is a SHARED eval suite, so the edit is a
+// declared spec section 7.2 WARN for the supervisor to reconcile.
 //
 // No new RegExp() — all patterns are literal regex literals or indexOf checks.
 import { readFileSync } from 'node:fs';
@@ -113,16 +125,6 @@ function countMonsterCardFields(src) {
   // Count `pub <fieldname>:` lines.
   const fields = body.match(/\bpub\s+\w+\s*:/g);
   return fields ? fields.length : 0;
-}
-
-// ---------------------------------------------------------------------------
-// Criterion: DISCONNECT_HOOK (TR-18)
-// lib.rs on_disconnect body must call cancel_trades_on_disconnect.
-// bad fixture: body without that call → must flag.
-// good fixture: body with call → must not flag.
-// ---------------------------------------------------------------------------
-function hasDisconnectHook(onDisconnectBody) {
-  return /cancel_trades_on_disconnect/.test(onDisconnectBody);
 }
 
 // ---------------------------------------------------------------------------
@@ -616,7 +618,7 @@ function checkReaperDisarm(tradingSrc) {
 // ---------------------------------------------------------------------------
 export default async function () {
   const name =
-    'trade-reducer-security (M15c ADR-0108 + M16.5f ADR-0117: TR-19 no-genes, TR-18 disconnect, propose, respond/confirm authorize delegation, authorize_rules, reread+delete, cancel, public, reaper)';
+    'trade-reducer-security (M15c ADR-0108 + M16.5f ADR-0117: TR-19 no-genes, propose, respond/confirm authorize delegation, authorize_rules, reread+delete, cancel, public, reaper)';
 
   // -------------------------------------------------------------------------
   // Proof-of-teeth: each checker must flag its bad fixture and pass its good.
@@ -635,26 +637,6 @@ export default async function () {
       name,
       pass: false,
       detail: 'TEETH FAILED: hasGeneField falsely flagged clean MonsterCard fixture',
-    };
-  }
-
-  // TR-18: DISCONNECT_HOOK
-  const badDisconnect = 'fn on_disconnect(ctx) { battle::cancel_battles_on_disconnect(ctx, me); }';
-  if (hasDisconnectHook(badDisconnect)) {
-    return {
-      name,
-      pass: false,
-      detail:
-        'TEETH FAILED: hasDisconnectHook should NOT pass fixture missing cancel_trades_on_disconnect',
-    };
-  }
-  const goodDisconnect =
-    'fn on_disconnect(ctx) { battle::cancel_battles_on_disconnect(ctx, me); trading::cancel_trades_on_disconnect(ctx, me); }';
-  if (!hasDisconnectHook(goodDisconnect)) {
-    return {
-      name,
-      pass: false,
-      detail: 'TEETH FAILED: hasDisconnectHook did not detect cancel_trades_on_disconnect',
     };
   }
 
@@ -1277,16 +1259,15 @@ export default async function () {
   // -------------------------------------------------------------------------
   // Read actual source files
   // -------------------------------------------------------------------------
-  let typesSrc, libSrc, tradingSrc, schemaSrc, rulesSrc;
+  // `libSrc` went with TR-18 (m22-s3b): lib.rs was read ONLY for the
+  // on_disconnect body scan, and after the spec section 4.4 step-1 extraction
+  // that criterion lives in server-module/src/trading_tests.rs. Verified: no
+  // other read in this eval touches lib.rs, so the binding would be unused.
+  let typesSrc, tradingSrc, schemaSrc, rulesSrc;
   try {
     typesSrc = readFileSync('game-core/src/trading/types.rs', 'utf8');
   } catch {
     return { name, pass: false, detail: 'game-core/src/trading/types.rs not found' };
-  }
-  try {
-    libSrc = readFileSync('server-module/src/lib.rs', 'utf8');
-  } catch {
-    return { name, pass: false, detail: 'server-module/src/lib.rs not found' };
   }
   try {
     tradingSrc = readFileSync('server-module/src/trading.rs', 'utf8');
@@ -1320,18 +1301,6 @@ export default async function () {
   } else if (fieldCount !== 6) {
     failures.push(
       `MONSTER_CARD_NO_GENES (TR-19): MonsterCard has ${fieldCount} fields, expected exactly 6 (monster_id, species_id, nickname, level, current_hp, stat_hp) — extra field may be a gene leak`,
-    );
-  }
-
-  // TR-18: on_disconnect calls cancel_trades_on_disconnect.
-  const onDisconnectBody = extractFunctionBody(libSrc, 'on_disconnect');
-  if (!onDisconnectBody) {
-    failures.push(
-      'DISCONNECT_HOOK (TR-18): on_disconnect function not found in server-module/src/lib.rs',
-    );
-  } else if (!hasDisconnectHook(onDisconnectBody)) {
-    failures.push(
-      'DISCONNECT_HOOK (TR-18): on_disconnect does not call cancel_trades_on_disconnect — active offers survive player disconnect, violating TR-18 escrow release',
     );
   }
 
@@ -1506,6 +1475,6 @@ export default async function () {
     name,
     pass: true,
     detail:
-      'all 17 trade-reducer-security criteria met (TR-19 no-genes, TR-18 disconnect, propose-validate, counterparty-join, respond/confirm authorize delegation, authorize_rules, confirm reread+delete, cancel party-check, trade_offer public, reaper armed+schedule-private+scheduler-guard+stale-check+deletes+disarm)',
+      'all 16 trade-reducer-security criteria met (TR-19 no-genes, propose-validate, counterparty-join, respond/confirm authorize delegation, authorize_rules, confirm reread+delete, cancel party-check, trade_offer public, reaper armed+schedule-private+scheduler-guard+stale-check+deletes+disarm)',
   };
 }

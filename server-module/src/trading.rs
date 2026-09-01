@@ -768,6 +768,36 @@ pub fn cancel_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> {
     Ok(())
 }
 
+/// M22 §4.4 steps 6b+6d (PRV1-6b/6d, ADR-0228 D1/D2): delete every
+/// `trade_offer` naming `owner` on EITHER side — initiator AND counterparty,
+/// with NO liveness filter (contrast `cancel_trades_on_disconnect` below,
+/// which is active-only by design) — and disarm each offer's TTL schedule row
+/// (the JOIN_ONLY sweep riding its parent, the disarm idiom). After the
+/// cascade's 6a resolve this is defense-in-depth over an already-empty set;
+/// it must still exist and sweep BOTH columns, or an incoming offer the
+/// deleted player never answered survives in a public table naming them.
+/// Called only from `accounts::account_deletion_reaper` (D0 write-isolation).
+pub(crate) fn erase_trade_offers(ctx: &ReducerContext, owner: Identity) {
+    let ids: Vec<u64> = ctx
+        .db
+        .trade_offer()
+        .initiator()
+        .filter(owner)
+        .map(|o| o.trade_id)
+        .chain(
+            ctx.db
+                .trade_offer()
+                .counterparty()
+                .filter(owner)
+                .map(|o| o.trade_id),
+        )
+        .collect();
+    for id in ids {
+        disarm_trade_reaper(ctx, id);
+        ctx.db.trade_offer().trade_id().delete(id);
+    }
+}
+
 /// Cancel all active offers for a disconnecting player (TR-18). Called from
 /// `on_disconnect` in lib.rs. Uses indexed filters — O(offers for player), not O(total).
 pub(crate) fn cancel_trades_on_disconnect(ctx: &ReducerContext, player: Identity) {

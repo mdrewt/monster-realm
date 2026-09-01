@@ -2,10 +2,10 @@
 type: SpacetimeDB Reducer
 title: account_deletion_reaper
 slug: reducers/account_deletion_reaper
-updated: 2026-08-31
+updated: 2026-09-01
 tags: [reducer, spacetimedb, accounts]
-abstract: "Deletion-grace reaper — m22-s3 ships the PRV1-5 RECHECK SKELETON, still no cascade (ADR-0225). Scheduler-only first sta…"
-resource: server-module/src/accounts.rs#L788
+abstract: "Deletion-grace reaper — the M22 §4.4 five-step cascade (m22-s3b, ADR-0228). Scheduler-only first statement, then a re-r…"
+resource: server-module/src/accounts.rs#L923
 source: scripts/okf-export.mjs@server-module/src/accounts.rs
 ---
 

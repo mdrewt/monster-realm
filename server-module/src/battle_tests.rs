@@ -5948,3 +5948,668 @@ fn ea_pve_has_conditional_token(header: &str) -> bool {
         .split(|c: char| !c.is_alphanumeric() && c != '_')
         .any(|tok| conditionals.iter().any(|k| k.as_str() == tok))
 }
+
+// ===========================================================================
+// m22-s3b (ADR-0228) — THE `battle` ANONYMIZE STEP.
+//
+// EARS criteria (`specs/monster-realm-v2/M22-privacy-compliance.spec.md` §7.4):
+//   PRV1-6c   the deleting party's identity column is swapped to the tombstone
+//             sentinel; the opponent's side and every mechanical field are left
+//             untouched, and the row itself SURVIVES.
+//   PRV1-6d   the row's JOIN-ONLY children (`battle_wild`,
+//             `pvp_deadline_schedule`) are swept at this, the parent's, step.
+//   PRV1-19   a PRACTICE battle (player_identity == opponent_identity) is
+//             visited and tombstoned EXACTLY ONCE, not twice.
+//
+// WHY `battle` IS THE ONE GENUINE IDENTITY-SWAP CASE (spec §3): unlike
+// `trade_offer` and `battle_challenge`, terminal `battle` rows demonstrably
+// PERSIST — settle updates the row, it never deletes it, and the GC is lazy — so
+// a surviving opponent's `my_battle` view can still resolve a row naming the
+// deleted party months later.
+//
+// WHY THE TOMBSTONE MUST NOT BE ZERO: `WILD_IDENTITY` is the all-zero identity,
+// and `guards.rs` classifies a battle as WILD by `opponent_identity !=
+// WILD_IDENTITY`. A zero-valued tombstone would silently reclassify every
+// anonymized PvP battle as a wild one. The value therefore comes from
+// game-core's `TOMBSTONE_IDENTITY_BYTES` and is pinned distinct from
+// `WILD_IDENTITY` here as well as at its declaration.
+//
+// SCAN HYGIENE: every needle is assembled from parts per this file's own
+// convention, and this section contains no bare double-quote inside a comment
+// and no block-comment delimiter.
+// ===========================================================================
+
+/// A `battle` row with DISTINCT mechanical fields, so a constructor that
+/// rebuilt the row instead of swapping one column is visible.
+///
+/// `battle_fixture` (this file, ptc5b) supplies the empty-team `BattleState`;
+/// the spread adds party ids, opponent ids and a creation stamp that a
+/// field-by-field comparison can actually catch a change in.
+fn m22s3b_battle_row(
+    id: u64,
+    player: spacetimedb::Identity,
+    opponent: spacetimedb::Identity,
+) -> crate::schema::Battle {
+    crate::schema::Battle {
+        party_monster_ids: vec![11, 22, 33],
+        opponent_monster_ids: vec![44],
+        created_at_ms: 1_700_000_000_123,
+        ..battle_fixture(id, player, opponent, game_core::BattleOutcome::SideAWins)
+    }
+}
+
+/// Assert that every field of a swapped `battle` row EXCEPT the two identity
+/// columns is byte-identical to the row that went in.
+///
+/// Factored out because it is asserted on FIVE rows and a copy-paste of ten
+/// clauses five times is where one of them quietly goes missing. `Battle` derives
+/// no `PartialEq`, so the comparison is field by field on purpose — and that is
+/// the better shape anyway: a whole-struct compare names only the first
+/// divergence, while these clauses name WHICH mechanical fact the anonymize
+/// destroyed.
+fn m22s3b_assert_mechanical_fields_intact(
+    label: &str,
+    before: &crate::schema::Battle,
+    after: &crate::schema::Battle,
+) {
+    assert_eq!(
+        after.battle_id, before.battle_id,
+        "[m22s3b/battle-pk] {label}: the PRIMARY KEY must not move. The anonymize is a \
+         PK-keyed update of a SURVIVING row (spec §3), not a delete-and-reinsert: a new \
+         battle_id orphans `battle_wild` and every `battle_action` keyed to the old one, and \
+         the surviving opponent's `my_battle` subscription sees the terminal row vanish."
+    );
+    assert_eq!(
+        after.party_monster_ids, before.party_monster_ids,
+        "[m22s3b/battle-party-ids] {label}: `party_monster_ids` is a MECHANICAL field and must \
+         survive verbatim. Spec §3 says to swap the identity column and leave every \
+         mechanical field untouched — the surviving opponent's record of what was fought is \
+         not the deleted player's personal data to remove."
+    );
+    assert_eq!(
+        after.opponent_monster_ids, before.opponent_monster_ids,
+        "[m22s3b/battle-opponent-ids] {label}: `opponent_monster_ids` must survive verbatim — \
+         and on a side-B swap these are the SURVIVING player's own monsters."
+    );
+    assert_eq!(
+        after.created_at_ms, before.created_at_ms,
+        "[m22s3b/battle-created] {label}: `created_at_ms` must survive verbatim."
+    );
+    assert_eq!(
+        after.state.outcome, before.state.outcome,
+        "[m22s3b/battle-outcome] {label}: the settled OUTCOME must survive. Rewriting it \
+         would silently rewrite ranked history for the surviving opponent, whose profile \
+         rating was computed from it."
+    );
+    assert_eq!(
+        after.state.turn_number, before.state.turn_number,
+        "[m22s3b/battle-turn] {label}: `turn_number` must survive verbatim."
+    );
+    assert_eq!(
+        after.state.side_a.active, before.state.side_a.active,
+        "[m22s3b/battle-side-a-active] {label}: side A's lead index must survive verbatim."
+    );
+    assert_eq!(
+        after.state.side_b.active, before.state.side_b.active,
+        "[m22s3b/battle-side-b-active] {label}: side B's lead index must survive verbatim."
+    );
+    assert_eq!(
+        after.state.side_a.team.len(),
+        before.state.side_a.team.len(),
+        "[m22s3b/battle-side-a-team] {label}: side A's team must survive verbatim."
+    );
+    assert_eq!(
+        after.state.side_b.team.len(),
+        before.state.side_b.team.len(),
+        "[m22s3b/battle-side-b-team] {label}: side B's team must survive verbatim."
+    );
+}
+
+/// **PRV1-6c + PRV1-19 (pure, table-driven)** — `battle_with_tombstoned_party`
+/// swaps EVERY side that names the deleting identity, and nothing else.
+///
+/// FIVE ROWS, EACH KILLING A DIFFERENT WRONG IMPLEMENTATION:
+///   1. side A only — the deleting player is `player_identity`.
+///   2. side B only — the deleting player is `opponent_identity`. A helper that
+///      only ever rewrites `player_identity` passes row 1 and leaves every
+///      battle the deleted player was CHALLENGED INTO naming them forever.
+///   3. PRACTICE, both sides — `player_identity == opponent_identity`. This is
+///      PRV1-19: the row is collected ONCE (the caller dedups by construction)
+///      and this pure seam swaps BOTH sides in that single visit. A helper that
+///      swaps only the first matching side leaves the practice battle
+///      half-tombstoned, and one that relies on being called twice re-writes a
+///      row the caller only collected once.
+///   4. WILD — the opponent is `WILD_IDENTITY`, which must NOT be touched. It is
+///      the all-zero sentinel that marks the row as a wild battle; overwriting
+///      it with the tombstone reclassifies a settled wild battle as PvP.
+///   5. NON-PARTICIPANT — neither side is the deleting identity, so nothing
+///      moves. This is what kills an unconditional `player_identity = tombstone`
+///      body, which passes rows 1 and 3 and destroys every other player's row.
+///
+/// THE SENTINEL IS DISTINCT FROM `WILD_IDENTITY`, asserted here as a
+/// precondition rather than assumed: if the two were ever equal, row 4's
+/// assertion would be satisfied by the wrong reason and the whole
+/// wild-reclassification argument would be vacuous.
+///
+/// Kills: a `player_identity`-only swap; an `opponent_identity`-only swap; a
+///        practice row visited half-way; a swap that clobbers `WILD_IDENTITY`;
+///        an unconditional overwrite that ignores `deleting`; any mechanical
+///        field rewritten (ten separate clauses, each naming what it destroys).
+#[test]
+fn m22s3b_battle_tombstone_truth_table() {
+    let deleting = spacetimedb::Identity::from_byte_array([61u8; 32]);
+    let survivor = spacetimedb::Identity::from_byte_array([62u8; 32]);
+    let wild = crate::WILD_IDENTITY;
+    let tombstone = crate::TOMBSTONE_IDENTITY;
+
+    assert_ne!(
+        tombstone, wild,
+        "[m22s3b/battle-sentinel-distinct] TOMBSTONE_IDENTITY must NOT equal WILD_IDENTITY. \
+         `guards.rs` classifies a battle as WILD by `opponent_identity != WILD_IDENTITY`, so \
+         a zero-valued tombstone reclassifies every anonymized PvP battle as a wild one and \
+         silently rewrites settled ranked history. If these two are equal, row 4 below passes \
+         for the wrong reason and proves nothing."
+    );
+    assert_ne!(
+        tombstone, deleting,
+        "[m22s3b/battle-sentinel-fixture] the sentinel must differ from the fixture's \
+         deleting identity, or the swap assertions could not tell a swap from a no-op."
+    );
+
+    // --- ROW 1: side A ------------------------------------------------------
+    let before = m22s3b_battle_row(101, deleting, survivor);
+    let after = super::battle_with_tombstoned_party(before.clone(), deleting, tombstone);
+    assert_eq!(
+        after.player_identity, tombstone,
+        "[m22s3b/battle-side-a] the deleting party on side A must be swapped to the tombstone."
+    );
+    assert_eq!(
+        after.opponent_identity, survivor,
+        "[m22s3b/battle-side-a-survivor] the SURVIVING opponent's identity must be left \
+         alone. Spec §3 is explicit: swap the deleting party's column, leave the opponent's \
+         side and every mechanical field untouched — the row belongs to the survivor too."
+    );
+    m22s3b_assert_mechanical_fields_intact("side-A swap", &before, &after);
+
+    // --- ROW 2: side B ------------------------------------------------------
+    let before = m22s3b_battle_row(102, survivor, deleting);
+    let after = super::battle_with_tombstoned_party(before.clone(), deleting, tombstone);
+    assert_eq!(
+        after.opponent_identity, tombstone,
+        "[m22s3b/battle-side-b] the deleting party on side B must be swapped too. A helper \
+         that only ever rewrites `player_identity` passes row 1 and leaves every battle the \
+         deleted player was CHALLENGED INTO naming them forever — and `battle` has TWO \
+         indexed identity columns precisely because both roles are real."
+    );
+    assert_eq!(
+        after.player_identity, survivor,
+        "[m22s3b/battle-side-b-survivor] the surviving challenger's identity must be left \
+         alone."
+    );
+    m22s3b_assert_mechanical_fields_intact("side-B swap", &before, &after);
+
+    // --- ROW 3: PRACTICE, both sides, ONE call (PRV1-19) --------------------
+    let before = m22s3b_battle_row(103, deleting, deleting);
+    let after = super::battle_with_tombstoned_party(before.clone(), deleting, tombstone);
+    assert_eq!(
+        after.player_identity, tombstone,
+        "[m22s3b/battle-practice-a] PRV1-19: in a PRACTICE battle both sides are the deleting \
+         identity, and BOTH must be swapped in the ONE visit the caller makes. The caller \
+         dedups by construction (`player_identity` filter, then `opponent_identity` filter \
+         excluding rows already matched — the `my_battle` idiom), so this row is collected \
+         exactly once and a seam that swaps only the first matching side leaves it \
+         half-tombstoned forever."
+    );
+    assert_eq!(
+        after.opponent_identity, tombstone,
+        "[m22s3b/battle-practice-b] PRV1-19: the second side of the practice battle must be \
+         swapped in the SAME call. A seam that relies on being invoked twice cannot work — \
+         the caller only visits the row once, and visiting it twice is the double-visit \
+         PRV1-19 forbids by name."
+    );
+    m22s3b_assert_mechanical_fields_intact("practice both-sides swap", &before, &after);
+
+    // --- ROW 4: WILD opponent stays WILD ------------------------------------
+    let before = m22s3b_battle_row(104, deleting, wild);
+    let after = super::battle_with_tombstoned_party(before.clone(), deleting, tombstone);
+    assert_eq!(
+        after.player_identity, tombstone,
+        "[m22s3b/battle-wild-player] the player side of a wild battle is still swapped."
+    );
+    assert_eq!(
+        after.opponent_identity, wild,
+        "[m22s3b/battle-wild-opponent] the WILD sentinel must survive untouched. It is the \
+         all-zero identity that marks the row as a wild battle, and `guards.rs` tests \
+         `opponent_identity != WILD_IDENTITY` in two places; overwriting it with the \
+         tombstone turns a settled wild battle into a settled PvP battle against a \
+         non-existent player. The seam must swap only sides that MATCH `deleting`."
+    );
+    m22s3b_assert_mechanical_fields_intact("wild-row player swap", &before, &after);
+
+    // --- ROW 5: NON-PARTICIPANT is untouched --------------------------------
+    let other = spacetimedb::Identity::from_byte_array([63u8; 32]);
+    let before = m22s3b_battle_row(105, survivor, other);
+    let after = super::battle_with_tombstoned_party(before.clone(), deleting, tombstone);
+    assert_eq!(
+        after.player_identity, survivor,
+        "[m22s3b/battle-bystander-a] a battle the deleting identity is not part of must be \
+         returned UNCHANGED. This row is what kills an unconditional \
+         `player_identity = tombstone` body: it passes rows 1 and 3 and quietly rewrites \
+         every other player's settled history."
+    );
+    assert_eq!(
+        after.opponent_identity, other,
+        "[m22s3b/battle-bystander-b] the bystander's opponent column is untouched too."
+    );
+    m22s3b_assert_mechanical_fields_intact("non-participant", &before, &after);
+}
+
+/// **PRV1-6c + PRV1-6d (scan)** — `anonymize_battles` collects BOTH filter
+/// passes before mutating anything, sweeps each row's JOIN-ONLY children BEFORE
+/// swapping that row's identity, skips `Ongoing` rows, and swaps through the
+/// pure seam.
+///
+/// COLLECT BEFORE MUTATE is not style: deleting or updating rows while iterating
+/// the table being iterated is the shape ADR-0126 and every disarm helper in
+/// this tree avoids by construction, and the dedup that makes PRV1-19 true
+/// depends on the second filter pass seeing the FIRST pass's own membership.
+///
+/// JOIN SWEEP BEFORE SWAP is a hard ordering, and ADR-0228 D2 deviation (b)
+/// records why the literal spec 6c-then-6d order is unimplementable here: after
+/// the swap, `battle.player_identity` no longer names the deleting identity, so
+/// a later pass has no way back to that row's children. Sweep first or never.
+///
+/// THE `Ongoing` SKIP IS A NAMED FAILURE PATH (ADR-0228 D2 / RT-11): an Ongoing
+/// row reaching step 6c means step 6a's resolver failed on it. Sweeping its live
+/// `pvp_deadline_schedule` row would remove the only mechanism that can ever
+/// settle it and soft-lock the SURVIVING opponent, so such a row is skipped with
+/// its identity un-tombstoned — a recorded residual rather than a silent one.
+///
+/// THE SWAP GOES THROUGH THE PURE SEAM. An inline `b.player_identity =
+/// tombstone;` here would put the PRV1-19 both-sides rule out of reach of
+/// `m22s3b_battle_tombstone_truth_table`, which is the only test that can
+/// actually execute it.
+///
+/// Kills: an update inside the collecting iteration; a join sweep moved after
+///        the swap (where the join key no longer resolves); a missing
+///        `battle_wild` sweep (the raw RNG individuality seed survives — a
+///        must-never-leak value the manifest marks `exportable: false`); a
+///        missing `pvp_deadline_schedule` sweep (an armed deadline against an
+///        erased participant); an inlined identity swap that bypasses the pure
+///        seam; a body with no `Ongoing` skip at all.
+#[test]
+fn m22s3b_anonymize_battles_sweeps_joins_before_swap() {
+    let stripped = strip_rust_strings(&strip_rust_comments(MODULE_SOURCE));
+    let name = ["anonymize", "_battles"].concat();
+    let (start, end) = extract_fn_body_range(&stripped, name.as_str()).unwrap_or_else(|| {
+        panic!(
+            "m22-s3b PRV1-6c FAIL (extraction): battle.rs declares no `fn {name}(`. The \
+             cascade delegates the `battle` ANONYMIZE — and, through it, the `battle_wild` \
+             and `pvp_deadline_schedule` JOIN-ONLY sweeps — to this module because G5 \
+             MODULE_WRITE_ISOLATION closes accounts.rs at its four owned tables. Without this \
+             helper every settled battle keeps naming the deleted player forever. Fail LOUD \
+             rather than pass vacuously."
+        )
+    });
+    let squashed = squash_ws(&stripped[start..end]);
+    assert!(
+        !squashed.is_empty(),
+        "m22-s3b PRV1-6c FAIL (non-vacuity): the `{name}` body is empty."
+    );
+
+    // --- count before index, for every anchor this test compares -------------
+    let update = ["battle().battle_id()", ".update("].concat();
+    let n_update = squashed.matches(update.as_str()).count();
+    assert_eq!(
+        n_update, 1,
+        "m22-s3b PRV1-6c FAIL (write census): `{name}` must update the battle row EXACTLY \
+         once — one PK-keyed update per collected row, inside the loop; found {n_update}. \
+         ZERO means no row is ever tombstoned. MORE THAN ONE makes every ordering clause \
+         below anchor on a first hit that a second, later write can sit behind."
+    );
+    let at_update = squashed
+        .find(update.as_str())
+        .expect("m22-s3b: the battle update counted 1 but could not be located");
+
+    // --- THE DELETE CENSUS ---------------------------------------------------
+    //
+    // CORRECTED IN r2. The first draft of this test demanded the `battle_wild`
+    // join sweep be PRESENT and, in the same breath, that the body contain ZERO
+    // delete verbs — and the `battle_wild` sweep IS a delete, so the sanctioned
+    // body was permanently RED. The property actually wanted is not "no deletes"
+    // but "EXACTLY ONE delete, and it is the `battle_wild` join sweep":
+    //   * total == 1 bounds the body to a single row removal;
+    //   * the `battle_wild().battle_id().delete(` count of 1 (asserted in the
+    //     join loop below, where its ordering is also pinned) identifies WHICH
+    //     one it is — with the total at 1, the two together mean the only delete
+    //     in this function is that sweep;
+    //   * `battle().battle_id().delete(` == 0 states the ANONYMIZE invariant
+    //     directly, so a failure names the actual violation rather than a count.
+    // `pvp_deadline_schedule` is NOT deleted here: pvp.rs is its sole writer and
+    // the sweep is delegated to `pvp::disarm_pvp_deadlines` (ADR-0228 D1), which
+    // is why one delete — not two — is the sanctioned number.
+    let delete_verb = ["del", "ete("].concat();
+    let deletes = squashed.matches(delete_verb.as_str()).count();
+    assert_eq!(
+        deletes, 1,
+        "m22-s3b PRV1-6c FAIL (delete census): `{name}` performs {deletes} row delete(s); \
+         EXACTLY ONE is sanctioned — the `battle_wild` join sweep, whose own count and \
+         ordering are pinned in the join loop below. ZERO means the JOIN-ONLY child is never \
+         swept, so the raw RNG individuality seed (a must-never-leak value the manifest marks \
+         `exportable: false`) survives as an orphan keyed to a battle whose participant is \
+         gone. TWO OR MORE means either the `battle` row itself is being deleted — see the \
+         clause below — or `pvp_deadline_schedule` is being swept inline instead of through \
+         `pvp::disarm_pvp_deadlines`, which breaks the sole-writer delegation ADR-0228 D1 \
+         keeps intact for that one table."
+    );
+    let battle_delete = ["battle().battle_id()", ".del", "ete("].concat();
+    assert_eq!(
+        squashed.matches(battle_delete.as_str()).count(),
+        0,
+        "m22-s3b PRV1-6c FAIL (never delete a battle): `{name}` deletes the `battle` row \
+         itself. `battle` is classified ANONYMIZE, never ERASE: spec §3 records that terminal \
+         rows demonstrably PERSIST — settle UPDATES the row and never deletes it, and the GC \
+         is lazy — so a surviving opponent's `my_battle` view can still resolve a row naming \
+         the deleted party months later. Deleting it destroys the opponent's own settled \
+         history to remove one identity column, which is exactly the trade the ANONYMIZE \
+         classification exists to refuse."
+    );
+
+    for (needle, what, why) in [
+        (
+            ["player_identity()", ".filter(owner)"].concat(),
+            "the side-A filter pass",
+            "every battle the deleting player STARTED",
+        ),
+        (
+            ["opponent_identity()", ".filter(owner)"].concat(),
+            "the side-B filter pass",
+            "every battle the deleting player was CHALLENGED INTO — omitted, those rows keep \
+             naming them in the surviving opponent's own view forever",
+        ),
+    ] {
+        let n = squashed.matches(needle.as_str()).count();
+        assert_eq!(
+            n, 1,
+            "m22-s3b PRV1-6c FAIL ({what}): `{name}` must filter that btree index with the \
+             `owner` PARAMETER (`{needle}`) EXACTLY once; found {n}. It covers {why}. \
+             `battle` carries TWO indexed identity columns and both are the deleting party's \
+             in a practice battle."
+        );
+        let at = squashed
+            .find(needle.as_str())
+            .expect("m22-s3b: a filter pass counted 1 but could not be located");
+        assert!(
+            at < at_update,
+            "m22-s3b PRV1-6c FAIL (collect before mutate): {what} sits at squashed offset \
+             {at}, AFTER the battle update at {at_update}. BOTH filter passes must be \
+             collected before ANY mutation: mutating the table being iterated is the shape \
+             every collect-then-delete helper in this tree exists to avoid, and the \
+             PRV1-19 dedup depends on the second pass being evaluated against the first \
+             pass's own membership rather than against half-rewritten rows."
+        );
+    }
+
+    // --- PRV1-19: THE DEDUP, AS ONE CONTIGUOUS CHAIN -------------------------
+    //
+    // TIGHTENED IN r2. The first draft asked only that the tokens
+    // `player_identity` and `!=owner` appear ADJACENT somewhere in the body, and
+    // a red-team satisfied that two ways without de-duplicating anything: with a
+    // decoy binding (`let _skip = b.player_identity != owner;`) that no filter
+    // consumes, and by hanging the exclusion off the FIRST pass — where it is
+    // not merely useless but actively wrong, because the first pass is the one
+    // that must collect the practice row. Pinning the WHOLE chain — the
+    // opponent-side index filter, then the exclusion closure, contiguous —
+    // is what makes the clause say `the SECOND pass excludes rows the FIRST
+    // already matched` rather than `these tokens are near each other`.
+    let dedup = [
+        "opponent_identity()",
+        ".filter(owner)",
+        ".filter(|b|b.player_identity",
+        "!=owner)",
+    ]
+    .concat();
+    let n_dedup = squashed.matches(dedup.as_str()).count();
+    assert_eq!(
+        n_dedup, 1,
+        "m22-s3b PRV1-19 FAIL (dedup by construction): `{name}` must exclude already-matched \
+         rows from the SECOND filter pass as one contiguous chain, `{dedup}` — the `my_battle` \
+         view's own idiom (schema.rs). Found {n_dedup}. \
+         WITHOUT IT a PRACTICE battle (player_identity == opponent_identity) is collected by \
+         BOTH passes and therefore visited TWICE, which is exactly what PRV1-19 forbids: the \
+         second visit re-reads a row whose sides are already the tombstone and writes it \
+         again. \
+         THE CHAIN IS PINNED WHOLE because the two loose tokens were MEASURED satisfiable by \
+         a decoy binding no filter consumes, and by attaching the exclusion to the FIRST pass \
+         — which does not de-duplicate at all and instead DROPS every practice battle from \
+         the side-A collection, so the row is visited once by the wrong pass and its side A \
+         is never swapped. \
+         Do NOT express the predicate as `b.player_identity != b.opponent_identity` either: \
+         that deletes every practice battle from the sweep outright instead of \
+         de-duplicating it, which is the same mistake schema.rs's `my_battle` doc comment \
+         records for the view. Body was: {squashed:?}"
+    );
+
+    for (needle, what, why) in [
+        (
+            ["battle_wild()", ".battle_id()", ".del", "ete("].concat(),
+            "the battle_wild join-sweep DELETE",
+            "`battle_wild` is JOIN-ONLY via `battle` and carries the raw RNG individuality \
+             seed — a must-never-leak value the manifest marks `exportable: false`. Left \
+             behind, it is an orphan row keyed to a battle whose participant no longer exists",
+        ),
+        (
+            ["disarm_pvp_", "deadlines("].concat(),
+            "the pvp_deadline_schedule join sweep",
+            "`pvp_deadline_schedule` is JOIN-ONLY via `battle` and pvp.rs is its SOLE writer, \
+             so the sweep is delegated to `pvp::disarm_pvp_deadlines` (ADR-0228 D1). Left \
+             armed, a deadline fires later against a battle whose participant is erased",
+        ),
+    ] {
+        let n = squashed.matches(needle.as_str()).count();
+        assert_eq!(
+            n, 1,
+            "m22-s3b PRV1-6d FAIL ({what}): `{name}` must perform it EXACTLY once; found {n}. \
+             {why}. The ordering clause below anchors on this needle, so a second occurrence \
+             would steer a first-hit index."
+        );
+        let at = squashed
+            .find(needle.as_str())
+            .expect("m22-s3b: a join sweep counted 1 but could not be located");
+        assert!(
+            at < at_update,
+            "m22-s3b PRV1-6d FAIL (sweep before swap): {what} sits at squashed offset {at}, \
+             AFTER the identity swap at {at_update}. ADR-0228 D2 deviation (b) records why \
+             this ordering is not negotiable: after the swap `battle.player_identity` no \
+             longer names the deleting identity, so a later pass has no route back from an \
+             owner to that row's children at all. The literal spec 6c-then-6d order is \
+             unimplementable here — sweep the joins per row, before that row's swap, or the \
+             children are unreachable forever."
+        );
+    }
+
+    // --- THE Ongoing SKIP, PINNED BY POLARITY (r3) --------------------------
+    //
+    // THE MEASURED SURVIVOR. cargo-mutants ran 60 mutants over this slice's
+    // diff and 59 were handled; the ONE that lived is battle.rs:1567,
+    // `replace == with != in anonymize_battles` — a single character, and the
+    // whole suite still reported 762 passing. The clause this replaces asked
+    // only that the token `Ongoing` APPEAR somewhere in the body, so an inverted
+    // comparison contains it just as happily as the correct one. Presence is not
+    // polarity, and for a guard whose entire content IS its comparison, a
+    // presence check is not a gate at all.
+    //
+    // ONE INVERSION, BOTH HARM DIRECTIONS AT ONCE — which is what makes this the
+    // worst mutant in the set rather than merely an uncaught one:
+    //   * it SKIPS every SETTLED battle, so PRV1-6c never runs on the entire
+    //     population it exists for. Every terminal row keeps naming the deleted
+    //     player forever, and spec §3 records exactly why that matters: terminal
+    //     `battle` rows demonstrably PERSIST (settle updates, never deletes; the
+    //     GC is lazy), so a surviving opponent's `my_battle` view still resolves
+    //     them months later. The cascade would report success having anonymized
+    //     nothing;
+    //   * and it PROCESSES the Ongoing ones — the precise rows ADR-0228 D2 /
+    //     RT-11 skips on purpose. Sweeping a live row's `pvp_deadline_schedule`
+    //     entry removes the only mechanism that can ever settle that battle, so
+    //     the SURVIVING opponent is soft-locked in a battle with no deadline and
+    //     no participant.
+    //
+    // THE PIN IS THE WHOLE STATEMENT, in the `m22s3_nd_reaper_recheck_guard`
+    // shape (accounts_tests): the comparison, its polarity, and the branch it
+    // guards, as one contiguous squashed needle. A condition that is present but
+    // whose branch does something other than skip is the same present-but-inert
+    // family that needle was written to close.
+    //
+    // TWO INDEPENDENT TRANSCRIPTIONS, split at different points, so the pin is
+    // not ONE artifact: a later edit that "fixes" the needle by copying it from a
+    // mutated implementation has to edit both, and the agreement clause below is
+    // what makes that checkable rather than merely hoped for. Neither spelling
+    // carries a contiguous `BattleOutcome` or `Ongoing` token, per this file's
+    // needle-assembly convention.
+    let ongoing_guard = concat!(
+        "ifb.state.out",
+        "come==BattleOutco",
+        "me::Ongo",
+        "ing{cont",
+        "inue;}"
+    );
+    let ongoing_guard_twin = [
+        "if",
+        "b.state.outcome==",
+        "BattleOut",
+        "come::Ong",
+        "oing{",
+        "continue;}",
+    ]
+    .concat();
+    assert_eq!(
+        ongoing_guard, ongoing_guard_twin,
+        "m22-s3b PRV1-6c FAIL (needle independence): the two transcriptions of the Ongoing \
+         skip disagree — `{ongoing_guard}` versus `{ongoing_guard_twin}`. They are split at \
+         different points on purpose so neither can be edited into agreement with a mutated \
+         implementation by accident; a mismatch means one was changed alone, and the clause \
+         below is then asserting something nobody chose. Re-derive BOTH from ADR-0228 D2 / \
+         RT-11 in the same change."
+    );
+
+    let n_ongoing = squashed.matches(ongoing_guard).count();
+    assert_eq!(
+        n_ongoing, 1,
+        "m22-s3b PRV1-6c FAIL (Ongoing skip): `{name}` must carry the outcome guard EXACTLY \
+         once, as the whole squashed statement `{ongoing_guard}`; found {n_ongoing}. \
+         THIS CLAUSE EXISTS BECAUSE OF A MEASURED SURVIVOR: cargo-mutants' \
+         `replace == with != in anonymize_battles` (battle.rs:1567) lived through the entire \
+         suite — 762 tests passing — against a presence-only check for the token `Ongoing`, \
+         which an inverted comparison satisfies exactly as well as a correct one. \
+         THE INVERSION DOES BOTH HARMS WITH ONE CHARACTER. It SKIPS every SETTLED battle, so \
+         PRV1-6c never runs on the whole population it exists for: terminal rows persist by \
+         design (spec §3 — settle updates, never deletes; the GC is lazy), so every one of \
+         them keeps naming the deleted player in the surviving opponent's `my_battle` view, \
+         and the cascade reports success having anonymized nothing. AND it PROCESSES the \
+         Ongoing rows, which is the failure path ADR-0228 D2 / RT-11 skips deliberately: an \
+         Ongoing row here means step 6a's resolver failed on it (an already-logged anomaly), \
+         and sweeping its LIVE `pvp_deadline_schedule` entry removes the only mechanism that \
+         can ever settle it — soft-locking the SURVIVING opponent in a battle with no \
+         deadline and no participant. \
+         ZERO means the guard is missing, mis-spelled, or was written as a condition whose \
+         branch does something other than `continue` — the present-but-inert family. A \
+         collect-side `filter(..)` in place of the loop-body skip is a DIFFERENT shape and is \
+         deliberately not accepted here: if that refactor is wanted, re-derive this pin from \
+         ADR-0228 D2 in the same change rather than relaxing it. Body was: {squashed:?}"
+    );
+    let at_ongoing = squashed
+        .find(ongoing_guard)
+        .expect("m22-s3b: the Ongoing skip counted 1 but could not be located");
+
+    // --- THE SKIP MUST PRECEDE BOTH JOIN SWEEPS, NOT MERELY THE SWAP (r4) ---
+    //
+    // MEASURED, AND THE REASON THIS CLAUSE MOVED. The assertion this replaces
+    // anchored on the identity SWAP while its own message claimed the join
+    // sweeps — and a skip relocated BETWEEN the sweeps and the update passes
+    // 762/762 with `battle_wild` already deleted and the deadline already
+    // disarmed. That is the RT-11 harm in full, and in its most deceptive form:
+    // the row is left un-tombstoned, so the skip looks like it worked, while the
+    // battle has already been stripped of the only mechanism that could ever
+    // settle it. A message that names the sweeps must anchor on the sweeps.
+    //
+    // ANCHOR 1 reuses `delete_verb` from the delete census above rather than
+    // re-spelling the `battle_wild` needle: that census pins the body's TOTAL
+    // `delete(` count at 1, and the join loop pins
+    // `battle_wild().battle_id().delete(` at 1, so the single occurrence located
+    // here IS the battle_wild sweep. No second spelling of that needle exists to
+    // drift.
+    //
+    // ANCHOR 2 re-spells the disarm call, because the join loop holds its needle
+    // only as a loop-local binding. The split points differ from the loop's on
+    // purpose, and the count is asserted HERE as well as there — so if the two
+    // spellings ever diverged, one of the two count-of-one clauses fails loudly
+    // instead of this pin going quiet.
+    //
+    // The old `at_ongoing < at_update` assertion is not restated: the join loop
+    // already pins both sweeps before the update, so the swap ordering follows
+    // by transitivity from the two clauses below, and repeating it would only
+    // add a third message that fires for somebody else's reason.
+    let at_wild = squashed
+        .find(delete_verb.as_str())
+        .expect("m22-s3b: the delete census counted 1 but the delete could not be located");
+    assert!(
+        at_ongoing < at_wild,
+        "m22-s3b PRV1-6c FAIL (skip before the battle_wild sweep): the Ongoing skip sits at \
+         squashed offset {at_ongoing}, AFTER the row's `battle_wild` delete at {at_wild}. The \
+         skip must be the FIRST thing the per-row body does. Placed after this delete it has \
+         already destroyed the live battle's wild side-table row — which carries the raw RNG \
+         individuality seed the encounter was rebuilt from — before deciding the row was not \
+         its business. `continue` cannot undo a delete: the reducer is one transaction, but \
+         the cascade goes on to commit it."
+    );
+
+    let disarm_call = concat!("disarm_pvp_dead", "lines(");
+    let n_disarm = squashed.matches(disarm_call).count();
+    assert_eq!(
+        n_disarm, 1,
+        "m22-s3b PRV1-6d FAIL (disarm anchor): `{name}` must call `{disarm_call}` EXACTLY \
+         once; found {n_disarm}. The join loop above asserts the same count through a \
+         differently-split spelling of the same needle — this clause is what keeps the two \
+         from drifting apart, and it must hold before the ordering clause below can use the \
+         offset."
+    );
+    let at_disarm = squashed
+        .find(disarm_call)
+        .expect("m22-s3b: the disarm call counted 1 but could not be located");
+    assert!(
+        at_ongoing < at_disarm,
+        "m22-s3b PRV1-6c/RT-11 FAIL (skip before the deadline disarm): the Ongoing skip sits \
+         at squashed offset {at_ongoing}, AFTER the `pvp_deadline_schedule` disarm at \
+         {at_disarm}. THIS IS THE ORDERING THE WHOLE SKIP EXISTS TO GUARANTEE. ADR-0228 D2 / \
+         RT-11: an Ongoing row reaching step 6c means step 6a's resolver failed on it, and \
+         its deadline schedule is the ONLY mechanism that can ever settle that battle — which \
+         is why the row is passed over with its identity un-tombstoned rather than processed. \
+         A skip placed after the disarm gets the visible half right (nothing is tombstoned) \
+         and the load-bearing half exactly wrong (the deadline is gone), so the SURVIVING \
+         opponent is left in a battle with no deadline, no participant and no exit. The \
+         clause this replaces anchored on the identity swap instead, and a skip relocated \
+         into precisely this gap was MEASURED passing 762/762."
+    );
+
+    let seam = ["battle_with_tombstoned", "_party("].concat();
+    let n_seam = squashed.matches(seam.as_str()).count();
+    assert_eq!(
+        n_seam, 1,
+        "m22-s3b PRV1-6c FAIL (pure seam): `{name}` must perform the identity swap through \
+         `{seam}` EXACTLY once; found {n_seam}. This crate has no reducer-executing harness, \
+         so an inline `b.player_identity = tombstone;` here puts the PRV1-19 both-sides rule \
+         and the WILD-sentinel exclusion permanently out of reach of \
+         `m22s3b_battle_tombstone_truth_table`, which is the ONLY test that can execute them. \
+         The `zeroed_wallet` / `profile_with_carried_stats` precedent is the same rule: every \
+         row mutation in a delegated helper goes through a pure seam."
+    );
+    let sentinel = ["TOMBSTONE", "_IDENTITY"].concat();
+    assert!(
+        squashed.contains(sentinel.as_str()),
+        "m22-s3b PRV1-6c FAIL (sentinel): `{name}` must pass the crate-level \
+         `{sentinel}` constant to the swap seam. That constant is derived ONCE from \
+         `game_core::TOMBSTONE_IDENTITY_BYTES` beside `WILD_IDENTITY`; a hand-typed byte \
+         array here is a second copy of a value whose ONLY load-bearing property is that it \
+         differs from the all-zero wild sentinel. Body was: {squashed:?}"
+    );
+}
