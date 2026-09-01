@@ -1,11 +1,11 @@
-//! monster-realm server module (`spacetimedb` crate 1.12.0 against a 2.8.1 host — see ADR-0197).
+//! monster-realm server module (`spacetimedb` crate 2.8.1, lockstep with the 2.8.1 host — ADR-0197).
 //!
 //! The authoritative imperative shell: tables hold the world's truth; reducers are
 //! the ONLY writers. Reducers are THIN — validate `ctx.sender()` + legality, delegate
 //! the rule to `game-core` (the SSOT `apply_move`), write tables; reject with `Err`,
 //! never clamp. Movement is **server-paced and per-zone** (ADR-0011/0007): clients
 //! buffer intent; a per-zone scheduled `movement_tick` drains one move/character/tick.
-//! Time columns are `i64` ms (round-trip `game_core::Millis`). Syntax: crate 1.12.
+//! Time columns are `i64` ms (round-trip `game_core::Millis`). Syntax: crate 2.x.
 //!
 //! M8.9 (ADR-0056): the former monolith is split into cohesive domain submodules.
 //! This `lib.rs` is reduced to module wiring + crate-wide constants + the three
