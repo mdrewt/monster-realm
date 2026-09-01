@@ -285,8 +285,14 @@ function findProfileAccessOutsideRanking(dir) {
   // Scope: production (non-test) files only. Test files (*_tests.rs) legitimately
   // access ctx.db.profile() through the SpacetimeDB test harness context — the
   // threat model is client-callable production paths, not test scaffolding.
+  // m22-s4 (ADR-0226): privacy.rs joins ranking.rs as a sanctioned READER —
+  // the data-export walk serializes the caller's own profile row. Named
+  // allowlist, exact paths only (the currency-integrity 6a lesson). The write
+  // direction stays closed by rb22p_writes_only_export_bundle (privacy.rs may
+  // write nothing but export_bundle) and by the m17a RL-2 never-deleted scan.
+  const PROFILE_READER_ALLOWLIST = ['ranking.rs', 'privacy.rs'];
   for (const entry of readdirSync(dir).sort()) {
-    if (entry === 'ranking.rs') continue; // allowed home
+    if (PROFILE_READER_ALLOWLIST.includes(entry)) continue; // allowed homes
     if (entry.endsWith('_tests.rs')) continue; // test scaffolding, not production
     const full = `${dir}/${entry}`;
     if (statSync(full).isDirectory()) {

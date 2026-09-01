@@ -4,7 +4,7 @@ title: Monster Realm Schema Overview
 slug: schema-overview
 updated: 2026-08-31
 tags: [schema, spacetimedb, overview]
-abstract: "40-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 51 reducers."
+abstract: "40-table SpacetimeDB schema for Monster Realm: public/private split (ADR-0040). 52 reducers."
 source: scripts/okf-export.mjs@server-module/src/
 ---
 
@@ -56,7 +56,7 @@ source: scripts/okf-export.mjs@server-module/src/
 - [pvp_deadline_schedule](tables/pvp_deadline_schedule.md)
 - [trade_offer_reaper_schedule](tables/trade_offer_reaper_schedule.md)
 
-## Reducers (51)
+## Reducers (52)
 
 - [accept_challenge](reducers/accept_challenge.md)
 - [account_deletion_reaper](reducers/account_deletion_reaper.md)
@@ -92,6 +92,7 @@ source: scripts/okf-export.mjs@server-module/src/
 - [playtest_reaper](reducers/playtest_reaper.md)
 - [propose_trade](reducers/propose_trade.md)
 - [pvp_deadline_reaper](reducers/pvp_deadline_reaper.md)
+- [request_data_export](reducers/request_data_export.md)
 - [respond_trade](reducers/respond_trade.md)
 - [sell](reducers/sell.md)
 - [set_move](reducers/set_move.md)

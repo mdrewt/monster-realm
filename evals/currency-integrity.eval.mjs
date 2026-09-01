@@ -239,6 +239,10 @@ export const ACCESSOR_BYPASS_ALLOWLIST = [
   'economy.rs', // the single sanctioned wallet surface (grant/spend live here)
   'economy_tests.rs', // its sibling test module
   'schema.rs', // declares the table + struct; no reducer logic
+  // m22-s4 (ADR-0226): the data-export reader. READ-ONLY by a compensating
+  // gate — rb22p_writes_only_export_bundle pins privacy.rs's whole write set
+  // to export_bundle, so a wallet WRITE here reds that test, not this eval.
+  'privacy.rs',
 ];
 
 // ---------------------------------------------------------------------------
