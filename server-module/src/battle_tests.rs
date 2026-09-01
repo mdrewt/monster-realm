@@ -6520,14 +6520,75 @@ fn m22s3b_anonymize_battles_sweeps_joins_before_swap() {
     let at_ongoing = squashed
         .find(ongoing_guard)
         .expect("m22-s3b: the Ongoing skip counted 1 but could not be located");
+
+    // --- THE SKIP MUST PRECEDE BOTH JOIN SWEEPS, NOT MERELY THE SWAP (r4) ---
+    //
+    // MEASURED, AND THE REASON THIS CLAUSE MOVED. The assertion this replaces
+    // anchored on the identity SWAP while its own message claimed the join
+    // sweeps — and a skip relocated BETWEEN the sweeps and the update passes
+    // 762/762 with `battle_wild` already deleted and the deadline already
+    // disarmed. That is the RT-11 harm in full, and in its most deceptive form:
+    // the row is left un-tombstoned, so the skip looks like it worked, while the
+    // battle has already been stripped of the only mechanism that could ever
+    // settle it. A message that names the sweeps must anchor on the sweeps.
+    //
+    // ANCHOR 1 reuses `delete_verb` from the delete census above rather than
+    // re-spelling the `battle_wild` needle: that census pins the body's TOTAL
+    // `delete(` count at 1, and the join loop pins
+    // `battle_wild().battle_id().delete(` at 1, so the single occurrence located
+    // here IS the battle_wild sweep. No second spelling of that needle exists to
+    // drift.
+    //
+    // ANCHOR 2 re-spells the disarm call, because the join loop holds its needle
+    // only as a loop-local binding. The split points differ from the loop's on
+    // purpose, and the count is asserted HERE as well as there — so if the two
+    // spellings ever diverged, one of the two count-of-one clauses fails loudly
+    // instead of this pin going quiet.
+    //
+    // The old `at_ongoing < at_update` assertion is not restated: the join loop
+    // already pins both sweeps before the update, so the swap ordering follows
+    // by transitivity from the two clauses below, and repeating it would only
+    // add a third message that fires for somebody else's reason.
+    let at_wild = squashed
+        .find(delete_verb.as_str())
+        .expect("m22-s3b: the delete census counted 1 but the delete could not be located");
     assert!(
-        at_ongoing < at_update,
-        "m22-s3b PRV1-6c FAIL (skip before effect): the Ongoing skip sits at squashed offset \
-         {at_ongoing}, AFTER the identity swap at {at_update}. It must be the FIRST thing the \
-         per-row body does. A skip placed below the join sweeps has already deleted the live \
-         row's `battle_wild` entry and disarmed its `pvp_deadline_schedule` before deciding \
-         not to touch it — which is the exact soft-lock the skip exists to prevent, reached \
-         by an ordering rather than by a polarity."
+        at_ongoing < at_wild,
+        "m22-s3b PRV1-6c FAIL (skip before the battle_wild sweep): the Ongoing skip sits at \
+         squashed offset {at_ongoing}, AFTER the row's `battle_wild` delete at {at_wild}. The \
+         skip must be the FIRST thing the per-row body does. Placed after this delete it has \
+         already destroyed the live battle's wild side-table row — which carries the raw RNG \
+         individuality seed the encounter was rebuilt from — before deciding the row was not \
+         its business. `continue` cannot undo a delete: the reducer is one transaction, but \
+         the cascade goes on to commit it."
+    );
+
+    let disarm_call = concat!("disarm_pvp_dead", "lines(");
+    let n_disarm = squashed.matches(disarm_call).count();
+    assert_eq!(
+        n_disarm, 1,
+        "m22-s3b PRV1-6d FAIL (disarm anchor): `{name}` must call `{disarm_call}` EXACTLY \
+         once; found {n_disarm}. The join loop above asserts the same count through a \
+         differently-split spelling of the same needle — this clause is what keeps the two \
+         from drifting apart, and it must hold before the ordering clause below can use the \
+         offset."
+    );
+    let at_disarm = squashed
+        .find(disarm_call)
+        .expect("m22-s3b: the disarm call counted 1 but could not be located");
+    assert!(
+        at_ongoing < at_disarm,
+        "m22-s3b PRV1-6c/RT-11 FAIL (skip before the deadline disarm): the Ongoing skip sits \
+         at squashed offset {at_ongoing}, AFTER the `pvp_deadline_schedule` disarm at \
+         {at_disarm}. THIS IS THE ORDERING THE WHOLE SKIP EXISTS TO GUARANTEE. ADR-0228 D2 / \
+         RT-11: an Ongoing row reaching step 6c means step 6a's resolver failed on it, and \
+         its deadline schedule is the ONLY mechanism that can ever settle that battle — which \
+         is why the row is passed over with its identity un-tombstoned rather than processed. \
+         A skip placed after the disarm gets the visible half right (nothing is tombstoned) \
+         and the load-bearing half exactly wrong (the deadline is gone), so the SURVIVING \
+         opponent is left in a battle with no deadline, no participant and no exit. The \
+         clause this replaces anchored on the identity swap instead, and a skip relocated \
+         into precisely this gap was MEASURED passing 762/762."
     );
 
     let seam = ["battle_with_tombstoned", "_party("].concat();
