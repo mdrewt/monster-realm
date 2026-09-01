@@ -4807,3 +4807,216 @@ fn ea_ra_06b_issuers_configured_matrix() {
          keep enforcement off for a legitimate deployment."
     );
 }
+
+// ===========================================================================
+// m22-s5 (PRV1-9, spec para 4.7, ADR-0225) — `challenge_pvp` and
+// `accept_challenge` carry the deletion gate, reachably, before the
+// irreversible effect.
+//
+// EARS criterion: WHILE the caller's account is inside the para-4.7 deletion
+// gate, WHEN the caller invokes `challenge_pvp` or `accept_challenge`, the
+// reducer SHALL reject the call BEFORE the challenge row is inserted /
+// BEFORE the ranked battle is created.
+//
+// WHY HERE, GIVEN THE CENSUS IN `guards_tests.rs`: that census is body-keyed
+// and count-based. It cannot see REACHABILITY (a gate nested in a never-taken
+// block is still in the body) and it cannot see EACH reducer's own guard
+// order. This block pins both, in this file's own idiom — the
+// `stripped_pvp_for_scan()` / `extract_pvp_fn_body` / `squash_ws` pipeline the
+// EA-CHR and EA-RA pins already use — so it runs in the same `cargo test` as
+// the reducers it protects.
+//
+// PLACEMENT, and why it is NOT arbitrary. Both gates sit AFTER the caller-state
+// guard that establishes who the caller is (guard 1 in `challenge_pvp`, guard 2
+// in `accept_challenge`) and BEFORE every irreversible effect. Ahead of those
+// guards the gate would run for callers the reducer has not yet identified;
+// behind the effect it gates nothing at all.
+//
+// PIPELINE NOTE: string-literal PAYLOADS are blanked by this pipeline, so both
+// call sites read identically here and the reducer-name TAG is NOT constrained
+// by this file. The tag is pinned from `guards_tests.rs`, on the
+// comments-only / strings-INTACT view — the same split
+// `ra_guard_needle` / `ra_guard_needle_tagged` uses for the ADR-0189 gate.
+//
+// RED AT HEAD: neither reducer carries a gate, so both count assertions fire
+// with their named FAIL messages.
+// ===========================================================================
+
+/// A blank string literal as it survives [`strip_rust_strings`] — the opening
+/// and closing quotes are emitted and the payload is swallowed. Built from a
+/// numeric byte so this file adds no bare double-quote CHARACTER to a crate
+/// whose text-level strippers have no char-literal lexer.
+fn m22s5_blank_string_literal() -> String {
+    let q = char::from(0x22u8).to_string();
+    [q.as_str(), q.as_str()].concat()
+}
+
+/// The two accepted spellings of the gate statement in the string-blanked,
+/// whitespace-squashed normal form: the single-line call, and the form rustfmt
+/// produces when it splits the call and adds a trailing comma (the EA-CHR-01
+/// tolerance precedent).
+fn m22s5_gate_statement_forms() -> (String, String) {
+    let blank = m22s5_blank_string_literal();
+    let call = concat!("crate::guards::require_not_", "deleting(");
+    (
+        [call, "ctx,", blank.as_str(), ")?;"].concat(),
+        [call, "ctx,", blank.as_str(), ",)?;"].concat(),
+    )
+}
+
+/// Shared body of the two pins below. Every failure path panics LOUDLY with a
+/// named message — a pin that silently skips when its anchor moves is worth
+/// nothing (the `ra_assert_guard_pinned` posture, applied to PRV1-9).
+///
+/// `caller_anchor` is the guard that establishes WHO the caller is; the gate
+/// must sit after it. `effect_anchor` is the reducer's irreversible effect; the
+/// gate must sit before it. Both are asserted to occur EXACTLY ONCE, so neither
+/// offset is ambiguous.
+fn m22s5_assert_deletion_gate_pinned(fn_name: &str, caller_anchor: &str, effect_anchor: &str) {
+    let stripped = stripped_pvp_for_scan();
+    let body = extract_pvp_fn_body(&stripped, fn_name).unwrap_or_else(|| {
+        panic!(
+            "m22-s5 PRV1-9 FAIL (extraction): could not extract the brace-bounded body of \
+             `{fn_name}` from pvp.rs, so the deletion-gate pin cannot fire. Fail LOUD \
+             rather than pass vacuously — if the reducer was renamed or removed, re-derive \
+             this pin DELIBERATELY from the spec, never by relaxing it."
+        )
+    });
+    let squashed = squash_ws(body);
+
+    // The local stripper is DOUBLE-QUOTE-only: it has no char-literal lexer, so
+    // a brace CHAR literal in the body survives into the squashed text and
+    // desyncs the depth fence below by one — exactly enough to make a nested,
+    // never-executed gate report depth 0. Ban them rather than pretend the
+    // fence is sound in their presence (the ADR-0189 red-team F5 finding).
+    let brace_open_char = concat!("'", "{", "'");
+    let brace_close_char = concat!("'", "}", "'");
+    assert!(
+        !squashed.contains(brace_open_char) && !squashed.contains(brace_close_char),
+        "m22-s5 PRV1-9 FAIL (substrate): `{fn_name}`'s body contains a brace CHAR literal. \
+         The local string stripper handles double-quoted literals only, so that brace \
+         survives into the squashed text and shifts the brace-depth fence below by one, \
+         blinding it to a nested gate. Move the char literal out of this reducer (or teach \
+         the local stripper about char literals) rather than deleting this assertion."
+    );
+
+    let (plain, trailing) = m22s5_gate_statement_forms();
+    let n = squashed.matches(plain.as_str()).count() + squashed.matches(trailing.as_str()).count();
+    assert_eq!(
+        n, 1,
+        "m22-s5 PRV1-9 FAIL: `{fn_name}` must carry the deletion-gate call EXACTLY ONCE, \
+         with the `?` propagation operator. Found {n}. \
+         RED AT HEAD: the reducer carries no gate, so an account inside the para-4.7 grace \
+         window can still open a fresh PvP commitment — a challenge that locks BOTH \
+         parties out of new challenges (guards 5b/6) or a RANKED battle whose rating the \
+         deletion cascade will have to unwind. \
+         The trailing propagation is part of the pin: a discarded result compiles, calls \
+         the gate, throws the answer away and proceeds, and stays clippy-clean under \
+         -D warnings because `let_underscore_must_use` is off by default. Comments are \
+         stripped before this count, so a commented-out statement reads as absent too. \
+         A count of 2 is the duplicated-guard shape, which the exact-equality half \
+         rejects. Expected (squashed, trailing-comma form): {trailing:?}"
+    );
+
+    let gate_pos = squashed
+        .find(plain.as_str())
+        .or_else(|| squashed.find(trailing.as_str()))
+        .unwrap_or_else(|| {
+            panic!("m22-s5 ({fn_name}): the gate statement counted 1 but could not be located")
+        });
+
+    let opens = squashed[..gate_pos].matches('{').count();
+    let closes = squashed[..gate_pos].matches('}').count();
+    assert_eq!(
+        opens,
+        closes,
+        "m22-s5 PRV1-9 FAIL (reachability): the deletion gate in `{fn_name}` sits at brace \
+         depth {} of the reducer body's own top level, not 0. KILLS the unreachable-if \
+         mutant — wrapping the gate in an always-false block, in a conditional-compilation \
+         test, or in any other block leaves the exact statement text in the file, keeps \
+         the count at 1, keeps it between both anchors, and never executes it. Every \
+         other assertion here is position-based and blind to this. The gate must be an \
+         unconditional top-level statement of the reducer.",
+        opens as i64 - closes as i64
+    );
+
+    let n_caller = squashed.matches(caller_anchor).count();
+    assert_eq!(
+        n_caller, 1,
+        "m22-s5 PRV1-9 FAIL (anchor ambiguity): the caller-state anchor occurs {n_caller} \
+         time(s) in `{fn_name}`; the ordering pin below needs EXACTLY ONE so the offset is \
+         unambiguous. With zero the reducer's guard preamble was restructured and this pin \
+         must be re-derived from the spec; with two it would silently anchor on the first."
+    );
+    let caller_pos = squashed
+        .find(caller_anchor)
+        .expect("m22-s5: caller-state anchor counted 1 but could not be located");
+    assert!(
+        caller_pos < gate_pos,
+        "m22-s5 PRV1-9 FAIL (ordering): the deletion gate in `{fn_name}` is at squashed \
+         offset {gate_pos}, BEFORE the caller-state guard at {caller_pos}. The gate is a \
+         CALLER-state check and belongs after the reducer has established who the caller \
+         is: hoisted above that guard it answers for identities the reducer has not yet \
+         identified, and the guard order stops reading as `who are you, then may you`."
+    );
+
+    let n_effect = squashed.matches(effect_anchor).count();
+    assert_eq!(
+        n_effect, 1,
+        "m22-s5 PRV1-9 FAIL (anti-vacuity): the irreversible-effect anchor occurs \
+         {n_effect} time(s) in `{fn_name}`; it must occur EXACTLY ONCE. With zero the \
+         ordering pin below is trivially true and proves nothing — fail LOUD rather than \
+         accept a vacuous pass. With two the offset is ambiguous and a gate could sit \
+         between them while still reading as `before the effect`."
+    );
+    let effect_pos = squashed
+        .find(effect_anchor)
+        .expect("m22-s5: irreversible-effect anchor counted 1 but could not be located");
+    assert!(
+        gate_pos < effect_pos,
+        "m22-s5 PRV1-9 FAIL (decision before irreversible effect): the deletion gate in \
+         `{fn_name}` is at squashed offset {gate_pos}, AFTER the irreversible effect at \
+         {effect_pos}. A gate that runs once the effect has committed does not gate \
+         anything — the challenge row (or the ranked battle row) already exists when the \
+         reject is returned, and the deletion cascade inherits a commitment it must unwind."
+    );
+}
+
+/// **PRV1-9** — `challenge_pvp` carries the deletion gate.
+///
+/// Anchors: the guard-1 not-joined test (caller state) and the challenge-row
+/// insert (guard 8, the only irreversible effect — the reaper arm at guard 9
+/// depends on its auto-inc id).
+///
+/// TEETH: kills a deleted gate (count), a gate wrapped in a never-taken block
+/// (depth), a gate hoisted above the joined guard (caller ordering), and a
+/// gate moved below the insert (effect ordering) — the last of which is the
+/// live hazard here: a Pending challenge from a deleting account locks BOTH
+/// parties out of new challenges until the TTL reaper fires.
+#[test]
+fn m22s5_challenge_pvp_carries_the_deletion_gate() {
+    m22s5_assert_deletion_gate_pinned(
+        concat!("challenge_", "pvp"),
+        concat!("ctx.db.player().identity().find(me).", "is_none()"),
+        concat!("battle_challenge", "().insert("),
+    );
+}
+
+/// **PRV1-9** — `accept_challenge` carries the deletion gate.
+///
+/// Anchors: the guard-2 target check (caller state — only the challenge target
+/// may accept) and the PvP battle creation (guard 6, the irreversible effect
+/// that is reached ONLY from here).
+///
+/// TEETH: the same four as `challenge_pvp`, over the higher-stakes reducer —
+/// accepting creates a RANKED battle whose rating a later deletion cascade
+/// would have to unwind, and this is the sole call path into the battle
+/// creator.
+#[test]
+fn m22s5_accept_challenge_carries_the_deletion_gate() {
+    m22s5_assert_deletion_gate_pinned(
+        concat!("accept_", "challenge"),
+        concat!("challenge.target", "!=me"),
+        concat!("start_pvp_", "battle("),
+    );
+}

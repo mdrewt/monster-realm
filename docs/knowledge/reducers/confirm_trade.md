@@ -5,7 +5,7 @@ slug: reducers/confirm_trade
 updated: 2026-08-31
 tags: [reducer, spacetimedb, trading]
 abstract: "Initiator confirms a ConfirmedByCounterparty offer → atomic swap. Role + status authorization is delegated to the pure …"
-resource: server-module/src/trading.rs#L466
+resource: server-module/src/trading.rs#L475
 source: scripts/okf-export.mjs@server-module/src/trading.rs
 ---
 

@@ -1593,3 +1593,1210 @@ fn touched_production_sources_have_balanced_block_comment_markers() {
         );
     }
 }
+
+// ===========================================================================
+// m22-s5 (PRV1-9 / PRV1-10, spec para 4.7, ADR-0225) — the gameplay deletion
+// gate: SCAN half.
+//
+// EARS criteria encoded by this block:
+//
+//   PRV1-9  WHILE the caller's account is inside the para-4.7 deletion gate,
+//           WHEN the caller invokes `propose_trade`, `challenge_pvp` or
+//           `accept_challenge`, the server module SHALL reject the call before
+//           any write, with a single static reason.
+//   PRV1-10 The `guards.rs` gate SHALL DELEGATE the decision to the accounts
+//           SSOT (`crate::accounts::is_pending_deletion` ->
+//           `should_reject_for_deletion`) and SHALL NOT re-derive the
+//           status-or-terminal-marker disjunction; exactly three reducers are
+//           gated and every other reducer stays deliberately open.
+//
+// RED STATE of this block at HEAD (before the S5 implementation lands):
+//   * `m22s5_gate_delegates_fused_and_unconditional` — RED: the wrapper does
+//     not exist in `guards.rs`, so body extraction fails LOUD.
+//   * `m22s5_guards_never_rederives_deletion_disjunction` — RED: the wrapper
+//     count is 0 and must be 1 (the five ban clauses are already green).
+//   * `m22s5_is_pending_deletion_delegates_to_should_reject` — GREEN at HEAD
+//     ON PURPOSE. The far hop (`accounts.rs:338-344`) already delegates since
+//     m22-s3; this is the fence that keeps the delegation the S5 wrapper is
+//     built on from being inlined away underneath it. Deliberately a SEPARATE
+//     test from every red one (the split reason recorded at
+//     `movement_tests.rs:917-921`: folded into a failing test it could never
+//     be observed passing).
+//   * `m22s5_gated_reducer_census_is_exactly_three` — RED: the gated set is
+//     empty and must be the three named reducers.
+//   * `m22s5_already_open_reducers_are_not_gated` — GREEN at HEAD, a fence.
+//   * `m22s5_gate_precedes_first_write_in_every_gated_reducer` — RED: no
+//     gated body carries the call, which fails LOUD rather than vacuously.
+//   * `m22s5_gate_body_performs_no_write` — RED: extraction fails LOUD.
+//   * `m22s5_gate_call_sites_are_fully_tagged` — RED: all four counts are 0.
+//
+// SCAN SUBSTRATE RULES honoured throughout (breaking them breaks OTHER
+// slices' gates, not this one): every needle naming a production symbol is
+// assembled from fragments, no failure message quotes a searched needle
+// verbatim, no raw double-quote CHARACTER literal is written anywhere, and
+// neither block-comment marker is ever spelled contiguously.
+// ===========================================================================
+
+const M22S5_TRADING_RS: &str = include_str!("trading.rs");
+const M22S5_PVP_RS: &str = include_str!("pvp.rs");
+const M22S5_ACCOUNTS_RS: &str = include_str!("accounts.rs");
+
+/// Whitespace-squashed view. Squashing is what makes every composite needle
+/// below rustfmt-proof: a call split across lines still matches.
+fn m22s5_squash(src: &str) -> String {
+    src.split_whitespace().collect()
+}
+
+/// Loud preconditions that must hold for EITHER pipeline below to be sound.
+///
+/// 1. No deep raw-string opener (three or more hashes) — the same construct
+///    `assert_stripper_preconditions` refuses for `guards.rs`, restated for
+///    the other three files S5 scans. Silent misalignment in a stripper is the
+///    worst failure mode for a source-scan gate: it blanks the wrong bytes and
+///    every assertion downstream turns vacuous.
+/// 2. Balanced block-comment markers. Both stripping pipelines stop at the
+///    FIRST close marker, so an unpaired opener hands the rest of the file to
+///    the scan as if it were executable code (or swallows real code). This is
+///    the same invariant `touched_production_sources_have_balanced_block_comment_markers`
+///    pins for the 11r-g file set, restated for the four files S5 scans.
+fn m22s5_assert_source_is_scannable(label: &str, raw: &str) {
+    let deep_raw = ["r#", "##"].concat();
+    assert!(
+        !raw.contains(deep_raw.as_str()),
+        "SCAN PRECONDITION (m22-s5): `{label}` contains a raw-string opener with three or \
+         more hashes, which this file's byte-sequential stripper does not handle — it \
+         would blank the wrong byte range and hollow out every m22-s5 assertion that reads \
+         the result. Extend the stripper's hash-depth handling before adding such a \
+         literal, and re-derive every count in this block against it."
+    );
+
+    let open_marker = ["/", "*"].concat();
+    let close_marker = ["*", "/"].concat();
+    let opens = raw.matches(open_marker.as_str()).count();
+    let closes = raw.matches(close_marker.as_str()).count();
+    assert_eq!(
+        opens, closes,
+        "SCAN PRECONDITION (m22-s5): `{label}` has {opens} block-comment opener(s) but \
+         {closes} closer(s). Both stripping pipelines in this block stop at the FIRST \
+         closer, so an unpaired opener either swallows real reducer bodies (turning a \
+         census silently vacuous) or hands comment prose to the scan as code. Spell the \
+         sequence out in words if it is needed in prose."
+    );
+}
+
+/// `src` with comments AND string-literal payloads blanked, then squashed.
+///
+/// Reuses this file's own [`strip_comments_and_strings`] so the S5 scans and
+/// the 11r-c / 11r-g fences agree byte-for-byte on what the source says.
+/// The extra preconditions here are the ones the REDUCER-BODY extractor needs
+/// and the guards.rs-only helper does not: a brace CHAR literal survives this
+/// stripper (it has a bounded char lexer) and would desync the brace matcher
+/// by one, which is exactly enough to mis-slice a reducer body.
+fn m22s5_stripped_squashed(label: &str, src: &str) -> String {
+    m22s5_assert_source_is_scannable(label, src);
+    let stripped = strip_comments_and_strings(src);
+
+    let close_marker = ["*", "/"].concat();
+    assert!(
+        !stripped.contains(close_marker.as_str()),
+        "SCAN PRECONDITION (m22-s5): a block-comment CLOSE marker survived stripping of \
+         `{label}`, which means a NESTED block comment. The stripper stops at the first \
+         closer, so the outer comment's tail reaches the scan as code."
+    );
+
+    let squashed = m22s5_squash(&stripped);
+
+    let brace_open_char = ["'", "{", "'"].concat();
+    let brace_close_char = ["'", "}", "'"].concat();
+    assert!(
+        !squashed.contains(brace_open_char.as_str())
+            && !squashed.contains(brace_close_char.as_str()),
+        "SCAN PRECONDITION (m22-s5): `{label}` contains a brace CHAR literal. The stripper \
+         consumes char literals atomically and KEEPS them, so that brace survives into the \
+         squashed text and shifts every brace-matched reducer body by one — enough to make \
+         a nested, never-executed gate report top level. Spell the character with a Unicode \
+         escape, or teach the extractor about char literals; never delete this check."
+    );
+
+    let opens = squashed.matches('{').count();
+    let closes = squashed.matches('}').count();
+    assert_eq!(
+        opens, closes,
+        "SCAN PRECONDITION (m22-s5): the stripped+squashed view of `{label}` has {opens} \
+         open brace(s) and {closes} close brace(s). The reducer-body extractor below is a \
+         brace matcher; on unbalanced input it slices the wrong region and every census \
+         count silently becomes meaningless. Investigate the stripper against the file \
+         rather than relaxing any assertion downstream."
+    );
+
+    squashed
+}
+
+/// `src` with COMMENTS ONLY removed — string-literal payloads SURVIVE — then
+/// squashed.
+///
+/// A copy of this file's [`strip_comments_and_strings`] state machine with the
+/// string-blanking arm replaced by a COPY arm (the literal is still consumed
+/// atomically, so a `//` or a brace inside a string can never be mis-lexed).
+/// Needed because the S5 log-tag pin is precisely a claim about a string
+/// payload: on the string-BLANKED view every reducer's tag reads as an empty
+/// literal, so a guard filing its reject under the wrong reducer's name is
+/// invisible there. Same trade `pvp_tests.rs`'s `ra_squash_comments_only`
+/// records for the ADR-0189 tag cross-pin.
+fn m22s5_strip_comments_only(src: &str) -> String {
+    let bytes = src.as_bytes();
+    let len = bytes.len();
+    let mut out = vec![b' '; len];
+    let mut i = 0;
+    while i < len {
+        if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'*' {
+            i += 2;
+            while i + 1 < len {
+                if bytes[i] == b'*' && bytes[i + 1] == b'/' {
+                    i += 2;
+                    break;
+                }
+                i += 1;
+            }
+        } else if i + 1 < len && bytes[i] == b'/' && bytes[i + 1] == b'/' {
+            while i < len && bytes[i] != b'\n' {
+                i += 1;
+            }
+        } else if let Some(end) = string_literal_end(bytes, i) {
+            while i < end {
+                out[i] = bytes[i];
+                i += 1;
+            }
+        } else if let Some(end) = char_literal_end(bytes, i) {
+            while i < end {
+                out[i] = bytes[i];
+                i += 1;
+            }
+        } else {
+            out[i] = bytes[i];
+            i += 1;
+        }
+    }
+    String::from_utf8(out).expect("comment-stripped source must be valid UTF-8")
+}
+
+/// Comments-only stripped, whitespace-squashed view of `src`.
+fn m22s5_comments_only_squashed(label: &str, src: &str) -> String {
+    m22s5_assert_source_is_scannable(label, src);
+    m22s5_squash(&m22s5_strip_comments_only(src))
+}
+
+/// The brace-bounded body of the function whose squashed declaration starts at
+/// `marker`, or `None`.
+///
+/// Brace matching starts AT the marker, never at file start: `guards.rs`
+/// legitimately contains a Unicode-escape char literal whose braces survive
+/// stripping (`json_escape`'s two structural arms), so a whole-file depth
+/// count would be desynced before it ever reached the S5 wrapper.
+fn m22s5_squashed_fn_body(squashed: &str, marker: &str) -> Option<String> {
+    let start = squashed.find(marker)?;
+    let after = &squashed[start..];
+    let open = after.find('{')?;
+    let bytes = after.as_bytes();
+    let mut depth = 1usize;
+    let mut k = open + 1;
+    while k < bytes.len() {
+        match bytes[k] {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(after[open + 1..k].to_string());
+                }
+            }
+            _ => {}
+        }
+        k += 1;
+    }
+    None
+}
+
+/// The squashed declaration marker of the S5 wrapper.
+fn m22s5_wrapper_marker() -> String {
+    ["fnrequire_not_", "deleting("].concat()
+}
+
+/// The S5 wrapper's brace-bounded, squashed body. Fails LOUD when it cannot be
+/// extracted — which IS the red state at HEAD.
+fn m22s5_require_not_deleting_body() -> String {
+    let squashed = m22s5_stripped_squashed("guards.rs", GUARDS_RS);
+    let marker = m22s5_wrapper_marker();
+    let n = squashed.matches(marker.as_str()).count();
+    assert_eq!(
+        n, 1,
+        "m22-s5 PRV1-10 FAIL (extraction): the S5 deletion-gate wrapper is declared {n} \
+         time(s) in `guards.rs`; it must be declared EXACTLY ONCE. \
+         ZERO is the RED STATE AT HEAD — the wrapper does not exist yet, and this test \
+         fails LOUD rather than passing vacuously over a body it never found. \
+         TWO would let the region extractor take the FIRST match, so a decoy definition \
+         could carry the delegation while the real one re-derives the disjunction."
+    );
+
+    m22s5_squashed_fn_body(&squashed, marker.as_str()).unwrap_or_else(|| {
+        panic!(
+            "m22-s5 PRV1-10 FAIL (extraction): the S5 deletion-gate wrapper is declared in \
+             `guards.rs` but its brace-bounded body could not be sliced. Either the braces \
+             are unbalanced from the declaration onward, or the declaration is followed by \
+             something other than a body. Fail LOUD: a pin that silently skips when its \
+             anchor moves is worth nothing."
+        )
+    })
+}
+
+/// The fully-qualified call text every gated reducer must carry, in the
+/// string-BLANKED normal form (the tag payload is gone, only the call shape
+/// remains). Split so this file's own text is never the thing a scan finds.
+fn m22s5_gate_call_needle() -> String {
+    ["crate::guards::require_not_", "deleting("].concat()
+}
+
+/// The bare wrapper name, for the already-open census (a re-export, an alias
+/// binding or a call all mention it — the census bans the NAME, not just the
+/// fully-qualified call).
+fn m22s5_gate_bare_name() -> String {
+    ["require_not_", "deleting"].concat()
+}
+
+/// Every `#[spacetimedb::reducer]` body in `squashed`, as `(name, body)` pairs.
+///
+/// PANICS on any parse ambiguity rather than skipping: a census that silently
+/// drops a reducer it could not parse is a census that reports the wrong set
+/// while looking healthy. The strings-blanked view has no comment or string
+/// braces left (the preconditions in [`m22s5_stripped_squashed`] prove it), so
+/// brace matching is exact here.
+fn m22s5_reducer_bodies(label: &str, squashed: &str) -> Vec<(String, String)> {
+    let attr_full = ["#[spacetimedb::", "reducer]"].concat();
+    let attr_open = ["#[spacetimedb::", "reducer"].concat();
+    let n_full = squashed.matches(attr_full.as_str()).count();
+    let n_open = squashed.matches(attr_open.as_str()).count();
+    assert_eq!(
+        n_open, n_full,
+        "m22-s5 CENSUS PARSE AMBIGUITY in `{label}`: {n_open} reducer attribute opener(s) \
+         but {n_full} in the bare no-argument form this extractor understands. A \
+         parameterised reducer attribute (a lifecycle hook, for instance) is present and \
+         would be SKIPPED, silently shrinking the census set. Extend the extractor \
+         deliberately; do not narrow the assertion that reads it."
+    );
+    assert!(
+        n_full > 0,
+        "m22-s5 CENSUS ANTI-VACUITY: `{label}` yielded ZERO reducers. Either the attribute \
+         spelling changed or the stripping pipeline blanked the file, and every set/count \
+         assertion downstream would pass over an empty world."
+    );
+
+    let pub_fn = ["pub", "fn"].concat();
+    let bare_fn = "fn";
+    let mut out: Vec<(String, String)> = Vec::new();
+    let mut cursor = 0usize;
+    while let Some(rel) = squashed[cursor..].find(attr_full.as_str()) {
+        let attr_at = cursor + rel;
+        let after = attr_at + attr_full.len();
+        let rest = &squashed[after..];
+        let (sig, sig_abs) = if let Some(r) = rest.strip_prefix(pub_fn.as_str()) {
+            (r, after + pub_fn.len())
+        } else if let Some(r) = rest.strip_prefix(bare_fn) {
+            (r, after + bare_fn.len())
+        } else {
+            let dump: String = rest.chars().take(80).collect();
+            panic!(
+                "m22-s5 CENSUS PARSE AMBIGUITY in `{label}`: the reducer attribute at \
+                 squashed offset {attr_at} is not immediately followed by a function \
+                 declaration. Something (another attribute, a visibility form this \
+                 extractor does not know) sits between them, so the reducer's name and \
+                 body cannot be attributed. Extend the extractor. Text after the \
+                 attribute began: {dump:?}"
+            )
+        };
+
+        let paren = sig.find('(').unwrap_or_else(|| {
+            panic!(
+                "m22-s5 CENSUS PARSE AMBIGUITY in `{label}`: a reducer declaration at \
+                 squashed offset {sig_abs} has no argument list."
+            )
+        });
+        let name = &sig[..paren];
+        assert!(
+            !name.is_empty() && name.bytes().all(|b| b.is_ascii_alphanumeric() || b == b'_'),
+            "m22-s5 CENSUS PARSE AMBIGUITY in `{label}`: the reducer declared at squashed \
+             offset {sig_abs} does not have a plain identifier name (generics or a path \
+             form would land here). The census keys on names, so an unparseable one must \
+             stop the run, never be skipped. Parsed: {name:?}"
+        );
+
+        let brace_rel = sig[paren..].find('{').unwrap_or_else(|| {
+            panic!(
+                "m22-s5 CENSUS PARSE AMBIGUITY in `{label}`: reducer `{name}` has no body \
+                 brace after its argument list."
+            )
+        });
+        let body_start = paren + brace_rel + 1;
+        let bytes = sig.as_bytes();
+        let mut depth = 1usize;
+        let mut k = body_start;
+        let mut end: Option<usize> = None;
+        while k < bytes.len() {
+            match bytes[k] {
+                b'{' => depth += 1,
+                b'}' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        end = Some(k);
+                        break;
+                    }
+                }
+                _ => {}
+            }
+            k += 1;
+        }
+        let end = end.unwrap_or_else(|| {
+            panic!(
+                "m22-s5 CENSUS PARSE AMBIGUITY in `{label}`: reducer `{name}`'s body brace \
+                 never closes. The whole-file balance precondition passed, so this is a \
+                 real extractor defect — stop rather than return a truncated body."
+            )
+        });
+
+        out.push((name.to_string(), sig[body_start..end].to_string()));
+        cursor = sig_abs + end + 1;
+    }
+    out
+}
+
+/// `(name, body)` pairs for BOTH scanned reducer files, in file order.
+fn m22s5_all_reducer_bodies() -> Vec<(&'static str, String, String)> {
+    let files: [(&'static str, &'static str); 2] =
+        [("trading.rs", M22S5_TRADING_RS), ("pvp.rs", M22S5_PVP_RS)];
+    let mut out = Vec::new();
+    for (label, src) in files {
+        let squashed = m22s5_stripped_squashed(label, src);
+        for (name, body) in m22s5_reducer_bodies(label, &squashed) {
+            out.push((label, name, body));
+        }
+    }
+    out
+}
+
+/// **PRV1-10 (a)** — the wrapper DELEGATES, in ONE fused expression, and does
+/// nothing else.
+///
+/// The prefix pin is the whole tooth. `contains` would be satisfied by a body
+/// that computes the fused call and then ignores it, negates it, rebinds it, or
+/// diverts around it; `starts_with` says the delegation IS the leading (and,
+/// with the clauses below, the only) expression. What each clause kills:
+///
+///   * PREFIX — kills a NEGATED fused argument (the polarity inversion: every
+///     gated reducer would then reject exactly the accounts that are NOT
+///     deleting), kills a rebind that computes the predicate into a local and
+///     hands the pure gate something else, and kills a leading early-return
+///     that diverts around the delegation entirely.
+///   * COUNT == 1 — kills a decoy fused call sitting beside the real, wrong
+///     one; with the prefix alone, a second copy is invisible.
+///   * NO always-false conditional, NO conditional-compilation attribute, NO
+///     conditional-compilation macro — the unconditional claim's three standard
+///     evasions. The attribute form in particular keeps the exact statement text
+///     in the file and in every source scan while compiling it OUT of the
+///     shipped wasm: present in review, absent in production (the ADR-0189
+///     red-team F3 finding, restated here).
+///   * THE REJECT LOG, APPLIED TO THE `reducer` PARAMETER, EXACTLY ONCE — kills
+///     a wrapper that rejects correctly but files the reject under a hard-coded
+///     name, losing the operator's only record of WHICH reducer refused; and
+///     kills a double-logging shape.
+///   * NO direct reach for the logging facade — kills a wrapper that bypasses
+///     the reject-logger choke point and hand-builds its own log line, skipping
+///     the ADR-0170 D5 escaping that the shared reject logger owns.
+///
+/// HONEST LIMIT: source scan, not execution — this crate has no
+/// reducer-executing harness (ADR-0156 P7). The behavioural half is
+/// `m22s5_deletion_gate_truth_table`, which runs the pure decision seam.
+#[test]
+fn m22s5_gate_delegates_fused_and_unconditional() {
+    let body = m22s5_require_not_deleting_body();
+
+    // Two closing forms are accepted for the fused call: the single-line form
+    // and the form rustfmt produces when it splits the call one argument per
+    // line and adds a trailing comma (the EA-CHR-01 tolerance precedent).
+    let fused_plain = [
+        "deletion_gate(crate::accounts::is_pending_",
+        "deletion(ctx,ctx.sender())).map_err(",
+    ]
+    .concat();
+    let fused_trailing = [
+        "deletion_gate(crate::accounts::is_pending_",
+        "deletion(ctx,ctx.sender(),)).map_err(",
+    ]
+    .concat();
+
+    assert!(
+        body.starts_with(fused_plain.as_str()) || body.starts_with(fused_trailing.as_str()),
+        "m22-s5 PRV1-10 FAIL (fused-delegation prefix): the wrapper's body must BEGIN with \
+         the fused delegation into the accounts SSOT, immediately chained into the \
+         reject-mapping combinator. It does not. A `contains`-style pin would accept a \
+         body that negates the predicate, rebinds it into a local before passing something \
+         else, or returns early above it — all three keep the delegation text in the file \
+         while inverting or skipping the decision. Expected leading text (squashed, \
+         trailing-comma form): {fused_trailing:?}. Body began: {body:?}"
+    );
+
+    // EXACT-EQUALITY body pin (artifact red-team, m22-s5): the prefix assertion
+    // above never looks PAST the prefix, and a measured CI-green bypass appended
+    // a trailing recovery combinator after the reject-mapping closure — every
+    // reject the gate produced was converted back into success while all prior
+    // clauses stayed green. The wrapper's body is a single fused expression and
+    // nothing else; whole-body equality is the only shape that rejects trailing
+    // text of ANY spelling. Two accepted bodies: single-line and the
+    // trailing-comma form rustfmt produces on a split.
+    let closure_tail = ["|e|{log_re", "ject(reducer,ctx.sender(),e);e.to_string()})"].concat();
+    let body_plain = [fused_plain.as_str(), closure_tail.as_str()].concat();
+    let body_trailing = [fused_trailing.as_str(), closure_tail.as_str()].concat();
+    assert!(
+        body == body_plain || body == body_trailing,
+        "m22-s5 PRV1-10 FAIL (whole-body equality): the wrapper's body must BE the fused \
+         delegation chained into the reject-mapping closure, byte-for-byte in the squashed \
+         view, with NOTHING after it. Trailing text of any kind — a recovery combinator, a \
+         second statement, an appended expression — can silently convert the reject back \
+         into success while the prefix, count, and log clauses above all stay green (a \
+         measured bypass). Expected (squashed): {body_plain:?}. Got: {body:?}"
+    );
+
+    let n_fused =
+        body.matches(fused_plain.as_str()).count() + body.matches(fused_trailing.as_str()).count();
+    assert_eq!(
+        n_fused, 1,
+        "m22-s5 PRV1-10 FAIL (fused-delegation count): the wrapper's body contains \
+         {n_fused} fused delegation(s); it must contain EXACTLY ONE. The prefix assertion \
+         above is blind to a SECOND copy — a decoy leading call followed by the real, \
+         differently-argued one satisfies it while the effective decision comes from the \
+         second."
+    );
+
+    let if_false = ["if", "false"].concat();
+    let n_if_false = body.matches(if_false.as_str()).count();
+    assert_eq!(
+        n_if_false, 0,
+        "m22-s5 PRV1-10 FAIL (unconditional): the wrapper's body contains {n_if_false} \
+         always-false conditional(s). A never-taken branch leaves every needle in this \
+         test satisfiable while the gate decides nothing."
+    );
+
+    let cfg_attr = ["#", "[cfg"].concat();
+    assert!(
+        !body.contains(cfg_attr.as_str()),
+        "m22-s5 PRV1-10 FAIL (unconditional): the wrapper's body carries a conditional \
+         compilation attribute. That keeps the exact statement text in the file and in \
+         every source scan while compiling it OUT of the shipped wasm — the gate would be \
+         present in review and absent in production."
+    );
+
+    let cfg_macro = ["cfg", "!("].concat();
+    assert!(
+        !body.contains(cfg_macro.as_str()),
+        "m22-s5 PRV1-10 FAIL (unconditional): the wrapper's body uses the conditional \
+         compilation MACRO. Same defect as the attribute form in the clause above, reached \
+         through an expression instead: the gate becomes deployment-dependent while every \
+         text pin stays green."
+    );
+
+    let log_call = ["log_re", "ject(reducer,"].concat();
+    let n_log = body.matches(log_call.as_str()).count();
+    assert_eq!(
+        n_log, 1,
+        "m22-s5 PRV1-9 FAIL (reject provenance): the wrapper's body logs the reject with \
+         its `reducer` parameter {n_log} time(s); it must do so EXACTLY ONCE. With zero, \
+         either nothing is logged or a hard-coded name is logged instead, and the \
+         operator's only record of which reducer refused a deletion-gated caller points at \
+         the wrong place (the wrapper is shared by three reducers, so the parameter is the \
+         ONLY thing that distinguishes them). With two, one reject produces two lines."
+    );
+
+    let log_path = ["log", "::"].concat();
+    let n_log_path = body.matches(log_path.as_str()).count();
+    assert_eq!(
+        n_log_path, 0,
+        "m22-s5 PRV1-9 FAIL (choke point): the wrapper's body reaches the logging facade \
+         directly {n_log_path} time(s) and must reach it ZERO times. Every reject line in \
+         this crate goes through the shared reject logger, which is the ADR-0170 D5 choke \
+         point that escapes both interpolated fields; a hand-built line beside it emits \
+         malformed JSON for any reason string carrying a structural character and the log \
+         ingest drops it silently."
+    );
+}
+
+/// **PRV1-10 (b)** — `guards.rs` never re-derives the deletion disjunction.
+///
+/// Spec para 4.1 defines the terminal state as a CONJUNCTION and para 4.7's
+/// gate as a DISJUNCTION over it (`accounts.rs:292-305`). The explicit second
+/// disjunct is the fail-closed arm for the illegal active-plus-marker shape and
+/// must never be simplified away — which is precisely what happens when a
+/// second module writes its own copy: the copy is written against the LEGAL
+/// states, the fail-closed arm quietly disappears, and a resurrected tombstone
+/// is waved through into new trades and challenges.
+///
+/// Run on the comments-stripped, strings-KEPT view ON PURPOSE. For a BAN,
+/// over-inclusive is the correct posture: a mention in a log message or a
+/// reject reason is itself the smell (it means the vocabulary crossed the
+/// module boundary), and keeping payloads immunises the ban against a
+/// string-stripper desync that would otherwise blank real code and turn the
+/// whole ban silently green — the 13r-c / ADR-0181 false-GREEN class.
+///
+/// The five ban clauses are GREEN AT HEAD and must stay green. The declaration
+/// count is the RED one: the wrapper does not exist yet.
+#[test]
+fn m22s5_guards_never_rederives_deletion_disjunction() {
+    let squashed = m22s5_comments_only_squashed("guards.rs", GUARDS_RS);
+
+    // Every needle is split so this test file's own text can never satisfy a
+    // scan, nor trip one that concatenates every source file in this crate.
+    let bans: [(String, &str); 5] = [
+        (
+            ["Pending", "Deletion"].concat(),
+            "the pending-deletion status variant",
+        ),
+        (
+            ["terminal_", "at_ms"].concat(),
+            "the terminal-marker column",
+        ),
+        (["Account", "Status"].concat(), "the account status enum"),
+        (
+            ["account_has_terminal_", "marker"].concat(),
+            "the marker-half predicate",
+        ),
+        (
+            ["ctx.db.acc", "ount("].concat(),
+            "a direct account-table read",
+        ),
+    ];
+
+    for (needle, what) in bans {
+        let n = squashed.matches(needle.as_str()).count();
+        assert_eq!(
+            n, 0,
+            "m22-s5 PRV1-10 FAIL (no re-derivation): `guards.rs` mentions {what} {n} \
+             time(s) and must mention it ZERO times. The para-4.7 gate has ONE SSOT, in \
+             `accounts.rs` (the module that OWNS the account table, per its own \
+             write-isolation rule), and the guards-side wrapper exists to DELEGATE to it. \
+             A second spelling here is not a duplicate — it is a second, divergent \
+             definition: a widening of the SSOT disjunction would silently stop applying \
+             to the gameplay gate, and a copy written against the legal states drops the \
+             fail-closed arm that refuses an already-erased account. Green at HEAD; if \
+             this fires, delegate instead of re-deriving."
+        );
+    }
+
+    let marker = m22s5_wrapper_marker();
+    let n_decl = squashed.matches(marker.as_str()).count();
+    assert_eq!(
+        n_decl, 1,
+        "m22-s5 PRV1-10 FAIL (wrapper exists, exactly once): `guards.rs` declares the S5 \
+         deletion-gate wrapper {n_decl} time(s) and must declare it EXACTLY ONCE. ZERO is \
+         the RED STATE AT HEAD. Without this clause the five bans above would pass \
+         perfectly on a `guards.rs` that has no gate at all — an absence gate is vacuous \
+         unless something also pins the presence it is scoping."
+    );
+}
+
+/// **PRV1-10 (c)** — the far hop stays delegated.
+///
+/// The S5 wrapper delegates to `accounts::is_pending_deletion`, which since
+/// m22-s3 delegates in turn to `should_reject_for_deletion` — the SSOT that
+/// carries the fail-closed second disjunct. This test pins the SECOND hop.
+/// Without it, the whole S5 chain can be gutted one module away: inline the
+/// status test inside `is_pending_deletion` and every guards-side assertion in
+/// this block stays green while the gate silently narrows back to
+/// status-only, waving a terminal (already-erased) account into new trades and
+/// challenges.
+///
+/// GREEN AT HEAD ON PURPOSE — the hop already exists (`accounts.rs:338-344`).
+/// This is a fence on an existing decision, not a proof of new teeth, and it
+/// is a separate `#[test]` from every red one so it can be observed passing.
+#[test]
+fn m22s5_is_pending_deletion_delegates_to_should_reject() {
+    let squashed = m22s5_stripped_squashed("accounts.rs", M22S5_ACCOUNTS_RS);
+    let marker = ["fnis_pending_", "deletion("].concat();
+    let n_marker = squashed.matches(marker.as_str()).count();
+    assert_eq!(
+        n_marker, 1,
+        "m22-s5 PRV1-10 FAIL (far hop, extraction): `accounts.rs` declares the \
+         context-bound deletion predicate {n_marker} time(s); it must declare it EXACTLY \
+         ONCE. With zero it was renamed or moved and the S5 wrapper's delegation target no \
+         longer exists; with two, the extractor below takes the FIRST match and a decoy \
+         could carry the delegation while the real one inlines it."
+    );
+
+    let body = m22s5_squashed_fn_body(&squashed, marker.as_str()).unwrap_or_else(|| {
+        panic!(
+            "m22-s5 PRV1-10 FAIL (far hop, extraction): the context-bound deletion \
+             predicate is declared in `accounts.rs` but its brace-bounded body could not \
+             be sliced. Fail LOUD rather than pass over a body never found."
+        )
+    });
+
+    let ssot = ["should_reject_for_", "deletion("].concat();
+    let n_ssot = body.matches(ssot.as_str()).count();
+    assert_eq!(
+        n_ssot, 1,
+        "m22-s5 PRV1-10 FAIL (far hop): the context-bound deletion predicate calls the \
+         pure SSOT decision {n_ssot} time(s); it must call it EXACTLY ONCE. ZERO is the \
+         gutting mutant: an inline status comparison here narrows the gate back to \
+         status-only and drops the fail-closed arm for the illegal active-plus-marker \
+         shape, so an already-erased account is admitted to new trades, battles and \
+         challenges — and every guards-side assertion in this block stays green, because \
+         nothing in `guards.rs` changed. Two would mean the row is consulted twice, which \
+         is a different function than the one the S5 wrapper was reasoned about."
+    );
+
+    let row_read = ["ctx.db.acc", "ount().identity().find("].concat();
+    assert!(
+        body.contains(row_read.as_str()),
+        "m22-s5 PRV1-10 FAIL (far hop, anti-vacuity): the context-bound deletion predicate \
+         must still READ the account row it judges. Without the lookup the SSOT call \
+         count above is satisfiable by a body that decides on a fabricated or defaulted \
+         row, and the predicate answers the same thing for every caller."
+    );
+
+    // EXACT-EQUALITY body pin (artifact red-team, m22-s5): the two containment
+    // clauses above are blind to LEADING code, and a measured CI-green bypass
+    // prepended a short-circuit return on a condition rustc cannot constant-fold
+    // (a timestamp comparison that is true for every real invocation) — the row
+    // read and the SSOT call both survived textually while the predicate went
+    // dead for every caller in production, gutting the S5 gate AND the
+    // guest-claim guard that shares this predicate. Whole-body equality rejects
+    // leading and trailing code of any spelling; this fn is a frozen SSOT seam
+    // and a refactor of it must co-edit this pin deliberately.
+    let expected_body = [
+        row_read.as_str(),
+        "identity).is_some_and(|a|",
+        ssot.as_str(),
+        "&a))",
+    ]
+    .concat();
+    assert!(
+        body == expected_body,
+        "m22-s5 PRV1-10 FAIL (far hop, whole-body equality): the context-bound deletion \
+         predicate's body must BE the account-row lookup fed straight into the pure SSOT \
+         decision, byte-for-byte in the squashed view — no leading code (a short-circuit \
+         return before the lookup deadens the gate for every caller while both containment \
+         clauses above stay green: a measured bypass), no trailing code, no rebinds. \
+         Expected (squashed): {expected_body:?}. Got: {body:?}"
+    );
+}
+
+/// **PRV1-9 (a)** — EXACTLY three gated reducers, named.
+///
+/// A count alone is satisfied by gating three arbitrary reducers; a membership
+/// check alone is satisfied by gating those three PLUS everything else. This
+/// asserts the SET, which is the actual spec claim: `propose_trade`,
+/// `challenge_pvp`, `accept_challenge` and nothing else. Over-gating is a real
+/// defect, not merely untidy — gating `cancel_trade` or `decline_challenge`
+/// would trap a deleting player's counterparty inside a commitment that can
+/// no longer be unwound, which is the exact opposite of what para 4.7 is for.
+///
+/// The per-file BANS close the other direction: a reducer that reaches for the
+/// accounts predicate (or the account table) DIRECTLY has re-derived the gate
+/// inside a reducer body, where none of the `guards.rs` fences can see it.
+#[test]
+fn m22s5_gated_reducer_census_is_exactly_three() {
+    let call = m22s5_gate_call_needle();
+    let bodies = m22s5_all_reducer_bodies();
+
+    let found: std::collections::BTreeSet<String> = bodies
+        .iter()
+        .filter(|(_, _, body)| body.contains(call.as_str()))
+        .map(|(_, name, _)| name.clone())
+        .collect();
+
+    let expected: std::collections::BTreeSet<String> = [
+        ["propose_", "trade"].concat(),
+        ["challenge_", "pvp"].concat(),
+        ["accept_", "challenge"].concat(),
+    ]
+    .into_iter()
+    .collect();
+
+    let missing: Vec<&String> = expected.difference(&found).collect();
+    let extra: Vec<&String> = found.difference(&expected).collect();
+    assert!(
+        missing.is_empty() && extra.is_empty(),
+        "m22-s5 PRV1-9 FAIL (gated-reducer census): the set of reducers carrying the \
+         deletion gate is wrong. Missing: {missing:?}. Unexpectedly gated: {extra:?}. \
+         Found: {found:?}. \
+         AT HEAD the found set is EMPTY — that is the red state. \
+         IF YOU ADDED A REDUCER that opens a NEW commitment between two players, gate it \
+         and add its name here. IF YOU ADDED ONE THAT DOES NOT, classify it already-open \
+         DELIBERATELY by adding it to the already-open census test in this block, and say \
+         why in the slice notes. Never delete a name from the expected set to make a \
+         build green: over-gating traps a counterparty inside an unwindable commitment, \
+         under-gating lets a deleting account open new ones — both are spec breaks, and \
+         only this SET assertion can tell them apart."
+    );
+
+    let per_file: [(&str, &str, usize); 2] = [
+        ("trading.rs", M22S5_TRADING_RS, 1),
+        ("pvp.rs", M22S5_PVP_RS, 2),
+    ];
+    let mut total = 0usize;
+    for (label, src, want) in per_file {
+        let squashed = m22s5_stripped_squashed(label, src);
+        let n = squashed.matches(call.as_str()).count();
+        total += n;
+        assert_eq!(
+            n, want,
+            "m22-s5 PRV1-9 FAIL (call-site count): `{label}` contains {n} deletion-gate \
+             call(s) and must contain exactly {want}. The set assertion above reads \
+             REDUCER BODIES only; this whole-file count additionally catches a gate call \
+             hoisted into a private helper (where the body-keyed set cannot attribute it) \
+             and a duplicated call inside one body."
+        );
+    }
+    assert_eq!(
+        total, 3,
+        "m22-s5 PRV1-9 FAIL (call-site total): {total} deletion-gate call(s) across both \
+         reducer files; the spec fixes it at three, one per gated reducer."
+    );
+
+    let file_bans: [(&str, &str); 2] = [("trading.rs", M22S5_TRADING_RS), ("pvp.rs", M22S5_PVP_RS)];
+    // The last two bans close the census extractor's camouflage class (artifact
+    // red-team, m22-s5): a conditional-compilation attribute wrapper or a
+    // renamed attribute import would make a reducer INVISIBLE to the extractor
+    // above (silently absent from both the gated and already-open sets) rather
+    // than a loud parse ambiguity. Neither spelling exists in either file today;
+    // a future legitimate use must extend the extractor first, deliberately.
+    let bypass: [(String, &str); 5] = [
+        (
+            ["crate::accounts::is_pending_", "deletion("].concat(),
+            "the accounts-side context predicate",
+        ),
+        (
+            ["should_reject_for_", "deletion("].concat(),
+            "the pure SSOT decision",
+        ),
+        (
+            ["ctx.db.acc", "ount("].concat(),
+            "a direct account-table read",
+        ),
+        (
+            ["cfg_", "attr("].concat(),
+            "a conditional-compilation attribute wrapper (census camouflage)",
+        ),
+        (
+            ["::reducer", "as"].concat(),
+            "a renamed reducer-attribute import (census camouflage)",
+        ),
+    ];
+    for (label, src) in file_bans {
+        let squashed = m22s5_stripped_squashed(label, src);
+        for (needle, what) in &bypass {
+            let n = squashed.matches(needle.as_str()).count();
+            assert_eq!(
+                n, 0,
+                "m22-s5 PRV1-9 FAIL (bypass ban): `{label}` reaches {what} directly {n} \
+                 time(s) and must reach it ZERO times. Every gated reducer goes through \
+                 the shared wrapper, which is what makes the census above meaningful: a \
+                 reducer that consults the predicate itself is gated by a rule NO fence in \
+                 this block constrains — it can invert the polarity, log nothing, or run \
+                 after the write, and the set assertion above still reports three. Green \
+                 at HEAD; keep it that way."
+            );
+        }
+    }
+}
+
+/// **PRV1-9 (b)** — the nine already-open reducers stay open, deliberately.
+///
+/// Para 4.7 gates the reducers that OPEN a new commitment. The nine here either
+/// unwind an existing one (`respond_trade`, `confirm_trade`, `cancel_trade`,
+/// `decline_challenge`, `cancel_challenge`), advance a battle already in
+/// progress (`submit_pvp_action`), or are scheduler-only liveness reapers
+/// (`trade_offer_reaper`, `battle_challenge_reaper`, `pvp_deadline_reaper`).
+/// Gating any of them is the trap-state defect: a deleting player's
+/// counterparty could no longer decline, cancel, confirm or finish, and the
+/// escrow the gate exists to protect would be frozen rather than released. The
+/// scheduler-only three are worse still — `ctx.sender()` there is the DATABASE
+/// identity, so a caller-keyed gate would consult the wrong account entirely.
+///
+/// Every name is asserted to EXIST first: a fence over a reducer that was
+/// renamed away silently stops fencing anything.
+///
+/// GREEN AT HEAD and after the slice; a separate `#[test]` from every red one.
+#[test]
+fn m22s5_already_open_reducers_are_not_gated() {
+    let bare = m22s5_gate_bare_name();
+    let bodies = m22s5_all_reducer_bodies();
+
+    let open_set: [String; 9] = [
+        ["respond_", "trade"].concat(),
+        ["confirm_", "trade"].concat(),
+        ["cancel_", "trade"].concat(),
+        ["trade_offer_", "reaper"].concat(),
+        ["decline_", "challenge"].concat(),
+        ["cancel_", "challenge"].concat(),
+        ["submit_pvp_", "action"].concat(),
+        ["battle_challenge_", "reaper"].concat(),
+        ["pvp_deadline_", "reaper"].concat(),
+    ];
+
+    for name in open_set {
+        let hit = bodies.iter().find(|(_, n, _)| *n == name);
+        let (label, _, body) = hit.unwrap_or_else(|| {
+            panic!(
+                "m22-s5 PRV1-9 FAIL (already-open census, anti-vacuity): reducer `{name}` \
+                 was not found in either reducer file. This fence asserts an ABSENCE \
+                 inside that reducer, so a missing reducer makes it vacuous. If the \
+                 reducer was renamed, update this list DELIBERATELY and re-argue whether \
+                 the new one is open or gated; if it was deleted, remove it here and say \
+                 so in the slice notes."
+            )
+        });
+        let n = body.matches(bare.as_str()).count();
+        assert_eq!(
+            n, 0,
+            "m22-s5 PRV1-9 FAIL (over-gating): `{name}` in `{label}` mentions the deletion \
+             gate {n} time(s) and must mention it ZERO times. This reducer is open BY \
+             DESIGN: it unwinds, advances or reaps an EXISTING commitment rather than \
+             opening a new one. Gating it turns the grace window into a trap — the \
+             deleting player's counterparty can no longer decline, cancel or complete, so \
+             the escrow this gate protects is frozen instead of released, and a \
+             scheduler-only reaper would consult the DATABASE identity's account rather \
+             than any player's. The bare NAME is the needle, so an alias or a wrapper \
+             around the gate is caught here too. If a future spec really gates one of \
+             these, change the spec first, then this list — never the reverse."
+        );
+    }
+}
+
+/// **PRV1-9 (c)** — decision before irreversible effect, in every gated body.
+///
+/// A gate that runs after the row exists does not gate anything: the trade
+/// offer is already inserted, the challenge already sent, the ranked battle
+/// already created, and the reject merely tells the caller about a commitment
+/// that now exists. Both the anchors and the write set fail LOUD when absent —
+/// an ordering pin whose landmark disappeared is a pin that passes on anything.
+#[test]
+fn m22s5_gate_precedes_first_write_in_every_gated_reducer() {
+    let call = m22s5_gate_call_needle();
+    let bodies = m22s5_all_reducer_bodies();
+
+    // The last four entries are the write-performing pub(crate) helpers a
+    // gated reducer could reach TODAY without any local write verb appearing in
+    // its own body (artifact red-team, m22-s5): a helper's insert/update text
+    // lives in the helper's file, invisible to this body-scoped scan. A named
+    // list is a stopgap, not a closure — a NEW write helper must be added here
+    // deliberately, and the anti-vacuity clause below is what forces that.
+    let write_verbs: [String; 13] = [
+        ["()", ".insert("].concat(),
+        ["()", ".update("].concat(),
+        ["()", ".delete("].concat(),
+        ["start_pvp_", "battle("].concat(),
+        ["schedule_trade_", "reaper("].concat(),
+        ["schedule_challenge_", "reaper("].concat(),
+        ["schedule_", "deadline("].concat(),
+        ["disarm_challenge_", "reaper("].concat(),
+        ["disarm_trade_", "reaper("].concat(),
+        ["grant_", "item("].concat(),
+        ["consume_", "one("].concat(),
+        ["grant_", "currency("].concat(),
+        ["spend_", "currency("].concat(),
+    ];
+
+    let gated: [String; 3] = [
+        ["propose_", "trade"].concat(),
+        ["challenge_", "pvp"].concat(),
+        ["accept_", "challenge"].concat(),
+    ];
+
+    for name in gated {
+        let hit = bodies.iter().find(|(_, n, _)| *n == name);
+        let (label, _, body) = hit.unwrap_or_else(|| {
+            panic!(
+                "m22-s5 PRV1-9 FAIL (ordering, anti-vacuity): gated reducer `{name}` was \
+                 not found in either reducer file, so the ordering pin cannot fire."
+            )
+        });
+
+        let gate_pos = body.find(call.as_str()).unwrap_or_else(|| {
+            panic!(
+                "m22-s5 PRV1-9 FAIL (ordering): `{name}` in `{label}` carries NO deletion \
+                 gate, so there is nothing to order. THIS IS THE RED STATE AT HEAD — the \
+                 gate has not been implemented yet. Failing loud here is deliberate: an \
+                 ordering assertion that quietly skips an ungated reducer would report \
+                 success on a module with no gate at all."
+            )
+        });
+
+        let first_write = write_verbs
+            .iter()
+            .filter_map(|v| body.find(v.as_str()))
+            .min()
+            .unwrap_or_else(|| {
+                panic!(
+                    "m22-s5 PRV1-9 FAIL (ordering, anti-vacuity): `{name}` in `{label}` \
+                     contains NONE of the known write verbs, so `gate before first write` \
+                     is trivially true and this assertion proves nothing. Either the \
+                     reducer stopped writing (in which case ask whether it still needs \
+                     gating) or it writes through a verb this list does not know — add it \
+                     here rather than accepting the vacuous pass."
+                )
+            });
+
+        assert!(
+            gate_pos < first_write,
+            "m22-s5 PRV1-9 FAIL (decision before irreversible effect): in `{name}` \
+             (`{label}`) the deletion gate sits at squashed offset {gate_pos}, AFTER the \
+             first write at offset {first_write}. A gate that runs once the row exists \
+             does not gate anything — the trade offer is inserted, the challenge is sent, \
+             or the ranked battle is created, and the reject only reports a commitment \
+             that the deleting account has ALREADY opened. Move the gate above every \
+             write in this reducer."
+        );
+    }
+}
+
+/// **PRV1-9 (d)** — the gate itself writes nothing.
+///
+/// The wrapper runs on the reject path of three reducers. A write inside it
+/// would be a side effect nobody reviewing a call site can see, and on the
+/// Ok path it would fire on EVERY gated call. Kept as its own test so the
+/// ordering pin above and this one fail with distinct, separable messages.
+#[test]
+fn m22s5_gate_body_performs_no_write() {
+    let body = m22s5_require_not_deleting_body();
+    let writes: [String; 3] = [
+        ["()", ".insert("].concat(),
+        ["()", ".update("].concat(),
+        ["()", ".delete("].concat(),
+    ];
+    for w in writes {
+        let n = body.matches(w.as_str()).count();
+        assert_eq!(
+            n, 0,
+            "m22-s5 PRV1-9 FAIL (pure gate): the deletion-gate wrapper's body performs {n} \
+             table write(s) and must perform ZERO. It is a shared preamble for three \
+             reducers and runs on every call, accepted or rejected; a write here is \
+             invisible at all three call sites and fires on the happy path too."
+        );
+    }
+}
+
+/// **PRV1-9 (e)** — every call site names ITS OWN reducer.
+///
+/// Run on the comments-stripped, strings-KEPT view: this is the only pin in
+/// the block that can see the tag, because every other pipeline blanks string
+/// payloads and all three call sites become byte-identical there. A gate that
+/// rejects correctly but files the reject under a sibling reducer's name
+/// points the operator's only record of a refused, deletion-gated commitment
+/// at the wrong reducer — and the wrapper is SHARED by three of them, so the
+/// tag is the only thing that distinguishes the three rejects in the log.
+///
+/// The per-file TOTALS are what make the three exact-statement pins airtight:
+/// without them, a duplicated call (correct tag, wrong place) satisfies every
+/// count above.
+#[test]
+fn m22s5_gate_call_sites_are_fully_tagged() {
+    let call = m22s5_gate_call_needle();
+    let dq = double_quote();
+
+    // Both closing forms are accepted — the single-line call and the form
+    // rustfmt produces when it splits and adds a trailing comma.
+    let site = |tag: &str, trailing: bool| -> String {
+        let comma = if trailing { "," } else { "" };
+        [
+            call.as_str(),
+            "ctx,",
+            dq.as_str(),
+            tag,
+            dq.as_str(),
+            comma,
+            ")?;",
+        ]
+        .concat()
+    };
+
+    let cases: [(&str, &str, &str, usize); 3] = [
+        ("trading.rs", M22S5_TRADING_RS, "propose_trade", 1),
+        ("pvp.rs", M22S5_PVP_RS, "challenge_pvp", 2),
+        ("pvp.rs", M22S5_PVP_RS, "accept_challenge", 2),
+    ];
+
+    for (label, src, tag, file_total) in cases {
+        let squashed = m22s5_comments_only_squashed(label, src);
+        let plain = site(tag, false);
+        let trailing = site(tag, true);
+        let n =
+            squashed.matches(plain.as_str()).count() + squashed.matches(trailing.as_str()).count();
+        assert_eq!(
+            n, 1,
+            "m22-s5 PRV1-9 FAIL (call-site tag): `{label}` contains {n} deletion-gate call \
+             site(s) tagged for `{tag}`; it must contain EXACTLY ONE. This is the only pin \
+             in the block evaluated with string payloads INTACT — every other pipeline \
+             blanks them, which makes all three call sites byte-identical and a swapped \
+             tag invisible. A wrong tag files the reject under a sibling reducer's name, \
+             and since one shared wrapper serves all three reducers the tag is the ONLY \
+             record of which commitment was actually refused. The trailing `?;` is part of \
+             the pin: a discarded result compiles, lints clean, and gates nothing. \
+             Expected (squashed, trailing-comma form): {trailing:?}"
+        );
+
+        let n_file = squashed.matches(call.as_str()).count();
+        assert_eq!(
+            n_file, file_total,
+            "m22-s5 PRV1-9 FAIL (call-site total, tagged view): `{label}` contains \
+             {n_file} deletion-gate call(s) and must contain exactly {file_total}. The \
+             exact-statement pin above counts only correctly-tagged sites; this total is \
+             what rejects a SECOND, differently-tagged or untagged call sitting beside it \
+             — including a copy in a reducer that must stay open."
+        );
+    }
+}
+
+// ===========================================================================
+// m22-s5 (PRV1-9 / PRV1-10, spec para 4.7, ADR-0225) — the gameplay deletion
+// gate: BEHAVIOURAL half.
+//
+// These two tests EXECUTE the pure decision seam rather than reading the
+// source, so they close the residue every scan in the sibling block records:
+// the scans prove the wrapper delegates and is called in the right places,
+// these prove the thing being delegated to actually decides the right way and
+// says something a client can act on.
+//
+// COMPILE-RED at HEAD: neither the reason constant nor the pure gate exists in
+// `guards.rs`, so `use super::*;` cannot resolve them and the crate does not
+// build. That is the established house precedent for a new pure seam
+// (`content_cache_tests.rs:14-25`, and the 11r-g `json_escape` block above).
+// Apply this block ONLY after the scan block, and expect the whole crate's
+// test build to fail until the implementation lands.
+// ===========================================================================
+
+/// **PRV1-9 (truth table)** — the pure gate is a total, two-row decision.
+///
+/// `deletion_gate` mirrors `pvp.rs`'s `ranked_account_gate` (pvp.rs:104): a
+/// ctx-free, I/O-free predicate-to-`Result` adapter, which is what makes it
+/// exhaustively testable in-crate when reducer bodies are not (ADR-0156 P7).
+///
+/// WHAT EACH ROW KILLS:
+///   * `false` -> `Ok` — kills the inverted branch (`if !rejected`), which
+///     would refuse EVERY caller of all three gated reducers: a total outage
+///     of trading and PvP challenges, shipped green by every source scan in
+///     the sibling block because the delegation text is unchanged.
+///   * `true` -> `Err` — kills the always-`Ok` stub, the shape a hollowed
+///     implementation naturally lands on. Matched against the CONSTANT rather
+///     than a re-typed literal: a test that re-types the reason cannot see a
+///     reason that was reworded on one side only, and would silently start
+///     asserting against text no client ever receives.
+#[test]
+fn m22s5_deletion_gate_truth_table() {
+    assert_eq!(
+        deletion_gate(false),
+        Ok(()),
+        "m22-s5 PRV1-9 FAIL (truth table, not-deleting row): an account that is NOT inside \
+         the deletion gate must be admitted. An inverted branch here is not a subtle bug: \
+         it refuses every caller of all three gated reducers — a total trading and \
+         PvP-challenge outage — while every source scan in the sibling block stays green, \
+         because the delegation text is byte-identical either way."
+    );
+    assert_eq!(
+        deletion_gate(true),
+        Err(REJECT_DELETION_GATED),
+        "m22-s5 PRV1-9 FAIL (truth table, deleting row): an account inside the deletion \
+         gate must be refused, with the module's single static reason. The `Err` half \
+         kills the always-Ok stub a hollowed implementation lands on; comparing against \
+         the CONSTANT (not a re-typed literal) is what keeps this test honest if the \
+         reason is ever reworded — a re-typed copy would drift silently and start \
+         asserting text no client ever receives."
+    );
+}
+
+/// **PRV1-9 (reason contract)** — the reject reason is static, PII-free, and
+/// DISTINCT from every neighbouring account-lifecycle reject.
+///
+/// WHY EACH CLAUSE:
+///   * NON-EMPTY — an empty reason reaches the client as a blank error toast.
+///   * NO FORMAT HOLE — the reason must be a fixed literal, never a template.
+///     A hole is how caller-controlled or row-derived text (an identity, an
+///     email, a name) reaches a log line and a client error string: the whole
+///     point of a static reason on a privacy path is that it can carry no
+///     subject data at all.
+///   * DISTINCT from `complete_guest_claim`'s Guard 3 reason
+///     (`accounts.rs:536`) — that guard consults the SAME predicate this gate
+///     delegates to. Sharing one string would make the two indistinguishable
+///     to a client that has to phrase them differently (one says `your claim
+///     cannot proceed`, the other says `you cannot open new commitments`), and
+///     would make the two rejects indistinguishable in the log as well.
+///   * DISTINCT from the PRV1-4 late-cancel reason (`accounts.rs:81`,
+///     `REJECT_ALREADY_DELETED`, a private const — referenced here by its
+///     literal, with the line cited, because module privacy puts the binding
+///     out of reach). That one means `this is over and cannot be reversed`;
+///     this one means `this is in progress and new commitments are paused`.
+///     Collapsing them tells a player mid-grace that their account is already
+///     permanently deleted, which is both false and unrecoverable advice — the
+///     cancel affordance is still live.
+///
+/// Distinctness is asserted in BOTH directions (neither string contains the
+/// other), not merely as inequality: a reason built by appending to a
+/// neighbour's text is still indistinguishable by prefix matching, which is
+/// how clients key affordances off reject strings.
+#[test]
+fn m22s5_reject_reason_is_static_pii_free_and_distinct() {
+    let reason = REJECT_DELETION_GATED;
+
+    assert!(
+        !reason.is_empty(),
+        "m22-s5 PRV1-9 FAIL (reason contract): the deletion-gate reject reason is empty. \
+         It reaches the client verbatim as the error for a refused trade or challenge; an \
+         empty string is a blank toast the player cannot act on."
+    );
+
+    let hole = "\u{007B}";
+    let n_hole = reason.matches(hole).count();
+    assert_eq!(
+        n_hole, 0,
+        "m22-s5 PRV1-9 FAIL (reason contract): the deletion-gate reject reason contains \
+         {n_hole} format hole(s) and must contain ZERO. The reason must be a fixed \
+         literal, never a template: a hole is exactly how row-derived or caller-derived \
+         text (an identity, a name, an issuer) reaches both the client error string and \
+         the reject log line. On a privacy path the whole value of a static reason is \
+         that it can carry no subject data at all."
+    );
+
+    // `complete_guest_claim` Guard 3 (accounts.rs:536) — the OTHER consumer of
+    // the same SSOT predicate this gate delegates to.
+    let claim_guard_reason = "account pending deletion";
+    // PRV1-4 late-cancel reason (accounts.rs:81, `REJECT_ALREADY_DELETED`).
+    // Spelled as a literal because the binding is a private `const` in
+    // `accounts` and module privacy puts it out of reach from here.
+    let terminal_cancel_reason = "this account has already been permanently deleted";
+
+    let neighbours: [(&str, &str); 2] = [
+        (claim_guard_reason, "the guest-claim pending-deletion guard"),
+        (terminal_cancel_reason, "the late-cancel terminal reject"),
+    ];
+
+    for (other, what) in neighbours {
+        assert_ne!(
+            reason, other,
+            "m22-s5 PRV1-9 FAIL (reason distinctness): the deletion-gate reject reason is \
+             IDENTICAL to {what}'s reason. The two mean different things and the client \
+             must phrase them differently; sharing one string also makes the two rejects \
+             indistinguishable in the operator's log."
+        );
+        assert!(
+            !reason.contains(other),
+            "m22-s5 PRV1-9 FAIL (reason distinctness): the deletion-gate reject reason \
+             CONTAINS {what}'s reason. Inequality alone is not enough — clients key \
+             affordances off substring and prefix matches on reject strings, so a reason \
+             built by appending to a neighbour's text still fires the neighbour's \
+             affordance."
+        );
+        assert!(
+            !other.contains(reason),
+            "m22-s5 PRV1-9 FAIL (reason distinctness): {what}'s reason CONTAINS the \
+             deletion-gate reject reason. Same defect as the clause above with the \
+             containment the other way round: the shorter string still matches inside the \
+             longer one, so the two paths remain indistinguishable to any client or log \
+             filter that matches on substrings."
+        );
+    }
+}

@@ -726,6 +726,8 @@ pub(crate) fn cancel_challenges_on_disconnect(ctx: &ReducerContext, player: Iden
 ///
 /// Guard order (reject-not-clamp, decision-before-irreversible):
 /// 1. Caller must be joined.
+///    1a. Caller is not deletion-gated (ADR-0227 / spec §4.7, PRV1-9) — new challenge
+///    commitments only; live ones are untouched (PRV1-10).
 /// 2. Cannot challenge self.
 /// 3. Target must be joined and online.
 ///    3a. Both parties hold a full account (ranked-only; ADR-0189, issue #307).
@@ -749,6 +751,12 @@ pub fn challenge_pvp(
         log_reject("challenge_pvp", me, &e);
         return Err(e);
     }
+
+    // Guard 1a (ADR-0227): a deletion-gated caller cannot OPEN a new challenge.
+    // Earlier than guard 3a on purpose: 3a's late placement bounds disclosure of a
+    // THIRD PARTY's account state (ADR-0189 D8); this is a self-property and
+    // discloses nothing about the target.
+    crate::guards::require_not_deleting(ctx, "challenge_pvp")?;
 
     // Guard 2: no self-challenges.
     if target == me {
@@ -895,6 +903,8 @@ pub fn challenge_pvp(
 /// Guard order:
 /// 1. Challenge exists.
 /// 2. ctx.sender() == challenge.target (only the target accepts).
+///    2a. Caller is not deletion-gated (ADR-0227, PRV1-9) — accepting OPENS the battle
+///    commitment; the pending challenge row itself is not force-terminated (PRV1-10).
 /// 3. status == Pending.
 ///    3a. Both parties hold a full account (re-checked at accept; ADR-0189 D3).
 /// 4. Neither party currently in an ongoing battle (re-checked here).
@@ -928,6 +938,11 @@ pub fn accept_challenge(
         log_reject("accept_challenge", me, &e);
         return Err(e);
     }
+
+    // Guard 2a (ADR-0227): authorization first (ADR-0117 role-first ordering), then
+    // refuse a deletion-gated caller before any state read or write — accepting is
+    // what OPENS the battle commitment.
+    crate::guards::require_not_deleting(ctx, "accept_challenge")?;
 
     // Guard 3: must be Pending.
     if challenge.status != ChallengeStatus::Pending {

@@ -73,6 +73,48 @@ pub(crate) fn require_owner(
     Ok(())
 }
 
+/// Single static reject reason for the para-4.7 deletion gate (ADR-0225 §2,
+/// ADR-0227, PRV1-9). ONE message for every gated shape on purpose: a
+/// per-state message (mid-grace vs terminal) would require this module to
+/// re-derive the state split that `accounts` owns, and PRV1-10 bans that
+/// vocabulary here.
+pub(crate) const REJECT_DELETION_GATED: &str =
+    "account deletion requested; new trades, battles and challenges are unavailable";
+
+/// Pure decision seam of the para-4.7 deletion gate (ADR-0225 §2, PRV1-9):
+/// maps an already-derived verdict to `Err(REJECT_DELETION_GATED)` or `Ok`.
+/// Takes a `bool`, never a context — the account-state derivation stays with
+/// its SSOT in `accounts`, and this half stays unit-testable without a
+/// `ReducerContext` (the same split as the battle-input validators below).
+pub(crate) fn deletion_gate(rejected: bool) -> Result<(), &'static str> {
+    if rejected {
+        return Err(REJECT_DELETION_GATED);
+    }
+    Ok(())
+}
+
+/// Reducer preamble for the para-4.7 deletion gate (ADR-0225 §2, ADR-0227,
+/// PRV1-9): reject the CALLER when their account is mid-grace or carries the
+/// terminal marker — such an account may not OPEN a new trade, battle or
+/// challenge commitment; existing commitments stay untouched.
+///
+/// Caller-only BY SIGNATURE: there is deliberately no identity parameter, so
+/// no call site can ever point this gate at a third party (a counterparty or
+/// challenge target). Delegates TRANSITIVELY — through the ctx-bound accounts
+/// predicate into the pure SSOT decision — and never re-derives the
+/// status-or-marker disjunction here (PRV1-10): the fail-closed arm for the
+/// illegal active-plus-marker shape lives in `accounts` alone, and a second
+/// spelling would silently diverge from it. The reason is ONE static string
+/// because a per-state message would require re-deriving exactly that state
+/// split. The fused single-expression body is pinned byte-for-byte by the
+/// m22-s5 gating tests; change it only together with them and the spec.
+pub(crate) fn require_not_deleting(ctx: &ReducerContext, reducer: &str) -> Result<(), String> {
+    deletion_gate(crate::accounts::is_pending_deletion(ctx, ctx.sender())).map_err(|e| {
+        log_reject(reducer, ctx.sender(), e);
+        e.to_string()
+    })
+}
+
 /// Validate + canonicalize a player-visible name (#27c Unicode hardening).
 ///
 /// Order matters: trim -> NFC-normalize -> length -> charset, so length and

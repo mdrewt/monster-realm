@@ -204,6 +204,9 @@ pub fn trade_offer_reaper(
 ///    unbounded `HashSet` dedups in `validate_proposal` and the per-item inventory
 ///    scans below can never run on an oversized client vector.
 /// 1. Caller must be joined.
+///    1a. Caller is not deletion-gated (ADR-0227 / spec §4.7): an account mid-grace or
+///    terminal cannot OPEN a new trade commitment (PRV1-9); existing trades are
+///    untouched (PRV1-10).
 /// 2. Counterparty != caller (no self-trade, TR-21).
 /// 3. Neither party has an active offer (TR-20 / D4).
 /// 4. validate_proposal (empty offer / duplicate monster IDs / zero-qty items, TR-1/22).
@@ -241,6 +244,12 @@ pub fn propose_trade(
         .identity()
         .find(me)
         .ok_or_else(|| "not joined".to_string())?;
+
+    // Guard 1a (ADR-0227): reject opening a NEW commitment for a deletion-gated caller.
+    // Fully-qualified + `?;` on purpose — both are pinned (unshadowable path, no
+    // discarded verdict). Placement: after the caps (ADR-0166 D3 bound-before-DB-read
+    // is preserved) and with the caller-state preamble, before any counterparty read.
+    crate::guards::require_not_deleting(ctx, "propose_trade")?;
 
     // Counterparty must be a joined player (prevents phantom-offer DoS, ADR-0106).
     ctx.db
