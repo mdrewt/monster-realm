@@ -113,6 +113,38 @@
 //      import children would go silent, exit 0, and this tooth would pass while
 //      blind to the only thing it exists for, so [T3/argv-control] runs first
 //      and fails loud.
+//   T4 doc tie — reds when ADR-0207's four retired-mechanism regions (the
+//      rb-2/ADR-0208 discriminator replaced the typeof-string inference this
+//      prose describes as live) are not anchored, escorted, or rewritten, and
+//      when ARCHITECTURE.md's rb-2/rb-3 paragraphs do not individually cite
+//      ADR-0208. Four locator substrings pin the regions ([T4/anchor],
+//      unconditional: fails loud on 0 occurrences AND on >1 — a first-hit
+//      anchor is forgeable). For :19/:113/:158 (preserved prose, RETIRED by
+//      an end-of-line mark) [T4/escort] derives the LINE from the anchor's
+//      own index (`lastIndexOf`/`indexOf('\n', ...)`, never a literal line
+//      number) and requires that ONE line to carry BOTH the ADR-0202 D2 mark
+//      prefix and `ADR-0208` — closing the measured bypass where three
+//      whole-file `includes()` checks let one genuine mark anywhere satisfy
+//      escort for all three regions. :109 (the D5 forward instruction) is
+//      REWRITTEN, not retired-and-marked, so [T4/anchor] locates it by the
+//      section HEADING (`### D5`) — never the rewritten phrase, which the
+//      fix deletes and would make a correct "throw on 0" anchor an own-goal
+//      — and [T4/instruction] closes two halves scoped to that region only:
+//      the exact pre-fix fragment must occur exactly 0 times, and the region
+//      must state `ADR-0208 D1` plus an object-shape marker (`policy:`); an
+//      open-ended semantic ban was rejected because the correct fixed text
+//      itself says "a string entry now reds [G6/policy]", which contains
+//      "string"+"entry" and would self-red forever. [T4/arch] closes the
+//      other measured bypass: ARCHITECTURE.md ALREADY contains `ADR-0208`
+//      (the rb-4 and rb-5 paragraphs), so a whole-file `includes` check is
+//      true today and stays true regardless of whether rb-2's/rb-3's own
+//      paragraphs were ever edited. Each paragraph is bounded from its own
+//      `**rb-N**` bold marker to the NEXT `**rb-` marker (paragraphs are not
+//      in numeric order in this file — rb-25 sits between rb-2 and rb-3),
+//      and the citation is required INSIDE that slice. Every count above is
+//      strip-HTML-comments-first, and T4 ACCUMULATES like T1/T2 rather than
+//      early-returning like T3, so one clause's bug never masks whether the
+//      others are load-bearing.
 //
 // WHY THE IMPORT IS LAZY AND WHY T3 RUNS FIRST — do NOT "clean this up" back
 // into a static `import * as gci from './guest-claim-integrity.eval.mjs'`.
@@ -142,7 +174,7 @@
 // String.indexOf / String.split only. The imported manifest is never mutated.
 
 import { spawnSync } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -168,6 +200,71 @@ const CHILD_TIMEOUT_MS = 20000;
 // Anchors that must carry a policy in ANY future revision of the manifest: the
 // milestone primary key and the one profile column rekey_profile moves.
 const ANCHOR_COLUMNS = ['account.identity', 'profile.identity'];
+
+// Insert this whole block AFTER the existing line:
+//   const ANCHOR_COLUMNS = ['account.identity', 'profile.identity'];
+// and BEFORE the existing comment:
+//   // ---------------------------------------------------------------------------
+//   // T2 fixtures — tiny, IN-MEMORY, and the only inputs the walker is given here.
+// ============================================================================
+
+// ---------------------------------------------------------------------------
+// T4 constants — the ADR-0207 / ARCHITECTURE.md doc-tie this tooth freezes.
+// See the header comment for why each locator was chosen, and which measured
+// bypass each closed-shape check below exists to kill.
+// ---------------------------------------------------------------------------
+
+const ADR_0207_REL = 'docs/adr/0207-data-lifecycle-manifest-and-terminal-schema.md';
+const ARCHITECTURE_REL = 'ARCHITECTURE.md';
+
+// A stray literal backtick inside a template literal silently terminates it
+// with NO error (measured hazard). Every needle below that needs one is
+// built from concatenated single-quoted pieces via this constant instead of
+// ever appearing directly inside a template literal.
+const BACKTICK = String.fromCharCode(0x60);
+
+// ADR-0202 D2's mark form, RETIRED variant (D2: the by-clause is omitted for
+// exactly two of the four states, STILL OPEN and RETIRED). The dash between
+// STATE and note is an em dash (U+2014, built via fromCharCode so this
+// source file carries no raw non-ASCII byte).
+const RETIRED_MARK_PREFIX = '**[RETIRED ' + String.fromCharCode(0x2014) + ' ';
+const ADR_0208_CITE = 'ADR-0208';
+
+// Locator substrings, one per ADR-0207 region. Verified unique at HEAD
+// (see the splice notes for the measured counts) and chosen to survive the
+// fix: :109's anchor is deliberately the section HEADING, never the
+// rewritten phrase itself, which the fix deletes.
+const ANCHOR_19 = 'JS ' + BACKTICK + 'REKEY_MANIFEST' + BACKTICK + ' object entries';
+const ANCHOR_109 = '### D5';
+const ANCHOR_113 = 'the parked R-m22-s0-X1 trap';
+const ANCHOR_158 = 'Why not the JS path:';
+
+const RETIRED_REGIONS = [
+  { label: ':19', needle: ANCHOR_19 },
+  { label: ':113', needle: ANCHOR_113 },
+  { label: ':158', needle: ANCHOR_158 },
+];
+
+// The D5 region's pre-fix instruction fragment: closed to EXACTLY 0
+// occurrences after the fix, never an open-ended semantic ban — the correct
+// fixed text is required to say "a string entry now reds [G6/policy]",
+// which itself contains "string" + "entry" and would make a blind ban
+// permanently unsatisfiable after a legitimate fix.
+const STALE_INSTRUCTION_FRAGMENT = BACKTICK + 'REKEY_MANIFEST' + BACKTICK + ' string key';
+const D5_POSITIVE_CITE = 'ADR-0208 D1';
+const D5_OBJECT_MARKER = 'policy:';
+
+const RB2_MARKER = '**rb-2**';
+const RB3_MARKER = '**rb-3**';
+const NEXT_RB_MARKER = '**rb-';
+
+const ARCH_PARAGRAPHS = [
+  { label: 'rb-2', marker: RB2_MARKER },
+  { label: 'rb-3', marker: RB3_MARKER },
+];
+
+// ============================================================================
+
 
 // ---------------------------------------------------------------------------
 // T2 fixtures — tiny, IN-MEMORY, and the only inputs the walker is given here.
@@ -681,6 +778,299 @@ function checkImportPurity() {
   };
 }
 
+// Insert this whole block AFTER the closing `}` of `checkImportPurity`
+// (the line that reads only `}` right before the blank line that precedes
+// the `runTooth` JSDoc comment `/** Run one tooth, converting a throw...`).
+// ============================================================================
+
+/**
+ * Strip HTML comments before ANY count — a commented-out line must not prop
+ * up an occurrence count. No `new RegExp` (Semgrep detect-non-literal-regexp
+ * is a CI gate); plain `indexOf` scanning only.
+ * @param {string} text Raw markdown source.
+ * @returns {string} `text` with every `<!-- ... -->` span removed.
+ */
+function stripHtmlComments(text) {
+  const OPEN = '<!--';
+  const CLOSE = '-->';
+  let out = '';
+  let i = 0;
+  for (;;) {
+    const openIdx = text.indexOf(OPEN, i);
+    if (openIdx === -1) {
+      out += text.slice(i);
+      break;
+    }
+    out += text.slice(i, openIdx);
+    const closeIdx = text.indexOf(CLOSE, openIdx + OPEN.length);
+    if (closeIdx === -1) {
+      // Unterminated comment: drop the remainder rather than risk treating
+      // real content on the wrong side of an unmatched delimiter as code.
+      break;
+    }
+    i = closeIdx + CLOSE.length;
+  }
+  return out;
+}
+
+/**
+ * Count non-overlapping occurrences of a literal substring.
+ * @param {string} haystack Text to search.
+ * @param {string} needle Literal substring (never a regex).
+ * @returns {number} Occurrence count.
+ */
+function countOccurrences(haystack, needle) {
+  if (needle.length === 0) return 0;
+  let count = 0;
+  let idx = 0;
+  for (;;) {
+    const found = haystack.indexOf(needle, idx);
+    if (found === -1) break;
+    count += 1;
+    idx = found + needle.length;
+  }
+  return count;
+}
+
+/**
+ * The single line containing `idx`, derived from the text itself — never a
+ * literal line number, so a later edit above this region never silently
+ * mis-targets the escort check.
+ * @param {string} text Full document text.
+ * @param {number} idx Index inside the line to extract.
+ * @returns {string} The line's content (no trailing newline).
+ */
+function lineAt(text, idx) {
+  const lineStart = text.lastIndexOf('\n', idx) + 1;
+  let lineEnd = text.indexOf('\n', idx);
+  if (lineEnd === -1) lineEnd = text.length;
+  return text.slice(lineStart, lineEnd);
+}
+
+/**
+ * [T4/anchor] + [T4/escort] for one preserved-and-retired ADR-0207 region.
+ *
+ * Escort is derived from the anchor's own index (never a literal line
+ * number) and requires the ONE line containing the anchor to carry BOTH the
+ * exact ADR-0202 D2 mark prefix and `ADR-0208` — closing the measured
+ * bypass where three whole-file `includes()` checks let one genuine mark
+ * ANYWHERE satisfy escort for all three regions.
+ * @param {string} label Human label for messages (e.g. ":19").
+ * @param {string} needle The region's stable locator substring.
+ * @param {string} doc207 Comment-stripped ADR-0207 text.
+ * @returns {{failures: string[], idx: number|null}} Tagged failures + the
+ *   anchor index (null when the anchor itself is not exactly-one).
+ */
+function checkRetiredRegion(label, needle, doc207) {
+  const failures = [];
+  const count = countOccurrences(doc207, needle);
+  if (count !== 1) {
+    failures.push(
+      `[T4/anchor] ADR-0207 region ${label} locator ${JSON.stringify(needle)} occurs ` +
+        `${count} time(s) in ${ADR_0207_REL}, expected exactly 1. A retired-mechanism region ` +
+        'must stay locatable by a substring that survives the fix; 0 means the region moved or ' +
+        'was deleted out from under this tooth, and more than 1 means the locator can no longer ' +
+        'name one line.',
+    );
+    return { failures, idx: null };
+  }
+
+  const idx = doc207.indexOf(needle);
+  const line = lineAt(doc207, idx);
+  const hasMark = line.indexOf(RETIRED_MARK_PREFIX) !== -1;
+  const hasCite = line.indexOf(ADR_0208_CITE) !== -1;
+  if (!hasMark || !hasCite) {
+    failures.push(
+      `[T4/escort] ADR-0207 region ${label} (line: ${JSON.stringify(line.slice(0, 160))}) is not ` +
+        'escorted on the SAME LINE by both the ADR-0202 D2 RETIRED mark and ' +
+        `${ADR_0208_CITE}. This region describes a mechanism rb-2/${ADR_0208_CITE} retired; a ` +
+        'reader hitting it unescorted acts on stale prose. A mark present anywhere ELSE in the ' +
+        'file does not satisfy this check — it must sit on this exact line.',
+    );
+  }
+  return { failures, idx };
+}
+
+/**
+ * [T4/anchor] for the D5 (:109) region. Anchored on the section HEADING,
+ * deliberately never the rewritten instruction phrase itself: a correct fix
+ * DELETES that phrase, so anchoring on it would make a correct "throw on 0"
+ * anchor check fail after the legitimate fix lands (an own-goal).
+ * @param {string} doc207 Comment-stripped ADR-0207 text.
+ * @returns {{failures: string[], idx: number|null}} Tagged failures + index.
+ */
+function checkD5Region(doc207) {
+  const failures = [];
+  const count = countOccurrences(doc207, ANCHOR_109);
+  if (count !== 1) {
+    failures.push(
+      `[T4/anchor] ADR-0207 region :109 (D5) locator ${JSON.stringify(ANCHOR_109)} occurs ` +
+        `${count} time(s) in ${ADR_0207_REL}, expected exactly 1.`,
+    );
+    return { failures, idx: null };
+  }
+  return { failures, idx: doc207.indexOf(ANCHOR_109) };
+}
+
+/**
+ * [T4/instruction] the :109 D5 region: the live forward-instruction to a
+ * future S3 slice must be REWRITTEN, not merely annotated. Two closed
+ * halves scoped to the D5 region only (bounded from the `### D5` heading to
+ * the next `### ` heading) — see the header for why an open-ended semantic
+ * ban is unclosable and self-defeating here.
+ * @param {number|null} d5Idx Index of the ANCHOR_109 heading, or null when
+ *   `checkD5Region` already failed (this clause is then a no-op: there is
+ *   no region to bound).
+ * @param {string} doc207 Comment-stripped ADR-0207 text.
+ * @returns {string[]} Tagged failures.
+ */
+function checkD5Instruction(d5Idx, doc207) {
+  if (d5Idx === null) return [];
+  const failures = [];
+  let regionEnd = doc207.indexOf('\n### ', d5Idx + ANCHOR_109.length);
+  if (regionEnd === -1) regionEnd = doc207.length;
+  const region = doc207.slice(d5Idx, regionEnd);
+
+  const hasCite = region.indexOf(D5_POSITIVE_CITE) !== -1;
+  const hasObjectMarker = region.indexOf(D5_OBJECT_MARKER) !== -1;
+  if (!hasCite || !hasObjectMarker) {
+    failures.push(
+      `[T4/instruction] the ADR-0207 D5 region does not state the object-entry rewrite: it must ` +
+        `contain ${JSON.stringify(D5_POSITIVE_CITE)} and an object-shape marker ` +
+        `${JSON.stringify(D5_OBJECT_MARKER)}. rb-2 (${D5_POSITIVE_CITE}) made a string ` +
+        'REKEY_MANIFEST entry red-on-arrival at [G6/policy]; D5 must not still instruct a future ' +
+        'S3 slice to add one.',
+    );
+  }
+
+  const staleCount = countOccurrences(region, STALE_INSTRUCTION_FRAGMENT);
+  if (staleCount !== 0) {
+    failures.push(
+      '[T4/instruction] the ADR-0207 D5 region still contains the exact pre-fix fragment ' +
+        `${JSON.stringify(STALE_INSTRUCTION_FRAGMENT)} (${staleCount} occurrence(s)). This is the ` +
+        `retired typeof-inference instruction; rb-2/${D5_POSITIVE_CITE} replaced it, and this ` +
+        'region must be REWRITTEN in place, not left standing beside a correction.',
+    );
+  }
+  return failures;
+}
+
+/**
+ * [T4/arch] one ARCHITECTURE.md `**rb-N**` paragraph must cite ADR-0208
+ * WITHIN ITS OWN SLICE. ARCHITECTURE.md already contains `ADR-0208` today
+ * (the rb-4 and rb-5 paragraphs), so a whole-file `includes('ADR-0208')`
+ * check is true regardless of whether THIS paragraph was ever edited — the
+ * measured bypass this scoping exists to close. The slice runs from the
+ * paragraph's own bold marker to the NEXT `**rb-` marker (paragraphs are
+ * not in numeric order in this file: rb-25 sits between rb-2 and rb-3).
+ * @param {string} label Human label for messages (e.g. "rb-2").
+ * @param {string} marker The paragraph's own bold marker (e.g. "**rb-2**").
+ * @param {string} archDoc Comment-stripped ARCHITECTURE.md text.
+ * @returns {string[]} Tagged failures.
+ */
+function checkArchParagraph(label, marker, archDoc) {
+  const failures = [];
+  const count = countOccurrences(archDoc, marker);
+  if (count !== 1) {
+    failures.push(
+      `[T4/arch] ${ARCHITECTURE_REL} marker ${JSON.stringify(marker)} (the ${label} paragraph) ` +
+        `occurs ${count} time(s), expected exactly 1. Cannot bound the paragraph to check for the ` +
+        `${ADR_0208_CITE} citation without a unique start marker.`,
+    );
+    return failures;
+  }
+
+  const startIdx = archDoc.indexOf(marker) + marker.length;
+  let endIdx = archDoc.indexOf(NEXT_RB_MARKER, startIdx);
+  if (endIdx === -1) endIdx = archDoc.length;
+  const slice = archDoc.slice(startIdx, endIdx);
+
+  if (slice.trim().length === 0) {
+    failures.push(
+      `[T4/arch] ${ARCHITECTURE_REL} ${label} paragraph slice (from ${JSON.stringify(marker)} to ` +
+        'the next rb-N marker) is empty — the paragraph boundary is wrong, not just missing a ' +
+        'citation.',
+    );
+    return failures;
+  }
+
+  if (slice.indexOf(ADR_0208_CITE) === -1) {
+    failures.push(
+      `[T4/arch] ${ARCHITECTURE_REL} ${label} paragraph does not cite ${ADR_0208_CITE} within its ` +
+        `own slice. ${ADR_0208_CITE} is ALREADY present elsewhere in this file (the rb-4 and rb-5 ` +
+        'paragraphs), so a whole-file substring check on this token would be true today regardless ' +
+        'of whether this specific paragraph was ever edited — the check must be scoped to THIS ' +
+        'paragraph only.',
+    );
+  }
+  return failures;
+}
+
+/**
+ * T4 — the ADR-0207 / ARCHITECTURE.md doc-tie: four retired-or-rewritten
+ * ADR-0207 regions plus two ARCHITECTURE.md paragraph citations. Reads no
+ * server-module source and re-implements no Rust walk; this is a pure
+ * markdown-text seam, same as this file's other teeth.
+ *
+ * ACCUMULATES like T1/T2, never early-returns like T3: a bug in one clause
+ * must never mask whether the sibling clauses are load-bearing.
+ * @returns {{failures: string[], note: string}} Tagged failures and a
+ *   success note whose every number is derived from the arrays above.
+ */
+function checkDocTie() {
+  let adr207raw;
+  let archRaw;
+  try {
+    adr207raw = readFileSync(path.resolve(REPO_ROOT, ADR_0207_REL), 'utf8');
+  } catch (e) {
+    return {
+      failures: [`[T4/fixture] could not read ${ADR_0207_REL}: ${e?.message ?? String(e)}`],
+      note: '',
+    };
+  }
+  try {
+    archRaw = readFileSync(path.resolve(REPO_ROOT, ARCHITECTURE_REL), 'utf8');
+  } catch (e) {
+    return {
+      failures: [`[T4/fixture] could not read ${ARCHITECTURE_REL}: ${e?.message ?? String(e)}`],
+      note: '',
+    };
+  }
+
+  const doc207 = stripHtmlComments(adr207raw);
+  const archDoc = stripHtmlComments(archRaw);
+  const failures = [];
+
+  for (const region of RETIRED_REGIONS) {
+    const result = checkRetiredRegion(region.label, region.needle, doc207);
+    failures.push(...result.failures);
+  }
+
+  const d5 = checkD5Region(doc207);
+  failures.push(...d5.failures);
+  failures.push(...checkD5Instruction(d5.idx, doc207));
+
+  for (const para of ARCH_PARAGRAPHS) {
+    failures.push(...checkArchParagraph(para.label, para.marker, archDoc));
+  }
+
+  if (failures.length > 0) {
+    return { failures, note: '' };
+  }
+
+  const totalAnchors = RETIRED_REGIONS.length + 1;
+  return {
+    failures: [],
+    note:
+      `doc tie proven (${totalAnchors} ADR-0207 region(s) anchored uniquely, ` +
+      `${RETIRED_REGIONS.length} retired-and-escorted, 1 D5 region rewritten past the stale ` +
+      `instruction, ${ARCH_PARAGRAPHS.length} ARCHITECTURE.md paragraph(s) individually citing ` +
+      'ADR-0208)',
+  };
+}
+
+// ============================================================================
+
 /**
  * Run one tooth, converting a throw into a tagged failure so the run always
  * reports the FULL list rather than short-circuiting on the first problem.
@@ -741,6 +1131,7 @@ export default async function rekeyContractSurfaceEval() {
     runTooth('T1', () => checkContractSurface(mod)),
     runTooth('T2', () => checkWalkerShape(mod)),
     t3,
+    runTooth('T4', checkDocTie),
   ];
 
   const failures = results.flatMap((r) => r.failures);
@@ -749,7 +1140,7 @@ export default async function rekeyContractSurfaceEval() {
   }
 
   const notes = results.map((r) => r.note).join('; ');
-  return { name, pass: true, detail: `${notes} (3 teeth verified)` };
+  return { name, pass: true, detail: `${notes} (${results.length} teeth verified)` };
 }
 
 // ---------------------------------------------------------------------------
