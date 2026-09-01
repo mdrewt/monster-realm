@@ -5,7 +5,7 @@ slug: reducers/complete_guest_claim
 updated: 2026-08-31
 tags: [reducer, spacetimedb, accounts]
 abstract: "Complete a guest→account claim: re-key the guest's game data onto the caller, consume the code (single-use), stamp prov…"
-resource: server-module/src/accounts.rs#L470
+resource: server-module/src/accounts.rs#L524
 source: scripts/okf-export.mjs@server-module/src/accounts.rs
 ---
 

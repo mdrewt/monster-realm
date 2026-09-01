@@ -75,6 +75,11 @@ pub(crate) const ERR_INVALID_CODE: &str = "invalid or already-used code";
 const REJECT_UNRECOGNIZED_ISSUER: &str = "unrecognized issuer";
 const REJECT_UNRECOGNIZED_AUDIENCE: &str = "unrecognized audience";
 
+/// PRV1-4 distinct terminal reject reason (M22 spec para 4.5, late cancel).
+/// Deliberately NOT named `REJECT_ACCOUNT_DELETED` — the spec reserves that
+/// name for the operator-blocked PRV1-8(a) alternate (issue #403, ADR-0225).
+const REJECT_ALREADY_DELETED: &str = "this account has already been permanently deleted";
+
 /// Rate-limits the unrecognized-issuer reject log (D1″ makes it the modal path —
 /// every non-account connection carries the host's own unrecognized-issuer
 /// token). One line per minute keeps a real ALLOWED_ISSUERS misconfiguration
@@ -269,6 +274,51 @@ pub(crate) fn claimed_account(existing: Account, guest: Identity, now_ms: i64) -
     out
 }
 
+/// True when the row carries the M22 terminal marker (`terminal_at_ms`).
+///
+/// DELIBERATELY THE MARKER HALF ALONE of spec para 4.1, whose defined
+/// `terminal` is the conjunction `status == PendingDeletion &&
+/// terminal_at_ms.is_some()` — hence the name `account_has_terminal_marker`,
+/// not `account_is_terminal` (ADR-0225). On the ILLEGAL `Active` + marker
+/// shape (a resurrected tombstone, forbidden by `account_state_is_legal` but
+/// only debug_assert-guarded) the marker half still answers true, which is
+/// the fail-closed direction at every call site: an already-erased account
+/// must never be cancelled back to life, re-armed, or allowed new
+/// commitments.
+pub(crate) fn account_has_terminal_marker(account: &Account) -> bool {
+    account.terminal_at_ms.is_some()
+}
+
+/// The M22 para-4.7 deletion gate — true when gameplay writes must be
+/// refused: the account is mid-grace (`PendingDeletion`) OR already erased
+/// (terminal marker present).
+///
+/// EXPLICIT DISJUNCTION on purpose: on legal states the marker implies
+/// `PendingDeletion`, so the second arm looks redundant — it is the
+/// fail-closed arm for the illegal `Active` + marker shape and must never be
+/// simplified away. This is the SSOT `is_pending_deletion` delegates to and
+/// the entry point the S5 gameplay-gate fan-out calls (via a `guards.rs`
+/// wrapper that delegates, never re-derives — ADR-0225). A third disjunct
+/// added here widens BOTH consumers: re-derive the delegation first.
+pub(crate) fn should_reject_for_deletion(account: &Account) -> bool {
+    account.status == AccountStatus::PendingDeletion || account_has_terminal_marker(account)
+}
+
+/// PRV1-5 — should the deletion-grace reaper run the cascade for this row at
+/// `now_ms`?
+///
+/// Defined DIRECTLY (not composed over `should_reject_for_deletion`) so a
+/// future widening of the gameplay gate can never silently widen what the
+/// reaper erases: exactly `PendingDeletion`, no terminal marker yet, and the
+/// request past its grace window. `is_deletion_due(None, _) == false` is
+/// load-bearing — a cancel clears the stamp, so `None` IS the cancelled
+/// state and must never read as due.
+pub(crate) fn reaper_should_run_cascade(account: &Account, now_ms: i64) -> bool {
+    account.status == AccountStatus::PendingDeletion
+        && !account_has_terminal_marker(account)
+        && game_core::is_deletion_due(account.deletion_requested_at_ms, now_ms)
+}
+
 // --- Context-bound predicates (SSOT) ------------------------------------------
 
 /// The load-bearing "is this an account holder?" gate (D4′). Only a verified
@@ -278,15 +328,19 @@ pub(crate) fn is_account_holder(ctx: &ReducerContext, identity: Identity) -> boo
     ctx.db.account().identity().find(identity).is_some()
 }
 
-/// True iff `identity` holds an account whose status is `PendingDeletion`
-/// (false when no row). D7's SSOT — reused by `complete_guest_claim` here and by
-/// M22's additional gameplay gate call sites, never re-derived.
+/// True iff `identity` holds an account the deletion gate refuses (false when
+/// no row). D7 SSOT — reused by `complete_guest_claim` here and by M22
+/// gameplay-gate call sites, never re-derived. Since m22-s3 this DELEGATES to
+/// `should_reject_for_deletion`: on every legal state that is exactly the old
+/// `status == PendingDeletion` test (the marker implies `PendingDeletion`),
+/// and on the illegal `Active` + marker shape it is fail-closed where the old
+/// spelling waved the row through (ADR-0225).
 pub(crate) fn is_pending_deletion(ctx: &ReducerContext, identity: Identity) -> bool {
     ctx.db
         .account()
         .identity()
         .find(identity)
-        .is_some_and(|a| a.status == AccountStatus::PendingDeletion)
+        .is_some_and(|a| should_reject_for_deletion(&a))
 }
 
 /// True if `identity` owns any row in any REKEY-policy table (D5 guard 3). The
@@ -559,7 +613,7 @@ fn arm_deletion_reaper(ctx: &ReducerContext, account: Identity, requested_at_ms:
 /// Disarm the pending deletion-reaper schedule row(s) for `account` (rb-24,
 /// PRV1-3; ADR-0126 D4 — collect-then-delete via the `account_identity` btree
 /// index, then delete by PK; mirrors `disarm_claim_reaper`). Owner-GENERIC so
-/// S3's cascade-era callers can reuse it verbatim.
+/// the S3b cascade-era callers can reuse it verbatim (ADR-0225).
 fn disarm_deletion_reaper(ctx: &ReducerContext, account: Identity) {
     let ids: Vec<u64> = ctx
         .db
@@ -591,6 +645,14 @@ pub fn delete_account(ctx: &ReducerContext) -> Result<(), String> {
     let Some(account) = ctx.db.account().identity().find(me) else {
         return reject("delete_account", me, "no account");
     };
+    // m22-s3 (ADR-0225): the terminal marker wins over status. On the illegal
+    // Active + marker shape the AUTH-28 gate below would answer yes and
+    // launder the row into a legal PendingDeletion + marker state, arming a
+    // SECOND cascade over an already-erased account. `Ok` shape, not a
+    // reject — PRV1-2 keeps its letter (a terminal row IS status-Pending).
+    if account_has_terminal_marker(&account) {
+        return Ok(());
+    }
     // AUTH-28 — the second call writes nothing (never re-stamps the timestamp).
     if !needs_deletion_write(account.status) {
         return Ok(());
@@ -617,6 +679,13 @@ pub fn cancel_account_deletion(ctx: &ReducerContext) -> Result<(), String> {
     let Some(account) = ctx.db.account().identity().find(me) else {
         return reject("cancel_account_deletion", me, "no account");
     };
+    // PRV1-4 (m22-s3, ADR-0225): a completed erasure is not reversible — a
+    // late cancel gets a DISTINCT error, never a silent success. Guard-first
+    // is fail-closed on the illegal Active + marker shape, where the AUTH-38
+    // gate below would otherwise wave the row through to a silent Ok.
+    if account_has_terminal_marker(&account) {
+        return reject("cancel_account_deletion", me, REJECT_ALREADY_DELETED);
+    }
     // AUTH-38 — no write when already Active.
     if !needs_cancel_write(account.status) {
         return Ok(());
@@ -628,7 +697,8 @@ pub fn cancel_account_deletion(ctx: &ReducerContext) -> Result<(), String> {
     // rb-24 (PRV1-3, ADR-0126 D4): actively disarm the pending reaper row —
     // inside the gate (an Active account owns no armed row by construction)
     // and after the status write, mirroring the arm-last rule on the request
-    // side. rb-21 owes the PRV1-4 terminal check, inserted BEFORE this disarm.
+    // side. The PRV1-4 terminal guard above (m22-s3) precedes the AUTH-38
+    // gate, so no terminal row can ever reach this write path.
     disarm_deletion_reaper(ctx, me);
     Ok(())
 }
@@ -675,7 +745,8 @@ pub fn guest_claim_reaper(
     Ok(())
 }
 
-// --- Scheduled deletion-grace reaper (rb-24, ADR-0221; cascade is S3's) -------
+// --- Scheduled deletion-grace reaper (rb-24 ADR-0221; m22-s3 recheck ADR-0225;
+// --- cascade is S3b) -----------------------------------------------------------
 
 /// PRIVATE scheduled table colocated with its reducer (ADR-0056 exception),
 /// mirroring `guest_claim_reaper_schedule` exactly. Minimal field set per
@@ -694,23 +765,43 @@ pub struct AccountDeletionReaperSchedule {
     pub account_identity: Identity,
 }
 
-/// Deletion-grace reaper — THIS SLICE SHIPS A DELIBERATE NO-OP (rb-24,
-/// ADR-0221). The table and the reducer must land atomically because
-/// scheduled-ness is automigration-frozen (ADR-0207 D5); the PRV1-5 recheck
-/// (status, terminal marker, due-ness) and the PRV1-6 cascade are S3's, and the
-/// frozen-body gate is DESIGNED to red when S3 replaces this body. Until then a
-/// fired reaper no-ops and the runtime deletes the fired one-shot row (C3), so
-/// an account can sit `PendingDeletion` unarmed — the expected S2-era shape,
-/// recorded in ADR-0221 Residuals R2. Scheduler-only: the guard is the entire
-/// precondition of the ADR-0195 D6 struct-argument carve-out.
+/// Deletion-grace reaper — m22-s3 ships the PRV1-5 RECHECK SKELETON, still no
+/// cascade (ADR-0225). Scheduler-only first statement, then a re-read of the
+/// live `account` row keyed on the SCHEDULER-supplied identity, then the pure
+/// `reaper_should_run_cascade` recheck (status is `PendingDeletion`, no
+/// terminal marker yet, request past its grace window). The spec para-4.4
+/// five-step cascade is S3b — blocked on G5 write isolation: accounts.rs may
+/// write only its four owned tables, so every erase or anonymize step needs a
+/// new helper in the owning module (the `rekey_all` delegation precedent).
+///
+/// TWO OBLIGATIONS S3B MUST DISCHARGE, recorded in ADR-0225: (1) the runtime
+/// deletes the fired one-shot row regardless, so the not-yet-due early `Ok`
+/// below drops the schedule with NO re-arm — S3b re-arms there; (2) ADR-0221
+/// R2 population (accounts sitting `PendingDeletion` whose one-shot already
+/// fired) needs a sweep. Exposure is nil while `ALLOWED_ISSUERS` is the
+/// fail-closed `.invalid` placeholder. The reaper stamps NOTHING (PRV1-6e
+/// forbids `terminal_at_ms` before the full cascade) and resolves NOTHING (a
+/// half-cascade would forfeit live battles for zero deletion benefit).
+/// Scheduler-only: the guard is the entire precondition of the ADR-0195 D6
+/// struct-argument carve-out.
 #[spacetimedb::reducer]
 pub fn account_deletion_reaper(
     ctx: &ReducerContext,
-    _args: AccountDeletionReaperSchedule,
+    args: AccountDeletionReaperSchedule,
 ) -> Result<(), String> {
     if ctx.sender() != ctx.database_identity() {
         return Err("account_deletion_reaper is scheduler-only".to_string());
     }
+    let Some(account) = ctx.db.account().identity().find(args.account_identity) else {
+        return Ok(());
+    };
+    if !reaper_should_run_cascade(&account, now_ms(ctx)) {
+        return Ok(());
+    }
+    // S3b: the spec para-4.4 five-step cascade lands here (force-resolve live
+    // interactions, erase, anonymize, join-sweep, then — only on full success
+    // — stamp `terminal_at_ms`). S3b must ALSO re-arm on the not-yet-due
+    // branch above.
     Ok(())
 }
 
