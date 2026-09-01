@@ -1064,13 +1064,23 @@ fn m22s3b_erase_playtest_events_shape() {
         "m22-s3b PRV1-6b FAIL (accessor): `{name}` must reach the `playtest_event` table. \
          Body was: {squashed:?}"
     );
+    // TIGHTENED IN r2. The bare token `owner` is present in ANY body that merely
+    // TAKES the parameter — including one that ignores it and iterates the whole
+    // table — because the parameter's own name is that token. `playtest_event`
+    // carries NO index on `identity` (ADR-0228 declines to add one in this
+    // slice), so the sweep is a full iteration and its PREDICATE is the entire
+    // scoping: without a comparison against `owner` the helper either deletes
+    // nothing or deletes everything.
+    let owner_test = concat!("==", "owner");
     assert!(
-        squashed.contains("owner"),
-        "m22-s3b PRV1-6b FAIL (owner-scoped): `{name}` never names its `owner` parameter, so \
-         whatever it sweeps is not scoped to the deleting identity. UNFILTERED, this helper \
-         deletes every player's telemetry in the database on the first cascade — the \
-         catastrophic direction, and one no presence-only clause distinguishes from the \
-         correct body. Body was: {squashed:?}"
+        squashed.contains(owner_test),
+        "m22-s3b PRV1-6b FAIL (owner-scoped): `{name}` contains no `{owner_test}` comparison, \
+         so its full-table iteration is not scoped to the deleting identity by anything. The \
+         bare parameter NAME is not enough — a body that takes `owner` and then sweeps \
+         unfiltered contains it while scoping nothing, and this table has no index to fall \
+         back on. UNFILTERED, this helper deletes every player's telemetry in the database on \
+         the first cascade — the catastrophic direction, and one no presence-only clause \
+         distinguishes from the correct body. Body was: {squashed:?}"
     );
     assert!(
         squashed.contains(concat!(".it", "er()")),

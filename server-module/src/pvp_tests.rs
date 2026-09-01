@@ -229,7 +229,17 @@ fn ea_pvp_04_new_types_in_spacetime_types_json() {
 // `m22s3b_on_disconnect_reaches_the_resolver` pins the other half of the hop.
 #[test]
 fn ea_pvp_05_on_disconnect_calls_pvp_helpers() {
-    let stripped = strip_rust_comments(LIB_RS);
+    // STRING LITERALS BLANKED TOO (r2). Two reasons, both measured:
+    //   * the brace walk that slices the resolver's body counts `{` and `}`
+    //     bytes with no string-literal lexer, so ONE brace inside a log format
+    //     string — and lib.rs's hand-built JSON lines are full of them — would
+    //     truncate the extracted body at an arbitrary point. A needle that fell
+    //     past that point reads as ABSENT and the pin false-REDs; a decoy that
+    //     fell inside reads as present;
+    //   * with strings intact, a log line naming a helper satisfies a needle
+    //     that no call site does.
+    // Comment stripping alone was never enough for either.
+    let stripped = strip_rust_strings(&strip_rust_comments(LIB_RS));
     let resolver = concat!("resolve_all_live", "_interactions");
 
     let decl = ["fn ", resolver, "("].concat();
@@ -251,9 +261,13 @@ fn ea_pvp_05_on_disconnect_calls_pvp_helpers() {
         )
     });
 
+    // The trailing `(` is part of each needle (r2): without it the pin is
+    // satisfied by any MENTION of the helper — in a log line, in a doc string
+    // the stripper happened to leave, or in a `use` import — rather than by a
+    // CALL. A bare-name pin cannot tell the two apart.
     for needle in &[
-        concat!("pvp::", "forfeit_on_disconnect"),
-        concat!("pvp::", "cancel_challenges_on_disconnect"),
+        concat!("pvp::", "forfeit_on_disconnect("),
+        concat!("pvp::", "cancel_challenges_on_disconnect("),
     ] {
         assert!(
             body.contains(needle),
@@ -300,7 +314,12 @@ fn ea_pvp_05_on_disconnect_calls_pvp_helpers() {
 // abandoned battle forever with nothing anywhere to clean it up.
 #[test]
 fn ptc5b_4_wiring_scan_on_disconnect_calls_resolve_wild_battle() {
-    let stripped = strip_rust_comments(LIB_RS);
+    // STRING LITERALS BLANKED TOO (r2) — same two reasons as EA-PVP-05 above:
+    // the body slice is a brace walk with no string-literal lexer, so a `{` in
+    // one of lib.rs's hand-built JSON log lines truncates it at an arbitrary
+    // point; and with strings intact a log line naming the helper satisfies a
+    // needle that no call site does.
+    let stripped = strip_rust_strings(&strip_rust_comments(LIB_RS));
     let resolver = concat!("resolve_all_live", "_interactions");
 
     let decl = ["fn ", resolver, "("].concat();
@@ -319,8 +338,11 @@ fn ptc5b_4_wiring_scan_on_disconnect_calls_resolve_wild_battle() {
         )
     });
 
-    // Assembled from parts per this file's concat! convention.
-    let needle = concat!("battle::", "resolve_wild_battle_on_disconnect");
+    // Assembled from parts per this file's concat! convention. The trailing `(`
+    // is part of the needle (r2): without it the pin is satisfied by any MENTION
+    // of the helper rather than by a CALL — and this file's own EA-CHR pins
+    // record the same lesson about `.delete(0)`-style decoration.
+    let needle = concat!("battle::", "resolve_wild_battle_on_disconnect(");
     assert!(
         body.contains(needle),
         "ptc5b-T4 FAIL: `{}` not found in the body of `resolve_all_live_interactions` in \
@@ -5123,7 +5145,13 @@ fn m22s5_accept_challenge_carries_the_deletion_gate() {
 ///        on rows the first already settled).
 #[test]
 fn m22s3b_on_disconnect_reaches_the_resolver() {
-    let stripped = strip_rust_comments(LIB_RS);
+    // STRING LITERALS BLANKED TOO (r2). `on_disconnect` is a lifecycle reducer
+    // in a file whose other bodies emit hand-built JSON, and the body slice is a
+    // brace walk with no string-literal lexer: one `{` inside a format string
+    // truncates the extracted body at an arbitrary point, which turns this
+    // count-of-one into a count of zero on a perfectly correct file. Blanking
+    // the payloads first removes the whole class.
+    let stripped = strip_rust_strings(&strip_rust_comments(LIB_RS));
     let resolver = concat!("resolve_all_live", "_interactions");
     let body = extract_pvp_fn_body(&stripped, concat!("on", "_disconnect")).unwrap_or_else(|| {
         panic!(
@@ -5230,6 +5258,21 @@ fn m22s3b_erase_pvp_rows_shape() {
          design: ADR-0228 declines to add an index in this slice and books the cost against \
          the §8.3 volume residual. Awkward is not a reason to skip it. Body was: {squashed:?}"
     );
+    // The battle_action scan has no index to scope it, so the ONLY thing that
+    // keeps it owner-scoped is its predicate — and a red-team measured that the
+    // accessor clause above is satisfied by a body that reaches the table and
+    // filters on something else entirely, or on nothing at all. Added in r2.
+    let action_owner = concat!("==", "owner");
+    assert!(
+        squashed.contains(action_owner),
+        "m22-s3b PRV1-6b FAIL (battle_action scope): `{name}` reaches `battle_action` but the \
+         body contains no `{action_owner}` comparison, so the unindexed scan is not scoped to \
+         the deleting identity by anything. This table has NO index on `player_identity` — \
+         that is why the sweep is a full iteration in the first place — so the predicate is \
+         the whole of its scoping. Without it the helper either deletes nothing (a filter on \
+         some other value) or deletes EVERY player's pending secret picks in the database, \
+         and both read identically to the accessor clause above. Body was: {squashed:?}"
+    );
 
     let disarm = concat!("disarm_challenge_", "reaper(");
     assert!(
@@ -5241,14 +5284,55 @@ fn m22s3b_erase_pvp_rows_shape() {
          challenge-deletion site in this module already follows (EA-CHR-02 pins those four). \
          Body was: {squashed:?}"
     );
-    let deletes = squashed.matches(concat!(".del", "ete(")).count();
-    assert!(
-        deletes >= 2,
-        "m22-s3b PRV1-6b FAIL (no delete): `{name}` performs {deletes} row delete(s); the two \
-         ERASE tables need at least 2. A helper that collects the matching ids and then only \
-         disarms their schedules satisfies every clause above while leaving the challenges \
-         and the secret picks themselves in place. Body was: {squashed:?}"
-    );
+
+    // --- PER-TABLE DELETE COUNTS (r2, replacing a `>= 2` floor) -------------
+    //
+    // The floor was measured insufficient: TWO deletes of the SAME table satisfy
+    // it, so a body that removed the challenge row and (say) its schedule row —
+    // and never touched `battle_action` at all — passed while the deleted
+    // player's per-turn secret picks survived in a must-never-leak table.
+    // Counting per TABLE is what makes the two independently accounted for.
+    //
+    // BOTH DELETE SPELLINGS ARE ACCEPTED, deliberately: this module deletes by
+    // primary key in some places (`challenge_id().delete(id)`) and by ROW VALUE
+    // in others (`settle_pvp_battle`'s `battle_action().delete(action)`), and the
+    // two are equally correct here. Pinning one would false-RED a body written in
+    // the module's own other idiom, which is a spelling argument rather than a
+    // safety one — so the clause sums the two forms per table and pins the SUM.
+    for (pk_form, row_form, table, why) in [
+        (
+            concat!("battle_challenge().challenge_id().del", "ete("),
+            concat!("battle_challenge().del", "ete("),
+            "battle_challenge",
+            "the pending challenges on both of its identity columns; only pending rows can \
+             exist at cascade time (terminal ones are deleted immediately, per the table doc) \
+             so there is no history here to keep",
+        ),
+        (
+            concat!("battle_action().action_id().del", "ete("),
+            concat!("battle_action().del", "ete("),
+            "battle_action",
+            "the per-turn SECRET picks. The table is PRIVATE and must-never-leak (ADR-0015 / \
+             ADR-0109 D2): a leaked pending pick is a competitively decisive exploit, and a \
+             row surviving its owner's deletion is one keyed to an identity nobody can \
+             account for",
+        ),
+    ] {
+        // The PK form CONTAINS neither the row form nor vice versa — the column
+        // accessor sits between the table accessor and the verb — so the two
+        // counts never double-count the same site.
+        let n = squashed.matches(pk_form).count() + squashed.matches(row_form).count();
+        assert_eq!(
+            n, 1,
+            "m22-s3b PRV1-6b FAIL ({table} delete): `{name}` must delete `{table}` rows \
+             EXACTLY once — either by primary key (`{pk_form}..)`) or by row value \
+             (`{row_form}..)`), both of which this module already uses elsewhere; found {n} \
+             across the two spellings. ZERO leaves {why}. MORE THAN ONE is a second, \
+             unreviewed removal path in a helper whose whole remit is these two tables. This \
+             clause replaces a `>= 2` TOTAL-delete floor that two deletes of the SAME table \
+             satisfied. Body was: {squashed:?}"
+        );
+    }
 }
 
 /// **PRV1-6d** — `disarm_pvp_deadlines` sweeps every `pvp_deadline_schedule` row
@@ -5291,13 +5375,23 @@ fn m22s3b_disarm_pvp_deadlines_shape() {
         "m22-s3b PRV1-6d FAIL (accessor): `{name}` must reach the deadline schedule table. \
          Body was: {squashed:?}"
     );
+    // TIGHTENED IN r2. The bare token `battle_id` is present in ANY body that
+    // merely takes the parameter — including one that ignores it and iterates
+    // the whole table — because the parameter NAME is itself that token. What
+    // must be pinned is the COMPARISON: `pvp_deadline_schedule.battle_id`
+    // carries no btree index, so the predicate is the only thing scoping the
+    // sweep, and a body without one disarms every live deadline in the database.
+    let keyed = concat!("==", "battle_id");
     assert!(
-        squashed.contains("battle_id"),
-        "m22-s3b PRV1-6d FAIL (key): `{name}` must key its sweep on the `battle_id` \
-         PARAMETER. An UNFILTERED sweep disarms every live PvP deadline in the database, \
-         which hangs every ongoing PvP battle in the game on the next cascade — the \
-         catastrophic direction, and one no containment pin distinguishes from the correct \
-         body. Body was: {squashed:?}"
+        squashed.contains(keyed),
+        "m22-s3b PRV1-6d FAIL (key): `{name}` must compare each row against the `battle_id` \
+         PARAMETER (`{keyed}`). The bare token `battle_id` is NOT enough — it is the \
+         parameter's own name, so a body that takes the argument and then iterates the whole \
+         table unfiltered contains it while scoping nothing. The column carries no btree \
+         index (ADR-0228 declines to add one in this slice), so this comparison IS the \
+         scoping: without it the helper disarms every live PvP deadline in the database on \
+         the first cascade, and every ongoing PvP battle in the game hangs with no deadline \
+         to settle it. Body was: {squashed:?}"
     );
     assert!(
         !squashed.contains(concat!(".fi", "nd(")),

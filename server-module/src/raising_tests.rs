@@ -2987,6 +2987,34 @@ fn m22s3b_erase_heal_cooldown_shape() {
          hands the whole server a free heal. That failure reads identically to the correct \
          body under any presence-only check."
     );
+
+    // --- ONE TABLE, AND ONLY ONE (added in r2) ------------------------------
+    //
+    // The exactly-one clause above pins what this helper MUST do; nothing pinned
+    // what it must NOT do. `raising.rs` imports a dozen table accessors —
+    // `monster`, `monster_pub`, `inventory`, `item_row`, `character`, `player`
+    // among them — so an appended foreign write here would be one line, would
+    // compile, and would be invisible: this file's other scans are all scoped to
+    // the four raising reducers, and the cascade's own reaper-body pin sees only
+    // the CALL to this helper, never its contents. Counting the table reaches
+    // makes the helper's whole surface exactly one table.
+    let db_reach = ["ctx", ".db."].concat();
+    let n_reach = body.matches(db_reach.as_str()).count();
+    assert_eq!(
+        n_reach, 1,
+        "TEETH (m22-s3b PRV1-6b, foreign-write ban): `erase_heal_cooldown` reaches the \
+         database {n_reach} time(s) through `{db_reach}`; EXACTLY ONE is sanctioned — the \
+         `heal_cooldown` point delete pinned above. MORE THAN ONE is a second table touched \
+         by a helper whose entire remit is one row: `raising.rs` has `monster`, \
+         `monster_pub`, `inventory`, `item_row`, `character` and `player` accessors in scope, \
+         so an appended write reaches any of them in one line, inside the deletion cascade, \
+         where nothing else looks — this file's other scans are scoped to the four raising \
+         reducers and the cascade's reaper-body pin sees only the CALL to this helper. \
+         ZERO means the body reaches the database through an ALIASED handle \
+         (`let d = &ctx.db;`), which the exactly-one delete clause above would still match \
+         while this census cannot vouch for what else that handle touches — failing closed \
+         here is the correct direction."
+    );
 }
 
 /// **12r-e E3 (the structural bridge)** — `accrue_quality_time` must RETURN on a

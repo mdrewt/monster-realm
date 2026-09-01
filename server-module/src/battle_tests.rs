@@ -6271,16 +6271,48 @@ fn m22s3b_anonymize_battles_sweeps_joins_before_swap() {
         .find(update.as_str())
         .expect("m22-s3b: the battle update counted 1 but could not be located");
 
-    let deletes = squashed.matches(["del", "ete("].concat().as_str()).count();
+    // --- THE DELETE CENSUS ---------------------------------------------------
+    //
+    // CORRECTED IN r2. The first draft of this test demanded the `battle_wild`
+    // join sweep be PRESENT and, in the same breath, that the body contain ZERO
+    // delete verbs — and the `battle_wild` sweep IS a delete, so the sanctioned
+    // body was permanently RED. The property actually wanted is not "no deletes"
+    // but "EXACTLY ONE delete, and it is the `battle_wild` join sweep":
+    //   * total == 1 bounds the body to a single row removal;
+    //   * the `battle_wild().battle_id().delete(` count of 1 (asserted in the
+    //     join loop below, where its ordering is also pinned) identifies WHICH
+    //     one it is — with the total at 1, the two together mean the only delete
+    //     in this function is that sweep;
+    //   * `battle().battle_id().delete(` == 0 states the ANONYMIZE invariant
+    //     directly, so a failure names the actual violation rather than a count.
+    // `pvp_deadline_schedule` is NOT deleted here: pvp.rs is its sole writer and
+    // the sweep is delegated to `pvp::disarm_pvp_deadlines` (ADR-0228 D1), which
+    // is why one delete — not two — is the sanctioned number.
+    let delete_verb = ["del", "ete("].concat();
+    let deletes = squashed.matches(delete_verb.as_str()).count();
     assert_eq!(
-        deletes, 0,
-        "m22-s3b PRV1-6c FAIL (never delete a battle): `{name}` performs {deletes} direct row \
-         delete(s). `battle` is classified ANONYMIZE, never ERASE: spec §3 records that \
-         terminal rows demonstrably PERSIST and a surviving opponent's `my_battle` view must \
-         still resolve them months later. The two JOIN-ONLY children are swept through their \
-         own delegated helpers (`battle_wild` here, `pvp_deadline_schedule` via \
-         `pvp::disarm_pvp_deadlines` — pvp.rs is that table's sole writer), so a bare delete \
-         verb in this body is either a battle delete or a sweep that bypassed the delegation."
+        deletes, 1,
+        "m22-s3b PRV1-6c FAIL (delete census): `{name}` performs {deletes} row delete(s); \
+         EXACTLY ONE is sanctioned — the `battle_wild` join sweep, whose own count and \
+         ordering are pinned in the join loop below. ZERO means the JOIN-ONLY child is never \
+         swept, so the raw RNG individuality seed (a must-never-leak value the manifest marks \
+         `exportable: false`) survives as an orphan keyed to a battle whose participant is \
+         gone. TWO OR MORE means either the `battle` row itself is being deleted — see the \
+         clause below — or `pvp_deadline_schedule` is being swept inline instead of through \
+         `pvp::disarm_pvp_deadlines`, which breaks the sole-writer delegation ADR-0228 D1 \
+         keeps intact for that one table."
+    );
+    let battle_delete = ["battle().battle_id()", ".del", "ete("].concat();
+    assert_eq!(
+        squashed.matches(battle_delete.as_str()).count(),
+        0,
+        "m22-s3b PRV1-6c FAIL (never delete a battle): `{name}` deletes the `battle` row \
+         itself. `battle` is classified ANONYMIZE, never ERASE: spec §3 records that terminal \
+         rows demonstrably PERSIST — settle UPDATES the row and never deletes it, and the GC \
+         is lazy — so a surviving opponent's `my_battle` view can still resolve a row naming \
+         the deleted party months later. Deleting it destroys the opponent's own settled \
+         history to remove one identity column, which is exactly the trade the ANONYMIZE \
+         classification exists to refuse."
     );
 
     for (needle, what, why) in [
@@ -6318,23 +6350,50 @@ fn m22s3b_anonymize_battles_sweeps_joins_before_swap() {
         );
     }
 
-    let dedup = ["player_identity", "!=owner"].concat();
-    assert!(
-        squashed.contains(dedup.as_str()),
+    // --- PRV1-19: THE DEDUP, AS ONE CONTIGUOUS CHAIN -------------------------
+    //
+    // TIGHTENED IN r2. The first draft asked only that the tokens
+    // `player_identity` and `!=owner` appear ADJACENT somewhere in the body, and
+    // a red-team satisfied that two ways without de-duplicating anything: with a
+    // decoy binding (`let _skip = b.player_identity != owner;`) that no filter
+    // consumes, and by hanging the exclusion off the FIRST pass — where it is
+    // not merely useless but actively wrong, because the first pass is the one
+    // that must collect the practice row. Pinning the WHOLE chain — the
+    // opponent-side index filter, then the exclusion closure, contiguous —
+    // is what makes the clause say `the SECOND pass excludes rows the FIRST
+    // already matched` rather than `these tokens are near each other`.
+    let dedup = [
+        "opponent_identity()",
+        ".filter(owner)",
+        ".filter(|b|b.player_identity",
+        "!=owner)",
+    ]
+    .concat();
+    let n_dedup = squashed.matches(dedup.as_str()).count();
+    assert_eq!(
+        n_dedup, 1,
         "m22-s3b PRV1-19 FAIL (dedup by construction): `{name}` must exclude already-matched \
-         rows from the second filter pass, as `{dedup}` — the `my_battle` view's own idiom. \
-         Without it a PRACTICE battle (player_identity == opponent_identity) is collected by \
+         rows from the SECOND filter pass as one contiguous chain, `{dedup}` — the `my_battle` \
+         view's own idiom (schema.rs). Found {n_dedup}. \
+         WITHOUT IT a PRACTICE battle (player_identity == opponent_identity) is collected by \
          BOTH passes and therefore visited TWICE, which is exactly what PRV1-19 forbids: the \
          second visit re-reads a row whose sides are already the tombstone and writes it \
-         again. Do NOT express this as `b.player_identity != b.opponent_identity`, which \
-         deletes every practice battle from the sweep instead of de-duplicating it. Body \
-         was: {squashed:?}"
+         again. \
+         THE CHAIN IS PINNED WHOLE because the two loose tokens were MEASURED satisfiable by \
+         a decoy binding no filter consumes, and by attaching the exclusion to the FIRST pass \
+         — which does not de-duplicate at all and instead DROPS every practice battle from \
+         the side-A collection, so the row is visited once by the wrong pass and its side A \
+         is never swapped. \
+         Do NOT express the predicate as `b.player_identity != b.opponent_identity` either: \
+         that deletes every practice battle from the sweep outright instead of \
+         de-duplicating it, which is the same mistake schema.rs's `my_battle` doc comment \
+         records for the view. Body was: {squashed:?}"
     );
 
     for (needle, what, why) in [
         (
-            ["battle_wild()", ".battle_id()"].concat(),
-            "the battle_wild join sweep",
+            ["battle_wild()", ".battle_id()", ".del", "ete("].concat(),
+            "the battle_wild join-sweep DELETE",
             "`battle_wild` is JOIN-ONLY via `battle` and carries the raw RNG individuality \
              seed — a must-never-leak value the manifest marks `exportable: false`. Left \
              behind, it is an orphan row keyed to a battle whose participant no longer exists",

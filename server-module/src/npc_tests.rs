@@ -1785,7 +1785,10 @@ fn m22s3b_erase_npc_state_shape() {
              tables survive the deletion. Fail LOUD rather than pass vacuously."
         )
     });
-    let squashed = squash_ws(&body);
+    // `extract_npc_fn_body` returns `Option<&str>` (measured in r2 — the
+    // authoring pass could not tell statically and used a defensive `&body`,
+    // which clippy's `needless_borrow` correctly rejects under -D warnings).
+    let squashed = squash_ws(body);
     assert!(
         !squashed.is_empty(),
         "m22-s3b PRV1-6b FAIL (non-vacuity): the `{name}` body is empty, so every clause \
@@ -1831,17 +1834,55 @@ fn m22s3b_erase_npc_state_shape() {
          direction and reads identically to the correct body under a presence-only check. \
          Body was: {squashed:?}"
     );
+
+    // --- THE OWNER PARAMETER IS ACTUALLY PASSED (corrected in r2) -----------
+    //
+    // The clause this replaces asserted `squashed.contains("owner")` and was
+    // VACUOUS: `owner_identity()` contains the substring `owner`, so the clause
+    // above already guaranteed it and this one could never fail independently.
+    // The property actually wanted is that the owner column is keyed on the
+    // PARAMETER — `filter(owner)` for the multi-row table, `delete(owner)` for
+    // the two PK-keyed ones — so the needle is the argument list, which
+    // `owner_identity()` does not contain.
+    let owner_arg = ["(", "owner)"].concat();
+    let n_owner_arg = squashed.matches(owner_arg.as_str()).count();
     assert!(
-        squashed.contains("owner"),
-        "m22-s3b PRV1-6b FAIL (parameter used): `{name}` never names its `owner` parameter, \
-         so whatever it sweeps is not scoped to the deleting identity. Body was: {squashed:?}"
+        n_owner_arg >= 3,
+        "m22-s3b PRV1-6b FAIL (owner-keyed): `{name}` passes the `owner` PARAMETER as an \
+         argument {n_owner_arg} time(s) (`{owner_arg}`); all three tables must be keyed on it \
+         (at least 3). Reaching the owner COLUMN is not the same as keying on the owner \
+         VALUE: `ctx.db.player_quest().owner_identity().filter(some_other_identity)` reaches \
+         the column and sweeps the wrong player, and an unkeyed iteration reaches it and \
+         sweeps everybody. This clause replaces one that asserted the body contains `owner` \
+         at all — which the `owner_identity()` count above already guaranteed, so it could \
+         never fail on its own. Body was: {squashed:?}"
+    );
+
+    let iter_call = [".it", "er()"].concat();
+    let n_iter = squashed.matches(iter_call.as_str()).count();
+    assert_eq!(
+        n_iter, 0,
+        "m22-s3b PRV1-6b FAIL (no full-table scan): `{name}` calls `{iter_call}` {n_iter} \
+         time(s) and must call it ZERO times. All three NPC tables are reachable by KEY for a \
+         single owner — two are keyed by `owner_identity` directly and the third carries an \
+         owner index — so a full-table iteration is never needed here. It is, however, the \
+         shape that makes the catastrophic mistake possible: an iteration whose predicate is \
+         wrong, absent, or refactored away deletes every player's dialogue flags, quest \
+         progress and conversation state in the database, and reads identically to the \
+         correct body under every presence clause above. Added in r2 alongside the same ban \
+         in the four sibling erase helpers."
     );
 
     let deletes = squashed.matches(&["del", "ete("].concat()).count();
-    assert!(
-        deletes >= 3,
-        "m22-s3b PRV1-6b FAIL (no delete): `{name}` performs {deletes} row delete(s); three \
-         ERASE tables need at least 3. A helper that reads all three and deletes from one or \
-         two satisfies every presence clause above. Body was: {squashed:?}"
+    assert_eq!(
+        deletes, 3,
+        "m22-s3b PRV1-6b FAIL (delete census): `{name}` performs {deletes} row delete(s); \
+         EXACTLY THREE are sanctioned, one per ERASE table. FEWER means a table is read and \
+         not erased — the manifest classifies all three INDEPENDENTLY, so the missing one's \
+         rows simply survive the deletion owned by an identity with no account. MORE means a \
+         fourth row removal in a helper whose remit is those three tables, which would also \
+         mean this body reaches a table no owning-module shape pin covers. Tightened from a \
+         `>= 3` floor in r2: a floor accepts an unbounded number of extra deletes. Body was: \
+         {squashed:?}"
     );
 }

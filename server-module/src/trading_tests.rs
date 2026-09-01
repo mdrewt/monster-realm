@@ -3220,28 +3220,78 @@ fn m22s3b_erase_trade_offers_shape() {
          below would be asserting properties of nothing."
     );
 
+    // --- BOTH SIDES, AND THE SECOND ONE MUST FEED THE FIRST (r2) ------------
+    //
+    // The first draft asked only that each side's `filter(owner)` APPEAR. A
+    // red-team satisfied that with a live initiator sweep beside a DEAD
+    // counterparty read — `let _ = ctx.db.trade_offer().counterparty().filter(owner);`
+    // — which is present, compiles, stays clippy-clean under -D warnings
+    // (`let_underscore_must_use` is off by default), and erases nothing: every
+    // offer the deleted player was ASKED to accept survives in a PUBLIC table
+    // naming them, and the surviving proposer stays locked out of proposing
+    // anything else (one active offer per player, ADR-0106 D4) until the TTL
+    // reaper fires.
+    //
+    // Two clauses close it. Each pass must be immediately followed by `.map(`,
+    // which a bare dangling read is not; and the COUNTERPARTY pass must appear
+    // as the ARGUMENT of a `.chain(` — one contiguous needle — which is what
+    // makes it feed the same id list the initiator pass does. That is the shape
+    // `cancel_trades_on_disconnect` already ships one function away in this
+    // file, so it is an in-file precedent rather than a new convention.
+    //
+    // The closure binder is deliberately NOT part of any needle: pinning `|t|`
+    // would false-RED an equivalent body over a differently-named binding, and
+    // the property under test is the wiring, not the spelling.
+    let initiator_pass = concat!("initi", "ator().filter(owner).map(");
+    let counterparty_pass = concat!("counterp", "arty().filter(owner).map(");
     for (needle, side, why) in [
         (
-            concat!("initi", "ator().filter(owner)"),
+            initiator_pass,
             "initiator",
             "the offers the deleted player PROPOSED",
         ),
         (
-            concat!("counterp", "arty().filter(owner)"),
+            counterparty_pass,
             "counterparty",
             "the offers the deleted player was ASKED to accept — omitted, these survive in a \
              PUBLIC table naming a deleted identity until their TTL expires, and they keep \
              the surviving proposer locked out of proposing anything else",
         ),
     ] {
-        assert!(
-            squashed.contains(needle),
+        let n = squashed.matches(needle).count();
+        assert_eq!(
+            n, 1,
             "m22-s3b PRV1-6b FAIL ({side} sweep): `{name}` must filter the {side} btree index \
-             with the `owner` PARAMETER (`{needle}`). `trade_offer` carries TWO identity \
-             columns and the manifest classifies the TABLE erase, not one column of it: \
-             {why}. Body was: {squashed:?}"
+             with the `owner` PARAMETER and feed the result straight into a `.map(`, as \
+             `{needle}`, EXACTLY once; found {n}. `trade_offer` carries TWO identity columns \
+             and the manifest classifies the TABLE erase, not one column of it: {why}. The \
+             `.map(` is part of the needle because a bare `filter(owner)` is satisfied by a \
+             DEAD read that collects nothing and deletes nothing. Body was: {squashed:?}"
         );
     }
+
+    let chained_counterparty = concat!(
+        ".chain(ctx.db.trade_offer().counterp",
+        "arty().filter(owner).map("
+    );
+    let n_chained = squashed.matches(chained_counterparty).count();
+    assert_eq!(
+        n_chained, 1,
+        "m22-s3b PRV1-6b FAIL (counterparty pass is not chained in): `{name}` must chain the \
+         counterparty pass into the SAME id collection as the initiator pass, as the \
+         contiguous `{chained_counterparty}`; found {n_chained}. The clause above proves the \
+         counterparty index is filtered and mapped; it cannot prove the RESULT goes anywhere. \
+         This one does: as the argument of `.chain(`, the mapped ids join the initiator's and \
+         are deleted by the same loop. A counterparty pass standing on its own — even a fully \
+         written one whose value is dropped — leaves every incoming offer in place, in a \
+         PUBLIC table, naming a deleted identity. \
+         SHAPE NOTE, stated so a legitimate refactor is a conscious decision rather than a \
+         surprise: two separately-collected passes joined at the delete loop are also \
+         behaviourally correct and are deliberately NOT the sanctioned form. The chained \
+         single-collection shape is the one `cancel_trades_on_disconnect` ships one function \
+         away in this same file, and pinning the in-file precedent is what lets this clause be \
+         one contiguous needle instead of a family of them. Body was: {squashed:?}"
+    );
 
     let is_active = concat!("is_ac", "tive");
     assert!(

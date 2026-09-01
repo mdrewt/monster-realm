@@ -778,20 +778,20 @@ pub fn cancel_trade(ctx: &ReducerContext, trade_id: u64) -> Result<(), String> {
 /// deleted player never answered survives in a public table naming them.
 /// Called only from `accounts::account_deletion_reaper` (D0 write-isolation).
 pub(crate) fn erase_trade_offers(ctx: &ReducerContext, owner: Identity) {
-    let mut ids: Vec<u64> = ctx
+    let ids: Vec<u64> = ctx
         .db
         .trade_offer()
         .initiator()
         .filter(owner)
         .map(|o| o.trade_id)
+        .chain(
+            ctx.db
+                .trade_offer()
+                .counterparty()
+                .filter(owner)
+                .map(|o| o.trade_id),
+        )
         .collect();
-    ids.extend(
-        ctx.db
-            .trade_offer()
-            .counterparty()
-            .filter(owner)
-            .map(|o| o.trade_id),
-    );
     for id in ids {
         disarm_trade_reaper(ctx, id);
         ctx.db.trade_offer().trade_id().delete(id);

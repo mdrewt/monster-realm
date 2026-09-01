@@ -6725,6 +6725,36 @@ fn rb24_deletion_reaper_body_is_pinned_cascade() {
          the schedule row, which erases nothing and stamps the wrong account terminal."
     );
 
+    // The ROW LOOKUP subject, carried forward from the m22-s3 pin this test
+    // re-derives (r2). The 13-count census above proves every DELEGATED call
+    // names the scheduler-supplied identity; it says nothing about the lookup
+    // that decides WHICH ROW the cascade is about, because that call spells
+    // `find(args.account_identity)` with no `ctx,` prefix and therefore matches
+    // no delegated-subject needle. Keeping the m22-s3 needle in service — rather
+    // than dropping it when the subject clause was rewritten — is what stops the
+    // lookup silently re-keying on the sender, which after the scheduler guard
+    // is the MODULE identity: the recheck would then run against the wrong row,
+    // or against no row at all, and the equality literal would be regenerated
+    // around it.
+    let subject = m22s3_nd_reaper_row_lookup();
+    assert!(
+        frozen.contains(subject.as_str()),
+        "[rb24/reaper-needle-independence] the row-lookup needle {subject:?} is not a \
+         substring of the frozen body literal. The two are transcribed separately and split \
+         at different points, so a mismatch means one artefact was edited alone and the \
+         clause below is asserting something other than the plan."
+    );
+    assert_eq!(
+        m22_count_occurrences(body, &subject),
+        1,
+        "[rb24/reaper-recheck-subject] the reaper must look the account row up by the \
+         identity the SCHEDULER supplied, {subject:?}, EXACTLY once. Authored from the plan \
+         and asserted ahead of the equality: the scheduler guard has already proven the \
+         sender IS the module, so a lookup keyed on the sender reads the module identity — \
+         the recheck then runs against the wrong row, or against no row at all, and a \
+         regenerated equality literal would ratify it."
+    );
+
     // --- (2) POLARITY + RE-ARM, both inside the not-due branch --------------
     assert_eq!(
         m22_count_occurrences(body, &polarity),
@@ -6961,10 +6991,28 @@ fn rb24_owned_write_set_covers_the_deletion_schedule() {
 /// one is credited to the previous accessor. A census built on it would
 /// under-report exactly the sites it exists to find.
 ///
+/// RE-DERIVED 3 -> 4 BY m22-s3b, AND PAID FOR (r2). The ADR-0221 R2 sweep
+/// `ensure_deletion_reapers_armed` has to know which identities ALREADY carry a
+/// schedule row — otherwise it re-arms every mid-grace account on every publish
+/// — so it adds a FOURTH reach for this accessor. That reach is READ-ONLY: an
+/// `.iter()` feeding the pure `plan_deletion_rearms` seam, with the actual
+/// arming delegated to `arm_deletion_reaper`, whose body is separately frozen.
+///
+/// A bare bump to 4 would delete the tooth (any of the four sites could then
+/// move anywhere), so the widening is compensated per SITE: the sweep's span
+/// must hold EXACTLY ONE reach, that reach must be the `.iter()` READ, and the
+/// sweep's body must contain ZERO row-write verbs of its own. Together those
+/// say the new site can read the schedule table and cannot write it — which is
+/// what keeps the two frozen-body pins the only description of how a schedule
+/// row is ever created or removed.
+///
 /// Kills: a schedule write inlined into delete_account, cancel_account_deletion,
-///        complete_guest_claim or the reaper itself; a third helper that writes
-///        the table; the reaper self-disarm (a fourth occurrence, and one
-///        outside both spans).
+///        complete_guest_claim or the reaper itself; a third WRITING helper; the
+///        reaper self-disarm (a fifth occurrence, outside all three spans); and
+///        a sweep that arms rows by inserting schedule rows DIRECTLY instead of
+///        delegating to the frozen arm helper — which would bypass the
+///        `deletion_fire_at_ms` derivation and the saturating ms-to-us multiply
+///        that pin exists to hold.
 #[test]
 fn rb24_schedule_table_sole_writers() {
     let squashed = stripped_for_scan(ACCOUNTS_RS);
@@ -6978,22 +7026,26 @@ fn rb24_schedule_table_sole_writers() {
 
     let total = m22_count_occurrences(&squashed, &accessor_call);
     assert_eq!(
-        total, 3,
+        total, 4,
         "[rb24/sole-writer-census] accounts.rs must reach the deletion schedule accessor \
-         EXACTLY three times: once for the arm insert, and twice for the disarm (the \
-         account_identity filter and the primary-key delete). Found {total}. FEWER means a \
-         helper lost its write; MORE means a site exists that neither frozen-body pin \
+         EXACTLY four times: once for the arm insert, twice for the disarm (the \
+         account_identity filter and the primary-key delete), and once for the ADR-0221 R2 \
+         sweep's READ-ONLY iteration over the already-armed set. Found {total}. FEWER means a \
+         helper lost its reach — the arm or one half of the two-phase disarm, or the sweep's \
+         already-armed read, whose absence makes the sweep re-arm every mid-grace account on \
+         every publish. MORE means a site exists that none of the three span clauses below \
          constrains — including one reached through an aliased db handle."
     );
 
     let (arm_start, arm_end) = rb24_fn_body_span(&squashed, &rb24_nd_arm_decl());
     let (dis_start, dis_end) = rb24_fn_body_span(&squashed, &rb24_nd_disarm_decl());
+    let (ens_start, ens_end) = rb24_fn_body_span(&squashed, &m22s3b_nd_ensure_decl());
     assert_eq!(
         m22_count_occurrences(&squashed[arm_start..arm_end], &accessor_call),
         1,
         "[rb24/sole-writer-arm] the arm helper must reach the schedule accessor exactly once. \
-         The total-of-three clause alone does not pin the SPLIT: three occurrences all inside \
-         the disarm satisfies it."
+         The total-of-four clause alone does not pin the SPLIT: four occurrences all inside \
+         one helper satisfies it."
     );
     assert_eq!(
         m22_count_occurrences(&squashed[dis_start..dis_end], &accessor_call),
@@ -7003,29 +7055,70 @@ fn rb24_schedule_table_sole_writers() {
          the two-phase shape collapsed into a delete inside the iteration."
     );
 
+    // --- THE FOURTH SITE IS A READ, AND ONLY A READ (r2 compensation) -------
+    let ens_span = &squashed[ens_start..ens_end];
+    assert_eq!(
+        m22_count_occurrences(ens_span, &accessor_call),
+        1,
+        "[rb24/sole-writer-sweep] the ADR-0221 R2 sweep must reach the schedule accessor \
+         EXACTLY once — the already-armed read. ZERO means it cannot tell an armed row from \
+         an unarmed one, so every publish adds another schedule row for every mid-grace \
+         account and fires one full cascade per row. MORE THAN ONE is a second reach in a \
+         body that is supposed only to look."
+    );
+    let read_only_reach = [accessor_call.as_str(), ")", concat!(".it", "er()")].concat();
+    assert_eq!(
+        m22_count_occurrences(ens_span, &read_only_reach),
+        1,
+        "[rb24/sole-writer-sweep-is-a-read] the sweep's one reach must be the iteration \
+         `{read_only_reach}`. That spelling is what makes it a READ: it is the only shape \
+         that can produce the already-armed identity set the pure `plan_deletion_rearms` seam \
+         consumes, and it chains no write verb. A reach spelled any other way in this body is \
+         a reach whose purpose this census cannot vouch for."
+    );
+    for (verb, what) in [
+        (concat!(".ins", "ert("), "insert"),
+        (concat!(".upd", "ate("), "update"),
+        (concat!(".del", "ete("), "delete"),
+    ] {
+        assert_eq!(
+            m22_count_occurrences(ens_span, verb),
+            0,
+            "[rb24/sole-writer-sweep-no-write] the ADR-0221 R2 sweep performs a direct \
+             `{what}` row write. It must not: arming is DELEGATED to `arm_deletion_reaper`, \
+             whose body is frozen by `rb24_arm_deletion_reaper_body_frozen` precisely so the \
+             fire instant is derived through `deletion_fire_at_ms` and the ms-to-us multiply \
+             saturates. A schedule row inserted directly here bypasses both, and it does so \
+             for the whole overdue R2 population at once — the largest single batch of \
+             irreversible cascades this module can schedule."
+        );
+    }
+
     let mut scan = 0usize;
     let mut seen = 0usize;
     while let Some(rel) = squashed[scan..].find(accessor_call.as_str()) {
         let at = scan + rel;
         let inside_arm = at >= arm_start && at < arm_end;
         let inside_disarm = at >= dis_start && at < dis_end;
+        let inside_sweep = at >= ens_start && at < ens_end;
         assert!(
-            inside_arm || inside_disarm,
+            inside_arm || inside_disarm || inside_sweep,
             "[rb24/sole-writer-scope] accounts.rs reaches the deletion schedule accessor at \
-             squashed offset {at}, which lies OUTSIDE both the arm helper body \
-             ({arm_start}..{arm_end}) and the disarm helper body ({dis_start}..{dis_end}). \
-             Every touch of this table must go through one of the two reviewed helpers: an \
-             inline insert in a reducer bypasses the frozen fire-instant derivation, and an \
-             inline delete in the reaper is the ADR-0126 D6 self-disarm that races the runtime \
-             own delete of the fired one-shot row."
+             squashed offset {at}, which lies OUTSIDE the arm helper body \
+             ({arm_start}..{arm_end}), the disarm helper body ({dis_start}..{dis_end}) and \
+             the R2 sweep body ({ens_start}..{ens_end}). Every touch of this table must go \
+             through one of those three reviewed bodies: an inline insert in a reducer \
+             bypasses the frozen fire-instant derivation, and an inline delete in the reaper \
+             is the ADR-0126 D6 self-disarm that races the runtime own delete of the fired \
+             one-shot row."
         );
         seen += 1;
         scan = at + accessor_call.len();
     }
     assert_eq!(
-        seen, 3,
+        seen, 4,
         "[rb24/sole-writer-walk] the position walk visited {seen} occurrence(s) where the \
-         census counted 3. The two counts must agree or the scope clause above ran over a \
+         census counted 4. The two counts must agree or the scope clause above ran over a \
          different set of sites than the census measured."
     );
 }
@@ -8790,7 +8883,13 @@ fn m22s3b_reaper_rearm_at_ms_truth_table() {
     };
 
     // (label, row, expected re-arm instant, expected legality)
-    let cases: [(&str, Account, Option<i64>, bool); 15] = [
+    //
+    // SIXTEEN rows as of r2: the reviewer asked for the FUTURE-STAMP row (a
+    // request dated after `now`, which host clock skew across a restart can
+    // genuinely produce). It is the one shape where the two ways of writing the
+    // due-ness test disagree, so it belongs in the table rather than only in the
+    // loop-freedom property below.
+    let cases: [(&str, Account, Option<i64>, bool); 16] = [
         (
             "Active / no marker / no request — an ordinary live account",
             row(AccountStatus::Active, None, None),
@@ -8891,16 +8990,37 @@ fn m22s3b_reaper_rearm_at_ms_truth_table() {
             None,
             true,
         ),
+        (
+            "PendingDeletion / no marker / request stamped in the FUTURE (host clock \
+             skew across a restart) — not due, so re-arm at the row's OWN future stamp",
+            row(
+                AccountStatus::PendingDeletion,
+                Some(NOW_MS + DELETION_GRACE_MS_DEFAULT),
+                None,
+            ),
+            Some(NOW_MS + DELETION_GRACE_MS_DEFAULT),
+            true,
+        ),
     ];
 
     let positives = cases.iter().filter(|c| c.2.is_some()).count();
     assert_eq!(
-        positives, 2,
-        "[m22s3b/rearm-table-shape] this table must declare EXACTLY TWO re-arming rows — the \
-         one not-yet-due mid-grace combination and its claim-provenance twin, which must \
-         agree with it; it declares {positives}. The table IS the specification here, so a \
-         table that lost its positive rows would pass against a seam mutated to constant \
-         `None` and report that the re-arm obligation is discharged."
+        positives, 3,
+        "[m22s3b/rearm-table-shape] this table must declare EXACTLY THREE re-arming rows — \
+         the not-yet-due mid-grace combination, its claim-provenance twin, and the \
+         future-dated stamp; it declares {positives}. The table IS the specification here, so \
+         a table that lost its positive rows would pass against a seam mutated to constant \
+         `None` and report that the re-arm obligation is discharged. \
+         WHY THE FUTURE ROW EARNS ITS PLACE (reviewer minor, added in r2): a request stamped \
+         AFTER `now` is reachable — `now_ms(ctx)` is the host's injected clock and a restart \
+         can move it backwards, which `game_core::is_deletion_due` documents by saturating \
+         the subtraction in BOTH directions. It is also the single shape where the two ways \
+         of writing due-ness part company: `now - requested >= GRACE` (the SSOT) answers \
+         not-due and re-arms, while a request-blind `now >= GRACE` answers DUE and cascades — \
+         erasing an account whose grace window has not started, let alone elapsed. Every \
+         other row in this table agrees under both spellings, so without this one the \
+         request-blind formulation is invisible here and survives on the strength of the \
+         loop-freedom property alone."
     );
 
     for (label, account, expected, expected_legal) in cases {
@@ -8984,17 +9104,26 @@ fn m22s3b_reaper_rearm_at_ms_truth_table() {
 /// an armed row would multiply schedule rows on every deploy and fire one
 /// cascade per row.
 ///
-/// THE FIRE INSTANT IS `deletion_fire_at_ms(requested)`, never `now`: the sweep
-/// has no business extending anybody's grace window, and a past-due instant is
-/// LEGAL (a `ScheduleAt::Time` in the past fires immediately, which is exactly
-/// what the overdue R2 population needs).
+/// THE EMITTED INSTANT IS THE ROW'S RAW `deletion_requested_at_ms`, never `now`
+/// and never a pre-shifted fire time. ADR-0228 D3 puts the grace arithmetic in
+/// exactly ONE place — `arm_deletion_reaper`, whose frozen body applies
+/// `deletion_fire_at_ms` itself — and the sweep's call site is pinned as
+/// `arm_deletion_reaper(ctx, identity, requested_at_ms)`. A plan that shifted the
+/// stamp here would therefore have it shifted AGAIN downstream, giving the whole
+/// overdue population `requested + 2 x GRACE`: a silent double grace window that
+/// both pins would have forced while each read correctly alone. A past-due
+/// instant is LEGAL (a `ScheduleAt::Time` in the past fires immediately, which is
+/// exactly what the overdue R2 population needs), so there is nothing to clamp.
 ///
 /// Kills: a sweep that arms Active rows (row A), terminal rows (row T), rows
 ///        with no request stamp (row S) or rows that already have a schedule
 ///        (row D); one that derives the instant from a clock instead of the
-///        row's own stamp; one that emits a row twice; one that is not
-///        idempotent under replay; a `HashSet`-ordered output, which would make
-///        the write order of a publish nondeterministic.
+///        row's own stamp; one that pre-applies the grace window and so doubles
+///        it; one that treats the already-armed list positionally rather than as
+///        a set; one that panics on an empty account table (the state `init`
+///        runs against); one that emits a row twice; one that is not idempotent
+///        under replay; a `HashSet`-ordered output, which would make the write
+///        order of a publish nondeterministic.
 #[test]
 fn m22s3b_plan_deletion_rearms_idempotent() {
     let requested_a: i64 = 1_700_000_000_000;
@@ -9054,24 +9183,44 @@ fn m22s3b_plan_deletion_rearms_idempotent() {
     ];
     let armed = [ident(43)];
 
+    // --- THE PAIR IS (identity, RAW request stamp) --------------------------
+    //
+    // CORRECTED IN r2, and the correction is a real contract defect the first
+    // draft would have shipped. `arm_deletion_reaper` derives the fire instant
+    // ITSELF — its frozen body (`rb24_arm_deletion_reaper_body_frozen`) is
+    // `deletion_fire_at_ms(requested_at_ms).saturating_mul(1_000)` — and
+    // `[rb24/arm-shape-ensure_deletion_reapers_armed]` pins the sweep's call as
+    // `arm_deletion_reaper(ctx, identity, requested_at_ms)`. So a plan that
+    // emitted `deletion_fire_at_ms(requested)` would be handing an ALREADY-SHIFTED
+    // instant to a helper that shifts it again: `requested + 2 x GRACE` for the
+    // whole ADR-0221 R2 population, a silent DOUBLE grace window, and the two
+    // pins would have forced it while each read correctly on its own.
+    //
+    // ADR-0228 D3's rule is that ONE place computes the fire instant, and that
+    // place is `arm_deletion_reaper`. Every producer therefore hands it the raw
+    // stamp: `reaper_rearm_at_ms` returns `Some(requested)`, and this seam emits
+    // the row's own `deletion_requested_at_ms` unchanged.
     let plan = plan_deletion_rearms(&rows, &armed);
     assert_eq!(
         plan,
-        vec![
-            (ident(42), deletion_fire_at_ms(requested_a)),
-            (ident(46), deletion_fire_at_ms(requested_b)),
-        ],
+        vec![(ident(42), requested_a), (ident(46), requested_b)],
         "[m22s3b/sweep-plan] the sweep must emit EXACTLY the two mid-grace rows that have no \
-         schedule row yet, each paired with `deletion_fire_at_ms` of its OWN request stamp, \
-         in input order. Every other row is skipped for its own reason and each is a distinct \
-         wrong implementation: an Active row has nothing pending (arming it schedules an \
-         erasure nobody requested); a TERMINAL row is already erased (arming it runs a second \
-         cascade and re-erases rows another account may since own); a row with NO request \
-         stamp is the illegal shape a bug elsewhere produces, and arming it needs an invented \
-         instant; and a row that ALREADY has a schedule gets a SECOND one, so a publish \
-         multiplies schedule rows and fires one cascade per row. Deriving the instant from a \
-         clock instead of the stamp would hand the whole overdue population a fresh full \
-         grace window on every publish."
+         schedule row yet, each paired with its OWN RAW `deletion_requested_at_ms`, in input \
+         order. \
+         RAW, NOT `deletion_fire_at_ms(..)`: `arm_deletion_reaper` — the one place ADR-0228 D3 \
+         puts that arithmetic — applies the grace window itself, so a pre-shifted value here \
+         is applied TWICE and the whole overdue population gets `requested + 2 x GRACE`. That \
+         is the same defect as a now-relative answer, reached by a different route: an account \
+         that asked to be deleted is silently granted a second full grace window it never \
+         asked for, on every publish. \
+         Every other row is skipped for its own reason and each is a distinct wrong \
+         implementation: an Active row has nothing pending (arming it schedules an erasure \
+         nobody requested); a TERMINAL row is already erased (arming it runs a second cascade \
+         and re-erases rows another account may since own); a row with NO request stamp is the \
+         illegal shape a bug elsewhere produces, and arming it needs an invented instant; and \
+         a row that ALREADY has a schedule gets a SECOND one, so a publish multiplies \
+         schedule rows and fires one cascade per row. Deriving the instant from a CLOCK \
+         instead of the row's stamp is the third way to reach the same place."
     );
 
     // --- IDEMPOTENCE BY REPLAY ----------------------------------------------
@@ -9091,6 +9240,40 @@ fn m22s3b_plan_deletion_rearms_idempotent() {
          publish frequency."
     );
 
+    // --- MEMBERSHIP IS A SET TEST, NOT A POSITIONAL ONE (reviewer minor, r2) -
+    //
+    // The already-armed list comes from a DB read of the schedule table, which
+    // can legitimately hold more than one row for an identity (the PRV1-3 disarm
+    // deletes every matching row precisely because that is representable). A
+    // plan that zipped or indexed the two lists rather than testing membership
+    // would answer correctly for the main case above and wrongly here.
+    let dup_armed = [ident(43), ident(43), ident(42)];
+    let with_dups = plan_deletion_rearms(&rows, &dup_armed);
+    assert_eq!(
+        with_dups,
+        vec![(ident(46), requested_b)],
+        "[m22s3b/sweep-armed-is-a-set] with `{dup_armed:?}` already armed the sweep must emit \
+         ONLY the one mid-grace row that is not in that set; it emitted {with_dups:?}. The \
+         already-armed list is read from the schedule table, where a DUPLICATE entry for one \
+         identity is representable — that is why the PRV1-3 disarm collects and deletes EVERY \
+         matching row rather than one. A plan that pairs the two lists positionally, or that \
+         assumes the armed set is deduplicated, answers correctly for the ordinary case and \
+         re-arms an already-armed account here."
+    );
+
+    // --- AN EMPTY WORLD IS A NO-OP, NOT A PANIC (reviewer minor, r2) --------
+    let no_rows: [Account; 0] = [];
+    let empty_plan = plan_deletion_rearms(&no_rows, &armed);
+    assert!(
+        empty_plan.is_empty(),
+        "[m22s3b/sweep-empty-input] a sweep over ZERO accounts must emit nothing and must not \
+         panic; it emitted {empty_plan:?}. `init` calls this on a database that has just been \
+         created, where the account table is genuinely empty — so this is the FIRST input the \
+         seam ever sees in production, not a synthetic edge. An implementation that indexes \
+         its input before checking length, or that unwraps a `first()`, fails here and \
+         aborts the whole `init` reducer."
+    );
+
     // --- NON-VACUITY --------------------------------------------------------
     let none_armed: [Identity; 0] = [];
     let all = plan_deletion_rearms(&rows, &none_armed);
@@ -9105,10 +9288,12 @@ fn m22s3b_plan_deletion_rearms_idempotent() {
     );
     assert_eq!(
         all[1],
-        (ident(43), deletion_fire_at_ms(requested_a)),
+        (ident(43), requested_a),
         "[m22s3b/sweep-order] the emitted order must follow the INPUT order, so the write \
          order of a publish is deterministic. A HashSet-backed plan answers correctly as a \
-         SET and reorders between runs, which makes a failure impossible to reproduce."
+         SET and reorders between runs, which makes a failure impossible to reproduce. The \
+         instant is the RAW request stamp here for the same reason as the main case: \
+         `arm_deletion_reaper` owns the grace arithmetic and applies it once."
     );
 }
 
@@ -9217,6 +9402,62 @@ fn m22s3b_resolver_body_order() {
              disconnect as well as on every cascade."
         );
     }
+
+    // --- EXACT EQUALITY, LAST (added in r2) ---------------------------------
+    //
+    // Everything above is a count and an ordering, and a red-team measured that
+    // the whole set is satisfiable by a resolver that never resolves: wrap the
+    // four calls in `if false { .. }`, or open the body with an unconditional
+    // `return;`, or add a guard that skips them for the deletion caller — every
+    // needle is still present, every count is still 1, and every offset
+    // comparison still holds, while the bundle force-resolves nothing at all and
+    // the cascade proceeds to erase rows that live trades and battles still
+    // reference. Position clauses are structurally blind to reachability, so the
+    // finale is equality: the body IS the four dispatch statements and nothing
+    // else. That is also exactly what spec §4.4 step 1 asks for — the
+    // `on_disconnect` dispatch, VERBATIM — so the pin and the requirement are the
+    // same sentence.
+    //
+    // The literal is transcribed INDEPENDENTLY of the `ordered` needles above,
+    // split at different points, so a silent edit to one artefact cannot move the
+    // other with it; the containment clause below is what makes that independence
+    // checkable rather than merely asserted in a comment.
+    let expected = [
+        concat!("trading::cancel_trades_on", "_disconnect(ctx,identity);"),
+        concat!("pvp::forfeit_on", "_disconnect(ctx,identity);"),
+        concat!(
+            "battle::resolve_wild_battle_on",
+            "_disconnect(ctx,identity);"
+        ),
+        concat!("pvp::cancel_challenges_on", "_disconnect(ctx,identity);"),
+    ]
+    .concat();
+    for (needle, _why) in ordered {
+        assert!(
+            expected.contains(needle),
+            "[m22s3b/resolver-literal-independence] the plan needle `{needle}` is not a \
+             substring of the frozen resolver literal. The two are transcribed separately and \
+             split at different points on purpose, so a mismatch means one artefact was \
+             edited alone and the equality below is now asserting something other than the \
+             plan."
+        );
+    }
+    assert_eq!(
+        body, expected,
+        "[m22s3b/resolver-body-exact] the body of `resolve_all_live_interactions` is not \
+         EXACTLY the four `on_disconnect` dispatch statements. Spec §4.4 step 1 says the \
+         bundle is that dispatch VERBATIM and in its existing order, so equality here is the \
+         requirement rather than an extra constraint on it. Every other clause in this test \
+         reasons about POSITION or COUNT and is therefore blind to REACHABILITY: an \
+         `if false {{ .. }}` wrapper, an early `return;` above the calls, or a caller-keyed \
+         guard that skips them for the deletion path keeps all four needles present, all four \
+         counts at 1 and every offset comparison true — while the bundle resolves NOTHING and \
+         the cascade goes on to erase monsters, wallets and inventories that live trades and \
+         ongoing battles still reference. The subject is spelled `identity` at every call \
+         because that is this helper's parameter: a local rebinding above the calls would \
+         retarget all four at once. If the sanctioned body legitimately changes, re-derive \
+         this literal FROM the lib.rs `on_disconnect` dispatch in the same change."
+    );
 }
 
 /// The squashed declaration needle for the extracted resolver.
@@ -9339,12 +9580,19 @@ fn m22s3b_cascade_covers_manifest() {
         );
     }
 
-    assert!(
-        classified >= 22,
-        "[m22s3b/coverage-nonvacuous] only {classified} manifest entries were classified for \
-         the cascade; the live manifest carries 13 ERASE, 4 ANONYMIZE and 5 JOIN-ONLY, which \
-         is 22. A shrunken walk is a walk that stopped looking, and every clause above would \
-         then be green about tables nobody checked."
+    assert_eq!(
+        classified, 22,
+        "[m22s3b/coverage-census] {classified} manifest entries were classified for the \
+         cascade; EXACTLY 22 is the live partition (13 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY). \
+         Tightened from a floor in r2 — a `>=` accepts growth silently, and growth is \
+         precisely the event that needs a human: a NEW owner-keyed table classified for the \
+         cascade must be routed through this test's hand-maintained table-to-helper map, \
+         which is a named drift surface of the same class as `JOIN_ONLY_TABLES` (spec §9 \
+         residual 3). FEWER means the walk stopped looking and every clause above is green \
+         about tables nobody checked; MORE means a table was classified without anyone \
+         deciding which helper erases it. Either way, re-derive this number together with the \
+         map and with `data_lifecycle_partition_matches_spec_section3`'s four name-sets, in \
+         the same conscious change."
     );
 }
 
@@ -9377,6 +9625,65 @@ fn m22s3b_ensure_rearm_wiring() {
          schedule table to the arm and disarm helpers in this module, so a sweep declared in \
          another module cannot arm anything without breaking that census."
     );
+
+    // --- THE SWEEP MUST ACTUALLY SWEEP (added in r2) ------------------------
+    //
+    // Declaration plus two call sites says the sweep EXISTS and RUNS. It says
+    // nothing about it doing anything, and a red-team measured the gap: an
+    // `ensure_deletion_reapers_armed` whose body is `let _ = ctx;` — or one that
+    // builds an empty account list and loops over it — is declared once, called
+    // from both lifecycle hooks, arms nothing, and is invisible to every clause
+    // in this test. It is also the WORST place for a silent no-op, because the
+    // ADR-0221 R2 population it exists to rescue is exactly the set no other code
+    // path will ever re-read: those accounts sit `PendingDeletion` with their
+    // one-shot already fired and dropped, and nothing else in the tree looks at
+    // them again.
+    //
+    // Three reads, each irreplaceable: the account table (the candidate rows),
+    // the schedule table (which of them are ALREADY armed — without it the sweep
+    // double-arms on every publish), and the pure `plan_deletion_rearms` seam
+    // that decides between them. The seam call is what keeps
+    // `m22s3b_plan_deletion_rearms_idempotent` load-bearing: an inline
+    // re-derivation of the same rule in the shell is untested by construction.
+    let sweep_body = extract_squashed_fn_body(&accounts, &decl).unwrap_or_else(|| {
+        panic!(
+            "[m22s3b/sweep-scope-body] the brace-bounded body of `{decl}` could not be sliced \
+             out of accounts.rs, so every shape clause below has no scope and would pass \
+             vacuously. Fail LOUD."
+        )
+    });
+    for (needle, what, why) in [
+        (
+            concat!("acc", "ount().iter()"),
+            "the candidate-row read",
+            "the sweep has to look at the account table to find rows sitting PendingDeletion \
+             with nothing armed. Without this read there are no candidates and the helper is \
+             a no-op that reads as a fix",
+        ),
+        (
+            concat!("account_deletion_reaper", "_schedule().iter()"),
+            "the already-armed read",
+            "without it the sweep cannot know which rows already carry a schedule, so it \
+             re-arms every mid-grace account on EVERY publish — one extra schedule row per \
+             deploy, each firing its own full cascade with two unindexed full-table sweeps \
+             (the §8.3 volume residual, multiplied by publish frequency)",
+        ),
+        (
+            concat!("plan_deletion", "_rearms(&"),
+            "the pure decision seam",
+            "the skip rules (Active, terminal, stamp-less, already-armed) are pinned \
+             behaviourally by `m22s3b_plan_deletion_rearms_idempotent`, and that test can \
+             only reach them through this seam. An inline re-derivation in the shell is \
+             untested by construction — and it is the shell, not the seam, that would then \
+             decide which accounts get an irreversible cascade scheduled",
+        ),
+    ] {
+        assert!(
+            sweep_body.contains(needle),
+            "[m22s3b/sweep-shape] `ensure_deletion_reapers_armed` must contain `{needle}` \
+             ({what}): {why}. Body read: {sweep_body:?}"
+        );
+    }
 
     let lib = stripped_for_scan(LIB_RS);
     let call = m22s3b_nd_ensure_call();
@@ -9487,6 +9794,38 @@ fn m22s3b_provision_terminal_reset_defaults() {
          provenance exactly as the completed cascade left them — a terminal row that is now \
          also freshly logged in. PRV1-8(b) requires every field at `new_account_row` \
          defaults. Arm span read: {span:?}"
+    );
+
+    // --- THE ARM MUST NOT REACH ITS OWN MATCH BINDING (added in r2) ---------
+    //
+    // A red-team measured the cheat the three clauses above miss:
+    //   Some(existing) if account_has_terminal_marker(&existing) => {
+    //       ctx.db.account().identity().update(Account {
+    //           ..new_account_row(ctx.sender(), issuer.to_string(), now)
+    //       });                                   // ..or ..existing, the real one
+    //   }
+    // Spelled with `..existing` as the struct-update base and the fresh row's
+    // fields listed selectively, it calls `new_account_row(`, it calls
+    // `.update(`, it never calls `touch_login(` — every clause above is green —
+    // and every field the author did not think to name is carried straight
+    // through from the erased row. PRV1-8(b) says NO pre-deletion field value
+    // survives, so the honest rule is that the reset arm must not be able to SEE
+    // the old row at all: the binder is named in the match guard, which sits
+    // OUTSIDE this span, so a body that never mentions it cannot carry anything
+    // forward no matter what it is written with.
+    let binder = m22_count_occurrences(span, "existing");
+    assert_eq!(
+        binder, 0,
+        "[m22s3b/reset-no-spread] the terminal-reset arm names its match binding `existing` \
+         {binder} time(s) inside the arm body; it must name it ZERO times. The binder belongs \
+         to the GUARD (which is outside this span and is where the marker is tested); the \
+         BODY rebuilds the row from `new_account_row`, which takes no existing row at all. \
+         Any mention of the old row inside the arm is a route for a pre-deletion value to \
+         survive — `Account {{ ..existing }}` being the measured one, which carries every \
+         unnamed field forward while satisfying the constructor, update and no-touch_login \
+         clauses above. PRV1-8(b) is explicit: every field at `new_account_row` defaults, \
+         with `identity` and `auth_issuer` supplied by the LIVE connection. Arm span read: \
+         {span:?}"
     );
 
     let touch = concat!("touch", "_login(");
@@ -9655,9 +9994,34 @@ fn m22s3b_guard3_terminal_reason_distinct() {
     let body = extract_squashed_fn_body(&squashed, &nd_complete())
         .expect("[m22s3b/guard3-scope] fn complete_guest_claim was not found");
 
+    // --- TWO INDEPENDENT TRANSCRIPTIONS OF THE MARKER CALL (added in r2) ----
+    //
+    // Every clause in this test reached the marker through ONE helper,
+    // `m22s3_nd_marker_call()`, which is ALSO what the two terminal-guard needles
+    // in `m22s3_terminal_guards_precede_state_writes` are built from. That makes
+    // the helper a single artefact three gates depend on: an edit inside it — a
+    // dropped `&`, a renamed binding, a switch from the marker half to spec
+    // §4.1's conjunction — moves every consumer with it, and all three stay
+    // green while asserting something nobody chose. That is the same
+    // one-artefact hole the frozen reaper body records at
+    // `[rb24/reaper-needle-independence]`, and it gets the same treatment: a
+    // SECOND spelling, split at different points, plus a clause that makes the
+    // agreement checkable instead of assumed.
     let marker = m22s3_nd_marker_call();
+    let marker_twin = concat!("acc", "ount_has_term", "inal_marker(&acc", "ount)");
+    assert_eq!(
+        marker, marker_twin,
+        "[m22s3b/guard3-needle-independence] the shared marker needle and this test's own \
+         independent transcription disagree: `{marker}` versus `{marker_twin}`. They are \
+         split at different points on purpose, so a mismatch means the shared helper was \
+         edited alone — and that helper is consumed by BOTH terminal-guard pins as well as by \
+         every clause below, so an edit inside it silently re-points three gates at once. \
+         Re-derive both spellings from ADR-0228 D4/D6 in the same change: the guard reads the \
+         MARKER HALF of spec §4.1 (`terminal_at_ms.is_some()`) on the ALREADY-BOUND row, \
+         which is what makes it fail-closed on the illegal Active-plus-marker shape."
+    );
     let pending = concat!("is_pending", "_deletion(");
-    let n_marker = m22_count_occurrences(body, &marker);
+    let n_marker = m22_count_occurrences(body, marker_twin);
     assert_eq!(
         n_marker, 1,
         "[m22s3b/guard3-marker-once] complete_guest_claim must consult `{marker}` EXACTLY \
@@ -9779,11 +10143,28 @@ fn m22s3b_erase_monsters_shape() {
     }
 
     let deletes = m22_count_occurrences(body, concat!(".del", "ete("));
-    assert!(
-        deletes >= 2,
-        "[m22s3b/monsters-deletes] erase_monsters performs {deletes} row delete(s); the two \
-         ERASE tables need at least 2. Fewer means one of the pair is only read, or the sweep \
-         collects ids and never deletes them."
+    assert_eq!(
+        deletes, 2,
+        "[m22s3b/monsters-deletes] erase_monsters performs {deletes} row delete(s); EXACTLY \
+         TWO are sanctioned — one per ERASE table, both keyed on the collected `monster_id`. \
+         FEWER means one of the pair is only read (the public projection then survives \
+         world-readable, or the private row with the hidden genes does). MORE is a third row \
+         removal in a helper whose entire remit is those two tables; it would also mean this \
+         body reaches a table no owning-module shape pin covers. Tightened from a floor in \
+         r2: `>= 2` accepted an unbounded number of extra deletes."
+    );
+    let iter_call = concat!(".it", "er()");
+    assert_eq!(
+        m22_count_occurrences(body, iter_call),
+        0,
+        "[m22s3b/monsters-no-scan] erase_monsters calls `{iter_call}`. `monster` carries a \
+         btree index on `owner_identity` and `monster_pub` mirrors it 1:1 by `monster_id`, so \
+         the owner's rows are reachable by INDEX and a full-table iteration is never needed. \
+         The measured cheat this closes: `ctx.db.monster().iter().filter(..)` alongside the \
+         owner filter satisfies every presence clause above while the sweep walks the whole \
+         table — and if that filter is ever wrong, absent, or refactored away, the same body \
+         deletes every player's collection in the database. An indexed route makes the \
+         catastrophic shape unrepresentable rather than merely unlikely."
     );
     let owner_scoped = m22_count_occurrences(body, concat!("owner_identity().fil", "ter(owner)"));
     assert!(
@@ -9830,6 +10211,19 @@ fn m22s3b_erase_inventory_shape() {
         body.contains(concat!(".del", "ete(")),
         "[m22s3b/inventory-deletes] erase_inventory must actually delete rows — a helper that \
          collects ids and never deletes satisfies both clauses above. Body read: {body:?}"
+    );
+    let iter_call = concat!(".it", "er()");
+    assert_eq!(
+        m22_count_occurrences(body, iter_call),
+        0,
+        "[m22s3b/inventory-no-scan] erase_inventory calls `{iter_call}`. `inventory` carries a \
+         btree index on `owner_identity`, so the owner's stacks are reachable by INDEX and a \
+         full-table iteration is never needed. The measured cheat this closes (added in r2): \
+         a body that keeps the owner filter for show and does the real work over \
+         `ctx.db.inventory().iter()` satisfies the accessor, owner-filter and delete clauses \
+         above while walking every player's rows — and one wrong or missing predicate in that \
+         scan deletes the whole table. `inventory` is PUBLIC and world-readable, so the blast \
+         radius of that mistake is every player's item counts at once."
     );
 }
 
@@ -9882,6 +10276,20 @@ fn m22s3b_erase_character_rows_shape() {
          §4.4 character-before-player ordering exists precisely because the two are handled \
          differently. Deleting it here strands every one of those references and makes the \
          ordering pin meaningless. Body read: {body:?}"
+    );
+    let iter_call = concat!(".it", "er()");
+    assert_eq!(
+        m22_count_occurrences(body, iter_call),
+        0,
+        "[m22s3b/character-no-scan] erase_character_rows calls `{iter_call}`. Both tables on \
+         this path are reached by KEY: `player` by its `identity` primary key, and `character` \
+         by the `entity_id` primary key that read yields. There is at most ONE character row \
+         per player, so a full-table iteration is never needed — and it is the shape that \
+         makes the catastrophic mistake possible, because `character` carries NO identity \
+         column at all (that is what JOIN-ONLY means), so an iteration here has nothing to \
+         scope itself with and a missing predicate deletes every character row in the world. \
+         Added in r2: the join-read and delete clauses above are both satisfied by a body that \
+         also scans."
     );
 }
 

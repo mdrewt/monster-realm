@@ -2519,6 +2519,46 @@ fn m22s3b_anonymize_display_names_shape() {
         );
     }
 
+    // --- THE TWO WRITES, COUNTED (added in r2) ------------------------------
+    //
+    // `d1_scan_no_eager_write_in_get_or_init` pins the PROFILE write of this
+    // function at exactly 1 (that is what its 4 -> 5 whole-file re-derivation
+    // paid for). NOTHING pinned the PLAYER write — and a red-team measured the
+    // gap: a body that composes `player_with_deleted_name(..)` and then drops the
+    // result on the floor satisfies the seam clause above, deletes nothing, and
+    // leaves `player.name` untouched. That is the field every other client
+    // actually renders for this identity, AND the field the ADR-0125 passive
+    // mirror copies onto the PUBLIC profile row at the next rated game — so the
+    // profile tombstone this function did write is overwritten with the live name
+    // the moment anything rates. PRV1-6c ends up worse than not done.
+    for (needle, table, why) in [
+        (
+            concat!("player().identity().upd", "ate("),
+            "player",
+            "the presence row's `name` is the display name every other client sees for this \
+             identity, and the ADR-0125 passive mirror copies it onto the PUBLIC `profile` \
+             row on the next rated game — so leaving it live silently un-does the profile \
+             tombstone this same function wrote",
+        ),
+        (
+            concat!("profile().identity().upd", "ate("),
+            "profile",
+            "the `profile` row IS the public leaderboard; this is the write that removes the \
+             deleted player's name from every other client's view",
+        ),
+    ] {
+        let n = m22s3b_count(body, needle);
+        assert_eq!(
+            n, 1,
+            "PRV1-6c FAIL ({table} write): anonymize_display_names must write the `{table}` \
+             row EXACTLY once, as `{needle}`; found {n}. ZERO means {why}. MORE THAN ONE is a \
+             second, unreviewed write in the one flow that cannot be undone. Composing the \
+             row through its pure seam (pinned above) and never writing the result is the \
+             measured cheat this clause closes — the compiler is silent about it, because a \
+             pure function's return value is not `#[must_use]`."
+        );
+    }
+
     assert_eq!(
         m22s3b_count(body, concat!(".del", "ete(")),
         0,

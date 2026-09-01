@@ -1865,12 +1865,12 @@ fn player_wallet_rows_are_never_deleted() {
          the deletion. MORE THAN ONE means the by-NAME exemption covers more than one body, \
          and the exact-body pin below can then only speak for whichever the walk saw last."
     );
-    let sanctioned = m22s3b_sanctioned_erase_wallet_bodies();
-    assert!(
-        sanctioned.iter().any(|s| *s == erase_wallet_body),
+    let sanctioned = m22s3b_sanctioned_erase_wallet_body();
+    assert_eq!(
+        erase_wallet_body, sanctioned,
         "TEETH(m22-s3b / ADR-0228 D7(c) EXEMPTION-SHAPE): the exempted `{erase_wallet}` body \
-         is not the sanctioned owner-keyed delete.\n  expected (whitespace-compacted, either \
-         accepted framing): {sanctioned:?}\n  found:    {erase_wallet_body:?}\n\
+         is not the sanctioned owner-keyed delete.\n  expected (whitespace-compacted): \
+         {sanctioned:?}\n  found:    {erase_wallet_body:?}\n\
          EXACT EQUALITY, because a by-name exemption is a hole in a never-delete invariant \
          and containment was MEASURED insufficient for this exact family (the rb-22 red-team: \
          an `if false` wrapper around a correct body, a shadowed binding, a shadowed loop \
@@ -1891,10 +1891,20 @@ fn player_wallet_rows_are_never_deleted() {
     );
 
     // Positional: the exempted helper must sit BEFORE `rekey_wallet` in the
-    // file. `evals/currency-integrity.eval.mjs`'s wallet zero-arg pin scans
-    // FORWARD from `rekey_wallet` without a bound, so a helper introduced after
-    // it lands inside that unbounded window and is measured by a criterion that
-    // was never written about it.
+    // file.
+    //
+    // MESSAGE CORRECTED IN r2 — the first draft overclaimed. What
+    // `evals/currency-integrity.eval.mjs`'s wallet zero-argument pin searches
+    // forward from `rekey_wallet` for is the ZEROING UPDATE, not a delete, so
+    // `erase_wallet` placed after it would not red that eval today: the helper
+    // contains no `update(` at all. The honest statement of the rule is
+    // therefore a FENCE rather than a repair: that forward search has no upper
+    // bound, so everything below `rekey_wallet` sits inside a window belonging to
+    // a criterion written about a DIFFERENT function, and a helper that later
+    // grows an `update(` — a zeroing step added beside the delete, say — would
+    // silently start answering for `rekey_wallet`. Keeping the new helper above
+    // that line is a one-line placement choice that costs nothing and removes the
+    // whole class; it is not a claim that the eval reds today.
     let economy_clean = strip_rust_strings_economy(&strip_rust_comments_economy(ECONOMY_SOURCE));
     let erase_decl = ["fn ", erase_wallet.as_str(), "("].concat();
     let rekey_decl = ["fn ", "rekey", "_wallet("].concat();
@@ -1913,12 +1923,16 @@ fn player_wallet_rows_are_never_deleted() {
     assert!(
         at_erase < at_rekey,
         "TEETH(m22-s3b EXEMPTION-PLACEMENT): `{erase_wallet}` is declared at byte {at_erase}, \
-         AFTER `rekey_wallet` at {at_rekey}. It must come first: \
-         evals/currency-integrity.eval.mjs pins the wallet zero-argument shape by scanning \
-         FORWARD from `rekey_wallet` with no upper bound, so a helper placed after it falls \
-         inside a window belonging to a criterion that was never written about this function \
-         — a full-CI-only red that looks like a defect in the cascade rather than a placement \
-         accident."
+         AFTER `rekey_wallet` at {at_rekey}. It must come first. \
+         STATED ACCURATELY (r2 correction): evals/currency-integrity.eval.mjs pins the wallet \
+         zero-argument shape by scanning FORWARD from `rekey_wallet` for the zeroing \
+         `update(`, with NO upper bound — so everything below that declaration sits inside a \
+         window belonging to a criterion written about a different function. `erase_wallet` \
+         carries no `update(` today, so this is a FENCE rather than a live red: it costs one \
+         line of placement and it removes the whole class, including the shape where a later \
+         edit adds a zeroing step beside the delete and that step silently starts answering \
+         for `rekey_wallet` in an eval nobody re-read. Do not relax this by moving the helper \
+         and widening the eval instead."
     );
 
     assert!(
@@ -1941,28 +1955,33 @@ fn player_wallet_rows_are_never_deleted() {
     );
 }
 
-/// The two accepted whitespace-COMPACTED framings of the sanctioned
-/// `erase_wallet` body: the ONE owner-keyed primary-key delete, and nothing
-/// else.
+/// The sanctioned whitespace-COMPACTED body of `erase_wallet`: the ONE
+/// owner-keyed primary-key delete, brace-framed, and nothing else.
 ///
-/// Two framings rather than one because `rust_fn_bodies` is the walk that
-/// decides where a body starts and ends, and pinning a single framing would
-/// couple this literal to that walk's brace convention rather than to the
-/// sanctioned code. Both spellings describe the same single statement.
+/// NARROWED TO A SINGLE FRAMING IN r2. The first draft accepted the statement
+/// with AND without its surrounding braces, because the authoring pass could not
+/// statically determine which one `rust_fn_bodies` produces. It has now been
+/// measured: that walk always returns the body WITH its braces, so the
+/// brace-free alternative was an accepted spelling nothing could ever emit —
+/// dead tolerance in an exact-equality pin, which is the one place tolerance has
+/// no business being. Removing it also removes the `iter().any()` comparison the
+/// lint objected to at both call sites: with one expected value the assertion is
+/// a plain equality, which is what it should have been.
 ///
 /// `player_wallet` is keyed by `owner_identity` as its PRIMARY KEY (schema.rs),
 /// so the delete is a point delete of exactly one row — not a filter, not a
 /// scan.
-fn m22s3b_sanctioned_erase_wallet_bodies() -> [String; 2] {
-    let stmt = [
+fn m22s3b_sanctioned_erase_wallet_body() -> String {
+    [
+        "{",
         "ctx.db.",
         "player",
         "_wallet().",
         "owner",
         "_identity().delete(owner);",
+        "}",
     ]
-    .concat();
-    [stmt.clone(), ["{", stmt.as_str(), "}"].concat()]
+    .concat()
 }
 
 /// **PRV1-6b (m22-s3b)** — the delegated wallet eraser is exactly one
@@ -2014,11 +2033,11 @@ fn m22s3b_erase_wallet_sanctioned_shape() {
          flow, and the cascade needs one that is scoped to whatever identity it is erasing. \
          Signature read: {sig:?}"
     );
-    let sanctioned = m22s3b_sanctioned_erase_wallet_bodies();
-    assert!(
-        sanctioned.iter().any(|s| *s == body),
+    let sanctioned = m22s3b_sanctioned_erase_wallet_body();
+    assert_eq!(
+        body, sanctioned,
         "m22-s3b PRV1-6b FAIL (body): `{erase_wallet}` must be EXACTLY the one owner-keyed \
-         point delete.\n  expected (whitespace-compacted, either accepted framing): \
+         point delete.\n  expected (whitespace-compacted): \
          {sanctioned:?}\n  found: {body:?}\n\
          `owner_identity` is the PRIMARY KEY of `player_wallet`, so the sanctioned shape is a \
          point delete of exactly one row. A filtered sweep says the same thing more slowly \
