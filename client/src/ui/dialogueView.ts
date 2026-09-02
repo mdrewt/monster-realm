@@ -14,11 +14,10 @@
 //
 // THE CLOSE GUARDS ARE ASYMMETRIC ON PURPOSE. The `render(null)` branch IS guarded: A11Y-34 forbids
 // invoking the helper "on a repeat render at the same nullity", and `main.ts`'s M12d
-// dialogue/quest-log/heal `store.onBatchApplied` listener (`:1627-1641` today) calls
-// `dialogueView.render(vm)` unconditionally on every single batch, passing `null` whenever
-// there is no conversation. `hide()` is NOT
-// guarded -- see the reasoning in `ui/pvpView.ts`'s `hide()`: an unguarded close is the self-healing
-// path, and `closeOverlayA11y` with no open record is a documented no-op.
+// `store.onBatchApplied` listener (`:1627-1641` today) calls `dialogueView.render(vm)`
+// unconditionally on every single batch, passing `null` whenever there is no conversation.
+// `hide()` is NOT guarded -- see the reasoning in `ui/pvpView.ts`'s `hide()`: an unguarded close
+// is the self-healing path, and `closeOverlayA11y` with no open record is a documented no-op.
 //
 // `hide()` HAS NO PRODUCTION CALLER and that is pinned: `main.ts`'s UXD3C-HANDLES-delimited
 // `overlayHandles` force-hide table leaves `dialogueView` out (`dialogueView: undefined` at

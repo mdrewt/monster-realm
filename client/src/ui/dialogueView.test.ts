@@ -240,11 +240,12 @@ describe('DialogueView — overlay a11y wiring on the render edge (m23-s3)', () 
   });
 
   it('S3-dialogueView-REPEAT-NO-REOPEN BITES: a repeat render(vm) at the SAME nullity neither re-opens nor yanks focus back', async () => {
-    // THE CRUX (plan F5/F6): main.ts's M12d dialogue/quest-log/heal store.onBatchApplied listener
-    // (`:1627-1641` today) calls dialogueView.render(vm) UNCONDITIONALLY on every store batch. An unguarded delegation would clear and re-schedule the deferred-focus timer
-    // every tick (ui/overlayA11y.ts:100-113), so focus is yanked off whatever the player Tabbed to
-    // and the overlay is untabbable. This failure mode is INVISIBLE to every attribute assertion —
-    // a re-open rewrites byte-identical values.
+    // THE CRUX (plan F5/F6): main.ts's M12d store.onBatchApplied listener (`:1627-1641` today)
+    // calls dialogueView.render(vm) UNCONDITIONALLY on every store batch. An unguarded delegation
+    // would clear and re-schedule the deferred-focus timer every tick (ui/overlayA11y.ts:100-113),
+    // so focus is yanked off whatever the player Tabbed to and the overlay is untabbable. This
+    // failure mode is INVISIBLE to every attribute assertion — a re-open rewrites byte-identical
+    // values.
     const root = mountDialogueOverlay();
     const view = new DialogueView();
 
