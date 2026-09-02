@@ -10357,3 +10357,1258 @@ fn m22s3b_purge_named_twice_claim_and_cascade() {
         total - scoped
     );
 }
+
+// ===========================================================================
+// M22-S6 — DELETION COMPLETENESS FROM DERIVE METADATA (PRV1-15, PRV1-16).
+//
+// Spec: M22-privacy-compliance.spec.md §3/§4.4, REDIRECTED per ADR-0224 (no new
+// evals/*.eval.mjs). Design record: ADR-0229. Ledger gates X1-X5.
+// Plan: memory/projects/monster-realm-m22-s6-plan.md (harness repo).
+//
+// WHAT THIS SECTION DOES NOT RE-DO. `data_lifecycle_manifest_totality_bidirectional`
+// (:3524) already proves every LIVE TABLE has a manifest entry; T1/X4 below proves
+// something narrower and different — that the entry's row TYPE actually carries (or
+// doesn't carry) an `Identity` column, which the totality test cannot see at all.
+// `m22s3b_cascade_covers_manifest` (:9493) already proves every classified table maps
+// to a reaper-reachable helper NAME; T2/X5 below proves the SAME correspondence plus
+// two things that test does not: that the mapped declaration is unique (no decoy
+// second declaration steering a first-hit anchor) and that the far end of the chain
+// actually PERFORMS a mutating call on that table's own accessor, in the same
+// statement as the accessor occurrence (the `erase_monsters`-serves-two-tables
+// bypass this ADR names explicitly).
+//
+// WHY DERIVE METADATA, NOT A SOURCE SCAN (ADR-0224/ADR-0229). `#[spacetimedb::table]`
+// derives `SpacetimeType`; calling `<T as SpacetimeType>::make_type` against a
+// throwaway `TypespaceBuilder` returns the row's real `AlgebraicType::Product` — the
+// same shape the host itself sees. No comment stripper, no string-literal parser, no
+// regex: the failure class ADR-0224 retires (a stray `/*` or bare `"` blanking a
+// later table from a whole-tree scan) is structurally absent from T1.
+//
+// SCAN HYGIENE (T2 only; T1 does no text scanning at all): this section's own needle
+// helpers are `m22s6_`-prefixed and split mid-token via `concat!`, per this file's
+// header rule, so this file never carries a contiguous scanner needle. Only
+// `player_wallet` and `account_deletion_reaper_schedule` are split — mirroring
+// EXACTLY what the neighbouring m22s3b tests above already do with those two names;
+// every other accessor name in this section (`guest_claim`, `monster_pub`,
+// `battle_challenge_reaper_schedule`, `trade_offer_reaper_schedule`, ...) is a bare
+// literal, matching `data_lifecycle_partition_matches_spec_section3` and
+// `m22s3b_cascade_covers_manifest` exactly.
+// ===========================================================================
+
+use spacetimedb::sats::AlgebraicType;
+use spacetimedb::SpacetimeType;
+
+/// The throwaway `TypespaceBuilder` T1 drives `SpacetimeType::make_type` with.
+///
+/// INLINES rather than INTERNS: `add` calls `make_ty(self)` straight through and
+/// returns the result directly — no `AlgebraicTypeRef` is ever minted, so the
+/// `AlgebraicType` this yields for every row type below is fully self-contained
+/// (no `Ref` variant anywhere in the tree). That is exactly the shape
+/// `m22s6_identity_bearing` below is written against: it recurses through `Sum`/
+/// `Product`/`Array` but never needs to resolve a `Ref` through a `Typespace`,
+/// because none is ever produced.
+///
+/// THIS IS WHY THE RECURSION BELOW CARRIES A HARD DEPTH CAP. Because this builder
+/// never interns, a genuinely self-referential column type (a struct that embeds
+/// itself, directly or through a cycle) would make `make_type` recurse without
+/// bound at DERIVE time already — before `m22s6_identity_bearing` ever runs — and
+/// the plan's red-team measured, in a scratch crate, that this is a real stack
+/// overflow that `SIGABRT`s the whole `cargo nextest` process rather than failing
+/// one test. No live table in this crate has such a type today (every nested
+/// `#[derive(SpacetimeType)]` struct here is a strict DAG), so the cap below is
+/// forward defence, not a live requirement — but it is what turns a future
+/// self-referential column into a named, loud test failure instead of a crashed
+/// test runner that reports nothing at all.
+struct M22s6InlineTypespace;
+impl spacetimedb::sats::typespace::TypespaceBuilder for M22s6InlineTypespace {
+    fn add(
+        &mut self,
+        _type_id: std::any::TypeId,
+        _name: Option<&'static str>,
+        make_ty: impl FnOnce(&mut Self) -> spacetimedb::sats::AlgebraicType,
+    ) -> spacetimedb::sats::AlgebraicType {
+        make_ty(self)
+    }
+}
+
+/// True if `ty` carries an `Identity` column at ANY depth — not just as a bare
+/// leaf field.
+///
+/// `AlgebraicType::is_identity()` is a SHALLOW shape check
+/// (`ProductType::is_identity()` requires the type to be EXACTLY one field named
+/// `__identity__` typed `U256` — verified against the vendored spacetimedb-sats
+/// 2.8.1 source this session). The plan's red-team measured that this shallow
+/// check is blind to three completely natural column shapes: `Option<Identity>`
+/// lowers to a `Sum` (the `some`/`none` tags, `some` holding the identity
+/// product), `Vec<Identity>` lowers to an `Array`, and any
+/// `#[derive(SpacetimeType)]` newtype wrapping an `Identity` lowers to a
+/// DIFFERENTLY-NAMED `Product` (its own field name, not `__identity__`) — all
+/// three are exactly what `is_identity()` was written to reject (it exists to
+/// distinguish a REAL identity newtype from an arbitrary same-shaped struct).
+/// `Option<Identity>` in particular is a completely ordinary column spelling
+/// ("assigned_to", "banned_by", "co_owner"), so a shallow check would let a new
+/// owner-keyed table be classified `NotOwned` with NO exception-list edit at all
+/// — silently reopening the exact hole ADR-0229 exists to close. This walk
+/// therefore recurses through `Sum` variants, `Array` element types and nested
+/// `Product` fields, testing `is_identity()` at every level before descending
+/// further.
+///
+/// `depth` is a CALLER-SUPPLIED counter (start at 0), asserted against a small
+/// cap and panicking BY NAME if exceeded — see `M22s6InlineTypespace`'s doc for
+/// why an unbounded recursion here is not merely slow but a measured SIGABRT
+/// hazard (the inline builder never interns, so a self-referential column has no
+/// `Ref` to stop the walk).
+fn m22s6_identity_bearing(ty: &AlgebraicType, depth: usize) -> bool {
+    assert!(
+        depth <= 12,
+        "[m22s6/identity-depth-cap] a column type nested more than 12 levels deep — this walk \
+         refuses to recurse further and panics by name instead. The inline \
+         M22s6InlineTypespace never interns (no AlgebraicTypeRef is ever produced by `add`), so \
+         a genuinely self-referential column type would otherwise recurse without bound and \
+         SIGABRT the whole nextest process rather than failing one test loud — measured by the \
+         plan's red-team in a scratch crate. No live table has such a type today; this cap is \
+         forward defence against one that someday might."
+    );
+    if ty.is_identity() {
+        return true;
+    }
+    match ty {
+        AlgebraicType::Product(p) => {
+            for e in p.elements.iter() {
+                if m22s6_identity_bearing(&e.algebraic_type, depth + 1) {
+                    return true;
+                }
+            }
+            false
+        }
+        AlgebraicType::Sum(s) => {
+            for v in s.variants.iter() {
+                if m22s6_identity_bearing(&v.algebraic_type, depth + 1) {
+                    return true;
+                }
+            }
+            false
+        }
+        AlgebraicType::Array(a) => m22s6_identity_bearing(&a.elem_ty, depth + 1),
+        _ => false,
+    }
+}
+
+/// The S6 table-row-type registry (T1): one entry per live `DATA_LIFECYCLE_MANIFEST`
+/// table, naming its row STRUCT (never a string transcription of it) so a renamed or
+/// removed struct is a COMPILE ERROR here, never a silent skip. Alphabetical by
+/// accessor. Verified this session against the live tree: every struct named below
+/// was read from its declaring file and confirmed to exist with that exact name and
+/// that exact `accessor = ...` attribute.
+///
+/// Split tokens: ONLY `player_wallet` and `account_deletion_reaper_schedule`,
+/// mirroring exactly what `data_lifecycle_partition_matches_spec_section3` (:3671)
+/// and `m22s3b_cascade_covers_manifest` (:9493) already do with those two names in
+/// this same file — every other accessor here (including `guest_claim`,
+/// `monster_pub`, `battle_challenge_reaper_schedule`, `trade_offer_reaper_schedule`)
+/// is a bare literal there too, so this registry matches the established convention
+/// rather than inventing a stricter one.
+fn m22s6_table_row_types() -> Vec<(&'static str, AlgebraicType)> {
+    let mut ts = M22s6InlineTypespace;
+    vec![
+        (
+            "account",
+            <crate::schema::Account as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            concat!("account_deletion_reaper", "_schedule"),
+            <crate::accounts::AccountDeletionReaperSchedule as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "battle",
+            <crate::schema::Battle as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "battle_action",
+            <crate::schema::BattleAction as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "battle_challenge",
+            <crate::schema::BattleChallenge as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "battle_challenge_reaper_schedule",
+            <crate::pvp::BattleChallengeReaperSchedule as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "battle_wild",
+            <crate::schema::BattleWild as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "character",
+            <crate::schema::Character as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "config",
+            <crate::schema::Config as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "encounter",
+            <crate::schema::EncounterRow as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "evolution_path",
+            <crate::schema::EvolutionPathRow as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "export_bundle",
+            <crate::schema::ExportBundle as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "guest_claim",
+            <crate::schema::GuestClaim as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "guest_claim_reaper_schedule",
+            <crate::accounts::GuestClaimReaperSchedule as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "heal_cooldown",
+            <crate::schema::HealCooldown as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "heal_location_row",
+            <crate::schema::HealLocationRow as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "inventory",
+            <crate::schema::Inventory as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "item_row",
+            <crate::schema::ItemRow as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "monster",
+            <crate::schema::Monster as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "monster_pub",
+            <crate::schema::MonsterPub as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "movement_tick_schedule",
+            <crate::movement::MovementTickSchedule as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "mr_heartbeat_schedule",
+            <crate::observability::MrHeartbeatSchedule as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "npc",
+            <crate::schema::Npc as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "player",
+            <crate::schema::Player as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "player_conversation",
+            <crate::schema::PlayerConversation as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "player_dialogue_state",
+            <crate::schema::PlayerDialogueStateRow as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "player_quest",
+            <crate::schema::PlayerQuestRow as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            concat!("player", "_wallet"),
+            <crate::schema::PlayerWallet as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "playtest_event",
+            <crate::playtest::PlaytestEvent as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "playtest_reaper_schedule",
+            <crate::playtest::PlaytestReaperSchedule as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "profile",
+            <crate::schema::Profile as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "pvp_deadline_schedule",
+            <crate::pvp::PvpDeadlineSchedule as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "shop_item_row",
+            <crate::schema::ShopItemRow as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "shop_row",
+            <crate::schema::ShopRow as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "skill_row",
+            <crate::schema::SkillRow as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "species_row",
+            <crate::schema::SpeciesRow as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "trade_offer",
+            <crate::schema::TradeOffer as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "trade_offer_reaper_schedule",
+            <crate::trading::TradeOfferReaperSchedule as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "type_relation_row",
+            <crate::schema::TypeRelationRow as SpacetimeType>::make_type(&mut ts),
+        ),
+        (
+            "zone_def",
+            <crate::schema::ZoneDefRow as SpacetimeType>::make_type(&mut ts),
+        ),
+    ]
+}
+
+/// The number of identity-bearing columns in one registered row type. `ty` MUST be
+/// `AlgebraicType::Product` at the top level — every SpacetimeDB table row is a
+/// struct, so anything else means `m22s6_table_row_types` names the WRONG Rust type
+/// for `accessor`, and every classification clause built on it would be counting
+/// columns of something that is not a row at all. Fail loud rather than silently
+/// return 0 (0 reads identically to "genuinely no Identity column" everywhere this
+/// is consumed, which would be the dangerous silent direction here).
+fn m22s6_identity_column_count(accessor: &str, ty: &AlgebraicType) -> usize {
+    let AlgebraicType::Product(p) = ty else {
+        panic!(
+            "[m22s6/registry-shape] the row type registered for `{accessor}` is not a Product \
+             at the top level ({ty:?}). Every SpacetimeDB table row is a struct, so a \
+             non-Product top-level type means the S6 registry names the WRONG Rust type for \
+             `{accessor}` — every R1/R2/R3 clause built on it would then be silently counting \
+             columns of something that is not a row at all."
+        )
+    };
+    let mut n = 0usize;
+    for e in p.elements.iter() {
+        if m22s6_identity_bearing(&e.algebraic_type, 0) {
+            n += 1;
+        }
+    }
+    n
+}
+
+// ---------------------------------------------------------------------------
+// T1 / X4 — THE REGISTRY CANNOT DRIFT FROM THE MANIFEST.
+// ---------------------------------------------------------------------------
+
+/// X4 (PRV1-15 totality): the S6 row-type registry and `DATA_LIFECYCLE_MANIFEST`
+/// name the SAME set of tables, with no duplicates on either side, the census
+/// pinned at 40, and a non-vacuity floor on how many of the 40 are identity-bearing.
+///
+/// This is DISTINCT from `data_lifecycle_manifest_totality_bidirectional` (:3524),
+/// which proves every LIVE TABLE has a manifest entry by scanning table-attribute
+/// SOURCE TEXT. That totality test cannot see whether a classified table's row
+/// STRUCT actually carries an Identity column — it has no row type in scope at all.
+/// This registry closes that gap by naming row TYPES directly, so a struct rename
+/// or removal is a compile error here rather than a totality test that keeps
+/// passing about a table whose struct no longer exists under that name.
+///
+/// Kills: a registry entry for a table `DATA_LIFECYCLE_MANIFEST` no longer lists
+///        (dead weight that would hide a manifest-side removal from the R1/R2/R3
+///        clauses that walk the manifest, not the registry);
+///        a manifest table with NO registry entry (R1/R2/R3 below cannot classify
+///        it at all — this totality clause is what makes THAT omission loud rather
+///        than a silent `unwrap_or_else` skip inside those tests);
+///        a duplicate name on either side, which would let one accessor's verdict
+///        silently shadow the other's;
+///        the identity-bearing count drifting without a corresponding R1/R2/R3
+///        edit — a row's columns changed shape (or this registry stopped seeing
+///        them) and nobody looked.
+#[test]
+fn m22s6_table_row_registry_matches_manifest() {
+    let registry = m22s6_table_row_types();
+    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
+
+    let mut registry_names: Vec<&str> = registry.iter().map(|(name, _)| *name).collect();
+    registry_names.sort_unstable();
+    for pair in registry_names.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "[m22s6/registry-dup] the S6 row-type registry names `{}` TWICE. A duplicate entry \
+             would let one accessor's identity-bearing verdict silently shadow the other's in \
+             every R1/R2/R3 clause below.",
+            pair[0]
+        );
+    }
+
+    let mut manifest_names: Vec<&str> = manifest.iter().map(|e| e.table).collect();
+    manifest_names.sort_unstable();
+    for pair in manifest_names.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "[m22s6/manifest-dup] DATA_LIFECYCLE_MANIFEST names `{}` TWICE. This is a manifest- \
+             side defect (also caught by `data_lifecycle_manifest_totality_bidirectional`), but \
+             it would break the set-equality clause below before this test could say anything \
+             useful about identity coverage.",
+            pair[0]
+        );
+    }
+
+    assert_eq!(
+        registry_names, manifest_names,
+        "[m22s6/registry-vs-manifest] the S6 row-type registry and DATA_LIFECYCLE_MANIFEST do \
+         not name the same set of tables. Every manifest entry needs a registered row TYPE so \
+         R1/R2/R3 can classify it from the real derive metadata, and a registry entry naming a \
+         table the manifest no longer lists is dead weight hiding a manifest-side removal. Add \
+         or remove the missing side in the SAME commit as the schema/manifest change."
+    );
+
+    let registry_len = registry.len();
+    assert_eq!(
+        registry_len, 40,
+        "[m22s6/registry-census] the S6 row-type registry has {registry_len} entries; the live \
+         manifest carries exactly 40 (13 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY + 18 NOT-OWNED, \
+         schema.rs :990-992). A registry that grew or shrank without a matching manifest change \
+         is a registry nobody reviewed against the schema it claims to cover."
+    );
+
+    let mut identity_bearing = 0usize;
+    for (_, ty) in &registry {
+        if m22s6_identity_bearing(ty, 0) {
+            identity_bearing += 1;
+        }
+    }
+    assert_eq!(
+        identity_bearing, 21,
+        "[m22s6/registry-identity-floor] {identity_bearing} of the 40 registered row types \
+         carry an Identity column at some depth; exactly 21 is the live count (the 17 \
+         cascade-classified owner-keyed tables R1 below re-derives, plus the 4 frozen NotOwned \
+         exceptions R3 below names). A count that drifted without a corresponding R1/R2/R3 edit \
+         means either a table's columns changed shape, or this registry stopped seeing them — \
+         either way a human needs to look, not have the number silently update itself."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T1 / X1 — R1: OWNER-KEYED (ERASE/ANONYMIZE) => AT LEAST ONE IDENTITY COLUMN.
+// ---------------------------------------------------------------------------
+
+/// X1 (PRV1-15 / R1): every `DATA_LIFECYCLE_MANIFEST` entry classified `Erase` or
+/// `Anonymize` proves, from its row struct's OWN SpacetimeDB derive metadata, that
+/// it declares at least one direct `Identity` column at any depth.
+///
+/// The `match` on `entry.policy` is EXHAUSTIVE with no wildcard arm: a new
+/// `DeletionPolicy` variant is a compile error here, forcing a conscious decision
+/// about whether the new variant is owner-keyed, rather than a silent fall-through.
+///
+/// Kills: `schema.rs` reclassifying an owner-keyed table (say `monster`) to
+///        `NotOwned` — R1's population count catches the reclassification directly
+///        (M1, the plan's registered mutation), and even before that, a table with
+///        a real owner column classified `NotOwned` is exactly the hole PRV1-15's
+///        "with a direct Identity column" clause exists to close (R3 below closes
+///        it from the OTHER direction: an owner-keyed table hiding inside
+///        `NotOwned`);
+///        a table classified `Erase`/`Anonymize` whose row struct is later edited
+///        to drop its only Identity column (a table classified for owner-keyed
+///        erasure with no owner key cannot be swept by ANY per-owner cascade step —
+///        its rows would survive every account deletion silently, forever);
+///        a population count that silently grows or shrinks without a matching
+///        reclassification (the exact-17 pin below, mirroring the file's own `==`
+///        tightening precedent on `m22s3b_cascade_covers_manifest`).
+#[test]
+fn m22s6_owner_keyed_tables_are_erase_or_anonymize() {
+    let registry = m22s6_table_row_types();
+    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
+
+    let mut population = 0usize;
+    for entry in manifest {
+        let table = entry.table;
+        let is_owner_keyed = match entry.policy {
+            DeletionPolicy::Erase => true,
+            DeletionPolicy::Anonymize => true,
+            DeletionPolicy::ViaJoin(_) => false,
+            DeletionPolicy::NotOwned => false,
+        };
+        if !is_owner_keyed {
+            continue;
+        }
+        population += 1;
+
+        let (_, ty) = registry
+            .iter()
+            .find(|(name, _)| *name == table)
+            .unwrap_or_else(|| {
+                panic!(
+                    "[m22s6/x1-unregistered] `{table}` is classified Erase/Anonymize but has no \
+                 entry in the S6 row-type registry — `m22s6_table_row_registry_matches_manifest` \
+                 should have caught this drift first; run it to find the missing entry."
+                )
+            });
+        let n = m22s6_identity_column_count(table, ty);
+        assert!(
+            n >= 1,
+            "[m22s6/x1-no-identity-column] `{table}` is classified Erase or Anonymize but its \
+             row struct carries ZERO Identity columns at any depth (checked via the real derive \
+             metadata, not source text). A table classified for owner-keyed erasure with no \
+             owner key cannot be swept by ANY per-owner cascade step, however the cascade is \
+             wired — its rows would survive every account deletion, forever, with every other \
+             gate in the tree reporting green."
+        );
+    }
+    assert_eq!(
+        population, 17,
+        "[m22s6/x1-population] {population} manifest entries are classified Erase or Anonymize; \
+         the live partition is exactly 17 (13 ERASE + 4 ANONYMIZE — schema.rs's own count at \
+         :990). A floor would let this population grow silently; an exact count forces a \
+         conscious edit to this test alongside any reclassification."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T1 / X2 — R2: VIAJOIN => EXACTLY ZERO IDENTITY COLUMNS, NO EXCEPTIONS.
+// ---------------------------------------------------------------------------
+
+/// X2 (PRV1-15 / R2): every `DATA_LIFECYCLE_MANIFEST` entry classified
+/// `ViaJoin(parent)` proves, from the real derive metadata, that its row struct
+/// declares EXACTLY ZERO `Identity` columns at any depth — the `DeletionPolicy::
+/// ViaJoin` doc comment ("No Identity column; swept transitively via the named
+/// parent table", schema.rs :960) stated as a checked fact, with NO exception list.
+///
+/// No exception list is deliberate, unlike R3: a `ViaJoin` table is invisible to
+/// the per-owner cascade BY DESIGN (it is swept only through its parent's step), so
+/// an Identity column here is never a defensible exception — it is always either a
+/// misclassification (reclassify Erase/Anonymize) or a genuine, silent per-owner
+/// leak across every account deletion.
+///
+/// Kills: `schema.rs` adding an `Option<Identity>` field to a `ViaJoin` table (the
+///        plan's registered mutation M2, on `Character`) — the SHALLOW
+///        `is_identity()` check would not see it (`Option<Identity>` lowers to a
+///        `Sum`), so only the deep walk in `m22s6_identity_bearing` catches it;
+///        a `ViaJoin` table whose row struct is edited to wrap its parent's key in
+///        a `#[derive(SpacetimeType)]` newtype containing an `Identity` (a
+///        differently-named `Product`, also invisible to the shallow check);
+///        a population count that silently grows or shrinks (the exact-5 pin).
+#[test]
+fn m22s6_via_join_tables_carry_no_identity_column() {
+    let registry = m22s6_table_row_types();
+    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
+
+    let mut population = 0usize;
+    for entry in manifest {
+        let table = entry.table;
+        let is_via_join = match entry.policy {
+            DeletionPolicy::Erase => false,
+            DeletionPolicy::Anonymize => false,
+            DeletionPolicy::ViaJoin(_) => true,
+            DeletionPolicy::NotOwned => false,
+        };
+        if !is_via_join {
+            continue;
+        }
+        population += 1;
+
+        let (_, ty) = registry
+            .iter()
+            .find(|(name, _)| *name == table)
+            .unwrap_or_else(|| {
+                panic!(
+                    "[m22s6/x2-unregistered] `{table}` is classified ViaJoin but has no entry in \
+                 the S6 row-type registry — `m22s6_table_row_registry_matches_manifest` should \
+                 have caught this drift first."
+                )
+            });
+        let n = m22s6_identity_column_count(table, ty);
+        assert_eq!(
+            n, 0,
+            "[m22s6/x2-unexpected-identity] `{table}` is classified ViaJoin(_) — its own doc \
+             comment says 'No Identity column; swept transitively via the named parent table' — \
+             but its row struct carries {n} Identity column(s) at some depth. A ViaJoin table \
+             with a real owner key is skipped by every per-owner cascade step (it is swept ONLY \
+             via its parent), so an Identity column here is a genuine, silent per-owner data \
+             leak across every single account deletion. NO EXCEPTION LIST for this arm: \
+             reclassify the table Erase/Anonymize instead of carving out a fifth exception."
+        );
+    }
+    assert_eq!(
+        population, 5,
+        "[m22s6/x2-population] {population} manifest entries are classified ViaJoin; the live \
+         set is exactly 5 (character, battle_wild, pvp_deadline_schedule, \
+         battle_challenge_reaper_schedule, trade_offer_reaper_schedule)."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// T1 / X3 — R3: NOTOWNED => ZERO IDENTITY COLUMNS, EXCEPT A FROZEN FOUR.
+// ---------------------------------------------------------------------------
+
+/// X3 (PRV1-15 / R3): every `DATA_LIFECYCLE_MANIFEST` entry classified `NotOwned`
+/// proves it declares zero direct `Identity` columns at any depth, EXCEPT a
+/// census-pinned four-table exception set (`config`, `guest_claim`,
+/// `guest_claim_reaper_schedule`, `account_deletion_reaper_schedule`) — each of
+/// which already carries a deliberate `basis`. A FIFTH identity-bearing `NotOwned`
+/// table fails this test outright and forces a human classification decision,
+/// exactly as PRV1-15 / R3 demands.
+///
+/// The frozen set is ITSELF a residual, named rather than papered over (ADR-0229's
+/// own "Residual" section): it is a declared fact living in this test file, so one
+/// self-consistent commit CAN add a genuinely owner-keyed `NotOwned` table by
+/// registering its row type, appending its accessor to the frozen array below, and
+/// bumping BOTH the exception census and the `NotOwned` population count. That is
+/// not closable in-test — it is why the last loop below re-checks every frozen name
+/// against the LIVE manifest, so a stale exception (naming a removed or renamed
+/// table) cannot linger unnoticed once nothing exercises it any more.
+///
+/// Kills: a new owner-keyed table added to `NotOwned` by accident (a `NotOwned`
+///        table whose column set the author never checked against a
+///        classification) — this is the single largest deletion-completeness hole
+///        measured in the plan's red-team: it satisfies manifest totality (it has
+///        an entry) and the basis floor (prose is prose), and is then SKIPPED
+///        OUTRIGHT by `m22s3b_cascade_covers_manifest`'s `needs_cascade = false`
+///        arm, so its rows silently survive every account deletion forever;
+///        one of the frozen four losing its Identity column entirely (the basis
+///        prose justifying its exception may now be stale — the exception census
+///        would drop below 4 and this test would say so, not silently absorb it);
+///        a frozen exception naming a table since removed or renamed from the live
+///        manifest (the trailing loop).
+#[test]
+fn m22s6_not_owned_identity_exceptions_are_frozen() {
+    let registry = m22s6_table_row_types();
+    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
+
+    let frozen_exceptions: [&str; 4] = [
+        "config",
+        "guest_claim",
+        "guest_claim_reaper_schedule",
+        concat!("account_deletion_reaper", "_schedule"),
+    ];
+
+    let mut population = 0usize;
+    let mut observed_exceptions: Vec<&str> = Vec::new();
+    for entry in manifest {
+        let table = entry.table;
+        let is_not_owned = match entry.policy {
+            DeletionPolicy::Erase => false,
+            DeletionPolicy::Anonymize => false,
+            DeletionPolicy::ViaJoin(_) => false,
+            DeletionPolicy::NotOwned => true,
+        };
+        if !is_not_owned {
+            continue;
+        }
+        population += 1;
+
+        let (_, ty) = registry
+            .iter()
+            .find(|(name, _)| *name == table)
+            .unwrap_or_else(|| {
+                panic!(
+                    "[m22s6/x3-unregistered] `{table}` is classified NotOwned but has no entry in \
+                 the S6 row-type registry — `m22s6_table_row_registry_matches_manifest` should \
+                 have caught this drift first."
+                )
+            });
+        let n = m22s6_identity_column_count(table, ty);
+        if n == 0 {
+            continue;
+        }
+        assert!(
+            frozen_exceptions.contains(&table),
+            "[m22s6/x3-unfrozen-identity] `{table}` is classified NotOwned but its row struct \
+             carries {n} Identity column(s) at some depth, and `{table}` is NOT one of the four \
+             frozen exceptions (config, guest_claim, guest_claim_reaper_schedule, \
+             account_deletion_reaper_schedule). A NotOwned table with a real owner key is \
+             skipped OUTRIGHT by the cascade walk (`m22s3b_cascade_covers_manifest`'s \
+             `needs_cascade = false` arm), so its rows survive every account deletion silently \
+             — this is the single largest deletion-completeness hole PRV1-15's 'with a direct \
+             Identity column' clause exists to close. Either reclassify `{table}` \
+             Erase/Anonymize/ViaJoin, or — if it is genuinely a deliberate exception like the \
+             frozen four — that is a PRIVACY-CLASSIFICATION DECISION for a human reviewer, not \
+             a test-maintenance edit: bump the frozen array AND the population/exception counts \
+             below in the SAME commit."
+        );
+        observed_exceptions.push(table);
+    }
+
+    assert_eq!(
+        population, 18,
+        "[m22s6/x3-population] {population} manifest entries are classified NotOwned; the live \
+         set is exactly 18 (spec §3's seventeen plus rb-24's own \
+         account_deletion_reaper_schedule, schema.rs :990-992)."
+    );
+
+    let observed_len = observed_exceptions.len();
+    assert_eq!(
+        observed_len, 4,
+        "[m22s6/x3-exception-census] {observed_len} NotOwned table(s) were observed carrying an \
+         Identity column; exactly 4 is the frozen count. FEWER than 4 means one of the frozen \
+         four no longer needs its exception (its basis prose describing WHY it is exempt may \
+         now be stale — a human should re-read it, not just shrink this number); MORE than 4 is \
+         structurally impossible to reach here — the loop above would already have panicked on \
+         the fifth unfrozen table before this assertion ever ran."
+    );
+
+    for name in frozen_exceptions {
+        let still_live = manifest.iter().any(|e| e.table == name);
+        assert!(
+            still_live,
+            "[m22s6/x3-stale-exception] the frozen exception `{name}` no longer appears in the \
+             live DATA_LIFECYCLE_MANIFEST at all. A stale exception naming a removed or renamed \
+             table can never be exercised by the loop above (nothing in the manifest matches it \
+             any more) and would linger here unnoticed forever; drop it from the frozen array in \
+             the same commit that removed or renamed the table."
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// T2 / X5 — THE MANIFEST REACHES THE FAR END OF THE DELEGATED CASCADE.
+// ---------------------------------------------------------------------------
+
+/// One row of the T2/X5 cascade-chain map: which entry helper (module source +
+/// declaration needle) reaches `table` from the pinned reaper body, and — for the
+/// three tables reachable only through a second hop (ADR-0228) — the sub-helper's
+/// own module/declaration/call-needle.
+struct M22s6ChainEntry {
+    table: &'static str,
+    /// `true` ONLY for `account`: no separate helper exists for it (the cascade
+    /// tombstones `auth_issuer` directly inside `account_deletion_reaper`'s own
+    /// body, via `anonymized_account` + the sanctioned `ctx.db.account()...
+    /// update(...)`), so the reaper body itself IS the terminal body and the
+    /// entry-declaration / reaper-call-needle / declaration-uniqueness clauses
+    /// below are skipped for exactly this one row — the plan's own carve-out.
+    inline_in_reaper: bool,
+    entry_module_src: &'static str,
+    entry_module_label: &'static str,
+    /// Squashed declaration needle, e.g. `"fnerase_monsters("`. Empty for the
+    /// `inline_in_reaper` row (unused).
+    entry_decl: String,
+    /// The needle naming this helper INSIDE the pinned reaper body — reused
+    /// directly from the `m22s3b_nd_*` fns above rather than re-transcribed, so
+    /// there is no second spelling of the same call site to drift out of sync.
+    /// Empty for the `inline_in_reaper` row (unused).
+    entry_call_in_reaper: String,
+    via: Option<M22s6ViaHop>,
+}
+
+/// The optional second hop: a sub-helper the entry helper delegates to, which is
+/// where `table`'s OWN accessor is actually touched (`trade_offer_reaper_schedule`
+/// via `disarm_trade_reaper`, `battle_challenge_reaper_schedule` via
+/// `disarm_challenge_reaper`, `pvp_deadline_schedule` via `disarm_pvp_deadlines`).
+struct M22s6ViaHop {
+    module_src: &'static str,
+    module_label: &'static str,
+    decl: String,
+    /// The needle naming this sub-helper INSIDE the entry helper's own body.
+    call_in_entry_body: String,
+}
+
+fn m22s6_nd_erase_monsters_decl() -> String {
+    concat!("fnerase", "_monsters(").to_string()
+}
+fn m22s6_nd_erase_inventory_decl() -> String {
+    concat!("fnerase", "_inventory(").to_string()
+}
+fn m22s6_nd_erase_npc_state_decl() -> String {
+    concat!("fnerase_npc", "_state(").to_string()
+}
+fn m22s6_nd_erase_heal_cooldown_decl() -> String {
+    concat!("fnerase_heal", "_cooldown(").to_string()
+}
+fn m22s6_nd_erase_wallet_decl() -> String {
+    concat!("fnerase", "_wallet(").to_string()
+}
+fn m22s6_nd_erase_playtest_events_decl() -> String {
+    concat!("fnerase_playtest", "_events(").to_string()
+}
+fn m22s6_nd_erase_trade_offers_decl() -> String {
+    concat!("fnerase_trade", "_offers(").to_string()
+}
+fn m22s6_nd_disarm_trade_reaper_decl() -> String {
+    concat!("fndisarm_trade", "_reaper(").to_string()
+}
+fn m22s6_nd_disarm_trade_reaper_call() -> String {
+    concat!("disarm_trade", "_reaper(").to_string()
+}
+fn m22s6_nd_erase_pvp_rows_decl() -> String {
+    concat!("fnerase_pvp", "_rows(").to_string()
+}
+fn m22s6_nd_disarm_challenge_reaper_decl() -> String {
+    concat!("fndisarm_challenge", "_reaper(").to_string()
+}
+fn m22s6_nd_disarm_challenge_reaper_call() -> String {
+    concat!("disarm_challenge", "_reaper(").to_string()
+}
+fn m22s6_nd_purge_export_bundles_decl() -> String {
+    concat!("fnpurge_export", "_bundles(").to_string()
+}
+fn m22s6_nd_erase_character_rows_decl() -> String {
+    concat!("fnerase_character", "_rows(").to_string()
+}
+fn m22s6_nd_anonymize_display_names_decl() -> String {
+    concat!("fnanonymize_display", "_names(").to_string()
+}
+fn m22s6_nd_anonymize_battles_decl() -> String {
+    concat!("fnanonymize", "_battles(").to_string()
+}
+fn m22s6_nd_disarm_pvp_deadlines_decl() -> String {
+    concat!("fndisarm_pvp", "_deadlines(").to_string()
+}
+fn m22s6_nd_disarm_pvp_deadlines_call() -> String {
+    concat!("crate::pvp::disarm_pvp", "_deadlines(").to_string()
+}
+
+/// The manifest-driven chain map itself: one row per classified table (22),
+/// AUTHORED FROM THE PLAN (ADR-0228's own delegation map), never derived by
+/// printing what an implementation produced.
+fn m22s6_cascade_chain() -> Vec<M22s6ChainEntry> {
+    vec![
+        M22s6ChainEntry {
+            table: "monster",
+            inline_in_reaper: false,
+            entry_module_src: MONSTER_MGMT_RS,
+            entry_module_label: "monster_mgmt.rs",
+            entry_decl: m22s6_nd_erase_monsters_decl(),
+            entry_call_in_reaper: m22s3b_nd_erase_monsters(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "monster_pub",
+            inline_in_reaper: false,
+            entry_module_src: MONSTER_MGMT_RS,
+            entry_module_label: "monster_mgmt.rs",
+            entry_decl: m22s6_nd_erase_monsters_decl(),
+            entry_call_in_reaper: m22s3b_nd_erase_monsters(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "inventory",
+            inline_in_reaper: false,
+            entry_module_src: M22_INVENTORY_RS,
+            entry_module_label: "inventory.rs",
+            entry_decl: m22s6_nd_erase_inventory_decl(),
+            entry_call_in_reaper: m22s3b_nd_erase_inventory(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "player_dialogue_state",
+            inline_in_reaper: false,
+            entry_module_src: M22_NPC_RS,
+            entry_module_label: "npc.rs",
+            entry_decl: m22s6_nd_erase_npc_state_decl(),
+            entry_call_in_reaper: m22s3b_nd_erase_npc_state(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "player_quest",
+            inline_in_reaper: false,
+            entry_module_src: M22_NPC_RS,
+            entry_module_label: "npc.rs",
+            entry_decl: m22s6_nd_erase_npc_state_decl(),
+            entry_call_in_reaper: m22s3b_nd_erase_npc_state(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "player_conversation",
+            inline_in_reaper: false,
+            entry_module_src: M22_NPC_RS,
+            entry_module_label: "npc.rs",
+            entry_decl: m22s6_nd_erase_npc_state_decl(),
+            entry_call_in_reaper: m22s3b_nd_erase_npc_state(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "heal_cooldown",
+            inline_in_reaper: false,
+            entry_module_src: M22_RAISING_RS,
+            entry_module_label: "raising.rs",
+            entry_decl: m22s6_nd_erase_heal_cooldown_decl(),
+            entry_call_in_reaper: m22s3b_nd_erase_heal_cooldown(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: concat!("player", "_wallet"),
+            inline_in_reaper: false,
+            entry_module_src: M22_ECONOMY_RS,
+            entry_module_label: "economy.rs",
+            entry_decl: m22s6_nd_erase_wallet_decl(),
+            entry_call_in_reaper: m22s3b_nd_erase_wallet(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "playtest_event",
+            inline_in_reaper: false,
+            entry_module_src: M22_PLAYTEST_RS,
+            entry_module_label: "playtest.rs",
+            entry_decl: m22s6_nd_erase_playtest_events_decl(),
+            entry_call_in_reaper: m22s3b_nd_erase_playtest_events(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "trade_offer",
+            inline_in_reaper: false,
+            entry_module_src: M22_TRADING_RS,
+            entry_module_label: "trading.rs",
+            entry_decl: m22s6_nd_erase_trade_offers_decl(),
+            entry_call_in_reaper: m22s3b_nd_erase_trade_offers(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "trade_offer_reaper_schedule",
+            inline_in_reaper: false,
+            entry_module_src: M22_TRADING_RS,
+            entry_module_label: "trading.rs",
+            entry_decl: m22s6_nd_erase_trade_offers_decl(),
+            entry_call_in_reaper: m22s3b_nd_erase_trade_offers(),
+            via: Some(M22s6ViaHop {
+                module_src: M22_TRADING_RS,
+                module_label: "trading.rs",
+                decl: m22s6_nd_disarm_trade_reaper_decl(),
+                call_in_entry_body: m22s6_nd_disarm_trade_reaper_call(),
+            }),
+        },
+        M22s6ChainEntry {
+            table: "battle_challenge",
+            inline_in_reaper: false,
+            entry_module_src: M22_PVP_RS,
+            entry_module_label: "pvp.rs",
+            entry_decl: m22s6_nd_erase_pvp_rows_decl(),
+            entry_call_in_reaper: m22s3b_nd_erase_pvp_rows(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "battle_action",
+            inline_in_reaper: false,
+            entry_module_src: M22_PVP_RS,
+            entry_module_label: "pvp.rs",
+            entry_decl: m22s6_nd_erase_pvp_rows_decl(),
+            entry_call_in_reaper: m22s3b_nd_erase_pvp_rows(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "battle_challenge_reaper_schedule",
+            inline_in_reaper: false,
+            entry_module_src: M22_PVP_RS,
+            entry_module_label: "pvp.rs",
+            entry_decl: m22s6_nd_erase_pvp_rows_decl(),
+            entry_call_in_reaper: m22s3b_nd_erase_pvp_rows(),
+            via: Some(M22s6ViaHop {
+                module_src: M22_PVP_RS,
+                module_label: "pvp.rs",
+                decl: m22s6_nd_disarm_challenge_reaper_decl(),
+                call_in_entry_body: m22s6_nd_disarm_challenge_reaper_call(),
+            }),
+        },
+        M22s6ChainEntry {
+            table: "export_bundle",
+            inline_in_reaper: false,
+            entry_module_src: M22_PRIVACY_RS,
+            entry_module_label: "privacy.rs",
+            entry_decl: m22s6_nd_purge_export_bundles_decl(),
+            entry_call_in_reaper: m22s3b_nd_purge_bundles(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "character",
+            inline_in_reaper: false,
+            entry_module_src: LIB_RS,
+            entry_module_label: "lib.rs",
+            entry_decl: m22s6_nd_erase_character_rows_decl(),
+            entry_call_in_reaper: m22s3b_nd_erase_character_rows(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "player",
+            inline_in_reaper: false,
+            entry_module_src: RANKING_RS,
+            entry_module_label: "ranking.rs",
+            entry_decl: m22s6_nd_anonymize_display_names_decl(),
+            entry_call_in_reaper: m22s3b_nd_anonymize_names(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "profile",
+            inline_in_reaper: false,
+            entry_module_src: RANKING_RS,
+            entry_module_label: "ranking.rs",
+            entry_decl: m22s6_nd_anonymize_display_names_decl(),
+            entry_call_in_reaper: m22s3b_nd_anonymize_names(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "battle",
+            inline_in_reaper: false,
+            entry_module_src: M22_BATTLE_RS,
+            entry_module_label: "battle.rs",
+            entry_decl: m22s6_nd_anonymize_battles_decl(),
+            entry_call_in_reaper: m22s3b_nd_anonymize_battles(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "battle_wild",
+            inline_in_reaper: false,
+            entry_module_src: M22_BATTLE_RS,
+            entry_module_label: "battle.rs",
+            entry_decl: m22s6_nd_anonymize_battles_decl(),
+            entry_call_in_reaper: m22s3b_nd_anonymize_battles(),
+            via: None,
+        },
+        M22s6ChainEntry {
+            table: "pvp_deadline_schedule",
+            inline_in_reaper: false,
+            entry_module_src: M22_BATTLE_RS,
+            entry_module_label: "battle.rs",
+            entry_decl: m22s6_nd_anonymize_battles_decl(),
+            entry_call_in_reaper: m22s3b_nd_anonymize_battles(),
+            via: Some(M22s6ViaHop {
+                module_src: M22_PVP_RS,
+                module_label: "pvp.rs",
+                decl: m22s6_nd_disarm_pvp_deadlines_decl(),
+                call_in_entry_body: m22s6_nd_disarm_pvp_deadlines_call(),
+            }),
+        },
+        M22s6ChainEntry {
+            table: "account",
+            inline_in_reaper: true,
+            entry_module_src: ACCOUNTS_RS,
+            entry_module_label: "accounts.rs",
+            entry_decl: String::new(),
+            entry_call_in_reaper: String::new(),
+            via: None,
+        },
+    ]
+}
+
+/// Statement-scoped terminal-body check, T2/X5's core primitive: true if `body`
+/// (an ALREADY-SQUASHED fn body) contains at least one occurrence of
+/// `accessor_call` (`.{table}(`) immediately followed, before the next `;` OR
+/// `{` (whichever comes first), by a mutating call (`.delete(` or `.update(`).
+///
+/// A body-wide "contains the accessor AND contains a mutation" conjunction is a
+/// MEASURED bypass (the plan's red-team, mutant M4 below): `erase_monsters` is
+/// the entry helper for BOTH `monster` and `monster_pub`, so replacing
+/// `ctx.db.monster_pub().monster_id().delete(id);` with a `.find(id)` read keeps
+/// the `monster_pub` ACCESSOR present in the body and borrows the `.delete(` from
+/// the sibling `monster` line two statements above — a body-wide conjunction is
+/// green on that swap while every `monster_pub` row of every deleted account
+/// survives forever. Scoping to the SAME statement (this accessor occurrence's
+/// own span, up to the next `;`) closes it: under the swap, `monster_pub`'s only
+/// occurrence's span holds `.find(` and never `.delete(`/`.update(`.
+///
+/// STOPPING AT `{` TOO (not just `;`) is a second, independently-measured
+/// correction over the naive "next `;`" rule: `anonymize_display_names` opens
+/// with `for p in ctx.db.player().identity().find(owner).into_iter() { ... }` —
+/// a `for`-loop HEADER carries no `;` of its own before its `{`, so a scan that
+/// only stops at `;` would walk straight through the (empty, on a mutant that
+/// deleted the loop body's `.update(...)`) braces and keep going into the NEXT
+/// statement, crediting `player` with the UNRELATED `profile` update two
+/// statements later — a false pass on a real deletion. Stopping at whichever of
+/// `;`/`{` comes first treats the loop header's own iterator expression as its
+/// own scope, so a body-wide read there is correctly NOT credited with a
+/// mutation two statements away; the real mutating statement inside the loop
+/// body is then found and scored on its OWN merits by a later occurrence of the
+/// same accessor token.
+fn m22s6_accessor_mutated_in_statement(body: &str, accessor_call: &str) -> bool {
+    let mut start = 0usize;
+    while let Some(rel) = body[start..].find(accessor_call) {
+        let at = start + rel;
+        let rest = &body[at..];
+        let semi = rest.find(';');
+        let brace = rest.find('{');
+        let end_rel = match (semi, brace) {
+            (Some(s), Some(b)) => s.min(b),
+            (Some(s), None) => s,
+            (None, Some(b)) => b,
+            (None, None) => rest.len(),
+        };
+        let span = &rest[..end_rel];
+        if span.contains(".delete(") || span.contains(".update(") {
+            return true;
+        }
+        start = at + accessor_call.len();
+    }
+    false
+}
+
+/// X5 (PRV1-16): every `DATA_LIFECYCLE_MANIFEST` entry classified `Erase`,
+/// `Anonymize` or `ViaJoin` proves an end-to-end chain from the pinned reaper
+/// body, through its entry helper, through at most one declared `via` sub-helper,
+/// to a body that names that table's own accessor AND performs a mutating call —
+/// in the SAME statement (see `m22s6_accessor_mutated_in_statement`).
+///
+/// FOUR CLAUSES PER ROW, each independently load-bearing:
+///   1. the table appears in `m22s6_cascade_chain()` at all — an unmapped
+///      classified table PANICS rather than being skipped: an unmapped table is
+///      an unerased table (fail loud, per ADR-0229 / the same posture
+///      `m22s3b_cascade_covers_manifest` already takes one hop earlier);
+///   2. the entry helper's declaration occurs EXACTLY ONCE in its module — a
+///      first-hit `find()` over a decoy second declaration is a steerable anchor
+///      this repo has measured before (memory: "First-hit anchors are
+///      forgeable");
+///   3. the reaper's own pinned body contains the entry helper's call needle —
+///      chains this row to the ALREADY-EXACT-PINNED reaper body
+///      (`rb24_deletion_reaper_body_is_pinned_cascade`), so a call dropped from
+///      the cascade is caught here even if nothing else in this test file
+///      changed;
+///   4. the TERMINAL body (the entry helper's own body, or its `via` sub-helper's
+///      body when one is declared) names the table's accessor with a mutation in
+///      the same statement.
+///
+/// `account` is special-cased (see `M22s6ChainEntry::inline_in_reaper`): no
+/// separate helper exists, so clauses 2-3 are skipped and clause 4 runs directly
+/// against the reaper body.
+///
+/// Kills: an unmapped classified table (M3-adjacent: dropping a table's cascade
+///        wiring without also dropping its manifest entry) — this test panics
+///        rather than silently passing about a table nobody checked;
+///        `crate::inventory::erase_inventory(ctx, args.account_identity);` deleted
+///        from the reaper cascade body (the plan's mutant M3) — clause 3 fails:
+///        the entry helper's call needle is no longer in the pinned reaper body;
+///        `ctx.db.monster_pub().monster_id().delete(id);` replaced with
+///        `let _ = ctx.db.monster_pub().monster_id().find(id);` (the plan's
+///        mutant M4, the red-team's measured bypass of an unscoped accessor+
+///        mutation conjunction) — clause 4 fails FOR `monster_pub` specifically
+///        (its only accessor occurrence's statement-scoped span now holds
+///        `.find(` and neither `.delete(` nor `.update(`), even though `monster`
+///        two lines above still passes and a body-wide conjunction would have
+///        stayed green;
+///        a declared `via` hop the entry helper never actually calls (an
+///        orphaned schedule row every time the entry helper runs);
+///        a decoy second declaration of an entry helper or sub-helper anywhere
+///        in its module (clause 2/the via-decl-unique clause).
+#[test]
+fn m22s6_cascade_chain_reaches_every_classified_table() {
+    let chain = m22s6_cascade_chain();
+    let squashed_accounts = stripped_for_scan(ACCOUNTS_RS);
+    let reaper_body = extract_squashed_fn_body(&squashed_accounts, &rb24_nd_reaper_decl()).expect(
+        "[m22s6/reaper-scope] fn account_deletion_reaper was not found in accounts.rs, so \
+             the whole chain proof below has no reaper body to check against.",
+    );
+
+    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
+    let mut classified = 0usize;
+    for entry in manifest {
+        let table = entry.table;
+        let needs_chain = match entry.policy {
+            DeletionPolicy::Erase => true,
+            DeletionPolicy::Anonymize => true,
+            DeletionPolicy::ViaJoin(_) => true,
+            DeletionPolicy::NotOwned => false,
+        };
+        if !needs_chain {
+            continue;
+        }
+        classified += 1;
+
+        let chain_entry = chain.iter().find(|c| c.table == table).unwrap_or_else(|| {
+            panic!(
+                "[m22s6/chain-unmapped] DATA_LIFECYCLE_MANIFEST classifies `{table}` for the \
+                 cascade, but this test's cascade-chain map does not name it. Under delegation \
+                 the reaper body names HELPERS, not table identifiers, so an unmapped table has \
+                 no proof anywhere that it is ever erased. Fail LOUD rather than skip: an \
+                 unmapped classified table is an unerased table."
+            )
+        });
+
+        let accessor_call = format!(".{table}(");
+
+        if chain_entry.inline_in_reaper {
+            assert!(
+                m22s6_accessor_mutated_in_statement(reaper_body, &accessor_call),
+                "[m22s6/terminal-not-mutated] `{table}` has no separate entry helper — it is \
+                 handled inline in account_deletion_reaper's own body — but no occurrence of \
+                 `{accessor_call}` in the reaper body is followed, within the SAME statement, by \
+                 `.delete(` or `.update(`. The row this cascade step is supposed to tombstone is \
+                 never actually written."
+            );
+            continue;
+        }
+
+        let squashed_entry_mod = stripped_for_scan(chain_entry.entry_module_src);
+        let n_decl = m22_count_occurrences(&squashed_entry_mod, &chain_entry.entry_decl);
+        let decl = &chain_entry.entry_decl;
+        let module = chain_entry.entry_module_label;
+        assert_eq!(
+            n_decl, 1,
+            "[m22s6/entry-decl-unique] the entry helper for `{table}` ({decl:?}) must be \
+             declared EXACTLY once in {module}; found {n_decl}. A decoy second declaration is a \
+             steerable first-hit anchor for the body extraction below."
+        );
+
+        let call = &chain_entry.entry_call_in_reaper;
+        assert!(
+            reaper_body.contains(call.as_str()),
+            "[m22s6/entry-unreached] the manifest classifies `{table}` for the cascade via the \
+             entry helper {decl:?} in {module}, and this map routes it through the reaper call \
+             `{call}` — which `account_deletion_reaper`'s pinned body does NOT contain. A \
+             classified table whose entry helper the reaper never calls is simply never erased: \
+             its rows survive account deletion silently, and nothing else in the tree looks \
+             wrong."
+        );
+
+        let entry_body = extract_squashed_fn_body(&squashed_entry_mod, &chain_entry.entry_decl)
+            .unwrap_or_else(|| {
+                panic!(
+                    "[m22s6/entry-body-scope] the body of the entry helper for `{table}` \
+                     ({decl:?}) in {module} could not be brace-extracted, so the terminal-body \
+                     clause below would have no scope and would pass vacuously."
+                )
+            });
+
+        let (terminal_body, terminal_module_label): (String, &'static str) = match &chain_entry.via
+        {
+            None => (entry_body.to_string(), chain_entry.entry_module_label),
+            Some(via) => {
+                let via_call = &via.call_in_entry_body;
+                let via_decl = &via.decl;
+                let via_module = via.module_label;
+                assert!(
+                    entry_body.contains(via_call.as_str()),
+                    "[m22s6/via-unreached] `{table}` is routed via the sub-helper \
+                         {via_decl:?} in {via_module}, but the entry helper's own body does not \
+                         call it ({via_call:?}). A declared via-hop the entry helper never \
+                         reaches leaves the child schedule row orphaned every time the entry \
+                         helper runs."
+                );
+                let squashed_via_mod = stripped_for_scan(via.module_src);
+                let n_via_decl = m22_count_occurrences(&squashed_via_mod, &via.decl);
+                assert_eq!(
+                    n_via_decl, 1,
+                    "[m22s6/via-decl-unique] the sub-helper for `{table}` ({via_decl:?}) \
+                         must be declared EXACTLY once in {via_module}; found {n_via_decl}."
+                );
+                let via_body = extract_squashed_fn_body(&squashed_via_mod, &via.decl)
+                    .unwrap_or_else(|| {
+                        panic!(
+                            "[m22s6/via-body-scope] the body of the sub-helper for `{table}` \
+                                 ({via_decl:?}) in {via_module} could not be brace-extracted."
+                        )
+                    });
+                (via_body.to_string(), via.module_label)
+            }
+        };
+
+        assert!(
+            m22s6_accessor_mutated_in_statement(&terminal_body, &accessor_call),
+            "[m22s6/terminal-not-mutated] `{table}`'s terminal body (in {terminal_module_label}) \
+             contains no occurrence of `{accessor_call}` immediately followed — within the SAME \
+             statement, before the next `;` — by `.delete(` or `.update(`. This is the \
+             red-team's measured bypass: `erase_monsters` is the entry helper for BOTH `monster` \
+             and `monster_pub`, so swapping `monster_pub`'s `.delete(id);` for a `.find(id)` \
+             read keeps the accessor present and borrows the sibling `monster` line's `.delete(` \
+             for a body-wide conjunction, while every `monster_pub` row of every deleted account \
+             survives forever. A missing mutation here means `{table}`'s rows are READ, never \
+             WRITTEN — the table is never actually swept."
+        );
+    }
+
+    assert_eq!(
+        classified, 22,
+        "[m22s6/chain-census] {classified} manifest entries are classified for the cascade \
+         (Erase/Anonymize/ViaJoin); EXACTLY 22 is the live partition (13 ERASE + 4 ANONYMIZE + 5 \
+         JOIN-ONLY). A floor would let this grow silently past the cascade-chain map's coverage; \
+         an exact count forces a conscious map edit alongside any reclassification."
+    );
+}
