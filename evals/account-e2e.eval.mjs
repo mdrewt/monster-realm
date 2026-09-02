@@ -1086,7 +1086,12 @@ export const DELETION_CITATIONS = [
  * Normalize markdown prose for substring pinning: drop HTML comments, then
  * collapse every whitespace run to one space.
  *
- * BOTH halves are load-bearing. Dropping comments first closes a measured
+ * COMPLEXITY CAVEAT: the comment strip is roughly O(n^2) on pathological
+ * input (measured: ~6 s for 100k unclosed HTML-comment openers). The only
+ * caller feeds it a committed file, so nothing untrusted reaches it — but
+ * bound the input before reusing this on text you did not commit.
+ *
+ * ALL THREE replacements are load-bearing. Dropping comments first closes a measured
  * bypass class in this repo — a needle present ONLY inside `<!-- ... -->`
  * renders as nothing to a human but satisfies a raw `indexOf`, which lets an
  * editor comment out the real disclaimer with the gate still green. Collapsing
@@ -1096,6 +1101,7 @@ export const DELETION_CITATIONS = [
 export function squashDocText(text) {
   return String(text == null ? '' : text)
     .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/^ {0,3}```[\s\S]*?^ {0,3}```/gm, ' ')
     .split(/\s+/)
     .join(' ')
     .trim();
@@ -1455,10 +1461,10 @@ export const GOOD_DELETION_RUNBOOK_LINES = [
 // files, so `requireSoleDefinition` neither returns -1 nor throws on them.
 // ---------------------------------------------------------------------------
 
-const DELETION_FILE_ACCOUNTS = 'server-module/src/accounts.rs';
-const DELETION_FILE_SCHEMA = 'server-module/src/schema.rs';
-const DELETION_FILE_PRIVACY = 'server-module/src/privacy.rs';
-const DELETION_FILE_GRACE_CONST = 'game-core/src/accounts/deletion.rs';
+// DELETION_FILE_* fixture aliases removed (M22 S7 addendum) — every fixture
+// below now reads the exported DELETION_SOURCE_ACCOUNTS/SCHEMA/PRIVACY/GRACE
+// constants directly, so a path change to one cannot update the export and
+// miss this private duplicate.
 
 const FIXTURE_ACCOUNTS_RS_LINES = [
   '// accounts.rs (fixture) — the deletion reaper.',
@@ -1516,10 +1522,10 @@ const FIXTURE_DELETION_RS = [
 ].join('\n');
 
 const GOOD_DELETION_SOURCES = {
-  [DELETION_FILE_ACCOUNTS]: FIXTURE_ACCOUNTS_RS,
-  [DELETION_FILE_SCHEMA]: FIXTURE_SCHEMA_RS,
-  [DELETION_FILE_PRIVACY]: FIXTURE_PRIVACY_RS,
-  [DELETION_FILE_GRACE_CONST]: FIXTURE_DELETION_RS,
+  [DELETION_SOURCE_ACCOUNTS]: FIXTURE_ACCOUNTS_RS,
+  [DELETION_SOURCE_SCHEMA]: FIXTURE_SCHEMA_RS,
+  [DELETION_SOURCE_PRIVACY]: FIXTURE_PRIVACY_RS,
+  [DELETION_SOURCE_GRACE]: FIXTURE_DELETION_RS,
 };
 
 function sourcesWithout(key) {
@@ -1540,10 +1546,16 @@ function sourcesWith(key, text) {
 // checks (e.g. ships clause 3 as a 3-of-4 AND) is still caught: with a
 // per-CLAUSE fixture, dropping any one of the other three terms is invisible.
 //
-// Each entry: [id, doc, sources, tag, why]. `tag` is either a string or an
-// array of required substrings — every one of them must appear in the
-// rejection `reason`, or the fixture earns no credit (rejected for the WRONG
-// reason is treated the same as not rejected at all).
+// Each entry: [id, doc, sources, tag, why, expectedClausesMet]. `tag` is
+// either a string or an array of required substrings — every one of them
+// must appear in the rejection `reason`, or the fixture earns no credit
+// (rejected for the WRONG reason is treated the same as not rejected at
+// all). `expectedClausesMet` pins checkDrRunbookDeletionSection's returned
+// `clausesMet` for this fixture: MEASURED, mutating any `miss(N, ...)` call
+// site's first argument (e.g. `miss(0, ...)` to `miss(999, ...)`) left every
+// existing G24 tooth bit, because nothing asserted the returned count even
+// though its own docstring says it exists so the caller reports a DERIVED
+// count. See g24Teeth()'s BAD-fixture loop for the pin.
 // ---------------------------------------------------------------------------
 
 const GOOD_DOC = GOOD_DELETION_RUNBOOK_LINES.join('\n');
@@ -1610,6 +1622,25 @@ const DOC_4_NO_TTL = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPEND
 const DOC_4_S4B = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
   l.split('S4b').join('S9'),
 );
+
+// fence-hidden — S4b removed from every prose occurrence before the appendix
+// and re-added ONLY inside a fenced code block placed just before the
+// appendix heading (still inside section 9's extracted body). See the
+// EDIT 8 banner above for the measured bypass this closes.
+const TRIPLE_BACKTICK = String.fromCharCode(96) + String.fromCharCode(96) + String.fromCharCode(96);
+const DELETION_APPENDIX_AT = GOOD_DELETION_RUNBOOK_LINES.indexOf(DELETION_APPENDIX_HEADING);
+const DOC_4_S4B_FENCE_BEFORE = GOOD_DELETION_RUNBOOK_LINES.slice(0, DELETION_APPENDIX_AT).map((l) =>
+  l.split(' (see S4b)').join(''),
+);
+const DOC_4_S4B_FENCE_AFTER = GOOD_DELETION_RUNBOOK_LINES.slice(DELETION_APPENDIX_AT);
+const DOC_4_S4B_FENCE_HIDDEN = DOC_4_S4B_FENCE_BEFORE.concat([
+  TRIPLE_BACKTICK,
+  'decoy reference: S4b',
+  TRIPLE_BACKTICK,
+  '',
+])
+  .concat(DOC_4_S4B_FENCE_AFTER)
+  .join('\n');
 const DOC_4_BOTH_NAMES = linesMapBefore(
   GOOD_DELETION_RUNBOOK_LINES,
   DELETION_APPENDIX_HEADING,
@@ -1643,11 +1674,11 @@ const DOC_DUPLICATE_HEADING = GOOD_DELETION_RUNBOOK_LINES.concat([
 ]).join('\n');
 
 // clause 5 — a `sources` map missing one roster file.
-const SOURCES_MISSING_PRIVACY = sourcesWithout(DELETION_FILE_PRIVACY);
+const SOURCES_MISSING_PRIVACY = sourcesWithout(DELETION_SOURCE_PRIVACY);
 
 // clause 5 — a duplicated declaration (ambiguous, never a silent first-hit).
 const SOURCES_DUPLICATE_ACCOUNTS = sourcesWith(
-  DELETION_FILE_ACCOUNTS,
+  DELETION_SOURCE_ACCOUNTS,
   FIXTURE_ACCOUNTS_RS_DUPLICATE,
 );
 
@@ -1660,6 +1691,7 @@ export const G24_BAD_FIXTURES = [
     'the pseudonymization sentence was accepted after "not erasure" was flipped to "complete ' +
       'erasure" — a substring-contains check (rather than the exact pin) would miss this, and the ' +
       'decoy appendix keeps the ORIGINAL sentence intact so a whole-document scan also passes',
+    0,
   ],
   [
     'clause1b-weakened',
@@ -1668,6 +1700,7 @@ export const G24_BAD_FIXTURES = [
     'clause 1b:',
     'the backup-limit sentence was accepted after "makes no claim" was softened to "makes no ' +
       'strong claim" — the exact backup-retention disclaimer is the load-bearing part of PRV1-18',
+    1,
   ],
   [
     'clause2-symbol-name',
@@ -1677,6 +1710,7 @@ export const G24_BAD_FIXTURES = [
     'the section was accepted with no mention of DELETION_GRACE_MS_DEFAULT by name, even though ' +
       'the correct ms value and "7 days" both survived — an operator reading this section could ' +
       'not find the constant to retune it',
+    2,
   ],
   [
     'clause2-ms-value',
@@ -1685,6 +1719,7 @@ export const G24_BAD_FIXTURES = [
     'clause 2:',
     'a WRONG grace-window ms value (604_800_001 instead of 604_800_000) was accepted — the value ' +
       'must equal parseGraceConst on the real deletion.rs, not merely look like a number',
+    2,
   ],
   [
     'clause2-day-figure',
@@ -1693,6 +1728,7 @@ export const G24_BAD_FIXTURES = [
     'clause 2:',
     'the section was accepted stating "5 days" while the ms value and symbol name were correct — ' +
       'a wrong day figure directly contradicts the number two lines away',
+    2,
   ],
   [
     'clause3-reaper-fn-name',
@@ -1701,6 +1737,7 @@ export const G24_BAD_FIXTURES = [
     'clause 3:',
     'the section was accepted with no mention of the reducer name account_deletion_reaper — an ' +
       'operator cannot find the reaper in the source without it',
+    3,
   ],
   [
     'clause3-schedule-name',
@@ -1708,6 +1745,7 @@ export const G24_BAD_FIXTURES = [
     GOOD_DELETION_SOURCES,
     'clause 3:',
     'the section was accepted with no mention of AccountDeletionReaperSchedule',
+    3,
   ],
   [
     'clause3-one-shot',
@@ -1716,6 +1754,7 @@ export const G24_BAD_FIXTURES = [
     'clause 3:',
     '"one-shot" was replaced with "recurring" and still accepted — this is the exact word that ' +
       'tells an operator cancel+re-request re-arms rather than double-schedules',
+    3,
   ],
   [
     'clause3-rearm',
@@ -1723,6 +1762,7 @@ export const G24_BAD_FIXTURES = [
     GOOD_DELETION_SOURCES,
     'clause 3:',
     '"re-arm" was replaced with "re-use" and still accepted',
+    3,
   ],
   [
     'clause4-my-export-bundle',
@@ -1732,6 +1772,7 @@ export const G24_BAD_FIXTURES = [
     'the section was accepted with no mention of my_export_bundle even though the bare ' +
       'export_bundle mention (and everything else) survived — the privacy-scoped view is the ' +
       'thing S4b actually names',
+    4,
   ],
   [
     'clause4-no-independent-ttl',
@@ -1740,6 +1781,7 @@ export const G24_BAD_FIXTURES = [
     'clause 4:',
     '"no independent TTL" was softened to "a bounded TTL" and still accepted — this phrase is the ' +
       'one place the doc states export bundles do NOT get their own expiry',
+    4,
   ],
   [
     'clause4-s4b',
@@ -1747,6 +1789,20 @@ export const G24_BAD_FIXTURES = [
     GOOD_DELETION_SOURCES,
     'clause 4:',
     'the S4b cross-reference was renamed to S9 and still accepted',
+    4,
+  ],
+  [
+    'clause4-s4b-fence-hidden',
+    DOC_4_S4B_FENCE_HIDDEN,
+    GOOD_DELETION_SOURCES,
+    'clause 4:',
+    'S4b was removed from every prose occurrence of the export-bundle sentence and re-added ONLY ' +
+      'inside a fenced code block placed before the appendix heading, and was still accepted — ' +
+      'squashDocText strips fenced code blocks as its second pass; deleting that one replacement ' +
+      'is a MEASURED bypass in this repo (doing the same thing to the REAL runbook section 9 made ' +
+      'this gate report 6/6 green), because a fence hides text from the substring scan exactly ' +
+      'like an HTML comment does',
+    4,
   ],
   [
     'clause4-export-bundle-pair',
@@ -1757,6 +1813,7 @@ export const G24_BAD_FIXTURES = [
       'are not independently isolable: my_export_bundle textually contains export_bundle as a ' +
       'substring, so no fixture can remove the bare name alone while my_export_bundle survives — ' +
       'see the handoff reply for the full note.)',
+    4,
   ],
   [
     'clause5-missing-source',
@@ -1766,6 +1823,7 @@ export const G24_BAD_FIXTURES = [
     'privacy.rs was missing from `sources` and the citation for my_export_bundle was silently ' +
       'treated as resolved (or silently skipped) instead of failing loud — a missing source file ' +
       'must read exactly the same as a citation that resolves to zero hits',
+    5,
   ],
   [
     'clause5-ambiguous-duplicate',
@@ -1775,6 +1833,7 @@ export const G24_BAD_FIXTURES = [
     'accounts.rs carried TWO definitions of account_deletion_reaper (a #[cfg(test)] twin) and the ' +
       'citation was accepted anyway — requireSoleDefinition throws on >1 occurrence for exactly ' +
       'this reason, and clause 5 must surface that as an explicit ambiguity, never pick the first',
+    5,
   ],
   [
     'heading-absent',
@@ -1783,6 +1842,7 @@ export const G24_BAD_FIXTURES = [
     'FAIL-LOUD',
     'a document with no "Data deletion & backup retention" heading passed — the extractor fell ' +
       'back to the whole document instead of failing loud',
+    0,
   ],
   [
     'duplicate-heading',
@@ -1791,6 +1851,7 @@ export const G24_BAD_FIXTURES = [
     'FAIL-LOUD',
     'two headings both containing the phrase were accepted — the extractor guessed which one to ' +
       'scan instead of failing loud',
+    0,
   ],
   [
     'html-comment-hidden',
@@ -1801,6 +1862,7 @@ export const G24_BAD_FIXTURES = [
       '— a squashDocText that does not strip HTML comments before matching lets a doc comment out ' +
       'the actual disclaimer while still satisfying every clause textually (measured bypass class ' +
       'in this repo)',
+    0,
   ],
 ];
 
@@ -1851,12 +1913,20 @@ export function g24Teeth() {
     'g24-good',
     `a complete deletion & backup retention section was rejected: ${goodResult.reason}`,
   );
+  record(
+    goodResult.clausesMet === 6,
+    'g24-good-clauses-met',
+    `a complete deletion & backup retention section reported clausesMet=${goodResult.clausesMet}, ` +
+      'expected 6 on the success path — the docstring on checkDrRunbookDeletionSection claims ' +
+      'this count is derived, not a fixed literal on the ok:true branch',
+  );
 
   // --- the BAD-fixture table ---
-  for (const [id, doc, sources, tag, why] of G24_BAD_FIXTURES) {
+  for (const [id, doc, sources, tag, why, expectedClausesMet] of G24_BAD_FIXTURES) {
     const got = checkDrRunbookDeletionSection(doc, sources);
     if (got.ok) {
       record(false, `g24-${id}`, why);
+      record(false, `g24-${id}-clauses-met`, why);
       continue;
     }
     const tags = Array.isArray(tag) ? tag : [tag];
@@ -1866,6 +1936,20 @@ export function g24Teeth() {
       `g24-${id}`,
       `rejected for the WRONG reason — expected ${JSON.stringify(tags)}, got: ${got.reason}`,
     );
+    // NEW TOOTH 2. MEASURED: mutating any `miss(N, ...)` call site inside
+    // checkDrRunbookDeletionSection (e.g. `miss(0, ...)` to `miss(999, ...)`)
+    // left every existing G24 tooth bit — nothing asserted the returned
+    // `clausesMet`, even though its own docstring says it exists so the
+    // caller reports a DERIVED count. This pin uses the SAME fixture the
+    // tag-check above already uses, so it can never be satisfied by a
+    // neighbouring fixture's expected value.
+    record(
+      got.clausesMet === expectedClausesMet,
+      `g24-${id}-clauses-met`,
+      `checkDrRunbookDeletionSection returned clausesMet=${got.clausesMet} for this rejection, ` +
+        `expected ${expectedClausesMet} — an operator reading the phase-1 detail string would be ` +
+        'told the wrong clause failed',
+    );
   }
 
   // --- state the extra checks below close over (computed once, up front,
@@ -1873,13 +1957,13 @@ export function g24Teeth() {
   let sec = null;
   let extractThrew = false;
   try {
-    sec = extractSection(GOOD_DOC, 'Data deletion & backup retention', '## ');
+    sec = extractSection(GOOD_DOC, DELETION_SECTION_HEADING_PHRASE, '## ');
   } catch {
     extractThrew = true;
   }
   let missingHeadingThrew = false;
   try {
-    extractSection('# doc\n\nno sections here', 'Data deletion & backup retention', '## ');
+    extractSection('# doc\n\nno sections here', DELETION_SECTION_HEADING_PHRASE, '## ');
   } catch {
     missingHeadingThrew = true;
   }
@@ -1895,23 +1979,23 @@ export function g24Teeth() {
   const expectedCitations = [
     {
       symbol: 'account_deletion_reaper',
-      file: DELETION_FILE_ACCOUNTS,
+      file: DELETION_SOURCE_ACCOUNTS,
       marker: 'pub fn account_deletion_reaper(',
     },
     {
       symbol: 'AccountDeletionReaperSchedule',
-      file: DELETION_FILE_ACCOUNTS,
+      file: DELETION_SOURCE_ACCOUNTS,
       marker: 'pub struct AccountDeletionReaperSchedule',
     },
-    { symbol: 'export_bundle', file: DELETION_FILE_SCHEMA, marker: 'accessor = export_bundle)' },
+    { symbol: 'export_bundle', file: DELETION_SOURCE_SCHEMA, marker: 'accessor = export_bundle)' },
     {
       symbol: 'DATA_LIFECYCLE_MANIFEST',
-      file: DELETION_FILE_SCHEMA,
+      file: DELETION_SOURCE_SCHEMA,
       marker: 'pub const DATA_LIFECYCLE_MANIFEST',
     },
     {
       symbol: 'my_export_bundle',
-      file: DELETION_FILE_PRIVACY,
+      file: DELETION_SOURCE_PRIVACY,
       marker: 'accessor = my_export_bundle,',
     },
   ];
@@ -1942,7 +2026,7 @@ export function g24Teeth() {
     ],
     [
       'g24-section-bounds-leak',
-      () => !!sec && sec.body.indexOf('Appendix (deletion decoys') === -1,
+      () => !!sec && sec.body.indexOf(DELETION_APPENDIX_HEADING) === -1,
       'the extracted section leaked into the FOLLOWING appendix — every clause would then be ' +
         'satisfiable by text the section does not contain',
     ],
@@ -2012,6 +2096,41 @@ export function g24Teeth() {
           'pub fn account_deletion_reaper(',
         ) !== -1,
       'FIXTURE_ACCOUNTS_RS does not carry a findable account_deletion_reaper definition',
+    ],
+    [
+      // NEW TOOTH 3. MEASURED: replacing ownSource's own-property guard
+      // (`if (!Object.hasOwn(sources, file)) return undefined;`) with
+      // `file in sources` left every existing G24 tooth bit, because no
+      // fixture exercised an inherited property. This tooth performs the
+      // REAL prototype write (not a stand-in object), refuses to run if the
+      // key already exists on Object.prototype (pre-existence check), and
+      // always cleans up via try/finally. The post-assert is non-tautological:
+      // it pins the specific "clause 5: FAIL-LOUD" / "no source text for"
+      // reason substrings, not merely `!ok`.
+      'g24-prototype-pollution',
+      () => {
+        const file = DELETION_SOURCE_PRIVACY;
+        if (Object.hasOwn(Object.prototype, file)) {
+          return false;
+        }
+        let result;
+        try {
+          Object.prototype[file] = FIXTURE_PRIVACY_RS;
+          result = resolveDeletionCitations(sourcesWithout(file));
+        } finally {
+          delete Object.prototype[file];
+        }
+        return (
+          !result.ok &&
+          result.reason.indexOf('clause 5: FAIL-LOUD') !== -1 &&
+          result.reason.indexOf('no source text for') !== -1 &&
+          result.reason.indexOf(file) !== -1
+        );
+      },
+      'a value forged onto Object.prototype for the one source file missing from `sources` was ' +
+        'accepted by resolveDeletionCitations as if the caller had supplied it — an inherited ' +
+        'property must never satisfy a citation lookup; ownSource must reject it via an ' +
+        'own-property guard',
     ],
   ];
   for (const [id, check, why] of EXTRA_CHECKS) {
@@ -3135,6 +3254,21 @@ export default async function () {
   // --- G24 checker fixtures (M22 PRV1-18: deletion & backup retention) ---
   {
     const g24 = g24Teeth();
+    // TWO floors, because the aggregate one alone is satisfiable by a gutted
+    // suite: the artifact red-team MEASURED that deleting 17 of the 18
+    // negative fixtures still reports 16/16 ALL-BIT, since the 13 EXTRA_CHECKS
+    // plus the two guards clear the aggregate on their own. The per-term
+    // negative fixtures are the coverage that actually proves each ANDed
+    // clause term bites, so they get a floor of their own.
+    if (G24_BAD_FIXTURES.length < 19) {
+      return teeth(
+        'g24-fixture-floor',
+        `G24_BAD_FIXTURES holds only ${G24_BAD_FIXTURES.length} negative fixtures — the ` +
+          'floor is 19, one per ANDed clause term plus the fail-loud cases and the ' +
+          'fenced-block bypass. Removing one ' +
+          "term's fixture is how a multi-term clause silently degrades to a partial AND",
+      );
+    }
     if (g24.total < 16) {
       return teeth(
         'g24-floor',

@@ -96,6 +96,14 @@ A needle present only inside `<!-- ... -->` renders as nothing to a human but sa
 strips HTML comments before substring matching, and there is a dedicated `html-comment-hidden` tooth
 that verifies this guard itself.
 
+### Clauses 3 and 4 are substring sets, and substring sets cannot read polarity
+
+Measured during the artifact red-team: a sentence such as "this reaper is NOT one-shot in the way
+an operator would assume" inserted beside the pinned prose keeps every clause-3 term present and
+G24 green. The same holds for clause 4. This is the same limitation stated above for the gate as a
+whole, restated here because clauses 3 and 4 are the ones a reader is most likely to mistake for a
+semantic check: they assert the section NAMES these things, not that it describes them correctly.
+
 ## PRV1-17 and PRV1-20 — Met by verification, mechanical enforcement deferred
 
 G24 does not mechanically verify PRV1-17 or PRV1-20 — both are properties of log CONTENT, which no
@@ -120,13 +128,23 @@ from a source scan.
   `raising.rs:765`, `economy.rs:283`, `playtest.rs:212`, `trading.rs:780`, `pvp.rs:729`,
   `privacy.rs:58`, `ranking.rs:286`, `battle.rs:1557`. (Several of those FILES do log elsewhere,
   in unrelated reducers — the distinction is per-function, not per-file.) `privacy.rs:19-28`
-  additionally bans logging macros file-wide.
+  additionally bans logging macros file-wide. The reaper's twelfth direct cascade call,
+  `crate::erase_character_rows` (`server-module/src/lib.rs:253-257`), is not cross-module
+  delegated and so is not in that list; it is a 4-line body and is likewise log-free.
 - The only logging transitively reachable from the cascade is through step 6a,
-  `resolve_all_live_interactions` (`server-module/src/lib.rs:240-245`) ->
-  `pvp::forfeit_on_disconnect` (`server-module/src/pvp.rs:645-701`) -> `apply_pvp_forfeit` /
-  `settle_pvp_battle` (`pvp.rs:559-599`), plus the ADR-0185 write-back paths
-  (`server-module/src/battle.rs:894`, `:936`). Those lines carry a `battle_id` (`u64`) and a
-  json-escaped internal error string. No player-authored text.
+  `resolve_all_live_interactions` (`server-module/src/lib.rs:240-245`), which calls exactly four
+  resolvers. Their logging, traced per resolver:
+  `pvp::forfeit_on_disconnect` (`server-module/src/pvp.rs:645-701`) -> `apply_pvp_forfeit`
+  (`pvp.rs:382-389`, a pure delegator with no logging of its own) / `settle_pvp_battle`
+  (`pvp.rs:559-602`); and `battle::resolve_wild_battle_on_disconnect` (`battle.rs:1459-1510`),
+  whose ADR-0185 write-back failure line is `battle.rs:1495-1499`
+  (`"evt":"wild_disconnect_writeback_err"`). Every one of those lines carries a `battle_id`
+  (`u64`) and a `json_escape`d internal error string, and nothing else. No player-authored text,
+  no pre-tombstone `name` or `auth_issuer`.
+
+  (An earlier draft of this ADR cited `battle.rs:894`/`:936` here. Those are the ADR-0185
+  write-back logs inside `swap_active` and `flee` — player-invoked reducers that the cascade never
+  reaches. The citation was wrong; the criterion still holds, on the corrected line above.)
 
 **PRV1-20 — the erasure window emits nothing.** PRV1-20 narrows PRV1-17 to the moment of erasure or
 anonymization: no log line there may carry the erased identity's pre-tombstone `name` or
