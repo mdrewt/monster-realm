@@ -394,6 +394,17 @@ ViaJoin(parent) / NotOwned), a mandatory prose `basis`, and an `exportable` flag
 yet — and `account_state_is_legal` already
 rejects a marker outside `PendingDeletion`+requested), and the PRIVATE `export_bundle`
 table holds per-owner data-export chunks per the frozen S2↔S4↔S8 chunk contract.
+**m22-s6 (ADR-0229)** ties the manifest to the two things it previously only asserted
+in prose. The row TYPES are introspected through SpacetimeDB's own derive metadata
+(`SpacetimeType::make_type` against an inline `TypespaceBuilder`, then a recursive
+Identity walk that also sees `Option<Identity>` / `Vec<Identity>` / newtype wrappers —
+all invisible to the shallow `AlgebraicType::is_identity`), so `Erase`/`Anonymize`
+must carry an owner key, `ViaJoin` must carry none, and `NotOwned` must carry none
+outside a frozen four-table exception set. Separately, a manifest-driven chain proof
+walks each classified table through the pinned reaper body, its entry helper and at
+most one declared `via` sub-helper, to a mutating call on that table's OWN accessor,
+in the same statement and keyed on something other than a bare numeric literal
+(`.delete(0)` against an `#[auto_inc]` key was measured green as a permanent no-op).
 Manifest string literals must never contain `/` (the snapshot baseline's raw parse is
 string-unaware — measured), and a compile-time `manifest_is_wellformed` assertion
 makes an empty basis a build error. `AccountDeletionReaperSchedule` shipped in
