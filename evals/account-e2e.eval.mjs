@@ -1274,17 +1274,17 @@ export function checkCascadeTruth(input) {
   }
   if (!post.battle1 || post.battle1.present !== true) {
     return fail(
-      '[s9/battle-anonymize] the terminal PvP battle row is GONE — Anonymize must never delete',
+      '[s9/battle-anonymize-gone] the terminal PvP battle row is GONE — Anonymize must never delete',
     );
   }
   if (post.battle1.aSideTombstoned !== true) {
     return fail(
-      '[s9/battle-anonymize] the deleted side of the terminal battle was not swapped to the tombstone identity',
+      '[s9/battle-anonymize-side-a] the deleted side of the terminal battle was not swapped to the tombstone identity',
     );
   }
   if (post.battle1.dSideIntact !== true) {
     return fail(
-      '[s9/battle-anonymize] the SURVIVING side of the terminal battle changed — over-anonymization is a failure, not a pass',
+      '[s9/battle-anonymize-side-b] the SURVIVING side of the terminal battle changed — over-anonymization is a failure, not a pass',
     );
   }
 
@@ -4626,7 +4626,21 @@ export default async function () {
         mustFail(
           'truth-battle-over-anon',
           mutT((f) => (f.post.battle1.dSideIntact = false)),
-          '[s9/battle-anonymize]',
+          '[s9/battle-anonymize-side-b]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-battle-gone',
+          mutT((f) => (f.post.battle1 = { present: false })),
+          '[s9/battle-anonymize-gone]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-battle-side-a-unswapped',
+          mutT((f) => (f.post.battle1.aSideTombstoned = false)),
+          '[s9/battle-anonymize-side-a]',
         ),
       );
       bad.push(
