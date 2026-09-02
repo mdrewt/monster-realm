@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 194 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 195 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -203,6 +203,7 @@ Generated from 194 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0226](./0226-s4-export-hand-rolled-json-deferred-ttl-reaper.md) | 0226 — S4 export ships in privacy.rs as hand-rolled per-field JSON with request-wide chunking; the TTL reaper defers to S4b behind the new-table ritual | Accepted | security-authz, schema-persistence, ci-gates | m22-s4 | request_data_export + my_export_bundle ship in privacy.rs: hand-rolled per-field JSON, request-wide chunk numbering, subject/deletion/cooldown guards, purge-before-write; the PRV1-14 reaper defers to S4b (frozen-table ritual). |
 | [0227](./0227-s5-caller-only-deletion-gate-for-opening-commitments.md) | 0227 — S5 gameplay deletion gate: caller-only `guards::require_not_deleting` on the three commitment-opening reducers, delegating transitively to `should_reject_for_deletion` | Accepted | security-authz | m22-s5 | S5 gates the three commitment-OPENING reducers with `guards::require_not_deleting`, a caller-only ctx wrapper delegating via `is_pending_deletion` to `should_reject_for_deletion`; already-open reducers stay ungated (PRV1-10). |
 | [0228](./0228-s3b-deletion-cascade-delegated-erase-rearm.md) | 0228 — S3b: the §4.4 deletion cascade via per-module erase/anonymize delegation, one-shot re-arm + sweep, and PRV1-8(b) fresh re-registration | Accepted | security-authz, schema-persistence, ci-gates | m22-s3b | S3b lands the §4.4 cascade via per-module `erase_*`/`anonymize_*` delegation, re-arms the one-shot reaper (not-due branch + init/sync sweep), ships PRV1-8(b) fresh re-registration, and re-pins the reaper body pin. |
+| [0229](./0229-deletion-completeness-from-derive-metadata.md) | S6 deletion completeness: prove it from the derive metadata, in-crate, not from a source scan | Accepted | ci-gates, security-authz | m22-s6 (M22 §7.2 S6 — PRV1-15, PRV1-16) | S6 ships five in-crate `#[test]`s in `accounts_tests.rs` — not new eval scanner scripts, not a `server-module/tests/` target (the manifest is crate-private); the Identity-column half reads SpacetimeDB's own derive metadata, not source text. |
 
 ## Harness design corpus (H- namespace)
 
@@ -567,6 +568,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0225](./0225-s3-rightsized-cascade-deferred-g5-write-isolation.md) — m22-s3 — 0225 — S3 right-sized: guards + recheck + gate predicate ship in accounts.rs; the PRV1-6 cascade defers to S3b behind G5 write isolation (Accepted)
 - [0226](./0226-s4-export-hand-rolled-json-deferred-ttl-reaper.md) — m22-s4 — 0226 — S4 export ships in privacy.rs as hand-rolled per-field JSON with request-wide chunking; the TTL reaper defers to S4b behind the new-table ritual (Accepted)
 - [0228](./0228-s3b-deletion-cascade-delegated-erase-rearm.md) — m22-s3b — 0228 — S3b: the §4.4 deletion cascade via per-module erase/anonymize delegation, one-shot re-arm + sweep, and PRV1-8(b) fresh re-registration (Accepted)
+- [0229](./0229-deletion-completeness-from-derive-metadata.md) — m22-s6 (M22 §7.2 S6 — PRV1-15, PRV1-16) — S6 deletion completeness: prove it from the derive metadata, in-crate, not from a source scan (Accepted)
 
 ### tooling-docs
 
@@ -661,6 +663,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0226](./0226-s4-export-hand-rolled-json-deferred-ttl-reaper.md) — m22-s4 — 0226 — S4 export ships in privacy.rs as hand-rolled per-field JSON with request-wide chunking; the TTL reaper defers to S4b behind the new-table ritual (Accepted)
 - [0227](./0227-s5-caller-only-deletion-gate-for-opening-commitments.md) — m22-s5 — 0227 — S5 gameplay deletion gate: caller-only `guards::require_not_deleting` on the three commitment-opening reducers, delegating transitively to `should_reject_for_deletion` (Accepted)
 - [0228](./0228-s3b-deletion-cascade-delegated-erase-rearm.md) — m22-s3b — 0228 — S3b: the §4.4 deletion cascade via per-module erase/anonymize delegation, one-shot re-arm + sweep, and PRV1-8(b) fresh re-registration (Accepted)
+- [0229](./0229-deletion-completeness-from-derive-metadata.md) — m22-s6 (M22 §7.2 S6 — PRV1-15, PRV1-16) — S6 deletion completeness: prove it from the derive metadata, in-crate, not from a source scan (Accepted)
 
 ### economy-quests
 

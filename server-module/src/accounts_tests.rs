@@ -10362,7 +10362,7 @@ fn m22s3b_purge_named_twice_claim_and_cascade() {
 // M22-S6 — DELETION COMPLETENESS FROM DERIVE METADATA (PRV1-15, PRV1-16).
 //
 // Spec: M22-privacy-compliance.spec.md §3/§4.4, REDIRECTED per ADR-0224 (no new
-// evals/*.eval.mjs). Design record: ADR-0229. Ledger gates X1-X5.
+// bespoke eval scanner scripts). Design record: ADR-0229. Ledger gates X1-X5.
 // Plan: memory/projects/monster-realm-m22-s6-plan.md (harness repo).
 //
 // WHAT THIS SECTION DOES NOT RE-DO. `data_lifecycle_manifest_totality_bidirectional`
@@ -10381,8 +10381,18 @@ fn m22s3b_purge_named_twice_claim_and_cascade() {
 // derives `SpacetimeType`; calling `<T as SpacetimeType>::make_type` against a
 // throwaway `TypespaceBuilder` returns the row's real `AlgebraicType::Product` — the
 // same shape the host itself sees. No comment stripper, no string-literal parser, no
-// regex: the failure class ADR-0224 retires (a stray `/*` or bare `"` blanking a
-// later table from a whole-tree scan) is structurally absent from T1.
+// regex: the failure class ADR-0224 retires (a stray block-comment opener, or an
+// unpaired quote, blanking a later table out of a whole-tree scan) is structurally
+// absent from T1.
+//
+// NO BLOCK-COMMENT OPENER AND NO GLOB MAY APPEAR ANYWHERE IN THIS SECTION, in prose
+// or in code. Several shipped evals concatenate every server-module source file —
+// INCLUDING this test file — and strip comments with a naive scanner; a two-character
+// sequence written here as an illustration once blanked `write_back_battle_results`
+// out of a LATER file entirely, red-ing `practice-xp` and `recruit-reducer-security`
+// with a message about a function this slice never touched. It is invisible to
+// `cargo nextest` and only reproduces under the full `just ci`. Describe such
+// sequences in words.
 //
 // SCAN HYGIENE (T2 only; T1 does no text scanning at all): this section's own needle
 // helpers are `m22s6_`-prefixed and split mid-token via `concat!`, per this file's

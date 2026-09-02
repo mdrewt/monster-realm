@@ -4,9 +4,10 @@
 **Date:** 2026-09-01
 **Slice:** m22-s6 (M22 §7.2 S6 — PRV1-15, PRV1-16)
 **Supersedes:** —
+**Amends:** —
 **Extends:** ADR-0224, ADR-0228
 **Subsystems:** ci-gates, security-authz
-**Decision:** S6's completeness checks ship as two in-crate `#[test]`s in `accounts_tests.rs`, not as the spec's two new `evals/*.eval.mjs` files and not as a `server-module/tests/` integration target. The Identity-column half is derived from SpacetimeDB's own derive metadata rather than from source text.
+**Decision:** S6 ships five in-crate `#[test]`s in `accounts_tests.rs` — not new eval scanner scripts, not a `server-module/tests/` target (the manifest is crate-private); the Identity-column half reads SpacetimeDB's own derive metadata, not source text.
 
 ## Context and problem statement
 
