@@ -1920,8 +1920,9 @@ suite for the two scanners. ADR next-free = 0206 (no new ADR: ADR-0205 already c
 **m23-s3** complete, `M23-accessibility` S3 — **the ten static-shell views wired to S1's helpers, in
 TWO mechanisms, and the deferred `.focus()` deleted from the view layer.** Seven views delegate from
 `show()`/`hide()`; the three with **no `show()`** (`dialogueView`, `questLogView`, `healView`) wire on
-the `render(vm | null)` **null↔non-null EDGE** instead (spec §2.2, A11Y-34) — `main.ts:1574` calls
-`dialogueView.render(vm)` unconditionally on every store batch, so there is literally nothing for a
+the `render(vm | null)` **null↔non-null EDGE** instead (spec §2.2, A11Y-34) — `main.ts`'s M12d
+`store.onBatchApplied` listener (`:1627-1641` today) calls `dialogueView.render(vm)`
+unconditionally on every store batch, so there is literally nothing for a
 `show()`-based design to attach to. **Both mechanisms detect the edge by reading the EXISTING `visible`
 getter BEFORE the `display` write, never from a new nullity field**, and that is the load-bearing call:
 `questLogView`/`healView` are opened by `render(vm)` but closed by `hide()`, so a `#lastVmWasNull`
