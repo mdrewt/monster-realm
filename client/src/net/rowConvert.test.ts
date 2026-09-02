@@ -3277,11 +3277,12 @@ describe('rowConvert 12r-d [E1]: healLocationRowToStore — costCurrency is a pa
 //             on data the server never sent.
 //
 // THE EXACT FIELD LIST, verified against the SCHEMA rather than transcribed from prose:
-// `server-module/src/schema.rs:685-700` declares `Account { identity, auth_issuer,
-// created_at_ms, last_login_at_ms, status, deletion_requested_at_ms, claimed_from,
-// claimed_at_ms }`, and the generated binding at `client/src/module_bindings/types.ts:13-24`
+// `server-module/src/schema.rs` declares `Account { identity, auth_issuer, created_at_ms,
+// last_login_at_ms, status, deletion_requested_at_ms, claimed_from, claimed_at_ms,
+// terminal_at_ms }`, and the generated binding at `client/src/module_bindings/types.ts:13-25`
 // mirrors it in camelCase with `__t.i64()` timestamps and `__t.option(...)` on the last
-// three. ADR-0182 D15 lists the same eight. EIGHT fields, no more, no fewer.
+// FOUR. ADR-0182 D15 listed eight; M22 S4 (PR#407) added `terminal_at_ms` as the ninth —
+// the PRV1-4 permanent-deletion marker. NINE fields, no more, no fewer.
 //
 // CONTRACT (modelled byte-for-byte on `playerWalletRowToStore`, rowConvert.ts:537-574 —
 // explicit field mapping, NO spread, NO coercion, NO defaulting, NO throw):
@@ -3295,6 +3296,7 @@ describe('rowConvert 12r-d [E1]: healLocationRowToStore — costCurrency is a pa
 //     readonly deletionRequestedAtMs: bigint | undefined;
 //     readonly claimedFrom: { toHexString(): string } | undefined;
 //     readonly claimedAtMs: bigint | undefined;
+//     readonly terminalAtMs: bigint | undefined;   // M22 S4 — Option<i64>, the PRV1-4 marker
 //   }
 //   export function accountRowToStore(row: SdkAccountRow): StoreAccount;
 //
@@ -3329,6 +3331,7 @@ function makeSdkAccountRow(overrides: Partial<Record<string, unknown>> = {}): Sd
     deletionRequestedAtMs: undefined,
     claimedFrom: undefined,
     claimedAtMs: undefined,
+    terminalAtMs: undefined,
     ...overrides,
   } as unknown as SdkAccountRow;
 }
@@ -3478,7 +3481,7 @@ describe('rowConvert M21b-2: accountRowToStore — status carries the enum TAG (
 });
 
 describe('rowConvert M21b-2: accountRowToStore — exact key set, explicit mapping (RC-AC-04)', () => {
-  it('★★ RC-AC-04a BITES: the output has EXACTLY the eight D15 keys — kills the spread impl', () => {
+  it('★★ RC-AC-04a BITES: the output has EXACTLY the nine account keys — kills the spread impl', () => {
     // WRONG IMPL KILLED: `{ ...row, identity: row.identity.toHexString() }`. `my_account` is
     // a PRIVATE table's owner-scoped view (schema.rs:674-711) and the account record is the
     // one row in this client that is deliberately PII-free by construction; smuggling any
@@ -3500,6 +3503,7 @@ describe('rowConvert M21b-2: accountRowToStore — exact key set, explicit mappi
         'identity',
         'lastLoginAtMs',
         'status',
+        'terminalAtMs',
       ].sort(),
     );
   });
@@ -3511,7 +3515,7 @@ describe('rowConvert M21b-2: accountRowToStore — exact key set, explicit mappi
     // the absent case explicitly, and with it the "eight keys, always" contract that makes
     // the key-set tooth mean something.
     const stored = accountRowToStore(makeSdkAccountRow()) as unknown as Record<string, unknown>;
-    for (const key of ['deletionRequestedAtMs', 'claimedFrom', 'claimedAtMs']) {
+    for (const key of ['deletionRequestedAtMs', 'claimedFrom', 'claimedAtMs', 'terminalAtMs']) {
       expect(Object.hasOwn(stored, key), `${key} must be present-but-undefined, not omitted`).toBe(
         true,
       );
@@ -3592,5 +3596,108 @@ describe('rowConvert M21b-2: accountRowToStore — totality (RC-AC-05)', () => {
         },
       ),
     );
+  });
+});
+
+// =============================================================================
+// M22 S8 (ADR-0231) — `terminal_at_ms`, the PRV1-4 data path. Gate X7.
+//
+// EARS COVERED
+//   PRV1-4 (client data-path half) — once `terminal_at_ms` is Some the account is
+//     PERMANENTLY deleted and a cancel is permanently rejected. `ui/privacyModel.ts`
+//     reads this ONE field as its primary route to that state, so a converter that
+//     fabricates, drops or mistypes it inverts the whole criterion one layer down.
+//
+// `terminal_at_ms` is `Option<i64>` (server-module/src/schema.rs; generated binding
+// `client/src/module_bindings/types.ts:24`, `terminalAtMs: __t.option(__t.i64())`).
+// The broke-vs-dark rule that governs it is stated at rowConvert.ts:543-568 and
+// ADR-0154 D1: absent means DARK, never `0n`.
+//
+// RED REASON AT AUTHORING TIME: `SdkAccountRow` has no `terminalAtMs` member and
+// `accountRowToStore` does not map one (rowConvert.ts:579-617, read this session), so
+// every assertion below reads `undefined` where a value is required — a MISSING
+// IMPLEMENTATION, not a typo here.
+// =============================================================================
+
+describe('rowConvert M22 S8: accountRowToStore carries terminal_at_ms (PRV1-4)', () => {
+  it('★★ S8T-TERMINAL-PASSTHROUGH BITES: a PRESENT marker is carried byte-identically — and 0n is a REAL marker', () => {
+    // `0n` is a legal i64 and a legal `terminal_at_ms`. An impl that treats it as
+    // falsy-and-absent (`row.terminalAtMs ? row.terminalAtMs : undefined`, or a
+    // truthiness guard) drops the marker for that account — and privacyModel then
+    // shows a live, cancellable grace window for an account that is already gone.
+    const present = accountRowToStore(makeSdkAccountRow({ terminalAtMs: 1_700_000_400_000n }));
+    expect(present.terminalAtMs).toBe(1_700_000_400_000n);
+    expect(typeof present.terminalAtMs).toBe('bigint');
+
+    const epoch = accountRowToStore(makeSdkAccountRow({ terminalAtMs: 0n }));
+    expect(epoch.terminalAtMs, '0n is a VALUE, not an absence').toBe(0n);
+    expect(epoch.terminalAtMs).not.toBeUndefined();
+
+    // 2^53 + 1 — the first value a JS number cannot hold. Kills `Number(...)` and
+    // `BigInt(Number(...))`, which restores the TYPE while keeping the WRONG VALUE.
+    const huge = accountRowToStore(makeSdkAccountRow({ terminalAtMs: 9007199254740993n }));
+    expect(huge.terminalAtMs).toBe(9007199254740993n);
+    expect(huge.terminalAtMs).not.toBe(9007199254740992n);
+  });
+
+  it('★★ S8T-TERMINAL-NOT-FABRICATED BITES: an ABSENT marker stays undefined — kills `?? 0n`', () => {
+    // ★ THE INVERSION TOOTH. `terminalAtMs: row.terminalAtMs ?? 0n` turns "this account
+    // has NOT been permanently deleted" into "it was deleted at the epoch" for EVERY
+    // healthy account in the game: privacyModel checks marker PRESENCE (not truthiness,
+    // because `0n` is legal), so a fabricated `0n` makes every player permanently
+    // deleted — no delete, no cancel, no export, for everyone.
+    const stored = accountRowToStore(makeSdkAccountRow());
+    expect(stored.terminalAtMs).toBeUndefined();
+    expect(stored.terminalAtMs).not.toBe(0n);
+    expect(
+      Object.hasOwn(stored as unknown as Record<string, unknown>, 'terminalAtMs'),
+      'present-but-undefined, never omitted (the RC-AC-04b contract)',
+    ).toBe(true);
+  });
+
+  it('★★ S8T-TERMINAL-NULL-NORMALISED BITES: a raw `null` from the SDK Option becomes undefined', () => {
+    // ★ THE RT1 TOOTH. This codebase has ALREADY seen a raw `null` out of an SDK Option
+    // column — the `claimedFrom` guard at rowConvert.ts:611-614 exists for exactly that.
+    // A `null` that reaches the store makes privacyModel`s `!== undefined` marker
+    // predicate true for EVERY account, which kills delete AND cancel globally: the
+    // mirror image of the `?? 0n` fabrication, reached by doing nothing at all.
+    const stored = accountRowToStore(
+      makeSdkAccountRow({ terminalAtMs: null as unknown as bigint }),
+    );
+    expect(stored.terminalAtMs, 'a null Option is an ABSENCE, normalised like claimedFrom').toBe(
+      undefined,
+    );
+    expect(stored.terminalAtMs).not.toBeNull();
+
+    // Fail-SOFT, like the rest of this converter: a degenerate value must not throw —
+    // a throw inside a row callback kills the whole flushBatch (ADR-0085 A6).
+    expect(() =>
+      accountRowToStore(makeSdkAccountRow({ terminalAtMs: 'not-a-bigint' as unknown as bigint })),
+    ).not.toThrow();
+  });
+
+  it('★★ S8T-ACCOUNT-KEYSET-9 BITES: the converted row has EXACTLY nine keys, terminalAtMs among them', () => {
+    // The M22 restatement of RC-AC-04a, with the ninth key: `my_account` is a PRIVATE
+    // table's owner-scoped view and the account record is the one row in this client that
+    // is deliberately PII-free by construction. WRONG IMPL KILLED: `{ ...row,
+    // identity: row.identity.toHexString() }` — a spread that both leaks any future
+    // SDK-only field and hands the store the raw SDK objects.
+    const stored = accountRowToStore(
+      makeSdkAccountRow({ terminalAtMs: 0n, serverOnlyScratch: 'leak-me' }),
+    );
+    expect(Object.keys(stored as unknown as Record<string, unknown>).sort()).toEqual(
+      [
+        'authIssuer',
+        'claimedAtMs',
+        'claimedFrom',
+        'createdAtMs',
+        'deletionRequestedAtMs',
+        'identity',
+        'lastLoginAtMs',
+        'status',
+        'terminalAtMs',
+      ].sort(),
+    );
+    expect(stored.terminalAtMs, 'the marker survives the explicit mapping').toBe(0n);
   });
 });

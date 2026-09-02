@@ -88,6 +88,18 @@ absent `deletion_requested_at_ms` yields a DARK countdown (`deadlineAtMs`/`remai
 but keeps the cancel affordance: a missing timestamp may make the deadline unknown, never the
 permission.
 
+### The phase never depends on the clock
+
+`deriveDeletionCountdown` derives the PHASE from the terminal marker and `status` alone; `nowMs`
+and `graceMs` affect only `deadlineAtMs`/`remainingMs`, which are `undefined` whenever any of the
+three bigint inputs is missing or not a bigint. The first draft degraded a hostile clock to
+`'unknown'` with every permission false, and the plan-phase tester caught that this silently
+re-introduced the blocker above: `nowMs` is `BigInt(Date.now())` at s8b's call site, so a wiring
+slip passing a raw `number` would have put EVERY `PendingDeletion` account into a state that
+refuses a cancel the server accepts. Degrading the *number* is safe; degrading the *permission* is
+not. A `PendingDeletion` row with a dark countdown resolves to `'grace'`, never `'due'` — both are
+cancel-permitted, and `'grace'` is the non-alarming one.
+
 The `'grace'`/`'due'` boundary is `remainingMs > 0n`, which puts `'due'` at exactly the deadline —
 identical to `is_deletion_due`'s `>=` (`game-core/src/accounts/deletion.rs:63-67`) and never more
 permissive than the server.

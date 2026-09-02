@@ -4576,6 +4576,9 @@ describe('AuthoritativeStore 12r-d [E2]: heal-location costCurrency survives the
 //     readonly deletionRequestedAtMs: bigint | undefined;   // Option<i64>
 //     readonly claimedFrom: string | undefined;             // Option<Identity>, hex
 //     readonly claimedAtMs: bigint | undefined;             // Option<i64>
+//     readonly terminalAtMs: bigint | undefined;            // Option<i64>, M22 S4 (PR#407):
+//                                                           // the PRV1-4 permanent-deletion
+//                                                           // marker. NINE keys, not eight.
 //   };
 //   upsertAccount(row: StoreAccount): void   — sets a SINGLE slot, marks #dirty
 //   ownAccount(identity: string): StoreAccount | undefined
@@ -4614,6 +4617,7 @@ function makeAccount(identity: string, overrides: Partial<StoreAccount> = {}): S
     deletionRequestedAtMs: undefined,
     claimedFrom: undefined,
     claimedAtMs: undefined,
+    terminalAtMs: undefined,
     ...overrides,
   };
 }
@@ -4673,6 +4677,34 @@ describe('AuthoritativeStore M21b-2 A1: ownAccount returns the own row and filte
     // AUTH-51 hangs the whole signed-in UI on exactly that difference.
     const s = new AuthoritativeStore();
     expect(s.ownAccount(ACCOUNT_A)).toBeUndefined();
+  });
+
+  it('★★ A1 BITES (M22 PRV1-4): terminalAtMs round-trips through the slot — 0n survives, absent stays dark', () => {
+    // The ninth key (M22 S4, PR#407) is the PRIMARY route to privacyModel's terminal
+    // phase, and the slot is the only thing between the converter and that read.
+    //
+    // WRONG IMPLS KILLED:
+    //   (a) a slot that PROJECTS the row on the way in (an explicit eight-key copy left
+    //       over from ADR-0182 D15) — `terminalAtMs` is silently dropped, PRV1-4 never
+    //       fires, and the player is offered a cancel for an account that is already gone.
+    //   (b) a slot that normalises `undefined` to `0n` "so the field is always there" —
+    //       the mirror inversion: every healthy account reads as permanently deleted.
+    const s = new AuthoritativeStore();
+
+    s.upsertAccount(makeAccount(ACCOUNT_A, { status: 'PendingDeletion', terminalAtMs: 0n }));
+    expect(s.ownAccount(ACCOUNT_A)!.terminalAtMs, '0n is a REAL i64 marker, not an absence').toBe(
+      0n,
+    );
+
+    s.upsertAccount(makeAccount(ACCOUNT_A, { terminalAtMs: 1_700_000_400_000n }));
+    expect(s.ownAccount(ACCOUNT_A)!.terminalAtMs).toBe(1_700_000_400_000n);
+
+    // The update path is what carries the marker: the reaper writes it AFTER the row is
+    // already in the slot, so an insert-wins slot would never see it at all.
+    s.upsertAccount(makeAccount(ACCOUNT_B));
+    expect(s.ownAccount(ACCOUNT_B)!.terminalAtMs, 'absent stays DARK, never fabricated').toBeUndefined();
+    s.upsertAccount(makeAccount(ACCOUNT_B, { terminalAtMs: 1_700_000_500_000n }));
+    expect(s.ownAccount(ACCOUNT_B)!.terminalAtMs).toBe(1_700_000_500_000n);
   });
 });
 
