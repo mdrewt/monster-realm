@@ -171,7 +171,7 @@ export const S9_VACUITY_ALLOWLIST = [
   ],
   [
     'pvp_deadline_schedule',
-    'rows exist only for LIVE PvP battles and the cascade-time live battle of A is deliberately wild',
+    'the turn-0 deadline row self-consumes at its 60s fire time (reaper no-ops on a terminal battle; the runtime deletes the fired one-shot), so a slow run may pre-snapshot AFTER it fired; on fast runs it is present and its cascade disarm is asserted via the post count',
   ],
   [
     'player_dialogue_state',
@@ -3296,15 +3296,20 @@ const DRIVER_SRC = [
   '  const aMon = iterRows(a.conn, "my_monster_pub").filter(function (r) { return stripHexS9(r.ownerIdentity.toHexString()) === stripHexS9(a.identity); });',
   '  if (aMon.length === 0) bail("S9-A-join", "A owns no monster after join (claim re-key + join both failed to grant)");',
   '  const aMonId = aMon[0].monsterId;',
-  '  const ch1 = await tryReducer(a.conn.reducers.challengePvp({ target: d.idObj, partyIds: [aMonId] }));',
+  '  // Challenge DIRECTION is load-bearing (ADR-0232 F1): battle1 must carry',
+  '  // player_identity = D so the cascade 6a wild write-back GC (ADR-0077',
+  '  // keep-latest, keyed on the WILD battle PLAYER axis = A) cannot delete the',
+  '  // terminal PvP battle the Anonymize assert needs; the opponent-axis GC',
+  '  // skips WILD battles by construction.',
+  '  const dMonPre = iterRows(d.conn, "my_monster_pub").filter(function (r) { return stripHexS9(r.ownerIdentity.toHexString()) === stripHexS9(d.identity); });',
+  '  if (dMonPre.length === 0) bail("S9-challenge1", "D owns no monster after join");',
+  '  const ch1 = await tryReducer(d.conn.reducers.challengePvp({ target: a.idObj, partyIds: [dMonPre[0].monsterId] }));',
   '  emit("S9-challenge1", ch1.ok, ch1);',
-  '  const ch1Row = await pollFor("incoming challenge on D", 20000, "S9-accept1", function () {',
-  '    const rows = iterRows(d.conn, "battle_challenge").filter(function (r) { return stripHexS9(r.target.toHexString()) === stripHexS9(d.identity); });',
+  '  const ch1Row = await pollFor("incoming challenge on A", 20000, "S9-accept1", function () {',
+  '    const rows = iterRows(a.conn, "battle_challenge").filter(function (r) { return stripHexS9(r.target.toHexString()) === stripHexS9(a.identity); });',
   '    return rows.length > 0 ? rows[0] : null;',
   '  });',
-  '  const dMon = iterRows(d.conn, "my_monster_pub").filter(function (r) { return stripHexS9(r.ownerIdentity.toHexString()) === stripHexS9(d.identity); });',
-  '  if (dMon.length === 0) bail("S9-accept1", "D owns no monster after join");',
-  '  const acc1 = await tryReducer(d.conn.reducers.acceptChallenge({ challengeId: ch1Row.challengeId, partyIds: [dMon[0].monsterId] }));',
+  '  const acc1 = await tryReducer(a.conn.reducers.acceptChallenge({ challengeId: ch1Row.challengeId, partyIds: [aMonId] }));',
   '  emit("S9-accept1", acc1.ok, acc1);',
   '  const b1 = await pollFor("live pvp battle on A", 20000, "S9-battle1-live", function () {',
   '    const rows = iterRows(a.conn, "my_battle").filter(function (r) { return r.state.outcome.tag === "Ongoing"; });',
@@ -3893,6 +3898,14 @@ async function runLivePhase() {
         s9.pre = takeS9Snapshot(entries, 'pre');
         writeGo(2);
         await waitEvent('S9-cancel-done', 420_000);
+        // export_bundle rows are created AFTER the go2 pre-snapshot (the export
+        // is S9-11), so its honest pre-cascade count is sampled HERE — after the
+        // export, before the cascade (the reaper fires 15 s after the REDELETE).
+        s9.pre.aCounts.export_bundle = {
+          owner_identity: cnt(
+            'SELECT COUNT(*) AS n FROM export_bundle WHERE owner_identity = ' + s9.refs.aHex,
+          ),
+        };
         s9.censusCancel = cnt(
           'SELECT COUNT(*) AS n FROM account_deletion_reaper_schedule WHERE account_identity = ' +
             s9.refs.aHex,

@@ -119,6 +119,28 @@ Four new `#[no_mangle]` host-syscall abort stubs (insert/update/delete-by-eq/del
 join `privacy_tests.rs`'s six to satisfy the linker for the ctx-bound fn-pointer
 materialization; they abort if ever actually called.
 
+### F1 — measured integration finding: the cascade's wild-resolve GCs the deleting player's terminal battles (and the seed direction must respect it)
+
+Building this e2e surfaced a real cross-slice interaction, reproduced deterministically and
+then bisected (2026-09-02): when the deleting account holds a LIVE WILD battle at cascade
+time, step 6a's `resolve_wild_battle_on_disconnect` runs `write_back_battle_results` for the
+wild row, whose ADR-0077 keep-latest GC **deletes every prior terminal `battle` row on the
+player axis of the wild battle** — including a terminal PvP battle the manifest classifies
+Anonymize ("terminal rows persist") — and its unfired `pvp_deadline_schedule` row is left
+orphaned (`anonymize_battles` later finds no battle row to disarm through). Adjudication:
+NOT a module bug. "Terminal rows persist" was always scoped by ADR-0077's keep-latest
+retention (the surviving opponent's own next battle GCs the row in ordinary play too); the
+cascade path erases rather than anonymizes, which is the *stronger* privacy outcome; and the
+orphaned deadline row is transient by construction — it self-consumes at its fire time (the
+reaper no-ops on a missing battle and the runtime deletes the fired one-shot). The e2e
+therefore seeds the terminal battle with the SUBJECT ON THE OPPONENT AXIS (D challenges, A
+accepts): the wild write-back's player-axis GC cannot reach it and the opponent-axis GC
+skips WILD battles by construction, so the battle legitimately survives for the Anonymize
+assert — which now also exercises the opponent-side tombstone swap and the cascade's
+deadline disarm. The `export_bundle` pre-count is sampled at the post-export census (the
+export runs after the main pre-snapshot; the cascade fires 15 s after the redelete), keeping
+its non-vacuity honest.
+
 ## Consequences
 
 - M22's DoD (§7.3) is executable in CI: the full cascade, terminal-cancel (PRV1-4),
