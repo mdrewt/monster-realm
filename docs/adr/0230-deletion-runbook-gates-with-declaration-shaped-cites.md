@@ -188,7 +188,13 @@ And:
 ## Measured teeth
 
 G24 is gate-enforced by `g24Teeth()` in `evals/account-e2e.eval.mjs`. The gate measured:
-- **33 of 33 teeth bite** (non-vacuous fixtures that catch real mutations and pass on the good tree)
+- **57 of 57 teeth bite** (non-vacuous fixtures that catch real mutations and pass on the good tree).
+  The suite grew twice after review: +22 from the artifact red-team (a fenced-code-block bypass, the
+  unasserted `clausesMet` return, and the unproven own-property guard), and +2 from the verifier,
+  which measured that clause 5's "cited symbol has no declaration" branch — the renamed-symbol case
+  clause 5 primarily exists for — had no fixture at all. Two phase-0 ratchets now hold the suite:
+  `G24_BAD_FIXTURES.length >= 20` and `g24.total >= G24_TEETH_FLOOR`; the first alone is not
+  enough, because it does not cover the EXTRA_CHECKS half.
 - **Real doc proof:** 6 of 6 clauses, 5 of 5 citations resolved
 
 The fixtures include both synthetic bad-case variations (missing clauses, negated text, stale constants)

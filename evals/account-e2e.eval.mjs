@@ -1682,6 +1682,19 @@ const SOURCES_DUPLICATE_ACCOUNTS = sourcesWith(
   FIXTURE_ACCOUNTS_RS_DUPLICATE,
 );
 
+// clause 5 — the source file is present and unambiguous, but the cited
+// symbol has been RENAMED out from under the runbook. This is the case
+// clause 5 primarily exists for (a doc citing a symbol that no longer
+// exists), and it was the one `resolveDeletionCitations` branch with no
+// fixture: the verifier MEASURED that changing its `at === -1` sentinel to
+// `at === -2` survived the whole suite at 55/55. Distinct from the two
+// neighbours: `clause5-missing-source` removes the FILE, and
+// `clause5-ambiguous-duplicate` supplies TWO declarations.
+const FIXTURE_ACCOUNTS_RS_RENAMED = FIXTURE_ACCOUNTS_RS.split(
+  'pub fn account_deletion_reaper(',
+).join('pub fn run_account_deletion_cascade(');
+const SOURCES_RENAMED_ACCOUNTS = sourcesWith(DELETION_SOURCE_ACCOUNTS, FIXTURE_ACCOUNTS_RS_RENAMED);
+
 export const G24_BAD_FIXTURES = [
   [
     'clause1a-weakened',
@@ -1836,6 +1849,18 @@ export const G24_BAD_FIXTURES = [
     5,
   ],
   [
+    'clause5-marker-absent',
+    GOOD_DOC,
+    SOURCES_RENAMED_ACCOUNTS,
+    ['clause 5: FAIL-LOUD', 'carries no'],
+    'accounts.rs was present and unambiguous but no longer declared account_deletion_reaper ' +
+      '(renamed), and the citation resolved anyway — this is the whole point of clause 5: a ' +
+      'runbook naming a symbol the code no longer has is a broken citation. It must also read ' +
+      'DIFFERENTLY from clause5-missing-source (no file at all), so the two cannot shadow ' +
+      'each other',
+    5,
+  ],
+  [
     'heading-absent',
     DOC_HEADING_ABSENT,
     GOOD_DELETION_SOURCES,
@@ -1877,6 +1902,10 @@ export const G24_BAD_FIXTURES = [
 // silently truncating a text pin is a MEASURED incident in this repo.
 const PIN_PSEUDONYMIZATION_EXPECTED_LENGTH = 243;
 const PIN_BACKUP_LIMIT_EXPECTED_LENGTH = 334;
+
+// Today's measured tooth count, used as a ratchet: the suite may grow, never
+// shrink. Kept beside `g24Teeth` so the two are edited together.
+export const G24_TEETH_FLOOR = 57;
 
 export function g24Teeth() {
   // `total` is incremented by `record` ITSELF, once per call, regardless of
@@ -3260,20 +3289,22 @@ export default async function () {
     // plus the two guards clear the aggregate on their own. The per-term
     // negative fixtures are the coverage that actually proves each ANDed
     // clause term bites, so they get a floor of their own.
-    if (G24_BAD_FIXTURES.length < 19) {
+    if (G24_BAD_FIXTURES.length < 20) {
       return teeth(
         'g24-fixture-floor',
         `G24_BAD_FIXTURES holds only ${G24_BAD_FIXTURES.length} negative fixtures — the ` +
-          'floor is 19, one per ANDed clause term plus the fail-loud cases and the ' +
+          'floor is 20, one per ANDed clause term plus the fail-loud cases and the ' +
           'fenced-block bypass. Removing one ' +
           "term's fixture is how a multi-term clause silently degrades to a partial AND",
       );
     }
-    if (g24.total < 16) {
+    if (g24.total < G24_TEETH_FLOOR) {
       return teeth(
         'g24-floor',
-        `g24Teeth() reports only ${g24.total} teeth — a future edit shrank the suite below ` +
-          'its floor of 16; that shrinkage is itself the failure, not a silent no-op',
+        `g24Teeth() reports only ${g24.total} teeth, below the floor of ${G24_TEETH_FLOOR} — ` +
+          'a future edit shrank the suite. The fixture-count floor above does not cover the ' +
+          'EXTRA_CHECKS half, so this one guards it; that shrinkage is itself the failure, ' +
+          'not a silent no-op',
       );
     }
     if (g24.bit !== g24.total) {
