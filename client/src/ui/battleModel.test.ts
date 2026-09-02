@@ -30,6 +30,7 @@ import {
   type OverlayState,
   shouldSkipBattleRefresh,
   statusBadge,
+  unknownStatusToken,
   weatherBanner,
 } from './battleModel';
 import { hpPercent } from './boxModel';
@@ -927,7 +928,14 @@ describe('battleModel m14.5d: weatherBanner — tag to label mapping', () => {
   });
 
   it('BITES: weatherBanner("UnknownWeather") warns + returns empty string (reviewer m-1)', () => {
-    // Identical contract to statusBadge's default arm: console.warn + ''.
+    // m23-s8: the two contracts DIVERGE here, deliberately - this is no longer "identical to
+    // statusBadge's default arm". statusBadge now returns a VISIBLE derived token (see
+    // unknownStatusToken) because a per-monster status badge that renders NOTHING is
+    // indistinguishable from "this monster is healthy": the absence is a lie about game state,
+    // and the badge is the HP bar's only non-colour channel for a status effect (M23 2.6).
+    // A weather banner carries no such ambiguity - no banner means no weather, which is the
+    // true and overwhelmingly common case - so an unknown weather tag must still render
+    // nothing rather than invent a label across the battlefield. Both arms still warn.
     // Kills: an impl that throws on unknown tags, or that returns a non-empty string.
     const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const result = weatherBanner('UnknownWeather');
@@ -966,11 +974,42 @@ describe('battleModel m14.5d: parity — StatusEffect variants all produce non-e
     // a hypothetical future one). The length anchor in the prior test ensures we
     // never vacuously pass an empty variants array.
     // statusBadge is imported at the top of this file from battleModel.
+    // m23-s8 HARDENING - DO NOT REMOVE. MEASURED: once statusBadge's default arm returns a
+    // VISIBLE token instead of the empty string, the `length > 0` assertion below stops biting
+    // at all - deleting `case 'Poison':` from statusBadge went from REDding 2 tests to 118/118
+    // GREEN. Two oracles restore the bite, neither of them length-based:
+    //   * ZERO WARNINGS across all five variants - the default arm console.warns, so a deleted
+    //     case is observable no matter what string it returns. This is the universal tooth.
+    //   * The SHADOW CENSUS - which variants' curated badge is byte-identical to the unknown
+    //     fallback. Deleting a case moves that variant INTO the set. The fallback is spelled so
+    //     that it can never collide with a curated token, so the census is EXACTLY empty.
     const variants = (StatusEffect.algebraicType.value as { variants: Array<{ name: string }> })
       .variants;
-    for (const v of variants) {
-      const badge = statusBadge(v.name);
-      expect(badge.length, `statusBadge("${v.name}") must be non-empty`).toBeGreaterThan(0);
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (const v of variants) {
+        const badge = statusBadge(v.name);
+        expect(badge.length, `statusBadge("${v.name}") must be non-empty`).toBeGreaterThan(0);
+      }
+      expect(
+        warnSpy,
+        'm23-s8: statusBadge must not warn for ANY current StatusEffect variant. A warning ' +
+          'means that variant fell through to the unknown-tag default arm, i.e. the map has ' +
+          'a gap that the now-visible fallback would otherwise hide from the length check ' +
+          'above',
+      ).not.toHaveBeenCalled();
+      const shadowed = variants
+        .filter((v) => statusBadge(v.name) === unknownStatusToken(v.name))
+        .map((v) => v.name)
+        .sort();
+      expect(
+        shadowed,
+        'm23-s8 SHADOW CENSUS: no curated badge may be byte-identical to the unknown-tag ' +
+          'fallback. A name appearing here means its case was deleted and the fallback is ' +
+          "wearing the curated badge's clothes",
+      ).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
     }
   });
 });
@@ -1961,5 +2000,207 @@ describe('isPvpBattle — standalone canonical export (ptc5e e-3)', () => {
     expect(
       isPvpBattle({ opponentMonsterIds: [1n], opponentIdentity: 'aa', playerIdentity: 'aa' }),
     ).toBe(false);
+  });
+});
+
+describe('battleModel m23-s8: statusBadge unknown-tag fallback is visible', () => {
+  it('m23s8 badge is non empty and not the fallback for every known status', () => {
+    // ANCHOR FIRST (the m14.5d idiom): an empty or missing `variants` array must FAIL here,
+    // never vacuously satisfy the loop below.
+    const variants = (StatusEffect.algebraicType.value as { variants: Array<{ name: string }> })
+      .variants;
+    expect(
+      variants.length,
+      'm23s8 ANCHOR: StatusEffect must expose exactly 5 generated variants. An empty array ' +
+        'would make every per-variant assertion below vacuous',
+    ).toBe(5);
+    expect(
+      variants.map((v) => v.name),
+      'm23s8 ANCHOR: the generated variant list must still contain a known member',
+    ).toContain('Poison');
+
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      for (const v of variants) {
+        const badge = statusBadge(v.name);
+        expect(
+          badge.length,
+          `m23s8: statusBadge("${v.name}") must be non-empty — a blank badge is read by a ` +
+            'player as "this monster has no status effect", which is a lie about game state',
+        ).toBeGreaterThan(0);
+        expect(
+          badge.length,
+          `m23s8: statusBadge("${v.name}") must be at most 3 characters — the badge is a pill ` +
+            'rendered inside the monster card and a longer label overflows it',
+        ).toBeLessThanOrEqual(3);
+      }
+
+      // THE UNIVERSAL TOOTH. Once the default arm returns a visible token, `length > 0` no
+      // longer distinguishes a curated badge from a fallback — MEASURED: deleting
+      // `case 'Poison':` goes from REDding 2 tests to 118/118 GREEN. The default arm warns, so
+      // a deleted case is observable regardless of what string it returns.
+      expect(
+        warnSpy,
+        'm23s8: statusBadge must not warn for ANY current StatusEffect variant. A warning ' +
+          'means that variant fell through to the unknown-tag default arm — i.e. the map has a ' +
+          'gap that the visible fallback would otherwise hide',
+      ).not.toHaveBeenCalled();
+
+      // THE SHADOW CENSUS — the second, warn-independent oracle. It kills an implementation
+      // that keeps the visible fallback but drops the console.warn.
+      const shadowed = variants
+        .filter((v) => statusBadge(v.name) === unknownStatusToken(v.name))
+        .map((v) => v.name)
+        .sort();
+      expect(
+        shadowed,
+        'm23s8 SHADOW CENSUS: the set of variants whose curated badge is byte-identical to the ' +
+          'unknown-tag fallback must be EXACTLY this one. "Paralysis" sliced to three ' +
+          'characters and upper-cased is "PAR", which is also its curated badge — a measured ' +
+          'collision of the specified transform, not a gap in the map. Any OTHER name ' +
+          'appearing here means its case was deleted and the fallback is now wearing the ' +
+          "curated badge's clothes",
+      ).toEqual([]);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('m23s8 badge falls back visibly for an unknown status tag', () => {
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const curse = statusBadge('Curse');
+      expect(
+        curse.length,
+        'm23s8: an unknown status tag must still produce a VISIBLE badge. Returning the empty ' +
+          'string makes a poisoned monster indistinguishable from a healthy one — that is the ' +
+          'whole defect this criterion closes',
+      ).toBeGreaterThan(0);
+      expect(
+        curse.length,
+        'm23s8: the fallback token is capped at 3 characters so it fits the same pill as a ' +
+          'curated badge',
+      ).toBeLessThanOrEqual(3);
+      expect(
+        curse,
+        'm23s8: the fallback token must already be upper-case, like every curated badge — a ' +
+          'mixed-case token reads as a different kind of thing on screen',
+      ).toBe(curse.toUpperCase());
+      expect(
+        curse,
+        'm23s8: statusBadge must return exactly the token unknownStatusToken names. The ' +
+          'exported helper exists so a test can name the expected fallback without ' +
+          're-implementing the transform (and thereby testing only itself)',
+      ).toBe(unknownStatusToken('Curse'));
+      expect(
+        warnSpy,
+        'm23s8: the default arm must STILL console.warn. The visible fallback is a player-side ' +
+          'repair, not a reason to stop surfacing a missing bindings regen at development time',
+      ).toHaveBeenCalledTimes(1);
+
+      // DERIVATION, not a constant. Kills a fallback that returns one shared literal (e.g.
+      // '???') for every unknown tag: visible, capped, upper-case, and identical for two
+      // different server variants, so the badge stops distinguishing them.
+      const hex = statusBadge('Hex');
+      expect(
+        hex,
+        'm23s8: two DIFFERENT unknown tags must produce two DIFFERENT tokens — the fallback is ' +
+          'derived from the tag, never one shared placeholder constant',
+      ).not.toBe(curse);
+      expect(
+        hex,
+        'm23s8: the second unknown tag must also route through unknownStatusToken, so the one ' +
+          'export is the sole source of the fallback value for every tag the map does not know',
+      ).toBe(unknownStatusToken('Hex'));
+      expect(warnSpy, 'm23s8: each unknown lookup warns once').toHaveBeenCalledTimes(2);
+
+      // THE OTHER SIDE OF THE BOUNDARY. Absence of a status is NOT an unknown tag: it must
+      // still map to '' so `statusBadge(...) || null` at battleModel.ts:196 yields null and the
+      // view renders no pill at all.
+      expect(
+        statusBadge(null),
+        'm23s8: a monster with NO status must still map to the empty string — a fallback that ' +
+          'fires on absence would stamp a badge on every healthy monster in the game',
+      ).toBe('');
+      expect(statusBadge(undefined), 'm23s8: undefined is absence, not an unknown tag').toBe('');
+      expect(statusBadge(''), 'm23s8: the empty tag is absence, not an unknown tag').toBe('');
+      expect(
+        warnSpy,
+        'm23s8: absence must not warn — the warn is reserved for a genuine bindings gap, and a ' +
+          'warning on every healthy monster would drown it',
+      ).toHaveBeenCalledTimes(2);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
+  it('m23s8 badge survives the view model chain for an unknown status tag', () => {
+    // WHY THIS GOES THROUGH buildBattleViewModel AND NOT THE VIEW. MEASURED:
+    // battleView.test.ts:32 imports BattleViewModel as a TYPE only and hand-builds every VM, so
+    // it contains zero live calls to buildBattleViewModel. A badge test written on the view
+    // side never exercises the real chain — statusBadge → `... || null` (battleModel.ts:196) →
+    // `if (card.status)` (battleView.ts:277) — and would pass with this fix reverted, because
+    // the hand-built VM supplies the non-null status the production path fails to produce.
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    try {
+      const b = makeBattle({
+        sideA: battleSide({
+          active: 0,
+          team: [battleMonster({ speciesId: 1, status: { tag: 'Curse' } })],
+        }),
+      } as Partial<StoreBattle>);
+      const vm = buildBattleViewModel(b, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+      expect(vm, 'm23s8: an unknown status tag must not sink the view model').not.toBeNull();
+      expect(
+        vm!.playerCard.status,
+        'm23s8 CHAIN: vm.playerCard.status must NOT be null for an unknown status tag. This is ' +
+          'the single assertion the whole criterion turns on: the "|| null" coercion at ' +
+          'battleModel.ts:196 converts an EMPTY fallback into null, and the card.status gate at ' +
+          'battleView.ts:277 then renders no badge element at all — so a monster carrying a ' +
+          'server-side status the client has not learned about yet looks perfectly healthy',
+      ).not.toBeNull();
+      expect(
+        typeof vm!.playerCard.status,
+        'm23s8 CHAIN: the propagated status must be a STRING — not a boolean or a number that ' +
+          'happens to be truthy at the card.status gate in the view',
+      ).toBe('string');
+      expect(
+        (vm!.playerCard.status as string).length,
+        'm23s8 CHAIN: the propagated badge must be non-empty',
+      ).toBeGreaterThan(0);
+      expect(
+        vm!.playerCard.status,
+        'm23s8 CHAIN: the propagated badge must be exactly the fallback token, proving the VM ' +
+          'carried the value through rather than substituting some placeholder of its own',
+      ).toBe(unknownStatusToken('Curse'));
+
+      // CONTROL PROBE — proves the assertion above is not tautological. The SAME chain, with a
+      // monster that has no status at all, must still yield null. Without this, an
+      // implementation that hardcoded a non-null status on every card would pass.
+      const bNone = makeBattle();
+      const vmNone = buildBattleViewModel(bNone, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+      expect(vmNone, 'm23s8 CONTROL: the no-status battle must still build').not.toBeNull();
+      expect(
+        vmNone!.playerCard.status,
+        'm23s8 CONTROL: a monster with NO status must still map to null, so the assertion ' +
+          'above is about the fallback and not about "status is always non-null"',
+      ).toBeNull();
+
+      // The KNOWN path must be untouched by the fallback change.
+      const bKnown = makeBattle({
+        sideA: battleSide({
+          active: 0,
+          team: [battleMonster({ speciesId: 1, status: { tag: 'Poison' } })],
+        }),
+      } as Partial<StoreBattle>);
+      const vmKnown = buildBattleViewModel(bKnown, makeSkillMap(1), makeSpeciesMap(speciesRow(1)));
+      expect(
+        vmKnown!.playerCard.status,
+        'm23s8 REGRESSION: a KNOWN status tag must still map to its curated badge, not to the ' +
+          'fallback token — the visible default arm must not have swallowed the switch',
+      ).toBe('PSN');
+    } finally {
+      warnSpy.mockRestore();
+    }
   });
 });
