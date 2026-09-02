@@ -1174,10 +1174,12 @@ handled sign-in-failed state.
   taxonomy mirrors `complete_guest_claim`'s guards). `menuModel`/`helpModel` add the `KeyC` account
   leaf. No credential value or claim code ever reaches a log/telemetry sink (AUTH-57, `evals/
   client-no-pii-logs.eval.mjs`).
-- **Deployment (`ops/auth/`, `docs/observability-dr-runbook.md` §8):** self-hosted Better Auth
+- **Deployment (`ops/auth/`, `docs/observability-dr-runbook.md` §8–9):** self-hosted Better Auth
   (compose + `.env.example` + README recipe, no committed runtime/secret) with a DR posture whose
   first line item is JWKS signing-key custody (ADR-0182 D20). Native email+password is dev/QA-only
   (OQ5). The self-contained live claim flow is exercised end-to-end by `evals/account-e2e.eval.mjs`.
+  Data deletion compliance (M22 §9) is exact-body-checked by G24 via declaration-shaped citation
+  anchors on the runbook's deletion & backup retention section (ADR-0230).
 
 ## Reducer-rejection feedback & app-level reconnect (`client/src/`, M13.5b — ADR-0085)
 

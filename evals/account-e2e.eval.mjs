@@ -56,9 +56,6 @@ import { createServer } from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
-// CHECKER-IMPORT REUSE (ADR-0121): the YAML job-block extractor already exists
-// and is already teeth-tested by the eval that owns it.
-import { extractJobBlock } from './e2e-desync-teeth.eval.mjs';
 // Same reuse rule for G24's Rust-source primitives: `requireSoleDefinition`
 // and `parseGraceConst` are already teeth-tested (and already red-teamed —
 // see their own docstrings) by the eval that owns them.
@@ -67,6 +64,9 @@ import {
   requireSoleDefinition,
   stripRustComments,
 } from './deletion-grace-wasm-ssot.eval.mjs';
+// CHECKER-IMPORT REUSE (ADR-0121): the YAML job-block extractor already exists
+// and is already teeth-tested by the eval that owns it.
+import { extractJobBlock } from './e2e-desync-teeth.eval.mjs';
 
 // ---------------------------------------------------------------------------
 // Contract constants — every one of these is a VALUE PIN against a committed
@@ -1017,12 +1017,17 @@ function runbookMapBeforeAppendix(fn) {
 // checker and any future caller cannot drift to different spellings.
 export const DELETION_SECTION_HEADING_PHRASE = 'Data deletion & backup retention';
 
-// Spec §9 residual risk 1, required-exact language. Authored DOUBLE-quoted:
-// biome's `quoteStyle: "single"` uses a fewer-escapes heuristic, so a
-// sentence containing apostrophes stays double-quoted and never acquires the
-// `\'` escapes that have silently truncated a text pin in this repo before.
+// Spec §9 residual risk 1, required-exact language.
+//
+// QUOTE STYLE IS NOT COSMETIC HERE. biome's `quoteStyle: "single"` applies a
+// fewer-escapes heuristic, so it leaves PIN_BACKUP_LIMIT (which contains
+// apostrophes) double-quoted and rewrites this one, which contains none, to
+// single. Either way neither pin may acquire a `\\` escape: a formatter
+// escaping an apostrophe has silently truncated a text pin in this repo
+// before. That is what the no-backslash and exact-length teeth enforce —
+// the quote character itself is left to the formatter.
 export const PIN_PSEUDONYMIZATION =
-  "Direct name/display fields are severed on deletion. The `Identity` key and its associated timestamps/behavioral history are not purged from multi-user or historical rows; this is a documented, accepted pseudonymization limitation, not erasure.";
+  'Direct name/display fields are severed on deletion. The `Identity` key and its associated timestamps/behavioral history are not purged from multi-user or historical rows; this is a documented, accepted pseudonymization limitation, not erasure.';
 
 // Spec §9 residual risk 2 — the PRV1-18 core, the sentence the spec calls
 // "pinned and exact-body-checked in the DR runbook". It names
@@ -1119,7 +1124,7 @@ export function groupThousands(digits) {
 // `Object.prototype` key must never satisfy a citation lookup.
 function ownSource(sources, file) {
   if (sources === null || typeof sources !== 'object') return undefined;
-  if (!Object.prototype.hasOwnProperty.call(sources, file)) return undefined;
+  if (!Object.hasOwn(sources, file)) return undefined;
   const text = sources[file];
   return typeof text === 'string' ? text : undefined;
 }
@@ -1387,7 +1392,6 @@ export function linesMapBefore(lines, marker, fn) {
   return lines.map((l, i) => (i < at ? fn(l) : l)).join('\n');
 }
 
-
 // ---------------------------------------------------------------------------
 // B. G24's own synthetic runbook, with its OWN decoy appendix.
 // ---------------------------------------------------------------------------
@@ -1547,11 +1551,15 @@ const GOOD_DOC = GOOD_DELETION_RUNBOOK_LINES.join('\n');
 // clause 1a / 1b — mutate ONE phrase inside the live pinned sentence, so a
 // checker doing substring `contains` (not exact-sentence match) still fails,
 // and so this fixture rots correctly if the implementer ever edits the pin.
-const DOC_1A_WEAKENED = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
-  l === PIN_PSEUDONYMIZATION ? l.split('not erasure').join('complete erasure') : l,
+const DOC_1A_WEAKENED = linesMapBefore(
+  GOOD_DELETION_RUNBOOK_LINES,
+  DELETION_APPENDIX_HEADING,
+  (l) => (l === PIN_PSEUDONYMIZATION ? l.split('not erasure').join('complete erasure') : l),
 );
-const DOC_1B_WEAKENED = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
-  l === PIN_BACKUP_LIMIT ? l.split('makes no claim').join('makes no strong claim') : l,
+const DOC_1B_WEAKENED = linesMapBefore(
+  GOOD_DELETION_RUNBOOK_LINES,
+  DELETION_APPENDIX_HEADING,
+  (l) => (l === PIN_BACKUP_LIMIT ? l.split('makes no claim').join('makes no strong claim') : l),
 );
 
 // clause 2 — three fixtures, each mutating exactly one of the three ANDed
@@ -1568,8 +1576,10 @@ const DOC_2_DAYS = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX
 );
 
 // clause 3 — four fixtures, one per ANDed term.
-const DOC_3_REAPER_FN = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
-  l.split('account_deletion_reaper').join('the_deletion_job'),
+const DOC_3_REAPER_FN = linesMapBefore(
+  GOOD_DELETION_RUNBOOK_LINES,
+  DELETION_APPENDIX_HEADING,
+  (l) => l.split('account_deletion_reaper').join('the_deletion_job'),
 );
 const DOC_3_SCHEDULE = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
   l.split('AccountDeletionReaperSchedule').join('DeletionScheduleRow'),
@@ -1589,8 +1599,10 @@ const DOC_3_REARM = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDI
 // its own fixture below; the reverse is not, so the 4th fixture removes
 // BOTH names together and is flagged as jointly covering that ANDed pair —
 // see the report note in the handoff reply, this is not a silent workaround.
-const DOC_4_MY_EXPORT = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
-  l.split('my_export_bundle').join('my-export-view'),
+const DOC_4_MY_EXPORT = linesMapBefore(
+  GOOD_DELETION_RUNBOOK_LINES,
+  DELETION_APPENDIX_HEADING,
+  (l) => l.split('my_export_bundle').join('my-export-view'),
 );
 const DOC_4_NO_TTL = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
   l.split('no independent TTL').join('a bounded TTL'),
@@ -1598,10 +1610,13 @@ const DOC_4_NO_TTL = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPEND
 const DOC_4_S4B = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
   l.split('S4b').join('S9'),
 );
-const DOC_4_BOTH_NAMES = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
-  l
-    .split('export_bundle and the my_export_bundle view')
-    .join('the account-export mechanism and its privacy-scoped view'),
+const DOC_4_BOTH_NAMES = linesMapBefore(
+  GOOD_DELETION_RUNBOOK_LINES,
+  DELETION_APPENDIX_HEADING,
+  (l) =>
+    l
+      .split('export_bundle and the my_export_bundle view')
+      .join('the account-export mechanism and its privacy-scoped view'),
 );
 
 // html-comment-hidden — the pseudonymization sentence is present ONLY
@@ -1901,7 +1916,8 @@ export function g24Teeth() {
     },
   ];
   const citationsIsArray = Array.isArray(DELETION_CITATIONS);
-  const citationsLengthOk = citationsIsArray && DELETION_CITATIONS.length === expectedCitations.length;
+  const citationsLengthOk =
+    citationsIsArray && DELETION_CITATIONS.length === expectedCitations.length;
   const rosterMatches =
     citationsIsArray &&
     expectedCitations.every((exp) =>
@@ -3173,8 +3189,7 @@ export default async function () {
         'reaper/export chain (M22 PRV1-18, ADR-0230).',
     };
   }
-  const g24Detail =
-    `G24 green (${g24Real.clausesMet}/6 clauses, ${g24Real.resolved}/${DELETION_CITATIONS.length} citations)`;
+  const g24Detail = `G24 green (${g24Real.clausesMet}/6 clauses, ${g24Real.resolved}/${DELETION_CITATIONS.length} citations)`;
 
   if (!existsSync(CI_WORKFLOW_PATH)) {
     return { name, pass: false, detail: `cannot read ${CI_WORKFLOW_PATH}` };
