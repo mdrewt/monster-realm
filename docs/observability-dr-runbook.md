@@ -238,3 +238,102 @@ spacetime logs monster-realm | tail -n 20
 Caveat carried from ADR-0182 D20: the `BLAKE3(iss|sub)` construction is cited against the vendored
 `spacetimedb-lib-1.12.0` source at high confidence and was **not** byte-verified by any review pass —
 treat the drill's identity-equality check as the authority, not this prose.
+
+## 9. Data deletion & backup retention
+
+What a deletion request actually guarantees, and what it explicitly does not (M22). Gated by
+`G24` in `evals/account-e2e.eval.mjs` — this section is exact-body-checked, so an edit that
+softens or drops one of the statements below fails CI rather than rotting quietly (PRV1-18).
+
+### 9.1 What deletion does — and does not — reach
+
+Spec-mandated language, quoted verbatim (M22 §9 residual risk 1):
+
+> Direct name/display fields are severed on deletion. The `Identity` key and its associated timestamps/behavioral history are not purged from multi-user or historical rows; this is a documented, accepted pseudonymization limitation, not erasure.
+
+Spec-mandated language, quoted verbatim (M22 §9 residual risk 2):
+
+> Deletion is guaranteed for the module's live queryable state within `DELETION_GRACE_MS` of the request. Host-level backups, snapshots, and WAL are outside the module's reach; point-in-time recovery can restore deleted data until the operator's backup-retention window elapses. This module makes no claim about backup or replica state.
+
+That quotation names `DELETION_GRACE_MS`; **no such symbol exists in this codebase**. The real
+declaration is `DELETION_GRACE_MS_DEFAULT` (`game-core/src/accounts/deletion.rs`) — do not go
+looking for the shorter name. The spelling split is deliberate and is recorded in ADR-0230.
+
+The practical consequence for you as the operator: **§2's backup procedures and §3's retention
+knobs are the other half of this module's deletion story.** A player whose account completed
+deletion is still recoverable from any restic snapshot taken before that date. Nothing in the
+module can reach into those snapshots.
+
+### 9.2 The grace window
+
+`DELETION_GRACE_MS_DEFAULT` is `604_800_000` ms — 7 days between `delete_account` and the
+irreversible cascade. During that window the account sits `PendingDeletion` and
+`cancel_account_deletion` fully restores it.
+
+**This figure is an arbitrary placeholder, not a chosen policy.** M22 §8.1 escalation #1 (the
+actual grace window and the backup-retention TTL) is **UNRESOLVED**: no operator has picked
+these numbers, and the ceremony deliberately refused to bake in a figure borrowed from an
+unrelated service. The `_DEFAULT` suffix means "the literal an operator edits" — there is no
+runtime override column. Retuning it is a code change, and it is a change that also owns the
+value written two paragraphs up: `G24` clause 2 derives both the ms figure and the day figure
+from the declaration itself, so a retune that skips this section is a CI failure, by design.
+
+### 9.3 What actually runs
+
+| Step | Where |
+|---|---|
+| `delete_account` sets `PendingDeletion` and arms exactly one `AccountDeletionReaperSchedule` row, last | `server-module/src/accounts.rs` |
+| `cancel_account_deletion` disarms that row and returns the account to `Active` | `server-module/src/accounts.rs` |
+| `account_deletion_reaper` runs the cascade when the row is due | `server-module/src/accounts.rs` |
+| `ensure_deletion_reapers_armed` re-arms after a republish or a crash, from `init`/`sync_content` | `server-module/src/accounts.rs` (ADR-0221 R2) |
+
+The schedule is **one-shot**. On a row that is not yet due the reaper performs a fresh **re-arm**
+from the account's own request stamp — the runtime has already deleted the fired row — rather
+than reusing a stale schedule (ADR-0228 D3a). So a deletion that survives a restart is still
+armed, and a cancel-then-re-request never double-schedules.
+
+The cascade runs as **one transaction** in the step order pinned by ADR-0228 (§4.4): live trades,
+battles and challenges are force-resolved first, the terminal marker is stamped last, and an
+`Err` anywhere aborts the whole thing. A partially-erased account therefore cannot persist, and
+the terminal marker can never precede the erasure it claims happened.
+
+**If you are investigating a stuck deletion**, the two rows that matter are the account's own
+`status`/`deletion_requested_at_ms`/`terminal_at_ms` and its `account_deletion_reaper_schedule`
+row. An account sitting `PendingDeletion` with **no** schedule row is the failure mode
+`ensure_deletion_reapers_armed` exists to repair; publishing the module runs that sweep.
+
+### 9.4 Export bundles — retention as landed
+
+`request_data_export` writes `export_bundle` rows, read back only through the owner-scoped
+`my_export_bundle` view. Their retention today is entirely indirect:
+
+- purged when that owner requests a **new** export (purge-before-write), and
+- purged by the deletion cascade.
+
+**There is no independent TTL.** The PRV1-14 expiry reaper is deferred to **S4b**
+(`server-module/src/privacy.rs`), so a bundle belonging to an account that neither re-exports nor
+deletes persists indefinitely. Treat that as operator-relevant: an export bundle is a second,
+denormalized copy of one player's personal data, and it lands in **every** subsequent backup
+taken under §2. Until S4b ships, the only bound on its lifetime is the account's.
+
+### 9.5 Classification SSOT
+
+`DATA_LIFECYCLE_MANIFEST` (`server-module/src/schema.rs`) is the single source of truth for what
+the cascade does with each table. Its four classes are spelled, in code, `Erase`, `Anonymize`,
+`ViaJoin(parent)` and `NotOwned` — the spec's prose calls the third class "join-only"; there is
+no `JoinOnly` symbol. Do not re-derive the partition from this runbook: the manifest is gated
+bidirectionally against the live schema (ADR-0229), and per-class counts listed here would drift
+on the next table added.
+
+### 9.6 Operator procedure — expiring recoverability
+
+There is no automation for this. Deciding how long a deleted account stays restorable is the
+backup-retention half of §8.1 escalation #1, and until it is answered the honest posture is that
+snapshots are kept under §3's rules and nothing prunes them on a deletion's behalf.
+
+```sh
+# what is still restorable, and from when
+restic snapshots --tag monster-realm --json | jq -r '.[] | "\(.time)  \(.short_id)"'
+# once a retention window is chosen, review before pruning — never run this without --dry-run first
+restic forget --tag monster-realm --keep-daily 7 --keep-weekly 4 --dry-run
+```
