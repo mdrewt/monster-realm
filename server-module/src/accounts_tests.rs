@@ -11689,3 +11689,1458 @@ fn m22s6_cascade_chain_reaches_every_classified_table() {
          an exact count forces a conscious map edit alongside any reclassification."
     );
 }
+
+// ===========================================================================
+// M22-S9 — POST-INTEGRATION CROSS-SLICE CONTRACT PINS (PRV1 §7.3).
+//
+// Spec: M22-privacy-compliance.spec.md §7.3 (post-integration verification —
+// the milestone's real DoD). Design record: ADR-0232 (D1 injected clock, D4
+// manifest-transcription honesty, D8 what S9 does NOT re-prove). Plan:
+// memory/projects/monster-realm-m22-s9-plan.md (harness repo).
+//
+// WHAT THIS SECTION IS. S0-S8 each merged in isolation. Nothing in the tree
+// had ever asserted that the SEAMS BETWEEN them still line up: that lib.rs'
+// disconnect bundle still has the shape the S3b cascade calls it with, that the
+// S1 deletion gate still has the shape the S5 fan-out delegates to, that the
+// `export_bundle` row the S2 schema declares is still the eight-column shape S4
+// writes and S8 assembles, that the committed TypeScript bindings still expose
+// the M22 client surface the live e2e drives, and that the e2e's own
+// transcribed constants still equal the source they claim to mirror. Five
+// tests, one per named contract; four host-syscall abort stubs so the
+// ctx-bound fn pointers of T1 can be MATERIALIZED in a native test binary.
+//
+// WHAT IT IS NOT (ADR-0232 D8). These are type-system and cross-artifact pins.
+// The behavioural coverage that already exists is deliberately NOT duplicated:
+// cascade body order (the `m22s3b_` tests), derive-metadata completeness (the
+// `m22s6_` tests), the S5 delegation census (`guards_tests.rs`), the
+// `export_bundle` column TEXT pin
+// (`export_bundle_struct_shape_and_privacy`, :4100). T2 below pins the
+// same table through a completely different mechanism — an exhaustive
+// destructure with no rest pattern — because a text pin over schema.rs and a
+// compile-level pin fail on disjoint mutations: a text pin cannot see a type
+// alias swap, and a destructure cannot see an attribute change.
+//
+// TWO OF THE FIVE START RED ON PURPOSE (TDD). T4 and T5 read constants that
+// `evals/account-e2e.eval.mjs` does not carry yet; T4's failure message PRINTS
+// the derived transcription so the eval author transcribes a DERIVED value
+// rather than authoring a second source of truth. Neither test may be edited to
+// match whatever the eval ends up saying: the eval is the artifact under test.
+//
+// NO BLOCK-COMMENT OPENER AND NO GLOB SEQUENCE APPEARS ANYWHERE IN THIS
+// SECTION, in prose or in code — this file's header rule, restated because it
+// is load-bearing: several shipped evals concatenate every `server-module/src`
+// file (test files included) and strip comments with a naive scanner, so one
+// such two-character sequence written here once blanked an unrelated function
+// out of a LATER file entirely and red-ed two evals this slice never touched.
+// Line comments only. Every scanner needle this section carries is assembled
+// mid-token with `concat!`, and the two byte values a naive stripper mis-pairs
+// on (the double quote and the backslash) are written as numeric constants
+// rather than as char literals.
+// ===========================================================================
+
+/// Frozen sources this section scans. `deletion.rs` is game-core's pure
+/// deletion surface (the grace + chunk SSOTs the e2e patches in its tmpdir
+/// copy); the eval is the artifact T4/T5 hold to its own source of truth; the
+/// five `.ts` files are the COMMITTED bindings — `include_str!` compiling at
+/// all is the existence proof T3 needs, and a missing file is a build error
+/// rather than a test that quietly asserts nothing.
+const M22S9_DELETION_RS: &str = include_str!("../../game-core/src/accounts/deletion.rs");
+const M22S9_ACCOUNT_E2E_MJS: &str = include_str!("../../evals/account-e2e.eval.mjs");
+const M22S9_EXPORT_BUNDLE_TS: &str =
+    include_str!("../../client/src/module_bindings/my_export_bundle_table.ts");
+const M22S9_MY_ACCOUNT_TS: &str =
+    include_str!("../../client/src/module_bindings/my_account_table.ts");
+const M22S9_DELETE_ACCOUNT_TS: &str =
+    include_str!("../../client/src/module_bindings/delete_account_reducer.ts");
+const M22S9_CANCEL_DELETION_TS: &str =
+    include_str!("../../client/src/module_bindings/cancel_account_deletion_reducer.ts");
+const M22S9_REQUEST_EXPORT_TS: &str =
+    include_str!("../../client/src/module_bindings/request_data_export_reducer.ts");
+
+/// How many times a pinned identifier may appear in the eval AT ALL before this
+/// section refuses to reason about which occurrence is the declaration.
+///
+/// This is a sanity bound, NOT the pin: the pin is that exactly ONE occurrence
+/// is a DECLARATION (`export const <name> =`), which is what defeats the
+/// steered first-hit anchor this repo has measured before. The cap exists so a
+/// file that suddenly names a pinned constant twenty-five times gets a human
+/// reading rather than a silent parse. Raising it consciously is fine; deleting
+/// the sole-declaration clause is not.
+const M22S9_MARKER_CAP: usize = 24;
+
+// ---------------------------------------------------------------------------
+// S9 machinery. Every helper is `m22s9_`-prefixed so it can never collide with
+// a same-named helper elsewhere in this file.
+// ---------------------------------------------------------------------------
+
+/// The NAMES of every top-level column of one registered row type, in
+/// declaration order.
+///
+/// Same fail-loud discipline as `m22s6_identity_column_count` (:10694) and for
+/// the same reason: `ty` MUST be a top-level `Product` (every SpacetimeDB table
+/// row is a struct), so anything else means the S6 registry names the WRONG
+/// Rust type for `accessor` and every clause built on the result would be
+/// describing something that is not a row. An UNNAMED element is equally fatal:
+/// a column with no name cannot be transcribed, cannot be queried by the e2e's
+/// SQL pass, and returning it as an empty string would silently produce a
+/// well-formed-looking transcription entry naming nothing.
+fn m22s9_top_level_column_names(accessor: &str, ty: &AlgebraicType) -> Vec<String> {
+    let AlgebraicType::Product(p) = ty else {
+        panic!(
+            "[m22s9/registry-shape] the row type registered for `{accessor}` is not a Product at \
+             the top level ({ty:?}). Every SpacetimeDB table row is a struct, so a non-Product \
+             top-level type means the S6 registry names the WRONG Rust type for `{accessor}` — \
+             every S9 clause built on it would be reading the columns of something that is not a \
+             row at all."
+        )
+    };
+    let mut out: Vec<String> = Vec::with_capacity(p.elements.len());
+    for e in p.elements.iter() {
+        let Some(name) = e.name.as_ref() else {
+            panic!(
+                "[m22s9/unnamed-column] a top-level column of `{accessor}` carries NO name in its \
+                 derive metadata. An unnamed column cannot be transcribed into the e2e's manifest \
+                 constant and cannot be named in a SQL predicate; emitting an empty name instead \
+                 would produce a well-formed-looking entry that identifies nothing."
+            )
+        };
+        out.push(name.to_string());
+    }
+    out
+}
+
+/// The NAMES of the identity-bearing top-level columns of one registered row
+/// type, sorted, deduplicated by construction (a Product cannot name a column
+/// twice).
+///
+/// Sibling of `m22s6_identity_column_count` (:10694): identical traversal,
+/// identical panic discipline, but it returns WHICH columns rather than HOW
+/// MANY. The e2e's post-cascade truth pass needs the names — a count cannot be
+/// turned into a SQL predicate, and guessing the name is measured-wrong
+/// (`player_wallet`'s owner column is not called `identity`, so a guess is a
+/// 400 from the SQL endpoint and a plausible-but-wrong guess is a silently
+/// empty pre-count).
+///
+/// SORTED, not declaration-ordered, on purpose: this list feeds a byte-compared
+/// transcription, and a column REORDER inside a row struct must not churn that
+/// constant. Field ORDER is pinned where it actually matters (BSATN layout) by
+/// `schema_account_struct_shape_tripwire` (:2465) and
+/// `export_bundle_struct_shape_and_privacy` (:4100).
+fn m22s9_identity_column_names(accessor: &str, ty: &AlgebraicType) -> Vec<String> {
+    let AlgebraicType::Product(p) = ty else {
+        panic!(
+            "[m22s9/registry-shape] the row type registered for `{accessor}` is not a Product at \
+             the top level ({ty:?}). See `m22s9_top_level_column_names` — a non-Product row type \
+             means the S6 registry names the wrong Rust type, and every identity-column list \
+             derived from it would be fiction."
+        )
+    };
+    let mut out: Vec<String> = Vec::new();
+    for e in p.elements.iter() {
+        if !m22s6_identity_bearing(&e.algebraic_type, 0) {
+            continue;
+        }
+        let Some(name) = e.name.as_ref() else {
+            panic!(
+                "[m22s9/unnamed-column] an IDENTITY-bearing top-level column of `{accessor}` \
+                 carries no name in its derive metadata. That is the one column class the e2e's \
+                 truth pass must be able to name in a SQL predicate; an unnamed one cannot be \
+                 queried, so this fails loud rather than transcribing a blank."
+            )
+        };
+        out.push(name.to_string());
+    }
+    out.sort();
+    out
+}
+
+/// `snake_case` -> `camelCase`, the transformation the SpacetimeDB TypeScript
+/// generator applies to every column name.
+///
+/// Derived, never hand-spelled: a hand-written camelCase list is a second
+/// transcription of the column set, and the whole point of T3 is that the
+/// binding's field names are checked against the LIVE row type rather than
+/// against a list somebody typed. The caller additionally proves the result
+/// carries no underscore, which is what kills the degenerate identity mutant —
+/// without that clause a `snake_to_camel` that returned its input would pass
+/// every containment check, because the generated binding carries the snake
+/// spelling too (inside `.name(...)`).
+fn m22s9_snake_to_camel(snake: &str) -> String {
+    let mut out = String::with_capacity(snake.len());
+    let mut upper_next = false;
+    for c in snake.chars() {
+        if c == '_' {
+            upper_next = true;
+            continue;
+        }
+        if upper_next {
+            out.push(c.to_ascii_uppercase());
+            upper_next = false;
+        } else {
+            out.push(c);
+        }
+    }
+    out
+}
+
+/// The full one-line declaration of the deletion grace SSOT, assembled
+/// mid-identifier so THIS file never carries the contiguous needle.
+///
+/// The FULL declaration, not the bare integer: `deletion.rs` mentions the raw
+/// literal in its own honesty note (:23), so a bare-literal needle is ambiguous
+/// in the file the e2e patcher rewrites — and an ambiguous needle is exactly
+/// what makes a patcher either throw on arrival or patch a comment.
+fn m22s9_nd_grace_decl() -> String {
+    concat!(
+        "pub const DELETION_GRACE",
+        "_MS_DEFAULT: i64 = 604",
+        "_800_000;"
+    )
+    .to_string()
+}
+
+/// The full one-line declaration of the export sub-chunk SSOT, same rules.
+fn m22s9_nd_chunk_decl() -> String {
+    concat!("pub const EXPORT_CHUNK", "_ROWS: u32 = 500;").to_string()
+}
+
+/// The squashed declaration needle for the S4 export reducer.
+fn m22s9_nd_request_export_decl() -> String {
+    concat!("fnrequest_data", "_export(").to_string()
+}
+
+/// The squashed call needle for the S1 deletion gate as the S4 export reducer
+/// spells it.
+fn m22s9_nd_pending_gate() -> String {
+    concat!("is_pending", "_deletion(").to_string()
+}
+
+/// The value of the SOLE `export const <name> = <literal>;` declaration in a
+/// JavaScript source, quote-agnostically.
+///
+/// QUOTE-AGNOSTIC because biome owns that character: it rewrites string
+/// delimiters at will and its choice is not a fact about the contract. It never
+/// rewrites string CONTENTS, which is why a single delimiter-joined literal is
+/// a stable cross-artifact carrier at all (ADR-0232 D4).
+///
+/// SOLE DECLARATION, not first hit. An `indexOf`-style anchor is steerable by a
+/// decoy: a second string mentioning the same identifier anywhere earlier in the
+/// file re-points the extraction, and the gate then compares against text the
+/// eval never uses. So every occurrence is walked, only those followed by `=`
+/// (and not `==`) at a word boundary count as declarations, exactly one is
+/// required, and its line must open with `export const` — a local shadow inside
+/// a function is not the exported contract.
+///
+/// EVERY AMBIGUITY IS AN `Err`, NEVER A GUESS: an escape sequence, a newline
+/// inside the literal, an unterminated literal, a backtick (a template literal
+/// can interpolate, so its text is not a constant), a `+` after the closing
+/// quote (a concatenated value is not a single literal and biome may re-split
+/// it at any line width). The caller decides how loudly to fail; T4 turns the
+/// `Err` into a panic that also prints the derived value it wanted to compare
+/// against.
+fn m22s9_sole_js_const_str(src: &str, name: &str) -> Result<String, String> {
+    const SINGLE_QUOTE: u8 = 39;
+    const DOUBLE_QUOTE: u8 = 34;
+    const BACKSLASH: u8 = 92;
+    const NEWLINE: u8 = 10;
+    const TAB: u8 = 9;
+
+    let bytes = src.as_bytes();
+    let mut occurrences = 0usize;
+    let mut decls: Vec<(usize, usize)> = Vec::new();
+    let mut start = 0usize;
+    while let Some(rel) = src[start..].find(name) {
+        let at = start + rel;
+        start = at + name.len();
+        occurrences += 1;
+        let after = at + name.len();
+        if at > 0 && is_word_byte(bytes[at - 1]) {
+            continue;
+        }
+        if after < bytes.len() && is_word_byte(bytes[after]) {
+            continue;
+        }
+        let mut k = after;
+        while k < bytes.len() && (bytes[k] == b' ' || bytes[k] == TAB) {
+            k += 1;
+        }
+        let next = bytes.get(k + 1).copied().unwrap_or_default();
+        if bytes.get(k) != Some(&b'=') || next == b'=' || next == b'>' {
+            continue;
+        }
+        decls.push((at, k + 1));
+    }
+
+    if occurrences == 0 {
+        return Err(format!(
+            "[m22s9/js-const-missing] `{name}` does not appear in evals/account-e2e.eval.mjs at \
+             all. The e2e must carry it as `export const {name} = <one quoted literal>;` — a \
+             value this test derives from committed source and byte-compares, so that the eval \
+             transcribes a derived fact instead of becoming a second source of truth for it."
+        ));
+    }
+    if occurrences > M22S9_MARKER_CAP {
+        return Err(format!(
+            "[m22s9/js-const-flood] `{name}` appears {occurrences} times in \
+             evals/account-e2e.eval.mjs; the sanity cap is {M22S9_MARKER_CAP}. The pin below is \
+             the SOLE-DECLARATION clause, not this count — but a file that names one pinned \
+             constant this often needs a human to say which occurrence is the contract before a \
+             parser guesses."
+        ));
+    }
+    if decls.len() != 1 {
+        let n = decls.len();
+        return Err(format!(
+            "[m22s9/js-const-not-sole] `{name}` has {n} declaration(s) (an occurrence followed by \
+             `=`) in evals/account-e2e.eval.mjs; exactly one is required. Zero means the eval \
+             mentions the name without declaring it; two or more means a first-hit anchor could \
+             be steered onto whichever the parser happened to reach first."
+        ));
+    }
+
+    let (marker_at, value_at) = decls[0];
+    let line_start = match src[..marker_at].rfind('\n') {
+        Some(i) => i + 1,
+        None => 0,
+    };
+    let prefix = src[line_start..marker_at].trim();
+    if prefix != "export const" {
+        return Err(format!(
+            "[m22s9/js-const-not-exported] the sole declaration of `{name}` is introduced by \
+             {prefix:?}, not by `export const`. The e2e's phase-0 teeth and this test both need \
+             the module-level EXPORTED binding; a local shadow inside a function is invisible to \
+             both."
+        ));
+    }
+
+    let mut k = value_at;
+    while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+        k += 1;
+    }
+    let quote = bytes.get(k).copied().unwrap_or_default();
+    if quote != SINGLE_QUOTE && quote != DOUBLE_QUOTE {
+        return Err(format!(
+            "[m22s9/js-const-not-a-literal] `{name}` is assigned something whose first non-space \
+             byte is {quote} — neither a single nor a double quote (a zero means the declaration \
+             runs off the end of the file). A backtick opens a template literal, which can \
+             interpolate, and an expression is not a constant at all; either way the value is not \
+             a stable carrier and this refuses to guess at it. Write ONE quoted literal."
+        ));
+    }
+    k += 1;
+    let value_start = k;
+    while k < bytes.len() && bytes[k] != quote {
+        if bytes[k] == BACKSLASH {
+            return Err(format!(
+                "[m22s9/js-const-escape] the literal assigned to `{name}` contains an escape \
+                 sequence. Every value this section pins is plain printable text; an escape means \
+                 the bytes the eval compares at runtime are not the bytes written in the source, \
+                 so a byte-comparison here would be comparing the wrong thing."
+            ));
+        }
+        if bytes[k] == NEWLINE {
+            return Err(format!(
+                "[m22s9/js-const-multiline] the literal assigned to `{name}` is not terminated on \
+                 its own line. A value split across lines is not one literal, and biome may \
+                 re-split it differently on any future format run."
+            ));
+        }
+        k += 1;
+    }
+    if k >= bytes.len() {
+        return Err(format!(
+            "[m22s9/js-const-unterminated] the literal assigned to `{name}` never closes."
+        ));
+    }
+    let value = &src[value_start..k];
+    if value.is_empty() {
+        return Err(format!(
+            "[m22s9/js-const-empty] `{name}` is declared as the EMPTY string. Every consumer of \
+             it would then compare, split or search nothing at all and report success."
+        ));
+    }
+    let mut tail = k + 1;
+    while tail < bytes.len() && bytes[tail].is_ascii_whitespace() {
+        tail += 1;
+    }
+    if bytes.get(tail) == Some(&b'+') {
+        return Err(format!(
+            "[m22s9/js-const-concatenated] `{name}` is assigned a CONCATENATION of literals. Only \
+             the first piece is readable from source, so the value this test compares would not \
+             be the value the eval uses. Write it as one literal."
+        ));
+    }
+    Ok(value.to_string())
+}
+
+/// The value of the SOLE `const <name>: &str = "...";` declaration in a Rust
+/// source.
+///
+/// Runs over the comment-stripped, string-PRESERVING view WITHOUT the usual
+/// whitespace squash, because the thing being extracted is a caller-facing
+/// message whose spaces are part of the contract: the live e2e compares a
+/// reducer's `Err` payload for exact equality, so a squashed view would happily
+/// certify a message with the spaces removed.
+///
+/// Requires the `: &str =` shape and rejects any escape sequence, so the value
+/// read here is exactly the value the compiler stores.
+fn m22s9_sole_rust_const_str(src: &str, name: &str) -> String {
+    const DOUBLE_QUOTE: u8 = 34;
+    const BACKSLASH: u8 = 92;
+
+    let clean = strip_comments_keep_strings(src);
+    let bytes = clean.as_bytes();
+    let mut values: Vec<String> = Vec::new();
+    let mut start = 0usize;
+    while let Some(rel) = clean[start..].find(name) {
+        let at = start + rel;
+        start = at + name.len();
+        let after = at + name.len();
+        if at > 0 && is_word_byte(bytes[at - 1]) {
+            continue;
+        }
+        if after < bytes.len() && is_word_byte(bytes[after]) {
+            continue;
+        }
+        let mut k = after;
+        while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+            k += 1;
+        }
+        if bytes.get(k) != Some(&b':') {
+            continue;
+        }
+        k += 1;
+        while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+            k += 1;
+        }
+        if !clean[k..].starts_with("&str") {
+            continue;
+        }
+        k += 4;
+        while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+            k += 1;
+        }
+        if bytes.get(k) != Some(&b'=') {
+            continue;
+        }
+        k += 1;
+        while k < bytes.len() && bytes[k].is_ascii_whitespace() {
+            k += 1;
+        }
+        assert!(
+            bytes.get(k) == Some(&DOUBLE_QUOTE),
+            "[m22s9/rust-const-shape] the `{name}` declaration is not assigned a plain string \
+             literal. This section pins the caller-facing message BY VALUE; a computed or \
+             macro-built value cannot be read from source, so it must not be silently skipped."
+        );
+        k += 1;
+        let value_start = k;
+        while k < bytes.len() && bytes[k] != DOUBLE_QUOTE {
+            assert!(
+                bytes[k] != BACKSLASH,
+                "[m22s9/rust-const-escape] the `{name}` literal contains an escape sequence, so \
+                 the bytes in the source are not the bytes the reducer returns. Extraction \
+                 refuses to guess."
+            );
+            k += 1;
+        }
+        assert!(
+            k < bytes.len(),
+            "[m22s9/rust-const-unterminated] the `{name}` literal never closes."
+        );
+        values.push(clean[value_start..k].to_string());
+    }
+    let n = values.len();
+    assert_eq!(
+        n, 1,
+        "[m22s9/rust-const-not-sole] found {n} `const {name}: &str = ...` declaration(s); exactly \
+         one is required. Zero means the constant was renamed or its shape changed and this pin \
+         is reading nothing; two means a decoy could steer which one a first-hit anchor picks."
+    );
+    values.remove(0)
+}
+
+/// The reject reason `request_data_export` returns for a caller inside the
+/// deletion grace window, read out of `privacy.rs` rather than transcribed.
+///
+/// The reducer builds that payload with `stringify!` over an IDENTIFIER, not
+/// from a string literal (privacy.rs :1481-1483), so there is no literal in the
+/// source to pin by value — the identifier's own text IS the wire value. This
+/// walks the squashed reducer body from the S1 deletion-gate call to the
+/// `stringify!` that follows it and returns that identifier, so a renamed
+/// reject identifier surfaces here as a changed VALUE (and reds the e2e
+/// constant that mirrors it) instead of passing unnoticed.
+///
+/// The gate call is required to occur EXACTLY ONCE in that body: two of them
+/// would make "the `stringify!` after it" ambiguous, and the whole point of
+/// reading the reject next to the gate is that it pins the deletion check's own
+/// reject rather than whichever reject happens to be spelled first.
+fn m22s9_export_pending_reject_value() -> String {
+    let squashed = stripped_for_scan(M22_PRIVACY_RS);
+    let decl = m22s9_nd_request_export_decl();
+    let n_decl = m22_count_occurrences(&squashed, &decl);
+    assert_eq!(
+        n_decl, 1,
+        "[m22s9/export-decl-unique] the S4 export reducer's declaration ({decl:?}) occurs \
+         {n_decl} time(s) in privacy.rs; exactly one is required before its body may be \
+         brace-extracted by a first-hit anchor."
+    );
+    let body = extract_squashed_fn_body(&squashed, &decl).unwrap_or_else(|| {
+        panic!(
+            "[m22s9/export-body-scope] the body of the S4 export reducer ({decl:?}) could not be \
+             brace-extracted from privacy.rs, so the reject-value read below would have no scope."
+        )
+    });
+
+    let gate = m22s9_nd_pending_gate();
+    let n_gate = m22_count_occurrences(body, &gate);
+    assert_eq!(
+        n_gate, 1,
+        "[m22s9/export-gate-census] the S4 export reducer's body calls the S1 deletion gate \
+         ({gate:?}) {n_gate} time(s); exactly one is required. Zero means PRV1-7's \
+         export-during-grace rejection is GONE (a subject inside the grace window could dump \
+         their data on the way out); more than one makes `the reject that follows the gate` \
+         ambiguous."
+    );
+
+    let at = idx(body, &gate);
+    let tail = &body[at..];
+    let marker = concat!("stringi", "fy!(");
+    let rel = tail.find(marker).unwrap_or_else(|| {
+        panic!(
+            "[m22s9/export-reject-shape] no {marker:?} follows the deletion gate in the S4 export \
+             reducer's body. The reject payload is built from an identifier, not a literal; if \
+             that changed, re-derive this extraction from the new shape rather than transcribing \
+             the value into the e2e by hand."
+        )
+    });
+    let after = &tail[rel + marker.len()..];
+    let value: String = after.chars().take_while(|c| is_word_char(*c)).collect();
+    assert!(
+        !value.is_empty(),
+        "[m22s9/export-reject-empty] the {marker:?} after the deletion gate wraps no identifier."
+    );
+    assert!(
+        after[value.len()..].starts_with(')'),
+        "[m22s9/export-reject-shape] the {marker:?} after the deletion gate does not wrap a single \
+         bare identifier (read {value:?}), so its expansion is not the wire value this pin claims."
+    );
+    value
+}
+
+/// The expected M22 lifecycle transcription, DERIVED — never transcribed — from
+/// `DATA_LIFECYCLE_MANIFEST` plus the S6 typespace walk.
+///
+/// FORMAT, one entry per manifest table, entries sorted by table name and
+/// joined with `|`; within an entry, four `:`-separated fields:
+///   `<table>:<policy>:<identity columns>:<exportable>`
+/// where `<policy>` is `Erase` / `Anonymize` / `ViaJoin(<parent>)` / `NotOwned`,
+/// `<identity columns>` is the sorted `+`-joined identity-bearing column list
+/// for the two owner-keyed policies and EMPTY for the other two (a ViaJoin row
+/// is swept through its parent and a NotOwned row is not swept at all, so
+/// neither has an owner column to name, and the S6 R2 test already proves
+/// ViaJoin rows carry no Identity column at all), and `<exportable>` is `1`/`0`
+/// from the manifest's third axis.
+///
+/// WHY DERIVED. The e2e needs the classification AND the owner-column names to
+/// run its post-cascade truth pass, and every other way of getting them was
+/// rejected with a measured reason (ADR-0232 D4): a second hand-written list in
+/// the eval is a second source of truth that drifts silently, and deriving the
+/// columns from the JS `REKEY_MANIFEST` yields ZERO columns for six of the
+/// seventeen owner-keyed tables (their rekey keys are `BLOCKED`-policy), which
+/// reads as `nothing to check` rather than as an error and is invisible to a
+/// vacuity list that only sees zero COUNTS.
+///
+/// The charset is deliberately narrow (see the caller's clause): no quote, no
+/// backslash, no whitespace anywhere in the produced string, so biome can
+/// neither re-delimit nor re-wrap the eval's copy of it.
+fn m22s9_derive_manifest_transcription() -> String {
+    let registry = m22s6_table_row_types();
+    let manifest: &[DataLifecycleEntry] = DATA_LIFECYCLE_MANIFEST;
+
+    let mut names: Vec<&str> = manifest.iter().map(|e| e.table).collect();
+    names.sort_unstable();
+    for pair in names.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "[m22s9/transcription-dup] DATA_LIFECYCLE_MANIFEST names `{}` twice. The derivation \
+             below looks each table up by name, so a duplicate would transcribe one entry twice \
+             and leave the census at 40 while a real table went missing.",
+            pair[0]
+        );
+    }
+
+    let mut entries: Vec<String> = Vec::with_capacity(names.len());
+    for table in names {
+        let entry = manifest
+            .iter()
+            .find(|candidate| candidate.table == table)
+            .unwrap_or_else(|| {
+                panic!(
+                    "[m22s9/transcription-lookup] `{table}` was collected from \
+                     DATA_LIFECYCLE_MANIFEST and then could not be found in it."
+                )
+            });
+        let (policy, owner_keyed) = match entry.policy {
+            DeletionPolicy::Erase => ("Erase".to_string(), true),
+            DeletionPolicy::Anonymize => ("Anonymize".to_string(), true),
+            DeletionPolicy::ViaJoin(parent) => (format!("ViaJoin({parent})"), false),
+            DeletionPolicy::NotOwned => ("NotOwned".to_string(), false),
+        };
+        let columns = if owner_keyed {
+            let (_, ty) = registry
+                .iter()
+                .find(|(name, _)| *name == table)
+                .unwrap_or_else(|| {
+                    panic!(
+                        "[m22s9/transcription-unregistered] `{table}` is classified {policy} but \
+                         has no entry in the S6 row-type registry, so its owner columns cannot be \
+                         derived — `m22s6_table_row_registry_matches_manifest` should have caught \
+                         this drift first."
+                    )
+                });
+            let cols = m22s9_identity_column_names(table, ty);
+            assert!(
+                !cols.is_empty(),
+                "[m22s9/zero-owner-cols] `{table}` is classified {policy} but its row type \
+                 carries ZERO identity-bearing columns, so the e2e's truth pass would have NO \
+                 predicate to scope its rows with. An empty column list is the dangerous \
+                 direction: the table is then silently unattempted, which is invisible to a \
+                 vacuity list that only sees zero row COUNTS. Reclassify the table or give it an \
+                 owner key — never transcribe an empty list."
+            );
+            cols.join("+")
+        } else {
+            String::new()
+        };
+        let exportable = if entry.exportable { "1" } else { "0" };
+        entries.push(format!("{table}:{policy}:{columns}:{exportable}"));
+    }
+
+    let census = entries.len();
+    assert_eq!(
+        census, 40,
+        "[m22s9/transcription-census] the derivation produced {census} entries; the live manifest \
+         carries exactly 40 (13 ERASE + 4 ANONYMIZE + 5 JOIN-ONLY + 18 NOT-OWNED, schema.rs \
+         :990-992). A transcription that silently shrank would let the e2e prove a cascade over \
+         fewer tables than the tree actually has."
+    );
+    entries.join("|")
+}
+
+// ---------------------------------------------------------------------------
+// m22s9-T1 — THE THREE CROSS-SLICE FUNCTION CONTRACTS, AT THE TYPE LEVEL.
+// ---------------------------------------------------------------------------
+
+/// m22s9-T1: the three functions that carry a contract ACROSS slice boundaries
+/// still have the exact signatures their far-side callers assume, proven by
+/// coercing each to an explicit `fn` pointer type.
+///
+/// A fn-pointer coercion is not decoration: it is the only check in this tree
+/// that fails when a signature changes in a way the CALLERS still compile
+/// through. Rust would happily let `resolve_all_live_interactions` grow a third
+/// parameter, or take an owned `ReducerContext`, or start returning a `Result`
+/// — every such change is caught here at compile time, at the seam, with the
+/// contract written out in full rather than inferred from a call site.
+///
+/// THE THREE CONTRACTS:
+///   - `crate::resolve_all_live_interactions` — S3b extracted the four resolver
+///     calls out of `on_disconnect` so the deletion cascade's §4.4 step 1 and
+///     the disconnect hook share ONE dispatch list (ADR-0228 D2). Both callers
+///     pass `(ctx, identity)`; the shape is what makes the sharing possible.
+///   - `super::should_reject_for_deletion` — the §4.7 gate S1 owns and the S5
+///     gameplay fan-out delegates to through a `guards.rs` wrapper that must
+///     never re-derive it (ADR-0225). `&Account -> bool` is that contract.
+///   - `crate::erase_character_rows` — §4.4 step 6d, the character erase that
+///     must run BEFORE the player display-name tombstone. Same `(ctx, identity)`
+///     shape as the disconnect bundle because the cascade calls both.
+///
+/// THE GATE IS ALSO EXERCISED THROUGH ITS POINTER, which is what makes this
+/// more than a compile-time assertion: the pointer is CALLED on a live-Active
+/// fixture and on a PendingDeletion fixture, so a gate rewritten to return a
+/// constant fails here even though its signature is untouched. The two
+/// ctx-bound pointers cannot be called (no `ReducerContext` is constructible
+/// off-instance, ADR-0225 D5) — materializing them is the whole point, and it
+/// is what drags the host-syscall link-time references in that the abort stubs
+/// at the end of this section satisfy.
+///
+/// Kills: adding, removing or retyping a parameter of any of the three (the
+///        callers on the far side of the seam would still compile against their
+///        own local view of it, and a mismatch would only surface as a wasm
+///        build break far from the edit);
+///        changing a return type (a `resolve_all_live_interactions` that starts
+///        returning `Result` and whose result the cascade drops is a silently
+///        swallowed failure mid-deletion);
+///        `should_reject_for_deletion` collapsed to a constant `false` (the
+///        deletion gate stops rejecting anything and every §4.7 call site goes
+///        quietly permissive) or to a constant `true` (nobody can play);
+///        deleting `erase_character_rows` and inlining its body into the reaper
+///        — the pin fails to compile, forcing the §4.4 step-6d ordering
+///        question to be re-answered rather than assumed.
+#[test]
+fn m22s9_cross_slice_contract_signatures() {
+    let _: fn(&spacetimedb::ReducerContext, spacetimedb::Identity) =
+        crate::resolve_all_live_interactions;
+    let _: fn(&spacetimedb::ReducerContext, spacetimedb::Identity) = crate::erase_character_rows;
+
+    let gate: fn(&crate::schema::Account) -> bool = super::should_reject_for_deletion;
+
+    let active = base_account(21);
+    assert!(
+        !gate(&active),
+        "[m22s9/gate-rejects-active] the §4.7 deletion gate, called through its pinned fn \
+         pointer, refuses an ordinary Active account. A gate stuck at `true` blocks every \
+         gameplay write in the game for every player, and no signature check can see it."
+    );
+
+    let pending = Account {
+        status: AccountStatus::PendingDeletion,
+        deletion_requested_at_ms: Some(5),
+        ..base_account(21)
+    };
+    assert!(
+        gate(&pending),
+        "[m22s9/gate-admits-pending] the §4.7 deletion gate, called through its pinned fn \
+         pointer, ADMITS an account inside its deletion grace window. That is the whole gate: S5 \
+         delegates every gameplay-write refusal to this one predicate, so a gate stuck at `false` \
+         reopens all of them at once while every signature and delegation census stays green."
+    );
+
+    let terminal = Account {
+        status: AccountStatus::PendingDeletion,
+        deletion_requested_at_ms: Some(5),
+        terminal_at_ms: Some(9),
+        ..base_account(21)
+    };
+    assert!(
+        gate(&terminal),
+        "[m22s9/gate-admits-terminal] the §4.7 deletion gate must also refuse an account whose \
+         cascade already completed (the terminal marker arm). Dropping that disjunct is the \
+         `looks redundant on legal states` simplification the SSOT's own doc comment forbids."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// m22s9-T2 — THE `export_bundle` ROW SHAPE, AT THE TYPE LEVEL.
+// ---------------------------------------------------------------------------
+
+/// m22s9-T2: `ExportBundle` is EXACTLY the eight-column S2/S4/S8 chunk
+/// contract, proven by constructing one and destructuring it exhaustively with
+/// NO rest pattern, then coercing every field to its expected type.
+///
+/// This is a COMPILE-LEVEL twin of `export_bundle_struct_shape_and_privacy`
+/// (:4100), not a duplicate of it, and the two fail on disjoint mutations. The
+/// text pin reads schema.rs and would still pass if a column's type were
+/// swapped for an alias that spells the same characters; this one would not.
+/// This one would still pass if the table attribute gained `public`; that one
+/// would not. A ninth field is a compile ERROR here (the destructure is
+/// exhaustive) and a text diff there.
+///
+/// The declaration-ORDER clause is derived, not transcribed twice: the eight
+/// names come out of the row type's own derive metadata (the same typespace
+/// walk the S6 tests use), so this test compares the compiler's view of the
+/// struct with the host's view of the row. T3 then builds the binding's
+/// camelCase field list from THAT list rather than from anything hand-written.
+///
+/// Kills: appending a ninth column to `ExportBundle` without re-deriving the S4
+///        writer and the S8 assembler (the destructure stops compiling);
+///        deleting a column (same);
+///        widening `chunk_index` / `total_chunks` from `u32`, or narrowing
+///        `created_at_ms` from `i64` — the per-field coercions reject it, and
+///        both are silent BSATN layout changes on a live table;
+///        swapping `owner_identity` for a wrapper type that still spells
+///        `Identity` in source (invisible to a text pin, rejected here);
+///        REORDERING two columns — the derive-metadata order clause catches it,
+///        and a reorder is a live-table layout change, not a cosmetic edit.
+#[test]
+fn m22s9_export_bundle_struct_shape_tripwire() {
+    let registry = m22s6_table_row_types();
+    let (_, ty) = registry
+        .iter()
+        .find(|(name, _)| *name == "export_bundle")
+        .unwrap_or_else(|| {
+            panic!(
+                "[m22s9/export-bundle-unregistered] the S6 row-type registry has no \
+                 `export_bundle` entry, so this test cannot compare the compiler's view of the \
+                 struct against the host's view of the row."
+            )
+        });
+    let columns = m22s9_top_level_column_names("export_bundle", ty);
+    let observed: Vec<&str> = columns.iter().map(String::as_str).collect();
+    let expected = [
+        "chunk_id",
+        "owner_identity",
+        "request_id",
+        "table_name",
+        "chunk_index",
+        "total_chunks",
+        "payload_json",
+        "created_at_ms",
+    ];
+    assert_eq!(
+        observed, expected,
+        "[m22s9/export-bundle-columns] `export_bundle`'s column list, read from its own derive \
+         metadata, is not the S2/S4/S8 chunk contract in its contract ORDER. S4's writer, S4's \
+         TTL reaper and S8's client assembler all consume these names in this order, and a \
+         reorder also changes the BSATN layout of a live table."
+    );
+
+    let row = crate::schema::ExportBundle {
+        chunk_id: 7,
+        owner_identity: ident(21),
+        request_id: 11,
+        table_name: "monster".to_string(),
+        chunk_index: 1,
+        total_chunks: 3,
+        payload_json: "[]".to_string(),
+        created_at_ms: 1_234,
+    };
+
+    // Exhaustive destructure — NO `..` rest pattern. A ninth field stops this
+    // compiling, which is the tripwire: a new column on a personal-data table
+    // must be a conscious S4/S8 decision, never an append nobody reviewed.
+    let crate::schema::ExportBundle {
+        chunk_id,
+        owner_identity,
+        request_id,
+        table_name,
+        chunk_index,
+        total_chunks,
+        payload_json,
+        created_at_ms,
+    } = row;
+
+    assert_eq!(
+        chunk_id, 7,
+        "[m22s9/export-bundle-values] the destructured chunk_id is not the constructed one."
+    );
+    assert_eq!(
+        owner_identity,
+        ident(21),
+        "[m22s9/export-bundle-values] the destructured owner_identity is not the constructed one."
+    );
+    assert_eq!(
+        chunk_index, 1,
+        "[m22s9/export-bundle-values] the destructured chunk_index is not the constructed one."
+    );
+    assert_eq!(
+        total_chunks, 3,
+        "[m22s9/export-bundle-values] the destructured total_chunks is not the constructed one."
+    );
+    assert_eq!(
+        table_name, "monster",
+        "[m22s9/export-bundle-values] the destructured table_name is not the constructed one."
+    );
+    assert_eq!(
+        payload_json, "[]",
+        "[m22s9/export-bundle-values] the destructured payload_json is not the constructed one."
+    );
+    assert_eq!(
+        created_at_ms, 1_234,
+        "[m22s9/export-bundle-values] the destructured created_at_ms is not the constructed one."
+    );
+    assert_eq!(
+        request_id, 11,
+        "[m22s9/export-bundle-values] the destructured request_id is not the constructed one."
+    );
+
+    // Per-field type pins. Taken by reference so nothing above is moved out
+    // from under the value assertions; `&u32` is no more coercible from `&u64`
+    // than `u32` is from `u64`, so the pin is exactly as tight.
+    let _: &u64 = &chunk_id;
+    let _: &spacetimedb::Identity = &owner_identity;
+    let _: &u64 = &request_id;
+    let _: &String = &table_name;
+    let _: &u32 = &chunk_index;
+    let _: &u32 = &total_chunks;
+    let _: &String = &payload_json;
+    let _: &i64 = &created_at_ms;
+}
+
+// ---------------------------------------------------------------------------
+// m22s9-T3 — THE COMMITTED BINDINGS EXPOSE THE M22 CLIENT SURFACE.
+// ---------------------------------------------------------------------------
+
+/// m22s9-T3: the committed TypeScript bindings carry the whole M22 surface the
+/// live e2e drives — the `my_export_bundle` and `my_account` view handles, and
+/// a reducer module for every client-callable §4.7 state-transition owner plus
+/// `request_data_export`.
+///
+/// EXISTENCE IS PROVEN BY COMPILATION. Each binding is `include_str!`-ed, so a
+/// missing or renamed file is a build error in this crate rather than a test
+/// that quietly asserts nothing about a file it could not read. That matters
+/// because the bindings are GENERATED and committed: a `spacetime generate` run
+/// that silently dropped a module would otherwise be invisible until the e2e
+/// failed to import it, in the one phase that does not run without a toolchain.
+///
+/// THE FILE LIST IS TIED TO `game_core::STATE_TRANSITION_OWNERS`, not merely
+/// parallel to it: the expected file names are BUILT from the const's own
+/// entries (`<owner>_reducer.ts`) and compared as a set against the names this
+/// test includes, so adding, removing or renaming an owner reds this test until
+/// the binding set is re-reviewed. That const is the §4.7 exemption list — an
+/// entry in it EXEMPTS a reducer from the deletion gate, which is exactly the
+/// kind of change that must not pass unnoticed.
+///
+/// ONE DECLARED ASYMMETRY, stated rather than papered over: the third owner,
+/// `account_deletion_reaper`, is a SCHEDULED reducer, and the generator emits no
+/// client binding for scheduled reducers (verified against the committed
+/// `module_bindings/index.ts`, which imports 39 reducer modules and none for
+/// either scheduled reaper). It is therefore excluded from the file set by name,
+/// with the name itself asserted to be a member of the const so the exclusion
+/// cannot outlive the entry it excludes. This test cannot prove the ABSENCE of a
+/// file — if a future generator starts emitting one, this test stays green and
+/// the omission is a review matter.
+///
+/// THE FIELD PARITY IS DERIVED END TO END: the eight snake_case column names
+/// come from T2's derive-metadata list, the camelCase spellings come from an
+/// in-test `snake_to_camel`, and each is required to appear in the binding
+/// alongside the generator's own `.name(<snake>)` alias. Nothing camelCase is
+/// hand-spelled anywhere, and the `no underscore survives` clause is what stops
+/// a degenerate `snake_to_camel` (one that returns its input) from passing
+/// vacuously — the binding carries the snake spelling too.
+///
+/// Kills: a `spacetime generate` run that dropped the `my_export_bundle` view,
+///        the `my_account` view, or any of the three reducer modules (build
+///        error);
+///        a renamed or retyped `export_bundle` column that the bindings were
+///        regenerated for but the Rust side was not — or the reverse, which is
+///        the direction that actually bites: the e2e reads `chunkIndex` /
+///        `totalChunks` / `tableName` off these rows to prove the S8 assembly
+///        contract, and a silent rename turns every one of those reads into
+///        `undefined`;
+///        adding a fourth `STATE_TRANSITION_OWNERS` entry (a new deletion-gate
+///        EXEMPTION) without deciding whether it needs a client binding;
+///        the `terminal_at_ms` column disappearing from the `my_account` view
+///        the e2e polls to detect a completed cascade;
+///        a hand-written placeholder standing in for a generated binding (the
+///        generated-header clause).
+#[test]
+fn m22s9_bindings_expose_m22_surface() {
+    let bindings: [(&str, &str); 5] = [
+        (
+            concat!("my_export_bundle", "_table.ts"),
+            M22S9_EXPORT_BUNDLE_TS,
+        ),
+        (concat!("my_account", "_table.ts"), M22S9_MY_ACCOUNT_TS),
+        (
+            concat!("delete", "_account_reducer.ts"),
+            M22S9_DELETE_ACCOUNT_TS,
+        ),
+        (
+            concat!("cancel_account", "_deletion_reducer.ts"),
+            M22S9_CANCEL_DELETION_TS,
+        ),
+        (
+            concat!("request_data", "_export_reducer.ts"),
+            M22S9_REQUEST_EXPORT_TS,
+        ),
+    ];
+    for (file, src) in bindings {
+        assert!(
+            src.contains("AUTOMATICALLY GENERATED"),
+            "[m22s9/binding-not-generated] `{file}` does not carry the SpacetimeDB generated-file \
+             header. A hand-written placeholder in the bindings directory satisfies every \
+             existence check while the real module surface it stands for may not exist at all; \
+             regenerate with the CLI instead."
+        );
+        assert!(
+            src.contains("export default"),
+            "[m22s9/binding-no-default-export] `{file}` has no default export, so nothing can \
+             import it as a schema — the e2e's driver would fail at module load, far from here."
+        );
+    }
+
+    // --- the reducer file set is DERIVED from the §4.7 exemption const -------
+    let owners: Vec<&str> = game_core::STATE_TRANSITION_OWNERS.to_vec();
+    let expected_owners = [
+        concat!("delete", "_account"),
+        concat!("cancel_account", "_deletion"),
+        concat!("account_deletion", "_reaper"),
+    ];
+    assert_eq!(
+        owners, expected_owners,
+        "[m22s9/owner-roster] game_core::STATE_TRANSITION_OWNERS is not the three §4.7 \
+         state-transition owners in their declared order. Every entry EXEMPTS a reducer from the \
+         deletion gate, so a change here is a security-relevant decision: re-review the new \
+         entry, decide whether it is client-callable (and therefore needs a committed binding), \
+         and update this pin consciously."
+    );
+
+    let scheduled_only = concat!("account_deletion", "_reaper");
+    assert!(
+        owners.contains(&scheduled_only),
+        "[m22s9/scheduled-exclusion-stale] `{scheduled_only}` is excluded from the expected \
+         binding set below because it is a SCHEDULED reducer with no generated client module — \
+         but it is no longer a state-transition owner at all, so the exclusion is stale and would \
+         silently hide a missing binding for whatever replaced it."
+    );
+
+    let mut expected_files: Vec<String> = owners
+        .iter()
+        .filter(|name| **name != scheduled_only)
+        .map(|name| format!("{name}_reducer.ts"))
+        .collect();
+    let export_reducer = concat!("request_data", "_export");
+    expected_files.push(format!("{export_reducer}_reducer.ts"));
+    expected_files.sort();
+
+    let mut included_files: Vec<String> = bindings
+        .iter()
+        .map(|&(file, _)| file.to_string())
+        .filter(|file| file.ends_with("_reducer.ts"))
+        .collect();
+    included_files.sort();
+
+    assert_eq!(
+        included_files, expected_files,
+        "[m22s9/reducer-binding-set] the reducer bindings this test pins are not the set derived \
+         from game_core::STATE_TRANSITION_OWNERS (minus the scheduled reaper) plus \
+         `request_data_export`. The expected side is BUILT from the const, so this fires the \
+         moment an owner is added, removed or renamed — which is the point: the live e2e drives \
+         exactly these entry points over the committed bindings."
+    );
+
+    // --- ExportBundle field parity, derived end to end ----------------------
+    let registry = m22s6_table_row_types();
+    let (_, bundle_ty) = registry
+        .iter()
+        .find(|(name, _)| *name == "export_bundle")
+        .unwrap_or_else(|| {
+            panic!(
+                "[m22s9/export-bundle-unregistered] the S6 row-type registry has no \
+                 `export_bundle` entry, so the binding's field list has nothing to be compared \
+                 against and this clause would pass vacuously."
+            )
+        });
+    let fields = m22s9_top_level_column_names("export_bundle", bundle_ty);
+    let n_fields = fields.len();
+    assert_eq!(
+        n_fields, 8,
+        "[m22s9/export-bundle-field-census] the derived `export_bundle` column list has \
+         {n_fields} entries; the S2/S4/S8 chunk contract has 8. A shrunken list would check \
+         fewer binding fields and report success."
+    );
+
+    let quote = rb22_dq();
+    for snake in &fields {
+        let camel = m22s9_snake_to_camel(snake);
+        assert!(
+            !camel.contains('_'),
+            "[m22s9/camel-underscore] snake_to_camel({snake:?}) produced {camel:?}, which still \
+             carries an underscore. The generated bindings never do; a transformation that \
+             returns its input would make every clause below pass vacuously, because the binding \
+             carries the snake spelling too (inside the generator's own `.name(..)` alias)."
+        );
+        if snake.contains('_') {
+            assert_ne!(
+                camel.as_str(),
+                snake.as_str(),
+                "[m22s9/camel-identity] snake_to_camel left the underscored column {snake:?} \
+                 unchanged."
+            );
+            let alias = format!(".name({quote}{snake}{quote})");
+            assert!(
+                M22S9_EXPORT_BUNDLE_TS.contains(alias.as_str()),
+                "[m22s9/binding-alias] the `my_export_bundle` binding does not map any field to \
+                 the wire column {snake:?} ({alias:?} is absent). Either the column was renamed \
+                 on the Rust side without regenerating the bindings, or the bindings were \
+                 regenerated against a different module — and the e2e's chunk-assembly reads \
+                 would silently see `undefined`."
+            );
+        }
+        let field = format!("{camel}:");
+        assert!(
+            M22S9_EXPORT_BUNDLE_TS.contains(field.as_str()),
+            "[m22s9/binding-field] the `my_export_bundle` binding declares no `{camel}` field, so \
+             the S8 client assembler and the S9 e2e cannot read the {snake:?} column of an export \
+             chunk at all."
+        );
+    }
+
+    // --- the my_account view still carries the terminal marker the e2e polls -
+    let (_, account_ty) = registry
+        .iter()
+        .find(|(name, _)| *name == "account")
+        .unwrap_or_else(|| {
+            panic!(
+                "[m22s9/account-unregistered] the S6 row-type registry has no `account` entry, so \
+                 the terminal-marker column name cannot be derived and the my_account view clause \
+                 below would have nothing to look for."
+            )
+        });
+    let account_columns = m22s9_top_level_column_names("account", account_ty);
+    let terminal: Vec<&String> = account_columns
+        .iter()
+        .filter(|name| name.starts_with("terminal"))
+        .collect();
+    let n_terminal = terminal.len();
+    assert_eq!(
+        n_terminal, 1,
+        "[m22s9/terminal-column] the `account` row type has {n_terminal} column(s) whose name \
+         starts with `terminal`; exactly one (the §4.1 completed-cascade marker) is expected. The \
+         name is derived rather than spelled here so a rename surfaces as a CHANGED value below \
+         instead of a stale literal that still matches nothing."
+    );
+    let terminal_camel = m22s9_snake_to_camel(terminal[0]);
+    let terminal_field = format!("{terminal_camel}:");
+    assert!(
+        M22S9_MY_ACCOUNT_TS.contains(terminal_field.as_str()),
+        "[m22s9/my-account-terminal] the `my_account` view binding declares no `{terminal_camel}` \
+         field. That column is how a client — and the S9 live driver — observes that a deletion \
+         cascade COMPLETED; without it the e2e's terminal poll can never succeed and would time \
+         out as a hang rather than fail as a contract break."
+    );
+}
+
+// ---------------------------------------------------------------------------
+// m22s9-T4 — THE E2E'S MANIFEST TRANSCRIPTION IS THE MANIFEST.
+// ---------------------------------------------------------------------------
+
+/// m22s9-T4: the classification string `evals/account-e2e.eval.mjs` drives its
+/// post-cascade truth pass from is BYTE-IDENTICAL to one derived here from
+/// `DATA_LIFECYCLE_MANIFEST` plus the S6 typespace walk.
+///
+/// THIS IS THE KEY CROSS-ARTIFACT TIE OF THE WHOLE SLICE (S0 -> S2 -> S6 ->
+/// e2e). The live phase asserts, table by table, that a deleted subject's rows
+/// were erased, anonymized, swept via a parent or left alone — and it can only
+/// do that against SOME statement of which table is which. If that statement is
+/// a second hand-written list, then the day somebody reclassifies a table in
+/// schema.rs the e2e keeps proving the OLD partition, in the one phase of the
+/// one gate that exists to catch exactly that. Deriving it here and comparing
+/// byte-for-byte makes the eval's copy a transcription of a derived fact rather
+/// than a source of truth of its own (ADR-0232 D4).
+///
+/// THE FAILURE MESSAGE PRINTS THE DERIVED VALUE, VERBATIM AND IN FULL. That is
+/// deliberate and it is the intended workflow: the canonical string is not
+/// something a human should compose. Run this test, copy the printed value into
+/// the eval's constant, and the two are tied by construction from then on. The
+/// same printing happens on a parse failure, so a missing declaration is
+/// self-servicing rather than a puzzle.
+///
+/// AMBIGUITY IS FATAL, NEVER GUESSED (see `m22s9_sole_js_const_str`): exactly
+/// one `export const` declaration, quote-agnostic (biome owns the delimiter),
+/// no escapes, no concatenation, no template literal. The charset clause below
+/// then pins that the derived value cannot contain a quote, a backslash or any
+/// whitespace at all — the property that makes it survive a biome format run
+/// unchanged.
+///
+/// Kills: an eval that carries a hand-written partition which has drifted from
+///        schema.rs (any reclassification, any added or removed table);
+///        an eval whose per-table OWNER COLUMN list was guessed rather than
+///        derived — the measured case is `player_wallet`, whose owner column is
+///        not named `identity`, so a guess is a 400 from the SQL endpoint and a
+///        plausible-but-wrong guess is a silently empty pre-count;
+///        an Erase/Anonymize entry with an EMPTY column list, which reads as
+///        `nothing to check` and is invisible to a vacuity list that only sees
+///        zero row counts (the [m22s9/zero-owner-cols] arm — this is the
+///        red-team's CRITICAL-1 kill);
+///        a decoy second mention of the constant steering a first-hit anchor
+///        onto text the eval never uses;
+///        a census that quietly shrank below the 40 live tables;
+///        an exportable flag flipped on one side only (the flag is the fourth
+///        field of every entry, so the export-scope axis is inside the compare).
+#[test]
+fn m22s9_e2e_manifest_transcription_matches_manifest() {
+    let derived = m22s9_derive_manifest_transcription();
+
+    for c in derived.chars() {
+        assert!(
+            c.is_ascii_alphanumeric() || matches!(c, '_' | ':' | '|' | '+' | '(' | ')'),
+            "[m22s9/transcription-charset] the derived transcription contains {c:?}, which is \
+             outside the pinned charset (ASCII alphanumerics plus underscore, colon, pipe, plus, \
+             and the two parentheses of a ViaJoin payload). The charset IS the stability \
+             property: with no quote, no backslash and no whitespace in the value, biome can \
+             neither re-delimit nor re-wrap the eval's copy of it, so a byte-comparison stays \
+             meaningful across format runs."
+        );
+    }
+
+    let parts: Vec<&str> = derived.split('|').collect();
+    let n_parts = parts.len();
+    assert_eq!(
+        n_parts, 40,
+        "[m22s9/transcription-parts] the derived transcription splits into {n_parts} entries; the \
+         live manifest carries exactly 40."
+    );
+    for part in &parts {
+        let colons = part.matches(':').count();
+        assert_eq!(
+            colons, 3,
+            "[m22s9/transcription-shape] the entry {part:?} carries {colons} colon(s); every \
+             entry is exactly `<table>:<policy>:<columns>:<exportable>`. The eval's parser splits \
+             on this shape, so a malformed entry would either throw there or, worse, silently \
+             yield a table whose policy is the empty string."
+        );
+    }
+
+    let name = concat!("M22S9_MANIFEST", "_TRANSCRIPTION");
+    let extracted = match m22s9_sole_js_const_str(M22S9_ACCOUNT_E2E_MJS, name) {
+        Ok(value) => value,
+        Err(why) => panic!(
+            "{why}\n\nexpected transcription:\n{derived}\n\nDeclare it verbatim in \
+             evals/account-e2e.eval.mjs as one quoted literal: `export const {name} = <the line \
+             above>;`. Do NOT edit this test to match the eval — the derivation above IS the \
+             contract, and the eval is the artifact under test."
+        ),
+    };
+
+    assert_eq!(
+        extracted, derived,
+        "[m22s9/transcription-mismatch] the e2e's `{name}` is not the classification the live \
+         DATA_LIFECYCLE_MANIFEST plus the S6 typespace walk produce. The e2e's post-cascade truth \
+         pass would then be proving the OLD partition — asserting erasure of a table that is now \
+         anonymize-only, or skipping a table that is now owner-keyed — in the one gate that \
+         exists to catch exactly that drift. Replace the eval's constant with the derived value \
+         below; never adjust the derivation to match the eval.\n\nexpected transcription:\n\
+         {derived}"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// m22s9-T5 — THE E2E'S PATCH NEEDLES AND EXPECTED CONSTANTS ARE SOURCE TRUTH.
+// ---------------------------------------------------------------------------
+
+/// m22s9-T5: every constant the live phase compares against, and every needle it
+/// patches with, equals the committed source it claims to mirror.
+///
+/// THE PATCH NEEDLES (ADR-0232 D1). The live phase compresses two time-scale
+/// constants in its TMPDIR module copy — the 7-day deletion grace down to
+/// seconds so the real reaper fires inside a CI run, and the export sub-chunk
+/// size down so a multi-chunk split is provable without a bulk seed. Both
+/// patchers rewrite a needle, and a needle that no longer occurs in the shipped
+/// source is the failure mode that hurts: the patch silently no-ops, the run
+/// waits seven days, and it reads as a hang rather than as a broken gate. Two
+/// clauses close that: the FULL declaration line occurs EXACTLY ONCE in
+/// `game-core/src/accounts/deletion.rs` (the patch target — sole occurrence is
+/// what lets a patcher throw on ambiguity instead of rewriting a comment), and
+/// the eval's exported needle constants equal that same declaration text.
+///
+/// WHY THE FULL DECLARATION AND NOT THE BARE NUMBER: `deletion.rs` mentions the
+/// raw grace literal in its own honesty note, so a bare-integer needle matches
+/// twice in the file the patcher rewrites.
+///
+/// THE EXPECTED CONSTANTS. The live driver compares reducer `Err` payloads and
+/// tombstoned column values for EXACT equality. Each of those expectations is
+/// tied here to the one place the value is actually decided:
+///   - the late-cancel reject (PRV1-4) to `accounts.rs`' own reject constant,
+///     read with the spaces intact — a squashed view would certify a message
+///     whose spacing had changed, and the driver compares the real bytes;
+///   - the export-during-grace reject (PRV1-7) to the identifier `privacy.rs`
+///     hands to `stringify!`, which IS the wire value;
+///   - the three anonymization sentinels to `game_core`'s own constants, by
+///     direct reference rather than by transcription, with the identity
+///     rendered to lowercase hex here so the eval never hand-types 64
+///     characters that a SQL row must match.
+///
+/// Kills: retuning or renaming either patched constant in `deletion.rs` while
+///        the eval keeps patching the old text (the patch no-ops, the reaper
+///        never fires within the run, and the whole live phase degrades into a
+///        timeout);
+///        a SECOND declaration of either constant in `deletion.rs`, which makes
+///        the patcher's target ambiguous;
+///        an eval needle that drifted one character from the declaration it
+///        patches;
+///        changing the PRV1-4 reject message (or its spacing) on either side —
+///        the e2e asserts the exact string, so a drift turns a real regression
+///        into an assertion that can never pass, or hides one that can;
+///        renaming the export-during-grace reject identifier, which changes the
+///        wire value with no literal anywhere to notice;
+///        retuning a tombstone sentinel in game-core while the eval keeps
+///        asserting the old one (the cascade would write a value the truth pass
+///        never checks);
+///        an eval that hand-types the tombstone identity hex with a typo, or
+///        with the uppercase spelling SQL does not return.
+#[test]
+fn m22s9_e2e_patch_needles_and_constants() {
+    // --- (a) the patch needles are live and unambiguous in the patch target --
+    let grace_needle = m22s9_nd_grace_decl();
+    let n_grace = m22_count_occurrences(M22S9_DELETION_RS, &grace_needle);
+    assert_eq!(
+        n_grace, 1,
+        "[m22s9/grace-needle] the deletion-grace declaration ({grace_needle:?}) occurs {n_grace} \
+         time(s) in game-core/src/accounts/deletion.rs; exactly one is required. ZERO means the \
+         e2e's patcher has nothing to rewrite, so the live phase would publish an unpatched \
+         module and wait out a seven-day grace window — a hang, not a failure. MORE than one \
+         means the patch target is ambiguous."
+    );
+
+    let chunk_needle = m22s9_nd_chunk_decl();
+    let n_chunk = m22_count_occurrences(M22S9_DELETION_RS, &chunk_needle);
+    assert_eq!(
+        n_chunk, 1,
+        "[m22s9/chunk-needle] the export-chunk declaration ({chunk_needle:?}) occurs {n_chunk} \
+         time(s) in game-core/src/accounts/deletion.rs; exactly one is required. Without it the \
+         live phase cannot compress the sub-chunk size, so a multi-chunk export is unprovable \
+         without a bulk seed and the S8 assembly contract goes untested."
+    );
+
+    // --- (b) the eval's exported needles ARE those declarations --------------
+    let grace_const = concat!("GRACE", "_NEEDLE");
+    let eval_grace = match m22s9_sole_js_const_str(M22S9_ACCOUNT_E2E_MJS, grace_const) {
+        Ok(value) => value,
+        Err(why) => panic!("{why}"),
+    };
+    assert_eq!(
+        eval_grace, grace_needle,
+        "[m22s9/grace-needle-drift] the e2e's `{grace_const}` is not the deletion-grace \
+         declaration as committed. The patcher searches for this exact text in its tmpdir copy of \
+         the module, so one character of drift makes the patch throw (best case) or silently \
+         match nothing (the case that reads as a hang)."
+    );
+
+    let chunk_const = concat!("CHUNK", "_NEEDLE");
+    let eval_chunk = match m22s9_sole_js_const_str(M22S9_ACCOUNT_E2E_MJS, chunk_const) {
+        Ok(value) => value,
+        Err(why) => panic!("{why}"),
+    };
+    assert_eq!(
+        eval_chunk, chunk_needle,
+        "[m22s9/chunk-needle-drift] the e2e's `{chunk_const}` is not the export-chunk declaration \
+         as committed."
+    );
+
+    // --- (c) the expected reject messages equal their deciding source --------
+    let reject_already_deleted =
+        m22s9_sole_rust_const_str(ACCOUNTS_RS, concat!("REJECT_ALREADY", "_DELETED"));
+    let already_deleted_const = concat!("ERR_ALREADY", "_DELETED_E2E");
+    let eval_already_deleted =
+        match m22s9_sole_js_const_str(M22S9_ACCOUNT_E2E_MJS, already_deleted_const) {
+            Ok(value) => value,
+            Err(why) => panic!("{why}"),
+        };
+    assert_eq!(
+        eval_already_deleted, reject_already_deleted,
+        "[m22s9/reject-terminal-drift] the e2e's `{already_deleted_const}` is not the PRV1-4 \
+         terminal reject constant declared in accounts.rs. The live driver asserts the late-cancel \
+         `Err` payload for EXACT equality, so a drift on either side either hides a real \
+         regression or turns the assertion into one that can never pass."
+    );
+
+    let export_reject = m22s9_export_pending_reject_value();
+    let export_reject_const = concat!("ERR_EXPORT_PENDING", "_DELETION_E2E");
+    let eval_export_reject =
+        match m22s9_sole_js_const_str(M22S9_ACCOUNT_E2E_MJS, export_reject_const) {
+            Ok(value) => value,
+            Err(why) => panic!("{why}"),
+        };
+    assert_eq!(
+        eval_export_reject, export_reject,
+        "[m22s9/export-reject-drift] the e2e's `{export_reject_const}` is not the identifier \
+         privacy.rs hands to `stringify!` on the PRV1-7 export-during-grace path. That identifier \
+         IS the wire value, so renaming it changes what a client sees with no literal anywhere in \
+         the tree to notice — this pin is what notices."
+    );
+
+    // --- (c continued) the anonymization sentinels ---------------------------
+    let issuer_const = concat!("TOMBSTONE_AUTH", "_ISSUER_E2E");
+    let eval_issuer = match m22s9_sole_js_const_str(M22S9_ACCOUNT_E2E_MJS, issuer_const) {
+        Ok(value) => value,
+        Err(why) => panic!("{why}"),
+    };
+    assert_eq!(
+        eval_issuer,
+        game_core::TOMBSTONE_AUTH_ISSUER,
+        "[m22s9/tombstone-issuer-drift] the e2e's `{issuer_const}` is not \
+         game_core::TOMBSTONE_AUTH_ISSUER. The cascade writes that constant over the one PII \
+         column of a surviving `account` row, and the truth pass reads the column back — a drift \
+         means the pass asserts a value nothing ever writes."
+    );
+
+    let name_const = concat!("TOMBSTONE_DISPLAY", "_NAME_E2E");
+    let eval_name = match m22s9_sole_js_const_str(M22S9_ACCOUNT_E2E_MJS, name_const) {
+        Ok(value) => value,
+        Err(why) => panic!("{why}"),
+    };
+    assert_eq!(
+        eval_name,
+        game_core::TOMBSTONE_DISPLAY_NAME,
+        "[m22s9/tombstone-name-drift] the e2e's `{name_const}` is not \
+         game_core::TOMBSTONE_DISPLAY_NAME — the ONE deletion display-name sentinel, deliberately \
+         distinct from ranking.rs' guest-claim tombstone so a deleted account never reads as an \
+         unclaimed guest."
+    );
+
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+    let mut expected_hex = String::with_capacity(66);
+    expected_hex.push('0');
+    expected_hex.push('x');
+    for byte in game_core::TOMBSTONE_IDENTITY_BYTES {
+        expected_hex.push(char::from(HEX_DIGITS[usize::from(byte >> 4)]));
+        expected_hex.push(char::from(HEX_DIGITS[usize::from(byte & 0x0F)]));
+    }
+    let hex_len = expected_hex.len();
+    assert_eq!(
+        hex_len, 66,
+        "[m22s9/tombstone-hex-length] the rendered tombstone identity is {hex_len} characters; a \
+         32-byte identity renders as `0x` plus 64 hex digits."
+    );
+    let hex_const = concat!("TOMBSTONE_IDENTITY", "_HEX_E2E");
+    let eval_hex = match m22s9_sole_js_const_str(M22S9_ACCOUNT_E2E_MJS, hex_const) {
+        Ok(value) => value,
+        Err(why) => panic!("{why}"),
+    };
+    assert_eq!(
+        eval_hex, expected_hex,
+        "[m22s9/tombstone-hex-drift] the e2e's `{hex_const}` is not the lowercase hex rendering of \
+         game_core::TOMBSTONE_IDENTITY_BYTES. The truth pass compares an anonymized battle's \
+         subject side against this literal as SQL returns it — 64 hand-typed characters in the \
+         wrong case, or with one digit wrong, is an assertion that can never pass and would be \
+         read as a broken cascade."
+    );
+}
+
+// ===========================================================================
+// NATIVE-LINK STUBS (test infrastructure, NOT assertions — S9-added and
+// disclosed in the PR). `m22s9_cross_slice_contract_signatures` MATERIALIZES
+// fn pointers to two ctx-bound functions, which makes their whole call graph
+// live in the NATIVE test binary — so the linker now demands the SpacetimeDB
+// host syscalls those bodies reach (row insert / update / delete-by-eq /
+// delete-by-index-point), which exist only inside the wasm host. These
+// no_mangle stubs satisfy the linker; none is ever CALLED (`ReducerContext` is
+// not constructible off-instance, ADR-0225 D5), and each aborts the process if
+// that ever stops being true. They join the six privacy_tests.rs already
+// declares (scan / index-scan / iterator / name-lookup); the two sets are
+// disjoint, which is what keeps the single test binary linkable.
+// Signatures mirror spacetimedb-bindings-sys 2.8.1 raw externs, with the
+// repr(transparent) TableId / IndexId newtypes spelled as the u32 they wrap —
+// the shape privacy_tests.rs already uses.
+// ===========================================================================
+
+#[no_mangle]
+extern "C" fn datastore_insert_bsatn(
+    _table_id: u32,
+    _row_ptr: *mut u8,
+    _row_len_ptr: *mut usize,
+) -> u16 {
+    std::process::abort()
+}
+
+#[no_mangle]
+extern "C" fn datastore_update_bsatn(
+    _table_id: u32,
+    _index_id: u32,
+    _row_ptr: *mut u8,
+    _row_len_ptr: *mut usize,
+) -> u16 {
+    std::process::abort()
+}
+
+#[no_mangle]
+extern "C" fn datastore_delete_all_by_eq_bsatn(
+    _table_id: u32,
+    _rel_ptr: *const u8,
+    _rel_len: usize,
+    _out: *mut u32,
+) -> u16 {
+    std::process::abort()
+}
+
+#[no_mangle]
+extern "C" fn datastore_delete_by_index_scan_point_bsatn(
+    _index_id: u32,
+    _point_ptr: *const u8,
+    _point_len: usize,
+    _out: *mut u32,
+) -> u16 {
+    std::process::abort()
+}
