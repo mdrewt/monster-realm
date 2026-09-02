@@ -31,7 +31,8 @@ export interface BattleMonsterCardVM {
   readonly maxHp: number;
   readonly hpPercent: number;
   readonly affinity: string;
-  /** Short status badge label ("PSN", "BRN", "PAR", "SLP", "FRZ"), or null. */
+  /** Short status badge label ("PSN", "BRN", "PAR", "SLP", "FRZ"), a "?XX" fallback
+   *  for a tag this bundle does not know (ADR-0233), or null when there is no status. */
   readonly status: string | null;
 }
 
@@ -46,7 +47,11 @@ export interface BattleMonsterCardVM {
  * indistinguishable from a correct label.
  */
 export function unknownStatusToken(tag: string): string {
-  return `?${tag.slice(0, 2).toUpperCase()}`;
+  // Spread, not `slice`: `slice` counts UTF-16 code units, so a tag containing an
+  // astral character yields a lone surrogate that renders as U+FFFD. The trailing
+  // cap is load-bearing too — `'\u00df'.toUpperCase()` is two characters, so
+  // uppercasing can lengthen the token past the badge's three-character budget.
+  return `?${[...tag].slice(0, 2).join('').toUpperCase()}`.slice(0, 3);
 }
 
 /** Map a StatusEffect tag to a short badge label. Pure — unit-testable. */
@@ -79,9 +84,16 @@ export function statusBadge(tag: string | null | undefined): string {
 }
 
 /** Map a WeatherEffect tag to a display label. Pure — unit-testable.
- *  Returns non-empty string for known variants; console.warn + '' for unknown
- *  (identical contract to statusBadge — a bindings regen that adds a new variant
- *  fails the parity test, surfacing the gap at development time). */
+ *  Returns a non-empty string for known variants; console.warn + '' for unknown.
+ *
+ *  The two contracts DIVERGE from statusBadge's here, deliberately (m23-s8,
+ *  ADR-0233): statusBadge now returns a VISIBLE fallback because a per-monster
+ *  status badge that renders nothing is indistinguishable from "this monster is
+ *  healthy" — the absence is a lie about game state. No weather banner carries no
+ *  such ambiguity: it means no weather, which is the true and common case, so an
+ *  unknown weather tag must render nothing rather than invent a battlefield-wide
+ *  label. Both arms still warn, and a bindings regen that adds a new variant
+ *  fails the parity test either way. */
 export function weatherBanner(tag: string | null | undefined): string {
   if (!tag) return '';
   switch (tag) {

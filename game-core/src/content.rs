@@ -1690,19 +1690,58 @@ pub const fn affinity_token_key(affinity: Affinity) -> &'static str {
 /// `Affinity` literally. Recorded in ADR-0233 rather than left to be discovered
 /// and deleted as dead weight.
 pub const A11Y_TOKENS: &[A11yToken] = &[
-    A11yToken { key: "status.poison", token: "PSN" },
-    A11yToken { key: "status.burn", token: "BRN" },
-    A11yToken { key: "status.paralysis", token: "PAR" },
-    A11yToken { key: "status.sleep", token: "SLP" },
-    A11yToken { key: "status.freeze", token: "FRZ" },
-    A11yToken { key: "affinity.fire", token: "FIR" },
-    A11yToken { key: "affinity.water", token: "WTR" },
-    A11yToken { key: "affinity.plant", token: "PLT" },
-    A11yToken { key: "affinity.electric", token: "ELC" },
-    A11yToken { key: "affinity.earth", token: "ERT" },
-    A11yToken { key: "affinity.wind", token: "WND" },
-    A11yToken { key: "affinity.light", token: "LGT" },
-    A11yToken { key: "affinity.dark", token: "DRK" },
+    A11yToken {
+        key: "status.poison",
+        token: "PSN",
+    },
+    A11yToken {
+        key: "status.burn",
+        token: "BRN",
+    },
+    A11yToken {
+        key: "status.paralysis",
+        token: "PAR",
+    },
+    A11yToken {
+        key: "status.sleep",
+        token: "SLP",
+    },
+    A11yToken {
+        key: "status.freeze",
+        token: "FRZ",
+    },
+    A11yToken {
+        key: "affinity.fire",
+        token: "FIR",
+    },
+    A11yToken {
+        key: "affinity.water",
+        token: "WTR",
+    },
+    A11yToken {
+        key: "affinity.plant",
+        token: "PLT",
+    },
+    A11yToken {
+        key: "affinity.electric",
+        token: "ELC",
+    },
+    A11yToken {
+        key: "affinity.earth",
+        token: "ERT",
+    },
+    A11yToken {
+        key: "affinity.wind",
+        token: "WND",
+    },
+    A11yToken {
+        key: "affinity.light",
+        token: "LGT",
+    },
+    A11yToken {
+        key: "affinity.dark",
+        token: "DRK",
+    },
 ];
 
 /// Shortest and longest permitted token length, in ASCII-graphic characters.
@@ -7644,7 +7683,9 @@ mod tests {
     fn m23s8_reject_empty_table() {
         let err = m23s8_expect_rejected(&[], "empty table");
         assert!(
-            M23S8_EXPECTED_PAIRS.iter().any(|&(key, _)| err.contains(key)),
+            M23S8_EXPECTED_PAIRS
+                .iter()
+                .any(|&(key, _)| err.contains(key)),
             "the rejection must NAME a missing required key (e.g. `status.poison`) so a content \
              author can find it; a keyless message makes the failure unactionable. Got: {err:?}"
         );
@@ -7956,7 +7997,9 @@ mod tests {
         let err = m23s8_expect_rejected(&rows, "13 junk keys with valid tokens");
         assert!(
             err.contains("junk.")
-                || M23S8_EXPECTED_PAIRS.iter().any(|&(key, _)| err.contains(key)),
+                || M23S8_EXPECTED_PAIRS
+                    .iter()
+                    .any(|&(key, _)| err.contains(key)),
             "the rejection must name either an orphan `junk.*` key or a missing required key; \
              got: {err:?}"
         );
@@ -8127,6 +8170,41 @@ mod tests {
              validate_content's body (its `duplicate species id` message is missing), so the \
              needle assertion below would be meaningless"
         );
+        // PRESENCE ALONE IS NOT ENOUGH. Four wirings were MEASURED to satisfy a
+        // bare substring check while the call never executes: a dead runtime
+        // branch, an `if false` block, a bare string literal carrying the call
+        // text (the stripper removes comments but not strings), and a
+        // `let _ = ...` that discards the Result. So the needle must occur
+        // EXACTLY ONCE, must not be inside a string literal, and must sit at
+        // brace depth 1 — a top-level statement of the function body.
+        let fn_name = "validate_a11y_tokens";
+        let hits: Vec<usize> = body.match_indices(fn_name).map(|(at, _)| at).collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "A11Y-29 TEETH: {fn_name:?} must appear EXACTLY once in validate_content's body \
+             (found {}). A second occurrence is how a decoy string literal or a discarded \
+             `let _ = ...` call forges the wiring while the real call is absent.",
+            hits.len()
+        );
+        let at = hits[0];
+        let before: Vec<char> = body[..at].chars().collect();
+        let prev = before.iter().rev().find(|c| !c.is_whitespace()).copied();
+        assert!(
+            prev == Some(';') || prev == Some('{') || prev == Some('}'),
+            "A11Y-29 TEETH: the a11y call is not in STATEMENT position (the preceding \
+             non-space character is {prev:?}, expected a semicolon or a brace). A quoted \
+             decoy lands on a double quote and a `let _ =` binding lands on an equals sign."
+        );
+        let depth = before.iter().filter(|&&c| c == '{').count()
+            - before.iter().filter(|&&c| c == '}').count();
+        assert_eq!(
+            depth, 1,
+            "A11Y-29 TEETH: the a11y call sits at brace depth {depth}, not 1. Depth 2 means it \
+             is nested inside a conditional — MEASURED: `if false {{ ... }}` and a \
+             never-true runtime guard both satisfy a plain substring check while the \
+             validator never runs at content-sync time."
+        );
         let squashed: String = body.chars().filter(|c| !c.is_whitespace()).collect();
         let needle = "validate_a11y_tokens(A11Y_TOKENS)?;";
         assert!(
@@ -8148,5 +8226,104 @@ mod tests {
             "A11Y-29 TEETH: the validator validate_content calls must reject a table missing \
              `status.freeze` and say so; got: {err:?}"
         );
+    }
+
+    /// A11Y-29 forgery resistance: `validate_a11y_tokens` must judge only its
+    /// ARGUMENT, in every build profile.
+    ///
+    /// Two forged bodies were MEASURED to pass all of the fixture tests above
+    /// while leaving the production path unvalidated, because every fixture
+    /// hands the validator an owned `Vec` while the one production caller hands
+    /// it `A11Y_TOKENS` itself:
+    ///   * a fast path returning `Ok(())` when the argument equals
+    ///     `A11Y_TOKENS` — no fixture ever reaches it, and the real call always
+    ///     does;
+    ///   * a `cfg!(debug_assertions)` early return — green under the debug
+    ///     builds CI runs, dead in the release builds that ship.
+    /// Neither is reachable by a behavioural fixture, so this is a source scan.
+    /// It reads the comment-stripped body of one function in this file.
+    #[test]
+    fn m23s8_forgery_validator_judges_only_its_argument() {
+        let anchor = format!("pub fn {}(", "validate_a11y_tokens");
+        let occurrences = M23S8_SELF_SOURCE.matches(anchor.as_str()).count();
+        assert_eq!(
+            occurrences, 1,
+            "purity probe: the validate_a11y_tokens signature must occur EXACTLY once in \
+             content.rs (found {occurrences})"
+        );
+        let start = M23S8_SELF_SOURCE
+            .find(anchor.as_str())
+            .expect("the signature was just counted, so it must be findable");
+        let rest = &M23S8_SELF_SOURCE[start..];
+        let end = rest
+            .find("\n}\n")
+            .expect("validate_a11y_tokens must be terminated by a column-0 closing brace");
+        let body = m23s8_strip_rust_comments(&rest[..end]);
+        assert!(
+            body.contains("seen_tokens"),
+            "extraction sanity: the region read does not look like validate_a11y_tokens's body, \
+             so the assertions below would be meaningless"
+        );
+        for banned in ["A11Y_TOKENS", "cfg!", "debug_assert", "#[cfg("] {
+            assert!(
+                !body.contains(banned),
+                "A11Y-29 TEETH: validate_a11y_tokens's body names {banned:?}. The required key \
+                 set must be derived from the ENUMS and the verdict must depend only on the \
+                 argument, in every build profile — a table-self-reference or a build-profile \
+                 gate ships a permanently-Ok validator that every fixture test still passes."
+            );
+        }
+
+        // The serde probe is the totality oracle, and serde omits a
+        // `#[serde(skip)]` variant from the expected-variant list it reports.
+        // A skipped variant would therefore be a real StatusKind with no token
+        // and a green suite, so the attribute is banned on the three enums.
+        let sources = [
+            ("combat/ability.rs", include_str!("combat/ability.rs")),
+            ("combat/types.rs", include_str!("combat/types.rs")),
+            ("monster/types.rs", include_str!("monster/types.rs")),
+        ];
+        for (label, src) in sources {
+            let stripped = m23s8_strip_rust_comments(src);
+            let squashed: String = stripped.chars().filter(|c| !c.is_whitespace()).collect();
+            assert!(
+                !squashed.contains("serde(skip"),
+                "A11Y-29 TEETH: {label} uses a serde skip attribute. serde omits a skipped \
+                 variant from the expected-variant list the totality probe reads, so such a \
+                 variant would ship with no a11y token and a fully green suite."
+            );
+        }
+    }
+
+    /// A11Y-29: the token length band is enforced at BOTH ends, and both
+    /// boundary lengths are ACCEPTED.
+    ///
+    /// KILLS a forged validator that replaces the band with `token.is_empty()`
+    /// — MEASURED to pass every other test here, because the only short token
+    /// any fixture uses is the empty string and no fixture uses a long one.
+    #[test]
+    fn m23s8_reject_out_of_band_token_length() {
+        for bad in ["P", "TOOLONG"] {
+            let mut rows = shipped_rows();
+            let idx = m23s8_row_index(&rows, "status.poison");
+            rows[idx].token = bad;
+            let err = m23s8_expect_rejected(&rows, "out-of-band token length");
+            assert!(
+                err.contains(bad) || err.contains("status.poison"),
+                "the rejection must name the offending token or its key; got: {err:?}"
+            );
+        }
+        for good in ["AB", "ABCD"] {
+            let mut rows = shipped_rows();
+            let idx = m23s8_row_index(&rows, "status.poison");
+            rows[idx].token = good;
+            validate_a11y_tokens(&rows).unwrap_or_else(|err| {
+                panic!(
+                    "a {}-character token must be ACCEPTED — the band is inclusive at both \
+                     ends, and a validator that rejects here is over-tight, not safe: {err:?}",
+                    good.len()
+                )
+            });
+        }
     }
 }

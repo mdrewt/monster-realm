@@ -2054,12 +2054,12 @@ describe('battleModel m23-s8: statusBadge unknown-tag fallback is visible', () =
         .sort();
       expect(
         shadowed,
-        'm23s8 SHADOW CENSUS: the set of variants whose curated badge is byte-identical to the ' +
-          'unknown-tag fallback must be EXACTLY this one. "Paralysis" sliced to three ' +
-          'characters and upper-cased is "PAR", which is also its curated badge — a measured ' +
-          'collision of the specified transform, not a gap in the map. Any OTHER name ' +
-          'appearing here means its case was deleted and the fallback is now wearing the ' +
-          "curated badge's clothes",
+        'm23s8 SHADOW CENSUS: NO curated badge may be byte-identical to the unknown-tag ' +
+          'fallback, which is why the fallback carries a leading "?" that no curated token ' +
+          'has. A name appearing here means its case was deleted from statusBadge and the ' +
+          "fallback is now wearing that curated badge's clothes. Do NOT repair a failure " +
+          'here by widening the expected array — that absorbs the deletion this clause exists ' +
+          'to catch',
       ).toEqual([]);
     } finally {
       warnSpy.mockRestore();
