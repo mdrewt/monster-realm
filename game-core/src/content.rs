@@ -740,6 +740,11 @@ pub fn validate_encounters(
 /// - Unique type chart pairs (attacker, defender)
 /// - Unique item ids
 /// - All `learnable_skill_ids` in species must reference existing skills
+/// - The a11y text-token table covers every `StatusKind` and every `Affinity`
+///   with a unique, visible token (A11Y-29, M23 spec section 2.6; ADR-0233).
+///   This one check reads a compile-time constant rather than the parameters
+///   below, so its result is independent of the registries handed in — it is
+///   here because this is the function the publish-time seed path calls.
 ///
 /// # Errors
 /// Returns `Err` with a descriptive message on the first integrity violation.
@@ -906,6 +911,10 @@ pub fn validate_content(
             ));
         }
     }
+
+    // A11Y-29 (M23 spec section 2.6, ADR-0233): a status or affinity that ships
+    // with no text token leaves the badge carrying meaning by colour alone.
+    validate_a11y_tokens(A11Y_TOKENS)?;
 
     Ok(())
 }
@@ -1580,6 +1589,198 @@ pub fn validate_npc_interactions(
                     ));
                 }
             }
+        }
+    }
+
+    Ok(())
+}
+
+// ===========================================================================
+// A11Y-29 — the accessibility text-token table (M23 spec section 2.6, ADR-0233)
+// ===========================================================================
+//
+// Every `StatusEffect` / `StatusKind` and every `Affinity` a monster can carry
+// must have a SHORT TEXT TOKEN, so no badge ever conveys its meaning by colour
+// alone. The table lives here, as Rust, rather than under `game-core/content/`:
+// `evals/content-version.eval.mjs` hashes EVERY file in that directory against a
+// checked-in baseline keyed to `CONTENT_VERSION`, so a new content file forces
+// an edit outside this slice's touch-set. The keys are enum variants — type
+// space, not designer-authored rows — so ADR-0006's "content is data" rule does
+// not reach them. See ADR-0233 for the full reasoning and the alternatives.
+//
+// TOTALITY. `status_token_key` and `affinity_token_key` are EXHAUSTIVE matches
+// with no wildcard arm, so a new variant is a compile error here. That alone is
+// not enough — a hand-maintained roster left at its old length was MEASURED to
+// let a new variant through with the validator still returning `Ok(())`. The
+// roster below is therefore proved complete by tests that read serde's own
+// derive-generated variant list, which no new variant can slip past.
+
+/// One accessibility text token: a stable `key` naming an enum variant, and the
+/// short `token` the UI renders alongside (never instead of) the colour cue.
+///
+/// The five status tokens are byte-identical to `statusBadge` in
+/// `client/src/ui/battleModel.ts` — the client badge and this table are one
+/// contract. Nothing mechanically links the two (residual R-m23-s8-TSDUP); the
+/// pinned-pairs test here and the generated-variant tooth on the client side
+/// are what make a drift visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct A11yToken {
+    /// `status.<lowercased variant>` or `affinity.<lowercased variant>`.
+    pub key: &'static str,
+    /// The rendered token: ASCII-graphic, 2 to 4 characters, unique under
+    /// ASCII case folding across the whole table.
+    pub token: &'static str,
+}
+
+/// Every `StatusKind` variant, in declaration order.
+///
+/// Hand-written because Rust has no variant reflection on stable. Its
+/// COMPLETENESS is not taken on trust: `m23s8_totality_status_kind_variants_have_tokens`
+/// compares it against serde's derive-generated variant list, so a variant
+/// missing here is a red test, not a silent gap.
+pub const STATUS_KIND_ALL: [StatusKind; 5] = [
+    StatusKind::Poison,
+    StatusKind::Burn,
+    StatusKind::Paralysis,
+    StatusKind::Sleep,
+    StatusKind::Freeze,
+];
+
+/// The a11y token key for a status condition.
+///
+/// EXHAUSTIVE, no wildcard arm: a new `StatusKind` variant is a COMPILE error
+/// here. Note that `game-core/src/combat/ability.rs` documents a new
+/// `StatusEffect` variant as requiring a `StatusKind::matches` update, but that
+/// function's false arm absorbs any new `StatusEffect`, so this is in practice
+/// the first site that forces the author to think about the pair.
+#[must_use]
+pub const fn status_token_key(kind: StatusKind) -> &'static str {
+    match kind {
+        StatusKind::Poison => "status.poison",
+        StatusKind::Burn => "status.burn",
+        StatusKind::Paralysis => "status.paralysis",
+        StatusKind::Sleep => "status.sleep",
+        StatusKind::Freeze => "status.freeze",
+    }
+}
+
+/// The a11y token key for an elemental affinity.
+///
+/// EXHAUSTIVE, no wildcard arm: a ninth `Affinity` variant is a COMPILE error
+/// here, mirroring `Affinity::index()` (ADR-0174 D7).
+#[must_use]
+pub const fn affinity_token_key(affinity: Affinity) -> &'static str {
+    match affinity {
+        Affinity::Fire => "affinity.fire",
+        Affinity::Water => "affinity.water",
+        Affinity::Plant => "affinity.plant",
+        Affinity::Electric => "affinity.electric",
+        Affinity::Earth => "affinity.earth",
+        Affinity::Wind => "affinity.wind",
+        Affinity::Light => "affinity.light",
+        Affinity::Dark => "affinity.dark",
+    }
+}
+
+/// The shipped a11y token table: five status conditions, eight affinities.
+///
+/// The eight affinity rows are DELIBERATELY unconsumed by the client today —
+/// `client/src/ui/battleView.ts` already renders the affinity NAME as text, so a
+/// new affinity ships with a text cue for free. They exist because A11Y-29 names
+/// `Affinity` literally. Recorded in ADR-0233 rather than left to be discovered
+/// and deleted as dead weight.
+pub const A11Y_TOKENS: &[A11yToken] = &[
+    A11yToken { key: "status.poison", token: "PSN" },
+    A11yToken { key: "status.burn", token: "BRN" },
+    A11yToken { key: "status.paralysis", token: "PAR" },
+    A11yToken { key: "status.sleep", token: "SLP" },
+    A11yToken { key: "status.freeze", token: "FRZ" },
+    A11yToken { key: "affinity.fire", token: "FIR" },
+    A11yToken { key: "affinity.water", token: "WTR" },
+    A11yToken { key: "affinity.plant", token: "PLT" },
+    A11yToken { key: "affinity.electric", token: "ELC" },
+    A11yToken { key: "affinity.earth", token: "ERT" },
+    A11yToken { key: "affinity.wind", token: "WND" },
+    A11yToken { key: "affinity.light", token: "LGT" },
+    A11yToken { key: "affinity.dark", token: "DRK" },
+];
+
+/// Shortest and longest permitted token length, in ASCII-graphic characters.
+const A11Y_TOKEN_MIN_LEN: usize = 2;
+const A11Y_TOKEN_MAX_LEN: usize = 4;
+
+/// Validate an a11y token table against the two enums it must cover (A11Y-29).
+///
+/// The REQUIRED key set is derived from `STATUS_KIND_ALL` and `Affinity::ALL`
+/// through the two key functions above. It is NEVER derived from `A11Y_TOKENS`:
+/// eight forged validators that re-derived their oracle from the table itself
+/// were MEASURED to accept a table with a row deleted, which is precisely the
+/// scenario this criterion exists to reject. `A11Y_TOKENS` must not appear
+/// anywhere in this function.
+///
+/// Rejects, in order: a duplicate key; an orphan key naming no variant; a token
+/// that is not ASCII-graphic (a bare `trim()` check was MEASURED to accept
+/// U+200B ZERO WIDTH SPACE, an invisible "text token"); a token outside the
+/// length band; two tokens equal under ASCII case folding; and a required key
+/// with no row.
+///
+/// # Errors
+/// Returns `Err` naming the offending key or token on the first violation.
+pub fn validate_a11y_tokens(tokens: &[A11yToken]) -> Result<(), String> {
+    let mut required: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    for kind in STATUS_KIND_ALL {
+        required.insert(status_token_key(kind));
+    }
+    for affinity in Affinity::ALL {
+        required.insert(affinity_token_key(affinity));
+    }
+
+    let mut seen_keys: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut seen_tokens: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for row in tokens {
+        if !seen_keys.insert(row.key) {
+            return Err(format!(
+                "a11y token key {:?} is declared twice; each status and affinity gets exactly one row",
+                row.key
+            ));
+        }
+        if !required.contains(row.key) {
+            return Err(format!(
+                "a11y token key {:?} names no StatusKind or Affinity variant; expected one of {:?}",
+                row.key, required
+            ));
+        }
+        if !row.token.chars().all(|c| c.is_ascii_graphic()) {
+            return Err(format!(
+                "a11y token {:?} for key {:?} is not ASCII-graphic; a blank, whitespace or \
+                 zero-width token renders as nothing, which is the colour-only failure A11Y-29 \
+                 forbids",
+                row.token, row.key
+            ));
+        }
+        let len = row.token.chars().count();
+        if !(A11Y_TOKEN_MIN_LEN..=A11Y_TOKEN_MAX_LEN).contains(&len) {
+            return Err(format!(
+                "a11y token {:?} for key {:?} is {} characters; tokens must be {} to {} so they \
+                 fit the badge without overflowing it",
+                row.token, row.key, len, A11Y_TOKEN_MIN_LEN, A11Y_TOKEN_MAX_LEN
+            ));
+        }
+        if !seen_tokens.insert(row.token.to_ascii_lowercase()) {
+            return Err(format!(
+                "a11y token {:?} for key {:?} duplicates another row's token under case folding; \
+                 two conditions sharing a token are indistinguishable on screen",
+                row.token, row.key
+            ));
+        }
+    }
+
+    for key in required {
+        if !seen_keys.contains(key) {
+            return Err(format!(
+                "a11y token table has no row for {key:?}; that status or affinity would render \
+                 with a colour cue and no text token"
+            ));
         }
     }
 
