@@ -286,14 +286,16 @@ const OPENERS: Readonly<Record<OverlayId, () => Opened>> = {
   // The three render-edge ids share one shape: a thunk that re-creates the view model, called once
   // to open and again to `reopen`. A thunk rather than a hoisted `const vm` because the object
   // literals below are contextually typed by `render()`'s parameter, which a hoisted `const` would
-  // widen (`shopAction: null`, `costCurrency: 0n`). It is also the shape `main.ts:1574` really
-  // drives (`main.ts:1627-1641`) — a fresh view model on every store batch — but that half is
+  // widen (`shopAction: null`, `costCurrency: 0n`). It is also the shape production really drives:
+  // `main.ts`'s M12d store-batch listener builds a fresh view model on every batch (`:1627-1641`
+  // as of 2026-09-02 — the landmark is the listener, the number is only a hint). But that half is
   // DEFENSIVE, not currently
   // load-bearing: none of the three `render()` bodies compares `vm` by identity today, so a
   // reused object would behave identically. Stated rather than left as an implied guarantee.
-  // (`main.ts:1574` is the citation `dialogueView.ts:16` and `dialogueView.test.ts:243` both carry
-  // for this fact; it has drifted — the real site is the `onBatchApplied` block at `:1627-1641`.
-  // Corrected here; the other two are flagged, not touched.)
+  // (rb-18 cited `main.ts:1574` for this fact and recorded that `dialogueView.ts` and
+  // `dialogueView.test.ts` carried the same drifted number, flagged but untouched. rb-36 (PR#414)
+  // has since retargeted all of them onto the landmark above, so that note is retired here too —
+  // residual R-rb36-WIRINGCITE.)
   dialogueView: () => {
     const view = new DialogueView();
     const renderIt = (): void => {
@@ -489,7 +491,42 @@ afterEach(async () => {
   document.body.replaceChildren();
 });
 
-describe('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wiring spec', () => {
+// RB37-SEQUENTIAL-RATIONALE (slice rb-37, residual R-rb18-CONCURRENT). This suite is pinned
+// SERIAL, and the annotation below is load-bearing rather than stylistic. DO NOT "clean it up".
+//
+// WHAT WAS MEASURED. At origin/master@318eb70, before this annotation existed,
+// `vitest run src/ui/overlayA11yWiring.test.ts --sequence.concurrent` reported
+// `76 failed | 40 passed (116)`. The rb-18 verifier measured the same 76/40 on its own branch and
+// 43/41 on master, i.e. the same root cause from a different interleaving: this is a PRE-EXISTING
+// file-wide property, not something any one slice introduced. With the annotation the file is
+// 116/116 in all four sequence modes — default, `--sequence.shuffle`, `--sequence.concurrent`, and
+// both together. `vite.config.ts` enables neither flag, which is why `just ci` never saw it.
+//
+// WHY SERIAL RATHER THAN REAL ISOLATION. Four pieces of mutable state are shared by all 116 tests,
+// and NO vitest API can fork any of them per test:
+//   * ONE happy-dom `document`. The environment is installed per test FILE, not per test, and
+//     `installSentinel`, `adoptRealIndexHtml` and every `document.activeElement` oracle read it.
+//   * The module-scope `beforeEach`/`afterEach` directly above, which `replaceChildren()` the body,
+//     re-adopt `client/index.html`, and `vi.clearAllMocks()`.
+//   * ONE spy per module registry, from `vi.mock('./overlayA11y', { spy: true })` above;
+//     `vi.clearAllMocks()` is process-global and most teeth here read `mock.calls.length`.
+//   * `overlayA11y.ts`'s module-private OPEN_OVERLAYS map, which exports no reset hook — a
+//     zero-consumer export is banned by that family's rule, as the hook comment above records.
+// Every test awaits at least one REAL macrotask (`flushMacrotask`), so under concurrency test B's
+// `beforeEach` wipes test A's DOM and mock record mid-flight. Genuine per-test isolation would mean
+// constructing a happy-dom Window per test and injecting `document` into all sixteen view classes
+// plus overlayA11y/focusTrap/liveRegion — a production refactor of the whole overlay family, which
+// is not something a one-spec-file residual slice gets to do. The residual's own text authorises
+// the serial route "with a documented reason"; this block is that reason.
+//
+// A `vite.config.ts` SETTING CANNOT SUBSTITUTE: the criterion is the CLI flag, and the CLI flag
+// overrides config. Moving this into the runner config would satisfy nobody and gate nothing.
+//
+// IF YOU DELETE THIS: `RB37-CONCURRENT-SAFE` and `RB37-RATIONALE-DURABLE` in the sibling
+// `overlayA11yWiring.concurrency.test.ts` both red — the first spawns a child vitest carrying the
+// flag, the second pins this marker and this block's content. If you ever make the file genuinely
+// per-test-isolated, delete the annotation AND that spec in the same commit.
+describe.sequential('m23-s10 / A11Y-13,14,16 — the cross-view overlay-a11y wiring spec', () => {
   it('S10-WIRE-TOTALITY BITES: the opener table covers EVERY OverlayId and nothing else, and the manifest is the real sixteen', () => {
     // Compile-time totality is the primary device (Record<OverlayId, _>); these are the runtime
     // belts, so an `as` cast or a `@ts-expect-error` cannot quietly shrink the parameterisation.

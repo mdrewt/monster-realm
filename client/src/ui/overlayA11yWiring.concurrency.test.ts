@@ -339,9 +339,10 @@ describe('rb-37 proof-of-teeth — overlayA11yWiring.test.ts under vitest --sequ
 
     expect(report.numTotalTests, 'the file holds 116 tests').toBe(116);
     expect(report.numFailedTests).toBe(0);
-    expect(report.numPendingTests, 'a .skip would hide a racy test behind a zero-failure count').toBe(
-      0,
-    );
+    expect(
+      report.numPendingTests,
+      'a .skip would hide a racy test behind a zero-failure count',
+    ).toBe(0);
     expect(report.numTodoTests).toBe(0);
 
     const assertions = report.testResults[0].assertionResults;
@@ -403,9 +404,10 @@ describe('rb-37 proof-of-teeth — overlayA11yWiring.test.ts under vitest --sequ
 
     const markerIndex = raw.indexOf('RB37-SEQUENTIAL-RATIONALE');
     const annotationIndex = raw.indexOf('describe.sequential(');
-    expect(markerIndex, 'the marker must actually be present in the raw source').toBeGreaterThanOrEqual(
-      0,
-    );
+    expect(
+      markerIndex,
+      'the marker must actually be present in the raw source',
+    ).toBeGreaterThanOrEqual(0);
     expect(
       annotationIndex,
       'the describe.sequential( annotation must actually be present in the raw source',
