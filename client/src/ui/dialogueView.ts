@@ -13,14 +13,16 @@
 // one fact both paths already write, so it cannot drift from itself.
 //
 // THE CLOSE GUARDS ARE ASYMMETRIC ON PURPOSE. The `render(null)` branch IS guarded: A11Y-34 forbids
-// invoking the helper "on a repeat render at the same nullity", and `main.ts:1574` calls `dialogueView.render(vm)` unconditionally on every
-// single batch, passing `null` whenever there is no conversation. `hide()` is NOT
-// guarded -- see the reasoning in `ui/pvpView.ts`'s `hide()`: an unguarded close is the self-healing
-// path, and `closeOverlayA11y` with no open record is a documented no-op.
+// invoking the helper "on a repeat render at the same nullity", and `main.ts`'s M12d
+// `store.onBatchApplied` listener (`:1627-1641` today) calls `dialogueView.render(vm)`
+// unconditionally on every single batch, passing `null` whenever there is no conversation.
+// `hide()` is NOT guarded -- see the reasoning in `ui/pvpView.ts`'s `hide()`: an unguarded close
+// is the self-healing path, and `closeOverlayA11y` with no open record is a documented no-op.
 //
-// `hide()` HAS NO PRODUCTION CALLER and that is pinned: `main.ts:362` leaves `dialogueView` out of
-// the force-hide handle table (it is the sole NEVER_FORCE_HIDE member -- hiding a live conversation
-// client-side strands the server `player_conversation` row), and `main.wiring.test.ts` asserts zero
+// `hide()` HAS NO PRODUCTION CALLER and that is pinned: `main.ts`'s UXD3C-HANDLES-delimited
+// `overlayHandles` force-hide table leaves `dialogueView` out (`dialogueView: undefined` at
+// `:365` today; it is the sole NEVER_FORCE_HIDE member -- hiding a live conversation client-side
+// strands the server `player_conversation` row), and `main.wiring.test.ts` asserts zero
 // `dialogueView.hide` occurrences in `main.ts`. `render(null)` is the real close. `hide()` stays as
 // a belt-and-braces API surface and is wired identically.
 

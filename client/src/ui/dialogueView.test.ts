@@ -240,11 +240,12 @@ describe('DialogueView — overlay a11y wiring on the render edge (m23-s3)', () 
   });
 
   it('S3-dialogueView-REPEAT-NO-REOPEN BITES: a repeat render(vm) at the SAME nullity neither re-opens nor yanks focus back', async () => {
-    // THE CRUX (plan F5/F6): main.ts:1574 calls dialogueView.render(vm) UNCONDITIONALLY on every
-    // store batch. An unguarded delegation would clear and re-schedule the deferred-focus timer
-    // every tick (ui/overlayA11y.ts:100-113), so focus is yanked off whatever the player Tabbed to
-    // and the overlay is untabbable. This failure mode is INVISIBLE to every attribute assertion —
-    // a re-open rewrites byte-identical values.
+    // THE CRUX (plan F5/F6): main.ts's M12d store.onBatchApplied listener (`:1627-1641` today)
+    // calls dialogueView.render(vm) UNCONDITIONALLY on every store batch. An unguarded delegation
+    // would clear and re-schedule the deferred-focus timer every tick (ui/overlayA11y.ts:100-113),
+    // so focus is yanked off whatever the player Tabbed to and the overlay is untabbable. This
+    // failure mode is INVISIBLE to every attribute assertion — a re-open rewrites byte-identical
+    // values.
     const root = mountDialogueOverlay();
     const view = new DialogueView();
 
@@ -286,7 +287,8 @@ describe('DialogueView — overlay a11y wiring on the render edge (m23-s3)', () 
   it('S3-dialogueView-EDGE-COUNTS BITES: 3x render(vm) = ONE open; 3x render(null) = ONE close; and a full cycle fires open -> close -> open IN THAT ORDER', () => {
     // A11Y-34. The close side is NOT DOM-observable (a second close is an idempotent no-op,
     // ui/overlayA11y.ts:136-137), so only a call COUNT can see an unguarded render(null) branch —
-    // and main.ts:1574 makes that branch run on EVERY batch forever (F5).
+    // and main.ts's M12d store.onBatchApplied listener (`:1627-1641` today) makes that branch run
+    // on EVERY batch forever (F5).
     mountDialogueOverlay();
     const view = new DialogueView();
 
@@ -368,7 +370,8 @@ describe('DialogueView — overlay a11y wiring on the render edge (m23-s3)', () 
     ).toHaveBeenCalledTimes(2);
 
     // Half B — the render(null) path is the one that MUST be guarded: A11Y-34 forbids a close on a
-    // repeat render at the same nullity, and main.ts:1574 would otherwise fire one every batch.
+    // repeat render at the same nullity, and main.ts's M12d store.onBatchApplied listener
+    // (`:1627-1641` today) would otherwise fire one every batch.
     vi.clearAllMocks();
     view.render(dialogueVm());
     view.render(null);
@@ -445,7 +448,7 @@ describe('DialogueView render(): existing paint behaviour (pinned, not changed b
     expect(buttons[0].textContent).toBe('Only one');
   });
 
-  it('BITES: render(null) hides the overlay (the ONLY production close — main.ts:362 keeps dialogueView out of the force-hide table, plan F3)', () => {
+  it('BITES: render(null) hides the overlay (the ONLY production close — the UXD3C-HANDLES-delimited overlayHandles table in main.ts keeps dialogueView out of the force-hide table, plan F3)', () => {
     const root = mountDialogueOverlay();
     const view = new DialogueView();
 
