@@ -56,6 +56,14 @@ import { createServer } from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+// Same reuse rule for G24's Rust-source primitives: `requireSoleDefinition`
+// and `parseGraceConst` are already teeth-tested (and already red-teamed —
+// see their own docstrings) by the eval that owns them.
+import {
+  parseGraceConst,
+  requireSoleDefinition,
+  stripRustComments,
+} from './deletion-grace-wasm-ssot.eval.mjs';
 // CHECKER-IMPORT REUSE (ADR-0121): the YAML job-block extractor already exists
 // and is already teeth-tested by the eval that owns it.
 import { extractJobBlock } from './e2e-desync-teeth.eval.mjs';
@@ -986,15 +994,1183 @@ const GOOD_RUNBOOK_LINES = [
 const APPENDIX_HEADING = '## 9. Appendix (DECOYS live here on purpose)';
 
 function runbookWithout(pred) {
-  return GOOD_RUNBOOK_LINES.filter((l) => !pred(l)).join('\n');
+  return linesWithout(GOOD_RUNBOOK_LINES, pred);
 }
 
 // Rewrite ONLY the lines above the appendix, so every BAD fixture leaves the
 // decoy section intact. That is what makes each fixture a section-scoping test
 // rather than a "does the word appear anywhere" test.
 function runbookMapBeforeAppendix(fn) {
-  const at = GOOD_RUNBOOK_LINES.indexOf(APPENDIX_HEADING);
-  return GOOD_RUNBOOK_LINES.map((l, i) => (i < at ? fn(l) : l)).join('\n');
+  return linesMapBefore(GOOD_RUNBOOK_LINES, APPENDIX_HEADING, fn);
+}
+
+// --- G24: the DR runbook's data-deletion & backup-retention section --------
+//
+// M22 PRV1-18: the runbook must carry a `## Data deletion & backup retention`
+// section, and a reword of it must fail CI. Deliberately NOT a re-derivation
+// of Rust semantics (ADR-0224 retired that class): every check below is
+// either an exact-sentence pin, a value equality against the SSOT constant,
+// or a "does the identifier this document cites still exist as a sole
+// declaration" citation resolution. None of them decides what the code DOES.
+
+// The heading phrase `extractSection` scopes on. Kept as one constant so the
+// checker and any future caller cannot drift to different spellings.
+export const DELETION_SECTION_HEADING_PHRASE = 'Data deletion & backup retention';
+
+// Spec §9 residual risk 1, required-exact language.
+//
+// QUOTE STYLE IS NOT COSMETIC HERE. biome's `quoteStyle: "single"` applies a
+// fewer-escapes heuristic, so it leaves PIN_BACKUP_LIMIT (which contains
+// apostrophes) double-quoted and rewrites this one, which contains none, to
+// single. Either way neither pin may acquire a `\\` escape: a formatter
+// escaping an apostrophe has silently truncated a text pin in this repo
+// before. That is what the no-backslash and exact-length teeth enforce —
+// the quote character itself is left to the formatter.
+export const PIN_PSEUDONYMIZATION =
+  'Direct name/display fields are severed on deletion. The `Identity` key and its associated timestamps/behavioral history are not purged from multi-user or historical rows; this is a documented, accepted pseudonymization limitation, not erasure.';
+
+// Spec §9 residual risk 2 — the PRV1-18 core, the sentence the spec calls
+// "pinned and exact-body-checked in the DR runbook". It names
+// `DELETION_GRACE_MS`, a symbol that does NOT exist (the real one is
+// `DELETION_GRACE_MS_DEFAULT`). That is not a typo to fix: this is
+// required-exact language quoted as such, and the runbook names the real
+// spelling in the very next sentence. See ADR-0230.
+export const PIN_BACKUP_LIMIT =
+  "Deletion is guaranteed for the module's live queryable state within `DELETION_GRACE_MS` of the request. Host-level backups, snapshots, and WAL are outside the module's reach; point-in-time recovery can restore deleted data until the operator's backup-retention window elapses. This module makes no claim about backup or replica state.";
+
+// The four real source files clause 2 and clause 5 read. Named once.
+export const DELETION_SOURCE_ACCOUNTS = 'server-module/src/accounts.rs';
+export const DELETION_SOURCE_SCHEMA = 'server-module/src/schema.rs';
+export const DELETION_SOURCE_PRIVACY = 'server-module/src/privacy.rs';
+export const DELETION_SOURCE_GRACE = 'game-core/src/accounts/deletion.rs';
+
+// Citation roster: every code identifier the runbook section names, paired
+// with the file it lives in and its DECLARATION-shaped marker.
+//
+// Declaration-shaped, never the bare identifier: measured on this tree, every
+// bare name here occurs 2-3 times in its own file after comment stripping
+// (attribute arguments, string literals, type positions), so a bare-name
+// uniqueness check would red on day one — and the natural "fix" for that red
+// is loosening exactly-one to at-least-one, which reopens the decoy-twin
+// bypass the uniqueness check exists to close.
+//
+// `DELETION_GRACE_MS_DEFAULT` is deliberately ABSENT: clause 2 already binds
+// it through `parseGraceConst`, which pins its VALUE and not merely its
+// presence. Listing it here as well would re-verify, more weakly, something
+// another clause already proves.
+export const DELETION_CITATIONS = [
+  {
+    symbol: 'account_deletion_reaper',
+    file: DELETION_SOURCE_ACCOUNTS,
+    marker: 'pub fn account_deletion_reaper(',
+  },
+  {
+    symbol: 'AccountDeletionReaperSchedule',
+    file: DELETION_SOURCE_ACCOUNTS,
+    marker: 'pub struct AccountDeletionReaperSchedule',
+  },
+  { symbol: 'export_bundle', file: DELETION_SOURCE_SCHEMA, marker: 'accessor = export_bundle)' },
+  {
+    symbol: 'DATA_LIFECYCLE_MANIFEST',
+    file: DELETION_SOURCE_SCHEMA,
+    marker: 'pub const DATA_LIFECYCLE_MANIFEST',
+  },
+  {
+    symbol: 'my_export_bundle',
+    file: DELETION_SOURCE_PRIVACY,
+    marker: 'accessor = my_export_bundle,',
+  },
+];
+
+/**
+ * Normalize markdown prose for substring pinning: drop HTML comments, then
+ * collapse every whitespace run to one space.
+ *
+ * COMPLEXITY CAVEAT: the comment strip is roughly O(n^2) on pathological
+ * input (measured: ~6 s for 100k unclosed HTML-comment openers). The only
+ * caller feeds it a committed file, so nothing untrusted reaches it — but
+ * bound the input before reusing this on text you did not commit.
+ *
+ * ALL THREE replacements are load-bearing. Dropping comments first closes a measured
+ * bypass class in this repo — a needle present ONLY inside `<!-- ... -->`
+ * renders as nothing to a human but satisfies a raw `indexOf`, which lets an
+ * editor comment out the real disclaimer with the gate still green. Collapsing
+ * whitespace is what lets the two exact-sentence pins survive a markdown
+ * re-wrap, so an editor reflowing a paragraph is not a false RED.
+ */
+export function squashDocText(text) {
+  return String(text == null ? '' : text)
+    .replace(/<!--[\s\S]*?-->/g, ' ')
+    .replace(/^ {0,3}```[\s\S]*?^ {0,3}```/gm, ' ')
+    .split(/\s+/)
+    .join(' ')
+    .trim();
+}
+
+/**
+ * Render a decimal digit string with Rust's `_` thousands grouping
+ * (`604800000` -> `604_800_000`), so clause 2 can look for the value the way
+ * the source declares it and the runbook writes it.
+ *
+ * DELIBERATE: only the grouped spelling is accepted. The ungrouped form is a
+ * different string and would be a second, unpinned way to satisfy the clause;
+ * one spelling, pinned, is the point.
+ */
+export function groupThousands(digits) {
+  const s = String(digits);
+  let out = '';
+  for (let i = 0; i < s.length; i++) {
+    if (i > 0 && (s.length - i) % 3 === 0) out += '_';
+    out += s[i];
+  }
+  return out;
+}
+
+// Own-property read: a `sources` object is caller-supplied, so an inherited
+// `Object.prototype` key must never satisfy a citation lookup.
+function ownSource(sources, file) {
+  if (sources === null || typeof sources !== 'object') return undefined;
+  if (!Object.hasOwn(sources, file)) return undefined;
+  const text = sources[file];
+  return typeof text === 'string' ? text : undefined;
+}
+
+/**
+ * Resolve every roster entry to exactly ONE declaration in the file the
+ * runbook cites it from. `sources` is a `{path: text}` map so the resolution
+ * is pure and fixture-testable; `readDeletionCitationSources()` builds the
+ * real one.
+ *
+ * This is a citation check, not semantic inference (ADR-0224): it answers only
+ * "does the identifier this document names still exist, once, as a declaration,
+ * in the file the document names" — the question a broken-link checker answers.
+ * Its verdict is invariant under any behavioural change that preserves the
+ * declarations.
+ *
+ * Fails LOUD in all three degenerate directions — an empty roster, a missing
+ * or non-string source, and zero matches are each an explicit failure, never
+ * a skip and never a default.
+ */
+export function resolveDeletionCitations(sources) {
+  const total = Array.isArray(DELETION_CITATIONS) ? DELETION_CITATIONS.length : 0;
+  if (total === 0) {
+    return {
+      ok: false,
+      resolved: 0,
+      total: 0,
+      reason:
+        'clause 5: FAIL-LOUD: the citation roster is empty — every citation check below would ' +
+        'pass vacuously over zero entries',
+    };
+  }
+  let resolved = 0;
+  for (const { symbol, file, marker } of DELETION_CITATIONS) {
+    const src = ownSource(sources, file);
+    if (src === undefined || src.length === 0) {
+      return {
+        ok: false,
+        resolved,
+        total,
+        reason:
+          `clause 5: FAIL-LOUD: no source text for ${file} (cited for \`${symbol}\`) — an ` +
+          'unreadable source must read exactly like a citation that resolves to zero hits, ' +
+          'never like one that resolved',
+      };
+    }
+    let at;
+    try {
+      at = requireSoleDefinition(stripRustComments(src), marker);
+    } catch (err) {
+      return {
+        ok: false,
+        resolved,
+        total,
+        reason:
+          `clause 5: \`${symbol}\` is ambiguous in ${file} — ${err?.message ?? String(err)}. A ` +
+          'decoy twin must never let a first-hit search bind the wrong declaration',
+      };
+    }
+    if (at === -1) {
+      return {
+        ok: false,
+        resolved,
+        total,
+        reason:
+          `clause 5: FAIL-LOUD: the runbook cites \`${symbol}\` but ${file} carries no ` +
+          `\`${marker}\` declaration — the document is citing a symbol that no longer exists`,
+      };
+    }
+    resolved++;
+  }
+  return { ok: true, resolved, total, reason: `${resolved}/${total} citations resolved` };
+}
+
+/**
+ * G24. Scope to the ONE `## ...Data deletion & backup retention...` section
+ * (never a whole-document fallback — `extractSection` throws on absent or
+ * duplicate headings) and evaluate six clauses against its squashed body.
+ *
+ * `clausesMet` is returned so the caller reports a DERIVED count rather than
+ * claiming one.
+ */
+export function checkDrRunbookDeletionSection(text, sources) {
+  let sec;
+  try {
+    sec = extractSection(text, DELETION_SECTION_HEADING_PHRASE, '## ');
+  } catch (err) {
+    return {
+      ok: false,
+      clausesMet: 0,
+      resolved: 0,
+      reason: `FAIL-LOUD: ${err?.message ?? String(err)}`,
+    };
+  }
+  const body = squashDocText(sec.body);
+  const miss = (clausesMet, reason) => ({ ok: false, clausesMet, resolved: 0, reason });
+
+  // clause 1a — spec §9 residual 1, verbatim. The single most misleading
+  // possible edit to this section is deleting the words "not erasure".
+  if (body.indexOf(squashDocText(PIN_PSEUDONYMIZATION)) === -1) {
+    return miss(
+      0,
+      'clause 1a: the pseudonymization sentence (spec §9 residual 1) is not present verbatim in ' +
+        'the section — a player-facing promise of erasure this module does not deliver',
+    );
+  }
+  // clause 1b — spec §9 residual 2, verbatim. This is PRV1-18's core.
+  if (body.indexOf(squashDocText(PIN_BACKUP_LIMIT)) === -1) {
+    return miss(
+      1,
+      'clause 1b: the backup-limitation sentence (spec §9 residual 2) is not present verbatim in ' +
+        'the section — the one statement bounding what deletion means against host backups',
+    );
+  }
+
+  // clause 2 — the grace window, tied to the SSOT constant rather than to a
+  // literal typed here: name, value, and the derived whole-day figure.
+  const graceSrc = ownSource(sources, DELETION_SOURCE_GRACE);
+  if (graceSrc === undefined) {
+    return miss(
+      2,
+      `clause 2: FAIL-LOUD: no source text for ${DELETION_SOURCE_GRACE} — the grace window ` +
+        'cannot be checked against its declaration, so it must not be reported as checked',
+    );
+  }
+  let graceMs;
+  try {
+    graceMs = parseGraceConst(graceSrc);
+  } catch (err) {
+    return miss(2, `clause 2: FAIL-LOUD: ${err?.message ?? String(err)}`);
+  }
+  if (body.indexOf('DELETION_GRACE_MS_DEFAULT') === -1) {
+    return miss(
+      2,
+      'clause 2: the section never names `DELETION_GRACE_MS_DEFAULT` — an operator retuning the ' +
+        'grace window cannot find the constant this section is describing',
+    );
+  }
+  const grouped = groupThousands(graceMs.toString());
+  if (body.indexOf(grouped) === -1) {
+    return miss(
+      2,
+      `clause 2: the section does not state the grace window as \`${grouped}\` ms — the value ` +
+        `must equal ${DELETION_SOURCE_GRACE}'s own declaration, not merely look like a number`,
+    );
+  }
+  const MS_PER_DAY = 86400000n;
+  if (graceMs % MS_PER_DAY !== 0n) {
+    return miss(
+      2,
+      `clause 2: FAIL-LOUD: the grace window (${graceMs} ms) is not a whole number of days, so ` +
+        'the day figure this clause pins cannot be derived — retune the check, do not guess',
+    );
+  }
+  const dayNeedle = `${graceMs / MS_PER_DAY} days`;
+  if (body.indexOf(dayNeedle) === -1) {
+    return miss(
+      2,
+      `clause 2: the section does not state the grace window as \`${dayNeedle}\` — the human ` +
+        'figure is derived from the constant, so a stale one contradicts the ms value beside it',
+    );
+  }
+
+  // clause 3 — the reaper an operator has to find and reason about.
+  for (const needle of [
+    'account_deletion_reaper',
+    'AccountDeletionReaperSchedule',
+    'one-shot',
+    're-arm',
+  ]) {
+    if (body.indexOf(needle) === -1) {
+      return miss(
+        3,
+        `clause 3: the deletion reaper is under-documented — the section never says \`${needle}\`; ` +
+          'the reducer name, its schedule table, and the one-shot/re-arm cadence are all things ' +
+          'an operator needs before touching a pending deletion',
+      );
+    }
+  }
+
+  // clause 4 — export bundles as LANDED. `no independent TTL` and `S4b` are
+  // the honest half: the PRV1-14 reaper is deferred, so a bundle outlives the
+  // export request and lands in every subsequent backup.
+  for (const needle of ['export_bundle', 'my_export_bundle', 'no independent TTL', 'S4b']) {
+    if (body.indexOf(needle) === -1) {
+      return miss(
+        4,
+        `clause 4: export-bundle retention is under-documented — the section never says ` +
+          `\`${needle}\`; without it the doc implies an expiry that does not exist`,
+      );
+    }
+  }
+
+  // clause 5 — every cited identifier still resolves to a sole declaration.
+  const cites = resolveDeletionCitations(sources);
+  if (!cites.ok) {
+    return { ok: false, clausesMet: 5, resolved: cites.resolved, reason: cites.reason };
+  }
+
+  return {
+    ok: true,
+    clausesMet: 6,
+    resolved: cites.resolved,
+    reason: `6/6 clauses, ${cites.resolved}/${cites.total} citations resolved`,
+  };
+}
+
+/**
+ * Read the four real source files clause 2 and clause 5 resolve against.
+ * THROWS on any read failure — the imperative half is deliberately tiny and
+ * kept out of the pure checker so every clause stays fixture-testable.
+ */
+export function readDeletionCitationSources() {
+  const files = [
+    DELETION_SOURCE_ACCOUNTS,
+    DELETION_SOURCE_SCHEMA,
+    DELETION_SOURCE_PRIVACY,
+    DELETION_SOURCE_GRACE,
+  ];
+  const out = Object.create(null);
+  for (const file of files) {
+    if (!existsSync(file)) {
+      throw new Error(`readDeletionCitationSources: ${file} is missing`);
+    }
+    out[file] = readFileSync(file, 'utf8');
+  }
+  return out;
+}
+
+// ===========================================================================
+// G24 GATING TEETH (M22 PRV1-18, EARS: docs/observability-dr-runbook.md must
+// carry a "## 9. Data deletion & backup retention" section). TESTER-AUTHORED
+// — do not add checker functions or the doc section here; those are the
+// implementer's half of this contract. This whole block is RED until:
+//   export const PIN_PSEUDONYMIZATION
+//   export const PIN_BACKUP_LIMIT
+//   export const DELETION_CITATIONS
+//   export function squashDocText(text)
+//   export function resolveDeletionCitations(sources)
+//   export function checkDrRunbookDeletionSection(text, sources)
+//   export function readDeletionCitationSources()
+// all exist in THIS file, ABOVE this block (same convention as the
+// ERR_INVALID_CODE / ISSUER_NEEDLE "contract constants" and the G23 checker
+// functions above) — this block references every one of those names as a
+// bare identifier, never via import, because they live in this same module.
+//
+
+// ---------------------------------------------------------------------------
+// A. Generalized fixture helpers (parameterized forms of G23's
+// runbookWithout / runbookMapBeforeAppendix). G24 needs the SAME shape over
+// a DIFFERENT synthetic document, so the logic is pulled out once here and
+// both G23 and G24 call the generalized form — never two copies of the same
+// filter/map that could quietly drift apart.
+// ---------------------------------------------------------------------------
+
+export function linesWithout(lines, pred) {
+  return lines.filter((l) => !pred(l)).join('\n');
+}
+
+// Rewrites only the lines strictly BEFORE `marker` (the appendix heading),
+// so every caller's decoy appendix survives untouched — see G23's own
+// comment on why that is what makes a fixture a section-scoping proof.
+export function linesMapBefore(lines, marker, fn) {
+  const at = lines.indexOf(marker);
+  return lines.map((l, i) => (i < at ? fn(l) : l)).join('\n');
+}
+
+// ---------------------------------------------------------------------------
+// B. G24's own synthetic runbook, with its OWN decoy appendix.
+// ---------------------------------------------------------------------------
+//
+// The decoy appendix duplicates EVERY needle every G24 clause tests: both
+// pinned sentences verbatim, DELETION_GRACE_MS_DEFAULT, 604_800_000, "7
+// days", account_deletion_reaper, AccountDeletionReaperSchedule, "one-shot",
+// "re-arm", export_bundle, my_export_bundle, "no independent TTL", S4b. A
+// checker that scans the whole document instead of the extracted section
+// still finds every one of these; only a section-scoped checker rejects the
+// BAD fixtures below. That is the scoping proof.
+//
+// NOTE ON PIN_PSEUDONYMIZATION / PIN_BACKUP_LIMIT: the fixture below embeds
+// the live exported constants directly (never re-typed text), so a formatter
+// or hand-edit that silently truncates the real pin also silently breaks
+// this fixture's own "good" pass — that coupling is itself a tooth (see the
+// GOOD-fixture check in g24Teeth()).
+
+export const DELETION_APPENDIX_HEADING = '## 10. Appendix (deletion decoys, on purpose)';
+
+export const GOOD_DELETION_RUNBOOK_LINES = [
+  '# Observability and disaster-recovery runbook',
+  '',
+  '## 8. Better Auth (accounts)',
+  '',
+  'Unrelated section — kept short so G24 never accidentally reads into it.',
+  '',
+  '## 9. Data deletion & backup retention',
+  '',
+  'Scope: what a deletion request actually guarantees, and what it explicitly does not (M22).',
+  '',
+  PIN_PSEUDONYMIZATION,
+  '',
+  PIN_BACKUP_LIMIT,
+  '',
+  'The grace window is the SSOT symbol DELETION_GRACE_MS_DEFAULT, currently 604_800_000 ms, which is 7 days.',
+  '',
+  'A scheduled reducer, account_deletion_reaper, is driven by the AccountDeletionReaperSchedule row.',
+  'It is one-shot: cancelling and re-requesting deletion always performs a fresh re-arm of that row rather than reusing a stale one.',
+  '',
+  'Export via export_bundle and the my_export_bundle view carries no independent TTL of its own (see S4b); its lifetime is bounded by the account it was exported from, never a separate expiry.',
+  '',
+  DELETION_APPENDIX_HEADING,
+  '',
+  'Historical, superseded, and NOT part of section 9. Every needle any clause of G24 tests is',
+  'duplicated below on purpose, so a whole-document scanner is satisfied by everything here and a',
+  'section-scoped one is not:',
+  '',
+  PIN_PSEUDONYMIZATION,
+  PIN_BACKUP_LIMIT,
+  'DELETION_GRACE_MS_DEFAULT 604_800_000 7 days',
+  'account_deletion_reaper AccountDeletionReaperSchedule one-shot re-arm',
+  'export_bundle my_export_bundle no independent TTL S4b',
+  '',
+];
+
+// ---------------------------------------------------------------------------
+// C. `sources` fixtures — small, realistic stand-ins for the 4 real source
+// files `readDeletionCitationSources()` reads. Each roster marker occurs
+// EXACTLY ONCE in its GOOD text, mirroring the orchestrator-verified real
+// files, so `requireSoleDefinition` neither returns -1 nor throws on them.
+// ---------------------------------------------------------------------------
+
+// DELETION_FILE_* fixture aliases removed (M22 S7 addendum) — every fixture
+// below now reads the exported DELETION_SOURCE_ACCOUNTS/SCHEMA/PRIVACY/GRACE
+// constants directly, so a path change to one cannot update the export and
+// miss this private duplicate.
+
+const FIXTURE_ACCOUNTS_RS_LINES = [
+  '// accounts.rs (fixture) — the deletion reaper.',
+  'pub struct AccountDeletionReaperSchedule {',
+  '    pub scheduled_id: u64,',
+  '    pub scheduled_at: spacetimedb::ScheduleAt,',
+  '}',
+  '',
+  '#[spacetimedb::reducer]',
+  'pub fn account_deletion_reaper(ctx: &ReducerContext, args: AccountDeletionReaperSchedule) -> Result<(), String> {',
+  '    Ok(())',
+  '}',
+];
+const FIXTURE_ACCOUNTS_RS = FIXTURE_ACCOUNTS_RS_LINES.join('\n');
+
+// The "second occurrence" is a #[cfg(test)] twin, not a bare repeated line —
+// the realistic shape called out in the brief and already precedented by
+// stripRustComments' own docstring risk note in deletion-grace-wasm-ssot.
+const FIXTURE_ACCOUNTS_RS_DUPLICATE = FIXTURE_ACCOUNTS_RS_LINES.concat([
+  '',
+  '#[cfg(test)]',
+  'mod tests {',
+  '    use super::*;',
+  '',
+  '    pub fn account_deletion_reaper(ctx: &ReducerContext, args: AccountDeletionReaperSchedule) -> Result<(), String> {',
+  '        Ok(())',
+  '    }',
+  '}',
+]).join('\n');
+
+const FIXTURE_SCHEMA_RS = [
+  '// schema.rs (fixture) — export table + lifecycle manifest.',
+  'pub const DATA_LIFECYCLE_MANIFEST: &[TableLifecycle] = &[];',
+  '',
+  '#[spacetimedb::table(name = export_bundle, accessor = export_bundle)]',
+  'pub struct ExportBundle {',
+  '    pub id: u64,',
+  '}',
+].join('\n');
+
+const FIXTURE_PRIVACY_RS = [
+  '// privacy.rs (fixture) — the my_export_bundle view.',
+  '#[spacetimedb::view(accessor = my_export_bundle, sql = "SELECT * FROM export_bundle")]',
+  'pub struct MyExportBundle {',
+  '    pub id: u64,',
+  '}',
+].join('\n');
+
+// Structurally identical to the real deletion.rs' declaration line (:40) —
+// a bare underscored integer literal, so parseGraceConst never has to
+// refuse an expression here.
+const FIXTURE_DELETION_RS = [
+  '// deletion.rs (fixture)',
+  'pub const DELETION_GRACE_MS_DEFAULT: i64 = 604_800_000;',
+].join('\n');
+
+const GOOD_DELETION_SOURCES = {
+  [DELETION_SOURCE_ACCOUNTS]: FIXTURE_ACCOUNTS_RS,
+  [DELETION_SOURCE_SCHEMA]: FIXTURE_SCHEMA_RS,
+  [DELETION_SOURCE_PRIVACY]: FIXTURE_PRIVACY_RS,
+  [DELETION_SOURCE_GRACE]: FIXTURE_DELETION_RS,
+};
+
+function sourcesWithout(key) {
+  const copy = {};
+  for (const k of Object.keys(GOOD_DELETION_SOURCES)) {
+    if (k !== key) copy[k] = GOOD_DELETION_SOURCES[k];
+  }
+  return copy;
+}
+
+function sourcesWith(key, text) {
+  return { ...GOOD_DELETION_SOURCES, [key]: text };
+}
+
+// ---------------------------------------------------------------------------
+// C (continued). The BAD-fixture table — one entry per ANDed TERM, not per
+// clause, so an implementation that drops ONE of a multi-term clause's
+// checks (e.g. ships clause 3 as a 3-of-4 AND) is still caught: with a
+// per-CLAUSE fixture, dropping any one of the other three terms is invisible.
+//
+// Each entry: [id, doc, sources, tag, why, expectedClausesMet]. `tag` is
+// either a string or an array of required substrings — every one of them
+// must appear in the rejection `reason`, or the fixture earns no credit
+// (rejected for the WRONG reason is treated the same as not rejected at
+// all). `expectedClausesMet` pins checkDrRunbookDeletionSection's returned
+// `clausesMet` for this fixture: MEASURED, mutating any `miss(N, ...)` call
+// site's first argument (e.g. `miss(0, ...)` to `miss(999, ...)`) left every
+// existing G24 tooth bit, because nothing asserted the returned count even
+// though its own docstring says it exists so the caller reports a DERIVED
+// count. See g24Teeth()'s BAD-fixture loop for the pin.
+// ---------------------------------------------------------------------------
+
+const GOOD_DOC = GOOD_DELETION_RUNBOOK_LINES.join('\n');
+
+// clause 1a / 1b — mutate ONE phrase inside the live pinned sentence, so a
+// checker doing substring `contains` (not exact-sentence match) still fails,
+// and so this fixture rots correctly if the implementer ever edits the pin.
+const DOC_1A_WEAKENED = linesMapBefore(
+  GOOD_DELETION_RUNBOOK_LINES,
+  DELETION_APPENDIX_HEADING,
+  (l) => (l === PIN_PSEUDONYMIZATION ? l.split('not erasure').join('complete erasure') : l),
+);
+const DOC_1B_WEAKENED = linesMapBefore(
+  GOOD_DELETION_RUNBOOK_LINES,
+  DELETION_APPENDIX_HEADING,
+  (l) => (l === PIN_BACKUP_LIMIT ? l.split('makes no claim').join('makes no strong claim') : l),
+);
+
+// clause 2 — three fixtures, each mutating exactly one of the three ANDed
+// terms (symbol name / ms value / day phrase) and leaving the other two
+// intact on the same line.
+const DOC_2_NAME = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
+  l.split('DELETION_GRACE_MS_DEFAULT').join('DELETION_GRACE_WINDOW_MS'),
+);
+const DOC_2_MS = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
+  l.split('604_800_000').join('604_800_001'),
+);
+const DOC_2_DAYS = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
+  l.split('7 days').join('5 days'),
+);
+
+// clause 3 — four fixtures, one per ANDed term.
+const DOC_3_REAPER_FN = linesMapBefore(
+  GOOD_DELETION_RUNBOOK_LINES,
+  DELETION_APPENDIX_HEADING,
+  (l) => l.split('account_deletion_reaper').join('the_deletion_job'),
+);
+const DOC_3_SCHEDULE = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
+  l.split('AccountDeletionReaperSchedule').join('DeletionScheduleRow'),
+);
+const DOC_3_ONE_SHOT = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
+  l.split('one-shot').join('recurring'),
+);
+const DOC_3_REARM = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
+  l.split('re-arm').join('re-use'),
+);
+
+// clause 4 — four fixtures. `my_export_bundle` and `export_bundle` are NOT
+// independently isolable: `my_export_bundle` textually CONTAINS the
+// substring `export_bundle`, so any document carrying `my_export_bundle`
+// also satisfies a plain `indexOf('export_bundle')` check. Removing
+// `my_export_bundle` alone (leaving the bare mention) IS isolable and is
+// its own fixture below; the reverse is not, so the 4th fixture removes
+// BOTH names together and is flagged as jointly covering that ANDed pair —
+// see the report note in the handoff reply, this is not a silent workaround.
+const DOC_4_MY_EXPORT = linesMapBefore(
+  GOOD_DELETION_RUNBOOK_LINES,
+  DELETION_APPENDIX_HEADING,
+  (l) => l.split('my_export_bundle').join('my-export-view'),
+);
+const DOC_4_NO_TTL = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
+  l.split('no independent TTL').join('a bounded TTL'),
+);
+const DOC_4_S4B = linesMapBefore(GOOD_DELETION_RUNBOOK_LINES, DELETION_APPENDIX_HEADING, (l) =>
+  l.split('S4b').join('S9'),
+);
+
+// fence-hidden — S4b removed from every prose occurrence before the appendix
+// and re-added ONLY inside a fenced code block placed just before the
+// appendix heading (still inside section 9's extracted body). See the
+// EDIT 8 banner above for the measured bypass this closes.
+const TRIPLE_BACKTICK = String.fromCharCode(96) + String.fromCharCode(96) + String.fromCharCode(96);
+const DELETION_APPENDIX_AT = GOOD_DELETION_RUNBOOK_LINES.indexOf(DELETION_APPENDIX_HEADING);
+const DOC_4_S4B_FENCE_BEFORE = GOOD_DELETION_RUNBOOK_LINES.slice(0, DELETION_APPENDIX_AT).map((l) =>
+  l.split(' (see S4b)').join(''),
+);
+const DOC_4_S4B_FENCE_AFTER = GOOD_DELETION_RUNBOOK_LINES.slice(DELETION_APPENDIX_AT);
+const DOC_4_S4B_FENCE_HIDDEN = DOC_4_S4B_FENCE_BEFORE.concat([
+  TRIPLE_BACKTICK,
+  'decoy reference: S4b',
+  TRIPLE_BACKTICK,
+  '',
+])
+  .concat(DOC_4_S4B_FENCE_AFTER)
+  .join('\n');
+const DOC_4_BOTH_NAMES = linesMapBefore(
+  GOOD_DELETION_RUNBOOK_LINES,
+  DELETION_APPENDIX_HEADING,
+  (l) =>
+    l
+      .split('export_bundle and the my_export_bundle view')
+      .join('the account-export mechanism and its privacy-scoped view'),
+);
+
+// html-comment-hidden — the pseudonymization sentence is present ONLY
+// inside an HTML comment. Measured bypass class in this repo (see
+// html-comment-stripping-in-gates in project memory): a squashDocText that
+// forgets to strip comments before matching would accept this.
+const DOC_1A_HTML_HIDDEN = linesMapBefore(
+  GOOD_DELETION_RUNBOOK_LINES,
+  DELETION_APPENDIX_HEADING,
+  (l) => (l === PIN_PSEUDONYMIZATION ? '<!-- ' + l + ' -->' : l),
+);
+
+// FAIL-LOUD — no heading at all.
+const DOC_HEADING_ABSENT = linesWithout(
+  GOOD_DELETION_RUNBOOK_LINES,
+  (l) => l === '## 9. Data deletion & backup retention',
+);
+
+// FAIL-LOUD — two headings both containing the phrase; must never guess.
+const DOC_DUPLICATE_HEADING = GOOD_DELETION_RUNBOOK_LINES.concat([
+  '## 9b. Data deletion & backup retention (draft)',
+  '',
+  'A second section with the same subject.',
+]).join('\n');
+
+// clause 5 — a `sources` map missing one roster file.
+const SOURCES_MISSING_PRIVACY = sourcesWithout(DELETION_SOURCE_PRIVACY);
+
+// clause 5 — a duplicated declaration (ambiguous, never a silent first-hit).
+const SOURCES_DUPLICATE_ACCOUNTS = sourcesWith(
+  DELETION_SOURCE_ACCOUNTS,
+  FIXTURE_ACCOUNTS_RS_DUPLICATE,
+);
+
+// clause 5 — the source file is present and unambiguous, but the cited
+// symbol has been RENAMED out from under the runbook. This is the case
+// clause 5 primarily exists for (a doc citing a symbol that no longer
+// exists), and it was the one `resolveDeletionCitations` branch with no
+// fixture: the verifier MEASURED that changing its `at === -1` sentinel to
+// `at === -2` survived the whole suite at 55/55. Distinct from the two
+// neighbours: `clause5-missing-source` removes the FILE, and
+// `clause5-ambiguous-duplicate` supplies TWO declarations.
+const FIXTURE_ACCOUNTS_RS_RENAMED = FIXTURE_ACCOUNTS_RS.split(
+  'pub fn account_deletion_reaper(',
+).join('pub fn run_account_deletion_cascade(');
+const SOURCES_RENAMED_ACCOUNTS = sourcesWith(DELETION_SOURCE_ACCOUNTS, FIXTURE_ACCOUNTS_RS_RENAMED);
+
+export const G24_BAD_FIXTURES = [
+  [
+    'clause1a-weakened',
+    DOC_1A_WEAKENED,
+    GOOD_DELETION_SOURCES,
+    'clause 1a:',
+    'the pseudonymization sentence was accepted after "not erasure" was flipped to "complete ' +
+      'erasure" — a substring-contains check (rather than the exact pin) would miss this, and the ' +
+      'decoy appendix keeps the ORIGINAL sentence intact so a whole-document scan also passes',
+    0,
+  ],
+  [
+    'clause1b-weakened',
+    DOC_1B_WEAKENED,
+    GOOD_DELETION_SOURCES,
+    'clause 1b:',
+    'the backup-limit sentence was accepted after "makes no claim" was softened to "makes no ' +
+      'strong claim" — the exact backup-retention disclaimer is the load-bearing part of PRV1-18',
+    1,
+  ],
+  [
+    'clause2-symbol-name',
+    DOC_2_NAME,
+    GOOD_DELETION_SOURCES,
+    'clause 2:',
+    'the section was accepted with no mention of DELETION_GRACE_MS_DEFAULT by name, even though ' +
+      'the correct ms value and "7 days" both survived — an operator reading this section could ' +
+      'not find the constant to retune it',
+    2,
+  ],
+  [
+    'clause2-ms-value',
+    DOC_2_MS,
+    GOOD_DELETION_SOURCES,
+    'clause 2:',
+    'a WRONG grace-window ms value (604_800_001 instead of 604_800_000) was accepted — the value ' +
+      'must equal parseGraceConst on the real deletion.rs, not merely look like a number',
+    2,
+  ],
+  [
+    'clause2-day-figure',
+    DOC_2_DAYS,
+    GOOD_DELETION_SOURCES,
+    'clause 2:',
+    'the section was accepted stating "5 days" while the ms value and symbol name were correct — ' +
+      'a wrong day figure directly contradicts the number two lines away',
+    2,
+  ],
+  [
+    'clause3-reaper-fn-name',
+    DOC_3_REAPER_FN,
+    GOOD_DELETION_SOURCES,
+    'clause 3:',
+    'the section was accepted with no mention of the reducer name account_deletion_reaper — an ' +
+      'operator cannot find the reaper in the source without it',
+    3,
+  ],
+  [
+    'clause3-schedule-name',
+    DOC_3_SCHEDULE,
+    GOOD_DELETION_SOURCES,
+    'clause 3:',
+    'the section was accepted with no mention of AccountDeletionReaperSchedule',
+    3,
+  ],
+  [
+    'clause3-one-shot',
+    DOC_3_ONE_SHOT,
+    GOOD_DELETION_SOURCES,
+    'clause 3:',
+    '"one-shot" was replaced with "recurring" and still accepted — this is the exact word that ' +
+      'tells an operator cancel+re-request re-arms rather than double-schedules',
+    3,
+  ],
+  [
+    'clause3-rearm',
+    DOC_3_REARM,
+    GOOD_DELETION_SOURCES,
+    'clause 3:',
+    '"re-arm" was replaced with "re-use" and still accepted',
+    3,
+  ],
+  [
+    'clause4-my-export-bundle',
+    DOC_4_MY_EXPORT,
+    GOOD_DELETION_SOURCES,
+    'clause 4:',
+    'the section was accepted with no mention of my_export_bundle even though the bare ' +
+      'export_bundle mention (and everything else) survived — the privacy-scoped view is the ' +
+      'thing S4b actually names',
+    4,
+  ],
+  [
+    'clause4-no-independent-ttl',
+    DOC_4_NO_TTL,
+    GOOD_DELETION_SOURCES,
+    'clause 4:',
+    '"no independent TTL" was softened to "a bounded TTL" and still accepted — this phrase is the ' +
+      'one place the doc states export bundles do NOT get their own expiry',
+    4,
+  ],
+  [
+    'clause4-s4b',
+    DOC_4_S4B,
+    GOOD_DELETION_SOURCES,
+    'clause 4:',
+    'the S4b cross-reference was renamed to S9 and still accepted',
+    4,
+  ],
+  [
+    'clause4-s4b-fence-hidden',
+    DOC_4_S4B_FENCE_HIDDEN,
+    GOOD_DELETION_SOURCES,
+    'clause 4:',
+    'S4b was removed from every prose occurrence of the export-bundle sentence and re-added ONLY ' +
+      'inside a fenced code block placed before the appendix heading, and was still accepted — ' +
+      'squashDocText strips fenced code blocks as its second pass; deleting that one replacement ' +
+      'is a MEASURED bypass in this repo (doing the same thing to the REAL runbook section 9 made ' +
+      'this gate report 6/6 green), because a fence hides text from the substring scan exactly ' +
+      'like an HTML comment does',
+    4,
+  ],
+  [
+    'clause4-export-bundle-pair',
+    DOC_4_BOTH_NAMES,
+    GOOD_DELETION_SOURCES,
+    'clause 4:',
+    'BOTH export_bundle and my_export_bundle were removed and still accepted. (These two terms ' +
+      'are not independently isolable: my_export_bundle textually contains export_bundle as a ' +
+      'substring, so no fixture can remove the bare name alone while my_export_bundle survives — ' +
+      'see the handoff reply for the full note.)',
+    4,
+  ],
+  [
+    'clause5-missing-source',
+    GOOD_DOC,
+    SOURCES_MISSING_PRIVACY,
+    'clause 5: FAIL-LOUD',
+    'privacy.rs was missing from `sources` and the citation for my_export_bundle was silently ' +
+      'treated as resolved (or silently skipped) instead of failing loud — a missing source file ' +
+      'must read exactly the same as a citation that resolves to zero hits',
+    5,
+  ],
+  [
+    'clause5-ambiguous-duplicate',
+    GOOD_DOC,
+    SOURCES_DUPLICATE_ACCOUNTS,
+    ['clause 5:', 'ambiguous'],
+    'accounts.rs carried TWO definitions of account_deletion_reaper (a #[cfg(test)] twin) and the ' +
+      'citation was accepted anyway — requireSoleDefinition throws on >1 occurrence for exactly ' +
+      'this reason, and clause 5 must surface that as an explicit ambiguity, never pick the first',
+    5,
+  ],
+  [
+    'clause5-marker-absent',
+    GOOD_DOC,
+    SOURCES_RENAMED_ACCOUNTS,
+    ['clause 5: FAIL-LOUD', 'carries no'],
+    'accounts.rs was present and unambiguous but no longer declared account_deletion_reaper ' +
+      '(renamed), and the citation resolved anyway — this is the whole point of clause 5: a ' +
+      'runbook naming a symbol the code no longer has is a broken citation. It must also read ' +
+      'DIFFERENTLY from clause5-missing-source (no file at all), so the two cannot shadow ' +
+      'each other',
+    5,
+  ],
+  [
+    'heading-absent',
+    DOC_HEADING_ABSENT,
+    GOOD_DELETION_SOURCES,
+    'FAIL-LOUD',
+    'a document with no "Data deletion & backup retention" heading passed — the extractor fell ' +
+      'back to the whole document instead of failing loud',
+    0,
+  ],
+  [
+    'duplicate-heading',
+    DOC_DUPLICATE_HEADING,
+    GOOD_DELETION_SOURCES,
+    'FAIL-LOUD',
+    'two headings both containing the phrase were accepted — the extractor guessed which one to ' +
+      'scan instead of failing loud',
+    0,
+  ],
+  [
+    'html-comment-hidden',
+    DOC_1A_HTML_HIDDEN,
+    GOOD_DELETION_SOURCES,
+    'clause 1a:',
+    'the pseudonymization sentence was present ONLY inside an HTML comment and was still accepted ' +
+      '— a squashDocText that does not strip HTML comments before matching lets a doc comment out ' +
+      'the actual disclaimer while still satisfying every clause textually (measured bypass class ' +
+      'in this repo)',
+    0,
+  ],
+];
+
+// ---------------------------------------------------------------------------
+// D. g24Teeth() — proof of teeth for G24. Every count below is DERIVED: never
+// a hardcoded literal for `total`.
+// ---------------------------------------------------------------------------
+
+// Length + no-backslash pins on the two live pins, computed from the exact
+// sentences quoted in the handoff brief (not re-derived from the pin itself
+// — that would prove nothing about truncation). A formatter's quote-rewrite
+// silently truncating a text pin is a MEASURED incident in this repo.
+const PIN_PSEUDONYMIZATION_EXPECTED_LENGTH = 243;
+const PIN_BACKUP_LIMIT_EXPECTED_LENGTH = 334;
+
+// Today's measured tooth count, used as a ratchet: the suite may grow, never
+// shrink. Kept beside `g24Teeth` so the two are edited together.
+export const G24_TEETH_FLOOR = 57;
+
+export function g24Teeth() {
+  // `total` is incremented by `record` ITSELF, once per call, regardless of
+  // outcome — so it is structurally impossible for `total` to drift from
+  // the actual number of checks that ran (the earlier draft of this
+  // function hand-counted "+ 11" for the extra checks; the real count was
+  // 13. That class of mistake is exactly what a self-counting `record`
+  // closes, for the checker AND for whoever edits this suite next).
+  let bit = 0;
+  let total = 0;
+  let firstMiss = null;
+  const record = (ok, id, why) => {
+    total++;
+    if (ok) {
+      bit++;
+      return;
+    }
+    if (firstMiss === null) firstMiss = `${id}: ${why}`;
+  };
+
+  // --- the fixture table itself must be non-empty, or every loop below it
+  // is vacuously "all bit" over zero iterations ---
+  record(
+    G24_BAD_FIXTURES.length > 0,
+    'g24-fixtures-nonempty',
+    'G24_BAD_FIXTURES is empty — the BAD-fixture loop below would vacuously report every tooth ' +
+      'as bit',
+  );
+
+  // --- non-vacuity: the GOOD fixture must pass whole ---
+  const goodResult = checkDrRunbookDeletionSection(GOOD_DOC, GOOD_DELETION_SOURCES);
+  record(
+    goodResult.ok,
+    'g24-good',
+    `a complete deletion & backup retention section was rejected: ${goodResult.reason}`,
+  );
+  record(
+    goodResult.clausesMet === 6,
+    'g24-good-clauses-met',
+    `a complete deletion & backup retention section reported clausesMet=${goodResult.clausesMet}, ` +
+      'expected 6 on the success path — the docstring on checkDrRunbookDeletionSection claims ' +
+      'this count is derived, not a fixed literal on the ok:true branch',
+  );
+
+  // --- the BAD-fixture table ---
+  for (const [id, doc, sources, tag, why, expectedClausesMet] of G24_BAD_FIXTURES) {
+    const got = checkDrRunbookDeletionSection(doc, sources);
+    if (got.ok) {
+      record(false, `g24-${id}`, why);
+      record(false, `g24-${id}-clauses-met`, why);
+      continue;
+    }
+    const tags = Array.isArray(tag) ? tag : [tag];
+    const allFound = tags.every((t) => got.reason.indexOf(t) !== -1);
+    record(
+      allFound,
+      `g24-${id}`,
+      `rejected for the WRONG reason — expected ${JSON.stringify(tags)}, got: ${got.reason}`,
+    );
+    // NEW TOOTH 2. MEASURED: mutating any `miss(N, ...)` call site inside
+    // checkDrRunbookDeletionSection (e.g. `miss(0, ...)` to `miss(999, ...)`)
+    // left every existing G24 tooth bit — nothing asserted the returned
+    // `clausesMet`, even though its own docstring says it exists so the
+    // caller reports a DERIVED count. This pin uses the SAME fixture the
+    // tag-check above already uses, so it can never be satisfied by a
+    // neighbouring fixture's expected value.
+    record(
+      got.clausesMet === expectedClausesMet,
+      `g24-${id}-clauses-met`,
+      `checkDrRunbookDeletionSection returned clausesMet=${got.clausesMet} for this rejection, ` +
+        `expected ${expectedClausesMet} — an operator reading the phase-1 detail string would be ` +
+        'told the wrong clause failed',
+    );
+  }
+
+  // --- state the extra checks below close over (computed once, up front,
+  // so the checks themselves stay simple boolean predicates) ---
+  let sec = null;
+  let extractThrew = false;
+  try {
+    sec = extractSection(GOOD_DOC, DELETION_SECTION_HEADING_PHRASE, '## ');
+  } catch {
+    extractThrew = true;
+  }
+  let missingHeadingThrew = false;
+  try {
+    extractSection('# doc\n\nno sections here', DELETION_SECTION_HEADING_PHRASE, '## ');
+  } catch {
+    missingHeadingThrew = true;
+  }
+  let dupThrew = false;
+  try {
+    requireSoleDefinition(
+      stripRustComments(FIXTURE_ACCOUNTS_RS_DUPLICATE),
+      'pub fn account_deletion_reaper(',
+    );
+  } catch {
+    dupThrew = true;
+  }
+  const expectedCitations = [
+    {
+      symbol: 'account_deletion_reaper',
+      file: DELETION_SOURCE_ACCOUNTS,
+      marker: 'pub fn account_deletion_reaper(',
+    },
+    {
+      symbol: 'AccountDeletionReaperSchedule',
+      file: DELETION_SOURCE_ACCOUNTS,
+      marker: 'pub struct AccountDeletionReaperSchedule',
+    },
+    { symbol: 'export_bundle', file: DELETION_SOURCE_SCHEMA, marker: 'accessor = export_bundle)' },
+    {
+      symbol: 'DATA_LIFECYCLE_MANIFEST',
+      file: DELETION_SOURCE_SCHEMA,
+      marker: 'pub const DATA_LIFECYCLE_MANIFEST',
+    },
+    {
+      symbol: 'my_export_bundle',
+      file: DELETION_SOURCE_PRIVACY,
+      marker: 'accessor = my_export_bundle,',
+    },
+  ];
+  const citationsIsArray = Array.isArray(DELETION_CITATIONS);
+  const citationsLengthOk =
+    citationsIsArray && DELETION_CITATIONS.length === expectedCitations.length;
+  const rosterMatches =
+    citationsIsArray &&
+    expectedCitations.every((exp) =>
+      DELETION_CITATIONS.some(
+        (got) => got.symbol === exp.symbol && got.file === exp.file && got.marker === exp.marker,
+      ),
+    );
+
+  // --- extra (non-fixture-table) teeth: section-bounds, extract-throw,
+  // pin length/no-backslash sanity, the DELETION_CITATIONS roster pin, and
+  // self-checks on this eval's OWN fixtures using the real imported
+  // primitives (never a reimplementation) — catches fixture rot before it
+  // ever reaches the checker under test. Array-driven so `total` below is
+  // structurally derived from `.length`, never hand-counted (a hand-counted
+  // literal here is exactly the "printed 118, ran 0" failure mode this repo
+  // has already shipped once).
+  const EXTRA_CHECKS = [
+    [
+      'g24-extract-good',
+      () => !extractThrew && !!sec,
+      'extractSection threw (or returned nothing) on a valid GOOD doc',
+    ],
+    [
+      'g24-section-bounds-leak',
+      () => !!sec && sec.body.indexOf(DELETION_APPENDIX_HEADING) === -1,
+      'the extracted section leaked into the FOLLOWING appendix — every clause would then be ' +
+        'satisfiable by text the section does not contain',
+    ],
+    [
+      'g24-section-bounds-content',
+      () => !!sec && sec.body.indexOf('account_deletion_reaper') !== -1,
+      'the extracted section is missing its own content',
+    ],
+    [
+      'g24-extract-throw',
+      () => missingHeadingThrew,
+      'extractSection did not throw on a doc with no matching heading',
+    ],
+    [
+      'g24-pin-1a-length',
+      () => PIN_PSEUDONYMIZATION.length === PIN_PSEUDONYMIZATION_EXPECTED_LENGTH,
+      `PIN_PSEUDONYMIZATION.length is ${PIN_PSEUDONYMIZATION.length}, expected ` +
+        `${PIN_PSEUDONYMIZATION_EXPECTED_LENGTH} — a quote-rewrite or hand-edit silently changed it`,
+    ],
+    [
+      'g24-pin-1b-length',
+      () => PIN_BACKUP_LIMIT.length === PIN_BACKUP_LIMIT_EXPECTED_LENGTH,
+      `PIN_BACKUP_LIMIT.length is ${PIN_BACKUP_LIMIT.length}, expected ` +
+        `${PIN_BACKUP_LIMIT_EXPECTED_LENGTH} — a quote-rewrite or hand-edit silently changed it`,
+    ],
+    [
+      'g24-pin-1a-no-backslash',
+      () => PIN_PSEUDONYMIZATION.indexOf('\\') === -1,
+      'PIN_PSEUDONYMIZATION contains a backslash — a formatter escaped an apostrophe instead of ' +
+        'leaving the sentence double-quoted, which changes its printed text',
+    ],
+    [
+      'g24-pin-1b-no-backslash',
+      () => PIN_BACKUP_LIMIT.indexOf('\\') === -1,
+      'PIN_BACKUP_LIMIT contains a backslash',
+    ],
+    [
+      'g24-citations-length',
+      () => citationsLengthOk,
+      `DELETION_CITATIONS has ${citationsIsArray ? DELETION_CITATIONS.length : 'a non-array'} ` +
+        `entries, expected ${expectedCitations.length}`,
+    ],
+    [
+      'g24-citations-content',
+      () => rosterMatches,
+      'DELETION_CITATIONS does not contain every {symbol, file, marker} triple from the roster ' +
+        'the spec pins — a hollowed or misspelled entry would make clause 5 unresolvable for the ' +
+        'real doc',
+    ],
+    [
+      'g24-fixture-grace-const',
+      () => parseGraceConst(FIXTURE_DELETION_RS) === 604800000n,
+      'FIXTURE_DELETION_RS does not parse to 604800000n via the real parseGraceConst — this ' +
+        "fixture's own text has drifted from the shape clause 2 is supposed to be checked against",
+    ],
+    [
+      'g24-fixture-duplicate-real',
+      () => dupThrew,
+      'FIXTURE_ACCOUNTS_RS_DUPLICATE does not actually trip requireSoleDefinition — the ' +
+        'clause5-ambiguous-duplicate fixture would not be a real ambiguity',
+    ],
+    [
+      'g24-fixture-good-real',
+      () =>
+        requireSoleDefinition(
+          stripRustComments(FIXTURE_ACCOUNTS_RS),
+          'pub fn account_deletion_reaper(',
+        ) !== -1,
+      'FIXTURE_ACCOUNTS_RS does not carry a findable account_deletion_reaper definition',
+    ],
+    [
+      // NEW TOOTH 3. MEASURED: replacing ownSource's own-property guard
+      // (`if (!Object.hasOwn(sources, file)) return undefined;`) with
+      // `file in sources` left every existing G24 tooth bit, because no
+      // fixture exercised an inherited property. This tooth performs the
+      // REAL prototype write (not a stand-in object), refuses to run if the
+      // key already exists on Object.prototype (pre-existence check), and
+      // always cleans up via try/finally. The post-assert is non-tautological:
+      // it pins the specific "clause 5: FAIL-LOUD" / "no source text for"
+      // reason substrings, not merely `!ok`.
+      'g24-prototype-pollution',
+      () => {
+        const file = DELETION_SOURCE_PRIVACY;
+        if (Object.hasOwn(Object.prototype, file)) {
+          return false;
+        }
+        let result;
+        try {
+          Object.prototype[file] = FIXTURE_PRIVACY_RS;
+          result = resolveDeletionCitations(sourcesWithout(file));
+        } finally {
+          delete Object.prototype[file];
+        }
+        return (
+          !result.ok &&
+          result.reason.indexOf('clause 5: FAIL-LOUD') !== -1 &&
+          result.reason.indexOf('no source text for') !== -1 &&
+          result.reason.indexOf(file) !== -1
+        );
+      },
+      'a value forged onto Object.prototype for the one source file missing from `sources` was ' +
+        'accepted by resolveDeletionCitations as if the caller had supplied it — an inherited ' +
+        'property must never satisfy a citation lookup; ownSource must reject it via an ' +
+        'own-property guard',
+    ],
+  ];
+  for (const [id, check, why] of EXTRA_CHECKS) {
+    record(check(), id, why);
+  }
+
+  // `total` was incremented once per `record()` call above (fixtures-nonempty
+  // + good + one per G24_BAD_FIXTURES entry + one per EXTRA_CHECKS entry) —
+  // it is read here, never recomputed, so there is no second place for the
+  // count to drift from what actually ran.
+  return { bit, total, firstMiss };
 }
 
 // ===========================================================================
@@ -2104,6 +3280,38 @@ export default async function () {
     }
   }
 
+  // --- G24 checker fixtures (M22 PRV1-18: deletion & backup retention) ---
+  {
+    const g24 = g24Teeth();
+    // TWO floors, because the aggregate one alone is satisfiable by a gutted
+    // suite: the artifact red-team MEASURED that deleting 17 of the 18
+    // negative fixtures still reports 16/16 ALL-BIT, since the 13 EXTRA_CHECKS
+    // plus the two guards clear the aggregate on their own. The per-term
+    // negative fixtures are the coverage that actually proves each ANDed
+    // clause term bites, so they get a floor of their own.
+    if (G24_BAD_FIXTURES.length < 20) {
+      return teeth(
+        'g24-fixture-floor',
+        `G24_BAD_FIXTURES holds only ${G24_BAD_FIXTURES.length} negative fixtures — the ` +
+          'floor is 20, one per ANDed clause term plus the fail-loud cases and the ' +
+          'fenced-block bypass. Removing one ' +
+          "term's fixture is how a multi-term clause silently degrades to a partial AND",
+      );
+    }
+    if (g24.total < G24_TEETH_FLOOR) {
+      return teeth(
+        'g24-floor',
+        `g24Teeth() reports only ${g24.total} teeth, below the floor of ${G24_TEETH_FLOOR} — ` +
+          'a future edit shrank the suite. The fixture-count floor above does not cover the ' +
+          'EXTRA_CHECKS half, so this one guards it; that shrinkage is itself the failure, ' +
+          'not a silent no-op',
+      );
+    }
+    if (g24.bit !== g24.total) {
+      return teeth('g24', g24.firstMiss || `${g24.bit}/${g24.total} g24 teeth bit`);
+    }
+  }
+
   // =========================================================================
   // PHASE 1 — G23 against the REAL runbook. Unconditional, before the CLI
   // probe: a note-skipped live phase must never take the doc gate with it.
@@ -2123,6 +3331,30 @@ export default async function () {
         'section.',
     };
   }
+
+  // G24 against the REAL runbook, same unconditional placement as G23.
+  let deletionSources;
+  try {
+    deletionSources = readDeletionCitationSources();
+  } catch (err) {
+    return {
+      name,
+      pass: false,
+      detail: `G24: readDeletionCitationSources failed: ${err?.message ?? String(err)}`,
+    };
+  }
+  const g24Real = checkDrRunbookDeletionSection(runbook, deletionSources);
+  if (!g24Real.ok) {
+    return {
+      name,
+      pass: false,
+      detail:
+        `G24 (${RUNBOOK_PATH}): ${g24Real.reason} — account deletion does not ship ` +
+        'without a stated backup/pseudonymization limitation, a cited grace window, and a cited ' +
+        'reaper/export chain (M22 PRV1-18, ADR-0230).',
+    };
+  }
+  const g24Detail = `G24 green (${g24Real.clausesMet}/6 clauses, ${g24Real.resolved}/${DELETION_CITATIONS.length} citations)`;
 
   if (!existsSync(CI_WORKFLOW_PATH)) {
     return { name, pass: false, detail: `cannot read ${CI_WORKFLOW_PATH}` };
@@ -2156,7 +3388,7 @@ export default async function () {
       name,
       pass: true,
       detail:
-        `G23 green (${g23.reason}); ${ciOrder.reason}; all phase-0 teeth bite. Live phase ` +
+        `G23 green (${g23.reason}); ${g24Detail}; ${ciOrder.reason}; all phase-0 teeth bite. Live phase ` +
         `note-skipped: no live toolchain locally (spacetime=${hasSpacetime}, cargo=${hasCargo}).`,
     };
   }
@@ -2174,6 +3406,6 @@ export default async function () {
   return {
     name,
     pass: true,
-    detail: `G23 green (${g23.reason}); ${ciOrder.reason}; G22 ${live.detail}`,
+    detail: `G23 green (${g23.reason}); ${g24Detail}; ${ciOrder.reason}; G22 ${live.detail}`,
   };
 }
