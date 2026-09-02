@@ -625,7 +625,10 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
     expect(armed.next.confirm).toBe('delete-armed');
     expect(armed.next.inFlight).toBe('none');
 
-    const confirmed = privacyStep(armed.next, { kind: 'delete-confirmed', hasLiveConnection: true });
+    const confirmed = privacyStep(armed.next, {
+      kind: 'delete-confirmed',
+      hasLiveConnection: true,
+    });
     expect(confirmed.effect).toBe('call-delete-account');
     expect(confirmed.next.inFlight).toBe('delete');
     expect(confirmed.next.notice).toBe('none');
@@ -644,10 +647,10 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
     //   structurally correct, silent, and the button does nothing with no explanation.
     // WRONG IMPL KILLED (b): disarming on the dropped click, which forces the player back
     //   through step one for an action that never happened.
-    const step = privacyStep(
-      stateOf({ countdown: ACTIVE_COUNTDOWN, confirm: 'delete-armed' }),
-      { kind: 'delete-confirmed', hasLiveConnection: false },
-    );
+    const step = privacyStep(stateOf({ countdown: ACTIVE_COUNTDOWN, confirm: 'delete-armed' }), {
+      kind: 'delete-confirmed',
+      hasLiveConnection: false,
+    });
     expect(step.effect).toBe('none');
     expect(step.next.notice, 'the notice CODE, by exact value — s8b renders the copy').toBe(
       'disconnected',
@@ -724,10 +727,10 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
     }
 
     // ... and the guard lifts once the request settles (anti-vacuity for all three).
-    const settled = privacyStep(
-      stateOf({ countdown: ACTIVE_COUNTDOWN, inFlight: 'export' }),
-      { kind: 'request-succeeded', which: 'export' },
-    );
+    const settled = privacyStep(stateOf({ countdown: ACTIVE_COUNTDOWN, inFlight: 'export' }), {
+      kind: 'request-succeeded',
+      which: 'export',
+    });
     expect(settled.next.inFlight).toBe('none');
     expect(
       privacyStep(settled.next, { kind: 'export-requested', hasLiveConnection: true }).effect,
@@ -789,9 +792,10 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
       stateOf({ countdown: ACTIVE_COUNTDOWN, confirm: 'delete-armed' }),
       { kind: 'account-changed', countdown: { ...ACTIVE_COUNTDOWN } },
     );
-    expect(stillActive.next.confirm, 'an unrelated update on a still-active row keeps the arm').toBe(
-      'delete-armed',
-    );
+    expect(
+      stillActive.next.confirm,
+      'an unrelated update on a still-active row keeps the arm',
+    ).toBe('delete-armed');
   });
 
   it('★ BITES: confirm-cancelled disarms without emitting, and no other event writes the countdown', () => {
@@ -1031,7 +1035,9 @@ describe('privacyModel: purity and totality', () => {
     }
     expect(deleteCalls, 'anti-vacuity: the sweep must observe a delete emitted').toBeGreaterThan(0);
     expect(cancelCalls, 'anti-vacuity: the sweep must observe a cancel emitted').toBeGreaterThan(0);
-    expect(exportCalls, 'anti-vacuity: the sweep must observe an export emitted').toBeGreaterThan(0);
+    expect(exportCalls, 'anti-vacuity: the sweep must observe an export emitted').toBeGreaterThan(
+      0,
+    );
   });
 
   it('★★ BITES (exhaustive): privacyStep never mutates its input and always returns a well-formed state', () => {
@@ -1051,7 +1057,12 @@ describe('privacyModel: purity and totality', () => {
           show(event),
         ).toContain(step.next.notice);
         expect(
-          ['none', 'call-delete-account', 'call-cancel-account-deletion', 'call-request-data-export'],
+          [
+            'none',
+            'call-delete-account',
+            'call-cancel-account-deletion',
+            'call-request-data-export',
+          ],
           show(event),
         ).toContain(step.effect);
       }

@@ -4702,7 +4702,10 @@ describe('AuthoritativeStore M21b-2 A1: ownAccount returns the own row and filte
     // The update path is what carries the marker: the reaper writes it AFTER the row is
     // already in the slot, so an insert-wins slot would never see it at all.
     s.upsertAccount(makeAccount(ACCOUNT_B));
-    expect(s.ownAccount(ACCOUNT_B)!.terminalAtMs, 'absent stays DARK, never fabricated').toBeUndefined();
+    expect(
+      s.ownAccount(ACCOUNT_B)!.terminalAtMs,
+      'absent stays DARK, never fabricated',
+    ).toBeUndefined();
     s.upsertAccount(makeAccount(ACCOUNT_B, { terminalAtMs: 1_700_000_500_000n }));
     expect(s.ownAccount(ACCOUNT_B)!.terminalAtMs).toBe(1_700_000_500_000n);
   });

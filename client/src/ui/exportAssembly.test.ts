@@ -145,16 +145,16 @@ describe('assembleExportBundle (PRV1-13): assembling one artifact from many chun
     expect(result.requestId).toBe(7n);
     expect(result.receivedChunks).toBe(2);
     expect(result.totalChunks).toBe(2);
-    expect(result.artifact).toBe(
-      `{"request_id":"7","total_chunks":2,"chunks":[${P0},${P1}]}`,
-    );
+    expect(result.artifact).toBe(`{"request_id":"7","total_chunks":2,"chunks":[${P0},${P1}]}`);
 
     const huge = assembleExportBundle(
       [chunkOf({ requestId: 9007199254740993n, chunkIndex: 0, totalChunks: 1 })],
       ME,
     );
     expect(huge.requestId).toBe(9007199254740993n);
-    expect(huge.artifact).toBe(`{"request_id":"9007199254740993","total_chunks":1,"chunks":[${P0}]}`);
+    expect(huge.artifact).toBe(
+      `{"request_id":"9007199254740993","total_chunks":1,"chunks":[${P0}]}`,
+    );
     expect(
       String(huge.artifact).indexOf('9007199254740992'),
       'a Number() round trip lands on 9007199254740992 — the classic silent corruption',
@@ -559,10 +559,7 @@ describe('assembleExportBundle (PRV1-11/12): the client re-derives nothing', () 
       ownerIdentity: fc.constantFrom(ME, FOREIGN, ''),
       requestId: fc.constantFrom(7n, 9n, 10n),
       tableName: fc.constantFrom('player_monster', 'guest_claim', ''),
-      chunkIndex: fc.oneof(
-        fc.integer({ min: -1, max: 3 }),
-        fc.constantFrom(Number.NaN, 1.5, -0.5),
-      ),
+      chunkIndex: fc.oneof(fc.integer({ min: -1, max: 3 }), fc.constantFrom(Number.NaN, 1.5, -0.5)),
       totalChunks: fc.constantFrom(1, 2, 3, 0, 2.5, Number.NaN),
       payloadJson: fc.constantFrom(P0, P1, P2, '', '{"broken":'),
       createdAtMs: fc.bigInt({ min: 0n, max: 999n }),
