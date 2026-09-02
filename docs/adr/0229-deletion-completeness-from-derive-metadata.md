@@ -110,6 +110,16 @@ ADR-0224 forbids new `evals/*.eval.mjs` scanner scripts outright, so the spec's 
   declaration is also asserted to occur exactly once in its module, so a decoy second declaration
   cannot steer the first-hit anchor. An unmapped classified table panics rather than being skipped:
   an unmapped table is an unerased table.
+- **The mutating call's ARGUMENT must be keyed, not a bare numeric literal.** The artifact red-team
+  measured the whole suite (767/767) GREEN on a diff rewriting `disarm_trade_reaper`'s
+  `.scheduled_id().delete(sid)` to `.delete(0)`: `scheduled_id` is `#[auto_inc]` starting at 1, so
+  that is a permanent no-op and every `trade_offer_reaper_schedule` row of every deleted account
+  survives forever — while the accessor, the `.delete(` token and the statement scope all still
+  read correctly. Nothing reachable from `cargo nextest` executes a reducer against a database, so
+  a presence check can only ever say a delete-shaped token is nearby, never which row it removes;
+  requiring the argument to NAME something is the cheapest available step back toward a claim about
+  rows. The same clause closes the identical shape in `disarm_challenge_reaper` and
+  `disarm_pvp_deadlines`, whose own pre-existing pins are presence-only.
 - **Consequences.** (+) The two remaining deletion-completeness holes are closed by checks that
   cannot suffer the scanner failure class. (+) A new owner-keyed table now cannot be classified
   `NotOwned` by accident. (-) Two new hand-maintained drift surfaces (the 40-entry type registry and
@@ -128,6 +138,22 @@ ADR-0224 forbids new `evals/*.eval.mjs` scanner scripts outright, so the spec's 
   census bump plus an exception-array edit in the diff, where a reviewer must sign it off. Reviewers
   of any diff touching `DATA_LIFECYCLE_MANIFEST` should treat a change to that census as a
   privacy-classification decision, not a test-maintenance edit.
+- **Second residual: the rules key on `Identity`, not on "personal data".** A future table holding
+  PII with NO `Identity` column — a report row keyed only by `#[auto_inc] id`, carrying free text,
+  an email or a device id — passes the `NotOwned` arm with zero friction, because the check
+  short-circuits on a zero column count before the frozen-exception check runs. Worse, the rule set
+  actively pushes an author that way: classifying such a table `Erase` HARD-FAILS R1 (no Identity
+  column), so the gate makes the safe classification the inconvenient one. Nothing here fixes that
+  — it is a review obligation on the `basis` prose, and the X3 failure message says so in as many
+  words rather than letting a reader over-read the gate.
+- **Third residual: a keyed argument is not the RIGHT key.** `.delete(some_other_bound_id)` still
+  passes. Closing it would need a per-body pin on each helper's own loop variable — a second
+  hand-maintained map of the class this ADR is already paying for once. Deliberately not built.
+- **Scope of a green X5:** it proves a keyed mutating call is REACHED in the terminal body, not
+  that every row is swept. `battle::anonymize_battles` deliberately skips battles still `Ongoing`,
+  and that branch is reachable, so a deleted identity can persist in the public `battle` table —
+  a residual m22-s3b named and accepted, structurally invisible to this test. The X5 doc comment
+  says so at the assertion site.
 
 ## Confirmation
 

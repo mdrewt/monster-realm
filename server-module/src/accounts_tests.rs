@@ -11045,9 +11045,17 @@ fn m22s6_not_owned_identity_exceptions_are_frozen() {
         "[m22s6/x3-exception-census] {observed_len} NotOwned table(s) were observed carrying an \
          Identity column; exactly 4 is the frozen count. FEWER than 4 means one of the frozen \
          four no longer needs its exception (its basis prose describing WHY it is exempt may \
-         now be stale — a human should re-read it, not just shrink this number); MORE than 4 is \
-         structurally impossible to reach here — the loop above would already have panicked on \
-         the fifth unfrozen table before this assertion ever ran."
+         now be stale — a human should re-read it, not just shrink this number); MORE than 4 \
+         means the FROZEN ARRAY ITSELF was widened, since an unfrozen fifth table would have \
+         panicked in the loop above. Widening it is a privacy-classification decision, not a \
+         test-maintenance edit: a reviewer must satisfy themselves that the new table's Identity \
+         column genuinely cannot outlive an account deletion, exactly as the existing four do. \
+         SCOPE, stated plainly so nobody over-reads this gate: it catches a NotOwned table with \
+         an IDENTITY COLUMN. A future table holding personal data with NO Identity column (a \
+         report row keyed only by auto_inc, carrying free text, an email or a device id) passes \
+         this arm with zero friction, because the loop short-circuits on a zero column count \
+         before the frozen check runs. That case is a REVIEW obligation on the `basis` prose, \
+         and ADR-0229 records it as an accepted residual rather than pretending otherwise."
     );
 
     for name in frozen_exceptions {
@@ -11108,56 +11116,20 @@ struct M22s6ViaHop {
 fn m22s6_nd_erase_monsters_decl() -> String {
     concat!("fnerase", "_monsters(").to_string()
 }
-fn m22s6_nd_erase_inventory_decl() -> String {
-    concat!("fnerase", "_inventory(").to_string()
-}
 fn m22s6_nd_erase_npc_state_decl() -> String {
     concat!("fnerase_npc", "_state(").to_string()
-}
-fn m22s6_nd_erase_heal_cooldown_decl() -> String {
-    concat!("fnerase_heal", "_cooldown(").to_string()
-}
-fn m22s6_nd_erase_wallet_decl() -> String {
-    concat!("fnerase", "_wallet(").to_string()
-}
-fn m22s6_nd_erase_playtest_events_decl() -> String {
-    concat!("fnerase_playtest", "_events(").to_string()
 }
 fn m22s6_nd_erase_trade_offers_decl() -> String {
     concat!("fnerase_trade", "_offers(").to_string()
 }
-fn m22s6_nd_disarm_trade_reaper_decl() -> String {
-    concat!("fndisarm_trade", "_reaper(").to_string()
-}
-fn m22s6_nd_disarm_trade_reaper_call() -> String {
-    concat!("disarm_trade", "_reaper(").to_string()
-}
 fn m22s6_nd_erase_pvp_rows_decl() -> String {
     concat!("fnerase_pvp", "_rows(").to_string()
-}
-fn m22s6_nd_disarm_challenge_reaper_decl() -> String {
-    concat!("fndisarm_challenge", "_reaper(").to_string()
-}
-fn m22s6_nd_disarm_challenge_reaper_call() -> String {
-    concat!("disarm_challenge", "_reaper(").to_string()
-}
-fn m22s6_nd_purge_export_bundles_decl() -> String {
-    concat!("fnpurge_export", "_bundles(").to_string()
-}
-fn m22s6_nd_erase_character_rows_decl() -> String {
-    concat!("fnerase_character", "_rows(").to_string()
 }
 fn m22s6_nd_anonymize_display_names_decl() -> String {
     concat!("fnanonymize_display", "_names(").to_string()
 }
 fn m22s6_nd_anonymize_battles_decl() -> String {
     concat!("fnanonymize", "_battles(").to_string()
-}
-fn m22s6_nd_disarm_pvp_deadlines_decl() -> String {
-    concat!("fndisarm_pvp", "_deadlines(").to_string()
-}
-fn m22s6_nd_disarm_pvp_deadlines_call() -> String {
-    concat!("crate::pvp::disarm_pvp", "_deadlines(").to_string()
 }
 
 /// The manifest-driven chain map itself: one row per classified table (22),
@@ -11188,7 +11160,7 @@ fn m22s6_cascade_chain() -> Vec<M22s6ChainEntry> {
             inline_in_reaper: false,
             entry_module_src: M22_INVENTORY_RS,
             entry_module_label: "inventory.rs",
-            entry_decl: m22s6_nd_erase_inventory_decl(),
+            entry_decl: concat!("fnerase", "_inventory(").to_string(),
             entry_call_in_reaper: m22s3b_nd_erase_inventory(),
             via: None,
         },
@@ -11224,7 +11196,7 @@ fn m22s6_cascade_chain() -> Vec<M22s6ChainEntry> {
             inline_in_reaper: false,
             entry_module_src: M22_RAISING_RS,
             entry_module_label: "raising.rs",
-            entry_decl: m22s6_nd_erase_heal_cooldown_decl(),
+            entry_decl: concat!("fnerase_heal", "_cooldown(").to_string(),
             entry_call_in_reaper: m22s3b_nd_erase_heal_cooldown(),
             via: None,
         },
@@ -11233,7 +11205,7 @@ fn m22s6_cascade_chain() -> Vec<M22s6ChainEntry> {
             inline_in_reaper: false,
             entry_module_src: M22_ECONOMY_RS,
             entry_module_label: "economy.rs",
-            entry_decl: m22s6_nd_erase_wallet_decl(),
+            entry_decl: concat!("fnerase", "_wallet(").to_string(),
             entry_call_in_reaper: m22s3b_nd_erase_wallet(),
             via: None,
         },
@@ -11242,7 +11214,7 @@ fn m22s6_cascade_chain() -> Vec<M22s6ChainEntry> {
             inline_in_reaper: false,
             entry_module_src: M22_PLAYTEST_RS,
             entry_module_label: "playtest.rs",
-            entry_decl: m22s6_nd_erase_playtest_events_decl(),
+            entry_decl: concat!("fnerase_playtest", "_events(").to_string(),
             entry_call_in_reaper: m22s3b_nd_erase_playtest_events(),
             via: None,
         },
@@ -11265,8 +11237,8 @@ fn m22s6_cascade_chain() -> Vec<M22s6ChainEntry> {
             via: Some(M22s6ViaHop {
                 module_src: M22_TRADING_RS,
                 module_label: "trading.rs",
-                decl: m22s6_nd_disarm_trade_reaper_decl(),
-                call_in_entry_body: m22s6_nd_disarm_trade_reaper_call(),
+                decl: concat!("fndisarm_trade", "_reaper(").to_string(),
+                call_in_entry_body: concat!("disarm_trade", "_reaper(").to_string(),
             }),
         },
         M22s6ChainEntry {
@@ -11297,8 +11269,8 @@ fn m22s6_cascade_chain() -> Vec<M22s6ChainEntry> {
             via: Some(M22s6ViaHop {
                 module_src: M22_PVP_RS,
                 module_label: "pvp.rs",
-                decl: m22s6_nd_disarm_challenge_reaper_decl(),
-                call_in_entry_body: m22s6_nd_disarm_challenge_reaper_call(),
+                decl: concat!("fndisarm_challenge", "_reaper(").to_string(),
+                call_in_entry_body: concat!("disarm_challenge", "_reaper(").to_string(),
             }),
         },
         M22s6ChainEntry {
@@ -11306,7 +11278,7 @@ fn m22s6_cascade_chain() -> Vec<M22s6ChainEntry> {
             inline_in_reaper: false,
             entry_module_src: M22_PRIVACY_RS,
             entry_module_label: "privacy.rs",
-            entry_decl: m22s6_nd_purge_export_bundles_decl(),
+            entry_decl: concat!("fnpurge_export", "_bundles(").to_string(),
             entry_call_in_reaper: m22s3b_nd_purge_bundles(),
             via: None,
         },
@@ -11315,7 +11287,7 @@ fn m22s6_cascade_chain() -> Vec<M22s6ChainEntry> {
             inline_in_reaper: false,
             entry_module_src: LIB_RS,
             entry_module_label: "lib.rs",
-            entry_decl: m22s6_nd_erase_character_rows_decl(),
+            entry_decl: concat!("fnerase_character", "_rows(").to_string(),
             entry_call_in_reaper: m22s3b_nd_erase_character_rows(),
             via: None,
         },
@@ -11365,8 +11337,8 @@ fn m22s6_cascade_chain() -> Vec<M22s6ChainEntry> {
             via: Some(M22s6ViaHop {
                 module_src: M22_PVP_RS,
                 module_label: "pvp.rs",
-                decl: m22s6_nd_disarm_pvp_deadlines_decl(),
-                call_in_entry_body: m22s6_nd_disarm_pvp_deadlines_call(),
+                decl: concat!("fndisarm_pvp", "_deadlines(").to_string(),
+                call_in_entry_body: concat!("crate::pvp::disarm_pvp", "_deadlines(").to_string(),
             }),
         },
         M22s6ChainEntry {
@@ -11384,7 +11356,10 @@ fn m22s6_cascade_chain() -> Vec<M22s6ChainEntry> {
 /// Statement-scoped terminal-body check, T2/X5's core primitive: true if `body`
 /// (an ALREADY-SQUASHED fn body) contains at least one occurrence of
 /// `accessor_call` (`.{table}(`) immediately followed, before the next `;` OR
-/// `{` (whichever comes first), by a mutating call (`.delete(` or `.update(`).
+/// `{` (whichever comes first), by a mutating call (`.delete(` or `.update(`)
+/// whose ARGUMENT is keyed rather than a bare numeric literal (see
+/// `m22s6_mutation_is_keyed` — a `.delete(0)` against an `#[auto_inc]` key is a
+/// permanent no-op that was MEASURED green against the whole suite).
 ///
 /// A body-wide "contains the accessor AND contains a mutation" conjunction is a
 /// MEASURED bypass (the plan's red-team, mutant M4 below): `erase_monsters` is
@@ -11410,6 +11385,65 @@ fn m22s6_cascade_chain() -> Vec<M22s6ChainEntry> {
 /// mutation two statements away; the real mutating statement inside the loop
 /// body is then found and scored on its OWN merits by a later occurrence of the
 /// same accessor token.
+/// The argument span of a `(`-opened call, up to its MATCHING `)` (depth-aware,
+/// so a nested constructor call in an `.update(..)` argument is returned whole).
+/// Returns `None` if the parentheses are unbalanced — a fail-loud signal that the
+/// squashed text is not what this scan assumes.
+fn m22s6_call_argument(after_open_paren: &str) -> Option<&str> {
+    let bytes = after_open_paren.as_bytes();
+    let mut depth = 0usize;
+    for (i, b) in bytes.iter().enumerate() {
+        match b {
+            b'(' => depth += 1,
+            b')' => {
+                if depth == 0 {
+                    return Some(&after_open_paren[..i]);
+                }
+                depth -= 1;
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// True if `span` contains a mutating call whose ARGUMENT is keyed on something
+/// rather than on a bare numeric literal.
+///
+/// THIS CLAUSE EXISTS BECAUSE THE PRESENCE-ONLY FORM WAS MEASURED GREEN ON A
+/// PERMANENT NO-OP (the artifact red-team, mutant M5 below). `disarm_trade_reaper`
+/// sweeps `trade_offer_reaper_schedule` with `.scheduled_id().delete(sid)`; the
+/// column is `#[auto_inc]` and starts at 1, so rewriting that to `.delete(0)`
+/// deletes NOTHING, ever, for any account — while the accessor is still present,
+/// the `.delete(` token is still present, and it is still in the same statement.
+/// The whole crate's suite was measured GREEN on that diff (767/767), because
+/// every check reachable from `cargo nextest` is a static scan and none of them
+/// looked at the ARGUMENT. Requiring the argument to name something — any
+/// identifier, field or call, as opposed to a constant the auto-inc sequence can
+/// never issue — is what turns the presence check back into a claim about rows.
+///
+/// This is deliberately a WEAK, general clause rather than a per-body pin on the
+/// exact loop variable: the residual it leaves (`.delete(some_other_bound_id)`)
+/// is recorded in ADR-0229 rather than chased with a second hand-maintained map.
+fn m22s6_mutation_is_keyed(span: &str) -> bool {
+    for verb in [".delete(", ".update("] {
+        let mut start = 0usize;
+        while let Some(rel) = span[start..].find(verb) {
+            let at = start + rel + verb.len();
+            let Some(arg) = m22s6_call_argument(&span[at..]) else {
+                panic!(
+                    "[m22s6/unbalanced-mutation-arg] a `{verb}` call in the squashed span                      {span:?} has unbalanced parentheses, so its argument cannot be read. The                      scan would otherwise silently score this occurrence as unkeyed. Fail loud:                      the squashed source is not the shape this check assumes."
+                )
+            };
+            if arg.chars().any(|c| c.is_alphabetic() || c == '_') {
+                return true;
+            }
+            start = at;
+        }
+    }
+    false
+}
+
 fn m22s6_accessor_mutated_in_statement(body: &str, accessor_call: &str) -> bool {
     let mut start = 0usize;
     while let Some(rel) = body[start..].find(accessor_call) {
@@ -11424,7 +11458,7 @@ fn m22s6_accessor_mutated_in_statement(body: &str, accessor_call: &str) -> bool 
             (None, None) => rest.len(),
         };
         let span = &rest[..end_rel];
-        if span.contains(".delete(") || span.contains(".update(") {
+        if m22s6_mutation_is_keyed(span) {
             return true;
         }
         start = at + accessor_call.len();
@@ -11437,6 +11471,16 @@ fn m22s6_accessor_mutated_in_statement(body: &str, accessor_call: &str) -> bool 
 /// body, through its entry helper, through at most one declared `via` sub-helper,
 /// to a body that names that table's own accessor AND performs a mutating call —
 /// in the SAME statement (see `m22s6_accessor_mutated_in_statement`).
+///
+/// WHAT THIS PROVES, EXACTLY: that a keyed mutating call on the table is REACHED
+/// in the terminal body — not that every one of that table's rows is swept. The
+/// two are different claims and this test only makes the first. `anonymize_battles`
+/// (`battle.rs`) deliberately `continue`s past a battle whose outcome is still
+/// `Ongoing`, and that branch is genuinely reachable (a forfeit whose apply step
+/// errors is logged and swallowed), so a deleted identity can survive in the
+/// PUBLIC `battle` table with no retry — a residual m22-s3b named and accepted,
+/// which this test is structurally unable to see. Read a green result as "the
+/// cascade still writes this table", never as "this table is fully swept".
 ///
 /// FOUR CLAUSES PER ROW, each independently load-bearing:
 ///   1. the table appears in `m22s6_cascade_chain()` at all — an unmapped
@@ -11594,13 +11638,36 @@ fn m22s6_cascade_chain_reaches_every_classified_table() {
             m22s6_accessor_mutated_in_statement(&terminal_body, &accessor_call),
             "[m22s6/terminal-not-mutated] `{table}`'s terminal body (in {terminal_module_label}) \
              contains no occurrence of `{accessor_call}` immediately followed — within the SAME \
-             statement, before the next `;` — by `.delete(` or `.update(`. This is the \
+             statement, i.e. before whichever of `;` or `{{` comes first — by a `.delete(` or \
+             `.update(` whose argument is keyed rather than a bare numeric literal. This is the \
              red-team's measured bypass: `erase_monsters` is the entry helper for BOTH `monster` \
              and `monster_pub`, so swapping `monster_pub`'s `.delete(id);` for a `.find(id)` \
              read keeps the accessor present and borrows the sibling `monster` line's `.delete(` \
              for a body-wide conjunction, while every `monster_pub` row of every deleted account \
              survives forever. A missing mutation here means `{table}`'s rows are READ, never \
              WRITTEN — the table is never actually swept."
+        );
+    }
+
+    let mut chain_tables: Vec<&str> = m22s6_cascade_chain().iter().map(|e| e.table).collect();
+    let chain_len = chain_tables.len();
+    assert_eq!(
+        chain_len, 22,
+        "[m22s6/chain-map-census] the cascade-chain map holds {chain_len} row(s); EXACTLY 22 is \
+         the live classified partition. The walk above only proves every CLASSIFIED table is \
+         mapped; it is blind in the other direction, so a stale row for a table that no longer \
+         exists — or a table demoted to NotOwned — would linger here forever, and a reviewer \
+         reading the map would believe a sweep is proven that nothing exercises."
+    );
+    chain_tables.sort_unstable();
+    for pair in chain_tables.windows(2) {
+        assert_ne!(
+            pair[0], pair[1],
+            "[m22s6/chain-map-duplicate] the table `{}` has TWO cascade-chain map rows. The \
+             lookup above takes the FIRST match, so a second row is dead weight that reads as \
+             coverage: a reviewer sees the table routed through a helper the test never \
+             actually checks it against.",
+            pair[0]
         );
     }
 
