@@ -56,6 +56,11 @@ import { createServer } from 'node:http';
 import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
+// CHECKER-IMPORT REUSE (ADR-0232 D6): the `spacetime sql --format json` envelope
+// decoder already exists, is exported, main-guarded, and adversarially
+// teeth-tested by evals/playtest-report.eval.mjs (DRIVER-1/2 + malformed-envelope
+// cases) — S9 reuses it rather than reimplementing a second JSON-table parser.
+import { decodeSqlJson } from '../scripts/playtest-report.mjs';
 // Same reuse rule for G24's Rust-source primitives: `requireSoleDefinition`
 // and `parseGraceConst` are already teeth-tested (and already red-teamed —
 // see their own docstrings) by the eval that owns them.
@@ -116,6 +121,99 @@ const MARKER_FILE = path.join(os.tmpdir(), 'mr-acct-e2e.pid');
 const HEX = '0123456789abcdef';
 
 // ===========================================================================
+// M22-S9 — post-integration verification constants (ADR-0232). Every expected
+// VALUE below is tied byte-for-byte to its source-of-record by the Rust test
+// m22s9_e2e_patch_needles_and_constants / m22s9_e2e_manifest_transcription_
+// matches_manifest in server-module/src/accounts_tests.rs — never re-derive or
+// "fix" one here without that test going red first.
+// ===========================================================================
+
+// game-core/src/accounts/deletion.rs — the FULL declaration lines, so the
+// patchers can never hit the HONESTY-NOTE comment that repeats the bare value
+// (red-team CRITICAL-4: a bare-literal needle patches the comment and leaves
+// the real constant at 7 days, which reads as a 120 s terminal-poll hang).
+export const GRACE_NEEDLE = 'pub const DELETION_GRACE_MS_DEFAULT: i64 = 604_800_000;';
+export const CHUNK_NEEDLE = 'pub const EXPORT_CHUNK_ROWS: u32 = 500;';
+// The e2e-compressed values (ADR-0232 D1). 15 s makes the real one-shot reaper
+// fire inside CI (spike-measured +15.002 s); 2 (not 1) is the chunk boundary
+// that distinguishes an honored chunks(K) from one-chunk-per-row.
+export const E2E_GRACE_MS = 15_000;
+export const E2E_CHUNK_ROWS = 2;
+
+// accounts.rs REJECT_ALREADY_DELETED — the PRV1-4 distinct terminal error.
+export const ERR_ALREADY_DELETED_E2E = 'this account has already been permanently deleted';
+// privacy.rs — request_data_export's pending-deletion reject. Pinned EXACTLY
+// (red-team HIGH-6): the same reducer has a cooldown reject 60 s wide that the
+// S9 flow sits inside, so a loose "any Err" here would pass even if a reorder
+// made the cooldown fire before the deletion gate.
+export const ERR_EXPORT_PENDING_DELETION_E2E = 'export_reject_pending_deletion';
+// game-core tombstone sentinels (S1), spelled once each.
+export const TOMBSTONE_AUTH_ISSUER_E2E = 'account-deleted-tombstone';
+export const TOMBSTONE_DISPLAY_NAME_E2E = '(deleted account)';
+export const TOMBSTONE_IDENTITY_HEX_E2E =
+  '0xffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff';
+
+// THE 40-entry data-lifecycle transcription (schema.rs DATA_LIFECYCLE_MANIFEST
+// + the S6 typespace walk's identity-column names), one biome-stable string:
+// entries sorted by table, `table:Policy[(parent)]:col1+col2:1|0`, '|'-joined.
+// Erase/Anonymize entries MUST carry >=1 column (red-team CRITICAL-1: a
+// zero-column entry is an UNATTEMPTED table, invisible to the vacuity list).
+export const M22S9_MANIFEST_TRANSCRIPTION =
+  'account:Anonymize:claimed_from+identity:1|account_deletion_reaper_schedule:NotOwned::0|battle:Anonymize:opponent_identity+player_identity:1|battle_action:Erase:player_identity:1|battle_challenge:Erase:challenger+target:1|battle_challenge_reaper_schedule:ViaJoin(battle_challenge)::0|battle_wild:ViaJoin(battle)::0|character:ViaJoin(player)::1|config:NotOwned::0|encounter:NotOwned::0|evolution_path:NotOwned::0|export_bundle:Erase:owner_identity:0|guest_claim:NotOwned::0|guest_claim_reaper_schedule:NotOwned::0|heal_cooldown:Erase:owner_identity:1|heal_location_row:NotOwned::0|inventory:Erase:owner_identity:1|item_row:NotOwned::0|monster:Erase:owner_identity:1|monster_pub:Erase:owner_identity:1|movement_tick_schedule:NotOwned::0|mr_heartbeat_schedule:NotOwned::0|npc:NotOwned::0|player:Anonymize:identity:1|player_conversation:Erase:owner_identity:1|player_dialogue_state:Erase:owner_identity:1|player_quest:Erase:owner_identity:1|player_wallet:Erase:owner_identity:1|playtest_event:Erase:identity:1|playtest_reaper_schedule:NotOwned::0|profile:Anonymize:identity:1|pvp_deadline_schedule:ViaJoin(battle)::0|shop_item_row:NotOwned::0|shop_row:NotOwned::0|skill_row:NotOwned::0|species_row:NotOwned::0|trade_offer:Erase:counterparty+initiator:1|trade_offer_reaper_schedule:ViaJoin(trade_offer)::0|type_relation_row:NotOwned::0|zone_def:NotOwned::0';
+
+// Tables that may legitimately hold ZERO A-scoped rows at the pre-cascade
+// snapshot, each with its measured reason. HARD-CAPPED — a fourth entry is a
+// seeding regression, not an allowlist edit (red-team MEDIUM-8).
+export const S9_VACUITY_ALLOWLIST = [
+  [
+    'battle_action',
+    'enum column is not expressible in 2.8.1 SQL DML and the organic writer needs a live PvP turn with private skill knowledge; consumed at forfeit settle',
+  ],
+  [
+    'pvp_deadline_schedule',
+    'the turn-0 deadline row self-consumes at its 60s fire time (reaper no-ops on a terminal battle; the runtime deletes the fired one-shot), so a slow run may pre-snapshot AFTER it fired; on fast runs it is present and its cascade disarm is asserted via the post count',
+  ],
+  [
+    'player_dialogue_state',
+    'Vec<String> columns are not expressible in 2.8.1 SQL DML (probed: 400) and no zone-0 organic writer fits the e2e budget',
+  ],
+];
+export const S9_VACUITY_ALLOWLIST_CAP = 3;
+// Independent seeded-rows floor: >500 playtest_event rows plus the rest of the
+// loaded account. A run that seeded nothing cannot reach this sum.
+export const S9_SEEDED_FLOOR = 520;
+
+// The S9 driver milestone roster (strict: exact set, this order, all ok:true,
+// no unknown S9- steps, no duplicates — red-team HIGH-5).
+export const S9_MILESTONES = [
+  'S9-D-join',
+  'S9-A-join',
+  'S9-challenge1',
+  'S9-accept1',
+  'S9-battle1-live',
+  'S9-battle1-terminal',
+  'S9-D-rejoin',
+  'S9-presence-ready',
+  'S9-trade-open',
+  'S9-challenge2-pending',
+  'S9-wild-live',
+  'S9-seed-ready',
+  'S9-export-chunks',
+  'S9-delete',
+  'S9-export-reject',
+  'S9-cancel',
+  'S9-cancel-done',
+  'S9-redelete',
+  'S9-redelete-done',
+  'S9-terminal-seen',
+  'S9-late-cancel',
+  'S9-late-export',
+  'S9-cascade-done',
+  'S9-D-still-active',
+  'S9-done',
+];
+
+// ===========================================================================
 // PURE FUNCTIONS — every one is proven against BAD + GOOD fixtures in phase 0.
 // ===========================================================================
 
@@ -172,6 +270,62 @@ export function patchAllowedAudience(src, clientId) {
   return src.replace(AUDIENCE_NEEDLE, replacement);
 }
 
+/**
+ * M22-S9 shared patcher core (ADR-0232 D1): replace `needle` with `replacement`
+ * in `src`, throwing on ZERO occurrences (a silent no-op publishes a module
+ * whose reaper fires in 7 days — the run reads as a 120 s terminal-poll hang)
+ * AND on MORE THAN ONE (a decoy match could leave the real declaration
+ * unpatched while the byte-diff guard stays satisfied — first-hit anchors are
+ * forgeable). `label` names the failing patcher in the throw.
+ */
+export function patchSoleNeedle(src, needle, replacement, label) {
+  if (typeof src !== 'string' || src.indexOf(needle) === -1) {
+    throw new Error(
+      label +
+        ': the committed declaration is absent from the source — refusing to build an ' +
+        'unpatched module (a no-op patch here waits out the real 7-day grace). Expected: ' +
+        needle,
+    );
+  }
+  if (src.indexOf(needle) !== src.lastIndexOf(needle)) {
+    throw new Error(
+      label +
+        ': the declaration needle matches MORE THAN ONCE — a decoy occurrence could absorb ' +
+        'the patch while the real constant stays live. Needle: ' +
+        needle,
+    );
+  }
+  return src.replace(needle, replacement);
+}
+
+/** Compress the deletion grace window in the tmpdir module copy (never the
+ *  shipped tree) so the real one-shot reaper fires inside the e2e. */
+export function patchDeletionGrace(src, graceMs) {
+  if (!Number.isInteger(graceMs) || graceMs <= 0) {
+    throw new Error('patchDeletionGrace: graceMs must be a positive integer, got ' + graceMs);
+  }
+  return patchSoleNeedle(
+    src,
+    GRACE_NEEDLE,
+    'pub const DELETION_GRACE_MS_DEFAULT: i64 = ' + graceMs + ';',
+    'patchDeletionGrace',
+  );
+}
+
+/** Compress the export sub-chunk boundary in the tmpdir module copy so a
+ *  3-row table forces a [2,1] multi-chunk split (chunks(K) vs one-per-row). */
+export function patchExportChunkRows(src, rows) {
+  if (!Number.isInteger(rows) || rows <= 0) {
+    throw new Error('patchExportChunkRows: rows must be a positive integer, got ' + rows);
+  }
+  return patchSoleNeedle(
+    src,
+    CHUNK_NEEDLE,
+    'pub const EXPORT_CHUNK_ROWS: u32 = ' + rows + ';',
+    'patchExportChunkRows',
+  );
+}
+
 // --- live-phase predicates (bindings-drift B/B2/B3 pattern) ----------------
 
 /**
@@ -225,6 +379,69 @@ export function identityMatches(cell, hex) {
   const a = normHex(cell);
   const b = normHex(hex);
   return a !== '' && a === b;
+}
+
+// --- M22-S9 `sql --format json` cell decoders (loud on unknown shapes) ------
+
+/** Identity cell from decodeSqlJson: ["0x.."], {"__identity__":..} or "0x..". */
+export function identityCellHex(v) {
+  if (typeof v === 'string') return normHex(v);
+  if (Array.isArray(v) && v.length === 1) return normHex(String(v[0]));
+  if (v !== null && typeof v === 'object' && v.__identity__ !== undefined) {
+    return normHex(String(v.__identity__));
+  }
+  throw new Error('[s9/cell] unrecognized Identity cell: ' + JSON.stringify(v));
+}
+
+/** Option<i64> cell: number | {"some": n} | {"none": ..} | [0, n] | [1, ..]
+ *  (the CLI renders a sum value positionally as [variantIndex, payload];
+ *  Option declares `some` first, so index 0 IS some — observed live). */
+export function optI64Cell(v) {
+  if (v === null || v === undefined) return null;
+  if (typeof v === 'number') return v;
+  if (Array.isArray(v) && v.length === 2 && typeof v[0] === 'number') {
+    if (v[0] === 0) return Number(v[1]);
+    if (v[0] === 1) return null;
+  }
+  if (typeof v === 'object' && !Array.isArray(v)) {
+    if (v.some !== undefined) return Number(v.some);
+    if (v.none !== undefined) return null;
+  }
+  throw new Error('[s9/cell] unrecognized Option<i64> cell: ' + JSON.stringify(v));
+}
+
+/** Enum (unit-variant sum) cell: "tag" | {"tag": payload} | [idx, payload].
+ *  The positional form carries no name, so the caller passes the declared
+ *  variant-name order (from the table's own schema) to resolve it. */
+export function enumTagCell(v, variants) {
+  if (typeof v === 'string') return v;
+  if (Array.isArray(v) && v.length === 2 && typeof v[0] === 'number') {
+    if (!Array.isArray(variants) || variants[v[0]] === undefined) {
+      throw new Error(
+        '[s9/cell] positional enum cell ' + JSON.stringify(v) + ' with no variant table',
+      );
+    }
+    return variants[v[0]];
+  }
+  if (v !== null && typeof v === 'object' && !Array.isArray(v)) {
+    const ks = Object.keys(v);
+    if (ks.length === 1) return ks[0];
+  }
+  throw new Error('[s9/cell] unrecognized enum cell: ' + JSON.stringify(v));
+}
+
+/** Option<Identity> cell -> inner hex, or null when none/absent. */
+export function optIdentityHex(v) {
+  if (v === null || v === undefined) return null;
+  if (Array.isArray(v) && v.length === 2 && typeof v[0] === 'number') {
+    if (v[0] === 0) return identityCellHex(v[1]);
+    if (v[0] === 1) return null;
+  }
+  if (typeof v === 'object' && !Array.isArray(v)) {
+    if (v.none !== undefined) return null;
+    if (v.some !== undefined) return identityCellHex(v.some);
+  }
+  return identityCellHex(v);
 }
 
 /**
@@ -611,6 +828,596 @@ export function checkHostSideAcceptance(reqLog) {
     };
   }
   return { ok: true, reason: "host fetched both issuers' discovery + the second issuer's jwks" };
+}
+
+// ===========================================================================
+// M22-S9 pure deciders (ADR-0232). The rig moves bytes; these decide, and every
+// decision is proven against BAD fixtures in phase 0 before being trusted.
+// ===========================================================================
+
+/**
+ * Parse M22S9_MANIFEST_TRANSCRIPTION into entries. Format per entry:
+ * `table:Policy[(parent)]:col1+col2:1|0`, '|'-joined, sorted by table. THROWS
+ * on any malformation — a half-parsed manifest silently narrows the truth pass
+ * (parse ambiguity is fatal, memory-card doctrine).
+ */
+export function parseManifestTranscription(s) {
+  if (typeof s !== 'string' || s.length === 0) {
+    throw new Error('[s9/transcription-parse] transcription is not a non-empty string');
+  }
+  const out = [];
+  const seen = new Set();
+  for (const raw of s.split('|')) {
+    const parts = raw.split(':');
+    if (parts.length !== 4) {
+      throw new Error('[s9/transcription-parse] entry does not have exactly 4 `:` fields: ' + raw);
+    }
+    const [table, policyRaw, colsRaw, exportRaw] = parts;
+    if (!/^[a-z0-9_]+$/.test(table)) {
+      throw new Error('[s9/transcription-parse] bad table name: ' + raw);
+    }
+    if (seen.has(table)) {
+      throw new Error('[s9/transcription-parse] duplicate table entry: ' + table);
+    }
+    seen.add(table);
+    let policy = policyRaw;
+    let parent = null;
+    const paren = policyRaw.indexOf('(');
+    if (paren !== -1) {
+      if (!policyRaw.endsWith(')')) {
+        throw new Error('[s9/transcription-parse] unclosed parent in: ' + raw);
+      }
+      policy = policyRaw.slice(0, paren);
+      parent = policyRaw.slice(paren + 1, -1);
+      if (!/^[a-z0-9_]+$/.test(parent)) {
+        throw new Error('[s9/transcription-parse] bad ViaJoin parent in: ' + raw);
+      }
+    }
+    if (['Erase', 'Anonymize', 'ViaJoin', 'NotOwned'].indexOf(policy) === -1) {
+      throw new Error('[s9/transcription-parse] unknown policy in: ' + raw);
+    }
+    if (policy === 'ViaJoin' && parent === null) {
+      throw new Error('[s9/transcription-parse] ViaJoin without a parent in: ' + raw);
+    }
+    if (policy !== 'ViaJoin' && parent !== null) {
+      throw new Error('[s9/transcription-parse] parent on a non-ViaJoin policy in: ' + raw);
+    }
+    const cols = colsRaw === '' ? [] : colsRaw.split('+');
+    for (const c of cols) {
+      if (!/^[a-z0-9_]+$/.test(c)) {
+        throw new Error('[s9/transcription-parse] bad column name in: ' + raw);
+      }
+    }
+    if ((policy === 'Erase' || policy === 'Anonymize') && cols.length === 0) {
+      // Red-team CRITICAL-1: a zero-column Erase/Anonymize entry is an
+      // UNATTEMPTED table — no SQL count ever runs for it, and the vacuity
+      // list (which sees only zero COUNTS) never hears about it.
+      throw new Error('[s9/zero-owner-cols] Erase/Anonymize entry with no owner columns: ' + raw);
+    }
+    if (exportRaw !== '0' && exportRaw !== '1') {
+      throw new Error('[s9/transcription-parse] exportable flag must be 0|1 in: ' + raw);
+    }
+    out.push({ table, policy, parent, cols, exportable: exportRaw === '1' });
+  }
+  return out;
+}
+
+/** Extract the single COUNT(*) AS n value from decodeSqlJson row objects. */
+export function countFromRows(rows) {
+  if (
+    !Array.isArray(rows) ||
+    rows.length !== 1 ||
+    typeof rows[0] !== 'object' ||
+    rows[0] === null
+  ) {
+    throw new Error(
+      '[s9/count-shape] COUNT query did not return exactly one row: ' + JSON.stringify(rows),
+    );
+  }
+  const n = Number(rows[0].n);
+  if (!Number.isFinite(n) || n < 0) {
+    throw new Error(
+      '[s9/count-shape] COUNT value is not a non-negative number: ' + JSON.stringify(rows[0]),
+    );
+  }
+  return n;
+}
+
+/**
+ * Find the FIRST milestone event with `step === name` in a (possibly partial)
+ * NDJSON stream. Non-JSON noise and a truncated trailing line are skipped; a
+ * malformed line never masks a later well-formed one.
+ */
+export function findS9Event(text, name) {
+  for (const line of String(text == null ? '' : text).split('\n')) {
+    const t = line.trim();
+    if (!t.startsWith('{')) continue;
+    let ev;
+    try {
+      ev = JSON.parse(t);
+    } catch {
+      continue;
+    }
+    if (ev !== null && typeof ev === 'object' && ev.step === name) return ev;
+  }
+  return null;
+}
+
+/**
+ * STRICT S9 milestone verdict (red-team HIGH-5 shape): the S9-prefixed events
+ * must be EXACTLY the roster — same set, same order, each ok:true, no
+ * duplicates, no unknown S9 step — and NO event anywhere in the whole stream
+ * (G22 legs included) may carry ok:false. `exitCode` must be exactly 0: a
+ * driver that crashes after its last milestone is a broken run, not a green one.
+ */
+export function checkS9Milestones(events, exitCode) {
+  if (!Array.isArray(events) || events.length === 0) {
+    return { ok: false, reason: '[s9/milestones] driver emitted no milestones at all' };
+  }
+  for (const e of events) {
+    if (e === null || typeof e !== 'object' || typeof e.step !== 'string') continue;
+    if (e.ok !== true) {
+      const err = e.data && e.data.err ? ' — ' + e.data.err : '';
+      return { ok: false, reason: '[s9/milestones] event ' + e.step + ' reported failure' + err };
+    }
+  }
+  const s9 = events.filter((e) => e && typeof e.step === 'string' && e.step.startsWith('S9-'));
+  const names = s9.map((e) => e.step);
+  const dupes = names.filter((n, i) => names.indexOf(n) !== i);
+  if (dupes.length > 0) {
+    return { ok: false, reason: '[s9/milestones] duplicate S9 milestone(s): ' + dupes.join(',') };
+  }
+  if (names.join('|') !== S9_MILESTONES.join('|')) {
+    return {
+      ok: false,
+      reason:
+        '[s9/milestones] S9 stream is not exactly the roster in order. got: ' +
+        names.join(' -> ') +
+        ' ; expected: ' +
+        S9_MILESTONES.join(' -> '),
+    };
+  }
+  if (exitCode !== 0) {
+    return {
+      ok: false,
+      reason: '[s9/driver-exit] driver exited ' + String(exitCode) + ', expected 0',
+    };
+  }
+  const dataOf = (step) => {
+    const e = s9.find((x) => x.step === step);
+    return e && e.data && typeof e.data === 'object' ? e.data : {};
+  };
+  return { ok: true, reason: 'all ' + S9_MILESTONES.length + ' S9 milestones asserted', dataOf };
+}
+
+/**
+ * Export-assembly verdict (PRV1-11/12/13, ADR-0232). `chunks` = driver digests
+ * [{t, i, n, req, rows, seedField}] where rows === -1 means payload_json failed
+ * a STRICT JSON.parse (red-team MEDIUM-9: a malformed export must fail here
+ * even when its row count would coincidentally reconcile). `expected` = {
+ * exportableTables, chunkRows, sqlCounts } with sqlCounts = the SQL-observed
+ * A-scoped row count per exportable table at export time.
+ */
+export function checkExportAssembly(chunks, expected) {
+  if (!Array.isArray(chunks) || chunks.length === 0) {
+    return { ok: false, reason: '[s9/export-empty] no export chunks observed' };
+  }
+  const reqs = new Set(chunks.map((c) => String(c.req)));
+  if (reqs.size !== 1) {
+    return {
+      ok: false,
+      reason: '[s9/export-request-id] expected one request_id, got ' + reqs.size,
+    };
+  }
+  const n = chunks.length;
+  const idx = chunks.map((c) => c.i).sort((a, b) => a - b);
+  for (let k = 0; k < n; k++) {
+    if (idx[k] !== k) {
+      return {
+        ok: false,
+        reason:
+          '[s9/export-contiguity] chunk_index multiset is not exactly 0..' +
+          (n - 1) +
+          ' (got ' +
+          idx.join(',') +
+          ')',
+      };
+    }
+  }
+  for (const c of chunks) {
+    if (c.n !== n) {
+      return {
+        ok: false,
+        reason: '[s9/export-total] chunk ' + c.i + ' says total_chunks=' + c.n + ', observed ' + n,
+      };
+    }
+    if (c.rows === -1) {
+      return {
+        ok: false,
+        reason:
+          '[s9/export-parse] chunk ' + c.i + ' (' + c.t + ') payload_json failed strict JSON.parse',
+      };
+    }
+    if (c.seedField === true) {
+      return {
+        ok: false,
+        reason:
+          '[s9/export-seed-leak] chunk ' +
+          c.i +
+          ' (' +
+          c.t +
+          ') carries a `seed` field — the battle_wild individuality seed must never be exportable',
+      };
+    }
+  }
+  const got = new Set(chunks.map((c) => c.t));
+  const want = new Set(expected.exportableTables);
+  for (const t of want) {
+    if (!got.has(t))
+      return { ok: false, reason: '[s9/export-missing-table] no chunk for exportable table ' + t };
+  }
+  for (const t of got) {
+    if (!want.has(t))
+      return {
+        ok: false,
+        reason: '[s9/export-extra-table] chunk exists for NON-exportable table ' + t,
+      };
+  }
+  // Per-table: chunk_index order, non-final chunks exactly full, final 1..=K,
+  // and the reassembled row count reconciles with the SQL-observed count.
+  let sawMultiChunk = false;
+  for (const t of want) {
+    const mine = chunks.filter((c) => c.t === t).sort((a, b) => a.i - b.i);
+    if (mine.length > 1) sawMultiChunk = true;
+    for (let k = 0; k < mine.length; k++) {
+      const isFinal = k === mine.length - 1;
+      const r = mine[k].rows;
+      if (!isFinal && r !== expected.chunkRows) {
+        return {
+          ok: false,
+          reason:
+            '[s9/export-chunk-fill] non-final chunk of ' +
+            t +
+            ' holds ' +
+            r +
+            ' row(s), expected exactly ' +
+            expected.chunkRows +
+            ' — a one-chunk-per-row split is not chunks(K)',
+        };
+      }
+      if (isFinal && (r < 0 || r > expected.chunkRows || (mine.length > 1 && r === 0))) {
+        return {
+          ok: false,
+          reason: '[s9/export-chunk-fill] final chunk of ' + t + ' holds ' + r + ' row(s)',
+        };
+      }
+    }
+    const total = mine.reduce((acc, c) => acc + c.rows, 0);
+    const sqlN = expected.sqlCounts[t];
+    if (typeof sqlN !== 'number') {
+      return {
+        ok: false,
+        reason: '[s9/export-reconcile] no SQL-observed count for exportable table ' + t,
+      };
+    }
+    if (total !== sqlN) {
+      return {
+        ok: false,
+        reason:
+          '[s9/export-reconcile] ' +
+          t +
+          ' reassembles to ' +
+          total +
+          ' row(s) but SQL observed ' +
+          sqlN,
+      };
+    }
+  }
+  if (!sawMultiChunk) {
+    return {
+      ok: false,
+      reason:
+        '[s9/export-no-split] no table spanned >=2 chunks — the sub-chunk boundary was never exercised (PRV1-13 vacuous)',
+    };
+  }
+  return {
+    ok: true,
+    reason:
+      'export assembled: ' +
+      n +
+      ' chunks across ' +
+      want.size +
+      ' tables, one request, contiguous, reconciled',
+  };
+}
+
+/**
+ * The post-cascade truth verdict (M22 §7.3). Every input is plain data built
+ * by the rig; this function only decides. See ADR-0232 D4/D5 for the derivation
+ * and non-vacuity contract. Returns { ok, reason, vacuous, detail }.
+ */
+export function checkCascadeTruth(input) {
+  const { entries, pre, post, allowlist, allowlistCap, seededFloor, graceMs } = input;
+  const fail = (reason) => ({ ok: false, reason, vacuous: [], detail: '' });
+  if (!Array.isArray(entries) || entries.length !== 40) {
+    return fail(
+      '[s9/census] transcription entries: ' + (entries ? entries.length : 'none') + ', expected 40',
+    );
+  }
+  if (!Array.isArray(allowlist) || allowlist.length > allowlistCap) {
+    return fail('[s9/allowlist-cap] vacuity allowlist exceeds its cap of ' + allowlistCap);
+  }
+  for (const [t, why] of allowlist) {
+    if (typeof why !== 'string' || why.length < 10) {
+      return fail('[s9/allowlist-reason] allowlist entry ' + t + ' has no substantive reason');
+    }
+  }
+  const allowed = new Set(allowlist.map(([t]) => t));
+  const vacuous = [];
+  let seededSum = 0;
+  const anonymizeHandled = new Set(['account', 'player', 'profile', 'battle']);
+
+  for (const e of entries) {
+    if (e.policy === 'Erase') {
+      let preSum = 0;
+      for (const c of e.cols) {
+        const postN = post.aCounts[e.table] ? post.aCounts[e.table][c] : undefined;
+        const preN = pre.aCounts[e.table] ? pre.aCounts[e.table][c] : undefined;
+        if (typeof postN !== 'number' || typeof preN !== 'number') {
+          return fail(
+            '[s9/unattempted] no count was taken for ' +
+              e.table +
+              '.' +
+              c +
+              ' — an unattempted table is not a verified one',
+          );
+        }
+        if (postN !== 0) {
+          return fail(
+            '[s9/erase-survivor] ' +
+              e.table +
+              '.' +
+              c +
+              ' still holds ' +
+              postN +
+              ' row(s) for the deleted identity',
+          );
+        }
+        preSum += preN;
+      }
+      seededSum += preSum;
+      if (preSum === 0) vacuous.push(e.table);
+    } else if (e.policy === 'ViaJoin') {
+      const postN = post.viaJoin[e.table];
+      const preN = pre.viaJoin[e.table];
+      if (typeof postN !== 'number' || typeof preN !== 'number') {
+        return fail(
+          '[s9/unattempted] no reachability count was taken for ViaJoin table ' + e.table,
+        );
+      }
+      if (postN !== 0) {
+        return fail(
+          '[s9/viajoin-live] ' +
+            e.table +
+            ' still reachable via the deleted parent (' +
+            postN +
+            ' row(s))',
+        );
+      }
+      seededSum += preN;
+      if (preN === 0) vacuous.push(e.table);
+    } else if (e.policy === 'Anonymize') {
+      if (!anonymizeHandled.has(e.table)) {
+        return fail(
+          '[s9/anonymize-unhandled] a NEW Anonymize table (' +
+            e.table +
+            ') has no special-cased truth assert — write one before trusting this run',
+        );
+      }
+    }
+  }
+
+  // Anonymize special cases — the row must SURVIVE and carry the tombstone.
+  const acct = post.account;
+  if (!acct || acct.present !== true)
+    return fail('[s9/account-tombstone] the account row is GONE — Anonymize must never delete');
+  if (acct.authIssuer !== TOMBSTONE_AUTH_ISSUER_E2E) {
+    return fail(
+      '[s9/account-tombstone] auth_issuer is ' +
+        JSON.stringify(acct.authIssuer) +
+        ', expected the tombstone sentinel',
+    );
+  }
+  if (typeof acct.terminal !== 'number' || typeof acct.requested !== 'number') {
+    return fail('[s9/account-tombstone] terminal_at_ms/deletion_requested_at_ms not both stamped');
+  }
+  if (acct.status !== 'pendingDeletion') {
+    return fail(
+      '[s9/account-tombstone] status is ' +
+        JSON.stringify(acct.status) +
+        ', expected pendingDeletion',
+    );
+  }
+  if (acct.claimRetained !== true) {
+    return fail(
+      '[s9/account-provenance] claimed_from/claimed_at_ms were not retained through the cascade (AUTH-29)',
+    );
+  }
+  if (acct.terminal - acct.requested < graceMs) {
+    return fail(
+      '[s9/grace-honored] terminal - requested = ' +
+        (acct.terminal - acct.requested) +
+        ' ms < the ' +
+        graceMs +
+        ' ms grace — the reaper fired before the (re-armed) request was due',
+    );
+  }
+  if (
+    !post.player ||
+    post.player.present !== true ||
+    post.player.name !== TOMBSTONE_DISPLAY_NAME_E2E
+  ) {
+    return fail(
+      '[s9/player-tombstone] the player presence row (A is still connected) is missing or not tombstoned: ' +
+        JSON.stringify(post.player),
+    );
+  }
+  if (
+    !post.profile ||
+    post.profile.present !== true ||
+    post.profile.name !== TOMBSTONE_DISPLAY_NAME_E2E
+  ) {
+    return fail(
+      '[s9/profile-tombstone] the profile row is missing or not tombstoned: ' +
+        JSON.stringify(post.profile),
+    );
+  }
+  if (!post.battle1 || post.battle1.present !== true) {
+    return fail(
+      '[s9/battle-anonymize-gone] the terminal PvP battle row is GONE — Anonymize must never delete',
+    );
+  }
+  if (post.battle1.aSideTombstoned !== true) {
+    return fail(
+      '[s9/battle-anonymize-side-a] the deleted side of the terminal battle was not swapped to the tombstone identity',
+    );
+  }
+  if (post.battle1.dSideIntact !== true) {
+    return fail(
+      '[s9/battle-anonymize-side-b] the SURVIVING side of the terminal battle changed — over-anonymization is a failure, not a pass',
+    );
+  }
+
+  // NotOwned world content must SURVIVE (an erase-everything cascade would
+  // otherwise pass every A-scoped zero-count above).
+  if (
+    !post.world ||
+    !(post.world.species > 0) ||
+    !(post.world.zones > 0) ||
+    post.world.config !== 1
+  ) {
+    return fail(
+      '[s9/world-nuked] seeded world content did not survive the cascade: ' +
+        JSON.stringify(post.world),
+    );
+  }
+  // Bystander: D's rows byte-count-identical across the snapshot window, and D
+  // never entered the deletion state machine.
+  const preD = JSON.stringify(pre.dCounts);
+  const postD = JSON.stringify(post.dCounts);
+  if (preD !== postD) {
+    return fail(
+      '[s9/bystander] the bystander account rows changed across the cascade: pre=' +
+        preD +
+        ' post=' +
+        postD,
+    );
+  }
+  if (post.dAccountActive !== true) {
+    return fail(
+      '[s9/bystander] the bystander account is not Active/terminal-free after the cascade',
+    );
+  }
+
+  for (const t of vacuous) {
+    if (!allowed.has(t)) {
+      return fail(
+        '[s9/vacuous] ' +
+          t +
+          ' had ZERO pre-cascade rows for the subject and is not on the declared allowlist — the run never actually tested its erasure. vacuous=' +
+          JSON.stringify(vacuous),
+      );
+    }
+  }
+  if (seededSum < seededFloor) {
+    return fail(
+      '[s9/seed-floor] only ' +
+        seededSum +
+        ' subject-scoped rows existed pre-cascade (floor ' +
+        seededFloor +
+        ') — the loaded-account seed did not happen',
+    );
+  }
+  return {
+    ok: true,
+    reason: 'cascade truth held over 40 classified entries',
+    vacuous,
+    detail: 'seeded=' + seededSum + ' vacuous=[' + vacuous.join(',') + ']',
+  };
+}
+
+/**
+ * Build the owner-SQL seed statements for the subject (pure — the rig executes
+ * them). >500 playtest_event rows (batched) + wallet + inventory + conversation
+ * + quest + heal_cooldown. player_dialogue_state is NOT here (Vec<String>
+ * columns are not DML-expressible — probed 400; declared on the vacuity
+ * allowlist instead).
+ */
+export function buildSeedStatements(aHex, playtestRows, baseMs) {
+  if (typeof aHex !== 'string' || !/^0x[0-9a-f]{64}$/.test(aHex)) {
+    throw new Error('[s9/seed-build] subject identity is not 0x + 64 lowercase hex: ' + aHex);
+  }
+  if (!Number.isInteger(playtestRows) || playtestRows <= 500) {
+    throw new Error(
+      '[s9/seed-build] playtestRows must exceed 500 (the loaded-account brief), got ' +
+        playtestRows,
+    );
+  }
+  // The stamp must be NEAR NOW (injected): an epoch-adjacent created_at_ms puts
+  // every seeded row past the ADR-0131 playtest-event TTL, and the periodic
+  // playtest reaper would then erase the seed MID-RUN — a count collapse that
+  // reads as a cascade bug instead of a fixture bug.
+  if (!Number.isInteger(baseMs) || baseMs < 1_000_000_000_000) {
+    throw new Error('[s9/seed-build] baseMs must be a modern epoch-ms stamp, got ' + baseMs);
+  }
+  const stmts = [];
+  // The three PK-on-owner tables are DELETE-then-INSERT: the subject may already
+  // own a row (e.g. the wallet re-keyed onto A by the G22 guest claim), and SQL
+  // DML has no upsert.
+  stmts.push('DELETE FROM player_wallet WHERE owner_identity = ' + aHex);
+  stmts.push('DELETE FROM heal_cooldown WHERE owner_identity = ' + aHex);
+  stmts.push('DELETE FROM player_conversation WHERE owner_identity = ' + aHex);
+  stmts.push('INSERT INTO player_wallet (owner_identity, balance) VALUES (' + aHex + ', 500)');
+  stmts.push(
+    'INSERT INTO inventory (inv_id, owner_identity, item_id, count) VALUES ' +
+      '(0, ' +
+      aHex +
+      ', 1, 2), (0, ' +
+      aHex +
+      ', 2, 1), (0, ' +
+      aHex +
+      ', 3, 1)',
+  );
+  stmts.push(
+    'INSERT INTO player_conversation (owner_identity, npc_entity_id, current_node_id) VALUES (' +
+      aHex +
+      ', 7, ' +
+      "'s9_node'" +
+      ')',
+  );
+  stmts.push(
+    'INSERT INTO player_quest (pq_id, owner_identity, quest_id, step_index) VALUES (0, ' +
+      aHex +
+      ', ' +
+      "'quest_001'" +
+      ', 1)',
+  );
+  stmts.push(
+    'INSERT INTO heal_cooldown (owner_identity, last_heal_at_ms) VALUES (' + aHex + ', 1)',
+  );
+  const batch = 50;
+  let emitted = 0;
+  while (emitted < playtestRows) {
+    const rows = [];
+    for (let i = 0; i < batch && emitted < playtestRows; i++, emitted++) {
+      rows.push('(0, ' + aHex + ', 1, ' + (baseMs + emitted) + ', 0, 1, 500, 0, true)');
+    }
+    stmts.push(
+      'INSERT INTO playtest_event (event_id, identity, kind, created_at_ms, battle_id, species_id, hp_permille, bait_item_id, success) VALUES ' +
+        rows.join(', '),
+    );
+  }
+  return stmts;
 }
 
 // --- ci.yml step ordering (read-only) --------------------------------------
@@ -2301,6 +3108,7 @@ function registerSrc(tsresolvePath) {
 const DRIVER_SRC = [
   "import { pathToFileURL } from 'node:url';",
   "import { webcrypto as wc } from 'node:crypto';",
+  "import { existsSync } from 'node:fs';",
   '',
   'const CLIENT = process.env.MR_CLIENT_DIR;',
   'const uri = process.env.MR_STDB_WS;',
@@ -2320,7 +3128,7 @@ const DRIVER_SRC = [
   '  emit(step, false, { err: String((err && err.message) || err) });',
   '  process.exit(1);',
   '}',
-  'const killer = setTimeout(function () { bail("timeout", "driver 150s timeout"); }, 150000);',
+  'const killer = setTimeout(function () { bail("timeout", "driver 420s timeout"); }, 420000);',
   'const sleep = function (ms) { return new Promise(function (r) { setTimeout(r, ms); }); };',
   '',
   'function connectOnce(token) {',
@@ -2328,7 +3136,7 @@ const DRIVER_SRC = [
   '    let b = DbConnection.builder().withUri(uri).withDatabaseName(db);',
   '    if (token) b = b.withToken(token);',
   '    b.onConnect(function (c, identity) {',
-  '      resolve({ conn: c, identity: identity.toHexString() });',
+  '      resolve({ conn: c, identity: identity.toHexString(), idObj: identity });',
   '    })',
   '      .onConnectError(function (_ctx, err) { reject(err); })',
   '      .build();',
@@ -2446,11 +3254,190 @@ const DRIVER_SRC = [
   '  emit("E-rejected", eRej.rejected === true, { rejected: eRej.rejected });',
   '  if (eRej.conn) { try { eRej.conn.disconnect(); } catch (ignored) {} }',
   '',
+  '',
+  '  // ---- M22-S9 flow (ADR-0232): loaded account -> delete -> real cascade ----',
+  '  const GO = process.env.MR_S9_GO;',
+  '  const ERR_EXPORT = process.env.MR_S9_ERR_EXPORT;',
+  '  const ERR_TERMINAL = process.env.MR_S9_ERR_TERMINAL;',
+  '  function iterRows(conn, handle) {',
+  '    const h = conn.db[handle];',
+  '    if (!h) throw new Error("no table handle " + handle);',
+  '    const out = [];',
+  '    for (const r of h.iter()) out.push(r);',
+  '    return out;',
+  '  }',
+  '  function stripHexS9(x) {',
+  '    const v = String(x).toLowerCase();',
+  '    return v.startsWith("0x") ? v.slice(2) : v;',
+  '  }',
+  '  async function waitGo(n, ms) {',
+  '    const f = GO + n;',
+  '    const t0 = Date.now();',
+  '    while (!existsSync(f)) {',
+  '      if (Date.now() - t0 > ms) bail("S9-go-wait", "go-file " + n + " never arrived within " + ms + "ms");',
+  '      await sleep(400);',
+  '    }',
+  '  }',
+  '  async function pollFor(label, ms, step, fn) {',
+  '    const t0 = Date.now();',
+  '    for (;;) {',
+  '      const v = fn();',
+  '      if (v !== undefined && v !== null && v !== false) return v;',
+  '      if (Date.now() - t0 > ms) bail(step, label + " not observed within " + ms + "ms");',
+  '      await sleep(600);',
+  '    }',
+  '  }',
+  '  await applied(d.conn, ["SELECT * FROM my_battle", "SELECT * FROM my_monster_pub", "SELECT * FROM battle_challenge"]);',
+  '  const dJoin = await tryReducer(d.conn.reducers.joinGame({ name: "dave s9" }));',
+  '  emit("S9-D-join", dJoin.ok, dJoin);',
+  '  await applied(a.conn, ["SELECT * FROM my_battle", "SELECT * FROM my_monster_pub", "SELECT * FROM my_export_bundle", "SELECT * FROM battle_challenge", "SELECT * FROM trade_offer", "SELECT * FROM player"]);',
+  '  const aJoin = await tryReducer(a.conn.reducers.joinGame({ name: "alice s9" }));',
+  '  emit("S9-A-join", aJoin.ok, aJoin);',
+  '  const aMon = iterRows(a.conn, "my_monster_pub").filter(function (r) { return stripHexS9(r.ownerIdentity.toHexString()) === stripHexS9(a.identity); });',
+  '  if (aMon.length === 0) bail("S9-A-join", "A owns no monster after join (claim re-key + join both failed to grant)");',
+  '  const aMonId = aMon[0].monsterId;',
+  '  // Challenge DIRECTION is load-bearing (ADR-0232 F1): battle1 must carry',
+  '  // player_identity = D so the cascade 6a wild write-back GC (ADR-0077',
+  '  // keep-latest, keyed on the WILD battle PLAYER axis = A) cannot delete the',
+  '  // terminal PvP battle the Anonymize assert needs; the opponent-axis GC',
+  '  // skips WILD battles by construction.',
+  '  const dMonPre = iterRows(d.conn, "my_monster_pub").filter(function (r) { return stripHexS9(r.ownerIdentity.toHexString()) === stripHexS9(d.identity); });',
+  '  if (dMonPre.length === 0) bail("S9-challenge1", "D owns no monster after join");',
+  '  const ch1 = await tryReducer(d.conn.reducers.challengePvp({ target: a.idObj, partyIds: [dMonPre[0].monsterId] }));',
+  '  emit("S9-challenge1", ch1.ok, ch1);',
+  '  const ch1Row = await pollFor("incoming challenge on A", 20000, "S9-accept1", function () {',
+  '    const rows = iterRows(a.conn, "battle_challenge").filter(function (r) { return stripHexS9(r.target.toHexString()) === stripHexS9(a.identity); });',
+  '    return rows.length > 0 ? rows[0] : null;',
+  '  });',
+  '  const acc1 = await tryReducer(a.conn.reducers.acceptChallenge({ challengeId: ch1Row.challengeId, partyIds: [aMonId] }));',
+  '  emit("S9-accept1", acc1.ok, acc1);',
+  '  const b1 = await pollFor("live pvp battle on A", 20000, "S9-battle1-live", function () {',
+  '    const rows = iterRows(a.conn, "my_battle").filter(function (r) { return r.state.outcome.tag === "Ongoing"; });',
+  '    return rows.length > 0 ? rows[0] : null;',
+  '  });',
+  '  emit("S9-battle1-live", true, { battleId: String(b1.battleId) });',
+  '  d.conn.disconnect();',
+  '  const b1t = await pollFor("battle1 terminal after D forfeit", 30000, "S9-battle1-terminal", function () {',
+  '    const rows = iterRows(a.conn, "my_battle").filter(function (r) { return String(r.battleId) === String(b1.battleId); });',
+  '    return rows.length > 0 && rows[0].state.outcome.tag !== "Ongoing" ? rows[0] : null;',
+  '  });',
+  '  emit("S9-battle1-terminal", true, { outcome: b1t.state.outcome.tag });',
+  '  const d2 = await connectOnce(jwtD);',
+  '  await applied(d2.conn, ["SELECT * FROM my_account", "SELECT * FROM my_battle", "SELECT * FROM my_monster_pub", "SELECT * FROM battle_challenge"]);',
+  '  const dRejoin = await tryReducer(d2.conn.reducers.joinGame({ name: "dave s9" }));',
+  '  emit("S9-D-rejoin", dRejoin.ok, dRejoin);',
+  '  emit("S9-presence-ready", true, { a: a.identity, d: d2.identity, battle1Id: String(b1.battleId) });',
+  '  await waitGo(1, 90000);',
+  '  const tr = await tryReducer(a.conn.reducers.proposeTrade({ counterparty: d2.idObj, initiatorMonsterIds: [], initiatorItems: [], initiatorCurrency: 5n, counterpartyMonsterIds: [], counterpartyItems: [], counterpartyCurrency: 0n }));',
+  '  emit("S9-trade-open", tr.ok, tr);',
+  '  const ch2 = await tryReducer(a.conn.reducers.challengePvp({ target: d2.idObj, partyIds: [aMonId] }));',
+  '  emit("S9-challenge2-pending", ch2.ok, ch2);',
+  '  let seq = 1;',
+  '  async function stepDir(dir) {',
+  '    const r = await tryReducer(a.conn.reducers.enqueueMove({ input: { tag: "Step", value: { tag: dir } }, seq: BigInt(seq) }));',
+  '    seq = seq + 1;',
+  '    return r;',
+  '  }',
+  '  await stepDir("South");',
+  '  await sleep(260);',
+  '  let wild = null;',
+  '  for (let i = 0; i < 80 && wild === null; i++) {',
+  '    await stepDir(i % 2 === 0 ? "East" : "West");',
+  '    await sleep(240);',
+  '    const rows = iterRows(a.conn, "my_battle").filter(function (r) { return r.state.outcome.tag === "Ongoing" && stripHexS9(r.opponentIdentity.toHexString()) === "0".repeat(64); });',
+  '    if (rows.length > 0) wild = rows[0];',
+  '  }',
+  '  if (wild === null) bail("S9-wild-live", "no wild encounter within 80 shuttle steps over zone-0 grass (rate 200/1000 per grass step)");',
+  '  emit("S9-wild-live", true, { battleId: String(wild.battleId) });',
+  '  emit("S9-seed-ready", true, { wildBattleId: String(wild.battleId) });',
+  '  await waitGo(2, 120000);',
+  '  const exq = await tryReducer(a.conn.reducers.requestDataExport());',
+  '  if (!exq.ok) bail("S9-export-chunks", "requestDataExport rejected: " + exq.err);',
+  '  let chunkRowsS9 = [];',
+  '  {',
+  '    let prevCount = -1;',
+  '    let stable = 0;',
+  '    const t0e = Date.now();',
+  '    for (;;) {',
+  '      const rs = iterRows(a.conn, "my_export_bundle");',
+  '      if (rs.length > 0 && rs.length === prevCount) {',
+  '        stable = stable + 1;',
+  '        if (stable >= 2) { chunkRowsS9 = rs; break; }',
+  '      } else {',
+  '        stable = 0;',
+  '      }',
+  '      prevCount = rs.length;',
+  '      if (Date.now() - t0e > 45000) bail("S9-export-chunks", "export chunks never stabilized (last count " + rs.length + ")");',
+  '      await sleep(700);',
+  '    }',
+  '  }',
+  '  function chunkDigest(r) {',
+  '    let rows = -1;',
+  '    let seedField = false;',
+  '    try {',
+  '      const parsed = JSON.parse(r.payloadJson);',
+  '      // ADR-0226 payload shape: {"table": <name>, "rows": [...]} — a table',
+  '      // field that disagrees with the table_name column is a malformed export.',
+  '      if (parsed !== null && typeof parsed === "object" && parsed.table === r.tableName && Array.isArray(parsed.rows)) {',
+  '        rows = parsed.rows.length;',
+  '        for (const row of parsed.rows) {',
+  '          if (row !== null && typeof row === "object" && Object.prototype.hasOwnProperty.call(row, "seed")) seedField = true;',
+  '        }',
+  '      }',
+  '    } catch (ignored) {',
+  '      rows = -1;',
+  '    }',
+  '    return { t: r.tableName, i: r.chunkIndex, n: r.totalChunks, req: String(r.requestId), rows: rows, seedField: seedField };',
+  '  }',
+  '  emit("S9-export-chunks", true, { chunks: chunkRowsS9.map(chunkDigest) });',
+  '  const t0d = Date.now();',
+  '  const del1 = await tryReducer(a.conn.reducers.deleteAccount());',
+  '  await pollFor("PendingDeletion after delete", 15000, "S9-delete", function () {',
+  '    const rs = accountRows(a.conn);',
+  '    return rs.length > 0 && rs[0].status.tag === "PendingDeletion" ? rs[0] : null;',
+  '  });',
+  '  emit("S9-delete", del1.ok, { err: del1.err });',
+  '  const exr = await tryReducer(a.conn.reducers.requestDataExport());',
+  '  emit("S9-export-reject", exr.ok === false && String(exr.err).indexOf(ERR_EXPORT) !== -1, { err: exr.err });',
+  '  const can = await tryReducer(a.conn.reducers.cancelAccountDeletion());',
+  '  const cancelElapsed = Date.now() - t0d;',
+  '  if (cancelElapsed >= 10000) bail("S9-cancel", "grace-margin: delete->cancel took " + cancelElapsed + "ms (>= 10s of the 15s window) — first-window race; the box is too slow for this leg");',
+  '  await pollFor("Active after cancel", 15000, "S9-cancel", function () {',
+  '    const rs = accountRows(a.conn);',
+  '    const r = rs.length > 0 ? rs[0] : null;',
+  '    return r !== null && r.status.tag === "Active" && (r.terminalAtMs === null || r.terminalAtMs === undefined) && (r.deletionRequestedAtMs === null || r.deletionRequestedAtMs === undefined) ? r : null;',
+  '  });',
+  '  emit("S9-cancel", can.ok === true, { err: can.err, elapsedMs: cancelElapsed });',
+  '  emit("S9-cancel-done", true, {});',
+  '  await waitGo(3, 90000);',
+  '  const del2 = await tryReducer(a.conn.reducers.deleteAccount());',
+  '  await pollFor("PendingDeletion after redelete", 15000, "S9-redelete", function () {',
+  '    const rs = accountRows(a.conn);',
+  '    return rs.length > 0 && rs[0].status.tag === "PendingDeletion" ? rs[0] : null;',
+  '  });',
+  '  emit("S9-redelete", del2.ok, { err: del2.err });',
+  '  emit("S9-redelete-done", true, {});',
+  '  await waitGo(4, 90000);',
+  '  const term = await pollFor("terminal marker via my_account", 120000, "S9-terminal-seen", function () {',
+  '    const rs = accountRows(a.conn);',
+  '    return rs.length > 0 && rs[0].terminalAtMs !== null && rs[0].terminalAtMs !== undefined ? rs[0] : null;',
+  '  });',
+  '  emit("S9-terminal-seen", true, { terminal: String(term.terminalAtMs), requested: String(term.deletionRequestedAtMs) });',
+  '  const lc = await tryReducer(a.conn.reducers.cancelAccountDeletion());',
+  '  emit("S9-late-cancel", lc.ok === false && lc.err === ERR_TERMINAL, { err: lc.err });',
+  '  const lx = await tryReducer(a.conn.reducers.requestDataExport());',
+  '  emit("S9-late-export", lx.ok === false && String(lx.err).indexOf(ERR_EXPORT) !== -1, { err: lx.err });',
+  '  emit("S9-cascade-done", true, {});',
+  '  await waitGo(5, 150000);',
+  '  const dAcct = accountRows(d2.conn);',
+  '  emit("S9-D-still-active", dAcct.length === 1 && dAcct[0].status.tag === "Active" && (dAcct[0].terminalAtMs === null || dAcct[0].terminalAtMs === undefined), { rows: dAcct.length });',
+  '  emit("S9-done", true, {});',
+  '',
   '  clearTimeout(killer);',
   '  emit("done", true, {});',
-  '  a.conn.disconnect();',
-  '  c.conn.disconnect();',
-  '  d.conn.disconnect();',
+  '  try { a.conn.disconnect(); } catch (ignored) {}',
+  '  try { c.conn.disconnect(); } catch (ignored) {}',
+  '  try { d2.conn.disconnect(); } catch (ignored) {}',
   '  process.exit(0);',
   '} catch (e) {',
   '  bail("flow", e);',
@@ -2549,6 +3536,20 @@ async function runLivePhase() {
     if (patched === original) throw new Error('patch was a no-op — refusing to publish (N4)');
     writeFileSync(accountsPath, patched);
 
+    // M22-S9 (ADR-0232 D1): compress the grace window + export chunk boundary
+    // in the COPY so the real one-shot reaper and a real multi-chunk split run
+    // inside the e2e. Both patchers throw on a missing/ambiguous needle.
+    const deletionPath = path.join(tmp, 'game-core', 'src', 'accounts', 'deletion.rs');
+    const deletionOrig = readFileSync(deletionPath, 'utf8');
+    const deletionPatched = patchExportChunkRows(
+      patchDeletionGrace(deletionOrig, E2E_GRACE_MS),
+      E2E_CHUNK_ROWS,
+    );
+    if (deletionPatched === deletionOrig) {
+      throw new Error('S9 grace/chunk patch was a no-op — refusing to publish (N4)');
+    }
+    writeFileSync(deletionPath, deletionPatched);
+
     // --- build + publish ---
     const targetDir = process.env.MR_ACCT_E2E_TARGET_DIR || path.join(repoRoot, 'target');
     const build = run(
@@ -2604,6 +3605,7 @@ async function runLivePhase() {
     // slice; the `.any()` check against a single entry already rejects a mismatch.)
     const jwtE = await mintJwt(stub.k1, 'e2e-k1', stub.iss1, 'erin-e2e', [WRONG_AUDIENCE]);
 
+    const s9GoPrefix = path.join(tmp, 's9-go-');
     const clientDir = path.join(repoRoot, 'client');
     driver = spawn(process.execPath, ['--import', registerPath, driverPath], {
       cwd: clientDir,
@@ -2616,6 +3618,9 @@ async function runLivePhase() {
         MR_JWT_C: jwtC,
         MR_JWT_D: jwtD,
         MR_JWT_E: jwtE,
+        MR_S9_GO: s9GoPrefix,
+        MR_S9_ERR_EXPORT: ERR_EXPORT_PENDING_DELETION_E2E,
+        MR_S9_ERR_TERMINAL: ERR_ALREADY_DELETED_E2E,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -2627,6 +3632,303 @@ async function runLivePhase() {
     driver.stderr.on('data', (d) => {
       err = (err + d).slice(-2000);
     });
+
+    // ---- M22-S9 orchestration (ADR-0232) — runs CONCURRENTLY with the driver.
+    // The driver blocks on go-files at each sync point; this side watches the
+    // milestone stream, executes the owner-SQL seeding/snapshots, and releases
+    // it. All failures are captured into s9.error and re-thrown after exit so
+    // teardown and milestone forensics still happen.
+    let driverGone = false;
+    driver.on('exit', () => {
+      driverGone = true;
+    });
+    const s9Sql = [];
+    const s9G22Raw = [];
+    const sqlJsonRows = (query) => {
+      const res = run('spacetime', ['sql', '--format', 'json', '-s', dbUrl, DB_NAME, query], {
+        timeout: 60_000,
+      });
+      if (!res.ok) throw new Error('sql-json failed (' + query + '): ' + res.stderr);
+      s9Sql.push(query + ' => ' + res.stdout.trim().replace(/\s+/g, ' ').slice(0, 500));
+      return decodeSqlJson(res.stdout);
+    };
+    const sqlDml = (stmt) => {
+      const res = run('spacetime', ['sql', '-s', dbUrl, DB_NAME, stmt], { timeout: 60_000 });
+      if (!res.ok) throw new Error('sql-dml failed (' + stmt.slice(0, 120) + '): ' + res.stderr);
+    };
+    const cnt = (q) => countFromRows(sqlJsonRows(q));
+    const writeGo = (n) => writeFileSync(s9GoPrefix + n, '1');
+    const waitEvent = async (name, ms) => {
+      const t0 = Date.now();
+      for (;;) {
+        const ev = findS9Event(out, name);
+        if (ev) {
+          if (ev.ok !== true) {
+            throw new Error(
+              '[s9/orchestration] milestone ' +
+                name +
+                ' arrived ok:false: ' +
+                JSON.stringify(ev.data),
+            );
+          }
+          return ev;
+        }
+        if (driverGone) {
+          throw new Error(
+            '[s9/orchestration] driver exited before emitting ' +
+              name +
+              ' (stderr tail: ' +
+              err.slice(-300) +
+              ')',
+          );
+        }
+        if (Date.now() - t0 > ms) {
+          throw new Error('[s9/orchestration] ' + name + ' not observed within ' + ms + 'ms');
+        }
+        await sleep(500);
+      }
+    };
+    const s9 = {
+      pre: null,
+      post: null,
+      censusCancel: null,
+      censusRedelete: null,
+      error: null,
+      refs: null,
+      g22Tables: null,
+    };
+    const takeS9Snapshot = (entries, phase) => {
+      const refs = s9.refs;
+      const aCounts = {};
+      const viaJoin = {};
+      for (const e of entries) {
+        if (e.policy !== 'Erase') continue;
+        aCounts[e.table] = {};
+        for (const c of e.cols) {
+          aCounts[e.table][c] = cnt(
+            'SELECT COUNT(*) AS n FROM ' + e.table + ' WHERE ' + c + ' = ' + refs.aHex,
+          );
+        }
+      }
+      if (phase === 'pre') {
+        // Pin every ViaJoin parent key NOW: the post pass must ask about the
+        // SAME rows the pre pass saw, never re-derive from post-cascade state.
+        const players = sqlJsonRows('SELECT identity, entity_id FROM player').filter(
+          (r) => identityCellHex(r.identity) === normHex(refs.aHex),
+        );
+        refs.entityId = players.length > 0 ? String(players[0].entity_id) : null;
+        refs.tradeIds = sqlJsonRows(
+          'SELECT trade_id FROM trade_offer WHERE initiator = ' + refs.aHex,
+        ).map((r) => String(r.trade_id));
+        refs.challengeIds = sqlJsonRows(
+          'SELECT challenge_id FROM battle_challenge WHERE challenger = ' + refs.aHex,
+        ).map((r) => String(r.challenge_id));
+        const b1 = sqlJsonRows(
+          'SELECT player_identity, opponent_identity FROM battle WHERE battle_id = ' +
+            refs.battle1Id,
+        );
+        if (b1.length !== 1) throw new Error('[s9/snapshot] battle1 row not found at pre-snapshot');
+        refs.b1Sides = {
+          p: identityCellHex(b1[0].player_identity),
+          o: identityCellHex(b1[0].opponent_identity),
+        };
+      }
+      // Diagnostic dump both phases: the deadline table is tiny and its
+      // scheduled_id/turn_number decide any [s9/viajoin-live] forensics.
+      sqlJsonRows('SELECT scheduled_id, battle_id, turn_number FROM pvp_deadline_schedule');
+      viaJoin.character =
+        refs.entityId === null
+          ? 0
+          : cnt('SELECT COUNT(*) AS n FROM character WHERE entity_id = ' + refs.entityId);
+      viaJoin.battle_wild = cnt(
+        'SELECT COUNT(*) AS n FROM battle_wild WHERE battle_id = ' + refs.wildId,
+      );
+      viaJoin.pvp_deadline_schedule =
+        cnt('SELECT COUNT(*) AS n FROM pvp_deadline_schedule WHERE battle_id = ' + refs.wildId) +
+        cnt('SELECT COUNT(*) AS n FROM pvp_deadline_schedule WHERE battle_id = ' + refs.battle1Id);
+      let chalSched = 0;
+      for (const id of refs.challengeIds) {
+        chalSched += cnt(
+          'SELECT COUNT(*) AS n FROM battle_challenge_reaper_schedule WHERE challenge_id = ' + id,
+        );
+      }
+      viaJoin.battle_challenge_reaper_schedule = chalSched;
+      let tradeSched = 0;
+      for (const id of refs.tradeIds) {
+        tradeSched += cnt(
+          'SELECT COUNT(*) AS n FROM trade_offer_reaper_schedule WHERE trade_id = ' + id,
+        );
+      }
+      viaJoin.trade_offer_reaper_schedule = tradeSched;
+      const dCounts = {
+        monster: cnt('SELECT COUNT(*) AS n FROM monster WHERE owner_identity = ' + refs.dHex),
+        monster_pub: cnt(
+          'SELECT COUNT(*) AS n FROM monster_pub WHERE owner_identity = ' + refs.dHex,
+        ),
+        inventory: cnt('SELECT COUNT(*) AS n FROM inventory WHERE owner_identity = ' + refs.dHex),
+        wallet: cnt('SELECT COUNT(*) AS n FROM player_wallet WHERE owner_identity = ' + refs.dHex),
+        playtest: cnt('SELECT COUNT(*) AS n FROM playtest_event WHERE identity = ' + refs.dHex),
+        player: cnt('SELECT COUNT(*) AS n FROM player WHERE identity = ' + refs.dHex),
+        profile: cnt('SELECT COUNT(*) AS n FROM profile WHERE identity = ' + refs.dHex),
+      };
+      const world = {
+        species: cnt('SELECT COUNT(*) AS n FROM species_row'),
+        zones: cnt('SELECT COUNT(*) AS n FROM zone_def'),
+        config: cnt('SELECT COUNT(*) AS n FROM config'),
+      };
+      const snap = { aCounts, viaJoin, dCounts, world };
+      if (phase === 'pre') {
+        const sqlCounts = {};
+        for (const e of entries) {
+          if (!e.exportable) continue;
+          if (e.cols.length > 0) {
+            let n = 0;
+            for (const c of e.cols) {
+              // `claimed_from` is the manifest's one Option<Identity> column;
+              // 2.8.1 SQL cannot WHERE-match a sum-typed literal (probed 400).
+              // A's own account row is counted via its plain `identity` column.
+              if (e.table === 'account' && c === 'claimed_from') continue;
+              n += cnt('SELECT COUNT(*) AS n FROM ' + e.table + ' WHERE ' + c + ' = ' + refs.aHex);
+            }
+            // Per-column sums equal the row count only because this seed never
+            // places A on both identity columns of one row (documented).
+            sqlCounts[e.table] = n;
+          } else {
+            sqlCounts[e.table] = viaJoin[e.table] === undefined ? 0 : viaJoin[e.table];
+          }
+        }
+        snap.sqlCounts = sqlCounts;
+      }
+      if (phase === 'post') {
+        const acct = sqlJsonRows(
+          'SELECT auth_issuer, status, deletion_requested_at_ms, terminal_at_ms, claimed_from FROM account WHERE identity = ' +
+            refs.aHex,
+        );
+        if (acct.length === 1) {
+          const claimHex = optIdentityHex(acct[0].claimed_from);
+          snap.account = {
+            present: true,
+            authIssuer: String(acct[0].auth_issuer),
+            status: enumTagCell(acct[0].status, ['active', 'pendingDeletion']),
+            requested: optI64Cell(acct[0].deletion_requested_at_ms),
+            terminal: optI64Cell(acct[0].terminal_at_ms),
+            claimRetained: claimHex !== null && claimHex === refs.bHex,
+          };
+        } else {
+          snap.account = { present: false };
+        }
+        const pl = sqlJsonRows('SELECT name FROM player WHERE identity = ' + refs.aHex);
+        snap.player =
+          pl.length === 1 ? { present: true, name: String(pl[0].name) } : { present: false };
+        const pr = sqlJsonRows('SELECT name FROM profile WHERE identity = ' + refs.aHex);
+        snap.profile =
+          pr.length === 1 ? { present: true, name: String(pr[0].name) } : { present: false };
+        const b1 = sqlJsonRows(
+          'SELECT player_identity, opponent_identity FROM battle WHERE battle_id = ' +
+            refs.battle1Id,
+        );
+        if (b1.length === 1) {
+          const now = {
+            p: identityCellHex(b1[0].player_identity),
+            o: identityCellHex(b1[0].opponent_identity),
+          };
+          const was = refs.b1Sides;
+          const aHexBare = normHex(refs.aHex);
+          const aSideKey = was.p === aHexBare ? 'p' : was.o === aHexBare ? 'o' : null;
+          const dSideKey = aSideKey === 'p' ? 'o' : 'p';
+          const tomb = normHex(TOMBSTONE_IDENTITY_HEX_E2E);
+          snap.battle1 = {
+            present: true,
+            aSideTombstoned: aSideKey !== null && now[aSideKey] === tomb,
+            dSideIntact: aSideKey !== null && now[dSideKey] === was[dSideKey],
+          };
+        } else {
+          snap.battle1 = { present: false };
+        }
+        // Diagnostic dumps (cheap; land in s9Sql for failure forensics).
+        sqlJsonRows('SELECT scheduled_id, battle_id, turn_number FROM pvp_deadline_schedule');
+        sqlJsonRows('SELECT battle_id, player_identity, opponent_identity FROM battle');
+        const dAcct = sqlJsonRows(
+          'SELECT status, terminal_at_ms FROM account WHERE identity = ' + refs.dHex,
+        );
+        snap.dAccountActive =
+          dAcct.length === 1 &&
+          enumTagCell(dAcct[0].status, ['active', 'pendingDeletion']) === 'active' &&
+          optI64Cell(dAcct[0].terminal_at_ms) === null;
+      }
+      return snap;
+    };
+    const s9Orchestration = (async () => {
+      try {
+        const entries = parseManifestTranscription(M22S9_MANIFEST_TRANSCRIPTION);
+        const evPresence = await waitEvent('S9-presence-ready', 300_000);
+        const evB = findS9Event(out, 'B-connect');
+        if (!evB)
+          throw new Error(
+            '[s9/orchestration] B-connect never observed (needed for the claim-provenance assert)',
+          );
+        s9.refs = {
+          aHex: '0x' + normHex(evPresence.data.a),
+          dHex: '0x' + normHex(evPresence.data.d),
+          bHex: normHex(evB.data.identity),
+          battle1Id: String(evPresence.data.battle1Id),
+          wildId: null,
+          tradeIds: [],
+          challengeIds: [],
+          entityId: null,
+          b1Sides: null,
+        };
+        // The G22 claim-flow truth must be read NOW (post-claim, pre-cascade):
+        // after the S9 cascade the re-keyed monster is correctly ERASED, so a
+        // post-exit read would fail the shipped G22 assertions for the wrong
+        // reason. Captured with the same text-table reader G22 always used.
+        s9.g22Tables = {
+          account: sqlTable(
+            dbUrl,
+            'SELECT identity, claimed_from, claimed_at_ms FROM account',
+            s9G22Raw,
+          ),
+          guestClaim: sqlTable(dbUrl, 'SELECT guest_identity, code FROM guest_claim', s9G22Raw),
+          monster: sqlTable(dbUrl, 'SELECT owner_identity FROM monster', s9G22Raw),
+        };
+        for (const stmt of buildSeedStatements(s9.refs.aHex, 501, Date.now())) sqlDml(stmt);
+        writeGo(1);
+        const evSeed = await waitEvent('S9-seed-ready', 240_000);
+        s9.refs.wildId = String(evSeed.data.wildBattleId);
+        s9.pre = takeS9Snapshot(entries, 'pre');
+        writeGo(2);
+        await waitEvent('S9-cancel-done', 420_000);
+        // export_bundle rows are created AFTER the go2 pre-snapshot (the export
+        // is S9-11), so its honest pre-cascade count is sampled HERE — after the
+        // export, before the cascade (the reaper fires 15 s after the REDELETE).
+        s9.pre.aCounts.export_bundle = {
+          owner_identity: cnt(
+            'SELECT COUNT(*) AS n FROM export_bundle WHERE owner_identity = ' + s9.refs.aHex,
+          ),
+        };
+        s9.censusCancel = cnt(
+          'SELECT COUNT(*) AS n FROM account_deletion_reaper_schedule WHERE account_identity = ' +
+            s9.refs.aHex,
+        );
+        writeGo(3);
+        await waitEvent('S9-redelete-done', 120_000);
+        s9.censusRedelete = cnt(
+          'SELECT COUNT(*) AS n FROM account_deletion_reaper_schedule WHERE account_identity = ' +
+            s9.refs.aHex,
+        );
+        writeGo(4);
+        await waitEvent('S9-cascade-done', 300_000);
+        s9.post = takeS9Snapshot(entries, 'post');
+        writeGo(5);
+      } catch (e) {
+        s9.error = e;
+        try {
+          driver.kill('SIGKILL');
+        } catch {
+          /* already gone */
+        }
+      }
+    })();
     const exitCode = await new Promise((resolve) => {
       const watchdog = setTimeout(() => {
         try {
@@ -2635,7 +3937,7 @@ async function runLivePhase() {
           /* already gone */
         }
         resolve('watchdog-timeout');
-      }, 240_000);
+      }, 480_000);
       driver.on('exit', (c) => {
         clearTimeout(watchdog);
         resolve(c);
@@ -2653,10 +3955,27 @@ async function runLivePhase() {
         /* not a milestone line */
       }
     }
+    // The S9 orchestration's own failure is the ROOT CAUSE when the driver
+    // stalls on a go-file — surface it before any milestone verdict can mask it.
+    await s9Orchestration;
+    if (s9.error) {
+      throw new Error(
+        'S9 orchestration failed: ' +
+          (s9.error.message || String(s9.error)) +
+          ' :: sql tail ' +
+          s9Sql.slice(-6).join(' | '),
+      );
+    }
     const milestones = checkMilestones(events, { issuer: stub.iss1 });
     if (!milestones.ok) {
+      const lastEvents = out
+        .split('\n')
+        .filter((l) => l.trim().startsWith('{'))
+        .slice(-4)
+        .join(' ~ ');
       throw new Error(
-        `driver milestones: ${milestones.reason} (exit ${exitCode}; stderr tail: ${err.slice(-400)})`,
+        `driver milestones: ${milestones.reason} (exit ${exitCode}; stderr tail: ${err.slice(-400)}; ` +
+          `last events: ${lastEvents.slice(-900)})`,
       );
     }
 
@@ -2665,17 +3984,12 @@ async function runLivePhase() {
     if (!acceptance.ok) throw new Error(acceptance.reason);
 
     // --- server truth ---
-    const rawSql = [];
+    const rawSql = s9G22Raw;
     const truth = checkSqlTruth(
-      {
-        account: sqlTable(
-          dbUrl,
-          'SELECT identity, claimed_from, claimed_at_ms FROM account',
-          rawSql,
-        ),
-        guestClaim: sqlTable(dbUrl, 'SELECT guest_identity, code FROM guest_claim', rawSql),
-        monster: sqlTable(dbUrl, 'SELECT owner_identity FROM monster', rawSql),
-      },
+      // Captured by the S9 orchestration at the presence-ready sync point —
+      // post-claim, pre-cascade — which is the moment G22's assertions are
+      // ABOUT. (The cascade later erases the re-keyed monster by design.)
+      s9.g22Tables,
       {
         a: events.find((e) => e.step === 'A-connect').data.identity,
         b: events.find((e) => e.step === 'B-connect').data.identity,
@@ -2685,11 +3999,62 @@ async function runLivePhase() {
     );
     if (!truth.ok) throw new Error(`server truth: ${truth.reason} :: raw ${rawSql.join(' | ')}`);
 
+    // ---- M22-S9 verdicts (ADR-0232) ----
+    const s9m = checkS9Milestones(events, exitCode);
+    if (!s9m.ok) throw new Error(s9m.reason + ' (stderr tail: ' + err.slice(-400) + ')');
+    if (s9.censusCancel !== 0) {
+      throw new Error(
+        '[s9/disarm] ' +
+          s9.censusCancel +
+          ' deletion schedule row(s) survived the cancel — disarm is a no-op (PRV1-3)',
+      );
+    }
+    if (s9.censusRedelete !== 1) {
+      throw new Error(
+        '[s9/rearm] expected exactly 1 deletion schedule row after redelete, found ' +
+          s9.censusRedelete,
+      );
+    }
+    const s9Entries = parseManifestTranscription(M22S9_MANIFEST_TRANSCRIPTION);
+    const exportAssembly = checkExportAssembly(s9m.dataOf('S9-export-chunks').chunks, {
+      exportableTables: s9Entries.filter((e) => e.exportable).map((e) => e.table),
+      chunkRows: E2E_CHUNK_ROWS,
+      sqlCounts: s9.pre.sqlCounts,
+    });
+    if (!exportAssembly.ok) throw new Error(exportAssembly.reason);
+    const cascadeTruth = checkCascadeTruth({
+      entries: s9Entries,
+      pre: s9.pre,
+      post: s9.post,
+      allowlist: S9_VACUITY_ALLOWLIST,
+      allowlistCap: S9_VACUITY_ALLOWLIST_CAP,
+      seededFloor: S9_SEEDED_FLOOR,
+      graceMs: E2E_GRACE_MS,
+    });
+    if (!cascadeTruth.ok) {
+      const joinForensics = s9Sql
+        .filter((l) => l.indexOf('deadline') !== -1 || l.indexOf('reaper_schedule') !== -1)
+        .join(' | ');
+      throw new Error(
+        cascadeTruth.reason +
+          ' :: join-forensics ' +
+          joinForensics.slice(-1200) +
+          ' :: sql tail ' +
+          s9Sql.slice(-4).join(' | '),
+      );
+    }
+    const s9Classified = s9Entries.filter((e) => e.policy !== 'NotOwned').length;
+
     return {
       ok: true,
       detail:
         `live flow green on issuer port ${issuerPort} / host port ${stdbPort} (tmp ${tmp}): ` +
-        `${milestones.reason}; ${truth.reason}; ${notes.join('; ')}`,
+        `${milestones.reason}; ${truth.reason}; ${s9m.reason}; ${exportAssembly.reason}; ` +
+        'S9-CASCADE-VERIFIED(classified=' +
+        s9Classified +
+        ' ' +
+        cascadeTruth.detail +
+        `); ${notes.join('; ')}`,
       ports: { issuerPort, stdbPort },
       tmp,
     };
@@ -2751,6 +4116,613 @@ export default async function () {
   // PHASE 0 — proof of teeth. Nothing below this block is trusted until every
   // pure decision function has been shown to reject a known-bad input.
   // =========================================================================
+
+  // --- M22-S9 teeth: every new pure decider must reject its known-bad input,
+  // --- by the RIGHT clause tag (coarse fixtures prove only the first assert).
+  {
+    const mustThrow = (id, fn, tag) => {
+      try {
+        fn();
+      } catch (e) {
+        const msg = String((e && e.message) || e);
+        if (tag && msg.indexOf(tag) === -1) {
+          return (
+            'S9 ' +
+            id +
+            ': threw the WRONG failure (' +
+            msg.slice(0, 140) +
+            '), expected tag ' +
+            tag
+          );
+        }
+        return null;
+      }
+      return 'S9 ' + id + ': did not throw on a known-bad input';
+    };
+    const mustFail = (id, res, tag) => {
+      if (res.ok !== false) return 'S9 ' + id + ': verdict was ok:true on a known-bad input';
+      if (String(res.reason).indexOf(tag) === -1) {
+        return (
+          'S9 ' +
+          id +
+          ': failed with the WRONG clause (' +
+          String(res.reason).slice(0, 160) +
+          '), expected ' +
+          tag
+        );
+      }
+      return null;
+    };
+    const clone = (v) => JSON.parse(JSON.stringify(v));
+    const bad = [];
+
+    // patchers
+    bad.push(
+      mustThrow(
+        'patch-missing-grace',
+        () => patchDeletionGrace('fn main() {}', 15000),
+        'patchDeletionGrace',
+      ),
+    );
+    bad.push(
+      mustThrow(
+        'patch-missing-chunk',
+        () => patchExportChunkRows('fn main() {}', 2),
+        'patchExportChunkRows',
+      ),
+    );
+    bad.push(
+      mustThrow(
+        'patch-decoy-dup',
+        () => patchDeletionGrace(GRACE_NEEDLE + '\n' + GRACE_NEEDLE, 15000),
+        'MORE THAN ONCE',
+      ),
+    );
+    bad.push(
+      mustThrow('patch-bad-ms', () => patchDeletionGrace(GRACE_NEEDLE, 0), 'positive integer'),
+    );
+    {
+      const patched = patchDeletionGrace('x\n' + GRACE_NEEDLE + '\ny', 15000);
+      if (patched.indexOf(GRACE_NEEDLE) !== -1 || patched.indexOf('= 15000;') === -1) {
+        bad.push('S9 patch-good: the grace patch did not swap the declaration value');
+      }
+      const patched2 = patchExportChunkRows('x\n' + CHUNK_NEEDLE + '\ny', 2);
+      if (patched2.indexOf(CHUNK_NEEDLE) !== -1 || patched2.indexOf('u32 = 2;') === -1) {
+        bad.push('S9 patch-good-chunk: the chunk patch did not swap the declaration value');
+      }
+    }
+
+    // transcription parser
+    {
+      const mini = 'aaa:Erase:owner:1|bbb:NotOwned::0|ccc:ViaJoin(aaa)::0';
+      const parsed = parseManifestTranscription(mini);
+      if (parsed.length !== 3 || parsed[0].cols[0] !== 'owner' || parsed[2].parent !== 'aaa') {
+        bad.push('S9 transcription-good: a well-formed mini transcription did not round-trip');
+      }
+      bad.push(
+        mustThrow(
+          'transcription-zero-cols',
+          () => parseManifestTranscription('aaa:Erase::1'),
+          '[s9/zero-owner-cols]',
+        ),
+      );
+      bad.push(
+        mustThrow(
+          'transcription-dup',
+          () => parseManifestTranscription('aaa:NotOwned::0|aaa:NotOwned::0'),
+          'duplicate',
+        ),
+      );
+      bad.push(
+        mustThrow(
+          'transcription-fields',
+          () => parseManifestTranscription('aaa:Erase:owner'),
+          '4 `:` fields',
+        ),
+      );
+      bad.push(
+        mustThrow(
+          'transcription-policy',
+          () => parseManifestTranscription('aaa:Nuke:owner:1'),
+          'unknown policy',
+        ),
+      );
+      bad.push(
+        mustThrow(
+          'transcription-orphan-parent',
+          () => parseManifestTranscription('aaa:Erase(bbb):owner:1'),
+          'non-ViaJoin',
+        ),
+      );
+    }
+    if (identityCellHex(['0xABCD']) !== 'abcd')
+      bad.push('S9 cell-identity: array cell did not decode');
+    if (
+      optI64Cell({ some: 3 }) !== 3 ||
+      optI64Cell({ none: [] }) !== null ||
+      optI64Cell([0, 9]) !== 9 ||
+      optI64Cell([1, []]) !== null
+    )
+      bad.push('S9 cell-opt: Option<i64> cells did not decode');
+    if (
+      enumTagCell({ pendingDeletion: [] }) !== 'pendingDeletion' ||
+      enumTagCell([1, []], ['active', 'pendingDeletion']) !== 'pendingDeletion'
+    )
+      bad.push('S9 cell-enum: sum cell did not decode');
+    if (
+      optIdentityHex({ none: [] }) !== null ||
+      optIdentityHex([0, ['0xAB']]) !== 'ab' ||
+      optIdentityHex([1, []]) !== null
+    )
+      bad.push('S9 cell-opt-identity: none did not decode to null');
+    bad.push(mustThrow('cell-enum-bad', () => enumTagCell({ a: 1, b: 2 }), '[s9/cell]'));
+    bad.push(mustThrow('count-empty', () => countFromRows([]), '[s9/count-shape]'));
+    bad.push(mustThrow('count-nan', () => countFromRows([{ n: 'x' }]), '[s9/count-shape]'));
+    if (countFromRows([{ n: 7 }]) !== 7) bad.push('S9 count-good: COUNT row did not decode');
+
+    // findS9Event
+    {
+      const stream =
+        'noise\n{"broken json\n{"step":"S9-x","ok":true,"data":{"v":1}}\n{"step":"S9-x","ok":false,"data":{}}\n{"trunc';
+      const ev = findS9Event(stream, 'S9-x');
+      if (!ev || ev.ok !== true || ev.data.v !== 1)
+        bad.push('S9 find-event: first well-formed match not returned');
+      if (findS9Event(stream, 'S9-absent') !== null)
+        bad.push('S9 find-event-absent: invented an event');
+    }
+
+    // buildSeedStatements
+    {
+      const hex = '0x' + 'ab'.repeat(32);
+      const stmts = buildSeedStatements(hex, 501, 1_700_000_000_000);
+      if (stmts.length !== 19)
+        bad.push('S9 seed-count: expected 19 statements, got ' + stmts.length);
+      if (stmts.some((st) => st.indexOf(hex) === -1))
+        bad.push('S9 seed-identity: a seed statement lacks the subject identity');
+      const playtestRows =
+        stmts
+          .slice(8)
+          .join(' ')
+          .split('(0, ' + hex).length - 1;
+      if (playtestRows !== 501)
+        bad.push('S9 seed-rows: expected 501 playtest rows, counted ' + playtestRows);
+      bad.push(
+        mustThrow(
+          'seed-too-few',
+          () => buildSeedStatements(hex, 500, 1_700_000_000_000),
+          'exceed 500',
+        ),
+      );
+      bad.push(
+        mustThrow(
+          'seed-bad-hex',
+          () => buildSeedStatements('0xzz', 501, 1_700_000_000_000),
+          'lowercase hex',
+        ),
+      );
+      bad.push(mustThrow('seed-epoch-base', () => buildSeedStatements(hex, 501, 1000), 'epoch-ms'));
+    }
+
+    // checkS9Milestones
+    {
+      const good = [{ step: 'A-connect', ok: true, data: {} }].concat(
+        S9_MILESTONES.map((step) => ({ step, ok: true, data: {} })),
+      );
+      const g = checkS9Milestones(good, 0);
+      if (g.ok !== true)
+        bad.push('S9 milestones-good: a complete roster was rejected: ' + g.reason);
+      bad.push(
+        mustFail(
+          'milestones-okfalse',
+          checkS9Milestones(
+            good.map((e, i) => (i === 3 ? { ...e, ok: false } : e)),
+            0,
+          ),
+          '[s9/milestones]',
+        ),
+      );
+      bad.push(
+        mustFail('milestones-missing', checkS9Milestones(good.slice(0, -1), 0), '[s9/milestones]'),
+      );
+      {
+        const swapped = clone(good);
+        const t = swapped[4];
+        swapped[4] = swapped[5];
+        swapped[5] = t;
+        bad.push(mustFail('milestones-order', checkS9Milestones(swapped, 0), '[s9/milestones]'));
+      }
+      bad.push(
+        mustFail(
+          'milestones-dup',
+          checkS9Milestones(good.concat([{ step: 'S9-done', ok: true, data: {} }]), 0),
+          'duplicate',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'milestones-unknown',
+          checkS9Milestones(good.concat([{ step: 'S9-extra', ok: true, data: {} }]), 0),
+          '[s9/milestones]',
+        ),
+      );
+      bad.push(mustFail('milestones-exit', checkS9Milestones(good, 1), '[s9/driver-exit]'));
+    }
+
+    // checkExportAssembly
+    {
+      const goodChunks = [
+        { t: 'ta', i: 0, n: 3, req: '9', rows: 2, seedField: false },
+        { t: 'ta', i: 1, n: 3, req: '9', rows: 1, seedField: false },
+        { t: 'tb', i: 2, n: 3, req: '9', rows: 1, seedField: false },
+      ];
+      const exp = { exportableTables: ['ta', 'tb'], chunkRows: 2, sqlCounts: { ta: 3, tb: 1 } };
+      const g = checkExportAssembly(goodChunks, exp);
+      if (g.ok !== true) bad.push('S9 export-good: a correct assembly was rejected: ' + g.reason);
+      const mut = (fn) => {
+        const c = clone(goodChunks);
+        fn(c);
+        return c;
+      };
+      bad.push(
+        mustFail(
+          'export-two-reqs',
+          checkExportAssembly(
+            mut((c) => (c[1].req = '8')),
+            exp,
+          ),
+          '[s9/export-request-id]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'export-gap',
+          checkExportAssembly(
+            mut((c) => (c[1].i = 5)),
+            exp,
+          ),
+          '[s9/export-contiguity]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'export-total',
+          checkExportAssembly(
+            mut((c) => (c[1].n = 4)),
+            exp,
+          ),
+          '[s9/export-total]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'export-parse',
+          checkExportAssembly(
+            mut((c) => (c[1].rows = -1)),
+            exp,
+          ),
+          '[s9/export-parse]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'export-seed',
+          checkExportAssembly(
+            mut((c) => (c[2].seedField = true)),
+            exp,
+          ),
+          '[s9/export-seed-leak]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'export-missing-table',
+          checkExportAssembly(
+            [
+              { t: 'ta', i: 0, n: 2, req: '9', rows: 2, seedField: false },
+              { t: 'ta', i: 1, n: 2, req: '9', rows: 1, seedField: false },
+            ],
+            exp,
+          ),
+          '[s9/export-missing-table]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'export-extra-table',
+          checkExportAssembly(
+            mut((c) => (c[2].t = 'tc')),
+            exp,
+          ),
+          '[s9/export-',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'export-underfull',
+          checkExportAssembly(
+            mut((c) => {
+              c[0].rows = 1;
+              c[1].rows = 2;
+            }),
+            exp,
+          ),
+          '[s9/export-chunk-fill]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'export-reconcile',
+          checkExportAssembly(goodChunks, { ...exp, sqlCounts: { ta: 4, tb: 1 } }),
+          '[s9/export-reconcile]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'export-no-split',
+          checkExportAssembly(
+            [
+              { t: 'ta', i: 0, n: 2, req: '9', rows: 1, seedField: false },
+              { t: 'tb', i: 1, n: 2, req: '9', rows: 1, seedField: false },
+            ],
+            { exportableTables: ['ta', 'tb'], chunkRows: 2, sqlCounts: { ta: 1, tb: 1 } },
+          ),
+          '[s9/export-no-split]',
+        ),
+      );
+    }
+
+    // checkCascadeTruth — the 8 registered cheat shapes plus its own clauses
+    {
+      const mkFix = () => {
+        const entries = [];
+        for (let i = 1; i <= 13; i++)
+          entries.push({
+            table: 'e' + i,
+            policy: 'Erase',
+            parent: null,
+            cols: ['owner'],
+            exportable: true,
+          });
+        for (const t of ['account', 'player', 'profile', 'battle'])
+          entries.push({
+            table: t,
+            policy: 'Anonymize',
+            parent: null,
+            cols: ['identity'],
+            exportable: true,
+          });
+        for (const t of ['v1', 'v2', 'v3', 'v4', 'v5'])
+          entries.push({ table: t, policy: 'ViaJoin', parent: 'e1', cols: [], exportable: false });
+        for (let i = 1; i <= 18; i++)
+          entries.push({
+            table: 'n' + i,
+            policy: 'NotOwned',
+            parent: null,
+            cols: [],
+            exportable: false,
+          });
+        const aPre = {};
+        const aPost = {};
+        for (let i = 1; i <= 13; i++) {
+          aPre['e' + i] = { owner: 40 };
+          aPost['e' + i] = { owner: 0 };
+        }
+        return {
+          entries,
+          pre: {
+            aCounts: aPre,
+            viaJoin: { v1: 1, v2: 1, v3: 0, v4: 1, v5: 1 },
+            dCounts: { monster: 2, player: 1 },
+            world: { species: 5, zones: 2, config: 1 },
+          },
+          post: {
+            aCounts: aPost,
+            viaJoin: { v1: 0, v2: 0, v3: 0, v4: 0, v5: 0 },
+            dCounts: { monster: 2, player: 1 },
+            world: { species: 5, zones: 2, config: 1 },
+            account: {
+              present: true,
+              authIssuer: TOMBSTONE_AUTH_ISSUER_E2E,
+              status: 'pendingDeletion',
+              requested: 1_700_000_000_000,
+              terminal: 1_700_000_000_000 + E2E_GRACE_MS,
+              claimRetained: true,
+            },
+            player: { present: true, name: TOMBSTONE_DISPLAY_NAME_E2E },
+            profile: { present: true, name: TOMBSTONE_DISPLAY_NAME_E2E },
+            battle1: { present: true, aSideTombstoned: true, dSideIntact: true },
+            dAccountActive: true,
+          },
+          allowlist: [
+            ['v3', 'fixture: this join-only table is legitimately empty in the synthetic run'],
+          ],
+          allowlistCap: 3,
+          seededFloor: 520,
+          graceMs: E2E_GRACE_MS,
+        };
+      };
+      const g = checkCascadeTruth(mkFix());
+      if (g.ok !== true) bad.push('S9 truth-good: a correct cascade was rejected: ' + g.reason);
+      else if (g.vacuous.join(',') !== 'v3')
+        bad.push('S9 truth-good: vacuous list wrong: ' + g.vacuous.join(','));
+      const mutT = (fn) => {
+        const f = mkFix();
+        fn(f);
+        return checkCascadeTruth(f);
+      };
+      bad.push(
+        mustFail(
+          'truth-census',
+          mutT((f) => f.entries.pop()),
+          '[s9/census]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-survivor',
+          mutT((f) => (f.post.aCounts.e1.owner = 3)),
+          '[s9/erase-survivor]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-erase-nothing-stamp-terminal',
+          mutT((f) => {
+            f.post.aCounts = clone(f.pre.aCounts);
+          }),
+          '[s9/erase-survivor]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-unattempted',
+          mutT((f) => delete f.post.aCounts.e2),
+          '[s9/unattempted]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-viajoin',
+          mutT((f) => (f.post.viaJoin.v1 = 1)),
+          '[s9/viajoin-live]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-account-gone',
+          mutT((f) => (f.post.account = { present: false })),
+          '[s9/account-tombstone]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-issuer',
+          mutT((f) => (f.post.account.authIssuer = 'x')),
+          '[s9/account-tombstone]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-provenance',
+          mutT((f) => (f.post.account.claimRetained = false)),
+          '[s9/account-provenance]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-grace',
+          mutT((f) => (f.post.account.terminal = f.post.account.requested + E2E_GRACE_MS - 1)),
+          '[s9/grace-honored]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-player',
+          mutT((f) => (f.post.player = { present: false })),
+          '[s9/player-tombstone]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-battle-over-anon',
+          mutT((f) => (f.post.battle1.dSideIntact = false)),
+          '[s9/battle-anonymize-side-b]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-battle-gone',
+          mutT((f) => (f.post.battle1 = { present: false })),
+          '[s9/battle-anonymize-gone]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-battle-side-a-unswapped',
+          mutT((f) => (f.post.battle1.aSideTombstoned = false)),
+          '[s9/battle-anonymize-side-a]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-erase-everything',
+          mutT((f) => (f.post.world.species = 0)),
+          '[s9/world-nuked]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-bystander',
+          mutT((f) => (f.post.dCounts.monster = 0)),
+          '[s9/bystander]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-vacuous-unlisted',
+          mutT((f) => {
+            f.pre.aCounts.e5.owner = 0;
+            f.pre.aCounts.e6.owner = 80;
+          }),
+          '[s9/vacuous]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-floor',
+          mutT((f) => {
+            for (let i = 1; i <= 13; i++) f.pre.aCounts['e' + i].owner = 20;
+          }),
+          '[s9/seed-floor]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-allowlist-cap',
+          mutT((f) => {
+            f.allowlist = [
+              ['v3', 'reason long enough one'],
+              ['x1', 'reason long enough two'],
+              ['x2', 'reason long enough three'],
+              ['x3', 'reason long enough four'],
+            ];
+          }),
+          '[s9/allowlist-cap]',
+        ),
+      );
+      bad.push(
+        mustFail(
+          'truth-anonymize-unhandled',
+          mutT((f) => {
+            f.entries[39] = {
+              table: 'n18',
+              policy: 'Anonymize',
+              parent: null,
+              cols: ['x'],
+              exportable: false,
+            };
+          }),
+          '[s9/anonymize-unhandled]',
+        ),
+      );
+    }
+
+    // The shipped allowlist itself must clear the cap + reason floor, and the
+    // roster must stay count-pinned so a dropped driver step cannot vanish.
+    if (S9_VACUITY_ALLOWLIST.length > S9_VACUITY_ALLOWLIST_CAP) {
+      bad.push('S9 allowlist: the SHIPPED allowlist exceeds its own cap');
+    }
+    if (S9_MILESTONES.length !== 25) {
+      bad.push(
+        'S9 roster: expected 25 S9 milestones, found ' +
+          S9_MILESTONES.length +
+          ' — a dropped step silently unrequires itself',
+      );
+    }
+
+    const firstBad = bad.find((x) => x !== null && x !== undefined);
+    if (firstBad) return teeth('S9', firstBad);
+  }
 
   // --- N4: the patchers must throw rather than silently no-op ---
   {

@@ -498,6 +498,32 @@ session could otherwise un-tombstone itself). `join_game`'s equivalent
 exposure (movement.rs, out of touches) rides the S6 [DEL-06] enforcement
 residual.
 
+**m22-s9 (ADR-0232) — M22 CLOSED.** Post-integration verification, the
+milestone's real DoD (§7.3): `account-e2e.eval.mjs`'s live phase now patches
+`DELETION_GRACE_MS_DEFAULT` (7 d → 15 s) and `EXPORT_CHUNK_ROWS` (500 → 2) in
+its tmpdir module copy (needle-throwing sole-occurrence patchers — the shipped
+tree keeps the bare literals) so the REAL one-shot reaper fires the REAL §4.4
+cascade in CI against a fully-loaded account (terminal PvP battle on the
+opponent axis, open currency trade, pending challenge, live wild battle,
+>500 seeded `playtest_event` rows via owner SQL DML, wallet/quest/dialogue
+fixtures), then proves every `DATA_LIFECYCLE_MANIFEST` classification live —
+Erase per identity column, Anonymize tombstones (incl. claim-provenance
+retention and the opponent-side battle swap), ViaJoin unreachability via
+pre-pinned parent keys, NotOwned survival — with a bystander account, a
+seeded-rows floor, a printed capped vacuity allowlist, PRV1-3 disarm/re-arm
+schedule censuses, the PRV1-4 distinct terminal error verbatim over the SDK,
+and request-wide multi-chunk export assembly reconciled row-for-row against
+SQL. Cross-slice contracts are pinned compile-level in `accounts_tests.rs`
+(`m22s9_*`: fn-pointer signatures for `resolve_all_live_interactions` and
+`should_reject_for_deletion`, an exhaustive `ExportBundle` destructure,
+committed-bindings surface parity, and byte-derivation of the e2e's manifest
+transcription + expected constants from source). Measured finding (ADR-0232
+F1): the cascade's 6a wild-resolve GCs the deleting player's terminal battles
+per ADR-0077 keep-latest — erasure, stronger than anonymize — so "terminal
+rows persist" is retention-scoped, and the e2e seeds accordingly. HTTP reducer
+calls are banned in the rig (each is an ephemeral connection whose disconnect
+resolves the very interactions being seeded).
+
 ## Server-module domain modules (M8.9 — ADR-0056)
 
 The `server-module` crate is split by domain into cohesive submodules of the **same**

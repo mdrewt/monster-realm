@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 197 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 198 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -206,6 +206,7 @@ Generated from 197 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0229](./0229-deletion-completeness-from-derive-metadata.md) | S6 deletion completeness: prove it from the derive metadata, in-crate, not from a source scan | Accepted | ci-gates, security-authz | m22-s6 (M22 §7.2 S6 — PRV1-15, PRV1-16) | S6 ships five in-crate `#[test]`s in `accounts_tests.rs` — not new eval scanner scripts, not a `server-module/tests/` target (the manifest is crate-private); the Identity-column half reads SpacetimeDB's own derive metadata, not source text. |
 | [0230](./0230-deletion-runbook-gates-with-declaration-shaped-cites.md) | S7 deletion runbook gates: exact-sentence pins + declaration-shaped citations (G24, PRV1-17/18/20) | Accepted | tooling-docs, ci-gates, security-authz | m22-s7 (M22 §7.2 S7 — PRV1-17, PRV1-18, PRV1-20) | G24 enforces six §9 deletion clauses via exact-sentence pins and declaration-shaped cites. Phantom `DELETION_GRACE_MS` vs real `DELETION_GRACE_MS_DEFAULT` split is intentional. PRV1-17/20 verified; enforcement deferred to future slice. |
 | [0231](./0231-client-privacy-cores-request-wide-chunk-assembly.md) | S8 client privacy cores: request-wide export assembly + a terminal-first deletion lattice | Accepted | client-ui, security-authz | m22-s8 (M22 §7.2 S8 — the client half of PRV1-1/3/4/11/12/13) | Ship S8 as two pure cores + the terminal_at_ms data path; defer the overlay and the export transport to m22-s8b. Chunk fields are read request-wide, verbatim from the producer; exportable filtering stays server-side. |
+| [0232](./0232-m22-s9-post-integration-verification-injected-clock-e2e.md) | M22 S9 post-integration verification: patched-constant injected clock in the e2e's module copy, WS-only driver, manifest-derived cascade truth | Accepted | security-authz, ci-gates | m22-s9 (M22 §7.3 — post-integration verification, the milestone's real DoD) | The S9 e2e patches the grace and chunk constants in its tmpdir module copy so the real reaper fires in CI; compile-level m22s9 contract pins land in accounts_tests.rs; HTTP reducer calls are banned in the rig. |
 
 ## Harness design corpus (H- namespace)
 
@@ -573,6 +574,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0228](./0228-s3b-deletion-cascade-delegated-erase-rearm.md) — m22-s3b — 0228 — S3b: the §4.4 deletion cascade via per-module erase/anonymize delegation, one-shot re-arm + sweep, and PRV1-8(b) fresh re-registration (Accepted)
 - [0229](./0229-deletion-completeness-from-derive-metadata.md) — m22-s6 (M22 §7.2 S6 — PRV1-15, PRV1-16) — S6 deletion completeness: prove it from the derive metadata, in-crate, not from a source scan (Accepted)
 - [0230](./0230-deletion-runbook-gates-with-declaration-shaped-cites.md) — m22-s7 (M22 §7.2 S7 — PRV1-17, PRV1-18, PRV1-20) — S7 deletion runbook gates: exact-sentence pins + declaration-shaped citations (G24, PRV1-17/18/20) (Accepted)
+- [0232](./0232-m22-s9-post-integration-verification-injected-clock-e2e.md) — m22-s9 (M22 §7.3 — post-integration verification, the milestone's real DoD) — M22 S9 post-integration verification: patched-constant injected clock in the e2e's module copy, WS-only driver, manifest-derived cascade truth (Accepted)
 
 ### tooling-docs
 
@@ -671,6 +673,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0229](./0229-deletion-completeness-from-derive-metadata.md) — m22-s6 (M22 §7.2 S6 — PRV1-15, PRV1-16) — S6 deletion completeness: prove it from the derive metadata, in-crate, not from a source scan (Accepted)
 - [0230](./0230-deletion-runbook-gates-with-declaration-shaped-cites.md) — m22-s7 (M22 §7.2 S7 — PRV1-17, PRV1-18, PRV1-20) — S7 deletion runbook gates: exact-sentence pins + declaration-shaped citations (G24, PRV1-17/18/20) (Accepted)
 - [0231](./0231-client-privacy-cores-request-wide-chunk-assembly.md) — m22-s8 (M22 §7.2 S8 — the client half of PRV1-1/3/4/11/12/13) — S8 client privacy cores: request-wide export assembly + a terminal-first deletion lattice (Accepted)
+- [0232](./0232-m22-s9-post-integration-verification-injected-clock-e2e.md) — m22-s9 (M22 §7.3 — post-integration verification, the milestone's real DoD) — M22 S9 post-integration verification: patched-constant injected clock in the e2e's module copy, WS-only driver, manifest-derived cascade truth (Accepted)
 
 ### economy-quests
 
