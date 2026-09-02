@@ -2915,3 +2915,377 @@ describe('BattleView rb-10 RM3-HP-FILL: the HP fill is stylesheet-reachable and 
     document.body.removeChild(parent);
   });
 });
+
+// =============================================================================
+// m23-s8 — the HP-bar severity palette must not encode severity by HUE ALONE
+// (M23 §2.6 colour independence; escalation §8.1 colour-blind-safe default
+// palette).
+//
+// SOURCE OF TRUTH: specs/monster-realm-v2/M23-accessibility.spec.md §2.6, §8.1.
+//
+// RED REASON. `battleView.ts:267` ships
+// `pct > 50 ? '#4a4' : pct > 20 ? '#aa4' : '#a44'`. Measured against the bar
+// track (`background:#333`, `battleView.ts:255`) and against each other:
+//
+//   band      hex     WCAG L    vs #333 track   luminance order
+//   healthy   #4a4    0.30396   4.26 : 1        (mid)
+//   wounded   #aa4    0.37713   5.14 : 1        (lightest)
+//   critical  #a44    0.13098   2.18 : 1  <-- FAILS P1 (below 3:1)
+//
+// P1 is red on the critical fill (2.18 against the required 3.0). P2 is red on
+// the ordering: the CRITICAL band is the DARKEST of the three, so a viewer who
+// cannot separate the three hues sees the bar get lighter and then darker
+// again and has no monotone lightness cue for "how bad is this".
+//
+// TWO CLAUSES, BOTH NECESSARY:
+//   P1 alone is satisfiable WITHOUT touching the trio, by darkening the TRACK
+//   (measured: #333 -> #111 lifts the worst fill from 2.18 to 3.25). That is
+//   why P1 reads the track FROM THE DOM rather than from a literal, and why P2
+//   — a fills-only relation the track cannot influence — is the clause that
+//   actually forces the palette.
+//
+// FIXTURE PERCENTAGES ARE NOT ARBITRARY. The ternary boundaries at
+// battleView.ts:267 are `> 50` and `> 20`. A 100/60/30 fixture yields
+// healthy/healthy/wounded and a 50/20/0 fixture yields wounded/critical/
+// critical — both sample only two of the three bands and both false-RED. 95 /
+// 35 / 5 sits strictly inside each band.
+// =============================================================================
+
+/** Strictly inside the `> 50` band. */
+const S8_HEALTHY_PCT = 95;
+/** Strictly inside the `> 20 && <= 50` band. */
+const S8_WOUNDED_PCT = 35;
+/** Strictly inside the `<= 20` band. */
+const S8_CRITICAL_PCT = 5;
+/** Severity order, healthy first — the order every array below is indexed in. */
+const S8_SEVERITY_PCTS = [S8_HEALTHY_PCT, S8_WOUNDED_PCT, S8_CRITICAL_PCT] as const;
+const S8_BAND_NAMES = ['healthy', 'wounded', 'critical'] as const;
+/**
+ * The OPPONENT card's percentage on every render below. It must differ from all three severity
+ * fixtures: the player's fill is identified by its rendered width, so an opponent sharing a
+ * percentage would make that lookup ambiguous and the walk would assert about the wrong node.
+ */
+const S8_OPPONENT_PCT = 70;
+/** Every unordered pair of severity bands, as index pairs into the arrays above. */
+const S8_BAND_PAIRS = [
+  [0, 1],
+  [1, 2],
+  [0, 2],
+] as const;
+/** A short status label, so the badge case renders the conditional 4th child of the card. */
+const S8_BADGE_TEXT = 'PSN';
+
+/** A bare `#rgb` / `#rrggbb` literal and NOTHING else. See `s8Rgb` for why nothing else. */
+const S8_HEX_ONLY = /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+
+/**
+ * Parse an inline colour, REFUSING anything that is not a bare hex literal.
+ *
+ * Refusing rather than defaulting is the load-bearing decision here — four fail-open shapes were
+ * MEASURED in happy-dom, and every one of them is closed by this throw:
+ *   1. A DELETED declaration reads back as the empty string. A reader that treats '' as black
+ *      turns the one currently-failing fill from 2.18 into 3.62 and the gate green — the gate
+ *      would then be satisfied by removing the colour entirely.
+ *   2. A DETACHED subtree reads '' for BOTH operands, so fill and track become the same value
+ *      and every ratio collapses to 1.0 (or, with a default, to a passing number).
+ *   3. `rgba(0,255,0,0.02)` parses alpha-blind to a 9.21:1 ratio while rendering invisible.
+ *      Any value carrying alpha is refused outright.
+ *   4. A named colour ('firebrick'), a keyword ('initial') or a gradient are not measurable by
+ *      this oracle at all; reporting them as anything other than a refusal is a false GREEN.
+ * `NaN` is never produced, which matters because `NaN < 3` is `false` and would silently satisfy
+ * any negated assertion.
+ */
+function s8Rgb(raw: string, where: string): readonly [number, number, number] {
+  const matched = S8_HEX_ONLY.exec(raw.trim());
+  if (matched === null) {
+    throw new Error(
+      `m23s8 COLOUR REFUSED (${where}): the DOM returned ${JSON.stringify(raw)}. Only a bare ` +
+        '#rgb / #rrggbb literal is admissible, and this reader never defaults and never falls ' +
+        'back. An empty value defaulted to black lifts the worst shipped fill from 2.18 to ' +
+        '3.62 and passes this gate by DELETING the colour; an alpha-bearing value parses ' +
+        'alpha-blind to 9.21 while rendering invisible',
+    );
+  }
+  const body = matched[1]!;
+  const wide = body.length === 6;
+  const channel = (i: number): number => {
+    const part = wide ? body.slice(i * 2, i * 2 + 2) : body.charAt(i).repeat(2);
+    return Number.parseInt(part, 16);
+  };
+  return [channel(0), channel(1), channel(2)] as const;
+}
+
+/** WCAG 2.x sRGB channel linearisation. */
+function s8ChannelLuminance(value: number): number {
+  const c = value / 255;
+  return c <= 0.03928 ? c / 12.92 : ((c + 0.055) / 1.055) ** 2.4;
+}
+
+/** WCAG 2.x relative luminance of a bare hex colour. */
+function s8Luminance(raw: string, where: string): number {
+  const [r, g, b] = s8Rgb(raw, where);
+  const lum =
+    0.2126 * s8ChannelLuminance(r) +
+    0.7152 * s8ChannelLuminance(g) +
+    0.0722 * s8ChannelLuminance(b);
+  if (!Number.isFinite(lum)) {
+    throw new Error(`m23s8 LUMINANCE (${where}): ${JSON.stringify(raw)} produced a non-finite L`);
+  }
+  return lum;
+}
+
+/** WCAG 2.x contrast ratio between two relative luminances, order-independent. */
+function s8Contrast(a: number, b: number): number {
+  return (Math.max(a, b) + 0.05) / (Math.min(a, b) + 0.05);
+}
+
+/**
+ * Read ONE inline colour off an element, with its own named non-emptiness failure BEFORE any
+ * arithmetic happens. The separate assertion exists so a detached-subtree or deleted-declaration
+ * failure reports which element was empty rather than surfacing as an opaque parse refusal.
+ */
+function s8ReadColour(el: HTMLElement, which: 'background' | 'color', where: string): string {
+  const raw = which === 'background' ? el.style.background : el.style.color;
+  expect(
+    raw.length,
+    `m23s8 COLOUR-PRESENT (${where}): the inline ${which} declaration read back EMPTY. Both ` +
+      'operands of a contrast ratio must come from a LIVE, attached element — an empty read is ' +
+      'the fail-open shape this gate exists to refuse, not a colour to be guessed at',
+  ).toBeGreaterThan(0);
+  return raw;
+}
+
+/** A VM whose player card sits at `playerPercent` and whose opponent card never shares it. */
+function s8VM(playerPercent: number, playerStatus: string | null): BattleViewModel {
+  const base = makeRecruitVM();
+  return {
+    ...base,
+    opponentCard: { ...base.opponentCard, hpPercent: S8_OPPONENT_PCT },
+    playerCard: { ...base.playerCard, hpPercent: playerPercent, status: playerStatus },
+  };
+}
+
+interface S8Reading {
+  readonly fillHex: string;
+  readonly trackHex: string;
+  readonly cardEl: HTMLElement;
+}
+
+/**
+ * Render one severity band and read the player card's fill colour, its TRACK colour, and the
+ * card element — every step fail-loud with a message naming the step that moved.
+ *
+ * This is a DELIBERATELY SEPARATE walk from the rb-10 helper above, which hard-asserts that a
+ * card holds exactly three children because its VM sets `status: null`. The badge case below
+ * renders a status-bearing card (four children) and would false-RED through that helper.
+ */
+function s8RenderAndRead(
+  parent: HTMLElement,
+  view: BattleView,
+  playerPercent: number,
+  playerStatus: string | null,
+): S8Reading {
+  view.refresh(s8VM(playerPercent, playerStatus));
+
+  const fills = Array.from(parent.querySelectorAll('.hp-fill')) as HTMLElement[];
+  expect(
+    fills.length,
+    'm23s8 WALK: exactly two HP-bar fill elements must render, one per monster card. A ' +
+      'different count means this walk is reading some other element, and every colour ' +
+      'assertion made on it would be about the wrong node',
+  ).toBe(2);
+
+  const matched = fills.filter((el) => el.style.width === `${playerPercent}%`);
+  expect(
+    matched.length,
+    `m23s8 WALK: exactly one fill must be sized ${playerPercent}% — the player card. The ` +
+      'opponent card is pinned to a different percentage so this lookup is unambiguous; zero ' +
+      'matches means the fill is no longer sized from the view model at all',
+  ).toBe(1);
+
+  const fillEl = matched[0]!;
+  expect(
+    fillEl.isConnected,
+    'm23s8 WALK: the fill must be attached to the document. A detached subtree reads an EMPTY ' +
+      'string for every inline colour, which would make both operands of the ratio identical',
+  ).toBe(true);
+
+  const trackEl = fillEl.parentElement;
+  expect(trackEl, 'm23s8 WALK: the fill must sit inside a bar-track element').not.toBeNull();
+  expect(
+    trackEl!.children.length,
+    'm23s8 WALK: the bar track must hold EXACTLY ONE child, the fill. A sibling would mean the ' +
+      'element whose background is read here is not the surface the fill is drawn against',
+  ).toBe(1);
+
+  const cardEl = trackEl!.parentElement;
+  expect(cardEl, 'm23s8 WALK: the bar track must sit inside a card').not.toBeNull();
+
+  return {
+    fillHex: s8ReadColour(fillEl, 'background', `${playerPercent}% fill`),
+    trackHex: s8ReadColour(trackEl!, 'background', `${playerPercent}% bar track`),
+    cardEl: cardEl!,
+  };
+}
+
+describe('BattleView m23-s8: colour-independent HP severity palette (M23 §2.6, §8.1)', () => {
+  // Scoped to this describe, like the ux4 and rb-10 blocks above: the per-case removeChild is
+  // skipped when an assertion throws, which would otherwise leak the overlay into the next case.
+  afterEach(() => {
+    document.body.replaceChildren();
+  });
+
+  it('m23s8 palette P1 every fill reaches 3 to 1 against the track', () => {
+    // WRONG IMPLEMENTATIONS KILLED:
+    //  (1) the SHIPPED trio — #a44 on #333 is 2.18:1, so the critical band, the ONE state a
+    //      player must never miss, is the least visible of the three.
+    //  (2) any later edit that satisfies this clause by DARKENING THE TRACK rather than fixing
+    //      the fills (measured: #333 -> #111 takes the worst fill from 2.18 to 3.25). The track
+    //      is read from the DOM here, and the P2 case below is a fills-only relation the track
+    //      cannot influence at all.
+    //  (3) a fill whose declaration was simply deleted: `s8Rgb` refuses the empty read rather
+    //      than defaulting it to black, which would otherwise score 3.62 and pass.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+    const view = new BattleView(parent, makeCallbacks());
+
+    const readings = S8_SEVERITY_PCTS.map((pct) => s8RenderAndRead(parent, view, pct, null));
+    expect(
+      readings,
+      'm23s8 P1 ANCHOR: all three severity bands must have been sampled — a shorter list makes ' +
+        'the per-band loop below vacuous for the bands it never reached',
+    ).toHaveLength(3);
+
+    const tracks = readings.map((r) => r.trackHex);
+    expect(
+      new Set(tracks).size,
+      'm23s8 P1 TRACK: every card must render the SAME bar-track colour, read ' +
+        `${JSON.stringify(tracks)}. Three different tracks would mean each fill is being ` +
+        'measured against a surface chosen to flatter it',
+    ).toBe(1);
+
+    for (let i = 0; i < readings.length; i += 1) {
+      const r = readings[i]!;
+      const band = S8_BAND_NAMES[i]!;
+      const trackL = s8Luminance(r.trackHex, `${band} bar track`);
+      const fillL = s8Luminance(r.fillHex, `${band} fill`);
+      expect(
+        s8Contrast(fillL, trackL),
+        `m23s8 P1 (${band}: fill ${r.fillHex} on track ${r.trackHex}): the fill must reach ` +
+          '3:1 against the track it is drawn on. Below that the bar carries no reliable ' +
+          'boundary at all for a low-vision player, so "how much HP is left" stops being ' +
+          'readable independently of hue. Asserted POSITIVELY on purpose: a negated form ' +
+          '(ratio < 3 is false) is satisfied by NaN, and NaN is exactly what an unparseable ' +
+          'colour would produce',
+      ).toBeGreaterThanOrEqual(3);
+    }
+
+    document.body.removeChild(parent);
+  });
+
+  it('m23s8 palette P2 luminances are strictly monotone with severity', () => {
+    // THE CLAUSE THAT ACTUALLY FORCES THE PALETTE. P1 is a fill-vs-track relation and can be
+    // satisfied by editing the track; this one is a fill-vs-fill relation and cannot.
+    //
+    // WRONG IMPLEMENTATIONS KILLED:
+    //  (1) the SHIPPED trio — L(healthy)=0.304, L(wounded)=0.377, L(critical)=0.131. The
+    //      critical band is DARKER than both others, so lightness does not track severity and a
+    //      viewer who cannot separate the hues has no ordering cue whatsoever.
+    //  (2) a trio that is monotone but barely so (e.g. three near-identical mid-greys): every
+    //      adjacent pair must additionally reach 1.5:1.
+    //  (3) any collapse of the three bands onto fewer distinct colours — caught by the
+    //      distinctness anchor BEFORE the pairwise loop, because a `new Set` dedup or a walk
+    //      that silently found nothing leaves that loop iterating over a chain of length < 2,
+    //      where "strictly increasing" is vacuously true.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+    const view = new BattleView(parent, makeCallbacks());
+
+    const colors = S8_SEVERITY_PCTS.map((pct) => s8RenderAndRead(parent, view, pct, null).fillHex);
+
+    // ANTI-VACUITY ANCHORS — both BEFORE any pairwise assertion.
+    expect(
+      colors,
+      'm23s8 P2 ANCHOR: three fill colours must have been sampled. Below n=2 every ordering ' +
+        'and every pairwise ratio below is satisfied by an empty iteration',
+    ).toHaveLength(3);
+    expect(
+      new Set(colors).size,
+      'm23s8 P2 ANCHOR: the three severity bands must render three DISTINCT colours, read ' +
+        `${JSON.stringify(colors)}. One colour repeated across bands makes the ordering ` +
+        'assertions below trivially satisfiable AND leaves severity encoded by nothing at all',
+    ).toBe(3);
+
+    const lums = colors.map((hex, i) => s8Luminance(hex, `${S8_BAND_NAMES[i]!} fill`));
+
+    expect(
+      lums[1]!,
+      `m23s8 P2 ORDER: the wounded fill (${colors[1]}, L=${lums[1]}) must be LIGHTER than the ` +
+        `healthy fill (${colors[0]}, L=${lums[0]}). Lightness is the channel that survives ` +
+        'every form of colour vision deficiency, so it — not hue — is what must carry severity',
+    ).toBeGreaterThan(lums[0]!);
+    expect(
+      lums[2]!,
+      `m23s8 P2 ORDER: the critical fill (${colors[2]}, L=${lums[2]}) must be LIGHTER than the ` +
+        `wounded fill (${colors[1]}, L=${lums[1]}). The shipped trio inverts here: its critical ` +
+        'band is the DARKEST of the three, so the bar gets lighter and then darker again as ' +
+        'the monster gets closer to fainting',
+    ).toBeGreaterThan(lums[1]!);
+
+    for (const [i, j] of S8_BAND_PAIRS) {
+      expect(
+        s8Contrast(lums[i]!, lums[j]!),
+        `m23s8 P2 PAIR (${S8_BAND_NAMES[i]!} ${colors[i]} vs ${S8_BAND_NAMES[j]!} ` +
+          `${colors[j]}): the two bands must reach 1.5:1 against EACH OTHER. A monotone but ` +
+          'imperceptible step is an ordering that exists only in the arithmetic',
+      ).toBeGreaterThanOrEqual(1.5);
+    }
+
+    document.body.removeChild(parent);
+  });
+
+  it('m23s8 status badge contrast reaches 4 point 5 to 1', () => {
+    // A REGRESSION PIN, not a change: the shipped badge is #ff9 on #553, which measures
+    // 7.32:1. It is pinned here because the status badge is the ONLY non-colour channel the
+    // monster card has for a status effect — an unreadable badge is the whole feature gone —
+    // and because the palette work in this slice puts the card's inline colours in play.
+    // WRONG IMPLEMENTATION KILLED: a later edit that harmonises the badge with a new fill
+    // palette by lowering its own text/pill contrast.
+    const parent = document.createElement('div');
+    document.body.appendChild(parent);
+    const view = new BattleView(parent, makeCallbacks());
+
+    const reading = s8RenderAndRead(parent, view, S8_HEALTHY_PCT, S8_BADGE_TEXT);
+    const cardEl = reading.cardEl;
+    expect(
+      cardEl.children.length,
+      'm23s8 BADGE WALK: with a NON-NULL status the player card must hold FOUR children ' +
+        '(header, hp bar, hp text, status badge). Three means the badge did not render at all, ' +
+        'and every assertion below would be about some other element',
+    ).toBe(4);
+
+    const badgeEl = cardEl.children[3] as HTMLElement;
+    expect(
+      badgeEl.textContent,
+      'm23s8 BADGE WALK: the fourth child of the card must be the status badge, carrying the ' +
+        'view model label verbatim — the index is checked against content rather than trusted',
+    ).toBe(S8_BADGE_TEXT);
+
+    const textL = s8Luminance(
+      s8ReadColour(badgeEl, 'color', 'status badge label'),
+      'status badge label',
+    );
+    const pillL = s8Luminance(
+      s8ReadColour(badgeEl, 'background', 'status badge pill'),
+      'status badge pill',
+    );
+    expect(
+      s8Contrast(textL, pillL),
+      'm23s8 BADGE CONTRAST: the status badge label must reach 4.5:1 against its own pill ' +
+        '(WCAG AA for the small text this badge is). Both operands are read from the DOM, so ' +
+        'this cannot be satisfied by a literal that no longer matches what renders',
+    ).toBeGreaterThanOrEqual(4.5);
+
+    document.body.removeChild(parent);
+  });
+});

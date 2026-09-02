@@ -31,8 +31,27 @@ export interface BattleMonsterCardVM {
   readonly maxHp: number;
   readonly hpPercent: number;
   readonly affinity: string;
-  /** Short status badge label ("PSN", "BRN", "PAR", "SLP", "FRZ"), or null. */
+  /** Short status badge label ("PSN", "BRN", "PAR", "SLP", "FRZ"), a "?XX" fallback
+   *  for a tag this bundle does not know (ADR-0233), or null when there is no status. */
   readonly status: string | null;
+}
+
+/**
+ * The badge shown for a status tag this bundle does not know — a deployed server
+ * running ahead of a cached client bundle (M23 §2.6, ADR-0233).
+ *
+ * Derived from the tag rather than a shared placeholder so two unknown statuses
+ * stay distinguishable, and prefixed with `?` so it can never collide with a
+ * curated three-letter token: `Paralysis` sliced to three characters uppercases
+ * to `PAR`, which IS its curated badge, so a bare slice would make the fallback
+ * indistinguishable from a correct label.
+ */
+export function unknownStatusToken(tag: string): string {
+  // Spread, not `slice`: `slice` counts UTF-16 code units, so a tag containing an
+  // astral character yields a lone surrogate that renders as U+FFFD. The trailing
+  // cap is load-bearing too — `'\u00df'.toUpperCase()` is two characters, so
+  // uppercasing can lengthen the token past the badge's three-character budget.
+  return `?${[...tag].slice(0, 2).join('').toUpperCase()}`.slice(0, 3);
 }
 
 /** Map a StatusEffect tag to a short badge label. Pure — unit-testable. */
@@ -55,14 +74,26 @@ export function statusBadge(tag: string | null | undefined): string {
       console.warn(
         `statusBadge: unknown status tag "${tag}" — update statusBadge in battleModel.ts`,
       );
-      return '';
+      // M23 §2.6 / ADR-0233: return a VISIBLE token, not ''. The empty string is
+      // collapsed to null by the `|| null` at the monsterCard call site below, and
+      // battleView.ts's `if (card.status)` then renders no badge at all — so a
+      // monster carrying a status the bundle has not learned about looks perfectly
+      // healthy. The token SSOT is `A11Y_TOKENS` in game-core/src/content.rs.
+      return unknownStatusToken(tag);
   }
 }
 
 /** Map a WeatherEffect tag to a display label. Pure — unit-testable.
- *  Returns non-empty string for known variants; console.warn + '' for unknown
- *  (identical contract to statusBadge — a bindings regen that adds a new variant
- *  fails the parity test, surfacing the gap at development time). */
+ *  Returns a non-empty string for known variants; console.warn + '' for unknown.
+ *
+ *  The two contracts DIVERGE from statusBadge's here, deliberately (m23-s8,
+ *  ADR-0233): statusBadge now returns a VISIBLE fallback because a per-monster
+ *  status badge that renders nothing is indistinguishable from "this monster is
+ *  healthy" — the absence is a lie about game state. No weather banner carries no
+ *  such ambiguity: it means no weather, which is the true and common case, so an
+ *  unknown weather tag must render nothing rather than invent a battlefield-wide
+ *  label. Both arms still warn, and a bindings regen that adds a new variant
+ *  fails the parity test either way. */
 export function weatherBanner(tag: string | null | undefined): string {
   if (!tag) return '';
   switch (tag) {

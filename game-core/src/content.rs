@@ -740,6 +740,11 @@ pub fn validate_encounters(
 /// - Unique type chart pairs (attacker, defender)
 /// - Unique item ids
 /// - All `learnable_skill_ids` in species must reference existing skills
+/// - The a11y text-token table covers every `StatusKind` and every `Affinity`
+///   with a unique, visible token (A11Y-29, M23 spec section 2.6; ADR-0233).
+///   This one check reads a compile-time constant rather than the parameters
+///   below, so its result is independent of the registries handed in — it is
+///   here because this is the function the publish-time seed path calls.
 ///
 /// # Errors
 /// Returns `Err` with a descriptive message on the first integrity violation.
@@ -906,6 +911,10 @@ pub fn validate_content(
             ));
         }
     }
+
+    // A11Y-29 (M23 spec section 2.6, ADR-0233): a status or affinity that ships
+    // with no text token leaves the badge carrying meaning by colour alone.
+    validate_a11y_tokens(A11Y_TOKENS)?;
 
     Ok(())
 }
@@ -1580,6 +1589,237 @@ pub fn validate_npc_interactions(
                     ));
                 }
             }
+        }
+    }
+
+    Ok(())
+}
+
+// ===========================================================================
+// A11Y-29 — the accessibility text-token table (M23 spec section 2.6, ADR-0233)
+// ===========================================================================
+//
+// Every `StatusEffect` / `StatusKind` and every `Affinity` a monster can carry
+// must have a SHORT TEXT TOKEN, so no badge ever conveys its meaning by colour
+// alone. The table lives here, as Rust, rather than under `game-core/content/`:
+// `evals/content-version.eval.mjs` hashes EVERY file in that directory against a
+// checked-in baseline keyed to `CONTENT_VERSION`, so a new content file forces
+// an edit outside this slice's touch-set. The keys are enum variants — type
+// space, not designer-authored rows — so ADR-0006's "content is data" rule does
+// not reach them. See ADR-0233 for the full reasoning and the alternatives.
+//
+// TOTALITY. `status_token_key` and `affinity_token_key` are EXHAUSTIVE matches
+// with no wildcard arm, so a new variant is a compile error here. That alone is
+// not enough — a hand-maintained roster left at its old length was MEASURED to
+// let a new variant through with the validator still returning `Ok(())`. The
+// roster below is therefore proved complete by tests that read serde's own
+// derive-generated variant list, which no new variant can slip past.
+
+/// One accessibility text token: a stable `key` naming an enum variant, and the
+/// short `token` the UI renders alongside (never instead of) the colour cue.
+///
+/// The five status tokens are byte-identical to `statusBadge` in
+/// `client/src/ui/battleModel.ts` — the client badge and this table are one
+/// contract. Nothing mechanically links the two (residual R-m23-s8-TSDUP); the
+/// pinned-pairs test here and the generated-variant tooth on the client side
+/// are what make a drift visible.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct A11yToken {
+    /// `status.<lowercased variant>` or `affinity.<lowercased variant>`.
+    pub key: &'static str,
+    /// The rendered token: ASCII-graphic, 2 to 4 characters, unique under
+    /// ASCII case folding across the whole table.
+    pub token: &'static str,
+}
+
+/// Every `StatusKind` variant, in declaration order.
+///
+/// Hand-written because Rust has no variant reflection on stable. Its
+/// COMPLETENESS is not taken on trust: `m23s8_totality_status_kind_variants_have_tokens`
+/// compares it against serde's derive-generated variant list, so a variant
+/// missing here is a red test, not a silent gap.
+pub const STATUS_KIND_ALL: [StatusKind; 5] = [
+    StatusKind::Poison,
+    StatusKind::Burn,
+    StatusKind::Paralysis,
+    StatusKind::Sleep,
+    StatusKind::Freeze,
+];
+
+/// The a11y token key for a status condition.
+///
+/// EXHAUSTIVE, no wildcard arm: a new `StatusKind` variant is a COMPILE error
+/// here. Note that `game-core/src/combat/ability.rs` documents a new
+/// `StatusEffect` variant as requiring a `StatusKind::matches` update, but that
+/// function's false arm absorbs any new `StatusEffect`, so this is in practice
+/// the first site that forces the author to think about the pair.
+#[must_use]
+pub const fn status_token_key(kind: StatusKind) -> &'static str {
+    match kind {
+        StatusKind::Poison => "status.poison",
+        StatusKind::Burn => "status.burn",
+        StatusKind::Paralysis => "status.paralysis",
+        StatusKind::Sleep => "status.sleep",
+        StatusKind::Freeze => "status.freeze",
+    }
+}
+
+/// The a11y token key for an elemental affinity.
+///
+/// EXHAUSTIVE, no wildcard arm: a ninth `Affinity` variant is a COMPILE error
+/// here, mirroring `Affinity::index()` (ADR-0174 D7).
+#[must_use]
+pub const fn affinity_token_key(affinity: Affinity) -> &'static str {
+    match affinity {
+        Affinity::Fire => "affinity.fire",
+        Affinity::Water => "affinity.water",
+        Affinity::Plant => "affinity.plant",
+        Affinity::Electric => "affinity.electric",
+        Affinity::Earth => "affinity.earth",
+        Affinity::Wind => "affinity.wind",
+        Affinity::Light => "affinity.light",
+        Affinity::Dark => "affinity.dark",
+    }
+}
+
+/// The shipped a11y token table: five status conditions, eight affinities.
+///
+/// The eight affinity rows are DELIBERATELY unconsumed by the client today —
+/// `client/src/ui/battleView.ts` already renders the affinity NAME as text, so a
+/// new affinity ships with a text cue for free. They exist because A11Y-29 names
+/// `Affinity` literally. Recorded in ADR-0233 rather than left to be discovered
+/// and deleted as dead weight.
+pub const A11Y_TOKENS: &[A11yToken] = &[
+    A11yToken {
+        key: "status.poison",
+        token: "PSN",
+    },
+    A11yToken {
+        key: "status.burn",
+        token: "BRN",
+    },
+    A11yToken {
+        key: "status.paralysis",
+        token: "PAR",
+    },
+    A11yToken {
+        key: "status.sleep",
+        token: "SLP",
+    },
+    A11yToken {
+        key: "status.freeze",
+        token: "FRZ",
+    },
+    A11yToken {
+        key: "affinity.fire",
+        token: "FIR",
+    },
+    A11yToken {
+        key: "affinity.water",
+        token: "WTR",
+    },
+    A11yToken {
+        key: "affinity.plant",
+        token: "PLT",
+    },
+    A11yToken {
+        key: "affinity.electric",
+        token: "ELC",
+    },
+    A11yToken {
+        key: "affinity.earth",
+        token: "ERT",
+    },
+    A11yToken {
+        key: "affinity.wind",
+        token: "WND",
+    },
+    A11yToken {
+        key: "affinity.light",
+        token: "LGT",
+    },
+    A11yToken {
+        key: "affinity.dark",
+        token: "DRK",
+    },
+];
+
+/// Shortest and longest permitted token length, in ASCII-graphic characters.
+const A11Y_TOKEN_MIN_LEN: usize = 2;
+const A11Y_TOKEN_MAX_LEN: usize = 4;
+
+/// Validate an a11y token table against the two enums it must cover (A11Y-29).
+///
+/// The REQUIRED key set is derived from `STATUS_KIND_ALL` and `Affinity::ALL`
+/// through the two key functions above. It is NEVER derived from `A11Y_TOKENS`:
+/// eight forged validators that re-derived their oracle from the table itself
+/// were MEASURED to accept a table with a row deleted, which is precisely the
+/// scenario this criterion exists to reject. `A11Y_TOKENS` must not appear
+/// anywhere in this function.
+///
+/// Rejects, in order: a duplicate key; an orphan key naming no variant; a token
+/// that is not ASCII-graphic (a bare `trim()` check was MEASURED to accept
+/// U+200B ZERO WIDTH SPACE, an invisible "text token"); a token outside the
+/// length band; two tokens equal under ASCII case folding; and a required key
+/// with no row.
+///
+/// # Errors
+/// Returns `Err` naming the offending key or token on the first violation.
+pub fn validate_a11y_tokens(tokens: &[A11yToken]) -> Result<(), String> {
+    let mut required: std::collections::BTreeSet<&'static str> = std::collections::BTreeSet::new();
+    for kind in STATUS_KIND_ALL {
+        required.insert(status_token_key(kind));
+    }
+    for affinity in Affinity::ALL {
+        required.insert(affinity_token_key(affinity));
+    }
+
+    let mut seen_keys: std::collections::BTreeSet<&str> = std::collections::BTreeSet::new();
+    let mut seen_tokens: std::collections::BTreeSet<String> = std::collections::BTreeSet::new();
+    for row in tokens {
+        if !seen_keys.insert(row.key) {
+            return Err(format!(
+                "a11y token key {:?} is declared twice; each status and affinity gets exactly one row",
+                row.key
+            ));
+        }
+        if !required.contains(row.key) {
+            return Err(format!(
+                "a11y token key {:?} names no StatusKind or Affinity variant; expected one of {:?}",
+                row.key, required
+            ));
+        }
+        if !row.token.chars().all(|c| c.is_ascii_graphic()) {
+            return Err(format!(
+                "a11y token {:?} for key {:?} is not ASCII-graphic; a blank, whitespace or \
+                 zero-width token renders as nothing, which is the colour-only failure A11Y-29 \
+                 forbids",
+                row.token, row.key
+            ));
+        }
+        let len = row.token.chars().count();
+        if !(A11Y_TOKEN_MIN_LEN..=A11Y_TOKEN_MAX_LEN).contains(&len) {
+            return Err(format!(
+                "a11y token {:?} for key {:?} is {} characters; tokens must be {} to {} so they \
+                 fit the badge without overflowing it",
+                row.token, row.key, len, A11Y_TOKEN_MIN_LEN, A11Y_TOKEN_MAX_LEN
+            ));
+        }
+        if !seen_tokens.insert(row.token.to_ascii_lowercase()) {
+            return Err(format!(
+                "a11y token {:?} for key {:?} duplicates another row's token under case folding; \
+                 two conditions sharing a token are indistinguishable on screen",
+                row.token, row.key
+            ));
+        }
+    }
+
+    for key in required {
+        if !seen_keys.contains(key) {
+            return Err(format!(
+                "a11y token table has no row for {key:?}; that status or affinity would render \
+                 with a colour cue and no text token"
+            ));
         }
     }
 
@@ -7227,5 +7467,864 @@ mod tests {
             choice.effects,
             choice.conditions
         );
+    }
+
+    // =======================================================================
+    // === m23-s8 (A11Y-29): the a11y text-token table + its validator ===
+    //
+    // A11Y-29: every `StatusEffect` and every `Affinity` a monster can carry
+    // must have a SHORT TEXT TOKEN, so colour is never the sole carrier of
+    // meaning. `A11Y_TOKENS` is content-shaped DATA and `validate_content`
+    // gates it exactly like every other registry (ADR-0006).
+    //
+    // Four families, all prefixed `m23s8_` so the acceptance ledger can filter
+    // them by name:
+    //   m23s8_reject_*       one biting fixture per rejection rule, plus the
+    //                        positive `m23s8_shipped_table_is_valid`   (9)
+    //   m23s8_totality_*     serde's derive metadata as the variant oracle (3)
+    //   m23s8_forgery_*      the measured forged-validator shapes        (4)
+    //   m23s8_reachability_* the call site inside validate_content       (1)
+    //
+    // WHY THE SERDE PROBE: Rust has no variant reflection, and a
+    // hand-maintained roster forces NOTHING — adding a sixth `StatusKind`
+    // variant plus the one match arm it forces was MEASURED to compile clean
+    // with the validator still returning `Ok(())`. `ron`'s
+    // `NoSuchEnumVariant.expected` is serde's own derive-generated variant
+    // list, which is the only oracle in this crate that a new variant cannot
+    // slip past.
+    //
+    // AUTHORING CONSTRAINT: no `/` immediately followed by `*` (nor the
+    // reverse) anywhere below, in code, strings or comments — the
+    // spacetime-type-snapshot eval concatenates all of game-core/src and
+    // strips block comments with a naive non-greedy regex, and a lone closer
+    // was measured to DROP a type from the snapshot.
+    // =======================================================================
+
+    use crate::StatusEffect;
+    use serde::de::DeserializeOwned;
+    use std::collections::BTreeSet;
+
+    /// The 13 shipped `(key, token)` pairs, written out as LITERALS.
+    ///
+    /// This list is deliberately independent of `A11Y_TOKENS`,
+    /// `status_token_key` and `affinity_token_key`: it is the rename tripwire
+    /// (`m23s8_forgery_shipped_pairs_are_pinned`) and the message oracle the
+    /// reject tests assert against, so it must not move when the impl moves.
+    /// The five status tokens are byte-identical to `statusBadge` in
+    /// `client/src/ui/battleModel.ts` — the client badge and this table are
+    /// one contract.
+    const M23S8_EXPECTED_PAIRS: [(&str, &str); 13] = [
+        ("status.poison", "PSN"),
+        ("status.burn", "BRN"),
+        ("status.paralysis", "PAR"),
+        ("status.sleep", "SLP"),
+        ("status.freeze", "FRZ"),
+        ("affinity.fire", "FIR"),
+        ("affinity.water", "WTR"),
+        ("affinity.plant", "PLT"),
+        ("affinity.electric", "ELC"),
+        ("affinity.earth", "ERT"),
+        ("affinity.wind", "WND"),
+        ("affinity.light", "LGT"),
+        ("affinity.dark", "DRK"),
+    ];
+
+    /// Thirteen well-formed but entirely unrelated keys — the same COUNT as the
+    /// shipped table, so a length-only or checksum-only validator accepts them.
+    const M23S8_JUNK_KEYS: [&str; 13] = [
+        "junk.0", "junk.1", "junk.2", "junk.3", "junk.4", "junk.5", "junk.6", "junk.7", "junk.8",
+        "junk.9", "junk.10", "junk.11", "junk.12",
+    ];
+
+    /// This file's own source, for the structural wiring proof in
+    /// `m23s8_reachability_validate_content_rejects_a_broken_table`.
+    const M23S8_SELF_SOURCE: &str = include_str!("content.rs");
+
+    /// The SHIPPED rows as an owned, mutable fixture base.
+    ///
+    /// Every hand-built fixture below starts here and then breaks exactly one
+    /// thing, so a change to the shipped table flows into the fixtures instead
+    /// of silently desynchronising from them.
+    fn shipped_rows() -> Vec<A11yToken> {
+        A11Y_TOKENS.to_vec()
+    }
+
+    /// Index of the row carrying `key`, or a loud fixture-sanity panic.
+    fn m23s8_row_index(rows: &[A11yToken], key: &str) -> usize {
+        rows.iter()
+            .position(|row| row.key == key)
+            .unwrap_or_else(|| {
+                panic!(
+                    "fixture sanity: the shipped A11Y_TOKENS table must contain the key {key:?}; \
+                     present keys: {:?}",
+                    rows.iter().map(|row| row.key).collect::<Vec<_>>()
+                )
+            })
+    }
+
+    /// Run the validator over a table that MUST be rejected and hand back the
+    /// message, so each caller can assert the message names the offender.
+    ///
+    /// KILLS `validate_a11y_tokens -> Ok(())` in every reject/forgery test: the
+    /// panic below fires instead of a bare `is_err()` going quietly green.
+    fn m23s8_expect_rejected(rows: &[A11yToken], case: &str) -> String {
+        match validate_a11y_tokens(rows) {
+            Ok(()) => panic!(
+                "TEETH(A11Y-29 / {case}): validate_a11y_tokens ACCEPTED a table it must reject. \
+                 An accepted table means a status or affinity ships with no text token, and the \
+                 badge falls back to colour alone."
+            ),
+            Err(err) => err,
+        }
+    }
+
+    /// serde's own derive-generated variant-name list for `T`, obtained by
+    /// asking `ron` to deserialise a variant that cannot exist and reading the
+    /// `expected` list back out of the error.
+    ///
+    /// This is the ONLY totality oracle available in this crate. Do not replace
+    /// it with a hand-written roster: a roster plus its one forced match arm
+    /// was measured to compile clean while a new variant had no token.
+    fn m23s8_serde_variant_names<T: DeserializeOwned>() -> Vec<String> {
+        match ron::from_str::<T>("ZzUnlikelyProbeVariant") {
+            Err(spanned) => match spanned.code {
+                ron::Error::NoSuchEnumVariant { expected, .. } => {
+                    expected.iter().map(|name| (*name).to_string()).collect()
+                }
+                other => panic!(
+                    "the variant probe did not reach serde's unknown-variant path: {other:?}. \
+                     Fix the probe (it is the totality oracle for A11Y-29) — never delete it."
+                ),
+            },
+            Ok(_) => panic!(
+                "the variant probe unexpectedly parsed `ZzUnlikelyProbeVariant` as a real \
+                 variant; pick a probe name no enum in this crate declares."
+            ),
+        }
+    }
+
+    /// Remove Rust line and (nesting-aware) block comments from `src`.
+    ///
+    /// Deliberately NOT string-literal aware: it can only ever DELETE text, so
+    /// the worst case is a false RED on the source-scan assertion, never a
+    /// false green. The two comment delimiters are assembled from single
+    /// `char` literals so this file never contains the delimiter pair itself.
+    fn m23s8_strip_rust_comments(src: &str) -> String {
+        let slash = '/';
+        let star = '*';
+        let chars: Vec<char> = src.chars().collect();
+        let mut out = String::with_capacity(src.len());
+        let mut i = 0usize;
+        let mut depth = 0usize;
+        while i < chars.len() {
+            let c = chars[i];
+            let next = chars.get(i + 1).copied();
+            if depth > 0 {
+                if c == slash && next == Some(star) {
+                    depth += 1;
+                    i += 2;
+                } else if c == star && next == Some(slash) {
+                    depth -= 1;
+                    i += 2;
+                } else {
+                    if c == '\n' {
+                        out.push('\n');
+                    }
+                    i += 1;
+                }
+                continue;
+            }
+            if c == slash && next == Some(star) {
+                depth += 1;
+                i += 2;
+                continue;
+            }
+            if c == slash && next == Some(slash) {
+                while i < chars.len() && chars[i] != '\n' {
+                    i += 1;
+                }
+                continue;
+            }
+            out.push(c);
+            i += 1;
+        }
+        out
+    }
+
+    // -----------------------------------------------------------------------
+    // Group X1 — the rejection rules, plus the positive shipped-table gate (9)
+    // -----------------------------------------------------------------------
+
+    /// A11Y-29 (X1 positive): the SHIPPED table satisfies its own validator.
+    ///
+    /// KILLS `validate_a11y_tokens -> Err(String::new())` (an always-Err
+    /// validator would fail `validate_content` on every `sync_content` and
+    /// brick content sync at deploy time, after CI went green).
+    /// ALSO KILLS both key-fn body replacements (`-> ""` / `-> "xyzzy"`): the
+    /// REQUIRED key set is derived through `status_token_key` /
+    /// `affinity_token_key`, so a collapsed key fn turns all 13 shipped rows
+    /// into orphans (or, if the table itself is built from those const fns,
+    /// into 13 duplicate keys). Either way the validator must Err here.
+    #[test]
+    fn m23s8_shipped_table_is_valid() {
+        validate_a11y_tokens(A11Y_TOKENS).expect(
+            "the shipped A11Y_TOKENS table must satisfy validate_a11y_tokens; validate_content \
+             calls it on every sync_content, so an invalid table bricks content sync",
+        );
+    }
+
+    /// A11Y-29: an EMPTY table is rejected, and the error names a missing key.
+    ///
+    /// KILLS a validator whose loop body simply never runs on an empty slice
+    /// (the classic vacuous-green shape), and any validator that derives its
+    /// required set FROM the table it is handed — for `&[]` that derived set is
+    /// also empty, so such an impl returns Ok here.
+    #[test]
+    fn m23s8_reject_empty_table() {
+        let err = m23s8_expect_rejected(&[], "empty table");
+        assert!(
+            M23S8_EXPECTED_PAIRS
+                .iter()
+                .any(|&(key, _)| err.contains(key)),
+            "the rejection must NAME a missing required key (e.g. `status.poison`) so a content \
+             author can find it; a keyless message makes the failure unactionable. Got: {err:?}"
+        );
+    }
+
+    /// A11Y-29: a whitespace-only token — and the empty string — are rejected.
+    ///
+    /// `"  "` is the load-bearing case: it is length 2 (inside the 2..=4 window)
+    /// and only the `char::is_ascii_graphic` rule can catch it, so a validator
+    /// that checks length alone accepts it and ships a badge that renders blank.
+    /// KILLS a length-only token check.
+    #[test]
+    fn m23s8_reject_blank_token() {
+        for blank in ["", "  "] {
+            let mut rows = shipped_rows();
+            let idx = m23s8_row_index(&rows, "status.poison");
+            rows[idx].token = blank;
+            let err = m23s8_expect_rejected(&rows, "blank token");
+            assert!(
+                err.contains("status.poison"),
+                "the rejection for the blank token {blank:?} must name the offending key \
+                 `status.poison`; got: {err:?}"
+            );
+        }
+    }
+
+    /// A11Y-29: a token made of U+200B ZERO WIDTH SPACE is rejected.
+    ///
+    /// NOT hypothetical: `char::is_whitespace` is FALSE for U+200B (category
+    /// Cf), so the obvious `token.trim().is_empty()` guard was MEASURED to
+    /// ACCEPT this token — producing a "text token" that renders as nothing at
+    /// all, which is exactly the failure A11Y-29 exists to prevent.
+    /// KILLS a `trim().is_empty()` blankness check.
+    #[test]
+    fn m23s8_reject_invisible_token() {
+        let mut rows = shipped_rows();
+        let idx = m23s8_row_index(&rows, "status.burn");
+        rows[idx].token = "\u{200b}";
+        let err = m23s8_expect_rejected(&rows, "U+200B zero-width-space token");
+        assert!(
+            err.contains("status.burn"),
+            "the rejection for the invisible U+200B token must name the offending key \
+             `status.burn`; got: {err:?}"
+        );
+    }
+
+    /// A11Y-29: dropping a required STATUS row is rejected.
+    ///
+    /// KILLS a validator that only checks the rows it was given (well-formed
+    /// keys, unique tokens) without ever asking whether every `StatusKind` is
+    /// covered — the exact shape that lets a status ship with no badge text.
+    #[test]
+    fn m23s8_reject_missing_status_row() {
+        let mut rows = shipped_rows();
+        let idx = m23s8_row_index(&rows, "status.sleep");
+        rows.remove(idx);
+        let err = m23s8_expect_rejected(&rows, "missing status.sleep row");
+        assert!(
+            err.contains("status.sleep"),
+            "the rejection must name the missing required key `status.sleep`; got: {err:?}"
+        );
+    }
+
+    /// A11Y-29: dropping a required AFFINITY row is rejected.
+    ///
+    /// KILLS the half-implementation that derives its required set from
+    /// `STATUS_KIND_ALL` only and never consults `Affinity::ALL`. That impl
+    /// passes `m23s8_reject_missing_status_row` and fails here.
+    #[test]
+    fn m23s8_reject_missing_affinity_row() {
+        let mut rows = shipped_rows();
+        let idx = m23s8_row_index(&rows, "affinity.dark");
+        rows.remove(idx);
+        let err = m23s8_expect_rejected(&rows, "missing affinity.dark row");
+        assert!(
+            err.contains("affinity.dark"),
+            "the rejection must name the missing required key `affinity.dark`; got: {err:?}"
+        );
+    }
+
+    /// A11Y-29: two rows sharing one token are rejected.
+    ///
+    /// All 13 required keys are present and unique here, so ONLY the
+    /// token-uniqueness rule can catch it. Two identical badges are
+    /// indistinguishable to a screen-reader user, which defeats the token.
+    /// KILLS a validator that checks key coverage but never compares tokens.
+    #[test]
+    fn m23s8_reject_duplicate_token() {
+        let mut rows = shipped_rows();
+        let idx = m23s8_row_index(&rows, "affinity.wind");
+        rows[idx].token = "FIR";
+        let err = m23s8_expect_rejected(&rows, "affinity.wind duplicating the FIR token");
+        assert!(
+            err.contains("affinity.wind") || err.contains("affinity.fire") || err.contains("FIR"),
+            "the rejection must name the colliding key or the duplicated token `FIR`; \
+             got: {err:?}"
+        );
+    }
+
+    /// A11Y-29: two tokens equal only under ASCII case folding are rejected.
+    ///
+    /// `fir` vs `FIR` is ascii-graphic, in the 2..=4 window, and BYTE-distinct,
+    /// so a plain `BTreeSet<&str>` uniqueness check accepts it — while a
+    /// speech synthesiser reads both identically.
+    /// KILLS a case-SENSITIVE token-uniqueness check.
+    #[test]
+    fn m23s8_reject_case_only_duplicate_token() {
+        let mut rows = shipped_rows();
+        let idx = m23s8_row_index(&rows, "affinity.wind");
+        rows[idx].token = "fir";
+        let err = m23s8_expect_rejected(&rows, "affinity.wind carrying the case-folded fir token");
+        assert!(
+            err.contains("affinity.wind") || err.contains("affinity.fire") || err.contains("fir"),
+            "the rejection must name the colliding key or the case-folded token; got: {err:?}"
+        );
+    }
+
+    /// A11Y-29: a duplicated KEY is rejected even when every required key is
+    /// present and every token is distinct.
+    ///
+    /// The fixture is the 13 shipped rows PLUS a second `status.burn` row with
+    /// its own unique token, so the required set is fully covered and there is
+    /// no orphan key: a validator built purely as a two-way set comparison
+    /// (required is a subset of present, present is a subset of required)
+    /// returns Ok. Only an explicit duplicate-key check bites.
+    /// KILLS a set-comparison-only validator; a duplicate key makes the lookup
+    /// first-match-wins and silently strands the second row.
+    #[test]
+    fn m23s8_reject_duplicate_key() {
+        let mut rows = shipped_rows();
+        rows.push(A11yToken {
+            key: "status.burn",
+            token: "BR9",
+        });
+        let err = m23s8_expect_rejected(&rows, "duplicated status.burn key");
+        assert!(
+            err.contains("status.burn"),
+            "the rejection must name the duplicated key `status.burn`; got: {err:?}"
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Group m23s8_totality_ — serde derive metadata as the variant oracle (3)
+    // -----------------------------------------------------------------------
+
+    /// A11Y-29 totality: every `StatusKind` variant serde knows about has a key
+    /// in `STATUS_KIND_ALL` (through `status_token_key`) AND a row in
+    /// `A11Y_TOKENS`.
+    ///
+    /// Adding a sixth `StatusKind` variant REDS this test: the probed set grows
+    /// to six keys while the roster-derived set stays at five.
+    /// KILLS `status_token_key -> ""` and `-> "xyzzy"` (all five arms collapse
+    /// onto one key, so the roster-derived SET shrinks to one entry and both
+    /// the length pin and the set equality fail), and kills a `STATUS_KIND_ALL`
+    /// that repeats a variant or omits one.
+    #[test]
+    fn m23s8_totality_status_kind_variants_have_tokens() {
+        let probed = m23s8_serde_variant_names::<StatusKind>();
+        assert!(
+            !probed.is_empty(),
+            "non-vacuity: the serde variant probe returned NO names for StatusKind, so every \
+             set comparison below would be trivially satisfied"
+        );
+        let from_serde: BTreeSet<String> = probed
+            .iter()
+            .map(|name| format!("status.{}", name.to_ascii_lowercase()))
+            .collect();
+        let from_roster: BTreeSet<String> = STATUS_KIND_ALL
+            .iter()
+            .copied()
+            .map(|kind| status_token_key(kind).to_string())
+            .collect();
+        assert_eq!(
+            from_roster.len(),
+            STATUS_KIND_ALL.len(),
+            "status_token_key must be INJECTIVE over STATUS_KIND_ALL: {} roster entries \
+             collapsed to {} distinct keys ({from_roster:?})",
+            STATUS_KIND_ALL.len(),
+            from_roster.len()
+        );
+        assert_eq!(
+            from_serde, from_roster,
+            "A11Y-29 TEETH: the set of `status.<variant>` keys serde's derive knows about must \
+             equal the set STATUS_KIND_ALL produces through status_token_key. A mismatch means a \
+             StatusKind variant exists with no text token (or a token with no variant)."
+        );
+        let table_keys: BTreeSet<&str> = A11Y_TOKENS.iter().map(|row| row.key).collect();
+        for key in &from_roster {
+            assert!(
+                table_keys.contains(key.as_str()),
+                "A11Y-29 TEETH: required key {key:?} has no row in A11Y_TOKENS; present keys: \
+                 {table_keys:?}"
+            );
+        }
+    }
+
+    /// A11Y-29 totality: every `Affinity` variant serde knows about has a key
+    /// in `Affinity::ALL` (through `affinity_token_key`) AND a row in
+    /// `A11Y_TOKENS`.
+    ///
+    /// Adding a ninth `Affinity` variant REDS this test.
+    /// KILLS `affinity_token_key -> ""` and `-> "xyzzy"` by the same collapse
+    /// argument as the status test above.
+    #[test]
+    fn m23s8_totality_affinity_variants_have_tokens() {
+        let probed = m23s8_serde_variant_names::<Affinity>();
+        assert!(
+            !probed.is_empty(),
+            "non-vacuity: the serde variant probe returned NO names for Affinity, so every set \
+             comparison below would be trivially satisfied"
+        );
+        let from_serde: BTreeSet<String> = probed
+            .iter()
+            .map(|name| format!("affinity.{}", name.to_ascii_lowercase()))
+            .collect();
+        let from_roster: BTreeSet<String> = Affinity::ALL
+            .iter()
+            .copied()
+            .map(|affinity| affinity_token_key(affinity).to_string())
+            .collect();
+        assert_eq!(
+            from_roster.len(),
+            Affinity::ALL.len(),
+            "affinity_token_key must be INJECTIVE over Affinity::ALL: {} roster entries \
+             collapsed to {} distinct keys ({from_roster:?})",
+            Affinity::ALL.len(),
+            from_roster.len()
+        );
+        assert_eq!(
+            from_serde, from_roster,
+            "A11Y-29 TEETH: the set of `affinity.<variant>` keys serde's derive knows about must \
+             equal the set Affinity::ALL produces through affinity_token_key. A mismatch means an \
+             Affinity variant exists with no text token (or a token with no variant)."
+        );
+        let table_keys: BTreeSet<&str> = A11Y_TOKENS.iter().map(|row| row.key).collect();
+        for key in &from_roster {
+            assert!(
+                table_keys.contains(key.as_str()),
+                "A11Y-29 TEETH: required key {key:?} has no row in A11Y_TOKENS; present keys: \
+                 {table_keys:?}"
+            );
+        }
+    }
+
+    /// A11Y-29 covers the criterion's literal `StatusEffect` wording: the
+    /// variant-name sets of `StatusKind` and `StatusEffect` are IDENTICAL.
+    ///
+    /// The token table is keyed on `StatusKind` (the payload-free
+    /// discriminant), but the thing a player actually carries is a
+    /// `StatusEffect`. This test is the bridge: if the two enums ever diverge
+    /// — a `StatusEffect` variant added without its `StatusKind` twin — a real
+    /// battle status would exist with no reachable token, and the two
+    /// `m23s8_totality_*` tests above would both stay green.
+    ///
+    /// `StatusEffect::Sleep { turns_remaining }` is a STRUCT variant; the probe
+    /// handles it (measured) because serde reports the variant NAME regardless
+    /// of payload shape.
+    #[test]
+    fn m23s8_totality_status_kind_matches_status_effect() {
+        let kinds: BTreeSet<String> = m23s8_serde_variant_names::<StatusKind>()
+            .into_iter()
+            .collect();
+        let effects: BTreeSet<String> = m23s8_serde_variant_names::<StatusEffect>()
+            .into_iter()
+            .collect();
+        assert!(
+            !kinds.is_empty() && !effects.is_empty(),
+            "non-vacuity: both probes must return names; got StatusKind {kinds:?} and \
+             StatusEffect {effects:?}"
+        );
+        assert_eq!(
+            kinds, effects,
+            "A11Y-29 TEETH: StatusKind and StatusEffect must declare the SAME variant names. A \
+             StatusEffect variant with no StatusKind twin is a battle status the token table \
+             cannot even name, and both totality tests above would stay green."
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Group m23s8_forgery_ — the measured forged-validator shapes (4)
+    //
+    // Eight `validate_a11y_tokens` implementations were MEASURED to pass
+    // "rejects empty / blank / missing / orphan / duplicate" while failing
+    // A11Y-29, five of which also survived DELETING a row from the shipped
+    // table — because they re-derived their required set FROM `A11Y_TOKENS`
+    // instead of from the enums. These four tests exist to kill them.
+    // -----------------------------------------------------------------------
+
+    /// A11Y-29 forgery: THIRTEEN well-formed rows keyed `junk.0 .. junk.12`,
+    /// carrying the shipped (distinct, valid) tokens, must be rejected.
+    ///
+    /// Every surface property of the shipped table is preserved — the row
+    /// count, the token set, key well-formedness — and not one required key is
+    /// present. KILLS the length-only forgery, the one-way-subset forgery
+    /// (present is a subset of required, never the reverse), the
+    /// parameter-is-a-shim forgery (validates `A11Y_TOKENS` regardless of its
+    /// argument) and the token-checksum forgery.
+    #[test]
+    fn m23s8_forgery_junk_key_table_is_rejected() {
+        let mut rows = shipped_rows();
+        assert_eq!(
+            rows.len(),
+            M23S8_JUNK_KEYS.len(),
+            "fixture sanity: the junk key list must be exactly as long as the shipped table"
+        );
+        for (row, junk) in rows.iter_mut().zip(M23S8_JUNK_KEYS) {
+            row.key = junk;
+        }
+        let err = m23s8_expect_rejected(&rows, "13 junk keys with valid tokens");
+        assert!(
+            err.contains("junk.")
+                || M23S8_EXPECTED_PAIRS
+                    .iter()
+                    .any(|&(key, _)| err.contains(key)),
+            "the rejection must name either an orphan `junk.*` key or a missing required key; \
+             got: {err:?}"
+        );
+    }
+
+    /// A11Y-29 forgery: the shipped rows PLUS one extra valid-looking row must
+    /// be rejected.
+    ///
+    /// KILLS a validator that only asks "is every required key present" and
+    /// never asks "is every present key required" — an orphan row is a token
+    /// nothing can ever render, i.e. dead a11y content that reads as coverage.
+    #[test]
+    fn m23s8_forgery_orphan_row_is_rejected() {
+        let mut rows = shipped_rows();
+        rows.push(A11yToken {
+            key: "status.confusion",
+            token: "CNF",
+        });
+        let err = m23s8_expect_rejected(&rows, "orphan status.confusion row");
+        assert!(
+            err.contains("status.confusion"),
+            "the rejection must name the orphan key `status.confusion`; got: {err:?}"
+        );
+    }
+
+    /// A11Y-29 forgery: swapping ONE required row for an orphan — leaving the
+    /// row count at 13 and the token set unchanged — must be rejected.
+    ///
+    /// KILLS the prefix-census forgery (count the rows, sniff the key prefixes,
+    /// declare victory) and every length-preserving variant of it. This is the
+    /// shape `m23s8_forgery_orphan_row_is_rejected` alone cannot reach: there,
+    /// the count changed; here, only the identity of one key did.
+    #[test]
+    fn m23s8_forgery_orphan_replacing_required_row_is_rejected() {
+        let mut rows = shipped_rows();
+        let idx = m23s8_row_index(&rows, "affinity.light");
+        rows[idx] = A11yToken {
+            key: "affinity.radiance",
+            token: "LGT",
+        };
+        // Fixture sanity: prove the swap ACTUALLY landed. A mutation that
+        // silently fails to apply reads exactly like a validator that accepted
+        // the forgery, which is how a bite-proof quietly stops biting.
+        assert_ne!(
+            rows[idx], A11Y_TOKENS[idx],
+            "fixture sanity: the swapped row must differ from the shipped row it replaced"
+        );
+        assert_eq!(
+            rows.len(),
+            A11Y_TOKENS.len(),
+            "fixture sanity: the swap must leave the row COUNT unchanged, otherwise a \
+             count-only forgery would be killed for the wrong reason"
+        );
+        let err = m23s8_expect_rejected(&rows, "affinity.light replaced by an orphan row");
+        assert!(
+            err.contains("affinity.light") || err.contains("affinity.radiance"),
+            "the rejection must name the missing key `affinity.light` or the orphan key \
+             `affinity.radiance`; got: {err:?}"
+        );
+    }
+
+    /// A11Y-29 rename tripwire: the exact 13 `(key, token)` pairs are PINNED.
+    ///
+    /// `A11Y_TOKENS` sits outside `content-hash` and `append-only-ids`
+    /// coverage, so nothing else in the repo notices a renamed key or a
+    /// retyped token. The five status tokens are byte-identical to
+    /// `statusBadge` in `client/src/ui/battleModel.ts`; drifting one of them
+    /// splits the client badge from the server-side contract silently.
+    ///
+    /// KILLS `status_token_key`/`affinity_token_key` collapsing to `""` or
+    /// `"xyzzy"` in the case where `A11Y_TOKENS` is BUILT from those const fns
+    /// (the pairs then no longer match these literals), and kills any row
+    /// hollowed out under an unchanged key.
+    #[test]
+    fn m23s8_forgery_shipped_pairs_are_pinned() {
+        assert_eq!(
+            A11Y_TOKENS.len(),
+            13,
+            "A11Y-29: the table must carry exactly 13 rows (5 status + 8 affinity); got {}",
+            A11Y_TOKENS.len()
+        );
+        let mut actual: Vec<(&str, &str)> =
+            A11Y_TOKENS.iter().map(|row| (row.key, row.token)).collect();
+        actual.sort_unstable();
+        let mut expected: Vec<(&str, &str)> = M23S8_EXPECTED_PAIRS.to_vec();
+        expected.sort_unstable();
+        assert_eq!(
+            actual, expected,
+            "A11Y-29 TEETH: the shipped (key, token) pairs drifted from the pinned list. The \
+             status tokens PSN/BRN/PAR/SLP/FRZ are byte-identical to statusBadge in \
+             client/src/ui/battleModel.ts — change one side and the badge stops matching the \
+             contract. Re-derive this list from the spec, never from the code."
+        );
+    }
+
+    // -----------------------------------------------------------------------
+    // Group m23s8_reachability_ — the call site inside validate_content (1)
+    // -----------------------------------------------------------------------
+
+    /// A11Y-29 reachability: `validate_a11y_tokens(A11Y_TOKENS)?;` really runs
+    /// inside `validate_content`, and the validator it calls really bites.
+    ///
+    /// The a11y check takes NO parameter from `validate_content`, so it cannot
+    /// be falsified through that function's arguments — a decoy that computes
+    /// the result and throws it away is behaviourally indistinguishable from
+    /// the real wiring. So this test proves reachability THREE ways, and the
+    /// third is the one with teeth:
+    ///
+    ///   1. a known-good registry set still validates Ok (an always-Err a11y
+    ///      check wired in would red this, which is what makes the wiring
+    ///      observable at all from the outside);
+    ///   2. the shipped table passes the SAME validator `validate_content`
+    ///      calls;
+    ///   3. STRUCTURAL: the call expression appears, verbatim modulo
+    ///      whitespace, inside `validate_content`'s own comment-stripped body.
+    ///
+    /// Clause 3 is the stronger proof and stays entirely inside content.rs
+    /// (the brief invited one). It reads THIS file via `include_str!`, strips
+    /// line and block comments so a decoy comment cannot forge the needle,
+    /// anchors on a fragment-assembled signature (asserted to occur exactly
+    /// once, so a decoy copy of the signature cannot steer the region), and
+    /// searches only the extracted function body — which ends thousands of
+    /// lines before `mod tests`, so this test's own needle literal can never
+    /// match itself.
+    #[test]
+    fn m23s8_reachability_validate_content_rejects_a_broken_table() {
+        // 1. A known-good registry set (the m10_5a_* minimal-valid idiom).
+        let species = vec![fixture_species(1, vec![1])];
+        let skills = vec![fixture_skill(1)];
+        validate_content(&species, &skills, &[], &[]).expect(
+            "A11Y-29: a known-good registry set must still validate once the a11y check is \
+             wired into validate_content; an always-Err a11y check bricks sync_content",
+        );
+
+        // 2. The shipped table, through the same validator validate_content calls.
+        validate_a11y_tokens(A11Y_TOKENS)
+            .expect("A11Y-29: the shipped A11Y_TOKENS table must pass the wired-in validator");
+
+        // 3. The wiring itself, read out of this file's own source.
+        //
+        //    The region is cut from the RAW source and only THEN
+        //    comment-stripped: stripping the whole file first would let an
+        //    unrelated string literal elsewhere in content.rs that happens to
+        //    contain a comment delimiter (a glob path, say) swallow the anchor
+        //    and produce a false RED far from its cause.
+        let anchor = format!("pub fn {}(", "validate_content");
+        let occurrences = M23S8_SELF_SOURCE.matches(anchor.as_str()).count();
+        assert_eq!(
+            occurrences, 1,
+            "A11Y-29 wiring probe: the validate_content signature must occur EXACTLY once in \
+             content.rs (found {occurrences}); a second occurrence — in a doc comment, say — \
+             would let a decoy steer the region this test reads."
+        );
+        let start = M23S8_SELF_SOURCE
+            .find(anchor.as_str())
+            .expect("the signature was just counted, so it must be findable");
+        let rest = &M23S8_SELF_SOURCE[start..];
+        let end = rest.find("\n}\n").expect(
+            "validate_content must be terminated by a column-0 closing brace; if this fails the \
+             region extraction is broken, not the wiring",
+        );
+        // Comments are stripped so a planted `//` or block comment carrying the
+        // call text cannot forge the needle below.
+        let body = m23s8_strip_rust_comments(&rest[..end]);
+        assert!(
+            body.contains("duplicate species id"),
+            "extraction sanity: the region read out of the source does not look like \
+             validate_content's body (its `duplicate species id` message is missing), so the \
+             needle assertion below would be meaningless"
+        );
+        // PRESENCE ALONE IS NOT ENOUGH. Four wirings were MEASURED to satisfy a
+        // bare substring check while the call never executes: a dead runtime
+        // branch, an `if false` block, a bare string literal carrying the call
+        // text (the stripper removes comments but not strings), and a
+        // `let _ = ...` that discards the Result. So the needle must occur
+        // EXACTLY ONCE, must not be inside a string literal, and must sit at
+        // brace depth 1 — a top-level statement of the function body.
+        let fn_name = "validate_a11y_tokens";
+        let hits: Vec<usize> = body.match_indices(fn_name).map(|(at, _)| at).collect();
+        assert_eq!(
+            hits.len(),
+            1,
+            "A11Y-29 TEETH: {fn_name:?} must appear EXACTLY once in validate_content's body \
+             (found {}). A second occurrence is how a decoy string literal or a discarded \
+             `let _ = ...` call forges the wiring while the real call is absent.",
+            hits.len()
+        );
+        let at = hits[0];
+        let before: Vec<char> = body[..at].chars().collect();
+        let prev = before.iter().rev().find(|c| !c.is_whitespace()).copied();
+        assert!(
+            prev == Some(';') || prev == Some('{') || prev == Some('}'),
+            "A11Y-29 TEETH: the a11y call is not in STATEMENT position (the preceding \
+             non-space character is {prev:?}, expected a semicolon or a brace). A quoted \
+             decoy lands on a double quote and a `let _ =` binding lands on an equals sign."
+        );
+        let depth = before.iter().filter(|&&c| c == '{').count()
+            - before.iter().filter(|&&c| c == '}').count();
+        assert_eq!(
+            depth, 1,
+            "A11Y-29 TEETH: the a11y call sits at brace depth {depth}, not 1. Depth 2 means it \
+             is nested inside a conditional — MEASURED: `if false {{ ... }}` and a \
+             never-true runtime guard both satisfy a plain substring check while the \
+             validator never runs at content-sync time."
+        );
+        let squashed: String = body.chars().filter(|c| !c.is_whitespace()).collect();
+        let needle = "validate_a11y_tokens(A11Y_TOKENS)?;";
+        assert!(
+            squashed.contains(needle),
+            "A11Y-29 TEETH: validate_content's body does not contain the call {needle:?}. The \
+             a11y table would then be validated by this test suite and by NOTHING that runs at \
+             content-sync time — a decoy gate. Add the call as the LAST statement of \
+             validate_content."
+        );
+
+        // 4. And the validator that call reaches genuinely rejects a broken
+        //    table: the same shipped rows minus one required status row.
+        let mut broken = shipped_rows();
+        let idx = m23s8_row_index(&broken, "status.freeze");
+        broken.remove(idx);
+        let err = m23s8_expect_rejected(&broken, "reachability probe: status.freeze removed");
+        assert!(
+            err.contains("status.freeze"),
+            "A11Y-29 TEETH: the validator validate_content calls must reject a table missing \
+             `status.freeze` and say so; got: {err:?}"
+        );
+    }
+
+    /// A11Y-29 forgery resistance: `validate_a11y_tokens` must judge only its
+    /// ARGUMENT, in every build profile.
+    ///
+    /// Two forged bodies were MEASURED to pass all of the fixture tests above
+    /// while leaving the production path unvalidated, because every fixture
+    /// hands the validator an owned `Vec` while the one production caller hands
+    /// it `A11Y_TOKENS` itself:
+    ///   * a fast path returning `Ok(())` when the argument equals
+    ///     `A11Y_TOKENS` — no fixture ever reaches it, and the real call always
+    ///     does;
+    ///   * a `cfg!(debug_assertions)` early return — green under the debug
+    ///     builds CI runs, dead in the release builds that ship.
+    ///
+    /// Neither is reachable by a behavioural fixture, so this is a source scan.
+    /// It reads the comment-stripped body of one function in this file.
+    #[test]
+    fn m23s8_forgery_validator_judges_only_its_argument() {
+        let anchor = format!("pub fn {}(", "validate_a11y_tokens");
+        let occurrences = M23S8_SELF_SOURCE.matches(anchor.as_str()).count();
+        assert_eq!(
+            occurrences, 1,
+            "purity probe: the validate_a11y_tokens signature must occur EXACTLY once in \
+             content.rs (found {occurrences})"
+        );
+        let start = M23S8_SELF_SOURCE
+            .find(anchor.as_str())
+            .expect("the signature was just counted, so it must be findable");
+        let rest = &M23S8_SELF_SOURCE[start..];
+        let end = rest
+            .find("\n}\n")
+            .expect("validate_a11y_tokens must be terminated by a column-0 closing brace");
+        let body = m23s8_strip_rust_comments(&rest[..end]);
+        assert!(
+            body.contains("seen_tokens"),
+            "extraction sanity: the region read does not look like validate_a11y_tokens's body, \
+             so the assertions below would be meaningless"
+        );
+        for banned in ["A11Y_TOKENS", "cfg!", "debug_assert", "#[cfg("] {
+            assert!(
+                !body.contains(banned),
+                "A11Y-29 TEETH: validate_a11y_tokens's body names {banned:?}. The required key \
+                 set must be derived from the ENUMS and the verdict must depend only on the \
+                 argument, in every build profile — a table-self-reference or a build-profile \
+                 gate ships a permanently-Ok validator that every fixture test still passes."
+            );
+        }
+
+        // The serde probe is the totality oracle, and serde omits a
+        // `#[serde(skip)]` variant from the expected-variant list it reports.
+        // A skipped variant would therefore be a real StatusKind with no token
+        // and a green suite, so the attribute is banned on the three enums.
+        let sources = [
+            ("combat/ability.rs", include_str!("combat/ability.rs")),
+            ("combat/types.rs", include_str!("combat/types.rs")),
+            ("monster/types.rs", include_str!("monster/types.rs")),
+        ];
+        for (label, src) in sources {
+            let stripped = m23s8_strip_rust_comments(src);
+            let squashed: String = stripped.chars().filter(|c| !c.is_whitespace()).collect();
+            assert!(
+                !squashed.contains("serde(skip"),
+                "A11Y-29 TEETH: {label} uses a serde skip attribute. serde omits a skipped \
+                 variant from the expected-variant list the totality probe reads, so such a \
+                 variant would ship with no a11y token and a fully green suite."
+            );
+        }
+    }
+
+    /// A11Y-29: the token length band is enforced at BOTH ends, and both
+    /// boundary lengths are ACCEPTED.
+    ///
+    /// KILLS a forged validator that replaces the band with `token.is_empty()`
+    /// — MEASURED to pass every other test here, because the only short token
+    /// any fixture uses is the empty string and no fixture uses a long one.
+    #[test]
+    fn m23s8_reject_out_of_band_token_length() {
+        for bad in ["P", "TOOLONG"] {
+            let mut rows = shipped_rows();
+            let idx = m23s8_row_index(&rows, "status.poison");
+            rows[idx].token = bad;
+            let err = m23s8_expect_rejected(&rows, "out-of-band token length");
+            assert!(
+                err.contains(bad) || err.contains("status.poison"),
+                "the rejection must name the offending token or its key; got: {err:?}"
+            );
+        }
+        for good in ["AB", "ABCD"] {
+            let mut rows = shipped_rows();
+            let idx = m23s8_row_index(&rows, "status.poison");
+            rows[idx].token = good;
+            validate_a11y_tokens(&rows).unwrap_or_else(|err| {
+                panic!(
+                    "a {}-character token must be ACCEPTED — the band is inclusive at both \
+                     ends, and a validator that rejects here is over-tight, not safe: {err:?}",
+                    good.len()
+                )
+            });
+        }
     }
 }

@@ -861,6 +861,14 @@ pattern. `validate_content` enforces: unique ids, no zero/over-255 base stats,
 no dangling skill refs, no duplicate type chart pairs. Append-only-ids eval
 extended for all registries.
 
+Since m23-s8 (ADR-0233) it also enforces **A11Y-29**: `A11Y_TOKENS` in
+`game-core/src/content.rs` gives every `StatusKind` and every `Affinity` a short,
+visible text token, so no battle badge conveys meaning by colour alone. The table is
+Rust rather than a `content/` RON file because `evals/content-version.eval.mjs` hashes
+every file under `game-core/content`, and its keys are enum variants (type space), not
+designer-authored rows. Roster completeness is proved against serde's own
+derive-generated variant list, not a hand-kept array.
+
 ## Monster server integration (`server-module`, M6b — ADR-0040)
 
 The monster subsystem's server-side integration: content tables, monster storage

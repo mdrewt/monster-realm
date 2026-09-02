@@ -264,7 +264,16 @@ export class BattleView {
     // `width` and `background` stay inline: both are computed per render.
     hpFill.className = 'hp-fill';
     const pct = card.hpPercent;
-    const color = pct > 50 ? '#4a4' : pct > 20 ? '#aa4' : '#a44';
+    // M23 §2.6 / escalation §8.1 default (a), ADR-0233: a colour-blind-SAFE DEFAULT
+    // palette, not an opt-in theme. The old trio was #4a4 / #aa4 / #a44 — a red/green
+    // pair whose healthy and wounded bands differ by only 1.21:1 in relative
+    // luminance, i.e. indistinguishable without hue. This blue -> amber -> pale-yellow
+    // axis survives all three dichromacies and is strictly monotone in luminance with
+    // severity, so the band is readable in greyscale. Gated by the m23s8 palette cases
+    // in battleView.test.ts, which recompute the ratios from the rendered DOM rather
+    // than pinning these literals. The bar track above is deliberately NOT retuned:
+    // darkening it would satisfy the contrast clause with the hostile trio intact.
+    const color = pct > 50 ? '#4a90d9' : pct > 20 ? '#f0aa44' : '#ffe680';
     hpFill.style.cssText = `width:${pct}%;height:100%;background:${color};`;
     hpBar.appendChild(hpFill);
     el.appendChild(hpBar);
