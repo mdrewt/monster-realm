@@ -450,6 +450,26 @@ and guards subject-existence → deletion-gate → cooldown → purge-before-wri
 path. The PRV1-14 TTL reaper is DEFERred to S4b (scheduled tables are
 automigration-frozen) — S4b must land before ANY public exposure.
 
+**m22-s8** (ADR-0231) landed the CLIENT half's decision cores plus the
+`terminal_at_ms` data path (`rowConvert`/`store` carry it as `bigint |
+undefined`, a `null` SDK Option normalised away, `0n` preserved as a REAL
+marker). `ui/privacyModel.ts` derives the phase lattice
+`unknown|active|grace|due|terminal` from the marker and `status` ALONE — the
+clock decides only `deadlineAtMs`/`remainingMs`, so a non-bigint `nowMs` darkens
+the number without ever removing a permission — with the marker checked BEFORE
+status (the `cancel_account_deletion` guard-first order) and `due` still
+cancel-permitted, because the server accepts a late cancel until
+`terminal_at_ms` is `Some`. `ui/exportAssembly.ts` reads `chunk_index`/
+`total_chunks` REQUEST-WIDE per the frozen S4↔S8 contract, filters by owner
+BEFORE selecting the newest `request_id` (bigint reduce-max, never a string
+sort), and splices the verbatim `payload_json` values — no `JSON.parse`, so the
+server's quoted-decimal u64/i64 encoding survives intact. `exportable` stays a
+server-side axis; the client applies no allowlist. The DOM overlay, the
+`main.ts` wiring, the `deletion_grace_ms_default()` wasm read and the
+`my_export_bundle` subscription are DEFERred to m22-s8b (X9/X10/X11), whose
+`touches:` must include `evals/monster-privacy.eval.mjs` for its
+`EXPECTED_SUBSCRIPTIONS` entry.
+
 **m22-s3b** (ADR-0228) landed the §4.4 five-step cascade in
 `account_deletion_reaper`'s fall-through: 6a force-resolve via
 `resolve_all_live_interactions` (extracted into lib.rs, shared verbatim-order

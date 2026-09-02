@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 196 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 197 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -205,6 +205,7 @@ Generated from 196 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0228](./0228-s3b-deletion-cascade-delegated-erase-rearm.md) | 0228 — S3b: the §4.4 deletion cascade via per-module erase/anonymize delegation, one-shot re-arm + sweep, and PRV1-8(b) fresh re-registration | Accepted | security-authz, schema-persistence, ci-gates | m22-s3b | S3b lands the §4.4 cascade via per-module `erase_*`/`anonymize_*` delegation, re-arms the one-shot reaper (not-due branch + init/sync sweep), ships PRV1-8(b) fresh re-registration, and re-pins the reaper body pin. |
 | [0229](./0229-deletion-completeness-from-derive-metadata.md) | S6 deletion completeness: prove it from the derive metadata, in-crate, not from a source scan | Accepted | ci-gates, security-authz | m22-s6 (M22 §7.2 S6 — PRV1-15, PRV1-16) | S6 ships five in-crate `#[test]`s in `accounts_tests.rs` — not new eval scanner scripts, not a `server-module/tests/` target (the manifest is crate-private); the Identity-column half reads SpacetimeDB's own derive metadata, not source text. |
 | [0230](./0230-deletion-runbook-gates-with-declaration-shaped-cites.md) | S7 deletion runbook gates: exact-sentence pins + declaration-shaped citations (G24, PRV1-17/18/20) | Accepted | tooling-docs, ci-gates, security-authz | m22-s7 (M22 §7.2 S7 — PRV1-17, PRV1-18, PRV1-20) | G24 enforces six §9 deletion clauses via exact-sentence pins and declaration-shaped cites. Phantom `DELETION_GRACE_MS` vs real `DELETION_GRACE_MS_DEFAULT` split is intentional. PRV1-17/20 verified; enforcement deferred to future slice. |
+| [0231](./0231-client-privacy-cores-request-wide-chunk-assembly.md) | S8 client privacy cores: request-wide export assembly + a terminal-first deletion lattice | Accepted | client-ui, security-authz | m22-s8 (M22 §7.2 S8 — the client half of PRV1-1/3/4/11/12/13) | Ship S8 as two pure cores + the terminal_at_ms data path; defer the overlay and the export transport to m22-s8b. Chunk fields are read request-wide, verbatim from the producer; exportable filtering stays server-side. |
 
 ## Harness design corpus (H- namespace)
 
@@ -483,6 +484,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0217](./0217-a11y15-focus-oracle-single-owner.md) — rb-16 (residual R-m23-s10-X19) — 0217 — A11Y-15's focus oracle is the readdir-derived eval; the hand-kept per-slice lists are retired, except the one that is not subsumed (Accepted)
 - [0218](./0218-axe-browser-tier-under-default-playwright-config.md) — rb-19 (residual R-m23-s11-X10) — 0218 — The axe-core browser tier runs under the default Playwright config, so the nightly a11y gate takes a server dependency (Accepted)
 - [0219](./0219-reduced-motion-browser-tier-covers-the-stylesheet-arm.md) — rb-20 (residual R-m23-s11-X11) — 0219 — The reduced-motion browser tier covers A11Y-27's stylesheet arm only, because the renderer arm was never wired into main.ts (Accepted)
+- [0231](./0231-client-privacy-cores-request-wide-chunk-assembly.md) — m22-s8 (M22 §7.2 S8 — the client half of PRV1-1/3/4/11/12/13) — S8 client privacy cores: request-wide export assembly + a terminal-first deletion lattice (Accepted)
 
 ### ci-gates
 
@@ -668,6 +670,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0228](./0228-s3b-deletion-cascade-delegated-erase-rearm.md) — m22-s3b — 0228 — S3b: the §4.4 deletion cascade via per-module erase/anonymize delegation, one-shot re-arm + sweep, and PRV1-8(b) fresh re-registration (Accepted)
 - [0229](./0229-deletion-completeness-from-derive-metadata.md) — m22-s6 (M22 §7.2 S6 — PRV1-15, PRV1-16) — S6 deletion completeness: prove it from the derive metadata, in-crate, not from a source scan (Accepted)
 - [0230](./0230-deletion-runbook-gates-with-declaration-shaped-cites.md) — m22-s7 (M22 §7.2 S7 — PRV1-17, PRV1-18, PRV1-20) — S7 deletion runbook gates: exact-sentence pins + declaration-shaped citations (G24, PRV1-17/18/20) (Accepted)
+- [0231](./0231-client-privacy-cores-request-wide-chunk-assembly.md) — m22-s8 (M22 §7.2 S8 — the client half of PRV1-1/3/4/11/12/13) — S8 client privacy cores: request-wide export assembly + a terminal-first deletion lattice (Accepted)
 
 ### economy-quests
 

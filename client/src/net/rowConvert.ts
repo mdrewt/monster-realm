@@ -585,15 +585,22 @@ export interface SdkAccountRow {
   readonly deletionRequestedAtMs: bigint | undefined;
   readonly claimedFrom: { toHexString(): string } | undefined;
   readonly claimedAtMs: bigint | undefined;
+  readonly terminalAtMs: bigint | undefined;
 }
 
 /**
  * Map a `my_account` view row to the store's account slot. Modelled byte-for-byte on
- * `playerWalletRowToStore`: EXPLICIT field mapping (the eight D15 keys, never a spread — the
- * account record is deliberately PII-free and no SDK-only field may leak into the store), NO
- * numeric coercion (the i64 timestamps stay bigint), NO defaulting (the three Option columns
+ * `playerWalletRowToStore`: EXPLICIT field mapping (the nine D15 + M22-S4 keys, never a spread —
+ * the account record is deliberately PII-free and no SDK-only field may leak into the store), NO
+ * numeric coercion (the i64 timestamps stay bigint), NO defaulting (the four Option columns
  * pass through as `undefined`, never fabricated to `0n`/`''` — the broke-vs-dark rule at
  * rowConvert.ts:543-568), and NO throw of its own.
+ *
+ * m22-s8 (ADR-0231) added the ninth key, `terminalAtMs` (M22 S2's `terminal_at_ms`): the PRV1-4
+ * permanent-deletion marker `ui/privacyModel.ts` reads as its PRIMARY route to the terminal
+ * state. It is `Option<i64>`, so `0n` is a REAL marker and must survive as `0n` — and a `null`
+ * is normalised to `undefined`, exactly as `claimedFrom` already is, because a raw `null` would
+ * read downstream as "marker present" and make every account look permanently deleted.
  *
  * Fail-SOFT, not fail-loud: this runs inside an SDK row callback whose dispatch loop has no
  * per-listener isolation (ADR-0085 A6), so a throw here starves every sibling table's ingest
@@ -613,6 +620,7 @@ export function accountRowToStore(row: SdkAccountRow): StoreAccount {
         ? undefined
         : row.claimedFrom.toHexString(),
     claimedAtMs: row.claimedAtMs,
+    terminalAtMs: row.terminalAtMs === null ? undefined : row.terminalAtMs,
   };
 }
 

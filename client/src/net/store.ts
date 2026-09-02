@@ -232,8 +232,11 @@ export type StoreWallet = {
 
 /** The caller's own account row, normalized (identities as hex strings; M21b-2, ADR-0182
  *  D15). Sourced from the owner-scoped `my_account` VIEW — never a whole-table subscription.
- *  `status` carries the AccountStatus tag bare; the three Option columns pass through as
- *  `undefined` when absent (never fabricated to `0n`/`''` — ADR-0154's broke-vs-dark rule). */
+ *  `status` carries the AccountStatus tag bare; the FOUR Option columns pass through as
+ *  `undefined` when absent (never fabricated to `0n`/`''` — ADR-0154's broke-vs-dark rule).
+ *  `terminalAtMs` (M22 S2, added client-side by m22-s8 / ADR-0231) is the PRV1-4
+ *  permanent-deletion marker: `0n` is a real marker value, so it must never be normalised
+ *  away. */
 export type StoreAccount = {
   readonly identity: string;
   readonly authIssuer: string;
@@ -243,6 +246,7 @@ export type StoreAccount = {
   readonly deletionRequestedAtMs: bigint | undefined;
   readonly claimedFrom: string | undefined;
   readonly claimedAtMs: bigint | undefined;
+  readonly terminalAtMs: bigint | undefined;
 };
 
 /** A player quest row, normalized (ownerIdentity as hex string; M12d). */
