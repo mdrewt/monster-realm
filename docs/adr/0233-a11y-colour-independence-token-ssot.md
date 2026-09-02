@@ -188,6 +188,10 @@ honest belt-and-braces, not the fix.
   `#484` on the player card (`:116`), and `#844` Flee vs `#6a6` swap/recruit (`:330`, `:399`). All
   carry text labels, so none is an A11Y-29 violation, but they are the same defect class one
   screenful away and this slice did NOT survey them.
+  **R-m23-s8-RUNTIME** (backlog) — the runtime-vs-CI split named above: a NEW enum variant fails
+  `m23s8_totality_*` in CI but not `validate_content` at content-sync time. The idiomatic fix is a
+  sibling validator called from `server-module/src/content.rs`, which is outside this slice's
+  `touches:`. Given an ID so the concession is queued rather than only prose.
   **R-m23-s8-FALLBACK-COLLIDE** (backlog) — the client fallback carries two characters of entropy
   after its `?`, so two unknown server statuses can share a badge (`Confusion` and `Corrosion` both
   render `?CO`). Accepted: the badge's job is to prove a status EXISTS during deployed-server /
