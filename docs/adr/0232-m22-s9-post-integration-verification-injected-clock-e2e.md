@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** security-authz, ci-gates
-**Decision:** S9 verifies the integrated M22 surface with a live e2e in `account-e2e.eval.mjs` that patches `DELETION_GRACE_MS_DEFAULT` (7 d → 15 s) and `EXPORT_CHUNK_ROWS` (500 → 2) in the eval's tmpdir module copy so the real one-shot reaper fires in CI, plus compile-level `m22s9_*` contract pins in `accounts_tests.rs`; HTTP reducer calls are banned in the rig.
+**Decision:** The S9 e2e patches the grace and chunk constants in its tmpdir module copy so the real reaper fires in CI; compile-level m22s9 contract pins land in accounts_tests.rs; HTTP reducer calls are banned in the rig.
 
 ## Context and problem statement
 
