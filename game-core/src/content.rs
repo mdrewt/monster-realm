@@ -8240,6 +8240,7 @@ mod tests {
     ///     does;
     ///   * a `cfg!(debug_assertions)` early return — green under the debug
     ///     builds CI runs, dead in the release builds that ship.
+    ///
     /// Neither is reachable by a behavioural fixture, so this is a source scan.
     /// It reads the comment-stripped body of one function in this file.
     #[test]
