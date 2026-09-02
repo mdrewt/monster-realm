@@ -13,13 +13,15 @@
 
 M22 §7.2's S7 row names three criteria:
 
-* **PRV1-17** ("deletion logging is zero for the account itself") — all code paths reachable from
-  `delete_account` and the cascade helpers emit no player-identifying data to log sinks.
-* **PRV1-18** ("the runbook section 9 is exact-body-checked, so drift fails CI") — the two
-  spec-mandated risk disclosures on pseudonymization and backup-recovery limits are verbatim and
-  immutable in the deployed documentation.
-* **PRV1-20** ("pre-tombstone identity is not exported") — no `name`, `auth_issuer`, or player
-  identity is written to `export_bundle` rows before the account is marked terminal.
+* **PRV1-17** — WHEN `delete_account`, `cancel_account_deletion`, or the deletion reaper emits a
+  log line THE SYSTEM SHALL NOT include any player-authored field in that line.
+* **PRV1-18** — WHEN the DR runbook is missing or its `## Data deletion & backup retention` section
+  is reworded THE SYSTEM SHALL fail CI.
+* **PRV1-20** — WHEN any of those three emits a log line **at the moment of erasure or
+  anonymization** THE SYSTEM SHALL NOT include the erased identity’s pre-tombstone `name` or
+  `auth_issuer` value in that line. (PRV1-20 is about LOG CONTENT in the cascade window, not about
+  export payloads — an earlier draft of this ADR paraphrased it as an export-side property, which
+  it is not.)
 
 ADR-0224 forbids new `evals/*.eval.mjs` scanner scripts outright, so the spec's stated vehicle
 (a new `evals/account-privacy.eval.mjs` seed-set extension) would have been unavailable. S7 instead
@@ -96,33 +98,47 @@ that verifies this guard itself.
 
 ## PRV1-17 and PRV1-20 — Met by verification, mechanical enforcement deferred
 
-G24 does not mechanically verify PRV1-17 (no account logging) and PRV1-20 (no pre-tombstone export).
+G24 does not mechanically verify PRV1-17 or PRV1-20 — both are properties of log CONTENT, which no
+runner can prove negatively without the taint-scanner class ADR-0224 retires.
 These are verified by code review of the following git:line evidence:
 
-**PRV1-17 logging check.** All reachable logging paths:
-- `delete_account` (`server-module/src/accounts.rs:769–799`) calls only `reject()` at lines 783/792
-- `cancel_account_deletion` (`server-module/src/accounts.rs:804–834`) calls only `reject()` at lines
-  812/825/831
-- `reject()` at `server-module/src/guards.rs:515–518` routes to `guards::log_reject` at `guards.rs:47–56`
-- `log_reject` emits static REJECT_ALREADY_DELETED (`accounts.rs:84`) or one of the static reasons
-  ("sign in required", "no account")
-- `account_deletion_reaper` (`accounts.rs:923–958`) emits no log line; its scheduler-only `Err` is
-  unlogged
-- All 11 delegated cascade helpers (`server-module/src/privacy.rs`) contain zero `log::`/`mr_log` calls;
-  line 19–28 bans logging macros file-wide
-- Transitive logging reachable via `resolve_all_live_interactions` (`server-module/src/lib.rs:240–245`) →
-  `pvp::forfeit_on_disconnect` (`server-module/src/pvp.rs:645–701`) → `apply_pvp_forfeit` / `settle_pvp_battle`
-  (`pvp.rs:559–599`) logs only `battle_id` (a u64) and an escaped internal error string. No
-  player-authored text, no pre-tombstone `name` or `auth_issuer`
+**PRV1-17 — every reachable log call site.** Each hop below was read directly; none is inferred
+from a source scan.
 
-Caveat: those helpers were read directly, not exhaustively taint-traced; however, the absence of
-logging macros file-wide in `privacy.rs` is a structural guarantee.
+- `server-module/src/accounts.rs` contains **zero** `log::`/`mr_log` calls of its own (measured).
+  Its only logging path is `reject()` (`accounts.rs:515-518`), which forwards to
+  `guards::log_reject` (`server-module/src/guards.rs:47-56`). `log_reject` emits one
+  `log::warn!` carrying `reducer`, `sender` (an `Identity`, fixed-width hex) and `reason`.
+- `delete_account` (`accounts.rs:769-799`) and `cancel_account_deletion` (`accounts.rs:804-834`)
+  reach `reject()` only with **static string literals** — `"sign in required"`, `"no account"`,
+  and the `const REJECT_ALREADY_DELETED` at `accounts.rs:84`. No caller-supplied or
+  player-authored value can reach the `reason` parameter on these paths.
+- `account_deletion_reaper` (`accounts.rs:923-958`) emits **no log line at all**; its
+  scheduler-only `Err` is a static string and is returned, not logged.
+- All **11** delegated cascade helpers were extracted brace-balanced and each body contains zero
+  `log::`/`mr_log` calls: `monster_mgmt.rs:148`, `inventory.rs:125`, `npc.rs:464`,
+  `raising.rs:765`, `economy.rs:283`, `playtest.rs:212`, `trading.rs:780`, `pvp.rs:729`,
+  `privacy.rs:58`, `ranking.rs:286`, `battle.rs:1557`. (Several of those FILES do log elsewhere,
+  in unrelated reducers — the distinction is per-function, not per-file.) `privacy.rs:19-28`
+  additionally bans logging macros file-wide.
+- The only logging transitively reachable from the cascade is through step 6a,
+  `resolve_all_live_interactions` (`server-module/src/lib.rs:240-245`) ->
+  `pvp::forfeit_on_disconnect` (`server-module/src/pvp.rs:645-701`) -> `apply_pvp_forfeit` /
+  `settle_pvp_battle` (`pvp.rs:559-599`), plus the ADR-0185 write-back paths
+  (`server-module/src/battle.rs:894`, `:936`). Those lines carry a `battle_id` (`u64`) and a
+  json-escaped internal error string. No player-authored text.
 
-**PRV1-20 pre-tombstone export check.** Enforced by inspection: `export_bundle` rows are written only
-by `request_data_export` (`server-module/src/accounts.rs:695–725`), which is reachable only by direct
-caller query, never by the cascade. The cascade's terminal step (`mark_deletion_terminal`,
-`accounts.rs:1038–1040`) writes the terminal marker only. Code inspection confirms zero export writes
-in the cascade path.
+**PRV1-20 — the erasure window emits nothing.** PRV1-20 narrows PRV1-17 to the moment of erasure or
+anonymization: no log line there may carry the erased identity's pre-tombstone `name` or
+`auth_issuer`. It holds **by absence**: the reaper body emits no log line, and every helper that
+performs the actual delete/update is log-free per the census above, so there is no line at that
+moment into which a pre-tombstone value could be interpolated. The pre-tombstone `name` and
+`auth_issuer` are read only into the `terminal_account(anonymized_account(account), now))` update
+at `accounts.rs:955-958`, which writes to the table and logs nothing.
+
+**Honest caveat.** The step-6a helpers named above were read directly, not exhaustively taint-traced,
+and the two criteria are therefore verified rather than mechanically enforced. A future edit adding a
+log line to any of these paths would not fail CI today.
 
 Mechanical enforcement is deferred because the spec's named vehicle (`evals/account-privacy.eval.mjs`
 seed-set extension) is both outside this slice's `touches:` row and retired as a category by ADR-0224.
