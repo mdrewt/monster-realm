@@ -164,6 +164,8 @@ Enforced by five ordinary `#[test]`s in `server-module/src/accounts_tests.rs`, r
 `m22s6_via_join_tables_carry_no_identity_column`,
 `m22s6_not_owned_identity_exceptions_are_frozen`,
 `m22s6_cascade_chain_reaches_every_classified_table`. Each was shown to fail on a real mutation of
-production source before it passed on the shipped tree; the four-mutant record is
+production source before it passed on the shipped tree; the six-mutant record (four planned
+arms, one split after it was found to shadow the arm below it, one added when the artifact
+red-team measured a bypass of the pre-fix clause) is
 `memory/projects/gates/m22-s6.x6-mutant-register.md` in the harness repo, and the acceptance ledger
 is `memory/projects/gates/m22-s6.gates.md` (gates X1-X8).
