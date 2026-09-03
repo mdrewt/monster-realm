@@ -14,24 +14,24 @@ import { expect, test } from '@playwright/test';
 // Its whole mechanism IS the browser's media-query engine, which is exactly
 // what happy-dom (`renderResolver.test.ts`) cannot model.
 //
-// The RENDERER arm WAS not gated here at rb-20, and MEASURED, could not be fixed
-// from that slice's `touches:`: `client/src/main.ts:2807` calls
-// `resolver.resolve({ characters, ownEntityId, predicted, snapped, now,
-// currentZoneId })` with no `reduceMotion` key, so `renderResolver.ts:83`'s
-// `reduceMotion = false` parameter default applies on every frame of the
-// shipped client, and `motionPreferenceFromWindow`
-// (`client/src/render/motionPreference.ts`) has ZERO production importers.
+// The RENDERER arm was NOT gated here at rb-20, and MEASURED, could not be fixed
+// from that slice's `touches:`: the `resolver.resolve({ characters, ownEntityId,
+// predicted, snapped, now, currentZoneId })` call in `client/src/main.ts` passed
+// no `reduceMotion` key, so `renderResolver.ts`'s `reduceMotion = false`
+// parameter default applied on every frame of the shipped client, and
+// `motionPreferenceFromWindow` (`client/src/render/motionPreference.ts`) had
+// ZERO production importers.
 //
-// rb-38 adds the renderer-arm PAIR below as a DISCLOSURE artifact, not a green
-// gate. `client/src/main.ts` is OUT OF SCOPE for rb-38 (same as it was for
-// rb-20), so the fix cannot land in this slice either. The reduce-polarity test
-// is EXPECTED TO RED on master, for exactly the missing-`reduceMotion`-key
-// reason above (`window.__game().sawFractionalOwnMotion`, main.ts:254/1933,
-// flips true because the own slide clock keeps gliding fractionally under the
-// OS preference), and MUST keep reding until a successor slice wires the live
-// preference into that `resolve()` call. DO NOT "fix" it by editing either new
-// test to assert today's (broken) behaviour, and DO NOT relabel this tier
-// "A11Y-27, gated" until the renderer-arm pair is actually green — that is
+// rb-38 added the renderer-arm PAIR below as a DISCLOSURE artifact — the correct
+// expectation, deliberately reding on master — because `client/src/main.ts` was
+// out of scope for rb-38 as it had been for rb-20.
+//
+// 17r-a WIRED IT. `client/src/main.ts` now constructs the preference once at
+// module scope and passes a live `reduceMotion` into that `resolve()` call, so
+// the pair below is an ORDINARY GREEN GATE and its known-defect guard is gone:
+// `window.__game().sawFractionalOwnMotion` stays `false` under the reduced-motion
+// project because the own slide clock takes its `snapTo` arm. DO NOT "fix" a
+// future red by editing either test to assert broken behaviour — that is
 // precisely the false green ADR-0219 exists to prevent. The EXACTLY-TWO-TESTS
 // accounting below (plan §6 finding 5) is scoped to the STYLESHEET arm only;
 // the renderer-arm pair is separate and additional.
@@ -193,16 +193,18 @@ test('with the preference off, the same rule animates (the guard is conditional,
 });
 
 // ============================================================================
-// rb-38 — THE RENDERER ARM (A11Y-27, EARS gate E1). Read the file header above
-// FIRST — in particular the updated RENDERER ARM note it now carries.
+// rb-38 — THE RENDERER ARM (A11Y-27, EARS gate E1), CLOSED BY 17r-a. Read the
+// file header above FIRST — in particular the RENDERER ARM note it now carries.
 //
-// THIS PAIR IS A KNOWN-DEFECT DISCLOSURE, NOT A GREEN GATE. `client/src/main.ts`
-// is OUT OF SCOPE for rb-38, so the fix cannot land here — but the CORRECT
-// expectation can, and does. The reduce-polarity test below asserts what the
-// renderer SHOULD do, as an ordinary test, with exactly ONE assertion wrapped in
-// a narrow known-defect guard (see "THE KNOWN-DEFECT BOUNDARY" inside it).
+// THIS PAIR IS NOW A GREEN GATE. It shipped at rb-38 as a known-defect disclosure
+// because `client/src/main.ts` was out of that slice's scope and the wiring could
+// not land there. 17r-a landed it, so both tests below are ordinary hard gates and
+// the reduce-polarity one asserts `sawFractionalOwnMotion === false` directly.
 //
-// THE THREE IDIOMS CONSIDERED, AND WHY THE NARROW GUARD WON (rb-38 review):
+// THE THREE IDIOMS CONSIDERED AT rb-38, AND WHY THE NARROW GUARD WON THEN — kept
+// because the reasoning still governs any FUTURE known-defect disclosure in this
+// file, and records why `test.fixme()`/`test.fail()` must not be used here (both
+// are still live traps for the nightly tier):
 //   * `test.fixme()` is this repo's existing idiom for a blocked-on-another-slice
 //     e2e (`client/e2e/recruit.spec.ts:1008`), but it SKIPS — and `just a11y-e2e`
 //     half 4 reds on `stats.skipped !== 0` by design, because "a skipped a11y
@@ -215,16 +217,16 @@ test('with the preference off, the same rule animates (the guard is conditional,
 //   * THE NARROW `try`/`catch` GUARD actually used keeps every other assertion —
 //     matchMedia, readiness, the fresh-latch precondition, the did-it-actually-
 //     move check — as an ORDINARY HARD GATE that reds the build, while
-//     tolerating the one known-broken assertion in the one direction that is
-//     currently true. It keeps the load-bearing alarm property: **it flips to
-//     RED the moment the bug is fixed**, forcing whoever wires
-//     `motionPreferenceFromWindow()` into `client/src/main.ts:2807`'s
-//     `resolver.resolve({...})` call to come back and delete the guard.
+//     tolerating the one known-broken assertion in the one direction that was
+//     true then. It kept the load-bearing alarm property: **it flipped to RED
+//     the moment the bug was fixed**, forcing whoever wired
+//     `motionPreferenceFromWindow()` into the `resolver.resolve({...})` call in
+//     `client/src/main.ts` to come back and delete the guard. That worked as
+//     designed — 17r-a is that slice, and the guard is gone.
 //
-// DO NOT "fix" this by asserting today's behaviour (`.toBe(true)`). That would
-// cement the bug and is exactly the false green ADR-0219 exists to prevent.
-// The ledger gate (rb-38 E1) stays DEFERred until the wiring lands: this pair
-// documents and detects the gap, it does not close it.
+// DO NOT "fix" a future red here by asserting the broken behaviour (`.toBe(true)`).
+// That would cement the bug and is exactly the false green ADR-0219 exists to
+// prevent. The rb-38 E1 ledger gate is MET as of 17r-a.
 //
 // KNOWN LIMIT OF THE ALARM, STATED SO IT IS NOT MISTAKEN FOR COVERAGE (rb-38
 // red-team finding 2, MEASURED). The alarm watches the OWN-entity render path
@@ -236,11 +238,12 @@ test('with the preference off, the same rule animates (the guard is conditional,
 // so it is deliberately out of scope for this file. Do not read a green run here
 // as "reduced motion is fully handled".
 //
-// THE OBSERVABLE: `sawFractionalOwnMotion` (`client/src/main.ts:254`, read via
-// `window.__game()` at `client/src/main.ts:1933`) — a STICKY DEV latch the
-// frame loop itself sets the first time the own character's RESOLVED render
-// position is not an integer tile (`client/src/main.ts:2815-2830`, the "sticky
-// latch" comment). Only the own slide clock's `positionAt`
+// THE OBSERVABLE: `sawFractionalOwnMotion` — declared in `client/src/main.ts` under
+// its "Sticky DEV latch" comment, exposed through the `window.__game()` snapshot,
+// and set by the frame loop under its "Sticky latch" comment the first time the own
+// character's RESOLVED render position is not an integer tile. (Landmarks, not line
+// numbers: rb-36 retargeted seven citations that a single main.ts edit had drifted,
+// and 17r-a's own diff moves every line below its insertion points.) Only the own slide clock's `positionAt`
 // (`client/src/render/slideClock.ts:42-48`) can produce a fractional value on
 // that path — the predicted tile fed into `RenderResolver.resolve` is always an
 // integer — so a `true` reading can ONLY have come from an in-flight slide
@@ -380,6 +383,15 @@ async function rendererArmStepEastAndSettle(
   await p.waitForTimeout(Math.round(stepMs * 1.5));
 }
 
+// THE TITLE STILL SAYS "KNOWN DEFECT — guarded" AND THAT IS NOW INACCURATE. It is kept
+// BYTE-IDENTICAL on purpose: `just a11y-e2e` half 4 pins this title's leading substring
+// (up to and including the parenthesised defect label) and requires exactly one
+// matching test title in the reduced-motion report, and the WHOLE
+// a11y-e2e recipe body is byte-pinned as A11Y_E2E_RECIPE_REGION in
+// `evals/ci-gate-wiring.eval.mjs`. Renaming here therefore reds two gates and needs a
+// justfile edit that was outside 17r-a's touch-set. Do not "just fix" the title in
+// isolation — retiring it is a self-contained follow-up slice that must move the title,
+// the justfile pin and the eval region together, in one commit.
 test('RENDERER ARM (E1, KNOWN DEFECT — guarded): under the reduced-motion project, the own character NEVER renders a fractional sub-tile position', async ({
   page,
 }) => {
@@ -444,23 +456,21 @@ test('RENDERER ARM (E1, KNOWN DEFECT — guarded): under the reduced-motion proj
       'because nothing was ever rendered in motion at all',
   ).toBe(t0.x + 1);
 
-  // THE GATE (E1). EXPECTED TO RED on master: `client/src/main.ts:2807`'s
-  // `resolver.resolve({...})` call passes no `reduceMotion` key, so
-  // `renderResolver.ts:83`'s `reduceMotion = false` default applies, the own
-  // slide clock's `setTarget` (not `snapTo`) arm runs every frame of this
-  // step, and `positionAt` reports a fractional value at some point during the
-  // STEP_MS glide — flipping this latch to `true` even though the OS-level
-  // preference (clause above) was ON the whole time. A correct renderer wiring
-  // (main.ts threading a live `motionPreferenceFromWindow()` read into
-  // `reduceMotion`) forces `snapTo` every frame instead
-  // (renderResolver.ts:106-116), so `positionAt` can only ever report the
-  // exact integer target tile, and this latch would never flip.
+  // THE GATE (E1), GREEN SINCE 17r-a. Before that slice this reded on master: the
+  // `resolver.resolve({...})` call in `client/src/main.ts` passed no `reduceMotion`
+  // key, so `renderResolver.ts`'s `reduceMotion = false` default applied, the own
+  // slide clock's `setTarget` (not `snapTo`) arm ran every frame of this step, and
+  // `positionAt` reported a fractional value at some point during the STEP_MS glide
+  // — flipping this latch to `true` even though the OS-level preference (clause
+  // above) was ON the whole time. 17r-a threads a live `motionPreferenceFromWindow()`
+  // read into `reduceMotion`, which forces `snapTo` every frame instead (see the
+  // A11Y-27 comment on renderResolver.ts's own-entity arm), so `positionAt` can only
+  // ever report the exact integer target tile and this latch never flips.
   //
-  // WRONG IMPLEMENTATIONS THIS ASSERTION KILLS, once a successor slice
-  // attempts a fix: (a) reading `motionPreferenceFromWindow()` only ONCE at
-  // startup instead of per-frame — undetectable by THIS specific assertion if
-  // the initial read happens to be correct, but the current, permanently-false
-  // wiring this red proves is today's actual state; (b) wiring a value that
+  // WRONG IMPLEMENTATIONS THIS ASSERTION KILLS: (a) reading
+  // `motionPreferenceFromWindow()` only ONCE at startup instead of per-frame — NOT
+  // detectable by THIS assertion, and deliberately covered instead by the RM17A-LIVE
+  // tooth in `client/src/main.reducedMotionWiring.test.ts` (17r-a); (b) wiring a value that
   // never actually reaches the `reduceMotion` key of the resolve() call args
   // (e.g. computed but unused) — this assertion stays red, identically to
   // today; (c) any wiring that supplies `reduceMotion` correctly for the
@@ -468,39 +478,31 @@ test('RENDERER ARM (E1, KNOWN DEFECT — guarded): under the reduced-motion proj
   // OWN-entity branch (renderResolver.ts:93-124) on the `false` default — the
   // remote branch never touches this own-only latch, so a remote-only fix
   // leaves this exact assertion red.
-  // THE KNOWN-DEFECT BOUNDARY. Everything above this point is an ORDINARY HARD
-  // GATE — matchMedia, readiness, the fresh-latch precondition and the
-  // did-it-actually-move check all red the build normally. ONLY the single
-  // assertion below is tolerated, and only in the one direction that is
-  // currently true.
+  // 17r-a RETIRED THE KNOWN-DEFECT GUARD. rb-38 wrapped the assertion below in a narrow
+  // try/catch whose entire purpose was to flip RED the moment the wiring landed, and to
+  // instruct whoever landed it to come back and delete the guard. 17r-a is that slice:
+  // `client/src/main.ts` now constructs the preference once at module scope and threads a
+  // live `reduceMotion` into the render loop's `resolve()` call. So this is an ORDINARY
+  // HARD GATE again, exactly like every assertion above it.
   //
-  // This is deliberately NOT `test.fail()` (rb-38 review finding). `test.fail()`
-  // marks the WHOLE test body expected-to-fail, so it also swallows a broken
-  // `__game()` hook, a boot failure, a readiness timeout, or a regression in any
-  // anti-vacuity clause — all of which would report identically to the known
-  // defect. MEASURED: with `window.__game` deleted entirely and the blanket
-  // `test.fail()` in place, this test reported `1 passed` in isolation. The
-  // narrow try/catch below cannot do that: a boot failure now throws out of
-  // `rendererArmReady()` long before this line.
-  let rendererHonoursReducedMotion: boolean;
-  try {
-    expect(after.sawFractionalOwnMotion).toBe(false);
-    rendererHonoursReducedMotion = true;
-  } catch {
-    rendererHonoursReducedMotion = false;
-  }
+  // Do NOT reintroduce the guard, and do NOT invert this assertion to accept fractional
+  // motion — `false` is the correct value and a `true` reading is a real regression. If a
+  // FUTURE slice ever needs a known-defect disclosure in this file again, re-read the
+  // three-idioms note in the section comment above: `test.fixme()` breaks the nightly
+  // tier's zero-skipped rule and `test.fail()` swallows every other failure in the body.
   expect(
-    rendererHonoursReducedMotion,
-    'THE RENDERER ARM IS FIXED — and this guard is now the only thing failing. That is BY ' +
-      'DESIGN (rb-38): the renderer now honours the OS reduced-motion preference, so the ' +
-      'known-defect disclosure is obsolete. DELETE this try/catch block and assert directly ' +
-      "instead: `expect(after.sawFractionalOwnMotion, '<diagnostic>').toBe(false);`. Then " +
-      'update the rb-38 E1 ledger gate from DEFERred to met, and drop the KNOWN-DEFECT wording ' +
-      "from this file's header and from the justfile a11y-e2e half-4 comment. " +
-      'CONVERSELY, if you are reading this because the value is `false` and you want it to ' +
-      'stop failing: it is NOT failing — `false` is the passing value today. Do NOT invert the ' +
-      'assertion above to accept fractional motion; that cements the bug and is exactly the ' +
-      'false green ADR-0219 exists to prevent.',
+    after.sawFractionalOwnMotion,
+    'THE RENDERER ARM REGRESSED. The own character rendered a FRACTIONAL sub-tile position ' +
+      'while the reduced-motion Playwright project had the OS preference ON the whole time — ' +
+      'the matchMedia clause above proves the preference really was on, and the did-it-move ' +
+      'clause proves a step really was rendered, so neither can explain this. It means the ' +
+      "live preference stopped reaching RenderResolver.resolve's `reduceMotion` key, so the " +
+      'own slide clock took its `setTarget` glide arm instead of the `snapTo` arm it must ' +
+      'take under reduced motion. Look first at the module-scope preference construction in ' +
+      '`client/src/main.ts` and at the `reduceMotion` key of its `resolve()` call; ' +
+      '`client/src/main.reducedMotionWiring.test.ts` gates that wiring at unit level and ' +
+      'should red first. Do NOT invert this assertion to accept fractional motion; that ' +
+      'cements the bug and is exactly the false green ADR-0219 exists to prevent.',
   ).toBe(false);
 });
 
