@@ -119,8 +119,10 @@ inline `ctx.db.<accessor>()…` writes.
 
 Measured at implementation review (artifact red-team + reducer-security-auditor), stated once:
 
-- A turbofish or any non-identifier byte before a segment's `(` reports `EmptyAccessor`; a
-  parenthesised receiver `(ctx.db.account()).identity().delete(x)` does too — loud, not silent.
+- A turbofish or any non-identifier byte before a segment's `(` reports `EmptyAccessor`
+  (measured: `.collect::<Vec<_>>()` and an index expression); a parenthesised receiver
+  `(ctx.db.account()).identity().delete(x)` is refused one step earlier as `UnrootedChain` by
+  the zero-argument rule below — loud either way, never silent.
 - A `Vec`/`HashMap` `.insert(` anywhere in `accounts.rs` is a loud false-RED whose sanctioned fix
   is `.push(`.
 - Every receiver segment between the root and the verb must be a zero-argument call (a table

@@ -2176,9 +2176,11 @@ fn g2_no_identity_constructor() {
 /// Kills (proof-of-teeth): add a direct `monster` (or any other pre-existing
 /// table) write chain in accounts.rs instead of delegating — the extracted
 /// accessor is outside the owned set; detach a write from its chain by aliasing
-/// the database handle, binding a column handle in an earlier statement, or
+/// the database handle, binding a column handle in an earlier statement,
+/// laundering the chain through an argument-taking combinator segment, or
 /// spelling the verb UFCS — the write becomes unattributable and this gate reds
-/// under `[W/attribution]` rather than reading as clean (rb-39 tests 1-6).
+/// under `[W/attribution]` rather than reading as clean (the rb-39 region's
+/// attribution rows).
 #[test]
 fn g5_writes_only_owned_tables() {
     let squashed = stripped_for_scan(ACCOUNTS_RS);
@@ -2192,15 +2194,18 @@ fn g5_writes_only_owned_tables() {
 /// Every variant is a REFUSAL, never a finding about the target: the scan knows
 /// a write happened and knows it cannot say which table it touches. Callers must
 /// treat all three as gate failures — an unattributed write is an UNGATED write.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq)]
 enum WriteAttrFault {
     /// The receiver chain does not bottom out in a word-bounded `ctx.db.` root:
     /// an aliased handle, a handle bound in an earlier statement, a bare
-    /// identifier receiver, or a decoy binding whose name merely ENDS in `ctx`.
+    /// identifier receiver, a decoy binding whose name merely ENDS in `ctx`, or
+    /// a segment that TAKES ARGUMENTS — a combinator can return any handle at
+    /// all, so nothing to its left is evidence about the table reached.
     UnrootedChain,
     /// A chain segment has an EMPTY name — the byte before its `(` is not an
-    /// identifier byte (a turbofish, an index expression, a parenthesised
-    /// receiver).
+    /// identifier byte (a turbofish, an index expression). A PARENTHESISED
+    /// receiver lands on `UnrootedChain` instead: its parens are NOT empty, so
+    /// the zero-argument segment rule refuses it one step earlier.
     EmptyAccessor,
     /// The verb is spelled UFCS (`<Type>::<verb>(receiver, ..)`), so the receiver
     /// is an ARGUMENT and there is no chain to walk at all.
@@ -2219,28 +2224,62 @@ enum WriteAttrFault {
 /// order-independent. That is the whole point: the pre-rb-39 body took the
 /// nearest EARLIER handle prefix, so a foreign write was credited to whatever
 /// the previous statement merely READ, and a write with no prefix before it
-/// vanished from the census entirely. A statement-boundary rule fixes neither —
-/// it is green whenever the read and the foreign write share one statement.
+/// vanished from the census entirely. A statement-boundary rule closes the
+/// anchorless-drop hole (it can push a marker) but still misattributes whenever
+/// no `;` sits between the read and the foreign write — the same-statement,
+/// argument-list and closure shapes.
 ///
-/// HONEST LIMITS, stated once and deliberately not re-audited (ADR-0224):
-///   - a turbofish (or any non-identifier byte) immediately before the segment's
-///     `(` yields `EmptyAccessor` — LOUD, and the fix is to spell the chain
-///     plainly rather than to widen the rule;
+/// HONEST LIMITS, stated once and deliberately not re-audited (ADR-0224). The
+/// SSOT is ADR-0234's "Honest limits" section; this list mirrors it:
+///   - a turbofish — or any other non-identifier byte — immediately before a
+///     segment's `(` yields `EmptyAccessor`. A PARENTHESISED receiver
+///     (`(ctx.db.account()).identity().<verb>(x)`) is refused too, as an
+///     `UnrootedChain` under the zero-argument rule below. Both are LOUD, and
+///     the fix is to spell the chain plainly rather than to widen the rule;
 ///   - a `Vec`/`HashMap` write in the scanned file is an `UnrootedChain`
-///     false-RED whose fix is `.push(` (the m22-s4 convention) — never a
-///     weakening of the rule;
-///   - a write generated inside a macro is invisible to any text scan;
-///   - a write performed in ANOTHER file, on a handle this file produced, is
-///     outside a per-file scan — which is precisely what `g5_alias_violation`'s
-///     handle ban exists to make impossible in the first place.
+///     false-RED whose sanctioned fix is `.push(` (the m22-s4 convention) —
+///     never a weakening of the rule;
+///   - every receiver segment between the root and the verb must be a
+///     ZERO-ARGUMENT call — a table handle, or a column/index handle obtained
+///     from one. All 13 shipped `accounts.rs` writes are `accessor()`, then
+///     optionally `column()`, then the verb, so a combinator segment is REFUSED
+///     rather than credited to the rooted accessor spelled to its left; a
+///     same-file helper that RETURNS a handle is refused for the same reason —
+///     an ergonomics cost on a hypothetical refactor, paid in the loud
+///     direction;
+///   - the verb vocabulary is `insert`, `try_insert`, `update` and `delete`, in
+///     both the chained and the UFCS spelling. The `insert_or_update` /
+///     `try_insert_or_update` upserts exist only behind the crate's `unstable`
+///     feature, which this workspace does not enable; renaming a trait method
+///     at import (`use Trait::method as ..`) does not compile on the pinned
+///     stable 1.96 toolchain; and the keyed column methods are INHERENT, not
+///     trait methods, so no import can rename them either;
+///   - a `macro_rules!` DEFINED in the scanned file is scanned like any other
+///     text and its write IS attributed. Only a macro defined in a sibling file
+///     and merely INVOKED here carries no verb text at the call site;
+///   - a PER-TABLE handle passed by value to a function in ANOTHER file carries
+///     no verb text at its call site, so both Rust predicates are green on it:
+///     `g5_alias_violation` bans only the raw handle escaping, never a derived
+///     per-table one. That shape IS caught in CI today, by the JS twin's
+///     `[W/split-binding]` clause; review covers the rest of what a per-file
+///     scan cannot see.
 fn write_target_accessors(squashed: &str) -> Vec<Result<String, WriteAttrFault>> {
+    // The four row-write verbs in their chained spelling. The fallible
+    // `try_insert` is the sibling the infallible spelling wraps; the two needles
+    // are DISJOINT substrings (the short verb's needle opens with the `.` that
+    // the fallible spelling replaces with `_`), so no occurrence can match twice
+    // and the array order is immaterial.
     let dotted = [
         concat!(".ins", "ert("),
+        concat!(".try_ins", "ert("),
         concat!(".upd", "ate("),
         concat!(".del", "ete("),
     ];
+    // The same four verbs spelled UFCS: the receiver arrives as an ARGUMENT, so
+    // there is no chain to walk and every hit is a refusal.
     let ufcs = [
         concat!("::ins", "ert("),
+        concat!("::try_ins", "ert("),
         concat!("::upd", "ate("),
         concat!("::del", "ete("),
     ];
@@ -2287,13 +2326,12 @@ fn rooted_chain_accessor(squashed: &str, verb_dot: usize) -> Result<String, Writ
         let open = loop {
             match bytes[i] {
                 b')' => depth += 1,
-                b'(' => match depth.checked_sub(1) {
-                    // Unreachable — the scan starts ON a `)`, so depth >= 1 here.
-                    // Guarded rather than asserted so no later edit can underflow.
-                    None => return Err(WriteAttrFault::UnrootedChain),
-                    Some(0) => break i,
-                    Some(rest) => depth = rest,
-                },
+                b'(' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break i;
+                    }
+                }
                 _ => {}
             }
             if i == 0 {
@@ -2302,6 +2340,15 @@ fn rooted_chain_accessor(squashed: &str, verb_dot: usize) -> Result<String, Writ
             }
             i -= 1;
         };
+        // Every receiver segment must be a ZERO-ARGUMENT call — a table handle,
+        // or a column/index handle obtained from one. MEASURED laundering shape:
+        // `ctx.db.account().identity().find(x).map(|_| ctx.db.<foreign>())
+        // .unwrap()` then the verb — an argument-taking segment can return ANY
+        // handle, so the rooted accessor spelled to its left is not evidence
+        // about the table the verb reaches.
+        if open + 2 != hop {
+            return Err(WriteAttrFault::UnrootedChain);
+        }
         // The name this segment calls.
         let mut start = open;
         while start > 0 && is_word_byte(bytes[start - 1]) {
@@ -2359,7 +2406,8 @@ fn g5_write_isolation_violation(squashed: &str) -> Result<(), String> {
                 "G5 [W/attribution]: a write verb is NOT rooted in a `{root}<table>()` receiver \
                  chain of its own (fault: {fault:?}; extracted: {targets:?}). The MEASURED shapes \
                  are an aliased database handle, a column handle bound in an earlier statement, a \
-                 bare identifier receiver and the UFCS verb spelling — each detaches the write \
+                 bare identifier receiver, a chain laundered through an argument-taking \
+                 combinator segment, and the UFCS verb spelling — each detaches the write \
                  from the only evidence about which table it touches, and each was silently \
                  credited to a neighbouring accessor (or dropped outright) before rb-39. Chain \
                  every write directly off `{root}` in the statement that performs it; use `.push(` \
