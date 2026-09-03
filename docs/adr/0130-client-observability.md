@@ -276,3 +276,81 @@ capture) and T10 (two fully-resolved reseed episodes re-capture per episode).
 - (e) **NEW, pre-existing** — `main.ts`'s `identity` is captured once in `onReady` and never refreshed on
   reconnect; a reconnect that mints a new SDK identity would leave every identity-scoped listener (this one
   included) permanently quiet, with the reseed latch armed. Flagged for a follow-up slice.
+
+## Amendment — 17r-b (2026-09-03): hydration-gated reseed latch + identity refresh on reconnect
+
+16r-f's sticky latch (above) resolved on the FIRST defined `latestPlayerBattle()` read after a reconnect against a
+single captured `reseedPrevBattleId`. The two residuals it disclosed — (d) and (e) — are closed here by an explicit
+hydration-complete edge fired from `connection.ts` and by carrying the connection's identity in `onReconnect`.
+
+**Contract changes (`ConnectionOptions`, connection.ts):**
+- `onReconnect` is WIDENED from `() => void` to `(identity: string) => void`, called from `.onApplied` with the
+  module-local identity the SDK handed `onConnect`. A rebuild can mint a NEW anon identity (`continueAnonymously()`
+  after a session-expired terminal, or the nh4 token-rejection suppression path) while `hadSession` is already true,
+  so a caller that keeps its `onReady`-time identity deafens every identity-gated listener. `main.ts` now reassigns
+  its module-local `identity` as the FIRST statement of `onReconnect`, so the `connect` ring event and every batch
+  listener see the new value. Type-carried, not type-enforced: TS parameter bivariance means a reverted zero-arg
+  handler still typechecks — the fix is pinned by RSD17B-CARRIES / IDROT / ORPHAN, not by the compiler.
+- NEW required `onHydrated: () => void` — the hydration-complete edge. A `snapshotApplied` flag is armed inside
+  `.onApplied` (after the stale-build guard, before the notify tail) and consumed by the batcher flush closure on the
+  first flush that follows: AFTER the `my_monster_pub`/`my_battle` view reconciles (the store now holds the applied
+  snapshot), BEFORE `store.flushBatch()` (every listener that flush notifies observes it as already delivered), and
+  OUTSIDE the `live !== undefined` guard (a parked build must not leave the flag armed for a later bogus edge). Once,
+  on the first flush following each applied snapshot — guaranteed today by the always-non-empty content
+  subscriptions, which schedule that flush. Required rather than optional: an unwired embedder fails at compile
+  time instead of shipping a permanently-armed latch (`main.ts` is the only production constructor).
+
+**main.ts:** a single module-local `hydratedSinceReconnect` (set by `onHydrated`; reset UNCONDITIONALLY in
+`onReconnect`, while the `reseedPrevBattleId` capture keeps its 16r-f `if (!battleReseedPending)` guard) replaces the
+`latest === undefined` stickiness. The reseed branch returns while un-hydrated — an empty flush OR one carrying an
+older surviving row can no longer burn the latch — and otherwise resolves; a post-hydration `undefined` read is
+definitive (the player has no battle rows), so the resolved branch reads `latest?.outcome`. Plan review caught that
+without that null guard the COMMON no-battle reconnect would throw inside the listener, swallowed by its try/catch
+behind a coincidentally-correct ring; the suite now carries a global `console.error` control for exactly that shape.
+
+**Reachability, stated plainly.** On spacetimedb npm 2.6.0 (`db_connection_impl.ts:861-884`) `SubscribeApplied`
+applies the cache, emits `applied` (where `onReconnect` runs), THEN dispatches the row callbacks, all within one
+synchronous message-processing turn; the microtask flush therefore always reconciles the COMPLETE `my_battle` cache
+after `onReconnect`. Residual (d)'s partial-hydration ordering is NOT reachable on 2.6.0. It ships anyway as a
+delivery-model-independent contract — this ADR's own proposal — because the pending npm bump to 2.7.1+/2.8.1 (SDK
+auto-reconnect; AGENTS.md) is exactly the change that could alter delivery. Residual (e) IS reachable today.
+
+**Gating tests** (ordinary vitest per ADR-0224; no eval added): `client/src/main.battle-reseed.test.ts` re-sequences
+T1..T10 with a `signalHydrated()` step where production hydrates, and adds six teeth — RSD17B-STALEROW (an older
+terminal row observed pre-hydration must not resolve the latch), RSD17B-ONGOINGROW (a non-survivor Ongoing row
+observed first keeps it), RSD17B-REARM (a second reconnect re-arms against its own hydration), RSD17B-NOBATTLE (a
+post-hydration flush with no rows resolves without throwing), RSD17B-IDROT (a fresh identity re-targets the listener
+and the connect event), RSD17B-ORPHAN (the previous identity's orphan row no longer re-baselines) — plus the global
+console.error control. `connection.test.ts` adds RSD17B-SIGNAL (presence, contiguity, order relative to `flushBatch`,
+exclusion from the live-guard, file-wide writer census, arm-after-stale-guard) and RSD17B-CARRIES (the
+identity-carrying call site and the two interface members). `main.wiring.test.ts`'s NH5_RECONNECT_START anchor now
+tracks the new handler signature (same assertions). Acceptance gate B1 runs the five specs with an exactly-once
+census of the eight ids AND a 17-test floor on the reseed file — the plan red-team measured that without the floor,
+deleting T3+T6 (the only pre-existing tests that prove the latch RESOLVES under an ignore-signal mutant) stayed green.
+Two fixture facts are load-bearing: `latestPlayerBattle` returns the HIGHEST id and `upsertBattle` never removes
+rows, so the survivor must be the higher id in every ordering fixture; and "the survivor itself observed
+pre-hydration" is non-discriminating (silent re-baseline either way).
+
+**Alternatives considered:** a pull-based `Connection.hydrationGen()` accessor (stub edits in three specs; a pull
+cannot distinguish flush-before-reconcile from after); firing from `onApplied` itself (cache-complete, not
+store-reconciled); resolving inside the `onHydrated` handler (duplicates the emit decision outside the single owning
+listener); a two-counter generation scheme (collapsed by /simplify to the one boolean — equivalent under every
+interleaving); moving `onReady`/`onReconnect` out of `onApplied` into the flush closure so that `onReconnect` itself
+is the hydration signal and the sticky latch disappears (rejected: shifts 20+ consumers by a microtask and makes the
+spec's EARS scenario unrepresentable — noted as a future simplification).
+
+**Residuals** (updating the 16r-f list above):
+- (c) **unchanged** — a `battleEnd` resolving entirely during the gap is still unobserved.
+- (d) **CLOSED** — the latch resolves on the hydration edge, independent of subscription-batch atomicity.
+- (e) **CLOSED** — `onReconnect(identity)`; `main.ts`'s identity is refreshed first and unconditionally.
+- (f) **NEW** — connection.ts's FIRING of `onHydrated` is proven by source-scan only (RSD17B-SIGNAL). The runtime
+  suite mocks `net/connection` and drives `onHydrated` itself, so a `return` inserted between the reconcile block
+  and the signal, a third `snapshotApplied` writer in another spelling, or a "fires on every flush" mutant (the
+  `snapshotApplied` gate removed — which would resolve the latch on the first post-reconnect flush and re-open (d)
+  under non-atomic delivery) are text-caught or uncaught, never behaviour-caught. A runtime harness for
+  connection.ts was rejected: the file is never imported under vitest, and an 18-table fake `DbConnection` reds on
+  every table addition. The current-swap race — a `reconnectNow()`/`continueAnonymously()` re-entry between an
+  armed `snapshotApplied` and its consuming flush reconciles against the NEW build's empty cache and still fires the
+  signal — is a pre-existing class the shared batcher (ADR-0085 C2) already accepts.
+- (g) **NEW** — `onHydrated`'s placement between `onReady` and `onReconnect` in main.ts is unenforced by any pin
+  (the onReconnect-region slicers assert positives only); harmless if moved, recorded for completeness.
