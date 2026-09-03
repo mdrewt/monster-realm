@@ -199,26 +199,42 @@ test('with the preference off, the same rule animates (the guard is conditional,
 // THIS PAIR IS A KNOWN-DEFECT DISCLOSURE, NOT A GREEN GATE. `client/src/main.ts`
 // is OUT OF SCOPE for rb-38, so the fix cannot land here — but the CORRECT
 // expectation can, and does. The reduce-polarity test below asserts what the
-// renderer SHOULD do and is marked `test.fail()`: Playwright still RUNS it and
-// still evaluates every assertion, but records its failure as EXPECTED.
+// renderer SHOULD do, as an ordinary test, with exactly ONE assertion wrapped in
+// a narrow known-defect guard (see "THE KNOWN-DEFECT BOUNDARY" inside it).
 //
-// WHY `test.fail()` AND NOT `test.fixme()`/`test.skip()` (both were considered):
+// THE THREE IDIOMS CONSIDERED, AND WHY THE NARROW GUARD WON (rb-38 review):
 //   * `test.fixme()` is this repo's existing idiom for a blocked-on-another-slice
 //     e2e (`client/e2e/recruit.spec.ts:1008`), but it SKIPS — and `just a11y-e2e`
 //     half 4 reds on `stats.skipped !== 0` by design, because "a skipped a11y
 //     test is a silently ungated one". A fixme here would break the nightly tier.
-//   * `test.fail()` keeps the assertions EXECUTING, so this file keeps proving
-//     the boot/join/step scaffolding works, and — the load-bearing property —
-//     **it flips to RED the moment the bug is fixed**. Playwright reports an
-//     expected-to-fail test that PASSES as `unexpected`. So whoever finally
-//     wires `motionPreferenceFromWindow()` into `client/src/main.ts:2807`'s
-//     `resolver.resolve({...})` call is FORCED to come back here and delete the
-//     `test.fail()` line. It cannot be silently left behind.
+//   * `test.fail()` was implemented and then REJECTED, on measured evidence. It
+//     marks the WHOLE test body expected-to-fail, so it swallows every OTHER
+//     failure too: with `window.__game` deleted (total boot failure) this test
+//     reported `1 passed` in isolation under `test.fail()`. It converts the
+//     test's own anti-vacuity clauses into decoration.
+//   * THE NARROW `try`/`catch` GUARD actually used keeps every other assertion —
+//     matchMedia, readiness, the fresh-latch precondition, the did-it-actually-
+//     move check — as an ORDINARY HARD GATE that reds the build, while
+//     tolerating the one known-broken assertion in the one direction that is
+//     currently true. It keeps the load-bearing alarm property: **it flips to
+//     RED the moment the bug is fixed**, forcing whoever wires
+//     `motionPreferenceFromWindow()` into `client/src/main.ts:2807`'s
+//     `resolver.resolve({...})` call to come back and delete the guard.
 //
 // DO NOT "fix" this by asserting today's behaviour (`.toBe(true)`). That would
 // cement the bug and is exactly the false green ADR-0219 exists to prevent.
 // The ledger gate (rb-38 E1) stays DEFERred until the wiring lands: this pair
 // documents and detects the gap, it does not close it.
+//
+// KNOWN LIMIT OF THE ALARM, STATED SO IT IS NOT MISTAKEN FOR COVERAGE (rb-38
+// red-team finding 2, MEASURED). The alarm watches the OWN-entity render path
+// only. A PARTIAL fix that wires `reduceMotion` correctly but honours it solely
+// on `renderResolver.ts`'s REMOTE-character branch produces a real, user-visible
+// change and yet NO signal here — measured `expected=4 unexpected=0`, identical
+// to an untouched tree. Covering the remote branch needs a second joined player,
+// which collides with `golden.spec.ts`'s exact `presenceCount === 2` assertion,
+// so it is deliberately out of scope for this file. Do not read a green run here
+// as "reduced motion is fully handled".
 //
 // THE OBSERVABLE: `sawFractionalOwnMotion` (`client/src/main.ts:254`, read via
 // `window.__game()` at `client/src/main.ts:1933`) — a STICKY DEV latch the
@@ -364,17 +380,9 @@ async function rendererArmStepEastAndSettle(
   await p.waitForTimeout(Math.round(stepMs * 1.5));
 }
 
-test('RENDERER ARM (E1, KNOWN DEFECT — test.fail): under the reduced-motion project, the own character NEVER renders a fractional sub-tile position', async ({
+test('RENDERER ARM (E1, KNOWN DEFECT — guarded): under the reduced-motion project, the own character NEVER renders a fractional sub-tile position', async ({
   page,
 }) => {
-  // KNOWN DEFECT, DISCLOSED (rb-38). See the big block comment above this test.
-  // The assertions below are the CORRECT expectation and run in full; only the
-  // final one currently fails, because `client/src/main.ts:2807` passes no
-  // `reduceMotion` key. When a successor slice wires that call site, this test
-  // starts PASSING — which Playwright reports as `unexpected`, turning the suite
-  // RED and forcing this line to be deleted. That is the intended alarm.
-  test.fail();
-
   // NO emulateMedia call anywhere in this test — same load-bearing absence, and
   // for the identical reason, as the file's first stylesheet-arm test above
   // (design constraint 1, rb-38): the ENTIRE end-to-end claim rests on the
@@ -460,17 +468,39 @@ test('RENDERER ARM (E1, KNOWN DEFECT — test.fail): under the reduced-motion pr
   // OWN-entity branch (renderResolver.ts:93-124) on the `false` default — the
   // remote branch never touches this own-only latch, so a remote-only fix
   // leaves this exact assertion red.
+  // THE KNOWN-DEFECT BOUNDARY. Everything above this point is an ORDINARY HARD
+  // GATE — matchMedia, readiness, the fresh-latch precondition and the
+  // did-it-actually-move check all red the build normally. ONLY the single
+  // assertion below is tolerated, and only in the one direction that is
+  // currently true.
+  //
+  // This is deliberately NOT `test.fail()` (rb-38 review finding). `test.fail()`
+  // marks the WHOLE test body expected-to-fail, so it also swallows a broken
+  // `__game()` hook, a boot failure, a readiness timeout, or a regression in any
+  // anti-vacuity clause — all of which would report identically to the known
+  // defect. MEASURED: with `window.__game` deleted entirely and the blanket
+  // `test.fail()` in place, this test reported `1 passed` in isolation. The
+  // narrow try/catch below cannot do that: a boot failure now throws out of
+  // `rendererArmReady()` long before this line.
+  let rendererHonoursReducedMotion: boolean;
+  try {
+    expect(after.sawFractionalOwnMotion).toBe(false);
+    rendererHonoursReducedMotion = true;
+  } catch {
+    rendererHonoursReducedMotion = false;
+  }
   expect(
-    after.sawFractionalOwnMotion,
-    'sawFractionalOwnMotion was true after a single move under the OS reduced-motion ' +
-      "preference (matchMedia confirmed ON above). This means the own character's slide clock " +
-      'animated a fractional sub-tile position while the user had reduced motion requested — ' +
-      'the RENDERER never learned about the preference. MEASURED cause on master: ' +
-      '`client/src/main.ts:2807` calls `resolver.resolve({...})` with no `reduceMotion` key, so ' +
-      "`renderResolver.ts:83`'s `reduceMotion = false` default applies on every frame. This is " +
-      'the KNOWN DEFECT rb-38 disclosed and marked `test.fail()` — see the block comment above ' +
-      'this test. Do NOT edit this assertion to accept `true` (that cements the bug); fix the ' +
-      'wiring in a successor slice and delete the `test.fail()` line instead.',
+    rendererHonoursReducedMotion,
+    'THE RENDERER ARM IS FIXED — and this guard is now the only thing failing. That is BY ' +
+      'DESIGN (rb-38): the renderer now honours the OS reduced-motion preference, so the ' +
+      'known-defect disclosure is obsolete. DELETE this try/catch block and assert directly ' +
+      "instead: `expect(after.sawFractionalOwnMotion, '<diagnostic>').toBe(false);`. Then " +
+      'update the rb-38 E1 ledger gate from DEFERred to met, and drop the KNOWN-DEFECT wording ' +
+      "from this file's header and from the justfile a11y-e2e half-4 comment. " +
+      'CONVERSELY, if you are reading this because the value is `false` and you want it to ' +
+      'stop failing: it is NOT failing — `false` is the passing value today. Do NOT invert the ' +
+      'assertion above to accept fractional motion; that cements the bug and is exactly the ' +
+      'false green ADR-0219 exists to prevent.',
   ).toBe(false);
 });
 

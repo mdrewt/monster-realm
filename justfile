@@ -348,10 +348,10 @@ e2e: wasm
 # 0 todo). axefloor=3 measured at eca6752 (3 axe tests / 0 unexpected / 0 flaky /
 # 0 skipped). rmfloor=4 measured at rb-38 (4 reduced-motion tests / 1 file, via
 # `npx playwright test --project=reduced-motion --list`); was 2 at rb-20, raised by
-# rb-38's renderer-arm pair. NOTE the count includes the `test.fail()`-marked
-# renderer-arm test: an expected-to-fail test still RUNS and is reported in
-# `stats.expected`, so it counts toward this floor and toward the unexpected=0
-# check -- it is NOT a skip. Raise any of them in the
+# rb-38's renderer-arm pair. The floor alone is FORGEABLE (rb-38 red-team finding
+# 1: deleting the renderer-arm tests and backfilling two trivial passing ones is
+# byte-identical in the stats), so half 4 additionally PINS the two renderer-arm
+# test titles -- see the `need` list in its node check. Raise any of them in the
 # same commit that adds a11y tests; LOWER one only in a commit that deliberately
 # removes some, and say which in the message.
 #
@@ -364,9 +364,10 @@ e2e: wasm
 # main.ts:2807 passes no `reduceMotion` to resolver.resolve, so the renderer
 # ignores the OS preference. rb-38 added the two renderer-arm tests to
 # client/e2e/reduced-motion.spec.ts; the reduce-polarity one asserts the CORRECT
-# behaviour and is marked `test.fail()`, so it runs, fails as EXPECTED today, and
-# turns this recipe RED the moment someone fixes the wiring (Playwright reports an
-# expected-to-fail test that passes as `unexpected`). Ledger gate rb-38 E1 stays
+# behaviour, with its single known-broken assertion wrapped in a narrow try/catch
+# guard (NOT `test.fail()`, which was measured to swallow boot failures too). Every
+# other assertion in it is an ordinary hard gate, and the guard turns this recipe
+# RED the moment someone fixes the wiring. Ledger gate rb-38 E1 stays
 # DEFERred to backlog until that wiring lands. So: do not relabel half 4
 # "A11Y-27, gated", and do not read the renderer-arm tests as proof the arm works.
 #
@@ -461,7 +462,7 @@ a11y-e2e floor="169" axefloor="3" rmfloor="4": wasm
     cd client && PLAYWRIGHT_JSON_OUTPUT_NAME=/tmp/a11y-e2e-rm.json \
         npx playwright test --project=reduced-motion --reporter=json
     cd ..
-    node -e "const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-rm.json', 'utf8')) } catch (e) { console.error('a11y-e2e: playwright wrote no readable JSON report for the reduced-motion tier — ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const s = j.stats; if (s === undefined) { console.error('a11y-e2e: reduced-motion report carries no stats block'); process.exit(1) } if (s.unexpected !== 0 || s.flaky !== 0 || s.skipped !== 0) { console.error('a11y-e2e: reduced-motion tier unexpected=' + s.unexpected + ' flaky=' + s.flaky + ' skipped=' + s.skipped + ' — a wholly describe.skip-ed spec file reports expected=0 and exits 0, and a skipped or flaky a11y test is a silently ungated one'); process.exit(1) } if (s.expected < floor) { console.error('a11y-e2e: reduced-motion tier reported ' + s.expected + ' passing test(s) — floor is ' + floor); process.exit(1) } console.log('A11Y-RM OK tests=' + s.expected + ' floor=' + floor + ' unexpected=0 flaky=0 skipped=0')" -- "{{rmfloor}}"
+    node -e "const fs = require('node:fs'); let j; try { j = JSON.parse(fs.readFileSync('/tmp/a11y-e2e-rm.json', 'utf8')) } catch (e) { console.error('a11y-e2e: playwright wrote no readable JSON report for the reduced-motion tier — ' + e.message); process.exit(1) } const floor = Number(process.argv[1]); const s = j.stats; if (s === undefined) { console.error('a11y-e2e: reduced-motion report carries no stats block'); process.exit(1) } if (s.unexpected !== 0 || s.flaky !== 0 || s.skipped !== 0) { console.error('a11y-e2e: reduced-motion tier unexpected=' + s.unexpected + ' flaky=' + s.flaky + ' skipped=' + s.skipped + ' — a wholly describe.skip-ed spec file reports expected=0 and exits 0, and a skipped or flaky a11y test is a silently ungated one'); process.exit(1) } if (s.expected < floor) { console.error('a11y-e2e: reduced-motion tier reported ' + s.expected + ' passing test(s) — floor is ' + floor); process.exit(1) } const titles = []; const walk = (su) => { for (const x of su) { for (const sp of (x.specs || [])) titles.push(sp.title); walk(x.suites || []) } }; walk(j.suites || []); const need = ['RENDERER ARM (E1, KNOWN DEFECT', 'RENDERER ARM mirror image']; for (const nd of need) { const hits = titles.filter((t) => t.indexOf(nd) !== -1).length; if (hits !== 1) { console.error('a11y-e2e: reduced-motion tier has ' + hits + ' test(s) whose title contains \"' + nd + '\", expected exactly 1 — rb-38 red-team finding 1: a bare count floor is satisfiable by DELETING the renderer-arm disclosure and backfilling trivial passing tests (measured: expected=4 unexpected=0, byte-identical to the real baseline). These two titles are pinned so that bypass reds. If you deliberately renamed or removed a renderer-arm test, update this pin in the SAME commit and say why.'); process.exit(1) } } console.log('A11Y-RM OK tests=' + s.expected + ' floor=' + floor + ' unexpected=0 flaky=0 skipped=0 renderer-arm-titles=2/2')" -- "{{rmfloor}}"
     echo "DEFERRED: A11Y-32 / A11Y-33 are MANUAL and are NEVER CI-green — docs/a11y-manual-protocol.md"
 
 # Fast inner loop: clippy + nextest + doctests scoped to a single crate.
