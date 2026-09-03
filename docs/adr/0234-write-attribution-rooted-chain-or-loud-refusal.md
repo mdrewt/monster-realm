@@ -90,6 +90,11 @@ inline `ctx.db.<accessor>()…` writes.
   JS twin also accepts `_ctx`; the Rust side is deliberately stricter (`ctx` only, matching
   `privacy_tests.rs`) because the walk's anchor is the literal `ctx.db.` — accepting `_ctx` in the
   ban while the walk refuses `_ctx.db.` would be a latent false-RED (plan red-team finding).
+- Implementation review added two shapes to the walk before merge, each with its own tooth:
+  `try_insert` joined the verb vocabulary (the reducer-security-auditor measured a foreign
+  `ctx.db.monster().try_insert(row)` producing no census entry at all), and every receiver
+  segment before the verb must be a zero-argument call (a combinator segment was measured to
+  launder a foreign handle into an owned attribution).
 - Proof-of-teeth assertions pin fault variants with `matches!`, never `assert_eq!`: the plan
   red-team measured that a hand-written always-true `impl PartialEq` is clippy-clean and would
   make every equality tooth — and the mutation bite-proof itself — vacuous. The ledger CHECKs
@@ -112,11 +117,36 @@ inline `ctx.db.<accessor>()…` writes.
 
 ### Honest limits (the terminal statement, not a backlog)
 
-A turbofish segment (`.iter::<T>()`) reports `EmptyAccessor` (loud, not silent). A `Vec`/`HashMap`
-`.insert(` anywhere in `accounts.rs` is a loud false-RED whose sanctioned fix is `.push(`. A
-macro-generated write has no verb token and is invisible. A write performed in another file on a
-handle this file produced is outside a per-file scan by construction. These are properties of the
-contract; review (reducer-security-auditor) covers what a per-file scan cannot.
+Measured at implementation review (artifact red-team + reducer-security-auditor), stated once:
+
+- A turbofish or any non-identifier byte before a segment's `(` reports `EmptyAccessor`; a
+  parenthesised receiver `(ctx.db.account()).identity().delete(x)` does too — loud, not silent.
+- A `Vec`/`HashMap` `.insert(` anywhere in `accounts.rs` is a loud false-RED whose sanctioned fix
+  is `.push(`.
+- Every receiver segment between the root and the verb must be a zero-argument call (a table
+  handle or a column/index handle — all 13 shipped writes are `accessor().column().verb(`), so a
+  combinator segment (`.find(x).map(|_| ctx.db.monster()).unwrap().delete(row)`) is refused
+  rather than credited to the first rooted segment; a same-file helper returning a foreign handle
+  is likewise refused (an ergonomics cost on a hypothetical refactor, in the loud direction).
+- The verb vocabulary is `insert`, `try_insert`, `update`, `delete` in both the dotted and the UFCS
+  spelling. The `insert_or_update`/`try_insert_or_update` upserts exist only behind the crate's
+  `unstable` feature, which this workspace does not enable. Renaming a trait method at import
+  (`use Table::delete as remove`) does not compile on the pinned stable 1.96 toolchain (unstable
+  `use` of associated items), and the keyed `.delete(key)`/`.update(row)` column methods are
+  inherent, not trait methods, so no import can rename them.
+- A `macro_rules!` DEFINED in `accounts.rs` is scanned like any other text and its write is
+  attributed; only a macro defined in a sibling file and merely invoked here carries no verb text.
+- A per-table handle passed by value to a function in ANOTHER file
+  (`crate::shared::write_row(ctx.db.monster(), row)`) carries no verb text at its call site: both
+  Rust predicates are green on it. `g5_alias_violation` bans only the raw `ctx.db` handle escaping,
+  not a derived per-table handle. This shape IS caught in CI today by the JS twin's
+  `[W/split-binding]` clause (a foreign accessor whose own chain reaches no read terminal), which
+  stays live because `evals/` is outside this slice; review (reducer-security-auditor) covers the
+  rest of what a per-file scan cannot.
+- `privacy_tests.rs`'s local copy keeps the weaker rb22p `;`-boundary rule and is therefore green
+  on a same-statement foreign write inside a NEW `privacy.rs` fn (the hardened walk was measured
+  to produce no false-RED there: two `Ok(export_bundle)`); porting it is recorded as a residual,
+  not widened into this slice.
 
 ### Consequences
 
