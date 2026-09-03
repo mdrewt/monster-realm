@@ -316,16 +316,19 @@ delivery-model-independent contract — this ADR's own proposal — because the 
 auto-reconnect; AGENTS.md) is exactly the change that could alter delivery. Residual (e) IS reachable today.
 
 **Gating tests** (ordinary vitest per ADR-0224; no eval added): `client/src/main.battle-reseed.test.ts` re-sequences
-T1..T10 with a `signalHydrated()` step where production hydrates, and adds six teeth — RSD17B-STALEROW (an older
+T1..T10 with a `signalHydrated()` step where production hydrates, and adds seven teeth — RSD17B-STALEROW (an older
 terminal row observed pre-hydration must not resolve the latch), RSD17B-ONGOINGROW (a non-survivor Ongoing row
 observed first keeps it), RSD17B-REARM (a second reconnect re-arms against its own hydration), RSD17B-NOBATTLE (a
 post-hydration flush with no rows resolves without throwing), RSD17B-IDROT (a fresh identity re-targets the listener
-and the connect event), RSD17B-ORPHAN (the previous identity's orphan row no longer re-baselines) — plus the global
-console.error control. `connection.test.ts` adds RSD17B-SIGNAL (presence, contiguity, order relative to `flushBatch`,
-exclusion from the live-guard, file-wide writer census, arm-after-stale-guard) and RSD17B-CARRIES (the
-identity-carrying call site and the two interface members). `main.wiring.test.ts`'s NH5_RECONNECT_START anchor now
+and the connect event), RSD17B-ORPHAN (the previous identity's orphan row no longer re-baselines), RSD17B-TWOFLUSH (two pre-hydration
+flushes before the signal — kills a listener that self-arms on its first sight, an artifact red-team survivor
+every one-flush fixture missed) — plus the global console.error control. `connection.test.ts` adds RSD17B-SIGNAL (presence, contiguity, order relative to `flushBatch`,
+exclusion from the live-guard, file-wide writer census, arm-after-stale-guard, no early exit in the closure and
+`flushBatch` as its last statement) and RSD17B-CARRIES (the identity-carrying call site, the two interface
+members, and a ban on any shadowing `identity` declaration inside the applied callback — a measured decoy that
+reported identity '' on every connect while every other needle still matched). `main.wiring.test.ts`'s NH5_RECONNECT_START anchor now
 tracks the new handler signature (same assertions). Acceptance gate B1 runs the five specs with an exactly-once
-census of the eight ids AND a 17-test floor on the reseed file — the plan red-team measured that without the floor,
+census of the nine ids AND an 18-test floor on the reseed file — the plan red-team measured that without the floor,
 deleting T3+T6 (the only pre-existing tests that prove the latch RESOLVES under an ignore-signal mutant) stayed green.
 Two fixture facts are load-bearing: `latestPlayerBattle` returns the HIGHEST id and `upsertBattle` never removes
 rows, so the survivor must be the higher id in every ordering fixture; and "the survivor itself observed
@@ -344,10 +347,11 @@ spec's EARS scenario unrepresentable — noted as a future simplification).
 - (d) **CLOSED** — the latch resolves on the hydration edge, independent of subscription-batch atomicity.
 - (e) **CLOSED** — `onReconnect(identity)`; `main.ts`'s identity is refreshed first and unconditionally.
 - (f) **NEW** — connection.ts's FIRING of `onHydrated` is proven by source-scan only (RSD17B-SIGNAL). The runtime
-  suite mocks `net/connection` and drives `onHydrated` itself, so a `return` inserted between the reconcile block
-  and the signal, a third `snapshotApplied` writer in another spelling, or a "fires on every flush" mutant (the
-  `snapshotApplied` gate removed — which would resolve the latch on the first post-reconnect flush and re-open (d)
-  under non-atomic delivery) are text-caught or uncaught, never behaviour-caught. A runtime harness for
+  suite mocks `net/connection` and drives `onHydrated` itself, so the measured cheats — a `return` inserted between
+  the reconcile block and the signal (dead-coding the flush), a "fires on every flush" mutant (the `snapshotApplied`
+  gate removed — which would resolve the latch on the first post-reconnect flush and re-open (d) under non-atomic
+  delivery), a shadowing `identity` declaration in the applied callback — are caught by TEXT pins only, never
+  behaviour-caught; a third `snapshotApplied` writer in another spelling stays uncaught. A runtime harness for
   connection.ts was rejected: the file is never imported under vitest, and an 18-table fake `DbConnection` reds on
   every table addition. The current-swap race the plan red-team raised — a `reconnectNow()`/`continueAnonymously()`
   re-entry between an armed `snapshotApplied` and its consuming flush — was analysed by the desync-guard lens as

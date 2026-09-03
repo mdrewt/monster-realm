@@ -4395,11 +4395,20 @@ describe('★ connection.ts wiring (15r-sec-a / ADR-0198): W-15RSECA-RECONCILE �
 //
 // ⚠ WHAT THESE TWO TEETH DO **NOT** PROVE — read this before treating them as sufficient.
 // They are SOURCE SCANS: they prove the statements EXIST, in the right REGION, in the right
-// ORDER. They cannot prove REACHABILITY. A `return` introduced in the flush closure between
-// the reconcile block and the signal, a third `snapshotApplied` write in another spelling
-// (`snapshotApplied ||= true`, a helper that assigns it), or a closure that is never invoked
-// would satisfy every needle below. The reviewer must confirm those BY READING (plan §2
-// names exactly this reviewer obligation), and residual (f) records it in ADR-0130.
+// ORDER, and (clause 7 / the shadow census) that nothing textually exits the closure early or
+// re-declares the identity binding. They still cannot prove REACHABILITY in general. A third
+// `snapshotApplied` write in another spelling (`snapshotApplied ||= true`, a helper that
+// assigns it), a closure that is never invoked, or a `wrapReducerLogging`-style indirection
+// that swaps the callback would satisfy every needle below. The reviewer must confirm those
+// BY READING (plan §2 names exactly this reviewer obligation), and residual (f) records it in
+// ADR-0130.
+//   HISTORICAL NOTE, kept because it is the most useful thing this banner can say: the
+//   paragraph here used to name "a `return` introduced in the flush closure between the
+//   reconcile block and the signal" as an accepted blind spot. The artifact red-team then
+//   BUILT that cheat and measured it green (260/260 tests + the acceptance gate) — it
+//   dead-codes the signal AND `store.flushBatch()`, freezing every batch listener in the
+//   client after the first applied snapshot. Clause (7) below closes it. Blind spots that get
+//   written down get exploited; that is the point of writing them down.
 //
 // WHY NO RUNTIME HARNESS (plan §2, and this file's standing answer since nh4): connection.ts
 // is coverage-EXCLUDED in client/vite.config.ts because importing it executes DOM/wasm side
@@ -4408,8 +4417,8 @@ describe('★ connection.ts wiring (15r-sec-a / ADR-0198): W-15RSECA-RECONCILE �
 // `.onApplied` + the batcher would have to model all 18 subscribed tables and would red on
 // every table addition. The BEHAVIOUR that depends on this signal is proven at runtime on the
 // other side of the seam — main.battle-reseed.test.ts drives `opts.onHydrated()` directly
-// against the real main.ts listener (RSD17B-STALEROW / ONGOINGROW / REARM / NOBATTLE). Both
-// halves are required; neither substitutes for the other.
+// against the real main.ts listener (RSD17B-STALEROW / ONGOINGROW / TWOFLUSH / REARM /
+// NOBATTLE). Both halves are required; neither substitutes for the other.
 //
 // NO `new RegExp(...)`; NO `://` in any string added here — this file's standing conventions
 // (the second is mechanised by the W-UX2B-SCAN-SOUND calibration fixture above).
@@ -4422,6 +4431,12 @@ describe('★ connection.ts wiring (15r-sec-a / ADR-0198): W-15RSECA-RECONCILE �
  *  REQUIRED, and an optional call is how an unwired embedder ships a permanently-armed latch
  *  with no compile error. */
 const RSD17B_SIGNAL_BLOCK = 'if (snapshotApplied) { snapshotApplied = false; opts.onHydrated(); }';
+
+/** 17r-b: the ONE connect()-scope identity binding (connection.ts:204). Pinned as an EXACT
+ *  statement, not just as an identifier, because the survivor it closes is a SHADOW
+ *  declaration inside `.onApplied` — and every call-site needle in this file is blind to a
+ *  shadow by construction (the call text does not change at all). */
+const RSD17B_IDENTITY_DECL = "let identity = '';";
 
 /** The batcher construction's OWN argument list (paren-walked), i.e. the flush closure —
  *  derived exactly as the W-13RE / W-15RSECA teeth above derive it, so all three judge the
@@ -4599,11 +4614,69 @@ describe('★ connection.ts wiring (17r-b / ADR-0130 residual d): the hydration-
         'edge to the live build`s next flush — the ADR-0085 C2 hazard, in the one place the ' +
         'guard is the only thing separating the two builds',
     ).toBeGreaterThan(staleHits[0]!);
+
+    // --- (7) REACHABILITY: nothing exits the closure early, and flushBatch is its LAST act
+    // THE SURVIVOR THIS CLOSES (artifact red-team, MEASURED: 260/260 tests green and the
+    // acceptance gate green with this cheat in the tree). A bare
+    //     return;
+    // inserted between the reconcile block and the signal block DEAD-CODES both the signal
+    // AND `store.flushBatch()`. After the first applied snapshot NO batch listener in the
+    // client is ever notified again — the render loop, the movement reconcile, every emit
+    // listener — while clauses (1)-(6) all still match, because every needle they look for is
+    // still THERE, in the right region, in the right order. Presence and order say nothing
+    // about reachability; this clause is the closest a text scan gets to saying it.
+    //
+    // THE CLOSURE IS UNCONDITIONAL BY DESIGN, which is what makes this pin cheap and exact:
+    // it has no guard clauses and no error paths. The stale-build check is an `if` BLOCK
+    // (clause 4, not an early return), and the converter try/catch deliberately SWALLOWS so
+    // the flush still happens ("a stale view map is recoverable, a starved flush is not" —
+    // connection.ts:165-169). So `return` and `throw` are simply absent today, and either one
+    // appearing is a behaviour change that must be reviewed, never formatted in.
+    //
+    // IF THIS EVER REDS ON A LEGITIMATE CHANGE (say a block-bodied `.map((row) => { return … })`
+    // nested inside a reconcile argument): RE-DERIVE the pin — narrow it to the closure's
+    // TOP-LEVEL statement list — never delete it. Deleting it re-opens a full client freeze
+    // that every other assertion in this file is blind to.
+    expect(
+      countCodeOccurrences(flushClosure, 'return'),
+      'the MicrotaskBatcher flush closure must contain NO `return` AS CODE. It is ' +
+        'unconditional by design — every batch listener in the client is notified from its ' +
+        'tail — so an early exit anywhere in it starves the flush from that point on. A bare ' +
+        '`return;` placed after the reconciles dead-codes BOTH the hydration signal and ' +
+        'store.flushBatch(), and every presence/order assertion above still passes: after the ' +
+        'first applied snapshot the client silently stops re-rendering. If a nested callback ' +
+        'legitimately needs a `return`, re-derive this pin over the closure`s TOP-LEVEL ' +
+        'statements — do not delete it',
+    ).toBe(0);
+    expect(
+      countCodeOccurrences(flushClosure, 'throw '),
+      'the MicrotaskBatcher flush closure must contain NO `throw ` AS CODE — same reason as ' +
+        'the `return` ban above, and it is exactly why the converter try/catch SWALLOWS ' +
+        'rather than rethrows (connection.ts:165-169: a stale view map is recoverable, a ' +
+        'starved flush is not). A throw between the reconciles and the tail skips the ' +
+        'hydration signal AND store.flushBatch()',
+    ).toBe(0);
+    // The TAIL: flushBatch is the closure's LAST statement. Two accepted spellings, differing
+    // only by the trailing comma biome inserts when it wraps a call across lines — an inert
+    // formatting degree of freedom, handled the same way the reconcile-argument pin above
+    // handles its two comma slots.
+    const closureTail = flushClosure.trim();
+    const acceptedTails = ['store.flushBatch(); }', 'store.flushBatch(); },'];
+    expect(
+      acceptedTails.some((tail) => closureTail.endsWith(tail)),
+      'store.flushBatch(); must be the LAST statement of the MicrotaskBatcher flush closure ' +
+        `(the squashed closure must end with \`${acceptedTails[0]}\`). Anything after it runs ` +
+        'AFTER every batch listener has already been notified — a second signal, a second ' +
+        'flush, or a cleanup that undoes what those listeners just observed. Together with ' +
+        'the `return` / `throw` bans above, this is the reachability argument the presence ' +
+        'and order clauses cannot make on their own.\n' +
+        `  closure ends with: ${closureTail.slice(-60)}`,
+    ).toBe(true);
   });
 });
 
 describe('★ connection.ts wiring (17r-b / ADR-0130 residual e): the reconnect callback carries THIS connection`s identity', () => {
-  it('★★ RSD17B-CARRIES BITES: opts.onReconnect is called with `identity` from inside .onApplied, from exactly one site, and the option types say so', () => {
+  it('★★ RSD17B-CARRIES BITES: opts.onReconnect is called with `identity` from inside .onApplied, from exactly one site, with no shadow declaration, and the option types say so', () => {
     // THE BUG THIS CLOSES (ADR-0130 residual (e), disclosed 2026-08-22 and tracked nowhere):
     // connection.ts:659 reassigns its module-local `identity` on EVERY connect — a reconnect
     // can mint a BRAND NEW anon identity (`continueAnonymously()` after a session-expired
@@ -4646,6 +4719,67 @@ describe('★ connection.ts wiring (17r-b / ADR-0130 residual e): the reconnect 
         '.onConnect would hand main.ts an identity for a connection whose subscriptions have ' +
         'not been applied',
     ).toBe(true);
+
+    // --- NO SHADOW DECLARATION of `identity` ------------------------------------------
+    // THE SURVIVOR THIS CLOSES (artifact red-team, MEASURED: 260/260 tests green and the
+    // acceptance gate green with this cheat in the tree). ONE line at the top of the
+    // .onApplied callback —
+    //     const identity = '';
+    // — shadows the connect()-scope binding for the whole callback. Every needle above still
+    // matches VERBATIM (`opts.onReconnect(identity)` is textually unchanged; so is
+    // `opts.onReady(identity)`), and every connect now reports the EMPTY identity. main.ts's
+    // `identity === ''` guard then short-circuits every batch listener it owns,
+    // store.ownEntityId('') resolves nothing, and the tab renders a permanently empty world:
+    // a full client DoS behind a fully green suite.
+    //
+    // WHY A DECLARATION CENSUS AND NOT A CALL-SITE PIN: a shadow IS a declaration, and the
+    // call sites cannot see the difference — that is the definition of shadowing. The census
+    // is stated in three parts on purpose: the exact one-and-only declaration statement, the
+    // whole-file `let identity` total (a second `let` elsewhere is the same bug in another
+    // scope), and a whole-file ban on `const identity` (the cheat's own spelling, which the
+    // `let` total is blind to).
+    expect(
+      includesAsCode(applied, 'opts.onReconnect(identity)'),
+      'ANTI-VACUITY for the shadow bans below: the .onApplied region must genuinely PASS ' +
+        '`identity` to the reconnect callback — if it does not, banning re-declarations in ' +
+        'this region proves nothing about what the callback receives',
+    ).toBe(true);
+    expect(
+      countCodeOccurrences(squashed, RSD17B_IDENTITY_DECL),
+      'connection.ts must declare the identity binding EXACTLY once AS CODE, as ' +
+        `\`${RSD17B_IDENTITY_DECL}\` at connect() scope (connection.ts:204) — one binding, ` +
+        'reassigned from the SDK on every connect (`identity = id.toHexString();`) and read ' +
+        'by every consumer. If this reds at 0 the declaration was re-spelled; re-derive the ' +
+        'needle from the source, never widen it to a bare identifier (a bare identifier ' +
+        'cannot distinguish the declaration from a shadow)',
+    ).toBe(1);
+    expect(
+      countCodeOccurrences(squashed, 'let identity'),
+      'connection.ts must contain EXACTLY ONE `let identity` declaration AS CODE — the ' +
+        'connect()-scope binding pinned above. A second one anywhere is a SHADOW: every call ' +
+        'site in this file keeps matching verbatim while the value it passes comes from a ' +
+        'different binding',
+    ).toBe(1);
+    expect(
+      countCodeOccurrences(squashed, 'const identity'),
+      'connection.ts must contain NO `const identity` declaration AS CODE. This is the ' +
+        'red-team`s measured survivor spelling: `const identity = <empty string>;` at the top ' +
+        'of .onApplied leaves every needle in this file matching while handing main.ts an ' +
+        'empty identity on every connect — which main.ts`s `identity === <empty string>` ' +
+        'guards read as "not joined yet", so every batch listener it owns short-circuits and ' +
+        'the world never renders',
+    ).toBe(0);
+    for (const shadowDecl of ['let identity', 'const identity', 'var identity']) {
+      expect(
+        countCodeOccurrences(applied, shadowDecl),
+        `the .onApplied callback must contain ZERO \`${shadowDecl}\` declarations AS CODE — ` +
+          'it must READ the connect()-scope binding, never introduce its own. A shadow here ' +
+          'is invisible to every call-site needle in this file (the call text is unchanged) ' +
+          'and turns the identity handed to onReady/onReconnect into whatever the shadow ' +
+          'holds. All three declaration keywords are banned because the ban is about ' +
+          'SHADOWING, not about any one spelling',
+      ).toBe(0);
+    }
 
     // --- exactly one call site, and never the argless spelling -------------------------
     expect(

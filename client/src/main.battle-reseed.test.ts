@@ -70,7 +70,7 @@
  * at 16r-f AUTHORING time and has been GREEN since that slice shipped. A stale "RED at fork"
  * claim in a gating file teaches the next reader to discount failure messages, which is how a
  * real red gets waved through).
- *   (1) HARNESS-LEVEL RED, 15 of the 17 tests: `signalHydrated()` calls `opts.onHydrated()`,
+ *   (1) HARNESS-LEVEL RED, 16 of the 18 tests: `signalHydrated()` calls `opts.onHydrated()`,
  *       and `ConnectionOptions` has no `onHydrated` at the fork, so every test that calls it
  *       throws `TypeError: opts.onHydrated is not a function` from the TEST BODY (not from
  *       inside the listener's try/catch). That is a missing-implementation red, not a typo.
@@ -82,6 +82,12 @@
  *                             re-sighting emits a spurious battleStart.
  *         RSD17B-ONGOINGROW — same defect via an Ongoing NON-survivor row (a second
  *                             participant-scoped row is legal, store.ts:895-900).
+ *         RSD17B-TWOFLUSH   — GREEN at the shipped implementation, and a CHEAT-KILL rather
+ *                             than a defect witness. It is the ONLY fixture with TWO
+ *                             pre-hydration flushes, which is what separates "wait for the
+ *                             signal" from a listener that SELF-ARMS on its first
+ *                             pre-hydration sight (the artifact red-team's measured survivor:
+ *                             260/260 green, gate green, with that cheat in place).
  *         RSD17B-REARM      — reds unless `hydratedSinceReconnect = false` is reset
  *                             UNCONDITIONALLY on every reconnect (outside the capture guard).
  *         RSD17B-IDROT      — reds until `onReconnect` CARRIES the identity and main.ts
@@ -481,10 +487,12 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
 
   /** 17r-b: flush ONE battle row and PROVE the listener observed exactly it. The anti-vacuity
    *  twin of flushWithNoBattleRows, for the PRE-HYDRATION flushes of STALEROW / ONGOINGROW /
-   *  REARM: without it, "the latch survived this flush" is indistinguishable from "this flush
-   *  never reached the listener at all" (a clean store no-ops flushBatch), and the whole
-   *  fixture would be vacuous. The id set — not the call count — is asserted, because the
-   *  number of listeners that happen to read latestPlayerBattle in one batch is not this
+   *  TWOFLUSH / REARM: without it, "the latch survived this flush" is indistinguishable from
+   *  "this flush never reached the listener at all" (a flush over a CLEAN store no-ops), and
+   *  the whole fixture would be vacuous. Safe to call twice in a row with the SAME row:
+   *  upsertBattle sets `#dirty = true` unconditionally (store.ts:602-605), so the second call
+   *  really does run a second batch. The id set — not the call count — is asserted, because
+   *  the number of listeners that happen to read latestPlayerBattle in one batch is not this
    *  gate's business (main.ts:1852's ranked listener also can, when a profile row exists). */
   function flushObservingBattleId(battle: StoreBattle, expectedId: bigint): void {
     latestSpy.mockClear();
@@ -566,6 +574,9 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
   // it is one of only two pre-existing tests that prove the latch RESOLVES at all: under
   // mutant #3 (`onHydrated: () => {}` — the signal ignored) the latch never resolves, the
   // re-baseline never happens, activeBattleId stays null and the battleEnd is dropped.
+  // It is ALSO the tooth that kills "resolve on the Nth post-reconnect flush" for every
+  // N >= 2 (see RSD17B-TWOFLUSH's note (b)): T3 requires the re-baseline to happen on the
+  // FIRST flush after the signal, or its battleEnd is lost.
   // WRONG IMPL KILLED: an implementation that keeps suppressing the re-baselined battle id
   // forever (never clearing the latch / the captured id after the match) swallows its
   // battleEnd, so the expected pair collapses to a lone battleStart.
@@ -785,6 +796,64 @@ describe('main.ts pt-b1 battle emit listener — post-reconnect reseed latch (16
     flushBattles(makeBattle(B2, 'SideAWins', 3));
 
     expect(battleEvents(pressF9AndReadRing())).toEqual([startOf(B2), endOf(B2, 'SideAWins', 3)]);
+  });
+
+  // GREEN at the shipped implementation — a CHEAT-KILL, not a defect witness. (RED at the
+  // 17r-b fork like every other signalHydrated() fixture: opts.onHydrated does not exist there.)
+  //
+  // THE SURVIVOR THIS CLOSES (artifact red-team, MEASURED: 260/260 tests green and the
+  // acceptance gate green with this cheat in the tree). A listener that SELF-ARMS on its first
+  // pre-hydration sight —
+  //     if (battleReseedPending) {
+  //       if (!hydratedSinceReconnect) { hydratedSinceReconnect = true; return; }
+  //       battleReseedPending = false;  … }
+  // — never consults the signal at all; it just SKIPS ONE FLUSH per reconnect and calls that
+  // hydration. Every other fixture in this file has EXACTLY ONE flush between
+  // simulateReconnect() and signalHydrated(), and on that single flush "arm and return" is
+  // observationally identical to "stay armed and return", so all of them stay green. TWO
+  // pre-hydration flushes is the smallest fixture that separates the two, and nothing else in
+  // the suite provides it. Do NOT collapse the two flushes when refactoring: one flush makes
+  // this tooth a duplicate of STALEROW.
+  //
+  // SEQUENCE: B2 Ongoing (start B2; the survivor is the HIGHER id) -> reconnect (captures B2)
+  //   -> pre-hydration flush #1 = B1 SideAWins,4 ONLY -> pre-hydration flush #2 = the SAME row
+  //   again (upsertBattle sets `#dirty` unconditionally, store.ts:602-605, so the second batch
+  //   really runs; BOTH flushes assert the listener observed a DEFINED B1) -> hydrated
+  //   -> flush(B1 terminal + B2 Ongoing) -> flush B2 SideBWins,6.
+  //
+  // CORRECT IMPL ring:            [start B2, end B2 SideBWins 6]
+  //   BOTH pre-hydration flushes return with the latch armed; the post-hydration flush reads
+  //   latest = B2 == the survivor and re-baselines silently; the terminal flush pairs the end.
+  // WRONG IMPL KILLED (a) — THE SELF-ARMING LISTENER above: flush #1 arms and returns; flush #2
+  //   now sees hydratedSinceReconnect === true and RESOLVES against the B1 terminal row, which
+  //   does not match survivor B2, is terminal, and finds activeBattleId null — so it emits
+  //   nothing and the burn is SILENT. The latch is gone before the real signal arrives, so the
+  //   post-signal flush treats the surviving B2 as brand new
+  //   ->  [start B2, START B2, end B2].
+  //   FAILS AT INDEX 1: expected endOf(B2,'SideBWins',6), got startOf(B2).
+  // WRONG IMPL KILLED (b) — "resolve on the Nth post-reconnect flush", N = 2: identical trace,
+  //   identical failure. For N >= 3 the kill belongs to T3, not to this fixture (this one has
+  //   two more flushes after the signal, so an N=3 counter would resolve on the RIGHT row and
+  //   pass): T3 requires the re-baseline to happen on the FIRST flush after the signal or its
+  //   battleEnd is dropped. Cite the PAIR when claiming the family is closed for every N >= 2 —
+  //   this tooth alone does not close N >= 3.
+  it('RSD17B-TWOFLUSH: two pre-hydration flushes both keep the latch — only the signal resolves it', () => {
+    flushBattles(makeBattle(B2, 'Ongoing'));
+    simulateReconnect();
+    flushObservingBattleId(makeBattle(B1, 'SideAWins', 4), B1); // pre-hydration flush #1
+    flushObservingBattleId(makeBattle(B1, 'SideAWins', 4), B1); // pre-hydration flush #2
+    signalHydrated();
+    flushBattles(makeBattle(B1, 'SideAWins', 4), makeBattle(B2, 'Ongoing'));
+    flushBattles(makeBattle(B2, 'SideBWins', 6));
+
+    expect(
+      battleEvents(pressF9AndReadRing()),
+      'the reseed latch must survive EVERY flush that lands before the hydration signal, not ' +
+        'just the first one. An implementation that skips one flush and then treats itself as ' +
+        'hydrated (or resolves on the Nth flush) passes every other fixture in this file, ' +
+        'because they each have exactly ONE pre-hydration flush — and it re-opens residual (d) ' +
+        'in full whenever a reconnect hydrates across two batches',
+    ).toEqual([startOf(B2), endOf(B2, 'SideBWins', 6)]);
   });
 
   // RED at fork (harness reason: two signalHydrated calls). Behaviourally this is the tooth
