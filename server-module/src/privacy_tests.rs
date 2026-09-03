@@ -320,7 +320,7 @@ fn rb22p_identity_ctor_needles() -> [String; 4] {
     ]
 }
 
-// --- write attribution (local, HARDENED port of write_target_accessors) ------
+// --- write attribution (this module's local copy; see the doc below) ---------
 
 const RB22P_NO_ANCHOR: &str = "<<unattributable-write-no-anchor>>";
 const RB22P_CROSS_STATEMENT: &str = "<<unattributable-write-statement-boundary>>";
@@ -328,18 +328,26 @@ const RB22P_EMPTY_ACCESSOR: &str = "<<unattributable-write-empty-accessor>>";
 
 /// The accessor name behind every write verb in an already-squashed source.
 ///
-/// HARDENED against the MEASURED red-team Finding 1: the shipped
-/// `write_target_accessors` (accounts_tests.rs:2139-2165) takes the nearest
-/// EARLIER `ctx.db.` as the anchor without checking that it belongs to the same
-/// statement, and DROPS a write with no anchor at all with no else-branch. So
-/// `let db = &ctx.db; db.account().identity().delete(owner);` in this module is
-/// misattributed to the previous statement's `export_bundle` accessor — green,
+/// Authored against the MEASURED red-team Finding 1. BEFORE rb-39, the sibling
+/// helper `write_target_accessors` took the nearest EARLIER `ctx.db.` as the
+/// anchor without checking that it belonged to the same statement, and dropped a
+/// write with no anchor at all — so `let db = &ctx.db;
+/// db.account().identity().delete(owner);` in this module would have been
+/// misattributed to the previous statement's `export_bundle` accessor: green,
 /// clippy-clean, and deleting a foreign table's rows.
 ///
 /// Here, an unattributable write pushes a POISON MARKER instead of being dropped
-/// or misattributed, and the caller fails loud on it. Scoped to this new file on
-/// purpose: hardening the SHARED helper would re-baseline accounts.rs's existing
-/// write census, which is why EO-11 is DEFERred to its own slice.
+/// or misattributed, and the caller fails loud on it.
+///
+/// EO-11 SHIPPED AS rb-39 (ADR-0234): the sibling helper now walks each write
+/// verb BACK over its own receiver chain and refuses anything that is not rooted
+/// in a word-bounded handle, which is strictly stronger than this local
+/// statement-boundary rule (a foreign write SHARING a statement with an owned
+/// read carries no `;` and is therefore invisible here). This local copy is
+/// retained per the per-module local-copy convention — the two files live under
+/// different parent modules and a `_tests.rs` file never imports scan machinery
+/// from a sibling `_tests.rs` — and its exact body is pinned, so the difference
+/// is a deliberate, bounded one rather than drift.
 fn rb22p_write_targets(squashed: &str) -> Vec<String> {
     let prefix = concat!("ctx", ".db.");
     let verbs = [
@@ -528,11 +536,14 @@ fn rb22p_no_early_return_in_purge() {
 /// Kills: any foreign-table write added to this module (its accessor is outside
 ///        the owned set);
 ///        the MEASURED alias bypass `let db = &ctx.db; db.account()...delete(..)`,
-///        which the shipped helper silently misattributes to the previous
-///        statement's accessor — here the intervening `;` makes it a POISON
-///        marker and the test fails loud instead;
-///        a write with no `ctx.db.` anchor at all, which the shipped helper drops
-///        on the floor.
+///        which the PRE-rb-39 shared helper silently misattributed to the
+///        previous statement's accessor — here the intervening `;` makes it a
+///        POISON marker and the test fails loud instead;
+///        a write with no `ctx.db.` anchor at all, which that pre-rb-39 helper
+///        dropped on the floor. Both holes are closed in the shared helper as of
+///        rb-39 / ADR-0234 (a rooted receiver chain or a loud refusal); this
+///        module keeps its own, differently-implemented copy, so these two rows
+///        state what THIS test kills, not what is still broken elsewhere.
 #[test]
 fn rb22p_writes_only_export_bundle() {
     let squashed = stripped_for_scan(PRIVACY_RS);
