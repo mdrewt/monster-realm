@@ -841,6 +841,346 @@ function driftOf(fileMap, baselineText) {
   return { drift: baselineDrift(scanned, parsed.rows), parsed };
 }
 
+// (i.e. immediately after `export const WORKSPACE_MANIFESTS = [...];`)
+//
+// OBS-48 / A9 proof-of-teeth fixtures (slice 17r-c). Injected data only — no
+// filesystem, no network, and (per the file header) NO REGEX: every check below
+// is indexOf / startsWith / endsWith / join / split / manual walk.
+//
+// Shape contract these fixtures are built against (implemented elsewhere):
+//   deriveWorkspaceManifests(rootCargoText) -> string[]
+//   detectUnstableSites({ manifests, srcFiles }) -> [{ kind, site, occurrences }]
+//   auditUnstable({ manifests, srcFiles, entries, adrExists, docs, committedManifests })
+//   formatJustifiedDetail(justified) -> string
+//   UNSTABLE_POLICY_DOCS -> the three A9b policy doc paths (ADR-0180 / ADR-0197 /
+//     the runbook). The doc fixtures below are KEYED FROM IT on purpose, so the
+//     teeth cannot drift from the path list the checker actually iterates.
+
+/** The issue every OBS-48 justification and the recorded policy must cite. */
+const OBS48_ISSUE_PREFIX = 'https://github.com/mdrewt/monster-realm/issues/';
+const OBS48_ISSUE = `${OBS48_ISSUE_PREFIX}342`;
+
+/**
+ * Build a `why` of EXACTLY `len` characters with no leading/trailing whitespace
+ * (so `why.trim().length === len` by construction — the 80-char floor and the
+ * 79-char negative control are computed, never eyeballed).
+ */
+function obs48Why(len) {
+  const stem =
+    'Reviewed under ADR-0180: this site is required for the deferred outbound HTTP export ' +
+    'spike and is re-checked at every release train. ';
+  let out = '';
+  while (out.length < len) out = out + stem;
+  out = out.slice(0, len);
+  if (out.endsWith(' ')) out = `${out.slice(0, len - 1)}.`;
+  return out;
+}
+
+/** A valid justification (>= 80 chars) and the 79-char one-under control. */
+const OBS48_WHY = obs48Why(140);
+const OBS48_WHY_79 = obs48Why(79);
+
+/** Root manifest whose `[workspace] members` derive the committed sweep set. */
+const OBS48_ROOT_TOML = [
+  '[workspace]',
+  'resolver = "2"',
+  'members = ["game-core", "server-module"]',
+  '',
+  '[workspace.dependencies]',
+  'serde = { version = "1", features = ["derive"] }',
+  '',
+].join('\n');
+
+/** Same members, rustfmt-style multi-line array (kills a single-line parse). */
+const OBS48_ROOT_TOML_MULTILINE = [
+  '[workspace]',
+  'resolver = "2"',
+  'members = [',
+  '    "game-core",',
+  '    "server-module",',
+  ']',
+  '',
+].join('\n');
+
+/** The set `OBS48_ROOT_TOML` must derive, sorted. */
+const OBS48_COMMITTED = ['Cargo.toml', 'game-core/Cargo.toml', 'server-module/Cargo.toml'];
+
+/** Same LENGTH as the derived set, one member swapped — the measured bypass. */
+const OBS48_DRIFTED_COMMITTED = ['Cargo.toml', 'game-core/Cargo.toml', 'sim-harness/Cargo.toml'];
+
+/** Three manifests, zero occurrences of the substring `unstable`. */
+const OBS48_CLEAN_MANIFESTS = {
+  'Cargo.toml': OBS48_ROOT_TOML,
+  'game-core/Cargo.toml':
+    '[package]\nname = "game-core"\n\n[dependencies]\nserde = { workspace = true }\n',
+  'server-module/Cargo.toml':
+    '[package]\nname = "server-module"\n\n[dependencies]\nspacetimedb = "1.4"\n',
+};
+
+/** Two source files, zero procedure needles. */
+const OBS48_CLEAN_SRC = {
+  'server-module/src/battle.rs': 'pub fn resolve_turn() -> u8 {\n    1\n}\n',
+  'server-module/src/lib.rs': 'pub mod battle;\n\npub fn boot() {}\n',
+};
+
+/** server-module/Cargo.toml with EXACTLY ONE `unstable` occurrence. */
+const OBS48_UNSTABLE_MANIFESTS = {
+  ...OBS48_CLEAN_MANIFESTS,
+  'server-module/Cargo.toml': [
+    '[package]',
+    'name = "server-module"',
+    '',
+    '[dependencies]',
+    'spacetimedb = { version = "1.4", features = ["unstable"] }',
+    '',
+  ].join('\n'),
+};
+
+/** The same file after a SECOND use lands in it — exactly TWO occurrences. */
+const OBS48_UNSTABLE_TWICE = {
+  ...OBS48_CLEAN_MANIFESTS,
+  'server-module/Cargo.toml': [
+    '[package]',
+    'name = "server-module"',
+    '',
+    '[features]',
+    'http-export = ["spacetimedb/unstable"]',
+    '',
+    '[dependencies]',
+    'spacetimedb = { version = "1.4", features = ["unstable"] }',
+    '',
+  ].join('\n'),
+};
+
+/** Four spellings that all enable the unstable feature (A9 sees only one today). */
+const OBS48_TOML_DOUBLE_QUOTED = [
+  '[package]',
+  'name = "game-core"',
+  '',
+  '[dependencies]',
+  'spacetimedb = { version = "1.4", features = ["unstable"] }',
+  '',
+].join('\n');
+
+const OBS48_TOML_SINGLE_QUOTED = [
+  '[package]',
+  'name = "game-core"',
+  '',
+  '[dependencies]',
+  `spacetimedb = { version = "1.4", features = ${"['unstable']"} }`,
+  '',
+].join('\n');
+
+const OBS48_TOML_PASSTHROUGH = [
+  '[package]',
+  'name = "game-core"',
+  '',
+  '[features]',
+  'http-export = ["spacetimedb/unstable"]',
+  '',
+].join('\n');
+
+const OBS48_TOML_BARE_KEY = [
+  '[package]',
+  'name = "game-core"',
+  '',
+  '[features]',
+  'unstable = []',
+  '',
+].join('\n');
+
+/** Three procedure spellings, one per file — including a `_tests.rs`. */
+const OBS48_PROC_SRC = {
+  'server-module/src/http_export.rs': [
+    'use spacetimedb::{procedure, ProcedureContext};',
+    '',
+    '#[procedure]',
+    'pub fn export(_ctx: &ProcedureContext) {}',
+    '',
+  ].join('\n'),
+  'server-module/src/http_export_tests.rs': [
+    '#[cfg(test)]',
+    'mod tests {',
+    '    #[procedure]',
+    '    fn helper() {}',
+    '}',
+    '',
+  ].join('\n'),
+  'server-module/src/ping.rs': ['#[spacetimedb::procedure]', 'pub fn ping() {}', ''].join('\n'),
+};
+
+/** Human-readable spelling per procedure fixture, for failure messages. */
+const OBS48_PROC_SPELLINGS = {
+  'server-module/src/http_export.rs':
+    'use spacetimedb::{procedure, ProcedureContext}; plus #[procedure]',
+  'server-module/src/http_export_tests.rs': '#[procedure] inside a _tests.rs file',
+  'server-module/src/ping.rs': '#[spacetimedb::procedure]',
+};
+
+/** The recorded policy sentence: BOTH literals, same line, no fence, no comment. */
+const OBS48_POLICY_LINE =
+  'OBS-48 policy: require-justification — every unstable feature or procedure site must carry ' +
+  `an UNSTABLE_JUSTIFICATIONS entry. Tracking issue: ${OBS48_ISSUE}`;
+
+const OBS48_GOOD_DOC = ['# OBS-48 policy', '', OBS48_POLICY_LINE, ''].join('\n');
+
+/** Inert variants: the literals are present in RAW text but must not count. */
+const OBS48_COMMENT_BLOCK_DOC = ['# OBS-48 policy', '', '<!--', OBS48_POLICY_LINE, '-->', ''].join(
+  '\n',
+);
+const OBS48_COMMENT_INLINE_DOC = ['# OBS-48 policy', '', `<!-- ${OBS48_POLICY_LINE} -->`, ''].join(
+  '\n',
+);
+const OBS48_FENCED_DOC = ['# OBS-48 policy', '', '```toml', OBS48_POLICY_LINE, '```', ''].join(
+  '\n',
+);
+const OBS48_SPLIT_LINE_DOC = [
+  '# OBS-48 policy',
+  '',
+  'The recorded stance for unstable features is require-justification.',
+  `Tracking issue: ${OBS48_ISSUE}`,
+  '',
+].join('\n');
+
+/** adrExists stub used wherever a tooth does not need a call counter. */
+const OBS48_ADR_OK = (id) => id === 'ADR-0180' || id === 'ADR-0197';
+
+/**
+ * The three A9b doc paths, read LAZILY (inside a tooth) so a missing
+ * implementation is a tooth miss, not a module-load crash.
+ */
+function obs48DocPaths() {
+  let paths;
+  try {
+    paths = UNSTABLE_POLICY_DOCS;
+  } catch {
+    throw new Error(
+      'the eval does not define `UNSTABLE_POLICY_DOCS` — the A9b doc arm must expose the three ' +
+        'policy doc paths (ADR-0180, ADR-0197, the runbook) it iterates, so these teeth can key ' +
+        'their doc fixtures off the same list the checker reads',
+    );
+  }
+  if (!Array.isArray(paths)) {
+    throw new Error(`UNSTABLE_POLICY_DOCS is ${typeof paths}, not an array of doc paths`);
+  }
+  return paths;
+}
+
+/** `bodies[i] === null` means that doc is absent from the map entirely. */
+function obs48DocsFor(bodies) {
+  const paths = obs48DocPaths();
+  const docs = {};
+  for (let i = 0; i < paths.length; i++) {
+    const body = i < bodies.length ? bodies[i] : OBS48_GOOD_DOC;
+    if (body === null) continue;
+    docs[paths[i]] = body;
+  }
+  return docs;
+}
+
+/** All three docs record the policy correctly. */
+function obs48Docs() {
+  return obs48DocsFor([OBS48_GOOD_DOC, OBS48_GOOD_DOC, OBS48_GOOD_DOC]);
+}
+
+/** A well-formed justification entry with exactly the 6 declared data keys. */
+function obs48Entry(overrides) {
+  const base = {
+    kind: 'unstable-feature',
+    site: 'server-module/Cargo.toml',
+    occurrences: 1,
+    decision: 'ADR-0180',
+    issue: OBS48_ISSUE,
+    why: OBS48_WHY,
+  };
+  const out = {};
+  for (const key of ['kind', 'site', 'occurrences', 'decision', 'issue', 'why']) {
+    out[key] = base[key];
+  }
+  for (const key of Object.keys(overrides ?? {})) out[key] = overrides[key];
+  return out;
+}
+
+/** Clean-fixture audit; `overrides` swaps any single argument. */
+function obs48Audit(overrides) {
+  const args = {
+    manifests: OBS48_CLEAN_MANIFESTS,
+    srcFiles: OBS48_CLEAN_SRC,
+    entries: [],
+    adrExists: OBS48_ADR_OK,
+    docs: obs48Docs(),
+    committedManifests: OBS48_COMMITTED,
+  };
+  for (const key of Object.keys(overrides ?? {})) args[key] = overrides[key];
+  return auditUnstable(args);
+}
+
+/** Manifest map with one member replaced by a variant text. */
+function obs48ManifestVariant(text) {
+  const map = {};
+  for (const key of Object.keys(OBS48_CLEAN_MANIFESTS)) map[key] = OBS48_CLEAN_MANIFESTS[key];
+  map['game-core/Cargo.toml'] = text;
+  return map;
+}
+
+/** Every failure bucket `ok` must find empty. */
+const OBS48_ERROR_LISTS = [
+  'schemaErrors',
+  'manifestSetDrift',
+  'missingManifests',
+  'violations',
+  'stale',
+  'countMismatches',
+  'docErrors',
+];
+
+/** Result-shape guard, so a hollow return value fails LOUD, not silently. */
+function obs48Shape(result) {
+  if (result === null || typeof result !== 'object') {
+    return `auditUnstable returned ${typeof result}, not a result object`;
+  }
+  for (const key of OBS48_ERROR_LISTS) {
+    if (!Array.isArray(result[key])) {
+      return `auditUnstable's result has no \`${key}\` array (got ${typeof result[key]})`;
+    }
+  }
+  for (const key of ['detected', 'justified']) {
+    if (!Array.isArray(result[key])) {
+      return `auditUnstable's result has no \`${key}\` array (got ${typeof result[key]})`;
+    }
+  }
+  for (const key of ['manifestsScanned', 'srcScanned', 'docsCited']) {
+    if (typeof result[key] !== 'number') {
+      return `auditUnstable's result field \`${key}\` is ${typeof result[key]}, not a number`;
+    }
+  }
+  if (typeof result.ok !== 'boolean') {
+    return `auditUnstable returned ok=${JSON.stringify(result.ok)}, not a boolean`;
+  }
+  return null;
+}
+
+/** Compact rendering of whichever failure buckets are populated. */
+function obs48Errs(result) {
+  const parts = [];
+  for (const key of OBS48_ERROR_LISTS) {
+    const list = result === null || typeof result !== 'object' ? null : result[key];
+    if (Array.isArray(list) && list.length > 0) parts.push(`${key}=[${list.join(' | ')}]`);
+  }
+  return parts.length === 0 ? '(every failure bucket was empty)' : parts.join(' ');
+}
+
+/** First detection matching `(kind, site)`, or null. */
+function obs48Hit(detected, kind, site) {
+  if (!Array.isArray(detected)) return null;
+  for (const hit of detected) {
+    if (hit !== null && typeof hit === 'object' && hit.kind === kind && hit.site === site) {
+      return hit;
+    }
+  }
+  return null;
+}
+
 const TEETH = [
   {
     id: 'T-good',
@@ -1303,6 +1643,679 @@ const TEETH = [
       const decoyAttr = attributeAt(decoy, decoy.indexOf('#[spacetimedb::table('));
       if (decoyAttr !== null && decoyAttr.indexOf('scheduled(mr_heartbeat)') !== -1) {
         return 'a prose mention outside the attribute was captured as part of it';
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-obs48-clean',
+    // Kills the VACUOUS audit: one that reports `ok` because it scanned nothing
+    // (an empty manifest map, an empty src map, a doc loop that never ran, a
+    // `detected` list that is always empty). Every count is pinned to the
+    // fixture size, so "green because it looked at zero files" is impossible.
+    run() {
+      const result = obs48Audit({});
+      const shape = obs48Shape(result);
+      if (shape !== null) return shape;
+      const wantManifests = Object.keys(OBS48_CLEAN_MANIFESTS).length;
+      if (result.manifestsScanned !== wantManifests) {
+        return (
+          `a clean audit reported manifestsScanned=${result.manifestsScanned} against a ` +
+          `${wantManifests}-manifest fixture — it is green because it scanned nothing`
+        );
+      }
+      const wantSrc = Object.keys(OBS48_CLEAN_SRC).length;
+      if (result.srcScanned !== wantSrc) {
+        return (
+          `a clean audit reported srcScanned=${result.srcScanned} against a ${wantSrc}-file ` +
+          'source fixture — the Rust half of the sweep never ran'
+        );
+      }
+      if (result.detected.length !== 0) {
+        return `a fixture with no unstable/procedure needle reported detections: ${JSON.stringify(result.detected)}`;
+      }
+      if (result.docsCited !== 3) {
+        return `docsCited=${result.docsCited} with all three policy docs well-formed — the doc loop did not visit all three`;
+      }
+      if (result.ok !== true) {
+        return `a clean, fully cited fixture was rejected: ${obs48Errs(result)}`;
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-obs48-unjustified-manifest',
+    // EARS-1, manifest arm. Kills the softened-to-warning shape: the sweep
+    // notices the `unstable` feature, prints a note, and still reports ok.
+    run() {
+      const result = obs48Audit({ manifests: OBS48_UNSTABLE_MANIFESTS, entries: [] });
+      if (result.ok !== false) {
+        return (
+          'a workspace manifest enabling `features = ["unstable"]` with an EMPTY justification ' +
+          `list still reported ok (detected: ${JSON.stringify(result.detected)}) — the finding ` +
+          'was softened to a warning'
+        );
+      }
+      if (result.violations.join(' | ').indexOf('server-module/Cargo.toml') === -1) {
+        return (
+          'the unjustified `unstable` feature was not reported as a violation naming ' +
+          `server-module/Cargo.toml: ${obs48Errs(result)}`
+        );
+      }
+      if (result.justified.length !== 0) {
+        return `an empty entry list produced ${result.justified.length} justified site(s)`;
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-obs48-unjustified-procedure',
+    // EARS-1, Rust arm, over all three needles: the `use ... {procedure,
+    // ProcedureContext}` + `#[procedure]` pair, the fully qualified
+    // `#[spacetimedb::procedure]`, and a `_tests.rs` file (which the OBS-2
+    // ratchet deliberately EXCLUDES — a procedure defined there must still be
+    // seen, which is exactly what a copied `_tests.rs` skip would break).
+    run() {
+      const result = obs48Audit({ srcFiles: OBS48_PROC_SRC, entries: [] });
+      if (result.ok !== false) {
+        return (
+          'server-module source defining Procedures with an EMPTY justification list still ' +
+          `reported ok (detected: ${JSON.stringify(result.detected)})`
+        );
+      }
+      const violations = result.violations.join(' | ');
+      for (const file of Object.keys(OBS48_PROC_SRC)) {
+        if (obs48Hit(result.detected, 'procedure', file) === null) {
+          return (
+            `[${file}] the spelling \`${OBS48_PROC_SPELLINGS[file]}\` was not detected as a ` +
+            `procedure site (detected: ${JSON.stringify(result.detected)})`
+          );
+        }
+        if (violations.indexOf(file) === -1) {
+          return `[${file}] detected but never reported as a violation: ${obs48Errs(result)}`;
+        }
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-obs48-justified-passes',
+    // EARS-2, BOTH halves. Kills "the entry is decorative": an audit that
+    // hardcodes a pass, and — the measured half — a detail line that never
+    // surfaces the justification, so no reviewer ever reads the `why`.
+    run() {
+      const result = obs48Audit({ manifests: OBS48_UNSTABLE_MANIFESTS, entries: [obs48Entry({})] });
+      if (result.ok !== true) {
+        return `a well-formed justification for a real use did not clear the gate: ${obs48Errs(result)}`;
+      }
+      if (result.justified.length !== 1) {
+        return `justified.length=${result.justified.length} for one matching entry — the match was not recorded`;
+      }
+      const detail = formatJustifiedDetail(result.justified);
+      if (typeof detail !== 'string') {
+        return `formatJustifiedDetail returned ${typeof detail}, not a string`;
+      }
+      if (detail.indexOf(OBS48_WHY) === -1) {
+        return (
+          'formatJustifiedDetail did not surface the VERBATIM `why` (truncated, summarised or ' +
+          `dropped): ${JSON.stringify(detail)}`
+        );
+      }
+      if (detail.indexOf(OBS48_ISSUE) === -1) {
+        return `formatJustifiedDetail never printed the entry's issue URL: ${JSON.stringify(detail)}`;
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-obs48-occurrence-ratchet',
+    // The BLANKET-LICENCE bypass, measured: once a site is justified, any
+    // number of further uses in the same file ride free. The declared count
+    // must equal the detected count EXACTLY, in both directions.
+    run() {
+      const grew = obs48Audit({
+        manifests: OBS48_UNSTABLE_TWICE,
+        entries: [obs48Entry({ occurrences: 1 })],
+      });
+      if (grew.ok !== false) {
+        return (
+          'a SECOND `unstable` use landed in an already-justified manifest (detected 2, entry ' +
+          'declares 1) and the audit stayed green — the entry is a blanket licence for the file'
+        );
+      }
+      if (grew.countMismatches.length === 0) {
+        return `detected 2 vs declared 1 was not reported as a count mismatch: ${obs48Errs(grew)}`;
+      }
+      const shrank = obs48Audit({
+        manifests: OBS48_UNSTABLE_MANIFESTS,
+        entries: [obs48Entry({ occurrences: 2 })],
+      });
+      if (shrank.ok !== false) {
+        return (
+          'an entry declaring 2 occurrences against 1 detected was accepted — an inflated count ' +
+          'pre-authorises the next use (`<=` instead of `===`)'
+        );
+      }
+      if (shrank.countMismatches.length === 0) {
+        return `detected 1 vs declared 2 was not reported as a count mismatch: ${obs48Errs(shrank)}`;
+      }
+      const exact = obs48Audit({
+        manifests: OBS48_UNSTABLE_TWICE,
+        entries: [obs48Entry({ occurrences: 2 })],
+      });
+      if (exact.ok !== true) {
+        return `an entry declaring exactly the 2 detected occurrences was rejected: ${obs48Errs(exact)}`;
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-obs48-stale',
+    // The PRE-SEED NEUTER, measured: land the justification entry first (clean
+    // tree, gate green), then land the use in a later commit — the entry is
+    // already there, so the gate never goes red. An entry naming a site with
+    // ZERO detected hits must fail on its own.
+    run() {
+      const result = obs48Audit({ entries: [obs48Entry({})] });
+      if (result.ok !== false) {
+        return (
+          'a justification entry naming a site with ZERO detected hits was accepted — an entry ' +
+          'can be pre-seeded on a clean tree and the later use then lands silently'
+        );
+      }
+      if (result.stale.join(' | ').indexOf('server-module/Cargo.toml') === -1) {
+        return `the pre-seeded entry was not reported as stale: ${obs48Errs(result)}`;
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-obs48-entry-shape',
+    // Schema smuggling. Each row is an independently diagnosable sub-case; the
+    // first row is the positive control that keeps the check from being "reject
+    // everything". Every rejection must land in `schemaErrors` — a malformed
+    // entry is a schema failure, not merely a non-match.
+    run() {
+      const proxyTarget = obs48Entry({});
+      proxyTarget.allowAll = true;
+      proxyTarget.suppress = 'server-module/Cargo.toml';
+      const declared = ['kind', 'site', 'occurrences', 'decision', 'issue', 'why'];
+      const proxied = new Proxy(proxyTarget, {
+        ownKeys() {
+          return declared.slice();
+        },
+        getOwnPropertyDescriptor(target, key) {
+          if (declared.indexOf(key) === -1) return undefined;
+          return { value: target[key], writable: true, enumerable: true, configurable: true };
+        },
+      });
+
+      // Zero OWN keys: all six fields are inherited, so `entry.kind` reads fine
+      // while `Object.keys(entry).length === 0`.
+      const protoOnly = Object.create(obs48Entry({}));
+
+      const getterEntry = obs48Entry({});
+      delete getterEntry.why;
+      Object.defineProperty(getterEntry, 'why', {
+        get() {
+          return OBS48_WHY;
+        },
+        enumerable: true,
+        configurable: true,
+      });
+
+      const missingKey = obs48Entry({});
+      delete missingKey.issue;
+
+      const cases = [
+        { label: 'well-formed-control', entries: [obs48Entry({})], reject: false },
+        {
+          label: 'proxy-hidden-keys',
+          entries: [proxied],
+          reject: true,
+          was:
+            'a Proxy entry whose ownKeys trap reports exactly the 6 declared names while its ' +
+            'target carries 2 further own keys (still reachable via `in` and via a plain ' +
+            'property read) was accepted',
+        },
+        {
+          label: 'proto-only-keys',
+          entries: [protoOnly],
+          reject: true,
+          was:
+            'an entry with ZERO own keys, whose six fields live on its prototype, was accepted ' +
+            '(the validator read `entry.kind` straight through the chain)',
+        },
+        {
+          label: 'why-is-a-getter',
+          entries: [getterEntry],
+          reject: true,
+          was:
+            'an entry whose `why` is an accessor — free to return one string to the validator ' +
+            'and another to the reviewer detail — was accepted',
+        },
+        {
+          label: 'seventh-key',
+          entries: [obs48Entry({ allowAll: true })],
+          reject: true,
+          was: 'an entry carrying a 7th key `allowAll: true` was accepted',
+        },
+        {
+          label: 'missing-key',
+          entries: [missingKey],
+          reject: true,
+          was: 'an entry with the `issue` key deleted was accepted',
+        },
+        {
+          label: 'not-an-array-string',
+          entries: 'x',
+          reject: true,
+          was: "UNSTABLE_JUSTIFICATIONS = 'x' (a string, iterable but entry-free) was accepted",
+        },
+        {
+          label: 'not-an-array-null',
+          entries: null,
+          reject: true,
+          was: 'UNSTABLE_JUSTIFICATIONS = null was coerced to an empty list instead of failing',
+        },
+        {
+          label: 'not-an-array-arraylike',
+          entries: { length: 0 },
+          reject: true,
+          was: 'UNSTABLE_JUSTIFICATIONS = { length: 0 } (an array-LIKE that reads as empty) was accepted',
+        },
+      ];
+
+      for (const testCase of cases) {
+        const result = obs48Audit({
+          manifests: OBS48_UNSTABLE_MANIFESTS,
+          entries: testCase.entries,
+        });
+        if (!testCase.reject) {
+          if (result.schemaErrors.length !== 0) {
+            return `[${testCase.label}] a well-formed entry produced schema errors: ${result.schemaErrors.join(' | ')}`;
+          }
+          if (result.ok !== true) {
+            return `[${testCase.label}] a well-formed entry did not clear the gate: ${obs48Errs(result)}`;
+          }
+          continue;
+        }
+        if (result.schemaErrors.length === 0) {
+          return `[${testCase.label}] ${testCase.was} — schemaErrors stayed empty`;
+        }
+        if (result.ok !== false) {
+          return `[${testCase.label}] ${testCase.was} — the audit still reported ok`;
+        }
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-obs48-duplicate',
+    // Kills "first match wins, extras ignored": a second entry for the same
+    // (kind, site) is an unreviewed justification hiding behind a reviewed one.
+    run() {
+      const cases = [
+        {
+          label: 'identical-duplicate',
+          entries: [obs48Entry({}), obs48Entry({})],
+          was: 'two IDENTICAL (kind, site) entries were accepted',
+        },
+        {
+          label: 'duplicate-differing-why',
+          entries: [obs48Entry({}), obs48Entry({ why: obs48Why(160) })],
+          was: 'two entries for the same (kind, site) differing only in `why` were accepted',
+        },
+      ];
+      for (const testCase of cases) {
+        const result = obs48Audit({
+          manifests: OBS48_UNSTABLE_MANIFESTS,
+          entries: testCase.entries,
+        });
+        if (result.schemaErrors.length === 0) {
+          return `[${testCase.label}] ${testCase.was} — schemaErrors stayed empty`;
+        }
+        if (result.ok !== false) {
+          return `[${testCase.label}] ${testCase.was} — the audit still reported ok`;
+        }
+      }
+      const single = obs48Audit({
+        manifests: OBS48_UNSTABLE_MANIFESTS,
+        entries: [obs48Entry({})],
+      });
+      if (single.ok !== true) {
+        return `a SINGLE well-formed entry was rejected by the duplicate check: ${obs48Errs(single)}`;
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-obs48-bad-refs',
+    // "Cite anything": the decision/issue/why fields are only real if they are
+    // validated. The final clause proves the injected `adrExists` seam is
+    // actually CALLED — an audit that pattern-matches `ADR-` against a
+    // hardcoded list would pass every row above and still cite a dead ADR.
+    run() {
+      if (OBS48_WHY_79.trim().length !== 79) {
+        return `fixture bug: the short \`why\` is ${OBS48_WHY_79.trim().length} chars, not the 79 this tooth needs`;
+      }
+      if (OBS48_WHY.trim().length < 80) {
+        return `fixture bug: the good \`why\` is ${OBS48_WHY.trim().length} chars, under the 80-char floor`;
+      }
+      const calls = [];
+      const adrExists = (id) => {
+        calls.push(id);
+        return OBS48_ADR_OK(id);
+      };
+      const cases = [
+        { label: 'well-formed-control', entry: obs48Entry({}), reject: false },
+        {
+          label: 'unknown-adr',
+          entry: obs48Entry({ decision: 'ADR-9999' }),
+          reject: true,
+          was: '`decision: "ADR-9999"` was accepted although the injected adrExists() reported that ADR does not exist',
+        },
+        {
+          label: 'empty-decision',
+          entry: obs48Entry({ decision: '' }),
+          reject: true,
+          was: 'an empty `decision` was accepted',
+        },
+        {
+          label: 'foreign-repo-issue',
+          entry: obs48Entry({ issue: 'https://github.com/someone-else/monster-realm/issues/342' }),
+          reject: true,
+          was: 'an issue URL hosted on a DIFFERENT repository was accepted',
+        },
+        {
+          label: 'issue-empty-suffix',
+          entry: obs48Entry({ issue: OBS48_ISSUE_PREFIX }),
+          reject: true,
+          was: 'an issue URL with an EMPTY id after /issues/ was accepted',
+        },
+        {
+          label: 'issue-non-numeric',
+          entry: obs48Entry({ issue: `${OBS48_ISSUE_PREFIX}abc` }),
+          reject: true,
+          was: 'an issue URL with a non-numeric id (`abc`) was accepted',
+        },
+        {
+          label: 'why-one-char-short',
+          entry: obs48Entry({ why: OBS48_WHY_79 }),
+          reject: true,
+          was: 'a 79-character `why` was accepted under an 80-character floor',
+        },
+      ];
+      for (const testCase of cases) {
+        const result = obs48Audit({
+          manifests: OBS48_UNSTABLE_MANIFESTS,
+          entries: [testCase.entry],
+          adrExists,
+        });
+        if (!testCase.reject) {
+          if (result.ok !== true) {
+            return `[${testCase.label}] a well-formed decision/issue/why triple was rejected: ${obs48Errs(result)}`;
+          }
+          continue;
+        }
+        if (result.schemaErrors.length === 0) {
+          return `[${testCase.label}] ${testCase.was} — schemaErrors stayed empty`;
+        }
+        if (result.ok !== false) {
+          return `[${testCase.label}] ${testCase.was} — the audit still reported ok`;
+        }
+      }
+      if (calls.indexOf('ADR-0180') === -1) {
+        return (
+          'the injected adrExists() was never asked about ADR-0180 (calls: ' +
+          `${calls.length === 0 ? 'none' : calls.join(', ')}) — the audit resolves \`decision\` ` +
+          'against something other than the seam, so a deleted ADR still reads as real'
+        );
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-obs48-wrong-site-or-kind',
+    // Cross-satisfaction: one entry anywhere in the list satisfying a use
+    // somewhere else. Site and kind must both be matched exactly, and an entry
+    // whose site carries no hits must ALSO be reported stale (otherwise moving
+    // the use one file over is free).
+    run() {
+      const elsewhere = obs48Audit({
+        manifests: OBS48_UNSTABLE_MANIFESTS,
+        entries: [obs48Entry({ site: 'game-core/Cargo.toml' })],
+      });
+      if (elsewhere.ok !== false) {
+        return (
+          'an entry justifying game-core/Cargo.toml silenced the unjustified `unstable` use in ' +
+          'server-module/Cargo.toml — any one entry licenses every site'
+        );
+      }
+      if (elsewhere.violations.join(' | ').indexOf('server-module/Cargo.toml') === -1) {
+        return `the use in server-module/Cargo.toml was not reported as a violation: ${obs48Errs(elsewhere)}`;
+      }
+      if (elsewhere.stale.join(' | ').indexOf('game-core/Cargo.toml') === -1) {
+        return `the entry pointing at a hit-free manifest was not reported as stale: ${obs48Errs(elsewhere)}`;
+      }
+      const procAtManifest = obs48Audit({
+        manifests: OBS48_UNSTABLE_MANIFESTS,
+        srcFiles: OBS48_PROC_SRC,
+        entries: [obs48Entry({ kind: 'procedure', site: 'server-module/Cargo.toml' })],
+      });
+      if (procAtManifest.schemaErrors.length === 0) {
+        return (
+          'a `procedure` entry whose site is a Cargo.toml (not a key of srcFiles) was accepted — ' +
+          'the two kinds share one site namespace'
+        );
+      }
+      const featureAtSource = obs48Audit({
+        manifests: OBS48_UNSTABLE_MANIFESTS,
+        srcFiles: OBS48_PROC_SRC,
+        entries: [
+          obs48Entry({ kind: 'unstable-feature', site: 'server-module/src/http_export.rs' }),
+        ],
+      });
+      if (featureAtSource.schemaErrors.length === 0) {
+        return (
+          'an `unstable-feature` entry whose site is a .rs file (not a member of the derived ' +
+          'manifest set) was accepted'
+        );
+      }
+      const bogusKind = obs48Audit({
+        manifests: OBS48_UNSTABLE_MANIFESTS,
+        entries: [obs48Entry({ kind: 'unstable' })],
+      });
+      if (bogusKind.schemaErrors.length === 0) {
+        return "an entry with kind 'unstable' (outside the two-value enum) was accepted";
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-obs48-detection-not-softened',
+    // Detection drift — the highest-value tooth. A9 today matches only the
+    // literal `"unstable"`, so three of these four spellings enable the exact
+    // same feature while reading as clean. The Rust half re-proves all three
+    // procedure spellings through the DETECTION entry point (not the audit), and
+    // the last clause pins the "just drop the file from the sweep" move.
+    run() {
+      const variants = [
+        {
+          label: 'todays-form',
+          text: OBS48_TOML_DOUBLE_QUOTED,
+          was: 'features = ["unstable"] (the only spelling A9 matched before this slice)',
+        },
+        {
+          label: 'single-quoted-toml',
+          text: OBS48_TOML_SINGLE_QUOTED,
+          was: "features = ['unstable'] (a single-quoted TOML literal string)",
+        },
+        {
+          label: 'slash-passthrough',
+          text: OBS48_TOML_PASSTHROUGH,
+          was: 'http-export = ["spacetimedb/unstable"] (a local feature that turns the dependency feature on transitively)',
+        },
+        {
+          label: 'bare-feature-key',
+          text: OBS48_TOML_BARE_KEY,
+          was: 'a bare `unstable = []` feature key',
+        },
+      ];
+      for (const variant of variants) {
+        const detected = detectUnstableSites({
+          manifests: obs48ManifestVariant(variant.text),
+          srcFiles: OBS48_CLEAN_SRC,
+        });
+        const hit = obs48Hit(detected, 'unstable-feature', 'game-core/Cargo.toml');
+        if (hit === null) {
+          return `[${variant.label}] ${variant.was} was NOT detected (detected: ${JSON.stringify(detected)})`;
+        }
+        if (!Number.isSafeInteger(hit.occurrences) || hit.occurrences < 1) {
+          return `[${variant.label}] detected with occurrences=${JSON.stringify(hit.occurrences)}, expected a safe integer >= 1`;
+        }
+      }
+      const procDetected = detectUnstableSites({
+        manifests: OBS48_CLEAN_MANIFESTS,
+        srcFiles: OBS48_PROC_SRC,
+      });
+      for (const file of Object.keys(OBS48_PROC_SRC)) {
+        const hit = obs48Hit(procDetected, 'procedure', file);
+        if (hit === null) {
+          return (
+            `[${file}] the spelling \`${OBS48_PROC_SPELLINGS[file]}\` was NOT detected ` +
+            `(detected: ${JSON.stringify(procDetected)})`
+          );
+        }
+        if (!Number.isSafeInteger(hit.occurrences) || hit.occurrences < 1) {
+          return `[${file}] detected with occurrences=${JSON.stringify(hit.occurrences)}, expected a safe integer >= 1`;
+        }
+      }
+      const short = {};
+      for (const key of Object.keys(OBS48_CLEAN_MANIFESTS)) {
+        if (key !== 'game-core/Cargo.toml') short[key] = OBS48_CLEAN_MANIFESTS[key];
+      }
+      const missing = obs48Audit({ manifests: short });
+      if (missing.missingManifests.join(' | ').indexOf('game-core/Cargo.toml') === -1) {
+        return (
+          'a committed workspace manifest absent from the scanned map was not reported in ' +
+          `missingManifests (${obs48Errs(missing)}) — dropping a manifest out of the sweep is a free pass`
+        );
+      }
+      if (missing.ok !== false) {
+        return 'an audit that never read one committed workspace manifest still reported ok';
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-obs48-manifest-set-drift',
+    // The sweep set must be DERIVED from the root `[workspace] members`, not
+    // trusted from a hand-maintained constant. The measured bypass is a
+    // committed list of the SAME LENGTH with one member swapped out — a
+    // length-only comparison waves it through and the swapped-out crate is
+    // never scanned again.
+    run() {
+      const derived = deriveWorkspaceManifests(OBS48_ROOT_TOML);
+      if (!Array.isArray(derived)) {
+        return `deriveWorkspaceManifests returned ${typeof derived}, not an array`;
+      }
+      if (derived.join(' | ') !== OBS48_COMMITTED.join(' | ')) {
+        return (
+          `deriveWorkspaceManifests returned [${derived.join(' | ')}], expected ` +
+          `[${OBS48_COMMITTED.join(' | ')}] (the root manifest plus one entry per member, sorted)`
+        );
+      }
+      const multiline = deriveWorkspaceManifests(OBS48_ROOT_TOML_MULTILINE);
+      if (multiline.join(' | ') !== OBS48_COMMITTED.join(' | ')) {
+        return (
+          `a multi-line \`members = [\` array derived [${multiline.join(' | ')}] — a single-line ` +
+          'parse silently shrinks the sweep set on the real root Cargo.toml'
+        );
+      }
+      const none = deriveWorkspaceManifests('[package]\nname = "solo"\n');
+      if (!Array.isArray(none) || none.length !== 0) {
+        return `a manifest with no [workspace] members derived ${JSON.stringify(none)}, expected []`;
+      }
+      const drifted = obs48Audit({ committedManifests: OBS48_DRIFTED_COMMITTED });
+      if (drifted.manifestSetDrift.length === 0) {
+        return (
+          'a committed manifest list of the SAME LENGTH as the derived set, naming ' +
+          'sim-harness/Cargo.toml where the root [workspace] members say server-module/Cargo.toml, ' +
+          `produced no drift (${obs48Errs(drifted)}) — the comparison is length-only`
+        );
+      }
+      if (drifted.ok !== false) {
+        return 'a committed manifest list that disagrees with the root [workspace] members still reported ok';
+      }
+      return null;
+    },
+  },
+  {
+    id: 'T-obs48-doc-policy',
+    // EARS-3 and the A9b inertness class. Both literals must survive fence and
+    // HTML-comment stripping AND land on ONE line: a line inside a fenced
+    // example, a line inside `<!-- -->`, and two literals split across lines are
+    // all present in the RAW bytes while recording no policy a reader can act on.
+    run() {
+      const paths = obs48DocPaths();
+      if (paths.length !== 3) {
+        return `UNSTABLE_POLICY_DOCS lists ${paths.length} docs, expected 3 (ADR-0180, ADR-0197, the runbook)`;
+      }
+      const joined = paths.join(' | ').toLowerCase();
+      for (const needle of ['0180', '0197', 'runbook']) {
+        if (joined.indexOf(needle) === -1) {
+          return (
+            `UNSTABLE_POLICY_DOCS never names \`${needle}\` ([${paths.join(' | ')}]) — EARS-3 ` +
+            'requires the require-justification stance be recorded in ADR-0180, ADR-0197 AND the runbook'
+          );
+        }
+      }
+      const cases = [
+        {
+          label: 'html-comment-block',
+          bodies: [OBS48_COMMENT_BLOCK_DOC, OBS48_GOOD_DOC, OBS48_GOOD_DOC],
+          was: 'a policy line sitting inside a multi-line <!-- --> comment counted as a citation',
+        },
+        {
+          label: 'html-comment-inline',
+          bodies: [OBS48_GOOD_DOC, OBS48_COMMENT_INLINE_DOC, OBS48_GOOD_DOC],
+          was: 'a policy line sitting inside an inline <!-- ... --> comment counted as a citation',
+        },
+        {
+          label: 'fenced-code-block',
+          bodies: [OBS48_GOOD_DOC, OBS48_GOOD_DOC, OBS48_FENCED_DOC],
+          was: 'a policy line sitting inside a fenced code block counted as a citation',
+        },
+        {
+          label: 'split-lines',
+          bodies: [OBS48_SPLIT_LINE_DOC, OBS48_GOOD_DOC, OBS48_GOOD_DOC],
+          was: 'the two literals on DIFFERENT lines counted as a citation (a whole-file substring scan)',
+        },
+        {
+          label: 'missing-doc',
+          bodies: [OBS48_GOOD_DOC, null, OBS48_GOOD_DOC],
+          was: 'one policy doc missing entirely still produced a full citation count',
+        },
+      ];
+      for (const testCase of cases) {
+        const result = obs48Audit({ docs: obs48DocsFor(testCase.bodies) });
+        if (result.ok !== false) {
+          return `[${testCase.label}] ${testCase.was} — the audit reported ok`;
+        }
+        if (result.docsCited === 3) {
+          return `[${testCase.label}] ${testCase.was} — docsCited stayed 3`;
+        }
+        if (result.docErrors.length === 0) {
+          return `[${testCase.label}] ${testCase.was} — docErrors stayed empty`;
+        }
+      }
+      const good = obs48Audit({ docs: obs48Docs() });
+      if (good.docsCited !== 3) {
+        return `three docs each carrying both literals on one surviving line counted ${good.docsCited} citations`;
+      }
+      if (good.docErrors.length !== 0) {
+        return `well-formed policy docs produced docErrors: ${good.docErrors.join(' | ')}`;
       }
       return null;
     },
