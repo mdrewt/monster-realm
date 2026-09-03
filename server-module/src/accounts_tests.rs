@@ -2160,64 +2160,367 @@ fn g2_no_identity_constructor() {
     }
 }
 
-/// G5 (MODULE_WRITE_ISOLATION, D0): every `.insert(`/`.update(`/`.delete(` in
-/// accounts.rs is chained off one of the three tables this module OWNS
-/// (`account`, `guest_claim`, `guest_claim_reaper_schedule`). A write to any
-/// pre-existing table must be delegated to that table's owning module.
+/// G5 (MODULE_WRITE_ISOLATION, D0): every row-write verb in accounts.rs is
+/// chained off one of the four tables this module OWNS (`account`,
+/// `guest_claim`, `guest_claim_reaper_schedule`,
+/// `account_deletion_reaper_schedule`). A write to any pre-existing table must
+/// be delegated to that table's owning module.
 ///
-/// The extractor walks every write verb, finds the nearest preceding `ctx.db.`,
-/// and reads the accessor name — asserting it is in the owned set.
+/// The verdict lives entirely in `g5_write_isolation_violation`, which is where
+/// the three clauses (non-vacuity, attribution, owned target) and their tags are
+/// documented. Attribution is a BACKWARD RECEIVER-CHAIN walk (ADR-0234, rb-39):
+/// a write is attributed to the handle root its own chain bottoms out in, or it
+/// is REFUSED — it is never credited to whichever accessor happened to be
+/// spelled earlier in the file, and never dropped.
 ///
 /// Kills (proof-of-teeth): add a direct `monster` (or any other pre-existing
 /// table) write chain in accounts.rs instead of delegating — the extracted
-/// accessor is outside the owned set.
+/// accessor is outside the owned set; detach a write from its chain by aliasing
+/// the database handle, binding a column handle in an earlier statement,
+/// laundering the chain through an argument-taking combinator segment, or
+/// spelling the verb UFCS — the write becomes unattributable and this gate reds
+/// under `[W/attribution]` rather than reading as clean (the rb-39 region's
+/// attribution rows).
 #[test]
 fn g5_writes_only_owned_tables() {
     let squashed = stripped_for_scan(ACCOUNTS_RS);
-    let targets = write_target_accessors(&squashed);
-    let allowed = allowed_write_tables();
-    assert!(
-        !targets.is_empty(),
-        "G5: expected accounts.rs to contain at least one owned-table write."
-    );
-    for t in &targets {
-        assert!(
-            allowed.iter().any(|a| a == t),
-            "G5/D0: accounts.rs writes table `{t}` which is NOT one of the three owned tables \
-             {allowed:?}. Every write to a pre-existing table must be delegated to its owning \
-             module."
-        );
+    if let Err(reason) = g5_write_isolation_violation(&squashed) {
+        panic!("G5 (MODULE_WRITE_ISOLATION) FAIL over accounts.rs: {reason}");
     }
 }
 
-/// G5 helper: the accessor name behind every `ctx.db.<t>()....(insert|update|delete)(`
-/// write verb in an already-squashed source.
-fn write_target_accessors(squashed: &str) -> Vec<String> {
-    let prefix = concat!("ctx", ".db.");
-    let verbs = [
-        concat!(".ins", "ert(").to_string(),
-        concat!(".upd", "ate(").to_string(),
-        concat!(".del", "ete(").to_string(),
+/// Why a row-write verb could not be attributed to a table (ADR-0234).
+///
+/// Every variant is a REFUSAL, never a finding about the target: the scan knows
+/// a write happened and knows it cannot say which table it touches. Callers must
+/// treat all three as gate failures — an unattributed write is an UNGATED write.
+#[derive(Debug, PartialEq, Eq)]
+enum WriteAttrFault {
+    /// The receiver chain does not bottom out in a word-bounded `ctx.db.` root:
+    /// an aliased handle, a handle bound in an earlier statement, a bare
+    /// identifier receiver, a decoy binding whose name merely ENDS in `ctx`, or
+    /// a segment that TAKES ARGUMENTS — a combinator can return any handle at
+    /// all, so nothing to its left is evidence about the table reached.
+    UnrootedChain,
+    /// A chain segment has an EMPTY name — the byte before its `(` is not an
+    /// identifier byte (a turbofish, an index expression). A PARENTHESISED
+    /// receiver lands on `UnrootedChain` instead: its parens are NOT empty, so
+    /// the zero-argument segment rule refuses it one step earlier.
+    EmptyAccessor,
+    /// The verb is spelled UFCS (`<Type>::<verb>(receiver, ..)`), so the receiver
+    /// is an ARGUMENT and there is no chain to walk at all.
+    UfcsSpelling,
+}
+
+/// THE WRITE-ATTRIBUTION CONTRACT (ADR-0234, rb-39) — one entry per row-write
+/// verb in an already-squashed source, in SOURCE ORDER.
+///
+/// The rule in one sentence: a write verb is attributed to `<name>` only when
+/// walking BACK over its OWN receiver chain — segment by segment, each segment a
+/// completed call — reaches a word-bounded `ctx.db.<name>(` root; every other
+/// shape is an `Err(WriteAttrFault)`, never a guess and never a silent drop.
+///
+/// Because the verdict reads only the verb's own receiver it is
+/// order-independent. That is the whole point: the pre-rb-39 body took the
+/// nearest EARLIER handle prefix, so a foreign write was credited to whatever
+/// the previous statement merely READ, and a write with no prefix before it
+/// vanished from the census entirely. A statement-boundary rule closes the
+/// anchorless-drop hole (it can push a marker) but still misattributes whenever
+/// no `;` sits between the read and the foreign write — the same-statement,
+/// argument-list and closure shapes.
+///
+/// HONEST LIMITS, stated once and deliberately not re-audited (ADR-0224). The
+/// SSOT is ADR-0234's "Honest limits" section; this list mirrors it:
+///   - a turbofish — or any other non-identifier byte — immediately before a
+///     segment's `(` yields `EmptyAccessor`. A PARENTHESISED receiver
+///     (`(ctx.db.account()).identity().<verb>(x)`) is refused too, as an
+///     `UnrootedChain` under the zero-argument rule below. Both are LOUD, and
+///     the fix is to spell the chain plainly rather than to widen the rule;
+///   - a `Vec`/`HashMap` write in the scanned file is an `UnrootedChain`
+///     false-RED whose sanctioned fix is `.push(` (the m22-s4 convention) —
+///     never a weakening of the rule;
+///   - every receiver segment between the root and the verb must be a
+///     ZERO-ARGUMENT call — a table handle, or a column/index handle obtained
+///     from one. All 13 shipped `accounts.rs` writes are `accessor()`, then
+///     optionally `column()`, then the verb, so a combinator segment is REFUSED
+///     rather than credited to the rooted accessor spelled to its left; a
+///     same-file helper that RETURNS a handle is refused for the same reason —
+///     an ergonomics cost on a hypothetical refactor, paid in the loud
+///     direction;
+///   - the verb vocabulary is `insert`, `try_insert`, `update` and `delete`, in
+///     both the chained and the UFCS spelling. The `insert_or_update` /
+///     `try_insert_or_update` upserts exist only behind the crate's `unstable`
+///     feature, which this workspace does not enable; renaming a trait method
+///     at import (`use Trait::method as ..`) does not compile on the pinned
+///     stable 1.96 toolchain; and the keyed column methods are INHERENT, not
+///     trait methods, so no import can rename them either;
+///   - a `macro_rules!` DEFINED in the scanned file is scanned like any other
+///     text and its write IS attributed. Only a macro defined in a sibling file
+///     and merely INVOKED here carries no verb text at the call site;
+///   - a PER-TABLE handle passed by value to a function in ANOTHER file carries
+///     no verb text at its call site, so both Rust predicates are green on it:
+///     `g5_alias_violation` bans only the raw handle escaping, never a derived
+///     per-table one. That shape IS caught in CI today, by the JS twin's
+///     `[W/split-binding]` clause; review covers the rest of what a per-file
+///     scan cannot see.
+fn write_target_accessors(squashed: &str) -> Vec<Result<String, WriteAttrFault>> {
+    // The four row-write verbs in their chained spelling. The fallible
+    // `try_insert` is the sibling the infallible spelling wraps; the two needles
+    // are DISJOINT substrings (the short verb's needle opens with the `.` that
+    // the fallible spelling replaces with `_`), so no occurrence can match twice
+    // and the array order is immaterial.
+    let dotted = [
+        concat!(".ins", "ert("),
+        concat!(".try_ins", "ert("),
+        concat!(".upd", "ate("),
+        concat!(".del", "ete("),
     ];
-    let mut acc = Vec::new();
-    for verb in &verbs {
-        let mut start = 0;
-        while let Some(rel) = squashed[start..].find(verb.as_str()) {
-            let vpos = start + rel;
-            if let Some(dbrel) = squashed[..vpos].rfind(prefix) {
-                let after = &squashed[dbrel + prefix.len()..];
-                let name: String = after
-                    .chars()
-                    .take_while(|c| c.is_alphanumeric() || *c == '_')
-                    .collect();
-                if !name.is_empty() {
-                    acc.push(name);
-                }
-            }
-            start = vpos + verb.len();
+    // The same four verbs spelled UFCS: the receiver arrives as an ARGUMENT, so
+    // there is no chain to walk and every hit is a refusal.
+    let ufcs = [
+        concat!("::ins", "ert("),
+        concat!("::try_ins", "ert("),
+        concat!("::upd", "ate("),
+        concat!("::del", "ete("),
+    ];
+    let bytes = squashed.as_bytes();
+    let mut acc: Vec<Result<String, WriteAttrFault>> = Vec::new();
+    let mut at = 0usize;
+    while at < bytes.len() {
+        if let Some(verb) = ufcs.iter().find(|v| bytes[at..].starts_with(v.as_bytes())) {
+            acc.push(Err(WriteAttrFault::UfcsSpelling));
+            at += verb.len();
+        } else if let Some(verb) = dotted
+            .iter()
+            .find(|v| bytes[at..].starts_with(v.as_bytes()))
+        {
+            acc.push(rooted_chain_accessor(squashed, at));
+            at += verb.len();
+        } else {
+            at += 1;
         }
     }
     acc
+}
+
+/// The backward half of the contract above: walk the receiver chain of the write
+/// verb whose `.` sits at byte `verb_dot` and name the table it is rooted in.
+///
+/// Every index step is bounds-guarded and returns `UnrootedChain` on exhaustion:
+/// a scanner that panics on a hostile shape is a scanner that cannot be run.
+fn rooted_chain_accessor(squashed: &str, verb_dot: usize) -> Result<String, WriteAttrFault> {
+    let root = concat!("ctx", ".db.").as_bytes();
+    let bytes = squashed.as_bytes();
+    let mut hop = verb_dot;
+    loop {
+        // Each segment of a receiver chain is a COMPLETED call, so the byte
+        // before this hop's `.` must be the `)` that closed it. A bare
+        // identifier receiver (`col.<verb>(`, `ids.<verb>(`) roots nothing.
+        if hop == 0 || bytes[hop - 1] != b')' {
+            return Err(WriteAttrFault::UnrootedChain);
+        }
+        // Depth-scan back to the `(` that `)` closed. Strings and comments are
+        // already blanked, so parens are the only nesting left to balance.
+        let mut depth = 0usize;
+        let mut i = hop - 1;
+        let open = loop {
+            match bytes[i] {
+                b')' => depth += 1,
+                b'(' => {
+                    depth -= 1;
+                    if depth == 0 {
+                        break i;
+                    }
+                }
+                _ => {}
+            }
+            if i == 0 {
+                // Unbalanced: the chain runs off the front of the source.
+                return Err(WriteAttrFault::UnrootedChain);
+            }
+            i -= 1;
+        };
+        // Every receiver segment must be a ZERO-ARGUMENT call — a table handle,
+        // or a column/index handle obtained from one. MEASURED laundering shape:
+        // `ctx.db.account().identity().find(x).map(|_| ctx.db.<foreign>())
+        // .unwrap()` then the verb — an argument-taking segment can return ANY
+        // handle, so the rooted accessor spelled to its left is not evidence
+        // about the table the verb reaches.
+        if open + 2 != hop {
+            return Err(WriteAttrFault::UnrootedChain);
+        }
+        // The name this segment calls.
+        let mut start = open;
+        while start > 0 && is_word_byte(bytes[start - 1]) {
+            start -= 1;
+        }
+        if start == open {
+            return Err(WriteAttrFault::EmptyAccessor);
+        }
+        // Rooted? The prefix must be the handle AND a whole token: `my_ctx.db.`
+        // is a DIFFERENT binding, so the byte before the prefix must not be a
+        // word byte.
+        if start >= root.len()
+            && &bytes[start - root.len()..start] == root
+            && (start == root.len() || !is_word_byte(bytes[start - root.len() - 1]))
+        {
+            return Ok(squashed[start..open].to_string());
+        }
+        // Not rooted yet: peel one more segment (`<root>.a().b().<verb>(`).
+        if start > 0 && bytes[start - 1] == b'.' {
+            hop = start - 1;
+            continue;
+        }
+        return Err(WriteAttrFault::UnrootedChain);
+    }
+}
+
+/// G5's MODULE_WRITE_ISOLATION verdict over an already-squashed source.
+///
+/// Three clauses, in this order, each answering a different question and each
+/// carrying its own tag so the reader can tell them apart:
+///   - `[W/non-vacuity]`: NOT ONE write was attributed. Every clause below would
+///     then pass over an empty set, so a scan that reached the wrong file — or a
+///     stripper that blanked it — would read as `clean`.
+///   - `[W/attribution]`: a write verb could not be tied to a table AT ALL. The
+///     target is UNKNOWN, not known-and-forbidden; refusing to classify is the
+///     safe direction, because an unattributed write is an UNGATED write.
+///   - `[W/target]`: an attributed write names a table this module does not own.
+fn g5_write_isolation_violation(squashed: &str) -> Result<(), String> {
+    let targets = write_target_accessors(squashed);
+    let allowed = allowed_write_tables();
+    let root = concat!("ctx", ".db.");
+
+    if !targets.iter().any(|t| t.is_ok()) {
+        return Err(format!(
+            "G5 [W/non-vacuity]: not one ATTRIBUTED write verb was found in the scanned source \
+             (extracted: {targets:?}). This module exists to write the tables it owns, so with no \
+             attributed write the attribution and target clauses below iterate an empty set and \
+             this gate would say `clean` about nothing."
+        ));
+    }
+
+    for t in &targets {
+        if let Err(fault) = t {
+            return Err(format!(
+                "G5 [W/attribution]: a write verb is NOT rooted in a `{root}<table>()` receiver \
+                 chain of its own (fault: {fault:?}; extracted: {targets:?}). The MEASURED shapes \
+                 are an aliased database handle, a column handle bound in an earlier statement, a \
+                 bare identifier receiver, a chain laundered through an argument-taking \
+                 combinator segment, and the UFCS verb spelling — each detaches the write \
+                 from the only evidence about which table it touches, and each was silently \
+                 credited to a neighbouring accessor (or dropped outright) before rb-39. Chain \
+                 every write directly off `{root}` in the statement that performs it; use `.push(` \
+                 for non-table containers."
+            ));
+        }
+    }
+
+    for name in targets.iter().flatten() {
+        if !allowed.iter().any(|a| a == name) {
+            return Err(format!(
+                "G5 [W/target]: the scanned source writes table `{name}`, which is NOT one of the \
+                 owned tables {allowed:?}. Every write to a pre-existing table must be delegated \
+                 to that table's owning module (D0)."
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+/// The clause that keeps the receiver-chain walk MEANINGFUL on a real file: the
+/// scanned source must bind no alias of the database handle and must take every
+/// reducer context under the literal name `ctx`.
+///
+/// Kept OUT of `g5_write_isolation_violation` on purpose (first-failure-wins
+/// shadowing): a predicate that folds this in can be hollowed on one side while
+/// the other side's tests stay green.
+///
+/// Four clauses, in this order:
+///   - `[alias/db-binding]`: every occurrence of the handle that is not part of
+///     a longer identifier must be followed IMMEDIATELY by `.` — the eval twin's
+///     `hasEscapedDbHandle` direction. Stated that way rather than as a pair of
+///     `=`/`=&` literals, so a handle escaping into a tuple or an argument list
+///     is caught by the same clause.
+///   - `[alias/non-vacuity]`: a file with no reducer-context parameter would
+///     make the naming clause below iterate an empty set.
+///   - `[alias/ctx-name]`: every reducer context is named `ctx` EXACTLY.
+///     Deliberately STRICTER than the JS twin, which also accepts `_ctx`: the
+///     walk's anchor is the literal `ctx` handle, so every write in a `_ctx`
+///     file would be unattributable — a false-RED that reads like a real defect.
+///   - `[alias/ctx-local]`: the eval twin's `CTX_ALIAS_FORMS`. Rebinding the
+///     context itself renames the handle one level up.
+fn g5_alias_violation(squashed: &str) -> Result<(), String> {
+    let bytes = squashed.as_bytes();
+
+    let handle = concat!("ctx", ".db");
+    let mut scan = 0usize;
+    while let Some(rel) = squashed[scan..].find(handle) {
+        let at = scan + rel;
+        scan = at + handle.len();
+        if at > 0 && is_word_byte(bytes[at - 1]) {
+            // A DIFFERENT binding whose name merely ends in the handle spelling.
+            continue;
+        }
+        if bytes.get(scan) != Some(&b'.') {
+            let shown: String = squashed[at..].chars().take(handle.len() + 2).collect();
+            return Err(format!(
+                "G5 [alias/db-binding]: the database handle ESCAPES its chain at `{shown}` — it \
+                 is bound, moved or captured rather than immediately dotted into an accessor. \
+                 Write attribution walks back to the literal `{handle}` handle, so an escaped \
+                 handle does not merely rename a variable: it detaches every write made through \
+                 it from the only evidence about which table that write touches."
+            ));
+        }
+    }
+
+    let ctx_param = concat!(":&Reducer", "Context");
+    if !squashed.contains(ctx_param) {
+        return Err(format!(
+            "G5 [alias/non-vacuity]: the scanned source declares no `{ctx_param}` parameter at \
+             all, so the naming clause would iterate an empty set and pass over nothing. A file \
+             without a reducer context is not the file this gate means to check."
+        ));
+    }
+
+    let mut scan = 0usize;
+    while let Some(rel) = squashed[scan..].find(ctx_param) {
+        let at = scan + rel;
+        scan = at + ctx_param.len();
+        let mut s = at;
+        while s > 0 && is_word_byte(bytes[s - 1]) {
+            s -= 1;
+        }
+        let name = &squashed[s..at];
+        if name != "ctx" {
+            return Err(format!(
+                "G5 [alias/ctx-name]: the scanned source takes the reducer context under the name \
+                 `{name}`; it must be `ctx`. This is stricter than the JS twin on purpose — the \
+                 attribution walk anchors on the literal `{handle}` handle, so under any other \
+                 name (`_ctx` included) EVERY write in the file becomes unattributable, and the \
+                 gate reds for a reason that has nothing to do with the defect it exists to find."
+            ));
+        }
+    }
+
+    for form in [
+        concat!("=", "ctx", ";"),
+        concat!("=", "ctx", ","),
+        concat!("=&", "ctx", ";"),
+        concat!("=&", "ctx", ","),
+        concat!("=", "ctx", ".clone()"),
+    ] {
+        if squashed.contains(form) {
+            return Err(format!(
+                "G5 [alias/ctx-local]: the scanned source rebinds the reducer context itself \
+                 (`{form}`). Renaming the context renames the handle one level up, which reopens \
+                 the attribution hole without ever spelling a handle binding."
+            ));
+        }
+    }
+
+    Ok(())
 }
 
 /// G5 (D0): accounts.rs contains NO wallet accessor token at all — even a READ of
@@ -2594,8 +2897,10 @@ fn machinery_g5_accessor_teeth() {
     let bad = format!("fn f(){{ {chain} m); }}");
     let bad_targets = write_target_accessors(&stripped_for_scan(&bad));
     assert!(
-        bad_targets.iter().any(|t| t == "monster"),
-        "machinery: the G5 extractor must surface a forbidden `monster` write accessor."
+        bad_targets.contains(&Ok(concat!("mon", "ster").to_string())),
+        "machinery: the G5 extractor must surface a forbidden `monster` write accessor as an \
+         ATTRIBUTED target — a rooted foreign write is known-and-forbidden, not unattributable. \
+         Got {bad_targets:?}"
     );
 
     // GOOD: an account write is in the owned set.
@@ -2605,8 +2910,9 @@ fn machinery_g5_accessor_teeth() {
     assert!(
         good_targets
             .iter()
-            .all(|t| allowed_write_tables().iter().any(|a| a == t)),
-        "machinery: an account write must be inside the owned-table allowlist."
+            .all(|t| matches!(t, Ok(name) if allowed_write_tables().iter().any(|a| a == name))),
+        "machinery: an account write must be ATTRIBUTED and inside the owned-table allowlist. \
+         Got {good_targets:?}"
     );
 }
 
@@ -5142,7 +5448,10 @@ fn rb24_nd_struct_marker() -> String {
 /// name and its opening paren, with NO `ctx.db.` prefix. rb-24 red-team
 /// (artifact pass) MEASURED that `let d = &ctx.db;` then `d.<accessor>()`
 /// squashes without the `ctx.db.` prefix, so a prefixed needle misses an
-/// aliased write entirely (the shared `write_target_accessors` alias hole). A
+/// aliased write entirely. (Since rb-39 the shared `write_target_accessors`
+/// REFUSES such a write under `[W/attribution]` rather than misattributing it,
+/// but a refusal is not a census: this token still has to see the call in order
+/// to say WHERE it sits.) A
 /// leading-dot method token matches the accessor call through ANY receiver
 /// (`ctx.db.`, an aliased handle, a further-chained handle) while still not
 /// matching the `accessor = <name>,` attribute (comma, no leading dot) or the
@@ -5226,11 +5535,11 @@ fn rb24_net_arm_mentions(squashed: &str) -> usize {
 /// source — the same brace walk `extract_squashed_fn_body` performs, returning
 /// the offsets it discards.
 ///
-/// The sole-writer census has to ask WHERE each accessor call sits, and it must
-/// not inherit `write_target_accessors` nearest-preceding-`ctx.db.`
-/// attribution: that walk has measured alias holes (an anchorless write is
-/// dropped, an aliased one is misattributed to the previous accessor), which
-/// would make a census built on it silently under-report.
+/// The sole-writer census has to ask WHERE each accessor call sits, which is a
+/// different question from the one `write_target_accessors` answers: that helper
+/// names the table a write is rooted in (or REFUSES it, rb-39/ADR-0234), and it
+/// sees only write verbs. This census must also see READS of the accessor, and
+/// it must report their position, so it walks the fn body spans itself.
 fn rb24_fn_body_span(squashed: &str, fn_needle: &str) -> (usize, usize) {
     let fn_start = squashed.find(fn_needle).unwrap_or_else(|| {
         panic!(
@@ -6958,21 +7267,30 @@ fn rb24_owned_write_set_covers_the_deletion_schedule() {
 
     let targets = write_target_accessors(&stripped_for_scan(ACCOUNTS_RS));
     assert!(
-        targets.contains(&accessor),
+        targets.contains(&Ok(accessor.clone())),
         "[rb24/owned-set-nonvacuous] the allowlist names `{accessor}` but accounts.rs performs \
-         NO write against that accessor (extracted write targets: {targets:?}). Widening an \
-         allowlist can only loosen a gate, so the widening must be paid for by a real write: \
-         zero writes here means the arm and the disarm are both gone and the allowlist entry is \
-         a permanently open slot."
+         NO attributed write against that accessor (extracted write targets: {targets:?}). \
+         Widening an allowlist can only loosen a gate, so the widening must be paid for by a \
+         real write: zero writes here means the arm and the disarm are both gone and the \
+         allowlist entry is a permanently open slot."
     );
 
     for t in &targets {
-        assert!(
-            allowed.iter().any(|a| a == t),
-            "[rb24/owned-set-closed] accounts.rs writes the table `{t}`, which is not in the \
-             owned set {allowed:?}. Every write to a pre-existing table must be delegated to \
-             that table owning module."
-        );
+        match t {
+            Ok(name) => assert!(
+                allowed.iter().any(|a| a == name),
+                "[rb24/owned-set-closed] accounts.rs writes the table `{name}`, which is not in \
+                 the owned set {allowed:?}. Every write to a pre-existing table must be delegated \
+                 to that table owning module."
+            ),
+            Err(fault) => panic!(
+                "[rb24/owned-set-attribution] accounts.rs contains a write verb that cannot be \
+                 attributed to any table at all (fault: {fault:?}; extracted: {targets:?}). The \
+                 clause above asks whether the owned set COVERS the schedule write; it can only \
+                 mean that over a census in which every write is attributed. An unattributable \
+                 write is an UNGATED write — see g5_writes_only_owned_tables and ADR-0234."
+            ),
+        }
     }
 }
 
@@ -6986,10 +7304,11 @@ fn rb24_owned_write_set_covers_the_deletion_schedule() {
 /// that races the runtime own delete of the fired row — is invisible to both.
 ///
 /// The span check is computed from a local brace walk rather than reusing
-/// `write_target_accessors`, whose nearest-preceding-`ctx.db.` attribution has
-/// measured alias holes: an anchorless write is dropped entirely and an aliased
-/// one is credited to the previous accessor. A census built on it would
-/// under-report exactly the sites it exists to find.
+/// `write_target_accessors`. Since rb-39 (ADR-0234) that helper no longer
+/// misattributes or drops anything — an unrooted write is a loud
+/// `[W/attribution]` refusal — but it still answers a DIFFERENT question: it
+/// names the table behind a WRITE verb, whereas this census must locate every
+/// reach for the accessor, reads included, and say which fn body it sits in.
 ///
 /// RE-DERIVED 3 -> 4 BY m22-s3b, AND PAID FOR (r2). The ADR-0221 R2 sweep
 /// `ensure_deletion_reapers_armed` has to know which identities ALREADY carry a
@@ -13086,6 +13405,858 @@ fn m22s9_e2e_patch_needles_and_constants() {
          subject side against this literal as SQL returns it — 64 hand-typed characters in the \
          wrong case, or with one digit wrong, is an assertion that can never pass and would be \
          read as a broken cascade."
+    );
+}
+
+// === rb-39 — G5 write attribution: rooted receiver chain or loud refusal (ADR-0234) ===
+//
+// TDD RED PHASE. These thirteen tests were authored BEFORE the fix and are never
+// edited to fit it: the helper rewrite (`WriteAttrFault`, the backward
+// receiver-chain walk, `g5_write_isolation_violation`, `g5_alias_violation`) is a
+// DIFFERENT agent's work and no placeholder for it lives in this region. AS
+// DELIVERED the region was compile-RED — at that point the enum and the two
+// predicates did not exist and `write_target_accessors` returned `Vec<String>`.
+//
+// Compile-fail is NOT the evidence. The BEHAVIOURAL red was MEASURED before any
+// edit and is recorded verbatim in memory/projects/gates/rb-39.red-before.md (a
+// rustc --edition 2021 -O probe = byte-copy of the strip pipeline plus the
+// pre-rb-39 helper, fed six fixtures and the real accounts.rs):
+//   F1 alias-after-read (aliased handle, FOREIGN delete)  -> ["account"]  MISATTRIBUTED
+//   F2 anchorless write (no handle prefix anywhere)       -> []           DROPPED
+//   F3 cross-statement bound column handle                -> ["account"]  MISATTRIBUTED
+//   F4 same-statement foreign write (no `;` between)      -> ["account"]  MISATTRIBUTED
+//   F5 UFCS write spelling                                -> []           DROPPED
+//   F6 legitimate match-arm owned write                   -> ["account"]  correct, must STAY
+//   accounts.rs census -> 13 accessors, zero unattributable (the no-false-RED baseline)
+// Tests 1-5 pin F1-F5 (each is a misattribution or a silent drop TODAY). Tests
+// 6-8 pin three shapes no red-before fixture exercises, each measured against
+// the walk after the fact: a supported write verb missing from the needle list,
+// a receiver chain laundered through a combinator, and the word-boundary half of
+// the anchor that a red-team cheat drops. Test 9 is the no-false-RED control
+// (green before AND after); tests 10-13 pin the two new Result-returning
+// predicates. The second half of the evidence is the post-green mutation
+// bite-proof: restore the rfind body and tests 1-8 fail.
+//
+// SCAN HYGIENE (module banner): every write verb, foreign accessor, `ctx.db.`
+// prefix and reducer-context parameter spelling below is assembled from split
+// fragments via `concat!` / `[..].concat()`, exactly as
+// `machinery_g5_accessor_teeth` does — this file must never carry a contiguous
+// scanner needle, because cross-file evals concatenate every `src` file and
+// do NOT strip string literals.
+
+/// rb-39 fixture vocabulary: the reducer-context parameter spelling.
+fn rb39_ctx_param() -> &'static str {
+    concat!("ctx:&Reducer", "Context")
+}
+
+/// rb-39 fixture vocabulary: the rooted database-handle prefix.
+fn rb39_db_root() -> &'static str {
+    concat!("ctx", ".db.")
+}
+
+/// rb-39 fixture vocabulary: the three write verbs, split.
+fn rb39_insert_verb() -> &'static str {
+    concat!(".ins", "ert(")
+}
+
+fn rb39_update_verb() -> &'static str {
+    concat!(".upd", "ate(")
+}
+
+fn rb39_delete_verb() -> &'static str {
+    concat!(".del", "ete(")
+}
+
+/// The UFCS spelling of a write verb (`<Type>::<verb>(receiver, key)`).
+fn rb39_ufcs_delete_verb() -> &'static str {
+    concat!("::del", "ete(")
+}
+
+/// A table this module does NOT own — the G5 counter-example accessor.
+fn rb39_foreign_table() -> &'static str {
+    concat!("mon", "ster")
+}
+
+/// `<foreign>().<foreign>_id()<delete verb>` — the two-hop foreign write chain,
+/// assembled at runtime so the contiguous chain never appears in this source.
+fn rb39_foreign_write_chain() -> String {
+    [
+        rb39_foreign_table(),
+        "().",
+        rb39_foreign_table(),
+        "_id()",
+        rb39_delete_verb(),
+    ]
+    .concat()
+}
+
+/// Wrap a fixture body in the `fn f(<ctx param>){ .. }` shell.
+fn rb39_fn(body: &str) -> String {
+    ["fn f(", rb39_ctx_param(), "){", body, "}"].concat()
+}
+
+/// One legitimate owned write statement (chained, with a nested call argument) —
+/// the accounts.rs:570-573 shape.
+fn rb39_owned_account_write() -> String {
+    [
+        rb39_db_root(),
+        "account().identity()",
+        rb39_update_verb(),
+        "touch_login(existing, now));",
+    ]
+    .concat()
+}
+
+/// The MEASURED F1 shape: an owned READ, then a db handle bound by reference
+/// performing a FOREIGN delete off the alias. `owned_write` is prepended when the
+/// fixture must also satisfy a non-vacuity clause.
+fn rb39_alias_fixture(owned_write: &str) -> String {
+    let foreign = rb39_foreign_write_chain();
+    rb39_fn(
+        &[
+            owned_write,
+            rb39_db_root(),
+            "account().identity().find(me);",
+            "let db = &",
+            "ctx",
+            ".db;db.",
+            foreign.as_str(),
+            "m);",
+        ]
+        .concat(),
+    )
+}
+
+/// The MEASURED F5 shape: a write spelled through UFCS, whose receiver is passed
+/// as an ARGUMENT rather than chained. `owned_write` as above.
+fn rb39_ufcs_fixture(owned_write: &str) -> String {
+    rb39_fn(
+        &[
+            owned_write,
+            "UniqueColumn",
+            rb39_ufcs_delete_verb(),
+            "&",
+            rb39_db_root(),
+            rb39_foreign_table(),
+            "().",
+            rb39_foreign_table(),
+            "_id(), k);",
+        ]
+        .concat(),
+    )
+}
+
+/// Run the alias predicate over a fixture that MUST be rejected, returning the
+/// rejection reason. Panics (naming the row) when the fixture is ACCEPTED, so a
+/// hollowed predicate that always returns `Ok(())` cannot pass this test by
+/// leaving the reason unexamined.
+fn rb39_alias_reason(label: &str, fixture: &str) -> String {
+    match g5_alias_violation(&stripped_for_scan(fixture)) {
+        Ok(()) => panic!(
+            "rb-39 [alias/teeth]: the `{label}` fixture was ACCEPTED by g5_alias_violation. \
+             Every alias ban in this module is spelled against the literal `ctx` handle name, \
+             so a shape that binds or renames the handle reopens write attribution by \
+             renaming rather than by aliasing. Fixture: {fixture:?}"
+        ),
+        Err(reason) => reason,
+    }
+}
+
+/// rb-39 (1/13): an aliased db handle's FOREIGN write is REFUSED — never credited
+/// to the owned accessor that a previous statement merely READ.
+///
+/// This is the rb-22 red-team's measured bypass: `let db = &ctx.db;` after an
+/// owned read, then a foreign delete off `db`. The pre-rb-39 helper `rfind`s the
+/// nearest EARLIER handle prefix and reports `["account"]`
+/// (rb-39.red-before.md F1) — a foreign-table delete reading as an owned write,
+/// which is exactly the module-write-isolation hole G5 exists to close.
+///
+/// Kills: the shipped rfind-anchored body (it returns the OWNED accessor here);
+///        any walk that "falls back" to the nearest earlier handle prefix when
+///        the receiver chain is unrooted;
+///        a fix that DROPS the unattributable write instead of reporting it —
+///        the slice pattern pins the length at exactly one.
+#[test]
+fn rb39_alias_write_is_not_misattributed() {
+    let fixture = rb39_alias_fixture("");
+    let targets = write_target_accessors(&stripped_for_scan(&fixture));
+    assert!(
+        matches!(targets.as_slice(), [Err(WriteAttrFault::UnrootedChain)]),
+        "rb-39 [W/attribution]: a write whose receiver is an ALIASED handle must be exactly one \
+         Err(UnrootedChain) — not the accessor the previous statement read, and not an empty \
+         census. Refusing to classify is the safe direction: an unattributed write is an \
+         UNGATED write. Got {targets:?}"
+    );
+}
+
+/// rb-39 (2/13): a write with NO database-handle anchor anywhere in the source is
+/// reported, not dropped on the floor.
+///
+/// The shipped body has no else-branch for "no anchor found", so
+/// `ids.<verb>(0, x);` extracts to `[]` (rb-39.red-before.md F2) and the whole
+/// census says "clean" about a write it never saw.
+///
+/// HONEST LIMIT, stated once (plan §1a): a `Vec`/`HashMap` write in accounts.rs
+/// would therefore be a LOUD false-RED whose fix is `.push(` — the m22-s4
+/// convention — never a weakening of the rule.
+///
+/// Kills: the missing else-branch (today: an empty vector);
+///        a "skip verbs whose receiver is a bare identifier" shortcut, which is
+///        the same silent drop wearing a rule;
+///        a fix that reports the fault but ALSO keeps dropping (length is pinned).
+#[test]
+fn rb39_anchorless_write_is_not_dropped() {
+    let fixture = ["fn f(){ids", rb39_insert_verb(), "0, x);}"].concat();
+    let targets = write_target_accessors(&stripped_for_scan(&fixture));
+    assert!(
+        matches!(targets.as_slice(), [Err(WriteAttrFault::UnrootedChain)]),
+        "rb-39 [W/attribution]: a write verb with no rooted receiver chain must surface as \
+         exactly one Err(UnrootedChain). A dropped write is worse than a misattributed one: it \
+         is absent from the census entirely, so every downstream clause passes over a set that \
+         does not contain it. Got {targets:?}"
+    );
+}
+
+/// rb-39 (3/13): a write off a bound COLUMN handle from an earlier statement is
+/// refused, not credited to that statement's accessor.
+///
+/// `let col = ctx.db.account().identity(); col.<verb>(x);` — the shipped body
+/// reports `["account"]` (rb-39.red-before.md F3). The binding is one statement
+/// away from the write, so the accessor named in the source is not the accessor
+/// the verb actually runs against.
+///
+/// Kills: the rfind anchor (returns `account`);
+///        a same-statement rule implemented as "no `;` between the anchor and the
+///        verb" that is later relaxed;
+///        any walk that accepts a BARE IDENTIFIER receiver (the byte before the
+///        verb's `.` here is `l`, not `)`).
+#[test]
+fn rb39_cross_statement_handle_write_is_not_misattributed() {
+    let fixture = rb39_fn(
+        &[
+            "let col = ",
+            rb39_db_root(),
+            "account().identity();col",
+            rb39_delete_verb(),
+            "x);",
+        ]
+        .concat(),
+    );
+    let targets = write_target_accessors(&stripped_for_scan(&fixture));
+    assert!(
+        matches!(targets.as_slice(), [Err(WriteAttrFault::UnrootedChain)]),
+        "rb-39 [W/attribution]: a write performed on a column handle BOUND in an earlier \
+         statement must be exactly one Err(UnrootedChain). The accessor spelled at the binding \
+         is not evidence about the verb: the handle can be rebound, shadowed or replaced between \
+         the two statements. Got {targets:?}"
+    );
+}
+
+/// rb-39 (4/13): a FOREIGN write that shares a statement with an owned read is
+/// refused — the shape that discriminates the receiver-chain walk from every
+/// `;`-poison port of it.
+///
+/// `if ctx.db.account().identity().find(x).is_some() { db.<foreign>...<delete>(y); }`
+/// has NO `;` between the owned read and the foreign write, so the rb22p
+/// statement-boundary rule is GREEN on it while the shipped body reports
+/// `["account"]` (rb-39.red-before.md F4). Only a verdict computed from the
+/// verb's OWN receiver is order-independent.
+///
+/// Kills: porting rb22p's `;`-poison rule into this file (it accepts this
+///        fixture);
+///        the shipped rfind anchor (returns `account`);
+///        a walk that gives up at a `{` or `}` and falls back to the nearest
+///        earlier prefix.
+#[test]
+fn rb39_same_statement_foreign_write_is_not_misattributed() {
+    let foreign = rb39_foreign_write_chain();
+    let fixture = rb39_fn(
+        &[
+            "if ",
+            rb39_db_root(),
+            "account().identity().find(x).is_some(){db.",
+            foreign.as_str(),
+            "y);}",
+        ]
+        .concat(),
+    );
+    let targets = write_target_accessors(&stripped_for_scan(&fixture));
+    assert!(
+        matches!(targets.as_slice(), [Err(WriteAttrFault::UnrootedChain)]),
+        "rb-39 [W/attribution]: a foreign write sharing a STATEMENT with an owned read must be \
+         exactly one Err(UnrootedChain). This fixture carries no `;` between the read and the \
+         write, so a statement-boundary heuristic is green on it — the verdict must depend only \
+         on the verb's own receiver chain. Got {targets:?}"
+    );
+}
+
+/// rb-39 (5/13): the UFCS spelling of a write verb is unattributable BY
+/// CONSTRUCTION, and loudly so.
+///
+/// `UniqueColumn::<delete>(&ctx.db.<foreign>().<foreign>_id(), k);` passes the
+/// receiver as an ARGUMENT, so there is no receiver chain to walk. The shipped
+/// scan only looks for the `.`-spelled verbs and reports `[]`
+/// (rb-39.red-before.md F5): today a foreign delete written this way is invisible
+/// to G5.
+///
+/// Kills: dropping the UFCS verbs from the needle list (today: an empty census);
+///        a "fix" that reads the handle out of the ARGUMENT list and credits the
+///        write to it — that would report Ok(<foreign>) here, which the exact
+///        Err(UfcsSpelling) pin rejects just as hard as an empty vector;
+///        collapsing the three fault variants into one (the variant is pinned).
+#[test]
+fn rb39_ufcs_write_is_unattributable() {
+    let fixture = rb39_ufcs_fixture("");
+    let targets = write_target_accessors(&stripped_for_scan(&fixture));
+    assert!(
+        matches!(targets.as_slice(), [Err(WriteAttrFault::UfcsSpelling)]),
+        "rb-39 [W/attribution]: a UFCS-spelled write must surface as exactly one \
+         Err(UfcsSpelling). The receiver is an argument, so no chain roots it; classifying it \
+         from the argument text would credit a foreign write to the very accessor it deletes \
+         rows from. Got {targets:?}"
+    );
+}
+
+/// rb-39 (6/13): the FALLIBLE insert is a write verb — the census counts it, and
+/// the predicate refuses a foreign table written through it.
+///
+/// spacetimedb 2.8.1's `Table::try_insert` is the fallible sibling of the plain
+/// insert (which is literally `try_insert(..).unwrap_or_else(..)`), so it is a
+/// stable, supported way to put a row in a table. Its spelling contains no
+/// `.ins`+`ert(` substring, so a needle list built from the three short verbs
+/// produces NO census entry for it at all: today a foreign write spelled this way
+/// is the silent-drop class (F2/F5) under a third spelling, and the predicate
+/// reports clean over a table this module does not own.
+///
+/// Row 2 is the UFCS spelling of the same verb — unattributable by construction,
+/// exactly as `::del`+`ete(` is.
+///
+/// Kills: a verb needle list that stops at the three short spellings (today row 1
+///        extracts only the owned write and the predicate says clean);
+///        adding the method spelling but not the UFCS one (row 2);
+///        a scan that double-counts the fallible spelling by also matching the
+///        short verb inside it — the census is pinned exactly, in source order.
+#[test]
+fn rb39_try_insert_is_a_write_verb() {
+    let owned = rb39_owned_account_write();
+    let foreign = rb39_foreign_table();
+
+    // Row 1 — the method spelling, after a legitimate owned write.
+    let fixture = rb39_fn(
+        &[
+            owned.as_str(),
+            rb39_db_root(),
+            foreign,
+            "()",
+            concat!(".try_ins", "ert("),
+            "row);",
+        ]
+        .concat(),
+    );
+    let squashed = stripped_for_scan(&fixture);
+    let targets = write_target_accessors(&squashed);
+    assert_eq!(
+        targets,
+        vec![Ok("account".to_string()), Ok(foreign.to_string())],
+        "rb-39 [W/attribution]: the fallible insert must be counted as a write verb, in source \
+         order, alongside the owned write. A verb the census cannot see is a verb the gate \
+         cannot gate — and this one puts a row in exactly the same table as the spelling it \
+         wraps."
+    );
+    let reason = g5_write_isolation_violation(&squashed).expect_err(
+        "rb-39 [W/target]: a foreign table written through the fallible insert must be REFUSED. \
+         The infallible spelling is a thin wrapper over it, so accepting one and refusing the \
+         other gates nothing.",
+    );
+    assert!(
+        reason.contains("[W/target]") && reason.contains(foreign),
+        "rb-39 [W/target]: the refusal must carry the target tag AND name the foreign accessor. \
+         Got {reason:?}"
+    );
+
+    // Row 2 — the UFCS spelling of the same verb: the receiver is an argument.
+    let ufcs = rb39_fn(
+        &[
+            "Table",
+            concat!("::try_ins", "ert("),
+            "&",
+            rb39_db_root(),
+            foreign,
+            "(), row);",
+        ]
+        .concat(),
+    );
+    let targets = write_target_accessors(&stripped_for_scan(&ufcs));
+    assert!(
+        matches!(targets.as_slice(), [Err(WriteAttrFault::UfcsSpelling)]),
+        "rb-39 [W/attribution]: the UFCS spelling of the fallible insert must surface as exactly \
+         one Err(UfcsSpelling) — nothing roots a receiver that arrives as an argument. \
+         Got {targets:?}"
+    );
+}
+
+/// rb-39 (7/13): a receiver chain LAUNDERED through a combinator is
+/// unattributable — every segment between the root and the verb must be a
+/// ZERO-ARGUMENT call.
+///
+/// Measured against the walk: it credits the write to the first rooted segment it
+/// reaches without asking whether the intervening segments PRESERVE that handle.
+/// So `ctx.db.account().identity().find(x).map(|_| ctx.db.<foreign>()).unwrap()`
+/// followed by a write verb reads as an owned `account` write while the row is
+/// deleted from the foreign table — the misattribution class (F1/F3/F4) rebuilt
+/// out of ordinary chain syntax, with no alias binding and no renamed parameter
+/// for `g5_alias_violation` to catch.
+///
+/// The rule that closes it: a segment carrying ARGUMENTS can return anything, so
+/// it breaks the chain of custody. Every one of accounts.rs' 13 writes is
+/// `accessor()` then optionally `column()` then the verb — all zero-argument
+/// hops — so row 2 pins the accepting side and the rule costs the live code
+/// nothing.
+///
+/// Kills: the first-rooted-segment walk with no zero-argument check (today:
+///        `[Ok("account")]` for a foreign write);
+///        a walk that only inspects the segment ADJACENT to the verb (the
+///        laundering segment here is two hops back);
+///        "fixing" it by rejecting every multi-hop chain, which would red the
+///        shipped schedule delete (row 2).
+#[test]
+fn rb39_combinator_laundered_chain_is_unattributable() {
+    // Row 1 — the handle laundered through a closure inside a combinator.
+    let laundered = rb39_fn(
+        &[
+            rb39_db_root(),
+            "account().identity().find(x).map(|_| ",
+            rb39_db_root(),
+            rb39_foreign_table(),
+            "()).unwrap()",
+            rb39_delete_verb(),
+            "row);",
+        ]
+        .concat(),
+    );
+    let targets = write_target_accessors(&stripped_for_scan(&laundered));
+    assert!(
+        matches!(targets.as_slice(), [Err(WriteAttrFault::UnrootedChain)]),
+        "rb-39 [W/attribution]: a chain whose intervening segment TAKES ARGUMENTS must be \
+         exactly one Err(UnrootedChain). Such a segment can return any handle at all, so the \
+         rooted accessor spelled to its left is not evidence about the table the verb reaches. \
+         Got {targets:?}"
+    );
+
+    // Row 2 — the accepting side: the shipped zero-argument two-hop chain.
+    let zero_arg = rb39_fn(
+        &[
+            "for id in ids {",
+            rb39_db_root(),
+            "guest_claim_reaper",
+            "_schedule().scheduled_id()",
+            rb39_delete_verb(),
+            "id); }",
+        ]
+        .concat(),
+    );
+    let targets = write_target_accessors(&stripped_for_scan(&zero_arg));
+    assert_eq!(
+        targets,
+        vec![Ok(concat!("guest_claim_reaper", "_schedule").to_string())],
+        "rb-39 [W/no-false-RED]: the shipped two-hop chain is all zero-argument hops and must \
+         stay attributed to the schedule accessor. The zero-argument rule must reject \
+         LAUNDERING, not multi-hop chains — every write in accounts.rs is one."
+    );
+}
+
+/// rb-39 (8/13): a write chained off a DECOY-PREFIXED handle is unattributable —
+/// the walk's anchor is a word-bounded `ctx` handle, not merely the seven bytes
+/// that precede the accessor.
+///
+/// MEASURED red-team cheat (this test exists because of it): an implementation
+/// that keeps the seven-byte prefix comparison but DROPS the "byte before it is
+/// not a word byte" half reports the foreign accessor as an attributed write
+/// here, and every other test in this region stays green — to that walk, the
+/// fixture's chain looks rooted. `g5_alias_violation`'s ctx-name clause would
+/// reject the renamed parameter in the FULL gate, but that is a different
+/// function checking a different clause: the walk's own boundary defence must be
+/// pinned STANDALONE, or any caller reached without the alias predicate inherits
+/// the hole.
+///
+/// Kills: the boundary-less seven-byte anchor (it credits the foreign write to
+///        the accessor named in the decoy chain);
+///        the same cheat spelled as an `ends_with` over the span before the
+///        accessor.
+#[test]
+fn rb39_decoy_prefixed_handle_write_is_unattributable() {
+    let foreign = rb39_foreign_write_chain();
+    let fixture = [
+        "fn f(my_",
+        rb39_ctx_param(),
+        "){my_",
+        rb39_db_root(),
+        foreign.as_str(),
+        "x);}",
+    ]
+    .concat();
+    let targets = write_target_accessors(&stripped_for_scan(&fixture));
+    assert!(
+        matches!(targets.as_slice(), [Err(WriteAttrFault::UnrootedChain)]),
+        "rb-39 [W/attribution]: a write chained off a handle whose name merely ENDS in the \
+         context spelling must be exactly one Err(UnrootedChain). `my_ctx` is a DIFFERENT \
+         binding — crediting its foreign write to the accessor spelled in that chain reports an \
+         attributed, owned-looking write this module never made. Got {targets:?}"
+    );
+}
+
+/// rb-39 (9/13): the NO-FALSE-RED control — the four legitimate write shapes that
+/// accounts.rs actually ships stay attributed to their own accessor.
+///
+/// Green before AND after the fix by design: this is the test that stops the
+/// hardening from being paid for with a rule so strict that the sanctioned code
+/// reds. The four rows are the shipped shapes (accounts.rs :570-573 chained
+/// update with a nested call argument; the :563 match-arm form, whose statement
+/// ends in `,` not `;`; :612 single-hop insert; :485-488 two-hop delete inside a
+/// `for` loop).
+///
+/// Kills: a walk that requires the write verb to terminate a `;` statement (the
+///        match-arm row ends in `,`);
+///        a walk confused by the nested call argument in the update row;
+///        a walk hardcoded to a two-hop chain (the `guest_claim` insert is one
+///        hop) or to a one-hop chain (the schedule delete is two);
+///        an over-strict "must be the first statement in the body" rule (the
+///        `for`-loop row is nested).
+#[test]
+fn rb39_owned_inline_write_is_still_attributed() {
+    // Row 1 — chained update with a nested call argument.
+    let nested_arg = rb39_fn(rb39_owned_account_write().as_str());
+    let targets = write_target_accessors(&stripped_for_scan(&nested_arg));
+    assert_eq!(
+        targets,
+        vec![Ok("account".to_string())],
+        "rb-39 [W/no-false-RED]: the shipped chained update with a nested call argument must \
+         stay attributed to `account`."
+    );
+
+    // Row 2 — the match-arm form: the statement ends in `,`, not `;`.
+    let match_arm = rb39_fn(
+        &[
+            "match x { Some(e) => ",
+            rb39_db_root(),
+            "account().identity()",
+            rb39_update_verb(),
+            "touch_login(e, now)), None => {} }",
+        ]
+        .concat(),
+    );
+    let targets = write_target_accessors(&stripped_for_scan(&match_arm));
+    assert_eq!(
+        targets,
+        vec![Ok("account".to_string())],
+        "rb-39 [W/no-false-RED]: the shipped match-arm write (no trailing `;`) must stay \
+         attributed to `account` — a rule keyed on statement punctuation reds on the live code."
+    );
+
+    // Row 3 — the single-hop insert (no column segment between the accessor and
+    // the verb).
+    let single_hop = rb39_fn(
+        &[
+            rb39_db_root(),
+            "guest",
+            "_claim()",
+            rb39_insert_verb(),
+            "row);",
+        ]
+        .concat(),
+    );
+    let targets = write_target_accessors(&stripped_for_scan(&single_hop));
+    assert_eq!(
+        targets,
+        vec![Ok(concat!("guest", "_claim").to_string())],
+        "rb-39 [W/no-false-RED]: the shipped single-hop insert must stay attributed to the \
+         guest-claim accessor."
+    );
+
+    // Row 4 — the two-hop delete inside a `for` loop.
+    let in_loop = rb39_fn(
+        &[
+            "for id in ids {",
+            rb39_db_root(),
+            "guest_claim_reaper",
+            "_schedule().scheduled_id()",
+            rb39_delete_verb(),
+            "id); }",
+        ]
+        .concat(),
+    );
+    let targets = write_target_accessors(&stripped_for_scan(&in_loop));
+    assert_eq!(
+        targets,
+        vec![Ok(concat!("guest_claim_reaper", "_schedule").to_string())],
+        "rb-39 [W/no-false-RED]: the shipped for-loop schedule delete must stay attributed to \
+         the schedule accessor."
+    );
+}
+
+/// rb-39 (10/13): the G5 predicate FAILS LOUD on an unattributable write — it does
+/// not skip it, and it does not credit it elsewhere.
+///
+/// Both rows carry a legitimate owned write ALONGSIDE the offending one, so the
+/// non-vacuity clause is satisfied and only the attribution clause can fire: an
+/// Err tagged `[W/non-vacuity]` here would mean the predicate never inspected the
+/// second write at all.
+///
+/// Kills: a predicate that filters unattributable entries out before the
+///        allowlist check (the classic "unknown means fine" shape);
+///        a predicate hollowed to `Ok(())`;
+///        a predicate that reports the fault under the `[W/target]` tag, which
+///        would tell the reader a KNOWN foreign table was written when in truth
+///        nothing is known about the target at all.
+#[test]
+fn rb39_g5_predicate_fails_loud_on_unattributable() {
+    let owned = rb39_owned_account_write();
+
+    // Row 1 — the aliased-handle foreign delete.
+    let alias = rb39_alias_fixture(owned.as_str());
+    let reason = g5_write_isolation_violation(&stripped_for_scan(&alias)).expect_err(
+        "rb-39 [W/attribution]: a source containing an aliased-handle write must be REFUSED by \
+         g5_write_isolation_violation, even though it also contains a legitimate owned write.",
+    );
+    assert!(
+        reason.contains("[W/attribution]"),
+        "rb-39 [W/attribution]: the refusal must be reported under the attribution tag so the \
+         reader knows the target is UNKNOWN rather than known-and-forbidden. Got {reason:?}"
+    );
+
+    // Row 2 — the UFCS spelling.
+    let ufcs = rb39_ufcs_fixture(owned.as_str());
+    let reason = g5_write_isolation_violation(&stripped_for_scan(&ufcs)).expect_err(
+        "rb-39 [W/attribution]: a source containing a UFCS-spelled write must be REFUSED by \
+         g5_write_isolation_violation — it is a write this module cannot attribute.",
+    );
+    assert!(
+        reason.contains("[W/attribution]"),
+        "rb-39 [W/attribution]: the UFCS refusal must carry the attribution tag. Got {reason:?}"
+    );
+}
+
+/// rb-39 (11/13): the G5 predicate is NON-VACUOUS, accepts the owned shapes, and
+/// names the foreign table it rejects.
+///
+/// Three rows: an EMPTY source must fail loud (with zero writes every other
+/// clause passes over an empty set and the gate says "clean" about nothing); the
+/// three shipped owned write shapes together must be accepted; and a properly
+/// ROOTED write against a foreign accessor must be rejected under `[W/target]`,
+/// naming the accessor — it is accompanied by an owned write so non-vacuity
+/// cannot be what fires.
+///
+/// Kills: an always-red predicate (row 2 is the good fixture that proves the
+///        predicate can say yes);
+///        a predicate whose non-vacuity clause was dropped, so pointing the scan
+///        at the wrong file or a stripper that blanks the declarations reads as
+///        a pass (row 1);
+///        a predicate that drops the allowlist membership check (row 3);
+///        a rejection message that does not say WHICH table (row 3 pins the name).
+#[test]
+fn rb39_g5_predicate_is_non_vacuous_and_accepts_owned_shapes() {
+    // Row 1 — the empty source.
+    let reason = g5_write_isolation_violation("").expect_err(
+        "rb-39 [W/non-vacuity]: an EMPTY source must FAIL LOUD. With zero writes extracted every \
+         clause below passes over an empty set, so a scan that reached the wrong file, or a \
+         stripper that blanked the source, would read as `clean`.",
+    );
+    assert!(
+        reason.contains("[W/non-vacuity]"),
+        "rb-39 [W/non-vacuity]: the empty source must be reported as a non-vacuity failure, not \
+         as an attribution or target failure. Got {reason:?}"
+    );
+
+    // Row 2 — the three shipped owned write shapes, together.
+    let account_write = rb39_owned_account_write();
+    let owned = rb39_fn(
+        &[
+            account_write.as_str(),
+            rb39_db_root(),
+            "guest",
+            "_claim()",
+            rb39_insert_verb(),
+            "row);",
+            "for id in ids {",
+            rb39_db_root(),
+            "guest_claim_reaper",
+            "_schedule().scheduled_id()",
+            rb39_delete_verb(),
+            "id); }",
+        ]
+        .concat(),
+    );
+    let verdict = g5_write_isolation_violation(&stripped_for_scan(&owned));
+    assert!(
+        verdict.is_ok(),
+        "rb-39 [W/no-false-RED]: the three write shapes accounts.rs actually ships must be \
+         ACCEPTED. A predicate that reds here is not a hardened gate, it is a broken one — the \
+         response to a red on live code is to fix the chain spelling, never to weaken the rule, \
+         so this row must never be silenced. Got {verdict:?}"
+    );
+
+    // Row 3 — a rooted write against a table this module does not own.
+    let foreign = rb39_foreign_table();
+    let forbidden = rb39_fn(
+        &[
+            account_write.as_str(),
+            rb39_db_root(),
+            foreign,
+            "()",
+            ".",
+            foreign,
+            "_id()",
+            rb39_update_verb(),
+            "m);",
+        ]
+        .concat(),
+    );
+    let reason = g5_write_isolation_violation(&stripped_for_scan(&forbidden)).expect_err(
+        "rb-39 [W/target]: a rooted write against a table outside the owned allowlist must be \
+         REFUSED — that is the original D0 module-write-isolation clause, and the hardening must \
+         not lose it.",
+    );
+    assert!(
+        reason.contains("[W/target]") && reason.contains(foreign),
+        "rb-39 [W/target]: the refusal must carry the target tag AND name the forbidden \
+         accessor, so the reader can tell an unowned-table write from an unattributable one. \
+         Got {reason:?}"
+    );
+}
+
+/// rb-39 (12/13): accounts.rs itself binds NO alias of the database handle and
+/// names every reducer context `ctx`.
+///
+/// This is the clause that keeps the receiver-chain walk meaningful on the real
+/// file: the walk's anchor is the literal `ctx` handle prefix, so a handle bound
+/// to another name, or a context taken under another name, would make every write
+/// in the file unattributable — loudly, but only after the fact. The census is
+/// clean today (13 inline chains, rb-39.red-before.md), so this test is green on
+/// arrival and reds the moment an alias is introduced.
+///
+/// Kills: a by-reference or by-value database-handle binding added to
+///        accounts.rs;
+///        a reducer context renamed away from `ctx`;
+///        a local rebinding of the context itself (`let c = ctx;`).
+#[test]
+fn rb39_no_db_or_ctx_alias_in_accounts() {
+    let verdict = g5_alias_violation(&stripped_for_scan(ACCOUNTS_RS));
+    assert!(
+        verdict.is_ok(),
+        "rb-39 [alias]: accounts.rs must bind no alias of the database handle and must take \
+         every reducer context under the name `ctx`. Every write in the file is attributed by \
+         walking back to the literal `ctx` handle, so an alias does not merely rename a \
+         variable: it detaches the write from the only evidence about which table it touches. \
+         Got {verdict:?}"
+    );
+}
+
+/// rb-39 (13/13): the alias predicate BITES on each banned shape and accepts the
+/// clean one — seven rows.
+///
+/// Row 7 is the no-false-RED control and it is not decorative: `my_ctx.db;` is a
+/// DIFFERENT variable whose text ends in the handle spelling followed by `;`.
+/// Without the "previous byte is not a word byte" boundary test, that occurrence
+/// reds — so this row is what proves the boundary test is present and correct.
+///
+/// Kills: dropping the db-binding clause (rows 1-2);
+///        accepting `_ctx` as a context name (row 3) — the JS twin does, and the
+///        Rust walk cannot, because its anchor is the literal `ctx` handle, so a
+///        `_ctx`-rooted write would be a silent false-RED on real code;
+///        dropping the CTX_ALIAS_FORMS clause (row 4);
+///        dropping the non-vacuity guard, which makes the naming clause iterate
+///        an empty set on any file with no reducer context (row 5);
+///        a db-binding clause written as the two rb22p LITERAL forms (the handle
+///        preceded by `=&` or `=` and terminated by `;`) instead of "every
+///        occurrence not immediately followed by a dot" — the row 6 escape is
+///        COMMA-terminated, so the literal pair is green while the handle is
+///        loose (row 6);
+///        implementing the db-binding clause as a raw substring scan with no word
+///        boundary (row 7).
+#[test]
+fn rb39_machinery_alias_predicate_teeth() {
+    // Row 1 — the handle bound BY REFERENCE.
+    let by_ref = rb39_fn(&["let db = &", "ctx", ".db;"].concat());
+    let reason = rb39_alias_reason("db-ref", &by_ref);
+    assert!(
+        reason.contains("[alias/db-binding]"),
+        "rb-39 [alias/db-binding]: a by-reference handle binding must be reported under the \
+         db-binding tag. Got {reason:?}"
+    );
+
+    // Row 2 — the handle bound BY VALUE.
+    let by_move = rb39_fn(&["let db = ", "ctx", ".db;"].concat());
+    let reason = rb39_alias_reason("db-move", &by_move);
+    assert!(
+        reason.contains("[alias/db-binding]"),
+        "rb-39 [alias/db-binding]: a by-value handle binding must be reported under the \
+         db-binding tag — the same attribution defeat applies. Got {reason:?}"
+    );
+
+    // Row 3 — the underscore-prefixed context name (deliberately STRICTER than
+    // the JS twin, which accepts it).
+    let underscored = ["fn g(_", rb39_ctx_param(), "){}"].concat();
+    let reason = rb39_alias_reason("underscored-ctx", &underscored);
+    assert!(
+        reason.contains("[alias/ctx-name]") && reason.contains("_ctx"),
+        "rb-39 [alias/ctx-name]: a reducer context named `_ctx` must be REJECTED and the \
+         message must name it. The walk anchors on the literal `ctx` handle, so every write in \
+         a `_ctx` file would be classified unattributable — a false-RED that reads like a real \
+         defect. Got {reason:?}"
+    );
+
+    // Row 4 — the context itself rebound to a local.
+    let ctx_local = rb39_fn("let c = ctx;");
+    let reason = rb39_alias_reason("ctx-local", &ctx_local);
+    assert!(
+        reason.contains("[alias/ctx-local]"),
+        "rb-39 [alias/ctx-local]: rebinding the context to a local (one of the eval twin's \
+         CTX_ALIAS_FORMS) must be reported under the ctx-local tag. Got {reason:?}"
+    );
+
+    // Row 5 — no reducer context at all: the naming clause would iterate an
+    // empty set and pass vacuously.
+    let no_ctx = "fn f(){let x = 1;}";
+    let reason = rb39_alias_reason("non-vacuity", no_ctx);
+    assert!(
+        reason.contains("[alias/non-vacuity]"),
+        "rb-39 [alias/non-vacuity]: a source declaring no reducer-context parameter must FAIL \
+         LOUD rather than pass every naming clause over an empty set. Got {reason:?}"
+    );
+
+    // Row 6 — the handle ESCAPING INTO A TUPLE: comma-terminated, so neither
+    // rb22p literal form sees it.
+    let tuple_escape = rb39_fn(&["let p = (&", "ctx", ".db, 1);"].concat());
+    let reason = rb39_alias_reason("db-tuple", &tuple_escape);
+    assert!(
+        reason.contains("[alias/db-binding]"),
+        "rb-39 [alias/db-binding]: a database handle escaping into a TUPLE must be reported \
+         under the db-binding tag. The clause is `every occurrence not immediately followed by a \
+         dot`, not a pair of semicolon-terminated literals: this escape ends in a comma, so a \
+         literal-pair implementation reports clean while the handle is loose and every write \
+         made through it is attributable to nothing. Got {reason:?}"
+    );
+
+    // Row 7 — the CLEAN fixture, including the word-boundary control.
+    let clean = rb39_fn(
+        &[
+            "let h = my_",
+            "ctx",
+            ".db;my_",
+            rb39_db_root(),
+            "account().identity().find(x);",
+            rb39_db_root(),
+            "account().identity().find(y);",
+        ]
+        .concat(),
+    );
+    let verdict = g5_alias_violation(&stripped_for_scan(&clean));
+    assert!(
+        verdict.is_ok(),
+        "rb-39 [alias/no-false-RED]: a differently-named receiver whose text merely ENDS in the \
+         handle spelling is not this module's context handle and must be accepted. Without the \
+         `previous byte is not a word byte` boundary test, the occurrence inside `my_ctx.db;` \
+         reds — and a gate that reds on unrelated code is one that gets weakened. Got {verdict:?}"
     );
 }
 
