@@ -3,7 +3,7 @@
 
 _Agent entry point: scan this file first; open the full ADR only on a hit. Legacy entries (pre-M-infra-d backfill) show `PENDING` for unset fields._
 
-Generated from 199 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
+Generated from 200 project ADRs (`docs/adr/`) and 36 harness design entries (`docs/adr/design-corpus.json`).
 
 ## Project ADRs — numeric master list
 
@@ -208,6 +208,7 @@ Generated from 199 project ADRs (`docs/adr/`) and 36 harness design entries (`do
 | [0231](./0231-client-privacy-cores-request-wide-chunk-assembly.md) | S8 client privacy cores: request-wide export assembly + a terminal-first deletion lattice | Accepted | client-ui, security-authz | m22-s8 (M22 §7.2 S8 — the client half of PRV1-1/3/4/11/12/13) | Ship S8 as two pure cores + the terminal_at_ms data path; defer the overlay and the export transport to m22-s8b. Chunk fields are read request-wide, verbatim from the producer; exportable filtering stays server-side. |
 | [0232](./0232-m22-s9-post-integration-verification-injected-clock-e2e.md) | M22 S9 post-integration verification: patched-constant injected clock in the e2e's module copy, WS-only driver, manifest-derived cascade truth | Accepted | security-authz, ci-gates | m22-s9 (M22 §7.3 — post-integration verification, the milestone's real DoD) | The S9 e2e patches the grace and chunk constants in its tmpdir module copy so the real reaper fires in CI; compile-level m22s9 contract pins land in accounts_tests.rs; HTTP reducer calls are banned in the rig. |
 | [0233](./0233-a11y-colour-independence-token-ssot.md) | A11Y-29 colour independence: a serde-derived a11y token SSOT in `content.rs`, and a CB-safe default HP palette | Accepted | content, client-ui | m23-s8 (M23 §2.6 — colour independence; the only §6 criterion S8 owns is A11Y-29) | A11Y-29's token SSOT is a Rust const table in content.rs checked inside validate_content, not RON: a new game-core/content file forces an out-of-touches baseline edit. The hand-kept roster is proved complete against serde derive metadata. |
+| [0234](./0234-write-attribution-rooted-chain-or-loud-refusal.md) | Module-write attribution: a rooted receiver chain, or a loud refusal | Accepted | ci-gates, security-authz | rb-39 (residual R-rb-22-EO-11, `M-residual-backlog.spec.md#rb-39`) | G5 write attribution walks back from each write verb over its receiver chain and requires the head to be `ctx.db.<accessor>(`; anything else (aliased handle, bare local, UFCS spelling) is Unattributable and fails G5 loud. |
 
 ## Harness design corpus (H- namespace)
 
@@ -578,6 +579,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0229](./0229-deletion-completeness-from-derive-metadata.md) — m22-s6 (M22 §7.2 S6 — PRV1-15, PRV1-16) — S6 deletion completeness: prove it from the derive metadata, in-crate, not from a source scan (Accepted)
 - [0230](./0230-deletion-runbook-gates-with-declaration-shaped-cites.md) — m22-s7 (M22 §7.2 S7 — PRV1-17, PRV1-18, PRV1-20) — S7 deletion runbook gates: exact-sentence pins + declaration-shaped citations (G24, PRV1-17/18/20) (Accepted)
 - [0232](./0232-m22-s9-post-integration-verification-injected-clock-e2e.md) — m22-s9 (M22 §7.3 — post-integration verification, the milestone's real DoD) — M22 S9 post-integration verification: patched-constant injected clock in the e2e's module copy, WS-only driver, manifest-derived cascade truth (Accepted)
+- [0234](./0234-write-attribution-rooted-chain-or-loud-refusal.md) — rb-39 (residual R-rb-22-EO-11, `M-residual-backlog.spec.md#rb-39`) — Module-write attribution: a rooted receiver chain, or a loud refusal (Accepted)
 
 ### tooling-docs
 
@@ -677,6 +679,7 @@ _Collision note: H-0055 = project ADR 0056; H-0056 = project ADR 0057; H-0057 = 
 - [0230](./0230-deletion-runbook-gates-with-declaration-shaped-cites.md) — m22-s7 (M22 §7.2 S7 — PRV1-17, PRV1-18, PRV1-20) — S7 deletion runbook gates: exact-sentence pins + declaration-shaped citations (G24, PRV1-17/18/20) (Accepted)
 - [0231](./0231-client-privacy-cores-request-wide-chunk-assembly.md) — m22-s8 (M22 §7.2 S8 — the client half of PRV1-1/3/4/11/12/13) — S8 client privacy cores: request-wide export assembly + a terminal-first deletion lattice (Accepted)
 - [0232](./0232-m22-s9-post-integration-verification-injected-clock-e2e.md) — m22-s9 (M22 §7.3 — post-integration verification, the milestone's real DoD) — M22 S9 post-integration verification: patched-constant injected clock in the e2e's module copy, WS-only driver, manifest-derived cascade truth (Accepted)
+- [0234](./0234-write-attribution-rooted-chain-or-loud-refusal.md) — rb-39 (residual R-rb-22-EO-11, `M-residual-backlog.spec.md#rb-39`) — Module-write attribution: a rooted receiver chain, or a loud refusal (Accepted)
 
 ### economy-quests
 
