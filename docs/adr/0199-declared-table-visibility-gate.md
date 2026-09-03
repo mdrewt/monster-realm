@@ -126,7 +126,7 @@ about), and it means the well-worded `[visibility-drift]` message is not what an
 flip actually surfaces first. The security property is unaffected — the gate still fails — so this
 is recorded as a known wart rather than fixed under this slice's criteria. The main guard is inert
 under `evals/run.mjs`, which imports the module rather than executing it (precedent:
-`evals/observability-log-wrapper.eval.mjs:1629`). D6 previously held that regeneration needed no new
+the `--write` main guard in `evals/observability-log-wrapper.eval.mjs`). D6 previously held that regeneration needed no new
 rule because D4 polices the result; that remains true — `--write` removes a hand-transcription step,
 it does not replace the policing.
 

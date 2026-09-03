@@ -100,7 +100,7 @@ an artifact of its own 1.12.0 pin.
 
 This matters because ADR-0180's 2026-08-08 amendment explicitly weighed "adopt a **BETA**
 SpacetimeDB API (scheduled Procedures with outbound HTTP, the `unstable` Cargo feature)" and
-**M20 OBS-48 forbids enabling `features = ["unstable"]`** partly on that footing. After the crate
+**M20 OBS-48 forbade enabling `features = ["unstable"]`** partly on that footing **[SOFTENED 2026-08-28 to require-justification — see the 2026-09-03 amendment at the end of this ADR and ADR-0180's amendment of the same date]**. After the crate
 bump that premise is simply false. It does **not** automatically overturn the verdict — D14–D18 also
 rested on `mr-trace-relay` being simpler and on keeping an HTTP egress path out of the module — but
 the call must be **re-adjudicated on corrected facts**, not inherited. Filed as a follow-up, not
@@ -297,8 +297,8 @@ dev-reducer-leak check into a no-op had the parser's fail-loud guard not caught 
   commit will not compile. Both SpacetimeDB skills now lead with the three changed spellings.
 - (+) `just playtest-publish` keeps working: the `describe --json` parser now accepts V9 and V10.
 - (→) Follow-ups: bump npm `spacetimedb` to 2.8.1 behind a live reconnect check (D2b); re-verify
-  `mr-trace-relay` breadcrumbs against 2.8.0's quieter host logs; re-adjudicate M20 OBS-48 now
-  that Procedures are stable (FF4); revisit `15r-sec-a` now that view primary keys exist — note
+  `mr-trace-relay` breadcrumbs against 2.8.0's quieter host logs; ~~re-adjudicate M20 OBS-48 now
+  that Procedures are stable (FF4)~~ **[CLOSED 2026-09-03, slice `17r-c` — re-adjudicated: require-justification]**; revisit `15r-sec-a` now that view primary keys exist — note
   they are **available but NOT yet adopted**: none of the five `#[spacetimedb::view(…)]`
   declarations in `schema.rs` carries `primary_key`, so `client/src/net/store.ts`'s hand-rolled
   insert/delete reconciliation (ADR-0194) remains load-bearing; adoption is tracked as the
@@ -427,3 +427,22 @@ obligation actually in scope.
 ADR-0184's `parseSqlTable (:317)` citation points at the e2e copy and stays valid). They inherit the
 same display-format coupling and are candidates for the same treatment in a later slice. Out of this
 slice's `touches:` set — flagged, not touched.
+
+---
+
+## Amendment (2026-09-03, slice `17r-c`) — the FF4 OBS-48 re-adjudication follow-up is CLOSED
+
+The Consequences follow-up "re-adjudicate M20 OBS-48 now that Procedures are stable (FF4)" — filed by
+this ADR because §5/FF4 corrected the false premise that `#[procedure]` is `unstable`-gated — is
+resolved. Drew's ruling on issue https://github.com/mdrewt/monster-realm/issues/342 (answered 2026-08-28, consumed and closed by review 17): OBS-48 becomes **require-justification** rather than a blanket forbid. The full <!-- A9b: this sentence must keep `require-justification` and the issue URL on ONE line -->
+reasoning, the general cross-dependency policy it generalises to, and the enforcement mechanism are
+recorded in **ADR-0180's amendment of the same date**; this note exists so a reader arriving at FF4
+is not left with an open question.
+
+Sharpening FF4 itself: `#[procedure]`, `ProcedureContext`, `http::HttpClient` and `HttpClient::send`
+are all ungated at crate 2.8.1 (verified against the vendored source). The `unstable` feature and the
+Procedure/outbound-HTTP surface are therefore **independent** concerns, and a gate that treats "no
+unstable feature" as implying "no Procedures" is asserting something false.
+
+Header block deliberately untouched: appending a header line shifts every inbound `ADR-0197:<line>`
+citation (7 of 13 were broken once by exactly that), and the ADR digest gate reads headers only.

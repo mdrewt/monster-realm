@@ -1096,3 +1096,61 @@ slice **13r-a**, ADR-0190:
 | *(fifth, discovered by D3)* caddy port-80 redirect bind | **STILL OPEN** | 13r-a, ADR-0190 D3b — parked out of touch-set |
 
 Neither open defect has an owner slice. Escalated by ADR-0202.
+
+---
+
+## Amendment (2026-09-03, slice `17r-c`) — OBS-48 is REQUIRE-JUSTIFICATION, not a blanket forbid
+
+**The ruling.** Drew answered `rev16-obs48-procedures` on 2026-08-28: OBS-48's blanket forbid is a
+vast overstatement. OBS-48 is hereby **require-justification** (issue https://github.com/mdrewt/monster-realm/issues/342, consumed and closed by review 17). <!-- A9b: this sentence must keep `require-justification` and the issue URL on ONE line -->
+D14's *verdict* stands as the standing default — nothing in the module enables the `unstable` feature
+or defines a Procedure today, and D15's log-reconstructed spans remain the reason it does not need
+to. What changes is the *form* of the constraint: a workspace manifest MAY enable an unstable
+feature, and the module MAY define a Procedure, **iff** a committed justification entry names the
+exact site, resolves to a real ADR, cites the issue, states the occurrence count, and carries written
+reasoning. An unjustified use still fails CI.
+
+**The general policy this records (it is not SpacetimeDB-specific).** Whenever a version bump
+promotes an unstable feature to stable — or adds a new stable feature — **for any dependency this
+project takes**, that feature is thereafter *available* to improve the design wherever it is
+genuinely useful, used as intended. A gate may require that such a use be justified; a gate may not
+forbid it on the ground that the feature was once unstable, and an inherited "we rejected this"
+verdict must be re-adjudicated on the corrected facts rather than restated. *Residual: the canonical
+home for a cross-project engineering standard of this shape is the harness `standards/` tree, which
+is outside this project repo. Escalated as a follow-up; this ADR is the project-local record.*
+
+**The mechanism.** `UNSTABLE_JUSTIFICATIONS` in `evals/observability-log-wrapper.eval.mjs` is the
+manifest; check A9 is its enforcement site and A9b pins this policy record. Three properties make a
+blanket allow-list unrepresentable rather than merely discouraged: `site` must be an **exact** member
+of the set the sweep actually reads — for `kind: 'unstable-feature'` the workspace-manifest set
+derived from the root `[workspace] members` (drift from the committed list is itself a hard failure),
+for `kind: 'procedure'` a scanned `.rs` path, and the two namespaces do not overlap; a **stale** entry — one naming a site with no detected use — FAILS,
+so entries cannot be pre-seeded ahead of the use they license; and `occurrences` must **exactly**
+equal the detected hit count in both directions, so one honest entry cannot silently license every
+later use in the same file. Detection was widened at the same time to a strict superset of the
+previous needles (the single-quoted TOML form, the `"spacetimedb/unstable"` passthrough, a bare
+`[features]` key, the `use spacetimedb::{procedure, …}` braced-import spelling, `ProcedureContext`,
+and `game-core/src` — all of which were measured to compile and to pass the old blanket check).
+Detection is deliberately **not** comment-stripped: a needle inside a comment counts, which is the
+fail-loud direction.
+
+**A correction this amendment must carry.** `#[procedure]`, `ProcedureContext`, `http::HttpClient`
+and `HttpClient::send` are **not** `#[cfg(feature = "unstable")]`-gated at spacetimedb 2.8.1
+(verified against the vendored crate source). The two A9 arms are therefore independent: "no unstable
+feature" does **not** imply "no Procedures", and the manifest arm provides no coverage at all for the
+outbound-HTTP surface D14 actually defers. The old success message asserted both in one breath and
+has been replaced. *Residual: there is no `HttpClient` needle — outside this slice's criteria.*
+
+**Relationship to ADR-0224.** ADR-0224 retires *new* `evals/*.eval.mjs` scanner gates and directs
+that existing ones be migrated rather than patched. This slice modifies an existing eval rather than
+authoring a new one, on the supervisor's explicit ruling: A9 is OBS-48's sole mechanical enforcement
+site, the alternative of a new gate file is exactly what 0224 forbids, and relocating A9 to another
+runner is outside the slice's declared touch set. Recorded as a knowing, bounded exception; A9
+remains a candidate for retirement under 0224's programme.
+
+**Disclosed residuals.** TOML unicode escapes (`"unstable"`) and a `[patch]`-to-a-forked-crate
+remain undetectable by a text scan; `cargo metadata` would close them at the cost of a cargo
+invocation in the eval. A9b cannot defeat a sentence that carries both required literals while
+asserting the opposite — presence checks never can; that is review's job. Line insertions in the eval
+shift check A10, which `evals/observability-stack-config.eval.mjs:32` and `:6988` cite by line
+number; that file is outside this slice's touch set, so the drift is escalated, not fixed here.
