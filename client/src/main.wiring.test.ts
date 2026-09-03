@@ -10012,7 +10012,7 @@ describe('★ main.ts wiring (M21b-2/ADR-0182 D15, G29): W-M21B2-SIGNED-IN-IS-OW
 const NH5_SWITCHZONE_START = 'function switchZone(';
 const NH5_SWITCHZONE_END = 'function reconcileFromStore(';
 const NH5_RESET_START = 'function resetPredictionState(): void {';
-const NH5_RECONNECT_START = 'onReconnect: () => {';
+const NH5_RECONNECT_START = 'onReconnect: (id) => {';
 const NH5_RECONNECT_END = 'onOwnWarp: (newZoneId) => {';
 const NH5_CAPTURE_STMT = 'const heldSnapshot = held.snapshot();';
 const NH5_RESTORE_STMT = 'held.restore(heldSnapshot);';

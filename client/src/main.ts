@@ -265,11 +265,14 @@ let identity = '';
 // reconnect/zone-switch (resetPredictionState) so they re-baseline — the RINGS do NOT reset.
 let activeBattleId: bigint | null = null;
 let lastOwnRating: number | null = null;
-// pt-b1 review (red-team M-1) + 16r-f: set on RECONNECT only. A still-Ongoing battle that
-// survived the drop must NOT re-emit battleStart. STICKY until a flush observes definite
-// battle state; reseedPrevBattleId is the drop-time battle so only ITS re-sighting is silent.
+// pt-b1 review (red-team M-1) + 16r-f + 17r-b: set on RECONNECT only. A still-Ongoing battle
+// that survived the drop must NOT re-emit battleStart. Armed until the connection signals
+// hydration-complete (onHydrated) — never resolved by what a flush happens to read, so a partial
+// hydration cannot burn it; reseedPrevBattleId is the drop-time battle so only ITS re-sighting
+// is silent. hydratedSinceReconnect is reset on EVERY reconnect and set by onHydrated.
 let battleReseedPending = false;
 let reseedPrevBattleId: bigint | null = null;
+let hydratedSinceReconnect = false;
 let conn: ReturnType<typeof connect> | undefined;
 let boxView: BoxView | undefined;
 let battleView: BattleView | undefined;
@@ -599,7 +602,8 @@ function activateMenuLeaf(leaf: MenuLeafDef): void {
   menuView?.hide(); // close FIRST — the target opens over the world, never over the menu
   // Leaf activation is a SECOND route to talk / proposeTrade / store.ownCharacter(identity),
   // all of which throw or send garbage before the join round-trip completes. The KeyM guard
-  // is not enough: activation happens later, and onReconnect can clear identity meanwhile.
+  // is not enough: activation happens later. identity is '' until the first onReady and is
+  // REASSIGNED (never cleared) on reconnect, so this is the pre-join gate only.
   if (identity !== '') {
     // Exhaustive switch, no default arm: a new leaf compiler-flags this site.
     switch (leaf.id) {
@@ -1797,15 +1801,16 @@ store.onBatchApplied(() => {
   if (identity === '') return;
   try {
     const latest = store.latestPlayerBattle(identity);
-    // red-team M-1 + 16r-f: re-baseline ONLY the battle that survived the drop, without
-    // emitting. Sticky: an undefined read keeps the latch armed (a pre-hydration flush must
-    // not burn it — drops the ADR-0198 D7 atomicity assumption); any definite row resolves it.
+    // red-team M-1 + 16r-f + 17r-b: re-baseline ONLY the battle that survived the drop, without
+    // emitting. The latch resolves on the first flush AFTER hydration-complete (ADR-0130
+    // residual d): a pre-hydration flush — empty OR carrying an older surviving row — must not
+    // burn it. Post-hydration an undefined read is definitive (no battle rows) and resolves it.
     if (battleReseedPending) {
-      if (latest === undefined) return;
+      if (!hydratedSinceReconnect) return;
       battleReseedPending = false;
       const survivedId = reseedPrevBattleId;
       reseedPrevBattleId = null;
-      if (latest.outcome === 'Ongoing' && latest.battleId === survivedId) {
+      if (latest?.outcome === 'Ongoing' && latest.battleId === survivedId) {
         activeBattleId = latest.battleId;
         return;
       }
@@ -2672,7 +2677,15 @@ async function main(): Promise<void> {
       // M21b-2 (ADR-0182 D17): a successful connection clears any session terminal overlay.
       applySession({ kind: 'connected' });
     },
-    onReconnect: () => {
+    // 17r-b (ADR-0130 residual d): the store now holds the applied snapshot, so the reseed latch
+    // may resolve on this flush. Set here, consumed by the battle emit listener.
+    onHydrated: () => {
+      hydratedSinceReconnect = true;
+    },
+    onReconnect: (id) => {
+      // 17r-b (ADR-0130 residual e): a rebuild can mint a NEW identity — refresh FIRST so every
+      // identity-gated listener (and the connect event below) sees this connection's identity.
+      identity = id;
       // 16r-f: capture BEFORE resetPredictionState nulls activeBattleId; a 2nd drop while a
       // reseed is still pending must keep the FIRST capture (not overwrite it with null).
       if (!battleReseedPending) reseedPrevBattleId = activeBattleId;
@@ -2691,8 +2704,11 @@ async function main(): Promise<void> {
       tradeProposeView?.hide();
       menuView?.hide(); // uxd3: grey-out reads store state that the reset invalidated
       // pt-b1 (red-team M-1): re-baseline a surviving Ongoing battle on the next batch
-      // instead of re-emitting a spurious battleStart for it.
+      // instead of re-emitting a spurious battleStart for it. 17r-b: armed until onHydrated —
+      // reset UNCONDITIONALLY (unlike the guarded capture above) so a second drop re-arms
+      // against ITS OWN hydration, never a stale one.
       battleReseedPending = true;
+      hydratedSinceReconnect = false;
       // RT-PL-01: a buy/sell in flight at drop time never settles (SDK — no settle
       // on drop), so the shop's double-spend lock would stay held forever. hide()
       // resets it (shopView.ts is outside this slice's touch-set; the reset rides
@@ -2715,7 +2731,7 @@ async function main(): Promise<void> {
       leaderboardView?.hide();
       // The "connection lost — reconnecting…" status line is now stale (ADR-0085 A8).
       clearStatus();
-      // pt-b1: record the reconnect edge as a fresh connect (retained module identity).
+      // pt-b1: record the reconnect edge as a fresh connect (the refreshed identity, 17r-b).
       eventRing.push(makeConnect(identity));
       // M21b-2 (ADR-0182 D17): a successful reconnect clears any session terminal overlay.
       applySession({ kind: 'connected' });

@@ -78,8 +78,20 @@ export interface ConnectionOptions {
   readonly store: AuthoritativeStore;
   /** Initial subscription applied — the caller starts the loop (gated on wasm + own row). */
   readonly onReady: (identity: string) => void;
-  /** Re-established after a drop: the caller resets the predictor + the loop re-seeds. */
-  readonly onReconnect: () => void;
+  /** Re-established after a drop: the caller resets the predictor + the loop re-seeds. Carries
+   *  THIS connection's identity (17r-b, ADR-0130 residual e): a rebuild can mint a NEW anon
+   *  identity (continueAnonymously / the nh4 token-rejection path), and a caller that keeps the
+   *  old one deafens every identity-gated listener. Test-carried, not type-carried: TS parameter
+   *  bivariance still accepts a zero-arg handler, so RSD17B-CARRIES / IDROT pin it. */
+  readonly onReconnect: (identity: string) => void;
+  /** 17r-b (ADR-0130 residual d): hydration-complete edge. Fired from the batcher flush closure
+   *  on the first flush after each applied snapshot — AFTER the view reconciles ran against the
+   *  cache the SDK had fully populated before it emitted `applied` (2.6.0: apply → 'applied' →
+   *  row callbacks, all synchronous) and BEFORE store.flushBatch(), so every listener that flush
+   *  notifies observes it as already delivered. Once per applied snapshot (guaranteed today by
+   *  the always-non-empty content subscriptions, which schedule that flush). MUST be total (never
+   *  throw): it runs outside the reconcile try/catch, so a throw here would starve the flush. */
+  readonly onHydrated: () => void;
   /** A non-movement failure to surface (status line). Movement-reducer rejections stay silent (M2 §3). */
   readonly onError: (where: string, message: string) => void;
   /** Called when the own entity crosses a zone boundary (M11c, ADR-0067 Option C).
@@ -132,6 +144,8 @@ export interface Connection {
 
 export function connect(opts: ConnectionOptions): Connection {
   const { store, name } = opts;
+  // 17r-b: armed by each applied snapshot (stale-guarded), consumed by the FIRST flush after it.
+  let snapshotApplied = false;
   // Reconcile once per transaction: each row callback schedules; the batcher fires
   // store.flushBatch() once on the next microtask (no per-transaction SDK hook in 2.6).
   // ONE batcher for ALL rebuilds (ADR-0085 C2): a per-build batcher could fire a
@@ -171,6 +185,13 @@ export function connect(opts: ConnectionOptions): Connection {
       } catch (err) {
         console.error('[net] view reconcile threw; flushing anyway', err);
       }
+    }
+    // 17r-b: hydration-complete — AFTER the reconciles (the store now holds the applied snapshot)
+    // and BEFORE flushBatch (listeners observe it delivered). Outside the live-guard on purpose:
+    // a parked build (current = undefined) must not leave the flag armed for a later bogus edge.
+    if (snapshotApplied) {
+      snapshotApplied = false;
+      opts.onHydrated();
     }
     store.flushBatch();
   });
@@ -695,8 +716,10 @@ export function connect(opts: ConnectionOptions): Connection {
             } else {
               opts.onClaimAwaitingAccount?.(); // UX polish only — the veto above is what makes F2 safe
             }
+            // 17r-b: arm the hydration edge BEFORE notifying, so a throwing callback cannot lose it.
+            snapshotApplied = true;
             hadSession = true;
-            if (reconnecting) opts.onReconnect();
+            if (reconnecting) opts.onReconnect(identity);
             else opts.onReady(identity);
           })
           // Forward the SDK's subscription-error payload (was discarded pre-M13.5b);
