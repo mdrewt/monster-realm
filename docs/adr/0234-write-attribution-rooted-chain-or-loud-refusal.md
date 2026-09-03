@@ -76,6 +76,9 @@ inline `ctx.db.<accessor>()…` writes.
 - `write_target_accessors(squashed) -> Vec<Result<String, WriteAttrFault>>` implements (ii),
   source-ordered; the walk is bounds-guarded (a chain that runs into the start of the source is
   `UnrootedChain`, never an index panic).
+- `WriteAttrFault` enum is `#[derive(Debug, PartialEq, Eq)]` — no Clone or Copy (callers use
+  `&`/`matches!`; the PartialEq/Eq stay for `Vec<Result<..>>` equality in fixture assertions
+  and rb24's `contains` check).
 - `g5_write_isolation_violation(squashed) -> Result<(), String>` carries the three G5 clauses
   (at least one attributed write — non-vacuity; any unattributable write is an `Err` naming the
   fault and the measured alias shape; every attributed accessor is in `allowed_write_tables()`), so
@@ -94,7 +97,8 @@ inline `ctx.db.<accessor>()…` writes.
   `try_insert` joined the verb vocabulary (the reducer-security-auditor measured a foreign
   `ctx.db.monster().try_insert(row)` producing no census entry at all), and every receiver
   segment before the verb must be a zero-argument call (a combinator segment was measured to
-  launder a foreign handle into an owned attribution).
+  launder a foreign handle into an owned attribution). Post-green bite-proof: nine mutants
+  killed (M1-M7 from initial probe; M8-M9 for try_insert and zero-argument-segment).
 - Proof-of-teeth assertions pin fault variants with `matches!`, never `assert_eq!`: the plan
   red-team measured that a hand-written always-true `impl PartialEq` is clippy-clean and would
   make every equality tooth — and the mutation bite-proof itself — vacuous. The ledger CHECKs
