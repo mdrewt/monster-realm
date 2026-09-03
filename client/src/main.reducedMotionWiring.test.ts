@@ -73,7 +73,6 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Connection, ConnectionOptions } from './net/connection';
 import { type MotionQuery, REDUCED_MOTION_QUERY } from './render/motionPreference';
 import type { ResolveInput } from './render/renderResolver';
-import type { BugBundle, BugBundleInput } from './ui/bugBundle';
 
 // --- hoisted state shared with the mock factories --------------------------------------
 const H = vi.hoisted(() => ({
@@ -81,9 +80,6 @@ const H = vi.hoisted(() => ({
   identity: 'ab'.repeat(32),
   /** The ConnectionOptions main() passed to connect(): our handle on the real store. */
   connectOpts: null as ConnectionOptions | null,
-  /** The observation channel for F9 — kept for parity with the sanctioned precedents even
-   *  though this file's tests never press F9. */
-  buildBugBundle: vi.fn<(input: BugBundleInput) => BugBundle>(),
   /** THE observation channel for this file: every `input` object main.ts's frame loop
    *  actually handed to `resolver.resolve(...)`, in call order, across the whole test. */
   resolveInputs: [] as ResolveInput[],
@@ -139,14 +135,6 @@ vi.mock('./net/connection', () => {
       return stub;
     },
   };
-});
-
-// The bundle assembler: real exports, buildBugBundle wrapped in a call-through spy — kept
-// for parity with the sanctioned precedents even though this file's tests do not press F9.
-vi.mock('./ui/bugBundle', async (importOriginal) => {
-  const actual = await importOriginal<typeof import('./ui/bugBundle')>();
-  H.buildBugBundle.mockImplementation(actual.buildBugBundle);
-  return { ...actual, buildBugBundle: H.buildBugBundle };
 });
 
 // Telemetry: keep NOOP_TELEMETRY and the types, never bootstrap the OTel SDK (no network).
@@ -341,7 +329,6 @@ describe('main.ts render-loop reduced-motion wiring (17r-a, gate B1)', { sequent
     initialMatches: boolean,
   ): Promise<{ readonly opts: ConnectionOptions; readonly mm: MatchMediaStub }> {
     H.connectOpts = null;
-    H.buildBugBundle.mockClear();
     H.resolveInputs = [];
 
     const mm = makeMatchMediaStub(initialMatches);
@@ -389,7 +376,6 @@ describe('main.ts render-loop reduced-motion wiring (17r-a, gate B1)', { sequent
     restoreDocumentAdd = undefined;
     restoreWindowAdd = undefined;
     H.connectOpts = null;
-    H.buildBugBundle.mockClear();
     H.resolveInputs = [];
     vi.unstubAllGlobals();
     rafCallback = null;
