@@ -89,7 +89,8 @@ export interface ConnectionOptions {
    *  cache the SDK had fully populated before it emitted `applied` (2.6.0: apply → 'applied' →
    *  row callbacks, all synchronous) and BEFORE store.flushBatch(), so every listener that flush
    *  notifies observes it as already delivered. Once per applied snapshot (guaranteed today by
-   *  the always-non-empty content subscriptions, which schedule that flush). */
+   *  the always-non-empty content subscriptions, which schedule that flush). MUST be total (never
+   *  throw): it runs outside the reconcile try/catch, so a throw here would starve the flush. */
   readonly onHydrated: () => void;
   /** A non-movement failure to surface (status line). Movement-reducer rejections stay silent (M2 §3). */
   readonly onError: (where: string, message: string) => void;

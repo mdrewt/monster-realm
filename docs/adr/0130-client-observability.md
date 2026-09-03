@@ -349,8 +349,12 @@ spec's EARS scenario unrepresentable — noted as a future simplification).
   `snapshotApplied` gate removed — which would resolve the latch on the first post-reconnect flush and re-open (d)
   under non-atomic delivery) are text-caught or uncaught, never behaviour-caught. A runtime harness for
   connection.ts was rejected: the file is never imported under vitest, and an 18-table fake `DbConnection` reds on
-  every table addition. The current-swap race — a `reconnectNow()`/`continueAnonymously()` re-entry between an
-  armed `snapshotApplied` and its consuming flush reconciles against the NEW build's empty cache and still fires the
-  signal — is a pre-existing class the shared batcher (ADR-0085 C2) already accepts.
+  every table addition. The current-swap race the plan red-team raised — a `reconnectNow()`/`continueAnonymously()`
+  re-entry between an armed `snapshotApplied` and its consuming flush — was analysed by the desync-guard lens as
+  UNREACHABLE: the arm and the flush that consumes it sit in the same microtask turn (`queueMicrotask`, batch.ts),
+  no macrotask can start a new attempt in between, and an attempt started earlier bumps `buildGen` so the arming
+  build's `onApplied` is already stale and never arms. One accepted nit instead: the handler runs OUTSIDE the
+  reconcile try/catch and BEFORE `flushBatch`, so it MUST be total — a throwing handler would starve the flush
+  (today's handler is a single boolean assignment; the contract is written on the field).
 - (g) **NEW** — `onHydrated`'s placement between `onReady` and `onReconnect` in main.ts is unenforced by any pin
   (the onReconnect-region slicers assert positives only); harmless if moved, recorded for completeness.
