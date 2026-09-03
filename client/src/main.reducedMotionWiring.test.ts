@@ -43,7 +43,7 @@
  * `resolver.resolve(...)` call is reachable, and every statement around it is safe, with NO DOM
  * shell at all — driving real frames without ever parsing index.html.
  *
- * WHY `describe.sequential(...)`: MEASURED (see 17r-a task brief) — `npx vitest run
+ * WHY SEQUENTIAL (see the note above the suite for the spelling): MEASURED (see 17r-a task brief) — `npx vitest run
  * --sequence.concurrent src/main.a11yFocus.test.ts` fails 4/26 because happy-dom's
  * `document`/`window` is per-FILE and this harness keeps module-scope rAF + hoisted state that
  * a concurrent sibling test in the SAME file would stomp on.
@@ -319,7 +319,13 @@ function makeMatchMediaStub(initialMatches: boolean): MatchMediaStub {
 }
 
 // --- the suite ---------------------------------------------------------------------------
-describe.sequential('main.ts render-loop reduced-motion wiring (17r-a, gate B1)', () => {
+// `describe(name, { sequential: true }, fn)` — NOT `describe.sequential(...)`. Same isolation,
+// but the literal `describe(` is REQUIRED here: motionPreference.test.ts's S7T-SCAN scans every
+// comment-stripped `.test.ts` under client/src for that exact token, as a tripwire against
+// production code disguised with a spec suffix, and the dotted form does not contain it. The
+// precedent file that uses the dotted form only passes because it happens to carry a nested
+// plain `describe(` for unrelated reasons. Do not 'tidy' this back to the dotted form.
+describe('main.ts render-loop reduced-motion wiring (17r-a, gate B1)', { sequential: true }, () => {
   let recorded: Recorded[] = [];
   let restoreWindowAdd: (() => void) | undefined;
   let restoreDocumentAdd: (() => void) | undefined;
