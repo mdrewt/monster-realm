@@ -434,7 +434,7 @@ slice's `touches:` set — flagged, not touched.
 
 The Consequences follow-up "re-adjudicate M20 OBS-48 now that Procedures are stable (FF4)" — filed by
 this ADR because §5/FF4 corrected the false premise that `#[procedure]` is `unstable`-gated — is
-resolved. Drew's ruling on issue https://github.com/mdrewt/monster-realm/issues/342 (answered 2026-08-28, consumed and closed by review 17): OBS-48 becomes **require-justification** rather than a blanket forbid. The full
+resolved. Drew's ruling on issue https://github.com/mdrewt/monster-realm/issues/342 (answered 2026-08-28, consumed and closed by review 17): OBS-48 becomes **require-justification** rather than a blanket forbid. The full <!-- A9b: this sentence must keep `require-justification` and the issue URL on ONE line -->
 reasoning, the general cross-dependency policy it generalises to, and the enforcement mechanism are
 recorded in **ADR-0180's amendment of the same date**; this note exists so a reader arriving at FF4
 is not left with an open question.

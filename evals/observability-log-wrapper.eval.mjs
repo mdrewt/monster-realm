@@ -1062,17 +1062,32 @@ export function deriveWorkspaceManifests(rootCargoText) {
  * for a procedure spelling, so widening detection is a one-place edit and
  * `T-obs48-detection-not-softened` measures it through this entry point.
  */
+/**
+ * Every `#` comment blanked, line-wise. Counting outside comments is deliberate
+ * and load-bearing: a needle in PROSE is not an enablement, so licensing it
+ * would mint a standing `occurrences` allowance that a later commit can spend by
+ * deleting the comment and adding the real thing at the same count (measured).
+ * It also stops an honest `# do not enable unstable` comment from reddening CI
+ * with no non-lying remedy available.
+ */
+function scrubTomlComments(text) {
+  const out = [];
+  for (const line of text.split('\n')) out.push(stripTomlComment(line));
+  return out.join('\n');
+}
+
 export function detectUnstableSites({ manifests, srcFiles } = {}) {
   const manifestMap = asPlainMap(manifests);
   const srcMap = asPlainMap(srcFiles);
   const out = [];
   for (const site of Object.keys(manifestMap)) {
-    const text = typeof manifestMap[site] === 'string' ? manifestMap[site] : '';
+    const raw = typeof manifestMap[site] === 'string' ? manifestMap[site] : '';
+    const text = scrubTomlComments(raw);
     const occurrences = countOccurrences(text, UNSTABLE_NEEDLE);
     if (occurrences > 0) out.push({ kind: 'unstable-feature', site, occurrences });
   }
   for (const site of Object.keys(srcMap)) {
-    const text = typeof srcMap[site] === 'string' ? srcMap[site] : '';
+    const text = scrubCommentLines(typeof srcMap[site] === 'string' ? srcMap[site] : '');
     let occurrences = 0;
     for (const needle of PROCEDURE_NEEDLES) occurrences += countOccurrences(text, needle);
     if (occurrences > 0) out.push({ kind: 'procedure', site, occurrences });
@@ -1243,7 +1258,8 @@ function stripDocNoise(text) {
   let inFence = false;
   let inComment = false;
   for (const raw of text.split('\n')) {
-    if (!inComment && raw.trimStart().startsWith('```')) {
+    const trimmed = raw.trimStart();
+    if (!inComment && (trimmed.startsWith('```') || trimmed.startsWith('~~~'))) {
       inFence = !inFence;
       out.push('');
       continue;
@@ -1278,7 +1294,16 @@ function stripDocNoise(text) {
   return out;
 }
 
-/** True when ONE surviving line of `text` carries BOTH policy literals. */
+/**
+ * True when ONE surviving LINE of `text` carries BOTH policy literals.
+ *
+ * Line- not paragraph-scoped, deliberately: paragraph scope would let the two
+ * literals be satisfied by two unrelated sentences that merely sit in the same
+ * block, which is exactly the inert-citation shape A9b exists to reject. The
+ * cost is that the policy sentence must be a single over-long line; the docs
+ * carry a `<!-- A9b -->` marker beside it so a reflow does not silently break
+ * the gate.
+ */
 function docRecordsPolicy(text) {
   for (const line of stripDocNoise(text)) {
     if (line.indexOf(POLICY_STANCE_LITERAL) !== -1 && line.indexOf(POLICY_ISSUE_LITERAL) !== -1) {
@@ -3303,6 +3328,49 @@ export async function observabilityLogWrapperEval() {
     const full = path.resolve(docPath);
     if (existsSync(full)) obs48DocBodies[docPath] = readFileSync(full, 'utf8');
   }
+  // NON-VACUITY GUARD (run-derived, on the maps this block actually built).
+  // The OBS-48 teeth run over injected fixtures, so they prove `auditUnstable`
+  // and say nothing about this wiring. Four mutations of the lines above were
+  // measured to leave every tooth green while printing the success marker
+  // verbatim: swapping in the `_tests.rs`-excluding collector, deleting the
+  // game-core arm, handing the audit empty manifest bodies, and handing it
+  // synthesised doc bodies. Each one re-opens a bypass that was proven to
+  // compile. These assertions are what make that mutation class visible.
+  const obs48SrcKeys = Object.keys(obs48Src);
+  const obs48Vacuity = [];
+  if (!obs48SrcKeys.some((f) => f.startsWith('server-module/src/') && f.endsWith('_tests.rs'))) {
+    obs48Vacuity.push(
+      'the swept source map contains no server-module `_tests.rs` file (wrong collector?)',
+    );
+  }
+  if (!obs48SrcKeys.some((f) => f.startsWith('game-core/src/'))) {
+    obs48Vacuity.push(
+      'the swept source map contains no game-core/src file (a procedure there links into the shipped cdylib)',
+    );
+  }
+  if (obs48SrcKeys.length < 40) {
+    obs48Vacuity.push(`the swept source map holds only ${obs48SrcKeys.length} file(s)`);
+  }
+  for (const manifest of Object.keys(obs48Manifests)) {
+    if (obs48Manifests[manifest].length === 0) {
+      obs48Vacuity.push(`manifest ${manifest} was read back EMPTY (an empty body detects nothing)`);
+    }
+  }
+  for (const docPath of Object.keys(obs48DocBodies)) {
+    if (obs48DocBodies[docPath].length < 1000) {
+      obs48Vacuity.push(
+        `policy doc ${docPath} was read back as ${obs48DocBodies[docPath].length} bytes, not the real document`,
+      );
+    }
+  }
+  if (obs48Vacuity.length > 0) {
+    return {
+      name: NAME,
+      pass: false,
+      detail: `A9: the OBS-48 sweep is VACUOUS — ${obs48Vacuity[0]}. The gate would pass by scanning nothing.`,
+    };
+  }
+
   const obs48 = auditUnstable({
     manifests: obs48Manifests,
     srcFiles: obs48Src,

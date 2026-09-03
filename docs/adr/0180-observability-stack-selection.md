@@ -1102,7 +1102,7 @@ Neither open defect has an owner slice. Escalated by ADR-0202.
 ## Amendment (2026-09-03, slice `17r-c`) — OBS-48 is REQUIRE-JUSTIFICATION, not a blanket forbid
 
 **The ruling.** Drew answered `rev16-obs48-procedures` on 2026-08-28: OBS-48's blanket forbid is a
-vast overstatement. OBS-48 is hereby **require-justification** (issue https://github.com/mdrewt/monster-realm/issues/342, consumed and closed by review 17).
+vast overstatement. OBS-48 is hereby **require-justification** (issue https://github.com/mdrewt/monster-realm/issues/342, consumed and closed by review 17). <!-- A9b: this sentence must keep `require-justification` and the issue URL on ONE line -->
 D14's *verdict* stands as the standing default — nothing in the module enables the `unstable` feature
 or defines a Procedure today, and D15's log-reconstructed spans remain the reason it does not need
 to. What changes is the *form* of the constraint: a workspace manifest MAY enable an unstable
@@ -1122,8 +1122,9 @@ is outside this project repo. Escalated as a follow-up; this ADR is the project-
 **The mechanism.** `UNSTABLE_JUSTIFICATIONS` in `evals/observability-log-wrapper.eval.mjs` is the
 manifest; check A9 is its enforcement site and A9b pins this policy record. Three properties make a
 blanket allow-list unrepresentable rather than merely discouraged: `site` must be an **exact** member
-of the workspace-manifest set derived from the root `[workspace] members` (drift from the committed
-list is itself a hard failure); a **stale** entry — one naming a site with no detected use — FAILS,
+of the set the sweep actually reads — for `kind: 'unstable-feature'` the workspace-manifest set
+derived from the root `[workspace] members` (drift from the committed list is itself a hard failure),
+for `kind: 'procedure'` a scanned `.rs` path, and the two namespaces do not overlap; a **stale** entry — one naming a site with no detected use — FAILS,
 so entries cannot be pre-seeded ahead of the use they license; and `occurrences` must **exactly**
 equal the detected hit count in both directions, so one honest entry cannot silently license every
 later use in the same file. Detection was widened at the same time to a strict superset of the
