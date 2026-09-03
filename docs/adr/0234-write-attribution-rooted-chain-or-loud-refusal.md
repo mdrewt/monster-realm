@@ -83,13 +83,22 @@ inline `ctx.db.<accessor>()…` writes.
   `g5_writes_only_owned_tables` unwraps it over the real file.
 - `g5_alias_violation(squashed) -> Result<(), String>` is the Rust-side port of the eval's
   `[W/db-binding]` (every `ctx.db` not preceded by a word byte must be immediately followed by
-  `.`) and `[W/ctx-binding]` (every `:&ReducerContext` parameter is named `ctx` or `_ctx`; the
+  `.`) and `[W/ctx-binding]` (every `:&ReducerContext` parameter is named exactly `ctx`; the
   alias forms `=ctx;` `=ctx,` `=&ctx;` `=&ctx,` `=ctx.clone()` are banned; at least one
   `:&ReducerContext` must exist). It is applied to `accounts.rs` by its own test and is
   deliberately not folded into the write predicate, so neither tooth can shadow the other. The
-  `ctx`/`_ctx` allowance mirrors the JS twin's allowlist (ADR-0195 parity); `privacy_tests.rs`'s
-  local clause is stricter (`ctx` only) by that module's own choice, and the divergence is
-  intentional.
+  JS twin also accepts `_ctx`; the Rust side is deliberately stricter (`ctx` only, matching
+  `privacy_tests.rs`) because the walk's anchor is the literal `ctx.db.` — accepting `_ctx` in the
+  ban while the walk refuses `_ctx.db.` would be a latent false-RED (plan red-team finding).
+- Proof-of-teeth assertions pin fault variants with `matches!`, never `assert_eq!`: the plan
+  red-team measured that a hand-written always-true `impl PartialEq` is clippy-clean and would
+  make every equality tooth — and the mutation bite-proof itself — vacuous. The ledger CHECKs
+  run nextest with `--run-ignored all` because an `#[ignore]`d test otherwise hides inside the
+  filtered-out `skipped` count.
+- Language-level backstop (plan red-team, compiled PoC): `ctx.db.<accessor>()` is a trait method
+  the table macro wires onto `Local`, and a function-local `trait account` that returns a foreign
+  handle does not compile (`E0034: multiple applicable items in scope`) — so an owned NAME cannot
+  be made to reach a foreign TABLE at one call site under the scanner's nose.
 - The eval's `[W/write-target]` / `[W/db-binding]` / `[W/ctx-binding]` clauses over `accounts.rs`
   stay live and un-narrowed: `evals/` is outside this slice's `touches:`, and under ADR-0224's
   opportunistic model the Rust side now being strictly more precise is not a residual — the
