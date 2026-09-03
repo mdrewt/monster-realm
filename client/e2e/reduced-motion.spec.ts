@@ -196,13 +196,29 @@ test('with the preference off, the same rule animates (the guard is conditional,
 // rb-38 — THE RENDERER ARM (A11Y-27, EARS gate E1). Read the file header above
 // FIRST — in particular the updated RENDERER ARM note it now carries.
 //
-// THIS PAIR IS A DISCLOSURE, NOT A GREEN GATE. `client/src/main.ts` is OUT OF
-// SCOPE for rb-38, so the fix cannot land here. The first test below (the
-// reduce-polarity one) is EXPECTED TO RED on master. Do not edit it to accept
-// today's behaviour, and do not delete it because it is red — its whole job is
-// to keep failing, honestly, until a successor slice wires
-// `motionPreferenceFromWindow()` (or an equivalent live read) into
-// `client/src/main.ts:2807`'s `resolver.resolve({...})` call.
+// THIS PAIR IS A KNOWN-DEFECT DISCLOSURE, NOT A GREEN GATE. `client/src/main.ts`
+// is OUT OF SCOPE for rb-38, so the fix cannot land here — but the CORRECT
+// expectation can, and does. The reduce-polarity test below asserts what the
+// renderer SHOULD do and is marked `test.fail()`: Playwright still RUNS it and
+// still evaluates every assertion, but records its failure as EXPECTED.
+//
+// WHY `test.fail()` AND NOT `test.fixme()`/`test.skip()` (both were considered):
+//   * `test.fixme()` is this repo's existing idiom for a blocked-on-another-slice
+//     e2e (`client/e2e/recruit.spec.ts:1008`), but it SKIPS — and `just a11y-e2e`
+//     half 4 reds on `stats.skipped !== 0` by design, because "a skipped a11y
+//     test is a silently ungated one". A fixme here would break the nightly tier.
+//   * `test.fail()` keeps the assertions EXECUTING, so this file keeps proving
+//     the boot/join/step scaffolding works, and — the load-bearing property —
+//     **it flips to RED the moment the bug is fixed**. Playwright reports an
+//     expected-to-fail test that PASSES as `unexpected`. So whoever finally
+//     wires `motionPreferenceFromWindow()` into `client/src/main.ts:2807`'s
+//     `resolver.resolve({...})` call is FORCED to come back here and delete the
+//     `test.fail()` line. It cannot be silently left behind.
+//
+// DO NOT "fix" this by asserting today's behaviour (`.toBe(true)`). That would
+// cement the bug and is exactly the false green ADR-0219 exists to prevent.
+// The ledger gate (rb-38 E1) stays DEFERred until the wiring lands: this pair
+// documents and detects the gap, it does not close it.
 //
 // THE OBSERVABLE: `sawFractionalOwnMotion` (`client/src/main.ts:254`, read via
 // `window.__game()` at `client/src/main.ts:1933`) — a STICKY DEV latch the
@@ -348,9 +364,17 @@ async function rendererArmStepEastAndSettle(
   await p.waitForTimeout(Math.round(stepMs * 1.5));
 }
 
-test('RENDERER ARM (E1, DISCLOSURE — EXPECTED RED on master): under the reduced-motion project, the own character NEVER renders a fractional sub-tile position', async ({
+test('RENDERER ARM (E1, KNOWN DEFECT — test.fail): under the reduced-motion project, the own character NEVER renders a fractional sub-tile position', async ({
   page,
 }) => {
+  // KNOWN DEFECT, DISCLOSED (rb-38). See the big block comment above this test.
+  // The assertions below are the CORRECT expectation and run in full; only the
+  // final one currently fails, because `client/src/main.ts:2807` passes no
+  // `reduceMotion` key. When a successor slice wires that call site, this test
+  // starts PASSING — which Playwright reports as `unexpected`, turning the suite
+  // RED and forcing this line to be deleted. That is the intended alarm.
+  test.fail();
+
   // NO emulateMedia call anywhere in this test — same load-bearing absence, and
   // for the identical reason, as the file's first stylesheet-arm test above
   // (design constraint 1, rb-38): the ENTIRE end-to-end claim rests on the
@@ -444,9 +468,9 @@ test('RENDERER ARM (E1, DISCLOSURE — EXPECTED RED on master): under the reduce
       'the RENDERER never learned about the preference. MEASURED cause on master: ' +
       '`client/src/main.ts:2807` calls `resolver.resolve({...})` with no `reduceMotion` key, so ' +
       "`renderResolver.ts:83`'s `reduceMotion = false` default applies on every frame. This is " +
-      "the EXPECTED-RED disclosure this slice (rb-38) exists to record — see this file's " +
-      'header RENDERER ARM note. Do NOT edit this assertion to accept `true`; fix the wiring ' +
-      'in a successor slice instead.',
+      'the KNOWN DEFECT rb-38 disclosed and marked `test.fail()` — see the block comment above ' +
+      'this test. Do NOT edit this assertion to accept `true` (that cements the bug); fix the ' +
+      'wiring in a successor slice and delete the `test.fail()` line instead.',
   ).toBe(false);
 });
 

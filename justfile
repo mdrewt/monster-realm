@@ -346,18 +346,29 @@ e2e: wasm
 #
 # floor=169 measured at 2770ec9 (8 files / 169 tests / 0 failed / 0 pending /
 # 0 todo). axefloor=3 measured at eca6752 (3 axe tests / 0 unexpected / 0 flaky /
-# 0 skipped). rmfloor=2 measured at rb-20 (2 reduced-motion tests / 1 file, via
-# `npx playwright test --project=reduced-motion --list`). Raise any of them in the
+# 0 skipped). rmfloor=4 measured at rb-38 (4 reduced-motion tests / 1 file, via
+# `npx playwright test --project=reduced-motion --list`); was 2 at rb-20, raised by
+# rb-38's renderer-arm pair. NOTE the count includes the `test.fail()`-marked
+# renderer-arm test: an expected-to-fail test still RUNS and is reported in
+# `stats.expected`, so it counts toward this floor and toward the unexpected=0
+# check -- it is NOT a skip. Raise any of them in the
 # same commit that adds a11y tests; LOWER one only in a commit that deliberately
 # removes some, and say which in the message.
 #
-# Half 4 is the reduced-motion BROWSER tier (rb-20, ADR-0219). It covers the
-# STYLESHEET arm of A11Y-27 only -- styles.css's `.hp-fill` transition under
-# `@media (prefers-reduced-motion: reduce)`, proven to be EVALUATED by Chromium
-# rather than merely present in the file. A11Y-27's RENDERER arm is NOT covered
-# and is not implemented at all (main.ts passes no `reduceMotion` to
-# resolver.resolve); it is ledger gate rb-20 RM-7, DEFERred to backlog. Do not
-# relabel half 4 "A11Y-27, gated".
+# Half 4 is the reduced-motion BROWSER tier (rb-20, ADR-0219; extended by rb-38).
+# It fully gates the STYLESHEET arm of A11Y-27 -- styles.css's
+# `.hp-fill` transition under `@media (prefers-reduced-motion: reduce)`, proven to
+# be EVALUATED by Chromium rather than merely present in the file.
+#
+# A11Y-27's RENDERER arm is now COVERED BY A TEST but is still NOT IMPLEMENTED:
+# main.ts:2807 passes no `reduceMotion` to resolver.resolve, so the renderer
+# ignores the OS preference. rb-38 added the two renderer-arm tests to
+# client/e2e/reduced-motion.spec.ts; the reduce-polarity one asserts the CORRECT
+# behaviour and is marked `test.fail()`, so it runs, fails as EXPECTED today, and
+# turns this recipe RED the moment someone fixes the wiring (Playwright reports an
+# expected-to-fail test that passes as `unexpected`). Ledger gate rb-38 E1 stays
+# DEFERred to backlog until that wiring lands. So: do not relabel half 4
+# "A11Y-27, gated", and do not read the renderer-arm tests as proof the arm works.
 #
 # Half 3 needs a BROWSER and a LIVE SpacetimeDB: client/e2e/a11y.spec.ts runs under
 # the default client/playwright.config.ts, whose globalSetup republishes the module.
@@ -370,7 +381,7 @@ e2e: wasm
 # gate is untouched: `a11y-e2e` is not a `ci:` dependency and is not in the eval's
 # REQUIRED_JUST_STEPS (ADR-0043, ADR-0218).
 # Response policy + owner: docs/nightly-red-response-policy.md.
-a11y-e2e floor="169" axefloor="3" rmfloor="2": wasm
+a11y-e2e floor="169" axefloor="3" rmfloor="4": wasm
     #!/usr/bin/env bash
     set -euo pipefail
     # Fail loud on a malformed floor BEFORE the run. BOTH floors are guarded, and
