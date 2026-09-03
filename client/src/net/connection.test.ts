@@ -4358,3 +4358,346 @@ describe('★ connection.ts wiring (15r-sec-a / ADR-0198): W-15RSECA-RECONCILE �
     ).toBe(-1);
   });
 });
+
+// ===========================================================================
+// 17r-b (ADR-0130 residuals (d) + (e)) — the hydration-complete signal and the
+// identity-carrying reconnect callback.
+//
+// SOURCE OF TRUTH: M-postgate-seventeenth-review-residuals.spec.md#17r-b (EARS-d/EARS-e)
+// and docs/adr/0130 residuals (d):273-275 / (e):276-278, plus the 17r-b build plan §1a
+// (NORMATIVE, as amended by its §7).
+//
+// WHAT connect() GAINS — exactly three wiring points, all inside `export function connect(opts)`:
+//   1. `let snapshotApplied = false;` at connect() scope (NOT inside the batcher closure and
+//      NOT inside a per-build callback: it must survive from the applied snapshot to the
+//      NEXT flush, and one flag serves every rebuild through the ONE shared batcher).
+//   2. `snapshotApplied = true;` inside `.onApplied`, AFTER `if (stale()) return;` — a
+//      superseded build must never arm the flag it will never consume.
+//   3. `if (snapshotApplied) { snapshotApplied = false; opts.onHydrated(); }` in the
+//      batcher's flush closure, OUTSIDE the `if (live !== undefined)` stale-build guard and
+//      BEFORE `store.flushBatch();`.
+// and `ConnectionOptions` gains `readonly onHydrated: () => void;` (REQUIRED, not `?:`) while
+// `readonly onReconnect: () => void;` becomes `readonly onReconnect: (identity: string) => void;`.
+//
+// WHY EACH POSITION IS LOAD-BEARING (i.e. what a mis-placed edit costs):
+//   * BEFORE flushBatch — flushBatch() is what notifies every batch listener. Firing the
+//     signal AFTER it means the listeners of the very flush that completed hydration still
+//     observe "not hydrated", so main.ts's reseed latch survives one flush too long and
+//     silently re-baselines against the NEXT batch instead.
+//   * OUTSIDE the live guard — a parked build (`current === undefined`, the ADR-0182 D13
+//     session-expired / auth-service-unreachable terminals) still reaches the flush tail. If
+//     the signal sat inside the guard, an armed `snapshotApplied` would survive the parked
+//     flush and fire a bogus "hydrated" against a LATER, unrelated flush.
+//   * GATED on the flag — without the `if`, `onHydrated` fires on EVERY flush, which turns
+//     main.ts's hydration edge into a permanent `true` and re-opens residual (d) in full.
+//   * AFTER the stale guard — arming from a superseded build sets a flag that the live
+//     build's next flush consumes, announcing a hydration that never happened.
+//
+// ⚠ WHAT THESE TWO TEETH DO **NOT** PROVE — read this before treating them as sufficient.
+// They are SOURCE SCANS: they prove the statements EXIST, in the right REGION, in the right
+// ORDER. They cannot prove REACHABILITY. A `return` introduced in the flush closure between
+// the reconcile block and the signal, a third `snapshotApplied` write in another spelling
+// (`snapshotApplied ||= true`, a helper that assigns it), or a closure that is never invoked
+// would satisfy every needle below. The reviewer must confirm those BY READING (plan §2
+// names exactly this reviewer obligation), and residual (f) records it in ADR-0130.
+//
+// WHY NO RUNTIME HARNESS (plan §2, and this file's standing answer since nh4): connection.ts
+// is coverage-EXCLUDED in client/vite.config.ts because importing it executes DOM/wasm side
+// effects (window.addEventListener, DbConnection.builder() touching the generated bindings),
+// so it CANNOT be imported under vitest. A fake DbConnection deep enough to drive
+// `.onApplied` + the batcher would have to model all 18 subscribed tables and would red on
+// every table addition. The BEHAVIOUR that depends on this signal is proven at runtime on the
+// other side of the seam — main.battle-reseed.test.ts drives `opts.onHydrated()` directly
+// against the real main.ts listener (RSD17B-STALEROW / ONGOINGROW / REARM / NOBATTLE). Both
+// halves are required; neither substitutes for the other.
+//
+// NO `new RegExp(...)`; NO `://` in any string added here — this file's standing conventions
+// (the second is mechanised by the W-UX2B-SCAN-SOUND calibration fixture above).
+// ===========================================================================
+
+/** The ONE hydration-signal block, as the contiguous statement it must be after
+ *  comment-stripping + whitespace-squashing (the M21B2_RETRY_BLOCK idiom: exact-block
+ *  equality closes the three-independent-`.includes` decoy bypass). An optional-call
+ *  spelling (`opts.onHydrated?.();`) does NOT match this needle, and must not: the field is
+ *  REQUIRED, and an optional call is how an unwired embedder ships a permanently-armed latch
+ *  with no compile error. */
+const RSD17B_SIGNAL_BLOCK = 'if (snapshotApplied) { snapshotApplied = false; opts.onHydrated(); }';
+
+/** The batcher construction's OWN argument list (paren-walked), i.e. the flush closure —
+ *  derived exactly as the W-13RE / W-15RSECA teeth above derive it, so all three judge the
+ *  same region. Throws loud if the anchor is missing or duplicated: a deleted batcher is a
+ *  hard red, never a vacuous pass. */
+function rsd17bFlushClosure(squashed: string): string {
+  expectUniqueAnchor(squashed, 'new MicrotaskBatcher(');
+  return parenArgsAt(squashed, 'new MicrotaskBatcher(');
+}
+
+describe('★ connection.ts wiring (17r-b / ADR-0130 residual d): the hydration-complete signal is armed once per applied snapshot and consumed at the flush tail', () => {
+  it('★★ RSD17B-SIGNAL BITES: the signal block sits in the flush closure, outside the stale-build guard, before store.flushBatch(), and the flag has exactly one arm and one clear', () => {
+    const src = readConnectionTs();
+    const squashed = squashedStrippedConnectionTs();
+    const flushClosure = rsd17bFlushClosure(squashed);
+
+    // --- (1) ANTI-VACUITY: the region really is the flush closure ---------------------
+    // Without this, every count below is satisfiable by an empty/mis-bound region.
+    expect(
+      includesAsCode(flushClosure, 'store.flushBatch()'),
+      'ANTI-VACUITY: the MicrotaskBatcher flush closure must still call `store.flushBatch()` ' +
+        'AS CODE — if it does not, this scan is judging the wrong region (or the batcher was ' +
+        'deleted) and every assertion below is vacuous',
+    ).toBe(true);
+
+    // --- (2) the signal is GATED, and is exactly this contiguous block ----------------
+    // WRONG IMPL KILLED — "fire every flush" (bite-proof #8): dropping the
+    //   `if (snapshotApplied)` gate makes `onHydrated` fire on EVERY flush, so main.ts's
+    //   hydration edge is permanently true from the first flush onwards and residual (d) is
+    //   re-opened in full — a pre-hydration flush would resolve the reseed latch again.
+    //   This is the ONE mutant in this slice that is TEXT-caught only: with the flag ignored,
+    //   main.battle-reseed.test.ts still passes (its signalHydrated() step happens to be
+    //   where the extra fires would land). Recorded as residual (f) in ADR-0130.
+    expect(
+      countCodeOccurrences(flushClosure, RSD17B_SIGNAL_BLOCK),
+      `the flush closure must contain EXACTLY ONE \`${RSD17B_SIGNAL_BLOCK}\` AS CODE. The three ` +
+        'statements are pinned as ONE contiguous block, not as three independent presence ' +
+        'checks: the gate, the CLEAR and the CALL are only correct together. Without the ' +
+        'gate the signal fires on every flush (a permanently-hydrated latch); without the ' +
+        'clear it fires on every flush after the first applied snapshot; without the call ' +
+        'nothing is signalled at all. An optional call (`opts.onHydrated?.()`) deliberately ' +
+        'does NOT satisfy this — the option is REQUIRED so an unwired embedder is a compile ' +
+        'error rather than a silently permanently-armed latch',
+    ).toBe(1);
+
+    // --- (3) ORDER: the signal is delivered BEFORE listeners are notified --------------
+    // WRONG IMPL KILLED — "signal after flushBatch" (bite-proof #9): store.flushBatch() is
+    //   what notifies every batch listener, so a signal fired after it is observed by the
+    //   listeners of the NEXT flush. main.ts's reseed latch would then survive the flush
+    //   that actually completed hydration and re-baseline against a later batch — the
+    //   ordering half of residual (d), invisible to any needle that only checks presence.
+    const signalHits = codeOccurrences(flushClosure, 'opts.onHydrated()');
+    const flushHits = codeOccurrences(flushClosure, 'store.flushBatch()');
+    expect(
+      signalHits.length,
+      'the flush closure must call `opts.onHydrated()` AS CODE exactly once — zero means the ' +
+        'signal is absent (or spelled as an optional call); two means this scan cannot tell ' +
+        'which call it is ordering',
+    ).toBe(1);
+    expect(
+      flushHits.length,
+      'the flush closure must call `store.flushBatch()` AS CODE exactly once — the tail that ' +
+        'notifies every batch listener (carried forward from W-13RE / W-15RSECA)',
+    ).toBe(1);
+    expect(
+      signalHits[0],
+      'opts.onHydrated() must be called BEFORE store.flushBatch() inside the flush closure. ' +
+        'flushBatch() is what notifies the listeners; a signal delivered after it is observed ' +
+        'one flush late, so main.ts`s reseed latch stays armed across the very flush that ' +
+        'completed hydration and silently re-baselines against the next batch instead',
+    ).toBeLessThan(flushHits[0]!);
+
+    // --- (4) SCOPE: the signal is OUTSIDE the stale-build guard ------------------------
+    // The guard body is brace-walked exactly as the W-15RSECA-RECONCILE tooth above derives
+    // it (same spelling, same helper), so the two teeth cannot disagree about the region.
+    // WRONG IMPL KILLED — "signal inside the live guard" (bite-proof #10): a PARKED build
+    //   (current === undefined — the ADR-0182 D13 session-expired / auth-service-unreachable
+    //   terminals) still reaches the flush tail. With the signal inside the guard the armed
+    //   flag survives that flush, and the next unrelated flush announces a hydration that
+    //   never happened — the flag must be consumed unconditionally, exactly like flushBatch.
+    const guardDecl = 'if (live !== undefined) {';
+    const guardHits = codeOccurrences(flushClosure, guardDecl);
+    expect(
+      guardHits.length,
+      `the flush closure must contain EXACTLY ONE \`${guardDecl}\` block AS CODE — the ` +
+        'ADR-0085 C2 stale-build guard the two reconciles live in (connection.ts:149-156). ' +
+        'Zero means the guard was deleted or re-spelled (see connection.test.ts:3859-3864 for ' +
+        'why `current === undefined` is the one spelling that must NOT be used); two means ' +
+        'this scan cannot tell which block it is judging',
+    ).toBe(1);
+    const guardBody = braceBodyAt(flushClosure, guardHits[0]! + guardDecl.length - 1);
+    expect(
+      includesAsCode(guardBody, 'store.reconcileBattlesFromView('),
+      'ANTI-VACUITY: the brace-walked guard body must still contain the battle reconcile — if ' +
+        'it does not, the walk bound the wrong block and the ban below passes for free',
+    ).toBe(true);
+    expect(
+      countCodeOccurrences(guardBody, 'opts.onHydrated()'),
+      'opts.onHydrated() must NOT appear inside the `if (live !== undefined)` block — it is ' +
+        'consumed UNCONDITIONALLY at the tail of the flush closure, alongside flushBatch(). ' +
+        'Inside the guard, a flush that happens while no live connection exists leaves ' +
+        '`snapshotApplied` armed, and a LATER flush then reports a hydration that never ' +
+        'happened. (The same reasoning the flushBatch ban in W-15RSECA-RECONCILE states.)',
+    ).toBe(0);
+
+    // --- (5) THE WRITERS, enumerated whole-file ---------------------------------------
+    // WRONG IMPL KILLED — "a second writer": a second `snapshotApplied = true;` (e.g. also
+    //   armed from `.onConnect`, or from a row handler) announces hydration before the
+    //   snapshot has applied; a second clear silently disarms it before the flush that
+    //   should consume it. The count is asserted WITH its breakdown (the M21b-2 `current =`
+    //   idiom at :2953-2961) so it can never be "fixed" by raising the number.
+    expect(
+      countCodeOccurrences(squashed, 'opts.onHydrated()'),
+      'connection.ts must call `opts.onHydrated()` from EXACTLY ONE site AS CODE — the ' +
+        'batcher flush closure. A second call site is a second, ungated hydration edge that ' +
+        'no region-bounded assertion in this block can see',
+    ).toBe(1);
+    expect(
+      countCodeOccurrences(squashed, 'snapshotApplied = true;'),
+      '`snapshotApplied = true;` must occur EXACTLY once AS CODE — the arm site inside ' +
+        '.onApplied. A second arm (from .onConnect, or from a row handler) announces a ' +
+        'hydration before the snapshot has applied, which is the delivery-model bug this ' +
+        'whole signal exists to remove',
+    ).toBe(1);
+    expect(
+      countCodeOccurrences(squashed, 'let snapshotApplied = false;'),
+      '`let snapshotApplied = false;` must occur EXACTLY once AS CODE — ONE declaration, at ' +
+        'connect() scope. The flag has to survive from the applied snapshot to the NEXT ' +
+        'flush and to serve every rebuild through the ONE shared batcher (ADR-0085 C2)',
+    ).toBe(1);
+    expect(
+      countCodeOccurrences(squashed, 'snapshotApplied = false;'),
+      '`snapshotApplied = false;` must occur EXACTLY twice AS CODE, and the breakdown is: (1) ' +
+        'the `let snapshotApplied = false;` DECLARATION (whose text contains this needle), ' +
+        'and (2) the ONE clear inside the flush-closure signal block pinned above. A THIRD ' +
+        'occurrence is an extra clear that disarms the flag before the flush that should ' +
+        'consume it. If this reds, re-derive the two sites — never raise the number',
+    ).toBe(2);
+    expect(
+      countCodeOccurrences(flushClosure, 'let snapshotApplied'),
+      'the flag must NOT be declared inside the flush closure — a per-flush `let` is `false` ' +
+        'on entry every time, so the gate never opens and `onHydrated` is never called. (tsc ' +
+        'also rejects the arm site in that shape, but the point of this line is that the ' +
+        'failure would otherwise be a SILENT no-op if the arm were moved with it)',
+    ).toBe(0);
+
+    // --- (6) the ARM is inside .onApplied and AFTER the stale guard --------------------
+    // WRONG IMPL KILLED — "arm before the stale guard" (bite-proof, plan §1a.4): a
+    //   SUPERSEDED build's applied callback would arm the shared flag, and the LIVE build's
+    //   next flush would consume it — announcing hydration for a snapshot that belongs to a
+    //   dead socket. Region-bounded because a file-wide presence check cannot see placement.
+    const applied = onAppliedRegion(src);
+    expect(
+      includesAsCode(applied, 'if (stale()) return;'),
+      'ANTI-VACUITY: the .onApplied region must contain the stale guard AS CODE — if it does ' +
+        'not, the region is mis-anchored and the ordering assertion below is meaningless',
+    ).toBe(true);
+    const staleHits = codeOccurrences(applied, 'if (stale()) return;');
+    expect(
+      staleHits.length,
+      'the .onApplied callback must contain EXACTLY ONE `if (stale()) return;` — two would ' +
+        'make "the arm comes after the guard" ambiguous about which guard it is measured from',
+    ).toBe(1);
+    const armHits = codeOccurrences(applied, 'snapshotApplied = true;');
+    expect(
+      armHits.length,
+      'the ONE `snapshotApplied = true;` must live INSIDE the .onApplied callback AS CODE — ' +
+        'the only place a live socket AND an applied snapshot are both proven (the same ' +
+        'reasoning the `state = onConnected(state)` membership pin at :2999 states)',
+    ).toBe(1);
+    expect(
+      armHits[0],
+      'the `snapshotApplied = true;` arm must come AFTER `if (stale()) return;` inside ' +
+        '.onApplied. A superseded build that arms the SHARED flag hands a bogus hydration ' +
+        'edge to the live build`s next flush — the ADR-0085 C2 hazard, in the one place the ' +
+        'guard is the only thing separating the two builds',
+    ).toBeGreaterThan(staleHits[0]!);
+  });
+});
+
+describe('★ connection.ts wiring (17r-b / ADR-0130 residual e): the reconnect callback carries THIS connection`s identity', () => {
+  it('★★ RSD17B-CARRIES BITES: opts.onReconnect is called with `identity` from inside .onApplied, from exactly one site, and the option types say so', () => {
+    // THE BUG THIS CLOSES (ADR-0130 residual (e), disclosed 2026-08-22 and tracked nowhere):
+    // connection.ts:659 reassigns its module-local `identity` on EVERY connect — a reconnect
+    // can mint a BRAND NEW anon identity (`continueAnonymously()` after a session-expired
+    // terminal, or the nh4 token-rejection suppression path, both of which build with
+    // `hadSession` already true). `opts.onReconnect()` passed NO identity, and main.ts only
+    // assigns its own `identity` in `onReady`, so after such a rotation every identity-gated
+    // listener in main.ts is querying the store with an identity that owns no rows.
+    //
+    // ⚠ THIS IS TEST-CARRIED, NOT TYPE-CARRIED (plan §7, reviewer m1). TypeScript parameter
+    // BIVARIANCE means a reverted `onReconnect: () => {}` handler in main.ts still typechecks
+    // against `(identity: string) => void`, and an argless `opts.onReconnect()` call would
+    // also typecheck against a widened signature. The compiler will NOT catch a revert of
+    // residual (e); this tooth and the runtime RSD17B-IDROT / RSD17B-ORPHAN teeth in
+    // main.battle-reseed.test.ts are the whole guard.
+    const src = readConnectionTs();
+    const squashed = squashedStrippedConnectionTs();
+
+    // --- the call site, as one contiguous statement -----------------------------------
+    // WRONG IMPL KILLED (bite-proof #7): `opts.onReconnect()` with no argument — the exact
+    //   shape that shipped before this slice, and the one a merge conflict resolves back to.
+    expect(
+      countCodeOccurrences(squashed, 'if (reconnecting) opts.onReconnect(identity);'),
+      'connection.ts must notify the caller with `if (reconnecting) opts.onReconnect(identity);` ' +
+        'AS CODE, exactly once — `identity` is the module-local assigned at connection.ts:659 ' +
+        'from THIS connection`s SDK identity. Pinned as the whole statement (gate + call) ' +
+        'because the pair is what makes the reconnect branch distinguishable from the ' +
+        'first-connect one',
+    ).toBe(1);
+
+    const applied = onAppliedRegion(src);
+    expect(
+      includesAsCode(applied, 'if (stale()) return;'),
+      'ANTI-VACUITY: the .onApplied region must contain the stale guard AS CODE — if it does ' +
+        'not, the region is mis-anchored and the membership assertion below is vacuous',
+    ).toBe(true);
+    expect(
+      includesAsCode(applied, 'if (reconnecting) opts.onReconnect(identity);'),
+      'the reconnect notification must stay INSIDE the .onApplied callback AS CODE — the link ' +
+        'is fully usable only once the initial snapshot applies, and moving the notify to ' +
+        '.onConnect would hand main.ts an identity for a connection whose subscriptions have ' +
+        'not been applied',
+    ).toBe(true);
+
+    // --- exactly one call site, and never the argless spelling -------------------------
+    expect(
+      countCodeOccurrences(squashed, 'opts.onReconnect('),
+      'connection.ts must call `opts.onReconnect(` from EXACTLY ONE site AS CODE. A second ' +
+        'notify is a second reconnect edge with its own (possibly stale) identity argument',
+    ).toBe(1);
+    expect(
+      countCodeOccurrences(squashed, 'opts.onReconnect()'),
+      'the ARGLESS `opts.onReconnect()` must not appear — it is the pre-17r-b shape, and TS ' +
+        'parameter bivariance means neither its call site nor a reverted main.ts handler is ' +
+        'a compile error. A caller that keeps its old identity across a rotation deafens ' +
+        'every identity-gated listener it owns (ADR-0130 residual (e))',
+    ).toBe(0);
+
+    // --- the option types -------------------------------------------------------------
+    // Scoped to the ConnectionOptions interface BODY (brace-walked, code-aware) rather than
+    // file-wide: a member declared on some other interface, or parked in a decoy string,
+    // must not satisfy these.
+    const iface = uniqueCodeBraceBody(squashed, 'export interface ConnectionOptions {');
+    expect(
+      includesAsCode(iface, 'readonly onReady: (identity: string) => void;'),
+      'ANTI-VACUITY: the ConnectionOptions body must still declare the sibling ' +
+        '`readonly onReady: (identity: string) => void;` — it proves this region is the right ' +
+        'interface AND calibrates the exact needle SHAPE the two assertions below require, so ' +
+        'a red there is a missing member and not an unachievable format',
+    ).toBe(true);
+    expect(
+      countCodeOccurrences(iface, 'readonly onReconnect: (identity: string) => void;'),
+      'ConnectionOptions must declare `readonly onReconnect: (identity: string) => void;` ' +
+        'EXACTLY once — same shape as its onReady sibling. The parameter is not decoration: ' +
+        'it is the ONLY channel through which main.ts can learn that the reconnect minted a ' +
+        'new identity',
+    ).toBe(1);
+    expect(
+      countCodeOccurrences(iface, 'readonly onHydrated: () => void;'),
+      'ConnectionOptions must declare `readonly onHydrated: () => void;` EXACTLY once, and ' +
+        'REQUIRED — an embedder that forgets to wire it must fail at COMPILE time. Optional ' +
+        '(`onHydrated?:`) would ship a latch that is armed on every reconnect and never ' +
+        'resolved: the player`s battle events stop entirely, silently, forever',
+    ).toBe(1);
+    expect(
+      countCodeOccurrences(iface, 'onHydrated?'),
+      'ConnectionOptions must NOT declare onHydrated as OPTIONAL. The whole point of making ' +
+        'it required is that an unwired embedder is a compile error rather than a ' +
+        'permanently-armed reseed latch (plan §1a.2)',
+    ).toBe(0);
+    expect(
+      countCodeOccurrences(iface, 'onReconnect: () => void;'),
+      'the pre-17r-b argless declaration `onReconnect: () => void;` must be GONE from ' +
+        'ConnectionOptions — leaving it (or restoring it) is residual (e) re-opened, and ' +
+        'bivariance means tsc will not tell you',
+    ).toBe(0);
+  });
+});
