@@ -19,7 +19,7 @@
 //   RB37-RATIONALE-DURABLE — static: the annotation and its rationale are both durably present.
 //
 // THE MEASUREMENT THAT DECIDES THE DESIGN (red-team, rb-37 planning). A bypass wraps every it()
-// body in try{}catch{} and never touches line 492: the target file's own three `afterAll` coverage
+// body in try{}catch{} and never touches the suite annotation: the file's own three `afterAll` coverage
 // floors (`checked`/`repeatChecked`/`reopenChecked` === 16) then fail as SUITE-level errors that
 // `numFailedTests` cannot see — the JSON report reads `numTotalTests=116 numFailedTests=0
 // numPassedTests=116`, green by every counter, while `success` is FALSE and the child exits 1.
@@ -37,7 +37,7 @@
 // unrelated reason).
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { homedir, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterAll, describe, expect, it } from 'vitest';
@@ -115,15 +115,11 @@ function buildChildEnv(): Record<string, string | undefined> {
   delete env.NODE_V8_COVERAGE;
   env.MR_RB37_CHILD = '1';
   env.FORCE_COLOR = '0';
-  const nodeBinDir = path.join(
-    process.env.HOME ?? homedir(),
-    '.asdf',
-    'installs',
-    'nodejs',
-    '24.13.1',
-    'bin',
-  );
-  env.PATH = `${nodeBinDir}:${env.PATH ?? ''}`;
+  // `process.execPath`, NOT a hardcoded asdf install path: the vitest shim is `#!/usr/bin/env node`
+  // and this harness's default PATH resolves `node` to v18, which cannot load the project config.
+  // The interpreter running THIS test is by construction the right one, so deriving the directory
+  // from it is correct on any machine and survives the next Node bump with no edit here.
+  env.PATH = `${path.dirname(process.execPath)}:${env.PATH ?? ''}`;
   return env;
 }
 
@@ -261,7 +257,10 @@ it('RB37-CTRL-B', async () => {
   return { dir, configPath };
 }
 
-describe('rb-37 proof-of-teeth — overlayA11yWiring.test.ts under vitest --sequence.concurrent', () => {
+// SEQUENTIAL for the same reason the file under test is, plus one of its own: these arms spawn
+// child vitest processes, and running them concurrently would put three runners on the box at
+// once. The spec that proves concurrency safety should not be the one that assumes it.
+describe.sequential('rb-37 proof-of-teeth — overlayA11yWiring.test.ts under vitest --sequence.concurrent', () => {
   it('RB37-FLAG-CONTROL-NEGATIVE BITES: without the flag, a broken spawn/flag/harness reports the wrong control census, which would otherwise silently discredit the target arm', () => {
     const fixture = writeControlFixture();
     try {
@@ -315,13 +314,13 @@ describe('rb-37 proof-of-teeth — overlayA11yWiring.test.ts under vitest --sequ
     armsRun += 1;
   }, 90000);
 
-  it('RB37-CONCURRENT-SAFE BITES: overlayA11yWiring.test.ts must survive vitest run --sequence.concurrent wholly green — a racy shared-state describe() reds ~76/116 (MEASURED at origin/master@318eb70); only describe.sequential( at :492 fixes it, and a try/catch-every-it() bypass is caught by the exit-status + success clauses below, never the counters alone', () => {
+  it('RB37-CONCURRENT-SAFE BITES: overlayA11yWiring.test.ts must survive vitest run --sequence.concurrent wholly green — a racy shared-state describe() reds ~76/116 (MEASURED at origin/master@318eb70); only the .sequential annotation on its single top-level describe fixes it, and a try/catch-every-it() bypass is caught by the exit-status + success clauses below, never the counters alone', () => {
     const { result, report } = runVitest([SEQUENCE_CONCURRENT_FLAG], [TARGET_SPEC_RELATIVE], {
       spawnTimeoutMs: 180000,
     });
 
     // BOTH load-bearing, asserted BEFORE any counter (see header measurement): a mutant that wraps
-    // every it() body in try{}catch{} and never touches line 492 keeps every assertionResult
+    // every it() body in try{}catch{} and never touches the annotation keeps every assertionResult
     // internally "passed" while the target file's own afterAll coverage floors fail as a
     // SUITE-level error — numFailedTests reads 0 either way, but the child still exits nonzero and
     // report.success is still false. Only these two clauses see that.
@@ -371,9 +370,9 @@ describe('rb-37 proof-of-teeth — overlayA11yWiring.test.ts under vitest --sequ
 
     // Anti-over-strip sanity, asserted BEFORE the real counts: a stripper that blanked the whole
     // file would make describe.sequential( read 0 for the WRONG reason, indistinguishable from a
-    // genuinely missing annotation. `installSentinel` and `afterAll(` are known-present tokens far
-    // from the describe line (target file :464 and :882, the coverage-floor afterAll) that any
-    // correct stripper preserves.
+    // genuinely missing annotation. `installSentinel` (the sentinel factory) and `afterAll(` (the
+    // coverage-floor hook) are known-present tokens far from the annotation that any correct
+    // stripper preserves. NO line numbers: they re-drift on the next edit and nothing reads them.
     expect(commentsStripped).toContain('installSentinel');
     expect(commentsStripped).toContain('afterAll(');
     expect(commentsAndStringsStripped).toContain('installSentinel');
@@ -388,7 +387,7 @@ describe('rb-37 proof-of-teeth — overlayA11yWiring.test.ts under vitest --sequ
     expect(
       sequentialInComments,
       'describe.sequential( must occur EXACTLY ONCE once comments are stripped — the fix turns ' +
-        'the file’s single bare describe( (line 492) into describe.sequential(.',
+        'the file’s single top-level describe into the sequential form.',
     ).toBe(1);
     expect(
       sequentialInBoth,
