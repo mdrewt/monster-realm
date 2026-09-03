@@ -57,6 +57,7 @@ import {
 import { HeldDirections, reissueDir } from './prediction/heldKeys';
 import { type ApplyMove, boundSeq, Predictor } from './prediction/predictor';
 import { TileMap } from './render/map';
+import { motionPreferenceFromWindow } from './render/motionPreference';
 import { RenderResolver } from './render/renderResolver';
 import { installResizeHandler } from './render/resizeWiring';
 import { WorldRenderer } from './render/world';
@@ -237,6 +238,10 @@ const applyMove = apply_move as unknown as ApplyMove;
 let predictor = new Predictor(applyMove, STEP_MS, QUEUE_CAP);
 // Routes own (slide clock) vs remote (interpolation buffer) renders (M8.6b).
 const resolver = new RenderResolver(STEP_MS);
+// A11Y-27: closes render/motionPreference.ts's S7 cross-slice contract. Constructed ONCE
+// (its change listener is page-lifetime by design); `.reduceMotion` is a live getter, so the
+// per-frame read at the resolve() call below re-reads it rather than a boot-time snapshot.
+const motionPreference = motionPreferenceFromWindow();
 // Held movement keys (most-recently-pressed stack) — drives the frame-loop
 // continuation re-issue so a held key keeps walking (M8.6c, ADR-0013).
 const held = new HeldDirections();
@@ -2811,6 +2816,7 @@ async function main(): Promise<void> {
         snapped,
         now,
         currentZoneId: rawMap.zone_id,
+        reduceMotion: motionPreference.reduceMotion,
       });
       // Sticky latch: count ONLY fractional motion from the slide-clock path — the own
       // entity WITH a predicted state (same predicate as RenderResolver's `isOwn`), never
