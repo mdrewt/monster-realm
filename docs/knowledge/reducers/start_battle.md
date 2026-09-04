@@ -5,7 +5,7 @@ slug: reducers/start_battle
 updated: 2026-09-01
 tags: [reducer, spacetimedb, battle]
 abstract: "Start a PvE battle: build BattleMonsters from the player's party and the opponent's party (owned by opponent_identity),…"
-resource: server-module/src/battle.rs#L58
+resource: server-module/src/battle.rs#L61
 source: scripts/okf-export.mjs@server-module/src/battle.rs
 ---
 

@@ -458,8 +458,10 @@ three commitment-OPENING reducers — `propose_trade`, `challenge_pvp`, `accept_
 before any write (PRV1-9), while every reducer acting on an already-open interaction stays
 ungated so live trades/battles/challenges are never force-terminated at request time
 (PRV1-10; `submit_pvp_action` deliberately NOT gated — deadline-forfeit would be de-facto
-force-termination, ADR-0227 D5). PvE `battle::start_battle` and shop `economy::buy`/`sell`
-remain ungated §4.7 targets, deferred with the PRV1-7 crate-wide slice.
+force-termination, ADR-0227 D5). PvE `battle::start_battle`, the dev-only `battle::start_wild_battle`
+and shop `economy::buy`/`sell` were gated by **rb-46** (ADR-0236, residual R-m22-s5-X12 closed) — the
+same wrapper as the first stateful check, proven by native-host execution plus source pins; the scheduler
+grass path (`movement_tick → begin_encounter`) is the remaining disclosed opener (R-rb-46-GRASSPATH).
 
 **m22-s4** (ADR-0226) landed the §5 export: `request_data_export` walks the
 manifest's 17 `exportable: true` tables in manifest order (compile-locked

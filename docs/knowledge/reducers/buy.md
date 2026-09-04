@@ -5,7 +5,7 @@ slug: reducers/buy
 updated: 2026-09-01
 tags: [reducer, spacetimedb, economy]
 abstract: "Buy `qty` units of `item_id` from shop `shop_id`. Server flow (reject-not-clamp, server-priced, atomic): 1. Verify call…"
-resource: server-module/src/economy.rs#L102
+resource: server-module/src/economy.rs#L104
 source: scripts/okf-export.mjs@server-module/src/economy.rs
 ---
 

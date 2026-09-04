@@ -7,6 +7,7 @@
 **Amends:** —
 **Subsystems:** security-authz
 **Extends:** ADR-0225 (S3 right-sized cascade + G5 write isolation; the reciprocal back-link is in ADR-0225's header)
+**Extended-by:** ADR-0236 (rb-46 — the same gate reaches `start_battle`, dev `start_wild_battle`, `buy`, `sell`; residual R-m22-s5-X12 closed)
 **Decision:** S5 gates the three commitment-OPENING reducers with `guards::require_not_deleting`, a caller-only ctx wrapper delegating via `is_pending_deletion` to `should_reject_for_deletion`; already-open reducers stay ungated (PRV1-10).
 
 ---
@@ -183,3 +184,19 @@ ordinary behavioral tests. No new eval scripts.
   force-resolve) is S3b, unshipped — until S3b lands nothing cleans up commitments dangling
   against a deleting account, so this residual's priority rises with issuer activation (exposure
   today is nil: `ALLOWED_ISSUERS` is the fail-closed `.invalid` placeholder).
+
+## Amendment (2026-09-04, rb-46 — residual R-m22-s5-X12 closed)
+
+The "Still-ungated §4.7 targets" bullet above is discharged: rb-46 (ADR-0236) wires the same caller-only
+wrapper — unchanged, still delegating transitively and pinned byte-for-byte here — into PvE
+`battle::start_battle`, the dev-only `battle::start_wild_battle`, and shop `economy::buy` / `economy::sell`,
+each as the first stateful check before any other-party read and every write. Two things this ADR asserted
+have moved and are recorded there rather than rewritten here: D6's premise that "reducer bodies have no
+runtime harness" is stale since rb-41's `native_host_tests` (ADR-0236 D4 proves the new sites by executing
+the reducers, with source pins kept for what execution cannot see), and the crate-wide caller set is no
+longer three — m22-s3b added `ranking::set_profile_name`, rb-46 adds four more, for eight; the "exactly
+three" census in `guards_tests.rs` stays correct as a scope-local claim over `trading.rs` and `pvp.rs`. D5
+(no gate on `submit_pvp_action`) is restated by ADR-0236 D5 and unchanged. rb-46's artifact red-team also
+found that the m22-s5 pins on the `trading.rs` site carry no `#[cfg` / statement-boundary clause (a
+`#[cfg(test)]` attribute on that gate statement would pass them while the wasm shipped ungated); that is a
+registered residual against `trading_tests.rs`, outside rb-46's touches.

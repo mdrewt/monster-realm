@@ -37,9 +37,10 @@ qualified (unshadowable by an import swap) with `?`-propagation (no discarded ve
 D2 call shape; the wrapper body is untouched. A per-file census (`guards_tests.rs`, on the m22-s5
 reducer-body extractor over `battle.rs` and `economy.rs`) asserts the gated SET and a whole-file bare-name
 count of two per file, so gating an already-open battle action (`submit_attack`, `swap_active`, `flee`,
-`use_battle_item`) or a wallet helper (`grant_currency`, `spend_currency`, `consume_one` sit on the
+`use_battle_item`) or a wallet helper (`grant_currency` and `spend_currency` sit on the
 battle-reward and write-back paths — gating them would force-terminate value delivery to a deleting player
-mid-battle, a PRV1-10 break) is a census red, not a judgment call.
+mid-battle, a PRV1-10 break) is a census red, not a judgment call. `consume_one` is on the same paths but
+lives in `inventory.rs`, outside both scanned files; no census here sees it.
 
 ### D2 — Placement: the first STATEFUL check, after every pure input-shape check
 
@@ -79,16 +80,25 @@ row-exists-keyed fake, and a sender-keyed fake), `REJECT_DELETION_GATED` in the 
 built with the shipped pure constructors (`new_account_row` → `requested_deletion` → `terminal_account`), so
 a test can never assemble a state the module itself cannot.
 
-Four facts execution cannot observe keep source pins (one helper per reducer file, the pvp_tests
-`m22s5_assert_deletion_gate_pinned` shape): the log-tag string (a wrong tag misattributes the reject and is
-behaviorally invisible), the fully-qualified path (an import-shadowed call behaves identically), ordering
-relative to a write the fixture never reaches, and — the plan red-team's critical finding — a
-`#[cfg(test)]` / `#[cfg(debug_assertions)]` attribute on the gate statement, under which every test executes
-the gate while the published wasm drops it. The pins therefore also require the character preceding the gate
-statement to be a statement boundary (`;` or `}`), ban `#[` and `cfg!(` inside the gated body, and count the
-BARE wrapper name exactly once per body (a `require_not_deleting_for(ctx, opponent_identity)` sibling would
-be a third-party gate the behavioral tests cannot distinguish from the caller gate, because the native
-host's dummy sender is the all-zero identity — the only admissible non-self opponent).
+Execution cannot observe several facts, which keep source pins. The log-tag string (a wrong tag
+misattributes the reject and is behaviorally invisible) is pinned in the `guards_tests.rs` census — the only
+string-bearing view, where the site must also sit inside its own reducer's declaration region so a tag SWAP
+between `buy` and `sell` is caught. The per-reducer helpers (`rb46_assert_gate_pinned`, one per reducer
+file, the pvp_tests `m22s5_assert_deletion_gate_pinned` shape) pin the fully-qualified path (an
+import-shadowed call behaves identically), the `?`-propagation, ordering relative to a write the fixture
+never reaches, and — the plan red-team's critical finding — a `#[cfg(test)]` / `#[cfg(debug_assertions)]`
+attribute on the gate statement, under which every test executes the gate while the published wasm drops
+it: the character preceding the gate statement must be a statement boundary (`;` or `}`), `#[` and `cfg!(`
+are banned inside the gated body, and the BARE wrapper name is counted exactly once per body (a
+`require_not_deleting_for(ctx, opponent_identity)` sibling would be a third-party gate the behavioral tests
+cannot distinguish from the caller gate, because the native host's dummy sender is the all-zero identity —
+the only admissible non-self opponent). The artifact red-team then measured that none of this constrains the
+region ABOVE the gate: a depth-0 `if me != WILD_IDENTITY { return ungated_twin(..) }` (keyed on the fixed
+native sender) or a file-scope `#[cfg(debug_assertions)]` const steering a `return` around the gate leaves
+every statement-level pin intact while no real client ever reaches it. The helpers therefore also require
+every early exit above the gate to be a rejection (the count of `return` in the prefix equals the count of
+`return Err(e);`), and the behavioral tests seed a STRANGER's PendingDeletion row throughout, so a
+table-keyed gate ("reject if anyone is deleting") fails the admitted states.
 
 ### D5 — Anti-decisions (restated so the successor does not re-open them)
 
@@ -133,11 +143,23 @@ debug-asserts state legality, so the shape is unconstructible without an `Accoun
   syscall aborts the process. The behavioral RED is therefore "a deletion-gated caller is admitted past every
   caller-standing check into content lookup" — not "the wallet was debited" — and the gate-after-write
   mutant is owned by the source pins, not the execution tests.
-- Proof-of-teeth: a 17-row mutant register (drop each call site; discard the Result; wrong tag; gate after
+- Known limit, the fixed native sender: `ReducerContext::__dummy()` always answers `ctx.sender()` with the
+  all-zero identity, so an implementation that branches on `me == WILD_IDENTITY` is observationally
+  invisible to execution. The bypass direction (skip the gate for real clients) is owned by the source pins
+  (the early-exit clause and the bare-name count); the opposite direction (reject every real client) is a
+  total outage visible to the first e2e or playtest, not a privacy defect.
+- **Residuals (disclosed; reviewer-checklist class under ADR-0224 — no new scanner):** a `macro_rules!`
+  that expands to a conditional early return carries no textual `return` and evades the early-exit clause;
+  and a `lib.rs` `#[cfg(target_arch = "wasm32")]`-selected `mod guards` swap would substitute the wrapper
+  for the wasm build only while every pin on the real `guards.rs` stays green — `lib.rs` is outside this
+  slice's touches, and such an edit is visible in the touches-delta audit.
+- Proof-of-teeth: a 20-row mutant register (drop each call site; discard the Result; wrong tag; gate after
   the first write; always-false block; gate an already-open reducer; gate a wallet helper; import-shadow;
-  duplicate; decoy comment; constant reject; `#[cfg(test)]` on the statement; a third-party sibling;
-  a token-swallowing macro) executed one mutant at a time with the designated failing test recorded per row
-  in the slice acceptance ledger (`memory/projects/gates/rb-46.gates.md`, gate X5), never in this ADR body.
+  duplicate; decoy comment; constant reject; `#[cfg(test)]` on the statement; a third-party sibling; a
+  token-swallowing macro; a sender-keyed early-return twin; a cfg-const early-return twin; a
+  row-exists-keyed predicate; a memoised verdict) executed one mutant at a time with the designated failing
+  test recorded per row in the slice acceptance ledger (`memory/projects/gates/rb-46.gates.md`, gate X5),
+  never in this ADR body.
 
 ## Confirmation
 
