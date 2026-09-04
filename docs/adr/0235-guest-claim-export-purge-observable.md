@@ -7,7 +7,7 @@
 **Amends:** —
 **Extends:** ADR-0220 (the claim-time purge helper), ADR-0180 D6 (`mr_log` as the sole new-emission point), ADR-0185 (an `mr_log` line at a domain call site), ADR-0224 (proof-of-teeth as ordinary tests)
 **Subsystems:** security-authz, ci-gates
-**Decision:** `purge_export_bundles` returns the number of chunks it deleted; `complete_guest_claim` binds that count and emits one `guest_claim_export_purge` line through `observability::mr_log` as its terminal statement, so the purge is observable at the ceremony that owns it.
+**Decision:** `purge_export_bundles` returns its deleted-chunk count; `complete_guest_claim` binds it and emits one `guest_claim_export_purge` line via `observability::mr_log` as its terminal statement, making the purge observable.
 
 ## Context and problem statement
 
