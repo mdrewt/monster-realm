@@ -640,7 +640,8 @@ function escCell(s) {
 // ---------------------------------------------------------------------------
 const ADR_BAND_MIN = 1;
 const ADR_BAND_MAX = 999;
-const ADR_BAND_LABEL = '0001-0999';
+// Derived, not spelled: a hand-written label drifts silently when the bounds move.
+const ADR_BAND_LABEL = `${String(ADR_BAND_MIN).padStart(4, '0')}-${String(ADR_BAND_MAX).padStart(4, '0')}`;
 
 /** Pure: { nextId, highestId } over collected id strings; empty corpus -> 0001. */
 function deriveNextFree(ids) {
@@ -861,23 +862,28 @@ function main() {
   for (const entry of designCorpus.entries) {
     allIds.add(entry.id); // "H-0002", "H-0003", ..., "H-0055", "H-0056", "H-0057"
   }
+  // Band guard (rb-43): every COLLECTED id must sit inside the project band.
+  // It runs BEFORE parseAdr() opens a single file, so an out-of-band entry is
+  // reported with the actionable band message rather than whatever readFileSync
+  // throws on it -- and, being ahead of generateDigest(), the --check compare and
+  // the writeFileSync alike, it cannot clobber the file it is about to reject.
+  const bandOffenders = idsOutsideBand(adrEntries);
+  if (bandOffenders.length > 0) {
+    for (const entry of bandOffenders) {
+      console.error(
+        `adr-digest ERROR: ${entry.id}: collected from "${basename(entry.file)}", outside the ` +
+          `project ADR band ${ADR_BAND_LABEL} -- a non-ADR markdown file in this directory ` +
+          'poisons the derived next-free number. Rename or move it.',
+      );
+    }
+    process.exit(1);
+  }
+
   const adrs = adrEntries.map(({ id, file }) => parseAdr(id, file));
 
   // Validate all ADRs; collect errors
   const errors = [];
   const warnings = [];
-
-  // Band guard (rb-43): every COLLECTED id must sit inside the project band.
-  // Pushed into `errors` so it fails loud BEFORE generateDigest() and before
-  // either the --check compare or the writeFileSync -- a guard that clobbers the
-  // target and only then exits 1 has already destroyed the file it rejected.
-  for (const entry of idsOutsideBand(adrEntries)) {
-    errors.push(
-      `${entry.id}: collected from "${basename(entry.file)}", outside the project ADR band ` +
-        `${ADR_BAND_LABEL} -- a non-ADR markdown file in this directory poisons the derived ` +
-        'next-free number. Rename or move it.',
-    );
-  }
   for (const adr of adrs) {
     const issues = validateAdr(adr, allIds);
     for (const issue of issues) {

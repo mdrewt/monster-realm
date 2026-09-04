@@ -20,9 +20,13 @@
 //   5. docs/adr/README.md hand-maintains no ADR number at all, and its
 //      next-free paragraph still points at DIGEST.md (moved, not deleted).
 //
-// EXPECTED STATE AT RED: scripts/adr-digest.mjs renders no such line and has no
-// band guard; docs/adr/README.md:16 still carries a hand-maintained four-digit
-// number. All six tests fail. The tester does not implement the feature.
+// RED CHECKPOINT — recorded history, NOT a live claim. At commit d1edade
+// (2026-09-04), before the implementation landed, scripts/adr-digest.mjs
+// rendered no such line and had no band guard, and docs/adr/README.md still
+// carried a hand-maintained four-digit number in its "Resolving a reference"
+// paragraph; all six tests failed there, each for its own reason. The generator
+// now ships the feature and this suite is green — do not read the paragraph
+// above as a description of the current tree, and do not chase README:16.
 //
 // SAFETY — every spawn passes BOTH --adr-dir AND --out into a mkdtemp dir, and
 // `--adr-dir` IS THE LOAD-BEARING ONE: DIGEST_PATH defaults to
@@ -271,6 +275,13 @@ function nextFreeParagraphsNamingDigest(text) {
  * invisible to the two paragraph predicates; this one still sees the digit.
  * The >= 0100 floor is what lets README keep citing the harness block and the
  * collision note.
+ *
+ * A plausible YEAR (19xx/20xx) is not an ADR-number claim and is excluded:
+ * "last restructured in 2026 by slice rb-43" is an innocent README edit, and
+ * reporting it would red `just test` under a message about a hand-maintained
+ * ADR number that is not there. Project ids stop at 0999, so no real next-free
+ * number can hide behind this exclusion. Everything else stays as-is — this is
+ * the leg that kills the "Next available number: **`0236`**" reword cheat.
  */
 function loudDigitsOutsideCitations(text) {
   const stripped = text
@@ -280,7 +291,9 @@ function loudDigitsOutsideCitations(text) {
     .replace(/[0-9]{4}-[a-z0-9-]*\.md/g, ' ');
   const found = new Set();
   for (const match of stripped.matchAll(/[0-9]{4}/g)) {
-    if (Number(match[0]) >= 100) found.add(match[0]);
+    const token = match[0];
+    if (/^(19|20)[0-9]{2}$/.test(token)) continue;
+    if (Number(token) >= 100) found.add(token);
   }
   return [...found].sort();
 }
@@ -801,6 +814,20 @@ test('X6 README states no hand-maintained next-free number and still names DIGES
       namesDigest: 0,
       loudDigits: [],
     },
+    {
+      label: 'clean: a bare year is not an ADR-number claim',
+      text: 'This catalog was last restructured in 2026 by slice rb-43.',
+      stale: 0,
+      namesDigest: 0,
+      loudDigits: [],
+    },
+    {
+      label: 'mixed: the year is excluded, the bold-code ADR number beside it is not',
+      text: 'Last restructured in 2026 by slice rb-43; start your new ADR at **`0236`**.',
+      stale: 0,
+      namesDigest: 0,
+      loudDigits: ['0236'],
+    },
   ];
 
   const controlObserved = controls.map((control) => ({
@@ -825,11 +852,12 @@ test('X6 README states no hand-maintained next-free number and still names DIGES
   // --- The real file.
   const readme = readFileSync(join(REAL_ADR_DIR, 'README.md'), 'utf8');
   const stale = staleNextFreeParagraphs(readme);
+  const loud = loudDigitsOutsideCitations(readme);
   assert.deepEqual(
     {
       staleParagraphs: stale.length,
       paragraphsNamingDigest: nextFreeParagraphsNamingDigest(readme).length,
-      loudDigits: loudDigitsOutsideCitations(readme),
+      loudDigits: loud,
       mentionsDigestFile: readme.includes('DIGEST.md'),
     },
     {
@@ -838,8 +866,9 @@ test('X6 README states no hand-maintained next-free number and still names DIGES
       loudDigits: [],
       mentionsDigestFile: true,
     },
-    'X6: docs/adr/README.md must hand-maintain no ADR number (loudDigits empty), and exactly ' +
-      'ONE paragraph must both mention the next-free number and name DIGEST.md — deleting ' +
-      `the clause is not a fix. Offending paragraph(s):\n${stale.join('\n---\n')}`,
+    'X6: docs/adr/README.md must hand-maintain no ADR number, and exactly ONE paragraph must ' +
+      'both mention the next-free number and name DIGEST.md — deleting the clause is not a ' +
+      `fix. Un-cited four-digit numbers found (years excluded): ${loud.join(', ') || '(none)'}. ` +
+      `Offending paragraph(s):\n${stale.join('\n---\n') || '(none)'}`,
   );
 });

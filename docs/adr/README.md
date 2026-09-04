@@ -45,10 +45,11 @@ duplicate table here.
 
 Two things `DIGEST.md` does not render, so they stay above: the two-location
 navigation rules and the numbering-collision note. It also does not render
-**self-amendments** — ADRs that carry an appended `## Amendment` section in their
-own body instead of a separate amending record, so no `Amended-by:` header points
-at them and the original decision text survives as the historical record. Grep
-`docs/adr/` for `## Amendment` rather than trusting any list of them here.
+**appended `## Amendment` sections** — an ADR whose body carries one keeps its
+original decision text above it as the historical record. A *self*-amendment adds
+no `Amended-by:` header of its own, so the header alone does not tell you whether
+a body amendment exists; several ADRs have both. Grep `docs/adr/` for
+`## Amendment` rather than trusting any list of them here.
 
 See also [`template.md`](./template.md) (the MADR template) and
 `../validation-findings.md` (empirical Tier-1 results).

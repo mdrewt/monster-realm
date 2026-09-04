@@ -141,7 +141,8 @@ summary-parsing block (ADR-0224 forbids a new eval or a new clause in an
 existing one, so an ordinary test is the sanctioned proof).
 
 **Why.** The hand-maintained `Next free number` in README had drifted 51 numbers
-stale (it read `0184` while the directory ran to 0235) and nothing gated it. The
+behind the top of the corpus (it read `0184` while the directory ran to `0235`;
+as a *next-free* value it was 52 off) and nothing gated it. The
 README's own ⚠ blockquote had already named the fix — "deriving it in the digest
 generator is a known follow-up" — and that blockquote is now deleted, since the
 defect it described no longer exists.
@@ -157,17 +158,37 @@ defect it described no longer exists.
 - The supervisor ledger (`mr-state.json`, key `.adr_next_free`) remains
   authoritative whenever a number has been reserved for an in-flight slice; it
   is ahead of the rendered line by construction.
-- A band guard is what keeps the number honest: `collectAdrIds` deliberately
-  keeps a loose four-digit-prefix filename filter, so a stray non-ADR markdown
-  file (a date-named retro, a five-digit note) would otherwise be collected and
-  poison the maximum. Every collected id — not just the maximum — must sit
-  inside the project band, in generate AND in `--check` mode, and the failure
-  fires before any write.
+- A band guard narrows, but does not close, the filename namespace.
+  `collectAdrIds` deliberately keeps a loose four-digit-prefix filter, so a
+  date-named retro (`2026-…`) or a five-digit note (`10000-…`) IS collected; the
+  guard rejects every collected id outside the band — not just the maximum — in
+  generate AND in `--check` mode, before any file is opened and before any write.
+  What it does NOT catch, measured: a prefix that truncates back INTO the band
+  (`02361-…` collects as `0236`), a duplicate id (two files may both claim
+  `0236` and the digest renders both rows without complaint), a filename prefix
+  that disagrees with the file's own `# ADR-NNNN` heading, and a real ADR the
+  filter silently MISSES (`.MD` casing, or a nested subdirectory — `readdir` is
+  not recursive), which under-reports the maximum. Each of those still yields a
+  wrong number with green CI. They are pre-existing properties of the collector
+  that this amendment makes load-bearing rather than cosmetic, and they are
+  filed as residuals rather than fixed here.
+- The band is not exhaustion-aware. At a corpus maximum of `0999` the rendered
+  value would be `1000`, which the guard itself then refuses to admit — the
+  digest would name a number that cannot be minted. That is ~760 ADRs away and
+  is deliberately left unhandled rather than speculatively coded.
+- The `just test` block that runs the new suite has no tooth on its OWN wiring:
+  deleting that block is CI-clean, and the suite would then gate nothing. The
+  obvious remedy — a check whose only purpose is proving another check has not
+  decayed — is the pattern ADR-0224 retires by name, so it is disclosed here
+  instead of built.
 
-**Residuals closed.** This closes `R-rb-26-X11-adr-readme-next-free`. Two
+**Residuals closed.** This closes `R-rb-26-X11-adr-readme-next-free`. Three
 escalation records that recorded the defect as OPEN are hereby discharged:
-`docs/adr/0202-obsolete-residual-prose-corrected.md:314` and
-`docs/adr/0223-g6-policy-decisions-recorded-once-in-0208.md:169`. Those files are
+`docs/adr/0202-obsolete-residual-prose-corrected.md:314`,
+`docs/adr/0223-g6-policy-decisions-recorded-once-in-0208.md:169`, and
+`docs/adr/0166-pvp-server-guard-parity.md:234` (R8, which named the same stale
+line and noted it was "gated by nothing"; its `README.md:16` citation now
+resolves to the resolution rule, the next-free clause having moved). Those files are
 append-only record and were deliberately NOT edited; this section is the
 forward-dated correction.
 
