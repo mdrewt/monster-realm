@@ -198,10 +198,16 @@ memoise their first answer in a per-type `OnceLock`; a process-wide lock seriali
 plain `cargo test` — nextest, which every `just` gate runs, gives each test its own process, so CI
 never exercises that lock. Three naming facts are load-bearing: the module name ends in `tests` (the
 `accounts_tests.rs` mod census exempts only `*tests` names), the file name ends in `_tests.rs` (what
-the cross-file eval scanners key on), and the `mod` line carries `#[cfg(test)]` (what
-monster-privacy's `[SCOPE]` clause requires) — and since `just ci` never compiles this module for
-wasm, that `#[cfg(test)]` is what keeps the ten symbols out of the published module (evidenced by a
-`just build` run in this slice). This is the first `unsafe` code in `server-module/src`.
+the cross-file eval scanners key on), and the `mod` line carries `#[cfg(test)]`. What keeps the ten
+symbols out of the published module is the COMPILER — any non-test reference to the module fails
+the publish build with E0433 (MEASURED by the security audit; `just build` was run in this slice) —
+not a gate: monster-privacy's `[SCOPE]` clause first accepts the literal `#[cfg(test)]` anywhere in
+the excluded file's RAW text, prose included, so a test file that mentions the attribute
+self-certifies (18 pre-existing `*_tests.rs` files do), and its parent-declaration branch accepts
+any such literal within 160 characters above the `mod` line, so an adjacent gated module vouches
+for its neighbour (both MEASURED; the eval is outside touches, recorded as a follow-up). The three
+rb-41 files deliberately never spell the attribute in prose, so nothing here self-certifies. This
+is the first `unsafe` code in `server-module/src`.
 
 **DELETED from `evals/guest-claim-integrity.eval.mjs`** — ADR-0224 amendment 1 makes migration mean
 deletion in the SAME slice: the ACCESSOR-REACH leg of the exists half of `[G6/correspondence]`

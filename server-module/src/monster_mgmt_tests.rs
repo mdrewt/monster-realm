@@ -3,8 +3,10 @@
 //! (the ADR-0222 known-limit 2 residual, closed by the ADR-0224 migration to a
 //! native host).
 //!
-//! Declared from `monster_mgmt.rs` as:
-//!   `#[cfg(test)] #[path = "monster_mgmt_tests.rs"] mod monster_mgmt_tests;`
+//! Declared from `monster_mgmt.rs` as a cfg(test)
+//! `#[path = "monster_mgmt_tests.rs"] mod monster_mgmt_tests;` (the attribute is
+//! not spelled here on purpose — see native_host_tests.rs on the
+//! monster-privacy `[SCOPE]` raw-text branch)
 //! so `super` resolves to the `monster_mgmt` module (this file uses absolute
 //! `crate::` paths throughout, so nothing here depends on that resolution).
 //!

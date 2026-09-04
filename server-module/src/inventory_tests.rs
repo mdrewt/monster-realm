@@ -3,8 +3,9 @@
 //! ADR-0222 known-limit 2 residual, closed by the ADR-0224 migration to a
 //! native host).
 //!
-//! Declared from `inventory.rs` as:
-//!   `#[cfg(test)] #[path = "inventory_tests.rs"] mod inventory_tests;`
+//! Declared from `inventory.rs` as a cfg(test) `#[path = "inventory_tests.rs"]
+//! mod inventory_tests;` (the attribute is not spelled here on purpose — see
+//! native_host_tests.rs on the monster-privacy `[SCOPE]` raw-text branch)
 //! so `super` resolves to the `inventory` module (this file uses absolute
 //! `crate::` paths throughout, so nothing here depends on that resolution).
 //!
