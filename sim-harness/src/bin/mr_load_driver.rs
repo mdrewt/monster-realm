@@ -76,9 +76,9 @@
 //! # Why WebSocket only (AM25)
 //!
 //! HTTP reducer calls are structurally dead for load: each
-//! `POST /v1/database/<db>/call/<reducer>` is an ephemeral connection, and
-//! `on_disconnect` (`server-module/src/lib.rs:213-239`) deletes the player and
-//! character rows BY IDENTITY when it closes. Live-verified: `join_game` returns
+//! `POST /v1/database/<db>/call/<reducer>` is an ephemeral connection, and the
+//! `client_disconnected` reducer `on_disconnect` (in `server-module/src/lib.rs`) resolves its live
+//! trades/PvP/battles and deletes its presence rows BY IDENTITY. Live-verified: `join_game` returns
 //! 200, then `enqueue_move` 5 ms later returns 530 "not joined". An HTTP call
 //! would also destroy a concurrent WS session's join state for the same
 //! identity. On top of that, the dominant server cost at concurrency N is
