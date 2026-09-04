@@ -5741,56 +5741,6 @@ fn m22s4_no_ufcs_write_verb_in_privacy() {
 }
 
 // ===========================================================================
-// NATIVE-LINK STUBS (test infrastructure, NOT assertions — implementer-added
-// and disclosed in the PR). The m22s4 registry tests read super::EXPORTERS at
-// runtime, and materializing its fn pointers makes every rows_ reader live in
-// the NATIVE test binary — so the linker now demands the SpacetimeDB host
-// syscalls, which exist only inside the wasm host. These no_mangle stubs
-// satisfy the linker; none is ever CALLED (ReducerContext is not constructible
-// off-instance, ADR-0225 D5), and each aborts the process if that ever stops
-// being true. Signatures mirror spacetimedb-bindings-sys 2.8.1 raw externs.
-// ===========================================================================
-
-#[no_mangle]
-extern "C" fn table_id_from_name(_name: *const u8, _name_len: usize, _out: *mut u32) -> u16 {
-    std::process::abort()
-}
-
-#[no_mangle]
-extern "C" fn index_id_from_name(_name_ptr: *const u8, _name_len: usize, _out: *mut u32) -> u16 {
-    std::process::abort()
-}
-
-#[no_mangle]
-extern "C" fn datastore_table_scan_bsatn(_table_id: u32, _out: *mut u32) -> u16 {
-    std::process::abort()
-}
-
-#[no_mangle]
-extern "C" fn datastore_index_scan_point_bsatn(
-    _index_id: u32,
-    _point_ptr: *const u8,
-    _point_len: usize,
-    _out: *mut u32,
-) -> u16 {
-    std::process::abort()
-}
-
-#[no_mangle]
-extern "C" fn row_iter_bsatn_advance(
-    _iter: u32,
-    _buffer_ptr: *mut u8,
-    _buffer_len_ptr: *mut usize,
-) -> i16 {
-    std::process::abort()
-}
-
-#[no_mangle]
-extern "C" fn row_iter_bsatn_close(_iter: u32) -> u16 {
-    std::process::abort()
-}
-
-// ===========================================================================
 // rb-40 (ADR-0235) — THE PURGE HELPER REPORTS WHAT IT DELETED.
 //
 // EARS E1 (spec M-residual-backlog.spec.md#rb-40, promoted residual

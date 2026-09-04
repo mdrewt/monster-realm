@@ -14275,62 +14275,6 @@ fn rb39_machinery_alias_predicate_teeth() {
 }
 
 // ===========================================================================
-// NATIVE-LINK STUBS (test infrastructure, NOT assertions — S9-added and
-// disclosed in the PR). `m22s9_cross_slice_contract_signatures` MATERIALIZES
-// fn pointers to two ctx-bound functions, which makes their whole call graph
-// live in the NATIVE test binary — so the linker now demands the SpacetimeDB
-// host syscalls those bodies reach (row insert / update / delete-by-eq /
-// delete-by-index-point), which exist only inside the wasm host. These
-// no_mangle stubs satisfy the linker; none is ever CALLED (`ReducerContext` is
-// not constructible off-instance, ADR-0225 D5), and each aborts the process if
-// that ever stops being true. They join the six privacy_tests.rs already
-// declares (scan / index-scan / iterator / name-lookup); the two sets are
-// disjoint, which is what keeps the single test binary linkable.
-// Signatures mirror spacetimedb-bindings-sys 2.8.1 raw externs, with the
-// repr(transparent) TableId / IndexId newtypes spelled as the u32 they wrap —
-// the shape privacy_tests.rs already uses.
-// ===========================================================================
-
-#[no_mangle]
-extern "C" fn datastore_insert_bsatn(
-    _table_id: u32,
-    _row_ptr: *mut u8,
-    _row_len_ptr: *mut usize,
-) -> u16 {
-    std::process::abort()
-}
-
-#[no_mangle]
-extern "C" fn datastore_update_bsatn(
-    _table_id: u32,
-    _index_id: u32,
-    _row_ptr: *mut u8,
-    _row_len_ptr: *mut usize,
-) -> u16 {
-    std::process::abort()
-}
-
-#[no_mangle]
-extern "C" fn datastore_delete_all_by_eq_bsatn(
-    _table_id: u32,
-    _rel_ptr: *const u8,
-    _rel_len: usize,
-    _out: *mut u32,
-) -> u16 {
-    std::process::abort()
-}
-
-#[no_mangle]
-extern "C" fn datastore_delete_by_index_scan_point_bsatn(
-    _index_id: u32,
-    _point_ptr: *const u8,
-    _point_len: usize,
-    _out: *mut u32,
-) -> u16 {
-    std::process::abort()
-}
-
-// ===========================================================================
 // rb-40 (ADR-0235) — THE CLAIM-TIME `export_bundle` PURGE IS OBSERVABLE.
 //
 // EARS E1 (spec M-residual-backlog.spec.md#rb-40, promoted residual

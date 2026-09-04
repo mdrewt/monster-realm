@@ -46,6 +46,14 @@ mod trading;
 #[path = "m14_5d_1a_tests.rs"]
 mod m14_5d_1a_tests;
 
+#[cfg(test)]
+#[path = "native_host_tests.rs"]
+mod native_host_tests;
+
+#[cfg(test)]
+#[path = "rb41_spike_tests.rs"]
+mod rb41_spike_tests;
+
 // --- Crate-wide constants ---------------------------------------------------
 pub(crate) const ZONE_0: u32 = 0;
 /// SSOT for the seeded-content version; bump when game-core RON content changes (ADR-0054).
