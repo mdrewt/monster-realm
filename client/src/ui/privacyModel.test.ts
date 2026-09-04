@@ -677,7 +677,7 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
       );
       expect(step.next.inFlight, label).toBe('none');
       // ★ THE LATENT HALF of the same B1 defect (plan's "Second, latent behavior change"):
-      // `begin`'s no-op guard branch (privacyModel.ts:231-235) applies the CALLER-supplied
+      // `begin`'s no-op guard branch in privacyModel.ts applies the CALLER-supplied
       // `confirm` unconditionally, so an armed confirmation on a non-active phase is ALSO
       // spent here today, silently. Only reachable by DIRECT STATE CONSTRUCTION — a real
       // player can never arm on a non-active countdown, because `account-changed` disarms on
@@ -724,8 +724,8 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
         busy,
       );
       // ★ THE B1 DEFECT LEG — reds on HEAD, greens on the fix. `begin`'s no-op guard branch
-      // (privacyModel.ts:231-235) applies the CALLER-supplied `confirm` unconditionally, and
-      // `delete-confirmed` (:275-284) passes the literal `'none'` meant only for the DELIVERED
+      // in privacyModel.ts applies the CALLER-supplied `confirm` unconditionally, and the
+      // `'delete-confirmed'` arm passes the literal `'none'` meant only for the DELIVERED
       // path — so a busy refusal silently spends the armed confirmation, with no notice.
       expect(
         deleteStep.next.confirm,
@@ -734,7 +734,7 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
       // ...and it must not INVENT anything either. WRONG IMPL KILLED (measured by this slice's
       // artifact red-team, which passed all five mutant teeth without this pair): a busy refusal
       // that reports `notice: 'request-rejected'` with a `rejectMessage` the server never sent —
-      // a field this module documents as the server's message VERBATIM (:160-163).
+      // a field `PrivacyModelState` documents as the server's message, VERBATIM.
       expect(
         deleteStep.next.notice,
         `delete while ${busy} is in flight: a request that was never sent has no rejection`,
@@ -746,7 +746,7 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
 
       // `confirm: 'delete-armed'` on these two fixtures is deliberate: it proves the UNIFORM
       // invariant "no emitter's no-op spends", not the defect above. `cancel-deletion-requested`
-      // and `export-requested` pass `state.confirm` straight through `begin` (:300, :310), so
+      // and `export-requested` pass `state.confirm` straight through `begin` at their call sites, so
       // the defect never reaches them — both legs below already PASS ON HEAD. Left at the
       // fixtures' default `confirm: 'none'` there is nothing to spend, so the assertion would
       // be permanently vacuous without this fixture change — hence the fixture, not the test.
@@ -820,7 +820,7 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
     expect(deleteWhileExporting.next.rejectMessage, 'reducer-built').toBeUndefined();
 
     // A SECOND reducer-built path — the double-click, the most realistic manifestation of the
-    // bug: `case 'delete-requested'` (:269-272) gates only on `deletePermitted`, never on
+    // bug: `case 'delete-requested'` gates only on `deletePermitted`, never on
     // `inFlight`, so a player can re-arm the confirmation while an earlier delete click is
     // still in flight, and the re-armed confirmation is then spent silently by the busy
     // refusal for the SAME control.
@@ -847,7 +847,7 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
     ).toBe('delete-armed');
 
     // Local anti-vacuity for the DELIVERED spend: a DELIBERATE duplication of S8T-DELETE-CONFIRM
-    // (:638) — first-failure-wins means a distant tooth cannot be relied on to cover the
+    // — first-failure-wins means a distant tooth cannot be relied on to cover the
     // delivered half of the SAME `begin` call this test exercises for the busy half above.
     const delivered = privacyStep(
       stateOf({ countdown: ACTIVE_COUNTDOWN, confirm: 'delete-armed', inFlight: 'none' }),
