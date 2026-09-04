@@ -14357,7 +14357,7 @@ extern "C" fn datastore_delete_by_index_scan_point_bsatn(
 // nothing here CALLS a function this slice has yet to add, because a call to a
 // missing fn is a BUILD error, which would take all 785 tests with it and make
 // the proof-of-teeth RED indistinguishable from a broken build (the rb-22 EO-6
-// precedent). The two behavioural tests that call `claim_purge_fields` land in
+// precedent). The two behavioural tests that call `purge_fields` land in
 // the same commit as the fix.
 //
 // SCAN HYGIENE (this file header rule, restated because this section adds the
