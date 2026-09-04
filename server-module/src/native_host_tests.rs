@@ -15,7 +15,10 @@
 //! defines every one of those ten symbols ONCE (a `#[no_mangle]` symbol is
 //! one-definition-per-binary), and implements the six a read-only predicate
 //! reaches: name lookups, the index point scan, the table scan and the row
-//! iterator. The four WRITE syscalls stay loudly unmodelled — tests seed rows
+//! iterator (the table scan is a named YAGNI exception: no shipped predicate
+//! reaches it today, but an `.iter()`-shaped reader is a legitimate future
+//! implementation and must not die in a silent abort). The four WRITE
+//! syscalls stay loudly unmodelled — tests seed rows
 //! through [`Fixture::table`] instead, which sidesteps the auto_inc write-back
 //! decode, the monster dual-write pairing scan and the single-stack inventory
 //! scan (all of which read test files) without touching any of them.

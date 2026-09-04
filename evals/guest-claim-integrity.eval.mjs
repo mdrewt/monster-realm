@@ -2907,9 +2907,9 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
       return (
         `[G6/consumed] the manifest marks \`${key}\` as REKEY, but its existence predicate ` +
         `\`${policy.exists}\` is never called from \`${HAS_GAME_DATA_FN}\` ` +
-        `(${ACCOUNTS_PATH}:209-216). This half of the clause is the ONLY part of G6 that nothing ` +
-        'else in the repo covers — accounts_tests.rs:1320 pins the six `rekey_all` delegations in ' +
-        'D6 order but never enumerates the exists-helpers. A missing predicate breaks guard 11 ' +
+        `(${ACCOUNTS_PATH}:209-216). The rb41_* Rust tests prove each shipped predicate decides ` +
+        'on its own table and that its disjunct is wired, but only this clause ties the MANIFEST ' +
+        'entry to that call site. A missing predicate breaks guard 11 ' +
         '(AUTH-20, D5.3 fail-closed): a destination account that already owns rows in THAT table ' +
         'is no longer detected, so the claim proceeds and either clobbers or PK-collides the ' +
         "caller's own data"
