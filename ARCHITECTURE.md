@@ -487,7 +487,11 @@ cancel-permitted, because the server accepts a late cancel until
 BEFORE selecting the newest `request_id` (bigint reduce-max, never a string
 sort), and splices the verbatim `payload_json` values — no `JSON.parse`, so the
 server's quoted-decimal u64/i64 encoding survives intact. `exportable` stays a
-server-side axis; the client applies no allowlist. The DOM overlay, the
+server-side axis; the client applies no allowlist. An armed delete confirmation
+survives every refusal `begin` can return — not permitted, another request
+already in flight, no live connection — so an action that never happened never
+spends step two; only the DELIVERED path writes the confirmation, which is what
+the `confirmOnDelivery` parameter name records (18r-a). The DOM overlay, the
 `main.ts` wiring, the `deletion_grace_ms_default()` wasm read and the
 `my_export_bundle` subscription are DEFERred to m22-s8b (X9/X10/X11), whose
 `touches:` must include `evals/monster-privacy.eval.mjs` for its
