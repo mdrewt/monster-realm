@@ -2326,3 +2326,733 @@ fn rb41_wallet_exists_tracks_real_wallet_rows() {
         fx.requested_indexes()
     );
 }
+
+// ===========================================================================
+// rb-46 (residual R-m22-s5-X12, ADR-0236 D2/D4) — the caller-only deletion gate
+// on the shop.
+//
+// EARS criterion covered here:
+//
+//   R-m22-s5-X12 (shop half)  WHILE the caller's account is inside the para-4.7
+//   deletion gate, WHEN the caller invokes `buy` or `sell`, the server module
+//   SHALL refuse the call before any wallet or inventory write, with the single
+//   static reason.
+//
+// WHY THE SHOP IS IN SCOPE AT ALL: M22 para 4.7 selects gate targets
+// mechanically from the tables they move, and `player_wallet` + `inventory` are
+// both ERASE-policy tables (spec section 3 / `DATA_LIFECYCLE_MANIFEST`). A
+// mid-grace account trading currency for items — or items for currency — is
+// opening exactly the kind of new commitment the grace window exists to stop,
+// and every unit of it lands in a table the cascade is about to erase.
+//
+// TWO VEHICLES, as in `battle_tests.rs` (ADR-0236 D4).
+//
+//   EXECUTION runs the SHIPPED reducers under the rb-41 native host
+//   (`native_host_tests`) against real `account` and `player` rows, through a
+//   five-state progression. It is the only proof of POLARITY (the gate refuses
+//   the two deleting states) and of REACHABILITY (it ADMITS the other three) —
+//   neither of which any source scan in this crate can supply.
+//
+//   SOURCE PINS cover what execution cannot see: the fully-qualified path, the
+//   `?`-propagation, ordering relative to a write the fixture never reaches, and
+//   a conditional-compilation attribute on the gate statement, under which every
+//   test here executes a gate the published wasm does not contain.
+//
+// The log TAG and the per-file gated SET live in
+// `guards_tests.rs::rb46_gated_reducer_census_battle_and_economy`, on the one
+// proven m22-s5 pipeline. The helper below reuses THIS file's existing
+// `strip_rust_comments_economy` / `strip_rust_strings_economy` / `rust_fn_bodies`
+// / `compact_ws`; no stripper and no body extractor is re-derived (ADR-0003).
+//
+// NOTE ON THE STRIPPED VIEW: `strip_rust_strings_economy` keeps the DELIMITERS
+// and discards the payload, so a tagged call reads as an empty literal here —
+// which is also why `require_owner` reads identically in both reducers and why
+// every anchor below is BODY-scoped rather than file-scoped.
+//
+// SCAN SUBSTRATE RULES: every needle naming a production symbol is assembled
+// from fragments, and the double-quote character is spelled as a NUMBER, never
+// as a bare CHARACTER literal.
+// ===========================================================================
+
+/// The fully-qualified gate call, up to and including its open paren.
+fn rb46_gate_call_opener() -> String {
+    ["crate::guards::require_not_", "deleting("].concat()
+}
+
+/// The bare wrapper name — what an alias, a re-export or a differently-argued
+/// sibling all still mention.
+fn rb46_gate_bare_name() -> String {
+    ["require_not_", "deleting"].concat()
+}
+
+/// The ASCII double quote as a one-character `String`, spelled as a NUMBER.
+fn rb46_double_quote() -> String {
+    char::from(0x22u8).to_string()
+}
+
+/// The gate STATEMENT in the two forms rustfmt can produce, spelled for THIS
+/// file's stripped view: `strip_rust_strings_economy` KEEPS both quotes and
+/// discards the payload, so the reducer tag reads as an empty literal.
+///
+/// The second form is what rustfmt emits when a call expression exceeds
+/// `fn_call_width` (60) and is split one argument per line. Neither shop call
+/// site reaches that width (47 and 48 characters), so the inline form is the
+/// expected one here — the split form is accepted anyway so a future rename
+/// cannot false-RED a correct call site.
+fn rb46_gate_needles() -> (String, String) {
+    let call = rb46_gate_call_opener();
+    let dq = rb46_double_quote();
+    let blank = [dq.as_str(), dq.as_str()].concat();
+    (
+        [call.as_str(), "ctx,", blank.as_str(), ")?;"].concat(),
+        [call.as_str(), "ctx,", blank.as_str(), ",)?;"].concat(),
+    )
+}
+
+/// Assert that `fn_name`'s body in `economy.rs` carries the deletion gate exactly
+/// once, as a reachable top-level `?`-propagating statement, between `before` and
+/// `after`, and above `write`.
+///
+/// A per-file copy of the `battle_tests.rs` helper of the same name, and
+/// deliberately so: every `*_tests.rs` file is a `#[cfg(test)]` submodule of its
+/// own production file and none can reach another's bare `fn` items, so sharing
+/// would need a new `pub(crate) mod` — the same precedent
+/// `content_cache_tests.rs:361-368` records for its own copies of the strippers.
+/// The two copies differ in substrate: this one runs on the view where string
+/// DELIMITERS survive.
+///
+/// Not a `#[test]`: it is driven once per gated reducer so each failure names its
+/// own reducer. Every clause is required, and NONE may be relaxed to make a build
+/// green — a pin that cannot be satisfied is a plan defect, to be re-derived from
+/// ADR-0236 D2.
+fn rb46_assert_gate_pinned(fn_name: &str, before: &str, after: &str, write: &str) {
+    let stripped = strip_rust_strings_economy(&strip_rust_comments_economy(ECONOMY_SOURCE));
+    let bodies = rust_fn_bodies(&stripped);
+
+    let n_decl = bodies
+        .iter()
+        .filter(|(n, _, _)| n.as_str() == fn_name)
+        .count();
+    assert_eq!(
+        n_decl, 1,
+        "rb-46 SCAN PRECONDITION: `economy.rs` declares `{fn_name}` {n_decl} time(s); it \
+         must declare it EXACTLY once. With zero the reducer was renamed or removed and \
+         every clause below would pass over a body that does not exist; with two the \
+         extractor takes the FIRST match, so a decoy definition could carry the gate while \
+         the real reducer stays ungated."
+    );
+    let raw = bodies
+        .iter()
+        .find(|(n, _, _)| n.as_str() == fn_name)
+        .map(|(_, _, body)| body.as_str())
+        .unwrap_or_else(|| panic!("rb-46: `{fn_name}` counted 1 but could not be extracted"));
+
+    // `rust_fn_bodies` returns the body INCLUDING its outer braces; strip them so
+    // brace depth at the gate is measured relative to the body's top level.
+    let compact = compact_ws(raw);
+    let body = compact
+        .strip_prefix('{')
+        .and_then(|inner| inner.strip_suffix('}'))
+        .unwrap_or_else(|| {
+            panic!(
+                "rb-46 SCAN PRECONDITION: the extracted `{fn_name}` body is not brace \
+                 delimited, so the extractor sliced the wrong region and every clause below \
+                 would read meaningless text."
+            )
+        });
+
+    // --- Clause 0: the stripper's blind spots are absent from this body -----
+    // `strip_rust_strings_economy` has no char lexer and no raw-string handling.
+    // A char literal holding a brace desynchronises the depth count below by one;
+    // one holding a double quote inverts string/code polarity for the rest of the
+    // file. Green at HEAD, and a precondition for every clause after it.
+    let dq = rb46_double_quote();
+    let char_landmines = [
+        ["'", "{", "'"].concat(),
+        ["'", "}", "'"].concat(),
+        ["'", dq.as_str(), "'"].concat(),
+    ];
+    for landmine in &char_landmines {
+        assert!(
+            !body.contains(landmine.as_str()),
+            "rb-46 SCAN PRECONDITION: `{fn_name}` contains the character literal \
+             {landmine} , which this file's strippers consume as ordinary code. A brace one \
+             shifts the depth count below by exactly one — enough to make a gate nested \
+             inside a never-taken branch report as a top-level statement — and a \
+             double-quote one blanks the wrong byte range for the rest of the file. Spell \
+             the character with a Unicode escape, or teach the stripper about char literals; \
+             never delete this check."
+        );
+    }
+
+    // --- Clause A: the gate statement is present EXACTLY once ---------------
+    let (plain, trailing) = rb46_gate_needles();
+    let n_gate = body.matches(plain.as_str()).count() + body.matches(trailing.as_str()).count();
+    assert_eq!(
+        n_gate, 1,
+        "rb-46 R-m22-s5-X12 FAIL (gate present exactly once): `{fn_name}` contains {n_gate} \
+         deletion-gate statement(s) and must contain EXACTLY ONE. \
+         ZERO IS THE RED STATE AT HEAD — the gate has not been wired into this reducer yet, \
+         so a mid-grace or terminal account can still move currency and items through the \
+         shop, into and out of tables the deletion cascade is about to erase. \
+         The needle is the FULLY QUALIFIED call ending in `?;`, so an unqualified call \
+         reached through an import — which behaves identically at runtime and is therefore \
+         invisible to the behavioural test beside this one — reads as ZERO here. That is \
+         deliberate: the qualified path cannot be shadowed by an import swap. TWO means a \
+         duplicated call, under which every ordering clause below anchors on a first hit \
+         that a second call can sit behind. Body scanned was:\n{body}"
+    );
+
+    let gate_at = body
+        .find(plain.as_str())
+        .or_else(|| body.find(trailing.as_str()))
+        .expect("rb-46: the gate statement counted 1 but could not be located");
+
+    // --- Clause B: that ONE call is the `?`-propagating one ------------------
+    let opener = rb46_gate_call_opener();
+    let n_opener = body.matches(opener.as_str()).count();
+    assert_eq!(
+        n_opener, 1,
+        "rb-46 R-m22-s5-X12 FAIL (verdict propagation): `{fn_name}` calls the deletion gate \
+         {n_opener} time(s) but exactly ONE of those calls ends in `?;` (clause A). A second \
+         call whose verdict is discarded — `let _ = ..;`, `.ok();`, a bare statement — \
+         compiles, lints clean under `-D warnings` (the wildcard pattern is never reported \
+         by `unused_variables`) and gates NOTHING, while sitting beside a correct one it can \
+         be mistaken for. One call, one `?`."
+    );
+
+    // --- Clause C: the gate is at the TOP level of the body ------------------
+    let opens = body[..gate_at].matches('{').count();
+    let closes = body[..gate_at].matches('}').count();
+    assert_eq!(
+        opens, closes,
+        "rb-46 R-m22-s5-X12 FAIL (unconditional): the deletion gate in `{fn_name}` sits at \
+         brace depth {opens} minus {closes}, i.e. INSIDE a nested block, and it must sit at \
+         the body's top level. A gate wrapped in `if false`, in a never-satisfied condition, \
+         or inside a loop or match arm a real call never enters leaves every text needle in \
+         this test satisfied while the reducer decides nothing. This is the shape a \
+         whole-body `contains` check cannot see."
+    );
+
+    // --- Clause D: the gate is its own statement, not an attributed one ------
+    // The character immediately before the statement must be a statement
+    // boundary. An attribute leaves a closing square bracket, `let () = ..`
+    // leaves an equals sign, `.and(..)` leaves a dot, and a token-swallowing
+    // macro leaves an open paren.
+    let semi = char::from(0x3Bu8);
+    let close_brace = char::from(0x7Du8);
+    let prev = body[..gate_at].chars().next_back();
+    assert!(
+        prev.is_none_or(|c| c == semi || c == close_brace),
+        "rb-46 R-m22-s5-X12 FAIL (statement boundary): in `{fn_name}` the deletion gate is \
+         preceded by {prev:?}, which is not a statement boundary (a semicolon, a closing \
+         brace, or the start of the body). THE CASE THIS EXISTS FOR: a \
+         conditional-compilation attribute on the gate statement leaves a closing square \
+         bracket here. Under it EVERY test in this crate executes the gate — including the \
+         behavioural test beside this one — while the published wasm is compiled WITHOUT it: \
+         present in review, absent in production. The same clause kills a discarded binding \
+         (an equals sign), a combinator that swallows the verdict (a dot), and a macro that \
+         swallows the whole call (an open paren). Re-derive the placement from ADR-0236 D2; \
+         never widen this clause."
+    );
+
+    // --- Clause E: no conditional compilation anywhere in the body ----------
+    // The same two bans `shop-reducer-security` already applies to these two
+    // bodies for the headroom checks, restated for the gate.
+    let attr_open = ["#", "["].concat();
+    let cfg_macro = ["cfg", "!("].concat();
+    for (needle, what) in [
+        (
+            attr_open.as_str(),
+            "an attribute — a conditional-compilation attribute on ANY statement here is the \
+             deployment-dependent gate described in clause D, reached from further away",
+        ),
+        (
+            cfg_macro.as_str(),
+            "the conditional-compilation MACRO — the same defect as the attribute form, \
+             expressed as an expression, which clause C would report only as a nested block",
+        ),
+    ] {
+        let n = body.matches(needle).count();
+        assert_eq!(
+            n, 0,
+            "rb-46 R-m22-s5-X12 FAIL (no conditional compilation): `{fn_name}` contains {n} \
+             occurrence(s) of {needle} — {what}. Shop guards must compile into every build. \
+             Green at HEAD; keep it that way."
+        );
+    }
+
+    // --- Clause F: exactly ONE mention of the wrapper, by bare name ----------
+    let bare = rb46_gate_bare_name();
+    let n_bare = body.matches(bare.as_str()).count();
+    assert_eq!(
+        n_bare, 1,
+        "rb-46 R-m22-s5-X12 FAIL (caller-only): `{fn_name}` mentions the deletion-gate \
+         wrapper {n_bare} time(s) by BARE NAME and must mention it EXACTLY once. TWO is the \
+         third-party gate: a sibling taking an identity argument, called beside the caller \
+         gate, points the gate at somebody who is not the caller — and the shipped wrapper \
+         takes no identity precisely so that cannot be written (ADR-0227 D2). The \
+         behavioural test beside this one cannot see it, because the native host's dummy \
+         sender is the only identity in play. ZERO means the qualified call in clause A was \
+         matched without the name, which is a scan defect."
+    );
+
+    // --- Clause G: every ordering anchor exists EXACTLY once -----------------
+    let anchors: [(&str, &str); 3] = [
+        (
+            before,
+            "the caller-standing guard the gate must follow — standing is established \
+             exactly there, so the preamble reads joined, then owner, then not-deleting \
+             (ADR-0227 D3)",
+        ),
+        (
+            after,
+            "the first input-shape check that must run AFTER the gate",
+        ),
+        (
+            write,
+            "the reducer's irreversible effect, the anchor the whole ordering exists to sit \
+             above",
+        ),
+    ];
+    for (needle, role) in anchors {
+        let n = body.matches(needle).count();
+        assert_eq!(
+            n, 1,
+            "rb-46 R-m22-s5-X12 FAIL (ordering anchor, anti-vacuity): the anchor `{needle}` \
+             — {role} — occurs {n} time(s) in `{fn_name}` and must occur EXACTLY once. ZERO \
+             makes every ordering clause below unfireable, so the pin would pass over a \
+             reducer whose landmark has moved or been renamed; TWO makes the comparison \
+             depend on which copy is found first. Note that on this view the reducer tag is \
+             blanked, so both shop reducers spell their standing guard identically — which \
+             is why the anchor is scoped to ONE body and must never be widened to the file. \
+             RE-DERIVE THE PIN AGAINST THE CURRENT BODY AND ADR-0236 D2; never relax it, and \
+             never delete an anchor to make this green."
+        );
+    }
+    let before_at = body
+        .find(before)
+        .expect("rb-46: the before-anchor counted 1 but could not be located");
+    let after_at = body
+        .find(after)
+        .expect("rb-46: the after-anchor counted 1 but could not be located");
+    let write_at = body
+        .find(write)
+        .expect("rb-46: the write-anchor counted 1 but could not be located");
+
+    // --- Clause H: before < gate < after < write ----------------------------
+    assert!(
+        before_at < gate_at,
+        "rb-46 R-m22-s5-X12 FAIL (placement): in `{fn_name}` the deletion gate (offset \
+         {gate_at}) runs BEFORE the standing guard `{before}` (offset {before_at}). \
+         `require_owner` stays the FIRST call in both shop reducers — `shop-reducer-security` \
+         pins it before every spend and grant — and ADR-0227 D3 orders the deletion gate \
+         immediately AFTER standing is established, so a caller with no standing is told \
+         that, not something about their account lifecycle."
+    );
+    assert!(
+        gate_at < after_at,
+        "rb-46 R-m22-s5-X12 FAIL (placement): in `{fn_name}` the deletion gate (offset \
+         {gate_at}) runs AFTER `{after}` (offset {after_at}). ADR-0236 D2 places the gate as \
+         the first check after standing: a DB read already precedes the quantity check, so \
+         nothing pure is displaced by putting it here, and message precedence stops \
+         depending on the arguments the caller happened to send."
+    );
+    assert!(
+        after_at < write_at,
+        "rb-46 R-m22-s5-X12 FAIL (ordering, anti-vacuity): in `{fn_name}` the effect anchor \
+         `{write}` (offset {write_at}) precedes `{after}` (offset {after_at}), so the two \
+         landmarks this pin orders the gate between are themselves out of order. The body is \
+         not the body this pin was derived against — re-derive it, do not renumber it."
+    );
+    assert!(
+        gate_at < write_at,
+        "rb-46 R-m22-s5-X12 FAIL (decision before irreversible effect): in `{fn_name}` the \
+         deletion gate sits at offset {gate_at}, AFTER the effect at offset {write_at}. A \
+         gate that runs once the wallet has been debited or the stack consumed gates \
+         nothing: the transaction still rolls back on the reject, but the reducer has \
+         already reordered its own guards so that a later refactor — or a partial-failure \
+         path — commits value movement for an account that may not open new commitments. \
+         The behavioural test beside this one cannot see this: the native host aborts the \
+         process on any write syscall, so it never reaches the effect at all. This clause is \
+         the only thing that owns the gate-after-write mutant."
+    );
+}
+
+/// Seed the one `player` row every shop reducer's joined check needs.
+///
+/// The handle is registered against the SAME fixture the caller's account handle
+/// comes from — rows live in the host store, not in the handle, so seeding
+/// through a locally-scoped handle is exactly equivalent to seeding through one
+/// the test holds. The row is a plain struct literal, which is the house pattern
+/// for `Player`: unlike `Account` it has no pure constructor to route through and
+/// carries no legal-state invariant to violate.
+fn rb46_seed_player(fx: &crate::native_host_tests::Fixture, me: spacetimedb::Identity) {
+    let players = fx.table::<crate::schema::Player>("player", "identity", |r| r.identity);
+    players.seed(&crate::schema::Player {
+        identity: me,
+        entity_id: 7,
+        name: String::new(),
+        online: true,
+        last_input_seq: 0,
+    });
+}
+
+/// **R-m22-s5-X12 (behaviour)** — `buy` refuses a deletion-gated caller and
+/// ADMITS everybody else.
+///
+/// The shipped reducer runs under the rb-41 native host through five account
+/// states, with the exact verdict pinned in each: no row, `Active`,
+/// `PendingDeletion`, `PendingDeletion` + the terminal marker, and row removed.
+/// The three admitted states are the positive control, and they are what make
+/// the two refused states mean anything at all.
+///
+/// WHY THE ADMITTED STATES ERR, and why that is the honest claim. `Fixture::table`
+/// keys rows by `Identity` bytes, so the `u32`-keyed shop stock index can never be
+/// seeded; an unregistered index yields no rows in this host
+/// (`native_host_tests.rs:311-319`), so the stock lookup finds nothing and the
+/// reducer stops there — one guard past the gate, and well before any wallet
+/// write. Every write syscall ABORTS the process (uncatchable, so
+/// `#[should_panic]` is not available here). The RED this test proves is
+/// therefore: a deletion-gated caller is ADMITTED past the joined check, past the
+/// ownership guard and into content lookup — not that currency changed hands.
+/// Ordering relative to the spend is owned by `rb46_buy_carries_the_deletion_gate`.
+///
+/// The ordinary error is pinned EXACTLY rather than as any-error: without that, a
+/// regression in the joined check (which would return a not-joined error instead)
+/// would masquerade as a pass in all three admitted states, and the whole positive
+/// control would go quietly vacuous.
+///
+/// The dummy sender is the all-zero identity; nothing in `buy` treats it
+/// specially. Account rows are built with the shipped pure constructors only, so
+/// this test can never assemble a state the module itself cannot. `seed` PUSHES
+/// rather than upserting, so each state removes the previous row and asserts that
+/// exactly one row went.
+///
+/// RED AT HEAD: at HEAD `buy` carries no deletion gate, so the `PendingDeletion`
+/// state returns the ordinary next-guard error and the third assertion fails.
+///
+/// kills:
+///   - M2, the dropped `buy` gate (and any later deletion of it).
+///   - M5, the discarded verdict `let _ = ..` at the `buy` call site: the two
+///     refused states go green-to-red exactly as a dropped gate does.
+///   - M8, an `if false` wrapper or any other unreachable placement.
+///   - M14, a constant reject: the three admitted states fail.
+///   - INVERTED POLARITY, invisible to every source pin in this slice: the
+///     `Active` and no-row states would return the deletion reject instead, which
+///     is a total shop outage for every honest player.
+///   - a row-exists-keyed fake (`is_some()` rather than the status test): the
+///     `Active` state fails.
+///   - a latched answer that never returns to admitting: the removed-row state
+///     fails.
+#[test]
+fn rb46_buy_is_refused_only_while_the_caller_is_deletion_gated() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+    rb46_seed_player(&fx, me);
+
+    let call = || crate::economy::buy(&ctx, 1, 1, 1);
+
+    let ordinary: Result<(), String> = Err("shop 1 does not stock item 1".to_string());
+    let gated: Result<(), String> = Err(crate::guards::REJECT_DELETION_GATED.to_string());
+
+    let active = crate::accounts::new_account_row(me, String::new(), 0);
+    let pending = crate::accounts::requested_deletion(active.clone(), 1);
+    let terminal = crate::accounts::terminal_account(pending.clone(), 2);
+
+    // --- State 1: no account row (a guest) ----------------------------------
+    let got = call();
+    assert_eq!(
+        got,
+        ordinary,
+        "rb-46 R-m22-s5-X12 FAIL (admitted state, no account row): `buy` returned {got:?} \
+         for a joined caller with NO account row. A caller who never authenticated is not \
+         inside the deletion gate and must be admitted into the ordinary guard chain; the \
+         expected error is the stock lookup's, and pinning it EXACTLY is what stops a \
+         regression in the joined check from masquerading as a pass. Indexes the generated \
+         code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+
+    // --- State 2: an Active account row -------------------------------------
+    acct.seed(&active);
+    let got = call();
+    assert_eq!(
+        got, ordinary,
+        "rb-46 R-m22-s5-X12 FAIL (admitted state, Active account): `buy` returned {got:?} \
+         for a caller whose account row is `Active`. This is the ordinary player, and \
+         refusing them is a TOTAL SHOP OUTAGE that every source pin in this slice would \
+         report as correctly gated — the call text is byte-identical whichever way the \
+         decision runs. It is also exactly what a row-EXISTS-keyed fake produces (a gate \
+         that asks whether an account row is present rather than what its status says), and \
+         what an inverted branch produces."
+    );
+
+    // --- State 3: mid-grace (PendingDeletion) --------------------------------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-46 fixture: exactly one `Active` account row was seeded and must be removed \
+         before the next state is pushed — `seed` appends rather than upserting, so a \
+         miscount would leave two rows for one identity and the unique-index lookup would \
+         assert instead of answering."
+    );
+    acct.seed(&pending);
+    let got = call();
+    assert_eq!(
+        got, gated,
+        "rb-46 R-m22-s5-X12 FAIL (refused state, mid-grace): `buy` returned {got:?} for a \
+         caller whose account is `PendingDeletion`; it must return the module's single static \
+         deletion reject. THIS IS THE RED STATE AT HEAD — at HEAD `buy` carries no deletion \
+         gate, so a mid-grace account can still spend currency into an inventory the cascade \
+         is about to erase. The expected value is compared against the CONSTANT, never a \
+         re-typed literal, so a reworded reason cannot drift silently into text no client \
+         ever receives."
+    );
+
+    // --- State 4: terminal (PendingDeletion + the marker) -------------------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-46 fixture: exactly one `PendingDeletion` account row was seeded and must be \
+         removed before the terminal row is pushed (`seed` appends, it never upserts)."
+    );
+    acct.seed(&terminal);
+    let got = call();
+    assert_eq!(
+        got, gated,
+        "rb-46 R-m22-s5-X12 FAIL (refused state, terminal): `buy` returned {got:?} for a \
+         caller whose account carries the M22 terminal marker. An already-erased account has \
+         no wallet and no inventory left — the cascade deleted both — so a purchase here \
+         would recreate rows the deletion just removed. The pure decision is an explicit \
+         disjunction (`accounts::should_reject_for_deletion`) precisely so this state is \
+         fail-closed even on the illegal `Active`-plus-marker shape."
+    );
+
+    // --- State 5: the row is gone again --------------------------------------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-46 fixture: exactly one terminal account row was seeded and must be removable."
+    );
+    let got = call();
+    assert_eq!(
+        got, ordinary,
+        "rb-46 R-m22-s5-X12 FAIL (admitted state, row removed): `buy` returned {got:?} once \
+         the caller's account row was gone again. The verdict must track LIVE rows: an \
+         answer that latches on a row it has already seen — a memoised predicate, a cached \
+         decision, a process-wide flag — would keep refusing this identity forever, and no \
+         state above can distinguish that from a correct gate."
+    );
+}
+
+/// **R-m22-s5-X12 (behaviour)** — `sell` refuses a deletion-gated caller and
+/// ADMITS everybody else.
+///
+/// The same five-state progression the `buy` test above runs, applied to
+/// `sell`, whose ordinary next-guard error is the item-content lookup's:
+/// `item_row` is `u32`-keyed and the fixture keys rows by `Identity`, so the
+/// lookup finds nothing and the reducer stops one guard past the gate, before any
+/// consume. A separate `#[test]` from `buy` on purpose — the two reducers carry
+/// separate call sites, so one dropped gate must fail with a message naming which.
+///
+/// RED AT HEAD: at HEAD `sell` carries no deletion gate, so the `PendingDeletion`
+/// state returns the ordinary next-guard error and the third assertion fails.
+///
+/// kills: M3 (the dropped `sell` gate) · a discarded verdict at the `sell` call
+/// site · an unreachable placement · a constant reject (the three admitted states)
+/// · inverted polarity (the `Active` and no-row states) · a row-exists-keyed fake
+/// (the `Active` state) · a latched answer (the removed-row state). It ALSO kills
+/// a gate wired into `buy` only: without this test, half the shop would be gated
+/// and the census would be the only witness.
+#[test]
+fn rb46_sell_is_refused_only_while_the_caller_is_deletion_gated() {
+    let fx = crate::native_host_tests::fixture();
+    let acct = fx.table::<crate::schema::Account>("account", "identity", |r| r.identity);
+    let ctx = fx.ctx();
+    let me = ctx.sender();
+    rb46_seed_player(&fx, me);
+
+    let call = || crate::economy::sell(&ctx, 1, 1);
+
+    let ordinary: Result<(), String> = Err("unknown item 1".to_string());
+    let gated: Result<(), String> = Err(crate::guards::REJECT_DELETION_GATED.to_string());
+
+    let active = crate::accounts::new_account_row(me, String::new(), 0);
+    let pending = crate::accounts::requested_deletion(active.clone(), 1);
+    let terminal = crate::accounts::terminal_account(pending.clone(), 2);
+
+    // --- State 1: no account row (a guest) ----------------------------------
+    let got = call();
+    assert_eq!(
+        got,
+        ordinary,
+        "rb-46 R-m22-s5-X12 FAIL (admitted state, no account row): `sell` returned {got:?} \
+         for a joined caller with NO account row. A caller who never authenticated is not \
+         inside the deletion gate and must be admitted into the ordinary guard chain; the \
+         expected error is the item-content lookup's, and pinning it EXACTLY is what stops a \
+         regression in the joined check from masquerading as a pass. Indexes the generated \
+         code asked the host for: {:?}",
+        fx.requested_indexes()
+    );
+
+    // --- State 2: an Active account row -------------------------------------
+    acct.seed(&active);
+    let got = call();
+    assert_eq!(
+        got, ordinary,
+        "rb-46 R-m22-s5-X12 FAIL (admitted state, Active account): `sell` returned {got:?} \
+         for a caller whose account row is `Active`. This is the ordinary player, and \
+         refusing them is a TOTAL SHOP OUTAGE that every source pin in this slice would \
+         report as correctly gated. It is also what a row-EXISTS-keyed fake produces, and \
+         what an inverted branch produces — and an inverted gate here would additionally \
+         trap value: a player could no longer liquidate an inventory the cascade is about to \
+         erase."
+    );
+
+    // --- State 3: mid-grace (PendingDeletion) --------------------------------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-46 fixture: exactly one `Active` account row was seeded and must be removed \
+         before the next state is pushed — `seed` appends rather than upserting, so a \
+         miscount would leave two rows for one identity and the unique-index lookup would \
+         assert instead of answering."
+    );
+    acct.seed(&pending);
+    let got = call();
+    assert_eq!(
+        got, gated,
+        "rb-46 R-m22-s5-X12 FAIL (refused state, mid-grace): `sell` returned {got:?} for a \
+         caller whose account is `PendingDeletion`; it must return the module's single static \
+         deletion reject. THIS IS THE RED STATE AT HEAD — at HEAD `sell` carries no deletion \
+         gate, so a mid-grace account can still consume inventory and credit a wallet the \
+         cascade is about to erase. The expected value is compared against the CONSTANT, \
+         never a re-typed literal, so a reworded reason cannot drift silently into text no \
+         client ever receives."
+    );
+
+    // --- State 4: terminal (PendingDeletion + the marker) -------------------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-46 fixture: exactly one `PendingDeletion` account row was seeded and must be \
+         removed before the terminal row is pushed (`seed` appends, it never upserts)."
+    );
+    acct.seed(&terminal);
+    let got = call();
+    assert_eq!(
+        got, gated,
+        "rb-46 R-m22-s5-X12 FAIL (refused state, terminal): `sell` returned {got:?} for a \
+         caller whose account carries the M22 terminal marker. An already-erased account has \
+         no inventory and no wallet left, so a sale here would recreate a wallet row the \
+         cascade deleted. The pure decision is an explicit disjunction \
+         (`accounts::should_reject_for_deletion`) precisely so this state is fail-closed even \
+         on the illegal `Active`-plus-marker shape."
+    );
+
+    // --- State 5: the row is gone again --------------------------------------
+    assert_eq!(
+        acct.remove(me),
+        1,
+        "rb-46 fixture: exactly one terminal account row was seeded and must be removable."
+    );
+    let got = call();
+    assert_eq!(
+        got, ordinary,
+        "rb-46 R-m22-s5-X12 FAIL (admitted state, row removed): `sell` returned {got:?} once \
+         the caller's account row was gone again. The verdict must track LIVE rows: an \
+         answer that latches on a row it has already seen would keep refusing this identity \
+         forever, and no state above can distinguish that from a correct gate."
+    );
+}
+
+/// **R-m22-s5-X12 (source pin)** — `buy`'s gate is qualified, reachable,
+/// unconditional, and sits between the ownership guard and the spend.
+///
+/// ADR-0236 D2 places it immediately after `require_owner` and before the
+/// quantity check: standing (the row exists, the caller owns it) is established
+/// exactly there, a DB read already precedes the quantity check, so the preamble
+/// reads joined, then owner, then not-deleting (ADR-0227 D3) and nothing pure is
+/// displaced. `require_owner` stays the FIRST call — `shop-reducer-security` pins
+/// it before every spend and grant, and this pin is written to keep that true.
+///
+/// On the stripped view the reducer tag is blanked to an empty literal, so `buy`
+/// and `sell` spell their standing guard identically; every anchor here is
+/// therefore scoped to ONE body and must never be widened to the file.
+///
+/// RED AT HEAD: the gate statement is absent, so clause A fails with a count of
+/// zero. Clause 0 (the char-literal landmines), clause E (no conditional
+/// compilation) and clause G (all three anchors present exactly once) are GREEN at
+/// HEAD by design — they are the fences that keep this pin honest, and a failure
+/// in any of them means the body moved out from under it.
+///
+/// kills: M2 (dropped gate) · M5 (`let _ =` — clause A, since the discarded form
+/// does not end in `?;`) · M7 (gate moved below the spend — clause H) · M8
+/// (`if false` wrapper — clause C) · M11 (import-shadowed unqualified call —
+/// clause A) · M12 (duplicate call — clauses A and B) · M13 (deleted call plus a
+/// decoy comment — comments are stripped first) · M15 (`#[cfg(test)]` on the
+/// statement — clauses D and E) · M16 (a third-party sibling — clause F) · M17 (a
+/// token-swallowing macro — clause D).
+#[test]
+fn rb46_buy_carries_the_deletion_gate() {
+    let dq = rb46_double_quote();
+    let name = ["b", "uy"].concat();
+    let before = [
+        "require_",
+        "owner(ctx,",
+        dq.as_str(),
+        dq.as_str(),
+        ",p.identity)?;",
+    ]
+    .concat();
+    let after = ["ifqty", "==0"].concat();
+    let write = ["spend_", "currency("].concat();
+    rb46_assert_gate_pinned(
+        name.as_str(),
+        before.as_str(),
+        after.as_str(),
+        write.as_str(),
+    );
+}
+
+/// **R-m22-s5-X12 (source pin)** — `sell`'s gate is qualified, reachable,
+/// unconditional, and sits between the ownership guard and the consume.
+///
+/// Same placement rule as `buy` (ADR-0236 D2), with the effect anchor on the
+/// irreversible half of THIS reducer: `consume_one`. The sell side is
+/// value-DESTRUCTION with no rollback backstop in the ADR-0124 sense, which is
+/// why the ordering clause matters here even though the transaction would roll
+/// back a rejected call: a gate below the consume loop is a reducer whose guard
+/// order no longer says what it means.
+///
+/// RED AT HEAD: the gate statement is absent, so clause A fails with a count of
+/// zero.
+///
+/// kills: M3 (dropped gate) · the same clause-for-clause set as
+/// `rb46_buy_carries_the_deletion_gate`, applied to the second call site — which
+/// is what stops a half-applied fix (gate `buy`, forget `sell`) from shipping
+/// with only the census to object.
+#[test]
+fn rb46_sell_carries_the_deletion_gate() {
+    let dq = rb46_double_quote();
+    let name = ["se", "ll"].concat();
+    let before = [
+        "require_",
+        "owner(ctx,",
+        dq.as_str(),
+        dq.as_str(),
+        ",p.identity)?;",
+    ]
+    .concat();
+    let after = ["ifqty", "==0"].concat();
+    let write = ["consume_", "one("].concat();
+    rb46_assert_gate_pinned(
+        name.as_str(),
+        before.as_str(),
+        after.as_str(),
+        write.as_str(),
+    );
+}
