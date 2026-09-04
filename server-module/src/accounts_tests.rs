@@ -7496,8 +7496,9 @@ fn rb24_schedule_table_sole_writers() {
 // section contains no block comment, no raw string, no apostrophe and no bare
 // double-quote character inside any comment.
 //
-// WHY ONE STRUCTURE TEST (T3) AND SEVEN PURE ONES: there is no way to construct
-// a `ReducerContext` in this crate, so a reducer BODY has no runtime harness at
+// WHY ONE STRUCTURE TEST (T3) AND SEVEN PURE ONES: when this was written there was
+// no way to construct a `ReducerContext` in this crate (rb-41's native_host_tests
+// changed that), so a reducer BODY had no runtime harness at
 // all. Everything that can be a pure seam is one and is EXECUTED; the two guard
 // PLACEMENTS — which are ordering properties of a reducer body — are provable
 // only over the source. ADR-0225 records that justification once.
@@ -8829,8 +8830,9 @@ fn rb34_guest_claim_rekey_delegate_reachable_only_from_rekey_all() {
 //   PRV1-8(b) a terminal identity re-registering is RESET to `new_account_row`
 //            defaults with NO pre-deletion value carried forward.
 //
-// SCOPE SPLIT, restated because it decides the shape of every test below: there
-// is no way to construct a `ReducerContext` in this crate, so every rule that
+// SCOPE SPLIT, restated because it decides the shape of every test below: when
+// these were written there was no way to construct a `ReducerContext` in this crate
+// (rb-41's native_host_tests changed that), so every rule that
 // can be a pure seam IS one and is EXECUTED; the residue that exists only as
 // wiring inside a reducer body — placement, ordering, delegation — is pinned by
 // source scan. ADR-0228 records that justification once.

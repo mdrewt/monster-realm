@@ -36,10 +36,11 @@
 //! and rows arrive already typed, so no accessor-token scanner (currency
 //! integrity, dual-write, single-stack, ...) has anything to match here.
 //!
-//! ISOLATION. `cargo nextest` runs one process per test; plain `cargo test`
-//! shares one process across threads. [`fixture`] therefore holds a
-//! process-wide serialisation lock for the test's lifetime and resets the row
-//! store, while table/index ids are minted on first lookup and NEVER reset —
+//! ISOLATION. `cargo nextest` (what every `just` gate runs) gives each test its
+//! own process, so CI never exercises the lock below; plain `cargo test` shares
+//! one process across threads, and that is what the lock is for. [`fixture`]
+//! holds a process-wide serialisation lock for the test's lifetime and resets
+//! the row store, while table/index ids are minted on first lookup and NEVER reset —
 //! the generated `table_id()` / `index_id()` memoise their first answer in a
 //! per-type `OnceLock` for the life of the process, so a later test in the
 //! same process must be handed the same id for the same name.
@@ -164,18 +165,25 @@ impl Fixture {
         ReducerContext::__dummy()
     }
 
-    /// Register `table` (its `accessor` name) with the single-column index
-    /// `index` (canonical name `{table}_{column}_idx_btree`) whose key is the
-    /// `Identity` `owner_of` extracts from a row. Idempotent per name.
+    /// Register `table` (its `accessor` name) with the single-column index on
+    /// `column`, whose key is the `Identity` `owner_of` extracts from a row.
+    /// The canonical index name `{table}_{column}_idx_btree` is derived HERE,
+    /// never passed in: a hand-supplied name could bind another table's index
+    /// to this table's rows and let a predicate that reads the wrong table
+    /// pass (red-team, rb-41). Idempotent per name. A test registers exactly
+    /// the one table its predicate owns; the shim models no constraints, so a
+    /// duplicate unique key seeded by mistake surfaces as the bindings' own
+    /// `cannot return more than one row` assertion inside `find`.
     pub(crate) fn table<R: Serialize>(
         &self,
         table: &str,
-        index: &str,
+        column: &str,
         owner_of: fn(&R) -> Identity,
     ) -> Handle<R> {
+        let index = format!("{table}_{column}_idx_btree");
         let mut h = host();
         let table_id = h.table_id(table);
-        let index_id = h.index_id(index);
+        let index_id = h.index_id(&index);
         h.index_table.insert(index_id, table_id);
         Handle {
             table_id,

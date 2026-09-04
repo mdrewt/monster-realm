@@ -1016,7 +1016,8 @@ fn rb22p_stub_probe_regression() {
 //   redaction, and the owner-scoped view that is the entire client read path.
 //   PRV1-14 (the TTL reaper) is DEFERRED to S4b and deliberately ungated here.
 //
-// THE SPLIT (ADR-0225 D5): a ReducerContext is not constructible off-instance,
+// THE SPLIT (ADR-0225 D5): a ReducerContext was not constructible off-instance when
+// this was written (rb-41's native_host_tests changed that; the scans stand as written),
 // so every PURE seam below is EXECUTED and every ctx-bound shell property is a
 // SOURCE-STRUCTURE pin over PRIVACY_RS through this module's existing
 // three-stage strip pipeline. Source pins are the weaker instrument and each
@@ -3816,8 +3817,9 @@ proptest! {
 /// subject, and every unindexed scan is IMMEDIATELY bounded by the extracted
 /// own-row predicate.
 ///
-/// Source-structure, and it says so: a ReducerContext is not constructible
-/// off-instance, so the behavioural half of this criterion lives in the two
+/// Source-structure, and it says so: a ReducerContext was not constructible
+/// off-instance when this was written (rb-41's native_host_tests changed that),
+/// so the behavioural half of this criterion lives in the two
 /// predicate tests and in the serializer tests; this clause proves the READ
 /// SHAPE. Every clause is scoped through extract_squashed_fn_body — never a
 /// whole-file contains — and every count is exact, so a decoy chain in a
@@ -5000,8 +5002,9 @@ fn m22s4_cooldown_polarity_differs_from_is_deletion_due() {
 // ===========================================================================
 // X9 — the reducer wiring (the security shape).
 //
-// SOURCE-STRUCTURE ONLY, and it says so: a ReducerContext is not constructible
-// off-instance, so these clauses pin the SHAPE of the one client entry point.
+// SOURCE-STRUCTURE ONLY, and it says so: a ReducerContext was not constructible
+// off-instance when this was written (rb-41's native_host_tests changed that), so
+// these clauses pin the SHAPE of the one client entry point.
 // Every clause is scoped through the fn-body extractor, never a whole-file
 // contains, and every count is exact.
 // ===========================================================================

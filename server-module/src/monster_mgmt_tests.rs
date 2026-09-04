@@ -24,15 +24,17 @@ use spacetimedb::Identity;
 
 /// A complete private monster row owned by `owner`. Every column the EG1
 /// schema declares is set explicitly so the seeded bytes decode exactly as the
-/// generated reader expects; the values themselves are arbitrary, because
-/// `has_monsters` reads ownership and nothing else.
+/// generated reader expects; every non-identity scalar is ZERO on purpose, so a
+/// predicate that additionally inspects a payload column (a level or a stat
+/// above zero, ...) cannot pass on this row — `has_monsters` reads ownership and
+/// nothing else.
 fn rb41_owned_monster(owner: Identity, monster_id: u64) -> Monster {
     Monster {
         monster_id,
         owner_identity: owner,
-        species_id: 1,
+        species_id: 0,
         nickname: String::new(),
-        level: 5,
+        level: 0,
         xp: 0,
         iv_hp: 0,
         iv_attack: 0,
@@ -47,13 +49,13 @@ fn rb41_owned_monster(owner: Identity, monster_id: u64) -> Monster {
         ev_speed: 0,
         ev_sp_attack: 0,
         ev_sp_defense: 0,
-        stat_hp: 20,
-        stat_attack: 10,
-        stat_defense: 10,
-        stat_speed: 10,
-        stat_sp_attack: 10,
-        stat_sp_defense: 10,
-        current_hp: 20,
+        stat_hp: 0,
+        stat_attack: 0,
+        stat_defense: 0,
+        stat_speed: 0,
+        stat_sp_attack: 0,
+        stat_sp_defense: 0,
+        current_hp: 0,
         party_slot: 0,
         last_care_at_ms: 0,
         essence_fire: 0,
@@ -100,9 +102,7 @@ fn rb41_owned_monster(owner: Identity, monster_id: u64) -> Monster {
 #[test]
 fn rb41_has_monsters_tracks_real_monster_rows() {
     let fx = fixture();
-    let t = fx.table::<Monster>("monster", "monster_owner_identity_idx_btree", |r| {
-        r.owner_identity
-    });
+    let t = fx.table::<Monster>("monster", "owner_identity", |r| r.owner_identity);
     let ctx = fx.ctx();
     let owner = Identity::from_byte_array([19u8; 32]);
     let stranger = Identity::from_byte_array([20u8; 32]);

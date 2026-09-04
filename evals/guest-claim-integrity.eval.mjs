@@ -247,27 +247,32 @@
 //                          `wallet_exists(` call. The `exists` half is the ONLY
 //                          part of G6 not already covered by
 //                          accounts_tests.rs:1320.
-//       [G6/correspondence] each REKEY entry's `rekey` needle's fn name resolves
-//                          to EXACTLY ONE definition in the scanned tree; that
-//                          definition has a locatable, non-empty body, carries
-//                          no cfg on the ITEM and none in the body (`#[cfg` /
-//                          `cfg!(`, both spellings, both positions); and it
-//                          reaches THIS key's own `db.<table>(` at a site that
-//                          is neither inside a MACRO invocation nor rooted at
-//                          anything but a real database handle (`<ident>.db.`
-//                          or a `db` this body bound to `&ctx.db`), carrying a
-//                          WRITE_VERBS verb in the METHOD-CHAIN SEGMENT rooted
-//                          at that accessor — bounded by isChainChar, exactly
-//                          as [W/write-target] bounds its own — because
-//                          presence is not effect (rb-25). The `exists` half of
-//                          this clause, and the mirror-cover exception that
-//                          existed only to excuse monster_pub from it, were
-//                          RETIRED by rb-41 (ADR-0222 amendment; ADR-0224
-//                          migrate-and-delete): the `rb41_*` Rust tests in
-//                          server-module/src/*_tests.rs run every shipped
-//                          existence predicate against real rows, which a text
+//       [G6/correspondence] each needle's fn name resolves to EXACTLY ONE
+//                          definition in the scanned tree; that definition has a
+//                          locatable, non-empty body, carries no cfg on the ITEM
+//                          and none in the body (`#[cfg` / `cfg!(`, both
+//                          spellings, both positions); and it reaches THIS key's
+//                          own `db.<table>(` at a site that is neither inside a
+//                          MACRO invocation nor rooted at anything but a real
+//                          database handle (`<ident>.db.` or a `db` this body
+//                          bound to `&ctx.db`). The REKEY half additionally
+//                          requires a WRITE_VERBS verb in the METHOD-CHAIN
+//                          SEGMENT rooted at that accessor — bounded by
+//                          isChainChar, exactly as [W/write-target] bounds its
+//                          own — because presence is not effect (rb-25).
+//                          Since rb-41 (ADR-0222 amendment, ADR-0224
+//                          migrate-and-delete) the accessor-reach leg runs on
+//                          the REKEY half ONLY: whether an existence predicate
+//                          reaches AND decides on its own table is proven by the
+//                          `rb41_*` Rust tests against real rows, which a text
 //                          scan never could (a hollowed body was MEASURED green
-//                          here, rb-25 S4).
+//                          here, rb-25 S4). The declaration legs stay on BOTH
+//                          halves because a native test binary is compiled with
+//                          `--cfg test` and can never see a `#[cfg(not(test))]`
+//                          twin or a `cfg!(test)` switch (MEASURED shipping
+//                          `false` to wasm while every rb41_* test stayed green).
+//                          The mirror-cover exception that existed only to excuse
+//                          monster_pub from the retired leg went with it.
 //   The G6 success path additionally re-runs the correspondence criterion as
 //   LIVE-TREE BORROW PROOFS L2-L4 against the SHIPPED sources and the SHIPPED
 //   manifest (the FG75 teeth measure an in-file fixture, which lives in the same
@@ -2412,12 +2417,14 @@ export function findIdentityColumns(treeSrcs) {
 //              `wallet_exists(` call, so a manifest can name a helper that
 //              exists nowhere and still read as consumed.
 // The pieces below close both: `containsCallOf` for the second, and the
-// [G6/correspondence] clause at the end of the checker for the first — on the
-// REKEY half only. Its exists half, and the mirror-cover exception that existed
-// solely to excuse monster_pub from it, were retired by rb-41 (ADR-0222
-// amendment): the `rb41_*` Rust tests exercise every shipped existence
-// predicate against real rows, proving the disjunct is wired AND decides on its
-// own table — which a text scan could not (a hollowed body was MEASURED green).
+// [G6/correspondence] clause at the end of the checker for the first. Since
+// rb-41 that clause proves table REACH (and the write) on the REKEY half only:
+// the exists side of the borrow is caught by the `rb41_*` Rust tests, which run
+// each shipped existence predicate against real rows and prove its disjunct is
+// wired — a text scan could not (a hollowed body was MEASURED green). What the
+// exists half keeps is declaration integrity (declared exactly once, non-empty,
+// cfg-free), because a native test binary cannot see a cfg twin. The
+// mirror-cover exception that excused monster_pub from the retired leg is gone.
 // Both pieces are FILE-LOCAL — nothing here is exported.
 // ---------------------------------------------------------------------------
 
@@ -2692,10 +2699,10 @@ const CFG_SPELLINGS = ['#[cfg', 'cfg!('];
 // DERIVED counters for the success detail. checkRekeyCompleteness resets both
 // on entry and the default export reads them straight after its FIRST live
 // call, so the numbers the detail prints are produced by the run that produced
-// the green. A hand-written "each re-key helper proven to write through its own
-// table" keeps printing verbatim after the clause it describes has been deleted;
-// a number cannot. Only meaningful when that call returned null.
-let g6RekeysVerified = 0;
+// the green. A hand-written "each REKEY helper proven to touch its own table"
+// keeps printing verbatim after the clause it describes has been deleted; a
+// number cannot. Only meaningful when that call returned null.
+let g6HalvesVerified = 0;
 let g6CallsMatched = 0;
 
 /**
@@ -2708,7 +2715,7 @@ let g6CallsMatched = 0;
  * @returns {string|null} Error string, or null on pass.
  */
 export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_MANIFEST) {
-  g6RekeysVerified = 0;
+  g6HalvesVerified = 0;
   g6CallsMatched = 0;
   for (const f of treeSrcs) {
     const desync = assertStripperSound(f.src, f.path);
@@ -2918,36 +2925,38 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     g6CallsMatched++;
   }
 
-  // [G6/correspondence] — the rekey needle must correspond to the KEY. Resolve
-  // the helper the needle names to EXACTLY ONE definition in the scanned tree,
-  // then require that definition to reach THIS key's own table accessor AND
-  // write through it, because presence is not effect. (The exists half of this
-  // check was retired by rb-41: the rb41_* Rust tests run each shipped
-  // existence predicate against real rows, ADR-0222 amendment.)
+  // [G6/correspondence] — the needle must correspond to the KEY. Resolve the
+  // helper the needle names to EXACTLY ONE definition in the scanned tree with
+  // a non-empty, cfg-free body (both halves); then, on the REKEY half only,
+  // require that definition to reach THIS key's own table accessor and WRITE
+  // through it, because presence is not effect. (The exists half's reach leg
+  // was retired by rb-41: the rb41_* Rust tests run each shipped existence
+  // predicate against real rows, ADR-0222 amendment.)
   // This is a NAMING-INTEGRITY check, not a reachability proof: a
   // `db.<table>(` in dead code satisfies it (which is why the cfg( leg exists —
   // text behind `#[cfg(any())]` compiles into no target at all).
   /**
-   * The strict check for one REKEY entry's re-key needle.
+   * The strict check for one half of one entry.
    * @param {string} key Manifest key, `<table>.<column>`.
    * @param {string} token The `db.<table>(` accessor token.
-   * @param {string} needle The rekey needle itself, trailing `(` included.
-   * @returns {string|null} A tagged failure, or null when the entry holds.
+   * @param {'rekey'|'exists'} half Which needle is being resolved.
+   * @param {string} needle The needle itself, trailing `(` included.
+   * @returns {string|null} A tagged failure, or null when the half holds.
    */
-  const strictCorrespondence = (key, token, needle) => {
+  const strictCorrespondence = (key, token, half, needle) => {
     // The module path is discarded on purpose: `crate::economy::rekey_wallet(`
     // and `rekey_wallet(` name the same function, and the tree is scanned whole.
     const fnName = needle.slice(0, -1).split('::').pop();
     if (fnName === '') {
       return (
-        `[G6/correspondence] the rekey needle \`${needle}\` of \`${key}\` names no function ` +
+        `[G6/correspondence] the ${half} needle \`${needle}\` of \`${key}\` names no function ` +
         `once its module path is removed, so ${token} can never be proven. Fail closed`
       );
     }
     const defs = findFnDeclarations(strippedTree, fnName);
     if (defs.length === 0) {
       return (
-        `[G6/correspondence] the manifest marks \`${key}\` as REKEY via the rekey needle ` +
+        `[G6/correspondence] the manifest marks \`${key}\` as REKEY via the ${half} needle ` +
         `\`${needle}\`, but no \`fn ${fnName}\` is declared anywhere in the ${strippedTree.length} ` +
         `scanned source(s), so nothing proves it reaches ${token}. An unresolvable needle is ` +
         'FAIL-CLOSED here: "helper not found, skip this entry" is a silent hole the size of the ' +
@@ -2956,7 +2965,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     }
     if (defs.length > 1) {
       return (
-        `[G6/correspondence] the rekey needle \`${needle}\` of \`${key}\` resolves to ` +
+        `[G6/correspondence] the ${half} needle \`${needle}\` of \`${key}\` resolves to ` +
         `\`fn ${fnName}\`, which is declared ${defs.length} time(s) in the scanned tree ` +
         `(${defs.map((d) => d.path).join(', ')}). Taking the FIRST hit lets a decoy declared ` +
         `earlier in the tree launder a borrow — the real definition, and its ${token}, are never ` +
@@ -2972,7 +2981,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     const span = findFnBody(def.stripped, fnName);
     if (span === null) {
       return (
-        `[G6/correspondence] \`fn ${fnName}\` (the rekey needle of \`${key}\`) is declared in ` +
+        `[G6/correspondence] \`fn ${fnName}\` (the ${half} needle of \`${key}\`) is declared in ` +
         `${def.path} but its body could not be located, so ${token} cannot be proven either way. ` +
         'The DECLARATION scan is whitespace-tolerant but the body finder anchors on the two ' +
         `words with a SINGLE space between them: \`fn ${fnName}\` must be spelled \`fn\`, one ` +
@@ -2982,7 +2991,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     const body = compactWs(def.stripped.slice(span.start, span.end));
     if (body === '') {
       return (
-        `[G6/correspondence] \`fn ${fnName}\` (the rekey needle of \`${key}\`) has an EMPTY ` +
+        `[G6/correspondence] \`fn ${fnName}\` (the ${half} needle of \`${key}\`) has an EMPTY ` +
         `body in ${def.path}. It reaches no table at all, ${token} least of all — it cannot be ` +
         'both implemented and empty'
       );
@@ -2996,7 +3005,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     const itemCfg = CFG_SPELLINGS.find((c) => itemPrefix.indexOf(c) !== -1);
     if (itemCfg !== undefined) {
       return (
-        `[G6/correspondence] \`fn ${fnName}\` (the rekey needle of \`${key}\`, ${def.path}) ` +
+        `[G6/correspondence] \`fn ${fnName}\` (the ${half} needle of \`${key}\`, ${def.path}) ` +
         `carries a configuration attribute (\`${itemCfg}\`) on the ITEM ITSELF — between the end ` +
         'of the previous item and the `fn` keyword. A body-interior scan is blind to that, and ' +
         'it is the stronger hiding place of the two: when the predicate is false — and ' +
@@ -3008,7 +3017,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     const bodyCfg = CFG_SPELLINGS.find((c) => body.indexOf(c) !== -1);
     if (bodyCfg !== undefined) {
       return (
-        `[G6/correspondence] the body of \`fn ${fnName}\` (the rekey needle of \`${key}\`, ` +
+        `[G6/correspondence] the body of \`fn ${fnName}\` (the ${half} needle of \`${key}\`, ` +
         `${def.path}) contains a configuration predicate (\`${bodyCfg}\`). This clause reads ` +
         'TEXT, so it cannot tell an accessor that compiles from one hidden behind a false ' +
         'predicate — `#[cfg(any())]` and `cfg!(any())` are both unconditionally false — and it ' +
@@ -3017,6 +3026,17 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
         'outside the conditional. The remedy either way is to move the conditional into a ' +
         'callee, which this clause resolves and checks on its own'
       );
+    }
+    // The exists half stops HERE since rb-41. Declaration integrity above is
+    // still checked textually for it, because a NATIVE test binary is compiled
+    // with `--cfg test` and structurally cannot see a `#[cfg(not(test))]` twin
+    // or a `cfg!(test) && real` switch (MEASURED: both ship `false` to wasm
+    // while every rb41_* test stays green). Whether the predicate REACHES and
+    // DECIDES on its own table is what the rb41_* tests prove against real
+    // rows — so the accessor-reach leg below is rekey-only.
+    if (half === 'exists') {
+      g6HalvesVerified++;
+      return null;
     }
     // Presence is not a touch. A token inside a MACRO invocation is a token
     // tree that may never be name-resolved, and a token whose receiver is some
@@ -3027,7 +3047,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
       const macroHit = rejected.find((r) => r.why === 'macro');
       if (macroHit !== undefined) {
         return (
-          `[G6/correspondence] every \`${token}\` in \`fn ${fnName}\` (the rekey needle of ` +
+          `[G6/correspondence] every \`${token}\` in \`fn ${fnName}\` (the ${half} needle of ` +
           `\`${key}\`, ${def.path}) sits INSIDE a macro invocation (\`${macroHit.detail}\`). A ` +
           'macro argument is a TOKEN TREE: it is name-resolved only if and where the expansion ' +
           'puts it, and `stringify!` puts it nowhere at all — so `ctx` and `db` need not even ' +
@@ -3037,7 +3057,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
       }
       const first = rejected[0];
       return (
-        `[G6/correspondence] every \`${token}\` in \`fn ${fnName}\` (the rekey needle of ` +
+        `[G6/correspondence] every \`${token}\` in \`fn ${fnName}\` (the ${half} needle of ` +
         `\`${key}\`, ${def.path}) has a receiver that is NOT a database handle ` +
         `(${first.detail}). The accessor counts only when it is rooted at one: ` +
         '`<ident>.db.<table>(`, or the aliased bare form when this very body binds `db` with ' +
@@ -3047,7 +3067,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     }
     if (valid.length === 0) {
       return (
-        `[G6/correspondence] the manifest marks \`${key}\` as REKEY via the rekey needle ` +
+        `[G6/correspondence] the manifest marks \`${key}\` as REKEY via the ${half} needle ` +
         `\`${needle}\`, but \`fn ${fnName}\` (${def.path}) never reaches \`${token}\` — the ` +
         'accessor of the very table this entry is about. The needle names SOME live helper, so ' +
         'the consumption scan is satisfied by it; a helper that touches another table carries ' +
@@ -3056,7 +3076,7 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
         'the legitimate `let db = &ctx.db;` handle'
       );
     }
-    g6RekeysVerified++;
+    g6HalvesVerified++;
     // WRITE_VERBS is G5's list, reused rather than re-spelled: "the verbs that
     // change rows" is ONE fact, and a second copy is a second thing to keep
     // true (FG75x pins the list itself, naming both consumers).
@@ -3106,8 +3126,11 @@ export function checkRekeyCompleteness(treeSrcs, accountsSrc, manifest = REKEY_M
     // on the `accessor =` argument, and [G6/live] forces every manifest key to
     // resolve to one of those tables, so the join is structural, not observed.
     const token = `db.${table}(`;
-    const strict = strictCorrespondence(key, token, policy.rekey);
-    if (strict !== null) return strict;
+    for (const half of ['rekey', 'exists']) {
+      const needle = half === 'rekey' ? policy.rekey : policy.exists;
+      const strict = strictCorrespondence(key, token, half, needle);
+      if (strict !== null) return strict;
+    }
   }
 
   return null;
@@ -3569,9 +3592,9 @@ function fakeRawBlindStrip(src) {
 //
 // Each body mirrors the TABLE ACCESS of its shipped twin
 // (server-module/src/{monster_mgmt,inventory,npc,raising,economy,ranking}.rs).
-// The existence predicates are kept so [G6/consumed]'s fixtures keep naming
-// real helpers; since rb-41 only the re-key helpers are resolved by
-// [G6/correspondence] (the exists half lives in the rb41_* Rust tests).
+// Since rb-41 the existence predicates are resolved for declaration integrity
+// only (their table REACH is proven by the rb41_* Rust tests); the re-key
+// helpers are still resolved for reach and write.
 //
 // EXACTLY ONE definition per fn name: two manifest keys share `has_monsters(`
 // and two share `has_quest_or_dialogue_state(`, and a duplicate definition is
@@ -7117,8 +7140,8 @@ pub type OwnerId = id_ty!();`;
   //               answers for it), so the eval stays GREEN while that table is
   //               never re-keyed. The exists-side twin of this cheat (guard 11
   //               silently stops fail-closing) is caught by the rb41_* Rust
-  //               tests since rb-41, so the teeth below exercise the REKEY half
-  //               only;
+  //               tests since rb-41, so the REACH teeth below exercise the
+  //               REKEY half; the declaration teeth still run on either half;
   //   SUBSTRING   the needle `et_exists(` is a plain substring hit on the live
   //               `wallet_exists(` call, so a manifest can name a helper that
   //               exists nowhere and still read as consumed.
@@ -7129,14 +7152,15 @@ pub type OwnerId = id_ty!();`;
   //                       right boundary), and an immediately-left `.` is
   //                       REJECTED, because a method call on a receiver is not a
   //                       call of the free function the manifest names.
-  //   [G6/correspondence] the REKEY needle's fn name resolves to EXACTLY ONE
-  //                       definition in the scanned tree, that definition has a
-  //                       non-empty, cfg-free body, and the body reaches THIS
-  //                       key's own table through `db.<table>(` with an
-  //                       identifier boundary on `db` AND a write verb in the
-  //                       chain segment rooted at that token — presence is not
-  //                       effect. (Rekey needles only: the exists half moved to
-  //                       the rb41_* Rust tests, ADR-0222 amendment.)
+  //   [G6/correspondence] the needle's fn name resolves to EXACTLY ONE
+  //                       definition in the scanned tree and that definition
+  //                       has a non-empty, cfg-free body (BOTH halves); the
+  //                       REKEY half's body additionally reaches THIS key's own
+  //                       table through `db.<table>(` with an identifier
+  //                       boundary on `db` and a write verb in the chain segment
+  //                       rooted at that token — presence is not effect. (The
+  //                       exists half's reach leg moved to the rb41_* Rust
+  //                       tests, ADR-0222 amendment.)
   //
   // Two tags, not one: a shared tag would let a consumption tooth be satisfied by
   // a correspondence failure and vice versa, and expectTag pins by tag alone. Each
@@ -7180,6 +7204,12 @@ pub type OwnerId = id_ty!();`;
     return { src: mut(GOOD_ACCOUNTS, from, to) };
   };
 
+  const H_HAS_ITEMS = `pub(crate) fn has_items(ctx: &ReducerContext, owner: Identity) -> bool {
+    ctx.db.inventory().owner_identity().filter(owner).next().is_some()
+}`;
+  const H_PROFILE_EXISTS = `pub(crate) fn profile_exists(ctx: &ReducerContext, identity: Identity) -> bool {
+    ctx.db.profile().identity().find(identity).is_some()
+}`;
   const H_REKEY_INVENTORY = `pub(crate) fn rekey_inventory(ctx: &ReducerContext, from: Identity, to: Identity) {
     let ids: Vec<u64> = ctx.db.inventory().owner_identity().filter(from).map(|r| r.inv_id).collect();
     for id in ids {
@@ -7201,15 +7231,6 @@ pub type OwnerId = id_ty!();`;
         grant_currency(ctx, to, row.balance);
         ctx.db.player_wallet().owner_identity().update(zeroed_wallet(row));
     }
-}`;
-  const H_REKEY_PROFILE = `pub(crate) fn rekey_profile(ctx: &ReducerContext, from: Identity, to: Identity) {
-    let guest = match ctx.db.profile().identity().find(from) {
-        Some(g) => g,
-        None => return,
-    };
-    let dest = get_or_init_profile(ctx, to);
-    ctx.db.profile().identity().update(carried_stats(dest, guest.rating));
-    ctx.db.profile().identity().update(tombstoned(guest));
 }`;
   const H_REKEY_NPC = `pub(crate) fn rekey_npc_state(ctx: &ReducerContext, from: Identity, to: Identity) {
     let pq_ids: Vec<u64> = ctx.db.player_quest().owner_identity().filter(from).map(|q| q.pq_id).collect();
@@ -7371,22 +7392,22 @@ pub type OwnerId = id_ty!();`;
   }
 
   // FG75f — a needle naming a fn that is declared NOWHERE in the scanned tree.
-  // The needle is wired into rekey_all on purpose, so [G6/consumed] is satisfied
-  // and only the definition-resolving clause can fire. Fail LOUD: "helper not
-  // found, skip this entry" is a silent hole the size of the manifest.
+  // The needle is wired into account_has_game_data on purpose, so [G6/consumed] is
+  // satisfied and only the definition-resolving clause can fire. Fail LOUD:
+  // "helper not found, skip this entry" is a silent hole the size of the manifest.
   {
     const accounts = swapAccounts(
       'FG75f',
-      '    crate::raising::rekey_heal_cooldown(ctx, from, to);\n',
-      '    crate::raising::never_wired_helper(ctx, from, to);\n',
+      '        || crate::raising::has_heal_cooldown(ctx, identity)\n',
+      '        || crate::raising::never_wired_helper(ctx, identity)\n',
     );
     if (Object.hasOwn(accounts, 'error')) return accounts.error;
     const manifest = {
       ...REKEY_MANIFEST,
       'heal_cooldown.owner_identity': {
         policy: 'REKEY',
-        rekey: 'never_wired_helper(',
-        exists: 'has_heal_cooldown(',
+        rekey: 'rekey_heal_cooldown(',
+        exists: 'never_wired_helper(',
       },
     };
     const err = checkRekeyCompleteness(GOOD_TREE, accounts.src, manifest);
@@ -7400,70 +7421,64 @@ pub type OwnerId = id_ty!();`;
     }
   }
 
-  // FG75g — FIRST-HIT ANCHOR FORGERY. A decoy `fn rekey_monsters` is declared in
-  // a file that sits BEFORE the real one in the scanned tree, with a body that
-  // reads a DIFFERENT table and writes nothing. A resolver that takes the first
-  // definition it finds reads the decoy and the real helper is never consulted;
-  // the COUNT is the assertion.
+  // FG75g — FIRST-HIT ANCHOR FORGERY. A decoy `fn has_monsters` is declared in a
+  // file that sits BEFORE the real one in the scanned tree, with a body touching a
+  // DIFFERENT table. A resolver that takes the first definition it finds reads the
+  // decoy and the real asymmetry becomes invisible; the COUNT is the assertion.
   {
-    const DECOY = `pub(crate) fn rekey_monsters(ctx: &ReducerContext, from: Identity, to: Identity) -> Result<(), String> {
-    let _ = to;
-    let _ = ctx.db.heal_cooldown().owner_identity().find(from);
-    Ok(())
+    const DECOY = `pub(crate) fn has_monsters(ctx: &ReducerContext, owner: Identity) -> bool {
+    ctx.db.heal_cooldown().owner_identity().find(owner).is_some()
 }
 `;
     const tree = [{ path: 'fixture/decoy.rs', src: DECOY }, GOOD_TREE[0], GOOD_TREE[1]];
     const err = checkRekeyCompleteness(tree, GOOD_ACCOUNTS);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75g');
     if (bad) return bad;
-    if (err.indexOf('declared 2') === -1 || err.indexOf('rekey_monsters') === -1) {
+    if (err.indexOf('declared 2') === -1 || err.indexOf('has_monsters') === -1) {
       return (
-        'FG75g: the failure must report that `rekey_monsters` is `declared 2` times. A resolver ' +
+        'FG75g: the failure must report that `has_monsters` is `declared 2` times. A resolver ' +
         'that anchors on the FIRST definition can be steered by a decoy declared earlier in the ' +
         `tree, so the count is asserted, never the hit: ${err}`
       );
     }
   }
 
-  // FG75h — a declared helper with an EMPTY body. `fn X(..) { }` resolves, has a
-  // locatable body, and reaches no table at all; without a distinct empty-body
-  // leg the reader is told "does not touch db.profile(" about a function that
-  // does not touch ANYTHING.
+  // FG75h — a declared helper with an EMPTY body. `fn X(..) -> bool { }` resolves,
+  // has a locatable body, and reaches no table at all; without a distinct
+  // empty-body leg the reader is told "does not touch db.profile(" about a
+  // function that does not touch ANYTHING.
   {
     const swapped = swapHelper(
       'FG75h',
-      H_REKEY_PROFILE,
-      'pub(crate) fn rekey_profile(ctx: &ReducerContext, from: Identity, to: Identity) { }',
+      H_PROFILE_EXISTS,
+      'pub(crate) fn profile_exists(ctx: &ReducerContext, identity: Identity) -> bool { }',
     );
     if (Object.hasOwn(swapped, 'error')) return swapped.error;
     const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75h');
     if (bad) return bad;
-    if (err.indexOf('EMPTY body') === -1 || err.indexOf('rekey_profile') === -1) {
+    if (err.indexOf('EMPTY body') === -1 || err.indexOf('profile_exists') === -1) {
       return (
         'FG75h: an empty helper body must be reported as an `EMPTY body` and by NAME ' +
-        `(rekey_profile), distinctly from "reaches the wrong table": ${err}`
+        `(profile_exists), distinctly from "reaches the wrong table": ${err}`
       );
     }
   }
 
   // FG75i — a table token that NEVER COMPILES. `#[cfg(any())]` is unconditionally
   // false, so the nested fn is dead text; a scan that only asks "does the token
-  // appear in the body" is satisfied by it, and a re-key helper that moves
-  // nothing reads as one that does.
+  // appear in the body" is satisfied by it, and the X10 borrow cheat is restored
+  // green by adding four lines that can never run.
   {
     const swapped = swapHelper(
       'FG75i',
-      H_REKEY_INVENTORY,
-      `pub(crate) fn rekey_inventory(ctx: &ReducerContext, from: Identity, to: Identity) {
+      H_HAS_ITEMS,
+      `pub(crate) fn has_items(ctx: &ReducerContext, owner: Identity) -> bool {
     #[cfg(any())]
-    fn dead_probe(ctx: &ReducerContext, from: Identity, to: Identity) {
-        for mut row in ctx.db.inventory().owner_identity().filter(from) {
-            row.owner_identity = to;
-            ctx.db.inventory().inv_id().update(row);
-        }
+    fn dead_probe(ctx: &ReducerContext, owner: Identity) -> bool {
+        ctx.db.inventory().owner_identity().filter(owner).next().is_some()
     }
-    let _ = (ctx, from, to);
+    false
 }`,
     );
     if (Object.hasOwn(swapped, 'error')) return swapped.error;
@@ -7473,11 +7488,11 @@ pub type OwnerId = id_ty!();`;
     // The SPELLING is pinned, not just the word: FG75y is the same leg on the
     // `cfg!(` expression macro, and a message that named the wrong one would
     // let either tooth stand in for the other.
-    if (err.indexOf('predicate (`#[cfg`)') === -1 || err.indexOf('rekey_inventory') === -1) {
+    if (err.indexOf('predicate (`#[cfg`)') === -1 || err.indexOf('has_items') === -1) {
       return (
         'FG75i: a helper body carrying a `#[cfg(` ATTRIBUTE must be reported as that spelling, ' +
-        'and by NAME (rekey_inventory). A token inside a cfg(any()) item is text that never ' +
-        `compiles, so it can never satisfy the correspondence rule: ${err}`
+        'and by NAME (has_items). A token inside a cfg(any()) item is text that never compiles, ' +
+        `so it can never satisfy the correspondence rule: ${err}`
       );
     }
   }
@@ -7486,7 +7501,8 @@ pub type OwnerId = id_ty!();`;
   // some other value, not a table accessor reached from the database handle.
   // Kills: the token spelled `.{table}(`, which ANY receiver satisfies. The token
   // is rooted at `db.` precisely so the aliased `let db = &ctx.db;` form still
-  // passes while this one does not.
+  // passes while this one does not. (Rekey half since rb-41: the reach leg no
+  // longer runs on the exists half.)
   {
     const swapped = swapHelper(
       'FG75j',
@@ -7515,7 +7531,7 @@ pub type OwnerId = id_ty!();`;
   // Proves the correspondence scan reads STRIPPED source, exactly as every other
   // clause in this file does. `player_quest` is genuinely re-keyed, so the
   // failure must be about `player_dialogue_state` ALONE — the table is resolved
-  // per KEY, not per helper.
+  // per KEY, not per helper. (Rekey half since rb-41.)
   {
     const swapped = swapHelper(
       'FG75k',
@@ -7703,7 +7719,8 @@ pub type OwnerId = id_ty!();`;
   // written, and `cargo clippy --all-targets -D warnings` is clean. MEASURED as a
   // working restoration of the X10 borrow cheat (rb-25 red-team B1). The
   // rejection is computed from the `ident!` + bracket SHAPE, never from a list
-  // of macro names — a blacklist of constructs is unclosable.
+  // of macro names — a blacklist of constructs is unclosable. (Rekey half since
+  // rb-41.)
   {
     const swapped = swapHelper(
       'FG75u',
@@ -7738,7 +7755,7 @@ pub type OwnerId = id_ty!();`;
   // handle so `rekey_wallet` no-ops and every guest balance orphans). The site
   // now counts only when rooted at `<ident>.db.` or at a `db` THIS body bound to
   // `&ctx.db` — which is exactly the legitimate alias the token is spelled
-  // `db.<table>(` in order to keep.
+  // `db.<table>(` in order to keep. (Rekey half since rb-41.)
   {
     const swapped = swapHelper(
       'FG75v',
@@ -7775,15 +7792,22 @@ pub type OwnerId = id_ty!();`;
   // scan (FG75i's leg) is structurally blind to it. MEASURED (rb-25 red-team
   // FIX C): the attribute-in-body leg closed only half the cfg-hiding case.
   {
-    const swapped = swapHelper('FG75w', H_REKEY_PROFILE, `#[cfg(any())]\n${H_REKEY_PROFILE}`);
+    const swapped = swapHelper(
+      'FG75w',
+      H_PROFILE_EXISTS,
+      `#[cfg(any())]
+pub(crate) fn profile_exists(ctx: &ReducerContext, identity: Identity) -> bool {
+    ctx.db.profile().identity().find(identity).is_some()
+}`,
+    );
     if (Object.hasOwn(swapped, 'error')) return swapped.error;
     const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75w');
     if (bad) return bad;
-    if (err.indexOf('on the ITEM ITSELF') === -1 || err.indexOf('rekey_profile') === -1) {
+    if (err.indexOf('on the ITEM ITSELF') === -1 || err.indexOf('profile_exists') === -1) {
       return (
         'FG75w: a cfg on the DECLARATION must be reported as being on the ITEM ITSELF and by ' +
-        `NAME (rekey_profile), distinctly from the body-interior cfg leg FG75i pins: ${err}`
+        `NAME (profile_exists), distinctly from the body-interior cfg leg FG75i pins: ${err}`
       );
     }
   }
@@ -7797,25 +7821,23 @@ pub type OwnerId = id_ty!();`;
   {
     const swapped = swapHelper(
       'FG75y',
-      H_REKEY_INVENTORY,
-      `pub(crate) fn rekey_inventory(ctx: &ReducerContext, from: Identity, to: Identity) {
+      H_HAS_ITEMS,
+      `pub(crate) fn has_items(ctx: &ReducerContext, owner: Identity) -> bool {
     if cfg!(any()) {
-        for mut row in ctx.db.inventory().owner_identity().filter(from) {
-            row.owner_identity = to;
-            ctx.db.inventory().inv_id().update(row);
-        }
+        return ctx.db.inventory().owner_identity().filter(owner).next().is_some();
     }
+    false
 }`,
     );
     if (Object.hasOwn(swapped, 'error')) return swapped.error;
     const err = checkRekeyCompleteness(swapped.tree, GOOD_ACCOUNTS);
     const bad = expectTag(err, '[G6/correspondence]', 'FG75y');
     if (bad) return bad;
-    if (err.indexOf('predicate (`cfg!(`)') === -1 || err.indexOf('rekey_inventory') === -1) {
+    if (err.indexOf('predicate (`cfg!(`)') === -1 || err.indexOf('has_items') === -1) {
       return (
         'FG75y: the `cfg!(` EXPRESSION macro must be reported as that spelling, and by NAME ' +
-        '(rekey_inventory). An attribute-only leg is green on this fixture, and the accessor is ' +
-        `not inside the macro's argument, so the macro-span leg is green on it too: ${err}`
+        '(has_items). An attribute-only leg is green on this fixture, and the accessor is not ' +
+        `inside the macro's argument, so the macro-span leg is green on it too: ${err}`
       );
     }
   }
@@ -7919,12 +7941,12 @@ export default async function guestClaimIntegrityEval() {
   // bit" keeps printing after the clause it describes has been deleted, which is
   // exactly the forgeable prose this block exists to replace.
   const borrowProofsBit = [];
-  // DERIVED counts read out of the G6 checker's own run (see g6RekeysVerified /
+  // DERIVED counts read out of the G6 checker's own run (see g6HalvesVerified /
   // g6CallsMatched). The success detail used to make these two claims in prose —
-  // "each re-key helper proven to write through its own table" and "matched as an
+  // "each REKEY helper proven to touch its own table" and "matched as an
   // identifier-bounded call" — and a literal keeps printing verbatim after the
   // clause it describes has been deleted.
-  let liveRekeysVerified = 0;
+  let liveHalvesVerified = 0;
   let liveCallsMatched = 0;
 
   // The desync self-check runs on EVERY live source: a desync anywhere in the
@@ -7957,7 +7979,7 @@ export default async function guestClaimIntegrityEval() {
     const errG6 = checkRekeyCompleteness(treeSrcs, accountsFile.src);
     // Read IMMEDIATELY: the borrow probes below re-enter the checker (and reset
     // these), and it is THIS call whose verdict the success detail reports.
-    liveRekeysVerified = g6RekeysVerified;
+    liveHalvesVerified = g6HalvesVerified;
     liveCallsMatched = g6CallsMatched;
     if (errG6) {
       failures.push(`[G6 rekey-completeness] ${errG6}`);
@@ -8020,8 +8042,8 @@ export default async function guestClaimIntegrityEval() {
       }
 
       // Each probe pins FRAGMENTS as well as its tag. checkRekeyCompleteness
-      // returns the FIRST failure across 8 keys, and L2/L4 both expect
-      // [G6/correspondence] — so a tag-only assertion is satisfied by ANY
+      // returns the FIRST failure across 8 keys x 2 halves, and L2/L4 both
+      // expect [G6/correspondence] — so a tag-only assertion is satisfied by ANY
       // correspondence failure on ANY key, including one caused by a defect the
       // probe did not introduce. The FG75 teeth already assert this way; these
       // are the same criterion re-run against the SHIPPED tree.
@@ -8082,8 +8104,8 @@ export default async function guestClaimIntegrityEval() {
           failures.push(
             `[G6 borrow-proof] ${probe.label}: bit under ${probe.tag} but the message is missing ` +
               `the fragment(s) [${missing.join(', ')}] that identify THIS probe. The tag alone ` +
-              'cannot: the checker returns the FIRST failure across 8 keys, so two of these ' +
-              `probes share one tag and would satisfy each other: ${got}`,
+              'cannot: the checker returns the FIRST failure across 8 keys x 2 halves, so two ' +
+              `of these probes share one tag and would satisfy each other: ${got}`,
           );
           continue;
         }
@@ -8136,9 +8158,10 @@ export default async function guestClaimIntegrityEval() {
       `region, and all ${Object.keys(REKEY_MANIFEST).length} Identity columns carry a D6 policy ` +
       `(${rekeyEntries} REKEY entries, ${liveCallsMatched} needle(s) matched as ` +
       `identifier-bounded calls in rekey_all / account_has_game_data, ` +
-      `${liveRekeysVerified} re-key helper(s) proven by [G6/correspondence] to reach their own ` +
-      `table and write through it across ${treeSrcs.length} scanned source(s) — the exists half ` +
-      'is proven by the rb41_* Rust tests in server-module/src/*_tests.rs since rb-41 — ' +
+      `${liveHalvesVerified} REKEY manifest half/halves proven by [G6/correspondence] to name a ` +
+      'singly-declared, non-empty, cfg-free helper — the rekey halves also reaching and writing ' +
+      `their own table — across ${treeSrcs.length} scanned source(s) (table reach on the exists ` +
+      'side is proven by the rb41_* Rust tests in server-module/src/*_tests.rs since rb-41), ' +
       `${borrowProofsBit.length} live-tree borrow proof(s) bit) ` +
       `(${teethRun} tooth assertion(s) executed)`,
   };

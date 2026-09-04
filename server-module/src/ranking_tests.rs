@@ -9,8 +9,8 @@
 //!   - `refresh_profile_name(profile, live_name)` — pure struct transform,
 //!     no ctx, no DB I/O.
 //!   - `live_player_name(ctx, identity)` — ctx helper; its exact inline shape
-//!     is pinned by T2 source-scan rather than an executed test (ReducerContext
-//!     is not constructible in unit tests).
+//!     is pinned by T2 source-scan rather than an executed test (a ReducerContext
+//!     was not constructible in unit tests before rb-41's native_host_tests).
 //!
 //! Rating arithmetic still delegates entirely to game_core (tested there).
 //!
@@ -2758,12 +2758,12 @@ fn m22s3b_count(hay: &str, needle: &str) -> usize {
 #[test]
 fn rb41_profile_exists_tracks_real_profile_rows() {
     let fx = crate::native_host_tests::fixture();
-    let t = fx.table::<Profile>("profile", "profile_identity_idx_btree", |r| r.identity);
+    let t = fx.table::<Profile>("profile", "identity", |r| r.identity);
     let ctx = fx.ctx();
     // Identities come off the rows themselves, so the seeded row and the asked
     // identity cannot drift apart.
-    let owner_row = make_profile(13, "rb41-owner", 1000, 0, 0);
-    let stranger_row = make_profile(14, "rb41-stranger", 1000, 0, 0);
+    let owner_row = make_profile(13, "", 0, 0, 0);
+    let stranger_row = make_profile(14, "", 0, 0, 0);
     let owner = owner_row.identity;
     let stranger = stranger_row.identity;
 

@@ -43,9 +43,7 @@ use spacetimedb::Identity;
 #[test]
 fn rb41_has_items_tracks_real_inventory_rows() {
     let fx = fixture();
-    let t = fx.table::<Inventory>("inventory", "inventory_owner_identity_idx_btree", |r| {
-        r.owner_identity
-    });
+    let t = fx.table::<Inventory>("inventory", "owner_identity", |r| r.owner_identity);
     let ctx = fx.ctx();
     let owner = Identity::from_byte_array([17u8; 32]);
     let stranger = Identity::from_byte_array([18u8; 32]);
@@ -65,7 +63,7 @@ fn rb41_has_items_tracks_real_inventory_rows() {
         inv_id: 7_002,
         owner_identity: stranger,
         item_id: 1,
-        count: 5,
+        count: 0,
     });
     assert!(
         !crate::inventory::has_items(&ctx, owner),
@@ -82,7 +80,7 @@ fn rb41_has_items_tracks_real_inventory_rows() {
         inv_id: 7_001,
         owner_identity: owner,
         item_id: 1,
-        count: 3,
+        count: 0,
     });
     assert!(
         crate::inventory::has_items(&ctx, owner),

@@ -2252,11 +2252,7 @@ fn auth24_rekey_wallet_credits_before_zero_never_deletes() {
 #[test]
 fn rb41_wallet_exists_tracks_real_wallet_rows() {
     let fx = crate::native_host_tests::fixture();
-    let t = fx.table::<PlayerWallet>(
-        "player_wallet",
-        "player_wallet_owner_identity_idx_btree",
-        |r| r.owner_identity,
-    );
+    let t = fx.table::<PlayerWallet>("player_wallet", "owner_identity", |r| r.owner_identity);
     let ctx = fx.ctx();
     let owner = Identity::from_byte_array([11u8; 32]);
     let stranger = Identity::from_byte_array([12u8; 32]);
@@ -2274,7 +2270,7 @@ fn rb41_wallet_exists_tracks_real_wallet_rows() {
 
     t.seed(&PlayerWallet {
         owner_identity: stranger,
-        balance: 250,
+        balance: 0,
     });
     assert!(
         !crate::economy::wallet_exists(&ctx, owner),
@@ -2289,7 +2285,7 @@ fn rb41_wallet_exists_tracks_real_wallet_rows() {
 
     t.seed(&PlayerWallet {
         owner_identity: owner,
-        balance: 40,
+        balance: 0,
     });
     assert!(
         crate::economy::wallet_exists(&ctx, owner),

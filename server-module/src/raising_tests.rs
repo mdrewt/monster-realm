@@ -3227,11 +3227,7 @@ fn care_reject_still_never_burns() {
 #[test]
 fn rb41_has_heal_cooldown_tracks_real_cooldown_rows() {
     let fx = crate::native_host_tests::fixture();
-    let t = fx.table::<HealCooldown>(
-        "heal_cooldown",
-        "heal_cooldown_owner_identity_idx_btree",
-        |r| r.owner_identity,
-    );
+    let t = fx.table::<HealCooldown>("heal_cooldown", "owner_identity", |r| r.owner_identity);
     let ctx = fx.ctx();
     let owner = Identity::from_byte_array([15u8; 32]);
     let stranger = Identity::from_byte_array([16u8; 32]);
@@ -3249,7 +3245,7 @@ fn rb41_has_heal_cooldown_tracks_real_cooldown_rows() {
 
     t.seed(&HealCooldown {
         owner_identity: stranger,
-        last_heal_at_ms: 9_000,
+        last_heal_at_ms: 0,
     });
     assert!(
         !crate::raising::has_heal_cooldown(&ctx, owner),

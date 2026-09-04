@@ -1925,11 +1925,7 @@ fn m22s3b_erase_npc_state_shape() {
 #[test]
 fn rb41_quest_state_tracks_real_quest_rows() {
     let fx = crate::native_host_tests::fixture();
-    let t = fx.table::<PlayerQuestRow>(
-        "player_quest",
-        "player_quest_owner_identity_idx_btree",
-        |r| r.owner_identity,
-    );
+    let t = fx.table::<PlayerQuestRow>("player_quest", "owner_identity", |r| r.owner_identity);
     let ctx = fx.ctx();
     let owner = Identity::from_byte_array([21u8; 32]);
     let stranger = Identity::from_byte_array([22u8; 32]);
@@ -2037,11 +2033,9 @@ fn rb41_quest_state_tracks_real_quest_rows() {
 #[test]
 fn rb41_dialogue_state_tracks_real_dialogue_rows() {
     let fx = crate::native_host_tests::fixture();
-    let t = fx.table::<PlayerDialogueStateRow>(
-        "player_dialogue_state",
-        "player_dialogue_state_owner_identity_idx_btree",
-        |r| r.owner_identity,
-    );
+    let t = fx.table::<PlayerDialogueStateRow>("player_dialogue_state", "owner_identity", |r| {
+        r.owner_identity
+    });
     let ctx = fx.ctx();
     let owner = Identity::from_byte_array([23u8; 32]);
     let stranger = Identity::from_byte_array([24u8; 32]);
