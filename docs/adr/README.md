@@ -13,13 +13,14 @@ Architecture Decision Records live in **two locations**; check both.
 - **`0001`** (record-architecture-decisions) is mirrored in both locations.
 
 Resolving a reference: an ADR numbered `0002`–`0034` → harness spec corpus;
-`0001` or `0035`+ → `docs/adr/`. Next free number: **`0184`**.
+`0001` or `0035`+ → `docs/adr/`.
 
-> ⚠ **`Next free number` above is still hand-maintained** — `scripts/adr-digest.mjs`
-> does not compute it, and nothing in `just ci` drift-gates it, so unlike the catalog
-> below it *can* fall behind (the CHANGELOG's long run of "reconcile next-free index"
-> chores is the evidence). Deriving it in the digest generator is a known follow-up;
-> it was out of slice 11r-d's declared `touches:` (it needs `scripts/adr-digest.mjs`).
+The next free number is not written here. It is derived at generation time from
+the files on disk and rendered into [`DIGEST.md`](./DIGEST.md) by
+`just adr-digest` — read it there; there is nothing to hand-update in this file.
+When a number has already been reserved for an in-flight slice, the supervisor
+ledger (`mr-state.json`, key `.adr_next_free`) is ahead of that rendered value
+and is the authoritative one to claim.
 
 **ADR numbering collision note:** the harness spec corpus also contains design
 ADRs numbered `0055`–`0057`; these cover the *same topics* as this project's
@@ -43,11 +44,11 @@ behind the files on disk the way a hand-written table does. Do not re-add a
 duplicate table here.
 
 Two things `DIGEST.md` does not render, so they stay above: the two-location
-navigation rules and the numbering-collision note. One thing it does not render
-either: **ADR-0041 (amended M8.5e) and ADR-0042 (amended M8.5a) carry appended
-`## Amendment` sections in their own bodies** — self-amendments, so no
-`Amended-by:` header points at them; the original decision text is preserved as
-the historical record.
+navigation rules and the numbering-collision note. It also does not render
+**self-amendments** — ADRs that carry an appended `## Amendment` section in their
+own body instead of a separate amending record, so no `Amended-by:` header points
+at them and the original decision text survives as the historical record. Grep
+`docs/adr/` for `## Amendment` rather than trusting any list of them here.
 
 See also [`template.md`](./template.md) (the MADR template) and
 `../validation-findings.md` (empirical Tier-1 results).

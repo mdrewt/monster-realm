@@ -56,6 +56,41 @@ test:
         echo "observability validate suite: only $pass test(s) passed, floor is 62" >&2
         exit 1
     fi
+    # rb-43: the adr-digest gating suite, in its OWN fail-closed block. Kept
+    # SEPARATE from the invocation above on purpose -- `node --test` silently
+    # ignores a path that does not exist (measured: exit 0, empty stderr), so
+    # folding both files into one command with one shared floor would hide a
+    # deleted suite the moment the other one grew past the floor.
+    if [ ! -f scripts/adr-digest.test.mjs ]; then
+        echo "adr-digest test suite: scripts/adr-digest.test.mjs is missing" >&2
+        exit 1
+    fi
+    adr_out="$(mktemp)"
+    node --test scripts/adr-digest.test.mjs 2>&1 | tee "$adr_out"
+    adr_pass="$(grep -Eo '^(ℹ|#) pass [0-9]+' "$adr_out" | grep -Eo '[0-9]+$' | tail -1)"
+    adr_fail="$(grep -Eo '^(ℹ|#) fail [0-9]+' "$adr_out" | grep -Eo '[0-9]+$' | tail -1)"
+    adr_skip="$(grep -Eo '^(ℹ|#) skipped [0-9]+' "$adr_out" | grep -Eo '[0-9]+$' | tail -1)"
+    adr_todo="$(grep -Eo '^(ℹ|#) todo [0-9]+' "$adr_out" | grep -Eo '[0-9]+$' | tail -1)"
+    if [ -z "$adr_pass" ] || [ -z "$adr_fail" ] || [ -z "$adr_skip" ] || [ -z "$adr_todo" ]; then
+        echo "adr-digest test suite: could not parse the node --test summary" >&2
+        exit 1
+    fi
+    if [ "$adr_fail" -ne 0 ]; then
+        echo "adr-digest test suite: $adr_fail failing test(s)" >&2
+        exit 1
+    fi
+    if [ "$adr_skip" -ne 0 ] || [ "$adr_todo" -ne 0 ]; then
+        echo "adr-digest test suite: $adr_skip skipped / $adr_todo todo test(s); both must be 0" >&2
+        exit 1
+    fi
+    # EQUALITY, not a floor: scripts/adr-digest.test.mjs is a frozen 6-test
+    # contract, so a silently DROPPED test is as fatal as a failing one. Raise
+    # this number in the SAME commit that adds a test.
+    if [ "$adr_pass" -ne 6 ]; then
+        echo "adr-digest test suite: $adr_pass test(s) passed, expected exactly 6" >&2
+        exit 1
+    fi
+    echo "adr-digest test suite: 6 test(s) passed"
 
 eval:
     node evals/run.mjs
