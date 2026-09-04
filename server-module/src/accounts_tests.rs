@@ -14484,6 +14484,21 @@ fn rb40_bare_log_needles() -> [String; 4] {
     ]
 }
 
+/// The log crate's bare PATH token, assembled from its bytes so this file never
+/// carries it contiguously (a dozen evals concatenate this file, `_tests.rs`
+/// siblings included, and several of them scan for exactly this token).
+///
+/// Banned as a WHOLE TOKEN, which is strictly wider than the four macro
+/// spellings above: it also covers the `__private_api` module those macros
+/// expand into, the global-logger accessor, the `Log` trait's own method and the
+/// `Level` enum — plus whatever spelling nobody has thought of yet.
+/// `rb22p_scan_hygiene` (privacy_tests.rs:711) has banned this same token in
+/// privacy.rs since rb-22, which is precisely why privacy.rs was never
+/// vulnerable to the internals shape and accounts.rs was.
+fn rb40_nd_log_path() -> String {
+    concat!("lo", "g", "::").to_string()
+}
+
 /// E1 (emission): `complete_guest_claim` emits EXACTLY ONE observation of the
 /// claim-time purge, and it is the TERMINAL statement of the success path.
 ///
@@ -14990,8 +15005,9 @@ fn rb40_claim_purge_fields_is_pure() {
     );
 }
 
-/// X3 (OBS-2 ratchet, no-regression): rb-40 adds NO bare `log` call site to
-/// accounts.rs or privacy.rs, and neither file imports the log crate.
+/// X3 (OBS-2 ratchet, no-regression): rb-40 adds NO new reach into the log crate
+/// from accounts.rs or privacy.rs — not a macro, not its internals — and neither
+/// file imports it.
 ///
 /// GREEN BEFORE THE FIX AS WELL AS AFTER — deliberately. This is a
 /// no-regression tooth, not a red-to-green one: the committed `.log-baseline`
@@ -14999,6 +15015,14 @@ fn rb40_claim_purge_fields_is_pure() {
 /// emission routes through the blessed `observability::mr_log` wrapper instead
 /// of reopening the ratchet. It belongs to the rb40 set because it is the fast
 /// local loop for the property X3 also checks against the baseline file itself.
+///
+/// THE BAN IS ON THE CRATE PATH TOKEN, NOT ON A LIST OF SPELLINGS (rb-40
+/// artifact red-team). A macro-name scan can only ever ban the names it
+/// enumerates, and those are not the only way to emit: the crate's
+/// `__private_api` module is `pub mod` (log 0.4.33, lib.rs:1626), so the
+/// function the four macros expand into is externally callable by anyone who
+/// spells the path. The four needles are KEPT because they attribute the common
+/// shape by name; the whole-token clause is what makes the tooth total.
 ///
 /// Kills: the emission written as a bare INFO macro of the log crate at the
 ///        claim site, which satisfies `be observable doing so` in the loosest
@@ -15010,7 +15034,26 @@ fn rb40_claim_purge_fields_is_pure() {
 ///        any logging);
 ///        an ALIASING import of that crate followed by a bang-call through the
 ///        alias, which hides the level token from a macro-name scan while
-///        emitting exactly the same unwrapped line.
+///        emitting exactly the same unwrapped line;
+///        a DIRECT call into the macro-expansion internals — MEASURED by the
+///        rb-40 artifact red-team, planted after the purge binding in
+///        complete_guest_claim, as a second emission channel that spells none of
+///        the four macro names, needs no import, is clippy-clean under
+///        `-D warnings` and left the whole suite green at 793/793. It hands the
+///        global logger a caller-built `format_args!`, so it also skips
+///        `guards::json_escape` and the AM6 reserved-key assert entirely —
+///        strictly worse than the shape the four needles ban, and invisible to
+///        every one of them;
+///        any future spelling of the same idea: the global-logger accessor, the
+///        `Log` trait's own method, the `Level` enum.
+///
+/// SCOPE, STATED HONESTLY: this tooth covers the two files this slice touches.
+/// The crate-wide G7 ratchet (`observability_tests.rs` `needles()` :376-383 and
+/// its `observability-log-wrapper.eval.mjs` twin, which must stay byte-identical
+/// to it) counts the same four macro spellings, so the internals shape is
+/// invisible to it in the other twenty modules. Widening that scanner — and
+/// re-deriving the `.log-baseline` under a wider needle — is outside this
+/// slice's touches and is recorded as residual R-rb40-G7PRIVATEAPI.
 #[test]
 fn rb40_no_new_bare_log_in_accounts_or_privacy() {
     let needles = rb40_bare_log_needles();
@@ -15024,6 +15067,19 @@ fn rb40_no_new_bare_log_in_accounts_or_privacy() {
         "rb40 [obs2/vacuity]: the bare-log needle does not match a PLANTED call after \
          stripping, so every zero-count assertion below would prove nothing. Stripped probe: \
          {probe_squashed:?}"
+    );
+
+    // --- non-vacuity: the crate-path token must FIND a planted internals call
+    let log_path = rb40_nd_log_path();
+    let path_probe = format!("fn f() {{ {log_path}__private_api::log(); }}");
+    let path_probe_squashed = stripped_for_scan(&path_probe);
+    assert_eq!(
+        m22_count_occurrences(&path_probe_squashed, &log_path),
+        1,
+        "rb40 [obs2/vacuity-path]: the crate-path token does not match a PLANTED call into the \
+         macro-expansion internals after stripping, so the whole-token clause below would \
+         prove nothing about the ONE shape it exists to catch — the shape a red-team measured \
+         as gate-green and clippy-clean. Stripped probe: {path_probe_squashed:?}"
     );
 
     for (path, src) in [("accounts.rs", ACCOUNTS_RS), ("privacy.rs", M22_PRIVACY_RS)] {
@@ -15047,6 +15103,22 @@ fn rb40_no_new_bare_log_in_accounts_or_privacy() {
                  macro-path spelling is caught too."
             );
         }
+        let n_path = m22_count_occurrences(&squashed, &log_path);
+        assert_eq!(
+            n_path, 0,
+            "rb40 [obs2/private-api]: {path} names the crate path token `{log_path}` {n_path} \
+             time(s); zero is allowed, and the ban is on the TOKEN rather than on any list of \
+             macro names. The crate's `__private_api` module is `pub mod` (log 0.4.33, \
+             lib.rs:1626), so the function the four macros above expand into is externally \
+             callable: a red-team MEASURED that direct call, planted in complete_guest_claim, \
+             as a second emission channel that spells none of those four names, needs no \
+             import, is clippy-clean under `-D warnings` and left the whole suite green. It \
+             hands the global logger a caller-built `format_args!`, so it bypasses \
+             `guards::json_escape` AND the AM6 reserved-key assert — the two things that stop \
+             a fragment forging the event type of a privacy-audit line. The same reasoning \
+             covers the global-logger accessor, the `Log` trait's own method and the `Level` \
+             enum. Route every emission through `observability::mr_log`."
+        );
         let clean = strip_rust_comments(&strip_rust_strings(src));
         for import in [
             concat!("use ", "lo", "g"),
