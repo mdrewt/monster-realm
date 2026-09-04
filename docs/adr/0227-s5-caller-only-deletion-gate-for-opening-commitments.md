@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** security-authz
-**Extends:** ADR-0225 (no reciprocal back-link edit — `docs/adr/0225-*` is outside this slice's declared touches)
+**Extends:** ADR-0225 (S3 right-sized cascade + G5 write isolation; the reciprocal back-link is in ADR-0225's header)
 **Decision:** S5 gates the three commitment-OPENING reducers with `guards::require_not_deleting`, a caller-only ctx wrapper delegating via `is_pending_deletion` to `should_reject_for_deletion`; already-open reducers stay ungated (PRV1-10).
 
 ---
