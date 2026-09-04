@@ -259,9 +259,10 @@ function begin(
 
 /**
  * Pure reducer. Total (never throws), never mutates its input, and takes exactly
- * `(state, event)` — no clock. Every step that CHANGES anything returns a fresh object; a true
- * no-op (a dark control, a refused emitter) returns the input state itself, so reference equality
- * means "nothing happened" rather than "nothing was copied".
+ * `(state, event)` — no clock. It does NOT promise a fresh object on every step: the two paths
+ * that exist to say "nothing happened" — a dark control (`'delete-requested'` while the delete is
+ * not permitted) and a refused emitter (`begin`'s guard) — return the input state itself. So
+ * `next === state` is a SUFFICIENT signal that nothing happened, never a necessary one.
  */
 export function privacyStep(state: PrivacyModelState, event: PrivacyEvent): PrivacyStep {
   switch (event.kind) {
