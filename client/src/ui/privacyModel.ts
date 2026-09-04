@@ -219,20 +219,26 @@ function isAlreadyDeletedMessage(message: string): boolean {
 }
 
 /** Start a request, or explain why it did not start. Shared by all three emitters so the
- *  double-submit guard is uniform — a guard applied to one of three is not a guard. */
+ *  double-submit guard is uniform — a guard applied to one of three is not a guard.
+ *
+ *  `confirmOnDelivery` is the confirmation state to write ON THE DELIVERED PATH ONLY — the name is
+ *  the guard: there is no value for a caller to spend on a path that delivered nothing. */
 function begin(
   state: PrivacyModelState,
   permitted: boolean,
   hasLiveConnection: boolean,
   which: PrivacyRequest,
   effect: PrivacyEffect,
-  confirm: PrivacyConfirm,
+  confirmOnDelivery: PrivacyConfirm,
 ): PrivacyStep {
   if (!permitted || state.inFlight !== 'none') {
     // A control that should not have been reachable. Nothing happened, so there is nothing to
     // tell the player — inventing a rejection here would claim the server refused when it was
-    // never asked.
-    return { next: { ...state, confirm }, effect: 'none' };
+    // never asked — and nothing is SPENT either: an armed confirmation survives a click that was
+    // refused, exactly as it survives one that could not be delivered (the branch below).
+    // Returning `state` itself, not a copy, is this module's shape for a true no-op — the same
+    // shape the `'delete-requested'` arm below uses for a dark control.
+    return { next: state, effect: 'none' };
   }
   if (!hasLiveConnection) {
     // Never silently dropped, and an armed confirmation stays ARMED so the player can retry the
@@ -240,14 +246,23 @@ function begin(
     return { next: { ...state, notice: 'disconnected', rejectMessage: undefined }, effect: 'none' };
   }
   return {
-    next: { ...state, confirm, inFlight: which, notice: 'none', rejectMessage: undefined },
+    next: {
+      ...state,
+      confirm: confirmOnDelivery,
+      inFlight: which,
+      notice: 'none',
+      rejectMessage: undefined,
+    },
     effect,
   };
 }
 
 /**
- * Pure reducer. Total (never throws), returns a FRESH state, never mutates its input, and takes
- * exactly `(state, event)` — no clock.
+ * Pure reducer. Total (never throws), never mutates its input, and takes exactly
+ * `(state, event)` — no clock. It does NOT promise a fresh object on every step: the two paths
+ * that exist to say "nothing happened" — a dark control (`'delete-requested'` while the delete is
+ * not permitted) and a refused emitter (`begin`'s guard) — return the input state itself. So
+ * `next === state` is a SUFFICIENT signal that nothing happened, never a necessary one.
  */
 export function privacyStep(state: PrivacyModelState, event: PrivacyEvent): PrivacyStep {
   switch (event.kind) {
@@ -279,7 +294,9 @@ export function privacyStep(state: PrivacyModelState, event: PrivacyEvent): Priv
         event.hasLiveConnection,
         'delete',
         'call-delete-account',
-        // Spend the confirmation on delivery; a refusal leaves it armed (handled inside `begin`).
+        // Spent ON DELIVERY only. Every refusal `begin` can return — not permitted, another
+        // request in flight, no live connection — leaves the confirmation ARMED, so the player
+        // never loses step two to a click that did nothing.
         'none',
       );
     case 'cancel-deletion-requested': {

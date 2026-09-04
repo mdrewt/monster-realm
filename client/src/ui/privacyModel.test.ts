@@ -676,6 +676,17 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
         'none',
       );
       expect(step.next.inFlight, label).toBe('none');
+      // ★ THE LATENT HALF of the same B1 defect (plan's "Second, latent behavior change"):
+      // `begin`'s no-op guard branch in privacyModel.ts applies the CALLER-supplied
+      // `confirm` unconditionally, so an armed confirmation on a non-active phase is ALSO
+      // spent here today, silently. Only reachable by DIRECT STATE CONSTRUCTION — a real
+      // player can never arm on a non-active countdown, because `account-changed` disarms on
+      // every phase change — but the uniform rule "a no-op never spends" must hold here too.
+      // WRONG IMPL KILLED: a partial fix that guards only the in-flight branch of `begin` and
+      // leaves this `!permitted` branch spending.
+      expect(step.next.confirm, `${label}: a no-op must not spend the armed confirmation`).toBe(
+        'delete-armed',
+      );
       // NO notice: the control should never have been reachable on this phase, so there is
       // nothing to tell the player. WRONG IMPL KILLED: routing the refusal through the
       // `'request-rejected'` notice, which invents a server rejection that never happened.
@@ -712,18 +723,56 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
       expect(deleteStep.next.inFlight, `the live request must not be clobbered by ${busy}`).toBe(
         busy,
       );
+      // ★ THE B1 DEFECT LEG — reds on HEAD, greens on the fix. `begin`'s no-op guard branch
+      // in privacyModel.ts applies the CALLER-supplied `confirm` unconditionally, and the
+      // `'delete-confirmed'` arm passes the literal `'none'` meant only for the DELIVERED
+      // path — so a busy refusal silently spends the armed confirmation, with no notice.
+      expect(
+        deleteStep.next.confirm,
+        `delete while ${busy} is in flight must not spend the armed confirmation`,
+      ).toBe('delete-armed');
+      // ...and it must not INVENT anything either. WRONG IMPL KILLED (measured by this slice's
+      // artifact red-team, which passed all five mutant teeth without this pair): a busy refusal
+      // that reports `notice: 'request-rejected'` with a `rejectMessage` the server never sent —
+      // a field `PrivacyModelState` documents as the server's message, VERBATIM.
+      expect(
+        deleteStep.next.notice,
+        `delete while ${busy} is in flight: a request that was never sent has no rejection`,
+      ).toBe('none');
+      expect(
+        deleteStep.next.rejectMessage,
+        `delete while ${busy} is in flight: no server message can exist for an unsent request`,
+      ).toBeUndefined();
 
-      const cancelStep = privacyStep(stateOf({ countdown: GRACE_COUNTDOWN, inFlight: busy }), {
-        kind: 'cancel-deletion-requested',
-        hasLiveConnection: true,
-      });
+      // `confirm: 'delete-armed'` on these two fixtures is deliberate: it proves the UNIFORM
+      // invariant "no emitter's no-op spends", not the defect above. `cancel-deletion-requested`
+      // and `export-requested` pass `state.confirm` straight through `begin` at their call sites, so
+      // the defect never reaches them — both legs below already PASS ON HEAD. Left at the
+      // fixtures' default `confirm: 'none'` there is nothing to spend, so the assertion would
+      // be permanently vacuous without this fixture change — hence the fixture, not the test.
+      const cancelStep = privacyStep(
+        stateOf({ countdown: GRACE_COUNTDOWN, confirm: 'delete-armed', inFlight: busy }),
+        { kind: 'cancel-deletion-requested', hasLiveConnection: true },
+      );
       expect(cancelStep.effect, `cancel while ${busy} is in flight`).toBe('none');
+      expect(
+        cancelStep.next.confirm,
+        `cancel while ${busy} busy: no-op must not spend (uniform, passes on HEAD)`,
+      ).toBe('delete-armed');
+      expect(cancelStep.next.notice, `cancel while ${busy} busy: nothing to announce`).toBe('none');
+      expect(cancelStep.next.rejectMessage, `cancel while ${busy} busy`).toBeUndefined();
 
-      const exportStep = privacyStep(stateOf({ countdown: ACTIVE_COUNTDOWN, inFlight: busy }), {
-        kind: 'export-requested',
-        hasLiveConnection: true,
-      });
+      const exportStep = privacyStep(
+        stateOf({ countdown: ACTIVE_COUNTDOWN, confirm: 'delete-armed', inFlight: busy }),
+        { kind: 'export-requested', hasLiveConnection: true },
+      );
       expect(exportStep.effect, `export while ${busy} is in flight`).toBe('none');
+      expect(
+        exportStep.next.confirm,
+        `export while ${busy} busy: no-op must not spend (uniform, passes on HEAD)`,
+      ).toBe('delete-armed');
+      expect(exportStep.next.notice, `export while ${busy} busy: nothing to announce`).toBe('none');
+      expect(exportStep.next.rejectMessage, `export while ${busy} busy`).toBeUndefined();
     }
 
     // ... and the guard lifts once the request settles (anti-vacuity for all three).
@@ -735,6 +784,79 @@ describe('privacyStep (PRV1-1): requesting deletion takes two explicit steps', (
     expect(
       privacyStep(settled.next, { kind: 'export-requested', hasLiveConnection: true }).effect,
     ).toBe('call-request-data-export');
+
+    // A REDUCER-BUILT reachable sequence, not a hand-built `stateOf` fixture: proves the buggy
+    // state is legally reachable by a real player. From PRIVACY_INITIAL: an active row arrives,
+    // the player arms the delete, starts an export (which goes in flight), then clicks the
+    // already-armed delete confirm. Each step's `next` threads into the following one.
+    const accountChanged = privacyStep(PRIVACY_INITIAL, {
+      kind: 'account-changed',
+      countdown: ACTIVE_COUNTDOWN,
+    });
+    const armed = privacyStep(accountChanged.next, { kind: 'delete-requested' });
+    const exportStarted = privacyStep(armed.next, {
+      kind: 'export-requested',
+      hasLiveConnection: true,
+    });
+    expect(exportStarted.effect, 'the export must actually go in flight for this fixture').toBe(
+      'call-request-data-export',
+    );
+    const deleteWhileExporting = privacyStep(exportStarted.next, {
+      kind: 'delete-confirmed',
+      hasLiveConnection: true,
+    });
+    expect(deleteWhileExporting.effect, 'reducer-built: delete while export is in flight').toBe(
+      'none',
+    );
+    expect(deleteWhileExporting.next.inFlight, 'the live export is untouched').toBe('export');
+    expect(
+      deleteWhileExporting.next.confirm,
+      'reducer-built: the armed confirmation must survive a busy refusal',
+    ).toBe('delete-armed');
+    expect(
+      deleteWhileExporting.next.notice,
+      'reducer-built: the busy refusal announces nothing — nothing was asked',
+    ).toBe('none');
+    expect(deleteWhileExporting.next.rejectMessage, 'reducer-built').toBeUndefined();
+
+    // A SECOND reducer-built path — the double-click, the most realistic manifestation of the
+    // bug: `case 'delete-requested'` gates only on `deletePermitted`, never on
+    // `inFlight`, so a player can re-arm the confirmation while an earlier delete click is
+    // still in flight, and the re-armed confirmation is then spent silently by the busy
+    // refusal for the SAME control.
+    const firstConfirm = privacyStep(armed.next, {
+      kind: 'delete-confirmed',
+      hasLiveConnection: true,
+    });
+    expect(firstConfirm.effect, 'the first click actually fires').toBe('call-delete-account');
+    expect(firstConfirm.next.inFlight).toBe('delete');
+    const reArmed = privacyStep(firstConfirm.next, { kind: 'delete-requested' });
+    expect(
+      reArmed.next.confirm,
+      'delete-requested re-arms even while an earlier delete is still in flight',
+    ).toBe('delete-armed');
+    const doubleClick = privacyStep(reArmed.next, {
+      kind: 'delete-confirmed',
+      hasLiveConnection: true,
+    });
+    expect(doubleClick.effect, 'the double-click must not fire a second delete').toBe('none');
+    expect(doubleClick.next.inFlight, 'the first delete is still the one in flight').toBe('delete');
+    expect(
+      doubleClick.next.confirm,
+      'the double-click must not silently disarm the re-armed confirmation',
+    ).toBe('delete-armed');
+
+    // Local anti-vacuity for the DELIVERED spend: a DELIBERATE duplication of S8T-DELETE-CONFIRM
+    // — first-failure-wins means a distant tooth cannot be relied on to cover the
+    // delivered half of the SAME `begin` call this test exercises for the busy half above.
+    const delivered = privacyStep(
+      stateOf({ countdown: ACTIVE_COUNTDOWN, confirm: 'delete-armed', inFlight: 'none' }),
+      { kind: 'delete-confirmed', hasLiveConnection: true },
+    );
+    expect(delivered.effect, 'idle + armed + permitted + live: the delete actually fires').toBe(
+      'call-delete-account',
+    );
+    expect(delivered.next.confirm, 'a DELIVERED confirmation is spent').toBe('none');
   });
 
   it('★★ BITES: a succeeded request clears the in-flight slot AND any stale notice / reject message', () => {
@@ -1072,6 +1194,112 @@ describe('privacyModel: purity and totality', () => {
   it('★ BITES: the reducer takes exactly (state, event) — no clock, no store, no connection argument', () => {
     expect(privacyStep.length).toBe(2);
     expect(deriveDeletionCountdown.length, 'the derivation takes exactly one INPUT record').toBe(1);
+  });
+
+  it('★★ S8T-NOOP-NEVER-SPENDS BITES (property): a no-op effect never spends confirm', () => {
+    // ★ THE B1 DEFECT, QUANTIFIED. Only three arms of `privacyStep` may legitimately WRITE
+    // `confirm`: `confirm-cancelled` (disarm), `delete-requested` (arm) and `account-changed`
+    // (disarm on any phase leave). Every other event that resolves to `effect: 'none'` — a
+    // busy-guard refusal, a permission refusal, a settled request, a rejected request — must
+    // leave `confirm` exactly as it found it. MEASURED by this slice's red-team, with a
+    // throwaway 20 000-run config: the property fails on 1112 of those cases against the pre-fix
+    // implementation (`begin`'s no-op guard branch applies the caller-supplied `confirm`
+    // unconditionally) and 0 against the fix — a ~5.6% per-case hit rate, so it is discriminating
+    // rather than decorative.
+    //
+    // What SHIPS below is deliberately smaller and DETERMINISTIC — a fixed seed and a fixed run
+    // count — so this gate never flakes. At that hit rate 2000 runs is not a probabilistic bet:
+    // the seed pins the exact sample, and the anti-vacuity flag at the end of this test proves
+    // that sample really does contain the armed + busy + `delete-confirmed` case.
+    const countdownArb = fc.constantFrom(
+      UNKNOWN_COUNTDOWN,
+      ACTIVE_COUNTDOWN,
+      GRACE_COUNTDOWN,
+      DUE_COUNTDOWN,
+      TERMINAL_COUNTDOWN,
+    );
+    const confirmArb = fc.constantFrom('none' as const, 'delete-armed' as const);
+    const inFlightArb = fc.constantFrom(
+      'none' as const,
+      'delete' as const,
+      'cancel' as const,
+      'export' as const,
+    );
+    const noticeArb = fc.constantFrom(
+      'none' as const,
+      'disconnected' as const,
+      'permanently-deleted' as const,
+      'request-rejected' as const,
+    );
+    const stateArb: fc.Arbitrary<PrivacyModelState> = fc
+      .record({
+        countdown: countdownArb,
+        confirm: confirmArb,
+        inFlight: inFlightArb,
+        notice: noticeArb,
+      })
+      .map((partial) => stateOf(partial));
+
+    const liveArb = fc.boolean();
+    const whichArb = fc.constantFrom('delete' as const, 'cancel' as const, 'export' as const);
+    const eventArb: fc.Arbitrary<PrivacyEvent> = fc.oneof(
+      countdownArb.map((countdown): PrivacyEvent => ({ kind: 'account-changed', countdown })),
+      fc.constant<PrivacyEvent>({ kind: 'delete-requested' }),
+      liveArb.map(
+        (hasLiveConnection): PrivacyEvent => ({ kind: 'delete-confirmed', hasLiveConnection }),
+      ),
+      fc.constant<PrivacyEvent>({ kind: 'confirm-cancelled' }),
+      liveArb.map(
+        (hasLiveConnection): PrivacyEvent => ({
+          kind: 'cancel-deletion-requested',
+          hasLiveConnection,
+        }),
+      ),
+      liveArb.map(
+        (hasLiveConnection): PrivacyEvent => ({ kind: 'export-requested', hasLiveConnection }),
+      ),
+      whichArb.map((which): PrivacyEvent => ({ kind: 'request-succeeded', which })),
+      fc
+        .tuple(whichArb, fc.constantFrom('no account', SERVER_ALREADY_DELETED_MESSAGE))
+        .map(([which, message]): PrivacyEvent => ({ kind: 'request-failed', which, message })),
+    );
+
+    // The three arms that legitimately WRITE `confirm` — everything else is a no-op on it.
+    const CONFIRM_WRITERS: readonly PrivacyEvent['kind'][] = [
+      'confirm-cancelled',
+      'delete-requested',
+      'account-changed',
+    ];
+
+    let sawArmedBusyDeleteConfirmed = false;
+
+    fc.assert(
+      fc.property(stateArb, eventArb, (state, event) => {
+        if (
+          state.confirm === 'delete-armed' &&
+          state.inFlight !== 'none' &&
+          event.kind === 'delete-confirmed'
+        ) {
+          sawArmedBusyDeleteConfirmed = true;
+        }
+        const step = privacyStep(state, event);
+        if (step.effect === 'none' && !CONFIRM_WRITERS.includes(event.kind)) {
+          expect(
+            step.next.confirm,
+            `${event.kind} (effect none) must not spend confirm=${show(state.confirm)}`,
+          ).toBe(state.confirm);
+        }
+      }),
+      { seed: 180226, numRuns: 2000 },
+    );
+
+    // ANTI-VACUITY: the generator must actually hit the interesting combination at least once —
+    // otherwise a generator that never reaches armed + busy + delete-confirmed would make the
+    // property above trivially true.
+    expect(
+      sawArmedBusyDeleteConfirmed,
+      'the generator never produced armed + busy + delete-confirmed — the property is vacuous',
+    ).toBe(true);
   });
 });
 
