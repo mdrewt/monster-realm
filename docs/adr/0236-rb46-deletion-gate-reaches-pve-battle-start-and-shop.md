@@ -7,7 +7,7 @@
 **Amends:** —
 **Extends:** ADR-0227 (the S5 caller-only gate; reciprocal `Extended-by:` in its header, and its stale "still-ungated §4.7 targets" bullet is discharged by a dated amendment there)
 **Subsystems:** security-authz, battle, economy-quests
-**Decision:** rb-46 gates `start_battle`, dev-only `start_wild_battle`, `buy` and `sell` with `guards::require_not_deleting` as the first stateful check, proven by native-host execution plus source pins; the scheduler grass path is a disclosed residual.
+**Decision:** rb-46 gates `start_battle`, dev `start_wild_battle`, `buy`, `sell` with `guards::require_not_deleting` as the first check after caller standing, proven by native-host execution plus source pins; the grass path is a disclosed residual.
 
 ---
 
@@ -118,10 +118,12 @@ debug-asserts state legality, so the shape is unconstructible without an `Accoun
   wasm that CI publishes.
 - **Source pins only (the ADR-0227 D6 vehicle)** — rejected: the runtime harness now exists, and a pin cannot
   prove polarity or reachability; execution can. Execution only — also rejected (D4's four blind spots).
-- **Gate the grass-path encounter (`movement_tick → begin_encounter`)** — not possible here: the caller is the
-  scheduler (`ctx.sender()` is the database identity), so a caller-only gate would consult the wrong
-  account, and an identity-parameterised gate is exactly what ADR-0227 D2 made unwritable; `movement.rs` is
-  outside this slice's touches. Disclosed residual (below).
+- **Gate the grass-path encounter (`movement_tick → begin_encounter`)** — not done here: the caller is the
+  scheduler (`ctx.sender()` is the database identity), so the caller-only wrapper cannot apply. A gate inside
+  `battle::begin_encounter` keyed on its server-derived `player_identity` (through the identity-taking
+  `accounts::is_pending_deletion`) IS writable — but whether a scheduler-driven encounter is a §4.7 commitment
+  at all is a design question for the PRV1-7 crate-wide slice, and `movement.rs` is outside this slice's
+  touches. Disclosed residual (below).
 
 ## Consequences and residuals
 
@@ -130,10 +132,17 @@ debug-asserts state legality, so the shape is unconstructible without an `Accoun
   `guards_tests.rs` is the authoritative per-file set for the other two.
 - ADR-0227's "Still-ungated §4.7 targets" consequence is discharged by a dated amendment in that ADR; its
   header gains `**Extended-by:** ADR-0236`.
-- **Residual (backlog): the scheduler grass path.** A mid-grace walker still receives wild encounters
-  (`movement.rs` `movement_tick → begin_encounter`). Whether that is a §4.7 "new commitment" or ordinary
-  world simulation is a design question for the PRV1-7 crate-wide slice; the caller-only gate cannot answer
-  it and this slice does not pretend to.
+- **Residual (backlog, R-rb-46-GRASSPATH): the scheduler grass path.** A mid-grace walker still receives
+  wild encounters (`movement.rs` `movement_tick` → `battle::begin_encounter`, an ungated opener that lives in
+  `battle.rs` itself — "every §4.7 opener in `battle.rs` is gated" holds at `#[spacetimedb::reducer]`
+  granularity only). Whether that is a §4.7 "new commitment" or ordinary world simulation is a design question
+  for the PRV1-7 crate-wide slice; this slice does not pretend to answer it.
+- **Residual (backlog, R-rb-46-ERASEWRITERS): the other ERASE-policy writers.** §4.7's trigger predicate
+  ("every reducer writing an ERASE/ANONYMIZE/JOIN_ONLY table") also selects `raising::heal_party` (spends
+  currency, consumes items), `npc::advance_dialogue` (quest turn-in grants items and currency) and the taming
+  recruit path (`grant_item`). None is gated, none is in this slice's touches, and §4.7 names only shop
+  buy/sell explicitly — a mid-grace account still moves currency and items through those paths. They belong to
+  the PRV1-7 crate-wide mechanism (reducer-security-auditor finding, rb-46).
 - **Residual (backlog): the pre-existing `trading.rs` call site** carries the m22-s5 pins, which have no
   `#[cfg` / statement-boundary clause — the same attribute trick D4 closes here would pass there
   (`pvp.rs`'s two sites are incidentally covered by ranking-security's body-wide `#[cfg` ban).
@@ -153,12 +162,13 @@ debug-asserts state legality, so the shape is unconstructible without an `Accoun
   and a `lib.rs` `#[cfg(target_arch = "wasm32")]`-selected `mod guards` swap would substitute the wrapper
   for the wasm build only while every pin on the real `guards.rs` stays green — `lib.rs` is outside this
   slice's touches, and such an edit is visible in the touches-delta audit.
-- Proof-of-teeth: a 20-row mutant register (drop each call site; discard the Result; wrong tag; gate after
-  the first write; always-false block; gate an already-open reducer; gate a wallet helper; import-shadow;
-  duplicate; decoy comment; constant reject; `#[cfg(test)]` on the statement; a third-party sibling; a
-  token-swallowing macro; a sender-keyed early-return twin; a cfg-const early-return twin; a
-  row-exists-keyed predicate; a memoised verdict) executed one mutant at a time with the designated failing
-  test recorded per row in the slice acceptance ledger (`memory/projects/gates/rb-46.gates.md`, gate X5),
+- Proof-of-teeth: a 22-row mutant register — M0 (all four gates dropped: the HEAD-equivalent RED record for
+  every test) and M1-M21 (drop each call site; discard the Result; wrong tag; gate after the first write;
+  always-false block; gate an already-open reducer; gate a wallet helper; import-shadow; duplicate; decoy
+  comment; constant reject; `#[cfg(test)]` on the statement; a third-party sibling; a token-swallowing macro;
+  a row-exists-keyed predicate; a memoised verdict; a sender-keyed early-return twin; a cfg-const early-return
+  twin) — executed one mutant at a time by the runner `memory/projects/gates/rb-46.mutants.py`, with the
+  per-row designated-test record in `memory/projects/gates/rb-46.red-before.md` (cited from ledger gate X5),
   never in this ADR body.
 
 ## Confirmation

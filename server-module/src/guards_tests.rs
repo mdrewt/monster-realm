@@ -2884,8 +2884,11 @@ fn rb46_gated_names() -> [String; 4] {
 ///      real defect here, not untidiness: gating `submit_attack`, `swap_active`,
 ///      `flee` or `use_battle_item` would trap a deleting player inside a battle
 ///      they can no longer finish or flee, and gating a wallet helper
-///      (`grant_currency`, `spend_currency`, `consume_one`) would force-terminate
-///      value delivery mid-battle — the PRV1-10 break ADR-0236 D1 names.
+///      (`grant_currency` / `spend_currency`, both in economy.rs) would
+///      force-terminate value delivery mid-battle — the PRV1-10 break ADR-0236
+///      D1 names. The third helper on that reasoning, `consume_one`, lives in
+///      inventory.rs and is therefore outside BOTH scanned files: this census
+///      cannot see it, and nothing here claims otherwise.
 ///   2. THE WHOLE-FILE BARE-NAME COUNT of two per file. The set assertion reads
 ///      REDUCER BODIES only, so it is blind to a gate call hoisted into a
 ///      private helper, to a duplicate inside one body, and to a `..._for(ctx,
@@ -2930,9 +2933,10 @@ fn rb46_gated_names() -> [String; 4] {
 ///     than a loud parse ambiguity.
 ///
 /// HONEST LIMIT: source scan. It says the call is written, is qualified, is
-/// tagged and is in the right reducer; it cannot say the call runs, or that it
-/// runs before the write. Ordering and reachability are pinned beside each
-/// reducer (`battle_tests.rs` / `economy_tests.rs`), and polarity is proven by
+/// tagged and is in the right reducer; it cannot say the call runs, that nothing
+/// above it returns early, or that it runs before the write. Reachability and
+/// ordering are pinned beside each reducer (`battle_tests.rs` /
+/// `economy_tests.rs`, clauses C/D/H/I there), and polarity is proven by
 /// executing the reducers under the native host in those same files.
 #[test]
 fn rb46_gated_reducer_census_battle_and_economy() {
@@ -3066,10 +3070,13 @@ fn rb46_gated_reducer_census_battle_and_economy() {
     for (label, src, tag) in tag_cases {
         let squashed = m22s5_comments_only_squashed(label, src);
 
-        // Both closing forms are accepted: the single-line call, and the form
-        // rustfmt produces when the call exceeds fn_call_width and is split one
-        // argument per line with a trailing comma. The longest of the four call
-        // sites is 61 characters, so at least one of them WILL be split.
+        // Both closing forms are accepted. The INLINE form is the expected one:
+        // `fn_call_width` (60) bounds the ARGUMENT LIST, not the whole call
+        // expression (`raising.rs:680` is the in-tree counter-example — a
+        // 67-column call kept inline on 52 columns of arguments), and the widest
+        // argument list among these four sites is 24 columns. The trailing-comma
+        // form is accepted only as future-proofing against a rename long enough
+        // to push an argument list past that width.
         let plain = [call.as_str(), "ctx,", dq.as_str(), tag, dq.as_str(), ")?;"].concat();
         let trailing = [call.as_str(), "ctx,", dq.as_str(), tag, dq.as_str(), ",)?;"].concat();
 
@@ -3085,8 +3092,8 @@ fn rb46_gated_reducer_census_battle_and_economy() {
              reducers, so the tag is the ONLY record of which commitment was actually \
              refused; a wrong tag files the reject under a sibling reducer's name and the \
              operator's log points at the wrong place. The trailing `?;` is part of the pin: \
-             a discarded result compiles, lints clean and gates nothing. Expected \
-             (squashed, trailing-comma form): {trailing:?}"
+             a discarded result compiles, lints clean and gates nothing. Expected (squashed, \
+             the inline form rustfmt produces here): {plain:?}"
         );
 
         // The site must sit inside its OWN reducer's declaration region — from

@@ -453,14 +453,15 @@ unarmed (ADR-0221 Residuals R2 — S3b owns the re-arm path AND the not-yet-due
 re-arm; the re-pinned frozen-body gate reds when the cascade body lands).
 **m22-s5** (ADR-0227) wired that predicate into gameplay: `guards::require_not_deleting`
 (caller-only ctx wrapper — no identity param by design; delegates transitively via
-`accounts::is_pending_deletion`, never re-deriving the disjunction) now gates exactly the
+`accounts::is_pending_deletion`, never re-deriving the disjunction) gated exactly the
 three commitment-OPENING reducers — `propose_trade`, `challenge_pvp`, `accept_challenge` —
 before any write (PRV1-9), while every reducer acting on an already-open interaction stays
 ungated so live trades/battles/challenges are never force-terminated at request time
 (PRV1-10; `submit_pvp_action` deliberately NOT gated — deadline-forfeit would be de-facto
 force-termination, ADR-0227 D5). PvE `battle::start_battle`, the dev-only `battle::start_wild_battle`
 and shop `economy::buy`/`sell` were gated by **rb-46** (ADR-0236, residual R-m22-s5-X12 closed) — the
-same wrapper as the first stateful check, proven by native-host execution plus source pins; the scheduler
+same wrapper as the first check once caller standing is established, proven by native-host execution plus
+source pins; the scheduler
 grass path (`movement_tick → begin_encounter`) is the remaining disclosed opener (R-rb-46-GRASSPATH).
 
 **m22-s4** (ADR-0226) landed the §5 export: `request_data_export` walks the

@@ -56,7 +56,7 @@ use game_core::resolve_encounter;
 /// to both named participants via the `my_battle` view (ADR-0198).
 ///
 /// Deletion-gated (ADR-0236, spec para 4.7): a caller whose account is mid-grace
-/// or terminal is refused before any state read or write.
+/// or terminal is refused before any other state read and every write.
 #[spacetimedb::reducer]
 pub fn start_battle(
     ctx: &ReducerContext,
@@ -118,8 +118,8 @@ pub fn start_battle(
     // Deletion gate (ADR-0236 D2, spec para 4.7): a mid-grace or terminal account
     // may not OPEN a new battle commitment. The FIRST stateful check on purpose —
     // the gate is a DB read, so the pure caps/provenance/dedup rejects above keep
-    // their place (M8.5a) — and it runs before every other-party read and every
-    // write. Fully qualified + `?;`: both are pinned (unshadowable path, no
+    // their place (M8.5a for the caps, ADR-0048 for provenance) — and it runs
+    // before every other-party read and every write. Fully qualified + `?;`: both are pinned (unshadowable path, no
     // discarded verdict).
     crate::guards::require_not_deleting(ctx, "start_battle")?;
 
