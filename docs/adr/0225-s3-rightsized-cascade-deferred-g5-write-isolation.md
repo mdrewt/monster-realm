@@ -5,6 +5,7 @@
 **Slice:** m22-s3
 **Supersedes:** —
 **Amends:** —
+**Extended-by:** ADR-0227
 **Subsystems:** security-authz, schema-persistence, ci-gates
 **Decision:** S3 ships the terminal-cancel guard, the reaper recheck skeleton and `should_reject_for_deletion` in accounts.rs; the PRV1-6 cascade defers to S3b — G5 write isolation demands per-module erase helpers outside S3's touches.
 

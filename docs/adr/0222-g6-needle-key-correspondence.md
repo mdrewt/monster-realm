@@ -6,7 +6,7 @@
 **Supersedes:** —
 **Amends:** —
 **Subsystems:** ci-gates, security-authz
-**Extends:** ADR-0208 (rb-42 added the reciprocal back-link that this slice parked; ADR-0208's header now names this ADR)
+**Extends:** ADR-0208 (G6 re-key manifest gate hardening; the reciprocal back-link is in ADR-0208's header)
 **Decision:** A REKEY needle must name one cfg-free `fn` (both halves); the rekey half must also reach `db.<table>(` and write through it. Since rb-41 the exists half's reach is proven by `rb41_*` Rust tests; the mirror exception is retired.
 
 ---

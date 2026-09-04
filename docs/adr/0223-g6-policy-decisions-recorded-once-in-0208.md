@@ -5,7 +5,7 @@
 **Slice:** rb-26 (residual R-rb-2-X9; also dispositions R-rb-3-X9 for the queued rb-27)
 **Supersedes:** —
 **Amends:** ADR-0207
-**Extends:** ADR-0208 (rb-42 added the reciprocal back-link that this slice parked; ADR-0208's header now names this ADR)
+**Extends:** ADR-0208 (G6 re-key manifest gate hardening; the reciprocal back-link is in ADR-0208's header)
 **Subsystems:** ci-gates, tooling-docs
 **Decision:** The policy-discriminator and own-property-boundary designs stay recorded only in ADR-0208 D1/D2; ADR-0207's four consumer regions are corrected in place; rb-27 extends ADR-0208 instead of minting a competing number.
 
@@ -122,11 +122,10 @@ manifest.
   ADR-0202 accepted the same cost for the same reason. `docs/adr/README.md`'s next-free-ADR number goes
   one staler — that file is supervisor-owned and outside this slice's touches.
 - **Follow-ups.** The four escalations below. None blocks this slice.
-- **Closed by rb-42 (2026-09-04).** This ADR and ADR-0222 each declared `Extends: ADR-0208` while parking
-  the reciprocal edit as out-of-touches. rb-42 owned `docs/adr/**` and discharged both: ADR-0208's header
-  now names the two extending ADRs, and the two parked caveats are rewritten rather than annotated, per
-  D2's own in-place rule. Honest limit, disclosed rather than papered over: **nothing in CI gates that
-  back-link.** `scripts/adr-digest.mjs` extracts only the amends/amended-by pair, so the extends relation
+- **Closed by rb-42 (2026-09-04)** — see the `Extends:` line above; rb-42 also swept the corpus's one
+  remaining instance of the same parked debt (ADR-0227 to ADR-0225), so no ADR now declares an extends
+  relation while asserting its back-link was left undone. Honest limit, disclosed rather than papered
+  over: **nothing in CI gates any of those back-links.** `scripts/adr-digest.mjs` extracts only the amends/amended-by pair, so the extends relation
   has neither reciprocity nor dangling-reference checking — a dangling extends target passes green today,
   measured. Modelling that relation properly means ~15 reciprocal header edits plus its own tolerated-gap
   baseline, ratchet, frozen duplicate and fixture teeth across two eval files; rb-42 deferred it to
@@ -155,7 +154,7 @@ paragraph), and an unbound whole-file escort check lets one mark satisfy all thr
 
 ## Escalations (recorded, not actioned here — each outside this slice's touches)
 
-Status re-measured by rb-42 on 2026-09-04; 2 is discharged, 1/3/4 remain open.
+Escalation 2 discharged and 1 re-measured by rb-42 (2026-09-04); 3 and 4 unchanged this slice.
 
 1. **OPEN.** `specs/monster-realm-v2/M-residual-backlog.spec.md` still states that no ADR number was
    reserved for R-rb-3-X9. Harness repo, generator output, supervisor-owned. D4 is the mitigation until
