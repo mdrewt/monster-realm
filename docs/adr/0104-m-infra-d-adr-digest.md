@@ -119,3 +119,81 @@ vs. nightly. The script is sub-second; drift caught at PR time is the point.
 - The harness design corpus is vendored once and frozen; project CI never reads the
   harness repo; any future harness ADR update requires a manual corpus refresh
 - The vocabulary is fixed at 10 subsystems; amendments go through a future ADR
+
+## Amendment (rb-43, 2026-09-04)
+
+Self-amendment; no new ADR number was minted and no `Amends:` / `Amended-by:`
+header field was added on either side (a reciprocity obligation the generator
+validates, and this record amends itself).
+
+**What changed.** `scripts/adr-digest.mjs` now DERIVES the next free project ADR
+number — `max(collected id) + 1`, zero-padded to four digits, `0001` on an empty
+corpus — and renders it into the generated `DIGEST.md` as the first line after
+the `Generated from N project ADRs …` line. Because it is part of the payload
+`--check` byte-compares, it is drift-gated by the same `just ci` →
+`evals/adr-digest.eval.mjs` leg as the rest of the digest. `docs/adr/README.md`
+no longer hand-maintains the number at all: its next-free paragraph now points
+at `DIGEST.md` and states where the value comes from. A new ordinary test,
+`scripts/adr-digest.test.mjs`, gates the derivation, the exact rendered line and
+position, payload membership, the band guard, and README's freedom from a
+hand-maintained digit; it is wired into `just test` behind its own fail-closed
+summary-parsing block (ADR-0224 forbids a new eval or a new clause in an
+existing one, so an ordinary test is the sanctioned proof).
+
+**Why.** The hand-maintained `Next free number` in README had drifted 51 numbers
+behind the top of the corpus (it read `0184` while the directory ran to `0235`;
+as a *next-free* value it was 52 off) and nothing gated it. The
+README's own ⚠ blockquote had already named the fix — "deriving it in the digest
+generator is a known follow-up" — and that blockquote is now deleted, since the
+defect it described no longer exists.
+
+**Disclosed limits.**
+
+- It is a MEASUREMENT of the files on disk, not a RESERVATION. Two slices
+  reading the same rendered number will pick the same id.
+- It is NON-MONOTONE. Reverting a merge, renaming the top ADR, or deleting it
+  moves the rendered number BACKWARDS onto an id that has already been used and
+  retired, with CI fully green — the digest is consistent with the corpus, and
+  the corpus is what shrank. Nothing in this repo remembers spent numbers.
+- The supervisor ledger (`mr-state.json`, key `.adr_next_free`) remains
+  authoritative whenever a number has been reserved for an in-flight slice; it
+  is ahead of the rendered line by construction.
+- A band guard narrows, but does not close, the filename namespace.
+  `collectAdrIds` deliberately keeps a loose four-digit-prefix filter, so a
+  date-named retro (`2026-…`) or a five-digit note (`10000-…`) IS collected; the
+  guard rejects every collected id outside the band — not just the maximum — in
+  generate AND in `--check` mode, before any file is opened and before any write.
+  What it does NOT catch, measured: a prefix that truncates back INTO the band
+  (`02361-…` collects as `0236`), a duplicate id (two files may both claim
+  `0236` and the digest renders both rows without complaint), a filename prefix
+  that disagrees with the file's own `# ADR-NNNN` heading, and a real ADR the
+  filter silently MISSES (`.MD` casing, or a nested subdirectory — `readdir` is
+  not recursive), which under-reports the maximum. Each of those still yields a
+  wrong number with green CI. They are pre-existing properties of the collector
+  that this amendment makes load-bearing rather than cosmetic, and they are
+  filed as residuals rather than fixed here.
+- The band is not exhaustion-aware. At a corpus maximum of `0999` the rendered
+  value would be `1000`, which the guard itself then refuses to admit — the
+  digest would name a number that cannot be minted. That is ~760 ADRs away and
+  is deliberately left unhandled rather than speculatively coded.
+- The `just test` block that runs the new suite has no tooth on its OWN wiring:
+  deleting that block is CI-clean, and the suite would then gate nothing. The
+  obvious remedy — a check whose only purpose is proving another check has not
+  decayed — is the pattern ADR-0224 retires by name, so it is disclosed here
+  instead of built.
+
+**Residuals closed.** This closes `R-rb-26-X11-adr-readme-next-free`. Three
+escalation records that recorded the defect as OPEN are hereby discharged:
+`docs/adr/0202-obsolete-residual-prose-corrected.md:314`,
+`docs/adr/0223-g6-policy-decisions-recorded-once-in-0208.md:169`, and
+`docs/adr/0166-pvp-server-guard-parity.md:234` (R8, which named the same stale
+line and noted it was "gated by nothing"; its `README.md:16` citation now
+resolves to the resolution rule, the next-free clause having moved). Those files are
+append-only record and were deliberately NOT edited; this section is the
+forward-dated correction.
+
+**Follow-up left undone (out of repo).** The harness's `/adr` command and its
+doc-keeper guidance still instruct an agent to read and update README's "Next
+free number" heading. That value no longer exists in README; the instruction now
+points at nothing and should be repointed at `docs/adr/DIGEST.md`. That edit is
+outside this repository and outside this slice's declared `touches:` set.
